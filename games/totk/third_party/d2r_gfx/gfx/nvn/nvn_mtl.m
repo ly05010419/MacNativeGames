@@ -5959,10 +5959,57 @@ static void warm_task_done(uint64_t *done,uint64_t total,uint64_t shader_total,u
     if (runtime_warm_progress && (!(*done % 64) || *done == total))
         runtime_warm_progress(*done,total,dict.count,shader_total,g_warm_rps+g_warm_cps,pipeline_total);
 }
+/* Compile the MSL libraries warm_worker is about to load, on every core and in the order it visits them. warm_worker
+   compiles one library at a time on its own thread (first launch: 9360 libraries, one MTLCompilerService busy and the
+   other cores idle); running ahead of it fills the system Metal shader cache, so its newLibraryWithSource for the same
+   source and options becomes a cache hit. The results are dropped (like warm_light); warm_worker, its order and its
+   progress are unchanged. TOTK_WARM_PARALLEL=0 turns it off. */
+static _Atomic uint64_t g_prec_compiled, g_prec_failed;
+static void warm_precompile(NSArray<NSString *> *paths, NSArray<NSString *> *files, NSSet<NSString *> *eligible) {
+#if !TARGET_OS_IPHONE
+    const char *e = getenv("TOTK_WARM_PARALLEL"); if (e && !atoi(e)) return;
+    NSMutableArray<NSString *> *order = [NSMutableArray array];
+    NSMutableSet<NSString *> *queued = [NSMutableSet set];
+    void (^add)(NSString *) = ^(NSString *key) { if (key.length && ![queued containsObject:key]) { [queued addObject:key]; [order addObject:key]; } };
+    for (NSString *path in paths) {
+        NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        for (NSString *line in [txt componentsSeparatedByString:@"\n"]) {
+            if (![eligible containsObject:line]) continue;
+            NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+            if (([c[0] isEqualToString:@"S"] && c.count >= 3) || ([c[0] isEqualToString:@"C"] && c.count >= 2)) add(c[1]);
+            else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
+                pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+                add(warm_key(sk.vs, sizeof sk.vs)); add(warm_key(sk.fs, sizeof sk.fs));
+            }
+        }
+    }
+    for (NSString *file in files) if ([file hasSuffix:@"_b.metal"]) add([file stringByDeletingPathExtension]);
+    NSString *rt = totk_rt_dir();
+    MTLCompileOptions *opts = totk_precise_opts();   // created here: its lazy initialisation is not thread-safe
+    g_dev.shouldMaximizeConcurrentCompilation = YES;
+    MLOG("并行预编译：%lu 个着色器库，%lu 个系统编译线程（TOTK_WARM_PARALLEL=0 关）",
+         (unsigned long)order.count, (unsigned long)g_dev.maximumConcurrentCompilationTaskCount);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        uint64_t t0 = bp_now();
+        dispatch_apply(order.count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) { @autoreleasepool {
+            NSString *msl = [NSString stringWithContentsOfFile:[rt stringByAppendingFormat:@"/%@.metal", order[i]]
+                                                        encoding:NSUTF8StringEncoding error:nil];
+            if (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"]) return;   // as warm_shader
+            NSError *err = nil;
+            atomic_fetch_add(([g_dev newLibraryWithSource:msl options:opts error:&err] ? &g_prec_compiled : &g_prec_failed), 1);
+        } });
+        MLOG("并行预编译完成：%llu 个着色器库，%llu 个失败，用时 %.1f s",
+             (unsigned long long)atomic_load(&g_prec_compiled), (unsigned long long)atomic_load(&g_prec_failed), (bp_now() - t0) / 1e9);
+    });
+#else
+    (void)paths; (void)files; (void)eligible;
+#endif
+}
 static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
                         NSSet<NSString *> *eligible,
                         NSMutableSet<NSString *> *planned_keys,uint64_t total,uint64_t shader_total,uint64_t pipeline_total) {
     @autoreleasepool {
+        warm_precompile(paths, files, eligible);
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         NSUInteger path_index = 0;
