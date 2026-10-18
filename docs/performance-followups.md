@@ -2,6 +2,48 @@
 
 本页保留原开发树 `native-port/TODO.md`、`docs/testing-methods.md` 中 2026-10-17 的重要结论，并与本工具的 [1.4.3 记录](v1.4.3-port.md) 分开。旧实验的开关、源码和二进制须按具体分支核对，不能把旧版通过或未合入的实验当作当前 1.4.3 验收。这里只安排 Mac；不代表 iPhone 已测。
 
+## Metal HUD
+
+Mac 保留原有 FPS、逐核 CPU/GPU 负载和着色器收集提示，额外在左上角显示 Apple Metal Performance HUD，避免遮挡右上角的原 FPS 面板。按键 **1** 统一隐藏或恢复全部提示。启动器在执行游戏前设置环境；直接开发启动在创建 Metal device/layer 前补齐默认值。显式环境参数优先，不改系统全局偏好。
+
+| 参数 | 默认值 | 用途 |
+|---|---|---|
+| `MTL_HUD_ENABLED` | `1` | 额外的官方性能面板；`0` 仅关闭这一面板 |
+| `MTL_HUD_LOG_ENABLED` | `0` | `1` 开启官方逐帧性能日志 |
+| `MTL_HUD_ALIGNMENT` | `topleft` | 额外面板的位置 |
+| `TOTK_FPS_OVERLAY` | `1` | 原游戏 FPS/补帧分项显示；`0` 单独关闭 |
+| `TOTK_LOAD_OVERLAY` | `1` | 原 CPU/GPU 负载采样及面板；`0` 单独关闭 |
+
+Metal HUD 的 FPS 按呈现帧统计，包括补帧，与游戏提交帧率不一定相同；GPU 时间也不等于原面板的 GPU 利用率百分比。着色器收集提示表示本项目翻译缓存的收集情况，与 Metal 的编译活动是两种指标。内部计时、音频、等待、翻译诊断及 `DM_NVN_TSV` 等原有开关保留。
+
+默认不启用额外 encoder GPU counter 跟踪。需要深入分析时单独验证其与现有计数器采样的兼容性。官方日志可用 Console 按游戏进程及 `com.apple.metal.hud` 过滤，不能假定所有系统版本都会把它写入 `totk.log`。
+
+### 验证
+
+`tests/metal_hud_ui_probe.m` 使用真实 Mac 前端与按键 1 的异步派发，不运行游戏、不提交 GPU 命令；检查原面板保持开启、HUD 单独关闭、日志开关、显隐恢复及 layer 位置设置保留。它需要 macOS 图形会话。将编译产物放在源码树外，依次以默认环境、`MTL_HUD_ENABLED=0`、`MTL_HUD_LOG_ENABLED=1` 运行；参数是用户数据目录 `tests` 下的独立 profile。
+
+```sh
+hud_build=$(mktemp -d "${TMPDIR:-/tmp}/mng-metal-hud.XXXXXX")
+xcrun clang -std=gnu11 -fobjc-arc -Wall -Wextra -Werror \
+  -Wno-deprecated-declarations -undefined dynamic_lookup \
+  -Igames/totk/third_party/d2r_gfx/gfx/nvn/include \
+  tests/metal_hud_ui_probe.m games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.c \
+  -framework Cocoa -framework Metal -framework QuartzCore -framework CoreVideo \
+  -framework CoreGraphics -framework CoreText -o "$hud_build/probe"
+hud_profile="$HOME/Library/Application Support/MacNativeGames/TOTK/tests/metal-hud-controls/profile"
+mkdir -p "$hud_profile"
+env -u MTL_HUD_ENABLED -u MTL_HUD_LOG_ENABLED -u MTL_HUD_ALIGNMENT \
+  -u TOTK_FPS_OVERLAY -u TOTK_LOAD_OVERLAY "$hud_build/probe" "$hud_profile"
+env MTL_HUD_ENABLED=0 MTL_HUD_ALIGNMENT=topleft TOTK_FPS_OVERLAY=1 \
+  TOTK_LOAD_OVERLAY=1 "$hud_build/probe" "$hud_profile"
+env MTL_HUD_ENABLED=1 MTL_HUD_LOG_ENABLED=1 MTL_HUD_ALIGNMENT=topleft \
+  TOTK_FPS_OVERLAY=1 TOTK_LOAD_OVERLAY=1 "$hud_build/probe" "$hud_profile"
+```
+
+本机已构建的 1.4.3 App 标题画面确认左上 Metal HUD、右上原 FPS、底部负载及着色器提示同时存在；这属于显示验证，不是性能跑分或长局验证。历史截图、签名与测试记录位于源码树外的 `/Volumes/mac-APFS/MacNativeGames-artifacts/2026-10-18/metal-hud-additional`；该 App 包含其他本地改动，不能代替本分支的独立源码检查。
+
+参考：[启用与日志](https://developer.apple.com/documentation/xcode/monitoring-your-metal-apps-graphics-performance)、[layer 开关与位置](https://developer.apple.com/documentation/xcode/customizing-metal-performance-hud)、[指标定义](https://developer.apple.com/documentation/xcode/understanding-metal-performance-hud-metrics)。
+
 ## 已有实验应保留的结论
 
 旧版 M4 / macOS 26.5.2、监视堡垒存档副本，取消显示节拍限制的渲染能力测试；不是实际上屏 FPS。每组同一二进制，8 个 30 秒平衡交替窗口。下表是每条件 4 个窗口分位数的算术均值，不是合并帧分位数；天气和时间仍自然变化。

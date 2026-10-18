@@ -65,6 +65,7 @@ verify:
 	"$(PY)" scripts/verify_rewrites.py
 
 .PHONY: runtime probe-loader boot
+build/totk-native: runtime/metal_hud.h
 build/runtime_tables.h: scripts/prepare_runtime.py analysis/phase12-validation.json
 	"$(PY)" scripts/prepare_runtime.py
 

@@ -97,7 +97,7 @@ void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one 
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
 void runtime_shortcut_help_toggle(void);
-int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
+int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for Metal HUD, FPS, shader and system-load overlays */
 
 void *runtime_account_override(const char *name);
 

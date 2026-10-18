@@ -7,9 +7,20 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"
+#include "metal_hud.h"
+#include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
+static BOOL metalHUDEnabled;
+/* Key 1 controls this layer only, without changing global Metal HUD settings.
+   Keep logging/configuration keys intact when changing overlay visibility. */
+static void front_sync_hud(int show) {
+ if(!metalLayer)return;
+ NSMutableDictionary *properties=[metalLayer.developerHUDProperties mutableCopy] ?: [NSMutableDictionary new];
+ properties[@"mode"]=metalHUDEnabled&&show?@"main":@"disabled";
+ metalLayer.developerHUDProperties=properties;
+}
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
@@ -102,7 +113,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 -(void)layout{[super layout];[self position];}
 -(void)position{if(!self.superview)return;CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=140;NSRect f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=NSInsetRect(self.bounds,20,18);}
 @end
-void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
+void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;front_sync_hud(show);});}
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -147,6 +158,8 @@ static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callbac
 void runtime_front_run(void(*callback)(void)){
  @autoreleasepool{
   bootStartNS=runtime_now_ns();
+  runtime_metal_hud_defaults();
+  metalHUDEnabled=atoi(getenv("MTL_HUD_ENABLED"))!=0;
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_gamepad_start();
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
@@ -163,6 +176,9 @@ void runtime_front_run(void(*callback)(void)){
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);
+  metalLayer.developerHUDProperties=@{@"logging":atoi(getenv("MTL_HUD_LOG_ENABLED"))?@"default":@"disabled"};
+  front_sync_hud(fps_overlay_hints_enabled());
+  fprintf(stderr,"[totk] Metal HUD %s; frame logging %s; legacy FPS/load overlays %s/%s\n",metalHUDEnabled?"on":"off",atoi(getenv("MTL_HUD_LOG_ENABLED"))?"on":"off",getenv("TOTK_FPS_OVERLAY"),getenv("TOTK_LOAD_OVERLAY"));
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
@@ -181,7 +197,8 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
-  /* The FPS counter is drawn into the game picture's top-right corner (with the on-screen size) by the present encoder (gfx/nvn/fps_overlay.c). */
+  /* Metal draws an additional HUD at top-left. The renderer keeps its FPS,
+     system-load and shader collection overlays; key 1 controls all together. */
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
