@@ -957,6 +957,7 @@ static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交
 static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
+static void pso_pend_drain(void);   // 回收预编表里编完但没被取走的管线（g_pp，定义见 pso_pend_kick 旁） | Reclaim pipelines finished in the predict table but never taken (g_pp, defined next to pso_pend_kick)
 void mtl_sub_begin(void) {
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (g_cg.ng) { static int once; if (!once++) MLOG("【红】[cube-merge] 上次提交结束时还有 %d 组没落地（不应发生）", g_cg.ng); g_cg.ng = 0; } g_cg_pending = 0; g_cg.take_seq = ~0ull;
@@ -966,6 +967,7 @@ void mtl_sub_begin(void) {
     defer_drain();
     defer_reset();
     warm_claim();
+    pso_pend_drain();   // 猜多了的管线：挪出预编表，不再永远占着槽位 | Over-guessed pipelines: move them out of the predict table instead of letting them hold a slot forever
     if (g_cb) MDIE("提交重入");
     pt_apply_request();
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
@@ -4859,6 +4861,21 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
     return o;
 }
 void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
+// 只查缓存，从不翻译：供并行预编的扫描用（pso_predict_rest）。扫到的是「后面可能要画」的程序；还没真正画过的（没有 NvProg），
+// prog_get 会在提交线程上同步翻译并编着色器库，一次缺失就可能把整个提交里的新着色器拉进这一帧。没缓存就不预测这次绘制，真画到时照常走 prog_get。
+// Lookup only, never translates: for the parallel-precompile scan (pso_predict_rest). The scan's programs are the ones
+// drawn later in this submission; for one never drawn yet (no NvProg), prog_get would translate it and compile its library
+// synchronously on the submit thread, so one miss could pull a whole submission's new shaders into this frame. Such a
+// draw is just not predicted; when it is actually drawn, prog_get handles it as before.
+static __unsafe_unretained NvProg *prog_get_cached(const prog_t *cp) {   // 只在提交线程调用 | Called only on the submit thread
+    prog_t *p = (prog_t *)cp;
+    static const prog_t *lp; static uint64_t lser, lgen; static NvProg *lpr;
+    uint64_t gen = g_ser_gen;
+    if (p == lp && p->serial == lser && lpr && (gen == lgen || ser_unaffected(lgen, gen, lser))) { lgen = gen; return lpr; }
+    __unsafe_unretained NvProg *have = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+    if (have) { lp = p; lser = p->serial; lgen = gen; lpr = have; }
+    return have;
+}
 
 // ---------- 描述符池：贴图号 / 采样器号 → 对象 ----------
 // 登记时快照整个贴图对象（NVN 语义：描述符已写进池）；view：该号对应的 MTLTexture（视图或基贴图，CFBridgingRetain 持有）及取得时的序号表 / 客体写代号
@@ -5811,15 +5828,41 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
 #define PSO_PEND_MAX 384
 static struct { pso_key k; id<MTLRenderPipelineState> ps; int used, done; } g_pp[PSO_PEND_MAX];
 static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pp_cv = PTHREAD_COND_INITIALIZER;
-static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用条数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
+static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken, g_pp_drained, g_pp_reused, g_pp_full;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用 / 回收 / 回收后又用上的条数、表满次数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken / drained / drained-then-used counts and times the table was full
+/* 编完却没被本次提交取走的猜测（多半是猜错的深度 / 模板挂法）。原先它们一直占着 g_pp 的槽位：384 个占满后 pso_pend_kick 不再丢任何管线，
+   之后每次缺失都在提交线程上逐条同步编。现在每次提交开始时把它们挪进这张表、释放槽位。不直接放进 g_pso：真正用到时仍要经过 pso_get 的
+   pso_record / pso_user_record，没画过的组合也不进清单。只在提交线程访问。
+   Guesses that finished compiling but were not taken in their submission (mostly wrong depth / stencil attach modes). They
+   used to keep their g_pp slot forever: once all 384 were held, pso_pend_kick kicked nothing and every later miss compiled
+   synchronously one by one on the submit thread. Each submission now starts by moving them here and freeing the slots. Not
+   into g_pso directly: a real use still goes through pso_get's pso_record / pso_user_record, and combinations never drawn
+   stay out of the manifests. Submit thread only. */
+static nvn_hmap g_pso_guess = {.klen = sizeof(pso_key)};
 static void pso_predict_rest(void);
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
+static void pso_pend_drain(void) {   // 提交线程，每次提交开始时（mtl_sub_begin） | Submit thread, at the start of each submission (mtl_sub_begin)
+    pthread_mutex_lock(&g_pp_mu);
+    for (int i = 0; i < PSO_PEND_MAX; i++) {
+        if (!g_pp[i].used || !g_pp[i].done) continue;
+        if (!hm_get_id(&g_pso, &g_pp[i].k) && !hm_get_id(&g_pso_guess, &g_pp[i].k)) { hm_put_id(&g_pso_guess, &g_pp[i].k, g_pp[i].ps ? g_pp[i].ps : (id)NSNull.null); g_pp_drained++; }   // NSNull：编失败的猜测，记下免得每次提交重丢 | NSNull: a guess that failed to compile, kept so it is not kicked again every submission
+        g_pp[i].ps = nil; g_pp[i].used = 0;
+    }
+    pthread_mutex_unlock(&g_pp_mu);
+}
+static id<MTLRenderPipelineState> pso_guess_take(const pso_key *k) {   // 提交线程调：回收表里有就取走；编失败的返回 nil，由 pso_get 照常同步编并报错 | Called by the submit thread: take it from the drained guesses if it is there; a failed one returns nil, and pso_get compiles and reports it synchronously as before
+    id o = hm_get_id(&g_pso_guess, k);
+    if (!o) return nil;
+    hm_del_id(&g_pso_guess, k);
+    if (o == (id)NSNull.null) return nil;
+    g_pp_reused++; return o;
+}
 static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // 提交线程调：没在缓存、没在表里才丢 | Called by the submit thread: kick only if it is neither in the cache nor in the table
-    if (hm_get_id(&g_pso, k)) return;
+    if (hm_get_id(&g_pso, k) || hm_get_id(&g_pso_guess, k)) return;
     pthread_mutex_lock(&g_pp_mu);
     int at = pso_pend_find(k), slot = -1;
     if (at < 0) for (int i = 0; i < PSO_PEND_MAX; i++) if (!g_pp[i].used) { slot = i; break; }
     if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].used = 1; }
+    if (at < 0 && slot < 0) g_pp_full++;
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0 || slot < 0) return;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); g_pp_kicked++;
@@ -5847,7 +5890,8 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     if (cached) return cached;
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
-    ps = g_pso_lmap ? nil : pso_pend_take(&k);
+    ps = g_pso_lmap ? nil : pso_guess_take(&k);
+    if (!ps && !g_pso_lmap) ps = pso_pend_take(&k);
     if (ps) g_pp_taken++;
     else {
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // 本次提交第一次缺：先把后面的丢出去并行编，再同步编眼前这条 | First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
@@ -5863,6 +5907,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     hm_put_id(&g_pso, &k, ps);
     return ps;
 }
+void mtl_pp_stats(uint64_t v[5]) { v[0] = g_pp_kicked; v[1] = g_pp_taken; v[2] = g_pp_drained; v[3] = g_pp_reused; v[4] = g_pp_full; }   // 并行预编表累计：丢出 / 领用 / 回收 / 回收后用上 / 表满次数 | Predict table, cumulative: kicked / taken / drained / drained then used / times found full
 static NSString *warm_key(const char *s, size_t n) {
     size_t z = strnlen(s, n);
     return [[NSString alloc] initWithBytes:s length:z encoding:NSUTF8StringEncoding];
@@ -7101,14 +7146,14 @@ static void pso_predict_rest(void) {
         }
         if (hq.op == OP_DRAW || hq.op == OP_DRAW_IDX) {
             draws++;
-            __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil; if (!pr || !pr->sh[0]) continue;
+            __unsafe_unretained NvProg *pr = S.prog ? prog_get_cached(S.prog) : nil; if (!pr || !pr->sh[0] || pr->missing) continue;   // 只查缓存，不在提交线程上翻译（见 prog_get_cached） | lookup only, never translates on the submit thread (see prog_get_cached)
             __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
             const uint32_t dv[4] = {dfull, 0, 0, dfull}, sv[4] = {sfull, 0, sfull, 0};
             for (int v = 0; v < 4; v++) {
                 if (v && dv[v] == dv[0] && sv[v] == sv[0]) continue;
                 if (v == 2 && !sfull) continue; if (v == 3 && (!dfull || !sfull)) continue;
                 pso_key k; pso_key_fill(&k, vs, fs, cf, dv[v], sv[v], samples, 0);
-                if (hm_get_id(&g_pso, &k)) continue;
+                if (hm_get_id(&g_pso, &k) || hm_get_id(&g_pso_guess, &k)) continue;
                 int dup = 0; for (int i = 0; i < (v ? nb : na) && !dup; i++) dup = !memcmp(&(v ? qb : qa)[i].k, &k, sizeof k);
                 if (dup) continue;
                 if (!v && na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }

@@ -2289,6 +2289,10 @@ static void tsummary(uint64_t frame) {
                                     "clear-render-disabled", "cond-disabled", "cond-unknown", "shader-missing"};   // TOTK: 12-14 conditional rendering (see cond_eval); 15 a shader variant the iPhone does not have yet
         for (int i = 0; i < 16; i++) { uint64_t d = g_draw_skip[i] - prev[i]; prev[i] = g_draw_skip[i]; if (d && o < sizeof b - 48) o += snprintf(b + o, sizeof b - o, " %s=%llu", why[i], (unsigned long long)d); }
         if (o) LOG("[nvn] TOTK 回放丢弃的绘制 至帧 %llu:%s", frame, b); }
+      { static uint64_t pk_[5]; uint64_t v[5]; void mtl_pp_stats(uint64_t[5]); mtl_pp_stats(v);   // TOTK: parallel-precompile predict table (nvn_mtl.m g_pp)
+        if (pf && frame > pf && (v[0] > pk_[0] || v[4] > pk_[4])) LOG("[nvn] 并行预编表 至帧 %llu：丢出 %llu 条，领用 %llu 条，回收 %llu 条（其中后来用上 %llu 条），表满 %llu 次（近 300 帧）", frame,
+            (unsigned long long)(v[0] - pk_[0]), (unsigned long long)(v[1] - pk_[1]), (unsigned long long)(v[2] - pk_[2]), (unsigned long long)(v[3] - pk_[3]), (unsigned long long)(v[4] - pk_[4]));
+        memcpy(pk_, v, sizeof pk_); }
       { static uint64_t py, pk, pw; uint64_t cy = atomic_load(&g_cum_sub_cyc), ck = atomic_load(&g_cum_sub_sys_ns), cw = atomic_load(&g_cum_sub_wall_ns);
         if (pf && frame > pf && ci > pi && cy > py) { double nf = (double)(frame - pf), cyc = (double)(cy - py), cpu = (double)(cc - pc);
           qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp);
