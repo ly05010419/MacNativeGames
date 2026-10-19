@@ -3,6 +3,7 @@
 #include "aspect_patch.h"
 #include "game_patches.h"
 #include "game_version.h"
+#include "world_survey.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +109,7 @@ static void patch_realtime(Module *m){
 static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 void runtime_game_patches(Module *m) {
+    runtime_survey_init(m);
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
     patch_realtime(m);
     patch_output_res(m);
@@ -147,7 +149,7 @@ void runtime_game_patches(Module *m) {
  * Pending output changes are bit 21 of +8. Keep the original rebuild path. */
 static int output_full_at_start;
 static unsigned output_w,output_h;
-static uint8_t *output_page;
+static _Atomic(uint8_t *) output_page;
 static uint64_t pack_size(unsigned w,unsigned h){return (uint64_t)h<<32|w;}
 /* The overlay's manifest header (scripts/make_output_res_overlay.py --scene) says how big a 3D scene its texture heap
  * has room for and how many KiB it added; without it the scene keeps the game's size (an overlay built before
@@ -164,6 +166,10 @@ static void overlay_manifest(unsigned w,unsigned h){
         else overlay_scene_w=overlay_scene_h=0;
     }
     fclose(f);
+}
+uint64_t runtime_output_size_current(void){
+    uint8_t *page=atomic_load(&output_page);
+    return page?atomic_load((_Atomic uint64_t *)(void *)(page+32)):pack_size(1920,1080);
 }
 int runtime_output_res(unsigned *w,unsigned *h){
     static int decided,on;static unsigned cw,ch;
@@ -242,9 +248,10 @@ static void patch_output_res(Module *m){
  #else
     for(unsigned i=0;i<3;i++)memcpy(m->base+guards[i].off,words+i,4);
  #endif
-    output_page=m->base+data;output_w=w;output_h=h;
-    atomic_store((_Atomic uint64_t *)(void *)(output_page+32),output_full_at_start?pack_size(w,h):pack_size(1920,1080));
-    atomic_store((_Atomic uint64_t *)(void *)(output_page+40),0);
+    uint8_t *page=m->base+data;output_w=w;output_h=h;
+    atomic_store((_Atomic uint64_t *)(void *)(page+32),output_full_at_start?pack_size(w,h):pack_size(1920,1080));
+    atomic_store((_Atomic uint64_t *)(void *)(page+40),0);
+    atomic_store(&output_page,page);   /* Publish initialized state to the HUD on the main thread. */
     fprintf(stderr,"[totk] 1.4.3 output: %ux%u swapchain; starts %s, key 3 cycles MetalFX / native / off; display-config veneer +%#llx\n",w,h,output_full_at_start?"at requested resolution":"at 1920x1080",(unsigned long long)stub);
 }
 /* Render resolution (TOTK_RENDER_RES=<w>x<h>, e.g. 960x540) - the 1.4.3 port of game_patches.c's patch.

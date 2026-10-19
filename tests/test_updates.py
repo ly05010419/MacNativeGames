@@ -191,6 +191,26 @@ class Updates(unittest.TestCase):
         self.assertNotIn('ab' * 17, failure)
         self.assertFalse(list(self.root.glob('update-merge-*')))
 
+    def test_merge_accepts_hactool_signature_checks_it_cannot_perform(self):
+        # Real hactool prints the NCA fixed-key and NPDM signature checks as (FAIL) on a successful merge:
+        # it has no Nintendo public key. The merge must judge the data, not those lines.
+        space = patch('extract_update_romfs.shutil.disk_usage')
+        space.start().return_value.free = 100 * 2**30
+        self.addCleanup(space.stop)
+        helper = self.root/'hactool'
+        helper.write_text('#!'+sys.executable+'\n'+
+            'import sys,pathlib\n'+
+            'out=pathlib.Path(next(s.split("=",1)[1] for s in sys.argv if s.startswith("--section")))\n'
+            f'out.write_bytes({romfs()!r})\n'
+            'print("Fixed-Key Signature (FAIL):")\n'
+            'print("NPDM Signature (FAIL):")\n'
+            'for i in range(6): print(f"Level {i} (GOOD)")\n')
+        helper.chmod(0o755)
+        base = self.root/'base.nsp'; base.write_bytes(game_image('nsp', managed=True))
+        out = self.root/'merged'
+        merge(base, self.update, self.keys, helper, out)
+        self.assertEqual((out/'romfs.bin').read_bytes(), romfs())
+
     def test_bundle_contains_only_selected_game_version(self):
         for version, display in (('v112', '1.1.2'), ('v121', '1.2.1'), ('v143', '1.4.3')):
             with self.subTest(version=version):

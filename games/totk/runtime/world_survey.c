@@ -14,21 +14,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(TOTK_GAME_V143)
-_Atomic int runtime_survey_pending;
-void runtime_survey_init(Module *m) {
-    (void)m;
-    if (getenv("TOTK_SURVEY")) runtime_fail("1.4.3 survey diagnostic offsets have not been enabled");
-}
-int runtime_survey_command(const char *line) { (void)line; return 0; }
-void runtime_survey_tick(uint64_t frame) { (void)frame; }
-void runtime_survey_cancel_user(void) { }
-#else
 enum { SCENE_SLOT = GAME_ADDR(0x4663f08), FORCE_MATRIX = GAME_ADDR(0x69a18c), ACTOR_POS = GAME_ACTOR_POS, ACTOR_ROT = GAME_ACTOR_ROT };
 static uintptr_t survey_main;
 static void (*survey_force)(void *, const float *, uint32_t);
 static _Atomic int survey_enabled;
 _Atomic int runtime_survey_pending;
+/* The frame-end sync, read by hle_nvn.c (built once for all versions): *(sys+[0]), then +[1] through one more pointer if
+   [1] >= 0. 1.4.3's frame controller (main+0x2db94c) first waits on *(*(sys+0x150)+0x78), found with TOTK_SURVEY_DEBUG. */
+#if defined(TOTK_GAME_V143)
+const int32_t runtime_survey_sync[2] = {0x150, 0x78};
+#else
+const int32_t runtime_survey_sync[2] = {0x1d8, -1};
+#endif
 static pthread_mutex_t survey_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct { int kind; char tag[64]; float xyz[3]; unsigned hold; } request;
 static unsigned hold_left;
@@ -98,7 +95,11 @@ void runtime_survey_init(Module *m) {
     if (!owner || !strcmp(owner, "user") || !profile || !realpath(profile, target) ||
         (realpath("analysis/phase6-profile", user) && !strcmp(target, user)))
         runtime_fail("TOTK_SURVEY requires an agent-owned session and a separate test profile");
+#if defined(TOTK_GAME_V143)
+    const uint32_t expected[] = {0xa9bc7bfd, 0xa9015ff8, 0xa90257f6, 0xa9034ff4};   // 1.4.3 inlines the physics call: larger frame
+#else
     const uint32_t expected[] = {0xa9bd7bfd, 0xf9000bf5, 0x910003fd, 0xa9024ff4};
+#endif
     if (strcmp(m->name, "main") || SCENE_SLOT + 8u > m->size || FORCE_MATRIX + sizeof expected > m->text_end ||
         memcmp(m->base + FORCE_MATRIX, expected, sizeof expected))
         runtime_fail("survey requires verified game-version forceSetMatrix entry");
@@ -176,4 +177,3 @@ void runtime_survey_tick(uint64_t frame) {
     pthread_mutex_unlock(&survey_lock);
     in_tick = 0;
 }
-#endif

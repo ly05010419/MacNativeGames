@@ -543,9 +543,32 @@ static uint64_t g_frame;   // tentative; defined with the frame bookkeeping belo
 static uint64_t g_game_sys;
 extern _Atomic int runtime_survey_pending;
 extern void runtime_survey_tick(uint64_t frame);
+extern const int32_t runtime_survey_sync[2];
+/* TOTK_SURVEY_DEBUG=1: while a command is pending, the first 6 waited syncs, their thread and guest call chain, and where the
+   system object holds them (pointer at sys+o, or inside / pointed to from the object at *(sys+o)). */
+static int vm_read8(uint64_t a, uint64_t *out);
+static void survey_wait_debug(const NVNsync *s) {
+    static int on = -1; static _Atomic int left = 6;
+    if (on < 0) { const char *e = getenv("TOTK_SURVEY_DEBUG"); on = e && !strcmp(e, "1"); }
+    if (!on || atomic_fetch_sub(&left, 1) <= 0) return;
+    uint64_t sv = (uintptr_t)s, tid = 0; pthread_threadid_np(NULL, &tid);
+    LOG("[survey] wait sync=%p frame=%llu thread=%llu", (const void *)s, (unsigned long long)g_frame, (unsigned long long)tid);
+    for (uint64_t o = 0; g_game_sys && o < 0x800; o += 8) {
+        uint64_t q;
+        if (!vm_read8(g_game_sys + o, &q) || !q) continue;
+        if (q == sv) LOG("[survey]   = *(sys+%#llx)", (unsigned long long)o);
+        if (sv >= q && sv - q < 0x800) LOG("[survey]   = *(sys+%#llx)+%#llx", (unsigned long long)o, (unsigned long long)(sv - q));
+        for (uint64_t o2 = 0; o2 < 0x800; o2 += 8) { uint64_t r; if (vm_read8(q + o2, &r) && r == sv) LOG("[survey]   = *(*(sys+%#llx)+%#llx)", (unsigned long long)o, (unsigned long long)o2); }
+    }
+    guest_chain("survey wait");
+}
 static void survey_after_wait(const NVNsync *s) {
-    if (__builtin_expect(atomic_load_explicit(&runtime_survey_pending, memory_order_relaxed), 0) &&
-        g_game_sys && (uintptr_t)s == *(const uintptr_t *)(uintptr_t)(g_game_sys + 0x1d8)) runtime_survey_tick(g_frame);
+    if (__builtin_expect(atomic_load_explicit(&runtime_survey_pending, memory_order_relaxed), 0)) {
+        survey_wait_debug(s);
+        uintptr_t at = g_game_sys ? *(const uintptr_t *)(uintptr_t)(g_game_sys + runtime_survey_sync[0]) : 0;
+        if (at && runtime_survey_sync[1] >= 0) at = *(const uintptr_t *)(at + runtime_survey_sync[1]);
+        if (at && (uintptr_t)s == at) runtime_survey_tick(g_frame);
+    }
 }
 /* TOTK_SYNC_CHAIN=<n>[:<from frame>] */
 static int sync_chain_left(int k) {

@@ -321,6 +321,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
     lock = threading.Lock()
     pending = iter(by_key.items())
     done = [0, 0]   # completed, failed
+    stop = threading.Event()   # a service failed: the others stop after their current shader
     started = time.monotonic()
 
     def worker():
@@ -328,7 +329,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
                                     '--out', str(staging), '--chain', CHAIN],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         try:
-            while True:
+            while not stop.is_set():
                 with lock:
                     item = next(pending, None)
                 if item is None:
@@ -379,10 +380,14 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
                 if mine:
                     with lock:
                         produced[key] = mine
+        except BaseException:
+            stop.set()
+            raise
         finally:
             process.stdin.close(); process.wait()
 
-    workers = max(1, min(os.cpu_count() or 4, len(by_key)))
+    # At most 8 services, as compile_seed.py compiles: each translator holds its own working memory.
+    workers = max(1, min(8, os.cpu_count() or 4, len(by_key)))
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         for future in [pool.submit(worker) for _ in range(workers)]:
             future.result()

@@ -8,7 +8,8 @@ NSPs need common tickets (unless rights-free) and a separate shared-font source.
 Nothing from the game is in this repository; everything is made from your files on your Mac. Key values are never printed.
 
 Steps (each one checked against games/totk/assets/expected-v<version>.json, so a damaged dump or another version stops the
-build at the first wrong file):
+build at the first wrong file; a different genuine dump of the same version is accepted — main.npdm by Nintendo's ACID
+signature, shared fonts by valid BFTTF structure):
   1. code: ExeFS out of the XCI or NSP, the three code modules rewritten for Apple silicon (games/totk/third_party/d2r)
   2. data: RomFS (17 GB), the system shared fonts (from XCI firmware or an explicit font source), the RomFS overlays
   3. shaders: SPIRV-Cross (fetched at a pinned commit, compiled with clang) and the shader translator, which ships
@@ -29,7 +30,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, hashlib, json, os, platform, shutil, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, json, os, platform, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -52,6 +53,20 @@ SPIRV_CROSS_SOURCES = ('main.cpp', 'spirv_cfg.cpp', 'spirv_cpp.cpp', 'spirv_cros
                        'spirv_reflect.cpp')
 SPIRV_CROSS_FLAGS = ('-O3', '-DNDEBUG', '-std=c++11', '-arch', 'arm64', '-Wno-deprecated-declarations')
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin']
+
+# Nintendo's public ACID signing key (generation 0): a dump's main.npdm is genuine when this key verifies
+# its ACID signature, which is the check the Horizon loader itself makes before it starts a title
+# (Atmosphere libraries/libstratosphere/source/fssystem/fssystem_crypto_configuration.cpp).
+NINTENDO_ACID_MODULUS = bytes.fromhex(
+    'DDC8DDF24E6DF0CA9EC75DC77BADFE7D238969B6F206A20288E15591ABCB4D50'
+    '2EFC9D9476D64CD8FF10FA5E930AB457AC51C71666F41A54C2C5043D1BFE3020'
+    '8AAC6F6FF5C7B668B8C9406B42AD1121E78BE9750186E4489B0A0AF87FE887F2'
+    '8201E6A30FE466AE833F4E9F5E0130A400B99AAE5F03CC1860E5EF3B5E1516FE'
+    '1C8278B52F477C0666885D35A2672010E76C4368D3E45A682A5AE26D73B03153'
+    '1C200944F51A9D22BE12A17711E2A1CD409AA28B609BEFA0D34863A2F8A32C08'
+    '56522E6019675AA79FDC3F3F692B316AB7884A148480333C9D44B73F4CE175EA'
+    '37EAE81E7C77B7C61AA2F09F1061CD7B5B324C37EFB17168530AED517D3522FD'
+)
 
 
 class BuildError(Exception):
@@ -99,6 +114,74 @@ def check(what, got, want):
                          f'(is this Tears of the Kingdom 1.0.0, and the dump complete?)')
 
 
+
+
+# ---- genuine dumps ----
+def _mgf1_sha256(seed, length):
+    blocks = b''
+    for counter in range((length + 31) // 32):
+        blocks += hashlib.sha256(seed + counter.to_bytes(4, 'big')).digest()
+    return blocks[:length]
+
+
+def _pss_sha256_valid(signature, modulus, message):
+    """RSA-2048 PSS/SHA-256 (32-byte salt, MGF1-SHA256), the scheme of an ACID block's signature."""
+    size = len(modulus)
+    if size < 256 or len(signature) != size:
+        return False
+    modulus_number = int.from_bytes(modulus, 'big')
+    number = int.from_bytes(signature, 'big')
+    if number >= modulus_number:
+        return False
+    encoded = pow(number, 0x10001, modulus_number).to_bytes(size, 'big')
+    if encoded[-1] != 0xBC:
+        return False
+    hashed, mask = encoded[size - 33:size - 1], _mgf1_sha256(encoded[size - 33:size - 1], size - 33)
+    db = bytes([(encoded[0] ^ mask[0]) & 0x7F]) + bytes(a ^ b for a, b in zip(encoded[1:size - 33], mask[1:]))
+    if db[:-33].strip(b'\x00') or db[-33] != 0x01:
+        return False
+    return hashlib.sha256(b'\x00' * 8 + hashlib.sha256(message).digest() + db[-32:]).digest() == hashed
+
+
+def npdm_signed(path):
+    """True when the npdm's ACID block carries a valid Nintendo signature over its own access control.
+
+    The pinned SHA-256 identifies the reference dump; the signature identifies every genuine dump of the
+    version, which is why this is the one ExeFS file that does not have to match byte for byte.
+    """
+    data = path.read_bytes()
+    if len(data) < 0x80 or data[:4] != b'META' or int.from_bytes(data[0x04:0x08], 'little') != 0:
+        return False
+    acid, acid_size = struct.unpack_from('<II', data, 0x78)
+    if acid_size < 0x200 or acid + acid_size > len(data) or data[acid + 0x200:acid + 0x204] != b'ACID':
+        return False
+    size = struct.unpack_from('<I', data, acid + 0x204)[0]
+    if size < 0x100 or acid + 0x100 + size > len(data):
+        return False
+    return _pss_sha256_valid(data[acid:acid + 0x100], NINTENDO_ACID_MODULUS, data[acid + 0x100:acid + 0x100 + size])
+
+
+def exefs_matches(exefs, expected):
+    """True when the extracted ExeFS holds the expected modules; a signed main.npdm of another dump is accepted."""
+    for name, digest in expected.items():
+        path = exefs / name
+        if not path.is_file() or (sha256(path) != digest and not (name == 'main.npdm' and npdm_signed(path))):
+            return False
+    return True
+
+
+def _bfttf_valid(path):
+    """A structurally valid shared font, by the same size check scripts/extract_shared_fonts.py makes."""
+    data = path.read_bytes()
+    if len(data) < 12:
+        return False
+    magic, size = struct.unpack_from('>II', data)
+    key = magic ^ 0x7f9a0218
+    if (size ^ key) + 8 != len(data):
+        return False
+    return struct.unpack_from('>I', data, 8)[0] ^ key in (0x00010000, 0x4F54544F)
+
+
 # ---- prerequisites ----
 def prerequisites(args):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
@@ -108,6 +191,14 @@ def prerequisites(args):
         raise BuildError(f'needs macOS 26 or later (Metal 4); this is macOS {platform.mac_ver()[0]}')
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install')
+    # SPIRV-Cross is C++: without the SDK's libc++ headers the build stops much later at "'string' file not found" (#41)
+    cxx = subprocess.run(['xcrun', 'clang++', '-std=c++11', '-x', 'c++', '-fsyntax-only', '-'], input='#include <string>\n',
+                         capture_output=True, text=True)
+    if cxx.returncode:
+        raise BuildError('clang++ finds no C++ standard library headers, so the developer tools or their SDK are incomplete. '
+                         'With Xcode: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer; with the command line '
+                         'tools only: sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install '
+                         f'(xcode-select -p and xcrun --show-sdk-path show what is used). clang++ said: {cxx.stderr.strip()[:300]}')
     brew = Path('/opt/homebrew')
     missing = [p for p in ('opus', 'libvpx') if not (brew / 'opt' / p / 'lib').is_dir()]
     if missing:
@@ -227,17 +318,15 @@ def identify_update(tree, game, keys, logs):
     source = prepare_update_container(tree, game, keys, logs)
     for version in UPDATES:
         exefs = tree / f'extracted/{version}/exefs'
-        if source_matches(exefs.parent / 'extraction-manifest.json', source) and all(
-                (exefs / name).is_file() and sha256(exefs / name) == digest
-                for name, digest in VERSIONS[version]['exefs_sha256'].items()):
+        if source_matches(exefs.parent / 'extraction-manifest.json', source) and exefs_matches(
+                exefs, VERSIONS[version]['exefs_sha256']):
             return version, source
     staging = tree / 'extracted/update-detection'
     if staging.exists(): shutil.rmtree(staging)
     run([tree / '.venv/bin/python', 'scripts/extract_exefs.py', source, '--keys', keys,
          '--update', '--output', staging / 'exefs'], logs / 'identify-update.log', cwd=tree)
-    actual = {path.name: sha256(path) for path in (staging / 'exefs').iterdir()}
     version = next((version for version in UPDATES
-                    if actual == VERSIONS[version]['exefs_sha256']), None)
+                    if exefs_matches(staging / 'exefs', VERSIONS[version]['exefs_sha256'])), None)
     if version is None:
         raise BuildError('unsupported update module hashes; expected 1.1.2, 1.2.1 or 1.4.3 (the file name is not used to choose a version)')
     target = tree / f'extracted/{version}'
@@ -251,16 +340,24 @@ def identify_update(tree, game, keys, logs):
 
 
 def font_report(folder):
-    """Only known font bytes can be bound into this version's runtime."""
+    """The fonts bound into the runtime: the pinned hashes identify the reference dump, and a valid font from
+    another firmware version is bound by the SHA-256 of its actual bytes (the manifest keeps that value, so
+    scripts/prepare_shared_fonts.py writes the real bytes into the runtime)."""
     rows = []
     for kind, (name, expected) in enumerate(EXPECTED['shared_fonts_sha256'].items()):
         path = folder / f'{kind}-{name}.bfttf'
         if not path.is_file():
             raise BuildError(f'missing shared font: {path}')
-        check(f'shared font {name}', sha256(path), expected)
+        digest = sha256(path)
+        if digest != expected:
+            if not _bfttf_valid(path):
+                raise BuildError(f'shared font {name}: not the expected bytes and not a valid BFTTF font '
+                                 f'(SHA-256 {digest[:16]}...)')
+            say(f'2/4 data: shared font {name} comes from another firmware version; its bytes are bound instead')
         size = path.stat().st_size
-        rows.append(dict(type=kind, name=name, bfttf_bytes=size, font_bytes=size - 8, sha256=expected))
-    return dict(status='pass', integrity='Each shared font matches the verified SHA-256 for this build', fonts=rows)
+        rows.append(dict(type=kind, name=name, bfttf_bytes=size, font_bytes=size - 8, sha256=digest))
+    return dict(status='pass', integrity='Each shared font is a valid BFTTF; the reference dump matches its pinned SHA-256',
+                fonts=rows)
 
 
 def validate_fonts(folder):
@@ -291,7 +388,7 @@ def step_code(tree, game, keys, env, logs, *, version="v0"):
     exefs = tree / f'extracted/{version}/exefs'
     want = expected['exefs_sha256']
     manifest = exefs.parent / 'extraction-manifest.json'
-    if not source_matches(manifest, game) or not all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items()):
+    if not source_matches(manifest, game) or not exefs_matches(exefs, want):
         say('1/4 code: extracting the ExeFS from the game file')
         if exefs.exists():
             shutil.rmtree(exefs)
@@ -300,7 +397,13 @@ def step_code(tree, game, keys, env, logs, *, version="v0"):
     for n, h in want.items():
         if not (exefs / n).is_file():
             raise BuildError(f'ExeFS {n} is missing; not the supported version')
-        check(f'ExeFS {n}', sha256(exefs / n), h)
+        got = sha256(exefs / n)
+        if got == h:
+            continue
+        if n == 'main.npdm' and npdm_signed(exefs / n):
+            say(f"1/4 code: main.npdm is a Nintendo-signed {expected['display_version']} file from another dump; using it")
+            continue
+        check(f'ExeFS {n}', got, h)
     if not (tree / f'extracted/{version}/elf/main-inventory.json').exists():
         run([py, 'scripts/prepare_modules.py', exefs, '--output', tree / f'extracted/{version}/elf'], logs / 'prepare_modules.log', cwd=tree)
     out = tree / f'rewritten/{version}'

@@ -31,6 +31,16 @@ static inline int gamepad_face_by_position(const char *category, const char *ven
     return !gamepad_names_nintendo(category) && !gamepad_names_nintendo(vendor);
 }
 
+/* The physical positions of GameController's buttonA, buttonB, buttonX, buttonY (bits 0 south, 1 east, 2 west, 3 north:
+   runtime/controller_map.h). By position they sit as on an Xbox controller (A bottom, B right, X left, Y top); by label
+   they name a Nintendo layout (A right, B bottom, X top, Y left). controller_map.h's default layout turns positions into
+   the Switch's (A right, B bottom, X top, Y left), which gives gamepad_face_bits. */
+static inline uint64_t gamepad_face_positions(int a, int b, int x, int y, int by_position) {
+    enum { SOUTH = 1, EAST = 2, WEST = 4, NORTH = 8 };
+    if (by_position) return (a ? SOUTH : 0) | (b ? EAST : 0) | (x ? WEST : 0) | (y ? NORTH : 0);
+    return (a ? EAST : 0) | (b ? SOUTH : 0) | (x ? NORTH : 0) | (y ? WEST : 0);
+}
+
 /* The Switch button bits for GameController's buttonA (bottom), buttonB (right), buttonX (left), buttonY (top). */
 static inline uint64_t gamepad_face_bits(int bottom, int right, int left, int top, int by_position) {
     if (by_position)

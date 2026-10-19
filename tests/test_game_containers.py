@@ -256,6 +256,48 @@ class Containers(unittest.TestCase):
             with self.assertRaises(build_app.BuildError):
                 build_app.font_report(folder)
 
+    def test_npdm_signature_accepts_another_genuine_dump(self):
+        # The pinned hash names one dump; Nintendo's signature over the ACID block names every genuine one.
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        # The signed body is acid->size bytes starting at acid+0x100 and includes the ACID header itself.
+        body = bytearray(bytes(range(256)) + b'access control')
+        body[0x100:0x104] = b'ACID'
+        struct.pack_into('<I', body, 0x104, len(body))
+        signature = key.sign(bytes(body), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32), hashes.SHA256())
+        npdm = bytearray(0x180 + len(body))
+        npdm[:4] = b'META'
+        struct.pack_into('<II', npdm, 0x78, 0x80, 0x100 + len(body))
+        npdm[0x80:0x180] = signature
+        npdm[0x180:0x180 + len(body)] = body
+        path = self.path / 'main.npdm'
+        path.write_bytes(npdm)
+        with patch.object(build_app, 'NINTENDO_ACID_MODULUS', key.public_key().public_numbers().n.to_bytes(256, 'big')):
+            self.assertTrue(build_app.npdm_signed(path))
+            tampered = bytearray(npdm)
+            tampered[0x180] ^= 1
+            path.write_bytes(tampered)
+            self.assertFalse(build_app.npdm_signed(path))
+            path.write_bytes(npdm)
+            struct.pack_into('<I', npdm, 0x04, 1)
+            path.write_bytes(npdm)
+            self.assertFalse(build_app.npdm_signed(path))
+
+    def test_font_from_another_firmware_is_bound_by_its_bytes(self):
+        folder = self.path / 'fonts'
+        folder.mkdir()
+        for i in range(6):
+            (folder / f'{i}-font{i}.bfttf').write_bytes(struct.pack('>III', 0x7F9A0218, 12, 0x00010000) + bytes([i]) * 8)
+        pinned = {f'font{i}': '0' * 64 for i in range(6)}
+        with patch.dict(build_app.EXPECTED, {'shared_fonts_sha256': pinned}):
+            report = build_app.font_report(folder)
+            self.assertEqual([row['sha256'] for row in report['fonts']],
+                             [hashlib.sha256((folder / f'{i}-font{i}.bfttf').read_bytes()).hexdigest() for i in range(6)])
+            (folder / '0-font0.bfttf').write_bytes(b'not a font')
+            with self.assertRaises(build_app.BuildError):
+                build_app.font_report(folder)
+
     def test_nsp_missing_fonts_stops_before_build(self):
         game = self.path / 'game.nsp'
         game.write_bytes(game_image('nsp'))

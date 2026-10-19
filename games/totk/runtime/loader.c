@@ -310,8 +310,43 @@ static void signal_hex(const char *label,uint64_t value) {
 }
 /* CTR_EL0 for 128-byte host cache lines: DminLine=IminLine=5 (32 words), ERG=CWG=5, PIPT I-cache, IDC/DIC clear. */
 #define HOST_CTR_EL0 0x8555c005ULL
+/* #57: the same optional reference as below (object+0x6b0, a holder whose first word is the target) can outlive its
+   holder: after long play the freed holder's memory held other data (the low region's base, two floats 1.0), the caller
+   at GAME_ADDR(0x15ecb0c) passed that word as the target, and the callee faulted reading the target's id (+0x10). The
+   callee takes a null target, but its caller then uses the word again, so the target is treated as absent where it is
+   read: the callee's frame is popped (its prologue decoded: frame size and the callee-saved registers it stored), the
+   caller resumes at its "no target" branch, and the stale reference is cleared as in the load-time case. Only this exact
+   signature is handled: fault at the callee's ldr w8,[x22,#0x10] with x1 == x22 and the address x22+0x10, return address
+   right after the caller's bl, and the caller's instructions as expected. */
+static int stale_target_reference(int num,siginfo_t *info,ucontext_t *u){
+ if((num!=SIGSEGV&&num!=SIGBUS)||!modules[0].base)return 0;
+ const uint32_t *site=(const uint32_t *)(uintptr_t)(modules[0].base+GAME_ADDR(0x15ecb0c));   /* ldr x21,[x8] */
+ uint64_t pc=u->uc_mcontext->__ss.__pc,*x=u->uc_mcontext->__ss.__x;
+ if(site[-2]!=0xf9435a68u||site[0]!=0xf9400115u||(site[1]&0xff00001fu)!=0xb4000015u||(site[6]&0xfc000000u)!=0x94000000u)return 0;   /* ldr x8,[x19,#0x6b0]; ldr x21,[x8]; cbz x21; bl */
+ if(u->uc_mcontext->__ss.__lr!=(uintptr_t)(site+7)||*(const uint32_t *)(uintptr_t)pc!=0xb94012c8u||x[1]!=x[22]||(uintptr_t)info->si_addr!=x[22]+0x10)return 0;
+ int32_t bl=(int32_t)(site[6]<<6)>>6,skip=(int32_t)((site[1]>>5)<<13)>>13;
+ const uint32_t *callee=site+6+bl,*resume=site+1+skip;
+ int64_t frame=0;unsigned saved[32]={0};int nsaved=0;uint64_t at[32];
+ for(const uint32_t *i=callee;i<callee+12&&(uintptr_t)i<pc;i++){uint32_t w=*i;unsigned rt=w&31,rt2=(w>>10)&31,rn=(w>>5)&31;int64_t imm7=((int64_t)(int32_t)(((w>>15)&0x7f)<<25)>>25)*8;
+  if((w&0xffc00000u)==0xa9800000u&&rn==31&&rt==29&&rt2==30&&imm7<0&&!frame){frame=-imm7;saved[nsaved]=29;at[nsaved++]=0;saved[nsaved]=30;at[nsaved++]=8;}   /* stp x29,x30,[sp,#-N]! */
+  else if((w&0xffc00000u)==0xa9000000u&&rn==31&&frame&&nsaved<30){saved[nsaved]=rt;at[nsaved++]=(uint64_t)imm7;saved[nsaved]=rt2;at[nsaved++]=(uint64_t)imm7+8;}   /* stp xa,xb,[sp,#o] */
+  else if((w&0xffc00000u)==0xf9000000u&&rn==31&&frame&&nsaved<31){saved[nsaved]=rt;at[nsaved++]=((w>>10)&0xfff)*8;}}   /* str xa,[sp,#o] */
+ if(!frame||frame>0x100)return 0;
+ uint64_t sp=u->uc_mcontext->__ss.__sp,stack[32];mach_vm_size_t got=0;
+ if(mach_vm_read_overwrite(mach_task_self(),sp,(mach_vm_size_t)frame,(uintptr_t)stack,&got)!=KERN_SUCCESS||got!=(mach_vm_size_t)frame)return 0;
+ for(int i=0;i<nsaved;i++){if(at[i]+8>(uint64_t)frame)return 0;uint64_t v=stack[at[i]/8];
+  if(saved[i]==29)u->uc_mcontext->__ss.__fp=v;else if(saved[i]==30)u->uc_mcontext->__ss.__lr=v;else if(saved[i]<29)x[saved[i]]=v;}
+ u->uc_mcontext->__ss.__sp=sp+(uint64_t)frame;u->uc_mcontext->__ss.__pc=(uintptr_t)resume;
+ uint64_t stale=x[21];uintptr_t field=x[19]+0x6b0;uint64_t holder=0,word=0;   /* the caller's x19 = the object, x21 = the stale word */
+ if(mach_vm_read_overwrite(mach_task_self(),field,8,(uintptr_t)&holder,&got)==KERN_SUCCESS&&got==8&&holder&&
+    mach_vm_read_overwrite(mach_task_self(),holder,8,(uintptr_t)&word,&got)==KERN_SUCCESS&&got==8&&word==stale)
+  __atomic_compare_exchange_n((uint64_t *)field,&holder,0,false,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST);
+ static const char note[]="[totk] ignored a stale optional target reference (#57)\n";write(2,note,sizeof(note)-1);
+ return 1;
+}
 static void crash(int num,siginfo_t *info,void *context) {
  ucontext_t *u=context;
+ if(stale_target_reference(num,info,u))return;
  /* During save load, this optional game object can contain a tagged invalid
     reference. Treat it as absent, as the following cbz path expects. */
  if(num==SIGSEGV&&modules[0].base&&
@@ -410,7 +445,10 @@ int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
 }
 uintptr_t runtime_frame_controller_return_pc(void) {
 #ifdef TOTK_GAME_V143
- return 0; /* The older graphics diagnostic reads the pre-1.4 controller layout. */
+ /* The older graphics diagnostic reads the pre-1.4 controller layout. The survey only needs the system object (caller's x19
+    at x29 + 0x38, same frame as 1.2.1) for its frame-end fence, so 1.4.3 finds it only while TOTK_SURVEY is on. */
+ const char *survey=getenv("TOTK_SURVEY");
+ return survey&&!strcmp(survey,"1")?(uintptr_t)modules[0].base+GAME_ADDR(0x8f6cbc):0;
 #else
  return (uintptr_t)modules[0].base + GAME_ADDR(0x8f6cbc);
 #endif

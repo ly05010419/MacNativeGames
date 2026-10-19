@@ -7,6 +7,13 @@
 #if defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"
+/* Survey only (world_survey.c): forceSetMatrix found through three 1.2.1 callers that match, the scene slot through its
+   singleton getter (same 0x490-byte object); setTransform writes +0x2b4 / +0x2c0 as in 1.2.1. */
+#define GAME_ACTOR_NAME 0x218
+#define GAME_ACTOR_POS 0x2b4
+#define GAME_ACTOR_ROT 0x2c0
+#define GAME_ADDR_0x69a18c 0x45ce70
+#define GAME_ADDR_0x4663f08 0x3add238
 #define GAME_ADDR_0x15ecb0c 0x1bd01c4
 #define GAME_ADDR_0x8f6cbc 0x2db2ec
 #define GAME_ADDR_0xe995c4 0xbdb48c
