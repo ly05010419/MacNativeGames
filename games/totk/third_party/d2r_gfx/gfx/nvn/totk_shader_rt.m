@@ -21,6 +21,7 @@
 #include <dirent.h>
 #include <stdatomic.h>
 #include "totk_shader_seed.h"
+#include "totk_shader_contrib.h"
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
 extern void runtime_boot_count(const char *,uint64_t,uint64_t) __attribute__((weak_import));
 static void seed_progress(int pass, NSUInteger done, NSUInteger total) {   // the bar under "Checking the shader cache"
@@ -224,6 +225,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     if (![missed containsObject:variant]) {
         [missed addObject:variant];
         [[json_string(rq) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[NSString stringWithFormat:@"shader-requests/%@.json", variant] atomically:YES];
+        totk_contrib_add(shader, answers);   // not in the prepared seed, so not in the shared shader list yet
         LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",
             stage_name.UTF8String, variant.UTF8String, (unsigned long)missed.count);
     }
@@ -251,6 +253,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     [[json_string(vs) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:index_path(shader) atomically:YES];
     g_translated++;
     if (!existed) { atomic_fetch_add(&g_new_variants, 1); atomic_store(&g_new_variant_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); }   // discovered, translated, in the cache
+    if (!existed) totk_contrib_add(shader, refl[@"deps"] ?: @{});   // the seed would have had it if the shared list named it
     if (getenv("TOTK_SURVEY_SHADER_LOG")) LOG("[survey-shader] frame %llu translated %s %s in %.2f ms%s",
         (unsigned long long)dm_nvn_frame_count(), stage_name.UTF8String, variant.UTF8String,
         (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6,
