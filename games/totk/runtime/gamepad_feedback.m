@@ -165,11 +165,118 @@ static void rumble_start(void) {
 
 /* ---- motion: the math is in runtime/motion_fusion.c ---- */
 static GCController *motionPad;  /* main queue */
+static void hid_motion_start(void);
+static void hid_motion_stop(void);
+static uint64_t zeroSince;          /* the controller's handler queue */
+static BOOL motionSeen, hidAsked;   /* the controller's handler queue; reset on attach */
 static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
     GCAcceleration a = m.acceleration;
     if (m.hasGravityAndUserAcceleration) { a.x = m.gravity.x + m.userAcceleration.x; a.y = m.gravity.y + m.userAcceleration.y; a.z = m.gravity.z + m.userAcceleration.z; }
     const double acc[3] = {a.x, a.y, a.z}, gyro[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
+    if (!motionSeen) {   /* a real sensor never reads exactly zero on all six axes; see hid_motion_start */
+        if (!acc[0] && !acc[1] && !acc[2] && !gyro[0] && !gyro[1] && !gyro[2]) {
+            uint64_t now = runtime_now_ns();
+            if (!zeroSince) zeroSince = now;
+            else if (!hidAsked && now - zeroSince > 1000000000ull) { hidAsked = YES; dispatch_async(dispatch_get_main_queue(), ^{ hid_motion_start(); }); }
+            return;
+        }
+        motionSeen = YES;
+    }
     runtime_motion_feed(acc, gyro, runtime_now_ns());
+}
+
+/* ---- motion straight from a Switch Pro Controller's HID reports (2026-10-19) ----
+   An 8BitDo controller in Switch mode (057e:2009 "Pro Controller" over Bluetooth) gets a GCMotion with hasRotationRate,
+   and GameController delivers its samples (33 a second) -- but every one is exactly zero, moved or not, while the same
+   controller's raw 0x30 reports carry live six-axis data (gyro up to 550 deg/s, about 1 G at rest) and its SPI factory
+   calibration at 0x6020 is valid. So once GameController's motion has been all zeros for a second, it is read from the
+   HID reports instead, as SDL does for emulators. Input report 0x30 holds three samples, oldest first, int16 little
+   endian from byte 13: acceleration x, y, z, then rotation x, y, z, on the raw axes x toward the top edge, y to the
+   left, z out of the face, acceleration as the push against gravity (lying face up z = +1 G). Scales from the SPI
+   calibration (the user calibration at 0x8026 when it has its 0xB2A1 magic, else the factory one at 0x6020), as SDL:
+   G = raw * 4 / (sensitivity - origin), deg/s = (raw - origin) * 936 / (sensitivity - origin); until it arrives the
+   sensor's nominal ranges, 8 G and 2000 deg/s over 32768. */
+#import <IOKit/hid/IOHIDManager.h>
+static IOHIDManagerRef hidManager;   /* main queue */
+static IOHIDDeviceRef hidDevice;     /* main queue */
+static uint8_t hidReport[64];
+static uint8_t hidPacket;
+static uint64_t hidLast;
+static BOOL hidUserCalibration;
+static double hidAccScale[3] = {8.0 / 32768, 8.0 / 32768, 8.0 / 32768}, hidGyroScale[3] = {2000.0 / 32768, 2000.0 / 32768, 2000.0 / 32768}, hidGyroOrigin[3];
+static int16_t le16(const uint8_t *p) { return (int16_t)(p[0] | p[1] << 8); }
+static void hid_subcommand(uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
+    if (!hidDevice) return;
+    uint8_t out[49] = {0x01, hidPacket++ & 15, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, cmd};   /* neutral rumble */
+    memcpy(out + 11, arg, n);
+    IOReturn r = IOHIDDeviceSetReport(hidDevice, kIOHIDReportTypeOutput, 0x01, out, sizeof out);
+    if (r != kIOReturnSuccess) fprintf(stderr, "[gyro] HID subcommand 0x%02x failed: 0x%x\n", cmd, r);
+}
+static void hid_calibration(const uint8_t *c, const char *which) {
+    for (int i = 0; i < 3; i++) {
+        int acc = le16(c + 6 + 2 * i) - le16(c + 2 * i), gyro = le16(c + 18 + 2 * i) - le16(c + 12 + 2 * i);
+        if (acc <= 0 || gyro <= 0) { fprintf(stderr, "[gyro] %s HID calibration unusable: nominal scales kept\n", which); return; }
+    }
+    for (int i = 0; i < 3; i++) {
+        hidAccScale[i] = 4.0 / (le16(c + 6 + 2 * i) - le16(c + 2 * i));
+        hidGyroOrigin[i] = le16(c + 12 + 2 * i);
+        hidGyroScale[i] = 936.0 / (le16(c + 18 + 2 * i) - hidGyroOrigin[i]);
+    }
+    fprintf(stderr, "[gyro] %s HID calibration: acc %.6f G, gyro %.4f deg/s per step\n", which, hidAccScale[0], hidGyroScale[0]);
+}
+static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
+    (void)ctx; (void)sender; (void)type;
+    if (result != kIOReturnSuccess || len < 49) return;
+    if (id == 0x21 && (p[13] & 0x80) && p[14] == 0x10) {   /* an SPI read's reply: address at 15, size at 19, data at 20 */
+        uint32_t at = p[15] | p[16] << 8 | p[17] << 16 | (uint32_t)p[18] << 24;
+        if (at == 0x8026 && p[19] >= 26 && p[20] == 0xB2 && p[21] == 0xA1) { hidUserCalibration = YES; hid_calibration(p + 22, "user"); }
+        else if (at == 0x6020 && p[19] >= 24 && !hidUserCalibration) hid_calibration(p + 20, "factory");
+        return;
+    }
+    if (id != 0x30) return;
+    uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
+    hidLast = now;
+    for (int k = 0; k < 3; k++) {
+        const uint8_t *s = p + 13 + 12 * k;
+        double raw[6];
+        for (int i = 0; i < 6; i++) raw[i] = le16(s + 2 * i);
+        for (int i = 0; i < 3; i++) { raw[i] *= hidAccScale[i]; raw[3 + i] = (raw[3 + i] - hidGyroOrigin[i]) * hidGyroScale[i] * (M_PI / 180); }
+        /* to GCMotion's frame (x right, y top edge, z out of the face; acceleration as gravity: face up z = -1 G) */
+        const double acc[3] = {raw[1], -raw[0], -raw[2]}, gyro[3] = {-raw[4], raw[3], raw[5]};
+        runtime_motion_feed(acc, gyro, now - (uint64_t)(2 - k) * step);
+    }
+}
+static void hid_motion_start(void) {   /* main queue */
+    if (!motionPad || hidDevice) return;
+    const char *name = (motionPad.vendorName ?: @"controller").UTF8String;
+    hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatching(hidManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @0x2009});
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidManager);
+    IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
+    IOReturn r = d ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
+    if (r != kIOReturnSuccess) {
+        fprintf(stderr, "[gyro] %s: GameController's motion is all zeros and no Switch Pro HID device could be opened (0x%x): no motion from it\n", name, r);
+        CFRelease(hidManager); hidManager = NULL; return;
+    }
+    hidDevice = (IOHIDDeviceRef)CFRetain(d); hidLast = 0; hidUserCalibration = NO;
+    motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
+    IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_report, NULL);
+    runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
+    fprintf(stderr, "[gyro] %s: GameController's motion is all zeros; reading the six-axis sensor from its HID reports\n", name);
+    /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back */
+    static const uint8_t imuOn[1] = {0x01}, factory[5] = {0x20, 0x60, 0, 0, 24}, user[5] = {0x26, 0x80, 0, 0, 26};
+    hid_subcommand(0x40, imuOn, sizeof imuOn);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ hid_subcommand(0x10, factory, sizeof factory); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ hid_subcommand(0x10, user, sizeof user); });
+}
+static void hid_motion_stop(void) {   /* main queue */
+    if (!hidDevice) return;
+    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);
+    IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDDeviceClose(hidDevice, kIOHIDOptionsTypeNone);
+    CFRelease(hidDevice); hidDevice = NULL;
+    CFRelease(hidManager); hidManager = NULL;
 }
 
 /* ---- controllers ---- */
@@ -193,6 +300,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
         GCMotion *m = c.motion;
         if (!m || !m.hasRotationRate) { fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name); return; }
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
+        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
         motionPad = c; runtime_motion_live(1);
         fprintf(stderr, "[gyro] %s: motion sensors on (gyro%s)\n", name, m.hasGravityAndUserAcceleration ? ", gravity" : ", acceleration");
@@ -202,7 +310,7 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (runtime_rumble_enabled() && rumbleQueue)
         dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
     if (motionPad == c) {
-        c.motion.valueChangedHandler = nil; motionPad = nil; runtime_motion_live(0);
+        c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
 }
 #endif

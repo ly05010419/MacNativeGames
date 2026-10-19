@@ -390,3 +390,15 @@ test-audio-effects:
 	"$(AUDIO_TEST_WORK)/dsp-probe" "$(AUDIO_TEST_WORK)/reference.bin"
 	xcrun clang -std=c11 -O2 -g -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -Iruntime tests/audio_effects/mixer_probe.c runtime/audio_effects.c runtime/audio_reverb.c -framework AudioToolbox -o "$(AUDIO_TEST_WORK)/mixer-probe"
 	"$(AUDIO_TEST_WORK)/mixer-probe" "$(AUDIO_TEST_WORK)/reference.bin"
+
+# Production Opus-wrapper regression checks; no game assets or audio device needed.
+OPUS_TEST_WORK ?= /tmp/totk-native-opus-codec
+OPUS_PREFIX ?= /opt/homebrew/opt/opus
+OPUS_SANITIZERS ?= address,undefined
+.PHONY: test-opus-codec
+test-opus-codec:
+	mkdir -p "$(OPUS_TEST_WORK)"
+	xcrun clang -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=$(OPUS_SANITIZERS) -fno-sanitize-recover=all -I"$(OPUS_PREFIX)/include/opus" tests/opus_codec/probe.c "$(OPUS_PREFIX)/lib/libopus.a" -o "$(OPUS_TEST_WORK)/probe"
+	"$(OPUS_TEST_WORK)/probe"
+	@probe_status=0; "$(OPUS_TEST_WORK)/probe" --bad-range > "$(OPUS_TEST_WORK)/negative-range.log" 2>&1 || probe_status=$$?; test "$$probe_status" -eq 1
+	@grep -q 'Opus stream integrity' "$(OPUS_TEST_WORK)/negative-range.log"

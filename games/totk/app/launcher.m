@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
 #include "game_version.h"
+#include "controller_map.h"
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 
@@ -142,11 +143,29 @@ int main(int argc, char **argv) {
             show_error(@"Cannot open the game folder inside the app.");
             return 1;
         }
+        /* The player's controller layout (runtime/controller_map.h), checked here: a bad line shows this alert instead of
+           the game closing at start. */
+        NSString *controls = env_or("TOTK_CONTROLS", [data stringByAppendingPathComponent:@"controls.txt"]);
+        NSData *layout = [NSData dataWithContentsOfFile:controls];
+        if (layout) {
+            NSString *text = layout.length < 16384 ? [[NSString alloc] initWithData:layout encoding:NSUTF8StringEncoding] : nil;
+            uint16_t map[CONTROLLER_BUTTONS]; uint8_t modes[CONTROLLER_BUTTONS]; controller_map_default(map, modes);
+            const char *problem = layout.length < 16384 ? "not UTF-8 text" : "larger than 16 KB";
+            int line = text ? controller_map_parse(text.UTF8String, map, modes, &problem) : 1;
+            if (line) { show_error([NSString stringWithFormat:@"%@, line %d: %s", controls, line, problem]); return 1; }
+        }
+        setenv("TOTK_CONTROLS", controls.fileSystemRepresentation, 1);
         setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
         setenv("TOTK_SHADER_CACHE", cache.fileSystemRepresentation, 1);
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);   // the app bundle stays read-only
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
+        /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. */
+        setenv("TOTK_ROMFS_MODS", [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR].fileSystemRepresentation, 0);
+        /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
+           language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
+        NSString *preferred = NSLocale.preferredLanguages.firstObject;
+        if (preferred) setenv("TOTK_LOCALE", preferred.UTF8String, 1);
         setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1);
         setenv("TOTK_GPU_WIDEN", "1", 1);
         setenv("TOTK_GPU_BLOCKRT", "1", 1);

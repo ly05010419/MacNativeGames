@@ -8,6 +8,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <ctype.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -239,14 +240,32 @@ static void operation_enabled(unsigned value) {operation_notification=value&255;
 static void performance_enabled(unsigned value) {performance_notification=value&255;}
 static uint32_t performance_configuration[2];
 static void performance_config(int mode,int cfg) {if(mode<0||mode>1)runtime_fail("invalid performance mode");performance_configuration[mode]=(uint32_t)cfg;fprintf(stderr,"[totk] performance request mode=%d cfg=%x: native macOS scheduling\n",mode,(uint32_t)cfg);}
+/* The game's language: TOTK_LANG as given (a Switch language code), otherwise from a locale: TOTK_LOCALE, which the
+   launcher sets to the app's first preferred language (BCP 47, e.g. "pt-BR"; it follows a per-app language), or else
+   the Mac's current locale. Brazil maps to "pt-BR" only in the 1.4.3 build, whose RomFS has the official USpt text. */
 static uint64_t desired_language(void) {
  const char *explicit=getenv("TOTK_LANG");char code[8]={0};
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
  else {
-  CFLocaleRef locale=CFLocaleCopyCurrent();char language[16]={0};
-  CFStringRef value=CFLocaleGetValue(locale,kCFLocaleLanguageCode);
-  if(value)CFStringGetCString(value,language,sizeof(language),kCFStringEncodingUTF8);CFRelease(locale);
-  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?"pt":"en-US";
+  char language[16]={0},region[4]={0};const char *tag=getenv("TOTK_LOCALE");
+  if(tag&&*tag){
+   size_t n=strcspn(tag,"-_");if(n<sizeof(language))memcpy(language,tag,n);
+   for(const char *p=tag+n;*p;){p+=strspn(p,"-_");size_t k=strcspn(p,"-_");
+    if(k==2&&isalpha((unsigned char)p[0])&&isalpha((unsigned char)p[1])){region[0]=(char)toupper((unsigned char)p[0]);region[1]=(char)toupper((unsigned char)p[1]);}
+    p+=k;}
+  } else {
+   CFLocaleRef locale=CFLocaleCopyCurrent();
+   CFStringRef value=CFLocaleGetValue(locale,kCFLocaleLanguageCode);
+   if(value)CFStringGetCString(value,language,sizeof(language),kCFStringEncodingUTF8);
+   value=CFLocaleGetValue(locale,kCFLocaleCountryCode);
+   if(value)CFStringGetCString(value,region,sizeof(region),kCFStringEncodingUTF8);CFRelease(locale);
+  }
+#ifdef TOTK_GAME_V143
+  const char *portuguese=!strcmp(region,"BR")?"pt-BR":"pt";
+#else
+  const char *portuguese="pt";
+#endif
+  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?portuguese:"en-US";
   memcpy(code,selected,strlen(selected));
  }
  uint64_t result;memcpy(&result,code,8);return result;

@@ -82,7 +82,11 @@ The same game memory can be reached through two Metal buffers, each with its own
    RomFS overlays (small data patches: quick-menu capture timing at high frame rates, the game-over retry, the heap
    sizes the 1440p output needs) are made from your own files. The game-over retry patch only matters on 1.0.0:
    1.1.2 and 1.4.3 read Nintendo's own fixed flow (`DmF_SY_GameOver.110`), so there the patch of the old file is made
-   and checked but never read.
+   and checked but never read. At start the runtime also loads player mods from
+   `~/Library/Application Support/MacNativeGames/TOTK/mods/<version>` in the same manifest format, after the build's
+   overlays. Every listed file is hashed at start, and each one is opened only when the game opens it. A line whose
+   original SHA-256 is `-` adds a file the RomFS lacks (numbered after the RomFS's own files; its folders exist for the
+   game's entry-type queries); `scripts/make_mod_manifest.py` writes such lines for new files.
 3. SPIRV-Cross compiled with clang; the prebuilt shader translator checked against its SHA-256. `prepare_shader_seed.py`
    reads dictionary-compressed startup packages from the selected, verified RomFS, parses supported NVN BNSH programs
    and translates default-binding variants. The version, translation chain, translator/preparer hashes and every

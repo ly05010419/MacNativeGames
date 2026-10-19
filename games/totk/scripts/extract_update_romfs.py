@@ -108,10 +108,15 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None):
             code = subprocess.run(command, env=environment,
                                   stdout=log, stderr=subprocess.STDOUT).returncode
         log = (result/'merge.log').read_text()
-        if code or re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', log):
+        # hactool also verifies the NCA's fixed-key and NPDM signatures, which need Nintendo's public keys:
+        # without them it always prints those two lines as (FAIL). They are not data failures; the six IVFC
+        # levels and the image SHA-256 recorded below decide whether the merge worked.
+        unsigned = re.compile(r'\s*(?:Fixed-Key Signature|NPDM Signature) \(FAIL\)')
+        checked = '\n'.join(line for line in log.splitlines() if not unsigned.match(line))
+        if code or re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', checked):
             # hactool repeats a key it cannot parse ("Key (<value>) must be 32 hex digits!"): keep no long hex in the log
             (output.parent/(output.name+'-failure.log')).write_text(re.sub(r'[0-9A-Fa-f]{32,}', '<hex removed>', log))
-        require(code == 0 and not re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', log), 'BKTR verification failed')
+        require(code == 0 and not re.search(r'\(FAIL\)|\(INVALID\)|Failed to|Error:', checked), 'BKTR verification failed')
         require(all(re.search(rf'Level {i} \(GOOD\)', log) for i in range(6)), 'Missing verified IVFC levels')
         image = result/'romfs.bin'
         with image.open('rb') as f:

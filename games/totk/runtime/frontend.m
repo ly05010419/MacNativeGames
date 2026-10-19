@@ -8,6 +8,8 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
+int mfxup_output_enabled(void);
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
@@ -107,17 +109,34 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @property(strong) NSTimer *timer;
 @property NSSize textSize;
 -(void)position;
+-(void)refresh;
 @end
 /* Compact HUD (default): one small box in the window's top-right corner with the FPS, shader and load lines (published by
    gfx/nvn/fps_overlay.c, refreshed twice a second) above the shortcuts. TOTK_HUD=corners: the lines stay in the picture's
    corners and this is the larger centred shortcut box. */
 @implementation TOTKShortcutHelp
-static NSString *shortcut_text(void){return @(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭\n4  21:9 宽屏：开 / 关","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off\n4  Ultrawide 21:9: on / off"));}
+static NSString *shortcut_text(void){
+ const char *interp;
+ switch(mfx_enabled()){
+  case MFX_30:interp="30+30";break;
+  case MFX_HALF:interp=TOTK_UI("刷新率一半","half refresh rate");break;
+  case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
+  default:interp=TOTK_UI("关闭","off");break;
+ }
+ uint64_t size=runtime_output_size_current();unsigned w=(uint32_t)size,h=(uint32_t)(size>>32);
+ NSString *picture;
+ if(mfxup_output_enabled())picture=@"MetalFX 2K";
+ else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
+ else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
+ else picture=@(TOTK_UI("关闭","off"));
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  21:9 宽屏：开 / 关","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Ultrawide 21:9: on / off")),[NSString stringWithUTF8String:interp],picture];
+}
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
- if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;[self refresh];
-  __weak TOTKShortcutHelp *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}}return self;}
+ if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;}
+ [self refresh];__weak TOTKShortcutHelp *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}return self;}
 -(void)refresh{
+ if(!hud_compact()){self.label.stringValue=shortcut_text();return;}
  NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium],*small=[NSFont systemFontOfSize:10];
  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
  NSMutableAttributedString *a=[NSMutableAttributedString new];

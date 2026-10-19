@@ -8,13 +8,16 @@ iPhone or iPad, which cannot translate while playing, carries what players have 
 data and belongs in the work folder, never in the repo.
 """
 import argparse
+import concurrent.futures
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -306,52 +309,94 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
     shaders.update(extra)
     print(f'{len(extra)} more shaders read where the shared list locates them (agl .sharcb, game module)', flush=True)
     jobs = plan(shaders, startup, listed)
-    process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
-                                '--out', str(staging), '--chain', CHAIN],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    failed, rows, completed = [], [], []
+    # One translator service per core. A shader's jobs (its default bind state, then its listed ones) run in order on
+    # one service, because whether a listed job is translated and kept depends on that shader's earlier results; the
+    # files each job writes are named after its own shader. The results are then taken in the order of `jobs`, so the
+    # output is the same as translating everything one at a time.
+    by_key = {}
+    for index, job in enumerate(jobs):
+        by_key.setdefault(job[0], []).append(index)
+    outcome = [None]*len(jobs)   # ('ok', variant, rows) / ('failed', record) / None (skipped or a duplicate of deps)
     produced = {}   # key -> {canonical deps: variant}; a shader's .variants rows
+    lock = threading.Lock()
+    pending = iter(by_key.items())
+    done = [0, 0]   # completed, failed
+    stop = threading.Event()   # a service failed: the others stop after their current shader
     started = time.monotonic()
-    try:
-        for key, answers, variant, why in jobs:
-            stage, control, code, source = shaders[key]
-            if why == 'listed' and json.dumps(answers, sort_keys=True, separators=(',', ':')) in produced.get(key, {}):
-                continue   # the default (or an earlier row) already gave exactly these deps
-            c1, length = struct.unpack_from('<II', control, 0x700)
-            code_path = staging/(variant+'.code')
-            code_path.write_bytes(code[0 if stage == 'cs' else 0x30:length])
-            request = dict(variant=variant, stage=stage, code=str(code_path.resolve()),
-                           c1=code[c1:length].hex(), depth_minus_w=True, **answers)
-            if stage == 'cs':
-                request['local'] = list(struct.unpack_from('<III', control, 0x748))
-            process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
-            response = process.stdout.readline()
-            if not response:
-                raise ValueError('shader preparation service exited unexpectedly')
-            reply = json.loads(response)
-            code_path.unlink()
-            if reply.get('ok'):
-                refl = json.loads((staging/(variant+'_b.json')).read_text())
-                if refl['chain'] != CHAIN or refl['stage'] != stage:
-                    raise ValueError('prepared shader identity mismatch')
-                deps = json.dumps(refl['deps'], sort_keys=True, separators=(',', ':'))
-                if deps in produced.get(key, {}):   # same deps as a variant already made: keep one
-                    for name in (variant+'_b.metal', variant+'_b.json'):
-                        (staging/name).unlink(missing_ok=True)
-                    continue
-                produced.setdefault(key, {})[deps] = variant
-                (staging/(key+'.variants')).write_text(json.dumps([dict(variant=v, deps=json.loads(d)) for d, v in
-                                                                   produced[key].items()], separators=(',', ':'))+'\n')
-                rows.append(f'S\t{variant}_b\t'+str({'vs': 0, 'ps': 1, 'cs': 5}[stage]))
-                if stage == 'cs':
-                    rows.append(f'C\t{variant}_b')
-                completed.append(variant)
-            else:
-                failed.append(dict(key=key, variant=variant, why=why, stage=stage, source=source, error=reply.get('error')))
-            if (len(completed)+len(failed)) % 100 == 0:
-                print(f'prepared {len(completed)}/{len(jobs)}, skipped {len(failed)}; {time.monotonic()-started:.1f}s', flush=True)
-    finally:
-        process.stdin.close(); process.wait()
+
+    def worker():
+        process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
+                                    '--out', str(staging), '--chain', CHAIN],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            while not stop.is_set():
+                with lock:
+                    item = next(pending, None)
+                if item is None:
+                    return
+                key, indices = item
+                mine = {}
+                for index in indices:
+                    _, answers, variant, why = jobs[index]
+                    stage, control, code, source = shaders[key]
+                    if why == 'listed' and json.dumps(answers, sort_keys=True, separators=(',', ':')) in mine:
+                        continue   # the default (or an earlier row) already gave exactly these deps
+                    c1, length = struct.unpack_from('<II', control, 0x700)
+                    code_path = staging/(variant+'.code')
+                    code_path.write_bytes(code[0 if stage == 'cs' else 0x30:length])
+                    request = dict(variant=variant, stage=stage, code=str(code_path.resolve()),
+                                   c1=code[c1:length].hex(), depth_minus_w=True, **answers)
+                    if stage == 'cs':
+                        request['local'] = list(struct.unpack_from('<III', control, 0x748))
+                    process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
+                    response = process.stdout.readline()
+                    if not response:
+                        raise ValueError('shader preparation service exited unexpectedly')
+                    reply = json.loads(response)
+                    code_path.unlink()
+                    if reply.get('ok'):
+                        refl = json.loads((staging/(variant+'_b.json')).read_text())
+                        if refl['chain'] != CHAIN or refl['stage'] != stage:
+                            raise ValueError('prepared shader identity mismatch')
+                        deps = json.dumps(refl['deps'], sort_keys=True, separators=(',', ':'))
+                        if deps in mine:   # same deps as a variant already made: keep one
+                            for name in (variant+'_b.metal', variant+'_b.json'):
+                                (staging/name).unlink(missing_ok=True)
+                            continue
+                        mine[deps] = variant
+                        (staging/(key+'.variants')).write_text(json.dumps([dict(variant=v, deps=json.loads(d)) for d, v in
+                                                                           mine.items()], separators=(',', ':'))+'\n')
+                        rows = [f'S\t{variant}_b\t'+str({'vs': 0, 'ps': 1, 'cs': 5}[stage])]
+                        if stage == 'cs':
+                            rows.append(f'C\t{variant}_b')
+                        outcome[index] = ('ok', variant, rows)
+                    else:
+                        outcome[index] = ('failed', dict(key=key, variant=variant, why=why, stage=stage, source=source,
+                                                         error=reply.get('error')))
+                    with lock:
+                        done[0 if reply.get('ok') else 1] += 1
+                        if sum(done) % 100 == 0:
+                            print(f'prepared {done[0]}/{len(jobs)}, skipped {done[1]}; {time.monotonic()-started:.1f}s', flush=True)
+                if mine:
+                    with lock:
+                        produced[key] = mine
+        except BaseException:
+            stop.set()
+            raise
+        finally:
+            process.stdin.close(); process.wait()
+
+    # At most 8 services, as compile_seed.py compiles: each translator holds its own working memory.
+    workers = max(1, min(8, os.cpu_count() or 4, len(by_key)))
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+        for future in [pool.submit(worker) for _ in range(workers)]:
+            future.result()
+    failed, rows, completed = [], [], []
+    for result in outcome:
+        if result and result[0] == 'ok':
+            completed.append(result[1]); rows.extend(result[2])
+        elif result:
+            failed.append(result[1])
     ready = sum(1 for key in startup if key in produced)
     if ready < MIN_SHADERS:
         raise ValueError(f'only {ready} shaders prepared; at least {MIN_SHADERS} are required for first-launch warm-up')

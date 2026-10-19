@@ -283,9 +283,13 @@ uint64_t runtime_output_res_extra_bytes(void) {
     return kib << 10;
 }
 enum { DP_OUTPUT_SIZE = 32, DP_RENDERER = 40 };   /* data page: the output size {w, h} the game reads; the renderer it stores */
-static uint8_t *output_page;
+static _Atomic(uint8_t *) output_page;
 static unsigned output_w, output_h;   /* the largest output size (the swapchain) */
 static uint64_t pack_size(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
+uint64_t runtime_output_size_current(void) {
+    uint8_t *page = atomic_load(&output_page);
+    return page ? atomic_load((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE)) : pack_size(1920, 1080);
+}
 static void patch_output_res(Module *m) {
     unsigned w, h;
     if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;
@@ -305,10 +309,11 @@ static void patch_output_res(Module *m) {
             runtime_fail("output resolution patch: main does not match the selected game version");
         }
     }
-    output_page = m->base + data_off; output_w = w; output_h = h;
-    atomic_store((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE), output_full_at_start ? pack_size(w, h) : pack_size(1920, 1080));
-    atomic_store((_Atomic uint64_t *)(void *)(output_page + DP_RENDERER), 0);
+    uint8_t *page = m->base + data_off; output_w = w; output_h = h;
+    atomic_store((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE), output_full_at_start ? pack_size(w, h) : pack_size(1920, 1080));
+    atomic_store((_Atomic uint64_t *)(void *)(page + DP_RENDERER), 0);
     for (int i = 0; i < 5; i++) memcpy(m->base + sites[i].offset, &sites[i].replacement, 4);
+    atomic_store(&output_page, page);   /* Publish initialized state to the HUD on the main thread. */
     fprintf(stderr, "[totk] output resolution patch: swapchain %ux%u (main+0xe996ac), the game's output %s from the data page (main+0xc630a4); texture heap and Graphics +%llu KiB (HeapDef overlay)\n",
             w, h, output_full_at_start ? "at that size" : "1920x1080 for now", (unsigned long long)(runtime_output_res_extra_bytes() >> 10));
 }
