@@ -138,6 +138,7 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 - Supports base 1.0.0, or base plus the separate 1.1.2 or 1.4.3 update NSP/NSZ. Other versions, DLC, combined packages, compressed base games (NSZ/XCZ) and personalized tickets remain unsupported. Mac only.
 - No online features, no amiibo.
 - New shaders can cause compilation stutters. Cache reuse reduces these, but does not guarantee stutter-free gameplay.
+- Shaders and render pipelines met while playing are compiled in the background. Until one is ready (usually a few frames), the objects that need it are not drawn, so a new object or effect can appear a moment late. `TOTK_ASYNC_SHADERS=0` restores waiting for every compile, which stutters instead. Details: [async shader loading](docs/async-shader-loading.md).
 - The 38 automated tests cover generated container/update fixtures, relocation formats, work-folder isolation, packaging, desktop migration, shader extraction, first-import cache preservation and 27 native RomFS path cases. GitHub Actions is configured to run the source tests and native path-parser sanitizers without game data or keys. A complete Mac build also passed with a local XCI-derived NSP fixture and generated common ticket. An independent retail base NSP and gameplay from that input have not yet been tested.
 
 ## How it works
@@ -299,6 +300,7 @@ macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro
 - 支持本体 1.0.0，或本体加单独的 1.1.2 / 1.4.3 更新（NSP/NSZ）。其他版本、DLC、合并包、压缩本体（NSZ/XCZ）和个性化票据仍不支持。平台仅限 Mac。
 - 没有联网功能，没有 amiibo。
 - 首次遇到新着色器可能出现编译卡顿，缓存能减少重复编译，但不保证完全没有卡顿。
+- 游玩中新遇到的着色器库和渲染管线在后台编译；编好之前（通常几帧）用到它们的物体暂不绘制，新物体或特效可能晚一点出现。`TOTK_ASYNC_SHADERS=0` 恢复逐个等编译完（会卡顿）。详见[后台加载着色器](docs/async-shader-loading.md)。
 - 38 项自动测试覆盖生成的容器 / 更新样本、重定位格式、工作目录隔离、打包、桌面入口迁移、着色器提取、首次导入的缓存保留及 27 个原生 RomFS 路径用例。GitHub Actions 已配置为运行源码测试和路径解析器内存检查，不需要游戏数据或密钥；另使用本地 XCI 构造、附带生成通用票据的 NSP 测试副本完成完整 Mac 打包。尚未验证独立的零售本体 NSP，也未测试从该类输入构建后的实际游玩。
 
 ## 工作原理
