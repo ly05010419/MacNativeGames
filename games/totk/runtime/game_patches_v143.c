@@ -1,5 +1,6 @@
 /* 1.4.3 has a new compiler and frame-controller layout. Every adapted game-code
    site below is checked before any write; older versions use game_patches.c. */
+#include "aspect_patch.h"
 #include "game_patches.h"
 #include "game_version.h"
 #include <stdio.h>
@@ -7,6 +8,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <TargetConditionals.h>
 
 typedef struct { uint64_t off; uint32_t original, replacement; } Patch;
 static const Patch fps60[] = {
@@ -62,16 +64,23 @@ static uint32_t branch(uint64_t pc,uint64_t target){
 static void patch_realtime(Module *m){
     const char *enabled=getenv("TOTK_REALTIME");if(enabled&&!strcmp(enabled,"0"))return;
     uint64_t data=(m->file_size+0x3fff)&~0x3fffULL;
-    uint64_t stub=(m->file_size+15)&~15ULL;
-    if(data+0x4000!=m->size||stub+16>data)runtime_fail("1.4.3 frame-step patch layout");
+    /* Keep executable veneers inside the text segment. iOS embeds x0 as a
+     * signed RX segment, so these bytes must be emitted by export-ios rather
+     * than written after the app starts. */
+    uint64_t stub=(m->text_end+15)&~15ULL;
+    if(data+0x4000!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
     const Patch guards[]={
         {0x3e5658,0x1e210808,0},{0x2daa54,0xbd425260,0},{0x2daa58,0x52a84e08,0},
         {0x2daa6c,0x5e21d800,0},{0x2daa70,0x1e201820,0},{0x2daa74,0x1e2c1001,0},{0x2daa78,0x1e210800,0}};
     for(unsigned i=0;i<sizeof guards/sizeof *guards;i++){
+#if !TARGET_OS_IPHONE
         uint32_t word;memcpy(&word,m->base+guards[i].off,4);
         if(word!=guards[i].original)runtime_fail("1.4.3 real-time original instruction mismatch");
+#endif
     }
+#if !TARGET_OS_IPHONE
     for(unsigned i=0;i<16;i++)if(m->base[stub+i])runtime_fail("1.4.3 frame-step veneer padding not empty");
+#endif
     /* Replace the nominal 60/FPS interval BEFORE the original producer applies
      * its 0.5/1.0 selector (sys+0x1da bit 0). Both FrameRateMgr call sites use
      * this s8 value. Hooking the callee entry instead would discard that scale
@@ -80,9 +89,17 @@ static void patch_realtime(Module *m){
      * x9 contains live task flags here: use x8, which the next ldxr overwrites.
      * s0 is dead until the call sites copy s8 into it again. */
     uint32_t veneer[]={adrp(8,(uintptr_t)m->base+stub,(uintptr_t)m->base+data),0xbd400900,0x1e210808,branch(stub+12,0x3e565c)};
+ #if TARGET_OS_IPHONE
+    if(memcmp(m->base+stub,veneer,sizeof veneer))runtime_fail("1.4.3 embedded frame-step veneer mismatch");
+ #else
     memcpy(m->base+stub,veneer,sizeof veneer);
+ #endif
     uint32_t words[]={branch(0x3e5658,stub),adrp(9,(uintptr_t)m->base+0x2daa54,(uintptr_t)m->base+data),0xbd400120,0xd503201f,0xd503201f,0xd503201f,0xd503201f};
+ #if TARGET_OS_IPHONE
+    for(unsigned i=0;i<sizeof guards/sizeof *guards;i++){uint32_t got;memcpy(&got,m->base+guards[i].off,4);if(got!=words[i])runtime_fail("1.4.3 embedded real-time patch mismatch");}
+ #else
     for(unsigned i=0;i<sizeof guards/sizeof *guards;i++)memcpy(m->base+guards[i].off,words+i,4);
+ #endif
     frame_step_data=(_Atomic uint64_t *)(void *)(m->base+data);
     frame_interval_data=(_Atomic uint32_t *)(void *)(m->base+data+8);frame_step_store(1.0f/60.0f);
     fprintf(stderr,"[totk] 1.4.3 real-time frame step: 7 guarded sites, producer veneer +%#llx; original half-step selector and ratio/inverse/seconds/FPS calculations retained\n",(unsigned long long)stub);
@@ -94,19 +111,31 @@ void runtime_game_patches(Module *m) {
     patch_realtime(m);
     patch_output_res(m);
     patch_render_res(m);
+    { static const uint64_t sites[] = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0};   /* camera update and setup, viewport x2 */
+      aspect_install(m, "1.4.3", sites, 4, ((m->text_end + 15) & ~15ULL) + 48,   /* after the two veneers above */
+                     (m->file_size + 0x3fff) & ~0x3fffULL); }
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");
         return;
     }
     for (unsigned i = 0; i < sizeof fps60 / sizeof *fps60; i++) {
+#if !TARGET_OS_IPHONE
         uint32_t word;
         if (fps60[i].off + 4 > m->text_end) runtime_fail("1.4.3 FPS patch outside text");
         memcpy(&word, m->base + fps60[i].off, 4);
         if (word != fps60[i].original) runtime_fail("1.4.3 FPS patch original instruction mismatch");
+#endif
     }
+ #if TARGET_OS_IPHONE
+    for (unsigned i = 0; i < sizeof fps60 / sizeof *fps60; i++) {
+        uint32_t word; memcpy(&word,m->base+fps60[i].off,4);
+        if(word!=fps60[i].replacement)runtime_fail("1.4.3 embedded FPS patch mismatch");
+    }
+ #else
     for (unsigned i = 0; i < sizeof fps60 / sizeof *fps60; i++)
         memcpy(m->base + fps60[i].off, &fps60[i].replacement, 4);
+ #endif
     fprintf(stderr, "[totk] 1.4.3 60 FPS: seven verified controller instructions; original game frame-time calculation\n");
 }
 
@@ -123,7 +152,14 @@ int runtime_output_res(unsigned *w,unsigned *h){
     static int decided,on;static unsigned cw,ch;
     if(!decided){
         const char *e=getenv("TOTK_OUTPUT_RES");
-        if(e&&!strcmp(e,"0"))on=0;
+        /* iOS shows 720p only (the user, 2026-10-18): no larger swapchain, heaps or output there, whatever
+           TOTK_OUTPUT_RES says. The iOS export runs these patches on the Mac to make the phone's embedded code
+           (TOTK_EXPORT_IOS), so it follows the same rule: before, auto put the 2560x1440 swapchain into the phone's code,
+           and the phone, which carries the heap overlay in its bundle, reserved 88 MiB more for a picture it never shows. */
+        if(TARGET_OS_IPHONE||getenv("TOTK_EXPORT_IOS")){
+            on=0;
+            if(e&&*e&&strcmp(e,"0")&&strcmp(e,"auto"))fprintf(stderr,"[totk] TOTK_OUTPUT_RES=%s ignored: iOS shows 720p only\n",e);
+        }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
             snprintf(path,sizeof path,"%s/2560x1440/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out");
@@ -145,16 +181,20 @@ uint64_t runtime_output_res_extra_bytes(void){
 }
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
-    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+32;
-    if(data+0x4000!=m->size||stub+28>data)runtime_fail("1.4.3 output patch layout");
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+16;
+    if(data+0x4000!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
     const Patch guards[]={
         {0xbdb578,0xd280f008,0},{0xbdb584,0xf2c08708,0},
         {0x3dcb28,0xd360fc64,0},{0x3dcb2c,0xf9028663,0},{0x3dcb30,0xd001ac08,0}};
     for(unsigned i=0;i<sizeof guards/sizeof *guards;i++){
+#if !TARGET_OS_IPHONE
         uint32_t word;memcpy(&word,m->base+guards[i].off,4);
         if(word!=guards[i].original)runtime_fail("1.4.3 output original instruction mismatch");
+#endif
     }
+#if !TARGET_OS_IPHONE
     for(unsigned i=0;i<28;i++)if(m->base[stub+i])runtime_fail("1.4.3 output veneer padding not empty");
+#endif
     /* x9 is dead at this publication point; the next original use initializes
      * it from the active display selector. x19 remains the display config. */
     uint32_t veneer[]={adrp(9,(uintptr_t)m->base+stub,(uintptr_t)m->base+data),
@@ -164,9 +204,17 @@ static void patch_output_res(Module *m){
         0xd360fc64, /* lsr x4,x3,#32: crop height */
         0xf9028663, /* str x3,[x19,#0x508]: original active output write */
         branch(stub+24,0x3dcb30)};
+ #if TARGET_OS_IPHONE
+    if(memcmp(m->base+stub,veneer,sizeof veneer))runtime_fail("1.4.3 embedded output veneer mismatch");
+ #else
     memcpy(m->base+stub,veneer,sizeof veneer);
+ #endif
     uint32_t words[]={0xd2800008|(w<<5),0xf2c00008|(h<<5),branch(0x3dcb28,stub)};
+ #if TARGET_OS_IPHONE
+    for(unsigned i=0;i<3;i++){uint32_t got;memcpy(&got,m->base+guards[i].off,4);if(got!=words[i])runtime_fail("1.4.3 embedded output patch mismatch");}
+ #else
     for(unsigned i=0;i<3;i++)memcpy(m->base+guards[i].off,words+i,4);
+ #endif
     output_page=m->base+data;output_w=w;output_h=h;
     atomic_store((_Atomic uint64_t *)(void *)(output_page+32),output_full_at_start?pack_size(w,h):pack_size(1920,1080));
     atomic_store((_Atomic uint64_t *)(void *)(output_page+40),0);
@@ -182,15 +230,23 @@ static void patch_output_res(Module *m){
    Every path that picks the render size converges through main+0x585e48 (the branch at 0x585f50 only reloads w11/w10
    and jumps back), so the four sites cover all of them. x3 is scratch and untouched by this function; x9 must NOT be
    used here because w9 still holds the output size for main+0x585e64. The size comes from the loader's data page +16
-   (the page patch_realtime reserves); TOTK_RENDER_RES unset = the game's own size and nothing is patched. */
+   (the page patch_realtime reserves); TOTK_RENDER_RES unset = the game's own size and nothing is patched.
+   iOS cannot write code at run time: the iOS export (TOTK_EXPORT_IOS, runtime/loader.c) runs this patch on the Mac, so
+   the phone's embedded code carries it only when TOTK_RENDER_RES was set for the export. The phone checks the embedded
+   words and writes the size on the data page itself: its own TOTK_RENDER_RES, or the game's handheld 1280x720 when unset
+   (the phone always reports handheld mode). Embedded code without the patch keeps the game's own size. */
 static int render_res(unsigned *w,unsigned *h){
     const char *e=getenv("TOTK_RENDER_RES");
     if(!e||!*e||!strcmp(e,"0"))return 0;
-    if(sscanf(e,"%ux%u",w,h)!=2||*w<64||*h<64||*w>4096||*h>4096)runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
+    char rest;
+    if(sscanf(e,"%ux%u%c",w,h,&rest)!=2||*w<64||*h<64||*w>4096||*h>4096)runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
     return 1;
 }
 static void patch_render_res(Module *m){
-    unsigned w,h;if(!render_res(&w,&h))return;
+    unsigned w=1280,h=720;int set=render_res(&w,&h);
+#if !TARGET_OS_IPHONE
+    if(!set)return;   /* Mac (and the iOS export): the game's own size unless asked */
+#endif
     uint64_t data=(m->file_size+0x3fff)&~0x3fffULL;
     if(data+24>m->size)runtime_fail("1.4.3 render-resolution patch layout");
     const Patch sites[]={
@@ -201,6 +257,14 @@ static void patch_render_res(Module *m){
     };
     uint32_t want[4]={adrp(3,(uintptr_t)m->base+sites[0].off,(uintptr_t)m->base+data),
                       sites[1].replacement,sites[2].replacement,sites[3].replacement};
+#if TARGET_OS_IPHONE
+    uint32_t first;memcpy(&first,m->base+sites[0].off,4);
+    if(first==sites[0].original){fprintf(stderr,"[totk] 1.4.3 render resolution: the game's own (not patched at build)\n");return;}
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){
+        uint32_t got;memcpy(&got,m->base+sites[i].off,4);
+        if(got!=want[i])runtime_fail("1.4.3 embedded render-resolution patch mismatch");
+    }
+#else
     for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){
         uint32_t word;memcpy(&word,m->base+sites[i].off,4);
         if(word!=sites[i].original){
@@ -210,9 +274,11 @@ static void patch_render_res(Module *m){
         }
     }
     for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&want[i],4);
+#endif
     float v[2]={(float)w,(float)h};
     memcpy(m->base+data+16,v,sizeof v);
-    fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u (4 instructions at main+0x585e48, value on the data page)\n",w,h);
+    fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u%s (4 instructions at main+0x585e48, value on the data page)\n",
+            w,h,set?"":" (the game's handheld size; TOTK_RENDER_RES not set)");
 }
 int runtime_output_res_toggle(void){
     if(!output_page)return 0;

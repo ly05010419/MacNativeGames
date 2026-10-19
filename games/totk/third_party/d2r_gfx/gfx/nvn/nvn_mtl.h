@@ -57,6 +57,7 @@ int mtl_probe_ub_rename(void);
 int mtl_probe_ubo_snapshot(void);
 int mtl_probe_drv_c0(void);
 int mtl_probe_dispatch_chain(void);
+int mtl_probe_copy_alias(void);
 int mtl_probe_layer_merge(void);
 int mtl_probe_cube_merge(void);
 void mtl_cube_merge_stats(uint64_t v[4]);

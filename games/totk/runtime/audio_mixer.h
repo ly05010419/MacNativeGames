@@ -29,10 +29,12 @@ typedef struct AudioRenderer {
 } AudioRenderer;
 
 void audio_mixer_open(AudioRenderer *r);
+void audio_mixer_set_running(AudioRenderer *r, int running);
 void audio_mixer_close(AudioRenderer *r);
 void audio_mixer_update_routing(AudioRenderer *r, const uint8_t *splitters, uint32_t splitter_bytes, const uint8_t *mixes, uint32_t mix_bytes, int mix_count);
 void audio_mixer_update_effects(AudioRenderer *r);
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size);
+uint32_t audio_mixer_sink_written(AudioRenderer *r, int id);
 void audio_mixer_render(AudioRenderer *r, double seconds);   /* called with r->lock held, after audio_voices_prepare, before voices advance */
 void audio_voices_prepare(AudioRenderer *r);                 /* audio_renderer.c: each render frame's voice state changes (flush, stop, start) */
 int audio_buffer_empty(const AudrenWaveBuffer *b);           /* no samples to decode: played as soon as it is reached */

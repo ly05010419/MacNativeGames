@@ -21,18 +21,26 @@
 #define GUEST_ADDRESS_LIMIT (1ULL<<39)
 #define ALIAS_SPACE_AT 0x7000000000ULL
 #define ALIAS_SIZE_MAX (64ULL<<30)
-/* TOTK_ALIAS_GIB: alias region size reported to the game (default 64, the real 39-bit Horizon size). iPhone without the
-   extended-virtual-addressing entitlement has only ~51 GiB of free address space in total, so smaller sizes are measured here. */
+/* TOTK_ALIAS_GIB: alias region size reported to the game (default 64, the real 39-bit Horizon size). An iOS app signed
+   without extended virtual addressing (unavailable to personal teams) gets a much smaller map: the old 6 + 16 GiB
+   reservation failed on an iPhone, while 4.75 + 16 GiB fit on an iPad (A16, iPadOS 26.7). So the largest size from 16
+   down to 4 GiB that fits is chosen at startup; the game maps about 3.3 GiB of it. */
 #if TARGET_OS_IPHONE
-#define ALIAS_DEFAULT_GIB 16   /* iPhone: ~51 GiB of free address space without extended virtual addressing; the game uses < 3 GiB */
+#define ALIAS_DEFAULT_GIB 16
+#define ALIAS_MIN_GIB 4ULL
 #else
 #define ALIAS_DEFAULT_GIB 64
 #endif
-static uint64_t alias_size_v;   /* memory_init may lower it when the default layout does not fit (macOS 27) */
-static uint64_t alias_size(void){uint64_t v=alias_size_v;if(!v){const char *e=getenv("TOTK_ALIAS_GIB");uint64_t g=e?strtoull(e,NULL,0):ALIAS_DEFAULT_GIB;if(g<1||g>64)runtime_fail("TOTK_ALIAS_GIB must be 1..64");v=alias_size_v=g<<30;}return v;}
+static uint64_t alias_len;
+static uint64_t alias_requested(void){const char *e=getenv("TOTK_ALIAS_GIB");uint64_t g=e?strtoull(e,NULL,0):ALIAS_DEFAULT_GIB;if(g<1||g>64)runtime_fail("TOTK_ALIAS_GIB must be 1..64");return g<<30;}
+static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();return alias_len;}
 #define ALIAS_SIZE alias_size()
 #define LOW_SEARCH_FROM 0x300000000ULL
+#if TARGET_OS_IPHONE
+#define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
+#else
 #define LOW_SIZE (6ULL<<30)
+#endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
 #define HEAP_OFF (STACK_OFF+STACK_SIZE+0x10000000ULL)
@@ -47,7 +55,7 @@ static unsigned char alias_stale[ALIAS_SIZE_MAX/4096];
 static uint64_t alias_bytes;
 static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define SYSTEM_RESOURCE_BUDGET (32ULL<<20)
-#define HEAP_CAP (4ULL<<30)
+#define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
  v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the true-2K texture heaps (TOTK_OUTPUT_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
@@ -64,13 +72,32 @@ static uint8_t *reserve_fixed(uint64_t at,uint64_t size){
  mach_vm_address_t a=at;   /* FIXED without OVERWRITE: fails instead of replacing an existing mapping */
  return mach_vm_map(mach_task_self(),&a,size,0,VM_FLAGS_FIXED,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS?(uint8_t *)(uintptr_t)a:NULL;
 }
+#if TARGET_OS_IPHONE
+#define GUEST_ALIGN (2ULL<<20)
+/* Reserve size bytes in the lowest free gap of this process's map above 4 GiB (2 MiB aligned). The end of the map is
+   not reported, so the last gap is only tried; FIXED fails there with KERN_NO_SPACE when it reaches past the end. */
+static uint8_t *reserve_in_gap(uint64_t size,int log){
+ uint64_t prev=1ULL<<32;
+ for(;;){
+  mach_vm_address_t r=prev;mach_vm_size_t rsize=0;vm_region_basic_info_data_64_t info;mach_msg_type_number_t n=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t obj=MACH_PORT_NULL;
+  int more=mach_vm_region(mach_task_self(),&r,&rsize,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&n,&obj)==KERN_SUCCESS;
+  uint64_t start=(prev+GUEST_ALIGN-1)&~(GUEST_ALIGN-1),end=more?r:GUEST_ADDRESS_LIMIT;
+  if(end>start&&end-start>=(256ULL<<20)&&log)fprintf(stderr,"[totk-mem] free %#llx..%s%#llx\n",(unsigned long long)start,more?"":"(end of map, at most) ",(unsigned long long)end);
+  if(end>start&&end-start>=size){uint8_t *p=reserve_fixed(start,size);if(p)return p;}
+  if(!more)return NULL;
+  prev=r+rsize;
+ }
+}
+#endif
 static void memory_init(void) {
  if(alias_space)return;
 #if TARGET_OS_IPHONE
- /* iOS: the usable address space ends at 0xF_C000_0000 and 0x10_0000_0000.. is the system's, so stack+heap and the alias
-    region go side by side at the lowest free gigabyte boundary from 0x3_0000_0000 (one reservation, then split). */
- for(uint64_t at=LOW_SEARCH_FROM;at+LOW_SIZE+ALIAS_SIZE<=GUEST_ADDRESS_LIMIT&&!low_space;at+=1ULL<<30)low_space=reserve_fixed(at,LOW_SIZE+ALIAS_SIZE);
- if(!low_space)runtime_fail("reserve guest stack, heap and alias regions");
+ /* iOS: stack+heap and the alias region go side by side in one reservation (ASLR_SIZE spans both), placed in the lowest
+    free gap that holds them. The free space depends on the device, so the alias region shrinks from the requested size
+    to ALIAS_MIN_GIB before giving up (logging the free gaps); TOTK_ALIAS_GIB pins one size. */
+ uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(ALIAS_MIN_GIB<<30);
+ for(uint64_t a=want;a>=least&&!low_space;a-=1ULL<<30)if((low_space=reserve_in_gap(LOW_SIZE+a,0)))alias_len=a;
+ if(!low_space){reserve_in_gap(UINT64_MAX,1);runtime_fail("reserve guest stack, heap and alias regions");}
  alias_space=low_space+LOW_SIZE;
 #else
  alias_space=reserve_fixed(ALIAS_SPACE_AT,ALIAS_SIZE);
@@ -78,12 +105,15 @@ static void memory_init(void) {
  if(!low_space){
   /* macOS 27: the shared cache fills 0x1_8000_0000..0xF_C000_0000 and the system reserves ~24 GiB at a random place in
      0x70_0000_0000..2^39, so neither fixed region fits. As on iOS, put stack+heap and the alias region side by side in one
-     free hole, shrinking the alias region (the game uses < 3 GiB of it) until it fits. */
+     free hole, shrinking the alias region (the game uses < 3 GiB of it) until it fits. TOTK_ALIAS_GIB pins one size. */
   if(alias_space)mach_vm_deallocate(mach_task_self(),(mach_vm_address_t)(uintptr_t)alias_space,ALIAS_SIZE);
-  for(uint64_t g=ALIAS_SIZE;g>=(8ULL<<30)&&!low_space;g-=4ULL<<30)
+  uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(8ULL<<30);
+  for(uint64_t g=want;!low_space;g-=4ULL<<30){
    for(uint64_t at=LOW_SEARCH_FROM;at+LOW_SIZE+g<=GUEST_ADDRESS_LIMIT&&!low_space;at+=1ULL<<30)
-    if((low_space=reserve_fixed(at,LOW_SIZE+g)))alias_size_v=g;
-  if(!low_space)runtime_fail("reserve guest stack, heap and alias regions below 2^39");
+    if((low_space=reserve_fixed(at,LOW_SIZE+g)))alias_len=g;
+   if(g<least+(4ULL<<30))break;
+  }
+  if(!low_space)runtime_fail(getenv("TOTK_ALIAS_GIB")?"reserve guest stack, heap and the TOTK_ALIAS_GIB alias region below 2^39":"reserve guest stack, heap and alias regions below 2^39");
   alias_space=low_space+LOW_SIZE;
  }
 #endif

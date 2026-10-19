@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Verify the exact local v112/v143 visibility shader and its atomic side effect on Metal."""
+"""Verify the exact local v112/v143 visibility shader and its atomic side effect on Metal.
+1.2.1 runs the very same shader as 1.1.2 (same key and Maxwell bytes, seen in 1.2.1 field sessions on 2026-10-19)."""
 import argparse, hashlib, json, os, subprocess
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 CASES={
  'v112':('b1e4d0906d1658f64825f570ed6a2abd08ceeec82d537cd3a5fc1c17f38fb238-641742ac59e3','eabe9fdd6fc737b8414e94cc3e14ec0031ab3a156511953abe5e3a04128524ad','vertex'),
+ 'v121':('b1e4d0906d1658f64825f570ed6a2abd08ceeec82d537cd3a5fc1c17f38fb238-641742ac59e3','eabe9fdd6fc737b8414e94cc3e14ec0031ab3a156511953abe5e3a04128524ad','vertex'),
  'v143':('1eee2726aae7493ec0506b96a54c89cb18bf6bd98f64c29641aa8e67ed642326-641742ac59e3','f5f4d23149565acd852f6b7091f64cc8cb3aa019ccb33ba3f88ced62c6d1ff7b','instance')}
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def main():

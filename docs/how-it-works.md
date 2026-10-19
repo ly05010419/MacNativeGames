@@ -64,6 +64,12 @@ The live TOTK 1.4.3 comparison on Apple M4 Pro also reproduced the grid with Rec
 
 Historical 1.1.2 Ultrahand captures and the current 1.4.3 Recall pair are hosted in the same [separate evidence attachments](https://github.com/huahuahuahuahuahuahuahua/MacNativeGames/releases/tag/rendering-evidence-20261018) and linked from PR #3. No screenshots, game binaries, extracted assets or saves are included in the code commits.
 
+## Buffer copies through aliased memory
+
+The same game memory can be reached through two Metal buffers, each with its own GPU virtual address: a virtual memory pool maps a physical pool's pages a second time (`mach_vm_remap`), and two memory pools can wrap the same CPU memory. A barrier with only device visibility does not make a write through one buffer visible to a read through the other. Every buffer-to-buffer copy (`mtl_sub_copy`, and the copy fallback of inline uniform updates) therefore carries `MTL4VisibilityOptionResourceAlias` in the barriers the copy encoder already places and at its end; no barriers are added. The fix comes from the original port (`d309e62`, by Codex); its copy-batch experiment, off by default there, is not included.
+
+`make -C games/totk probe-gpu-copy-alias` replays 256 dependent copies and fills over 64 KiB through two no-copy buffers over one allocation and through a virtual pool's view, across encoder boundaries, and compares every byte with the same steps done on the CPU (524,288 checks). With `TOTK_PROBE_NEGATIVE=1` the copies lose the alias visibility: on an M4 every run read a stale byte (byte 512 read 125 instead of 207). TOTK 1.0.0 makes no buffer copies in the world; 1.1.2 and 1.4.3 make one per frame. Whether that copy reaches its memory through two buffers has not been traced, and no visible defect has been attributed to the missing visibility.
+
 ## The build (build_app.py)
 
 1. Detect XCI (HFS0 secure partition) or NSP (PFS0) by its header. Read the base Program NCA in place, extract ExeFS,
@@ -74,7 +80,9 @@ Historical 1.1.2 Ultrahand captures and the current 1.4.3 Recall pair are hosted
    system update partition, `--firmware` (an unpacked firmware NCA directory), or `--shared-fonts` (six extracted
    BFTTF files). Actual font bytes and the complete manifest are verified before reuse. Then the
    RomFS overlays (small data patches: quick-menu capture timing at high frame rates, the game-over retry, the heap
-   sizes the 1440p output needs) are made from your own files.
+   sizes the 1440p output needs) are made from your own files. The game-over retry patch only matters on 1.0.0:
+   1.1.2 and 1.4.3 read Nintendo's own fixed flow (`DmF_SY_GameOver.110`), so there the patch of the old file is made
+   and checked but never read.
 3. SPIRV-Cross compiled with clang; the prebuilt shader translator checked against its SHA-256. `prepare_shader_seed.py`
    reads dictionary-compressed startup packages from the selected, verified RomFS, parses supported NVN BNSH programs
    and translates default-binding variants. The version, translation chain, translator/preparer hashes and every

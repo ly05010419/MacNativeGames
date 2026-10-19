@@ -25,7 +25,9 @@ jobs:
         run: python -m pip install -r games/totk/requirements.txt
       - name: Run synthetic container, update and native path tests
         run: python -m unittest discover -s tests -v
-      - name: Check native path parser with sanitizers
+      # UBSan only: on macOS 26 an AddressSanitizer build of this test hangs in dyld before main
+      # (AsanInitInternal -> StaticSpinMutex::LockSlow), which would hold the job until its timeout.
+      - name: Check native path parser with the undefined-behavior sanitizer
         run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined tests/test_romfs_paths.c -o "$RUNNER_TEMP/test-romfs-paths"
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_romfs_paths.c -o "$RUNNER_TEMP/test-romfs-paths"
           "$RUNNER_TEMP/test-romfs-paths"

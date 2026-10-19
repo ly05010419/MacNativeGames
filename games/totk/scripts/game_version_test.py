@@ -3,11 +3,12 @@ import argparse,re,struct
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 def options():
-    p=argparse.ArgumentParser();p.add_argument('--version',choices=('v0','v112'),default='v0');return p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--version',choices=('v0','v112','v121'),default='v0');return p.parse_args()
 def offsets(version):
-    source=(ROOT/'runtime/game_version.h').read_text().split('#elif defined(TOTK_GAME_V112)',1)[1].split('#else',1)[0]
+    if version=='v0':return lambda value:value
+    source=(ROOT/'runtime/game_version.h').read_text().split(f'defined(TOTK_GAME_{version.upper()})',1)[1].split('\n#el',1)[0]
     mapping={int(a,16):int(b,16) for a,b in re.findall(r'#define GAME_ADDR_(0x[0-9a-f]+) (0x[0-9a-f]+)',source)}
-    def address(value):return mapping[value] if version=='v112' else value
+    def address(value):return mapping[value]
     return address
 def adrp_ldr(image,pc,ldr_pc):
     a=struct.unpack_from('<I',image,pc)[0];b=struct.unpack_from('<I',image,ldr_pc)[0]

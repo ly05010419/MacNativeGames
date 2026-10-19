@@ -19,10 +19,16 @@ def main():
  (out/'timing-fixture.log').write_text(run.stdout+run.stderr);samples=json.loads(run.stdout)
  for name,seconds in [('pin',0.01),('sample',0.025)]:
   assert all(abs(x-y)<1e-6 for x,y in zip(samples[name],[seconds*30,seconds,seconds*60]))
- patched=target.read_bytes();data=(len(raw)+0x3fff)&~0x3fff;stub=(len(raw)+15)&~15
+ # Same placement as game_patches_v143.c: the producer veneer (4 words) sits in
+ # the zero padding after the text segment, so iOS can embed it in the signed RX
+ # segment. It must end before read-only data starts, which is stricter than the
+ # runtime's 16 KiB page bound.
+ patched=target.read_bytes();data=(len(raw)+0x3fff)&~0x3fff;stub=(layout['TEXT_END']+15)&~15
+ assert stub+16<=layout['RO_OFF'],'frame-step veneer would overlap read-only data'
+ assert raw[stub:stub+16]==bytes(16),'frame-step veneer padding not empty in the rewritten image'
  changes=[o for o in range(0,len(raw),4) if raw[o:o+4]!=patched[o:o+4]]
- allowed={0x2db204,0x2db208,0x2db22c,0x2db360,0x2db36c,0x2db340,0x2db34c,0x3e5658,0x2daa54,0x2daa58,0x2daa6c,0x2daa70,0x2daa74,0x2daa78}
- assert set(changes)==allowed,changes
+ allowed={0x2db204,0x2db208,0x2db22c,0x2db360,0x2db36c,0x2db340,0x2db34c,0x3e5658,0x2daa54,0x2daa58,0x2daa6c,0x2daa70,0x2daa74,0x2daa78}|{stub+4*i for i in range(4)}
+ assert set(changes)==allowed,[hex(o) for o in sorted(set(changes)^allowed)]
  def bits(value):return struct.unpack('<I',struct.pack('<f',value))[0]
  def execute(seconds,apply,half=False,call=0x3e5720,nominal_fps=60):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)

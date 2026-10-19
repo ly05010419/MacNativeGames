@@ -33,9 +33,14 @@ static unsigned initialize(void *guest, int rate, int channels, void *work, size
     int err = 0; OpusDecoder *dec = opus_decoder_create(rate, channels, &err);
     if (!dec || err != OPUS_OK) runtime_fail("libopus decoder creation");
     pthread_mutex_lock(&lock);
-    /* the game may re-initialize a decoder object without finalizing it: reuse its slot */
+    /* the game may re-initialize a decoder object without finalizing it: reuse its slot. Logged once, to learn which
+       path does it (our host writes none of the SDK's HardwareOpusDecoderType fields, which the game may test). */
+    static int reuse_logged;
     for (int i = 0; i < MAX_DECODERS; i++) if (decoders[i].dec && decoders[i].guest == guest) {
-        opus_decoder_destroy(decoders[i].dec); decoders[i] = (Decoder){guest, dec, rate, channels}; pthread_mutex_unlock(&lock); return 0; }
+        opus_decoder_destroy(decoders[i].dec); decoders[i] = (Decoder){guest, dec, rate, channels};
+        int first = !reuse_logged; reuse_logged = 1; pthread_mutex_unlock(&lock);
+        if (first) fprintf(stderr, "[totk] hardware Opus decoder %p initialized again without Finalize: its slot is reused (logged once)\n", guest);
+        return 0; }
     for (int i = 0; i < MAX_DECODERS; i++) if (!decoders[i].dec) { decoders[i] = (Decoder){guest, dec, rate, channels}; pthread_mutex_unlock(&lock); return 0; }
     pthread_mutex_unlock(&lock); runtime_fail("hardware Opus decoder table full");
 }

@@ -14,13 +14,14 @@
 #include <string.h>
 #include <time.h>
 #include <mach/mach.h>
+#include <pthread/qos.h>
 
 #define REV(n) (0x30564552u + ((uint32_t)(n) << 24))   /* "REVn" */
 #define WORK_BUFFER_BYTES 0x10000u                      /* host keeps its state in host memory */
 #define BEHAVIOR_OUT 0xb0u
 #define RENDER_INFO_OUT 0x10u
 
-static int revision_number(uint32_t rev) { return (int)((rev >> 24) - '0') + (((rev >> 24) >= 'A') ? -7 : 0); }
+static int revision_number(uint32_t rev) { return (int)(rev >> 24) - '0'; }
 static void need(int c, const char *m) { if (!c) { fprintf(stderr, "[totk-audio] %s\n", m); runtime_fail("audio renderer protocol"); } }
 
 static AudioRenderer *renderer_new(const AudrenParameter *p) {
@@ -29,7 +30,7 @@ static AudioRenderer *renderer_new(const AudrenParameter *p) {
     r->param = *p;
     r->revision=p->revision;
     need(p->sample_rate == 48000 || p->sample_rate == 32000, "unsupported output rate");
-    need(p->voice_count > 0 && p->voice_count <= 1024 && p->sink_count > 0 && p->effect_count >= 0 && p->submix_count >= 0, "renderer counts");
+    need(p->voice_count > 0 && p->voice_count <= 1024 && p->sink_count > 0 && p->sink_count <= 256 && p->effect_count >= 0 && p->effect_count <= 4096 && p->submix_count >= 0 && p->submix_count < 256, "renderer counts");
     r->voices = calloc((size_t)p->voice_count, sizeof *r->voices);
     r->pools = calloc((size_t)p->effect_count + 4u * (size_t)p->voice_count, sizeof *r->pools);
     r->mixes = calloc((size_t)p->submix_count + 1, sizeof *r->mixes);
@@ -223,7 +224,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
         memcpy(w, &vo, sizeof vo); w += sizeof vo;
     }
     for (int i = 0; i < ec; i++) { w[0] = effects[i].enabled ? 3 : 4; if(eo>16)audio_mixer_effect_result(r,i,w+16,eo-16); w += eo; }   /* EffectStatus Enabled=3 / Disabled=4 */
-    for (int i = 0; i < sc; i++) w += sizeof(AudrenSinkOut);
+    for (int i = 0; i < sc; i++) { AudrenSinkOut so={0};if(r->sinks[i].type==SINK_CIRCULAR)so.last_written_offset=audio_mixer_sink_written(r,i);memcpy(w,&so,sizeof so);w += sizeof so; }
     w += 0x10;                                            /* performance: nothing written */
     w += BEHAVIOR_OUT;                                    /* behavior: no errors */
     memcpy(w, &r->elapsed_frames, 8);
@@ -249,6 +250,7 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
 }
 static void *render_thread(void *p) {
     AudioRenderer *r = p;
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE,0);
     const double frame = (double)r->param.sample_count / r->param.sample_rate;
     struct timespec next; clock_gettime(CLOCK_MONOTONIC, &next);
     while (__atomic_load_n(&r->running, __ATOMIC_ACQUIRE)) {
@@ -303,8 +305,8 @@ static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
         for (unsigned i = 0; i < rq->nc && rq->cmd == 10; i++) if (rq->c[i].size && (i >= rq->nb || !rq->b[i].size)) rs->xout[rs->nxout++] = (IpcBuffer){rq->c[i].addr, rq->c[i].size, i};
         return;
     }
-    case 5: pthread_mutex_lock(&r->lock); r->state = 0; pthread_mutex_unlock(&r->lock); return;
-    case 6: pthread_mutex_lock(&r->lock); r->state = 1; pthread_mutex_unlock(&r->lock); return;
+    case 5: pthread_mutex_lock(&r->lock); r->state = 0;audio_mixer_set_running(r,1); pthread_mutex_unlock(&r->lock); return;
+    case 6: pthread_mutex_lock(&r->lock); r->state = 1;audio_mixer_set_running(r,0); pthread_mutex_unlock(&r->lock); return;
     case 7: rs->copy[rs->ncopy++] = runtime_event_readable(r->event); return;
     case 8: r->time_limit = IPC_ARG(rq, uint32_t, 0); return;
     case 9: { uint32_t v = r->time_limit ? r->time_limit : 100; IPC_OUT(rs, v); return; }

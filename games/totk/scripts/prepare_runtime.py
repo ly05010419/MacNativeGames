@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--version', choices=('v0','v112','v143'), default='v0')
+parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
 version = parser.parse_args().version
 OUT = ROOT / ('build' if version == 'v0' else f'build/{version}')
 OUT.mkdir(parents=True, exist_ok=True)
@@ -21,6 +21,8 @@ assert report['status'] == 'pass' and report['rom_version'] == version
 if version == 'v112':
     expected = 'f04fbebdaacbcde0bcca20cbe0caff06bd51f7c8f904d217e5f17efe3308d1ac'
     assert report['module_file_sha256']['extracted/v112/exefs/main'] == expected, 'Unsupported 1.1.2 main image'
+if version == 'v121':
+    assert report['module_file_sha256']['extracted/v121/exefs/main'] == 'e5aa8d48e68cbb82ed4416c7b6b29a46fe4a998ee149d6dbf979164c628efcb6', 'Unsupported 1.2.1 main image'
 if version == 'v143':
     assert report['module_file_sha256']['extracted/v143/exefs/main'] == 'e84a90d551fed0824b4b74933b9c6d043c458521363a7cea58b2faca1822dc9e', 'Unsupported 1.4.3 main image'
 modules = []

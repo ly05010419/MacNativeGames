@@ -1,0 +1,40 @@
+name: Shader list contribution / 提交着色器清单
+description: Send the shaders your game met that the shared shader list does not have yet. 发送你的游戏遇到的、公共着色器清单里还没有的着色器。
+title: "Shader list: "
+labels: ["shader-list"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! The file holds shader keys and bind states only: no game data, saves or personal information. Once merged into [the shared list](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md), these shaders come with everyone's next build.
+
+        谢谢！这个文件只有着色器的标识和绑定状态，不含游戏内容、存档或个人信息。并入[公共清单](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md)后，以后大家打包的 App 都会带上这些着色器。
+  - type: dropdown
+    id: version
+    attributes:
+      label: Game version / 游戏版本
+      options: ["1.4.3", "1.2.1", "1.1.2", "1.0.0"]
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Device / 设备
+      options: ["Mac", "iPhone", "iPad"]
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: shader-list-contribution.txt
+      description: |
+        Drag the file here. Mac: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt` (the reminder shows it in Finder). iPhone / iPad: Files app › On My iPhone (or iPad) › Tears of the Kingdom.
+        把文件拖到这里。Mac：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`（提醒会在访达里显示它）。iPhone / iPad：“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom。
+      placeholder: Drop shader-list-contribution.txt here / 把 shader-list-contribution.txt 拖到这里
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Where you played (optional) / 玩了哪些地方（可选）
+      placeholder: e.g. Hyrule Field, the Depths, 2 hours / 例如：海拉鲁平原、地底，2 小时

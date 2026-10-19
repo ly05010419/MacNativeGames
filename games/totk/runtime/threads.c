@@ -64,6 +64,7 @@ typedef struct thr {
     uint64_t cseq, core_since; struct thr *cnext;
     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
+    uint64_t yrun_ns, yrun_svc;   // the current run of yields: when it started, and nsvc at its last yield (yield_backoff_ns)
 } thr_t;
 static thr_t *g_all;
 
@@ -323,6 +324,29 @@ void dm_guest_clock_advanced(void) {
 
 // 处理线程 / 同步类 SVC；返回 1 = 已处理
 // Handle thread / synchronization SVCs; returns 1 = handled
+/* Yield back-off (after nxnative e06a8ec / b703be2). On the Switch a yield with nothing else runnable costs nothing; here
+   a guest loop that polls and yields becomes a host busy spin (on the iPhone the system logged about 1,300 wake-ups a
+   second for the game). A run of yields with no other SVC between them stays plain sched_yield for its first 2 ms:
+   shorter waits are handoffs between working threads, such as the main thread waiting for its ModuleSystem workers on
+   the frame's critical path (nxnative started at 200 µs and 1.4.3 then dropped itself to 20 fps). After that each yield
+   sleeps an eighth of the run so far, 10 to 250 µs, with the virtual core given up, so a wait ends at most an eighth late.
+   Off by default: on the Mac at about 100 fps (1.2.1 field save, 300 s each) it saved 3% CPU (708 -> 685 s) but frames
+   dropped steadily, 10-15 per 300 instead of 0-3. TOTK_YIELD_BACKOFF=on turns it on (250:2000); =<cap µs>[:<start µs>]
+   sets the cap and the start. Returns the sleep for a yield whose run started run_ns ago, 0 for a plain yield. */
+static uint64_t yield_backoff_ns(uint64_t run_ns) {
+    static int64_t cap = -1, start = 2000000;
+    if (cap < 0) {
+        const char *e = getenv("TOTK_YIELD_BACKOFF"); int64_t c = 0;
+        if (e && !strcmp(e, "on")) c = 250000;
+        else if (e && *e) { c = atoll(e) * 1000; const char *colon = strchr(e, ':'); if (colon) start = atoll(colon + 1) * 1000; }
+        if (c) LOG("TOTK_YIELD_BACKOFF: a run of yields backs off after %lld us, sleeping at most %lld us", (long long)(start / 1000), (long long)(c / 1000));
+        cap = c;
+    }
+    if (!cap || run_ns < (uint64_t)start) return 0;
+    uint64_t s = run_ns / 8; if (s < 10000) s = 10000;
+    return s < (uint64_t)cap ? s : (uint64_t)cap;
+}
+
 int svc_thread(int num, uint64_t *regs) {
     { thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->last_fp = regs[29]; me->nsvc++; } }
 
@@ -364,11 +388,18 @@ int svc_thread(int num, uint64_t *regs) {
         else {   // 让出（0 / -1 / -2）。主线程的让出次数与耗时记账：游戏渲染任务图「等全部做完」是纯轮询 + 让出（main+0x15ee898），量它占一帧多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
             thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL);
             uint64_t y0 = now_ns();
+            if (me && me->nsvc != me->yrun_svc + 1) me->yrun_ns = y0;   // another SVC since the last yield: a new run
+            if (me) me->yrun_svc = me->nsvc;
             pthread_mutex_lock(&G);   // Horizon yield: hand the core to a waiting thread of equal or higher priority
             int give = 0; for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && w->prio <= me->prio;
             if (give) { core_put(me); core_take(me); }
             pthread_mutex_unlock(&G);
-            if (!give) sched_yield();
+            uint64_t backoff = !give && me ? yield_backoff_ns(y0 - me->yrun_ns) : 0;
+            if (backoff) {   // a long poll: sleep with the core given up, as SleepThread(ns) does
+                pthread_mutex_lock(&G); core_put(me); pthread_mutex_unlock(&G);
+                struct timespec ts = {0, (long)backoff}; nanosleep(&ts, 0);
+                pthread_mutex_lock(&G); core_take(me); pthread_mutex_unlock(&G);
+            } else if (!give) sched_yield();
             if (me && me->handle == 0x1001) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
         }
         if (ns > 0) { pthread_mutex_lock(&G); core_take(self); pthread_mutex_unlock(&G); }

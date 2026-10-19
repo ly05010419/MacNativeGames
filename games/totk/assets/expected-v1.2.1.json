@@ -1,0 +1,30 @@
+{
+  "_comment": "Verified 1.2.1 outputs from base 1.0.0 plus the cumulative 1.2.1 update. Hashes only; no game data.",
+  "title_id": "0100F2C0115B6000",
+  "version": 393216,
+  "display_version": "1.2.1",
+  "exefs_sha256": {
+    "rtld": "28317605926caa40a5cbee3e3cb290c65783b4d9f8c3697b43ca41ab2866a44d",
+    "subsdk0": "9d04c98997977e99c12a48a2dbfd3064b8da96b5152e0119064957a43f6c3f99",
+    "main.npdm": "7df836b8b2608a545f215ae7cf8f9abdadc0c5d6dda98e4ab5f63f408235af39",
+    "sdk": "91573d4444d0dcd07080db78fece2b098b76080d77cdb2e1d301a2a41d7c4eea",
+    "main": "e5aa8d48e68cbb82ed4416c7b6b29a46fe4a998ee149d6dbf979164c628efcb6"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "b7a2cc7e3465c4f11cd23f34cb38e037cf51d1d18310206f03b86c160ff2dbd0",
+    "sdk.patched.bin": "01402184940ea2b308005f30a5be087244fb7da739976a1bde084822604b1ef8",
+    "subsdk0.patched.bin": "43734d4172885a17088754227b7fc66b13c5f2421679c37dac23a4aa3dc84459"
+  },
+  "romfs": {
+    "size": 17052047360,
+    "sha256": "c2beb1c2a732489200d0949d4ad12f3ed836ae86495c4acd6c217c6d53937c11"
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
+    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}

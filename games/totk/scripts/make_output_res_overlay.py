@@ -34,7 +34,7 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('size', help='<width>x<height>, e.g. 2560x1440')
 parser.add_argument('--output-root', type=Path, default=root / 'extracted/v0/romfs-patches-out')
-parser.add_argument('--version', choices=('v0','v112','v143'), default='v0')
+parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
 args = parser.parse_args()
 version = args.version
 if args.output_root == root / 'extracted/v0/romfs-patches-out': args.output_root = root / f'extracted/{version}/romfs-patches-out'
