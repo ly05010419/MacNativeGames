@@ -1,9 +1,14 @@
 # Plan: stop in-game shader compiles from stalling frames
 
-Status (2026-10-19): step 0, the pipeline half of step 1, and step 1b (Metal libraries in the background) are
-implemented in `nvn_mtl.m` / `hle_nvn.c` / `totk_shader_rt.m`. Step 1b compiles with no new warnings, but it has **not been
-run in the game yet**. Making translation itself (`totk_rt_variant`) non-blocking, the rest of step 1, is still not
-implemented. Steps 2-5 are untouched. None of this has had the cold-cache A/B test. Mac only.
+Status (2026-10-19, updated): steps 0, 1 (pipelines) and 1b (Metal libraries) are merged into this branch.
+- Step 0 is upstream #29's version (bounded prediction scan, no translation, stale guesses reclaimed), which replaced
+  the drain described below.
+- Steps 1 and 1b are upstream #30, with two fixes found while measuring:
+  - `res_commit()` in `present_now` (a GPU page fault on frame 1 with an empty cache);
+  - `totk_precise_opts` set up with `dispatch_once`.
+- Cold-cache A/B results are in [async-shader-loading.md](async-shader-loading.md).
+- Making translation itself (`totk_rt_variant`) non-blocking, the rest of step 1, is still not implemented. Steps 2-5
+  are untouched. Mac only.
 
 ## What's done so far
 

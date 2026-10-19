@@ -2289,11 +2289,7 @@ static void tsummary(uint64_t frame) {
                                     "clear-render-disabled", "cond-disabled", "cond-unknown", "shader-missing", "pipeline-pending", "shader-loading"};   // TOTK: 12-14 conditional rendering (see cond_eval); 15 a shader variant the iPhone does not have yet; 16 a pipeline still compiling in the background, 17 a shader library still loading in the background (TOTK_ASYNC_SHADERS)
         for (int i = 0; i < 18; i++) { uint64_t d = g_draw_skip[i] - prev[i]; prev[i] = g_draw_skip[i]; if (d && o < sizeof b - 48) o += snprintf(b + o, sizeof b - o, " %s=%llu", why[i], (unsigned long long)d); }
         if (o) LOG("[nvn] TOTK 回放丢弃的绘制 至帧 %llu:%s", frame, b); }
-      { static uint64_t pk_[4]; uint64_t v[4]; void mtl_pp_stats(uint64_t[4]); mtl_pp_stats(v);   // TOTK: parallel-precompile predict table (nvn_mtl.m g_pp)
-        if (pf && frame > pf && (v[0] > pk_[0] || v[3] > pk_[3])) LOG("[nvn] 并行预编表 至帧 %llu：丢出 %llu 条，领用 %llu 条，回收 %llu 条，表满 %llu 次（近 300 帧）", frame,
-            (unsigned long long)(v[0] - pk_[0]), (unsigned long long)(v[1] - pk_[1]), (unsigned long long)(v[2] - pk_[2]), (unsigned long long)(v[3] - pk_[3]));
-        memcpy(pk_, v, sizeof pk_); }
-      { static uint64_t sl_[4]; uint64_t v[5]; void mtl_shload_stats(uint64_t[5]); mtl_shload_stats(v);   // TOTK step 1b: shader libraries loaded in the background (nvn_mtl.m shader_get_async)
+      { static uint64_t sl_[4]; uint64_t v[5]; void mtl_shload_stats(uint64_t[5]); mtl_shload_stats(v);   // TOTK_ASYNC_SHADERS: shader libraries loaded in the background (nvn_mtl.m shader_get_async)
         if (pf && frame > pf && v[0] > sl_[0]) { uint64_t done = (v[1] - sl_[1]) + (v[2] - sl_[2]);
             LOG("[nvn] 后台载着色器库 至帧 %llu：排队 %llu 个，载完 %llu 个（失败 %llu），平均 %.0f ms、最长 %.0f ms（近 300 帧）", frame, (unsigned long long)(v[0] - sl_[0]),
                 (unsigned long long)(v[1] - sl_[1]), (unsigned long long)(v[2] - sl_[2]), done ? (v[3] - sl_[3]) / 1e6 / (double)done : 0.0, v[4] / 1e6); }

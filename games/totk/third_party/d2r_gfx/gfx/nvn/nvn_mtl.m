@@ -958,7 +958,6 @@ static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
 static void shload_drain(void);   // 把后台载完的着色器库收进 g_shcache（定义见 shader_get 旁） | Publish shader libraries loaded in the background into g_shcache (defined next to shader_get)
-static void pso_pend_drain(void);   // 回收预编表里编完但没被取走的管线（g_pp，定义见 pso_pend_kick 旁） | Reclaim pipelines finished in the predict table but never taken (g_pp, defined next to pso_pend_kick)
 void mtl_sub_begin(void) {
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (g_cg.ng) { static int once; if (!once++) MLOG("【红】[cube-merge] 上次提交结束时还有 %d 组没落地（不应发生）", g_cg.ng); g_cg.ng = 0; } g_cg_pending = 0; g_cg.take_seq = ~0ull;
@@ -968,8 +967,7 @@ void mtl_sub_begin(void) {
     defer_drain();
     defer_reset();
     warm_claim();
-    shload_drain();   // 步骤 1b：后台载完的着色器库 | step 1b: shader libraries finished in the background
-    pso_pend_drain();   // 猜多了的管线：收进 g_pso 而不是永远占着预编表的槎位 | Over-guessed pipelines: collect them into g_pso instead of letting them hold a predict-table slot forever
+    shload_drain();   // 后台载完的着色器库 | shader libraries finished in the background
     if (g_cb) MDIE("提交重入");
     pt_apply_request();
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
@@ -1716,12 +1714,12 @@ static uint64_t gpu_ticks(void) { static mach_timebase_info_data_t tb; if (!tb.d
 // ---------- Boot instrumentation (DM_BOOTPROF=1): metallib loading, pipeline creation (both happen synchronously during replay on the submit thread), texture upload, first-frame present ----------
 static uint64_t bp_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 static int survey_shader_log(void) { static int on = -1; if (on < 0) on = getenv("TOTK_SURVEY_SHADER_LOG") != NULL; return on; }
-// TOTK_ASYNC_SHADERS（缺省 1）：普通通道的管线缺失时不再在提交线程上阻塞等编译完——等到 TOTK_SHADER_STALL_MS 还没完就跳过这次绘制（docs/async-shader-compile-plan.md 步骤 1）。
-// 0 恢复今天逐条同步编的行为，便于 A/B 对比；合并通道 / 特化片元管线这一步仍走同步路径。
-// TOTK_ASYNC_SHADERS (default 1): a missing pipeline for a normal pass no longer blocks the submit thread until it
-// compiles -- it waits up to TOTK_SHADER_STALL_MS and then skips that draw (docs/async-shader-compile-plan.md step 1).
-// 0 restores today's one-by-one synchronous compile, for A/B comparison; merged-pass / specialized-fragment pipelines
-// still take the synchronous path at this step.
+// TOTK_ASYNC_SHADERS（缺省 1）：游玩中缺的顶点 / 片元着色器库和普通通道管线在后台编，提交线程最多等 TOTK_SHADER_STALL_MS（缺省 4 ms），还没好就跳过这次绘制（docs/async-shader-loading.md）。
+// 0 恢复逐个同步编；计算着色器、合并通道 / 特化片元管线始终同步。
+// TOTK_ASYNC_SHADERS (default 1): vertex / fragment libraries and normal-pass pipelines missing in play compile in the
+// background; the submit thread waits at most TOTK_SHADER_STALL_MS (default 4 ms) and otherwise skips that draw
+// (docs/async-shader-loading.md). 0 restores compiling each one synchronously. Compute shaders and merged-pass /
+// specialised-fragment pipelines always compile synchronously.
 static int async_shaders_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_ASYNC_SHADERS"); v = !e || atoi(e); } return v; }
 static uint64_t shader_stall_budget_ns(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("TOTK_SHADER_STALL_MS"); v = e ? atoll(e) : 4; if (v < 0) v = 0; } return (uint64_t)v * 1000000ull; }
 static uint64_t g_bp_t0;   // 进程启动（本模块装入）时刻 | Time of process start (when this module is loaded)
@@ -3076,8 +3074,8 @@ static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key)
 uint64_t mtl_upload_ns_take(void) { return atomic_exchange(&g_upload_ns, 0); }
 uint64_t mtl_upload_gpu_ns_take(void) { return atomic_exchange(&g_upload_gpu_ns, 0); }
 void mtl_create_stats(uint64_t *lib, uint64_t *pso) { *lib = g_bp_lib_n; *pso = g_bp_pso_n; }
-void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns) { *lib_ns = g_bp_lib_ns; *pso_ns = g_bp_pso_ns; }
-void mtl_xlate_stats(uint64_t *n, uint64_t *ns) { totk_rt_xlate_stats(n, ns); }   // runtime translations and their time on the submit thread (totk_shader_rt.m), for the long-frame log   // 同步现建着色器库 / 管线的累计耗时（长帧日志按帧取差） | Cumulative time spent synchronously creating shader libraries / pipelines on the spot (the long-frame log takes the per-frame difference)
+void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns) { *lib_ns = g_bp_lib_ns; *pso_ns = g_bp_pso_ns; }   // 同步现建着色器库 / 管线的累计耗时（长帧日志按帧取差） | Cumulative time spent synchronously creating shader libraries / pipelines on the spot (the long-frame log takes the per-frame difference)
+void mtl_xlate_stats(uint64_t *n, uint64_t *ns) { totk_rt_xlate_stats(n, ns); }   // runtime translations and their time on the submit thread (totk_shader_rt.m), for the long-frame log
 uint64_t mtl_upload_bytes(void) { return g_bp_up_bytes; }   // 贴图上传累计字节 | Cumulative texture upload bytes
 /* TOTK: textures replaced by a re-upload are kept (still resident) once the submissions that read them completed, and the
    next upload with the same description writes into one instead of creating a texture: about 30 small textures the game
@@ -4460,10 +4458,10 @@ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
     const uint8_t *ctl[6], *code[6]; NSString *key[6]; uint64_t sig[6]; NSMutableDictionary<NSNumber *, NvShader *> *alt[6];
     void *udc_sh[6]; uint8_t udc_ok, udc_img, udc_imgw; uint32_t udc_cmask;   // udc_*: udc_note_draw's summary of sh[] (valid while sh[] is the same)
     int missing, miss_has[2]; uint64_t miss_sig[2]; int exp_skip;
-    // TOTK step 1b (Mac): stages whose translated variant is loading in the background (shader_get_async). pend: its _b key;
+    // TOTK (Mac, TOTK_ASYNC_SHADERS): stages whose translated variant is loading in the background (shader_get_async). pend: its _b key;
     // pend_sig: the bound-state signature it was translated for (not the state at retry time); pend_gen: g_shload_gen last checked;
     // pend_alt: the same for a prog_fit signature change (with miss_sig / miss_has)
-    NSString *pend[2], *pend_alt[2]; uint64_t pend_sig[2], pend_gen; int pend_mask; } @end   // TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
+    NSString *pend[2], *pend_alt[2]; uint64_t pend_sig[2], pend_gen; int pend_mask; } @end   // TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)   // TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
 @implementation NvProg @end
 /* TOTK_EXP_SKIP_FS=<fragment key prefix>[,<prefix>...] (measurement only, 2026-10-16): drop every draw whose fragment shader key
    starts with one of the prefixes. A render pass whose draws are all dropped is never opened, so the GPU time saved is the
@@ -4650,13 +4648,19 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
 }
 /* TOTK: the translated Switch shaders rely on exactly rounded IEEE float arithmetic (integer-division idioms built from
    float bit patterns, invariant positions, depth compares); Metal's default fast math breaks them. */
+/* Set up once, completely, before any thread can see it: shaders are compiled on the warm-up thread and the background
+   load queue at the same time. Publishing the object before setting mathMode let a concurrent first compile use the
+   default fast math (seen as GPU address faults on the first frames with an empty translation cache). */
 static MTLCompileOptions *totk_precise_opts(void) {
-    static MTLCompileOptions *o; if (o) return o;
-    o = [MTLCompileOptions new];
-    if (@available(macOS 15.0, *)) o.mathMode = MTLMathModeSafe; else o.fastMathEnabled = NO;
-    /* TOTK_FAST_MATH=1 (measurement only): fast math for every translated shader. Known to break the tile-light vertex
-       shader's integer-division idiom, so pictures from such runs are not evidence of correctness. */
-    if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) { if (@available(macOS 15.0, *)) o.mathMode = MTLMathModeFast; else o.fastMathEnabled = YES; MLOG("【实验】TOTK_FAST_MATH=1：着色器用快速数学"); }
+    static MTLCompileOptions *o; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        MTLCompileOptions *n = [MTLCompileOptions new];
+        if (@available(macOS 15.0, *)) n.mathMode = MTLMathModeSafe; else n.fastMathEnabled = NO;
+        /* TOTK_FAST_MATH=1 (measurement only): fast math for every translated shader. Known to break the tile-light vertex
+           shader's integer-division idiom, so pictures from such runs are not evidence of correctness. */
+        if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) { if (@available(macOS 15.0, *)) n.mathMode = MTLMathModeFast; else n.fastMathEnabled = YES; MLOG("【实验】TOTK_FAST_MATH=1：着色器用快速数学"); }
+        o = n;
+    });
     return o;
 }
 /* TOTK (2026-10-15): which words of the NVN driver constant segments c0 / c2 a translated shader reads, scanned from its MSL
@@ -4725,7 +4729,7 @@ static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS do
     if (nbad) MLOG("【红】着色器 %s（阶段 %d）读驱动段的这些位置回放层不填，读到 0：%s", o->key, o->stage, bad);
     return nunfill;
 }
-static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK (atomic: shader_load runs on the warm-up thread and the step 1b load queue too): translated variants loaded precompiled / compiled from MSL here
+static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK (atomic: shader_load runs on the warm-up thread and the background load queue too): translated variants loaded precompiled / compiled from MSL here
 #if !TARGET_OS_IPHONE
 /* TOTK: the startup shaders compiled when the app was built (build_app.py step_shader_libs), named by the SHA-256 of their
    MSL, so only an exact match is used. Metal's own cache of libraries compiled here starts over when the app is moved or
@@ -4850,9 +4854,9 @@ static NvShader *shader_get(NSString *pc, int stage) {
     if (survey_shader_log()) MLOG("[survey-shader] frame %llu Metal library stage %d %s in %.2f ms", (unsigned long long)atomic_load(&g_cur_frame), stage, pc.UTF8String, (bp_now() - bt) / 1e6);
     return o;
 }
-/* TOTK step 1b (docs/async-shader-compile-plan.md), Mac, TOTK_ASYNC_SHADERS: the Metal library of a vertex / fragment variant
-   met in play is loaded (shader_load: newLibraryWithSource, a cold front-end compile of 200-500 ms for a variant translated
-   this session; 85-90% of the long-frame time in the 2026-10-19 run) on a background queue instead of the submit thread.
+/* TOTK (docs/async-shader-loading.md), Mac, TOTK_ASYNC_SHADERS: the Metal library of a vertex / fragment variant met in
+   play is loaded (shader_load: newLibraryWithSource, a cold front-end compile of about 100-900 ms for a variant translated
+   this session, and most of the long-frame time without this) on a background queue instead of the submit thread.
    shader_get_async waits up to TOTK_SHADER_STALL_MS for it (a variant already in the system Metal cache loads within that),
    otherwise returns nil with SL_PENDING: the caller marks the stage pending and its draws are skipped (g_draw_skip[17])
    until mtl_sub_begin publishes the finished load (shload_drain) and the program picks it up (prog_retry / prog_fit).
@@ -4961,7 +4965,7 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         NSString *variant=totk_rt_variant(@(key),st,control,(const uint8_t *)(uintptr_t)p->sd[i].data,rt_answers(st),rt_local(control,st));
         if(!variant){o->missing|=1<<st;o->ctl[st]=control;o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data;o->key[st]=@(key);continue;}   // iOS: not translated yet, its draws are skipped
         NSString *pc=[variant stringByAppendingString:@"_b"]; NvShader *sh;
-        if (st != 5 && async_libs()) {   // step 1b: vertex / fragment library in the background; compute stays synchronous (skipping dispatches is unsafe)
+        if (st != 5 && async_libs()) {   // vertex / fragment library in the background; compute stays synchronous (skipping dispatches is unsafe)
             int sl; sh = shader_get_async(pc, st, &sl);
             if (!sh && sl == SL_PENDING) { o->missing |= 1 << st; o->pend_mask |= 1 << st; o->pend[st] = pc; o->pend_sig[st] = stage_sig(st);
                 o->ctl[st]=control; o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data; o->key[st]=@(key); continue; }
@@ -4974,23 +4978,6 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
     return o;
 }
 void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
-// 只查缓存，从不翻译：供并行预编的扫描用（pso_predict_rest）。预测在扫到的绘制上「未来可能要用」的程序，不是「马上要用」；
-// 若该程序还没被真正绘制过（没有缓存的 NvProg），prog_get 会在提交线程上同步调用 totk_rt_variant 翻译它——这正是要避免阻塞一帧的那种调。
-// 没缓存就跳过那条绘制的预测即可：它真正被绘制时，仍会走 prog_get 正常翻译（只是不再提前预测它的管线）。
-// Lookup only, never translates: used by the parallel-precompile scan (pso_predict_rest). The scan's programs are
-// "might be needed soon", not "needed right now"; if a program has never actually been drawn yet (no cached NvProg),
-// prog_get would synchronously call totk_rt_variant to translate it on the submit thread -- exactly the kind of call
-// this scan exists to avoid. Skipping that draw's prediction on a miss is enough: once it is actually drawn, prog_get
-// still translates it normally (its pipeline just is not predicted ahead of time).
-static __unsafe_unretained NvProg *prog_get_cached(const prog_t *cp) {
-    prog_t *p = (prog_t *)cp;
-    static const prog_t *lp; static uint64_t lser, lgen; static NvProg *lpr;
-    uint64_t gen = g_ser_gen;
-    if (p == lp && p->serial == lser && lpr && (gen == lgen || ser_unaffected(lgen, gen, lser))) { lgen = gen; return lpr; }
-    __unsafe_unretained NvProg *have = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
-    if (have) { lp = p; lser = p->serial; lgen = gen; lpr = have; }
-    return have;
-}
 
 // ---------- 描述符池：贴图号 / 采样器号 → 对象 ----------
 // 登记时快照整个贴图对象（NVN 语义：描述符已写进池）；view：该号对应的 MTLTexture（视图或基贴图，CFBridgingRetain 持有）及取得时的序号表 / 客体写代号
@@ -5528,7 +5515,7 @@ static int prog_fit(NvProg *pr) {
         if (pr->miss_has[st] && sg == pr->miss_sig[st]) {
             if (!pr->pend_alt[st]) return -1;   // iOS: still not translated
             if ([g_sl_failed containsObject:pr->pend_alt[st]]) MDIE("TOTK shader translation/reflection unavailable for %s", pr->pend_alt[st].UTF8String);
-            NvShader *ready = g_shcache[pr->pend_alt[st]]; if (!ready) return -2;   // step 1b: still loading in the background
+            NvShader *ready = g_shcache[pr->pend_alt[st]]; if (!ready) return -2;   // still loading in the background
             pr->alt[st][@(sg)] = ready; pr->miss_has[st] = 0; pr->pend_alt[st] = nil;
         }
         NvShader *v = pr->alt[st][@(sg)];
@@ -5536,7 +5523,7 @@ static int prog_fit(NvProg *pr) {
             NSString *variant = totk_rt_variant(pr->key[st], st, pr->ctl[st], pr->code[st], rt_answers(st), nil);
             if (!variant) { pr->miss_sig[st] = sg; pr->miss_has[st] = 1; return -1; }   // iOS: this signature's variant is not translated yet
             NSString *pc = [variant stringByAppendingString:@"_b"];
-            if (async_libs()) {   // step 1b: load in the background, skip this signature's draws until it is published
+            if (async_libs()) {   // load in the background, skip this signature's draws until it is published
                 int sl; v = shader_get_async(pc, st, &sl);
                 if (!v && sl == SL_PENDING) { pr->miss_sig[st] = sg; pr->miss_has[st] = 1; pr->pend_alt[st] = pc; return -2; }
             } else v = shader_get(pc, st);
@@ -5547,6 +5534,21 @@ static int prog_fit(NvProg *pr) {
         pr->sh[st] = v; pr->sig[st] = sg;
     }
     return changed;
+}
+// Prediction must not translate/compile, or mutate a program's active binding.
+// Only the exact already-resolved variant is safe to predict. Unknown variants
+// are left for the authoritative draw path, without changing active bindings.
+static int prog_prediction_stages(const prog_t *p, NvShader **vs, NvShader **fs) {
+    NvProg *pr = p && p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+    if (!pr || pr->missing) return 0;   // a stage not translated (iOS) or still loading in the background (TOTK_ASYNC_SHADERS)
+    NvShader *stages[2] = {nil, nil};
+    for (int st = 0; st < 2; st++) {
+        if (!pr->sh[st]) { if (!st) return 0; continue; }
+        uint64_t sig = stage_sig(st);
+        stages[st] = sig == pr->sig[st] ? pr->sh[st] : pr->alt[st][@(sig)];
+        if (!stages[st]) return 0;
+    }
+    *vs = stages[0]; *fs = stages[1]; return 1;
 }
 // Compute thread group size lives in the control section; not located yet, so compute shaders stop with this message.
 /* Compute thread group size: control+0x748/0x74c/0x750. Evidence (12 TOTK kernels): the triple exists only in compute
@@ -5950,35 +5952,30 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
 // Now: on the first pipeline miss in a submission, scan ahead once along the remaining commands (replaying state only, no drawing) and kick all the normal-pass pipelines that will also miss later to the background to compile in parallel;
 // when the submit thread reaches that draw it only waits for 'the remaining time not yet compiled'. The compiled pipelines are identical to synchronously compiled ones (same descriptor). Pipeline keys of merged passes / specialized fragments depend on the planning result at replay time, are not predicted, and are compiled synchronously as before.
 #define PSO_PEND_MAX 384
-static struct { pso_key k; id<MTLRenderPipelineState> ps; int used, done; } g_pp[PSO_PEND_MAX];
+static struct { pso_key k; id<MTLRenderPipelineState> ps; uint64_t submit; int used, done, demand; } g_pp[PSO_PEND_MAX];   // demand: kicked by pso_get for a draw being made (TOTK_ASYNC_SHADERS), kept until that draw takes it
 static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pp_cv = PTHREAD_COND_INITIALIZER;
-static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken, g_pp_drained, g_pp_full;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用 / 回收条数 / 表满次数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken / drained counts and times the table was full
+static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用条数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
 static int g_pso_pending;   // pso_get 本次返回 nil 是「还在后台编」而不是真的建失败：调用方据此记 g_draw_skip[16] 而不是 [9]，也不刷「建管线失败」的红字 | pso_get's nil this time means "still compiling in the background", not a real failure: the caller counts g_draw_skip[16] instead of [9] and does not print the "pipeline failed" red line
 static void pso_predict_rest(void);
 static int pso_pend_find(const pso_key *k) { for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && !memcmp(&g_pp[i].k, k, sizeof *k)) return i; return -1; }
-// 本次提交开始时调（mtl_sub_begin）：猜中的槎位已被 pso_pend_take 领走并清空；没猜中的编完了但没人来取——把它们收进 g_pso（不走 pso_record／pso_user_record，
-// 这些键本就不是从真实绘制得出的，合入清单只会混进从未画过的组合），再释放槎位，这样它们不会永远占着 PSO_PEND_MAX 个槎位中的一个。
-// Called at the start of each submission (mtl_sub_begin): slots that were guessed right were already taken and cleared by pso_pend_take.
-// Slots that finished but nothing ever claimed them are collected into g_pso here (skipping pso_record / pso_user_record: these keys were never
-// derived from an actual draw, so adding them to the manifests would mix in combinations that were never drawn), then freed, so they stop
-// permanently holding one of the PSO_PEND_MAX slots.
-static void pso_pend_drain(void) {
-    pthread_mutex_lock(&g_pp_mu);
-    for (int i = 0; i < PSO_PEND_MAX; i++) {
-        if (!g_pp[i].used || !g_pp[i].done) continue;
-        if (g_pp[i].ps && !hm_get_id(&g_pso, &g_pp[i].k)) { hm_put_id(&g_pso, &g_pp[i].k, g_pp[i].ps); g_pp_drained++; }
+// Called only with g_pp_mu held. An in-flight worker still owns its slot:
+// completion must be published before that slot can ever be reused.
+static void pso_pend_reclaim(uint64_t submit) {
+    for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used && g_pp[i].done && !g_pp[i].demand && submit - g_pp[i].submit > 2) {
         g_pp[i].ps = nil; g_pp[i].used = 0;
     }
-    pthread_mutex_unlock(&g_pp_mu);
 }
-// 返回：1 已在表里（刚丢下去的，或早已有人丢过/领过一半），0 表满——调用方那种情况下照旧同步编 | Returns: 1 it is in the table (just kicked, or someone else already kicked/is holding it), 0 the table is full -- the caller compiles synchronously in that case, as before
-static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // 提交线程调：没在缓存、没在表里才丢 | Called by the submit thread: kick only if it is neither in the cache nor in the table
+// 返回：1 已在表里（刚丢下去的，或早已丢过），0 表满（demand 调用方照旧同步编）。demand：真要画的那次绘制丢的，不当作猜测回收
+// Returns 1 if it is in the table (just kicked, or kicked before), 0 if the table is full (a demand caller then compiles
+// synchronously, as before). demand: kicked for a draw being made, so it is not reclaimed as a stale guess.
+static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs, int demand) {   // 提交线程调：没在缓存、没在表里才丢 | Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k)) return 1;
     pthread_mutex_lock(&g_pp_mu);
+    pso_pend_reclaim(g_sub_serial);
     int at = pso_pend_find(k), slot = -1;
     if (at < 0) for (int i = 0; i < PSO_PEND_MAX; i++) if (!g_pp[i].used) { slot = i; break; }
-    if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].used = 1; }
-    if (at < 0 && slot < 0) g_pp_full++;
+    if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].used = 1; g_pp[slot].submit = g_sub_serial; g_pp[slot].demand = demand; }
+    if (at >= 0 && demand) g_pp[at].demand = 1;   // a guess that a draw now waits for
     pthread_mutex_unlock(&g_pp_mu);
     if (at >= 0) return 1;
     if (slot < 0) return 0;
@@ -6047,7 +6044,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
         uint64_t budget = same ? 0 : shader_stall_budget_ns();
         int st = pso_pend_poll(&k, budget, &ps);
         if (st == PP_ABSENT) {
-            if (pso_pend_kick(&k, vs, fs)) st = pso_pend_poll(&k, budget, &ps);
+            if (pso_pend_kick(&k, vs, fs, 1)) st = pso_pend_poll(&k, budget, &ps);
             else { MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, g_pso_fsfn, 0); ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e]; st = ps ? PP_READY : PP_ABSENT; }   // 预编表满：照旧同步编 | the predict table is full: compile synchronously, as before
         }
         if (st == PP_READY) { if (ps) g_pp_taken++; }
@@ -6067,7 +6064,6 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     hm_put_id(&g_pso, &k, ps);
     return ps;
 }
-void mtl_pp_stats(uint64_t v[4]) { v[0] = g_pp_kicked; v[1] = g_pp_taken; v[2] = g_pp_drained; v[3] = g_pp_full; }   // 并行预编表：累计丢出 / 领用 / 回收 / 表满次数 | Parallel predict table: cumulative kicked / taken / drained counts and times the table was found full
 static NSString *warm_key(const char *s, size_t n) {
     size_t z = strnlen(s, n);
     return [[NSString alloc] initWithBytes:s length:z encoding:NSUTF8StringEncoding];
@@ -7333,14 +7329,17 @@ static void pso_predict_rest(void) {
     int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty;
     uint32_t cf[8]; memcpy(cf, g_pass.cfmt, sizeof cf); uint32_t df = g_pass.dfmt, sf = g_pass.sfmt, samples = g_pass.samples, dfull = df, sfull = sf; int kicked0 = (int)g_pp_kicked, draws = 0;
     fz_cursor cur = {.p = g_exec_next};
-    // 先收齐再丢：按「附件原样挂」的键排在前（最可能用到），其余挂法排在后——后台并发有限，先丢的先编完
-    // Collect them all first, then dispatch: keys for "attachments attached as-is" go first (most likely to be used), the other attach modes after -- background concurrency is limited, and what is dispatched first is compiled first
-    enum { QN = 160 }; static struct { pso_key k; void *vs, *fs; } qa[QN], qb[QN]; int na = 0, nb = 0;
-    for (int guard = 0; guard < 200000 && na < QN; guard++) {
+    // Bound speculative work. Submit likely keys as they are found instead of
+    // making the current draw wait for the entire scan before any worker starts.
+    uint64_t started = bp_now();
+    enum { QN = 32 }; static struct { pso_key k; void *vs, *fs; } qa[QN], qb[QN]; int na = 0, nb = 0;
+    for (int guard = 0; guard < 8192 && na < QN; guard++) {
+        if (bp_now() - started > 2000000ull) break;
         const uint8_t *q; op_hdr hq; const void *aq;
         if (!fz_next(&cur, &q, &hq, &aq)) break;
         if (hq.op == OP_SET_RT) {
             const p_set_rt *r = aq; memset(cf, 0, sizeof cf); dfull = sfull = 0; samples = 1;
+            R.rt = *r; R.has_rt = 1;
             /* Prediction must not acquire/recreate/upload textures on the active GPU timeline. */
             for (int i = 0; i < r->n && i < 8; i++) { MTLTextureDescriptor *d = r->color[i] ? tex_desc(r->color[i], tex_mirrored(r->color[i])) : nil;
                 if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); samples = (uint32_t)d.sampleCount; } }
@@ -7353,8 +7352,8 @@ static void pso_predict_rest(void) {
         }
         if (hq.op == OP_DRAW || hq.op == OP_DRAW_IDX) {
             draws++;
-            __unsafe_unretained NvProg *pr = S.prog ? prog_get_cached(S.prog) : nil; if (!pr || !pr->sh[0] || pr->missing) continue;   // lookup only: never translates on the submit thread (see prog_get_cached)
-            __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
+            NvShader *vs = nil, *fs = nil;
+            if (!prog_prediction_stages(S.prog, &vs, &fs)) continue;
             const uint32_t dv[4] = {dfull, 0, 0, dfull}, sv[4] = {sfull, 0, sfull, 0};
             for (int v = 0; v < 4; v++) {
                 if (v && dv[v] == dv[0] && sv[v] == sv[0]) continue;
@@ -7363,7 +7362,8 @@ static void pso_predict_rest(void) {
                 if (hm_get_id(&g_pso, &k)) continue;
                 int dup = 0; for (int i = 0; i < (v ? nb : na) && !dup; i++) dup = !memcmp(&(v ? qb : qa)[i].k, &k, sizeof k);
                 if (dup) continue;
-                if (!v && na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++; }
+                if (!v && na < QN) { qa[na].k = k; qa[na].vs = (__bridge void *)vs; qa[na].fs = (__bridge void *)fs; na++;
+                    pso_pend_kick(&k, vs, fs, 0); }
                 else if (v && nb < QN) { qb[nb].k = k; qb[nb].vs = (__bridge void *)vs; qb[nb].fs = (__bridge void *)fs; nb++; }
             }
             continue;
@@ -7372,8 +7372,7 @@ static void pso_predict_rest(void) {
         state_op(hq.op, aq);
     }
     (void)df; (void)sf;
-    for (int i = 0; i < na; i++) pso_pend_kick(&qa[i].k, (__bridge NvShader *)qa[i].vs, (__bridge NvShader *)qa[i].fs);
-    for (int i = 0; i < nb; i++) pso_pend_kick(&qb[i].k, (__bridge NvShader *)qb[i].vs, (__bridge NvShader *)qb[i].fs);
+    for (int i = 0; i < nb; i++) pso_pend_kick(&qb[i].k, (__bridge NvShader *)qb[i].vs, (__bridge NvShader *)qb[i].fs, 0);
     memcpy(&S, &Ssave, sizeof S); R = Rsave; args_dirty_all(); g_pso_dirty = pso_dirty; g_dss_dirty = dss_dirty;
     static int logged; if (g_pp_kicked > (uint64_t)kicked0 && logged++ < 20) MLOG("并行预编：本次提交余下 %d 次绘制，丢给后台 %d 条管线", draws, (int)g_pp_kicked - kicked0);
 }
@@ -7394,6 +7393,47 @@ void dm_nvn_probe_prediction(void) {
     g_exec_next=(const uint8_t *)&cond;pso_predict_rest();
     if(getenv("TOTK_PROBE_NEGATIVE"))state_op(OP_RENDER_COND,&cond.c);
     if(memcmp(&cache,&g_cond_cache[slot],sizeof cache)||g_draw_skip[14]!=unknown)MDIE("pipeline prediction evaluated a future conditional counter");
+    // A speculative future program need not be resolved. Calling prog_get here
+    // would try to translate its absent bytes (or compile real future shaders).
+    prog_t future = {.nstage = 1, .serial = UINT64_MAX - 17};
+    struct { op_hdr bind; p_bind_program program; op_hdr draw; p_draw args; op_hdr end; } cold = {
+        {OP_BIND_PROGRAM, 8 + sizeof(p_bind_program)}, {&future, 3},
+        {OP_DRAW, 8 + sizeof(p_draw)}, {0}, {OP_END, 8}
+    };
+    typeof(S) saved_state = S;
+    uint64_t old_libs = g_bp_lib_n, old_psos = g_bp_pso_n;
+    g_exec_next = (const uint8_t *)&cold; pso_predict_rest();
+    if (g_bp_lib_n != old_libs || g_bp_pso_n != old_psos || memcmp(&S, &saved_state, sizeof S))
+        MDIE("pipeline prediction compiled a future program or changed bindings");
+    // A cached program may need a different binding variant while scanning.
+    // Resolving it for prediction must neither compile nor select it for a draw.
+    NvProg *pr = [NvProg new]; NvShader *active = [NvShader new], *alternate = [NvShader new];
+    uint64_t signature = stage_sig(0);
+    pr->sh[0] = active; pr->sig[0] = signature ^ 1;
+    pr->alt[0] = [NSMutableDictionary dictionaryWithObject:alternate forKey:@(signature)];
+    prog_t cached = {.serial = nvn_new_serial()};
+    serial_put(cached.serial, pr);
+    NvShader *vs = nil, *fs = nil;
+    if (!prog_prediction_stages(&cached, &vs, &fs) || vs != alternate || pr->sh[0] != active || pr->sig[0] != (signature ^ 1))
+        MDIE("pipeline prediction selected a binding variant for the active draw");
+    [pr->alt[0] removeAllObjects];
+    if (prog_prediction_stages(&cached, &vs, &fs) || pr->sh[0] != active)
+        MDIE("pipeline prediction resolved a missing binding variant");
+    serial_del(cached.serial);
+
+    // Reclaim completed stale guesses, but retain recent completions and even
+    // very old unfinished jobs (their workers can still publish into the slot).
+    pthread_mutex_lock(&g_pp_mu);
+    for (int i = 0; i < PSO_PEND_MAX; i++) if (g_pp[i].used) MDIE("prediction probe requires an idle pending table");
+    g_pp[0].used = g_pp[0].done = 1; g_pp[0].submit = 9;
+    g_pp[1].used = g_pp[1].done = 1; g_pp[1].submit = 10;
+    g_pp[2].used = 1; g_pp[2].done = 0; g_pp[2].submit = 1;
+    pso_pend_reclaim(12);
+    if (g_pp[0].used || !g_pp[1].used || !g_pp[2].used)
+        MDIE("pipeline prediction recycled an in-flight or recent pending slot");
+    g_pp[2].done = 1; pso_pend_reclaim(13);
+    if (g_pp[1].used || g_pp[2].used) MDIE("pipeline prediction retained completed stale guesses");
+    pthread_mutex_unlock(&g_pp_mu);
     R = saved; g_exec_next = next;
 }
 
@@ -9276,7 +9316,7 @@ static int mfxup_draw(NvProg *pr) {
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
-    if (pr && pr->missing) { g_draw_skip[pr->missing == pr->pend_mask ? 17 : 15]++; return; }   // TOTK: 15 a stage is not translated yet (iOS); 17 its library is still loading in the background (step 1b)
+    if (pr && pr->missing) { g_draw_skip[pr->missing == pr->pend_mask ? 17 : 15]++; return; }   // TOTK: 15 a stage is not translated yet (iOS); 17 its library is still loading in the background
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { g_draw_skip[fit == -2 ? 17 : 15]++; return; } if (fit) g_pso_dirty = 1; }
     if (skv_on()) { g_skv_draws++; if (skv_check((__bridge const void *)pr, dw, di)) return; }   // measurement experiment: skip draws invisible in the last frames
@@ -9470,10 +9510,8 @@ frz_plain:;
     if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial) { cur_ps = pso_get(pr, nil); cur_pr = pr; cur_ps_pass = g_pass.serial; g_pso_dirty = !cur_ps; }
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // 下一次绘制重新按自身情况取 | The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
-    if (!ps) {
-        if (g_pso_pending) { g_draw_skip[16]++; return; }   // still compiling in the background (TOTK_ASYNC_SHADERS); not a failure, nothing to print
-        g_draw_skip[9]++; static int failed_n; if (failed_n++ < 3) MLOG("[pipeline-draw] rt-depth=%p serial=%llu fmt=%#x pass-depth=%u dt=%u dw=%u fs-depth=%d", R.rt.depth, (unsigned long long)(R.rt.depth ? R.rt.depth->serial : 0), R.rt.depth ? R.rt.depth->d.format : 0, g_pass.dfmt, S.ds.dt, S.ds.dw, pr->sh[1] ? pr->sh[1]->writes_depth : 0); return;
-    }
+    if (!ps && g_pso_pending) { g_draw_skip[16]++; return; }   // still compiling in the background (TOTK_ASYNC_SHADERS); not a failure, nothing to print
+    if (!ps) { g_draw_skip[9]++; static int failed_n; if (failed_n++ < 3) MLOG("[pipeline-draw] rt-depth=%p serial=%llu fmt=%#x pass-depth=%u dt=%u dw=%u fs-depth=%d", R.rt.depth, (unsigned long long)(R.rt.depth ? R.rt.depth->serial : 0), R.rt.depth ? R.rt.depth->d.format : 0, g_pass.dfmt, S.ds.dt, S.ds.dw, pr->sh[1] ? pr->sh[1]->writes_depth : 0); return; }
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;
     if (g_dss_dirty || cur_ds_pass != g_pass.serial) { cur_ds = dss_get(g_pass.hd, g_pass.hs); cur_ds_pass = g_pass.serial; g_dss_dirty = 0; }
@@ -11373,6 +11411,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     PD("X ser=%llu%s", t->serial, interp >= 0 ? " (MetalFX interpolated frame before it)" : "");
     id<MTLTexture> src = interp >= 0 ? mfx_output(interp) : tex_mtl(t);   // TOTK_MFX: the interpolated frame shown one tick before this game frame
     if (!src) { RED_ONCE(8, "出图贴图建不出 MTLTexture"); return 0; }
+    res_commit();   // TOTK: a picture no pass has rendered into yet (every draw of its frame skipped, TOTK_ASYNC_SHADERS) is created and uploaded by tex_mtl right here; it must be resident before this command buffer runs (a GPU address fault on the first frames otherwise)
     if (interp < 0) anom_present(src, frame);   // TOTK_ANOMALY
     /* One-frame temporal fallback (TOTK_FLASH_GUARD=1, off by default): a same-queue readback of the picture's centre
        before the drawable is encoded; on an abrupt colour jump the previous good picture is shown again, at most twice
