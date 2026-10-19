@@ -3,8 +3,9 @@
 // iPhone / iPad misses, is one the list does not have yet. Such a variant is written once to the player's contribution
 // file (TOTK_SHADER_CONTRIB, set by app/launcher.m and ios/Sources/main.m; unset in development runs, which then write
 // nothing) as a shader-list V row: the shader key and the bind state, no game data. Every TOTK_CONTRIB_STEP new rows the
-// launcher (Mac) or the app (iOS) asks the player to send the file in a GitHub issue; scripts/collect_shader_issues.py
-// merges what arrives. Header-only: the runtime, the Mac launcher and the iOS app share it.
+// Mac launcher asks the player, before the game starts, to send the file in a GitHub issue (an iPhone / iPad never asks
+// during play: while it is connected, ios/tools/shader_contrib_watch.py asks on the Mac); scripts/collect_shader_issues.py
+// merges what arrives. Header-only: the runtime and the Mac launcher share it.
 #pragma once
 #import <Foundation/Foundation.h>
 #include <stdio.h>
@@ -28,18 +29,23 @@ static inline NSMutableSet<NSString *> *totk_contrib_read(NSString *path) {
     return rows;
 }
 
-/* The reminder is due when the file holds TOTK_CONTRIB_STEP rows more than at the last one (<file>.reminded).
-   Returns the row count then, else 0. */
+/* The reminder is due when the file holds TOTK_CONTRIB_STEP rows more than at the last one (<file>.reminded), unless the
+   player chose "Don't remind me again" ("never" there). Returns the row count then, else 0. */
 static inline NSUInteger totk_contrib_due(NSString *path) {
     if (!path) return 0;
-    NSUInteger rows = totk_contrib_read(path).count;
     NSString *last = [NSString stringWithContentsOfFile:[path stringByAppendingString:@".reminded"] encoding:NSUTF8StringEncoding error:nil];
+    if ([last hasPrefix:@"never"]) return 0;
+    NSUInteger rows = totk_contrib_read(path).count;
     NSUInteger at = last ? (NSUInteger)strtoull(last.UTF8String, NULL, 10) : 0;
     return rows >= at + TOTK_CONTRIB_STEP ? rows : 0;
 }
 static inline void totk_contrib_reminded(NSString *path, NSUInteger rows) {
     [[NSString stringWithFormat:@"%lu\n", (unsigned long)rows] writeToFile:[path stringByAppendingString:@".reminded"]
                                                                  atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+/* "Don't remind me again": no more reminders for this file. The game still notes the shaders. */
+static inline void totk_contrib_never(NSString *path) {
+    [@"never\n" writeToFile:[path stringByAppendingString:@".reminded"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 /* Compact JSON with keys in code-point order, as scripts/shader_list.py canonical() writes it (Python's json.dumps with

@@ -67,15 +67,18 @@ static pid_t running_game(NSString *slot) {
 static void contrib_reminder(NSString *path) {
     NSUInteger rows = totk_contrib_due(path);
     if (!rows) return;
-    totk_contrib_reminded(path, rows);   // the next reminder comes TOTK_CONTRIB_STEP rows later, whatever is chosen
+    totk_contrib_reminded(path, rows);   // "next time": TOTK_CONTRIB_STEP rows later; "don't remind me again": never
     [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
     NSAlert *alert = [NSAlert new];
     alert.messageText = @(TOTK_UI("期待你的贡献", "We would love your contribution"));
     alert.informativeText = [NSString stringWithFormat:@(TOTK_UI("你有 %lu 个着色器可以贡献：玩的时候遇到的、公共着色器清单里还没有的。它们记在一个小文件里，只有着色器的标识，不含游戏内容、存档或个人信息。把它发到 GitHub 加进公共清单，以后大家打包的 App 都会带上它们，玩到那里不再卡顿。\n\n点“发送”会打开 GitHub 的提交页面，并在访达里显示这个文件，把它拖进页面即可。",
                                       "You have %lu shaders to contribute: ones your game met that the shared shader list does not have yet. They are kept in a small file with shader identifiers only: no game data, saves or personal information. Sent to GitHub and added to the shared list, they come with everyone's next build, and nobody stutters there again.\n\n\"Send\" opens the GitHub form and shows the file in Finder: drag it into the form.")), (unsigned long)rows];
     [alert addButtonWithTitle:@(TOTK_UI("发送", "Send"))];
-    [alert addButtonWithTitle:@(TOTK_UI("以后再说", "Later"))];
-    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    [alert addButtonWithTitle:@(TOTK_UI("下次提醒", "Remind me next time"))];
+    [alert addButtonWithTitle:@(TOTK_UI("不要提醒了", "Don't remind me again"))];
+    NSModalResponse choice = [alert runModal];
+    if (choice == NSAlertThirdButtonReturn) totk_contrib_never(path);
+    if (choice != NSAlertFirstButtonReturn) return;
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_CONTRIB_ISSUE_URL]];
     [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:path]]];
 }

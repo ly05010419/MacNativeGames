@@ -33,6 +33,9 @@ int main(int argc, char **argv) {
         check(totk_contrib_due(path) == 0, "999 rows: the next step is not reached");
         totk_contrib_add(key(999), deps);
         check(totk_contrib_due(path) == 1000, "1000 rows: due again");
+        totk_contrib_never(path);
+        for (unsigned i = 1000; i < 1600; i++) totk_contrib_add(key(i), deps);
+        check(totk_contrib_due(path) == 0 && totk_contrib_read(path).count == 1600, "never: still noted, never due");
         unsetenv("TOTK_SHADER_CONTRIB");
         check(totk_contrib_due(nil) == 0, "no file: nothing due");
         printf("{\"status\":\"%s\",\"probe\":\"shader-contrib\",\"checked\":%d,\"failures\":%d}\n", failures ? "fail" : "pass", checked, failures);

@@ -29,7 +29,7 @@ class ContributionFileTests(unittest.TestCase):
             self.assertTrue(rows and all(canonical(json.loads(deps)) == deps for _, _, deps in rows), 'deps as canonical() writes them')
             shared = ShaderList()
             shared.add_rows(contrib, 'm')
-            self.assertEqual(len(shared.variants), 1000)
+            self.assertEqual(len(shared.variants), 1600)
             self.assertFalse(shared.warm)
 
 
@@ -63,3 +63,46 @@ class IssueCollectionTests(unittest.TestCase):
         rows, dropped = contribution_rows(text)
         self.assertEqual(rows, {(self.KEY_A, '{"tex":{"10":"3d","9":"2d"}}'), (self.KEY_B, '{}')})
         self.assertEqual(dropped, 5)
+
+
+sys.path.insert(0, str(TOTK / 'ios/tools'))
+import shader_contrib_watch as watch  # noqa: E402
+
+
+class MacReminderForDevicesTests(unittest.TestCase):
+    def test_only_paired_reachable_ios_devices(self):
+        listing = {'result': {'devices': [
+            {'identifier': 'A', 'deviceProperties': {'name': 'iPhone'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-a'},
+             'connectionProperties': {'pairingState': 'paired', 'transportType': 'localNetwork', 'tunnelState': 'disconnected'}},
+            {'identifier': 'B', 'deviceProperties': {'name': 'iPad'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-b'},
+             'connectionProperties': {'pairingState': 'paired'}},                                   # not reachable now
+            {'identifier': 'C', 'hardwareProperties': {'platform': 'watchOS'}, 'connectionProperties': {'pairingState': 'paired', 'transportType': 'wired'}},
+            {'identifier': 'D', 'hardwareProperties': {'platform': 'iOS'}, 'connectionProperties': {'pairingState': 'unpaired', 'transportType': 'wired'}}]}}
+        self.assertEqual(watch.reachable_devices(listing), [('A', 'u-a', 'iPhone')])
+        self.assertEqual(watch.reachable_devices({}), [])
+
+    def test_the_game_is_found_by_name_or_bundle(self):
+        self.assertEqual(watch.game_bundle({'result': {'apps': [{'name': 'Other', 'bundleIdentifier': 'x.y'},
+                                                                 {'name': 'Tears of the Kingdom', 'bundleIdentifier': 'com.someone.totk'}]}}), 'com.someone.totk')
+        self.assertEqual(watch.game_bundle({'result': {'apps': [{'name': 'TOTK', 'bundleIdentifier': 'org.macnativegames.totk'}]}}), 'org.macnativegames.totk')
+        self.assertIsNone(watch.game_bundle({'result': {'apps': [{'name': 'Other', 'bundleIdentifier': 'x.y'}]}}))
+
+    def test_rows_and_every_500(self):
+        text = '# header\n' + ''.join(f'V\t{i:064x}\t{{}}\n' for i in range(3)) + f'V\t{0:064x}\t{{}}\n'
+        self.assertEqual(watch.contribution_rows(text), 3)
+        self.assertFalse(watch.due(499, 0)); self.assertTrue(watch.due(500, 0))
+        self.assertFalse(watch.due(999, 500)); self.assertTrue(watch.due(1000, 500))
+
+    def test_agent_runs_check_every_ten_minutes_with_the_xcode(self):
+        plist = watch.agent_plist('/usr/bin/python3', Path('/x/shader_contrib_watch.py'), '/X/Xcode.app/Contents/Developer')
+        self.assertEqual(plist['ProgramArguments'], ['/usr/bin/python3', '/x/shader_contrib_watch.py', 'check'])
+        self.assertEqual(plist['StartInterval'], 600)
+        self.assertEqual(plist['EnvironmentVariables'], {'DEVELOPER_DIR': '/X/Xcode.app/Contents/Developer'})
+        self.assertFalse(plist['RunAtLoad'])
+
+    def test_never_stops_the_reminders(self):
+        self.assertEqual(watch.reminded_at(''), 0)
+        self.assertEqual(watch.reminded_at('500\n'), 500)
+        self.assertIsNone(watch.reminded_at('never\n'))
+        self.assertEqual(watch.message(500, 'iPad')[2:], ('Remind me next time', "Don't remind me again", 'Send')
+                         if not watch.chinese() else ('下次提醒', '不要提醒了', '发送'))

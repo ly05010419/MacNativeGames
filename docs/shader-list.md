@@ -57,8 +57,11 @@ per shader and bind state, nothing else (`third_party/d2r_gfx/gfx/nvn/totk_shade
 - Mac: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - iPhone / iPad: Files app › On My iPhone (or iPad) › Tears of the Kingdom › `shader-list-contribution.txt`
 
-Every 500 new rows the game asks once, before it starts (Mac) or as it starts (iPhone / iPad), whether to send the
-file. "Send" opens the [shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)
+On a Mac, every 500 new rows the launcher asks once, before the game starts, whether to send the file. An iPhone or
+iPad never asks during play: while it is connected to the Mac that built its app (cable or the same Wi-Fi),
+`games/totk/ios/tools/shader_contrib_watch.py` (a LaunchAgent the iOS build installs) copies the file to the Mac every
+10 minutes at most and asks there, every 500 new rows per device. "Remind me next time" waits for the next 500;
+"Don't remind me again" stops the reminders for good (the file is still kept). "Send" opens the [shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)
 issue form; drag the file into it. Later reminders come at 1,000, 1,500 and so on, so sending the whole file each time
 is fine: rows the list already has are skipped. The game never uploads anything by itself.
 
@@ -117,7 +120,7 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - `L` 行：打包程序自己找不到的着色器在玩家游戏文件中的位置：文件路径、控制段和代码的偏移、代码长度。打包时从玩家自己的文件读出，核对哈希等于键才用。BNSH 文件、agl 的 `.sharcb` 包和游戏程序里的着色器，打包程序会自己找到。
   - `S`、`C`、`R` 行：预热用的着色器库和管线。标记 `t` 是标题画面用的（第一帧只等这些），`m` 是其余预热。
   - 只有标识，不含游戏数据。
-- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每攒够 500 条，游戏会问一次要不要发送；点“发送”会打开 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面，把文件拖进去即可。下次在 1,000、1,500 条时再提醒，每次发整个文件也没关系，清单里已有的会跳过。游戏不会自己上传任何东西。
+- **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。Mac 上每攒够 500 条，启动器会在游戏开始前问一次要不要发送；iPhone / iPad 玩的时候从不提醒，设备连着打包它的那台 Mac 时，由 Mac 上的 `ios/tools/shader_contrib_watch.py`（打包 iOS 版时装的后台任务）把文件拷过来，每台设备每多 500 条在 Mac 上问一次。“下次提醒”等到下一个 500 条再问，“不要提醒了”以后就不再问（文件照样记）；点“发送”会打开 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面，把文件拖进去即可。下次在 1,000、1,500 条时再提醒，每次发整个文件也没关系，清单里已有的会跳过。游戏不会自己上传任何东西。
 - **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py` 先看每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件里只取 `V` 行。
 - **用 git 贡献**：
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。
