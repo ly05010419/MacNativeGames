@@ -125,9 +125,10 @@ static NSString *shortcut_text(void){
  }
  uint64_t size=runtime_output_size_current();unsigned w=(uint32_t)size,h=(uint32_t)(size>>32);
  NSString *picture;
- if(mfxup_output_enabled())picture=@"MetalFX 2K";
- else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
+ /* The size first: 1.4.3's native mode keeps MetalFX's window stage on (game_patches_v143.c runtime_output_mode_cycle). */
+ if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
  else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
+ else if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else picture=@(TOTK_UI("关闭","off"));
  return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  21:9 宽屏：开 / 关","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Ultrawide 21:9: on / off")),[NSString stringWithUTF8String:interp],picture];
 }
