@@ -88,10 +88,12 @@ static void patch_realtime(Module *m){
     fprintf(stderr,"[totk] 1.4.3 real-time frame step: 7 guarded sites, producer veneer +%#llx; original half-step selector and ratio/inverse/seconds/FPS calculations retained\n",(unsigned long long)stub);
 }
 static void patch_output_res(Module *m);
+static void patch_render_res(Module *m);
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
     patch_realtime(m);
     patch_output_res(m);
+    patch_render_res(m);
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");
@@ -169,6 +171,48 @@ static void patch_output_res(Module *m){
     atomic_store((_Atomic uint64_t *)(void *)(output_page+32),output_full_at_start?pack_size(w,h):pack_size(1920,1080));
     atomic_store((_Atomic uint64_t *)(void *)(output_page+40),0);
     fprintf(stderr,"[totk] 1.4.3 output: %ux%u swapchain; starts %s, key 3 cycles MetalFX / native / off; display-config veneer +%#llx\n",w,h,output_full_at_start?"at requested resolution":"at 1920x1080",(unsigned long long)stub);
+}
+/* Render resolution (TOTK_RENDER_RES=<w>x<h>, e.g. 960x540) - the 1.4.3 port of game_patches.c's patch.
+   1.4.3 keeps the same graphics-parameter entry (+0x30 of the mode entry: handheld 1280x720, docked 1600x900) and the
+   same renderer fields (+0xcc4 width, +0xcc8 height), but converts both through s0 and keeps the output size in w9:
+     main+0x585e48  scvtf s0, w11             -> adrp x3, <data page>
+     main+0x585e50  str   s0, [x19, #0xcc4]   -> ldp  s0, s1, [x3, #16]
+     main+0x585e54  scvtf s0, w10             -> str  s0, [x19, #0xcc4]
+     main+0x585e60  str   s0, [x19, #0xcc8]   -> str  s1, [x19, #0xcc8]
+   Every path that picks the render size converges through main+0x585e48 (the branch at 0x585f50 only reloads w11/w10
+   and jumps back), so the four sites cover all of them. x3 is scratch and untouched by this function; x9 must NOT be
+   used here because w9 still holds the output size for main+0x585e64. The size comes from the loader's data page +16
+   (the page patch_realtime reserves); TOTK_RENDER_RES unset = the game's own size and nothing is patched. */
+static int render_res(unsigned *w,unsigned *h){
+    const char *e=getenv("TOTK_RENDER_RES");
+    if(!e||!*e||!strcmp(e,"0"))return 0;
+    if(sscanf(e,"%ux%u",w,h)!=2||*w<64||*h<64||*w>4096||*h>4096)runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
+    return 1;
+}
+static void patch_render_res(Module *m){
+    unsigned w,h;if(!render_res(&w,&h))return;
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL;
+    if(data+24>m->size)runtime_fail("1.4.3 render-resolution patch layout");
+    const Patch sites[]={
+        {0x585e48,0x1e220160,0},
+        {0x585e50,0xbd0cc660,0x2d420460},
+        {0x585e54,0x1e220140,0xbd0cc660},
+        {0x585e60,0xbd0cca60,0xbd0cca61},
+    };
+    uint32_t want[4]={adrp(3,(uintptr_t)m->base+sites[0].off,(uintptr_t)m->base+data),
+                      sites[1].replacement,sites[2].replacement,sites[3].replacement};
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){
+        uint32_t word;memcpy(&word,m->base+sites[i].off,4);
+        if(word!=sites[i].original){
+            fprintf(stderr,"[totk] render resolution patch main+%#llx: found %08x, expected %08x\n",
+                    (unsigned long long)sites[i].off,word,sites[i].original);
+            runtime_fail("render resolution patch: main does not match 1.4.3");
+        }
+    }
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&want[i],4);
+    float v[2]={(float)w,(float)h};
+    memcpy(m->base+data+16,v,sizeof v);
+    fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u (4 instructions at main+0x585e48, value on the data page)\n",w,h);
 }
 int runtime_output_res_toggle(void){
     if(!output_page)return 0;
