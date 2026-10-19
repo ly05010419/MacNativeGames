@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <math.h>
 #include <TargetConditionals.h>
+#include <sys/sysctl.h>
 
 typedef struct { uint64_t off; uint32_t original, replacement; } Patch;
 static const Patch fps60[] = {
@@ -148,6 +149,22 @@ static int output_full_at_start;
 static unsigned output_w,output_h;
 static uint8_t *output_page;
 static uint64_t pack_size(unsigned w,unsigned h){return (uint64_t)h<<32|w;}
+/* The overlay's manifest header (scripts/make_output_res_overlay.py --scene) says how big a 3D scene its texture heap
+ * has room for and how many KiB it added; without it the scene keeps the game's size (an overlay built before
+ * 2026-10-19). */
+static unsigned overlay_scene_w,overlay_scene_h;
+static uint64_t overlay_extra_kib;
+static void overlay_manifest(unsigned w,unsigned h){
+    const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096],line[512];
+    snprintf(path,sizeof path,"%s/%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",w,h);
+    FILE *f=fopen(path,"r");if(!f)return;
+    if(fgets(line,sizeof line,f)){
+        const char *sc=strstr(line," scene="),*ex=strstr(line," extra_kib=");unsigned long long kib;
+        if(sc&&ex&&sscanf(sc," scene=%ux%u",&overlay_scene_w,&overlay_scene_h)==2&&sscanf(ex," extra_kib=%llu",&kib)==1)overlay_extra_kib=kib;
+        else overlay_scene_w=overlay_scene_h=0;
+    }
+    fclose(f);
+}
 int runtime_output_res(unsigned *w,unsigned *h){
     static int decided,on;static unsigned cw,ch;
     if(!decided){
@@ -161,9 +178,17 @@ int runtime_output_res(unsigned *w,unsigned *h){
             if(e&&*e&&strcmp(e,"0")&&strcmp(e,"auto"))fprintf(stderr,"[totk] TOTK_OUTPUT_RES=%s ignored: iOS shows 720p only\n",e);
         }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
+            /* The largest output (and native scene) the Mac's memory allows and the app has an overlay for: a 3840x2160
+             * scene and canvas allocated about 7 GB of GPU memory (2026-10-19), too much next to a 16 GB Mac's other use. */
+            static const struct{unsigned w,h,gb;}sizes[]={{3840,2160,32},{3200,1800,24},{2560,1440,0}};
+            uint64_t mem=0;size_t len=sizeof mem;if(sysctlbyname("hw.memsize",&mem,&len,NULL,0))mem=0;
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
-            snprintf(path,sizeof path,"%s/2560x1440/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out");
-            FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=2560;ch=1440;}
+            for(unsigned i=0;i<sizeof sizes/sizeof *sizes&&!on;i++){
+                if(mem<(uint64_t)sizes[i].gb<<30)continue;
+                snprintf(path,sizeof path,"%s/%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i].w,sizes[i].h);
+                FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=sizes[i].w;ch=sizes[i].h;}
+            }
+            if(on)fprintf(stderr,"[totk] 1.4.3 output size %ux%u for %llu GB of memory (TOTK_OUTPUT_RES=<w>x<h> picks another)\n",cw,ch,(unsigned long long)(mem>>30));
             output_full_at_start=0;
         }else{
             char tail;
@@ -171,11 +196,13 @@ int runtime_output_res(unsigned *w,unsigned *h){
             on=1;output_full_at_start=1;
         }
         decided=1;
+        if(on)overlay_manifest(cw,ch);
     }
     if(on){*w=cw;*h=ch;}return on;
 }
 uint64_t runtime_output_res_extra_bytes(void){
     unsigned w,h;if(!runtime_output_res(&w,&h))return 0;
+    if(overlay_extra_kib)return overlay_extra_kib<<10;
     double ratio=(double)w*h/(1920.0*1080.0);if(ratio<=1)return 0;
     uint64_t kib=(uint64_t)ceil(113664.0*ratio/1024.0)*1024-113664;return kib<<10;
 }
@@ -230,11 +257,29 @@ static void patch_output_res(Module *m){
    Every path that picks the render size converges through main+0x585e48 (the branch at 0x585f50 only reloads w11/w10
    and jumps back), so the four sites cover all of them. x3 is scratch and untouched by this function; x9 must NOT be
    used here because w9 still holds the output size for main+0x585e64. The size comes from the loader's data page +16
-   (the page patch_realtime reserves); TOTK_RENDER_RES unset = the game's own size and nothing is patched.
+   (the page patch_realtime reserves); TOTK_RENDER_RES unset = the game's own size and nothing is patched, except below.
    iOS cannot write code at run time: the iOS export (TOTK_EXPORT_IOS, runtime/loader.c) runs this patch on the Mac, so
    the phone's embedded code carries it only when TOTK_RENDER_RES was set for the export. The phone checks the embedded
    words and writes the size on the data page itself: its own TOTK_RENDER_RES, or the game's handheld 1280x720 when unset
-   (the phone always reports handheld mode). Embedded code without the patch keeps the game's own size. */
+   (the phone always reports handheld mode). Embedded code without the patch keeps the game's own size.
+   Mac, TOTK_RENDER_RES unset: when the output patch is on and its overlay has room for a scene of the output size
+   (manifest scene=, scripts/make_output_res_overlay.py --scene), the scene follows key 3 (2026-10-19, user: native 2K was
+   as blurry as 1080p because only the canvas and UI grew): the docked 1600x900 in the 1080p modes, the output size in
+   native 2K; how the switch gets this routine to run again is below. */
+enum{SCENE_DOCKED_W=1600,SCENE_DOCKED_H=900};
+static uint8_t *scene_page;   /* set when the scene follows the output */
+/* A changed size on the data page is only read when the routine runs again. The renderer's per-frame update re-runs it
+   (main+0x581f5c -> main+0x5822d0) when the mode it computes differs from the one cached at +0xcd0, but only while bit 13
+   of +0xca4 asks for that check; the game sets that bit for a mode change and clears it after one frame (main+0x581fbc).
+   When the scene follows key 3, the first patched site branches instead to a veneer in main's text padding (after the
+   ultrawide stubs) that also keeps the renderer (x19) at data page +48; the switch sets the cached mode to -1 and bit 13,
+   so the next frame lays the scene out again at the new size on the game's own thread. Bit 14 (the mode the check
+   applies) is left as it is. Neither "operation mode changed" (oe message 30) nor the display config's change bits
+   reach this routine in 1.4.3 (tried 2026-10-19: the cached mode stayed -1). */
+static void scene_size_store(unsigned w,unsigned h){
+    float v[2]={(float)w,(float)h};uint64_t bits;memcpy(&bits,v,8);
+    atomic_store((_Atomic uint64_t *)(void *)(scene_page+16),bits);   /* the game reads both lanes with one ldp */
+}
 static int render_res(unsigned *w,unsigned *h){
     const char *e=getenv("TOTK_RENDER_RES");
     if(!e||!*e||!strcmp(e,"0"))return 0;
@@ -243,19 +288,26 @@ static int render_res(unsigned *w,unsigned *h){
     return 1;
 }
 static void patch_render_res(Module *m){
-    unsigned w=1280,h=720;int set=render_res(&w,&h);
+    unsigned w=1280,h=720;int set=render_res(&w,&h),follow=0;
 #if !TARGET_OS_IPHONE
-    if(!set)return;   /* Mac (and the iOS export): the game's own size unless asked */
+    if(!set){   /* Mac (and the iOS export): the game's own size unless asked, or the scene follows key 3 */
+        if(!output_page||overlay_scene_w<output_w||overlay_scene_h<output_h)return;
+        follow=1;w=output_full_at_start?output_w:SCENE_DOCKED_W;h=output_full_at_start?output_h:SCENE_DOCKED_H;
+    }
 #endif
-    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL;
-    if(data+24>m->size)runtime_fail("1.4.3 render-resolution patch layout");
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+176;   /* after the ultrawide stubs */
+    if(data+(follow?56:24)>m->size)runtime_fail("1.4.3 render-resolution patch layout");
+    if(follow){
+        if(stub+12>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 render-resolution veneer layout");
+        for(unsigned i=0;i<12;i++)if(m->base[stub+i])runtime_fail("1.4.3 render-resolution veneer padding not empty");
+    }
     const Patch sites[]={
         {0x585e48,0x1e220160,0},
         {0x585e50,0xbd0cc660,0x2d420460},
         {0x585e54,0x1e220140,0xbd0cc660},
         {0x585e60,0xbd0cca60,0xbd0cca61},
     };
-    uint32_t want[4]={adrp(3,(uintptr_t)m->base+sites[0].off,(uintptr_t)m->base+data),
+    uint32_t want[4]={follow?branch(sites[0].off,stub):adrp(3,(uintptr_t)m->base+sites[0].off,(uintptr_t)m->base+data),
                       sites[1].replacement,sites[2].replacement,sites[3].replacement};
 #if TARGET_OS_IPHONE
     uint32_t first;memcpy(&first,m->base+sites[0].off,4);
@@ -273,21 +325,40 @@ static void patch_render_res(Module *m){
             runtime_fail("render resolution patch: main does not match 1.4.3");
         }
     }
+    if(follow){
+        uint32_t veneer[]={adrp(3,(uintptr_t)m->base+stub,(uintptr_t)m->base+data),
+            0xf9001873, /* str x19,[x3,#48]: the renderer */
+            branch(stub+8,sites[0].off+4)};
+        memcpy(m->base+stub,veneer,sizeof veneer);
+    }
     for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&want[i],4);
 #endif
     float v[2]={(float)w,(float)h};
     memcpy(m->base+data+16,v,sizeof v);
-    fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u%s (4 instructions at main+0x585e48, value on the data page)\n",
-            w,h,set?"":" (the game's handheld size; TOTK_RENDER_RES not set)");
+    if(follow)scene_page=m->base+data;
+    fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u%s (4 instructions at main+0x585e48, value on the data page)\n",w,h,
+            follow?"; native 2K renders the scene at the output size, the 1080p modes at 1600x900 (renderer veneer after the ultrawide stubs)":
+            set?"":" (the game's handheld size; TOTK_RENDER_RES not set)");
 }
 int runtime_output_res_toggle(void){
     if(!output_page)return 0;
     _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
     int full=atomic_load(size)!=pack_size(output_w,output_h);
     atomic_store(size,full?pack_size(output_w,output_h):pack_size(1920,1080));
+    if(scene_page){
+        scene_size_store(full?output_w:SCENE_DOCKED_W,full?output_h:SCENE_DOCKED_H);
+        uint64_t renderer=atomic_load((_Atomic uint64_t *)(void *)(scene_page+48));
+        if(renderer){
+            float now[2];memcpy(now,(const void *)(uintptr_t)(renderer+0xcc4),8);
+            fprintf(stderr,"[totk] 1.4.3 scene size was %.0fx%.0f (renderer %#llx, cached mode %d); re-laid out next frame\n",now[0],now[1],(unsigned long long)renderer,*(volatile int8_t *)(uintptr_t)(renderer+0xcd0));
+            __atomic_store_n((int8_t *)(uintptr_t)(renderer+0xcd0),(int8_t)-1,__ATOMIC_SEQ_CST);
+            __atomic_fetch_or((uint32_t *)(uintptr_t)(renderer+0xca4),1u<<13,__ATOMIC_SEQ_CST);   /* re-run next frame */
+        }else fprintf(stderr,"[totk] 1.4.3 scene size: the renderer has not run its layout yet; it takes the new size when it does\n");
+    }
     uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
     if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
-    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (display config %s)\n",full?output_w:1920,full?output_h:1080,config?"ready":"not published yet");
+    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u, scene %ux%u (display config %s)\n",full?output_w:1920,full?output_h:1080,
+            scene_page?(full?output_w:SCENE_DOCKED_W):0,scene_page?(full?output_h:SCENE_DOCKED_H):0,config?"ready":"not published yet");
     return 1;
 }
 int runtime_output_mode_cycle(void){
@@ -295,10 +366,12 @@ int runtime_output_mode_cycle(void){
     extern int mfxup_output_enabled(void);extern void dm_gfx_set_flag(const char *,int);
     int full=atomic_load((_Atomic uint64_t *)(void *)(output_page+32))==pack_size(output_w,output_h);
     int native=0,mfx=0;const char *name;
-    if(full)name="关闭 2K";
-    else if(mfxup_output_enabled()){native=1;name="原生 2K";}
-    else{mfx=1;name="MetalFX 2K";}
+    if(full)name="off (1920x1080)";
+    else if(mfxup_output_enabled()){native=1;name="native (the output size)";}
+    else{mfx=1;name="MetalFX (1920x1080 scaled up)";}
     if(full!=native)runtime_output_res_toggle();
-    dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
-    fprintf(stderr,"[totk] key 3: %s\n",name);return 1;
+    /* Native 2K keeps MetalFX's window stage: a 2560x1440 picture in a bigger window (4K) is upscaled by MetalFX instead
+       of the bilinear stretch. The scene stage stays off there: the scene is drawn at the canvas size. */
+    dm_gfx_set_flag("mfx_output",mfx||native);dm_gfx_set_flag("mfx_upscale",mfx);
+    fprintf(stderr,"[totk] key 3: %s, output %ux%u\n",name,output_w,output_h);return 1;
 }

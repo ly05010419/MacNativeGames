@@ -489,9 +489,15 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112'):
         report = json.loads(index.read_text())
         check(f'{expected["display_version"]} RomFS', report['romfs_sha256'], expected['romfs']['sha256'])
         check(f'{expected["display_version"]} RomFS size', report['romfs_size'], expected['romfs']['size'])
-    for script, arguments in [('make_romfs_patches.py', []), ('make_output_res_overlay.py', ['2560x1440'])]:
+    # 1.4.3's native mode renders the 3D scene at the output size too (runtime/game_patches_v143.c): heap room for it at each
+    # size the runtime may pick by the Mac's memory
+    if version == 'v143':
+        steps = [('make_output_res_overlay.py', [size, '--scene', size]) for size in ('2560x1440', '3200x1800', '3840x2160')]
+    else:
+        steps = [('make_output_res_overlay.py', ['2560x1440'])]
+    for script, arguments in [('make_romfs_patches.py', []), *steps]:
         run([tree/'.venv/bin/python', 'scripts/'+script, *arguments, '--version', version],
-            logs/(version+'-'+script+'.log'), cwd=tree)
+            logs/('-'.join([version, script, *arguments[:1]])+'.log'), cwd=tree)
 
 
 def build_spirv_cross(tree, logs):

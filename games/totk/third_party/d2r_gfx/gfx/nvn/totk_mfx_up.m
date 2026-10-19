@@ -174,10 +174,15 @@ static int use_cached(int ci, ctx_t *c, const cfg_t *want) {
     }
     return 0;
 }
-/* 1 when the scaler for this configuration is current; otherwise starts building it (in the background) and returns 0. */
-static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode) {
+/* 1 when the scaler for this configuration is current; otherwise starts building it (in the background) and returns 0.
+   The output stage keys its scaler on the picture region, not the texture: one scaler (2560x1440 input) used first for the
+   1080p picture (content 1920x1080) and then for the native 2K one kept upscaling only the top-left 1920x1080 of it, so
+   native 2K showed a cut-off, zoomed picture in a 4K window (2026-10-19). Each region now has its own scaler whose input
+   is exactly that region. The scene stage keeps the texture size: its region follows the game's dynamic resolution. */
+static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode, NSUInteger in_w, NSUInteger in_h) {
     ctx_t *c = &g_c[ci]; int own = dst == nil;
-    cfg_t want = {src.width, src.height, ow, oh, src.pixelFormat, own ? MTLPixelFormatInvalid : dst.pixelFormat, mode, own};
+    if (ci != MFXUP_OUTPUT) { in_w = src.width; in_h = src.height; }
+    cfg_t want = {in_w, in_h, ow, oh, src.pixelFormat, own ? MTLPixelFormatInvalid : dst.pixelFormat, mode, own};
     if (c->cur >= 0 && cfg_eq(&c->cache[c->cur].cfg, &want)) { c->cache[c->cur].used = ++c->tick; return 1; }
     if (use_cached(ci, c, &want)) return 1;
     if (g_unavailable || is_bad(c, &want)) return 0;
@@ -197,7 +202,7 @@ static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow,
 int mfxup_prepare(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode) {
     if (ci < 0 || ci >= MFXUP_NCTX || !src) return 0;
     if (dst) { ow = dst.width; oh = dst.height; }
-    return ensure(ci, src, dst, ow, oh, mode);
+    return ensure(ci, src, dst, ow, oh, mode, src.width, src.height);
 }
 
 id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger in_w, NSUInteger in_h,
@@ -206,7 +211,7 @@ id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> 
     ctx_t *c = &g_c[ci];
     if (dst) { ow = dst.width; oh = dst.height; }
     if (!cb || !src || src.textureType != MTLTextureType2D || (dst && dst.textureType != MTLTextureType2D) || !in_w || !in_h ||
-        in_w > src.width || in_h > src.height || !ow || !oh || !ensure(ci, src, dst, ow, oh, mode)) { c->refused++; return nil; }
+        in_w > src.width || in_h > src.height || !ow || !oh || !ensure(ci, src, dst, ow, oh, mode, in_w, in_h)) { c->refused++; return nil; }
     built_t *b = &c->cache[c->cur];
     id<MTLTexture> out = dst ? dst : b->out;
     /* MetalFX waits on the fence before reading: signal it after everything before (the producer of src, earlier users of

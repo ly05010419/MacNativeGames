@@ -5411,6 +5411,16 @@ static MTLSamplerAddressMode wrapm(int w) {
         case 6: return MTLSamplerAddressModeMirrorRepeat; }
     return MTLSamplerAddressModeRepeat;
 }
+/* TOTK_ANISO (default 16; 0 or 1 = the game's own value): anisotropic filtering for the game's mipmapped linear samplers.
+   Every texture sampler TOTK registers asks for anisotropy 1 (DM_NVN_SAMPLOG, 2026-10-19: ~6,900 samplers, all aniso=1),
+   so ground and walls seen at a slant fall to a blurry mip; this is the emulators' anisotropy override. Depth-compare,
+   min / max reduction, unmipmapped and nearest samplers keep the game's value. */
+static unsigned samp_aniso_override(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_ANISO"); v = e ? atoi(e) : 16; if (v < 1) v = 1; if (v > 16) v = 16;
+                 MLOG("anisotropic filtering (TOTK_ANISO): %dx%s", v, v > 1 ? " on the game's mipmapped linear samplers" : ", the game's own"); }
+    return (unsigned)v;
+}
 static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Caller holds g_rmu
     if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "采样器号 %d 未登记", sid); return nil; }
     if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
@@ -5422,6 +5432,8 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     d.sAddressMode = wrapm(p.ws); d.tAddressMode = wrapm(p.wt); d.rAddressMode = wrapm(p.wr);
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
+    { unsigned a = samp_aniso_override();
+      if (a > d.maxAnisotropy && p.magf && (p.minf == 3 || p.minf == 5) && !p.cmp_mode && !p.reduction && p.lod_max > p.lod_min) d.maxAnisotropy = a; }
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);
@@ -11325,7 +11337,8 @@ static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, floa
 /* TOTK 2K output (user, 2026-10-16 night: "2K output with MetalFX"): when the window or the full screen shows the game
    picture bigger than it is (the 1920x1080 picture at 2560x1440 full screen on the user's 3440x1440 display), MetalFX
    upscales it to the viewport (perceptual: display values) and the present draws the result 1:1, instead of the bilinear
-   stretch. Key 3 enables both MetalFX stages in its manual mode; TOTK_MFX_OUTPUT=0 disables the output stage. Only an enlargement
+   stretch. Key 3 enables both MetalFX stages in its manual mode and this stage alone in native 2K (2026-10-19: a 2560x1440
+   canvas on a 4K window); TOTK_MFX_OUTPUT=0 disables the output stage. Only an enlargement
    by a margin and a picture region at the texture's origin (MetalFX reads the top-left content region); while the window
    is being resized the size must hold for 15 pictures first (building a scaler per size would stall every present). */
 static uint64_t g_outup_n, g_outup_skip[3];   // done; skipped: off, not an enlargement / region not at the origin / not built, size settling
@@ -11336,7 +11349,7 @@ static NSUInteger g_outup_size[4];            // in and out size of the last ups
 static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
     static NSUInteger sw, sh; static int same;
     if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
-    if (!mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
+    if (!mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
     NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
     if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
     if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
@@ -12099,7 +12112,12 @@ static CAFrameRateRange link_range(int mode) {
     if (mode == 2) return CAFrameRateRangeMake(60, 120, 120);
     const char *explicit_hz = getenv("DM_PRESENT_HZ"), *rt = getenv("TOTK_REALTIME");
     int hz = explicit_hz ? atoi(explicit_hz) : (rt && !strcmp(rt, "0")) ? 60 : mtl_display_hz();
-    if (hz < 30 || hz > 120) hz = 60;
+    /* TOTK: above 120 Hz (144 Hz panels) the link runs at the display's rate when the game is paced by the uncapped clock
+       (hle_nvn.c present_cfg, set before the first present): it only shows the newest frame. Otherwise 60, which macOS
+       rounds to a divisor of the refresh rate (72 at 144), keeping display-tick pacing within the 1/120 s frame step. */
+    extern int nvn_uncapped_configured(void);
+    if (hz > 120 && !nvn_uncapped_configured()) hz = 60;
+    if (hz < 30) hz = 60;
     return CAFrameRateRangeMake(hz, hz, hz);
 }
 static int g_link_mode = 1;   // 节拍对象当前的模式：1 / 2 同 g_dm_present_link，3 = 省电模式 30 Hz | Current mode of the display link object: 1 / 2 same as g_dm_present_link, 3 = power-saving mode 30 Hz

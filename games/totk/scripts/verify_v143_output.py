@@ -116,12 +116,26 @@ def main():
     assert raw[frame_step:stub + 28] == bytes(stub + 28 - frame_step), \
         'veneer padding not empty in the rewritten image'
     changes = {p for p in range(0, len(raw), 4) if raw[p:p+4] != patched[p:p+4]}
+    # An overlay built with --scene lets the native mode render the scene at the output size: the render-size patch
+    # (four sites, and a 3-word veneer keeping the renderer at data +48, after the ultrawide stubs) is installed too,
+    # starting at 2560x1440 here.
+    header = (ROOT / 'extracted/v143/romfs-patches-out/2560x1440/manifest.tsv').read_text().split('\n', 1)[0]
+    scene_follow = ' scene=2560x1440 ' in header + ' '
+    # The ultrawide patch (runtime/aspect_patch.h, key 4) is installed on every Mac run: four camera sites and a 32-byte
+    # stub each in the text padding from +48; the scene veneer follows at +176.
+    aspect_sites = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0} | {frame_step + 48 + 4 * i for i in range(32)}
+    vstub = frame_step + 176
+    render_sites = ({0x585e48, 0x585e50, 0x585e54, 0x585e60} | {vstub + 4 * i for i in range(3)}) if scene_follow else set()
     want = {
         0xbdb578, 0xbdb584, 0x3dcb28,
         0x2db204, 0x2db208, 0x2db22c, 0x2db360, 0x2db36c, 0x2db340, 0x2db34c,
         0x3e5658, 0x2daa54, 0x2daa58, 0x2daa6c, 0x2daa70, 0x2daa74, 0x2daa78,
-    } | {frame_step + 4 * i for i in range(4)} | {stub + 4 * i for i in range(7)}
+    } | {frame_step + 4 * i for i in range(4)} | {stub + 4 * i for i in range(7)} | render_sites | aspect_sites
     assert changes == want, [hex(p) for p in sorted(changes ^ want)]
+    if scene_follow:
+        assert struct.unpack('<ff', patched[data + 16:data + 24]) == (2560.0, 1440.0)
+        assert struct.unpack('<I', patched[vstub + 4:vstub + 8])[0] == 0xf9001873   # str x19, [x3, #48]
+        assert struct.unpack('<I', patched[0x585e48:0x585e4c])[0] >> 26 == 0b000101   # b <veneer>
 
     def execute(w, h, scale, apply):
         mu = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
