@@ -123,6 +123,7 @@ int main(int argc, char **argv) {
         setenv("TOTK_SHADER_CACHE", cache.fileSystemRepresentation, 1);
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);   // the app bundle stays read-only
+        setenv("TOTK_CHEATS_DIR", env_or("TOTK_CHEATS_DIR", [data stringByAppendingPathComponent:@"cheats"]).fileSystemRepresentation, 1);   // <build id>.txt (runtime/cheats.c)
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
         setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1);
         setenv("TOTK_GPU_WIDEN", "1", 1);

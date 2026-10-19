@@ -7,7 +7,7 @@
   "program_nca": "9d827368992a2faafa9062aa5458b7ec.nca",
   "exefs_sha256": {
     "main": "faf81f8a609ff61a6322d04948132b5929af9f6e2398e0e0ebbe819b8ba3eaab",
-    "main.npdm": "f5a5eecc49bbc31d6508c72f2e702fa9dcf2911efcc458d45963f1bdc2722485",
+    "main.npdm": "890c6174a31605519d82361fd5e2e941d684601f6aec317caa67b7e1a60b0c5a",
     "rtld": "28317605926caa40a5cbee3e3cb290c65783b4d9f8c3697b43ca41ab2866a44d",
     "sdk": "91573d4444d0dcd07080db78fece2b098b76080d77cdb2e1d301a2a41d7c4eea",
     "subsdk0": "9d04c98997977e99c12a48a2dbfd3064b8da96b5152e0119064957a43f6c3f99"
@@ -23,8 +23,8 @@
   },
   "shared_fonts_sha256": {
     "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
-    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
-    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-simplified": "a04eb490283d8393b2c49c52e315132461d790ac73996cb43ac869ce72003938",
+    "chinese-simplified-extension": "f5784e7a553fef9a05b3b7dba94e77e79162ace9db8dafc715ace0be1fd9b9ff",
     "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
     "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
     "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"

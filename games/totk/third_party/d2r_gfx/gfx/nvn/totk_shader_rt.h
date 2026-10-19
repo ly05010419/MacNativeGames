@@ -12,3 +12,6 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
 /* Variants new to the translation cache this run, the variants in the cache (-1 until counted in the background) and
    the CLOCK_UPTIME_RAW time of the last new one (0: none yet). Any pointer may be NULL. */
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
+/* Runtime translations done through the service this run and their cumulative wall time on the calling thread
+   (CLOCK_UPTIME_RAW ns). Only real translations count, not cache lookups. Either pointer may be NULL. */
+void totk_rt_xlate_stats(uint64_t *count, uint64_t *ns);

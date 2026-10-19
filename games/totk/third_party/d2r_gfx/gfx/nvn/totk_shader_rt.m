@@ -36,6 +36,7 @@ static uint64_t g_translated;
    and the variants in the cache (counted once in the background, plus the new ones since). */
 static _Atomic uint64_t g_new_variants, g_new_variant_ns, g_new_at_count;
 static _Atomic int64_t g_cached_variants = -1;
+static _Atomic uint64_t g_xlate_n, g_xlate_ns;   // translations through the service and their wall time on the caller (totk_rt_xlate_stats)
 
 static NSString *root_dir(void) {   // native-port/ (the executable lives in native-port/build/)
     if (g_root) return g_root;
@@ -202,6 +203,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     fprintf(g_svc_in, "%s\n", json_string(rq).UTF8String); fflush(g_svc_in);
     char line[2048];
     if (!fgets(line, sizeof line, g_svc_out)) die("shader service exited while translating %s", variant.UTF8String);
+    atomic_fetch_add(&g_xlate_n, 1); atomic_fetch_add(&g_xlate_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started);
     NSDictionary *reply = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:line length:strlen(line)] options:0 error:nil];
     if (![reply[@"ok"] boolValue]) {
         LOG("[survey-shader] frame %llu translation FAILED %s %s after %.2f ms: %s",
@@ -241,4 +243,8 @@ void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns) {
     if (fresh) *fresh = f;
     if (total) *total = t < 0 ? -1 : t + (int64_t)(f - atomic_load(&g_new_at_count));
     if (last_new_ns) *last_new_ns = atomic_load(&g_new_variant_ns);
+}
+void totk_rt_xlate_stats(uint64_t *count, uint64_t *ns) {
+    if (count) *count = atomic_load(&g_xlate_n);
+    if (ns) *ns = atomic_load(&g_xlate_ns);
 }

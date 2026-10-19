@@ -2242,10 +2242,10 @@ __attribute__((weak)) int dm_thermal_now(void) { return -1; }   // 缺省（Mac�
 // 长帧日志的逐帧环（GPU 时间滞后 8 帧才有，所以先存后判）
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
-typedef struct { uint64_t f; double fr, nv, t_s, make_ms, up_mb, up_ms; unsigned pso, lib, up, rup; int ls; } lf_rec;   // ls：这一帧出图时读取画面是否盖着 | ls: whether the loading screen was covering the picture when this frame was presented
+typedef struct { uint64_t f; double fr, nv, t_s, make_ms, lib_ms, pso_ms, xl_ms, up_mb, up_ms; unsigned pso, lib, xl, up, rup; int ls; } lf_rec;   // lib_ms / pso_ms: make_ms split; xl / xl_ms: runtime shader translations on the submit thread   // ls：这一帧出图时读取画面是否盖着 | ls: whether the loading screen was covering the picture when this frame was presented
 static lf_rec g_lf[LFN];
 __attribute__((weak)) void dm_longframe_note(const char *what) { LOG("[长帧] %s", what); }   // 缺省（图形单测）；宿主 diag.c 的强定义补上场景上下文并写 perf.txt | Default (graphics unit tests); the strong definition in the host's diag.c adds scene context and writes perf.txt
-extern void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern uint64_t mtl_upload_bytes(void); extern void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
+extern void mtl_create_ns(uint64_t *lib_ns, uint64_t *pso_ns); extern void mtl_xlate_stats(uint64_t *n, uint64_t *ns); extern uint64_t mtl_upload_bytes(void); extern void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads);
 static const char *const g_tname[6] = {"帧时间", "出帧工作", "NVN 提交+出图", "GPU", "翻译层录制期", "翻译层提交期"};
 static void tpush(int k, double v) { g_tw[k][g_tn[k]++ % TWIN] = v; }
 // 发热归因（iOS DM_HEAT）：每帧 GPU 毫秒另存一圈，取「上次取数以来」的均值 / p95（最多最近 HRN 帧），与计时汇总的 300 帧窗口互不干扰
@@ -2284,11 +2284,20 @@ static void tsummary(uint64_t frame) {
         if (pf && frame > pf) LOG("[nvn] 参数块 至帧 %llu：每帧新编 %.0f 个，复用 %.0f 个（%.0f%%）", frame, (double)(ae - pae) / (double)(frame - pf), (double)(ar - par) / (double)(frame - pf),
                                   ae - pae + ar - par ? 100.0 * (double)(ar - par) / (double)(ae - pae + ar - par) : 0.0);
         pae = ae; par = ar; }
-      { extern uint64_t g_draw_skip[16]; static uint64_t prev[16]; char b[512]; size_t o = 0; b[0] = 0;
+      { extern uint64_t g_draw_skip[18]; static uint64_t prev[18]; char b[512]; size_t o = 0; b[0] = 0;
         static const char *why[] = {"no-program", "zero-source", "defer-take", "render-disabled", "raster-discard", "cull-both", "scissor-empty", "deferred", "no-encoder", "no-pipeline", "viewport-empty", "primitive",
-                                    "clear-render-disabled", "cond-disabled", "cond-unknown", "shader-missing"};   // TOTK: 12-14 conditional rendering (see cond_eval); 15 a shader variant the iPhone does not have yet
-        for (int i = 0; i < 16; i++) { uint64_t d = g_draw_skip[i] - prev[i]; prev[i] = g_draw_skip[i]; if (d && o < sizeof b - 48) o += snprintf(b + o, sizeof b - o, " %s=%llu", why[i], (unsigned long long)d); }
+                                    "clear-render-disabled", "cond-disabled", "cond-unknown", "shader-missing", "pipeline-pending", "shader-loading"};   // TOTK: 12-14 conditional rendering (see cond_eval); 15 a shader variant the iPhone does not have yet; 16 a pipeline still compiling in the background, 17 a shader library still loading in the background (TOTK_ASYNC_SHADERS)
+        for (int i = 0; i < 18; i++) { uint64_t d = g_draw_skip[i] - prev[i]; prev[i] = g_draw_skip[i]; if (d && o < sizeof b - 48) o += snprintf(b + o, sizeof b - o, " %s=%llu", why[i], (unsigned long long)d); }
         if (o) LOG("[nvn] TOTK 回放丢弃的绘制 至帧 %llu:%s", frame, b); }
+      { static uint64_t pk_[4]; uint64_t v[4]; void mtl_pp_stats(uint64_t[4]); mtl_pp_stats(v);   // TOTK: parallel-precompile predict table (nvn_mtl.m g_pp)
+        if (pf && frame > pf && (v[0] > pk_[0] || v[3] > pk_[3])) LOG("[nvn] 并行预编表 至帧 %llu：丢出 %llu 条，领用 %llu 条，回收 %llu 条，表满 %llu 次（近 300 帧）", frame,
+            (unsigned long long)(v[0] - pk_[0]), (unsigned long long)(v[1] - pk_[1]), (unsigned long long)(v[2] - pk_[2]), (unsigned long long)(v[3] - pk_[3]));
+        memcpy(pk_, v, sizeof pk_); }
+      { static uint64_t sl_[4]; uint64_t v[5]; void mtl_shload_stats(uint64_t[5]); mtl_shload_stats(v);   // TOTK step 1b: shader libraries loaded in the background (nvn_mtl.m shader_get_async)
+        if (pf && frame > pf && v[0] > sl_[0]) { uint64_t done = (v[1] - sl_[1]) + (v[2] - sl_[2]);
+            LOG("[nvn] 后台载着色器库 至帧 %llu：排队 %llu 个，载完 %llu 个（失败 %llu），平均 %.0f ms、最长 %.0f ms（近 300 帧）", frame, (unsigned long long)(v[0] - sl_[0]),
+                (unsigned long long)(v[1] - sl_[1]), (unsigned long long)(v[2] - sl_[2]), done ? (v[3] - sl_[3]) / 1e6 / (double)done : 0.0, v[4] / 1e6); }
+        memcpy(sl_, v, sizeof sl_); }
       { static uint64_t py, pk, pw; uint64_t cy = atomic_load(&g_cum_sub_cyc), ck = atomic_load(&g_cum_sub_sys_ns), cw = atomic_load(&g_cum_sub_wall_ns);
         if (pf && frame > pf && ci > pi && cy > py) { double nf = (double)(frame - pf), cyc = (double)(cy - py), cpu = (double)(cc - pc);
           qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0; pthread_get_qos_class_np(pthread_self(), &qc, &rp);
@@ -2641,10 +2650,11 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         static uint64_t plib, ppso; uint64_t lib_, pso_; mtl_create_stats(&lib_, &pso_);
         trow(f, "@lib_new", (double)(lib_ - plib)); trow(f, "@pso_new", (double)(pso_ - ppso));
         {   // 长帧日志：本帧各项先记进环，等 8 帧后 GPU 时间到了再决定打不打（见下） | long-frame log: this frame's items are first recorded into the ring; whether to print is decided 8 frames later, once the GPU time has arrived (see below)
-            static uint64_t plns, ppns, pup, prup, pub; uint64_t lns, pns, up, rup, ub; mtl_create_ns(&lns, &pns); mtl_pkg_stats(&up, &rup); ub = mtl_upload_bytes();
+            static uint64_t plns, ppns, pup, prup, pub, pxn, pxns; uint64_t lns, pns, up, rup, ub, xn, xns; mtl_create_ns(&lns, &pns); mtl_xlate_stats(&xn, &xns); mtl_pkg_stats(&up, &rup); ub = mtl_upload_bytes();
             lf_rec *r = &g_lf[f % LFN]; r->f = f; r->fr = fr; r->nv = nv; r->ls = g_nvn_loadscreen_up ? g_nvn_loadscreen_up() : 0; r->t_s = (now_ns() - g_t0_ns) / 1e9; r->pso = (unsigned)(pso_ - ppso); r->lib = (unsigned)(lib_ - plib);
             r->make_ms = ((lns - plns) + (pns - ppns)) / 1e6; r->up = (unsigned)(up - pup); r->rup = (unsigned)(rup - prup); r->up_mb = (ub - pub) / 1048576.0; r->up_ms = up_ms;
-            plns = lns; ppns = pns; pup = up; prup = rup; pub = ub;
+            r->lib_ms = (lns - plns) / 1e6; r->pso_ms = (pns - ppns) / 1e6; r->xl = (unsigned)(xn - pxn); r->xl_ms = (xns - pxns) / 1e6;
+            plns = lns; ppns = pns; pup = up; prup = rup; pub = ub; pxn = xn; pxns = xns;
         }
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);
@@ -2660,8 +2670,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
           static double ef = 16.7, eg = 8; int lf = r->fr > 20.0 && r->fr > 1.4 * ef, lg = g > 16.7 && g > 1.3 * eg;
           if (r->f == f - 8) { ef += ((r->fr < 3 * ef ? r->fr : 3 * ef) - ef) / 16; eg += ((g < 3 * eg ? g : 3 * eg) - eg) / 16; }
           if (on && r->f == f - 8 && f - 8 > 0 && (lf || lg)) { char b[512];
-              snprintf(b, sizeof b, "帧 %llu（%.2f s）整帧 %.1f ms，提交+出图 %.1f ms，GPU %.1f ms；新建管线 %u 条 + 着色器库 %u 个共 %.1f ms；上传贴图 首传 %u 张 + 重传 %u 次 %.1f MB / %.1f ms",
-                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->up, r->rup, r->up_mb, r->up_ms);
+              snprintf(b, sizeof b, "帧 %llu（%.2f s）整帧 %.1f ms，提交+出图 %.1f ms，GPU %.1f ms；新建管线 %u 条 + 着色器库 %u 个共 %.1f ms（库 %.1f ms / 管线 %.1f ms）；翻译着色器 %u 个 %.1f ms；上传贴图 首传 %u 张 + 重传 %u 次 %.1f MB / %.1f ms",
+                       (unsigned long long)r->f, r->t_s, r->fr, r->nv, g, r->pso, r->lib, r->make_ms, r->lib_ms, r->pso_ms, r->xl, r->xl_ms, r->up, r->rup, r->up_mb, r->up_ms);
               // 可见性：长帧「晚出来」的那段时间屏幕上停着的是上一帧；上一帧若是读取画面（或本帧自己就是），玩家看到的只是读取画面多停了一下，没有运动被打断
               // Visibility: during the time a long frame "comes out late", what stays on screen is the previous frame; if the previous frame was a loading screen (or this frame itself is one), all the player sees is the loading screen staying a bit longer, with no motion interrupted
               const lf_rec *pv = &g_lf[(f - 9) % LFN]; int hidden = r->ls || (f >= 9 && pv->f == f - 9 && pv->ls);

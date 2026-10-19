@@ -6,12 +6,15 @@ variants are still discovered while playing. The output
 contains game-derived data and belongs in the work folder, never in the repo.
 """
 import argparse
+import concurrent.futures
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
 import subprocess
+import threading
 import time
 
 CHAIN = 'totk-native-v4-unverified'
@@ -158,42 +161,71 @@ def prepare(romfs, output, translator, spirv_cross, version):
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     _, shaders, archives = inventory(romfs)
-    process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
-                                '--out', str(staging), '--chain', CHAIN],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    failed, rows, completed = [], [], []
+    items = sorted(shaders.items())
+    workers = max(1, min(os.cpu_count() or 4, len(items)))
     started = time.monotonic()
-    try:
-        for key, (stage, control, code, source) in sorted(shaders.items()):
-            variant = key+'-'+SUFFIX
-            c1, length = struct.unpack_from('<II', control, 0x700)
-            code_path = staging/(variant+'.code')
-            code_path.write_bytes(code[0 if stage == 'cs' else 0x30:length])
-            request = dict(variant=variant, stage=stage, code=str(code_path.resolve()),
-                           c1=code[c1:length].hex(), depth_minus_w=True, **ANSWERS)
-            if stage == 'cs':
-                request['local'] = list(struct.unpack_from('<III', control, 0x748))
-            process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
-            response = process.stdout.readline()
-            if not response:
-                raise ValueError('shader preparation service exited unexpectedly')
-            reply = json.loads(response)
-            code_path.unlink()
-            if reply.get('ok'):
-                refl = json.loads((staging/(variant+'_b.json')).read_text())
-                if refl['chain'] != CHAIN or refl['stage'] != stage:
-                    raise ValueError('prepared shader identity mismatch')
-                (staging/(key+'.variants')).write_text(json.dumps([dict(variant=variant, deps=refl['deps'])], separators=(',', ':'))+'\n')
-                rows.append(f'S\t{variant}_b\t'+str({'vs': 0, 'ps': 1, 'cs': 5}[stage]))
+    lock = threading.Lock()
+    done = [0, 0]   # completed, failed; shared across worker threads under lock
+
+    def worker(worker_items):
+        # Each worker owns its own translator process (the service handles one request at a time over its
+        # pipe); running several in parallel is what spreads translation across cores. Unique per-shader
+        # filenames (content-hash keyed) mean concurrent workers never write the same path in `staging`.
+        process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
+                                    '--out', str(staging), '--chain', CHAIN],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        local = {}
+        try:
+            for key, (stage, control, code, source) in worker_items:
+                variant = key+'-'+SUFFIX
+                c1, length = struct.unpack_from('<II', control, 0x700)
+                code_path = staging/(variant+'.code')
+                code_path.write_bytes(code[0 if stage == 'cs' else 0x30:length])
+                request = dict(variant=variant, stage=stage, code=str(code_path.resolve()),
+                               c1=code[c1:length].hex(), depth_minus_w=True, **ANSWERS)
                 if stage == 'cs':
-                    rows.append(f'C\t{variant}_b')
-                completed.append(variant)
-            else:
-                failed.append(dict(key=key, stage=stage, source=source, error=reply.get('error')))
-            if (len(completed)+len(failed)) % 100 == 0:
-                print(f'prepared {len(completed)}/{len(shaders)}, skipped {len(failed)}; {time.monotonic()-started:.1f}s', flush=True)
-    finally:
-        process.stdin.close(); process.wait()
+                    request['local'] = list(struct.unpack_from('<III', control, 0x748))
+                process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
+                response = process.stdout.readline()
+                if not response:
+                    raise ValueError('shader preparation service exited unexpectedly')
+                reply = json.loads(response)
+                code_path.unlink()
+                if reply.get('ok'):
+                    refl = json.loads((staging/(variant+'_b.json')).read_text())
+                    if refl['chain'] != CHAIN or refl['stage'] != stage:
+                        raise ValueError('prepared shader identity mismatch')
+                    (staging/(key+'.variants')).write_text(json.dumps([dict(variant=variant, deps=refl['deps'])], separators=(',', ':'))+'\n')
+                    rows = [f'S\t{variant}_b\t'+str({'vs': 0, 'ps': 1, 'cs': 5}[stage])]
+                    if stage == 'cs':
+                        rows.append(f'C\t{variant}_b')
+                    local[key] = dict(ok=True, variant=variant, rows=rows)
+                    with lock:
+                        done[0] += 1
+                else:
+                    local[key] = dict(ok=False, key=key, stage=stage, source=source, error=reply.get('error'))
+                    with lock:
+                        done[1] += 1
+                with lock:
+                    if sum(done) % 100 == 0:
+                        print(f'prepared {done[0]}/{len(items)}, skipped {done[1]}; {time.monotonic()-started:.1f}s', flush=True)
+        finally:
+            process.stdin.close(); process.wait()
+        return local
+
+    buckets = [items[i::workers] for i in range(workers)]
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+        for local in pool.map(worker, buckets):
+            results.update(local)
+    failed, rows, completed = [], [], []
+    for key, _ in items:
+        r = results[key]
+        if r['ok']:
+            rows.extend(r['rows'])
+            completed.append(r['variant'])
+        else:
+            failed.append(dict(key=r['key'], stage=r['stage'], source=r['source'], error=r['error']))
     if len(completed) < MIN_SHADERS:
         raise ValueError(f'only {len(completed)} shaders prepared; at least {MIN_SHADERS} are required for first-launch warm-up')
     # Only ship completed runtime inputs. Failed translations can leave MSL

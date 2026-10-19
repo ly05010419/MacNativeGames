@@ -46,7 +46,10 @@ int runtime_core_away(void);          /* runtime/threads.c: a guest thread gives
 void runtime_core_back(int *away);
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
-uint8_t *runtime_module_base(const char *name);   /* runtime/loader.c: "main", "subsdk0", "sdk" (probes) */
+uint8_t *runtime_module_base(const char *name);
+void runtime_cheats(Module *main_module);   /* runtime/cheats.c: Atmosphère-format cheats from $TOTK_CHEATS_DIR/<build id>.txt, before sealing */
+void runtime_cheats_sealed(Module *main_module);   /* after sealing: data pages that button cheats write become writable */
+void runtime_cheats_input(uint64_t buttons, int lx, int ly, int rx, int ry);   /* every controller read: runs the button cheats */   /* runtime/loader.c: "main", "subsdk0", "sdk" (probes) */
 uint64_t runtime_module_permission(uint64_t address,uint64_t size,unsigned permission);
 uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned mask,unsigned attribute);
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute);

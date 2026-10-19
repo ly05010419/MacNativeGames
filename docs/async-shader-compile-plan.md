@@ -1,8 +1,124 @@
 # Plan: stop in-game shader compiles from stalling frames
 
-Status: plan, not implemented (2026-10-19). Mac only.
+Status (2026-10-19): step 0, the pipeline half of step 1, and step 1b (Metal libraries in the background) are
+implemented in `nvn_mtl.m` / `hle_nvn.c` / `totk_shader_rt.m`. Step 1b compiles with no new warnings, but it has **not been
+run in the game yet**. Making translation itself (`totk_rt_variant`) non-blocking, the rest of step 1, is still not
+implemented. Steps 2-5 are untouched. None of this has had the cold-cache A/B test. Mac only.
 
-## What the last run shows
+## What's done so far
+
+- **Step 0, table drain**: `pso_pend_drain()` (`nvn_mtl.m`), called from `mtl_sub_begin`, moves any predict-table
+  slot that finished compiling but was never claimed into `g_pso` and frees the slot, instead of leaking it until
+  `g_pp[384]` fills up. Counters (`g_pp_kicked/taken/drained/full`) are logged every 300 frames from `hle_nvn.c`'s
+  `tsummary` as `[nvn] 并行预编表`.
+- **Step 0, predictor no longer translates**: `pso_predict_rest` now calls a new `prog_get_cached` (lookup-only,
+  never calls `totk_rt_variant`) instead of `prog_get`, so scanning ahead for pipelines to pre-kick can no longer
+  pull an untranslated shader onto the submit thread.
+- **Step 0, prebuilt-library diagnostic**: `shader_lib_prebuilt_path` now logs, once at startup, whether
+  `build/shader-libs` exists and how many files are in it, and the existing periodic log line now also reports
+  hit/miss counts against it. On the machine and build this was implemented against, this came back **8220 files,
+  100% hits, 0 misses** — the "0 of 9372 used" bug this plan describes did not reproduce here (this machine has
+  the Metal toolchain; the original report's App was likely built without it, or on a different machine/App than
+  the one checked here). The diagnostic is there in case it reproduces elsewhere.
+- **Step 1, pipelines only**: behind `TOTK_ASYNC_SHADERS` (default on), `pso_get` no longer blocks the submit
+  thread waiting for a normal-pass pipeline to finish compiling (in the predict table or kicked fresh). It waits
+  up to `TOTK_SHADER_STALL_MS` (default 4), and skips the draw (counted as the new `g_draw_skip[16]`
+  "pipeline-pending", logged separately from the real "no-pipeline" failure reason) if it is still not ready.
+  Merged-pass / specialized-fragment pipelines, and everything when `TOTK_ASYNC_SHADERS=0`, still compile
+  synchronously as before.
+- **Step 1b, Metal libraries in the background** (spec below):
+  - **Loading off the submit thread.** `shader_get_async` loads vertex and fragment variants on a background queue. It waits up to `TOTK_SHADER_STALL_MS`, and only the call that queues a load waits. Otherwise the stage is marked pending in `NvProg.pend*`.
+  - **Skipping and picking up.** Draws needing a pending stage are skipped as `shader-loading` (`g_draw_skip[17]`). `mtl_sub_begin` publishes finished loads into `g_shcache` (`shload_drain`), and the program picks them up the next time `prog_get` returns it (`prog_retry`). A retried stage uses the signature it was translated for, not the state at retry time.
+  - **Signature changes.** `prog_fit` handles them the same way through `pend_alt` and returns `-2`.
+  - **What stays synchronous.** Compute stages, and everything on iOS or with `TOTK_ASYNC_SHADERS=0`.
+  - **Failures.** A load that fails is still fatal (`MDIE`) when a program needs it.
+  - **The predictor** skips programs with a missing stage.
+  - **Counters.** `g_rt_prebuilt` / `g_rt_compiled` / prebuilt hit and miss counts are now `_Atomic`, because `shader_load` runs on several threads.
+- **Logging gap closed:**
+  - `[长帧]` now appends `（库 X ms / 管线 Y ms）；翻译着色器 N 个 Z ms` after the unchanged `新建管线 … 共 … ms` part, so `scripts/summarize_mac_soak.py`'s regex still matches. Translation time comes from the new `totk_rt_xlate_stats` (only real translations through the service).
+  - `[nvn] 后台载着色器库` reports background loads queued, done and failed, plus their average and longest time, every 300 frames.
+
+## Run 2: after step 0 and async pipelines
+
+Source: `~/Library/Logs/MacNativeGames/totk.log`, 2026-10-19, ending 10:19. About 670 s of play (38,700 frames), App at `/Volumes/Cw/TOTK_build/apps/Tears of the Kingdom.app`, default `TOTK_ASYNC_SHADERS=1` and `TOTK_SHADER_STALL_MS=4`. This was a single run, not the A/B test from the Test section, and it is not the same route as run 1.
+
+**Improved:**
+- The first-frame wait fell from 284 s to **8.2 s**. Prebuilt libraries were used 8,456 times, so the startup library pass took 1.1 s. The background warm-up finished in 25 s, with 4,478 render pipelines.
+- The prediction table now drains: `表满` (table full) stayed at 0 for the whole run.
+- The worst frame fell from 13,049 ms to **3,644 ms**.
+
+**Not improved:**
+- Hitches are as frequent as before. 48 of 129 windows have a frame over 100 ms (37%), against 21 of 61 (34%) in run 1, and 33 windows have one over 500 ms. All of them are on the submit thread.
+- 2,518 draws were skipped as `pipeline-pending`, so the async pipeline path is working.
+
+**What the long frames spend their time on.** The per-frame `[长帧]` lines ([hle_nvn.c:2647](../games/totk/third_party/d2r_gfx/gfx/nvn/hle_nvn.c#L2647)) report each long frame's synchronous library and pipeline creation time (`mtl_create_ns`) and its texture-upload time. Over the 737 long frames:
+
+| Frames | Count | Total time | In library + pipeline creation | Include a library compile | Texture upload |
+|---|---:|---:|---:|---:|---:|
+| ≥ 50 ms | 203 | 90.9 s | 81% | 121 | ≈0% |
+| ≥ 100 ms | 134 | 85.8 s | 85% | 108 | ≈0% |
+| ≥ 500 ms | 67 | 68.8 s | 90% | **66** | ≈0% |
+
+Typical examples:
+- frame 8874: 3,644 ms, with "29 pipelines + 10 libraries" taking 3,423 ms;
+- frame 8951: 543 ms, with 1 pipeline + 1 library taking 497 ms.
+
+With async pipelines, a pending pipeline costs at most the 4 ms budget, so **almost all of this time is `newLibraryWithSource` in `shader_load`**. A library for a variant translated in-game has never been compiled on this machine, so it is a cold front-end compile of roughly 200-500 ms each. Translation (`totk_rt_variant`) is not in that counter. The part of the frame not counted (frame time minus creation time) is about 5-10% in the big frames, which puts translation at roughly 20-50 ms per variant: much cheaper than the library compile.
+
+Two smaller remainders:
+- **Synchronous pipelines.** Frames with pipelines but no library compile are rare (5 of 134), but one took 346 ms for 17 pipelines. Merged-pass pipelines (step 5) and compute pipelines (`dispatch()`) are still built synchronously.
+- **Game-side stalls.** 21 of 134 frames over 100 ms show about 0 ms submit and about 0 ms GPU. These are on the game's side, not the renderer's, and are out of scope here.
+
+Logging gap: the `[长帧]` line prints the library time and the pipeline time as one sum, although `mtl_create_ns` already returns them separately. Print them separately, and also add the time spent in `totk_rt_variant` translation, so the next run can attribute each part without estimating.
+
+## Next: step 1b — Metal libraries in the background, translation stays synchronous (≈150 lines, `nvn_mtl.m`)
+
+This takes most of what is left, about 85% of the long-frame time, without the risky part of step 1's translation half. Translation keeps running on the submit thread, so:
+- guest memory never has to be copied across threads;
+- the translator lock and pipe stay as they are.
+
+Only the `newLibraryWithSource` call moves off the submit thread, and it reads nothing but the translated MSL and JSON files.
+
+1. **Background loads.**
+   - Add `shader_get_async(pc, stage, budget_ns)`. It returns the cached `NvShader` if `g_shcache` has one. Otherwise it enqueues `shader_load(pc, stage)` on a concurrent queue (`QOS_CLASS_USER_INITIATED`), keyed by `pc` in an in-flight set so each variant loads only once.
+   - It then waits up to `TOTK_SHADER_STALL_MS` on that job's condition variable, and returns nil if the job is still running.
+   - The wait means a variant already in the system Metal cache, which loads in a few ms, is never skipped. Only true cold compiles are.
+   - When a job finishes, it posts `{pc, NvShader or nil}` to a completion list under a mutex.
+2. **Drain.** In `mtl_sub_begin`, next to `pso_pend_drain`, move finished jobs into `g_shcache` and bump `g_shload_gen`. A job whose `shader_load` returned nil is a real failure: report it as today's `加载着色器失败` (shader load failed) and keep today's fatal `MDIE` at the next lookup.
+3. **New programs (`prog_get`).**
+   - Translate as now. Then, for stages 0 and 1, call `shader_get_async`.
+   - If it returns nil, mark the stage missing (`o->missing |= 1<<st`, plus `ctl` / `code` / `key`, as the iOS path already does), store the variant name in a new `NvProg.pend[st]`, and record `o->miss_gen = g_shload_gen`.
+   - Compute (stage 5) keeps the synchronous `shader_get`, because skipping dispatches is unsafe (see "What still blocks" in step 1).
+4. **Signature changes (`prog_fit`).**
+   - When the `alt` lookup misses, translate as now, then call `shader_get_async`.
+   - If it returns nil, set `miss_sig[st]` / `miss_has[st]`, store `pend_alt[st]` and `miss_gen`, and return -1.
+   - Change the early `return -1` for `miss_has && sg == miss_sig` so that it retries once `g_shload_gen != miss_gen`, instead of failing forever as on iOS.
+5. **Retry.** Add `prog_retry(pr)`. If `pr->missing` is set and `pr->miss_gen != g_shload_gen`:
+   - for each missing stage with a `pend[st]`, look up `g_shcache`;
+   - fill in `sh` / `sig` / `alt` exactly as `prog_get` does;
+   - clear the stage's bit.
+
+   Call it before each existing `pr->missing` check: the draw at [nvn_mtl.m:9074](../games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m#L9074) and the three planning checks around 7662-7696. Update the line numbers after the edits. Keep iOS behaviour unchanged: it has no `pend[st]`, so `prog_retry` does nothing there.
+6. **Counters.**
+   - Add skip reason `g_draw_skip[17] = "shader-loading"`.
+   - Count jobs queued, done and failed, plus the longest job, in the 300-frame summary.
+   - Background load time must **not** be added to `g_bp_lib_ns`, so that `[长帧]` keeps reporting only synchronous time.
+7. **Switch.** Use the existing `TOTK_ASYNC_SHADERS`. With `0`, everything loads synchronously as today.
+
+**Thread safety.** The warm-up thread already runs `shader_load` while the game runs, so the following are already shared today; audit them before relying on it:
+- `c1_store` (shared c1 tables);
+- `drv_scan`'s `MLOG`;
+- the plain `g_rt_prebuilt` / `g_rt_compiled` counters, which should become `_Atomic`.
+
+`g_shcache` stays touched only on the submit thread, through the drain.
+
+**What to look for.** Objects can be missing for one or two extra frames, because a draw now skips once while its library loads and once more while its pipeline compiles. Watch new areas and effects for pop-in, and check the risks listed under step 1.
+
+**Measure.** On the same route, run `TOTK_ASYNC_SHADERS=0` against `1` with the logging gap above fixed first. Success:
+- no frame over 100 ms whose `[长帧]` line shows library time;
+- the remaining long frames are explained by translation time, which step 2 or the full step 1 translation half then targets.
+
+## Run 1: before any fix (what this plan was based on)
 
 Source: `~/Library/Logs/MacNativeGames/totk.log` from the 2026-10-19 07:21 session (1.4.3, seed imported earlier, 0 files imported this launch). This log is replaced on the next launch, so copy it to `/Volumes/mac-APFS/MacNativeGames-artifacts/<date>/` if it needs to be kept.
 
