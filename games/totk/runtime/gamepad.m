@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "runtime.h"
+#include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
@@ -25,12 +26,12 @@ static int32_t stronger_axis(int32_t a, int32_t b) {
     return abs(b) > abs(a) ? b : a;
 }
 
-static uint64_t gamepad_buttons(GCExtendedGamepad *pad) {
-    uint64_t buttons = 0;
-    if (pad.buttonA.isPressed) buttons |= 1ULL << 0;
-    if (pad.buttonB.isPressed) buttons |= 1ULL << 1;
-    if (pad.buttonX.isPressed) buttons |= 1ULL << 2;
-    if (pad.buttonY.isPressed) buttons |= 1ULL << 3;
+static int face_by_position(GCController *controller) {
+    return gamepad_face_by_position(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+}
+
+static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
+    uint64_t buttons = gamepad_face_bits(pad.buttonA.isPressed, pad.buttonB.isPressed, pad.buttonX.isPressed, pad.buttonY.isPressed, by_position);
     if (pad.leftThumbstickButton.isPressed) buttons |= 1ULL << 4;
     if (pad.rightThumbstickButton.isPressed) buttons |= 1ULL << 5;
     if (pad.leftShoulder.isPressed) buttons |= 1ULL << 6;
@@ -52,7 +53,7 @@ static void refresh_gamepads(void) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
-        next.buttons |= gamepad_buttons(pad);
+        next.buttons |= gamepad_buttons(pad, face_by_position(controller));
         next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
         next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
         next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
@@ -71,9 +72,9 @@ static void attach_gamepad(GCController *controller) {
         (void)changed; (void)element;
         refresh_gamepads();
     };
-    fprintf(stderr, "[totk-input] native gamepad connected: %s (%s)\n",
+    fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
-            (controller.productCategory ?: @"unknown").UTF8String);
+            (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }

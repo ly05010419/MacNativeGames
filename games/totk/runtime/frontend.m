@@ -112,7 +112,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
    gfx/nvn/fps_overlay.c, refreshed twice a second) above the shortcuts. TOTK_HUD=corners: the lines stay in the picture's
    corners and this is the larger centred shortcut box. */
 @implementation TOTKShortcutHelp
-static NSString *shortcut_text(void){return @(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off"));}
+static NSString *shortcut_text(void){return @(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：关 → 30+30 → 刷新率一半 → 不限帧\n3  画质：MetalFX 2K → 原生 2K → 关闭\n4  21:9 宽屏：开 / 关","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: off → 30+30 → half refresh rate → unlimited\n3  Picture: MetalFX 2K → native 2K → off\n4  Ultrawide 21:9: on / off"));}
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
  if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;[self refresh];
@@ -133,7 +133,7 @@ static NSString *shortcut_text(void){return @(TOTK_UI("快捷键说明\n1  显�
 -(void)layout{[super layout];[self position];}
 -(void)position{if(!self.superview)return;NSRect f,in;
  if(hud_compact()){CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);in=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
- else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=140;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
+ else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
 @end
 void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}

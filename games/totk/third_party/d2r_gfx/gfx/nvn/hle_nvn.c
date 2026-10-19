@@ -1671,7 +1671,7 @@ void dm_nvn_probe_deferred_binds(void) {
     h_nvnCommandBufferCallCommands(&caller, 1, &hd);
     NVNcommandHandle hc = h_nvnCommandBufferEndRecording(&caller);
     table[0] = 0x10200011; table[1] = 0x10200012; immediate = 0x10200013;   /* written after recording, before submit */
-    int negative = getenv("TOTK_PROBE_NEGATIVE") != NULL;
+    int negative = getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 1;   /* other numbers are later checks of probe-gfx */
     for (unsigned k = 0; k < 2; k++) {
         const uint8_t *p = (const uint8_t *)(uintptr_t)(k ? hc : hd);
         if (!negative) resolve_deferred(p, 0);

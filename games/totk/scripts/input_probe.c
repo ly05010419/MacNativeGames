@@ -19,6 +19,10 @@ void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-ca
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
 int runtime_output_res_toggle(void){output_toggles++;return 1;}
+/* Keys 1, 3 and 4 (frontend.m, game_patches*.c, aspect_patch.h) are not part of this probe. */
+void runtime_shortcut_help_toggle(void){}
+int runtime_output_mode_cycle(void){return 0;}
+int runtime_aspect_toggle(void){return 0;}
 void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_upscale")&&v==-1){mfx_toggles++;return;}if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
