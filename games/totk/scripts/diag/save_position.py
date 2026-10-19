@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Inspect or change TOTK 1.0.0 / 1.1.2 player position in a *copy* of progress.sav.
+"""Inspect or change TOTK 1.0.0 / 1.1.2 / 1.2.1 player position in a *copy* of progress.sav.
+
+1.2.1 writes the 1.1.2 layout (2,307,656 bytes, header 0x0047E0F4; checked 2026-10-19).
 
 Both World_PlayerPos and PlayerStatus.SavePos are raw X,Y,Z vectors; Y is
 height. Both must be updated so world streaming follows the new position.
@@ -21,7 +23,7 @@ SAVE_LAYOUTS = {(EXPECTED_SIZE, EXPECTED_HEADER), (2307656, 0x0047E0F4)}
 
 def locate_all(data):
     if len(data) < 8 or struct.unpack_from("<I", data)[0] != 0x01020304 or (len(data), struct.unpack_from("<I", data, 4)[0]) not in SAVE_LAYOUTS:
-        raise ValueError("requires a verified TOTK 1.0.0 or 1.1.2 progress.sav layout")
+        raise ValueError("requires a verified TOTK 1.0.0 or 1.1.2 / 1.2.1 progress.sav layout")
     offsets = {}
     for index in range(0x28, len(data) - 8, 8):
         tag, value = struct.unpack_from("<II", data, index)

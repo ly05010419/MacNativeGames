@@ -6,9 +6,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
-p=argparse.ArgumentParser(description=__doc__);p.add_argument('--version',choices=('v0','v112'),default='v0');version=p.parse_args().version
-exe = ROOT / ('build/totk-native' if version=='v0' else 'build/totk-native-v112')
-out=ROOT/('analysis' if version=='v0' else 'analysis/v112-port')
+p=argparse.ArgumentParser(description=__doc__);p.add_argument('--version',choices=('v0','v112','v121'),default='v0');version=p.parse_args().version
+exe = ROOT / ('build/totk-native' if version=='v0' else f'build/totk-native-{version}')
+out=ROOT/('analysis' if version=='v0' else f'analysis/{version}-port')
 run = subprocess.run([str(exe), f'rewritten/{version}', 'probe'], cwd=ROOT, capture_output=True, text=True, check=True)
 data = json.loads(run.stdout)
 assert data['status'] == 'pass' and data['calls'] == 4000 and data['threads'] == 4

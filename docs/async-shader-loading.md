@@ -58,7 +58,8 @@ Testing async mode with an empty translation cache turned up a GPU address fault
   - Result: 0 faults in 12 async boots, against 4 in 14 before.
 - **`totk_precise_opts()` race.** It published its `MTLCompileOptions` before setting `mathMode`. Two threads
   compiling at once (the warm-up and the background loads, both at startup) could compile one shader with the
-  default fast math. It is now set up with `dispatch_once`. This race was not the cause of the fault above.
+  default fast math. Upstream has since fixed this the same way (`dispatch_once`, for its multi-threaded warm-up), and
+  this branch now uses upstream's version. This race was not the cause of the fault above.
 
 ## Trade-off
 
@@ -119,6 +120,18 @@ This branch, same method, one pair before the two fixes and one pair with them:
 | Frames > 500 ms | 15 | 5 | 21 | 3 |
 | Time lost to frames > 50 ms | 38.0 s | 9.3 s | 27.5 s | 9.9 s |
 | Save load to play | 59.6 s | 23.7 s | 62.2 s | 23.6 s |
+
+After upstream's title-first startup and multi-threaded warm-up were merged into this branch, one more pair, same
+method:
+
+| | Sync | Async |
+|---|---:|---:|
+| Average FPS on the route | 36.6 | 62.1 |
+| p99 frame | 490 ms | 48 ms |
+| Worst frame | 2,525 ms | 1,441 ms |
+| Frames > 500 ms | 21 | 4 |
+| Time lost to frames > 50 ms | 27.9 s | 7.9 s |
+| Save load to play | 61.5 s | 20.5 s |
 
 **Notes.**
 

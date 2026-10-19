@@ -1,0 +1,64 @@
+name: TOTKIOS
+options:
+  bundleIdPrefix: org.macnativegames
+  deploymentTarget:
+    iOS: "26.0"
+configFiles:
+  Release: Gen/totk.xcconfig
+  Debug: Gen/totk.xcconfig
+targets:
+  TOTKIOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - path: ../runtime
+        excludes:
+          - frontend.m
+          - loader.c
+      - path: ../third_party/d2r_gfx/gfx/nvn
+      - path: ../third_party/d2r_gfx/gfx/tex
+      - path: Gen/embed.S
+      - path: ../runtime/loader.c
+        compilerFlags: "-Dmain=totk_host_main"
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: ${TOTK_APP_NAME}
+        CFBundleName: ${TOTK_APP_NAME}
+        CFBundleIdentifier: ${TOTK_BUNDLE_ID}
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        CADisableMinimumFrameDurationOnPhone: true
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: ${TOTK_BUNDLE_ID}
+      PRODUCT_NAME: TOTK
+      CODE_SIGN_ENTITLEMENTS: Sources/TOTK.entitlements
+      TARGETED_DEVICE_FAMILY: "1,2"
+      IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGNING_ALLOWED: NO
+      ENABLE_BITCODE: NO
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      CLANG_ENABLE_OBJC_ARC: YES
+      GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+      HEADER_SEARCH_PATHS:
+        - $(inherited)
+        - ../third_party/d2r_gfx/gfx/nvn
+        - ../third_party/d2r_gfx/gfx/nvn/include
+        - Gen
+        - Gen/deps/include
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I../runtime -I../third_party/d2r_gfx/gfx/nvn -I../third_party/d2r_gfx/gfx/nvn/include -IGen -I../build

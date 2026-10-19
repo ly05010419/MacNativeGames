@@ -135,10 +135,10 @@ class Updates(unittest.TestCase):
         self.assertFalse(list(self.root.glob('update-merge-*')))
 
     def test_bundle_contains_only_selected_game_version(self):
-        for version, display in (('v112', '1.1.2'), ('v143', '1.4.3')):
+        for version, display in (('v112', '1.1.2'), ('v121', '1.2.1'), ('v143', '1.4.3')):
             with self.subTest(version=version):
                 tree=self.root/version;out=self.root/f'{version}.app'
-                files=[f'build/totk-native-{version}','build/pso_manifest.tsv','build/spirv-cross/spirv-cross',
+                files=[f'build/totk-native-{version}','build/pso_manifest.tsv','build/pso_title.tsv','build/spirv-cross/spirv-cross',
                        'prebuilt/macos-arm64/totk_xlate','build/app-launcher',f'extracted/{version}/romfs/romfs.bin',
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
@@ -159,6 +159,7 @@ class Updates(unittest.TestCase):
                 self.assertTrue((res/'build/totk-native').exists())
                 self.assertTrue((res/f'rewritten/{version}/main.patched.bin').exists())
                 self.assertTrue((res/'build/shader-seed/seed-manifest.json').exists())
+                self.assertTrue((res/'build/pso_title.tsv').exists())   # the list the first frame waits for
                 self.assertEqual([p.name for p in (res/'rewritten').iterdir()], [version])
 
     def test_failed_bundle_seal_preserves_previous_app(self):

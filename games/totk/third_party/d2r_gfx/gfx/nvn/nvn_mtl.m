@@ -66,7 +66,7 @@ extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarde
 // Function parameters in this file are never retained again in the callee (the caller / global tables already hold them, and lifetime is guaranteed by defer_obj_release): saves a retain / release pair per call on the hot path
 #pragma clang attribute push(__attribute__((objc_externally_retained)), apply_to = function)
 
-#define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+#define MLOG(...) do { flockfile(stderr); fprintf(stderr, "[dm] [nvn-mtl] " __VA_ARGS__); fputc('\n', stderr); funlockfile(stderr); } while (0)   // one whole line even when the warm-up threads log at once
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
 
 static void warm_start(void);
@@ -275,13 +275,16 @@ static void res_site_report(int top) {
     }
     pthread_mutex_unlock(&g_res_mu);
 }
-/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 40% of physical memory (0 disables). Checked before every submission and
-   residency commit, in the no-submit mode too, so the growth is reported with its sites instead of exhausting wired memory. */
+/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 40% of physical memory on the Mac (0 disables). Checked before every
+   submission and residency commit, in the no-submit mode too, so the growth is reported with its sites instead of
+   exhausting wired memory. Off by default on iOS: there the system's per-app limit bounds GPU memory and ends only the app,
+   and 40% of an iPhone 14 (2284 MB) stopped the game in the world while it used 3.6 of its 4 GB (2026-10-19). */
 static uint64_t gpu_budget_bytes(void) {
     static uint64_t b; static int init;
     if (!init) {
         init = 1; const char *e = getenv("TOTK_GPU_BUDGET_MB");
         if (e) b = strtoull(e, NULL, 10) << 20;
+        else if (TARGET_OS_IPHONE) b = 0;
         else { uint64_t phys = 0; size_t n = sizeof phys; if (sysctlbyname("hw.memsize", &phys, &n, NULL, 0) || !phys) MDIE("hw.memsize unavailable for the GPU memory budget"); b = phys / 5 * 2; }
         MLOG("显存预算 %llu MB（TOTK_GPU_BUDGET_MB 覆盖，0 关闭）", (unsigned long long)(b >> 20));
     }
@@ -905,6 +908,8 @@ static void zskip_clear(void);
 static int tbdr_on(void);
 static id g_cb;
 static id<MTL4ComputeCommandEncoder> g_blit;
+static int g_blit_alias; // shared encoder may have accessed aliased buffer storage
+static int g_copy_probe_no_alias; // probe-gpu-copy-alias negative control only: copies without alias visibility
 static NSMutableArray<dispatch_block_t> *g_commit_blocks;
 static uint64_t g_alloc_fence[ALLOC_MAX]; static uint64_t g_alloc_waits, g_alloc_grown;
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);
@@ -1026,7 +1031,12 @@ static void ser_gate(void) {
 static int bar_end_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BARRIER_END"); v = !(e && !strcmp(e, "0")); if (!v) fprintf(stderr, "[dm] [nvn-mtl] 【实验】TOTK_BARRIER_END=0：编码器结束处不设生产者屏障\n"); } return v; }
 static int bar_start_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BARRIER_START"); v = !(e && !strcmp(e, "0")); if (!v) fprintf(stderr, "[dm] [nvn-mtl] 【实验】TOTK_BARRIER_START=0：回放编码器开头不设消费者屏障（有数据竞争，只供测量）\n"); } return v; }
 static MTL4VisibilityOptions bar_vis(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BARRIER_VIS"); v = !(e && !strcmp(e, "0")); if (!v) fprintf(stderr, "[dm] [nvn-mtl] 【实验】TOTK_BARRIER_VIS=0：回放编码器开头屏障不带缓存可见性\n"); } return v ? MTL4VisibilityOptionDevice : MTL4VisibilityOptionNone; }
+static MTL4VisibilityOptions blit_vis(void) { return bar_vis() | (g_blit_alias ? MTL4VisibilityOptionResourceAlias : 0); }
 static inline void m4_end(id e) {
+    if (e == g_blit && g_blit_alias) {
+        [g_blit barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionResourceAlias];
+        g_blit_alias = 0;
+    }
     if (bar_end_on() && [e conformsToProtocol:@protocol(MTL4CommandEncoder)]) [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [e endEncoding];
 }
@@ -1222,10 +1232,20 @@ static uint64_t g_blit_opens, g_blit_splits, g_upd_n, g_upd_split, g_copy_n, g_c
    test read a stale value 1 time in 3). The barrier when the encoder opens only orders it against earlier encoders. On
    Metal 4 the copy encoder is a compute encoder, so both blit and dispatch stages are ordered. TOTK_BLIT_BAR=0: off. */
 static int blit_bar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BLIT_BAR"); v = !e || atoi(e); } return v; }
-static id<MTL4ComputeCommandEncoder> blit(void) { blit_note(); if (!g_blit) { g_blit_opens++; g_blit_splits += g_enc != nil; } rp_end();
-    if (!g_blit) { rs_sync(); ser_gate(); pt_mark(g_cb, 'B', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; }
-    else if (blit_bar_on()) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
+static id<MTL4ComputeCommandEncoder> blit_kind(int buffer_alias) { blit_note(); if (!g_blit) { g_blit_opens++; g_blit_splits += g_enc != nil; } rp_end();
+    if (buffer_alias && !g_copy_probe_no_alias) g_blit_alias = 1; // rp_end may itself open and close a copy encoder
+    if (!g_blit) { rs_sync(); ser_gate(); pt_mark(g_cb, 'B', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:blit_vis()]; }
+    else if (blit_bar_on()) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:blit_vis()];
     return g_blit; }
+static id<MTL4ComputeCommandEncoder> blit(void) { return blit_kind(0); }
+/* Buffer copies (mtl_sub_copy, the copy fallback of inline uniform updates). The same memory can be reached through two Metal
+   buffers, each with its own GPU virtual address: a virtual pool's remapped view of a physical pool, or two pools over the same
+   CPU memory. Device visibility alone does not make a write through one visible to a read through the other: a chain of copies
+   through two no-copy buffers over one allocation read stale bytes on every run (probe-gpu-copy-alias). So every buffer-copy
+   segment carries alias visibility in the barriers it keeps and at the encoder end (original port d309e62, Codex). The ranges
+   are unused here; the original port's copy-batch experiment (off by default) takes the same call. */
+static id<MTL4ComputeCommandEncoder> blit_buffer(id<MTLBuffer> src, NSUInteger so, id<MTLBuffer> dst, NSUInteger d, NSUInteger n) {
+    (void)src; (void)so; (void)dst; (void)d; (void)n; return blit_kind(1); }
 
 /* TOTK: collect and copy the uniform ranges a submission binds (see usnap_t). */
 static size_t arena_alloc(size_t n, id<MTLBuffer> *buf);
@@ -1474,7 +1494,7 @@ void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     void *sb, *db; uint64_t so, dof;
     if (!mtl_addr(src, n, &sb, &so) || !mtl_addr(dst, n, &db, &dof))
         MDIE("缓冲拷贝地址不在任何内存池内 src=%#llx dst=%#llx n=%#llx", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n);
-    enc_b_copy_buffer(blit(), (__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n);
+    enc_b_copy_buffer(blit_buffer((__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n), (__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n);
 }
 
 // TOTK: uniform updates carry their data inline in the (host-owned) recording; stage it in this submit's
@@ -1644,7 +1664,7 @@ static void mtl_sub_update(const void *data, uint64_t dst, uint64_t n) {
     }
     if (ub_rename_on()) { g_ren_fallback++; upd_flush(); }   // pending table full: keep the order with a real copy
     usnap_drop(dst, n);   // TOTK: the update reaches memory on the GPU timeline; later readers read it there
-    enc_b_copy_buffer(blit(), sb, so, (__bridge id<MTLBuffer>)db, dof, n);
+    enc_b_copy_buffer(blit_buffer(sb, so, (__bridge id<MTLBuffer>)db, dof, n), sb, so, (__bridge id<MTLBuffer>)db, dof, n);
 }
 static void post(post_op o) {
     if (g_npost == g_postcap) { g_postcap = g_postcap ? g_postcap * 2 : 64; g_post = realloc(g_post, g_postcap * sizeof *g_post); }
@@ -4643,25 +4663,47 @@ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
         if (k == 1 || k % 100 == 0 || dt >= 300000) MLOG("着色器现编：第 %d 个 %.0f ms，累计 %.1f 秒", k, dt / 1e3, tot / 1e6);
         return l; }
 #endif
+#if TARGET_OS_IPHONE
+    // iOS：映射也占一个 vnode，而整机 vnode 表只有 11400 项（iPad A16，2026-10-18）；全量预热留着约 8800 个库时表满，系统按 vnode-limit 杀掉游戏。
+    // 这里复制进内存后立刻解除映射（全部库约 110 MB）。
+    // iOS: a mapping also holds a vnode, and the whole device has 11,400 (iPad A16, 2026-10-18); with the full warm-up keeping about
+    // 8,800 libraries the table filled and the system killed the game (jetsam reason vnode-limit). Copy and unmap at once (about 110 MB for all).
+    void *copy = malloc(len);
+    if (copy) { memcpy(copy, m, len); munmap(m, len);
+                return [g_dev newLibraryWithData:dispatch_data_create(copy, len, NULL, DISPATCH_DATA_DESTRUCTOR_FREE) error:err]; }
+#endif
     dispatch_data_t d = dispatch_data_create(m, len, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ munmap(m, len); });
     return [g_dev newLibraryWithData:d error:err];
 }
 /* TOTK: the translated Switch shaders rely on exactly rounded IEEE float arithmetic (integer-division idioms built from
    float bit patterns, invariant positions, depth compares); Metal's default fast math breaks them. */
-/* Set up once, completely, before any thread can see it: shaders are compiled on the warm-up thread and the background
-   load queue at the same time. Publishing the object before setting mathMode let a concurrent first compile use the
-   default fast math (seen as GPU address faults on the first frames with an empty translation cache). */
 static MTLCompileOptions *totk_precise_opts(void) {
+    /* Made once and published only when complete: the warm-up compiles on several threads (2026-10-18), and a thread must
+       never get the options before mathMode is set (that would compile with fast math). */
     static MTLCompileOptions *o; static dispatch_once_t once;
     dispatch_once(&once, ^{
-        MTLCompileOptions *n = [MTLCompileOptions new];
-        if (@available(macOS 15.0, *)) n.mathMode = MTLMathModeSafe; else n.fastMathEnabled = NO;
+        MTLCompileOptions *x = [MTLCompileOptions new];
+        if (@available(macOS 15.0, *)) x.mathMode = MTLMathModeSafe; else x.fastMathEnabled = NO;
         /* TOTK_FAST_MATH=1 (measurement only): fast math for every translated shader. Known to break the tile-light vertex
            shader's integer-division idiom, so pictures from such runs are not evidence of correctness. */
-        if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) { if (@available(macOS 15.0, *)) n.mathMode = MTLMathModeFast; else n.fastMathEnabled = YES; MLOG("【实验】TOTK_FAST_MATH=1：着色器用快速数学"); }
-        o = n;
+        if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) { if (@available(macOS 15.0, *)) x.mathMode = MTLMathModeFast; else x.fastMathEnabled = YES; MLOG("【实验】TOTK_FAST_MATH=1：着色器用快速数学"); }
+        o = x;
     });
     return o;
+}
+/* Compile translated MSL with the precise options. The system compiler service (MTLCompilerService) can be stopped under
+   memory pressure in the middle of a compile (iPad, 2026-10-18: "Compilation failed due to an interrupted connection:
+   XPC_ERROR_CONNECTION_INTERRUPTED" while the shader warm-up was running); it restarts on the next request, so such a
+   failure is retried instead of being taken as a broken shader. */
+static id<MTLLibrary> totk_msl_library(NSString *src, NSError **err) {
+    NSError *e = nil;
+    for (int attempt = 1;; attempt++) {
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        BOOL interrupted = !lib && [e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"];
+        if (lib || !interrupted || attempt == 4) { if (err) *err = e; return lib; }
+        MLOG("【红】着色器编译服务连接中断（第 %d 次），%d ms 后重试", attempt, attempt * 100);
+        usleep((useconds_t)attempt * 100000);
+    }
 }
 /* TOTK (2026-10-15): which words of the NVN driver constant segments c0 / c2 a translated shader reads, scanned from its MSL
    at load (spirv-cross names them <stage>p_c0 / <stage>p_c2: vp_, fp_, cp_). The translation-time scan
@@ -4729,12 +4771,13 @@ static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS do
     if (nbad) MLOG("【红】着色器 %s（阶段 %d）读驱动段的这些位置回放层不填，读到 0：%s", o->key, o->stage, bad);
     return nunfill;
 }
-static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK (atomic: shader_load runs on the warm-up thread and the background load queue too): translated variants loaded precompiled / compiled from MSL here
+static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK: translated variants loaded precompiled (iOS) / compiled from MSL here (atomic: the warm-up loads on several threads)
 #if !TARGET_OS_IPHONE
 /* TOTK: the startup shaders compiled when the app was built (build_app.py step_shader_libs), named by the SHA-256 of their
-   MSL, so only an exact match is used. Metal's own cache of libraries compiled here starts over when the app is moved or
-   rebuilt (measured: a full 4.5-minute warm-up again); these files move with the app. */
+   MSL, so only an exact match is used. Metal's own cache of libraries compiled here does not follow the app to a folder
+   whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
 static NSString *shader_lib_prebuilt_path(NSData *src) {
+    if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) return nil;   // built with safe math (totk_precise_opts)
     static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{ dir = exe_rel("shader-libs"); });
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(src.bytes, (CC_LONG)src.length, md);
     char hex[2 * sizeof md + 1]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
@@ -4759,16 +4802,17 @@ static NvShader *shader_load(NSString *pc, int stage) {
 #if TARGET_OS_IPHONE
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = [NSString stringWithFormat:@"%@/%@.metallib", totk_rt_dir(), pc];
-        if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else g_rt_prebuilt++; }
+        if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
 #endif
         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
 #if !TARGET_OS_IPHONE
-                    if (raw && (lib = shader_lib_prebuilt(raw))) g_rt_prebuilt++;
+                    if (raw && (lib = shader_lib_prebuilt(raw))) atomic_fetch_add(&g_rt_prebuilt, 1);
 #endif
                     NSString *src = raw && !lib ? [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding] : nil;
-                    if (src) { lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e]; g_rt_compiled++; } }
+                    if (src) { lib = totk_msl_library(src, &e); atomic_fetch_add(&g_rt_compiled, 1); } }
     } else lib = lib_from_file(lp, &e);
-    if (rt && (g_rt_prebuilt + g_rt_compiled) % 200 == 1) MLOG("着色器库：预编译加载 %llu 个，现编 %llu 个", (unsigned long long)g_rt_prebuilt, (unsigned long long)g_rt_compiled);
+    if (rt) { uint64_t pre = atomic_load(&g_rt_prebuilt), com = atomic_load(&g_rt_compiled);
+              if ((pre + com) % 200 == 1) MLOG("着色器库：预编译加载 %llu 个，现编 %llu 个", (unsigned long long)pre, (unsigned long long)com); }
     NSData *jd = [NSData dataWithContentsOfFile:[NSString stringWithFormat:@"%@/%@.json", rt ? totk_rt_dir() : g_msl_dir, pc]];
     NSDictionary *j = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (!lib || !j) { MLOG("【红】加载着色器失败 %s：%s", pc.UTF8String, e ? e.localizedDescription.UTF8String : "无反射 json"); return nil; }
@@ -5665,7 +5709,7 @@ static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered) {
             src = [src stringByReplacingCharactersInRange:[src rangeOfString:entry] withString:[entry stringByAppendingFormat:@"constant uint& totk_layer_in [[buffer(%d)]], ", LAY_BUF_INDEX]];
             src = [src stringByReplacingOccurrencesOfString:@"return out;" withString:@"{ out.totk_layer = totk_layer_in; return out; }"];
         }
-        NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(src, &e);
         f = lib ? [lib newFunctionWithName:vs->fn.name] : nil;
         if (!f) MDIE("vertex shader %s (variant %s): %s", vs->key, key.UTF8String, e.localizedDescription.UTF8String);
         if (!vs->vpatch) vs->vpatch = [NSMutableDictionary dictionary];
@@ -5698,7 +5742,7 @@ static id<MTLFunction> fs_fn_without_depth(NvShader *fs) {
     static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT; os_unfair_lock_lock(&lock);
     if (!fs->no_depth_fn) {
         NSString *src = fs_src_without_depth(fs);
-        NSError *err = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&err];
+        NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
         fs->no_depth_fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
         if (!fs->no_depth_fn) MDIE("fragment shader %s without depth export: %s", fs->key, err.localizedDescription.UTF8String);
         MLOG("[totk] fragment depth export omitted for a color-only pass: %s", fs->key);
@@ -5727,7 +5771,7 @@ static id<MTLFunction> fs_fn_mfx(NvShader *fs, int role, int nodepth) {
         if (e && [src rangeOfString:head].location != NSNotFound && [src rangeOfString:@"[[color(7)]]"].location == NSNotFound) {
             src = [src stringByReplacingCharactersInRange:[src rangeOfString:head] withString:[head stringByAppendingString:@"    float4 totk_mfx_copy [[color(7)]];\n"]];
             src = [src stringByReplacingOccurrencesOfString:@"return out;" withString:[NSString stringWithFormat:@"{ out.totk_mfx_copy = %@; return out; }", e]];
-            NSError *err = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&err];
+            NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
             fs->mfx_fn[idx] = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
             if (!fs->mfx_fn[idx]) MDIE("fragment shader %s, MetalFX copy (role %d): %s", fs->key, role, err.localizedDescription.UTF8String);
         } else MLOG("【红】[mfx] fragment shader %s: colour 0 (%s) cannot be copied to the UI layer; this draw is left out of it", fs->key, type ? type.UTF8String : "none");
@@ -5791,7 +5835,7 @@ static id<MTLFunction> nan_trace_fn(NvShader *fs) {
         [o appendFormat:@"%@\n", l];
     }
     if (in_entry != 3) MDIE("TOTK_NAN_TRACE: could not instrument %s (state %d)", fs->key, in_entry);
-    NSError *err = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:o options:totk_precise_opts() error:&err];
+    NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(o, &err);
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
     if (!fn) MDIE("TOTK_NAN_TRACE: %s does not compile: %s", fs->key, err.localizedDescription.UTF8String);
     MLOG("TOTK_NAN_TRACE: %s rebuilt with %d checked temporaries, outputs %s", fs->key, instrumented, [outs componentsJoinedByString:@","].UTF8String);
@@ -6058,7 +6102,7 @@ static NSString *warm_key(const char *s, size_t n) {
     size_t z = strnlen(s, n);
     return [[NSString alloc] initWithBytes:s length:z encoding:NSUTF8StringEncoding];
 }
-static uint64_t g_warm_missing;   // shaders named in the warm lists that are not in the translation cache (yet)
+static _Atomic uint64_t g_warm_missing;   // shaders named in the warm lists that are not in the translation cache (yet)
 static int warm_available(NSString *key) {
     if (!key.length) return 1;
     NSFileManager *fm = NSFileManager.defaultManager;
@@ -6073,29 +6117,118 @@ static int warm_available(NSString *key) {
     }
     return have;
 }
+/* One shader of the warm-up, without the per-run dictionary (safe on several threads at once). */
+static NvShader *warm_shader_load(NSString *key, int stage) {
+    /* A warm list may name a variant this cache does not hold (collected by another session, the cache trimmed): it is
+       translated on first use like any new shader, so the warm-up skips it quietly and counts it (one line at the end)
+       instead of a red "cannot open" per pipeline that names it (2026-10-16 night: 42 such lines in one session). */
+    static NSMutableSet<NSString *> *missing; static dispatch_once_t once; dispatch_once(&once, ^{ missing = [NSMutableSet set]; });
+    @synchronized (missing) { if ([missing containsObject:key]) return nil; }
+    NSString *msl = [NSString stringWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@.metal", key]
+                                                encoding:NSUTF8StringEncoding error:nil];
+    if (!msl && ![NSFileManager.defaultManager fileExistsAtPath:[totk_rt_dir() stringByAppendingFormat:@"/%@.metallib", key]] &&
+        ![NSFileManager.defaultManager fileExistsAtPath:[NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, key]]) {
+        @synchronized (missing) { if (![missing containsObject:key]) { [missing addObject:key]; g_warm_missing++; } }
+        return nil;
+    }
+    if (msl && ([msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) return nil;
+    uint64_t started = bp_now();
+    NvShader *sh = shader_load(key, stage);
+    atomic_fetch_add(&g_warm_library_ns, bp_now() - started);
+    atomic_fetch_add(&g_warm_library_count, 1);
+    return sh;
+}
+/* Shaders whose warm-up load failed: tried once, not again for every row that names them. */
+static NSMutableSet<NSString *> *g_warm_failed;
+static os_unfair_lock g_warm_failed_lock = OS_UNFAIR_LOCK_INIT;
+static int warm_failed(NSString *key) {
+    os_unfair_lock_lock(&g_warm_failed_lock); int f = [g_warm_failed containsObject:key]; os_unfair_lock_unlock(&g_warm_failed_lock);
+    return f;
+}
+static void warm_fail(NSString *key) {
+    os_unfair_lock_lock(&g_warm_failed_lock);
+    if (!g_warm_failed) g_warm_failed = [NSMutableSet set];
+    [g_warm_failed addObject:key];
+    os_unfair_lock_unlock(&g_warm_failed_lock);
+}
 static NvShader *warm_shader(NSMutableDictionary<NSString *, NvShader *> *dict, NSString *key, int stage) {
     NvShader *sh = dict[key];
-    if (!sh) {
-        /* A warm list may name a variant this cache does not hold (collected by another session, the cache trimmed): it is
-           translated on first use like any new shader, so the warm-up skips it quietly and counts it (one line at the end)
-           instead of a red "cannot open" per pipeline that names it (2026-10-16 night: 42 such lines in one session). */
-        static NSMutableSet<NSString *> *missing; static dispatch_once_t once; dispatch_once(&once, ^{ missing = [NSMutableSet set]; });
-        @synchronized (missing) { if ([missing containsObject:key]) return nil; }
-        NSString *msl = [NSString stringWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@.metal", key]
-                                                    encoding:NSUTF8StringEncoding error:nil];
-        if (!msl && ![NSFileManager.defaultManager fileExistsAtPath:[totk_rt_dir() stringByAppendingFormat:@"/%@.metallib", key]] &&
-            ![NSFileManager.defaultManager fileExistsAtPath:[NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, key]]) {
-            @synchronized (missing) { if (![missing containsObject:key]) { [missing addObject:key]; g_warm_missing++; } }
-            return nil;
-        }
-        if (msl && ([msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) return nil;
-        uint64_t started = bp_now();
-        sh = shader_load(key, stage);
-        atomic_fetch_add(&g_warm_library_ns, bp_now() - started);
-        atomic_fetch_add(&g_warm_library_count, 1);
-        if (sh) dict[key] = sh;
-    }
+    if (sh || warm_failed(key)) return sh;
+    sh = warm_shader_load(key, stage);
+    if (sh) dict[key] = sh; else warm_fail(key);
     return sh;
+}
+/* TOTK (2026-10-18): the warm-up compiles the shader libraries of each block of rows on several threads, then builds the
+   pipelines of those rows one after another in list order, as before. A cold library takes about 48-92 ms, almost all of it
+   in the system Metal compiler (one thread: 9,268 libraries 856 s, 3,459 pipelines under 1 s), and the compiler service runs
+   requests side by side (8 threads: 188 s). That matters on a Mac whose Metal cache has never seen the prepared shaders: a
+   new Mac, after the system purged the cache, or after the app moved. (Programs without an app bundle -- the game binary is
+   one -- share one store, keyed by the source, the options and the length of the path of the folder the program runs
+   from: rebuilding the app in the same place keeps it, moving it does not. The store evicts heavily when any such program
+   compiles many new libraries, and what one compiles while another that opened it first is running is lost when that
+   one quits. build_app.py compiles the seed once at packaging time from the game binary's folder, with no other program
+   using the store: tools/warm_metal_cache.m.) Once the player is in the world (mtl_warm_wait returned) at most 2 threads go on, so the
+   rest of the warm-up does not take the game's cores. TOTK_WARM_THREADS=<n> (1 = one thread as before); default 8 on the
+   Mac (at most the core count minus 2), 1 on iOS (prebuilt libraries, nothing to compile). */
+enum { WARM_BLOCK = 512 };   // rows per block: the shaders of a block load in parallel, then its rows run in order
+static _Atomic int g_warm_in_play;
+static int warm_threads(void) {
+    static int n; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *e = getenv("TOTK_WARM_THREADS");
+#if TARGET_OS_IPHONE
+        int d = 1;
+#else
+        int d = (int)NSProcessInfo.processInfo.activeProcessorCount - 2; if (d > 8) d = 8; if (d < 1) d = 1;
+#endif
+        n = e && *e ? atoi(e) : d; if (n < 1) n = 1; if (n > 32) n = 32;
+    });
+    return n;
+}
+static int warm_threads_now(void) { int n = warm_threads(); return n > 2 && atomic_load(&g_warm_in_play) ? 2 : n; }
+typedef struct { _Atomic size_t next; os_unfair_lock lock; } warm_par;
+/* Load the shaders named by keys / stages into dict, each once, on warm_threads_now() threads. */
+static void warm_load_keys(NSArray<NSString *> *keys, NSArray<NSNumber *> *stages, NSMutableDictionary<NSString *, NvShader *> *dict) {
+    NSMutableArray<NSString *> *todo = [NSMutableArray array]; NSMutableArray<NSNumber *> *st = [NSMutableArray array];
+    NSMutableSet<NSString *> *want = [NSMutableSet set];
+    for (NSUInteger i = 0; i < keys.count; i++) {
+        NSString *k = keys[i];
+        if (!k.length || dict[k] || [want containsObject:k] || warm_failed(k)) continue;
+        [want addObject:k]; [todo addObject:k]; [st addObject:stages[i]];
+    }
+    size_t n = todo.count, workers = (size_t)warm_threads_now();
+    if (!n) return;
+    if (workers <= 1 || n == 1) { for (size_t i = 0; i < n; i++) @autoreleasepool { warm_shader(dict, todo[i], st[i].intValue); } return; }
+    if (workers > n) workers = n;
+    warm_par *wp = calloc(1, sizeof *wp); if (!wp) MDIE("预热：内存不足");
+    wp->lock = OS_UNFAIR_LOCK_INIT;
+    dispatch_apply(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) {
+        for (;;) @autoreleasepool {
+            if (w && w >= (size_t)warm_threads_now()) break;   // fewer threads once playing; thread 0 always goes on
+            size_t i = atomic_fetch_add(&wp->next, 1);
+            if (i >= n) break;
+            NSString *key = todo[i];
+            NvShader *sh = warm_shader_load(key, st[i].intValue);
+            if (!sh) { warm_fail(key); continue; }
+            os_unfair_lock_lock(&wp->lock); dict[key] = sh; os_unfair_lock_unlock(&wp->lock);
+        }
+    });
+    free(wp);
+}
+/* The shaders a block of warm-list rows names (S: the shader, R: its vertex and fragment shaders, C: the compute shader). */
+static void warm_load_rows(NSArray<NSString *> *rows, NSMutableDictionary<NSString *, NvShader *> *dict) {
+    NSMutableArray<NSString *> *keys = [NSMutableArray array]; NSMutableArray<NSNumber *> *stages = [NSMutableArray array];
+    for (NSString *line in rows) {
+        NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+        if ([c[0] isEqualToString:@"S"] && c.count >= 3) { [keys addObject:c[1]]; [stages addObject:@(c[2].intValue)]; }
+        else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
+            pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) continue;
+            NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
+            if (vkey.length) { [keys addObject:vkey]; [stages addObject:@(sk.vs_stage)]; }
+            if (fkey.length) { [keys addObject:fkey]; [stages addObject:@(sk.fs_stage)]; }
+        } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && c[1].length) { [keys addObject:c[1]]; [stages addObject:@5]; }
+    }
+    warm_load_keys(keys, stages, dict);
 }
 static void warm_enqueue(WarmItem *item) {
     os_unfair_lock_lock(&g_warm_lock);
@@ -6157,50 +6290,58 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
         NSMutableSet<NSString *> *seen = [NSMutableSet set];
         NSUInteger path_index = 0;
+        MLOG("后台预热：着色器库用 %d 个线程编（TOTK_WARM_THREADS），进世界后最多 2 个", warm_threads());
         uint64_t done = 0;
         for (NSString *path in paths) {
             NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
             if (!txt) { MLOG("【红】预热清单读取失败：%s", path.UTF8String);
                 if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1); continue; }
+            NSMutableArray<NSString *> *todo = [NSMutableArray array];
             for (NSString *line in [txt componentsSeparatedByString:@"\n"]) {
                 if (![eligible containsObject:line] || [seen containsObject:line]) continue;
-                [seen addObject:line];
-                NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
-                if (!c.count) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                if ([c[0] isEqualToString:@"S"] && c.count >= 3) {
-                    NSString *key = c[1]; NvShader *sh = warm_shader(dict, key, c[2].intValue);
-                    if (!sh) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh;
-                    warm_enqueue(item);
-                } else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
-                    pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
-                    NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil;
-                    NvShader *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
-                    if (!vs || (fkey.length && !fs)) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    id<MTLFunction> fsfn = nil;
-                    if (sk.fz) {
-                        if (sk.fz_desc.kind == 1 && fs) { int fx[32]; for (int i = 0; i < 32; i++) fx[i] = sk.fz_desc.fx[i]; fsfn = bf_fn(fs, fx, sk.fz_desc.fbmask, sk.k.lmap); }
-                                                if (!fsfn) { g_warm_skip_fz++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                [seen addObject:line]; [todo addObject:line];
+            }
+            for (NSUInteger at = 0; at < todo.count; at += WARM_BLOCK) @autoreleasepool {
+                NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, todo.count - at))];
+                warm_load_rows(block, dict);   // the block's shaders on several threads; its pipelines below, in list order
+                for (NSString *line in block) {
+                    NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+                    if (!c.count) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                    if ([c[0] isEqualToString:@"S"] && c.count >= 3) {
+                        NSString *key = c[1]; NvShader *sh = warm_shader(dict, key, c[2].intValue);
+                        if (!sh) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh;
+                        warm_enqueue(item);
+                    } else if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
+                        pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk)) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
+                        NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil;
+                        NvShader *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
+                        if (!vs || (fkey.length && !fs)) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        id<MTLFunction> fsfn = nil;
+                        if (sk.fz) {
+                            if (sk.fz_desc.kind == 1 && fs) { int fx[32]; for (int i = 0; i < 32; i++) fx[i] = sk.fz_desc.fx[i]; fsfn = bf_fn(fs, fx, sk.fz_desc.fbmask, sk.k.lmap); }
+                                                    if (!fsfn) { g_warm_skip_fz++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        }
+                        pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
+                        NSError *e = nil; uint64_t ps_started = bp_now();
+                        id ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e];
+                        atomic_fetch_add(&g_warm_pipeline_ns, bp_now() - ps_started); atomic_fetch_add(&g_warm_pipeline_count, 1);
+                        if (!ps) { MLOG("【红】后台建渲染管线失败：%s", e.localizedDescription.UTF8String); warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = vkey; item->fs_key = fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
+                        warm_enqueue(item); g_warm_rps++;
+                    } else if ([c[0] isEqualToString:@"C"] && c.count >= 2) {
+                        NSString *key = c[1]; if (!key.length) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        NvShader *cs = warm_shader(dict, key, 5);
+                        if (!cs) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        NSError *e = nil; uint64_t ps_started = bp_now(); id ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
+                        atomic_fetch_add(&g_warm_pipeline_ns, bp_now() - ps_started); atomic_fetch_add(&g_warm_pipeline_count, 1);
+                        if (!ps) { MLOG("【红】后台建计算管线失败：%s", e.localizedDescription.UTF8String); warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                        WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps;
+                        warm_enqueue(item); g_warm_cps++;
                     }
-                    pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
-                    NSError *e = nil; uint64_t ps_started = bp_now();
-                    id ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e];
-                    atomic_fetch_add(&g_warm_pipeline_ns, bp_now() - ps_started); atomic_fetch_add(&g_warm_pipeline_count, 1);
-                    if (!ps) { MLOG("【红】后台建渲染管线失败：%s", e.localizedDescription.UTF8String); warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = vkey; item->fs_key = fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
-                    warm_enqueue(item); g_warm_rps++;
-                } else if ([c[0] isEqualToString:@"C"] && c.count >= 2) {
-                    NSString *key = c[1]; if (!key.length) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    NvShader *cs = warm_shader(dict, key, 5);
-                    if (!cs) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    NSError *e = nil; uint64_t ps_started = bp_now(); id ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&e];
-                    atomic_fetch_add(&g_warm_pipeline_ns, bp_now() - ps_started); atomic_fetch_add(&g_warm_pipeline_count, 1);
-                    if (!ps) { MLOG("【红】后台建计算管线失败：%s", e.localizedDescription.UTF8String); warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-                    WarmItem *item = [WarmItem new]; item->kind = 2; item->key = key; item->shader = cs; item->object = ps;
-                    warm_enqueue(item); g_warm_cps++;
+                    warm_task_done(&done,total,shader_total,pipeline_total,dict);
                 }
-                warm_task_done(&done,total,shader_total,pipeline_total,dict);
             }
             if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1);
         }
@@ -6224,7 +6365,8 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         }
         if (runtime_warm_progress) runtime_warm_progress(done,total,dict.count,shader_total,g_warm_rps+g_warm_cps,pipeline_total);
         uint64_t cached = 0, failed = 0;
-        for (NSString *file in cache_files) {
+        NSMutableArray<NSString *> *lkeys = [NSMutableArray array]; NSMutableArray<NSNumber *> *lstages = [NSMutableArray array];
+        for (NSString *file in cache_files) @autoreleasepool {
             if (![file hasSuffix:@"_b.metal"]) continue;
             NSString *key = [file stringByDeletingPathExtension];
             if (dict[key]) { warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
@@ -6234,17 +6376,26 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             NSString *stage = j[@"stage"];
             int st = [stage isEqual:@"vs"] ? 0 : [stage isEqual:@"ps"] ? 1 : [stage isEqual:@"cs"] ? 5 : -1;
             if (st < 0 || ![j[@"chain"] isEqual:@DMSH_CHAIN]) { failed++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-            NvShader *sh = warm_shader(dict, key, st);
-            if (!sh) { failed++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
-            WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh;
-            warm_enqueue(item); cached++;
-            warm_task_done(&done,total,shader_total,pipeline_total,dict);
+            [lkeys addObject:key]; [lstages addObject:@(st)];
+        }
+        for (NSUInteger at = 0; at < lkeys.count; at += WARM_BLOCK) @autoreleasepool {   // on several threads, a block at a time
+            NSRange r = NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, lkeys.count - at));
+            NSArray<NSString *> *block = [lkeys subarrayWithRange:r];
+            warm_load_keys(block, [lstages subarrayWithRange:r], dict);
+            for (NSString *key in block) {
+                NvShader *sh = dict[key];
+                if (!sh) { failed++; warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
+                WarmItem *item = [WarmItem new]; item->kind = 0; item->key = key; item->shader = sh;
+                warm_enqueue(item); cached++;
+                warm_task_done(&done,total,shader_total,pipeline_total,dict);
+            }
         }
         if (runtime_warm_progress) runtime_warm_progress(done,total,dict.count,shader_total,g_warm_rps+g_warm_cps,pipeline_total);
         MLOG("缓存补充预热：新增 %llu 个着色器，%llu 个失败；清单里还不在翻译缓存的着色器 %llu 个（第一次用到时现翻，自动收集）", cached, failed, (unsigned long long)g_warm_missing);
-        MLOG("管线预热完成：着色器 %llu 个 / 渲染管线 %llu 个（跳过特化片元 %llu）/ 计算管线 %llu 个，后台用时 %.1f ms",
-             (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6);
-        MLOG("预热分段：着色器库 %llu 次 / %.1f ms，Metal 管线 %llu 次 / %.1f ms",
+        MLOG("管线预热完成：着色器 %llu 个 / 渲染管线 %llu 个（跳过特化片元 %llu）/ 计算管线 %llu 个，后台用时 %.1f ms（着色器库 %d 个线程%s）",
+             (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, warm_threads(),
+             atomic_load(&g_warm_in_play) && warm_threads() > 2 ? "，进世界后 2 个" : "");
+        MLOG("预热分段：着色器库 %llu 次 / %.1f ms（各线程用时相加），Metal 管线 %llu 次 / %.1f ms",
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
     }
@@ -6259,6 +6410,7 @@ int mtl_warm_wait(int timeout_ms) {
     if (!atomic_load(&g_warm_running)) return 0;
     uint64_t t0 = bp_now();
     while (atomic_load(&g_warm_running) && (timeout_ms < 0 || (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms)) usleep(2000);
+    atomic_store(&g_warm_in_play, 1);   // the player goes into the world: the rest of the warm-up uses at most 2 threads
     return (int)((bp_now() - t0) / 1000000ull) + 1;
 }
 /* TOTK (iOS): variants the phone was missing (shader-requests/, written by totk_rt_variant) that fill_shaders.py has since
@@ -6348,18 +6500,27 @@ static void warm_start(void) {
     if (e && *e) {
         paths = @[@(e)];
     } else {
-        NSString *seed = [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"pso_manifest.tsv"];
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *dir = g_shmap_path.stringByDeletingLastPathComponent;
+        NSString *title = [dir stringByAppendingPathComponent:@"pso_title.tsv"];
+        NSString *seed = [dir stringByAppendingPathComponent:@"pso_manifest.tsv"];
         NSMutableArray<NSString *> *all = [NSMutableArray array];
-        // This selected-version seed has real MSL/reflection, including on a
-        // fresh install. Warm it before the title; identifiers alone cannot warm.
-        const char *seedMode = getenv("TOTK_SHADER_SEED");
-        NSString *prepared = [g_shmap_path.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"shader-seed/pso_manifest.tsv"];
-        if (!(seedMode && !strcmp(seedMode, "off")) && [NSFileManager.defaultManager fileExistsAtPath:prepared]) [all addObject:prepared];
-        if ([NSFileManager.defaultManager fileExistsAtPath:seed]) [all addObject:seed];
+        // The first list is the one the first frame waits for (g_warm_priority_done below): only what the title screen,
+        // its menu and the save list use (pso_title.tsv, recorded 2026-10-18 on 1.4.3, 1.1.2 and 1.0.0; rows of another
+        // version are not in this cache and are skipped like any missing row). With the
+        // 8,290 prepared shaders first the title came after 7-8 s even with warm caches and after about 10 minutes on a
+        // Mac whose Metal cache has never seen them. Without the title list the game's manifest goes first, as before.
+        if ([fm fileExistsAtPath:title]) [all addObject:title];
+        if ([fm fileExistsAtPath:seed]) [all addObject:seed];
         NSString *user = pso_user_path();
-        if (user && [NSFileManager.defaultManager fileExistsAtPath:user]) [all addObject:user];
+        if (user && [fm fileExistsAtPath:user]) [all addObject:user];
         NSString *shared = pso_shared_path();   // what every session collected (pso_user_record)
-        if ([NSFileManager.defaultManager fileExistsAtPath:shared]) [all addObject:shared];
+        if ([fm fileExistsAtPath:shared]) [all addObject:shared];
+        // The selected version's prepared shaders (real MSL, also on a fresh install) come last: they are shader libraries
+        // only, while the lists above also build the pipelines the first scenes need.
+        const char *seedMode = getenv("TOTK_SHADER_SEED");
+        NSString *prepared = [dir stringByAppendingPathComponent:@"shader-seed/pso_manifest.tsv"];
+        if (!(seedMode && !strcmp(seedMode, "off")) && [fm fileExistsAtPath:prepared]) [all addObject:prepared];
         paths = all;
         NSMutableString *desc = [NSMutableString string];
         for (NSString *p in paths) { NSString *t = [NSString stringWithContentsOfFile:p encoding:NSUTF8StringEncoding error:nil];
@@ -6378,8 +6539,8 @@ static void warm_start(void) {
     dispatch_queue_t q = dispatch_queue_create("dm.nvn.pso-warm", attr);
     atomic_store(&g_warm_running, 1);
     dispatch_async(q, ^{ warm_worker(paths,files,eligible,planned_keys,total,shader_total,pipeline_total); });
-    // The title's seed manifest must be ready before its first frame. The
-    // profile-specific list and remaining translated variants finish behind
+    // The title's list must be ready before its first frame. The other lists,
+    // the prepared shaders and the remaining translated variants finish behind
     // the menu, then mtl_warm_wait at save-load waits before entering play.
     uint64_t wait_start = bp_now();
     while (!atomic_load(&g_warm_priority_done)) usleep(2000);
@@ -8573,7 +8734,7 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
         NSString *src = [NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\nconstant float4 cc [[function_constant(0)]];\n"
             "vertex float4 cq_vs(uint id [[vertex_id]]) { float2 p = float2((id << 1) & 2, id & 2); return float4(p * 2 - 1, 0, 1); }\n"
             "struct O { float4 c [[color(%d)]]; };\nfragment O cq_fs() { O o; o.c = cc; return o; }\n", index];
-        NSError *e = nil; libs[index] = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        NSError *e = nil; libs[index] = totk_msl_library(src, &e);
         if (!libs[index]) MDIE("clear shader: %s", e.localizedDescription.UTF8String);
     }
     NSString *key = [NSString stringWithFormat:@"%d/%x/%u,%u,%u,%u,%u,%u,%u,%u/%u/%u/%u/%a,%a,%a,%a", index, mask, cfmt[0], cfmt[1], cfmt[2], cfmt[3], cfmt[4], cfmt[5], cfmt[6], cfmt[7],
@@ -10921,6 +11082,7 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
     uint64_t mfx_at = atomic_load(&g_mfxup_last), gen_at = atomic_load(&g_mfxi_last), cur = atomic_load(&g_cur_frame);   // the last game frame MetalFX did the upscale (" MFX") / an interpolated frame was shown ("+50")
     int gen = gen_at && cur - gen_at < 30 ? fps_overlay_gen_value() : 0;
     fps_overlay_info info = {fps_overlay_value(), (int)lround(vp.width), (int)lround(vp.height), mfx_at && cur - mfx_at < 30, gen > 0 ? gen : 0, atomic_load(&g_pic_big)};
+    if (hud_compact()) { char text[96]; fps_overlay_text(&info, text, sizeof text); hud_publish(HUD_FPS, text, 0); return 0; }   // shown in the window's corner panel
     pthread_mutex_lock(&mu);
     if (g_fps_key[slot].scale != scale || memcmp(&g_fps_key[slot].info, &info, sizeof info)) {
         fps_overlay_raster(&info, scale, px, &g_fps_box[slot][0], &g_fps_box[slot][1]);
@@ -10947,6 +11109,7 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), newest = last > plast ? last : plast;
     char text[48]; shader_overlay_text(text, sizeof text, fresh, total, pso);
     int hl = newest && now - newest < 3000000000ull, scale = fps_overlay_scale(vp.height);
+    if (hud_compact()) { hud_publish(HUD_SHADER, text, hl); return 0; }
     pthread_mutex_lock(&mu);
     if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, text)) {
         fps_overlay_raster_line(text, hl, scale, px, &g_shd_box[slot][0], &g_shd_box[slot][1]);
@@ -10971,6 +11134,7 @@ static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, floa
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     static uint8_t px[LOAD_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
     char text[96]; sysload_text(text, sizeof text, &li);
+    if (hud_compact()) { hud_publish(HUD_LOAD, text, 0); return 0; }
     int scale = fps_overlay_scale(vp.height);
     pthread_mutex_lock(&mu);
     if (g_load_key[slot].scale != scale || strcmp(g_load_key[slot].text, text)) {
@@ -12127,8 +12291,8 @@ int mtl_probe_depth_output(void) {
     mtl_init();
     NSString *vsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 p [[position]]; };\nvertex V vs(uint id [[vertex_id]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return {float4(p[id],0.75,1)}; }";
     NSString *fsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct main0_out { float4 color [[color(0)]]; float gl_FragDepth [[depth(any)]]; };\nfragment main0_out main0() { main0_out out = {}; out.gl_FragDepth=0.125; out.color=float4(out.gl_FragDepth*2,0.5,0.75,1); return out; }";
-    NSError *err = nil; id<MTLLibrary> vl = [g_dev newLibraryWithSource:vsrc options:totk_precise_opts() error:&err];
-    id<MTLLibrary> fl = [g_dev newLibraryWithSource:fsrc options:totk_precise_opts() error:&err];
+    NSError *err = nil; id<MTLLibrary> vl = totk_msl_library(vsrc, &err);
+    id<MTLLibrary> fl = totk_msl_library(fsrc, &err);
     if (!vl || !fl) MDIE("depth output probe compile: %s", err.localizedDescription.UTF8String);
     NvShader *vs = [NvShader new], *fs = [NvShader new]; vs->fn = [vl newFunctionWithName:@"vs"]; vs->io = @{};
     fs->fn = [fl newFunctionWithName:@"main0"]; fs->src = fsrc; fs->io = @{}; fs->writes_depth = 1; strcpy(fs->key, "probe-depth-output");
@@ -13056,7 +13220,7 @@ int mtl_probe_dispatch_chain(void) {
     NvProg *pr[2]; prog_t pg[2] = {{0}, {0}};
     for (int k = 0; k < 2; k++) {
         NSError *e = nil; NSString *msl = [NSString stringWithFormat:@"%s%s", head, body[k]];
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:msl options:totk_precise_opts() error:&e];
+        id<MTLLibrary> lib = totk_msl_library(msl, &e);
         if (!lib) MDIE("dispatch-chain probe: kernel %d does not compile: %s", k, e.localizedDescription.UTF8String);
         NvShader *cs = [NvShader new]; cs->fn = [lib newFunctionWithName:@"main0"]; cs->stage = 5; cs->src = msl;
         snprintf(cs->key, sizeof cs->key, "probe-dispatch-chain-%d", k);
@@ -13133,7 +13297,7 @@ int mtl_probe_layer_merge(void) {
         "    out.m_0 = float4(float(k + 1u) / 64.0, 0.25, 0.5, 1.0);\n    if (k >= 64u)\n    {\n        return out;\n    }\n    return out;\n}\n";
     NSString *fsrc = @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 c [[color(0)]];\n};\n\nstruct main0_in\n{\n    float4 m_0 [[user(locn0)]];\n};\n\n"
         "fragment main0_out main0(main0_in in [[stage_in]])\n{\n    main0_out out = {};\n    out.c = in.m_0;\n    return out;\n}\n";
-    NSError *e = nil; id<MTLLibrary> vl = [g_dev newLibraryWithSource:vsrc options:totk_precise_opts() error:&e], fl = vl ? [g_dev newLibraryWithSource:fsrc options:totk_precise_opts() error:&e] : nil;
+    NSError *e = nil; id<MTLLibrary> vl = totk_msl_library(vsrc, &e), fl = vl ? totk_msl_library(fsrc, &e) : nil;
     if (!vl || !fl) MDIE("layer probe shaders: %s", e.localizedDescription.UTF8String);
     NvShader *vs = [NvShader new], *vs_plain = [NvShader new], *fs = [NvShader new];
     vs->fn = vs_plain->fn = [vl newFunctionWithName:@"main0"]; vs->src = vsrc; strcpy(vs->key, "probe-layer-vs"); strcpy(vs_plain->key, "probe-layer-vs-without-msl");
@@ -13397,6 +13561,7 @@ int mtl_probe_arg_epoch(void) {
 }
 
 #include "nvn_tex_slots_probe.h"
+#include "nvn_copy_alias_probe.h"
 
 #include "nvn_pool_retire_probe.h"
 #include "nvn_cube_group_probe.h"

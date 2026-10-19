@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make a new diagnostic profile copy with a guarded saved spawn position.
 
-Input must use a verified 1.0.0/1.1.2 save layout, which 1.4.3 can migrate when
+Input must use a verified 1.0.0/1.1.2 save layout (1.2.1 writes the 1.1.2 one), which 1.4.3 can migrate when
 loading. This deliberately does not assume a layout for newly written saves.
 Only the new copy is edited; existing destinations are always refused.
 """

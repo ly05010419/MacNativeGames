@@ -229,7 +229,7 @@ static void patch_render_res(Module *m) {
    TOTK_OUTPUT_RES: auto (the Mac default) = a 2560x1440 swapchain and heaps so that key 3 can switch at any time, starting at
    1920x1080 (the user's choice, 2026-10-17: "default 1080p"; needs the HeapDef overlay built by make romfs-patches; without
    it the game's own 1920x1080, no switching); <w>x<h> = that largest size, starting there (TOTK_OUTPUT_RES=2560x1440 starts
-   in true 2K); 0 = the game's own 1920x1080, no switching. The iOS export (TOTK_EXPORT_IOS) only takes an explicit size. Decided once;
+   in true 2K); 0 = the game's own 1920x1080, no switching. iOS and the iOS export (TOTK_EXPORT_IOS) keep the game's own size. Decided once;
    every caller sees the same answer. Mac only. */
 static int output_full_at_start = 1;
 static int output_res_auto(unsigned *w, unsigned *h) {
@@ -251,7 +251,12 @@ static int output_res(unsigned *w, unsigned *h) {
     static int decided, on; static unsigned cw, ch;
     if (!decided) {
         const char *e = getenv("TOTK_OUTPUT_RES");
-        if (e && !strcmp(e, "0")) on = 0;
+        /* iOS shows 720p only (the user, 2026-10-18), auto or not; the iOS export (TOTK_EXPORT_IOS) makes the phone's
+           embedded code on the Mac, so it follows the same rule. */
+        if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS")) {
+            on = 0;
+            if (e && *e && strcmp(e, "0") && strcmp(e, "auto")) fprintf(stderr, "[totk] TOTK_OUTPUT_RES=%s ignored: iOS shows 720p only\n", e);
+        } else if (e && !strcmp(e, "0")) on = 0;
         else if (!e || !*e || !strcmp(e, "auto")) on = output_res_auto(&cw, &ch);
         else if (sscanf(e, "%ux%u", &cw, &ch) != 2 || cw < 640 || ch < 360 || cw > 7680 || ch > 4320) runtime_fail("TOTK_OUTPUT_RES must be <width>x<height> (640x360 .. 7680x4320), auto or 0");
         else on = 1;

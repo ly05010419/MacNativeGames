@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""MacNativeGames: turn your own XCI or NSP into a native Mac app (macOS only).
+"""MacNativeGames: turn your own XCI or NSP into a native Mac app or iPhone/iPad IPA.
 
-    python3 build_app.py <game.xci|game.nsp> -k <prod.keys> [-o "<output>.app"] [--work <folder>]
+    python3 build_app.py <game.xci|game.nsp> -k <prod.keys> [--platform macos|ios] [-o <output>] [--work <folder>]
 
 Supported: TOTK base 1.0.0 (0100F2C0115B6000), XCI or NSP; optional --update with a supported cumulative update.
-NSPs need common tickets (unless rights-free) and a separate shared-font source. No iPhone/iOS builds are supported.
+NSPs need common tickets (unless rights-free) and a separate shared-font source. iOS builds are unsigned IPAs for sideloading and require Xcode 26+, xcodegen, CMake, and network access to build device libraries.
 Nothing from the game is in this repository; everything is made from your files on your Mac. Key values are never printed.
 
 Steps (each one checked against games/totk/assets/expected-v<version>.json, so a damaged dump or another version stops the
@@ -15,14 +15,17 @@ build at the first wrong file):
      ready-made as a native program (games/totk/prebuilt/macos-arm64: vendor/ryujinx + patches + Service.cs, made with
      games/totk/tools/totk_xlate/publish_native.sh); startup shaders are extracted from your selected RomFS and
      translated into a bundled seed, ready for GPU warm-up even with an empty cache on the first launch
-  4. the game binary, the launcher, and the app bundle (the 17 GB RomFS is an APFS clone when on the same volume)
+  4. the game binary and either a macOS app bundle or an unsigned iPhone/iPad IPA (large game data is cloned when possible);
+     for the Mac the startup shaders are then compiled once into this Mac's Metal cache (about 2 minutes on an M4), so the
+     first start does not compile them in the background (games/totk/tools/warm_metal_cache.m)
 
 Every intermediate file is in the work folder (default: "<game file folder>/TOTK_build"); a second run reuses
-what is already done and correct. The finished app keeps no writable state: saves, the shader cache and logs go to
-~/Library/Application Support/MacNativeGames/TOTK and ~/Library/Logs/MacNativeGames.
+what is already done and correct. Mac saves, shader cache and logs go to the user's Library folders; iOS keeps saves
+and the writable shader cache in the app's Documents container.
 
-Needs: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
+Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
     brew install opus libvpx python@3.14
+For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and Ninja.
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
@@ -33,8 +36,10 @@ REPO = Path(__file__).resolve().parent
 GAME = REPO / 'games/totk'
 EXPECTED = json.loads((GAME / 'assets/expected-v1.0.0.json').read_text())
 UPDATED = json.loads((GAME / 'assets/expected-v1.1.2.json').read_text())
+UPDATED121 = json.loads((GAME / 'assets/expected-v1.2.1.json').read_text())
 UPDATED143 = json.loads((GAME / 'assets/expected-v1.4.3.json').read_text())
-VERSIONS = {'v0': EXPECTED, 'v112': UPDATED, 'v143': UPDATED143}
+VERSIONS = {'v0': EXPECTED, 'v112': UPDATED, 'v121': UPDATED121, 'v143': UPDATED143}
+UPDATES = ('v112', 'v121', 'v143')
 HACTOOL = ('https://github.com/SciresM/hactool.git', '1d64a83450e025622f3468c28fc4164dad2c5ef6')
 APP_NAME = 'Tears of the Kingdom'
 BUNDLE_ID = 'org.macnativegames.totk'
@@ -220,7 +225,7 @@ def prepare_update_container(tree, game, keys, logs):
 def identify_update(tree, game, keys, logs):
     """Choose the runtime by verified module bytes, never by the package filename."""
     source = prepare_update_container(tree, game, keys, logs)
-    for version in ('v112', 'v143'):
+    for version in UPDATES:
         exefs = tree / f'extracted/{version}/exefs'
         if source_matches(exefs.parent / 'extraction-manifest.json', source) and all(
                 (exefs / name).is_file() and sha256(exefs / name) == digest
@@ -231,10 +236,10 @@ def identify_update(tree, game, keys, logs):
     run([tree / '.venv/bin/python', 'scripts/extract_exefs.py', source, '--keys', keys,
          '--update', '--output', staging / 'exefs'], logs / 'identify-update.log', cwd=tree)
     actual = {path.name: sha256(path) for path in (staging / 'exefs').iterdir()}
-    version = next((version for version in ('v112', 'v143')
+    version = next((version for version in UPDATES
                     if actual == VERSIONS[version]['exefs_sha256']), None)
     if version is None:
-        raise BuildError('unsupported update module hashes; expected 1.1.2 or 1.4.3 (the file name is not used to choose a version)')
+        raise BuildError('unsupported update module hashes; expected 1.1.2, 1.2.1 or 1.4.3 (the file name is not used to choose a version)')
     target = tree / f'extracted/{version}'
     target.mkdir(parents=True, exist_ok=True)
     if (target / 'exefs').exists(): shutil.rmtree(target / 'exefs')
@@ -518,17 +523,45 @@ def step_shaders(tree, logs, *, version='v0'):
     run([tree/'.venv/bin/python', 'scripts/prepare_shader_seed.py',
          '--romfs', tree/f'extracted/{version}/romfs', '--output', tree/f'build/shader-seed/{version}',
          '--translator', translator, '--spirv-cross', tree/'build/spirv-cross/spirv-cross',
-         '--version', version], logs/'prepare-shader-seed.log', cwd=tree)
+         '--version', version, '--modules', tree/f'rewritten/{version}'], logs/'prepare-shader-seed.log', cwd=tree)
+
+
+def developer_dirs():
+    """Developer folders that may hold the Metal toolchain: DEVELOPER_DIR, the one xcode-select points at, Xcode*.app in
+    /Applications, then any Xcode Spotlight knows (one kept outside /Applications, for example next to the game)."""
+    found = [os.environ['DEVELOPER_DIR']] if os.environ.get('DEVELOPER_DIR') else []
+    try:
+        found.append(subprocess.check_output(['xcode-select', '-p'], text=True, stderr=subprocess.DEVNULL).strip())
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Applications').glob('Xcode*.app'))]
+    found += [str(p / 'Contents/Developer') for p in sorted(Path.home().glob('Applications/Xcode*.app'))]
+    # An Xcode kept on another volume, at its top or one folder down (Spotlight may not index it)
+    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/Xcode*.app'))]
+    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/*/Xcode*.app'))]
+    try:
+        spotlight = subprocess.check_output(['mdfind', "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"], text=True,
+                                            stderr=subprocess.DEVNULL)
+        found += [line + '/Contents/Developer' for line in spotlight.splitlines() if line.endswith('.app')]
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return list(dict.fromkeys(d for d in found if d))
 
 
 def metal_compiler():
-    """Apple's offline shader compiler, or None: it comes with Xcode's optional Metal toolchain, not the command line tools."""
-    found = subprocess.run(['xcrun', '--find', 'metal'], capture_output=True, text=True)
-    metal = found.stdout.strip()
-    if found.returncode or not metal:
-        return None
-    version = subprocess.run([metal, '--version'], capture_output=True, text=True)
-    return (metal, version.stdout.splitlines()[0]) if not version.returncode and version.stdout else None
+    """(compiler, its version, the environment to run it with), or None. Apple's offline shader compiler comes with an
+    Xcode's optional Metal toolchain, not the command line tools, so when the selected folder has none the other Xcodes
+    on this Mac are tried."""
+    for developer in developer_dirs():
+        env = dict(os.environ, DEVELOPER_DIR=developer)
+        found = subprocess.run(['xcrun', '--find', 'metal'], capture_output=True, text=True, env=env)
+        metal = found.stdout.strip()
+        if found.returncode or not metal:
+            continue
+        version = subprocess.run([metal, '--version'], capture_output=True, text=True, env=env)
+        if not version.returncode and version.stdout:
+            return metal, version.stdout.splitlines()[0], env
+    return None
 
 
 # The options of totk_precise_opts() in nvn_mtl.m: the translated shaders need exactly rounded float arithmetic.
@@ -536,16 +569,16 @@ METAL_FLAGS = ['-fmetal-math-mode=safe']
 
 
 def step_shader_libs(tree, logs, *, version='v0'):
-    """Compile the startup shaders ahead of time. Metal's own cache of shaders compiled at launch starts over when the
-    app is moved or rebuilt; these files go inside the app. Each is named by the SHA-256 of its source, so the game
-    loads only an exact match, and a rebuild reuses every shader that did not change."""
+    """Compile the startup shaders ahead of time. Metal's own cache of shaders compiled at launch does not follow the
+    app to a folder whose path has another length (step_warm_metal); these files go inside the app. Each is named by the
+    SHA-256 of its source, so the game loads only an exact match, and a rebuild reuses every shader that did not change."""
     sources = sorted((tree/f'build/shader-seed/{version}').glob('*.metal'))
     found = metal_compiler()
     if not found:
-        say('3/4 shaders: no Metal toolchain (xcodebuild -downloadComponent MetalToolchain), so the startup shaders are '
-            'compiled on the first launch, and again after the app is moved or rebuilt')
+        say('3/4 shaders: no Metal toolchain (xcodebuild -downloadComponent MetalToolchain), so the startup shaders go '
+            "into Metal's cache for the app's location at the end of the build instead; moving the app makes them cold again")
         return
-    metal, compiler = found
+    metal, compiler, metal_env = found
     libs = tree/'build/shader-libs'
     stamp = libs/'compiler.txt'
     identity = ' '.join([compiler, *METAL_FLAGS])
@@ -563,7 +596,7 @@ def step_shader_libs(tree, logs, *, version='v0'):
     def compile_one(item):
         digest, src = item
         partial = libs/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True)
+        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=metal_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
             return f'{src.name}\n{r.stdout}{r.stderr}'
@@ -582,6 +615,9 @@ def step_binary(tree, game, keys, env, logs, *, version="v0"):
     run(['make', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *([] if version == 'v0' else [f'-DTOTK_GAME_{version.upper()}=1']), 'app/launcher.m', '-framework', 'AppKit',
          '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
+    # used only while packaging (step_warm_metal); not part of the app
+    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
+         '-framework', 'Foundation', '-o', 'build/warm-metal-cache'], logs / 'warm-metal-cache-build.log', cwd=tree, env=env)
     if not (tree / 'build/AppIcon.icns').exists():   # the game's own icon from its control data; optional
         try:
             run([tree / '.venv/bin/python', 'scripts/extract_app_icon.py', game, '--keys', keys, '--output', 'build/AppIcon.icns'],
@@ -617,7 +653,7 @@ def step_app(tree, out, logs, *, version="v0"):
         shutil.rmtree(tmp)
     res = tmp / 'Contents/Resources/totk'
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res/'build/totk-native')
-    for rel in ('build/pso_manifest.tsv', 'build/spirv-cross/spirv-cross',
+    for rel in ('build/pso_manifest.tsv', 'build/pso_title.tsv', 'build/spirv-cross/spirv-cross',
                 f'rewritten/{version}/main.patched.bin', f'rewritten/{version}/sdk.patched.bin',
                 f'rewritten/{version}/subsdk0.patched.bin', f'extracted/{version}/romfs/romfs.bin', f'extracted/{version}/romfs/runtime-index.bin'):
         clone(tree / rel, res / rel)
@@ -671,13 +707,102 @@ def step_app(tree, out, logs, *, version="v0"):
     tmp.rename(out)
 
 
+def last_json(log):
+    """The tool's report: its last line that is a JSON object."""
+    for line in reversed(log.read_text(errors='replace').splitlines()):
+        if line.startswith('{'):
+            try: return json.loads(line)
+            except ValueError: pass
+    return None
+
+
+def metal_cache_users():
+    """Programs that have the Metal library cache of programs without an app bundle open, as 'name (pid)'. Whatever a
+    program compiles there while another program that opened it first is running is lost when that other program quits
+    (2026-10-18: 20 new libraries found while it ran, 2 after it quit; a packaging run with a short-lived probe running at
+    its start kept 1 of 64)."""
+    try:
+        cache = subprocess.run(['getconf', 'DARWIN_USER_CACHE_DIR'], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    files = sorted(str(f) for f in Path(cache, 'com.apple.metal').glob('*/libraries.*'))
+    if not files:
+        return []
+    try:
+        listed = subprocess.run(['lsof', '-F', 'pc', '--', *files], capture_output=True, text=True).stdout
+    except OSError:
+        return []
+    users, pid = set(), None
+    for line in listed.splitlines():
+        if line.startswith('p'):
+            pid = line[1:]
+        elif line.startswith('c') and pid:
+            users.add(f'{line[1:]} ({pid})')
+    return sorted(users)
+
+
+def step_warm_metal(tree, out, logs):
+    """Compile the app's startup shaders once into this Mac's Metal cache (2026-10-18). The game compiles each of them from
+    source when it first meets it, and Metal keeps the result keyed by the source text, the compile options and the length
+    of the path of the compiling program's folder (only its length: another folder with a path as long finds them too);
+    on a Mac that has never compiled them (a new Mac, after the system purged its cache, or after the app moved) the game's
+    background warm-up spends about 3 minutes (M4, 8 threads) compiling them, and the world stutters if the player goes
+    in before it is done. The tool (games/totk/tools/warm_metal_cache.m) compiles the same files with the same options from
+    the game binary's own folder, and is removed again afterwards (the app's signature seals that folder). It runs only
+    while no other program has Metal's cache open (what it compiled would be lost when that program quits), and the
+    result is checked in a new process. Nothing here can make the build fail: without it the game compiles the shaders
+    itself, as before."""
+    build = out / 'Contents/Resources/totk/build'
+    seed = build / 'shader-seed'
+    tool = build / 'warm-metal-cache'   # next to the game binary: Metal matches the length of the program's folder path
+    tool.unlink(missing_ok=True)        # left by an interrupted build
+    sources = sorted(seed.glob('*_b.metal'))
+    if sources and all((build / 'shader-libs' / f'{sha256(src)}.metallib').is_file() for src in sources):
+        say('4/4 app: the startup shaders are compiled into the app (step_shader_libs), so Metal\'s cache needs no warming')
+        return
+    users = metal_cache_users()
+    if users or subprocess.run(['pgrep', '-q', 'totk-native']).returncode == 0:
+        who = ', '.join(users) if users else 'a game'
+        say(f"4/4 app: {who} has Metal's shader cache open, so the startup shaders are compiled on the first start instead "
+            '(what this build compiled now would be lost when that program quits)')
+        return
+    say("4/4 app: compiling the startup shaders for this Mac's GPU once (about 2 minutes on an M4; minutes saved on the first start)")
+    t0 = time.time()
+    try:
+        clone(tree / 'build/warm-metal-cache', tool)
+        run([tool, seed], logs / 'warm-metal-cache.log')
+        run([tool, seed, '--verify', '64'], logs / 'warm-metal-cache-verify.log', quiet=False)
+    except (BuildError, OSError) as e:
+        say(f'   not done, the first start compiles them instead: {str(e).splitlines()[0]}')
+        return
+    finally:
+        tool.unlink(missing_ok=True)
+    done, sample = last_json(logs / 'warm-metal-cache.log'), last_json(logs / 'warm-metal-cache-verify.log')
+    if not done or not sample:
+        say(f'   no report from the tool, the first start compiles them instead (see {logs / "warm-metal-cache.log"})')
+        return
+    if done.get('failed'):
+        say(f"   {done['failed']} shaders do not compile on this Mac (the game reports them in its log too); see {logs / 'warm-metal-cache.log'}")
+    if sample['sampled'] and sample['hits'] * 10 >= sample['sampled'] * 9:
+        say(f"   {done['compiled']} shaders compiled in {time.time() - t0:.0f} s; a new program finds them in Metal's cache "
+            f"({sample['hits']} of {sample['sampled']} sampled, median {sample['median_ms']:.1f} ms). Moving the app makes them "
+            f"cold again.")
+    else:
+        users = metal_cache_users()
+        why = (f"{', '.join(users)} has Metal's cache open now" if users else
+               'another program probably used Metal\'s cache meanwhile; build again with no other program running to retry')
+        say(f"   compiled, but Metal did not keep them ({sample['hits']} of {sample['sampled']} sampled found, median "
+            f"{sample['median_ms']:.0f} ms; {why}); the first start compiles them instead")
+
+
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description='Build one native macOS app from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2 or 1.4.3 update.',
+    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update.',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app')
+    ap.add_argument('--platform', choices=('macos','ios'), default='macos', help='build a macOS app (default) or unsigned iPhone/iPad IPA')
     ap.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys')
-    ap.add_argument('-o', '--out', type=Path, help=f'the app to write (default: "{APP_NAME}.app" next to the game file)')
+    ap.add_argument('-o', '--out', type=Path, help=f'the app or IPA to write (default depends on --platform; next to the game file)')
     ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file)')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available)')
@@ -692,10 +817,10 @@ def main(argv):
         raise BuildError(f'no such file: {game}')
     if not keys.is_file():
         raise BuildError(f'no such file: {keys}')
-    out = (args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.app')
+    out = (args.out.expanduser().resolve() if args.out else game.parent / (f'{APP_NAME}.ipa' if args.platform=='ios' else f'{APP_NAME}.app'))
     work = (args.work.expanduser().resolve() if args.work else game.parent / 'TOTK_build')
-    if out.suffix != '.app':
-        raise BuildError(f'the output must end in .app: {out}')
+    if out.suffix.lower() != ('.ipa' if args.platform=='ios' else '.app'):
+        raise BuildError(f'the {args.platform} output must end in {".ipa" if args.platform=="ios" else ".app"}: {out}')
     kind = input_kind(game)
     if kind not in ('xci', 'nsp'):
         raise BuildError('the base game must be an uncompressed XCI or NSP; NSZ is supported for update packages')
@@ -713,12 +838,31 @@ def main(argv):
         raise BuildError('NSP files do not include system shared fonts. Supply --firmware <unpacked firmware NCA directory> '
                          'or --shared-fonts <previously extracted font directory>; valid fonts in --work are also reused.')
     py = prerequisites(args)
-    free = shutil.disk_usage(work.parent if work.parent.exists() else game.parent).free / 2**30
+    def existing_volume_path(path):
+        path=path.resolve()
+        while not path.exists(): path=path.parent
+        return path
+    work_volume=existing_volume_path(work.parent if work.parent.exists() else game.parent)
+    output_volume=existing_volume_path(out.parent if out.parent.exists() else game.parent)
+    free=shutil.disk_usage(work_volume).free/2**30
+    output_free=shutil.disk_usage(output_volume).free/2**30
+    same_volume=os.stat(work_volume).st_dev==os.stat(output_volume).st_dev
+    base_cached=(work/'totk/extracted/v0/romfs/romfs.bin').exists()
     say(f'work folder {work} ({free:.0f} GB free on its volume)')
-    if update and free < 40 and not (work / 'totk/extracted/v0/romfs/romfs.bin').exists():
-        raise BuildError('needs about 40 GB free for a fresh base + update build (19 GB extra with base data cached)')
-    if free < 25 and not (work / 'totk/extracted/v0/romfs/romfs.bin').exists():
-        raise BuildError('needs about 25 GB free for the work folder (the app itself is an APFS clone of it when on the same volume)')
+    if args.platform=='ios':
+        if same_volume:
+            required=(60 if update else 45) if not base_cached else (40 if update else 18)
+        else:
+            required=(40 if update else 25) if not base_cached else (25 if update else 18)
+        if free<required:
+            raise BuildError(f'iOS build needs about {required} GB free on the work/output volume for the IPA archive')
+        if not same_volume and output_free<18:
+            raise BuildError('the output volume needs about 18 GB free for the iOS IPA')
+    else:
+        if update and free<40 and not base_cached:
+            raise BuildError('needs about 40 GB free for a fresh base + update build (19 GB extra with base data cached)')
+        if free<25 and not base_cached:
+            raise BuildError('needs about 25 GB free for the work folder (the app itself is an APFS clone of it when on the same volume)')
     logs = work / 'logs'
     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
     t0 = time.time()
@@ -735,22 +879,30 @@ def main(argv):
     step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
-    step_app(tree, out, logs, version=version)
+    if args.platform=='ios':
+        run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
+             '--logs', logs, '--app-name', APP_NAME, '--bundle-id', BUNDLE_ID], logs/'build-ipa.log', cwd=tree, env=env)
+    else:
+        step_app(tree, out, logs, version=version)
     # Refresh an existing app's version, executable and signing identity before
     # the next Finder launch; the desktop alias keeps pointing to this bundle.
-    run([LSREGISTER, '-f', out], logs / 'register-app.log')
+    if args.platform=='macos': run([LSREGISTER, '-f', out], logs / 'register-app.log')
     # macOS scans a new app the first time it runs (minutes for 16 GB, with nothing on screen): run it once here, in its
     # check-only mode, so the player's first start is immediate.
-    say('4/4 app: macOS checks the new app once (a few minutes for the 16 GB bundle)')
-    t1 = time.time()
-    r = subprocess.run([out / 'Contents/MacOS/TOTK', '--check'], capture_output=True, text=True, timeout=1800)
-    if r.returncode:
-        raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
-    say(f'   checked in {time.time() - t1:.0f} s')
+    if args.platform=='macos':
+        say('4/4 app: macOS checks the new app once (a few minutes for the 16 GB bundle)')
+        t1 = time.time()
+        r = subprocess.run([out / 'Contents/MacOS/TOTK', '--check'], capture_output=True, text=True, timeout=1800)
+        if r.returncode: raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
+        say(f'   checked in {time.time() - t1:.0f} s')
+        step_warm_metal(tree, out, logs)
     say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
-    say('Open it from Finder (or move it to /Applications first: moving within one volume keeps the check). The first '
-        'start verifies the game data, discovers the prepared startup shaders and warms them on your GPU. '
-        'Additional scene/binding variants are translated and cached as they appear.')
+    if args.platform=='macos':
+        say('Open it from Finder. Moving it afterwards (also to /Applications) keeps the macOS check when it stays on the same '
+            'volume, but Metal then compiles the startup shaders again in the background on the next start (a few minutes): '
+            'pass -o with the final location instead. The first start verifies the game data and loads the prepared startup '
+            'shaders. Additional scene/binding variants are translated and cached as they appear.')
+    else: say('Install the unsigned IPA with a sideloading tool. The iOS build needs iOS/iPadOS 26 and a supported game controller; verify gameplay on your device.')
 
 
 if __name__ == '__main__':

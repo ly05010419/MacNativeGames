@@ -144,8 +144,8 @@ void fps_overlay_raster_line(const char *text, int highlight, int scale, uint8_t
     fps_overlay_raster_line_tex(text, highlight, scale, out, FPS_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H, box_w, box_h);
 }
 
-void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h) {
-    char text[MAX_CHARS + 1], fps[8], ss[12];
+void fps_overlay_text(const fps_overlay_info *info, char *text, size_t n) {
+    char fps[8], ss[12];
     if (info->fps < 0) snprintf(fps, sizeof fps, "--");
     else snprintf(fps, sizeof fps, "%d", info->fps > 999 ? 999 : info->fps);
     size_text(ss, sizeof ss, info->screen_w, info->screen_h);
@@ -153,8 +153,42 @@ void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, i
     if (info->gen > 0 && info->fps >= 0) snprintf(gen, sizeof gen, "+%d", info->gen > 999 ? 999 : info->gen);   // interpolated frames a second (key 2)
     // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); 2K: true 2K output.
     // The whole line in the system font, so switching MetalFX does not switch the font.
-    snprintf(text, sizeof text, "FPS %s%s  %s%s%s", fps, gen, ss, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big ? "  2K" : "");
+    snprintf(text, n, "FPS %s%s  %s%s%s", fps, gen, ss, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big ? "  2K" : "");
+}
+
+void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h) {
+    char text[MAX_CHARS + 1];
+    fps_overlay_text(info, text, sizeof text);
     raster_line_ct(text, 0, scale, out, FPS_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H, box_w, box_h);
+}
+
+int hud_compact(void) {
+    static int on = -1;
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    const int def = 0;   // the iOS frontend has no corner panel
+#else
+    const int def = 1;
+#endif
+    if (on < 0) { const char *e = getenv("TOTK_HUD"); on = e ? strcmp(e, "corners") != 0 : def; }
+    return on;
+}
+
+static pthread_mutex_t g_hud_mu = PTHREAD_MUTEX_INITIALIZER;
+static char g_hud_text[HUD_LINES][128];
+static int g_hud_hl[HUD_LINES], g_hud_set[HUD_LINES];
+void hud_publish(int line, const char *text, int highlight) {
+    if (line < 0 || line >= HUD_LINES) return;
+    pthread_mutex_lock(&g_hud_mu);
+    snprintf(g_hud_text[line], sizeof g_hud_text[line], "%s", text); g_hud_hl[line] = highlight; g_hud_set[line] = 1;
+    pthread_mutex_unlock(&g_hud_mu);
+}
+int hud_snapshot(int line, char *out, size_t n, int *highlight) {
+    if (line < 0 || line >= HUD_LINES) return 0;
+    pthread_mutex_lock(&g_hud_mu);
+    int set = g_hud_set[line];
+    if (set) { snprintf(out, n, "%s", g_hud_text[line]); if (highlight) *highlight = g_hud_hl[line]; }
+    pthread_mutex_unlock(&g_hud_mu);
+    return set;
 }
 
 int shader_overlay_enabled(void) {

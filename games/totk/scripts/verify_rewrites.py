@@ -32,7 +32,7 @@ def gate(command, output, environment):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', choices=('v0','v112','v143'), default='v0')
+    parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
     parser.add_argument('--collect-existing', action='store_true')
     parser.add_argument('--jobs', type=int, default=2)
     args = parser.parse_args()
@@ -98,7 +98,8 @@ def main():
                 or any(case['status'] != 'pass' or case['threads'] != 8 for case in atomic['cases'])
                 or atomic['source_sha256'] != digest(ROOT / 'scripts/native_exclusive_probe.c')):
             raise RuntimeError('Native 1.4.3 atomic-window checks did not pass')
-    elif atomic['status'] != 'pass' or atomic['wrong_exit_negative_controls_detected'] != 2:
+    elif (atomic['status'] != 'pass' or not atomic['windows']
+          or atomic['wrong_exit_negative_controls_detected'] != len(atomic['windows'])):
         raise RuntimeError('Atomic-window regression tests did not pass')
     if native['status'] != 'pass' or native['completed_calls'] != 20000 or native['errors'] != 0:
         raise RuntimeError('Native prepared-call hardware test did not pass')
@@ -122,7 +123,7 @@ def main():
                    ['structural_sites', 'semantic_sites', 'trials', 'effective_trials', 'both_fault_trials', 'detected_negative_controls']},
         'scope': ['All listed module rewrite sites checked structurally.',
                   'Full per-site differential verification uses the upstream deexcl model for exclusive accesses.',
-                  'Real exclusive-success and injected-failure behavior separately checked on the two repaired windows.',
+                  'Real exclusive-success and injected-failure behavior separately checked on every w18 external-exit window (two in 1.0.0 and 1.1.2, one in 1.2.1).',
                   'The prepared-call window requires no alternate entry at the original call word; known branches/functions/relocations are checked.',
                   'Darwin TSD hardware checks are for this Mac; this is not a proof for all Apple devices.',
                   '100 SDK system/timer gates are structurally checked; host service semantics are not implemented or tested.',

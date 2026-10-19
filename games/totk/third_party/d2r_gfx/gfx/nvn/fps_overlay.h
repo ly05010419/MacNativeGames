@@ -21,6 +21,14 @@ int fps_overlay_scale(double view_h);
 /* The line in a 5x7 pixel font on a dark box, as BGRA8 pixels in out (FPS_OVERLAY_TEX_W x FPS_OVERLAY_TEX_H,
    row stride FPS_OVERLAY_TEX_W * 4). Returns the box size in pixels. */
 void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h);
+void fps_overlay_text(const fps_overlay_info *info, char *out, size_t n);   /* "FPS 97  2560x1440  MetalFX on" */
+/* Compact HUD (Mac default; TOTK_HUD=corners keeps the lines in the picture's corners): the FPS, shader and load lines are
+   not drawn into the picture but published here, and the window's corner panel (runtime/frontend.m) shows them with the
+   shortcuts in one small box. */
+enum { HUD_FPS, HUD_SHADER, HUD_LOAD, HUD_LINES };
+int hud_compact(void);
+void hud_publish(int line, const char *text, int highlight);
+int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* 0: the line was never published (hidden or not known yet) */
 /* Any one line (at most 80 characters of the 5x7 font) the same way; highlight draws it yellow instead of green. The _tex
    form rasterises into a texture of tex_w x tex_h pixels (row stride tex_w * 4); the scale drops until the line fits. */
 void fps_overlay_raster_line(const char *text, int highlight, int scale, uint8_t *out, int *box_w, int *box_h);

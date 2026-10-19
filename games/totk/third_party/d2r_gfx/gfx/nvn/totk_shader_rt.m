@@ -22,6 +22,11 @@
 #include <stdatomic.h>
 #include "totk_shader_seed.h"
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
+extern void runtime_boot_count(const char *,uint64_t,uint64_t) __attribute__((weak_import));
+static void seed_progress(int pass, NSUInteger done, NSUInteger total) {   // the bar under "Checking the shader cache"
+    if (runtime_boot_count) runtime_boot_count(pass ? TOTK_UI("导入随 App 准备的着色器","Importing the app's shaders")
+                                                    : TOTK_UI("校验随 App 准备的着色器","Verifying the app's shaders"), done, total);
+}
 int totk_depth_near_minus_w(void);   // hle_nvn.c: 1 when the game selected NVN_DEPTH_MODE_NEAR_IS_MINUS_W
 uint64_t dm_nvn_frame_count(void);
 
@@ -55,13 +60,23 @@ NSString *totk_rt_dir(void) {
         g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%s", DMSH_CHAIN];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
-#if !TARGET_OS_IPHONE
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         if (!(seedMode && !strcmp(seedMode, "off"))) {
             NSError *error = nil;
             if (runtime_boot_status) runtime_boot_status(TOTK_UI("检查着色器缓存","Checking the shader cache"),TOTK_UI("校验 App 附带的着色器，并按需导入本机缓存","Verifying the shaders bundled with the app and importing them into the local cache if needed"));
-            NSDictionary *seed = totk_seed_import([root_dir() stringByAppendingPathComponent:@"build/shader-seed"], g_dir, &error);
-            if (!seed) die("startup shader preparation: %s", error.localizedDescription.UTF8String);
+            const char *seedPath = getenv("TOTK_SHADER_SEED_DIR");
+            NSString *source = seedPath ? @(seedPath) : [root_dir() stringByAppendingPathComponent:@"build/shader-seed"];
+            totk_seed_progress = seed_progress;
+            NSDictionary *seed = totk_seed_import(source, g_dir, &error);
+            totk_seed_progress = NULL;
+            if (!seed) {   // 2026-10-18: a damaged bundle or a full disk used to end the game here with nothing on screen. The
+                           // cache stays usable (totk_seed_import writes shader files before the indexes that name them),
+                           // so play on and translate shaders as they first appear, as before the prepared shaders existed.
+                LOG("[shader-seed] 【红】导入 App 附带的着色器失败：%s；改为边玩边翻译",
+                    error ? error.localizedDescription.UTF8String : "unknown error");
+                if (runtime_boot_status) runtime_boot_status(TOTK_UI("着色器缓存未就绪","Shader cache not ready"),TOTK_UI("App 附带的着色器导入失败，改为边玩边翻译","Could not import the shaders bundled with the app; shaders are translated during play"));
+                seed = @{@"available": @NO, @"failed": @YES};
+            }
             if ([seed[@"available"] boolValue]) {
                 unsigned long long imported=[seed[@"imported_files"] unsignedLongLongValue];
                 LOG("[shader-seed] 发现随 App 准备的着色器 %llu 个，导入 %llu 个文件；首次启动即可预热",
@@ -69,8 +84,14 @@ NSString *totk_rt_dir(void) {
                 if (runtime_boot_status) runtime_boot_status(TOTK_UI("着色器缓存已就绪","Shader cache ready"),imported
                     ? [NSString stringWithFormat:@(TOTK_UI("已导入 %llu 个预置文件，开始预热","Imported %llu prepared files; starting warm-up")),imported].UTF8String
                     : TOTK_UI("本机缓存已存在，无需重新导入；开始预热","Local cache already present, nothing to import; starting warm-up"));
-            } else if (runtime_boot_status) runtime_boot_status(TOTK_UI("着色器缓存已就绪","Shader cache ready"),TOTK_UI("没有内置着色器种子，继续初始化图形","No bundled shader seed; continuing graphics setup"));
+            } else if (runtime_boot_status && ![seed[@"failed"] boolValue]) runtime_boot_status(TOTK_UI("着色器缓存已就绪","Shader cache ready"),TOTK_UI("没有内置着色器种子，继续初始化图形","No bundled shader seed; continuing graphics setup"));
         }
+#if TARGET_OS_IPHONE
+        // Variants that ios/tools/fill_shaders.py translated on the Mac for this device's earlier misses (shader-requests/).
+        NSDictionary *fill = totk_fill_import(@"shader-fill", g_dir);
+        if ([fill[@"packs"] unsignedIntegerValue]) LOG("[shader-fill] 合并 Mac 补译的着色器包 %lu 个，导入 %lu 个文件",
+            (unsigned long)[fill[@"packs"] unsignedIntegerValue], (unsigned long)[fill[@"imported_files"] unsignedIntegerValue]);
+        for (NSString *why in fill[@"rejected"]) LOG("【红】[shader-fill] 丢弃不完整的着色器包 %s（请在 Mac 上重新运行 fill_shaders.py）", why.UTF8String);
 #endif
     });
     return g_dir;
@@ -145,6 +166,17 @@ static int deps_match(NSDictionary *deps, NSDictionary *ans) {
     return 1;
 }
 
+/* No translator: the iPhone / iPad, or TOTK_SHADER_NO_TRANSLATE=1 on the Mac (tests: what a device with only the prepared
+   shaders would skip, with the same miss records and skipped draws). */
+static int no_translator(void) {
+#if TARGET_OS_IPHONE
+    return 1;
+#else
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_SHADER_NO_TRANSLATE"); v = e && !strcmp(e, "1"); }
+    return v;
+#endif
+}
 NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, const uint8_t *code, NSDictionary *answers, NSArray *local) {
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     pthread_mutex_lock(&g_rt_lock);
@@ -180,7 +212,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
-#if TARGET_OS_IPHONE
+    if (no_translator()) {
     // No translator on the phone (Python + .NET + SPIRV-Cross): the variant cache is translated on the Mac and copied over.
     // A miss records the complete request (with the guest code bytes) under shader-requests/ for ios/tools/fill_shaders.py.
     rq[@"code_hex"] = hex(code + skip, c1t - skip);
@@ -197,7 +229,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     }
     pthread_mutex_unlock(&g_rt_lock);
     return nil;
-#endif
+    }
     BOOL existed = [NSFileManager.defaultManager fileExistsAtPath:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", variant]];   // a re-translation of a broken variant is not a new one
     service_start();
     fprintf(g_svc_in, "%s\n", json_string(rq).UTF8String); fflush(g_svc_in);

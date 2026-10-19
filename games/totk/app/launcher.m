@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
             [[NSRunningApplication runningApplicationWithProcessIdentifier:running] activateWithOptions:NSApplicationActivateAllWindows];
             return 0;
         }
-#if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V143)
+#if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143)
         NSString *backup = [profile stringByAppendingFormat:@"-before-%s", TOTK_GAME_VERSION];
         NSFileManager *fm = NSFileManager.defaultManager;
         if (![fm fileExistsAtPath:backup]) {

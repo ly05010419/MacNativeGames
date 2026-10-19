@@ -89,16 +89,37 @@ def run(original, patched, header, start, failure, seed, use_patch):
             bytes(u.mem_read(SP, 128)), u.reg_read(UC_ARM64_REG_PC))
 
 
+# Every main has these windows: LDXR w17, [x16] / op / STXR w18 / CBZ w18 to a block outside the window.
+# 1.2.1 compiled the function around 1.1.2's 0x74cb68 without x18, so it has only one of them.
+WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v112': [0x74CB68, 0x80B3A0], 'v121': [0x7FF694]}
+
+
+def x18_exit_windows(image, nso):
+    """All exclusive windows whose STXR status register is w18 and whose CBZ on it leaves the window."""
+    start, size = struct.unpack_from('<II', nso.read_bytes()[:0x100], 0x14)
+    words = memoryview(image)[start:start + size].cast('I')
+    found = []
+    for i in range(len(words) - 3):
+        a, c, d = words[i], words[i + 2], words[i + 3]
+        if a & 0xbfff7c00 != 0x885f7c00 or c & 0xbfe07c00 != 0x88007c00 or (c >> 16) & 31 != 18: continue
+        if d & 0x7e000000 != 0x34000000 or d & 31 != 18: continue
+        at = start + 4 * i
+        if not at <= nsoimg.direct_target(d, at + 12) < at + 16: found.append(at)
+    return found
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('directory', type=Path)
     ap.add_argument('nso', type=Path)
-    ap.add_argument('--version', choices=('v0','v112'), default='v0')
+    ap.add_argument('--version', choices=sorted(WINDOWS), default='v0')
     args = ap.parse_args()
     original = nsoimg.load(args.nso)
     patched = (args.directory / 'main.patched.bin').read_bytes()
     header = nsoimg.header(args.directory, 'main')
-    starts = [0x72AFDC, 0x7AA630] if args.version == "v0" else [0x74CB68, 0x80B3A0]
+    starts = WINDOWS[args.version]
+    scanned = x18_exit_windows(original, args.nso)
+    assert scanned == starts, f'w18 external-exit windows in this main: {[hex(x) for x in scanned]}'
     cases = 0
     for start in starts:
         for failure in [False, True]:

@@ -7,11 +7,12 @@
    folded into their destination in dependency order; the device sink's inputs (5.1 downmixed to stereo) go to
    CoreAudio through a ring buffer. Splitter wire formats follow the public Ryujinx description (REV11: SNDH
    header, SNDI infos with 12 reserved bytes after the ids, SNDD destinations, 16-byte padded section).
-   Two per-voice Q14 biquads run after resampling, before volume/routing. 3D reverb, guest auxiliary effects and the output limiter run on each completed mix in effect order.
+   Two per-voice Q14 biquads run after resampling, before volume/routing. Delay, reverb, biquad, compressor, auxiliary/capture and limiter effects run on each completed mix in effect order.
    Effect algorithms/layouts follow Ryujinx.Audio (MIT; third_party/licenses/Ryujinx-Audio.txt). */
 #include "runtime.h"
 #include "audio_mixer.h"
 #include "audio_reverb.h"
+#include "audio_effects.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -28,6 +29,8 @@ typedef struct { int32_t ndest; int32_t *ids; } SplitInfo;
 typedef struct {
     Reverb3d *reverb; Reverb3dParam param; int pending;
     float *delay, detector[6], compression[6], peak[6], minimum[6]; int position[6], delay_max, channels;
+    AudioEffectDsp *dsp; unsigned type; uint8_t wire[160];
+    float biquad_z[6][2], numerator[3], denominator[2]; uint8_t biquad_channels;
 } EffectState;
 typedef struct Mixer {
     float *buf; int nbuf, frame;
@@ -35,24 +38,96 @@ typedef struct Mixer {
     SplitInfo *split; int nsplit; SplitDest *dest; int ndest;
     AudioComponentInstance unit; int unit_ok;
     float ring[RING_FRAMES * 2]; _Atomic uint64_t wr, rd, underruns, overruns;
+    _Atomic int playing; int ready; _Atomic uint64_t missing_frames;
+    _Atomic uint64_t flush_until; _Atomic unsigned stop_epoch; unsigned callback_epoch;
+    _Atomic uint64_t callback_frames,callback_nonzero;
     EffectState *effect; int *effect_order; unsigned effect_reported;
+    uint64_t *sink_address; uint32_t *sink_size, *sink_offset, *sink_old, *sink_written;
     unsigned reported;                             /* one-time reports */
+    float voice_scratch[6][MAX_FRAME],filter_scratch[MAX_FRAME],output_scratch[MAX_FRAME*2];
+    double level_sum,level_peak;uint64_t level_count,level_frames;
+    FILE *capture;float *capture_buf;uint64_t capture_frames,capture_limit,capture_skip;
+    pthread_t capture_thread;pthread_mutex_t capture_lock;pthread_cond_t capture_cond;
+    int capture_started,capture_done,capture_closing,capture_worker;
 } Mixer;
 
-static float device_volume = 1.0f;
+static _Atomic float device_volume = 1.0f;
+static unsigned audio_revision(const AudioRenderer *r) { unsigned byte=r->revision>>24;return byte>='0'?byte-'0':0; }
 static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
     if (m->reported & (1u << bit)) return;
     m->reported |= 1u << bit; fprintf(stderr, "[totk-audio] 【红】%s (%d)\n", msg, value);
 }
 
+/* Diagnostic recording is optional. The render thread only copies to pre-touched
+   memory: filesystem writes and close/flush belong to this worker. */
+static void *capture_write(void *ctx) {
+    Mixer *m=ctx;
+    pthread_mutex_lock(&m->capture_lock);
+    while(!m->capture_done && !m->capture_closing)pthread_cond_wait(&m->capture_cond,&m->capture_lock);
+    uint64_t n=m->capture_frames;
+    pthread_mutex_unlock(&m->capture_lock);
+    int ok=fwrite(m->capture_buf,2*sizeof(float),(size_t)n,m->capture)==n;
+    if(fclose(m->capture))ok=0;
+    fprintf(stderr,"[totk-audio] diagnostic capture %s: %llu stereo frames\n",ok?"complete":"write failed",(unsigned long long)n);
+    return NULL;
+}
+static void capture_copy(Mixer *m,const float *lr,int frames) {
+    if(!m->capture_worker || m->capture_done)return;
+    if(!m->capture_started)for(int k=0;k<2*frames;k++)if(lr[k]!=0){m->capture_started=1;break;}
+    if(!m->capture_started)return;
+    uint64_t skip=m->capture_skip<(uint64_t)frames?m->capture_skip:(uint64_t)frames;m->capture_skip-=skip;
+    uint64_t n=m->capture_limit-m->capture_frames;if(n>(uint64_t)frames-skip)n=(uint64_t)frames-skip;
+    memcpy(m->capture_buf+2*m->capture_frames,lr+2*skip,(size_t)n*2*sizeof(float));m->capture_frames+=n;
+    if(m->capture_frames==m->capture_limit){
+        pthread_mutex_lock(&m->capture_lock);m->capture_done=1;pthread_cond_signal(&m->capture_cond);pthread_mutex_unlock(&m->capture_lock);
+    }
+}
+
 /* ---------- CoreAudio output ---------- */
+/* How much audio the output waits for before it starts, and again after an underrun: TOTK_AUDIO_PREFILL_MS, rounded up
+   to whole 5-ms render blocks (the renderer's period), default 20 ms = four blocks (the user, 2026-10-18 evening; it was
+   40 ms that morning, and ten sessions at 0 / 20 / 40 ms had no underrun). The sound runs that much behind the picture.
+   With the 512-frame (10.7 ms) device buffer, 20 ms leaves about 10 ms for a stall of the mixing thread (40 ms left about
+   30 ms); 0 starts as soon as one device buffer is there.
+   Returns -1 for a value that is not a number of milliseconds from 0 to 500. */
+static int prefill_blocks_for(const char *e) {
+    if (!e || !*e) return 4;
+    char *end; double ms = strtod(e, &end);
+    if (end == e || *end || !(ms >= 0) || ms > 500) return -1;
+    return (int)ceil(ms / 5.0);
+}
+static int prefill_blocks(void) {   // read once before the device starts (audio_mixer_open); the callback only reads it
+    static int blocks = -2;
+    if (blocks == -2) {
+        const char *e = getenv("TOTK_AUDIO_PREFILL_MS"); int b = prefill_blocks_for(e);
+        if (b < 0) { fprintf(stderr, "[totk-audio] 【红】TOTK_AUDIO_PREFILL_MS=%s is not 0..500 ms: using 20\n", e); b = 4; }
+        fprintf(stderr, "[totk-audio] output starts after %d ms of queued audio (TOTK_AUDIO_PREFILL_MS%s)\n", b * 5, e && *e ? "" : ", default");
+        blocks = b;
+    }
+    return blocks;
+}
 static OSStatus pull(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *io) {
     (void)flags; (void)ts; (void)bus;
     Mixer *m = ctx; float *out = io->mBuffers[0].mData;
+    atomic_fetch_add(&m->callback_frames,frames);
+    unsigned epoch=atomic_load_explicit(&m->stop_epoch,memory_order_acquire);
     uint64_t rd = atomic_load(&m->rd), wr = atomic_load_explicit(&m->wr, memory_order_acquire), have = wr - rd;
+    if(epoch!=m->callback_epoch){uint64_t until=atomic_load_explicit(&m->flush_until,memory_order_acquire);if(until>rd){rd=until<wr?until:wr;atomic_store_explicit(&m->rd,rd,memory_order_release);}have=wr-rd;m->callback_epoch=epoch;m->ready=0;}
+    if(!atomic_load_explicit(&m->playing,memory_order_acquire)){
+        memset(out,0,(size_t)frames*2*sizeof(float));m->ready=0;atomic_store_explicit(&m->rd,wr,memory_order_release);return noErr;
+    }
+    if(!m->ready){
+        /* prefill_blocks() 5-ms blocks (default four, 20 ms) of scheduling headroom for the producer.
+           A real underrun still counts and requires a fresh prefill. */
+        uint64_t prefill=(uint64_t)m->frame*(uint64_t)prefill_blocks();if(prefill<frames)prefill=frames;if(prefill>RING_FRAMES)prefill=RING_FRAMES;
+        if(have<prefill){memset(out,0,(size_t)frames*2*sizeof(float));return noErr;}
+        m->ready=1;
+    }
     UInt32 n = frames < have ? frames : (UInt32)have;
-    for (UInt32 i = 0; i < n; i++) { uint64_t k = (rd + i) % RING_FRAMES; out[2 * i] = m->ring[2 * k]; out[2 * i + 1] = m->ring[2 * k + 1]; }
-    if (n < frames) { memset(out + 2 * n, 0, (frames - n) * 2 * sizeof(float)); if (wr) atomic_fetch_add(&m->underruns, 1); }
+    uint64_t nonzero=0;
+    for (UInt32 i = 0; i < n; i++) { uint64_t k = (rd + i) % RING_FRAMES; out[2 * i] = m->ring[2 * k]; out[2 * i + 1] = m->ring[2 * k + 1];if(out[2*i]!=0 || out[2*i+1]!=0)nonzero++; }
+    atomic_fetch_add(&m->callback_nonzero,nonzero);
+    if (n < frames) { memset(out + 2 * n, 0, (frames - n) * 2 * sizeof(float));atomic_fetch_add(&m->underruns,1);atomic_fetch_add(&m->missing_frames,frames-n);m->ready=0; }
     atomic_store_explicit(&m->rd, rd + n, memory_order_release);
     return noErr;
 }
@@ -95,14 +170,42 @@ void audio_mixer_open(AudioRenderer *r) {
     m->effect = calloc((size_t)(r->param.effect_count ? r->param.effect_count : 1), sizeof *m->effect);
     m->effect_order = calloc((size_t)(r->param.effect_count ? r->param.effect_count : 1), sizeof *m->effect_order);
     if (!m->effect || !m->effect_order) runtime_fail("audio effect tables");
+    size_t sinks=(size_t)r->param.sink_count;
+    m->sink_address=calloc(sinks,sizeof(uint64_t));m->sink_size=calloc(sinks,sizeof(uint32_t));
+    m->sink_offset=calloc(sinks,sizeof(uint32_t));m->sink_old=calloc(sinks,sizeof(uint32_t));m->sink_written=calloc(sinks,sizeof(uint32_t));
+    if(!m->sink_address || !m->sink_size || !m->sink_offset || !m->sink_old || !m->sink_written)runtime_fail("audio sink state allocation");
     r->mixer = m;
+    atomic_store(&m->playing,r->state==0);
+    const char *capture=getenv("TOTK_AUDIO_CAPTURE");
+    if(capture && *capture){m->capture=fopen(capture,"wbx");if(m->capture){
+        const char *skip=getenv("TOTK_AUDIO_CAPTURE_DELAY_S");char *end=NULL;unsigned long seconds=skip?strtoul(skip,&end,10):0;
+        if(skip && (!*skip || *end || seconds>600))runtime_fail("audio capture delay must be 0..600 seconds");
+        m->capture_limit=(uint64_t)r->param.sample_rate*30;m->capture_skip=(uint64_t)r->param.sample_rate*seconds;
+        size_t bytes=(size_t)m->capture_limit*2*sizeof(float);m->capture_buf=calloc(1,bytes);
+        if(!m->capture_buf)runtime_fail("audio capture memory");
+        for(size_t i=0;i<bytes;i+=4096)((volatile uint8_t *)m->capture_buf)[i]=0;
+        if(pthread_mutex_init(&m->capture_lock,NULL) || pthread_cond_init(&m->capture_cond,NULL) || pthread_create(&m->capture_thread,NULL,capture_write,m))runtime_fail("audio capture worker");
+        m->capture_worker=1;
+        fprintf(stderr,"[totk-audio] diagnostic capture armed: %d Hz stereo float32, 30 seconds after %lu-second delay from first nonzero frame\n",r->param.sample_rate,seconds);
+    }else fprintf(stderr,"[totk-audio] diagnostic capture unavailable (file exists or cannot be opened)\n");}
+    prefill_blocks();   // decided before the device's callback can run
     output_open(m, r->param.sample_rate);
+}
+void audio_mixer_set_running(AudioRenderer *r,int running){
+    Mixer *m=r->mixer;if(!m)return;
+    if(!running){atomic_store_explicit(&m->flush_until,atomic_load_explicit(&m->wr,memory_order_acquire),memory_order_release);atomic_fetch_add_explicit(&m->stop_epoch,1,memory_order_release);}
+    atomic_store_explicit(&m->playing,running,memory_order_release);
 }
 void audio_mixer_close(AudioRenderer *r) {
     Mixer *m = r->mixer; if (!m) return;
     if (m->unit_ok) { AudioOutputUnitStop(m->unit); AudioUnitUninitialize(m->unit); AudioComponentInstanceDispose(m->unit); }
+    if(m->capture_worker){
+        pthread_mutex_lock(&m->capture_lock);m->capture_closing=1;pthread_cond_signal(&m->capture_cond);pthread_mutex_unlock(&m->capture_lock);
+        pthread_join(m->capture_thread,NULL);pthread_cond_destroy(&m->capture_cond);pthread_mutex_destroy(&m->capture_lock);free(m->capture_buf);
+    }
     for (int i = 0; i < m->nsplit; i++) free(m->split[i].ids);
-    for (int i = 0; i < r->param.effect_count; i++) { audio_reverb_free(m->effect[i].reverb); free(m->effect[i].delay); }
+    for (int i = 0; i < r->param.effect_count; i++) { audio_reverb_free(m->effect[i].reverb); audio_effect_free(m->effect[i].dsp); free(m->effect[i].delay); }
+    free(m->sink_address);free(m->sink_size);free(m->sink_offset);free(m->sink_old);free(m->sink_written);
     free(m->effect); free(m->effect_order);
     free(m->buf); free(m->offset); free(m->split); free(m->dest); free(m); r->mixer = NULL;
 }
@@ -176,6 +279,25 @@ void audio_mixer_update_effects(AudioRenderer *r) {
     Mixer *m = r->mixer;
     for (int i=0;i<r->param.effect_count;i++) {
         const AudrenEffectIn *e=&r->effects[i]; EffectState *s=&m->effect[i];
+        unsigned revision=audio_revision(r);
+        int reset=e->is_new || s->type!=e->type;
+        if(reset){audio_effect_free(s->dsp);s->dsp=NULL;memset(s->biquad_z,0,sizeof s->biquad_z);}
+        if(e->type==3 || e->type==4 || e->type==9) {
+            unsigned status,channels;int dimensions_changed=0;
+            if(e->type==3){AudrenDelayParam p,old;memcpy(&p,e->specific,sizeof p);memcpy(&old,s->wire,sizeof old);status=p.status;channels=p.channels;dimensions_changed=p.channels!=old.channels || p.sample_rate!=old.sample_rate || p.delay_max!=old.delay_max;}
+            else if(e->type==4){AudrenReverbParam p,old;memcpy(&p,e->specific,sizeof p);memcpy(&old,s->wire,sizeof old);status=p.status;channels=p.channels;dimensions_changed=p.channels!=old.channels || p.sample_rate!=old.sample_rate;}
+            else {AudrenCompressorParam p,old;memcpy(&p,e->specific,sizeof p);memcpy(&old,s->wire,sizeof old);status=p.status;channels=p.channels;dimensions_changed=p.channels!=old.channels;}
+            if(status==0 || dimensions_changed){audio_effect_free(s->dsp);s->dsp=NULL;}
+            if(e->enabled && channels){if(!s->dsp)s->dsp=audio_effect_create(e->type,e->specific,revision);else audio_effect_update(s->dsp,e->specific);}
+        } else if(s->dsp){audio_effect_free(s->dsp);s->dsp=NULL;}
+        if(e->type==6){
+            unsigned status;
+            if(revision>=15){AudrenBiquadEffectV2 p;memcpy(&p,e->specific,sizeof p);s->biquad_channels=p.channels;status=p.status;memcpy(s->numerator,p.numerator,sizeof p.numerator);memcpy(s->denominator,p.denominator,sizeof p.denominator);}
+            else {AudrenBiquadEffectV1 p;memcpy(&p,e->specific,sizeof p);s->biquad_channels=p.channels;status=p.status;for(int k=0;k<3;k++)s->numerator[k]=p.numerator[k]/16384.f;for(int k=0;k<2;k++)s->denominator[k]=p.denominator[k]/16384.f;}
+            if(status==0 || (status==1 && revision<6))memset(s->biquad_z,0,sizeof s->biquad_z);
+            if(e->enabled && (s->biquad_channels<1 || s->biquad_channels>6))runtime_fail("biquad effect channel count");
+        }
+        s->type=e->type;memcpy(s->wire,e->specific,sizeof s->wire);
         if(e->type!=5 || e->is_new) { audio_reverb_free(s->reverb); s->reverb=NULL; s->pending=1; }
         if(e->type==7) {
             AudrenLimiterParam p; memcpy(&p,e->specific,sizeof p);
@@ -201,7 +323,7 @@ void audio_mixer_update_effects(AudioRenderer *r) {
 
 /* ---------- voice decoding along the voice clock's sample path ---------- */
 typedef struct { ServerVoice *v; unsigned index; uint64_t offset; int32_t loops; uint8_t valid[4]; int ended; int16_t h1, h2; int32_t abuf; uint64_t aat; } Walk;
-static int fmt_bytes(int f) { return f == FMT_PCM8 ? 1 : f == FMT_PCM16 ? 2 : f == FMT_PCM32 || f == FMT_PCMF32 ? 4 : 0; }
+static int fmt_bytes(int f) { return f == FMT_PCM8 ? 1 : f == FMT_PCM16 ? 2 : f==FMT_PCM24?3:f == FMT_PCM32 || f == FMT_PCMF32 ? 4 : 0; }
 /* DSP-ADPCM: 8-byte frames of a predictor/scale byte and 14 4-bit samples; the history runs across samples. */
 static int16_t adpcm_next(Walk *w, const AudrenWaveBuffer *b, const int16_t *coef, uint64_t i) {
     const uint8_t *d = (const uint8_t *)(uintptr_t)b->address;
@@ -209,7 +331,7 @@ static int16_t adpcm_next(Walk *w, const AudrenWaveBuffer *b, const int16_t *coe
     if ((frame + 1) * 8 > b->size) return 0;
     uint8_t ps = d[frame * 8]; int scale = 1 << (ps & 15), pred = (ps >> 4) & 7;
     int n = (d[frame * 8 + 1 + nib / 2] >> ((nib & 1) ? 0 : 4)) & 15; if (n >= 8) n -= 16;
-    int32_t s = ((n * scale) << 11) + 1024 + coef[pred * 2] * w->h1 + coef[pred * 2 + 1] * w->h2;
+    int64_t s = (int64_t)n * scale * 2048 + 1024 + (int64_t)coef[pred * 2] * w->h1 + (int64_t)coef[pred * 2 + 1] * w->h2;
     s >>= 11; if (s > 32767) s = 32767; if (s < -32768) s = -32768;
     w->h2 = w->h1; w->h1 = (int16_t)s; return (int16_t)s;
 }
@@ -236,6 +358,7 @@ static float sample_at(Walk *w, int ch) {
     switch (f) {
     case FMT_PCM8: return (int8_t)p[0] / 128.0f;
     case FMT_PCM16: { int16_t s; memcpy(&s, p, 2); return s / 32768.0f; }
+    case FMT_PCM24: {uint32_t word=(uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16;return ((int32_t)(word<<8)>>8)/8388608.f;}
     case FMT_PCM32: { int32_t s; memcpy(&s, p, 4); return (float)(s / 2147483648.0); }
     default: { float s; memcpy(&s, p, 4); return s; }
     }
@@ -318,6 +441,7 @@ static void mix_aux(AudioRenderer *r, int mix, const AudrenEffectIn *e) {
 void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned size) {
     Mixer *m=r->mixer;
     if(size>=48 && r->effects[id].type==7) { memcpy(output,m->effect[id].peak,24);memcpy((uint8_t *)output+24,m->effect[id].minimum,24); }
+    if(r->effects[id].type==9)audio_effect_statistics(m->effect[id].dsp,output,size);
 }
 static void mix_limiter(AudioRenderer *r, int mix, int id) {
     Mixer *m=r->mixer; EffectState *s=&m->effect[id]; const AudrenEffectIn *e=&r->effects[id];
@@ -340,6 +464,68 @@ static void mix_limiter(AudioRenderer *r, int mix, int id) {
     }
 }
 
+static int32_t effect_integer(float value) {
+    double x=trunc((double)value*32768);return !isfinite(x)?0:x>INT32_MAX?INT32_MAX:x<INT32_MIN?INT32_MIN:(int32_t)x;
+}
+static void prepare_ring_write(uint8_t *base,uint32_t size,uint32_t at,uint64_t bytes) {
+    if(bytes>=size){dm_guest_write_prepare(base,size);return;}
+    uint32_t first=(uint32_t)bytes;if(first>size-at)first=size-at;
+    dm_guest_write_prepare(base+at,first);if(bytes>first)dm_guest_write_prepare(base,(size_t)bytes-first);
+}
+/* SDK SampleCounter::Add advances the producer counter itself, not the
+   producer-consumer difference or the ring cursor. Saturate on diff overflow. */
+static void effect_counter_add(uint32_t cpu,uint32_t *dsp,uint32_t count) {
+    uint32_t previous=*dsp-cpu,next=*dsp+count;
+    *dsp=next-cpu<previous?cpu-1:next;
+}
+static void mix_capture(AudioRenderer *r,int mix,const AudrenEffectIn *e) {
+    Mixer *m=r->mixer;AudrenAuxParam p;memcpy(&p,e->specific,sizeof p);
+    if(!p.send_info || !p.capacity || !p.channels)return;
+    if(p.channels>24 || p.capacity>16*1024*1024)runtime_fail("capture effect dimensions");
+    uint8_t *base=ipc_guest(p.send_info,128+(uint64_t)p.capacity*4);uint32_t *cpu=(uint32_t *)base,*dsp=(uint32_t *)(base+64);int32_t *data=(int32_t *)(base+128);
+    dm_guest_write_prepare(base+64,64);
+    if(!e->enabled){dsp[0]=dsp[1]=dsp[3]=0;return;}
+    uint32_t wr=dsp[1],total=p.channels*(uint32_t)m->frame;
+    for(unsigned c=0;c<p.channels;c++){
+        if(p.input[c]>=r->mixes[mix].buffer_count)runtime_fail("capture effect input buffer");
+        float *in=mixbuf(m,m->offset[mix]+p.input[c]);uint64_t at=(uint64_t)wr+c*m->frame;
+        if(at<=p.capacity)prepare_ring_write((uint8_t *)data,p.capacity*4,(uint32_t)(at%p.capacity)*4,(uint64_t)m->frame*4);
+        for(int k=0;k<m->frame;k++){int32_t value=effect_integer(in[k]);in[k]=value/32768.f;if(at<=p.capacity)data[(at+(unsigned)k)%p.capacity]=value;}
+    }
+    if((uint64_t)wr+(p.channels-1)*(uint32_t)m->frame<=p.capacity){
+        uint32_t diff=dsp[3]-cpu[3];
+        if(diff>=p.capacity)effect_counter_add(cpu[2],&dsp[2],total);
+        dsp[1]=(wr+total)%p.capacity;effect_counter_add(cpu[3],&dsp[3],total);
+    }
+}
+static void mix_simple_effect(AudioRenderer *r,int mix,int id) {
+    Mixer *m=r->mixer;const AudrenEffectIn *e=&r->effects[id];EffectState *s=&m->effect[id];
+    if(e->type==1){
+        AudrenBufferMixParam p;memcpy(&p,e->specific,sizeof p);if(!e->enabled)return;
+        if(p.count>24)runtime_fail("buffer-mix effect count");
+        for(unsigned c=0;c<p.count;c++){
+            if(p.input[c]>=r->mixes[mix].buffer_count || p.output[c]>=r->mixes[mix].buffer_count)runtime_fail("buffer-mix effect index");
+            float *in=mixbuf(m,m->offset[mix]+p.input[c]),*out=mixbuf(m,m->offset[mix]+p.output[c]);
+            for(int k=0;k<m->frame;k++)out[k]+=ceilf(in[k]*32768*p.volume[c])/32768;
+        }return;
+    }
+    unsigned channels;if(e->type==6)channels=s->biquad_channels;else {uint16_t n;memcpy(&n,e->specific+14,2);channels=n;}
+    if(channels<1 || channels>6){if(e->enabled)runtime_fail("audio DSP effect channels");return;}
+    float *in[6]={0},*out[6]={0};unsigned revision=audio_revision(r);
+    for(unsigned c=0;c<channels;c++){
+        unsigned idx=c;
+        if(channels==6 && ((e->type==3 && revision<11)||(e->type==4 && revision>=11))){static const unsigned map[6]={0,1,4,5,2,3};idx=map[c];}
+        if(e->specific[idx]>=r->mixes[mix].buffer_count || e->specific[6+idx]>=r->mixes[mix].buffer_count)runtime_fail("audio DSP effect buffer index");
+        in[c]=mixbuf(m,m->offset[mix]+e->specific[idx]);out[c]=mixbuf(m,m->offset[mix]+e->specific[6+idx]);
+    }
+    if(!e->enabled){for(unsigned c=0;c<channels;c++)if(in[c]!=out[c])memmove(out[c],in[c],(size_t)m->frame*sizeof(float));return;}
+    if(e->type==6){
+        for(unsigned c=0;c<channels;c++)for(int k=0;k<m->frame;k++){
+            float x=in[c][k],y=s->numerator[0]*x+s->biquad_z[c][0];
+            s->biquad_z[c][0]=s->numerator[1]*x+s->denominator[0]*y+s->biquad_z[c][1];s->biquad_z[c][1]=s->numerator[2]*x+s->denominator[1]*y;out[c][k]=y;
+        }
+    } else {if(!s->dsp)runtime_fail("audio DSP effect state missing");audio_effect_process(s->dsp,in,out,m->frame);}
+}
 static void mix_effects(AudioRenderer *r, int mix) {
     Mixer *m=r->mixer; int count=0;
     for(int i=0;i<r->param.effect_count;i++) if(r->effects[i].type && r->effects[i].mix_id==mix) {
@@ -347,7 +533,9 @@ static void mix_effects(AudioRenderer *r, int mix) {
     }
     for(int n=0;n<count;n++) {
         int id=m->effect_order[n]; const AudrenEffectIn *e=&r->effects[id]; EffectState *s=&m->effect[id];
+        if(e->type==1 || e->type==3 || e->type==4 || e->type==6 || e->type==9){mix_simple_effect(r,mix,id);continue;}
         if(e->type==2) { mix_aux(r,mix,e); continue; }
+        if(e->type==8) { mix_capture(r,mix,e);continue; }
         if(e->type==7) { mix_limiter(r,mix,id); continue; }
         if(e->type!=5) {
             if(e->enabled && e->type<32 && !(m->effect_reported&(1u<<e->type))) { m->effect_reported|=1u<<e->type; fprintf(stderr,"[totk-audio] 【红】effect type %u not implemented\n",e->type); }
@@ -380,6 +568,31 @@ static const float *splitter_filter(SplitDest *d,const float *input,float *outpu
     }
     return output;
 }
+typedef struct {
+    uint64_t address;uint32_t size,channels,samples,last_read;
+    uint8_t format,reserved[3],input[6],padding[2];
+} CircularSinkParam;
+_Static_assert(__builtin_offsetof(CircularSinkParam,input)==28,"circular sink wire layout");
+static void mix_circular_sink(AudioRenderer *r,int id) {
+    Mixer *m=r->mixer;CircularSinkParam p;memcpy(&p,r->sinks[id].name,sizeof p);
+    if(!p.address || !p.size)return;
+    if(p.channels<1 || p.channels>6 || p.format!=FMT_PCM16 || p.size>256*1024*1024 || p.size%2)runtime_fail("circular audio sink parameters");
+    if(m->sink_address[id]!=p.address || m->sink_size[id]!=p.size){m->sink_address[id]=p.address;m->sink_size[id]=p.size;m->sink_offset[id]=m->sink_old[id]=m->sink_written[id]=0;}
+    uint8_t *data=ipc_guest(p.address,p.size);uint32_t at=m->sink_offset[id];
+    prepare_ring_write(data,p.size,at,(uint64_t)p.channels*m->frame*2);
+    float gain=r->mixes[0].in_use?r->mixes[0].volume:1;
+    for(unsigned c=0;c<p.channels;c++){
+        if(p.input[c]>=m->nbuf)runtime_fail("circular audio sink input index");
+        float *in=mixbuf(m,p.input[c]);
+        for(int k=0;k<m->frame;k++){
+            float scaled=in[k]*gain*32768;int16_t value=!isfinite(scaled)?0:scaled>=32767?32767:scaled<=-32768?-32768:(int16_t)scaled;
+            memcpy(data+at,&value,2);at=(at+2)%p.size;
+        }
+    }
+    m->sink_written[id]=m->sink_old[id];m->sink_old[id]=m->sink_offset[id];m->sink_offset[id]=at;
+}
+uint32_t audio_mixer_sink_written(AudioRenderer *r,int id) {Mixer *m=r->mixer;return m?m->sink_written[id]:0;}
+
 void audio_mixer_render(AudioRenderer *r, double seconds) {
     (void)seconds;
     Mixer *m = r->mixer; if (!m) return;
@@ -389,7 +602,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     for (int i = 0; i < mc; i++) { m->offset[i] = at; if (r->mixes[i].in_use) at += r->mixes[i].buffer_count; }
     if (at > m->nbuf) { fprintf(stderr, "[totk-audio] mixes use %d buffers, renderer has %d\n", at, m->nbuf); runtime_fail("audio mix buffer layout"); }
 
-    static float vs[6][MAX_FRAME],filtered[MAX_FRAME];
+    float (*vs)[MAX_FRAME]=m->voice_scratch,*filtered=m->filter_scratch;
     for (int i = 0; i < r->param.voice_count; i++) {
         ServerVoice *v = &r->voices[i];
         if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
@@ -451,15 +664,16 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     }
     if (r->mixes[0].in_use) mix_effects(r, 0);
     /* device sink */
-    const AudrenSinkIn *sink = NULL;
+    const AudrenSinkIn *sink = NULL;int circular=0;
     for (int i = 0; i < r->param.sink_count; i++) if (r->sinks[i].in_use) {
+        if(r->sinks[i].type!=SINK_CIRCULAR){m->sink_address[i]=0;m->sink_size[i]=m->sink_offset[i]=m->sink_old[i]=m->sink_written[i]=0;}
         if (r->sinks[i].type == SINK_DEVICE && !sink) sink = &r->sinks[i];
-        else if (r->sinks[i].type == SINK_CIRCULAR) report_once(m, 4, "circular-buffer sink not implemented (sink)", i);
-    }
-    static float lr[MAX_FRAME * 2];
+        else if (r->sinks[i].type == SINK_CIRCULAR){mix_circular_sink(r,i);circular=1;}
+    } else {m->sink_address[i]=0;m->sink_size[i]=m->sink_offset[i]=m->sink_old[i]=m->sink_written[i]=0;}
+    float *lr=m->output_scratch;
     memset(lr, 0, sizeof(float) * 2 * (size_t)frames);
     if (sink && sink->input_count >= 1 && sink->input_count <= 6) {
-        const float gain = device_volume * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
+        const float gain = atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
         const float *ch[6] = {0};
         for (uint32_t c = 0; c < sink->input_count; c++) if (sink->inputs[c] >= 0 && sink->inputs[c] < m->nbuf) ch[c] = mixbuf(m, sink->inputs[c]);
         for (int k = 0; k < frames; k++) {
@@ -474,15 +688,16 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
             l *= gain; rr *= gain;
             lr[2 * k] = l > 1 ? 1 : l < -1 ? -1 : l; lr[2 * k + 1] = rr > 1 ? 1 : rr < -1 ? -1 : rr;
         }
-    } else if (!sink) report_once(m, 5, "no device sink in use", r->param.sink_count);
-    { static double sum, peak; static uint64_t count, frames_total;   /* level report every ~5 s: evidence that sound is produced */
-      for (int k = 0; k < 2 * frames; k++) { double x = lr[k]; sum += x * x; if (fabs(x) > peak) peak = fabs(x); }
-      count += 2 * (uint64_t)frames; frames_total += (uint64_t)frames;
-      if (frames_total >= (uint64_t)r->param.sample_rate * 5) {
-          fprintf(stderr, "[totk-audio] output level: rms %.4f peak %.4f over %.1f s, underruns %llu, overruns %llu\n", sqrt(sum / (double)count), peak,
-                  frames_total / (double)r->param.sample_rate, (unsigned long long)atomic_load(&m->underruns), (unsigned long long)atomic_load(&m->overruns));
-          sum = peak = 0; count = frames_total = 0;
+    } else if (!sink && !circular) report_once(m, 5, "no device sink in use", r->param.sink_count);
+    { /* Per-renderer level report; independent renderers never share scratch or meter state. */
+      for (int k = 0; k < 2 * frames; k++) { double x = lr[k];m->level_sum+=x*x;if(fabs(x)>m->level_peak)m->level_peak=fabs(x); }
+      m->level_count+=2*(uint64_t)frames;m->level_frames+=(uint64_t)frames;
+      if (m->level_frames >= (uint64_t)r->param.sample_rate * 5) {
+          fprintf(stderr, "[totk-audio] output level: rms %.4f peak %.4f over %.1f s, underruns %llu, overruns %llu, missing frames %llu, callback frames %llu / nonzero %llu\n", sqrt(m->level_sum/(double)m->level_count),m->level_peak,
+                  m->level_frames/(double)r->param.sample_rate,(unsigned long long)atomic_load(&m->underruns),(unsigned long long)atomic_load(&m->overruns),(unsigned long long)atomic_load(&m->missing_frames),(unsigned long long)atomic_load(&m->callback_frames),(unsigned long long)atomic_load(&m->callback_nonzero));
+          m->level_sum=m->level_peak=0;m->level_count=m->level_frames=0;
       } }
+    capture_copy(m,lr,frames);
     output_push(m, lr, frames);
 }
 
@@ -510,7 +725,7 @@ void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) 
     switch (rq->cmd) {
     case 0: case 6: { IpcBuffer b = out_buffer(rq, &pointer); int32_t n = b.size >= 0x100 ? 1 : 0; if (n) put_name(&b, rs, pointer); IPC_OUT(rs, n); return; }   /* ListAudioDeviceName(Auto) */
     case 1: case 7: device_volume = IPC_ARG(rq, float, 0); return;                                    /* SetAudioDeviceOutputVolume(Auto) */
-    case 2: case 8: IPC_OUT(rs, device_volume); return;                                              /* GetAudioDeviceOutputVolume(Auto) */
+    case 2: case 8: {float volume=atomic_load(&device_volume);IPC_OUT(rs,volume);return;}             /* GetAudioDeviceOutputVolume(Auto) */
     case 3: case 10: { IpcBuffer b = out_buffer(rq, &pointer); put_name(&b, rs, pointer); return; }  /* GetActiveAudioDeviceName(Auto) */
     case 5: { int32_t n = 2; IPC_OUT(rs, n); return; }                                               /* GetActiveChannelCount */
     case 13: { IpcBuffer b = out_buffer(rq, &pointer); put_name(&b, rs, pointer); return; }          /* GetActiveAudioOutputDeviceName [13.0.0+] */

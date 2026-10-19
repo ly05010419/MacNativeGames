@@ -9,7 +9,7 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     binary = pathlib.Path(work) / "probe"
     subprocess.run([
         "xcrun", "clang", "-std=c11", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
-        "-Wno-deprecated-declarations", str(source), "-framework", "Cocoa",
+        "-Wno-deprecated-declarations", "-I" + str(source.parents[2] / "third_party/d2r_gfx/gfx/nvn/include"), str(source), "-framework", "Cocoa",
         "-framework", "QuartzCore", "-framework", "Metal", "-framework", "CoreVideo",
         "-o", str(binary),
     ], check=True)
