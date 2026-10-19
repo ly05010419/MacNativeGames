@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MAX_DECODERS 64
+#define MAX_DECODERS 256
 #define R_INVALID 0x1fcd1u   /* codec: invalid argument (module 111) */
 typedef struct { const void *guest; OpusDecoder *dec; int rate, channels; } Decoder;
 static Decoder decoders[MAX_DECODERS];
@@ -33,6 +33,9 @@ static unsigned initialize(void *guest, int rate, int channels, void *work, size
     int err = 0; OpusDecoder *dec = opus_decoder_create(rate, channels, &err);
     if (!dec || err != OPUS_OK) runtime_fail("libopus decoder creation");
     pthread_mutex_lock(&lock);
+    /* the game may re-initialize a decoder object without finalizing it: reuse its slot */
+    for (int i = 0; i < MAX_DECODERS; i++) if (decoders[i].dec && decoders[i].guest == guest) {
+        opus_decoder_destroy(decoders[i].dec); decoders[i] = (Decoder){guest, dec, rate, channels}; pthread_mutex_unlock(&lock); return 0; }
     for (int i = 0; i < MAX_DECODERS; i++) if (!decoders[i].dec) { decoders[i] = (Decoder){guest, dec, rate, channels}; pthread_mutex_unlock(&lock); return 0; }
     pthread_mutex_unlock(&lock); runtime_fail("hardware Opus decoder table full");
 }
