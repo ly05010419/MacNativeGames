@@ -22,7 +22,7 @@
 #define ASPECT_DATA_SLOT 56   /* the ratio's float on the data page after main; 0.0 = the game's own */
 
 static _Atomic(uint32_t) *g_aspect_slot;   /* points into that page once the stubs are in */
-static float g_aspect_wide;               /* the ratio key 4 switches to */
+static _Atomic float g_aspect_wide;       /* the ratio key 4 switches to (settings can change it live) */
 
 /* TOTK_ASPECT as a ratio; 0 when unset or "0". A malformed value stops the start. */
 static inline float aspect_requested(void) {
@@ -44,12 +44,60 @@ float runtime_aspect_now(void) {
 /* Key 4 (runtime/input.c). Returns 0 where it is not available (iPhone / iPad, other game versions). */
 int runtime_aspect_toggle(void) {
     if (!g_aspect_slot) return 0;
-    float next = runtime_aspect_now() ? 0 : g_aspect_wide; uint32_t bits; memcpy(&bits, &next, 4);
+    float next = runtime_aspect_now() ? 0 : atomic_load(&g_aspect_wide); uint32_t bits; memcpy(&bits, &next, 4);
     atomic_store(g_aspect_slot, bits);
     fprintf(stderr, "[totk] key 4: aspect ratio %s\n", next ? "wide" : "16:9 (the game's own)");
     if (next) fprintf(stderr, "[totk] aspect ratio %.4f\n", next);
     return 1;
 }
+
+/* Compile-time capability, known before boot: the ultrawide patch exists for 1.2.1 and 1.4.3 only.
+   runtime_aspect_available() is false until aspect_install has published the data slot, too late for settings.m's
+   startup environment injection, so settings/UI must gate on supported || available, not on available alone. */
+int runtime_aspect_supported(void) {
+#if defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+/* Settings (runtime/settings.h) control the same switch key 4 toggles. Before aspect_install there is no data slot:
+   the setters no-op with -1; startup still gets TOTK_ASPECT on the versions where runtime_aspect_supported() is true
+   (the settings core injects the persisted value before the boot patches run). */
+int runtime_aspect_available(void) { return g_aspect_slot != NULL; }
+
+static inline void aspect_store(float ratio) {
+    uint32_t bits = 0;
+    if (ratio) memcpy(&bits, &ratio, 4);
+    atomic_store(g_aspect_slot, bits);
+}
+
+int runtime_aspect_set_enabled(int on) {
+    if (!g_aspect_slot) return -1;
+    float next = on ? atomic_load(&g_aspect_wide) : 0;
+    aspect_store(next);
+    fprintf(stderr, "[totk] aspect ratio %s\n", next ? "wide" : "16:9 (the game's own)");
+    if (next) fprintf(stderr, "[totk] aspect ratio %.4f\n", next);
+    return 0;
+}
+
+/* The wide ratio to switch to (0.5 .. 8). Changing it while the picture is wide updates the live slot atomically. */
+int runtime_aspect_set_ratio(float ratio) {
+    if (!g_aspect_slot) return -1;
+    if (!(ratio >= 0.5f && ratio <= 8.0f)) {
+        fprintf(stderr, "[totk] aspect ratio %.4f: expected 0.5 to 8\n", (double)ratio);
+        return -1;
+    }
+    atomic_store(&g_aspect_wide, ratio);
+    int live = runtime_aspect_now() != 0;
+    if (live) aspect_store(ratio);
+    fprintf(stderr, "[totk] aspect ratio %.4f (%s)\n", (double)ratio, live ? "wide, live" : "16:9 until switched on");
+    return 0;
+}
+
+/* The configured wide ratio (0 before aspect_install). */
+float runtime_aspect_ratio(void) { return atomic_load(&g_aspect_wide); }
 
 static inline uint32_t aspect_branch(uint64_t from, uint64_t to) {
     int64_t d = (int64_t)to - (int64_t)from;
@@ -67,7 +115,7 @@ static inline void aspect_install(Module *m, const char *version, const uint64_t
     (void)m; (void)version; (void)sites; (void)nsite; (void)stub_off; (void)data_off;
 #else
     float start = aspect_requested();
-    g_aspect_wide = start ? start : 21.0f / 9.0f;
+    atomic_store(&g_aspect_wide, start ? start : 21.0f / 9.0f);
     uint64_t page_end = (m->text_end + 0x3fff) & ~0x3fffULL;
     if (stub_off < m->text_end || stub_off + ASPECT_STUB * nsite > page_end) runtime_fail("aspect patch: no room in main's text padding");
     if (data_off + ASPECT_DATA_SLOT + 4 > m->size) runtime_fail("aspect patch: no data page after main");
@@ -97,6 +145,6 @@ static inline void aspect_install(Module *m, const char *version, const uint64_t
     uint32_t bits = 0; if (start) memcpy(&bits, &start, 4);
     atomic_store(g_aspect_slot, bits);
     fprintf(stderr, "[totk] %s ultrawide: key 4 switches 16:9 / %.4f (TOTK_ASPECT), starts %s; %u camera site(s), stubs +%#llx\n",
-            version, g_aspect_wide, start ? "wide" : "at 16:9", nsite, (unsigned long long)stub_off);
+            version, atomic_load(&g_aspect_wide), start ? "wide" : "at 16:9", nsite, (unsigned long long)stub_off);
 #endif
 }

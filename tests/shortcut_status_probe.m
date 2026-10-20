@@ -11,6 +11,12 @@ void mfxup_set(int on);
 void mfxup_output_set(int on);
 void shortcut_test_output_init(void);
 void shortcut_test_output_size(unsigned w, unsigned h);
+int totk_settings_init(void);          /* runtime/settings.m: the store input.c dispatches keys through */
+int totk_setting_locked(const char *name);
+
+/* The controller path (runtime/gamepad.m) is not part of this keyboard/panel probe; the settings store reloads it on
+   startup. A no-op keeps that dependency out without changing any assertion this probe makes. */
+void totk_gamepad_reload(void) {}
 
 void dm_gfx_set_flag(const char *name, int value) {
     if (!strcmp(name, "mfx_interp")) mfx_set(value);
@@ -35,6 +41,12 @@ static void expect(TOTKShortcutHelp *panel, NSString *text) {
 
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
+    /* Initialize the store before any key press: a lazy init inside runtime_input_key_synthetic would re-enter
+       apply_all_init -> totk_input_reload while that same function holds inputLock and deadlock. The game's loader
+       does this before it dispatches input; the probe must do the same. */
+    int settings = totk_settings_init();
+    if (settings < 0) fprintf(stderr, "settings unavailable: %d\n", settings);
+    assert(settings == 0);
     shortcut_test_output_init();
     int initial = mfx_enabled();
     assert(initial == ((!getenv("TOTK_MFX") || !strcmp(getenv("TOTK_MFX"), "0")) ? MFX_OFF : MFX_HALF));
@@ -46,7 +58,17 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [panel refresh];
     expect(panel, initial ? @"half refresh rate" : @"off");
     expect(panel, mfxup_output_enabled() ? @"MetalFX 2K" : @"Picture: off");
+    /* An explicit TOTK_* variable is a lock in the v2 store: the keys must report it and keep the env value. */
+    int locked = totk_setting_locked("interp") || totk_setting_locked("picture");
 
+    if (locked) {
+        press(19); tick();
+        expect(panel, initial ? @"Interpolation: half refresh rate" : @"Interpolation: off");
+        press(20); tick();
+        expect(panel, mfxup_output_enabled() ? @"Picture: MetalFX 2K" : @"Picture: off");
+        press(20); tick();
+        expect(panel, mfxup_output_enabled() ? @"Picture: MetalFX 2K" : @"Picture: off");
+    } else {
     /* A request is not the current frame's interpolation mode until latched. */
     mfx_set(MFX_OFF); mfx_latch();
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
@@ -69,6 +91,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     mfx_set(MFX_HALF); mfx_latch();
     setenv("TOTK_UI_LANG", "zh", 1); tick();
     expect(panel, @"补帧：当前 刷新率一半"); expect(panel, @"画质：当前 原生 2K");
+    }
 
     if (hud_compact()) {
         assert(panel.frame.size.width < host.bounds.size.width - 20);
@@ -82,7 +105,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); tick(); assert(panel.hidden && !fps_overlay_hints_enabled());
     mfx_set(MFX_MAX); mfx_latch(); tick();
     press(18); tick(); assert(!panel.hidden && fps_overlay_hints_enabled());
-    expect(panel, @"补帧：当前 不限帧");
+    if (!locked) expect(panel, @"补帧：当前 不限帧");
+    else expect(panel, @"Interpolation: unlimited");
     hud_publish(0, "60 FPS (30 + 30)", 0); tick();
     if (hud_compact()) expect(panel, @"60 FPS (30 + 30)");
 
@@ -93,6 +117,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 writeToFile:@(argv[1]) atomically:YES]);
     }
     [panel.timer invalidate];
-    puts("pass: current modes, keyboard cycling, frame latch, localization, both layouts and hide/restore");
+    puts(locked ? "pass: env-locked modes, keys refused, both layouts and hide/restore"
+                : "pass: current modes, keyboard cycling, frame latch, localization, both layouts and hide/restore");
     return 0;
 }}

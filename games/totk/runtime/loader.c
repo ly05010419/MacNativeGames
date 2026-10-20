@@ -20,6 +20,7 @@
 #include <sys/ucontext.h>
 #include "runtime_tables.h"
 #include "game_patches.h"
+#include "settings.h"
 #include "game_version.h"
 #define NM (sizeof(modules)/sizeof(modules[0]))
 pthread_key_t runtime_keys[8];
@@ -522,6 +523,9 @@ static void abort_report(int num) {
 }
 int main(int argc,char **argv) {
  need(argc==3,"usage: totk-native rewritten-dir probe|boot");
+ /* Load the user's settings before anything parses TOTK_* or boots: the file's values are injected as defaults
+    (an explicit TOTK_* variable still wins), so the persisted picture, aspect, HUD and keymap reach the patches. */
+ {int settings=totk_settings_init();if(settings<0)fprintf(stderr,"[totk] settings unavailable (%s); using defaults\n",totk_settings_error());}
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */

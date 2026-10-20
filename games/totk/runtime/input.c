@@ -3,6 +3,8 @@
 #include "runtime.h"
 #include "autoload.h"
 #include "world_survey.h"
+#include "settings.h"
+#include "runtime_settings.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,8 +16,16 @@ static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
-/* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
-static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+/* The keyboard layout is the active keymap profile (runtime/settings.h): the profile decides which key is which
+   Switch button and which keys drive the left / right stick. Keys 1-4 stay reserved shortcuts (below). */
+static uint64_t button(unsigned code){return totk_key_button(code);}
+/* One stick axis: 0 = left x, 1 = left y, 2 = right x, 3 = right y. The active profile maps a key to a stick
+   action with a sign (+1 right / up, -1 left / down); opposite keys cancel and the result is clamped. */
+static int32_t axis_value(int axis){
+ int sum=0;
+ for(unsigned i=0;i<128;i++){if(!keys[i])continue;int which=0,sign=0;if(!totk_key_axis(i,&which,&sign)||which!=axis)continue;sum+=(int)sign*32767;}
+ if(sum>32767)return 32767;if(sum<-32767)return -32767;return sum;
+}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -29,17 +39,49 @@ static void user_input(const char *what){
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
 /* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
-   off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
-   MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Held-key repeats do not cycle. */
-enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21 };   /* 21: key 4, ultrawide on / off (aspect_patch.h) */
+   Key 1 toggles the shortcut reminder in frontend.m. Keys 2-4 go through the settings store (runtime/settings.m) so the
+   menu checkmark, settings.json and the next launch agree with the in-game change: key 2 (Mac key code 19) cycles
+   MetalFX frame interpolation off -> 30+30 -> half the refresh rate -> uncapped, key 3 (key code 20) cycles the picture
+   mode off -> MetalFX 2K -> native 2K, key 4 (key code 21) toggles the ultrawide aspect ratio. Held-key repeats do not
+   act. On a locked / unavailable / unsaved change the settings store refuses or reports it; the old adapters are not
+   called directly, because that would desync the menu and the persisted value. */
+enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21 };   /* 21: key 4, ultrawide on / off */
+static const char *setting_result_name(int result){
+ switch(result){case TOTK_SET_ERR_UNAVAILABLE:return "unavailable";case TOTK_SET_ERR_INVALID:return "invalid";
+  case TOTK_SET_ERR_SAVE:return "save failed";case TOTK_SET_ERR_LOCKED:return "locked";default:return "error";}
+}
+static void setting_result_log(const char *key,const char *what,int result){
+ if(result==TOTK_SET_ERR_SAVE)fprintf(stderr,"[totk] %s: %s changed but not saved (%s, %d)\n",key,what,setting_result_name(result),result);
+ else fprintf(stderr,"[totk] %s: %s unchanged (%s, %d)\n",key,what,setting_result_name(result),result);
+}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
- if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
- if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
- if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();}
+ if(press&&code==KEY_INTERP_TOGGLE){
+  int current=totk_setting_interp();
+  int next=current>=TOTK_INTERP_OFF&&current<=TOTK_INTERP_MAX?(current+1)%4:TOTK_INTERP_OFF;
+  int result=totk_setting_set_interp(next);
+  if(result!=TOTK_SET_OK)setting_result_log("key 2","frame interpolation",result);
+ }
+ if(press&&code==KEY_OUTPUT_MODE_CYCLE){
+  int current=totk_setting_picture();
+  int next=current>=TOTK_PICTURE_OFF&&current<=TOTK_PICTURE_NATIVE?(current+1)%3:TOTK_PICTURE_OFF;
+  int result=totk_setting_set_picture(next);
+  if(result==TOTK_SET_ERR_INVALID)fprintf(stderr,"[totk] key 3: picture mode unchanged (display switch pending, %d)\n",result);
+  else if(result!=TOTK_SET_OK)setting_result_log("key 3","picture mode",result);
+ }
+ if(press&&code==KEY_ASPECT_TOGGLE){
+  int result=totk_setting_set_aspect(!totk_setting_aspect());
+  if(result!=TOTK_SET_OK)setting_result_log("key 4","aspect ratio",result);
+ }}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+/* A keymap profile switch (runtime/settings.h, totk_profile_apply): the next pad read uses the new profile. Forget
+   held keys and the one-frame pending bits so a key held across the switch is not released by the old mapping. */
+void totk_input_reload(void){
+ pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);
+ int active=totk_profile_active();const char *name=active>=0?totk_profile_name(active):NULL;
+ fprintf(stderr,"[totk-input] keymap reloaded%s%s\n",name?": ":"",name?name:"");
+}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
@@ -59,7 +101,7 @@ static int full_states(NpadState *out,int max,const uint32_t *id){return pad_sta
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+ state.lx=axis_value(0);state.ly=axis_value(1);state.rx=axis_value(2);state.ry=axis_value(3);
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;

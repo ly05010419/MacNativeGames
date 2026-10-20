@@ -38,14 +38,19 @@ static const Glyph FONT[] = {
 };
 
 static _Atomic int g_hints_visible = 1;
+static _Atomic int g_fps_visible = -1;     /* -1: not resolved from TOTK_FPS_OVERLAY yet */
+static _Atomic int g_hud_compact = -1;
+static _Atomic int g_shader_visible = -1;
 int fps_overlay_hints_enabled(void) { return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
 int fps_overlay_toggle_hints(void) { return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
+void fps_overlay_set_hints(int on) { atomic_store_explicit(&g_hints_visible, on ? 1 : 0, memory_order_relaxed); }
 
 int fps_overlay_enabled(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("TOTK_FPS_OVERLAY"); on = !(e && !strcmp(e, "0")); }
+    int on = atomic_load_explicit(&g_fps_visible, memory_order_relaxed);
+    if (on < 0) { const char *e = getenv("TOTK_FPS_OVERLAY"); on = !(e && !strcmp(e, "0")); atomic_store_explicit(&g_fps_visible, on, memory_order_relaxed); }
     return on;
 }
+void fps_overlay_set_enabled(int on) { atomic_store_explicit(&g_fps_visible, on ? 1 : 0, memory_order_relaxed); }
 
 int fps_overlay_scale(double view_h) {
     int s = (int)lround(view_h * 0.03 / BOX_ROWS);
@@ -151,9 +156,11 @@ void fps_overlay_text(const fps_overlay_info *info, char *text, size_t n) {
     size_text(ss, sizeof ss, info->screen_w, info->screen_h);
     char gen[8] = "";
     if (info->gen > 0 && info->fps >= 0) snprintf(gen, sizeof gen, "+%d", info->gen > 999 ? 999 : info->gen);   // interpolated frames a second (key 2)
-    // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); 2K: true 2K output.
+    // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); true 2K/4K: the game's own canvas
+    // is bigger than 1080p (the picture viewport then reaches the swapchain size, 3840x2160 on a 4K start).
     // The whole line in the system font, so switching MetalFX does not switch the font.
-    snprintf(text, n, "FPS %s%s  %s%s%s", fps, gen, ss, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big ? "  2K" : "");
+    const char *tier = info->big ? ((info->screen_w >= 3840 || info->screen_h >= 2160) ? "  4K" : "  2K") : "";
+    snprintf(text, n, "FPS %s%s  %s%s%s", fps, gen, ss, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", tier);
 }
 
 void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h) {
@@ -163,15 +170,20 @@ void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, i
 }
 
 int hud_compact(void) {
-    static int on = -1;
+    int on = atomic_load_explicit(&g_hud_compact, memory_order_relaxed);
+    if (on < 0) {
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-    const int def = 0;   // the iOS frontend has no corner panel
+        const int def = 0;   // the iOS frontend has no corner panel
 #else
-    const int def = 1;
+        const int def = 1;
 #endif
-    if (on < 0) { const char *e = getenv("TOTK_HUD"); on = e ? strcmp(e, "corners") != 0 : def; }
+        const char *e = getenv("TOTK_HUD");
+        on = e ? strcmp(e, "corners") != 0 : def;
+        atomic_store_explicit(&g_hud_compact, on, memory_order_relaxed);
+    }
     return on;
 }
+void fps_overlay_set_compact(int on) { atomic_store_explicit(&g_hud_compact, on ? 1 : 0, memory_order_relaxed); }
 
 static pthread_mutex_t g_hud_mu = PTHREAD_MUTEX_INITIALIZER;
 static char g_hud_text[HUD_LINES][128];
@@ -192,15 +204,20 @@ int hud_snapshot(int line, char *out, size_t n, int *highlight) {
 }
 
 int shader_overlay_enabled(void) {
-    static int on = -1;
+    int on = atomic_load_explicit(&g_shader_visible, memory_order_relaxed);
+    if (on < 0) {
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-    const int def = 0;   // the phone translates nothing (misses go to shader-requests/)
+        const int def = 0;   // the phone translates nothing (misses go to shader-requests/)
 #else
-    const int def = 1;
+        const int def = 1;
 #endif
-    if (on < 0) { const char *e = getenv("TOTK_SHADER_OVERLAY"); on = e ? strcmp(e, "0") != 0 : def; }
+        const char *e = getenv("TOTK_SHADER_OVERLAY");
+        on = e ? strcmp(e, "0") != 0 : def;
+        atomic_store_explicit(&g_shader_visible, on, memory_order_relaxed);
+    }
     return on;
 }
+void fps_overlay_set_shader_enabled(int on) { atomic_store_explicit(&g_shader_visible, on ? 1 : 0, memory_order_relaxed); }
 
 void shader_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total, uint64_t pipelines) {
     char t[16];
