@@ -60,6 +60,42 @@ Testing async mode with an empty translation cache turned up a GPU address fault
   compiling at once (the warm-up and the background loads, both at startup) could compile one shader with the
   default fast math. It is now set up with `dispatch_once`. This race was not the cause of the fault above.
 
+## Border colour emulation and the per-frame stall cap (2026-10-20)
+
+Upstream's sampler border colour emulation (`fs_fn_border`, `PSO_VBORDER`) brought back long frames in async mode.
+A 1.4.3 session had frames of 0.5–2.3 s that were all "pipeline" time:
+
+- **Patched functions compiled on the submit thread.** A border variant is the shader's MSL rewritten and compiled
+  from source (`fs_fn_border` in `pso_get`, `vs_fn_for` in `pso_desc`), a cold front-end compile like a library's.
+  Neither went through the background path.
+- **Waits added up.** Draws of a shader that has met a border sampler look up their pipeline on every draw. With
+  several pipelines pending, each draw that switched to another one waited the full `TOTK_SHADER_STALL_MS` again:
+  3,180 waits and 2.2 s in one frame.
+
+Changes:
+
+- `fn_patch_async` compiles patched vertex functions (unwritten varyings, layer index, border colours) and border
+  fragment functions on a background queue. `pso_get` waits at most the stall budget for them, and otherwise skips the
+  draw as `pipeline-pending`. The functions are stored in the shader's `vpatch` / `bpatch` dictionary, under its lock;
+  compiles run outside the lock. Pipeline guesses (`pso_pend_kick`) only queue such a compile and never build one on
+  the submit thread. `TOTK_ASYNC_SHADERS=0`, merged passes and the warm-up keep compiling them in place.
+- Every wait of the submit thread (libraries, pipelines, patched functions) also counts against a per-frame cap,
+  `TOTK_SHADER_STALL_FRAME_MS` (default 8).
+- A draw still waiting for its pipeline no longer counts as a created pipeline in `[长帧]`.
+
+Measured with the same cold-cache method as below (empty translation cache, `MTL_SHADER_CACHE_SIZE=0`, the newest
+save, the same scripted route), two runs per build, on a profile whose warm-up list (11,592 rows) kept the CPU
+saturated, so whole-frame numbers were noisy. Submit-thread stalls on the route:
+
+| | Before (upstream merge) | After | Before border emulation (`cea7608`) |
+|---|---:|---:|---:|
+| Stalls of 100 ms or more | 14, 16 | 4, 3 | 4, 12 |
+| Time in them | 7.6 s, 7.9 s | 2.2 s, 1.4 s | 0.9 s, 2.9 s |
+| Of it, pipeline creation | 3.8 s, 3.1 s | 0.7 s, 0.2 s | 0.7 s, 1.1 s |
+| Longest stall | 1,480 ms, 1,677 ms | 1,259 ms, 661 ms | 352 ms, 702 ms |
+
+Runs, logs and frame times: `~/Library/Application Support/MacNativeGames/TOTK/tests/stutter-ab-2026-10-20`.
+
 ## Trade-off
 
 An object, effect or pass whose library or pipeline is still compiling is missing for those frames, usually a few

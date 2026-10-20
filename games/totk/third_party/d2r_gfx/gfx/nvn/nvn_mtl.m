@@ -1748,6 +1748,18 @@ static int survey_shader_log(void) { static int on = -1; if (on < 0) on = getenv
 // specialised-fragment pipelines always compile synchronously.
 static int async_shaders_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_ASYNC_SHADERS"); v = !e || atoi(e); } return v; }
 static uint64_t shader_stall_budget_ns(void) { static int64_t v = -1; if (v < 0) { const char *e = getenv("TOTK_SHADER_STALL_MS"); v = e ? atoll(e) : 4; if (v < 0) v = 0; } return (uint64_t)v * 1000000ull; }
+/* The submit thread's TOTK_SHADER_STALL_MS waits (libraries, pipelines, patched functions) are also capped per game
+   frame, TOTK_SHADER_STALL_FRAME_MS (default 8): a frame that met hundreds of pending pipelines, or draws switching
+   between several, waited the budget for each, 3,180 times and 2.2 s in one frame (2026-10-20, border colour draws). */
+static uint64_t g_stall_frame, g_stall_used;
+static uint64_t stall_budget(void) {   // submit thread: how long the next wait may take
+    uint64_t f = atomic_load_explicit(&g_cur_frame, memory_order_relaxed);
+    if (f != g_stall_frame) { g_stall_frame = f; g_stall_used = 0; }
+    static int64_t cap = -1; if (cap < 0) { const char *e = getenv("TOTK_SHADER_STALL_FRAME_MS"); cap = e ? atoll(e) : 8; if (cap < 0) cap = 0; }
+    uint64_t c = (uint64_t)cap * 1000000ull, b = shader_stall_budget_ns();
+    return g_stall_used >= c ? 0 : b < c - g_stall_used ? b : c - g_stall_used;
+}
+static void stall_spent(uint64_t ns) { g_stall_used += ns; }
 static uint64_t g_bp_t0;   // 进程启动（本模块装入）时刻 | Time of process start (when this module is loaded)
 __attribute__((constructor)) static void bp_t0(void) { g_bp_t0 = bp_now(); }
 static int bootprof(void) { static int v = -1; if (v < 0) v = getenv("DM_BOOTPROF") != NULL; return v; }
@@ -4995,7 +5007,7 @@ static NvShader *shader_get_async(NSString *pc, int stage, int *state) {   // su
     NvShader *o = g_shcache[pc];
     if (o) { *state = SL_READY; return o; }
     if ([g_sl_failed containsObject:pc]) { *state = SL_FAILED; return nil; }
-    uint64_t bt = bp_now(), budget = shader_stall_budget_ns();
+    uint64_t bt = bp_now(), budget = 0;
     pthread_mutex_lock(&g_sl_mu);
     if (!g_sl_done) { g_sl_done = [NSMutableDictionary dictionary]; g_sl_busy = [NSMutableSet set]; }
     int queued_now = 0;   // only the call that queues a load waits the budget for it; later callers see it pending at once
@@ -5009,7 +5021,7 @@ static NvShader *shader_get_async(NSString *pc, int stage, int *state) {   // su
             pthread_mutex_lock(&g_sl_mu); g_sl_done[pc] = r ? r : (id)NSNull.null; [g_sl_busy removeObject:pc]; pthread_cond_broadcast(&g_sl_cv); pthread_mutex_unlock(&g_sl_mu);
         });
     }
-    if (!g_sl_done[pc] && budget && queued_now) {
+    if (!g_sl_done[pc] && queued_now && (budget = stall_budget())) {
         struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
         uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec + budget;
         ts.tv_sec = (time_t)(ns / 1000000000ull); ts.tv_nsec = (long)(ns % 1000000000ull);
@@ -5017,6 +5029,7 @@ static NvShader *shader_get_async(NSString *pc, int stage, int *state) {   // su
     }
     id r = g_sl_done[pc]; if (r) [g_sl_done removeObjectForKey:pc];
     pthread_mutex_unlock(&g_sl_mu);
+    if (budget) stall_spent(bp_now() - bt);
     g_bp_lib_ns += bp_now() - bt;   // only the submit thread's own wait counts as synchronous library time ([长帧])
     if (!r) { *state = SL_PENDING; return nil; }
     if (r == NSNull.null) { sl_note_failed(pc); *state = SL_FAILED; return nil; }
@@ -5831,7 +5844,7 @@ static NSString *border_key(NvShader *sh, int stage, float colours[][4], int aid
     if (key) sh->border_seen = 1;
     return key;
 }
-static NSString *border_src(NvShader *sh, NSString *src0, float colours[][4], const int aids[], int n) {
+static NSString *border_src(NvShader *sh, NSString *src0, const float colours[][4], const int aids[], int n) {
     NSString *src = src0; int patched = 0;
     for (int i = 0; i < n; i++) {   // SPIRV-Cross: "sampler <name> [[id(<aid>)]]" in the argument struct, used as tex.sample(spvDescriptorSet0.<name>, coord, ...)
         NSString *decl = [NSString stringWithFormat:@"sampler\\s+(\\w+)\\s*\\[\\[id\\(%d\\)\\]\\]", aids[i]];
@@ -5843,7 +5856,7 @@ static NSString *border_src(NvShader *sh, NSString *src0, float colours[][4], co
         src = [re stringByReplacingMatchesInString:src options:0 range:NSMakeRange(0, src.length)
                                       withTemplate:[NSString stringWithFormat:@"totk_border_sample(float4(%a, %a, %a, %a), $1,$2", colours[i][0], colours[i][1], colours[i][2], colours[i][3]]];
     }
-    if (!patched) { static int warned; if (!warned++) MLOG("[totk] shader %s: a sampler clamps to a border colour Metal lacks, but no sample call to emulate it was found", sh->key); return nil; }
+    if (!patched) { static _Atomic int warned; if (!warned++) MLOG("[totk] shader %s: a sampler clamps to a border colour Metal lacks, but no sample call to emulate it was found", sh->key); return nil; }
     NSString *helper =   // 2D, 2D array and 3D textures test the normalized coordinate; other kinds (cube, depth) sample as before
         @"template<typename T, typename... A> static inline vec<T, 4> totk_border_sample(float4 border, texture2d<T> t, sampler s, float2 uv, A... a)\n"
         @"{ return any(uv < 0.0) || any(uv > 1.0) ? vec<T, 4>(border) : t.sample(s, uv, a...); }\n"
@@ -5855,78 +5868,152 @@ static NSString *border_src(NvShader *sh, NSString *src0, float colours[][4], co
         @"{ return t.sample(s, uv, a...); }\n";
     NSRange r = [src rangeOfString:@"using namespace metal;\n"];
     if (r.location == NSNotFound) MDIE("shader %s: no 'using namespace metal;' for the border colour helper", sh->key);
-    static int logged; if (logged++ < 16) MLOG("[totk] shader %s: sampler border colour %g %g %g %g emulated in the shader (%d samples; Metal has no such border colour)",
+    static _Atomic int logged; if (logged++ < 16) MLOG("[totk] shader %s: sampler border colour %g %g %g %g emulated in the shader (%d samples; Metal has no such border colour)",
                                               sh->key, colours[0][0], colours[0][1], colours[0][2], colours[0][3], patched);
     return [src stringByReplacingCharactersInRange:NSMakeRange(NSMaxRange(r), 0) withString:helper];
 }
-/* The fragment function for the draw's samplers (border_key), nil when none needs the emulation. */
-static id<MTLFunction> fs_fn_border(NvShader *fs, int nodepth) {
-    if (!fs || !sh_has_src(fs)) return nil;
-    float colours[8][4]; int aids[8], n;
-    NSString *key = border_key(fs, 1, colours, aids, &n);
-    if (!key) return nil;
-    if (nodepth && fs->writes_depth) key = [@"nodepth;" stringByAppendingString:key];
-    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT; os_unfair_lock_lock(&lock);
-    id<MTLFunction> fn = fs->bpatch[key];
-    if (!fn) {
-        NSString *src = border_src(fs, nodepth && fs->writes_depth ? fs_src_without_depth(fs) : sh_src(fs), colours, aids, n);
-        if (!src) { os_unfair_lock_unlock(&lock); return nil; }
-        NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
-        fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
-        if (!fn) MDIE("fragment shader %s with emulated sampler border colour: %s", fs->key, err.localizedDescription.UTF8String);
-        if (!fs->bpatch) fs->bpatch = [NSMutableDictionary dictionary];
-        fs->bpatch[key] = fn;
+/* TOTK: the vertex and fragment functions pso_get / pso_desc patch from MSL (vs_fn_for: unwritten varyings, the layer
+   index, border colours; fs_fn_border) are a cold front-end compile each, as long as a library's, and border colour
+   emulation (2026-10-19) made a scene meet many: compiled on the submit thread they were most of the long frames of a
+   1.4.3 session (2026-10-20). With TOTK_ASYNC_SHADERS, pso_get asks fn_patch_async for them instead: the compile runs on
+   a background queue, the submit thread waits at most the stall budget, and the draw is skipped as pipeline-pending
+   until the function is in the shader's dictionary. The dictionaries (vpatch, bpatch) are read and written under their
+   lock only; compiles run outside it. */
+static os_unfair_lock g_vpatch_lock = OS_UNFAIR_LOCK_INIT;   // vs->vpatch, and msl_varyings' cache (sh->io)
+static os_unfair_lock g_bpatch_lock = OS_UNFAIR_LOCK_INIT;   // fs->bpatch
+static pthread_mutex_t g_fp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_fp_cv = PTHREAD_COND_INITIALIZER;
+static NSMutableSet<NSString *> *g_fp_busy;   // patched functions being compiled (under g_fp_mu)
+typedef struct { float c[8][4]; int a[8], n; } border_set;   // a stage's emulated border colours and their argument ids (border_key)
+static id fn_patch_get(NvShader *sh, int which, NSString *key) {   // which: 0 vpatch, 1 bpatch; NSNull: no patch applies
+    os_unfair_lock *l = which ? &g_bpatch_lock : &g_vpatch_lock;
+    os_unfair_lock_lock(l); id f = (which ? sh->bpatch : sh->vpatch)[key]; os_unfair_lock_unlock(l);
+    return f;
+}
+static id fn_patch_put(NvShader *sh, int which, NSString *key, id<MTLFunction> fn) {   // returns what the dictionary holds
+    os_unfair_lock *l = which ? &g_bpatch_lock : &g_vpatch_lock;
+    os_unfair_lock_lock(l);
+    NSMutableDictionary *d = which ? sh->bpatch : sh->vpatch;
+    if (!d) { d = [NSMutableDictionary dictionary]; if (which) sh->bpatch = d; else sh->vpatch = d; }
+    id f = d[key]; if (!f) { f = fn ? (id)fn : (id)NSNull.null; d[key] = f; }
+    os_unfair_lock_unlock(l);
+    return f;
+}
+// Submit thread: 1 when sh's function `key` is compiled; otherwise queue `compile` (once) and, with `wait`, wait for it at
+// most the stall budget. 0: still compiling.
+static int fn_patch_async(NvShader *sh, int which, NSString *key, int wait, id<MTLFunction> (^compile)(void)) {
+    if (fn_patch_get(sh, which, key)) return 1;
+    NSString *bk = [NSString stringWithFormat:@"%d %p %@", which, (__bridge void *)sh, key];
+    uint64_t t0 = bp_now(), budget = 0;
+    pthread_mutex_lock(&g_fp_mu);
+    if (!g_fp_busy) g_fp_busy = [NSMutableSet set];
+    int queued_now = 0;
+    if (![g_fp_busy containsObject:bk]) {
+        if (fn_patch_get(sh, which, key)) { pthread_mutex_unlock(&g_fp_mu); return 1; }   // finished since the look-up above
+        [g_fp_busy addObject:bk]; queued_now = 1; atomic_fetch_add(&g_sl_queued, 1);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            uint64_t c0 = bp_now(); id<MTLFunction> fn = compile(); uint64_t dt = bp_now() - c0;
+            atomic_fetch_add(&g_sl_loaded, 1); atomic_fetch_add(&g_sl_ns, dt);   // counted with the background libraries ([nvn] 后台载着色器库)
+            uint64_t m = atomic_load(&g_sl_max_ns); while (dt > m && !atomic_compare_exchange_weak(&g_sl_max_ns, &m, dt)) {}
+            fn_patch_put(sh, which, key, fn);
+            pthread_mutex_lock(&g_fp_mu); [g_fp_busy removeObject:bk]; pthread_cond_broadcast(&g_fp_cv); pthread_mutex_unlock(&g_fp_mu);
+        });
     }
-    os_unfair_lock_unlock(&lock);
+    if (wait && queued_now && (budget = stall_budget())) {
+        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+        uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec + budget;
+        ts.tv_sec = (time_t)(ns / 1000000000ull); ts.tv_nsec = (long)(ns % 1000000000ull);
+        while ([g_fp_busy containsObject:bk]) if (pthread_cond_timedwait(&g_fp_cv, &g_fp_mu, &ts) == ETIMEDOUT) break;
+    }
+    int ready = ![g_fp_busy containsObject:bk];
+    pthread_mutex_unlock(&g_fp_mu);
+    if (budget) stall_spent(bp_now() - t0);
+    return ready;
+}
+static id<MTLFunction> fs_border_compile(NvShader *fs, int nodepth, const border_set *bs) {   // any thread; nil: no sample call to patch
+    NSString *src = border_src(fs, nodepth && fs->writes_depth ? fs_src_without_depth(fs) : sh_src(fs), bs->c, bs->a, bs->n);
+    if (!src) return nil;
+    NSError *err = nil; id<MTLLibrary> lib = totk_msl_library(src, &err);
+    id<MTLFunction> fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
+    if (!fn) MDIE("fragment shader %s with emulated sampler border colour: %s", fs->key, err.localizedDescription.UTF8String);
     return fn;
 }
-static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int border) {
-    static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+/* The fragment function for the draw's samplers (border_key), nil when none needs the emulation. With `pending`
+   (TOTK_ASYNC_SHADERS), a function not compiled yet is queued (fn_patch_async): nil and *pending = 1. */
+static id<MTLFunction> fs_fn_border(NvShader *fs, int nodepth, int *pending) {
+    if (!fs || !sh_has_src(fs)) return nil;
+    border_set bs;
+    NSString *key = border_key(fs, 1, bs.c, bs.a, &bs.n);
+    if (!key) return nil;
+    if (nodepth && fs->writes_depth) key = [@"nodepth;" stringByAppendingString:key];
+    id fn = fn_patch_get(fs, 1, key);
+    if (!fn && pending) {
+        if (!fn_patch_async(fs, 1, key, 1, ^id<MTLFunction>{ return fs_border_compile(fs, nodepth, &bs); })) { *pending = 1; return nil; }
+        fn = fn_patch_get(fs, 1, key);
+    }
+    if (!fn) fn = fn_patch_put(fs, 1, key, fs_border_compile(fs, nodepth, &bs));
+    return fn == NSNull.null ? nil : fn;
+}
+/* vs_fn_for's variant for the draw: its key, nil when vs->fn serves as it is, and what vs_patch_compile needs (the
+   fragment varyings the vertex shader leaves unwritten, the border colours). Reads the bound samplers: submit thread,
+   or a warm-up thread with its own state. */
+static NSString *vs_patch_key(NvShader *vs, NvShader *fs, int layered, int border, border_set *bs, NSString **bkey_out, NSDictionary **in_out, NSArray **miss_out) {
     if (layered && !vs_layerable(vs)) MDIE("vertex shader %s cannot write the render target array index", vs->key);
-    float bc[8][4]; int ba[8], bn = 0;   // TOTK: vertex-stage samplers with a border colour Metal lacks (PSO_VBORDER)
-    NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, bc, ba, &bn) : nil;
-    if (!sh_has_src(vs) || (!layered && !bkey && (!fs || !sh_has_src(fs)))) return vs->fn;
-    os_unfair_lock_lock(&lk);
+    bs->n = 0;   // TOTK: vertex-stage samplers with a border colour Metal lacks (PSO_VBORDER)
+    NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, bs->c, bs->a, &bs->n) : nil;
+    if (!sh_has_src(vs) || (!layered && !bkey && (!fs || !sh_has_src(fs)))) return nil;
+    os_unfair_lock_lock(&g_vpatch_lock);
     NSDictionary *in = fs && sh_has_src(fs) ? msl_varyings(fs) : nil, *out = in ? msl_varyings(vs) : nil;
+    os_unfair_lock_unlock(&g_vpatch_lock);
     NSMutableArray *miss = [NSMutableArray array];
     for (NSNumber *l in [in.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (!out[l]) [miss addObject:l];
-    if (!miss.count && !layered && !bkey) { os_unfair_lock_unlock(&lk); return vs->fn; }
-    NSString *key = [NSString stringWithFormat:@"%@%@%@", layered ? @"layer;" : @"", bkey ? [NSString stringWithFormat:@"border:%@", bkey] : @"", [miss componentsJoinedByString:@","]];
-    id<MTLFunction> f = vs->vpatch[key];
-    if (!f) {
-        NSMutableString *add = [NSMutableString string];
-        for (NSNumber *l in miss) [add appendFormat:@"    %@ totk_unwritten_locn%@ [[user(locn%@)]];\n", in[l], l, l];
-        if (layered) [add appendString:@"    uint totk_layer [[render_target_array_index]];\n"];
-        NSString *head = @"struct main0_out\n{\n";
-        NSString *vsrc0 = sh_src(vs);
-        if (bkey) { NSString *b = border_src(vs, vsrc0, bc, ba, bn); if (b) vsrc0 = b; }
-        NSRange r = [vsrc0 rangeOfString:head];
-        if (r.location == NSNotFound) MDIE("vertex shader %s: no main0_out to extend", vs->key);
-        NSString *src = [vsrc0 stringByReplacingCharactersInRange:r withString:[head stringByAppendingString:add]];
-        if (layered) {
-            NSRegularExpression *psz = [NSRegularExpression regularExpressionWithPattern:@"\\n\\s*float\\s+(\\w+)\\s*\\[\\[point_size\\]\\];" options:0 error:nil];
-            NSTextCheckingResult *m = [psz firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
-            if (m) {
-                NSString *field = [src substringWithRange:[m rangeAtIndex:1]], *local = [@"totk_unused_" stringByAppendingString:field];
-                src = [src stringByReplacingCharactersInRange:m.range withString:@""];
-                src = [src stringByReplacingOccurrencesOfString:[@"out." stringByAppendingString:field] withString:local];
-                src = [src stringByReplacingOccurrencesOfString:@"main0_out out = {};" withString:[NSString stringWithFormat:@"main0_out out = {}; float %@ = 0.0;", local]];
-            }
-            NSString *entry = @"vertex main0_out main0(";
-            src = [src stringByReplacingCharactersInRange:[src rangeOfString:entry] withString:[entry stringByAppendingFormat:@"constant uint& totk_layer_in [[buffer(%d)]], ", LAY_BUF_INDEX]];
-            src = [src stringByReplacingOccurrencesOfString:@"return out;" withString:@"{ out.totk_layer = totk_layer_in; return out; }"];
+    if (!miss.count && !layered && !bkey) return nil;
+    *bkey_out = bkey; *in_out = in; *miss_out = miss;
+    return [NSString stringWithFormat:@"%@%@%@", layered ? @"layer;" : @"", bkey ? [NSString stringWithFormat:@"border:%@", bkey] : @"", [miss componentsJoinedByString:@","]];
+}
+static id<MTLFunction> vs_patch_compile(NvShader *vs, NvShader *fs, NSString *key, NSDictionary *in, NSArray *miss, int layered, NSString *bkey, const border_set *bs) {   // any thread
+    NSMutableString *add = [NSMutableString string];
+    for (NSNumber *l in miss) [add appendFormat:@"    %@ totk_unwritten_locn%@ [[user(locn%@)]];\n", in[l], l, l];
+    if (layered) [add appendString:@"    uint totk_layer [[render_target_array_index]];\n"];
+    NSString *head = @"struct main0_out\n{\n";
+    NSString *vsrc0 = sh_src(vs);
+    if (bkey) { NSString *b = border_src(vs, vsrc0, bs->c, bs->a, bs->n); if (b) vsrc0 = b; }
+    NSRange r = [vsrc0 rangeOfString:head];
+    if (r.location == NSNotFound) MDIE("vertex shader %s: no main0_out to extend", vs->key);
+    NSString *src = [vsrc0 stringByReplacingCharactersInRange:r withString:[head stringByAppendingString:add]];
+    if (layered) {
+        NSRegularExpression *psz = [NSRegularExpression regularExpressionWithPattern:@"\\n\\s*float\\s+(\\w+)\\s*\\[\\[point_size\\]\\];" options:0 error:nil];
+        NSTextCheckingResult *m = [psz firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
+        if (m) {
+            NSString *field = [src substringWithRange:[m rangeAtIndex:1]], *local = [@"totk_unused_" stringByAppendingString:field];
+            src = [src stringByReplacingCharactersInRange:m.range withString:@""];
+            src = [src stringByReplacingOccurrencesOfString:[@"out." stringByAppendingString:field] withString:local];
+            src = [src stringByReplacingOccurrencesOfString:@"main0_out out = {};" withString:[NSString stringWithFormat:@"main0_out out = {}; float %@ = 0.0;", local]];
         }
-        NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(src, &e);
-        f = lib ? [lib newFunctionWithName:vs->fn.name] : nil;
-        if (!f) MDIE("vertex shader %s (variant %s): %s", vs->key, key.UTF8String, e.localizedDescription.UTF8String);
-        if (!vs->vpatch) vs->vpatch = [NSMutableDictionary dictionary];
-        vs->vpatch[key] = f;
-        static int once, lonce;
-        if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as zero outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
-        if (layered && !lonce++) MLOG("[totk] layered pass: vertex shader %s writes the render target array index", vs->key);
+        NSString *entry = @"vertex main0_out main0(";
+        src = [src stringByReplacingCharactersInRange:[src rangeOfString:entry] withString:[entry stringByAppendingFormat:@"constant uint& totk_layer_in [[buffer(%d)]], ", LAY_BUF_INDEX]];
+        src = [src stringByReplacingOccurrencesOfString:@"return out;" withString:@"{ out.totk_layer = totk_layer_in; return out; }"];
     }
-    os_unfair_lock_unlock(&lk);
+    NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(src, &e);
+    id<MTLFunction> f = lib ? [lib newFunctionWithName:vs->fn.name] : nil;
+    if (!f) MDIE("vertex shader %s (variant %s): %s", vs->key, key.UTF8String, e.localizedDescription.UTF8String);
+    static _Atomic int once, lonce;
+    if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as zero outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
+    if (layered && !lonce++) MLOG("[totk] layered pass: vertex shader %s writes the render target array index", vs->key);
     return f;
+}
+static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int border) {
+    border_set bs; NSString *bkey = nil; NSDictionary *in = nil; NSArray *miss = nil;
+    NSString *key = vs_patch_key(vs, fs, layered, border, &bs, &bkey, &in, &miss);
+    if (!key) return vs->fn;
+    id f = fn_patch_get(vs, 0, key);
+    return f ? f : fn_patch_put(vs, 0, key, vs_patch_compile(vs, fs, key, in, miss, layered, bkey, &bs));
+}
+// TOTK_ASYNC_SHADERS: 1 when vs_fn_for will not compile for this draw (no patch, or compiled); otherwise its compile is
+// queued (fn_patch_async, waiting at most the stall budget with `wait`) and 0.
+static int vs_fn_ready(NvShader *vs, NvShader *fs, int layered, int border, int wait) {
+    border_set bs; NSString *bkey = nil; NSDictionary *in = nil; NSArray *miss = nil;
+    NSString *key = vs_patch_key(vs, fs, layered, border, &bs, &bkey, &in, &miss);
+    return !key || fn_patch_async(vs, 0, key, wait, ^id<MTLFunction>{ return vs_patch_compile(vs, fs, key, in, miss, layered, bkey, &bs); });
 }
 // MSL of a depth-exporting fragment function with the depth output kept as a local (see fs_fn_without_depth).
 static NSString *fs_src_without_depth(NvShader *fs) {
@@ -6214,6 +6301,9 @@ static void pso_pend_reclaim(uint64_t submit) {
 // synchronously, as before). demand: kicked for a draw being made, so it is not reclaimed as a stale guess.
 static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs, int demand) {   // 提交线程调：没在缓存、没在表里才丢 | Called by the submit thread: kick only if it is neither in the cache nor in the table
     if (hm_get_id(&g_pso, k)) return 1;
+    // TOTK_ASYNC_SHADERS: a guess whose vertex function needs a patch (vs_fn_for) only queues that compile; pso_desc would
+    // compile it here, on the submit thread. The draw itself makes the pipeline once the function is there.
+    if (!demand && async_shaders_enabled() && !vs_fn_ready(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0, 0)) return 1;
     pthread_mutex_lock(&g_pp_mu);
     pso_pend_reclaim(g_sub_serial);
     int at = pso_pend_find(k), slot = -1;
@@ -6257,7 +6347,7 @@ static int pso_pend_poll(const pso_key *k, uint64_t budget_ns, __strong id<MTLRe
         uint64_t ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec + budget_ns;
         ts.tv_sec = (time_t)(ns / 1000000000ull); ts.tv_nsec = (long)(ns % 1000000000ull);
         while (!g_pp[at].done) if (pthread_cond_timedwait(&g_pp_cv, &g_pp_mu, &ts) == ETIMEDOUT) break;
-        g_pp_waits++; g_pp_wait_ns += bp_now() - t0;
+        g_pp_waits++; g_pp_wait_ns += bp_now() - t0; stall_spent(bp_now() - t0);
     }
     if (!g_pp[at].done) { pthread_mutex_unlock(&g_pp_mu); return PP_PENDING; }
     *out = g_pp[at].ps; g_pp[at].ps = nil; g_pp[at].used = 0;
@@ -6266,21 +6356,24 @@ static int pso_pend_poll(const pso_key *k, uint64_t budget_ns, __strong id<MTLRe
 }
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRenderPassDescriptor *unused) {
     (void)unused;
+    g_pso_pending = 0;
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs) { RED_ONCE(13, "程序没有顶点着色器（或未映射）"); return nil; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_pass.layered) k.a2c |= PSO_LAYERED;   // TOTK: layered pass (see g_lay)
     if (g_mfx.role) k.a2c |= (uint32_t)g_mfx.role << 2;   // TOTK_MFX: scene / UI copy variant (see pso_desc)
     if (g_pso_lmap) { memcpy(k.lmap, g_pso_lmap, 8); k.fsfn = (__bridge void *)g_pso_fsfn; }
-    __unsafe_unretained id<MTLFunction> bfn = !g_pso_lmap && !g_mfx.role ? fs_fn_border(fs, k.dfmt == 0) : nil;   // TOTK: sampler border colour emulation
+    int async = !g_pso_lmap && async_shaders_enabled(), fpend = 0;
+    uint64_t ft = bp_now();
+    __unsafe_unretained id<MTLFunction> bfn = !g_pso_lmap && !g_mfx.role ? fs_fn_border(fs, k.dfmt == 0, async ? &fpend : NULL) : nil;   // TOTK: sampler border colour emulation
+    if (fpend) { g_pso_pending = 1; g_bp_pso_ns += bp_now() - ft; return nil; }   // its fragment function is compiling in the background (fn_patch_async)
     if (bfn) k.fsfn = (__bridge void *)bfn;
     { float bc[8][4]; int ba[8], bn; if (border_key(vs, 0, bc, ba, &bn)) k.a2c |= PSO_VBORDER; }
     __unsafe_unretained id<MTLRenderPipelineState> cached = (__bridge id<MTLRenderPipelineState>)hm_get_ptr(&g_pso, &k);
     if (cached) return cached;
-    g_pso_pending = 0;
     id<MTLRenderPipelineState> ps = nil;
     NSError *e = nil; uint64_t bt = bp_now();
-    if (g_pso_lmap || !async_shaders_enabled()) {   // 合并通道 / 特化片元管线这一步仍同步编；TOTK_ASYNC_SHADERS=0 时普通通道也照旧 | merged-pass / specialized-fragment pipelines still compile synchronously at this step; with TOTK_ASYNC_SHADERS=0, normal passes do too
+    if (!async) {   // 合并通道 / 特化片元管线这一步仍同步编；TOTK_ASYNC_SHADERS=0 时普通通道也照旧 | merged-pass / specialized-fragment pipelines still compile synchronously at this step; with TOTK_ASYNC_SHADERS=0, normal passes do too
         ps = g_pso_lmap ? nil : pso_pend_take(&k);
         if (ps) g_pp_taken++;
         else {
@@ -6294,17 +6387,17 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
         if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }
         static pso_key last_pending_k; static uint64_t last_pending_sub;   // 同一提交内对同一个键已经等过一次budget了，别再等 | already waited the budget once for this key in this submission -- do not wait again
         int same = last_pending_sub == g_sub_serial && !memcmp(&last_pending_k, &k, sizeof k);
-        uint64_t budget = same ? 0 : shader_stall_budget_ns();
-        int st = pso_pend_poll(&k, budget, &ps);
+        int st = pso_pend_poll(&k, same ? 0 : stall_budget(), &ps);
         if (st == PP_ABSENT) {
-            if (pso_pend_kick(&k, vs, fs, 1)) st = pso_pend_poll(&k, budget, &ps);
+            if (!vs_fn_ready(vs, fs, (k.a2c & PSO_LAYERED) != 0, (k.a2c & PSO_VBORDER) != 0, !same)) st = PP_PENDING;   // its patched vertex function is compiling in the background (fn_patch_async)
+            else if (pso_pend_kick(&k, vs, fs, 1)) st = pso_pend_poll(&k, same ? 0 : stall_budget(), &ps);
             else { MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, bfn, 0); ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e]; st = ps ? PP_READY : PP_ABSENT; }   // 预编表满：照旧同步编 | the predict table is full: compile synchronously, as before
         }
         if (st == PP_READY) { if (ps) g_pp_taken++; }
         else if (st == PP_PENDING) {
             last_pending_k = k; last_pending_sub = g_sub_serial;
             g_pso_pending = 1;
-            g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
+            g_bp_pso_ns += bp_now() - bt;   // a wait, no pipeline: not counted as one ([长帧] counted every pending draw)
             return nil;
         }
     }
