@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "runtime.h"
-#include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
+#include "gamepad_layout.h"   // face buttons by GameController's names (the Xbox layout)
 #include "controller_map.h"   // the player's button layout (controls.txt)
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
@@ -51,14 +51,10 @@ static int32_t stronger_axis(int32_t a, int32_t b) {
     return abs(b) > abs(a) ? b : a;
 }
 
-static int face_by_position(GCController *controller) {
-    return gamepad_face_by_position(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
-}
-
-/* The physical buttons held, bit i = controller_physical_names[i]; the face buttons by where they sit
-   (gamepad_face_positions), so one layout file means the same buttons on every controller. */
-static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
-    uint64_t buttons = gamepad_face_positions(pad.buttonA.isPressed, pad.buttonB.isPressed, pad.buttonX.isPressed, pad.buttonY.isPressed, by_position);
+/* The physical buttons held, bit i = controller_physical_names[i]; the face buttons by where GameController's names
+   sit on an Xbox controller (gamepad_face_positions). */
+static uint64_t gamepad_buttons(GCExtendedGamepad *pad) {
+    uint64_t buttons = gamepad_face_positions(pad.buttonA.isPressed, pad.buttonB.isPressed, pad.buttonX.isPressed, pad.buttonY.isPressed);
     if (pad.leftThumbstickButton.isPressed) buttons |= 1ULL << 4;
     if (pad.rightThumbstickButton.isPressed) buttons |= 1ULL << 5;
     if (pad.leftShoulder.isPressed) buttons |= 1ULL << 6;
@@ -83,7 +79,7 @@ static void refresh_gamepads(void) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
-        physical |= gamepad_buttons(pad, face_by_position(controller));
+        physical |= gamepad_buttons(pad);
         next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
         next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
         next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
@@ -135,9 +131,9 @@ static void attach_gamepad(GCController *controller) {
         (void)changed; (void)element;
         refresh_gamepads();
     };
-    fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
+    fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by label (Xbox layout)\n",
             (controller.vendorName ?: @"unknown").UTF8String,
-            (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
+            (controller.productCategory ?: @"unknown").UTF8String);
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }

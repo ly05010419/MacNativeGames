@@ -28,27 +28,26 @@ static int mode_of(const char *text, int physical, int *line) {
 int main(void) {
     int line;
     expect(press("", SOUTH | EAST | WEST | NORTH | MENU, &line) == (A | B | X | Y | PLUS) && !line, "no lines: default layout");
-    expect(press("", EAST, &line) == A && press("", SOUTH, &line) == B && press("", NORTH, &line) == X && press("", WEST, &line) == Y,
-           "the default is the Switch's layout by position: east A, south B, north X, west Y");
-    /* Without a layout file every controller gets what gamepad_face_bits gave before (issue #10), by position or label. */
-    for (int by_position = 0; by_position < 2; by_position++)
-        for (int held = 0; held < 16; held++) {
-            int a = held & 1, b = held >> 1 & 1, x = held >> 2 & 1, y = held >> 3 & 1;
-            expect(press("", gamepad_face_positions(a, b, x, y, by_position), &line) == gamepad_face_bits(a, b, x, y, by_position),
-                   "default layout over face positions = gamepad_face_bits");
-        }
+    expect(press("", SOUTH, &line) == A && press("", EAST, &line) == B && press("", WEST, &line) == X && press("", NORTH, &line) == Y,
+           "the default is the Xbox layout: south A, east B, west X, north Y");
+    /* Without a layout file every controller gets gamepad_face_bits: each face button the Switch button of its label. */
+    for (int held = 0; held < 16; held++) {
+        int a = held & 1, b = held >> 1 & 1, x = held >> 2 & 1, y = held >> 3 & 1;
+        expect(press("", gamepad_face_positions(a, b, x, y), &line) == gamepad_face_bits(a, b, x, y),
+               "default layout over face positions = gamepad_face_bits");
+    }
     uint64_t nintendo = press("# buttons by position, as on a Switch\neast = a\nsouth = b\nnorth = x\nwest = y\n", SOUTH, &line);
     expect(nintendo == B && !line, "south drives B in the Nintendo layout");
     expect(press("east = a\nsouth = b\nnorth = x\nwest = y", EAST | NORTH, &line) == (A | X) && !line, "last line without a newline");
     expect(press("  SOUTH\t=  ZR  \r\n\r\n", SOUTH, &line) == ZR && !line, "spaces, tabs, CRLF and upper case");
     expect(press("south = a # trailing comment\neast = a\n", SOUTH | EAST, &line) == A && !line, "two buttons may drive one Switch button");
-    expect(press("menu = none\n", MENU | SOUTH, &line) == B && !line, "none leaves a button unused");
+    expect(press("menu = none\n", MENU | SOUTH, &line) == A && !line, "none leaves a button unused");
     expect(press("north = a\nnorth = b\n", NORTH, &line) == B && !line, "a later line for the same button wins");
-    expect(press("east = a\nsout = b\n", SOUTH, &line) == B && line == 2, "unknown controller button: line 2, layout unchanged");
-    expect(press("south = c\n", SOUTH, &line) == B && line == 1, "unknown Switch button");
-    expect(press("south =\n", SOUTH, &line) == B && line == 1, "missing Switch button");
-    expect(press("\n# note\nsouth b\n", SOUTH, &line) == B && line == 3, "missing equals sign");
-    expect(press("= a\n", SOUTH, &line) == B && line == 1, "missing controller button");
+    expect(press("east = a\nsout = b\n", SOUTH, &line) == A && line == 2, "unknown controller button: line 2, layout unchanged");
+    expect(press("south = c\n", SOUTH, &line) == A && line == 1, "unknown Switch button");
+    expect(press("south =\n", SOUTH, &line) == A && line == 1, "missing Switch button");
+    expect(press("\n# note\nsouth b\n", SOUTH, &line) == A && line == 3, "missing equals sign");
+    expect(press("= a\n", SOUTH, &line) == A && line == 1, "missing controller button");
     expect(mode_of("south = x tap\n", 0, &line) == CONTROLLER_TAP && !line, "tap mode");
     expect(mode_of("l3 = b TOGGLE\n", 4, &line) == CONTROLLER_TOGGLE && !line, "toggle mode, upper case");
     expect(mode_of("south = b hold\n", 0, &line) == CONTROLLER_HOLD && !line, "hold mode");

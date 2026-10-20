@@ -1,4 +1,4 @@
-"""Face buttons by position for PlayStation and Xbox controllers, by label for Nintendo ones (runtime/gamepad_layout.h)."""
+"""Face buttons by label (the Xbox layout) for every controller (runtime/gamepad_layout.h)."""
 import json
 import shutil
 import subprocess

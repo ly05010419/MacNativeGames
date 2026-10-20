@@ -1,6 +1,7 @@
 /* Controller button layout: each physical button of a controller (named by its position, the same on a DualSense, an Xbox
    and a Nintendo controller: runtime/gamepad_layout.h gamepad_face_positions) drives one Switch Pro Controller button, or
-   none. The default is the Switch's own layout by position: east -> A, south -> B, north -> X, west -> Y (issue #10); the
+   none. The default is the Xbox layout: south -> A, east -> B, west -> X, north -> Y, each button the Switch button of
+   its label (this fork; upstream's default is the Switch's layout by position, east -> A, issue #10); the
    other buttons i < 16 are FullKey bit i. The touchpad click (DualSense, DualShock 4) is physical button 16 and drives
    nothing by default.
    A layout file has one "physical = switch [mode]" line per change; '#' starts a comment; names are case-insensitive;
@@ -31,7 +32,7 @@ static inline int controller_mode_fire(uint8_t mode) { return mode >> 3; }
 
 static inline void controller_map_default(uint16_t map[CONTROLLER_BUTTONS], uint8_t modes[CONTROLLER_BUTTONS]) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) { map[i] = i < CONTROLLER_SWITCH_BUTTONS ? (uint16_t)(1u << i) : 0; modes[i] = CONTROLLER_HOLD; }
-    map[0] = 1u << 1; map[1] = 1u << 0; map[2] = 1u << 3; map[3] = 1u << 2;   /* south B, east A, west Y, north X */
+    /* south A, east B, west X, north Y: FullKey bits 0-3 already (the Xbox layout) */
 }
 
 /* Index of name [s, s + n) in the count names, or -1. */
