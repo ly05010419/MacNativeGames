@@ -403,6 +403,37 @@ static void action_mfx4k_gate(void) {
     }
 }
 
+static void action_render_clamp(void) {
+    /* Python wrote outputRes=1080 with renderRes=2160: the invalid combination
+       that used to crash the game during boot.  It must be normalized before
+       any environment is exported, and the 4K render must stay unselectable. */
+    CHECK_INT(totk_settings_init(), 0);
+    CHECK_INT(totk_setting_output_res(), TOTK_RES_1080);
+    CHECK_INT(totk_setting_render_res(), TOTK_RENDER_GAME);
+    check_env("TOTK_RENDER_RES", NULL);
+    CHECK_INT(totk_setting_set_render_res(TOTK_RENDER_2160), TOTK_SET_ERR_UNAVAILABLE);
+    CHECK_INT(totk_settings_save_now(), TOTK_SET_OK);
+    check_v2_file(TOTK_RES_1080, TOTK_UPSCALE_NATIVE, TOTK_RENDER_GAME, TOTK_PICTURE_OFF);
+    printf("pass: invalid 4K scene render is normalized and cannot be selected\n");
+}
+
+static void action_render_native4k(void) {
+    /* A native 4K output may use a 4K scene render; returning to 1080p must
+       drop the render target in the same commit and export the next start. */
+    CHECK_INT(totk_settings_init(), 0);
+    CHECK_INT(totk_setting_output_res(), TOTK_RES_2160);
+    CHECK_INT(totk_setting_upscaler(), TOTK_UPSCALE_NATIVE);
+    CHECK_INT(totk_setting_render_res(), TOTK_RENDER_2160);
+    check_env("TOTK_RENDER_RES", "3840x2160");
+    CHECK_INT(totk_setting_set_output_res(TOTK_RES_1080), TOTK_SET_OK);
+    CHECK_INT(totk_setting_output_res(), TOTK_RES_1080);
+    CHECK_INT(totk_setting_render_res(), TOTK_RENDER_GAME);
+    check_env("TOTK_RENDER_RES", NULL);
+    CHECK_INT(totk_settings_save_now(), TOTK_SET_OK);
+    check_v2_file(TOTK_RES_1080, TOTK_UPSCALE_NATIVE, TOTK_RENDER_GAME, TOTK_PICTURE_OFF);
+    printf("pass: 4K render is only valid on native 4K and drops with the output\n");
+}
+
 static void action_fallback(void) {
     /* Python wrote schema-2 outputRes=2160 with the upscaler under test and
        controls the overlay tree; init must keep that target but export a
@@ -456,6 +487,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(action, "native-incapable")) action_native_incapable();
         else if (!strcmp(action, "mfx4k")) action_mfx4k_gate();
         else if (!strcmp(action, "fallback")) action_fallback();
+        else if (!strcmp(action, "render-clamp")) action_render_clamp();
+        else if (!strcmp(action, "render-native4k")) action_render_native4k();
         else if (!strcmp(action, "legacy")) action_legacy_encoding();
         else {
             fprintf(stderr, "unknown action: %s\n", action);

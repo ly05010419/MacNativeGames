@@ -183,6 +183,32 @@ class SettingsSchemaV2(unittest.TestCase):
                     'PROBE_EXPECT_CAP': capable,
                 })
 
+    def test_4k_render_requires_native_4k_output(self):
+        # The first v2 build allowed renderRes=4K with 1080p output; that
+        # crashed the game renderer during boot.  Imports must be clamped.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.write_settings(directory, {
+                'schemaVersion': 2,
+                'settings': {'outputRes': RES_1080, 'upscaler': UPSCALE_NATIVE,
+                             'renderRes': 4},
+            })
+            self.run_probe('render-clamp', directory)
+            document = json.loads((directory / 'settings.json').read_text())
+            self.assertEqual(document['settings']['renderRes'], 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.overlay(directory, '3840x2160')
+            self.write_settings(directory, {
+                'schemaVersion': 2,
+                'settings': {'outputRes': RES_2160, 'upscaler': UPSCALE_NATIVE,
+                             'renderRes': 4},
+            })
+            self.run_probe('render-native4k', directory)
+            document = json.loads((directory / 'settings.json').read_text())
+            self.assertEqual(document['settings']['renderRes'], 0)
+
     def test_legacy_compact_output_res_encoding(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

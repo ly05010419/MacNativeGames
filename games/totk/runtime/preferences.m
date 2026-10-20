@@ -287,6 +287,13 @@ static BOOL picture_native4k_available(void) {
     return totk_setting_output_capable(TOTK_RES_2160, TOTK_UPSCALE_NATIVE);
 }
 
+/* A 4K scene render target is only valid on a native 4K output.  Selecting
+   it with a 1080p/2K output used to crash in the game renderer during boot. */
+static BOOL picture_native4k_selected(void) {
+    return totk_setting_output_res() == TOTK_RES_2160 &&
+           totk_setting_upscaler() == TOTK_UPSCALE_NATIVE;
+}
+
 static BOOL picture_tag_available(NSInteger tag) {
     if (tag == TOTKMenuTagPictureMFX4K) return picture_mfx4k_available();
     if (tag == TOTKMenuTagPictureNative4K) return picture_native4k_available();
@@ -1441,8 +1448,12 @@ static const char *lock_name_for_tag(NSInteger tag) {
     int renderRes = totk_setting_render_res();
     if (renderRes >= TOTK_RENDER_GAME && renderRes <= TOTK_RENDER_2160) [_renderPopup selectItemAtIndex:renderRes];
     NSMenuItem *render4K = [_renderPopup itemAtIndex:TOTK_RENDER_2160];
-    render4K.enabled = renderEnabled && picture_native4k_available();
-    render4K.toolTip = render4K.enabled ? nil : picture_unavailable_reason(TOTKMenuTagPictureNative4K);
+    render4K.enabled = renderEnabled && picture_native4k_available() && picture_native4k_selected();
+    render4K.toolTip = render4K.enabled ? nil :
+        (picture_native4k_available()
+            ? @(TOTK_UI("先选择“原生 4K”作为画质预设，才能使用 4K 场景渲染。",
+                        "Select Native 4K as the picture preset before enabling a 4K scene render."))
+            : picture_unavailable_reason(TOTKMenuTagPictureNative4K));
 
     NSString *restartText = nil;
     if (outputRes == TOTK_RES_2160 && runtime_output_max_res() != TOTK_RES_2160) {
@@ -1594,8 +1605,11 @@ static const char *lock_name_for_tag(NSInteger tag) {
 - (void)renderChanged:(NSPopUpButton *)sender {
     int render = (int)sender.indexOfSelectedItem;
     if (render < TOTK_RENDER_GAME || render > TOTK_RENDER_2160) return;
-    if (render == TOTK_RENDER_2160 && !picture_native4k_available()) {
-        [self showError:picture_unavailable_reason(TOTKMenuTagPictureNative4K)];
+    if (render == TOTK_RENDER_2160 && !picture_native4k_selected()) {
+        [self showError:(picture_native4k_available()
+            ? @(TOTK_UI("4K 场景渲染只支持“原生 4K”输出；请先切换到原生 4K。",
+                        "A 4K scene render requires Native 4K output; select Native 4K first."))
+            : picture_unavailable_reason(TOTKMenuTagPictureNative4K))];
         [self refreshControls];
         return;
     }

@@ -1496,6 +1496,9 @@ static int persist(int keymaps) {
 /* ------------------------------------------------------------------------------------------------------------ */
 /* Init                                                                                                          */
 
+static int render_res_allowed(const Values *v, int render);
+static int normalize_render_res(Values *v);
+
 static void do_init(void) {
     atomic_store_explicit(&g_state, 1, memory_order_release);
     pthread_mutex_lock(&g_mu);
@@ -1521,14 +1524,17 @@ static void do_init(void) {
         int settings = load_settings_file();
         int keymaps = load_keymaps_file();
         if (settings > 0 || keymaps > 0) result = 1;
+        if (normalize_render_res(&g_file)) g_dirty_settings = 1;
         g_v = g_file;
         env_overrides(&g_v);
+        normalize_render_res(&g_v);
         if (g_profile_count == 0) default_profiles();
         publish_active();
         g_loaded = 1;
     } else {
         g_v = g_file;
         env_overrides(&g_v);
+        normalize_render_res(&g_v);
         default_profiles();
         publish_active();
         result = -1;
@@ -1667,11 +1673,33 @@ int totk_setting_set_interp(int mode) {
     return result;
 }
 
+/* A 4K scene render target is only valid with a native 4K output.  It is not
+   a free supersampling choice: the first v2 build allowed it with a 1080p
+   output, which crashed in the game's renderer during boot.  MetalFX 4K keeps
+   a 1080p canvas, so it must not use a 4K scene target either. */
+static int render_res_allowed(const Values *v, int render) {
+    if (render != TOTK_RENDER_2160) return 1;
+    return v->output_res == TOTK_RES_2160 && v->upscaler == TOTK_UPSCALE_NATIVE;
+}
+
+static int normalize_render_res(Values *v) {
+    if (render_res_allowed(v, v->render_res)) return 0;
+    fprintf(stderr, "[totk] settings: a 4K scene render requires native 4K output; using the game default\n");
+    v->render_res = TOTK_RENDER_GAME;
+    return 1;
+}
+
 /* Apply a picture-v2 proposal and commit it only when the adapter accepted it
    (TOTK_SET_OK) or stored it for the next start (TOTK_SET_RESTART).  Pending,
    unavailable and locked results leave g_file/g_v untouched. */
-static int commit_picture_change(int which, const Values *proposed) {
-    int applied = apply_live(which, proposed);
+static int commit_picture_change(int which, const Values *proposed_in) {
+    Values proposed = *proposed_in;
+    int render_clamped = 0;
+    if (which == APPLY_PICTURE && !render_res_allowed(&proposed, proposed.render_res)) {
+        proposed.render_res = TOTK_RENDER_GAME;
+        render_clamped = 1;
+    }
+    int applied = apply_live(which, &proposed);
     if (applied != TOTK_SET_OK && applied != TOTK_SET_RESTART) return applied;
     pthread_mutex_lock(&g_mu);
     int locked = which == APPLY_RENDER ? g_locked_render : g_locked_picture;
@@ -1680,15 +1708,23 @@ static int commit_picture_change(int which, const Values *proposed) {
         return TOTK_SET_ERR_LOCKED;
     }
     if (which == APPLY_RENDER) {
-        g_file.render_res = proposed->render_res;
-        g_v.render_res = proposed->render_res;
+        g_file.render_res = proposed.render_res;
+        g_v.render_res = proposed.render_res;
         g_restart_render = applied == TOTK_SET_RESTART;
     } else {
-        g_file.output_res = proposed->output_res;
-        g_v.output_res = proposed->output_res;
-        g_file.upscaler = proposed->upscaler;
-        g_v.upscaler = proposed->upscaler;
+        g_file.output_res = proposed.output_res;
+        g_v.output_res = proposed.output_res;
+        g_file.upscaler = proposed.upscaler;
+        g_v.upscaler = proposed.upscaler;
         g_restart_output = applied == TOTK_SET_RESTART;
+        if (render_clamped || g_file.render_res != proposed.render_res) {
+            /* Also export the next start's TOTK_RENDER_RES.  This is a safety
+               clamp, so it overrides an explicit environment lock. */
+            g_file.render_res = proposed.render_res;
+            g_v.render_res = proposed.render_res;
+            g_restart_render = 1;
+            render_env_export(&proposed, 1);
+        }
     }
     int saved = persist(0);
     pthread_mutex_unlock(&g_mu);
@@ -1783,7 +1819,9 @@ int totk_setting_set_render_res(int render) {
     }
     Values proposed = g_v;
     proposed.render_res = render;
+    int allowed = render_res_allowed(&proposed, render);
     pthread_mutex_unlock(&g_mu);
+    if (!allowed) return TOTK_SET_ERR_UNAVAILABLE;
     return commit_picture_change(APPLY_RENDER, &proposed);
 }
 
