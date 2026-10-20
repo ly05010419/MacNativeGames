@@ -43,6 +43,12 @@ targets:
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
         CADisableMinimumFrameDurationOnPhone: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: TOTKSceneDelegate
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: ${TOTK_BUNDLE_ID}
       PRODUCT_NAME: TOTK

@@ -26,7 +26,11 @@
 #define R_INVALID_PATH 0x2ee602u
 #define R_OPEN_MODE 0x307402u
 #define R_APPEND_REQUIRED 0x2f5e02u
+#ifdef GAME_BOTW
+#define TOTK_APPLICATION_ID 0x01007ef00011e000ULL   /* Breath of the Wild: its own save data is the one that exists */
+#else
 #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
+#endif
 enum { M_FREE, M_SAVE, M_TEMP, M_CACHE };
 enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
 #define FILE_BASE 0x200000000ULL
@@ -172,7 +176,7 @@ static void unmount(const char *name) {
     pthread_mutex_lock(&lock);
     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; pthread_mutex_unlock(&lock); return; }
     pthread_mutex_unlock(&lock);
-    if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
+    BOTW_AOC_UNMOUNT(name) if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
 }
 static unsigned commit(const char *name) {
     pthread_mutex_lock(&lock); int found = 0, save = 0;
@@ -193,7 +197,7 @@ static File *file_of(uint64_t h, int *fd, int *mode) {
 void runtime_fs_log(const char *what, const char *path);
 static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
-    if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
+    if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode); BOTW_AOC_OPEN(out, path, mode)
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
@@ -210,7 +214,7 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     pthread_mutex_unlock(&lock); runtime_fail("host file handle table full");
 }
 static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
-    if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size);
+    if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size); BOTW_AOC_READ(out, h, offset, buffer, size)
     int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
     dm_guest_write_prepare(buffer, (size_t)size);
@@ -236,7 +240,7 @@ static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     return 0;
 }
 static unsigned file_size(int64_t *out, uint64_t h) {
-    if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h);
+    if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h); BOTW_AOC_SIZE(out, h)
     int fd; struct stat st; if (!out || !file_of(h, &fd, NULL) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
     *out = st.st_size; return 0;
 }
@@ -248,7 +252,7 @@ static unsigned set_file_size(uint64_t h, int64_t size) {
 }
 static unsigned flush_file(uint64_t h) { int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; fcntl(fd, F_FULLFSYNC); return 0; }
 static void close_file(uint64_t h) {
-    if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; }
+    if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; } BOTW_AOC_CLOSE(h)
     if (!file_of(h, NULL, NULL)) runtime_fail("close invalid file handle");
     pthread_mutex_lock(&lock); int fd = files[h - FILE_BASE].fd, save = files[h - FILE_BASE].save; files[h - FILE_BASE].fd = 0; pthread_mutex_unlock(&lock);
     close(fd);
@@ -266,7 +270,7 @@ static unsigned rename_file(const char *from, const char *to) {
     return rename(a, b) ? errno_result() : 0;
 }
 static unsigned entry_type(int *out, const char *path) {
-    if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
+    if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path); BOTW_AOC_TYPE(out, path)
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
@@ -338,7 +342,7 @@ void runtime_save_probe(void) {
 
 void *runtime_fs_host_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
-        {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size},
+        {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size}, BOTW_AOC_TABLE
         {"_ZN2nn2fs9CloseFileENS0_10FileHandleE", close_file}, {"_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", entry_type},
         {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", read_file}, {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", read_options},
         {"_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm", read_exact},
@@ -353,6 +357,10 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
+#ifdef GAME_BOTW
+        {"_ZN2nn2fs14CommitSaveDataEPKc", commit},   /* SDK 7 (Breath of the Wild 1.6.0) */
+#endif
+       
         {"_ZN2nn2fs18CreateCacheStorageEill", create_cache}, {"_ZN2nn2fs18DeleteCacheStorageEi", delete_cache},
         {"_ZN2nn2fs17MountCacheStorageEPKci", mount_cache},
         {"_ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE", open_cache_list},

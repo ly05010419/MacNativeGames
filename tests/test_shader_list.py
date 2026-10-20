@@ -104,6 +104,14 @@ class ShaderList(unittest.TestCase):
             self.assertEqual(rows(out, 'L'), [f'L\t{KEY}\tLib/agl/agl_resource.sarc.zs/agl_common.sharcb\t1a00\t2b00\t1d0'])
             self.assertIn('1 located', self.run_tool('stats', out))
 
+    def test_each_games_list_gets_its_own_header(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('shader_list', SCRIPT)
+        shader_list = importlib.util.module_from_spec(spec); spec.loader.exec_module(shader_list)
+        self.assertIn('TOTK shader list', shader_list.header_for(ROOT/'games/totk/assets/shader_list.tsv'))
+        self.assertIn('Breath of the Wild shader list', shader_list.header_for(ROOT/'games/botw/assets/shader_list.tsv'))
+        self.assertIn('TOTK shader list', shader_list.header_for('/tmp/anywhere/list.tsv'))
+
     def test_the_repository_list_is_valid(self):
         self.assertIn('variants', self.run_tool('stats', ROOT/'games/totk/assets/shader_list.tsv'))
 

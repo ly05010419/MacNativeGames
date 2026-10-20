@@ -73,9 +73,12 @@ build/totk-native: Makefile runtime/loader.c runtime/cheats.c runtime/runtime.h 
 
 # Both warm-up lists come from the one shared shader list (docs/shader-list.md): pso_title.tsv is what the title screen,
 # its menu and the save list use, the only list the first frame waits for (nvn_mtl.m warm_start); pso_manifest.tsv the rest.
-build/pso_manifest.tsv: assets/shader_list.tsv scripts/shader_list.py
+# Each game has its own list: SHADER_LIST names it (Breath of the Wild's is games/botw/assets/shader_list.tsv; the
+# botw160 targets default to it, build_app.py passes it).
+SHADER_LIST ?= assets/shader_list.tsv
+build/pso_manifest.tsv: $(SHADER_LIST) scripts/shader_list.py
 	@mkdir -p build
-	"$(PY)" scripts/shader_list.py export assets/shader_list.tsv build/pso_manifest.tsv build/pso_title.tsv
+	"$(PY)" scripts/shader_list.py export $(SHADER_LIST) build/pso_manifest.tsv build/pso_title.tsv
 build/pso_title.tsv: build/pso_manifest.tsv
 
 runtime: build/totk-native build/pso_manifest.tsv build/pso_title.tsv
@@ -391,6 +394,25 @@ test-audio-effects:
 	xcrun clang -std=c11 -O2 -g -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all -Iruntime tests/audio_effects/mixer_probe.c runtime/audio_effects.c runtime/audio_reverb.c -framework AudioToolbox -o "$(AUDIO_TEST_WORK)/mixer-probe"
 	"$(AUDIO_TEST_WORK)/mixer-probe" "$(AUDIO_TEST_WORK)/reference.bin"
 
+# ---- The Legend of Zelda: Breath of the Wild 1.6.0 (botw.md) ----
+# The shared runtime and graphics layer compiled with GAME_BOTW: the graphics objects go to build/gfx-botw, so every TOTK
+# binary keeps exactly the code it had. game_patches_botw.c replaces game_patches.c.
+GFX_OBJECTS_BOTW := $(addprefix build/gfx-botw/,$(addsuffix .o,$(GFX_SRC)))
+build/gfx-botw/%.o: % $(GFX_HEADERS) Makefile
+	@mkdir -p "$(dir $@)"
+	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -c "$<" -o "$@"
+.PHONY: runtime-botw160
+build/botw160/runtime_tables.h: scripts/prepare_runtime.py analysis/botw160-port/phase12-validation.json
+	"$(PY)" scripts/prepare_runtime.py --version botw160
+build/botw160/romfs_config.h: scripts/prepare_romfs_backend.py extracted/botw160/romfs/index.json
+	"$(PY)" scripts/prepare_romfs_backend.py --version botw160
+# The add-on content volumes (games/botw/scripts/extract_aoc_romfs.py -> extracted/botw160/aoc/<index>); a missing index is not listed.
+build/botw160/aoc_config.h: scripts/prepare_romfs_backend.py $(wildcard extracted/botw160/aoc/*/index.json)
+	"$(PY)" scripts/prepare_romfs_backend.py --version botw160 --aoc
+build/totk-native-botw160: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/botw160/runtime_tables.h build/botw160/romfs_config.h build/botw160/aoc_config.h build/shared_fonts_config.h $(GFX_OBJECTS_BOTW) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW160=1 -Ibuild/botw160 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+runtime-botw160: SHADER_LIST ?= ../botw/assets/shader_list.tsv
+runtime-botw160: build/totk-native-botw160 build/pso_manifest.tsv build/pso_title.tsv
 # Production Opus-wrapper regression checks; no game assets or audio device needed.
 OPUS_TEST_WORK ?= /tmp/totk-native-opus-codec
 OPUS_PREFIX ?= /opt/homebrew/opt/opus

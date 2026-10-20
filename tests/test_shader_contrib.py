@@ -51,6 +51,15 @@ class IssueCollectionTests(unittest.TestCase):
                                                  'https://github.com/someone/MacNativeGames/files/456/contrib.txt'])
         self.assertEqual(attachment_urls(None), [])
 
+    def test_an_automatic_submission_is_read_like_a_form_issue(self):
+        link = watch.gist_raw('https://gist.github.com/someone/0123abcd\n')
+        self.assertEqual(link, 'https://gist.githubusercontent.com/someone/0123abcd/raw/shader-list-contribution.txt')
+        self.assertIsNone(watch.gist_raw('error: HTTP 401'))
+        body = watch.issue_body('iPad', link)
+        self.assertEqual(attachment_urls(body), [link])
+        self.assertIn('### Device / 设备\n\niPad\n', body)
+        self.assertNotIn('udid', body.lower())
+
     def test_only_shader_rows_are_taken(self):
         text = '\n'.join([
             '# header', '',
@@ -76,9 +85,11 @@ class MacReminderForDevicesTests(unittest.TestCase):
              'connectionProperties': {'pairingState': 'paired', 'transportType': 'localNetwork', 'tunnelState': 'disconnected'}},
             {'identifier': 'B', 'deviceProperties': {'name': 'iPad'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-b'},
              'connectionProperties': {'pairingState': 'paired'}},                                   # not reachable now
+            {'identifier': 'E', 'deviceProperties': {'name': 'Tablet'}, 'hardwareProperties': {'platform': 'iOS', 'udid': 'u-e', 'deviceType': 'iPad'},
+             'connectionProperties': {'pairingState': 'paired', 'transportType': 'wired'}},
             {'identifier': 'C', 'hardwareProperties': {'platform': 'watchOS'}, 'connectionProperties': {'pairingState': 'paired', 'transportType': 'wired'}},
             {'identifier': 'D', 'hardwareProperties': {'platform': 'iOS'}, 'connectionProperties': {'pairingState': 'unpaired', 'transportType': 'wired'}}]}}
-        self.assertEqual(watch.reachable_devices(listing), [('A', 'u-a', 'iPhone')])
+        self.assertEqual(watch.reachable_devices(listing), [('A', 'u-a', 'iPhone', 'iPhone'), ('E', 'u-e', 'Tablet', 'iPad')])
         self.assertEqual(watch.reachable_devices({}), [])
 
     def test_the_game_is_found_by_name_or_bundle(self):
@@ -106,3 +117,14 @@ class MacReminderForDevicesTests(unittest.TestCase):
         self.assertIsNone(watch.reminded_at('never\n'))
         self.assertEqual(watch.message(500, 'iPad')[2:], ('Remind me next time', "Don't remind me again", 'Send')
                          if not watch.chinese() else ('下次提醒', '不要提醒了', '发送'))
+
+    def test_gh_replaces_remind_me_next_time_with_submit(self):
+        self.assertEqual(watch.message(500, 'iPad', auto=True)[2:], ('Submit automatically', "Don't remind me again", 'Send')
+                         if not watch.chinese() else ('自动提交', '不要提醒了', '发送'))
+        with tempfile.TemporaryDirectory() as tmp:   # no gh on PATH or in the usual places: no automatic button
+            old = (watch.GH_CANDIDATES, watch.shutil.which)
+            watch.GH_CANDIDATES, watch.shutil.which = (str(Path(tmp) / 'gh'),), lambda name: None
+            try:
+                self.assertIsNone(watch.gh_path())
+            finally:
+                watch.GH_CANDIDATES, watch.shutil.which = old

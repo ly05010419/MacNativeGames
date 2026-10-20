@@ -108,6 +108,13 @@ static void ring_output(void){
     for(int n=0;n<intact;n++){pull(m,NULL,NULL,0,240,&io);for(int k=0;k<480;k++)near(out[k],.5f,"producer scheduling gap within the prefill");}
     check(!atomic_load(&m->underruns),"scheduling headroom avoids dropout");
     pull(m,NULL,NULL,0,240,&io);check(atomic_load(&m->underruns)==1,"a gap longer than the prefill underruns");free(m);
+    /* A Bluetooth route change or CoreAudio callback stall lets the 5-ms producer fill the 341-ms ring while pull() is
+       paused; when pull() resumes on a live device, stale backlog past the headroom cap is skipped back to prefill. */
+    m=calloc(1,sizeof *m);m->frame=240;m->unit_ok=1;atomic_store(&m->playing,1);
+    for(int k=0;k<480;k++)samples[k]=.25f;for(int n=0;n<20;n++)output_push(m,samples,240);
+    for(int k=0;k<480;k++)samples[k]=.75f;for(int n=0;n<4;n++)output_push(m,samples,240);
+    pull(m,NULL,NULL,0,240,&io);near(out[0],.75f,"device stall backlog trims stale audio back to prefill");
+    check(atomic_load(&m->wr)-atomic_load(&m->rd)==720,"trimmed backlog leaves remaining prefill headroom");free(m);
     /* TOTK_AUDIO_PREFILL_MS: milliseconds rounded up to 5-ms blocks; unset is the default 20; anything else is refused. */
     check(prefill_blocks_for(NULL)==4&&prefill_blocks_for("")==4,"prefill default 20 ms");
     check(prefill_blocks_for("0")==0&&prefill_blocks_for("20")==4&&prefill_blocks_for("40")==8&&prefill_blocks_for("22")==5,"prefill milliseconds to blocks");

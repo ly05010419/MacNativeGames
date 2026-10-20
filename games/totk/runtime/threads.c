@@ -37,6 +37,17 @@
 #define R_BAD_HANDLE  0xE401u   // 114
 #define R_BAD_STATE   0xFA01u   // 125
 #define R_OUT_OF_RES  0xCE01u   // 103
+#ifdef GAME_BOTW
+#define R_BAD_CORE    0xE201u   // 113 InvalidCoreId
+#define R_BAD_COMBO   0xE801u   // 116 InvalidCombination
+/* Core ids as Horizon reads them (Atmosphere svc::CreateThread / SetThreadCoreMask, KThread::SetCoreMask): -1 = no ideal
+   core (DontCare), -2 = the process's ideal core with only that core in the mask (UseProcessValue), -3 = keep the ideal
+   core (NoUpdate). A new thread's mask is its ideal core alone; the kernel starts the main thread the same way on the
+   process's default core (main.npdm META +0xf: core 0 for Breath of the Wild, cores 0-2 allowed). botw.md: with mask 0x7
+   for core -2 (and for the main thread), threads the Switch keeps on core 0 with the main thread ran beside it on cores 1-2. */
+#define PROCESS_IDEAL_CORE 0
+#define PROCESS_CORE_MASK  7u
+#endif
 #define WAITERS_BIT   0x40000000u
 #define H_CUR_THREAD  0xFFFF8000u
 
@@ -65,6 +76,11 @@ typedef struct thr {
     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
     uint64_t yrun_ns, yrun_svc;   // the current run of yields: when it started, and nsvc at its last yield (yield_backoff_ns)
+#ifdef GAME_BOTW
+    uint64_t cwait_ns;            // when it last queued for a virtual core (starvation rule, core_beats)
+    uint64_t protect_until;       // given a core by the starvation rule: no priority preemption before this
+    int cqueued;                  // in g_core_wait: queued by core_take, or by wake_queue the moment it was woken
+#endif
 } thr_t;
 static thr_t *g_all;
 
@@ -75,13 +91,47 @@ static pthread_key_t g_keythr;
 static uint64_t g_next_id = 0x51;
 static thr_t *g_wait;          // 全部在等的线程（锁 / 条件 / 地址 / 同步） | All waiting threads (lock / condition / address / synchronization)
 
+#ifdef GAME_BOTW
+/* Handles as Horizon encodes them (Atmosphere KHandleTable): the slot in bits 0-14 and, in bits 15-29, a linear id that
+   changes at every allocation, so a handle stays invalid after it is closed even when its slot is reused. Plain slot
+   numbers (0x1000 + slot) let a stale handle -- a signal to or a wait on an event the game had already closed, a thread
+   handle kept after the thread exited -- reach whatever object took the slot next (botw.md: Breath of the Wild reused
+   thread handle 0x1029 within a minute). Bit 30 stays clear: mutex tags use it as the waiters bit. */
+static uint16_t g_hlin[MAX_H];
+static uint16_t g_next_lin = 1;
+static uint32_t g_main_handle;
+static uint32_t h_new(int type, void *obj) {     // caller holds G
+    for (int i = 1; i < MAX_H; i++) if (!g_h[i].type) {
+        uint16_t lin = g_next_lin++; if (g_next_lin > 0x7fff) g_next_lin = 1;
+        g_h[i].type = type; g_h[i].obj = obj; g_hlin[i] = lin;
+        return ((uint32_t)lin << 15) | (uint32_t)i;
+    }
+    die("句柄表满");
+}
+static uint64_t g_stale_handles;
+static unsigned h_index(uint32_t h) {            // slot of a live handle, 0 when the value names none
+    unsigned i = h & 0x7fff, lin = (h >> 15) & 0x7fff;
+    if ((h >> 30) || i == 0 || i >= MAX_H || !g_h[i].type) return 0;
+    if (g_hlin[i] != lin) {   // a closed handle whose slot now holds another object: the old encoding handed that object over
+        if (g_stale_handles++ < 40) { thr_t *me = g_keythr ? pthread_getspecific(g_keythr) : NULL;
+            fprintf(stderr, "[threads] stale handle %#x used by thread %#x: its slot now holds handle %#x (type %d)\n", h, me ? me->handle : 0, ((uint32_t)g_hlin[i] << 15) | i, g_h[i].type); }
+        return 0;
+    }
+    return i;
+}
+#else
 static uint32_t h_new(int type, void *obj) {     // 调用方持 G | Caller holds G
     for (int i = 1; i < MAX_H; i++) if (!g_h[i].type) { g_h[i].type = type; g_h[i].obj = obj; return 0x1000 + i; }
     die("句柄表满");
 }
+#endif
 static void *h_peek(uint32_t h, int type) {      // 只查不报 | Lookup only, no report
     if (h == H_CUR_THREAD && type == O_THREAD) return (g_keythr ? pthread_getspecific(g_keythr) : NULL);
+#ifdef GAME_BOTW
+    unsigned i = h_index(h);
+#else
     unsigned i = h - 0x1000;
+#endif
     if (i == 0 || i >= MAX_H || g_h[i].type != type) return NULL;
     return g_h[i].obj;
 }
@@ -113,7 +163,14 @@ static thr_t *pick(int kind, uint64_t a) {
     }
     return b;
 }
-static void wake(thr_t *t, int64_t res) { wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv); }
+#ifdef GAME_BOTW
+static void wake_queue(thr_t *t);   /* below, with the virtual cores */
+#endif
+static void wake(thr_t *t, int64_t res) { wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+#ifdef GAME_BOTW
+    wake_queue(t);
+#endif
+}
 // 挂起直到被唤醒或超时（ns<0 无限、0 立即超时）；返回 wres 或 R_TIMEOUT
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
 static int64_t block_inner(thr_t *t, int kind, int64_t ns);
@@ -129,10 +186,51 @@ static thr_t *g_core_wait;
 static int g_cores_on = -1;
 static int cores_enabled(void) { if (g_cores_on < 0) g_cores_on = getenv("TOTK_FREE_CORES") ? 0 : 1; return g_cores_on; }
 static int core_allowed(const thr_t *t, int c) { return (int)((t->mask >> c) & 1); }
+#ifdef GAME_BOTW
+/* Priority inheritance (Breath of the Wild, botw.md): a thread that owns a guest mutex runs, for the virtual cores, at
+   the priority of the best thread blocked on that mutex, as Horizon raises a mutex owner. The owner is read from the
+   mutex word, so it follows hand-offs. TOTK_PI_STEP=<n> (diagnostics) makes it n steps better than that waiter, and
+   TOTK_STARVE=1 turns on the starvation rule below: both were tried against a hang at the Shrine of Resurrection
+   (2026-10-19: the main thread, priority 44, blocked on a mutex handed to worker 0x1026, priority 45, which only runs on
+   core 1, while worker 0x1009, 44, spun on core 1 waiting for the main thread), which came from the game's spin locks
+   reading stale state on Apple cores (game_patches_botw.c, exclusive loads with acquire); with that fixed the game runs
+   on Horizon's rules (session hz1). Holding G. */
+static int g_pi_step = -1;      /* default 0: Horizon's inheritance */
+static int g_starve_on = -1;    /* default off: Horizon has no starvation rule */
+static void sched_knobs(void) {
+    if (g_pi_step < 0) { const char *e = getenv("TOTK_PI_STEP"); g_pi_step = e ? atoi(e) : 0; }
+    if (g_starve_on < 0) { const char *e = getenv("TOTK_STARVE"); g_starve_on = e && *e && strcmp(e, "0"); }
+}
+static int eff_prio(const thr_t *o) {
+    sched_knobs();
+    int p = o->prio;
+    for (const thr_t *w = g_wait; w; w = w->next)
+        if (w->wkind == 1 && w->waddr && (__atomic_load_n((const uint32_t *)(uintptr_t)w->waddr, __ATOMIC_RELAXED) & ~WAITERS_BIT) == o->handle && w->prio - g_pi_step < p) p = w->prio - g_pi_step;
+    return p;
+}
+/* Starvation (TOTK_STARVE=1, diagnostics): a thread that waited STARVE_NS for a core whose owner held it STARVE_NS may
+   take it, and then keeps it for at least PROTECT_NS. Horizon has no such rule (only priority 59 rotates), and a lower
+   priority thread taking a core breaks per-core data the game keys by core (botw.md B3). Logged when it fires. */
+#define STARVE_NS 100000000ull
+#define PROTECT_NS 2000000ull
+static uint64_t g_starve_grants;
+static int starved(const thr_t *w, uint64_t now) { sched_knobs(); return g_starve_on && w->cwait_ns && now - w->cwait_ns >= STARVE_NS; }
+#endif
 static void core_grant(int c) {   // holding G: give free core c to the best waiter
     thr_t *b = NULL, **bp = NULL;
+#ifdef GAME_BOTW
+    uint64_t now = now_ns(); int bpri = 0, bst = 0;   // starved waiters first, then by effective priority, then first come
+    for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext) {
+        if (!core_allowed(*p, c)) continue;
+        int st = starved(*p, now), pr = eff_prio(*p);
+        if (!b || st > bst || (st == bst && (pr < bpri || (pr == bpri && (*p)->cseq < b->cseq)))) { b = *p; bp = p; bpri = pr; bst = st; }
+    }
+    if (b && bst) { b->protect_until = now + PROTECT_NS; if (g_starve_grants++ < 20) fprintf(stderr, "[threads] core %d to thread %#x (priority %d) after %.1f ms waiting: starvation rule\n", c, b->handle, b->prio, (now - b->cwait_ns) / 1e6); }
+    if (b) b->cqueued = 0;
+#else
     for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
         if (core_allowed(*p, c) && (!b || (*p)->prio < b->prio || ((*p)->prio == b->prio && (*p)->cseq < b->cseq))) { b = *p; bp = p; }
+#endif
     if (!b) return;
     *bp = b->cnext; b->cnext = NULL; b->cur_core = c; b->core_since = now_ns(); g_core_owner[c] = b; pthread_cond_signal(&b->cv);
 }
@@ -140,17 +238,141 @@ static void core_put(thr_t *t) {   // holding G
     if (t->cur_core < 0) return;
     int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
 }
+#ifdef GAME_BOTW
+/* Asynchronous preemption (Breath of the Wild, botw.md). Horizon switches a core to a better thread the moment that thread
+   becomes ready, wherever the running one is. BotW's job workers spin on user-mode spinlocks without any SVC, so preempting
+   only at SVC entry let spinning workers keep cores that better threads waited for, forever (2026-10-19: workers 0x1009 /
+   0x100a at priority 44 spun at main+0x12c0e4c for minutes while threads at 30 / 32 / 43 waited for cores 1 and 2).
+   A waiter therefore signals (SIGUSR2) each owner it may preempt, again every millisecond while it waits. The owner gives
+   its core up in the handler only when it was interrupted in guest code at the top level: pc in a module's original code
+   (not a rewritten window or a gate in the patch area) and its host-stack slot set (not inside a host function, nor in
+   guest code that a host function called). It then holds no host lock and is not in libc, so waiting in the handler is
+   like a kernel switch. Otherwise it keeps the core until its next SVC or the next signal. Who may preempt is Horizon's
+   rule: a strictly better priority, or at priority 59 (Horizon rotates that priority on cores 0-2 every 10 ms) a waiter
+   once the owner has held the core 10 ms. TOTK_ASYNC_PREEMPT=0 leaves only the preemption at SVC entry. */
+#include <string.h>
+#include <sys/ucontext.h>
+static int g_async_preempt = -1;
+static uint64_t g_preempt_kicks, g_preempt_async;   // signals sent / cores given up in the handler (state dump)
+static int core_beats(const thr_t *w, const thr_t *o, uint64_t now) {   // holding G: may waiter w take running o's core?
+    if (now < o->protect_until) return 0;
+    int wp = eff_prio(w), op = eff_prio(o);
+    return wp < op || (wp == op && op == 59 && now - o->core_since >= 10000000ull)
+        || (starved(w, now) && now - o->core_since >= STARVE_NS);
+}
+static int core_should_yield(const thr_t *t) {   // holding G: does a waiter that may run on t's core beat t?
+    uint64_t now = now_ns();
+    for (const thr_t *w = g_core_wait; w; w = w->cnext) if (core_allowed(w, t->cur_core) && core_beats(w, t, now)) return 1;
+    return 0;
+}
+static void preempt_signal(int sig, siginfo_t *si, void *context);
+static int async_preempt_on(void) {   // holding G
+    if (g_async_preempt < 0) {
+        const char *e = getenv("TOTK_ASYNC_PREEMPT"); g_async_preempt = !(e && !strcmp(e, "0"));
+        if (g_async_preempt) {
+            struct sigaction a = {0}; a.sa_sigaction = preempt_signal; a.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+            sigemptyset(&a.sa_mask);
+            if (sigaction(SIGUSR2, &a, NULL)) g_async_preempt = 0;
+        }
+        fprintf(stderr, "[threads] asynchronous preemption of virtual cores: %s\n", g_async_preempt ? "on" : "off (TOTK_ASYNC_PREEMPT=0)");
+    }
+    return g_async_preempt;
+}
+static int core_kick(thr_t *t) {   // holding G, t waiting: mark (and signal) the owners t may preempt; returns how many
+    int n = 0; uint64_t now = now_ns();
+    for (int i = 0; i < NCORE; i++) {
+        thr_t *o = g_core_owner[i];
+        if (!o || !core_allowed(t, i) || !core_beats(t, o, now)) continue;
+        __atomic_store_n(&o->preempt, 1, __ATOMIC_RELEASE); n++;
+        if (async_preempt_on() && !pthread_kill(o->pt, SIGUSR2)) g_preempt_kicks++;
+    }
+    return n;
+}
+static void core_unqueue(thr_t *t) {   // holding G: out of the core wait queue, if it is in it
+    if (!t->cqueued) return;
+    for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext) if (*p == t) { *p = t->cnext; break; }
+    t->cnext = NULL; t->cqueued = 0;
+}
+/* A woken thread competes for a core from the moment it is woken, as in Horizon, where it is ready at once: Horizon
+   switches to it before the SVC that woke it returns when it beats the thread that woke it on that thread's core, and
+   interrupts the owner of another core it beats. Here the woken host thread still has to be scheduled and reach
+   core_take; until it did, the thread that woke it ran on, and a producer that hands a buffer to a better consumer on
+   its own core could change the buffer before the consumer saw it. So it queues here (core_take finds it queued), the
+   owners it beats are signalled, and runtime_svc's checkpoint after every SVC lets the waker give its core up.
+   Holding G. */
+static int g_wake_queue_on = -1;   /* TOTK_WAKE_QUEUE=0: a woken thread queues only when it reaches core_take (old) */
+static void wake_queue(thr_t *t) {
+    if (g_wake_queue_on < 0) { const char *e = getenv("TOTK_WAKE_QUEUE"); g_wake_queue_on = !(e && !strcmp(e, "0")); fprintf(stderr, "[threads] woken threads compete for a core at once: %s\n", g_wake_queue_on ? "on" : "off (TOTK_WAKE_QUEUE=0)"); }
+    if (!g_wake_queue_on || !cores_enabled() || t->cur_core >= 0 || t->cqueued || !t->started || t->exited) return;
+    for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) return;   /* a free core: core_take takes it */
+    t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->cqueued = 1; t->cwait_ns = now_ns();
+    core_kick(t);
+}
+#endif
+#ifdef GAME_BOTW
+void runtime_describe_address(uint64_t a, char *out, size_t n);
+/* Diagnostics: a thread that waited STARVE_NS for a core logs who holds the cores it may use and where they are (first 40
+   waits; also with the starvation rule off, so a run on Horizon's rules shows what keeps the cores busy). Holding G. */
+static int g_core_reports;
+static void core_wait_report(const thr_t *w) {
+    if (g_core_reports++ >= 40) return;
+    uint64_t now = now_ns();
+    fprintf(stderr, "[threads] thread %#x (priority %d, mask %#llx) has waited %.0f ms for a core:", w->handle, w->prio, (unsigned long long)w->mask, (now - w->cwait_ns) / 1e6);
+    for (int i = 0; i < NCORE; i++) {
+        thr_t *o = g_core_owner[i]; if (!o || !core_allowed(w, i)) continue;
+        char a[96] = "?", b[96] = "?";
+        if (thread_suspend(o->mport) == KERN_SUCCESS) {
+            arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+            if (thread_get_state(o->mport, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+                runtime_describe_address(arm_thread_state64_get_pc(st), a, sizeof a); runtime_describe_address(arm_thread_state64_get_lr(st), b, sizeof b); }
+            thread_resume(o->mport);
+        }
+        fprintf(stderr, " core %d: %#x (priority %d, effective %d, held %.0f ms) at %s <- %s;", i, o->handle, o->prio, eff_prio(o), (now - o->core_since) / 1e6, a, b);
+    }
+    fprintf(stderr, "\n");
+}
+#endif
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
     if (!cores_enabled() || t->cur_core >= 0) return;
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
     int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
     for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
+#ifdef GAME_BOTW
+    if (c >= 0) { core_unqueue(t); t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
+    if (!t->cqueued) { t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->cqueued = 1; t->cwait_ns = now_ns(); }
+    int reported = 0;
+    while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance)
+        struct timespec again = {0, core_kick(t) ? 1000000 : 20000000};
+        pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
+        if (!reported && t->cur_core < 0 && t->cwait_ns && now_ns() - t->cwait_ns >= STARVE_NS) { core_wait_report(t); reported = 1; }
+    }
+    t->cwait_ns = 0;
+#else
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
     for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && g_core_owner[i] && g_core_owner[i]->prio > t->prio) g_core_owner[i]->preempt = 1;
     while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
+#endif
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
+#ifdef GAME_BOTW
+extern uint64_t runtime_hle_tsd_off;                 // hle_stack.c: host-stack slot, cleared while a host function runs
+int runtime_guest_code_pc(uint64_t pc);              // loader.c
+static void preempt_signal(int sig, siginfo_t *si, void *context) {
+    (void)sig; (void)si;
+    thr_t *t = me_or_null();
+    if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) || t->cur_core < 0) return;
+    uint64_t pc = (uint64_t)((ucontext_t *)context)->uc_mcontext->__ss.__pc;
+    uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
+    if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) return;
+    int saved = errno;
+    pthread_mutex_lock(&G);
+    if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); g_preempt_async++; }
+    else t->preempt = 0;
+    pthread_mutex_unlock(&G);
+    errno = saved;
+}
+#endif
 void runtime_thread_note_hle(unsigned i) { thr_t *t = me_or_null(); if (t) t->last_hle = (int)i + 1; }   // hle_stack.c, while tracing
 uint32_t runtime_thread_current_handle(void) { thr_t *t = me_or_null(); return t ? t->handle : 0; }
 // Host services that wait for other threads or the GPU give the core up around the wait (no host locks held).
@@ -164,7 +386,19 @@ void runtime_core_back(int *away) {
 }
 // Preemption point at SVC entry: a higher-priority thread waits for this core.
 void runtime_core_checkpoint(void) {
-    thr_t *t = me_or_null(); if (!t || !t->preempt) return;
+    thr_t *t = me_or_null();
+#ifdef GAME_BOTW
+    /* Breath of the Wild (botw.md): the preempt flag is set when a waiter queues up, but a waiter's mask or priority can
+       change while it waits; so at every SVC a core owner also looks at the queue itself (core_should_yield: Horizon's
+       rule, see core_beats). */
+    if (!t || t->cur_core < 0 || (!t->preempt && !__atomic_load_n(&g_core_wait, __ATOMIC_RELAXED))) return;
+    pthread_mutex_lock(&G);
+    if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); }
+    else t->preempt = 0;
+    pthread_mutex_unlock(&G);
+    return;
+#endif
+    if (!t || !t->preempt) return;
     pthread_mutex_lock(&G); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
@@ -200,6 +434,15 @@ static inline uint32_t ld32(uint64_t a) { return __atomic_load_n((uint32_t *)a, 
 static inline void st32(uint64_t a, uint32_t v) { __atomic_store_n((uint32_t *)a, v, __ATOMIC_SEQ_CST); }
 static inline int cas32(uint64_t a, uint32_t *exp, uint32_t v) { return __atomic_compare_exchange_n((uint32_t *)a, exp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST); }
 
+#ifdef GAME_BOTW
+/* A thread's lock tag is its own handle (the SDK reads it from the ThreadType at TLR+0x1f8). Any other tag means two
+   threads can believe they hold the same mutex (a tag of 0 reads as "free"): logged (holding G). */
+static uint64_t g_bad_tags;
+static void tag_check(const thr_t *t, uint32_t tag, const char *what, uint64_t addr) {
+    if (tag == t->handle) return;
+    if (g_bad_tags++ < 40) fprintf(stderr, "[threads] %s by thread %#x with tag %#x (not its handle) on %#llx\n", what, t->handle, tag, (unsigned long long)addr);
+}
+#endif
 // 释放 addr 处的锁：交给等在它上面的第一个线程，或清零（持 G）
 // Release the lock at addr: hand it to the first thread waiting on it, or clear it to zero (holding G)
 static void lock_handoff(uint64_t addr) {
@@ -274,9 +517,16 @@ uint32_t svc_thread_main_init(void) {
     pthread_key_create(&g_keythr, NULL);
     thr_t *t = calloc(1, sizeof *t);
     pthread_cond_init(&t->cv, NULL);
+#ifdef GAME_BOTW
+    t->started = 1; t->prio = 44; t->core = PROCESS_IDEAL_CORE; t->mask = 1u << PROCESS_IDEAL_CORE; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
+#else
     t->started = 1; t->prio = 44; t->core = 0; t->mask = 7; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
+#endif
     t->cur_core = -1;
     pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; t->all = g_all; g_all = t; core_take(t); pthread_mutex_unlock(&G);
+#ifdef GAME_BOTW
+    g_main_handle = t->handle;
+#endif
     pthread_setspecific(g_keythr, t);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
@@ -289,7 +539,11 @@ uint32_t dm_guest_work_qos(unsigned *count) {
     uint32_t qos = QOS_CLASS_UNSPECIFIED; unsigned n = 0;
     pthread_mutex_lock(&G);
     for (thr_t *t = g_all; t; t = t->all) {
+#ifdef GAME_BOTW
+        if (t->handle == g_main_handle) continue;
+#else
         if (t->handle == 0x1001) continue;
+#endif
         if (!n) qos = t->qos; else if (qos != t->qos) qos = UINT32_MAX;
         n++;
     }
@@ -301,7 +555,11 @@ uint32_t dm_guest_work_qos(unsigned *count) {
 // ---------- 同步对象 ----------
 // ---------- Synchronization objects ----------
 static int sig_obj(uint32_t h, int *bad) {    // 1=已触发（持 G） | 1 = signaled (holding G)
+#ifdef GAME_BOTW
+    unsigned i = h_index(h);
+#else
     unsigned i = h - 0x1000;
+#endif
     if (h == H_CUR_THREAD) return 0;
     if (i == 0 || i >= MAX_H) { *bad = 1; return 0; }
     switch (g_h[i].type) {
@@ -311,6 +569,15 @@ static int sig_obj(uint32_t h, int *bad) {    // 1=已触发（持 G） | 1 = si
     }
 }
 static void wake_sync_waiters(void) {
+#ifdef GAME_BOTW
+    /* Only the waiters one of whose objects is now signaled (all of them when the wait has more handles than are kept):
+       a woken thread competes for a core at once (wake_queue), and a waiter that would only look and sleep again
+       would preempt the signalling thread for nothing. */
+    for (thr_t *w = g_wait; w; ) { thr_t *n = w->next;
+        if (w->wkind == 4) { int hit = w->nwh > 4, bad = 0; for (int i = 0; !hit && i < w->nwh; i++) hit = sig_obj(w->wh[i], &bad) || bad; if (hit) wake(w, -1); }
+        w = n; }
+    return;
+#endif
     for (thr_t *w = g_wait; w; ) { thr_t *n = w->next; if (w->wkind == 4) wake(w, -1); w = n; }
 }
 
@@ -358,7 +625,13 @@ int svc_thread(int num, uint64_t *regs) {
         t->cur_core = -1;
         pthread_cond_init(&t->cv, NULL);
         t->entry = regs[1]; t->arg = regs[2]; t->stack_top = regs[3] & ~0xFull;
+#ifdef GAME_BOTW
+        { int c = (int)regs[5]; if (c == -2) c = PROCESS_IDEAL_CORE;
+          if (c < 0 || c > 2) { free(t); regs[0] = R_BAD_CORE; return 1; }   // Horizon: only -2 is adjusted, other negatives are invalid here
+          t->prio = (int)regs[4]; t->core = c; t->mask = 1ull << c; }
+#else
         t->prio = (int)regs[4]; t->core = (int)regs[5]; t->mask = t->core >= 0 ? 1ull << t->core : 7;
+#endif
         t->born_ns = now_ns(); t->born_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
         pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; t->all = g_all; g_all = t; pthread_mutex_unlock(&G);
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8 << 20);   // also the host-service stack of this guest thread
@@ -400,7 +673,11 @@ int svc_thread(int num, uint64_t *regs) {
                 struct timespec ts = {0, (long)backoff}; nanosleep(&ts, 0);
                 pthread_mutex_lock(&G); core_take(me); pthread_mutex_unlock(&G);
             } else if (!give) sched_yield();
+#ifdef GAME_BOTW
+            if (me && me->handle == g_main_handle) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
+#else
             if (me && me->handle == 0x1001) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
+#endif
         }
         if (ns > 0) { pthread_mutex_lock(&G); core_take(self); pthread_mutex_unlock(&G); }
 
@@ -412,8 +689,21 @@ int svc_thread(int num, uint64_t *regs) {
                  regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? (uint64_t)(uint32_t)t->core : 0; regs[2] = t ? t->mask : 0;pthread_mutex_unlock(&G); return 1; }
     case 0x0F: {  // SetThreadCoreMask(w0, w1 理想核, x2 掩码)：-1 = 用进程缺省、-2/-3 = 不改理想核；宿主只记账 | SetThreadCoreMask(w0, w1 ideal core, x2 mask): -1 = use the process default, -2/-3 = leave the ideal core unchanged; the host only keeps the bookkeeping
         pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[0], O_THREAD);
+#ifdef GAME_BOTW
+        if (t) { int c = (int)regs[1]; uint64_t m = regs[2]; uint32_t r = 0;
+                 if (c == -2) { c = PROCESS_IDEAL_CORE; m = 1ull << c; }
+                 else if ((m | PROCESS_CORE_MASK) != PROCESS_CORE_MASK) r = R_BAD_CORE;
+                 else if (!m) r = R_BAD_COMBO;
+                 else if (c >= 0 && c <= 2) { if (!((m >> c) & 1)) r = R_BAD_COMBO; }
+                 else if (c == -3) { c = t->core; if (c >= 0 && !((m >> c) & 1)) r = R_BAD_COMBO; }
+                 else if (c != -1) r = R_BAD_CORE;
+                 if (!r) { t->core = c; t->mask = m;
+                           if (t == cur() && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) { core_put(t); core_take(t); } }   // migrate off a core no longer allowed
+                 regs[0] = r; pthread_mutex_unlock(&G); return 1; }
+#else
         if (t) { int c = (int)regs[1]; if (c >= 0) t->core = c; else if (c == -1) t->core = 0; if (regs[2]) t->mask = regs[2];
                  if (t == cur() && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) { core_put(t); core_take(t); } }   // migrate off a core no longer allowed
+#endif
         regs[0] = t ? 0 : R_BAD_HANDLE;pthread_mutex_unlock(&G); return 1;
     }
     case 0x10: { thr_t *t = cur(); regs[0] = (uint64_t)(uint32_t)(t->cur_core >= 0 ? t->cur_core : t->core); return 1; }   // GetCurrentProcessorNumber
@@ -422,8 +712,15 @@ int svc_thread(int num, uint64_t *regs) {
     case 0x1A: {  // ArbitrateLock(w0 持有者句柄, x1 地址, w2 本线程标签) | ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)
         thr_t *t = cur(); uint64_t addr = regs[1];
         pthread_mutex_lock(&G);
+#ifdef GAME_BOTW
+        tag_check(t, (uint32_t)regs[2], "ArbitrateLock", addr);
+#endif
         int64_t r = 0;
-        if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2]; r = block(t, 1, -1); }
+        if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2];
+#ifdef GAME_BOTW
+            for (thr_t *o = g_core_wait; o; o = o->cnext) if (o->handle == (uint32_t)regs[0]) { pthread_cond_signal(&o->cv); break; }   // an owner waiting for a core looks again (eff_prio)
+#endif
+            r = block(t, 1, -1); }
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
     }
@@ -431,6 +728,9 @@ int svc_thread(int num, uint64_t *regs) {
     case 0x1C: {  // WaitProcessWideKeyAtomic(x0 锁地址, x1 条件键, w2 标签, x3 超时) | WaitProcessWideKeyAtomic(x0 lock address, x1 condition key, w2 tag, x3 timeout)
         thr_t *t = cur(); uint64_t addr = regs[0], key = regs[1];
         pthread_mutex_lock(&G);
+#ifdef GAME_BOTW
+        tag_check(t, (uint32_t)regs[2], "WaitProcessWideKeyAtomic", addr);
+#endif
         // 顺序要紧：先置条件键 = 1，再放互斥锁。SDK 的 InternalConditionVariable::Signal 在用户态先读条件键、为 0 就不发 svc 0x1D；
         // 用户态抢互斥锁也不经过 G。原先先 lock_handoff 后置键：放锁后、置键前，别的线程可在用户态抢到锁、改完条件、读到键 0 就不唤醒，
         // 本线程随后挂上去永远等不到（并行负载下资源表读写锁 main+0x320e5e0 卡死：读者计数 0、锁空闲、写者条件键 1、写者仍在等）。
@@ -548,7 +848,11 @@ int svc_thread(int num, uint64_t *regs) {
     }
     case 0x16: {  // CloseHandle(w0)：事件两端都关才释放；线程句柄关闭后槽位回收，对象在线程也退出后释放 | CloseHandle(w0): an event is freed only when both ends are closed; after a thread handle is closed the slot is recycled, and the object is freed once the thread has also exited
         pthread_mutex_lock(&G);
+#ifdef GAME_BOTW
+        unsigned i = h_index((uint32_t)regs[0]);int valid=0;
+#else
         unsigned i = (uint32_t)regs[0] - 0x1000;int valid=0;
+#endif
         if (i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W)) {
             valid=1;event_t *e = g_h[i].obj; if (--e->refs == 0) free(e);
             g_h[i].type = O_FREE; g_h[i].obj = NULL;
@@ -686,6 +990,11 @@ static void dump_threads(unsigned secs) {
     for (int c = 0; c < NCORE; c++) fprintf(stderr, "[totk-dump] core %d owner %#x for %.1f ms\n", c, g_core_owner[c] ? g_core_owner[c]->handle : 0,
                                             g_core_owner[c] ? (now_ns() - g_core_owner[c]->core_since) / 1e6 : 0.0);
     for (thr_t *w = g_core_wait; w; w = w->cnext) fprintf(stderr, "[totk-dump] core waiter %#x prio %d mask %#llx ideal %d\n", w->handle, w->prio, (unsigned long long)w->mask, w->core);
+#ifdef GAME_BOTW
+    fprintf(stderr, "[totk-dump] preemption signals %llu, cores given up in the signal handler %llu, starvation grants %llu\n",
+            (unsigned long long)g_preempt_kicks, (unsigned long long)g_preempt_async, (unsigned long long)g_starve_grants);
+    for (thr_t *w = g_core_wait; w; w = w->cnext) if (eff_prio(w) != w->prio) fprintf(stderr, "[totk-dump] core waiter %#x runs at %d (owns a mutex a better thread waits for)\n", w->handle, eff_prio(w));
+#endif
     thr_t *run[64]; int nrun = 0;
     for (thr_t *t = g_all; t; t = t->all) {
         uint32_t word = 0; if (t->wkind == 1 && t->waddr) memcpy(&word, (const void *)(uintptr_t)t->waddr, 4);
@@ -700,7 +1009,11 @@ static void dump_threads(unsigned secs) {
         if (!t->wkind && !t->exited && t->mport && nrun < 64) run[nrun++] = t;
     }
     if (locked) pthread_mutex_unlock(&G);
-    for (int i = 0; i < nrun; i++) { thr_t *t = run[i]; fprintf(stderr, "[totk-dump] live h=%#x\n", t->handle);
+    for (int i = 0; i < nrun; i++) { thr_t *t = run[i];
+#ifdef GAME_BOTW
+            if (t->mport == pthread_mach_thread_np(pthread_self())) continue;   /* dumping from a crashing guest thread: never suspend ourselves */
+#endif
+            fprintf(stderr, "[totk-dump] live h=%#x\n", t->handle);
             for (int k = 0; k < 3; k++) {
                 arm_thread_state64_t st; mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
                 thread_suspend(t->mport);

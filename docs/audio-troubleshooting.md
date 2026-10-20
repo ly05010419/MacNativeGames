@@ -95,6 +95,10 @@ audio is queued, also after an underrun; `TOTK_AUDIO_PREFILL_MS=<0..500>` change
 (0 / 20 / 40 ms ran without underruns in the tests behind the 20 ms default). This work came from the original port and
 was merged with this repository's REV15 float biquads for 1.4.3.
 
+After the output device stalls (a Bluetooth headset reconnecting, a CoreAudio hiccup) the mixer keeps at most the prefill
+plus 30 ms queued and drops older audio, so the delay does not stay (#64); the `output level` line counts these as
+`backlog trims N (M frames)`.
+
 Checks, without game data:
 
 - `./build/totk-native-v143 rewritten/v143 probe-audio`: 46,587 production-mixer checks, REV15 voices and splitters

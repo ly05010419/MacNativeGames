@@ -18,9 +18,16 @@ def control_nca(game, keys, title):
     with game.open('rb') as f:
         _, entries = container_entries(f, game.stat().st_size)
         tickets = common_tickets(f, entries)
-        controls = [r for r, _ in nca_inventory(f, entries, keys)
-                    if r['content_type'] == 2 and r['title_id'].lower() == title.lower()]
-        require(len(controls) == 1, 'Expected one control NCA for this title in the game file')
+        records = nca_inventory(f, entries, keys)
+        controls = [r for r, _ in records if r['content_type'] == 2 and r['title_id'].lower() == title.lower()]
+        require(controls, 'Expected a control NCA for this title in the game file')
+        if len(controls) > 1:
+            # a card image holding the base game and its update (Breath of the Wild) has a control NCA for each: the
+            # update's follows its Program NCA (the one with a BKTR section) in the file; else the last one
+            bktr = [i for i, (r, h) in enumerate(records) if r['content_type'] == 0 and r['title_id'].lower() == title.lower()
+                    and any(h[0x400 + s * 512 + 4] == 4 for s in range(4))]
+            later = [r for i, (r, _) in enumerate(records) if r in controls and bktr and i > bktr[0]]
+            controls = later[:1] or controls[-1:]
         return controls[0]['nca_offset'], tickets
 
 

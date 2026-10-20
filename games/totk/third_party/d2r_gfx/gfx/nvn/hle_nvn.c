@@ -150,7 +150,11 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 设备属性：Tegra X1 实测值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐项调 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
+#ifdef GAME_BOTW
+    [0x00] = 53, [0x01] = 311,  // Breath of the Wild 1.6.0 main+0xe55304 requires major 53, minor >= 311 (botw.md).
+#else
     [0x00] = 55, [0x01] = 15,   // Experimental ABI target: TOTK main+e9d614 requires major 55, minor >= 15. Unsupported functions stop.
+#endif
     [0x02] = 14, [0x03] = 65536, [0x04] = 256, [0x05] = 8, [0x06] = 16, [0x07] = 4, [0x08] = 16, [0x09] = 32,
     [0x0A] = 16, [0x0B] = 4, [0x0C] = 4, [0x0D] = 4, [0x0E] = 16, [0x0F] = 32, [0x10] = 32, [0x11] = 256, [0x12] = 256,
     [0x13] = 4, [0x14] = 8, [0x15] = 512, [0x16] = 256, [0x17] = 2, [0x18] = 256, [0x19] = 4096, [0x1A] = 131072,
@@ -197,7 +201,15 @@ NVN(nvnDeviceInstallDebugCallback, void, NVNdevice *d, const PFNNVNDEBUGCALLBACK
     dev_t_ *o = (dev_t_ *)d; o->dbg_cb = B(enable) ? (void *)cb : NULL; o->dbg_data = data;
 }
 NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; LOG("[nvn] 窗口原点 %s", m ? "左上（同 D3D / Metal）" : "左下（GL）"); }
+#ifdef GAME_BOTW
+/* NVN's default depth mode is NEAR_IS_MINUS_W (enum value 0, the OpenGL convention): a device the game never calls
+   nvnDeviceSetDepthMode on keeps it. TOTK sets it explicitly; Breath of the Wild never does, and its full-screen copy
+   to the swapchain has clip z = -1 (the near plane), which the 0..w convention clipped away: the window stayed magenta
+   (botw.md). */
+static _Atomic int g_depth_near_minus_w = 1;
+#else
 static _Atomic int g_depth_near_minus_w;
+#endif
 int totk_depth_near_minus_w(void) { return atomic_load(&g_depth_near_minus_w); }
 NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; atomic_store(&g_depth_near_minus_w, m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W); LOG("[nvn] 深度模式 %s", m ? "近=0（同 D3D / Metal）" : "近=-w（GL）：顶点着色器翻译时做 z=(z+w)/2 转换"); }
 NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
@@ -211,6 +223,9 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
 // TOTK: logging switches checked on per-call paths (command memory, recording, submits) are read once.
 static int cmdlog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CMD_LOG") != NULL; return on; }
 static int poollog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_POOL_LOG") != NULL; return on; }
+#ifdef GAME_BOTW
+static void guest_chain(const char *what);
+#endif
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     memset(o, 0, sizeof *o);
@@ -221,6 +236,10 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
+#ifdef GAME_BOTW
+    { static long want = -2; if (want == -2) { const char *e = getenv("TOTK_POOL_CHAIN"); want = e ? strtol(e, NULL, 0) : -1; }   /* diagnostics: TOTK_POOL_CHAIN=<size> logs who makes pools of that size */
+      if (want >= 0 && (long)o->size == want) { LOG("[pool] %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags); guest_chain("pool of the watched size"); } }
+#endif
     return o->mem != NULL;
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
@@ -230,7 +249,11 @@ NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
 }
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
 NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p){return (NVNmemoryPoolFlags)((const pool_t *)p)->flags;}
-NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const void *)p;if(v->magic!=MAGIC('P','O','O','L'))return NULL;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
+NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const void *)p;
+#ifdef GAME_BOTW
+ if(v->magic!=MAGIC('P','O','O','L')||(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)||!v->mem){static int n;if(n++<12)LOG("【红】nvnMemoryPoolMap(%p) -> NULL: magic %#x flags %#x mem %p size %#llx",(void *)p,v->magic,v->flags,(void *)v->mem,(unsigned long long)v->size);}
+#endif
+ if(v->magic!=MAGIC('P','O','O','L'))return NULL;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *r) {
     return (NVNboolean)totk_vpool_map((pool_t *)p, n, (const totk_mapping_request *)(const void *)r);
 }
@@ -243,9 +266,22 @@ FITS(totk_buffer_builder,NVNbufferBuilder);FITS(totk_buffer,NVNbuffer);
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b,NVNdevice *d){((totk_buffer_builder *)b)->dev=d;}
 NVN(nvnBufferBuilderSetDefaults, void, NVNbufferBuilder *b){NVNdevice *d=((totk_buffer_builder *)b)->dev;memset(b,0,sizeof(totk_buffer_builder));((totk_buffer_builder *)b)->dev=d;}
 NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b,NVNmemoryPool *p,ptrdiff_t off,size_t size){totk_buffer_builder *v=(void *)b;v->pool=(void *)p;v->off=off;v->size=size;}
-NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b,const NVNbufferBuilder *builder){const totk_buffer_builder *v=(const void *)builder;if(!v->pool||v->pool->magic!=MAGIC('P','O','O','L')||v->off<0||(uint64_t)v->off>v->pool->size||v->size>v->pool->size-(uint64_t)v->off)return 0;*(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
+NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b,const NVNbufferBuilder *builder){const totk_buffer_builder *v=(const void *)builder;
+#ifdef GAME_BOTW
+ /* Breath of the Wild creates a 256 KiB buffer at the start of a 144 KiB pool and never checks the result: the driver does
+    not compare the two (the buffer is an address and a size), so the buffer is made as asked and only its first part is
+    backed by the pool (botw.md). Refusing it left the game's NVNbuffer uninitialized; the first GetAddress read garbage. */
+ if(v->pool&&v->pool->magic==MAGIC('P','O','O','L')&&v->off>=0&&(uint64_t)v->off<=v->pool->size&&v->size>v->pool->size-(uint64_t)v->off){
+  static int n;if(n++<8){LOG("[nvn] buffer of %llu bytes at offset %lld of a %llu-byte pool %p (mem %p, flags %#x): made as asked (the driver does not check)",(unsigned long long)v->size,(long long)v->off,(unsigned long long)v->pool->size,(void *)v->pool,(void *)v->pool->mem,v->pool->flags);guest_chain("oversized buffer");}
+  *(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
+#endif
+ if(!v->pool||v->pool->magic!=MAGIC('P','O','O','L')||v->off<0||(uint64_t)v->off>v->pool->size||v->size>v->pool->size-(uint64_t)v->off)return 0;*(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
 NVN(nvnBufferFinalize, void, NVNbuffer *b){memset(b,0,sizeof(totk_buffer));}
-NVN(nvnBufferMap, void *, const NVNbuffer *b){const totk_buffer *v=(const void *)b;return v->pool&&v->pool->mem?v->pool->mem+v->off:NULL;}
+NVN(nvnBufferMap, void *, const NVNbuffer *b){const totk_buffer *v=(const void *)b;
+#ifdef GAME_BOTW
+ if(!(v->pool&&v->pool->mem)){static int n;if(n++<12)LOG("【红】nvnBufferMap(%p) -> NULL: magic %#x pool %p offset %lld size %llu",(void *)b,v->magic,(void *)v->pool,(long long)v->off,(unsigned long long)v->size);}
+#endif
+ return v->pool&&v->pool->mem?v->pool->mem+v->off:NULL;}
 NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *b){return (uintptr_t)h_nvnBufferMap(b);}
 NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *b){return (void *)((const totk_buffer *)b)->pool;}
 NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *b){return ((const totk_buffer *)b)->off;}
@@ -647,6 +683,43 @@ NVN(nvnQueueFinish, void, NVNqueue *q) { NVN_BLOCKING(); (void)q; totk_tl(TL_FIN
 // ---------- 命令缓冲：录进游戏的命令内存，提交时执行 CPU 可见副作用 ----------
 // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
 #define CB(c) ((cmd_t *)(c))
+#ifdef GAME_BOTW
+/* Diagnostics (TOTK_CB_CHECK=1, Breath of the Wild): each record appended and each Begin / EndRecording first checks that
+   the host fields of the command buffer still make sense -- the write pointer inside the host segment and the two inline
+   sentinels intact -- and logs the first violations with the game code that called (a game writing into the
+   NVNcommandBuffer object directly, through code inlined from NVN 53's headers, would show up here). */
+static void guest_chain(const char *what);
+/* The write pointer each command buffer had after our own last change (side table): a different one at the next record
+   means something else moved it. */
+#define CB_SEEN 4096
+static struct { const cmd_t *o; uint8_t *cur; } g_cb_seen[CB_SEEN];
+static pthread_mutex_t g_cb_seen_mu = PTHREAD_MUTEX_INITIALIZER;
+static int cb_check_on(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CB_CHECK") != NULL; return on; }
+static void cb_seen_set(const cmd_t *o) {
+    if (!cb_check_on()) return;
+    unsigned i = (unsigned)(((uintptr_t)o >> 5) % CB_SEEN);
+    pthread_mutex_lock(&g_cb_seen_mu); g_cb_seen[i].o = o; g_cb_seen[i].cur = o->cur; pthread_mutex_unlock(&g_cb_seen_mu);
+}
+static void cb_check(const cmd_t *o, const char *where) {
+    if (!cb_check_on()) return;
+    unsigned i = (unsigned)(((uintptr_t)o >> 5) % CB_SEEN);
+    pthread_mutex_lock(&g_cb_seen_mu); int moved = g_cb_seen[i].o == o && g_cb_seen[i].cur != o->cur; uint8_t *was = g_cb_seen[i].cur; pthread_mutex_unlock(&g_cb_seen_mu);
+    if (moved) { static _Atomic int said_m; if (atomic_fetch_add(&said_m, 1) < 12) {
+        const uint64_t *q = (const uint64_t *)(uintptr_t)was;
+        LOG("【红】[cb-check] %s: the write pointer of command buffer %p moved from %p to %p outside our code (%+lld bytes); bytes there: %016llx %016llx %016llx %016llx",
+            where, (const void *)o, (void *)was, (void *)o->cur, (long long)(o->cur - was), (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2], (unsigned long long)q[3]);
+        guest_chain("cb-check moved"); } }
+    int bad = o->inline_cur != ~0ull || o->inline_end != 0 || (o->seg && (o->cur < o->seg || o->cur > o->end));
+    static _Atomic int said;
+    if (bad && atomic_fetch_add(&said, 1) < 12) {
+        const uint64_t *w = (const uint64_t *)o;
+        LOG("【红】[cb-check] %s: command buffer %p seg %p cur %p end %p flags10 %#llx inline %#llx/%#llx recording %u; words %016llx %016llx %016llx %016llx %016llx %016llx",
+            where, (const void *)o, (void *)o->seg, (void *)o->cur, (void *)o->end, (unsigned long long)o->guest_flags, (unsigned long long)o->inline_cur, (unsigned long long)o->inline_end, o->recording,
+            (unsigned long long)w[0], (unsigned long long)w[1], (unsigned long long)w[2], (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)w[5]);
+        guest_chain("cb-check");
+    }
+}
+#endif
 #define OP_RESERVE 24                             // 段尾永远留够一条 JUMP / END | Always keep enough room at the segment end for one JUMP / END
 
 NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
@@ -716,26 +789,52 @@ NVN(nvnCommandBufferAddCommandMemory, void, NVNcommandBuffer *c, const NVNmemory
 // The SDK encodes handles in control memory (sdk+0x444530). Reusing that storage retires its copies.
 NVN(nvnCommandBufferAddControlMemory, void, NVNcommandBuffer *c, void *m, size_t n) {
     if (cmdlog_env()) LOG("[cmd] AddControlMemory cb=%p mem=%p size=%#zx", (void *)c, m, n);
+#ifndef GAME_BOTW   /* NVN 53 handles do not live in control memory: Breath of the Wild re-adds a command buffer's control memory and keeps calling handles recorded before (botw.md) */
     release_copies((uintptr_t)m, (uintptr_t)m + n);
+#endif
     CB(c)->ctl = m; CB(c)->ctl_size = n; CB(c)->ctl_used = 0;
 }
 NVN(nvnCommandBufferGetControlMemorySize, size_t, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->ctl_size; }
 /* Usage is reported (records live in host memory, but the game decides from it whether a recording is empty);
    it is bounded by the memory the game provided, so the game never sees more used than it gave. */
+#ifdef GAME_BOTW
+static int used_log_left(void);
+static uint64_t guest_main_caller(void);
+NVN(nvnCommandBufferGetControlMemoryUsed, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; size_t r = o->ctl_used < o->ctl_size ? o->ctl_used : o->ctl_size;
+    if (used_log_left()) LOG("[cmd-used] control memory used %#zx (given %#zx) asked by main+%#llx", r, o->ctl_size, (unsigned long long)guest_main_caller());
+    return r; }
+#else
 NVN(nvnCommandBufferGetControlMemoryUsed, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; return o->ctl_used < o->ctl_size ? o->ctl_used : o->ctl_size; }
+#endif
 NVN(nvnCommandBufferGetControlMemoryFree, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; return o->ctl_size - (o->ctl_used < o->ctl_size ? o->ctl_used : o->ctl_size); }
 NVN(nvnCommandBufferGetCommandMemorySize, size_t, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->game_size; }
+#ifdef GAME_BOTW
+/* Diagnostics (TOTK_CMD_USED_LOG=<n>): the first n usage queries with the game code that asked and the answer. */
+static int used_log_left(void) { static int left = -2; if (left == -2) { const char *e = getenv("TOTK_CMD_USED_LOG"); left = e ? atoi(e) : 0; } return left > 0 ? left-- : 0; }
+static uint64_t guest_main_caller(void);
+NVN(nvnCommandBufferGetCommandMemoryUsed, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; size_t r = o->hw_used < o->game_size ? o->hw_used : o->game_size;
+    if (used_log_left()) LOG("[cmd-used] command memory used %#zx (records %#zx, given %#zx) asked by main+%#llx", r, o->cmd_used, o->game_size, (unsigned long long)guest_main_caller());
+    return r; }
+#else
 NVN(nvnCommandBufferGetCommandMemoryUsed, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; return o->hw_used < o->game_size ? o->hw_used : o->game_size; }
+#endif
 NVN(nvnCommandBufferGetCommandMemoryFree, size_t, const NVNcommandBuffer *c) { const cmd_t *o = (const cmd_t *)c; return o->game_size - (o->hw_used < o->game_size ? o->hw_used : o->game_size); }
 NVN(nvnCommandBufferGetMemoryCallback, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->cb; }
 NVN_NOPROTO(nvnCommandBufferGetMemoryCallbackData, void *, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->cb_data; }
 // 取一条记录的空间；不够则按 NVN 约定回调游戏补命令内存
 // Get space for one record; if not enough, call back into the game per the NVN convention to add command memory
 static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
+#ifdef GAME_BOTW
+    cb_check(o, "record");
+#endif
     size = (size + 7) & ~7u;
     cmd_reserve(o, size);
     if (cs_on()) { pthread_mutex_lock(&g_cs_mu); g_cs.bytes += size; g_cs.recs++; pthread_mutex_unlock(&g_cs_mu); }
-    uint8_t *p = o->cur; o->cur += size; o->cmd_used += size; o->hw_used += size; o->last_rec = size; put_hdr(p, 0, size); return p;
+    uint8_t *p = o->cur; o->cur += size; o->cmd_used += size; o->hw_used += size; o->last_rec = size; put_hdr(p, 0, size);
+#ifdef GAME_BOTW
+    cb_seen_set(o);
+#endif
+    return p;
 }
 /* TOTK: the game sums nvnCommandBufferGetCommandMemoryUsed over recordings to size resource heaps (RSTB), so usage must be what
    the real NVN pushbuffer encoding takes, not our record size. Known encodings (Maxwell methods, from a real recording):
@@ -747,6 +846,9 @@ NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
     cmd_t *o = CB(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
+#ifdef GAME_BOTW
+    cb_seen_set(o);
+#endif
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_BEGIN, 8); o->hw_used -= 8;   /* BEGIN/END records have no hardware equivalent */
     o->hw_start = o->hw_used; memset(t_rec_hist, 0, sizeof t_rec_hist);
@@ -784,7 +886,11 @@ static copy_bucket *cbk_get(uintptr_t page, int create) {   // g_copy_mu held
 static pthread_mutex_t g_copy_mu = PTHREAD_MUTEX_INITIALIZER;
 /* The opaque handle points past this host-only validation and accounting prefix. */
 #define COPY_MAGIC 0x59504f43444d43ull   /* "CMDCOPY" */
+#ifdef GAME_BOTW
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
+#else
 typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; } copy_prefix;
+#endif
 static _Atomic uint64_t g_copy_bytes;   /* live recording-copy bytes (logged with the copy count) */
 static copy_prefix *copy_of(NVNcommandHandle h) { copy_prefix *c = (copy_prefix *)(uintptr_t)h - 1; return c; }
 static uint8_t *flatten_recording(const uint8_t *p) {
@@ -804,6 +910,9 @@ static uint8_t *flatten_recording(const uint8_t *p) {
         if (h.op == OP_END) {
             uint8_t *trimmed = realloc(out, n); if (trimmed) out = trimmed;
             copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits;
+#ifdef GAME_BOTW
+            c->used = 0;
+#endif
             size_t body = n >= sizeof(copy_prefix) + 16 ? n - sizeof(copy_prefix) - 16 : 0;
             c->body_bytes = bulk_ok && h.size == 8 && body <= UINT32_MAX ? (uint32_t)body : 0;
             c->last_size = c->body_bytes ? last_size : 0;
@@ -823,6 +932,9 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
         die("command handle %#llx is not a live recording (freed or never recorded)", (unsigned long long)h);
     }
     c->used_at = now;
+#ifdef GAME_BOTW
+    c->used = 1;
+#endif
 }
 
 static uint64_t g_copy_drop_readd, g_copy_drop_token, g_copy_mark_faults;   /* why copies were released: their control memory was added again / their mark there is gone (of those: unmapped) */
@@ -844,6 +956,12 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
         for (uint32_t i = 0; i < b->n;) {
             cmd_copy *c = &b->v[i];
             if (!(c->ctl_lo < hi && lo < c->ctl_hi)) { i++; continue; }
+#ifdef GAME_BOTW
+            /* NVN 53 (botw.md): a recording the game has not used yet stays, though the command memory it went into is handed
+               out again: Breath of the Wild recycles its 512-byte command chunks within a frame and calls such handles later
+               in the same frame (boot37 / boot38). Once used, a recycled chunk retires it. */
+            if (!((const copy_prefix *)(c->copy - sizeof(copy_prefix)))->used) { i++; continue; }
+#endif
             copy_drop(b, i, 0);
         }
     }
@@ -902,13 +1020,28 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     uint8_t *copy = flatten_recording(o->seg);
     if (call_stats_on()) call_stats_end(c, copy);
     /* Finalizing the recorder does not retire its handle; only reusing the backing control region does. */
+#ifdef GAME_BOTW
+    /* NVN 53 (Breath of the Wild, botw.md): the handle is the recording's position in the command buffer's control memory,
+       as the original driver returns a descriptor address there. The game records into the same control memory position
+       frame after frame and keeps calling the handle value it got once: it means "what was last recorded here". So the
+       handle returned is that position (a guest address), the copy is found by it at every call (botw_handle_copy), and a
+       new recording at the same position replaces the old copy. Re-adding control or command memory releases nothing:
+       2026-10-19 runs with either rule died calling a handle whose memory had been added again (boot33, boot35-40). */
+    uintptr_t lo = o->ctl && o->ctl_used + 64 <= o->ctl_size ? (uintptr_t)o->ctl + o->ctl_used : 0;
+    uintptr_t hi = lo ? lo + 1 : 0;
+    int token = 0;
+#else
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
     int token = o->ctl && o->ctl_used + 64 <= o->ctl_size && copy_token_on();   /* only inside the control memory the game gave */
+#endif
     o->ctl_used += 64;
     if (token) copy_token_write(lo, copy);
     pthread_mutex_lock(&g_copy_mu);
     { copy_bucket *b = cbk_get(lo >> COPY_PAGE_SHIFT, 1);
+#ifdef GAME_BOTW
+      if (lo) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == lo) { copy_drop(b, i, 0); break; }   /* re-recorded at this position */
+#endif
       if (b->empty) { b->empty = 0; g_cbk_empty--; }
       if (b->n == b->cap) { b->cap = b->cap ? b->cap * 2 : 8; b->v = realloc(b->v, b->cap * sizeof *b->v); if (!b->v) die("command copy table"); }
       b->v[b->n++] = (cmd_copy){lo, hi, copy, 0, (uint32_t)token}; g_ncopies++; }
@@ -920,8 +1053,23 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     if (cmdlog_env()) LOG("[cmd] EndRecording cb=%p recorded=%p copy=%p ctl=%p", (void *)c, (void *)o->seg, (void *)copy, o->ctl);
     if (totk_life_on() && totk_life_cb_take(c)) { totk_life_log("end cb=%p handle=%p", (void *)c, (void *)copy); totk_life_handle_add((uint64_t)(uintptr_t)copy); }
     if (getenv("TOTK_CHAIN_LOG")) { static int n; if (n++ < 200) guest_chain("EndRecording"); }
+#ifdef GAME_BOTW
+    if (lo) return (NVNcommandHandle)lo;
+    { static uint64_t n; if (n++ < 4) LOG("[cmd] recording without room in its control memory: the handle is the copy itself (kept)"); }
+#endif
     return (NVNcommandHandle)copy;
 }
+#ifdef GAME_BOTW
+/* The copy a handle names now: a control-memory position (EndRecording) is looked up; anything else is a copy itself. */
+static NVNcommandHandle botw_handle_copy(NVNcommandHandle h) {
+    uint8_t *copy = NULL;
+    pthread_mutex_lock(&g_copy_mu);
+    copy_bucket *b = cbk_get((uintptr_t)h >> COPY_PAGE_SHIFT, 0);
+    if (b) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == (uintptr_t)h) { copy = b->v[i].copy; break; }
+    pthread_mutex_unlock(&g_copy_mu);
+    return copy ? (NVNcommandHandle)(uintptr_t)copy : h;
+}
+#endif
 NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->recording != 0; }
 // TOTK: the referenced recording is copied into the caller at this point (it is complete and valid now). The game
 // recycles command memory in small steps, so a handle may be gone by the time the caller is submitted; inlining
@@ -1006,12 +1154,20 @@ static void life_call(NVNcommandBuffer *c, int n, const NVNcommandHandle *h, con
 }
 NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     life_call(c, n, h, "copy");
+#ifdef GAME_BOTW
+    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
+#else
     for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+#endif
 }
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     if (cmdlog_env()) for (int i = 0; i < n; i++) LOG("[cmd] CallCommands cb=%p handle=%#llx", (void *)c, (unsigned long long)h[i]);
     life_call(c, n, h, "call");
+#ifdef GAME_BOTW
+    for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
+#else
     for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+#endif
 }
 NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
     (void)loc; (void)flags;
@@ -1191,6 +1347,25 @@ static void pin_gone_flush(void) {   /* g_pin_mu not held */
     if (n) mtl_dead_forget(l, n);
     free(l);
 }
+#ifdef GAME_BOTW
+/* botw.md (the black save thumbnail): a recording copy whose serial was finalised is re-keyed to the texture now living at
+   its storage (botw_tex_follow, nvn_mtl.m): the copy's fields become the live texture's, and it moves to the live serial's
+   slot of the serial table (its address, which the ops hold, stays). 1 = copy was a pin and is re-keyed; 0 = not a pin. */
+int dm_nvn_pin_rekey(const tex_t *copy, const tex_t *live) {
+    pthread_mutex_lock(&g_pin_mu);
+    size_t j = 0; int found = 0;
+    if (g_pin_cap) for (j = pin_slot(copy->serial, g_pin_cap); g_pin_tab[j]; j = (j + 1) & (g_pin_cap - 1)) if (&g_pin_tab[j]->t == copy) { found = 1; break; }
+    if (found) {
+        pin_t *p = g_pin_tab[j];
+        probe_delete(g_pin_tab, g_pin_cap, j, home_serial);
+        p->t = *live;
+        for (j = pin_slot(p->t.serial, g_pin_cap); g_pin_tab[j]; j = (j + 1) & (g_pin_cap - 1)) {}
+        g_pin_tab[j] = p;
+    }
+    pthread_mutex_unlock(&g_pin_mu);
+    return found;
+}
+#endif
 int dm_nvn_pin_has_serial(uint64_t serial) {   /* nvn_mtl.m (texture finalize): a recording may still bring this serial to the replay */
     pthread_mutex_lock(&g_pin_mu);
     int has = 0;
@@ -1974,6 +2149,12 @@ static int fence_wait(uint64_t k, uint64_t timeout_ns) {
 
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     NVN_BLOCKING();
+#ifdef GAME_BOTW
+    NVNcommandHandle mapped[64]; NVNcommandHandle *heap = n > 64 ? malloc(sizeof *heap * (size_t)n) : NULL;
+    NVNcommandHandle *hv = heap ? heap : mapped; if (n > 64 && !heap) die("submit handle table");
+    for (int i = 0; i < n; i++) hv[i] = botw_handle_copy(h[i]);
+    h = hv;
+#endif
     totk_tl(TL_SUB_IN, (uint64_t)n, 0);
     { uint64_t now = __atomic_add_fetch(&g_submits, 1, __ATOMIC_RELAXED); for (int i = 0; i < n; i++) copy_touch(h[i], now); }
     if (totk_life_on()) { int k = 0; for (int i = 0; i < n; i++) k += totk_life_handle_has(h[i]); totk_life_log("submit n=%d followed=%d", n, k); }
@@ -1996,10 +2177,16 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
         j.ucap = mtl_sub_capture_ubos((const uint64_t *)h, n);
         x_push(&j);
         totk_tl(TL_SUB_OUT, 1, 0);
+#ifdef GAME_BOTW
+        free(heap);
+#endif
         return;
     }
     submit_exec(n, (const uint64_t *)h, NULL);
     totk_tl(TL_SUB_OUT, 0, 0);
+#ifdef GAME_BOTW
+    free(heap);
+#endif
 }
 static void submit_exec(int n, const uint64_t *h, void *ucap) {
     gfx_enter();
@@ -2242,8 +2429,8 @@ static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m =
 /* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
    30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
 static int mfx_own_clock(void) { return mfx_enabled() == MFX_30 && (g_paced_hz <= 0 || g_paced_hz % 30); }
-/* Opt-in until live scene/clock validation. Only applies to the existing Mac
-   real-time uncapped path; original timing, MetalFX and deterministic tests
+/* Opt-in until live scene/clock validation (Breath of the Wild: on by default, UNCAPPED_INTERVAL_FROM_ENV in nvn_obj.h).
+   Only applies to the existing Mac real-time uncapped path; original timing, MetalFX and deterministic tests
    retain the guest interval. GPU/texture lifetime waits are unchanged. */
 static _Atomic int g_uncapped_interval = -1;
 void nvn_set_uncapped_interval(int on) {
@@ -2252,7 +2439,7 @@ void nvn_set_uncapped_interval(int on) {
 }
 static int uncapped_interval_on(void) {
     int v = atomic_load(&g_uncapped_interval);
-    if (v < 0) { const char *e = getenv("TOTK_UNCAPPED_INTERVAL"); v = e && atoi(e); atomic_store(&g_uncapped_interval, v); }
+    if (v < 0) { const char *e = getenv("TOTK_UNCAPPED_INTERVAL"); v = UNCAPPED_INTERVAL_FROM_ENV(e); atomic_store(&g_uncapped_interval, v); }
     return v;
 }
 static double g_rt_comp_ms;   // 当前声明的实时计算量（ms；0 = 未声明） | Currently declared real-time computation amount (ms; 0 = not declared)
@@ -2311,6 +2498,20 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     totk_tl(TL_ACQ_OUT, (uint64_t)*idx, 0);
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
+#ifdef GAME_BOTW
+/* NVN 53 (Breath of the Wild 1.6.0, botw.md): the queue-side acquire. The same wait as nvnWindowAcquireTexture without a
+   sync: it returns once the texture may be drawn into, and every later GPU use of it is ordered after the present copy on
+   the one Metal queue. */
+NVN(nvnQueueAcquireTexture, NVNqueueAcquireTextureResult, NVNqueue *q, NVNwindow *w, int *idx) {
+    (void)q;
+    int ok = h_nvnWindowAcquireTexture(w, NULL, idx) == NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
+    { static int n; win_t *o = (win_t *)w;
+      if (n < 6) { n++; LOG("[nvn] QueueAcquireTexture -> %d (texture serial %llu; swapchain %llu / %llu)", *idx,
+                            (unsigned long long)(*idx >= 0 && *idx < o->ntex ? CTX(o->tex[*idx])->serial : 0),
+                            (unsigned long long)CTX(o->tex[0])->serial, (unsigned long long)(o->ntex > 1 ? CTX(o->tex[1])->serial : 0)); } }
+    return ok ? NVN_QUEUE_ACQUIRE_TEXTURE_RESULT_SUCCESS : NVN_QUEUE_ACQUIRE_TEXTURE_RESULT_NATIVE_ERROR;
+}
+#endif
 
 // 帧边界：每次出图打印 / 落盘本帧各 NVN 函数调用次数
 // Frame boundary: on each present, print / write to disk the call count of each NVN function for this frame

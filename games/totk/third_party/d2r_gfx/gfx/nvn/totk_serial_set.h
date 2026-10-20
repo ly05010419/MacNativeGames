@@ -1,6 +1,6 @@
 // Exact, append-only serial membership without an O(number of serials) rehash.
-// The caller provides synchronization, just as for nvn_hmap. Do not clear old
-// serials: texture-pool slots and deferred recordings may still refer to them.
+// The caller provides synchronization, just as for nvn_hmap. A serial is cleared (totk_serial_del) only once no
+// texture-pool slot and no deferred recording refers to it any more (nvn_mtl.m serial_forget_if_unreferenced).
 #pragma once
 #include <stdint.h>
 #include <stdlib.h>
@@ -53,6 +53,14 @@ static inline int totk_serial_add(totk_serial_set *s, uint64_t serial) {
     uint64_t mask = UINT64_C(1) << (serial & 63); unsigned word = (serial & 65535) >> 6;
     if (p[word] & mask) return 0;
     p[word] |= mask; s->n++; return 1;
+}
+// Returns 1 when the serial was in the set. The page stays (no bitmap is ever relocated or freed while in use).
+static inline int totk_serial_del(totk_serial_set *s, uint64_t serial) {
+    uint64_t *p = totk_serial_page(s, serial >> TOTK_SERIAL_PAGE_BITS, 0);
+    if (!p) return 0;
+    uint64_t mask = UINT64_C(1) << (serial & 63); unsigned word = (serial & 65535) >> 6;
+    if (!(p[word] & mask)) return 0;
+    p[word] &= ~mask; s->n--; return 1;
 }
 // Only at teardown or in isolated CPU tests; never used as live history GC.
 static inline void totk_serial_free_node(totk_serial_node *p, int level) {

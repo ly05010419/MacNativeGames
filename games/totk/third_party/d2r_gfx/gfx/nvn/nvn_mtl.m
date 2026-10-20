@@ -2166,7 +2166,7 @@ static inline void *hm_get_ptr(const nvn_hmap *m, const void *k) { return nvn_hm
 static void *serial_ptr(uint64_t k) { pthread_mutex_lock(&g_smu); void *o = nvn_hm_get(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
 static __unsafe_unretained id serial_get(uint64_t k) { pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); pthread_mutex_unlock(&g_smu); return o; }
 static void serial_put(uint64_t k, id o) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_put_id(&g_by_serial, &k, o); stor_ref_locked(o, k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); }
-static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_del_id(&g_by_serial, &k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); }
+static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get_id(&g_by_serial, &k); if (old) { if (stor_unref_locked(old, k)) defer_obj_unref(old); else defer_obj_release(old); } hm_del_id(&g_by_serial, &k); ser_bump_locked(k); pthread_mutex_unlock(&g_smu); BOTW_SERIAL_NOTE(k, "serial_del") }
 static void ser_bump(uint64_t serial) { pthread_mutex_lock(&g_smu); ser_bump_locked(serial); pthread_mutex_unlock(&g_smu); }
 /* Dead serials (TOTK): the game finalizes temporary NVNtexture objects after recording and before the submission runs,
    so a replay may meet a serial that was already finalized. Previously the replay created a Metal texture for it and
@@ -2185,6 +2185,29 @@ static int gpu_owned(uint64_t k) { pthread_mutex_lock(&g_smu); int d = totk_seri
 
 static uint64_t *g_dead_put; static int g_dead_put_n, g_dead_put_cap; static uint64_t g_dead_put_total;
 static int serial_is_dead(uint64_t k) { pthread_mutex_lock(&g_smu); int d = totk_serial_has(&g_dead_serial, k); pthread_mutex_unlock(&g_smu); return d; }
+/* 2026-10-20: a finalised serial is forgotten (dropped from g_dead_serial and g_gpu_owned) once nothing can bring it back:
+   no recording copy names it (dm_nvn_pin_has_serial: only a recording's texture copy brings a serial to the replay) and
+   no texture-pool slot is registered with it (g_treg_refs, kept by mtl_reg_tex and tex_by_id's redirect: such a slot still
+   follows the serial to the live texture at its memory). Before, both sets only grew: Breath of the Wild finalises about
+   80 textures a frame and had 17.4 million entries after 30 minutes on a static screen, TOTK about 130 MB in 27 minutes. */
+static nvn_hmap g_treg_refs = {.klen = 8};   /* serial -> pool slots registered with it (g_rmu) */
+static uint64_t g_serial_forgotten;
+static void treg_ref_locked(uint64_t serial, int delta) {   /* g_rmu held */
+    if (!serial) return;
+    uintptr_t n = (uintptr_t)nvn_hm_get(&g_treg_refs, &serial);
+    n = delta > 0 ? n + 1 : n ? n - 1 : 0;
+    if (n) nvn_hm_put(&g_treg_refs, &serial, (void *)n); else nvn_hm_del(&g_treg_refs, &serial);
+}
+static void serial_forget_locked_rmu(uint64_t k) {   /* g_rmu held (g_rmu -> g_pin_mu and g_rmu -> g_smu are the allowed orders) */
+    extern int dm_nvn_pin_has_serial(uint64_t serial);
+    if (!k || nvn_hm_get(&g_treg_refs, &k) || dm_nvn_pin_has_serial(k)) return;
+    pthread_mutex_lock(&g_smu);
+    if (totk_serial_del(&g_dead_serial, k)) g_serial_forgotten++;
+    totk_serial_del(&g_gpu_owned, k);
+    pthread_mutex_unlock(&g_smu);
+}
+static inline int registry_lock(void); static inline void registry_unlock(void);
+static void serial_forget_if_unreferenced(uint64_t k) { registry_lock(); serial_forget_locked_rmu(k); registry_unlock(); }
 static void dead_put_note(uint64_t k) {
     pthread_mutex_lock(&g_smu);
     if (g_dead_put_n == g_dead_put_cap) { g_dead_put_cap = g_dead_put_cap ? g_dead_put_cap * 2 : 256; g_dead_put = realloc(g_dead_put, g_dead_put_cap * sizeof *g_dead_put); if (!g_dead_put) MDIE("dead-serial list"); }
@@ -2194,7 +2217,7 @@ static void dead_put_note(uint64_t k) {
 /* Called at the end of every submission: textures created for already-finalized serials are released after it completes. */
 static void dead_put_flush(void) {
     pthread_mutex_lock(&g_smu); int n = g_dead_put_n; uint64_t *l = n ? malloc(n * sizeof *l) : NULL; if (n) memcpy(l, g_dead_put, n * sizeof *l); g_dead_put_n = 0; pthread_mutex_unlock(&g_smu);
-    for (int i = 0; i < n; i++) { serial_del(l[i]); treg_drop_serial(l[i]); }
+    for (int i = 0; i < n; i++) { BOTW_DEAD_KEEP(l[i]) BOTW_SERIAL_NOTE(l[i], "dead_put_flush") serial_del(l[i]); treg_drop_serial(l[i]); }
     free(l);
 }
 uint64_t mtl_dead_serial_textures(void) { return g_dead_put_total; }
@@ -2384,7 +2407,7 @@ static int tilelog_match(const tex_t *t) {
     static int on = -1; static unsigned w, h; if (on < 0) { const char *e = getenv("DM_NVN_TILELOG"); on = e && sscanf(e, "%ux%u", &w, &h) == 2; }
     return on && t && t->d.width == w && t->d.height == h;
 }
-#define TILELOG(t, fmt, ...) do { if (tilelog_match(t)) MLOG("[tile] f%llu ser=%llu mem=%p nvnfmt=%#x lv%u " fmt, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(t)->serial, (void *)(t)->mem, (t)->d.format, (t)->d.levels, ##__VA_ARGS__); } while (0)
+#define TILELOG(t, fmt, ...) do { BOTW_TILELOG_NOTE(t) if (tilelog_match(t)) MLOG("[tile] f%llu ser=%llu mem=%p nvnfmt=%#x lv%u " fmt, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(t)->serial, (void *)(t)->mem, (t)->d.format, (t)->d.levels, ##__VA_ARGS__); } while (0)
 static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e); }
 static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
@@ -2404,6 +2427,11 @@ static int wb_level_back(const tex_t *t, id<MTLTexture> mt, unsigned level, unsi
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     uint32_t lw = MAX(t->d.width >> level, 1u), lh = MAX(t->d.height >> level, 1u);
     size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
+    /* This runs on the game's thread (nvnMemoryPoolInvalidateMappedRange), which has no autorelease pool: without one the
+       autoreleased command buffer kept its blit encoder and this read-back buffer for ever (one 16 KiB buffer and one
+       blit context per written-back level: Breath of the Wild writes back about 130 a second, 3.7 GB of GPU memory in 30
+       minutes; TOTK's AGXG16GFamilyBuffer / BlitContext pairs growing by the thousands per lap were the same). */
+    @autoreleasepool {
     id<MTLBuffer> buf = [g_dev newBufferWithLength:lp * lr options:MTLResourceStorageModeShared];
     if (!buf) return 0;
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = enc_b_begin(cb);
@@ -2412,6 +2440,7 @@ static int wb_level_back(const tex_t *t, id<MTLTexture> mt, unsigned level, unsi
     enc_b_end(b); cb_commit(cb); cb_wait(cb);
     if (nvn_swizzle(&t->d, level, layer, (const uint8_t *)buf.contents, lp, t->mem)) return 0;
     g_wb_bytes += lp * lr;
+    }
     return 1;
 }
 static void wb_write_list(wb_ent **list, int nl, int force);
@@ -2634,7 +2663,7 @@ static void stor_release_holders_locked(stor_ent *e) {
     for (int i = 0; i < e->nser; i++) {
         uint64_t s = e->ser[i]; id o = hm_get_id(&g_by_serial, &s); if (!o) continue;
         uint64_t ok = obj_key(o); if (ok != (uint64_t)(uintptr_t)e->tex) nvn_hm_del(&g_stor_of_obj, &ok);
-        defer_obj_unref(o); hm_del_id(&g_by_serial, &s);
+        defer_obj_unref(o); hm_del_id(&g_by_serial, &s); BOTW_SERIAL_NOTE(s, "storage entry dropped")
     }
     e->nser = 0; ser_bump_locked(0);
 }
@@ -3388,7 +3417,7 @@ static int tex_mirrored(const tex_t *t) {
 }
 static int tex_check_once(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TEX_CHECK_ONCE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_TEX_CHECK_ONCE=0：CPU 池贴图每次取用都查是否被改写（旧行为）"); } return v; }
 static id<MTLTexture> tex_mtl(const tex_t *ct) {
-    tex_t *t = (tex_t *)ct;
+    tex_t *t = (tex_t *)ct; BOTW_TEX_FOLLOW(t)
     if (!t || !t->serial) return nil;
     int packaged = tex_mirrored(t);
     __unsafe_unretained id have = (__bridge id)serial_ptr(t->serial);
@@ -3496,7 +3525,8 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     MLOG("已死序号纹理累计 %llu 张（替换前即为泄漏来源）", (unsigned long long)g_dead_put_total);
     pthread_mutex_lock(&g_smu); uint64_t dead_n = g_dead_serial.n, owned_n = g_gpu_owned.n;
     uint64_t serial_bytes = g_dead_serial.bytes + g_gpu_owned.bytes, serial_pages = g_dead_serial.pages + g_gpu_owned.pages; pthread_mutex_unlock(&g_smu);
-    MLOG("序号表：已销毁 %llu 个，GPU 画过 %llu 个（两张表都只增不减，见 mtl_dead_forget；分页位图 %llu 页，%llu 字节）", (unsigned long long)dead_n, (unsigned long long)owned_n, (unsigned long long)serial_pages, (unsigned long long)serial_bytes);
+    registry_lock(); unsigned refs_n = g_treg_refs.n; registry_unlock();
+    MLOG("序号表：已销毁 %llu 个，GPU 画过 %llu 个（没有录制副本和池槽位引用后忘掉的累计 %llu 个；池槽位引用着 %u 个序号；分页位图 %llu 页，%llu 字节）", (unsigned long long)dead_n, (unsigned long long)owned_n, (unsigned long long)g_serial_forgotten, refs_n, (unsigned long long)serial_pages, (unsigned long long)serial_bytes);
     pthread_mutex_lock(&g_smu); int ndet = g_stor_ndet; pthread_mutex_unlock(&g_smu);
     MLOG("可压缩贴图跨格式换主 %llu 次（其中换回原贴图 %llu 次），暂存旧登记 %d 个（TOTK_COMPRESSED_ALIAS=1 恢复跨格式共用）", (unsigned long long)g_stor_handover, (unsigned long long)g_stor_taken_back, ndet);
     MLOG("共享存储贴图：条目 %llu，共用 %llu 次，格式视图 %llu 次，重建 %llu 次，闲置回收 %llu，随内存池释放 %llu", (unsigned long long)g_stor_entries, (unsigned long long)g_stor_shared, (unsigned long long)g_stor_viewed, (unsigned long long)g_stor_recreated, (unsigned long long)g_stor_swept, (unsigned long long)g_stor_dropped);
@@ -3522,16 +3552,17 @@ void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads) { *uploads = g_pkg_up
 uint64_t mtl_pkg_miss(void) { return g_pkg_miss; }
 void mtl_tex_release(tex_t *t) {
     if (!t->serial) return;
-    serial_del(t->serial);
+    BOTW_SERIAL_NOTE(t->serial, "nvnTextureFinalize") BOTW_TEX_RELEASE_KEEP(t->serial) serial_del(t->serial);
     pthread_mutex_lock(&g_smu); totk_serial_add(&g_dead_serial, t->serial); ser_bump_locked(t->serial); pthread_mutex_unlock(&g_smu);   // view caches of this serial look again (dead-serial follow)
     treg_drop_serial(t->serial);
+    serial_forget_if_unreferenced(t->serial);   // nothing names it any more: no need to remember it
 }
 /* TOTK (2026-10-17): not yet. A finalized serial must stay remembered while a texture-pool slot still names it: tex_by_id
    follows such a slot to the live texture at the same storage only for a remembered serial. The first version forgot a
    serial once no recording's texture copy had it (and did not remember unpinned ones at all): analysis/long20b made not one
    dead-serial texture where long19 made 538,563, i.e. slots kept textures of finalized serials instead of following them.
    Forgetting needs the number of slots per serial; until then the set keeps every finalized serial, as before. */
-void mtl_dead_forget(const uint64_t *serials, size_t n) { (void)serials; (void)n; }
+void mtl_dead_forget(const uint64_t *serials, size_t n) { BOTW_DEAD_FORGET(serials, n) for (size_t i = 0; i < n; i++) serial_forget_if_unreferenced(serials[i]); }
 
 // ---------- 渲染通道：SetRenderTargets 开新通道；通道里第一条命令之前的清除并进 load 动作 ----------
 // ---------- Render passes: SetRenderTargets opens a new pass; clears before the first command in the pass are folded into the load action ----------
@@ -4200,7 +4231,7 @@ static void canvas_learn(MTL4RenderPassDescriptor *pd) {
         if (to_swap) {
             if (g_mfx.last_c0 && g_mfx.canvas != g_mfx.last_c0) { g_mfx.canvas = g_mfx.last_c0; MLOG("[mfx] canvas: texture %llu (%ux%u), copied to presented texture %llu", (unsigned long long)g_mfx.canvas, g_mfx.swap_w, g_mfx.swap_h, (unsigned long long)t0->serial); }
         } else if (c0.width >= 640 && fabs((double)c0.width * g_mfx.swap_h / ((double)c0.height * g_mfx.swap_w) - 1) < 0.01 && pd.colorAttachments[0].level == 0 &&
-                   pf_is_float(c0.pixelFormat) && !pd.depthAttachment.texture)
+                   MFX_CANVAS_FMT_OK(c0.pixelFormat) && !pd.depthAttachment.texture)
             g_mfx.last_c0 = t0->serial;
     }
 }
@@ -4298,11 +4329,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     if (R.rt.depth) (void)attachment_texture(R.rt.depth, &R.rt.dview, R.rt.has_dview);
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     MTL4RenderPassDescriptor *pd = [MTL4RenderPassDescriptor new];
-    int any = 0;
+    int any = 0; BOTW_RT_DUP_CLEARS()
     for (int i = 0; i < R.rt.n; i++) {
-        if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue;
+        if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue; BOTW_RT_DUP_SKIP(i)
         attach(pd.colorAttachments[i], R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
-        { const tex_t *ot = R.rt.color[i]; int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial);
+        { const tex_t *ot = R.rt.color[i]; BOTW_TEX_FOLLOW(ot) int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial);
           if (ot->mem && tex_mirrored(ot)) wb_note(ot);
           static int ownlog = -1; if (ownlog < 0) ownlog = getenv("DM_NVN_OWNLOG") != NULL;
           if (ownlog && !was && tex_mirrored(ot)) MLOG("[ownlog] ser=%llu %ux%ux%u lv%u nvnfmt=%#x flags=%#x pool=%p pflags=%#x mem=%p off=%lld: GPU-rendered texture in a CPU-visible pool", (unsigned long long)ot->serial,
@@ -5066,6 +5097,11 @@ static uint64_t stage_sig(int st);
    restores copy earlier states), so they are 0 and stage_sig compares only the slots below it (it compared all 128). */
 static int g_tex_hi[6] = {1, 1, 1, 1, 1, 1};
 static NSArray *rt_local(const uint8_t *control, int st);
+/* How much of a control section the shader key hashes: the section's own size, the word at +0x20 (0x880 in TOTK's
+   archives and in its agl packages; 0x7d1 and 0x848 in Breath of the Wild, whose game keeps each section in its own
+   allocation, so the bytes after it are not the shader's and differ from the archive's), never more than 0x880.
+   scripts/prepare_shader_seed.py control_key_len computes the same offline. */
+static inline uint32_t ctl_key_len(const uint8_t *control) { uint32_t n; memcpy(&n, control + 0x20, 4); return n >= 0x7cc && n < 0x880 ? n : 0x880; }
 static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提交线程调用 | Called only on the submit thread
     prog_t *p = (prog_t *)cp;
     static const prog_t *lp; static uint64_t lser, lgen; static NvProg *lpr;   // 上次结果：同一对象、同一序号且序号表未变即直接用 | Last result: same object, same serial and unchanged serial table means it is used directly
@@ -5081,11 +5117,16 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         memcpy(&length,control+0x704,4);memcpy(&nvn_stage,control+0x714,4);
         if (!length || length>16*1024*1024) MDIE("invalid TOTK shader code length %u",length);
         // Host NVN GPU addresses are CPU addresses (MemoryPoolGetBufferAddress).
-        uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);CC_SHA256_Update(&ctx,control,0x880);
+        uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);CC_SHA256_Update(&ctx,control,ctl_key_len(control));
         CC_SHA256_Update(&ctx,(const void *)(uintptr_t)p->sd[i].data,length);CC_SHA256_Final(md,&ctx);
         char key[65];for(unsigned j=0;j<32;j++)snprintf(key+2*j,3,"%02x",md[j]);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
         int st=(int)nvn_stage;if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
+        if (getenv("TOTK_CTL_DUMP")) {   // diagnostic: the control section the game hands NVN, per shader (offline shader discovery is checked against it)
+            static FILE *df; if (!df) df = fopen(getenv("TOTK_CTL_DUMP"), "a");
+            if (df) { uint8_t cm[32]; char ch[65]; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data; size_t skip = st == 5 ? 0 : 0x30;
+                CC_SHA256(cd + skip, (CC_LONG)(length > skip ? length - skip : 0), cm); for (unsigned j = 0; j < 32; j++) snprintf(ch + 2*j, 3, "%02x", cm[j]);
+                fprintf(df, "%s\t%d\t%s\t", key, st, ch); for (int k = 0; k < 0x880; k++) fprintf(df, "%02x", control[k]); fputc('\n', df); fflush(df); } }
         if (getenv("TOTK_CS_PROBE")) { static int nd; if (nd++ < 6) { char b[4096]; size_t o = 0; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data;
             for (int k = 0x6c0; k < 0x880; k += 4) { uint32_t w; memcpy(&w, control + k, 4); if (w) o += snprintf(b + o, sizeof b - o, " %03x:%x", k, w); }
             o += snprintf(b + o, sizeof b - o, " | code:"); for (int k = 0; k < 0x30; k += 4) { uint32_t w; memcpy(&w, cd + k, 4); o += snprintf(b + o, sizeof b - o, " %x", w); }
@@ -5160,6 +5201,9 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     g_treg_changed++;
     g_reg_gen++;
     if (g_treg[id_].view) treg_clear_view_locked(id_);
+    uint64_t was = g_treg[id_].ok ? g_treg[id_].t.serial : 0;   // the serial this slot named before: one reference less (serial_forget_locked_rmu)
+    if (t && t->serial != was) treg_ref_locked(t->serial, 1);
+    if (was && (!t || t->serial != was)) { treg_ref_locked(was, -1); serial_forget_locked_rmu(was); }
     g_treg[id_].ok = t != NULL; if (t) g_treg[id_].t = *t; g_treg[id_].has_v = v != NULL;
     if (v) g_treg[id_].v = *v; else memset(&g_treg[id_].v, 0, sizeof g_treg[id_].v);   // TOTK: a registration without a view must not keep the slot's previous view (depth texture once got a stale BC3 9-level view)
     if (id_ < (1 << 20)) atomic_store_explicit(&g_tser[id_], t ? t->serial : 0, memory_order_release);
@@ -5392,7 +5436,9 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
             static uint64_t n; if (n++ < 4 || n % 100000 == 0) MLOG("texture id %d: registration followed its storage from finalised serial %llu to live serial %llu (%u redirects so far)", tid, (unsigned long long)rp->t.serial, (unsigned long long)live.serial, (unsigned)n);
             if (rp->view) treg_clear_view_locked(tid);
             if (totk_life_on() && totk_life_match(&live)) totk_life_log("use fc=%llu id=%d redirect %llu -> %llu mem=%p", (unsigned long long)atomic_load(&g_cur_frame), tid, (unsigned long long)rp->t.serial, (unsigned long long)live.serial, (void *)live.mem);
+            treg_ref_locked(live.serial, 1); treg_ref_locked(rp->t.serial, -1); uint64_t was_ = rp->t.serial;
             rp->t = live; if (tid < (1 << 20)) atomic_store_explicit(&g_tser[tid], live.serial, memory_order_release);
+            serial_forget_locked_rmu(was_);
             dead = 0;
         }
     }
@@ -7819,7 +7865,7 @@ static void pso_predict_rest(void) {
             R.rt = *r; R.has_rt = 1;
             /* Prediction must not acquire/recreate/upload textures on the active GPU timeline. */
             for (int i = 0; i < r->n && i < 8; i++) { MTLTextureDescriptor *d = r->color[i] ? tex_desc(r->color[i], tex_mirrored(r->color[i])) : nil;
-                if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); samples = (uint32_t)d.sampleCount; } }
+                if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); samples = (uint32_t)d.sampleCount; } } BOTW_RT_DUP_PREDICT(r, cf)
             for (int i = 0; i < 8; i++) if (pf_block_compressed(cf[i])) memset(cf, 0, sizeof cf), r = NULL;   // TOTK: such passes are handled (or reported) when they begin
             if (!r) { cf[0] = 0; df = sf = dfull = sfull = 0; continue; }
             MTLTextureDescriptor *dd = r->depth ? tex_desc(r->depth, tex_mirrored(r->depth)) : nil;
@@ -9156,7 +9202,7 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
 static void clear_quad(const p_clear_color *c) {
-    gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / partial-mask / scissored color clear");
+    gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / partial-mask / scissored color clear"); BOTW_RT_DUP_CLEAR_TO_FIRST(c)
     const tex_t *t = R.rt.color[c->index];
     int f = R.rt.has_cview[c->index] && R.rt.cview[c->index].set_format ? R.rt.cview[c->index].format : t->d.format;
     if (cls_of(f)) MDIE("partial color clear of integer render target format %#x not implemented", f);
@@ -9261,8 +9307,8 @@ static void prepare_draw_textures(NvProg *pr) {
    projection, inverse view, near / far, aspect, field of view; floats 84..167 hold the camera of two frames earlier). */
 static void mfx_take_camera(void) {
     g_mfx.want_cam = 0;
-    const p_bind_buf *u = &S.ubo[0][1]; float cam[84];
-    if (u->addr && u->size == 2368) {
+    const p_bind_buf *u = &S.ubo[0][MFX_CAM_SLOT]; float cam[84];
+    if (u->addr && u->size == MFX_CAM_SIZE) {
         pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);   // the bytes this draw sees: memory plus pending inline updates
         mfx_note_camera(cam, 84);
         /* TOTK_MFX_CAMLOG=<first>-<last frame>: every captured camera (diagnostic) */
@@ -9729,22 +9775,22 @@ static int mfxup_dock(__unsafe_unretained NvShader *fs) {
      * highlights above 1, so request HDR processing. Exact-shader GPU probe:
      * scripts/upscale_color_probe.m (RGB/HDR + deliberately missing gain).
      * Both variants use the same con0 and integer output-size layout below. */
-    int hdr = !strncmp(fs->key, "ac58fc18eda5f3878b16074dc28cd441644a66710f1b73954d39e57ac357561b-", 65);
-    if (!hdr && strncmp(fs->key, "a3a570eb159202f14bc86479b0d3a012ecd830b8550505536eb70bf82372e4bb-", 65)) return 0;
+    int hdr = !strncmp(fs->key, "ac58fc18eda5f3878b16074dc28cd441644a66710f1b73954d39e57ac357561b-", 65); BOTW_MFXUP_DOCK_KEY(fs)
+    if (!hdr BOTW_AND_NOT_DOCK && strncmp(fs->key, "a3a570eb159202f14bc86479b0d3a012ecd830b8550505536eb70bf82372e4bb-", 65)) return 0;
     int color_mode = hdr ? MFXUP_HDR : MFXUP_PERCEPTUAL;
     const view_t *cv = &R.rt.cview[0]; int hv = R.rt.has_cview[0];
     int why = 0;
     if (R.rt.n < 1 || !R.rt.color[0]) why = 1;
     for (int i = 1; !why && i < R.rt.n; i++) if (R.rt.color[i]) why = 1;
-    if (!why && ((S.color.blend_en & 1) || (S.chmask.mask & 0xf) != 0xf || S.ms.a2c || (R.rt.depth && (S.ds.dt || S.ds.st)))) why = 2;
+    if (!why && ((S.color.blend_en & 1) || BOTW_MFXUP_MASK_BAD || S.ms.a2c || (R.rt.depth && (S.ds.dt || S.ds.st)))) why = 2;
     if (!why && hv && ((cv->set_levels && cv->base_level) || (cv->set_layers && cv->min_layer))) why = 1;   // the canvas's own level 0 / layer 0 (its view names layer 0: still the whole texture)
     int tid = (int)(S.tex[1][0] & 0xfffff);
     id<MTLTexture> src = !why && tid > 0 ? (__bridge id<MTLTexture>)tex_fast(tid) : nil, dst = src ? attachment_texture(R.rt.color[0], cv, hv) : nil;
     if (!why && (!src || !dst || src.textureType != MTLTextureType2D || dst.textureType != MTLTextureType2D)) why = 3;
     if (!why && ((S.has_vp && !(S.vp[0][0] == 0 && S.vp[0][1] == 0 && S.vp[0][2] == (float)dst.width && S.vp[0][3] == (float)dst.height)) ||
                  !scissor_full(R.rt.color[0], cv, hv))) why = 4;
-    NSUInteger cw = 0, ch = 0; float k[20] = {0}; uint32_t ow = 0, oh = 0;
-    if (!why) {
+    NSUInteger cw = 0, ch = 0; float k[20] = {0}; uint32_t ow = 0, oh = 0; BOTW_MFXUP_DOCK_REGION(cw, ch, src)
+    if (!why BOTW_AND_NOT_DOCK) {
         const p_bind_buf *u = &S.ubo[1][0];
         if (!u->addr || u->size < sizeof k) why = 5;
         else {
@@ -9984,7 +10030,7 @@ frz_plain:;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     if (g_enc && g_lay.active && !lay_draw_ok(pr, dw, di)) {   // TOTK: this draw cannot write its layer: end the layered pass, draw in a plain one
         PD("L %llu 分层通道内的绘制不能写层号，在此切开", g_stat_pass); rp_end(); g_lay.refuse = 1; g_lay.refused++; }
-    if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key) && mfx_enabled())
+    if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && MFX_UI_DRAW(pr) && mfx_enabled())
         mfx_snapshot_scene();   // TOTK_MFX: first UI draw into the canvas: copy the finished scene first
     if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // key 4: the UI begins
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
@@ -10422,7 +10468,7 @@ static void copy_t2b(const p_copy_b2t *c) {
     upd_guard(c->src, c->src + img * nz);   // TOTK: renamed uniform updates before a GPU write to the range
     if (!mtl_addr(c->src, img * nz, &mb, &mo)) { RED_ONCE(31, "贴图→缓冲拷贝的目标不在内存池里"); return; }
     usnap_drop(c->src, img * nz);   // TOTK: a GPU write: no uniform copy of these bytes from here on
-    id<MTL4ComputeCommandEncoder> b = blit();
+    id<MTL4ComputeCommandEncoder> b = blit(); BOTW_T2B_NOTE(c, t, mb, mo, img * nz) BOTW_GPU_COPY_SUPERSEDES(mb, mo, img * nz)
     if (is3d)
         enc_b_copy_texture_buffer(b, t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset), MTLSizeMake(c->r.width, c->r.height, nz), (__bridge id<MTLBuffer>)mb, mo, row, img);
     else
@@ -11167,7 +11213,7 @@ void mtl_shot_at_present(const tex_t *t) {
         if (src) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, NULL); MLOG("[shot] F%ld %s", cur, g_shotq[i].path); } else MLOG("【红】截图：出图纹理不可用，丢弃 %s", g_shotq[i].path);
         g_shotq[i] = g_shotq[--g_nshotq];
     } else i++;
-    pthread_mutex_unlock(&g_shotq_mu);
+    BOTW_ASHOT_POLL(t, cur) pthread_mutex_unlock(&g_shotq_mu);
     if (!nshot) return;
     for (int i = 0; i < nshot; i++) if (!done[i] && cur >= shots[i]) {
         done[i] = 1; id<MTLTexture> src = tex_mtl(t); if (!src) { MLOG("【红】截图：出图纹理不可用"); continue; }
@@ -12532,7 +12578,7 @@ static int mfx_present_frame_body(const tex_t *t, double period, int discard) {
             d.storageMode = MTLStorageModeShared; g_mfx_swap_prev = [g_dev newTextureWithDescriptor:d]; }
         if (sc && g_mfx_swap_prev) { mtl_finish_gpu(); id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder]; [b copyFromTexture:sc toTexture:g_mfx_swap_prev]; [b endEncoding]; cb_commit(cb); cb_wait(cb); }
     }
-    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0;
+    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET()
     if (++g_mfx.frames % 300 == 0) { char b[256]; mfx_stats(b, sizeof b); MLOG("[mfx] 至帧 %llu：%s", (unsigned long long)atomic_load(&g_cur_frame), b); }
     return slot;
 }
@@ -12541,7 +12587,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
-    if (mfx_latch() && !mfx_enabled()) g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0;   // key 2 / flag mfx_interp: the next frame is fully on or off
+    if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
     mtl_wb_eager();
     g_uw_ui = 0;
@@ -14030,3 +14076,190 @@ int mtl_probe_arg_epoch(void) {
 
 #include "nvn_pool_retire_probe.h"
 #include "nvn_cube_group_probe.h"
+#ifdef GAME_BOTW
+/* "ashot <path>" (botw.md, game-speed checks; at the end of the file so TOTK's line numbers stay as they were): the next
+   game frame like "shot", but only the read-back runs on the game's present thread (wait for the GPU, one blit: a few
+   ms); the picture is scaled to 480 wide and written as PNG on a background queue, so a sequence of them barely moves the
+   frame timing, and it is taken whether the window is visible or not. The log line "[ashot] F<frame> t=<ns> <path> ok"
+   carries the frame's present time (CLOCK_UPTIME_RAW), which the alignment uses instead of when the command was read
+   (the command file is polled every 100 ms). */
+static struct { uint64_t frame; char path[1024]; } g_ashotq[SHOTQ_MAX]; static int g_nashotq;
+void dm_gfx_ashot(const char *path) {
+    pthread_mutex_lock(&g_shotq_mu);
+    if (g_nashotq < SHOTQ_MAX) { g_ashotq[g_nashotq].frame = atomic_load(&g_cur_frame) + 1; strlcpy(g_ashotq[g_nashotq].path, path, sizeof g_ashotq[0].path); g_nashotq++; }
+    else MLOG("【红】ashot 请求超过 %d 个，丢弃 %s", SHOTQ_MAX, path);
+    pthread_mutex_unlock(&g_shotq_mu);
+}
+static void ashot_take(id<MTLTexture> src, const char *path, long frame) { @autoreleasepool {
+    uint64_t t = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    MTLPixelFormat pf = src.pixelFormat;
+    if (pf != MTLPixelFormatRGBA8Unorm && pf != MTLPixelFormatRGBA8Unorm_sRGB && pf != MTLPixelFormatBGRA8Unorm && pf != MTLPixelFormatBGRA8Unorm_sRGB) {
+        MLOG("【红】ashot：不支持格式 %lu", (unsigned long)pf); return;
+    }
+    size_t w = src.width, h = src.height, row = w * 4;
+    id<MTLBuffer> buf = [g_dev newBufferWithLength:row * h options:MTLResourceStorageModeShared];
+    mtl_finish_gpu();
+    id<MTLCommandBuffer> cb = q_cb();
+    id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+    [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
+              toBuffer:buf destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * h];
+    [b endEncoding]; cb_commit(cb); cb_wait(cb);
+    NSData *pixels = [NSData dataWithBytes:buf.contents length:row * h];
+    int bgra = pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB;
+    char *p = strdup(path);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ @autoreleasepool {
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGBitmapInfo bi = bgra ? (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : (CGBitmapInfo)kCGImageAlphaNoneSkipLast;
+        CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
+        CGImageRef img = dp ? CGImageCreate(w, h, 8, 32, row, cs, bi, dp, NULL, false, kCGRenderingIntentDefault) : NULL;
+        size_t ow = 480, oh = h * ow / (w ? w : 1);
+        CGContextRef small = img ? CGBitmapContextCreate(NULL, ow, oh, 8, 0, cs, kCGImageAlphaNoneSkipLast) : NULL;
+        CGImageRef out = NULL;
+        if (small) { CGContextSetInterpolationQuality(small, kCGInterpolationMedium); CGContextDrawImage(small, CGRectMake(0, 0, ow, oh), img); out = CGBitmapContextCreateImage(small); }
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)p, (CFIndex)strlen(p), false);
+        CGImageDestinationRef dst = url && out ? CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL) : NULL;
+        int ok = 0;
+        if (dst) { CGImageDestinationAddImage(dst, out, NULL); ok = CGImageDestinationFinalize(dst); CFRelease(dst); }
+        if (url) CFRelease(url);
+        CGImageRelease(out); CGContextRelease(small); CGImageRelease(img); if (dp) CGDataProviderRelease(dp); CGColorSpaceRelease(cs);
+        MLOG("[ashot] F%ld t=%llu %s %s", frame, (unsigned long long)t, p, ok ? "ok" : "failed");
+        free(p);
+    } });
+} }
+void botw_ashot_poll(const void *tv, long cur) {
+    const tex_t *t = tv;
+    for (int i = 0; i < g_nashotq;) if ((uint64_t)cur >= g_ashotq[i].frame) {
+        id<MTLTexture> src = tex_mtl(t);
+        if (src) ashot_take(src, g_ashotq[i].path, cur); else MLOG("【红】ashot：出图纹理不可用，丢弃 %s", g_ashotq[i].path);
+        g_ashotq[i] = g_ashotq[--g_nashotq];
+    } else i++;
+}
+#endif
+#ifdef GAME_BOTW
+/* TOTK_T2B_LOG=1 (botw.md, the black save thumbnail: the game copies a texture into a buffer on a CPU-visible pool with
+   nvnCommandBufferCopyTextureToBuffer and JPEG-encodes the pool bytes): each copy's source texture and destination, and
+   once the GPU is done, how many destination bytes are not zero (first 4 MiB). Zero: the source was black; not zero
+   but a black JPEG: the bytes were overwritten or read too early. */
+void botw_t2b_note(const void *cv, const void *texv, const void *mbv, uint64_t mo, size_t n) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("TOTK_T2B_LOG"); on = e && *e && strcmp(e, "0"); }
+    if (!on) return;
+    const p_copy_b2t *c = cv; id<MTLTexture> t = (__bridge id<MTLTexture>)texv; id<MTLBuffer> mb = (__bridge id<MTLBuffer>)mbv;
+    static _Atomic unsigned seq; unsigned k = atomic_fetch_add(&seq, 1);
+    MLOG("[t2b] #%u F%llu ser=%llu %ux%u nvnfmt=%#x region %d,%d %dx%d -> %#llx (%zu bytes); Metal %lux%lu format %lu; gpu_owned %d mirrored %d; buffer %s",
+         k, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->tex->serial, c->tex->d.width, c->tex->d.height, c->tex->d.format,
+         c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src, n, (unsigned long)t.width, (unsigned long)t.height,
+         (unsigned long)t.pixelFormat, gpu_owned(c->tex->serial), tex_mirrored(c->tex), mb.storageMode == MTLStorageModeShared ? "shared" : "not shared");
+    if (mb.storageMode != MTLStorageModeShared) return;
+    const uint8_t *p = (const uint8_t *)mb.contents + mo; size_t m = n < (4u << 20) ? n : (4u << 20);
+    static const char *dump; static int dump_init; if (!dump_init) { dump_init = 1; dump = getenv("TOTK_T2B_DUMP"); }
+    unsigned w = c->r.width, h = c->r.height;
+    [g_commit_blocks addObject:^{ size_t z = 0; for (size_t i = 0; i < m; i++) z += p[i] != 0; MLOG("[t2b] #%u done: %zu of %zu destination bytes not zero", k, z, m);
+        if (dump && *dump) { char path[1024]; snprintf(path, sizeof path, "%s/t2b-%u-%ux%u.rgba", dump, k, w, h); FILE *f = fopen(path, "wb"); if (f) { fwrite(p, 1, m, f); fclose(f); } } }];
+}
+/* botw.md, the black save thumbnail: a GPU copy into a buffer (nvnCommandBufferCopyTextureToBuffer) is newer than every
+   earlier GPU rendering of a texture over the same memory that waits for write-back (wb_note). The game copies its
+   256x144 caption into a CPU-visible pool, waits for the queue and invalidates the pool before JPEG-encoding it; the
+   invalidate wrote such an older rendering back over the copied bytes. Those records are dropped here (in GPU order:
+   this runs where the replay encodes the copy; a later rendering of that memory is recorded again). */
+void botw_gpu_copy_supersedes(const void *mbv, uint64_t mo, size_t n) {
+    id<MTLBuffer> mb = (__bridge id<MTLBuffer>)mbv;
+    if (!mb || !n || mb.storageMode != MTLStorageModeShared) return;
+    const uint8_t *a = (const uint8_t *)mb.contents + mo, *z = a + n;
+    wb_ent *list[64]; int nl = 0;
+    pthread_mutex_lock(&g_smu);
+    for (uint32_t i = 0; g_wb.n && g_wb.vals && i < g_wb.cap && nl < 64; i++) {
+        wb_ent *e = g_wb.vals[i];
+        if (!e || e->t.mem >= z || e->t.mem + e->t.L.size <= a) continue;
+        uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts entries: rescan
+    }
+    pthread_mutex_unlock(&g_smu);
+    static _Atomic unsigned shown;
+    for (int i = 0; i < nl; i++) {
+        const tex_t *t = &list[i]->t;
+        if (atomic_fetch_add(&shown, 1) < 16)
+            MLOG("[t2b] a GPU copy into %p (%zu bytes) replaces the earlier GPU rendering of ser=%llu %ux%u nvnfmt=%#x at %p (%llu bytes): not written back",
+                 (const void *)a, n, (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (const void *)t->mem, (unsigned long long)t->L.size);
+        wb_ent_free(list[i]);
+    }
+}
+/* botw.md, the black save thumbnail: the game records the caption rendering and its copy into a buffer once and replays
+   the recording at every save, while it finalises and re-initialises the 256x144 NVNtexture between saves. The recording's
+   texture copy kept the finalised serial, so each use made a texture for a dead serial that was deleted when the
+   submission completed (dead_put_flush): the copy of the next submission read a fresh upload of the stale pool bytes
+   (zeros). As the texture-pool slots do (tex_by_id), a command's texture whose serial was finalised now follows its
+   storage to the texture living there with the same layout: the pinned copy is re-keyed in place (dm_nvn_pin_rekey),
+   so every recording holding it, and the owned / write-back bookkeeping by serial, see the live texture. */
+int botw_serial_noted(uint64_t serial);
+void botw_tex_follow(const void *tv) {
+    tex_t *t = (tex_t *)tv;
+    if (!t || !t->serial || !t->mem || !serial_is_dead(t->serial)) return;
+    tex_t live; extern int nvn_tex_live_at(const void *mem, tex_t *out); extern int dm_nvn_pin_rekey(const tex_t *copy, const tex_t *live);
+    int watched = botw_serial_noted(t->serial), have = nvn_tex_live_at(t->mem, &live);
+    if (!have || live.serial == t->serial || serial_is_dead(live.serial)) {
+        if (watched) MLOG("[tile] f%llu ser=%llu not followed: %s", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial,
+                          !have ? "no live texture at its storage" : live.serial == t->serial ? "the live texture is itself" : "the live texture is finalised too");
+        return;
+    }
+    if (live.L.size != t->L.size || live.d.format != t->d.format || live.d.width != t->d.width || live.d.height != t->d.height ||
+        live.d.depth != t->d.depth || live.d.target != t->d.target || live.d.levels != t->d.levels) {
+        if (watched) MLOG("[tile] f%llu ser=%llu not followed: live ser=%llu %ux%ux%u lv%u nvnfmt=%#x target %d size %llu differs from %ux%ux%u lv%u nvnfmt=%#x target %d size %llu",
+                          (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)t->serial, (unsigned long long)live.serial, live.d.width, live.d.height, live.d.depth, live.d.levels, live.d.format, live.d.target,
+                          (unsigned long long)live.L.size, t->d.width, t->d.height, t->d.depth, t->d.levels, t->d.format, t->d.target, (unsigned long long)t->L.size);
+        return;
+    }
+    uint64_t from = t->serial; int pinned = dm_nvn_pin_rekey(t, &live);
+    if (!pinned) *t = live;
+    static uint64_t n; if (n++ < 8 || n % 1000 == 0)
+        MLOG("[tex-follow] %s ser=%llu -> %llu at %p (%ux%u nvnfmt=%#x; %llu so far)", pinned ? "recording copy" : "texture", (unsigned long long)from,
+             (unsigned long long)live.serial, (void *)t->mem, t->d.width, t->d.height, t->d.format, (unsigned long long)n);
+}
+/* botw.md, the black save thumbnail (the second half): the game renders the pause menu's 854x480 screen copy, finalises
+   that NVNtexture object the next frame (the object is only a handle; the memory keeps the rendering) and then replays
+   the recorded caption draw, which samples it; the caption texture itself is finalised after the first save and never
+   initialised again while its recording keeps addressing its memory. On hardware a command addresses memory, so the
+   host texture made for a finalised serial must live as long as a recording copy names the serial (dm_nvn_pin_has_serial),
+   not until the finalize (mtl_tex_release) or the end of the submission (dead_put_flush). Such serials are kept and
+   released when the pin sweep frees their copies (mtl_dead_forget -> botw_dead_forget). */
+static nvn_hmap g_bdead_kept = {.klen = 8};   /* finalised serials whose textures are kept for their recording copies (g_smu) */
+static uint64_t g_bdead_kept_n, g_bdead_freed_n;
+int botw_dead_keep(uint64_t serial) {
+    extern int dm_nvn_pin_has_serial(uint64_t serial);
+    if (!dm_nvn_pin_has_serial(serial)) return 0;
+    pthread_mutex_lock(&g_smu);
+    if (!nvn_hm_get(&g_bdead_kept, &serial)) { nvn_hm_put(&g_bdead_kept, &serial, (void *)1); g_bdead_kept_n++; }
+    uint64_t k = g_bdead_kept_n, live = g_bdead_kept.n;
+    pthread_mutex_unlock(&g_smu);
+    if (k <= 4 || k % 1000 == 0) MLOG("[dead-keep] finalised serial %llu stays while a recording copy names it (%llu kept so far, %llu now)", (unsigned long long)serial, (unsigned long long)k, (unsigned long long)live);
+    return 1;
+}
+void botw_dead_forget(const uint64_t *serials, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        uint64_t k = serials[i];
+        pthread_mutex_lock(&g_smu); int kept = nvn_hm_get(&g_bdead_kept, &k) != NULL; if (kept) { nvn_hm_del(&g_bdead_kept, &k); g_bdead_freed_n++; } pthread_mutex_unlock(&g_smu);
+        if (kept) { BOTW_SERIAL_NOTE(k, "dead copy swept: texture released") serial_del(k); treg_drop_serial(k); }
+    }
+}
+/* Key 2 (MetalFX frame interpolation): the scene copy is taken before the first UI draw into the canvas, and in this game
+   the canvas is also drawn into early in the frame, before the scene (cleared, a few draws); only a draw after the upscale
+   draw 0af88d51 (or after MetalFX replaced it, mfxup_dock) counts as UI. Reset every game frame (BOTW_MFX_FRAME_RESET). */
+static int g_botw_scene_ready;
+void botw_mfx_scene_ready(void) { g_botw_scene_ready = 1; }
+void botw_mfx_frame_reset(void) { g_botw_scene_ready = 0; }
+int botw_mfx_ui_draw(void *prog) {
+    NvProg *pr = (__bridge NvProg *)prog;
+    if (!pr->sh[1]) return 0;
+    if (!strncmp(pr->sh[1]->key, "0af88d51bb12a2346b03bb2586d131def5a631271df192779b701efba6eb7f70-", 65)) { g_botw_scene_ready = 1; return 0; }
+    return g_botw_scene_ready;
+}
+/* DM_NVN_TILELOG diagnostics: serials a [tile] line was logged for are remembered (what == NULL), and the serial table's
+   deletions of them are logged with the reason (what), to see who drops a watched texture's host record. */
+static uint64_t g_bsn_seen[64]; static _Atomic int g_bsn_n;
+int botw_serial_noted(uint64_t serial) { int c = atomic_load(&g_bsn_n); for (int i = 0; i < c; i++) if (g_bsn_seen[i] == serial) return 1; return 0; }
+void botw_serial_note(uint64_t serial, const char *what) {
+    uint64_t *seen = g_bsn_seen; _Atomic int *np = &g_bsn_n;
+    int c = atomic_load(np);
+    if (!what) { for (int i = 0; i < c; i++) if (seen[i] == serial) return; if (c < 64) { seen[c] = serial; atomic_store(np, c + 1); } return; }
+    for (int i = 0; i < c; i++) if (seen[i] == serial) { MLOG("[tile] f%llu ser=%llu %s", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)serial, what); return; }
+}
+#endif

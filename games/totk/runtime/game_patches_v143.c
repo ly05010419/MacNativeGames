@@ -10,6 +10,12 @@
 #include <stdatomic.h>
 #include <math.h>
 #include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
+#include <mach/mach.h>
+#include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 typedef struct { uint64_t off; uint32_t original, replacement; } Patch;
 static const Patch fps60[] = {
@@ -62,6 +68,60 @@ static uint32_t branch(uint64_t pc,uint64_t target){
     if((delta&3)||delta<-(1<<27)||delta>=(1<<27))runtime_fail("1.4.3 patch branch outside range");
     return 0x14000000|(((uint32_t)(delta>>2))&0x3ffffff);
 }
+/* The actor animation update has a second, unscaled clock for cloth/hair
+ * (ordinary animation already receives FrameRateMgr's real-time step). Its
+ * explicit time-factor path still constructs {factor / 30, factor} every
+ * rendered frame. At 120 FPS that advances four seconds per real second.
+ * Correct only that clock, retaining pauses, slow motion and the fallback to
+ * the ordinary clock. 1.4.3 inlines the update in two actor paths; two other
+ * callers share the out-of-line update at +0x2a0e40. Its third caller already
+ * passes measured time and MUST NOT be scaled a second time.
+ *
+ * The inline veneers use only the original destination s register and x8,
+ * which the next original load overwrites. At the two call boundaries x8/s4
+ * are caller-saved scratch; the veneer tail-calls the original function with
+ * its original LR. No stack, flags, ordinary-clock arguments or callee-saved
+ * registers are changed. Stubs follow the four 32-byte aspect veneers. */
+static void patch_secondary_animation(Module *m,uint64_t data,uint64_t stub){
+    const char *enabled=getenv("TOTK_CLOTH_REALTIME");
+    if(enabled&&!strcmp(enabled,"0"))return;   /* diagnostic comparison */
+    const Patch sites[]={
+        {0x246eac,0x1e200940,0}, /* fmul s0,s10,s0: inline clock */
+        {0x345904,0x1e210801,0}, /* fmul s1,s0,s1: inline clock */
+        {0x24944c,0x94015e7d,0}, /* bl 0x2a0e40: actor with transform override */
+        {0x28bc98,0x9400546a,0}, /* bl 0x2a0e40: includes both transform branches */
+    };
+    enum { WORDS=19 };
+    if(stub+WORDS*4>((m->text_end+0x3fff)&~0x3fffULL)||data+8>m->size)
+        runtime_fail("1.4.3 secondary animation patch layout");
+    uint32_t code[WORDS]={
+        adrp(8,(uintptr_t)m->base+stub,(uintptr_t)m->base+data),
+        0xbd400100,0x1e200940,0xbd0367e0, /* ratio * factor -> sp+0x364 */
+        0xbd400500,0x1e200940,branch(stub+24,0x246eb0), /* seconds * factor */
+        adrp(8,(uintptr_t)m->base+stub+28,(uintptr_t)m->base+data),
+        0xbd400101,0x1e210801,0xbd0117e1, /* ratio * factor -> sp+0x114 */
+        0xbd400501,0x1e210801,branch(stub+52,0x345908),
+        adrp(8,(uintptr_t)m->base+stub+56,(uintptr_t)m->base+data),
+        0xbd400104,0x1e240842,0x1e240863, /* s2/s3 *= measured 30 Hz ratio */
+        branch(stub+72,0x2a0e40),
+    };
+    uint32_t jumps[]={branch(sites[0].off,stub),branch(sites[1].off,stub+28),
+        branch(sites[2].off,stub+56)|0x80000000u,branch(sites[3].off,stub+56)|0x80000000u};
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){
+        if(sites[i].off+4>m->text_end)runtime_fail("1.4.3 secondary animation site outside text");
+        uint32_t word;memcpy(&word,m->base+sites[i].off,4);
+        if(word!=(TARGET_OS_IPHONE?jumps[i]:sites[i].original))
+            runtime_fail("1.4.3 secondary animation instruction mismatch");
+    }
+#if TARGET_OS_IPHONE
+    if(memcmp(m->base+stub,code,sizeof code))runtime_fail("1.4.3 embedded secondary animation veneer mismatch");
+#else
+    for(unsigned i=0;i<sizeof code;i++)if(m->base[stub+i])runtime_fail("1.4.3 secondary animation padding in use");
+    memcpy(m->base+stub,code,sizeof code);
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,jumps+i,4);
+#endif
+    fprintf(stderr,"[totk] 1.4.3 cloth/hair clock: real-time seconds and ratio at 4 guarded actor sites; ordinary animation and time factors retained\n");
+}
 static void patch_realtime(Module *m){
     const char *enabled=getenv("TOTK_REALTIME");if(enabled&&!strcmp(enabled,"0"))return;
     uint64_t data=(m->file_size+0x3fff)&~0x3fffULL;
@@ -103,8 +163,98 @@ static void patch_realtime(Module *m){
  #endif
     frame_step_data=(_Atomic uint64_t *)(void *)(m->base+data);
     frame_interval_data=(_Atomic uint32_t *)(void *)(m->base+data+8);frame_step_store(1.0f/60.0f);
+    patch_secondary_animation(m,data,stub+176);
     fprintf(stderr,"[totk] 1.4.3 real-time frame step: 7 guarded sites, producer veneer +%#llx; original half-step selector and ratio/inverse/seconds/FPS calculations retained\n",(unsigned long long)stub);
 }
+/* High frame rates (#61, sky-island trampolines): the contact code at main+0x562a64 scales the bounce vector by 0.1
+   when X+0x28 > 100, X being the time object 0x3e58a4 feeds (X+0x28 = 30 / (30 Hz ratio * time scale), X+0x38 the
+   ratio). The shipping game steps at 30 Hz (ratio 1), so the check means "time slowed below 0.3"; above 100 FPS it also
+   fires with time running normally. The veneer compares X+0x28 * X+0x38 = 30 / time scale instead: the same value at
+   30 Hz, independent of the frame rate. TOTK_HIGHFPS_FIX=0 keeps the original check. */
+static void patch_slowmo_bounce(Module *m){
+    const char *e=getenv("TOTK_HIGHFPS_FIX");if(e&&!strcmp(e,"0"))return;
+    /* after the ultrawide veneers (+48, 4 x 32 bytes) and the cloth/hair clock (+176, 19 words); read-only data starts
+       at the next 4 KiB page */
+    uint64_t stub=((m->text_end+15)&~15ULL)+256;
+    if(stub+20>((m->text_end+0xfff)&~0xfffULL))runtime_fail("1.4.3 bounce veneer layout");
+    uint32_t veneer[]={0xbd402920,   /* ldr s0, [x9, #0x28]: X+0x28 */
+        0xbd403921,                  /* ldr s1, [x9, #0x38]: the 30 Hz ratio (s1 is set again by the next original instruction) */
+        0x1e210800,                  /* fmul s0, s0, s1 */
+        0x52a85909,                  /* mov w9, #0x42c80000: the original 100.0 */
+        branch(stub+16,0x562a6c)};
+    uint32_t word=branch(0x562a64,stub);
+#if TARGET_OS_IPHONE
+    uint32_t got;memcpy(&got,m->base+0x562a64,4);
+    if(got!=word||memcmp(m->base+stub,veneer,sizeof veneer))runtime_fail("1.4.3 embedded bounce patch mismatch");
+#else
+    const Patch guards[]={{0x562a64,0xbd402920,0},{0x562a68,0x52a85909,0},{0x562a6c,0x1e270121,0}};
+    for(unsigned i=0;i<sizeof guards/sizeof *guards;i++){uint32_t w;memcpy(&w,m->base+guards[i].off,4);if(w!=guards[i].original)runtime_fail("1.4.3 bounce check: original instruction mismatch");}
+    for(unsigned i=0;i<sizeof veneer;i++)if(m->base[stub+i])runtime_fail("1.4.3 bounce veneer padding not empty");
+    memcpy(m->base+stub,veneer,sizeof veneer);memcpy(m->base+0x562a64,&word,4);
+#endif
+    fprintf(stderr,"[totk] 1.4.3 high-FPS fix: trampoline slow-motion check uses the time scale, veneer +%#llx\n",(unsigned long long)stub);
+}
+#if !TARGET_OS_IPHONE
+/* High-frame-rate diagnostics (Mac, TOTK_INPUT_FILE commands). Such bugs sit in game code that compares the game's time
+   values with constants tuned for 30 Hz (#61: X+0x28 > 100 above). The time values: the FrameRateMgr singleton
+   (main+0x3ada848; +0x10 30 Hz ratio, +0x18 seconds, +0x1c integer FPS) and the time object X = [[main+0x3ad27c8]+0xc8]
+   (+0x24 seconds, +0x28 FPS, +0x38 ratio), which 0x3e58a4 updates only when the ratio changes.
+   - "frmwatch <seconds> [hex offset]" (FrameRateMgr, default +0x10) / "frmwatchx <seconds> <hex offset>" (X): a hardware
+     read watchpoint in every thread, re-armed every 10 ms. A hit (loader.c crash() hands SIGTRAP to
+     runtime_diag_watch_trap) records the reading instruction and its return address and disarms that thread, so the
+     load runs again; the readers are printed at the end. A frequent reader hides the later ones on its thread until the
+     next re-arm, and threshold code often runs only at the moment of contact: watch while the case happens.
+   - "xpoke <hex offset> <value>": writes a float into X. With the frame step pinned (framestep) the value stays until
+     the ratio changes, which tells which field a behaviour depends on. */
+static Module *diag_main;
+static uint64_t time_object(void){uint64_t x;memcpy(&x,diag_main->base+0x3ad27c8,8);memcpy(&x,(const void *)(uintptr_t)(x+0xc8),8);return x;}
+static uint64_t watch_addr;
+enum{WATCH_SLOTS=512};
+static struct{_Atomic uint64_t pc;_Atomic uint64_t lr;_Atomic uint32_t n;} watch_hits[WATCH_SLOTS];
+static void watch_set(thread_act_t t,int on){
+    arm_debug_state64_t d;mach_msg_type_number_t c=ARM_DEBUG_STATE64_COUNT;
+    if(thread_get_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,&c)!=KERN_SUCCESS)return;
+    /* WCR: enable, EL0, load, byte address select for the 4 bytes at watch_addr */
+    d.__wvr[0]=on?(watch_addr&~7ULL):0;d.__wcr[0]=on?((0xfULL<<((watch_addr&7)+5))|(1u<<3)|(2u<<1)|1u):0;
+    thread_set_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,ARM_DEBUG_STATE64_COUNT);
+}
+static void watch_all(int on){
+    thread_act_array_t list;mach_msg_type_number_t n;thread_act_t self=mach_thread_self();
+    if(task_threads(mach_task_self(),&list,&n)!=KERN_SUCCESS)return;
+    for(unsigned i=0;i<n;i++){if(list[i]!=self){thread_suspend(list[i]);watch_set(list[i],on);thread_resume(list[i]);}mach_port_deallocate(mach_task_self(),list[i]);}
+    vm_deallocate(mach_task_self(),(vm_address_t)list,n*sizeof *list);mach_port_deallocate(mach_task_self(),self);
+}
+int runtime_diag_watch_trap(void *context){
+    ucontext_t *u=context;uint64_t pc=u->uc_mcontext->__ss.__pc,lr=u->uc_mcontext->__ss.__lr;
+    unsigned ec=(unsigned)(u->uc_mcontext->__es.__esr>>26);if(!watch_addr||(ec!=0x34&&ec!=0x35))return 0;   /* watchpoint */
+    for(unsigned i=(unsigned)(pc>>2)%WATCH_SLOTS,k=0;k<WATCH_SLOTS;k++,i=(i+1)%WATCH_SLOTS){
+        uint64_t z=0;if(atomic_compare_exchange_strong(&watch_hits[i].pc,&z,pc)||z==pc){atomic_store(&watch_hits[i].lr,lr);atomic_fetch_add(&watch_hits[i].n,1);break;}
+    }
+    thread_act_t self=mach_thread_self();watch_set(self,0);mach_port_deallocate(mach_task_self(),self);
+    return 1;
+}
+static void *watch_run(void *arg){
+    double secs=((double *)arg)[0];unsigned off=(unsigned)((double *)arg)[1];int in_x=((double *)arg)[2]!=0;free(arg);
+    uint64_t obj;if(in_x)obj=time_object();else memcpy(&obj,diag_main->base+0x3ada848,8);
+    for(unsigned i=0;i<WATCH_SLOTS;i++){atomic_store(&watch_hits[i].pc,0);atomic_store(&watch_hits[i].n,0);}
+    watch_addr=obj+off;
+    fprintf(stderr,"[totk] frmwatch: %s %#llx, watching +%#x for %.0f s\n",in_x?"X":"FrameRateMgr",(unsigned long long)obj,off,secs);
+    for(double t=0;t<secs;t+=0.01){watch_all(1);usleep(10000);}
+    watch_all(0);uint64_t base=(uintptr_t)diag_main->base;unsigned total=0;
+    for(unsigned i=0;i<WATCH_SLOTS;i++){uint64_t pc=atomic_load(&watch_hits[i].pc);if(!pc)continue;uint32_t n=atomic_load(&watch_hits[i].n);total+=n;
+        fprintf(stderr,"[totk] frmwatch hit main%+lld x%u lr main%+lld\n",(long long)(pc-base),n,(long long)(atomic_load(&watch_hits[i].lr)-base));}
+    fprintf(stderr,"[totk] frmwatch done: %u hits\n",total);watch_addr=0;return NULL;
+}
+void runtime_diag_frm_watch(double secs,unsigned off,int in_x){
+    if(watch_addr)runtime_fail("frmwatch: a watch is already running");
+    double *a=malloc(3*sizeof *a);a[0]=secs;a[1]=off;a[2]=in_x;pthread_t t;pthread_create(&t,NULL,watch_run,a);pthread_detach(t);
+}
+void runtime_diag_xpoke(unsigned off,float value){
+    uint64_t x=time_object();float old;
+    memcpy(&old,(const void *)(uintptr_t)(x+off),4);memcpy((void *)(uintptr_t)(x+off),&value,4);
+    fprintf(stderr,"[totk] xpoke X+%#x: %g -> %g\n",off,old,value);
+}
+#endif
 static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 void runtime_game_patches(Module *m) {
@@ -113,6 +263,10 @@ void runtime_game_patches(Module *m) {
     patch_realtime(m);
     patch_output_res(m);
     patch_render_res(m);
+    patch_slowmo_bounce(m);
+#if !TARGET_OS_IPHONE
+    diag_main=m;   /* frmwatch / xpoke */
+#endif
     { static const uint64_t sites[] = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0};   /* camera update and setup, viewport x2 */
       aspect_install(m, "1.4.3", sites, 4, ((m->text_end + 15) & ~15ULL) + 48,   /* after the two veneers above */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }

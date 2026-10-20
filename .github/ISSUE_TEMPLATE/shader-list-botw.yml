@@ -1,0 +1,33 @@
+name: Shader list contribution (Breath of the Wild) / 提交着色器清单（旷野之息）
+description: Send the shaders your Breath of the Wild met that its shared shader list does not have yet. 发送你的旷野之息遇到的、它的公共着色器清单里还没有的着色器。
+title: "Shader list (Breath of the Wild): "
+labels: ["shader-list-botw"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! The file holds shader keys and bind states only: no game data, saves or personal information. Once merged into [the game's shared list](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md) (`games/botw/assets/shader_list.tsv`), these shaders come with everyone's next build.
+
+        谢谢！这个文件只有着色器的标识和绑定状态，不含游戏内容、存档或个人信息。并入[这个游戏的公共清单](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md)（`games/botw/assets/shader_list.tsv`）后，以后大家打包的 App 都会带上这些着色器。
+  - type: dropdown
+    id: version
+    attributes:
+      label: Game version / 游戏版本
+      options: ["1.6.0"]
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: shader-list-contribution.txt
+      description: |
+        Drag the file here: `~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt` (the reminder shows it in Finder).
+        把文件拖到这里：`~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt`（提醒会在访达里显示它）。
+      placeholder: Drop shader-list-contribution.txt here / 把 shader-list-contribution.txt 拖到这里
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Where you played (optional) / 玩了哪些地方（可选）
+      placeholder: e.g. the Great Plateau, Kakariko, 2 hours / 例如：初始台地、卡卡利科村，2 小时

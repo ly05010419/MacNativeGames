@@ -65,6 +65,28 @@ iPad never asks during play: while it is connected to the Mac that built its app
 issue form; drag the file into it. Later reminders come at 1,000, 1,500 and so on, so sending the whole file each time
 is fine: rows the list already has are skipped. The game never uploads anything by itself.
 
+## Breath of the Wild
+
+Breath of the Wild has its own list, `games/botw/assets/shader_list.tsv`, in the same format and kept with the same
+tools (`shader_list.py merge ... games/botw/assets/shader_list.tsv <folder or file>`). Its build reads the game's
+Yaz0 packages (`Pack/`, `Effect/`, `Event/`, `System/`: the `uking_*.sbfsha` material archives and the engine's agl
+packages) and translates the boot and title packages' shaders for the default bind state plus every state the list
+names (`games/botw/scripts/prepare_shader_seed.py`). Its players' contribution file is
+`~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt`, sent with the
+[Breath of the Wild issue form](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-botw.yml)
+(label `shader-list-botw`; `collect_shader_issues.py --game botw` merges them). The lists never mix: a key names a
+shader of one game only.
+
+Its shader key hashes the control section's own length (the word at +0x20: 0x7d1 for the game's archives, 0x848 for
+agl's; Tears of the Kingdom's is 0x880, so its keys are unchanged) and, for the agl programs the game loads from
+embedded BNSH files, the bytes as the game rewrites them before binding (`prepare_shader_seed.py bound_control`); the
+agl packages' own records are bound unchanged.
+
+Title rows (`t`) of either game must be recorded in a cache that has the prepared seed imported (the warm-up loads a
+row's shader by its file name, and the seed names its variants by their bind-state answers, not as a cache translated
+on the spot would): run the game with `DM_PSO_MANIFEST=off`, an empty `DM_NVN_SHMAP` folder and
+`TOTK_SHADER_SEED_DIR=<prepared seed>`, then `shader_list.py merge --title ... <profile>/pso_user.tsv`.
+
 ## Merging what players sent (maintainers)
 
 ```sh
@@ -126,3 +148,4 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。
   - iOS：`fill_shaders.py` 补译后会自动把变体并进清单。
 - **审核**：`stats` 和 `tests/test_shader_list.py` 要通过；PR 只能改这一个文件，不能带翻译出的 `.metal`、编好的 `.metallib` 或缓存。
+- **旷野之息**：自己的一份清单 `games/botw/assets/shader_list.tsv`，格式、工具都一样（`merge` 时写它的路径）。打包时读它的 Yaz0 包（`Pack/`、`Effect/`、`Event/`、`System/`），启动包和标题包的着色器按默认绑定状态翻译、清单里的绑定状态也翻译。玩家的贡献文件在 `~/Library/Application Support/MacNativeGames/BotW/`，用旷野之息自己的 Issue 表单（标签 `shader-list-botw`），`collect_shader_issues.py --game botw` 合并。两份清单不混：一个键只属于一个游戏。它的键按控制段自己的长度算（+0x20 处的字：档案里 0x7d1、agl 的 0x848；王国之泪是 0x880，键不变）；agl 包里嵌着的 BNSH 程序还按游戏绑定前改写过的字节算（`bound_control`），agl 包自己的记录原样绑定。

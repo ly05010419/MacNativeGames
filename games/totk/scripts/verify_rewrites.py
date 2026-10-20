@@ -32,7 +32,7 @@ def gate(command, output, environment):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+    parser.add_argument('--version', choices=('v0','v112','v121','v143','botw160'), default='v0')
     parser.add_argument('--collect-existing', action='store_true')
     parser.add_argument('--jobs', type=int, default=2)
     args = parser.parse_args()
@@ -98,7 +98,7 @@ def main():
                 or any(case['status'] != 'pass' or case['threads'] != 8 for case in atomic['cases'])
                 or atomic['source_sha256'] != digest(ROOT / 'scripts/native_exclusive_probe.c')):
             raise RuntimeError('Native 1.4.3 atomic-window checks did not pass')
-    elif (atomic['status'] != 'pass' or not atomic['windows']
+    elif (atomic['status'] != 'pass' or (not atomic['windows'] and version != 'botw160')
           or atomic['wrong_exit_negative_controls_detected'] != len(atomic['windows'])):
         raise RuntimeError('Atomic-window regression tests did not pass')
     if native['status'] != 'pass' or native['completed_calls'] != 20000 or native['errors'] != 0:

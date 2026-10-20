@@ -33,7 +33,9 @@ from pathlib import Path
 
 HEADER = ('# TOTK shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
           '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v4-unverified.\n')
-EXPORT = '# Generated from games/totk/assets/shader_list.tsv by scripts/shader_list.py; edit that list, not this file.\n'
+HEADERS = {'botw': ('# Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
+                    '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v4-unverified.\n')}
+EXPORT = '# Generated from {} by scripts/shader_list.py; edit that list, not this file.\n'
 KEY = re.compile(r'^[0-9a-f]{64}$')
 VARIANT = re.compile(r'^[0-9a-f]{64}-[0-9a-f]{12}_b$')
 PIPELINE = re.compile(r'^(?:[0-9a-f]{2})+$')
@@ -73,6 +75,19 @@ def warm_row(fields):
     if kind == 'R' and len(fields) >= 2 and PIPELINE.match(fields[1]):
         return tuple(fields[:2])
     return None
+
+
+def list_name(path):
+    """How the export names its list: games/<game>/assets/<file> when it is kept there, else the file name."""
+    parts = Path(path).resolve().parts
+    return '/'.join(parts[-4:]) if len(parts) >= 4 and parts[-4] == 'games' and parts[-2] == 'assets' else Path(path).name
+
+
+def header_for(path):
+    """The list's header comment: by the game folder it is kept in (games/<game>/assets/...), Tears of the Kingdom's otherwise."""
+    parts = Path(path).resolve().parts
+    game = parts[-3] if len(parts) >= 3 and parts[-2] == 'assets' else None
+    return HEADERS.get(game, HEADER)
 
 
 class ShaderList:
@@ -115,7 +130,7 @@ class ShaderList:
         lines = [f'V\t{key}\t{deps}' for key, deps in sorted(self.variants)]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
         lines += ['\t'.join(row + (flags,)) for row, flags in self.warm.items()]
-        Path(path).write_text(HEADER + ''.join(line + '\n' for line in lines))
+        Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
 
     def add_warm(self, row, flag):
         old = self.warm.get(row, '')
@@ -157,14 +172,14 @@ class ShaderList:
                 listed = fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else ''
                 self.add_warm(row, listed or flag)
 
-    def export(self, *flags):
+    def export(self, *flags, source='games/totk/assets/shader_list.tsv'):
         """The warm rows carrying one of these flags; rows of the first flag come first, each row once."""
         out, seen = [], set()
         for flag in flags:
             for row, have in self.warm.items():
                 if flag in have and row not in seen:
                     out.append(row); seen.add(row)
-        return EXPORT + ''.join('\t'.join(row) + '\n' for row in out)
+        return EXPORT.format(source) + ''.join('\t'.join(row) + '\n' for row in out)
 
     def counts(self):
         kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCR'}
@@ -191,10 +206,10 @@ def main(argv):
         print(f'{len(lst.variants) + len(lst.warm) + len(lst.locators) - before} new; {lst.counts()}')
     elif argv[:1] == ['export'] and len(argv) == 4:
         lst = ShaderList.load(argv[1])
-        Path(argv[2]).write_text(lst.export('m'))
-        Path(argv[3]).write_text(lst.export('t'))
+        Path(argv[2]).write_text(lst.export('m', source=list_name(argv[1])))
+        Path(argv[3]).write_text(lst.export('t', source=list_name(argv[1])))
     elif argv[:1] == ['export'] and len(argv) == 3:
-        Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm'))
+        Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm', source=list_name(argv[1])))
     elif argv[:1] == ['stats'] and len(argv) == 2:
         lst = ShaderList.load(argv[1])
         lines = [l for l in Path(argv[1]).read_text().splitlines() if l and not l.startswith('#')]

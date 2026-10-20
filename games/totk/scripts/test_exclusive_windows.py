@@ -91,7 +91,8 @@ def run(original, patched, header, start, failure, seed, use_patch):
 
 # Every main has these windows: LDXR w17, [x16] / op / STXR w18 / CBZ w18 to a block outside the window.
 # 1.2.1 compiled the function around 1.1.2's 0x74cb68 without x18, so it has only one of them.
-WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v112': [0x74CB68, 0x80B3A0], 'v121': [0x7FF694]}
+# Breath of the Wild 1.6.0's main has none (scanned 2026-10-19): its exclusive windows keep their status register off x18.
+WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v112': [0x74CB68, 0x80B3A0], 'v121': [0x7FF694], 'botw160': []}
 
 
 def x18_exit_windows(image, nso):

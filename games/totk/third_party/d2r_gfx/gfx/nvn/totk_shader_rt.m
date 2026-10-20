@@ -1,4 +1,4 @@
-// TOTK: runtime shader translation. A shader is identified by SHA-256(control 0x880 + code area); each
+// TOTK: runtime shader translation. A shader is identified by SHA-256(control section + code area) (nvn_mtl.m ctl_key_len: 0x880 of control, or its own smaller size); each
 // translation ("variant") also records the translator answers it depended on (texture slot types, vertex
 // input and colour output component types). A variant is reused only when those answers match the current
 // bound state; otherwise a new one is produced by the translation service and cached on disk: the native program

@@ -635,6 +635,71 @@ SIGNED_TABLES = {'277178b7dba1b6d4949a84778d4abc58': {
     0x5f2a9c: (0x5f2a90, 0x2d892e0, (884,892,16,900,-6516), 'f0030f2a12000010207ab0b85202008b40021fd6'),
     0x6397d8: (0x6397cc, 0x2d88e7c, (1376,1384,16,1392,1400,1408,-7264), 'fb0301aa12000010207ab0b85202008b40021fd6'),
 }}
+FLAG_SETTERS = ('cmp', 'cmn', 'tst', 'adds', 'subs', 'ands', 'bics', 'adcs', 'sbcs', 'ccmp', 'ccmn', 'fcmp', 'fcmpe', 'fccmp', 'fccmpe', 'negs', 'ngcs')
+def ldrsw_table(insl, j, fa, fb):
+    """Breath of the Wild 1.6.0 (older clang): a table of signed 32-bit offsets from its own base,
+        cmp wK, #n-1 ; b.hi default ; [mov wI, wK] ; adrp xT, page ; add xT, xT, #lo ; ldrsw xE, [xT, xI, lsl #2] ; add x18, xE, xT ; br x18
+    (T, E, I may be x18). The table is read from the image; returns (base, count) covering every target, each one checked to be an
+    instruction of this function, or None when the dispatch does not have exactly this shape."""
+    ops = lambda p: [o.strip() for o in p.op_str.replace('[', '').replace(']', '').split(',')]
+    ctx = insl[max(0, j - 48):j]
+    writes = lambda p, r: r is not None and p.mnemonic not in ('str', 'stur', 'stp', 'strb', 'strh', 'cmp', 'cmn', 'tst', 'b', 'bl', 'br', 'blr', 'ret',
+                                                               'cbz', 'cbnz', 'tbz', 'tbnz') \
+        and not p.mnemonic.startswith('b.') and ops(p)[0] in (f'x{r}', f'w{r}')
+    k = len(ctx) - 1
+    if k < 0 or ctx[k].mnemonic != 'add' or len(ops(ctx[k])) != 3 or ops(ctx[k])[0] != 'x18':
+        return None
+    a, b = ops(ctx[k])[1:]
+    for k2 in range(k - 1, -1, -1):              # the load of the entry: ldrsw xE, [xT, xI, lsl #2] with {E, T} = {a, b}
+        p = ctx[k2]
+        if p.mnemonic == 'ldrsw' and 'lsl #2' in p.op_str:
+            o = ops(p)
+            if len(o) == 4 and {o[0], o[1]} == {a, b} and o[0] != o[1]:
+                break
+        if writes(p, num(a)) or writes(p, num(b)):
+            return None
+    else:
+        return None
+    E, T, I = num(o[0]), num(o[1]), num(o[2])
+    if None in (E, T, I) or any(writes(p, T) or writes(p, I) for p in ctx[k2 + 1:k]):
+        return None
+    k3 = k2 - 1                                  # the table base: adrp xT, page ; add xT, xT, #lo
+    while k3 >= 0 and not writes(ctx[k3], T): k3 -= 1
+    if k3 < 1 or ctx[k3].mnemonic != 'add' or ops(ctx[k3])[:2] != [f'x{T}', f'x{T}'] or not ops(ctx[k3])[2].startswith('#'):
+        return None
+    lo = int(ops(ctx[k3])[2][1:], 0)
+    k4 = k3 - 1
+    while k4 >= 0 and not writes(ctx[k4], T): k4 -= 1
+    if k4 < 0 or ctx[k4].mnemonic != 'adrp' or ops(ctx[k4])[0] != f'x{T}':
+        return None
+    table = ctx[k4].operands[1].imm + lo
+    src = {I}; k5 = k2 - 1                      # the bound: b.hi / b.hs after a cmp on the index or on the register it was copied from
+    while k5 >= 0 and ctx[k5].mnemonic not in ('b.hi', 'b.hs'):
+        p = ctx[k5]
+        if p.mnemonic in FLAG_SETTERS or p.mnemonic in ('b', 'br', 'ret') or p.mnemonic.startswith('b.'):
+            return None
+        if p.mnemonic == 'mov' and len(ops(p)) == 2 and num(ops(p)[0]) in src and num(ops(p)[1]) is not None:
+            src = {num(ops(p)[1])}
+        elif any(writes(p, r) for r in src):
+            return None
+        k5 -= 1
+    if k5 < 1:
+        return None
+    k6 = k5 - 1
+    while k6 >= 0 and ctx[k6].mnemonic not in FLAG_SETTERS:
+        if any(writes(ctx[k6], r) for r in src) or ctx[k6].mnemonic.startswith('b'):
+            return None
+        k6 -= 1
+    if k6 < 0 or ctx[k6].mnemonic != 'cmp' or len(ops(ctx[k6])) != 2 or num(ops(ctx[k6])[0]) not in src or not ops(ctx[k6])[1].startswith('#'):
+        return None
+    n = int(ops(ctx[k6])[1][1:], 0) + (1 if ctx[k5].mnemonic == 'b.hi' else 0)
+    if not 0 < n <= 4096:
+        return None
+    entries = struct.unpack_from('<' + 'i' * n, IMG, table)
+    targets = [table + e for e in entries]
+    assert all(fa <= t < fb and t % 4 == 0 for t in targets), f'ldrsw table {insl[j].address:x}: target outside its function'
+    return min(targets), (max(targets) - min(targets)) // 4 + 1
+
 funcs = sorted({func_of(a) for a, (k, _) in kinds.items() if k == 'x18'})
 for fa, fb in funcs:
     insl = list(md.disasm(bytes(IMG[fa:fb]), fa))
@@ -664,6 +729,10 @@ for fa, fb in funcs:
                 targets = [adrbase + offset for offset in offsets]
                 assert all(0 <= target < TEXT_END and target % 4 == 0 for target in targets)
                 base, width = min(targets), (max(targets) - min(targets)) // 4 + 1
+            if not width:
+                found = ldrsw_table(insl, j, fa, fb)
+                if found:
+                    base, width = found; stat('ldrsw_table')
             assert base and width, f'jump table {ins.address:x}'
             jumps[ins.address] = (base, width)
         if ins.mnemonic == 'blr' and ins.op_str == 'x18':

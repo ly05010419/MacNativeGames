@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+parser.add_argument('--version', choices=('v0','v112','v121','v143','botw160'), default='v0')
 version = parser.parse_args().version
 OUT = ROOT / ('build' if version == 'v0' else f'build/{version}')
 OUT.mkdir(parents=True, exist_ok=True)
@@ -23,6 +23,8 @@ if version == 'v112':
     assert report['module_file_sha256']['extracted/v112/exefs/main'] == expected, 'Unsupported 1.1.2 main image'
 if version == 'v121':
     assert report['module_file_sha256']['extracted/v121/exefs/main'] == 'e5aa8d48e68cbb82ed4416c7b6b29a46fe4a998ee149d6dbf979164c628efcb6', 'Unsupported 1.2.1 main image'
+if version == 'botw160':   # Breath of the Wild 1.6.0 (botw.md)
+    assert report['module_file_sha256']['extracted/botw160/exefs/main'] == '15cfca7b89348956f85d945fade2e215a6af5991ed1071e181f97ca72f7ae20b', 'Unsupported BotW 1.6.0 main image'
 if version == 'v143':
     assert report['module_file_sha256']['extracted/v143/exefs/main'] == 'e84a90d551fed0824b4b74933b9c6d043c458521363a7cea58b2faca1822dc9e', 'Unsupported 1.4.3 main image'
 modules = []
@@ -82,7 +84,7 @@ for name in ['main', 'subsdk0', 'sdk']:
         assert kind in ['cntpct', 'cntvct', 'svc']
         gates.append(dict(ret=int(ret, 0), timer=kind != 'svc', arg=int(arg), original=int(original, 0)))
     # Match each compiler's actual DT_INIT state load before decoding it.
-    flag_reg, load_offset = (19, 20) if version == 'v143' else (20, 24)
+    flag_reg, load_offset = (19, 20) if version in ('v143', 'botw160') else (20, 24)
     a, w = struct.unpack_from('<I', image, tags[12]+16)[0], struct.unpack_from('<I', image, tags[12]+load_offset)[0]
     assert a & 0x9f00001f == 0x90000000 | flag_reg and w & 0xffc003ff == 0xb9400008 | (flag_reg << 5)
     imm = ((a >> 29) & 3) | (((a >> 5) & 0x7ffff) << 2)

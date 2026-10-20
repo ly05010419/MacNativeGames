@@ -1,4 +1,5 @@
 /* Native keyboard and macOS gamepad backed full-key controller. State ABI follows libnx HID. */
+#include <TargetConditionals.h>
 #include "runtime.h"
 #include "autoload.h"
 #include "world_survey.h"
@@ -90,6 +91,18 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
  return 0;
 }
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
+#ifdef GAME_BOTW
+/* SDK 7 (Breath of the Wild 1.6.0, botw.md). The console's own seven-axis sensor (Labo VR) is absent on a Mac: it starts and
+   stops without states. Gyroscope zero-drift mode and the dual Joy-Con assignment change nothing for the host controller.
+   The one-argument controller applet returns at once, as the two-argument one does (one player). */
+static uint32_t seven_axis_init(void *work,unsigned long size){(void)work;(void)size;fprintf(stderr,"[botw] seven-axis sensor: not present\n");return 0;}
+static uint32_t seven_axis_ok(void){return 0;}
+static void seven_axis_reset(void){}
+static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0;}
+static void zero_drift_mode(const void *handle,const int *mode){(void)handle;(void)mode;}
+static void joy_dual(const uint32_t *id){(void)id;}
+static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
+#endif
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
  static const struct{const char *name;void *fn;} entries[]={
@@ -100,7 +113,17 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE",hold_type},{"_ZN2nn3hid14DisconnectNpadERKj",disconnect},
  {"_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE",show_controller_support},
  {"_ZN2nn3hid15InitializeMouseEv",initialize_mouse},{"_ZN2nn3hid18InitializeKeyboardEv",initialize_keyboard},
- {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state}};
+ {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state}
+#ifdef GAME_BOTW
+ ,{"_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm",seven_axis_init},{"_ZN2nn3hid26FinalizeSevenSixAxisSensorEv",seven_axis_ok},
+ {"_ZN2nn3hid23StartSevenSixAxisSensorEv",seven_axis_ok},{"_ZN2nn3hid22StopSevenSixAxisSensorEv",seven_axis_ok},
+ {"_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv",seven_axis_reset},
+ {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
+ {"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
+ {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
+ {"_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE",show_controller_support_v1}
+#endif
+ };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 
@@ -169,6 +192,11 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
+#ifdef GAME_BOTW
+        } else if (!strncmp(line, "ashot ", 6)) {   /* "ashot <path>": the next game frame, written in the background, its present time logged (botw.md) */
+            line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic ashot path");
+            extern void dm_gfx_ashot(const char *path); dm_gfx_ashot(line + 6);
+#endif
         } else if (!strcmp(line, "kbtest\n")) {   /* text entry bar the way the game names a horse (runtime/swkbd_host.c) */
             runtime_swkbd_selftest();
         } else if (!strncmp(line, "kbtype ", 7)) {   /* "kbtype <text>": typed into the open bar */
@@ -182,6 +210,17 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "framestep ", 10)) {   /* "framestep <ms>": pin the real-time frame step, 0 = back to real time */
             char *end; double ms = strtod(line + 10, &end); if (end == line + 10 || ms < 0 || ms > 100) runtime_fail("framestep takes milliseconds (0 = real time)");
             runtime_frame_step_pin(ms);
+#if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE   /* high-frame-rate diagnostics (game_patches_v143.c) */
+        } else if (!strncmp(line, "frmwatch ", 9) || !strncmp(line, "frmwatchx ", 10)) {   /* "frmwatch[x] <seconds> [hex offset]": who reads a time value */
+            extern void runtime_diag_frm_watch(double secs, unsigned off, int in_x);
+            int in_x = line[8] == 'x'; double secs; unsigned off = 0x10;
+            if (sscanf(line + 9 + in_x, "%lf %x", &secs, &off) < 1 || secs <= 0 || off > 0x400 || off % 4) runtime_fail("frmwatch[x] <seconds> [hex offset, a multiple of 4]");
+            runtime_diag_frm_watch(secs, off, in_x);
+        } else if (!strncmp(line, "xpoke ", 6)) {   /* "xpoke <hex offset> <value>": a float into the game's time object */
+            extern void runtime_diag_xpoke(unsigned off, float value);
+            unsigned off; float value; if (sscanf(line + 6, "%x %f", &off, &value) != 2 || off > 0x400 || off % 4) runtime_fail("xpoke <hex offset, a multiple of 4> <value>");
+            runtime_diag_xpoke(off, value);
+#endif
         } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
             runtime_dump_threads();
         } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }

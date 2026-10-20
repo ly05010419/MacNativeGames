@@ -14,6 +14,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef GAME_BOTW
+_Atomic int runtime_survey_pending;
+void runtime_survey_init(Module *m) {
+    (void)m;
+    if (getenv("TOTK_SURVEY")) runtime_fail("Breath of the Wild has no survey");
+}
+int runtime_survey_command(const char *line) { (void)line; return 0; }
+void runtime_survey_tick(uint64_t frame) { (void)frame; }
+void runtime_survey_cancel_user(void) { }
+const int32_t runtime_survey_sync[2] = {0, -1};   /* read by hle_nvn.c only once the survey found the system object, which it never does here */
+#else
 enum { SCENE_SLOT = GAME_ADDR(0x4663f08), FORCE_MATRIX = GAME_ADDR(0x69a18c), ACTOR_POS = GAME_ACTOR_POS, ACTOR_ROT = GAME_ACTOR_ROT };
 static uintptr_t survey_main;
 static void (*survey_force)(void *, const float *, uint32_t);
@@ -177,3 +188,4 @@ void runtime_survey_tick(uint64_t frame) {
     pthread_mutex_unlock(&survey_lock);
     in_tick = 0;
 }
+#endif   /* GAME_BOTW */

@@ -33,10 +33,22 @@ static int valid(int type){if(type<0||type>=SHARED_FONT_COUNT)runtime_fail("inva
 static int load_state(int type){valid(type);return 1;}   /* SharedFontLoadState_Loaded */
 static const void *address(int type){return region+offsets[valid(type)];}
 static size_t size(int type){return (size_t)rows[valid(type)].font_bytes;}
+#ifdef GAME_BOTW
+/* SDK 7 (Breath of the Wild 1.6.0, botw.md): it asks for each font to be loaded before reading it; the fonts are loaded at
+   startup. 1.6.0 also asks whether Labo VR mode is on: never on a Mac. */
+static void request_load(int type){(void)type;}
+static unsigned char vr_mode(void){return 0;}
+static void vr_mode_change(void){fprintf(stderr,"[botw] Labo VR mode is not available\n");}
+#endif
 void *runtime_font_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
   {"_ZN2nn2pl22GetSharedFontLoadStateENS0_14SharedFontTypeE",load_state},
   {"_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE",address},
-  {"_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE",size}};
+  {"_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE",size}
+#ifdef GAME_BOTW
+  ,{"_ZN2nn2pl21RequestSharedFontLoadENS0_14SharedFontTypeE",request_load},{"_ZN2nn2pl8IsVrModeEv",vr_mode},
+  {"_ZN2nn2pl11BeginVrModeEv",vr_mode_change},{"_ZN2nn2pl9EndVrModeEv",vr_mode_change}
+#endif
+  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }

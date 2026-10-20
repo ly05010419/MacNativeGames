@@ -1,0 +1,35 @@
+{
+  "_comment": "The Legend of Zelda: Breath of the Wild 1.6.0 (botw.md): the 1.6.0 update's ExeFS, its three modules rewritten for Apple silicon (verified site by site, games/totk/scripts/verify_rewrites.py --version botw160), the base + 1.6.0 BKTR-merged RomFS, the two add-on content RomFS images, and the system shared fonts (the same six the Tears of the Kingdom card carries; this card's system update partition is empty, so they come from a cached or given font folder).",
+  "title_id": "01007EF00011E000",
+  "version": 786432,
+  "display_version": "1.6.0",
+  "exefs_sha256": {
+    "main": "15cfca7b89348956f85d945fade2e215a6af5991ed1071e181f97ca72f7ae20b",
+    "main.npdm": "f36df1a7b3faa617ef2a3901e26970bf04800c70ea442624b347d06202f46b1e",
+    "rtld": "e893e12a4199b0c2c15775bf03f58987fa6227923ba8a04832aabf2352d2b1b7",
+    "sdk": "754cf4b581d749fbe3d457cf66497b141ef994cf592d247919d64a37dcc30d27",
+    "subsdk0": "d22d98656a19be240b554e7db8d69126d6427232521238d665aec3509087f2cf"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "c41ac2fa9be737f2e6b0ab641508e9a51995b03463ff6aa445ce04e5e8766a8e",
+    "sdk.patched.bin": "d950b6f1af7690231fe17e6db77d26dabf9dbf565b04774c11d7fbc605f117dd",
+    "subsdk0.patched.bin": "f5bc35332258bd850f2137c7953916dad47bd5f3ce67e5d208a1b31336c6c8da"
+  },
+  "romfs": {
+    "size": 15131979952,
+    "sha256": "89d922b7b01f09766530a601f3dcfca8bdd4e94e6387f1c1335c4f3c6662b625",
+    "files": 41052
+  },
+  "aoc": {
+    "1": {"title_id": "01007EF00011F001", "size": 1390370680, "sha256": "6fc0b5f075bd52ab5390e98b4c07ffccd1db5efbcfd514003ded703fcdd2d42b", "files": 7094},
+    "2": {"title_id": "01007EF00011F002", "size": 648, "sha256": "a66389137e8505994bba3c5930e709c38d95579dae4554ab5a93ee9e519ebd20", "files": 1}
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
+    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}

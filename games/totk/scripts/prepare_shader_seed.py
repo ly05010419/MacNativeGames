@@ -6,6 +6,11 @@ The startup shaders (Shader/, SDK, boot) are translated for the default bind sta
 shader list (assets/shader_list.tsv, docs/shader-list.md) names for a shader of this game is translated too, so an
 iPhone or iPad, which cannot translate while playing, carries what players have met. The output contains game-derived
 data and belongs in the work folder, never in the repo.
+
+Breath of the Wild (game='botw', games/botw/scripts/prepare_shader_seed.py): the same, with its own list and container
+formats (Yaz0 instead of Zstandard, no dictionaries), its shaders in Pack/ (the boot packages' uking_*.sbfsha and the
+engine's .sharcb inside System/*.ssarc), Effect/, Event/ and System/ (botw.md: a scan of every file of 1.6.0 found
+them nowhere else), and the control section's own size (0x7d1, at +0x7c8) hashed into the key, as the runtime does.
 """
 import argparse
 import concurrent.futures
@@ -26,8 +31,16 @@ from shader_list import ShaderList   # noqa: E402
 CHAIN = 'totk-native-v4-unverified'
 MIN_SHADERS = 8000
 ZSTD = b'\x28\xb5\x2f\xfd'
+YAZ0 = b'Yaz0'
 ANSWERS = dict(tex={}, img={}, attr={}, fout={})
 LIST = Path(__file__).resolve().parents[1]/'assets/shader_list.tsv'
+# Per game: the RomFS folders that hold shaders (None: every file), the packages whose shaders are translated for the
+# default bind state (the startup ones), the fewest startup shaders a seed may have.
+GAMES = {
+    'totk': dict(folders=None, min_shaders=MIN_SHADERS, list=LIST),
+    'botw': dict(folders=('Pack/', 'Effect/', 'Event/', 'System/'), min_shaders=2000,
+                 list=Path(__file__).resolve().parents[2]/'botw/assets/shader_list.tsv'),
+}
 
 
 def suffix(answers):
@@ -45,6 +58,67 @@ def checked(data, offset, size):
     if offset < 0 or size < 0 or offset + size > len(data):
         raise ValueError('shader container range outside file')
     return data[offset:offset+size]
+
+
+def control_key_len(control):
+    """How many bytes of a control section the runtime hashes into the shader key (nvn_mtl.m prog_get ctl_key_len): the
+    section's own size, the word at +0x20 (0x880 in Tears of the Kingdom's archives and agl packages; 0x7d1 and 0x848 in
+    Breath of the Wild, where the game keeps each section in its own allocation and what follows it is not the
+    shader's), never more than 0x880."""
+    size = struct.unpack_from('<I', control, 0x20)[0] if len(control) >= 0x24 else 0
+    return size if 0x7cc <= size < 0x880 else 0x880
+
+
+def bound_control(control, game='totk', embedded=True):
+    """The control section as the game hands it to NVN. Breath of the Wild rewrites the 0x848-byte sections of the agl
+    programs it loads from embedded BNSH files before binding: a flag at +0x14, the size copies at +0x6f0 and +0x7c8,
+    three words at +0x788..+0x794 and the 24 bytes at +0x7d0 (995 of 997 shaders of a recorded session, the other two
+    a code shared with another shader); the agl packages' own records (embedded=False) are bound as they are (158 of
+    160; botw.md). The key must hash what NVN sees."""
+    if game != 'botw' or not embedded or len(control) != 0x848:
+        return control
+    c = bytearray(control)
+    c[0x14:0x16] = bytes(2); c[0x6f0:0x6f4] = bytes(4); c[0x7c8:0x7cc] = bytes(4); c[0x7d0:0x7e8] = bytes(0x18)
+    c[0x788] = 0; c[0x790] = 0x1c; c[0x794] = 0
+    return bytes(c)
+
+
+def yaz0(data):
+    """Yaz0 (Breath of the Wild's compression): a code byte, then 8 items, a literal byte or a back reference of
+    (distance, length)."""
+    if data[:4] != YAZ0:
+        raise ValueError('expected Yaz0')
+    size = struct.unpack_from('>I', data, 4)[0]
+    if size > 512 << 20:
+        raise ValueError('unbounded Yaz0 file')
+    out, o, i, n = bytearray(size), 0, 16, len(data)
+    try:
+        while o < size:
+            code = data[i]; i += 1
+            for bit in (0x80, 0x40, 0x20, 0x10, 8, 4, 2, 1):
+                if o >= size:
+                    break
+                if code & bit:
+                    out[o] = data[i]; o += 1; i += 1
+                    continue
+                first = data[i]; dist = ((first & 0xF) << 8 | data[i+1]) + 1; length = first >> 4; i += 2
+                if length:
+                    length += 2
+                else:
+                    length = data[i] + 0x12; i += 1
+                length = min(length, size - o)
+                src = o - dist
+                if src < 0:
+                    raise ValueError('Yaz0 back reference before the start')
+                if dist >= length:
+                    out[o:o+length] = out[src:src+length]
+                else:
+                    for k in range(length):
+                        out[o+k] = out[src+k]
+                o += length
+    except IndexError:
+        raise ValueError('truncated Yaz0 file') from None
+    return bytes(out)
 
 
 def sarc(data):
@@ -66,13 +140,15 @@ def sarc(data):
         if attribute >> 24 != 1 or not names <= off < start or hi < lo or start+lo < start:
             raise ValueError('invalid SARC member')
         name = data[off:data.index(0, off, start)].decode('utf-8')
+        if name.startswith('/'):   # Breath of the Wild's gamedata.ssarc names its members "/<name>.bgdata"
+            name = name[1:]
         if name.startswith('/') or '\\' in name or any(p in ('', '.', '..') for p in name.split('/')) or name in result:
             raise ValueError('unsafe or duplicate SARC name')
         result[name] = checked(data, start+lo, hi-lo)
     return result
 
 
-def bnsh_shaders(data):
+def bnsh_shaders(data, game='totk'):
     """BNSH absolute offsets are relative to each embedded BNSH, not BFSHA."""
     if data[:4] != b'BNSH' or checked(data, 12, 2) != b'\xff\xfe' or checked(data, 96, 4) != b'grsc':
         raise ValueError('unsupported BNSH header')
@@ -90,11 +166,14 @@ def bnsh_shaders(data):
             control_off, code_off, code_size, control_size = struct.unpack_from('<QQII', checked(data, offset+8, 24))
             control = checked(data, control_off, control_size)
             code = checked(data, code_off, code_size)
-            if len(control) < 0x880:
+            if len(control) < 0x7cc:
                 # The SDK utility BNSH uses an older, shorter control layout.
                 # Do not invent bytes to make it look like the game's NVN ABI.
                 continue
-            control = control[:0x880]   # some are 0x88c; NVN and the runtime's key read 0x880
+            key_len = control_key_len(control)   # 0x880 (some sections are 0x88c), Breath of the Wild's 0x7d1
+            if len(control) < key_len:
+                continue
+            control = bound_control(control[:key_len], game)   # what NVN and the runtime's key read
             c1, length = struct.unpack_from('<II', control, 0x700)
             actual = struct.unpack_from('<I', control, 0x714)[0]
             if actual != {'vs': 0, 'ps': 1, 'cs': 5}[stage] or not 0 <= c1 <= length <= len(code) or not length:
@@ -103,17 +182,18 @@ def bnsh_shaders(data):
             yield digest(control+code), stage, control, code
 
 
-def sharcb_shaders(data):
+def sharcb_shaders(data, game='totk'):
     """agl shader packages (.sharcb, magic BAHS): the records between the header's start and the code pool are
-    <u64 code offset in the pool, u32 control size (0x880 or 0x88c), i32 offset of the control from the record>; a record
-    may reuse an earlier record's control. Control (its first 0x880 bytes) and code hash to the runtime's key."""
+    <u64 code offset in the pool, u32 control size (0x880 or 0x88c; 0x7d1 in Breath of the Wild), i32 offset of the
+    control from the record>; a record may reuse an earlier record's control. Control (the bytes control_key_len names)
+    and code hash to the runtime's key."""
     if len(data) < 32 or data[:4] != b'BAHS':
         raise ValueError('expected an agl shader package')
     start, pool_size, pool = struct.unpack_from('<3I', data, 20)
     if not 32 <= start <= pool or pool + pool_size > len(data):
         raise ValueError('agl shader package layout outside the file')
     seen = set()
-    for size in (b'\x80\x08\x00\x00', b'\x8c\x08\x00\x00'):
+    for size in (b'\x80\x08\x00\x00', b'\x8c\x08\x00\x00', b'\xd1\x07\x00\x00', b'\x48\x08\x00\x00'):   # 0x880 / 0x88c; Breath of the Wild's 0x7d1 / 0x848
         at = start
         while (at := data.find(size, at, pool)) >= 0:
             record, at = at - 8, at + 4
@@ -121,9 +201,10 @@ def sharcb_shaders(data):
                 continue
             code_off = struct.unpack_from('<Q', data, record)[0]
             control_at = record + struct.unpack_from('<i', data, record+12)[0]
-            if not start <= control_at <= pool - 0x880 or code_off >= pool_size:
+            key_len = control_key_len(data[control_at:control_at+0x880]) if control_at >= start else 0
+            if not key_len or not start <= control_at <= pool - key_len or code_off >= pool_size:
                 continue
-            control = data[control_at:control_at+0x880]
+            control = bound_control(data[control_at:control_at+key_len], game, embedded=False)
             c1, length = struct.unpack_from('<II', control, 0x700)
             stage = {0: 'vs', 1: 'ps', 5: 'cs'}.get(struct.unpack_from('<I', control, 0x714)[0])
             if not stage or not 0 < length <= pool_size - code_off or c1 > length:
@@ -135,20 +216,43 @@ def sharcb_shaders(data):
                 yield key, stage, control, code
 
 
-def startup_package(name):
-    """The packages the startup shaders come from; effects and UI layouts carry more."""
+def startup_package(name, game='totk'):
+    """The packages the startup shaders come from; effects and UI layouts carry more. Breath of the Wild: the boot and
+    title packages (the materials, terrain, trees, grass and the engine's own shaders) and the System/ ones."""
+    if game == 'botw':
+        return name in ('Pack/Bootup.pack', 'Pack/Bootup_Graphics.pack', 'Pack/TitleBG.pack') or name.startswith('System/')
     return (name == 'Lib/NintendoSDK/TextureShader.bnsh' or name == 'Pack/Bootup.Nin_NX_NVN.pack.zs' or
             name.startswith('Shader/') and name.endswith('.zs'))
 
 
-def inventory(romfs, modules=None):
+def decoder(romfs, read, game='totk'):
+    """decode(raw) -> the file's content: Zstandard with the game's dictionaries (Tears of the Kingdom), Yaz0 (Breath of
+    the Wild); other data unchanged."""
+    if game == 'botw':
+        return lambda raw: yaz0(raw) if raw[:4] == YAZ0 else raw
+    import compression.zstd as zstd
+    dictionaries = {}
+    for raw in sarc(zstd.decompress(read('Pack/ZsDic.pack.zs'))).values():
+        d = zstd.ZstdDict(raw)
+        dictionaries[d.dict_id] = d
+    def decode(raw):
+        if raw[:4] != ZSTD:
+            return raw
+        info = zstd.get_frame_info(raw)
+        if info.decompressed_size is None or info.decompressed_size > 512 << 20:
+            raise ValueError('unbounded shader package')
+        return zstd.decompress(raw, zstd_dict=dictionaries[info.dictionary_id] if info.dictionary_id else None)
+    return decode
+
+
+def inventory(romfs, modules=None, game='totk'):
     """Every shader in the RomFS and the game modules -> (stage, control, code, source path), the keys translated for
     the default bind state (startup packages, agl packages, the modules), the archives. modules: rewritten/<version>."""
-    import compression.zstd as zstd
     index = json.loads((romfs/'index.json').read_text())
     if index.get('status') != 'pass':
         raise ValueError('RomFS has not passed integrity verification')
     entries = {r['path']: r for r in index['files']}
+    folders = GAMES[game]['folders']
     shaders, startup, archives = {}, set(), []
     with (romfs/'romfs.bin').open('rb') as stream:
         def read(name):
@@ -158,26 +262,18 @@ def inventory(romfs, modules=None):
             if len(raw) != row['size']:
                 raise ValueError('short RomFS shader read')
             return raw
-        dictionaries = {}
-        for raw in sarc(zstd.decompress(read('Pack/ZsDic.pack.zs'))).values():
-            d = zstd.ZstdDict(raw)
-            dictionaries[d.dict_id] = d
-        def decode(raw):
-            info = zstd.get_frame_info(raw)
-            if info.decompressed_size is None or info.decompressed_size > 512 << 20:
-                raise ValueError('unbounded shader package')
-            return zstd.decompress(raw, zstd_dict=dictionaries[info.dictionary_id] if info.dictionary_id else None)
+        decode = decoder(romfs, read, game)
         def visit(name, data, keys, depth=0):
             if data[:4] == b'BAHS':   # agl: the engine's own shaders (title screen, post effects, lighting)
-                for key, stage, control, code in sharcb_shaders(data):
+                for key, stage, control, code in sharcb_shaders(data, game):
                     shaders.setdefault(key, (stage, control, code, name))
                     keys.add(key); startup.add(key)
-                return
+                # Breath of the Wild's agl packages keep most of their programs as embedded BNSH files: found below.
             if data[:4] == b'SARC':
                 if depth > 4:
                     return
                 for member, raw in sarc(data).items():
-                    visit(name+'/'+member, decode(raw) if raw[:4] == ZSTD else raw, keys, depth+1)
+                    visit(name+'/'+member, decode(raw), keys, depth+1)
                 return
             # BFSHA and BNSH files, and effect / layout resources, hold complete, independently addressed BNSH files.
             pos = 0
@@ -186,21 +282,23 @@ def inventory(romfs, modules=None):
                 if pos < 0:
                     break
                 size = struct.unpack_from('<I', checked(data, pos+28, 4))[0]
-                for key, stage, control, code in bnsh_shaders(checked(data, pos, size)):
+                for key, stage, control, code in bnsh_shaders(checked(data, pos, size), game):
                     shaders.setdefault(key, (stage, control, code, name))
                     keys.add(key)
                 pos += max(size, 8)
         for name in sorted(entries):
+            if folders and not name.startswith(folders):
+                continue
             raw = read(name)
             # Only containers can hold shaders: compressed files, packages and shader archives.
-            if raw[:4] not in (ZSTD, b'SARC', b'FSHA', b'BNSH', b'BAHS') and b'BNSH\0\0\0\0' not in raw:
+            if raw[:4] not in (ZSTD, YAZ0, b'SARC', b'FSHA', b'BNSH', b'BAHS') and b'BNSH\0\0\0\0' not in raw:
                 continue
-            data = decode(raw) if raw[:4] == ZSTD else raw
+            data = decode(raw)
             keys = set()
             visit(name, data, keys)
-            if startup_package(name):
+            if startup_package(name, game):
                 startup |= keys
-            if keys or startup_package(name):
+            if keys or startup_package(name, game):
                 archives.append(dict(path=name, sha256=digest(raw)))
         for module in sorted(Path(modules).glob('*.patched.bin')) if modules else []:
             keys = set()   # the game module embeds a few BNSH files
@@ -213,7 +311,7 @@ def inventory(romfs, modules=None):
     return index, shaders, startup, archives
 
 
-def located(locators, read):
+def located(locators, read, game='totk'):
     """Shaders the shared list locates outside BNSH files (agl .sharcb, the game module), read where it says and kept
     only when control and code hash to the listed key (another game version's bytes never are). read(source) -> bytes."""
     found = {}
@@ -222,7 +320,11 @@ def located(locators, read):
         if data is None or not 0 < length <= 16 << 20:
             continue
         control, code = data[control_at:control_at+0x880], data[code_at:code_at+length]
-        if len(control) != 0x880 or len(code) != length or digest(control+code) != key:
+        key_len = control_key_len(control) if len(control) >= 0x7cc else 0
+        control = control[:key_len]
+        if key_len and digest(control+code) != key:   # a program the game rewrites (an embedded BNSH one)?
+            control = bound_control(control, game)
+        if not key_len or len(control) != key_len or len(code) != length or digest(control+code) != key:
             continue
         stage = {0: 'vs', 1: 'ps', 5: 'cs'}.get(struct.unpack_from('<I', control, 0x714)[0])
         c1, size = struct.unpack_from('<II', control, 0x700)
@@ -231,23 +333,15 @@ def located(locators, read):
     return found
 
 
-def source_reader(romfs, modules):
-    """read(source) for locator rows: a RomFS path, each '/' after a package entering it (.zs decompressed), or
+def source_reader(romfs, modules, game='totk'):
+    """read(source) for locator rows: a RomFS path, each '/' after a package entering it (.zs / Yaz0 decompressed), or
     module:<name>, a game module's image (rewritten/<version>/<name>.patched.bin). None when it is not there."""
-    import compression.zstd as zstd
     index = json.loads((romfs/'index.json').read_text())
     entries = {r['path']: r for r in index['files']}
     stream = (romfs/'romfs.bin').open('rb')
     def raw(name):
         row = entries[name]; stream.seek(row['offset']); return stream.read(row['size'])
-    dictionaries = {}
-    for data in sarc(zstd.decompress(raw('Pack/ZsDic.pack.zs'))).values():
-        d = zstd.ZstdDict(data); dictionaries[d.dict_id] = d
-    def decode(data):
-        if data[:4] != ZSTD:
-            return data
-        info = zstd.get_frame_info(data)
-        return zstd.decompress(data, zstd_dict=dictionaries[info.dictionary_id] if info.dictionary_id else None)
+    decode = decoder(romfs, raw, game)
     cache = {}
     def read(source):
         if source in cache:
@@ -284,10 +378,12 @@ def plan(shaders, startup, listed):
     return jobs
 
 
-def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, modules=None):
+def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, modules=None, game='totk'):
+    shader_list = shader_list or GAMES[game]['list']
+    min_shaders = GAMES[game]['min_shaders']
     shared = ShaderList.load(shader_list)
     listed = shared.variants
-    identity = dict(schema=1, chain=CHAIN, version=version,
+    identity = dict(schema=1, chain=CHAIN, version=version, game=game,
                     source_romfs_sha256=json.loads((romfs/'index.json').read_text())['romfs_sha256'],
                     translator_sha256=digest(translator.read_bytes()),
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
@@ -296,7 +392,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
     marker = output/'seed-manifest.json'
     if marker.exists():
         old = json.loads(marker.read_text())
-        if all(old.get(k) == v for k, v in identity.items()) and old.get('shaders', 0) >= MIN_SHADERS and all(
+        if all(old.get(k) == v for k, v in identity.items()) and old.get('shaders', 0) >= min_shaders and all(
                 (output/name).is_file() and digest((output/name).read_bytes()) == sha for name, sha in old['files'].items()):
             print(f'reusing {old["shaders"]} verified prepared startup shaders', flush=True)
             return old
@@ -304,8 +400,8 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
-    _, shaders, startup, archives = inventory(romfs, modules)
-    extra = located({where for where in shared.locators if where[0] not in shaders}, source_reader(romfs, modules))
+    _, shaders, startup, archives = inventory(romfs, modules, game)
+    extra = located({where for where in shared.locators if where[0] not in shaders}, source_reader(romfs, modules, game), game)
     shaders.update(extra)
     print(f'{len(extra)} more shaders read where the shared list locates them (agl .sharcb, game module)', flush=True)
     jobs = plan(shaders, startup, listed)
@@ -398,8 +494,8 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
         elif result:
             failed.append(result[1])
     ready = sum(1 for key in startup if key in produced)
-    if ready < MIN_SHADERS:
-        raise ValueError(f'only {ready} shaders prepared; at least {MIN_SHADERS} are required for first-launch warm-up')
+    if ready < min_shaders:
+        raise ValueError(f'only {ready} shaders prepared; at least {min_shaders} are required for first-launch warm-up')
     # Only ship completed runtime inputs. Failed translations can leave MSL
     # behind before publishing reflection; those must not become cached shaders.
     wanted = set()
@@ -407,12 +503,17 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=LIST, m
         wanted.update([variant+'_b.metal', variant+'_b.json', variant.split('-')[0]+'.variants'])
     for p in staging.iterdir():
         if p.name not in wanted:
-            p.unlink()
+            p.unlink(missing_ok=True)
     (staging/'pso_manifest.tsv').write_text('# Prepared from this app\'s local game data; '+CHAIN+'\n'+'\n'.join(rows)+'\n')
+    # On filesystems without native extended-attribute support (exFAT, FAT32), macOS can
+    # transparently create "._name" AppleDouble sidecar files for anything written here,
+    # including pso_manifest.tsv itself. Exclude them so the manifest's own file list never
+    # ships a name the runtime's strict filename check (totk_shader_seed.h) would reject.
+    wanted_final = wanted | {'pso_manifest.tsv'}
     report = dict(**identity, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
                   listed_variants=sum(1 for _, _, _, why in jobs if why == 'listed'), skipped=failed,
                   archives=archives, seconds=time.monotonic()-started,
-                  files={p.name: digest(p.read_bytes()) for p in sorted(staging.iterdir())})
+                  files={p.name: digest(p.read_bytes()) for p in sorted(staging.iterdir()) if p.name in wanted_final})
     (staging/'seed-manifest.json').write_text(json.dumps(report, indent=2)+'\n')
     if output.exists():
         shutil.rmtree(output)
@@ -427,11 +528,12 @@ def main():
     for name in ['romfs', 'output', 'translator', 'spirv-cross']:
         p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--version', required=True)
-    p.add_argument('--shader-list', type=Path, default=LIST, help='the shared shader list (default: assets/shader_list.tsv)')
+    p.add_argument('--shader-list', type=Path, help='the shared shader list (default: the game\'s, assets/shader_list.tsv)')
     p.add_argument('--modules', type=Path, help='rewritten/<version>: the game module images the list locates shaders in')
+    p.add_argument('--game', choices=sorted(GAMES), default='totk', help='totk (default) or botw: the game the RomFS belongs to')
     a = p.parse_args()
     prepare(a.romfs.resolve(), a.output.resolve(), a.translator.resolve(), a.spirv_cross.resolve(), a.version,
-            a.shader_list.resolve(), a.modules.resolve() if a.modules else None)
+            a.shader_list.resolve() if a.shader_list else None, a.modules.resolve() if a.modules else None, a.game)
 
 
 if __name__ == '__main__':

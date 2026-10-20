@@ -45,8 +45,25 @@ void runtime_shortcut_help_toggle(void) {}
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
 @end
 
-@interface TOTKApp : UIResponder <UIApplicationDelegate> @property(nonatomic,strong) UIWindow *window; @end
+/* iOS 27 ends apps linked against its SDK that keep the window in the app delegate (UIKit traps in
+   _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption at launch), so the window belongs to a window scene. */
+@interface TOTKSceneDelegate : UIResponder <UIWindowSceneDelegate> @property(nonatomic,strong) UIWindow *window; @end
+@implementation TOTKSceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    (void)session; (void)options;
+    if (![scene isKindOfClass:UIWindowScene.class]) return;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.rootViewController = [TOTKGameController new]; [self.window makeKeyAndVisible];
+}
+@end
+
+@interface TOTKApp : UIResponder <UIApplicationDelegate> @end
 @implementation TOTKApp
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    (void)application; (void)options;
+    UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:session.role];
+    c.delegateClass = TOTKSceneDelegate.class; return c;
+}
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
     (void)options;
     // Controller input does not reset the idle timer; auto-lock would suspend the game mid-play or mid shader import.
@@ -78,8 +95,7 @@ void runtime_shortcut_help_toggle(void) {}
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
     host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [TOTKGameController new]; [self.window makeKeyAndVisible]; return YES;
+    return YES;   // the window is made when the window scene connects (TOTKSceneDelegate)
 }
 @end
 

@@ -120,6 +120,106 @@ enum {
 // Payload (immediately follows op_hdr)
 typedef struct { int32_t n; const tex_t *color[8]; view_t cview[8]; uint8_t has_cview[8]; const tex_t *depth; view_t dview; uint8_t has_dview; } p_set_rt;
 typedef struct { int32_t index, mask; float rgba[4]; } p_clear_color;
+#ifdef GAME_BOTW
+/* The same texture level / layer attached at more than one colour slot: only the first slot is attached (botw.md; the
+   finding and fix come from nxnative, MIT, github.com/seedds/nxnative, rt_dup_slot). Breath of the Wild's G-buffer passes
+   attach the albedo and another buffer twice each (c1 = c2, c3 = c4) with channel write masks 0 on the second ones. The
+   Switch's ROP writes only masked channels, so the slots do not interfere; on Apple's tile-based GPUs each attachment has
+   its own tile memory, stored back whole at the end of the pass, so the copy stored later (loaded, never written)
+   overwrote the other's writes in a different order per tile: the albedo kept scattered squares. Returns the earlier slot
+   holding the same image, or -1. Slots are compared by serial: records hold copies of the texture objects.
+   The macros below are the call sites in nvn_mtl.m: they sit at the end of existing lines and expand to nothing for TOTK,
+   so TOTK's code and line numbers (res_add_at) stay as they were. */
+static inline int rt_dup_of(const p_set_rt *r, int i) {
+    if (!r->color[i]) return -1;
+    int lv = r->has_cview[i] && r->cview[i].set_levels ? r->cview[i].base_level : 0, ly = r->has_cview[i] && r->cview[i].set_layers ? r->cview[i].min_layer : 0;
+    for (int j = 0; j < i; j++) {
+        if (!r->color[j] || r->color[j]->serial != r->color[i]->serial) continue;
+        int lj = r->has_cview[j] && r->cview[j].set_levels ? r->cview[j].base_level : 0, yj = r->has_cview[j] && r->cview[j].set_layers ? r->cview[j].min_layer : 0;
+        if (lj == lv && yj == ly) return j;
+    }
+    return -1;
+}
+/* a clear of a slot left unattached goes to the slot holding the same image */
+#define BOTW_RT_DUP_CLEARS() { for (int i_ = 1; i_ < R.rt.n && i_ < 8; i_++) { int j_ = rt_dup_of(&R.rt, i_); \
+        if (j_ >= 0 && R.clear_c[i_]) { if (!R.clear_c[j_]) { R.clear_c[j_] = 1; R.cc[j_] = R.cc[i_]; } R.clear_c[i_] = 0; } } }
+#define BOTW_RT_DUP_SKIP(i) if (rt_dup_of(&R.rt, i) >= 0) { static int said_; if (!said_++) MLOG("[botw] colour slot %d holds the same image as an earlier slot (serial %llu): left unattached (rt_dup_of)", i, (unsigned long long)R.rt.color[i]->serial); continue; }
+/* prediction: the slot is left unattached when the pass begins */
+#define BOTW_RT_DUP_PREDICT(r, cf) { for (int i_ = 1; i_ < (r)->n && i_ < 8; i_++) if (rt_dup_of(r, i_) >= 0) (cf)[i_] = 0; }
+/* a clear of a slot left unattached: clear the slot holding the same image */
+#define BOTW_RT_DUP_CLEAR_TO_FIRST(c) p_clear_color botw_to_first_; { int f_ = rt_dup_of(&R.rt, (c)->index); if (f_ >= 0) { botw_to_first_ = *(c); botw_to_first_.index = f_; (c) = &botw_to_first_; } }
+/* "ashot <path>" requests (end of nvn_mtl.m), taken at the game's present call with the screenshot queue lock held */
+void botw_ashot_poll(const void *t, long cur);
+#define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
+/* Uncapped pacing ignores the game's present interval 2 by default (up to 120 fps; user 2026-10-19: "放开到120帧"); the
+   real-time frame step keeps the game's speed (botw.md). TOTK_UNCAPPED_INTERVAL=0 keeps the interval (up to 60 fps). */
+#define UNCAPPED_INTERVAL_FROM_ENV(e) ((e) ? atoi(e) != 0 : 1)
+/* TOTK_T2B_LOG=1 (diagnostics, the black save thumbnail): every texture-to-buffer copy is logged with its source
+   texture and destination, and after the GPU is done with how many destination bytes are not zero (end of nvn_mtl.m) */
+void botw_t2b_note(const void *c, const void *tex, const void *mb, uint64_t mo, size_t n);
+#define BOTW_T2B_NOTE(c, t, mb, mo, n) botw_t2b_note((c), (__bridge const void *)(t), (mb), (mo), (n));
+/* A GPU copy into pool memory is newer than an earlier GPU rendering of a texture over the same bytes: that rendering's
+   write-back record (wb_note, written back at nvnMemoryPoolInvalidateMappedRange) is dropped, else it overwrote the copy
+   (the black save thumbnail, botw.md; end of nvn_mtl.m). */
+void botw_gpu_copy_supersedes(const void *mb, uint64_t mo, size_t n);
+#define BOTW_GPU_COPY_SUPERSEDES(mb, mo, n) botw_gpu_copy_supersedes((mb), (mo), (n));
+void botw_serial_note(uint64_t serial, const char *what);
+#define BOTW_SERIAL_NOTE(k, what) botw_serial_note((k), (what));
+#define BOTW_TILELOG_NOTE(t) if (tilelog_match(t)) botw_serial_note((t)->serial, NULL);
+void botw_tex_follow(const void *t);
+#define BOTW_TEX_FOLLOW(t) botw_tex_follow(t);
+int botw_dead_keep(uint64_t serial);
+#define BOTW_DEAD_KEEP(k) if (botw_dead_keep(k)) continue;
+#define BOTW_TEX_RELEASE_KEEP(k) if (!botw_dead_keep(k))
+void botw_dead_forget(const uint64_t *serials, size_t n);
+#define BOTW_DEAD_FORGET(s, n) botw_dead_forget((s), (n));
+/* Key 3 (MetalFX 2K): Breath of the Wild's own upscale of the finished 1600x900 picture into the 1920x1080 canvas is the
+   fragment shader 0af88d51 (a 3-vertex triangle: five texel reads around the fragment's own coordinates, an edge-directed
+   sharpening of the sampled colour; no dynamic resolution, so the valid region is the whole source). MetalFX replaces the
+   whole draw (mfxup_dock; botw.md). */
+void botw_mfx_scene_ready(void);   /* the upscale draw happened (or MetalFX replaced it): the canvas holds the scene */
+#define BOTW_MFXUP_DOCK_KEY(fs) int botw_ = !strncmp((fs)->key, "0af88d51bb12a2346b03bb2586d131def5a631271df192779b701efba6eb7f70-", 65); if (botw_) botw_mfx_scene_ready();
+#define BOTW_AND_NOT_DOCK && !botw_
+#define BOTW_MFXUP_DOCK_REGION(cw, ch, src) if (botw_ && !why) { (cw) = (src).width; (ch) = (src).height; }
+/* Breath of the Wild's upscale draw writes RGB only (mask 0x7): the canvas keeps its cleared alpha, which nothing reads
+   (the final copy into the swapchain is opaque); MetalFX writes alpha too. TOTK's draw writes all four. */
+#define BOTW_MFXUP_MASK_BAD (botw_ ? (S.chmask.mask & 0x7) != 0x7 : (S.chmask.mask & 0xf) != 0xf)
+/* Key 2 (MetalFX frame interpolation, totk_mfx.m): Breath of the Wild's canvas is RGB10A2 (no float format), its scene is
+   finished by the upscale draw 0af88d51 (every later draw into the canvas is UI: the scene copy is taken before the first of
+   them), and its camera block is vertex uniform 0, 2336 bytes (view, view-projection, projection, inverse view, near / far,
+   aspect, field of view and size at the same offsets as TOTK's 2368-byte block; botw.md). */
+#define MFX_CANVAS_FMT_OK(f) (pf_is_float(f) || (f) == MTLPixelFormatRGB10A2Unorm)
+int botw_mfx_ui_draw(void *prog);   /* a draw into the canvas after the upscale draw is UI; the canvas is also drawn into before the scene (cleared and used early in the frame), those draws are not */
+void botw_mfx_frame_reset(void);
+#define MFX_UI_DRAW(pr) botw_mfx_ui_draw((__bridge void *)(pr))
+#define BOTW_MFX_FRAME_RESET() botw_mfx_frame_reset();
+#define MFX_CAM_SLOT 0
+#define MFX_CAM_SIZE 2336
+#else
+#define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
+#define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
+#define BOTW_MFX_FRAME_RESET()
+#define MFX_CAM_SLOT 1
+#define MFX_CAM_SIZE 2368
+#define BOTW_MFXUP_MASK_BAD (S.chmask.mask & 0xf) != 0xf
+#define BOTW_MFXUP_DOCK_KEY(fs)
+#define BOTW_AND_NOT_DOCK
+#define BOTW_MFXUP_DOCK_REGION(cw, ch, src)
+#define BOTW_T2B_NOTE(c, t, mb, mo, n)
+#define BOTW_GPU_COPY_SUPERSEDES(mb, mo, n)
+#define BOTW_SERIAL_NOTE(k, what)
+#define BOTW_TILELOG_NOTE(t)
+#define BOTW_TEX_FOLLOW(t)
+#define BOTW_DEAD_KEEP(k)
+#define BOTW_TEX_RELEASE_KEEP(k)
+#define BOTW_DEAD_FORGET(s, n)
+#define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
+#define BOTW_RT_DUP_CLEARS()
+#define BOTW_RT_DUP_SKIP(i)
+#define BOTW_RT_DUP_PREDICT(r, cf)
+#define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
+#define BOTW_ASHOT_POLL(t, cur)
+#endif
 typedef struct { float depth; int32_t depth_mask, stencil, stencil_mask; } p_clear_ds;
 typedef struct { int32_t first, n; float v[16][6]; } p_viewports;          // x, y, w, h, 近, 远（近远由 DEPTH_RANGE 覆盖） | x, y, w, h, near, far (near and far are overridden by DEPTH_RANGE)
 typedef struct { int32_t x, y, w, h; } p_scissor;

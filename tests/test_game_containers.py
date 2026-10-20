@@ -284,6 +284,33 @@ class Containers(unittest.TestCase):
             path.write_bytes(npdm)
             self.assertFalse(build_app.npdm_signed(path))
 
+    def test_resigned_npdm_is_accepted_only_with_matching_code(self):
+        # Dump tools that change an NCA's key generation sign the npdm's ACID again (#65, #80): not Nintendo's signature,
+        # but the title's own npdm; the game never reads it, so it passes when every code module matches.
+        def npdm(program_id):
+            data = bytearray(0x200)
+            data[:4] = b'META'
+            struct.pack_into('<II', data, 0x70, 0x100, 0x40)   # ACI0 at 0x100
+            data[0x100:0x104] = b'ACI0'
+            struct.pack_into('<Q', data, 0x110, program_id)
+            return bytes(data)
+        exefs = self.path / 'exefs'
+        exefs.mkdir()
+        code = {name: f'{name} bytes'.encode() for name in ('main', 'rtld', 'sdk', 'subsdk0')}
+        for name, data in code.items():
+            (exefs / name).write_bytes(data)
+        (exefs / 'main.npdm').write_bytes(npdm(0x0100F2C0115B6000))
+        expected = {name: hashlib.sha256(data).hexdigest() for name, data in code.items()}
+        expected['main.npdm'] = '0' * 64   # the reference dump's file is another one
+        self.assertEqual(build_app.npdm_program_id(exefs / 'main.npdm'), '0100F2C0115B6000')
+        self.assertEqual(build_app.npdm_kind(exefs / 'main.npdm', '0100f2c0115b6000'), 'resigned')
+        self.assertTrue(build_app.exefs_matches(exefs, expected, '0100F2C0115B6000'))
+        self.assertFalse(build_app.exefs_matches(exefs, expected, '01007EF00011E000'))   # another title's npdm
+        (exefs / 'sdk').write_bytes(b'patched sdk')
+        self.assertFalse(build_app.exefs_matches(exefs, expected, '0100F2C0115B6000'))   # code that differs still stops it
+        (exefs / 'main.npdm').write_bytes(b'META' + bytes(0x7c))   # no ACI0
+        self.assertIsNone(build_app.npdm_kind(exefs / 'main.npdm', '0100F2C0115B6000'))
+
     def test_font_from_another_firmware_is_bound_by_its_bytes(self):
         folder = self.path / 'fonts'
         folder.mkdir()
