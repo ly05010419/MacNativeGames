@@ -96,6 +96,13 @@ int main(void) {
     CHECK(grown > base, "frame interpolation on: \"+50\" after the fps (box %d, without it %d)", grown, base);
     fps_overlay_raster(&(fps_overlay_info){97, 2560, 1440, 0, 0, 1}, 2, px, &grown, &h);
     CHECK(grown > base, "true 2K: \"  2K\" at the end (box %d, without it %d)", grown, base);
+    char hud_line[96];
+    fps_overlay_text(&(fps_overlay_info){60, 2560, 1440, 0, 0, 1}, hud_line, sizeof hud_line);
+    CHECK(strstr(hud_line, "  2K") != NULL, "2K picker: \"%s\"", hud_line);
+    fps_overlay_text(&(fps_overlay_info){60, 3840, 2160, 0, 0, 1}, hud_line, sizeof hud_line);
+    CHECK(strstr(hud_line, "  4K") != NULL, "4K picker: \"%s\"", hud_line);
+    fps_overlay_raster(&(fps_overlay_info){97, 3840, 2160, 0, 0, 1}, 2, px, &grown, &h);
+    CHECK(grown > base, "true 4K: \"  4K\" at the end (box %d, without it %d)", grown, base);
     fps_overlay_raster(&(fps_overlay_info){999, 99999, 99999, 1, 5000, 1}, FPS_OVERLAY_MAX_SCALE, px, &w, &h);   /* longest line: fits, or drops a scale */
     CHECK(w > 0 && w <= FPS_OVERLAY_TEX_W && h <= FPS_OVERLAY_TEX_H, "longest FPS line %dx%d outside the texture", w, h);
 

@@ -9,13 +9,18 @@ enum { FPS_OVERLAY_TEX_W = 768, FPS_OVERLAY_TEX_H = 64, FPS_OVERLAY_MAX_SCALE = 
 
 /* fps / screen size < 0 / 0: not known yet ("--"). mfx: MetalFX upscaled the picture in the last frames. gen > 0: MetalFX
    frame interpolation shows that many generated frames a second besides the game's fps frames -> "FPS 50+50" (key 2).
-   big: the game itself outputs more than 1920x1080 (true 2K) -> " 2K" at the end. */
+   big: the game itself outputs more than 1920x1080; the label is " 4K" when the picture viewport reaches 3840x2160
+   (a 3840x2160 start), " 2K" otherwise. */
 typedef struct { int fps, screen_w, screen_h, mfx, gen, big; } fps_overlay_info;
 
 int fps_overlay_enabled(void);
+/* Settings (runtime/settings.h) drive the same switches the TOTK_* variables set at startup; the setters are
+   atomic, so the render thread sees a change without a restart. */
+void fps_overlay_set_enabled(int on);
 /* Shared user toggle for every in-picture HUD layer: FPS, shader collection and load telemetry. */
 int fps_overlay_hints_enabled(void);
 int fps_overlay_toggle_hints(void);   /* atomically toggles all HUD layers and returns the new visibility */
+void fps_overlay_set_hints(int on);
 /* Pixel scale (1..FPS_OVERLAY_MAX_SCALE) for a game picture view_h pixels tall: one text line is about 3% of its height. */
 int fps_overlay_scale(double view_h);
 /* The line in a 5x7 pixel font on a dark box, as BGRA8 pixels in out (FPS_OVERLAY_TEX_W x FPS_OVERLAY_TEX_H,
@@ -27,6 +32,7 @@ void fps_overlay_text(const fps_overlay_info *info, char *out, size_t n);   /* "
    shortcuts in one small box. */
 enum { HUD_FPS, HUD_SHADER, HUD_LOAD, HUD_LINES };
 int hud_compact(void);
+void fps_overlay_set_compact(int on);   /* 1: the corner panel; 0: the lines in the picture's corners (TOTK_HUD=corners) */
 void hud_publish(int line, const char *text, int highlight);
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* 0: the line was never published (hidden or not known yet) */
 /* Any one line (at most 80 characters of the 5x7 font) the same way; highlight draws it yellow instead of green. The _tex
@@ -40,6 +46,7 @@ int fps_overlay_line_pixel_font(const char *text);   // 0: the line has a charac
 /* TOTK automatic shader collection, bottom-left box (2026-10-16 night): "SHADER +<new>/<in the cache> PSO +<new pipelines>",
    yellow for 3 s after something new was collected. TOTK_SHADER_OVERLAY=0 hides it (default on on the Mac, off on iOS). */
 int shader_overlay_enabled(void);
+void fps_overlay_set_shader_enabled(int on);
 void shader_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total, uint64_t pipelines);   /* total < 0: "--" (not counted yet) */
 /* Record that the game's present number `ticket` reached the screen at now_s (seconds). The rate of game presents is
    re-measured every half second; fps_overlay_value() returns it, or -1 before the first measurement. */

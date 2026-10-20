@@ -58,6 +58,12 @@ APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'bo
 HACTOOL = ('https://github.com/SciresM/hactool.git', '1d64a83450e025622f3468c28fc4164dad2c5ef6')
 APP_NAME = 'Tears of the Kingdom'
 BUNDLE_ID = 'org.macnativegames.totk'
+# Output sizes that get a HeapDef overlay (games/totk/scripts/make_output_res_overlay.py). True 2K is the default and what
+# TOTK_OUTPUT_RES=auto starts from, so its overlay is required for key 3; the 3840x2160 one is the optional, experimental
+# native 4K extra. A build without the 4K overlay still plays at 1080p and true 2K (runtime/romfs.c loads the overlay of the
+# output size it starts in), so making the 4K one must never fail a 2K/1080p build.
+OUTPUT_RES_2K = '2560x1440'
+OUTPUT_RES_4K = '3840x2160'
 LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
 # Pinned upstream sources fetched at build time (repository, commit)
 SPIRV_CROSS = ('https://github.com/KhronosGroup/SPIRV-Cross.git', 'aa217aeb6c9f0ace7a0ab233b28807edf45eb165')
@@ -468,6 +474,17 @@ def step_code(tree, game, keys, env, logs, *, version="v0"):
     report_path.write_text(json.dumps(report, indent=2) + '\n')
 
 
+def step_output_res_overlay_4k(tree, logs, *, version='v0'):
+    """The 3840x2160 HeapDef overlay for the experimental native 4K output, next to the 2K one in
+    extracted/<version>/romfs-patches-out. Optional by design: the runtime loads the overlay of the output size it starts in,
+    so without this file the game still runs at 1080p and true 2K; a failure only says so instead of failing the build."""
+    log = logs / ('output_res_overlay_4k.log' if version == 'v0' else f'{version}-output_res_overlay_4k.log')
+    try:
+        run([tree / '.venv/bin/python', 'scripts/make_output_res_overlay.py', OUTPUT_RES_4K, '--version', version], log, cwd=tree)
+    except BuildError as e:
+        say(f'   the {OUTPUT_RES_4K} overlay was not built; 1080p and true 2K are unaffected: {str(e).splitlines()[0]}')
+
+
 def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None):
     py = tree / '.venv/bin/python'
     romfs = tree / 'extracted/v0/romfs'
@@ -507,9 +524,12 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None):
     if not (tree / 'extracted/v0/romfs-patches/manifest.tsv').exists():
         say('2/4 data: RomFS overlays (quick-menu capture timing, game-over retry)')
         run([py, 'scripts/make_romfs_patches.py'], logs / 'romfs_patches.log', cwd=tree)
-    if not (tree / 'extracted/v0/romfs-patches-out/2560x1440/manifest.tsv').exists():
-        say('2/4 data: RomFS overlay for the 2560x1440 output (key 3 in the game)')
-        run([py, 'scripts/make_output_res_overlay.py', '2560x1440'], logs / 'output_res_overlay.log', cwd=tree)
+    if not (tree / f'extracted/v0/romfs-patches-out/{OUTPUT_RES_2K}/manifest.tsv').exists():
+        say(f'2/4 data: RomFS overlay for the {OUTPUT_RES_2K} output (key 3 in the game)')
+        run([py, 'scripts/make_output_res_overlay.py', OUTPUT_RES_2K], logs / 'output_res_overlay.log', cwd=tree)
+    if not (tree / f'extracted/v0/romfs-patches-out/{OUTPUT_RES_4K}/manifest.tsv').exists():
+        say(f'2/4 data: RomFS overlay for the {OUTPUT_RES_4K} output (experimental native 4K; optional)')
+        step_output_res_overlay_4k(tree, logs)
 
 
 def build_hactool(tree, logs):
@@ -634,9 +654,10 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112'):
         report = json.loads(index.read_text())
         check(f'{expected["display_version"]} RomFS', report['romfs_sha256'], expected['romfs']['sha256'])
         check(f'{expected["display_version"]} RomFS size', report['romfs_size'], expected['romfs']['size'])
-    for script, arguments in [('make_romfs_patches.py', []), ('make_output_res_overlay.py', ['2560x1440'])]:
+    for script, arguments in [('make_romfs_patches.py', []), ('make_output_res_overlay.py', [OUTPUT_RES_2K])]:
         run([tree/'.venv/bin/python', 'scripts/'+script, *arguments, '--version', version],
             logs/(version+'-'+script+'.log'), cwd=tree)
+    step_output_res_overlay_4k(tree, logs, version=version)
 
 
 def build_spirv_cross(tree, logs):
@@ -809,6 +830,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
     for rel in files:
         clone(tree / rel, res / rel)
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
+    # The RomFS overlays travel with the app, including every output-size folder (romfs-patches-out/2560x1440 and, when it
+    # was built, /3840x2160). copy_tree copies whatever is there, so a checkout without the optional 4K overlay packages the
+    # 2K one and the game still runs 1080p/2K.
     for rel in (f'extracted/{version}/romfs-patches', f'extracted/{version}/romfs-patches-out', 'extracted/firmware/shared-fonts'):
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)

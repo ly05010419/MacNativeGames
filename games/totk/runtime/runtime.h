@@ -85,13 +85,25 @@ void runtime_front_run(void(*callback)(void));
 void runtime_boot_progress(const char *stage,uint64_t done,uint64_t total);
 void runtime_boot_status(const char *stage,const char *detail);
 void runtime_boot_count(const char *stage,uint64_t done,uint64_t total);   /* a boot step counted in items (shader import) */
-/* True 2K (runtime/game_patches.c, Mac): TOTK_OUTPUT_RES=<w>x<h> sets the game's own output size. runtime_output_res gives it
-   (0 when unset); runtime_output_res_extra_bytes is what the HeapDef overlay (scripts/make_output_res_overlay.py, same formula)
-   adds to the texture heap and to Graphics, and so to the application pool (runtime/services.c). */
+/* True 2K/4K (runtime/game_patches.c, Mac): TOTK_OUTPUT_RES=<w>x<h> sets the game's own output size. runtime_output_res
+   gives it (0 when unset); runtime_output_res_extra_bytes is what the HeapDef overlay (scripts/make_output_res_overlay.py,
+   same formula) adds to the texture heap and to Graphics, and so to the application pool (runtime/services.c). */
 int runtime_output_res(unsigned *w,unsigned *h);
 uint64_t runtime_output_res_extra_bytes(void);
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
-int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
+int runtime_output_mode_cycle(void);                    /* key 3: MetalFX -> native -> off, at 2K or 4K by the drawable */
+/* Picture v2 target: res is TOTK_RES_1080/1440/2160 and upscaler TOTK_UPSCALE_NATIVE/METALFX (runtime/settings.h).
+   runtime_output_mode_set_ex returns RUNTIME_OUTPUT_OK (0) when applied live, UNAVAILABLE (-1), PENDING (-2, a previous
+   switch is still in flight), RESTART (-3, the target is valid but this process must start again with a bigger
+   TOTK_OUTPUT_RES) or INVALID (-4, not a presentation mode).  get_ex reports the live state (0, or -1 for a canvas that
+   is not a v2 mode); max_res is the largest res this process can present (2160 only after a 3840x2160 start);
+   available_ex/restart_required answer what set_ex would do without changing anything. */
+enum { RUNTIME_OUTPUT_OK = 0, RUNTIME_OUTPUT_UNAVAILABLE = -1, RUNTIME_OUTPUT_PENDING = -2, RUNTIME_OUTPUT_RESTART = -3, RUNTIME_OUTPUT_INVALID = -4 };
+int runtime_output_mode_set_ex(int res,int upscaler);
+int runtime_output_mode_get_ex(int *res,int *upscaler);
+int runtime_output_max_res(void);
+int runtime_output_mode_available_ex(int res,int upscaler);
+int runtime_output_mode_restart_required(int res,int upscaler);
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);

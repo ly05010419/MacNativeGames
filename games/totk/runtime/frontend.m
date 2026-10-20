@@ -8,7 +8,10 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "preferences.h"
+#include "settings.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
+#include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 int mfxup_output_enabled(void);
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
@@ -125,7 +128,15 @@ static NSString *shortcut_text(void){
  }
  uint64_t size=runtime_output_size_current();unsigned w=(uint32_t)size,h=(uint32_t)(size>>32);
  NSString *picture;
- if(mfxup_output_enabled())picture=@"MetalFX 2K";
+ int outRes=0,outUp=0;
+ int modeOk=runtime_output_mode_get_ex(&outRes,&outUp)==RUNTIME_OUTPUT_OK;
+ if(modeOk&&outRes==TOTK_RES_2160)
+  picture=outUp==TOTK_UPSCALE_METALFX?@"MetalFX 4K":@(TOTK_UI("原生 3840×2160","native 3840×2160"));
+ else if(modeOk&&outRes==TOTK_RES_1440)
+  picture=outUp==TOTK_UPSCALE_METALFX?@"MetalFX 2K":@(TOTK_UI("原生 2K","native 2K"));
+ else if(modeOk&&outRes==TOTK_RES_1080)
+  picture=@(TOTK_UI("关闭","off"));
+ else if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
  else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
  else picture=@(TOTK_UI("关闭","off"));
@@ -155,7 +166,45 @@ static NSString *shortcut_text(void){
  else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
 @end
-void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
+/* The Cocoa shortcut card follows the same persisted switches as the in-picture HUD: hints on/off at launch and after
+   a settings change, and compact/corners layout without waiting for a restart. */
+void runtime_shortcut_help_set_visible(int on){
+ dispatch_async(dispatch_get_main_queue(), ^{if(shortcutHelp)shortcutHelp.hidden=!on;});
+}
+void runtime_shortcut_help_refresh_layout(void){
+ dispatch_async(dispatch_get_main_queue(), ^{
+  if(!shortcutHelp)return;
+  int compact=hud_compact();
+  TOTKShortcutHelp *h=(TOTKShortcutHelp *)shortcutHelp;
+  h.autoresizingMask=compact?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
+  h.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;
+  h.layer.cornerRadius=compact?7:14;
+  h.layer.borderWidth=1;
+  h.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
+  h.label.alignment=compact?NSTextAlignmentLeft:NSTextAlignmentCenter;
+  h.label.lineBreakMode=compact?NSLineBreakByClipping:NSLineBreakByWordWrapping;
+  /* In corners mode the card is centred; keep it below the opaque boot overlay so it cannot cover the startup card. */
+  if(bootOverlay&&h.superview==bootOverlay.superview)[h.superview addSubview:h positioned:NSWindowBelow relativeTo:bootOverlay];
+  [h refresh];[h position];
+ });
+}
+void runtime_shortcut_help_toggle(void){
+ int want=!totk_setting_hints();
+ int rc=totk_setting_set_hints(want);
+ if(rc==TOTK_SET_OK){
+  runtime_shortcut_help_set_visible(totk_setting_hints());
+  return;
+ }
+ /* A locked or read-only settings store must not make key 1 / Help > Shortcut Help inert: keep the live toggle. */
+ int current=totk_setting_hints();
+ if(current==want){
+  /* The setter applied the new value but could not persist it; the atomic HUD flag already matches. */
+  runtime_shortcut_help_set_visible(current);
+ }else{
+  runtime_shortcut_help_set_visible(fps_overlay_toggle_hints());
+ }
+ fprintf(stderr,"[totk] hints: settings toggle failed (%d); kept live overlay state\n",rc);
+}
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -177,11 +226,11 @@ static void front_sync_drawable(void){
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;
- if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
+ if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");totk_preferences_flush();_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
   uint64_t t0=runtime_now_ns();while(runtime_fs_save_busy()&&runtime_now_ns()-t0<15000000000ull)usleep(20000);
-  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
+  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);totk_preferences_flush();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
@@ -196,14 +245,7 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
-/* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
-static void front_install_menu(void){
- NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
- NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
- NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
- quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];NSApp.mainMenu=menu;
-}
+/* The native menu bar is built by runtime/preferences.m; its Quit uses the window-close path so saves finish. */
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
  @autoreleasepool{
@@ -221,7 +263,7 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME "  Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
-  front_install_menu();
+  totk_preferences_install(window);
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);
@@ -238,7 +280,8 @@ void runtime_front_run(void(*callback)(void)){
   bootProgress.minValue=0;bootProgress.maxValue=100;bootProgress.indeterminate=YES;bootProgress.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
-  shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.autoresizingMask=hud_compact()?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
+  shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.hidden=!fps_overlay_hints_enabled();
+  shortcutHelp.autoresizingMask=hud_compact()?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
   /* Keep discovery/warm-up visible; the help appears after the opaque boot
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];

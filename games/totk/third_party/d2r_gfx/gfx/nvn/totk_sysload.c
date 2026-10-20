@@ -10,6 +10,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,17 +25,25 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static sysload_info g_cur;
 static int g_have;
 static sysload_busy g_busy;   // under g_mu (GPU completion handlers)
+static _Atomic int g_enabled = -1;   // -1: not resolved from TOTK_LOAD_OVERLAY yet
 
 int sysload_enabled(void) {
-    static int on = -1;
+    int on = atomic_load_explicit(&g_enabled, memory_order_relaxed);
+    if (on < 0) {
 #if TARGET_OS_IPHONE
-    const int def = 0;   // no IOKit on iOS; the phone shows only the FPS counter
+        const int def = 0;   // no IOKit on iOS; the phone shows only the FPS counter
 #else
-    const int def = 1;
+        const int def = 1;
 #endif
-    if (on < 0) { const char *e = getenv("TOTK_LOAD_OVERLAY"); on = e ? strcmp(e, "0") != 0 : def; }
+        const char *e = getenv("TOTK_LOAD_OVERLAY");
+        on = e ? strcmp(e, "0") != 0 : def;
+        atomic_store_explicit(&g_enabled, on, memory_order_relaxed);
+    }
     return on;
 }
+
+/* Settings (runtime/settings.h) can show or hide the load line without a restart; atomic for the render thread. */
+void totk_sysload_set_enabled(int on) { atomic_store_explicit(&g_enabled, on ? 1 : 0, memory_order_relaxed); }
 
 double sysload_busy_add(sysload_busy *b, double s, double e) {
     if (!(e > s)) return 0;

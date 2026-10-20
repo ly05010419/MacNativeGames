@@ -11,7 +11,8 @@ uint64_t runtime_now_ns(void){return probe_clock_fixed?probe_now:(probe_now+=100
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-static int help_toggles,interp_toggles,output_cycles,aspect_toggles;   // keys 1 / 2 / 3 / 4 (see the key checks)
+static int help_toggles;   // key 1 changes the overlay view directly; keys 2-4 go through the settings store
+extern int probe_interp_actions, probe_picture_actions, probe_aspect_actions;
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
@@ -19,9 +20,9 @@ void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame s
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
 int runtime_output_res_toggle(void){runtime_fail("unexpected output size switch in unit probe");return 0;}
 void runtime_shortcut_help_toggle(void){help_toggles++;}
-int runtime_output_mode_cycle(void){output_cycles++;return 1;}
-int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
-void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
+int runtime_output_mode_cycle(void){runtime_fail("picture mode must go through the settings store");return 0;}
+int runtime_aspect_toggle(void){runtime_fail("aspect must go through the settings store");return 0;}
+void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("shortcut must go through the settings store");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
 void dm_gfx_window_shot(const char *p){(void)p;runtime_fail("unexpected window shot in unit probe");}
@@ -147,7 +148,7 @@ int main(void){
  /* Keys 1-4 (Mac key codes 18-21): one action per press; held-key repeats and the release do nothing more; no game
     button; each key touches only its own action. 1 shows / hides the overlays (frontend.m), 2 frame interpolation (runtime
     flag mfx_interp, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h). */
- static const unsigned keys[4]={18,19,20,21};int *count[4]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles};
+ static const unsigned keys[4]={18,19,20,21};int *count[4]={&help_toggles,&probe_interp_actions,&probe_picture_actions,&probe_aspect_actions};
  static const char *const pressed[4]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)"};
  for(int k=0;k<4;k++){
   runtime_input_key(keys[k],1);for(int j=0;j<4;j++)need(*count[j]==(j<k?2:j==k?1:0),pressed[k]);

@@ -34,6 +34,7 @@ Update history:
 
 | Date | Platform | Update |
 |---|---|---|
+| Oct 20 | Mac | Native Settings window and Game menu for interpolation, picture, ultrawide, HUD, overlays, language and input profiles; settings and keymaps now persist across restarts |
 | Oct 20 | Mac | Two memory leaks fixed for both games |
 | Oct 20 | Mac | **Breath of the Wild 1.6.0** (early): a card image holding the base game, the update and the add-on content builds its own app with the same command; title, saves, the Great Plateau and the DLC packs work, keys 2 (frame interpolation) and 3 (MetalFX 2K) work |
 | Oct 20 | iPhone, iPad | The launcher adopts the UIScene lifecycle, so an IPA built with Xcode 27 starts on iOS 27 (which ends apps that still make their window in the app delegate) |
@@ -205,7 +206,15 @@ The launcher checks the file at every start and names the first bad line in an a
 
 Mac-only extra keys: **1** show or hide all on-screen overlays (FPS, shader count, system load and the shortcut reminder, together in one small box in the window's top-right corner; `TOTK_HUD=corners` puts the readings back in the picture's corners), **2** frame interpolation (off → 30+30 → half the refresh rate → unlimited), **3** cycle picture mode (MetalFX 2K → native 2K → off), **4** ultrawide 21:9 on / off (1.2.1 and 1.4.3: the camera sees more at the sides and the picture fills a wider window; `TOTK_ASPECT=32:9` or `3440x1440` picks another shape and starts with it on; the HUD, menus and map keep their shape in the middle 16:9 of the window, the map with black bars at the sides; markers that follow objects in the world are not moved out yet). The shortcut reminder shows the current interpolation and picture modes and refreshes twice a second in both HUD layouts. MetalFX is off by default and only starts when you select its mode with **3**; resizing the window never enables it automatically. Text entry (naming a horse) uses the Mac keyboard. iPhone/iPad uses touch controls or a compatible game controller and does not show the Mac 1/2/3/4 shortcut prompts. The touch layout follows a Switch controller: L and ZL at the top left, R and ZR at the top right, − and + between them, the d-pad on the left and A, B, X, Y on the right. The d-pad sits above the left stick and A, B, X, Y above the right stick, and L3 and R3 (stick presses) are in the bottom corners. Touch the left half away from the buttons and drag for the left stick, the right half for the camera (right stick); each stick is centred where your finger goes down. With a game controller connected the touch controls are hidden: touch the screen to show and use them, and they hide again 3 seconds after you lift your fingers.
 
-Native 2K changes the game's composition canvas and UI to 2560×1440. The 3D scene still follows the game's separate render scaling; this does not force every internal render target to 1440p. The manual MetalFX mode also works in smaller windows and scales to the actual output size, including 4K.
+### Settings on Mac
+
+The Mac app has a standard menu bar. **Game** holds the picture options (interpolation, picture mode, ultrawide and its ratio, HUD layout, overlays, input profile, language and full screen); **Settings… (⌘,)** opens a four-tab window (Picture, HUD, Input, Language). Changes apply as you make them — game and interface language changes take effect after a restart — and are written to `~/Library/Application Support/MacNativeGames/TOTK/settings.json` immediately, so they survive quitting and relaunching. Keymap profiles live beside it in `keymaps.json`; the Input tab can create, duplicate, rename, delete and switch up to eight profiles, each holding both the keyboard map and the controller map. Keys **1–4** keep working and now update the same saved state.
+
+`controls.txt` remains the default controller layout and is still read when the active profile leaves every controller button at its default. Once a profile changes any controller button, that profile wins and `controls.txt` is ignored for the controller (the launcher still validates the file).
+
+A `TOTK_*` environment variable set for the current launch still wins over the saved value; the matching control is disabled and explains why. In a test/agent run (`TOTK_SLOT_OWNER` other than `user`) the store is isolated under `agent-settings/`, so tests never overwrite the player's settings. `TOTK_SETTINGS_DIR` moves the whole store (used by tests). A corrupt file is moved aside as `settings.json.corrupt-<timestamp>`; the previous good copy is kept as `settings.json.bak` and restored when possible. These files are local and are never synced or uploaded.
+
+The Picture tab and the Game menu offer five presets: **Off (1080p)**, **MetalFX 2K**, **Native 2K**, **MetalFX 4K** and **Native 4K (experimental)**, plus advanced output-target, upscaler and scene-render controls. MetalFX 2K/4K render a 1080p canvas and let MetalFX present it at the chosen output size; native 2K/4K change the game's composition canvas and UI to 2560×1440 or 3840×2160. Native 4K is heavy and experimental. 4K does not require a 4K display: it supersamples and scales into the current window, so it costs more GPU time and memory. A 4K mode needs an app built with the 3840×2160 HeapDef overlay (the 1.4.3 build includes it); without that overlay the 4K options are disabled and a saved 4K preference falls back to the best available 2K/1080p start instead of failing. Picture changes that need a larger startup canvas are saved and take effect after restarting the game; key **3** still cycles the modes and updates the same saved state. The 3D scene still follows the game's separate render scaling; this does not force every internal render target to 1440p or 2160p. A 4K scene render is only selectable with Native 4K output: with 1080p, 2K or MetalFX output the game uses its default scene target, and a saved incompatible combination is normalized at startup instead of risking a renderer crash.
 
 Language: the game and the launcher's own text (startup screen, shader warm-up progress, overlays, keyboard prompt) follow the Mac's language. The launcher text is Chinese on a Chinese Mac and English otherwise. In a 1.4.3 build, Brazilian Portuguese selects the game's official pt-BR text. To give only this game another language, set its preferred language, for example `defaults write org.macnativegames.totk AppleLanguages -array pt-BR` (`defaults delete org.macnativegames.totk AppleLanguages` removes it). To override, launch with `TOTK_LANG` for the game (for example `open --env TOTK_LANG=en-US "Tears of the Kingdom.app"`) or `TOTK_UI_LANG=zh` / `en` for the launcher text.
 
@@ -281,6 +290,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 | 日期 | 平台 | 更新 |
 |---|---|---|
+| 10 月 20 日 | Mac | 原生设置窗口和「游戏」菜单：补帧、画质、超宽屏、HUD、覆盖层、语言和输入方案；设置与键位方案退出重开仍在 |
 | 10 月 20 日 | Mac | 修了两处两个游戏都有的内存泄漏|
 | 10 月 20 日 | Mac | **旷野之息 1.6.0**（早期）：本体 + 更新 + 追加内容合在一起的卡带镜像用同一条命令打成单独的 App；标题、存档、初始台地和 DLC 内容包都能用，2 键（补帧）和 3 键（MetalFX 2K）都能用 |
 | 10 月 20 日 | iPhone、iPad | 启动器改用 UIScene 生命周期：用 Xcode 27 构建的 IPA 能在 iOS 27 上启动（iOS 27 会结束仍在 app delegate 里创建窗口的 App） |
@@ -452,7 +462,15 @@ west = y
 
 仅限 Mac 的额外按键：**1** 同时隐藏或重新显示所有屏幕提示（FPS、着色器计数、系统负载和快捷键说明，集中在窗口右上角的一个小框里；`TOTK_HUD=corners` 恢复为画面四角显示）；**2** 补帧（关 → 30+30 → 刷新率一半 → 不限帧），**3** 循环切换画质（MetalFX 2K → 原生 2K → 关闭），**4** 21:9 超宽屏开 / 关（1.2.1 和 1.4.3：镜头两侧看到更多，画面铺满更宽的窗口；`TOTK_ASPECT=32:9` 或 `3440x1440` 换成别的比例并以宽屏启动；HUD、菜单和地图保持原比例，放在窗口中间的 16:9 区域，地图两侧是黑边；跟着世界物体走的标记还没往两侧挪）。快捷键说明会显示当前补帧和画质档位，两种提示布局都每半秒刷新一次。MetalFX 默认关闭，只有按 **3** 手动切换到该模式才会启用；放大窗口不会自动开启。文字输入（给马取名）直接用 Mac 键盘。iPhone / iPad 使用触屏控件或兼容手柄，不会显示 Mac 的 1 / 2 / 3 / 4 快捷键提示。触屏按 Switch 手柄排布：左上 L、ZL，右上 R、ZR，中间 − 和 +，左边十字键，右边 A、B、X、Y。十字键在左摇杆上方，A、B、X、Y 在右摇杆上方，L3、R3（按下摇杆）在左下角和右下角。在左半屏避开按钮的地方按住拖动是左摇杆，在右半屏是转镜头（右摇杆）；摇杆以手指按下的位置为中心。接上手柄时触屏控件自动隐藏：碰一下屏幕就会显示，可以照常使用，手指离开 3 秒后再次隐藏。
 
-原生 2K 将游戏合成画布和 UI 改为 2560×1440，3D 场景仍由游戏独立的渲染比例控制，并非强制所有内部通道以 1440p 渲染。手动 MetalFX 在较小窗口中也可使用，输出放大会跟随实际窗口尺寸，包括 4K。
+### Mac 设置
+
+Mac 版有标准菜单栏。**游戏**菜单集中了画面选项（补帧、画质、超宽屏及比例、HUD 布局、覆盖层、输入方案、语言和全屏）；**设置…（⌘,）** 打开含四个标签页的窗口（画面、HUD、输入、语言）。改动立即生效——游戏语言和界面语言需要重新启动——并马上写入 `~/Library/Application Support/MacNativeGames/TOTK/settings.json`，退出重开仍在。键位方案保存在同目录的 `keymaps.json`；输入页可以新建、复制、重命名、删除和切换最多 8 个方案，每个方案同时保存键盘映射和手柄映射。**1–4** 快捷键继续可用，并会更新同一份已保存状态。
+
+`controls.txt` 仍是默认手柄布局：当前方案没有改动任何手柄按键时，它照常生效；一旦方案改了任一手柄按键，就以方案为准，手柄不再读取 `controls.txt`（启动器仍会校验该文件的格式）。
+
+本次启动显式设置的 `TOTK_*` 环境变量仍优先于保存值，对应控件会禁用并说明原因。测试/代理运行（`TOTK_SLOT_OWNER` 不是 `user`）会把存储隔离到 `agent-settings/`，不会覆盖玩家的设置；`TOTK_SETTINGS_DIR` 可以整体搬移存储位置（测试用）。文件损坏时会改名为 `settings.json.corrupt-<时间戳>` 保留现场，并尽量从上一份 `settings.json.bak` 恢复。这些文件只在本机，不会同步或上传。
+
+画面页和“游戏”菜单提供五档预设：**关闭（1080p）**、**MetalFX 2K**、**原生 2K**、**MetalFX 4K**、**原生 4K（实验性）**，另有输出目标、放大方式和场景渲染分辨率等高级控件。MetalFX 2K/4K 以 1080p 画布渲染，再由 MetalFX 放大到所选输出尺寸；原生 2K/4K 把游戏合成画布和 UI 分别改为 2560×1440 / 3840×2160。原生 4K 开销很大且属于实验性功能。4K 不要求 4K 显示器：它以超采样方式渲染后缩放到当前窗口，因此会明显增加 GPU 时间与显存占用。4K 模式需要打包了 3840×2160 HeapDef 覆盖层的 app（1.4.3 构建已包含）；缺少该覆盖层时 4K 选项会禁用，已保存的 4K 偏好会安全回退到可用的 2K/1080p 启动，而不是启动失败。需要更大启动画布的画面变更会先保存，重启游戏后生效；快捷键 **3** 仍可循环切换，并同步更新保存状态。3D 场景仍由游戏独立的渲染比例控制，并非强制所有内部通道以 1440p 或 2160p 渲染。4K 场景渲染只能在“原生 4K”输出下选择：1080p、2K 或 MetalFX 输出时使用游戏默认场景目标，已保存的不兼容组合会在启动时自动归一，避免渲染器崩溃。
 
 语言：游戏和启动器自身的文字（启动画面、着色器预热进度、提示叠层、键盘输入提示）跟随 Mac 的系统语言。启动器文字在中文系统上显示中文，其他语言显示英文。1.4.3 版本中，巴西葡萄牙语会选择游戏官方的 pt-BR 文本。只想让本游戏使用另一种语言时，可设置它的首选语言，例如 `defaults write org.macnativegames.totk AppleLanguages -array pt-BR`（`defaults delete org.macnativegames.totk AppleLanguages` 可撤销）。如需指定，可用 `TOTK_LANG` 设置游戏语言（例如 `open --env TOTK_LANG=zh-Hans "Tears of the Kingdom.app"`），用 `TOTK_UI_LANG=zh` / `en` 设置启动器文字。
 

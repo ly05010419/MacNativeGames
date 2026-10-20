@@ -300,6 +300,18 @@ void runtime_game_patches(Module *m) {
  * multiplies the canvas by that scale (8d860..8d894). Publishing only +0x508
  * changes the final crop but leaves every UI/composition target at 1080p.
  * Pending output changes are bit 21 of +8. Keep the original rebuild path. */
+/* Settings picture v2 (runtime/settings.h): the output resolution and the upscaler. The runtime keeps its own copies of
+   the schema constants so this translation unit does not include the settings one; the values are part of the v2
+   contract (TOTK_RES_* / TOTK_UPSCALE_*). */
+#ifndef TOTK_RES_1080
+#define TOTK_RES_1080 1080
+#define TOTK_RES_1440 1440
+#define TOTK_RES_2160 2160
+#endif
+#ifndef TOTK_UPSCALE_NATIVE
+#define TOTK_UPSCALE_NATIVE 0
+#define TOTK_UPSCALE_METALFX 1
+#endif
 static int output_full_at_start;
 static unsigned output_w,output_h;
 static _Atomic(uint8_t *) output_page;
@@ -307,6 +319,20 @@ static uint64_t pack_size(unsigned w,unsigned h){return (uint64_t)h<<32|w;}
 uint64_t runtime_output_size_current(void){
     uint8_t *page=atomic_load(&output_page);
     return page?atomic_load((_Atomic uint64_t *)(void *)(page+32)):pack_size(1920,1080);
+}
+/* The largest picture this process can present: 4K only after a 3840x2160 start, 2K when the swapchain has at least
+   2560x1440. The drawable, not the physical screen, is what counts (a 4K canvas on a smaller window is a downscale). */
+int runtime_output_max_res(void){
+    if(!output_page)return TOTK_RES_1080;
+    if(output_w==3840&&output_h==2160)return TOTK_RES_2160;
+    if(output_w>=2560&&output_h>=1440)return TOTK_RES_1440;
+    return TOTK_RES_1080;
+}
+/* A MetalFX output start keeps the game at the 1080p canvas and lets the scaler reach the swapchain; only a native start
+   draws the requested size itself. TOTK_MFX_OUTPUT is what the settings layer exports for the MetalFX upscaler. */
+static int output_mfx_env(void){
+    const char *e=getenv("TOTK_MFX_OUTPUT");
+    return e&&*e&&strcmp(e,"0")!=0;
 }
 int runtime_output_res(unsigned *w,unsigned *h){
     static int decided,on;static unsigned cw,ch;
@@ -328,7 +354,7 @@ int runtime_output_res(unsigned *w,unsigned *h){
         }else{
             char tail;
             if(sscanf(e,"%ux%u%c",&cw,&ch,&tail)!=2||cw<640||ch<360||cw>7680||ch>4320)runtime_fail("TOTK_OUTPUT_RES must be auto, 0 or widthxheight");
-            on=1;output_full_at_start=1;
+            on=1;output_full_at_start=output_mfx_env()?0:1;
         }
         decided=1;
     }
@@ -441,25 +467,182 @@ static void patch_render_res(Module *m){
     fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u%s (4 instructions at main+0x585e48, value on the data page)\n",
             w,h,set?"":" (the game's handheld size; TOTK_RENDER_RES not set)");
 }
+/* Request a new canvas: store it, set the display config's pending bit and post the operation-mode notification. Without
+   a published display config the size is taken when the game first lays out. Returns 1. */
+static int output_request_canvas(unsigned cw,unsigned ch,int full){
+    _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
+    atomic_store(size,pack_size(cw,ch));
+    uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
+    const char *before="";
+    if(config){uint32_t old=__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);before=old&(1u<<21)?" (the previous switch was still pending)":"";runtime_oe_push_message(30);}
+    int maxres=runtime_output_max_res();
+    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (%s)%s%s\n",cw,ch,
+            full?(maxres==TOTK_RES_2160?"native 4K: the canvas and the UI at that size":"true 2K: the canvas and the UI at that size")
+                 :(maxres==TOTK_RES_2160?"MetalFX 4K: 1080p canvas, MetalFX scales it at present":"the 2K output: 1080p canvas, MetalFX scales it at present"),
+            config?" from the next layout":"; the game has not laid out its displays yet, it takes this size when it does",before);
+    return 1;
+}
 int runtime_output_res_toggle(void){
     if(!output_page)return 0;
     _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
     int full=atomic_load(size)!=pack_size(output_w,output_h);
-    atomic_store(size,full?pack_size(output_w,output_h):pack_size(1920,1080));
-    uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
-    if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
-    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (display config %s)\n",full?output_w:1920,full?output_h:1080,config?"ready":"not published yet");
-    return 1;
+    return output_request_canvas(full?output_w:1920,full?output_h:1080,full);
 }
 int runtime_output_mode_cycle(void){
     if(!output_page)return 0;
     extern int mfxup_output_enabled(void);extern void dm_gfx_set_flag(const char *,int);
-    int full=atomic_load((_Atomic uint64_t *)(void *)(output_page+32))==pack_size(output_w,output_h);
-    int native=0,mfx=0;const char *name;
-    if(full)name="关闭 2K";
-    else if(mfxup_output_enabled()){native=1;name="原生 2K";}
-    else{mfx=1;name="MetalFX 2K";}
-    if(full!=native)runtime_output_res_toggle();
-    dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
+    _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
+    uint64_t current=atomic_load(size);
+    int full=current==pack_size(output_w,output_h),canvas_1080=current==pack_size(1920,1080);
+    int maxres=runtime_output_max_res();
+    const char *off_name=maxres==TOTK_RES_2160?"关闭 4K":"关闭 2K";
+    const char *native_name=maxres==TOTK_RES_2160?"原生 4K":"原生 2K";
+    const char *mfx_name=maxres==TOTK_RES_2160?"MetalFX 4K":"MetalFX 2K";
+    int next_full,next_mfx;const char *name;
+    if(full){next_full=0;next_mfx=0;name=off_name;}
+    else if(mfxup_output_enabled()){next_full=1;next_mfx=0;name=native_name;}
+    else if(!canvas_1080){next_full=0;next_mfx=0;name=off_name;}
+    else{next_full=0;next_mfx=1;name=mfx_name;}
+    if(full!=next_full||!canvas_1080)output_request_canvas(next_full?output_w:1920,next_full?output_h:1080,next_full);
+    dm_gfx_set_flag("mfx_output",next_mfx);dm_gfx_set_flag("mfx_upscale",next_mfx);
     fprintf(stderr,"[totk] key 3: %s\n",name);return 1;
+}
+/* Settings picture mode (runtime/settings.h): deterministic OFF / MetalFX / NATIVE instead of key 3's relative cycle.
+   -1: no 2K-capable start; -2: the display config or a previous switch is still pending. Key 3 keeps its own path. */
+static const char *output_mode_name(int mode){
+    int maxres=runtime_output_max_res();
+    return mode==2?(maxres==TOTK_RES_2160?"native 4K":"native 2K"):mode==1?(maxres==TOTK_RES_2160?"MetalFX 4K":"MetalFX 2K"):"off (1080p)";
+}
+int runtime_output_available(void){return atomic_load(&output_page)!=NULL;}
+int runtime_output_mode_get(void){
+    uint8_t *page=atomic_load(&output_page);if(!page)return -1;
+    if(atomic_load((_Atomic uint64_t *)(void *)(page+32))==pack_size(output_w,output_h))return 2;
+    extern int mfxup_output_enabled(void);return mfxup_output_enabled()?1:0;
+}
+int runtime_output_mode_set(int mode){
+    if(mode<0||mode>2){fprintf(stderr,"[totk] output mode %d: expected 0 (off), 1 (MetalFX 2K) or 2 (native 2K)\n",mode);return -1;}
+    uint8_t *page=atomic_load(&output_page);
+    if(!page){fprintf(stderr,"[totk] output mode %s: 2K needs a 2K-capable start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>)\n",output_mode_name(mode));return -1;}
+    extern void dm_gfx_set_flag(const char *,int);int mfx=mode==1;
+    int current=runtime_output_mode_get();
+    if(current==mode){dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);return 0;}
+    /* Only a resolution change re-runs the game's display handler; OFF <-> MetalFX is just the upscaler flags, as key 3 does. */
+    int full=mode==2,was_full=current==2;
+    if(full!=was_full){
+        uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(page+40));
+        if(!config){fprintf(stderr,"[totk] output mode %s: the game has not laid out its displays yet (pending)\n",output_mode_name(mode));return -2;}
+        uint32_t old=__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);
+        if(old&(1u<<21)){fprintf(stderr,"[totk] output mode %s: the previous 2K switch is still pending\n",output_mode_name(mode));return -2;}
+    }
+    atomic_store((_Atomic uint64_t *)(void *)(page+32),full?pack_size(output_w,output_h):pack_size(1920,1080));
+    dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
+    if(full!=was_full)runtime_oe_push_message(30);
+    fprintf(stderr,"[totk] output mode: %s\n",output_mode_name(mode));return 0;
+}
+
+/* Picture v2 (runtime/settings.h): choose the output resolution and the upscaler by value. res names the presented tier
+   (the startup drawable); the canvas is what changes at run time. MetalFX upscales the 1080p canvas to the drawable, so
+   MetalFX 2K needs a 2K start and MetalFX 4K a 3840x2160 one; native draws the canvas itself (2K native works on any
+   2K/4K start, 4K native needs the 3840x2160 swapchain). A mode this process did not start big enough for returns
+   RUNTIME_OUTPUT_RESTART so settings can persist it and start again. */
+static const char *output_name_ex(int res,int upscaler){
+    if(res==TOTK_RES_1080)return "off (1080p)";
+    if(res==TOTK_RES_2160)return upscaler==TOTK_UPSCALE_NATIVE?"native 4K":"MetalFX 4K";
+    return upscaler==TOTK_UPSCALE_NATIVE?"native 2K":"MetalFX 2K";
+}
+static int output_mode_plan(int res,int upscaler,unsigned *cw,unsigned *ch,int *mfx){
+    if(upscaler!=TOTK_UPSCALE_NATIVE&&upscaler!=TOTK_UPSCALE_METALFX)return RUNTIME_OUTPUT_INVALID;
+    int maxres=runtime_output_max_res();
+    switch(res){
+        case TOTK_RES_1080:
+            /* Off is the 1080p canvas with the output scaler disabled. 1080p with MetalFX would be the same 1080p canvas
+               as MetalFX 2K (the scaler targets the drawable), so it is not a separate mode. */
+            if(upscaler!=TOTK_UPSCALE_NATIVE)return RUNTIME_OUTPUT_INVALID;
+            *cw=1920;*ch=1080;*mfx=0;return RUNTIME_OUTPUT_OK;
+        case TOTK_RES_1440:
+            if(maxres<TOTK_RES_1440)return RUNTIME_OUTPUT_RESTART;
+            if(upscaler==TOTK_UPSCALE_NATIVE){*cw=2560;*ch=1440;*mfx=0;}
+            else if(maxres==TOTK_RES_2160)return RUNTIME_OUTPUT_RESTART;   /* a 4K drawable presents MetalFX at 4K: that is 2160 MetalFX */
+            else{*cw=1920;*ch=1080;*mfx=1;}
+            return RUNTIME_OUTPUT_OK;
+        case TOTK_RES_2160:
+            if(maxres<TOTK_RES_2160)return RUNTIME_OUTPUT_RESTART;
+            if(upscaler==TOTK_UPSCALE_NATIVE){*cw=output_w;*ch=output_h;*mfx=0;}
+            else{*cw=1920;*ch=1080;*mfx=1;}
+            return RUNTIME_OUTPUT_OK;
+    }
+    return RUNTIME_OUTPUT_INVALID;
+}
+int runtime_output_mode_available_ex(int res,int upscaler){
+    unsigned cw,ch;int mfx;
+    return output_mode_plan(res,upscaler,&cw,&ch,&mfx)==RUNTIME_OUTPUT_OK;
+}
+int runtime_output_mode_restart_required(int res,int upscaler){
+    unsigned cw,ch;int mfx;
+    return output_mode_plan(res,upscaler,&cw,&ch,&mfx)==RUNTIME_OUTPUT_RESTART;
+}
+int runtime_output_mode_get_ex(int *res,int *upscaler){
+    uint8_t *page=atomic_load(&output_page);
+    int r=TOTK_RES_1080,u=TOTK_UPSCALE_NATIVE;
+    if(page){
+        extern int mfxup_output_enabled(void);
+        uint64_t size=atomic_load((_Atomic uint64_t *)(void *)(page+32));
+        int mfx=mfxup_output_enabled();
+        int unknown=0;
+        if(size==pack_size(1920,1080)){
+            if(mfx){r=runtime_output_max_res()==TOTK_RES_2160?TOTK_RES_2160:TOTK_RES_1440;u=TOTK_UPSCALE_METALFX;}
+        }else if(!mfx&&size==pack_size(2560,1440)){r=TOTK_RES_1440;}
+        else if(!mfx&&size==pack_size(3840,2160)){r=TOTK_RES_2160;}
+        else if(!mfx&&size==pack_size(output_w,output_h)){
+            /* An explicit startup size that is neither 2K nor 4K: native at the tier the drawable reaches. */
+            if(output_w==3840&&output_h==2160)r=TOTK_RES_2160;
+            else if(output_w>=2560&&output_h>=1440)r=TOTK_RES_1440;
+        }else unknown=1;
+        if(res)*res=r;if(upscaler)*upscaler=u;
+        if(unknown){
+            fprintf(stderr,"[totk] output mode: the canvas %ux%u (MetalFX %s) is not a picture-v2 mode\n",(unsigned)(size&0xffffffffu),(unsigned)(size>>32),mfx?"on":"off");
+            return -1;
+        }
+        return 0;
+    }
+    if(res)*res=r;if(upscaler)*upscaler=u;
+    return 0;
+}
+int runtime_output_mode_set_ex(int res,int upscaler){
+    const char *name=output_name_ex(res,upscaler);
+    unsigned cw,ch;int mfx;
+    int plan=output_mode_plan(res,upscaler,&cw,&ch,&mfx);
+    if(plan==RUNTIME_OUTPUT_INVALID){
+        fprintf(stderr,"[totk] output mode %d/%d: not a presentation mode (1080 native, 1440 native or MetalFX, 2160 native or MetalFX)\n",res,upscaler);
+        return RUNTIME_OUTPUT_INVALID;
+    }
+    if(plan==RUNTIME_OUTPUT_RESTART){
+        fprintf(stderr,"[totk] output mode %s: needs the %s start (TOTK_OUTPUT_RES=%s with the HeapDef overlay); restart required\n",
+                name,res==TOTK_RES_2160?"3840x2160":"2560x1440",res==TOTK_RES_2160?"3840x2160":"2560x1440");
+        return RUNTIME_OUTPUT_RESTART;
+    }
+    extern int mfxup_output_enabled(void);extern void dm_gfx_set_flag(const char *,int);
+    uint8_t *page=atomic_load(&output_page);
+    uint64_t wanted=pack_size(cw,ch);
+    uint64_t current=page?atomic_load((_Atomic uint64_t *)(void *)(page+32)):pack_size(1920,1080);
+    if(current==wanted){
+        dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
+        fprintf(stderr,"[totk] output mode: %s\n",name);return RUNTIME_OUTPUT_OK;
+    }
+    /* A canvas change re-runs the game's display handler. Claim it first: when a previous switch is still in flight this
+       request changes nothing (settings reports "pending" and keeps the old target). */
+    uint64_t config=page?atomic_load((_Atomic uint64_t *)(void *)(page+40)):0;
+    if(!config){
+        fprintf(stderr,"[totk] output mode %s: the game has not laid out its displays yet (pending)\n",name);
+        return RUNTIME_OUTPUT_PENDING;
+    }
+    uint32_t old=__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);
+    if(old&(1u<<21)){
+        fprintf(stderr,"[totk] output mode %s: the previous output switch is still pending\n",name);
+        return RUNTIME_OUTPUT_PENDING;
+    }
+    atomic_store((_Atomic uint64_t *)(void *)(page+32),wanted);
+    dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
+    runtime_oe_push_message(30);   /* nn::oe "operation mode changed": the game runs its display handler */
+    fprintf(stderr,"[totk] output mode: %s (%ux%u)\n",name,cw,ch);return RUNTIME_OUTPUT_OK;
 }

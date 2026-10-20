@@ -5,9 +5,12 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "runtime.h"
+#include "settings.h"
+#include "runtime_settings.h"
 #include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
-#include "controller_map.h"   // the player's button layout (controls.txt)
+#include "controller_map.h"   // the player's button layout (active profile, or legacy controls.txt)
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
@@ -19,23 +22,61 @@ static uint64_t physicalPrev;
 static uint64_t tapUntil[CONTROLLER_BUTTONS];   /* ns, for tap */
 static int toggleOn[CONTROLLER_BUTTONS];        /* for toggle */
 static int toggleMoved[CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
+static int face_env = -1;                       /* TOTK_FACE_BUTTONS for face AUTO: -1 unresolved, 0 label, 1 position, 2 auto */
 static void refresh_gamepads(void);
 
-/* The player's button layout (controller_map.h): TOTK_CONTROLS names the file (the launcher: <data>/controls.txt and
-   checks it first). No file: the default layout. */
+/* The controller map comes from the active keymap profile (runtime/settings.h). Each physical button names the
+   Switch button it drives (target -1 = none), the hold/tap/toggle/aim mode and, for aim, the fire button. A legacy
+   TOTK_CONTROLS file still applies while the profile leaves the whole map at the default; once the profile sets any
+   button or mode the profile wins. */
 static void load_controller_map(void) {
-    controller_map_default(controllerMap, controllerModes);
+    uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS];
+    controller_map_default(defaults, defaultModes);
+    memcpy(controllerMap, defaults, sizeof controllerMap);
+    memcpy(controllerModes, defaultModes, sizeof controllerModes);
+    face_env = -1;
     const char *path = getenv("TOTK_CONTROLS");
-    FILE *f = path && *path ? fopen(path, "rb") : NULL;
-    if (!f) { fprintf(stderr, "[totk-input] controller layout: default\n"); return; }
-    char text[16384]; size_t n = fread(text, 1, sizeof text - 1, f); int whole = feof(f); fclose(f);
-    if (!whole) runtime_fail("controller layout file too large");
-    text[n] = 0;
-    const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, &error);
-    if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
-    uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS]; controller_map_default(defaults, defaultModes);
-    int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
-    fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
+    int active = totk_profile_active();
+    const char *profile = active >= 0 ? totk_profile_name(active) : NULL;
+    int custom = 0;
+    if (active >= 0) {
+        for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
+            int target = totk_profile_controller_target(active, i);
+            int mode = totk_profile_controller_mode(active, i);
+            int fire = totk_profile_controller_fire(active, i);
+            if (target < -1 || target >= CONTROLLER_SWITCH_BUTTONS) {
+                fprintf(stderr, "[totk-input] profile \"%s\" %s: target %d is invalid, keeping the default\n",
+                        profile ? profile : "?", controller_physical_names[i], target);
+                continue;
+            }
+            if (mode < CONTROLLER_HOLD || mode > CONTROLLER_AIM) {
+                fprintf(stderr, "[totk-input] profile \"%s\" %s: mode %d is invalid, keeping the default\n",
+                        profile ? profile : "?", controller_physical_names[i], mode);
+                continue;
+            }
+            if (fire < 0 || fire >= CONTROLLER_BUTTONS) fire = 0;
+            controllerMap[i] = target >= 0 ? (uint16_t)(1u << target) : 0;
+            controllerModes[i] = (uint8_t)(mode | (fire << 3));
+        }
+        for (int i = 0; i < CONTROLLER_BUTTONS; i++)
+            if (controllerMap[i] != defaults[i] || controllerModes[i] != defaultModes[i]) custom = 1;
+    }
+    if (!custom && path && *path) {
+        FILE *f = fopen(path, "rb");
+        if (!f) { fprintf(stderr, "[totk-input] controller layout: default (controls.txt %s not found)\n", path); return; }
+        char text[16384]; size_t n = fread(text, 1, sizeof text - 1, f); int whole = feof(f); fclose(f);
+        if (!whole) runtime_fail("controller layout file too large");
+        text[n] = 0;
+        const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, &error);
+        if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
+        int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
+        fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
+        return;
+    }
+    if (custom && path && *path)
+        fprintf(stderr, "[totk-input] controller layout: active profile \"%s\" (controls.txt ignored)\n", profile ? profile : "?");
+    else
+        fprintf(stderr, "[totk-input] controller layout: %s\n", custom ? "active profile" : "default");
 }
 
 static int32_t stick_axis(float value) {
@@ -52,7 +93,16 @@ static int32_t stronger_axis(int32_t a, int32_t b) {
 }
 
 static int face_by_position(GCController *controller) {
-    return gamepad_face_by_position(controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+    int layout = totk_setting_face_layout();
+    if (layout == TOTK_FACE_POSITION) return 1;
+    if (layout == TOTK_FACE_LABEL) return 0;
+    /* AUTO: the legacy TOTK_FACE_BUTTONS override, read once per map load, then the controller's own naming. */
+    if (face_env < 0) {
+        const char *e = getenv("TOTK_FACE_BUTTONS");
+        face_env = e && !strcmp(e, "position") ? 1 : e && !strcmp(e, "label") ? 0 : 2;
+    }
+    if (face_env < 2) return face_env;
+    return !gamepad_names_nintendo(controller.productCategory.UTF8String) && !gamepad_names_nintendo(controller.vendorName.UTF8String);
 }
 
 /* The physical buttons held, bit i = controller_physical_names[i]; the face buttons by where they sit
@@ -171,6 +221,25 @@ void runtime_gamepad_clear(void) {
     gamepadState = (RuntimeGamepadState){0};
     pressedEdges = 0;
     pthread_mutex_unlock(&gamepadLock);
+}
+
+/* A keymap profile switch (runtime/settings.h, totk_profile_apply): rebuild the map from the new profile and forget
+   held buttons and the per-button tap / toggle / aim state built from the old map. */
+void totk_gamepad_reload(void) {
+    load_controller_map();
+    physicalPrev = 0;
+    memset(tapUntil, 0, sizeof tapUntil);
+    memset(toggleOn, 0, sizeof toggleOn);
+    memset(toggleMoved, 0, sizeof toggleMoved);
+    pthread_mutex_lock(&gamepadLock);
+    gamepadState = (RuntimeGamepadState){0};
+    pressedEdges = 0;
+    pthread_mutex_unlock(&gamepadLock);
+    if (started) refresh_gamepads();
+    int active = totk_profile_active();
+    const char *name = active >= 0 ? totk_profile_name(active) : NULL;
+    fprintf(stderr, "[totk-input] controller layout reloaded%s%s; held, tap, toggle and aim state cleared\n",
+            name ? ": " : "", name ? name : "");
 }
 
 /* On-screen touch controls (iPhone, ios/app/Sources/touch_controls.m) feed a second state merged with the physical

@@ -13,6 +13,7 @@ enum { SYSLOAD_MAX_CORES = 32 };
 typedef struct { int np, ne, p[SYSLOAD_MAX_CORES], e[SYSLOAD_MAX_CORES], gpu_sys, gpu_game, thread_max; char thread_name[32]; } sysload_info;
 
 int sysload_enabled(void);                       // TOTK_LOAD_OVERLAY=0 hides the line (Mac default on, iOS off)
+void totk_sysload_set_enabled(int on);           // runtime/settings.h show/hide, atomic (no restart)
 void sysload_start(void);                        // starts the sampler thread once (every 0.5 s)
 int sysload_get(sysload_info *out);              // 0 before the first sample
 void sysload_note_gpu(double start_s, double end_s);   // one of our command buffers ran on the GPU (CACurrentMediaTime seconds)
