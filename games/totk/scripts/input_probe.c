@@ -21,7 +21,7 @@ int runtime_output_res_toggle(void){runtime_fail("unexpected output size switch 
 void runtime_shortcut_help_toggle(void){help_toggles++;}
 int runtime_output_mode_cycle(void){output_cycles++;return 1;}
 int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
-void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
+void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"frame_mode")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
 void dm_gfx_window_shot(const char *p){(void)p;runtime_fail("unexpected window shot in unit probe");}
@@ -146,7 +146,7 @@ int main(void){
  }
  /* Keys 1-4 (Mac key codes 18-21): one action per press; held-key repeats and the release do nothing more; no game
     button; each key touches only its own action. 1 shows / hides the overlays (frontend.m), 2 frame interpolation (runtime
-    flag mfx_interp, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h). */
+    flag frame_mode, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h). */
  static const unsigned keys[4]={18,19,20,21};int *count[4]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles};
  static const char *const pressed[4]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)"};
  for(int k=0;k<4;k++){

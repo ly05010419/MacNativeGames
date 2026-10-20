@@ -94,8 +94,9 @@ void runtime_boot_count(const char *stage,uint64_t done,uint64_t total);   /* a 
 int runtime_output_res(unsigned *w,unsigned *h);
 uint64_t runtime_output_res_extra_bytes(void);
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
-int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
+int runtime_output_mode_cycle(void);                    /* key 3: 1.4.3 the render resolution; others MetalFX 2K -> native 2K -> off */
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
+uint64_t runtime_scene_size_current(void);               /* 1.4.3: the render size key 3 set (same packing), 0 when the scene does not follow it */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */

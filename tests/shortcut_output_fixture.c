@@ -17,3 +17,32 @@ void shortcut_test_output_size(unsigned w, unsigned h) {
     atomic_store(&page[4], pack_size(w, h));
     assert(runtime_output_size_current() == pack_size(w, h));
 }
+
+/* Key 2's frame-rate state as hle_nvn.c nvn_frame_mode_cycle keeps it, on a 144 Hz display (caps every 2, 3, 4 ticks).
+   The pacing itself is checked by the runtime's present-interval probe (make probe-gfx). */
+int mfx_requested(void);
+void mfx_set(int mode);
+static int test_cap = -1;   /* -1 auto (72 fps), k: every k-th tick, 0 uncapped */
+void nvn_frame_mode_cycle(void) {
+    int m = mfx_requested();
+    if (m) { if (m == 3) { test_cap = -1; mfx_set(0); } else mfx_set(m + 1); }
+    else if (test_cap == -1) test_cap = 2;
+    else if (test_cap > 0) test_cap = test_cap < 4 ? test_cap + 1 : 0;
+    else mfx_set(1);
+}
+int nvn_frame_mode(int *fps) {
+    if (test_cap == -1) { *fps = 72; return 0; }
+    if (test_cap > 0) { *fps = 144 / test_cap; return 1; }
+    *fps = 0; return 2;
+}
+#if defined(TOTK_GAME_V143)
+/* 1.4.3 with an overlay that has room for a 1440p scene: key 3 cycles the render resolution from 1080p. */
+static _Atomic uint64_t scene_test_page[8];
+int shortcut_test_scene_init(void) {
+    overlay_scene_w = 2560; overlay_scene_h = 1440;
+    scene_page = (uint8_t *)scene_test_page; atomic_store(&scene_idx, scene_start());
+    return 1;
+}
+#else
+int shortcut_test_scene_init(void) { return 0; }
+#endif

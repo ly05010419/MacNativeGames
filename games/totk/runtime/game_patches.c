@@ -290,6 +290,7 @@ uint64_t runtime_output_size_current(void) {
     uint8_t *page = atomic_load(&output_page);
     return page ? atomic_load((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE)) : pack_size(1920, 1080);
 }
+uint64_t runtime_scene_size_current(void) { return 0; }   /* key 3 picks render sizes on 1.4.3 only (game_patches_v143.c) */
 static void patch_output_res(Module *m) {
     unsigned w, h;
     if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;

@@ -2143,9 +2143,102 @@ static void rt_comp_tick(uint64_t period_ns);
 static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
 static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED_HZ while interpolation paces the game
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
+/* TOTK (fork, 2026-10-20, the user: stable frame times at a high frame rate): uncapped, the display shows the newest frame
+   at every refresh, so a game at 50-70 fps on a 144 Hz display stays on screen 2 and 3 refreshes in turn (6.9 / 13.9 /
+   20.8 ms in a 1.4.3 session), which reads as judder. A frame-rate cap presents every k-th display tick instead
+   (present_ticks), so each frame stays on screen equally long: 72, 48 or 36 fps at 144 Hz, never above the uncapped
+   ceiling (120). Auto, the default, picks k from the frame's own work time (cap_auto_note): one step slower after a few
+   frames missed their tick, one step faster after 3 s with room to spare. The real-time frame step keeps game speed right
+   at any rate. Caps need the uncapped real-time mode (g_uncapped); interpolation modes pace the game themselves.
+   TOTK_FPS: auto (default), uncapped, or a frame rate (rounded to a whole number of display ticks). Key 2 (flag
+   frame_mode -1) cycles auto, the fixed caps, uncapped and the three interpolation modes. */
+#define CAP_MAX_HZ 120   /* the uncapped ceiling (UNCAPPED_HZ) */
+static _Atomic int g_cap_mode = -2;   // -2 TOTK_FPS not read yet, -1 auto, 0 uncapped, k >= 1: every k-th display tick
+static _Atomic int g_cap_fps_req;      // TOTK_FPS=<fps>, turned into k once the display rate is known
+static _Atomic int g_auto_k = 2;
+static int cap_kmin(void) { return g_paced_hz > CAP_MAX_HZ ? (g_paced_hz + CAP_MAX_HZ - 1) / CAP_MAX_HZ : 1; }
+static int cap_kmax(void) { int k = g_paced_hz / 30; return k < cap_kmin() ? cap_kmin() : k; }
+static int cap_mode(void) {
+    int m = atomic_load(&g_cap_mode);
+    if (m == -2) {
+        const char *e = getenv("TOTK_FPS");
+        if (!e || !*e || !strcmp(e, "auto")) m = -1;
+        else if (!strcmp(e, "uncapped") || !strcmp(e, "0")) m = 0;
+        else { int f = atoi(e); if (f < 30 || f > 240) { LOG("【红】TOTK_FPS=%s: use auto, uncapped or 30..240; auto instead", e); m = -1; } else { atomic_store(&g_cap_fps_req, f); m = -3; } }
+        atomic_store(&g_cap_mode, m);
+    }
+    if (m == -3 && g_paced_hz > 0) {   // a frame rate: the nearest whole number of display ticks within the caps' range
+        int f = atomic_load(&g_cap_fps_req), k = (g_paced_hz + f / 2) / f;
+        if (k < cap_kmin()) k = cap_kmin(); if (k > cap_kmax()) k = cap_kmax();
+        atomic_store(&g_cap_mode, m = k); LOG("[nvn] TOTK_FPS=%d: every %d display ticks, %d fps", f, k, g_paced_hz / k);
+    }
+    return m;
+}
+static int cap_ticks(void) {   /* display ticks per game frame under a cap; 0 = no cap */
+    if (!g_uncapped || g_paced_hz <= 0) return 0;
+    int m = cap_mode();
+    return m == -1 ? atomic_load(&g_auto_k) : m > 0 ? m : 0;
+}
+/* Auto: the work of each frame, from its start (after the previous frame's tick wait) to its next acquire, and the GPU
+   time of the recent frames (cap_auto_gpu, known 8 frames late): under a cap the GPU keeps up and the CPU side alone looks
+   fast, so speeding up on it alone went 48 -> 72 -> 48 every few seconds (2026-10-20). Misses: frames over their k ticks
+   but under three times that (longer ones are one-off hitches: loading, a shader, not the scene's load). Three misses
+   within 60 frames slow down one step; 3 s in a row with both under 80 % of a faster step speed up one. */
+static double g_cap_gpu_ms[16]; static unsigned g_cap_gpu_n;
+static void cap_auto_gpu(double ms) { g_cap_gpu_ms[g_cap_gpu_n++ % 16] = ms; }
+static uint64_t cap_gpu_recent_ns(void) {   /* the longest of the last 16 frames' GPU time */
+    double m = 0; unsigned n = g_cap_gpu_n < 16 ? g_cap_gpu_n : 16;
+    for (unsigned i = 0; i < n; i++) if (g_cap_gpu_ms[i] > m) m = g_cap_gpu_ms[i];
+    return (uint64_t)(m * 1e6);
+}
+static void cap_auto_note(uint64_t busy_ns, uint64_t now) {
+    static int n, miss, k_seen; static uint64_t fast_since;
+    if (cap_mode() != -1 || !g_uncapped || g_paced_hz <= 0 || mfx_enabled() != MFX_OFF) { n = miss = 0; fast_since = 0; return; }
+    int k = atomic_load(&g_auto_k);
+    if (k < cap_kmin() || k > cap_kmax() || k != k_seen) {   // first use, or the display rate changed
+        if (k < cap_kmin()) k = cap_kmin(); if (k > cap_kmax()) k = cap_kmax();
+        atomic_store(&g_auto_k, k); k_seen = k; n = miss = 0; fast_since = 0;
+    }
+    double tick = 1e9 / g_paced_hz;
+    if (busy_ns > k * tick && busy_ns < 3 * k * tick) miss++;
+    if (++n >= 60) n = miss = 0;
+    if (miss >= 3 && k < cap_kmax()) {
+        atomic_store(&g_auto_k, k_seen = k + 1); n = miss = 0; fast_since = 0;
+        LOG("[nvn] 帧率自动：%d → %d fps（帧超出 %d 个刷新）", g_paced_hz / k, g_paced_hz / (k + 1), k); return;
+    }
+    uint64_t gpu = cap_gpu_recent_ns(), need = busy_ns > gpu ? busy_ns : gpu;
+    if (k > cap_kmin() && need < 0.8 * (k - 1) * tick) {
+        if (!fast_since) fast_since = now;
+        else if (now - fast_since >= 3000000000ull) {
+            atomic_store(&g_auto_k, k_seen = k - 1); n = miss = 0; fast_since = 0;
+            LOG("[nvn] 帧率自动：%d → %d fps（3 秒内帧都在 %d 个刷新的 80%% 内）", g_paced_hz / k, g_paced_hz / (k - 1), k - 1);
+        }
+    } else fast_since = 0;
+}
+/* Key 2: auto -> the fixed caps (slowest last) -> uncapped -> interpolation 30+30 -> half the refresh rate -> uncapped
+   interpolation -> auto. Without the uncapped real-time mode only the interpolation modes cycle (as before). */
+void nvn_frame_mode_cycle(void) {
+    extern int mfx_requested(void); extern void mfx_set(int m);
+    int m = mfx_requested(), cap = cap_mode();
+    if (!g_uncapped) { mfx_set(-1); return; }
+    if (m != MFX_OFF) { if (m == MFX_MAX) { atomic_store(&g_cap_mode, -1); mfx_set(MFX_OFF); } else mfx_set(m + 1); }
+    else if (cap == -1) atomic_store(&g_cap_mode, cap_kmin());
+    else if (cap > 0) atomic_store(&g_cap_mode, cap < cap_kmax() ? cap + 1 : 0);
+    else { atomic_store(&g_cap_mode, 0); mfx_set(MFX_30); }
+    cap = atomic_load(&g_cap_mode);
+    LOG("[nvn] 2 键帧率：%s（帧 %llu）", cap == -1 ? "自动（整刷新）" : cap > 0 ? "固定上限" : mfx_requested() ? "补帧" : "不限帧率", (unsigned long long)g_frame);
+}
+/* For the shortcut panel: 0 auto (*fps the current rate), 1 a fixed cap (*fps), 2 uncapped; interpolation is mfx_enabled(). */
+int nvn_frame_mode(int *fps) {
+    int cap = g_uncapped ? cap_mode() : 0, hz = g_paced_hz > 0 ? g_paced_hz : 60;
+    if (cap == -1) { *fps = hz / atomic_load(&g_auto_k); return 0; }
+    if (cap > 0) { *fps = hz / cap; return 1; }
+    *fps = 0; return 2;
+}
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
-   the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
-static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m == MFX_OFF || m == MFX_MAX); }
+   the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). A frame-rate cap
+   (cap_ticks) also suspends it: the game then waits for its display tick. */
+static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m == MFX_MAX || (m == MFX_OFF && !cap_ticks())); }
 /* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
    30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
 static int mfx_own_clock(void) { return mfx_enabled() == MFX_30 && (g_paced_hz <= 0 || g_paced_hz % 30); }
@@ -2188,8 +2281,12 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         static uint64_t rt_period; uint64_t period = present_period(o);
         if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
         rt_comp_tick(period);
+        /* TOTK frame-rate cap, auto: a frame's work runs from the end of its tick wait to the next frame's acquire */
+        static uint64_t frame_start, last_f; int new_frame = g_frame != last_f;
+        if (new_frame) { uint64_t t = now_ns(); if (frame_start) cap_auto_note(t - frame_start, t); last_f = g_frame; }
         if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
+        if (new_frame) frame_start = now_ns();
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // 机器满载时帧只会更慢、后台得到的墙钟只会更多，所以「消息后第 N 帧」截到的画面与负载无关
                // When the machine is fully loaded frames only get slower and the background only gets more wall clock, so the picture captured at "the Nth frame after the message" is independent of load
@@ -2510,6 +2607,7 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     int m = mfx_enabled();
     if (m == MFX_HALF) return 2;
     if (m == MFX_30) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
+    if (m == MFX_OFF && !dm_detclock_enabled()) { int k = cap_ticks(); if (k) return (unsigned)k; }   /* frame-rate cap: every k-th tick, whatever interval the game asks for */
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
 static uint64_t present_period(const win_t *o) {
@@ -2528,6 +2626,8 @@ void dm_nvn_probe_present_interval(void) {
     int saved_hz = g_hz, saved_display = g_display_mode, saved_uncapped = g_uncapped;
     int saved_flag = atomic_load(&g_uncapped_interval), checked = 0;
     const char *neg = getenv("TOTK_PROBE_NEGATIVE");
+    int saved_cap = cap_mode(), saved_auto = atomic_load(&g_auto_k);
+    atomic_store(&g_cap_mode, 0);   /* the cases below are the uncapped pacing; the frame-rate caps follow them */
     for (int hz = 60; hz <= 120; hz += 60) for (int uncapped = 0; uncapped < 2; uncapped++)
     for (int display = 0; display < 2; display++) for (int on = 0; on < 2; on++)
     for (int interval = -1; interval <= 3; interval++) {
@@ -2537,6 +2637,37 @@ void dm_nvn_probe_present_interval(void) {
         if (present_ticks(&w) != expected || present_period(&w) != (uint64_t)expected * 1000000000ull / hz)
             die("present interval probe: effective pacing differs from expected");
         checked++;
+    }
+    /* Frame-rate caps (key 2, TOTK_FPS), interpolation off: every k-th tick at the display rate whatever interval the game
+       asks for, only when the uncapped real-time mode is configured; auto steps one slower after three missed ticks and one
+       faster after 3 s under 80 % of the faster step. Negative control 28: the cap is ignored. */
+    if (mfx_enabled() == MFX_OFF) {
+        int saved_paced0 = g_paced_hz;
+        for (int k = 2; k <= 4; k++) for (int uncapped = 0; uncapped < 2; uncapped++) for (int interval = -1; interval <= 3; interval++) {
+            win_t w = {.interval = interval}; g_paced_hz = 144; g_hz = uncapped ? UNCAPPED_HZ : 144; g_display_mode = 0; g_uncapped = uncapped;
+            atomic_store(&g_uncapped_interval, 0); atomic_store(&g_cap_mode, neg && atoi(neg) == 28 ? 0 : k);
+            unsigned expected = uncapped ? (unsigned)k : interval <= 0 ? 1u : (unsigned)interval;
+            if (present_ticks(&w) != expected || present_period(&w) != (uint64_t)expected * 1000000000ull / 144 || uncapped_now())
+                die("present interval probe: a frame-rate cap must pace every k-th display tick (uncapped mode only)");
+            checked++;
+        }
+        if (cap_kmin() != 2 || cap_kmax() != 4) die("present interval probe: caps at 144 Hz must be 72, 48 and 36 fps");
+        g_uncapped = 1; atomic_store(&g_cap_mode, -1); atomic_store(&g_auto_k, 2);
+        win_t w = {.interval = 1}; uint64_t t = 1000000000ull;
+        cap_auto_note(1, t);   /* first note: takes k */
+        for (int i = 0; i < 3; i++) cap_auto_note(15000000ull, t += 15000000ull);   /* over two ticks (13.9 ms): misses */
+        if (present_ticks(&w) != 3) die("present interval probe: auto must slow to 48 fps after three missed ticks");
+        for (int i = 0; i < 16; i++) cap_auto_gpu(16.0);   /* the GPU needs 16 ms: 72 fps (13.9) is out of reach */
+        for (int i = 0; i < 160; i++) cap_auto_note(5000000ull, t += 20833333ull);
+        if (present_ticks(&w) != 3) die("present interval probe: auto must not speed up past what the GPU holds");
+        for (int i = 0; i < 16; i++) cap_auto_gpu(6.0);
+        for (int i = 0; i < 160; i++) cap_auto_note(5000000ull, t += 20833333ull);   /* 3.3 s well under 80 % of two ticks */
+        if (present_ticks(&w) != 2) die("present interval probe: auto must return to 72 fps after 3 s with room");
+        cap_auto_note(60000000ull, t += 60000000ull); cap_auto_note(60000000ull, t += 60000000ull); cap_auto_note(60000000ull, t += 60000000ull);
+        if (present_ticks(&w) != 2) die("present interval probe: auto must not slow down for one-off hitches");
+        checked += 4;
+        for (int i = 0; i < 16; i++) cap_auto_gpu(0);
+        g_paced_hz = saved_paced0; atomic_store(&g_cap_mode, 0);
     }
     /* Frame interpolation modes (key 2 / flag mfx_interp, taken over at the frame boundary). Half the refresh rate: two
        display ticks per game frame at the display rate, also when the uncapped mode is configured (suspended). 30+30:
@@ -2571,7 +2702,7 @@ void dm_nvn_probe_present_interval(void) {
     }
     mfx_set(saved_mfx); mfx_latch();
     g_hz = saved_hz; g_paced_hz = saved_paced; g_display_mode = saved_display; g_uncapped = saved_uncapped;
-    atomic_store(&g_uncapped_interval, saved_flag);
+    atomic_store(&g_uncapped_interval, saved_flag); atomic_store(&g_cap_mode, saved_cap); atomic_store(&g_auto_k, saved_auto);
     LOG("[present-interval] %d pacing cases passed", checked);
 }
 int (*g_nvn_loadscreen_up)(void);   // 宿主登记：读取画面此刻是否开着（diag.c 订阅界面消息时填；图形单测里为空 = 不设闸） | host registration: whether the loading screen is up right now (filled in when diag.c subscribes to UI messages; null in graphics unit tests = no gate)
@@ -2684,7 +2815,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         trow(f, "@sub_wall_ms", atomic_exchange(&g_sub_wall_ns, 0) / 1e6); trow(f, "@sub_cpu_ms", atomic_exchange(&g_sub_cpu_ns, 0) / 1e6); trow(f, "@sub_instr", (double)atomic_exchange(&g_sub_instr, 0));
     } else atomic_store(&g_nvn_ns, 0);
     g_acq_wait_ns = g_pq_wait_ns = 0;
-    if (f >= 8) { double g = mtl_gpu_ms(f - 8); if (g >= 0) { tpush(3, g); trow(f - 8, "@gpu_ms", g); g_hr[g_hn++ % HRN] = g; }   // GPU 时间滞后 8 帧取（已完成） | GPU time is taken 8 frames late (already completed)
+    if (f >= 8) { double g = mtl_gpu_ms(f - 8); if (g >= 0) { tpush(3, g); trow(f - 8, "@gpu_ms", g); g_hr[g_hn++ % HRN] = g; cap_auto_gpu(g); }   // GPU 时间滞后 8 帧取（已完成） | GPU time is taken 8 frames late (already completed)
         { lf_rec *r = &g_lf[(f - 8) % LFN];   // 长帧日志（缺省开，DM_LONGFRAME=0 关）：整帧 > 20 ms 或 GPU > 16.7 ms、且明显高于近况，才打一行 | long-frame log (on by default, DM_LONGFRAME=0 turns it off): a line is printed only when the whole frame > 20 ms or GPU > 16.7 ms, and it is clearly above recent conditions
           static int on = -1; if (on < 0) { const char *e = getenv("DM_LONGFRAME"); on = !(e && !strcmp(e, "0")); }
           // 「长」是相对近况说的：稳定跑在 30 帧（菜单 / 无窗口宿主）或持续过载时每帧都 > 20 ms，那不是长帧，不刷屏——要比近 16 帧的滑动均值高出四成才算

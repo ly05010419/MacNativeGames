@@ -28,13 +28,14 @@ static void user_input(const char *what){
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
 /* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
-   off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
-   MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Held-key repeats do not cycle. */
+   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles the frame rate: auto (even), the
+   fixed caps, uncapped, then MetalFX frame interpolation 30+30 -> half the refresh rate -> uncapped (hle_nvn.c
+   nvn_frame_mode_cycle). Key 3 (key code 20) cycles the picture (runtime_output_mode_cycle; 1.4.3: the render
+   resolution, MetalFX scaling it up). Held-key repeats do not cycle. */
 enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21 };   /* 21: key 4, ultrawide on / off (aspect_patch.h) */
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
- if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
+ if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("frame_mode",-1);}
  if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
  if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}

@@ -15,5 +15,8 @@ for number,message in prediction.items():
  run=subprocess.run([str(exe),'rewritten/v0','probe-gfx'],cwd=root,capture_output=True,text=True,env={**__import__('os').environ,'TOTK_PROBE_NEGATIVE':number})
  assert run.returncode!=0 and message in run.stderr, (number, run.stderr[-400:])
 report['prediction_negatives']='active variant taken, in-flight slots freed, untranslated stages predicted, depth-less guesses for depth export: each caught'
+caps=subprocess.run([str(exe),'rewritten/v0','probe-gfx'],cwd=root,capture_output=True,text=True,env={**__import__('os').environ,'TOTK_PROBE_NEGATIVE':'28'})
+assert caps.returncode!=0 and 'a frame-rate cap must pace every k-th display tick' in caps.stderr, caps.stderr[-400:]
+report['frame_rate_cap_negative']='a cap that is ignored: caught'
 report['texture_copy_negative']='render targets of recordings not marked: caught';report['recording_copy_negative']='control-memory marks never checked: caught';report['unsupported_call']='stops with exit 2';report['executable_sha256']=hashlib.sha256(exe.read_bytes()).hexdigest()
 (root/'analysis/native-gfx-probe.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report))
