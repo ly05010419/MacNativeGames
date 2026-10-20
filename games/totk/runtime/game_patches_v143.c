@@ -441,8 +441,8 @@ uint64_t runtime_scene_size_current(void){int i=atomic_load(&scene_idx);return i
 /* A changed size on the data page is only read when the routine runs again. The renderer's per-frame update re-runs it
    (main+0x581f5c -> main+0x5822d0) when the mode it computes differs from the one cached at +0xcd0, but only while bit 13
    of +0xca4 asks for that check; the game sets that bit for a mode change and clears it after one frame (main+0x581fbc).
-   When the scene follows key 3, the first patched site branches instead to a veneer in main's text padding (after the
-   ultrawide stubs) that also keeps the renderer (x19) at data page +48; the switch sets the cached mode to -1 and bit 13,
+   When the scene follows key 3, the first patched site branches instead to a veneer in main's text padding (+288, after
+   the bounce veneer) that also keeps the renderer (x19) at data page +48; the switch sets the cached mode to -1 and bit 13,
    so the next frame lays the scene out again at the new size on the game's own thread. Bit 14 (the mode the check
    applies) is left as it is. Neither "operation mode changed" (oe message 30) nor the display config's change bits
    reach this routine in 1.4.3 (tried 2026-10-19: the cached mode stayed -1). */
@@ -467,7 +467,7 @@ static void patch_render_res(Module *m){
         follow=1;int i=scene_start();w=scene_sizes[i][0];h=scene_sizes[i][1];atomic_store(&scene_idx,i);
     }
 #endif
-    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+176;   /* after the ultrawide stubs */
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+288;   /* after the ultrawide stubs (+48), the cloth/hair clock (+176) and the bounce veneer (+256) */
     if(data+(follow?56:24)>m->size)runtime_fail("1.4.3 render-resolution patch layout");
     if(follow){
         if(stub+12>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 render-resolution veneer layout");

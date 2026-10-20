@@ -117,14 +117,14 @@ def main():
         'veneer padding not empty in the rewritten image'
     changes = {p for p in range(0, len(raw), 4) if raw[p:p+4] != patched[p:p+4]}
     # An overlay built with --scene lets the native mode render the scene at the output size: the render-size patch
-    # (four sites, and a 3-word veneer keeping the renderer at data +48, after the ultrawide stubs) is installed too,
+    # (four sites, and a 3-word veneer keeping the renderer at data +48, at +288) is installed too,
     # starting at 2560x1440 here.
     header = (ROOT / 'extracted/v143/romfs-patches-out/2560x1440/manifest.tsv').read_text().split('\n', 1)[0]
     scene_follow = ' scene=2560x1440 ' in header + ' '
     # The ultrawide patch (runtime/aspect_patch.h, key 4) is installed on every Mac run: four camera sites and a 32-byte
-    # stub each in the text padding from +48; the scene veneer follows at +176.
+    # stub each in the text padding from +48; the scene veneer is at +288 (after the cloth/hair clock at +176 and the bounce veneer at +256).
     aspect_sites = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0} | {frame_step + 48 + 4 * i for i in range(32)}
-    vstub = frame_step + 176
+    vstub = frame_step + 288
     render_sites = ({0x585e48, 0x585e50, 0x585e54, 0x585e60} | {vstub + 4 * i for i in range(3)}) if scene_follow else set()
     want = {
         0xbdb578, 0xbdb584, 0x3dcb28,
