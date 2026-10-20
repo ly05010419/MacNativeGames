@@ -617,7 +617,17 @@ static _Atomic uint64_t g_reg_gen = 1;   // 内存池 / 贴图 / 采样器登记
    kIOReturnNoMemory. A zero-copy buffer makes the whole range resident, so ranges with inaccessible pages (sparse
    virtual pools) or very large ranges are refused here, with details, instead of being handed to the driver. */
 #include "mach_vm_compat.h"
-#define POOL_BUFFER_MAX (1ull << 30)
+/* TOTK_POOL_BUFFER_MAX_MB raises the limit; TOTK_4K=1 (the 4K texture pack enlarges the texture heap to 3.75 GiB, a pool of that
+   size) raises it to 4 GiB. */
+static uint64_t pool_buffer_max(void) {
+    static uint64_t v;
+    if (!v) {
+        const char *e = getenv("TOTK_POOL_BUFFER_MAX_MB"), *k = getenv("TOTK_4K");
+        v = (e && atoll(e) > 0 ? (uint64_t)atoll(e) : k && *k && strcmp(k, "0") ? 4096 : 1024) << 20;
+    }
+    return v;
+}
+#define POOL_BUFFER_MAX pool_buffer_max()
 static void pool_range_check(uintptr_t a, uintptr_t b, const void *mem, uint64_t size) {
     if (b - a > POOL_BUFFER_MAX) MDIE("memory pool %p+%#llx: %llu MiB zero-copy GPU buffer refused (limit %llu MiB)", mem, (unsigned long long)size,
                                       (unsigned long long)((b - a) >> 20), POOL_BUFFER_MAX >> 20);
