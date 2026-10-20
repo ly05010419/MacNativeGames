@@ -99,6 +99,10 @@ static void unprotect_page(range_t *r, uintptr_t p) {   // 调用方已把状态
     uint64_t g = atomic_fetch_add(&g_now, 1) + 1, l = atomic_load(&r->latest);
     atomic_store(&r->gen[p], g);
     while (l < g && !atomic_compare_exchange_weak(&r->latest, &l, g)) {}
+    /* TOTK (#90): "now" moves on once more after the page's generation is stored. A checker that read "now" between the
+       first step and the stores found the page clean and kept that "now" as its last look (tex_mtl's now == seen); the page
+       is writable from here on, so without a newer "now" every later write went unseen until something else faulted. */
+    atomic_fetch_add(&g_now, 1);
     atomic_store(&r->state[p], PG_NONE);
 }
 static int on_fault(void *addr, int is_write, void *uc) {
@@ -223,12 +227,16 @@ void nvn_dirty_protect(const void *addr, size_t len) {
     // 已是 PROT / BUSY 的页断开连续段：不重复保护，也不碰别的线程正在改的页
     // Consecutive pages set to PROT are merged into one mprotect (per-page calls ran to over a thousand per frame when large textures were first uploaded; character select, startup frame 5: 4888 calls).
     // Pages already PROT / BUSY break a run: they are not protected again, and pages another thread is changing are left alone
+    // TOTK (#90): a BUSY page is waited out (the run so far is protected first, so nothing of ours is BUSY meanwhile) and
+    // looked at again. An unprotect in progress leaves the page writable with a generation the caller's stamp may already
+    // cover: skipped, later writes to it never faulted and the texture stayed stale (letters missing in the glyph cache).
     uintptr_t run = 0; int open = 0;
     for (uintptr_t i = p; i <= q + 1; i++) {
         uint8_t st = PG_NONE;
         int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
         if (took && !open) { run = i; open = 1; }
         if (!took && open) { mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ); for (uintptr_t k = run; k < i; k++) atomic_store(&r->state[k], PG_PROT); open = 0; }
+        if (!took && st == PG_BUSY && busy_wait(r, i)) i--;   // this page again
     }
 }
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }

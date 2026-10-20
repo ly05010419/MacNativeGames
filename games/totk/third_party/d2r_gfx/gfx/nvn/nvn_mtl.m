@@ -2282,12 +2282,13 @@ static int pkg_final_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_PKG_FINAL_CACHE"); v = e && atoi(e); atomic_store(&g_pkg_final_cache, v); }
     return v;
 }
-@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
+@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
 /* TOTK: a mirrored texture the GPU starts rendering into is told directly (g_smu held), so tex_mtl no longer asks the owned
    set again every time any other serial joins it (a locked lookup per CPU-pool texture per new render target). */
 static void pkg_owned_locked(uint64_t k) { id o = hm_get_id(&g_by_serial, &k); if ([o isKindOfClass:[NvPkg class]]) ((NvPkg *)o)->owned = 1; }
 @implementation NvPkg
 - (void)dealloc {
+    free(edge);   // TOTK (#90): the shared first / last page bytes (pkg_edge_snap)
     // The wrapper is released after its GPU readers finish. Recycle its allocation
     // with the same descriptor key as a re-upload, retaining residency. The next
     // owner overwrites every mip/layer; cached views are retired by the normal path.
@@ -2413,8 +2414,10 @@ static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
     if (!atomic_load(&g_wb_on) || !t->mem || !t->L.size) return;
     id o = serial_get(t->serial); if (!o) return;
-    nvn_dirty_protect(t->mem, t->L.size);   // CPU writes after this rendering show up in nvn_dirty_since
+    /* CPU writes after this rendering show up in nvn_dirty_since. TOTK (#90): the stamp comes first; a write that faults while
+       the pages are being protected then counts as after it (taken after, it covered that page, writable from then on). */
     uint64_t stamp = nvn_dirty_now(), k = t->serial;
+    nvn_dirty_protect(t->mem, t->L.size);
     pthread_mutex_lock(&g_smu);
     wb_ent *e = nvn_hm_get(&g_wb, &k);
     if (e) { e->stamp = stamp; e->t = *t; pthread_mutex_unlock(&g_smu); return; }
@@ -3156,10 +3159,42 @@ static uint64_t pkg_hash(const void *p, uint64_t n) {
     for (; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
     h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ull; return h ^ (h >> 33);
 }
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key);
-static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key) {
+/* TOTK (#90): a texture whose first or last host page (16 KB) also holds other data is marked written whenever that data
+   is. The glyph cache's last page holds the glyph records the font code flags as used on every frame, so the whole 8 MB
+   texture was uploaded again on every frame. When only those shared pages were written since the stamp, the texture's
+   bytes in them are compared with the ones the upload started from: equal means clean, and the two pages are protected
+   again under a new stamp. The bytes are kept only for a texture that showed this once (edge_want): no memory for others. */
+static void pkg_edges(const tex_t *t, uintptr_t *h, uintptr_t *tl) {   // own pages [h, tl); the shared parts are [mem, h) and [tl, end)
+    static uintptr_t pg; if (!pg) pg = (uintptr_t)getpagesize();
+    uintptr_t a = (uintptr_t)t->mem, e = a + t->L.size; *h = (a + pg - 1) & ~(pg - 1); *tl = e & ~(pg - 1);
+}
+static void pkg_edge_snap(const tex_t *t, NvPkg *pk) {   // in pkg_upload_, after the stamp and before the pages are protected and copied
+    uintptr_t h, tl, a = (uintptr_t)t->mem, e = a + t->L.size; pkg_edges(t, &h, &tl);
+    free(pk->edge); pk->edge = NULL; pk->eh = pk->et = 0;
+    if (tl <= h || (h == a && tl == e) || !(pk->edge = malloc((h - a) + (e - tl)))) return;
+    pk->eh = (uint32_t)(h - a); pk->et = (uint32_t)(e - tl);
+    memcpy(pk->edge, t->mem, pk->eh); memcpy(pk->edge + pk->eh, (const void *)tl, pk->et);
+}
+static uint64_t g_pkg_edge_same;
+static int pkg_edge_clean(const tex_t *t, NvPkg *pk) {   // 1: only the shared pages were written, and the texture's bytes there are unchanged
+    uintptr_t h, tl, a = (uintptr_t)t->mem, e = a + t->L.size; pkg_edges(t, &h, &tl);
+    if (tl <= h || (h == a && tl == e) || nvn_dirty_since((const void *)h, tl - h, pk->stamp)) return 0;   // its own pages were written
+    if (!pk->edge || pk->eh != h - a || pk->et != e - tl) { pk->edge_want = 1; return 0; }   // upload again, keeping the shared bytes this time
+    uint64_t st = nvn_dirty_now();   // before protecting, as in pkg_upload_
+    if (h > a) nvn_dirty_protect(t->mem, h - a);
+    if (e > tl) nvn_dirty_protect((const void *)tl, e - tl);
+    /* compared after protecting: a write before it is in the bytes compared, a write after it faults and is newer than st */
+    if (memcmp(t->mem, pk->edge, pk->eh) || memcmp((const void *)tl, pk->edge + pk->eh, pk->et) ||
+        nvn_dirty_since((const void *)h, tl - h, pk->stamp)) return 0;   // changed, or its own pages written meanwhile
+    pk->stamp = st;
+    if (!g_pkg_edge_same++ || g_pkg_edge_same % 5000 == 0)
+        MLOG("贴图首尾共享页被写、贴图内容没变，不重传：累计 %llu 次（例 ser=%llu %ux%u）", (unsigned long long)g_pkg_edge_same, (unsigned long long)t->serial, t->d.width, t->d.height);
+    return 1;
+}
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk);
+static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp, key);
+    id<MTLTexture> r = pkg_upload_(t, stamp, key, pk);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
@@ -3232,7 +3267,7 @@ static unsigned mip_drop_of(const tex_t *t) {
     if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
     return 1;
 }
-static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key) {
+static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     MTLTextureDescriptor *d = tex_desc(t, t->has_layout);   // TOTK: default-layout mirrored textures keep render-target usage
     if (!d) return nil;
     unsigned drop = mip_drop_of(t);   // TOTK (iPhone): the copy starts at the game's level `drop` (see mip_drop_of)
@@ -3249,8 +3284,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         if (ul && (!ulw || (t->d.width == ulw && t->d.height == ulh))) { uint64_t nz = 0, n = t->L.size; const uint8_t *m = t->mem; for (uint64_t i = 0; i < n; i += 8) if (*(const uint64_t *)(m + i)) nz++;
             MLOG("[uplog] ser=%llu fmt=%#x %ux%u lv=%u tgt=%d size=%llu nz8=%llu/%llu pool=%p flags=%#x host=%p off=%lld frame=%llu", (unsigned long long)t->serial, t->d.format, t->d.width, t->d.height, t->d.levels, t->d.target,
                  (unsigned long long)n, (unsigned long long)nz, (unsigned long long)(n / 8), (void *)t->pool, t->pool ? t->pool->flags : 0, t->pool ? (void *)t->pool->host : NULL, (long long)t->off, (unsigned long long)atomic_load(&g_cur_frame)); } }
+    *stamp = nvn_dirty_now();   // TOTK (#90): before protecting, as in wb_note: a write that faults during the protect or the copy is newer than it
+    if (pk && pk->edge_want) pkg_edge_snap(t, pk);
     if (!pkg_hashed(t)) nvn_dirty_protect(t->mem, t->L.size);
-    *stamp = nvn_dirty_now();
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     unsigned layers = (t->d.target == 4 || t->d.target == 9) ? t->d.depth : t->d.target == 8 ? 6 : t->d.target == 3 ? t->d.height : 1;
     if (t->d.target == 9) layers *= 6;
@@ -3447,11 +3483,14 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                range up again (the lookup was a linear scan over ~3,700 pools, about 14% of the replay). */
             int tracked = now == pk->seen && pk->tracked ? 1 : nvn_dirty_tracked(t->mem, t->L.size);
             clean = tracked && (now == pk->seen || !nvn_dirty_since(t->mem, t->L.size, pk->stamp));
+            if (!clean && tracked && pkg_edge_clean(t, pk)) clean = 1;   // TOTK (#90): only a shared first / last page was written
             pk->seen = now; pk->tracked = tracked;
             }
             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("上传被丢的贴图 ser=%llu 重传（累计 %llu 张，记录里还剩 %d 张）", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
             if (clean) {
-                if (dirtycheck() && full_hash(t->mem, t->L.size) != pk->hash) {
+                /* TOTK (#90): a write that lands while the texture is being checked has faulted first, so the tracker reports it
+                   by the time the hash sees it; it is uploaded at the next check and is not a miss. */
+                if (dirtycheck() && full_hash(t->mem, t->L.size) != pk->hash && !nvn_dirty_since(t->mem, t->L.size, pk->stamp)) {
                     if (!g_pkg_miss++) MLOG("【红】脏页漏检：贴图 ser=%llu 池内容已变但未检出", t->serial);
                     static int fix = -1; if (fix < 0) fix = getenv("DM_NVN_DIRTYFIX") != NULL;   // TOTK diagnostic: DM_NVN_DIRTYFIX=1 re-uploads on a missed change
                     if (fix) clean = 0;
@@ -3459,16 +3498,19 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                 if (clean) return pk->tex;
             }
             TILELOG(t, "re-upload from the pool bytes");
-            uint64_t st; reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
-            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = nvn_dirty_now(); g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); }
+            uint64_t st; reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
+            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); }
+            else { free(pk->edge); pk->edge = NULL; }   // TOTK (#90): the bytes kept belong to the upload that failed
             return pk->tex;
         }
         TILELOG(t, "first upload from the pool bytes");
         NvPkg *npk = [NvPkg new]; pk = npk;
         pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size;
-        pk->tex = pkg_upload(t, &pk->stamp, &pk->key);
+        pk->tex = pkg_upload(t, &pk->stamp, &pk->key, pk);
         if (!pk->tex) return nil;
-        pk->seen = nvn_dirty_now(); g_pkg_uploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
+        /* TOTK (#90): seen = the upload's stamp, not "now": a write that faulted during the copy moved "now" on, and the
+           now == seen shortcut above then called the texture clean without looking at its pages. */
+        pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
         serial_put(t->serial, pk);
         pk->owned = gpu_owned(t->serial);   // after it is in the table: a later mark finds it there (pkg_owned_locked)
         if ((pk->hashed = pkg_hashed(t))) { pk->chash = pkg_hash(t->mem, t->L.size); pk->csub = g_sub_serial; }

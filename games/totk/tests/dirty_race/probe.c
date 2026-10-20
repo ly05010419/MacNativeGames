@@ -43,6 +43,50 @@ int t_mprotect(void *a, size_t n, int prot) {   // A's read-only mprotect lands 
     return mprotect(a, n, prot);
 }
 
+/* #90 (glyph cache letters missing): nvn_dirty_protect meets a page another thread is unprotecting, with the mprotect to
+   writable done and the new generation stored but the state still BUSY. Skipping that page left it writable with a
+   generation the caller's stamp covers, so later writes did not fault and were never reported. Thread C plays the last
+   step of that unprotect 50 ms late. "No write yet" must still be clean (control). */
+static _Atomic uint8_t *g_c_state;
+static void *thread_c(void *arg) { (void)arg; usleep(50000); atomic_store(g_c_state, PG_NONE); return NULL; }
+static int busy_protect(size_t pg) {
+    uint8_t *page = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (page == MAP_FAILED) { perror("mmap"); return 1; }
+    nvn_dirty_add_range(page, pg);
+    range_t *r = find((uintptr_t)page);
+    nvn_dirty_protect(page, pg);
+    uint8_t st = PG_PROT;
+    if (!r || !atomic_compare_exchange_strong(&r->state[0], &st, PG_BUSY)) { printf("dirty race probe: page not protected\n"); return 1; }
+    mprotect(page, pg, PROT_READ | PROT_WRITE);   /* what unprotect_page does before it stores the generation */
+    uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[0], g); atomic_store(&r->latest, g);
+    g_c_state = &r->state[0];
+    pthread_t tc; pthread_create(&tc, NULL, thread_c, NULL);
+    uint64_t stamp = nvn_dirty_now();   /* the uploader's stamp, then its protect */
+    nvn_dirty_protect(page, pg);
+    pthread_join(tc, NULL);
+    EXPECT("#90: protect waited out a page being unprotected (state PROT)", PG_PROT, atomic_load(&r->state[0]));
+    EXPECT("#90: no write after the stamp yet: clean (control)", 0, nvn_dirty_since(page, 16, stamp));
+    page[0] = 7;   /* a write after the upload copied the page */
+    EXPECT("#90: a later write to that page is seen", 1, nvn_dirty_since(page, 16, stamp));
+    return 0;
+}
+/* #90: why pkg_upload_ / wb_note take the stamp before nvn_dirty_protect, and tex_mtl's "nothing written since" shortcut
+   starts from that stamp. A write that faults while the pages are being protected or copied gets a generation above a
+   stamp taken before, and the page is writable from then on; a stamp taken after covers it, so the copy can miss that
+   write and every later one (second check: the old order, expected to miss). */
+static void stamp_order(size_t pg) {
+    uint8_t *page = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (page == MAP_FAILED) { perror("mmap"); g_fail++; return; }
+    nvn_dirty_add_range(page, pg);
+    uint64_t before = nvn_dirty_now();
+    nvn_dirty_protect(page, pg);
+    page[0] = 1;   /* faults during the upload */
+    uint64_t after = nvn_dirty_now();
+    page[0] = 2;   /* after the copy: no fault, the page is writable */
+    EXPECT("#90: stamp before protect: the writes are seen", 1, nvn_dirty_since(page, 16, before));
+    EXPECT("#90: stamp after protect (old order): the writes are missed", 0, nvn_dirty_since(page, 16, after));
+}
+
 int main(void) {
     g_negative = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_sigaction = on_signal; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
@@ -85,6 +129,8 @@ int main(void) {
     EXPECT("a write into the last of them is seen", 1, nvn_dirty_since(many + (size_t)(MANY - 1) * pg, 16, s2));
     EXPECT("a write into the first of them is seen", 1, nvn_dirty_since(many, 16, s2));
     EXPECT("an untouched one in between is clean", 0, nvn_dirty_since(many + (size_t)(MANY / 2) * pg, 16, s2));
+    if (busy_protect(pg)) return 2;
+    stamp_order(pg);
     printf("{\"status\":\"%s\",\"checks\":%d,\"failed\":%d}\n", g_fail ? "fail" : "pass", g_checks, g_fail);
     return g_fail != 0;
 }
