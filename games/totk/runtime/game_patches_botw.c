@@ -29,7 +29,16 @@ uint32_t runtime_thread_current_handle(void);
      main+0x1821570  csinc w8, w8, wzr, ne      -> nop
      main+0x1821574  ucvtf s0, w8               -> nop
      main+0x1821588  fmul s0, s0, s11 (x 0.5)   -> nop
-   (x8 is reloaded two instructions later, the flags are not read again.) MacNativeGames games/botw/scripts/
+   (x8 is reloaded two instructions later, the flags are not read again.) The UI's animation step is the same sum
+   (main+0x18522e0: max(interval, 1) x 0.5 into +0xb20 of the layout system): at 120 fps
+   the game still asks for interval 2, so menus and the HUD animated four times too fast (2026-10-20). It now takes the
+   ratio too: main+0x18522ec ldr w8 -> adrp x8, main+0x18522f0 cmp -> ldr s0, [x8], and the csinc / ucvtf / fmul become
+   nops (s1 keeps its 0.5; x8 and the flags are not read again before they are set).
+   Physics: the frame loop calls the physics step (main+0x1c9c920) with the frame time, the frame ratio and the time
+   speed, and the step runs round(6 x ratio) solver substeps (main+0x1c9c958): six at the shipped 30 fps, two at 120 fps,
+   where staggered enemies' ragdolls blew apart and flew off (2026-10-20). The ratio argument
+   is now always 1.0 (main+0x1618480 ldr s9, [x8] -> fmov s9, #1.0): six substeps every frame, the frame time still sets
+   the step. MacNativeGames games/botw/scripts/
    verify_realtime_patch.py runs both with Unicorn. */
 static _Atomic uint64_t *frame_step_data;
 static uint8_t *frame_step_main;
@@ -255,6 +264,9 @@ static void patch_realtime(Module *m) {
         {0x1821564u, 0xf9400108u}, {0x1821568u, 0xb9400108u}, {0x182156cu, 0x7100011fu}, {0x1821570u, 0x1a9f1508u},
         {0x1821574u, 0x1e230100u}, {0x1821578u, 0x1e2c100bu}, {0x182157cu, 0xb0006f68u}, {0x1821580u, 0xbd409109u},
         {0x1821584u, 0xbd435ee1u}, {0x1821588u, 0x1e2b0800u}, {0x182158cu, 0x1e290800u},
+        {0x18522ecu, 0xb9400108u}, {0x18522f0u, 0x7100011fu}, {0x18522f4u, 0x1a9f1508u}, {0x18522f8u, 0x1e230100u},
+        {0x18522fcu, 0x1e2c1001u}, {0x1852300u, 0x1e210800u}, {0x1852304u, 0xbd0b22a0u},
+        {0x161847cu, 0x1e290908u}, {0x1618480u, 0xbd400109u}, {0x1618484u, 0xb94c3680u},
     };
     for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
         uint32_t w; memcpy(&w, m->base + check[i].off, 4);
@@ -269,12 +281,15 @@ static void patch_realtime(Module *m) {
         {0x1c0120cu, adrp_reg(9, (uintptr_t)m->base + 0x1c0120c, page)}, {0x1c01214u, 0xbd400121u},   /* ldr s1, [x9] */
         {0x1821568u, adrp_reg(8, (uintptr_t)m->base + 0x1821568, page)}, {0x182156cu, 0xbd400100u},   /* ldr s0, [x8] */
         {0x1821570u, nop}, {0x1821574u, nop}, {0x1821588u, nop},
+        {0x18522ecu, adrp_reg(8, (uintptr_t)m->base + 0x18522ec, page)}, {0x18522f0u, 0xbd400100u},   /* ldr s0, [x8] */
+        {0x18522f4u, nop}, {0x18522f8u, nop}, {0x1852300u, nop},
+        {0x1618480u, 0x1e2e1009u},   /* fmov s9, #1.0: six physics substeps per frame at any frame rate */
     };
     for (size_t i = 0; i < sizeof put / sizeof *put; i++) memcpy(m->base + put[i].off, &put[i].word, 4);
     frame_step_main = m->base;
     frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
     atomic_store(frame_step_data, frame_step_bits(1.0f / 30.0f));
-    fprintf(stderr, "[botw] real-time frame step: the VFR ratio and one interval-stepped fade follow the measured frame time "
+    fprintf(stderr, "[botw] real-time frame step: the VFR ratio, one interval-stepped fade and the UI animation step follow the measured frame time, physics keeps six substeps a frame "
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
@@ -328,8 +343,36 @@ static unsigned excl_acquire(uint8_t *code, size_t n) {
     }
     return done;
 }
+/* Docked render size (TOTK_RENDER_RES=900: as shipped). The display-mode routine (main+0x1821644, run when the operation
+   mode is set, before the render targets are made) stores the screen width 1920.0 and the render width 1600.0 as one
+   pair (+0x1290 / +0x1294 of the graphics system); the renderer scales its targets by render / screen width, so docked
+   play draws the scene at 1600x900 and upscales it into the 1920x1080 canvas. 1920.0 makes it native 1080p: every scene
+   target is made at 1920x1080 (and 960x540 for the half-size ones; pass dumps 2026-10-20) at the same frame rate on the
+   Great Plateau. Above the screen size the game fails to make its heaps, and a 2560x1440 screen needs larger heaps than
+   the game asks for (PlacementMgr fails after a 320 MB render budget at main+0x1804c44): not done.
+   main+0x1821674 movk x8, #0x44c8, lsl #48 (1600.0) -> movk x8, #0x44f0, lsl #48 (1920.0). */
+static int g_render_1080;
+static void patch_render_1080(Module *m) {
+    const char *e = getenv("TOTK_RENDER_RES");
+    if (e && !strcmp(e, "900")) { fprintf(stderr, "[botw] docked render size 1600x900, as shipped (TOTK_RENDER_RES=900)\n"); return; }
+    static const struct { uint32_t off, original; } check[] = {
+        {0x1821670u, 0xd2a89e08u}, {0x1821674u, 0xf2e89908u}, {0x1821678u, 0xf9094b88u},
+    };
+    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] render size main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("1080p render size requires the 1.6.0 display-mode instructions");
+        }
+    }
+    const uint32_t movk = 0xf2e89e08u;   /* movk x8, #0x44f0, lsl #48 */
+    memcpy(m->base + 0x1821674u, &movk, 4);
+    g_render_1080 = 1;
+    fprintf(stderr, "[botw] docked render size 1920x1080 (shipped: 1600x900; TOTK_RENDER_RES=900 keeps it)\n");
+}
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
+    patch_render_1080(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
     { const char *a = getenv("TOTK_EXCL_ACQUIRE");
@@ -446,6 +489,20 @@ int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was
 int runtime_output_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
 uint64_t runtime_output_size_current(void) { return 1920ull | (1080ull << 32); }   /* the canvas this game draws (frontend.m's shortcut text); no output-size patch yet */
 uint64_t runtime_output_res_extra_bytes(void) { return 0; }
+/* Pre-rendered movies (the memories, the intro): the movie player advances one movie frame per game frame, so above
+   30 fps they ran fast, out of step with their sound, and a cutscene could wait for ever (2026-10-20). main+0x2cbef40
+   holds the movie object while one plays (stored at main+0x1600e74 when it is made, cleared at main+0x1a4d6f0 after it
+   is freed; the community "60 FPS + FMV Cutscenes Speed Fix" for 1.6.0 keys on the same word). While it is set the
+   frame pacing holds the game at 30 fps (hle_nvn.c cap_ticks); the real-time step then gives the shipped ratio 1.0.
+   TOTK_MOVIE_30=0 turns it off. */
+int runtime_game_fps_limit(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_MOVIE_30"); on = !(e && !strcmp(e, "0")); }
+    if (!on || !frame_step_main) return 0;
+    uint64_t movie; memcpy(&movie, frame_step_main + 0x2cbef40, 8);
+    static int was; if (!!movie != was) { was = !!movie; fprintf(stderr, "[botw] movie %s: frame pacing %s\n", was ? "starts" : "ends", was ? "held at 30 fps" : "back to normal"); }
+    return movie ? 30 : 0;
+}
+uint64_t runtime_scene_size_current(void) { return g_render_1080 ? 1920ull | (1080ull << 32) : 0; }   /* the shortcut panel's render size */
 int runtime_output_res_toggle(void) { return 0; }
 /* Key 3 (runtime/input.c): MetalFX 2K on / off. On: MetalFX replaces the game's own upscale of the 1600x900 picture into
    the 1080p canvas (nvn_mtl.m mfxup_dock, BOTW_MFXUP_DOCK_KEY) and upscales the canvas into a window or full screen bigger

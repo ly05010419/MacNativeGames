@@ -2361,46 +2361,56 @@ static int cap_mode(void) {
     }
     return m;
 }
+/* A frame rate the game itself needs at the moment, 0 = none (runtime/game_patches_botw.c: 30 while Breath of the Wild
+   plays a pre-rendered movie, which advances one movie frame per game frame). Weak: Tears of the Kingdom has none. */
+__attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
 static int cap_ticks(void) {   /* display ticks per game frame under a cap; 0 = no cap */
     if (!g_uncapped || g_paced_hz <= 0) return 0;
+    int lim = runtime_game_fps_limit();
+    if (lim > 0) return (g_paced_hz + lim - 1) / lim;   /* the whole number of ticks at or under that rate (240 Hz: 8, 30 fps) */
     int m = cap_mode();
     return m == -1 ? atomic_load(&g_auto_k) : m > 0 ? m : 0;
 }
 /* Auto: the work of each frame, from its start (after the previous frame's tick wait) to its next acquire, and the GPU
    time of the recent frames (cap_auto_gpu, known 8 frames late): under a cap the GPU keeps up and the CPU side alone looks
-   fast, so speeding up on it alone went 48 -> 72 -> 48 every few seconds (2026-10-20). Misses: frames over their k ticks
-   but under three times that (longer ones are one-off hitches: loading, a shader, not the scene's load). Three misses
-   within 60 frames slow down one step; 3 s in a row with both under 80 % of a faster step speed up one. */
+   fast, so speeding up on it alone went 48 -> 72 -> 48 every few seconds (2026-10-20). The rate follows the typical frame,
+   not single slow ones: the 75th percentile of the last 120 frames' work (and of the last 16 GPU times). It slows down
+   only when that frame no longer fits the current step at all (after 1 s), to the fastest step it fits with 5 % to
+   spare, and speeds up only when it fits the faster step with 20 % to spare (after 1.5 s): with one margin for both, a
+   typical frame of 7-9 ms on a 240 Hz display switched 120 <-> 80 fps every few seconds (2026-10-20). Before (three missed ticks in 60 frames slowed down) Breath of the Wild's frequent one-off frames of 20-35 ms
+   held a 240 Hz display at 40-48 fps while its typical frame took 8 ms (2026-10-20, the user: "I want high fps"). */
+enum { CAP_WIN = 120 };
 static double g_cap_gpu_ms[16]; static unsigned g_cap_gpu_n;
 static void cap_auto_gpu(double ms) { g_cap_gpu_ms[g_cap_gpu_n++ % 16] = ms; }
-static uint64_t cap_gpu_recent_ns(void) {   /* the longest of the last 16 frames' GPU time */
-    double m = 0; unsigned n = g_cap_gpu_n < 16 ? g_cap_gpu_n : 16;
-    for (unsigned i = 0; i < n; i++) if (g_cap_gpu_ms[i] > m) m = g_cap_gpu_ms[i];
-    return (uint64_t)(m * 1e6);
+static int cap_cmp_u64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return x < y ? -1 : x > y; }
+static uint64_t cap_p75(const uint64_t *v, unsigned n) {   /* 75th percentile of n samples (n <= CAP_WIN) */
+    uint64_t s[CAP_WIN]; memcpy(s, v, n * sizeof *s); qsort(s, n, sizeof *s, cap_cmp_u64); return s[(n * 3) / 4 < n ? (n * 3) / 4 : n - 1];
+}
+static uint64_t cap_gpu_typical_ns(void) {   /* 75th percentile of the last 16 frames' GPU time */
+    uint64_t v[16]; unsigned n = g_cap_gpu_n < 16 ? g_cap_gpu_n : 16;
+    for (unsigned i = 0; i < n; i++) v[i] = (uint64_t)(g_cap_gpu_ms[i] * 1e6);
+    return n ? cap_p75(v, n) : 0;
 }
 static void cap_auto_note(uint64_t busy_ns, uint64_t now) {
-    static int n, miss, k_seen; static uint64_t fast_since;
-    if (cap_mode() != -1 || !g_uncapped || g_paced_hz <= 0 || mfx_enabled() != MFX_OFF) { n = miss = 0; fast_since = 0; return; }
+    static uint64_t win[CAP_WIN]; static unsigned nwin, pos; static int k_seen; static uint64_t want_since; static int want_k;
+    if (cap_mode() != -1 || !g_uncapped || g_paced_hz <= 0 || mfx_enabled() != MFX_OFF || runtime_game_fps_limit() > 0) { nwin = pos = 0; want_since = 0; return; }
     int k = atomic_load(&g_auto_k);
     if (k < cap_kmin() || k > cap_kmax() || k != k_seen) {   // first use, or the display rate changed
         if (k < cap_kmin()) k = cap_kmin(); if (k > cap_kmax()) k = cap_kmax();
-        atomic_store(&g_auto_k, k); k_seen = k; n = miss = 0; fast_since = 0;
+        atomic_store(&g_auto_k, k); k_seen = k; want_since = 0;
     }
+    win[pos] = busy_ns; pos = (pos + 1) % CAP_WIN; if (nwin < CAP_WIN) nwin++;
+    if (nwin < CAP_WIN / 2) return;
     double tick = 1e9 / g_paced_hz;
-    if (busy_ns > k * tick && busy_ns < 3 * k * tick) miss++;
-    if (++n >= 60) n = miss = 0;
-    if (miss >= 3 && k < cap_kmax()) {
-        atomic_store(&g_auto_k, k_seen = k + 1); n = miss = 0; fast_since = 0;
-        LOG("[nvn] 帧率自动：%d → %d fps（帧超出 %d 个刷新）", g_paced_hz / k, g_paced_hz / (k + 1), k); return;
-    }
-    uint64_t gpu = cap_gpu_recent_ns(), need = busy_ns > gpu ? busy_ns : gpu;
-    if (k > cap_kmin() && need < 0.8 * (k - 1) * tick) {
-        if (!fast_since) fast_since = now;
-        else if (now - fast_since >= 3000000000ull) {
-            atomic_store(&g_auto_k, k_seen = k - 1); n = miss = 0; fast_since = 0;
-            LOG("[nvn] 帧率自动：%d → %d fps（3 秒内帧都在 %d 个刷新的 80%% 内）", g_paced_hz / k, g_paced_hz / (k - 1), k - 1);
-        }
-    } else fast_since = 0;
+    uint64_t busy = cap_p75(win, nwin), gpu = cap_gpu_typical_ns(), need = busy > gpu ? busy : gpu;
+    int target = k;
+    if (need > k * tick) { target = cap_kmin(); while (target < cap_kmax() && need > 0.95 * target * tick) target++; }
+    else if (k > cap_kmin() && need < 0.8 * (k - 1) * tick) { target = cap_kmin(); while (target < k && need > 0.8 * target * tick) target++; }
+    if (target == k) { want_since = 0; return; }
+    if (target != want_k || !want_since) { want_k = target; want_since = now; return; }
+    if (now - want_since < (target > k ? 1000000000ull : 1500000000ull)) return;
+    atomic_store(&g_auto_k, k_seen = target); want_since = 0;
+    LOG("[nvn] 帧率自动：%d → %d fps（近 %u 帧的 75%% 分位 %.1f ms，GPU %.1f ms）", g_paced_hz / k, g_paced_hz / target, nwin, busy / 1e6, gpu / 1e6);
 }
 /* Key 2: auto -> the fixed caps (slowest last) -> uncapped -> interpolation 30+30 -> half the refresh rate -> uncapped
    interpolation -> auto. Without the uncapped real-time mode only the interpolation modes cycle (as before). */
@@ -2840,8 +2850,8 @@ void dm_nvn_probe_present_interval(void) {
         checked++;
     }
     /* Frame-rate caps (key 2, TOTK_FPS), interpolation off: every k-th tick at the display rate whatever interval the game
-       asks for, only when the uncapped real-time mode is configured; auto steps one slower after three missed ticks and one
-       faster after 3 s under 80 % of the faster step. Negative control 28: the cap is ignored. */
+       asks for, only when the uncapped real-time mode is configured; auto follows the 75th percentile of the frames' work
+       (one slower after 1 s of misses, one faster after 1.5 s with room), not occasional hitches. Negative control 28: the cap is ignored. */
     if (mfx_enabled() == MFX_OFF) {
         int saved_paced0 = g_paced_hz;
         for (int k = 2; k <= 4; k++) for (int uncapped = 0; uncapped < 2; uncapped++) for (int interval = -1; interval <= 3; interval++) {
@@ -2856,16 +2866,16 @@ void dm_nvn_probe_present_interval(void) {
         g_uncapped = 1; atomic_store(&g_cap_mode, -1); atomic_store(&g_auto_k, 2);
         win_t w = {.interval = 1}; uint64_t t = 1000000000ull;
         cap_auto_note(1, t);   /* first note: takes k */
-        for (int i = 0; i < 3; i++) cap_auto_note(15000000ull, t += 15000000ull);   /* over two ticks (13.9 ms): misses */
-        if (present_ticks(&w) != 3) die("present interval probe: auto must slow to 48 fps after three missed ticks");
+        for (int i = 0; i < 140; i++) cap_auto_note(15000000ull, t += 15000000ull);   /* typical frame over two ticks (13.9 ms): 2.1 s */
+        if (present_ticks(&w) != 3) die("present interval probe: auto must slow to 48 fps when the typical frame misses 72");
         for (int i = 0; i < 16; i++) cap_auto_gpu(16.0);   /* the GPU needs 16 ms: 72 fps (13.9) is out of reach */
         for (int i = 0; i < 160; i++) cap_auto_note(5000000ull, t += 20833333ull);
         if (present_ticks(&w) != 3) die("present interval probe: auto must not speed up past what the GPU holds");
         for (int i = 0; i < 16; i++) cap_auto_gpu(6.0);
-        for (int i = 0; i < 160; i++) cap_auto_note(5000000ull, t += 20833333ull);   /* 3.3 s well under 80 % of two ticks */
-        if (present_ticks(&w) != 2) die("present interval probe: auto must return to 72 fps after 3 s with room");
-        cap_auto_note(60000000ull, t += 60000000ull); cap_auto_note(60000000ull, t += 60000000ull); cap_auto_note(60000000ull, t += 60000000ull);
-        if (present_ticks(&w) != 2) die("present interval probe: auto must not slow down for one-off hitches");
+        for (int i = 0; i < 160; i++) cap_auto_note(5000000ull, t += 20833333ull);   /* 3.3 s with room for two ticks */
+        if (present_ticks(&w) != 2) die("present interval probe: auto must return to 72 fps when the typical frame fits");
+        for (int i = 0; i < 200; i++) cap_auto_note(i % 8 ? 5000000ull : 30000000ull, t += 13888889ull);   /* one frame in 8 is a 30 ms hitch */
+        if (present_ticks(&w) != 2) die("present interval probe: auto must not slow down for occasional hitches");
         checked += 4;
         for (int i = 0; i < 16; i++) cap_auto_gpu(0);
         g_paced_hz = saved_paced0; atomic_store(&g_cap_mode, 0);
