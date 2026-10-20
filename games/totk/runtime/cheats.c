@@ -66,13 +66,15 @@ static uint64_t private_page(const Module *m) { return page_up16k(m->file_size);
 
 static int slot_index(uint64_t off) { for (unsigned i = 0; i < nslots; i++) if (slots[i].off == off) return (int)i; return -1; }
 
-/* The NSO build ID is the ELF GNU build-id note (namesz 4, descsz 20, type 3, "GNU"), kept in the module's read-only data. */
+/* The NSO build ID is the ELF GNU build-id note (namesz 4, type 3, "GNU"), kept in the module's read-only data. Its
+   descsz is 20 in Tears of the Kingdom and 16 in Breath of the Wild; cheat files use the first 8 bytes either way. */
 static int main_build_id(const Module *m, char out[17]) {
     static const uint8_t note[16] = {4, 0, 0, 0, 20, 0, 0, 0, 3, 0, 0, 0, 'G', 'N', 'U', 0};
     uint64_t lo = m->text_end, hi = m->key_off;
     if (hi > m->file_size) hi = m->file_size;
     for (uint64_t p = lo & ~3ull; p + sizeof note + 8 <= hi; p += 4) {
-        if (memcmp(m->base + p, note, sizeof note)) continue;
+        const uint8_t *q = m->base + p;
+        if (memcmp(q, note, 4) || (q[4] != 20 && q[4] != 16) || memcmp(q + 5, note + 5, sizeof note - 5)) continue;
         for (unsigned i = 0; i < 8; i++) snprintf(out + 2 * i, 3, "%02X", m->base[p + sizeof note + i]);
         return 1;
     }
