@@ -85,6 +85,23 @@ extern void totk_sr_closing(void) __attribute__((weak_import));
 extern void totk_sr_settings(int open) __attribute__((weak_import));
 int runtime_front_window_visible(void);   /* below: 1 seen, 0 covered, -1 not known yet */
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* The display the window is on and its refresh rate (0 before the window exists): the pacing follows that rate
+   (gfx/nvn mtl_display_hz), not the main display's. A BOTW window moved to a 75 Hz monitor while the 120 Hz built-in
+   screen stayed the main display was paced in 120 Hz ticks: 60 FPS became 75 / 37 FPS, 30+30 four 75 Hz refreshes a
+   frame (19 FPS; 2026-10-20, PR #257). The display link follows it too (it drives the guest's vsync events). Set on the
+   main thread at start, when the window changes screen and when a screen's parameters change (a new rate on the same
+   display); the present path reads the rate every frame without asking CoreGraphics. */
+static _Atomic uint32_t windowDisplay;
+static _Atomic int windowDisplayHz;
+int front_display_hz(void){return atomic_load(&windowDisplayHz);}
+static void note_window_screen(void){
+ NSNumber *n=window.screen.deviceDescription[@"NSScreenNumber"];uint32_t d=n?n.unsignedIntValue:CGMainDisplayID();
+ CGDisplayModeRef m=CGDisplayCopyDisplayMode(d);int hz=m?(int)(CGDisplayModeGetRefreshRate(m)+0.5):0;if(m)CGDisplayModeRelease(m);
+ uint32_t was=atomic_exchange(&windowDisplay,d);int wasHz=atomic_exchange(&windowDisplayHz,hz);
+ if(was==d&&wasHz==hz)return;
+ if(displayLink&&was!=d)CVDisplayLinkSetCurrentCGDisplay(displayLink,d);
+ fprintf(stderr,"[totk] window on display %u (%d Hz%s)\n",d,hz,d==CGMainDisplayID()?", the main display":"");
+}
 /* The start-up screen goes once a frame was presented and the warm-up is done, or lets the title come before it ends
    (runtime_warm_title): the player sees the game from here on. */
 static void boot_overlay_hide(void){
@@ -612,7 +629,7 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
--(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sr_view();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */
@@ -758,11 +775,12 @@ void runtime_front_run(void(*callback)(void)){
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   front_sr_view();
-  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;front_sr_view();}];   /* a refresh rate changed on the same screen */
+  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   runtime_gamepad_focus(window.isKeyWindow||assume_focus());   /* a test window never becomes key (TOTK_ASSUME_FOCUS) */
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");
+  note_window_screen();
   pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
   [NSApp run];runtime_fail("native event loop returned unexpectedly");
  }
