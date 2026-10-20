@@ -825,6 +825,48 @@ def sign_app(app, logs):
     run(['codesign', '--verify', '--deep', '--strict', app], logs / 'verify-app-signature.log')
 
 
+def wait_game_closed(out):
+    """Preparing a replacement is safe while playing; replacing the resources of an active game is not. Wait without
+    closing the player."""
+    old_binary = out/'Contents/Resources/totk/build/totk-native'
+    notified = 0
+    while old_binary.is_file():
+        processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
+        if str(old_binary.resolve()) not in (p.strip() for p in processes):
+            break
+        if time.monotonic()-notified >= 60:
+            say('app: replacement is ready; waiting for the running game to close before updating it')
+            notified = time.monotonic()
+        time.sleep(2)
+
+
+def step_quick(tree, out, logs, env, *, version, game):
+    """--quick: rebuild only the game program and the launcher and swap them into the app a full build made, for changes
+    to the code alone. Game data, shaders and the startup check are left as they are, and the bundle seal is not renewed
+    (codesign hashes all 16 GB): `codesign --verify` then reports the app as modified, which does not stop a locally
+    built app from starting. The next full build seals it again."""
+    app_binary = out/'Contents/Resources/totk/build/totk-native'
+    executable = out/f'Contents/MacOS/{APPS[game][2]}'
+    if not app_binary.is_file() or not executable.is_file():
+        raise BuildError(f'--quick updates an app a full build made; there is none at {out}')
+    t0 = time.time()
+    say('quick: building the game program and the launcher')
+    step_binary(tree, None, None, env, logs, version=version)
+    built = tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}')
+    changed = [(src, dst) for src, dst in ((built, app_binary), (tree / 'build/app-launcher', executable))
+               if src.read_bytes() != dst.read_bytes()]
+    if not changed:
+        say(f'quick: {out} is already up to date')
+        return
+    wait_game_closed(out)
+    for src, dst in changed:
+        tmp = dst.with_name(dst.name + '.partial')
+        clone(src, tmp)
+        tmp.replace(dst)
+        say(f'quick: replaced {dst.relative_to(out)}')
+    say(f'done in {time.time() - t0:.0f} s: {out} (bundle seal not renewed; a full build renews it)')
+
+
 def step_app(tree, out, logs, *, version="v0", game='totk'):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
@@ -875,18 +917,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
     sign_app(tmp, logs)  # A failed seal must not remove the previous working app.
-    old_binary = out/'Contents/Resources/totk/build/totk-native'
-    notified = 0
-    while old_binary.is_file():
-        # Preparing/signing a replacement is safe while playing; replacing the
-        # resources of an active game is not. Wait without closing the player.
-        processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
-        if str(old_binary.resolve()) not in (p.strip() for p in processes):
-            break
-        if time.monotonic()-notified >= 60:
-            say('4/4 app: replacement is ready; waiting for the running game to close before updating it')
-            notified = time.monotonic()
-        time.sleep(2)
+    wait_game_closed(out)
     if out.exists():
         shutil.rmtree(out)
     tmp.rename(out)
@@ -1073,7 +1104,8 @@ def step_data_botw(tree, botw, game, keys, logs, *, shared_fonts=None):
         if aoc.exists():
             shutil.rmtree(aoc)
         say('2/4 data: extracting the add-on content (the expansion pass, 1.4 GB)')
-        run([py, botw / 'scripts/extract_aoc_romfs.py', game, '--keys', keys, '--hactool', hactool, '--output', aoc], logs / 'botw-aoc.log', cwd=tree)
+        run([py, botw / 'scripts/extract_aoc_romfs.py', game, '--keys', keys, '--hactool', hactool, '--output', aoc,
+             '--expected', botw / 'assets/expected-v1.6.0.json'], logs / 'botw-aoc.log', cwd=tree)
         for i, want in expected['aoc'].items():
             report = json.loads((aoc / i / 'index.json').read_text())
             check(f'add-on content {i}', report['romfs_sha256'], want['sha256'])
@@ -1132,6 +1164,8 @@ def parse_args(argv):
     ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file, or next to this repository '
                     'with --extracted)')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
+    ap.add_argument('--quick', action='store_true', help='after a full build: rebuild only the game program and the launcher '
+                    'and swap them into that app (code changes only; game data, shaders and the bundle seal are left as they are)')
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available)')
@@ -1213,6 +1247,9 @@ def main(argv):
             say('--shader-cache is no longer needed: the startup shaders come from the game data and the shared shader list (games/botw/assets/shader_list.tsv)')
         botw = work / 'botw'
         say(f'Breath of the Wild {BOTW160["display_version"]} (by the title IDs in the game file); work folder {work}')
+        if args.quick:
+            step_quick(tree, out, logs, {**env, 'SHADER_LIST': str(BOTW_LIST)}, version='botw160', game='botw')
+            return
         step_code_botw(tree, botw, game, keys, env, logs)
         step_data_botw(tree, botw, game, keys, logs, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs)
@@ -1256,6 +1293,9 @@ def main(argv):
         version, update = identify_update(tree, update, keys, logs)
     elif args.update_version:
         version = next(v for v in UPDATES if VERSIONS[v]['display_version'] == args.update_version)
+    if args.quick:
+        step_quick(tree, out, logs, env, version=version, game='totk')
+        return
     if extracted:
         seed_extracted(tree, extracted, ['v0'] + ([version] if version != 'v0' else []))
     step_code(tree, game, keys, env, logs)
