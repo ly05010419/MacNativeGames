@@ -21,7 +21,8 @@ signature, shared fonts by valid BFTTF structure):
      first start does not compile them in the background (games/totk/tools/warm_metal_cache.m)
 
 Every intermediate file is in the work folder (default: "<game file folder>/TOTK_build"); a second run reuses
-what is already done and correct. Mac saves, shader cache and logs go to the user's Library folders; iOS keeps saves
+what is already done and correct. --extracted <game folder> (e.g. games/totk) builds from data extracted before instead
+of the game files: what the work folder lacks is cloned from there, and every piece is verified by its hashes. Mac saves, shader cache and logs go to the user's Library folders; iOS keeps saves
 and the writable shader cache in the app's Documents container.
 
 Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
@@ -265,6 +266,21 @@ def prepare_work(work, py, logs):
 
 
 # ---- steps ----
+def seed_extracted(tree, source, versions):
+    """--extracted: clone in the extracted data the work folder lacks (APFS clones on the same volume take no space).
+    Nothing is trusted for being there: step_code / step_data / step_update_data verify every piece by its hashes."""
+    rels = [*(f'extracted/{v}' for v in versions), *(f'rewritten/{v}' for v in versions), 'extracted/firmware', 'build/AppIcon.icns']
+    for rel in rels:
+        src, dst = source / rel, tree / rel
+        if dst.exists() or not src.exists() or (src.is_dir() and not any(src.iterdir())):
+            continue
+        say(f'using the already extracted {rel} from {source}')
+        if src.is_dir():
+            copy_tree(src, dst)
+        else:
+            clone(src, dst)
+
+
 def input_kind(game):
     with game.open('rb') as f:
         if f.read(4) == b'PFS0':
@@ -388,7 +404,10 @@ def step_code(tree, game, keys, env, logs, *, version="v0"):
     exefs = tree / f'extracted/{version}/exefs'
     want = expected['exefs_sha256']
     manifest = exefs.parent / 'extraction-manifest.json'
-    if not source_matches(manifest, game) or not exefs_matches(exefs, want):
+    stale = not exefs_matches(exefs, want) if game is None else not source_matches(manifest, game) or not exefs_matches(exefs, want)
+    if stale:
+        if game is None or keys is None:
+            raise BuildError(f"no verified {expected['display_version']} ExeFS in the work folder or --extracted: give the game file and keys")
         say('1/4 code: extracting the ExeFS from the game file')
         if exefs.exists():
             shutil.rmtree(exefs)
@@ -433,6 +452,8 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None):
     ok = index.exists() and (romfs / 'romfs.bin').is_file() and json.loads(index.read_text()).get('romfs_sha256') == EXPECTED['romfs']['sha256'] and \
         (romfs / 'romfs.bin').stat().st_size == EXPECTED['romfs']['size']
     if not ok:
+        if game is None or keys is None:
+            raise BuildError('no verified 1.0.0 RomFS in the work folder or --extracted: give the game file and keys')
         say('2/4 data: extracting and verifying the RomFS (17 GB, a minute or two)')
         if romfs.exists():
             shutil.rmtree(romfs)
@@ -453,8 +474,10 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None):
                     shutil.copy2(shared_fonts / name, fonts / name)
             (fonts / 'manifest.json').write_text(json.dumps(report, indent=2) + '\n')
         else:
-            if not firmware and input_kind(game) == 'nsp':
+            if not firmware and (game is None or input_kind(game) == 'nsp'):
                 raise BuildError('NSP needs --firmware or --shared-fonts because no valid shared fonts are cached')
+            if keys is None:
+                raise BuildError('extracting the shared fonts needs your prod.keys (-k)')
             say('2/4 data: extracting the system shared fonts')
             if fonts.exists():
                 shutil.rmtree(fonts)
@@ -583,6 +606,8 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112'):
         except (ValueError, KeyError):
             pass
     if not valid:
+        if game is None or update is None or keys is None:
+            raise BuildError(f'no verified {expected["display_version"]} RomFS in the work folder or --extracted: give the game file, --update and keys')
         hactool = build_hactool(tree, logs)
         if folder.exists():
             shutil.rmtree(folder)
@@ -727,7 +752,7 @@ def step_binary(tree, game, keys, env, logs, *, version="v0"):
     # used only while packaging (step_warm_metal); not part of the app
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
          '-framework', 'Foundation', '-o', 'build/warm-metal-cache'], logs / 'warm-metal-cache-build.log', cwd=tree, env=env)
-    if not (tree / 'build/AppIcon.icns').exists():   # the game's own icon from its control data; optional
+    if not (tree / 'build/AppIcon.icns').exists() and game is not None and keys is not None:   # the game's own icon from its control data; optional
         try:
             run([tree / '.venv/bin/python', 'scripts/extract_app_icon.py', game, '--keys', keys, '--output', 'build/AppIcon.icns'],
                 logs / 'app_icon.log', cwd=tree)
@@ -907,12 +932,19 @@ def step_warm_metal(tree, out, logs):
 def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update.',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
-    ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0')
+    ap.add_argument('game', type=Path, nargs='?', help='the game file (.xci or .nsp), base game 1.0.0 (not needed with --extracted)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app')
     ap.add_argument('--platform', choices=('macos','ios'), default='macos', help='build a macOS app (default) or unsigned iPhone/iPad IPA')
-    ap.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys')
-    ap.add_argument('-o', '--out', type=Path, help=f'the app or IPA to write (default depends on --platform; next to the game file)')
-    ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file)')
+    ap.add_argument('-k', '--keys', type=Path, help='your prod.keys (not needed with --extracted when its data verifies)')
+    ap.add_argument('--extracted', type=Path, help='a game folder with data already extracted from your game files (extracted/v0, '
+                    'extracted/<update>, extracted/firmware, rewritten/, e.g. games/totk): what the work folder lacks is cloned from '
+                    'it and verified as if extracted here, so no game file or keys are needed')
+    ap.add_argument('--update-version', choices=('1.1.2', '1.2.1', '1.4.3'), help='with --extracted and no --update: the update '
+                    'whose extracted data to use (verified by its module and RomFS hashes)')
+    ap.add_argument('-o', '--out', type=Path, help=f'the app or IPA to write (default depends on --platform; next to the game file, '
+                    'or in <work>/apps with --extracted)')
+    ap.add_argument('--work', type=Path, help='work folder (default: TOTK_build next to the game file, or next to this repository '
+                    'with --extracted)')
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available)')
@@ -922,21 +954,35 @@ def parse_args(argv):
 
 def main(argv):
     args = parse_args(argv)
-    game, keys = args.game.expanduser().resolve(), args.keys.expanduser().resolve()
-    if not game.is_file():
+    extracted = args.extracted.expanduser().resolve() if args.extracted else None
+    if extracted and not (extracted / 'extracted').is_dir():
+        raise BuildError(f'--extracted needs a game folder with an extracted/ folder (e.g. games/totk): {extracted}')
+    if not args.game and not extracted:
+        raise BuildError('give the game file (.xci / .nsp), or --extracted with a folder of already extracted data')
+    game = args.game.expanduser().resolve() if args.game else None
+    keys = args.keys.expanduser().resolve() if args.keys else None
+    if game and not game.is_file():
         raise BuildError(f'no such file: {game}')
-    if not keys.is_file():
+    if game and not keys:
+        raise BuildError('the game file needs your prod.keys (-k)')
+    if keys and not keys.is_file():
         raise BuildError(f'no such file: {keys}')
-    out = (args.out.expanduser().resolve() if args.out else game.parent / (f'{APP_NAME}.ipa' if args.platform=='ios' else f'{APP_NAME}.app'))
-    work = (args.work.expanduser().resolve() if args.work else game.parent / 'TOTK_build')
+    home = game.parent if game else REPO.parent   # --extracted alone: TOTK_build next to this repository, outside it
+    work = (args.work.expanduser().resolve() if args.work else home / 'TOTK_build')
+    app_file = f'{APP_NAME}.ipa' if args.platform=='ios' else f'{APP_NAME}.app'
+    out = (args.out.expanduser().resolve() if args.out else (game.parent / app_file if game else work / 'apps' / app_file))
     if out.suffix.lower() != ('.ipa' if args.platform=='ios' else '.app'):
         raise BuildError(f'the {args.platform} output must end in {".ipa" if args.platform=="ios" else ".app"}: {out}')
-    kind = input_kind(game)
-    if kind not in ('xci', 'nsp'):
+    kind = input_kind(game) if game else None
+    if game and kind not in ('xci', 'nsp'):
         raise BuildError('the base game must be an uncompressed XCI or NSP; NSZ is supported for update packages')
     update = args.update.expanduser().resolve() if args.update else None
     if update and (not update.is_file() or input_kind(update) not in ('nsp', 'nsz')):
         raise BuildError('--update must be a separate cumulative NSP or NSZ')
+    if update and not keys:
+        raise BuildError('--update needs your prod.keys (-k)')
+    if args.update_version and update:
+        raise BuildError('--update-version is for --extracted without an update file; the update file names its own version')
     version = 'v0'
     firmware = args.firmware.expanduser().resolve() if args.firmware else None
     shared_fonts = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
@@ -944,7 +990,8 @@ def main(argv):
         raise BuildError(f'no firmware directory: {firmware}')
     if shared_fonts:
         font_report(shared_fonts)
-    if kind == 'nsp' and not (firmware or shared_fonts or fonts_valid(work / 'totk/extracted/firmware/shared-fonts')):
+    if kind == 'nsp' and not (firmware or shared_fonts or fonts_valid(work / 'totk/extracted/firmware/shared-fonts')
+                              or (extracted and fonts_valid(extracted / 'extracted/firmware/shared-fonts'))):
         raise BuildError('NSP files do not include system shared fonts. Supply --firmware <unpacked firmware NCA directory> '
                          'or --shared-fonts <previously extracted font directory>; valid fonts in --work are also reused.')
     py = prerequisites(args)
@@ -952,12 +999,12 @@ def main(argv):
         path=path.resolve()
         while not path.exists(): path=path.parent
         return path
-    work_volume=existing_volume_path(work.parent if work.parent.exists() else game.parent)
-    output_volume=existing_volume_path(out.parent if out.parent.exists() else game.parent)
+    work_volume=existing_volume_path(work.parent if work.parent.exists() else home)
+    output_volume=existing_volume_path(out.parent if out.parent.exists() else home)
     free=shutil.disk_usage(work_volume).free/2**30
     output_free=shutil.disk_usage(output_volume).free/2**30
     same_volume=os.stat(work_volume).st_dev==os.stat(output_volume).st_dev
-    base_cached=(work/'totk/extracted/v0/romfs/romfs.bin').exists()
+    base_cached=(work/'totk/extracted/v0/romfs/romfs.bin').exists() or bool(extracted and (extracted/'extracted/v0/romfs/romfs.bin').exists())
     say(f'work folder {work} ({free:.0f} GB free on its volume)')
     if args.platform=='ios':
         if same_volume:
@@ -979,11 +1026,15 @@ def main(argv):
     tree = prepare_work(work, py, logs)
     if update:
         version, update = identify_update(tree, update, keys, logs)
+    elif args.update_version:
+        version = next(v for v in UPDATES if VERSIONS[v]['display_version'] == args.update_version)
+    if extracted:
+        seed_extracted(tree, extracted, ['v0'] + ([version] if version != 'v0' else []))
     step_code(tree, game, keys, env, logs)
-    if update:
+    if version != 'v0':
         step_code(tree, update, keys, env, logs, version=version)
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts)
-    if update:
+    if version != 'v0':
         step_update_data(tree, game, update, keys, logs, version=version)
     step_shaders(tree, logs, version=version)
     step_shader_libs(tree, logs, version=version)
