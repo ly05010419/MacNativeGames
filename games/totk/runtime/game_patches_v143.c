@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 #include <math.h>
 #include <TargetConditionals.h>
+#include <sys/sysctl.h>
 
 typedef struct { uint64_t off; uint32_t original, replacement; } Patch;
 static const Patch fps60[] = {
@@ -183,15 +184,17 @@ int runtime_output_res(unsigned *w,unsigned *h){
             if(e&&*e&&strcmp(e,"0")&&strcmp(e,"auto"))fprintf(stderr,"[totk] TOTK_OUTPUT_RES=%s ignored: iOS shows 720p only\n",e);
         }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
-            /* True 2K (2560x1440), whatever the Mac's memory. Picking bigger sizes by memory (3200x1800 from 24 GB,
-             * 3840x2160 from 32 GB) was wrong: memory says nothing about the GPU. On a 64 GB M4 Pro (20-core GPU, 2026-10-19)
-             * native at 3200x1800 was GPU-bound at 17-22 ms a frame (about 50 FPS) where MetalFX 2K took 5.5 ms, and
-             * 3840x2160's texture heap makes a 1197 MiB memory pool that nvn_mtl.m's 1 GiB zero-copy guard
-             * (POOL_BUFFER_MAX) refuses at the title. TOTK_OUTPUT_RES=<w>x<h> still asks for a bigger size. */
+            /* The largest output (and native scene) the Mac's memory allows and the app has an overlay for: a 3840x2160
+             * scene and canvas allocated about 7 GB of GPU memory (2026-10-19), too much next to a 16 GB Mac's other use. */
+            static const struct{unsigned w,h,gb;}sizes[]={{3840,2160,32},{3200,1800,24},{2560,1440,0}};
+            uint64_t mem=0;size_t len=sizeof mem;if(sysctlbyname("hw.memsize",&mem,&len,NULL,0))mem=0;
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
-            snprintf(path,sizeof path,"%s/2560x1440/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out");
-            FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=2560;ch=1440;}
-            if(on)fprintf(stderr,"[totk] 1.4.3 output size 2560x1440 (TOTK_OUTPUT_RES=<w>x<h> picks another)\n");
+            for(unsigned i=0;i<sizeof sizes/sizeof *sizes&&!on;i++){
+                if(mem<(uint64_t)sizes[i].gb<<30)continue;
+                snprintf(path,sizeof path,"%s/%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i].w,sizes[i].h);
+                FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=sizes[i].w;ch=sizes[i].h;}
+            }
+            if(on)fprintf(stderr,"[totk] 1.4.3 output size %ux%u for %llu GB of memory (TOTK_OUTPUT_RES=<w>x<h> picks another)\n",cw,ch,(unsigned long long)(mem>>30));
             /* The canvas and UI start at the output size (fork, 2026-10-20): key 3 picks the scene's render size and
                MetalFX scales it up (scene_cycle). A 1440p canvas from the start was measured at 4.2 GB with a 1440p scene. */
             output_full_at_start=1;
