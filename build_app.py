@@ -1030,9 +1030,11 @@ def main(argv):
         version = next(v for v in UPDATES if VERSIONS[v]['display_version'] == args.update_version)
     if extracted:
         seed_extracted(tree, extracted, ['v0'] + ([version] if version != 'v0' else []))
-    step_code(tree, game, keys, env, logs)
+    # An update build packages only the update's code (runtime-<version>, rewritten/<version>); the base game supplies data
     if version != 'v0':
         step_code(tree, update, keys, env, logs, version=version)
+    else:
+        step_code(tree, game, keys, env, logs)
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts)
     if version != 'v0':
         step_update_data(tree, game, update, keys, logs, version=version)
