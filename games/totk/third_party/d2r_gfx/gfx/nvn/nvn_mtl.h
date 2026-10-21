@@ -75,3 +75,4 @@ int mtl_ui_ghost_rect(float r[4]);   // 上面认到的那件货的屏幕矩形�
 
 int mtl_probe_upload_batch(void);
 int mtl_probe_wb_batch(void);
+int mtl_probe_pso_archive(void);

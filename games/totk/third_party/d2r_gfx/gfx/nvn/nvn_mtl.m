@@ -6371,6 +6371,81 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
     }
     enc_r_args(en, MTLRenderStageFragment, buf.gpuAddress + (uint64_t)(fr % NT_SLOTS) * NT_SLOT_WORDS * 4, 29);
 }
+/* TOTK (Mac): the game's render pipelines are kept in Metal binary archives between launches, so a pipeline met before is
+   loaded instead of compiled, whatever the system's shared Metal cache (one per user, ~1 GB, shared by every app) has
+   evicted meanwhile. Each launch writes the pipelines it had to compile into an archive of its own; the archives of
+   earlier launches are only read (adding to an archive that is also being read made it grow from 26 MB to 2.4 GB in the
+   0x1233333/MacNativeGames fork, 2026-10-20). They live under the translation cache (a new translation chain starts
+   empty) in a folder per macOS build and GPU; at more than PSO_ARC_FILES archives or PSO_ARC_BYTES they all start over.
+   Adding a pipeline to the archive compiles it once more, on a background queue. TOTK_PSO_ARCHIVE=0 turns it off. */
+#define PSO_ARC_FILES 24
+#define PSO_ARC_BYTES (1536ull << 20)
+static NSArray<id<MTLBinaryArchive>> *g_arc_read;   // earlier launches' archives (read only)
+static id<MTLBinaryArchive> g_arc_new; static NSURL *g_arc_url;   // this launch's (written)
+static dispatch_queue_t g_arc_q; static _Atomic uint64_t g_arc_hits, g_arc_misses, g_arc_added; static uint64_t g_arc_saved;
+static void pso_arc_init(void) {
+#if !TARGET_OS_IPHONE
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *e = getenv("TOTK_PSO_ARCHIVE"); if (e && !strcmp(e, "0")) { MLOG("TOTK_PSO_ARCHIVE=0: render pipelines are not kept in binary archives"); return; }
+        NSString *os = [NSProcessInfo.processInfo.operatingSystemVersionString stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+        NSString *gpu = [g_dev.name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+        NSString *dir = [totk_rt_dir() stringByAppendingFormat:@"/pipeline-archives/%@-%@", [os stringByReplacingOccurrencesOfString:@"/" withString:@"_"], gpu];
+        NSFileManager *fm = NSFileManager.defaultManager; [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.metalar'"]];
+        uint64_t bytes = 0; for (NSString *n in names) bytes += [[fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:n] error:nil] fileSize];
+        if (names.count >= PSO_ARC_FILES || bytes > PSO_ARC_BYTES) {
+            MLOG("[pso-archive] %lu archives, %.0f MB: starting over", (unsigned long)names.count, bytes / 1048576.0);
+            for (NSString *n in names) [fm removeItemAtPath:[dir stringByAppendingPathComponent:n] error:nil];
+            names = @[]; bytes = 0;
+        }
+        NSMutableArray *read = [NSMutableArray array];
+        for (NSString *n in names) {
+            MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:n]];
+            NSError *err = nil; id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:ad error:&err];
+            if (a) [read addObject:a]; else { MLOG("[pso-archive] %s unreadable (%s): removed", n.UTF8String, err.localizedDescription.UTF8String); [fm removeItemAtURL:ad.url error:nil]; }
+        }
+        NSError *err = nil; id<MTLBinaryArchive> fresh = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
+        if (!fresh) { MLOG("【红】[pso-archive] cannot make an archive (%s): off", err.localizedDescription.UTF8String); return; }
+        g_arc_read = read; g_arc_new = fresh;
+        g_arc_url = [NSURL fileURLWithPath:[dir stringByAppendingFormat:@"/launch-%llx-%d.metalar", (unsigned long long)clock_gettime_nsec_np(CLOCK_REALTIME), getpid()]];
+        g_arc_q = dispatch_queue_create("totk.pso-archive", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        MLOG("[pso-archive] %lu archives of earlier launches (%.0f MB) in %s", (unsigned long)read.count, bytes / 1048576.0, dir.UTF8String);
+    });
+#endif
+}
+static void pso_arc_save(void) {   // on g_arc_q
+    NSError *err = nil;
+    if (![g_arc_new serializeToURL:g_arc_url error:&err]) MLOG("【红】[pso-archive] saving %s failed: %s", g_arc_url.lastPathComponent.UTF8String, err.localizedDescription.UTF8String);
+    else { g_arc_saved = atomic_load(&g_arc_added); MLOG("[pso-archive] saved %llu pipelines of this launch (loaded %llu from archives, compiled %llu)", (unsigned long long)g_arc_saved, (unsigned long long)atomic_load(&g_arc_hits), (unsigned long long)atomic_load(&g_arc_misses)); }
+}
+/* A game render pipeline: from the archives when it is there, else compiled (and queued for this launch's archive). */
+static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSError **e) {
+    pso_arc_init();
+    if (!g_arc_new) return [g_dev newRenderPipelineStateWithDescriptor:d error:e];
+    if (g_arc_read.count) {
+        d.binaryArchives = g_arc_read;
+        id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
+        d.binaryArchives = nil;
+        if (ps) { atomic_fetch_add(&g_arc_hits, 1); return ps; }
+    }
+    id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
+    if (!ps) return nil;
+    atomic_fetch_add(&g_arc_misses, 1);
+    MTLRenderPipelineDescriptor *copy = [d copy];
+    dispatch_async(g_arc_q, ^{ @autoreleasepool {
+        NSError *err = nil;
+        if (![g_arc_new addRenderPipelineFunctionsWithDescriptor:copy error:&err]) { static int said; if (said++ < 5) MLOG("[pso-archive] not archived: %s", err.localizedDescription.UTF8String); return; }
+        uint64_t n = atomic_fetch_add(&g_arc_added, 1) + 1, now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); static uint64_t last;
+        if (n == 64 || n % 512 == 0 || now - last > 30000000000ull) { pso_arc_save(); last = now; }
+    } });
+    return ps;
+}
+/* Saves this launch's additions not saved yet (after the warm-up; during play every 64th / 512th addition or 30 s). */
+static void mtl_pso_archive_flush(void) {
+    if (!g_arc_q) return;
+    dispatch_async(g_arc_q, ^{ @autoreleasepool { if (atomic_load(&g_arc_added) != g_arc_saved) pso_arc_save(); } });
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
@@ -6528,7 +6603,7 @@ static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs, int deman
     if (slot < 0) return 0;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, (__bridge id<MTLFunction>)k->fsfn, 0); g_pp_kicked++;   // a demand key may carry the border-colour fragment (fs_fn_border); guesses have none
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+        NSError *e = nil; id<MTLRenderPipelineState> ps = pso_new(d, &e);
         pthread_mutex_lock(&g_pp_mu); g_pp[slot].ps = ps; g_pp[slot].done = 1; pthread_cond_broadcast(&g_pp_cv); pthread_mutex_unlock(&g_pp_mu);
     });
     return 1;
@@ -6591,7 +6666,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
         else {
             if (g_pp_submit_mark != g_sub_serial) { g_pp_submit_mark = g_sub_serial; pso_predict_rest(); }   // 本次提交第一次缺：先把后面的丢出去并行编，再同步编眼前这条 | First miss in this submission: first kick the later ones out to compile in parallel, then synchronously compile the one at hand
             MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, bfn ? bfn : g_pso_fsfn, g_pso_lmap != NULL);
-            ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+            ps = pso_new(d, &e);
         }
     } else {   // 普通通道，TOTK_ASYNC_SHADERS=1：不在提交线程上等完整编译，最多等 TOTK_SHADER_STALL_MS，还没完就把这次绘制标成「待定」跳过
         // Normal pass, TOTK_ASYNC_SHADERS=1: do not wait out a full compile on the submit thread; wait at most
@@ -6603,7 +6678,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
         if (st == PP_ABSENT) {
             if (!vs_fn_ready(vs, fs, (k.a2c & PSO_LAYERED) != 0, (k.a2c & PSO_VBORDER) != 0, !same)) st = PP_PENDING;   // its patched vertex function is compiling in the background (fn_patch_async)
             else if (pso_pend_kick(&k, vs, fs, 1)) st = pso_pend_poll(&k, same ? 0 : stall_budget(), &ps);
-            else { MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, bfn, 0); ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e]; st = ps ? PP_READY : PP_ABSENT; }   // 预编表满：照旧同步编 | the predict table is full: compile synchronously, as before
+            else { MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, fs, bfn, 0); ps = pso_new(d, &e); st = ps ? PP_READY : PP_ABSENT; }   // 预编表满：照旧同步编 | the predict table is full: compile synchronously, as before
         }
         if (st == PP_READY) { if (ps) g_pp_taken++; }
         else if (st == PP_PENDING) {
@@ -6898,7 +6973,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
                         }
                         pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fsfn;
                         NSError *e = nil; uint64_t ps_started = bp_now();
-                        id ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, fsfn, sk.merged) error:&e];
+                        id ps = pso_new(pso_desc(&k, vs, fs, fsfn, sk.merged), &e);
                         atomic_fetch_add(&g_warm_pipeline_ns, bp_now() - ps_started); atomic_fetch_add(&g_warm_pipeline_count, 1);
                         if (!ps) { MLOG("【红】后台建渲染管线失败：%s", e.localizedDescription.UTF8String); warm_task_done(&done,total,shader_total,pipeline_total,dict); continue; }
                         WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = vkey; item->fs_key = fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
@@ -6966,6 +7041,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         }
         if (runtime_warm_progress) runtime_warm_progress(done,total,dict.count,shader_total,g_warm_rps+g_warm_cps,pipeline_total);
         MLOG("缓存补充预热：新增 %llu 个着色器，%llu 个失败；清单里还不在翻译缓存的着色器 %llu 个（第一次用到时现翻，自动收集）", cached, failed, (unsigned long long)g_warm_missing);
+        mtl_pso_archive_flush();
         MLOG("管线预热完成：着色器 %llu 个 / 渲染管线 %llu 个（跳过特化片元 %llu）/ 计算管线 %llu 个，后台用时 %.1f ms（着色器库 %d 个线程%s）",
              (unsigned long long)dict.count, g_warm_rps, g_warm_skip_fz, g_warm_cps, (bp_now() - g_warm_t0) / 1e6, warm_threads(),
              atomic_load(&g_warm_in_play) && warm_threads() > 2 ? "，进世界后 2 个" : "");
@@ -7052,7 +7128,7 @@ static void warm_light(void) {
                 NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
                 if (!vs || (fkey.length && !fs)) { nfail++; continue; }
                 pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = NULL;
-                NSError *er = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, fs, nil, sk.merged) error:&er]; tried = 1; nr += ps != nil;
+                NSError *er = nil; ps = pso_new(pso_desc(&k, vs, fs, nil, sk.merged), &er); tried = 1; nr += ps != nil;
             } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
                 NvShader *cs = warm_shader(dict, c[1], 5); if (!cs) { nfail++; continue; }
                 NSError *er = nil; ps = [g_dev newComputePipelineStateWithFunction:cs->fn error:&er]; tried = 1; nc += ps != nil;
@@ -7062,6 +7138,7 @@ static void warm_light(void) {
             if (dict.count > 256) [dict removeAllObjects];
             if (tried && (nr + nc) % 500 == 0 && nr + nc) MLOG("轻量管线预热：%llu 条，用时 %.1f s，其中超过 20 ms（现编）%llu 条", nr + nc, (bp_now() - t0) / 1e9, slow);
         }
+        mtl_pso_archive_flush();
         MLOG("轻量管线预热完成：渲染管线 %llu 条、计算管线 %llu 条，失败 / 缺着色器 %llu，超过 20 ms（现编）%llu 条，用时 %.1f s", nr, nc, nfail, slow, (bp_now() - t0) / 1e9);
     });
 #endif
@@ -13402,6 +13479,34 @@ int mtl_probe_wb_batch(void) {
             checked++; free(mems[i]); free(want[i]);
         }
     }
+    return checked;
+}
+/* Pipeline archives (pso_new): a pipeline compiled once is written to this launch's archive; with that archive read back
+   as an earlier launch's, the same descriptor is served from it (MTLPipelineOptionFailOnBinaryArchiveMiss), and a
+   descriptor never archived still misses. TOTK_PROBE_NEGATIVE asks for the archived one with another colour format. */
+int mtl_probe_pso_archive(void) {
+    mtl_init(); pso_arc_init(); int checked = 0;
+    if (!g_arc_new) MDIE("pipeline archive probe: archives are off (TOTK_PSO_ARCHIVE=0 or iOS)");
+    NSError *e = nil;
+    /* the library is compiled again for every descriptor, as each launch compiles the game's (from source or a metallib) */
+    MTLRenderPipelineDescriptor *(^desc)(MTLPixelFormat) = ^(MTLPixelFormat pf) {
+        NSError *le = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nvertex float4 v(uint i [[vertex_id]]) { return float4(float(i & 1), float(i >> 1), 0, 1); }\nfragment float4 f() { return float4(0.25, 0.5, 0.75, 1); }\n" options:totk_precise_opts() error:&le];
+        if (!lib) MDIE("pipeline archive probe library: %s", le.localizedDescription.UTF8String);
+        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new]; d.vertexFunction = [lib newFunctionWithName:@"v"]; d.fragmentFunction = [lib newFunctionWithName:@"f"];
+        d.colorAttachments[0].pixelFormat = pf; return d; };
+    uint64_t misses = atomic_load(&g_arc_misses), hits = atomic_load(&g_arc_hits);
+    if (!pso_new(desc(MTLPixelFormatRGBA8Unorm), &e)) MDIE("pipeline archive probe: first build failed");
+    if (atomic_load(&g_arc_misses) != misses + 1) MDIE("pipeline archive probe: the first build was not a miss"); checked++;
+    dispatch_sync(g_arc_q, ^{ pso_arc_save(); });   // after the queued addition
+    MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = g_arc_url;
+    id<MTLBinaryArchive> saved = [g_dev newBinaryArchiveWithDescriptor:ad error:&e];
+    if (!saved) MDIE("pipeline archive probe: the saved archive does not load: %s", e.localizedDescription.UTF8String); checked++;
+    NSArray *before = g_arc_read; g_arc_read = @[saved];
+    MTLPixelFormat again = getenv("TOTK_PROBE_NEGATIVE") ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
+    if (!pso_new(desc(again), &e)) MDIE("pipeline archive probe: second build failed");
+    if (atomic_load(&g_arc_hits) != hits + 1) MDIE("pipeline archive probe: the archived pipeline was not served from the archive"); checked++;
+    if (!pso_new(desc(MTLPixelFormatRGBA16Float), &e) || atomic_load(&g_arc_hits) != hits + 1) MDIE("pipeline archive probe: a pipeline never archived was served from the archive"); checked++;
+    g_arc_read = before; [NSFileManager.defaultManager removeItemAtURL:g_arc_url error:nil];
     return checked;
 }
 int mtl_probe_upload_batch(void) {
