@@ -129,19 +129,21 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
    report id). The built-in table has the controllers checked on real hardware; a player can add one in
    rumble-profiles.txt next to controls.txt (TOTK_RUMBLE_PROFILES names another file): one profile per line,
    `vendor product report_id length low_offset high_offset` (decimal or 0x hex, `#` starts a comment), for example the
-   built-in line `0x2dc8 0x6012 0x05 5 1 2`. Many reports can be found in SDL's HIDAPI drivers (src/joystick/hidapi).
+   built-in line `0x2dc8 0x6012 0x05 5 1 2 1` (an optional seventh number, 1, says the high motor is the weak one, so the low motor carries the stronger side). Many reports can be found in SDL's HIDAPI drivers (src/joystick/hidapi).
    Built in:
    - 2dc8:6012 8BitDo Ultimate 2 Wireless, firmware 1.03 and later (34-byte input reports), output report 0x05 =
-     {0x05, low, high, 0, 0} as SDL_hidapi_8bitdo.c sends it; a probe over Bluetooth LE felt both motors (2026-10-21).
+     {0x05, low, high, 0, 0} as SDL_hidapi_8bitdo.c sends it; a probe over Bluetooth LE felt both motors (2026-10-21):
+     the low motor is strong and the high one weak; every strength from 50/255 was felt, so the floor is for the game's
+     faint values; one report gives a short kick, so a held value is resent every 50 ms.
    The game's left value drives the low motor and its right value the high one, each by the same intensity as the Core
-   Haptics path. A report goes out when a motor value changes (at most every 20 ms) and every 250 ms while one is on;
-   silence is written as zeros, also at exit. TOTK_RUMBLE_HID=0 keeps it off. The game's own pulses are faint and short
+   Haptics path. A report goes out when a motor value changes (at most every 20 ms) and every 50 ms while one is on (the
+   8BitDo stops a lone report after a moment); silence is written as zeros three times, also at exit. TOTK_RUMBLE_HID=0 keeps it off. The game's own pulses are faint and short
    (a play session: strongest amplitude 0.10-0.15, a few tenths of a second in 30 s) and motors need a push to start
-   turning, so a non-zero value is raised to at least TOTK_RUMBLE_HID_FLOOR (0..255, default 90) and held for
-   TOTK_RUMBLE_HID_HOLD_MS (default 60) after it ends. */
-typedef struct { uint16_t vendor, product; uint8_t reportId, length, lowAt, highAt; } HidRumbleProfile;
-enum { HID_PROFILES_MAX = 16, HID_MIN_MS = 20, HID_KEEP_MS = 250 };
-static HidRumbleProfile hidProfiles[HID_PROFILES_MAX] = { {0x2dc8, 0x6012, 0x05, 5, 1, 2} };
+   turning, so a non-zero value is raised to at least TOTK_RUMBLE_HID_FLOOR (0..255, default 110) and held for
+   TOTK_RUMBLE_HID_HOLD_MS (default 120) after it ends. */
+typedef struct { uint16_t vendor, product; uint8_t reportId, length, lowAt, highAt, lowTakesMax; } HidRumbleProfile;
+enum { HID_PROFILES_MAX = 16, HID_MIN_MS = 20, HID_KEEP_MS = 50, HID_QUIET_REPEATS = 3 };
+static HidRumbleProfile hidProfiles[HID_PROFILES_MAX] = { {0x2dc8, 0x6012, 0x05, 5, 1, 2, 1} };
 static int hidProfileCount = 1;
 static IOHIDManagerRef hidRumbleManager;   /* main queue */
 static IOHIDDeviceRef hidRumbleDevice;     /* set on rumbleQueue, opened on the main queue */
@@ -149,7 +151,7 @@ static HidRumbleProfile hidRumbleProfile;  /* the profile of hidRumbleDevice */
 static GCController *hidRumblePad;         /* main queue */
 static uint8_t hidSent[2], hidHeld[2];
 static uint64_t hidSentAt, hidHeldUntil[2];
-static int hidFloor = 90, hidHoldMs = 60;
+static int hidFloor = 110, hidHoldMs = 120, hidQuietSent = HID_QUIET_REPEATS;
 static BOOL hidRumbleFailed;
 static void hid_profiles_load(void) {   /* main queue, once */
     const char *path = getenv("TOTK_RUMBLE_PROFILES"), *controls = getenv("TOTK_CONTROLS");
@@ -162,14 +164,14 @@ static void hid_profiles_load(void) {   /* main queue, once */
         NSRange hash = [raw rangeOfString:@"#"];
         NSString *line = [(hash.location == NSNotFound ? raw : [raw substringToIndex:hash.location]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         if (!line.length) continue;
-        int v, p, rid, len, lo, hi; char extra;
-        BOOL ok = sscanf(line.UTF8String, "%i %i %i %i %i %i %c", &v, &p, &rid, &len, &lo, &hi, &extra) == 6
+        int v, p, rid, len, lo, hi, mx = 0; char extra; int got = sscanf(line.UTF8String, "%i %i %i %i %i %i %i %c", &v, &p, &rid, &len, &lo, &hi, &mx, &extra);
+        BOOL ok = (got == 6 || got == 7) && mx >= 0 && mx <= 1
                   && v > 0 && v <= 0xffff && p >= 0 && p <= 0xffff && rid >= 1 && rid <= 255 && len >= 3 && len <= 64
                   && lo >= 1 && lo < len && hi >= 1 && hi < len && lo != hi;
-        if (!ok) { fprintf(stderr, "[rumble] %s line %d ignored (want: vendor product report_id length low_offset high_offset)\n", file.UTF8String, lineNo); continue; }
+        if (!ok) { fprintf(stderr, "[rumble] %s line %d ignored (want: vendor product report_id length low_offset high_offset [1 if the high motor is weak])\n", file.UTF8String, lineNo); continue; }
         if (hidProfileCount >= HID_PROFILES_MAX) { fprintf(stderr, "[rumble] %s: at most %d profiles\n", file.UTF8String, HID_PROFILES_MAX); break; }
-        hidProfiles[hidProfileCount++] = (HidRumbleProfile){(uint16_t)v, (uint16_t)p, (uint8_t)rid, (uint8_t)len, (uint8_t)lo, (uint8_t)hi};
-        fprintf(stderr, "[rumble] profile %04x:%04x report 0x%02x, %d bytes, motors at %d and %d (from %s)\n", v, p, rid, len, lo, hi, file.UTF8String);
+        hidProfiles[hidProfileCount++] = (HidRumbleProfile){(uint16_t)v, (uint16_t)p, (uint8_t)rid, (uint8_t)len, (uint8_t)lo, (uint8_t)hi, (uint8_t)mx};
+        fprintf(stderr, "[rumble] profile %04x:%04x report 0x%02x, %d bytes, motors at %d and %d%s (from %s)\n", v, p, rid, len, lo, hi, mx ? ", low motor follows the stronger side" : "", file.UTF8String);
     }
 }
 static void hid_rumble_write(IOHIDDeviceRef d, const HidRumbleProfile *pr, uint8_t lo, uint8_t hi) {
@@ -192,9 +194,16 @@ static void hid_rumble_tick(uint64_t now) {   /* rumbleQueue, every 10 ms */
         m[side] = now < hidHeldUntil[side] ? hidHeld[side] : 0;
         if (m[side]) playedNs[side] += RUMBLE_TICK_MS * 1000000ull;
     }
+    if (hidRumbleProfile.lowTakesMax && m[1] > m[0]) m[0] = m[1];   /* the high-frequency motor is the weak one: the low one carries the stronger side */
+    if (!m[0] && !m[1]) {   /* a stop that gets lost keeps the motor turning, so zeros go out a few times */
+        if (hidQuietSent >= HID_QUIET_REPEATS || now - hidSentAt < HID_MIN_MS * 1000000ull) return;
+        hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, 0, 0);
+        hidQuietSent++; hidSent[0] = hidSent[1] = 0; hidSentAt = now;
+        return;
+    }
+    hidQuietSent = 0;
     BOOL same = m[0] == hidSent[0] && m[1] == hidSent[1];
-    if (same && !m[0] && !m[1]) return;
-    if (now - hidSentAt < (same ? HID_KEEP_MS : HID_MIN_MS) * 1000000ull) return;
+    if (now - hidSentAt < (same ? HID_KEEP_MS : HID_MIN_MS) * 1000000ull) return;   /* the controller stops a lone report after a moment */
     hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, m[0], m[1]);
     hidSent[0] = m[0]; hidSent[1] = m[1]; hidSentAt = now;
 }
@@ -232,7 +241,7 @@ static void hid_rumble_attach(GCController *c) {   /* main queue: c has no hapti
     hidRumbleManager = m; hidRumblePad = c; hidRumbleFailed = NO;
     HidRumbleProfile pr = *found;
     IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
-    dispatch_async(rumbleQueue, ^{ hidSent[0] = hidSent[1] = 0; hidSentAt = 0; hidRumbleProfile = pr; hidRumbleDevice = held; });
+    dispatch_async(rumbleQueue, ^{ hidSent[0] = hidSent[1] = 0; hidSentAt = 0; hidQuietSent = HID_QUIET_REPEATS; hidRumbleProfile = pr; hidRumbleDevice = held; });
     fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (%04x:%04x, report 0x%02x)\n", (c.vendorName ?: @"controller").UTF8String, vendor, product, pr.reportId);
 }
 static void hid_rumble_detach(GCController *c) {   /* main queue */
