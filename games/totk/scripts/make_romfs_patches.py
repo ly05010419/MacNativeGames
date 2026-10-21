@@ -31,20 +31,6 @@ from pathlib import Path
 import compression.zstd as zstd
 
 root = Path(__file__).resolve().parents[1]
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--output-dir', type=Path, default=root / 'extracted/v0/romfs-patches')
-parser.add_argument('--capture-frame', type=float, default=0.0)
-parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
-parser.add_argument('--aspect', type=str.lower, help='<width>x<height> of a canvas wider than 16:9: also lay the UI out for it (scripts/ultrawide_layout.py); default output romfs-patches-<width>x<height> (-center with --hud center)')
-parser.add_argument('--hud', choices=('corner', 'center'), default='corner', help='with --aspect: the HUD in the screen corners or in the middle 16:9')
-args = parser.parse_args()
-version = args.version
-if args.output_dir == root / 'extracted/v0/romfs-patches': args.output_dir = root / (f'extracted/{version}/romfs-patches' + (f'-{args.aspect}' + ('-center' if args.hud == 'center' else '') if args.aspect else ''))
-assert 0 <= args.capture_frame <= 0.5
-manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
-assert manifest['status'] == 'pass'
-files = {f['path']: f for f in manifest['files']}
-out_dir = args.output_dir
 
 def sarc_members(data):
     """name -> (absolute start, end) of every SARC member."""
@@ -83,71 +69,110 @@ def flvi_keys(data, base):
         pos += size
     return out
 
-ARCHIVE = 'UI/LayoutArchive/Common.Product.' + {'v0':'100','v112':'110','v121':'110','v143':'140'}[version] + '.Nin_NX_NVN.blarc.zs'
+COMMON = {'v0': '100', 'v112': '110', 'v121': '110', 'v143': '140'}   # the version in each game's Common archive name
+
+
+def common_archive(version):
+    return 'UI/LayoutArchive/Common.Product.' + COMMON[version] + '.Nin_NX_NVN.blarc.zs'
+
+
 MEMBERS = {
     'anim/ShortCutBG_00_In.bflan': ('C_CaptureBG_00', 'C_CaptureClearBG_00', 'P_CaptureClearBG_00'),
     'anim/AutoBuilder_00_In.bflan': ('C_CaptureBG_00',),
 }
 
-with (root / f'extracted/{version}/romfs/romfs.bin').open('rb') as image:
-    def read(path): f = files[path]; image.seek(f['offset']); b = image.read(f['size']); assert len(b) == f['size']; return b
-    dictionaries = {}
-    for name, (lo, hi) in sarc_members(pack := zstd.decompress(read('Pack/ZsDic.pack.zs'))).items():
-        d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
-    raw = read(ARCHIVE)
-info = zstd.get_frame_info(raw); dictionary = dictionaries[info.dictionary_id]
-blarc = bytearray(zstd.decompress(raw, zstd_dict=dictionary)); assert len(blarc) == info.decompressed_size
-members = sarc_members(blarc)
-patched = {}
-for member, panes in MEMBERS.items():
-    lo, hi = members[member]
-    changed = []
-    for name, ko, keys in flvi_keys(blarc, lo):
-        if name not in panes: continue
-        assert [(f, v) for f, v in keys] == [(0.0, 0), (1.0, 1)], (member, name, keys)
-        struct.pack_into('<f', blarc, ko + 8, args.capture_frame)
-        changed.append(name)
-    assert sorted(changed) == sorted(panes), (member, changed)
-    patched[member] = changed
-layout = []
-if args.aspect:
-    import importlib.util
-    spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).resolve().parent / 'ultrawide_layout.py')
-    ultrawide = importlib.util.module_from_spec(spec); spec.loader.exec_module(ultrawide)
-    width, height = (int(v) for v in args.aspect.lower().split('x'))
-    layout = ultrawide.apply(blarc, members, width, height, hud_corner=args.hud == 'corner')
-check = zstd.decompress(zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary), zstd_dict=dictionary)
-assert check == bytes(blarc)
-original = zstd.decompress(raw, zstd_dict=dictionary)
-diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in [*MEMBERS, *layout])) for i in diff), diff[:20]
-data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary)
-assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id and zstd.get_frame_info(data).decompressed_size == len(blarc)
-target = out_dir / ARCHIVE; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
-lines = ['\t'.join([ARCHIVE, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()])]
-print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, frame=f'1.0 -> {args.capture_frame}', ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None, size=len(data), changed_bytes=len(diff))))
 
-# The game over flow: Event14 (EventTriggerPauseMgrRequestPause GameOverPause) ends its branch instead of going on to
-# Event25 (EventWait, Frames 1). BFEVFL events are 0x28 bytes from 0x1f0 (name ref at +0, type at +8, next at +0xa);
-# the original's SHA-256 pins the layout these offsets come from.
-# v112, v121 and v143 additionally have DmF_SY_GameOver.110 with EventWaitUpdate instead of EventWait.
-# Preserve that updated flow; this guarded patch only covers the retained original file.
-FLOW = 'Event/EventFlow/DmF_SY_GameOver.bfevfl.zs'
-FLOW_SHA256 = 'c59975494fb30063b7a339fd66bbde8b456b11c73a5b4332bc070d63ece66b7d'
-with (root / f'extracted/{version}/romfs/romfs.bin').open('rb') as image:
-    f = files[FLOW]; image.seek(f['offset']); raw = image.read(f['size']); assert len(raw) == f['size']
-info = zstd.get_frame_info(raw); dictionary = dictionaries[info.dictionary_id]
-flow = bytearray(zstd.decompress(raw, zstd_dict=dictionary))
-assert hashlib.sha256(flow).hexdigest() == FLOW_SHA256, 'DmF_SY_GameOver.bfevfl is not the analysed v1.0.0 file'
-def event(i):
-    e = 0x1f0 + 0x28 * i; ref = struct.unpack_from('<Q', flow, e)[0]; n = struct.unpack_from('<H', flow, ref)[0]
-    return e, flow[ref + 2:ref + 2 + n].decode(), flow[e + 8], struct.unpack_from('<H', flow, e + 0xa)[0]
-e14, name14, type14, next14 = event(7); _, name25, type25, next25 = event(25)
-assert (name14, type14, next14) == ('Event14', 0, 25) and (name25, type25, next25) == ('Event25', 0, 0xffff)
-struct.pack_into('<H', flow, e14 + 0xa, 0xffff)
-data = zstd.compress(bytes(flow), level=19, zstd_dict=dictionary)
-assert zstd.decompress(data, zstd_dict=dictionary) == bytes(flow) and zstd.get_frame_info(data).dictionary_id == info.dictionary_id
-target = out_dir / FLOW; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
-lines.append('\t'.join([FLOW, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
-print(json.dumps(dict(status='pass', path=FLOW, event='Event14 next: Event25 (wait 1 frame) -> end', size=len(data), changed_bytes=2)))
-(out_dir / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (generated by scripts/make_romfs_patches.py)\n' + '\n'.join(lines) + '\n')
+def patch_capture(blarc, members, frame):
+    """Move the capture panes' visibility keys in MEMBERS of the decompressed Common archive `blarc` (a bytearray, with
+    `members` from sarc_members) from frame 1.0 to `frame`. Each pane must have the shipping keys (0.0, 0) (1.0, 1); a
+    player's mod archive goes through the same checks (scripts/make_mod_manifest.py). Returns member -> panes moved."""
+    patched = {}
+    for member, panes in MEMBERS.items():
+        lo, hi = members[member]
+        changed = []
+        for name, ko, keys in flvi_keys(blarc, lo):
+            if name not in panes: continue
+            if [(f, v) for f, v in keys] != [(0.0, 0), (1.0, 1)]:
+                raise ValueError(f'{member}: pane {name} has the keys {keys}, not the shipping (0.0, 0) (1.0, 1)')
+            struct.pack_into('<f', blarc, ko + 8, frame)
+            changed.append(name)
+        if sorted(changed) != sorted(panes):
+            raise ValueError(f'{member}: found the panes {changed}, expected {list(panes)}')
+        patched[member] = changed
+    return patched
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output-dir', type=Path, default=root / 'extracted/v0/romfs-patches')
+    parser.add_argument('--capture-frame', type=float, default=0.0)
+    parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+    parser.add_argument('--aspect', type=str.lower, help='<width>x<height> of a canvas wider (scripts/ultrawide_layout.py) or taller (scripts/tall_layout.py, 16:10) than 16:9: also lay the UI out for it; default output romfs-patches-<width>x<height> (-center with --hud center)')
+    parser.add_argument('--hud', choices=('corner', 'center'), default='corner', help='with --aspect: the HUD in the screen corners or in the middle 16:9')
+    args = parser.parse_args()
+    version = args.version
+    if args.output_dir == root / 'extracted/v0/romfs-patches': args.output_dir = root / (f'extracted/{version}/romfs-patches' + (f'-{args.aspect}' + ('-center' if args.hud == 'center' else '') if args.aspect else ''))
+    assert 0 <= args.capture_frame <= 0.5
+    manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
+    assert manifest['status'] == 'pass'
+    files = {f['path']: f for f in manifest['files']}
+    out_dir = args.output_dir
+    ARCHIVE = common_archive(version)
+
+    with (root / f'extracted/{version}/romfs/romfs.bin').open('rb') as image:
+        def read(path): f = files[path]; image.seek(f['offset']); b = image.read(f['size']); assert len(b) == f['size']; return b
+        dictionaries = {}
+        for name, (lo, hi) in sarc_members(pack := zstd.decompress(read('Pack/ZsDic.pack.zs'))).items():
+            d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
+        raw = read(ARCHIVE)
+    info = zstd.get_frame_info(raw); dictionary = dictionaries[info.dictionary_id]
+    blarc = bytearray(zstd.decompress(raw, zstd_dict=dictionary)); assert len(blarc) == info.decompressed_size
+    members = sarc_members(blarc)
+    patched = patch_capture(blarc, members, args.capture_frame)
+    layout = []
+    if args.aspect:
+        import importlib.util
+        width, height = (int(v) for v in args.aspect.lower().split('x'))
+        script = 'ultrawide_layout.py' if width * 9 > height * 16 else 'tall_layout.py'   # wider than 16:9, or taller
+        spec = importlib.util.spec_from_file_location(script[:-3], Path(__file__).resolve().parent / script)
+        ultrawide = importlib.util.module_from_spec(spec); spec.loader.exec_module(ultrawide)
+        layout = ultrawide.apply(blarc, members, width, height, hud_corner=args.hud == 'corner')
+    check = zstd.decompress(zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary), zstd_dict=dictionary)
+    assert check == bytes(blarc)
+    original = zstd.decompress(raw, zstd_dict=dictionary)
+    diff = [i for i in range(len(original)) if original[i] != blarc[i]]
+    assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in [*MEMBERS, *layout])) for i in diff), diff[:20]
+    data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary)
+    assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id and zstd.get_frame_info(data).decompressed_size == len(blarc)
+    target = out_dir / ARCHIVE; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+    lines = ['\t'.join([ARCHIVE, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()])]
+    print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, frame=f'1.0 -> {args.capture_frame}', ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None, size=len(data), changed_bytes=len(diff))))
+
+    # The game over flow: Event14 (EventTriggerPauseMgrRequestPause GameOverPause) ends its branch instead of going on to
+    # Event25 (EventWait, Frames 1). BFEVFL events are 0x28 bytes from 0x1f0 (name ref at +0, type at +8, next at +0xa);
+    # the original's SHA-256 pins the layout these offsets come from.
+    # v112, v121 and v143 additionally have DmF_SY_GameOver.110 with EventWaitUpdate instead of EventWait.
+    # Preserve that updated flow; this guarded patch only covers the retained original file.
+    FLOW = 'Event/EventFlow/DmF_SY_GameOver.bfevfl.zs'
+    FLOW_SHA256 = 'c59975494fb30063b7a339fd66bbde8b456b11c73a5b4332bc070d63ece66b7d'
+    with (root / f'extracted/{version}/romfs/romfs.bin').open('rb') as image:
+        f = files[FLOW]; image.seek(f['offset']); raw = image.read(f['size']); assert len(raw) == f['size']
+    info = zstd.get_frame_info(raw); dictionary = dictionaries[info.dictionary_id]
+    flow = bytearray(zstd.decompress(raw, zstd_dict=dictionary))
+    assert hashlib.sha256(flow).hexdigest() == FLOW_SHA256, 'DmF_SY_GameOver.bfevfl is not the analysed v1.0.0 file'
+    def event(i):
+        e = 0x1f0 + 0x28 * i; ref = struct.unpack_from('<Q', flow, e)[0]; n = struct.unpack_from('<H', flow, ref)[0]
+        return e, flow[ref + 2:ref + 2 + n].decode(), flow[e + 8], struct.unpack_from('<H', flow, e + 0xa)[0]
+    e14, name14, type14, next14 = event(7); _, name25, type25, next25 = event(25)
+    assert (name14, type14, next14) == ('Event14', 0, 25) and (name25, type25, next25) == ('Event25', 0, 0xffff)
+    struct.pack_into('<H', flow, e14 + 0xa, 0xffff)
+    data = zstd.compress(bytes(flow), level=19, zstd_dict=dictionary)
+    assert zstd.decompress(data, zstd_dict=dictionary) == bytes(flow) and zstd.get_frame_info(data).dictionary_id == info.dictionary_id
+    target = out_dir / FLOW; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+    lines.append('\t'.join([FLOW, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()]))
+    print(json.dumps(dict(status='pass', path=FLOW, event='Event14 next: Event25 (wait 1 frame) -> end', size=len(data), changed_bytes=2)))
+    (out_dir / 'manifest.tsv').write_text('# path\tsize\tsha256\toriginal_sha256 (generated by scripts/make_romfs_patches.py)\n' + '\n'.join(lines) + '\n')
+
+
+if __name__ == '__main__':
+    main()

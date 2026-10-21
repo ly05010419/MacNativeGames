@@ -18,6 +18,7 @@ void dm_gfx_set_flag(const char *name, int value) {
     else if (!strcmp(name, "mfx_upscale")) mfxup_set(value);
     else abort();
 }
+void shortcut_test_aspect_init(double view);
 static void press(unsigned key) {
     runtime_input_key_synthetic(key, 1);
     runtime_input_key_synthetic(key, 0);
@@ -66,6 +67,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
     expect(panel, @"Edge smoothing (MetalFX Temporal): off");
     press(23); tick(); expect(panel, @"Edge smoothing (MetalFX Temporal): on");
     press(23); tick(); expect(panel, @"Edge smoothing (MetalFX Temporal): off");
+    expect(panel, @"Aspect ratio: 16:9");
+    shortcut_test_aspect_init(1.6);   /* key 4 becomes available; a 16:10 window */
+    press(21); tick(); expect(panel, @"Aspect ratio: fit to window 1.60:1");
+    press(21); tick(); expect(panel, @"Aspect ratio: 21:9");
+    press(21); tick(); expect(panel, @"Aspect ratio: 16:9");
     /* Startup/diagnostic paths can set the canvas without a key press. */
     shortcut_test_output_size(3840, 2160); tick(); expect(panel, @"Picture: native 3840×2160");
     shortcut_test_output_size(2560, 1440);

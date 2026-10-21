@@ -23,6 +23,9 @@ int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
 int mfx_enabled(void){return 0;}
 int mfxup_output_enabled(void){return 0;}
 uint64_t runtime_output_size_current(void){return 1920|(uint64_t)1080<<32;}
+void runtime_aspect_view(double w,double h){(void)w;(void)h;}
+int runtime_aspect_step(void){return -1;}
+float runtime_aspect_now(void){return 0;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

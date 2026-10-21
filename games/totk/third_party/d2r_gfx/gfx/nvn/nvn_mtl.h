@@ -42,6 +42,7 @@ uint64_t mtl_sub_commit(void);
 int mtl_probe_vertex_streams(void);
 int mtl_probe_arg_epoch(void);
 int mtl_probe_tex_slots(void);
+int mtl_probe_sampler_border(void);
 int mtl_probe_pool_retire(void);
 int mtl_probe_anomaly(void);
 int mtl_probe_widen(void);     // TOTK: standalone probes of isolated GPU paths (die on mismatch, return checked count)
@@ -51,6 +52,7 @@ int mtl_probe_srgb_view(void);
 int mtl_probe_storage_view(void);
 int mtl_probe_compressed_alias(void);
 int mtl_probe_linear_rt_upload(void);
+int mtl_probe_texels_region(void);
 int mtl_probe_texture_retire(void);
 int mtl_probe_ds_clear(void);
 int mtl_probe_ub_rename(void);

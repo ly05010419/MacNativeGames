@@ -48,14 +48,15 @@ static uint64_t handles[NH]; /* file index + 1; 0 is free */
    original stops the start. The directories, in this order: the build's patches (scripts/make_romfs_patches.py;
    TOTK_ROMFS_PATCHES, default extracted/<version>/romfs-patches, 0 = none), the true-2K HeapDef overlay
    (scripts/make_output_res_overlay.py) and the player's mods (TOTK_ROMFS_MODS, which the launcher sets to
-   <data>/mods/<version>; no manifest there = none). Each file can be replaced once. An overlay file is opened when the
+   <data>/mods/<version>; no manifest there = none). Each file can be replaced once, except that a mod file merged with the
+   build's edit takes the place of the build's overlay (overlay_load). An overlay file is opened when the
    game opens it, so a mod can replace thousands of files (a dub's voice streams) without holding a descriptor each; the
    file's identity (device, inode, size, modification time) is kept from the start check, and an open that finds another
    file there stops the game instead of serving bytes nobody checked. scripts/make_mod_manifest.py writes a mod's manifest.
    A line whose original SHA-256 is "-" adds a file the RomFS lacks (issue #48: The Second Quest adds 874): it is numbered
    after the RomFS's own files (file_count + k, k in path order, added[]), opens and reads like a replacement, and its
    folders exist for runtime_romfs_entry_type. The RomFS has no directory listing here, so nothing else needs to know. */
-typedef struct { uint64_t index,size; char *path; dev_t dev; ino_t ino; struct timespec mtime; char *name; } Overlay;
+typedef struct { uint64_t index,size; char *path; dev_t dev; ino_t ino; struct timespec mtime; char *name; char sha[65]; } Overlay;
 static Overlay *overlays; /* sorted by RomFS index after overlay_init */
 static size_t noverlay,overlay_cap;
 #define ADDED UINT64_MAX   /* an added file's index until overlay_init numbers it */
@@ -164,28 +165,36 @@ static void sha_range(int fd,uint64_t offset,uint64_t size,const char *expected,
 }
 static uint64_t lower(const char *name);
 static int path_ok(const char *p);
-static void overlay_load(const char *dir,int required) {
+/* With mods set (the player's mods), a line whose original SHA-256 is that of an overlay loaded before it for the same path
+   (the build's romfs-patches) replaces that overlay: scripts/make_mod_manifest.py wrote it by applying the build's edit to the
+   mod's own file (issue #73: translations replace the UI archive the build patches for the quick-menu capture). Its
+   original is then the build's checked file, so the RomFS original is not read again. Any other collision stops the start. */
+static void overlay_load(const char *dir,int required,int mods) {
  char path[4096];need(snprintf(path,sizeof(path),"%s/manifest.tsv",dir)<(int)sizeof(path),"RomFS overlay path");FILE *m=fopen(path,"r");
  if(!m&&required){fprintf(stderr,"[totk] RomFS overlay: %s missing; build it with scripts/make_output_res_overlay.py <w>x<h>\n",path);runtime_fail("true-2K HeapDef overlay missing (make romfs-patches-out OUTPUT_RES=<w>x<h>)");}
  if(!m){fprintf(stderr,"[totk] RomFS overlay: none (%s)\n",path);return;}
- char line[8192];size_t first=noverlay;uint64_t hashed=0,t0=runtime_now_ns();
+ char line[8192];size_t first=noverlay,replaced=0;uint64_t hashed=0,t0=runtime_now_ns();
  while(fgets(line,sizeof(line),m)){
   if(line[0]=='#'||line[0]=='\n')continue;char name[4096],sha[65],orig[65];unsigned long long size=0;
   need(sscanf(line,"%4095[^\t]\t%llu\t%64[0-9a-f]\t%64[0-9a-f-]",name,&size,sha,orig)==4&&strlen(sha)==64&&(strlen(orig)==64||!strcmp(orig,"-")),"RomFS overlay manifest line");
   need(path_ok(name),"RomFS overlay path");uint64_t i=lower(name);int known=i<file_count&&!strcmp(entry_name(entry(i)),name),add=!strcmp(orig,"-");
   if(!known&&!add){fprintf(stderr,"[totk] RomFS overlay: %s/manifest.tsv names %s, which the RomFS lacks; a new file has \"-\" as its original's SHA-256\n",dir,name);runtime_fail("RomFS overlay names a file the RomFS lacks");}
   if(known&&add){fprintf(stderr,"[totk] RomFS overlay: %s/manifest.tsv adds %s, which the RomFS already has; give its original's SHA-256\n",dir,name);runtime_fail("RomFS overlay adds a file the RomFS already has");}
-  Entry e={0};if(known){e=entry(i);sha_range(image_fd,e.offset,e.size,orig,"original");}else i=ADDED;
+  size_t over=SIZE_MAX;if(mods&&known)for(size_t k=0;k<first;k++)if(overlays[k].index==i&&!strcmp(overlays[k].sha,orig)){over=k;break;}
+  Entry e={0};if(known){e=entry(i);if(over==SIZE_MAX)sha_range(image_fd,e.offset,e.size,orig,"original");}else i=ADDED;
   char file[8200];need(snprintf(file,sizeof(file),"%s/%s",dir,name)<(int)sizeof(file),"RomFS overlay file path");int fd=open(file,O_RDONLY|O_CLOEXEC);struct stat st;
   need(fd>=0&&fstat(fd,&st)==0&&(uint64_t)st.st_size==size,"RomFS overlay file missing or wrong size");sha_range(fd,0,size,sha,name);close(fd);
-  hashed+=e.size+size;
+  hashed+=(over==SIZE_MAX?e.size:0)+size;
   if(noverlay==overlay_cap){overlay_cap=overlay_cap?overlay_cap*2:16;overlays=realloc(overlays,overlay_cap*sizeof(*overlays));need(overlays!=NULL,"RomFS overlay table");}
-  char *copy=strdup(file),*rel=strdup(name);need(copy&&rel,"RomFS overlay path copy");overlays[noverlay++]=(Overlay){i,size,copy,st.st_dev,st.st_ino,st.st_mtimespec,rel};
+  char *copy=strdup(file),*rel=strdup(name);need(copy&&rel,"RomFS overlay path copy");Overlay o={i,size,copy,st.st_dev,st.st_ino,st.st_mtimespec,rel,{0}};memcpy(o.sha,sha,65);
+  if(over!=SIZE_MAX){fprintf(stderr,"[totk] RomFS overlay: %s (%llu bytes) replaces the build's overlay %s (the mod holds its edit)\n",name,size,overlays[over].path);
+   free(overlays[over].path);free(overlays[over].name);overlays[over]=o;replaced++;continue;}
+  overlays[noverlay++]=o;
   if(noverlay-first<=16)fprintf(stderr,"[totk] RomFS overlay: %s (%llu bytes) %s\n",name,size,add?"is added":"replaces the original");
  }
  fclose(m);
- if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first,dir,noverlay-first-16);
- if(noverlay>first)fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, %.1f MB hashed in %.2f s\n",dir,noverlay-first,hashed/1048576.0,(runtime_now_ns()-t0)/1e9);
+ if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first+replaced,dir,noverlay-first-16);
+ if(noverlay>first||replaced)fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, %.1f MB hashed in %.2f s\n",dir,noverlay-first+replaced,hashed/1048576.0,(runtime_now_ns()-t0)/1e9);
 }
 static int overlay_order(const void *a,const void *b) {uint64_t x=((const Overlay *)a)->index,y=((const Overlay *)b)->index;return (x>y)-(x<y);}
 static int added_order(const void *a,const void *b) {const Overlay *x=*(Overlay *const *)a,*y=*(Overlay *const *)b;return strcmp(x->name,y->name);}
@@ -217,7 +226,7 @@ static uint32_t overlay_slot(uint64_t i) {size_t lo=0,hi=noverlay;while(lo<hi){s
    also <TOTK_ROMFS_PATCHES_OUT, default extracted/<version>/romfs-patches-out>/<w>x<h> (the HeapDef sizes,
    scripts/make_output_res_overlay.py; "-4k" appended with TOTK_4K=1, "4k" alone when the output is the game's own: the pack's HeapDef is the base); then the player's mods in TOTK_ROMFS_MODS (0 = none). */
 static void overlay_init(void) {
- const char *dir=getenv("TOTK_ROMFS_PATCHES");if(!dir||strcmp(dir,"0"))overlay_load(dir?dir:"extracted/" TOTK_GAME_DIR "/romfs-patches",0);
+ const char *dir=getenv("TOTK_ROMFS_PATCHES");if(!dir||strcmp(dir,"0"))overlay_load(dir?dir:"extracted/" TOTK_GAME_DIR "/romfs-patches",0,0);
  /* A scene bigger than 1600x900 (TOTK_RENDER_RES, 1.4.3) grows the same heaps: its overlay is <w>x<h>-scene-<sw>x<sh>. */
  unsigned w=1920,h=1080,sw,sh;if(runtime_output_res_extra_bytes()){const char *out=getenv("TOTK_ROMFS_PATCHES_OUT");char d[4096],name[128]="",scene[64]="";
   if(runtime_output_res(&w,&h)){
@@ -231,8 +240,8 @@ static void overlay_init(void) {
    if(texture_pack_requested())fprintf(stderr,"[totk] RomFS overlay %s missing: make it with scripts/make_output_res_overlay.py --name --base-heapdef (see docs/4k-texture-pack.md)\n",d);
    else fprintf(stderr,"[totk] RomFS overlay %s missing: make it with\n  .venv/bin/python scripts/make_output_res_overlay.py %ux%u%s%s --version " TOTK_GAME_DIR "%s%s\n",d,w,h,*scene?" --scene ":"",*scene?scene+7:"",out?" --output-root ":"",out?out:"");
    runtime_fail("HeapDef overlay for this output / scene size missing (see the line above)");}
-  overlay_load(d,1);}
- const char *mods=getenv("TOTK_ROMFS_MODS");if(mods&&*mods&&strcmp(mods,"0"))overlay_load(mods,0);
+  overlay_load(d,1,0);}
+ const char *mods=getenv("TOTK_ROMFS_MODS");if(mods&&*mods&&strcmp(mods,"0"))overlay_load(mods,0,1);
  added_init();
  if(noverlay)qsort(overlays,noverlay,sizeof(*overlays),overlay_order);
  for(size_t k=1;k<noverlay;k++)if(overlays[k].index==overlays[k-1].index){

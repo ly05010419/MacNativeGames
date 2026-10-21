@@ -222,6 +222,7 @@ NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size
 NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool_builder_t *)b)->flags = f; }
 // TOTK: logging switches checked on per-call paths (command memory, recording, submits) are read once.
 static int cmdlog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CMD_LOG") != NULL; return on; }
+static int chainlog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CHAIN_LOG") != NULL; return on; }   // once: EndRecording runs per command buffer
 static int poollog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_POOL_LOG") != NULL; return on; }
 #ifdef GAME_BOTW
 static void guest_chain(const char *what);
@@ -1052,7 +1053,7 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     pthread_mutex_unlock(&g_copy_mu);
     if (cmdlog_env()) LOG("[cmd] EndRecording cb=%p recorded=%p copy=%p ctl=%p", (void *)c, (void *)o->seg, (void *)copy, o->ctl);
     if (totk_life_on() && totk_life_cb_take(c)) { totk_life_log("end cb=%p handle=%p", (void *)c, (void *)copy); totk_life_handle_add((uint64_t)(uintptr_t)copy); }
-    if (getenv("TOTK_CHAIN_LOG")) { static int n; if (n++ < 200) guest_chain("EndRecording"); }
+    if (chainlog_env()) { static int n; if (n++ < 200) guest_chain("EndRecording"); }
 #ifdef GAME_BOTW
     if (lo) return (NVNcommandHandle)lo;
     { static uint64_t n; if (n++ < 4) LOG("[cmd] recording without room in its control memory: the handle is the copy itself (kept)"); }
@@ -1699,8 +1700,10 @@ static const char *bindprog_env(void) { return getenv("TOTK_BINDPROG_LOG"); }
 static int diag_env_once_on(void) {
     int v = atomic_load_explicit(&g_diag_env_once, memory_order_relaxed);
     if (v < 0) {
+        // On by default: the range is read once (getenv on every BindProgram cost 26 ms of CPU per second in the world,
+        // 2026-10-21 Time Profiler). TOTK_DIAG_ENV_ONCE=0 or the diag_env_once flag brings back the per-call lookup.
         const char *e = getenv("TOTK_DIAG_ENV_ONCE"); int initial = -1;
-        int desired = e && !strcmp(e, "1");
+        int desired = !(e && !strcmp(e, "0"));
         atomic_compare_exchange_strong(&g_diag_env_once, &initial, desired);
         v = atomic_load_explicit(&g_diag_env_once, memory_order_relaxed);
     }
