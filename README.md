@@ -234,7 +234,7 @@ Language: the game and the launcher's own text (startup screen, shader warm-up p
 
 ## Where things are
 
-- Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile`
+- Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile` (BotW: `.../BotW/profile`). As on the Switch, a save lands only when the game finishes it: the game works on a hidden copy beside the save (`save/.<user>.work`) and each finished save replaces `save/<user>` in one step, so quitting, a crash or iOS closing the app in the middle of a save keeps the previous save. Copy `save/<user>` to back a save up; the hidden folders can be ignored.
 - Shader cache: `~/Library/Application Support/MacNativeGames/TOTK/shader-cache` (delete it to translate everything again)
 - Shaders the shared list does not have yet: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - Log: `~/Library/Logs/MacNativeGames/totk.log` (the run before: `totk.previous.log`)
@@ -505,7 +505,7 @@ north = y
 
 ## 文件位置
 
-- 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`
+- 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`（旷野之息：`.../BotW/profile`）。和 Switch 一样，存档只在游戏存完时才算数：游戏在存档旁边的隐藏副本（`save/.<用户>.work`）里写，每次存完一步替换 `save/<用户>`，所以存档途中退出、崩溃或被 iOS 关掉，都会保留上一份存档。备份存档复制 `save/<用户>` 即可，隐藏文件夹不用管。
 - 着色器缓存：`~/Library/Application Support/MacNativeGames/TOTK/shader-cache`（删掉会全部重新翻译）
 - 公共清单里还没有的着色器：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - 日志：`~/Library/Logs/MacNativeGames/totk.log`（上一次运行：`totk.previous.log`）
