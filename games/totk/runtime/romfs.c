@@ -38,6 +38,40 @@ static ssize_t src_pread(int fd,void *buf,size_t n,off_t off) {
  return pread(chunk_fds[c],buf,n,(off_t)o);
 }
 static const uint8_t *image_map;
+static void need(int c,const char *m) {if(!c)runtime_fail(m);}
+/* Block cache for small reads of the image. Entering the world the game reads ~3,500 small files (median 2 KB) on two
+   loader threads, mostly next to each other in the image, and each read was a cold pread of 80-390 us (a fork's 1.0.0
+   trace, DavidZande/MacNativeGames 2026-10-20). Reads under BLK bytes are served from BLK-aligned blocks of the image
+   (NBLK of them, least recently used out), so neighbouring files share one disk read. The image is read-only, so a block
+   never goes stale. Bigger reads and overlays go to the file as before. TOTK_ROMFS_CACHE=0 turns it off. */
+#define BLK (256u<<10)
+#if TARGET_OS_IPHONE
+#define NBLK 64   /* 16 MB: the phone's memory is tighter */
+#else
+#define NBLK 256   /* 64 MB */
+#endif
+static struct {uint64_t at,used;uint8_t *bytes;} blocks[NBLK];   /* at: image offset + 1 (0 empty); used: last use */
+static uint64_t block_clock;
+static pthread_mutex_t block_lock=PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t block_hits,block_misses;
+static int block_cache_on(void){static int v=-1;if(v<0){const char *e=getenv("TOTK_ROMFS_CACHE");v=!(e&&!strcmp(e,"0"));if(!v)fprintf(stderr,"[totk] TOTK_ROMFS_CACHE=0: small RomFS reads go to the file\n");}return v;}
+/* Copies n bytes at image offset off (within one block) from the cache; fills the block from the image on a miss. */
+static void block_read(void *dst,uint64_t off,size_t n){
+ uint64_t at=off/BLK*BLK;size_t in=(size_t)(off-at);
+ pthread_mutex_lock(&block_lock);
+ for(unsigned i=0;i<NBLK;i++)if(blocks[i].at==at+1){blocks[i].used=++block_clock;memcpy(dst,blocks[i].bytes+in,n);pthread_mutex_unlock(&block_lock);atomic_fetch_add(&block_hits,1);return;}
+ pthread_mutex_unlock(&block_lock);
+ uint8_t *b=malloc(BLK);need(b!=NULL,"RomFS block cache");size_t got=0;
+ while(got<BLK&&at+got<ROMFS_IMAGE_SIZE){ssize_t r=src_pread(image_fd,b+got,BLK-got,(off_t)(at+got));if(r<=0)runtime_fail("RomFS read failure");got+=(size_t)r;}
+ need(in+n<=got,"RomFS block read past the image");
+ memcpy(dst,b+in,n);atomic_fetch_add(&block_misses,1);
+ pthread_mutex_lock(&block_lock);   /* the other loader thread may have read the same block meanwhile: then keep one */
+ unsigned slot=0;int dup=0;
+ for(unsigned i=0;i<NBLK;i++){if(blocks[i].at==at+1){dup=1;break;}if(blocks[i].used<blocks[slot].used)slot=i;}
+ if(!dup){free(blocks[slot].bytes);blocks[slot].bytes=b;blocks[slot].at=at+1;blocks[slot].used=++block_clock;b=NULL;}
+ pthread_mutex_unlock(&block_lock);free(b);
+ uint64_t m=atomic_load(&block_misses);if(m==1||m%4096==0)fprintf(stderr,"[totk] RomFS block cache: %llu block reads for %llu small reads\n",(unsigned long long)m,(unsigned long long)(m+atomic_load(&block_hits)));
+}
 static char mount_name[32];
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t read_calls,read_bytes,read_ns,read_prepare_ns,read_report_ns;
@@ -66,7 +100,6 @@ typedef struct { uint64_t offset,size;uint32_t name,len; } Entry;
 _Static_assert(sizeof(Entry)==24,"index entry layout");
 static Entry entry(uint64_t i) {Entry e;memcpy(&e,index_bytes+24+i*24,24);return e;}
 static const char *entry_name(Entry e) {return (char *)index_bytes+strings_offset+e.name;}
-static void need(int c,const char *m) {if(!c)runtime_fail(m);}
 static void sha_fd(int fd,const char *expected,uint64_t total,const char *stage) {
  CC_SHA256_CTX c;CC_SHA256_Init(&c);uint8_t *buffer=malloc(8<<20);need(buffer!=NULL,"hash buffer");
  for(off_t off=0;;){ssize_t n=src_pread(fd,buffer,8<<20,off);need(n>=0,"read hash input");if(!n)break;CC_SHA256_Update(&c,buffer,(CC_LONG)n);off+=n;
@@ -293,6 +326,9 @@ unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer
  dm_guest_write_prepare(buffer,(size_t)n);
  uint64_t t0=profile?runtime_now_ns():0;
  if(fd==image_fd&&image_map){memcpy(buffer,image_map+base+(uint64_t)offset,(size_t)n);done=n;}
+ else if(fd==image_fd&&n&&n<BLK&&block_cache_on()){   /* one or two blocks */
+  uint64_t off=base+(uint64_t)offset,split=(off/BLK+1)*BLK;size_t first=off+n>split?(size_t)(split-off):(size_t)n;
+  block_read(buffer,off,first);if(first<n)block_read((uint8_t *)buffer+first,split,(size_t)n-first);done=n;}
  else while(done<n){size_t chunk=(size_t)(n-done);if(chunk>8<<20)chunk=8<<20;ssize_t r=src_pread(fd,(uint8_t *)buffer+done,chunk,(off_t)(base+(uint64_t)offset+done));if(r<=0)runtime_fail("RomFS read failure");done+=(uint64_t)r;}
  if(profile){uint64_t now=runtime_now_ns();atomic_fetch_add(&read_calls,1);atomic_fetch_add(&read_bytes,done);atomic_fetch_add(&read_ns,now-t0);atomic_fetch_add(&read_prepare_ns,t0-prep_start);
   uint64_t last=atomic_load(&read_report_ns);
@@ -340,6 +376,17 @@ void runtime_fs_probe(void) {
    need(!runtime_romfs_entry_type(&type,p)&&type==1,"probe added file type");}uint64_t oh=0,n=0;int64_t size=0;uint8_t a[64],b[64];
   need(!runtime_romfs_open(&oh,p,1)&&!runtime_romfs_size(&size,oh)&&(uint64_t)size==overlays[k].size,"probe overlay size");uint64_t tail=overlays[k].size<64?overlays[k].size:64;int fd=open(overlays[k].path,O_RDONLY|O_CLOEXEC);
   need(fd>=0&&!runtime_romfs_read(&n,oh,size-(int64_t)tail,a,tail)&&n==tail&&pread(fd,b,tail,(off_t)(size-(int64_t)tail))==(ssize_t)tail&&!memcmp(a,b,tail),"probe overlay bytes");close(fd);runtime_romfs_close(oh);}
+ /* the block cache: small reads (some across a block edge) equal direct reads of the image */
+ unsigned cached=0;
+ if(block_cache_on()&&!image_map)for(unsigned k=0,x=0x9e3779b9u;k<2000;k++){
+  x=x*1664525u+1013904223u;Entry e=entry((uint64_t)x%file_count);if(!e.size||overlay_slot((uint64_t)x%file_count))continue;
+  x=x*1664525u+1013904223u;uint64_t off=e.size>1?(uint64_t)x%e.size:0;
+  x=x*1664525u+1013904223u;uint64_t len=1+(uint64_t)x%(k%4?4096:BLK-1);if(len>e.size-off)len=e.size-off;
+  if(k%8==0&&e.size>2){uint64_t edge=(e.offset/BLK+1)*BLK;if(edge>e.offset&&edge<e.offset+e.size){off=edge-e.offset>1?edge-e.offset-1:0;len=e.size-off<3?e.size-off:3;}}
+  char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",entry_name(e))<(int)sizeof(p),"probe path");uint64_t h=0,n=0;
+  uint8_t *a=malloc(len),*b=malloc(len);need(a&&b&&!runtime_romfs_open(&h,p,1)&&!runtime_romfs_read(&n,h,(int64_t)off,a,len)&&n==len,"probe cached read");runtime_romfs_close(h);
+  for(uint64_t got=0;got<len;){ssize_t r=src_pread(image_fd,b+got,(size_t)(len-got),(off_t)(e.offset+off+got));need(r>0,"probe direct read");got+=(uint64_t)r;}
+  need(!memcmp(a,b,len),"RomFS block cache bytes equal the image");free(a);free(b);cached++;}
  uint64_t h=0;need(runtime_romfs_open(&h,"rom:/../main",1)==NOT_FOUND,"reject traversal");need(runtime_romfs_open(&h,"rom:/absent",2)==UNSUPPORTED,"reject write open");
- printf("{\"status\":\"pass\",\"files\":%llu,\"sampled_files\":%u,\"overlays\":%zu,\"added\":%zu,\"read_digest\":\"%016llx\",\"scope\":\"read-only mount/open/size/read/EOF, verified overlays and added files; no game startup\"}\n",(unsigned long long)file_count,count,noverlay,nadded,(unsigned long long)sum);
+ printf("{\"status\":\"pass\",\"cached_reads_checked\":%u,\"files\":%llu,\"sampled_files\":%u,\"overlays\":%zu,\"added\":%zu,\"read_digest\":\"%016llx\",\"scope\":\"read-only mount/open/size/read/EOF, block cache against direct reads, verified overlays and added files; no game startup\"}\n",cached,(unsigned long long)file_count,count,noverlay,nadded,(unsigned long long)sum);
 }
