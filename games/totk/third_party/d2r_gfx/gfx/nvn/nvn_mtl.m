@@ -10888,6 +10888,12 @@ static int texels_region(void) {
     if (v < 0) { const char *e = getenv("TOTK_TEXELS_REGION"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_TEXELS_REGION=0: ReadTexels / WriteTexels convert the whole level"); }
     return v;
 }
+/* The game's buffer lies (partly) in the texture's own storage: the region copy would read bytes it already overwrote, so
+   such calls take the whole-level path, which goes through a temporary copy (as upstream PR #143 keeps them). */
+static int texels_overlap(const tex_t *t, const uint8_t *cpu, size_t row, size_t img, size_t wb, size_t hb, int nz) {
+    uintptr_t c = (uintptr_t)cpu, m = (uintptr_t)t->mem, span = (size_t)(nz - 1) * img + (hb ? (hb - 1) * row : 0) + wb;
+    return c < m + t->L.size && m < c + span;
+}
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     xv_check(t->serial, level, layer0, "CPU读回");
     PD("U cpu_read ser=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d dst=%p row=%lu img=%lu", t->serial, level, layer0, r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, dst, (unsigned long)row, (unsigned long)img);
@@ -10902,7 +10908,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     int gpu_content = tex_mirrored(t) && gpu_owned(t->serial) && !bc_unpack(t->d.format, &upf_, &ubpp_);
     TILELOG(t, "ReadTexels lv%u xy=%d,%d %dx%d (%s)", level, r->xoffset, r->yoffset, r->width, r->height, gpu_content ? "from the GPU texture" : tex_mirrored(t) ? "from the pool bytes" : "GPU texture");
     if (gpu_content) { static int n; if (++n <= 8) MLOG("[texels] ReadTexels ser=%llu %ux%u nvnfmt=%#x lv%u: rendered by the GPU, read back from the Metal texture (%d so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, level, n); }
-    if (tex_mirrored(t) && !gpu_content && texels_region()) {
+    if (tex_mirrored(t) && !gpu_content && texels_region() && !texels_overlap(t, dst, row, img, wb, hb, nz)) {
         int ok = 1;   // a 3D level is one layer with slices; an array has one layer per slice of the region
         if (is3d) ok = !nvn_deswizzle_region(&t->d, level, 0, t->mem, dst, row, img, (uint32_t)x0, (uint32_t)y0, (uint32_t)r->zoffset, (uint32_t)wb, (uint32_t)hb, (uint32_t)nz);
         else for (int z = 0; z < nz && ok; z++) ok = !nvn_deswizzle_region(&t->d, level, layer0 + r->zoffset + z, t->mem, dst + z * img, row, img, (uint32_t)x0, (uint32_t)y0, 0, (uint32_t)wb, (uint32_t)hb, 1);
@@ -10947,7 +10953,7 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
     uint64_t lo, hi, lo_last, hi_last;   // the storage the region lies in: its first layer to its last (arrays), whole block rows
     unsigned first = is3d ? 0 : layer0 + r->zoffset, last = is3d ? 0 : layer0 + r->zoffset + nz - 1;
     uint32_t z0 = is3d ? (uint32_t)r->zoffset : 0, zn = is3d ? (uint32_t)nz : 1;
-    if (tex_mirrored(t) && texels_region() && !nvn_region_span(&t->d, level, first, (uint32_t)y0, (uint32_t)hb, z0, zn, &lo, &hi) &&
+    if (tex_mirrored(t) && texels_region() && !texels_overlap(t, src, row, img, wb, hb, nz) && !nvn_region_span(&t->d, level, first, (uint32_t)y0, (uint32_t)hb, z0, zn, &lo, &hi) &&
         !nvn_region_span(&t->d, level, last, (uint32_t)y0, (uint32_t)hb, z0, zn, &lo_last, &hi_last)) {
         dm_guest_write_prepare((uint8_t *)t->mem + lo, MAX(hi, hi_last) - lo);
         if (is3d) { if (nvn_swizzle_region(&t->d, level, 0, src, row, img, t->mem, (uint32_t)x0, (uint32_t)y0, z0, (uint32_t)wb, (uint32_t)hb, zn)) die("WriteTexels: unsupported layout"); }
@@ -13646,6 +13652,71 @@ int mtl_probe_vertex_wait(void) {
     MLOG("vertex wait probe: %d of %d rounds read pass A's value too early (%s)", wrong, rounds, negative ? "no wait: the race" : "with the wait");
     if (!negative && wrong) MDIE("vertex wait probe: %d of %d rounds read pass A's value before A wrote it, despite the wait", wrong, rounds);
     if (negative && !wrong) MLOG("vertex wait probe (negative): the race did not show this time (timing); the wait itself is checked above");
+    return checked;
+}
+/* ReadTexels / WriteTexels on a CPU-pool texture through the production mtl_read_texels / mtl_write_texels (CPU only, no
+   GPU work): random regions of 2D, array and 3D textures, against a reference made with the whole-level nvn_deswizzle /
+   nvn_swizzle; then a write whose source and a read whose destination lie inside the texture's own storage (they must
+   act as if the source were read before anything is written). TOTK_PROBE_NEGATIVE: the reference of the overlapping
+   write is made from the source after it changed, and must differ. */
+int mtl_probe_texels(void) {
+    mtl_init(); int checked = 0; uint32_t seed = 99;
+    static const struct { int target, format; uint32_t w, h, depth, levels; } shapes[] = {
+        {1, 0x25, 700, 300, 1, 4}, {1, 0x42, 512, 256, 1, 3}, {4, 0x25, 128, 96, 3, 2}, {2, 0x25, 64, 48, 6, 2}, {1, 0x1d, 333, 77, 1, 1}};
+    for (unsigned c = 0; c < sizeof shapes / sizeof *shapes; c++) {
+        tex_t t; memset(&t, 0, sizeof t); t.serial = 0xfffe0000u + c;
+        t.d.target = shapes[c].target; t.d.format = shapes[c].format; t.d.width = shapes[c].w; t.d.height = shapes[c].h;
+        t.d.depth = shapes[c].depth; t.d.levels = shapes[c].levels; nvn_tex_layout(&t.d, &t.L);
+        pool_t pool; memset(&pool, 0, sizeof pool); pool.flags = NVN_MEMORY_POOL_FLAGS_CPU_CACHED; t.pool = &pool;
+        uint8_t *mem = malloc(t.L.size), *ref = malloc(t.L.size); t.mem = mem; pool.mem = mem; pool.size = t.L.size;
+        for (uint64_t i = 0; i < t.L.size; i++) mem[i] = ref[i] = (uint8_t)(i * 7 + c);
+        if (!tex_mirrored(&t)) MDIE("texels probe: shape %u is not a CPU-pool texture", c);
+        int bw, bh, bpb = nvn_fmt_bpb(t.d.format, &bw, &bh), is3d = t.d.target == 2;
+        for (int k = 0; k < 40; k++) {
+            seed = seed * 1103515245u + 12345u; unsigned level = (seed >> 8) % t.d.levels;
+            uint32_t lw = MAX(t.d.width >> level, 1u), lh = MAX(t.d.height >> level, 1u), lz = is3d ? MAX(t.d.depth >> level, 1u) : t.d.target == 4 ? t.d.depth : 1;
+            uint32_t cols = (lw + bw - 1) / bw, rows = (lh + bh - 1) / bh;
+            seed = seed * 1103515245u + 12345u; uint32_t cx = (seed >> 8) % cols, cy = (seed >> 16) % rows;
+            seed = seed * 1103515245u + 12345u; uint32_t cw = 1 + (seed >> 8) % (cols - cx), ch = 1 + (seed >> 16) % (rows - cy), cz = (seed >> 4) % lz, cn = 1 + (seed >> 20) % (lz - cz);
+            NVNcopyRegion r = {.xoffset = (int)(cx * bw), .yoffset = (int)(cy * bh), .zoffset = (int)cz, .width = (int)(cw * bw), .height = (int)(ch * bh), .depth = (int)cn};
+            size_t wb = (size_t)cw * bpb, row = wb + 8, img = row * ch + 16, n = img * cn;
+            uint8_t *src = malloc(n), *got = malloc(n), *want = malloc(n);
+            for (size_t i = 0; i < n; i++) { seed = seed * 1103515245u + 12345u; src[i] = (uint8_t)(seed >> 24); }
+            /* reference: whole level through a temporary, as the old path */
+            size_t lp = (size_t)cols * bpb, lr = rows; uint8_t *lin = malloc(lp * lr * (is3d ? lz : 1));
+            for (uint32_t z = 0; z < cn; z++) {
+                unsigned layer = is3d ? 0 : cz + z;
+                if (!is3d || z == 0) nvn_deswizzle(&t.d, level, layer, ref, lin, lp);
+                uint8_t *at = lin + (is3d ? (size_t)(cz + z) * lp * lr : 0);
+                for (uint32_t y = 0; y < ch; y++) memcpy(at + (size_t)(cy + y) * lp + (size_t)cx * bpb, src + z * img + y * row, wb);
+                if (!is3d || z == cn - 1) nvn_swizzle(&t.d, level, layer, lin, lp, ref);
+            }
+            free(lin);
+            mtl_write_texels(&t, level, 0, &r, src, row, img);
+            if (memcmp(mem, ref, t.L.size)) MDIE("texels probe: write, shape %u level %u region %u,%u,%u %ux%ux%u", c, level, cx, cy, cz, cw, ch, cn);
+            memset(got, 0xa5, n); memcpy(want, got, n);
+            for (uint32_t z = 0; z < cn; z++) for (uint32_t y = 0; y < ch; y++) memcpy(want + z * img + y * row, src + z * img + y * row, wb);
+            mtl_read_texels(&t, level, 0, &r, got, row, img);
+            if (memcmp(got, want, n)) MDIE("texels probe: read back, shape %u level %u", c, level);
+            checked += 2; free(src); free(got); free(want);
+        }
+        /* overlapping: the source is the texture's own first bytes, the destination its own bytes too */
+        NVNcopyRegion r = {.xoffset = 0, .yoffset = 0, .zoffset = 0, .width = 8 * bw, .height = 4 * bh, .depth = 1};
+        size_t wb = 8 * (size_t)bpb, row = wb, img = row * 4;
+        uint8_t *src_copy = malloc(img); memcpy(src_copy, mem + 64, img);
+        uint8_t *lin = malloc(t.L.size); size_t lp = (size_t)((t.d.width + bw - 1) / bw) * bpb;
+        nvn_deswizzle(&t.d, 0, 0, ref, lin, lp);
+        const uint8_t *from = getenv("TOTK_PROBE_NEGATIVE") ? NULL : src_copy;
+        for (int y = 0; y < 4; y++) memcpy(lin + (size_t)y * lp, (from ? from : mem + 64) + y * row, wb);
+        mtl_write_texels(&t, 0, 0, &r, mem + 64, row, img);
+        if (!from) { nvn_swizzle(&t.d, 0, 0, lin, lp, ref); for (int y = 0; y < 4; y++) memcpy(lin + (size_t)y * lp, mem + 64 + y * row, wb); }
+        nvn_swizzle(&t.d, 0, 0, lin, lp, ref);
+        if (memcmp(mem, ref, t.L.size)) MDIE("texels probe: a write whose source lies in the texture itself, shape %u", c);
+        memcpy(src_copy, mem, img); uint8_t *expect = malloc(img); mtl_read_texels(&t, 0, 0, &r, expect, row, img);   // the region, read to elsewhere
+        mtl_read_texels(&t, 0, 0, &r, mem + 32, row, img);   // and into the texture's own bytes
+        if (memcmp(mem + 32, expect, img)) MDIE("texels probe: a read whose destination lies in the texture itself, shape %u", c);
+        checked += 2; free(src_copy); free(lin); free(expect); free(mem); free(ref);
+    }
     return checked;
 }
 int mtl_probe_upload_batch(void) {
