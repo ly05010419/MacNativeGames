@@ -121,79 +121,127 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
     if (!playing[side]) { playing[side] = YES; playingSince[side] = now; }
     return YES;
 }
-/* ---- rumble written straight to an 8BitDo Ultimate 2 Wireless (2dc8:6012, 2026-10-21) ----
-   macOS files it as a generic HID pad, so GameController gives it no haptics (the log says "has no haptics"). Its firmware
-   1.03 and later (34-byte input reports) takes output report 0x05 = {0x05, low-frequency motor, high-frequency motor, 0, 0},
-   as SDL's 8BitDo driver sends it; a probe over Bluetooth LE felt both motors. The game's left value drives the low motor
-   and its right value the high one, each by the same intensity as the Core Haptics path. A report goes out when a motor
-   value changes (at most every 20 ms) and every 250 ms while one is on; silence is written as zeros. TOTK_RUMBLE_HID=0
-   keeps it off. The game's own pulses are faint and short (a play session: strongest amplitude 0.10-0.15, a few tenths of
-   a second in 30 s) and the controller's motors need a push to start turning, so a non-zero value is raised to at least
-   TOTK_RUMBLE_HID_FLOOR (0..255, default 90) and held for TOTK_RUMBLE_HID_HOLD_MS (default 60) after it ends. */
-enum { BITDO_VID = 0x2dc8, BITDO_PID_ULTIMATE2_WIRELESS = 0x6012, BITDO_MIN_MS = 20, BITDO_KEEP_MS = 250 };
-static IOHIDManagerRef bitdoManager;   /* main queue */
-static IOHIDDeviceRef bitdoHid;        /* set on rumbleQueue, opened on the main queue */
-static GCController *bitdoPad;         /* main queue */
-static uint8_t bitdoSent[2], bitdoHeld[2];
-static uint64_t bitdoHeldUntil[2];
-static int bitdoFloor = 90, bitdoHoldMs = 60;
-static uint64_t bitdoSentAt;
-static BOOL bitdoFailed;
-static void bitdo_write(uint8_t lo, uint8_t hi) {   /* rumbleQueue */
-    uint8_t out[5] = {0x05, lo, hi, 0, 0};
-    IOReturn r = IOHIDDeviceSetReport(bitdoHid, kIOHIDReportTypeOutput, 0x05, out, sizeof out);
-    if (r != kIOReturnSuccess && !bitdoFailed) { bitdoFailed = YES; fprintf(stderr, "[rumble] 8BitDo output report 0x05 failed: 0x%x (not logged again)\n", r); }
+/* ---- rumble written straight to a controller's HID device, from a table of profiles ----
+   Some controllers macOS files as generic HID pads: GameController gives them no haptics (the log says "has no haptics"),
+   so the Core Haptics path never plays. For those the game's rumble is written to the HID device as one output report
+   with a motor byte for the low-frequency (left) and one for the high-frequency (right) motor. A profile says which
+   device (vendor and product id), which report (id, length) and where the two motor bytes sit in it (offsets; 0 is the
+   report id). The built-in table has the controllers checked on real hardware; a player can add one in
+   rumble-profiles.txt next to controls.txt (TOTK_RUMBLE_PROFILES names another file): one profile per line,
+   `vendor product report_id length low_offset high_offset` (decimal or 0x hex, `#` starts a comment), for example the
+   built-in line `0x2dc8 0x6012 0x05 5 1 2`. Many reports can be found in SDL's HIDAPI drivers (src/joystick/hidapi).
+   Built in:
+   - 2dc8:6012 8BitDo Ultimate 2 Wireless, firmware 1.03 and later (34-byte input reports), output report 0x05 =
+     {0x05, low, high, 0, 0} as SDL_hidapi_8bitdo.c sends it; a probe over Bluetooth LE felt both motors (2026-10-21).
+   The game's left value drives the low motor and its right value the high one, each by the same intensity as the Core
+   Haptics path. A report goes out when a motor value changes (at most every 20 ms) and every 250 ms while one is on;
+   silence is written as zeros, also at exit. TOTK_RUMBLE_HID=0 keeps it off. The game's own pulses are faint and short
+   (a play session: strongest amplitude 0.10-0.15, a few tenths of a second in 30 s) and motors need a push to start
+   turning, so a non-zero value is raised to at least TOTK_RUMBLE_HID_FLOOR (0..255, default 90) and held for
+   TOTK_RUMBLE_HID_HOLD_MS (default 60) after it ends. */
+typedef struct { uint16_t vendor, product; uint8_t reportId, length, lowAt, highAt; } HidRumbleProfile;
+enum { HID_PROFILES_MAX = 16, HID_MIN_MS = 20, HID_KEEP_MS = 250 };
+static HidRumbleProfile hidProfiles[HID_PROFILES_MAX] = { {0x2dc8, 0x6012, 0x05, 5, 1, 2} };
+static int hidProfileCount = 1;
+static IOHIDManagerRef hidRumbleManager;   /* main queue */
+static IOHIDDeviceRef hidRumbleDevice;     /* set on rumbleQueue, opened on the main queue */
+static HidRumbleProfile hidRumbleProfile;  /* the profile of hidRumbleDevice */
+static GCController *hidRumblePad;         /* main queue */
+static uint8_t hidSent[2], hidHeld[2];
+static uint64_t hidSentAt, hidHeldUntil[2];
+static int hidFloor = 90, hidHoldMs = 60;
+static BOOL hidRumbleFailed;
+static void hid_profiles_load(void) {   /* main queue, once */
+    const char *path = getenv("TOTK_RUMBLE_PROFILES"), *controls = getenv("TOTK_CONTROLS");
+    NSString *file = path && *path ? @(path) : controls && *controls ? [[@(controls) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"rumble-profiles.txt"] : nil;
+    NSString *text = file ? [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (!text) return;
+    int lineNo = 0;
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        lineNo++;
+        NSRange hash = [raw rangeOfString:@"#"];
+        NSString *line = [(hash.location == NSNotFound ? raw : [raw substringToIndex:hash.location]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!line.length) continue;
+        int v, p, rid, len, lo, hi; char extra;
+        BOOL ok = sscanf(line.UTF8String, "%i %i %i %i %i %i %c", &v, &p, &rid, &len, &lo, &hi, &extra) == 6
+                  && v > 0 && v <= 0xffff && p >= 0 && p <= 0xffff && rid >= 1 && rid <= 255 && len >= 3 && len <= 64
+                  && lo >= 1 && lo < len && hi >= 1 && hi < len && lo != hi;
+        if (!ok) { fprintf(stderr, "[rumble] %s line %d ignored (want: vendor product report_id length low_offset high_offset)\n", file.UTF8String, lineNo); continue; }
+        if (hidProfileCount >= HID_PROFILES_MAX) { fprintf(stderr, "[rumble] %s: at most %d profiles\n", file.UTF8String, HID_PROFILES_MAX); break; }
+        hidProfiles[hidProfileCount++] = (HidRumbleProfile){(uint16_t)v, (uint16_t)p, (uint8_t)rid, (uint8_t)len, (uint8_t)lo, (uint8_t)hi};
+        fprintf(stderr, "[rumble] profile %04x:%04x report 0x%02x, %d bytes, motors at %d and %d (from %s)\n", v, p, rid, len, lo, hi, file.UTF8String);
+    }
 }
-static void bitdo_tick(uint64_t now) {   /* rumbleQueue, every 10 ms */
+static void hid_rumble_write(IOHIDDeviceRef d, const HidRumbleProfile *pr, uint8_t lo, uint8_t hi) {
+    uint8_t out[64] = {0};
+    out[0] = pr->reportId; out[pr->lowAt] = lo; out[pr->highAt] = hi;
+    IOReturn r = IOHIDDeviceSetReport(d, kIOHIDReportTypeOutput, pr->reportId, out, pr->length);
+    if (r != kIOReturnSuccess && !hidRumbleFailed) { hidRumbleFailed = YES; fprintf(stderr, "[rumble] HID output report 0x%02x failed: 0x%x (not logged again)\n", pr->reportId, r); }
+}
+static void hid_rumble_tick(uint64_t now) {   /* rumbleQueue, every 10 ms */
     uint8_t m[2];
     for (int side = 0; side < 2; side++) {
         float v[4]; uint64_t at;
         pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pthread_mutex_unlock(&wantLock);
         float a = at && now - at < RUMBLE_STALE_MS * 1000000ull ? intensity_of(v) : 0;
         if (a >= 0.02f) {
-            int level = bitdoFloor + (int)(a * (255 - bitdoFloor) + 0.5f);
-            bitdoHeld[side] = (uint8_t)(level > 255 ? 255 : level);
-            bitdoHeldUntil[side] = now + (uint64_t)bitdoHoldMs * 1000000ull;
+            int level = hidFloor + (int)(a * (255 - hidFloor) + 0.5f);
+            hidHeld[side] = (uint8_t)(level > 255 ? 255 : level);
+            hidHeldUntil[side] = now + (uint64_t)hidHoldMs * 1000000ull;
         }
-        m[side] = now < bitdoHeldUntil[side] ? bitdoHeld[side] : 0;
+        m[side] = now < hidHeldUntil[side] ? hidHeld[side] : 0;
         if (m[side]) playedNs[side] += RUMBLE_TICK_MS * 1000000ull;
     }
-    BOOL same = m[0] == bitdoSent[0] && m[1] == bitdoSent[1];
+    BOOL same = m[0] == hidSent[0] && m[1] == hidSent[1];
     if (same && !m[0] && !m[1]) return;
-    if (now - bitdoSentAt < (same ? BITDO_KEEP_MS : BITDO_MIN_MS) * 1000000ull) return;
-    bitdo_write(m[0], m[1]);
-    bitdoSent[0] = m[0]; bitdoSent[1] = m[1]; bitdoSentAt = now;
+    if (now - hidSentAt < (same ? HID_KEEP_MS : HID_MIN_MS) * 1000000ull) return;
+    hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, m[0], m[1]);
+    hidSent[0] = m[0]; hidSent[1] = m[1]; hidSentAt = now;
 }
-static void bitdo_quiet_at_exit(void) {   /* the controller keeps the last motor values it got */
-    if (bitdoHid) { uint8_t out[5] = {0x05, 0, 0, 0, 0}; IOHIDDeviceSetReport(bitdoHid, kIOHIDReportTypeOutput, 0x05, out, sizeof out); }
+static void hid_rumble_quiet_at_exit(void) {   /* the controller keeps the last motor values it got */
+    if (hidRumbleDevice) hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, 0, 0);
 }
-static void bitdo_attach(GCController *c) {   /* main queue: c has no haptics */
+static void hid_rumble_attach(GCController *c) {   /* main queue: c has no haptics */
     const char *off = getenv("TOTK_RUMBLE_HID");
-    if (bitdoHid || (off && !strcmp(off, "0"))) return;
+    if (hidRumbleDevice || (off && !strcmp(off, "0"))) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        hid_profiles_load();
+        const char *fl = getenv("TOTK_RUMBLE_HID_FLOOR"), *ho = getenv("TOTK_RUMBLE_HID_HOLD_MS");
+        if (fl) hidFloor = atoi(fl) < 0 ? 0 : atoi(fl) > 255 ? 255 : atoi(fl);
+        if (ho) hidHoldMs = atoi(ho) < 0 ? 0 : atoi(ho) > 500 ? 500 : atoi(ho);
+        atexit(hid_rumble_quiet_at_exit);
+    });
+    NSMutableArray *matching = [NSMutableArray array];
+    for (int i = 0; i < hidProfileCount; i++) [matching addObject:@{@kIOHIDVendorIDKey: @(hidProfiles[i].vendor), @kIOHIDProductIDKey: @(hidProfiles[i].product)}];
     IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-    IOHIDManagerSetDeviceMatching(m, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @(BITDO_VID), @kIOHIDProductIDKey: @(BITDO_PID_ULTIMATE2_WIRELESS)});
+    IOHIDManagerSetDeviceMatchingMultiple(m, (__bridge CFArrayRef)matching);
     IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
     NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(m);
     IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
     if (!d) { CFRelease(m); return; }
+    int vendor = 0, product = 0;
+    CFTypeRef cv = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDVendorIDKey)), cp = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
+    if (cv) CFNumberGetValue(cv, kCFNumberIntType, &vendor);
+    if (cp) CFNumberGetValue(cp, kCFNumberIntType, &product);
+    const HidRumbleProfile *found = NULL;
+    for (int i = hidProfileCount - 1; i >= 0 && !found; i--) if (hidProfiles[i].vendor == vendor && hidProfiles[i].product == product) found = &hidProfiles[i];   /* the player's lines win */
+    if (!found) { CFRelease(m); return; }
     IOReturn r = IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone);
-    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] 8BitDo Ultimate 2 Wireless found but its HID device did not open (0x%x): no rumble from it\n", r); CFRelease(m); return; }
-    const char *fl = getenv("TOTK_RUMBLE_HID_FLOOR"), *ho = getenv("TOTK_RUMBLE_HID_HOLD_MS");
-    if (fl) bitdoFloor = atoi(fl) < 0 ? 0 : atoi(fl) > 255 ? 255 : atoi(fl);
-    if (ho) bitdoHoldMs = atoi(ho) < 0 ? 0 : atoi(ho) > 500 ? 500 : atoi(ho);
-    bitdoManager = m; bitdoPad = c; bitdoFailed = NO;
+    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] HID device %04x:%04x found but did not open (0x%x): no rumble from it\n", vendor, product, r); CFRelease(m); return; }
+    hidRumbleManager = m; hidRumblePad = c; hidRumbleFailed = NO;
+    HidRumbleProfile pr = *found;
     IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
-    dispatch_async(rumbleQueue, ^{ bitdoSent[0] = bitdoSent[1] = 0; bitdoSentAt = 0; bitdoHid = held; });
-    static dispatch_once_t once; dispatch_once(&once, ^{ atexit(bitdo_quiet_at_exit); });
-    fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (8BitDo Ultimate 2 Wireless, report 0x05)\n", (c.vendorName ?: @"controller").UTF8String);
+    dispatch_async(rumbleQueue, ^{ hidSent[0] = hidSent[1] = 0; hidSentAt = 0; hidRumbleProfile = pr; hidRumbleDevice = held; });
+    fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (%04x:%04x, report 0x%02x)\n", (c.vendorName ?: @"controller").UTF8String, vendor, product, pr.reportId);
 }
-static void bitdo_detach(GCController *c) {   /* main queue */
-    if (bitdoPad != c) return;
-    bitdoPad = nil;
-    IOHIDManagerRef m = bitdoManager; bitdoManager = NULL;
+static void hid_rumble_detach(GCController *c) {   /* main queue */
+    if (hidRumblePad != c) return;
+    hidRumblePad = nil;
+    IOHIDManagerRef m = hidRumbleManager; hidRumbleManager = NULL;
     dispatch_async(rumbleQueue, ^{
-        IOHIDDeviceRef d = bitdoHid; bitdoHid = NULL;
-        if (d) { { uint8_t out[5] = {0x05, 0, 0, 0, 0}; IOHIDDeviceSetReport(d, kIOHIDReportTypeOutput, 0x05, out, sizeof out); } CFRelease(d); }
+        IOHIDDeviceRef d = hidRumbleDevice; hidRumbleDevice = NULL;
+        if (d) { hid_rumble_write(d, &hidRumbleProfile, 0, 0); CFRelease(d); }
         if (m) CFRelease(m);
     });
 }
@@ -218,13 +266,13 @@ static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
         if (!playing[side] || now - playerSince[side] > RUMBLE_RENEW_MS * 1000000ull) start_player(side, intensity, sharpness, now);
         else if (fabsf(intensity - sentIntensity[side]) > 0.01f || fabsf(sharpness - sentSharpness[side]) > 0.02f) send_params(players[side], side, intensity, sharpness);
     }
-    if (bitdoHid) bitdo_tick(now);
+    if (hidRumbleDevice) hid_rumble_tick(now);
     static uint64_t lastLog; if (!lastLog) lastLog = now;
     if (now - lastLog >= 30000000000ull) {
         pthread_mutex_lock(&wantLock); uint64_t n = wantCount - wantCountLogged; float peak = strongest; wantCountLogged = wantCount; strongest = 0; pthread_mutex_unlock(&wantLock);
         for (int side = 0; side < 2; side++) if (playing[side]) { playedNs[side] += now - playingSince[side]; playingSince[side] = now; }
         if (n) fprintf(stderr, "[rumble] last 30 s: %llu values from the game, strongest amplitude %.2f, played left %.1f s / right %.1f s%s\n",
-                       (unsigned long long)n, peak, playedNs[0] / 1e9, playedNs[1] / 1e9, bitdoHid ? " (8BitDo HID)" : rumblePad.haptics ? "" : " (no controller with haptics)");
+                       (unsigned long long)n, peak, playedNs[0] / 1e9, playedNs[1] / 1e9, hidRumbleDevice ? " (HID)" : rumblePad.haptics ? "" : " (no controller with haptics)");
         playedNs[0] = playedNs[1] = 0; lastLog = now;
     }
 }
@@ -374,7 +422,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             fprintf(stderr, "[rumble] %s: haptics (%s)\n", name, [where componentsJoinedByString:@", "].UTF8String);
         } else {
             fprintf(stderr, "[rumble] %s has no haptics\n", name);
-            bitdo_attach(c);
+            hid_rumble_attach(c);
         }
     }
     if (runtime_gyro_enabled()) {
@@ -394,7 +442,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
     }
 }
 void runtime_feedback_detach(GCController *c) {   /* main queue */
-    bitdo_detach(c);
+    hid_rumble_detach(c);
     if (runtime_rumble_enabled() && rumbleQueue)
         dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
     if (motionPad == c) {
