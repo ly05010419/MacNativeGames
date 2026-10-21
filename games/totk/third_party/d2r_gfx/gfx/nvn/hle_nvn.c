@@ -45,6 +45,7 @@
 #endif
 #include <pthread/qos.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 #include <mach/thread_policy.h>
 #include <assert.h>
 #include <stdatomic.h>
@@ -2382,38 +2383,65 @@ static int cap_ticks(void) {   /* display ticks per game frame under a cap; 0 = 
    spare, and speeds up only when it fits the faster step with 20 % to spare (after 1.5 s): with one margin for both, a
    typical frame of 7-9 ms on a 240 Hz display switched 120 <-> 80 fps every few seconds (2026-10-20). Before (three missed ticks in 60 frames slowed down) Breath of the Wild's frequent one-off frames of 20-35 ms
    held a 240 Hz display at 40-48 fps while its typical frame took 8 ms (2026-10-20, the user: "I want high fps"). */
-enum { CAP_WIN = 120 };
-static double g_cap_gpu_ms[16]; static unsigned g_cap_gpu_n;
-static void cap_auto_gpu(double ms) { g_cap_gpu_ms[g_cap_gpu_n++ % 16] = ms; }
-static int cap_cmp_u64(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return x < y ? -1 : x > y; }
-static uint64_t cap_p75(const uint64_t *v, unsigned n) {   /* 75th percentile of n samples (n <= CAP_WIN) */
-    uint64_t s[CAP_WIN]; memcpy(s, v, n * sizeof *s); qsort(s, n, sizeof *s, cap_cmp_u64); return s[(n * 3) / 4 < n ? (n * 3) / 4 : n - 1];
+/* The decision itself lives in nvn_cap_auto.h (tested by games/totk/tests/cap_auto/probe.c), including the probes back
+   to a faster rate after the iPhone lowered its clocks at the slower one (adapted from nxnative, MIT; see the header).
+   TOTK_FPS_PROBE: unset = the default (iPhone and iPad: all three signals; Mac: only "the cost that held the faster
+   rate", since the Mac keeps its clocks), 0 = no probes (the rule as before), same = only that one, all = all three. */
+#include "nvn_cap_auto.h"
+int dm_thermal_now(void);
+__attribute__((weak)) int dm_low_power_now(void) { return 0; }   // Low Power Mode (iOS frontend_ios.m); off on the Mac
+static capa_state g_capa;   // acquire thread (cap_auto_note); the GPU ring is fed from the present path (cap_auto_gpu)
+static capa_cpu g_capa_cpu;
+static int g_capa_quiet;    // the present-interval probe: no probes, so its fixed sequences stay deterministic
+static void cap_auto_gpu(double ms) { capa_gpu(&g_capa, ms); }
+static int cap_probe_signals(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("TOTK_FPS_PROBE");
+        v = !e || !*e ? (TARGET_OS_IPHONE ? CAPA_SIG_ALL : CAPA_SIG_SAME) : !strcmp(e, "0") ? 0 : !strcmp(e, "same") ? CAPA_SIG_SAME : CAPA_SIG_ALL;
+        if (e && *e) LOG("[nvn] TOTK_FPS_PROBE=%s：帧率自动的试探信号 %s%s%s", e, v ? "" : "关", v & CAPA_SIG_SAME ? "成本相同 " : "", v & CAPA_SIG_ALL & ~CAPA_SIG_SAME ? "能效核 GPU 降频" : "");
+    }
+    return g_capa_quiet ? 0 : v;
 }
-static uint64_t cap_gpu_typical_ns(void) {   /* 75th percentile of the last 16 frames' GPU time */
-    uint64_t v[16]; unsigned n = g_cap_gpu_n < 16 ? g_cap_gpu_n : 16;
-    for (unsigned i = 0; i < n; i++) v[i] = (uint64_t)(g_cap_gpu_ms[i] * 1e6);
-    return n ? cap_p75(v, n) : 0;
+/* CAPA_SIG_CPU: the process's share of CPU time on performance cores, every 30 frames, on a chip with two core types */
+static int cap_cpu_slowed(void) {
+    static int levels = -1; static unsigned n;
+    if (levels < 0) { size_t sz = sizeof levels; if (sysctlbyname("hw.nperflevels", &levels, &sz, 0, 0)) levels = 1; }
+    if (levels < 2) return 0;
+    if (n++ % 30) return g_capa_cpu.slowed;
+    task_power_info_v2_data_t pw; mach_msg_type_number_t cnt = TASK_POWER_INFO_V2_COUNT;
+    if (task_info(mach_task_self(), TASK_POWER_INFO_V2, (task_info_t)&pw, &cnt) != KERN_SUCCESS) return g_capa_cpu.slowed;
+    return capa_cpu_window(&g_capa_cpu, pw.cpu_energy.total_user + pw.cpu_energy.total_system, pw.task_ptime);   // both in mach time units
 }
 static void cap_auto_note(uint64_t busy_ns, uint64_t now) {
-    static uint64_t win[CAP_WIN]; static unsigned nwin, pos; static int k_seen; static uint64_t want_since; static int want_k;
-    if (cap_mode() != -1 || !g_uncapped || g_paced_hz <= 0 || mfx_enabled() != MFX_OFF || runtime_game_fps_limit() > 0) { nwin = pos = 0; want_since = 0; return; }
-    int k = atomic_load(&g_auto_k);
-    if (k < cap_kmin() || k > cap_kmax() || k != k_seen) {   // first use, or the display rate changed
-        if (k < cap_kmin()) k = cap_kmin(); if (k > cap_kmax()) k = cap_kmax();
-        atomic_store(&g_auto_k, k); k_seen = k; want_since = 0;
-    }
-    win[pos] = busy_ns; pos = (pos + 1) % CAP_WIN; if (nwin < CAP_WIN) nwin++;
-    if (nwin < CAP_WIN / 2) return;
-    double tick = 1e9 / g_paced_hz;
-    uint64_t busy = cap_p75(win, nwin), gpu = cap_gpu_typical_ns(), need = busy > gpu ? busy : gpu;
-    int target = k;
-    if (need > k * tick) { target = cap_kmin(); while (target < cap_kmax() && need > 0.95 * target * tick) target++; }
-    else if (k > cap_kmin() && need < 0.8 * (k - 1) * tick) { target = cap_kmin(); while (target < k && need > 0.8 * target * tick) target++; }
-    if (target == k) { want_since = 0; return; }
-    if (target != want_k || !want_since) { want_k = target; want_since = now; return; }
-    if (now - want_since < (target > k ? 1000000000ull : 1500000000ull)) return;
-    atomic_store(&g_auto_k, k_seen = target); want_since = 0;
-    LOG("[nvn] 帧率自动：%d → %d fps（近 %u 帧的 75%% 分位 %.1f ms，GPU %.1f ms）", g_paced_hz / k, g_paced_hz / target, nwin, busy / 1e6, gpu / 1e6);
+    if (cap_mode() != -1 || !g_uncapped || g_paced_hz <= 0 || mfx_enabled() != MFX_OFF || runtime_game_fps_limit() > 0) { capa_idle(&g_capa); return; }
+    int sig = cap_probe_signals(), k = atomic_load(&g_auto_k);
+    capa_env e = {.kmin = cap_kmin(), .kmax = cap_kmax(), .tick_ns = 1e9 / g_paced_hz, .signals = sig};
+    if (sig) { e.cpu_slowed = sig & CAPA_SIG_CPU ? cap_cpu_slowed() : 0; e.power_ok = dm_thermal_now() <= 1 && !dm_low_power_now(); }
+    int target = capa_note(&g_capa, k, busy_ns, now, &e);
+    if (target != k) atomic_store(&g_auto_k, target);
+    const capa_state *s = &g_capa;
+    static unsigned nlog;   // probe lines: the first 40, then every 25th (a device that cannot hold the faster rate probes every 32 s at most)
+    int pev = s->ev & (CAPA_EV_PROBE | CAPA_EV_HELD | CAPA_EV_FAILED), plog = pev && (nlog < 40 || nlog % 25 == 0);
+    if (pev) nlog++;
+    if (pev && !plog) return;
+    if (!(s->ev & (CAPA_EV_SWITCH | CAPA_EV_HELD))) return;
+    char why[320] = ""; size_t w = 0;
+    if (s->ev & CAPA_EV_PROBE) {
+        w += (size_t)snprintf(why + w, sizeof why - w, "；试探（第 %llu 次，失败 %llu 次）：", (unsigned long long)s->probes, (unsigned long long)s->failed);
+        if (s->ev_sig & CAPA_SIG_SAME) w += (size_t)snprintf(why + w, sizeof why - w, "成本 %.2f× 撑住 %d fps 时的 %.1f ms ", s->ccur / s->cref, g_paced_hz / target, s->cref / 1e6);
+        if (s->ev_sig & CAPA_SIG_CPU) w += (size_t)snprintf(why + w, sizeof why - w, "CPU 只有 %d%% 在性能核 ", g_capa_cpu.share);
+        if (s->ev_sig & CAPA_SIG_GPU) w += (size_t)snprintf(why + w, sizeof why - w, "GPU %.2f× 它在 %d fps 时的 %.1f ms ", s->gcur / s->gref, g_paced_hz / target, s->gref / 1e6);
+        snprintf(why + w, sizeof why - w, "温控 %d", dm_thermal_now());
+    } else if (s->ev & CAPA_EV_FAILED)
+        snprintf(why, sizeof why, "；试探失败：%d fps 只撑了 %.1f s（不到 %.0f s），下次试探至少等 %.0f s（第 %llu 次失败）", g_paced_hz / s->ev_from, s->ev_ran / 1e9,
+                 CAPA_HELD_NS / 1e9, s->hold / 1e9, (unsigned long long)s->failed);
+    if (s->ev & CAPA_EV_SWITCH)
+        LOG("[nvn] 帧率自动：%d → %d fps（近 %u 帧的 75%% 分位 %.1f ms，GPU %.1f ms%s）", g_paced_hz / s->ev_from, g_paced_hz / target, s->ev_n,
+            s->ev_busy / 1e6, s->ev_gpu / 1e6, why);
+    if (s->ev & CAPA_EV_HELD)
+        LOG("[nvn] 帧率自动：试探撑住了 %d fps %.0f s，下次试探的等待回到 %.0f s（%llu 次试探，撑住 %llu 次）", g_paced_hz / target, CAPA_HELD_NS / 1e9, s->hold / 1e9,
+            (unsigned long long)s->probes, (unsigned long long)s->held);
 }
 /* Key 2: auto -> the fixed caps (slowest last) -> uncapped -> interpolation 30+30 -> half the refresh rate -> uncapped
    interpolation -> auto. Without the uncapped real-time mode only the interpolation modes cycle (as before). */
@@ -2572,7 +2600,7 @@ static double g_pres_iv[TWIN]; static unsigned g_presn;   // 上屏间隔（ms�
 __attribute__((weak)) double dm_brightness_now(void) { return -1; }
 __attribute__((weak)) void dm_perf_present(double iv_ms) { (void)iv_ms; }   // 缺省（单测）；宿主 diag.c 的强定义：常开性能记录 perf.txt | Default (unit tests); strong definition in the host's diag.c: always-on performance record perf.txt
 uint64_t dm_nvn_sub_cpu_ns(void) { return atomic_load(&g_cum_sub_cpu_ns); }   // 提交（不含出图）累计 CPU 纳秒 | Cumulative CPU nanoseconds of submit (excluding present)
-__attribute__((weak)) int dm_thermal_now(void) { return -1; }   // 缺省（Mac）；iOS front_ios.m 覆盖   // 缺省（Mac）；iOS 前端 front_ios.m 的强定义覆盖它 | Default (Mac); overridden by iOS front_ios.m   // default (Mac); the strong definition in the iOS front end front_ios.m overrides it
+__attribute__((weak)) int dm_thermal_now(void) { return -1; }   // 缺省（Mac）；iOS 前端 frontend_ios.m 的强定义覆盖它 | Default (Mac); the strong definition in the iOS front end frontend_ios.m overrides it
 // 长帧日志的逐帧环（GPU 时间滞后 8 帧才有，所以先存后判）
 // Per-frame ring for the long-frame log (GPU time only arrives 8 frames late, so store first and judge later)
 #define LFN 16
@@ -2874,7 +2902,7 @@ void dm_nvn_probe_present_interval(void) {
             checked++;
         }
         if (cap_kmin() != 2 || cap_kmax() != 4) die("present interval probe: caps at 144 Hz must be 72, 48 and 36 fps");
-        g_uncapped = 1; atomic_store(&g_cap_mode, -1); atomic_store(&g_auto_k, 2);
+        g_uncapped = 1; atomic_store(&g_cap_mode, -1); atomic_store(&g_auto_k, 2); g_capa_quiet = 1;   /* the rule alone; tests/cap_auto covers the probes */
         win_t w = {.interval = 1}; uint64_t t = 1000000000ull;
         cap_auto_note(1, t);   /* first note: takes k */
         for (int i = 0; i < 140; i++) cap_auto_note(15000000ull, t += 15000000ull);   /* typical frame over two ticks (13.9 ms): 2.1 s */
@@ -2889,7 +2917,7 @@ void dm_nvn_probe_present_interval(void) {
         if (present_ticks(&w) != 2) die("present interval probe: auto must not slow down for occasional hitches");
         checked += 4;
         for (int i = 0; i < 16; i++) cap_auto_gpu(0);
-        g_paced_hz = saved_paced0; atomic_store(&g_cap_mode, 0);
+        g_paced_hz = saved_paced0; atomic_store(&g_cap_mode, 0); g_capa_quiet = 0;
     }
     /* Frame interpolation modes (key 2 / flag mfx_interp, taken over at the frame boundary). Half the refresh rate: two
        display ticks per game frame at the display rate, also when the uncapped mode is configured (suspended). 30+30:

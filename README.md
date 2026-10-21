@@ -258,7 +258,7 @@ Recorded performance experiments, remaining work and comparison methods: [Mac pe
 ## Acknowledgements
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this way of running Switch games natively (for Diablo II: Resurrected): the NSO rewriter, the Horizon host and the NVN-on-Metal layer here started as its generic parts.
-- **[nxnative](https://github.com/seedds/nxnative)**: the one-script packaging and NSP common-ticket import follow its approach.
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the one-script packaging and NSP common-ticket import follow its approach. Lazy clears, uniform read extents, upload and QueueFinish waits, thread and SystemEvent fixes, the crash report gate, the auto frame-rate probes and shader patch 0006 are adapted from it (license `games/totk/third_party/licenses/nxnative.txt`, sources in `THIRD_PARTY_NOTICES.md`); at native 2K they cut GPU time by about 27% in an A/B on an M4 Pro ([measurements](docs/performance-followups.md)).
 - **Ryujinx** (MIT): its shader translator (`vendor/ryujinx`) turns the game's Maxwell shaders into SPIR-V, and its system-service code is a reference. With this project's patches and service it is compiled ahead of time (.NET NativeAOT) into `games/totk/prebuilt/macos-arm64/totk_xlate`; `games/totk/tools/totk_xlate/publish_native.sh` rebuilds it (needs the .NET 10 SDK, only for developers).
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)** (Apache-2.0) turns SPIR-V into Metal Shading Language; it is fetched at a pinned commit and compiled with clang during the build.
 - **deko3d** (zlib): texture layout sizes. **bcdec**: BC texture decoding. **libopus** and **libvpx** (BSD) from Homebrew: audio and the pre-rendered movies.
@@ -529,7 +529,7 @@ north = y
 ## 致谢
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）为《暗黑破坏神 II：狱火重生》开发了这套原生运行 Switch 游戏的方法：这里的 NSO 改写器、Horizon 宿主和 Metal 上的 NVN 层都从它的通用部分起步。
-- **[nxnative](https://github.com/seedds/nxnative)**：“用户自己的游戏文件 + 一个脚本出包”和 NSP 通用票据读取的做法借鉴自它；本项目只构建 Mac App。
+- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：“用户自己的游戏文件 + 一个脚本出包”和 NSP 通用票据读取的做法借鉴自它；本项目只构建 Mac App。惰性清除、uniform 读取范围、上传与 QueueFinish 的等待、线程与 SystemEvent 修正、崩溃报告闸门、帧率自动档试探和着色器补丁 0006 改编自它（许可 `games/totk/third_party/licenses/nxnative.txt`，出处见 `THIRD_PARTY_NOTICES.md`）；M4 Pro 上原生 2K 的 A/B 中 GPU 时间约少 27%（[测量](docs/performance-followups.md)）。
 - **Ryujinx**（MIT）：它的着色器翻译器（`vendor/ryujinx`）把游戏的 Maxwell 着色器转成 SPIR-V，它的系统服务代码也是参考。加上本项目的补丁和着色器服务，用 .NET NativeAOT 预先编成原生程序 `games/totk/prebuilt/macos-arm64/totk_xlate`；改了翻译器用 `games/totk/tools/totk_xlate/publish_native.sh` 重编（要 .NET 10 SDK，只有开发者需要）。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**（Apache-2.0）把 SPIR-V 转成 Metal 着色语言；打包时按固定提交取得，用 clang 编。
 - **deko3d**（zlib）：贴图布局尺寸。**bcdec**：BC 贴图解码。**libopus**、**libvpx**（BSD，来自 Homebrew）：音频和预渲染影片。

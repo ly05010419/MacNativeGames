@@ -53,6 +53,7 @@ int mtl_probe_compressed_alias(void);
 int mtl_probe_linear_rt_upload(void);
 int mtl_probe_texture_retire(void);
 int mtl_probe_ds_clear(void);
+int mtl_probe_lazy_clear(void);   // TOTK: lazy clears wait, are replaced, land before readers and are taken as load actions
 int mtl_probe_ub_rename(void);
 int mtl_probe_ubo_snapshot(void);
 int mtl_probe_drv_c0(void);

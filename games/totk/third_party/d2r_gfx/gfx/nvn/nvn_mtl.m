@@ -203,6 +203,7 @@ static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;                         // 已完成的最大栅栏值（完成回调写） | Highest completed fence value (written by the completion callback)
 static _Atomic int g_last_commit_error;
 static _Atomic int g_up_pending;
+static void up_wait_zero(void);   // TOTK: sleep until every queued upload has completed (see its definition)
 
 static pthread_mutex_t g_res_mu = PTHREAD_MUTEX_INITIALIZER;   // 驻留集专用锁：res_add 会在持 g_mu 的路径里调用（arena_new），不能共用 g_mu | Dedicated lock for the residency set: res_add is called on paths that hold g_mu (arena_new), so it cannot share g_mu
 static NSHashTable *g_res_objects;
@@ -225,9 +226,13 @@ static void res_add_at(id<MTLResource> r, int site) {
     if (!r) return;
     if (site < 0 || site >= RES_SITES) site = 0;
     pthread_mutex_lock(&g_res_mu);
-    [g_res addAllocation:(id<MTLAllocation>)r];
     if (!g_res_objects) { g_res_objects = [NSHashTable weakObjectsHashTable]; g_res_site_of = [NSMapTable weakToStrongObjectsMapTable]; }
-    if (![g_res_objects containsObject:r]) {
+    /* TOTK: g_res_objects mirrors g_res exactly (only res_add_at / res_remove_body change g_res; an object in g_res is
+       alive, so its weak entry is there): adding a member again or removing a non-member changes nothing, and no longer
+       marks the set for a commit (as nxnative df7badd) */
+    if ([g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }
+    [g_res addAllocation:(id<MTLAllocation>)r];
+    {
         uint64_t sz = (uint64_t)r.allocatedSize;
         [g_res_objects addObject:r]; [g_res_site_of setObject:@(site) forKey:r];
         g_res_site[site].adds++; g_res_site[site].live_bytes += sz; g_res_live_bytes += sz;
@@ -243,8 +248,9 @@ static void res_add_at(id<MTLResource> r, int site) {
 static void res_remove_body(id<MTLResource> r) {
     if (!r) return;
     pthread_mutex_lock(&g_res_mu);
+    if (![g_res_objects containsObject:r]) { pthread_mutex_unlock(&g_res_mu); return; }   // not a member: nothing to remove (see res_add_at)
     [g_res removeAllocation:(id<MTLAllocation>)r];
-    if ([g_res_objects containsObject:r]) {
+    {
         int site = ((NSNumber *)[g_res_site_of objectForKey:r]).intValue; uint64_t sz = (uint64_t)r.allocatedSize;
         g_res_site[site].removes++; g_res_site[site].live_bytes -= sz < g_res_site[site].live_bytes ? sz : g_res_site[site].live_bytes;
         g_res_live_bytes -= sz < g_res_live_bytes ? sz : g_res_live_bytes;
@@ -910,6 +916,7 @@ static zskip_zero g_zskip_zero[4096]; static int g_zskip_n, g_zskip_count;
 static zskip_zero g_zskip_cand[8]; static uint8_t g_zskip_cand_ok[8];
 static void zskip_clear(void);
 static int tbdr_on(void);
+static int g_nlc; static void lc_land(void);   // TOTK: lazy clears waiting for the next pass (see lc_push)
 static id g_cb;
 static id<MTL4ComputeCommandEncoder> g_blit;
 static int g_blit_alias; // shared encoder may have accessed aliased buffer storage
@@ -939,7 +946,7 @@ static void up_owner_check(const char *where) {
 // other threads (the present thread etc.) creating a command buffer do not touch the batch: they do not read or write textures uploaded in this batch; commands that need these textures all come after this replay submission (the batch is flushed before it)
 // Old-queue command buffers (readback / diagnostics / present; to be deleted once M4-4 and M4-5 are migrated away): uploads are already on the Metal 4 queue, and there is no ordering guarantee between the two queues -
 // wait for the upload to complete after flushing it, and only then can the old queue read the upload result (mtl_read_texels waited first and flushed afterwards, the readback beat the upload, 4 failures on t_nvn upload content)
-static id<MTLCommandBuffer> q_cb(void) { if (on_sub_thread()) { up_flush(); while (atomic_load(&g_up_pending)) usleep(200); } return [g_q commandBuffer]; }
+static id<MTLCommandBuffer> q_cb(void) { if (on_sub_thread()) { up_flush(); up_wait_zero(); } return [g_q commandBuffer]; }
 static post_op *g_post; static int g_npost, g_postcap;
 // 每次提交一个自动释放池：提交跑在客体线程上（长驻、无运行循环、从不排空隐式池），Metal 回放里自动释放的对象
 // （命令缓冲、编码器、通道描述等）不放池就永远不释放。iOS 真机选角页实测宿主堆每帧涨约 47 个对象、0.22 MiB/s。
@@ -1949,6 +1956,7 @@ static void chunk_maybe_split(void) {
 }
 uint64_t mtl_sub_commit(void) {
     cg_flush();   // TOTK: cube-face-set groups still pending at the end of the submission (reason 4 in the stats line)
+    lc_land();   // TOTK: lazy clears still waiting (normally landed at the end of each command list)
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     usnap_finish();   // TOTK: the helper threads must be done with the copies (they are, long before this)
@@ -2062,10 +2070,20 @@ int mtl_wait(uint64_t fence, uint64_t timeout_ns) {
 
 static void mtl_finish_gpu(void) {
     if (g_fence) mtl_wait(g_fence, UINT64_MAX);
-    while (atomic_load(&g_up_pending)) usleep(1000);
+    up_wait_zero();
 }
 void mtl_present_flush(void);
-void mtl_finish(void) { mtl_present_flush(); mtl_finish_gpu(); }   // 队列语义：已入队的出图也算队列工作 | Queue semantics: already-enqueued presents also count as queue work
+// nvnQueueFinish 只等已提交的 GPU 工作，不等排队的出图上屏（Switch 上也不等显示）：有窗口时节拍每拍只取一帧，等出图让每次 QueueFinish 多花一到两拍
+// （nxnative b0a9079：Three Houses 的加载每传一个资源调一次 QueueFinish，首次加载 78 s → 6 s）。交换链贴图归还前 AcquireTexture 仍等它上一次出图的票；mtl_drain 照旧先清出图
+// TOTK_FINISH_PRESENTS=1 恢复旧行为（先等排队的出图）
+// nvnQueueFinish waits for the GPU work submitted so far, not for queued presents to reach the screen (the Switch does not wait for the display either): with a window the display link takes one
+// present per tick, so waiting for them made every QueueFinish cost one or two ticks (nxnative b0a9079: Three Houses' loader calls QueueFinish per uploaded resource, first load 78 s -> 6 s).
+// A swapchain texture is still not handed back before its previous present ran (AcquireTexture waits for that ticket); mtl_drain keeps its flush. TOTK_FINISH_PRESENTS=1 restores the old wait
+void mtl_finish(void) {
+    static int old = -1; if (old < 0) { const char *e = getenv("TOTK_FINISH_PRESENTS"); old = e && atoi(e); }
+    if (old) mtl_present_flush();
+    mtl_finish_gpu();
+}
 static void present_drop_for_suspend(void);
 void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); mtl_init(); id<MTLCommandBuffer> cb = q_cb(); cb_commit(cb); cb_wait(cb); mtl_finish_gpu(); }
 
@@ -2584,7 +2602,7 @@ static void wb_write_list_(wb_ent **list, int nl, int force) {
        The game waits for its own sync before it invalidates, so these have usually completed already. */
     uint64_t need = 0; for (int i = 0; i < nl; i++) if (list[i]->fence > need) need = list[i]->fence;
     if (!wb_fence_on()) mtl_finish_gpu();
-    else { if (need) mtl_wait(need, UINT64_MAX); while (atomic_load(&g_up_pending)) usleep(200); }
+    else { if (need) mtl_wait(need, UINT64_MAX); up_wait_zero(); }
     /* Freshness is decided for every entry before anything is written back (a write-back marks its pages written), and
        of several renderings of the same memory (texture objects over it) only the newest is written back. */
     int fresh[512];
@@ -2987,6 +3005,19 @@ static id<MTL4ComputeCommandEncoder> g_up_ce;
 static _Atomic int g_up_alloc_busy[3];
 // TOTK: the submit thread sleeps on this until an upload allocator slot's GPU feedback arrives (was a 1 ms usleep poll).
 static pthread_mutex_t g_up_slot_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_up_slot_cv = PTHREAD_COND_INITIALIZER;
+/* Waiting for the queued uploads used to poll g_up_pending every 200 us / 1 ms (write-backs, QueueFinish, ReadTexels:
+   Breath of the Wild writes back about 440 times a second, each wait rounded up to the poll). The completion handler
+   drops g_up_pending under g_up_slot_mu and broadcasts g_up_slot_cv, so this sleeps until the last one completes (as
+   nxnative df7badd up_wait_zero); the 5 ms timeout only re-checks, it is not needed for progress. */
+static void up_wait_zero(void) {
+    if (!atomic_load(&g_up_pending)) return;
+    pthread_mutex_lock(&g_up_slot_mu);
+    while (atomic_load(&g_up_pending)) {
+        struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 5000000; if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        pthread_cond_timedwait(&g_up_slot_cv, &g_up_slot_mu, &ts);
+    }
+    pthread_mutex_unlock(&g_up_slot_mu);
+}
 static _Atomic uint64_t g_up_slot_waits, g_up_slot_wait_ns;
 static unsigned g_up_seq;
 #define UP_BLOCK_SIZE (32u * 1024u * 1024u)
@@ -3178,8 +3209,7 @@ static void up_flush(void) {
         [staging removeAllObjects];
         for (int i = 0; i < UP_POOL; i++) if (pool_mask >> i & 1) atomic_store(&g_up_pool_busy[i], 0);
         for (int i = 0; i < UP_SPOOL; i++) if (spool_mask >> i & 1) atomic_store(&g_up_spool_busy[i], 0);
-        pthread_mutex_lock(&g_up_slot_mu); atomic_store(&g_up_alloc_busy[slot], 0); pthread_cond_broadcast(&g_up_slot_cv); pthread_mutex_unlock(&g_up_slot_mu);
-        atomic_fetch_sub(&g_up_pending, 1);
+        pthread_mutex_lock(&g_up_slot_mu); atomic_store(&g_up_alloc_busy[slot], 0); atomic_fetch_sub(&g_up_pending, 1); pthread_cond_broadcast(&g_up_slot_cv); pthread_mutex_unlock(&g_up_slot_mu);   // pending drops under the lock: up_wait_zero cannot miss the wakeup
     }];
     res_commit();
     [cb endCommandBuffer];
@@ -4501,6 +4531,7 @@ static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static int rt_none(void); static void noatt_dims(NSUInteger *w, NSUInteger *h);
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     if (g_enc) return g_enc;
+    if (g_nlc) lc_land();   // TOTK: a pass opened by anything but a draw that took the waiting clears (lc_take): they land first, in order
     chunk_maybe_split();
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
     g_enc_mode = clear_only;
@@ -4776,6 +4807,7 @@ static void shmap_load(void) {
 
 @interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
+    uint32_t cb_ext[NVN_REFL_MAXB];   // TOTK: bytes each user uniform binding can read, 0 = unknown (cb_extent_scan)
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
     arg_epoch_key ab_epoch; int ab_epoch_ok;
@@ -5075,6 +5107,56 @@ static void refl_mark_stores(NvShader *o, NSArray *bs, NSString *src) {
         if (msl_stores_through(src, d[@"msl_name"])) b->rw = 1;
     }
 }
+/* TOTK: how far into each user uniform slot the shader reads (o->cb_ext, bytes; 0 = unknown, the whole binding). A renamed
+   inline update makes a private copy of a uniform binding for each draw that reads it (upd_shadow), and the game binds
+   whole 64 KiB blocks it updates in part: about 80 copies and 3.8 MB a frame in a 1.4.3 session. The copy only needs the
+   bytes the shader can read. Bounded only when every use of the binding's name in the MSL is a read
+   "<name>)._m0[<integer>]" of the translator's "float4 _m0[4096]" block, or its declaration; anything else (a computed
+   index, the block passed to a function) keeps the whole binding. In the 1.4.3 cache 60,386 of 67,304 bindings are bounded,
+   most below 2.4 KB. Idea from nxnative's cb_extent.tsv (f5646ef), which computes the same offline. TOTK_CB_EXTENT=0: off */
+static int cb_extent_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_CB_EXTENT"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_CB_EXTENT=0：uniform 副本整块复制（不按着色器读到的范围） | uniform copies take the whole binding"); } return v; }
+static uint32_t cb_extent_of(const char *s, const char *name, const char *type) {
+    char decl[96]; snprintf(decl, sizeof decl, "struct %s\n{\n    float4 _m0[4096];\n};", type);
+    if (!strstr(s, decl)) return 0;
+    size_t n = strlen(name); long top = -1;
+    for (const char *p = strstr(s, name); p; p = strstr(p + n, name)) {
+        char before = p > s ? p[-1] : ' ', after = p[n];
+        if (isalnum((unsigned char)before) || before == '_' || isalnum((unsigned char)after) || after == '_') continue;   // part of a longer name (fp_c1 in fp_c11)
+        const char *q = p + n;
+        if (!strncmp(q, ")._m0[", 6)) {
+            q += 6; char *end; unsigned long idx = strtoul(q, &end, 10);
+            if (end == q || *q < '0' || *q > '9') return 0;   // computed index
+            if (*end == 'u') end++;
+            if (*end != ']' || idx >= 4096) return 0;
+            if ((long)idx > top) top = (long)idx;
+            continue;
+        }
+        while (*q == ' ') q++;
+        if (!strncmp(q, "[[id(", 5)) continue;   // its declaration in the argument struct
+        return 0;
+    }
+    return top < 0 ? 16 : (uint32_t)(top + 1) * 16;
+}
+static void cb_extent_scan(NvShader *o, NSArray *bs, NSString *src) {
+    if (!cb_extent_on() || ![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;   // nvn_refl_from_json keeps the json order 1:1
+    const char *s = src.UTF8String; if (!s) return;
+    for (int i = 0; i < o->rf.nb; i++) {
+        if (o->rf.b[i].kind != NVN_RB_CBUF) continue;
+        NSDictionary *d = bs[(NSUInteger)i]; if (![d isKindOfClass:[NSDictionary class]]) continue;
+        NSString *name = d[@"msl_name"], *type = d[@"msl_type"];
+        if (![name isKindOfClass:[NSString class]] || ![type isKindOfClass:[NSString class]] || ![type hasPrefix:@"constant "] || ![type hasSuffix:@"*"]) continue;
+        NSString *t = [[type substringWithRange:NSMakeRange(9, type.length - 10)] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        o->cb_ext[i] = cb_extent_of(s, name.UTF8String, t.UTF8String);
+    }
+}
+// Bytes of the bound uniform range [addr, addr + size) the shader's binding i can read: its extent rounded up to 256 bytes (so
+// shaders reading nearly the same part of a block share one copy), never more than the binding.
+static inline uint64_t cb_read_len(const NvShader *sh, int i, uint64_t size) {
+    uint64_t e = sh->cb_ext[i];
+    if (!e) return size;
+    e = (e + 255u) & ~(uint64_t)255u;
+    return e < size ? e : size;
+}
 static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS does not keep it in o->src)
     const char *s = src.UTF8String; if (!s) return 0;
     int nunfill = 0;
@@ -5095,11 +5177,11 @@ static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS do
     return nunfill;
 }
 static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK: translated variants loaded precompiled (iOS) / compiled from MSL here (atomic: the warm-up loads on several threads)
+static _Atomic uint64_t g_prebuilt_hit, g_prebuilt_miss;   // TOTK diagnostic (declared on iOS too: the shader-library log line below reads them on both platforms): 本机此目录命中 / 未命中次数（见下面启动时的一次性清单日志） | diagnostic: hits / misses against this directory on this machine (see the one-time inventory log at startup, below)
 #if !TARGET_OS_IPHONE
 /* TOTK: the startup shaders compiled when the app was built (build_app.py step_shader_libs), named by the SHA-256 of their
    MSL, so only an exact match is used. Metal's own cache of libraries compiled here does not follow the app to a folder
    whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
-static _Atomic uint64_t g_prebuilt_hit, g_prebuilt_miss;   // TOTK diagnostic: 本机此目录命中 / 未命中次数（见下面启动时的一次性清单日志） | diagnostic: hits / misses against this directory on this machine (see the one-time inventory log at startup, below)
 static NSString *shader_lib_prebuilt_path(NSData *src) {
     if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) return nil;   // built with safe math (totk_precise_opts)
     static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{
@@ -5157,7 +5239,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
-    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
+    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); cb_extent_scan(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     /* TOTK (2026-10-17): the MSL is read again from its file when a variant needs it (sh_src), on the Mac too -- keeping
        every source cost 255 MB of strings (7,691 of them) in a long session (analysis/long18 heap). TOTK_KEEP_MSL=1 keeps
        them in memory (the Mac's behaviour before). */
@@ -6256,6 +6338,22 @@ static id<MTLFunction> vs_patch_compile(NvShader *vs, NvShader *fs, NSString *ke
     NSRange r = [vsrc0 rangeOfString:head];
     if (r.location == NSNotFound) MDIE("vertex shader %s: no main0_out to extend", vs->key);
     NSString *src = [vsrc0 stringByReplacingCharactersInRange:r withString:[head stringByAppendingString:add]];
+    // 补上的输出从 Maxwell 未写分量的读数 (0, 0, 0, 1) 起（与翻译器补丁 0005 一致；nxnative dmsh_build.py vs_pad 同）：四分量浮点为 (0, 0, 0, 1)，
+    // 四分量整数取同一寄存器位（1.0f 的位），其余为 0
+    // Added outputs start at what Maxwell reads for unwritten components, (0, 0, 0, 1) (as translator patch 0005 does for written outputs; nxnative's
+    // dmsh_build.py vs_pad does the same): float four-component types get (0, 0, 0, 1), integer ones the same register bits (1.0f's), the rest 0
+    NSString *init0 = @"main0_out out = {};";
+    if (miss.count && [src rangeOfString:init0].location != NSNotFound) {
+        NSMutableString *set = [NSMutableString stringWithString:init0];
+        for (NSNumber *l in miss) {
+            NSString *ty = in[l];
+            BOOL four = [ty hasSuffix:@"4"], integer = [ty hasPrefix:@"int"] || [ty hasPrefix:@"uint"];
+            if (!four) continue;   // out = {} already zeroes it
+            if (integer) [set appendFormat:@" out.totk_unwritten_locn%@ = %@(as_type<uint4>(float4(0.0, 0.0, 0.0, 1.0)));", l, ty];
+            else [set appendFormat:@" out.totk_unwritten_locn%@ = %@(0.0, 0.0, 0.0, 1.0);", l, ty];
+        }
+        src = [src stringByReplacingCharactersInRange:[src rangeOfString:init0] withString:set];
+    }
     if (layered) {
         NSRegularExpression *psz = [NSRegularExpression regularExpressionWithPattern:@"\\n\\s*float\\s+(\\w+)\\s*\\[\\[point_size\\]\\];" options:0 error:nil];
         NSTextCheckingResult *m = [psz firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
@@ -6273,7 +6371,7 @@ static id<MTLFunction> vs_patch_compile(NvShader *vs, NvShader *fs, NSString *ke
     id<MTLFunction> f = lib ? [lib newFunctionWithName:vs->fn.name] : nil;
     if (!f) MDIE("vertex shader %s (variant %s): %s", vs->key, key.UTF8String, e.localizedDescription.UTF8String);
     static _Atomic int once, lonce;
-    if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as zero outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
+    if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as outputs starting at (0, 0, 0, 1)", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
     if (layered && !lonce++) MLOG("[totk] layered pass: vertex shader %s writes the render target array index", vs->key);
     return f;
 }
@@ -7639,7 +7737,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
-            uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow)
+            uint64_t ren = g_nupd ? upd_shadow(u->addr, bl ? u->size : cb_read_len(sh, i, u->size)) : 0;   // TOTK: renamed inline updates (see upd_shadow), only the bytes the shader reads (cb_extent_scan; the whole binding while the pass dump reads it back)
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
@@ -10301,12 +10399,134 @@ static int mfxup_draw(NvProg *pr) {
     return 0;
 }
 #include "nvn_cube_group.h"
+/* TOTK: lazy clears (idea and shape from nxnative f5646ef, MIT). A SetRenderTargets that leaves clears pending with no draw
+   used to open a pass just to land them (rp_flush): the cleared attachments were stored, and the next pass that attached
+   them loaded them back. Such clears now wait (g_lc) when every cleared attachment is a plain single-sample 2D texture
+   (not block-compressed or ASTC: those render through rp_begin_ex's auxiliary textures; not cube or array: those are what
+   the layered and cube-face passes merge, and a pending clear stops a layered pass). The next draw whose targets attach
+   the same texture level and layer through the same view takes the clear as its load action (lc_take); every other
+   waiting clear lands before it, in record order, each group in a clear-only pass of its own as before (lc_land). They
+   also land before anything else could see their textures: a draw whose program samples one (by serial or by memory,
+   since the game aliases textures), a pass opened any other way (rp_begin_ex), any op other than targets, clears, state
+   and uniform updates (lc_keeps), the end of a command list (not of a sub-list it calls) and the end of the submission.
+   A newer clear of the same subresource replaces an older one. Off in TBDR mode (DM_NVN_TBDR=1 hoists clear-only passes
+   its own way). TOTK_LAZY_CLEAR=0 turns it off. */
+typedef struct { p_set_rt rt; uint8_t clear_c[8]; MTLClearColor cc[8]; uint8_t clear_d, clear_s; double cd; uint32_t cs; } lc_group;
+enum { LC_MAX = 8 };
+static lc_group g_lc[LC_MAX];
+static uint64_t g_lc_taken, g_lc_landed;   // clears a later pass took as its load action / clear-only passes still opened for them
+static int lc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_LAZY_CLEAR"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_LAZY_CLEAR=0：无绘制的清除照旧单开一个通道 | clears with no draw open a pass of their own as before"); } return v && !tbdr_on(); }
+static int lc_same(const p_set_rt *a, int ka, const p_set_rt *b, int kb) {   // the same subresource through the same view (k = 8: depth / stencil)
+    uint64_t s1, s2; int l1, l2, x1, x2; rt_sub(a, ka, &s1, &l1, &x1); rt_sub(b, kb, &s2, &l2, &x2);
+    if (!s1 || s1 != s2 || l1 != l2 || x1 != x2) return 0;
+    int h1 = ka == 8 ? a->has_dview : a->has_cview[ka], h2 = kb == 8 ? b->has_dview : b->has_cview[kb];
+    return h1 == h2 && (!h1 || !memcmp(ka == 8 ? &a->dview : &a->cview[ka], kb == 8 ? &b->dview : &b->cview[kb], sizeof(view_t)));
+}
+static int lc_sub_same(const p_set_rt *a, int ka, const p_set_rt *b, int kb) {   // the same subresource, whatever the view
+    uint64_t s1, s2; int l1, l2, x1, x2; rt_sub(a, ka, &s1, &l1, &x1); rt_sub(b, kb, &s2, &l2, &x2);
+    return s1 && s1 == s2 && l1 == l2 && x1 == x2;
+}
+static int lc_plain(const tex_t *t) {   // a target a waiting clear may be taken over to (see the note above)
+    if (!t || (t->d.target != 1 && t->d.target != 7) || t->d.samples > 1 || tex_astc(t)) return 0;
+    uint32_t upf; int ubpp; if (bc_unpack(t->d.format, &upf, &ubpp)) return 0;
+    id<MTLTexture> m = tex_mtl(t);
+    return m && m.textureType == MTLTextureType2D && m.sampleCount == 1 && !pf_block_compressed(m.pixelFormat);
+}
+static int lc_group_plain(void) {   // every attachment R clears is plain
+    int any = 0;
+    for (int i = 0; i < R.rt.n && i < 8; i++) if (R.clear_c[i]) { if (!lc_plain(R.rt.color[i])) return 0; any = 1; }
+    if (R.clear_d || R.clear_s) { if (!lc_plain(R.rt.depth)) return 0; any = 1; }
+    return any;
+}
+// Land every waiting clear, oldest first, each group in a clear-only pass of its own (rp_flush's way)
+static void lc_land(void) {
+    if (!g_nlc) return;
+    if (g_enc) rp_end();
+    int n = g_nlc; g_nlc = 0;
+    typeof(R) save = R;
+    for (int gi = 0; gi < n; gi++) { const lc_group *g = &g_lc[gi]; int any = g->clear_d || g->clear_s; for (int i = 0; i < 8; i++) any |= g->clear_c[i];
+        if (!any || !g_cb) continue;
+        R.rt = g->rt; R.has_rt = 1; memcpy(R.clear_c, g->clear_c, sizeof R.clear_c); memcpy(R.cc, g->cc, sizeof R.cc);
+        R.clear_d = g->clear_d; R.clear_s = g->clear_s; R.cd = g->cd; R.cs = g->cs;
+        rp_begin_ex(1); rp_end(); g_lc_landed++; }
+    R = save;
+}
+// SetRenderTargets with clears pending and no draw since: 1 when the clears now wait instead of opening a pass
+static int lc_push(void) {
+    if (!lc_on() || g_enc || !g_cb || !R.has_rt || !lc_group_plain()) return 0;
+    if (g_nlc == LC_MAX) lc_land();
+    lc_group *g = &g_lc[g_nlc];
+    g->rt = R.rt; memcpy(g->clear_c, R.clear_c, sizeof g->clear_c); memcpy(g->cc, R.cc, sizeof g->cc); g->clear_d = R.clear_d; g->clear_s = R.clear_s; g->cd = R.cd; g->cs = R.cs;
+    for (int gi = 0; gi < g_nlc; gi++) { lc_group *o = &g_lc[gi];   // older clears of the same subresources are overwritten
+        for (int i = 0; i < 8; i++) if (o->clear_c[i]) for (int j = 0; j < 8; j++) if (g->clear_c[j] && lc_sub_same(&o->rt, i, &g->rt, j)) { o->clear_c[i] = 0; break; }
+        if ((o->clear_d || o->clear_s) && (g->clear_d || g->clear_s) && lc_sub_same(&o->rt, 8, &g->rt, 8)) { if (g->clear_d) o->clear_d = 0; if (g->clear_s) o->clear_s = 0; } }
+    g_nlc++;
+    memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
+    return 1;
+}
+static int lc_tex_hit(const treg_t *t) {   // a bound texture that is a waiting clear's target or shares its memory
+    for (int gi = 0; gi < g_nlc; gi++) { const lc_group *g = &g_lc[gi];
+        for (int k = 0; k < 9; k++) {
+            const tex_t *w = k < 8 ? g->rt.color[k] : g->rt.depth;
+            if (!w || !(k < 8 ? g->clear_c[k] : (g->clear_d || g->clear_s))) continue;
+            if (w->serial == t->t.serial) return 1;
+            if (w->mem && t->t.mem && w->mem < t->t.mem + (t->t.L.size ? t->t.L.size : 1) && t->t.mem < w->mem + (w->L.size ? w->L.size : 1)) return 1;
+        } }
+    return 0;
+}
+// Whether the program reads a texture with a waiting clear (a program with a stage not loaded counts as reading everything)
+static int lc_sampled(NvProg *pr) {
+    if (!pr || pr->missing) return 1;
+    int hit = 0;
+    registry_lock();
+    for (int st = 0; st < 5 && !hit; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh->stage >= 6) continue;
+        for (int i = 0; i < sh->rf.nb && !hit; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
+            if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0;
+            else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0;
+            else continue;
+            const treg_t *t = h ? bound_tex(h) : NULL; if (t && lc_tex_hit(t)) hit = 1; } }
+    registry_unlock();
+    return hit;
+}
+// The draw about to replay: its attachments take the waiting clears of the same subresources (the newest one; the draw's
+// own pending clear is newer still), every other waiting clear lands first
+static void lc_take(NvProg *pr) {
+    if (g_enc || !R.has_rt || lc_sampled(pr)) { lc_land(); return; }
+    for (int gi = g_nlc - 1; gi >= 0; gi--) { lc_group *g = &g_lc[gi];
+        for (int i = 0; i < 8; i++) if (g->clear_c[i])
+            for (int j = 0; j < R.rt.n && j < 8; j++) {
+                if (!R.rt.color[j] || !lc_plain(R.rt.color[j]) || !lc_same(&g->rt, i, &R.rt, j)) continue;
+                int dup = 0; for (int k = 0; k < j; k++) if (R.rt.color[k] && lc_sub_same(&R.rt, k, &R.rt, j)) dup = 1;
+                if (dup) continue;   // the first slot holding this image takes it
+                if (!R.clear_c[j]) { R.clear_c[j] = 1; R.cc[j] = g->cc[i]; }
+                g->clear_c[i] = 0; g_lc_taken++; break; }
+        if ((g->clear_d || g->clear_s) && R.rt.depth && lc_plain(R.rt.depth) && lc_same(&g->rt, 8, &R.rt, 8)) {
+            if (g->clear_d) { if (!R.clear_d) { R.clear_d = 1; R.cd = g->cd; } g->clear_d = 0; }
+            if (g->clear_s) { if (!R.clear_s) { R.clear_s = 1; R.cs = g->cs; } g->clear_s = 0; }
+            g_lc_taken++; } }
+    { static int once; if (g_lc_taken && !once++) MLOG("[totk] lazy clear: first clear taken over by a later pass (pass %llu)", g_stat_pass + 1); }
+    lc_land();
+}
+// The ops a waiting clear can wait across: they neither read nor write textures or the memory under them
+static int lc_keeps(uint32_t op) {
+    switch (op) {
+        case OP_SET_RT: case OP_CLEAR_COLOR: case OP_CLEAR_DS: case OP_DRAW: case OP_DRAW_IDX: case OP_BEGIN: case OP_JUMP: case OP_CALL:
+        case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
+        case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
+        case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
+        case OP_RASTER_DISCARD: case OP_RENDER_ENABLE: case OP_RENDER_COND: case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL:
+        case OP_UPDATE_UB: return 1;
+        default: return 0;
+    }
+}
+void mtl_lc_stats(uint64_t *taken, uint64_t *landed) { *taken = g_lc_taken; *landed = g_lc_landed; }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
     if (pr && pr->missing) { g_draw_skip[pr->missing == pr->pend_mask ? 17 : 15]++; return; }   // TOTK: 15 a stage is not translated yet (iOS); 17 its library is still loading in the background
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { g_draw_skip[fit == -2 ? 17 : 15]++; return; } if (fit) g_pso_dirty = 1; }
+    if (g_nlc) lc_take(pr);   // TOTK: waiting clears become this pass's load actions or land now, before this draw prepares or reads any texture
     if (skv_on()) { g_skv_draws++; if (skv_check((__bridge const void *)pr, dw, di)) return; }   // measurement experiment: skip draws invisible in the last frames
     geometry_dump(pr, dw, di);
     if (di && di->itype == 0 && di->count && pend_hits(di->ibuf, (uint64_t)di->count)) widen_indices_gpu(di);
@@ -11461,7 +11681,8 @@ void mtl_exec(const uint8_t *p) {
         if (h.op == OP_SET_RT) rt_toggle_poll();
         if ((g_frz_on || g_frz_state || g_dm_rt_ab == 1) && frz_op(h.op, p + 8)) { p += h.size; continue; }
         if (trace) PD("o cmd=%p pass=%llu op=%u size=%u", p, g_stat_pass, (unsigned)h.op, (unsigned)h.size);
-        if (g_cg_pending && !cg_op_safe(h.op)) { g_cg.reason[1]++; cg_flush(); }   // TOTK: cube-face-set groups pend only across state / binding ops (nvn_cube_group.h)
+        if (g_cg_pending && !cg_op_safe(h.op)) { g_cg.reason[1]++; cg_flush(); }
+        if (g_nlc && !lc_keeps(h.op) && !(h.op == OP_END && g_ret_n)) lc_land();   // TOTK: lazy clears land before an op that could see their textures (lc_keeps), and at the end of a command list (a sub-list's end returns to its caller)   // TOTK: cube-face-set groups pend only across state / binding ops (nvn_cube_group.h)
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
         switch (h.op) {
@@ -11519,7 +11740,8 @@ void mtl_exec(const uint8_t *p) {
                    attachment) and in the clear ops still end the continued pass where needed. TOTK_RT_CONTINUE=0 turns it off. */
                 static int rt_cont = -1; if (rt_cont < 0) { const char *e = getenv("TOTK_RT_CONTINUE"); rt_cont = !(e && !strcmp(e, "0")); }
                 if (g_enc && g_enc_mode != 1 && !pend && R.has_rt && (tbdr_on() || rt_cont) && rt_same(&R.rt, r)) { g_rt_merged = 1; if (!g_rt_merge_n++) MLOG("同目标续用：首例 通道 %llu", g_stat_pass); PD("M %llu 同目标续用通道", g_stat_pass); R.rt = *r; break; }
-                rp_flush(); R.rt = *r; R.has_rt = 1; break;
+                if (!(pend && lc_push())) rp_flush();   // TOTK: clears with no draw wait for the next pass that attaches their targets (lc_push)
+                R.rt = *r; R.has_rt = 1; break;
             }
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = a;
@@ -13165,6 +13387,7 @@ void mtl_args_stats(uint64_t *enc, uint64_t *reuse) { *enc = g_stat_args_enc; *r
     if (frame && !(frame % 300) && frame != logged) { logged = frame;
         MLOG("[drv-cache] hit=%llu miss=%llu verified=%llu", (unsigned long long)g_driver_hit, (unsigned long long)g_driver_miss, (unsigned long long)g_driver_check);
         MLOG("[texture-plan] enabled=%d total=%llu selected=%llu verified=%llu", texture_plan_on(), (unsigned long long)g_texture_plan_total, (unsigned long long)g_texture_plan_selected, (unsigned long long)g_texture_plan_verified);
+        MLOG("[lazy-clear] taken=%llu landed=%llu; uniform copies %llu, %llu bytes", (unsigned long long)g_lc_taken, (unsigned long long)g_lc_landed, (unsigned long long)g_ren_shadows, (unsigned long long)g_ren_bytes);
         if (!(frame % 3000)) {
             pthread_mutex_lock(&g_smu);
             uint64_t bytes = g_dead_serial.bytes + g_gpu_owned.bytes, pages = g_dead_serial.pages + g_gpu_owned.pages;
@@ -13517,6 +13740,94 @@ int mtl_probe_srgb_view(void) {
     serial_del(t.serial); defer_obj_release(base); return checked;
 }
 
+/* Lazy clears (lc_push / lc_take / lc_land) on real command records: clears with no draw wait and land at the end of the
+   command list, a newer clear of the same image replaces an older one, they land before a copy reads them and before a
+   pass opened another way (a scissored clear), and a later pass attaching the image takes the clear as its load action.
+   TOTK_PROBE_NEGATIVE: the waiting clears are dropped instead of landed, and the probe must fail. */
+int mtl_probe_lazy_clear(void) {
+    mtl_init(); setenv("TOTK_GPU_MIDCLEAR", "1", 1);   /* step 3 replays a scissored clear */
+    if (!lc_on()) MDIE("lazy clear probe: lazy clears are off (TOTK_LAZY_CLEAR=0 or DM_NVN_TBDR=1)");
+    const NSUInteger W = 16, H = 16;
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:W height:H mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> ma = [g_dev newTextureWithDescriptor:d], mb = [g_dev newTextureWithDescriptor:d], mx = [g_dev newTextureWithDescriptor:d];
+    if (!ma || !mb || !mx) MDIE("lazy clear probe textures"); res_add(ma); res_add(mb); res_add(mx);
+    tex_t ta = {0}, tb = {0}, tx = {0}; ta.serial = 0xffffffc0; tb.serial = 0xffffffc1; tx.serial = 0xffffffc2;
+    tex_t *ts[3] = {&ta, &tb, &tx}; id<MTLTexture> ms[3] = {ma, mb, mx};
+    for (int i = 0; i < 3; i++) { ts[i]->d.width = W; ts[i]->d.height = H; ts[i]->d.format = 0x25; ts[i]->d.target = 1; serial_put(ts[i]->serial, ms[i]); }
+    int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL, checked = 0;
+    typedef struct { op_hdr h; p_set_rt r; } rec_rt;
+    typedef struct { op_hdr h; p_clear_color c; } rec_cc;
+    #define LC_RT(t) ((rec_rt){{OP_SET_RT, (uint32_t)sizeof(rec_rt)}, {.n = 1, .color = {(t)}}})
+    #define LC_CC(r, g, b) ((rec_cc){{OP_CLEAR_COLOR, (uint32_t)sizeof(rec_cc)}, {0, 0xf, {(r), (g), (b), 1}}})
+    if (sizeof(rec_rt) % 8 || sizeof(rec_cc) % 8) MDIE("lazy clear probe: record sizes not 8-aligned");
+    const op_hdr end = {OP_END, 8};
+    id<MTLBuffer> rb = probe_buf(3 * W * H * 4);
+    NSArray<id<MTLTexture>> *msa = @[ma, mb, mx];
+    void (^readback)(void) = ^{ id<MTL4ComputeCommandEncoder> e = blit(); for (int i = 0; i < 3; i++) enc_b_copy_texture_buffer(e, msa[(NSUInteger)i], 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(W, H, 1), rb, i * W * H * 4, W * 4, W * H * 4); mtl_sub_commit(); mtl_finish(); };
+    int (^pixel_is)(int, NSUInteger, NSUInteger, const uint8_t *) = ^int(int img, NSUInteger x, NSUInteger y, const uint8_t *want) {
+        const uint8_t *p = (const uint8_t *)rb.contents + img * W * H * 4 + (y * W + x) * 4; for (int k = 0; k < 4; k++) if (abs(p[k] - want[k]) > 1) return 0; return 1; };
+    static const uint8_t RED[4] = {255, 0, 0, 255}, GREEN[4] = {0, 255, 0, 255}, BLUE[4] = {0, 0, 255, 255}, WHITE[4] = {255, 255, 255, 255};
+    memset(&R, 0, sizeof R);
+    {   // 1. waiting clears land at the end of the list; the newer clear of A replaces the older one
+        struct { rec_rt a0; rec_cc red; rec_rt b0; rec_cc green; rec_rt a1; rec_cc blue; rec_rt b1; op_hdr end; } L = {LC_RT(&ta), LC_CC(1, 0, 0), LC_RT(&tb), LC_CC(0, 1, 0), LC_RT(&ta), LC_CC(0, 0, 1), LC_RT(&tb), end};
+        uint64_t landed0 = g_lc_landed; mtl_sub_begin();
+        g_ret_n++; mtl_exec((const uint8_t *)&L); g_ret_n--;   // as a sub-list: its end does not land them
+        if (g_nlc != 3) MDIE("lazy clear probe: %d clears waiting, want 3", g_nlc); checked++;
+        if (neg) g_nlc = 0;
+        mtl_exec((const uint8_t *)&end);   // the end of a command list lands them
+        if (g_nlc) MDIE("lazy clear probe: clears still waiting after the end of the list"); checked++;
+        if (!neg && g_lc_landed - landed0 != 2) MDIE("lazy clear probe: %llu clear-only passes, want 2 (A's older clear was replaced)", (unsigned long long)(g_lc_landed - landed0)); checked++;
+        readback();
+        for (NSUInteger y = 0; y < H; y++) for (NSUInteger x = 0; x < W; x++) {
+            if (!pixel_is(0, x, y, BLUE)) MDIE("lazy clear probe (1): A at %lu,%lu is not the newer clear (blue)", (unsigned long)x, (unsigned long)y);
+            if (!pixel_is(1, x, y, GREEN)) MDIE("lazy clear probe (1): B at %lu,%lu is not green", (unsigned long)x, (unsigned long)y); checked += 2; }
+    }
+    {   // 2. a texture copy reads A: the waiting clear lands before it
+        struct { rec_rt a; rec_cc white; rec_rt b; struct { op_hdr h; p_copy_t2t c; } cp; op_hdr end; } L = {LC_RT(&ta), LC_CC(1, 1, 1), LC_RT(&tb),
+            {{OP_COPY_T2T, (uint32_t)(8 + sizeof(p_copy_t2t))}, {.src = &ta, .dst = &tx, .sr = {0, 0, 0, (int)W, (int)H, 1}, .dr = {0, 0, 0, (int)W, (int)H, 1}}}, end};
+        if ((8 + sizeof(p_copy_t2t)) % 8) MDIE("lazy clear probe: copy record size");
+        mtl_sub_begin(); mtl_exec((const uint8_t *)&L); readback();
+        for (NSUInteger y = 0; y < H; y++) for (NSUInteger x = 0; x < W; x++) { if (!pixel_is(2, x, y, WHITE)) MDIE("lazy clear probe (2): the copy of A at %lu,%lu missed its clear", (unsigned long)x, (unsigned long)y); checked++; }
+    }
+    {   // 3. a scissored clear opens a pass of its own (clear_quad): the waiting full clear lands first, then the quad
+        struct { rec_rt a0; rec_cc red; rec_rt a1; } L0 = {LC_RT(&ta), LC_CC(1, 0, 0), LC_RT(&ta)};
+        struct { rec_cc blue; op_hdr end; } L1 = {LC_CC(0, 0, 1), end};
+        mtl_sub_begin(); g_ret_n++; struct { typeof(L0) l; op_hdr e; } l0 = {L0, end}; mtl_exec((const uint8_t *)&l0); g_ret_n--;
+        if (g_nlc != 1) MDIE("lazy clear probe (3): %d clears waiting, want 1", g_nlc); checked++;
+        if (neg) g_nlc = 0;
+        R.has_sc = 1; R.sc = (p_scissor){4, 4, 8, 8}; mtl_exec((const uint8_t *)&L1); R.has_sc = 0; rp_end(); readback();
+        for (NSUInteger y = 0; y < H; y++) for (NSUInteger x = 0; x < W; x++) { int in = x >= 4 && x < 12 && y >= 4 && y < 12;
+            if (!pixel_is(0, x, y, in ? BLUE : RED)) MDIE("lazy clear probe (3): A at %lu,%lu is not %s", (unsigned long)x, (unsigned long)y, in ? "the scissored blue" : "the waiting red"); checked++; }
+    }
+    {   // 4. the next pass attaching A takes the waiting clear as its load action (no clear-only pass for it)
+        struct { rec_rt a; rec_cc green; rec_rt b; rec_rt a1; op_hdr end; } L = {LC_RT(&ta), LC_CC(0, 1, 0), LC_RT(&tb), LC_RT(&ta), end};
+        uint64_t taken0 = g_lc_taken, landed0 = g_lc_landed; mtl_sub_begin();
+        g_ret_n++; mtl_exec((const uint8_t *)&L); g_ret_n--;
+        if (g_nlc != 1) MDIE("lazy clear probe (4): %d clears waiting, want 1", g_nlc); checked++;
+        if (neg) g_nlc = 0;
+        NvProg *pr = [NvProg new];   // a program reading no texture
+        lc_take(pr);
+        if (!neg && (g_lc_taken - taken0 != 1 || g_lc_landed != landed0 || !R.clear_c[0] || g_nlc)) MDIE("lazy clear probe (4): the clear was not taken (taken %llu landed %llu pending %d)", (unsigned long long)(g_lc_taken - taken0), (unsigned long long)(g_lc_landed - landed0), R.clear_c[0]); checked++;
+        rp_flush(); readback();   // the pass the draw would open, landed with the taken clear
+        for (NSUInteger y = 0; y < H; y++) for (NSUInteger x = 0; x < W; x++) { if (!pixel_is(0, x, y, GREEN)) MDIE("lazy clear probe (4): A at %lu,%lu is not the taken green", (unsigned long)x, (unsigned long)y); checked++; }
+    }
+    {   // 5. a program sampling A (by an aliasing texture over the same memory) makes the waiting clear land instead
+        static uint8_t mem[64]; ta.mem = mem; ta.L.size = 64; tb.mem = NULL;
+        struct { rec_rt a; rec_cc red; rec_rt b; op_hdr end; } L = {LC_RT(&ta), LC_CC(1, 0, 0), LC_RT(&tb), end};
+        mtl_sub_begin(); g_ret_n++; mtl_exec((const uint8_t *)&L); g_ret_n--;
+        treg_t alias = {0}; alias.ok = 1; alias.t.serial = 0xffffffc3; alias.t.mem = mem + 16; alias.t.L.size = 16;
+        if (!neg && !lc_tex_hit(&alias)) MDIE("lazy clear probe (5): an aliasing texture was not seen"); checked++;
+        alias.t.mem = mem + 64; if (lc_tex_hit(&alias)) MDIE("lazy clear probe (5): a texture next to it was seen"); checked++;
+        lc_land(); rp_end(); readback(); ta.mem = NULL; ta.L.size = 0;
+        if (!pixel_is(0, 0, 0, RED)) MDIE("lazy clear probe (5): A not landed"); checked++;
+    }
+    #undef LC_RT
+    #undef LC_CC
+    memset(&R, 0, sizeof R); for (int i = 0; i < 3; i++) serial_del(ts[i]->serial);
+    for (id o in @[ma, mb, mx, rb]) defer_obj_release(o);
+    return checked;
+}
 /* Replay actual depth/stencil clear records across active and restarted passes. Preserve colors, depth
    outside the scissor, stencil bits outside the mask, and depth during stencil-only clears. */
 int mtl_probe_ds_clear(void) {
@@ -13828,7 +14139,7 @@ int mtl_probe_upload_batch(void) {
         up_blit_add(b, off, 4, 4, MTLSizeMake(1, 1, 1), dst[i], 0, 0); [g_up_texs addObject:dst[i]];
         checked++;
     }
-    up_flush(); while (atomic_load(&g_up_pending)) usleep(1000);
+    up_flush(); up_wait_zero();
     /* Staging must be gone even though this NVN submission has not reached its fence. */
     pthread_mutex_lock(&g_res_mu);
     for (id obj in g_up_old.allObjects) if ([g_res_objects containsObject:obj]) MDIE("upload batch probe: completed staging still resident");
@@ -14412,6 +14723,23 @@ int mtl_probe_drv_c0(void) {
         if (c1_reads_bounded(@"float a = (*spvDescriptorSet0.cp_c1)._m0[32].x;", 256)) MDIE("c1 probe: an index past the data and its zero pad was accepted"); checked++;
         if (c1_reads_bounded(@"float a = (*spvDescriptorSet0.fp_c1)._m0[ 3].x;", 256)) MDIE("c1 probe: an index that is not a plain integer was accepted"); checked++;
         if (c1_reads_bounded(nil, 256)) MDIE("c1 probe: a shader without source was accepted"); checked++;
+    }
+    {   // uniform read extents (cb_extent_of): plain indices only, the longer name fp_c11 is not fp_c1, anything else is unbounded
+        const char *blk = "struct _16\n{\n    float4 _m0[4096];\n};\nstruct spvDescriptorSetBuffer0\n{\n    constant _16* fp_c1 [[id(0)]];\n    constant _16* fp_c11 [[id(1)]];\n};\n";
+        char s[1024];
+        snprintf(s, sizeof s, "%sfloat a = (*spvDescriptorSet0.fp_c1)._m0[9].x; float b = (*spvDescriptorSet0.fp_c1)._m0[31u].y; float c = (*spvDescriptorSet0.fp_c11)._m0[900].x;", blk);
+        if (cb_extent_of(s, "fp_c1", "_16") != 32 * 16) MDIE("cb extent probe: plain indices gave %u", cb_extent_of(s, "fp_c1", "_16")); checked++;
+        if (cb_extent_of(s, "fp_c11", "_16") != 901 * 16) MDIE("cb extent probe: the longer name was mixed up"); checked++;
+        snprintf(s, sizeof s, "%sfloat a = (*spvDescriptorSet0.fp_c1)._m0[int(_997)].x;", blk);
+        if (cb_extent_of(s, "fp_c1", "_16")) MDIE("cb extent probe: a computed index was bounded"); checked++;
+        snprintf(s, sizeof s, "%sfloat a = f((*spvDescriptorSet0.fp_c1));", blk);
+        if (cb_extent_of(s, "fp_c1", "_16")) MDIE("cb extent probe: the block passed whole was bounded"); checked++;
+        snprintf(s, sizeof s, "struct _16\n{\n    uint4 _m0[4096];\n};\nfloat a = (*spvDescriptorSet0.fp_c1)._m0[2].x;");
+        if (cb_extent_of(s, "fp_c1", "_16")) MDIE("cb extent probe: a block of another layout was bounded"); checked++;
+        snprintf(s, sizeof s, "%sfloat a = 1.0;", blk);
+        if (cb_extent_of(s, "fp_c1", "_16") != 16) MDIE("cb extent probe: an unread binding"); checked++;
+        NvShader *t = [NvShader new]; t->cb_ext[0] = 32 * 16;
+        if (cb_read_len(t, 0, 65536) != 512 || cb_read_len(t, 0, 300) != 300 || cb_read_len(t, 1, 65536) != 65536) MDIE("cb extent probe: copy length"); checked++;
     }
     NvProg *pr = [NvProg new]; pr->sh[5] = cs;
     prog_t p = {0}; p.serial = 0xfffffd00; serial_put(p.serial, pr);

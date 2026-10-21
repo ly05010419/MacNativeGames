@@ -582,17 +582,22 @@ static int sig_obj(uint32_t h, int *bad) {    // 1=已触发（持 G） | 1 = si
     default: *bad = 1; return 0;
     }
 }
+// 只唤醒有对象已触发的同步等待者（等待的句柄多于记下的 4 个时照旧全唤醒；句柄失效的也唤醒，好让它返回错误）。
+// 原先王国之泪每次触发都唤醒全部同步等待者：每个都要醒来、重新抢虚拟核（core_take，可能为此抢占别的线程）、查一遍句柄再睡回去，
+// 一次触发就是每个等待线程一次宿主线程切换，费 CPU 和电（iPhone 上尤甚）。旷野之息从 58ac238 起就这样做（它的 wake_queue 让被唤醒者立即抢核）；
+// 当时只放在 GAME_BOTW 下是为了那次提交不改王国之泪的构建，并不是王国之泪有问题。语义不变：没有触发的等待者醒来也只会再睡回去（nxnative df7badd 同理）。
+// Wake only the waiters one of whose objects is now signaled (all of them when the wait has more handles than the 4 kept; also those
+// holding a handle that is no longer valid, so they return the error). Tears of the Kingdom used to wake every synchronization waiter
+// on every signal: each woke, competed for a virtual core again (core_take, which may preempt another thread for it), re-checked its
+// handles and went back to sleep, one host thread switch per waiting thread per signal, costing CPU and power (most of all on the
+// iPhone). Breath of the Wild has done this since 58ac238 (its wake_queue makes a woken thread compete for a core at once); it was
+// kept under GAME_BOTW only so that commit left Tears of the Kingdom's build unchanged, not because of a problem there. Semantics are
+// unchanged: a waiter none of whose objects is signaled would only have gone back to sleep (nxnative df7badd does the same).
+// Holding G.
 static void wake_sync_waiters(void) {
-#ifdef GAME_BOTW
-    /* Only the waiters one of whose objects is now signaled (all of them when the wait has more handles than are kept):
-       a woken thread competes for a core at once (wake_queue), and a waiter that would only look and sleep again
-       would preempt the signalling thread for nothing. */
     for (thr_t *w = g_wait; w; ) { thr_t *n = w->next;
         if (w->wkind == 4) { int hit = w->nwh > 4, bad = 0; for (int i = 0; !hit && i < w->nwh; i++) hit = sig_obj(w->wh[i], &bad) || bad; if (hit) wake(w, -1); }
         w = n; }
-    return;
-#endif
-    for (thr_t *w = g_wait; w; ) { thr_t *n = w->next; if (w->wkind == 4) wake(w, -1); w = n; }
 }
 
 static int64_t now_mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec * 1000000000ll + ts.tv_nsec; }
@@ -601,6 +606,29 @@ void dm_guest_clock_advanced(void) {
     pthread_mutex_lock(&G);
     for (thr_t *t = g_wait; t; t = t->next) if (t->wkind) pthread_cond_signal(&t->cv);
     pthread_mutex_unlock(&G);
+}
+
+// 服务层 SystemEvent 的绑定（见下面 hle_bind_system_event）：客体 SystemEventType 地址 → 它那个内核事件写端的句柄。
+// 绑定与写端句柄同生共死：CloseHandle 关掉写端时摘掉它（se_unbind），同一地址上销毁后重建的 SystemEvent 会得到新的内核事件。
+// 原先绑定永不结束：第二次绑定见到旧项直接返回，新的内核事件根本没建，触发发给已关的句柄（王国之泪的句柄编号会复用，于是发给了占了那个编号的别的事件）。
+// 例如 nfp::AttachAvailabilityChangeEvent：游戏每次用 amiibo 都可能在同一地址重建这个事件（nxnative 49ee623 同理）。锁的次序：先 G 后 g_se_lock（持 g_se_lock 时不取 G）
+// Service-layer SystemEvent bindings (see hle_bind_system_event below): guest SystemEventType address -> the handle of its kernel event's
+// write end. A binding lives as long as that handle: CloseHandle on the write end removes it (se_unbind), so a SystemEvent destroyed and
+// created again at the same address gets a new kernel event. Bindings used to stay forever: the second bind found the old entry and
+// returned, the new kernel event was never created, and signals went to the closed handle (Tears of the Kingdom reuses handle numbers,
+// so to whatever event took that number). nfp::AttachAvailabilityChangeEvent, for one, may create the event again at the same address
+// each time the game uses amiibo (nxnative 49ee623 found the same). Lock order: G, then g_se_lock (nothing takes G holding g_se_lock).
+static struct { void *ev; uint32_t wh; } g_se[512];
+static int g_nse;
+static pthread_mutex_t g_se_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t se_find(void *ev) {   // 调用方持 g_se_lock | Caller holds g_se_lock
+    for (int i = 0; i < g_nse; i++) if (g_se[i].ev == ev) return g_se[i].wh;
+    return 0;
+}
+static void se_unbind(uint32_t wh) {   // 调用方持 G | Caller holds G
+    pthread_mutex_lock(&g_se_lock);
+    for (int i = 0; i < g_nse; ) if (g_se[i].wh == wh) g_se[i] = g_se[--g_nse]; else i++;
+    pthread_mutex_unlock(&g_se_lock);
 }
 
 // 处理线程 / 同步类 SVC；返回 1 = 已处理
@@ -800,7 +828,9 @@ int svc_thread(int num, uint64_t *regs) {
         if (type != 0) {
             int32_t nv = val + 1;
             if (type == 2) {
-                if (cnt <= 0) nv = nw > 0 ? val - 1 : val + 1;
+                // 全部唤醒（个数 <= 0）且有等待者时减 2，不是减 1（mesosphère KAddressArbiter::SignalAndModifyByWaitingCountIfEqual，Ryujinx、yuzu 一致；nxnative d47f899 在 Engage 上查到）
+                // Waking all (count <= 0) with waiters subtracts 2, not 1 (mesosphère KAddressArbiter::SignalAndModifyByWaitingCountIfEqual; Ryujinx and yuzu agree; found by nxnative d47f899 in Engage)
+                if (cnt <= 0) nv = nw > 0 ? val - 2 : val + 1;
                 else nv = nw == 0 ? val + 1 : nw <= cnt ? val - 1 : val;
             }
             uint32_t e = (uint32_t)val;
@@ -868,6 +898,7 @@ int svc_thread(int num, uint64_t *regs) {
         unsigned i = (uint32_t)regs[0] - 0x1000;int valid=0;
 #endif
         if (i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W)) {
+            if (g_h[i].type == O_EVENT_W) se_unbind((uint32_t)regs[0]);   // 绑定随写端结束 | the binding ends with its write end
             valid=1;event_t *e = g_h[i].obj; if (--e->refs == 0) free(e);
             g_h[i].type = O_FREE; g_h[i].obj = NULL;
         } else if (i > 0 && i < MAX_H && (g_h[i].type == O_SESSION || g_h[i].type == O_TMEM)) {
@@ -895,13 +926,7 @@ int svc_thread(int num, uint64_t *regs) {
 // ---------- SystemEvent of the service layer ----------
 // Real device: the service hands the read end of a kernel event to the client, and the guest waits on it through SDK nn::os. Host: on a guest thread, call the SDK's own
 // CreateSystemEvent(inter-process=true), and the SDK creates the kernel event through SVC 0x45; the write-end handle is recorded, after which any thread (including the host audio thread) can signal it.
-static struct { void *ev; uint32_t wh; } g_se[512];
-static int g_nse;
-static pthread_mutex_t g_se_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint32_t se_find(void *ev) {
-    for (int i = 0; i < g_nse; i++) if (g_se[i].ev == ev) return g_se[i].wh;
-    return 0;
-}
+// 绑定表 g_se 在 svc_thread 之前：CloseHandle 经它解绑 | The binding table g_se sits before svc_thread: CloseHandle unbinds through it
 void hle_bind_system_event(void *ev, int autoclear) {      // 必须在客体线程上调（要执行 SDK 代码） | Must be called on a guest thread (it has to execute SDK code)
     pthread_mutex_lock(&g_se_lock); uint32_t wh = se_find(ev); pthread_mutex_unlock(&g_se_lock);
     if (wh) return;
@@ -917,14 +942,30 @@ void hle_bind_system_event(void *ev, int autoclear) {      // 必须在客体线
     g_se[g_nse].ev = ev; g_se[g_nse++].wh = wh;
     pthread_mutex_unlock(&g_se_lock);
 }
-void hle_signal_system_event(void *ev) {   // 未绑定的按手动清除即时绑定（只能在客体线程上发生） | An unbound one is bound on the spot as manual-clear (can only happen on a guest thread)
-    pthread_mutex_lock(&g_se_lock); uint32_t wh = se_find(ev); pthread_mutex_unlock(&g_se_lock);
-    if (!wh) { hle_bind_system_event(ev, 0); pthread_mutex_lock(&g_se_lock); wh = se_find(ev); pthread_mutex_unlock(&g_se_lock); }
-    pthread_mutex_lock(&G);
-    event_t *e = h_get(wh, O_EVENT_W);
-    if (!e) die("SystemEvent 写端句柄失效 %#x", wh);
-    e->signaled = 1; wake_sync_waiters();
-    pthread_mutex_unlock(&G);
+// 未绑定的在客体线程上按手动清除即时绑定；宿主线程（显示链接的垂直同步回调等）上未绑定说明游戏已销毁了它，这次触发没有对象可发，跳过。
+// 查找与触发在同一次持 G 内完成：CloseHandle（会解绑）也在 G 下，句柄不会在两者之间被关掉、编号被别的事件占去
+// An unbound one is bound on the spot as manual-clear on a guest thread; on a host thread (the display link's vsync callback and the
+// like) unbound means the game destroyed it, and this signal has nothing to go to: skipped. The lookup and the signal happen under one
+// hold of G: CloseHandle (which unbinds) also runs under G, so the handle cannot be closed and its number taken by another event between them
+static uint64_t g_se_skipped;
+void hle_signal_system_event(void *ev) {
+    for (int bound = 0; ; bound = 1) {
+        pthread_mutex_lock(&G);
+        pthread_mutex_lock(&g_se_lock); uint32_t wh = se_find(ev); pthread_mutex_unlock(&g_se_lock);
+        if (wh) {
+            event_t *e = h_get(wh, O_EVENT_W);
+            if (!e) die("SystemEvent 写端句柄失效 %#x", wh);
+            e->signaled = 1; wake_sync_waiters();
+            pthread_mutex_unlock(&G);
+            return;
+        }
+        int guest = (g_keythr ? pthread_getspecific(g_keythr) : NULL) != NULL;
+        if (!guest && g_se_skipped++ < 8) LOG("SystemEvent %p 未绑定（游戏已销毁），宿主线程的触发跳过 | not bound (destroyed by the game): signal from a host thread skipped", ev);
+        pthread_mutex_unlock(&G);
+        if (!guest) return;
+        if (bound) die("SystemEvent %p 绑定后仍查不到 | still not bound after binding", ev);
+        hle_bind_system_event(ev, 0);   // 执行客体代码（其 SVC 要取 G）：不能持 G | runs guest code (its SVCs take G): not under G
+    }
 }
 
 // ---------- IPC support (ipc.c): sessions, transfer memory and service-owned events ----------

@@ -18,6 +18,30 @@
 
 旧实验树对读后写、写后读、写后写及别名做过受控 GPU 验证：普通 Device 屏障不足以覆盖 `mach_vm_remap` / 多个 no-copy buffer 包装的别名，曾需要 ResourceAlias 可见性。该正确性结论应保留；移植到本工具的具体路径仍须独立核查和正反例验证，不能用另一个树的通过记录代替。fill 的 helper 覆盖也不等于真实游戏 fill 路径已覆盖。
 
+## nxnative 移植的原生 2K 对照（2026-10-21）
+
+对照 nxnative（[seedds/nxnative](https://github.com/seedds/nxnative)，MIT，许可全文 `games/totk/third_party/licenses/nxnative.txt`，逐项出处见 `THIRD_PARTY_NOTICES.md`）移植进来的改动：惰性清除、uniform 读取范围、`nvnQueueFinish` 不等排队的出图、上传等待改条件变量、驻留无变化时跳过（`nvn_mtl.m`）；地址仲裁 SignalToAddress、SystemEvent 绑定随写句柄结束、只唤醒被触发对象的等待者（`threads.c`）；崩溃报告闸门（`crash_gate.h`）；帧率自动档的试探回升（`nvn_cap_auto.h`）；翻译器补丁 0006。nxnative 的代码按本项目的层重写或改编，不是原样复制；思路与发现归功于它。
+
+**环境。** M4 Pro（20 核 GPU）、64 GB、macOS 27.0.1，外接 3840x2160 240 Hz 屏。1.4.3，画布 2560x1440，按 3 进原生场景 2560x1440（场景 MetalFX 不用），出图 MetalFX 2560x1440 → 3840x2160（两边每帧 GPU p50 都是 0.83–0.87 ms），按 2 固定上限（120 帧），时间性抗锯齿关（`TOTK_TAA`，key 5 未按），着色器缓存已热，同一存档。
+
+**两个构建。** 基线 = 提交 `2458646`（无 nxnative），在项目外的 git worktree 用 `build_app.py --quick` 构建，`totk-native` SHA-256 `46a7623c…005bb9f`；nxnative = 同一提交加上述未提交改动，`103dbd47…af712afb`。基线二进制不含 nxnative 的标记字符串 `TOTK_FPS_PROBE`，nxnative 二进制含。
+
+**路线。** 手动游玩：在监视堡垒（Lookout Landing）绕一圈，再朝海拉鲁城堡走。每个构建按相同按键和路线走，但不是脚本复现，窗口没有按时间对齐；nxnative 那次玩得更久（52 个 300 帧窗口，基线 26–27 个）。所以比较的是每次运行的分布，不是逐窗口相减。
+
+**结果**（每 300 帧窗口的 p50，再取各窗口的中位数；「游玩」去掉 GPU < 1 ms 的加载/菜单窗口，「重场景」只取 GPU ≥ 7 ms 的窗口，即朝城堡走的部分）：
+
+| 运行 | 游玩窗口 | 帧 p50 中位 | GPU p50 中位 | 重场景窗口 | 帧 p50 中位（范围） | GPU p50 中位（范围） |
+|---|---|---|---|---|---|---|
+| 基线 1 | 21 | 14.33 ms（70 fps） | 11.78 ms | 15 | 15.55 ms / 64 fps（9.33–16.94） | 12.23 ms（7.15–12.69） |
+| 基线 2 | 21 | 15.56 ms（64 fps） | 12.45 ms | 19 | 15.66 ms / 64 fps（9.86–17.34） | 12.58 ms（8.27–13.18） |
+| nxnative | 48 | 10.47 ms（95 fps） | 7.93 ms | 25 | 11.97 ms / 84 fps（10.25–14.23） | 9.00 ms（7.76–9.68） |
+
+重场景 GPU 时间约 −27%（12.2–12.6 → 9.0 ms），帧率约 +31%（64 → 84 fps）。两次基线彼此一致，与同日 17:33 另一次 nxnative 运行（原生 2K 重场景 GPU p50 7.1–9.5 ms、帧 p50 9.2–13.7 ms）也一致。
+
+**1080p 不计入。** 1080p 场景（MetalFX 放大到画布）时两个构建都顶在 120 帧上限（帧 p50 8.3 ms），帧率差异看不出来，不作为对照（当时 GPU p50：基线 3.3–4.0 ms，nxnative 3.9–4.4 ms）。
+
+**限制。** 不满足上面「每轮测试的最低记录」的 8 × 30 秒 A/B/B/A 交替：每个构建只有一到两次手动运行，同一台机器、同一天。收益来自哪一项改动尚未拆分（惰性清除的嫌疑最大，因为清除成本随分辨率增长）。nxnative 运行的 footprint 从帧 300 的 11.2 GB 涨到 14.4 GB（上午 1080p 的运行约 2.9 GB）；基线运行的日志已被之后的启动轮换掉，是否是新问题尚未确认。证据在项目外：`~/Library/Application Support/MacNativeGames/TOTK/tests/2026-10-21-ab-baseline/`（`RESULTS.txt`、`nxnative-native2k.log`；基线日志的数字是轮换前抄下的）。
+
 ## 后续优先级
 
 1. **1.4.3 成本基线。** 固定构建、存档、镜头、内部与输出尺寸、缓存和呈现方式。先分别量总 CPU 工作、关键路径、GPU 执行/空档、复制字节和资源解析成本。

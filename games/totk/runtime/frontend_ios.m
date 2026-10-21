@@ -77,6 +77,23 @@ static void app_active_changed(int active){
  mtl_app_active(active);runtime_oe_push_message(15);
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
+/* Thermal state (0 nominal, 1 fair, 2 serious, 3 critical) and Low Power Mode, for the auto frame-rate cap (hle_nvn.c
+   cap_auto_note: no probe back to the faster rate at serious or critical or in Low Power Mode, which lowers the clocks
+   anyway) and the on-screen log line. Read at attach and on each change (logged), not per frame. */
+static _Atomic int thermalState=-2,lowPower=-1;
+int dm_thermal_now(void){int t=atomic_load(&thermalState);if(t==-2){t=(int)NSProcessInfo.processInfo.thermalState;atomic_store(&thermalState,t);}return t;}
+int dm_low_power_now(void){int v=atomic_load(&lowPower);if(v<0){v=NSProcessInfo.processInfo.lowPowerModeEnabled?1:0;atomic_store(&lowPower,v);}return v;}
+static void power_watch(void){
+ NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+ [nc addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;
+  atomic_store(&thermalState,(int)NSProcessInfo.processInfo.thermalState);
+  fprintf(stderr,"[totk] thermal state -> %d (%.0f s after attach)\n",dm_thermal_now(),(runtime_now_ns()-bootStartNS)/1e9);}];
+ [nc addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;
+  atomic_store(&lowPower,NSProcessInfo.processInfo.lowPowerModeEnabled?1:0);
+  fprintf(stderr,"[totk] Low Power Mode -> %s (%.0f s after attach)\n",dm_low_power_now()?"on":"off",(runtime_now_ns()-bootStartNS)/1e9);}];
+ atomic_store(&thermalState,(int)NSProcessInfo.processInfo.thermalState);atomic_store(&lowPower,NSProcessInfo.processInfo.lowPowerModeEnabled?1:0);
+ fprintf(stderr,"[totk] thermal state %d, Low Power Mode %s\n",dm_thermal_now(),dm_low_power_now()?"on":"off");
+}
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
 
@@ -114,6 +131,7 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
  [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(0);}];
  [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(1);}];
+ power_watch();
  vsyncTarget=[TOTKVsync new];displayLink=[CADisplayLink displayLinkWithTarget:vsyncTarget selector:@selector(tick:)];
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }

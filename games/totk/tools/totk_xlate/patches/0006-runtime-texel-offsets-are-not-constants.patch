@@ -1,0 +1,86 @@
+Texel offsets read from a register become OpCompositeConstruct + Offset, and a four-offset gather becomes four
+one-offset gathers, instead of an OpConstantComposite + ConstOffset(s), which is invalid SPIR-V that SPIRV-Cross
+rejects with a null pointer. Constant offsets are emitted exactly as before.
+From nxnative (https://github.com/seedds/nxnative, MIT), commit b3f25a0; see THIRD_PARTY_NOTICES.md.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1308,6 +1308,11 @@
+                 lod = Src(coordType);
+             }
+ 
++            // TOTK (from nxnative, MIT): texel offsets read from a register (Maxwell AOFFI / PTP from a non-immediate) are not constants. Upstream put them
++            // into an OpConstantComposite and passed them as ConstOffset / ConstOffsets: invalid SPIR-V, on which SPIRV-Cross throws "nullptr"
++            // (the shader never builds). Constant offsets keep the old form byte for byte; runtime ones use Offset (see the gather below)
++            bool offsetsConst = true;
++
+             SpvInstruction AssembleOffsetVector(int count)
+             {
+                 if (count > 1)
+@@ -1320,12 +1325,26 @@
+                     }
+ 
+                     SpvInstruction vectorType = context.TypeVector(context.TypeS32(), count);
++
++                    if (Array.Exists(elems, e => e.Opcode != Op.OpConstant))
++                    {
++                        offsetsConst = false;
++
++                        return context.CompositeConstruct(vectorType, elems);
++                    }
+ 
+                     return context.ConstantComposite(vectorType, elems);
+                 }
+                 else
+                 {
+-                    return Src(AggregateType.S32);
++                    SpvInstruction elem = Src(AggregateType.S32);
++
++                    if (elem.Opcode != Op.OpConstant)
++                    {
++                        offsetsConst = false;
++                    }
++
++                    return elem;
+                 }
+             }
+ 
+@@ -1398,10 +1417,10 @@
+ 
+             if (hasOffset)
+             {
+-                operandsMask |= ImageOperandsMask.ConstOffset;
++                operandsMask |= offsetsConst ? ImageOperandsMask.ConstOffset : ImageOperandsMask.Offset;
+                 operandsList.Add(offsets[0]);
+             }
+-            else if (hasOffsets)
++            else if (hasOffsets && offsetsConst)
+             {
+                 operandsMask |= ImageOperandsMask.ConstOffsets;
+                 SpvInstruction arrayv2 = context.TypeArray(context.TypeVector(context.TypeS32(), 2), context.Constant(context.TypeU32(), 4));
+@@ -1431,6 +1450,25 @@
+             {
+                 result = context.ImageFetch(resultType, image, pCoords, operandsMask, operands);
+             }
++            else if (isGather && hasOffsets && !offsetsConst)
++            {
++                // TOTK (from nxnative, MIT): ConstOffsets must be constant. Each texel of a four-offset gather is texel (i0, j0) of a gather at that one offset,
++                // which is component w of its result (gather order: i0j1, i1j1, i1j0, i0j0)
++                SpvInstruction[] texels = new SpvInstruction[4];
++
++                for (int index = 0; index < 4; index++)
++                {
++                    SpvInstruction[] gatherOperands = [.. operands, offsets[index]];
++                    ImageOperandsMask gatherMask = operandsMask | ImageOperandsMask.Offset;
++                    SpvInstruction texel4 = isShadow
++                        ? context.ImageDrefGather(resultType, image, pCoords, dRef, gatherMask, gatherOperands)
++                        : context.ImageGather(resultType, image, pCoords, compIdx, gatherMask, gatherOperands);
++
++                    texels[index] = context.CompositeExtract(context.TypeFP32(), texel4, 3);
++                }
++
++                result = context.CompositeConstruct(resultType, texels);
++            }
+             else if (isGather)
+             {
+                 if (isShadow)
