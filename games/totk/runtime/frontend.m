@@ -100,12 +100,40 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
 @interface TOTKInputView:NSView
+@property(strong) NSTimer *cursorHideTimer;
+@property BOOL cursorAutoHideActive;
+@property BOOL cursorIsHidden;
+-(void)setCursorAutoHideEnabled:(BOOL)enabled;
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
 -(void)keyDown:(NSEvent *)e{runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
+/* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
+   as soon as it moves; restore it when the window loses focus or leaves full screen. */
+-(void)hideCursorIfIdle:(NSTimer *)timer{
+ (void)timer;self.cursorHideTimer=nil;
+ if(!self.cursorAutoHideActive||!self.window.isKeyWindow||!(self.window.styleMask&NSWindowStyleMaskFullScreen))return;
+ if(!self.cursorIsHidden){[NSCursor hide];self.cursorIsHidden=YES;}
+}
+-(void)mouseMoved:(NSEvent *)e{
+ (void)e;if(!self.cursorAutoHideActive)return;
+ [self.cursorHideTimer invalidate];self.cursorHideTimer=nil;
+ if(self.cursorIsHidden){[NSCursor unhide];self.cursorIsHidden=NO;}
+ self.cursorHideTimer=[NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(hideCursorIfIdle:) userInfo:nil repeats:NO];
+}
+-(void)setCursorAutoHideEnabled:(BOOL)enabled{
+ self.cursorAutoHideActive=enabled;
+ [self.cursorHideTimer invalidate];self.cursorHideTimer=nil;
+ if(enabled){
+  self.window.acceptsMouseMovedEvents=YES;
+  self.cursorHideTimer=[NSTimer scheduledTimerWithTimeInterval:1.5 target:self selector:@selector(hideCursorIfIdle:) userInfo:nil repeats:NO];
+ }else{
+  if(self.cursorIsHidden){[NSCursor unhide];self.cursorIsHidden=NO;}
+  self.window.acceptsMouseMovedEvents=NO;
+ }
+}
 @end
 @interface TOTKShortcutHelp:NSView
 @property(strong) NSTextField *label;
@@ -221,11 +249,12 @@ static void front_sync_drawable(void){
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
--(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);runtime_oe_push_message(15);fprintf(stderr,"[totk] window gained focus\n");}
--(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");}
+-(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);fprintf(stderr,"[totk] window gained focus\n");}
+-(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;
+ [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -233,6 +262,8 @@ static void front_sync_drawable(void){
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
+-(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];}
+-(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */

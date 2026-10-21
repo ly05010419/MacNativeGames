@@ -78,23 +78,28 @@ static uint8_t *reserve_fixed(uint64_t at,uint64_t size){
  mach_vm_address_t a=at;   /* FIXED without OVERWRITE: fails instead of replacing an existing mapping */
  return mach_vm_map(mach_task_self(),&a,size,0,VM_FLAGS_FIXED,MEMORY_OBJECT_NULL,0,FALSE,VM_PROT_NONE,VM_PROT_ALL,VM_INHERIT_DEFAULT)==KERN_SUCCESS?(uint8_t *)(uintptr_t)a:NULL;
 }
-#if TARGET_OS_IPHONE
 #define GUEST_ALIGN (2ULL<<20)
-/* Reserve size bytes in the lowest free gap of this process's map above 4 GiB (2 MiB aligned). The end of the map is
+/* Reserve size bytes in a free gap (2 MiB aligned). The end of the map is
    not reported, so the last gap is only tried; FIXED fails there with KERN_NO_SPACE when it reaches past the end. */
-static uint8_t *reserve_in_gap(uint64_t size,int log){
- uint64_t prev=1ULL<<32;
+static uint8_t *reserve_in_gap_from(uint64_t size,int log,uint64_t prev){
  for(;;){
   mach_vm_address_t r=prev;mach_vm_size_t rsize=0;vm_region_basic_info_data_64_t info;mach_msg_type_number_t n=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t obj=MACH_PORT_NULL;
   int more=mach_vm_region(mach_task_self(),&r,&rsize,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&n,&obj)==KERN_SUCCESS;
-  uint64_t start=(prev+GUEST_ALIGN-1)&~(GUEST_ALIGN-1),end=more?r:GUEST_ADDRESS_LIMIT;
+  if(obj!=MACH_PORT_NULL)mach_port_deallocate(mach_task_self(),obj);
+  uint64_t start=(prev+GUEST_ALIGN-1)&~(GUEST_ALIGN-1),end=more&&r<GUEST_ADDRESS_LIMIT?r:GUEST_ADDRESS_LIMIT;
   if(end>start&&end-start>=(256ULL<<20)&&log)fprintf(stderr,"[totk-mem] free %#llx..%s%#llx\n",(unsigned long long)start,more?"":"(end of map, at most) ",(unsigned long long)end);
   if(end>start&&end-start>=size){uint8_t *p=reserve_fixed(start,size);if(p)return p;}
-  if(!more)return NULL;
+  if(!more||r>=GUEST_ADDRESS_LIMIT||!rsize||r+rsize<=prev)return NULL;
   prev=r+rsize;
  }
 }
+static uint8_t *reserve_in_gap(uint64_t size,int log){
+#if TARGET_OS_IPHONE
+ return reserve_in_gap_from(size,log,1ULL<<32);
+#else
+ return reserve_in_gap_from(size,log,LOW_SEARCH_FROM);
 #endif
+}
 static void memory_init(void) {
  if(alias_space)return;
 #if TARGET_OS_IPHONE
@@ -113,14 +118,32 @@ static void memory_init(void) {
      0x70_0000_0000..2^39, so neither fixed region fits. As on iOS, put stack+heap and the alias region side by side in one
      free hole, shrinking the alias region (the game uses < 3 GiB of it) until it fits. TOTK_ALIAS_GIB pins one size. */
   if(alias_space)mach_vm_deallocate(mach_task_self(),(mach_vm_address_t)(uintptr_t)alias_space,ALIAS_SIZE);
+  alias_space=NULL;
   uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(8ULL<<30);
   for(uint64_t g=want;!low_space;g-=4ULL<<30){
    for(uint64_t at=LOW_SEARCH_FROM;at+LOW_SIZE+g<=GUEST_ADDRESS_LIMIT&&!low_space;at+=1ULL<<30)
     if((low_space=reserve_fixed(at,LOW_SIZE+g)))alias_len=g;
    if(g<least+(4ULL<<30))break;
   }
+  if(!low_space){
+   /* ASLR can leave only ~13 GiB holes, or a 14 GiB hole missed by the old
+      1 GiB stride. Preserve successful layouts; only a previously failing
+      startup queries exact gaps, then tries separate stack/heap and alias
+      reservations (already supported by the original fixed layout). */
+   for(uint64_t g=want;!low_space;g-=4ULL<<30){
+    if((low_space=reserve_in_gap(LOW_SIZE+g,0))){alias_space=low_space+LOW_SIZE;alias_len=g;break;}
+    /* Keep low below alias: GetInfo's ASLR span and QueryMemory use that order,
+       including an explicit TOTK_ALIAS_GIB smaller than LOW_SIZE. */
+    uint8_t *separate_low=reserve_in_gap(LOW_SIZE,0);
+    if(separate_low){
+     if((alias_space=reserve_in_gap_from(g,0,(uintptr_t)separate_low+LOW_SIZE))){low_space=separate_low;alias_len=g;break;}
+     mach_vm_deallocate(mach_task_self(),(mach_vm_address_t)(uintptr_t)separate_low,LOW_SIZE);
+    }
+    if(g<least+(4ULL<<30))break;
+   }
+  }
   if(!low_space)runtime_fail(getenv("TOTK_ALIAS_GIB")?"reserve guest stack, heap and the TOTK_ALIAS_GIB alias region below 2^39":"reserve guest stack, heap and alias regions below 2^39");
-  alias_space=low_space+LOW_SIZE;
+  if(!alias_space)alias_space=low_space+LOW_SIZE;
  }
 #endif
  heap=low_space+HEAP_OFF;

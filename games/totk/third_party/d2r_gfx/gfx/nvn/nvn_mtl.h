@@ -42,6 +42,7 @@ uint64_t mtl_sub_commit(void);
 int mtl_probe_vertex_streams(void);
 int mtl_probe_arg_epoch(void);
 int mtl_probe_tex_slots(void);
+int mtl_probe_sampler_border(void);
 int mtl_probe_pool_retire(void);
 int mtl_probe_anomaly(void);
 int mtl_probe_widen(void);     // TOTK: standalone probes of isolated GPU paths (die on mismatch, return checked count)
@@ -76,7 +77,6 @@ int mtl_ui_ghost_rect(float r[4]);   // 上面认到的那件货的屏幕矩形�
 
 int mtl_probe_upload_batch(void);
 int mtl_probe_wb_batch(void);
-int mtl_probe_pso_archive(void);
 int mtl_probe_vertex_wait(void);
 int mtl_probe_texels(void);
 int mtl_probe_wb_exact(void);
