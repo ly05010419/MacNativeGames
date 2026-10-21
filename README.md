@@ -52,6 +52,7 @@ Update history:
 | Oct 19 | iPhone, iPad | Touch controls laid out like a Switch controller, with every button and both sticks |
 | Oct 19 | All | The game notes the shaders the shared list lacks; on a Mac, every 500 it asks to send them in a [GitHub issue](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml) |
 | Oct 19 | All | One shared [shader list](docs/shader-list.md); the build reads every shader in the game data (15,266 prepared for 1.4.3) |
+| Oct 21 | All | The build prepares every shader the game data holds, not only the startup ones: the effect shaders nobody had met yet are carried too (28,687 of 28,771 for 1.4.3, up from 18,662) |
 | Oct 19 | Mac | 1.2.1 support (the most widely used update), with the same build command |
 | Oct 19 | Mac | FPS, shader and load readings and the shortcut reminder in one small box in the window's top-right corner (`TOTK_HUD=corners` keeps the old layout) |
 | Oct 18 | iPhone, iPad | IPA build target |
@@ -320,6 +321,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 | 10 月 19 日 | iPhone、iPad | 触屏控件按 Switch 手柄排布，所有按键和两个摇杆都有 |
 | 10 月 19 日 | 全部 | 游戏会记下公共清单里还没有的着色器；Mac 上每攒够 500 个提醒一次用 [GitHub Issue](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml) 发送 |
 | 10 月 19 日 | 全部 | 所有平台共用一份[着色器清单](docs/shader-list.md)；打包时读取游戏数据里的全部着色器（1.4.3 准备 15,266 个） |
+| 10 月 21 日 | 全部 | 打包准备游戏数据里所有着色器，不只启动那些：以前没人遇到过的特效着色器也一并带上（1.4.3 为 28,687 / 28,771，此前 18,662） |
 | 10 月 19 日 | Mac | 支持 1.2.1（玩家最多的版本），构建命令不变 |
 | 10 月 19 日 | Mac | FPS、着色器、负载读数和快捷键说明集中到窗口右上角一个小框里（`TOTK_HUD=corners` 保留原来的布局） |
 | 10 月 18 日 | iPhone、iPad | 加入 IPA 构建目标 |

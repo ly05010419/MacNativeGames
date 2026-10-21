@@ -47,6 +47,21 @@ def bnsh_botw():
 
 
 class ShaderInventory(unittest.TestCase):
+    def test_the_plan_translates_every_shader_when_complete(self):
+        shaders = {'a': 1, 'b': 2, 'c': 3}
+        startup = {'a'}
+        listed = {('b', '{"attr":{"0":"uint"}}')}
+        default = seed.plan(shaders, startup, listed)
+        self.assertEqual([job[0] for job in default], ['a', 'b'])
+        self.assertEqual([job[3] for job in default], ['default', 'listed'])
+        complete = seed.plan(shaders, startup, listed, complete=True)
+        self.assertEqual([job[0] for job in complete], ['a', 'b', 'c', 'b'])
+        self.assertEqual([job[3] for job in complete], ['default', 'default', 'default', 'listed'])
+        # The listed variant answers the shared list's deps; the default one does not.
+        by_reason = {job[3]: job for job in complete}
+        self.assertEqual(by_reason['default'][1], seed.ANSWERS)
+        self.assertEqual(by_reason['listed'][1]['attr'], {'0': 'uint'})
+
     def test_the_key_hashes_the_control_sections_own_size_as_the_runtime_does(self):
         self.assertEqual(seed.control_key_len(bytes(0x880)), 0x880)              # no size word: the NVN 55 section
         self.assertEqual(seed.control_key_len(bytes(0x20)+struct.pack('<I', 0x88c)+bytes(0x860)), 0x880)   # 0x88c: hashed as 0x880

@@ -2,10 +2,12 @@
 """Prepare game shaders from the selected, verified local RomFS, without a played cache.
 
 Every shader in the RomFS is found (Shader/ packages, SDK and boot packages, and the ones effects and UI layouts carry).
-The startup shaders (Shader/, SDK, boot) are translated for the default bind state; then every bind state the shared
-shader list (assets/shader_list.tsv, docs/shader-list.md) names for a shader of this game is translated too, so an
-iPhone or iPad, which cannot translate while playing, carries what players have met. The output contains game-derived
-data and belongs in the work folder, never in the repo.
+Every shader the game data holds is translated for the default bind state, so a first launch with an empty cache does
+not translate an effect nobody has met yet; then every bind state the shared shader list (assets/shader_list.tsv,
+docs/shader-list.md) names for a shader of this game is translated too, so an iPhone or iPad, which cannot translate
+while playing, carries what players have met. The output contains game-derived data and belongs in the work folder,
+never in the repo. '--startup-only' keeps the previous behaviour and translates the default bind state for the
+startup shaders (Shader/, SDK, boot) alone.
 
 Breath of the Wild (game='botw', games/botw/scripts/prepare_shader_seed.py): the same, with its own list and container
 formats (Yaz0 instead of Zstandard, no dictionaries), its shaders in Pack/ (the boot packages' uking_*.sbfsha and the
@@ -418,11 +420,17 @@ def source_reader(romfs, modules, game='totk'):
     return read
 
 
-def plan(shaders, startup, listed):
+def plan(shaders, startup, listed, *, complete=False):
     """Translation jobs (key, answers, variant, why): the default bind state for every startup shader, then each bind
     state the shared list names for a shader found in this game ('listed'). Listed states the default already produced
-    are dropped after translation (prepare), since only the translator knows a shader's deps."""
-    jobs = [(key, ANSWERS, key+'-'+SUFFIX, 'default') for key in sorted(startup)]
+    are dropped after translation (prepare), since only the translator knows a shader's deps.
+
+    With complete=True every shader the inventory found is also translated for the default bind state, not only the
+    startup ones. The shaders the game data holds but nobody has met yet (mostly the effect shaders) are then carried
+    too, so a first launch with an empty cache does not translate them while playing.
+    """
+    default_keys = sorted(shaders) if complete else sorted(startup)
+    jobs = [(key, ANSWERS, key+'-'+SUFFIX, 'default') for key in default_keys]
     for key, deps in sorted(listed):
         if key in shaders:
             answers = {**ANSWERS, **json.loads(deps)}
@@ -430,12 +438,14 @@ def plan(shaders, startup, listed):
     return jobs
 
 
-def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, modules=None, game='totk'):
+def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, modules=None, game='totk',
+            complete=False):
     shader_list = shader_list or GAMES[game]['list']
     min_shaders = GAMES[game]['min_shaders']
     shared = ShaderList.load(shader_list)
     listed = shared.variants
     identity = dict(schema=1, chain=CHAIN, version=version, game=game,
+                    complete=bool(complete),
                     source_romfs_sha256=json.loads((romfs/'index.json').read_text())['romfs_sha256'],
                     translator_sha256=digest(translator.read_bytes()),
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
@@ -453,7 +463,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     extra = located({where for where in shared.locators if where[0] not in shaders}, source_reader(romfs, modules, game), game)
     shaders.update(extra)
     print(f'{len(extra)} more shaders read where the shared list locates them (agl .sharcb, game module)', flush=True)
-    jobs = plan(shaders, startup, listed)
+    jobs = plan(shaders, startup, listed, complete=complete)
     # One translator service per core. A shader's jobs (its default bind state, then its listed ones) run in order on
     # one service, because whether a listed job is translated and kept depends on that shader's earlier results; the
     # files each job writes are named after its own shader. The results are then taken in the order of `jobs`, so the
@@ -582,9 +592,12 @@ def main():
     p.add_argument('--shader-list', type=Path, help='the shared shader list (default: the game\'s, assets/shader_list.tsv)')
     p.add_argument('--modules', type=Path, help='rewritten/<version>: the game module images the list locates shaders in')
     p.add_argument('--game', choices=sorted(GAMES), default='totk', help='totk (default) or botw: the game the RomFS belongs to')
+    p.add_argument('--startup-only', action='store_true',
+                   help='translate only the startup shaders for the default bind state, not every shader the game data holds')
     a = p.parse_args()
     prepare(a.romfs.resolve(), a.output.resolve(), a.translator.resolve(), a.spirv_cross.resolve(), a.version,
-            a.shader_list.resolve() if a.shader_list else None, a.modules.resolve() if a.modules else None, a.game)
+            a.shader_list.resolve() if a.shader_list else None, a.modules.resolve() if a.modules else None, a.game,
+            complete=not a.startup_only)
 
 
 if __name__ == '__main__':
