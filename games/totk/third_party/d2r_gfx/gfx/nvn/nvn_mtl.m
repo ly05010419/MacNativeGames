@@ -2429,25 +2429,63 @@ static void wb_note(const tex_t *t) {
     nvn_hm_put(&g_wb, &k, e);
     pthread_mutex_unlock(&g_smu);
 }
-static int wb_level_back(const tex_t *t, id<MTLTexture> mt, unsigned level, unsigned layer) {
+/* Write-back of renderings to memory, a batch at a time: every level and layer of every texture in the batch is copied
+   into one shared buffer by one command buffer, waited for once, then re-laid out into the pool. It was one command
+   buffer and one wait per level (a fork's 1.0.0 profile, DavidZande/MacNativeGames 2026-10-19: ~110 ms stalls after
+   spawning, an invalidate writing back dozens of levels). A batch stops before WB_BATCH_BYTES unless it holds one
+   texture only. TOTK_WB_BATCH=0: one texture per batch. */
+enum { WB_BATCH_MAX = 64 };
+#define WB_BATCH_BYTES (64u << 20)
+static int wb_batch_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WB_BATCH"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_WB_BATCH=0: renderings are written back one texture at a time"); } return v; }
+static void wb_level_size(const tex_t *t, unsigned level, size_t *lp, size_t *lr) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
     uint32_t lw = MAX(t->d.width >> level, 1u), lh = MAX(t->d.height >> level, 1u);
-    size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
+    *lp = (size_t)((lw + bw - 1) / bw) * bpb; *lr = (lh + bh - 1) / bh;
+}
+static size_t wb_tex_bytes(const tex_t *t) {   // every level and layer, each at a 256-byte offset
+    size_t n = 0, lp, lr; unsigned layers = t->L.layers ? t->L.layers : 1;
+    for (unsigned l = 0; l < t->d.levels; l++) { wb_level_size(t, l, &lp, &lr); n += layers * ((lp * lr + 255) & ~(size_t)255); }
+    return n;
+}
+static void wb_back_batch(wb_ent **ents, id<MTLTexture> __strong *mts, int n, size_t bytes) {
     /* This runs on the game's thread (nvnMemoryPoolInvalidateMappedRange), which has no autorelease pool: without one the
-       autoreleased command buffer kept its blit encoder and this read-back buffer for ever (one 16 KiB buffer and one
-       blit context per written-back level: Breath of the Wild writes back about 130 a second, 3.7 GB of GPU memory in 30
-       minutes; TOTK's AGXG16GFamilyBuffer / BlitContext pairs growing by the thousands per lap were the same). */
+       autoreleased command buffer kept its blit encoder and the read-back buffer for ever (Breath of the Wild writes back
+       about 130 levels a second: 3.7 GB of GPU memory in 30 minutes; TOTK's AGXG16GFamilyBuffer / BlitContext pairs grew
+       by the thousands per lap). */
     @autoreleasepool {
-    id<MTLBuffer> buf = [g_dev newBufferWithLength:lp * lr options:MTLResourceStorageModeShared];
-    if (!buf) return 0;
+    id<MTLBuffer> buf = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    if (!buf) { for (int i = 0; i < n; i++) { MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)ents[i]->t.serial, ents[i]->t.d.format); wb_ent_free(ents[i]); } return; }
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = enc_b_begin(cb);
-    [b copyFromTexture:mt sourceSlice:layer sourceLevel:level sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(lw, lh, 1)
-              toBuffer:buf destinationOffset:0 destinationBytesPerRow:lp destinationBytesPerImage:lp * lr];
-    enc_b_end(b); cb_commit(cb); cb_wait(cb);
-    if (nvn_swizzle(&t->d, level, layer, (const uint8_t *)buf.contents, lp, t->mem)) return 0;
-    g_wb_bytes += lp * lr;
+    size_t at = 0, lp, lr;
+    for (int i = 0; i < n; i++) {
+        const tex_t *t = &ents[i]->t; unsigned layers = t->L.layers ? t->L.layers : 1;
+        for (unsigned l = 0; l < t->d.levels; l++) for (unsigned y = 0; y < layers; y++) {
+            wb_level_size(t, l, &lp, &lr);
+            [b copyFromTexture:mts[i] sourceSlice:y sourceLevel:l sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(MAX(t->d.width >> l, 1u), MAX(t->d.height >> l, 1u), 1)
+                      toBuffer:buf destinationOffset:at destinationBytesPerRow:lp destinationBytesPerImage:lp * lr];
+            at += (lp * lr + 255) & ~(size_t)255;
+        }
     }
-    return 1;
+    enc_b_end(b); cb_commit(cb); cb_wait(cb);
+    at = 0;
+    for (int i = 0; i < n; i++) {
+        wb_ent *e = ents[i]; const tex_t *t = &e->t; unsigned layers = t->L.layers ? t->L.layers : 1, ok = 1;
+        /* the GPU's bytes landing in memory: not a CPU write (with dm_guest_write_prepare the page this texture shares
+           with a neighbour counted as written, and the neighbour's own write-back was skipped as "CPU wrote since") */
+        void *tok = nvn_dirty_tracked(t->mem, t->L.size) ? nvn_dirty_gpu_write_begin(t->mem, t->L.size) : NULL;
+        if (!tok) dm_guest_write_prepare(t->mem, t->L.size);
+        for (unsigned l = 0; l < t->d.levels; l++) for (unsigned y = 0; y < layers; y++) {
+            wb_level_size(t, l, &lp, &lr);
+            if (ok && nvn_swizzle(&t->d, l, y, (const uint8_t *)buf.contents + at, lp, t->mem)) ok = 0;
+            if (ok) g_wb_bytes += lp * lr;
+            at += (lp * lr + 255) & ~(size_t)255;
+        }
+        nvn_dirty_gpu_write_end(tok);
+        if (ok) { uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
+        else MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)t->serial, t->d.format);
+        wb_ent_free(e);
+    }
+    }
 }
 static void wb_write_list(wb_ent **list, int nl, int force);
 /* Diagnostic TOTK_WB_EAGER=<w>x<h>: at every present, renderings of mirrored textures of that size are written back to
@@ -2490,6 +2528,7 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
     for (int i = 0; i < nl; i++) fresh[i] = force || !nvn_dirty_since(list[i]->t.mem, list[i]->t.L.size, list[i]->stamp);
     for (int i = 0; i < nl; i++) for (int j = 0; j < nl; j++)
         if (i != j && fresh[i] && fresh[j] && list[j]->t.mem == list[i]->t.mem && list[j]->stamp > list[i]->stamp) { fresh[i] = 2; break; }   // 2: superseded
+    wb_ent *batch[WB_BATCH_MAX]; id<MTLTexture> batch_mt[WB_BATCH_MAX]; int nb = 0; size_t batch_bytes = 0;
     for (int i = 0; i < nl; i++) {
         wb_ent *e = list[i]; const tex_t *t = &e->t;
         id o = (__bridge id)e->obj; id<MTLTexture> mt = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o;
@@ -2514,17 +2553,11 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
             wb_ent_free(e); continue;
         }
         if (!mt || bc_unpack(t->d.format, &upf, &ubpp) || t->d.target == 2 || t->d.samples > 1) { if (++g_wb_skip_fmt <= 8) MLOG("【红】GPU 写回内存：不支持的贴图 ser=%llu 格式 %#x 目标 %d", (unsigned long long)t->serial, t->d.format, t->d.target); wb_ent_free(e); continue; }
-        /* the GPU's bytes landing in memory: not a CPU write (with dm_guest_write_prepare the page this texture shares
-           with a neighbour counted as written, and the neighbour's own write-back was skipped as "CPU wrote since") */
-        void *tok = nvn_dirty_tracked(t->mem, t->L.size) ? nvn_dirty_gpu_write_begin(t->mem, t->L.size) : NULL;
-        if (!tok) dm_guest_write_prepare(t->mem, t->L.size);
-        unsigned layers = t->L.layers ? t->L.layers : 1, ok = 1;
-        for (unsigned l = 0; l < t->d.levels && ok; l++) for (unsigned y = 0; y < layers && ok; y++) ok = wb_level_back(t, mt, l, y);
-        nvn_dirty_gpu_write_end(tok);
-        if (ok) { uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
-        else MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)t->serial, t->d.format);
-        wb_ent_free(e);
+        size_t bytes = wb_tex_bytes(t);
+        if (nb && (!wb_batch_on() || nb == WB_BATCH_MAX || batch_bytes + bytes > WB_BATCH_BYTES)) { wb_back_batch(batch, batch_mt, nb, batch_bytes); nb = 0; batch_bytes = 0; }
+        batch[nb] = e; batch_mt[nb++] = mt; batch_bytes += bytes;
     }
+    if (nb) wb_back_batch(batch, batch_mt, nb, batch_bytes);
 }
 static uint64_t g_pkg_uploads, g_pkg_reuploads, g_pkg_miss, g_pkg_restored;
 static uint64_t g_pfv_upgrades;
@@ -13329,6 +13362,48 @@ int mtl_probe_ds_clear(void) {
 
 /* Keep a game submission open while more than one staging batch is uploaded. Check both payload
    ordering and bounded batch memory, including retirement before the game fence is committed. */
+/* Write-back batches (wb_write_list): textures of several sizes, levels and layers, one of them bigger than a batch, are
+   given known bytes in their MTLTextures and written back into block-linear memory, in batches and (TOTK_WB_BATCH=0
+   path, forced here) one texture at a time; every level and layer must read back as uploaded. TOTK_PROBE_NEGATIVE: the
+   memory is checked before the write-back and must fail. */
+int mtl_probe_wb_batch(void) {
+    mtl_init(); int checked = 0;
+    static const struct { uint32_t w, h, levels, layers; } shapes[] = {{64, 64, 1, 1}, {300, 200, 5, 1}, {128, 32, 3, 4}, {17, 9, 2, 1}, {2048, 2048, 1, 4}, {512, 512, 10, 1}};
+    enum { NS = sizeof shapes / sizeof *shapes };
+    for (int pass = 0; pass < 2; pass++) {
+        wb_ent *list[NS]; uint8_t *want[NS]; uint32_t seed = 7 + (uint32_t)pass;
+        for (int i = 0; i < NS; i++) {
+            tex_t t; memset(&t, 0, sizeof t);
+            t.d.target = shapes[i].layers > 1 ? 4 : 1; t.d.format = 0x25; t.d.width = shapes[i].w; t.d.height = shapes[i].h;
+            t.d.depth = shapes[i].layers; t.d.levels = shapes[i].levels; t.serial = 0x7b000000u + (uint64_t)pass * 64 + (uint64_t)i;
+            nvn_tex_layout(&t.d, &t.L); t.mem = calloc(1, t.L.size); want[i] = calloc(1, t.L.size);
+            MTLTextureDescriptor *d = [MTLTextureDescriptor new];
+            d.textureType = shapes[i].layers > 1 ? MTLTextureType2DArray : MTLTextureType2D; d.pixelFormat = MTLPixelFormatRGBA8Unorm;
+            d.width = shapes[i].w; d.height = shapes[i].h; d.arrayLength = shapes[i].layers; d.mipmapLevelCount = shapes[i].levels;
+            d.storageMode = MTLStorageModeShared; d.usage = MTLTextureUsageShaderRead;
+            id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d];
+            for (unsigned l = 0; l < shapes[i].levels; l++) for (unsigned y = 0; y < shapes[i].layers; y++) {
+                uint32_t lw = MAX(shapes[i].w >> l, 1u), lh = MAX(shapes[i].h >> l, 1u); size_t n = (size_t)lw * lh * 4;
+                uint8_t *px = malloc(n); for (size_t k = 0; k < n; k++) { seed = seed * 1664525u + 1013904223u; px[k] = (uint8_t)(seed >> 24); }
+                [mt replaceRegion:MTLRegionMake2D(0, 0, lw, lh) mipmapLevel:l slice:y withBytes:px bytesPerRow:lw * 4 bytesPerImage:n];
+                if (nvn_swizzle(&t.d, l, y, px, lw * 4, want[i])) MDIE("write-back probe: layout of shape %d", i);
+                free(px);
+            }
+            wb_ent *e = calloc(1, sizeof *e); e->t = t; e->stamp = nvn_dirty_now(); e->obj = (void *)CFBridgingRetain(mt); list[i] = e;
+        }
+        uint8_t *mems[NS]; uint64_t sizes[NS]; for (int i = 0; i < NS; i++) { mems[i] = list[i]->t.mem; sizes[i] = list[i]->t.L.size; }
+        if (pass == 0) wb_write_list(list, NS, 1);
+        else for (int i = 0; i < NS; i++) wb_write_list(&list[i], 1, 1);   // one texture a batch, as TOTK_WB_BATCH=0
+        int negative = getenv("TOTK_PROBE_NEGATIVE") != NULL;
+        for (int i = 0; i < NS; i++) {
+            if (negative) memset(mems[i], 0, sizes[i]);
+            if (memcmp(mems[i], want[i], sizes[i])) { uint64_t k = 0, nd = 0; for (uint64_t q = 0; q < sizes[i]; q++) if (mems[i][q] != want[i][q]) { if (!nd) k = q; nd++; }
+                MDIE("write-back probe: %s, shape %d (%ux%u, %u levels, %u layers) differs from its texture (%llu of %llu bytes, first at %llu: %02x, want %02x)", pass ? "one at a time" : "batched", i, shapes[i].w, shapes[i].h, shapes[i].levels, shapes[i].layers, (unsigned long long)nd, (unsigned long long)sizes[i], (unsigned long long)k, mems[i][k], want[i][k]); }
+            checked++; free(mems[i]); free(want[i]);
+        }
+    }
+    return checked;
+}
 int mtl_probe_upload_batch(void) {
     mtl_init(); const int N = 12; const size_t cap = 2u * UP_BLOCK_SIZE; int checked = 0;
     g_up_batch_limit = getenv("TOTK_PROBE_NEGATIVE") ? SIZE_MAX : cap;
