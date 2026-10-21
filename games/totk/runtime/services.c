@@ -40,7 +40,7 @@ static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();retur
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE (6ULL<<30)
+#define LOW_SIZE (8ULL<<30)   /* the heap cap (7 GiB) and its offset (0.75 GiB) fit */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -61,7 +61,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
+#if TARGET_OS_IPHONE
 #define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
+#else
+#define HEAP_CAP (7ULL<<30)   /* the 4K texture pack (TOTK_4K=1) grows the application pool to ~7.8 GiB and the game asks for a heap of it less ~1.1 GiB */
+#endif
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
  v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
@@ -119,7 +123,7 @@ static void memory_init(void) {
      free hole, shrinking the alias region (the game uses < 3 GiB of it) until it fits. TOTK_ALIAS_GIB pins one size. */
   if(alias_space)mach_vm_deallocate(mach_task_self(),(mach_vm_address_t)(uintptr_t)alias_space,ALIAS_SIZE);
   alias_space=NULL;
-  uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(8ULL<<30);
+  uint64_t want=alias_requested(),least=getenv("TOTK_ALIAS_GIB")?want:(4ULL<<30);   /* the game maps about 3.3 GiB of it */
   for(uint64_t g=want;!low_space;g-=4ULL<<30){
    for(uint64_t at=LOW_SEARCH_FROM;at+LOW_SIZE+g<=GUEST_ADDRESS_LIMIT&&!low_space;at+=1ULL<<30)
     if((low_space=reserve_fixed(at,LOW_SIZE+g)))alias_len=g;

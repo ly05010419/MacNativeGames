@@ -1,6 +1,7 @@
 /* 1.4.3 has a new compiler and frame-controller layout. Every adapted game-code
    site below is checked before any write; older versions use game_patches.c. */
 #include "aspect_patch.h"
+#include "texture_pack.h"
 #include "game_patches.h"
 #include "game_version.h"
 #include "world_survey.h"
@@ -353,13 +354,14 @@ int runtime_render_res(unsigned *w,unsigned *h){
 #endif
 }
 uint64_t runtime_output_res_extra_bytes(void){
+    uint64_t pack=texture_pack_requested()?(uint64_t)TEXPACK_EXTRA_KIB<<10:0;   /* TOTK_4K=1: the pack's HeapDef grows the heaps (runtime/texture_pack.h) */
     unsigned w,h,sw,sh;double grow=0;
     if(runtime_output_res(&w,&h)&&(double)w*h>1920.0*1080.0)grow+=(double)w*h/(1920.0*1080.0)-1;
     int scene=runtime_render_res(&sw,&sh)&&(double)sw*sh>1600.0*900.0;
     if(scene)grow+=((double)sw*sh/(1600.0*900.0)-1);
-    if(grow<=0)return 0;
+    if(grow<=0)return pack;
     if(scene)grow*=1.6;
-    uint64_t kib=(uint64_t)ceil(113664.0*(1+grow)/1024.0)*1024-113664;return kib<<10;
+    uint64_t kib=(uint64_t)ceil(113664.0*(1+grow)/1024.0)*1024-113664;return pack+(kib<<10);
 }
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
