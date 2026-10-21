@@ -6388,15 +6388,20 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
 }
 /* TOTK (Mac): the game's render pipelines are kept in Metal binary archives between launches, so a pipeline met before is
    loaded instead of compiled, whatever the system's shared Metal cache (one per user, ~1 GB, shared by every app) has
-   evicted meanwhile. Each launch writes the pipelines it had to compile into an archive of its own; the archives of
-   earlier launches are only read (adding to an archive that is also being read made it grow from 26 MB to 2.4 GB in the
-   0x1233333/MacNativeGames fork, 2026-10-20). They live under the translation cache (a new translation chain starts
-   empty) in a folder per macOS build and GPU; at more than PSO_ARC_FILES archives or PSO_ARC_BYTES they all start over.
-   Adding a pipeline to the archive compiles it once more, on a background queue. TOTK_PSO_ARCHIVE=0 turns it off. */
-#define PSO_ARC_FILES 24
+   evicted meanwhile. The pipelines a launch had to compile are added, on a background queue (it compiles them once more),
+   to a batch archive that is written to a file of its own and then replaced by an empty one: Metal cannot save an archive
+   again once pipelines were added after its first save ("expecting 'fragment' stage in pipeline no. N", macOS 27.0.1,
+   2026-10-21; saving each batch to its own archive works, and all of them load and hit together). Archives already on
+   disk are only read (adding to an archive that is also being read grew it from 26 MB to 2.4 GB in the
+   0x1233333/MacNativeGames fork, 2026-10-20). A batch is saved at PSO_ARC_BATCH pipelines, after 30 s with at least 64,
+   and after the warm-up. They live under the translation cache (a new translation chain starts empty) in a folder per
+   macOS build and GPU; above PSO_ARC_FILES files or PSO_ARC_BYTES the oldest go. TOTK_PSO_ARCHIVE=0 turns it off. */
+#define PSO_ARC_FILES 96
 #define PSO_ARC_BYTES (1536ull << 20)
-static NSArray<id<MTLBinaryArchive>> *g_arc_read;   // earlier launches' archives (read only)
-static id<MTLBinaryArchive> g_arc_new; static NSURL *g_arc_url;   // this launch's (written)
+#define PSO_ARC_BATCH 512
+static NSArray<id<MTLBinaryArchive>> *g_arc_read;   // the archives on disk at start (read only)
+static id<MTLBinaryArchive> g_arc_new; static NSURL *g_arc_url;   // the batch being filled; the file last saved
+static NSString *g_arc_stem; static unsigned g_arc_seq, g_arc_batch; static uint64_t g_arc_last_save;   // g_arc_q only
 static dispatch_queue_t g_arc_q; static _Atomic uint64_t g_arc_hits, g_arc_misses, g_arc_added; static uint64_t g_arc_saved;
 static void pso_arc_init(void) {
 #if !TARGET_OS_IPHONE
@@ -6407,34 +6412,47 @@ static void pso_arc_init(void) {
         NSString *gpu = [g_dev.name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
         NSString *dir = [totk_rt_dir() stringByAppendingFormat:@"/pipeline-archives/%@-%@", [os stringByReplacingOccurrencesOfString:@"/" withString:@"_"], gpu];
         NSFileManager *fm = NSFileManager.defaultManager; [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-        NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:dir error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.metalar'"]];
-        uint64_t bytes = 0; for (NSString *n in names) bytes += [[fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:n] error:nil] fileSize];
-        if (names.count >= PSO_ARC_FILES || bytes > PSO_ARC_BYTES) {
-            MLOG("[pso-archive] %lu archives, %.0f MB: starting over", (unsigned long)names.count, bytes / 1048576.0);
-            for (NSString *n in names) [fm removeItemAtPath:[dir stringByAppendingPathComponent:n] error:nil];
-            names = @[]; bytes = 0;
-        }
-        NSMutableArray *read = [NSMutableArray array];
-        for (NSString *n in names) {
-            MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:n]];
-            NSError *err = nil; id<MTLBinaryArchive> a = [g_dev newBinaryArchiveWithDescriptor:ad error:&err];
-            if (a) [read addObject:a]; else { MLOG("[pso-archive] %s unreadable (%s): removed", n.UTF8String, err.localizedDescription.UTF8String); [fm removeItemAtURL:ad.url error:nil]; }
+        NSMutableArray<NSURL *> *files = [NSMutableArray array];
+        for (NSURL *u in [fm contentsOfDirectoryAtURL:[NSURL fileURLWithPath:dir] includingPropertiesForKeys:@[NSURLContentModificationDateKey, NSURLFileSizeKey] options:0 error:nil] ?: @[])
+            if ([u.pathExtension isEqualToString:@"metalar"]) [files addObject:u];
+        [files sortUsingComparator:^NSComparisonResult(NSURL *x, NSURL *y) {   // newest first
+            NSDate *dx = nil, *dy = nil; [x getResourceValue:&dx forKey:NSURLContentModificationDateKey error:nil]; [y getResourceValue:&dy forKey:NSURLContentModificationDateKey error:nil];
+            return [dy compare:dx]; }];
+        uint64_t bytes = 0; NSMutableArray *read = [NSMutableArray array]; unsigned dropped = 0;
+        for (NSURL *u in files) {
+            NSNumber *size = nil; [u getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+            if (read.count >= PSO_ARC_FILES || bytes + size.unsignedLongLongValue > PSO_ARC_BYTES) { [fm removeItemAtURL:u error:nil]; dropped++; continue; }
+            MTLBinaryArchiveDescriptor *ad = [MTLBinaryArchiveDescriptor new]; ad.url = u;
+            NSError *err = nil; id<MTLBinaryArchive> arc = [g_dev newBinaryArchiveWithDescriptor:ad error:&err];
+            if (arc) { [read addObject:arc]; bytes += size.unsignedLongLongValue; }
+            else { MLOG("[pso-archive] %s unreadable (%s): removed", u.lastPathComponent.UTF8String, err.localizedDescription.UTF8String); [fm removeItemAtURL:u error:nil]; }
         }
         NSError *err = nil; id<MTLBinaryArchive> fresh = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
         if (!fresh) { MLOG("【红】[pso-archive] cannot make an archive (%s): off", err.localizedDescription.UTF8String); return; }
         g_arc_read = read; g_arc_new = fresh;
-        g_arc_url = [NSURL fileURLWithPath:[dir stringByAppendingFormat:@"/launch-%llx-%d.metalar", (unsigned long long)clock_gettime_nsec_np(CLOCK_REALTIME), getpid()]];
+        g_arc_stem = [dir stringByAppendingFormat:@"/launch-%llx-%d", (unsigned long long)clock_gettime_nsec_np(CLOCK_REALTIME), getpid()];
         g_arc_q = dispatch_queue_create("totk.pso-archive", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
-        MLOG("[pso-archive] %lu archives of earlier launches (%.0f MB) in %s", (unsigned long)read.count, bytes / 1048576.0, dir.UTF8String);
+        g_arc_last_save = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        MLOG("[pso-archive] %lu archives (%.0f MB, %u old ones removed) in %s", (unsigned long)read.count, bytes / 1048576.0, dropped, dir.UTF8String);
     });
 #endif
 }
-static void pso_arc_save(void) {   // on g_arc_q
-    NSError *err = nil;
-    if (![g_arc_new serializeToURL:g_arc_url error:&err]) MLOG("【红】[pso-archive] saving %s failed: %s", g_arc_url.lastPathComponent.UTF8String, err.localizedDescription.UTF8String);
-    else { g_arc_saved = atomic_load(&g_arc_added); MLOG("[pso-archive] saved %llu pipelines of this launch (loaded %llu from archives, compiled %llu)", (unsigned long long)g_arc_saved, (unsigned long long)atomic_load(&g_arc_hits), (unsigned long long)atomic_load(&g_arc_misses)); }
+/* On g_arc_q: the batch into a file of its own, then a new empty batch. Returns 1 when saved (or nothing to save). */
+static int pso_arc_save(void) {
+    g_arc_last_save = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!g_arc_batch) return 1;
+    NSURL *url = [NSURL fileURLWithPath:[g_arc_stem stringByAppendingFormat:@"-%03u.metalar", g_arc_seq++]];
+    NSError *err = nil; int ok = [g_arc_new serializeToURL:url error:&err];
+    if (!ok) MLOG("【红】[pso-archive] saving %s (%u pipelines) failed: %s", url.lastPathComponent.UTF8String, g_arc_batch, err.localizedDescription.UTF8String);
+    else { g_arc_url = url; g_arc_saved += g_arc_batch;
+        MLOG("[pso-archive] saved %u pipelines to %s; this launch: %llu saved, %llu loaded from archives, %llu compiled", g_arc_batch, url.lastPathComponent.UTF8String,
+             (unsigned long long)g_arc_saved, (unsigned long long)atomic_load(&g_arc_hits), (unsigned long long)atomic_load(&g_arc_misses)); }
+    id<MTLBinaryArchive> fresh = [g_dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:nil];
+    if (fresh) g_arc_new = fresh;
+    g_arc_batch = 0;
+    return ok;
 }
-/* A game render pipeline: from the archives when it is there, else compiled (and queued for this launch's archive). */
+/* A game render pipeline: from the archives when it is there, else compiled (and queued for the batch archive). */
 static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSError **e) {
     pso_arc_init();
     if (!g_arc_new) return [g_dev newRenderPipelineStateWithDescriptor:d error:e];
@@ -6451,15 +6469,15 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSErro
     dispatch_async(g_arc_q, ^{ @autoreleasepool {
         NSError *err = nil;
         if (![g_arc_new addRenderPipelineFunctionsWithDescriptor:copy error:&err]) { static int said; if (said++ < 5) MLOG("[pso-archive] not archived: %s", err.localizedDescription.UTF8String); return; }
-        uint64_t n = atomic_fetch_add(&g_arc_added, 1) + 1, now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); static uint64_t last;
-        if (n == 64 || n % 512 == 0 || now - last > 30000000000ull) { pso_arc_save(); last = now; }
+        atomic_fetch_add(&g_arc_added, 1); g_arc_batch++;
+        if (g_arc_batch >= PSO_ARC_BATCH || (g_arc_batch >= 64 && clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - g_arc_last_save > 30000000000ull)) pso_arc_save();
     } });
     return ps;
 }
-/* Saves this launch's additions not saved yet (after the warm-up; during play every 64th / 512th addition or 30 s). */
+/* Saves the batch being filled (after the warm-up). */
 static void mtl_pso_archive_flush(void) {
     if (!g_arc_q) return;
-    dispatch_async(g_arc_q, ^{ @autoreleasepool { if (atomic_load(&g_arc_added) != g_arc_saved) pso_arc_save(); } });
+    dispatch_async(g_arc_q, ^{ @autoreleasepool { pso_arc_save(); } });
 }
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
@@ -13547,6 +13565,21 @@ int mtl_probe_pso_archive(void) {
     if (!pso_new(desc(again), &e)) MDIE("pipeline archive probe: second build failed");
     if (atomic_load(&g_arc_hits) != hits + 1) MDIE("pipeline archive probe: the archived pipeline was not served from the archive"); checked++;
     if (!pso_new(desc(MTLPixelFormatRGBA16Float), &e) || atomic_load(&g_arc_hits) != hits + 1) MDIE("pipeline archive probe: a pipeline never archived was served from the archive"); checked++;
+    /* more pipelines (one depth-only) after the first save: a second batch saves into a file of its own (an archive saved
+       once, added to and saved again fails in Metal), and both batches load and hit together */
+    MTLRenderPipelineDescriptor *(^depth)(void) = ^{ MTLRenderPipelineDescriptor *d = desc(MTLPixelFormatInvalid); d.fragmentFunction = nil;
+        d.colorAttachments[0].pixelFormat = MTLPixelFormatInvalid; d.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float; return d; };
+    if (!pso_new(depth(), &e) || !pso_new(desc(MTLPixelFormatRG16Float), &e)) MDIE("pipeline archive probe: third build failed");
+    NSURL *first = g_arc_url; __block int saved_ok = 0; dispatch_sync(g_arc_q, ^{ saved_ok = pso_arc_save(); });
+    if (!saved_ok || [g_arc_url isEqual:first]) MDIE("pipeline archive probe: the second batch did not save into its own file"); checked++;
+    MTLBinaryArchiveDescriptor *ad2 = [MTLBinaryArchiveDescriptor new]; ad2.url = g_arc_url;
+    id<MTLBinaryArchive> saved2 = [g_dev newBinaryArchiveWithDescriptor:ad2 error:&e];
+    if (!saved2) MDIE("pipeline archive probe: the second batch does not load: %s", e.localizedDescription.UTF8String);
+    g_arc_read = @[saved, saved2]; uint64_t h0 = atomic_load(&g_arc_hits);
+    if (!pso_new(depth(), &e) || !pso_new(desc(MTLPixelFormatRG16Float), &e) || !pso_new(desc(MTLPixelFormatRGBA8Unorm), &e) || atomic_load(&g_arc_hits) != h0 + 3)
+        MDIE("pipeline archive probe: pipelines of the two batches were not all served from them (%llu of 3)", (unsigned long long)(atomic_load(&g_arc_hits) - h0));
+    checked++;
+    [NSFileManager.defaultManager removeItemAtURL:first error:nil];
     g_arc_read = before; [NSFileManager.defaultManager removeItemAtURL:g_arc_url error:nil];
     return checked;
 }
