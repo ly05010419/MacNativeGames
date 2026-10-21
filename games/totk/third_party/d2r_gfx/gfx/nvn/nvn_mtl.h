@@ -78,3 +78,4 @@ int mtl_probe_wb_batch(void);
 int mtl_probe_pso_archive(void);
 int mtl_probe_vertex_wait(void);
 int mtl_probe_texels(void);
+int mtl_probe_wb_exact(void);

@@ -2321,7 +2321,7 @@ static void pkg_owned_locked(uint64_t k) { id o = hm_get_id(&g_by_serial, &k); i
    so the result outlives a temporary texture object finalized before the submission runs); an invalidate over its
    memory waits for the GPU and writes every level back in the NVN layout, unless the CPU has written the memory since
    the rendering (then the CPU's bytes are newer). Runtime switch: TOTK_INPUT_FILE "flag writeback 0|1" (default 1). */
-typedef struct { tex_t t; uint64_t stamp; void *obj; } wb_ent;
+typedef struct { tex_t t; uint64_t stamp; void *obj; uint8_t *own; } wb_ent;   // own: a small target's bytes when it was rendered (wb_exact)
 static nvn_hmap g_wb = {.klen = 8};   // serial -> wb_ent * (g_smu): rendered since the last write-back
 static _Atomic int g_wb_on = 1;
 /* TOTK: fill the driver segment c0 for vertex and compute shaders (thread-group counts, uniform / storage address tables,
@@ -2426,7 +2426,17 @@ static int tilelog_match(const tex_t *t) {
     return on && t && t->d.width == w && t->d.height == h;
 }
 #define TILELOG(t, fmt, ...) do { BOTW_TILELOG_NOTE(t) if (tilelog_match(t)) MLOG("[tile] f%llu ser=%llu mem=%p nvnfmt=%#x lv%u " fmt, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(t)->serial, (void *)(t)->mem, (t)->d.format, (t)->d.levels, ##__VA_ARGS__); } while (0)
-static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e); }
+static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e->own); free(e); }
+/* The "CPU wrote since the render" test is per 16 KiB page. Breath of the Wild picks what is under the reticle (magnesis,
+   stasis) with 1x1 / 3x3 render targets it reads on the CPU, and their few bytes share a page with data the CPU writes
+   every frame: the write-back was always skipped, so magnesis never locked on (objects glowed pink, never yellow;
+   2026-10-21, 18,228 skips in one session; upstream PR #140 found the same). A target of at most WB_EXACT_MAX bytes keeps
+   a copy of its own bytes when it is rendered; when its page was written but those bytes are unchanged, the CPU did not
+   write this target and the rendering is written back. (A CPU write of exactly the bytes already there would be lost;
+   the game writes these targets only through the GPU.) TOTK_WB_EXACT=0: the page alone decides, as before. */
+#define WB_EXACT_MAX 4096
+static int wb_exact_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WB_EXACT"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_WB_EXACT=0: small render targets are skipped whenever their page was written"); } return v; }
+static uint64_t g_wb_exact;
 static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
     if (!atomic_load(&g_wb_on) || !t->mem || !t->L.size) return;
@@ -2437,9 +2447,11 @@ static void wb_note(const tex_t *t) {
     nvn_dirty_protect(t->mem, t->L.size);
     pthread_mutex_lock(&g_smu);
     wb_ent *e = nvn_hm_get(&g_wb, &k);
-    if (e) { e->stamp = stamp; e->t = *t; pthread_mutex_unlock(&g_smu); return; }
+    int exact = wb_exact_on() && t->L.size <= WB_EXACT_MAX;
+    if (e) { e->stamp = stamp; e->t = *t; if (exact && (e->own || (e->own = malloc(t->L.size)))) memcpy(e->own, t->mem, t->L.size); pthread_mutex_unlock(&g_smu); return; }
     e = calloc(1, sizeof *e); if (!e) MDIE("write-back record");
     e->t = *t; e->stamp = stamp; e->obj = (void *)CFBridgingRetain(o);
+    if (exact && (e->own = malloc(t->L.size))) memcpy(e->own, t->mem, t->L.size);
     nvn_hm_put(&g_wb, &k, e);
     pthread_mutex_unlock(&g_smu);
 }
@@ -2539,7 +2551,13 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
     /* Freshness is decided for every entry before anything is written back (a write-back marks its pages written), and
        of several renderings of the same memory (texture objects over it) only the newest is written back. */
     int fresh[512];
-    for (int i = 0; i < nl; i++) fresh[i] = force || !nvn_dirty_since(list[i]->t.mem, list[i]->t.L.size, list[i]->stamp);
+    for (int i = 0; i < nl; i++) {
+        fresh[i] = force || !nvn_dirty_since(list[i]->t.mem, list[i]->t.L.size, list[i]->stamp);
+        if (!fresh[i] && list[i]->own && !memcmp(list[i]->own, list[i]->t.mem, list[i]->t.L.size)) {   // page written, this target not (wb_exact_on)
+            fresh[i] = 1; uint64_t n = ++g_wb_exact;
+            if (n <= 8 || n % 2000 == 0) MLOG("[writeback] small target ser=%llu %ux%u nvnfmt=%#x: its page was written but not its bytes, written back (%llu so far)", (unsigned long long)list[i]->t.serial, list[i]->t.d.width, list[i]->t.d.height, list[i]->t.d.format, (unsigned long long)n);
+        }
+    }
     for (int i = 0; i < nl; i++) for (int j = 0; j < nl; j++)
         if (i != j && fresh[i] && fresh[j] && list[j]->t.mem == list[i]->t.mem && list[j]->stamp > list[i]->stamp) { fresh[i] = 2; break; }   // 2: superseded
     wb_ent *batch[WB_BATCH_MAX]; id<MTLTexture> batch_mt[WB_BATCH_MAX]; int nb = 0; size_t batch_bytes = 0;
@@ -13717,6 +13735,43 @@ int mtl_probe_texels(void) {
         if (memcmp(mem + 32, expect, img)) MDIE("texels probe: a read whose destination lies in the texture itself, shape %u", c);
         checked += 2; free(src_copy); free(lin); free(expect); free(mem); free(ref);
     }
+    return checked;
+}
+/* Small render targets (wb_exact_on): two 3x3 RGBA8 targets share one tracked 16 KiB page with data the CPU writes after
+   the render. Target A's own bytes are untouched and its rendering must be written back; target B's bytes were written
+   by the CPU and must be kept. TOTK_PROBE_NEGATIVE drops A's copy of its bytes (the old page-only decision): A is skipped
+   and the probe fails. */
+int mtl_probe_wb_exact(void) {
+    mtl_init(); int checked = 0;
+    if (!wb_exact_on()) MDIE("small target probe: TOTK_WB_EXACT=0");
+    size_t page = 16384; uint8_t *mem = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (mem == MAP_FAILED) MDIE("small target probe allocation");
+    memset(mem, 0x11, page); nvn_dirty_add_range(mem, page);
+    wb_ent *list[2]; static uint8_t want[2][1024];   // a 3x3 target takes a whole 512-byte GOB
+    for (int k = 0; k < 2; k++) {
+        tex_t t; memset(&t, 0, sizeof t); t.serial = 0xfffd0000u + k; t.d.target = 1; t.d.format = 0x25; t.d.width = t.d.height = 3; t.d.depth = 1; t.d.levels = 1;
+        nvn_tex_layout(&t.d, &t.L); t.mem = mem + 4096 + (size_t)k * 1024;
+        if (t.L.size > 1024) MDIE("small target probe: layout %llu bytes", (unsigned long long)t.L.size);
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:3 height:3 mipmapped:NO];
+        d.storageMode = MTLStorageModeShared; id<MTLTexture> mt = [g_dev newTextureWithDescriptor:d];
+        uint8_t px[36]; for (int i = 0; i < 36; i++) px[i] = (uint8_t)(0x40 + k * 0x40 + i);
+        [mt replaceRegion:MTLRegionMake2D(0, 0, 3, 3) mipmapLevel:0 withBytes:px bytesPerRow:12];
+        memcpy(want[k], t.mem, t.L.size); if (k == 0) nvn_swizzle(&t.d, 0, 0, px, 12, want[0]);
+        wb_ent *e = calloc(1, sizeof *e); e->t = t; e->obj = (void *)CFBridgingRetain(mt);
+        if (!(k == 0 && getenv("TOTK_PROBE_NEGATIVE"))) { e->own = malloc(t.L.size); memcpy(e->own, t.mem, t.L.size); }
+        list[k] = e;
+    }
+    for (int k = 0; k < 2; k++) list[k]->stamp = nvn_dirty_now();
+    nvn_dirty_protect(mem, page);
+    /* the CPU writes other data on the page, and target B's own bytes (host-style writes: a probe has no guest fault path) */
+    dm_guest_write_prepare(mem + 100, 1); mem[100] = 0x22;
+    dm_guest_write_prepare(list[1]->t.mem + 5, 1); list[1]->t.mem[5] ^= 0xff; want[1][5] ^= 0xff;
+    if (!nvn_dirty_since(mem, page, list[0]->stamp)) MDIE("small target probe: the page write was not tracked"); checked++;
+    uint8_t *a = list[0]->t.mem, *b = list[1]->t.mem; uint64_t an = list[0]->t.L.size, bn = list[1]->t.L.size;
+    wb_write_list(list, 2, 0);
+    if (memcmp(a, want[0], an)) MDIE("small target probe: target A (page written, its bytes not) was not written back"); checked++;
+    if (memcmp(b, want[1], bn)) MDIE("small target probe: target B (its own bytes written by the CPU) was overwritten"); checked++;
+    nvn_dirty_remove_range(mem); munmap(mem, page);
     return checked;
 }
 int mtl_probe_upload_batch(void) {
