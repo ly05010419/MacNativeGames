@@ -2247,7 +2247,14 @@ static _Atomic uint64_t g_arg_epoch_hits, g_arg_epoch_extra, g_arg_epoch_verifie
 static int g_arg_epoch_negative;
 static int arg_epoch_on(void) {
     int v = atomic_load_explicit(&g_arg_epoch_on, memory_order_relaxed);
+    /* Breath of the Wild: off unless TOTK_ARG_EPOCH=1. Its check mode stopped at a random moment in BotW 1.6.0
+       (2026-10-21, a fragment texture binding, like the texture slot cache): the key misses something this game changes.
+       Upstream measured it alone within noise in Tears of the Kingdom. */
+#ifdef GAME_BOTW
+    if (v < 0) { const char *e = getenv("TOTK_ARG_EPOCH"); v = e && atoi(e); atomic_store(&g_arg_epoch_on, v);
+#else
     if (v < 0) { const char *e = getenv("TOTK_ARG_EPOCH"); v = !(e && !atoi(e)); atomic_store(&g_arg_epoch_on, v);
+#endif
         e = getenv("TOTK_ARG_EPOCH_CHECK"); atomic_store(&g_arg_epoch_check, e && atoi(e)); }
     return v;
 }
