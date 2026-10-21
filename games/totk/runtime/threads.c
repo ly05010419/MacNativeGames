@@ -78,6 +78,7 @@ typedef struct thr {
     uint64_t yrun_ns, yrun_svc;   // the current run of yields: when it started, and nsvc at its last yield (yield_backoff_ns)
 #ifdef GAME_BOTW
     uint64_t cwait_ns;            // when it last queued for a virtual core (starvation rule, core_beats)
+    uint64_t cwait_sum;           // time spent queued for a virtual core so far (runtime_core_wait_self)
     uint64_t protect_until;       // given a core by the starvation rule: no priority preemption before this
     int cqueued;                  // in g_core_wait: queued by core_take, or by wake_queue the moment it was woken
 #endif
@@ -332,13 +333,22 @@ static void core_wait_report(const thr_t *w) {
     fprintf(stderr, "\n");
 }
 #endif
+#ifdef GAME_BOTW
+/* Time guest threads spent queued for a virtual core: the presenting thread's and all threads' (for the long-frame log,
+   hle_nvn.c), so a late frame with the GPU idle shows whether the game waited for cores or for its own work. */
+static uint64_t g_cwait_all;   // added under G, read from the present path
+static void core_wait_done(thr_t *t) {   // holding G
+    if (!t->cwait_ns) return;
+    uint64_t d = now_ns() - t->cwait_ns; t->cwait_sum += d; __atomic_fetch_add(&g_cwait_all, d, __ATOMIC_RELAXED); t->cwait_ns = 0;
+}
+#endif
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
     if (!cores_enabled() || t->cur_core >= 0) return;
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
     int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
     for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
 #ifdef GAME_BOTW
-    if (c >= 0) { core_unqueue(t); t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
+    if (c >= 0) { core_unqueue(t); core_wait_done(t); t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     if (!t->cqueued) { t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->cqueued = 1; t->cwait_ns = now_ns(); }
     int reported = 0;
     while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance)
@@ -346,7 +356,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && t->cur_core < 0 && t->cwait_ns && now_ns() - t->cwait_ns >= STARVE_NS) { core_wait_report(t); reported = 1; }
     }
-    t->cwait_ns = 0;
+    core_wait_done(t);
 #else
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
@@ -355,6 +365,10 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
 #endif
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
+#ifdef GAME_BOTW
+uint64_t runtime_core_wait_self(void) { thr_t *t = me_or_null(); return t ? t->cwait_sum : 0; }   // the calling guest thread's (read by itself)
+uint64_t runtime_core_wait_all(void) { return __atomic_load_n(&g_cwait_all, __ATOMIC_RELAXED); }
+#endif
 #ifdef GAME_BOTW
 extern uint64_t runtime_hle_tsd_off;                 // hle_stack.c: host-stack slot, cleared while a host function runs
 int runtime_guest_code_pc(uint64_t pc);              // loader.c
