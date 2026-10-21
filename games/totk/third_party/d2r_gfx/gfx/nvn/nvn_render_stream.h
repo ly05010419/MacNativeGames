@@ -25,6 +25,7 @@ enum {
     RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE,
     RS_BEGIN,   /* u[0] = retained MTL4RenderPassDescriptor, u[1] = vertex table, u[2] = fragment table, u[3] = command buffer, u[4] = barrier at start, u[5] = visibility options */
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
+    RS_VERTEX_WAIT,   /* TOTK_BARRIER_NARROW=1 (bar_draw): later vertex work waits for earlier vertex and fragment work; u[0] = visibility options */
 };
 enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
                                    for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
@@ -77,6 +78,7 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
             if (u[0] == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:(MTL4VisibilityOptions)u[1]];   /* TOTK_BARRIER_NARROW: later vertex stages do not wait */
             else if (u[0]) [e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:(MTL4VisibilityOptions)u[1]];
             [e endEncoding]; *enc = nil; break;
+        case RS_VERTEX_WAIT: [e barrierAfterQueueStages:MTLStageVertex | MTLStageFragment beforeStages:MTLStageVertex visibilityOptions:(MTL4VisibilityOptions)u[0]]; break;
         case RS_PSO: [e setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)(void *)(uintptr_t)u[0]]; if (u[0]) CFRelease((CFTypeRef)(uintptr_t)u[0]); break;
         case RS_DSS: [e setDepthStencilState:(__bridge id<MTLDepthStencilState>)(void *)(uintptr_t)u[0]]; if (u[0]) CFRelease((CFTypeRef)(uintptr_t)u[0]); break;
         case RS_VIEWPORT: { MTLViewport v; memcpy(&v, u, sizeof v); [e setViewport:v]; break; }
