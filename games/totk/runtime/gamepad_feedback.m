@@ -127,12 +127,16 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
    as SDL's 8BitDo driver sends it; a probe over Bluetooth LE felt both motors. The game's left value drives the low motor
    and its right value the high one, each by the same intensity as the Core Haptics path. A report goes out when a motor
    value changes (at most every 20 ms) and every 250 ms while one is on; silence is written as zeros. TOTK_RUMBLE_HID=0
-   keeps it off. */
+   keeps it off. The game's own pulses are faint and short (a play session: strongest amplitude 0.10-0.15, a few tenths of
+   a second in 30 s) and the controller's motors need a push to start turning, so a non-zero value is raised to at least
+   TOTK_RUMBLE_HID_FLOOR (0..255, default 90) and held for TOTK_RUMBLE_HID_HOLD_MS (default 60) after it ends. */
 enum { BITDO_VID = 0x2dc8, BITDO_PID_ULTIMATE2_WIRELESS = 0x6012, BITDO_MIN_MS = 20, BITDO_KEEP_MS = 250 };
 static IOHIDManagerRef bitdoManager;   /* main queue */
 static IOHIDDeviceRef bitdoHid;        /* set on rumbleQueue, opened on the main queue */
 static GCController *bitdoPad;         /* main queue */
-static uint8_t bitdoSent[2];
+static uint8_t bitdoSent[2], bitdoHeld[2];
+static uint64_t bitdoHeldUntil[2];
+static int bitdoFloor = 90, bitdoHoldMs = 60;
 static uint64_t bitdoSentAt;
 static BOOL bitdoFailed;
 static void bitdo_write(uint8_t lo, uint8_t hi) {   /* rumbleQueue */
@@ -146,7 +150,12 @@ static void bitdo_tick(uint64_t now) {   /* rumbleQueue, every 10 ms */
         float v[4]; uint64_t at;
         pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pthread_mutex_unlock(&wantLock);
         float a = at && now - at < RUMBLE_STALE_MS * 1000000ull ? intensity_of(v) : 0;
-        m[side] = a < 0.02f ? 0 : (uint8_t)(a * 255.f + 0.5f);
+        if (a >= 0.02f) {
+            int level = bitdoFloor + (int)(a * (255 - bitdoFloor) + 0.5f);
+            bitdoHeld[side] = (uint8_t)(level > 255 ? 255 : level);
+            bitdoHeldUntil[side] = now + (uint64_t)bitdoHoldMs * 1000000ull;
+        }
+        m[side] = now < bitdoHeldUntil[side] ? bitdoHeld[side] : 0;
         if (m[side]) playedNs[side] += RUMBLE_TICK_MS * 1000000ull;
     }
     BOOL same = m[0] == bitdoSent[0] && m[1] == bitdoSent[1];
@@ -169,6 +178,9 @@ static void bitdo_attach(GCController *c) {   /* main queue: c has no haptics */
     if (!d) { CFRelease(m); return; }
     IOReturn r = IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone);
     if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] 8BitDo Ultimate 2 Wireless found but its HID device did not open (0x%x): no rumble from it\n", r); CFRelease(m); return; }
+    const char *fl = getenv("TOTK_RUMBLE_HID_FLOOR"), *ho = getenv("TOTK_RUMBLE_HID_HOLD_MS");
+    if (fl) bitdoFloor = atoi(fl) < 0 ? 0 : atoi(fl) > 255 ? 255 : atoi(fl);
+    if (ho) bitdoHoldMs = atoi(ho) < 0 ? 0 : atoi(ho) > 500 ? 500 : atoi(ho);
     bitdoManager = m; bitdoPad = c; bitdoFailed = NO;
     IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
     dispatch_async(rumbleQueue, ^{ bitdoSent[0] = bitdoSent[1] = 0; bitdoSentAt = 0; bitdoHid = held; });
