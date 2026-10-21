@@ -10704,6 +10704,16 @@ static void copy_t2b(const p_copy_b2t *c) {
 }
 // CPU 读贴图（ReadTexels）：预排布贴图以池内存为真值，解排布直读；其余从 MTLTexture blit 读回（调用方已按 NVN 规矩等过 GPU）
 // CPU texture read (ReadTexels): for packaged textures the pool memory is the ground truth, de-layout and read directly; the rest are read back from the MTLTexture by blit (the caller has already waited for the GPU per NVN rules)
+/* TOTK: ReadTexels / WriteTexels on a CPU-pool texture move only the region asked for (nvn_deswizzle_region /
+   nvn_swizzle_region) and unprotect only the block rows it lies in (nvn_region_span). They converted the whole level both
+   ways on every call, and unprotected all of it: a fork's 1.0.0 play profile (DavidZande/MacNativeGames, 2026-10-19)
+   found the game writing small tiles into a 5120x5120 texture 6-29 times a frame, ~2 x 13 MB each on a game thread.
+   TOTK_TEXELS_REGION=0: the whole level, as before. */
+static int texels_region(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_TEXELS_REGION"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_TEXELS_REGION=0: ReadTexels / WriteTexels convert the whole level"); }
+    return v;
+}
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     xv_check(t->serial, level, layer0, "CPU读回");
     PD("U cpu_read ser=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d dst=%p row=%lu img=%lu", t->serial, level, layer0, r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, dst, (unsigned long)row, (unsigned long)img);
@@ -10718,6 +10728,12 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     int gpu_content = tex_mirrored(t) && gpu_owned(t->serial) && !bc_unpack(t->d.format, &upf_, &ubpp_);
     TILELOG(t, "ReadTexels lv%u xy=%d,%d %dx%d (%s)", level, r->xoffset, r->yoffset, r->width, r->height, gpu_content ? "from the GPU texture" : tex_mirrored(t) ? "from the pool bytes" : "GPU texture");
     if (gpu_content) { static int n; if (++n <= 8) MLOG("[texels] ReadTexels ser=%llu %ux%u nvnfmt=%#x lv%u: rendered by the GPU, read back from the Metal texture (%d so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, level, n); }
+    if (tex_mirrored(t) && !gpu_content && texels_region()) {
+        int ok = 1;   // a 3D level is one layer with slices; an array has one layer per slice of the region
+        if (is3d) ok = !nvn_deswizzle_region(&t->d, level, 0, t->mem, dst, row, img, (uint32_t)x0, (uint32_t)y0, (uint32_t)r->zoffset, (uint32_t)wb, (uint32_t)hb, (uint32_t)nz);
+        else for (int z = 0; z < nz && ok; z++) ok = !nvn_deswizzle_region(&t->d, level, layer0 + r->zoffset + z, t->mem, dst + z * img, row, img, (uint32_t)x0, (uint32_t)y0, 0, (uint32_t)wb, (uint32_t)hb, 1);
+        if (ok) return;   // refused: the whole-level path below reports the layout as before
+    }
     if (tex_mirrored(t) && !gpu_content) {
         uint32_t lw = MAX(t->d.width >> level, 1u), lh = MAX(t->d.height >> level, 1u), lz = is3d ? MAX(t->d.depth >> level, 1u) : 1;
         size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
@@ -10754,7 +10770,16 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
     uint32_t lw = MAX(t->d.width >> level, 1u), lh = MAX(t->d.height >> level, 1u), lz = is3d ? MAX(t->d.depth >> level, 1u) : 1;
     if ((uint32_t)(r->xoffset + r->width) > lw || (uint32_t)(r->yoffset + r->height) > lh || (is3d && (uint32_t)(r->zoffset + nz) > lz)) die("WriteTexels: region outside level %u", level);
     TILELOG(t, "WriteTexels lv%u xy=%d,%d %dx%d owned %d mirrored %d flags=%#x pbh=%d tileH=%u size=%llu", level, r->xoffset, r->yoffset, r->width, r->height, gpu_owned(t->serial), tex_mirrored(t), t->d.flags, t->d.pkg_block_h, t->L.tileH, (unsigned long long)t->L.size);
-    if (tex_mirrored(t)) {
+    uint64_t lo, hi, lo_last, hi_last;   // the storage the region lies in: its first layer to its last (arrays), whole block rows
+    unsigned first = is3d ? 0 : layer0 + r->zoffset, last = is3d ? 0 : layer0 + r->zoffset + nz - 1;
+    uint32_t z0 = is3d ? (uint32_t)r->zoffset : 0, zn = is3d ? (uint32_t)nz : 1;
+    if (tex_mirrored(t) && texels_region() && !nvn_region_span(&t->d, level, first, (uint32_t)y0, (uint32_t)hb, z0, zn, &lo, &hi) &&
+        !nvn_region_span(&t->d, level, last, (uint32_t)y0, (uint32_t)hb, z0, zn, &lo_last, &hi_last)) {
+        dm_guest_write_prepare((uint8_t *)t->mem + lo, MAX(hi, hi_last) - lo);
+        if (is3d) { if (nvn_swizzle_region(&t->d, level, 0, src, row, img, t->mem, (uint32_t)x0, (uint32_t)y0, z0, (uint32_t)wb, (uint32_t)hb, zn)) die("WriteTexels: unsupported layout"); }
+        else for (int z = 0; z < nz; z++) if (nvn_swizzle_region(&t->d, level, first + z, src + z * img, row, img, t->mem, (uint32_t)x0, (uint32_t)y0, 0, (uint32_t)wb, (uint32_t)hb, 1)) die("WriteTexels: unsupported layout");
+        if (!gpu_owned(t->serial)) return;   // as below: a texture the GPU rendered into takes the write in its MTLTexture too
+    } else if (tex_mirrored(t)) {
         size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
         uint8_t *lin = malloc(lp * lr * lz);
         if (!lin) die("WriteTexels: out of memory");

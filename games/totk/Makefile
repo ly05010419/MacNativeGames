@@ -373,6 +373,14 @@ $(RENDER_PROBE_DIR)/texture-auto-layout-probe: tests/texture_auto_layout/probe.c
 probe-texture-auto-layout: $(RENDER_PROBE_DIR)/texture-auto-layout-probe
 	"$(RENDER_PROBE_DIR)/texture-auto-layout-probe"
 
+.PHONY: probe-texel-region
+# CPU only: region copies for ReadTexels / WriteTexels against the whole-level copies, with controls.
+$(RENDER_PROBE_DIR)/texel-region-probe: tests/texel_region/probe.c third_party/d2r_gfx/gfx/nvn/nvn_tex.c third_party/d2r_gfx/gfx/nvn/nvn_tex.h third_party/d2r_gfx/gfx/tex/nvn_deswizzle.c third_party/d2r_gfx/gfx/tex/nvn_deswizzle.h
+	@mkdir -p "$(RENDER_PROBE_DIR)"
+	xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn -Ithird_party/d2r_gfx/gfx/tex tests/texel_region/probe.c third_party/d2r_gfx/gfx/nvn/nvn_tex.c third_party/d2r_gfx/gfx/tex/nvn_deswizzle.c -o "$@"
+probe-texel-region: $(RENDER_PROBE_DIR)/texel-region-probe
+	"$(RENDER_PROBE_DIR)/texel-region-probe"
+
 .PHONY: probe-depth16-clear
 $(RENDER_PROBE_DIR)/depth16-clear-probe: tests/depth16_clear/probe.m third_party/d2r_gfx/gfx/nvn/nvn_depth_clear.h
 	@mkdir -p "$(RENDER_PROBE_DIR)"

@@ -21,6 +21,16 @@ int nvn_swizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void
 // Single-point address: within this level and layer, linear (x byte, y block row, z slice) → block-linear byte offset relative to the start of this level and layer (unit tests verify against hand calculation)
 uint64_t nvn_bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned tileH, unsigned tileD);
 
+// One region of a level / layer only (ReadTexels / WriteTexels): x0 / w in bytes, y0 / h in block rows, z0 / nz slices
+// (3D; other targets 0 / 1); the linear side has pitch bytes a row and img bytes a slice. -1 as above, or for a region
+// outside the level. nvn_region_span: the storage bytes [lo, hi) from the start of the texture that hold those block
+// rows (whole blocks: a superset of what the region writes).
+int nvn_deswizzle_region(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src_storage, void *dst_linear, size_t pitch, size_t img,
+                         uint32_t x0, uint32_t y0, uint32_t z0, uint32_t w, uint32_t h, uint32_t nz);
+int nvn_swizzle_region(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src_linear, size_t pitch, size_t img, void *dst_storage,
+                       uint32_t x0, uint32_t y0, uint32_t z0, uint32_t w, uint32_t h, uint32_t nz);
+int nvn_region_span(const nvn_texdesc *d, unsigned level, unsigned layer, uint32_t y0, uint32_t h, uint32_t z0, uint32_t nz, uint64_t *lo, uint64_t *hi);
+
 int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
                        uint32_t *row_bytes, uint32_t *rows, uint32_t *slices,
                        uint64_t *base, unsigned *tileH, unsigned *tileD, uint32_t *bpb);
