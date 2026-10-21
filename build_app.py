@@ -804,6 +804,9 @@ def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115
                 logs / 'app_icon.log', cwd=tree)
         except BuildError as e:
             say(f'   no app icon, the app gets the default one ({str(e).splitlines()[0]})')
+    elif not (tree / 'build/AppIcon.icns').exists():   # --extracted alone: the icon is in the game's control data
+        say(f'   no app icon, the app gets the default one: build once with the game file and keys, or put the '
+            f'AppIcon.icns of an earlier work folder into {tree / "build"}')
 
 
 _libc = None
