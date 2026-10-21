@@ -6453,7 +6453,11 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
 // ---- Parallel precompile: pipelines met for the first time used to be compiled synchronously one by one on the submit thread; 9 misses in a row in one frame = 284 ms (heavy scene on a real device).
 // Now: on the first pipeline miss in a submission, scan ahead once along the remaining commands (replaying state only, no drawing) and kick all the normal-pass pipelines that will also miss later to the background to compile in parallel;
 // when the submit thread reaches that draw it only waits for 'the remaining time not yet compiled'. The compiled pipelines are identical to synchronously compiled ones (same descriptor). Pipeline keys of merged passes / specialized fragments depend on the planning result at replay time, are not predicted, and are compiled synchronously as before.
-#define PSO_PEND_MAX 384
+/* TOTK: 1024 slots, 64 of them for draws only. With 384 the guesses of the prediction scan could fill the table, and a
+   draw that then missed built its pipeline on the submit thread (in-place builds of up to 126 ms in play, 1.0.0 profile
+   of the DavidZande/MacNativeGames fork, 2026-10-19). Guesses now stop at PSO_PEND_MAX - PSO_DEMAND_ROOM slots. */
+#define PSO_PEND_MAX 1024
+#define PSO_DEMAND_ROOM 64
 static struct { pso_key k; id<MTLRenderPipelineState> ps; uint64_t submit; int used, done, demand; } g_pp[PSO_PEND_MAX];   // demand: kicked by pso_get for a draw being made (TOTK_ASYNC_SHADERS), kept until that draw takes it
 static pthread_mutex_t g_pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pp_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_pp_submit_mark, g_pp_kicked, g_pp_taken;   // 本次提交是否已预测过（按提交序号）；累计丢出 / 领用条数 | Whether this submission has already been predicted (by submission serial); cumulative kicked / taken counts
@@ -6480,8 +6484,9 @@ static int pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs, int deman
     if (!demand && async_shaders_enabled() && !vs_fn_ready(vs, fs, (k->a2c & PSO_LAYERED) != 0, (k->a2c & PSO_VBORDER) != 0, 0)) return 1;
     pthread_mutex_lock(&g_pp_mu);
     pso_pend_reclaim(g_sub_serial);
-    int at = pso_pend_find(k), slot = -1;
-    if (at < 0) for (int i = 0; i < PSO_PEND_MAX; i++) if (!g_pp[i].used) { slot = i; break; }
+    int at = pso_pend_find(k), slot = -1, used = 0;
+    if (at < 0) for (int i = 0; i < PSO_PEND_MAX; i++) { if (g_pp[i].used) used++; else if (slot < 0) slot = i; }
+    if (at < 0 && !demand && used >= PSO_PEND_MAX - PSO_DEMAND_ROOM) slot = -1;   // guesses leave room for draws
     if (at < 0 && slot >= 0) { g_pp[slot].k = *k; g_pp[slot].ps = nil; g_pp[slot].done = 0; g_pp[slot].used = 1; g_pp[slot].submit = g_sub_serial; g_pp[slot].demand = demand; }
     if (at < 0 && slot < 0) g_pp_full++;
     if (at >= 0 && demand) g_pp[at].demand = 1;   // a guess that a draw now waits for
