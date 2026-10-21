@@ -1,5 +1,5 @@
 /* The Mac controller's haptics and motion sensors for the game's HD rumble and six-axis sensor (runtime/hid_feedback.c),
-   2026-10-17. Only with TOTK_RUMBLE=1 / TOTK_GYRO=1, and only on macOS (iOS: stubs, never on).
+   2026-10-17. On by default (TOTK_RUMBLE=0 / TOTK_GYRO=0 turn them off), and only on macOS (iOS: stubs, never on).
    Rumble: each of the game's two vibration devices (left, right) is a Core Haptics engine on that handle of the
    controller (GCHapticsLocalityLeftHandle / RightHandle; a DualSense has both) playing a long continuous event. The
    game's value (two bands, each an amplitude 0..1 at a frequency) sets the event's intensity (TOTK_RUMBLE_GAIN, default 1,

@@ -1,5 +1,5 @@
 # Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.
-# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v4-unverified.
+# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v6-unverified.
 V	001b98741aa774e4bcfbe32d4278c836002ce4ba12ab86e8a02f6fbde97b4d7a	{"attr":{},"fout":{},"img":{},"tex":{"12":"2darray","5":"3d","6":"2d_depth","7":"2d"}}
 V	004598fb6f69e36a55ade901b75d5946abbb8e51f0aaa4d65d787aac8f440e2d	{"attr":{"0":"float","1":"float","8":"float"},"fout":{},"img":{},"tex":{}}
 V	0056aaeb8765f13bd9c1714bdf8de5a3f3c623092550e3e851965c8fb8e42b2a	{"attr":{"0":"float","1":"float","12":"float","2":"float","8":"float"},"fout":{},"img":{},"tex":{}}

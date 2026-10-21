@@ -304,22 +304,6 @@ static int output_full_at_start;
 static unsigned output_w,output_h;
 static _Atomic(uint8_t *) output_page;
 static uint64_t pack_size(unsigned w,unsigned h){return (uint64_t)h<<32|w;}
-/* The overlay's manifest header (scripts/make_output_res_overlay.py --scene) says how big a 3D scene its texture heap
- * has room for and how many KiB it added; without it the scene keeps the game's size (an overlay built before
- * 2026-10-19). */
-static unsigned overlay_scene_w,overlay_scene_h;
-static uint64_t overlay_extra_kib;
-static void overlay_manifest(unsigned w,unsigned h){
-    const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096],line[512];
-    snprintf(path,sizeof path,"%s/%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",w,h);
-    FILE *f=fopen(path,"r");if(!f)return;
-    if(fgets(line,sizeof line,f)){
-        const char *sc=strstr(line," scene="),*ex=strstr(line," extra_kib=");unsigned long long kib;
-        if(sc&&ex&&sscanf(sc," scene=%ux%u",&overlay_scene_w,&overlay_scene_h)==2&&sscanf(ex," extra_kib=%llu",&kib)==1)overlay_extra_kib=kib;
-        else overlay_scene_w=overlay_scene_h=0;
-    }
-    fclose(f);
-}
 uint64_t runtime_output_size_current(void){
     uint8_t *page=atomic_load(&output_page);
     return page?atomic_load((_Atomic uint64_t *)(void *)(page+32)):pack_size(1920,1080);
@@ -355,15 +339,33 @@ int runtime_output_res(unsigned *w,unsigned *h){
             on=1;output_full_at_start=1;
         }
         decided=1;
-        if(on)overlay_manifest(cw,ch);
     }
     if(on){*w=cw;*h=ch;}return on;
 }
+/* The canvas-sized and the scene-sized render targets share DynamicTextureAllocatorMem (113664 KiB at a 1080p canvas
+ * and the 1600x900 scene). Each grows the heap by its own pixel ratio above the shipped size, a bigger scene with a 1.6
+ * margin: measured 2026-10-19, a 3440x1440 canvas with a 2580x1080 scene crashed in the allocator (main+0x1c2d20) at
+ * +258 MiB and loaded at +400 MiB. That was before scene_size_store divided out the game's own canvas scaling (the
+ * scene was then about 4620x1935), so for the scene asked for the heaps are now larger than needed: safe, not tight.
+ * The scene is TOTK_RENDER_RES, or with it unset the biggest size key 3 picks, the canvas (patch_render_res); romfs.c
+ * mounts the HeapDef overlay <canvas>-scene-<scene> (scripts/make_output_res_overlay.py --scene, same formula). Mac
+ * only: iOS keeps the game's own heaps. */
+static int render_res(unsigned *w,unsigned *h);
+int runtime_render_res(unsigned *w,unsigned *h){
+#if TARGET_OS_IPHONE
+    (void)w;(void)h;return 0;
+#else
+    return !getenv("TOTK_EXPORT_IOS")&&(render_res(w,h)||runtime_output_res(w,h));
+#endif
+}
 uint64_t runtime_output_res_extra_bytes(void){
-    unsigned w,h;if(!runtime_output_res(&w,&h))return 0;
-    if(overlay_extra_kib)return overlay_extra_kib<<10;
-    double ratio=(double)w*h/(1920.0*1080.0);if(ratio<=1)return 0;
-    uint64_t kib=(uint64_t)ceil(113664.0*ratio/1024.0)*1024-113664;return kib<<10;
+    unsigned w,h,sw,sh;double grow=0;
+    if(runtime_output_res(&w,&h)&&(double)w*h>1920.0*1080.0)grow+=(double)w*h/(1920.0*1080.0)-1;
+    int scene=runtime_render_res(&sw,&sh)&&(double)sw*sh>1600.0*900.0;
+    if(scene)grow+=((double)sw*sh/(1600.0*900.0)-1);
+    if(grow<=0)return 0;
+    if(scene)grow*=1.6;
+    uint64_t kib=(uint64_t)ceil(113664.0*(1+grow)/1024.0)*1024-113664;return kib<<10;
 }
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
@@ -422,20 +424,25 @@ static void patch_output_res(Module *m){
    the phone's embedded code carries it only when TOTK_RENDER_RES was set for the export. The phone checks the embedded
    words and writes the size on the data page itself: its own TOTK_RENDER_RES, or the game's handheld 1280x720 when unset
    (the phone always reports handheld mode). Embedded code without the patch keeps the game's own size.
-   Mac, TOTK_RENDER_RES unset: when the output patch is on and its overlay has room for a scene of the output size
-   (manifest scene=, scripts/make_output_res_overlay.py --scene), the scene follows key 3 (2026-10-19, user: native 2K was
-   as blurry as 1080p because only the canvas and UI grew): the docked 1600x900 in the 1080p modes, the output size in
-   native 2K; how the switch gets this routine to run again is below. */
+   Mac, TOTK_RENDER_RES unset: when the output patch is on, the scene follows key 3 (2026-10-19, user: native 2K was as
+   blurry as 1080p because only the canvas and UI grew; the heaps have room for a scene of the canvas size,
+   runtime_render_res); how the switch gets this routine to run again is below. */
+/* The game scales its scene with the canvas: the size it renders is the mode entry's (or the patched) size times the
+   output width over 1920, on both axes (PR #86, measured: 2560x1440 asked on a 2560x1440 canvas rendered 3408x1920,
+   3440x1440 on the 3440x1440 canvas 6160x2576). The data page therefore holds the asked size divided by that factor,
+   rewritten when the canvas changes (canvas_set, before the game is told), so the scene is the size asked for on every
+   canvas. Before 2026-10-21 this fork wrote the size itself: key 3's sizes rendered 4/3 bigger on the 2560 canvas. */
+static uint8_t *render_page;static unsigned render_w,render_h;   /* the data page and the size asked for, once patched */
 enum{SCENE_DOCKED_W=1600,SCENE_DOCKED_H=900};
-static uint8_t *scene_page;   /* set when the scene follows the output */
+static int scene_follows;   /* key 3 picks the scene size; the data page's +48 keeps the renderer */
 /* Key 3's render resolutions (fork, 2026-10-20, the user: MetalFX by default, key 3 through 720p, 900p, 1080p, 2K ...):
-   the 16:9 sizes up to the canvas and the room the overlay's texture heap has (scene=, 2560x1440 on a 16 GB Mac). The
+   the 16:9 sizes up to the canvas (the heaps have room for a scene of the canvas size, runtime_render_res). The
    canvas and UI stay at the output size; MetalFX scales a smaller scene up to it (nvn_mtl.m mfxup_dock replaces the
    game's own upscale draw), and the canvas up to a bigger window. A scene of the canvas size is drawn natively. */
 static const unsigned scene_sizes[][2]={{1280,720},{1600,900},{1920,1080},{2560,1440},{3200,1800},{3840,2160}};
 enum{SCENE_N=sizeof scene_sizes/sizeof *scene_sizes,SCENE_DEFAULT=2};   /* 1920x1080 */
 static _Atomic int scene_idx=-1;   /* the scene size key 3 set, -1 when the scene does not follow it */
-static int scene_fits(int i){return scene_sizes[i][0]<=output_w&&scene_sizes[i][1]<=output_h&&scene_sizes[i][0]<=overlay_scene_w&&scene_sizes[i][1]<=overlay_scene_h;}
+static int scene_fits(int i){return scene_sizes[i][0]<=output_w&&scene_sizes[i][1]<=output_h;}
 static int scene_start(void){int i=SCENE_DEFAULT;while(i>0&&!scene_fits(i))i--;return i;}
 uint64_t runtime_scene_size_current(void){int i=atomic_load(&scene_idx);return i<0?0:pack_size(scene_sizes[i][0],scene_sizes[i][1]);}
 /* A changed size on the data page is only read when the routine runs again. The renderer's per-frame update re-runs it
@@ -447,8 +454,11 @@ uint64_t runtime_scene_size_current(void){int i=atomic_load(&scene_idx);return i
    applies) is left as it is. Neither "operation mode changed" (oe message 30) nor the display config's change bits
    reach this routine in 1.4.3 (tried 2026-10-19: the cached mode stayed -1). */
 static void scene_size_store(unsigned w,unsigned h){
-    float v[2]={(float)w,(float)h};uint64_t bits;memcpy(&bits,v,8);
-    atomic_store((_Atomic uint64_t *)(void *)(scene_page+16),bits);   /* the game reads both lanes with one ldp */
+    unsigned canvas_w=(unsigned)runtime_output_size_current();   /* 1920 without the output patch (and on iOS) */
+    float k=canvas_w>1920?canvas_w/1920.0f:1.0f,v[2]={w/k,h/k};uint64_t bits;memcpy(&bits,v,8);
+    render_w=w;render_h=h;
+    atomic_store((_Atomic uint64_t *)(void *)(render_page+16),bits);   /* the game reads both lanes with one ldp */
+    fprintf(stderr,"[totk] 1.4.3 render resolution: %ux%u on a %u-wide canvas (game size %.0fx%.0f, scaled by %.4f)\n",w,h,canvas_w,v[0],v[1],k);
 }
 static int render_res(unsigned *w,unsigned *h){
     const char *e=getenv("TOTK_RENDER_RES");
@@ -463,7 +473,7 @@ static void patch_render_res(Module *m){
     unsigned w=1280,h=720;int set=render_res(&w,&h),follow=0;
 #if !TARGET_OS_IPHONE
     if(!set){   /* Mac (and the iOS export): the game's own size unless asked, or the scene follows key 3 */
-        if(!output_page||overlay_scene_w<output_w||overlay_scene_h<output_h)return;
+        if(!output_page)return;
         follow=1;int i=scene_start();w=scene_sizes[i][0];h=scene_sizes[i][1];atomic_store(&scene_idx,i);
     }
 #endif
@@ -505,10 +515,9 @@ static void patch_render_res(Module *m){
     }
     for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&want[i],4);
 #endif
-    float v[2]={(float)w,(float)h};
-    memcpy(m->base+data+16,v,sizeof v);
+    render_page=m->base+data;scene_size_store(w,h);
     if(follow){   /* MetalFX on from the start (fork, 2026-10-20): the scene stage up to the canvas, the window stage beyond it */
-        scene_page=m->base+data;extern void dm_gfx_set_flag(const char *,int);
+        scene_follows=1;extern void dm_gfx_set_flag(const char *,int);
         if(!getenv("TOTK_MFX_OUTPUT"))dm_gfx_set_flag("mfx_output",1);
         dm_gfx_set_flag("mfx_upscale",mfx_upscale_wanted());
     }
@@ -519,7 +528,7 @@ static void patch_render_res(Module *m){
 /* The scene's render size from the next frame: the data page value, and the renderer's mode check re-armed (above). */
 static void scene_set(unsigned w,unsigned h){
     scene_size_store(w,h);
-    uint64_t renderer=atomic_load((_Atomic uint64_t *)(void *)(scene_page+48));
+    uint64_t renderer=atomic_load((_Atomic uint64_t *)(void *)(render_page+48));
     if(renderer){
         float now[2];memcpy(now,(const void *)(uintptr_t)(renderer+0xcc4),8);
         fprintf(stderr,"[totk] 1.4.3 scene size was %.0fx%.0f (renderer %#llx, cached mode %d); %ux%u from the next frame\n",now[0],now[1],(unsigned long long)renderer,*(volatile int8_t *)(uintptr_t)(renderer+0xcd0),w,h);
@@ -530,6 +539,7 @@ static void scene_set(unsigned w,unsigned h){
 /* The canvas (and UI) at the output size or at 1920x1080, through the game's display-config rebuild. */
 static void canvas_set(int full){
     atomic_store((_Atomic uint64_t *)(void *)(output_page+32),full?pack_size(output_w,output_h):pack_size(1920,1080));
+    if(render_page)scene_size_store(render_w,render_h);   /* the same scene on the new canvas, before the game is told */
     uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
     if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
     fprintf(stderr,"[totk] 1.4.3 canvas %ux%u (display config %s)\n",full?output_w:1920,full?output_h:1080,config?"ready":"not published yet");
@@ -539,13 +549,13 @@ int runtime_output_res_toggle(void){
     if(!output_page)return 0;
     int full=!canvas_full();
     canvas_set(full);
-    if(scene_page)scene_set(full?output_w:SCENE_DOCKED_W,full?output_h:SCENE_DOCKED_H);
+    if(scene_follows)scene_set(full?output_w:SCENE_DOCKED_W,full?output_h:SCENE_DOCKED_H);
     return 1;
 }
 int runtime_output_mode_cycle(void){
     if(!output_page)return 0;
     extern int mfxup_output_enabled(void);extern void dm_gfx_set_flag(const char *,int);
-    if(scene_page&&atomic_load(&scene_idx)>=0){   /* key 3: the next render resolution, MetalFX scaling it up */
+    if(scene_follows&&atomic_load(&scene_idx)>=0){   /* key 3: the next render resolution, MetalFX scaling it up */
         int i=atomic_load(&scene_idx);
         for(int n=0;n<SCENE_N;n++){i=(i+1)%SCENE_N;if(scene_fits(i))break;}
         if(!canvas_full())canvas_set(1);
@@ -556,8 +566,7 @@ int runtime_output_mode_cycle(void){
                 scene_sizes[i][0]==output_w&&scene_sizes[i][1]==output_h?"native":up?"MetalFX up to the canvas":"the game's own upscale, TOTK_MFX_UPSCALE=0");
         return 1;
     }
-    /* No room in the overlay for another scene size (an overlay built before 2026-10-19, or TOTK_RENDER_RES): the
-       earlier cycle of the canvas, MetalFX 2K -> native -> off. */
+    /* TOTK_RENDER_RES (a fixed scene size): the earlier cycle of the canvas, MetalFX 2K -> native -> off. */
     int full=canvas_full();
     int native=0,mfx=0;const char *name;
     if(full)name="off (1920x1080)";

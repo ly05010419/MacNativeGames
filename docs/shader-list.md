@@ -48,6 +48,14 @@ build uses only those found in the selected game files.
 The build exports the warm rows to `build/pso_title.tsv` (rows marked `t`) and `build/pso_manifest.tsv` (rows marked
 `m`), which the runtime reads. Edit the list, never those files.
 
+## Warm-up scope
+
+The prepared seed also carries `shader-keys.json`: every shader key found in the selected game files, including shaders
+that were not translated. The background warm-up warms only cache entries of those shaders, plus shaders the game was
+seen to use on this Mac (`observed/<RomFS SHA>.keys` in the translation cache). Entries of other game versions in the
+shared cache are skipped during warm-up only, never deleted or refused for drawing. Without a valid scope (an older
+app) the whole cache is warmed as before; `TOTK_WARM_ALL=1` does that for comparison. Not used on iPhone / iPad.
+
 ## Sending what you played (players)
 
 You do not need to do anything while playing. When the Mac has to translate a shader variant, or an iPhone or iPad
@@ -106,7 +114,7 @@ Use `games/totk/scripts/shader_list.py`. It needs only Python 3.
 ```sh
 # Mac: add the shaders your own translation cache holds
 python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv \
-  "$HOME/Library/Application Support/MacNativeGames/TOTK/shader-cache/rt-totk-native-v4-unverified"
+  "$HOME/Library/Application Support/MacNativeGames/TOTK/shader-cache/rt-totk-native-v6-unverified"
 
 # check the result, then commit the list and open a pull request
 python3 games/totk/scripts/shader_list.py stats games/totk/assets/shader_list.tsv

@@ -29,7 +29,7 @@ class ShortcutStatus(unittest.TestCase):
                            '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
                            str(ROOT / 'tests/shortcut_status_probe.m'),
                            str(ROOT / 'tests/shortcut_output_fixture.c'),
-                           str(gfx / 'totk_mfx.m'), str(gfx / 'totk_mfx_up.m'),
+                           str(gfx / 'totk_mfx.m'), str(gfx / 'totk_mfx_up.m'), str(gfx / 'totk_taa.m'),
                            str(gfx / 'fps_overlay.c'),
                            '-framework', 'Cocoa', '-framework', 'Metal',
                            '-framework', 'MetalFX', '-framework', 'QuartzCore',
@@ -45,7 +45,7 @@ class ShortcutStatus(unittest.TestCase):
                             env.update(TOTK_UI_LANG='en', TOTK_HUD=layout,
                                        TOTK_MFX='interp' if overridden else '0',
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
-                                       TOTK_MFX_UPSCALE='0')
+                                       TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
                             run = subprocess.run([str(executable)], env=env,
                                                  capture_output=True, text=True, timeout=35)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

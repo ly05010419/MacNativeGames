@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Breath of the Wild: extract and verify the 1.6.0 ExeFS from the game file.
 
-The game file holds the base game, the 1.6.0 update and the add-on content (a cartridge image made that way). The code
-comes from the update's Program NCA (the one with a BKTR section, key-area encrypted, title 01007EF00011E000): its ExeFS
+The game file is a separate 1.6.0 update NSP or a combined cartridge image. Common NSP tickets are supported. The code
+comes from the update's Program NCA (the one with a BKTR section, title 01007EF00011E000): its ExeFS
 section is read in place, the FS header hash, the hash table and every data block are verified, and the files are
 written with an extraction-manifest.json in the format of games/totk/scripts/extract_exefs.py (build_app.py reads it).
 usage: extract_exefs.py <game file> --keys <prod.keys> --output <new folder>
@@ -18,7 +18,7 @@ from pathlib import Path
 TOTK_SCRIPTS = next(p for p in (Path(__file__).resolve().parents[2] / 'totk/scripts', Path(__file__).resolve().parents[2] / 'scripts')
                     if (p / 'extract_exefs.py').exists())
 sys.path.insert(0, str(TOTK_SCRIPTS))
-from extract_exefs import (container_entries, decrypt, load_keys, nca_ctr_key, nca_inventory, partition_entries,  # noqa: E402
+from extract_exefs import (common_tickets, container_entries, decrypt, load_keys, nca_ctr_key, nca_inventory, partition_entries,  # noqa: E402
                            read_at, record_offset, require)
 from cryptography.hazmat.primitives.ciphers import modes  # noqa: E402
 
@@ -29,7 +29,6 @@ def update_program(records):
     bktr = lambda h: any(h[0x400 + i * 512 + 4] == 4 for i in range(4))
     found = [(r, h) for r, h in records if r['content_type'] == 0 and r['title_id'] == TITLE and bktr(h)]
     require(len(found) == 1, f'Expected one update Program NCA of {TITLE} (the one with a BKTR section)')
-    require(found[0][1][0x230:0x240] == bytes(16), 'Rights-managed NCAs are not supported here')
     return found[0]
 
 
@@ -45,7 +44,7 @@ def main():
         kind, entries = container_entries(f, a.game.stat().st_size)
         records = nca_inventory(f, entries, keys)
         record, hdr = update_program(records)
-        ctr_key = nca_ctr_key(hdr, keys, {})
+        ctr_key = nca_ctr_key(hdr, keys, common_tickets(f, entries))
         for i in range(4):
             start, end = struct.unpack_from('<II', hdr, 0x240 + 16 * i)
             if not start:

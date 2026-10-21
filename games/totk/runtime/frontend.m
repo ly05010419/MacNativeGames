@@ -19,6 +19,7 @@ static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
 static NSView *shortcutHelp;
+int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: key 5 */
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
@@ -138,7 +139,8 @@ static NSString *shortcut_text(void){
  else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
  else if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else picture=@(TOTK_UI("关闭","off"));
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  帧率：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  21:9 宽屏：开 / 关","Shortcuts\n1  Show / hide all overlays\n2  Frame rate: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Ultrawide 21:9: on / off")),rate,picture];
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  帧率：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  21:9 宽屏：开 / 关\n5  边缘平滑（MetalFX 时间性）：%@","Shortcuts\n1  Overlays: all → FPS only → off\n2  Frame rate: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Ultrawide 21:9: on / off\n5  Edge smoothing (MetalFX Temporal): %@")),rate,picture,
+  taa_enabled()?@(TOTK_UI("开","on")):@(TOTK_UI("关","off"))];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
@@ -149,9 +151,12 @@ static NSString *shortcut_text(void){
  NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium],*small=[NSFont systemFontOfSize:10];
  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
  NSMutableAttributedString *a=[NSMutableAttributedString new];
- for(int i=0;i<3;i++){char t[128];int hl=0;if(!hud_snapshot(i,t,sizeof t,&hl))continue;
+ int full=fps_overlay_full_hud();   // key 1 minimal: the FPS line (line 0) only; the others keep their last text, so skip them
+ for(int i=0;i<3;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
- if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
+ if(!full){if(a.length)[a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the single FPS line
+  else [a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];}
+ else if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1],NSParagraphStyleAttributeName:gap}]];}
  else [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1]}]];
  if([a isEqualToAttributedString:self.label.attributedStringValue])return;
@@ -161,10 +166,45 @@ static NSString *shortcut_text(void){
 -(void)layout{[super layout];[self position];}
 -(void)position{if(!self.superview)return;NSRect f,in;
  if(hud_compact()){CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);in=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
- else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
+ else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=192;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
 @end
-void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
+/* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
+   ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
+   overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
+   the clock can be hidden by System Settings > Menu Bar). Independent of key 1; hidden in full screen with the menu bar.
+   TOTK_MENUBAR_FPS=0 leaves the menu bar alone. */
+extern int dm_gfx_fps_now(int *generated) __attribute__((weak_import));   // gfx/nvn/nvn_mtl.m (absent in tests)
+static NSMenu *fpsMenu;static NSMenuItem *fpsMenuItem;static NSTimer *fpsTimer;
+static int menubar_fps_enabled(void){const char *e=getenv("TOTK_MENUBAR_FPS");return !(e&&!strcmp(e,"0"));}
+static void front_menubar_fps_add(NSMenu *bar){   // from front_install_menu
+ if(!menubar_fps_enabled())return;
+ fpsMenu=[[NSMenu alloc] initWithTitle:@"FPS --"];
+ NSMenuItem *about=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("实时帧率（TOTK_MENUBAR_FPS=0 可隐藏）","Live frame rate (TOTK_MENUBAR_FPS=0 hides it)")) action:nil keyEquivalent:@""];
+ about.enabled=NO;[fpsMenu addItem:about];fpsMenu.autoenablesItems=NO;
+ fpsMenuItem=[[NSMenuItem alloc] initWithTitle:@"FPS --" action:nil keyEquivalent:@""];fpsMenuItem.submenu=fpsMenu;[bar addItem:fpsMenuItem];
+}
+/* TOTK_TITLE_FPS=1: the window title also ends in the frame rate ("Tears of the Kingdom  Mac — Ver. 1.4.3 — 60 FPS"),
+   kept after whatever title the game set. Off by default: the menu bar already shows it. */
+static int title_fps_enabled(void){const char *e=getenv("TOTK_TITLE_FPS");return e&&!strcmp(e,"1");}
+static NSString *titleBase,*titleShown;
+static void front_title_fps(NSString *fps){
+ if(!title_fps_enabled()||!window)return;
+ NSString *now=window.title;
+ if(!titleShown||![now isEqualToString:titleShown])titleBase=now;   // the game changed its title: keep that one as the base
+ titleShown=[NSString stringWithFormat:@"%@ — %@",titleBase,fps];
+ if(![now isEqualToString:titleShown])window.title=titleShown;
+}
+static void front_menubar_fps(void){   // starts the refresh once the window exists
+ if((!fpsMenu&&!title_fps_enabled())||fpsTimer)return;
+ fpsTimer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;
+  int gen=0,fps=dm_gfx_fps_now?dm_gfx_fps_now(&gen):-1;
+  NSString *title=fps<0?@"FPS --":gen>0?[NSString stringWithFormat:@"%d+%d FPS",fps,gen]:[NSString stringWithFormat:@"%d FPS",fps];
+  if(fpsMenu&&![fpsMenu.title isEqualToString:title]){fpsMenu.title=title;fpsMenuItem.title=title;}
+  front_title_fps(title);}];
+}
+void runtime_shortcut_help_toggle(void){int mode=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{   // key 1: all -> minimal (FPS only) -> off
+ shortcutHelp.hidden=mode==0||(mode==2&&!hud_compact());[(TOTKShortcutHelp *)shortcutHelp refresh];});}   // mode 0 off, 2 minimal (fps_overlay.h HUD_MODE_*)
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -211,7 +251,7 @@ static void front_install_menu(void){
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];NSApp.mainMenu=menu;
+ [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
@@ -247,6 +287,7 @@ void runtime_front_run(void(*callback)(void)){
   bootProgress.minValue=0;bootProgress.maxValue=100;bootProgress.indeterminate=YES;bootProgress.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
+  front_menubar_fps();
   shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.autoresizingMask=hud_compact()?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
   /* Keep discovery/warm-up visible; the help appears after the opaque boot
      overlay is hidden. Key 1 still controls its requested visibility. */

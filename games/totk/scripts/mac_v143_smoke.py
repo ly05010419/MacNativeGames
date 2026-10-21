@@ -76,7 +76,7 @@ def run_point(args, point):
     commands.write_text('')
     env = os.environ | {
         'TOTK_PROFILE_DIR': str(out/'profile'), 'TOTK_INPUT_FILE': str(commands),
-        'TOTK_SHADER_CACHE': str(ROOT/'build/shader-cache/rt-totk-native-v4-unverified'),
+        'TOTK_SHADER_CACHE': str(ROOT/'build/shader-cache/rt-totk-native-v6-unverified'),
         'TOTK_ROMFS_PROOF_DIR': str(args.output/'romfs-proof'),
         'TOTK_ASSUME_FOCUS': '1', 'TOTK_AUTOLOAD': '1', 'TOTK_FPS60': '1', 'TOTK_REALTIME': '1',
         'TOTK_MFX': '0', 'TOTK_MFX_UPSCALE': '0', 'TOTK_MFX_OUTPUT': '0', 'TOTK_OUTPUT_RES': 'auto',

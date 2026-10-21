@@ -361,6 +361,8 @@ static int output_res(unsigned *w, unsigned *h) {
     return on;
 }
 int runtime_output_res(unsigned *w, unsigned *h) { return !CODE_PATCHED_AT_BUILD && output_res(w, h); }
+/* Only 1.4.3 counts a bigger scene in its heaps (runtime_output_res_extra_bytes): no scene overlay here. */
+int runtime_render_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
 /* The canvas-sized render targets come from agl::utl::DynamicTextureAllocator (initialised once, main+0x8e1a98): a single
    heap of the HeapDef size "DynamicTextureAllocatorMem" (113664 KiB), carved from the "Graphics" heap (201728 KiB, the heap
    of gsys::SystemTask), with no parent to grow from. At 2560x1440 the title runs out of it (the allocator main+0x798934

@@ -37,9 +37,17 @@ static const Glyph FONT[] = {
     {' ', {0, 0, 0, 0, 0, 0, 0}},
 };
 
-static _Atomic int g_hints_visible = 1;
-int fps_overlay_hints_enabled(void) { return atomic_load_explicit(&g_hints_visible, memory_order_relaxed); }
-int fps_overlay_toggle_hints(void) { return !atomic_fetch_xor_explicit(&g_hints_visible, 1, memory_order_relaxed); }
+/* Key 1 cycles all -> minimal (FPS only) -> off -> all. */
+static _Atomic int g_hud_mode = HUD_MODE_ALL;
+int fps_overlay_hud_mode(void) { return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
+int fps_overlay_hints_enabled(void) { return fps_overlay_hud_mode() != HUD_MODE_OFF; }
+int fps_overlay_full_hud(void) { return fps_overlay_hud_mode() == HUD_MODE_ALL; }
+int fps_overlay_toggle_hints(void) {
+    int mode = atomic_load_explicit(&g_hud_mode, memory_order_relaxed), next;
+    do next = mode == HUD_MODE_ALL ? HUD_MODE_MINIMAL : mode == HUD_MODE_MINIMAL ? HUD_MODE_OFF : HUD_MODE_ALL;
+    while (!atomic_compare_exchange_weak_explicit(&g_hud_mode, &mode, next, memory_order_relaxed, memory_order_relaxed));
+    return next;
+}
 
 int fps_overlay_enabled(void) {
     static int on = -1;

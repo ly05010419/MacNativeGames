@@ -1,11 +1,12 @@
 /* Controller rumble and motion on the game's side (2026-10-17): the hid functions TOTK uses for HD rumble and for the
    six-axis sensor (motion aiming).
-   Opt-in at start, because the game asks for its vibration and six-axis handles only when a controller's style is set
+   Chosen at start, because the game asks for its vibration and six-axis handles only when a controller's style is set
    up (main+0x29b45cc, from the per-frame controller update main+0x29b442c), so they cannot appear later:
-     TOTK_RUMBLE=1  the controller has its two vibration devices (left, right); what the game plays goes to the Mac
+     TOTK_RUMBLE    the controller has its two vibration devices (left, right); what the game plays goes to the Mac
                     controller's haptics (runtime/gamepad_feedback.m);
-     TOTK_GYRO=1    the controller has its six-axis sensor; the game gets the Mac controller's motion.
-   Off (the default) the game sees neither, exactly as before (no handles, nothing below is called).
+     TOTK_GYRO      the controller has its six-axis sensor; the game gets the Mac controller's motion.
+   Both are on by default (env_on below); =0 turns one off, and the game then does not get that device, exactly as before
+   (no handles for it, its code below is not called).
    While the game runs, "flag rumble 0|1" / "flag gyro 0|1" mute and unmute them (muted motion = a controller lying still).
    The handles are the SDK's own: nn::hid::utility computes them without the hid service (byte 0 = style index, 3 full-key,
    4 handheld; byte 1 = controller id; byte 2 = device index: vibration 0 left / 1 right, six-axis 2). Everything under

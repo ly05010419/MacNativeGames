@@ -10,15 +10,12 @@ looked up by name (main+0x1123b70 -> main+0x8119b0):
 At 2560x1440 the title already runs out of the texture heap (crash at main+0x799390). This overlay scales
 DynamicTextureAllocatorMem with the output pixels (rounded up to whole MiB) and grows Graphics by the same amount; the
 runtime adds that amount to the application memory pool it reports (runtime/services.c), so no other heap shrinks. The
-values are the same formula as runtime_output_res_extra_bytes() (runtime/game_patches.c): keep the two in step.
+values are the same formula as runtime_output_res_extra_bytes() (runtime/game_patches.c; with --scene, 1.4.3 only:
+runtime/game_patches_v143.c): keep the two in step.
 
---scene <w>x<h> (1.4.3, game_patches_v143.c): the same allocator also holds the 3D scene's render targets (1600x900 docked
-in the shipped heap). A scene rendered at the output size ("native 2K" renders the scene at 2560x1440) needs the heap
-scaled with the scene pixels instead: 1.35 x (the scene / 1600x900 pixel ratio + the canvas pixels beyond 2560x1440 /
-1920x1080), measured 2026-10-19: 384 MiB for a 2560x1440 scene and canvas loaded and played; a 3840x2160 scene and
-canvas ran out of 640 MiB at once and of 1 GiB after turning the camera (this gives it 1.2 GiB; the 3200x1800 and
-3840x2160 sizes are for Macs with 24 / 32 GB and were not played on the 16 GB test Mac). The manifest's header records
-the scene size and the added KiB; the 1.4.3 runtime takes both from there instead of repeating the formula.
+--scene <w>x<h> (1.4.3): the same allocator also holds the 3D scene's render targets (1600x900 docked in the shipped heap).
+The overlay <canvas>-scene-<w>x<h> has room for a scene of that size: TOTK_RENDER_RES, or with it unset the biggest size
+key 3 picks, the canvas size (the runtime asks for <canvas>-scene-<canvas>).
 
 Input: the IVFC-verified local RomFS image (extracted/v0/romfs). Output: extracted/v0/romfs-patches-out/<w>x<h>/<path>
 and manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original); game content stays in the ignored folder.
@@ -32,28 +29,33 @@ BASE_W, BASE_H = 1920, 1080
 HEAPDEF = 'System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs'
 DTA_KIB, GRAPHICS_KIB = 113664, 201728   # the shipped values, checked below
 
-SCENE_W, SCENE_H, SCENE_MARGIN = 1600, 900, 1.35   # the shipped docked scene size; see --scene above
+SCENE_W, SCENE_H = 1600, 900   # the game's docked scene render size (TOTK_RENDER_RES, 1.4.3)
 
-def extra_kib(w, h, scene=None):
-    """KiB added to DynamicTextureAllocatorMem (and to Graphics, and to the application pool) for a w x h output."""
-    ratio = w * h / (BASE_W * BASE_H)
-    if scene: ratio = max(ratio, (scene[0] * scene[1] / (SCENE_W * SCENE_H) + max(0, w * h - 2560 * 1440) / (BASE_W * BASE_H)) * SCENE_MARGIN)
-    if ratio <= 1: return 0
-    return math.ceil(DTA_KIB * ratio / 1024) * 1024 - DTA_KIB
+def extra_kib(w, h, sw=0, sh=0):
+    """KiB added to DynamicTextureAllocatorMem (and to Graphics, and to the application pool) for a w x h output and an
+    optional sw x sh scene: each grows the heap by its pixel ratio above the shipped size, a bigger scene with a 1.6
+    margin (runtime_output_res_extra_bytes, runtime/game_patches_v143.c)."""
+    scene = sw * sh > SCENE_W * SCENE_H
+    grow = max(0, w * h / (BASE_W * BASE_H) - 1) + (sw * sh / (SCENE_W * SCENE_H) - 1 if scene else 0)
+    if grow <= 0: return 0
+    if scene: grow *= 1.6
+    return math.ceil(DTA_KIB * (1 + grow) / 1024) * 1024 - DTA_KIB
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('size', help='<width>x<height>, e.g. 2560x1440')
 parser.add_argument('--output-root', type=Path, default=root / 'extracted/v0/romfs-patches-out')
 parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
-parser.add_argument('--scene', help='<width>x<height>: also room for a 3D scene of this size (1.4.3)')
+parser.add_argument('--scene', help='<width>x<height> scene render size (TOTK_RENDER_RES or key 3, 1.4.3) the heaps must also hold')
 args = parser.parse_args()
 version = args.version
 if args.output_root == root / 'extracted/v0/romfs-patches-out': args.output_root = root / f'extracted/{version}/romfs-patches-out'
 w, h = (int(v) for v in args.size.lower().split('x'))
+sw, sh = (int(v) for v in args.scene.lower().split('x')) if args.scene else (0, 0)
+scene_dir = f'-scene-{sw}x{sh}' if sw * sh > SCENE_W * SCENE_H else ''
 assert 640 <= w <= 7680 and 360 <= h <= 4320, 'size out of range'
-scene = tuple(int(v) for v in args.scene.lower().split('x')) if args.scene else None
-assert not scene or (64 <= scene[0] <= 4096 and 64 <= scene[1] <= 4096), 'scene size out of range'
+assert not args.scene or version == 'v143', '--scene: only 1.4.3 renders its scene at a size of its own'
+assert not args.scene or (64 <= sw <= 4096 and 64 <= sh <= 4096), 'scene size out of range (TOTK_RENDER_RES: 64..4096)'
 manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
 assert manifest['status'] == 'pass'
 files = {f['path']: f for f in manifest['files']}
@@ -103,8 +105,8 @@ def size_field(heap): return field(child(heaps, heap), 'Size', 0xd1)
 dta_at, graphics_at = size_field('DynamicTextureAllocatorMem'), size_field('Graphics')
 dta, graphics = (struct.unpack_from('<i', byml, a)[0] for a in (dta_at, graphics_at))
 assert (dta, graphics) == (DTA_KIB, GRAPHICS_KIB), (dta, graphics)
-extra = extra_kib(w, h, scene)
-assert extra > 0, 'the output is not bigger than 1920x1080: no overlay needed'
+extra = extra_kib(w, h, sw, sh)
+assert extra > 0, 'neither the output nor the scene is bigger than the shipped size: no overlay needed'
 struct.pack_into('<i', byml, dta_at, dta + extra)
 struct.pack_into('<i', byml, graphics_at, graphics + extra)
 original = zstd.decompress(raw, zstd_dict=dictionary)
@@ -113,12 +115,10 @@ assert diff and all(dta_at <= i < dta_at + 4 or graphics_at <= i < graphics_at +
 data = zstd.compress(bytes(byml), level=19, zstd_dict=dictionary)
 assert zstd.decompress(data, zstd_dict=dictionary) == bytes(byml)
 assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id and zstd.get_frame_info(data).decompressed_size == len(byml)
-out_dir = args.output_root / f'{w}x{h}'
+out_dir = args.output_root / f'{w}x{h}{scene_dir}'
 target = out_dir / HEAPDEF; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
 line = '\t'.join([HEAPDEF, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()])
-header = f'# path\tsize\tsha256\toriginal_sha256 (generated by scripts/make_output_res_overlay.py {w}x{h})'
-if scene: header += f' scene={scene[0]}x{scene[1]} extra_kib={extra}'
-(out_dir / 'manifest.tsv').write_text(header + '\n' + line + '\n')
-print(json.dumps(dict(status='pass', output=f'{w}x{h}', scene=f'{scene[0]}x{scene[1]}' if scene else None, path=HEAPDEF, extra_kib=extra,
+(out_dir / 'manifest.tsv').write_text(f'# path\tsize\tsha256\toriginal_sha256 (generated by scripts/make_output_res_overlay.py {w}x{h}{" --scene " + args.scene if args.scene else ""})\n' + line + '\n')
+print(json.dumps(dict(status='pass', output=f'{w}x{h}', path=HEAPDEF, extra_kib=extra,
                       DynamicTextureAllocatorMem_kib=[dta, dta + extra], Graphics_kib=[graphics, graphics + extra],
                       size=len(data), changed_bytes=len(diff), dir=str(out_dir))))

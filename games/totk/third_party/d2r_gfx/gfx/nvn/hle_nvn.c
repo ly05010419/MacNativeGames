@@ -2361,13 +2361,13 @@ static int cap_mode(void) {
     }
     return m;
 }
-/* A frame rate the game itself needs at the moment, 0 = none (runtime/game_patches_botw.c: 30 while Breath of the Wild
-   plays a pre-rendered movie, which advances one movie frame per game frame). Weak: Tears of the Kingdom has none. */
+/* A frame rate the game itself needs at the moment (runtime/game_patches_botw.c: 30 while Breath of the Wild plays a
+   pre-rendered movie, which advances one movie frame per game frame). The game is then paced exactly as in the 30+30
+   mode, without the interpolation, whatever the cap. Weak: Tears of the Kingdom has none. */
 __attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
+static int game_holds_30(void) { return runtime_game_fps_limit() == 30; }
 static int cap_ticks(void) {   /* display ticks per game frame under a cap; 0 = no cap */
     if (!g_uncapped || g_paced_hz <= 0) return 0;
-    int lim = runtime_game_fps_limit();
-    if (lim > 0) return (g_paced_hz + lim - 1) / lim;   /* the whole number of ticks at or under that rate (240 Hz: 8, 30 fps) */
     int m = cap_mode();
     return m == -1 ? atomic_load(&g_auto_k) : m > 0 ? m : 0;
 }
@@ -2435,10 +2435,10 @@ int nvn_frame_mode(int *fps) {
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). A frame-rate cap
    (cap_ticks) also suspends it: the game then waits for its display tick. */
-static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && (m == MFX_MAX || (m == MFX_OFF && !cap_ticks())); }
+static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_holds_30() && (m == MFX_MAX || (m == MFX_OFF && !cap_ticks())); }
 /* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
    30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
-static int mfx_own_clock(void) { return mfx_enabled() == MFX_30 && (g_paced_hz <= 0 || g_paced_hz % 30); }
+static int mfx_own_clock(void) { return (mfx_enabled() == MFX_30 || game_holds_30()) && (g_paced_hz <= 0 || g_paced_hz % 30); }
 /* Opt-in until live scene/clock validation (Breath of the Wild: on by default, UNCAPPED_INTERVAL_FROM_ENV in nvn_obj.h).
    Only applies to the existing Mac real-time uncapped path; original timing, MetalFX and deterministic tests
    retain the guest interval. GPU/texture lifetime waits are unchanged. */
@@ -2738,7 +2738,11 @@ void set_time_constraint_comp_x(uint64_t period_ns, uint64_t comp_ns) {
     LOG("[nvn] 翻译线程时间约束策略（周期 %.3f ms、计算 %.3f ms）%s", period_ns / 1e6, comp_ns / 1e6, kr == KERN_SUCCESS ? "已设" : "设置失败");
 }
 static int rt_comp_fixed_ms(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_RT_COMP"); v = e && *e && strcmp(e, "auto") ? atoi(e) : -1; } return v; }   // −1 = auto
-static void set_time_constraint(uint64_t period_ns) { int f = rt_comp_fixed_ms(); set_time_constraint_comp(period_ns, f > 0 ? (uint64_t)f * 1000000ull : 2000000ull); }   // 首次：固定值，或 auto 的起始值 2 ms | first time: the fixed value, or auto's starting value of 2 ms
+/* The fixed value; in auto mode the computation declared so far, and auto's starting value of 2 ms only the first time.
+   TOTK (from nxnative 04ea8f8): resetting to 2 ms at each period change (the game's present interval 1 <-> 2, key 2's
+   modes) under-declared the thread until the next p90 window (120 frames); nxnative measured an iPhone then moving the
+   game to the efficiency cores (3.4 -> 1.5 GHz, 60 -> 23-30 fps), from which it did not come back. */
+static void set_time_constraint(uint64_t period_ns) { int f = rt_comp_fixed_ms(); set_time_constraint_comp(period_ns, f > 0 ? (uint64_t)f * 1000000ull : g_rt_comp_ms > 0 ? (uint64_t)(g_rt_comp_ms * 1e6) : 2000000ull); }
 // 每帧在取图处调：记本线程自上次以来的 CPU 时间；auto 模式下按 p90 重新声明
 // Called every frame at acquire: records this thread's CPU time since the last call; in auto mode re-declares based on p90
 static void rt_comp_tick(uint64_t period_ns) {
@@ -2816,8 +2820,8 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
        mfx_own_clock). Held here and not only by the game's controller, because the code carries the 60 FPS patch (the
        controller may choose 1); the real-time frame step keeps game speed right. Uncapped interpolation paces as uncapped. */
     int m = mfx_enabled();
-    if (m == MFX_HALF) return 2;
-    if (m == MFX_30) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
+    if (m == MFX_HALF && !game_holds_30()) return 2;
+    if (m == MFX_30 || game_holds_30()) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
     if (m == MFX_OFF && !dm_detclock_enabled()) { int k = cap_ticks(); if (k) return (unsigned)k; }   /* frame-rate cap: every k-th tick, whatever interval the game asks for */
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
@@ -2828,7 +2832,7 @@ static uint64_t present_period(const win_t *o) {
                                     m == MFX_HALF ? "补帧 刷新率一半：跟随显示器、每两次刷新一帧" :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
-    if (m == MFX_30) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
+    if (m == MFX_30 || game_holds_30()) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
 /* Exercise production policy, including the shrine's interval=2 and the

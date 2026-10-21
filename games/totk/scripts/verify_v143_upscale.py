@@ -12,7 +12,7 @@ KEY = 'ac58fc18eda5f3878b16074dc28cd441644a66710f1b73954d39e57ac357561b-86e45adf
 
 def main():
     os.chdir(ROOT)
-    cache = ROOT / 'build/shader-cache/rt-totk-native-v4-unverified'
+    cache = ROOT / 'build/shader-cache/rt-totk-native-v6-unverified'
     code = cache / (KEY + '.code')
     assert hashlib.sha256(code.read_bytes()).hexdigest() == 'a8835fa299e9033df670842ad00a1799353cd504817caf06f171152bee67f2b3'
     reflection = json.loads((cache / (KEY + '_b.json')).read_text())

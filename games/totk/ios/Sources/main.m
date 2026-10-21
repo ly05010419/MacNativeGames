@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <math.h>
 #include "runtime.h"
+#include "dmsh_chain.h"
 #import "touch_pad.h"
 
 int totk_host_main(int argc, char **argv);
@@ -36,6 +37,16 @@ void runtime_shortcut_help_toggle(void) {}
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     static BOOL started; if (started) return; started = YES;
+    /* Playback category (PR #97): plays with the ring / silent switch off and routes to the speaker. Without an active
+       session the game's CoreAudio output stays on a null sink on iOS 27 ("no device sink in use"); activating it in
+       didFinishLaunching blocked the main thread before the log file was opened. Interruptions: audio_observe. */
+    AVAudioSession *audio = AVAudioSession.sharedInstance;
+    NSError *catErr = nil, *actErr = nil;
+    [audio setCategory:AVAudioSessionCategoryPlayback mode:AVAudioSessionModeDefault options:0 error:&catErr];
+    BOOL activated = [audio setActive:YES error:&actErr];
+    fprintf(stderr, "[totk-audio] audio session category=%s active=%d route=%s err=%s%s\n",
+            audio.category.UTF8String ?: "?", (int)activated, audio.currentRoute.outputs.firstObject.portType.UTF8String ?: "?",
+            catErr ? catErr.localizedDescription.UTF8String : "none", actErr ? actErr.localizedDescription.UTF8String : "");
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 64u << 20);
     pthread_t thread; pthread_create(&thread, &attr, run_host, NULL);
     pthread_detach(thread); pthread_attr_destroy(&attr);
@@ -57,6 +68,33 @@ void runtime_shortcut_help_toggle(void) {}
 }
 @end
 
+/* Game audio after interruptions (from nxnative b301431). A call, Siri or an alarm takes the audio session and the
+   system stops the game's output unit; a media services reset invalidates it. Nothing started it again, so the game
+   stayed silent. When an interruption ends the session is made active again and the output started
+   (runtime_audio_output_restart); a reset rebuilds the output. Becoming active does the same, for an interruption
+   whose "ended" never came. Becoming active also turns the idle timer off again. */
+static BOOL g_audio_interrupted;
+static void audio_resume(int recreate, const char *why) {
+    NSError *err = nil;
+    if (![AVAudioSession.sharedInstance setActive:YES error:&err]) fprintf(stderr,"[totk-audio] audio session not active again (%s): %s\n",why,err.localizedDescription.UTF8String);
+    g_audio_interrupted = NO; runtime_audio_output_restart(recreate);
+}
+static void audio_observe(void) {
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter; NSOperationQueue *main = NSOperationQueue.mainQueue;
+    [nc addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:main usingBlock:^(NSNotification *n) {
+        NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+        fprintf(stderr,"[totk-audio] audio session interruption %s\n",type == AVAudioSessionInterruptionTypeBegan ? "began" : "ended");
+        if (type == AVAudioSessionInterruptionTypeBegan) g_audio_interrupted = YES; else audio_resume(0,"interruption ended");
+    }];
+    [nc addObserverForName:AVAudioSessionMediaServicesWereResetNotification object:nil queue:main usingBlock:^(NSNotification *n) {
+        (void)n; fprintf(stderr,"[totk-audio] media services were reset\n"); audio_resume(1,"media services reset");
+    }];
+    [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:main usingBlock:^(NSNotification *n) {
+        (void)n; UIApplication.sharedApplication.idleTimerDisabled = YES;
+        if (g_audio_interrupted) audio_resume(0,"became active during an interruption");
+    }];
+}
+
 @interface TOTKApp : UIResponder <UIApplicationDelegate> @end
 @implementation TOTKApp
 - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
@@ -68,6 +106,10 @@ void runtime_shortcut_help_toggle(void) {}
     (void)options;
     // Controller input does not reset the idle timer; auto-lock would suspend the game mid-play or mid shader import.
     application.idleTimerDisabled = YES;
+    audio_observe();
+    /* The Mac launcher passes the preferred language as TOTK_LOCALE (PR #97); "zh-Hans-CN" maps to zh-Hans in services.c. */
+    NSString *preferred = NSLocale.preferredLanguages.firstObject;
+    if (preferred.length) setenv("TOTK_LOCALE", preferred.UTF8String, 1);
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
     NSString *res = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"GameData"];
@@ -80,7 +122,25 @@ void runtime_shortcut_help_toggle(void) {}
     setenv("TOTK_ROMFS_PATCHES_OUT",[res stringByAppendingPathComponent:@"romfs-patches-out"].fileSystemRepresentation,1);
     setenv("TOTK_SHARED_FONTS",[res stringByAppendingPathComponent:@"shared-fonts"].fileSystemRepresentation,1);
     setenv("TOTK_SHADER_SEED_DIR",[res stringByAppendingPathComponent:@"shader-seed"].fileSystemRepresentation,1);
-    setenv("TOTK_SHADER_CACHE",[docs stringByAppendingPathComponent:@"shader-cache"].fileSystemRepresentation,1);
+    /* One folder per translation chain, as on the Mac: the runtime refuses translations of another chain, and the seed
+       import keeps files that are already there. Builds before the v5 chain (2026-10-20) kept them directly in
+       shader-cache; those, and other chains' folders, are only cache and are removed in the background. */
+    NSString *cacheRoot = [docs stringByAppendingPathComponent:@"shader-cache"], *chainDir = @"rt-" DMSH_CHAIN;
+    NSString *cache = [cacheRoot stringByAppendingPathComponent:chainDir];
+    /* Test launches (devicectl --environment-variables '{"TOTK_SHADER_CACHE":"cache-test/1"}') can name another folder
+       in Documents, e.g. an empty one to time a first start; it lies outside shader-cache, so the cleanup leaves it. */
+    const char *testCache = getenv("TOTK_SHADER_CACHE");
+    if (testCache && *testCache && !strstr(testCache, "..")) cache = [docs stringByAppendingPathComponent:@(testCache)];
+    [fm createDirectoryAtPath:cache withIntermediateDirectories:YES attributes:nil error:nil];
+    setenv("TOTK_SHADER_CACHE",cache.fileSystemRepresentation,1);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
+        NSFileManager *files = [NSFileManager new]; NSUInteger removed = 0;
+        for (NSString *name in [files contentsOfDirectoryAtPath:cacheRoot error:nil] ?: @[]) {
+            if ([name isEqualToString:chainDir]) continue;
+            if ([files removeItemAtPath:[cacheRoot stringByAppendingPathComponent:name] error:nil]) removed++;
+        }
+        if (removed) fprintf(stderr,"[shader-cache] removed %lu entries of earlier translation chains\n",(unsigned long)removed);
+    });
     // Shaders the shared list lacks (totk_shader_contrib.h), in the Files app for players who want to send them; only the Mac asks.
     setenv("TOTK_SHADER_CONTRIB",[docs stringByAppendingPathComponent:@"shader-list-contribution.txt"].fileSystemRepresentation,1);
     setenv("DM_NVN_SHMAP",[res stringByAppendingPathComponent:@"shader-seed/shader_map.tsv"].fileSystemRepresentation,1);

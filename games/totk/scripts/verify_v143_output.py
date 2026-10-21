@@ -103,7 +103,8 @@ def main():
         'build/v143-output-fixture', 'rewritten/v143/main.patched.bin', str(target),
         str(layout['TEXT_END']),
     ], capture_output=True, text=True, check=True,
-        env=clean_env() | {'TOTK_REALTIME': '1', 'TOTK_FPS60': '1', 'TOTK_OUTPUT_RES': '2560x1440'})
+        env=clean_env() | {'TOTK_REALTIME': '1', 'TOTK_FPS60': '1', 'TOTK_OUTPUT_RES': '2560x1440',
+                           'TOTK_CLOTH_REALTIME': '0', 'TOTK_HIGHFPS_FIX': '0'})   # their words: verify_v143_timing.py
     (out / 'output-fixture.log').write_text(run.stdout + run.stderr)
     patched = target.read_bytes()
     data = (len(raw) + 0x3fff) & ~0x3fff
@@ -116,11 +117,9 @@ def main():
     assert raw[frame_step:stub + 28] == bytes(stub + 28 - frame_step), \
         'veneer padding not empty in the rewritten image'
     changes = {p for p in range(0, len(raw), 4) if raw[p:p+4] != patched[p:p+4]}
-    # An overlay built with --scene lets the native mode render the scene at the output size: the render-size patch
-    # (four sites, and a 3-word veneer keeping the renderer at data +48, at +288) is installed too,
-    # starting at 2560x1440 here.
-    header = (ROOT / 'extracted/v143/romfs-patches-out/2560x1440/manifest.tsv').read_text().split('\n', 1)[0]
-    scene_follow = ' scene=2560x1440 ' in header + ' '
+    # With the output patch on, key 3 picks the scene size: the render-size patch (four sites, and a 3-word veneer keeping
+    # the renderer at data +48, at +288) is installed too, starting at 1920x1080 on the 2560x1440 canvas.
+    scene_follow = True
     # The ultrawide patch (runtime/aspect_patch.h, key 4) is installed on every Mac run: four camera sites and a 32-byte
     # stub each in the text padding from +48; the scene veneer is at +288 (after the cloth/hair clock at +176 and the bounce veneer at +256).
     aspect_sites = {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0} | {frame_step + 48 + 4 * i for i in range(32)}
@@ -133,7 +132,8 @@ def main():
     } | {frame_step + 4 * i for i in range(4)} | {stub + 4 * i for i in range(7)} | render_sites | aspect_sites
     assert changes == want, [hex(p) for p in sorted(changes ^ want)]
     if scene_follow:
-        assert struct.unpack('<ff', patched[data + 16:data + 24]) == (2560.0, 1440.0)
+        # the game scales the scene by the canvas width / 1920, so the data page holds 1920x1080 divided by that
+        assert all(abs(got - want) < 0.01 for got, want in zip(struct.unpack('<ff', patched[data + 16:data + 24]), (1440.0, 810.0)))
         assert struct.unpack('<I', patched[vstub + 4:vstub + 8])[0] == 0xf9001873   # str x19, [x3, #48]
         assert struct.unpack('<I', patched[0x585e48:0x585e4c])[0] >> 26 == 0b000101   # b <veneer>
 

@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import plistlib
 import struct
@@ -27,6 +28,14 @@ def update_nca(managed=True):
     header[0x2a0:0x2c0] = hashlib.sha256(header[0x600:0x800]).digest()
     return b''.join(encrypt(HEADER, modes.XTS(i.to_bytes(16, 'big')), header[i*512:(i+1)*512])
                     for i in range(6)) + data[0xc00:]
+
+
+def fake_data_bundle(tree, version, _logs, **_names):
+    """build_app.data_bundle without the 16 GB image or codesign: an empty bundle folder."""
+    bundle = tree / f'build/data-bundles/GameData-{version}.bundle'
+    (bundle / 'Contents/Resources').mkdir(parents=True, exist_ok=True)
+    (bundle / 'Contents/Resources/romfs.bin').write_bytes(b'image')
+    return bundle
 
 
 class Updates(unittest.TestCase):
@@ -224,7 +233,7 @@ class Updates(unittest.TestCase):
                     p=tree/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
                 import hashlib
                 (tree/f'build/shader-seed/{version}/seed-manifest.json').write_text(json.dumps(dict(
-                    version=version, chain='totk-native-v4-unverified', shaders=8000,
+                    version=version, chain='totk-native-v6-unverified', shaders=8000,
                     files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
                 with patch.object(build_app, 'sign_app') as signing:
                     build_app.step_app(tree,out,self.root/'logs',version=version)
@@ -246,12 +255,12 @@ class Updates(unittest.TestCase):
         import hashlib
         (tree/'build/shader-seed/v143/pso_manifest.tsv').write_bytes(b'test')
         (tree/'build/shader-seed/v143/seed-manifest.json').write_text(json.dumps(dict(
-            version='v143',chain='totk-native-v4-unverified',shaders=8000,
+            version='v143',chain='totk-native-v6-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_bytes(b'synthetic payload')
-        with patch.object(build_app,'clone',side_effect=fake_clone), \
+        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone), \
              patch.object(build_app,'sign_app',side_effect=build_app.BuildError('seal rejected')):
             with self.assertRaisesRegex(build_app.BuildError,'seal rejected'):
                 build_app.step_app(tree,out,self.root/'logs',version='v143')
@@ -261,7 +270,7 @@ class Updates(unittest.TestCase):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
-        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v112',chain='totk-native-v4-unverified',shaders=1,files={'x':'0'*64})))
+        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v112',chain='totk-native-v6-unverified',shaders=1,files={'x':'0'*64})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'synthetic payload')
         with patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app') as signing:
@@ -277,7 +286,7 @@ class Updates(unittest.TestCase):
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
         (seed/'pso_manifest.tsv').write_bytes(b'test')
-        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v4-unverified',shaders=8000,
+        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v6-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'new app')
@@ -286,11 +295,29 @@ class Updates(unittest.TestCase):
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
-        with patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'), \
+        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
             build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual(len(checks),2);pause.assert_called_once_with(2)
         self.assertEqual(old.read_bytes(),b'new app')
+
+    def test_remove_tree_retries_when_a_file_reappears(self):
+        path = self.root/'bundle.app'
+        path.mkdir()
+        (path/'keep').write_text('x')
+        calls = {'n': 0}
+        original = shutil.rmtree
+        def flaky(target, *args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise OSError(66, 'Directory not empty')
+            original(target)
+        with patch.object(build_app.shutil, 'rmtree', side_effect=flaky), \
+             patch.object(build_app.time, 'sleep') as pause:
+            build_app.remove_tree(path)
+        self.assertFalse(path.exists())
+        self.assertEqual(calls['n'], 2)
+        pause.assert_called_once_with(0.2)
 
 
 

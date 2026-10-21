@@ -19,6 +19,7 @@ void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);
 void runtime_gpu_path_probe(const char *which);
 void runtime_audio_probe(void);
+void runtime_audio_output_restart(int recreate);   /* audio_mixer.c: start the outputs again after an audio session interruption (iOS) */
 void *runtime_hle_wrap(void *fn);
 void runtime_hle_stack_set(uintptr_t top);
 void *runtime_font_override(const char *name);
@@ -93,6 +94,7 @@ void runtime_boot_count(const char *stage,uint64_t done,uint64_t total);   /* a 
    adds to the texture heap and to Graphics, and so to the application pool (runtime/services.c). */
 int runtime_output_res(unsigned *w,unsigned *h);
 uint64_t runtime_output_res_extra_bytes(void);
+int runtime_render_res(unsigned *w, unsigned *h);   /* the scene size the heaps must hold: TOTK_RENDER_RES, or key 3's biggest, the canvas (1.4.3 on the Mac; 0 elsewhere) */
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
 int runtime_output_mode_cycle(void);                    /* key 3: 1.4.3 the render resolution; others MetalFX 2K -> native 2K -> off */
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
@@ -103,7 +105,9 @@ void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one 
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
 void runtime_shortcut_help_toggle(void);
-int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
+int fps_overlay_toggle_hints(void);   /* key 1: all -> minimal (FPS only) -> off; returns the new mode, 0 = off */
+int fps_overlay_hud_mode(void);
+int fps_overlay_full_hud(void);
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */

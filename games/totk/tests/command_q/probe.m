@@ -18,6 +18,11 @@ uint64_t dm_nvn_frame_count(void){return 0;}
 int fps_overlay_toggle_hints(void){return 0;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
+int fps_overlay_full_hud(void){return 1;}
+int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
+int mfx_enabled(void){return 0;}
+int mfxup_output_enabled(void){return 0;}
+uint64_t runtime_output_size_current(void){return 1920|(uint64_t)1080<<32;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

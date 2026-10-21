@@ -16,7 +16,7 @@ command = [
     "--dotnet", str(ROOT / "tooling/dotnet/dotnet"),
     "--xlate", str(ROOT / "build/totk_xlate/totk_xlate.dll"),
     "--spirv-cross", str(ROOT / "build/spirv-cross/spirv-cross"),
-    "--out", str(OUT), "--chain", "totk-native-v4-unverified",
+    "--out", str(OUT), "--chain", "totk-native-v6-unverified",
 ]
 results = []
 with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, cwd=ROOT) as service:

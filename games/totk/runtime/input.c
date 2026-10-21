@@ -33,12 +33,13 @@ static void user_input(const char *what){
    fixed caps, uncapped, then MetalFX frame interpolation 30+30 -> half the refresh rate -> uncapped (hle_nvn.c
    nvn_frame_mode_cycle). Key 3 (key code 20) cycles the picture (runtime_output_mode_cycle; 1.4.3: the render
    resolution, MetalFX scaling it up). Held-key repeats do not cycle. */
-enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21 };   /* 21: key 4, ultrawide on / off (aspect_patch.h) */
+enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21, KEY_TAA_TOGGLE = 23 };   /* 21: key 4, ultrawide on / off (aspect_patch.h); 23: key 5, MetalFX temporal anti-aliasing (totk_taa.m) */
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
  if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("frame_mode",-1);}
  if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
- if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();}
+ if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();
+ if(press&&code==KEY_TAA_TOGGLE){extern void taa_toggle(void);taa_toggle();}}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}

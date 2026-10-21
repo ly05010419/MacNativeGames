@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -28,7 +29,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shader_list import ShaderList   # noqa: E402
 
-CHAIN = 'totk-native-v4-unverified'
+CHAIN = 'totk-native-v6-unverified'
 MIN_SHADERS = 8000
 ZSTD = b'\x28\xb5\x2f\xfd'
 YAZ0 = b'Yaz0'
@@ -52,6 +53,57 @@ SUFFIX = suffix(ANSWERS)
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def shader_key_scope(keys, version, source_romfs_sha256, *, chain=CHAIN):
+    """The raw shader keys belonging to this game, including shaders not translated into the seed.
+
+    This is deliberately independent of the startup/bind-state translation plan. A valid shader may fail translation,
+    or only be needed when entering a later area; it still belongs to this game and may have usable cached variants.
+    It can also be used to publish metadata from a previously saved, verified inventory without translating it again.
+    """
+    if chain != CHAIN:
+        raise ValueError('shader key scope translation chain mismatch')
+    if not isinstance(version, str) or not version or version != version.strip():
+        raise ValueError('invalid shader key scope game version')
+    if not isinstance(source_romfs_sha256, str) or not re.fullmatch('[0-9a-f]{64}', source_romfs_sha256):
+        raise ValueError('invalid shader key scope RomFS hash')
+    if isinstance(keys, (str, bytes)):
+        raise ValueError('shader key scope requires a collection of raw shader hashes')
+    values = set()
+    for key in keys:
+        if not isinstance(key, str) or not re.fullmatch('[0-9a-f]{64}', key):
+            raise ValueError('invalid raw shader key')
+        values.add(key)
+    if not values:
+        raise ValueError('empty shader key scope')
+    return dict(schema=1, chain=chain, version=version, source_romfs_sha256=source_romfs_sha256, keys=sorted(values))
+
+
+def reusable_seed(output, identity, min_shaders=MIN_SHADERS):
+    """Return a verified seed manifest, or None when it must be prepared again."""
+    marker = output/'seed-manifest.json'
+    if not marker.is_file():
+        return None
+    try:
+        old = json.loads(marker.read_text())
+        files = old.get('files', {})
+        # Older seeds lack the complete raw-key inventory. Their successful translation rows are not a substitute.
+        if not isinstance(files, dict) or 'shader-keys.json' not in files:
+            return None
+        if not all(old.get(k) == v for k, v in identity.items()) or old.get('shaders', 0) < min_shaders:
+            return None
+        if not all((output/name).is_file() and digest((output/name).read_bytes()) == sha for name, sha in files.items()):
+            return None
+        scope = json.loads((output/'shader-keys.json').read_text())
+        if scope.get('schema') != 1 or scope.get('version') != identity['version'] or \
+                scope.get('source_romfs_sha256') != identity['source_romfs_sha256']:
+            return None
+        if shader_key_scope(scope['keys'], scope['version'], scope['source_romfs_sha256'], chain=scope.get('chain')) != scope:
+            return None
+        return old
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def checked(data, offset, size):
@@ -389,13 +441,10 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                     spirv_cross_sha256=digest(spirv_cross.read_bytes()),
                     preparation_sha256=digest(Path(__file__).read_bytes()),
                     shader_list_sha256=digest(Path(shader_list).read_bytes()) if Path(shader_list).is_file() else None)
-    marker = output/'seed-manifest.json'
-    if marker.exists():
-        old = json.loads(marker.read_text())
-        if all(old.get(k) == v for k, v in identity.items()) and old.get('shaders', 0) >= min_shaders and all(
-                (output/name).is_file() and digest((output/name).read_bytes()) == sha for name, sha in old['files'].items()):
-            print(f'reusing {old["shaders"]} verified prepared startup shaders', flush=True)
-            return old
+    old = reusable_seed(output, identity, min_shaders)
+    if old is not None:
+        print(f'reusing {old["shaders"]} verified prepared startup shaders', flush=True)
+        return old
     staging = output.with_name(output.name+'.partial')
     if staging.exists():
         shutil.rmtree(staging)
@@ -504,12 +553,14 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     for p in staging.iterdir():
         if p.name not in wanted:
             p.unlink(missing_ok=True)
+    scope = shader_key_scope(shaders, version, identity['source_romfs_sha256'])
+    (staging/'shader-keys.json').write_text(json.dumps(scope, separators=(',', ':'))+'\n')
     (staging/'pso_manifest.tsv').write_text('# Prepared from this app\'s local game data; '+CHAIN+'\n'+'\n'.join(rows)+'\n')
     # On filesystems without native extended-attribute support (exFAT, FAT32), macOS can
     # transparently create "._name" AppleDouble sidecar files for anything written here,
     # including pso_manifest.tsv itself. Exclude them so the manifest's own file list never
     # ships a name the runtime's strict filename check (totk_shader_seed.h) would reject.
-    wanted_final = wanted | {'pso_manifest.tsv'}
+    wanted_final = wanted | {'pso_manifest.tsv', 'shader-keys.json'}
     report = dict(**identity, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
                   listed_variants=sum(1 for _, _, _, why in jobs if why == 'listed'), skipped=failed,
                   archives=archives, seconds=time.monotonic()-started,

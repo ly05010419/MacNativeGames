@@ -35,9 +35,11 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--output-dir', type=Path, default=root / 'extracted/v0/romfs-patches')
 parser.add_argument('--capture-frame', type=float, default=0.0)
 parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+parser.add_argument('--aspect', type=str.lower, help='<width>x<height> of a canvas wider than 16:9: also lay the UI out for it (scripts/ultrawide_layout.py); default output romfs-patches-<width>x<height> (-center with --hud center)')
+parser.add_argument('--hud', choices=('corner', 'center'), default='corner', help='with --aspect: the HUD in the screen corners or in the middle 16:9')
 args = parser.parse_args()
 version = args.version
-if args.output_dir == root / 'extracted/v0/romfs-patches': args.output_dir = root / f'extracted/{version}/romfs-patches'
+if args.output_dir == root / 'extracted/v0/romfs-patches': args.output_dir = root / (f'extracted/{version}/romfs-patches' + (f'-{args.aspect}' + ('-center' if args.hud == 'center' else '') if args.aspect else ''))
 assert 0 <= args.capture_frame <= 0.5
 manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
 assert manifest['status'] == 'pass'
@@ -107,16 +109,23 @@ for member, panes in MEMBERS.items():
         changed.append(name)
     assert sorted(changed) == sorted(panes), (member, changed)
     patched[member] = changed
+layout = []
+if args.aspect:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).resolve().parent / 'ultrawide_layout.py')
+    ultrawide = importlib.util.module_from_spec(spec); spec.loader.exec_module(ultrawide)
+    width, height = (int(v) for v in args.aspect.lower().split('x'))
+    layout = ultrawide.apply(blarc, members, width, height, hud_corner=args.hud == 'corner')
 check = zstd.decompress(zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary), zstd_dict=dictionary)
 assert check == bytes(blarc)
 original = zstd.decompress(raw, zstd_dict=dictionary)
 diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in MEMBERS)) for i in diff), diff
+assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in [*MEMBERS, *layout])) for i in diff), diff[:20]
 data = zstd.compress(bytes(blarc), level=19, zstd_dict=dictionary)
 assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id and zstd.get_frame_info(data).decompressed_size == len(blarc)
 target = out_dir / ARCHIVE; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
 lines = ['\t'.join([ARCHIVE, str(len(data)), hashlib.sha256(data).hexdigest(), hashlib.sha256(raw).hexdigest()])]
-print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, frame=f'1.0 -> {args.capture_frame}', size=len(data), changed_bytes=len(diff))))
+print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, frame=f'1.0 -> {args.capture_frame}', ultrawide_layout=dict(aspect=args.aspect, hud=args.hud, members=len(layout)) if args.aspect else None, size=len(data), changed_bytes=len(diff))))
 
 # The game over flow: Event14 (EventTriggerPauseMgrRequestPause GameOverPause) ends its branch instead of going on to
 # Event25 (EventWait, Frames 1). BFEVFL events are 0x28 bytes from 0x1f0 (name ref at +0, type at +8, next at +0xa);

@@ -64,7 +64,7 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the true-2K texture heaps (TOTK_OUTPUT_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
+ v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
 /* TOTK: application memory pool reported to the game (default: retail 3.2 GiB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
@@ -282,7 +282,9 @@ static uint64_t desired_language(void) {
   const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?"zh-Hans":!strcmp(language,"pt")?portuguese:"en-US";
   memcpy(code,selected,strlen(selected));
  }
- uint64_t result;memcpy(&result,code,8);return result;
+ uint64_t result;memcpy(&result,code,8);
+ fprintf(stderr,"[totk] language: %s (TOTK_LANG=%s TOTK_LOCALE=%s)\n",code,explicit?explicit:"-",getenv("TOTK_LOCALE")?getenv("TOTK_LOCALE"):"-");
+ return result;
 }
 static uint32_t observed_region(uint64_t *out,uint64_t size){
  uint8_t *fn=runtime_symbol("_ZN2nn2os21AllocateAddressRegionEPmm");uint32_t r=((uint32_t(*)(uint64_t *,uint64_t))fn)(out,size);

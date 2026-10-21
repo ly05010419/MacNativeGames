@@ -12,12 +12,12 @@ def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--version',choices=CASES,required=True);p.add_argument('--code',type=Path);p.add_argument('--compare-cache',type=Path)
  a=p.parse_args();os.chdir(ROOT);key,digest,mode=CASES[a.version]
- code=(a.code or ROOT/f'build/shader-cache/rt-totk-native-v4-unverified/{key}.code').resolve()
+ code=(a.code or ROOT/f'build/shader-cache/rt-totk-native-v6-unverified/{key}.code').resolve()
  assert sha(code)==digest,'unrecognised Maxwell shader bytes'
  out=ROOT/f'analysis/{a.version}-port/counter-native';out.mkdir(parents=True,exist_ok=True)
  service=ROOT/'build/shader-service/totk_xlate'
  rq=dict(variant=key,stage='vs',code=str(code),depth_minus_w=True)
- cmd=[str(service),'--service','--spirv-cross',str(ROOT/'build/spirv-cross/spirv-cross'),'--out',str(out),'--chain','totk-native-v4-unverified']
+ cmd=[str(service),'--service','--spirv-cross',str(ROOT/'build/spirv-cross/spirv-cross'),'--out',str(out),'--chain','totk-native-v6-unverified']
  r=subprocess.run(cmd,input=json.dumps(rq)+'\n',text=True,capture_output=True,check=True);assert json.loads(r.stdout)['ok'],r.stdout
  if a.compare_cache:
   for suffix in ('.spv','_b.metal','_b.json'):

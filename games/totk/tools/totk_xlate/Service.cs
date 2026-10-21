@@ -166,6 +166,31 @@ static class ShaderService
         return src;
     }
 
+    // Two depth sampling differences between Maxwell and Metal (PR #104, issue #89: dark patches on ground and walls, a dark
+    // halo around Link on the wall behind him).
+    //  - Shadow compares on texture arrays (the game's cascaded shadow maps, Depth16Unorm): Maxwell rounds the reference to
+    //    the texture's precision before comparing, Metal compares the full float, so a lit surface fails its own compare by
+    //    a fraction of a 16-bit step. The reference is rounded to 1/65535 like the depth write. The 2D depth copies are D32F
+    //    and never compare-sampled.
+    //  - Non-compare reads of a depth texture (totk_depth_fetch above): the game binds a trilinear sampler, and on the Switch
+    //    the read lands on one texel; Metal blends neighbouring depths, which puts reconstructed positions in mid-air at
+    //    object edges. These reads are point-sampled.
+    static readonly Regex D16Compare = new(@"(\.sample_compare\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, [^,]+\.xy, uint\(rint\([^)]+\)\), )([^,]+)(, level)");
+    static readonly Regex DepthFetchSample = new(@"totk_depth_fetch\((spvDescriptorSet0\.[A-Za-z0-9_]+)\.sample\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, ");
+
+    static string MatchSwitchDepthSampling(string src)
+    {
+        string s = D16Compare.Replace(src, "${1}totk_d16ref(${2})${3}");
+        s = DepthFetchSample.Replace(s, "totk_depth_fetch(${1}.sample(totk_nearest, ");
+        if (s == src) return src;
+        const string ns = "using namespace metal;";
+        int at = s.IndexOf(ns, StringComparison.Ordinal);
+        if (at < 0) throw new RuntimeError("depth sampling rewrite: no 'using namespace metal;'");
+        return s.Substring(0, at) + ns +
+            "\nstatic inline float totk_d16ref(float r) { return floor(fast::clamp(r, 0.0f, 1.0f) * 65535.0f + 0.5f) * (1.0f / 65535.0f); }" +
+            "\nconstexpr sampler totk_nearest(filter::nearest, mip_filter::none, address::clamp_to_edge);" + s.Substring(at + ns.Length);
+    }
+
     /// True when the MSL stores or does atomics through storage binding `name` (same rule as nvn_mtl.m msl_stores_through).
     static bool MslStoresThrough(string msl, string name)
     {
@@ -314,10 +339,10 @@ static class ShaderService
         var depthSlots = new HashSet<long>(tex.Where(kv => kv.Value is JsonValue v && v.GetValueKind() == JsonValueKind.String && v.GetValue<string>().EndsWith("_depth", StringComparison.Ordinal))
                                             .Select(kv => ParseInt(kv.Key)));
         if (depthSlots.Count > 0)
-        {
             src = RewriteDepthTextures(src, depthSlots);
+        src = MatchSwitchDepthSampling(src);
+        if (depthSlots.Count > 0 || src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
-        }
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");
         JsonObject dr = DrvReads(src, stage);
         JsonArray unfillable = Unfillable(dr, stage);
