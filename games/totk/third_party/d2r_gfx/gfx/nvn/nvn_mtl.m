@@ -2268,7 +2268,15 @@ static int g_tex_slots_negative;
 static int tex_slots_on(void) {
     int v = atomic_load_explicit(&g_tex_slots_on, memory_order_relaxed);
     if (v < 0) {
+        /* Breath of the Wild: off unless TOTK_TEX_SLOTS=1. Its check mode (TOTK_TEX_SLOTS_CHECK=1) stopped on entering a
+           shrine (2026-10-21, 1.6.0): a fragment texture binding resolved to another slot with the same handle and the
+           same key, so the key misses something this game changes. Upstream measured the cache alone within noise in
+           Tears of the Kingdom, where its check mode passed 210M bindings. */
+#ifdef GAME_BOTW
+        const char *e = getenv("TOTK_TEX_SLOTS"); v = e && atoi(e); atomic_store(&g_tex_slots_on, v);
+#else
         const char *e = getenv("TOTK_TEX_SLOTS"); v = !(e && !atoi(e)); atomic_store(&g_tex_slots_on, v);
+#endif
         e = getenv("TOTK_TEX_SLOTS_CHECK"); atomic_store(&g_tex_slots_check, e && atoi(e));
     }
     return v;
