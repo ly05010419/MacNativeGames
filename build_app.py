@@ -35,7 +35,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, hashlib, json, os, platform, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, json, os, platform, re, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -932,6 +932,16 @@ def step_quick(tree, out, logs, env, *, version, game):
     executable = out/f'Contents/MacOS/{APPS[game][2]}'
     if not app_binary.is_file() or not executable.is_file():
         raise BuildError(f'--quick updates an app a full build made; there is none at {out}')
+    # The app's shaders were translated by the chain of the code that made it; a program of another chain rejects them
+    # all ("Startup shader seed identity is invalid") and every shader is translated again while playing.
+    chain = re.search(r'#define DMSH_CHAIN "([^"]+)"', (tree / 'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text()).group(1)
+    try:
+        app_chain = json.loads((out / 'Contents/Resources/totk/build/shader-seed/seed-manifest.json').read_text()).get('chain')
+    except (OSError, ValueError):
+        app_chain = None
+    if app_chain and app_chain != chain:
+        raise BuildError(f'--quick cannot update this app: its shaders were made by translation chain {app_chain} and the '
+                         f'code now uses {chain}. Run a full build (leave out --quick; ./build-botw.sh --full)')
     t0 = time.time()
     say('quick: building the game program and the launcher')
     step_binary(tree, None, None, env, logs, version=version)
