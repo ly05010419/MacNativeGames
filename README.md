@@ -34,6 +34,7 @@ Update history:
 
 | Date | Platform | Update |
 |---|---|---|
+| Oct 20 | Mac | Launch settings: hold Option while opening the game (or ⌘, while playing) for a window with its frame rate, power, controller, overlay, aspect ratio and language settings; they stay for every later start |
 | Oct 20 | iPhone, iPad | Sound plays with the silent switch on and comes back after a call, Siri or an alarm; the game follows the system language; a fresh install reaches the title screen (#97) |
 | Oct 20 | iPhone, iPad | First launch after installing shows the game in about 7 seconds instead of about 4½ minutes: the shaders that come with the app are read where they are, without checking or copying them again (iPhone 14) |
 | Oct 20 | Mac | Breath of the Wild above 30 fps: menus and the HUD at normal speed, physics steady, movies at their own speed; docked play renders at native 1080p (`TOTK_RENDER_RES=900` keeps 1600x900) (#103) |
@@ -230,12 +231,15 @@ Native 2K changes the game's composition canvas and UI to 2560×1440. The 3D sce
 
 Language: the game and the launcher's own text (startup screen, shader warm-up progress, overlays, keyboard prompt) follow the Mac's language. The launcher text is Chinese on a Chinese Mac and English otherwise. In a 1.4.3 build, Brazilian Portuguese selects the game's official pt-BR text. To give only this game another language, set its preferred language, for example `defaults write org.macnativegames.totk AppleLanguages -array pt-BR` (`defaults delete org.macnativegames.totk AppleLanguages` removes it). To override, launch with `TOTK_LANG` for the game (for example `open --env TOTK_LANG=en-US "Tears of the Kingdom.app"`) or `TOTK_UI_LANG=zh` / `en` for the launcher text.
 
+Launch settings (Mac): hold **Option (⌥)** while you open the game (keep holding until the window appears), or choose **Settings… (⌘,)** in the game's menu while playing (the window opens beside the game; after **Save**, quit the game with ⌘Q and open it again for the new settings to apply; asking again while the window is open brings it to the front), for a settings window with four tabs: Performance (uncapped frame rate and its cap, steady pacing, GPU keep-alive, frame interpolation, the 60 fps patch), Controller (rumble and its strength, gyro and its axes, face buttons), Display (picture mode and aspect ratio at start, overlays) and Language (the game's and the launcher's). Each setting has a short explanation, and a longer one when you hover over it. **Save and Launch** keeps them for every later start, including from Finder; **Launch once** uses them without saving; **Reset to defaults** goes back to the game's own defaults. On a fanless MacBook Air, a cap of 60 (or the display's rate) with steady pacing on and GPU keep-alive off runs cooler at a steady 60 FPS on a 60 Hz screen. The window also opens by itself when the last start stopped because of one of these settings, or when the game crashed within a minute of starting. Variables you pass yourself (`open --env TOTK_GPU_KEEPALIVE=1 "Tears of the Kingdom.app"`, or a shell) still win over the saved settings; the window shows them greyed out. The settings are kept in the app's preferences (`defaults read org.macnativegames.totk LaunchEnv`; `defaults delete org.macnativegames.totk LaunchEnv` clears them; Breath of the Wild uses `org.macnativegames.botw`), and the log lists the ones each start uses. The launcher also accepts `--settings` or `TOTK_SETTINGS=1` to open the window.
+
 ## Where things are
 
 - Saves: `~/Library/Application Support/MacNativeGames/TOTK/profile`
 - Shader cache: `~/Library/Application Support/MacNativeGames/TOTK/shader-cache` (delete it to translate everything again)
 - Shaders the shared list does not have yet: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - Log: `~/Library/Logs/MacNativeGames/totk.log` (the run before: `totk.previous.log`)
+- Launch settings: `defaults read org.macnativegames.totk LaunchEnv` (hold Option while opening the game to change them)
 - Mods: `~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`. Its `manifest.tsv` lists each RomFS file the mod replaces or adds as tab-separated path, size, SHA-256 and the original's SHA-256 (`-` for a file the game does not have); the files sit under the same paths. `python3 games/totk/scripts/make_mod_manifest.py <mods folder> --app <Tears of the Kingdom.app>` writes it, adding files the game lacks; a path that differs from the game's only in upper and lower case stops it (paths are case-sensitive). Only the RomFS (data) side of a mod is loaded: ExeFS parts (extra code modules, IPS patches) are not supported. The game checks every listed file at start and stops on a mismatch, or when a mod file changes while it runs. Delete the folder to play without mods. Step by step: [docs/mods.md](docs/mods.md).
 - Button icons: `python3.14 games/totk/scripts/make_button_icons.py <mods folder> --app <Tears of the Kingdom.app> --style keyboard` (or `--style xbox`) writes a mod that draws the Mac keyboard keys (J K I U for A B X Y, W A S D, the arrow keys and so on) or Xbox buttons (B A Y X in the Switch positions, LB/RB, LT/RT, Menu/View) in the game's button prompts. It redraws the icon font from your own RomFS (nothing of the game is in the project) and writes the manifest; files already in the folder are kept. Needs Python 3.14 and `python3.14 -m pip install fonttools`. If the folder already has a font archive (another mod's, or an earlier run) it stops; `--replace` overwrites it, which is also how to switch styles. The Xbox icons match the default face-button mapping (by position); with `TOTK_FACE_BUTTONS=label` or face buttons changed in `controls.txt` they do not. remove the font file and run `make_mod_manifest.py` to go back. Prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
 
@@ -302,6 +306,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 | 日期 | 平台 | 更新 |
 |---|---|---|
+| 10 月 20 日 | Mac | 启动设置：打开游戏时按住 Option 键（游戏中按 ⌘,），弹出设置窗口（帧率、功耗、手柄、屏幕提示、宽高比和语言），保存后以后每次启动都生效 |
 | 10 月 20 日 | iPhone、iPad | 打开静音键也有声音，来电、Siri、闹钟之后声音会恢复；游戏跟随系统语言；全新安装能进标题画面（#97） |
 | 10 月 20 日 | iPhone、iPad | 安装后第一次启动约 7 秒出画面，原来要约 4 分半：随 App 的着色器直接原地读取，不再校验和复制（iPhone 14） |
 | 10 月 20 日 | Mac | 旷野之息 30 帧以上：菜单和 HUD 速度正常、物理稳定、过场动画按原速播放；底座模式按原生 1080p 渲染（`TOTK_RENDER_RES=900` 保持 1600x900）（#103） |
@@ -498,12 +503,15 @@ west = y
 
 语言：游戏和启动器自身的文字（启动画面、着色器预热进度、提示叠层、键盘输入提示）跟随 Mac 的系统语言。启动器文字在中文系统上显示中文，其他语言显示英文。1.4.3 版本中，巴西葡萄牙语会选择游戏官方的 pt-BR 文本。只想让本游戏使用另一种语言时，可设置它的首选语言，例如 `defaults write org.macnativegames.totk AppleLanguages -array pt-BR`（`defaults delete org.macnativegames.totk AppleLanguages` 可撤销）。如需指定，可用 `TOTK_LANG` 设置游戏语言（例如 `open --env TOTK_LANG=zh-Hans "Tears of the Kingdom.app"`），用 `TOTK_UI_LANG=zh` / `en` 设置启动器文字。
 
+启动设置（Mac）：打开游戏时按住 **Option（⌥）** 键（按住直到窗口出现），或在游戏中从菜单选 **设置…（⌘,）**（窗口在游戏旁边打开；点 **保存** 后，用 ⌘Q 退出游戏再重新打开，新设置才会生效；窗口已打开时再次打开只会把它切到前面），会弹出设置窗口，共四页：性能（不限帧率及其上限、稳定帧节奏、GPU 保活、补帧、60 帧补丁）、手柄（震动及强度、体感及轴向、面键）、画面（启动时的画质和宽高比、屏幕提示）和语言（游戏语言和启动器文字）。每项设置都有一行简短说明，鼠标悬停时显示更详细的说明。点 **保存并启动** 后以后每次启动都生效（包括从访达打开）；**仅本次启动** 只用于这一次，不保存；**恢复默认** 回到游戏自己的默认值。在无风扇的 MacBook Air 和 60 Hz 屏幕上，上限设为 60（或显示器刷新率）、打开稳定帧节奏、关闭 GPU 保活，可以稳定 60 帧且温度更低。上次启动因为其中某项设置而停止，或游戏启动后一分钟内崩溃时，这个窗口也会自动弹出。自己传入的环境变量（`open --env TOTK_GPU_KEEPALIVE=1 "Tears of the Kingdom.app"` 或终端）仍然优先于保存的设置，窗口里会显示为灰色。设置保存在 App 的偏好设置里（`defaults read org.macnativegames.totk LaunchEnv` 查看，`defaults delete org.macnativegames.totk LaunchEnv` 清除；旷野之息为 `org.macnativegames.botw`），日志里会列出每次启动使用的设置。启动器也支持用 `--settings` 或 `TOTK_SETTINGS=1` 打开这个窗口。
+
 ## 文件位置
 
 - 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`
 - 着色器缓存：`~/Library/Application Support/MacNativeGames/TOTK/shader-cache`（删掉会全部重新翻译）
 - 公共清单里还没有的着色器：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`
 - 日志：`~/Library/Logs/MacNativeGames/totk.log`（上一次运行：`totk.previous.log`）
+- 启动设置：`defaults read org.macnativegames.totk LaunchEnv`（打开游戏时按住 Option 键修改）
 - 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`。其中的 `manifest.tsv` 以制表符分隔列出模组替换或新增的每个 RomFS 文件：路径、大小、SHA-256 和原文件的 SHA-256（游戏里没有的新文件写 `-`）；文件按相同路径存放。可用 `python3 games/totk/scripts/make_mod_manifest.py <模组文件夹> --app <Tears of the Kingdom.app>` 生成，游戏里没有的文件会作为新增文件写入；只是大小写和游戏里的路径不同的会报错（路径区分大小写）。只加载模组的 RomFS（数据）部分，ExeFS 部分（额外的代码模块、IPS 补丁）不支持。游戏启动时校验所有列出的文件，不一致即停止；游戏运行中模组文件被改动也会停止。删除该文件夹即可不带模组运行。详细步骤见 [docs/mods.md](docs/mods.md)。
 - 按键图标：`python3.14 games/totk/scripts/make_button_icons.py <模组文件夹> --app <Tears of the Kingdom.app> --style keyboard`（或 `--style xbox`）生成一个模组，把游戏按键提示里的 Switch 图标换成 Mac 键盘按键（A B X Y 对应 J K I U、W A S D、方向键等）或 Xbox 按键（按 Switch 位置排列的 B A Y X、LB/RB、LT/RT、Menu/View）。它用你自己的 RomFS 重绘图标字体（项目里不含任何游戏内容）并写好 manifest；文件夹里已有的文件会保留。需要 Python 3.14 和 `python3.14 -m pip install fonttools`。文件夹里已有字体包（别的模组的，或者上次生成的）时会停下，加 `--replace` 才覆盖，换风格也要加它。Xbox 图标对应默认的按位置映射；设了 `TOTK_FACE_BUTTONS=label` 或在 `controls.txt` 里改过面键时会对不上。删除字体文件后运行 `make_mod_manifest.py` 即可恢复。以固定图片显示的提示（部分教程动画）仍是 Switch 图标。
 

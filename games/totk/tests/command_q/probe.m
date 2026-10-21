@@ -21,6 +21,7 @@ int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)ou
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
 int mfx_enabled(void){return 0;}
+int taa_enabled(void){return 0;}
 int mfxup_output_enabled(void){return 0;}
 uint64_t runtime_output_size_current(void){return 1920|(uint64_t)1080<<32;}
 
@@ -40,6 +41,9 @@ int main(int argc,char **argv){
   window.contentView=[[TOTKInputView alloc] initWithFrame:window.contentView.bounds];
   [window makeFirstResponder:window.contentView];
   front_install_menu();
+  {NSMenuItem *settings=nil;for(NSMenuItem *i in NSApp.mainMenu.itemArray.firstObject.submenu.itemArray)if([i.keyEquivalent isEqualToString:@","])settings=i;
+   if(!getenv("TOTK_APP_BUNDLE")!=!settings)runtime_fail("Settings… (Command-comma) belongs in the menu exactly when the launcher set TOTK_APP_BUNDLE");
+   if(settings&&settings.keyEquivalentModifierMask!=NSEventModifierFlagCommand)runtime_fail("Settings… is not Command-comma");}
   [NSApp finishLaunching];
   if(atoi(argv[2])){
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(10,10,200,25)];

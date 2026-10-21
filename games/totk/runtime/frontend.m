@@ -237,9 +237,27 @@ static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
+/* Settings… (Command-comma): the launcher's settings window (app/settings_window.m) in its save-only mode, beside the running
+   game (open -n ... --settings-only). The game reads those settings when it starts, so the player quits and reopens it for
+   them to apply; the window says so. TOTK_APP_BUNDLE (app/launcher.m): the app; unset in development runs, no item. */
+@interface TOTKSettingsItem:NSObject
+@end
+@implementation TOTKSettingsItem
+-(void)openSettings:(id)sender{(void)sender;
+ const char *app=getenv("TOTK_APP_BUNDLE");if(!app||!*app)return;
+ NSTask *t=[NSTask new];t.executableURL=[NSURL fileURLWithPath:@"/usr/bin/open"];t.arguments=@[@"-n",@(app),@"--args",@"--settings-only"];
+ NSError *err=nil;if(![t launchAndReturnError:&err])fprintf(stderr,"[totk] Settings: could not open %s: %s\n",app,err.localizedDescription.UTF8String);
+ else fprintf(stderr,"[totk] Settings: the settings window opens beside the game (applied at the next start)\n");
+}
+@end
+static TOTKSettingsItem *settingsItem;
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ {const char *app=getenv("TOTK_APP_BUNDLE");
+  if(app&&*app){settingsItem=[TOTKSettingsItem new];
+   NSMenuItem *s=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("设置…","Settings…")) action:@selector(openSettings:) keyEquivalent:@","];
+   s.keyEquivalentModifierMask=NSEventModifierFlagCommand;s.target=settingsItem;[appMenu addItem:s];[appMenu addItem:NSMenuItem.separatorItem];}}
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;

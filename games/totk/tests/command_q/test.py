@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run on macOS: python3 games/totk/tests/command_q/test.py. No ROM or saves needed."""
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -15,8 +16,10 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     ], check=True)
     for mode, expected in enumerate(("graceful guest shutdown pending", "save done", "gave up")):
         for text_entry in (0, 1):
+            # with TOTK_APP_BUNDLE (set by app/launcher.m) the menu also has Settings… (Command-comma); Command-Q is the same
+            env = {**os.environ, "TOTK_APP_BUNDLE": "/Applications/Tears of the Kingdom.app"} if text_entry else {k: v for k, v in os.environ.items() if k != "TOTK_APP_BUNDLE"}
             result = subprocess.run([str(binary), str(mode), str(text_entry)],
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True, timeout=5, env=env)
             assert result.returncode == 0, result.stderr
             assert expected in result.stderr, result.stderr
             if mode:
