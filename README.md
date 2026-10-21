@@ -531,3 +531,7 @@ west = y
 ## 许可证
 
 MIT（见 [LICENSE](LICENSE)）。第三方代码保留各自的许可证：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+The macOS [Game Controls menu](docs/display-settings.md) opens with F1 or Command+comma. It includes render resolution, spatial upscaling, window mode, independent pacing controls, and [keyboard, mouse and controller bindings](docs/input-bindings.md).
+
+macOS 按 F1 或 Command+, 打开[控制菜单](docs/display-settings.md)，可调整画面、帧率和[键鼠／手柄绑定](docs/input-bindings.md)。

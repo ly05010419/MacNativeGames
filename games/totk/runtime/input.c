@@ -4,6 +4,7 @@
 #include "autoload.h"
 #include "world_survey.h"
 #include <stdbool.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,11 +12,29 @@
 typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attributes,pad;} NpadState;
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
-static unsigned char keys[128];static uint64_t pending;
+static unsigned char keys[INPUT_SOURCES];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
-/* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
-static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+static RuntimeKeyboardBindings inputBindings;
+static int inputBindingsLoaded,inputSuspended;
+static int32_t mouseRX,mouseRY;static uint64_t mouseLast;
+static void bindings_init(void){if(!inputBindingsLoaded){input_bindings_default(&inputBindings);inputBindingsLoaded=1;}}
+static uint64_t button(unsigned code){bindings_init();uint64_t result=0;for(unsigned i=0;i<16;i++)for(unsigned j=0;j<2;j++)if(inputBindings.source[i][j]==code+1)result|=1ULL<<i;return result;}
+static int bound_down(unsigned action){for(unsigned j=0;j<2;j++){unsigned s=inputBindings.source[action][j];if(s&&keys[s-1])return 1;}return 0;}
+void runtime_input_bindings_get(RuntimeKeyboardBindings *b){pthread_mutex_lock(&inputLock);bindings_init();*b=inputBindings;pthread_mutex_unlock(&inputLock);}
+int runtime_input_bindings_set(const RuntimeKeyboardBindings *b){if(!input_bindings_valid(b))return 0;pthread_mutex_lock(&inputLock);inputBindings=*b;inputBindingsLoaded=1;pthread_mutex_unlock(&inputLock);runtime_input_clear();return 1;}
+int runtime_input_suspended(void){pthread_mutex_lock(&inputLock);int s=inputSuspended;pthread_mutex_unlock(&inputLock);return s;}
+void runtime_input_suspend(int suspended){pthread_mutex_lock(&inputLock);inputSuspended=!!suspended;pthread_mutex_unlock(&inputLock);runtime_input_clear();}
+void runtime_input_mouse_motion(double dx,double dy){
+ if(!isfinite(dx)||!isfinite(dy))return;
+ pthread_mutex_lock(&inputLock);bindings_init();
+ if(!inputSuspended&&inputBindings.mouse_look){
+  uint64_t now=runtime_now_ns();double dt=mouseLast&&now>mouseLast?(now-mouseLast)/1e9:1.0/60.0;
+  if(dt<1.0/1000)dt=1.0/1000;if(dt>0.08)dt=1.0/60.0;
+  double k=24.0*inputBindings.mouse_sensitivity/100.0/dt,x=dx*k,y=-dy*k*(inputBindings.mouse_invert_y?-1:1);
+  mouseRX=(int32_t)(x>32767?32767:x< -32767?-32767:x);mouseRY=(int32_t)(y>32767?32767:y< -32767?-32767:y);mouseLast=now;
+ }pthread_mutex_unlock(&inputLock);
+}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -28,19 +47,39 @@ static void user_input(const char *what){
  const char *owner=getenv("TOTK_SLOT_OWNER");bool agent=owner&&*owner&&strcmp(owner,"user");
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
-/* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
-   off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
-   MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Held-key repeats do not cycle. */
-enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21, KEY_TAA_TOGGLE = 23 };   /* 21: key 4, ultrawide on / off (aspect_patch.h); 23: key 5, MetalFX temporal anti-aliasing (totk_taa.m) */
-void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
- if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
- if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
- if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
- if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();
- if(press&&code==KEY_TAA_TOGGLE){extern void taa_toggle(void);taa_toggle();}}
-void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
-void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+/* Exact modifier matching and one action per press, shared by live and diagnostic input.
+   Consumed shortcut keys never enter the emulated controller. */
+enum { KEY_INTERP_TOGGLE=19, KEY_OUTPUT_MODE_CYCLE=20, KEY_ASPECT_TOGGLE=21, KEY_TAA_TOGGLE=23 };
+extern int runtime_controls_handle_key(unsigned,unsigned) __attribute__((weak_import));
+extern int runtime_controls_active(void) __attribute__((weak_import));
+extern void runtime_front_control_test(const char *) __attribute__((weak_import));
+static unsigned char pressedKeys[INPUT_SOURCES],shortcutHeld[INPUT_SOURCES];
+static void input_key_modifiers(unsigned code,int down,unsigned modifiers){
+ if(code>=INPUT_SOURCES)return;
+ pthread_mutex_lock(&inputLock);
+ if(inputSuspended){pthread_mutex_unlock(&inputLock);return;}
+ int press=down&&!pressedKeys[code],held=shortcutHeld[code];pressedKeys[code]=(unsigned char)!!down;
+ if(!down)shortcutHeld[code]=0;
+ pthread_mutex_unlock(&inputLock);
+ if(held)return;
+ if(code<INPUT_KEYS&&press&&runtime_controls_handle_key&&runtime_controls_handle_key(code,modifiers)){
+  pthread_mutex_lock(&inputLock);shortcutHeld[code]=1;pthread_mutex_unlock(&inputLock);return;
+ }
+ pthread_mutex_lock(&inputLock);if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
+ if(!runtime_controls_active||!runtime_controls_active()){
+  if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
+  if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *,int);dm_gfx_set_flag("mfx_interp",-1);}
+  if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
+  if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();
+ }
+ if(press&&code==KEY_TAA_TOGGLE){extern void taa_toggle(void);taa_toggle();}
+}
+void runtime_input_key_synthetic(unsigned code,int down){if(code<INPUT_KEYS)input_key_modifiers(code,down,0);}
+void runtime_input_mouse_button(unsigned button,int down){if(button>=INPUT_MOUSE_BUTTONS)return;if(down)user_input("mouse");input_key_modifiers(INPUT_KEYS+button,down,0);}
+void runtime_input_key_modifiers(unsigned code,int down,unsigned modifiers){if(down&&code<128)user_input("keyboard");input_key_modifiers(code,down,modifiers);}
+void runtime_input_key(unsigned code,int down){runtime_input_key_modifiers(code,down,0);}
+void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(pressedKeys,0,sizeof(pressedKeys));memset(shortcutHeld,0,sizeof(shortcutHeld));pending=0;mouseRX=mouseRY=0;mouseLast=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
@@ -59,8 +98,11 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+ bindings_init();
+ state.attributes=1;if(inputSuspended){*out=state;pthread_mutex_unlock(&inputLock);return 1;}for(unsigned i=0;i<INPUT_SOURCES;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+ state.lx=32767*(bound_down(INPUT_RIGHT)-bound_down(INPUT_LEFT));state.ly=32767*(bound_down(INPUT_UP)-bound_down(INPUT_DOWN));
+ state.rx=32767*(bound_down(INPUT_LOOK_RIGHT)-bound_down(INPUT_LOOK_LEFT));state.ry=32767*(bound_down(INPUT_LOOK_UP)-bound_down(INPUT_LOOK_DOWN));
+ uint64_t now=runtime_now_ns();if(mouseLast&&now>=mouseLast&&now-mouseLast<80000000ULL){if(abs(mouseRX)>abs(state.rx))state.rx=mouseRX;if(abs(mouseRY)>abs(state.ry))state.ry=mouseRY;}
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
@@ -222,6 +264,7 @@ static void *input_file(void *arg) {
 #endif
         } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
             runtime_dump_threads();
+        } else if (!strncmp(line,"control ",8)) { if(runtime_front_control_test)runtime_front_control_test(line+8);
         } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }
         else runtime_fail("invalid diagnostic input command");
     }

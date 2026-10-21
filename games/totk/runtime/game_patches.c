@@ -2,6 +2,7 @@
 #include "aspect_patch.h"
 #include "game_version.h"
 #include "world_survey.h"
+#include "control_policy.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,14 +72,19 @@ void runtime_frame_step_pin(double ms) {
     else fprintf(stderr, "[totk] frame step pinned at %.3f ms (ratio %.3f, diagnostics)%s\n", us / 1000.0, us / 1e6 * 30.0,
                  frame_step_data ? "" : " -- but the real-time patch is off, nothing changes");
 }
+static void render_control_latch(void);
+static _Atomic uint64_t render_control_request;
+static _Atomic uint64_t render_control_applied;
 void runtime_frame_step_update(uint64_t now_ns) {
+    render_control_latch();
     if (!frame_step_data || !now_ns) return;
     if (atomic_load_explicit(&pinned_step_us, memory_order_relaxed)) { last_present_ns = now_ns; return; }
     if (!last_present_ns) { last_present_ns = now_ns; return; }
     double dt = (double)(now_ns - last_present_ns) * 1e-9;
     last_present_ns = now_ns;
     if (dt > 0.25 || dt < 0.001) { frame_sample_count = frame_sample_next = 0; return; }
-    if (dt < 1.0 / 120.0) dt = 1.0 / 120.0;
+    double minimum = atomic_load(&render_control_request) ? 1.0 / 1000.0 : 1.0 / 120.0;
+    if (dt < minimum) dt = minimum;
     if (dt > 1.0 / 15.0) dt = 1.0 / 15.0;
     frame_samples[frame_sample_next++ % 5] = dt;
     if (frame_sample_count < 5) frame_sample_count++;
@@ -264,7 +270,10 @@ static const GamePatch render_res_sites[3] = {
     {GAME_ADDR(0xc630c4), 0xbd0cc660, 0x2d420520, "str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]"},
     {GAME_ADDR(0xc630c8), 0x5e21d921, 0xbd0cc660, "scvtf s1, s9 -> str s0, [x19, #0xcc4]"},
 };
+static _Atomic uint64_t *render_control_page;
 static int render_res(unsigned *w, unsigned *h) {
+    uint64_t request=atomic_load(&render_control_request);
+    if(request){*w=(request>>24)&4095;*h=(request>>36)&4095;return 1;}
     const char *e = getenv("TOTK_RENDER_RES");
     if (!e || !*e || !strcmp(e, "0")) return 0;
     if (sscanf(e, "%ux%u", w, h) != 2 || *w < 64 || *h < 64 || *w > 4096 || *h > 4096) runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
@@ -293,6 +302,7 @@ static void patch_render_res(Module *m) {
     }
     float v[2] = {(float)w, (float)h};
     memcpy(m->base + data_off + 16, v, sizeof v);
+    render_control_page=(_Atomic uint64_t *)(void *)(m->base+data_off+16);
     fprintf(stderr, "[totk] render resolution patch: scene render size %ux%u%s (3 instructions at main+0xc630bc, value on the data page)\n",
             w, h, set ? "" : " (the game's handheld size; TOTK_RENDER_RES not set)");
 }
@@ -372,7 +382,7 @@ int runtime_render_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
 uint64_t runtime_output_res_extra_bytes(void) {
     unsigned w, h;
     if (!runtime_output_res(&w, &h)) return 0;
-    double ratio = (double)w * h / (1920.0 * 1080.0);
+    double ratio = (double)w * h / (1600.0 * 900.0); // reserve for native 3D at the maximum selectable canvas, too
     if (ratio <= 1.0) return 0;
     uint64_t kib = (uint64_t)ceil(113664.0 * ratio / 1024.0) * 1024 - 113664;
     return kib << 10;
@@ -430,6 +440,29 @@ int runtime_output_res_toggle(void) {
             full ? "true 2K: the canvas and the UI at that size" : "the 2K output: 1080p canvas, MetalFX scales it at present",
             renderer ? " from the next layout" : "; the game has not laid out its displays yet, it takes this size when it does", before);
     return 1;
+}
+/* A single request contains canvas w/h, scene w/h and the upscale preset.
+   The UI never rewrites guest text or touches renderer memory. Present latches
+   it into the already-patched data page before the next layout, like key 3. */
+int runtime_render_configure(unsigned w,unsigned h,int quality) {
+    uint64_t scene=totk_control_render(w,h,quality);if(!scene)return 0;
+    uint64_t request=w|((uint64_t)h<<12)|((scene&4095)<<24)|(((scene>>32)&4095)<<36)|((uint64_t)quality<<48);
+    atomic_store(&render_control_request,request);return 1;
+}
+uint64_t runtime_render_applied(void){return atomic_load(&render_control_applied);}
+static void render_control_latch(void) {
+    uint64_t request=atomic_load(&render_control_request);
+    if(!request||request==atomic_load(&render_control_applied)||!render_control_page||!output_page)return;
+    unsigned w=request&4095,h=(request>>12)&4095,rw=(request>>24)&4095,rh=(request>>36)&4095;
+    if(w>output_w||h>output_h){fprintf(stderr,"[totk-controls] target %ux%u exceeds allocated canvas %ux%u; request declined\n",w,h,output_w,output_h);return;}
+    float f[2]={(float)rw,(float)rh};uint64_t bits;memcpy(&bits,f,8);atomic_store(render_control_page,bits);
+    atomic_store((_Atomic uint64_t *)(void *)(output_page+DP_OUTPUT_SIZE),pack_size(w,h));
+    uint64_t renderer=atomic_load((_Atomic uint64_t *)(void *)(output_page+DP_RENDERER));
+    if(renderer){__atomic_fetch_or((uint32_t *)(uintptr_t)(renderer+0xca4),0x200u,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
+    extern void dm_gfx_set_flag(const char *,int);
+    int up=(request>>48)!=0;dm_gfx_set_flag("mfx_upscale",up);dm_gfx_set_flag("mfx_output",0);
+    atomic_store(&render_control_applied,request);
+    fprintf(stderr,"[totk-controls] applied scene=%ux%u canvas=%ux%u MetalFX=%d (guest layout requested)\n",rw,rh,w,h,up);
 }
 /* Key 3: cycle the active 2K presentation path. The normal startup is 1080p game output with the MetalFX output scaler
    enabled; native 2K switches the game's canvas/UI to 2560x1440; off returns to 1080p and disables the output scaler. */

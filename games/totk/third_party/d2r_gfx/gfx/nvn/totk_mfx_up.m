@@ -46,6 +46,8 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;         // g_dev / g_co
 static pthread_mutex_t g_build_mu = PTHREAD_MUTEX_INITIALIZER;   // the contexts' ready slots
 static dispatch_queue_t g_build_q;                               // background scaler builds, one at a time
 static _Atomic int g_on = -1;
+static _Atomic uint64_t g_completed[MFXUP_NCTX];
+uint64_t mfxup_completed(int ctx){return ctx>=0&&ctx<MFXUP_NCTX?atomic_load(&g_completed[ctx]):0;}
 static int g_unavailable;                                        // no MetalFX here (device, residency set, compiler): never retried
 
 int mfxup_enabled(void) {
@@ -217,7 +219,7 @@ id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> 
     [e endEncoding];
     b->sc.colorTexture = src; b->sc.outputTexture = out; b->sc.inputContentWidth = in_w; b->sc.inputContentHeight = in_h; b->sc.fence = c->fence;
     [b->sc encodeToCommandBuffer:cb];
-    c->done++;
+    c->done++;atomic_fetch_add(&g_completed[ci],1);
     sweep(c);
     return out;
 }

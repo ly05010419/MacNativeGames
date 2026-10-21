@@ -507,7 +507,8 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None):
     if not (tree / 'extracted/v0/romfs-patches/manifest.tsv').exists():
         say('2/4 data: RomFS overlays (quick-menu capture timing, game-over retry)')
         run([py, 'scripts/make_romfs_patches.py'], logs / 'romfs_patches.log', cwd=tree)
-    if not (tree / 'extracted/v0/romfs-patches-out/2560x1440/manifest.tsv').exists():
+    output_manifest = tree / 'extracted/v0/romfs-patches-out/2560x1440/manifest.tsv'
+    if not output_manifest.exists() or 'scene-render-reserve=1' not in output_manifest.read_text():
         say('2/4 data: RomFS overlay for the 2560x1440 output (key 3 in the game)')
         run([py, 'scripts/make_output_res_overlay.py', '2560x1440'], logs / 'output_res_overlay.log', cwd=tree)
 

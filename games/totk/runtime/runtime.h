@@ -117,6 +117,7 @@ void runtime_vpool_probe(void);
 void runtime_memory_probe(void);
 
 void runtime_input_key(unsigned code,int down);
+void runtime_input_key_modifiers(unsigned code,int down,unsigned modifiers);
 void runtime_input_clear(void);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
@@ -149,3 +150,22 @@ void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 void runtime_feedback_attach(GCController *controller);
 void runtime_feedback_detach(GCController *controller);
 #endif
+
+/* Unified macOS controls; preference loading precedes guest-code patching. */
+void runtime_controls_prepare(void);
+int runtime_controls_active(void);
+int runtime_controls_handle_key(unsigned code,unsigned modifiers);
+void runtime_front_control_test(const char *command);
+int runtime_render_configure(unsigned w,unsigned h,int quality);
+uint64_t runtime_render_applied(void);
+
+#include "input_bindings.h"
+void runtime_input_bindings_get(RuntimeKeyboardBindings *bindings);
+int runtime_input_bindings_set(const RuntimeKeyboardBindings *bindings);
+void runtime_input_mouse_button(unsigned button,int down);
+void runtime_input_mouse_motion(double dx,double dy);
+void runtime_input_suspend(int suspended); /* sheet/capture/focus: releases every input source */
+int runtime_input_suspended(void);
+/* Controller configuration is updated on the main thread, as are GC events. */
+void runtime_gamepad_bindings_get(RuntimeControllerBindings *bindings);
+int runtime_gamepad_bindings_set(const RuntimeControllerBindings *bindings);

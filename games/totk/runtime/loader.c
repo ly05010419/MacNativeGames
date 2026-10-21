@@ -532,6 +532,9 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<8;i++)need(pthread_key_create(&runtime_keys[i],NULL)==0&&runtime_keys[i]!=0,"allocate Darwin key");
  runtime_hle_stack_init((uint64_t)runtime_keys[4]*8);
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
+#if TARGET_OS_OSX
+ if(!strcmp(argv[2],"boot")&&!getenv("TOTK_HEADLESS")&&!getenv("TOTK_VERIFY_STARTUP")&&!getenv("TOTK_EXPORT_IOS"))runtime_controls_prepare();
+#endif
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);

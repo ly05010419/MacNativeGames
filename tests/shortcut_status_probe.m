@@ -1,7 +1,7 @@
 /* Production AppKit panel, keyboard dispatch, mode state and output helpers.
    No guest, save files, game window or GPU commands are used. */
-#include "../games/totk/runtime/frontend.m"
 #include "../games/totk/runtime/input.c"
+#include "../games/totk/runtime/frontend.m"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 #include <assert.h>
 

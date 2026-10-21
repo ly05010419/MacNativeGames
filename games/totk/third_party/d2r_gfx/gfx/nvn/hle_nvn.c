@@ -2329,6 +2329,14 @@ static void set_time_constraint(uint64_t period_ns);
 static void rt_comp_tick(uint64_t period_ns);
 static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
 static int g_paced_hz;   // the display-following rate, used instead of UNCAPPED_HZ while interpolation paces the game
+#include "totk_present_policy.h"
+static _Atomic uint64_t g_control_pacing;
+void nvn_control_pacing(int vsync,int cap){
+ if(cap<0||cap>240)return;
+ atomic_store(&g_control_pacing,UINT64_C(1)<<63|((uint64_t)!!vsync<<32)|(unsigned)cap);
+ LOG("[controls] vsync=%d native-frame-cap=%d; interpolation independent",!!vsync,cap);
+}
+int nvn_control_vsync(void){uint64_t p=atomic_load(&g_control_pacing);return p?(int)((p>>32)&1):-1;}
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
@@ -2380,7 +2388,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         static uint64_t rt_period; uint64_t period = present_period(o);
         if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
         rt_comp_tick(period);
-        if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+        if (!atomic_load(&g_control_pacing) && mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
         else if (wait) sleep_until_ns(at);
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // 机器满载时帧只会更慢、后台得到的墙钟只会更多，所以「消息后第 N 帧」截到的画面与负载无关
@@ -2715,6 +2723,8 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
 static uint64_t present_period(const win_t *o) {
+    uint64_t control=atomic_load(&g_control_pacing);
+    if(control)return totk_control_period((control>>32)&1,control&65535,mtl_display_hz());
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
         LOG("[nvn] 出图节拍切换：%s", m == MFX_30 ? (mfx_own_clock() ? "补帧 30+30：游戏按自己的时钟每秒 30 帧" : "补帧 30+30：跟随显示器，每秒 30 帧") :

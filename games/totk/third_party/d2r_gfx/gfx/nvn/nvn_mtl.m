@@ -24,6 +24,7 @@
 #include "totk_shader_rt.h"
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
+#include "totk_present_policy.h"
 #include "totk_taa.h"
 #include "totk_sysload.h"
 /* TOTK_MFX_UPSCALE: for the one compose draw that samples the smaller scene, the scene texture and its MetalFX upscale
@@ -9706,7 +9707,20 @@ static int mfxup_dock(__unsafe_unretained NvShader *fs) {
    texture slot 0; when that scene is smaller than the canvas (TOTK_RENDER_RES below the canvas size), upscale it with
    MetalFX first and let encode_args bind the result. Runs before the draw opens its render encoder. Docked: mfxup_dock.
    Returns 1 when the draw was replaced (not to be encoded). */
+static _Atomic uint64_t g_control_observed;
+uint64_t nvn_control_render_observed(void){return atomic_load(&g_control_observed);}
+static void controls_note_render(NvProg *pr){
+ NvShader *f=pr?pr->sh[1]:nil;if(!f)return;
+ if(strncmp(f->key,"a3a570eb159202f14bc86479b0d3a012ecd830b8550505536eb70bf82372e4bb-",65)&&strncmp(f->key,"ac58fc18eda5f3878b16074dc28cd441644a66710f1b73954d39e57ac357561b-",65))return;
+ const p_bind_buf *u=&S.ubo[1][0];if(!u->addr||u->size<80)return;
+ float k[20];pend_materialize(u->addr,(uint8_t *)k,sizeof k,0);uint32_t w,h;memcpy(&w,k+16,4);memcpy(&h,k+17,4);
+ if(!w||!h||w>4095||h>4095||!isfinite(k[0])||!isfinite(k[1]))return;
+ long rw=lround((double)k[0]*w),rh=lround((double)k[1]*h);if(rw<=0||rh<=0||rw>4095||rh>4095)return;
+ uint64_t value=w|((uint64_t)h<<12)|((uint64_t)rw<<24)|((uint64_t)rh<<36);
+ if(atomic_exchange(&g_control_observed,value)!=value)MLOG("[controls-render] actual scene %ldx%ld -> canvas %ux%u (game upscale constants)",rw,rh,w,h);
+}
 static int mfxup_draw(NvProg *pr) {
+    controls_note_render(pr);
     g_mfxup_src = nil; g_mfxup_out = nil; g_mfxup_sh = nil;
     if (!pr) return 0;
     __unsafe_unretained NvShader *fs = pr->sh[1];
@@ -12081,7 +12095,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!layer) return 0;
     if (g_present_layer_resident != layer) { if (!layer.residencySet) MDIE("present layer has no residency set (layer device %s)", layer.device ? "set" : "missing"); [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
 #if TARGET_OS_OSX
-    if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // 窗口模式按显示器垂直同步，防撕裂 | Windowed mode follows the display's vsync to prevent tearing
+    BOOL sync = nvn_control_vsync()<0 ? YES : nvn_control_vsync()!=0;
+    if (layer.displaySyncEnabled!=sync) layer.displaySyncEnabled=sync;   // 窗口模式按显示器垂直同步，防撕裂 | Windowed mode follows the display's vsync to prevent tearing
 #endif
     present_pipeline(layer.pixelFormat);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable
     window_shot_tick(g_present_n);
@@ -12358,6 +12373,11 @@ static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象
     if (g_rescue_mode && now_ns() >= g_rescue_back_at) {   // rescue period over: back to the display link (stall timing starts afresh)
         pthread_mutex_lock(&g_pq_mu); g_dm_present_link = g_rescue_mode; g_rescue_mode = 0; g_stall_t0 = 0; g_link_tick_ns = now_ns(); pthread_mutex_unlock(&g_pq_mu);
         MLOG("显示节拍：抢救期满，换回节拍模式 %d 再试（帧 %llu）", g_dm_present_link, (unsigned long long)atomic_load(&g_cur_frame)); }
+    int control=nvn_control_vsync();
+    if(control>=0){
+        if(!control){g_rescue_mode=0;g_dm_present_link=0;}
+        else if(!g_rescue_mode)g_dm_present_link=control;
+    }
     int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
     if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz | Power-saving mode: display link at 30 Hz

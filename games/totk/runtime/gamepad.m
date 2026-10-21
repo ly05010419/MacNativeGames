@@ -15,7 +15,9 @@ static uint64_t pressedEdges;
 static BOOL started;
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
-static uint64_t physicalPrev;
+static int swapSticks,invertLookY;
+static uint64_t physicalPrev,blockedPhysical;
+static unsigned neutralSticks;
 static uint64_t tapUntil[CONTROLLER_BUTTONS];   /* ns, for tap */
 static int toggleOn[CONTROLLER_BUTTONS];        /* for toggle */
 static int toggleMoved[CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
@@ -76,19 +78,14 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
     return buttons;
 }
 
-static void refresh_gamepads(void) {
-    RuntimeGamepadState next = {0};
-    uint64_t physical = 0;
-    for (GCController *controller in GCController.controllers) {
-        GCExtendedGamepad *pad = controller.extendedGamepad;
-        if (!pad) continue;
-        next.connected = 1;
-        physical |= gamepad_buttons(pad, face_by_position(controller));
-        next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
-        next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
-        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
-        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
-    }
+/* Shared state transition, also exercised without a connected controller by the input probe. */
+static void update_gamepad_state(RuntimeGamepadState next,uint64_t physical) {
+    pthread_mutex_lock(&gamepadLock);
+    blockedPhysical&=physical;physical&=~blockedPhysical;
+    if(neutralSticks&1){if(!next.lx&&!next.ly)neutralSticks&=~1u;next.lx=next.ly=0;}
+    if(neutralSticks&2){if(!next.rx&&!next.ry)neutralSticks&=~2u;next.rx=next.ry=0;}
+    if(swapSticks){int32_t x=next.lx,y=next.ly;next.lx=next.rx;next.ly=next.ry;next.rx=x;next.ry=y;}
+    if(invertLookY)next.ry=-next.ry;
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0;
@@ -122,15 +119,31 @@ static void refresh_gamepads(void) {
     uint64_t held = physical & ~suppressed;
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
-    pthread_mutex_lock(&gamepadLock);
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
     pthread_mutex_unlock(&gamepadLock);
 }
 
+static void refresh_gamepads(void) {
+    RuntimeGamepadState next = {0};
+    uint64_t physical = 0;
+    for (GCController *controller in GCController.controllers) {
+        GCExtendedGamepad *pad = controller.extendedGamepad;
+        if (!pad) continue;
+        next.connected = 1;
+        physical |= gamepad_buttons(pad, face_by_position(controller));
+        next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
+        next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
+        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
+        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
+    }
+    update_gamepad_state(next, physical);
+}
+
 static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
+    controller.handlerQueue=dispatch_get_main_queue();
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
         (void)changed; (void)element;
         refresh_gamepads();
@@ -163,14 +176,27 @@ void runtime_gamepad_start(void) {
 
 void runtime_gamepad_clear(void) {
     runtime_feedback_quiet();
-    physicalPrev = 0;
+    pthread_mutex_lock(&gamepadLock);
+    blockedPhysical|=physicalPrev;physicalPrev=0;neutralSticks=3;
     memset(tapUntil, 0, sizeof tapUntil);
     memset(toggleOn, 0, sizeof toggleOn);
     memset(toggleMoved, 0, sizeof toggleMoved);
-    pthread_mutex_lock(&gamepadLock);
     gamepadState = (RuntimeGamepadState){0};
     pressedEdges = 0;
     pthread_mutex_unlock(&gamepadLock);
+}
+
+void runtime_gamepad_bindings_get(RuntimeControllerBindings *b){
+ pthread_mutex_lock(&gamepadLock);
+ memcpy(b->map,controllerMap,sizeof controllerMap);memcpy(b->modes,controllerModes,sizeof controllerModes);b->swap_sticks=swapSticks;b->invert_look_y=invertLookY;
+ pthread_mutex_unlock(&gamepadLock);
+}
+int runtime_gamepad_bindings_set(const RuntimeControllerBindings *b){
+ if(!controller_bindings_valid(b)||!NSThread.isMainThread)return 0;
+ pthread_mutex_lock(&gamepadLock);
+ memcpy(controllerMap,b->map,sizeof controllerMap);memcpy(controllerModes,b->modes,sizeof controllerModes);swapSticks=b->swap_sticks;invertLookY=b->invert_look_y;
+ pthread_mutex_unlock(&gamepadLock);
+ runtime_gamepad_clear();refresh_gamepads();return 1;
 }
 
 /* On-screen touch controls (iPhone, ios/app/Sources/touch_controls.m) feed a second state merged with the physical
