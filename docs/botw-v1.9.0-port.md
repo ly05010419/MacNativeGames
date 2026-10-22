@@ -353,6 +353,27 @@ the forest and no Game Over. GPU allocation: 1138 MB at frame 300, 1823 MB at ab
 the warm-up this is about 4 MB/min, against 10 MB/min before the fix. Resident memory: 2686 to 2900 MB. A first
 moving try on the field route is void, because Link died before 245 s and the run stayed on Game Over.
 
+## Core lending (`BOTW_CORE_TIMESLICE_MS`, off by default)
+
+1.9.0's job workers (priority 44, one per core) poll their `sead::JobQueue` at main+0xef6354..0xef6418 without an SVC
+until participant 0, the main thread, opens the first batch. Here the main thread also translates NVN to Metal, so it
+gets there later than on the console, and the threads at priority 45-49 pinned to the workers' cores wait the whole
+time: Horizon's rule never lets a worse priority in. `BOTW_CORE_TIMESLICE_MS=<ms>` lets a core owner that made no SVC
+for that long, as its waiters see it, give its core to the best waiter in the preemption signal. It only does so where
+`game_patches_botw.c` (`runtime_game_spin_lendable`) says the owner polls that queue outside its spinlock and is not
+participant 0. The waiter then keeps the core for 2 ms (`PROTECT_NS`), and after that the worker's priority counts again.
+1.6.0 never lends: its loop addresses are not known.
+
+Measured on another runtime only: the NSWMacPort fork, built from this repository at `b75be8c`, ran the same 1.9.0
+binary with the same rule. That fork preempts with `thread_suspend` instead of the signal and caps at 60 fps.
+Scripted runs with the same seeds (2026-10-21) gave a frame p99 of 64-80 -> 24 ms, and frames over 33 ms went from about
+3.5 % to about 0.1 %. In this runtime, the rule is checked only by `tests/test_core_lending.py`
+(`games/totk/tests/core_lending/probe.c`, the real `threads.c` without a game). There, a polling priority-44 owner lends its core
+to a priority-46 waiter within 500 ms with the setting on, and never with it off or outside the allowed range. Against
+`threads.c` from before this change, the waiter does not run. The TOTK preprocessed `threads.c` (v0, v112, v121, v143)
+is identical to before. Not played on this branch: an A/B in game (`BOTW_CORE_TIMESLICE_MS=2` against unset, same route
+and warm cache) decides whether it should be on by default.
+
 ## Not tested and known issues
 
 - Sinking legs after a save loads: deferred, cause unknown (see "Long run and the sinking legs").

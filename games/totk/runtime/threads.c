@@ -78,8 +78,9 @@ typedef struct thr {
     uint64_t yrun_ns, yrun_svc;   // the current run of yields: when it started, and nsvc at its last yield (yield_backoff_ns)
 #ifdef GAME_BOTW
     uint64_t cwait_ns;            // when it last queued for a virtual core (starvation rule, core_beats)
-    uint64_t protect_until;       // given a core by the starvation rule: no priority preemption before this
+    uint64_t protect_until;       // given a core by the starvation rule or a lend: no priority preemption before this
     int cqueued;                  // in g_core_wait: queued by core_take, or by wake_queue the moment it was woken
+    uint64_t svc_seen, svc_seen_ns;   // nsvc as the core waiters last saw it change, and when (core_polling)
 #endif
 } thr_t;
 static thr_t *g_all;
@@ -253,17 +254,45 @@ static void core_put(thr_t *t) {   // holding G
 #include <string.h>
 #include <sys/ucontext.h>
 static int g_async_preempt = -1;
-static uint64_t g_preempt_kicks, g_preempt_async;   // signals sent / cores given up in the handler (state dump)
-static int core_beats(const thr_t *w, const thr_t *o, uint64_t now) {   // holding G: may waiter w take running o's core?
+static uint64_t g_preempt_kicks, g_preempt_async, g_core_lends;   // signals sent / cores given up in the handler / of them lent (state dump)
+/* Core lending (BOTW_CORE_TIMESLICE_MS=<ms>, off by default; not Horizon's rule). 1.9.0's job workers (priority 44) poll
+   their sead::JobQueue without an SVC until participant 0, the main thread, opens the first batch; here the main thread
+   also translates NVN to Metal, so it gets there later than on the console, and the threads at 45-49 pinned to the
+   workers' cores wait the whole time. A core owner that made no SVC for a whole timeslice, as its waiters see it, gives
+   its core to the best waiter in the preemption signal, but only where game_patches_botw.c says it is polling that queue
+   outside its spinlock (so it holds nothing another thread could need); the waiter then keeps it for PROTECT_NS. Measured
+   on the NSWMacPort fork's runtime (forced preemption by thread_suspend instead of the signal, 60 FPS cap, scripted runs
+   with the same seeds, 2026-10-21): frame p99 64-80 -> 24 ms, frames over 33 ms ~3.5 % -> ~0.1 %. */
+__attribute__((weak)) int runtime_game_spin_lendable(uint64_t pc, const uint64_t *x) { (void)pc; (void)x; return 0; }   // game_patches_botw.c
+static int64_t g_lend_ns = -1;
+static uint64_t lend_ns(void) {   // holding G
+    if (g_lend_ns < 0) {
+        const char *e = getenv("BOTW_CORE_TIMESLICE_MS"); double ms = e ? atof(e) : 0; g_lend_ns = ms > 0 ? (int64_t)(ms * 1e6) : 0;
+        if (g_lend_ns) fprintf(stderr, "[threads] core lending: a job worker polling %.1f ms without an SVC lends its core (BOTW_CORE_TIMESLICE_MS)\n", ms);
+    }
+    return (uint64_t)g_lend_ns;
+}
+static int core_polling(thr_t *o, uint64_t now) {   // holding G: o made no SVC for a whole timeslice, counted from when a waiter first saw that
+    if (!lend_ns()) return 0;
+    if (o->nsvc != o->svc_seen || o->svc_seen_ns < o->core_since) { o->svc_seen = o->nsvc; o->svc_seen_ns = now; return 0; }
+    return now - o->svc_seen_ns >= lend_ns();
+}
+/* Holding G: may waiter w take running o's core? 1 by Horizon's rule; 2 for a lend only (o polls; preempt_signal checks where). */
+static int core_beats(const thr_t *w, thr_t *o, uint64_t now) {
     if (now < o->protect_until) return 0;
     int wp = eff_prio(w), op = eff_prio(o);
-    return wp < op || (wp == op && op == 59 && now - o->core_since >= 10000000ull)
-        || (starved(w, now) && now - o->core_since >= STARVE_NS);
+    if (wp < op || (wp == op && op == 59 && now - o->core_since >= 10000000ull)
+        || (starved(w, now) && now - o->core_since >= STARVE_NS)) return 1;
+    return core_polling(o, now) ? 2 : 0;
 }
-static int core_should_yield(const thr_t *t) {   // holding G: does a waiter that may run on t's core beat t?
-    uint64_t now = now_ns();
-    for (const thr_t *w = g_core_wait; w; w = w->cnext) if (core_allowed(w, t->cur_core) && core_beats(w, t, now)) return 1;
-    return 0;
+static int core_should_yield(thr_t *t, int lendable) {   // holding G: does a waiter that may run on t's core beat t? (as core_beats)
+    uint64_t now = now_ns(); int lend = 0;
+    for (const thr_t *w = g_core_wait; w; w = w->cnext) {
+        int b = core_allowed(w, t->cur_core) ? core_beats(w, t, now) : 0;
+        if (b == 1) return 1;
+        if (b == 2 && lendable) lend = 2;
+    }
+    return lend;
 }
 static void preempt_signal(int sig, siginfo_t *si, void *context);
 static int async_preempt_on(void) {   // holding G
@@ -341,8 +370,8 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     if (c >= 0) { core_unqueue(t); t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     if (!t->cqueued) { t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->cqueued = 1; t->cwait_ns = now_ns(); }
     int reported = 0;
-    while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance)
-        struct timespec again = {0, core_kick(t) ? 1000000 : 20000000};
+    while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance), every millisecond with core lending
+        struct timespec again = {0, core_kick(t) || lend_ns() ? 1000000 : 20000000};
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && t->cur_core < 0 && t->cwait_ns && now_ns() - t->cwait_ns >= STARVE_NS) { core_wait_report(t); reported = 1; }
     }
@@ -365,9 +394,13 @@ static void preempt_signal(int sig, siginfo_t *si, void *context) {
     uint64_t pc = (uint64_t)((ucontext_t *)context)->uc_mcontext->__ss.__pc;
     uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
     if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) return;
-    int saved = errno;
+    int saved = errno, lendable = runtime_game_spin_lendable(pc, ((ucontext_t *)context)->uc_mcontext->__ss.__x), y;
     pthread_mutex_lock(&G);
-    if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); g_preempt_async++; }
+    if (t->cur_core >= 0 && (y = core_should_yield(t, lendable))) {
+        int c = t->cur_core; core_put(t);
+        if (y == 2 && g_core_owner[c]) { g_core_owner[c]->protect_until = now_ns() + PROTECT_NS; g_core_lends++; }   // one burst for the waiter, then the lender's priority counts again
+        core_take(t); g_preempt_async++;
+    }
     else t->preempt = 0;
     pthread_mutex_unlock(&G);
     errno = saved;
@@ -393,7 +426,7 @@ void runtime_core_checkpoint(void) {
        rule, see core_beats). */
     if (!t || t->cur_core < 0 || (!t->preempt && !__atomic_load_n(&g_core_wait, __ATOMIC_RELAXED))) return;
     pthread_mutex_lock(&G);
-    if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); }
+    if (t->cur_core >= 0 && core_should_yield(t, 0)) { core_put(t); core_take(t); }
     else t->preempt = 0;
     pthread_mutex_unlock(&G);
     return;
@@ -1032,8 +1065,8 @@ static void dump_threads(unsigned secs) {
                                             g_core_owner[c] ? (now_ns() - g_core_owner[c]->core_since) / 1e6 : 0.0);
     for (thr_t *w = g_core_wait; w; w = w->cnext) fprintf(stderr, "[totk-dump] core waiter %#x prio %d mask %#llx ideal %d\n", w->handle, w->prio, (unsigned long long)w->mask, w->core);
 #ifdef GAME_BOTW
-    fprintf(stderr, "[totk-dump] preemption signals %llu, cores given up in the signal handler %llu, starvation grants %llu\n",
-            (unsigned long long)g_preempt_kicks, (unsigned long long)g_preempt_async, (unsigned long long)g_starve_grants);
+    fprintf(stderr, "[totk-dump] preemption signals %llu, cores given up in the signal handler %llu (lent %llu), starvation grants %llu\n",
+            (unsigned long long)g_preempt_kicks, (unsigned long long)g_preempt_async, (unsigned long long)g_core_lends, (unsigned long long)g_starve_grants);
     for (thr_t *w = g_core_wait; w; w = w->cnext) if (eff_prio(w) != w->prio) fprintf(stderr, "[totk-dump] core waiter %#x runs at %d (owns a mutex a better thread waits for)\n", w->handle, eff_prio(w));
 #endif
     thr_t *run[64]; int nrun = 0;

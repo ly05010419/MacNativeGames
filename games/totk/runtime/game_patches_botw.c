@@ -717,3 +717,16 @@ int runtime_aspect_toggle(void) { return 0; }
 void runtime_aspect_view(double w, double h) { (void)w; (void)h; }
 int runtime_aspect_step(void) { return -1; }
 #endif
+#ifdef GAME_BOTW190
+/* Core lending (threads.c, BOTW_CORE_TIMESLICE_MS): where a polling core owner may lend its core. 1.9.0's job workers poll
+   their sead::JobQueue (a FixedSizeJQ::run variant) at main+0xef6354..0xef6418: x21 = the queue, w0 = this worker's
+   participant index (TLS value - 1, main+0xef631c; the TLS is GetCurrentCoreNumber() + 1, set at main+0x1573a9c). Only
+   outside the queue's spinlock [x21+0x1c] (taken by the stxr at 0xef6378 or 0xef640c, released by the stlxr at 0xef63e0):
+   stopped inside, it would leave participant 0 spinning on that lock until the core came back. Participant 0 itself (the
+   main thread) is never lent: it waits for nobody, and the frame waits for it. */
+int runtime_game_spin_lendable(uint64_t pc, const uint64_t *x) {
+    uint8_t *main_base = runtime_module_base("main"); if (!main_base) return 0;
+    uint64_t o = pc - (uintptr_t)main_base;
+    return ((o >= 0xef6354 && o < 0xef637c) || (o >= 0xef63e8 && o < 0xef6410)) && (uint32_t)x[0] != 0;
+}
+#endif
