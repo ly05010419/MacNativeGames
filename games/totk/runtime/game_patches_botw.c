@@ -223,7 +223,34 @@ static void pad_log_arm(Module *m) {
     g_pad_main = m->base; g_pad_log_on = 1;
     fprintf(stderr, "[botw] TOTK_PAD_LOG: every controller update while a direction is held, and the tick at each present\n");
 }
+#ifdef GAME_BOTW190
+/* 1.9.0 uses float hold counts and fmod(count - delay, pulse) < step to emit a
+   repeat. Its shared sead step defaults to 1.0, independently of the patched VFR.
+   Feed this loop the same 30-Hz frame ratio as the simulation. Trigger/release bits
+   remain per frame. The pause menu countdown already uses a real-time float delta. */
+static void patch_pad_repeat_190(Module *m, uint64_t page) {
+    const char *e = getenv("TOTK_PAD_REPEAT");
+    if (e && !strcmp(e, "0")) return;
+    static const struct { uint32_t off, original; } check[] = {
+        {0xeb0f78, 0xd00075e8}, {0xeb0f7c, 0xaa1f03f5}, {0xeb0f80, 0xf944f108},
+        {0xeb0f84, 0x52800036}, {0xeb0f88, 0xbd400108}, {0xeb0fa8, 0x1e202909},
+        {0xeb0fcc, 0x941bbd81}, {0xeb0fd0, 0x1e282000}, {0xeb0fec, 0xbd0032e9},
+    };
+    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+        uint32_t word; memcpy(&word, m->base + check[i].off, 4);
+        if (word != check[i].original) runtime_fail("1.9.0 pad repeat instructions differ from the supported game");
+    }
+    uint32_t adrp = adrp_reg(8, (uintptr_t)m->base + 0xeb0f78, page), nop = 0xd503201f;
+    memcpy(m->base + 0xeb0f78, &adrp, 4);
+    memcpy(m->base + 0xeb0f80, &nop, 4);
+    fprintf(stderr, "[botw] 1.9.0 pad repeat: floating hold counts and repeat windows follow the real-time VFR ratio (TOTK_PAD_REPEAT=0: per frame)\n");
+}
+#endif
 static void patch_pad_repeat(Module *m, uint64_t page) {
+#ifdef GAME_BOTW190
+    patch_pad_repeat_190(m, page);
+    return;
+#endif
     const char *e = getenv("TOTK_PAD_REPEAT");
     if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] pad repeat and hold counts per frame, as shipped (TOTK_PAD_REPEAT=0)\n"); pad_log_arm(m); return; }
     for (unsigned i = 0; i < PAD_LOOP_WORDS; i++) {

@@ -2685,6 +2685,17 @@ static int uncapped_cap(int scr) {
     return v < 30 ? 30 : v > UNCAPPED_HZ ? UNCAPPED_HZ : v;
 }
 void nvn_present_config(int hz, int display_mode) { g_hz = g_paced_hz = hz; g_display_mode = display_mode; }
+/* At exactly 120 Hz the guest may still request interval 2. It needs the same
+   uncapped interval bypass as a slower display; excluding equality halves the rate. */
+static int uncapped_configured(const char *hz_env, int realtime, const char *uncapped, const char *fps60, int hz) {
+    return !hz_env && realtime && !(uncapped && !strcmp(uncapped, "0")) &&
+           !(fps60 && !strcmp(fps60, "0")) &&
+#ifdef GAME_BOTW
+           hz <= UNCAPPED_HZ;
+#else
+           hz < UNCAPPED_HZ;
+#endif
+}
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // 有窗口仍缺省 display 间隔模式；无窗口缺省 game 模式。环境变量可覆盖固定 60 Hz。
@@ -2694,7 +2705,7 @@ static void present_cfg(const win_t *o) {
     int realtime = !(rt && !strcmp(rt, "0"));
     g_hz = g_paced_hz = e ? atoi(e) : (realtime && scr > 0 ? scr : 60);
     { const char *u = getenv("TOTK_UNCAPPED"), *f60 = getenv("TOTK_FPS60");   // the original 30-frame mode needs fixed pacing; MetalFX interpolation suspends it while on (uncapped_now)
-      g_uncapped = !e && realtime && !(u && !strcmp(u, "0")) && !(f60 && !strcmp(f60, "0")) && g_hz < UNCAPPED_HZ; }
+      g_uncapped = uncapped_configured(e, realtime, u, f60, g_hz); }
     if (g_uncapped) { g_hz = uncapped_cap(scr); LOG("[nvn] 不限帧率（TOTK_UNCAPPED，默认开；=0 关）：不等显示器刷新，自己的时钟上限 %d 帧（TOTK_UNCAPPED_HZ）；显示器 %d Hz 每次刷新显示最新一帧%s", g_hz, scr,
                                        mfx_enabled() ? "（补帧开着时暂停：每两次刷新一帧）" : "（补帧打开时暂停，2 键）"); }
     if (!g_hz) LOG("[nvn] 【警告】DM_PRESENT_HZ=0：不限帧率，帧节奏非真机，界面逻辑可能偏离（仅供性能剖析，不能用于判据 / 对拍）");
@@ -2740,6 +2751,19 @@ void dm_nvn_probe_present_interval(void) {
     int saved_hz = g_hz, saved_display = g_display_mode, saved_uncapped = g_uncapped;
     int saved_flag = atomic_load(&g_uncapped_interval), checked = 0;
     const char *neg = getenv("TOTK_PROBE_NEGATIVE");
+#ifdef GAME_BOTW
+    for (int hz = 60; hz <= 120; hz += 60) {
+        win_t w = {.interval = 2}; g_hz = UNCAPPED_HZ; g_display_mode = 0;
+        g_uncapped = uncapped_configured(NULL, 1, "1", NULL, hz);
+        atomic_store(&g_uncapped_interval, 1);
+        if (!g_uncapped || present_ticks(&w) != 1 || present_period(&w) != 1000000000ull / 120)
+            die("uncapped configuration must bypass interval 2 on 60 and 120 Hz displays");
+        if (uncapped_configured("120", 1, "1", NULL, hz) || uncapped_configured(NULL, 0, "1", NULL, hz) ||
+            uncapped_configured(NULL, 1, "0", NULL, hz) || uncapped_configured(NULL, 1, "1", "0", hz))
+            die("uncapped configuration ignored explicit pacing or legacy mode");
+        checked++;
+    }
+#endif
     for (int hz = 60; hz <= 120; hz += 60) for (int uncapped = 0; uncapped < 2; uncapped++)
     for (int display = 0; display < 2; display++) for (int on = 0; on < 2; on++)
     for (int interval = -1; interval <= 3; interval++) {
