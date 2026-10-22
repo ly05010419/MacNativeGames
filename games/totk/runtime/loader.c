@@ -526,6 +526,7 @@ static void abort_report(int num) {
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
 int main(int argc,char **argv) {
+ {extern void video_prefs_boot(void);video_prefs_boot();}   /* frame-rate cap / vertical sync (runtime/video_prefs.c), before any reader */
  need(argc==3,"usage: totk-native rewritten-dir probe|boot");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
