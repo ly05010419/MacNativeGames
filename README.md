@@ -189,6 +189,8 @@ Mac-only extra keys: **1** show or hide all on-screen overlays (FPS, shader coun
 
 Native 2K changes the game's composition canvas and UI to 2560×1440. The 3D scene still follows the game's separate render scaling; this does not force every internal render target to 1440p. The manual MetalFX mode also works in smaller windows and scales to the actual output size, including 4K.
 
+Trackpad as the right stick (Mac): one finger on the built-in trackpad can drive the right stick, so the camera follows the speed of your finger: a faster swipe turns it more, and a finger that stops or rests returns the stick to neutral. It is off by default. Set `enabled = on` in `~/Library/Application Support/MacNativeGames/TOTK/trackpad.txt` (the game creates the file on its first launch, with every option explained) and relaunch, or launch with `TOTK_TRACKPAD=1`. While a finger drives the stick the mouse pointer is hidden and held still; it comes back when you lift the finger or leave the window. After that, edits to the other settings apply on the next touch, with no relaunch. It reads the trackpad through the private MultitouchSupport framework, so a future macOS update can break it; the arrow keys and controllers keep working either way.
+
 Language: the game and the launcher's own text (startup screen, shader warm-up progress, overlays, keyboard prompt) follow the Mac's language. The launcher text is Chinese on a Chinese Mac and English otherwise. In a 1.4.3 build, Brazilian Portuguese selects the game's official pt-BR text. To give only this game another language, set its preferred language, for example `defaults write org.macnativegames.totk AppleLanguages -array pt-BR` (`defaults delete org.macnativegames.totk AppleLanguages` removes it). To override, launch with `TOTK_LANG` for the game (for example `open --env TOTK_LANG=en-US "Tears of the Kingdom.app"`) or `TOTK_UI_LANG=zh` / `en` for the launcher text.
 
 ## Where things are
@@ -416,6 +418,8 @@ west = y
 仅限 Mac 的额外按键：**1** 同时隐藏或重新显示所有屏幕提示（FPS、着色器计数、系统负载和快捷键说明，集中在窗口右上角的一个小框里；`TOTK_HUD=corners` 恢复为画面四角显示）；**2** 补帧（关 → 30+30 → 刷新率一半 → 不限帧），**3** 循环切换画质（MetalFX 2K → 原生 2K → 关闭），**4** 21:9 超宽屏开 / 关（1.2.1 和 1.4.3：镜头两侧看到更多，画面铺满更宽的窗口；`TOTK_ASPECT=32:9` 或 `3440x1440` 换成别的比例并以宽屏启动；HUD、菜单和地图保持原比例，放在窗口中间的 16:9 区域，地图两侧是黑边；跟着世界物体走的标记还没往两侧挪）。快捷键说明会显示当前补帧和画质档位，两种提示布局都每半秒刷新一次。MetalFX 默认关闭，只有按 **3** 手动切换到该模式才会启用；放大窗口不会自动开启。文字输入（给马取名）直接用 Mac 键盘。iPhone / iPad 使用触屏控件或兼容手柄，不会显示 Mac 的 1 / 2 / 3 / 4 快捷键提示。触屏按 Switch 手柄排布：左上 L、ZL，右上 R、ZR，中间 − 和 +，左边十字键，右边 A、B、X、Y。十字键在左摇杆上方，A、B、X、Y 在右摇杆上方，L3、R3（按下摇杆）在左下角和右下角。在左半屏避开按钮的地方按住拖动是左摇杆，在右半屏是转镜头（右摇杆）；摇杆以手指按下的位置为中心。接上手柄时触屏控件自动隐藏：碰一下屏幕就会显示，可以照常使用，手指离开 3 秒后再次隐藏。
 
 原生 2K 将游戏合成画布和 UI 改为 2560×1440，3D 场景仍由游戏独立的渲染比例控制，并非强制所有内部通道以 1440p 渲染。手动 MetalFX 在较小窗口中也可使用，输出放大会跟随实际窗口尺寸，包括 4K。
+
+触控板当右摇杆（Mac）：用内置触控板上的一根手指就能控制右摇杆，镜头跟随手指的速度：划得越快转得越多，手指停住或静止时摇杆回到中间。默认关闭。在 `~/Library/Application Support/MacNativeGames/TOTK/trackpad.txt` 里写 `enabled = on`（游戏第一次启动时会创建这个文件，每个选项都有说明）后重新启动，或用 `TOTK_TRACKPAD=1` 启动。手指控制摇杆时，鼠标指针会隐藏并固定不动，手指抬起或离开窗口后恢复。之后改其他设置只需保存文件，下次触碰触控板就会生效，不用重启。它通过私有的 MultitouchSupport 框架读取触控板，所以以后的 macOS 更新可能让它失效；无论如何方向键和手柄都照常可用。
 
 语言：游戏和启动器自身的文字（启动画面、着色器预热进度、提示叠层、键盘输入提示）跟随 Mac 的系统语言。启动器文字在中文系统上显示中文，其他语言显示英文。1.4.3 版本中，巴西葡萄牙语会选择游戏官方的 pt-BR 文本。只想让本游戏使用另一种语言时，可设置它的首选语言，例如 `defaults write org.macnativegames.totk AppleLanguages -array pt-BR`（`defaults delete org.macnativegames.totk AppleLanguages` 可撤销）。如需指定，可用 `TOTK_LANG` 设置游戏语言（例如 `open --env TOTK_LANG=zh-Hans "Tears of the Kingdom.app"`），用 `TOTK_UI_LANG=zh` / `en` 设置启动器文字。
 
