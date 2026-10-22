@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an unsigned, sideloadable iPhone/iPad IPA from a prepared TOTK work tree."""
+"""Build an unsigned, sideloadable iPhone/iPad IPA from a prepared TOTK or Breath of the Wild work tree."""
 import argparse, json, os, shutil, subprocess, sys
 from pathlib import Path
 from compile_seed import METAL_FLAGS
@@ -40,7 +40,7 @@ def copy_tree(src,dst):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tree',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
-    p.add_argument('--version',choices=['v0','v112','v121','v143'],required=True);p.add_argument('--logs',type=Path,required=True)
+    p.add_argument('--version',choices=['v0','v112','v121','v143','botw160','botw190'],required=True);p.add_argument('--logs',type=Path,required=True)
     p.add_argument('--image-outside',action='store_true',help='leave romfs.bin out: the device keeps it in Documents/GameData');p.add_argument('--app-name',default='Tears of the Kingdom');p.add_argument('--bundle-id',default='org.macnativegames.totk')
     a=p.parse_args(); tree=a.tree.resolve(); ios=tree/'ios';gen=ios/'Gen';logs=a.logs.resolve(); out=a.out.resolve()
     if out.suffix.lower() not in ('.ipa','.app'): raise RuntimeError('iOS output path must end in .ipa (or .app: the unsigned folder)')
@@ -49,22 +49,26 @@ def main():
     subprocess.run(['xcodebuild','-version'],env=env,check=True,stdout=subprocess.DEVNULL)
     if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
-    version_dir=tree/'build'/({'v0':'','v112':'v112','v121':'v121','v143':'v143'}[a.version])
-    if a.version=='v0': version_dir=tree/'build'
-    for name in ('runtime_tables.h','romfs_config.h'):
+    botw=a.version.startswith('botw')   # Breath of the Wild: game_patches_botw.c, its add-on content and shader list
+    version_dir=tree/'build' if a.version=='v0' else tree/'build'/a.version
+    for name in ('runtime_tables.h','romfs_config.h')+(('aoc_config.h',) if botw else ()):
         clone(version_dir/name,gen/name)
     clone(tree/'build/shared_fonts_config.h',gen/'shared_fonts_config.h')
     # Export the final code after all verified runtime patches have been applied, then embed it in executable segments.
     host=tree/('build/totk-native' if a.version=='v0' else f'build/totk-native-{a.version}')
     rewritten=tree/f'rewritten/{a.version}'; modules=gen/'modules';modules.mkdir(exist_ok=True)
     e=dict(env,TOTK_EXPORT_IOS=str(modules))
+    # The embedded code is made with the defaults: an opt-out left in this shell would not match what the device checks.
+    for name in ('TOTK_REALTIME','TOTK_RENDER_RES','TOTK_PAD_REPEAT','TOTK_EXCL_ACQUIRE','TOTK_PAD_LOG','TOTK_JQ_CHECK'): e.pop(name,None)
     run([host,rewritten,'export-ios'],tree,logs/'export-ios.log',e)
     flags=subprocess.check_output([sys.executable,ios/'tools/gen_embed.py',rewritten,gen/'embed.S','--text-dir',modules,'main','subsdk0','sdk'],text=True,env=env).strip()
     # The app's sources use version-specific patch and generated runtime tables.
     project=(ios/'project.yml').read_text()
-    if a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
+    if botw: project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
+    elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
     else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
-    if a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
+    if botw: project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
+    elif a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
     # The home screen icon: the game's own, which the build took from its control data for the Mac app
     # (build/AppIcon.icns, scripts/extract_app_icon.py), as a single-size asset catalog. Without it the app had none.
     icon=tree/'build/AppIcon.icns'; catalog=gen/'Assets.xcassets'; shutil.rmtree(catalog,ignore_errors=True)
@@ -134,14 +138,19 @@ def main():
         for p in list((res/'romfs').glob('romfs.bin*')): p.unlink()
     for src,dst in [(tree/f'extracted/{a.version}/romfs-patches',res/'romfs-patches'),
                     (tree/f'extracted/{a.version}/romfs-patches-out',res/'romfs-patches-out'),
-                    (tree/'extracted/firmware/shared-fonts',res/'shared-fonts')]: copy_tree(src,dst)
+                    (tree/'extracted/firmware/shared-fonts',res/'shared-fonts')]:
+        if src.is_dir() or not botw: copy_tree(src,dst)   # Breath of the Wild has no RomFS overlays
+    if botw:   # the verified add-on content volumes the build imported (aoc_romfs.c, TOTK_AOC in main.m)
+        for index in sorted((tree/f'extracted/{a.version}/aoc').glob('*/index.json')):
+            for name in ('romfs.bin','runtime-index.bin'): clone(index.parent/name,res/'aoc'/index.parent.name/name)
     copy_tree(seed,res/'shader-seed')
     # The first frame waits only for the title screen's shaders (pso_title.tsv); the runtime looks for the list next to
     # DM_NVN_SHMAP, which is in shader-seed on iOS. Without it the first frame waits for the whole warm-up.
     # Exported from the one shared shader list (games/totk/assets/shader_list.tsv, docs/shader-list.md).
+    shader_list=tree/'../botw/assets/shader_list.tsv' if botw else tree/'assets/shader_list.tsv'
     # The list's other warm rows (its render pipelines) go in as pso_list.tsv: shader-seed/pso_manifest.tsv is the seed's own
     # list there, and the runtime reads both (nvn_mtl.m warm_start). Before 2026-10-22 they stayed in the build logs.
-    run([sys.executable,tree/'scripts/shader_list.py','export',tree/'assets/shader_list.tsv',res/'shader-seed/pso_list.tsv',
+    run([sys.executable,tree/'scripts/shader_list.py','export',shader_list,res/'shader-seed/pso_list.tsv',
          res/'shader-seed/pso_title.tsv'],tree,logs/'shader-list.log',env)
     aliases=seed_src.with_name(seed_src.name+'.aliases.tsv')   # listed variants the seed carries under another name
     if aliases.is_file():

@@ -10,6 +10,7 @@
 #include <math.h>
 #include "game_patches.h"
 #include "game_version.h"
+#include <TargetConditionals.h>
 #ifdef GAME_BOTW190
 #include "aspect_math.h"   /* key 4: TOTK_ASPECT parsing */
 #endif
@@ -68,7 +69,26 @@ static int g_pad_log_on; static _Atomic uint64_t g_pad_dir_until;   /* TOTK_PAD_
 static uint8_t *g_pad_main;
 #endif
 
-static int realtime_enabled(void) { const char *e = getenv("TOTK_REALTIME"); return !(e && !strcmp(e, "0")); }
+/* iOS cannot write code pages at run time: the iOS export (TOTK_EXPORT_IOS, runtime/loader.c) runs these patches on the
+   Mac and the patched text is embedded in the app (loader.c checks its SHA-256 when it maps it). On the device the shipped
+   words are not checked again (they are patched by then); each patched word is checked instead, and the choices that
+   change code (TOTK_REALTIME, TOTK_RENDER_RES, TOTK_PAD_REPEAT, TOTK_EXCL_ACQUIRE) are the build's: their opt-outs are not
+   read there, and the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) are Mac only. */
+#if TARGET_OS_IPHONE
+#define CODE_PATCHED_AT_BUILD 1
+#else
+#define CODE_PATCHED_AT_BUILD 0
+#endif
+static void put_word(Module *m, uint64_t off, uint32_t word, const char *what) {
+    if (!CODE_PATCHED_AT_BUILD) { memcpy(m->base + off, &word, 4); return; }
+    uint32_t have; memcpy(&have, m->base + off, 4);
+    if (have != word) {
+        fprintf(stderr, "[botw] %s main+%#llx: embedded %08x, expected patched %08x\n", what, (unsigned long long)off, have, word);
+        runtime_fail("embedded main text was not patched at build time (ios/tools/build_ipa.py)");
+    }
+}
+static int brk_diagnostics(void) { return !CODE_PATCHED_AT_BUILD && !getenv("TOTK_EXPORT_IOS"); }   /* never in the embedded code */
+static int realtime_enabled(void) { const char *e = getenv("TOTK_REALTIME"); return CODE_PATCHED_AT_BUILD || !(e && !strcmp(e, "0")); }
 static uint64_t frame_step_bits(float seconds) {
     float ratio = seconds * 30.0f; uint32_t lo, hi;
     memcpy(&lo, &ratio, 4); memcpy(&hi, &seconds, 4);
@@ -236,7 +256,7 @@ static const uint32_t menu_cd_shipped[MENU_CD_WORDS] = { 0x8b0a136au, 0x5289400b
 static const uint32_t menu_cd_ticked[MENU_CD_WORDS] = { 0x8b0a136au, 0x9141914bu, 0, 0xb94009adu, 0x34000aedu, 0xb94a016cu, 0x5100058du, 0xb90a016du, 0x35000a6cu };
 static void pad_log_arm(Module *m) {
     const char *l = getenv("TOTK_PAD_LOG");
-    if (!l || !*l || !strcmp(l, "0")) return;
+    if (!l || !*l || !strcmp(l, "0") || !brk_diagnostics()) return;
     /* diagnostics: a brk on the loop's first instruction (ldr w8, [x19, #0x100], the same shipped and patched), see botw_pad_hook */
     uint32_t b = 0xd4200000u | (0x7c0u << 5); memcpy(m->base + PAD_LOOP, &b, 4);
     g_pad_main = m->base; g_pad_log_on = 1;
@@ -244,15 +264,15 @@ static void pad_log_arm(Module *m) {
 }
 static void patch_pad_repeat(Module *m, uint64_t page) {
     const char *e = getenv("TOTK_PAD_REPEAT");
-    if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] pad repeat and hold counts per frame, as shipped (TOTK_PAD_REPEAT=0)\n"); pad_log_arm(m); return; }
-    for (unsigned i = 0; i < PAD_LOOP_WORDS; i++) {
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] pad repeat and hold counts per frame, as shipped (TOTK_PAD_REPEAT=0)\n"); pad_log_arm(m); return; }
+    if (!CODE_PATCHED_AT_BUILD) for (unsigned i = 0; i < PAD_LOOP_WORDS; i++) {
         uint32_t w; memcpy(&w, m->base + PAD_LOOP + 4 * i, 4);
         if (w != pad_loop_shipped[i]) {
             fprintf(stderr, "[botw] pad repeat main+%#x: found %08x expected %08x\n", PAD_LOOP + 4 * i, w, pad_loop_shipped[i]);
             runtime_fail("pad repeat by real time requires the 1.6.0 sead::ControllerBase loop");
         }
     }
-    for (unsigned i = 0; i < MENU_CD_WORDS; i++) {
+    if (!CODE_PATCHED_AT_BUILD) for (unsigned i = 0; i < MENU_CD_WORDS; i++) {
         uint32_t w; memcpy(&w, m->base + MENU_CD + 4 * i, 4);
         if (w != menu_cd_shipped[i]) {
             fprintf(stderr, "[botw] menu countdown main+%#x: found %08x expected %08x\n", MENU_CD + 4 * i, w, menu_cd_shipped[i]);
@@ -263,11 +283,11 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
     atomic_store(pad_tick, 1);
     for (unsigned i = 0; i < PAD_LOOP_WORDS; i++) {
         uint32_t w = i == PAD_ADRP ? adrp_reg(16, (uintptr_t)m->base + PAD_LOOP + 4 * i, page) : pad_loop_ticked[i];
-        memcpy(m->base + PAD_LOOP + 4 * i, &w, 4);
+        put_word(m, PAD_LOOP + 4 * i, w, "pad repeat");
     }
     for (unsigned i = 0; i < MENU_CD_WORDS; i++) {
         uint32_t w = i == MENU_CD_ADRP ? adrp_reg(13, (uintptr_t)m->base + MENU_CD + 4 * i, page) : menu_cd_ticked[i];
-        memcpy(m->base + MENU_CD + 4 * i, &w, 4);
+        put_word(m, MENU_CD + 4 * i, w, "menu countdown");
     }
     fprintf(stderr, "[botw] pad repeat and hold counts by real time: held buttons count once per 1/30 s of game time, and so does "
                     "the pause menu's fast-repeat countdown (%u + %u instructions, all verified; TOTK_PAD_REPEAT=0: once per frame, as shipped)\n",
@@ -288,7 +308,7 @@ static void patch_realtime(Module *m) {
         {0x18522fcu, 0x1e2c1001u}, {0x1852300u, 0x1e210800u}, {0x1852304u, 0xbd0b22a0u},
         {0x161847cu, 0x1e290908u}, {0x1618480u, 0xbd400109u}, {0x1618484u, 0xb94c3680u},
     };
-    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+    if (!CODE_PATCHED_AT_BUILD) for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
         uint32_t w; memcpy(&w, m->base + check[i].off, 4);
         if (w != check[i].original) {
             fprintf(stderr, "[botw] real-time frame step main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
@@ -305,7 +325,7 @@ static void patch_realtime(Module *m) {
         {0x18522f4u, nop}, {0x18522f8u, nop}, {0x1852300u, nop},
         {0x1618480u, 0x1e2e1009u},   /* fmov s9, #1.0: six physics substeps per frame at any frame rate */
     };
-    for (size_t i = 0; i < sizeof put / sizeof *put; i++) memcpy(m->base + put[i].off, &put[i].word, 4);
+    for (size_t i = 0; i < sizeof put / sizeof *put; i++) put_word(m, put[i].off, put[i].word, "real-time frame step");
     frame_step_main = m->base;
     frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
     atomic_store(frame_step_data, frame_step_bits(1.0f / 30.0f));
@@ -344,11 +364,11 @@ static void patch_realtime(Module *m) {
    the patched ratio makes it real-time too. */
 static void patch_pad_repeat(Module *m, uint64_t page) {
     const char *e = getenv("TOTK_PAD_REPEAT");
-    if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] pad repeat and hold counts per frame, as shipped (TOTK_PAD_REPEAT=0)\n"); return; }
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] pad repeat and hold counts per frame, as shipped (TOTK_PAD_REPEAT=0)\n"); return; }
     static const struct { uint32_t off, original; } check[] = {
         {0xeb0f78u, 0xd00075e8u}, {0xeb0f7cu, 0xaa1f03f5u}, {0xeb0f80u, 0xf944f108u}, {0xeb0f84u, 0x52800036u}, {0xeb0f88u, 0xbd400108u},
     };
-    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+    if (!CODE_PATCHED_AT_BUILD) for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
         uint32_t w; memcpy(&w, m->base + check[i].off, 4);
         if (w != check[i].original) {
             fprintf(stderr, "[botw] pad repeat main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
@@ -358,7 +378,7 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
     const struct { uint32_t off, word; } put[] = {
         {0xeb0f78u, adrp_reg(8, (uintptr_t)m->base + 0xeb0f78, page)}, {0xeb0f80u, 0xd503201fu},
     };
-    for (size_t i = 0; i < sizeof put / sizeof *put; i++) memcpy(m->base + put[i].off, &put[i].word, 4);
+    for (size_t i = 0; i < sizeof put / sizeof *put; i++) put_word(m, put[i].off, put[i].word, "pad repeat");
     fprintf(stderr, "[botw] pad repeat and hold counts by real time: held buttons count the VFR ratio per frame (%zu instructions, "
                     "%zu verified; TOTK_PAD_REPEAT=0: one per frame, as shipped)\n", sizeof put / sizeof *put, sizeof check / sizeof *check);
 }
@@ -375,7 +395,7 @@ static void patch_realtime(Module *m) {
         {0x1281064u, 0x97cc6dc9u}, {0x1281068u, 0xf94002a0u}, {0x128106cu, 0x1e204009u}, {0x1281070u, 0x97ccd7ceu},
         {0x1281080u, 0x1e204121u}, {0x1281084u, 0x940bba19u},
     };
-    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+    if (!CODE_PATCHED_AT_BUILD) for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
         uint32_t w; memcpy(&w, m->base + check[i].off, 4);
         if (w != check[i].original) {
             fprintf(stderr, "[botw] real-time frame step main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
@@ -390,7 +410,7 @@ static void patch_realtime(Module *m) {
         {0x1280eccu, adrp_reg(9, (uintptr_t)m->base + 0x1280ecc, page)}, {0x1280ee4u, 0xbd400120u},   /* ldr s0, [x9] */
         {0x128106cu, 0x1e2e1009u},   /* fmov s9, #1.0: six physics substeps per frame at any frame rate */
     };
-    for (size_t i = 0; i < sizeof put / sizeof *put; i++) memcpy(m->base + put[i].off, &put[i].word, 4);
+    for (size_t i = 0; i < sizeof put / sizeof *put; i++) put_word(m, put[i].off, put[i].word, "real-time frame step");
     frame_step_main = m->base;
     frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
     atomic_store(frame_step_data, frame_step_bits(1.0f / 30.0f));
@@ -440,12 +460,12 @@ static struct { uint32_t state, status, ring; uint64_t jq; } g_pre[64];   /* per
    bit (ldaxr / ldaxp): one bit, the same registers and size, only stronger ordering. */
 static int excl_ld(uint32_t w) { return (w & 0x3ffffc00u) == 0x085f7c00u || (w & 0xbfff8000u) == 0x887f0000u; }   /* ldxr{b,h} / ldxp */
 static int excl_st(uint32_t w) { return (w & 0x3fe07c00u) == 0x08007c00u || (w & 0xbfe00000u) == 0x88200000u; }   /* st{l}xr{b,h} / st{l}xp */
-static unsigned excl_acquire(uint8_t *code, size_t n) {
+static unsigned excl_acquire(uint8_t *code, size_t n) {   /* iOS: counts only (the embedded code has them already: 0) */
     unsigned done = 0; uint32_t *w = (uint32_t *)(void *)code; size_t words = n / 4;
     for (size_t i = 0; i < words; i++) {
         if (!excl_ld(w[i])) continue;
         uint32_t rn = (w[i] >> 5) & 31;
-        for (size_t j = i + 1; j < words && j <= i + 16; j++) if (excl_st(w[j]) && ((w[j] >> 5) & 31) == rn) { w[i] |= 0x8000u; done++; break; }
+        for (size_t j = i + 1; j < words && j <= i + 16; j++) if (excl_st(w[j]) && ((w[j] >> 5) & 31) == rn) { if (!CODE_PATCHED_AT_BUILD) w[i] |= 0x8000u; done++; break; }
     }
     return done;
 }
@@ -467,7 +487,7 @@ enum { RENDER_MOVK = 0x12660c8 };
 #endif
 static void patch_render_1080(Module *m) {
     const char *e = getenv("TOTK_RENDER_RES");
-    if (e && !strcmp(e, "900")) { fprintf(stderr, "[botw] docked render size 1600x900, as shipped (TOTK_RENDER_RES=900)\n"); return; }
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "900")) { fprintf(stderr, "[botw] docked render size 1600x900, as shipped (TOTK_RENDER_RES=900)\n"); return; }
     static const struct { uint32_t off, original; } check[] = {
 #ifdef GAME_BOTW160
         {0x1821670u, 0xd2a89e08u}, {0x1821674u, 0xf2e89908u}, {0x1821678u, 0xf9094b88u},
@@ -476,7 +496,7 @@ static void patch_render_1080(Module *m) {
         {0x12660ccu, 0xf9090a68u},
 #endif
     };
-    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+    if (!CODE_PATCHED_AT_BUILD) for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
         uint32_t w; memcpy(&w, m->base + check[i].off, 4);
         if (w != check[i].original) {
             fprintf(stderr, "[botw] render size main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
@@ -484,7 +504,7 @@ static void patch_render_1080(Module *m) {
         }
     }
     const uint32_t movk = 0xf2e89e08u;   /* movk x8, #0x44f0, lsl #48 */
-    memcpy(m->base + RENDER_MOVK, &movk, 4);
+    put_word(m, RENDER_MOVK, movk, "render size");
     fprintf(stderr, "[botw] docked render size 1920x1080 (shipped: 1600x900; TOTK_RENDER_RES=900 keeps it)\n");
 }
 void runtime_game_patches(Module *m) {
@@ -497,11 +517,16 @@ void runtime_game_patches(Module *m) {
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
     { const char *a = getenv("TOTK_EXCL_ACQUIRE");
-      if (!a || strcmp(a, "0")) {
+      if (CODE_PATCHED_AT_BUILD || !a || strcmp(a, "0")) {
           unsigned t = excl_acquire(m->base, m->text_end), p = excl_acquire(m->base + m->patch_off, m->file_size - m->patch_off);
+          /* The export embeds the text only; the patch area comes from the verified rewrite, so it must need none. */
+          if (CODE_PATCHED_AT_BUILD ? t || p : p && getenv("TOTK_EXPORT_IOS")) {
+              fprintf(stderr, "[botw] exclusive loads without acquire: %u in the code, %u in the patch area\n", t, p);
+              runtime_fail("the embedded code lacks the exclusive-load acquire patch");
+          }
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
-    const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0")) return;
+    const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || !brk_diagnostics()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
     for (int i = 0; i < JQ_SITES; i++) { uint32_t b = 0xd4200000u | ((0x7a1u + (uint32_t)i) << 5); memcpy(m->base + g_jq_site[i].off, &b, 4); }

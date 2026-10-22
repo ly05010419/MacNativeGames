@@ -1719,7 +1719,7 @@ def step_shaders_botw(tree, botw, logs, *, version='botw160'):
 
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, a base game with the separate 1.6.0 update, or a base NSP with its 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
+    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app or iPhone/iPad IPA from Breath of the Wild: a combined 1.6.0 card image, a base game with the separate 1.6.0 update, or a base NSP with its 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0 (Breath of the Wild: the 1.6.0 card image, or the base NSP with --update)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app (Breath of the Wild: the 1.9.0 update NSP, not for a card image)')
@@ -1814,8 +1814,6 @@ def main(argv):
     if which == 'botw':
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build
             shutil.rmtree(work)
-        if args.platform == 'ios':
-            raise BuildError('Breath of the Wild has no iPhone / iPad build yet: build the Mac app (leave out --platform ios)')
         if mod:
             raise BuildError('--mod: merging a mod\'s main-module patches is only wired for Tears of the Kingdom so far '
                              '(the patch sites of Breath of the Wild 1.6.0 are not listed in scripts/patch_sites.py)')
@@ -1824,7 +1822,7 @@ def main(argv):
             logs = work / 'logs'
             tree = prepare_work(work, py, logs)
         if not args.out:
-            out = game.parent / f'{APPS["botw"][0]}.app'
+            out = game.parent / (f'{APPS["botw"][0]}.ipa' if args.platform == 'ios' else f'{APPS["botw"][0]}.app')
         check_package(game, 'botw', 'base')
         if update:
             check_package(update, 'botw', 'update')
@@ -1843,6 +1841,9 @@ def main(argv):
         if shutil.disk_usage(existing_volume_path(work.parent if work.parent.exists() else game.parent)).free / 2**30 < 22 and \
                 not (work / f'totk/extracted/{version}/romfs/romfs.bin').exists():
             raise BuildError('needs about 22 GB free for the work folder (the app itself is an APFS clone of it when on the same volume)')
+        if args.platform == 'ios' and args.ios_game_data == 'app' and \
+                shutil.disk_usage(existing_volume_path(out.parent if out.parent.exists() else game.parent)).free / 2**30 < 20:
+            raise BuildError('the output volume needs about 20 GB free for the iPhone / iPad IPA (the game data is stored in it uncompressed)')
         if args.shader_cache:
             say('--shader-cache is no longer needed: the startup shaders come from the game data and the shared shader list (games/botw/assets/shader_list.tsv)')
         botw = work / 'botw'
@@ -1854,6 +1855,18 @@ def main(argv):
         # The work folder's copy of games/botw (prepare_work), relative: make splits a path with spaces into several targets
         step_binary(tree, game, keys, {**env, 'SHADER_LIST': '../botw/assets/shader_list.tsv'}, logs, version=version, title='01007ef00011e000')
         say(f'4/4 app: assembling {out}')
+        if args.platform == 'ios':
+            # The code patches are made here on the Mac and embedded (runtime/game_patches_botw.c, CODE_PATCHED_AT_BUILD).
+            run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version, '--logs', logs,
+                 '--app-name', APPS['botw'][2], '--bundle-id', APPS['botw'][1],   # BotW on the home screen, as TOTK
+                 *(['--image-outside'] if args.ios_game_data == 'documents' else [])], logs / 'build-ipa.log', cwd=tree, env=env)
+            say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
+            say('Sign and install it with games/totk/ios/tools/install_device.py (your Apple ID, over the cable) or a sideloading '
+                'tool' + (f' (--game-data {tree}/extracted/{version}/romfs/romfs.bin copies the game image into Documents once)'
+                          if args.ios_game_data == 'documents' else '') +
+                '. The iOS build needs iOS/iPadOS 26 and a supported game controller; saves and the shader cache are in '
+                'the app\'s Documents (Files app).')
+            return
         step_app(tree, out, logs, version=version, game='botw')
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
