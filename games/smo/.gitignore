@@ -1,0 +1,14 @@
+# Super Mario Odyssey: work folder, player mods and game data
+SMO_build/
+BY3_build/
+/mods/
+/extracted/
+/rewritten/
+/analysis/
+/build/
+/user-data/
+romfs.bin
+*.pkz
+*.pchtxt
+*.szs
+

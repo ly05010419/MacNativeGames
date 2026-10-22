@@ -1,0 +1,37 @@
+{
+    "_comment": "Verified Bayonetta 3 1.2.0 code (from the update; the sparse base ExeFS is empty), rewrite bytes and merged RomFS. Runtime validation is recorded separately.",
+    "title_id": "01004A4010FEA000",
+    "update_title_id": "01004A4010FEA800",
+    "version": 131072,
+    "display_version": "1.2.0",
+    "main_build_id": "B47CC79B88B7091EA514B2B725C50AE01C6F00DF",
+    "base_program_nca": {
+        "name": "9e43f1484371267e542b20adb6c1df63.nca",
+        "nca_offset": 6529,
+        "size": 13286686720
+    },
+    "update_program_nca": {
+        "name": "bc258a5e1024760fff726d069d957cbf.nca",
+        "nca_offset": 8638,
+        "size": 1841835008
+    },
+    "exefs_sha256": {
+        "main": "499983f6adabc071488be7fe75f547c079c8c8dac95c3573e78a4277d7641800",
+        "main.npdm": "0a716fe54a6bad240c5ae69310e6daebd0f94eccbd0348c15f3e786fd60089ca",
+        "rtld": "8e08c8cf2e4d6b39d69643af10ce765d39c06860878224c68f8cafc45a2636aa",
+        "sdk": "2a89fa1c0e677710e89ed29b578162affef530a0c9b8c93cda15d50a57a20d28",
+        "subsdk0": "f38d30e8241ee208cbf3090f44613e328af517ad199eb5985619416bb2cbcb55"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "90eca6106e73f536541ab229f31c2077760c7957740b376bc0710c4481e1796f",
+        "sdk.patched.bin": "ad72aea69a60a0debd6e0dc34aee10bb4d1308c5509ebb8ccc97aaca37ce317f",
+        "subsdk0.patched.bin": "348ec2d088bff83c9bc72905b239c94a1f471bf06cc499b16a1de8435675f9e2"
+    },
+    "romfs": {
+        "size": 15047546224,
+        "sha256": "4d8de0ab2abf8cca2281b7fae94b0c2dbf0e5944765a2ae0c6e479cac5718da0",
+        "files": 552,
+        "bytes_from_base": 13261633584,
+        "bytes_from_update": 1815420224
+    }
+}

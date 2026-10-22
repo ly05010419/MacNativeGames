@@ -12,7 +12,11 @@ __pycache__/
 *.sav
 # build output (the work folder normally lives next to the card image)
 TOTK_build/
+*.app
 *.app/
+*.code-workspace
+games/smo/SMO_build/
+games/smo/.DS_Store
 games/totk/.venv
 games/totk/build/
 games/totk/extracted/
