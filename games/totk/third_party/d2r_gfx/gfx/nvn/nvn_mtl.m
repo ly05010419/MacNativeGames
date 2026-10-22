@@ -15344,14 +15344,14 @@ void botw_dead_forget(const uint64_t *serials, size_t n) {
 }
 /* Key 2 (MetalFX frame interpolation): the scene copy is taken before the first UI draw into the canvas, and in this game
    the canvas is also drawn into early in the frame, before the scene (cleared, a few draws); only a draw after the upscale
-   draw 0af88d51 (or after MetalFX replaced it, mfxup_dock) counts as UI. Reset every game frame (BOTW_MFX_FRAME_RESET). */
+   draw (BOTW_SCENE_DRAW; or after MetalFX replaced it, mfxup_dock) counts as UI. Reset every game frame (BOTW_MFX_FRAME_RESET). */
 static int g_botw_scene_ready;
 void botw_mfx_scene_ready(void) { g_botw_scene_ready = 1; }
 void botw_mfx_frame_reset(void) { g_botw_scene_ready = 0; }
 int botw_mfx_ui_draw(void *prog) {
     NvProg *pr = (__bridge NvProg *)prog;
     if (!pr->sh[1]) return 0;
-    if (!strncmp(pr->sh[1]->key, BOTW_MFXUP_KEY, 65)) { g_botw_scene_ready = 1; return 0; }
+    if (BOTW_SCENE_DRAW(pr->sh[1]->key)) { g_botw_scene_ready = 1; return 0; }
     return g_botw_scene_ready;
 }
 /* A frame with no UI draw (the idle camera hides the HUD) never reaches the scene copy: the first draw into a presented
