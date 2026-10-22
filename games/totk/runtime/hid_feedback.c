@@ -121,8 +121,12 @@ static uint32_t six_states(int *out, SixAxisState *s, int max, const uint32_t *h
 static uint32_t six_state(SixAxisState *s, const uint32_t *h) { int n; return six_states(&n, s, 1, h); }
 static int no_handles(void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
 
-/* "flag rumble 0|1", "flag gyro 0|1": 1 if the name was one of these. */
+/* "flag rumble 0|1", "flag gyro 0|1", "flag gyro_yaw <percent>": 1 if the name was one of these. */
 int runtime_hid_feedback_flag(const char *name, int v) {
+    if (!strcmp(name, "gyro_yaw")) {
+        if (v < 10 || v > 1000) runtime_fail("flag gyro_yaw takes a percentage in [10, 1000]");
+        runtime_motion_yaw_gain(v); return 1;
+    }
     _Atomic int *muted = !strcmp(name, "rumble") ? &rumble_muted : !strcmp(name, "gyro") ? &gyro_muted : NULL;
     if (!muted) return 0;
     if (v != 0 && v != 1) runtime_fail("flag rumble / gyro takes 0 or 1");
