@@ -2719,7 +2719,11 @@ static void present_cfg(const win_t *o) {
     LOG("[nvn] 出图节拍 %d Hz，间隔模式 %s（游戏设的出图间隔 %d；%s）", g_hz, g_display_mode ? "display（每节拍一帧，剪口）" : "game（原版语义）", o->interval,
         e ? "显式指定" : g_uncapped ? "不限帧率" : realtime && scr > 0 ? "跟随显示器" : "固定 60 Hz");
 }
-static unsigned present_ticks(const win_t *o) {   /* display ticks per game frame */
+/* Video preferences (runtime/video_prefs.c, keys 8 and 9): present_cfg caches its decision on the
+   first present (it returns once g_hz is set); a preference change resets that, so the next
+   present re-reads the environment the preferences translated their file into. */
+void dm_nvn_present_invalidate(void) { g_hz = -1; LOG("[nvn] 出图配置重读：视频偏好已更改 / pacing re-read after a video preference change"); }
+static unsigned present_ticks_base(const win_t *o) {   /* display ticks per game frame */
     present_cfg(o);
     /* TOTK_MFX / key 2: MetalFX makes the frame between two game frames. Half the refresh rate: the game presents every
        second display tick (50 + 50 on a 100 Hz display); 30+30: hz / 30 ticks (2 at 60 Hz; at 100 Hz the own clock paces,
@@ -2730,7 +2734,7 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     if (m == MFX_30 || game_holds_30()) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
-static uint64_t present_period(const win_t *o) {
+static uint64_t present_period_base(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
         LOG("[nvn] 出图节拍切换：%s", m == MFX_30 ? (mfx_own_clock() ? "补帧 30+30：游戏按自己的时钟每秒 30 帧" : "补帧 30+30：跟随显示器，每秒 30 帧") :
@@ -2739,6 +2743,32 @@ static uint64_t present_period(const win_t *o) {
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
     if (m == MFX_30 || game_holds_30()) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
+}
+/* The user's frame-rate ceiling (key 8, runtime/video_prefs.c): the shortest period the pacing may
+   choose, applied on top of the game's own interval so the game still steps down in heavy scenes.
+   0 = unlimited. */
+static uint64_t present_period(const win_t *o) {
+    uint64_t p = present_period_base(o);
+    extern long video_pref_period_floor_ns(void);
+    long floor_ns = getenv("TOTK_PROBE_GPU") ? 0 : video_pref_period_floor_ns();   /* probes check the unclamped pacing */
+    if (floor_ns > 0 && p && p < (uint64_t)floor_ns) p = (uint64_t)floor_ns;
+    return p;
+}
+/* The ceiling in the display-link path too: nvnWindowAcquireTexture waits present_ticks display
+   ticks, which bypasses a period-only cap (a 120 Hz display let the game run 120 fps with vertical
+   sync on and a 60 ceiling). Raising the tick count keeps every path -- link ticks, the period, the
+   swapchain release times -- on the same ceiling, and a display running at a multiple of the
+   ceiling still presents on refresh boundaries. */
+static unsigned present_ticks(const win_t *o) {
+    unsigned itv = present_ticks_base(o);
+    extern long video_pref_period_floor_ns(void);
+    long floor_ns = getenv("TOTK_PROBE_GPU") ? 0 : video_pref_period_floor_ns();
+    int hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
+    if (floor_ns > 0 && hz > 0) {
+        uint64_t min_ticks = ((uint64_t)floor_ns * (uint64_t)hz + 999999999ull) / 1000000000ull;
+        if (itv < min_ticks) itv = (unsigned)min_ticks;
+    }
+    return itv;
 }
 /* Exercise production policy, including the shrine's interval=2 and the
    legacy 30 FPS path. No sleep, present or GPU allocation is involved. */
