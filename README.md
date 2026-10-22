@@ -2,7 +2,7 @@
 
 # English
 
-**Breath of the Wild 1.6.0 and 1.9.0 are now officially supported on Mac!** (Mac only for now: no iPhone or iPad build yet.)
+**Breath of the Wild 1.6.0 and 1.9.0 are now officially supported on Mac!** (iPhone and iPad: early, see [iPhone and iPad](#iphone-and-ipad).)
 **Tears of the Kingdom 1.0.0, 1.2.1 and 1.4.3 are now officially supported on Mac, iPhone and iPad!**
 
 > **Use your AI assistant to help you build the Mac app. We recommend Claude Code, Codex, or any other AI assistant you prefer.**
@@ -221,7 +221,7 @@ What works on 1.9.0 (October 20, an M1 Pro Mac with its built-in 120 Hz display,
 
 ### iPhone and iPad
 
-Version 1.4.3 has been played on an **iPhone 14 (iOS 26.6.1)** and an **iPad with the A16 chip (iPadOS 26.7.1)**, both signed with a personal development team in Xcode. Versions 1.0.0, 1.1.2 and 1.2.1 have not been tested on iOS. Breath of the Wild has no iPhone/iPad build yet: `--platform ios` stops with an error for both versions.
+Version 1.4.3 has been played on an **iPhone 14 (iOS 26.6.1)** and an **iPad with the A16 chip (iPadOS 26.7.1)**, both signed with a personal development team in Xcode. Versions 1.0.0, 1.1.2 and 1.2.1 have not been tested on iOS. Breath of the Wild (early): `--platform ios` builds both versions the same way, with the add-on content packs in the app; it is named BotW on the home screen and installs as its own app beside TOTK (`install_device.py` signs it as `org.macnativegames.botw.<team>`). 1.9.0 with both DLC packs has been played on an **iPad Pro 13-inch (M4)**; 1.6.0 and iPhones have not been tested. The iPad cannot translate shaders: a shader neither the build nor the shared list has is skipped until `ios/tools/fill_shaders.py` fills it from the Mac (`--from-cache` packs the shaders the Mac's own BotW cache has).
 
 - **First launch:** the app checks the game data (about 15 seconds) and imports the shaders it carries, with a progress bar. On an iPhone 14 this takes about 3 minutes before the title appears. Later launches show the title in about 8 seconds.
 - **Picture:** the game runs in handheld mode, as a Switch does without its dock: 1280×720.
@@ -314,7 +314,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 # 中文说明
 
-**正式支持旷野之息 1.6.0 和 1.9.0 mac了！**（目前只有 Mac 版，还不能打包 iPhone / iPad 版。）
+**正式支持旷野之息 1.6.0 和 1.9.0 mac了！**（iPhone / iPad 版：早期，见 [iPhone 和 iPad](#iphone-和-ipad)。）
 **正式支持王国之泪 1.0.0,1.2.1，1.4.3 Mac iPhone iPad了！**
 
 > **请使用你的 AI 助理帮你完成 Mac App 的构建。推荐 Claude Code、Codex，或其他你喜欢的 AI 助理。**
@@ -513,7 +513,7 @@ python3.14 build_app.py ~/Games/botw-base.nsp -k ~/keys/prod.keys --update ~/Gam
 
 ### iPhone 和 iPad
 
-1.4.3 已在 **iPhone 14（iOS 26.6.1）** 和 **A16 芯片的 iPad（iPadOS 26.7.1）** 上实际游玩，两台都是在 Xcode 里用个人开发团队签名安装的。1.0.0、1.1.2 和 1.2.1 没有在 iOS 上测过。旷野之息还没有 iPhone / iPad 版：两个版本加 `--platform ios` 都会报错退出。
+1.4.3 已在 **iPhone 14（iOS 26.6.1）** 和 **A16 芯片的 iPad（iPadOS 26.7.1）** 上实际游玩，两台都是在 Xcode 里用个人开发团队签名安装的。1.0.0、1.1.2 和 1.2.1 没有在 iOS 上测过。旷野之息（早期）：`--platform ios` 用同样的方式打包两个版本，追加内容包放在 App 里；主屏幕上的名字是 BotW，和王国之泪是两个独立的 App（`install_device.py` 签名为 `org.macnativegames.botw.<团队>`）。1.9.0 加两个 DLC 内容包已在 **iPad Pro 13 英寸（M4）** 上实际游玩；1.6.0 和 iPhone 没有测过。iPad 不能翻译着色器：打包时和公共清单里都没有的着色器会被跳过，直到 `ios/tools/fill_shaders.py` 在 Mac 上补上（`--from-cache` 把 Mac 自己的旷野之息缓存里有的着色器打成包）。
 
 - **第一次启动：** App 先校验游戏数据（约 15 秒），再导入随 App 准备的着色器，有进度条。iPhone 14 上约 3 分钟后出现标题画面；之后的启动约 8 秒出标题。
 - **画面：** 游戏以掌机模式运行，和 Switch 不接底座时一样：1280×720。
