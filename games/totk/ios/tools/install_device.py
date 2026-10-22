@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign the unsigned TOTK IPA with your own Xcode team and install it on a connected iPhone / iPad.
+"""Sign an unsigned game IPA (Tears of the Kingdom or Breath of the Wild) with your own Xcode team and install it on a connected iPhone / iPad.
 
 A free (Personal Team) Apple ID signs for 7 days, a paid membership for a year: run this again to renew. Reinstalling
 with the same team and bundle identifier keeps the saves and the shader cache (they are in the app's Documents).
@@ -85,6 +85,15 @@ def identity_of(signed_app):
         der = Path(d+'/cert0').read_bytes()
     return hashlib.sha1(der).hexdigest().upper()
 
+def ipa_app(ipa):
+    """The app's folder in the IPA (Payload/<name>.app) and its bundle identifier, read without unpacking (an unsigned
+    .app folder: its own Info.plist)."""
+    if ipa.is_dir(): return f'Payload/{ipa.name}', plistlib.loads((ipa/'Info.plist').read_bytes())['CFBundleIdentifier']
+    with zipfile.ZipFile(ipa) as z:
+        plists = [n for n in z.namelist() if re.fullmatch(r'Payload/[^/]+\.app/Info\.plist', n)]
+        if len(plists) != 1: sys.exit(f'{ipa}: expected one app in Payload/, found {len(plists)}')
+        return plists[0].removesuffix('/Info.plist'), plistlib.loads(z.read(plists[0]))['CFBundleIdentifier']
+
 PART = 1 << 30
 def device_files(dev, bundle_id, sub):
     """{name: size} of the app's Documents/<sub> on the device, {} when there is none."""
@@ -125,12 +134,14 @@ def main():
     ap.add_argument('ipa', type=Path, help='the unsigned IPA (or .app folder) from build_app.py --platform ios')
     ap.add_argument('--device', help='device name (as in Finder) or identifier; needed when several are paired')
     ap.add_argument('--team', help='Apple team ID (default: the only team with an Apple Development certificate)')
-    ap.add_argument('--bundle-id', help='default: org.macnativegames.totk.<team>, so it is free to register on your team')
+    ap.add_argument('--bundle-id', help="default: the IPA's own identifier + .<team> (org.macnativegames.totk.<team>, "
+                                         "org.macnativegames.botw.<team>), so it is free to register on your team and each game keeps its own app")
     ap.add_argument('--game-data', type=Path, help='romfs.bin (index.json beside it) for an IPA built with --ios-game-data documents')
     a = ap.parse_args()
     team = a.team or (lambda t: t[0] if len(t) == 1 else sys.exit(
         f'choose the team with --team: {", ".join(t)}' if t else 'no Apple Development certificate: add your Apple ID in Xcode > Settings > Accounts'))(teams())
-    bundle_id = a.bundle_id or f'org.macnativegames.totk.{team.lower()}'
+    app_dir, ipa_bundle = ipa_app(a.ipa)
+    bundle_id = a.bundle_id or f'{ipa_bundle}.{team.lower()}'
     dev = pick_device(a.device)
     udid = dev['hardwareProperties']['udid']
     print(f"team {team}, bundle {bundle_id}, device {dev['deviceProperties'].get('name')} ({udid})")
@@ -146,7 +157,7 @@ def main():
 
     # Unpack once per IPA; later runs only re-sign. 16 GiB of game data is signed in place.
     work = a.ipa.with_suffix('.signed'); stamp = work/'.ipa-mtime'
-    app = work/'Payload/TOTK.app'
+    app = work/app_dir
     if a.ipa.is_dir():   # an unsigned .app (build_app.py -o X.app): cloned, nothing to unpack
         print(f'cloning {a.ipa.name}')
         shutil.rmtree(work, ignore_errors=True); app.parent.mkdir(parents=True)

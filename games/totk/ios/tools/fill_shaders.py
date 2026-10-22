@@ -6,7 +6,10 @@ iOS has no shader translator. On a miss the game skips the draws that need the v
 pulls those requests, translates them with the Mac's runtime service (build/shader-service/totk_xlate) into the Mac
 cache, compiles device metallibs, and pushes one pack in the startup-seed format to Documents/shader-fill/. The game
 checks and merges the pack on its next start (totk_fill_import) and warms the new variants in the background.
-usage: fill_shaders.py --tree <work tree> --device <id> [--bundle-id <id>] [--requests <dir>] [--with-done] [--no-push]"""
+--from-cache <Mac cache> --seed <the IPA's seed> packs what the Mac's own cache (the game played on the Mac) has and the
+IPA lacks, already translated, so the device has them before it misses them.
+usage: fill_shaders.py --tree <work tree> --device <id> [--bundle-id <id>] [--game totk|botw] [--requests <dir>] [--with-done] [--no-push]
+       fill_shaders.py --tree <work tree> --from-cache <Mac cache rt-folder> [--seed <dir>] [--game botw] --no-push"""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 from xcode_dir import developer_dir
@@ -15,7 +18,7 @@ from compile_seed import METAL_FLAGS
 TOTK = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(TOTK/'scripts'))
 from shader_list import ShaderList   # noqa: E402
-SHADER_LIST = TOTK/'assets/shader_list.tsv'
+SHADER_LISTS = {'totk': TOTK/'assets/shader_list.tsv', 'botw': TOTK.parent/'botw/assets/shader_list.tsv'}   # one per game
 VARIANT = re.compile(r'^([0-9a-f]{64})-[0-9a-f]{12}$')
 HEX = re.compile(r'^(?:[0-9a-f]{2})+$')
 MAX_CODE = 16 << 20   # the runtime's own limit on a shader's code area
@@ -76,9 +79,11 @@ def translate(rqs, tree, out, ch):
     return failed
 
 
-def record(out, variant):
-    """Add the variant to the Mac cache's index exactly as the runtime does; returns its index row."""
+def record(out, variant, write=True):
+    """Add the variant to the Mac cache's index exactly as the runtime does; returns its index row. write=False leaves the
+    cache as it is (--from-cache: the player's own Mac cache)."""
     row = {'variant': variant, 'deps': json.loads((out/f'{variant}_b.json').read_text()).get('deps') or {}}
+    if not write: return row
     index = out/f"{variant.split('-')[0]}.variants"
     rows = json.loads(index.read_text()) if index.is_file() else []
     if not any(r.get('variant') == variant for r in rows):
@@ -98,12 +103,12 @@ def compile_metallib(pack, name, env):
         air.unlink(missing_ok=True)
 
 
-def build_pack(pack, out, variants, ch, env):
+def build_pack(pack, out, variants, ch, env, write_index=True):
     """The pack uses the startup-seed format so the device checks every file before merging it."""
     indexes = {}
     for variant in variants:
         for suffix in ('_b.metal', '_b.json'): shutil.copy2(out/f'{variant}{suffix}', pack/f'{variant}{suffix}')
-        indexes.setdefault(variant.split('-')[0], []).append(record(out, variant))
+        indexes.setdefault(variant.split('-')[0], []).append(record(out, variant, write_index))
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
         for problem in pool.map(lambda v: compile_metallib(pack, f'{v}_b', env), variants):
             if problem: print(f'no iOS metallib, the device compiles the source: {problem}')
@@ -118,15 +123,24 @@ def main():
     ap = argparse.ArgumentParser(description='Translate the shaders an iOS device missed and push them back to it.')
     ap.add_argument('--tree', type=Path, required=True, help='prepared work tree (build/shader-service, build/spirv-cross)')
     ap.add_argument('--device', default=os.environ.get('TOTK_IOS_DEVICE'), help='devicectl device id (or TOTK_IOS_DEVICE)')
-    ap.add_argument('--bundle-id', default=os.environ.get('TOTK_BUNDLE_ID', 'org.macnativegames.totk'))
+    ap.add_argument('--bundle-id', default=os.environ.get('TOTK_BUNDLE_ID', 'org.macnativegames.totk'),
+                    help='the app on the device (install_device.py installs it as <IPA bundle id>.<team>)')
+    ap.add_argument('--game', choices=sorted(SHADER_LISTS), help="whose shared shader list gets the new variants "
+                    "(default: botw for a bundle id with .botw, else totk)")
+    ap.add_argument('--from-cache', type=Path, metavar='DIR', help="pack the variants of this Mac cache folder (rt-<chain>, "
+                    "e.g. ~/Library/Application Support/MacNativeGames/BotW/shader-cache/rt-...) instead of device requests")
+    ap.add_argument('--seed', type=Path, metavar='DIR', help='--from-cache: leave out the variants this seed has (the IPA\'s: '
+                    '<work>/totk/build/shader-seed/<version>)')
     ap.add_argument('--requests', type=Path, help='use requests already copied from the device instead of pulling them')
     ap.add_argument('--no-push', action='store_true', help='translate and build the pack, but do not send it')
     ap.add_argument('--with-done', action='store_true', help='also rebuild the variants filled before (shader-requests/done),'
                     ' e.g. after a change of the compile options; the game replaces their libraries')
     args = ap.parse_args()
-    if not args.requests and not args.device: raise RuntimeError('give --device (or TOTK_IOS_DEVICE), or --requests')
+    if not args.requests and not args.device and not args.from_cache: raise RuntimeError('give --device (or TOTK_IOS_DEVICE), --requests or --from-cache')
     if not args.no_push and not args.device: raise RuntimeError('pushing needs --device (or TOTK_IOS_DEVICE); use --no-push')
     tree = args.tree.resolve(); ch = chain(); env = xcode_env()
+    shader_list = SHADER_LISTS[args.game or ('botw' if '.botw' in args.bundle_id else 'totk')]
+    if args.from_cache: return pack_from_cache(args, tree, ch, env)
     out = tree/f'build/shader-cache/rt-{ch}'; out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix='totk-shader-fill-'))
     try:
@@ -151,15 +165,39 @@ def main():
         count = build_pack(pack, out, variants, ch, env)
         # What this device needed goes into the one shared list, so every later build carries it (docs/shader-list.md).
         # The pack's index rows are written by build_pack, so the list is merged from the pack after it is built.
-        shared = ShaderList.load(SHADER_LIST); before = len(shared.variants); shared.add_cache(pack); shared.save(SHADER_LIST)
-        print(f'shared shader list: {len(shared.variants) - before} new variants ({SHADER_LIST}; send them in a pull request)')
+        shared = ShaderList.load(shader_list); before = len(shared.variants); shared.add_cache(pack); shared.save(shader_list)
+        print(f'shared shader list: {len(shared.variants) - before} new variants ({shader_list}; send them in a pull request)')
         print(f'pack {name}: {len(variants)} variants, {count} files' + (f', {len(failed)} failed' if failed else ''))
-        if args.no_push:
-            keep = tree/'build/shader-fill'/name; keep.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(pack), keep)
-            print(f'not pushed; the pack is in {keep}'); return
-        r = devicectl(env, args, 'to', pack, f'Documents/shader-fill/{name}')
-        if r.returncode: raise RuntimeError(f"push failed: {r.stderr.strip()[-400:]}")
-        print('pushed; restart the game on the device to merge and warm the new shaders')
+        deliver(args, env, tree, pack, name)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def deliver(args, env, tree, pack, name):
+    if args.no_push:
+        keep = tree/'build/shader-fill'/name; keep.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(pack), keep)
+        print(f'not pushed; the pack is in {keep} (copy the folder into the app\'s Documents/shader-fill/ on the device)'); return
+    r = devicectl(env, args, 'to', pack, f'Documents/shader-fill/{name}')
+    if r.returncode: raise RuntimeError(f"push failed: {r.stderr.strip()[-400:]}")
+    print('pushed; restart the game on the device to merge and warm the new shaders')
+
+
+def pack_from_cache(args, tree, ch, env):
+    """The variants a Mac cache has (translated in play on the Mac, same chain) and the seed lacks, as one pack. The Mac
+    cache is only read; its new variants reach the shared list through the Mac's own contribution file."""
+    cache = args.from_cache.expanduser().resolve()
+    if cache.name != f'rt-{ch}': raise RuntimeError(f'{cache}: not a cache of this translation chain (rt-{ch})')
+    have = {f.name[:-len('_b.metal')] for f in cache.glob('*_b.metal') if (cache/f.name.replace('_b.metal', '_b.json')).is_file()}
+    seeded = {f.name[:-len('_b.metal')] for f in args.seed.expanduser().glob('*_b.metal')} if args.seed else set()
+    variants = sorted(v for v in have - seeded if VARIANT.match(v))
+    print(f'{len(have)} variants in {cache}, {len(have & seeded)} already in the seed, {len(variants)} to pack')
+    if not variants: print('nothing to pack'); return
+    work = Path(tempfile.mkdtemp(prefix='totk-shader-fill-'))
+    try:
+        name = time.strftime('%Y%m%d-%H%M%S') + '-mac-cache'; pack = work/name; pack.mkdir()
+        count = build_pack(pack, cache, variants, ch, env, write_index=False)
+        print(f'pack {name}: {len(variants)} variants, {count} files')
+        deliver(args, env, tree, pack, name)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
