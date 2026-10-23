@@ -539,6 +539,15 @@ int runtime_gamepad_type(int *detected) {
     return atomic_load(&controllerType);
 }
 
+/* While UIKit's text field is up, the same physical keys type into it; they must not also drive the game. */
+#if TARGET_OS_IPHONE
+static volatile int keyboardPaused;
+void runtime_keyboard_capture(int on) {
+    if (on && !keyboardPaused) for (unsigned mac = 0; mac < 128; mac++) runtime_input_key(mac, 0);
+    keyboardPaused = on;
+}
+#endif
+
 void runtime_gamepad_start(void) {
     if (started) return;
     started = YES;
