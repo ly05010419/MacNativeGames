@@ -78,6 +78,11 @@ void runtime_frame_step_update(uint64_t now_ns) {
     double dt = (double)(now_ns - last_present_ns) * 1e-9;
     last_present_ns = now_ns;
     if (dt > 0.25 || dt < 0.001) { frame_sample_count = frame_sample_next = 0; return; }
+    /* At least 1/120 s, as before 2338bb0. Without the floor Tears of the Kingdom 1.1.2 crashed in its own code within a
+       minute at 190-230 fps (four runs, the same call chain from main+0x274b80 / main+0x2abc1fc) and once after 24 min at
+       the 120 ceiling; with it, 15 min at 147 fps and every run since at 120 kept going (Mac, 2026-10-22..24). Above 120 fps
+       (TOTK_UNCAPPED_HZ beyond 120) the game then runs faster than real time, which the default ceiling of 120 avoids. */
+    if (dt < 1.0 / 120.0) dt = 1.0 / 120.0;
     if (dt > 1.0 / 15.0) dt = 1.0 / 15.0;
     frame_samples[frame_sample_next++ % 5] = dt;
     if (frame_sample_count < 5) frame_sample_count++;
