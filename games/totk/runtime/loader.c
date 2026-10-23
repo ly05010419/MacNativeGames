@@ -51,11 +51,9 @@ void *runtime_symbol(const char *name) {
  return NULL;
 }
 uint8_t *runtime_module_base(const char *name){for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,name))return modules[i].base;return NULL;}
-#ifdef GAME_BOTW
 /* Is pc in a module's original code (not in the patch area, where rewritten windows and gates are)? Called from a signal
-   handler (threads.c, asynchronous preemption): only reads the module table. */
+   handler (threads.c, asynchronous preemption, both games): only reads the module table. */
 int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
-#endif
 /* RELRO in newer SDKs protects relocated data after linking. Keep permissions at
  * the guest's 4 KiB granularity. A Darwin 16 KiB page receives the union of its
  * four guest permissions, so protecting an edge never removes access from an
