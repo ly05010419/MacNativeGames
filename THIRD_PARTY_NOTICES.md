@@ -14,6 +14,17 @@ Code in this repository that comes from other projects keeps its license; the li
 | in `games/totk/runtime/threads.c`: SignalToAddress that wakes all waiters subtracts 2, SystemEvent bindings that end with their write handle, signals that wake only the waiters of the signalled object (checked by `games/totk/tests/system_event_bind`) | [nxnative](https://github.com/seedds/nxnative) commits `d47f899`, `49ee623`, `df7badd`, rewritten for this runtime (via PR #159) | MIT | `games/totk/third_party/licenses/nxnative.txt` |
 | audio effects in `games/totk/runtime/audio_reverb.c`, `games/totk/runtime/audio_effects.c` (delay, reverb, compressor) and the mixer | ported from Ryujinx.Audio | MIT | `games/totk/third_party/licenses/Ryujinx-Audio.txt` |
 
+## Unicorn Overlord copies
+
+`games/unicorn` copies the MacNativeGames `games/by3` host, graphics layer and build tools from commit `30a1b93`; it keeps that game's dependencies and their existing licenses. The new game does not add a CPU emulator to the runtime. The optional `d2r/equiv.py` verifier uses Unicorn outside gameplay.
+
+| Code | From | License | File |
+|---|---|---|---|
+| `games/unicorn/third_party/d2r` and `third_party/d2r_gfx` | d2r-mobile, via MacNativeGames/Bayonetta 3; adapted for this port | MIT | `games/unicorn/third_party/d2r/LICENSE`, `games/unicorn/third_party/d2r_gfx/LICENSE` |
+| NVN texture layout and `third_party/bcdec` inside that graphics copy | deko3d; bcdec 0.985 | zlib; MIT or public domain | `games/unicorn/third_party/d2r_gfx/LICENSE.deko3d`, `games/unicorn/third_party/d2r_gfx/third_party/bcdec/LICENSE` |
+| `games/unicorn/runtime/audio_effects.c`, `audio_reverb.c`, audio mixer | Ryujinx.Audio, via MacNativeGames | MIT | `games/unicorn/third_party/licenses/Ryujinx-Audio.txt` |
+| `games/unicorn/prebuilt/macos-arm64/totk_xlate` | Unmodified `games/by3` NativeAOT shader translator; source and build instructions remain in `games/totk/tools/totk_xlate` and `vendor/ryujinx` | MIT (Ryujinx, d2r-mobile, .NET) | `vendor/ryujinx/LICENSE.txt`, `games/totk/tools/totk_xlate/LICENSE` |
+
 Fetched or linked at build time (not in this repository):
 
 | Code | Use | License |
