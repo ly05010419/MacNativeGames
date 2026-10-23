@@ -128,6 +128,17 @@ Signing and verifying a large updated app can add several minutes. Keep the buil
 **3. Play:** open the app from Finder. The build starts the launcher in `--check` mode, which checks that the game executable exists and allows macOS to perform its first-launch checks; it does not run a gameplay test. You can keep the app where it was built or move it to `/Applications`; the first start after a move compiles the shaders again in the background (macOS's Metal cache does not follow the app to its new place), so to keep it in `/Applications`, build it there with `-o`. Copying it to a different volume can use additional disk space and trigger another macOS check, during which no window may appear. The first game launch verifies the game data (about 20 seconds in local testing). Newly encountered shaders can cause stutters; cached shaders reduce this work on later visits.
 
 
+### Update the runtime without the game files
+
+After pulling a newer version of this repository, you do not have to build the app again from your game file. The app has two parts: the **runtime**, which this repository makes on its own (the game binary with the loader, system services and graphics; the launcher; the shader tools; the warm-up lists from the shared shader list), and the **game files** made from your copy (the rewritten code, the 17 GB RomFS, the shared fonts, the startup shaders and a small game data folder with the tables and hashes the runtime reads at start). `update_runtime.py` builds the runtime and puts it into the app in place of the old one. It reads no game file or keys and leaves the game files as they are:
+
+```sh
+python3.14 update_runtime.py "~/Games/Tears of the Kingdom.app"
+```
+
+It took 46 seconds for a 1.4.3 app on an M4 Mac. Quit the game first, or the script waits until it closes. An app built before this split has no game data folder yet: the script makes the folder once from the work folder of the build that made the app (`TOTK_build` next to the app, or `--work <folder>`). Whatever the source, the folder is checked against the app's own code modules, RomFS index and fonts before anything is replaced. When a new runtime changes the shader translation chain, the app's startup shaders no longer fit it and the script stops; add `--seed` to make them again from the work folder's RomFS and modules (a few minutes, still without the game file or keys; the folder is checked to hold the app's files). A new game version or a mod's code patches still need `build_app.py`. The runtime holds nothing from the game, so `make -C games/totk binary-v143` (or `binary`, `binary-v112`, …) builds it with no game files at all.
+
+
 ### Build version 1.1.2, 1.2.1 or 1.4.3
 
 ```sh
@@ -456,6 +467,17 @@ python3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys --platform ios -o ~
 大型更新版 App 的完整签名和校验还可能多用几分钟；日志持续报告进度时，请等待构建完成。
 
 **3. 游玩：** 在访达里打开 App。构建结束时会以 `--check` 模式启动启动器，检查游戏可执行文件是否存在，并让 macOS 执行首次启动检查；这一步不进行游戏游玩测试。App 可以留在原位置，也可以移到 `/Applications`；挪动之后的第一次启动要在后台重新编着色器（Metal 的缓存不跟着 App 走），想放在 `/Applications` 就用 `-o` 直接打包到那里。拷贝到另一个卷可能额外占用磁盘空间，并触发 macOS 再次检查，期间可能没有窗口。第一次进入游戏会校验游戏数据（本地测试约 20 秒）。首次遇到的着色器可能造成编译卡顿，缓存可减少后续访问时的重复工作。
+
+
+### 不用游戏文件更新运行时
+
+拉取本仓库的新版本后，不必再用游戏文件重新打包 App。App 分两部分：**运行时**完全由本仓库生成（包含加载器、系统服务和图形层的游戏程序，启动器，着色器工具，以及共享着色器清单导出的预热列表）；**游戏文件**来自你自己的游戏（改写后的代码、17 GB 的 RomFS、共享字体、启动着色器，以及运行时启动时读取的游戏数据文件夹，里面是表格和哈希）。`update_runtime.py` 只构建运行时，并替换 App 里的旧运行时；它不读取游戏文件和密钥，也不改动游戏文件：
+
+```sh
+python3.14 update_runtime.py "~/Games/Tears of the Kingdom.app"
+```
+
+在 M4 Mac 上更新一个 1.4.3 App 用了 46 秒。请先退出游戏，否则脚本会等游戏关闭后再替换。拆分之前打包的 App 还没有游戏数据文件夹：脚本会用当初打包这个 App 的工作目录（App 旁边的 `TOTK_build`，或 `--work <目录>`）生成一次。不管来自哪里，替换之前都会先核对这个文件夹与 App 自己的代码模块、RomFS 索引和字体是否一致。新的运行时如果改变了着色器翻译链版本，App 里的启动着色器就不再适用，脚本会停下；加上 `--seed` 即可用工作目录里的 RomFS 和代码模块重新生成它们（几分钟，同样不需要游戏文件和密钥；会先核对这些文件确实属于这个 App）。换游戏版本或合并模组代码补丁，仍然需要 `build_app.py`。运行时不含任何游戏内容，所以 `make -C games/totk binary-v143`（或 `binary`、`binary-v112` 等）无需任何游戏文件就能构建它。
 
 
 ### 构建 1.1.2、1.2.1 或 1.4.3
