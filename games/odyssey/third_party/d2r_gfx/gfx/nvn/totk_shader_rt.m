@@ -164,11 +164,22 @@ static NSMutableArray *variants_of(NSString *shader) {
     g_variants[shader] = v;
     return v;
 }
+/* The shared translator (games/totk/prebuilt) records "*" / "*_depth" for a texture slot any 2D-like type fits: the
+   same matching as games/totk, or every draw of such a shader asks for it again and its draws stay skipped. */
 static int deps_match(NSDictionary *deps, NSDictionary *ans) {
     NSDictionary *defaults = @{@"tex": @"2d", @"img": @{}, @"attr": @"float", @"fout": @"float"};
     for (NSString *kind in defaults) {
         NSDictionary *want = deps[kind], *have = ans[kind];
-        for (NSString *slot in want) { id h = have[slot] ?: defaults[kind]; if (![h isEqual:want[slot]]) return 0; }
+        for (NSString *slot in want) {
+            id w = want[slot], h = have[slot];
+            if (!h && [kind isEqualToString:@"attr"]) continue;
+            if (!h) h = defaults[kind];
+            if ([w isEqual:@"*"] || [w isEqual:@"*_depth"]) {
+                if (![h isKindOfClass:NSString.class] || [h hasSuffix:@"_depth"] != [w isEqual:@"*_depth"]) return 0;
+                continue;
+            }
+            if (![h isEqual:w]) return 0;
+        }
     }
     return 1;
 }
