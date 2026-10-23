@@ -1,6 +1,6 @@
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(addprefix build/gfx/,$(addsuffix .o,$(GFX_SRC)))
-NATIVE_OPT ?= -O2
+NATIVE_OPT ?= -O3 -flto=full
 GFX_FLAGS := -std=gnu11 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
 
 PY := .venv/bin/python
@@ -272,7 +272,7 @@ shader-service:
 .PHONY: graphics-tools
 graphics-tools:
 	tooling/dotnet/dotnet build tooling/d2r-mobile/dm/gfx/tools/dmsh_xlate/dmsh_xlate.csproj -c Release -o build/dmsh_xlate
-	cmake -S tooling/spirv-cross -B build/spirv-cross -DCMAKE_BUILD_TYPE=Release -DSPIRV_CROSS_ENABLE_TESTS=OFF
+	cmake -S tooling/spirv-cross -B build/spirv-cross -DCMAKE_BUILD_TYPE=Release -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -flto=full -fvisibility=hidden -fwhole-program-vtables -fvirtual-function-elimination" -DCMAKE_EXE_LINKER_FLAGS="-flto=full -fwhole-program-vtables -fvirtual-function-elimination" -DSPIRV_CROSS_ENABLE_TESTS=OFF
 	cmake --build build/spirv-cross -j 4
 
 .PHONY: probe-metal-semantics

@@ -3,7 +3,7 @@
 # (vendor/ryujinx) with this project's patches (patches/*.patch) and the service (Service.cs), compiled ahead of time
 # with NativeAOT into one arm64 program that needs no .NET runtime.
 # build_app.py uses the copy in games/totk/prebuilt/macos-arm64 (made with this script), so building the app needs no
-# .NET at all; run this only after changing the translator, its patches or Service.cs. Needs the .NET 10 SDK and network
+# .NET at all; run this only after changing the translator, its patches or Service.cs. Needs the .NET 11 SDK and network
 # access the first time (NuGet packages, the NativeAOT compiler).
 # SPIRV-Cross (build_app.py SPIRV_CROSS: the pinned commit, its sources and flags) is compiled in as well
 # (spirv_cross_inproc.cpp: its own main.cpp's compile_iteration), so the service needs no process per shader. The
@@ -30,7 +30,7 @@ if [[ -z $SPIRV_CROSS_SRC ]]; then
 fi
 [[ $(git -C "$SRC" rev-parse HEAD) == $COMMIT ]] || { echo "$SRC is not SPIRV-Cross $COMMIT"; exit 1; }
 SOURCES=(${(f)"$(python3 -c "import ast,re,sys; t=open(sys.argv[1]).read(); print(chr(10).join(s for s in ast.literal_eval(re.search(r'^SPIRV_CROSS_SOURCES = (\(.*?\))$', t, re.M|re.S).group(1)) if s != 'main.cpp'))" "$REPO/build_app.py")"})
-FLAGS=(${(f)"$(python3 -c "import ast,re,sys; t=open(sys.argv[1]).read(); print(chr(10).join(ast.literal_eval(re.search(r'^SPIRV_CROSS_FLAGS = (\(.*?\))$', t, re.M).group(1))))" "$REPO/build_app.py")"})
+FLAGS=(${(f)"$(python3 -c "import ast,re,sys; t=open(sys.argv[1]).read(); print(chr(10).join(ast.literal_eval(re.search(r'^SPIRV_CROSS_FLAGS = (\(.*?\))$', t, re.M|re.S).group(1))))" "$REPO/build_app.py")"})
 FLAGS+=(-mmacosx-version-min=12.0)   # as the NativeAOT link of the service (otherwise every object warns and may need a newer macOS)
 mkdir -p "$WORK/spvc"
 for f in "${SOURCES[@]}"; do xcrun clang++ "${FLAGS[@]}" -c "$SRC/$f" -o "$WORK/spvc/${f%.cpp}.o" & done

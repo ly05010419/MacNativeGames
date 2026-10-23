@@ -84,7 +84,7 @@ Shaders are automatically collected, compiled and cached as you play. Returning 
 
 ```sh
 xcode-select --install
-brew install opus libvpx python@3.14
+brew install opus libvpx python@3.14 spirv-tools
 ```
 
 For an iPhone/iPad build, install full **Xcode 26 or later** (including the iOS and Metal toolchains), then install the additional tools:
@@ -414,7 +414,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 ```sh
 xcode-select --install
-brew install opus libvpx python@3.14
+brew install opus libvpx python@3.14 spirv-tools
 ```
 
 构建 iPhone / iPad App 还需要完整的 **Xcode 26 或更高版本**（包含 iOS 和 Metal 工具链），并安装以下工具：
