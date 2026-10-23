@@ -133,8 +133,9 @@ python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.ts
 python3 games/totk/scripts/shader_list.py stats games/totk/assets/shader_list.tsv
 ```
 
-- **iPhone / iPad:** `games/totk/ios/tools/fill_shaders.py` translates what a device missed. It also merges those
-  variants into the list automatically.
+- **iPhone / iPad:** `games/totk/ios/tools/fill_shaders.py` translates what a device missed. Like the Mac, it puts the
+  new variants in the contribution file, not in the shipped list: add `--update-list` when you want the next build from
+  this tree to carry them too.
 - **Pipelines:** merging a cache folder adds only its `V` rows. A cache's `pso_collected.tsv` holds every pipeline ever
   built, tens of thousands of them. To add pipelines, name a `pso_user.tsv` or `pso_collected.tsv` file explicitly.
 - **Title rows:** record them with the warm-up off, then add them with `merge --title`.
@@ -167,6 +168,6 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
 - **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py --seed <打包目录>/totk/build/shader-seed/v143` 先看每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件里只取 `V` 行和管线的 `R` / `B` 行，种子自带的默认变体能用的 `V` 行丢掉。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
 - **用 git 贡献**：
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。
-  - iOS：`fill_shaders.py` 补译后会自动把变体并进清单。
+  - iOS：`fill_shaders.py` 补译后和 Mac 一样先写进贡献文件（`shader-list-contribution.txt`）；想让下一次本地打包就带上，加 `--update-list` 同时并进共享清单。
 - **审核**：`stats` 和 `tests/test_shader_list.py` 要通过；PR 只能改这一个文件，不能带翻译出的 `.metal`、编好的 `.metallib` 或缓存。
 - **旷野之息**：自己的一份清单 `games/botw/assets/shader_list.tsv`，格式、工具都一样（`merge` 时写它的路径）。打包时读它的 Yaz0 包（`Pack/`、`Effect/`、`Event/`、`System/`），启动包和标题包的着色器按默认绑定状态翻译、清单里的绑定状态也翻译。玩家的贡献文件在 `~/Library/Application Support/MacNativeGames/BotW/`，用旷野之息自己的 Issue 表单（标签 `shader-list-botw`），`collect_shader_issues.py --game botw` 合并。两份清单不混：一个键只属于一个游戏。它的键按控制段自己的长度算（+0x20 处的字：档案里 0x7d1、agl 的 0x848；王国之泪是 0x880，键不变）；agl 包里嵌着的 BNSH 程序还按游戏绑定前改写过的字节算（`bound_control`），agl 包自己的记录原样绑定。
