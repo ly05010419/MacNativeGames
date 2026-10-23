@@ -1,6 +1,7 @@
 #import "touch_pad.h"
 #import <GameController/GameController.h>
 #include <math.h>
+#include <stdlib.h>
 #include "runtime.h"
 
 /* Layout inside the safe area (clear of the iPhone's notch, rounded corners and home indicator), like a Switch
@@ -33,6 +34,8 @@ static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger l
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidConnectNotification object:nil];
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidDisconnectNotification object:nil];
+        [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidConnectNotification object:nil];
+        [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidDisconnectNotification object:nil];
         [self controllersChanged:nil];
     }
     return self;
@@ -42,8 +45,23 @@ static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger l
     BOOL connected = NO;
     for (GCController *controller in GCController.controllers)
         if (controller.extendedGamepad && !([note.name isEqualToString:GCControllerDidDisconnectNotification] && controller == note.object)) connected = YES;
-    if (connected == gamepad) return;
-    gamepad = connected; [hideTimer invalidate]; hideTimer = nil;
+    /* A connect notification carries the keyboard itself; coalescedKeyboard is the one that stays. A disconnect's object
+       is already gone, so ask for the remaining keyboard instead. */
+    GCKeyboard *keyboard = [note.name isEqualToString:GCKeyboardDidConnectNotification] && [note.object isKindOfClass:GCKeyboard.class]
+                         ? note.object : GCKeyboard.coalescedKeyboard;
+    const char *keyboardMode = getenv("TOTK_KEYBOARD");
+    BOOL keyboardOn = !(keyboardMode && !strcmp(keyboardMode, "off")) && keyboard != nil;
+    const char *touchWithKeyboard = getenv("TOTK_TOUCH_WITH_KEYBOARD");
+    BOOL keepTouch = touchWithKeyboard && !strcmp(touchWithKeyboard, "1");
+    BOOL hidden = connected || (keyboardOn && !keepTouch);
+    /* coalescedKeyboard can still name the departing keyboard when the notification arrives; look again when the
+       system has settled, so the touch layer cannot stay hidden with no keyboard attached. */
+    if ([note.name isEqualToString:GCKeyboardDidDisconnectNotification])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self controllersChanged:nil];
+        });
+    if (hidden == gamepad) return;
+    gamepad = hidden; [hideTimer invalidate]; hideTimer = nil;
     if (gamepad) [self conceal]; else { concealed = NO; [self setNeedsDisplay]; }
 }
 

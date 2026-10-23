@@ -539,6 +539,75 @@ int runtime_gamepad_type(int *detected) {
     return atomic_load(&controllerType);
 }
 
+/* Hardware keyboards (Magic Keyboard, Smart Keyboard, Bluetooth) feed the same virtual controller the Mac keyboard
+   drives, with the macOS input.c key layout. iOS only: the Mac already gets the keyboard through the window
+   (frontend.m keyDown/keyUp), and a second source there would fight it. Strictly additive on iOS: the GCController
+   path below is untouched, the keyboard can be switched off with TOTK_KEYBOARD=off, and touch / a controller always
+   remain available. */
+#if TARGET_OS_IPHONE
+static GCKeyboard *keyboardPad;
+/* While UIKit's text field is up, the same physical keys type into it; they must not also drive the game. */
+static volatile int keyboardPaused;
+void runtime_keyboard_capture(int on) {
+    if (on && !keyboardPaused) for (unsigned mac = 0; mac < 128; mac++) runtime_input_key(mac, 0);
+    keyboardPaused = on;
+}
+
+static int mac_key_code(GCKeyCode code) {
+    /* GCKeyCode values are extern const objects, not enum constants, so this cannot be a switch. */
+    if (code == GCKeyCodeKeyA) return 0;           /* WASD: left stick, as on the Mac */
+    if (code == GCKeyCodeKeyS) return 1;
+    if (code == GCKeyCodeKeyD) return 2;
+    if (code == GCKeyCodeKeyW) return 13;
+    if (code == GCKeyCodeLeftArrow) return 123;    /* arrows: right stick */
+    if (code == GCKeyCodeRightArrow) return 124;
+    if (code == GCKeyCodeDownArrow) return 125;
+    if (code == GCKeyCodeUpArrow) return 126;
+    if (code == GCKeyCodeKeyF) return 3;           /* F/T/H/G: D-pad */
+    if (code == GCKeyCodeKeyT) return 17;
+    if (code == GCKeyCodeKeyH) return 4;
+    if (code == GCKeyCodeKeyG) return 5;
+    if (code == GCKeyCodeKeyJ) return 38;          /* J/K/I/U: face buttons */
+    if (code == GCKeyCodeKeyK) return 40;
+    if (code == GCKeyCodeKeyI) return 34;
+    if (code == GCKeyCodeKeyU) return 32;
+    if (code == GCKeyCodeKeyZ) return 6;           /* Z/C: stick clicks (runtime/input.c's bits 4/5) */
+    if (code == GCKeyCodeKeyC) return 8;
+    if (code == GCKeyCodeKeyQ) return 12;          /* Q/E: L/R */
+    if (code == GCKeyCodeKeyE) return 14;
+    if (code == GCKeyCodeLeftAlt || code == GCKeyCodeRightAlt) return 58;    /* Option: ZL */
+    if (code == GCKeyCodeLeftShift || code == GCKeyCodeRightShift) return 56; /* Shift: ZR */
+    if (code == GCKeyCodeReturnOrEnter) return 36;  /* Return: + */
+    if (code == GCKeyCodeTab) return 48;            /* Tab / Esc: - */
+    if (code == GCKeyCodeEscape) return 53;
+    if (code == GCKeyCodeSpacebar) return 49;       /* Space: B, as on the Mac */
+    return -1;
+}
+static void attach_keyboard(GCKeyboard *keyboard) {
+    if (!keyboard) return;
+    const char *mode = getenv("TOTK_KEYBOARD");
+    if (mode && !strcmp(mode, "off")) return;
+    keyboardPad = keyboard;
+    keyboard.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
+        (void)input; (void)key;
+        if (keyboardPaused) return;
+        int mac = mac_key_code(code);
+        if (mac >= 0) runtime_input_key((unsigned)mac, pressed);
+    };
+    fprintf(stderr, "[totk-input] hardware keyboard connected: %s\n", (keyboard.vendorName ?: @"keyboard").UTF8String);
+}
+static void detach_keyboard(GCKeyboard *keyboard) {
+    if (keyboardPad == keyboard) {
+        keyboard.keyboardInput.keyChangedHandler = nil;
+        keyboardPad = nil;
+    }
+    /* Release every key on any keyboard disconnect: a held W/Space must not keep the game walking after the keyboard
+       sleeps or is detached, and the notification's object is not guaranteed to be the one attached. */
+    for (unsigned mac = 0; mac < 128; mac++) runtime_input_key(mac, 0);
+    fprintf(stderr, "[totk-input] hardware keyboard disconnected\n");
+}
+#endif
+
 void runtime_gamepad_start(void) {
     if (started) return;
     started = YES;
@@ -559,6 +628,13 @@ void runtime_gamepad_start(void) {
     for (GCController *controller in GCController.controllers) attach_gamepad(controller);
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     hid_pad_start();
+#if TARGET_OS_IPHONE
+    [center addObserverForName:GCKeyboardDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
+                   usingBlock:^(NSNotification *notification) { attach_keyboard(notification.object); }];
+    [center addObserverForName:GCKeyboardDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue
+                   usingBlock:^(NSNotification *notification) { detach_keyboard(notification.object); }];
+    attach_keyboard(GCKeyboard.coalescedKeyboard);
+#endif
 }
 
 void runtime_gamepad_clear(void) {

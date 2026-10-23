@@ -119,6 +119,7 @@ void runtime_vpool_probe(void);
 void runtime_memory_probe(void);
 
 void runtime_input_key(unsigned code,int down);
+void runtime_keyboard_capture(int on);   /* iOS only (runtime/gamepad.m, TARGET_OS_IPHONE): a UIKit text field takes the hardware keyboard; it must not also drive the game */
 void runtime_input_clear(void);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
