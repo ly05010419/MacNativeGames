@@ -283,7 +283,13 @@ int botw_wb_from_stage(void *e);   /* 1 written back from the stage, 0 failed, -
 #endif
 typedef struct { float depth; int32_t depth_mask, stencil, stencil_mask; } p_clear_ds;
 typedef struct { int32_t first, n; float v[16][6]; } p_viewports;          // x, y, w, h, 近, 远（近远由 DEPTH_RANGE 覆盖） | x, y, w, h, near, far (near and far are overridden by DEPTH_RANGE)
-typedef struct { int32_t x, y, w, h; } p_scissor;
+typedef struct {
+    int32_t x, y, w, h;
+#if defined(GAME_BOTW) && !defined(GAME_BOTW190)
+    // 已验证 pane 的虚拟 / 物理宽高；其他来源为零。 | Verified pane virtual / physical extents; zero for other callers.
+    float ui_basis[4];
+#endif
+} p_scissor;
 typedef struct { int32_t value; } p_flag;   // TOTK: single boolean render state (OP_DEPTH_CLAMP)
 typedef struct { int32_t mode; int32_t pad; uint64_t addr; } p_render_cond;   // TOTK: SetRenderEnableConditional: mode 0 = render if the two NVNcounterData.counter values at addr / addr+16 are equal, 1 = if not equal
 typedef struct { float n, f; } p_depth_range;

@@ -8915,12 +8915,12 @@ void dm_nvn_probe_prediction(void) {
     typeof(R) saved = R; const uint8_t *next = g_exec_next;
     g_plib_probe = 1;   // libraries prediction asks for are recorded, not compiled (the probe's shaders have no files)
     struct { op_hdr sc; p_scissor rect; op_hdr end; } ops = {
-        {OP_SCISSOR, 8 + sizeof(p_scissor)}, {101, 202, 303, 404}, {OP_END, 8}
+        {OP_SCISSOR, 8 + sizeof(p_scissor)}, {.x=101,.y=202,.w=303,.h=404}, {OP_END, 8}
     };
-    R.sc = (p_scissor){3, 5, 7, 11}; R.has_sc = 0;
+    R.sc = (p_scissor){.x=3, .y=5, .w=7, .h=11}; R.has_sc = 0;
     g_exec_next = (const uint8_t *)&ops;
     pso_predict_rest();
-    p_scissor expected = {3, 5, 7, 11};
+    p_scissor expected = {.x=3, .y=5, .w=7, .h=11};
     if (R.has_sc || memcmp(&R.sc, &expected, sizeof expected)) MDIE("pipeline prediction changed active scissor");
     struct {op_hdr h;p_render_cond c;op_hdr end;} cond={{OP_RENDER_COND,8+sizeof(p_render_cond)},{0},{OP_END,8}};
     const void *op=&cond;unsigned slot=((uintptr_t)op>>3)&1023;cond_cache_ent cache=g_cond_cache[slot];uint64_t unknown=g_draw_skip[14];
@@ -11007,6 +11007,7 @@ static int mfxup_draw(NvProg *pr) {
     return 0;
 }
 #include "nvn_cube_group.h"
+#include "botw_ui_scissor_map.h"
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = prog_get(S.prog); g_prog_for_draw = 0;
@@ -11344,6 +11345,11 @@ frz_plain:;
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
+#if defined(GAME_BOTW) && !defined(GAME_BOTW190)
+    int ui_scissor_result = botw_ui_scissor_apply(pr, g_es.vp, &sc, tw, th);
+    if (ui_scissor_result < 0) { g_draw_skip[10]++; return; }
+    if (ui_scissor_result > 0) enc_r_scissor((id<MTL4RenderCommandEncoder>)en, sc);
+#endif
     int prim = dw ? dw->prim : di->prim;
     MTLPrimitiveType mp;
     switch (prim) {
@@ -14311,11 +14317,11 @@ int mtl_probe_ds_clear(void) {
     R.rt.n = 1; R.rt.color[0] = &ct; R.rt.depth = &dt; R.has_rt = 1;
     R.clear_c[0] = R.clear_d = R.clear_s = 1; R.cc[0] = MTLClearColorMake(0.25, 0.5, 0.75, 1); R.cd = 0.8; R.cs = 0xa5; rp_begin();
     struct { op_hdr h; p_clear_ds c; op_hdr end; } op = {{OP_CLEAR_DS, 8 + sizeof(p_clear_ds)}, {0.25f, 1, 0x3c, 0x0f}, {OP_END, 8}};
-    R.has_sc = 1; R.sc = (p_scissor){4, 8, 8, 16};
+    R.has_sc = 1; R.sc = (p_scissor){.x=4, .y=8, .w=8, .h=16};
     if (getenv("TOTK_PROBE_NEGATIVE")) op.c.stencil_mask = 255;
     mtl_exec((const uint8_t *)&op); rp_end(); /* next partial clear starts its own pass */
-    R.sc = (p_scissor){8, 8, 16, 16}; op.c = (p_clear_ds){0.9f, 0, 0x50, 0xf0}; mtl_exec((const uint8_t *)&op);
-    R.sc = (p_scissor){0, 0, W, 8}; op.c = (p_clear_ds){0.5f, 1, 0xff, 0}; mtl_exec((const uint8_t *)&op);
+    R.sc = (p_scissor){.x=8, .y=8, .w=16, .h=16}; op.c = (p_clear_ds){0.9f, 0, 0x50, 0xf0}; mtl_exec((const uint8_t *)&op);
+    R.sc = (p_scissor){.x=0, .y=0, .w=W, .h=8}; op.c = (p_clear_ds){0.5f, 1, 0xff, 0}; mtl_exec((const uint8_t *)&op);
     op.c = (p_clear_ds){1, 0, 0, 0}; mtl_exec((const uint8_t *)&op); rp_end();
     id<MTL4ComputeCommandEncoder> e = blit(); enc_b_copy_texture_buffer(e, color, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(W, H, 1), rc, 0, W * 4, W * H * 4);
     [e copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1) toBuffer:rd destinationOffset:0 destinationBytesPerRow:W * 4 destinationBytesPerImage:W * H * 4 options:MTLBlitOptionDepthFromDepthStencil];
@@ -15071,7 +15077,7 @@ static uint8_t *lp_rt(uint8_t *w, const tex_t *t, int level, int layer) {
     return lp_rec(w, OP_SET_RT, &r, sizeof r);
 }
 static uint8_t *lp_draw(uint8_t *w, int k) { p_draw d = {4, 3 * k, 3, 0, 0}; return lp_rec(w, OP_DRAW, &d, sizeof d); }
-static uint8_t *lp_sc(uint8_t *w, int x, int y, int sw, int sh) { p_scissor s = {x, y, sw, sh}; return lp_rec(w, OP_SCISSOR, &s, sizeof s); }
+static uint8_t *lp_sc(uint8_t *w, int x, int y, int sw, int sh) { p_scissor s = {.x=x, .y=y, .w=sw, .h=sh}; return lp_rec(w, OP_SCISSOR, &s, sizeof s); }
 static uint8_t *lp_prog(uint8_t *w, const prog_t *p) { p_bind_program b = {p, 0x1f}; return lp_rec(w, OP_BIND_PROGRAM, &b, sizeof b); }
 static uint8_t *lp_clear(uint8_t *w, float r, float g, float b, float a) { p_clear_color c = {0, 0xf, {r, g, b, a}}; return lp_rec(w, OP_CLEAR_COLOR, &c, sizeof c); }
 static uint8_t *lp_end(uint8_t *w) { return lp_rec(w, OP_END, NULL, 0); }
