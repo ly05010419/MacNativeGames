@@ -57,6 +57,10 @@ seen to use on this Mac (`observed/<RomFS SHA>.keys` in the translation cache). 
 shared cache are skipped during warm-up only, never deleted or refused for drawing. Without a valid scope (an older
 app) the whole cache is warmed as before; `TOTK_WARM_ALL=1` does that for comparison. Not used on iPhone / iPad.
 
+On macOS, the optional [persistent-library tool](persistent-shader-libraries.md) can compile already translated
+variants into a user library cache without repackaging the App. It is separate from the shared identifier list and
+requires a manual preparation step.
+
 ## Sending what you played (players)
 
 You do not need to do anything while playing. When the Mac has to translate a shader variant, or an iPhone or iPad

@@ -42,6 +42,9 @@ static uint64_t g_gen_shown;            // interpolated frames handed to the scr
 #include "nvn_cover.h"
 #include "totk_shader_scope.h"   // totk_shader_scope_contains: the warm-up scope (PR #84)
 #include "dmsh_chain.h"   // DMSH_CHAIN：本源码树期望的 B 着色器库翻译链版本 | DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree
+#if !TARGET_OS_IPHONE
+#include "totk_shader_libraries.h"
+#endif
 #include "nvn_hmap.h"
 #include "totk_lifelog.h"
 #include "totk_timeline.h"
@@ -5155,22 +5158,35 @@ static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS do
 }
 static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // TOTK: translated variants loaded precompiled (iOS) / compiled from MSL here (atomic: the warm-up loads on several threads)
 #if !TARGET_OS_IPHONE
+static _Atomic uint64_t g_rt_user_prebuilt;
 /* TOTK: the startup shaders compiled when the app was built (build_app.py step_shader_libs), named by the SHA-256 of their
    MSL, so only an exact match is used. Metal's own cache of libraries compiled here does not follow the app to a folder
    whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
-static NSString *shader_lib_prebuilt_path(NSData *src) {
-    if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) return nil;   // built with safe math (totk_precise_opts)
-    static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{ dir = exe_rel("shader-libs"); });
+static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
+    if (getenv("TOTK_FAST_MATH") && atoi(getenv("TOTK_FAST_MATH"))) return nil;
+    static NSString *dir; static NSDictionary<NSString *, NSString *> *user;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dir = exe_rel("shader-libs");
+        const char *e = getenv("TOTK_SHADER_LIBRARIES");
+        if (!(e && !strcmp(e, "off"))) {
+            NSString *root = e && *e ? @(e) : [totk_rt_dir() stringByAppendingPathComponent:@"metal-libraries"];
+            user = totk_shader_libraries_read(root, @DMSH_CHAIN);
+            if (user.count) MLOG("本机补编着色器库：%lu 个（按源码 SHA 精确匹配）", (unsigned long)user.count);
+        }
+    });
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(src.bytes, (CC_LONG)src.length, md);
     char hex[2 * sizeof md + 1]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
-    NSString *path = [NSString stringWithFormat:@"%@/%s.metallib", dir, hex];
-    return dir && [NSFileManager.defaultManager fileExistsAtPath:path] ? path : nil;
-}
-static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
-    NSString *path = shader_lib_prebuilt_path(src); if (!path) return nil;
-    NSError *e = nil; id<MTLLibrary> lib = lib_from_file(path, &e);
-    if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", path.lastPathComponent.UTF8String, e.localizedDescription.UTF8String);
-    return lib;
+    NSString *digest = @(hex);
+    NSString *bundled = dir ? [dir stringByAppendingPathComponent:[digest stringByAppendingPathExtension:@"metallib"]] : nil;
+    NSString *local = user[digest];
+    for (NSString *path in @[bundled ?: @"", local ?: @""]) {
+        if (!path.length || ![NSFileManager.defaultManager fileExistsAtPath:path]) continue;
+        NSError *e = nil; id<MTLLibrary> lib = totk_shader_library_load(g_dev, path, &e);
+        if (lib) { if ([path isEqual:local]) atomic_fetch_add(&g_rt_user_prebuilt, 1); return lib; }
+        MLOG("【红】预编译着色器库加载失败 %s：%s（继续查找或现编）", path.lastPathComponent.UTF8String, e.localizedDescription.UTF8String);
+    }
+    return nil;
 }
 #endif
 static NvShader *shader_load(NSString *pc, int stage) {
@@ -7589,7 +7605,12 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
         MLOG("预热分段：着色器库 %llu 次 / %.1f ms（各线程用时相加），Metal 管线 %llu 次 / %.1f ms",
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
+#if !TARGET_OS_IPHONE
+        MLOG("预热库来源：预编译 %llu 次（本机补编 %llu 次），源码编译 %llu 次", (unsigned long long)atomic_load(&g_rt_prebuilt),
+             (unsigned long long)atomic_load(&g_rt_user_prebuilt), (unsigned long long)atomic_load(&g_rt_compiled));
+#else
         MLOG("预热库来源：预编译 %llu 次，源码编译 %llu 次", (unsigned long long)atomic_load(&g_rt_prebuilt), (unsigned long long)atomic_load(&g_rt_compiled));
+#endif
     }
     g_variant_bg = 0; par_write_in_place = 0;   // a queue thread: other work may run on it next
     atomic_store(&g_warm_running, 0);
