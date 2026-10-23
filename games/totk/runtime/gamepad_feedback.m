@@ -27,6 +27,7 @@ void runtime_feedback_quiet(void) {}
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
 #else
 #import <CoreHaptics/CoreHaptics.h>
+#include "hid_imu.h"
 
 /* ---- rumble ----
    Simple pattern players (CHHapticPatternPlayer) only: on macOS 26.5.2 (25F84) the advanced player (looping) never gets
@@ -285,6 +286,52 @@ static void hid_motion_stop(void) {   /* main queue */
     CFRelease(hidManager); hidManager = NULL;
 }
 
+/* ---- motion from the input reports of a pad GameController gives none (2026-10-23): runtime/hid_imu.h ---- */
+static const HidImuProfile *imuProfile;   /* main run loop */
+static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
+    (void)ctx; (void)sender; (void)type;
+    const HidImuProfile *pr = imuProfile;
+    if (result != kIOReturnSuccess || !pr || id != pr->reportId) return;
+    if (len < pr->length) {
+        static BOOL said;
+        if (!said) { said = YES; fprintf(stderr, "[gyro] %04x:%04x sends %ld-byte reports and the sensor needs %d (old firmware?): no motion from it\n", pr->vendor, pr->product, (long)len, pr->length); }
+        return;
+    }
+    double acc[3], gyro[3];
+    if (!hid_imu_decode(pr, id, p, len, acc, gyro)) return;
+    runtime_motion_feed(acc, gyro, runtime_now_ns());
+}
+static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion */
+    if (![c.productCategory isEqualToString:GCProductCategoryHID]) return NO;   /* not an Xbox pad that merely sits beside one of these */
+    NSMutableArray *matching = [NSMutableArray array];
+    for (int i = 0; i < HID_IMU_PROFILES; i++)
+        [matching addObject:@{@kIOHIDVendorIDKey: @(hid_imu_profiles[i].vendor), @kIOHIDProductIDKey: @(hid_imu_profiles[i].product)}];
+    IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatchingMultiple(m, (__bridge CFArrayRef)matching);
+    IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(m);
+    IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
+    if (!d) { CFRelease(m); return NO; }
+    int vendor = 0, product = 0;
+    CFTypeRef cv = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDVendorIDKey)), cp = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
+    if (cv) CFNumberGetValue(cv, kCFNumberIntType, &vendor);
+    if (cp) CFNumberGetValue(cp, kCFNumberIntType, &product);
+    const HidImuProfile *found = hid_imu_find(vendor, product);
+    const char *name = (c.vendorName ?: @"controller").UTF8String;
+    IOReturn r = found ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
+    if (r != kIOReturnSuccess) {
+        if (found) fprintf(stderr, "[gyro] %s: HID device %04x:%04x found but did not open (0x%x): no motion from it\n", name, vendor, product, r);
+        CFRelease(m); return NO;
+    }
+    hid_motion_stop();
+    hidManager = m; hidDevice = (IOHIDDeviceRef)CFRetain(d); imuProfile = found;
+    IOHIDDeviceScheduleWithRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, hid_imu_report, NULL);
+    motionPad = c; runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
+    fprintf(stderr, "[gyro] %s: no motion from GameController; reading the six-axis sensor from its HID reports (%04x:%04x)\n", name, vendor, product);
+    return YES;
+}
+
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
@@ -304,7 +351,10 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             if (r > 0) fprintf(stderr, "[gyro] axes remapped by TOTK_GYRO_AXES=%s\n", axes);
         });
         GCMotion *m = c.motion;
-        if (!m || !m.hasRotationRate) { fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name); return; }
+        if (!m || !m.hasRotationRate) {
+            if (!hid_imu_start(c)) fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name);
+            return;
+        }
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
         hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
