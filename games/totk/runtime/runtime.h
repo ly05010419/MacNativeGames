@@ -160,5 +160,6 @@ void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 #ifdef __OBJC__
 @class GCController;
 void runtime_feedback_attach(GCController *controller);
+void runtime_feedback_active(void);   /* the app became active: manual-activation controllers need their sensors on again */
 void runtime_feedback_detach(GCController *controller);
 #endif

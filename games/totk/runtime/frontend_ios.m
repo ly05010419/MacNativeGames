@@ -78,6 +78,7 @@ static void app_active_changed(int active){
  if(atomic_exchange(&appActive,active)==active)return;
  if(!active)runtime_input_clear();
  mtl_app_active(active);runtime_oe_push_message(15);
+ if(active)runtime_feedback_active();
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
