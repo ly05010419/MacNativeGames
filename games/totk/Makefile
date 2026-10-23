@@ -388,6 +388,18 @@ $(RENDER_PROBE_DIR)/depth16-clear-probe: tests/depth16_clear/probe.m third_party
 probe-depth16-clear: $(RENDER_PROBE_DIR)/depth16-clear-probe
 	$(GAME_SLOT_RUN) "$(RENDER_PROBE_DIR)/depth16-clear-probe"
 
+.PHONY: probe-fbread
+.PHONY: probe-gpu-writeback
+probe-gpu-writeback: runtime-botw160
+	MTL_DEBUG_LAYER=1 build/totk-native-botw160 rewritten/botw160 probe-gpu-writeback
+
+# Decals reading the attachment they write (nvn_fbread.h): overlapping draws see each other only through the tile read.
+$(RENDER_PROBE_DIR)/fbread-probe: tests/fbread/probe.m third_party/d2r_gfx/gfx/nvn/nvn_fbread.h
+	@mkdir -p "$(RENDER_PROBE_DIR)"
+	xcrun clang -std=c11 -O2 -Wall -Wextra -Werror -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn tests/fbread/probe.m -framework Metal -framework Foundation -o "$@"
+probe-fbread: $(RENDER_PROBE_DIR)/fbread-probe
+	$(GAME_SLOT_RUN) "$(RENDER_PROBE_DIR)/fbread-probe"
+
 # Independent, game-data-free DSP and production-mixer comparisons (from the original port, 2026-10-18). Keep vectors,
 # .NET build output and executables outside the source checkout. Needs a .NET SDK and a Ryujinx.Audio build.
 AUDIO_TEST_WORK ?= /tmp/totk-native-audio-effects

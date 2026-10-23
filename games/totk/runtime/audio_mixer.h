@@ -4,6 +4,15 @@
 #include "ipc.h"
 #include <pthread.h>
 
+/* A voice reaching the end of an end-of-stream buffer: plays on into the next queued one in the same frame (Breath of
+   the Wild, 2b6fb60), or stops for the rest of the frame (Tears of the Kingdom, as before 2b6fb60: playing on left 1.1.2
+   silent after the title). audio_renderer.c advance_voice and the mixer's walk follow it alike. */
+#ifdef GAME_BOTW
+#define AUDIO_EOS_PLAYS_ON 1
+#else
+#define AUDIO_EOS_PLAYS_ON 0
+#endif
+
 typedef struct {
     AudrenVoiceIn in;
     AudrenBiquadFloat float_biquads[2]; uint8_t use_float_biquads;

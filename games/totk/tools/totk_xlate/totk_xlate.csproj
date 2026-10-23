@@ -11,4 +11,10 @@
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
   </ItemGroup>
+  <!-- SPIRV-Cross linked in (publish_native.sh builds the library; Service.cs SpirvCross calls it) -->
+  <ItemGroup Condition="'$(TotkSpirvCrossLib)' != ''">
+    <DirectPInvoke Include="totk_spirv_cross" />
+    <NativeLibrary Include="$(TotkSpirvCrossLib)" />
+    <LinkerArg Include="-lc++" />
+  </ItemGroup>
 </Project>

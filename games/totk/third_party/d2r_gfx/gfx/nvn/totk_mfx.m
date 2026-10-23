@@ -25,9 +25,34 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_mfx.h"
+#include <TargetConditionals.h>
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
+
+#if TARGET_OS_VISION
+/* visionOS has no MetalFX frame interpolator. Keep every entry point off, including environment initialization. */
+int mfx_enabled(void) { return 0; }
+const char *mfx_mode_name(int mode) { return mode == MFX_OFF ? "off" : "not available on visionOS"; }
+void mfx_set(int mode) { if (mode) MLOG("frame interpolation is not available on visionOS"); }
+void mfx_set_mv_dyn(int on) { (void)on; }
+int mfx_latch(void) { return 0; }
+id<MTLTexture> mfx_scene_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h, MTLPixelFormat format) { (void)dev; (void)w; (void)h; (void)format; return nil; }
+id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { (void)dev; (void)w; (void)h; return nil; }
+void mfx_note_scene(void) {}
+void mfx_note_depth(id<MTLTexture> depth) { (void)depth; }
+void mfx_note_camera(const float *cam, int n) { (void)cam; (void)n; }
+id<MTLResidencySet> mfx_residency(void) { return nil; }
+int mfx_frame_prepare(double frame_s) { (void)frame_s; return -1; }
+NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int slot, id<MTL4CounterHeap> heap, NSUInteger stamp) { (void)cb; (void)slot; (void)heap; (void)stamp; return nil; }
+void mfx_note_gpu(double ms) { (void)ms; }
+void mfx_frame_abort(void) {}
+id<MTLTexture> mfx_output(int slot) { (void)slot; return nil; }
+void mfx_stats(char *out, size_t n) { snprintf(out, n, "not available on visionOS"); }
+void mfx_mv_log(void) {}
+int mfx_dump_due(void) { return 0; }
+void mfx_dump(long frame, id<MTLTexture> prev, id<MTLTexture> cur) { (void)frame; (void)prev; (void)cur; }
+#else
 
 #define MFX_OUT 3
 static struct {
@@ -416,3 +441,5 @@ void mfx_stats(char *out, size_t n) {
              (unsigned long long)g.miss[2], (unsigned long long)g.miss[3],
              (unsigned long long)g.skip_first, (unsigned long long)g.skip_cut, (unsigned long long)g.skip_busy);
 }
+
+#endif  // TARGET_OS_VISION

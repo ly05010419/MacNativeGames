@@ -6270,6 +6270,18 @@ static int vs_layerable(NvShader *vs) {
     return vs->lay_ok > 0;
 }
 static NSString *fs_src_without_depth(NvShader *fs);
+/* Read at replay time, including inline/GPU copies queued before this draw. Retain no pointer across draws. */
+static uint32_t ubo_tex_handle(int stage, const nvn_rbind *b) {
+    if (stage < 0 || stage >= 6 || b->reg >= 16) return 0;
+    const p_bind_buf *u = &S.ubo[stage][b->reg];
+    if (!u->addr || u->size < (uint64_t)b->off + sizeof(uint32_t)) return 0;
+    uint32_t handle = 0; pend_materialize(u->addr + b->off, (uint8_t *)&handle, sizeof handle, 0);
+    return handle;
+}
+static int uniform_textures(NvShader *sh) {
+    for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].kind == NVN_RB_TEXU || sh->rf.b[i].kind == NVN_RB_SAMPU) return 1;
+    return 0;
+}
 /* TOTK: samplers that clamp to a border colour Metal does not have (samp_border_custom) are emulated in the shader: the
    stage's sample calls on them return that colour when the coordinate is outside [0, 1]. border_key lists the stage's
    bound samplers that need it (argument id and colour; nil when none), border_src rewrites the MSL. */
@@ -6280,8 +6292,8 @@ static NSString *border_key(NvShader *sh, int stage, float colours[][4], int aid
     registry_lock();
     for (int i = 0; i < sh->rf.nb && *n < 8; i++) {
         const nvn_rbind *b = &sh->rf.b[i];
-        if ((b->kind != NVN_RB_SAMP && b->kind != NVN_RB_SAMPT) || b->reg >= 128) continue;
-        int sid = (int)((b->kind == NVN_RB_SAMPT ? S.tex[stage][b->reg] : S.samp[stage][b->reg]) >> 20);
+        if ((b->kind != NVN_RB_SAMP && b->kind != NVN_RB_SAMPT && b->kind != NVN_RB_SAMPU) || b->reg >= 128) continue;
+        int sid = (int)((b->kind == NVN_RB_SAMPU ? ubo_tex_handle(stage, b) : b->kind == NVN_RB_SAMPT ? S.tex[stage][b->reg] : S.samp[stage][b->reg]) >> 20);
         if (sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid] || !samp_border_custom(&g_sreg[sid])) continue;
         memcpy(colours[*n], g_sreg[sid].border, sizeof colours[*n]); aids[*n] = b->aid;
         if (!key) key = [NSMutableString string];
@@ -7681,12 +7693,6 @@ static int tex_slot_binding(const nvn_rbind *b) {
     return b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF ||
         b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT;
 }
-static uint32_t ubo_tex_handle(const nvn_rbind *b, int stage) {
-    const p_bind_buf *u = b->reg < 16 && stage >= 0 && stage < 6 ? &S.ubo[stage][b->reg] : NULL; uint32_t h = 0;
-    if (!u || !u->addr || u->size < (uint64_t)b->off + 4) { RED_ONCE(122, "阶段 %d uniform 槽 %d 未绑或不够长，无绑定贴图句柄读不到（偏移 %u）", stage, b->reg, b->off); return 0; }
-    if (pend_read(u->addr + b->off, &h, 4, 0) < 0) memcpy(&h, (const void *)(uintptr_t)(u->addr + b->off), 4);
-    return h;
-}
 static int tex_slots_diagnostics(void) {
     static int active = -1;
     if (active < 0) active = getenv("DM_NVN_TEXPNG_FS") != NULL || getenv("DM_NVN_FLASHHDR") != NULL;
@@ -7709,7 +7715,8 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         epoch_hit = sh->ab_buf && !memcmp(&epoch, &sh->ab_epoch, sizeof epoch);
         registry_unlock();
     }
-    int reuse = !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+    // Uniform contents may change without a texture-slot rebind: neither cache key describes these handles.
+    int reuse = !uniform_textures(sh) && !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
     if (reuse) {
@@ -7786,14 +7793,14 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             slots[aid] = gpu;
             USE((__bridge id<MTLBuffer>)mb, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU) {   // SAMPT：合并句柄（贴图号 | 采样器号 << 20）的采样器部分 | SAMPT: the sampler part of a combined handle (texture ID | sampler ID << 20)
-            int sid = b->kind == NVN_RB_SAMPU ? (int)(ubo_tex_handle(b, nvn_stage) >> 20) : reg < 128 ? (int)((b->kind == NVN_RB_SAMPT ? S.tex[nvn_stage][reg] : S.samp[nvn_stage][reg]) >> 20) : 0;
+            int sid = b->kind == NVN_RB_SAMPU ? (int)(ubo_tex_handle(nvn_stage, b) >> 20) : reg < 128 ? (int)((b->kind == NVN_RB_SAMPT ? S.tex[nvn_stage][reg] : S.samp[nvn_stage][reg]) >> 20) : 0;
             __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
             slots[aid] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // 本段已持 g_rmu | g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d cmp=%d/%d wrap=%d,%d,%d lod=%g..%g（0 最近点 / 1 双线性；2–5 带 mip）", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf, (int)sp.cmp_mode, (int)sp.cmp_func, (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.lod_min, sp.lod_max); }
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
-            int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_tex_handle(b, nvn_stage) & 0xfffff) : reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
+            int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_tex_handle(nvn_stage, b) & 0xfffff) : reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (nvn_stage == 1 && reg == 0 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR")) g_flash_hdr_source = t;
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
@@ -8572,7 +8579,7 @@ static int draw_samples_rt(NvProg *pr) {   // 采样附件保持原ser级保守g
     if (R.rt.depth) rs[nr++] = R.rt.depth->serial;
     if (!pr) return 1;
     for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
-        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind == NVN_RB_TEXU) { return 1; } uint64_t h;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 && sh->stage < 6 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 && sh->stage < 6 ? S.tex[sh->stage][b->reg] : 0; else continue;
             int tid = (int)(h & 0xfffff); if (!tid) continue;
             registry_lock(); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; registry_unlock();
@@ -8681,8 +8688,9 @@ static void sdx_walk(const uint8_t *p, int depth) {
                 if (h.op != OP_DISPATCH) seq_push(&g_drx_seq, &g_drx_n, &g_drx_cap, seq);
                 __unsafe_unretained NvProg *pr = g_pp_prog ? prog_get(g_pp_prog) : nil;
                 if (!pr) { for (int st = 0; st < 6; st++) for (int k = 0; k < 160; k++) if (g_pp_slot[st][k]) sdx_ev_add((sdx_ev){seq, 0, g_pp_slot[st][k], p, 0, 0, SDX_READ, 0, 0, 1}); }
+                // Lookahead does not replay uniform bytes. Unknown indirect reads must keep attachments stored.
                 else for (int st = 0; st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || (h.op == OP_DISPATCH) != (st == 5)) continue;
-                    for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; int k = b->kind == NVN_RB_IMG ? 128 + b->reg : (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) ? b->reg : -1;
+                    for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind == NVN_RB_TEXU) { g_sdx_ok = 0; return; } int k = b->kind == NVN_RB_IMG ? 128 + b->reg : (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) ? b->reg : -1;
                         if (k < 0 || k >= 160 || sh->stage < 0 || sh->stage >= 6) continue; uint64_t ser = g_pp_slot[sh->stage][k];
                         if (ser) sdx_ev_add((sdx_ev){seq, 0, ser, p, 0, 0, SDX_READ, 0, 0, 1}); } }
                 const p_set_rt *r = g_pp_rt;
@@ -8912,7 +8920,7 @@ static int sub_eq(const p_set_rt *a, int ka, const p_set_rt *b, int kb) { uint64
 static int prog_samples_ser(const prog_t *pg, uint64_t tex[6][128], uint64_t img[6][32], uint64_t ser) {   // TOTK: a program with an untranslated stage counts as reading everything   // 程序反射声明的贴图 / 图像 / 类型化缓冲槽里有没有绑着该贴图 | Whether this texture is bound in any texture / image / typed buffer slot declared by the program's reflection
     __unsafe_unretained NvProg *pr = pg ? prog_get(pg) : nil; if (!pr || pr->missing) return 1;
     for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh->stage >= 6) continue;
-        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind == NVN_RB_TEXU) { return 1; } uint64_t h;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? tex[sh->stage][b->reg] : 0; else continue;
             if (h && h_ser(h) == ser) return 1; } }
     return 0;
@@ -8933,7 +8941,7 @@ static int defer_handle_sub(uint64_t h, const p_set_rt *r, int k, int cover) {
 static int defer_prog_hits(const prog_t *pg, uint64_t tex[6][128], uint64_t img[6][32], const p_set_rt *r, int color_only, int cover) {
     __unsafe_unretained NvProg *pr = pg ? prog_get(pg) : nil; if (!pr || pr->missing) return 1;
     for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh->stage < 0 || sh->stage >= 6) continue;
-        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h = 0;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind == NVN_RB_TEXU) { return 1; } uint64_t h = 0;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? img[sh->stage][b->reg] : 0;
             else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? tex[sh->stage][b->reg] : 0;
             else continue;
@@ -8946,7 +8954,7 @@ static int defer_prog_hits(const prog_t *pg, uint64_t tex[6][128], uint64_t img[
 static void defer_collect_reads(defer_t *d, const prog_t *pg, uint64_t tex[6][128], uint64_t img[6][32]) {
     __unsafe_unretained NvProg *pr = pg ? prog_get(pg) : nil; if (!pr || pr->missing) { d->nreads = 513; return; }
     for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh->stage < 0 || sh->stage >= 6) continue;
-        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h = 0;
+        for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; if (b->kind == NVN_RB_TEXU) { d->nreads = 513; return; } uint64_t h = 0;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? img[sh->stage][b->reg] : 0;
             else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? tex[sh->stage][b->reg] : 0;
             else continue;
@@ -9276,7 +9284,7 @@ planned:
         if (!vs2 || !fs2) return;
         int touches = 0;
         for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr2->sh[st]; if (!sh || sh->stage >= 6) continue;
-            for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *bb = &sh->rf.b[i]; uint64_t h;
+            for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *bb = &sh->rf.b[i]; if (bb->kind == NVN_RB_TEXU) return; uint64_t h;
                 if (bb->kind == NVN_RB_IMG) h = bb->reg < 32 ? i2[sh->stage][bb->reg] : 0; else if (bb->kind == NVN_RB_TEX || bb->kind == NVN_RB_TBUF) h = bb->reg < 128 ? t2[sh->stage][bb->reg] : 0; else continue;
                 uint64_t ser = h ? h_ser(h) : 0; if (!ser) continue;
                 int j = -1; for (int m = 0; m < R.rt.n; m++) if (R.rt.color[m] && R.rt.color[m]->serial == ser) { j = m; break; }
@@ -9383,7 +9391,7 @@ static int zskip_can_draw(NvProg *pr) {
     else if (!zskip_vis_dead()) why = 2;
     else if (f.ubo_slot >= 0 && (!ubo_float(1, (uint16_t)((f.ubo_slot << 8) | (f.vec << 2) | f.comp), &coeff) || !isfinite(coeff))) why = 3;   // ubo_slot < 0：该着色器没有系数 | ubo_slot < 0: this shader has no coefficient
     for (int i = 0; !why && i < fs->rf.nb; i++) { nvn_rbind *b = &fs->rf.b[i];
-        if (b->kind == NVN_RB_IMG) { why = 4; break; }
+        if (b->kind == NVN_RB_IMG || b->kind == NVN_RB_TEXU) { why = 4; break; }
         if (b->kind != NVN_RB_TEX && b->kind != NVN_RB_TBUF) continue;
         int tid = b->reg < 128 ? (int)(S.tex[1][b->reg] & 0xfffff) : 0; if (!zskip_view_zero(tid)) why = 5; }
     if (!why && (!R.has_rt || !R.rt.n)) why = 6;
@@ -9418,7 +9426,7 @@ static int fz_p2_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di, uint8_
     int fx[32]; for (int i = 0; i < 32; i++) fx[i] = -1; uint8_t fbmask = 0;
     for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh || sh->stage >= 6) continue;
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
-            if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0; else continue;
+            if (b->kind == NVN_RB_TEXU) h = ubo_tex_handle(sh->stage, b); else if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0; else continue;
             uint64_t ser = h ? h_ser(h) : 0; if (!ser) continue;
             int j = -1; for (int m = 0; m < g_fz.n1; m++) if (R.rt.color[m] && R.rt.color[m]->serial == ser) { j = m; break; }
             if (j < 0) continue;   // 采样的不是前一个通道的附件 | What is sampled is not an attachment of the earlier pass
@@ -9725,6 +9733,7 @@ static void clear_ds_quad(const p_clear_ds *c) {
 static void prepare_draw_textures(NvProg *pr) {
     if (!pr) return;
     int planned = texture_plan_on();
+    for (int st = 0; st < 2; st++) if (pr->sh[st] && uniform_textures(pr->sh[st])) planned = 0;
     if (planned) {
         unsigned total = 0;
         for (int st = 0; st < 2; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
@@ -9751,7 +9760,8 @@ static void prepare_draw_textures(NvProg *pr) {
             for (int i = 0; i < count; i++) { int tid = 0;
                 if (planned) { unsigned slot = sh->texture_slots[i]; tid = (int)((slot < 128 ? S.tex[st][slot] : S.img[st][slot - 128]) & 0xfffff); }
                 else { const nvn_rbind *b = &sh->rf.b[i];
-                    if ((b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) && b->reg < 128) tid = (int)(S.tex[st][b->reg] & 0xfffff);
+                    if (b->kind == NVN_RB_TEXU) tid = (int)(ubo_tex_handle(st, b) & 0xfffff);
+                    else if ((b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) && b->reg < 128) tid = (int)(S.tex[st][b->reg] & 0xfffff);
                     else if (b->kind == NVN_RB_IMG && b->reg < 32) tid = (int)(S.img[st][b->reg] & 0xfffff);
                 }
                 if (tid > 0) (void)tex_fast(tid);

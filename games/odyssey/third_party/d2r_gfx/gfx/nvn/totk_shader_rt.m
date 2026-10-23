@@ -154,18 +154,34 @@ static NSString *json_string(id obj) {
     return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
 }
 static NSString *index_path(NSString *shader) { return [totk_rt_dir() stringByAppendingFormat:@"/%@.variants", shader]; }
+/* Keep one record per variant. Last record wins: it contains the newest dependency metadata. */
+static NSMutableArray *unique_variants(NSArray *records) {
+    NSMutableArray *out = [NSMutableArray array]; NSMutableDictionary *positions = [NSMutableDictionary dictionary];
+    for (id record in records) {
+        if (![record isKindOfClass:NSDictionary.class]) continue;
+        id key = record[@"variant"]; if (![key isKindOfClass:NSString.class] || ![key length]) continue;
+        NSNumber *position = positions[key];
+        if (position) out[position.unsignedIntegerValue] = record;
+        else { positions[key] = @(out.count); [out addObject:record]; }
+    }
+    return out;
+}
+static void variant_put(NSMutableArray *records, NSDictionary *record) {
+    for (NSUInteger i = 0; i < records.count; i++) if ([records[i][@"variant"] isEqual:record[@"variant"]]) { records[i] = record; return; }
+    [records addObject:record];
+}
 static NSMutableArray *variants_of(NSString *shader) {
     if (!g_variants) g_variants = [NSMutableDictionary dictionary];
     NSMutableArray *v = g_variants[shader];
     if (v) return v;
     NSData *d = [NSData dataWithContentsOfFile:index_path(shader)];
     NSArray *a = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
-    v = [NSMutableArray arrayWithArray:[a isKindOfClass:[NSArray class]] ? a : @[]];
+    v = unique_variants([a isKindOfClass:NSArray.class] ? a : @[]);
+    if ([a isKindOfClass:NSArray.class] && v.count != a.count)
+        [[json_string(v) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:index_path(shader) atomically:YES];
     g_variants[shader] = v;
     return v;
 }
-/* The shared translator (games/totk/prebuilt) records "*" / "*_depth" for a texture slot any 2D-like type fits: the
-   same matching as games/totk, or every draw of such a shader asks for it again and its draws stay skipped. */
 static int deps_match(NSDictionary *deps, NSDictionary *ans) {
     NSDictionary *defaults = @{@"tex": @"2d", @"img": @{}, @"attr": @"float", @"fout": @"float"};
     for (NSString *kind in defaults) {
@@ -249,7 +265,7 @@ static void *async_worker(void *arg) {
         [g_pending removeObject:variant];
         if (ok) {
             NSMutableArray *vs = variants_of(shader);
-            [vs addObject:rec];
+            variant_put(vs, rec);
             [g_msl_checked addObject:variant];
             [[json_string(vs) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:index_path(shader) atomically:YES];
             g_translated++;
@@ -383,7 +399,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
     NSDictionary *refl = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (![refl isKindOfClass:[NSDictionary class]]) die("shader %s: reflection missing", variant.UTF8String);
-    [vs addObject:@{@"variant": variant, @"deps": refl[@"deps"] ?: @{}, @"depth_minus_w": @(depth_minus_w)}];
+    variant_put(vs, @{@"variant": variant, @"deps": refl[@"deps"] ?: @{}, @"depth_minus_w": @(depth_minus_w)});
     [g_msl_checked addObject:variant];
     [[json_string(vs) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:index_path(shader) atomically:YES];
     g_translated++;

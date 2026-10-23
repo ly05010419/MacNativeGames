@@ -26,6 +26,8 @@
 #include <errno.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
+#include <sys/ucontext.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <mach/mach.h>
@@ -59,10 +61,10 @@ typedef struct thr {
     uint64_t nsvc;             // SVC 次数（现场导出用） | SVC count (for the state dump)
     mach_port_t mport;         // 宿主线程端口（取 CPU 时间） | Host thread port (to get CPU time)
     uint32_t qos;
-    int cur_core;              // virtual core held while running guest code, -1 while blocked / not started
-    int preempt;               // a higher-priority thread waits for this thread's core
-    uint64_t preempt_ns; int kicked;   // when preempt was set; a preemption signal is pending (core_watch)
-    uint64_t cwait_ns;         // when this thread started waiting for a core (anti-starvation)
+    _Atomic int cur_core;              // virtual core held while running guest code, -1 while blocked / not started
+    _Atomic int preempt;               // a higher-priority thread waits for this thread's core
+    _Atomic int kicked;
+    uint64_t preempt_ns, cwait_ns;
     uint64_t cseq, core_since; struct thr *cnext;
     uint32_t wh[4]; int nwh;   // handles of the current WaitSynchronization (state dump)
     int last_hle;              // 1 + wrapper index of the last host call made while "hletrace" was on (state dump)
@@ -131,10 +133,10 @@ static thr_t *g_core_wait;
 static int g_cores_on = -1;
 static int cores_enabled(void) { if (g_cores_on < 0) g_cores_on = getenv("TOTK_FREE_CORES") ? 0 : 1; return g_cores_on; }
 static int core_allowed(const thr_t *t, int c) { return (int)((t->mask >> c) & 1); }
-/* Anti-starvation (from games/lm3): a thread that has waited CORE_STARVE_NS for a core gets the next free one before
-   higher-priority waiters, and core_watch preempts an owner for it. Super Mario Odyssey's audio thread spins on
-   nn::audio::IsMemoryPoolAttached at the end of a cutscene, without any SVC, while the thread that would update the
-   renderer and detach the pool waits for that core: without this the game froze there. */
+/* Adapted from the MIT LM3 port (#218, 714e4f3): bounded starvation and guest-only signal preemption.
+   Anti-starvation (Odyssey): a thread that has waited CORE_STARVE_NS for a core gets the next free one before
+   higher-priority waiters, and core_watch preempts an owner for it. Horizon has no such rule, but the guest's busier-than-
+   hardware threads kept a priority-45 job worker off its only core while the main thread waited for its job. */
 #define CORE_STARVE_NS 30000000
 static void core_grant(int c) {   // holding G: give free core c to the best waiter
     thr_t *b = NULL, **bp = NULL; uint64_t now = now_ns();
@@ -165,8 +167,8 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     while (t->cur_core < 0) pthread_cond_wait(&t->cv, &G);
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
-/* Preemption of guest code that makes no SVC (Luigi's Mansion 3's job workers spin on a core while higher-priority
-   threads, the renderer among them, wait for it). Horizon's scheduler preempts at once; here a watcher interrupts a
+/* Odyssey's audio thread can spin on IsMemoryPoolAttached without an SVC while the renderer update that completes
+   the detach waits for its virtual core. Horizon's scheduler preempts at once; here a watcher interrupts a
    core owner that a higher-priority waiter has been waiting on for 2 ms. The signal handler gives the core up only when
    the thread was interrupted in guest code (inside a loaded module), where it holds no host lock; elsewhere it gives it
    up at its next SVC as before. Guest threads run their handlers on their own signal stack (loader.c). */
@@ -176,7 +178,7 @@ int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
 static void core_preempt_handler(int sig, siginfo_t *info, void *ctx) {
     (void)sig; (void)info; int saved = errno;
     thr_t *t = me_or_null(); const char *name; uint64_t off;
-    uint64_t pc = ((ucontext_t *)ctx)->uc_mcontext->__ss.__pc;
+    uint64_t pc = arm_thread_state64_get_pc(((ucontext_t *)ctx)->uc_mcontext->__ss);
     if (t && t->cur_core >= 0 && runtime_module_offset(pc, &name, &off)) {
         pthread_mutex_lock(&G); if (t->preempt && t->cur_core >= 0) { t->preempt = 0; core_put(t); core_take(t); } else t->kicked = 0; pthread_mutex_unlock(&G);
     } else if (t) t->kicked = 0;   /* host code: the next SVC checkpoint gives the core up */
@@ -190,8 +192,7 @@ static void *core_watch(void *arg) {
         for (thr_t *w = g_core_wait; w; w = w->cnext) if (now - w->cwait_ns > CORE_STARVE_NS)   /* a starving waiter: preempt an owner of one of its cores */
             for (int i = 0; i < NCORE; i++) { thr_t *o = g_core_owner[i]; if (o && core_allowed(w, i) && !o->preempt) { o->preempt = 1; o->preempt_ns = now - CORE_PREEMPT_NS - 1; break; } }
         for (int i = 0; i < NCORE; i++) { thr_t *o = g_core_owner[i];
-            if (o && o->preempt && !o->kicked && now - o->preempt_ns > CORE_PREEMPT_NS) { o->kicked = 1; int r = pthread_kill(o->pt, CORE_PREEMPT_SIGNAL);
-                static int nk; if (getenv("ODYSSEY_CORE_LOG") && nk++ < 20) fprintf(stderr, "[core] kick %#x (prio %d, core %d) -> %d\n", o->handle, o->prio, i, r); } }
+            if (o && o->preempt && !o->kicked && now - o->preempt_ns > CORE_PREEMPT_NS) { o->kicked = 1; (void)pthread_kill(o->pt, CORE_PREEMPT_SIGNAL); } }
         pthread_mutex_unlock(&G);
     }
     return NULL;

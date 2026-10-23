@@ -21,3 +21,10 @@ no .NET and the app needs no .NET runtime and no Python.
   seed MSL files of a 1.4.3 build, each only by `[[ early_fragment_tests ]]` before the fragment entry, all of them
   fragment shaders with the flag; the reflection files differ only by the chain name. Without the field, 1,380 replayed
   variants of a player cache translate to the same MSL and reflection as the previous build.
+
+SPIRV-Cross is compiled into the program (2026-10-23, `games/totk/tools/totk_xlate/spirv_cross_inproc.cpp`): its own
+`main.cpp` at the pinned commit (build_app.py `SPIRV_CROSS`) with the same arguments the service passed to the program,
+so no process is started per shader (`TOTK_XLATE_SPIRV_CROSS=process` still runs the `--spirv-cross` program). Checked
+by preparing the whole 1.4.3 seed with both builds from the same inputs: all 95,227 files (MSL, reflection, variant
+indexes) byte-identical; the translation took as long (268 s / 270 s: the preparing script's 8 workers wait on each
+reply) for about half the CPU (508 s instead of 961 s, system time 90 s instead of 294 s).

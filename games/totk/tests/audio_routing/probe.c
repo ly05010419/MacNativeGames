@@ -74,9 +74,46 @@ static int run_case(int scenario) {
     return failed;
 }
 
+/* Exercise the production decoder too: the metadata cursor and decoded samples must agree at EOS. Independent PCM
+   buffers make an accidental read into the next stream visible, even when the renderer's consumed count looks right. */
+static int eos_samples(void) {
+    int16_t first[100], second[480];
+    for (int i = 0; i < 100; i++) first[i] = 8192;
+    for (int i = 0; i < 480; i++) second[i] = -16384;
+    AudioRenderer r = {.param = {.sample_rate = 48000}};
+    ServerVoice v = {.in = {.sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1, .pitch = 1},
+        .valid = {1, 1}, .adpcm = {.buffer = -1}};
+    v.buffers[0] = (AudrenWaveBuffer){.address = (uintptr_t)first, .size = sizeof first, .end = 100, .end_of_stream = 1};
+    v.buffers[1] = (AudrenWaveBuffer){.address = (uintptr_t)second, .size = sizeof second, .end = 480};
+    float out[6][MAX_FRAME] = {{0}};
+    int failed = 0;
+    for (int scenario = 0; scenario < 3; scenario++) {
+        v.buffers[0].end_of_stream = scenario != 1;
+        v.buffers[0].loop = scenario == 2; v.buffers[0].loop_count = -1;
+        voice_render(&r, &v, out, 240);
+        for (int i = 0; i < 240; i++) {
+            float want = i < 100 || scenario == 2 ? .25f : scenario == 1 || AUDIO_EOS_PLAYS_ON ? -.5f : 0;
+            if (fabsf(out[0][i] - want) > 1e-6f) {
+                fprintf(stderr, "EOS samples scenario %d sample %d: %g != %g\n", scenario, i, out[0][i], want);
+                failed = 1; break;
+            }
+        }
+    }
+    /* An empty EOS encountered after a partial buffer has the same boundary as a non-empty EOS. */
+    v.buffers[0].loop = 0; v.buffers[0].end_of_stream = 0;
+    v.buffers[2] = v.buffers[1]; v.buffers[1] = (AudrenWaveBuffer){.end_of_stream = 1}; v.valid[2] = 1;
+    voice_render(&r, &v, out, 240);
+    for (int i = 0; i < 240; i++) {
+        float want = i < 100 ? .25f : AUDIO_EOS_PLAYS_ON ? -.5f : 0;
+        if (fabsf(out[0][i] - want) > 1e-6f) { failed = 1; fprintf(stderr, "empty EOS sample %d\n", i); break; }
+    }
+    puts("4 EOS sample paths checked (stream boundary, continuous, loop, empty EOS)");
+    return failed;
+}
+
 int main(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1); unsetenv("TOTK_AUDIO_CAPTURE");
-    int failed = 0;
+    int failed = eos_samples();
     for (int i = 0; i < 4; ++i) failed += run_case(i);
     if (failed) return 1;
     puts("4 audio routing graphs / 64 stereo frames (128 channel samples) passed");

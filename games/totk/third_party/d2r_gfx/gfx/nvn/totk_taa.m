@@ -8,7 +8,12 @@
 //  - Key 5 turns it on and off while playing (runtime/input.c); TOTK_TAA=1 starts it on.
 //  - Motion vectors: from the camera only, as for frame interpolation (totk_mfx.m): the G-buffer depth reprojected with
 //    this and the previous frame's view-projection. What moves on its own (Link, enemies) gets the camera's motion;
-//    MetalFX rejects what does not match, at the cost of less smoothing there.
+//    MetalFX rejects what does not match, at the cost of less smoothing there. The game keeps no motion vectors of its
+//    own (the scene-size R32Float target its G-buffer passes write, a4eb9e94, is linear depth).
+//  - Reactive mask (TOTK_TAA_REACTIVE=0 turns it off): MetalFX's colour clamp alone let walking characters leave trails.
+//    The same kernel keeps the depth of each frame and checks the surface the camera motion points to: when last frame's
+//    depth there is not the depth that surface should have had (nearest of 3x3, so edges and jitter still pass), something
+//    moved in or out of that pixel, and MetalFX is told to take the current frame there instead of the history.
 //  - Reset: the first frame, a size change and a camera cut (more than 8 units or 25 degrees in one frame).
 #import <MetalFX/MetalFX.h>
 #include <math.h>
@@ -17,6 +22,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_taa.h"
+#include <TargetConditionals.h>
+
+#if TARGET_OS_VISION
+/* visionOS has no MetalFX temporal scaler: anti-aliasing stays off there (it is off by default everywhere, key 5). */
+int taa_enabled(void) { return 0; }
+int taa_active(void) { return 0; }
+int taa_ready(void) { return 0; }
+void taa_toggle(void) {}
+int taa_pass(MTL4RenderPassDescriptor *pd) { (void)pd; return 0; }
+int taa_jittered(void) { return 0; }
+void taa_jitter(double *x, double *y) { *x = 0; *y = 0; }
+void taa_note_camera(const float *cam, int n) { (void)cam; (void)n; }
+id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> scene) { (void)cb; (void)scene; return nil; }
+id<MTLResidencySet> taa_residency(void) { return nil; }
+void taa_frame_end(void) {}
+void taa_stats(char *out, size_t n) { snprintf(out, n, "not available on visionOS"); }
+#else
 
 #define TLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [taa] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 /* Per-frame parameter buffers and argument tables: the replay can encode several frames before the GPU runs the first
@@ -28,7 +50,7 @@
 static struct {
     id<MTLDevice> dev; id<MTL4Compiler> comp; id<MTLResidencySet> rs; id<MTLFence> fence;
     id<MTL4FXTemporalScaler> sc; NSUInteger w, h; MTLPixelFormat fmt;
-    id<MTLTexture> out, mv;
+    id<MTLTexture> out, mv, react, dh[2]; int dh_i;   // dh: the depth of this and of the last frame (reactive mask)
     id<MTLComputePipelineState> mv_ps; id<MTL4ArgumentTable> args[TAA_SLOTS]; id<MTLBuffer> par[TAA_SLOTS]; int slot;
     __unsafe_unretained id<MTLTexture> depth;   // this frame's G-buffer depth (the game's texture, alive for the frame)
     double cam[84], prev[84]; int cam_ok, prev_ok, jit_pass, failed;
@@ -37,7 +59,8 @@ static struct {
     unsigned jit_i; double jx, jy;
     __unsafe_unretained id<MTLTexture> last_src; uint64_t frame, encoded_frame;
     uint64_t done, resets, missing;
-    struct { id obj; uint64_t frame; } old[TAA_OLD * 3]; int nold;
+    /* Each size change retires the scaler and five textures. Keep every one alive for the in-flight frames. */
+    struct { id obj; uint64_t frame; } old[TAA_OLD * 6]; int nold;
 } g;
 static void keep_old(id obj) {   // released (and dropped from the residency set) TAA_OLD frames later, when the GPU is done with it
     if (!obj) return;
@@ -103,23 +126,39 @@ static int setup(id<MTLDevice> dev) {
     g.rs = [dev newResidencySetWithDescriptor:rd error:&e];
     static const char *src =
         "#include <metal_stdlib>\nusing namespace metal;\n"
-        "struct P { float4x4 reproj; float2 size; float2 inv_size; };\n"
-        // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture
+        "struct P { float4x4 reproj; float2 size; float2 inv_size; float prev_valid; };\n"
+        // view distance up to the near plane's factor: the depth has an infinite far plane (distance = near / (1 - depth))
+        "static float lin(float z) { return 1.0 / max(1.0 - z, 1e-7); }\n"
+        // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture; this frame's
+        // depth for the next one; and the reactive mask (see the header)
         "kernel void taa_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],\n"
+        "                   texture2d<float, access::read> pd [[texture(2)]], texture2d<float, access::write> cd [[texture(3)]],\n"
+        "                   texture2d<float, access::write> rm [[texture(4)]],\n"
         "                   constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
         "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
+        "  float z = d.read(g);\n"
         "  float2 uv = (float2(g) + 0.5) * p.inv_size;\n"
-        "  float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d.read(g) * 2.0 - 1.0, 1.0);\n"
-        "  float2 m = 0.0;\n"
-        "  if (c.w > 1e-7) { float2 n = c.xy / c.w; m = (float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * n.y) - uv) * p.size; }\n"
+        "  float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z * 2.0 - 1.0, 1.0);\n"
+        "  float2 m = 0.0; float r = 0.0;\n"
+        "  if (c.w > 1e-7) {\n"
+        "    float3 n = c.xyz / c.w; float2 puv = float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * n.y);\n"
+        "    m = (puv - uv) * p.size;\n"
+        "    if (p.prev_valid > 0.5 && z < 1.0 && all(puv >= 0.0) && all(puv < 1.0)) {\n"
+        "      float le = lin(n.z * 0.5 + 0.5), best = 1e9; int2 q = int2(puv * p.size), hi = int2(p.size) - 1;\n"
+        "      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++)\n"
+        "        best = min(best, abs(lin(pd.read(uint2(clamp(q + int2(x, y), int2(0), hi))).x) - le) / le);\n"
+        "      r = saturate((best - 0.04) / 0.06);\n"   // 4 % apart starts it, 10 % is the current frame only
+        "    }\n"
+        "  }\n"
         "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
-        "  mv.write(float4(m, 0.0, 0.0), g);\n"
+        "  if (isnan(r)) r = 0.0;\n"
+        "  mv.write(float4(m, 0.0, 0.0), g); cd.write(float4(z, 0.0, 0.0, 0.0), g); rm.write(float4(r, 0.0, 0.0, 0.0), g);\n"
         "}\n";
     MTLCompileOptions *o = [MTLCompileOptions new]; o.mathMode = MTLMathModeSafe;
     id<MTLLibrary> lib = [dev newLibraryWithSource:@(src) options:o error:&e];
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"taa_mv"] : nil;
     g.mv_ps = fn ? [dev newComputePipelineStateWithFunction:fn error:&e] : nil;
-    MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 2;
+    MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 5;
     for (int i = 0; i < TAA_SLOTS && g.rs; i++) {
         g.args[i] = [dev newArgumentTableWithDescriptor:ad error:&e];
         g.par[i] = [dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
@@ -134,6 +173,7 @@ static int setup(id<MTLDevice> dev) {
     g.dev = dev;
     return 1;
 }
+static int reactive_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TAA_REACTIVE"); v = !(e && !strcmp(e, "0")); } return v; }
 static id<MTLTexture> mk(MTLPixelFormat f, NSUInteger w, NSUInteger h, MTLTextureUsage u) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:w height:h mipmapped:NO];
     d.usage = u; d.storageMode = MTLStorageModePrivate;
@@ -157,16 +197,30 @@ static int ensure_scaler(id<MTLTexture> src) {
        went from (28, 98, 122) to (46, 83, 76) between two captures and hazy rocks seemed to glow. With the exposure
        left at 1 the same five minutes stayed smooth and flickered less than without anti-aliasing. */
     d.autoExposureEnabled = NO;
+    d.reactiveMaskTextureEnabled = YES; d.reactiveMaskTextureFormat = MTLPixelFormatR16Float;   // all zero with TOTK_TAA_REACTIVE=0
     id<MTL4FXTemporalScaler> sc = [d newTemporalScalerWithDevice:g.dev compiler:g.comp];
     if (!sc) { g.retry_at = g.frame + 300; TLOG("temporal scaler %lux%lu (format %lu) not created; trying again in 300 frames", (unsigned long)src.width, (unsigned long)src.height, (unsigned long)src.pixelFormat); return 0; }
-    keep_old(g.out); keep_old(g.mv);
+    keep_old(g.out); keep_old(g.mv); keep_old(g.react); keep_old(g.dh[0]); keep_old(g.dh[1]);
     keep_old(g.sc);
+    MTLTextureUsage ru;   // what MetalFX needs of the mask: renamed reactiveMaskTextureUsage in the 27 SDKs, older SDKs lack it
+#if defined(__MAC_27_0)
+    if (@available(macOS 27.0, iOS 27.0, *)) ru = sc.reactiveMaskTextureUsage; else
+#endif
+    {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        ru = sc.reactiveTextureUsage;
+#pragma clang diagnostic pop
+    }
     g.out = mk(of, src.width, src.height, sc.outputTextureUsage | MTLTextureUsageShaderRead);
     g.mv = mk(MTLPixelFormatRG16Float, src.width, src.height, sc.motionTextureUsage | MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
+    g.react = mk(MTLPixelFormatR16Float, src.width, src.height, ru | MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
+    for (int i = 0; i < 2; i++) g.dh[i] = mk(MTLPixelFormatR32Float, src.width, src.height, MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
     [g.rs commit];
-    if (!g.out || !g.mv) { g.sc = nil; g.retry_at = g.frame + 300; TLOG("textures for %lux%lu not created; trying again in 300 frames", (unsigned long)src.width, (unsigned long)src.height); return 0; }
+    if (!g.out || !g.mv || !g.react || !g.dh[0] || !g.dh[1]) { g.sc = nil; g.retry_at = g.frame + 300; TLOG("textures for %lux%lu not created; trying again in 300 frames", (unsigned long)src.width, (unsigned long)src.height); return 0; }
     g.sc = sc; g.w = src.width; g.h = src.height; g.fmt = src.pixelFormat; g.prev_ok = 0;
-    TLOG("temporal scaler %lux%lu, scene format %lu, output RGBA16Float, 1:1 with jitter", (unsigned long)g.w, (unsigned long)g.h, (unsigned long)g.fmt);
+    TLOG("temporal scaler %lux%lu, scene format %lu, output RGBA16Float, 1:1 with jitter, reactive mask from depth %s", (unsigned long)g.w, (unsigned long)g.h, (unsigned long)g.fmt,
+         reactive_on() ? "on" : "off (TOTK_TAA_REACTIVE=0)");
     return 1;
 }
 // 4x4 inverse (Gauss-Jordan, partial pivoting) and product, row-major, in double (world coordinates in the thousands).
@@ -207,19 +261,23 @@ id<MTLTexture> taa_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src) {
     float *par = g.par[s].contents;
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) par[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     par[16] = (float)src.width; par[17] = (float)src.height; par[18] = 1.0f / src.width; par[19] = 1.0f / src.height;
+    par[20] = !reset && reactive_on() ? 1.0f : 0.0f;   // last frame's depth (dh[dh_i ^ 1]) belongs to this history
     [g.args[s] setTexture:depth.gpuResourceID atIndex:0]; [g.args[s] setTexture:g.mv.gpuResourceID atIndex:1]; [g.args[s] setAddress:g.par[s].gpuAddress atIndex:0];
+    [g.args[s] setTexture:g.dh[g.dh_i ^ 1].gpuResourceID atIndex:2]; [g.args[s] setTexture:g.dh[g.dh_i].gpuResourceID atIndex:3];
+    [g.args[s] setTexture:g.react.gpuResourceID atIndex:4];
+    g.dh_i ^= 1;
     id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
     [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // the scene and depth are done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.args[s]];
     [e dispatchThreads:MTLSizeMake(src.width, src.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
     [e updateFence:g.fence afterEncoderStages:MTLStageDispatch];
     [e endEncoding];
-    g.sc.colorTexture = src; g.sc.depthTexture = depth; g.sc.motionTexture = g.mv; g.sc.outputTexture = g.out;
+    g.sc.colorTexture = src; g.sc.depthTexture = depth; g.sc.motionTexture = g.mv; g.sc.outputTexture = g.out; g.sc.reactiveMaskTexture = g.react;
     g.sc.inputContentWidth = src.width; g.sc.inputContentHeight = src.height;
     g.sc.jitterOffsetX = g.jit_used ? (float)g.jx : 0; g.sc.jitterOffsetY = g.jit_used ? (float)g.jy : 0;   // what the geometry got
     g.sc.motionVectorScaleX = 1; g.sc.motionVectorScaleY = 1; g.sc.depthReversed = NO; g.sc.reset = reset; g.sc.fence = g.fence;
     [g.sc encodeToCommandBuffer:cb];
-    g.sc.colorTexture = nil; g.sc.depthTexture = nil; g.sc.motionTexture = nil; g.sc.outputTexture = nil;
+    g.sc.colorTexture = nil; g.sc.depthTexture = nil; g.sc.motionTexture = nil; g.sc.outputTexture = nil; g.sc.reactiveMaskTexture = nil;
     memcpy(g.prev, g.cam, sizeof g.cam); g.prev_ok = 1;
     g.resets += reset; g.done++;
     g.last_src = src; g.encoded_frame = g.frame + 1;
@@ -239,3 +297,5 @@ void taa_stats(char *out, size_t n) {
     snprintf(out, n, "frame %llu: anti-aliased %llu, history resets %llu, without depth or camera %llu",
              (unsigned long long)g.frame, (unsigned long long)g.done, (unsigned long long)g.resets, (unsigned long long)g.missing);
 }
+
+#endif   // TARGET_OS_VISION
