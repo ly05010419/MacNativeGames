@@ -2342,7 +2342,7 @@ static int pkg_final_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_PKG_FINAL_CACHE"); v = !(e && !atoi(e)); atomic_store(&g_pkg_final_cache, v); }
     return v;
 }
-@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
+@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; BOTW_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
 /* TOTK: a mirrored texture the GPU starts rendering into is told directly (g_smu held), so tex_mtl no longer asks the owned
    set again every time any other serial joins it (a locked lookup per CPU-pool texture per new render target). */
 static void pkg_owned_locked(uint64_t k) {
@@ -2614,7 +2614,7 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
         unsigned layers = t->L.layers ? t->L.layers : 1, ok = 1; BOTW_WB_FROM_STAGE(e, ok, layers)
         for (unsigned l = 0; l < t->d.levels && ok; l++) for (unsigned y = 0; y < layers && ok; y++) ok = wb_level_back(t, mt, l, y);
         nvn_dirty_gpu_write_end(tok);
-        if (ok) { uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
+        if (ok) { BOTW_WB_LANDED(t) uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
         else MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)t->serial, t->d.format);
         wb_ent_free(e);
     }
@@ -3599,7 +3599,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         /* TOTK: rendered into by the GPU since the upload: the pool memory is stale, never re-upload. The set only grows, so
            the answer is kept in the NvPkg and asked again only after it gained members (a locked lookup on every use before). */
         int reduced = pk && pk->tex && (pk->tex.mipmapLevelCount < (t->d.levels ? t->d.levels : 1u) || (tc_pf(t->d.format) != MTLPixelFormatInvalid && pk->tex.pixelFormat == tc_pf(t->d.format)));   // TOTK: copy without its top level (mip_drop_of) or transcoded (tex_tc): not something the GPU can render into
-        if (pk && pk->owned && pk->tex && !reduced) return pk->tex;
+        if (pk && pk->owned && pk->tex && !reduced) return pk->tex; BOTW_PKG_RENDER_ALIAS(pk, t)
         if (pk) {   // 已上传：自上次检查后有过客体写才查覆盖页 | Already uploaded: check the covered pages only if there has been a guest write since the last check
             uint64_t now = nvn_dirty_now(), h = 0; int clean;
             if (!pk->tex || (pk->owned && reduced)) {   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
@@ -3619,7 +3619,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                range up again (the lookup was a linear scan over ~3,700 pools, about 14% of the replay). */
             int tracked = now == pk->seen && pk->tracked ? 1 : nvn_dirty_tracked(t->mem, t->L.size);
             clean = tracked && (now == pk->seen || !nvn_dirty_since(t->mem, t->L.size, pk->stamp));
-            if (!clean && tracked && pkg_edge_clean(t, pk)) clean = 1;   // TOTK (#90): only a shared first / last page was written
+            if (!clean && tracked && pkg_edge_clean(t, pk)) clean = 1; BOTW_PKG_WB_STALE(pk, t, clean)   // TOTK (#90): only a shared first / last page was written
             pk->seen = now; pk->tracked = tracked;
             }
             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("上传被丢的贴图 ser=%llu 重传（累计 %llu 张，记录里还剩 %d 张）", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
@@ -3634,14 +3634,14 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
                 if (clean) return pk->tex;
             }
             TILELOG(t, "re-upload from the pool bytes");
-            uint64_t st; reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
-            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
+            uint64_t st; BOTW_PKG_WB_TAKE() reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
+            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; BOTW_PKG_WB_SET(pk) g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
             else { free(pk->edge); pk->edge = NULL; }   // TOTK (#90): the bytes kept belong to the upload that failed
             return pk->tex;
         }
         TILELOG(t, "first upload from the pool bytes");
         NvPkg *npk = [NvPkg new]; pk = npk;
-        pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size;
+        pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size; BOTW_PKG_WB_SEEN(pk)
         pk->tex = pkg_upload(t, &pk->stamp, &pk->key, pk);
         if (!pk->tex) return nil;
         /* TOTK (#90): seen = the upload's stamp, not "now": a write that faulted during the copy moved "now" on, and the
@@ -3650,7 +3650,7 @@ static id<MTLTexture> tex_mtl(const tex_t *ct) {
         serial_put(t->serial, pk);
         pk->owned = gpu_owned(t->serial);   // after it is in the table: a later mark finds it there (pkg_owned_locked)
         if ((pk->hashed = pkg_hashed(t))) { pk->chash = pkg_hash(t->mem, t->L.size); pk->csub = g_sub_serial; }
-        if (serial_is_dead(t->serial)) dead_put_note(t->serial);
+        if (serial_is_dead(t->serial)) dead_put_note(t->serial); BOTW_PKG_RENDER_ALIAS(pk, t)
         return pk->tex;
     }
     if (have) return have;
@@ -4388,7 +4388,7 @@ static MTLPixelFormat attachment_format(const tex_t *t, const view_t *v, int has
     return (MTLPixelFormat)pf;
 }
 static id<MTLTexture> attachment_texture(const tex_t *t, const view_t *v, int has_v) {
-    id<MTLTexture> base = tex_mtl(t); if (!base) return nil;
+    id<MTLTexture> base = BOTW_ATTACH_TEX_MTL(t); if (!base) return nil;
     MTLPixelFormat pf = attachment_format(t, v, has_v, base.pixelFormat);
     if (pf == base.pixelFormat) return base;
     if (tex_need_pfv(base.pixelFormat, pf) && !(base.usage & MTLTextureUsagePixelFormatView)) base = tex_upgrade_pfv(t, base, pf);
@@ -15799,6 +15799,67 @@ int botw_wb_from_stage(void *ev) {
     }
     if (++g_wb_from_stage == 1 || g_wb_from_stage % 5000 == 0) MLOG("[writeback] %llu written back from the submission's own copy (%llu copies staged)", (unsigned long long)g_wb_from_stage, (unsigned long long)g_wb_staged);
     return ok;
+}
+/* Sinking legs (2026-10-23): the game composes the terrain height clipmap on the GPU, one NVN texture object to render
+   into and another over the same memory to sample, and reads each level back with the CPU (Link's feet stand on those
+   heights). Here every object has its own Metal copy: the sampled one is uploaded from the memory at first use, and the
+   rendering reaches the memory only by the write-back at the game's invalidate, which the dirty tracker does not count
+   as a write. When the first composition ran before the height sources were loaded (most loads on a fast Mac), the
+   sampled copy of a coarse level kept those zeros, every finer level composed from it kept them, and the feet sank
+   0.77 m (the game's clamp under the physics hit). Each write-back now notes its memory; a sampled copy uploaded before
+   it is uploaded again at its next use. */
+static nvn_hmap g_bwb_at = {.klen = 8};   /* storage address -> generation of the last write-back there (g_bwb_mu) */
+static pthread_mutex_t g_bwb_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_bwb_gen;
+uint64_t botw_wb_gen(void) { return atomic_load(&g_bwb_gen); }
+/* The pending rendering of each memory (wb_note), until its write-back lands: a sampled copy over the same memory and
+   layout reads it. Without this a copy stayed stale until the game happened to read the memory back: when the first
+   read-back of a terrain material level came late, the sampled copy kept its first, all-zero upload through the early
+   compositions and tall grass covered the road near Link for good. */
+typedef struct { tex_t t; void *obj; uint64_t stamp; } bra_ent;   /* obj: CFBridgingRetain'ed rendering object */
+static nvn_hmap g_bra = {.klen = 8};   /* storage address -> bra_ent * (g_bwb_mu) */
+static uint64_t g_bra_hits;
+static void bra_drop_locked(uint64_t k) { bra_ent *r = nvn_hm_get(&g_bra, &k); if (r) { nvn_hm_del(&g_bra, &k); defer_obj_release((__bridge id)r->obj); CFRelease(r->obj); free(r); } }
+void botw_render_note(const tex_t *t, void *obj, uint64_t stamp) {
+    uint64_t k = (uint64_t)(uintptr_t)t->mem; void *old = NULL;
+    pthread_mutex_lock(&g_bwb_mu);
+    bra_ent *r = nvn_hm_get(&g_bra, &k);
+    if (!r) { r = malloc(sizeof *r); if (!r) MDIE("render alias record"); r->obj = NULL; nvn_hm_put(&g_bra, &k, r); }
+    if (r->obj != obj) { old = r->obj; r->obj = (void *)CFRetain(obj); }
+    r->t = *t; r->stamp = stamp;
+    pthread_mutex_unlock(&g_bwb_mu);
+    if (old) { defer_obj_release((__bridge id)old); CFRelease(old); }
+}
+void *botw_render_alias(const tex_t *t, const void *ownp) {
+    id<MTLTexture> own = (__bridge id<MTLTexture>)ownp;
+    uint64_t k = (uint64_t)(uintptr_t)t->mem, stamp = 0, rser = 0; id<MTLTexture> mt = nil;
+    pthread_mutex_lock(&g_bwb_mu);
+    bra_ent *r = g_bra.n ? nvn_hm_get(&g_bra, &k) : NULL;
+    if (r && r->t.serial != t->serial && r->t.L.size == t->L.size && r->t.d.format == t->d.format && r->t.d.width == t->d.width &&
+        r->t.d.height == t->d.height && r->t.d.depth == t->d.depth && r->t.d.levels == t->d.levels && r->t.d.target == t->d.target &&
+        r->t.d.flags == t->d.flags && r->t.d.stride == t->d.stride && r->t.d.samples == t->d.samples && r->t.L.layer_size == t->L.layer_size &&
+        r->t.L.layers == t->L.layers && r->t.L.bpb == t->L.bpb && r->t.L.tileH == t->L.tileH && r->t.L.tileD == t->L.tileD) {
+        id o = (__bridge id)r->obj; mt = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o; stamp = r->stamp; rser = r->t.serial;
+    }
+    pthread_mutex_unlock(&g_bwb_mu);
+    if (!mt || mt.pixelFormat != own.pixelFormat || mt.mipmapLevelCount != own.mipmapLevelCount || nvn_dirty_since(t->mem, t->L.size, stamp)) return NULL;
+    uint64_t n = ++g_bra_hits; if (n <= 4 || n % 5000 == 0) MLOG("[render-alias] ser=%llu %ux%u nvnfmt=%#x samples the pending GPU rendering ser=%llu of its memory (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)rser, (unsigned long long)n);
+    return (void *)CFBridgingRetain(mt);
+}
+_Thread_local int botw_bra_attach;
+void botw_render_gone(const void *mem, const void *obj) {
+    uint64_t k = (uint64_t)(uintptr_t)mem;
+    pthread_mutex_lock(&g_bwb_mu); bra_ent *r = g_bra.n ? nvn_hm_get(&g_bra, &k) : NULL; if (r && obj && r->obj == obj) bra_drop_locked(k); pthread_mutex_unlock(&g_bwb_mu);
+}
+void botw_wb_landed(const void *mem) {
+    uint64_t k = (uint64_t)(uintptr_t)mem, g = atomic_fetch_add(&g_bwb_gen, 1) + 1;
+    pthread_mutex_lock(&g_bwb_mu); nvn_hm_put(&g_bwb_at, &k, (void *)(uintptr_t)g); bra_drop_locked(k); pthread_mutex_unlock(&g_bwb_mu);
+}
+int botw_wb_newer(const void *mem, uint64_t gen) {
+    if (atomic_load(&g_bwb_gen) <= gen) return 0;
+    uint64_t k = (uint64_t)(uintptr_t)mem;
+    pthread_mutex_lock(&g_bwb_mu); uint64_t g = (uint64_t)(uintptr_t)nvn_hm_get(&g_bwb_at, &k); pthread_mutex_unlock(&g_bwb_mu);
+    return g > gen;
 }
 #endif
 
