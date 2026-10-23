@@ -8,7 +8,13 @@
    noise, so no calibration is read; a roll moves x, a pitch y, a turn about the vertical z. Those are the Switch Pro
    Controller's raw axes (x toward the top edge, y to the left, z out of the face), so the frame change is the one
    gamepad_feedback.m applies to a Switch Pro's HID reports. Firmware 1.02 sends 12-byte reports without the sensor.
-   A line in the table is one more controller of this kind. */
+   A line in the table is one more controller of this kind.
+   Time: a sample is stamped with the kernel's receive time of its report (IOKit's timestamp, mach ticks), not with the
+   moment the callback runs. Over Bluetooth the reports come every 15.8 ms on average (63 a second at rest, more while it
+   moves; at most 31 ms apart); when the main thread is busy the callbacks bunch up (measured with a 100 ms stall every
+   200 ms: 45 % of them under 1 ms apart, a gap of 167 ms) while the kernel's stamps stay smooth. The rotation is
+   integrated over the time between samples, and motion_fusion.c drops a step longer than 50 ms, so callback times
+   would lose turn exactly when the game is busiest. */
 #ifndef HID_IMU_H
 #define HID_IMU_H
 #include <math.h>
@@ -39,5 +45,15 @@ static inline int hid_imu_decode(const HidImuProfile *pr, uint32_t id, const uin
     acc[0] = raw[1]; acc[1] = -raw[0]; acc[2] = -raw[2];
     gyro[0] = -raw[4]; gyro[1] = raw[3]; gyro[2] = raw[5];
     return 1;
+}
+
+/* The time to give a sample (ns, runtime_now_ns's clock): the report's kernel receive time (ns) when it is plausible (not
+   0, not more than 5 ms ahead of now, not more than 1 s behind), else now; and strictly later than the one before. */
+static inline uint64_t hid_imu_time(uint64_t kernel_ns, uint64_t now_ns, uint64_t *last) {
+    uint64_t t = kernel_ns;
+    if (!t || (t > now_ns ? t - now_ns > 5000000ull : now_ns - t > 1000000000ull)) t = now_ns;
+    if (t <= *last) t = *last + 1;
+    *last = t;
+    return t;
 }
 #endif

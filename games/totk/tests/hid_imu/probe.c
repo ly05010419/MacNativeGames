@@ -65,6 +65,27 @@ int main(void) {
     hid_imu_decode(pr, 1, real, sizeof real, acc, gyro);
     check(!near(acc[1], acc2[1], 0.01), "negative control: a one-byte offset error is caught");
 
+
+    /* the sample's time: the report's kernel receive time, not the callback's */
+    uint64_t last = 0;
+    check(hid_imu_time(1000000000ull, 1005000000ull, &last) == 1000000000ull, "a plausible kernel time is used");
+    check(hid_imu_time(1015800000ull, 1016000000ull, &last) == 1015800000ull && last == 1015800000ull, "and kept as the last time");
+    /* a busy main thread: four reports 15 ms apart are delivered in one go, 60 ms late, all with the same 'now' */
+    uint64_t t0 = 2000000000ull, got[4], lastB = 0;
+    for (int i = 0; i < 4; i++) got[i] = hid_imu_time(t0 + i * 15000000ull, t0 + 60000000ull + i * 100000ull, &lastB);
+    check(got[1] - got[0] == 15000000ull && got[2] - got[1] == 15000000ull && got[3] - got[2] == 15000000ull, "bunched callbacks keep the reports' own 15 ms spacing");
+    last = 5000000000ull;
+    check(hid_imu_time(5000000000ull, 5001000000ull, &last) == 5000000001ull, "the same stamp twice is nudged on (never equal or backwards)");
+    check(hid_imu_time(4990000000ull, 5002000000ull, &last) == 5000000002ull, "an older stamp is nudged past the last one too");
+    last = 0;
+    check(hid_imu_time(0, 7000000000ull, &last) == 7000000000ull, "no kernel time: now");
+    last = 0;
+    check(hid_imu_time(9000000000ull, 7000000000ull, &last) == 7000000000ull, "a stamp from the future: now");
+    last = 0;
+    check(hid_imu_time(1000000000ull, 7000000000ull, &last) == 7000000000ull, "a stamp over a second old: now");
+    last = 0;
+    check(hid_imu_time(7003000000ull, 7000000000ull, &last) == 7003000000ull, "a stamp 3 ms ahead of now is still used");
+
     printf("{\"status\": \"%s\", \"checked\": %d, \"failures\": %d}\n", failures ? "fail" : "pass", checked, failures);
     return failures ? 1 : 0;
 }
