@@ -27,6 +27,7 @@ void runtime_feedback_quiet(void) {}
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
 #else
 #import <CoreHaptics/CoreHaptics.h>
+#import <IOKit/hid/IOHIDManager.h>
 
 /* ---- rumble ----
    Simple pattern players (CHHapticPatternPlayer) only: on macOS 26.5.2 (25F84) the advanced player (looping) never gets
@@ -120,6 +121,139 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
     if (!playing[side]) { playing[side] = YES; playingSince[side] = now; }
     return YES;
 }
+/* ---- rumble written straight to a controller's HID device, from a table of profiles ----
+   Some controllers macOS files as generic HID pads: GameController gives them no haptics (the log says "has no haptics"),
+   so the Core Haptics path never plays. For those the game's rumble is written to the HID device as one output report
+   with a motor byte for the low-frequency (left) and one for the high-frequency (right) motor. A profile says which
+   device (vendor and product id), which report (id, length) and where the two motor bytes sit in it (offsets; 0 is the
+   report id). The built-in table has the controllers checked on real hardware; a player can add one in
+   rumble-profiles.txt next to controls.txt (TOTK_RUMBLE_PROFILES names another file): one profile per line,
+   `vendor product report_id length low_offset high_offset` (decimal or 0x hex, `#` starts a comment), for example the
+   built-in line `0x2dc8 0x6012 0x05 5 1 2 1` (an optional seventh number, 1, says the high motor is the weak one, so the low motor carries the stronger side). Many reports can be found in SDL's HIDAPI drivers (src/joystick/hidapi).
+   Built in:
+   - 2dc8:6012 8BitDo Ultimate 2 Wireless, firmware 1.03 and later (34-byte input reports), output report 0x05 =
+     {0x05, low, high, 0, 0} as SDL_hidapi_8bitdo.c sends it; a probe over Bluetooth LE felt both motors (2026-10-21):
+     the low motor is strong and the high one weak; every strength from 50/255 was felt, so the floor is for the game's
+     faint values; one report gives a short kick, so a held value is resent every 50 ms.
+   The game's left value drives the low motor and its right value the high one, each by the same intensity as the Core
+   Haptics path. A report goes out when a motor value changes (at most every 20 ms) and every 50 ms while one is on (the
+   8BitDo stops a lone report after a moment); silence is written as zeros three times, also at exit. TOTK_RUMBLE_HID=0 keeps it off. The game's own pulses are faint and short
+   (a play session: strongest amplitude 0.10-0.15, a few tenths of a second in 30 s) and motors need a push to start
+   turning, so a non-zero value is raised to at least TOTK_RUMBLE_HID_FLOOR (0..255, default 110) and held for
+   TOTK_RUMBLE_HID_HOLD_MS (default 120) after it ends. */
+typedef struct { uint16_t vendor, product; uint8_t reportId, length, lowAt, highAt, lowTakesMax; } HidRumbleProfile;
+enum { HID_PROFILES_MAX = 16, HID_MIN_MS = 20, HID_KEEP_MS = 50, HID_QUIET_REPEATS = 3 };
+static HidRumbleProfile hidProfiles[HID_PROFILES_MAX] = { {0x2dc8, 0x6012, 0x05, 5, 1, 2, 1} };
+static int hidProfileCount = 1;
+static IOHIDManagerRef hidRumbleManager;   /* main queue */
+static IOHIDDeviceRef hidRumbleDevice;     /* set on rumbleQueue, opened on the main queue */
+static HidRumbleProfile hidRumbleProfile;  /* the profile of hidRumbleDevice */
+static GCController *hidRumblePad;         /* main queue */
+static uint8_t hidSent[2], hidHeld[2];
+static uint64_t hidSentAt, hidHeldUntil[2];
+static int hidFloor = 110, hidHoldMs = 120, hidQuietSent = HID_QUIET_REPEATS;
+static BOOL hidRumbleFailed;
+static void hid_profiles_load(void) {   /* main queue, once */
+    const char *path = getenv("TOTK_RUMBLE_PROFILES"), *controls = getenv("TOTK_CONTROLS");
+    NSString *file = path && *path ? @(path) : controls && *controls ? [[@(controls) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"rumble-profiles.txt"] : nil;
+    NSString *text = file ? [NSString stringWithContentsOfFile:file encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (!text) return;
+    int lineNo = 0;
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        lineNo++;
+        NSRange hash = [raw rangeOfString:@"#"];
+        NSString *line = [(hash.location == NSNotFound ? raw : [raw substringToIndex:hash.location]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!line.length) continue;
+        int v, p, rid, len, lo, hi, mx = 0; char extra; int got = sscanf(line.UTF8String, "%i %i %i %i %i %i %i %c", &v, &p, &rid, &len, &lo, &hi, &mx, &extra);
+        BOOL ok = (got == 6 || got == 7) && mx >= 0 && mx <= 1
+                  && v > 0 && v <= 0xffff && p >= 0 && p <= 0xffff && rid >= 1 && rid <= 255 && len >= 3 && len <= 64
+                  && lo >= 1 && lo < len && hi >= 1 && hi < len && lo != hi;
+        if (!ok) { fprintf(stderr, "[rumble] %s line %d ignored (want: vendor product report_id length low_offset high_offset [1 if the high motor is weak])\n", file.UTF8String, lineNo); continue; }
+        if (hidProfileCount >= HID_PROFILES_MAX) { fprintf(stderr, "[rumble] %s: at most %d profiles\n", file.UTF8String, HID_PROFILES_MAX); break; }
+        hidProfiles[hidProfileCount++] = (HidRumbleProfile){(uint16_t)v, (uint16_t)p, (uint8_t)rid, (uint8_t)len, (uint8_t)lo, (uint8_t)hi, (uint8_t)mx};
+        fprintf(stderr, "[rumble] profile %04x:%04x report 0x%02x, %d bytes, motors at %d and %d%s (from %s)\n", v, p, rid, len, lo, hi, mx ? ", low motor follows the stronger side" : "", file.UTF8String);
+    }
+}
+static void hid_rumble_write(IOHIDDeviceRef d, const HidRumbleProfile *pr, uint8_t lo, uint8_t hi) {
+    uint8_t out[64] = {0};
+    out[0] = pr->reportId; out[pr->lowAt] = lo; out[pr->highAt] = hi;
+    IOReturn r = IOHIDDeviceSetReport(d, kIOHIDReportTypeOutput, pr->reportId, out, pr->length);
+    if (r != kIOReturnSuccess && !hidRumbleFailed) { hidRumbleFailed = YES; fprintf(stderr, "[rumble] HID output report 0x%02x failed: 0x%x (not logged again)\n", pr->reportId, r); }
+}
+static void hid_rumble_tick(uint64_t now) {   /* rumbleQueue, every 10 ms */
+    uint8_t m[2];
+    for (int side = 0; side < 2; side++) {
+        float v[4]; uint64_t at;
+        pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pthread_mutex_unlock(&wantLock);
+        float a = at && now - at < RUMBLE_STALE_MS * 1000000ull ? intensity_of(v) : 0;
+        if (a >= 0.02f) {
+            int level = hidFloor + (int)(a * (255 - hidFloor) + 0.5f);
+            hidHeld[side] = (uint8_t)(level > 255 ? 255 : level);
+            hidHeldUntil[side] = now + (uint64_t)hidHoldMs * 1000000ull;
+        }
+        m[side] = now < hidHeldUntil[side] ? hidHeld[side] : 0;
+        if (m[side]) playedNs[side] += RUMBLE_TICK_MS * 1000000ull;
+    }
+    if (hidRumbleProfile.lowTakesMax && m[1] > m[0]) m[0] = m[1];   /* the high-frequency motor is the weak one: the low one carries the stronger side */
+    if (!m[0] && !m[1]) {   /* a stop that gets lost keeps the motor turning, so zeros go out a few times */
+        if (hidQuietSent >= HID_QUIET_REPEATS || now - hidSentAt < HID_MIN_MS * 1000000ull) return;
+        hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, 0, 0);
+        hidQuietSent++; hidSent[0] = hidSent[1] = 0; hidSentAt = now;
+        return;
+    }
+    hidQuietSent = 0;
+    BOOL same = m[0] == hidSent[0] && m[1] == hidSent[1];
+    if (now - hidSentAt < (same ? HID_KEEP_MS : HID_MIN_MS) * 1000000ull) return;   /* the controller stops a lone report after a moment */
+    hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, m[0], m[1]);
+    hidSent[0] = m[0]; hidSent[1] = m[1]; hidSentAt = now;
+}
+static void hid_rumble_quiet_at_exit(void) {   /* the controller keeps the last motor values it got */
+    if (hidRumbleDevice) hid_rumble_write(hidRumbleDevice, &hidRumbleProfile, 0, 0);
+}
+static void hid_rumble_attach(GCController *c) {   /* main queue: c has no haptics */
+    const char *off = getenv("TOTK_RUMBLE_HID");
+    if (hidRumbleDevice || (off && !strcmp(off, "0"))) return;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        hid_profiles_load();
+        const char *fl = getenv("TOTK_RUMBLE_HID_FLOOR"), *ho = getenv("TOTK_RUMBLE_HID_HOLD_MS");
+        if (fl) hidFloor = atoi(fl) < 0 ? 0 : atoi(fl) > 255 ? 255 : atoi(fl);
+        if (ho) hidHoldMs = atoi(ho) < 0 ? 0 : atoi(ho) > 500 ? 500 : atoi(ho);
+        atexit(hid_rumble_quiet_at_exit);
+    });
+    NSMutableArray *matching = [NSMutableArray array];
+    for (int i = 0; i < hidProfileCount; i++) [matching addObject:@{@kIOHIDVendorIDKey: @(hidProfiles[i].vendor), @kIOHIDProductIDKey: @(hidProfiles[i].product)}];
+    IOHIDManagerRef m = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatchingMultiple(m, (__bridge CFArrayRef)matching);
+    IOHIDManagerOpen(m, kIOHIDOptionsTypeNone);
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(m);
+    IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
+    if (!d) { CFRelease(m); return; }
+    int vendor = 0, product = 0;
+    CFTypeRef cv = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDVendorIDKey)), cp = IOHIDDeviceGetProperty(d, CFSTR(kIOHIDProductIDKey));
+    if (cv) CFNumberGetValue(cv, kCFNumberIntType, &vendor);
+    if (cp) CFNumberGetValue(cp, kCFNumberIntType, &product);
+    const HidRumbleProfile *found = NULL;
+    for (int i = hidProfileCount - 1; i >= 0 && !found; i--) if (hidProfiles[i].vendor == vendor && hidProfiles[i].product == product) found = &hidProfiles[i];   /* the player's lines win */
+    if (!found) { CFRelease(m); return; }
+    IOReturn r = IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone);
+    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] HID device %04x:%04x found but did not open (0x%x): no rumble from it\n", vendor, product, r); CFRelease(m); return; }
+    hidRumbleManager = m; hidRumblePad = c; hidRumbleFailed = NO;
+    HidRumbleProfile pr = *found;
+    IOHIDDeviceRef held = (IOHIDDeviceRef)CFRetain(d);
+    dispatch_async(rumbleQueue, ^{ hidSent[0] = hidSent[1] = 0; hidSentAt = 0; hidQuietSent = HID_QUIET_REPEATS; hidRumbleProfile = pr; hidRumbleDevice = held; });
+    fprintf(stderr, "[rumble] %s: no haptics, so rumble is written to its HID reports (%04x:%04x, report 0x%02x)\n", (c.vendorName ?: @"controller").UTF8String, vendor, product, pr.reportId);
+}
+static void hid_rumble_detach(GCController *c) {   /* main queue */
+    if (hidRumblePad != c) return;
+    hidRumblePad = nil;
+    IOHIDManagerRef m = hidRumbleManager; hidRumbleManager = NULL;
+    dispatch_async(rumbleQueue, ^{
+        IOHIDDeviceRef d = hidRumbleDevice; hidRumbleDevice = NULL;
+        if (d) { hid_rumble_write(d, &hidRumbleProfile, 0, 0); CFRelease(d); }
+        if (m) CFRelease(m);
+    });
+}
 static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
     uint64_t now = runtime_now_ns();
     for (int side = 0; side < 2; side++) {
@@ -141,12 +275,13 @@ static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
         if (!playing[side] || now - playerSince[side] > RUMBLE_RENEW_MS * 1000000ull) start_player(side, intensity, sharpness, now);
         else if (fabsf(intensity - sentIntensity[side]) > 0.01f || fabsf(sharpness - sentSharpness[side]) > 0.02f) send_params(players[side], side, intensity, sharpness);
     }
+    if (hidRumbleDevice) hid_rumble_tick(now);
     static uint64_t lastLog; if (!lastLog) lastLog = now;
     if (now - lastLog >= 30000000000ull) {
         pthread_mutex_lock(&wantLock); uint64_t n = wantCount - wantCountLogged; float peak = strongest; wantCountLogged = wantCount; strongest = 0; pthread_mutex_unlock(&wantLock);
         for (int side = 0; side < 2; side++) if (playing[side]) { playedNs[side] += now - playingSince[side]; playingSince[side] = now; }
         if (n) fprintf(stderr, "[rumble] last 30 s: %llu values from the game, strongest amplitude %.2f, played left %.1f s / right %.1f s%s\n",
-                       (unsigned long long)n, peak, playedNs[0] / 1e9, playedNs[1] / 1e9, rumblePad.haptics ? "" : " (no controller with haptics)");
+                       (unsigned long long)n, peak, playedNs[0] / 1e9, playedNs[1] / 1e9, hidRumbleDevice ? " (HID)" : rumblePad.haptics ? "" : " (no controller with haptics)");
         playedNs[0] = playedNs[1] = 0; lastLog = now;
     }
 }
@@ -294,7 +429,10 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             dispatch_async(rumbleQueue, ^{ for (int s = 0; s < 2; s++) { if (players[s]) [players[s] stopAtTime:CHHapticTimeImmediate error:nil]; forget_side(s); retryAt[s] = 0; } rumblePad = c; });
             NSMutableArray *where = [NSMutableArray array]; for (NSString *l in c.haptics.supportedLocalities) [where addObject:l];
             fprintf(stderr, "[rumble] %s: haptics (%s)\n", name, [where componentsJoinedByString:@", "].UTF8String);
-        } else fprintf(stderr, "[rumble] %s has no haptics: no rumble from it\n", name);
+        } else {
+            fprintf(stderr, "[rumble] %s has no haptics\n", name);
+            hid_rumble_attach(c);
+        }
     }
     if (runtime_gyro_enabled()) {
         static dispatch_once_t once;
@@ -313,6 +451,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
     }
 }
 void runtime_feedback_detach(GCController *c) {   /* main queue */
+    hid_rumble_detach(c);
     if (runtime_rumble_enabled() && rumbleQueue)
         dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
     if (motionPad == c) {
