@@ -262,6 +262,11 @@ int main(int argc, char **argv) {
         setenv("TOTK_GPU_WIDEN", "1", 1);
         setenv("TOTK_GPU_BLOCKRT", "1", 1);
         setenv("TOTK_GPU_MIDCLEAR", "1", 1);
+        /* The translation thread (TOTK_ASYNC_REPLAY: the game returns from a submission at once, the replay runs beside the
+           next frame): frame times closer to the refresh and half the longest stall in four runs (2026-10-24). On unless
+           defaults write org.macnativegames.totk TOTK_ASYNC_REPLAY -bool NO; TOTK_ASYNC_REPLAY in the environment wins. */
+        if (![NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_ASYNC_REPLAY"] || [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_ASYNC_REPLAY"])
+            setenv("TOTK_ASYNC_REPLAY", "1", 0);
         { /* 5000 MB was sized for 16 GB Macs; scale with memory (30%, never below 5000) so native 4K fits on bigger
              Macs. An explicit TOTK_GPU_BUDGET_MB from the environment still wins. */
           unsigned long long mb = NSProcessInfo.processInfo.physicalMemory / 10 * 3 >> 20;
