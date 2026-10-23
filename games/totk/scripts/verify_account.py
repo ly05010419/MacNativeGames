@@ -2,7 +2,7 @@
 import hashlib,json,os,subprocess,tempfile
 from pathlib import Path
 root=Path(__file__).resolve().parents[1];exe=root/'build/account-probe'
-subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror',str(root/'scripts/account_probe.c'),str(root/'runtime/account.c'),'-o',str(exe)],check=True)
+subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror',str(root/'scripts/account_probe.c'),str(root/'runtime/account.c'),'-framework','CoreFoundation','-framework','CoreGraphics','-framework','ImageIO','-o',str(exe)],check=True)
 with tempfile.TemporaryDirectory(prefix='totk-account-') as folder:
  env=os.environ.copy();env['TOTK_PROFILE_DIR']=folder
  runs=[subprocess.run([str(exe)],env=env,capture_output=True,text=True,check=True) for _ in range(2)]

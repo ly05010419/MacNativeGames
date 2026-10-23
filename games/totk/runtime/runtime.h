@@ -27,6 +27,7 @@ void *runtime_codec_override(const char *name);
 void *runtime_movie_override(const char *name);   /* runtime/movie_host.c: movie::Decoder for VP9 cutscenes */
 void *runtime_time_override(const char *name);
 void *runtime_applet_override(const char *name);
+void *runtime_offline_override(const char *name);   /* games/wonder/runtime/offline_host.c: nifm and the console identity of an offline host */
 void *runtime_swkbd_override(const char *name);   /* runtime/swkbd_host.c: nn::swkbd text entry with the Mac keyboard */
 void runtime_swkbd_probe(void);
 void runtime_swkbd_selftest(void);
@@ -53,6 +54,7 @@ uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned 
 int runtime_module_query(uint64_t address,uint64_t *base,uint64_t *size,unsigned *state,unsigned *permission,unsigned *attribute);
 void runtime_oe_push_message(uint32_t message);
 void hle_bind_system_event(void *event, int autoclear);
+void hle_signal_system_event(void *event);
 uint64_t runtime_svc(unsigned num, uint64_t *regs, const char *module, uint64_t offset);
 void runtime_gate(void);
 void runtime_thread_init(void);

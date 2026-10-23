@@ -157,20 +157,25 @@ def nca_inventory(f, entries, keys):
     return records
 
 
-def program_nca(records, update=False):
+TOTK_TITLE_ID = '0100F2C0115B6000'
+
+
+def program_nca(records, update=False, title_id=TOTK_TITLE_ID):
     if update:
         programs = [(r, h) for r, h in records if r["content_type"] == 0]
         require(len(programs) == 1, "Expected one update Program NCA; combined packages are unsupported")
         record, hdr = programs[0]
-        require(record["title_id"] == "0100F2C0115B6000", "Update belongs to another game")
+        update_id = f'{int(title_id, 16) | 0x800:016X}'
+        require(record["title_id"] == title_id, "Update belongs to another game")
         require(any(hdr[0x400 + i*512 + 4] == 4 for i in range(4)), "Expected a BKTR update, not a base game")
-        require(all(r["title_id"] in ("0100F2C0115B6000", "0100F2C0115B6800") for r, _ in records), "Mixed-title update package")
+        require(all(r["title_id"] in (title_id, update_id) for r, _ in records), "Mixed-title update package")
         return record, hdr
     # Update Program NCAs can retain the base title ID; their Meta NCA carries the update ID. A card image can also hold
     # the update it shipped with (base + update Meta, base + BKTR Program): the base Program is the one without BKTR.
     metadata = [r for r, _ in records if r['content_type'] == 1]
-    base_meta = [r for r in metadata if r['title_id'] == '0100F2C0115B6000']
-    update_meta = [r for r in metadata if r['title_id'] == '0100F2C0115B6800']
+    update_id = f'{int(title_id, 16) | 0x800:016X}'
+    base_meta = [r for r in metadata if r['title_id'] == title_id]
+    update_meta = [r for r in metadata if r['title_id'] == update_id]
     require(len(base_meta) <= 1 and len(update_meta) <= 1 and len(base_meta) + len(update_meta) == len(metadata) and
             (base_meta or not update_meta),
             'Expected base game metadata; updates, DLC and combined packages are unsupported')
@@ -181,8 +186,8 @@ def program_nca(records, update=False):
         programs = [(r, h) for r, h in programs if (r, h) not in bktr]
     require(len(programs) == 1, 'Expected one base Program NCA; updates, DLC and combined packages are unsupported')
     record, hdr = programs[0]
-    require(record['title_id'] == '0100F2C0115B6000',
-            'Expected Tears of the Kingdom base game 1.0.0; updates, DLC and other games are unsupported')
+    require(record['title_id'] == title_id,
+            f'Expected the base game {title_id}, found {record["title_id"]}; updates, DLC and other games are unsupported')
     return record, hdr
 
 
@@ -196,6 +201,7 @@ def main():
     parser.add_argument('game', type=Path, help='base game 1.0.0 (.xci or .nsp)')
     parser.add_argument('--keys', required=True, type=Path)
     parser.add_argument('--update', action='store_true', help='extract update code; caller must verify supported version hashes')
+    parser.add_argument('--title-id', default=TOTK_TITLE_ID, help='base title ID of the game (default: Tears of the Kingdom)')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     require(not args.output.exists(), 'Output already exists; choose a new directory')
@@ -204,7 +210,7 @@ def main():
         kind, entries = container_entries(f, args.game.stat().st_size)
         tickets = common_tickets(f, entries)
         records = nca_inventory(f, entries, keys)
-        record, hdr = program_nca(records, update=args.update)
+        record, hdr = program_nca(records, update=args.update, title_id=args.title_id.upper())
         ctr_key = nca_ctr_key(hdr, keys, tickets)
         for i in range(4):
             start, end = struct.unpack_from('<II', hdr, 0x240 + 16 * i)

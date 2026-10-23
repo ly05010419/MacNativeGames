@@ -15,6 +15,18 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef GAME_WONDER
+/* Super Mario Bros. Wonder: the survey's offsets are TOTK's; none of it runs. */
+_Atomic int runtime_survey_pending;
+const int32_t runtime_survey_sync[2] = {0, -1};   /* read by hle_nvn.c only once the survey found the system object, which it never does here */
+void runtime_survey_init(Module *m) {
+    (void)m;
+    if (getenv("TOTK_SURVEY")) runtime_fail("survey: not available for Super Mario Bros. Wonder");
+}
+int runtime_survey_command(const char *line) { (void)line; return 0; }
+void runtime_survey_tick(uint64_t frame) { (void)frame; }
+void runtime_survey_cancel_user(void) { }
+#else
 #ifdef GAME_BOTW
 /* Breath of the Wild 1.6.0: no frame-end hook (the survey sync object is never found, see runtime_survey_sync), so
    "survey pos" reads and "survey move" writes the player's position from the command thread. The pointer chains from
@@ -345,3 +357,4 @@ void runtime_survey_tick(uint64_t frame) {
     in_tick = 0;
 }
 #endif   /* GAME_BOTW */
+#endif   /* GAME_WONDER */

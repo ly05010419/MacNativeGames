@@ -120,6 +120,13 @@ static uint32_t six_states(int *out, SixAxisState *s, int max, const uint32_t *h
 }
 static uint32_t six_state(SixAxisState *s, const uint32_t *h) { int n; return six_states(&n, s, 1, h); }
 static int no_handles(void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
+/* The public wrappers of the calls above, which other games import (Super Mario Bros. Wonder; TOTK's code calls the detail
+   functions directly). They always bind: without TOTK_RUMBLE / TOTK_GYRO the game gets no handles of ours, and these
+   ignore the ones it makes up. */
+static void pub_vib_init(const uint32_t *h) { vib_init(h); }
+static void pub_vib_send(const uint32_t *h, const VibrationValue *v) { vib_send(h, v); }
+static void pub_six_start(const uint32_t *h) { if (runtime_gyro_enabled()) six_start(h); else six_axis_check(h); }
+static int pub_six_states(SixAxisState *s, int max, const uint32_t *h) { int n = 0; six_states(&n, s, max, h); return n; }
 
 /* "flag rumble 0|1", "flag gyro 0|1": 1 if the name was one of these. */
 int runtime_hid_feedback_flag(const char *name, int v) {
@@ -154,5 +161,11 @@ void *runtime_hid_feedback_override(const char *name) {
         {"_ZN2nn3hid6detail21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", (void *)six_state, true}};
     for (unsigned i = 0; i < sizeof entries / sizeof *entries; i++)
         if (!strcmp(name, entries[i].name)) return (entries[i].gyro ? gyro : rumble) ? entries[i].fn : NULL;
+    static const struct { const char *name; void *fn; } public[] = {
+        {"_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", (void *)pub_vib_init},
+        {"_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", (void *)pub_vib_send},
+        {"_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", (void *)pub_six_start},
+        {"_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", (void *)pub_six_states}};
+    for (unsigned i = 0; i < sizeof public / sizeof *public; i++) if (!strcmp(name, public[i].name)) return public[i].fn;
     return NULL;
 }

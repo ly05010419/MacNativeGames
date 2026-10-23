@@ -467,6 +467,8 @@ int runtime_module_offset(uint64_t pc,const char **name,uint64_t *off) {
 uintptr_t runtime_frame_controller_return_pc(void) {
 #ifdef GAME_BOTW
  return 0; /* no survey on Breath of the Wild */
+#elif defined(GAME_WONDER)
+ return 0; /* no survey on Super Mario Bros. Wonder */
 #elif defined(TOTK_GAME_V143)
  /* The older graphics diagnostic reads the pre-1.4 controller layout. The survey only needs the system object (caller's x19
     at x29 + 0x38, same frame as 1.2.1) for its frame-end fence, so 1.4.3 finds it only while TOTK_SURVEY is on. */

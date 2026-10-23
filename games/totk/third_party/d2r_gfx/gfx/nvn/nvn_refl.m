@@ -55,7 +55,20 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
             else FAIL("B 绑定种类 %s 未实现（%s）", k.UTF8String, [b[@"msl_name"] UTF8String]);
-            if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU) && reg < 0)
+            /* Bindless (the translator names it <stage>_t_cb<slot>_<word>): the combined handle is read from a user uniform
+               block, not from the texture bind table, so the translator leaves reg empty; decode slot and offset here. */
+            if ((r->kind == NVN_RB_TEX || r->kind == NVN_RB_SAMPT) && reg < 0) {
+                NSString *n = b[@"msl_name"]; NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"^[a-z]+_t\\w*?_cb(\\d+)_([0-9A-F]+)(Smplr)?$" options:0 error:nil];
+                NSTextCheckingResult *m = [n isKindOfClass:[NSString class]] ? [re firstMatchInString:n options:0 range:NSMakeRange(0, n.length)] : nil;
+                if (m) {
+                    unsigned long slot = strtoul([[n substringWithRange:[m rangeAtIndex:1]] UTF8String], NULL, 10), h = strtoul([[n substringWithRange:[m rangeAtIndex:2]] UTF8String], NULL, 16);
+                    if (h >> 28) FAIL("B 绑定 %s：分开的贴图 / 采样器句柄未实现", n.UTF8String);   // separate texture and sampler handles
+                    if ((slot & 0xffff) >= 16 || (slot >> 16) || (h & 0x3fff) * 4 + 4 > 0xffff) FAIL("B 绑定 %s：uniform 槽或偏移越界", n.UTF8String);
+                    reg = (int)(slot & 0xffff); r->reg = (uint16_t)reg; r->off = (uint16_t)((h & 0x3fff) * 4);
+                    r->kind = r->kind == NVN_RB_TEX ? NVN_RB_TEXU : NVN_RB_SAMPU;
+                }
+            }
+            if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU || r->kind == NVN_RB_TEXU || r->kind == NVN_RB_SAMPU) && reg < 0)
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;
         }

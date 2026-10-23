@@ -16,6 +16,7 @@ import build_app
 
 BOTW_BASE, BOTW_UPDATE, BOTW_DLC = '01007EF00011E000', '01007EF00011E800', '01007EF00011F001'
 TOTK_BASE, TOTK_UPDATE = '0100F2C0115B6000', '0100F2C0115B6800'
+WONDER_BASE, WONDER_UPDATE = '010015100B514000', '010015100B514800'
 
 
 def pfs0(path, entries):
@@ -175,6 +176,17 @@ class GameSelectionTests(unittest.TestCase):
         self.assertIn('needs the 1.9.0 update', str(error))
         self.assertIn('--update', str(error))
         started['step_code_botw'].assert_not_called()
+
+    def test_wonder_takes_the_shared_route(self):
+        # Super Mario Bros. Wonder 1.0.0 (games/wonder): its base game, built the shared way as version 'wonder'
+        error, started = self.run_main(package(self.root, 'wonder.nsp', WONDER_BASE), game='wonder')
+        self.assertIsInstance(error, Stop)
+        started['step_code_botw'].assert_not_called()
+        self.assertEqual(started['step_code'].call_args.kwargs['version'], 'wonder')
+        # an update is not supported yet; it stops before any step
+        error, started = self.run_main(package(self.root, 'wonder.nsp', WONDER_BASE), package(self.root, 'wonder-u.nsp', WONDER_UPDATE), game='wonder')
+        self.assertIn('updates are not supported yet', str(error))
+        started['step_code'].assert_not_called()
 
     def test_botw_update_decides_the_version(self):
         update = package(self.root, 'botw-u.nsp', BOTW_UPDATE)

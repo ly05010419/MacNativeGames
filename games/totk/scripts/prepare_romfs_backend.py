@@ -3,7 +3,7 @@
 import argparse,hashlib,json,struct
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v112','v121','v143','botw160','botw190'), default='v0')
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v112','v121','v143','wonder','botw160','botw190'), default='v0')
 parser.add_argument('--aoc', action='store_true', help='Breath of the Wild: the add-on content volumes extracted/<version>/aoc/<index> -> aoc_config.h')
 args=parser.parse_args();version=args.version
 out=root/('build' if version=='v0' else f'build/{version}');out.mkdir(parents=True,exist_ok=True)

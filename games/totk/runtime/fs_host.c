@@ -28,6 +28,8 @@
 #define R_APPEND_REQUIRED 0x2f5e02u
 #ifdef GAME_BOTW
 #define TOTK_APPLICATION_ID 0x01007ef00011e000ULL   /* Breath of the Wild: its own save data is the one that exists */
+#elif defined(GAME_WONDER)
+#define TOTK_APPLICATION_ID 0x010015100b514000ULL   /* Super Mario Bros. Wonder */
 #else
 #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
 #endif
@@ -142,6 +144,9 @@ static unsigned mount_save_ro(const char *name, uint64_t application, const uint
     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
     return mount_add(name, M_SAVE, save_root);
 }
+static unsigned char own_save_exists(const uint64_t *uid) { return save_exists(TOTK_APPLICATION_ID, uid); }
+/* The local user's save storage always exists (ready() creates it); nobody else has one here. */
+static unsigned ensure_save(const uint64_t *uid) { return own_save_exists(uid) ? 0 : R_TARGET_NOT_FOUND; }
 static unsigned mount_temp(const char *name) { ready(); char p[1100]; snprintf(p, sizeof p, "%s/temp", profile); return mount_add(name, M_TEMP, p); }
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 static unsigned create_cache(int index, int64_t size, int64_t journal) {
@@ -305,6 +310,12 @@ static void close_directory(uint64_t h) {
     if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !dirs[h - DIR_BASE].dir) runtime_fail("close invalid directory handle");
     pthread_mutex_lock(&lock); closedir(dirs[h - DIR_BASE].dir); dirs[h - DIR_BASE].dir = NULL; pthread_mutex_unlock(&lock);
 }
+/* The thread's FS context (error handling policy) is only read by the SDK's own file-system client, which the host replaces. */
+typedef struct { uint8_t bytes[64]; } FsContext;
+static const FsContext default_context;
+static __thread const FsContext *thread_context;
+static const FsContext *get_fs_context(void) { return thread_context ? thread_context : &default_context; }
+static void set_fs_context(const FsContext *context) { thread_context = context; }
 /* The fs priority only orders I/O inside the system fs process; host I/O is unordered. */
 static void set_priority(int priority) { (void)priority; }
 
@@ -356,6 +367,8 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", own_save_exists}, {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
+        {"_ZN2nn2fs25GetCurrentThreadFsContextEv", get_fs_context}, {"_ZN2nn2fs25SetCurrentThreadFsContextEPKNS0_9FsContextE", set_fs_context},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
 #ifdef GAME_BOTW
         {"_ZN2nn2fs14CommitSaveDataEPKc", commit},   /* SDK 7 (Breath of the Wild 1.6.0) */

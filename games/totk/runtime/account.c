@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
 typedef struct{uint64_t lo,hi;} Uid;
 typedef struct{Uid uid;uint64_t token;} UserHandle;
 static Uid local;
@@ -40,6 +42,28 @@ static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool o
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
 static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!same(uid))return 0x7c67;memset(out,0,33);memcpy(out,"Local",5);return 0;}
+/* The one local user is the only qualified user, the selector picks it, and it has no network service account. */
+#define NSA_UNAVAILABLE (124u|(280u<<9))
+static uint32_t qualified_users(int *count,Uid *out,int max){if(!count)return 0x7c67;initialize();*count=max>0&&out?1:0;if(*count)out[0]=local;return 0;}
+static uint32_t user_count(int *out){if(!out)return 0x7c67;initialize();*out=1;return 0;}
+static uint32_t open_user(UserHandle *out,const Uid *uid){if(!out)runtime_fail("account null user handle");initialize();if(!same(uid))return 0x7c67;lock_acquire();for(unsigned i=0;i<64;i++)if(!tokens[i]){tokens[i]=nextToken++;*out=(UserHandle){local,tokens[i]};lock_release();return 0;}lock_release();return 0x7c67;}
+static uint32_t select_user(Uid *out,const void *settings){(void)settings;if(!out)return 0x7c67;initialize();*out=local;return 0;}
+static uint32_t nsa_available(unsigned char *out,const UserHandle *handle){if(!out)return 0x7c67;lock_acquire();bool ok=valid(handle);lock_release();*out=0;return ok?0:0x7c67;}
+static uint32_t nsa_unavailable(void){return NSA_UNAVAILABLE;}
+/* The console's profile image is a 256x256 JPEG; the local user's is a plain one, made once (under the account lock). */
+static CFMutableDataRef jpeg;
+static CFMutableDataRef make_profile_jpeg(void){
+ CGColorSpaceRef cs=CGColorSpaceCreateDeviceRGB();CGContextRef c=CGBitmapContextCreate(NULL,256,256,8,0,cs,kCGImageAlphaNoneSkipLast);
+ CGContextSetRGBFillColor(c,0.85,0.15,0.15,1);CGContextFillRect(c,CGRectMake(0,0,256,256));CGImageRef img=CGBitmapContextCreateImage(c);
+ CFMutableDataRef d=CFDataCreateMutable(NULL,0);CGImageDestinationRef dst=CGImageDestinationCreateWithData(d,CFSTR("public.jpeg"),1,NULL);
+ bool ok=img&&dst;if(ok){CGImageDestinationAddImage(dst,img,NULL);ok=CGImageDestinationFinalize(dst);}
+ if(dst)CFRelease(dst);if(img)CGImageRelease(img);CGContextRelease(c);CGColorSpaceRelease(cs);if(!ok){CFRelease(d);d=NULL;}
+ return d;
+}
+static uint32_t profile_image(uint64_t *size,void *out,uint64_t capacity,const Uid *uid){
+ initialize();if(!size||!same(uid))return 0x7c67;lock_acquire();if(!jpeg)jpeg=make_profile_jpeg();lock_release();if(!jpeg)runtime_fail("local profile image");
+ uint64_t n=(uint64_t)CFDataGetLength(jpeg);*size=n;if(out)memcpy(out,CFDataGetBytePtr(jpeg),n<capacity?n:capacity);return 0;
+}
 void runtime_account_uid(uint64_t out[2]){initialize();out[0]=local.lo;out[1]=local.hi;}
 #ifdef GAME_BOTW
 /* SDK 7 (Breath of the Wild 1.6.0, botw.md) opens the preselected user with the aborting variant and lists the users. */
@@ -52,7 +76,15 @@ void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
- {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
+ {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname},
+ {"_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi",qualified_users},{"_ZN2nn7account12GetUserCountEPi",user_count},
+ {"_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE",open_user},{"_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE",select_user},
+ {"_ZN2nn7account32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE",nsa_available},
+ {"_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE",profile_image},
+ {"_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE",nsa_unavailable},
+ {"_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE",nsa_unavailable},
+ {"_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE",nsa_unavailable},
+ {"_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE",nsa_unavailable}
 #ifdef GAME_BOTW
  ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_users}
  ,{"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users}

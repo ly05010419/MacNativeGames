@@ -5,6 +5,8 @@
                          [--update <update.nsp>] [--dlc <dlc.nsp> ...] [--mod <mod folder> [--install-mod-romfs]]
 
 Supported: TOTK base 1.0.0 (0100F2C0115B6000), XCI or NSP; optional --update with a supported cumulative update.
+Also Super Mario Bros. Wonder 1.0.0 (010015100B514000, games/wonder), its base game only, early port: the shared host without
+game-code patches. No update, no iOS build and no startup shader set yet.
 Also Breath of the Wild (01007EF00011E000, games/botw), in two forms: 1.6.0 as one card image holding the base game, the update
 and the add-on content, which needs --shared-fonts (the six .bfttf files a Tears of the Kingdom build extracted into its work
 folder, extracted/firmware/shared-fonts); or 1.9.0 as a base NSP with --update <the 1.9.0 update NSP> and fonts from --firmware
@@ -66,10 +68,14 @@ BOTW190 = json.loads((BOTW / 'assets/expected-v1.9.0.json').read_text())
 BOTW_LIST = BOTW / 'assets/shader_list.tsv'   # the game's shared shader list (docs/shader-list.md)
 VERSIONS['botw160'] = BOTW160
 VERSIONS['botw190'] = BOTW190
-TITLES = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw'}
+# Super Mario Bros. Wonder (games/wonder): 1.0.0, its base game alone, on the shared host (GAME_WONDER, runtime-wonder).
+WONDER = REPO / 'games/wonder'
+VERSIONS['wonder'] = json.loads((WONDER / 'assets/expected-v1.0.0.json').read_text())
+TITLES = {'0100F2C0115B6000': 'totk', '01007EF00011E000': 'botw', '010015100B514000': 'wonder'}
 # Per game: app name, bundle identifier, executable name (= the player's data folder under
 # ~/Library/Application Support/MacNativeGames, games/totk/runtime/game_version.h GAME_FOLDER)
-APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'botw': ('Breath of the Wild', 'org.macnativegames.botw', 'BotW')}
+APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'botw': ('Breath of the Wild', 'org.macnativegames.botw', 'BotW'),
+        'wonder': ('Super Mario Bros. Wonder', 'org.macnativegames.wonder', 'Wonder')}
 HACTOOL = ('https://github.com/SciresM/hactool.git', '1d64a83450e025622f3468c28fc4164dad2c5ef6')
 APP_NAME = 'Tears of the Kingdom'
 IOS_APP_NAME = 'TOTK'   # the iPhone / iPad home screen name: "Tears of the Kingdom" was cut to "Tears of the…" (user 2026-10-22)
@@ -334,6 +340,8 @@ def prepare_work(work, py, logs):
     run(['rsync', '-a', *excludes, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
     # games/botw: its scripts find the shared ones at ../totk/scripts (work/botw next to work/totk)
     run(['rsync', '-a', *excludes, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
+    # games/wonder: games/totk/Makefile builds its patch file from ../wonder (work/wonder next to work/totk)
+    run(['rsync', '-a', *excludes, f'{WONDER}/', f'{work / "wonder"}/'], logs / 'sources-wonder.log')
     tooling = tree / 'tooling'
     # Migrate a work folder made by the old copier before writing child links:
     # link(tooling/spirv-cross, ...) must not traverse into a shared checkout.
@@ -543,7 +551,7 @@ def merge_mod_exefs(tree, mod, version, logs):
 
 def step_code(tree, game, keys, env, logs, *, version="v0", mod=None):
     expected = VERSIONS[version]
-    update_args = [] if version == "v0" else ["--update"]
+    update_args = [] if version in ("v0", "wonder") else ["--update"]
     py = tree / '.venv/bin/python'
     exefs = tree / f'extracted/{version}/exefs'
     want = expected['exefs_sha256']
@@ -553,7 +561,8 @@ def step_code(tree, game, keys, env, logs, *, version="v0", mod=None):
         if exefs.exists():
             shutil.rmtree(exefs)
         source = prepare_update_container(tree, game, keys, logs) if update_args else game
-        run([py, 'scripts/extract_exefs.py', source, '--keys', keys, '--output', exefs, *update_args], logs / f'extract_exefs-{version}.log', cwd=tree)
+        title_args = ['--title-id', expected['title_id']] if version == 'wonder' else []
+        run([py, 'scripts/extract_exefs.py', source, '--keys', keys, '--output', exefs, *update_args, *title_args], logs / f'extract_exefs-{version}.log', cwd=tree)
     for n, h in want.items():
         if not (exefs / n).is_file():
             raise BuildError(f'ExeFS {n} is missing; not the supported version')
@@ -574,7 +583,8 @@ def step_code(tree, game, keys, env, logs, *, version="v0", mod=None):
         run([py, 'scripts/prepare_modules.py', exefs, '--output', tree / f'extracted/{version}/elf'], logs / 'prepare_modules.log', cwd=tree)
     out = tree / f'rewritten/{version}'
     out.mkdir(parents=True, exist_ok=True)
-    for name in ('sdk', 'subsdk0', 'main'):
+    modules = [n.removesuffix('.patched.bin') for n in expected['rewritten_sha256']]   # TOTK: main, sdk, subsdk0; Wonder: main, sdk
+    for name in sorted(modules, key=lambda n: n == 'main'):   # main last: the big one
         image = out / f'{name}.patched.bin'
         modded = merged is not None and name == 'main'
         source = tree / f'extracted/{version}/mod-exefs/main' if modded else exefs / name
@@ -594,13 +604,13 @@ def step_code(tree, game, keys, env, logs, *, version="v0", mod=None):
     # The loader binds itself to these images (scripts/prepare_runtime.py): they are the same bytes as the rewrite that
     # was verified site by site (python3 games/totk/scripts/verify_rewrites.py re-runs that verification, hours) unless
     # --mod merged a patch into main, which the report records.
-    digests = {f'{name}.patched.bin': sha256(out / f'{name}.patched.bin') for name in ('main', 'sdk', 'subsdk0')}
+    digests = {f'{name}.patched.bin': sha256(out / f'{name}.patched.bin') for name in modules}
     scope = f'hash match with verified {expected["display_version"]} rewrite'
     if merged:
         scope = (f'verified {expected["display_version"]} rewrite, with the main-module patches of {merged["folder"]} '
                  f'merged before it ({merged["patched_main_sha256"][:16]}...); the mod\u2019s bytes are bound by hash')
     report = dict(format=1, status='pass', rom_version=version, scope=scope,
-                  module_file_sha256={**{f'extracted/{version}/exefs/{n}': want[n] for n in ('main', 'sdk', 'subsdk0')},
+                  module_file_sha256={**{f'extracted/{version}/exefs/{n}': want[n] for n in modules},
                                       **{f'rewritten/{version}/{n}': digests[n] for n in digests}},
                   **({'mod_exefs': {key: merged[key] for key in
                                     ('folder', 'folder_sha256', 'build_id', 'patches', 'edit_bytes', 'reserved_sites',
@@ -730,19 +740,22 @@ def say_mod_copy_steps(mod, tree, version, out):
     say(f'   "{sys.executable}" "{tree}/scripts/make_mod_manifest.py" "{folder}" --app "{out}" --version {version}')
 
 
-def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=None):
+def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=None, version='v0'):
+    """version: 'v0' (Tears of the Kingdom 1.0.0, with its RomFS overlays) or 'wonder' (no overlays)."""
     py = tree / '.venv/bin/python'
-    romfs = tree / 'extracted/v0/romfs'
+    expected = VERSIONS[version]
+    romfs = tree / f'extracted/{version}/romfs'
     index = romfs / 'index.json'
-    ok = index.exists() and (romfs / 'romfs.bin').is_file() and json.loads(index.read_text()).get('romfs_sha256') == EXPECTED['romfs']['sha256'] and \
-        (romfs / 'romfs.bin').stat().st_size == EXPECTED['romfs']['size']
+    ok = index.exists() and (romfs / 'romfs.bin').is_file() and json.loads(index.read_text()).get('romfs_sha256') == expected['romfs']['sha256'] and \
+        (romfs / 'romfs.bin').stat().st_size == expected['romfs']['size']
     if not ok:
-        say('2/4 data: extracting and verifying the RomFS (17 GB, a minute or two)')
+        say(f"2/4 data: extracting and verifying the RomFS ({expected['romfs']['size'] / 1e9:.0f} GB, a minute or two)")
         if romfs.exists():
             shutil.rmtree(romfs)
-        run([py, 'scripts/extract_romfs.py', '--keys', keys], logs / 'extract_romfs.log', cwd=tree)
+        where = [] if version == 'v0' else ['--manifest', tree / f'extracted/{version}/extraction-manifest.json', '--output', romfs]
+        run([py, 'scripts/extract_romfs.py', '--keys', keys, *where], logs / 'extract_romfs.log', cwd=tree)
         r = json.loads(index.read_text())
-        check('RomFS', r['romfs_sha256'], EXPECTED['romfs']['sha256'])
+        check('RomFS', r['romfs_sha256'], expected['romfs']['sha256'])
     fonts = tree / 'extracted/firmware/shared-fonts'
     if not fonts_valid(fonts):
         if shared_fonts:
@@ -766,6 +779,8 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=N
             run([py, 'scripts/extract_shared_fonts.py', '--keys', keys, *source_args, '--output', fonts],
                 logs / 'shared_fonts.log', cwd=tree)
         validate_fonts(fonts)
+    if version != 'v0':   # the RomFS overlays below are Tears of the Kingdom's
+        return
     if not (tree / 'extracted/v0/romfs-patches/manifest.tsv').exists():
         say('2/4 data: RomFS overlays (quick-menu capture timing, game-over retry)')
         run([py, 'scripts/make_romfs_patches.py'], logs / 'romfs_patches.log', cwd=tree)
@@ -1066,7 +1081,7 @@ def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115
     say('4/4 app: building the game binary and the launcher')
     run(['make', f'-j{os.cpu_count() or 4}', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
     # the launcher is per game and version (runtime/game_version.h: the data folder, the log name, the backup of saves)
-    defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') else [f'-DTOTK_GAME_{version.upper()}=1']
+    defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') or version == 'wonder' else [f'-DTOTK_GAME_{version.upper()}=1']
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit',
          '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
     # used only while packaging (step_warm_metal); not part of the app
@@ -1322,9 +1337,10 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
         remove_tree(tmp)
     res = tmp / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res/'build/totk-native')
-    files = ['build/spirv-cross/spirv-cross', f'rewritten/{version}/main.patched.bin', f'rewritten/{version}/sdk.patched.bin',
-             f'rewritten/{version}/subsdk0.patched.bin', f'extracted/{version}/romfs/runtime-index.bin']   # romfs.bin: data_bundle
-    files += ['build/pso_manifest.tsv', 'build/pso_title.tsv']   # exported from the game's shared shader list (games/totk/Makefile)
+    files = ['build/spirv-cross/spirv-cross', *(f'rewritten/{version}/{n}' for n in expected['rewritten_sha256']),
+             f'extracted/{version}/romfs/runtime-index.bin']   # romfs.bin: data_bundle
+    if game != 'wonder':   # exported from the game's shared shader list (games/totk/Makefile); Wonder has none yet
+        files += ['build/pso_manifest.tsv', 'build/pso_title.tsv']
     for index in expected.get('aoc', {}):   # Only installed, verified expansion pass volumes.
         if not (tree / f'extracted/{version}/aoc/{index}/index.json').is_file():
             continue
@@ -1336,7 +1352,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)
     seed = tree/f'build/shader-seed/{version}'
-    if not (seed/'seed-manifest.json').is_file():
+    if game == 'wonder':   # no startup shader seed yet: its shaders are translated as the game meets them (cached after)
+        pass
+    elif not (seed/'seed-manifest.json').is_file():
         raise BuildError('startup shader seed was not prepared; refusing an app without first-launch warm-up data')
     else:
         try:
@@ -1769,7 +1787,7 @@ def step_shaders_botw(tree, botw, logs, *, version='botw160'):
 
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, a base game with the separate 1.6.0 update, or a base NSP with its 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
+    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, a base game with the separate 1.6.0 update, or a base NSP with its 1.9.0 update NSP and optional add-on content NSPs (--dlc); or (early port) a Mac app from the Super Mario Bros. Wonder 1.0.0 base game.',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0 (Breath of the Wild: the 1.6.0 card image, or the base NSP with --update)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app (Breath of the Wild: the 1.9.0 update NSP, not for a card image)')
@@ -1915,6 +1933,44 @@ def main(argv):
         say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
         say('Open it from Finder. The first start verifies the game data and any installed add-on content and keeps a record; '
             'saves, the shader cache and the log go to ~/Library/Application Support/MacNativeGames/BotW and ~/Library/Logs/MacNativeGames/botw.log.')
+        return
+    if which == 'wonder':   # Super Mario Bros. Wonder 1.0.0 (games/wonder): the shared steps for its base game
+        if fresh_work and not args.work:   # Wonder_build next to the game file, not TOTK_build
+            shutil.rmtree(work)
+        if args.platform == 'ios':
+            raise BuildError('Super Mario Bros. Wonder has no iPhone / iPad build yet: build the Mac app (leave out --platform ios)')
+        if update:
+            raise BuildError('Super Mario Bros. Wonder: updates are not supported yet; build the base game (leave out --update)')
+        if mod:
+            raise BuildError('--mod: merging a mod\'s main-module patches is only wired for Tears of the Kingdom so far')
+        if not args.work:
+            work = game.parent / 'Wonder_build'
+            logs = work / 'logs'
+            tree = prepare_work(work, py, logs)
+        if not args.out:
+            out = game.parent / f'{APPS["wonder"][0]}.app'
+        if shutil.disk_usage(existing_volume_path(work.parent if work.parent.exists() else game.parent)).free / 2**30 < 10 and \
+                not (work / 'totk/extracted/wonder/romfs/romfs.bin').exists():
+            raise BuildError('needs about 10 GB free for the work folder (the app itself is an APFS clone of it when on the same volume)')
+        say(f'Super Mario Bros. Wonder 1.0.0; work folder {work}')
+        step_code(tree, game, keys, env, logs, version='wonder')
+        step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts, version='wonder')
+        if not (tree / 'build/spirv-cross/spirv-cross').exists():   # no startup shader seed: only the translator's tools
+            say('3/4 shaders: building SPIRV-Cross with clang')
+            build_spirv_cross(tree, logs)
+        step_binary(tree, game, keys, env, logs, version='wonder', title='010015100b514000')
+        say(f'4/4 app: assembling {out}')
+        step_app(tree, out, logs, version='wonder', game='wonder')
+        run([LSREGISTER, '-f', out], logs / 'register-app.log')
+        say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
+        t1 = time.time()
+        r = subprocess.run([out / f'Contents/MacOS/{APPS["wonder"][2]}', '--check'], capture_output=True, text=True, timeout=1800)
+        if r.returncode: raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
+        say(f'   checked in {time.time() - t1:.0f} s')
+        say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
+        say('Open it from Finder. The first start verifies the game data. There is no startup shader set for this game yet: '
+            'each shader is translated the first time the game uses it (a short stutter) and cached for later starts. Saves, '
+            'the shader cache and the log go to ~/Library/Application Support/MacNativeGames/Wonder and ~/Library/Logs/MacNativeGames/wonder.log.')
         return
     work_volume=existing_volume_path(work.parent if work.parent.exists() else game.parent)
     output_volume=existing_volume_path(out.parent if out.parent.exists() else game.parent)

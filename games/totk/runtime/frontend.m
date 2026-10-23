@@ -104,6 +104,14 @@ static int assume_focus(void){static int v=-1;if(v<0){const char *e=getenv("TOTK
 int runtime_front_focus(void){return 1;}
 static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,const CVTimeStamp *output,CVOptionFlags flags,CVOptionFlags *out,void *ctx){
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
+#ifdef GAME_WONDER
+ /* The Switch display runs at 60 Hz, and Super Mario Bros. Wonder paces its frames by vsync counts: on a 120 Hz Mac
+    display it ran at double speed. Its VI vsync therefore keeps a 60 Hz schedule whatever the Mac's refresh rate (TOTK
+    paces itself). */
+ {static uint64_t next;uint64_t t=runtime_now_ns();const uint64_t period=16666667;
+  if(next&&t+2000000<next)return kCVReturnSuccess;
+  next=next&&t<next+3*period?next+period:t+period;}
+#endif
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
 @interface TOTKInputView:NSView

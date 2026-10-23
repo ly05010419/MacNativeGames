@@ -305,6 +305,11 @@ NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const
     totk_life_reg(id, (const tex_t *)t);
     mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
 
+/* An image (writable texture) handle is its texture-pool index here (nvnDeviceGetImageHandle), so registering an image is
+   registering the texture at that index (TOTK registers its images as textures). */
+NVN(nvnTexturePoolRegisterImage, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { (void)tp;
+    totk_life_reg(id, (const tex_t *)t); mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
+
 NVN(nvnSamplerPoolInitialize, NVNboolean, NVNsamplerPool *sp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
     *(dpool_t *)sp = (dpool_t){(const pool_t *)p, off, n}; OLOG("SamplerPool n=%d", n); return 1;
 }
@@ -638,6 +643,14 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (lg) { atomic_fetch_add(&g_sw_blocked[k], 1); atomic_fetch_add(&g_sw_ns[k], now_ns() - t0); }
     if (ok) survey_after_wait(s);
     return ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+}
+/* GPU-side wait (one queue waiting for another): every NVN queue here is submitted, in order, to the one Metal command
+   queue, so work fenced before this point already runs before what follows; a sync never fenced has nothing to wait for
+   yet (logged once). */
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) {
+    (void)q; static _Atomic int warned;
+    if (!((const sync_t *)s)->fenced && !atomic_exchange(&warned, 1)) LOG("QueueWaitSync on a sync that was never fenced: not waited for");
+    return 1;
 }
 NVN(nvnEventBuilderSetDefaults, void, NVNeventBuilder *b) { memset(b, 0, sizeof(ev_builder_t)); }
 NVN(nvnEventBuilderSetStorage, void, NVNeventBuilder *b, const NVNmemoryPool *p, int64_t off) { *(ev_builder_t *)b = (ev_builder_t){(const pool_t *)p, off}; }
@@ -2336,9 +2349,10 @@ static int g_paced_hz;   // the display-following rate, used instead of the unca
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
-/* A frame rate the game itself needs at the moment (runtime/game_patches_botw.c: 30 while Breath of the Wild plays a
-   pre-rendered movie, which advances one movie frame per game frame). The game is then paced exactly as in the 30+30
-   mode, without the interpolation. Weak: Tears of the Kingdom has none. */
+/* A frame rate the game itself needs (runtime/game_patches_botw.c: 30 while Breath of the Wild plays a pre-rendered movie,
+   which advances one movie frame per game frame; games/wonder: 60 with TOTK_REALTIME=0, as Super Mario Bros. Wonder's
+   shipped frame step runs 2x / 4x fast at 120 / 240 fps; none with its real-time frame step). The game is then paced at
+   exactly that rate, as in the 30+30 mode, without the uncapped clock. Weak: Tears of the Kingdom has none. */
 __attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
 /* TOTK_PHONE_FPS=30: the phone holds 30 fps the same way, presenting every second refresh of its 60 Hz screen, frame
    step and present interval agreeing (lowering the uncapped clock to 30 Hz instead left the game's interval in 60 Hz
@@ -2352,11 +2366,20 @@ static int phone_holds_30(void) {
     return 0;
 #endif
 }
-static int game_holds_30(void) { return runtime_game_fps_limit() == 30 || phone_holds_30(); }
-static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_holds_30() && (m == MFX_OFF || m == MFX_MAX); }
-/* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
-   30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
-static int mfx_own_clock(void) { return (mfx_enabled() == MFX_30 || game_holds_30()) && (g_paced_hz <= 0 || g_paced_hz % 30); }
+/* The frame rate the game holds at the moment, 0 = none: the game's own limit, or 30 on a phone holding 30. */
+static int game_fps_limit(void) { int l = runtime_game_fps_limit(); return l > 0 ? l : phone_holds_30() ? 30 : 0; }
+static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && game_fps_limit() <= 0 && (m == MFX_OFF || m == MFX_MAX); }
+/* The exact game frame rate the host paces at, 0 = none: 30 in the 30+30 mode or while the game holds 30, else the game's
+   own rate; half the refresh rate (key 2) still paces by display ticks when that is within the game's rate. */
+static int fixed_fps(void) {
+    int l = game_fps_limit(), m = mfx_enabled();
+    if (m == MFX_30 || l == 30) return 30;
+    if (l <= 0 || (m == MFX_HALF && g_paced_hz > 0 && g_paced_hz / 2 <= l)) return 0;
+    return l;
+}
+/* A fixed rate the display's rate is not a multiple of (30+30 on the user's 100 Hz): the game is paced by our own clock at
+   exactly that rate instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
+static int mfx_own_clock(void) { int f = fixed_fps(); return f && (g_paced_hz <= 0 || g_paced_hz % f); }
 /* Opt-in until live scene/clock validation (Breath of the Wild: on by default, UNCAPPED_INTERVAL_FROM_ENV in nvn_obj.h).
    Only applies to the existing Mac real-time uncapped path; original timing, MetalFX and deterministic tests
    retain the guest interval. GPU/texture lifetime waits are unchanged. */
@@ -2738,8 +2761,9 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
        mfx_own_clock). Held here and not only by the game's controller, because the code carries the 60 FPS patch (the
        controller may choose 1); the real-time frame step keeps game speed right. Uncapped interpolation paces as uncapped. */
     int m = mfx_enabled();
-    if (m == MFX_HALF && !game_holds_30()) return 2;
-    if (m == MFX_30 || game_holds_30()) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
+    int f = fixed_fps();
+    if (m == MFX_HALF && !f) return 2;
+    if (f) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= f + f / 2 ? (hz + f / 2) / f : 1); }
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
 static uint64_t present_period(const win_t *o) {
@@ -2749,7 +2773,7 @@ static uint64_t present_period(const win_t *o) {
                                     m == MFX_HALF ? "补帧 刷新率一半：跟随显示器、每两次刷新一帧" :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
-    if (m == MFX_30 || game_holds_30()) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
+    { int f = fixed_fps(); if (f) return 1000000000ull / (uint64_t)f; }   /* exactly the fixed rate, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
 /* Exercise production policy, including the shrine's interval=2 and the

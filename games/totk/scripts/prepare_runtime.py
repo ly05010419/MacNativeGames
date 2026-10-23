@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--version', choices=('v0','v112','v121','v143','botw160','botw190'), default='v0')
+parser.add_argument('--version', choices=('v0','v112','v121','v143','wonder','botw160','botw190'), default='v0')
 version = parser.parse_args().version
 OUT = ROOT / ('build' if version == 'v0' else f'build/{version}')
 OUT.mkdir(parents=True, exist_ok=True)
@@ -30,7 +30,9 @@ if version == 'botw190':   # Breath of the Wild 1.9.0 (docs/botw-v1.9.0-port.md)
 if version == 'v143':
     assert report['module_file_sha256']['extracted/v143/exefs/main'] == 'e84a90d551fed0824b4b74933b9c6d043c458521363a7cea58b2faca1822dc9e', 'Unsupported 1.4.3 main image'
 modules = []
-for name in ['main', 'subsdk0', 'sdk']:
+# main first (the loader patches modules[0]), then the modules this title ships, sdk last
+names = ['main', *(f'subsdk{i}' for i in range(10) if (ROOT / f'rewritten/{version}/subsdk{i}.patched.bin').is_file()), 'sdk']
+for name in names:
     path = ROOT / f'rewritten/{version}/{name}.patched.bin'
     image = path.read_bytes()
     digest = hashlib.sha256(image).hexdigest()

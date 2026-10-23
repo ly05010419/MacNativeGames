@@ -1,6 +1,7 @@
 /* nn::pl shared fonts: the verified system BFTTF files laid out back to back as in the pl shared memory.
-   GetSharedFontAddress points 8 bytes past each file start (after the BFTTF header), as the SDK adds the
-   service-provided offset to the shared memory base; the size is the decoded font size. */
+   GetSharedFontAddress points at each file's BFTTF header: games hand it to nn::fontll::ScalableFontEngineHelper::Decode,
+   which checks the header's magic, decrypts the body in place and returns the font 8 bytes further on (Super Mario Bros.
+   Wonder's button icons come from the Nintendo Extension font this way). The size is the decoded font size. */
 #include "runtime.h"
 #include "shared_fonts_config.h"
 #include <CommonCrypto/CommonDigest.h>
@@ -25,7 +26,7 @@ static void load(void){
   need(fread(region+at,1,rows[i].file_bytes,f)==rows[i].file_bytes&&fgetc(f)==EOF,"shared font size");fclose(f);
   uint8_t d[32];char hex[65];CC_SHA256(region+at,(CC_LONG)rows[i].file_bytes,d);for(int k=0;k<32;k++)snprintf(hex+k*2,3,"%02x",d[k]);
   need(!strcmp(hex,rows[i].sha256),"shared font integrity mismatch");
-  offsets[i]=at+8;at+=rows[i].file_bytes;
+  offsets[i]=at;at+=rows[i].file_bytes;
  }
  fprintf(stderr,"[totk] shared fonts loaded: %d fonts, %llu bytes\n",SHARED_FONT_COUNT,(unsigned long long)total);
 }

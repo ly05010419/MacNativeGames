@@ -212,7 +212,7 @@ class Containers(unittest.TestCase):
             game = self.path / 'update.nsp'
             game.write_bytes(game_image('nsp', title=title))
             _, result = self.extract(game, success=False)
-            self.assertIn('Expected Tears of the Kingdom base game', result.stderr)
+            self.assertIn('Expected the base game 0100F2C0115B6000', result.stderr)
 
     def test_update_metadata_with_base_program_id(self):
         for metadata in ([('update.cnmt.nca', nca(title=TITLE + 0x800, content=1))],

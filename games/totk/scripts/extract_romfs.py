@@ -19,7 +19,7 @@ def main():
     source=Path(manifest['source']);require(source.stat().st_size==manifest['source_size'],'Source size changed')
     with source.open('rb') as f:
         _,entries=container_entries(f,source.stat().st_size)
-        actual,hdr=program_nca(nca_inventory(f,entries,keys))
+        actual,hdr=program_nca(nca_inventory(f,entries,keys),title_id=record['title_id'])
         require(actual['name']==record['name'] and actual['size']==record['size'] and
                 record_offset(actual)==record_offset(record),'Source Program NCA changed; extract ExeFS again')
         ctr_key=nca_ctr_key(hdr,keys,common_tickets(f,entries))

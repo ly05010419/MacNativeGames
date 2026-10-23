@@ -36,6 +36,21 @@
 #define GAME_ADDR_0xe995c4 0xc617e8   /* return address of nnMain's only call to nn::oe::SetFocusHandlingMode */
 #define GAME_ADDR_0x2aa4fa0 0x15a01a0 /* nn::swkbd::ShowKeyboard: main's PLT stub */
 #define GAME_ADDR_0x453f648 0x1d78198 /* nn::swkbd::ShowKeyboard: main's GOT slot */
+#elif defined(GAME_WONDER)
+/* Super Mario Bros. Wonder 1.0.0 (games/wonder): the shared host with no game-code patches
+   (games/wonder/runtime/game_patches_wonder.c). TOTK's patch sites are never patched in it: these values are outside
+   main, so they never match a PC. */
+#define GAME_TITLE_ID 0x010015100b514000ULL
+#define GAME_NAME "Super Mario Bros. Wonder"
+#define GAME_FOLDER "Wonder"   /* ~/Library/Application Support/MacNativeGames/<this>, Logs/MacNativeGames/<lowercase>.log */
+#define GAME_LOG "wonder"
+#define TOTK_GAME_VERSION "1.0.0"
+#define TOTK_GAME_DIR "wonder"
+#define GAME_ADDR_0x15ecb0c 0xffffffffu
+#define GAME_ADDR_0xe995c4 0xffffffffu
+#define GAME_ADDR_0x2aa4fa0 0xffffffffu
+#define GAME_ADDR_0x453f648 0xffffffffu
+#define GAME_ADDR_0x8f6cbc 0xffffffffu
 #elif defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"

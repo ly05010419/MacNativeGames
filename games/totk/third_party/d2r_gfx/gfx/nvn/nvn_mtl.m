@@ -8106,7 +8106,7 @@ static int arg_epoch_safe(NvShader *sh) {
         for (int i = 0; i < sh->rf.nb; i++) {
             const nvn_rbind *b = &sh->rf.b[i];
             // Indirect pointers and writable bindings have replay-time side effects.
-            if (b->rw || b->kind == NVN_RB_IMG || b->kind == NVN_RB_SBUFU) { sh->ab_epoch_ok = -1; break; }
+            if (b->rw || b->kind == NVN_RB_IMG || b->kind == NVN_RB_SBUFU || b->kind == NVN_RB_TEXU || b->kind == NVN_RB_SAMPU) { sh->ab_epoch_ok = -1; break; }
         }
     }
     return sh->ab_epoch_ok > 0;
@@ -8118,6 +8118,14 @@ static arg_epoch_key arg_epoch_current(int stage) {
 static int tex_slot_binding(const nvn_rbind *b) {
     return b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF ||
         b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT;
+}
+// Bindless: the combined handle (texture ID | sampler ID << 20) a shader loads from user uniform slot reg, byte offset off,
+// as that block will hold it when this submission runs (a pending inline update counts, as for SBUFU).
+static uint32_t ubo_tex_handle(const nvn_rbind *b, int stage) {
+    const p_bind_buf *u = b->reg < 16 && stage >= 0 && stage < 6 ? &S.ubo[stage][b->reg] : NULL; uint32_t h = 0;
+    if (!u || !u->addr || u->size < (uint64_t)b->off + 4) { RED_ONCE(122, "阶段 %d uniform 槽 %d 未绑或不够长，无绑定贴图句柄读不到（偏移 %u）", stage, b->reg, b->off); return 0; }
+    if (pend_read(u->addr + b->off, &h, 4, 0) < 0) memcpy(&h, (const void *)(uintptr_t)(u->addr + b->off), 4);
+    return h;
 }
 static int tex_slots_diagnostics(void) {
     static int active = -1;
@@ -8217,15 +8225,15 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             }
             slots[aid] = gpu;
             USE((__bridge id<MTLBuffer>)mb, MTLResourceUsageRead);
-        } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT) {   // SAMPT：合并句柄（贴图号 | 采样器号 << 20）的采样器部分 | SAMPT: the sampler part of a combined handle (texture ID | sampler ID << 20)
-            int sid = reg < 128 ? (int)((b->kind == NVN_RB_SAMPT ? S.tex[nvn_stage][reg] : S.samp[nvn_stage][reg]) >> 20) : 0;
+        } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU) {   // SAMPT：合并句柄（贴图号 | 采样器号 << 20）的采样器部分 | SAMPT: the sampler part of a combined handle (texture ID | sampler ID << 20)
+            int sid = b->kind == NVN_RB_SAMPU ? (int)(ubo_tex_handle(b, nvn_stage) >> 20) : reg < 128 ? (int)((b->kind == NVN_RB_SAMPT ? S.tex[nvn_stage][reg] : S.samp[nvn_stage][reg]) >> 20) : 0;
             __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
             slots[aid] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // 本段已持 g_rmu | g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d cmp=%d/%d wrap=%d,%d,%d lod=%g..%g（0 最近点 / 1 双线性；2–5 带 mip）", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf, (int)sp.cmp_mode, (int)sp.cmp_func, (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.lod_min, sp.lod_max); }
-        } else if (b->kind == NVN_RB_TEX) {
-            int tid = reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
+        } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
+            int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_tex_handle(b, nvn_stage) & 0xfffff) : reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (nvn_stage == 1 && reg == 0 && !strncmp(sh->key, "0ac9a54938974396", 16) && getenv("DM_NVN_FLASHHDR")) g_flash_hdr_source = t;
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);

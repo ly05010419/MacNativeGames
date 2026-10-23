@@ -93,6 +93,13 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
  static int once;if(!once++)fprintf(stderr,"[totk] controller support applet: one player on controller %#x\n",pad_id());
  return 0;
 }
+/* Joy-Con assignment (single / dual, L+R pairing): the host's one controller is a full controller, never a split Joy-Con
+   pair, so the modes have nothing to change and every assignment reads dual (NpadJoyAssignmentMode_Dual = 0). */
+static void lr_assignment(void){}
+static void joy_single(const uint32_t *id){(void)id;}
+static int joy_assignment(const uint32_t *id){(void)id;return 0;}
+static void swap_assignment(const uint32_t *a,const uint32_t *b){(void)a;(void)b;}
+static unsigned char vibration_permitted(void){return 1;}
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
 #ifdef GAME_BOTW
 /* SDK 7 (Breath of the Wild 1.6.0, botw.md). The console's own seven-axis sensor (Labo VR) is absent on a Mac: it starts and
@@ -115,6 +122,9 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj",disconnected_states},{"_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj",handheld_states},
  {"_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE",hold_type},{"_ZN2nn3hid14DisconnectNpadERKj",disconnect},
  {"_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE",show_controller_support},
+ {"_ZN2nn3hid21StartLrAssignmentModeEv",lr_assignment},{"_ZN2nn3hid20StopLrAssignmentModeEv",lr_assignment},
+ {"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj",joy_single},{"_ZN2nn3hid20GetNpadJoyAssignmentERKj",joy_assignment},
+ {"_ZN2nn3hid18SwapNpadAssignmentERKjS2_",swap_assignment},{"_ZN2nn3hid20IsVibrationPermittedEv",vibration_permitted},
  {"_ZN2nn3hid15InitializeMouseEv",initialize_mouse},{"_ZN2nn3hid18InitializeKeyboardEv",initialize_keyboard},
  {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state}
 #ifdef GAME_BOTW
