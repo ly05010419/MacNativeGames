@@ -1460,7 +1460,14 @@ NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, c
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }
-NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, int h) { *REC(c, OP_SCISSOR, p_scissor) = (p_scissor){x, y, w, h}; }
+#include "botw_ui_scissor_origin.h"
+NVN(nvnCommandBufferSetScissor, void, NVNcommandBuffer *c, int x, int y, int w, int h) {
+    p_scissor *record = REC(c, OP_SCISSOR, p_scissor);
+    *record = (p_scissor){.x=x, .y=y, .w=w, .h=h};
+#if defined(GAME_BOTW) && !defined(GAME_BOTW190)
+    botw_ui_scissor_basis((uint64_t *)__builtin_frame_address(0), record->ui_basis);
+#endif
+}
 
 /* CPU-only regression: independently recorded handles can share command storage. */
 void dm_nvn_probe_commands(void) {
@@ -1494,7 +1501,7 @@ void dm_nvn_probe_commands(void) {
     if (g_ncopies != before + 2) die("command probe: control reuse retired wrong recordings");
     copy_touch(hb, g_submits); copy_touch(hc, g_submits);
     const uint8_t *p = (const uint8_t *)(uintptr_t)hc;
-    const p_scissor expected[] = {{11,22,33,44}, {55,66,77,88}};
+    const p_scissor expected[] = {{.x=11,.y=22,.w=33,.h=44}, {.x=55,.y=66,.w=77,.h=88}};
     unsigned n = 0;
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
