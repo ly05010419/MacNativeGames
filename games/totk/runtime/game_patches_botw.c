@@ -760,6 +760,136 @@ void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the cam
             now * 57.29578f, fov_result(now, f) * 57.29578f);
 }
 #endif
+#ifdef GAME_BOTW190
+/* Font raster size, 1.9.0 (the owner, 2026-10-23: "patch the font size up by canvas height / 720"). The Chinese and Korean
+   languages (region languages 13, 14, 15 and 17; the others use bitmap fonts, Font/Font_%s.bfarc) draw their text with
+   nn::font scalable fonts, rasterized into a 2048x4096 glyph cache at the font size: 16-17 px menu glyphs, made for the
+   1280x720 layout, so a 1944-pixel canvas magnified them 2.7x and the edges were soft. Three changes make the raster k =
+   canvas height / 720 times finer and keep the drawn text at its shipped size, positions and line breaks:
+   1. The font sizes. The font setup main+0x13e61fc picks the language's table through the relative words at
+      main+0x1727e10 (language 16 points at the 13 table and is not used), and the font manager main+0xf6a3a4 makes one
+      ScalableFont per 16-byte row: the font size at +8 (read at main+0xf6a4d4) and the face at +0xc. Each size becomes
+      fs' = fs x k. Every metric of the font follows its size (main+0x2113c), and the glyph writer scales glyphs by text
+      size / font width and height (CharWriter::SetFontSize, main+0x1f42c), so the size alone only makes the raster finer;
+      but the game sets the text size from the font's own metrics in two places, which 2 and 3 correct.
+   2. main+0x13ebfc4 sets each text box of a CJK font to layout size / reference size x the font's width and height. The
+      reference table main+0x1d4dc20 {name, int width, int height} holds the bitmap fonts' sizes (Normal_00 31x39,
+      NormalS_00 24x30, Caption_00 19x22, Special_00 92x110); main+0x13ec134 is its only reader. Its sizes become floats
+      x fs' / fs, and the two scvtf that read them become nop and fmov: the text box gets the shipped size again. Only the
+      fonts of the CJK font manager reach it, so the bitmap fonts of the other languages keep their sizes.
+   3. The game's text box (main+0xf67b68) sets the width to the font width x the second value of its user data
+      "TextScaleOn" (button prompts, the pick-up window, the pause menu's bonus info, ...), for any font. Its 10
+      instructions at main+0xf67c04 now read the width through a float table on the data page (+0x1000, indexed by the
+      font width): fs' gives fs back, every other width (the bitmap fonts: 14, 19, 24, 31, 50 and 92) stays. An fs' that
+      would equal a bitmap width or another fs' steps one pixel up. TextBox::GetFont (main+0x31c24) is inlined to make
+      room.
+   The sizes are for the largest canvas of the session (the swapchain size). Key 3 does not make the fonts again: a
+   smaller canvas draws the bigger glyphs scaled down. TOTK_FONT_RES=0 keeps all three as shipped.
+   Not done: 1.6.0 and TOTK (no game files at hand to find and test their font tables; TOTK may not have the issue). */
+static const struct { uint32_t off, original; } g_font_rel[] = {   /* the table of each language, relative to 0x1727e10 */
+    {0x1727e10u, 0x006247a0u}, {0x1727e14u, 0x006247e0u}, {0x1727e18u, 0x00624820u}, {0x1727e1cu, 0x006247a0u},
+    {0x1727e20u, 0x00624860u},
+};
+static const struct { uint32_t off, original; } g_font_row[] = {   /* {size at +8, face at +0xc} of the 4 rows per table */
+    {0x1d4c5b8u, 80}, {0x1d4c5bcu, 0}, {0x1d4c5c8u, 18}, {0x1d4c5ccu, 1}, {0x1d4c5d8u, 20}, {0x1d4c5dcu, 2}, {0x1d4c5e8u, 30}, {0x1d4c5ecu, 3},
+    {0x1d4c5f8u, 80}, {0x1d4c5fcu, 0}, {0x1d4c608u, 18}, {0x1d4c60cu, 1}, {0x1d4c618u, 20}, {0x1d4c61cu, 2}, {0x1d4c628u, 30}, {0x1d4c62cu, 3},
+    {0x1d4c638u, 80}, {0x1d4c63cu, 0}, {0x1d4c648u, 18}, {0x1d4c64cu, 1}, {0x1d4c658u, 20}, {0x1d4c65cu, 2}, {0x1d4c668u, 30}, {0x1d4c66cu, 3},
+    {0x1d4c678u, 80}, {0x1d4c67cu, 0}, {0x1d4c688u, 18}, {0x1d4c68cu, 1}, {0x1d4c698u, 20}, {0x1d4c69cu, 2}, {0x1d4c6a8u, 30}, {0x1d4c6acu, 3},
+};
+static const struct { uint32_t off, original; } g_font_ref[] = {   /* {width, height} of Normal_00, NormalS_00, Caption_00, Special_00 */
+    {0x1d4dc28u, 31}, {0x1d4dc2cu, 39}, {0x1d4dc38u, 24}, {0x1d4dc3cu, 30}, {0x1d4dc48u, 19}, {0x1d4dc4cu, 22}, {0x1d4dc58u, 92}, {0x1d4dc5cu, 110},
+};
+static const struct { uint32_t off, original, word; } g_font_scvtf[] = {   /* main+0x13ebfc4 reads the reference sizes as floats */
+    {0x13ec150u, 0x5e21d821u, 0xd503201fu},   /* scvtf s1, s1 -> nop */
+    {0x13ec158u, 0x5e21d841u, 0x1e204041u},   /* scvtf s1, s2 -> fmov s1, s2 */
+};
+enum { FONT_SCALE = 0xf67c04, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_TABLE_N = 3072 };
+static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont / ... / scvtf s0, w0 / ... */
+    0xaa1303e0u, 0x97c32807u, 0xf9400008u, 0xf9401108u, 0xd63f0100u, 0x1e220000u, 0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,
+};
+static void patch_font_size(Module *m) {
+    if (ios_code()) return;   /* the phone: the handheld 720p canvas, the shipped size */
+    const char *e = getenv("TOTK_FONT_RES");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] font raster size as shipped, for 720p (TOTK_FONT_RES=0)\n"); return; }
+    unsigned w, h; if (!runtime_output_res(&w, &h)) h = 1080;
+    uint32_t word;
+    for (size_t i = 0; i < sizeof g_font_rel / sizeof *g_font_rel; i++) {
+        memcpy(&word, m->base + g_font_rel[i].off, 4);
+        if (word != g_font_rel[i].original) {
+            fprintf(stderr, "[botw] font size main+%#x: found %08x expected %08x\n", g_font_rel[i].off, word, g_font_rel[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " font tables");
+        }
+    }
+    for (size_t i = 0; i < sizeof g_font_row / sizeof *g_font_row; i++) {
+        memcpy(&word, m->base + g_font_row[i].off, 4);
+        if (word != g_font_row[i].original) {
+            fprintf(stderr, "[botw] font size main+%#x: found %u expected %u\n", g_font_row[i].off, word, g_font_row[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " font tables");
+        }
+    }
+    for (size_t i = 0; i < sizeof g_font_ref / sizeof *g_font_ref; i++) {
+        memcpy(&word, m->base + g_font_ref[i].off, 4);
+        if (word != g_font_ref[i].original) {
+            fprintf(stderr, "[botw] font size main+%#x: found %u expected %u\n", g_font_ref[i].off, word, g_font_ref[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " text-size reference table");
+        }
+    }
+    for (size_t i = 0; i < sizeof g_font_scvtf / sizeof *g_font_scvtf; i++) {
+        memcpy(&word, m->base + g_font_scvtf[i].off, 4);
+        if (word != g_font_scvtf[i].original) {
+            fprintf(stderr, "[botw] font size main+%#x: found %08x expected %08x\n", g_font_scvtf[i].off, word, g_font_scvtf[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " text-size instructions");
+        }
+    }
+    for (unsigned i = 0; i < FONT_SCALE_WORDS; i++) {
+        memcpy(&word, m->base + FONT_SCALE + 4 * i, 4);
+        if (word != font_scale_shipped[i]) {
+            fprintf(stderr, "[botw] font size main+%#x: found %08x expected %08x\n", FONT_SCALE + 4 * i, word, font_scale_shipped[i]);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " TextScaleOn instructions");
+        }
+    }
+    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (data_off + 0x4000 != m->size) runtime_fail("the font raster size: no data page after the main module");
+    float *table = (float *)(void *)(m->base + data_off + FONT_TABLE);
+    /* the new sizes, one per font (the four tables hold the same rows): Special 80, Caption 18, NormalS 20, Normal 30 */
+    static const uint32_t fs[4] = {80, 18, 20, 30}, bitmap[] = {14, 19, 24, 31, 50, 92};
+    uint32_t big[4];
+    for (int i = 0; i < 4; i++) {
+        long v = lround(fs[i] * (double)h / 720.0);
+        big[i] = (uint32_t)(v > 255 ? 255 : v < 1 ? 1 : v);   /* the font keeps its size as a u8 default width (+0x2d / +0x2e) */
+        for (int clash = 1; clash; ) {
+            clash = 0;
+            for (size_t j = 0; j < sizeof bitmap / sizeof *bitmap; j++) clash |= big[i] == bitmap[j];
+            for (int j = 0; j < i; j++) clash |= big[i] == big[j];
+            if (clash) big[i] = big[i] < 255 ? big[i] + 1 : big[i] - 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof g_font_row / sizeof *g_font_row; i += 2) {
+        int f = 0; while (fs[f] != g_font_row[i].original) f++;
+        memcpy(m->base + g_font_row[i].off, &big[f], 4);
+    }
+    static const int ref_font[4] = {3, 2, 1, 0};   /* Normal_00 30, NormalS_00 20, Caption_00 18, Special_00 80 */
+    for (size_t i = 0; i < sizeof g_font_ref / sizeof *g_font_ref; i++) {
+        int f = ref_font[i / 2];
+        float v = (float)((double)g_font_ref[i].original * big[f] / fs[f]);
+        memcpy(m->base + g_font_ref[i].off, &v, 4);
+    }
+    for (size_t i = 0; i < sizeof g_font_scvtf / sizeof *g_font_scvtf; i++) put_word(m, g_font_scvtf[i].off, g_font_scvtf[i].word, "font text size");
+    for (unsigned i = 0; i < FONT_TABLE_N; i++) table[i] = (float)i;
+    for (int i = 0; i < 4; i++) table[big[i]] = (float)fs[i];
+    const uint32_t scale[FONT_SCALE_WORDS] = {
+        0xf9407e60u,   /* ldr x0, [x19, #0xf8]      the text box's font (TextBox::GetFont) */
+        0xf9400008u, 0xf9401108u, 0xd63f0100u,   /* ldr x8, [x0] / ldr x8, [x8, #0x20] / blr x8: GetWidth */
+        adrp_reg(8, (uintptr_t)m->base + FONT_SCALE + 16, (uintptr_t)m->base + data_off + FONT_TABLE),   /* adrp x8, the table */
+        0xbc605900u,   /* ldr s0, [x8, w0, uxtw #2]  the shipped width */
+        0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,   /* the user data's value, x it (as shipped) */
+    };
+    put_words(m, FONT_SCALE, scale, FONT_SCALE_WORDS, "font TextScaleOn width");
+    fprintf(stderr, "[botw] font raster size x%.2f for the %u-pixel canvas: 18 -> %u, 20 -> %u, 30 -> %u, 80 -> %u; text sizes kept "
+            "(main+0x13ebfc4 reference table, main+0xf67c04 TextScaleOn) (TOTK_FONT_RES=0 keeps 720p)\n",
+            h / 720.0, h, big[1], big[2], big[3], big[0]);
+}
+#endif
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
@@ -770,6 +900,9 @@ void runtime_game_patches(Module *m) {
 #endif
 #ifdef GAME_BOTW190
     patch_fov(m);
+#endif
+#ifdef GAME_BOTW190
+    patch_font_size(m);
 #endif
     botw_aspect_install(m);
     if (realtime_enabled()) patch_realtime(m);
