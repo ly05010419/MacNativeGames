@@ -23,6 +23,7 @@ typedef struct {
     uint8_t dtt, dpf;        // 贴图槽未绑时的哑贴图：MTLTextureType 数值、像素类 | Dummy texture when the texture slot is unbound: MTLTextureType value, pixel class
     uint16_t reg, aid;       // D3D 寄存器号、参数缓冲内序号 | D3D register number, index within the argument buffer
     uint16_t off;            // SBUFU：uniform 块内的指针字节偏移 | SBUFU: byte offset of the pointer inside the uniform block
+    uint32_t need;           // TOTK: uniform bytes the shader reads (from its MSL, refl_cbuf_need); 0 = unknown (dynamic index): the whole binding
 } nvn_rbind;
 typedef struct {
     int nb, abi, nv;         // 绑定数、参数缓冲槽、顶点输入数 | Binding count, argument buffer slot, vertex input count

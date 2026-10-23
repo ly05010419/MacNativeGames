@@ -245,7 +245,28 @@ static void rate_note(rate_meter *m, uint64_t k, double now_s) {
     pthread_mutex_unlock(&m->mu);
 }
 
-void fps_overlay_note(uint64_t ticket, double now_s) { rate_note(&g_game, ticket, now_s); }
+/* Each game frame's time on screen (seconds since the previous one), for the corner panel's graph (fps_overlay_history). */
+enum { HIST_N = 2048 };
+static pthread_mutex_t g_hist_mu = PTHREAD_MUTEX_INITIALIZER;
+static double g_hist_t[HIST_N], g_hist_last = -1; static uint64_t g_hist_n, g_hist_ticket;
+static void hist_note(uint64_t ticket, double now_s) {
+    pthread_mutex_lock(&g_hist_mu);
+    if (g_hist_last >= 0 && ticket > g_hist_ticket && now_s - g_hist_last < 2.0) {   // a pause of 2 s and more (menus closed, hidden window) is not a frame
+        double dt = (now_s - g_hist_last) / (double)(ticket - g_hist_ticket);   // presents the screen skipped share the interval
+        for (uint64_t k = g_hist_ticket; k < ticket && k - g_hist_ticket < 8; k++) { g_hist_t[g_hist_n % HIST_N] = dt; g_hist_n++; }
+    }
+    g_hist_last = now_s; g_hist_ticket = ticket;
+    pthread_mutex_unlock(&g_hist_mu);
+}
+int fps_overlay_history(double *dt, int max, double window_s) {
+    pthread_mutex_lock(&g_hist_mu);
+    int n = 0; double sum = 0;
+    for (uint64_t i = g_hist_n; i > 0 && n < max && n < HIST_N && sum < window_s; i--) { dt[n] = g_hist_t[(i - 1) % HIST_N]; sum += dt[n++]; }
+    pthread_mutex_unlock(&g_hist_mu);
+    for (int i = 0; i < n / 2; i++) { double x = dt[i]; dt[i] = dt[n - 1 - i]; dt[n - 1 - i] = x; }   // oldest first
+    return n;
+}
+void fps_overlay_note(uint64_t ticket, double now_s) { rate_note(&g_game, ticket, now_s); hist_note(ticket, now_s); }
 int fps_overlay_value(void) { return atomic_load(&g_game.value); }
 void fps_overlay_note_gen(uint64_t n, double now_s) { rate_note(&g_gen, n, now_s); }
 int fps_overlay_gen_value(void) { return atomic_load(&g_gen.value); }

@@ -475,6 +475,7 @@ __attribute__((weak)) void runtime_hle_stack_set(uintptr_t top) { (void)top; }  
 static void *thread_main(void *p) {
     thr_t *t = p;
     pthread_setspecific(g_keythr, t);
+    { char nm[24]; snprintf(nm, sizeof nm, "guest-%#x", t->handle); pthread_setname_np(nm); }   // sample(1) and crash reports name the guest thread
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;

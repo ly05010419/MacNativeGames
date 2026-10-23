@@ -1,6 +1,7 @@
 // NVN 空设备的 Metal 执行层，见 nvn_mtl.h。
 // Metal execution layer of the NVN null device, see nvn_mtl.h.
 #import <Metal/Metal.h>
+#include <ctype.h>
 #include "totk_ui_lang.h"
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CAMetalDisplayLink.h>
@@ -839,7 +840,12 @@ static _Atomic int g_pend_arena_pin = 1;
 static uint64_t g_pend_arena_hazards;
 static int pend_over(void) { return g_pend_over_fence > g_done; }
 static int pend_hits(uint64_t a, uint64_t n) { if (pend_over()) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
+/* TOTK: bumped whenever an uniform copy made earlier in this replay might no longer equal a fresh one plus the writes
+   noted since (upd_shadow's incremental copy): a new submission, the snapshot table rebuilt or a range dropped from it,
+   a GPU copy noted (its bytes come from other memory), the table full. */
+static uint64_t g_mat_gen;
 static void pend_note(uint64_t dst, uint64_t n, const void *src, int kind) {
+    if (kind || g_npend >= PEND_MAX) g_mat_gen++;
     if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend] = dst + n; g_pend_src[g_npend] = src; g_pend_kind[g_npend] = (uint8_t)kind; g_pend_fence[g_npend] = g_fence + 1; g_npend++; }
     else g_pend_over_fence = g_fence + 1;
 }
@@ -854,7 +860,7 @@ static void pend_begin(void) {
         if (n != i) { g_pend_lo[n] = g_pend_lo[i]; g_pend_hi[n] = g_pend_hi[i]; g_pend_src[n] = g_pend_src[i]; g_pend_kind[n] = g_pend_kind[i]; g_pend_fence[n] = g_pend_fence[i]; }
         n++;
     }
-    g_npend = n;
+    g_npend = n; g_mat_gen++;
 }
 /* TOTK (2026-10-15): uniform contents as of the submit call. A submission is replayed inside nvnQueueSubmitCommands for
    several milliseconds; on the console the call returns at once and the GPU reads the constants soon after. Meanwhile the
@@ -947,6 +953,7 @@ static uint64_t g_usnap_skip_gpu;
 static int g_usnap_drop_off;   // probe-gpu-ubo-snapshot negative control only
 static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) within this submission
     if (!n) return;
+    g_mat_gen++;
     if (usnap_on()) {
         int dup = 0;   // the same buffer bound for many dispatches in a row: log it once
         for (int j = g_ngw - 1; j >= 0 && j >= g_ngw - 8; j--) if (g_gw[j].lo == a && g_gw[j].hi == a + n && g_gw[j].fence == g_fence + 1) { dup = 1; break; }
@@ -1463,7 +1470,7 @@ static void usnap_finish(void) {   // this submission's copies are about to be r
 void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
     usnap_cap *cap = capv;
     usnap_finish();
-    g_nusnap = 0;
+    g_nusnap = 0; g_mat_gen++;
     if (!usnap_on()) { g_ngw = 0; ucap_free(cap); g_fc_snap_end = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); return; }
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     usnap_take(h, n, cap);   // keeps cap in g_usnap_cap until the copies are done (usnap_finish)
@@ -1615,7 +1622,8 @@ static uint64_t upd_overlap_seq(uint64_t lo, uint64_t hi) {
     for (int i = a - 1; i >= 0 && g_upd_maxhi[i] > lo; i--) if (g_upd[i].hi > lo && g_upd[i].seq > last) last = g_upd[i].seq;
     return last;
 }
-typedef struct { uint64_t lo, size, seq, gpu; } ubo_shadow;
+typedef struct { uint64_t lo, size, seq, gpu; uint8_t *cpu; uint64_t gen, done; int npend; } ubo_shadow;   // cpu/gen/done/npend: upd_shadow's incremental copy
+static uint64_t g_ren_incr;
 #define UBO_SHADOW_MAX 512
 static ubo_shadow g_shadow[UBO_SHADOW_MAX]; static int g_nshadow;
 /* Small direct-mapped index into the authoritative shadow list. Always compare the
@@ -1641,7 +1649,7 @@ static int ub_rename_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_UB_RENAME"); v = !(e && !strcmp(e, "0")); MLOG("TOTK: inline uniform updates %s", v ? "renamed per binding (render passes stay open)" : "copied on the GPU timeline (TOTK_UB_RENAME=0)"); }
     return v;
 }
-void mtl_ren_stats(uint64_t v[6]) { v[0] = g_ren_updates; v[1] = g_ren_shadows; v[2] = g_ren_bytes; v[3] = g_ren_flushes; v[4] = g_ren_late; v[5] = g_ren_fallback; }
+void mtl_ren_stats(uint64_t v[7]) { v[6] = g_ren_incr; v[0] = g_ren_updates; v[1] = g_ren_shadows; v[2] = g_ren_bytes; v[3] = g_ren_flushes; v[4] = g_ren_late; v[5] = g_ren_fallback; }
 /* Bytes [a, a+n) as the GPU will see them at this point of the submission: memory, then every pending write that the GPU
    has not completed yet, oldest first (inline updates carry their bytes; GPU copies read their source the same way). */
 static void pend_materialize_x(uint64_t a, uint8_t *out, size_t n, int depth, int wait) {
@@ -1691,6 +1699,7 @@ static inline int upd_guard(uint64_t lo, uint64_t hi) {
     g_ren_flushes++; upd_flush(); return 1;
 }
 // GPU address of a private copy of the uniform range [lo, lo+size) holding the logged updates, or 0 when none overlaps it.
+static int shadow_incr_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_SHADOW_INCR"); on = !(e && !strcmp(e, "0")); } return on; }   // =0: every copy the full way (A/B)
 static uint64_t upd_shadow(uint64_t lo, uint64_t size) {
     uint64_t last = size ? upd_overlap_seq(lo, lo + size) : 0;
     if (!last) return 0;
@@ -1714,10 +1723,25 @@ static uint64_t upd_shadow(uint64_t lo, uint64_t size) {
         return g_shadow[i].gpu;
     }
     id<MTLBuffer> sb; size_t so = arena_alloc((size_t)size, &sb);
-    pend_materialize(lo, (uint8_t *)sb.contents + so, (size_t)size, 0);
+    uint8_t *cpu = (uint8_t *)sb.contents + so;
+    /* TOTK (2026-10-20, BOTW): a newer version of a range copied earlier in this replay is that copy plus the writes noted
+       since; rebuilding it read the whole snapshot and walked every pending write (thousands) for each of the ~540 copies
+       a frame. Only while nothing else changed (g_mat_gen) and no write completed meanwhile (g_done); else the full way. */
+    uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE); int prev = -1;
+    if (shadow_incr_on()) for (int i = g_nshadow - 1; i >= 0; i--) if (g_shadow[i].lo == lo && g_shadow[i].size == size) { prev = i; break; }
+    if (prev >= 0 && g_shadow[prev].gen == g_mat_gen && g_shadow[prev].done == done && g_shadow[prev].npend <= g_npend) {
+        memcpy(cpu, g_shadow[prev].cpu, (size_t)size);
+        for (int i = g_shadow[prev].npend; i < g_npend; i++) {
+            uint64_t plo = g_pend_lo[i], phi = g_pend_hi[i];
+            if (phi <= lo || plo >= lo + size || g_pend_fence[i] <= done) continue;
+            uint64_t s0 = plo > lo ? plo : lo, e0 = phi < lo + size ? phi : lo + size;
+            memcpy(cpu + (s0 - lo), (const uint8_t *)g_pend_src[i] + (s0 - plo), e0 - s0);   // kind 0 only: a kind 1 write bumps g_mat_gen
+        }
+        g_ren_incr++;
+    } else pend_materialize(lo, cpu, (size_t)size, 0);
     uint64_t gpu = sb.gpuAddress + so;
     if (g_nshadow == UBO_SHADOW_MAX) g_nshadow = 0;
-    g_shadow[g_nshadow++] = (ubo_shadow){lo, size, last, gpu};
+    g_shadow[g_nshadow++] = (ubo_shadow){lo, size, last, gpu, cpu, g_mat_gen, done, g_npend};
     if(indexed)g_shadow_index[slot]=(uint16_t)g_nshadow;
     g_ren_shadows++; g_ren_bytes += size;
     return gpu;
@@ -1989,7 +2013,7 @@ uint64_t mtl_sub_commit(void) {
     defer_fallback();   // 推迟合并通道：提交结束仍有未回放的 P 绘制（正常路径不会到这里） | Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     usnap_finish();   // TOTK: the helper threads must be done with the copies (they are, long before this)
-    g_nusnap = 0;   // TOTK: the replay is done; the uniform copies stay in this submission's arena until it completes
+    g_nusnap = 0; g_mat_gen++;   // TOTK: the replay is done; the uniform copies stay in this submission's arena until it completes
     upd_flush(); BOTW_WB_STAGE()   // TOTK: renamed uniform updates reach memory here, after every draw that read them through private copies
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     rs_sub_end();   // TOTK: encode stage drained before the command buffer is ended
@@ -2557,8 +2581,13 @@ void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
     wb_write_list(list, nl, 0);
 }
 /* Writes the listed renderings back to memory (the entries are freed); force: even over CPU writes since the render. */
-static void wb_write_list(wb_ent **list, int nl, int force) {
-    if (!nl) return;
+static void wb_write_list_body(wb_ent **list, int nl, int force);
+/* TOTK (2026-10-20, BotW): its own autorelease pool. nvnMemoryPoolInvalidateMappedRange calls this on a game thread,
+   outside the submission's pool, and game threads never drain their implicit one: every write-back's command buffer
+   and staging buffer stayed alive (about 1,700 IOAccelerator regions a minute in the world) until the GPU budget
+   stopped the game after 20-40 minutes. */
+static void wb_write_list(wb_ent **list, int nl, int force) { if (nl) @autoreleasepool { wb_write_list_body(list, nl, force); } }
+static void wb_write_list_body(wb_ent **list, int nl, int force) {
     { extern void nvn_x_drain(void) __attribute__((weak)); if (nvn_x_drain) nvn_x_drain(); }   // translation thread: nothing queued overtakes this read-back (as for ReadTexels)
     WB_WAIT_GPU(list, nl)
     /* Freshness is decided for every entry before anything is written back (a write-back marks its pages written), and
@@ -5126,6 +5155,36 @@ static int msl_stores_through(NSString *src, NSString *name) {
     }
     return 0;
 }
+/* TOTK (2026-10-20, BOTW): how many bytes of each uniform binding the shader reads. The translator declares every uniform
+   block as 64 KB (float4 _m0[4096]) and BOTW binds 64 KB, so the private copy of a block with inline updates
+   (upd_shadow) copied 64 KB a draw: 18 MB a frame on the render thread. 91% of the bindings index the block only with
+   constants, "(*spvDescriptorSet0.fp_c7)._m0[33]": they read (largest index + 1) x 16 bytes, mostly under 1 KB. Any other
+   use of the name (a computed index, the block passed on) leaves need at 0: the whole binding is copied. */
+static int cbuf_need_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_CBUF_NEED"); on = !(e && !strcmp(e, "0")); } return on; }   // =0: copy whole bindings (A/B)
+static void refl_cbuf_need(NvShader *o, NSArray *bs, NSString *src) {
+    const char *s = src.UTF8String;
+    if (!s || ![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;
+    for (int i = 0; i < o->rf.nb; i++) {
+        nvn_rbind *b = &o->rf.b[i]; if (b->kind != NVN_RB_CBUF && b->kind != NVN_RB_UBOP) continue;
+        NSDictionary *d = bs[(NSUInteger)i]; NSString *nm = [d isKindOfClass:[NSDictionary class]] ? d[@"msl_name"] : nil;
+        if (![nm isKindOfClass:[NSString class]] || !nm.length) continue;
+        const char *n = nm.UTF8String; size_t nl = strlen(n); long top = -1; int dyn = 0;
+        for (const char *p = strstr(s, n); p && !dyn; p = strstr(p + nl, n)) {
+            char before = p > s ? p[-1] : ' ', after = p[nl];
+            if (isalnum((unsigned char)before) || before == '_' || isalnum((unsigned char)after) || after == '_') continue;   // part of another name
+            if (!strncmp(p + nl, " [[", 3)) continue;   // its declaration in the argument struct
+            if (strncmp(p + nl, ")._m0[", 6)) { dyn = 1; break; }
+            const char *q = p + nl + 6; char *end; long idx = strtol(q, &end, 10);
+            if (end == q || idx < 0) { dyn = 1; break; }
+            if (*end == 'u') end++;
+            if (*end != ']') { dyn = 1; break; }
+            if (idx > top) top = idx;
+        }
+        if (!dyn) b->need = (uint32_t)(top + 1) * 16 > 16 ? (uint32_t)(top + 1) * 16 : 16;
+        static unsigned nb, nd; static uint64_t bytes; nb++; if (dyn) nd++; else bytes += b->need;
+        if (nb % 1000 == 1) MLOG("uniform 读取范围：%u 个绑定，%u 个按常数下标（平均 %.0f 字节），%u 个动态下标整块复制", nb, nb - nd, nb > nd ? (double)bytes / (nb - nd) : 0.0, nd);
+    }
+}
 static void refl_mark_stores(NvShader *o, NSArray *bs, NSString *src) {
     if (![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;   // nvn_refl_from_json keeps the json order 1:1
     for (int i = 0; i < o->rf.nb; i++) {
@@ -5213,7 +5272,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
-    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
+    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); if (cbuf_need_on()) refl_cbuf_need(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     /* TOTK (2026-10-17): the MSL is read again from its file when a variant needs it (sh_src), on the Mac too -- keeping
        every source cost 255 MB of strings (7,691 of them) in a long session (analysis/long18 heap). TOTK_KEEP_MSL=1 keeps
        them in memory (the Mac's behaviour before). */
@@ -8194,7 +8253,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
-            uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow)
+            uint64_t ren = g_nupd ? upd_shadow(u->addr, b->need && b->need < u->size ? b->need : u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow), only the bytes the shader reads
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
@@ -8304,7 +8363,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
               if (wsb && !wsb_done && u && u->addr && reg == wsb_reg && sh && sh->key && !strncmp(sh->key, wsb, strlen(wsb))) { extern void runtime_watch_set(uintptr_t, size_t); runtime_watch_set((uintptr_t)u->addr, (size_t)u->size); wsb_done = 1; MLOG("[watch] armed on storage buffer reg%d of %.16s addr=%#llx size=%llu", reg, sh->key, (unsigned long long)u->addr, (unsigned long long)u->size); } }
             uint64_t ren = 0;
             if (u && u->addr && g_nupd) {   // TOTK: renamed inline updates: uniforms read the private copy; storage access must already see memory
-                if (b->kind == NVN_RB_UBOP) ren = upd_shadow(u->addr, u->size);
+                if (b->kind == NVN_RB_UBOP) ren = upd_shadow(u->addr, b->need && b->need < u->size ? b->need : u->size);
                 else if (upd_overlap_seq(u->addr, u->addr + (u->size ? u->size : 1))) { g_ren_late++; RED_ONCE(59, "存储缓冲 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)u->addr); }
             }
             if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) usnap_drop(u->addr, u->size ? u->size : 1);   // TOTK: the shader may write it: no stale uniform copy from here on
@@ -12767,12 +12826,21 @@ static _Atomic uint64_t g_drawable_ns;   // 出图里等 nextDrawable 的累计�
 uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0); }
 // 有窗口时屏幕的最高刷新率（Hz）；无窗口返回 0。Mac 用 CoreGraphics 显示模式（线程安全的 C 接口，出图配置在游戏线程上读）
 // Maximum refresh rate (Hz) of the screen when there is a window; returns 0 without a window. Mac uses CoreGraphics display modes (thread-safe C interface; the present configuration is read on the game thread)
+#if TARGET_OS_OSX
+uint32_t front_display_id(void) __attribute__((weak_import));   // runtime/frontend.m: the display the window is on
+#endif
 int mtl_display_hz(void) {
     if (!front_metal_layer()) return 0;
 #if TARGET_OS_OSX
-    CGDisplayModeRef m = CGDisplayCopyDisplayMode(CGMainDisplayID());
+    /* The window's display, not the main one (frontend.m note_window_screen); read once per display, the pacing asks
+       every frame */
+    static _Atomic uint64_t cached;   // display id << 32 | Hz
+    CGDirectDisplayID d = front_display_id ? front_display_id() : 0; if (!d) d = CGMainDisplayID();
+    uint64_t c = atomic_load(&cached); if (c && (uint32_t)(c >> 32) == d) return (int)(uint32_t)c;
+    CGDisplayModeRef m = CGDisplayCopyDisplayMode(d);
     double hz = m ? CGDisplayModeGetRefreshRate(m) : 0; if (m) CGDisplayModeRelease(m);
-    return (int)(hz + 0.5);
+    int v = (int)(hz + 0.5); atomic_store(&cached, (uint64_t)d << 32 | (uint32_t)v);
+    return v;
 #else
     Class c = NSClassFromString(@"UIScreen"); id s = c ? [c valueForKey:@"mainScreen"] : nil;
     return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
@@ -13259,7 +13327,7 @@ static void cadence_note(double tt, int interp) {
     if (tt <= 0) dropped++;
     else { if (last > 0 && tt > last && n < N) { iv[n++] = (tt - last) * 1e3; ni += interp; } if (tt > last) last = tt; }
     if (n == N) {
-        if (!hz) { hz = mtl_display_hz(); if (hz <= 0) hz = 60; }
+        hz = mtl_display_hz(); if (hz <= 0) hz = 60;
         double a[N]; memcpy(a, iv, sizeof a); qsort(a, N, sizeof *a, dcmp_mtl);
         double tick = 1000.0 / hz; int held = 0; for (int i = 0; i < N; i++) held += a[i] > 1.5 * tick;
         MLOG("上屏节奏（近 %d 张，至帧 %llu，显示器 %d Hz）：间隔 p50 %.2f / p95 %.2f / 最大 %.2f ms；多停一次刷新以上 %d 次（%.1f%%）；其中补帧 %d 张；系统丢弃 %llu 张",
@@ -13670,7 +13738,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         /* TOTK_MFX: the game frame goes up at the refresh nearest to half a game frame after its interpolated one, so the
            two pictures share the frame's time evenly (30+30 on a 100 Hz display: two refreshes later, not one; half the
            refresh rate and uncapped: the next refresh). Until then the interpolated picture stays up. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);   // the window may change display
         if (tts < ip->interp_ts + ip->period / 2 - tick / 2) { pthread_mutex_unlock(&g_pq_mu); return; }
     }
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = tts; }
@@ -13778,7 +13846,7 @@ static void *present_main(void *arg) {
            the game frame for at least half a game frame (30+30 at 100 Hz: 1 + 2 refreshes within the 3.3 a frame lasts). When
            a newer game frame is already queued (uncapped interpolation above half the refresh rate) the interpolated
            picture is skipped: two pictures per game frame would fall further and further behind. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);   // the window may change display
         pthread_mutex_lock(&g_pq_mu); int behind = g_pq_read < g_pq_in; pthread_mutex_unlock(&g_pq_mu);
         int show_interp = it.interp >= 0 && !behind;
         if (show_interp) { @autoreleasepool { (void)present_now(&it.t, fmin(it.period / 2, tick), it.frame, ticket, it.crop, nil, 0, it.interp); } }

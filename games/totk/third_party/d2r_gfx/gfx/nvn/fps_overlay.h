@@ -51,6 +51,9 @@ void pso_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total);   /* 
    re-measured every half second; fps_overlay_value() returns it, or -1 before the first measurement. */
 void fps_overlay_note(uint64_t ticket, double now_s);
 int fps_overlay_value(void);
+/* The intervals between the last game frames on screen, in seconds, oldest first, covering about window_s seconds (at
+   most max): the corner panel's FPS graph. Returns how many. */
+int fps_overlay_history(double *dt, int max, double window_s);
 /* The same for interpolated frames shown (n counts them); fps_overlay_gen_value() is that rate, or -1. */
 void fps_overlay_note_gen(uint64_t n, double now_s);
 int fps_overlay_gen_value(void);
