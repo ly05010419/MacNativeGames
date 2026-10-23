@@ -90,7 +90,10 @@ def main():
     # Export the final code after all verified runtime patches have been applied, then embed it in executable segments.
     host=tree/('build/totk-native' if a.version=='v0' else f'build/totk-native-{a.version}')
     rewritten=tree/f'rewritten/{a.version}'; modules=gen/'modules';modules.mkdir(exist_ok=True)
-    e=dict(env,TOTK_EXPORT_IOS=str(modules))
+    # The Settings pane chooses the scene size at launch, but the size patch is code the phone cannot write: export
+    # with one valid size so the patch is embedded, then the device's own TOTK_RENDER_RES (main.m from the pane) drives
+    # it. Without this the embedded code keeps the game's handheld size and the pane's scene row does nothing.
+    e=dict(env,TOTK_EXPORT_IOS=str(modules),TOTK_RENDER_RES='1280x720')
     run([host,rewritten,'export-ios'],tree,logs/'export-ios.log',e)
     flags=subprocess.check_output([sys.executable,ios/'tools/gen_embed.py',rewritten,gen/'embed.S','--text-dir',modules,'main','subsdk0','sdk'],text=True,env=env).strip()
     # The app's sources use version-specific patch and generated runtime tables.

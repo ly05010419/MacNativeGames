@@ -11,6 +11,7 @@
 #include <math.h>
 #include "runtime.h"
 #include "dmsh_chain.h"
+#include "settings_map.h"
 #import "touch_pad.h"
 
 int totk_host_main(int argc, char **argv);
@@ -192,6 +193,127 @@ static void audio_observe(void) {
     }];
 }
 
+#if !TARGET_OS_VISION
+/* apply_settings runs before the window scene exists, so there is no scene screen to ask yet. */
+static NSDictionary *pref_row(NSDictionary *root, NSString *key) {
+    for (NSDictionary *item in root[@"PreferenceSpecifiers"] ?: @[])
+        if ([item[@"Key"] isEqual:key]) return item;
+    return nil;
+}
+#endif
+
+/* The Settings app pane is the single source of defaults: every TOTK_* row with a DefaultValue is registered, so the
+   game sees the same defaults before the player changes anything, then handed to the runtime as an environment
+   variable. Plain keys use overwrite=0, so devicectl can still supply them; the picture and frame blocks below
+   overwrite the keys they own, because one mode must own the whole pipeline. visionOS is the exception: its platform
+   defaults own the picture and frame keys (the pane's rows describe a phone display). */
+static void apply_settings(void) {
+    NSBundle *settings = [NSBundle bundleWithPath:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"Settings.bundle"]];
+    NSString *path = [settings pathForResource:@"Root" ofType:@"plist"];
+    NSDictionary *root = path ? [NSDictionary dictionaryWithContentsOfFile:path] : nil;
+    NSMutableDictionary *defaults = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in root[@"PreferenceSpecifiers"] ?: @[]) {
+        NSString *key = item[@"Key"]; id value = item[@"DefaultValue"];
+        if (key.length && [key hasPrefix:@"TOTK_"] && value) defaults[key] = value;
+    }
+#if TARGET_OS_VISION
+    /* The pane's picture and frame rows describe a phone or tablet display. On visionOS the platform's own defaults
+       (didFinishLaunching, below) own those keys: the window is not a 60 Hz panel, and its scene size comes from the
+       headset rather than from a phone's list. Handing the pane's values over would silently replace them. */
+    for (NSString *key in @[@"TOTK_IOS_PICTURE_MODE", @"TOTK_IOS_DRAWABLE_H", @"TOTK_RENDER_RES", @"TOTK_ASPECT",
+                            @"TOTK_MFX_UPSCALE", @"TOTK_TAA", @"TOTK_FPS_CAP", @"TOTK_FPS_OVERLAY", @"TOTK_SHADER_OVERLAY"])
+        [defaults removeObjectForKey:key];
+#endif
+    /* A package without the pane is broken; do not keep a second, hand-copied copy of the defaults here. Each
+       consumer falls back to its own documented default (the picture and frame maps have theirs). */
+    if (!defaults.count) fprintf(stderr, "[totk] settings: no Settings.bundle defaults; using the runtime defaults\n");
+    fprintf(stderr, "[totk] settings: %lu defaults from %s\n", (unsigned long)defaults.count, path.UTF8String ?: "no Settings.bundle");
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d registerDefaults:defaults];
+    for (NSString *key in defaults) {
+        id value = [d objectForKey:key];
+        if ([value isKindOfClass:NSNumber.class]) {
+            setenv(key.UTF8String, [value boolValue] ? "1" : "0", 0);
+        } else if ([value isKindOfClass:NSString.class] && [value length] && [value length] < 64) {
+            setenv(key.UTF8String, [value UTF8String], 0);
+        }
+        /* overwrite=0: a devicectl value for a plain key still wins. The picture and frame blocks below own their keys
+           and replace them. */
+    }
+#if !TARGET_OS_VISION
+    /* Before the pane existed, the drawable height was the only display choice. Adopt a stored choice once so an
+       upgrade keeps the player's cooler or sharper setting instead of silently starting in the new default mode. */
+    NSDictionary *stored = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier] ?: @{};
+    if (!stored[@"TOTK_IOS_PICTURE_MODE"]) {
+        NSString *old = stored[@"TOTK_IOS_DRAWABLE_H"];
+        NSString *migrated = [old isEqualToString:@"720"] ? @"720" : [old isEqualToString:@"1080"] ? @"1080" : old ? @"mfx" : nil;
+        if (migrated) {
+            [d setObject:migrated forKey:@"TOTK_IOS_PICTURE_MODE"];
+            fprintf(stderr, "[totk] settings: old drawable %s -> picture mode %s\n", old.UTF8String, migrated.UTF8String);
+        }
+    }
+    /* The picture mode owns the drawable and the output upscale; the scene upscale is the pane's own switch
+       (TOTK_MFX_UPSCALE), so 960x540 can be sharpened into 1080p without changing the mode. */
+    NSString *picture = [d stringForKey:@"TOTK_IOS_PICTURE_MODE"];
+    totk_picture_env penv;
+    if (!totk_picture_env_build(picture.UTF8String, &penv)) {
+        fprintf(stderr, "[totk] settings: picture mode \"%s\" is not a pane value; using %s\n",
+                picture.UTF8String ?: "", totk_picture_mode_default());
+        picture = [NSString stringWithUTF8String:totk_picture_mode_default()];
+        totk_picture_env_build(picture.UTF8String, &penv);
+    }
+    setenv("TOTK_IOS_DRAWABLE_H", penv.drawable, 1);
+    setenv("TOTK_MFX_OUTPUT", penv.output_upscale, 1);
+    /* Frame rate is one choice: the cap. */
+    NSString *cap = [d stringForKey:@"TOTK_FPS_CAP"];
+    /* Older builds stored a frame mode here; "interp" was one of them. Adopt the default instead of an unknown value. */
+    if ([cap isEqualToString:@"interp"]) {
+        cap = [NSString stringWithUTF8String:totk_frame_cap_default()];
+        [d setObject:cap forKey:@"TOTK_FPS_CAP"];
+        fprintf(stderr, "[totk] settings: old frame mode interp -> %s fps\n", cap.UTF8String);
+    }
+    totk_frame_env fenv;
+    if (!totk_frame_env_build(cap.UTF8String, &fenv)) {
+        fprintf(stderr, "[totk] settings: frame cap \"%s\" is not a pane value; using %s\n",
+                cap.UTF8String ?: "", totk_frame_cap_default());
+        cap = [NSString stringWithUTF8String:totk_frame_cap_default()];
+        [d setObject:cap forKey:@"TOTK_FPS_CAP"];
+        totk_frame_env_build(cap.UTF8String, &fenv);
+    }
+    /* The 120 cap leaves the pacing to the uncapped path, whose ceiling is the display's own rate: a 60 Hz panel simply
+       never gets above 60, so there is no separate fallback to apply. */
+    if (fenv.present_hz) setenv("DM_PRESENT_HZ", fenv.present_hz, 1); else unsetenv("DM_PRESENT_HZ");
+    if (fenv.phone_fps) setenv("TOTK_PHONE_FPS", fenv.phone_fps, 1); else unsetenv("TOTK_PHONE_FPS");
+    /* A stored scene the pane no longer offers would leave the game at a size it cannot name; use the pane's default
+       and say so. A valid devicectl value was already applied and survives this check. */
+    NSDictionary *scene_row = pref_row(root, @"TOTK_RENDER_RES");
+    NSArray *scene_values = scene_row[@"Values"] ?: @[];
+    NSString *fallback = scene_row[@"DefaultValue"] ?: @"960x540";
+    const char *scene = getenv("TOTK_RENDER_RES");
+    NSString *scene_text = scene && *scene ? [NSString stringWithUTF8String:scene] : nil;
+    if (scene_values.count && (!scene_text || ![scene_values containsObject:scene_text])) {
+        fprintf(stderr, "[totk] settings: scene \"%s\" is not a pane value; using %s\n",
+                scene_text.UTF8String ?: "", fallback.UTF8String);
+        [d setObject:fallback forKey:@"TOTK_RENDER_RES"];
+        setenv("TOTK_RENDER_RES", fallback.UTF8String, 1);
+    }
+    /* One switch per overlay: the status line in the top-right corner and the shader/pipeline counts in the
+       bottom-left; the runtime reads both independently (gfx/nvn/fps_overlay.c). */
+    setenv("TOTK_FPS_OVERLAY", [d boolForKey:@"TOTK_FPS_OVERLAY"] ? "1" : "0", 1);
+    setenv("TOTK_SHADER_OVERLAY", [d boolForKey:@"TOTK_SHADER_OVERLAY"] ? "1" : "0", 1);
+    fprintf(stderr, "[totk] settings: picture %s (drawable %s), scene %s, fps %s (hz %s, phone %s), aspect %s, overlays %s/%s, taa %d, mfx %s/%s\n",
+            picture.UTF8String ?: "?",
+            penv.drawable,
+            getenv("TOTK_RENDER_RES") ?: "?",
+            cap.UTF8String ?: "60",
+            getenv("DM_PRESENT_HZ") ?: "-", getenv("TOTK_PHONE_FPS") ?: "-",
+            [[d stringForKey:@"TOTK_ASPECT"] UTF8String] ?: "?",
+            getenv("TOTK_FPS_OVERLAY") ?: "1", getenv("TOTK_SHADER_OVERLAY") ?: "1",
+            (int)[d boolForKey:@"TOTK_TAA"],
+            getenv("TOTK_MFX_UPSCALE") ?: "1", getenv("TOTK_MFX_OUTPUT") ?: "0");
+#endif
+}
+
 @interface TOTKApp : UIResponder <UIApplicationDelegate> @end
 @implementation TOTKApp
 - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
@@ -219,6 +341,7 @@ static void audio_observe(void) {
     BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv,"0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
     if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
+    apply_settings();
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     /* The 17 GB image may live in Documents/GameData instead of the app (romfs.bin or romfs.bin.000, ...; ios/tools/
        install_device.py --game-data puts it there): a new build then installs without it, and reinstalling keeps it.
@@ -275,11 +398,6 @@ static void audio_observe(void) {
 #else
     setenv("TOTK_OPERATION_MODE","handheld",1);
 #endif
-    // Game language: the Settings app (Settings.bundle › TOTK_LANG) stores the choice in our defaults; empty means the
-    // system language, which is what the runtime already follows. iOS 27 does not honour Info.plist LSEnvironment, so
-    // the value must be applied here. overwrite=0 keeps devicectl --environment-variables winning when testing from the Mac.
-    NSString *lang = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_LANG"];
-    if (lang.length>0&&lang.length<8) setenv("TOTK_LANG",lang.UTF8String,0);
     setenv("TOTK_ROMFS_PATCHES",[res stringByAppendingPathComponent:@"romfs-patches"].fileSystemRepresentation,1);
     setenv("TOTK_ROMFS_PATCHES_OUT",[res stringByAppendingPathComponent:@"romfs-patches-out"].fileSystemRepresentation,1);
     setenv("TOTK_SHARED_FONTS",[res stringByAppendingPathComponent:@"shared-fonts"].fileSystemRepresentation,1);
