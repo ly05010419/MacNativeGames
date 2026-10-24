@@ -197,6 +197,7 @@ static NSString *shortcut_text(void){
  NSString *picture;
  if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
+ else if(w==3840&&h==2160)picture=@(TOTK_UI("原生 4K","native 4K"));
  else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
  else picture=@(TOTK_UI("关闭","off"));
  /* key 4 (runtime/aspect_patch.h): 16:9 -> fit to the window -> 21:9 (or TOTK_ASPECT's ratio) */

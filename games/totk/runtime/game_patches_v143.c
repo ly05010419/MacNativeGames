@@ -325,8 +325,12 @@ int runtime_output_res(unsigned *w,unsigned *h){
         }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
-            snprintf(path,sizeof path,"%s/2560x1440/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out");
-            FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=2560;ch=1440;}
+            /* The largest prepared size sizes the swapchain and heaps: 4K when its HeapDef overlay exists, else 2K. */
+            static const unsigned sizes[][2]={{3840,2160},{2560,1440}};
+            for(unsigned i=0;i<2&&!on;i++){
+                snprintf(path,sizeof path,"%s/%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i][0],sizes[i][1]);
+                FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=sizes[i][0];ch=sizes[i][1];}
+            }
             output_full_at_start=0;
         }else{
             char tail;
@@ -455,6 +459,10 @@ static void render_res_publish(unsigned canvas_w){
     if(!render_page)return;
     float k=canvas_w>1920?canvas_w/1920.0f:1.0f,v[2]={render_w/k,render_h/k};
     if(render_canvas){v[0]=1920;v[1]=1080;render_w=(unsigned)(1920*k);render_h=(unsigned)(1080*k);}   /* the game's scaling makes it the canvas */
+    /* Native 4K (--native-4k): a 3840x2160 scene's texture pool (about 1.49 GiB) is over the 1 GiB zero-copy buffer limit
+       (nvn_mtl.m POOL_BUFFER_MAX), so the 4K canvas keeps the game's own docked scene, 1600x900 scaled with the canvas:
+       3200x1800. Smaller canvases still render the scene at the canvas size. */
+    if(render_canvas&&canvas_w>2560){v[0]=1600;v[1]=900;render_w=(unsigned)(1600*k);render_h=(unsigned)(900*k);}
     memcpy(render_page+16,v,sizeof v);
     fprintf(stderr,"[totk] 1.4.3 render resolution: %ux%u on a %u-wide canvas (game size %.0fx%.0f, scaled by %.4f)\n",render_w,render_h,canvas_w,v[0],v[1],k);
 }
@@ -474,6 +482,7 @@ static int render_res(unsigned *w,unsigned *h){
         *w=960;*h=540;
 #else
         render_canvas=1;unsigned ow,oh;if(runtime_output_res(&ow,&oh)){*w=ow;*h=oh;}else{*w=1920;*h=1080;}   /* the largest scene, for the heaps */
+        if(*w>2560){*w=2560;*h=1440;}   /* native 4K: the 2K canvas has the largest canvas-sized scene (render_res_publish) */
 #endif
         return 1;
     }
@@ -542,26 +551,32 @@ static void patch_fixed_res(Module *m){
     fprintf(stderr,"[totk] 1.4.3 fixed resolution (TOTK_FIXED_RES): the dynamic resolution controller's scale is held at 100 %% (1 instruction at main+%#llx)\n",(unsigned long long)site);
 #endif
 }
-int runtime_output_res_toggle(void){
-    if(!output_page)return 0;
-    _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
-    int full=atomic_load(size)!=pack_size(output_w,output_h);
-    atomic_store(size,full?pack_size(output_w,output_h):pack_size(1920,1080));
-    uint64_t now=atomic_load(size);render_res_publish((unsigned)now);   /* the scene size first: the game rebuilds when told */
+/* Request a canvas size up to the largest prepared one; the game rebuilds its layout on the next frame. */
+static void output_request(unsigned w,unsigned h){
+    atomic_store((_Atomic uint64_t *)(void *)(output_page+32),pack_size(w,h));
+    render_res_publish(w);   /* the scene size first: the game rebuilds when told */
     uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
     if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
-    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (display config %s)\n",(unsigned)now,(unsigned)(now>>32),config?"ready":"not published yet");
+    fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (display config %s)\n",w,h,config?"ready":"not published yet");
+}
+int runtime_output_res_toggle(void){
+    if(!output_page)return 0;
+    int full=atomic_load((_Atomic uint64_t *)(void *)(output_page+32))!=pack_size(output_w,output_h);
+    if(full)output_request(output_w,output_h);else output_request(1920,1080);
     return 1;
 }
+/* Key 3: off -> MetalFX 2K -> native 2K -> native 4K (when the 4K heaps were prepared) -> off. */
 int runtime_output_mode_cycle(void){
     if(!output_page)return 0;
     extern int mfxup_output_enabled(void);extern void dm_gfx_set_flag(const char *,int);
-    int full=atomic_load((_Atomic uint64_t *)(void *)(output_page+32))==pack_size(output_w,output_h);
-    int native=0,mfx=0;const char *name;
-    if(full)name="关闭 2K";
-    else if(mfxup_output_enabled()){native=1;name="原生 2K";}
+    uint64_t cur=atomic_load((_Atomic uint64_t *)(void *)(output_page+32));
+    int has4k=output_w>=3840&&output_h>=2160;
+    unsigned w=1920,h=1080;int mfx=0;const char *name;
+    if(cur==pack_size(2560,1440)&&has4k){w=3840;h=2160;name="原生 4K";}
+    else if(cur!=pack_size(1920,1080))name="关闭 2K/4K";
+    else if(mfxup_output_enabled()){w=2560;h=1440;name="原生 2K";}
     else{mfx=1;name="MetalFX 2K";}
-    if(full!=native)runtime_output_res_toggle();
+    if(cur!=pack_size(w,h))output_request(w,h);
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
     fprintf(stderr,"[totk] key 3: %s\n",name);
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));

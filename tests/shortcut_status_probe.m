@@ -98,7 +98,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(21); tick(); expect(panel, @"Aspect ratio: 21:9");
     press(21); tick(); expect(panel, @"Aspect ratio: 16:9");
     /* Startup/diagnostic paths can set the canvas without a key press. */
-    shortcut_test_output_size(3840, 2160); tick(); expect(panel, @"Picture: native 3840×2160");
+    shortcut_test_output_size(3840, 2160); tick(); expect(panel, @"Picture: native 4K");
     shortcut_test_output_size(2560, 1440);
     mfx_set(MFX_HALF); mfx_latch();
     setenv("TOTK_UI_LANG", "zh", 1); tick();
