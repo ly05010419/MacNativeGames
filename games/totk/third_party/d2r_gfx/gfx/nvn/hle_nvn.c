@@ -130,6 +130,7 @@ void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
 // TOTK translation thread (see "translation thread" below)
 static uint64_t fence_now(int *token);
 static int fence_wait(uint64_t k, uint64_t timeout_ns);
+static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns);
 static void x_drain(void);
 static int async_replay(void);
 static int call_stats_on(void);
@@ -628,6 +629,15 @@ NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f)
 // and calls whose fence was the newest committed one (a full drain of the queue).
 _Atomic uint64_t g_sw_calls[2], g_sw_blocked[2], g_sw_ns[2], g_sw_newest[2];
 static int synclog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_SYNC_LOG") != NULL; return on; }
+/* TOTK_SYNC_LAG=1 (runtime "flag sync_lag 0|1"; off by default): the game's main thread waits every frame for the GPU to
+   finish the frame it has just submitted (SyncWait on the newest fence, from observed_main; ~7 ms a frame in a heavy
+   world scene on an M4 Air), so the game's CPU frame and the GPU frame never overlap. With the switch such a wait settles
+   for the submission before it: the main thread computes frame N+1 while the GPU still draws frame N. A wait for any older
+   fence is unchanged, and with the translation thread the newest submission must still be translated (its command memory
+   is free again) before the wait returns; only the GPU part lags by one frame. */
+static _Atomic int g_sync_lag = -1;
+void nvn_set_sync_lag(int on) { atomic_store(&g_sync_lag, on != 0); LOG("[flag] sync_lag = %d", on != 0); }
+static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e && atoi(e) > 0; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     NVN_BLOCKING();
     const sync_t *o = (const sync_t *)s;
@@ -635,11 +645,13 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     int k = (o->fenced & 2) != 0, lg = synclog_env();
     if (lg) { atomic_fetch_add(&g_sw_calls[k], 1); if (o->fence == mtl_last_fence()) atomic_fetch_add(&g_sw_newest[k], 1); }
     int tok = (o->fenced & 4) != 0;
-    if (tok ? fence_wait(o->fence, 0) : mtl_wait(o->fence, 0)) { survey_after_wait(s); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
+    uint64_t want = o->fence;   // the fence whose GPU completion is waited for (TOTK_SYNC_LAG: one submission earlier)
+    if (want > 1 && sync_lag_on()) { int t; if (tok ? fence_now(&t) == want : want == mtl_last_fence()) want--; }
+    if (tok ? fence_wait_to(o->fence, want, 0) : mtl_wait(want, 0)) { survey_after_wait(s); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = lg ? now_ns() : 0;
     totk_tl(TL_WAIT_IN, o->fence, o->fence == mtl_last_fence());
     if (sync_chain_left(1)) { char w[96]; snprintf(w, sizeof w, "SyncWait sync=%p fence=%llu newest=%d", (const void *)s, (unsigned long long)o->fence, o->fence == mtl_last_fence()); guest_chain(w); }
-    int ok = tok ? fence_wait(o->fence, timeout) : mtl_wait(o->fence, timeout);
+    int ok = tok ? fence_wait_to(o->fence, want, timeout) : mtl_wait(want, timeout);
     totk_tl(TL_WAIT_OUT, o->fence, ok);
     if (lg) { atomic_fetch_add(&g_sw_blocked[k], 1); atomic_fetch_add(&g_sw_ns[k], now_ns() - t0); }
     if (ok) survey_after_wait(s);
@@ -2140,7 +2152,9 @@ static uint64_t fence_now(int *token) {
     pthread_mutex_lock(&g_xq_mu); uint64_t k = g_xsub_in; pthread_mutex_unlock(&g_xq_mu); *token = 1; return k;
 }
 // Waits for a token: the submit has been translated, then the Metal fence it ended with. 1 = reached.
-static int fence_wait(uint64_t k, uint64_t timeout_ns) {
+static int fence_wait(uint64_t k, uint64_t timeout_ns) { return fence_wait_to(k, k, timeout_ns); }
+// Submit k must be translated; the GPU wait is for the fence of submit kg <= k (TOTK_SYNC_LAG).
+static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
     uint64_t t0 = now_ns();
     pthread_mutex_lock(&g_xq_mu);
     if (g_xsub_done < k) {
@@ -2150,7 +2164,7 @@ static int fence_wait(uint64_t k, uint64_t timeout_ns) {
         while (g_xsub_done < k) if (pthread_cond_timedwait(&g_xq_cv, &g_xq_mu, &dl)) break;
     }
     int ok = g_xsub_done >= k;
-    uint64_t f = !k ? 0 : g_xsub_done - k < XF ? g_xsub_fence[k % XF] : mtl_last_fence();   // older entries were overwritten: a later fence is conservative
+    uint64_t f = !kg ? 0 : g_xsub_done - kg < XF ? g_xsub_fence[kg % XF] : mtl_last_fence();   // older entries were overwritten: a later fence is conservative
     pthread_mutex_unlock(&g_xq_mu);
     if (!ok) return 0;
     uint64_t used = now_ns() - t0;

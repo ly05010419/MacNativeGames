@@ -2466,6 +2466,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "writeback")) { atomic_store(&g_wb_on, v); MLOG("[flag] writeback = %d", v); return; }
     if (!strcmp(name, "deferred")) { extern void nvn_set_deferred_binds(int on); nvn_set_deferred_binds(v); return; }
     if (!strcmp(name, "framewait")) { extern void nvn_set_framewait(int on); nvn_set_framewait(v); return; }
+    if (!strcmp(name, "sync_lag")) { extern void nvn_set_sync_lag(int on); nvn_set_sync_lag(v); return; }
     if (!strcmp(name, "uncapped_interval")) { extern void nvn_set_uncapped_interval(int on); nvn_set_uncapped_interval(v); return; }
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
