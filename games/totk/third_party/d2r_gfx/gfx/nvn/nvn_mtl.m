@@ -578,7 +578,7 @@ void mtl_init(void) {
     for (int i = 0; i < 3; i++) {
         g_present_args[i] = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
         if (!g_present_args[i]) MDIE("建立出图 argument table[%d] 失败：%s", i, ate.localizedDescription.UTF8String);
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
         if (!g_present_uv[i]) MDIE("建立出图 UV 缓冲[%d] 失败", i);
         res_add(g_present_uv[i]);
         if (g_present_probe) {
@@ -590,13 +590,13 @@ void mtl_init(void) {
         g_bloomq_const[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
         if (!g_bloomq_const[i]) MDIE("建立泛光 1/4 常量缓冲[%d] 失败", i);
         res_add(g_bloomq_const[i]);
-        g_fps_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_fps_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
         if (!g_fps_uv[i]) MDIE("建立帧数 UV 缓冲[%d] 失败", i);
         res_add(g_fps_uv[i]);
-        g_shd_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_shd_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
         if (!g_shd_uv[i]) MDIE("建立着色器计数框 UV 缓冲[%d] 失败", i);
         res_add(g_shd_uv[i]);
-        g_load_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_load_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 12 options:MTLResourceStorageModeShared];
         if (!g_load_uv[i]) MDIE("建立负载行 UV 缓冲[%d] 失败", i);
         res_add(g_load_uv[i]);
     }
@@ -12536,7 +12536,7 @@ void mtl_exec(const uint8_t *p) {
 
 // ---------- 出图：交换链贴图画到 CAMetalLayer；可选截图 ----------
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------
-static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
+static id<MTLRenderPipelineState> g_blit_pso, g_hdr_pso; static MTLPixelFormat g_blit_fmt;
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
 uint64_t mtl_present_count(void) { return g_present_n; }   // 实际出图次数（发热归因 DM_HEAT 算出图帧率） | Actual present count (heat attribution DM_HEAT computes the present frame rate)
@@ -12993,25 +12993,56 @@ int mtl_display_hz(void) {
 static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次出图前额外停顿（模拟 drawable 迟迟不可用） | For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
 static CAMetalLayer *g_present_layer_resident;
 void mtl_present_test_stall(uint64_t ns) { g_present_stall_ns = ns; }
+/* TOTK HDR (key 8, frontend.m front_hdr_peak): the EDR window is RGBA16Float in extended linear Display P3, so every draw
+   into it (kLinear) decodes the sRGB-encoded picture to linear. The game picture's draw (g_hdr_pso, kExpand) then brightens
+   pixels brighter than the knee (linear luminance, TOTK_HDR_KNEE, default 0.5) along a square curve, scaling the colour by
+   its luminance so hues hold, until SDR white reaches the peak (Crop.hdr.x). The overlays keep SDR white. */
+static float hdr_knee(void) { static float k = -1; if (k < 0) { const char *e = getenv("TOTK_HDR_KNEE"); k = e ? strtof(e, NULL) : 0.5f; if (!(k >= 0 && k <= 0.95f)) k = 0.5f; } return k; }
+static id<MTLRenderPipelineState> present_pso_for(float hdr[4]) {
+    float peak = front_hdr_peak();
+    hdr[0] = peak > 1 ? peak : 1; hdr[1] = hdr_knee(); hdr[2] = hdr[3] = 0;
+    return g_hdr_pso && peak > 1.001f ? g_hdr_pso : g_blit_pso;
+}
 static void present_pipeline(MTLPixelFormat format) {
     if (!g_blit_pso || g_blit_fmt != format) {
         static const char *src_msl =
             "#include <metal_stdlib>\nusing namespace metal;\n"
+            "constant bool kLinear [[function_constant(0)]];\n"
+            "constant bool kExpand [[function_constant(1)]];\n"
             "struct V { float4 p [[position]]; float2 uv; };\n"
             "vertex V vs(uint id [[vertex_id]]) { float2 uv = float2((id << 1) & 2, id & 2); V o; o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
-            "struct Crop { float4 rect; float4 edge; };\n"
-            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) { return t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw)); }\n";
+            "struct Crop { float4 rect; float4 edge; float4 hdr; };\n"
+            "fragment float4 fs(V in [[stage_in]], texture2d<float> t [[texture(0)]], sampler s [[sampler(0)]], constant Crop& c [[buffer(0)]]) {\n"
+            "  float4 o = t.sample(s, clamp(in.uv * c.rect.zw + c.rect.xy, c.edge.xy, c.edge.zw));\n"
+            "  if (kLinear) {\n"
+            "    float3 e = saturate(o.rgb), l = select(pow((e + 0.055) / 1.055, 2.4), e / 12.92, e <= 0.04045);\n"
+            "    if (kExpand) { float y = dot(l, float3(0.2126, 0.7152, 0.0722)), a = saturate((y - c.hdr.y) / (1 - c.hdr.y)); l *= 1 + (c.hdr.x - 1) * a * a; }\n"
+            "    o.rgb = l;\n"
+            "  }\n"
+            "  return o;\n"
+            "}\n";
         NSError *e = nil;
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src_msl) options:nil error:&e];
         if (!lib) MDIE("出图着色器编译失败 %s", e.localizedDescription.UTF8String);
-        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
-        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
-        pd.colorAttachments[0].pixelFormat = format;
-        g_blit_pso = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
-        if (!g_blit_pso) MDIE("出图管线失败 %s", e.localizedDescription.UTF8String);
+        bool linear = format == MTLPixelFormatRGBA16Float;
+        id<MTLRenderPipelineState> (^build)(bool) = ^id<MTLRenderPipelineState>(bool expand) {
+            NSError *pe = nil;
+            MTLFunctionConstantValues *fc = [MTLFunctionConstantValues new];
+            [fc setConstantValue:&linear type:MTLDataTypeBool atIndex:0]; [fc setConstantValue:&expand type:MTLDataTypeBool atIndex:1];
+            MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+            pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs" constantValues:fc error:&pe];
+            pd.colorAttachments[0].pixelFormat = format;
+            id<MTLRenderPipelineState> pso = pd.fragmentFunction ? [g_dev newRenderPipelineStateWithDescriptor:pd error:&pe] : nil;
+            if (!pso) MDIE("出图管线失败 %s", pe.localizedDescription.UTF8String);
+            return pso;
+        };
+        g_blit_pso = build(false);
+        g_hdr_pso = linear ? build(true) : nil;
         g_blit_fmt = format;
-        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
-        g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
+        if (!g_blit_samp) {
+            MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new]; sd.minFilter = sd.magFilter = MTLSamplerMinMagFilterLinear; sd.supportArgumentBuffers = YES;
+            g_blit_samp = [g_dev newSamplerStateWithDescriptor:sd];
+        }
     }
 }
 // 出图仅采NVN声明的有效源矩形；与原始交换链读回截图分开。边缘钳到有效区纹素中心，双线性不读外侧黑纹素。
@@ -13213,12 +13244,13 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
-    float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
-                   (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
+                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    [en setRenderPipelineState:present_pso_for(uv + 8)]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    MTLViewport ovp; float fuv[8];
+    [en setRenderPipelineState:g_blit_pso];
+    MTLViewport ovp; float fuv[12] = {0};
     if (fps_overlay && fps_overlay_prepare(3, vp, &ovp, fuv)) {
         [en setViewport:ovp]; [en setFragmentTexture:g_fps_tex[3] atIndex:0]; [en setFragmentBytes:fuv length:sizeof fuv atIndex:0];
         [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -13268,8 +13300,9 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setArgumentTable:args atStages:MTLRenderStageFragment];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:present_pso_for(uv + 8)];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [en setRenderPipelineState:g_blit_pso];
     MTLViewport ovp; float fuv[8];
     if (fps_overlay_prepare(uv_i, vp, &ovp, fuv)) {   // argument-table bindings are captured per draw, so rebinding here leaves the game picture's draw intact
         memcpy(g_fps_uv[uv_i].contents, fuv, sizeof fuv);

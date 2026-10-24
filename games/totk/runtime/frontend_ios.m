@@ -69,6 +69,7 @@ void runtime_warm_done(void){}
 /* The "温控" of the present lines (hle_nvn.c): the system's thermal state, 0 nominal, 1 fair, 2 serious, 3 critical; the default
    (-1) was never replaced on iOS, so a phone slowing down as it warmed could not be told from other causes (2026-10-23). */
 int dm_thermal_now(void){return (int)NSProcessInfo.processInfo.thermalState;}
+float front_hdr_peak(void){return 0;}
 uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
 static _Atomic int appActive=1;
 int runtime_front_focus(void){return atomic_load(&appActive);}

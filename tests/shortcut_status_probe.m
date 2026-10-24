@@ -28,6 +28,9 @@ static int fakeMouse;
 int runtime_mouse_toggle(void) { return fakeMouse = !fakeMouse; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
+/* runtime/gamepad.m's settings files (key 8 keeps HDR in hdr.txt): none here, so HDR starts off. */
+int runtime_setting_get(const char *name, char *word, size_t size) { (void)name; (void)word; (void)size; return 0; }
+void runtime_setting_put(const char *name, const char *word, const char *what) { (void)name; (void)word; (void)what; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
 void runtime_mouse_release(void) {}
