@@ -13,6 +13,9 @@
 #include "audio_mixer.h"
 #include "audio_reverb.h"
 #include "audio_effects.h"
+#ifdef GAME_BOTW
+#include "audio_ramp.h"
+#endif
 #include <AudioToolbox/AudioToolbox.h>
 #include <math.h>
 #include <stdatomic.h>
@@ -49,6 +52,9 @@ typedef struct Mixer {
     FILE *capture;float *capture_buf;uint64_t capture_frames,capture_limit,capture_skip;
     pthread_t capture_thread;pthread_mutex_t capture_lock;pthread_cond_t capture_cond;
     int capture_started,capture_done,capture_closing,capture_worker;
+#ifdef GAME_BOTW
+    int ramp; float (*prev_mix)[24], *depop;   /* volume ramps and depop (voice_ramp_mix); TOTK_AUDIO_RAMP=0 turns them off */
+#endif
 } Mixer;
 
 static _Atomic float device_volume = 1.0f;
@@ -213,6 +219,12 @@ void audio_mixer_open(AudioRenderer *r) {
         m->capture_worker=1;
         fprintf(stderr,"[totk-audio] diagnostic capture armed: %d Hz stereo float32, 30 seconds after %lu-second delay from first nonzero frame\n",r->param.sample_rate,seconds);
     }else fprintf(stderr,"[totk-audio] diagnostic capture unavailable (file exists or cannot be opened)\n");}
+#ifdef GAME_BOTW
+    { const char *e=getenv("TOTK_AUDIO_RAMP"); m->ramp=!(e && !strcmp(e,"0"));
+      m->prev_mix=calloc((size_t)r->param.voice_count*6,sizeof *m->prev_mix); m->depop=calloc((size_t)m->nbuf,sizeof(float));
+      if(!m->prev_mix || !m->depop)runtime_fail("audio ramp tables");
+      if(!m->ramp)fprintf(stderr,"[totk-audio] TOTK_AUDIO_RAMP=0: volume changes and voice stops are not smoothed (the old behaviour, for comparison)\n"); }
+#endif
     prefill_blocks();   // decided before the device's callback can run
     pthread_mutex_lock(&g_out_mu);
     m->rate = r->param.sample_rate; output_open(m, m->rate);
@@ -236,6 +248,9 @@ void audio_mixer_close(AudioRenderer *r) {
     }
     for (int i = 0; i < m->nsplit; i++) free(m->split[i].ids);
     for (int i = 0; i < r->param.effect_count; i++) { audio_reverb_free(m->effect[i].reverb); audio_effect_free(m->effect[i].dsp); free(m->effect[i].delay); }
+#ifdef GAME_BOTW
+    free(m->prev_mix);free(m->depop);
+#endif
     free(m->sink_address);free(m->sink_size);free(m->sink_offset);free(m->sink_old);free(m->sink_written);
     free(m->effect); free(m->effect_order);
     free(m->buf); free(m->offset); free(m->split); free(m->dest); free(m); r->mixer = NULL;
@@ -434,6 +449,54 @@ static void accumulate(Mixer *m, int buffer, const float *src, float vol, int fr
     if (vol == 0 || buffer < 0 || buffer >= m->nbuf) return;
     float *d = mixbuf(m, buffer); for (int k = 0; k < frames; k++) d[k] += src[k] * vol;
 }
+#ifdef GAME_BOTW
+/* The DSP never applies a new volume as a step: Breath of the Wild changes voice and channel volumes from one 5-ms
+   frame to the next (fades, ducking the music under a menu or a scene change) and stops voices in the middle of
+   their sound, and a step on a loud sample is a click. As Ryujinx.Audio does it (CommandGenerator.GenerateVoice):
+   the voice volume ramps from the last frame's value (VolumeRamp), each channel's mix volume ramps from the last
+   frame's value (MixRamp, which keeps the last sample it added to each buffer), and a voice that stopped or paused
+   adds those last samples to a depop value that decays by 0.962189 per sample (48 kHz) in its mix (DepopPrepare,
+   DepopForMixBuffers). A new voice starts at its volume; a voice that resumes ramps up from 0. */
+static int mix_valid(AudioRenderer *r, int32_t id);
+static void voice_ramp_mix(AudioRenderer *r, ServerVoice *v, float vs[6][MAX_FRAME], int cc, int frames) {
+    Mixer *m = r->mixer; const float v0 = v->prev_volume, v1 = v->in.volume;
+    for (int c = 0; c < cc; c++) ramp_gain(vs[c], v0, v1, frames);
+    v->prev_volume = v1;
+    const int mix = v->in.mix_id;
+    for (int c = 0; c < cc; c++) {
+        int32_t id = v->in.channel_ids[c]; if (id < 0 || id >= r->param.voice_count * 6) continue;
+        const AudrenChannelIn *ch = &r->channels[id]; float *prev = m->prev_mix[id];
+        for (int b = 0; b < r->mixes[mix].buffer_count && b < 24; b++) {
+            int buffer = m->offset[mix] + b;
+            if (buffer >= m->nbuf) continue;
+            if (ch->mix[b] != 0 || prev[b] != 0) v->last[c][b] = ramp_mix(mixbuf(m, buffer), vs[c], prev[b], ch->mix[b], frames);
+            else v->last[c][b] = 0;   /* a muted channel added nothing, so a later pause has no tail to fade */
+        }
+        memcpy(prev, ch->mix, sizeof ch->mix);
+    }
+}
+static void voice_depop_prepare(AudioRenderer *r, ServerVoice *v) {
+    Mixer *m = r->mixer; const int mix = v->in.mix_id;
+    for (int c = 0; c < 6; c++) for (int b = 0; b < 24; b++) {
+        if (v->last[c][b] != 0 && mix_valid(r, mix) && b < r->mixes[mix].buffer_count && m->offset[mix] + b < m->nbuf) m->depop[m->offset[mix] + b] += v->last[c][b];
+        v->last[c][b] = 0;
+    }
+}
+/* A voice that was stopped or paused but is released or reused before the next render frame (audio_renderer.c update_voice) still
+   hands its tail to the depop, as the frame that sees the stop would. A voice freed while it is still started is cut. */
+int audio_mixer_voice_release(AudioRenderer *r, ServerVoice *v) {
+    Mixer *m = r->mixer; if (!m || !m->ramp || !v->was_started || v->state == SV_STARTED) return 0;
+    voice_depop_prepare(r, v); return 1;
+}
+static void mix_depop(AudioRenderer *r, int mix) {
+    Mixer *m = r->mixer; const float decay = r->param.sample_rate == 48000 ? 0.962189f : 0.943695f;
+    for (int b = 0; b < r->mixes[mix].buffer_count; b++) {
+        int i = m->offset[mix] + b; if (i >= m->nbuf || m->depop[i] == 0) continue;
+        float value = depop_decay(mixbuf(m, i), m->depop[i], decay, m->frame);
+        m->depop[i] = fabsf(value) < 1e-9f ? 0 : value;
+    }
+}
+#endif
 static int mix_valid(AudioRenderer *r, int32_t id) { return id >= 0 && id <= r->param.submix_count && r->mixes[id].in_use; }
 static int mix_depth(AudioRenderer *r, int id, int depth[256], uint8_t visiting[256]) {
     if (!id) return 0;
@@ -651,6 +714,17 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     float (*vs)[MAX_FRAME]=m->voice_scratch,*filtered=m->filter_scratch;
     for (int i = 0; i < r->param.voice_count; i++) {
         ServerVoice *v = &r->voices[i];
+#ifdef GAME_BOTW
+        const int fade_in = v->fade_in; v->fade_in = 0;   /* a tail was queued in this slot since the last frame */
+        if (m->ramp && v->in.in_use) {
+            if (!v->ramp_ready) {   /* new voice: no ramp from an older volume, unless it starts over a kept tail */
+                v->prev_volume = fade_in && v->state == SV_STARTED ? 0 : v->in.volume; v->ramp_ready = 1;   /* over a kept tail it ramps up from 0 */
+                for (unsigned c = 0; c < v->in.channel_count && c < 6; c++) { int32_t id = v->in.channel_ids[c]; if (id >= 0 && id < r->param.voice_count * 6) memcpy(m->prev_mix[id], r->channels[id].mix, sizeof m->prev_mix[id]); }
+            }
+            if (v->state != SV_STARTED) { if (v->was_started) { voice_depop_prepare(r, v); v->prev_volume = 0; } v->was_started = 0; continue; }
+            v->was_started = 1;
+        }
+#endif
         if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
         int cc = (int)v->in.channel_count; if (cc < 1 || cc > 6) { report_once(m, 2, "voice channel count unsupported", cc); continue; }
         voice_render(r, v, vs, frames);
@@ -681,6 +755,9 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames);
             }
         } else if (mix_valid(r, v->in.mix_id)) {
+#ifdef GAME_BOTW
+            if (m->ramp) { voice_ramp_mix(r, v, vs, cc, frames); continue; }
+#endif
             for (int c = 0; c < cc; c++) {
                 int32_t id = v->in.channel_ids[c]; if (id < 0 || id >= r->param.voice_count * 6) continue;
                 const AudrenChannelIn *ch = &r->channels[id];
@@ -694,6 +771,9 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     for (int i = 1; i < mc && n < 256; i++) if (r->mixes[i].in_use) { mix_depth(r, i, depth, visiting); order[n++] = i; }
     for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if (depth[order[b]] > depth[order[a]]) { int t = order[a]; order[a] = order[b]; order[b] = t; }
     for (int a = 0; a < n; a++) {
+#ifdef GAME_BOTW
+        if (m->ramp) mix_depop(r, order[a]);
+#endif
         mix_effects(r, order[a]);
         const AudrenMixIn *x = &r->mixes[order[a]]; int src = m->offset[order[a]];
         if (x->dest_splitter_id != SPLITTER_UNUSED && x->dest_splitter_id < (uint32_t)m->nsplit) {
@@ -709,6 +789,9 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 for (int b = 0; b < r->mixes[x->dest_mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[x->dest_mix_id] + b, mixbuf(m, src + c), x->mix[c][b] * x->volume, frames);
         }
     }
+#ifdef GAME_BOTW
+    if (m->ramp && r->mixes[0].in_use) mix_depop(r, 0);
+#endif
     if (r->mixes[0].in_use) mix_effects(r, 0);
     /* device sink */
     const AudrenSinkIn *sink = NULL;int circular=0;
