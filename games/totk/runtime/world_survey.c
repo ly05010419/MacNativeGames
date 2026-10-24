@@ -263,10 +263,17 @@ void runtime_survey_tick(uint64_t frame) {
             .camera_fovy = fovy,
         };
         BotFrameCommand cmd = {0};
+        static int prev_bot_pad_connected = 0;
         bot_on_frame_tick(&st, &cmd);
-        if (cmd.pad_connected && runtime_input_pad_synthetic) {
-            RuntimeGamepadState pad = {.buttons = cmd.buttons, .lx = cmd.lx, .ly = cmd.ly, .rx = cmd.rx, .ry = cmd.ry, .connected = 1};
-            runtime_input_pad_synthetic(&pad);
+        if (runtime_input_pad_synthetic) {
+            if (cmd.pad_connected) {
+                RuntimeGamepadState pad = {.buttons = cmd.buttons, .lx = cmd.lx, .ly = cmd.ly, .rx = cmd.rx, .ry = cmd.ry, .connected = 1};
+                runtime_input_pad_synthetic(&pad);
+                prev_bot_pad_connected = 1;
+            } else if (prev_bot_pad_connected) {
+                runtime_input_pad_synthetic(NULL);
+                prev_bot_pad_connected = 0;
+            }
         }
         if (cmd.pin_frame_step_us) runtime_frame_step_pin(cmd.pin_frame_step_us / 1000.0);
         if (cmd.request_ashot_id && cmd.ashot_path[0] && dm_gfx_ashot) {
