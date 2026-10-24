@@ -46,9 +46,44 @@ static void expect(TOTKShortcutHelp *panel, NSString *text) {
     }
 }
 
+/* Exercise the real key dispatch and both production overlay layouts, without a GPU or preferences. */
+static int test_hdr_shortcut(void) {
+    assert(totk_hdr_available());
+    atomic_store(&hdrEnabled,0);
+    NSView *host=[[NSView alloc] initWithFrame:NSMakeRect(0,0,900,540)];
+    TOTKShortcutHelp *panel=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];
+    [host addSubview:panel];shortcutHelp=panel;
+    expect(panel,@"8  HDR / EDR: off (current; press to switch)");
+    press(28);tick();assert(front_hdr_enabled());expect(panel,@"8  HDR / EDR: on");
+    runtime_input_key_synthetic(28,1);runtime_input_key_synthetic(28,1);tick();
+    assert(!front_hdr_enabled());expect(panel,@"8  HDR / EDR: off");
+    runtime_input_key_synthetic(28,0);tick();assert(!front_hdr_enabled());
+    /* Both requests must read the state on the main thread, rather than collapsing into one. */
+    press(28);press(28);tick();assert(!front_hdr_enabled());
+    runtime_front_hdr_set(1);tick();expect(panel,@"8  HDR / EDR: on");
+    press(28);tick();expect(panel,@"8  HDR / EDR: off");assert(front_hdr_headroom()==1);
+    setenv("TOTK_UI_LANG","zh",1);tick();expect(panel,@"8  HDR / EDR：当前 关（按键切换）");
+    press(28);tick();expect(panel,@"8  HDR / EDR：当前 开（按键切换）");
+    if(hud_compact()) {
+        assert(panel.frame.size.width<host.bounds.size.width-20);
+        assert(panel.frame.size.height<host.bounds.size.height-20);
+        assert(panel.frame.origin.x>=0 && panel.frame.origin.y>=0);
+    } else {
+        NSSize fit=[panel.label sizeThatFits:panel.label.bounds.size];
+        assert(fit.height<=panel.label.bounds.size.height);
+    }
+    /* EDR follows key 1's normal overlay visibility; it does not create its own HUD. */
+    press(18);tick();assert(![panel.label.stringValue containsString:@"HDR / EDR"] || panel.hidden);
+    press(18);tick();assert(panel.hidden);
+    press(18);tick();assert(!panel.hidden);expect(panel,@"8  HDR / EDR：当前 开");
+    [panel.timer invalidate];
+    puts("pass: EDR key 8, held repeats, queued toggles, localization, layout and key 1 visibility");
+    return 0;
+}
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
     shortcut_test_output_init();
+    if(getenv("TOTK_SHORTCUT_HDR_TEST"))return test_hdr_shortcut();
     int initial = mfx_enabled();
     assert(initial == ((!getenv("TOTK_MFX") || !strcmp(getenv("TOTK_MFX"), "0")) ? MFX_OFF : MFX_HALF));
     NSView *host = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 900, 540)];
@@ -57,6 +92,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(panel.timer && panel.timer.valid);
     assert(panel.timer.timeInterval == 0.5);
     [panel refresh];
+    assert(!totk_hdr_available());
+    press(28);tick();assert(!front_hdr_enabled());
+    assert(![panel.label.stringValue containsString:@"HDR / EDR"]);
     expect(panel, initial ? @"half refresh rate" : @"off");
     expect(panel, mfxup_output_enabled() ? @"MetalFX 2K" : @"Picture: off");
 

@@ -45,8 +45,21 @@ class ShortcutStatus(unittest.TestCase):
                             env.update(TOTK_UI_LANG='en', TOTK_HUD=layout,
                                        TOTK_MFX='interp' if overridden else '0',
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
-                                       TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
+                                       TOTK_MFX_UPSCALE='0', TOTK_TAA='0',
+                                       TOTK_HDR='0', TOTK_HDR_CONTROL='0')
                             run = subprocess.run([str(executable)], env=env,
                                                  capture_output=True, text=True, timeout=35)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: current modes', run.stdout)
+
+                if version == 'TOTK_GAME_V143':
+                    for layout in ('compact', 'corners'):
+                        with self.subTest(edr=True, layout=layout):
+                            env = os.environ.copy()
+                            env.update(TOTK_UI_LANG='en', TOTK_HUD=layout,
+                                       TOTK_HDR='0', TOTK_HDR_CONTROL='1',
+                                       TOTK_SHORTCUT_HDR_TEST='1')
+                            run = subprocess.run([str(executable)], env=env,
+                                                 capture_output=True, text=True, timeout=35)
+                            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                            self.assertIn('pass: EDR key 8', run.stdout)

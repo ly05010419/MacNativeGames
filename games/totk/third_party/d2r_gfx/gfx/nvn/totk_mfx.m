@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_mfx.h"
+#include "totk_hdr.h"
 #include <TargetConditionals.h>
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
@@ -131,8 +132,9 @@ static void mfx_init(void) {
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
-int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_enabled(void) { if(totk_hdr_available())return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
 void mfx_set(int m) {
+    if(totk_hdr_available()){MLOG("[hdr] frame interpolation is unavailable in the HDR prototype");return;}
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }
     int v = m < 0 ? (atomic_load(&g_req) + 1) % MFX_NMODES : m;
