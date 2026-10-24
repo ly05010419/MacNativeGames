@@ -471,6 +471,66 @@ static unsigned excl_acquire(uint8_t *code, size_t n, int write) {   /* write 0:
     }
     return done;
 }
+#ifdef GAME_BOTW190
+/* Job queue lock with LSE atomics (TOTK_JQ_LSE=0: as shipped). The job queue's take-a-batch routine (main+0xef62dc,
+   this = x21, lock word at +0x1c, flag byte +0x98, next index +0x94, count +0x90) guards its index with a
+   test-and-test-and-set lock built from ldaxr / stxr, released with ldxr / stlxr. Worker threads that find no work
+   (flag set and the index still 0, before the owner takes the first batch) loop back and take the lock again at once.
+   On a Mac, Time Profiler showed the game's main thread spending most of its guest time (about 57 of 69 s in a 120 s
+   trace) in that lock's ldaxr / stxr retry loop while two workers spun on the same line: each store-exclusive failed
+   because another core touched the line between its load and its store.
+   The patch keeps the routine's logic and registers and changes only how the lock is taken and how idle workers wait:
+   - take: swpa w10, w14, [x9] (one atomic swap with acquire; old value 0 = taken), else back to the plain-load wait;
+   - release: stlr wzr, [x9] (the lock is held, so the shipped loop always stored 0 with release);
+   - no work: wait with plain loads (isb between reads) until the flag clears or the index moves past 0, then take the
+     lock and check again as shipped. Plain loads share the line instead of pulling it away from the owner.
+   main+0xef637c (an old cbnz) is left in place and is no longer reached. The iOS export applies it like the other
+   patches (TOTK_JQ_LSE=0 is Mac only); swpa needs ARMv8.1 atomics, which every Apple core that runs the port has. */
+enum { JQ_LSE_FROM = 0xef6354u, JQ_LSE_WORDS = 49 };
+static const uint32_t jq_lse_shipped[JQ_LSE_WORDS] = {
+    0xb40004f4u, 0xb901028bu, 0xb940012eu, 0x710005dfu, 0x54ffffc0u, 0x885ffd2eu, 0x3400006eu, 0xd5033f5fu,
+    0x17fffffdu, 0x880e7d2au, 0x35ffff6eu, 0xb901028cu, 0x394262aeu, 0x7100001fu, 0x7a4019c4u, 0xb94096b9u,
+    0x7a401b20u, 0x1a9fd7eeu, 0x710005dfu, 0x540001a1u, 0xb94092adu, 0x4b1901a8u, 0x6b0802dfu, 0x1a8832c8u,
+    0x0b19010fu, 0x0b180118u, 0x6b0d01ffu, 0x510005e8u, 0xb90096afu, 0x1a9f37edu, 0x14000002u, 0xd5033f5fu,
+    0x885f7d2fu, 0x710005ffu, 0x54ffffa1u, 0x880ffd3fu, 0x35ffff8fu, 0x34fffb6eu, 0x1400000bu, 0xb940012eu,
+    0x710005dfu, 0x54ffffc0u, 0x885ffd2eu, 0x3400006eu, 0xd5033f5fu, 0x17fffffdu, 0x880e7d2au, 0x35ffff6eu,
+    0x17ffffdcu,
+};
+static const struct { uint32_t off, word; } jq_lse_put[] = {
+    {0xef6368u, 0xb8aa812eu},   /* swpa w10, w14, [x9] */
+    {0xef636cu, 0x340000aeu},   /* cbz w14, 0xef6380 (taken) */
+    {0xef6370u, 0x17fffffbu},   /* b 0xef635c (held: wait with plain loads) */
+    {0xef6374u, 0x54ffff0cu},   /* b.gt 0xef6354 (index past 0: take the lock) */
+    {0xef6378u, 0x14000024u},   /* b 0xef6408 (keep waiting) */
+    {0xef63d4u, 0x889ffd3fu},   /* stlr wzr, [x9] (release) */
+    {0xef63d8u, 0x14000004u},   /* b 0xef63e8 */
+    {0xef63dcu, 0xb94096aeu},   /* ldr w14, [x21, #0x94] */
+    {0xef63e0u, 0x710001dfu},   /* cmp w14, #0 */
+    {0xef63e4u, 0x17ffffe4u},   /* b 0xef6374 */
+    {0xef63e8u, 0x3400010eu},   /* cbz w14, 0xef6408 (no work: wait without the lock) */
+    {0xef63fcu, 0xb8aa812eu},   /* swpa w10, w14, [x9] (path without a worker record) */
+    {0xef6400u, 0x34fffc2eu},   /* cbz w14, 0xef6384 (taken) */
+    {0xef6404u, 0x17fffffbu},   /* b 0xef63f0 */
+    {0xef6408u, 0xd5033fdfu},   /* isb (pause between reads) */
+    {0xef640cu, 0x394262aeu},   /* ldrb w14, [x21, #0x98] */
+    {0xef6410u, 0x34fffa2eu},   /* cbz w14, 0xef6354 (flag cleared: take the lock) */
+    {0xef6414u, 0x17fffff2u},   /* b 0xef63dc */
+};
+static void patch_jq_lse(Module *m) {
+    const char *e = getenv("TOTK_JQ_LSE");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] job queue lock as shipped (TOTK_JQ_LSE=0)\n"); return; }
+    for (unsigned i = 0; !CODE_PATCHED_AT_BUILD && i < JQ_LSE_WORDS; i++) {   /* the device: put_word checks the patched words */
+        uint32_t w, want = jq_lse_shipped[i], off = JQ_LSE_FROM + 4 * i; memcpy(&w, m->base + off, 4);
+        if (w != want && !(off == 0xef63d4u && w == (want | 0x8000u))) {   /* the release ldxr may already have acquire */
+            fprintf(stderr, "[botw] job queue lock: main+%#x is %08x, expected %08x: left as shipped\n", off, w, want);
+            return;
+        }
+    }
+    for (size_t i = 0; i < sizeof jq_lse_put / sizeof *jq_lse_put; i++) put_word(m, jq_lse_put[i].off, jq_lse_put[i].word, "job queue lock");
+    fprintf(stderr, "[botw] job queue lock: atomic swap take, store release, idle workers wait with plain loads (%zu instructions, %d verified; TOTK_JQ_LSE=0: as shipped)\n",
+            sizeof jq_lse_put / sizeof *jq_lse_put, JQ_LSE_WORDS);
+}
+#endif
 /* Docked render size (TOTK_RENDER_RES=900: as shipped). The display-mode routine (main+0x1821644, run when the operation
    mode is set, before the render targets are made) stores the screen width 1920.0 and the render width 1600.0 as one
    pair (+0x1290 / +0x1294 of the graphics system); the renderer scales its targets by render / screen width, so docked
@@ -556,6 +616,9 @@ void runtime_game_patches(Module *m) {
           if (!w) fprintf(stderr, "[botw] exclusive loads with acquire: set at build time (iOS), none left\n"); else
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
+#ifdef GAME_BOTW190
+    patch_jq_lse(m);
+#endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
