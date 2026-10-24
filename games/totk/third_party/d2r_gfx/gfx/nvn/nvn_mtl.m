@@ -2551,6 +2551,25 @@ void mtl_wb_eager(void) {
     pthread_mutex_unlock(&g_smu);
     wb_write_list(list, nl, 1);
 }
+/* #49: render targets in CPU-cached pools whose only consumer is the CPU are never invalidated or
+   copied, so no write-back ever runs for them -- the grass cut reaction's 128x128 RGBA8 target, found
+   by valentderah's Windows/Vulkan port of 1.2.1. After a fence the game waits on, the frame's small
+   renderings are written back; the freshness check still honours CPU rewrites since the render. */
+void dm_wb_fence_flush(void) {
+    if (!atomic_load(&g_wb_on)) return;
+    pthread_mutex_lock(&g_smu);
+    if (!g_wb.n) { pthread_mutex_unlock(&g_smu); return; }
+    wb_ent *list[512]; int nl = 0;
+    for (uint32_t i = 0; i < g_wb.cap && nl < 512 && g_wb.n; i++) {
+        wb_ent *e = g_wb.vals ? g_wb.vals[i] : NULL;
+        if (!e || e->t.L.size > 65536) continue;
+        uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts: rescan
+    }
+    pthread_mutex_unlock(&g_smu);
+    if (nl) wb_write_list(list, nl, 0);
+    static uint64_t done; if (nl) { done += (uint64_t)nl; if (done <= 4 || done % 1000 == 0) MLOG("[writeback] fence 触发小目标回写：%d 张（累计 %llu）", nl, (unsigned long long)done); }
+}
+
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
     if (!p || !p->mem || !atomic_load(&g_wb_on)) return;
     pthread_mutex_lock(&g_smu);
