@@ -13669,11 +13669,12 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     void (^grab)(CGImageRef) = nil; NSString *grab_src = nil;
     if (g_grab_cb && interp < 0) { pthread_mutex_lock(&g_shotq_mu); grab = g_grab_cb; g_grab_cb = nil;
         if (g_grab_src_path[0]) { grab_src = @(g_grab_src_path); g_grab_src_path[0] = 0; } pthread_mutex_unlock(&g_shotq_mu); }
-    /* TOTK_PRESENT_SKIP=1 (measurement only): never take a drawable, so the render pipeline's own frame rate shows (the window
-       does not update). */
+    /* TOTK_PRESENT_SKIP=1 (measurement only) or occluded/minimized/background smoke mode: never take a drawable, so the
+       render pipeline runs without waiting on CAMetalDisplayLink / nextDrawable when the window is hidden or minimized. */
+    extern int runtime_front_window_visible(void);
     static int present_skip = -1; if (present_skip < 0) { present_skip = getenv("TOTK_PRESENT_SKIP") != NULL; if (present_skip) MLOG("【实验】TOTK_PRESENT_SKIP=1：不出图，只测渲染流水线"); }
-    if (nogpu() || present_skip) { if (grab && present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize);
-        pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
+    if (nogpu() || present_skip || runtime_front_window_visible() == 0) { if (grab && present_skip && !nogpu()) grab_present(grab, src, crop, layer.drawableSize);
+        front_frame_presented(); pthread_mutex_lock(&g_pq_mu); if (ticket > g_pq_done) g_pq_done = ticket; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu); return 1; }
     uint64_t dt0 = now_ns();
     id<CAMetalDrawable> dr = supplied ? supplied : [layer nextDrawable];
     if (!supplied) g_drawable_ns += now_ns() - dt0;
@@ -14079,16 +14080,24 @@ static int mfx_present_frame_body(const tex_t *t, double period, int discard) {
 static int mfx_present_frame(const tex_t *t, double period, int discard) {
     @autoreleasepool { return mfx_present_frame_body(t, period, discard); }
 }
+static int botw_smoke_bg_skip(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *s = getenv("TOTK_BOT_SMOKE"), *sh = getenv("TOTK_SHOW_WINDOW"), *m = getenv("TOTK_MINIMIZE"), *h = getenv("TOTK_HEADLESS"), *p = getenv("TOTK_PRESENT_SKIP");
+        v = ((p && *p) || (m && atoi(m)) || (h && atoi(h)) || (s && !strcmp(s, "1") && !(sh && !strcmp(sh, "1")))) ? 1 : 0;
+    }
+    return v || runtime_front_window_visible() == 0;
+}
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     taa_frame_end();   // TOTK_TAA: next frame's jitter, this frame's depth and camera forgotten (also while off: key 5)
-    int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
+    int bg_skip = botw_smoke_bg_skip(), discard = atomic_load(&g_present_discard) || bg_skip, islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
     mtl_wb_eager();
     g_uw_ui = 0;
     if (atomic_load(&g_uw_log) > 0) atomic_fetch_sub(&g_uw_log, 1);
     if (atomic_load(&g_draw_log) > 0) atomic_fetch_sub(&g_draw_log, 1);
-    if (discard) return 0;   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait
+    if (discard) { if (bg_skip) { present_drop_for_suspend(); front_frame_presented(); } return 0; }   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait
     if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
     link_sync();
@@ -14131,7 +14140,7 @@ void mtl_present_wait(uint64_t tk) {
         pthread_cond_broadcast(&g_pq_cv);
         if (!g_stall_t0) { g_stall_t0 = last ? last : now; g_stall_drop = 0; g_stall_red = 0; g_stall_logged = 0; g_stall_n++; }
         g_stall_drop += n;
-        int active = dm_focus_now() == 1; uint64_t since = dm_focus_in_since(), from = g_stall_t0 > since ? g_stall_t0 : since;
+        int active = dm_focus_now() == 1 && runtime_front_window_visible() > 0; uint64_t since = dm_focus_in_since(), from = g_stall_t0 > since ? g_stall_t0 : since;
         if (active && !g_stall_logged && now - from >= STALL_NS) { g_stall_logged = 1;
             MLOG("显示节拍 %.0f ms 没回调（激活中，%s）：丢掉排队未上屏的 %llu 帧，游戏继续（第 %llu 段；节拍回来自动照常）", (now - from) / 1e6, window_seen(), (unsigned long long)n, (unsigned long long)g_stall_n); }
         if (active && !g_rescue_mode && g_dm_present_link && now - from >= LINK_RESCUE_NS) {
@@ -14174,7 +14183,7 @@ int mtl_has_window(void) { return front_metal_layer() != NULL; }
 int mtl_link_active(void) { return link_on(); }
 void mtl_link_pause(int on) { CAMetalDisplayLink *l = g_link; if (l) l.paused = on != 0; }   // 测试用（DM_TEST_BG）：模仿系统在后台停掉节拍回调 | For testing (DM_TEST_BG): imitates the system stopping the display-link callback in the background
 int mtl_link_wait_tick(uint64_t timeout_ns, unsigned frame_ticks) {
-    if (!mtl_link_active()) return 0;
+    if (!mtl_link_active() || botw_smoke_bg_skip()) return 0;
     // 只在跑得比显示快时才等节拍：上一帧开工之后若已经过了节拍（这一帧已落后），立刻开工，不再白等到下一个节拍——
     // 否则帧时间略大于一个节拍时会「错过节拍 → 再等一整拍」，帧率直接锁到一半（Mac 有窗口负载下实测成串掉帧）
     // Wait for the display link only when running faster than the display: if a display-link tick has already passed since the previous frame started work (this frame is already behind), start immediately instead of waiting in vain for the next display-link tick --

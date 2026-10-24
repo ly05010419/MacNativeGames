@@ -27,3 +27,5 @@ games/totk/tools/totk_xlate/bin/
 games/totk/scripts/shader_inventory/obj/
 games/totk/scripts/shader_inventory/bin/
 ultracode.md
+games/totk/bot_engine/target/
+games/totk/bot_engine/Cargo.lock

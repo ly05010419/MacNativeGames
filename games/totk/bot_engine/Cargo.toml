@@ -1,0 +1,13 @@
+[package]
+name = "botw_bot"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "botw_bot"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+panic = "abort"

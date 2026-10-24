@@ -336,7 +336,7 @@ probe-audio-effects: runtime probe-reverb
 # Host-only validation of live survey parsing and actor pointer traversal; no GPU or game.
 .PHONY: probe-world-survey
 build/world-survey-probe: scripts/world_survey_probe.c runtime/world_survey.c runtime/world_survey.h runtime/runtime.h
-	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/world_survey_probe.c -o "$@"
+	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn/include -Iruntime scripts/world_survey_probe.c -o "$@"
 probe-world-survey: build/world-survey-probe
 	build/world-survey-probe
 	@TOTK_PROBE_NEGATIVE=1 build/world-survey-probe > analysis/world-survey-negative.log 2>&1; test $$? -eq 1
@@ -447,8 +447,19 @@ build/botw190/romfs_config.h: scripts/prepare_romfs_backend.py extracted/botw190
 # 1.9.0: the add-on content volumes the build imported from the --dlc NSPs (extracted/botw190/aoc/<index>).
 build/botw190/aoc_config.h: scripts/prepare_romfs_backend.py $(wildcard extracted/botw190/aoc/*/index.json)
 	"$(PY)" scripts/prepare_romfs_backend.py --version botw190 --aoc
-build/totk-native-botw190: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/botw190/runtime_tables.h build/botw190/romfs_config.h build/botw190/aoc_config.h build/shared_fonts_config.h $(GFX_OBJECTS_BOTW190) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW190=1 -Ibuild/botw190 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW190) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+# Optional Rust FastHands / smoke-bot static archive (never linked into probe-* targets).
+BOT_RUST_LIB := build/libbotw_bot.a
+BOT_RUST_SYS_LIBS = $(shell rustc --print native-static-libs 2>/dev/null | sed -n 's/.*native-static-libs: //p')
+BOT_LINK_FLAGS = -Wl,-U,_bot_on_frame_tick -Wl,-U,_runtime_input_pad_synthetic -Wl,-U,_dm_gfx_ashot -Wl,-U,_runtime_front_request_close $(if $(wildcard $(BOT_RUST_LIB)),$(BOT_RUST_LIB) $(BOT_RUST_SYS_LIBS),)
+
+.PHONY: bot-engine
+bot-engine:
+	@mkdir -p build
+	cd bot_engine && cargo build --release
+	cp bot_engine/target/release/libbotw_bot.a $(BOT_RUST_LIB)
+
+build/totk-native-botw190: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/botw190/runtime_tables.h build/botw190/romfs_config.h build/botw190/aoc_config.h build/shared_fonts_config.h $(GFX_OBJECTS_BOTW190) $(wildcard $(BOT_RUST_LIB)) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW190=1 -Ibuild/botw190 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW190) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a $(BOT_LINK_FLAGS) -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 runtime-botw190: SHADER_LIST ?= ../botw/assets/shader_list.tsv
 runtime-botw190: build/totk-native-botw190 build/pso_manifest.tsv build/pso_title.tsv
 # Production Opus-wrapper regression checks; no game assets or audio device needed.
