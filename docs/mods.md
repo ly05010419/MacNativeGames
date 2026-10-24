@@ -293,6 +293,9 @@ Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail
   The build checks what the file itself says: a `.pchtxt` is refused when its `@nsobid-` names another
   main, and an `.ips` / `.ips32` named after a build id is left out when that id is not this main's.
 - This guide covers the Mac app; installing mods into the iPhone/iPad app container is not covered.
+- A field report of one merged (TKMM-style) mod pack - the four delivery paths, the IPS to pchtxt arithmetic,
+  the zstd frame header that looks like a game crash, a Resource Size Table repair and the criteria that prove a
+  mod is live: [subsdk1 + RomFS mod in practice](subsdk1-romfs-merge-guide.md).
 
 ### When the start stops
 
@@ -567,6 +570,9 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
 - 带代码补丁的 mod，其 `exefs/` 补丁也要和构建所用的游戏版本一致。构建按文件自己写的东西核对：`.pchtxt` 的
   `@nsobid-` 不是这个 main 就拒绝；按 build id 命名的 `.ips` / `.ips32`，id 不是这个 main 就留出并提示。
 - 本文面向 Mac App；iPhone/iPad 的 App 容器内安装未在此说明。
+- 一份合并包（管理器输出的 `exefs/` + `romfs/`）的实战记录：四条落地路径分层、IPS 转 pchtxt 的换算、
+  看起来像游戏崩溃的 zstd 帧头、ResourceSizeTable 槽位并回，以及"怎么才算真的生效"的判据清单，
+  见 [subsdk1 + RomFS mod 实战](subsdk1-romfs-merge-guide.md)。
 
 ### 启动停止时
 
