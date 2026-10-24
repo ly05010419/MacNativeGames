@@ -15,7 +15,7 @@
 #include <unistd.h>
 
 enum { AL_OFF, AL_WAIT, AL_PRESSING, AL_DONE };
-enum { KEY_A = 38, PRESS_MS = 150, POLL_MS = 50 };
+enum { KEY_A = 38, KEY_B = 40, PRESS_MS = 150, POLL_MS = 50 };
 static _Atomic int g_state = AL_OFF;
 static unsigned g_period_ms = 1500, g_limit_s = 180;
 
@@ -44,8 +44,16 @@ static void *press_loop(void *arg) {
     uint64_t t0 = runtime_now_ns();
     for (unsigned n = 1; atomic_load(&g_state) == AL_PRESSING; n++) {
         if (runtime_now_ns() - t0 >= (uint64_t)g_limit_s * 1000000000ull) { stop(AL_PRESSING, "gave up: the load did not start (no progress.sav opened)"); break; }
-        runtime_input_key_synthetic(KEY_A, 1); usleep(PRESS_MS * 1000); runtime_input_key_synthetic(KEY_A, 0);
-        fprintf(stderr, "[autoload] press A #%u at %.1f s\n", n, (double)(runtime_now_ns() - t0) / 1e9);
+        unsigned key = KEY_A;
+        const char *btn = "A";
+#ifdef GAME_BOTW
+        /* BotW 1.9.0 with DLC opens the "Downloaded DLC" page on the title screen, which only closes with B (Cancel).
+           Send B on the first two presses (and at most 1 B every 8 presses thereafter) leaving 7 consecutive A presses
+           so Continue -> slot -> Load completes cleanly without cancelling [Load]/[Cancel] on non-DLC or shifted titles. */
+        if (n <= 2 || ((n - 3) % 8) == 7) { key = KEY_B; btn = "B"; }
+#endif
+        runtime_input_key_synthetic(key, 1); usleep(PRESS_MS * 1000); runtime_input_key_synthetic(key, 0);
+        fprintf(stderr, "[autoload] press %s #%u at %.1f s\n", btn, n, (double)(runtime_now_ns() - t0) / 1e9);
         for (unsigned w = PRESS_MS; w < g_period_ms && atomic_load(&g_state) == AL_PRESSING; w += POLL_MS) usleep(POLL_MS * 1000);
     }
     return NULL;
