@@ -2379,6 +2379,15 @@ static int uncapped_interval_on(void) {
 static double g_rt_comp_ms;   // 当前声明的实时计算量（ms；0 = 未声明） | Currently declared real-time computation amount (ms; 0 = not declared)
 static double g_rt_period_ms;
 static void sleep_until_ns(uint64_t dl);
+// User ceiling, independent of the game's interval and frame interpolation. Only the Mac frontend enables it.
+static _Atomic int g_user_fps_limit;
+int nvn_user_fps_limit(void) { return atomic_load(&g_user_fps_limit); }
+void nvn_set_user_fps_limit(int fps) {
+    if (fps != 0 && fps != 30 && fps != 40 && fps != 60 && fps != 90 && fps != 120) return;
+    atomic_store(&g_user_fps_limit, fps);
+    LOG("[fps-limit] game frame ceiling = %d FPS", fps);
+}
+static uint64_t present_base_period(const win_t *o);
 static uint64_t present_period(const win_t *o);
 static unsigned present_ticks(const win_t *o);
 extern void runtime_frame_step_update(uint64_t now_ns) __attribute__((weak_import));
@@ -2402,7 +2411,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
         static uint64_t rt_period; uint64_t period = present_period(o);
         if (period && rt_period != period) { rt_period = period; set_time_constraint(period); }
         rt_comp_tick(period);
-        if (mtl_link_active() && !uncapped_now() && !mfx_own_clock()) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK：节拍完全跟显示节拍（跑得快就等下一拍，落后立刻走）；自己的 60 Hz 时钟只作等不到节拍时的兜底 | DM_PRESENT_LINK: pacing fully follows the display link (wait for the next display-link tick when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
+        if (mtl_link_active() && !uncapped_now() && !mfx_own_clock() && period == present_base_period(o)) { if (!mtl_link_wait_tick(period ? 2 * period : 33333333ull, present_ticks(o)) && wait) sleep_until_ns(at); }   // A stricter user ceiling uses the existing monotonic-clock pacer, including non-divisors of the display rate.
         else if (wait) sleep_until_ns(at);
     } else {   // DM_DETCLOCK_PACE=1（画面闸门用）：客体时钟按帧走的同时，每帧墙钟不短于一个步长——帧数与游戏内时间确定，后台加载线程每帧至少有一个步长的墙钟可用； | DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
                // 机器满载时帧只会更慢、后台得到的墙钟只会更多，所以「消息后第 N 帧」截到的画面与负载无关
@@ -2751,7 +2760,7 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     if (m == MFX_30 || game_holds_30()) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
-static uint64_t present_period(const win_t *o) {
+static uint64_t present_base_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
         LOG("[nvn] 出图节拍切换：%s", m == MFX_30 ? (mfx_own_clock() ? "补帧 30+30：游戏按自己的时钟每秒 30 帧" : "补帧 30+30：跟随显示器，每秒 30 帧") :
@@ -2761,9 +2770,19 @@ static uint64_t present_period(const win_t *o) {
     if (m == MFX_30 || game_holds_30()) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
+static uint64_t present_period(const win_t *o) {
+    uint64_t period = present_base_period(o);
+    int fps = nvn_user_fps_limit();
+    if (fps && !dm_detclock_enabled()) {
+        uint64_t floor = 1000000000ull / (unsigned)fps;
+        if (period < floor) period = floor;
+    }
+    return period;
+}
 /* Exercise production policy, including the shrine's interval=2 and the
    legacy 30 FPS path. No sleep, present or GPU allocation is involved. */
 void dm_nvn_probe_present_interval(void) {
+    int saved_limit = nvn_user_fps_limit(); atomic_store(&g_user_fps_limit, 0);
     int saved_hz = g_hz, saved_display = g_display_mode, saved_uncapped = g_uncapped;
     int saved_flag = atomic_load(&g_uncapped_interval), checked = 0;
     const char *neg = getenv("TOTK_PROBE_NEGATIVE");
@@ -2808,6 +2827,19 @@ void dm_nvn_probe_present_interval(void) {
             die("present interval probe: uncapped interpolation must keep the pacing of the mode without interpolation");
         checked++;
     }
+    // A user ceiling can slow down the base clock but must never speed up a 30-fps interpolation mode.
+    const int limits[] = {30, 40, 60, 90, 120};
+    for (int mode = MFX_OFF; mode <= MFX_MAX; mode++) for (int i = 0; i < 5; i++) {
+        mfx_set(mode); mfx_latch();
+        win_t w = {.interval = 1}; g_hz = 120; g_paced_hz = 120; g_uncapped = 1; g_display_mode = 0;
+        atomic_store(&g_user_fps_limit, limits[i]);
+        uint64_t natural = mode == MFX_30 ? 1000000000ull / 30 : mode == MFX_HALF ? 1000000000ull / 60 : 1000000000ull / 120;
+        uint64_t ceiling = dm_detclock_enabled() ? 0 : 1000000000ull / limits[i];
+        uint64_t expected = natural > ceiling ? natural : ceiling;
+        if (present_period(&w) != expected) die("user FPS ceiling probe: wrong frame period");
+        checked++;
+    }
+    atomic_store(&g_user_fps_limit, saved_limit);
     mfx_set(saved_mfx); mfx_latch();
     g_hz = saved_hz; g_paced_hz = saved_paced; g_display_mode = saved_display; g_uncapped = saved_uncapped;
     atomic_store(&g_uncapped_interval, saved_flag);

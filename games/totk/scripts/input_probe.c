@@ -11,7 +11,7 @@ uint64_t runtime_now_ns(void){return probe_clock_fixed?probe_now:(probe_now+=100
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-static int help_toggles,interp_toggles,output_cycles,aspect_toggles,taa_toggles,pad_type_cycles,mouse_toggles;   // keys 1 / 2 / 3 / 4 / 5 / 6 / 7 (see the key checks)
+static int help_toggles,interp_toggles,output_cycles,aspect_toggles,taa_toggles,pad_type_cycles,mouse_toggles,fps_limit_cycles;   // keys 1 / 2 / 3 / 4 / 5 / 6 / 7 (see the key checks)
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
@@ -22,6 +22,7 @@ void runtime_shortcut_help_toggle(void){help_toggles++;}
 int runtime_output_mode_cycle(void){output_cycles++;return 1;}
 int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
 void taa_toggle(void){taa_toggles++;}
+void runtime_fps_limit_cycle(void){fps_limit_cycles++;}
 int runtime_gamepad_type_cycle(void){return ++pad_type_cycles;}
 int runtime_mouse_toggle(void){return ++mouse_toggles&1;}
 void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
@@ -165,9 +166,9 @@ int main(void){
     button; each key touches only its own action. 1 shows / hides the overlays (frontend.m), 2 frame interpolation (runtime
     flag mfx_interp, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h), 5 edge
     smoothing (totk_taa.m), 6 the controller type, 7 mouse mode (gamepad.m). */
- enum{SHORTCUTS=7};
- static const unsigned keys[SHORTCUTS]={18,19,20,21,23,22,26};int *count[SHORTCUTS]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles,&taa_toggles,&pad_type_cycles,&mouse_toggles};
- static const char *const pressed[SHORTCUTS]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)","key 5 toggles edge smoothing (only)","key 6 cycles the controller type (only)","key 7 toggles mouse mode (only)"};
+ enum{SHORTCUTS=8};
+ static const unsigned keys[SHORTCUTS]={18,19,20,21,23,22,26,28};int *count[SHORTCUTS]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles,&taa_toggles,&pad_type_cycles,&mouse_toggles,&fps_limit_cycles};
+ static const char *const pressed[SHORTCUTS]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)","key 5 toggles edge smoothing (only)","key 6 cycles the controller type (only)","key 7 toggles mouse mode (only)","key 8 cycles the FPS ceiling (only)"};
  for(int k=0;k<SHORTCUTS;k++){
   runtime_input_key(keys[k],1);for(int j=0;j<SHORTCUTS;j++)need(*count[j]==(j<k?2:j==k?1:0),pressed[k]);
   runtime_input_key(keys[k],1);need(*count[k]==1,"a held key (auto-repeat) does not act again");
