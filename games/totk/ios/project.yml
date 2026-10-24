@@ -23,6 +23,8 @@ targets:
       - path: Gen/embed.S
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"
+    dependencies:
+      - sdk: CoreHaptics.framework   # controller HD rumble (GCDeviceHaptics)
     info:
       path: Sources/Info.plist
       properties:

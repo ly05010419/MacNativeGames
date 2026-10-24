@@ -139,8 +139,9 @@ void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX /
 void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
-/* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
-   Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
+/* Controller rumble and motion (on by default, TOTK_RUMBLE=0 / TOTK_GYRO=0 mute them): the game's hid side in
+   runtime/hid_feedback.c, the controller's haptics and motion sensors in runtime/gamepad_feedback.m. iOS exposes both
+   only for pads GameController gives them to, so runtime_feedback_diagnose logs what a connected pad actually reports. */
 #define RUNTIME_MOTION_MAX 32
 typedef struct { uint64_t sampling, delta_ns; float acc[3], gyro[3], angle[3], dir[9]; } RuntimeMotionState;   /* G, rev/s, rev, 3 axes */
 int runtime_rumble_enabled(void);
@@ -160,6 +161,7 @@ void runtime_motion_feed_mouse(const double acc_g[3], const double gyro_rad_s[3]
 void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 #ifdef __OBJC__
 @class GCController;
+void runtime_feedback_diagnose(GCController *controller);   /* log haptics/motion capabilities (always, both platforms) */
 void runtime_feedback_attach(GCController *controller);
 void runtime_feedback_detach(GCController *controller);
 #endif
