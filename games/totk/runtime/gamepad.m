@@ -423,7 +423,14 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
     if (mouseButtons) { mouseButtons = 0; refresh_gamepads(); }
 }
 
-static void refresh_gamepads(void) {
+/* An overlay (the cheat panel, frontend.m) may take the controllers: the hook sees the held and newly pressed buttons
+   (left stick up / down as bits 16 / 17) and returns 1 to keep them from the game. Buttons still held when it lets go
+   stay hidden from the game until released, so the button that closed the overlay does not also act in the game. */
+static int (*overlayHook)(uint64_t held, uint64_t pressed);
+static uint64_t overlayPrev, overlaySwallow, overlayHeld;   // overlayHeld: buttons down while the overlay had them
+static int overlayActive;
+void runtime_gamepad_set_overlay(int (*hook)(uint64_t held, uint64_t pressed)) { overlayHook = hook; }
+static void refresh_gamepads(void) {   // on the main queue (controller value handlers and notifications)
     RuntimeGamepadState next = {0};
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0;
@@ -489,6 +496,16 @@ static void refresh_gamepads(void) {
     uint64_t held = physical & ~suppressed;
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
+    if (overlayHook) {   /* the cheat panel reads the physical buttons (a remap cannot lock it out); while it has them the game gets none */
+        uint64_t seen = physical | (next.ly > 16384 ? 1ULL << 16 : 0) | (next.ly < -16384 ? 1ULL << 17 : 0);
+        int take = overlayHook(seen, seen & ~overlayPrev);
+        overlayPrev = seen;
+        if (overlayActive && !take) overlaySwallow = next.buttons & overlayHeld;
+        overlayActive = take;
+        if (take) { overlayHeld = next.buttons; next = (RuntimeGamepadState){.connected = next.connected}; }
+        overlaySwallow &= next.buttons;
+        next.buttons &= ~overlaySwallow;
+    }
     pthread_mutex_lock(&gamepadLock);
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
@@ -587,6 +604,13 @@ void runtime_touch_pad_set(const RuntimeGamepadState *s) {
     pthread_mutex_unlock(&gamepadLock);
 }
 
+/* Cheats: the held buttons without consuming the press edges the game's next read still has to see. */
+uint64_t runtime_gamepad_held(void) {
+    pthread_mutex_lock(&gamepadLock);
+    uint64_t b = gamepadState.buttons | touchState.buttons;
+    pthread_mutex_unlock(&gamepadLock);
+    return b;
+}
 void runtime_gamepad_read(RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
     *out = gamepadState;

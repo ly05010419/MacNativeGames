@@ -220,6 +220,9 @@ static uint64_t alias_map(int unmap,uint64_t addr,uint64_t size){
 uint64_t runtime_heap_base(void){return (uintptr_t)heap;}
 /* Guest memory the game has committed (heap size + mapped alias pages), for memory reports (iOS app monitor). */
 void runtime_guest_committed(uint64_t *heap_bytes,uint64_t *alias_mapped){*heap_bytes=heap_size;*alias_mapped=alias_bytes;}
+/* Cheats (cheats.c): the guest memory regions an Atmosphère cheat addresses as heap, alias and ASLR. */
+void runtime_guest_regions(uint64_t base[3],uint64_t size[3]){
+ base[0]=(uintptr_t)heap;size[0]=heap_size;base[1]=alias_space?ALIAS_START:0;size[1]=alias_space?ALIAS_SIZE:0;base[2]=ASLR_START;size[2]=low_space?ASLR_SIZE:0;}
 /* Physical memory behind the guest regions (stack+heap and alias): resident pages, of which dirty, and pages the system
    compressed. Committed sizes overstate what the game uses; these are what count against the iOS memory limit. */
 static void region_pages(uint64_t a,uint64_t end,uint64_t *resident,uint64_t *dirty,uint64_t *compressed){

@@ -106,6 +106,9 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
+static int cheat_panel_key(NSEvent *e);
+static void cheat_panel_toggle(void);
+static NSView *cheatPanel;
 @interface TOTKInputView:NSView
 @property(strong) NSTimer *cursorHideTimer;
 @property BOOL cursorAutoHideActive;
@@ -114,8 +117,8 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
--(void)keyDown:(NSEvent *)e{runtime_input_key(e.keyCode,1);}
--(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
+-(void)keyDown:(NSEvent *)e{if(cheat_panel_key(e))return;runtime_input_key(e.keyCode,1);}
+-(void)keyUp:(NSEvent *)e{if(cheatPanel&&!cheatPanel.hidden)return;runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
@@ -338,13 +341,142 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+/* Cheats menu (runtime/cheats.c): one item per cheat baked into the app, rebuilt each time the menu opens. Code patches
+   take effect at the next launch, so their items say so until then; refused cheats are listed, disabled, with the reason. */
+@interface TOTKCheatMenu:NSObject<NSMenuDelegate>
+@end
+static NSString *cheat_title(int i){
+ int st=runtime_cheats_state(i);const char *why=runtime_cheats_problem(i);
+ NSString *title=@(runtime_cheats_name(i))?:@"?";
+ if(st&CHEAT_REFUSED)return [title stringByAppendingFormat:@(TOTK_UI("（不支持：%s）"," (not supported: %s)")),why];
+ if(why[0])return [title stringByAppendingFormat:@" (%s)",why];   // e.g. a code patch that conflicts with another
+ if((st&CHEAT_AT_LAUNCH)&&!!(st&CHEAT_ON)!=!!(st&CHEAT_APPLIED))return [title stringByAppendingString:@(st&CHEAT_ON?TOTK_UI("（重启后生效）"," (applies after restart)"):TOTK_UI("（重启后关闭）"," (turns off after restart)"))];
+ return title;
+}
+/* Code cheats switched since this launch: they apply (or turn off) only when the game starts again. */
+static int cheats_pending(void){int k=0;for(int i=0;i<runtime_cheats_count();i++){int st=runtime_cheats_state(i);if((st&CHEAT_AT_LAUNCH)&&!(st&CHEAT_REFUSED)&&!!(st&CHEAT_ON)!=!!(st&CHEAT_APPLIED))k++;}return k;}
+static NSString *cheats_pending_note(int k){return k==1?@(TOTK_UI("重启游戏以应用 1 项作弊码更改","Restart the game to apply 1 cheat change")):[NSString stringWithFormat:@(TOTK_UI("重启游戏以应用 %d 项作弊码更改","Restart the game to apply %d cheat changes")),k];}
+static int cheats_any_on(void){for(int i=0;i<runtime_cheats_count();i++)if(runtime_cheats_state(i)&CHEAT_ON)return 1;return 0;}
+static void cheats_all_off(void){for(int i=0;i<runtime_cheats_count();i++)if(runtime_cheats_state(i)&CHEAT_ON)runtime_cheats_set(i,0);}
+@implementation TOTKCheatMenu
+-(void)menuNeedsUpdate:(NSMenu *)menu{
+ [menu removeAllItems];int n=runtime_cheats_count();
+ for(int i=0;i<n;i++){
+  int st=runtime_cheats_state(i);
+  NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:cheat_title(i) action:(st&CHEAT_REFUSED)?nil:@selector(toggle:) keyEquivalent:@""];
+  item.target=self;item.tag=i;item.state=(st&CHEAT_ON)?NSControlStateValueOn:NSControlStateValueOff;item.enabled=!(st&CHEAT_REFUSED);[menu addItem:item];
+ }
+ [menu addItem:NSMenuItem.separatorItem];
+ int k=cheats_pending();
+ if(k){NSMenuItem *note=[[NSMenuItem alloc] initWithTitle:cheats_pending_note(k) action:nil keyEquivalent:@""];note.enabled=NO;[menu addItem:note];}
+ NSMenuItem *off=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("关闭全部作弊码","Turn Off All Cheats")) action:@selector(allOff:) keyEquivalent:@""];
+ off.target=self;off.enabled=cheats_any_on();[menu addItem:off];
+ NSMenuItem *panel=[[NSMenuItem alloc] initWithTitle:cheatPanel&&!cheatPanel.hidden?@(TOTK_UI("隐藏作弊码面板","Hide Cheat Panel")):@(TOTK_UI("显示作弊码面板","Show Cheat Panel"))
+                                              action:@selector(panel:) keyEquivalent:@""];   // the only way to open it: no key or button combination
+ panel.target=self;panel.enabled=cheatPanel!=nil;[menu addItem:panel];
+}
+-(void)panel:(NSMenuItem *)item{(void)item;cheat_panel_toggle();}
+-(void)allOff:(NSMenuItem *)item{(void)item;cheats_all_off();}
+-(void)toggle:(NSMenuItem *)item{runtime_cheats_set((int)item.tag,!(runtime_cheats_state((int)item.tag)&CHEAT_ON));}
+@end
+static TOTKCheatMenu *cheatMenu;
+/* Cheat panel (Cheats menu > Show Cheat Panel): the same cheats as the menu over the game picture. While it is open the
+   keyboard drives it (Up/Down select, Space/Return toggle, Esc closes) instead of the game, which keeps running; rows can
+   be clicked. */
+@interface TOTKFlippedView:NSView
+@end
+@implementation TOTKFlippedView
+-(BOOL)isFlipped{return YES;}
+@end
+@interface TOTKCheatPanel:NSView
+@property(strong) NSTextField *title,*hint,*note;
+@property(strong) NSScrollView *scroll;
+@property(strong) TOTKFlippedView *list;
+@property(strong) NSMutableArray<NSButton *> *rows;
+@property NSInteger selected;
+@end
+@implementation TOTKCheatPanel
+-(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){
+ self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.05 alpha:0.92].CGColor;self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.2].CGColor;
+ self.title=[NSTextField labelWithString:@(TOTK_UI("作弊码","Cheats"))];self.title.font=[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];self.title.textColor=NSColor.whiteColor;[self addSubview:self.title];
+ self.hint=[NSTextField labelWithString:@(TOTK_UI("↑↓ / 方向键 选择 · 空格 / A 切换 · Esc / B 关闭 · 修改代码的作弊码重启游戏后生效","↑↓ or D-pad select · Space or A toggles · Esc or B closes · code cheats apply when the game restarts"))];
+ self.hint.font=[NSFont systemFontOfSize:11];self.hint.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];self.hint.lineBreakMode=NSLineBreakByTruncatingTail;[self addSubview:self.hint];
+ self.note=[NSTextField labelWithString:@""];self.note.font=[NSFont systemFontOfSize:12 weight:NSFontWeightMedium];self.note.textColor=[NSColor colorWithCalibratedRed:1 green:0.85 blue:0.3 alpha:1];self.note.hidden=YES;[self addSubview:self.note];
+ self.list=[[TOTKFlippedView alloc] initWithFrame:NSZeroRect];
+ self.scroll=[[NSScrollView alloc] initWithFrame:NSZeroRect];self.scroll.drawsBackground=NO;self.scroll.hasVerticalScroller=YES;self.scroll.autohidesScrollers=YES;self.scroll.documentView=self.list;[self addSubview:self.scroll];
+ self.rows=[NSMutableArray new];}return self;}
+-(void)reload{
+ for(NSView *v in self.rows)[v removeFromSuperview];[self.rows removeAllObjects];
+ int n=runtime_cheats_count();
+ for(int i=0;i<n;i++){
+  int st=runtime_cheats_state(i);
+  NSButton *b=[NSButton checkboxWithTitle:@"" target:self action:@selector(clicked:)];
+  b.attributedTitle=[[NSAttributedString alloc] initWithString:cheat_title(i) attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:(st&CHEAT_REFUSED)?[NSColor colorWithCalibratedWhite:0.5 alpha:1]:NSColor.whiteColor}];
+  b.tag=i;b.state=(st&CHEAT_ON)?NSControlStateValueOn:NSControlStateValueOff;b.enabled=!(st&CHEAT_REFUSED);b.refusesFirstResponder=YES;
+  b.wantsLayer=YES;b.layer.cornerRadius=5;[self.list addSubview:b];[self.rows addObject:b];
+ }
+ if(n){   // the last row: turn every cheat off (code cheats then at the next launch)
+  NSButton *off=[NSButton buttonWithTitle:@"" target:self action:@selector(allOff:)];off.bordered=NO;off.alignment=NSTextAlignmentLeft;off.tag=n;off.refusesFirstResponder=YES;
+  off.attributedTitle=[[NSAttributedString alloc] initWithString:@(TOTK_UI("  关闭全部作弊码","  Turn off all cheats")) attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:cheats_any_on()?[NSColor colorWithCalibratedRed:1 green:0.55 blue:0.5 alpha:1]:[NSColor colorWithCalibratedWhite:0.5 alpha:1]}];
+  off.wantsLayer=YES;off.layer.cornerRadius=5;[self.list addSubview:off];[self.rows addObject:off];
+ }
+ int k=cheats_pending();self.note.stringValue=k?cheats_pending_note(k):@"";self.note.hidden=!k;
+ if(!n){NSButton *none=[NSButton buttonWithTitle:@"" target:nil action:nil];none.bordered=NO;none.enabled=NO;none.attributedTitle=[[NSAttributedString alloc] initWithString:@(TOTK_UI("此 App 未内置作弊码","No cheats are built into this app")) attributes:@{NSForegroundColorAttributeName:NSColor.whiteColor}];[self.list addSubview:none];[self.rows addObject:none];}
+ if(self.selected>=(NSInteger)self.rows.count)self.selected=(NSInteger)self.rows.count-1;if(self.selected<0)self.selected=0;
+ [self position];[self highlight];
+}
+-(void)highlight{for(NSUInteger i=0;i<self.rows.count;i++)self.rows[i].layer.backgroundColor=(NSInteger)i==self.selected?[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor:NSColor.clearColor.CGColor;
+ if(self.selected<(NSInteger)self.rows.count)[self.list scrollRectToVisible:self.rows[(NSUInteger)self.selected].frame];}
+-(void)position{if(!self.superview)return;NSSize sv=self.superview.bounds.size;CGFloat noteH=self.note.hidden?0:20,rowH=26,w=MIN(600,MAX(300,sv.width-40)),listH=rowH*self.rows.count+8,h=MIN(listH+76+noteH,MAX(160,sv.height-60));
+ NSRect f=NSMakeRect(floor((sv.width-w)/2),floor((sv.height-h)/2),w,h);if(!NSEqualRects(self.frame,f))self.frame=f;
+ self.title.frame=NSMakeRect(16,h-34,w-32,20);self.hint.frame=NSMakeRect(16,10,w-32,16);self.note.frame=NSMakeRect(16,30,w-32,16);self.scroll.frame=NSMakeRect(8,34+noteH,w-16,h-74-noteH);
+ CGFloat lw=self.scroll.contentSize.width;self.list.frame=NSMakeRect(0,0,lw,listH);
+ for(NSUInteger i=0;i<self.rows.count;i++)self.rows[i].frame=NSMakeRect(6,4+rowH*i,lw-12,rowH-2);}
+-(void)layout{[super layout];[self position];}
+-(void)move:(int)d{NSInteger n=(NSInteger)self.rows.count;if(!n)return;self.selected=(self.selected+d+n)%n;[self highlight];}
+-(void)set:(NSInteger)i on:(int)on{if(i<0||i>=runtime_cheats_count())return;runtime_cheats_set((int)i,on);[self reload];}
+-(void)allOff:(NSButton *)b{(void)b;cheats_all_off();[self reload];}
+-(void)toggleSelected{NSInteger i=self.selected;if(i==runtime_cheats_count()&&i>0){[self allOff:nil];return;}if(i<runtime_cheats_count()&&!(runtime_cheats_state((int)i)&CHEAT_REFUSED))[self set:i on:!(runtime_cheats_state((int)i)&CHEAT_ON)];}
+-(void)clicked:(NSButton *)b{self.selected=b.tag;[self set:b.tag on:b.state==NSControlStateValueOn];}
+@end
+static void cheat_panel_toggle(void){
+ TOTKCheatPanel *p=(TOTKCheatPanel *)cheatPanel;if(!p)return;
+ if(p.hidden){[p reload];p.hidden=NO;runtime_input_clear();}   // keys held when it opens must not stay pressed in the game
+ else p.hidden=YES;
+}
+/* Controllers, while the panel is open: D-pad or left stick select, A toggles, B closes; the game gets no controller
+   input meanwhile (runtime/gamepad.m). No button combination opens it: the Cheats menu does. */
+enum { PAD_A = 1, PAD_B = 2, PAD_UP = 1 << 13, PAD_DOWN = 1 << 15, PAD_STICK_UP = 1 << 16, PAD_STICK_DOWN = 1 << 17 };
+static int cheat_panel_pad(uint64_t held, uint64_t pressed){
+ (void)held;
+ TOTKCheatPanel *p=(TOTKCheatPanel *)cheatPanel;if(!p||p.hidden)return 0;
+ if(pressed&(PAD_UP|PAD_STICK_UP))[p move:-1];
+ if(pressed&(PAD_DOWN|PAD_STICK_DOWN))[p move:1];
+ if(pressed&PAD_A)[p toggleSelected];
+ if(pressed&PAD_B)p.hidden=YES;   // returning 1 keeps this B from the game; it stays hidden until released
+ return 1;
+}
+static int cheat_panel_key(NSEvent *e){   // no key opens it (the number keys are the game's): Cheats menu > Show Cheat Panel
+ TOTKCheatPanel *p=(TOTKCheatPanel *)cheatPanel;if(!p||p.hidden)return 0;
+ switch(e.keyCode){
+ case 126:[p move:-1];break;                    // up
+ case 125:[p move:1];break;                     // down
+ case 49:case 36:case 76:if(!e.isARepeat)[p toggleSelected];break;   // space, return, enter
+ case 53:p.hidden=YES;break;                    // esc
+ default:break;                                 // every other key stays away from the game while the panel is open
+ }
+ return 1;
+}
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
+ [appMenu addItem:quit];front_menubar_fps_add(menu);
+ NSMenu *cheats=[[NSMenu alloc] initWithTitle:@(TOTK_UI("作弊","Cheats"))];cheatMenu=[TOTKCheatMenu new];cheats.delegate=cheatMenu;cheats.autoenablesItems=NO;
+ NSMenuItem *cheatsItem=[NSMenuItem new];cheatsItem.submenu=cheats;cheatsItem.hidden=!runtime_cheats_count();[menu addItem:cheatsItem];   // loaded before the window (loader.c)
+ NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
@@ -387,6 +519,8 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
+  cheatPanel=[[TOTKCheatPanel alloc] initWithFrame:NSZeroRect];cheatPanel.hidden=YES;cheatPanel.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
+  [window.contentView addSubview:cheatPanel];runtime_gamepad_set_overlay(cheat_panel_pad);
   /* The FPS, shader and load lines: in the corner panel above (compact HUD), or with TOTK_HUD=corners drawn into the game picture's corners by the present encoder (gfx/nvn/fps_overlay.c). */
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
