@@ -25,7 +25,7 @@ python3.14 build_app.py ~/Games/botw-base.nsp -k ~/keys/prod.keys --update ~/Gam
 `build_app.py` picks the game by the title IDs in the file, never by its name. A card image builds 1.6.0. A base NSP
 needs `--update`: with the 1.9.0 update it builds 1.9.0, with the 1.6.0 update 1.6.0 (by the update's verified ExeFS
 hashes). A package on the wrong option stops the build and names the option it belongs on. `--dlc` with a 1.6.0 card
-image or with TOTK also stops the build. A 1.9.0 build takes its DLC packs from `--dlc` only. Both BOTW versions use
+image or with TOTK also stops the build. A build with a separate update (1.9.0 or 1.6.0) takes its DLC packs from `--dlc` only. Both BOTW versions use
 the work folder `BotW_build`, the app `Breath of the Wild.app` and the data folder
 `~/Library/Application Support/MacNativeGames/BotW`.
 
