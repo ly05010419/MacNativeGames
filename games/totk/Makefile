@@ -469,3 +469,9 @@ probe-gpu-sampler-border: runtime-v143
 
 .PHONY: probe-gpu-sampler-border-edge
 probe-gpu-sampler-border-edge: probe-gpu-sampler-border
+
+.PHONY: probe-update-notice
+probe-update-notice:
+	@mkdir -p build
+	xcrun clang -fobjc-arc -Wall -Wextra -Werror tests/update_notice/probe.m -framework AppKit -o build/update-notice-probe
+	build/update-notice-probe
