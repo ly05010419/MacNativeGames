@@ -12,6 +12,7 @@
 #include "runtime.h"
 #include "dmsh_chain.h"
 #import "touch_pad.h"
+#import "device_motion.h"
 
 int totk_host_main(int argc, char **argv);
 void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *host);
@@ -137,9 +138,17 @@ void runtime_shortcut_help_toggle(void) {}
     fprintf(stderr, "[totk-audio] audio session category=%s active=%d route=%s err=%s%s\n",
             audio.category.UTF8String ?: "?", (int)activated, audio.currentRoute.outputs.firstObject.portType.UTF8String ?: "?",
             catErr ? catErr.localizedDescription.UTF8String : "none", actErr ? actErr.localizedDescription.UTF8String : "");
+    totk_device_motion_set_orientation(self.view.window.windowScene.effectiveGeometry.interfaceOrientation);
+    totk_device_motion_begin();   // the phone's own gyro as the controller's six-axis sensor (device_motion.m)
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 64u << 20);
     pthread_t thread; pthread_create(&thread, &attr, run_host, NULL);
     pthread_detach(thread); pthread_attr_destroy(&attr);
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> c) {
+        (void)c; totk_device_motion_set_orientation(self.view.window.windowScene.effectiveGeometry.interfaceOrientation);
+    }];
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -189,6 +198,10 @@ static void audio_observe(void) {
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:main usingBlock:^(NSNotification *n) {
         (void)n; UIApplication.sharedApplication.idleTimerDisabled = YES;
         if (g_audio_interrupted) audio_resume(0,"became active during an interruption");
+        totk_device_motion_pause(NO);
+    }];
+    [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:main usingBlock:^(NSNotification *n) {
+        (void)n; totk_device_motion_pause(YES);   // no-op before the game starts (device_motion.m 'wanted')
     }];
 }
 
@@ -280,6 +293,9 @@ static void audio_observe(void) {
     // the value must be applied here. overwrite=0 keeps devicectl --environment-variables winning when testing from the Mac.
     NSString *lang = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_LANG"];
     if (lang.length>0&&lang.length<8) setenv("TOTK_LANG",lang.UTF8String,0);
+    // Motion aiming (Settings.bundle › TOTK_GYRO, on unless switched off): the game takes its six-axis sensor at start.
+    id gyro = [NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_GYRO"];
+    if (gyro && ![gyro boolValue]) setenv("TOTK_GYRO","0",0);
     setenv("TOTK_ROMFS_PATCHES",[res stringByAppendingPathComponent:@"romfs-patches"].fileSystemRepresentation,1);
     setenv("TOTK_ROMFS_PATCHES_OUT",[res stringByAppendingPathComponent:@"romfs-patches-out"].fileSystemRepresentation,1);
     setenv("TOTK_SHARED_FONTS",[res stringByAppendingPathComponent:@"shared-fonts"].fileSystemRepresentation,1);
