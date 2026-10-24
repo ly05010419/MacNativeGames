@@ -133,9 +133,17 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 /* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
+#if TARGET_OS_IOS
+extern void totk_phone_motion_start(void);
+extern void totk_phone_haptics_start(void);
+#endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
  runtime_gamepad_start();
+#if TARGET_OS_IOS
+ /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
+ dispatch_async(dispatch_get_main_queue(), ^{ totk_phone_motion_start(); totk_phone_haptics_start(); });
+#endif
  @autoreleasepool{callback();}
 }
 static int viReady;
