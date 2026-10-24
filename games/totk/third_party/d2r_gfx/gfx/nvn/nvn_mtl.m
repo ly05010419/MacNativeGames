@@ -15617,11 +15617,16 @@ static void ashot_take(id<MTLTexture> src, const char *path, long frame) { @auto
         CGContextRef small = img ? CGBitmapContextCreate(NULL, ow, oh, 8, 0, cs, kCGImageAlphaNoneSkipLast) : NULL;
         CGImageRef out = NULL;
         if (small) { CGContextSetInterpolationQuality(small, kCGInterpolationMedium); CGContextDrawImage(small, CGRectMake(0, 0, ow, oh), img); out = CGBitmapContextCreateImage(small); }
-        CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)p, (CFIndex)strlen(p), false);
+        static _Atomic unsigned ashot_seq;
+        unsigned seq = atomic_fetch_add_explicit(&ashot_seq, 1u, memory_order_relaxed);
+        char tmp[1056]; snprintf(tmp, sizeof tmp, "%s.%ld.%u.tmp", p, frame, seq);   /* pollers never see a half-written PNG at p */
+        CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)tmp, (CFIndex)strlen(tmp), false);
         CGImageDestinationRef dst = url && out ? CGImageDestinationCreateWithURL(url, (__bridge CFStringRef)UTTypePNG.identifier, 1, NULL) : NULL;
         int ok = 0;
         if (dst) { CGImageDestinationAddImage(dst, out, NULL); ok = CGImageDestinationFinalize(dst); CFRelease(dst); }
         if (url) CFRelease(url);
+        if (ok && rename(tmp, p) != 0) ok = 0;
+        if (!ok) unlink(tmp);
         CGImageRelease(out); CGContextRelease(small); CGImageRelease(img); if (dp) CGDataProviderRelease(dp); CGColorSpaceRelease(cs);
         MLOG("[ashot] F%ld t=%llu %s %s", frame, (unsigned long long)t, p, ok ? "ok" : "failed");
         free(p);
