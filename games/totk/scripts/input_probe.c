@@ -178,6 +178,18 @@ int main(void){
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
  for(unsigned i=0;i<32;i++)need(out.guard[i]==0xa5,"state output guard");
  /* Handheld mode (the iPhone): the input is the handheld controller (id 0x20, style bit 1); player 1 is not connected. */
+ id=0;
+ /* The editor publishes the same layout parsed from controls.txt. */
+ ControlsLayout layout;controls_layout_default(&layout);const char *layoutError=NULL;
+ need(!controls_layout_parse("key_38 = x\nkey_7 = x\nkey_0 = look_right\n",&layout,&layoutError),"edited keyboard layout parses");
+ runtime_keyboard_layout_set(layout.keys);
+ runtime_input_key(38,1);runtime_input_key(38,0);read(&out.state,1,&id);need(out.state.buttons==4,"edited short tap goes to new button only");
+ runtime_input_key(38,1);runtime_input_key(7,1);runtime_input_key(38,0);read(&out.state,1,&id);need(out.state.buttons==4,"alternate source remains held after first releases");
+ runtime_input_key(7,0);read(&out.state,1,&id);need(!out.state.buttons,"edited target releases");
+ runtime_input_key(0,1);read(&out.state,1,&id);need(out.state.rx==32767&&!out.state.lx,"edited stick direction");
+ runtime_input_suspend(1);fake_pad.buttons=1;runtime_input_key(38,1);read(&out.state,1,&id);need(out.state.attr==1&&!out.state.buttons&&!out.state.rx,"sheet isolates keyboard and controller");
+ runtime_input_suspend(0);read(&out.state,1,&id);need(!out.state.buttons&&!out.state.rx,"closing sheet clears held input");
+ controls_layout_default(&layout);runtime_keyboard_layout_set(layout.keys);
  handheld=1;
  void(*styles)(uint32_t)=runtime_input_override("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE");
  void(*ids)(const uint32_t *,uint64_t)=runtime_input_override("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm");

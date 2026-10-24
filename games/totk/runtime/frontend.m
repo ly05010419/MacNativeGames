@@ -24,6 +24,7 @@ static NSView *shortcutHelp;
    mouse mode goes off (front_mouse_update). */
 static BOOL mouseHeld;
 static int textEntryOpen;
+static BOOL controlsOpen;
 static void front_mouse_update(void);
 int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: key 5 */
 int taa_effective(void);   /* a frame has been anti-aliased */
@@ -116,7 +117,11 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 -(BOOL)acceptsFirstResponder{return YES;}
 -(void)keyDown:(NSEvent *)e{runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
--(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
+-(void)flagsChanged:(NSEvent *)e{
+ /* Device-specific bits distinguish left/right modifiers even when both are down. */
+ static const struct{unsigned key;uint64_t mask;} modifiers[]={{56,2},{60,4},{58,32},{61,64},{59,1},{62,8192},{57,NSEventModifierFlagCapsLock},{63,NSEventModifierFlagFunction}};
+ for(unsigned i=0;i<sizeof modifiers/sizeof *modifiers;i++)if(e.keyCode==modifiers[i].key)runtime_input_key(e.keyCode,!!(e.modifierFlags&modifiers[i].mask));
+}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
@@ -153,7 +158,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 }
 @end
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
- BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen;
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!controlsOpen;
  if(want==mouseHeld)return;
  mouseHeld=want;
  if(want){
@@ -166,6 +171,7 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  }
  fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (key 7, or Command-Tab, lets it go)":"let go");
 }
+#include "controls_editor.h"
 @interface TOTKShortcutHelp:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
@@ -342,6 +348,9 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ controlsEditor=[TOTKControlsEditor new];
+ NSMenuItem *bindings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("按键绑定…","Input Bindings…")) action:@selector(open:) keyEquivalent:@","];
+ bindings.target=controlsEditor;bindings.keyEquivalentModifierMask=NSEventModifierFlagCommand;[appMenu addItem:bindings];[appMenu addItem:NSMenuItem.separatorItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
