@@ -1,0 +1,39 @@
+/* Standalone probes for GPU paths that were isolated after a macOS kernel panic in full-game tests: each runs the
+   production replay code on known data in its own process, with Metal API validation enabled by the Makefile. */
+#import <Metal/Metal.h>
+#include "runtime.h"
+#include "../third_party/d2r_gfx/gfx/nvn/nvn_mtl.h"
+#include <stdio.h>
+#include <string.h>
+
+void runtime_gpu_path_probe(const char *which) {
+ int checked = !strcmp(which, "probe-gpu-sampler-border") ? mtl_probe_sampler_border() : !strcmp(which, "probe-gpu-pool-retire") ? mtl_probe_pool_retire() : !strcmp(which, "probe-gpu-tex-slots") ? mtl_probe_tex_slots() : !strcmp(which, "probe-gpu-arg-epoch") ? mtl_probe_arg_epoch() : !strcmp(which, "probe-gpu-anomaly") ? mtl_probe_anomaly() : !strcmp(which, "probe-gpu-vertex-streams") ? mtl_probe_vertex_streams() : !strcmp(which, "probe-gpu-layer-merge") ? mtl_probe_layer_merge() : !strcmp(which, "probe-gpu-cube-merge") ? mtl_probe_cube_merge() : !strcmp(which, "probe-gpu-texture-retire") ? mtl_probe_texture_retire() : !strcmp(which, "probe-gpu-texels-region") ? mtl_probe_texels_region() : !strcmp(which, "probe-gpu-linear-rt") ? mtl_probe_linear_rt_upload() : !strcmp(which, "probe-gpu-storage-view") ? mtl_probe_storage_view() : !strcmp(which, "probe-gpu-compressed-alias") ? mtl_probe_compressed_alias() : !strcmp(which, "probe-gpu-upload-batch") ? mtl_probe_upload_batch() : !strcmp(which, "probe-gpu-ds-clear") ? mtl_probe_ds_clear() : !strcmp(which, "probe-gpu-ub-rename") ? mtl_probe_ub_rename() : !strcmp(which, "probe-gpu-ubo-snapshot") ? mtl_probe_ubo_snapshot() : !strcmp(which, "probe-gpu-drv-c0") ? mtl_probe_drv_c0() : !strcmp(which, "probe-gpu-copy-alias") ? mtl_probe_copy_alias() : !strcmp(which, "probe-gpu-dispatch-chain") ? mtl_probe_dispatch_chain() : !strcmp(which, "probe-gpu-srgb-view") ? mtl_probe_srgb_view() : !strcmp(which, "probe-gpu-depth-output") ? mtl_probe_depth_output() : !strcmp(which, "probe-gpu-widen") ? mtl_probe_widen() : !strcmp(which, "probe-gpu-midclear") ? mtl_probe_midclear() : !strcmp(which, "probe-gpu-winding") ? mtl_probe_winding() : !strcmp(which, "probe-gpu-tile") ? mtl_probe_tile() : mtl_probe_blockrt();
+ printf("{\"status\":\"pass\",\"probe\":\"%s\",\"checked\":%d,\"scope\":\"%s\"}\n", which, checked,
+        !strcmp(which, "probe-gpu-sampler-border") ? "production VS/FS sampler border colour switching, mixed addressing and GPU readback" :
+        !strcmp(which, "probe-gpu-texels-region") ? "production texel GPU region read/write, pitch guards, packed/block formats, mip/layer/volume, overlap fallback and CPU/Metal mirror visibility" :
+        !strcmp(which, "probe-gpu-pool-retire") ? "removed pool wrappers release before outer autorelease drain; seven scope controls and 64 GPU readback/retirement cycles" :
+        !strcmp(which, "probe-gpu-anomaly") ? "same-queue GPU readback detects known flash, captures adjacent frames, respects runtime toggles and ignores nonconsecutive frames" :
+        !strcmp(which, "probe-gpu-tex-slots") ? "production texture/sampler slot cache: uniform-only changes, program switches, changed handles and descriptors, resource replacement, 2D-to-array views, typed buffers, unbound slots, passes/submissions and shadow comparisons" :
+        !strcmp(which, "probe-gpu-arg-epoch") ? "argument epoch reuse across programs; UBO/storage/registry/serial/pass/submission invalidation; snapshot retirement and shadow validation" :
+        !strcmp(which, "probe-gpu-vertex-streams") ? "active vertex streams match production descriptors: unused poison bindings, remapped streams, zero-input fallback, GPU pixel equivalence" :
+        !strcmp(which, "probe-gpu-layer-merge") ? "layered passes over cube / array layers: face chains, clears and lower layers ending the pass, partial clear opening it, draws without a layer output, untouched layers preserved" :
+        !strcmp(which, "probe-gpu-texture-retire") ? "descriptor/type views of re-uploaded textures retire after GPU completion; live views and type changes preserve pixels; finalized CPU-upload wrappers recycle after fences with complete pixel replacement" :
+        !strcmp(which, "probe-gpu-linear-rt") ? "CPU-loaded linear-render-target height textures: cold upload, CPU texel update, GPU rendering retained across dirty pool writes" :
+        !strcmp(which, "probe-gpu-storage-view") ? "shared GPU texture content survives format/usage upgrades discovered inside active passes, across all mips and layers" :
+        !strcmp(which, "probe-gpu-compressed-alias") ? "compressible storage changing format keeps the earlier format's content for its readers; same-format content persists; non-compressible storage still aliases" :
+        !strcmp(which, "probe-gpu-upload-batch") ? "bounded texture-upload staging, retirement before game submit, cross-batch payload ordering" :
+        !strcmp(which, "probe-gpu-ds-clear") ? "scissored depth/stencil clears, partial stencil masks, preserved colors and untouched pixels across passes" :
+        !strcmp(which, "probe-gpu-copy-alias") ? "production buffer copies and fills through two no-copy buffers over one allocation and a virtual pool's view, 256 dependent steps over 64 KiB across encoder boundaries, match a CPU replay byte for byte" :
+        !strcmp(which, "probe-gpu-dispatch-chain") ? "back-to-back dispatches through the production dispatch share one compute encoder (31 of 32) and stay ordered: 16 alternating rounds of two dependent kernels over 2^20 elements" :
+        !strcmp(which, "probe-gpu-drv-c0") ? "driver c0/c2 production cache: dispatch counts, changed storage/uniform/texture/sampler bindings, vertex point limit, identical-bank reuse and submission epoch; load-time scan" :
+        !strcmp(which, "probe-gpu-ubo-snapshot") ? "uniform contents as of the submit call: CPU rewrites during the replay unseen by draws and pointer reads, close ranges merged, a GPU copy within the submission seen, a range the previous submission's storage write still produces not copied; copies past the 1 MiB cap disjoint; translation thread: bytes captured at the submit call used by the later replay, ranges an earlier submission writes after the capture read on the GPU timeline; pending CPU references survive prior GPU completion and arena churn; snapshot index collisions and list rebuilds preserve captured GPU bytes" :
+        !strcmp(which, "probe-gpu-ub-rename") ? "renamed inline uniform updates: old/new/newest reads in one submission, copy ordering, final memory, argument buffers dirtied" :
+        !strcmp(which, "probe-gpu-srgb-view") ? "linear/sRGB render and texture-clear views preserve alpha and mip/layer selection" :
+        !strcmp(which, "probe-gpu-depth-output") ? "fragment color preserved without a depth attachment; original fragment depth retained with one" :
+        !strcmp(which, "probe-gpu-midclear") ? "masked, scissored color clears inside a render pass with two color targets and depth" :
+        !strcmp(which, "probe-gpu-tile") ? "tile-light quad draw replayed through the Metal 4 path" :
+        !strcmp(which, "probe-gpu-winding") ? "front-face winding and culling through the Metal 4 render path" :
+        !strcmp(which, "probe-gpu-widen") ? "GPU widening of 8-bit indices at 24 count/offset combinations incl. restart 0xFF"
+                                          : "block texture <-> BC4 2D/2D mip/3D plane and BC3 copies, clear-rendered blocks into the compressed texture");
+ fflush(stdout);
+}

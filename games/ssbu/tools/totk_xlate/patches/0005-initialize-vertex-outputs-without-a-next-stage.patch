@@ -1,0 +1,23 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -224,6 +224,20 @@
+                 }
+ 
+                 InitializeOutputComponent(context, vecIndex, index & 3, perPatch: false);
++            }
++
++            // TOTK: shaders are translated one at a time, so no next stage is set and the loop above initializes nothing.
++            // Maxwell reads components a vertex shader leaves unwritten as (0, 0, 0, 1); start every written output there.
++            if (stage == ShaderStage.Vertex && context.TranslatorContext.AttributeUsage.NextInputAttributesComponents == UInt128.Zero)
++            {
++                for (int location = 0; location < AttributeConsts.UserAttributesCount; location++)
++                {
++                    if ((attributeUsage.UsedOutputAttributes & (1 << location)) != 0 &&
++                        (attributeUsage.PassthroughAttributes & (1 << location)) == 0)
++                    {
++                        InitializeOutput(context, location, perPatch: false);
++                    }
++                }
+             }
+ 
+             if (context.TranslatorContext.AttributeUsage.NextUsedInputAttributesPerPatch != null)
