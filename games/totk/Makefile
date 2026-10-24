@@ -469,3 +469,9 @@ probe-gpu-sampler-border: runtime-v143
 
 .PHONY: probe-gpu-sampler-border-edge
 probe-gpu-sampler-border-edge: probe-gpu-sampler-border
+
+.PHONY: probe-ultrahand-vertical
+probe-ultrahand-vertical:
+	@mkdir -p build
+	xcrun clang -O2 -ffunction-sections -fdata-sections -Wl,-dead_strip -Iruntime tests/ultrahand_vertical/probe.c -o build/ultrahand-vertical-probe
+	build/ultrahand-vertical-probe
