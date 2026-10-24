@@ -12,6 +12,15 @@
 #include "game_version.h"
 #include "aspect_math.h"   /* key 4: TOTK_ASPECT parsing */
 #include <TargetConditionals.h>
+#include "runtime.h"
+#include <sched.h>
+#ifdef GAME_BOTW190
+#define JQ_SPIN_SITE 0xef63e8u
+#define JQ_SPIN_ORIG 0x34fffb6eu   /* cbz w14, 0xef6354 */
+static uint8_t *g_botw_main;
+static int g_jq_yield_on;
+static _Atomic uint64_t g_jq_yield_count;
+#endif
 uint32_t runtime_thread_current_handle(void);
 static void botw_aspect_install(Module *m);   /* key 4, end of the file */
 static int patch_output_res(Module *m);   /* native output size, after runtime_output_res */
@@ -556,6 +565,22 @@ void runtime_game_patches(Module *m) {
           if (!w) fprintf(stderr, "[botw] exclusive loads with acquire: set at build time (iOS), none left\n"); else
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
+#ifdef GAME_BOTW190
+    g_botw_main = m->base;
+    const char *ey = getenv("TOTK_JQ_YIELD");
+    if (!(ey && !strcmp(ey, "0"))) {   /* default on */
+        uint32_t w; memcpy(&w, m->base + JQ_SPIN_SITE, 4);
+        if (w == JQ_SPIN_ORIG) {
+            put_word(m, JQ_SPIN_SITE, 0xd420f540u, "job-queue spin yield hook");   /* brk #0x7aa */
+            g_jq_yield_on = 1;
+            fprintf(stderr, "[botw] armed job-queue spin yield hook at main+%#x (TOTK_JQ_YIELD=0: off)\n", JQ_SPIN_SITE);
+        } else {
+            fprintf(stderr, "[botw] JQ_SPIN_SITE mismatch: expected %08x found %08x\n", JQ_SPIN_ORIG, w);
+        }
+    } else {
+        fprintf(stderr, "[botw] job-queue spin yield hook off (TOTK_JQ_YIELD=0)\n");
+    }
+#endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
@@ -596,6 +621,31 @@ static int botw_pad_hook(ucontext_t *u) {
 int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was one of ours, handled */
 #ifdef GAME_BOTW160
     if (g_pad_log_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_pad_main + PAD_LOOP) return botw_pad_hook(context);
+#endif
+#ifdef GAME_BOTW190
+    if (g_jq_yield_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_botw_main + JQ_SPIN_SITE) {
+        ucontext_t *u = context;
+        uint64_t *x = u->uc_mcontext->__ss.__x;
+        uint32_t w14 = (uint32_t)x[14];
+        if (w14 != 0) {
+            u->uc_mcontext->__ss.__pc = (uintptr_t)g_botw_main + 0xef63ecu;
+            return 1;
+        }
+        uint64_t cnt = atomic_fetch_add(&g_jq_yield_count, 1) + 1;
+        if ((cnt & 0x3ff) == 1) {
+            static uint64_t last_log;
+            uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+            if (now - last_log >= 5000000000ull) {
+                last_log = now;
+                fprintf(stderr, "[botw] job-queue: %llu core yields from empty/ordered queue spin\n", (unsigned long long)cnt);
+            }
+        }
+        int away = runtime_core_away();
+        sched_yield();
+        runtime_core_back(&away);
+        u->uc_mcontext->__ss.__pc = (uintptr_t)g_botw_main + 0xef6354u;
+        return 1;
+    }
 #endif
     if (!g_jq_on) return 0;
     ucontext_t *u = context; uint64_t pc = u->uc_mcontext->__ss.__pc, *x = u->uc_mcontext->__ss.__x;
