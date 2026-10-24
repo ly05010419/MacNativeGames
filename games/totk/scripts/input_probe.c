@@ -159,14 +159,9 @@ int main(void){
  void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
  int(*read)(State *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
  uint32_t id=0;struct{State state;unsigned char guard[32];} out;memset(&out,0xa5,sizeof(out));init();
- runtime_input_key(38,1);runtime_input_key(38,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
- need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
- runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
- fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
  /* Synthetic pad merges with keyboard/controller without calling user_input("controller"), so TOTK_AUTOLOAD stays armed.
-    Physical controller stick (>16384) calls user_input, which clears syntheticPad and cancels autoload. */
+    Physical controller stick (>16384) calls user_input, which clears syntheticPad and cancels autoload.
+    Run before keyboard checks so runtime_input_key does not cancel TOTK_AUTOLOAD while in AL_WAIT. */
  {
   const char *al=getenv("TOTK_AUTOLOAD");
   if(al&&!strcmp(al,"1")){
@@ -192,6 +187,9 @@ int main(void){
    runtime_input_pad_synthetic(&sp);
    read(&out.state,1,&id);
    need(out.state.buttons==8&&out.state.lx==-15000&&out.state.ly==22000&&out.state.rx==-5000&&out.state.ry==6000,"synthetic pad read");
+   runtime_input_clear();
+   read(&out.state,1,&id);
+   need(out.state.buttons==8&&out.state.lx==-15000&&out.state.ly==22000,"focus clear preserves synthetic pad state");
    RuntimeGamepadState clamp_sp={.buttons=2,.lx=INT_MIN,.ly=99999,.rx=-99999,.ry=INT_MAX,.connected=1};
    runtime_input_pad_synthetic(&clamp_sp);
    read(&out.state,1,&id);
@@ -216,6 +214,12 @@ int main(void){
    }
   }
  }
+ runtime_input_key(38,1);runtime_input_key(38,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
+ need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
+ runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
+ runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
+ fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
+ runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
  const unsigned dpad[]={3,17,4,5};
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
