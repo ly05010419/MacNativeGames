@@ -15850,7 +15850,7 @@ void botw_tiny_commit(void) {   // in mtl_sub_commit, after the last render pass
 /* Write-back staging (BOTW_WB_* in nvn_obj.h; docs/botw-v1.9.0-port.md). Serials rendered in this submission are noted on the submit
    thread; at the submission's end each small one (WB_STAGE_MAX) is copied into its stage buffer in the same command
    buffer, so the invalidate waits for that fence only and swizzles from the stage without a read-back blit. */
-#define WB_STAGE_MAX (256u << 10)   /* larger textures keep the read-back blit at the invalidate */
+#define WB_STAGE_MAX (1024u << 10)  /* larger textures keep the read-back blit at the invalidate */
 static uint64_t g_wb_sub[64]; static int g_wb_nsub;   /* submit thread: serials noted in this submission */
 static uint64_t g_wb_staged, g_wb_from_stage;
 void botw_wb_sub_note(uint64_t k) {
