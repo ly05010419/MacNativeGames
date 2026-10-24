@@ -389,7 +389,9 @@ game's texture for that key.
 **Tools.** The tool downloads nothing; you install these yourself. Both are approved sources:
 
 - `realesrgan-ncnn-vulkan`, the v0.2.5.0 release on GitHub of xinntao/Real-ESRGAN. Its `models` folder has `realesrgan-x4plus-anime`.
-- The 4x-UltraSharp NCNN files (`4x-UltraSharp.param` and `4x-UltraSharp.bin`) by Kim2091, on Hugging Face. Put them in the same `models` folder.
+- The 4x-UltraSharp NCNN files by Kim2091, on Hugging Face (`Kim2091/UltraSharp`, folder `NCNN`): `4x-UltraSharp-fp32.param` and
+  `4x-UltraSharp-fp32.bin`. Put them in the same `models` folder as `4x-UltraSharp.param` and `4x-UltraSharp.bin` (the tool looks
+  for these names).
 
 The harvest folder and the pack are made from game data. They stay on your Mac and never go into the repository or a pull request.
 
@@ -809,7 +811,8 @@ alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更
 **工具。** 工具不会下载任何东西，请自己安装。两个来源都已获批准：
 
 - `realesrgan-ncnn-vulkan`：GitHub 上 xinntao/Real-ESRGAN 的 v0.2.5.0 发布版，其 `models` 文件夹里有 `realesrgan-x4plus-anime`。
-- Kim2091 的 4x-UltraSharp NCNN 文件（`4x-UltraSharp.param` 和 `4x-UltraSharp.bin`），在 Hugging Face 上。放进同一个 `models` 文件夹。
+- Kim2091 的 4x-UltraSharp NCNN 文件，在 Hugging Face 上（`Kim2091/UltraSharp` 的 `NCNN` 文件夹）：`4x-UltraSharp-fp32.param` 和
+  `4x-UltraSharp-fp32.bin`。放进同一个 `models` 文件夹，并改名为 `4x-UltraSharp.param` 和 `4x-UltraSharp.bin`（工具按这两个名字找）。
 
 采集文件夹和贴图包由游戏数据生成，只保留在你的 Mac 上，不放进仓库或拉取请求。
 
