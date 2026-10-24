@@ -498,6 +498,7 @@ static void refresh_gamepads(void) {
 }
 
 static void attach_gamepad(GCController *controller) {
+    runtime_feedback_diagnose(controller);   /* before the profile check: even a pad without extendedGamepad gets logged */
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {

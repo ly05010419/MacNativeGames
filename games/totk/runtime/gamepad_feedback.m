@@ -1,5 +1,8 @@
-/* The Mac controller's haptics and motion sensors for the game's HD rumble and six-axis sensor (runtime/hid_feedback.c),
-   2026-10-17. On by default (TOTK_RUMBLE=0 / TOTK_GYRO=0 turn them off), and only on macOS (iOS: stubs, never on).
+/* The controller's haptics and motion sensors for the game's HD rumble and six-axis sensor (runtime/hid_feedback.c),
+   2026-10-17. On by default (TOTK_RUMBLE=0 / TOTK_GYRO=0 turn them off). macOS and iOS: GameController is the same
+   framework on both, so the haptics and GCMotion paths are shared; only the raw Switch Pro HID fallback is macOS-only
+   (IOKit has no iOS equivalent). iOS may expose neither capability for a given pad, so runtime_feedback_diagnose logs
+   what GameController actually reports before the two paths are set up.
    Rumble: each of the game's two vibration devices (left, right) is a Core Haptics engine on that handle of the
    controller (GCHapticsLocalityLeftHandle / RightHandle; a DualSense has both) playing a long continuous event. The
    game's value (two bands, each an amplitude 0..1 at a frequency) sets the event's intensity (TOTK_RUMBLE_GAIN, default 1,
@@ -12,21 +15,15 @@
    desk 2026-10-17: acceleration (0.00, +0.15, -0.95) G, rotation under 0.004 rad/s, 751 samples in 3 s. */
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
+#import <CoreHaptics/CoreHaptics.h>
 #include <TargetConditionals.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "runtime.h"
-
-#if !TARGET_OS_OSX
-void runtime_feedback_attach(GCController *c) { (void)c; }
-void runtime_feedback_detach(GCController *c) { (void)c; }
-void runtime_feedback_quiet(void) {}
-void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
-#else
-#import <CoreHaptics/CoreHaptics.h>
 
 /* ---- rumble ----
    Simple pattern players (CHHapticPatternPlayer) only: on macOS 26.5.2 (25F84) the advanced player (looping) never gets
@@ -94,6 +91,9 @@ static BOOL ensure_engine(int side) {   /* rumbleQueue */
     if (![rumblePad.haptics.supportedLocalities containsObject:where]) where = GCHapticsLocalityDefault;   /* a pad with one motor */
     CHHapticEngine *e = [rumblePad.haptics createEngineWithLocality:where];
     if (!e) { rumble_failed(side, "creating the haptic engine", nil); return NO; }
+#if TARGET_OS_IPHONE
+    e.playsHapticsOnly = YES;   /* do not touch the game's audio session for controller haptics */
+#endif
     e.resetHandler = ^{ dispatch_async(rumbleQueue, ^{ forget_side(side); }); };
     e.stoppedHandler = ^(CHHapticEngineStoppedReason reason) { (void)reason; dispatch_async(rumbleQueue, ^{ forget_side(side); }); };
     if (![e startAndReturnError:&err]) { rumble_failed(side, "starting the haptic engine", err); return NO; }
@@ -169,12 +169,18 @@ static void hid_motion_start(void);
 static void hid_motion_stop(void);
 static uint64_t zeroSince;          /* the controller's handler queue */
 static BOOL motionSeen, hidAsked;   /* the controller's handler queue; reset on attach */
+static _Atomic uint64_t motionSamples, motionZeroSamples;   /* reset on attach, logged 3 s later */
 static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
     GCAcceleration a = m.acceleration;
     if (m.hasGravityAndUserAcceleration) { a.x = m.gravity.x + m.userAcceleration.x; a.y = m.gravity.y + m.userAcceleration.y; a.z = m.gravity.z + m.userAcceleration.z; }
     const double acc[3] = {a.x, a.y, a.z}, gyro[3] = {m.rotationRate.x, m.rotationRate.y, m.rotationRate.z};
+    BOOL zero = !acc[0] && !acc[1] && !acc[2] && !gyro[0] && !gyro[1] && !gyro[2];
+    uint64_t n = atomic_fetch_add(&motionSamples, 1);
+    if (zero) atomic_fetch_add(&motionZeroSamples, 1);
+    if (n == 0) fprintf(stderr, "[gyro] first GCMotion sample: acc %.2f %.2f %.2f G, gyro %.1f %.1f %.1f deg/s%s\n",
+                        acc[0], acc[1], acc[2], gyro[0] * 180 / M_PI, gyro[1] * 180 / M_PI, gyro[2] * 180 / M_PI, zero ? " (all zero)" : "");
     if (!motionSeen) {   /* a real sensor never reads exactly zero on all six axes; see hid_motion_start */
-        if (!acc[0] && !acc[1] && !acc[2] && !gyro[0] && !gyro[1] && !gyro[2]) {
+        if (zero) {
             uint64_t now = runtime_now_ns();
             if (!zeroSince) zeroSince = now;
             else if (!hidAsked && now - zeroSince > 1000000000ull) { hidAsked = YES; dispatch_async(dispatch_get_main_queue(), ^{ hid_motion_start(); }); }
@@ -196,6 +202,7 @@ static void motion_sample(GCMotion *m) {   /* the controller's handler queue */
    calibration (the user calibration at 0x8026 when it has its 0xB2A1 magic, else the factory one at 0x6020), as SDL:
    G = raw * 4 / (sensitivity - origin), deg/s = (raw - origin) * 936 / (sensitivity - origin); until it arrives the
    sensor's nominal ranges, 8 G and 2000 deg/s over 32768. */
+#if TARGET_OS_OSX
 #import <IOKit/hid/IOHIDManager.h>
 static IOHIDManagerRef hidManager;   /* main queue */
 static IOHIDDeviceRef hidDevice;     /* main queue */
@@ -287,6 +294,29 @@ static void hid_motion_stop(void) {   /* main queue */
     CFRelease(hidDevice); hidDevice = NULL;
     CFRelease(hidManager); hidManager = NULL;
 }
+#else
+/* IOKit's HID manager is not part of the iOS SDK: when GameController's motion is all zeros there is nothing more to try. */
+static void hid_motion_start(void) {   /* main queue */
+    fprintf(stderr, "[gyro] %s: GameController's motion is all zeros; raw HID reports are macOS only, so no motion from it\n",
+            (motionPad.vendorName ?: @"controller").UTF8String);
+}
+static void hid_motion_stop(void) {}
+#endif
+
+/* ---- what GameController reports for this controller ---- */
+void runtime_feedback_diagnose(GCController *c) {   /* main queue, whatever TOTK_RUMBLE / TOTK_GYRO say */
+    NSMutableArray *where = [NSMutableArray array];
+    for (GCHapticsLocality l in c.haptics.supportedLocalities) [where addObject:l];
+    NSMutableString *s = [NSMutableString string];
+    [s appendFormat:@"category=%@ buttons=%lu", (c.productCategory ?: @"unknown"), (unsigned long)c.physicalInputProfile.buttons.count];
+    if (c.haptics) [s appendFormat:@" haptics=yes localities=[%@]", [where componentsJoinedByString:@","]];
+    else [s appendString:@" haptics=no"];
+    GCMotion *m = c.motion;
+    if (m) [s appendFormat:@" motion=yes rotation=%d gravity=%d manual=%d active=%d",
+            (int)m.hasRotationRate, (int)m.hasGravityAndUserAcceleration, (int)m.sensorsRequireManualActivation, (int)m.sensorsActive];
+    else [s appendString:@" motion=no"];
+    fprintf(stderr, "[pad] %s: %s\n", (c.vendorName ?: @"controller").UTF8String, s.UTF8String);
+}
 
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */
@@ -309,10 +339,19 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
         GCMotion *m = c.motion;
         if (!m || !m.hasRotationRate) { fprintf(stderr, "[gyro] %s has no gyro: no motion from it\n", name); return; }
         if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
-        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO; runtime_motion_deadzone_default(0);
+        if (motionPad && motionPad != c) motionPad.motion.valueChangedHandler = nil;
+        hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO;
+        atomic_store(&motionSamples, 0); atomic_store(&motionZeroSamples, 0);
+        runtime_motion_deadzone_default(0);
         m.valueChangedHandler = ^(GCMotion *changed) { motion_sample(changed); };
         motionPad = c; runtime_motion_live(1);
         fprintf(stderr, "[gyro] %s: motion sensors on (gyro%s)\n", name, m.hasGravityAndUserAcceleration ? ", gravity" : ", acceleration");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (motionPad != c) return;
+            uint64_t n = atomic_load(&motionSamples), z = atomic_load(&motionZeroSamples);
+            if (!n) fprintf(stderr, "[gyro] %s: no GCMotion sample in 3 s (the handler was never called)\n", name);
+            else fprintf(stderr, "[gyro] %s: %llu GCMotion samples in 3 s, %llu all zero\n", name, (unsigned long long)n, (unsigned long long)z);
+        });
     }
 }
 void runtime_feedback_detach(GCController *c) {   /* main queue */
@@ -322,4 +361,3 @@ void runtime_feedback_detach(GCController *c) {   /* main queue */
         c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
 }
-#endif
