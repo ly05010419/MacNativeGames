@@ -119,6 +119,22 @@ static void load_controller_type(void) {
 
 static void save_controller_type(int type) { setting_write("controller-type.txt", gamepad_type_name(type), "controller type"); }
 
+/* The button icons app/launcher.m loaded for this start (TOTK_BUTTON_ICONS: xbox-position, playstation-label, switch-label,
+   none, or mod when the player's mods hold their own; unset: the launcher picks none, as in a Tears of the Kingdom app), at
+   the size TOTK_BUTTON_ICONS_SCALE (switch only at 2 or more: gamepad_icon_style). They change only
+   at the next start (runtime/romfs.c reads them once), so a new type or controller is logged for then. Main thread. */
+static void button_icons_report(const char *why) {
+    const char *loaded = getenv("TOTK_BUTTON_ICONS");
+    if (!loaded || !strcmp(loaded, "mod")) return;
+    int detected = -1, type = runtime_gamepad_type(&detected), by_position = 1;
+    if (type == GAMEPAD_TYPE_AUTO && detected < 0) return;   /* no controller now: the launcher takes the last one seen */
+    const char *scale = getenv("TOTK_BUTTON_ICONS_SCALE");
+    int style = gamepad_icon_style(type, detected, scale ? atoi(scale) : 1, &by_position);
+    char wanted[40];
+    snprintf(wanted, sizeof wanted, "%s%s%s", style < 0 ? "none" : gamepad_type_name(style), style < 0 ? "" : "-", style < 0 ? "" : by_position ? "position" : "label");
+    if (strcmp(wanted, loaded)) fprintf(stderr, "[totk-input] button icons: %s now, %s from the next start (%s)\n", loaded, wanted, why);
+}
+
 static int face_by_position(GCController *controller) {
     return gamepad_type_face_by_position(atomic_load(&controllerType), controller.productCategory.UTF8String, controller.vendorName.UTF8String);
 }
@@ -288,6 +304,10 @@ static void hid_pad_attach(IOHIDDeviceRef device) {
     hidPad.present = 1;
     fprintf(stderr, "[totk-input] HID gamepad connected: %s (%s)\n", name ? name : "unknown", manufacturer ? manufacturer : "unknown");
     refresh_gamepads();
+    if (getenv("TOTK_BUTTON_ICONS")) {   /* Switch-style (runtime_gamepad_type): Switch icons at the next start in auto */
+        setting_write("controller-detected.txt", gamepad_type_name(GAMEPAD_TYPE_SWITCH), "connected controller");
+        button_icons_report("controller connected");
+    }
 }
 
 static void hid_matched(void *context, IOReturn result, void *sender, IOHIDDeviceRef device) {
@@ -509,6 +529,10 @@ static void attach_gamepad(GCController *controller) {
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
     runtime_feedback_attach(controller);
     refresh_gamepads();
+    if (getenv("TOTK_BUTTON_ICONS")) {   /* the launcher's pick for auto at the next start, when no controller is on yet */
+        setting_write("controller-detected.txt", gamepad_type_name(gamepad_type_detect(controller.productCategory.UTF8String, controller.vendorName.UTF8String)), "connected controller");
+        button_icons_report("controller connected");
+    }
 }
 
 /* Key 6 (runtime/input.c): the next type (auto -> Xbox -> PlayStation -> Switch); the held buttons are read again at once. */
@@ -523,6 +547,7 @@ int runtime_gamepad_type_cycle(void) {
                 fprintf(stderr, "[totk-input] %s: face buttons by %s\n", (controller.vendorName ?: @"unknown").UTF8String,
                         face_by_position(controller) ? "position" : "label");
         refresh_gamepads();
+        button_icons_report("key 6");
     });
     return type;
 }

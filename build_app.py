@@ -1067,7 +1067,7 @@ def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115
     run(['make', f'-j{os.cpu_count() or 4}', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
     # the launcher is per game and version (runtime/game_version.h: the data folder, the log name, the backup of saves)
     defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') else [f'-DTOTK_GAME_{version.upper()}=1']
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit',
+    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit', '-framework', 'GameController',
          '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
     # used only while packaging (step_warm_metal); not part of the app
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
@@ -1314,7 +1314,31 @@ def install_app(new, out, *, verify=None, remove=None):
     return kept
 
 
-def step_app(tree, out, logs, *, version="v0", game='totk'):
+def button_icons_kit(tree, res, version, game):
+    """The button icon tools inside the app (Contents/Resources/totk/button-icons, app/launcher.m button_icons): at each start
+    the launcher makes, once, the prompts for the controller type, face mode and controls.txt in use (docs/mods.md). The
+    scripts keep the repo layout (games/botw/scripts finds the shared ones at ../../totk/scripts), and kit.txt names the work
+    folder's Python (fontTools: requirements.txt), the tool and an id over the scripts and the RomFS the app plays, so a
+    set made for an earlier build is never loaded."""
+    kit = res / 'button-icons'
+    files = sorted((tree / 'scripts').glob('*.py')) + [tree / 'runtime/controller_map.h']   # prompt_layout.py reads the header
+    if game == 'botw':
+        files += sorted((tree.parent / 'botw/scripts').glob('*.py'))
+    digest = hashlib.sha256()
+    for path in files:
+        rel = Path('games') / path.relative_to(tree.parent)
+        (kit / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, kit / rel)
+        digest.update(f'{rel}\n'.encode() + path.read_bytes())
+    romfs = tree / f'extracted/{version}'
+    digest.update((romfs / 'romfs/runtime-index.bin').read_bytes())
+    for manifest in sorted(romfs.glob('romfs-patches*/**/manifest.tsv')) or ['none']:   # Breath of the Wild has no RomFS overlays
+        digest.update(manifest.read_bytes() if isinstance(manifest, Path) else b'none')
+    tool = 'games/botw/scripts/botw_prompts.py' if game == 'botw' else 'games/totk/scripts/make_button_icons.py'
+    (kit / 'kit.txt').write_text(f'python={tree.resolve() / ".venv/bin/python"}\ntool={tool}\nid={digest.hexdigest()}\n')
+
+
+def step_app(tree, out, logs, *, version="v0", game='totk', button_icons=False):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
     tmp = out.with_name(out.name + '.partial')
@@ -1335,6 +1359,8 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
     for rel in (f'extracted/{version}/romfs-patches', f'extracted/{version}/romfs-patches-out', 'extracted/firmware/shared-fonts'):
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)
+    if button_icons:
+        button_icons_kit(tree, res, version, game)
     seed = tree/f'build/shader-seed/{version}'
     if not (seed/'seed-manifest.json').is_file():
         raise BuildError('startup shader seed was not prepared; refusing an app without first-launch warm-up data')
@@ -1790,6 +1816,10 @@ def parse_args(argv):
                          'and its manifest.tsv, so the app plays with the mod. That folder is the player\'s: what it '
                          'held is moved next to it as <version>.backup-<date>-<time>, not deleted. Without this flag '
                          'the build leaves the folder alone and prints the two commands that fill it by hand')
+    ap.add_argument('--button-icons', action=argparse.BooleanOptionalAction,
+                    help='draw the game\'s button prompts for the controller in use: Xbox or PlayStation from key 6\'s type or the '
+                         'connected controller, with controls.txt (made at start, once per setting; docs/mods.md). On by default '
+                         'for Breath of the Wild (1.6.0 and 1.9.0), off for Tears of the Kingdom; needs fontTools in the work folder\'s Python')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
     fonts = ap.add_mutually_exclusive_group()
@@ -1913,7 +1943,7 @@ def main(argv):
             say('Install it with games/totk/ios/tools/install_device.py' + (f' --game-data {tree}/extracted/{version}/romfs/romfs.bin'
                 if args.ios_game_data == 'documents' else '') + '; saves and the shader cache stay in the app\'s Documents.')
             return
-        step_app(tree, out, logs, version=version, game='botw')
+        step_app(tree, out, logs, version=version, game='botw', button_icons=True if args.button_icons is None else args.button_icons)
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
         t1 = time.time()
@@ -1982,7 +2012,7 @@ def main(argv):
             except BuildError as e:
                 say(f'   the Mac reminder for iPhone / iPad shader contributions was not installed: {e}')
     else:
-        step_app(tree, out, logs, version=version)
+        step_app(tree, out, logs, version=version, button_icons=bool(args.button_icons))
     # Refresh an existing app's version, executable and signing identity before
     # the next Finder launch; the desktop alias keeps pointing to this bundle.
     if args.platform=='macos': run([LSREGISTER, '-f', out], logs / 'register-app.log')

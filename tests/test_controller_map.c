@@ -1,4 +1,5 @@
 /* Test the controller layout parser and mapping (games/totk/runtime/controller_map.h) with synthetic files. */
+#define _POSIX_C_SOURCE 200809L   /* setenv */
 #include "../games/totk/runtime/controller_map.h"
 #include "../games/totk/runtime/gamepad_layout.h"
 #include <stdio.h>
@@ -77,6 +78,34 @@ int main(void) {
     expect(mode_of("mouse_right = zl\n", MR, &line) == CONTROLLER_HOLD, "a mouse line without a mode holds");
     expect(mode_of("mouse_middle = zr aim mouse5\n", MM, &line) == (CONTROLLER_AIM | M5 << 3), "a side button as a fire button");
     expect(mode_of("mouse_left = y tap\n", ML, &line) == CONTROLLER_TAP, "modes work on mouse buttons");
+    /* The button icons the launcher picks (gamepad_icon_style): the picked type, else what auto detected; Switch only at 2x and up. */
+    int pos = -1;
+    unsetenv("TOTK_FACE_BUTTONS");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_XBOX, -1, 1, &pos) == GAMEPAD_TYPE_XBOX && pos == 1, "Xbox picked: Xbox icons by position");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_PLAYSTATION, GAMEPAD_TYPE_XBOX, 2, &pos) == GAMEPAD_TYPE_PLAYSTATION && pos == 1, "a picked type wins over the detected pad");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_SWITCH, GAMEPAD_TYPE_XBOX, 1, &pos) == -1, "Switch picked at 1x: the game's own icons");
+    pos = -1;
+    expect(gamepad_icon_style(GAMEPAD_TYPE_SWITCH, GAMEPAD_TYPE_XBOX, 2, &pos) == GAMEPAD_TYPE_SWITCH && pos == 0, "Switch picked at 2x: sharp Switch icons by label");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_PLAYSTATION, 1, &pos) == GAMEPAD_TYPE_PLAYSTATION && pos == 1, "auto: the detected PlayStation pad");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_SWITCH, 1, &pos) == -1, "auto with a Nintendo pad at 1x: the game's own icons");
+    pos = -1;
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_SWITCH, 3, &pos) == GAMEPAD_TYPE_SWITCH && pos == 0, "auto with a Nintendo pad at 3x: Switch icons by label");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, -1, 2, &pos) == -1, "auto with no pad seen: the game's own icons");
+    setenv("TOTK_FACE_BUTTONS", "label", 1);
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_XBOX, 1, &pos) == GAMEPAD_TYPE_XBOX && pos == 0, "auto with TOTK_FACE_BUTTONS=label: by label");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_XBOX, -1, 1, &pos) == GAMEPAD_TYPE_XBOX && pos == 1, "a picked type maps by position whatever TOTK_FACE_BUTTONS says");
+    setenv("TOTK_FACE_BUTTONS", "position", 1);
+    expect(gamepad_icon_style(GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_SWITCH, 2, &pos) == GAMEPAD_TYPE_SWITCH && pos == 1, "auto Nintendo pad with TOTK_FACE_BUTTONS=position: by position");
+    expect(gamepad_icon_style(GAMEPAD_TYPE_SWITCH, -1, 2, &pos) == GAMEPAD_TYPE_SWITCH && pos == 0, "Switch picked maps by label whatever TOTK_FACE_BUTTONS says");
+    unsetenv("TOTK_FACE_BUTTONS");
+    /* The icon size for the display (gamepad_icon_scale): the 16:9 picture's height over 1080, rounded up, 1 to 4. */
+    expect(gamepad_icon_scale(1920, 1080) == 1, "1080p: the game's size");
+    expect(gamepad_icon_scale(3456, 2234) == 2, "MacBook Pro 16 (16:9 picture 1944 high): twice");
+    expect(gamepad_icon_scale(2560, 1440) == 2, "1440p: twice");
+    expect(gamepad_icon_scale(3840, 2160) == 2, "4K: twice");
+    expect(gamepad_icon_scale(5120, 2880) == 3, "5K: three times");
+    expect(gamepad_icon_scale(1440, 900) == 1, "a small display: the game's size");
+    expect(gamepad_icon_scale(15360, 8640) == 4, "a huge display: at most four times");
     if (failures) return 1;
     printf("PASS: controller layout cases\n");
     return 0;
