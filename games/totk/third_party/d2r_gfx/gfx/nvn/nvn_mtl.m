@@ -22,6 +22,7 @@
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "totk_shader_rt.h"
+#include "totk_app_resources.h"
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
 #include "totk_taa.h"
@@ -4745,6 +4746,8 @@ static NSMutableDictionary<NSString *, NSString *> *g_shmap;
 static NSMutableDictionary<NSString *, NSString *> *g_shassets;
 static NSString *g_shmap_path, *g_msl_dir;
 static NSString *exe_rel(const char *rel) {
+    NSString *build = totk_app_shader_build_dir();
+    if (build) return [build stringByAppendingPathComponent:@(rel)];
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
     char *dir = dirname(buf);

@@ -119,6 +119,7 @@ void runtime_vpool_probe(void);
 
 void runtime_memory_probe(void);
 
+void runtime_input_start(void);   /* after packaged startup has created the diagnostic input file */
 void runtime_input_key(unsigned code,int down);
 void runtime_input_clear(void);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */

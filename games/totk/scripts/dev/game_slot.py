@@ -74,7 +74,9 @@ def pid_path(pid):
 
 
 def is_game(pid):
-    return os.path.basename(pid_path(pid)).startswith("totk-native")   # also renamed copies (totk-native.base)
+    path = pid_path(pid)
+    return (os.path.basename(path).startswith("totk-native") or   # also renamed copies (totk-native.base)
+            path.endswith((".app/Contents/MacOS/TOTK", ".app/Contents/MacOS/BotW")))
 
 
 def all_pids():

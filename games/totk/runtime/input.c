@@ -145,7 +145,7 @@ static void *input_script(void *arg) {
     }
     return NULL;
 }
-__attribute__((constructor)) static void input_script_start(void) {
+static void input_script_start(void) {
     const char *e = getenv("TOTK_INPUT_SCRIPT"); if (!e) return;
     pthread_t t; pthread_create(&t, NULL, input_script, (void *)e); pthread_detach(t);
 }
@@ -231,7 +231,12 @@ static void *input_file(void *arg) {
     }
     fclose(f); return NULL;
 }
-__attribute__((constructor)) static void input_file_start(void) {
+static void input_file_start(void) {
     const char *e = getenv("TOTK_INPUT_FILE"); if (!e || !*e) return;
     pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
+}
+void runtime_input_start(void) {
+    /* Packaged startup sets the input path before entering the runtime; constructors run too early. */
+    input_script_start();
+    input_file_start();
 }

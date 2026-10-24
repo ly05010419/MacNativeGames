@@ -260,7 +260,7 @@ class Updates(unittest.TestCase):
             with self.subTest(version=version):
                 tree=self.root/version;out=self.root/f'{version}.app'
                 files=[f'build/totk-native-{version}','build/pso_manifest.tsv','build/pso_title.tsv','build/spirv-cross/spirv-cross',
-                       'prebuilt/macos-arm64/totk_xlate','build/app-launcher',f'extracted/{version}/romfs/romfs.bin',
+                       'prebuilt/macos-arm64/totk_xlate',f'extracted/{version}/romfs/romfs.bin',
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
                        f'build/shader-seed/{version}/pso_manifest.tsv']+[f'rewritten/{version}/{n}.patched.bin' for n in ('main','sdk','subsdk0')]
@@ -317,10 +317,18 @@ class Updates(unittest.TestCase):
         self.assertEqual((out/'keep.txt').read_text(),'previous working app')
 
     def test_running_app_is_preserved_until_its_process_exits(self):
+        for primary in (False, True):
+            with self.subTest(primary=primary):
+                self.check_running_app_is_preserved(primary)
+
+    def check_running_app_is_preserved(self, primary):
         import hashlib
         from types import SimpleNamespace
-        tree=self.root/'tree';out=self.root/'existing.app'
+        tree=self.root/f'tree-{primary}';out=self.root/f'existing-{primary}.app'
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
+        running=out/'Contents/MacOS/TOTK' if primary else old
+        if primary:
+            running.parent.mkdir(parents=True);running.write_bytes(b'old primary executable')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
         (seed/'pso_manifest.tsv').write_bytes(b'test')
         (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v8-unverified',shaders=8000,
@@ -331,7 +339,7 @@ class Updates(unittest.TestCase):
         def processes(*_args,**_kwargs):
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
-            return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
+            return SimpleNamespace(stdout=str(running.resolve())+'\n' if len(checks)==1 else '')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'app_seal_valid',return_value=True), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
             build_app.step_app(tree,out,self.root/'logs',version='v143')
