@@ -23,6 +23,7 @@
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "totk_shader_rt.h"
 #include "totk_mfx.h"
+#include "odyssey_mfx.h"
 #include "totk_mfx_up.h"
 #include "totk_sysload.h"
 /* TOTK_MFX_UPSCALE: for the one compose draw that samples the smaller scene, the scene texture and its MetalFX upscale
@@ -4597,8 +4598,9 @@ static void canvas_learn(MTL4RenderPassDescriptor *pd) {
             g_mfx.last_c0 = t0->serial;
     }
 }
+/* G-buffer depth/camera and the post-scene UI attachment. With frame interpolation Odyssey's canvas is identified by
+   its final FXAA draw (odyssey_mfx_before_draw), not by canvas_learn's float-target heuristic. */
 static void mfx_pass_setup(MTL4RenderPassDescriptor *pd) {
-    canvas_learn(pd);
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
     id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil;
     id<MTLTexture> dt = pd.depthAttachment.texture;
@@ -4666,6 +4668,7 @@ static void mfx_snapshot_scene(void) {
     enc_b_end(g_blit); g_blit = nil;
     g_mfx.scene_done = 1; mfx_note_scene();
 }
+
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static int rt_none(void); static void noatt_dims(NSUInteger *w, NSUInteger *h);
@@ -9711,22 +9714,54 @@ static void prepare_draw_textures(NvProg *pr) {
         g_tex_prepare_split = 0; rp_end();
     }
 }
-/* TOTK_MFX: the camera of the G-buffer pass, from its first draw: vertex uniform 1, the 2368-byte block (view, view-projection,
-   projection, inverse view, near / far, aspect, field of view; floats 84..167 hold the camera of two frames earlier). */
+/* The FXAA destination is the tone-mapped scene canvas. Snapshot it before the first
+   later canvas draw (HUD, text, tutorial video), then duplicate those draws to UI.
+   A HUD-free frame snapshots at the final copy and supplies a transparent UI layer. */
+static int g_odyssey_scene_ready;
+static void odyssey_mfx_before_draw(NvProg *pr) {
+    if (!mfx_enabled() || !pr || !pr->sh[1] || !R.rt.n || !R.rt.color[0]) return;
+    const tex_t *target = R.rt.color[0];
+    if (g_mfx.depth_done && odyssey_mfx_fxaa(pr->sh[1]->key) && R.rt.n == 1 && !(S.color.blend_en & 1) &&
+        target->d.width >= 320 && target->d.height >= 180) {
+        g_mfx.canvas = target->serial; g_odyssey_scene_ready = 1; return;
+    }
+    if (!g_odyssey_scene_ready || g_mfx.scene_done) return;
+    if (target->serial == g_mfx.canvas) { mfx_snapshot_scene(); return; }
+    int swap = 0;
+    for (int i = 0; i < g_mfx.nswap; i++) swap |= g_mfx.swap[i] == target->serial;
+    if (!swap) return;
+    int tid = (int)(S.tex[1][0] & 0xfffff);
+    const tex_t *canvas = tid > 0 && tid < g_ntreg ? &g_treg[tid].t : NULL;
+    if (!canvas || canvas->serial != g_mfx.canvas) return;
+    R.rt.color[0] = canvas; mfx_snapshot_scene(); R.rt.color[0] = target;
+    id<MTLTexture> c = tex_mtl(canvas);
+    id<MTLTexture> ui = c ? mfx_ui_target(g_dev, c.width, c.height) : nil;
+    if (ui) {
+        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+        rp.colorAttachments[0].texture = ui; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        blit_close(); rs_sync();
+        id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+        if (en) { [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; m4_end(en); }
+        args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    }
+}
+
+/* Odyssey camera bytes are materialized with pending updates, just like draw uniforms. */
 static void mfx_take_camera(void) {
     g_mfx.want_cam = 0;
-    const p_bind_buf *u = &S.ubo[0][MFX_CAM_SLOT]; float cam[84];
-    if (u->addr && u->size == MFX_CAM_SIZE) {
-        pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);   // the bytes this draw sees: memory plus pending inline updates
+    for (int slot = 0; slot < 16; slot++) {
+        const p_bind_buf *u = &S.ubo[0][slot];
+        if (!u->addr || u->size < 0x180) continue;
+        float h[0x180 / 4], cam[84];
+        pend_materialize(u->addr, (uint8_t *)h, sizeof h, 0);
+        if (!odyssey_mfx_camera(h, cam)) continue;
         mfx_note_camera(cam, 84);
-        /* TOTK_MFX_CAMLOG=<first>-<last frame>: every captured camera (diagnostic) */
-        static long c0 = -2, c1; if (c0 == -2) { const char *e = getenv("TOTK_MFX_CAMLOG"); c0 = e ? atol(e) : -1; c1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : c0; }
-        long f = (long)atomic_load(&g_cur_frame);
-        if (c0 >= 0 && f >= c0 && f <= c1) MLOG("[mfx] camera F%ld pass %llu block %#llx size %.0fx%.0f near %g fov %.4f yaw %.3f pos %.3f %.3f %.3f vp0 %.5f %.5f %.5f %.3f",
-            f, g_stat_pass, (unsigned long long)u->addr, cam[72], cam[73], cam[56], cam[70], atan2(cam[2], cam[0]) * 180 / M_PI, cam[47], cam[51], cam[55], cam[12], cam[13], cam[14], cam[15]);
-    } else { static int said; if (said++ < 5) MLOG("[mfx] G-buffer pass %llu: vertex uniform 1 is %#llx / %llu bytes, not the 2368-byte camera block (frame %llu)", g_stat_pass,
-                                                 (unsigned long long)u->addr, (unsigned long long)u->size, (unsigned long long)atomic_load(&g_cur_frame)); }
+        return;
+    }
 }
+
 static void draw_inner(const p_draw *dw, const p_draw_idx *di);
 /* Diagnostic DM_NVN_NANDRAW=<first>-<last frame> (log DM_NVN_NANDRAW_LOG, default analysis/nandraw.tsv): after every
    draw into a full-size RG11B10F or R32F colour attachment (the HDR target, the linear depth), end the pass and count
@@ -10441,8 +10476,7 @@ frz_plain:;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     if (g_enc && g_lay.active && !lay_draw_ok(pr, dw, di)) {   // TOTK: this draw cannot write its layer: end the layered pass, draw in a plain one
         PD("L %llu 分层通道内的绘制不能写层号，在此切开", g_stat_pass); rp_end(); g_lay.refuse = 1; g_lay.refused++; }
-    if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && MFX_UI_DRAW(pr) && mfx_enabled())
-        mfx_snapshot_scene();   // TOTK_MFX: first UI draw into the canvas: copy the finished scene first
+    odyssey_mfx_before_draw(pr);
     if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // key 4: the UI begins
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
@@ -11983,9 +12017,8 @@ uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0);
 int mtl_display_hz(void) {
     if (!front_metal_layer()) return 0;
 #if TARGET_OS_OSX
-    CGDisplayModeRef m = CGDisplayCopyDisplayMode(CGMainDisplayID());
-    double hz = m ? CGDisplayModeGetRefreshRate(m) : 0; if (m) CGDisplayModeRelease(m);
-    return (int)(hz + 0.5);
+    extern int runtime_front_display_hz(void) __attribute__((weak_import));
+    return runtime_front_display_hz ? runtime_front_display_hz() : 0;
 #else
     Class c = NSClassFromString(@"UIScreen"); id s = c ? [c valueForKey:@"mainScreen"] : nil;
     return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
@@ -12438,10 +12471,11 @@ static void cadence_note(double tt, int interp) {
     enum { N = 600 };
     static double last, iv[N]; static int n, ni, hz; static uint64_t dropped;
     pthread_mutex_lock(&mu);
+    int current_hz = mtl_display_hz(); if (current_hz <= 0) current_hz = 60;
+    if (current_hz != hz) { hz = current_hz; last = 0; n = ni = 0; dropped = 0; }   // another screen or mode: restart the window
     if (tt <= 0) dropped++;
     else { if (last > 0 && tt > last && n < N) { iv[n++] = (tt - last) * 1e3; ni += interp; } if (tt > last) last = tt; }
     if (n == N) {
-        if (!hz) { hz = mtl_display_hz(); if (hz <= 0) hz = 60; }
         double a[N]; memcpy(a, iv, sizeof a); qsort(a, N, sizeof *a, dcmp_mtl);
         double tick = 1000.0 / hz; int held = 0; for (int i = 0; i < N; i++) held += a[i] > 1.5 * tick;
         MLOG("上屏节奏（近 %d 张，至帧 %llu，显示器 %d Hz）：间隔 p50 %.2f / p95 %.2f / 最大 %.2f ms；多停一次刷新以上 %d 次（%.1f%%）；其中补帧 %d 张；系统丢弃 %llu 张",
@@ -12848,7 +12882,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         /* TOTK_MFX: the game frame goes up at the refresh nearest to half a game frame after its interpolated one, so the
            two pictures share the frame's time evenly (30+30 on a 100 Hz display: two refreshes later, not one; half the
            refresh rate and uncapped: the next refresh). Until then the interpolated picture stays up. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);
         if (tts < ip->interp_ts + ip->period / 2 - tick / 2) { pthread_mutex_unlock(&g_pq_mu); return; }
     }
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = tts; }
@@ -12905,7 +12939,7 @@ static void *link_main(void *arg) {   // 显示节拍线程：切到节拍模式
 static _Atomic int g_link_fallback; static _Atomic uint64_t g_link_fallback_at;
 static int link_fallback_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_PRESENT_LINK_FALLBACK"); on = e && !strcmp(e, "1"); } return on; }
 static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象的状态对齐到 g_dm_present_link 与省电模式（运行中可改） | Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
-    static int applied; int want = g_dm_present_link;
+    static int applied, applied_hz; int hz = mtl_display_hz(), want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
     if (want && atomic_load(&g_link_fallback)) {
         int visible = runtime_front_window_visible() != 0;   // unknown (-1) counts as visible
@@ -12913,7 +12947,12 @@ static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象
         else want = 0;
     }
     if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz | Power-saving mode: display link at 30 Hz
-    if (want == applied) return;
+    /* Odyssey 60+60: at DM_PRESENT_HZ=60 the link ticks at 60 Hz and every tick took the generated picture, so the real
+       frames never reached the screen. A 120 Hz link gives each picture its own refresh; the game keeps its own 60 Hz
+       clock meanwhile (hle_nvn.c, odyssey_mfx_clock), so the link's tick count does not pace it. */
+    if (want == 1 && mfx_enabled() == MFX_HALF) want = 2;
+    if (want == applied && hz == applied_hz) return;
+    applied_hz = hz;
     g_link_mode = want;
     if (!g_link_started) {
         if (!want) { applied = 0; return; }
@@ -12963,7 +13002,7 @@ static void *present_main(void *arg) {
            the game frame for at least half a game frame (30+30 at 100 Hz: 1 + 2 refreshes within the 3.3 a frame lasts). When
            a newer game frame is already queued (uncapped interpolation above half the refresh rate) the interpolated
            picture is skipped: two pictures per game frame would fall further and further behind. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);
         pthread_mutex_lock(&g_pq_mu); int behind = g_pq_read < g_pq_in; pthread_mutex_unlock(&g_pq_mu);
         int show_interp = it.interp >= 0 && !behind;
         if (show_interp) { @autoreleasepool { (void)present_now(&it.t, fmin(it.period / 2, tick), it.frame, ticket, it.crop, nil, 0, it.interp); } }
@@ -13045,7 +13084,7 @@ static int mfx_present_frame_body(const tex_t *t, double period, int discard) {
             d.storageMode = MTLStorageModeShared; g_mfx_swap_prev = [g_dev newTextureWithDescriptor:d]; }
         if (sc && g_mfx_swap_prev) { mtl_finish_gpu(); id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder]; [b copyFromTexture:sc toTexture:g_mfx_swap_prev]; [b endEncoding]; cb_commit(cb); cb_wait(cb); }
     }
-    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET()
+    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; g_odyssey_scene_ready = 0; BOTW_MFX_FRAME_RESET()
     if (++g_mfx.frames % 300 == 0) { char b[256]; mfx_stats(b, sizeof b); MLOG("[mfx] 至帧 %llu：%s", (unsigned long long)atomic_load(&g_cur_frame), b); }
     return slot;
 }
@@ -13054,7 +13093,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
-    if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
+    if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; g_odyssey_scene_ready = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
     mtl_wb_eager();
     g_uw_ui = 0;
