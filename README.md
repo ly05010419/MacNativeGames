@@ -179,7 +179,7 @@ bytes and that every edit is inside main's own segments. The merged module is th
 app is bound to its SHA-256. `analysis/phase12-validation.json` (1.0.0) or `analysis/<version>-port/phase12-validation.json`
 in `--work` records the mod folder, each patch file's SHA-256 and the addresses it changed, under `mod_exefs`. An extra
 code module a mod ships (`subsdk9`, a hooking framework's) is not loaded and the build says so: such a mod keeps its
-main patches and its RomFS, but not the code changes that live in that module. Step by step: [docs/mods.md](docs/mods.md).
+main patches and its RomFS, but not the code changes that live in that module. Step by step: [docs/mods.md](docs/mods.md); a manager's merged `exefs/` + `romfs/` folder in practice: [docs/merged-mod-pack.md](docs/merged-mod-pack.md).
 
 To keep one desktop entry, link the packaged app with the optional installer:
 
@@ -503,7 +503,7 @@ python3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys --update ~/Games/1.
 
 `--mod` 原样接收模组文件夹，`exefs/` 和 `romfs/` 一起（只有其中一半也可以）。为什么要一个构建参数：App 没有模块加载器——启动时它映射的是构建时的那三个代码模块（main、sdk、subsdk0），已经改写为 Apple 芯片版本并按 SHA-256 绑定，里面没有任何东西会像 Ryujinx 或 Switch 那样去加载模组的 `exefs/`。所以代码这一半只能在更早一步进去：`--mod` 在改写之前把模组的主模块补丁合并进核对过的原版模块。数据这一半也不需要新的加载器，但装不装由你决定，因为版本目录是你的：加 `--install-mod-romfs` 时，构建结束时会把 `~/Library/Application Support/MacNativeGames/TOTK/mods/<版本>` 整个换成模组的 `romfs/` 并对着刚构建好的 App 生成清单（`make_mod_manifest.py`），一条命令就得到可直接带着模组玩的 App。那个目录里原来的东西不会删除，而是挪到旁边的 `<版本>.backup-<日期>-<时间>`（游戏不读它），构建开始时会醒目提示，结束时说出备份在哪。不加这个参数时构建完全不碰该目录，只打印手动复制的两条命令。多个带代码补丁的模组建议先在模组管理器里合并（TKMM 的输出就是一个文件夹，一套 `exefs/`、一套 `romfs/`），再用 `--mod <那个文件夹> --install-mod-romfs` 构建。
 
-补丁只打在当前版本、核对过的原版 main 上：`.pchtxt` 按游戏自带补丁加载器的规则读，`.ips` / `.ips32` 按模拟器的偏移约定（含 0x100 字节 NSO 头）读；打之前会检查没有任何改动落在 App 自己打补丁的位置、没有两个补丁改同一批字节、且每处改动都在 main 自己的段内。合并后的模块再改写为 Apple 芯片版本，App 按它的 SHA-256 绑定。`--work` 里的 `analysis/phase12-validation.json`（1.0.0）或 `analysis/<version>-port/phase12-validation.json` 在 `mod_exefs` 下记录模组目录、每个补丁文件的 SHA-256 和它改动的地址。模组附带的额外代码模块（`subsdk9` 这类 hook 框架的模块）不会被加载，构建会明确提示：这样的模组保留主模块补丁和整个 RomFS，但依赖那个模块的那部分代码改动不会生效。逐步说明见 [docs/mods.md](docs/mods.md)。
+补丁只打在当前版本、核对过的原版 main 上：`.pchtxt` 按游戏自带补丁加载器的规则读，`.ips` / `.ips32` 按模拟器的偏移约定（含 0x100 字节 NSO 头）读；打之前会检查没有任何改动落在 App 自己打补丁的位置、没有两个补丁改同一批字节、且每处改动都在 main 自己的段内。合并后的模块再改写为 Apple 芯片版本，App 按它的 SHA-256 绑定。`--work` 里的 `analysis/phase12-validation.json`（1.0.0）或 `analysis/<version>-port/phase12-validation.json` 在 `mod_exefs` 下记录模组目录、每个补丁文件的 SHA-256 和它改动的地址。模组附带的额外代码模块（`subsdk9` 这类 hook 框架的模块）不会被加载，构建会明确提示：这样的模组保留主模块补丁和整个 RomFS，但依赖那个模块的那部分代码改动不会生效。逐步说明见 [docs/mods.md](docs/mods.md)；管理器合并出来的 `exefs/` + `romfs/` 文件夹怎么装、怎么判断生效，见 [docs/merged-mod-pack.md](docs/merged-mod-pack.md)。
 
 ### 旷野之息 1.6.0 和 1.9.0（早期）
 
