@@ -49,6 +49,7 @@ static class ShaderService
 
     static string spirvCross, outDir, chain;
     static int debugMode;
+    static bool optimizeSpirv;
 
     // ---- small helpers with Python's meaning ----
     static long ParseInt(string s) => long.Parse(s, NumberStyles.None, CultureInfo.InvariantCulture);
@@ -352,6 +353,49 @@ static class ShaderService
         return bad;
     }
 
+    static void OptimizeSpirv(string spv)
+    {
+        uint version = BitConverter.ToUInt32(File.ReadAllBytes(spv), 4);
+        string target = $"spv{(version >> 16) & 255}.{(version >> 8) & 255}";
+        string optimized = spv + ".optimized";
+        try
+        {
+            SpirvTool("spirv-val", "--target-env", target, spv);
+            SpirvTool("spirv-opt", "--target-env=" + target,
+                      "--inline-entry-points-exhaustive", "--scalar-replacement=100",
+                      "--convert-local-access-chains", "--eliminate-local-single-block",
+                      "--eliminate-local-single-store", "--ssa-rewrite", "--loop-unroll",
+                      "--eliminate-dead-branches", "--cfg-cleanup", "--merge-blocks",
+                      "--copy-propagate-arrays", "--redundancy-elimination", "--vector-dce",
+                      "--eliminate-dead-inserts",
+                      "--eliminate-dead-functions", "--eliminate-dead-const",
+                      "--remove-duplicates", "--compact-ids",
+                      "--eliminate-dead-branches", "--cfg-cleanup", "--merge-blocks",
+                      "--eliminate-dead-const", "--compact-ids",
+                      "--strength-reduction", "--combine-access-chains",
+                      "--private-to-local", "--scalar-replacement=100",
+                      "--convert-local-access-chains", "--ssa-rewrite", "--reduce-load-size",
+                      "--loop-invariant-code-motion", "--code-sink", "--if-conversion",
+                      "--redundancy-elimination",
+                      "--eliminate-dead-branches", "--cfg-cleanup", "--merge-blocks",
+                      "--eliminate-dead-const", "--compact-ids",
+                      "--wrap-opkill", "--eliminate-dead-branches", "--merge-return",
+                      "--inline-entry-points-exhaustive", "--eliminate-dead-functions", "--ssa-rewrite",
+                      "--eliminate-dead-members", "--unify-const",
+                      "--scalar-replacement=100", "--convert-local-access-chains",
+                      "--eliminate-local-single-block", "--eliminate-local-single-store",
+                      "--ssa-rewrite", "--copy-propagate-arrays", "--vector-dce",
+                      "--eliminate-dead-inserts", "--remove-duplicates",
+                      "--redundancy-elimination",
+                      "--eliminate-dead-branches", "--cfg-cleanup", "--merge-blocks",
+                      "--eliminate-dead-const", "--compact-ids",
+                      "--eliminate-dead-variables", "--preserve-bindings", "--preserve-interface", spv, "-o", optimized);
+            SpirvTool("spirv-val", "--target-env", target, optimized);
+            File.Move(optimized, spv, true);
+        }
+        finally { if (File.Exists(optimized)) File.Delete(optimized); }
+    }
+
     // SPIRV-Cross's own program, compiled into this one (spirv_cross_inproc.cpp, linked by publish_native.sh): the same MSL
     // without a process per shader. TOTK_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
     [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl")]
@@ -362,6 +406,7 @@ static class ShaderService
 
     static unsafe void SpirvCross(string spv, string msl, string what)
     {
+        if (optimizeSpirv) OptimizeSpirv(spv);
         if (!spirvCrossProcess)
         {
             byte[] bytes = File.ReadAllBytes(spv);
@@ -387,6 +432,19 @@ static class ShaderService
         _ = outp.Result;
     }
 
+    static void SpirvTool(string executable, params string[] arguments)
+    {
+        string brew = Path.Combine("/opt/homebrew/bin", executable);
+        if (File.Exists(brew)) executable = brew;
+        var psi = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (string argument in arguments) psi.ArgumentList.Add(argument);
+        using Process p = Process.Start(psi) ?? throw new RuntimeError("could not start " + executable);
+        var err = p.StandardError.ReadToEndAsync(); var outp = p.StandardOutput.ReadToEndAsync();
+        p.WaitForExit();
+        if (p.ExitCode != 0) throw new RuntimeError(Path.GetFileName(executable) + ": " + Cut(err.Result.Trim(), 300));
+        _ = outp.Result;
+    }
+
     static void Translate(JsonObject job)
     {
         string err = SwshXlate.Translate(job, outDir);
@@ -400,7 +458,6 @@ static class ShaderService
         string variant = (string)rq["variant"], stage = (string)rq["stage"];
         if (stage != "vs" && stage != "ps" && stage != "cs") throw new RuntimeError($"stage {stage} not supported by the translation chain");
         if (stage == "cs" && !Truthy(Get(rq, "local"))) throw new RuntimeError("compute shader without thread group size");
-        // DebugMode (AST optimizer off) since 2026-10-13: --debug-mode / TOTK_SHADER_DEBUGMODE, as in shader_service.py
         var job = new JsonObject
         {
             ["key"] = variant, ["stage"] = stage, ["code"] = (string)rq["code"], ["c1"] = GetStr(rq, "c1", ""), ["debug"] = debugMode != 0, ["reduced"] = true,
@@ -560,11 +617,11 @@ static class ShaderService
         sb.Append('"');
     }
 
-    // totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]
+    // totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1] [--optimize-spirv]
     public static int Run(string[] args)
     {
         string dm = Environment.GetEnvironmentVariable("TOTK_SHADER_DEBUGMODE");
-        debugMode = string.IsNullOrEmpty(dm) ? 1 : (int)ParseInt(dm.Trim());
+        debugMode = string.IsNullOrEmpty(dm) ? 0 : (int)ParseInt(dm.Trim());
         for (int i = 1; i < args.Length; i++)
         {
             string v = i + 1 < args.Length ? args[i + 1] : null;
@@ -574,12 +631,13 @@ static class ShaderService
                 case "--out": outDir = v; i++; break;
                 case "--chain": chain = v; i++; break;
                 case "--debug-mode": debugMode = (int)ParseInt(v); i++; break;
+                case "--optimize-spirv": optimizeSpirv = true; break;
                 default: Console.Error.WriteLine($"totk_xlate --service: unknown argument {args[i]}"); return 2;
             }
         }
         if (spirvCross == null || outDir == null || chain == null)
         {
-            Console.Error.WriteLine("usage: totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]");
+            Console.Error.WriteLine("usage: totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1] [--optimize-spirv]");
             return 2;
         }
         Directory.CreateDirectory(outDir);

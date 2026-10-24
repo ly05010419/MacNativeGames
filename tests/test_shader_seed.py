@@ -225,8 +225,9 @@ class ShaderKeyScope(unittest.TestCase):
                     mock.patch.object(seed, 'inventory', return_value=({}, shaders, {rows[0][0]}, [])) as inventory, \
                     mock.patch.object(seed, 'source_reader', return_value=lambda _: None), \
                     mock.patch.object(seed, 'located', return_value=extra), \
-                    mock.patch.object(seed.subprocess, 'Popen', side_effect=Service):
+                    mock.patch.object(seed.subprocess, 'Popen', side_effect=Service) as service:
                 manifest = seed.prepare(romfs, output, translator, cross, '1.2.1', shared)
+                self.assertIn('--optimize-spirv', service.call_args.args[0])
                 scope = json.loads((output/'shader-keys.json').read_text())
                 self.assertEqual(scope['keys'], sorted(row[0] for row in rows))
                 self.assertEqual((manifest['shaders'], manifest['discovered'], manifest['located']), (3, 3, 1))
