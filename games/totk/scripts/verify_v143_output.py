@@ -95,7 +95,7 @@ def main():
     layout = json.loads((out / 'runtime-layout.json').read_text())[0]['layout']
     subprocess.run([
         'xcrun', 'clang', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',
-        '-Iruntime', 'scripts/v143_timing_fixture.c', 'runtime/game_patches_v143.c',
+        '-Iruntime', 'scripts/v143_timing_fixture.c', 'runtime/game_patches_v143.c','runtime/semantic_action_stub.S',
         '-o', 'build/v143-output-fixture',
     ], check=True)
     target = out / 'main-output-fixture.bin'

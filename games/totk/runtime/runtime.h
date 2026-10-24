@@ -163,3 +163,16 @@ void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 void runtime_feedback_attach(GCController *controller);
 void runtime_feedback_detach(GCController *controller);
 #endif
+
+/* Optional, Mac-only gameplay action translation (separate from physical bindings). */
+#include "action_bindings.h"
+void runtime_action_bindings_get(RuntimeActionBindings *bindings);
+int runtime_action_bindings_set(const RuntimeActionBindings *bindings);
+int runtime_action_bindings_available(void);
+int runtime_action_bindings_supported(void);
+int runtime_action_bindings_enabled(void);
+void runtime_action_bindings_attach(void *word);
+#define RUNTIME_ACTION_CODE_OFFSET 0x4000
+#define RUNTIME_ACTION_CODE_SIZE 0x4000
+
+void runtime_input_suspend(int on);

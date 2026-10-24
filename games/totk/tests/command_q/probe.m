@@ -10,6 +10,11 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_suspend(int on){(void)on;}
+void runtime_action_bindings_get(RuntimeActionBindings *b){action_bindings_default(b);}
+int runtime_action_bindings_set(const RuntimeActionBindings *b){return action_bindings_valid(b);}
+int runtime_action_bindings_available(void){return 0;}
+int runtime_action_bindings_supported(void){return 0;}
 void runtime_gamepad_start(void){}
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 int runtime_mouse_enabled(void){return 0;}
@@ -33,6 +38,7 @@ void runtime_aspect_view(double w,double h){(void)w;(void)h;}
 int runtime_aspect_step(void){return -1;}
 float runtime_aspect_now(void){return 0;}
 int taa_enabled(void){return 0;}
+int taa_effective(void){return 0;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0
