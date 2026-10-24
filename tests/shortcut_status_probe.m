@@ -24,6 +24,7 @@ static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYS
 int runtime_gamepad_type_cycle(void) { return fakePadType = gamepad_type_next(fakePadType); }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 /* runtime/gamepad.m's mouse mode (key 7) without GameController; the window never has the keyboard here. */
+uint64_t runtime_now_ns(void){return 0;}
 static int fakeMouse;
 int runtime_mouse_toggle(void) { return fakeMouse = !fakeMouse; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -49,6 +50,7 @@ static void expect(TOTKShortcutHelp *panel, NSString *text) {
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
     shortcut_test_output_init();
+    playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
     int initial = mfx_enabled();
     assert(initial == ((!getenv("TOTK_MFX") || !strcmp(getenv("TOTK_MFX"), "0")) ? MFX_OFF : MFX_HALF));
     NSView *host = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 900, 540)];
@@ -60,6 +62,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     expect(panel, initial ? @"half refresh rate" : @"off");
     expect(panel, mfxup_output_enabled() ? @"MetalFX 2K" : @"Picture: off");
 
+    expect(panel,@"Playtime  0 h 00 m");
     /* A request is not the current frame's interpolation mode until latched. */
     mfx_set(MFX_OFF); mfx_latch();
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
