@@ -14,6 +14,16 @@ static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
+static RuntimeGamepadState syntheticPad;
+static int32_t clamp_axis(int32_t v){return v<-32767?-32767:(v>32767?32767:v);}
+static int32_t stronger_axis(int32_t a, int32_t b){a=clamp_axis(a);b=clamp_axis(b);return abs(b)>abs(a)?b:a;}
+void runtime_input_pad_synthetic(const RuntimeGamepadState *s){
+ RuntimeGamepadState c={0};
+ if(s){c=*s;c.lx=clamp_axis(c.lx);c.ly=clamp_axis(c.ly);c.rx=clamp_axis(c.rx);c.ry=clamp_axis(c.ry);}
+ pthread_mutex_lock(&inputLock);
+ syntheticPad=c;
+ pthread_mutex_unlock(&inputLock);
+}
 /* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
 static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
@@ -43,8 +53,8 @@ void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pth
  if(press&&code==KEY_TAA_TOGGLE){extern void taa_toggle(void);taa_toggle();}
  if(press&&code==KEY_PAD_TYPE_CYCLE)runtime_gamepad_type_cycle();
  if(press&&code==KEY_MOUSE_TOGGLE)runtime_mouse_toggle();}
-void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
-void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+void runtime_input_key(unsigned code,int down){if(down&&code<128){pthread_mutex_lock(&inputLock);syntheticPad=(RuntimeGamepadState){0};pthread_mutex_unlock(&inputLock);user_input("keyboard");}runtime_input_key_synthetic(code,down);}
+void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;syntheticPad=(RuntimeGamepadState){0};pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
@@ -62,14 +72,23 @@ static uint32_t style(const uint32_t *id){if(!id)runtime_fail("controller id poi
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style);
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
-static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
+static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);int physical=0;NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
- RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
- if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
- if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
- if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ RuntimeGamepadState pad;runtime_gamepad_read(&pad);
+ pad.lx=clamp_axis(pad.lx);pad.ly=clamp_axis(pad.ly);pad.rx=clamp_axis(pad.rx);pad.ry=clamp_axis(pad.ry);
+ state.buttons|=pad.buttons;
+ physical=!!(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384);
+ padSeen=pad.buttons;
+ if(physical)syntheticPad=(RuntimeGamepadState){0};
+ state.lx=stronger_axis(state.lx,pad.lx);state.ly=stronger_axis(state.ly,pad.ly);
+ state.rx=stronger_axis(state.rx,pad.rx);state.ry=stronger_axis(state.ry,pad.ry);
+ if(syntheticPad.connected){
+  state.buttons|=syntheticPad.buttons;
+  state.lx=stronger_axis(state.lx,syntheticPad.lx);state.ly=stronger_axis(state.ly,syntheticPad.ly);
+  state.rx=stronger_axis(state.rx,syntheticPad.rx);state.ry=stronger_axis(state.ry,syntheticPad.ry);
+ }
+ }*out=state;pthread_mutex_unlock(&inputLock);if(physical)user_input("controller");return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
 static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
@@ -163,6 +182,20 @@ static void *input_file(void *arg) {
         if (!fgets(line, sizeof line, f)) { if (ferror(f)) runtime_fail("diagnostic input read"); clearerr(f); usleep(100000); continue; }
         if (runtime_survey_command(line)) continue;
         unsigned code, ms; int used = 0;
+        unsigned long long pbtns = 0; int plx = 0, ply = 0, prx = 0, pry = 0; unsigned pms = 0;
+        if (sscanf(line, "padclear %n", &used) == 0 && used && !line[used]) {
+            runtime_input_pad_synthetic(NULL);
+            continue;
+        }
+        int used5 = 0, used6 = 0;
+        int n_pad = sscanf(line, "pad %lli %d %d %d %d %n%u %n", (long long *)&pbtns, &plx, &ply, &prx, &pry, &used5, &pms, &used6);
+        if ((n_pad == 5 && used5 && !line[used5]) || (n_pad == 6 && used6 && !line[used6])) {
+            RuntimeGamepadState s = { .buttons = (uint64_t)pbtns, .lx = plx, .ly = ply, .rx = prx, .ry = pry, .connected = (pbtns || plx || ply || prx || pry) ? 1 : 0 };
+            runtime_input_pad_synthetic(&s);
+            if (n_pad == 6 && pms > 0 && pms <= 60000) { usleep(pms * 1000); runtime_input_pad_synthetic(NULL); }
+            continue;
+        }
+        used = 0;
         if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
             fprintf(stderr,"[totk-input] file: key %u down\n",code);runtime_input_key_synthetic(code,1);
         } else if (sscanf(line, "up %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {

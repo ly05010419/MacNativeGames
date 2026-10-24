@@ -1,8 +1,18 @@
 #include "../runtime/runtime.h"
+#include "../runtime/autoload.h"
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+static char probe_cmd_path[128];
+__attribute__((constructor)) static void probe_input_file_setup(void){
+ if(getenv("TOTK_PROBE_NEGATIVE")||getenv("TOTK_AUTOLOAD")||getenv("TOTK_INPUT_FILE"))return;
+ snprintf(probe_cmd_path,sizeof probe_cmd_path,"/tmp/totk-input-probe-%d.cmds",(int)getpid());
+ FILE *f=fopen(probe_cmd_path,"w");if(f)fclose(f);
+ setenv("TOTK_INPUT_FILE",probe_cmd_path,1);
+}
 /* Interactive diagnostics are not exercised by this service ABI probe. */
 /* A fake clock: real user input reads it to rate-limit its log line. */
 /* Motion checks pin it (probe_clock_fixed) to the times of the samples they feed. */
@@ -155,6 +165,57 @@ int main(void){
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
+ /* Synthetic pad merges with keyboard/controller without calling user_input("controller"), so TOTK_AUTOLOAD stays armed.
+    Physical controller stick (>16384) calls user_input, which clears syntheticPad and cancels autoload. */
+ {
+  const char *al=getenv("TOTK_AUTOLOAD");
+  if(al&&!strcmp(al,"1")){
+   runtime_autoload_save_file_opened("save:/slot_00/caption.sav");
+   RuntimeGamepadState sp={.buttons=4,.lx=12000,.ly=-25000,.rx=8000,.ry=-9000,.connected=1};
+   runtime_input_pad_synthetic(&sp);
+   read(&out.state,1,&id);
+   need((out.state.buttons&4)==4&&out.state.lx==12000&&out.state.ly==-25000&&out.state.rx==8000&&out.state.ry==-9000,"synthetic pad merges into full-key state");
+   int saw_autoload_a=0;
+   for(int t=0;t<60;t++){usleep(10000);read(&out.state,1,&id);if(out.state.buttons&1)saw_autoload_a=1;}
+   need(saw_autoload_a,"synthetic pad does not cancel TOTK_AUTOLOAD");
+   fake_pad=(RuntimeGamepadState){.lx=20000,.connected=1};
+   read(&out.state,1,&id);
+   fake_pad=(RuntimeGamepadState){0};
+   read(&out.state,1,&id);
+   need((out.state.buttons&4)==0&&out.state.lx==0&&out.state.ly==0,"physical controller stick clears syntheticPad via user_input");
+   for(int t=0;t<25;t++){usleep(10000);read(&out.state,1,&id);}
+   int a_after=0;
+   for(int t=0;t<55;t++){usleep(10000);read(&out.state,1,&id);if(out.state.buttons&1)a_after=1;}
+   need(!a_after,"physical controller stick cancels TOTK_AUTOLOAD");
+  } else {
+   RuntimeGamepadState sp={.buttons=8,.lx=-15000,.ly=22000,.rx=-5000,.ry=6000,.connected=1};
+   runtime_input_pad_synthetic(&sp);
+   read(&out.state,1,&id);
+   need(out.state.buttons==8&&out.state.lx==-15000&&out.state.ly==22000&&out.state.rx==-5000&&out.state.ry==6000,"synthetic pad read");
+   RuntimeGamepadState clamp_sp={.buttons=2,.lx=INT_MIN,.ly=99999,.rx=-99999,.ry=INT_MAX,.connected=1};
+   runtime_input_pad_synthetic(&clamp_sp);
+   read(&out.state,1,&id);
+   need(out.state.buttons==2&&out.state.lx==-32767&&out.state.ly==32767&&out.state.rx==-32767&&out.state.ry==32767,"synthetic pad axis clamping (INT_MIN/INT_MAX/99999)");
+   runtime_input_pad_synthetic(NULL);
+   read(&out.state,1,&id);
+   need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"synthetic pad clear");
+   if(probe_cmd_path[0]){
+    FILE *cf=fopen(probe_cmd_path,"a");need(cf!=NULL,"open TOTK_INPUT_FILE for pad commands");
+    fputs("pad 8 -99999 99999 -5000 6000\n",cf);fflush(cf);
+    int ok5=0;for(int t=0;t<40;t++){usleep(10000);read(&out.state,1,&id);if(out.state.buttons==8&&out.state.lx==-32767&&out.state.ly==32767&&out.state.rx==-5000&&out.state.ry==6000){ok5=1;break;}}
+    need(ok5,"5-arg pad command via TOTK_INPUT_FILE with axis clamping");
+    fputs("padclear\n",cf);fflush(cf);
+    int okc=0;for(int t=0;t<40;t++){usleep(10000);read(&out.state,1,&id);if(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry){okc=1;break;}}
+    need(okc,"padclear command via TOTK_INPUT_FILE");
+    fputs("pad 4 12000 -12000 3000 -4000 120\n",cf);fflush(cf);
+    int ok6_on=0;for(int t=0;t<40;t++){usleep(10000);read(&out.state,1,&id);if(out.state.buttons==4&&out.state.lx==12000&&out.state.ly==-12000&&out.state.rx==3000&&out.state.ry==-4000){ok6_on=1;break;}}
+    need(ok6_on,"6-arg timed pad command engages via TOTK_INPUT_FILE");
+    int ok6_off=0;for(int t=0;t<40;t++){usleep(10000);read(&out.state,1,&id);if(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry){ok6_off=1;break;}}
+    need(ok6_off,"6-arg timed pad command auto-clears after duration");
+    fclose(cf);unlink(probe_cmd_path);probe_cmd_path[0]=0;
+   }
+  }
+ }
  const unsigned dpad[]={3,17,4,5};
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
@@ -189,5 +250,5 @@ int main(void){
  runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 overlays / key 2 frame interpolation / key 3 picture mode / key 4 ultrawide / key 5 edge smoothing / key 6 controller type / key 7 mouse mode (once per press), mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), synthetic pad without cancelling TOTK_AUTOLOAD, physical stick clearing synthetic and cancelling autoload, short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 overlays / key 2 frame interpolation / key 3 picture mode / key 4 ultrawide / key 5 edge smoothing / key 6 controller type / key 7 mouse mode (once per press), mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }
