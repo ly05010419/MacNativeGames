@@ -102,6 +102,9 @@ compare-and-swap loops that retry inside the window. `prepare_runtime.py`, `prep
   `TAA_COMPOSE` in `nvn_obj.h` holds the compose key of each game. The jitter and the camera block need no change.
   Upstream's #157 picks the jittered draws by what they do, not by a shader key, so it acts on BOTW too. 1.6.0's
   compose key is not known, so key 5 has no effect there.
+- Job poll pause (Mac): sead's job workers that are not on core 0 poll their queue with no SVC until the core-0 worker
+  has taken the first batch (main+0xef6354..0xef63e8). `patch_job_poll_pause` makes them wait 1 us between passes
+  (`TOTK_JOB_POLL_PAUSE_NS`, `0`: as shipped). See "Job poll pause".
 
 Two changes act on both BOTW versions:
 
@@ -305,9 +308,9 @@ Every file under `games/totk` that this port changes (`git diff --stat ab4c9d2 H
 | `runtime/aoc_romfs.c` | default DLC folder `extracted/<TOTK_GAME_DIR>/aoc` instead of the fixed `extracted/botw160/aoc` | the file is inside `#ifdef GAME_BOTW` |
 | `runtime/audio_mixer.h` | two fields keep the voice-drop parameter | `#ifdef GAME_BOTW` |
 | `runtime/audio_renderer.c` | `IAudioRenderer` commands 12 and 13 (Set/GetVoiceDropParameter) | `#ifdef GAME_BOTW` |
-| `runtime/game_patches_botw.c` | The 1.9.0 real-time, UI-step, physics-substep, held-count, docked 1080p, movie-hold and ultrawide-camera sites. The 1.6.0 sites are unchanged. A `runtime_render_res` stub answers 0 for the shared `romfs.c` of `466330d`. Without it, no BOTW binary links | `#ifdef GAME_BOTW160` / `#else`. Only BOTW binaries compile this file |
+| `runtime/game_patches_botw.c` | The 1.9.0 real-time, UI-step, physics-substep, held-count, docked 1080p, movie-hold and ultrawide-camera sites, and the job poll pause (Mac only). The 1.6.0 sites are unchanged. A `runtime_render_res` stub answers 0 for the shared `romfs.c` of `466330d`. Without it, no BOTW binary links | `#ifdef GAME_BOTW160` / `#else`; the job poll pause is under `#ifdef GAME_BOTW190`. Only BOTW binaries compile this file |
 | `runtime/game_version.h` | the 1.9.0 version block | `#elif defined(GAME_BOTW190)`, before the TOTK blocks |
-| `runtime/loader.c` | the five-argument `nn::init::Start` of SDK 20.5; `module_finis` is compiled for 1.9.0 too | `#ifdef GAME_BOTW160` / `#elif defined(GAME_BOTW)`; `#ifndef GAME_BOTW` became `#ifndef GAME_BOTW160` |
+| `runtime/loader.c` | the five-argument `nn::init::Start` of SDK 20.5; `module_finis` is compiled for 1.9.0 too; `runtime_guest_code_pc` also takes the job poll pause's veneer as game code (an empty range unless the pause is installed) | `#ifdef GAME_BOTW160` / `#elif defined(GAME_BOTW)`; `#ifndef GAME_BOTW` became `#ifndef GAME_BOTW160`; the veneer range is inside the existing `#ifdef GAME_BOTW` |
 | `runtime/shared_font.c` | `nn::pl::IsRunningOnOunce` answers no | `#ifdef GAME_BOTW` |
 | `scripts/extract_romfs.py` | the IVFC loop moved into `verify_ivfc` | refactor; same checks, messages and report |
 | `scripts/prepare_romfs_backend.py` | `botw190` in `--version` | new choice only |
@@ -353,6 +356,86 @@ the forest and no Game Over. GPU allocation: 1138 MB at frame 300, 1823 MB at ab
 the warm-up this is about 4 MB/min, against 10 MB/min before the fix. Resident memory: 2686 to 2900 MB. A first
 moving try on the field route is void, because Link died before 245 s and the run stayed on Game Over.
 
+## Job poll pause (2026-10-24)
+
+Frames of 30-220 ms on the Great Plateau at 60 fps, while the GPU time stays near 4 ms, come from a poll of sead's job
+workers (main+0xef6354..0xef63e8, no SVC). A worker that is not on core 0 takes the test-and-test-and-set lock at
+queue+0x1c, reads the flag byte +0x98 and the next index +0x94, unlocks, and goes round again while the flag is set and
+the index is still 0, that is until the core-0 worker has taken the first batch. On the Mac such a poll went on for tens
+of milliseconds while the worker (priority 44) held its virtual core, and threads of priority 45-49 pinned to that core
+waited 50 ms or more for it.
+
+`patch_job_poll_pause` (Mac, on by default) branches the poll's back-edge to a 10-word veneer in the zero padding after
+the text. An open queue leaves as shipped; a closed one waits 1 us on `cntvct_el0` (`TOTK_JOB_POLL_PAUSE_NS`, at most
+4095 counter ticks; `0`: as shipped) and polls again. The veneer busy-waits, so the worker keeps its core as in the
+shipped loop. 13 words are checked first, and a difference stops the game. `games/botw/scripts/verify_job_poll_patch.py`
+runs the poll in Unicorn as shipped and patched, for 1 GHz and 24 MHz counters: six scenarios leave at the same place
+with the same jobs, stores and registers, the lock word is 0 at every veneer instruction, an empty pass polls again only
+after the pause, and seven negative controls fail.
+
+How it was found, on `77101a9` with experiment builds of the same veneer: MacBook Pro M5 Pro (`cntfrq_el0` 1 GHz),
+macOS 27.2, built-in 120 Hz display, `TOTK_UNCAPPED_HZ=60`, warm shader cache v6, a Great Plateau save. Each run loads
+the save, then 30 s of still view, a 20 s camera pan and a 10 s walk with turns are measured. Frames over 25 ms per run
+come from the frame TSV. Long waits are waits of 50 ms or more for a core (a local diagnostic); the column gives how
+many had the owner in the poll:
+
+| Arm | Frames over 25 ms per run | Long waits with the owner in the poll |
+|---|---|---|
+| As shipped | 87 / 215 / 276 | 396 of 455 |
+| No preemption inside the poll | 76 / 117 / 146 | 70 of 94 |
+| No preemption while the queue is locked | 20 / 78 / 147 | 97 of 129 |
+| A host round trip between passes (no pause) | 0 / 0 / 2 | 0 of 15 |
+| 1 us pause | 0 / 1 / 1 | 0 of 15 |
+| 1 us pause, not preemptible | 0 / 2 / 2 | 0 of 17 |
+
+Keeping the worker from being preempted did not end the stalls (76-146 and 20-147 frames over 25 ms against 87-276),
+while any delay between passes did. So the passes themselves held the core-0 worker back, most likely on the lock's
+cache line: the same kind of difference from the Switch's Cortex-A57 as the exclusive-acquire patch. A dose sweep (3
+runs each) gave 34 / 37 / 48 frames over 25 ms with no pause, 0 / 0 / 1 at 100 ns, 0 / 0 / 0 at 250 ns and 0 / 0 / 3 at
+1 us. GPU time was 4.1-4.2 ms (p50) in every arm; the arms with a delay held 60 fps, the arms without fell to 54-59 fps.
+
+On this branch (`5281186` with the patch, `build_app.py`, shader cache v8 warmed by earlier runs), on the same Mac and
+route: the patched app with `TOTK_JOB_POLL_PAUSE_NS=0` ("as shipped") or the default, the arms alternating. The first
+ten runs with the frame TSV used an earlier build of the patch, which differed in its log line and failure paths (11
+checked words; a mismatch skipped the patch); all other runs used the final build. Upstream has no switch that puts the
+window on a given screen, so each run opened on the screen of the active window, often behind other windows: the
+external 160 Hz display in 24 of the 30 short runs, the built-in one in 6. The ~1 s display-link stalls in these runs all
+came on the built-in display (in the measured windows of 4 of its 5 runs with the frame TSV), so the tables count the
+runs on the external display.
+
+The main measure is the game's own line every 300 frames ("[nvn] 帧间隔 至帧 N"), without `DM_NVN_TSV`, as a player runs
+the game: of the 11 blocks of 300 frames (55 s) after the harness's first screenshot, how many have a frame-interval p99
+over 25 ms. Other windows covered the game's window for 97 of the 99 blocks in the table (macOS stops the display link
+then; the game keeps running and presenting).
+
+| Without `DM_NVN_TSV`, external display | Blocks over 25 ms per run (of 11) |
+|---|---|
+| As shipped (`TOTK_JOB_POLL_PAUSE_NS=0`) | 3 / 7 / 7 / 4 / 2 (p99 25.5-90.6 ms) |
+| 1 us pause | 0 / 0 / 0 / 0 (all 44 blocks 19.4-22.9 ms) |
+
+Exact two-sided Mann-Whitney p = 0.016. The remaining pause run (the third) opened on the built-in display, with the
+window visible, and had 2 such blocks (33.2 and 77.4 ms). On `77101a9` the same measure gave 1 to 11 blocks per run as
+shipped (factorial 11 / 11 / 11, dose sweep 4 / 7 / 8, spin-gate A/B 1 / 3 / 3 / 5 / 7) and 0 or 1 with a delay. On this
+base, as shipped gave 0 to 3 blocks per run with `DM_NVN_TSV` set (p = 0.04 against the runs without it). The variable
+also switches on the scheduler's wait statistics (`19730cd`, `6b0c62f`); the TSV writer and the statistics were not
+separated, and the two sets of runs were not interleaved.
+
+With `DM_NVN_TSV` set, the frame TSV gives the per-frame view (external display, the window covered in all but one run;
+5 runs as shipped, 3 with the pause): frames over 25 ms 12 / 15 / 8 / 19 / 28 against 1 / 0 / 6, and frames in which
+the guest threads' waits for a core add up to 100 ms or more (`@core_wait_all_ms`) 7 / 12 / 4 / 8 / 26 against 0 / 0 / 1
+(p = 0.036 for both). With every run of both displays counted, the core-wait frames (p = 0.008) and the blocks without
+`DM_NVN_TSV` (p = 0.016) point the same way; frames over 25 ms only by median (15 against 6, p = 0.22), because one pause
+run on the built-in display had a display-link stall and 93 such frames. With `TOTK_EXCL_ACQUIRE=0` the stall is still
+there (as shipped, 1 to 61 such core-wait frames and 3 to 79 frames over 25 ms per run in its five runs); on the external
+display alone that pair has too few runs to compare. GPU time was 4.0-4.4 ms (p50) in every run with the frame TSV, and
+the runs in the tables held 58.5-60 fps.
+
+Two pairs of 12-minute soaks without `DM_NVN_TSV`, with a camera nudge every 20 s and a screenshot every 5 minutes. The
+window states fell differently in each pair, so together they cover both. As shipped: 96 of 133 blocks over 25 ms
+(built-in display, window visible) and 78 of 139 (external, covered; median block 31.2 ms, at most 143 ms). With the
+pause: 0 of 141 (external, covered) and 4 of 142 (external, visible; 28-34 ms, median block 21.6 ms). phys_footprint grew
+by 0.02-0.08 GB over each soak.
+
 ## Not tested and known issues
 
 - Sinking legs after a save loads: deferred, cause unknown (see "Long run and the sinking legs").
@@ -367,6 +450,9 @@ moving try on the field route is void, because Link died before 245 s and the ru
 - A cold start with an empty shader cache: not tested. Every route run had a warm cache.
 - A card image as the game file with a 1.9.0 `--update`: not tested. The build takes the DLC packs from `--dlc` only.
 - BOTW 1.6.0 and the iPhone and iPad builds: not built. The write-back staging and the 120 Hz rule also act on 1.6.0.
+- Job poll pause: Mac only. 1.6.0 keeps the shipped poll; whether it has the same loop was not checked (no 1.6.0 files
+  at hand). The iPhone and iPad export leaves it out. Measured on one Mac (M5 Pro, 1 GHz counter);
+  a Mac with a 24 MHz counter waits the same time in fewer ticks: not tested.
 - Keys 4 and 5 do nothing on 1.6.0. No 1.6.0 game files were at hand for a test.
 - TOTK: not played on this branch. The evidence is the 68 of 68 preprocessed identity.
 - Upstream's `[dead-keep]` set grows linearly (30k to 397k entries in 25 minutes, from `e0ad452`): not changed here,

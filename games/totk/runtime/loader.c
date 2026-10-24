@@ -52,9 +52,11 @@ void *runtime_symbol(const char *name) {
 }
 uint8_t *runtime_module_base(const char *name){for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,name))return modules[i].base;return NULL;}
 #ifdef GAME_BOTW
-/* Is pc in a module's original code (not in the patch area, where rewritten windows and gates are)? Called from a signal
-   handler (threads.c, asynchronous preemption): only reads the module table. */
-int runtime_guest_code_pc(uint64_t pc){for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
+/* Is pc in a module's original code (not in the patch area, where rewritten windows and gates are), or in the job poll
+   pause's veneer, which holds no lock either? Called from a signal handler (threads.c, asynchronous preemption): only
+   reads the module table. */
+uint64_t runtime_job_poll_veneer[2];   /* game_patches_botw.c patch_job_poll_pause: [start, end), 0 when not installed */
+int runtime_guest_code_pc(uint64_t pc){if(pc>=runtime_job_poll_veneer[0]&&pc<runtime_job_poll_veneer[1])return 1;for(unsigned i=0;i<NM;i++){uint64_t b=(uintptr_t)modules[i].base;if(b&&pc>=b&&pc-b<modules[i].text_end)return 1;}return 0;}
 #endif
 /* RELRO in newer SDKs protects relocated data after linking. Keep permissions at
  * the guest's 4 KiB granularity. A Darwin 16 KiB page receives the union of its

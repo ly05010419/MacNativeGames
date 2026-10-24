@@ -1,6 +1,6 @@
-/* Breath of the Wild game-code patches (botw.md): exclusive loads with acquire, the real-time frame step, and the
-   TOTK_JQ_CHECK diagnostics. Key 4 (ultrawide) is 1.9.0 only (end of the file); the output size answers "not available"
-   until BotW's own sites are found. */
+/* Breath of the Wild game-code patches (botw.md): exclusive loads with acquire, the real-time frame step, the job poll
+   pause (1.9.0, Mac), and the TOTK_JQ_CHECK diagnostics. Key 4 (ultrawide) is 1.9.0 only (end of the file); the output
+   size answers "not available" until BotW's own sites are found. */
 #include <stdatomic.h>
 #include "world_survey.h"
 #include <stdio.h>
@@ -23,7 +23,9 @@ static void botw_aspect_apply(void);
    Tears of the Kingdom (game_patches.c). On the device the original words are not checked (they are patched already) and
    each patched word is checked instead of written. The switches that leave a patch out (TOTK_REALTIME=0,
    TOTK_PAD_REPEAT=0, TOTK_RENDER_RES=900, TOTK_EXCL_ACQUIRE=0), the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) and the
-   native output size (TOTK_OUTPUT_RES) are Mac only; the export ignores them too, so the device checks what it made. */
+   native output size (TOTK_OUTPUT_RES) are Mac only; the export ignores them too, so the device checks what it made.
+   The job poll pause (1.9.0) is Mac only as a whole: its pause is a number of ticks of the counter it is installed on,
+   which would be the exporting Mac's, and it was not played on a phone; the export leaves it out. */
 #if TARGET_OS_IPHONE
 #define CODE_PATCHED_AT_BUILD 1
 #else
@@ -540,12 +542,89 @@ static void patch_phone_render(Module *m) {
     put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
     fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
 }
+#ifdef GAME_BOTW190
+/* Pause between job polls (1.9.0, Mac; TOTK_JOB_POLL_PAUSE_NS, default 1000; 0: as shipped). A sead job worker that is
+   not on core 0 polls its queue at main+0xef6354..0xef63e8 with no SVC until the core-0 worker has taken the first batch:
+   take the test-and-test-and-set lock at queue+0x1c, read the flag byte +0x98 and the next index +0x94, unlock, and go
+   round again while the flag is set and the index is still 0 (w14 = 0 at +0xef63e8). Back to back on Apple cores such a
+   poll went on for tens of milliseconds while the worker (priority 44) held its virtual core, and threads of priority
+   45-49 pinned to that core waited 50 ms or more for it: frame hitches. Keeping the worker from being preempted in the
+   poll did not end it, and any pause between passes did, so the passes themselves held the core-0 worker back, most
+   likely on the lock's cache line: the same kind of difference from the Switch's Cortex-A57 as the exclusive loads
+   below. Measurements: docs/botw-v1.9.0-port.md, "Job poll pause". The back-edge (+0xef63e8, cbz w14 -> +0xef6354)
+   becomes a branch to a veneer in the zero padding after the text: an open queue (w14 = 1) leaves as shipped, a closed
+   one waits the pause on cntvct_el0 (ticks of cntfrq_el0, read once here) and polls again. The veneer busy-waits, so the
+   worker keeps its core as in the shipped loop. x14, x15 and the flags are dead there (written before they are read
+   again from +0xef6354) and the queue is unlocked, so a preemption signal may take the core in the veneer as in the
+   game's code (loader.c runtime_guest_code_pc). None of the checked words is an exclusive load, which the exclusive
+   acquire below would change. games/botw/scripts/verify_job_poll_patch.py runs the poll with and without the pause in
+   Unicorn. */
+extern uint64_t runtime_job_poll_veneer[2];   /* loader.c */
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, module offsets 4-byte aligned and close */
+    int64_t d = (int64_t)target - (int64_t)site;
+    return 0x14000000u | ((uint32_t)(d >> 2) & 0x3ffffffu);
+}
+static void patch_job_poll_pause(Module *m) {
+    if (ios_code()) return;
+    const char *e = getenv("TOTK_JOB_POLL_PAUSE_NS");
+    char *end = NULL; long long ns = e && *e ? strtoll(e, &end, 10) : 1000;
+    if (e && *e && (*end || ns < 0)) runtime_fail("TOTK_JOB_POLL_PAUSE_NS must be a number of nanoseconds (0: as shipped)");
+    if (!ns) { fprintf(stderr, "[botw] job poll pause off (TOTK_JOB_POLL_PAUSE_NS=0): the job workers poll back to back, as shipped\n"); return; }
+    enum { LOOP = 0xef6354u, SITE = 0xef63e8u, EXIT = 0xef63ecu, VENEER = 0x15a1f00u, VENEER_WORDS = 10 };
+    static const struct { uint32_t off, original; } check[] = {   /* the gate: ldrb w14, [x21, #0x98] ... cset w14, gt */
+        {LOOP, 0xb40004f4u}, {0xef635cu, 0xb940012eu}, {0xef6378u, 0x880e7d2au}, {0xef637cu, 0x35ffff6eu},
+        {0xef6384u, 0x394262aeu}, {0xef6398u, 0x1a9fd7eeu}, {0xef63e0u, 0x880ffd3fu}, {0xef63e4u, 0x35ffff8fu},
+        {SITE, 0x34fffb6eu}, {EXIT, 0x1400000bu}, {0xef640cu, 0x880e7d2au}, {0xef6410u, 0x35ffff6eu}, {0xef6414u, 0x17ffffdcu},
+    };
+    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] job poll pause main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("the job poll pause requires the 1.9.0 job queue poll (TOTK_JOB_POLL_PAUSE_NS=0 runs without it)");
+        }
+    }
+    if (VENEER < m->text_end || VENEER + 4 * VENEER_WORDS > m->ro_off) runtime_fail("job poll pause veneer outside the padding after the text");
+    for (unsigned i = 0; i < 4 * VENEER_WORDS; i++)
+        if (m->base[VENEER + i]) runtime_fail("job poll pause veneer padding not empty");
+    uint64_t hz; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(hz));
+    if (!hz) runtime_fail("job poll pause: the counter frequency (cntfrq_el0) is 0");
+    uint64_t ticks = (uint64_t)(ns < 1000000 ? ns : 1000000) * hz / 1000000000ull;   /* bounded: no overflow */
+    if (!ticks) ticks = 1;
+    if (ticks > 4095) {   /* add's 12-bit immediate: 4.095 us at 1 GHz */
+        ticks = 4095;
+        fprintf(stderr, "[botw] job poll pause: TOTK_JOB_POLL_PAUSE_NS=%lld is above the longest pause, %llu ns\n", ns,
+                (unsigned long long)(ticks * 1000000000ull / hz));
+    }
+    const uint32_t veneer[VENEER_WORDS] = {
+        0x3400004eu,                                          /* cbz w14, +8: the queue is not open to this worker yet */
+        branch_to(VENEER + 4, EXIT),                          /* open: leave as shipped (it may find nothing to take) */
+        0xd5033fdfu,                                          /* isb: the counter is read after the poll's unlock */
+        0xd53be04fu,                                          /* mrs x15, cntvct_el0 */
+        0x91000000u | (uint32_t)ticks << 10 | 15u << 5 | 15u, /* add x15, x15, #ticks */
+        0xd5033fdfu,                                          /* isb */
+        0xd53be04eu,                                          /* mrs x14, cntvct_el0 */
+        0xeb0f01dfu,                                          /* cmp x14, x15 */
+        0x54ffffa3u,                                          /* b.lo the second isb */
+        branch_to(VENEER + 36, LOOP),                         /* poll again */
+    };
+    put_words(m, VENEER, veneer, VENEER_WORDS, "job poll pause veneer");
+    runtime_job_poll_veneer[0] = (uintptr_t)m->base + VENEER; runtime_job_poll_veneer[1] = (uintptr_t)m->base + VENEER + 4 * VENEER_WORDS;
+    put_word(m, SITE, branch_to(SITE, VENEER), "job poll pause");
+    fprintf(stderr, "[botw] job poll pause: workers off core 0 wait %llu ns between polls of a queue not yet open (main+%#x, %d-word veneer, "
+                    "%zu words verified; %llu ticks of a %llu Hz counter; TOTK_JOB_POLL_PAUSE_NS=0: as shipped)\n",
+            (unsigned long long)(ticks * 1000000000ull / hz), SITE, VENEER_WORDS, sizeof check / sizeof *check, (unsigned long long)ticks,
+            (unsigned long long)hz);
+}
+#endif
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
     if (!patch_output_res(m)) patch_render_1080(m);
     patch_phone_render(m);
     botw_aspect_install(m);
+#ifdef GAME_BOTW190
+    patch_job_poll_pause(m);
+#endif
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
     { const char *a = getenv("TOTK_EXCL_ACQUIRE");
