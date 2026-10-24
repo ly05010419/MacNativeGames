@@ -143,7 +143,7 @@ def main():
     # Generate the app project with resolved identity and the embedded-segment linker flags.
     env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
     xcconfig=gen/'totk.xcconfig'
-    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','AVFAudio','Security'])
+    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','AVFAudio','Security'])
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a {flags}\n')
     run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
     derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
