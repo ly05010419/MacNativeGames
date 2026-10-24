@@ -104,6 +104,9 @@ static void setting_write(const char *name, const char *word, const char *what) 
     if (ok && rename(temp, path)) ok = 0;
     if (!ok) { fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path); unlink(temp); }
 }
+/* The same for settings kept elsewhere (key 8: frontend.m hdr.txt). */
+int runtime_setting_get(const char *name, char *word, size_t size) { char path[4096]; return setting_read(name, word, size, path, sizeof path); }
+void runtime_setting_put(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
 
 /* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), key 6 on the Mac, in controller-type.txt. */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;

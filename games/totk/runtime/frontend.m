@@ -38,6 +38,30 @@ static unsigned vsyncCount;
 void hle_bind_system_event(void *,int);
 void hle_signal_system_event(void *);
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* HDR (key 8, in hdr.txt next to controls.txt; TOTK_HDR=0/1 wins). The game's picture is SDR (its tone mapping already
+   ran), so this is an "auto HDR": the window becomes EDR (RGBA16Float, extended linear Display P3, so SDR colours look as
+   they did in the unmanaged 8-bit window) and nvn_mtl.m's present brightens the brightest parts of the picture past SDR
+   white, up to front_hdr_peak() times it. The peak is TOTK_HDR_PEAK (default 3) held under the screen's current EDR
+   headroom, which macOS lowers as the screen's brightness goes up and which is 1 on an SDR screen (nothing brightens). */
+static _Atomic int hdrOn=-1;static _Atomic float hdrHeadroom=1;static NSTimer *hdrTimer;
+static int hdr_enabled(void){int on=atomic_load(&hdrOn);if(on<0){const char *e=getenv("TOTK_HDR");char word[16]={0};
+  on=e&&*e?strcmp(e,"0")!=0:runtime_setting_get("hdr.txt",word,sizeof word)&&!strncmp(word,"on",2);atomic_store(&hdrOn,on);}return on;}
+static float hdr_peak_setting(void){static float p=0;if(!p){const char *e=getenv("TOTK_HDR_PEAK");p=e?strtof(e,NULL):3;if(!(p>=1&&p<=16))p=3;}return p;}
+float front_hdr_peak(void){return metalLayer&&hdr_enabled()?fmaxf(1,fminf(hdr_peak_setting(),atomic_load(&hdrHeadroom))):0;}
+static void hdr_apply(void){   /* main thread */
+  int on=hdr_enabled();if(!metalLayer||metalLayer.wantsExtendedDynamicRangeContent==on)return;
+  CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3):NULL;
+  metalLayer.wantsExtendedDynamicRangeContent=on;metalLayer.colorspace=cs;metalLayer.pixelFormat=on?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;if(cs)CGColorSpaceRelease(cs);
+  [hdrTimer invalidate];hdrTimer=nil;atomic_store(&hdrHeadroom,1);
+  if(on)hdrTimer=[NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t){(void)t;
+    NSScreen *s=window.screen?window.screen:NSScreen.mainScreen;atomic_store(&hdrHeadroom,s?(float)s.maximumExtendedDynamicRangeColorComponentValue:1);}];
+  fprintf(stderr,"[totk] HDR %s (key 8)\n",on?"on: EDR window, highlights brightened":"off");}
+static NSString *hdr_text(void){
+  if(!hdr_enabled())return @(TOTK_UI("关","off"));
+  float h=atomic_load(&hdrHeadroom);
+  return h<1.05f?@(TOTK_UI("开（这块屏幕没有 HDR 余量）","on (this screen has no HDR headroom now)")):[NSString stringWithFormat:@(TOTK_UI("开（高光最高 %.1f 倍）","on (highlights up to %.1f×)")),front_hdr_peak()];}
+void runtime_hdr_toggle(void){int on=!hdr_enabled();atomic_store(&hdrOn,on);runtime_setting_put("hdr.txt",on?"on":"off","HDR setting");
+  dispatch_async(dispatch_get_main_queue(),^{hdr_apply();});}
 void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
@@ -204,9 +228,9 @@ static NSString *shortcut_text(void){
  NSString *ratio=!ar?@"16:9":fabsf(ar*9-21)<0.05f?@"21:9":[NSString stringWithFormat:@"%.2f:1",ar];
  NSString *shape=step==1?[NSString stringWithFormat:@(TOTK_UI("适配窗口 %@","fit to window %@")),ratio]:step==2?ratio:@"16:9";
  if(step<0)shape=@(TOTK_UI("本游戏暂不支持","not available in this game"));   /* runtime_aspect_step -1: this game version has no aspect sites */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  画面比例：当前 %@（按键切换）\n5  边缘平滑（MetalFX 时间性）：%@\n6  手柄类型：当前 %@（按键切换）\n7  鼠标操作：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Aspect ratio: %@ (current; press to cycle)\n5  Edge smoothing (MetalFX Temporal): %@\n6  Controller type: %@ (current; press to cycle)\n7  Mouse: %@ (current; press to switch)")),[NSString stringWithUTF8String:interp],picture,shape,
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  画面比例：当前 %@（按键切换）\n5  边缘平滑（MetalFX 时间性）：%@\n6  手柄类型：当前 %@（按键切换）\n7  鼠标操作：当前 %@（按键切换）\n8  HDR：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Aspect ratio: %@ (current; press to cycle)\n5  Edge smoothing (MetalFX Temporal): %@\n6  Controller type: %@ (current; press to cycle)\n7  Mouse: %@ (current; press to switch)\n8  HDR: %@ (current; press to switch)")),[NSString stringWithUTF8String:interp],picture,shape,
   taa_enabled()?(taa_effective()?@(TOTK_UI("开","on")):@(TOTK_UI("开（未生效）","on (not in effect)"))):@(TOTK_UI("关","off")),pad_type_text(),
-  runtime_mouse_enabled()?@(TOTK_UI("开（视角、按键，⌘Tab 释放指针）","on (camera, buttons; Command-Tab frees the pointer)")):@(TOTK_UI("关","off"))];
+  runtime_mouse_enabled()?@(TOTK_UI("开（视角、按键，⌘Tab 释放指针）","on (camera, buttons; Command-Tab frees the pointer)")):@(TOTK_UI("关","off")),hdr_text()];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
@@ -368,7 +392,7 @@ void runtime_front_run(void(*callback)(void)){
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
-  metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
+  metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;hdr_apply();
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
   bootStage=[NSTextField labelWithString:@(TOTK_UI("正在启动海拉鲁","Starting Hyrule"))];

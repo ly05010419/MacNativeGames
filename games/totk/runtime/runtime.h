@@ -133,6 +133,9 @@ void runtime_gamepad_clear(void);
 int runtime_gamepad_type_cycle(void);       /* runtime/gamepad.m: key 6, the controller type auto -> Xbox -> PlayStation -> Switch (gamepad_layout.h GAMEPAD_TYPE_*) */
 int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
 int runtime_mouse_toggle(void);             /* runtime/gamepad.m: key 7, mouse mode on (1) / off (0) */
+int runtime_setting_get(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting next to controls.txt */
+void runtime_setting_put(const char *name, const char *word, const char *what);
+void runtime_hdr_toggle(void);             /* runtime/frontend.m: key 8, HDR (EDR window, brightened highlights) on / off */
 int runtime_mouse_enabled(void);
 void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */
 void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */
