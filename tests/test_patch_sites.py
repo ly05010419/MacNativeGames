@@ -94,6 +94,71 @@ class Extraction(unittest.TestCase):
         self.assertIn(0x628c74, found)                  # ultrawide
         self.assertNotIn(0x8f6c60, found)               # game_patches.c is not compiled for 1.4.3
 
+    def test_botw190_sites_follow_game_patches_botw_c(self):
+        # Breath of the Wild 1.9.0: the rows {offset, word, ...} of the branch GAME_BOTW190 compiles, and nothing of 1.6.0's.
+        found = offsets('botw190')
+        for site in (0x151d484, 0x151d490,              # the VFR ratio (real-time frame step), first and last word
+                     0x125f118, 0x1280ecc, 0x128106c,   # the fade, the UI step, the physics ratio
+                     0xeb0f78, 0xeb0f88,                # the pad repeat count
+                     0x12660c8,                         # the docked render size
+                     0xc617e8, 0x15a01a0, 0x1d78198):   # GAME_ADDR sites of game_version.h's 1.9.0 block
+            self.assertIn(site, found, hex(site))
+        for word in (0x1266114, 0x1266118, 0x126611c):   # the phone's handheld render size, three instructions
+            self.assertTrue(patch_sites.overlaps([(word, 4)], patch_sites.sites('botw190')), hex(word))
+        self.assertNotIn(0x1c0120c, found)              # 1.6.0's VFR site: that branch is not compiled for 1.9.0
+        self.assertNotIn(0x126e490, found)              # 1.6.0's pad loop
+        self.assertNotIn(0x1821674, found)              # 1.6.0's render size
+        self.assertNotIn(0x151d484 + 1, found)
+        self.assertNotIn(0x12c1010, found)              # TOTK_JQ_CHECK's table: 1.6.0 addresses only
+        self.assertNotIn(0x13a0508, found)
+
+    def test_botw190_has_no_totk_sites(self):
+        found = offsets('botw190')
+        self.assertNotIn(0x8f6c60, found)               # TOTK 1.0.0 60 FPS
+        self.assertNotIn(0xce3fec, found)               # the high-FPS bounce
+        self.assertEqual(sorted(patch_sites._unresolved), [])
+
+    def test_botw160_sites_follow_game_patches_botw_c(self):
+        # Breath of the Wild 1.6.0: the branch GAME_BOTW160 compiles, its multi-word sequences whole, nothing of 1.9.0's.
+        reserved = patch_sites.sites('botw160')
+        found = {site.offset for site in reserved}
+        for site in (0x1c0120c, 0x1c01218,              # the VFR ratio (real-time frame step), first and last word
+                     0x1821564, 0x18522ec, 0x1618480,   # the fade, the UI step, the physics substeps
+                     0x1214474,                         # the pause menu's countdown
+                     0x1821674,                         # the docked render size
+                     0xe53f8c, 0x2128690, 0x2c7ef90,    # GAME_ADDR sites of game_version.h's 1.6.0 block
+                     0x182167c, 0x18216ac, 0x1804c44, 0xe53fa0,   # the output size's display-mode and heap checks
+                     0x18216c8):                        # the phone's handheld render size (three instructions)
+            self.assertIn(site, found, hex(site))
+        sizes = {site.offset: site.size for site in reserved}
+        self.assertEqual(sizes[0x15c2118], 4 * 14)       # the ultrawide aspect writer, 14 instructions rewritten in place
+        self.assertTrue(patch_sites.overlaps([(0x15c2118 + 4 * 13, 4)], reserved))   # its last word, the aspect store
+        self.assertFalse(patch_sites.overlaps([(0x15c2118 + 4 * 14, 4)], reserved))
+        for word in (0x18216cc, 0x18216d0):
+            self.assertTrue(patch_sites.overlaps([(word, 4)], reserved), hex(word))
+        self.assertEqual(sizes[0x126e490], 4 * 38)      # the pad loop, 38 instructions rewritten in place
+        self.assertEqual(sizes[0x1214474], 4 * 9)       # the menu countdown, 9 instructions
+        for site in (0xe563dc, 0x1805028):              # the output size's initialisers: movz, and the movk 12 bytes on
+            self.assertEqual(sizes[site], 16, hex(site))
+        self.assertTrue(patch_sites.overlaps([(0x126e490 + 4 * 37, 4)], reserved))   # its last word
+        self.assertFalse(patch_sites.overlaps([(0x126e490 + 4 * 38, 4)], reserved))
+        for site in (0x151d484, 0x12660c8, 0xeb0f78, 0xc617e8):   # 1.9.0's VFR, render size, pad count, GAME_ADDR
+            self.assertNotIn(site, found, hex(site))
+        self.assertNotIn(0x8f6c60, found)               # TOTK 1.0.0 60 FPS
+
+    def test_botw_sites_skip_the_runtime_copy_of_the_list(self):
+        # g_pchtxt_reserved is TOTK_PCHTXT's copy of this list: its rows are not sites, or the parity test checks itself.
+        text = 'static const struct { uint32_t off, size; } g_pchtxt_reserved[] = {\n    {0x40, 0x4},\n};\nx = {0x80u, 1};\n'
+        self.assertEqual([site.offset for site in patch_sites.botw_sites(text, 't.c', set())], [0x80])
+
+    def test_the_botw_branch_is_chosen_by_the_macros(self):
+        text = '#ifdef A\none\n#else\ntwo\n#endif\n#ifndef A\nthree\n#endif\n#if defined(B)\nfour\n#elif C\nfive\n#endif\n#if X > 1\nsix\n#endif\n'
+        kept = lambda defined: {line for line in patch_sites.compiled_text(text, defined).split() if line.isalpha()}
+        self.assertEqual(kept({'A'}), {'one', 'five', 'six'})      # an #elif is not evaluated: its sites are reserved
+        self.assertEqual(kept({'B'}), {'two', 'three', 'four', 'five', 'six'})
+        self.assertEqual(kept(set()), {'two', 'three', 'five', 'six'})
+        self.assertEqual(patch_sites.compiled_text(text, {'A'}).count('\n'), text.count('\n'))      # line numbers stay
+
     def test_rewriter_tables_need_the_build_id(self):
         without = offsets('v0')
         with_id = offsets('v0', BUILD_ID_V0)
