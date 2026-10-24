@@ -349,7 +349,7 @@ project: the pictures come from your own game.
 | `BOTW_TEXPACK_DIR` | The pack folder. Default `~/Library/Application Support/MacNativeGames/BotW/texture-pack`. |
 | `BOTW_TEXPACK=0` | Turns the pack off. |
 | `BOTW_TEXPACK_HARVEST=<dir>` | Harvest mode: writes each UI texture the game draws into `<dir>` as `<key>.png`, with a line in `harvest.tsv`. A texture already there is not written again, so the folder grows over runs. |
-| `BOTW_TEXPACK_HARVEST_FS` | The fragment shaders to harvest, as key prefixes separated by commas. Default `87d90016,e6a88e12` (the 1.9.0 shaders). The 44 HUD and menu textures have the same keys in 1.6.0, so one pack serves both versions. |
+| `BOTW_TEXPACK_HARVEST_FS` | The fragment shaders to harvest, as key prefixes separated by commas. Default `87d90016,e6a88e12,e1f8208d` (the 1.9.0 picture shaders and the temperature gauge). The HUD and menu textures have the same keys in 1.6.0, so one pack serves both versions. |
 
 The key is `<hash>-<width>x<height>-<NVN format>`, where the hash covers the texture's bytes as the game stores them.
 Pictures hold the stored channel values: 8-bit grey for one-channel masks, RGB with blue 0 for two-channel masks, RGBA (not
@@ -775,7 +775,7 @@ python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application 
 | `BOTW_TEXPACK_DIR` | 贴图包文件夹。默认 `~/Library/Application Support/MacNativeGames/BotW/texture-pack`。 |
 | `BOTW_TEXPACK=0` | 关闭贴图包。 |
 | `BOTW_TEXPACK_HARVEST=<dir>` | 采集模式：把游戏绘制的每张界面贴图以 `<key>.png` 写入 `<dir>`，并在 `harvest.tsv` 里记一行。已在文件夹里的贴图不会重写，所以文件夹会随多次运行增长。 |
-| `BOTW_TEXPACK_HARVEST_FS` | 要采集的片段着色器，写 key 前缀，用逗号分隔。默认 `87d90016,e6a88e12`（1.9.0 的着色器）。44 张 HUD 和菜单贴图在 1.6.0 里 key 相同，所以一个贴图包两个版本都能用。 |
+| `BOTW_TEXPACK_HARVEST_FS` | 要采集的片段着色器，写 key 前缀，用逗号分隔。默认 `87d90016,e6a88e12,e1f8208d`（1.9.0 的图片着色器和温度计）。HUD 和菜单贴图在 1.6.0 里 key 相同，所以一个贴图包两个版本都能用。 |
 
 key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图字节。图片保存的是存储的通道值：单通道遮罩为 8 位灰度，
 双通道遮罩为蓝色为 0 的 RGB，彩色图为 RGBA（不预乘，sRGB 颜色保持编码值）。

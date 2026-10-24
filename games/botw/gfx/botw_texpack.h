@@ -21,8 +21,9 @@
    - BOTW_TEXPACK_DIR: the pack folder (default ~/Library/Application Support/MacNativeGames/BotW/texture-pack);
      BOTW_TEXPACK=0: off.
    - BOTW_TEXPACK_HARVEST=<folder>: the first time a UI picture shader (BOTW_TEXPACK_HARVEST_FS, key prefixes, default
-     87d90016,e6a88e12) samples a candidate, its texels are written there as "<key>.png" (decoded on the CPU from the
-     guest bytes) with a line in harvest.tsv. Textures already in the folder are not written again, so it grows over runs. */
+     87d90016,e6a88e12,e1f8208d: the picture shaders and the temperature gauge's segment shader) samples a candidate,
+     its texels are written there as "<key>.png" (decoded on the CPU from the guest bytes) with a line in harvest.tsv.
+     Textures already in the folder are not written again, so it grows over runs. */
 #import <CoreGraphics/CoreGraphics.h>
 
 int g_botw_tp = -1;   /* -1 not yet set up, 0 off, 1 on */
@@ -46,7 +47,7 @@ static void tp_setup(void) {
     if (harv && *harv) {
         g_tp_harv = @(harv); [[NSFileManager defaultManager] createDirectoryAtPath:g_tp_harv withIntermediateDirectories:YES attributes:nil error:nil];
         g_tp_harv_seen = [tp_scan(g_tp_harv) mutableCopy];
-        g_tp_harv_fs = getenv("BOTW_TEXPACK_HARVEST_FS"); if (!g_tp_harv_fs || !*g_tp_harv_fs) g_tp_harv_fs = "87d90016,e6a88e12";
+        g_tp_harv_fs = getenv("BOTW_TEXPACK_HARVEST_FS"); if (!g_tp_harv_fs || !*g_tp_harv_fs) g_tp_harv_fs = "87d90016,e6a88e12,e1f8208d";
         MLOG("[texpack] harvest into %s (%lu textures there; fragment shaders %s)", harv, (unsigned long)g_tp_harv_seen.count, g_tp_harv_fs);
         g_botw_tp = 1;
     }
