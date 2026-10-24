@@ -51,7 +51,16 @@ PATCH_OFF = (len(IMG) + 0xFFFF) & ~0xFFFF
 # ---- Registered cuts: {NSO build ID: [(offset, original bytes, new bytes, reason)]} ----
 # Networking cuts (excluded scope: Battle.net / online play): taken from a community offline fix (LFS Mod Offline Fix for v2228224, which differs from the official 94012 main in only these 7 words).
 # Measured: the system service layer (nifm offline / DNS black hole / account service) cannot get around it: the game itself sends Battle.net requests directly and allows offline play according to the "last online" time.
-CUTS = {'db0507f36b84200ac05f75d76ed5026f': [
+CUTS = {'8e9978d50bdd20b4c8395a106c27ffde': [
+    # BotW 1.6.0 JobQueue: equal-length CASA loops preserve status, NZCV and monitor clearing.
+    # Only the six reproduced contention sites; other LL/SC loops are unchanged.
+    (0x12c0e58, '0e7d5f88eeffff350c7d0e88aeffff35', 'ee031f2a0c7dee88ceffff355f3f03d5', 'JobQueue atomic progress: acquire', '仅宿主'),
+    (0x12c0ebc, '0f7d5f88ff050071c1ffff541f7d0f888fffff35', '2f0080521f7def88ef050071afffff355f3f03d5', 'JobQueue atomic progress: release', '仅宿主'),
+    (0x12c0f04, '0c7d5f88ecffff350b7d0c88acffff35', 'ec031f2a0b7dec88ccffff355f3f03d5', 'JobQueue atomic progress: acquire', '仅宿主'),
+    (0x12c0f60, '0d7d5f88bf050071c1ffff541f7d0d888dffff35', '2d0080521f7ded88ad050071adffff355f3f03d5', 'JobQueue atomic progress: release', '仅宿主'),
+    (0x12c0f8c, '0a7d5f88eaffff35097d0a88aaffff35', 'ea031f2a097dea88caffff355f3f03d5', 'JobQueue atomic progress: acquire', '仅宿主'),
+    (0x12c0fb8, '0a7d5f885f050071c1ffff541f7d0a888affff35', '2a0080521f7dea884a050071aaffff355f3f03d5', 'JobQueue atomic progress: release', '仅宿主'),
+], 'db0507f36b84200ac05f75d76ed5026f': [
     # （放进所有产物共用的基础改写）：游戏显存分配器预算 260 MB → 512 MB
     # (Placed in the base rewrite shared by all build outputs): game video memory allocator budget 260 MB → 512 MB
     (0x8524c4, '0808a2d2', '0800a4d2', '显存分配器初始化配置：mov x8,#0x10400000（260 MB）→ mov x8,#0x20000000（512 MB），随后 movk #0xa0,lsl48 与 str [sp,#0x238] 不变；'

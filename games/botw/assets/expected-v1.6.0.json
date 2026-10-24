@@ -11,7 +11,7 @@
     "subsdk0": "d22d98656a19be240b554e7db8d69126d6427232521238d665aec3509087f2cf"
   },
   "rewritten_sha256": {
-    "main.patched.bin": "c41ac2fa9be737f2e6b0ab641508e9a51995b03463ff6aa445ce04e5e8766a8e",
+    "main.patched.bin": "4f265850bcd11e5098b27ab107d445bc19c2c2a98dcd8c81588cc8840a2143e7",
     "sdk.patched.bin": "d950b6f1af7690231fe17e6db77d26dabf9dbf565b04774c11d7fbc605f117dd",
     "subsdk0.patched.bin": "f5bc35332258bd850f2137c7953916dad47bd5f3ce67e5d208a1b31336c6c8da"
   },

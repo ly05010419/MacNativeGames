@@ -157,6 +157,9 @@ build/system-event-probe: tests/system_event_bind/probe.c runtime/threads.c runt
 probe-system-event: build/system-event-probe
 	build/system-event-probe | tee analysis/system-event-probe.log
 
+build/botw-atomics-probe: tests/atomic_progress/probe.c
+	xcrun clang -std=c11 -O2 -g -Wall -Wextra -Werror tests/atomic_progress/probe.c -o "$@"
+
 .PHONY: probe-account probe-gfx
 probe-account:
 	"$(PY)" scripts/verify_account.py

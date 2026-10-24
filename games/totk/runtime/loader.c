@@ -19,6 +19,7 @@
 #include "mach_vm_compat.h"
 #include <sys/ucontext.h>
 #include "runtime_tables.h"
+#include <sys/sysctl.h>
 #include "game_patches.h"
 #include "game_version.h"
 #define NM (sizeof(modules)/sizeof(modules[0]))
@@ -536,6 +537,11 @@ static void abort_report(int num) {
 }
 int main(int argc,char **argv) {
  need(argc==3,"usage: totk-native rewritten-dir probe|boot");
+#ifdef GAME_BOTW160
+ {int supported=0;size_t size=sizeof supported;
+  need(sysctlbyname("hw.optional.arm.FEAT_LSE",&supported,&size,NULL,0)==0&&size==sizeof supported&&supported,
+       "BotW JobQueue CASA cuts require a target with LSE");}
+#endif
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
