@@ -2888,6 +2888,42 @@ static int tex_swizzle_sel(const tex_t *t, const uint8_t *view_sel, int format, 
 }
 static int tex_swizzle(const tex_t *t, int format, MTLTextureSwizzleChannels *out) { return tex_swizzle_sel(t, NULL, format, out); }
 static int swizzle_eq(MTLTextureSwizzleChannels a, MTLTextureSwizzleChannels b) { return a.red == b.red && a.green == b.green && a.blue == b.blue && a.alpha == b.alpha; }
+// From games/totk (f864eb0): a texture that comes from a mod can carry descriptor fields the guest never validates and Metal refuses to
+// build - it aborts the process from -[MTLTextureDescriptorInternal validateWithDevice:] (seen with The Second Quest:
+// "requests 9 mipmap levels, but the dimensions (1, 1, 1) can only support 1"). Cap every guest-controlled field at
+// what the hardware allows; the game's own data is always inside these bounds, so nothing changes for it.
+static void tex_desc_fixup(const tex_t *t, MTLTextureDescriptor *d) {
+    static uint64_t capped;
+    char why[160] = "";
+    NSUInteger w = d.width, h = d.height, z = d.depth;
+    NSUInteger arr0 = d.arrayLength, smp0 = d.sampleCount, lv0 = d.mipmapLevelCount, w0 = d.width, h0 = d.height, z0 = d.depth;
+    int is_msaa = d.textureType == MTLTextureType2DMultisample || d.textureType == MTLTextureType2DMultisampleArray;
+    if (w < 1 || w > 16384) { d.width = w = w < 1 ? 1 : 16384; strlcat(why, "宽, ", sizeof why); }
+    if (h < 1 || h > 16384) { d.height = h = h < 1 ? 1 : 16384; strlcat(why, "高, ", sizeof why); }
+    if (z < 1 || z > 2048) { d.depth = z = z < 1 ? 1 : 2048; strlcat(why, "深, ", sizeof why); }
+    NSUInteger biggest = w > h ? w : h;
+    if (d.textureType == MTLTextureType3D && z > biggest) biggest = z;
+    unsigned allowed = 1;
+    for (NSUInteger v = biggest; v > 1; v >>= 1) allowed++;
+    if (d.mipmapLevelCount > allowed) { d.mipmapLevelCount = allowed; strlcat(why, "mip 级数, ", sizeof why); }
+    if (d.mipmapLevelCount < 1) { d.mipmapLevelCount = 1; strlcat(why, "mip 级数, ", sizeof why); }
+    if (d.arrayLength < 1 || d.arrayLength > 2048) { d.arrayLength = d.arrayLength < 1 ? 1 : 2048; strlcat(why, "数组长度, ", sizeof why); }
+    if (!(d.sampleCount == 1 || d.sampleCount == 2 || d.sampleCount == 4 || d.sampleCount == 8)) {
+        d.sampleCount = 1; strlcat(why, "采样数, ", sizeof why);
+    }
+    if (d.sampleCount > 1 && !is_msaa) { d.sampleCount = 1; strlcat(why, "采样数, ", sizeof why); }   // only the multisample types may sample more than once
+    if (d.sampleCount > 1) d.mipmapLevelCount = 1;
+    if (!why[0]) return;
+    if (capped++ < 6 || capped % 500 == 0) {
+        size_t n = strlen(why); if (n > 2) why[n - 2] = 0;      // drop the trailing ", "
+        MLOG("[tex] ser=%llu %ux%ux%u 目标 %d 声明 %lux%lux%lu arr=%lu smp=%lu 级数=%lu：%s 超出硬件允许，按 %lux%lux%lu arr=%lu smp=%lu 级数=%lu 创建（累计 %llu 张；Metal 否则会终止进程）",
+             (unsigned long long)t->serial, (uint32_t)t->d.width, (uint32_t)t->d.height, (uint32_t)t->d.depth, (int)t->d.target,
+             (unsigned long)w0, (unsigned long)h0, (unsigned long)z0, (unsigned long)arr0, (unsigned long)smp0, (unsigned long)lv0,
+             why, (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.depth, (unsigned long)d.arrayLength,
+             (unsigned long)d.sampleCount, (unsigned long)d.mipmapLevelCount, (unsigned long long)capped);
+    }
+}
+
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "贴图格式 %#x Metal 无对应（首例）", t->d.format); return nil; }
@@ -2908,6 +2944,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 10: RED_ONCE(1, "缓冲贴图（TARGET_BUFFER）未实现"); return nil;
         default: d.textureType = MTLTextureType2D; break;
     }
+    tex_desc_fixup(t, d);
     d.storageMode = MTLStorageModePrivate;   // 渲染目标与素材都放 GPU 私有存储（可用无损压缩） | Render targets and assets both go in GPU private storage (lossless compression available)
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // 图像用途：着色器可写（计算核生成 3D 调色表等） | Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.)
@@ -7198,6 +7235,10 @@ int mtl_warm_wait(int timeout_ms) {
     uint64_t t0 = bp_now();
     while (atomic_load(&g_warm_running) && (timeout_ms < 0 || (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms)) usleep(2000);
     atomic_store(&g_warm_in_play, 1);   // the player goes into the world: the rest of the warm-up uses at most 2 threads
+    /* Odyssey: the game plays from here, so the boot overlay ("Warming shaders and pipelines N%") goes away now, not when
+       the whole list is done: on a first launch it covered the world for minutes while sound and input already ran (24
+       October). The rest of the warm-up keeps going behind the game. */
+    if (runtime_warm_done) runtime_warm_done();
     return (int)((bp_now() - t0) / 1000000ull) + 1;
 }
 /* TOTK (iOS): variants the phone was missing (shader-requests/, written by totk_rt_variant) that fill_shaders.py has since

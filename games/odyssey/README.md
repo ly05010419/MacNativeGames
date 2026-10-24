@@ -73,8 +73,10 @@ space in its path below `games/odyssey`, since `make` can't handle spaces), `--d
 
 **Tested 23 October 2026** from an empty folder on the M3 test Mac with a 1.3.0 card dump: about 9 minutes in all
 (the shader seed about 6, packaging about 2). The rewritten modules, the merged game data and all 129,602 shader-seed files came
-out byte-identical to the known-good build, and the new app started and showed the game's opening screen. Not yet
-tried on a second Mac or with an NSP.
+out byte-identical to the known-good build, and the new app started and showed the game's opening screen. That count
+was made with the translator the port was developed on; with the translator in `prebuilt/` (main since 069a999) the
+seed has 28,131 shaders in 89,892 files (24 October), which is what a correct build from main gives. Others have built
+and played it from NSPs (base + 1.3.0 update merged into one PFS0, #657) and with the Command Line Tools only (#655).
 
 Optional, after you've played a while: `scripts/precompile_cached_shaders.py` compiles the shaders your game has
 translated into Metal libraries ahead of time; then run the build command again to repackage.
