@@ -296,6 +296,50 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
             PAD_LOOP_WORDS, MENU_CD_WORDS);
     pad_log_arm(m);
 }
+/* Sound-link timers by real time (TOTK_SLINK_REALTIME=0: as shipped). xlink2 steps its asset timers (delays, durations)
+   by the frame rate its system holds at +0x84. The effect system's rate gets the VFR's ratio each frame
+   (main+0x1be7918); the sound system's ([main+0x2cc2028]) gets max(raw ratio, 1.0) (main+0x1c59fac..0x1c5a014),
+   which is the ratio on the Switch, where a frame is never shorter than 1/30 s. Above 30 fps the 1.0 made every SLink
+   timer count rendered frames: Cryonis' placement marker, emitted again when its sound event ends after about 24
+   frames, restarted 4-5 times a second at 120 fps instead of about 1.3, so the ice block preview never grew (measured
+   2026-10-23; 1.3 a second at 120 fps after the fix). The store now takes the unclamped ratio from the frame-step page;
+   the audio frame values computed from the clamped number just before it are unchanged. x9 and s0 are free there (a call follows):
+     main+0x1c5a014  str s0, [x8, #0x84]  -> b <veneer>
+     veneer          adrp x9, <page> / ldr s0, [x9] / str s0, [x8, #0x84] / b main+0x1c5a018 */
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
+    int64_t delta = (int64_t)target - (int64_t)site;
+    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
+    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+}
+static void patch_slink_rate(Module *m, uint64_t page) {
+    const char *e = getenv("TOTK_SLINK_REALTIME");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[botw] sound-link timers at least one 30 fps frame per frame, as shipped (TOTK_SLINK_REALTIME=0)\n"); return; }
+    enum { SITE = 0x1c5a014, BACK = 0x1c5a018 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0x1c59fa8u, 0xbd400100u}, {0x1c59facu, 0x1e2e1001u}, {0x1c59fb0u, 0x1e214800u},
+        {0x1c5a00cu, 0x90008348u}, {0x1c5a010u, 0xf9401508u}, {SITE, 0xbd008500u}, {BACK, 0x91090300u}, {0x1c5a01cu, 0x94133c99u},
+    };
+    for (size_t i = 0; i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] sound-link rate main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("sound-link timers by real time require the 1.6.0 rate update instructions");
+        }
+    }
+    const uint64_t stub = (m->text_end + 15) & ~15ULL;
+    const uint32_t veneer[] = {
+        adrp_reg(9, (uintptr_t)m->base + stub, page),
+        0xbd400120u,   /* ldr s0, [x9]         (the measured ratio) */
+        0xbd008500u,   /* str s0, [x8, #0x84]  (the sound system's rate) */
+        branch_to(stub + 12, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("sound-link veneer layout");
+    for (size_t i = 0; i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("sound-link veneer padding not empty");
+    memcpy(m->base + stub, veneer, sizeof veneer);
+    uint32_t to = branch_to(SITE, stub); memcpy(m->base + SITE, &to, 4);
+    fprintf(stderr, "[botw] sound-link timers follow the measured frame ratio (veneer +%#llx; TOTK_SLINK_REALTIME=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     /* The loader reserved a writable page immediately after main's image; nothing else uses it in this game. */
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
@@ -335,6 +379,7 @@ static void patch_realtime(Module *m) {
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
+    patch_slink_rate(m, page);
 }
 #else
 /* Breath of the Wild 1.9.0: the same real-time step at the 1.9.0 sites (found by disassembly; MacNativeGames
