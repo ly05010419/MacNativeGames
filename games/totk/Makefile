@@ -336,7 +336,7 @@ probe-audio-effects: runtime probe-reverb
 # Host-only validation of live survey parsing and actor pointer traversal; no GPU or game.
 .PHONY: probe-world-survey
 build/world-survey-probe: scripts/world_survey_probe.c runtime/world_survey.c runtime/world_survey.h runtime/runtime.h
-	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/world_survey_probe.c -o "$@"
+	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror -Ithird_party/d2r_gfx/gfx/nvn/include -Iruntime scripts/world_survey_probe.c -o "$@"
 probe-world-survey: build/world-survey-probe
 	build/world-survey-probe
 	@TOTK_PROBE_NEGATIVE=1 build/world-survey-probe > analysis/world-survey-negative.log 2>&1; test $$? -eq 1
