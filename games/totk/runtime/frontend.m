@@ -77,8 +77,26 @@ void runtime_boot_status(const char *stage,const char *detail){
   bootProgress.indeterminate=YES;[bootProgress startAnimation:nil];
  });
 }
+/* TOTK_SHADER_STATUS (app/launcher.m): how far the shader warm-up got, for the hub's game list (hub/hub.m): written at each new
+   whole percent and when it finishes, through a temporary file so a reader never sees half of it. */
+static void front_shader_status(uint64_t done,uint64_t total,int finished){
+ static int lastPercent=-1;static dispatch_queue_t q;static dispatch_once_t once;
+ const char *path=getenv("TOTK_SHADER_STATUS");
+ if(!path||!*path)return;
+ int percent=total?(int)fmin(100.0,floor((double)done*100.0/(double)total)):100;
+ if(!finished&&percent==lastPercent)return;
+ lastPercent=percent;
+ dispatch_once(&once,^{q=dispatch_queue_create("shader-status",DISPATCH_QUEUE_SERIAL);});
+ NSString *target=@(path);
+ dispatch_async(q,^{
+  NSDictionary *status=@{@"done":@(done),@"total":@(total),@"percent":@(finished?100:percent),@"finished":@(finished),
+                         @"time":@((long long)NSDate.date.timeIntervalSince1970)};
+  [[NSJSONSerialization dataWithJSONObject:status options:0 error:nil] writeToFile:target atomically:YES];
+ });
+}
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total){
  atomic_store(&warmPending,1);
+ front_shader_status(done,total,0);
  dispatch_async(dispatch_get_main_queue(), ^{
   if(!bootOverlay||bootOverlay.hidden)return;
   double percent=total ? fmin(100.0,(double)done/(double)total*100.0) : 100.0;
@@ -92,6 +110,7 @@ void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_
 }
 void runtime_warm_done(void){
  atomic_store(&warmPending,0);
+ front_shader_status(1,1,1);
  dispatch_async(dispatch_get_main_queue(), ^{if(atomic_load(&presentedFrames))bootOverlay.hidden=YES;});
 }
 uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
@@ -338,10 +357,32 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+/* Started from the hub app (hub/hub.m sets MNG_HUB_APP): the hub comes back whenever the game closes, so "Back to Game Hub" is
+   closing the game, and "Quit MacNativeGames" first leaves MNG_HUB_QUIT_FILE, which tells the hub not to come back. */
+@interface TOTKHubMenu : NSObject
+@end
+@implementation TOTKHubMenu
+-(void)backToHub:(id)sender{(void)sender;[window performClose:nil];}
+-(void)quitAll:(id)sender{
+ (void)sender;const char *mark=getenv("MNG_HUB_QUIT_FILE");
+ if(mark&&*mark){FILE *f=fopen(mark,"w");if(f)fclose(f);}
+ [window performClose:nil];
+}
+@end
+static TOTKHubMenu *hubMenu;
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ const char *hub=getenv("MNG_HUB_APP");
+ if(hub&&*hub){
+  hubMenu=[TOTKHubMenu new];
+  NSMenuItem *back=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("返回游戏大厅","Back to Game Hub")) action:@selector(backToHub:) keyEquivalent:@"b"];
+  back.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagShift;back.target=hubMenu;
+  NSMenuItem *all=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 MacNativeGames","Quit MacNativeGames")) action:@selector(quitAll:) keyEquivalent:@"q"];
+  all.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagOption;all.target=hubMenu;
+  [appMenu addItem:back];[appMenu addItem:all];[appMenu addItem:NSMenuItem.separatorItem];
+ }
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
