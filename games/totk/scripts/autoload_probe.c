@@ -36,6 +36,9 @@ int runtime_handheld_mode(void){return 0;}   /* docked, as the Mac runs */
 /* The controller feedback side (runtime/gamepad_feedback.m) is not linked; auto-load never makes the game rumble. */
 void runtime_rumble_set(unsigned side,float al,float fl,float ah,float fh){(void)side;(void)al;(void)fl;(void)ah;(void)fh;runtime_fail("unexpected rumble in unit probe");}
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
+void taa_toggle(void){runtime_fail("unexpected anti-aliasing switch in unit probe");}
+int runtime_gamepad_type_cycle(void){runtime_fail("unexpected controller type switch in unit probe");}
+int runtime_mouse_toggle(void){runtime_fail("unexpected mouse switch in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
@@ -54,6 +57,7 @@ static int presses(unsigned ms){
 }
 int main(int argc,char **argv){
     if(argc!=2)runtime_fail("usage: autoload-probe press|nosave|key|pad|limit|off");
+    runtime_autoload_configure();runtime_input_start();
     void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
     read_state=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
     need(init&&read_state,"controller entry points");init();

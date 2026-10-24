@@ -1065,10 +1065,6 @@ def step_shader_libs(tree, logs, *, version='v0'):
 def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115b6000'):
     say('4/4 app: building the game binary and the launcher')
     run(['make', f'-j{os.cpu_count() or 4}', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
-    # the launcher is per game and version (runtime/game_version.h: the data folder, the log name, the backup of saves)
-    defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') else [f'-DTOTK_GAME_{version.upper()}=1']
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit',
-         '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
     # used only while packaging (step_warm_metal); not part of the app
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
          '-framework', 'Foundation', '-o', 'build/warm-metal-cache'], logs / 'warm-metal-cache-build.log', cwd=tree, env=env)
@@ -1321,7 +1317,8 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
     if tmp.exists():
         remove_tree(tmp)
     res = tmp / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
-    clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res/'build/totk-native')
+    binary = tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}')
+    clone(binary, res/'build/totk-native')
     files = ['build/spirv-cross/spirv-cross', f'rewritten/{version}/main.patched.bin', f'rewritten/{version}/sdk.patched.bin',
              f'rewritten/{version}/subsdk0.patched.bin', f'extracted/{version}/romfs/runtime-index.bin']   # romfs.bin: data_bundle
     files += ['build/pso_manifest.tsv', 'build/pso_title.tsv']   # exported from the game's shared shader list (games/totk/Makefile)
@@ -1360,7 +1357,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
         place_variant_libs(tree, res, version)
     # after the checks above: signing it is slow
     place_data_bundle(data_bundle(tree, version, logs, bundle_id=bundle_id), tmp, res, version)
-    clone(tree / 'build/app-launcher', tmp / f'Contents/MacOS/{executable}')
+    clone(binary, tmp / f'Contents/MacOS/{executable}')
     info = dict(CFBundleDevelopmentRegion='en', CFBundleExecutable=executable, CFBundleIdentifier=bundle_id, CFBundleName=app_name,
                 CFBundleDisplayName=app_name, CFBundlePackageType='APPL', CFBundleShortVersionString=expected['display_version'],
                 CFBundleVersion=str(expected['version'] + 1), LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
@@ -1376,13 +1373,14 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
     sign_app(tmp, logs)  # A failed seal must not remove the previous working app.
-    old_binary = out/'Contents/Resources/totk/build/totk-native'
+    old_binaries = {str(path.resolve()) for path in (out/'Contents/Resources/totk/build/totk-native',
+                                                    out/f'Contents/MacOS/{executable}') if path.is_file()}
     notified = 0
-    while old_binary.is_file():
+    while old_binaries:
         # Preparing/signing a replacement is safe while playing; replacing the
         # resources of an active game is not. Wait without closing the player.
         processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
-        if str(old_binary.resolve()) not in (p.strip() for p in processes):
+        if not old_binaries.intersection(p.strip() for p in processes):
             break
         if time.monotonic()-notified >= 60:
             say('4/4 app: replacement is ready; waiting for the running game to close before updating it')
@@ -1439,14 +1437,14 @@ def step_warm_metal(tree, out, logs):
     itself, as before."""
     build = out / 'Contents/Resources/totk/build'
     seed = build / 'shader-seed'
-    tool = build / 'warm-metal-cache'   # next to the game binary: Metal matches the length of the program's folder path
+    tool = out / 'Contents/MacOS/warm-metal-cache'   # beside the main executable, whose path Metal uses for its cache
     tool.unlink(missing_ok=True)        # left by an interrupted build
     sources = sorted(seed.glob('*_b.metal'))
     if sources and all((build / 'shader-libs' / f'{sha256(src)}.metallib').is_file() for src in sources):
         say('4/4 app: the startup shaders are compiled into the app (step_shader_libs), so Metal\'s cache needs no warming')
         return
     users = metal_cache_users()
-    if users or subprocess.run(['pgrep', '-q', 'totk-native']).returncode == 0:
+    if users or subprocess.run(['pgrep', '-q', '^(totk-native.*|TOTK|BotW)$']).returncode == 0:
         who = ', '.join(users) if users else 'a game'
         say(f"4/4 app: {who} has Metal's shader cache open, so the startup shaders are compiled on the first start instead "
             '(what this build compiled now would be lost when that program quits)')

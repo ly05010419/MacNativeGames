@@ -1,5 +1,6 @@
-// The launcher inside the packaged app (build_app.py compiles it as Contents/MacOS/TOTK).
-// The game itself is Contents/Resources/totk/build/totk-native; everything it writes goes to the player's own folders:
+// Packaged startup, linked into the native runtime. The app's main executable runs the game without exec:
+// macOS must keep the same application identity to grant Game Mode when its window enters full screen.
+// Contents/Resources/totk/build/totk-native remains available for diagnostic commands. Writable data goes to:
 //   ~/Library/Application Support/MacNativeGames/TOTK/   profile (account, saves), shader cache, game slot, RomFS proof (BotW/ for Breath of the Wild)
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
@@ -178,10 +179,13 @@ static BOOL make_dir(NSString *path) {
     return [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 }
 
-int main(int argc, char **argv) {
+int runtime_app_launch(int argc, char **argv, int (*run_game)(int, char **)) {
     @autoreleasepool {
-        NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
-        NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
+        NSBundle *bundle = NSBundle.mainBundle;
+        // An unbundled command-line invocation still gets the runtime's normal usage error.
+        if (![[bundle objectForInfoDictionaryKey:@"CFBundlePackageType"] isEqual:@"APPL"]) return -1;
+        NSString *root = [bundle.resourcePath stringByAppendingPathComponent:@"totk"];
+        NSString *binary = bundle.executablePath;
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
            app is when macOS scans the whole bundle (minutes for 16 GB, with nothing on screen); doing it during the build
            makes the player's first start immediate. */
@@ -294,11 +298,9 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
-        char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
-        execv(arguments[0], arguments);
-        int failed = errno;
-        fprintf(stderr, "[launcher] execv failed: %s\n", strerror(failed));
-        show_error([NSString stringWithFormat:@"Starting the game failed: %s.", strerror(failed)]);
-        return 1;
+        char *arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
+        // Keep the Launch Services process and its fullscreen monitoring intact. exec preserves the PID but breaks
+        // Game Mode's fullscreen grant, even if the replacement executable has valid app metadata.
+        return run_game(3, arguments);
     }
 }
