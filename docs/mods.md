@@ -235,25 +235,27 @@ rebuilds the overlay from the retail table instead of keeping the mod's heap siz
 
 ### Breath of the Wild
 
-The Breath of the Wild app reads its mods from
+The Breath of the Wild app reads its mods from the folder for its version, `botw160` for 1.6.0 or `botw190` for 1.9.0:
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
 The RomFS half above applies: copy the mod's RomFS contents into that folder and generate the manifest with the app,
-naming the folder `botw160` or passing `--version botw160`:
+naming the folder `botw160` or `botw190`, or passing `--version botw160` or `--version botw190` (1.6.0 shown):
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start.
+Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start
+(`mods/botw190 checked` on 1.9.0).
 
 - A mod that makes a resource larger than the original also has to ship the matching resource size table,
-  `System/Resource/ResourceSizeTable.product.srsizetable`, built for 1.6.0. Without it the game reserves the original
-  size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
+  `System/Resource/ResourceSizeTable.product.srsizetable`, built for the same version. Without it the game reserves the
+  original size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
 - The game's language follows the app's preferred language, which also picks the language folder a mod must use (`USen` for
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
@@ -519,22 +521,23 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 
 ### 旷野之息
 
-旷野之息 App 从这里读取 mod：
+旷野之息 App 按版本从对应目录读取 mod，1.6.0 是 `botw160`，1.9.0 是 `botw190`：
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
-上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160`，或加 `--version botw160`）：
+上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160` 或 `botw190`，或加 `--version botw160` 或 `--version botw190`；下面以 1.6.0 为例）：
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查。
+启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查（1.9.0 是 `mods/botw190 checked`）。
 
-- 如果 mod 让某个资源比原版大，还必须带上为 1.6.0 生成的资源大小表
+- 如果 mod 让某个资源比原版大，还必须带上为同一版本生成的资源大小表
   `System/Resource/ResourceSizeTable.product.srsizetable`。没有它游戏会按原版大小分配，启动时就会停止（例如
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：

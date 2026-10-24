@@ -117,13 +117,30 @@ class ModManifest(unittest.TestCase):
         self.assertIn('1 files', result.stdout)
 
     def test_botw_app_path_takes_the_version_from_the_folder(self):
+        for version in ('botw160', 'botw190'):
+            with self.subTest(version):
+                app = self.root/version/'Breath of the Wild.app'
+                fake_romfs(app/'Contents/Resources/totk/extracted'/version/'romfs')
+                self.mod = self.root/version/'mods'/version
+                self.put('Pack/A.pack.zs', b'modded a')
+                result = run(self.mod, '--app', app)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('1 files', result.stdout)
+
+    def test_botw190_app_with_a_named_version(self):   # a mod folder under any name, with the version passed
         app = self.root/'Breath of the Wild.app'
-        fake_romfs(app/'Contents/Resources/totk/extracted/botw160/romfs')
-        self.mod = self.root/'mods/botw160'
-        self.put('Pack/A.pack.zs', b'modded a')
-        result = run(self.mod, '--app', app)
+        romfs = app/'Contents/Resources/totk/extracted/botw190/romfs'
+        fake_romfs(self.root/'data')                       # the app holds a link to romfs.bin (build_app.py place_data_bundle)
+        romfs.mkdir(parents=True)
+        (romfs/'romfs.bin').symlink_to(self.root/'data/romfs.bin')
+        (romfs/'runtime-index.bin').write_bytes((self.root/'data/runtime-index.bin').read_bytes())
+        self.mod = self.root/'library'
+        self.put('Sound/B.bwav', b'dubbed')
+        result = run(self.mod, '--app', app, '--version', 'botw190')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('1 files', result.stdout)
+        lines = [l for l in (self.mod/'manifest.tsv').read_text().splitlines() if not l.startswith('#')]
+        self.assertEqual(lines, ['\t'.join(['Sound/B.bwav', '6', hashlib.sha256(b'dubbed').hexdigest(),
+                                            hashlib.sha256(FILES['Sound/B.bwav']).hexdigest()])])
 
 
 
