@@ -27,6 +27,10 @@ void runtime_feedback_quiet(void) {}
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
 #else
 #import <CoreHaptics/CoreHaptics.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include "bow_state.h"
+#include "game_version.h"   /* Tears of the Kingdom 1.4.3's scene slot and actor name offsets, for the bow state */
 
 /* ---- rumble ----
    Simple pattern players (CHHapticPatternPlayer) only: on macOS 26.5.2 (25F84) the advanced player (looping) never gets
@@ -288,6 +292,144 @@ static void hid_motion_stop(void) {   /* main queue */
     CFRelease(hidManager); hidManager = NULL;
 }
 
+/* ---- DualSense adaptive triggers ----
+   R2 (ZR: draw the bow) resists like a bowstring, more the further it is pressed, but only while Link is drawing the
+   bow; at any other time both triggers are slack, and L2 never resists. The game sends a controller nothing for this, so
+   a thread reads it from the game's memory every 10 ms (runtime/bow_state.h: Breath of the Wild 1.9.0 and Tears of the
+   Kingdom 1.4.3; other versions leave the triggers alone) and R2 changes through GameController only when the state does.
+   It follows the draw within a frame; over Bluetooth the controller takes another 30-45 ms, so the very start of the pull
+   is slack. On by default: dualsense-triggers.txt next to controls.txt saying "off" turns it off (TOTK_DUALSENSE_TRIGGERS
+   =on / off overrides the file; an agent's test session, TOTK_SLOT_OWNER claude / codex, leaves it off unless set).
+   macOS drops a controller's trigger effects while the app is in the background, so they are sent again when it is
+   active again; the triggers go back to off when the controller goes away or the game ends. Known limit: Tears of the
+   Kingdom keeps the bow drawn while its menu is open (Breath of the Wild does not), so R2 keeps resisting there until
+   the menu closes. TOTK_TRIGGER_LOG=1 logs every change of the triggers' mode and status (diagnostics). */
+enum { BOW_POLL_MS = 10 };
+static GCDualSenseGamepad *triggerPad;   /* main queue */
+static BOOL bowDrawn;                    /* main queue: what R2 shows */
+static int triggers_wanted(void) {
+    const char *e = getenv("TOTK_DUALSENSE_TRIGGERS"), *owner = getenv("TOTK_SLOT_OWNER");
+    if (e && *e) {
+        if (!strcmp(e, "on") || !strcmp(e, "1")) return 1;
+        if (!strcmp(e, "off") || !strcmp(e, "0")) return 0;
+        runtime_fail("TOTK_DUALSENSE_TRIGGERS must be on or off");
+    }
+    if (owner && (!strcmp(owner, "claude") || !strcmp(owner, "codex"))) return 0;
+    char word[16] = {0}, *w = word;
+    if (!runtime_setting_word("dualsense-triggers.txt", word, sizeof word)) return 1;
+    while (*w && strchr(" \t\n\v\f\r", *w)) w++;   /* the blanks around the word go, as for every one-word file */
+    for (size_t n = strlen(w); n && strchr(" \t\n\v\f\r", w[n - 1]); n--) w[n - 1] = 0;
+    if (!strcmp(w, "off")) return 0;
+    if (strcmp(w, "on")) fprintf(stderr, "[triggers] dualsense-triggers.txt: not on or off; on\n");
+    return 1;
+}
+static int bow_state_supported(void) {
+#if defined(GAME_BOTW190) || defined(TOTK_GAME_V143)
+    return 1;
+#else
+    return 0;
+#endif
+}
+#if defined(GAME_BOTW190) || defined(TOTK_GAME_V143)
+static int bow_read(uint64_t address, void *out, size_t size) {   /* fails instead of faulting on a bad address */
+    mach_vm_size_t got = 0;
+    return mach_vm_read_overwrite(mach_task_self(), address, size, (mach_vm_address_t)(uintptr_t)out, &got) == KERN_SUCCESS && got == size;
+}
+#endif
+static int bow_state_now(void) {   /* the bow thread only */
+#if defined(GAME_BOTW190)
+    uint64_t main_base = (uintptr_t)runtime_module_base("main");
+    return main_base ? bow_state_botw190(main_base, bow_read) : BOW_UNKNOWN;
+#elif defined(TOTK_GAME_V143)
+    static BowTotkCache player;
+    uint64_t main_base = (uintptr_t)runtime_module_base("main");
+    return main_base ? bow_state_totk143(main_base, GAME_ADDR(0x4663f08), GAME_ACTOR_NAME, bow_read, &player) : BOW_UNKNOWN;
+#else
+    return BOW_UNKNOWN;
+#endif
+}
+static void triggers_r2(void) {   /* main queue: R2 as the bow is */
+    if (!triggerPad) return;
+    if (bowDrawn) [triggerPad.rightTrigger setModeSlopeFeedbackWithStartPosition:0.05f endPosition:0.95f startStrength:0.2f endStrength:0.8f];
+    else [triggerPad.rightTrigger setModeOff];
+}
+static void triggers_send(void) {   /* main queue: both triggers, at attach and when the app is active again */
+    if (!triggerPad) return;
+    [triggerPad.leftTrigger setModeOff];
+    triggers_r2();
+}
+static void triggers_off(void) {
+    if (!triggerPad) return;
+    [triggerPad.leftTrigger setModeOff]; [triggerPad.rightTrigger setModeOff]; triggerPad = nil;
+}
+static void triggers_at_exit(void) { if (triggerPad) { triggers_off(); usleep(50000); } }   /* let the report reach the controller */
+/* The bow thread: every 10 ms the bow's state; R2 changes only when it does. A line the first time the state can be read
+   (the world is up), and every 30 s one with the draws that ended, if any. */
+static void *bow_watch(void *arg) {
+    (void)arg;
+    pthread_setname_np("bow-state");
+    BOOL drawn = NO, found = NO;
+    unsigned draws = 0; uint64_t since = 0, longest = 0, logAt = runtime_now_ns();
+    for (;;) {
+        int state = bow_state_now();
+        uint64_t t = runtime_now_ns();
+        if (state != BOW_UNKNOWN && !found) { found = YES; fprintf(stderr, "[triggers] bow state found: R2 follows the bow\n"); }
+        BOOL now = state == BOW_DRAWN;
+        if (now != drawn) {
+            drawn = now;
+            if (now) since = t;
+            else { draws++; if (t - since > longest) longest = t - since; }
+            dispatch_async(dispatch_get_main_queue(), ^{ bowDrawn = now; triggers_r2(); });
+        }
+        if (t - logAt >= 30000000000ull) {
+            if (draws) fprintf(stderr, "[triggers] last 30 s: bow drawn %u times, longest %.1f s\n", draws, longest / 1e9);
+            draws = 0; longest = 0; logAt = t;
+        }
+        usleep(BOW_POLL_MS * 1000);
+    }
+    return NULL;
+}
+/* TOTK_TRIGGER_LOG=1: a line whenever a trigger's mode or status changes or its arm moves a tenth of its travel (status:
+   0/1 feedback no load / load applied, 7-9 slope feedback ready / applying load / finished, -1 unknown). */
+static void triggers_watch(void) {   /* main queue, every 250 ms */
+    static long last[2][3] = {{-9, -9, -9}, {-9, -9, -9}};
+    GCDualSenseGamepad *pad = triggerPad;
+    if (!pad) return;
+    GCDualSenseAdaptiveTrigger *t[2] = {pad.leftTrigger, pad.rightTrigger};
+    for (int i = 0; i < 2; i++) {
+        long now[3] = {(long)t[i].mode, (long)t[i].status, lroundf(t[i].armPosition * 10)};
+        if (!memcmp(now, last[i], sizeof now)) continue;
+        memcpy(last[i], now, sizeof now);
+        fprintf(stderr, "[triggers] %s mode %ld status %ld arm %.2f pressed %.2f\n", i ? "R2" : "L2", now[0], now[1], t[i].armPosition, t[i].value);
+    }
+}
+static void triggers_apply(GCController *c, const char *name) {   /* main queue */
+    if (![c.extendedGamepad isKindOfClass:GCDualSenseGamepad.class] || !triggers_wanted()) return;
+    if (!bow_state_supported()) { fprintf(stderr, "[triggers] %s: no bow state for this game version; triggers left alone\n", name); return; }
+    triggerPad = (GCDualSenseGamepad *)c.extendedGamepad;
+    triggers_send();
+    fprintf(stderr, "[triggers] %s: R2 is a bowstring while the bow is drawn (slope 0.2 -> 0.8 over 5-95 %%), L2 slack\n", name);
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        atexit(triggers_at_exit);
+        [NSNotificationCenter.defaultCenter addObserverForName:@"NSApplicationDidBecomeActiveNotification" object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *n) { (void)n; triggers_send(); }];
+        if (getenv("TOTK_TRIGGER_LOG")) {
+            static dispatch_source_t watch;
+            watch = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+            dispatch_source_set_timer(watch, dispatch_time(DISPATCH_TIME_NOW, 0), 250 * NSEC_PER_MSEC, 50 * NSEC_PER_MSEC);
+            dispatch_source_set_event_handler(watch, ^{ triggers_watch(); });
+            dispatch_resume(watch);
+        }
+        pthread_t thread; pthread_attr_t attr;
+        pthread_attr_init(&attr); pthread_attr_set_qos_class_np(&attr, QOS_CLASS_UTILITY, 0);
+        int r = pthread_create(&thread, &attr, bow_watch, NULL);
+        pthread_attr_destroy(&attr);
+        if (r) fprintf(stderr, "[triggers] the bow thread could not start (%d): R2 stays slack\n", r);
+        else pthread_detach(thread);
+    });
+}
+
 /* ---- controllers ---- */
 void runtime_feedback_attach(GCController *c) {   /* main queue */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
@@ -299,6 +441,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             fprintf(stderr, "[rumble] %s: haptics (%s)\n", name, [where componentsJoinedByString:@", "].UTF8String);
         } else fprintf(stderr, "[rumble] %s has no haptics: no rumble from it\n", name);
     }
+    triggers_apply(c, name);
     if (runtime_gyro_enabled()) {
         static dispatch_once_t once;
         dispatch_once(&once, ^{
@@ -318,6 +461,7 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
 void runtime_feedback_detach(GCController *c) {   /* main queue */
     if (runtime_rumble_enabled() && rumbleQueue)
         dispatch_async(rumbleQueue, ^{ if (rumblePad == c) { for (int s = 0; s < 2; s++) forget_side(s); rumblePad = nil; } });
+    if (triggerPad && c.extendedGamepad == triggerPad) triggers_off();
     if (motionPad == c) {
         c.motion.valueChangedHandler = nil; hid_motion_stop(); motionPad = nil; runtime_motion_live(0);
     }
