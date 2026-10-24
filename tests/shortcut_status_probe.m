@@ -24,6 +24,9 @@ static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYS
 int runtime_gamepad_type_cycle(void) { return fakePadType = gamepad_type_next(fakePadType); }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 /* runtime/gamepad.m's mouse mode (key 7) without GameController; the window never has the keyboard here. */
+static int fakeFpsLimit;
+int nvn_user_fps_limit(void){return fakeFpsLimit;}
+void nvn_set_user_fps_limit(int fps){fakeFpsLimit=fps;}
 static int fakeMouse;
 int runtime_mouse_toggle(void) { return fakeMouse = !fakeMouse; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -60,6 +63,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     expect(panel, initial ? @"half refresh rate" : @"off");
     expect(panel, mfxup_output_enabled() ? @"MetalFX 2K" : @"Picture: off");
 
+    expect(panel, @"Game FPS limit: off");
+    const int limits[]={120,90,60,40,30,0};
+    for(unsigned i=0;i<sizeof limits/sizeof *limits;i++){
+        press(28);tick();assert(fakeFpsLimit==limits[i]);
+        expect(panel,limits[i]?[NSString stringWithFormat:@"Game FPS limit: %d FPS",limits[i]]:@"Game FPS limit: off");
+        assert([NSUserDefaults.standardUserDefaults integerForKey:@"TOTKUserFPSLimit"]==limits[i]);
+    }
     /* A request is not the current frame's interpolation mode until latched. */
     mfx_set(MFX_OFF); mfx_latch();
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
