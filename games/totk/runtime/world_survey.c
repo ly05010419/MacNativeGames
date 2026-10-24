@@ -5,6 +5,7 @@
    Only called after the actual game frame-end GPU wait, never from the input file thread. */
 #include "world_survey.h"
 #include "game_version.h"
+#include <TargetConditionals.h>
 #include <ctype.h>
 #include <limits.h>
 #include <mach/mach.h>
@@ -14,24 +15,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if defined(GAME_BOTW190) && TARGET_OS_OSX
+#include "bot_ffi.h"
+#endif
 
 #ifdef GAME_BOTW
-/* Breath of the Wild 1.6.0: no frame-end hook (the survey sync object is never found, see runtime_survey_sync), so
-   "survey pos" reads and "survey move" writes the player's position from the command thread. The pointer chains from
-   main's data segment are the ones Bloom (Swiffy22) found for 1.6.0 (the botw-save-state tool uses them); the code is
-   our own. Chains: Havok position = [[[main+0x2d37af0]+0xf0]+0xd28]+0x5e0 (float xyz);
-                    world matrix   = [[main+0x2ca1140]+0x60]+0x398 (3x4 row-major, translation at [3], [7], [11]);
-                    camera         = [[main+0x2ce1090]+0x60]+0x20 {position, look-at, up, fovy, ?, aspect}.
-   Writing those two is not enough: the actor and the Havok object keep a dozen more copies of the position (feet,
-   previous positions, swept transforms), so a move shifts every copy near the player by the same offset ("survey scan"
-   lists them). A far place is not loaded, and the player freezes there; the move is therefore a flight at a speed the
-   streaming keeps up with (2 m per frame worked, 8 m did not): survey move <tag> X Y Z <frames>, 1200 frames for 2.3 km.
-   Verified on the Mac 2026-10-21 (5 m step: walks, camera follows; Hebra to Oman Au shrine: lands, in control). */
+/* Breath of the Wild: no frame-end sync object (runtime_survey_sync is never matched), so 1.6.0 runs pos/move from the
+   command thread, and 1.9.0 runs VFR/camera telemetry from nvnQueuePresentTexture via runtime_survey_tick.
+   1.6.0 chains (Bloom / Swiffy22): Havok = [[[main+0x2d37af0]+0xf0]+0xd28]+0x5e0; world matrix = [[main+0x2ca1140]+0x60]+0x398;
+   camera = [[main+0x2ce1090]+0x60]+0x20. A far teleport freezes streaming, so move is a multi-frame flight. */
 _Atomic int runtime_survey_pending;
 const int32_t runtime_survey_sync[2] = {0, -1};   /* read by hle_nvn.c only once the survey found the system object, which it never does here */
-void runtime_survey_tick(uint64_t frame) { (void)frame; }
 void runtime_survey_cancel_user(void) { }
 #if defined(GAME_BOTW160)
+void runtime_survey_tick(uint64_t frame) { (void)frame; }   /* 1.6.0: pos/move act on the command thread */
 enum { HAVOK_ROOT = 0x2d37af0, HAVOK_STEP1 = 0xf0, HAVOK_STEP2 = 0xd28, HAVOK_POS = 0x5e0,
        MATRIX_ROOT = 0x2ca1140, MATRIX_STEP1 = 0x60, MATRIX_OFF = 0x398,
        CAMERA_ROOT = 0x2ce1090, CAMERA_STEP1 = 0x60, CAMERA_OFF = 0x20 };   /* camera pan matrix (same research) */
@@ -173,10 +170,125 @@ int runtime_survey_command(const char *line) {
     return 1;
 }
 #endif   /* GAME_BOTW160 */
-#if !defined(GAME_BOTW160)
+#if defined(GAME_BOTW190)
+/* 1.9.0: no Havok/matrix chains yet; telemetry reads VFR (main+0x1e93890) and the ultrawide camera singleton
+   (main+0x1e39d10, views +0x28/+0x118, projection +0x38) with mach_vm_read_overwrite. Tick runs from present. */
+enum { VFR_INSTANCE = 0x1e93890, VFR_RATIO = 0x3c, VFR_DELTA_TIME = 0x138,
+       CAMERA_SINGLETON = 0x1e39d10, CAMERA_VIEW0 = 0x28, CAMERA_VIEW1 = 0x118, CAMERA_PROJ = 0x38 };
+static uintptr_t survey_main_190;
+static _Atomic int survey_enabled_190;
+static int read_mem_190(uintptr_t address, void *out, size_t size) {
+    if (!address || address > UINTPTR_MAX - size) return 0;
+    mach_vm_size_t got = 0;
+    return mach_vm_read_overwrite(mach_task_self(), address, size, (uintptr_t)out, &got) == KERN_SUCCESS && got == size;
+}
+static uintptr_t read_ptr_190(uintptr_t address) { uintptr_t p = 0; return read_mem_190(address, &p, sizeof p) ? p : 0; }
+#if TARGET_OS_OSX
+extern void runtime_input_pad_synthetic(const RuntimeGamepadState *s) __attribute__((weak_import));
+extern void dm_gfx_ashot(const char *path) __attribute__((weak_import));
+extern void runtime_front_request_close(void) __attribute__((weak_import));
+#endif
+void runtime_survey_init(Module *m) {
+    const char *enabled = getenv("TOTK_SURVEY");
+    const char *smoke = getenv("TOTK_BOT_SMOKE");
+    if ((!enabled || strcmp(enabled, "1")) && (!smoke || strcmp(smoke, "1"))) return;
+    const char *owner = getenv("TOTK_SLOT_OWNER");
+    if (owner && !strcmp(owner, "user"))
+        runtime_fail("TOTK_SURVEY refuses to run on an explicit user-owned slot");
+    if (strcmp(m->name, "main") || VFR_INSTANCE + 8u > m->size || CAMERA_SINGLETON + 8u > m->size)
+        runtime_fail("survey: Breath of the Wild 1.9.0 main expected");
+    survey_main_190 = (uintptr_t)m->base;
+    atomic_store(&survey_enabled_190, 1);
+    fprintf(stderr, "[survey] enabled (Breath of the Wild 1.9.0): VFR and camera telemetry on present\n");
+}
+void runtime_survey_tick(uint64_t frame) {
+    if (!atomic_load_explicit(&survey_enabled_190, memory_order_relaxed) || !survey_main_190) return;
+    float ratio = 0, delta = 0;
+    uintptr_t vfr = read_ptr_190(survey_main_190 + VFR_INSTANCE);
+    if (vfr) {
+        read_mem_190(vfr + VFR_RATIO, &ratio, sizeof ratio);
+        uintptr_t delta_p = read_ptr_190(vfr + VFR_DELTA_TIME);
+        if (delta_p) read_mem_190(delta_p, &delta, sizeof delta);
+    }
+    uintptr_t cam = read_ptr_190(survey_main_190 + CAMERA_SINGLETON);
+    uintptr_t view0 = cam ? cam + CAMERA_VIEW0 : 0, view1 = cam ? cam + CAMERA_VIEW1 : 0;
+    uintptr_t proj = cam ? cam + CAMERA_PROJ : 0;
+    float aspect = 0, fovy = 0; uint64_t proj_vt = 0;
+    if (proj) {
+        read_mem_190(proj, &proj_vt, sizeof proj_vt);
+        read_mem_190(proj + 0xa0, &fovy, sizeof fovy);
+        read_mem_190(proj + 0xb0, &aspect, sizeof aspect);
+    }
+    float cpos[3] = {0}, cat[3] = {0}, cup[3] = {0, 1, 0}, cfwd[3] = {0, 0, 1};
+    uintptr_t active_cam = 0;
+    if (view0) {
+        int32_t slot = -1;
+        if (read_mem_190(view0 + 0xdc, &slot, sizeof slot) && (slot == 0 || slot == 1))
+            active_cam = read_ptr_190(view0 + 0xe0 + (uint32_t)slot * 8u);
+        if (active_cam) {
+            read_mem_190(active_cam + 0x38, cpos, sizeof cpos);
+            read_mem_190(active_cam + 0x44, cat, sizeof cat);
+            read_mem_190(active_cam + 0x50, cup, sizeof cup);
+            float dx = cat[0] - cpos[0], dy = cat[1] - cpos[1], dz = cat[2] - cpos[2];
+            float len = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (len > 1e-5f) { cfwd[0] = dx / len; cfwd[1] = dy / len; cfwd[2] = dz / len; }
+        }
+    }
+    extern void mtl_stats(uint64_t *passes, uint64_t *draws);
+    static uint64_t prev_draws_190;
+    uint64_t passes_190 = 0, draws_190 = 0;
+    mtl_stats(&passes_190, &draws_190);
+    uint32_t this_draws_190 = draws_190 >= prev_draws_190 ? (uint32_t)(draws_190 - prev_draws_190) : 0;
+    prev_draws_190 = draws_190;
+    if (frame == 1 || frame % 300 == 0)
+        fprintf(stderr, "[survey] frame=%llu vfr=%#llx ratio=%.4f delta=%.5f cam=%#llx view0=%#llx view1=%#llx proj=%#llx aspect=%.4f fovy=%.4f pos=%.2f,%.2f,%.2f at=%.2f,%.2f,%.2f draws=%u\n",
+                (unsigned long long)frame, (unsigned long long)vfr, ratio, delta,
+                (unsigned long long)cam, (unsigned long long)view0, (unsigned long long)view1,
+                (unsigned long long)proj, aspect, fovy, cpos[0], cpos[1], cpos[2], cat[0], cat[1], cat[2], this_draws_190);
+    (void)proj_vt;
+#if TARGET_OS_OSX
+    if (bot_on_frame_tick) {
+        SchematicState st = {
+            .abi_version = BOT_ABI_VERSION,
+            .state_flags = this_draws_190 >= 400 ? 1u : 0u,
+            .frame_index = frame,
+            .now_ns = runtime_now_ns(),
+            .vfr_dt_s = delta > 0 ? delta : (ratio > 0 ? ratio / 30.0f : 0),
+            .this_frame_draws = this_draws_190,
+            .player_pos = {cat[0], cat[1], cat[2]},
+            .player_fwd = {cfwd[0], cfwd[1], cfwd[2]},
+            .camera_pos = {cpos[0], cpos[1], cpos[2]},
+            .camera_fwd = {cfwd[0], cfwd[1], cfwd[2]},
+            .camera_up = {cup[0], cup[1], cup[2]},
+            .camera_fovy = fovy,
+        };
+        BotFrameCommand cmd = {0};
+        bot_on_frame_tick(&st, &cmd);
+        if (cmd.pad_connected && runtime_input_pad_synthetic) {
+            RuntimeGamepadState pad = {.buttons = cmd.buttons, .lx = cmd.lx, .ly = cmd.ly, .rx = cmd.rx, .ry = cmd.ry, .connected = 1};
+            runtime_input_pad_synthetic(&pad);
+        }
+        if (cmd.pin_frame_step_us) runtime_frame_step_pin(cmd.pin_frame_step_us / 1000.0);
+        if (cmd.request_ashot_id && cmd.ashot_path[0] && dm_gfx_ashot) {
+            dm_gfx_ashot(cmd.ashot_path);
+        }
+        if (cmd.request_close && runtime_front_request_close) {
+            runtime_front_request_close();
+        }
+    }
+#endif
+}
+int runtime_survey_command(const char *line) {
+    if (strncmp(line, "survey ", 7)) return 0;
+    fprintf(stderr, "[survey] Breath of the Wild 1.9.0: telemetry only (no pos/move chains yet)\n");
+    return 1;
+}
+#endif   /* GAME_BOTW190 */
+#if !defined(GAME_BOTW160) && !defined(GAME_BOTW190)
+void runtime_survey_tick(uint64_t frame) { (void)frame; }
 void runtime_survey_init(Module *m) {
     (void)m;
-    if (getenv("TOTK_SURVEY")) runtime_fail("survey: only Breath of the Wild 1.6.0 has the player position chains");
+    if (getenv("TOTK_SURVEY")) runtime_fail("survey: only Breath of the Wild 1.6.0 / 1.9.0 are supported");
 }
 int runtime_survey_command(const char *line) { (void)line; return 0; }
 #endif
