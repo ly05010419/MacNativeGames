@@ -80,6 +80,16 @@ void runtime_aspect_view(double w, double h) {
     if (atomic_load(&g_aspect_step) == ASPECT_STEP_FIT) aspect_apply();
 }
 
+/* The Settings menu (frontend.m): whether key 4 can switch, and one of its steps chosen directly. */
+unsigned runtime_aspect_steps(void) { return g_aspect_slot ? 1u << ASPECT_STEP_GAME | 1u << ASPECT_STEP_FIT | 1u << ASPECT_STEP_WIDE : 0; }
+int runtime_aspect_set(int step) {
+    if (step < ASPECT_STEP_GAME || step > ASPECT_STEP_WIDE || !(runtime_aspect_steps() >> step & 1)) return 0;
+    atomic_store(&g_aspect_step, step);
+    aspect_apply();
+    fprintf(stderr, "[totk] Settings menu: %s\n", aspect_step_name(step));
+    return 1;
+}
+
 /* Key 4 (runtime/input.c). Returns 0 where it is not available (iPhone / iPad, other game versions). */
 int runtime_aspect_toggle(void) {
     if (!g_aspect_slot) return 0;

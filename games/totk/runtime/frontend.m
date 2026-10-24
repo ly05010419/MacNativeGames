@@ -10,6 +10,8 @@
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
+#include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"   /* HUD_MODE_* (key 1) */
+#include "start_options.h"   /* the Settings menu's options for the next launch */
 int mfxup_output_enabled(void);
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
@@ -269,6 +271,76 @@ static void front_menubar_fps(void){   // starts the refresh once the window exi
   if(fpsMenu&&![fpsMenu.title isEqualToString:title]){fpsMenu.title=title;fpsMenuItem.title=title;}
   front_title_fps(title);}];
 }
+/* The Settings menu (Mac), after the FPS menu: what keys 1-7 switch, with the current choice checked (each item does what
+   its key does, so the two always agree; saved only where the key saves, the controller type), then the start options of
+   runtime/start_options.h, which take effect at the next launch: saved in the app's preferences (TOTK_PREFS_APP, set by
+   app/launcher.m; without it, a start not from the app, they are greyed out). Diagnostics stay environment-only. */
+void dm_gfx_set_flag(const char *name,int v);   /* gfx/nvn/nvn_mtl.m: mfx_interp 0..3 is key 2's mode */
+void taa_toggle(void);                          /* gfx/nvn/totk_taa.m: key 5 */
+enum { SET_HUD=1, SET_INTERP, SET_PICTURE, SET_ASPECT, SET_TAA, SET_PAD, SET_MOUSE, SET_START };   /* item tag: kind << 8 | value */
+static CFStringRef prefs_app(void){static CFStringRef app;const char *e=getenv("TOTK_PREFS_APP");if(!app&&e&&*e)app=CFStringCreateWithCString(NULL,e,kCFStringEncodingUTF8);return app;}
+static int start_option_saved(int i){Boolean ok=false;return prefs_app()&&CFPreferencesGetAppBooleanValue((__bridge CFStringRef)@(start_options[i].env),prefs_app(),&ok)&&ok;}
+static void start_option_save(int i,int on){if(!prefs_app())return;
+ CFPreferencesSetAppValue((__bridge CFStringRef)@(start_options[i].env),on?kCFBooleanTrue:NULL,prefs_app());CFPreferencesAppSynchronize(prefs_app());
+ fprintf(stderr,"[totk] Settings menu: %s=%s %s from the next launch\n",start_options[i].env,start_options[i].value,on?"on":"off");}
+@interface TOTKSettings:NSObject<NSMenuDelegate>
+@end
+@implementation TOTKSettings
+-(void)choose:(NSMenuItem *)item{int kind=(int)item.tag>>8,v=(int)item.tag&255;
+ switch(kind){
+  case SET_HUD:for(int i=0;i<3&&fps_overlay_hud_mode()!=v;i++)runtime_shortcut_help_toggle();break;   // key 1's cycle, to the chosen mode
+  case SET_INTERP:dm_gfx_set_flag("mfx_interp",v);break;
+  case SET_PICTURE:runtime_output_mode_set(v);break;
+  case SET_ASPECT:runtime_aspect_set(v);break;
+  case SET_TAA:taa_toggle();break;
+  case SET_PAD:runtime_gamepad_type_set(v);break;
+  case SET_MOUSE:runtime_mouse_toggle();break;
+  case SET_START:start_option_save(v,!start_option_saved(v));break;
+ }}
+-(void)menuNeedsUpdate:(NSMenu *)menu{for(NSMenuItem *item in menu.itemArray){int kind=(int)item.tag>>8,v=(int)item.tag&255,on=0,can=1;
+  switch(kind){
+   case SET_HUD:on=fps_overlay_hud_mode()==v;break;
+   case SET_INTERP:on=mfx_enabled()==v;break;
+   case SET_PICTURE:on=runtime_output_mode_now()==v;can=runtime_output_modes()>>v&1;break;
+   case SET_ASPECT:on=runtime_aspect_step()==v;can=runtime_aspect_steps()>>v&1;break;
+   case SET_TAA:on=taa_enabled();break;
+   case SET_PAD:on=runtime_gamepad_type(NULL)==v;break;
+   case SET_MOUSE:on=runtime_mouse_enabled();break;
+   case SET_START:on=start_option_saved(v);can=prefs_app()!=NULL;break;
+   default:continue;
+  }
+  item.state=on?NSControlStateValueOn:NSControlStateValueOff;item.enabled=can;}}
+@end
+static TOTKSettings *settings;
+static NSMenuItem *settings_item(NSMenu *menu,const char *title,int kind,int value){
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@(title) action:@selector(choose:) keyEquivalent:@""];   // no key equivalent: keys 1-5 stay the game's
+ item.target=settings;item.tag=kind<<8|value;[menu addItem:item];return item;}
+static NSMenu *settings_submenu(NSMenu *menu,const char *title){
+ NSMenu *sub=[[NSMenu alloc] initWithTitle:@(title)];sub.autoenablesItems=NO;sub.delegate=settings;
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@(title) action:nil keyEquivalent:@""];item.submenu=sub;[menu addItem:item];return sub;}
+static void front_settings_add(NSMenu *bar){   // from front_install_menu
+ settings=[TOTKSettings new];
+ NSMenu *menu=[[NSMenu alloc] initWithTitle:@(TOTK_UI("设置","Settings"))];menu.autoenablesItems=NO;menu.delegate=settings;
+ NSMenu *hud=settings_submenu(menu,TOTK_UI("提示（按键 1）","Overlays (key 1)"));
+ settings_item(hud,TOTK_UI("全部","All"),SET_HUD,HUD_MODE_ALL);settings_item(hud,TOTK_UI("只显示 FPS","FPS only"),SET_HUD,HUD_MODE_MINIMAL);settings_item(hud,TOTK_UI("隐藏","Off"),SET_HUD,HUD_MODE_OFF);
+ NSMenu *interp=settings_submenu(menu,TOTK_UI("补帧（按键 2）","Frame interpolation (key 2)"));
+ settings_item(interp,TOTK_UI("关闭","Off"),SET_INTERP,MFX_OFF);settings_item(interp,"30+30",SET_INTERP,MFX_30);
+ settings_item(interp,TOTK_UI("刷新率一半","Half the refresh rate"),SET_INTERP,MFX_HALF);settings_item(interp,TOTK_UI("不限帧","Unlimited"),SET_INTERP,MFX_MAX);
+ NSMenu *picture=settings_submenu(menu,TOTK_UI("画质（按键 3）","Picture (key 3)"));
+ settings_item(picture,"MetalFX 2K",SET_PICTURE,PICTURE_METALFX_2K);settings_item(picture,TOTK_UI("原生 2K","Native 2K"),SET_PICTURE,PICTURE_NATIVE_2K);settings_item(picture,TOTK_UI("关闭","Off"),SET_PICTURE,PICTURE_OFF);
+ NSMenu *shape=settings_submenu(menu,TOTK_UI("画面比例（按键 4）","Aspect ratio (key 4)"));   // key 4's steps (runtime_aspect_step)
+ const char *wide=getenv("TOTK_ASPECT")&&*getenv("TOTK_ASPECT")&&strcmp(getenv("TOTK_ASPECT"),"0")?TOTK_UI("宽屏（TOTK_ASPECT）","Wide (TOTK_ASPECT)"):"21:9";
+ settings_item(shape,"16:9",SET_ASPECT,0);settings_item(shape,TOTK_UI("适配窗口","Fit to the window"),SET_ASPECT,1);settings_item(shape,wide,SET_ASPECT,2);
+ settings_item(menu,TOTK_UI("边缘平滑（按键 5）","Edge smoothing (key 5)"),SET_TAA,0);
+ NSMenu *pad=settings_submenu(menu,TOTK_UI("手柄类型（按键 6）","Controller type (key 6)"));   // saved by runtime/gamepad.m, as key 6 is
+ settings_item(pad,TOTK_UI("自动","Auto"),SET_PAD,GAMEPAD_TYPE_AUTO);settings_item(pad,"Xbox",SET_PAD,GAMEPAD_TYPE_XBOX);
+ settings_item(pad,"PlayStation",SET_PAD,GAMEPAD_TYPE_PLAYSTATION);settings_item(pad,"Switch",SET_PAD,GAMEPAD_TYPE_SWITCH);
+ settings_item(menu,TOTK_UI("鼠标操作（按键 7）","Mouse mode (key 7)"),SET_MOUSE,0);
+ [menu addItem:NSMenuItem.separatorItem];
+ NSMenuItem *next=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("下次启动时生效","From the next launch")) action:nil keyEquivalent:@""];next.enabled=NO;[menu addItem:next];
+ for(int i=0;i<START_OPTIONS;i++)settings_item(menu,TOTK_UI(start_options[i].zh,start_options[i].en),SET_START,i).indentationLevel=1;
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:menu.title action:nil keyEquivalent:@""];item.submenu=menu;[bar addItem:item];
+}
 void runtime_shortcut_help_toggle(void){int mode=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{   // key 1: all -> minimal (FPS only) -> off
  shortcutHelp.hidden=mode==0||(mode==2&&!hud_compact());[(TOTKShortcutHelp *)shortcutHelp refresh];});}   // mode 0 off, 2 minimal (fps_overlay.h HUD_MODE_*)
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
@@ -344,7 +416,7 @@ static void front_install_menu(void){
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
+ [appMenu addItem:quit];front_menubar_fps_add(menu);front_settings_add(menu);NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){

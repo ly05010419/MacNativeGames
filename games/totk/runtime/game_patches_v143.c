@@ -567,3 +567,18 @@ int runtime_output_mode_cycle(void){
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
     return 1;
 }
+/* The Settings menu (frontend.m): the same three modes as key 3, read and chosen directly (one output size switch at most). */
+unsigned runtime_output_modes(void){return output_page?1u<<PICTURE_OFF|1u<<PICTURE_METALFX_2K|1u<<PICTURE_NATIVE_2K:0;}
+int runtime_output_mode_now(void){
+    extern int mfxup_output_enabled(void);
+    if(output_page&&runtime_output_size_current()==pack_size(output_w,output_h))return PICTURE_NATIVE_2K;
+    return mfxup_output_enabled()?PICTURE_METALFX_2K:PICTURE_OFF;
+}
+int runtime_output_mode_set(int mode){
+    if(!(runtime_output_modes()>>mode&1))return 0;
+    extern void dm_gfx_set_flag(const char *,int);
+    int full=runtime_output_mode_now()==PICTURE_NATIVE_2K,mfx=mode==PICTURE_METALFX_2K;
+    if(full!=(mode==PICTURE_NATIVE_2K))runtime_output_res_toggle();
+    dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
+    fprintf(stderr,"[totk] Settings menu: picture %s\n",mode==PICTURE_NATIVE_2K?"原生 2K":mfx?"MetalFX 2K":"关闭 2K");return 1;
+}

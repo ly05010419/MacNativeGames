@@ -22,6 +22,7 @@ void shortcut_test_aspect_init(double view);
 /* runtime/gamepad.m's key 6 state without GameController (gamepad_layout.h's real cycle): a DualSense is connected. */
 static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYSTATION;
 int runtime_gamepad_type_cycle(void) { return fakePadType = gamepad_type_next(fakePadType); }
+int runtime_gamepad_type_set(int type) { return fakePadType = type; }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 /* runtime/gamepad.m's mouse mode (key 7) without GameController; the window never has the keyboard here. */
 static int fakeMouse;
@@ -39,6 +40,18 @@ static void tick(void) {
     [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
     [((TOTKShortcutHelp *)shortcutHelp).timer fire];
 }
+/* The Settings menu's item for a choice (tag kind << 8 | value), its submenus refreshed as when it opens. */
+static NSMenuItem *setting(NSMenu *menu, int kind, int value) {
+    [settings menuNeedsUpdate:menu];
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.submenu) { NSMenuItem *found = setting(item.submenu, kind, value); if (found) return found; }
+        else if (item.tag == (kind << 8 | value)) return item;
+    }
+    return nil;
+}
+static NSMenu *settingsMenu;
+static void choose(int kind, int value) { NSMenuItem *item = setting(settingsMenu, kind, value); assert(item && item.enabled); [settings choose:item]; }
+static int checked(int kind, int value) { return setting(settingsMenu, kind, value).state == NSControlStateValueOn; }
 static void expect(TOTKShortcutHelp *panel, NSString *text) {
     if (![panel.label.stringValue containsString:text]) {
         fprintf(stderr, "expected %s in:\n%s\n", text.UTF8String, panel.label.stringValue.UTF8String);
@@ -130,6 +143,42 @@ int main(int argc, const char **argv) { @autoreleasepool {
     hud_publish(0, "60 FPS (30 + 30)", 0); tick();
     if (hud_compact()) expect(panel, @"60 FPS (30 + 30)");
 
+    /* The Settings menu: each choice does what its key does, and the current one is checked. */
+    setenv("TOTK_UI_LANG", "en", 1);
+    NSMenu *bar = [NSMenu new]; front_settings_add(bar);
+    settingsMenu = bar.itemArray.lastObject.submenu;
+    assert([settingsMenu.title isEqualToString:@"Settings"]);
+    assert(checked(SET_HUD, HUD_MODE_ALL) && !checked(SET_HUD, HUD_MODE_OFF));
+    choose(SET_HUD, HUD_MODE_OFF); tick(); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && panel.hidden && checked(SET_HUD, HUD_MODE_OFF));
+    choose(SET_HUD, HUD_MODE_MINIMAL); tick(); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
+    choose(SET_HUD, HUD_MODE_ALL); choose(SET_HUD, HUD_MODE_ALL); tick();
+    assert(fps_overlay_hud_mode() == HUD_MODE_ALL && !panel.hidden && checked(SET_HUD, HUD_MODE_ALL));
+    choose(SET_INTERP, MFX_30); mfx_latch(); tick();
+    assert(checked(SET_INTERP, MFX_30) && !checked(SET_INTERP, MFX_MAX)); expect(panel, @"Interpolation: 30+30");
+    choose(SET_INTERP, MFX_OFF); mfx_latch(); tick(); expect(panel, @"Interpolation: off");
+    assert(runtime_output_mode_now() == PICTURE_NATIVE_2K && checked(SET_PICTURE, PICTURE_NATIVE_2K));
+    choose(SET_PICTURE, PICTURE_METALFX_2K); tick(); expect(panel, @"Picture: MetalFX 2K");
+    assert(runtime_output_size_current() == (1920 | (uint64_t)1080 << 32) && checked(SET_PICTURE, PICTURE_METALFX_2K));
+    choose(SET_PICTURE, PICTURE_NATIVE_2K); tick(); expect(panel, @"Picture: native 2K");
+    assert(!mfxup_output_enabled() && checked(SET_PICTURE, PICTURE_NATIVE_2K));
+    choose(SET_PICTURE, PICTURE_OFF); tick(); expect(panel, @"Picture: off");
+    assert(runtime_output_size_current() == (1920 | (uint64_t)1080 << 32) && checked(SET_PICTURE, PICTURE_OFF));
+    choose(SET_TAA, 0); tick(); assert(taa_enabled() && checked(SET_TAA, 0)); expect(panel, @"Edge smoothing (MetalFX Temporal): on");
+    choose(SET_TAA, 0); tick(); assert(!taa_enabled() && !checked(SET_TAA, 0));
+    fakePadDetected = GAMEPAD_TYPE_PLAYSTATION;
+    choose(SET_PAD, GAMEPAD_TYPE_SWITCH); tick(); assert(checked(SET_PAD, GAMEPAD_TYPE_SWITCH) && !checked(SET_PAD, GAMEPAD_TYPE_AUTO));
+    expect(panel, @"Controller type: Switch (current");
+    choose(SET_PAD, GAMEPAD_TYPE_AUTO); tick(); assert(checked(SET_PAD, GAMEPAD_TYPE_AUTO)); expect(panel, @"Controller type: auto (PlayStation)");
+    int mouse = runtime_mouse_enabled();
+    choose(SET_MOUSE, 0); tick(); assert(runtime_mouse_enabled() == !mouse && checked(SET_MOUSE, 0) == !mouse);
+    choose(SET_MOUSE, 0); tick(); assert(runtime_mouse_enabled() == mouse && checked(SET_MOUSE, 0) == mouse);
+    assert(checked(SET_ASPECT, 0) && setting(settingsMenu, SET_ASPECT, 2).enabled);   // key 4 made available above
+    choose(SET_ASPECT, 2); tick(); assert(runtime_aspect_step() == 2 && checked(SET_ASPECT, 2)); expect(panel, @"Aspect ratio: 21:9");
+    choose(SET_ASPECT, 1); tick(); assert(checked(SET_ASPECT, 1)); expect(panel, @"Aspect ratio: fit to window 1.60:1");
+    choose(SET_ASPECT, 0); tick(); assert(runtime_aspect_now() == 0 && checked(SET_ASPECT, 0)); expect(panel, @"Aspect ratio: 16:9");
+    /* Not started from the app (no TOTK_PREFS_APP): the start options are shown but cannot be saved. */
+    for (int i = 0; i < START_OPTIONS; i++) assert(setting(settingsMenu, SET_START, i) && !setting(settingsMenu, SET_START, i).enabled);
+
     if (argc == 2) {
         NSBitmapImageRep *rep = [panel bitmapImageRepForCachingDisplayInRect:panel.bounds];
         [panel cacheDisplayInRect:panel.bounds toBitmapImageRep:rep];
@@ -137,6 +186,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
                 writeToFile:@(argv[1]) atomically:YES]);
     }
     [panel.timer invalidate];
-    puts("pass: current modes, keyboard cycling, frame latch, localization, both layouts, key 1 all/minimal/off, key 6 controller type and key 7 mouse");
+    puts("pass: current modes, keyboard cycling, frame latch, localization, both layouts, key 1 all/minimal/off, key 6 controller type, key 7 mouse and the Settings menu");
     return 0;
 }}

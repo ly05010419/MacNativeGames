@@ -18,6 +18,7 @@
 #include "controller_map.h"
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
+#include "start_options.h"        // the Settings menu's options for the next start
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -267,6 +268,12 @@ int main(int argc, char **argv) {
           unsigned long long mb = NSProcessInfo.processInfo.physicalMemory / 10 * 3 >> 20;
           char budget[32]; snprintf(budget, sizeof budget, "%llu", mb < 5000 ? 5000ULL : mb);
           setenv("TOTK_GPU_BUDGET_MB", budget, 0); }
+        /* The start options chosen in the game's Settings menu (runtime/start_options.h); a variable already in the
+           environment wins. The game saves new choices in this app's preferences (TOTK_PREFS_APP). */
+        for (int i = 0; i < START_OPTIONS; i++)
+            if ([NSUserDefaults.standardUserDefaults boolForKey:@(start_options[i].env)]) setenv(start_options[i].env, start_options[i].value, 0);
+        NSString *prefs = NSBundle.mainBundle.bundleIdentifier;
+        if (prefs) setenv("TOTK_PREFS_APP", prefs.UTF8String, 1);
         setenv("TOTK_SLOT_OWNER", "user", 0);
         setenv("TOTK_SLOT_PURPOSE", "player", 0);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));

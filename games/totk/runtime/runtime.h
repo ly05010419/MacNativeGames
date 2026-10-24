@@ -94,6 +94,12 @@ uint64_t runtime_output_res_extra_bytes(void);
 int runtime_render_res(unsigned *w, unsigned *h);   /* TOTK_RENDER_RES above 1600x900 that the heaps count (1.4.3 on the Mac; 0 elsewhere) */
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
 int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
+/* The same picture modes for the Settings menu (frontend.m): the modes this start can switch to (bit 1 << PICTURE_*, 0 =
+   none), the mode in force, and a direct switch to one (0 when that mode is not available). */
+enum { PICTURE_OFF, PICTURE_METALFX_2K, PICTURE_NATIVE_2K };
+unsigned runtime_output_modes(void);
+int runtime_output_mode_now(void);
+int runtime_output_mode_set(int mode);
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
@@ -109,6 +115,8 @@ int runtime_aspect_step(void);     /* key 4's step: 0 16:9, 1 fit to the window,
 void runtime_aspect_view(double w, double h);   /* frontend.m: the window's drawable size, which key 4 follows */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 void runtime_front_resize_aspect(double ratio);   /* Mac: resize the window to a selected picture ratio */
+unsigned runtime_aspect_steps(void); /* the steps key 4 can switch to in this start (bit 1 << step), 0 where unavailable */
+int runtime_aspect_set(int step);   /* the Settings menu: key 4's step (as runtime_aspect_step) directly; 0 where unavailable */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..3: FPS, shaders, render pipelines, load; 0 = not published */
 
@@ -131,7 +139,8 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 int runtime_gamepad_type_cycle(void);       /* runtime/gamepad.m: key 6, the controller type auto -> Xbox -> PlayStation -> Switch (gamepad_layout.h GAMEPAD_TYPE_*) */
-int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
+int runtime_gamepad_type_set(int type);     /* runtime/gamepad.m: the Settings menu, one type directly (saved as key 6 saves it); -1 not a type */
+int runtime_gamepad_type(int *detected);   /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
 int runtime_mouse_toggle(void);             /* runtime/gamepad.m: key 7, mouse mode on (1) / off (0) */
 int runtime_mouse_enabled(void);
 void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */

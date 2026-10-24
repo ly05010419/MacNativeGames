@@ -841,6 +841,33 @@ int runtime_output_mode_cycle(void) {
     fprintf(stderr, "[botw] key 3: %s\n", next ? "MetalFX 2K" : "关闭 2K");
     return 1;
 }
+/* The Settings menu (frontend.m): key 3's modes, read and chosen directly (one output size switch at most). */
+unsigned runtime_output_modes(void) {
+#ifdef GAME_BOTW160
+    if (g_out_mode == OUT_AUTO && g_out_page) return 1u << PICTURE_OFF | 1u << PICTURE_METALFX_2K | 1u << PICTURE_NATIVE_2K;
+#endif
+    return 1u << PICTURE_OFF | 1u << PICTURE_METALFX_2K;
+}
+int runtime_output_mode_now(void) {
+    extern int mfxup_enabled(void);
+#ifdef GAME_BOTW160
+    if (g_out_mode == OUT_AUTO && g_out_page && (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu) > 1920) return PICTURE_NATIVE_2K;
+#endif
+    return mfxup_enabled() ? PICTURE_METALFX_2K : PICTURE_OFF;
+}
+int runtime_output_mode_set(int mode) {
+    if (!(runtime_output_modes() >> mode & 1)) return 0;
+    extern void dm_gfx_set_flag(const char *name, int value);
+    int mfx = mode == PICTURE_METALFX_2K;
+#ifdef GAME_BOTW160
+    int full = runtime_output_mode_now() == PICTURE_NATIVE_2K;
+    if (full != (mode == PICTURE_NATIVE_2K)) { if (full) output_switch(1920, 1080); else output_switch(g_out_w, g_out_h); }
+#endif
+    dm_gfx_set_flag("mfx_output", mfx);
+    dm_gfx_set_flag("mfx_upscale", mfx);
+    fprintf(stderr, "[botw] Settings menu: picture %s\n", mode == PICTURE_NATIVE_2K ? "原生 2K" : mfx ? "MetalFX 2K" : "关闭 2K");
+    return 1;
+}
 /* Key 4 (runtime/input.c): ultrawide on / off (TOTK_ASPECT, default 21:9; also 32:9, 3440x1440 or 2.39; TOTK_ASPECT set
    also starts with it on). The game keeps drawing into its 16:9 canvas with the main camera's aspect ratio set to the wider
    one, so the picture holds the wider view squeezed horizontally; the present stretches it over the window
@@ -991,4 +1018,15 @@ void runtime_aspect_view(double w, double h) {
     if (!(w > 0 && h > 0)) return;
     g_uw_view = (float)(w / h);
     if (g_uw_main) botw_aspect_phone(g_uw_view);
+}
+/* The Settings menu (frontend.m): 16:9 or wide (steps 0 and 2), as key 4; no fit to the window. */
+unsigned runtime_aspect_steps(void) { return g_uw_main ? 1u << 0 | 1u << 2 : 0; }
+int runtime_aspect_set(int step) {
+    if (!(runtime_aspect_steps() >> step & 1)) return 0;
+    atomic_store(&g_uw_on, step == 2); botw_aspect_word(step == 2);
+#if !TARGET_OS_IPHONE
+    runtime_front_resize_aspect(step == 2 ? g_uw_wide : ASPECT_GAME);
+#endif
+    fprintf(stderr, "[botw] Settings menu: aspect ratio %s\n", step == 2 ? "wide" : "16:9 (the game's own)");
+    return 1;
 }

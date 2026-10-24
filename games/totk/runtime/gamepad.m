@@ -512,11 +512,14 @@ static void attach_gamepad(GCController *controller) {
 }
 
 /* Key 6 (runtime/input.c): the next type (auto -> Xbox -> PlayStation -> Switch); the held buttons are read again at once. */
-int runtime_gamepad_type_cycle(void) {
-    int type = gamepad_type_next(atomic_load(&controllerType));
+static int pick_controller_type(int type, const char *by);
+int runtime_gamepad_type_cycle(void) { return pick_controller_type(gamepad_type_next(atomic_load(&controllerType)), "key 6"); }
+/* The Settings menu (frontend.m): one type directly, saved as key 6 saves it. */
+int runtime_gamepad_type_set(int type) { return type >= 0 && type < GAMEPAD_TYPE_COUNT ? pick_controller_type(type, "Settings menu") : -1; }
+static int pick_controller_type(int type, const char *by) {
     atomic_store(&controllerType, type);
     save_controller_type(type);
-    fprintf(stderr, "[totk-input] controller type: %s (key 6)\n", gamepad_type_name(type));
+    fprintf(stderr, "[totk-input] controller type: %s (%s)\n", gamepad_type_name(type), by);
     dispatch_async(dispatch_get_main_queue(), ^{
         for (GCController *controller in GCController.controllers)
             if (controller.extendedGamepad)
