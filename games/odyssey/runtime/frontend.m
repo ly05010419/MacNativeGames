@@ -23,6 +23,8 @@ static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
 static CVDisplayLinkRef displayLink;
 static _Atomic int focused;
+static _Atomic int frontDisplayHz;
+int runtime_front_display_hz(void){return atomic_load(&frontDisplayHz);}
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
 static void *vsyncEvents[16];
 static unsigned vsyncCount;
@@ -168,6 +170,13 @@ void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();disp
 static CGFloat drawable_scale(void){static CGFloat f=-1;if(f<0){const char *e=getenv("TOTK_DRAWABLE_SCALE");f=e?atof(e):1;if(f<0.25||f>4)f=1;}return f;}
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
+ NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ CGDirectDisplayID display=[screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+ CGDisplayModeRef mode=display?CGDisplayCopyDisplayMode(display):NULL;
+ double rate=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);
+ int hz=rate>0?(int)lround(rate):(int)screen.maximumFramesPerSecond;
+ if(atomic_exchange(&frontDisplayHz,hz)!=hz)fprintf(stderr,"[odyssey-display] window screen %u: %d Hz\n",display,hz);
+ if(displayLink&&display)CVDisplayLinkSetCurrentCGDisplay(displayLink,display);
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
  metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);
@@ -189,6 +198,8 @@ static void front_sync_drawable(void){
   uint64_t t0=runtime_now_ns();while(runtime_fs_save_busy()&&runtime_now_ns()-t0<15000000000ull)usleep(20000);
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
 }
+-(void)screenParametersChanged:(NSNotification *)n{(void)n;front_sync_drawable();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
@@ -273,6 +284,7 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Super Mario Odyssey Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
+  [NSNotificationCenter.defaultCenter addObserver:windowDelegate selector:@selector(screenParametersChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
   front_install_menu();front_start_cursor_hiding();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
