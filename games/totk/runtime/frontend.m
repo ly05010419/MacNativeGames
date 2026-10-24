@@ -195,6 +195,9 @@ static NSString *shortcut_text(void){
  }
  uint64_t size=runtime_output_size_current();unsigned w=(uint32_t)size,h=(uint32_t)(size>>32);
  NSString *picture;
+#ifdef GAME_BOTW190
+ if(mfxup_output_enabled()&&w==2560&&h==1440)picture=@(TOTK_UI("原生 2K + MetalFX","native 2K + MetalFX"));else
+#endif
  if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
  else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];

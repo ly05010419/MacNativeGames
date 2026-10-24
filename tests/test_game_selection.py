@@ -51,7 +51,7 @@ def card_image(folder):
     return xci
 
 
-def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True):
+def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True, extra=()):
     """build_app.main with the long steps mocked: it stops at `stop` (Stop) or at the first BuildError, which it returns
     with the started mocks. fonts=False leaves out --firmware."""
     keys = folder / 'prod.keys'
@@ -63,6 +63,7 @@ def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_c
         argv += ['--update', str(update)]
     for dlc in dlcs:
         argv += ['--dlc', str(dlc)]
+    argv += [str(a) for a in extra]
 
     def prepare_work(work, py, logs):
         work.mkdir(parents=True, exist_ok=True)
@@ -198,6 +199,41 @@ class GameSelectionTests(unittest.TestCase):
         self.assertEqual(started['step_code_botw'].call_args[0][2], update.resolve())
         self.assertEqual(started['step_code_botw'].call_args.kwargs['version'], 'botw190')
 
+    def mod_folder(self, *halves):
+        mod = self.root / 'Mod'
+        for half in halves:
+            (mod / half).mkdir(parents=True, exist_ok=True)
+        return mod
+
+    def test_botw190_takes_a_mod_with_code_patches(self):
+        base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
+        mod = self.mod_folder('exefs', 'romfs')
+        error, started = run_main(self, self.root, base, update, extra=['--mod', mod])
+        self.assertIsInstance(error, Stop)
+        self.assertEqual(started['step_code_botw'].call_args.kwargs['mod'], mod.resolve())
+
+    def test_botw190_data_only_mod_has_no_code_to_merge(self):
+        base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
+        error, started = run_main(self, self.root, base, update, extra=['--mod', self.mod_folder('romfs')])
+        self.assertIsInstance(error, Stop)
+        self.assertIsNone(started['step_code_botw'].call_args.kwargs['mod'])
+
+    def test_botw160_takes_a_mod_with_code_patches(self):
+        mod = self.mod_folder('exefs')
+        error, started = self.run_main_with(self.card_image(), extra=['--mod', mod])
+        self.assertIsInstance(error, Stop)
+        self.assertEqual(started['step_code_botw'].call_args.kwargs['version'], 'botw160')
+        self.assertEqual(started['step_code_botw'].call_args.kwargs['mod'], mod.resolve())
+
+    def test_botw_install_mod_romfs_is_not_wired(self):
+        base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
+        error, started = run_main(self, self.root, base, update, extra=['--mod', self.mod_folder('exefs', 'romfs'), '--install-mod-romfs'])
+        self.assertIn('--install-mod-romfs is only wired for Tears of the Kingdom', str(error))
+        started['step_code_botw'].assert_not_called()
+
+    def run_main_with(self, base, **kwargs):
+        return run_main(self, self.root, base, **kwargs)
+
     def test_botw_files_on_the_wrong_flag_stop_before_any_step(self):
         base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
         error, started = self.run_main(update, base)
@@ -217,6 +253,13 @@ class GameSelectionTests(unittest.TestCase):
             error, started = self.run_main(package(self.root, 'totk.nsp', TOTK_BASE), game='totk', fonts=False)
             self.assertIn('NSP files do not include system shared fonts', str(error))
             started['step_code'].assert_not_called()
+
+    def test_totk_route_still_takes_a_mod(self):
+        mod = self.mod_folder('exefs')
+        error, started = run_main(self, self.root, package(self.root, 'totk.nsp', TOTK_BASE), game='totk', extra=['--mod', mod])
+        self.assertIsInstance(error, Stop)
+        self.assertEqual(started['step_code'].call_args.kwargs['mod'], mod.resolve())
+        started['step_code_botw'].assert_not_called()
 
     def test_totk_route_is_unchanged(self):
         error, started = self.run_main(package(self.root, 'totk.nsp', TOTK_BASE), game='totk')

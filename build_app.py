@@ -1629,10 +1629,11 @@ def step_dlc_botw(tree, botw, dlc, keys, logs, pins, aoc):
         (tree / 'build/botw190/aoc_config.h').unlink(missing_ok=True)
 
 
-def step_code_botw(tree, botw, game, keys, env, logs, *, version='botw160'):
+def step_code_botw(tree, botw, game, keys, env, logs, *, version='botw160', mod=None):
     """The ExeFS of the card image or of the separate 1.6.0 or 1.9.0 update given as game (games/botw/scripts/extract_exefs.py
     reads the update's Program NCA, the one with a BKTR section), the three modules rewritten with the same rewriter as Tears of the Kingdom (it learnt
-    this game's jump tables), each file checked against expected-v<version>.json."""
+    this game's jump tables), each file checked against expected-v<version>.json. With a mod (1.9.0 or 1.6.0), its main-module
+    code patches are merged into a copy of the verified main first (merge_mod_exefs) and that copy is what main is rewritten from."""
     expected = VERSIONS[version]
     py = tree / '.venv/bin/python'
     exefs = tree / f'extracted/{version}/exefs'
@@ -1647,22 +1648,40 @@ def step_code_botw(tree, botw, game, keys, env, logs, *, version='botw160'):
         if not (exefs / n).is_file():
             raise BuildError(f'ExeFS {n} is missing; not Breath of the Wild {expected["display_version"]}')
         check(f'ExeFS {n}', sha256(exefs / n), h)
+    merged, merged_path = merge_mod_exefs(tree, mod, version, logs) if mod else (None, None)
     if not (tree / f'extracted/{version}/elf/main-inventory.json').exists():
         run([py, 'scripts/prepare_modules.py', exefs, '--output', tree / f'extracted/{version}/elf'], logs / f'prepare_modules-{version}.log', cwd=tree)
     out = tree / f'rewritten/{version}'
     out.mkdir(parents=True, exist_ok=True)
     for name in ('sdk', 'subsdk0', 'main'):
         image, h = out / f'{name}.patched.bin', expected['rewritten_sha256'][f'{name}.patched.bin']
-        if image.exists() and sha256(image) == h:
+        modded = merged is not None and name == 'main'
+        if modded:      # the rewrite of the merged module is bound by its own hash (step_code does the same for Tears of the Kingdom)
+            h = merged['rewritten_main_sha256']
+        if image.exists() and h and sha256(image) == h:
             continue
         say(f'1/4 code: rewriting {name} for Apple silicon' + (' (the big one: about a minute)' if name == 'main' else ''))
-        run([py, 'third_party/d2r/patch_nso.py', exefs / name, out, name], logs / f'rewrite_{version}_{name}.log', cwd=tree,
-            env=dict(env, DM_RULESET='native', DM_PRIVATE_GATES='0'))
-        check(f'rewritten {name}', sha256(image), h)
+        run([py, 'third_party/d2r/patch_nso.py', tree / f'extracted/{version}/mod-exefs/main' if modded else exefs / name, out, name],
+            logs / f'rewrite_{version}_{name}.log', cwd=tree, env=dict(env, DM_RULESET='native', DM_PRIVATE_GATES='0'))
+        if modded:
+            merged['rewritten_main_sha256'] = sha256(image)
+            merged_path.write_text(json.dumps(merged, indent=2) + '\n')
+        else:
+            check(f'rewritten {name}', sha256(image), h)
     # scripts/prepare_runtime.py binds the loader to these images (verify_rewrites.py --version <version> re-runs the site-by-site check)
-    report = dict(format=1, status='pass', rom_version=version, scope=f'hash match with verified {expected["display_version"]} rewrite',
+    scope = f'hash match with verified {expected["display_version"]} rewrite'
+    digests = {n: sha256(out / f'{n}.patched.bin') if merged and n == 'main' else expected['rewritten_sha256'][f'{n}.patched.bin']
+               for n in ('main', 'sdk', 'subsdk0')}
+    if merged:
+        scope = (f'verified {expected["display_version"]} rewrite, with the main-module patches of {merged["folder"]} '
+                 f'merged before it ({merged["patched_main_sha256"][:16]}...); the mod\u2019s bytes are bound by hash')
+    report = dict(format=1, status='pass', rom_version=version, scope=scope,
                   module_file_sha256={**{f'extracted/{version}/exefs/{n}': want[n] for n in ('main', 'sdk', 'subsdk0')},
-                                      **{f'rewritten/{version}/{n}.patched.bin': expected['rewritten_sha256'][f'{n}.patched.bin'] for n in ('main', 'sdk', 'subsdk0')}})
+                                      **{f'rewritten/{version}/{n}.patched.bin': digests[n] for n in digests}},
+                  **({'mod_exefs': {key: merged[key] for key in
+                                    ('folder', 'folder_sha256', 'build_id', 'patches', 'edit_bytes', 'reserved_sites',
+                                     'retail_main_sha256', 'patched_main_sha256', 'rewritten_main_sha256',
+                                     'rewriter_sha256', 'notes')}} if merged else {}))
     report_path = tree / f'analysis/{version}-port/phase12-validation.json'
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + '\n')
@@ -1867,9 +1886,10 @@ def main(argv):
             raise BuildError('Breath of the Wild has no native Vision Pro build yet: use --platform macos or ios')
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build
             shutil.rmtree(work)
-        if mod:
-            raise BuildError('--mod: merging a mod\'s main-module patches is only wired for Tears of the Kingdom so far '
-                             '(the patch sites of Breath of the Wild 1.6.0 are not listed in scripts/patch_sites.py)')
+        if args.install_mod_romfs:
+            raise BuildError('--install-mod-romfs is only wired for Tears of the Kingdom so far: copy a Breath of the Wild mod\'s '
+                             'RomFS files into ~/Library/Application Support/MacNativeGames/BotW/mods/botw190 (botw160 for 1.6.0) and write its '
+                             'manifest.tsv (docs/mods.md)')
         if not args.work:
             work = game.parent / 'BotW_build'
             logs = work / 'logs'
@@ -1898,7 +1918,7 @@ def main(argv):
             say('--shader-cache is no longer needed: the startup shaders come from the game data and the shared shader list (games/botw/assets/shader_list.tsv)')
         botw = work / 'botw'
         say(f'Breath of the Wild {expected["display_version"]}; work folder {work}')
-        step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
+        step_code_botw(tree, botw, update or game, keys, env, logs, version=version, mod=code_mod)
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs, version=version)
         step_shader_libs(tree, logs, version=version)
@@ -1921,6 +1941,9 @@ def main(argv):
         if r.returncode: raise BuildError(f'the app does not start: {(r.stdout + r.stderr).strip()}')
         say(f'   checked in {time.time() - t1:.0f} s')
         step_warm_metal(tree, out, logs)
+        if mod and (mod / 'romfs').is_dir():
+            say(f'4/4 app: {mod.name}/romfs was not installed (a build leaves the player\'s mod folder alone): copy it into '
+                f'~/Library/Application Support/MacNativeGames/BotW/mods/{version} and write its manifest.tsv (docs/mods.md)')
         say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
         say('Open it from Finder. The first start verifies the game data and any installed add-on content and keeps a record; '
             'saves, the shader cache and the log go to ~/Library/Application Support/MacNativeGames/BotW and ~/Library/Logs/MacNativeGames/botw.log.')

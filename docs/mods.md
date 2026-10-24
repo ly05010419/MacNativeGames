@@ -116,6 +116,34 @@ carries on, its code half is in the app, and its data half takes effect once the
 (`--install-mod-romfs`, or by hand). With `--update` the patch is merged into the updated module, which is the one
 the app runs.
 
+**Breath of the Wild 1.9.0 and 1.6.0.** The same `--mod` flag and the same patch formats work for both Breath of the Wild
+builds (give the game files as for any build of that version: the base NSP and `--update`, or the card image for 1.6.0).
+The patch is applied to the verified main of that version, and the `@nsobid-` line must name that main (the 20 bytes at
+0x40 of the extracted `main`). It is refused when it lands on a site the app patches or checks itself in this game: the
+real-time frame step, the pad repeat count (on 1.6.0 the whole 38-instruction pad loop and the 9-instruction pause menu
+countdown), the docked render size, the output size (`TOTK_OUTPUT_RES`, 1.6.0 only), the `TOTK_JQ_CHECK` sites (1.6.0 only) and the sites listed for that version in
+`runtime/game_version.h` (`games/totk/scripts/patch_sites.py` reads them out of `runtime/game_patches_botw.c`, and out of
+`game_version.h` and the runtime files that use those addresses). Three
+things differ from Tears of the Kingdom:
+
+- `--install-mod-romfs` is refused for this game. For 1.6.0, copy the mod's RomFS files into
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160` and write the manifest as in
+  [Breath of the Wild](#breath-of-the-wild) below; the build prints this when the mod has a `romfs/`. For 1.9.0,
+  `make_mod_manifest.py` does not take `botw190` yet, so a 1.9.0 mod's RomFS half needs the 1.9.0 RomFS mod support
+  (ly05010419/MacNativeGames#310); its code half works without it.
+- `--platform ios` builds the iPhone / iPad app from the same merged main, but a code mod was not tried on a phone.
+- To try a `.pchtxt` without a build, start the game from the work folder (`<work>/totk`, which holds
+  `extracted/botw190/exefs/main` or `extracted/botw160/exefs/main`) with `TOTK_PCHTXT=<file>` (a development switch, Mac
+  only; the same reading as the build, but the bytes go into the rewritten main the game runs, so a patch on an
+  instruction the rewriter changed behaves differently there). The game stops at start when the file is for another
+  build of main, touches a site the build refuses (the list above), reaches outside main or has a byte that is not two
+  hex digits.
+
+What was tested: 1.9.0 code mods were built and played on a Mac (M1 Pro). 1.6.0 takes the same steps, but it is not
+tested: no 1.6.0 game files were at hand, so no 1.6.0 build with `--mod` or `TOTK_PCHTXT` was made or run; only the unit
+tests cover its site list and its reader. Nothing was tested on a device: there was no real Switch to compare with, and
+no `--mod` build was made for an iPhone / iPad.
+
 <a id="data"></a>
 ### The mod's RomFS files: `--install-mod-romfs`
 
@@ -257,6 +285,14 @@ Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail
 - The game's language follows the app's preferred language, which also picks the language folder a mod must use (`USen` for
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
+- Add-on content (1.9.0, the DLC): put a replaced DLC file under `aoc1/` in the mod folder, at its path inside the add-on
+  content (for example `aoc1/Pack/Dungeon120.pack`). `make_mod_manifest.py` writes `aoc1/manifest.tsv` for it, checked
+  against the app's add-on content. DLC files can only be replaced, not added. A mod with only `aoc1/` files is valid.
+  Check `grep "add-on content overlay" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the first DLC load.
+- Large texture packs (1.9.0 and 1.6.0, Mac only): `TOTK_BOTW_HD_HEAPS=1` gives the game bigger heaps (a 7.5 GiB memory heap and the
+  texture heaps of the pack's own 1.6.0 patch, which the app applies itself: do not add the pack's `ExeFS/1.6.0.pchtxt`) and a GPU memory budget of at least 7000 MB. It needs about 6.3 GB of memory. Without it, HDPacks 4k stops at boot or at the first world load.
+  The app turns it on by itself when the mod's `manifest.tsv` replaces 4 GiB or more (HDPacks 4k: 19.7 GiB), or
+  `Pack/TitleBG.pack` with 200 MiB or more. `botw.log` says so in a `[launcher] HD heaps` line. `TOTK_BOTW_HD_HEAPS=0` or `=1` in the environment wins.
 
 ### Notes
 
@@ -423,6 +459,23 @@ App 没有模块加载器：启动时它映射的是构建时的那三个代码�
 `subsdk9`、只有 `main.npdm`，甚至空的 `exefs/`）只算提示、不算失败：构建照常往下走，只是这个 mod 只生效数据
 那一半。带 `--update` 时补丁合并进更新后的模块，也就是 App 实际运行的那个。
 
+**旷野之息 1.9.0 和 1.6.0。** 同样的 `--mod` 参数和同样的补丁格式适用于旷野之息的两个版本（游戏文件按该版本的常规构建给出：基础 NSP 加 `--update`，1.6.0 也可以给卡带镜像）。
+补丁打在核对过的该版本 main 上，`@nsobid-` 一行必须是这个 main 的（解出的 `main` 偏移 0x40 起的 20 字节）。补丁落在这个游戏里 App 自己打补丁或检查的位置上会被拒绝：
+实时帧步长、手柄重复计数（1.6.0 上是整段 38 条指令的手柄循环和 9 条指令的暂停菜单倒计时）、底座模式渲染分辨率、输出分辨率（`TOTK_OUTPUT_RES`，仅 1.6.0）、`TOTK_JQ_CHECK` 的位置（仅 1.6.0），以及 `runtime/game_version.h` 里该版本一段列出的位置
+（`games/totk/scripts/patch_sites.py` 从 `runtime/game_patches_botw.c` 读出，`game_version.h` 的位置从它和用到这些地址的运行时文件读出）。与王国之泪有三处不同：
+
+- 这个游戏拒绝 `--install-mod-romfs`。1.6.0：把模组的 RomFS 文件复制到
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160`，再按下面「旷野之息」一节生成清单；模组带 `romfs/` 时构建会提示这一点。
+  1.9.0：`make_mod_manifest.py` 还不接受 `botw190`，所以 1.9.0 模组的 RomFS 部分需要 1.9.0 的 RomFS 模组支持
+  （ly05010419/MacNativeGames#310）；代码部分不需要它。
+- `--platform ios` 用同一份合并后的 main 构建 iPhone / iPad 版，但没有在手机上试过代码模组。
+- 想不重新构建就试一个 `.pchtxt`，在工作目录（`<work>/totk`，里面有 `extracted/botw190/exefs/main` 或 `extracted/botw160/exefs/main`）里用 `TOTK_PCHTXT=<文件>` 启动游戏
+  （开发用开关，仅 Mac；读法与构建相同，但字节写进游戏实际运行的改写后 main，
+  所以补丁落在改写器改过的指令上时表现会不同）。文件是给另一个 main 的、改到构建会拒绝的位置（见上面的列表）、超出 main 的范围，或有一个字节不是两位十六进制数时，游戏在启动时停止。
+
+测试范围：1.9.0 的代码模组在 Mac（M1 Pro）上构建并实际玩过。1.6.0 走同样的步骤，但没有测试：手边没有 1.6.0 的游戏文件，所以没有构建或运行过带 `--mod` 或 `TOTK_PCHTXT` 的 1.6.0；只有单元测试覆盖它的位置列表和读取器。
+没有在任何设备上测试：没有真机 Switch 可以对比，也没有做过带 `--mod` 的 iPhone / iPad 构建。
+
 <a id="data-zh"></a>
 ### 模组的 RomFS 文件：`--install-mod-romfs`
 
@@ -539,6 +592,15 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`。
+- 追加内容（1.9.0 的 DLC）：把要替换的 DLC 文件放在 mod 目录的 `aoc1/` 下，路径与追加内容里的相同（例如
+  `aoc1/Pack/Dungeon120.pack`）。`make_mod_manifest.py` 为它生成 `aoc1/manifest.tsv`，并按 App 的追加内容校验。DLC
+  文件只能替换，不能新增。只有 `aoc1/` 文件的 mod 也可以。第一次加载 DLC 后用
+  `grep "add-on content overlay" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查。
+- 大型材质包（1.9.0 和 1.6.0，仅 Mac）：`TOTK_BOTW_HD_HEAPS=1` 让游戏使用更大的堆（7.5 GiB 内存堆，以及材质包自带 1.6.0
+  补丁里的材质堆大小，由 App 自己写入：不要再加入材质包的 `ExeFS/1.6.0.pchtxt`），显存预算至少 7000 MB，约需 6.3 GB 内存。不设置它，HDPacks 4k 会在启动时或第一次进入世界时停止。
+  当 mod 的 `manifest.tsv` 替换 4 GiB 或更多数据（HDPacks 4k：19.7 GiB），或以 200 MiB 或更大的文件
+  替换 `Pack/TitleBG.pack` 时，App 会自动开启它，并在 `botw.log` 中写一行
+  `[launcher] HD heaps`。环境变量中的 `TOTK_BOTW_HD_HEAPS=0` 或 `=1` 优先。
 
 ### 注意
 
