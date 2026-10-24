@@ -24,6 +24,8 @@ int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
 void taa_toggle(void){taa_toggles++;}
 int runtime_gamepad_type_cycle(void){return ++pad_type_cycles;}
 int runtime_mouse_toggle(void){return ++mouse_toggles&1;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
+
 void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}

@@ -1,9 +1,10 @@
 /* The Mac controller's haptics and motion sensors for the game's HD rumble and six-axis sensor (runtime/hid_feedback.c),
-   2026-10-17. On by default (TOTK_RUMBLE=0 / TOTK_GYRO=0 turn them off), and only on macOS (iOS: stubs, never on).
+   2026-10-17. On by default (TOTK_RUMBLE=0 / TOTK_GYRO=0, or rumble.txt / gyro.txt saying off, turn them off), and only on
+   macOS (iOS: stubs, never on).
    Rumble: each of the game's two vibration devices (left, right) is a Core Haptics engine on that handle of the
    controller (GCHapticsLocalityLeftHandle / RightHandle; a DualSense has both) playing a long continuous event. The
-   game's value (two bands, each an amplitude 0..1 at a frequency) sets the event's intensity (TOTK_RUMBLE_GAIN, default 1,
-   times the bands' combined amplitude) and sharpness (the bands' amplitude-weighted frequency, 40..1250 Hz on a log scale).
+   game's value (two bands, each an amplitude 0..1 at a frequency) sets the event's intensity (TOTK_RUMBLE_GAIN, else
+   rumble-gain.txt next to controls.txt, default 1, times the bands' combined amplitude) and sharpness (the bands' amplitude-weighted frequency, 40..1250 Hz on a log scale).
    The game sends values every few milliseconds from its own threads; those only store the latest one, and a timer on our
    own queue applies it 100 times a second. The player stops after 150 ms of silence, and the value counts as silence once
    the game has sent nothing for 250 ms (paused, frozen, window lost focus), so the controller never keeps buzzing alone.
@@ -19,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "runtime.h"
+#include "feedback_settings.h"
 
 #if !TARGET_OS_OSX
 void runtime_feedback_attach(GCController *c) { (void)c; }
@@ -153,8 +155,12 @@ static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
 static void rumble_start(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        const char *g = getenv("TOTK_RUMBLE_GAIN");
+        const char *g = getenv("TOTK_RUMBLE_GAIN"); char word[32] = {0}; float saved;
         if (g) { char *end; double v = strtod(g, &end); if (end == g || *end || !(v > 0) || v > 4) runtime_fail("TOTK_RUMBLE_GAIN must be a number in (0, 4]"); gain = (float)v; }
+        else if (runtime_setting_word("rumble-gain.txt", word, sizeof word)) {
+            if (feedback_gain_word(word, &saved)) { gain = saved; fprintf(stderr, "[rumble] strength %g (rumble-gain.txt)\n", saved); }
+            else fprintf(stderr, "[rumble] rumble-gain.txt: not a number in (0, 4]; strength 1\n");
+        }
         rumbleQueue = dispatch_queue_create("totk.rumble", DISPATCH_QUEUE_SERIAL);
         rumbleTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, rumbleQueue);   /* kept for the life of the process */
         dispatch_source_set_timer(rumbleTimer, dispatch_time(DISPATCH_TIME_NOW, 0), RUMBLE_TICK_MS * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);

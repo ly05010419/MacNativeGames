@@ -22,6 +22,7 @@ void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected t
 void runtime_shortcut_help_toggle(void){}
 int runtime_output_mode_cycle(void){return 0;}
 int runtime_aspect_toggle(void){return 0;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
