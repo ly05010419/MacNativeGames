@@ -67,3 +67,4 @@ The small offline tools are adapted from Tyraelone's common tools at
 `2f00936366640ce6a7aa84536a66a96a4747f927`; provenance and MIT licensing are
 under `tools/`. Rewriting and Control RomFS verification use this checkout's
 existing d2r and TOTK tooling. No separate fork is required to run preparation.
+The shader translator is kept local to this game folder in `games/acnh/prebuilt/macos-arm64/totk_xlate` and pinned by `totk_xlate.sha256`.
