@@ -58,6 +58,24 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>體感瞄準 · Motion aiming</string>
+			<key>FooterText</key>
+			<string>用手機本身的陀螺儀瞄準（遊戲選項裡也要開啟體感操作）。重新啟動遊戲後生效 · Aim with the phone's own gyro (also turn on Motion Controls in the game's options). Takes effect after relaunching the game</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_GYRO</string>
+			<key>Title</key>
+			<string>陀螺儀 · Gyro</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
