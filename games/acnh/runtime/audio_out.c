@@ -64,7 +64,7 @@ static void open_device(AudioOut *o) {
         AudioStreamBasicDescription f = {.mSampleRate = o->rate, .mFormatID = kAudioFormatLinearPCM,
             .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked, .mBytesPerPacket = 4, .mFramesPerPacket = 1,
             .mBytesPerFrame = 4, .mChannelsPerFrame = 2, .mBitsPerChannel = 16};
-        OSStatus s = AudioQueueNewOutput(&f, played, o, NULL, kCFRunLoopCommonModes, 0, &o->aq);
+        OSStatus s = AudioQueueNewOutput(&f, played, o, NULL, NULL, 0, &o->aq);
         if (s) { fprintf(stderr, "[totk-audio] AudioOut: no Core Audio output (%d); continuing silent\n", (int)s); o->silent = 1; }
     }
     if (o->silent) need(pthread_create(&o->thread, NULL, silent_playback, o) == 0, "AudioOut playback thread");

@@ -22,12 +22,10 @@
    blood moon) a frame more than 1.5 frame periods late is dropped if the next one is due too: the picture stays in time
    with the cutscene's sound instead of lagging and then running fast to catch up. TOTK_MOVIE_PACE=0 hands every frame
    over as soon as it is decoded.
-   Odyssey (2026-10-22): its 44 movies (the .mp4 files in MovieData, 41 with an AAC track: the PlayGuide clips Cappy shows, the world postcards) are H.264
-   (Baseline / Main / High, 480x272 to 640x360, 4-byte NAL lengths, most with B-frames). The game asks for decoder
-   type 1 ("video/avc"), which aborted in NvMMLiteOpenBlock -> NvRmChannelOpen -> NvOsDrvOpen right after the skipped
-   intro. Type 1 in buffer mode runs here on VideoToolbox: SPS / PPS come from the format's csd-0 / csd-1 or from the
-   stream, samples may be Annex B or length-prefixed, and decoded pictures wait in `held` until they can leave in
-   presentation order (AVC_REORDER pictures behind, all at end of stream). */
+   H.264 (Super Mario Odyssey: the 44 .mp4 play guide movies in MovieData, High profile with B-frames, 480x544 at 30 fps)
+   goes through the same entries as decoder type 1: VideoToolbox decodes each input (Annex B or length-prefixed NAL units;
+   SPS and PPS are taken wherever they appear and build the session), writes NV12 directly, and a reorder buffer of
+   AVC_REORDER frames hands them over in presentation order, as MediaCodec does; end of stream flushes it. */
 #include "runtime.h"
 #include "movie_host.h"
 #include <arm_neon.h>
@@ -48,36 +46,50 @@ void movie_host_tick(void) {}
 #else
 #include <vpx/vp8dx.h>
 #include <vpx/vpx_decoder.h>
+#if __has_include(<vorbis/codec.h>)
+#include <vorbis/codec.h>
+#define HAVE_VORBIS 1
+#else
+#define HAVE_VORBIS 0
+#endif
 #include <VideoToolbox/VideoToolbox.h>
 
-enum { IN_BUFS = 4, IN_CAP = 2 << 20, OUT_BUFS = 8, MAX_MOVIES = 16 };
-enum { TYPE_AVC = 1, TYPE_VP9 = 3, MODE_BUFFER = 1, FORMAT_NV12 = 4, FLAG_EOS = 4 };
-enum { AVC_HELD = 24, AVC_REORDER = 4, AVC_PARAM = 512 };
+enum { IN_BUFS = 4, IN_CAP = 2 << 20, OUT_BUFS = 8, MAX_MOVIES = 16, IN_MAX = 16, OUT_MAX = 8 };
+/* Vorbis (Super Smash Bros. Ultimate's movie sound): the buffers the library's audio decoder has, recorded 23.10. with
+   TOTK_MOVIE_TRACE: 14 inputs of 32 KiB, 4 outputs; the game copies each output into its own 8 KiB buffer. */
+enum { AUD_IN_BUFS = 14, AUD_IN_CAP = 32 << 10, AUD_OUT_BUFS = 4, AUD_OUT_CAP = 8 << 10 };
+enum { TYPE_AVC = 1, TYPE_VP9 = 3, TYPE_VORBIS = 5, MODE_BUFFER = 1, FORMAT_PCM16 = 1, FORMAT_NV12 = 4, FLAG_EOS = 4 };
+enum { AVC_REORDER = 4, AVC_HOLD = 16, AVC_PARAM = 256 };
 enum { ST_OK = 0, ST_ERROR = 0x1000, ST_NULL = 0x100b, ST_NOT_READY = 0x100c, ST_NO_OUTPUT = 0x100e, ST_NO_INPUT = 0x1011,
        ST_UNSUPPORTED = 0x2001, ST_NOT_CONFIGURED = 0x2002 };
 enum { EV_INPUT, EV_OUTPUT, EV_FORMAT, EV_ERROR };
 
 typedef struct { int index; unsigned flags; int64_t time; } Ready;
-typedef struct { int index, offset, size; int64_t time; unsigned flags; int decoded; } Pending;   /* decoded: AVC input already sent to VideoToolbox */
-typedef struct { CVPixelBufferRef px; int64_t time; } Held;
+typedef struct { int index, offset, size; int64_t time; unsigned flags; } Pending;
 typedef struct {
     void *guest;                         /* the movie::Decoder object */
     int format, configured, started, w, h, eos_in, format_sent, last_error;
     void **events;                       /* DecoderEvents: EventType* per EV_* */
     vpx_codec_ctx_t vpx; int vpx_live;
-    int codec;                           /* TYPE_VP9 or TYPE_AVC */
-    VTDecompressionSessionRef vt; CMVideoFormatDescriptionRef vfmt;
-    uint8_t sps[AVC_PARAM], pps[AVC_PARAM]; size_t nsps, npps; int params_new;
-    uint8_t *sample; size_t nsample, sample_cap;
-    Held held[AVC_HELD]; int nheld;
-    uint8_t *in[IN_BUFS]; int in_free[IN_BUFS], nin_free;
-    Pending pending[IN_BUFS]; int npending;
-    uint8_t *out[OUT_BUFS]; int out_bytes[OUT_BUFS], out_held[OUT_BUFS];
-    Ready ready[OUT_BUFS]; int nready;
-    Ready decoded[OUT_BUFS]; int ndecoded;   /* paced: decoded, not due yet */
+    int n_in, n_out, in_cap, out_cap;        /* this decoder's buffers (video: IN_BUFS x IN_CAP, OUT_BUFS frames; Vorbis: AUD_*) */
+    uint8_t *in[IN_MAX]; int in_free[IN_MAX], nin_free;
+    Pending pending[IN_MAX]; int npending;
+    uint8_t *out[OUT_MAX]; int out_bytes[OUT_MAX], out_held[OUT_MAX];
+    Ready ready[OUT_MAX]; int nready;
+    Ready decoded[OUT_MAX]; int ndecoded;   /* paced: decoded, not due yet */
+    int vorbis, channels, rate, bitrate;     /* Vorbis (decoder type 5): 16-bit PCM out, not paced */
+    int64_t anchor; uint64_t pcm_frames, packets;   /* time of the first output frame, frames handed out since */
+#if HAVE_VORBIS
+    vorbis_info vi; vorbis_comment vc; vorbis_dsp_state vd; vorbis_block vb; int vorbis_hdr, vorbis_live;
+#endif
     uint64_t t0; int64_t pts0;               /* paced: host time and presentation time of the first frame handed over */
     uint64_t frames, decode_ns, errors, dropped;
     pthread_mutex_t mu;
+    int avc;                                 /* H.264 through VideoToolbox (decoder type 1) instead of VP9 */
+    VTDecompressionSessionRef vt; CMVideoFormatDescriptionRef vt_fmt;
+    uint8_t sps[AVC_PARAM], pps[AVC_PARAM]; int nsps, npps;
+    struct { uint8_t *nv12; int64_t time; } held[AVC_HOLD]; int nheld;   /* decoded, waiting for presentation order */
+    uint8_t *scratch; size_t scratch_cap;    /* one access unit as 4-byte length-prefixed NAL units */
 } Movie;
 
 static MovieGuest G; static int g_ready;
@@ -86,7 +98,13 @@ static int negative(void) { if (g_negative < 0) { const char *e = getenv("TOTK_P
 static uint64_t now_ns(void);
 static uint64_t (*g_clock)(void) = now_ns;
 void movie_host_set_clock(uint64_t (*clock)(void)) { g_clock = clock ? clock : now_ns; }
-static int pace_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_MOVIE_PACE"); v = !(e && !strcmp(e, "0")); } return v; }
+/* Breath of the Wild: off by default. The frame pacing holds that game at 30 fps while a movie plays (game_patches_botw.c
+   runtime_game_fps_limit), so it takes every frame at the movie's rate as on the console; dropping late frames left the
+   first tower's cutscene on a black screen after its last frame, the decoder never stopped (2026-10-20). */
+/* Animal Crossing: New Horizons runs at 30 fps (like BOTW): off by default.
+   Dropping late frames leaves cutscenes stuck on a black screen after the last frame. */
+#define MOVIE_PACE_DEFAULT 0
+static int pace_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_MOVIE_PACE"); v = e ? strcmp(e, "0") != 0 : MOVIE_PACE_DEFAULT; } return v; }
 static Movie *g_movies[MAX_MOVIES];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -122,8 +140,6 @@ static void guest_init(void) {
         need_symbol((void **)&G.md_set_int32, "_ZN5movie9MediaData8SetInt32EPKci");
         need_symbol((void **)&G.md_set_rect, "_ZN5movie9MediaData7SetRectEPKciiii");
         need_symbol((void **)&G.md_set_string, "_ZN5movie9MediaData9SetStringEPKcS2_");
-        G.md_find_buffer = runtime_symbol("_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
-        G.buf_data = runtime_symbol("_ZNK5movie6Buffer4DataEv"); G.buf_size = runtime_symbol("_ZNK5movie6Buffer4SizeEv");
         void *vt; need_symbol(&vt, "_ZTVN5movie7DecoderE"); G.vptr = (uint8_t *)vt + 0x10;
         for (int i = 0; i < MOVIE_ENTRIES; i++) need_symbol(&G.orig[i], NAMES[i]);
         g_ready = 1;
@@ -160,10 +176,10 @@ static void to_nv12(const vpx_image_t *img, uint8_t *dst, int w, int h) {
         for (; x < w / 2; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
     }
 }
-static int free_out(const Movie *m) { for (int i = 0; i < OUT_BUFS; i++) if (!m->out_held[i]) return i; return -1; }
+static int free_out(const Movie *m) { for (int i = 0; i < m->n_out; i++) if (!m->out_held[i]) return i; return -1; }
 static void push_ready(Movie *m, Signals *s, int slot, unsigned flags, int64_t time, int bytes) {
     m->out_held[slot] = 1; m->out_bytes[slot] = bytes;
-    if (pace_on()) { m->decoded[m->ndecoded++] = (Ready){slot, flags, time}; return; }
+    if (pace_on() && !m->vorbis) {   /* sound is consumed as the game's mixer needs it */ m->decoded[m->ndecoded++] = (Ready){slot, flags, time}; return; }
     m->ready[m->nready++] = (Ready){slot, flags, time};
     note(m, s, EV_OUTPUT);
 }
@@ -200,156 +216,254 @@ void movie_host_tick(void) {   /* lock order g_lock -> Movie.mu, as in destroy; 
     pthread_mutex_unlock(&g_lock);
     fire(&s);
 }
-/* ---- H.264 on VideoToolbox (Odyssey) ---- */
-static void avc_drop_held(Movie *m) { for (int i = 0; i < m->nheld; i++) CVPixelBufferRelease(m->held[i].px); m->nheld = 0; }
-static void avc_release(Movie *m) {
-    if (m->vt) { VTDecompressionSessionWaitForAsynchronousFrames(m->vt); VTDecompressionSessionInvalidate(m->vt); CFRelease(m->vt); m->vt = NULL; }
-    if (m->vfmt) { CFRelease(m->vfmt); m->vfmt = NULL; }
-    avc_drop_held(m); free(m->sample); m->sample = NULL; m->nsample = m->sample_cap = 0;
-}
-static void avc_param(uint8_t *dst, size_t *n, const uint8_t *nal, size_t len, int *changed) {
-    if (len > AVC_PARAM || (len == *n && !memcmp(dst, nal, len))) return;
-    memcpy(dst, nal, len); *n = len; *changed = 1;
-}
-/* One NAL unit: parameter sets are kept for the format description, delimiters dropped, the rest appended to the sample
-   as a 4-byte big-endian length and the unit (the layout VideoToolbox's AVC format description expects). */
-static void avc_nal(Movie *m, const uint8_t *nal, size_t len) {
-    if (!len) return;
-    int type = nal[0] & 0x1f;
-    if (type == 7) { avc_param(m->sps, &m->nsps, nal, len, &m->params_new); return; }
-    if (type == 8) { avc_param(m->pps, &m->npps, nal, len, &m->params_new); return; }
-    if (type == 9) return;
-    if (m->nsample + 4 + len > m->sample_cap) {
-        size_t cap = (m->nsample + 4 + len) * 2; uint8_t *s = realloc(m->sample, cap);
-        if (!s) runtime_fail("movie H.264 sample buffer"); m->sample = s; m->sample_cap = cap;
-    }
-    uint8_t *o = m->sample + m->nsample;
-    o[0] = (uint8_t)(len >> 24); o[1] = (uint8_t)(len >> 16); o[2] = (uint8_t)(len >> 8); o[3] = (uint8_t)len;
-    memcpy(o + 4, nal, len); m->nsample += 4 + len;
-}
-/* Length-prefixed when 4-byte lengths chain exactly to the end, otherwise Annex B (start codes). */
-static void avc_parse(Movie *m, const uint8_t *d, size_t n) {
-    size_t off = 0;
-    while (off + 4 <= n) {
-        size_t len = (size_t)d[off] << 24 | (size_t)d[off + 1] << 16 | (size_t)d[off + 2] << 8 | d[off + 3];
-        if (!len || len > n - off - 4 || d[off + 4] & 0x80) break;
-        off += 4 + len;
-    }
-    if (off == n && n) {
-        for (off = 0; off < n;) { size_t len = (size_t)d[off] << 24 | (size_t)d[off + 1] << 16 | (size_t)d[off + 2] << 8 | d[off + 3]; avc_nal(m, d + off + 4, len); off += 4 + len; }
-        return;
-    }
-    size_t start = SIZE_MAX;
-    for (size_t i = 0; i + 3 <= n; i++) {
-        if (d[i] || d[i + 1] || d[i + 2] != 1) continue;
-        if (start != SIZE_MAX) { size_t end = i; while (end > start && !d[end - 1]) end--; avc_nal(m, d + start, end - start); }
-        start = i + 3; i += 2;
-    }
-    if (start != SIZE_MAX && start < n) avc_nal(m, d + start, n - start);
-}
-/* csd-0 / csd-1 as an Android extractor gives them (Annex B parameter sets), or an avcC record. */
-static void avc_csd(Movie *m, const uint8_t *d, size_t n) {
-    if (n > 7 && d[0] == 1) {
-        size_t off = 6; int nsps = d[5] & 0x1f;
-        for (int k = 0; k < 2; k++) {
-            int count = k ? (off < n ? d[off++] : 0) : nsps;
-            for (int i = 0; i < count && off + 2 <= n; i++) {
-                size_t len = (size_t)d[off] << 8 | d[off + 1]; off += 2;
-                if (len > n - off) return;
-                avc_nal(m, d + off, len); off += len;
+/* ---- H.264 through VideoToolbox ---- */
+typedef struct { const uint8_t *p; int n; } Nal;
+/* The NAL units of one input: Annex B (start codes) or 4-byte length prefixes; -1 when the lengths do not add up. */
+static int split_nals(const uint8_t *d, int n, Nal *out, int max) {
+    int k = 0;
+    if (n >= 4 && !d[0] && !d[1] && (d[2] == 1 || (!d[2] && d[3] == 1))) {
+        int start = -1;
+        for (int i = 0; i + 3 <= n;) {
+            if (!d[i] && !d[i + 1] && d[i + 2] == 1) {
+                if (start >= 0 && k < max) { int end = i; while (end > start && !d[end - 1]) end--; out[k++] = (Nal){d + start, end - start}; }
+                i += 3; start = i; continue;
             }
+            i++;
         }
-        return;
+        if (start >= 0 && start < n && k < max) out[k++] = (Nal){d + start, n - start};
+        return k;
     }
-    avc_parse(m, d, n);
+    for (int i = 0; i + 4 <= n && k < max;) {
+        uint32_t len = (uint32_t)d[i] << 24 | (uint32_t)d[i + 1] << 16 | (uint32_t)d[i + 2] << 8 | d[i + 3]; i += 4;
+        if (!len || len > (uint32_t)(n - i)) return -1;
+        out[k++] = (Nal){d + i, (int)len}; i += (int)len;
+    }
+    return k;
 }
-static void avc_output(void *refcon, void *frame, OSStatus st, VTDecodeInfoFlags flags, CVImageBufferRef img, CMTime pts, CMTime dur) {
-    (void)frame; (void)flags; (void)dur;
-    Movie *m = refcon;
-    if (st != noErr || !img) { if (++m->errors <= 4) LOG("【红】H.264 picture not decoded (VideoToolbox %d)", (int)st); return; }
-    if (m->nheld == AVC_HELD) { if (++m->errors <= 4) LOG("【红】H.264 reorder queue full: picture dropped"); return; }
-    m->held[m->nheld++] = (Held){CVPixelBufferRetain(img), pts.value};
+static void avc_close(Movie *m) {
+    if (m->vt) { VTDecompressionSessionWaitForAsynchronousFrames(m->vt); VTDecompressionSessionInvalidate(m->vt); CFRelease(m->vt); m->vt = NULL; }
+    if (m->vt_fmt) { CFRelease(m->vt_fmt); m->vt_fmt = NULL; }
+    for (int i = 0; i < m->nheld; i++) free(m->held[i].nv12);
+    m->nheld = 0;
+}
+/* VideoToolbox output (synchronous: inside VTDecompressionSessionDecodeFrame, under the decoder's lock): copy the NV12
+   planes into a held frame. */
+static void avc_output(void *ref, void *frame, OSStatus st, VTDecodeInfoFlags info, CVImageBufferRef img, CMTime pts, CMTime dur) {
+    Movie *m = ref; (void)frame; (void)info; (void)dur;
+    if (st != noErr || !img) { m->errors++; m->last_error = ST_ERROR; if (m->errors <= 4) LOG("【红】H.264 decode error %d", (int)st); return; }
+    if (m->nheld == AVC_HOLD) runtime_fail("movie decoder: H.264 reorder buffer full");
+    CVPixelBufferLockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
+    if ((int)CVPixelBufferGetWidth(img) < m->w || (int)CVPixelBufferGetHeight(img) < m->h || CVPixelBufferGetPlaneCount(img) != 2) {
+        LOG("【红】H.264 frame %zux%zu with %zu planes for the configured %dx%d NV12", CVPixelBufferGetWidth(img), CVPixelBufferGetHeight(img), CVPixelBufferGetPlaneCount(img), m->w, m->h);
+        runtime_fail("movie decoder: unexpected H.264 frame layout");
+    }
+    uint8_t *f = malloc((size_t)frame_bytes(m)); if (!f) runtime_fail("movie H.264 frame allocation");
+    const uint8_t *y = CVPixelBufferGetBaseAddressOfPlane(img, 0), *uv = CVPixelBufferGetBaseAddressOfPlane(img, 1);
+    size_t ys = CVPixelBufferGetBytesPerRowOfPlane(img, 0), uvs = CVPixelBufferGetBytesPerRowOfPlane(img, 1);
+    for (int r = 0; r < m->h; r++) memcpy(f + (size_t)r * m->w, y + r * ys, (size_t)m->w);
+    for (int r = 0; r < m->h / 2; r++) memcpy(f + (size_t)m->w * m->h + (size_t)r * m->w, uv + r * uvs, (size_t)m->w);
+    CVPixelBufferUnlockBaseAddress(img, kCVPixelBufferLock_ReadOnly);
+    m->held[m->nheld].nv12 = f; m->held[m->nheld++].time = CMTimeConvertScale(pts, 1000000, kCMTimeRoundingMethod_Default).value;
 }
 static int avc_session(Movie *m) {
-    if (!m->params_new && m->vt) return 1;
+    if (m->vt) return 1;
     if (!m->nsps || !m->npps) return 0;
-    if (m->vt) { VTDecompressionSessionWaitForAsynchronousFrames(m->vt); VTDecompressionSessionInvalidate(m->vt); CFRelease(m->vt); m->vt = NULL; }
-    if (m->vfmt) { CFRelease(m->vfmt); m->vfmt = NULL; }
-    const uint8_t *sets[2] = {m->sps, m->pps}; const size_t sizes[2] = {m->nsps, m->npps};
-    OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(kCFAllocatorDefault, 2, sets, sizes, 4, &m->vfmt);
-    if (st != noErr) { LOG("【红】H.264 parameter sets rejected by CoreMedia (%d)", (int)st); return 0; }
-    int fmt = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
-    CFNumberRef pf = CFNumberCreate(NULL, kCFNumberIntType, &fmt);
-    const void *keys[] = {kCVPixelBufferPixelFormatTypeKey}, *vals[] = {pf};
-    CFDictionaryRef attrs = CFDictionaryCreate(NULL, keys, vals, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    const uint8_t *sets[2] = {m->sps, m->pps}; size_t sizes[2] = {(size_t)m->nsps, (size_t)m->npps};
+    OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(kCFAllocatorDefault, 2, sets, sizes, 4, &m->vt_fmt);
+    if (st) { LOG("【红】H.264 parameter sets rejected: %d", (int)st); runtime_fail("movie decoder: H.264 parameter sets"); }
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    int pf = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange; CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt32Type, &pf);
+    CFDictionarySetValue(attrs, kCVPixelBufferPixelFormatTypeKey, n); CFRelease(n);
     VTDecompressionOutputCallbackRecord cb = {avc_output, m};
-    st = VTDecompressionSessionCreate(kCFAllocatorDefault, m->vfmt, NULL, attrs, &cb, &m->vt);
-    CFRelease(attrs); CFRelease(pf);
-    if (st != noErr) { LOG("【红】VideoToolbox H.264 session not created (%d)", (int)st); m->vt = NULL; return 0; }
-    CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(m->vfmt);
-    LOG("VideoToolbox H.264 session %dx%d (configured %dx%d)", dim.width, dim.height, m->w, m->h);
-    m->params_new = 0; return 1;
+    st = VTDecompressionSessionCreate(NULL, m->vt_fmt, NULL, attrs, &cb, &m->vt); CFRelease(attrs);
+    if (st) { LOG("【红】VideoToolbox H.264 session: %d", (int)st); runtime_fail("movie decoder: VideoToolbox H.264 session"); }
+    LOG("VideoToolbox H.264 session for %dx%d", m->w, m->h);
+    return 1;
 }
-/* VideoToolbox NV12 picture -> packed NV12 at the configured size (rows / columns beyond the picture left black). */
-static void px_to_nv12(CVPixelBufferRef px, uint8_t *dst, int w, int h) {
-    CVPixelBufferLockBaseAddress(px, kCVPixelBufferLock_ReadOnly);
-    int pw = (int)CVPixelBufferGetWidthOfPlane(px, 0), ph = (int)CVPixelBufferGetHeightOfPlane(px, 0);
-    int cw = pw < w ? pw : w, ch = ph < h ? ph : h;
-    if (cw < w || ch < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * (h / 2)); }
-    const uint8_t *y = CVPixelBufferGetBaseAddressOfPlane(px, 0), *uv = CVPixelBufferGetBaseAddressOfPlane(px, 1);
-    size_t ys = CVPixelBufferGetBytesPerRowOfPlane(px, 0), uvs = CVPixelBufferGetBytesPerRowOfPlane(px, 1);
-    for (int r = 0; r < ch; r++) memcpy(dst + (size_t)r * w, y + r * ys, (size_t)cw);
-    uint8_t *o = dst + (size_t)w * h;
-    for (int r = 0; r < ch / 2; r++) memcpy(o + (size_t)r * w, uv + r * uvs, (size_t)(cw & ~1));
-    CVPixelBufferUnlockBaseAddress(px, kCVPixelBufferLock_ReadOnly);
+/* An SPS (7) or PPS (8) NAL unit replaces the kept one; returns 1 when it changed. */
+static int avc_param(Movie *m, const uint8_t *p, int n) {
+    int type = p[0] & 31; uint8_t *dst = type == 7 ? m->sps : m->pps; int *len = type == 7 ? &m->nsps : &m->npps;
+    if (n > AVC_PARAM) runtime_fail("movie decoder: H.264 parameter set too large");
+    if (*len == n && !memcmp(dst, p, (size_t)n)) return 0;
+    memcpy(dst, p, (size_t)n); *len = n; return 1;
 }
-/* Hand held pictures over in presentation order while more than `keep` are held and output slots are free. */
-static void avc_emit(Movie *m, Signals *s, int keep) {
-    while (m->nheld > keep) {
+/* The format's codec-specific data: csd-0 / csd-1 as MediaCodec has them (Annex B parameter sets), or the MP4 avcC record
+   (version 1, then SPS and PPS each with a 16-bit length) the movie library keeps under "avcc". Super Mario Odyssey's
+   movies carry their SPS and PPS only there (avcc, 61 bytes; the first input is an IDR slice without them). */
+static void avc_codec_data(Movie *m, const void *format) {
+    static bool (*find_buffer)(const void *, const char *, void **); static void *(*buffer_data)(const void *); static size_t (*buffer_size)(const void *);
+    if (!find_buffer) {
+        need_symbol((void **)&buffer_data, "_ZNK5movie6Buffer4DataEv"); need_symbol((void **)&buffer_size, "_ZNK5movie6Buffer4SizeEv");
+        need_symbol((void **)&find_buffer, "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+    }
+    static const char *const keys[] = {"csd-0", "csd-1", "csd-2", "avcc", "avcC"};   /* the movie library's own key names */
+    for (int k = 0; k < 5; k++) {
+        void *buf = NULL; if (!find_buffer(format, keys[k], &buf) || !buf) continue;
+        const uint8_t *d = buffer_data(buf); int n = (int)buffer_size(buf); if (!d || n <= 0) continue;
+        if (n > 7 && d[0] == 1) {   /* avcC */
+            int at = 5, count = d[at++] & 31;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int i = 0; i < count && at + 2 <= n; i++) { int len = d[at] << 8 | d[at + 1]; at += 2; if (len <= 0 || at + len > n) break; avc_param(m, d + at, len); at += len; }
+                if (!pass && at < n) count = d[at++];
+            }
+        } else {
+            Nal nals[8]; int c = split_nals(d, n, nals, 8);
+            for (int i = 0; i < c; i++) if ((nals[i].p[0] & 31) == 7 || (nals[i].p[0] & 31) == 8) avc_param(m, nals[i].p, nals[i].n);
+        }
+    }
+    LOG("H.264 parameter sets from the format: SPS %d bytes, PPS %d bytes", m->nsps, m->npps);
+}
+/* One input: parameter sets update the session, the other NAL units (access unit delimiters dropped) are one sample. */
+static void avc_decode(Movie *m, const uint8_t *d, int n, int64_t time) {
+    Nal nals[128]; int k = split_nals(d, n, nals, 128);
+    if (k < 0) { m->errors++; m->last_error = ST_ERROR; if (m->errors <= 4) LOG("【红】H.264 input of %d bytes is neither Annex B nor length-prefixed", n); return; }
+    size_t bytes = 0; int changed = 0;
+    for (int i = 0; i < k; i++) {
+        int type = nals[i].p[0] & 31;
+        if (type == 7 || type == 8) changed |= avc_param(m, nals[i].p, nals[i].n);
+        else if (type != 9) bytes += 4 + (size_t)nals[i].n;
+    }
+    if (changed && m->vt) { VTDecompressionSessionWaitForAsynchronousFrames(m->vt); VTDecompressionSessionInvalidate(m->vt); CFRelease(m->vt); m->vt = NULL; CFRelease(m->vt_fmt); m->vt_fmt = NULL; }
+    if (!bytes) return;
+    if (!avc_session(m)) { m->errors++; m->last_error = ST_ERROR; if (m->errors <= 4) LOG("【红】H.264 slice before its SPS and PPS"); return; }
+    if (m->scratch_cap < bytes) { free(m->scratch); m->scratch = malloc(bytes); m->scratch_cap = bytes; if (!m->scratch) runtime_fail("movie H.264 sample buffer"); }
+    size_t at = 0;
+    for (int i = 0; i < k; i++) {
+        int type = nals[i].p[0] & 31; if (type == 7 || type == 8 || type == 9) continue;
+        uint32_t len = (uint32_t)nals[i].n; uint8_t *o = m->scratch + at;
+        o[0] = (uint8_t)(len >> 24); o[1] = (uint8_t)(len >> 16); o[2] = (uint8_t)(len >> 8); o[3] = (uint8_t)len;
+        memcpy(o + 4, nals[i].p, len); at += 4 + len;
+    }
+    CMBlockBufferRef block = NULL; CMSampleBufferRef sample = NULL;
+    CMSampleTimingInfo timing = {.duration = kCMTimeInvalid, .presentationTimeStamp = CMTimeMake(time, 1000000), .decodeTimeStamp = kCMTimeInvalid};
+    if (CMBlockBufferCreateWithMemoryBlock(NULL, m->scratch, bytes, kCFAllocatorNull, NULL, 0, bytes, 0, &block) ||
+        CMSampleBufferCreateReady(NULL, block, m->vt_fmt, 1, 1, &timing, 1, &bytes, &sample)) runtime_fail("movie decoder: H.264 sample buffer");
+    VTDecodeInfoFlags info = 0;
+    OSStatus st = VTDecompressionSessionDecodeFrame(m->vt, sample, 0, NULL, &info);
+    CFRelease(sample); CFRelease(block);
+    if (st) { m->errors++; m->last_error = ST_ERROR; if (m->errors <= 4) LOG("【红】VideoToolbox DecodeFrame: %d at %lld us", (int)st, (long long)time); }
+}
+/* Hand held frames over in presentation order: all of them at end of stream, else those beyond the reorder depth. */
+static void avc_emit(Movie *m, Signals *s, int all) {
+    while (m->nheld > (all ? 0 : AVC_REORDER)) {
+        int best = 0; for (int i = 1; i < m->nheld; i++) if (m->held[i].time < m->held[best].time) best = i;
         int slot = free_out(m); if (slot < 0) return;
-        int first = 0; for (int i = 1; i < m->nheld; i++) if (m->held[i].time < m->held[first].time) first = i;
-        Held h = m->held[first]; m->held[first] = m->held[--m->nheld];
+        memcpy(m->out[slot], m->held[best].nv12, (size_t)frame_bytes(m)); free(m->held[best].nv12);
+        int64_t time = m->held[best].time; m->held[best] = m->held[--m->nheld];
         if (!m->format_sent) { m->format_sent = 1; if (negative() != 2) note(m, s, EV_FORMAT); }
-        px_to_nv12(h.px, m->out[slot], m->w, m->h); CVPixelBufferRelease(h.px);
-        push_ready(m, s, slot, 0, h.time, frame_bytes(m)); m->frames++;
+        push_ready(m, s, slot, 0, time, frame_bytes(m)); m->frames++;
     }
 }
-static int avc_decode_one(Movie *m, Signals *s, Pending *p) {
-    if (p->size > 0 && !p->decoded) {
-        if (m->nheld >= AVC_HELD - 4) return 0;   /* wait until the game takes pictures */
-        uint64_t t0 = now_ns();
-        m->nsample = 0; avc_parse(m, m->in[p->index] + p->offset, (size_t)p->size);
-        if (m->nsample && avc_session(m)) {
-            CMBlockBufferRef block = NULL; CMSampleBufferRef sample = NULL;
-            CMSampleTimingInfo timing = {kCMTimeInvalid, CMTimeMake(p->time, 1000000), kCMTimeInvalid};
-            OSStatus st = CMBlockBufferCreateWithMemoryBlock(NULL, m->sample, m->nsample, kCFAllocatorNull, NULL, 0, m->nsample, 0, &block);
-            if (st == noErr) st = CMSampleBufferCreateReady(NULL, block, m->vfmt, 1, 1, &timing, 1, &m->nsample, &sample);
-            if (st == noErr) st = VTDecompressionSessionDecodeFrame(m->vt, sample, 0, NULL, NULL);
-            if (st != noErr && ++m->errors <= 4) LOG("【红】H.264 decode of a %d-byte sample at %lld us failed (%d)", p->size, (long long)p->time, (int)st);
-            if (sample) CFRelease(sample);
-            if (block) CFRelease(block);
-        } else if (m->nsample && ++m->errors <= 4) LOG("【红】H.264 sample at %lld us before its parameter sets: skipped", (long long)p->time);
-        p->decoded = 1; m->decode_ns += now_ns() - t0;
+static int avc_decode_one(Movie *m, Signals *s, const Pending *p) {
+    int eos = p->flags & FLAG_EOS && !m->eos_in, need = eos ? m->nheld + (p->size > 0) + 1 : p->size > 0;
+    int freeslots = 0; for (int i = 0; i < m->n_out; i++) freeslots += !m->out_held[i];
+    if (freeslots < need) return 0;
+    if (p->size > 0) {
+        uint64_t t0 = now_ns(); avc_decode(m, m->in[p->index] + p->offset, p->size, p->time); m->decode_ns += now_ns() - t0;
+        if (m->frames && m->frames % 300 == 0) LOG("%llu frames, decode %.2f ms per frame", (unsigned long long)m->frames, m->decode_ns / 1e6 / (double)m->frames);
     }
-    int eos = p->flags & FLAG_EOS && !m->eos_in;
-    if (eos && m->vt) VTDecompressionSessionWaitForAsynchronousFrames(m->vt);
-    avc_emit(m, s, eos ? 0 : AVC_REORDER);
+    avc_emit(m, s, 0);
     if (eos) {
-        int slot = free_out(m);
-        if (m->nheld || slot < 0) return 0;   /* the rest leaves as the game releases output slots */
-        m->eos_in = 1; push_ready(m, s, slot, FLAG_EOS, p->time, 0);
+        if (m->vt) VTDecompressionSessionWaitForAsynchronousFrames(m->vt);
+        avc_emit(m, s, 1);
+        m->eos_in = 1; int slot = free_out(m); if (slot < 0) runtime_fail("movie decoder: no slot for end of stream");
+        push_ready(m, s, slot, FLAG_EOS, p->time, 0);
         LOG("H.264 end of stream after %llu frames (%.2f ms per input, %llu errors)", (unsigned long long)m->frames, m->frames ? m->decode_ns / 1e6 / (double)m->frames : 0.0, (unsigned long long)m->errors);
     }
     m->in_free[m->nin_free++] = p->index; note(m, s, EV_INPUT);
     return 1;
 }
 
+/* ---- Vorbis (decoder type 5) with libvorbis ----
+   Super Smash Bros. Ultimate's movies carry a Vorbis track. The library decodes it with Android's MediaCodec, which ran
+   for ~19 s and then never answered the game's Flush (23.10.: the main thread waited in MediaCodec::flush; other runs
+   ran its allocator dry in MatroskaSource::readBlock). Its behaviour, recorded with TOTK_MOVIE_TRACE, is rebuilt here:
+   Configure gets the identification header as csd-0 and the setup header as csd-1 (the comment header is not passed);
+   every input is one Vorbis packet with its time; every packet's samples come out as interleaved 16-bit PCM in one output
+   (2 channels x 1024 frames = 4096 bytes for the long blocks), timed from the first output frame on (the first packet
+   only primes the overlap and gives none); the output format is audio/raw with the channel count and rate. */
+#if HAVE_VORBIS
+static void vorbis_close(Movie *m) {
+    if (m->vorbis_live) { vorbis_block_clear(&m->vb); vorbis_dsp_clear(&m->vd); m->vorbis_live = 0; }
+    if (m->vorbis_hdr) { vorbis_comment_clear(&m->vc); vorbis_info_clear(&m->vi); m->vorbis_hdr = 0; }
+}
+static int md_buffer(void *md, const char *key, const uint8_t **data, size_t *size) {
+    static int (*find_buffer)(void *, const char *, void **); static size_t (*buf_size)(void *), (*buf_offset)(void *);
+    if (!find_buffer) { need_symbol((void **)&find_buffer, "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+                        need_symbol((void **)&buf_size, "_ZNK5movie6Buffer4SizeEv"); need_symbol((void **)&buf_offset, "_ZNK5movie6Buffer6OffsetEv"); }
+    void *b = NULL; if (!find_buffer(md, key, &b) || !b) return 0;
+    const uint8_t *base = G.buf_base(b); if (!base) return 0;
+    *data = base + buf_offset(b); *size = buf_size(b); return *size > 0;
+}
+static int vorbis_configure(Movie *m, void *md) {
+    const uint8_t *id, *setup; size_t nid, nsetup;
+    if (!md_buffer(md, "csd-0", &id, &nid) || !md_buffer(md, "csd-1", &setup, &nsetup)) { LOG("【红】Vorbis configure without csd-0 / csd-1"); return 0; }
+    static const uint8_t comment[] = {3, 'v', 'o', 'r', 'b', 'i', 's', 0, 0, 0, 0, 0, 0, 0, 0, 1};   /* empty vendor, no comments, framing bit */
+    vorbis_info_init(&m->vi); vorbis_comment_init(&m->vc); m->vorbis_hdr = 1;
+    ogg_packet op = {.packet = (unsigned char *)id, .bytes = (long)nid, .b_o_s = 1, .packetno = 0};
+    int r = vorbis_synthesis_headerin(&m->vi, &m->vc, &op);
+    if (!r) { op = (ogg_packet){.packet = (unsigned char *)comment, .bytes = sizeof comment, .packetno = 1}; r = vorbis_synthesis_headerin(&m->vi, &m->vc, &op); }
+    if (!r) { op = (ogg_packet){.packet = (unsigned char *)setup, .bytes = (long)nsetup, .packetno = 2}; r = vorbis_synthesis_headerin(&m->vi, &m->vc, &op); }
+    if (r) { LOG("【红】Vorbis headers rejected (%d): identification %zu bytes, setup %zu bytes", r, nid, nsetup); return 0; }
+    if (m->vi.channels != m->channels || m->vi.rate != m->rate || m->vi.channels < 1 || m->vi.channels > 8) {
+        LOG("【红】Vorbis stream %d ch %ld Hz, the track says %d ch %d Hz", m->vi.channels, m->vi.rate, m->channels, m->rate); return 0;
+    }
+    if (vorbis_synthesis_init(&m->vd, &m->vi) || vorbis_block_init(&m->vd, &m->vb)) { LOG("【红】Vorbis decoder initialisation failed"); return 0; }
+    m->vorbis_live = 1; m->packets = 0;
+    return 1;
+}
+static int vorbis_decode_one(Movie *m, Signals *s, const Pending *p) {
+    int per = m->out_cap / (2 * m->channels), most = (int)(vorbis_info_blocksize(&m->vi, 1) / 2);
+    int eos = p->flags & FLAG_EOS && !m->eos_in, need = (p->size > 0 ? (most + per - 1) / per : 0) + eos;
+    int freeslots = 0; for (int i = 0; i < m->n_out; i++) freeslots += !m->out_held[i];
+    if (freeslots < need) return 0;
+    if (p->size > 0) {
+        uint64_t t0 = now_ns();
+        ogg_packet op = {.packet = m->in[p->index] + p->offset, .bytes = p->size, .packetno = 3 + (int64_t)m->packets++, .granulepos = -1};
+        int r = vorbis_synthesis(&m->vb, &op);
+        if (!r) r = vorbis_synthesis_blockin(&m->vd, &m->vb);
+        if (r) { m->errors++; if (m->errors <= 4) LOG("【红】Vorbis packet of %d bytes at %lld us rejected (%d)", p->size, (long long)p->time, r); }
+        float **pcm; int n;
+        while ((n = vorbis_synthesis_pcmout(&m->vd, &pcm)) > 0) {
+            if (m->anchor < 0) m->anchor = p->time;
+            for (int done = 0; done < n;) {
+                int k = n - done < per ? n - done : per, slot = free_out(m);
+                if (slot < 0) runtime_fail("movie decoder: Vorbis output slots counted wrong");
+                int16_t *o = (int16_t *)m->out[slot];
+                for (int f = 0; f < k; f++) for (int c = 0; c < m->channels; c++) {
+                    float v = pcm[c][done + f] * 32768.0f;
+                    o[f * m->channels + c] = (int16_t)(v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int)lrintf(v));
+                }
+                if (!m->format_sent) { m->format_sent = 1; note(m, s, EV_FORMAT); }
+                push_ready(m, s, slot, 0, m->anchor + (int64_t)(m->pcm_frames * 1000000ULL / (uint64_t)m->rate), k * m->channels * 2);
+                m->pcm_frames += (uint64_t)k; done += k;
+            }
+            vorbis_synthesis_read(&m->vd, n);
+        }
+        m->frames++; m->decode_ns += now_ns() - t0;
+        if (m->frames % 3000 == 0) LOG("Vorbis: %llu packets, %llu frames (%.1f s), %.3f ms per packet", (unsigned long long)m->frames, (unsigned long long)m->pcm_frames, m->pcm_frames / (double)m->rate, m->decode_ns / 1e6 / (double)m->frames);
+    }
+    if (eos) {
+        m->eos_in = 1; int slot = free_out(m); if (slot < 0) runtime_fail("movie decoder: no slot for end of stream");
+        push_ready(m, s, slot, FLAG_EOS, p->time, 0);
+        LOG("Vorbis end of stream after %llu packets, %.1f s of sound, %llu errors", (unsigned long long)m->frames, m->pcm_frames / (double)m->rate, (unsigned long long)m->errors);
+    }
+    m->in_free[m->nin_free++] = p->index; note(m, s, EV_INPUT);
+    return 1;
+}
+#else
+static void vorbis_close(Movie *m) { (void)m; }
+#endif
+
 /* Decode one input into output slots; returns 0 when it had to wait for a free output slot. */
-static int decode_one(Movie *m, Signals *s, Pending *p) {
-    if (m->codec == TYPE_AVC) return avc_decode_one(m, s, p);
+static int decode_one(Movie *m, Signals *s, const Pending *p) {
+    if (m->avc) return avc_decode_one(m, s, p);
+#if HAVE_VORBIS
+    if (m->vorbis) return vorbis_decode_one(m, s, p);
+#endif
     int need = p->size > 0 ? 1 : 0;
     if (p->flags & FLAG_EOS && !m->eos_in) need++;
-    int freeslots = 0; for (int i = 0; i < OUT_BUFS; i++) freeslots += !m->out_held[i];
+    int freeslots = 0; for (int i = 0; i < m->n_out; i++) freeslots += !m->out_held[i];
     if (freeslots < need) return 0;
     if (p->size > 0) {
         uint64_t t0 = now_ns();
@@ -387,33 +501,82 @@ static void drain_pending(Movie *m, Signals *s) {
 }
 static void release_codec(Movie *m) {
     if (m->vpx_live) { vpx_codec_destroy(&m->vpx); m->vpx_live = 0; }
-    avc_release(m);
-    for (int i = 0; i < IN_BUFS; i++) { free(m->in[i]); m->in[i] = NULL; }
-    for (int i = 0; i < OUT_BUFS; i++) { free(m->out[i]); m->out[i] = NULL; }
+    avc_close(m); m->nsps = m->npps = 0; free(m->scratch); m->scratch = NULL; m->scratch_cap = 0;
+    vorbis_close(m);
+    for (int i = 0; i < IN_MAX; i++) { free(m->in[i]); m->in[i] = NULL; }
+    for (int i = 0; i < OUT_MAX; i++) { free(m->out[i]); m->out[i] = NULL; }
     m->configured = m->started = 0; m->nin_free = m->npending = m->nready = m->ndecoded = 0; m->t0 = 0;
 }
 static void reset_queues(Movie *m) {
-    m->nin_free = 0; for (int i = 0; i < IN_BUFS; i++) m->in_free[m->nin_free++] = i;
+    m->nin_free = 0; for (int i = 0; i < m->n_in; i++) m->in_free[m->nin_free++] = i;
+    m->anchor = -1; m->pcm_frames = 0;
     memset(m->out_held, 0, sizeof m->out_held); m->npending = m->nready = m->ndecoded = 0; m->eos_in = 0; m->t0 = 0;
+}
+
+/* ---- TOTK_MOVIE_TRACE=1 (diagnostics): the calls the game makes on decoders left to the library, with arguments, results,
+   the keys of every MediaData passed in or out and the size and first bytes of every buffer, to rebuild a decoder type on
+   the host from what the library really does (Super Smash Bros. Ultimate's Vorbis track, decoder type 5). ---- */
+static void *g_traced[MAX_MOVIES]; static int g_traced_type[MAX_MOVIES];
+static int trace_on(void) { static int v = -1; if (v < 0) v = getenv("TOTK_MOVIE_TRACE") != NULL; return v; }
+static int traced(const void *obj) { if (!trace_on()) return 0; for (int i = 0; i < MAX_MOVIES; i++) if (g_traced[i] == obj) return g_traced_type[i]; return 0; }
+static void trace_md(const char *what, void *md) {
+    if (!md) { LOG("[trace] %s: (null)", what); return; }
+    static int (*find_int64)(void *, const char *, int64_t *), (*find_buffer)(void *, const char *, void **);
+    static size_t (*buf_size)(void *), (*buf_offset)(void *);
+    if (!find_int64) { need_symbol((void **)&find_int64, "_ZNK5movie9MediaData9FindInt64EPKcPl"); need_symbol((void **)&find_buffer, "_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
+                       need_symbol((void **)&buf_size, "_ZNK5movie6Buffer4SizeEv"); need_symbol((void **)&buf_offset, "_ZNK5movie6Buffer6OffsetEv"); }
+    static const char *const keys[] = {"mime", "channel-count", "sample-rate", "durationUs", "max-input-size", "pcm-encoding", "bitrate", "bit-rate",
+        "csd-0", "csd-1", "csd-2", "channel-mask", "encoder-delay", "encoder-padding", "is-adts", "aac-profile", "frame-size", "max-output-size",
+        "output-buffer-size", "buffer-size", "num-buffers", "time-us", "timeUs", "is-sync-frame", "track-id", "language"};
+    char line[2048]; size_t o = 0;
+    for (size_t k = 0; k < sizeof keys / sizeof *keys && o < sizeof line - 128; k++) {
+        const char *s = NULL; int i32 = 0; int64_t i64 = 0; void *b = NULL;
+        if (G.md_find_string(md, keys[k], &s) && s) o += (size_t)snprintf(line + o, sizeof line - o, " %s=\"%s\"", keys[k], s);
+        else if (G.md_find_int32(md, keys[k], &i32)) o += (size_t)snprintf(line + o, sizeof line - o, " %s=%d", keys[k], i32);
+        else if (find_int64(md, keys[k], &i64)) o += (size_t)snprintf(line + o, sizeof line - o, " %s=%lld", keys[k], (long long)i64);
+        else if (find_buffer(md, keys[k], &b) && b) {
+            const uint8_t *p = G.buf_base(b); size_t n = buf_size(b), off = buf_offset(b);
+            o += (size_t)snprintf(line + o, sizeof line - o, " %s=buf[%zu@%zu:", keys[k], n, off);
+            for (size_t j = 0; p && j < n && j < 12 && o < sizeof line - 8; j++) o += (size_t)snprintf(line + o, sizeof line - o, "%02x", p[off + j]);
+            o += (size_t)snprintf(line + o, sizeof line - o, "]");
+        }
+    }
+    line[o] = 0; LOG("[trace] %s:%s", what, line);
+}
+static void trace_buf(const char *what, void *buf) {
+    static size_t (*buf_size)(void *), (*buf_offset)(void *);
+    if (!buf_size) { need_symbol((void **)&buf_size, "_ZNK5movie6Buffer4SizeEv"); need_symbol((void **)&buf_offset, "_ZNK5movie6Buffer6OffsetEv"); }
+    if (!buf) { LOG("[trace] %s: buffer (null)", what); return; }
+    const uint8_t *p = G.buf_base(buf); size_t n = buf_size(buf), off = buf_offset(buf), cap = G.buf_capacity(buf);
+    char hex[80]; size_t o = 0; for (size_t j = 0; p && j < n && j < 16; j++) o += (size_t)snprintf(hex + o, sizeof hex - o, "%02x", p[off + j]); hex[o] = 0;
+    LOG("[trace] %s: size %zu offset %zu capacity %zu base %p head %s", what, n, off, cap, (const void *)p, hex);
 }
 
 /* ---- entries ---- */
 typedef void (*ctor_fn)(void *, int, int, int, int);
 static void h_ctor(void *obj, int type, int format, int mode, int priority) {
     if (!g_ready) guest_init();
-    if ((type != TYPE_VP9 && type != TYPE_AVC) || mode != MODE_BUFFER) {
-        LOG("decoder type %d mode %d format %d: left to the library (only VP9 / H.264 in buffer mode run on the host)", type, mode, format);
-        ((ctor_fn)G.orig[MOVIE_CTOR])(obj, type, format, mode, priority); return;
+    static int vorbis_off = -1; if (vorbis_off < 0) { const char *e = getenv("TOTK_MOVIE_VORBIS"); vorbis_off = e && !strcmp(e, "0"); }   /* 0: the library's Vorbis (A/B) */
+    int host_vorbis = HAVE_VORBIS && !vorbis_off && type == TYPE_VORBIS && format == FORMAT_PCM16;
+    if ((type != TYPE_VP9 && type != TYPE_AVC && !host_vorbis) || mode != MODE_BUFFER) {
+        LOG("decoder type %d mode %d format %d: left to the library (VP9, H.264 and Vorbis to 16-bit PCM in buffer mode run on the host)", type, mode, format);
+        ((ctor_fn)G.orig[MOVIE_CTOR])(obj, type, format, mode, priority);
+        if (trace_on()) { pthread_mutex_lock(&g_lock); for (int i = 0; i < MAX_MOVIES; i++) if (!g_traced[i] || g_traced[i] == obj) { g_traced[i] = obj; g_traced_type[i] = type; break; } pthread_mutex_unlock(&g_lock);
+                          LOG("[trace] %p ctor type %d format %d mode %d priority %d", obj, type, format, mode, priority); }
+        return;
     }
     Movie *m = calloc(1, sizeof *m); if (!m) runtime_fail("movie decoder allocation");
-    m->guest = obj; m->format = format; m->codec = type; pthread_mutex_init(&m->mu, NULL);
+    m->guest = obj; m->format = format; m->avc = type == TYPE_AVC; m->vorbis = type == TYPE_VORBIS; m->anchor = -1; pthread_mutex_init(&m->mu, NULL);
     pthread_mutex_lock(&g_lock); int i = 0;
     while (i < MAX_MOVIES && g_movies[i] && g_movies[i]->guest != obj) i++;
     if (i == MAX_MOVIES) runtime_fail("movie decoder table full");
     if (g_movies[i]) { LOG("【红】decoder object %p reused without destruction", obj); release_codec(g_movies[i]); free(g_movies[i]); }
     g_movies[i] = m; pthread_mutex_unlock(&g_lock);
     ((void **)obj)[0] = G.vptr; ((void **)obj)[1] = m;
-    if (type == TYPE_AVC) LOG("H.264 decoder %p on the host (VideoToolbox), output format %d", obj, format);
+    if (m->avc) LOG("H.264 decoder %p on the host (VideoToolbox), output format %d", obj, format);
+#if HAVE_VORBIS
+    else if (m->vorbis) LOG("Vorbis decoder %p on the host (%s), 16-bit PCM", obj, vorbis_version_string());
+#endif
     else LOG("VP9 decoder %p on the host (libvpx %s), output format %d", obj, vpx_codec_version_str(), format);
 }
 static void destroy(void *obj) {
@@ -433,48 +596,61 @@ static void h_d0(void *obj) { if (find(obj)) destroy(obj); ((obj_fn)G.orig[MOVIE
 
 typedef int (*md_fn)(void *, void *);
 static int h_configure(void *obj, void *format) {
-    Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format);
+    Movie *m = find(obj);
+    if (!m) { if (traced(obj)) trace_md("configure in", format); int r = ((md_fn)G.orig[MOVIE_CONFIGURE])(obj, format); if (traced(obj)) LOG("[trace] %p configure -> %#x", obj, r); return r; }
     if (!format) return ST_NULL;
+#if HAVE_VORBIS
+    if (m->vorbis) {
+        const char *mime = NULL; int ch = 0, rate = 0, br = 0;
+        G.md_find_string(format, "mime", &mime); G.md_find_int32(format, "channel-count", &ch); G.md_find_int32(format, "sample-rate", &rate); G.md_find_int32(format, "bit-rate", &br);
+        if (!mime || strcmp(mime, "audio/vorbis") || ch < 1 || ch > 8 || rate < 8000 || rate > 192000) {
+            LOG("【红】configure: mime %s %d ch %d Hz not supported", mime ? mime : "(none)", ch, rate); return ST_UNSUPPORTED;
+        }
+        pthread_mutex_lock(&m->mu);
+        release_codec(m); m->channels = ch; m->rate = rate; m->bitrate = br;
+        if (!vorbis_configure(m, format)) { release_codec(m); pthread_mutex_unlock(&m->mu); return ST_UNSUPPORTED; }
+        m->n_in = AUD_IN_BUFS; m->in_cap = AUD_IN_CAP; m->n_out = AUD_OUT_BUFS; m->out_cap = AUD_OUT_CAP;
+        for (int i = 0; i < m->n_in; i++) if (!(m->in[i] = malloc((size_t)m->in_cap))) runtime_fail("movie input buffers");
+        for (int i = 0; i < m->n_out; i++) if (!(m->out[i] = malloc((size_t)m->out_cap))) runtime_fail("movie output buffers");
+        reset_queues(m); m->format_sent = 0; m->configured = 1; m->last_error = 0;
+        pthread_mutex_unlock(&m->mu);
+        LOG("configured Vorbis %d ch %d Hz (blocks %d / %d), %d input buffers of %d KiB, %d outputs of %d bytes", ch, rate,
+            vorbis_info_blocksize(&m->vi, 0), vorbis_info_blocksize(&m->vi, 1), m->n_in, m->in_cap >> 10, m->n_out, m->out_cap);
+        return ST_OK;
+    }
+#endif
     if (m->format != FORMAT_NV12) { LOG("【红】output format %d not implemented on the host (NV12 = 4 only)", m->format); return ST_UNSUPPORTED; }
     const char *mime = NULL; int w = 0, h = 0;
     G.md_find_string(format, "mime", &mime); G.md_find_int32(format, "width", &w); G.md_find_int32(format, "height", &h);
-    const char *want = m->codec == TYPE_AVC ? "video/avc" : "video/x-vnd.on2.vp9";
-    if (!mime || strcmp(mime, want) || w <= 0 || h <= 0 || w > 8192 || h > 8192 || (w | h) & 1) {
+    if (!mime || strcmp(mime, m->avc ? "video/avc" : "video/x-vnd.on2.vp9") || w <= 0 || h <= 0 || w > 8192 || h > 8192 || (w | h) & 1) {
         LOG("【红】configure: mime %s %dx%d not supported", mime ? mime : "(none)", w, h); return ST_UNSUPPORTED;
     }
     pthread_mutex_lock(&m->mu);
     release_codec(m); m->w = w; m->h = h;
-    if (m->codec == TYPE_AVC) {
-        m->nsps = m->npps = 0; m->params_new = 0;
-        /* The library's MP4 reader keeps the avcC record under "avcc" (the NVIDIA decoder derived csd-0 / csd-1 from it);
-           an Android-style extractor gives csd-0 / csd-1. Take whichever is there. */
-        static const char *const keys[] = {"csd-0", "csd-1", "avcc", "avcC", "csd"};
-        for (int k = 0; k < 5 && G.md_find_buffer && G.buf_data && G.buf_size; k++) {
-            void *b = NULL;
-            if (!G.md_find_buffer(format, keys[k], &b) || !b) continue;
-            const uint8_t *d = G.buf_data(b); size_t n = G.buf_size(b);
-            LOG("H.264 format buffer \"%s\": %zu bytes%s", keys[k], n, d && n ? (d[0] == 1 ? " (avcC record)" : "") : " (empty)");
-            if (d && n && n < 4096) avc_csd(m, d, n);
-        }
-        m->nsample = 0;   /* csd carries parameter sets only */
-        LOG("H.264 csd: SPS %zu bytes, PPS %zu bytes%s", m->nsps, m->npps, m->nsps && m->npps ? "" : " (waiting for in-band parameter sets)");
-    } else {
+    if (m->avc) avc_codec_data(m, format);   /* the session is made at the first slice (avc_session) */
+    else {
         vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)w, .h = (unsigned)h};
         if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder initialisation");
         m->vpx_live = 1;
     }
-    for (int i = 0; i < IN_BUFS; i++) if (!(m->in[i] = malloc(IN_CAP))) runtime_fail("movie input buffers");
-    for (int i = 0; i < OUT_BUFS; i++) if (!(m->out[i] = malloc((size_t)frame_bytes(m)))) runtime_fail("movie output buffers");
+    m->n_in = IN_BUFS; m->in_cap = IN_CAP; m->n_out = OUT_BUFS; m->out_cap = frame_bytes(m);
+    for (int i = 0; i < m->n_in; i++) if (!(m->in[i] = malloc((size_t)m->in_cap))) runtime_fail("movie input buffers");
+    for (int i = 0; i < m->n_out; i++) if (!(m->out[i] = malloc((size_t)m->out_cap))) runtime_fail("movie output buffers");
     reset_queues(m); m->format_sent = 0; m->configured = 1; m->last_error = 0;
     pthread_mutex_unlock(&m->mu);
-    LOG("configured %dx%d %s, %d input buffers of %d KiB, %d output frames of %d bytes", w, h, m->codec == TYPE_AVC ? "H.264" : "VP9", IN_BUFS, IN_CAP >> 10, OUT_BUFS, frame_bytes(m));
+    LOG("configured %dx%d %s, %d input buffers of %d KiB, %d output frames of %d bytes", w, h, m->avc ? "H.264" : "VP9", IN_BUFS, IN_CAP >> 10, OUT_BUFS, frame_bytes(m));
     return ST_OK;
 }
 static int h_register_events(void *obj, void *events) {
-    Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_REGISTER_EVENTS])(obj, events);
+    Movie *m = find(obj);
+    if (!m) { if (traced(obj)) LOG("[trace] %p register events %p", obj, events); return ((md_fn)G.orig[MOVIE_REGISTER_EVENTS])(obj, events); }
     m->events = events; return ST_OK;
 }
 static void set_format(Movie *m, void *md) {
+    if (m->vorbis) {   /* what the library's Vorbis decoder reports (recorded): mime, channels, rate, the track's bit rate */
+        G.md_set_string(md, "mime", "audio/raw"); G.md_set_int32(md, "channel-count", m->channels);
+        G.md_set_int32(md, "sample-rate", m->rate); G.md_set_int32(md, "bit-rate", m->bitrate); return;
+    }
     G.md_set_string(md, "mime", "video/raw");
     G.md_set_int32(md, "width", m->w); G.md_set_int32(md, "height", m->h);
     G.md_set_int32(md, "stride", m->w); G.md_set_int32(md, "slice-height", m->h);
@@ -485,14 +661,16 @@ static void set_format(Movie *m, void *md) {
     G.md_set_int32(md, "nv12-y-offset", 0); G.md_set_int32(md, "nv12-uv-offset", m->w * m->h);
 }
 static int h_get_output_format(void *obj, void *md) {
-    Movie *m = find(obj); if (!m) return ((md_fn)G.orig[MOVIE_GET_OUTPUT_FORMAT])(obj, md);
+    Movie *m = find(obj);
+    if (!m) { int r = ((md_fn)G.orig[MOVIE_GET_OUTPUT_FORMAT])(obj, md); if (traced(obj)) { LOG("[trace] %p output format -> %#x", obj, r); trace_md("output format", md); } return r; }
     if (!md) return ST_NULL;
     if (!m->configured) return ST_ERROR;
     set_format(m, md); return ST_OK;
 }
 typedef int (*int_fn)(void *);
 static int h_start(void *obj) {
-    Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_START])(obj);
+    Movie *m = find(obj);
+    if (!m) { int t = traced(obj); uint64_t t0 = now_ns(); if (t) LOG("[trace] %p start ...", obj); int r = ((int_fn)G.orig[MOVIE_START])(obj); if (t) LOG("[trace] %p start -> %#x after %.1f ms", obj, r, (now_ns() - t0) / 1e6); return r; }
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->configured) { pthread_mutex_unlock(&m->mu); return ST_NOT_CONFIGURED; }
@@ -501,22 +679,26 @@ static int h_start(void *obj) {
     return ST_OK;
 }
 static int h_stop(void *obj) {
-    Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_STOP])(obj);
+    Movie *m = find(obj);
+    if (!m) { int t = traced(obj); uint64_t t0 = now_ns(); if (t) LOG("[trace] %p stop ...", obj); int r = ((int_fn)G.orig[MOVIE_STOP])(obj); if (t) LOG("[trace] %p stop -> %#x after %.1f ms", obj, r, (now_ns() - t0) / 1e6); return r; }
     pthread_mutex_lock(&m->mu); LOG("stop after %llu frames (%llu dropped to keep time)", (unsigned long long)m->frames, (unsigned long long)m->dropped); release_codec(m); pthread_mutex_unlock(&m->mu);
     return ST_OK;
 }
 static int h_reset(void *obj) {
-    Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_RESET])(obj);
+    Movie *m = find(obj);
+    if (!m) { int t = traced(obj); uint64_t t0 = now_ns(); if (t) LOG("[trace] %p reset ...", obj); int r = ((int_fn)G.orig[MOVIE_RESET])(obj); if (t) LOG("[trace] %p reset -> %#x after %.1f ms", obj, r, (now_ns() - t0) / 1e6); return r; }
     pthread_mutex_lock(&m->mu); release_codec(m); m->last_error = 0; pthread_mutex_unlock(&m->mu);
     return ST_OK;
 }
 static int h_flush(void *obj) {
-    Movie *m = find(obj); if (!m) return ((int_fn)G.orig[MOVIE_FLUSH])(obj);
+    Movie *m = find(obj);
+    if (!m) { int t = traced(obj); uint64_t t0 = now_ns(); if (t) LOG("[trace] %p flush ...", obj); int r = ((int_fn)G.orig[MOVIE_FLUSH])(obj); if (t) LOG("[trace] %p flush -> %#x after %.1f ms", obj, r, (now_ns() - t0) / 1e6); return r; }
     pthread_mutex_lock(&m->mu);
-    if (m->configured && m->codec == TYPE_AVC) {   /* parameter sets and session stay; held pictures belong to the old position */
-        if (m->vt) VTDecompressionSessionWaitForAsynchronousFrames(m->vt);
-        avc_drop_held(m); reset_queues(m);
-    } else if (m->configured) {   /* drop queued work; the next input starts a new decode (after a seek: a key frame) */
+    if (m->configured && m->avc) { avc_close(m); reset_queues(m); }   /* the parameter sets stay for the next key frame */
+#if HAVE_VORBIS
+    else if (m->configured && m->vorbis) { LOG("Vorbis flush after %llu packets, %.1f s of sound", (unsigned long long)m->packets, m->pcm_frames / (double)m->rate); vorbis_synthesis_restart(&m->vd); reset_queues(m); }
+#endif
+    else if (m->configured) {   /* drop queued work; the next input starts a new decode (after a seek: a key frame) */
         vpx_codec_destroy(&m->vpx); m->vpx_live = 0;
         vpx_codec_dec_cfg_t cfg = {.threads = 4, .w = (unsigned)m->w, .h = (unsigned)m->h};
         if (vpx_codec_dec_init(&m->vpx, vpx_codec_vp9_dx(), &cfg, 0) != VPX_CODEC_OK) runtime_fail("libvpx VP9 decoder re-initialisation");
@@ -527,7 +709,8 @@ static int h_flush(void *obj) {
 }
 typedef int (*pp_fn)(void *, int *, int *);
 static int h_acquire_input(void *obj, int *index, int *remaining) {
-    Movie *m = find(obj); if (!m) return ((pp_fn)G.orig[MOVIE_ACQUIRE_INPUT])(obj, index, remaining);
+    Movie *m = find(obj);
+    if (!m) { int r = ((pp_fn)G.orig[MOVIE_ACQUIRE_INPUT])(obj, index, remaining); static unsigned n; if (traced(obj) && (++n <= 30 || n % 500 == 0)) LOG("[trace] %p acquire input #%u -> %#x index %d remaining %d", obj, n, r, index ? *index : -9, remaining ? *remaining : -9); return r; }
     if (!index || !remaining) return ST_NULL;
     pthread_mutex_lock(&m->mu);
     *index = -1; *remaining = 0; int st = ST_NO_INPUT;
@@ -539,20 +722,22 @@ static int h_acquire_input(void *obj, int *index, int *remaining) {
 }
 typedef int (*ib_fn)(void *, int, void *);
 static int h_get_input(void *obj, int index, void *buf) {
-    Movie *m = find(obj); if (!m) return ((ib_fn)G.orig[MOVIE_GET_INPUT])(obj, index, buf);
+    Movie *m = find(obj);
+    if (!m) { int r = ((ib_fn)G.orig[MOVIE_GET_INPUT])(obj, index, buf); static unsigned n; if (traced(obj) && ++n <= 8) { LOG("[trace] %p get input %d -> %#x", obj, index, r); trace_buf("input buffer", buf); } return r; }
     if (!buf) return ST_NULL;
-    if (index < 0 || index >= IN_BUFS || !m->in[index]) { G.buf_set_range(buf, 0, 0); G.buf_set_data(buf, NULL, 0); return ST_ERROR; }
-    G.buf_set_range(buf, 0, IN_CAP); G.buf_set_data(buf, m->in[index], IN_CAP);
+    if (index < 0 || index >= m->n_in || !m->in[index]) { G.buf_set_range(buf, 0, 0); G.buf_set_data(buf, NULL, 0); return ST_ERROR; }
+    G.buf_set_range(buf, 0, m->in_cap); G.buf_set_data(buf, m->in[index], (size_t)m->in_cap);
     return ST_OK;
 }
 typedef int (*send_fn)(void *, int, int, int, int64_t, unsigned);
 static int h_send_input(void *obj, int index, int offset, int size, int64_t time, unsigned flags) {
-    Movie *m = find(obj); if (!m) return ((send_fn)G.orig[MOVIE_SEND_INPUT])(obj, index, offset, size, time, flags);
-    if (index < 0 || index >= IN_BUFS || offset < 0 || size < 0 || (int64_t)offset + size > IN_CAP) return ST_ERROR;
+    Movie *m = find(obj);
+    if (!m) { int r = ((send_fn)G.orig[MOVIE_SEND_INPUT])(obj, index, offset, size, time, flags); static unsigned n; if (traced(obj) && (++n <= 40 || n % 500 == 0 || flags)) LOG("[trace] %p send input #%u index %d offset %d size %d time %lld flags %#x -> %#x", obj, n, index, offset, size, (long long)time, flags, r); return r; }
+    if (index < 0 || index >= m->n_in || offset < 0 || size < 0 || (int64_t)offset + size > m->in_cap) return ST_ERROR;
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     if (!m->started) { pthread_mutex_unlock(&m->mu); return ST_ERROR; }
-    Pending p = {index, offset, size, time, flags, 0};
+    Pending p = {index, offset, size, time, flags};
     if (m->eos_in) { m->in_free[m->nin_free++] = index; note(m, &s, EV_INPUT); }   /* after end of stream: hand the buffer back */
     else if (m->npending || !decode_one(m, &s, &p)) m->pending[m->npending++] = p;
     pthread_mutex_unlock(&m->mu); fire(&s);
@@ -560,7 +745,8 @@ static int h_send_input(void *obj, int index, int offset, int size, int64_t time
 }
 typedef int (*acq_fn)(void *, int *, int64_t *, unsigned *, int *);
 static int h_acquire_output(void *obj, int *index, int64_t *time, unsigned *flags, int *remaining) {
-    Movie *m = find(obj); if (!m) return ((acq_fn)G.orig[MOVIE_ACQUIRE_OUTPUT])(obj, index, time, flags, remaining);
+    Movie *m = find(obj);
+    if (!m) { int r = ((acq_fn)G.orig[MOVIE_ACQUIRE_OUTPUT])(obj, index, time, flags, remaining); static unsigned n; if (traced(obj) && r == 0 && (++n <= 40 || n % 500 == 0 || (flags && *flags))) LOG("[trace] %p acquire output #%u -> index %d time %lld flags %#x remaining %d", obj, n, *index, (long long)*time, *flags, *remaining); return r; }
     if (!index || !time || !flags || !remaining) return ST_NULL;
     pthread_mutex_lock(&m->mu);   /* paced frames become ready only at presents (movie_host_tick): one per game frame */
     *index = -1; *time = 0; *flags = 0; *remaining = 0; int st = ST_NO_OUTPUT;
@@ -572,12 +758,13 @@ static int h_acquire_output(void *obj, int *index, int64_t *time, unsigned *flag
     return st;
 }
 static int h_get_output(void *obj, int index, void *buf) {
-    Movie *m = find(obj); if (!m) return ((ib_fn)G.orig[MOVIE_GET_OUTPUT])(obj, index, buf);
+    Movie *m = find(obj);
+    if (!m) { int r = ((ib_fn)G.orig[MOVIE_GET_OUTPUT])(obj, index, buf); static unsigned n; if (traced(obj) && (++n <= 40 || n % 500 == 0)) { LOG("[trace] %p get output %d #%u -> %#x", obj, index, n, r); trace_buf("output buffer", buf); } return r; }
     if (!buf) return ST_NULL;
     G.buf_set_range(buf, 0, 0);
     pthread_mutex_lock(&m->mu);
     int st = ST_ERROR;
-    if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
+    if (index >= 0 && index < m->n_out && m->out_held[index]) {
         int bytes = m->out_bytes[index]; uint8_t *dst = G.buf_base(buf);
         if (!bytes) st = ST_OK;
         else if (dst && G.buf_capacity(buf) >= (size_t)bytes) { memcpy(dst, m->out[index], (size_t)bytes); G.buf_set_range(buf, 0, bytes); st = ST_OK; }
@@ -586,21 +773,23 @@ static int h_get_output(void *obj, int index, void *buf) {
     pthread_mutex_unlock(&m->mu); return st;
 }
 static int h_get_output_size(void *obj, int *size, int *count) {
-    Movie *m = find(obj); if (!m) return ((pp_fn)G.orig[MOVIE_GET_OUTPUT_SIZE])(obj, size, count);
+    Movie *m = find(obj);
+    if (!m) { int r = ((pp_fn)G.orig[MOVIE_GET_OUTPUT_SIZE])(obj, size, count); if (traced(obj)) LOG("[trace] %p output size -> %#x size %d count %d", obj, r, size ? *size : -9, count ? *count : -9); return r; }
     if (!size || !count) return ST_NULL;
-    *count = 1; *size = m->configured ? frame_bytes(m) : 0;
+    *count = 1; *size = m->configured ? m->out_cap : 0;
     return ST_OK;
 }
 typedef int (*i_fn)(void *, int);
 static int h_release_output(void *obj, int index) {
-    Movie *m = find(obj); if (!m) return ((i_fn)G.orig[MOVIE_RELEASE_OUTPUT])(obj, index);
+    Movie *m = find(obj);
+    if (!m) { int r = ((i_fn)G.orig[MOVIE_RELEASE_OUTPUT])(obj, index); static unsigned n; if (traced(obj) && (++n <= 30 || n % 500 == 0)) LOG("[trace] %p release output %d #%u -> %#x", obj, index, n, r); return r; }
     Signals s = {0};
     pthread_mutex_lock(&m->mu);
     int st = ST_ERROR;
-    if (index >= 0 && index < OUT_BUFS && m->out_held[index]) {
+    if (index >= 0 && index < m->n_out && m->out_held[index]) {
         int queued = 0; for (int i = 0; i < m->nready; i++) queued |= m->ready[i].index == index;
         for (int i = 0; i < m->ndecoded; i++) queued |= m->decoded[i].index == index;
-        if (!queued) { m->out_held[index] = 0; if (m->codec == TYPE_AVC && !m->npending) avc_emit(m, &s, AVC_REORDER); drain_pending(m, &s); st = ST_OK; }
+        if (!queued) { m->out_held[index] = 0; drain_pending(m, &s); st = ST_OK; }
     }
     pthread_mutex_unlock(&m->mu); fire(&s);
     return st;
@@ -611,13 +800,15 @@ static int h_get_last_error(void *obj) {
 }
 typedef int (*ibm_fn)(void *, int, void *, void *);
 static int h_get_output_buffer_format(void *obj, int index, void *md) {
-    Movie *m = find(obj); if (!m) return ((ib_fn)G.orig[MOVIE_GET_OUTPUT_BUFFER_FORMAT])(obj, index, md);
+    Movie *m = find(obj);
+    if (!m) { int r = ((ib_fn)G.orig[MOVIE_GET_OUTPUT_BUFFER_FORMAT])(obj, index, md); static unsigned n; if (traced(obj) && ++n <= 6) { LOG("[trace] %p output buffer format %d -> %#x", obj, index, r); trace_md("output buffer format", md); } return r; }
     if (!md) return ST_NULL;
-    if (index < 0 || index >= OUT_BUFS || !m->out_held[index]) return ST_ERROR;
+    if (index < 0 || index >= m->n_out || !m->out_held[index]) return ST_ERROR;
     set_format(m, md); return ST_OK;
 }
 static int h_get_output_md(void *obj, int index, void *buf, void *md) {
-    Movie *m = find(obj); if (!m) return ((ibm_fn)G.orig[MOVIE_GET_OUTPUT_MD])(obj, index, buf, md);
+    Movie *m = find(obj);
+    if (!m) { int r = ((ibm_fn)G.orig[MOVIE_GET_OUTPUT_MD])(obj, index, buf, md); static unsigned n; if (traced(obj) && (++n <= 40 || n % 500 == 0)) { LOG("[trace] %p get output+format %d #%u -> %#x", obj, index, n, r); trace_buf("output buffer", buf); if (n <= 4) trace_md("output buffer format", md); } return r; }
     if (!buf && !md) return ST_NULL;
     int st = md ? h_get_output_buffer_format(obj, index, md) : ST_OK;
     return st == ST_OK && buf ? h_get_output(obj, index, buf) : st;

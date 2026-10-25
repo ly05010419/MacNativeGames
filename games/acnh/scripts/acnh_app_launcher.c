@@ -89,6 +89,7 @@ int main(int argc, char **argv) {
     setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_SLOT_OWNER", "user", 1);
     setenv("TOTK_SLOT_PURPOSE", "Animal Crossing New Horizons.app", 1);
+    setenv("TOTK_MOVIE_PACE", "0", 1);
     setenv("TOTK_SHADER_ASYNC", "0", 0);
     setenv("TOTK_MFX_UPSCALE", "0", 0);
     setenv("TOTK_MFX_OUTPUT", "0", 0);
