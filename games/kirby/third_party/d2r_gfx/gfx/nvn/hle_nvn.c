@@ -137,13 +137,18 @@ static int call_stats_on(void);
 static void call_stats_end(const void *cb, const uint8_t *copy);
 NVN(nvnDeviceBuilderSetDefaults, void, NVNdeviceBuilder *b) { memset(b, 0, sizeof(dev_builder_t)); }
 NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_t *)b)->flags = f; }
+// The zero-valued NVN device depth mode is -w..w; keep translation in sync
+// even when a game uses the default and never calls SetDepthMode.
+static _Atomic int g_depth_near_minus_w = 1;
 NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
+    atomic_store(&g_depth_near_minus_w, o->depth_mode == NVN_DEPTH_MODE_NEAR_IS_MINUS_W);
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
     return 1;
 }
 NVN(nvnDeviceFinalize, void, NVNdevice *d) { ((dev_t_ *)d)->magic = 0; }
+NVN(nvnDeviceSetIntermediateShaderCache, void, NVNdevice *d, int size) { (void)d; (void)size; }
 NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const char *name) {
     (void)d; return (PFNNVNGENERICFUNCPTRPROC)runtime_hle_wrap_named(nvn_lookup(name), name);
 }
@@ -151,7 +156,7 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 设备属性：Tegra X1 实测值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐项调 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
-#if defined(GAME_BOTW) || defined(GAME_ODYSSEY)
+#if defined(GAME_BOTW) || defined(GAME_ODYSSEY) || defined(GAME_KIRBY)
     [0x00] = 53, [0x01] = 311,  // Odyssey 1.3.0 main+0x9414c4 checks 53; +0x9414d0 requires minor >= 311.
 #else
     [0x00] = 55, [0x01] = 15,   // Experimental ABI target: TOTK main+e9d614 requires major 55, minor >= 15. Unsupported functions stop.
@@ -196,7 +201,16 @@ NVN(nvnDeviceGetImageHandle, NVNimageHandle, const NVNdevice *d, int id) { (void
 // Separate texture / sampler handles: value = descriptor index (the sampler index goes in bit 20 and above, consistent with the bit layout of combined handles)
 // TOTK: combined handle = texture id (20 bits) | sampler id << 20, the encoding the replay layer decodes.
 NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int tid, int sid) {
-    (void)d; if (tid < 0 || tid >= (1 << 20) || sid < 0 || sid >= (1 << 12)) die("texture handle ids out of range %d/%d", tid, sid);
+    (void)d;
+    // Kirby binds an unassigned refractionDepthBuffer parameter while opening
+    // Pause. Preserve its invalid descriptor sentinel; do not alias a live
+    // texture. Replay still checks reflected slots before choosing its dummy texture.
+    if (tid == -1 && sid >= 0 && sid < (1 << 12)) {
+        static _Atomic unsigned unbound;
+        if (atomic_fetch_add(&unbound, 1) < 3) LOG("[kirby] preserved unbound texture descriptor sentinel (sampler %d)", sid);
+        return (NVNtextureHandle)(0xfffffu | (uint64_t)sid << 20);
+    }
+    if (tid < 0 || tid >= (1 << 20) || sid < 0 || sid >= (1 << 12)) die("texture handle ids out of range %d/%d", tid, sid);
     return (NVNtextureHandle)((uint64_t)tid | (uint64_t)sid << 20);
 }
 NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int tid) {
@@ -207,16 +221,10 @@ NVN(nvnDeviceGetSeparateSamplerHandle, NVNseparateSamplerHandle, const NVNdevice
 NVN(nvnDeviceInstallDebugCallback, void, NVNdevice *d, const PFNNVNDEBUGCALLBACKPROC cb, void *data, uint32_t enable) {
     dev_t_ *o = (dev_t_ *)d; o->dbg_cb = B(enable) ? (void *)cb : NULL; o->dbg_data = data;
 }
-NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; LOG("[nvn] 窗口原点 %s", m ? "左上（同 D3D / Metal）" : "左下（GL）"); }
-#if defined(GAME_BOTW) || defined(GAME_ODYSSEY)
-/* NVN's default depth mode is NEAR_IS_MINUS_W (enum value 0, the OpenGL convention): a device the game never calls
-   nvnDeviceSetDepthMode on keeps it. TOTK sets it explicitly; Breath of the Wild never does, and its full-screen copy
-   to the swapchain has clip z = -1 (the near plane), which the 0..w convention clipped away: the window stayed magenta
-   (botw.md). */
-static _Atomic int g_depth_near_minus_w = 1;
-#else
-static _Atomic int g_depth_near_minus_w;
-#endif
+static _Atomic int g_window_origin_mode = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+int totk_window_origin_mode(void) { return atomic_load(&g_window_origin_mode); }
+NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; atomic_store(&g_window_origin_mode, (int)m); LOG("[nvn] 窗口原点 %s", m ? "左上（同 D3D / Metal）" : "左下（GL）"); }
+NVN(nvnDeviceGetWindowOriginMode, NVNwindowOriginMode, const NVNdevice *d) { return (NVNwindowOriginMode)((const dev_t_ *)d)->origin; }
 int totk_depth_near_minus_w(void) { return atomic_load(&g_depth_near_minus_w); }
 NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; atomic_store(&g_depth_near_minus_w, m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W); LOG("[nvn] 深度模式 %s", m ? "近=0（同 D3D / Metal）" : "近=-w（GL）：顶点着色器翻译时做 z=(z+w)/2 转换"); }
 NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
@@ -240,7 +248,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    if (o->mem && gpu_visible) { for (uint64_t off = 0; off < o->size; off += (1ull << 29)) { uint64_t n = o->size - off; if (n > (1ull << 29)) n = 1ull << 29; mtl_pool_add(o->mem + off, n); } nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -252,7 +260,7 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); for (uint64_t off = 0; off < o->size; off += (1ull << 29)) mtl_pool_del(o->mem + off); }
     totk_vpool_fini(o); o->magic = 0;
 }
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
@@ -2038,7 +2046,10 @@ NVN(nvnCommandBufferCopyTextureToTexture, void, NVNcommandBuffer *c, const NVNte
     copy_view(&o->sv, &o->has_sv, sv); copy_view(&o->dv, &o->has_dv, dv); o->sr = *sr; o->dr = *dr; o->flags = flags;
 }
 NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) { REC(c, OP_COPY_STRIDE, p_copy_stride)->stride = st; }
-NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { (void)c; (void)st; }
+NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) {
+    (void)c;
+    if (st != 0) { fprintf(stderr, "[nvn] nonzero copy image stride %td unsupported\n", st); abort(); }
+}
 NVN(nvnCommandBufferGetCopyRowStride, ptrdiff_t, const NVNcommandBuffer *c) { (void)c; return 0; }
 NVN(nvnCommandBufferGetCopyImageStride, ptrdiff_t, const NVNcommandBuffer *c) { (void)c; return 0; }
 NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { memcpy(REC(c, OP_BLEND_COLOR, p_blend_color)->rgba, v, 16); }
@@ -2506,7 +2517,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     totk_tl(TL_ACQ_OUT, (uint64_t)*idx, 0);
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
-#if defined(GAME_BOTW) || defined(GAME_ODYSSEY)
+#if defined(GAME_BOTW) || defined(GAME_ODYSSEY) || defined(GAME_KIRBY)
 /* NVN 53 (also called by Odyssey 1.3.0): the queue-side acquire. The same wait as nvnWindowAcquireTexture without a
    sync: it returns once the texture may be drawn into, and every later GPU use of it is ordered after the present copy on
    the one Metal queue. */

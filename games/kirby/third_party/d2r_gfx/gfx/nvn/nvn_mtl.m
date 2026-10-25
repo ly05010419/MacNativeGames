@@ -48,6 +48,26 @@ static uint64_t g_gen_shown;            // interpolated frames handed to the scr
 #include "../../host/dm.h"
 #import <CommonCrypto/CommonDigest.h>
 #include <stdarg.h>
+
+int totk_window_origin_mode(void);
+static inline int nvn_window_origin_is_lower_left(void) {
+    static int env_origin = -2;
+    if (env_origin == -2) {
+        const char *e = getenv("TOTK_WIN_ORIGIN");
+        env_origin = e ? atoi(e) : -1;
+    }
+    if (env_origin >= 0) return env_origin == 0;
+    return totk_window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+}
+static inline int linear_tex_should_flip(void) {
+    static int env_flip = -2;
+    if (env_flip == -2) {
+        const char *e = getenv("TOTK_LINEAR_TEX_FLIP");
+        env_flip = e ? atoi(e) : -1;
+    }
+    if (env_flip >= 0) return env_flip != 0;
+    return nvn_window_origin_is_lower_left();
+}
 #include <setjmp.h>
 extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarded read of guest memory survives a fault
 #include <mach-o/dyld.h>
@@ -3633,7 +3653,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     size_t xtotal = 0;   // output of the BC2/3/4/5/7 transcoder
     if (tck) for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) { uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u); xtotal += (size_t)((w + 3) / 4) * tco * ((h + 3) / 4) * layers; }
     int use_gpu = (!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d) && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // TOTK: linear textures take the CPU row copy
-    if (g_nvn_deswz_gpu && !use_gpu && !unp) RED_ONCE(40, "预排布贴图存储不在内存池里，回退 CPU");
+    if (g_nvn_deswz_gpu && !use_gpu && !unp && !nvn_tex_is_linear(&t->d)) RED_ONCE(40, "预排布贴图存储不在内存池里，回退 CPU");
     if (use_gpu) {
         // GPU 执行时读内存池，比 CPU 上传时刻快照更接近 Switch 真机；脏页戳仍在编码前取，之后写入仍会触发重传。
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
@@ -3715,7 +3735,14 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
             if (tca) {   // BC1 -> ASTC on the CPU (linear textures, storage outside memory pools, no GPU transcoder)
                 uint8_t *cb = malloc(pitch * rows * z); uint32_t bw4 = (w + 3) / 4, bh4 = (h + 3) / 4; size_t arow = (size_t)bw4 * 16;
                 if (!cb || (nvn_tex_is_linear(&t->d) ? 0 : nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch))) { free(cb); RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
-                if (nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows * z; r++) memcpy(cb + r * pitch, t->mem + r * stride, pitch); }
+                if (nvn_tex_is_linear(&t->d)) {
+                    size_t stride = nvn_tex_linear_stride(&t->d);
+                    int flip = linear_tex_should_flip();
+                    for (size_t r = 0; r < rows * z; r++) {
+                        size_t dst_r = flip ? (rows * z - 1 - r) : r;
+                        memcpy(cb + dst_r * pitch, t->mem + r * stride, pitch);
+                    }
+                }
                 for (uint32_t zi = 0; zi < z; zi++) nvn_bc1_to_astc_image(cb + zi * pitch * rows, pitch, bw4, bh4, (uint8_t *)stg.contents + off + zi * arow * bh4, bc1_rgba(t->d.format));
                 free(cb);
                 up_blit_add(stg, off, arow, arow * bh4, MTLSizeMake(w, h, z), mt, y, l - drop);
@@ -3733,9 +3760,14 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
             }
             if (nvn_tex_is_linear(&t->d)) {   // TOTK: linear (pitch) textures such as the glyph atlas: rows are already linear in the pool, copy with the stride
                 size_t stride = nvn_tex_linear_stride(&t->d);
-                for (size_t r = 0; r < rows; r++) memcpy((uint8_t *)stg.contents + off + r * pitch, t->mem + r * stride, pitch);
-            } else
-            if (nvn_deswizzle(&t->d, l, y, t->mem, (uint8_t *)stg.contents + off, pitch)) { RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
+                int flip = linear_tex_should_flip();
+                for (size_t r = 0; r < rows; r++) {
+                    size_t dst_r = flip ? (rows - 1 - r) : r;
+                    memcpy((uint8_t *)stg.contents + off + dst_r * pitch, t->mem + r * stride, pitch);
+                }
+            } else {
+                if (nvn_deswizzle(&t->d, l, y, t->mem, (uint8_t *)stg.contents + off, pitch)) { RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
+            }
             up_blit_add(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l - drop);
             off += pitch * rows * z;
         }
@@ -4963,10 +4995,21 @@ static void shmap_load(void) {
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
+/* Every compile path must use the same framebuffer orientation. Derived vertex
+   functions (missing varyings/layers) reread MSL, bypassing shader_load's library. */
+static NSString *kirby_shader_source(NSString *src, int stage) {
+    if (!src || stage != 0 || !getenv("KIRBY_VERTEX_Y_FLIP")) return src;
+    NSString *flip = @"    out.gl_Position.y = -out.gl_Position.y;";
+    if ([src containsString:flip]) return src;
+    if ([src containsString:@"out.gl_Position"] && [src containsString:@"    return out;"])
+        return [src stringByReplacingOccurrencesOfString:@"    return out;"
+            withString:[flip stringByAppendingString:@"\n    return out;"]];
+    return src;
+}
 static NSString *sh_src(NvShader *s) {
     if (!s) return nil;
-    if (s->src) return s->src;
-    return s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil;
+    NSString *src = s->src ?: (s->src_path ? [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil] : nil);
+    return kirby_shader_source(src, s->stage);
 }
 static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
 #include "nvn_pso_skey.h"
@@ -5223,7 +5266,7 @@ static id<MTLLibrary> totk_msl_library_(NSString *src, NSError **err) {
 static int drv_fillable(int stage, int bank, unsigned off) {
     if (bank == 2) return (off >= 0x20 && off < 0x120) || (off >= 0x168 && off < 0x968);
     switch (stage) {
-    case 0: return (off >= 0x110 && off < 0x210) || off == 0x610 || off == 0x640;
+    case 0: return (off >= 0x110 && off < 0x210) || off == 0x610 || (off >= 0x640 && off <= 0x648);
     case 1: return off >= 0x510 && off < 0x610;
     case 5: return off >= 0x200 && off < 0x410;
     default: return 0;
@@ -5311,6 +5354,10 @@ static NvShader *shader_load(NSString *pc, int stage) {
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
 #endif
         if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
+                    if (raw && stage == 0) {
+                        NSString *source = [[NSString alloc] initWithData:raw encoding:NSUTF8StringEncoding];
+                        raw = [kirby_shader_source(source, stage) dataUsingEncoding:NSUTF8StringEncoding];
+                    }
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) atomic_fetch_add(&g_rt_prebuilt, 1);
 #endif
@@ -7548,6 +7595,8 @@ static int driver_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_DRV_CACHE"); v = e && !strcmp(e, "1"); atomic_store(&g_driver_cache_on, v); }
     return v;
 }
+static uint32_t g_cur_base_vertex;
+static uint32_t g_cur_base_instance;
 static void driver_bank_fill(uint8_t *d, int bank, int stage) {
     memset(d, 0, 0xA00);
     if (bank == 0) {
@@ -7559,6 +7608,10 @@ static void driver_bank_fill(uint8_t *d, int bank, int stage) {
             for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); }
         } else if (stage == 0) {   // TOTK: point-size limit the vertex shaders clamp gl_PointSize to (the driver's hardware limit 0x44fffe00 = 2047.9375)
             const float ps_max = 2047.9375f; memcpy(d + 0x610, &ps_max, sizeof ps_max);
+            uint32_t bv = g_cur_base_vertex;
+            uint32_t bi = g_cur_base_instance;
+            memcpy(d + 0x640, &bv, 4);
+            memcpy(d + 0x644, &bi, 4);
         }
     } else {
         for (int r = 0; r < 128; r++) { uint32_t th = (uint32_t)S.tex[stage][r], sh_ = (uint32_t)S.samp[stage][r]; memcpy(d + 0x168 + 8 * r, &th, 4); memcpy(d + 0x568 + 8 * r, &sh_, 4); }
@@ -7705,6 +7758,38 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
+            /* Kirby base game: its movie conversion block is zero in the native
+               startup path. Supply the limited-range BT.709 matrix at binding,
+               after uniform snapshots have selected the actual GPU allocation.
+               Match the movie vertex shader and both NV12 planes; shader-cache
+               fragment keys can differ even when the translated MSL is equal. */
+            if (nvn_stage == 1 && reg == 0 && u->size == 64) {
+                NvProg *movie = S.prog ? prog_get(S.prog) : nil;
+                if (movie && movie->sh[0] && !strncmp(movie->sh[0]->key, "0f97533a854839fe", 16)) {
+                    const treg_t *y = bound_tex(S.tex[1][0]), *uv = bound_tex(S.tex[1][1]);
+                    const uint8_t *actual = bound_uniform_bytes(gpu, 64, (__bridge id<MTLBuffer>)mb);
+                    static const uint8_t zero[64];
+                    if (y && y->t.d.format == 1 && y->t.d.width == 1920 && y->t.d.height == 1080
+                    && uv && uv->t.d.format == 13 && uv->t.d.width == 960 && uv->t.d.height == 540
+                    && actual && !memcmp(actual, zero, sizeof zero)) {
+                    static id<MTLBuffer> matrix;
+                    if (!matrix) {
+                        static const float bt709[16] = {
+                            16.f/255.f, 128.f/255.f, 128.f/255.f, 0.f,
+                            1.1643836f, 0.f, 1.7927411f, 0.f,
+                            1.1643836f, -0.2132486f, -0.5329093f, 0.f,
+                            1.1643836f, 2.1124018f, 0.f, 0.f,
+                        };
+                        matrix = [g_dev newBufferWithBytes:bt709 length:sizeof bt709 options:MTLResourceStorageModeShared];
+                        if (!matrix) MDIE("Kirby movie matrix allocation");
+                        res_add(matrix);
+                        MLOG("[kirby] supplied missing movie BT.709 matrix at GPU binding");
+                    }
+                    gpu = matrix.gpuAddress;
+                    USE(matrix, MTLResourceUsageRead);
+                    }
+                }
+            }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -9614,9 +9699,21 @@ static void clear_quad(const p_clear_color *c) {
     if (cls_of(f)) MDIE("partial color clear of integer render target format %#x not implemented", f);
     id<MTL4RenderCommandEncoder> en = rp_begin(); if (!en) return;
     NSUInteger tw = g_pass.tw, th = g_pass.th; MTLScissorRect sc = {0, 0, tw, th};
-    if (R.has_sc) { long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y < 0 ? 0 : R.sc.y, x1 = (long)R.sc.x + R.sc.w, y1 = (long)R.sc.y + R.sc.h;
-        if (x1 > (long)tw) x1 = (long)tw; if (y1 > (long)th) y1 = (long)th; if (x1 <= x0 || y1 <= y0) return;
-        sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)}; }
+    if (R.has_sc) {
+        long x0 = R.sc.x < 0 ? 0 : R.sc.x, x1 = (long)R.sc.x + R.sc.w;
+        long y0, y1;
+        if (nvn_window_origin_is_lower_left()) {
+            y0 = (long)th - ((long)R.sc.y + R.sc.h);
+            y1 = (long)th - (long)R.sc.y;
+        } else {
+            y0 = R.sc.y < 0 ? 0 : R.sc.y;
+            y1 = (long)R.sc.y + R.sc.h;
+        }
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+        if (x1 > (long)tw) x1 = (long)tw; if (y1 > (long)th) y1 = (long)th;
+        if (x1 <= x0 || y1 <= y0) return;
+        sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
+    }
     if (!g_pass.cfmt[c->index]) MDIE("partial color clear: attachment %d not in the pass", c->index);
     clear_quad_core(en, g_pass.cfmt, g_pass.hd ? g_pass.dfmt : 0, g_pass.hs ? g_pass.sfmt : 0, g_pass.samples, tw, th, c->index, c->mask, c->rgba, sc);
 }
@@ -9662,8 +9759,20 @@ static void clear_ds_quad(const p_clear_ds *c) {
     if (g_enc && ((c->depth_mask && !g_pass.hd) || (c->stencil_mask && !g_pass.hs))) rp_end();
     id<MTL4RenderCommandEncoder> en = rp_begin(); if (!en) return;
     NSUInteger tw = g_pass.tw, th = g_pass.th; MTLScissorRect sc = {0, 0, tw, th};
-    if (R.has_sc) { int64_t x0 = MAX(R.sc.x, 0), y0 = MAX(R.sc.y, 0), x1 = MIN((int64_t)R.sc.x + R.sc.w, (int64_t)tw), y1 = MIN((int64_t)R.sc.y + R.sc.h, (int64_t)th);
-        if (x1 <= x0 || y1 <= y0) return; sc = (MTLScissorRect){x0, y0, x1 - x0, y1 - y0}; }
+    if (R.has_sc) {
+        int64_t x0 = MAX(R.sc.x, 0), x1 = MIN((int64_t)R.sc.x + R.sc.w, (int64_t)tw);
+        int64_t y0, y1;
+        if (nvn_window_origin_is_lower_left()) {
+            y0 = (int64_t)th - ((int64_t)R.sc.y + R.sc.h);
+            y1 = (int64_t)th - (int64_t)R.sc.y;
+        } else {
+            y0 = MAX(R.sc.y, 0);
+            y1 = MIN((int64_t)R.sc.y + R.sc.h, (int64_t)th);
+        }
+        if (y0 < 0) y0 = 0; if (y1 > (int64_t)th) y1 = (int64_t)th;
+        if (x1 <= x0 || y1 <= y0) return;
+        sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
+    }
     clear_ds_core(en, g_pass.cfmt, g_pass.hd ? g_pass.dfmt : 0, g_pass.hs ? g_pass.sfmt : 0, g_pass.samples, tw, th, c, sc);
 }
 static void prepare_draw_textures(NvProg *pr) {
@@ -10389,13 +10498,6 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
         } else if (g_bloomq.state) { RED_ONCE(61, "泛光 1/4 起点：链中途出现别的绘制，本帧泛光不完整"); bloomq_reset(); }
       }
     }
-    { static int dl = -1, nd; if (dl < 0) dl = getenv("TOTK_DRAW_LOG") != NULL;
-      if (dl && nd < 40) { nd++;
-        MLOG("[draw] #%d vs=%s ps=%s rt0=%p %ux%u fmt=%#x", nd, pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-", (void *)(R.has_rt ? R.rt.color[0] : NULL),
-             R.has_rt && R.rt.color[0] ? R.rt.color[0]->d.width : 0, R.has_rt && R.rt.color[0] ? R.rt.color[0]->d.height : 0, R.has_rt && R.rt.color[0] ? R.rt.color[0]->d.format : 0);
-        for (int r = 0; r < 4; r++) if (S.tex[1][r]) { int tid = (int)(S.tex[1][r] & 0xfffff); const treg_t *t = tid < g_ntreg && g_treg[tid].ok ? &g_treg[tid] : NULL;
-            MLOG("[draw]   ps slot %d handle %#llx tid %d %s %ux%u fmt=%#x tgt=%d layout=%d mem=%p ser=%llu", r, (unsigned long long)S.tex[1][r], tid, t ? "ok" : "UNREGISTERED",
-                 t ? t->t.d.width : 0, t ? t->t.d.height : 0, t ? t->t.d.format : 0, t ? t->t.d.target : 0, t ? t->t.has_layout : 0, t ? (void *)t->t.mem : NULL, t ? (unsigned long long)t->t.serial : 0ull); } } }
     if (S.color.logic_op != NVN_LOGIC_OP_COPY || (S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS))
         RED_ONCE(70, "TOTK: logic op %u / alpha test %u not implemented on Metal (drawn without it)", S.color.logic_op, S.color.alpha_func);
     if (S.render_disabled || S.raster_discard) { g_draw_skip[S.render_disabled ? 3 : 4]++; return; }   // TOTK: SetRenderEnable(false) / SetRasterizerDiscard(true)
@@ -10416,7 +10518,16 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (g_enc && g_pass.noatt) { NSUInteger w, h; noatt_dims(&w, &h); if (w > g_pass.tw || h > g_pass.th) rp_end(); }   // no render target: this draw needs a larger pass
     if (R.has_sc && !g_enc) {
         NSUInteger tw0 = 0, th0 = 0; rt_dims(&tw0, &th0);
-        long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y < 0 ? 0 : R.sc.y, x1 = (long)R.sc.x + R.sc.w, y1 = (long)R.sc.y + R.sc.h;
+        long x0 = R.sc.x < 0 ? 0 : R.sc.x, x1 = (long)R.sc.x + R.sc.w;
+        long y0, y1;
+        if (nvn_window_origin_is_lower_left()) {
+            y0 = (long)th0 - ((long)R.sc.y + R.sc.h);
+            y1 = (long)th0 - (long)R.sc.y;
+        } else {
+            y0 = R.sc.y < 0 ? 0 : R.sc.y;
+            y1 = (long)R.sc.y + R.sc.h;
+        }
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
         if (x1 > (long)tw0) x1 = tw0; if (y1 > (long)th0) y1 = th0;
         if (x1 <= x0 || y1 <= y0) { g_draw_skip[6]++; return; }
     }
@@ -10543,7 +10654,16 @@ frz_plain:;
     if (R.has_sc) {
         long sx0 = R.sc.x, sx1 = (long)R.sc.x + R.sc.w;
         if (ux != 1) { sx0 = lround(cx + (sx0 - cx) / ux); sx1 = lround(cx + (sx1 - cx) / ux); }
-        long x0 = sx0 < 0 ? 0 : sx0, y0 = R.sc.y <= 0 ? 0 : R.sc.y + so, x1 = sx1, y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
+        long x0 = sx0 < 0 ? 0 : sx0, x1 = sx1;
+        long y0, y1;
+        if (nvn_window_origin_is_lower_left()) {
+            y0 = (long)th - ((long)R.sc.y + R.sc.h + so);
+            y1 = (long)th - ((long)R.sc.y + so);
+        } else {
+            y0 = R.sc.y <= 0 ? 0 : R.sc.y + so;
+            y1 = vs != 1 ? (long)th : (long)R.sc.y + R.sc.h + so;
+        }
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
         if (x1 > (long)tw) x1 = tw; if (y1 > (long)th) y1 = th;
         if (x1 <= x0 || y1 <= y0) { g_draw_skip[10]++;
             PD("S %llu scissor-empty sc=%d,%d,%d,%d tgt=%lux%lu ux=%g vs=%g so=%ld", g_stat_pass, R.sc.x, R.sc.y, R.sc.w, R.sc.h, (unsigned long)tw, (unsigned long)th, (double)ux, (double)vs, (long)so);
@@ -10585,6 +10705,13 @@ frz_plain:;
     enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
     bind_vertex_streams((id<MTL4RenderCommandEncoder>)en,pr->sh[0]);
     if (g_lay.active) enc_r_vbuf(en, LAY_BUF_INDEX, lay_gpu(g_lay_probe_neg == 1 ? 0 : g_lay.cur - g_lay.base));   // TOTK: this draw's layer within the layered pass
+    uint32_t bv = di ? (uint32_t)di->base_vertex : (dw ? (uint32_t)dw->first : 0);
+    uint32_t bi = di ? (uint32_t)di->base_instance : (dw ? (uint32_t)dw->base_instance : 0);
+    if (bv != g_cur_base_vertex || bi != g_cur_base_instance) {
+        g_cur_base_vertex = bv;
+        g_cur_base_instance = bi;
+        args_dirty_stage(0);
+    }
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
@@ -11108,6 +11235,63 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
     defer_obj_unref(sv); defer_obj_unref(dv); defer_obj_release(pb);   // 本次提交跑完再放（视图不单独驻留，参数块撤驻留） | Release after this submit has finished running (views are not made resident separately; the parameter block is removed from residency)
     return 1;
 }
+// Kirby's HDR downsample uses filtered CopyTextureToTexture. A blit cannot
+// scale, so render the source rectangle into the destination rectangle instead.
+// Restrict this implementation to the observed 2D HDR and R16Float surfaces.
+static int kirby_copy_t2t_scaled(const p_copy_t2t *c, id<MTLTexture> src, id<MTLTexture> dst) {
+    if (getenv("KIRBY_DISABLE_SCALED_COPY") || src == dst
+        || src.textureType != MTLTextureType2D || dst.textureType != MTLTextureType2D
+        || (src.pixelFormat != MTLPixelFormatRG11B10Float && src.pixelFormat != MTLPixelFormatR16Float) || dst.pixelFormat != src.pixelFormat
+        || !(dst.usage & MTLTextureUsageRenderTarget)
+        || (c->has_sv && ((c->sv.set_levels && c->sv.base_level) || (c->sv.set_layers && c->sv.min_layer)))
+        || (c->has_dv && ((c->dv.set_levels && c->dv.base_level) || (c->dv.set_layers && c->dv.min_layer)))
+        || c->sr.zoffset || c->dr.zoffset || c->sr.depth != 1 || c->dr.depth != 1
+        || c->sr.width <= 0 || c->sr.height <= 0 || c->dr.width <= 0 || c->dr.height <= 0
+        || c->sr.xoffset < 0 || c->sr.yoffset < 0 || c->dr.xoffset < 0 || c->dr.yoffset < 0
+        || (uint64_t)c->sr.xoffset + c->sr.width > src.width || (uint64_t)c->sr.yoffset + c->sr.height > src.height
+        || (uint64_t)c->dr.xoffset + c->dr.width > dst.width || (uint64_t)c->dr.yoffset + c->dr.height > dst.height
+        || c->flags != NVN_COPY_FLAGS_LINEAR_FILTER_BIT) return 0;
+    static NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *pipelines;
+    static id<MTL4ArgumentTable> at;
+    if (!pipelines) pipelines = [NSMutableDictionary new];
+    id<MTLRenderPipelineState> ps = pipelines[@(dst.pixelFormat)];
+    if (!ps) {
+        const char *msl =
+            "#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint i [[vertex_id]]) { float2 u=float2((i<<1)&2,i&2); V v; v.p=float4(u*float2(2,-2)+float2(-1,1),0,1); v.uv=u; return v; }\n"
+            "fragment float4 fs(V v [[stage_in]], texture2d<float> s [[texture(0)]], constant float4& r [[buffer(0)]]) { constexpr sampler f(coord::normalized,address::clamp_to_edge,filter::linear); return s.sample(f,r.xy+v.uv*r.zw,level(0)); }\n";
+        NSError *e = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(msl) options:nil error:&e];
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [lib newFunctionWithName:@"vs"]; pd.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        pd.colorAttachments[0].pixelFormat = dst.pixelFormat;
+        if (lib) ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&e];
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 1; ad.maxBufferBindCount = 1;
+        if (!at) at = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+        if (!ps || !at) { MLOG("[kirby] scaled copy pipeline failed: %s", e.localizedDescription.UTF8String); return 0; }
+        pipelines[@(dst.pixelFormat)] = ps;
+    }
+    id<MTLBuffer> pb = [g_dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
+    if (!pb) return 0;
+    float *v = pb.contents; v[0] = (float)c->sr.xoffset/src.width; v[1] = (float)c->sr.yoffset/src.height;
+    v[2] = (float)c->sr.width/src.width; v[3] = (float)c->sr.height/src.height; res_add(pb);
+    rp_end(); blit_close(); rs_sync();
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = dst;
+    int full = !c->dr.xoffset && !c->dr.yoffset && c->dr.width == dst.width && c->dr.height == dst.height;
+    rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionLoad;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+    if (!en) { defer_obj_release(pb); return 0; }
+    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    [at setTexture:src.gpuResourceID atIndex:0]; [at setAddress:pb.gpuAddress atIndex:0];
+    [en setArgumentTable:at atStages:MTLRenderStageFragment]; [en setRenderPipelineState:ps];
+    [en setViewport:(MTLViewport){c->dr.xoffset,c->dr.yoffset,c->dr.width,c->dr.height,0,1}];
+    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1; defer_obj_release(pb);
+    static int noted; if (!noted++) MLOG("[kirby] filtered HDR texture copy %dx%d -> %dx%d",c->sr.width,c->sr.height,c->dr.width,c->dr.height);
+    return 1;
+}
 // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
 static void copy_t2t(const p_copy_t2t *c) {
@@ -11134,6 +11318,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         for (int z = 0; z < nz && ok; z++) ok = copy_t2t_astc(s, d, sl, sz0 + c->sr.zoffset + z, dl, dz0 + c->dr.zoffset + z, c->sr.xoffset, c->sr.yoffset, c->dr.xoffset, c->dr.yoffset, c->sr.width, c->sr.height);
         if (ok) return;
     }
+    if ((c->sr.width != c->dr.width || c->sr.height != c->dr.height) && kirby_copy_t2t_scaled(c, s, d)) return;
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
         RED_ONCE(33, "贴图→贴图拷贝未实现的形态：%dx%dx%d→%dx%dx%d 标志 %#x 格式 %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
@@ -12111,7 +12296,7 @@ static NSUInteger g_outup_size[4];            // in and out size of the last ups
 static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger cx, NSUInteger cy, NSUInteger cw, NSUInteger ch, MTLViewport vp, int slot) {
     static NSUInteger sw, sh; static int same;
     if (slot >= 0 && slot < 3) g_outup_timed[slot] = 0;
-    if (!mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
+    if (getenv("KIRBY_PREVIEW") || !mfxup_enabled() || !mfxup_output_enabled()) { g_outup_skip[0]++; return nil; }
     NSUInteger ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
     if (cx || cy || ow < cw + 16 || oh < ch + 9) { g_outup_skip[1]++; return nil; }
     if (ow != sw || oh != sh) { sw = ow; sh = oh; same = 0; }
@@ -12132,6 +12317,11 @@ static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> sr
     return out;
 }
 static int dcmp_out(const void *x, const void *y) { double a = *(const double *)x, b = *(const double *)y; return a < b ? -1 : a > b; }
+static int kirby_flip_present_y(void) {
+    static int flip = -1;
+    if (flip < 0) { const char *value = getenv("KIRBY_PRESENT_FLIP_Y"); flip = value && !strcmp(value, "1"); }
+    return flip;
+}
 static void outup_note_gpu(int slot) {   // the present command buffer of this slot completed: the upscale's GPU time
     if (!g_outup_heap || g_outup_hz <= 0) return;
     NSData *d = [g_outup_heap resolveCounterRange:NSMakeRange((NSUInteger)slot * 2, 2)]; const MTL4TimestampHeapEntry *t = d.bytes;
@@ -12185,6 +12375,10 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     [en setRenderPipelineState:g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[8] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
+    if (kirby_flip_present_y()) {
+        uv[1] = (float)(cy + ch) / src.height;
+        uv[3] = -uv[3];
+    }
     [en setFragmentBytes:uv length:sizeof uv atIndex:0];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     MTLViewport ovp; float fuv[8];
@@ -12236,6 +12430,10 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     float *uv = g_present_uv[uv_i].contents;
     uv[0] = (float)cx / pic.width; uv[1] = (float)cy / pic.height; uv[2] = (float)cw / pic.width; uv[3] = (float)ch / pic.height;
     uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
+    if (kirby_flip_present_y()) {
+        uv[1] = (float)(cy + ch) / pic.height;
+        uv[3] = -uv[3];
+    }
     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setArgumentTable:args atStages:MTLRenderStageFragment];
     [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];

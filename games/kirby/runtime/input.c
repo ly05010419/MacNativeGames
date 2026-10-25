@@ -205,6 +205,7 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
  {"_ZN2nn3hid18InitializeDebugPadEv",initialize_debug_pad},
  {"_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE",debug_pad_state},
+ {"_ZN2nn3hid17GetDebugPadStatesEPNS0_13DebugPadStateEi",seven_axis_states},
  {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
  {"_ZN2nn3hid18GetNpadJoyHoldTypeEv",get_hold_type},
  {"_ZN2nn3hid24ShowControllerStrapGuideEv",strap_guide},
