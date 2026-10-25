@@ -34,6 +34,14 @@ xcode-select --install
 brew install opus libvpx python@3.14
 ```
 
+也可以使用 [uv](https://docs.astral.sh/uv/) 提供 Python 3.14。先用 `brew install opus libvpx` 安装原生依赖，然后将下面命令中的 `python3.14 build_app.py` 替换为 `uv run --python 3.14 build_app.py`。例如，在仓库目录运行：
+
+```sh
+uv run --python 3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+构建脚本会在 uv 所选解释器的目录中查找 Python，无需安装 Homebrew Python。构建仍会创建自己的虚拟环境，并在其中安装依赖。
+
 构建 iPhone / iPad App 还需要完整的 **Xcode 26 或更高版本**（包含 iOS 和 Metal 工具链），并安装以下工具：
 
 ```sh

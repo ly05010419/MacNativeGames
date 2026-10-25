@@ -34,6 +34,14 @@ xcode-select --install
 brew install opus libvpx python@3.14
 ```
 
+Alternatively, use [uv](https://docs.astral.sh/uv/) to provide Python 3.14. Install the native dependencies with `brew install opus libvpx`, then use `uv run --python 3.14 build_app.py` in place of `python3.14 build_app.py` in the commands below. For example, from the repository folder:
+
+```sh
+uv run --python 3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys
+```
+
+The build finds Python alongside the interpreter selected by uv, so a Homebrew Python installation is not required. The build still creates its own virtual environment and installs its dependencies there.
+
 For an iPhone/iPad build, install full **Xcode 26 or later** (including the iOS and Metal toolchains), then install the additional tools:
 
 ```sh
