@@ -353,11 +353,19 @@ static int output_res_auto(unsigned *w, unsigned *h) {
     if (!f) { fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): off, %s is missing (make romfs-patches)\n", path); return 0; }
     fclose(f);
     *w = 2560; *h = 1440; output_full_at_start = 0;
-    { unsigned dw2 = 0, dh2 = 0; int nat = display_slice(&dw2, &dh2);
-      fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K, 2560x1440%s\n",
-              nat ? " and the display slice" : " (the display slice is not larger than 2K here, so no fourth step)");
-      if (nat) fprintf(stderr, "[totk] display slice: %ux%u\n", dw2, dh2); }
-    if (display_slice(w, h)) { }   /* the switchable maximum becomes the display slice: its heaps cover 2K too */
+    { unsigned dw = 0, dh = 0;
+      if (display_slice(&dw, &dh)) {
+          char mpath[4096];
+          snprintf(mpath, sizeof mpath, "%s/%ux%u/manifest.tsv", dir, dw, dh);
+          FILE *mf = fopen(mpath, "r");
+          if (mf) { fclose(mf); *w = dw; *h = dh;   /* the switchable maximum becomes the display slice: its heaps cover 2K too */
+              fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K, 2560x1440 and the display slice %ux%u\n", dw, dh);
+          } else {   /* the heaps are sized per output size: without the slice's overlay the game would refuse to boot */
+              fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K and 2560x1440 (the display slice %ux%u stays off until its HeapDef overlay exists: scripts/make_output_res_overlay.py %ux%u)\n", dw, dh, dw, dh);
+          }
+      } else
+          fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K and 2560x1440 (the display is not larger than 2K here, so no fourth step)\n");
+    }
     return 1;
 #else
     (void)w; (void)h; return 0;
