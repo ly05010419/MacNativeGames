@@ -8,6 +8,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdatomic.h>
+#include <CoreGraphics/CGDirectDisplay.h>
 #include <math.h>
 
 /* 60 FPS.
@@ -326,6 +327,18 @@ static void patch_render_res(Module *m) {
    in true 2K); 0 = the game's own 1920x1080, no switching. iOS and the iOS export (TOTK_EXPORT_IOS) keep the game's own size. Decided once;
    every caller sees the same answer. Mac only. */
 static int output_full_at_start = 1;
+/* The display's own 16:9 slice (a 3024x1964 Retina panel gives 3024x1701). Returns 0 when the slice
+   is not larger than 2K (then key 3 keeps the three upstream steps). */
+static int display_slice(unsigned *w, unsigned *h) {
+    uint32_t dw = (uint32_t)CGDisplayPixelsWide(CGMainDisplayID()), dh = (uint32_t)CGDisplayPixelsHigh(CGMainDisplayID());
+    unsigned sw = dw, sh = (unsigned)((uint64_t)dw * 9 / 16);
+    if (sh > dh || !sh) { sh = dh; sw = (unsigned)((uint64_t)dh * 16 / 9); }
+    if (!sw || !sh || sw < 640 || sh < 360 || (uint64_t)sw * sh <= (uint64_t)2560 * 1440 || sw > 7680 || sh > 4320) return 0;
+    if (w) *w = sw;
+    if (h) *h = sh;
+    return 1;
+}
+
 static int output_res_auto(unsigned *w, unsigned *h) {
 #if TARGET_OS_OSX
     if (getenv("TOTK_EXPORT_IOS")) return 0;
@@ -335,7 +348,9 @@ static int output_res_auto(unsigned *w, unsigned *h) {
     if (!f) { fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): off, %s is missing (make romfs-patches)\n", path); return 0; }
     fclose(f);
     *w = 2560; *h = 1440; output_full_at_start = 0;
-    fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 switches between 1920x1080 and 2560x1440\n");
+    fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K, 2560x1440 and the display slice %s\n",
+            display_slice(NULL, NULL) ? "" : "(not larger than 2K here, so no fourth step)");
+    if (display_slice(w, h)) { }   /* the switchable maximum becomes the display slice: its heaps cover 2K too */
     return 1;
 #else
     (void)w; (void)h; return 0;
@@ -431,24 +446,41 @@ int runtime_output_res_toggle(void) {
     return 1;
 }
 /* Key 3: cycle the active 2K presentation path. The normal startup is 1080p game output with the MetalFX output scaler
-   enabled; native 2K switches the game's canvas/UI to 2560x1440; off returns to 1080p and disables the output scaler. */
+   enabled; native 2K switches the game's canvas/UI to 2560x1440; off returns to 1080p and disables the output scaler.
+   A display whose 16:9 slice is larger than 2K adds a fourth step that renders at that slice (3024x1701 on a 14-inch
+   Retina panel): off -> MetalFX 2K -> native 2K -> native display -> off. */
+static int output_res_set(unsigned w, unsigned h, const char *what) {
+    if (!output_page) { fprintf(stderr, "[totk] key 3: switching the output size needs a 2K-capable start (TOTK_OUTPUT_RES auto with the HeapDef overlay, or <w>x<h>)\n"); return 0; }
+    _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
+    atomic_store(size, pack_size(w, h));
+    uint64_t renderer = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_RENDERER));
+    if (renderer) {
+        __atomic_fetch_or((uint32_t *)(uintptr_t)(renderer + 0xca4), 0x200u, __ATOMIC_SEQ_CST);
+        runtime_oe_push_message(30);   /* nn::oe "operation mode changed": the game runs its display handler (main+0x1185310) */
+    }
+    fprintf(stderr, "[totk] key 3: the game's output becomes %ux%u (%s)%s\n", w, h, what,
+            renderer ? " from the next layout" : "; the game has not laid out its displays yet, it takes this size when it does");
+    return 1;
+}
 int runtime_output_mode_cycle(void) {
     if (!output_page) {
         fprintf(stderr, "[totk] key 3: 2K mode cycling needs a 2K-capable start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>)\n");
         return 0;
     }
     _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
-    int full = atomic_load(size) == pack_size(output_w, output_h);
+    uint64_t cur = atomic_load(size);
+    unsigned nw = 0, nh = 0;
+    int has_native = display_slice(&nw, &nh);
     extern int mfxup_output_enabled(void);
     extern void dm_gfx_set_flag(const char *name, int value);
-    int next_full, next_mfx;
-    const char *name;
-    if (full) { next_full = 0; next_mfx = 0; name = "关闭 2K"; }
-    else if (mfxup_output_enabled()) { next_full = 1; next_mfx = 0; name = "原生 2K"; }
-    else { next_full = 0; next_mfx = 1; name = "MetalFX 2K"; }
-    if (full != next_full) runtime_output_res_toggle();
-    dm_gfx_set_flag("mfx_output", next_mfx);
-    dm_gfx_set_flag("mfx_upscale", next_mfx);
+    unsigned tw = 0; unsigned th = 0; int tmfx = 0; const char *name = NULL;
+    if (has_native && cur == pack_size(nw, nh)) { tw = 1920; th = 1080; tmfx = 0; name = "关闭(1080p)"; }
+    else if (cur == pack_size(2560, 1440)) { if (has_native) { tw = nw; th = nh; tmfx = 0; name = "原生屏幕"; } else { tw = 1920; th = 1080; tmfx = 0; name = "关闭 2K"; } }
+    else if (mfxup_output_enabled()) { tw = 2560; th = 1440; tmfx = 0; name = "原生 2K"; }
+    else { tw = 1920; th = 1080; tmfx = 1; name = "MetalFX 2K"; }
+    if (!output_res_set(tw, th, name)) return 0;
+    dm_gfx_set_flag("mfx_output", tmfx);
+    dm_gfx_set_flag("mfx_upscale", tmfx);
     fprintf(stderr, "[totk] key 3: %s\n", name);
     return 1;
 }
