@@ -17,6 +17,8 @@ Kirby and the Forgotten Land (**1.0.0**) running natively on Apple silicon Macs,
 
 Kirby shaders are catalogued in `games/kirby/assets/shader_list.tsv` (shader keys and bind state dependencies only).
 
+The shader translator is kept local to this game folder in `games/kirby/prebuilt/macos-arm64/totk_xlate` and pinned by `totk_xlate.sha256`, so the app can build and run without fetching anything remotely or depending on a shared repo path.
+
 To compile translated shaders into Metal libraries ahead of time:
 ```bash
 python3 games/kirby/scripts/precompile_cached_shaders.py
