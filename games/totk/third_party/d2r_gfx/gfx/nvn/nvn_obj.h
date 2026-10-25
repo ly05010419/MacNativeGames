@@ -224,9 +224,9 @@ int botw_uw_scene_picture(void);   /* end of nvn_mtl.m */
    into a shared stage buffer at its end (botw_wb_stage_encode); the invalidate waits only for the fences of the listed
    renderings and swizzles a staged texture from its stage. fence: the submission that rendered it last; stage_fence:
    the submission whose end copied it into stage. */
-#define BOTW_WB_ENT_FIELDS uint64_t fence; void *stage; uint64_t stage_fence;
+#define BOTW_WB_ENT_FIELDS uint64_t fence; void *stage; uint64_t stage_fence; uint64_t late_fence;
 void botw_wb_sub_note(uint64_t serial);
-#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k);
+#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k); (e)->late_fence = botw_late_note(&(e)->t, (e)->obj, (e)->stamp, (e)->fence);
 #define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); }
 void botw_wb_stage_encode(void);
 #define BOTW_WB_STAGE() botw_wb_stage_encode();
@@ -242,7 +242,16 @@ int botw_wb_from_stage(void *e);   /* 1 written back from the stage, 0 failed, W
 void botw_tiny_note(const void *t, const void *o);
 #define BOTW_TINY_NOTE(t, o) botw_tiny_note((t), (__bridge const void *)(o));
 void botw_tiny_commit(void);
-#define BOTW_TINY_COMMIT() botw_tiny_commit();
+/* Grass masks (end of nvn_mtl.m): a target the flush has waited for in many frames is written into its memory when its
+   submission completes, and the flush no longer waits for it. late_fence: the submission whose end copies it out. */
+uint64_t botw_late_note(const tex_t *t, void *obj, uint64_t stamp, uint64_t fence);
+void botw_late_commit(void);
+int botw_late_filter(void **list, int nl);
+void botw_late_drop(uintptr_t lo, uintptr_t hi);
+void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the memory (botw_gpu_copy_supersedes) */
+#define BOTW_TINY_COMMIT() botw_tiny_commit(); botw_late_commit();
+#define BOTW_LATE_FILTER(list, nl) (nl) = botw_late_filter((void **)(list), (nl));
+#define BOTW_LATE_DROP(lo, hi) botw_late_drop((lo), (hi));
 #else
 #define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
 #define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
@@ -278,6 +287,8 @@ int totk_wb_fence_on(void);
 #define BOTW_WB_FROM_STAGE(e, ok, layers)
 #define BOTW_TINY_NOTE(t, o)
 #define BOTW_TINY_COMMIT()
+#define BOTW_LATE_FILTER(list, nl)
+#define BOTW_LATE_DROP(lo, hi)
 #define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
 #define BOTW_RT_DUP_CLEARS()
 #define BOTW_RT_DUP_SKIP(i)

@@ -17,11 +17,26 @@ def main():
  layout=json.loads((out/'runtime-layout.json').read_text())[0]['layout']
  subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror','-Iruntime','scripts/v143_timing_fixture.c','runtime/game_patches_v143.c','-o','build/v143-timing-fixture'],check=True)
  target=out/'main-timing-fixture.bin'
- fixture_env=os.environ|{'TOTK_REALTIME':'1','TOTK_FPS60':'1','TOTK_OUTPUT_RES':'0','TOTK_ASPECT':'0','TOTK_CLOTH_REALTIME':'1','TOTK_HIGHFPS_FIX':'1'}
- run=subprocess.run(['build/v143-timing-fixture',str(source),str(target),str(layout['TEXT_END'])],capture_output=True,text=True,check=True,env=fixture_env)
+ # The render-resolution patch is on by default on the Mac (e8edbcd: the scene at the canvas size); the fixture runs it as
+ # shipped, so a TOTK_RENDER_RES left in the caller's environment is dropped.
+ fixture_env={k:v for k,v in os.environ.items() if k!='TOTK_RENDER_RES'}|{'TOTK_REALTIME':'1','TOTK_FPS60':'1','TOTK_OUTPUT_RES':'0','TOTK_ASPECT':'0','TOTK_CLOTH_REALTIME':'1','TOTK_HIGHFPS_FIX':'1'}
+ # Real-time frame step (runtime_frame_step_update): steady 120, 144, 160 and 240 fps, and short and long presents
+ # alternating (around the 120 cap, and above it), must give game time = real time. A 1/120 s floor per interval made
+ # 144 fps run 1.2x and 240 fps 2x fast, and alternating 1/240 + 1/80 s 1.33x fast. A hitch is cut at 1/15 s per
+ # interval (as in 1.0-1.2.1): a 200 ms present among 120 fps ones, and steady 10 fps, count 1/15 s each.
+ patterns=[(1/120,),(1/144,),(1/160,),(1/240,),(1/240,1/80),(.004,.0127),(1/288,1/96),(.003,.0045,.006),(1/240,1/240,1/60),
+           (1/120,)*15+(.2,),(.1,)]
+ run=subprocess.run(['build/v143-timing-fixture',str(source),str(target),str(layout['TEXT_END'])]+[','.join(str(round(x*1e9)) for x in p) for p in patterns],capture_output=True,text=True,check=True,env=fixture_env)
  (out/'timing-fixture.log').write_text(run.stdout+run.stderr);samples=json.loads(run.stdout)
  for name,seconds in [('pin',0.01),('sample',0.025)]:
   assert all(abs(x-y)<1e-6 for x,y in zip(samples[name],[seconds*30,seconds,seconds*60]))
+ realtime_cases=[]
+ assert len(samples['realtime'])==len(patterns)
+ for pattern,(real,game) in zip(patterns,samples['realtime']):
+  # The 5-sample average lags by at most a few presents at the start and the end of the run.
+  capped=[min(x,1/15) for x in pattern];expect=real*sum(capped)/sum(pattern)
+  assert abs(game-expect)<=3*max(capped),('game time is not real time (hitches cut at 1/15 s)',pattern,real,game,expect)
+  realtime_cases.append(dict(intervals_ms=[round(x*1e3,4) for x in pattern],real=real,game=game,ratio=game/real))
  # Same placement as game_patches_v143.c: the producer veneer (4 words) sits in
  # the zero padding after the text segment, so iOS can embed it in the signed RX
  # segment. It must end before read-only data starts, which is stricter than the
@@ -31,7 +46,9 @@ def main():
  assert raw[stub:stub+16]==bytes(16),'frame-step veneer padding not empty in the rewritten image'
  changes=[o for o in range(0,len(raw),4) if raw[o:o+4]!=patched[o:o+4]]
  allowed={0x2db204,0x2db208,0x2db22c,0x2db360,0x2db36c,0x2db340,0x2db34c,0x3e5658,0x2daa54,0x2daa58,0x2daa6c,0x2daa70,0x2daa74,0x2daa78,
-          0x246eac,0x345904,0x24944c,0x28bc98,0x628c74,0xb43460,0x1ff04f4,0x253fbb0,0x562a64}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}
+          0x246eac,0x345904,0x24944c,0x28bc98,0x628c74,0xb43460,0x1ff04f4,0x253fbb0,0x562a64,
+          0x585e48,0x585e50,0x585e54,0x585e60}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}
+ # 0x585e48..0x585e60: patch_render_res, the scene size read from the data page (on by default since e8edbcd)
  assert set(changes)==allowed,[hex(o) for o in sorted(set(changes)^allowed)]
  def bits(value):return struct.unpack('<I',struct.pack('<f',value))[0]
  def execute(seconds,apply,half=False,call=0x3e5720,nominal_fps=60):
@@ -147,6 +164,6 @@ def main():
    bounce_cases.append(dict(hz=hz,scale=scale,compared=got))
  assert bounce_check(120,1,False)>100,'negative control: the original check fires at 120 FPS with time running normally'
  assert abs(bounce_check(30,.25,False)-bounce_check(30,.25))<1e-3,'at 30 Hz the patched check must equal the original'
- report=dict(status='pass',version='v143',scope='production ARM64 timing and secondary cloth/hair clock veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
- (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),changed_original_words=len(changes))))
+ report=dict(status='pass',version='v143',scope='production ARM64 timing and secondary cloth/hair clock veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,realtime_cases=realtime_cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
+ (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),realtime_ratios=[round(c['ratio'],6) for c in realtime_cases],cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),changed_original_words=len(changes))))
 if __name__=='__main__':main()

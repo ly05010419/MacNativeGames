@@ -82,5 +82,26 @@ class ShaderPack(unittest.TestCase):
             self.assertTrue(exact)   # nothing after the end mark
 
 
+
+class FullHD(unittest.TestCase):
+    """Settings › Full HD (docked): off by default, Tears of the Kingdom only, with the 1600x900 scene (1.4.3 renders
+    960x540 on the phone otherwise), and no switch in Breath of the Wild's Settings pane (build_ipa.py)."""
+    def test_switch_off_by_default_and_docked_at_1600x900(self):
+        import plistlib, re
+        ios = TOOLS.parent
+        specs = plistlib.loads((ios/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
+        switch = [s for s in specs if s.get('Key') == 'TOTK_DOCKED']
+        self.assertEqual(len(switch), 1)
+        self.assertIs(switch[0]['DefaultValue'], False)
+        main = (ios/'Sources/main.m').read_text()
+        branch = re.search(r'#ifndef GAME_BOTW\n(.*?)#endif', main[main.index('TOTK_DOCKED') - 200:], re.S)
+        self.assertTrue(branch and 'TOTK_DOCKED' in branch.group(1))
+        for line in ('"TOTK_OPERATION_MODE","docked"', '"TOTK_IOS_DRAWABLE_H","1080"', '"TOTK_RENDER_RES","1600x900"'):
+            self.assertIn(line, branch.group(1))
+        build = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("s.get('Key')=='TOTK_DOCKED'", build)
+        self.assertIn("'      - path: Gen/Settings.bundle'", build)
+
+
 if __name__ == '__main__':
     unittest.main()

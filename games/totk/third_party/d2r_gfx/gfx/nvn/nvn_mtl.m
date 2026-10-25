@@ -774,7 +774,7 @@ void mtl_pool_del(const void *mem) {
         [g_keep removeObjectIdenticalTo:buf];
     }
     pthread_mutex_unlock(&g_mu);
-    if (hi > lo) { stor_drop_range(lo, hi); wb_drop_range(lo, hi); }   // TOTK: storage-shared textures and pending write-backs of this pool
+    if (hi > lo) { stor_drop_range(lo, hi); wb_drop_range(lo, hi); BOTW_LATE_DROP(lo, hi) }   // TOTK: storage-shared textures and pending write-backs of this pool
 }
 
 static pidx_ent *pool_query(uintptr_t addr, uint64_t len) { // caller holds g_mu
@@ -2742,14 +2742,15 @@ static void wb_note(const tex_t *t) {
    finalize the pool meanwhile (#764: after a warp, a sead heap block header and an NVN pool allocator node held pixel
    bytes). Returns 1 with g_mu held; 0 (counted, logged) when the bytes are no longer a live pool's. */
 enum { WB_POOL_GONE = -2 };   // botw_wb_from_stage's -1 is "not staged"
-static uint64_t g_wb_pool_gone;
+static _Atomic uint64_t g_wb_pool_gone;   /* the game's thread and Breath of the Wild's completion-time write-back */
 static int wb_target_lock(const tex_t *t) {
     pthread_mutex_lock(&g_mu);
     if (pidx_find(&g_pools, (uintptr_t)t->mem, t->L.size)) return 1;
     pthread_mutex_unlock(&g_mu);
-    if (++g_wb_pool_gone <= 8 || g_wb_pool_gone % 500 == 0)
+    uint64_t gone = atomic_fetch_add(&g_wb_pool_gone, 1) + 1;
+    if (gone <= 8 || gone % 500 == 0)
         MLOG("[writeback] skipped (its memory pool was finalized during the read-back, or the texture runs past its pool) ser=%llu %ux%u at %p size %#llx (%llu so far)",
-             (unsigned long long)t->serial, t->d.width, t->d.height, (void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)g_wb_pool_gone);
+             (unsigned long long)t->serial, t->d.width, t->d.height, (void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)gone);
     return 0;
 }
 static int wb_level_back(const tex_t *t, id<MTLTexture> mt, unsigned level, unsigned layer) {   // 1 written, 0 failed, WB_POOL_GONE
@@ -2867,6 +2868,7 @@ static void wb_write_list_body(wb_ent **list, int nl, int force);
    stopped the game after 20-40 minutes. */
 static void wb_write_list(wb_ent **list, int nl, int force) { if (nl) @autoreleasepool { wb_write_list_body(list, nl, force); } }
 static void wb_write_list_body(wb_ent **list, int nl, int force) {
+    if (!force) { BOTW_LATE_FILTER(list, nl) } if (!nl) return;   // Breath of the Wild: renderings that land on completion are not waited for
     { extern void nvn_x_drain(void) __attribute__((weak)); if (nvn_x_drain) nvn_x_drain(); }   // translation thread: nothing queued overtakes this read-back (as for ReadTexels)
     WB_WAIT_GPU(list, nl)
     /* Freshness is decided for every entry before anything is written back (a write-back marks its pages written), and
@@ -13553,6 +13555,9 @@ static _Atomic uint64_t g_drawable_ns;   // 出图里等 nextDrawable 的累计�
 uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0); }
 // 有窗口时屏幕的最高刷新率（Hz）；无窗口返回 0。Mac 用 CoreGraphics 显示模式（线程安全的 C 接口，出图配置在游戏线程上读）
 // Maximum refresh rate (Hz) of the screen when there is a window; returns 0 without a window. Mac uses CoreGraphics display modes (thread-safe C interface; the present configuration is read on the game thread)
+#if !TARGET_OS_OSX
+int front_display_link_hz(void);   /* runtime/frontend_ios.m */
+#endif
 int mtl_display_hz(void) {
     if (!front_metal_layer()) return 0;
 #if TARGET_OS_OSX
@@ -13560,8 +13565,12 @@ int mtl_display_hz(void) {
     double hz = m ? CGDisplayModeGetRefreshRate(m) : 0; if (m) CGDisplayModeRelease(m);
     return (int)(hz + 0.5);
 #else
+    /* No more than the display link that signals the game's vsync (runtime/frontend_ios.m, 60): a ProMotion iPhone reports
+       120 here, and pacing at 120 drew frames the link never showed (only heat and battery) and held 30 as four ticks of a
+       60 Hz link (15 fps). */
     Class c = NSClassFromString(@"UIScreen"); id s = c ? [c valueForKey:@"mainScreen"] : nil;
-    return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
+    int screen = s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0, link = front_display_link_hz();
+    return screen > 0 && link > 0 && screen > link ? link : screen;
 #endif
 }
 static _Atomic uint64_t g_present_stall_ns;   // 单测用：出图线程每次出图前额外停顿（模拟 drawable 迟迟不可用） | For unit tests: an extra pause before each present on the present thread (simulating a drawable that stays unavailable)
@@ -16347,6 +16356,7 @@ void botw_gpu_copy_supersedes(const void *mbv, uint64_t mo, size_t n) {
         uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts entries: rescan
     }
     pthread_mutex_unlock(&g_smu);
+    botw_late_copy_drop((uintptr_t)a, (uintptr_t)z);   // nor do renderings that land on completion
     static _Atomic unsigned shown;
     for (int i = 0; i < nl; i++) {
         const tex_t *t = &list[i]->t;
@@ -16519,6 +16529,216 @@ void botw_tiny_commit(void) {   // in mtl_sub_commit, after the last render pass
             free(e->snap); }
         free(l); }];
 }
+/* Grass masks (upstream f1043e5, BOTW_LATE_* in nvn_obj.h): Breath of the Wild renders its grass density masks (512x512
+   RGBA8) early in a frame, flushes their range and reads them on the CPU to pick the grass cells it draws (the layer 50-130 m
+   away, about 130 draws a frame on the Great Plateau), and also its 64x64 light-probe cube maps. The flush write-back waited for that rendering on the game's thread,
+   about 3.7 ms a frame: 116-119 fps instead of 120 at the 120 cap. The game itself never waits for it (nvnSyncWait does wait
+   for its fence; were there a wait, the flush would find the rendering done), so on hardware the CPU reads what the GPU
+   has finished by then. A render target the flush has had to wait for LATE_LEARN times (LATE_BYTES at most, every level and
+   layer) is learned. From then on, the end of each submission that renders it copies it out, and that submission's
+   completion writes it into its memory, as the water colours above; the flush frees its record without waiting, and the
+   CPU reads the last completed rendering. A rendering the CPU has written over since is not written, and a finalized
+   pool's pending ones are dropped (botw_late_drop). The 1 MiB mask starts and ends inside 16 KiB pages it shares with
+   its neighbours, and the game writes the neighbour after its last byte (main+0x1399290) every frame: on the two edge
+   pages only the mask's own bytes count (a copy taken at the rendering), on the others any write does. As for the waiting
+   write-back: the bytes are written only while a live pool holds the whole texture, with g_mu held (wb_target_lock,
+   #764), a GPU copy into them cancels the landing (botw_gpu_copy_supersedes), and only the newest rendering of a memory
+   lands. A learned target not rendered for LATE_IDLE submissions gives its slot to the next one (a recreated mask has
+   a new serial).
+   TOTK_BOTW_LATE_WB=0 keeps the waiting write-back. */
+#define LATE_MAX 8
+#define LATE_LEARN 120
+#define LATE_BYTES (1u << 20)
+#define LATE_RED 123   /* RED_ONCE slot */
+#define LATE_IDLE 2000
+#define LATE_SLOTS 4
+typedef struct { uint64_t serial; unsigned waits; } late_cand;
+typedef struct { tex_t t; uint64_t stamp; size_t n; int ring, cancel; size_t hn, t0, tn; uint8_t *edge; uint64_t lseq; int busy; } late_job;   /* busy: being written into memory */   /* edge: own bytes on the head page [0, hn) and tail page [t0, t0 + tn) at the rendering; lseq: landings of its target by then */
+static pthread_mutex_t g_late_mu = PTHREAD_MUTEX_INITIALIZER;   /* candidates, learning, slots and the jobs in flight; never held while writing memory */
+static pthread_mutex_t g_late_land_mu = PTHREAD_MUTEX_INITIALIZER;   /* one submission's landings at a time (taken before g_late_mu) */
+static late_cand g_late_cand[16];
+static _Atomic int g_late_n;   /* learned slots */
+static late_job g_late_sub[LATE_MAX]; static __strong id<MTLTexture> g_late_tex[LATE_MAX]; static int g_late_nsub;   /* submit thread */
+static __strong id<MTLBuffer> g_late_buf[LATE_MAX][LATE_SLOTS]; static uint64_t g_late_bfence[LATE_MAX][LATE_SLOTS];   /* submit thread: a slot per submission */
+static late_job *g_late_fly[64]; static int g_late_nfly;   /* copied out, not landed yet */
+static uint8_t *g_late_post[LATE_MAX]; static size_t g_late_post_n[LATE_MAX]; static uint64_t g_late_lseq[LATE_MAX];   /* (g_late_mu) edge bytes after the last landing of each target, and the landings so far */
+static _Atomic uint64_t g_late_landed, g_late_skipped, g_late_freed, g_late_bytes, g_late_ns;
+static _Atomic uint64_t g_late_last[LATE_MAX];   /* the submission that last rendered each learned target */
+
+static int late_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_BOTW_LATE_WB"); on = !(e && !strcmp(e, "0")); } return on; }
+static _Atomic uint64_t g_late_sera[LATE_MAX];   /* g_late_ser as read by other threads (a slot can be given to another serial) */
+static int late_ring(uint64_t serial) { int n = atomic_load(&g_late_n); for (int i = 0; i < n; i++) if (atomic_load(&g_late_sera[i]) == serial) return i; return -1; }
+static size_t wb_level_size(const tex_t *t, unsigned level, size_t *pitch, uint32_t *w, uint32_t *h);
+static size_t late_bytes(const tex_t *t) {   /* every level and layer in the stage layout (botw_wb_stage_encode) */
+    int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); uint32_t upf; int ubpp;
+    if (bpb <= 0 || !t->d.levels || t->d.samples > 1 || t->d.target == 2 || fmt_depth(t->d.format) || bc_unpack(t->d.format, &upf, &ubpp)) return 0;
+    unsigned layers = t->L.layers ? t->L.layers : 1; size_t n = 0;
+    for (unsigned l = 0; l < t->d.levels; l++) n += wb_level_size(t, l, NULL, NULL, NULL) * layers;
+    return n <= LATE_BYTES ? n : 0;
+}
+/* wb_note (submit thread, g_smu held): a learned target's rendering is copied out at this submission's end */
+uint64_t botw_late_note(const tex_t *t, void *obj, uint64_t stamp, uint64_t fence) {
+    if (!atomic_load(&g_late_n) || !late_on() || late_ring(t->serial) < 0) return 0;
+    size_t n = late_bytes(t);
+    id o = (__bridge id)obj; id<MTLTexture> mt = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o;
+    if (!n || !mt) return 0;
+    uintptr_t a = (uintptr_t)t->mem, e = a + t->L.size, pg = (uintptr_t)getpagesize(), ha = (a + pg - 1) & ~(pg - 1), te = e & ~(pg - 1);
+    size_t hn = ha > a ? (ha < e ? ha : e) - a : 0, t0 = 0, tn = 0;
+    if (te < e && te >= a + hn) { t0 = te - a; tn = e - te; }
+    pthread_mutex_lock(&g_late_mu);   /* its slot cannot be given to another serial meanwhile (late_count) */
+    int r = late_ring(t->serial);
+    if (r < 0) { pthread_mutex_unlock(&g_late_mu); return 0; }
+    atomic_store(&g_late_last[r], fence);
+    int i = 0; while (i < g_late_nsub && !(g_late_sub[i].ring == r && g_late_sub[i].t.serial == t->serial)) i++;
+    if (i == g_late_nsub) { if (g_late_nsub == LATE_MAX) { pthread_mutex_unlock(&g_late_mu); return 0; } g_late_nsub++; }
+    late_job *j = &g_late_sub[i]; free(j->edge);   /* replaced in this submission, or NULL */
+    *j = (late_job){*t, stamp, n, r, 0, hn, t0, tn, NULL, g_late_lseq[r], 0};   /* lseq before the copy: a landing that overlaps it is noticed */
+    if (hn + tn && (j->edge = malloc(hn + tn))) { memcpy(j->edge, t->mem, hn); memcpy(j->edge + hn, t->mem + t0, tn); }
+    pthread_mutex_unlock(&g_late_mu);
+    g_late_tex[i] = mt;
+    return fence;
+}
+/* the CPU has written the target's bytes since its rendering (g_late_mu held) */
+static int late_dirty(const late_job *c) {
+    const tex_t *t = &c->t; size_t full0 = c->hn, full1 = c->tn ? c->t0 : t->L.size;
+    const uint8_t *own = g_late_lseq[c->ring] != c->lseq && g_late_post[c->ring] && g_late_post_n[c->ring] == c->hn + c->tn ? g_late_post[c->ring] : c->edge;   /* an earlier rendering landed after this one's copy */
+    if (full1 > full0 && nvn_dirty_since(t->mem + full0, full1 - full0, c->stamp)) return 1;
+    if (c->hn && nvn_dirty_since(t->mem, c->hn, c->stamp) && (!own || memcmp(own, t->mem, c->hn))) return 1;
+    if (c->tn && nvn_dirty_since(t->mem + c->t0, c->tn, c->stamp) && (!own || memcmp(own + c->hn, t->mem + c->t0, c->tn))) return 1;
+    return 0;
+}
+/* The copy could not be queued: the record goes back to the waiting write-back */
+static void late_unclaim(uint64_t serial, uint64_t fence) {
+    pthread_mutex_lock(&g_smu); wb_ent *e = nvn_hm_get(&g_wb, &serial); if (e && e->late_fence == fence) e->late_fence = 0; pthread_mutex_unlock(&g_smu);
+}
+/* Lands one submission's copies (its completion handler), newest last */
+static void late_land(late_job **jobs, int m, NSArray<id<MTLBuffer>> *bufs) { @autoreleasepool {
+    pthread_mutex_lock(&g_late_land_mu);
+    for (int i = 0; i < m; i++) { late_job *c = jobs[i]; const tex_t *t = &c->t; int landed = 0, go = 0; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+        size_t en = c->hn + c->tn; uint8_t *post = NULL;   /* its edge bytes as written, before the pages can take CPU writes again */
+        pthread_mutex_lock(&g_late_mu);
+        if (!c->cancel && !late_dirty(c)) go = c->busy = 1;   // the CPU has not written these bytes since the rendering
+        pthread_mutex_unlock(&g_late_mu);
+        if (go && wb_target_lock(t)) {   /* g_mu first, as for the game thread's write-backs: the pool cannot be finalized during
+                                            the write (#764), and this thread never waits for g_mu while holding pages the dirty
+                                            tracker marks busy (a g_mu holder faulting on one of them would wait on it).
+                                            botw_late_drop waits for a busy job before its pool goes away. */
+            void *tok = nvn_dirty_tracked(t->mem, t->L.size) ? nvn_dirty_gpu_write_begin(t->mem, t->L.size) : NULL;
+            if (!tok) dm_guest_write_prepare(t->mem, t->L.size);
+            const uint8_t *src = (const uint8_t *)bufs[(NSUInteger)i].contents; unsigned layers = t->L.layers ? t->L.layers : 1; size_t off = 0; landed = 1;
+            for (unsigned l = 0; l < t->d.levels && landed; l++) for (unsigned y = 0; y < layers && landed; y++) {
+                size_t lp; size_t ln = wb_level_size(t, l, &lp, NULL, NULL);
+                if (nvn_swizzle(&t->d, l, y, src + off, lp, t->mem)) { RED_ONCE(LATE_RED, "late write-back: unsupported layout"); landed = 0; }
+                off += ln; }
+            if (landed && en && (post = malloc(en))) { memcpy(post, t->mem, c->hn); memcpy(post + c->hn, t->mem + c->t0, c->tn); }
+            nvn_dirty_gpu_write_end(tok);
+            pthread_mutex_unlock(&g_mu);
+        }
+        pthread_mutex_lock(&g_late_mu);
+        c->busy = 0;
+        for (int k = 0; k < g_late_nfly; k++) if (g_late_fly[k] == c) { g_late_fly[k] = g_late_fly[--g_late_nfly]; break; }
+        int r = c->ring;
+        if (landed && atomic_load(&g_late_sera[r]) == t->serial) {   // newer renderings compare their edges with what this landing wrote
+            g_late_lseq[r]++;
+            free(g_late_post[r]); g_late_post[r] = post; g_late_post_n[r] = post ? en : 0; post = NULL;
+        }
+        pthread_mutex_unlock(&g_late_mu);
+        atomic_fetch_add(&g_late_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0);
+        if (landed) { atomic_fetch_add(&g_late_bytes, c->n); uint64_t d = atomic_fetch_add(&g_late_landed, 1) + 1;
+            if (d <= 4 || d % 5000 == 0) MLOG("[late-wb] ser=%llu %ux%u nvnfmt=%#x landed on completion (%llu so far, %llu MB, %.0f us each; %llu skipped, %llu flushes without a wait)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)d, (unsigned long long)(atomic_load(&g_late_bytes) >> 20), atomic_load(&g_late_ns) / 1e3 / (double)(d + atomic_load(&g_late_skipped)), (unsigned long long)atomic_load(&g_late_skipped), (unsigned long long)atomic_load(&g_late_freed)); }
+        else atomic_fetch_add(&g_late_skipped, 1);
+        free(post); free(c->edge); free(c);
+    }
+    pthread_mutex_unlock(&g_late_land_mu);
+    free(jobs); } }
+/* mtl_sub_commit, after the tiny targets: copy this submission's learned targets out, land them on completion */
+void botw_late_commit(void) {
+    if (!g_late_nsub) return;
+    uint64_t fence = g_fence + 1; unsigned s = (unsigned)(fence % LATE_SLOTS);
+    int n = g_late_nsub, m = 0; g_late_nsub = 0;
+    late_job **jobs = malloc((size_t)n * sizeof *jobs); if (!jobs) MDIE("late write-back list");
+    NSMutableArray<id<MTLBuffer>> *bufs = [NSMutableArray arrayWithCapacity:(NSUInteger)n];
+    for (int i = 0; i < n; i++) {
+        late_job *j = &g_late_sub[i]; id<MTLTexture> mt = g_late_tex[i]; g_late_tex[i] = nil;
+        int r = j->ring;
+        if (g_late_bfence[r][s]) mtl_wait(g_late_bfence[r][s], UINT64_MAX);   // the slot's last landing has run (commit blocks run before g_done moves)
+        id<MTLBuffer> buf = g_late_buf[r][s];
+        if (!buf) { buf = g_late_buf[r][s] = [g_dev newBufferWithLength:LATE_BYTES options:MTLResourceStorageModeShared]; if (buf) { res_add(buf); res_commit(); } }
+        late_job *c = buf ? malloc(sizeof *c) : NULL;
+        int ok = 0;
+        if (c) { *c = *j; pthread_mutex_lock(&g_late_mu); if ((ok = g_late_nfly < 64)) g_late_fly[g_late_nfly++] = c; pthread_mutex_unlock(&g_late_mu); }
+        if (!ok) { free(c); free(j->edge); j->edge = NULL; late_unclaim(j->t.serial, fence); continue; }
+        j->edge = NULL;   /* owned by the job in flight */
+        g_late_bfence[r][s] = fence;
+        { unsigned layers = j->t.L.layers ? j->t.L.layers : 1; size_t off = 0;
+          for (unsigned l = 0; l < j->t.d.levels; l++) for (unsigned y = 0; y < layers; y++) {
+              size_t lp; uint32_t lw, lh; size_t ln = wb_level_size(&j->t, l, &lp, &lw, &lh);
+              enc_b_copy_texture_buffer(blit(), mt, y, l, MTLOriginMake(0, 0, 0), MTLSizeMake(lw, lh, 1), buf, off, lp, ln); off += ln; } }
+        jobs[m++] = c; [bufs addObject:buf];
+    }
+    if (!m) { free(jobs); return; }
+    for (int i = 1; i < m; i++) for (int k = i; k > 0 && jobs[k - 1]->stamp > jobs[k]->stamp; k--) {   // the newest rendering of a memory lands last
+        late_job *tj = jobs[k]; jobs[k] = jobs[k - 1]; jobs[k - 1] = tj; id<MTLBuffer> tb = bufs[(NSUInteger)k]; bufs[(NSUInteger)k] = bufs[(NSUInteger)k - 1]; bufs[(NSUInteger)k - 1] = tb; }
+    [g_commit_blocks addObject:^{ late_land(jobs, m, bufs); }];
+}
+/* wb_write_list (game thread): a record whose last rendering lands on completion is freed without a wait or a write-back;
+   the others stay, and a target that has to be waited for counts towards learning */
+static void late_count(uint64_t serial) {
+    pthread_mutex_lock(&g_late_mu);
+    if (late_ring(serial) < 0) {
+        int i, free_i = -1, min_i = 0;
+        for (i = 0; i < 16; i++) { if (g_late_cand[i].serial == serial) break; if (!g_late_cand[i].serial && free_i < 0) free_i = i; if (g_late_cand[i].waits < g_late_cand[min_i].waits) min_i = i; }
+        if (i == 16) { i = free_i >= 0 ? free_i : min_i; g_late_cand[i] = (late_cand){serial, 0}; }
+        if (++g_late_cand[i].waits >= LATE_LEARN) {
+            int n = atomic_load(&g_late_n), r = -1;
+            if (n < LATE_MAX) r = n;
+            else for (int q = 0; q < LATE_MAX && r < 0; q++) {   // a target no longer rendered, with nothing in flight
+                int busy = 0; for (int k = 0; k < g_late_nfly; k++) busy |= g_late_fly[k]->ring == q;
+                if (!busy && atomic_load(&g_late_last[q]) + LATE_IDLE < g_fence) r = q; }
+            if (r >= 0) {
+                free(g_late_post[r]); g_late_post[r] = NULL; g_late_post_n[r] = 0; g_late_lseq[r]++; atomic_store(&g_late_last[r], g_fence);
+                atomic_store(&g_late_sera[r], serial); if (r == n) atomic_store(&g_late_n, n + 1);
+                MLOG("[late-wb] ser=%llu: the flush waited for its rendering %d times; from now on it lands when its submission completes (slot %d)", (unsigned long long)serial, LATE_LEARN, r);
+            }
+            g_late_cand[i] = (late_cand){0, 0};
+        }
+    }
+    pthread_mutex_unlock(&g_late_mu);
+}
+int botw_late_filter(void **lv, int nl) {
+    if (!late_on()) return nl;
+    wb_ent **list = (wb_ent **)lv; int k = 0;
+    uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < nl; i++) {   // an older rendering of a memory whose newer one lands on completion is not written back (wb_write_list's newest-only rule)
+        wb_ent *e = list[i]; if (!e || !(e->late_fence && e->late_fence == e->fence)) continue;
+        for (int j = 0; j < nl; j++) if (j != i && list[j] && list[j]->t.mem == e->t.mem && list[j]->stamp < e->stamp && !(list[j]->late_fence && list[j]->late_fence == list[j]->fence)) { wb_ent_free(list[j]); list[j] = NULL; }
+    }
+    for (int i = 0; i < nl; i++) {
+        wb_ent *e = list[i]; if (!e) continue;
+        if (e->late_fence && e->late_fence == e->fence) { wb_ent_free(e); atomic_fetch_add(&g_late_freed, 1); continue; }
+        uint64_t need = e->fence > e->stage_fence ? e->fence : e->stage_fence;
+        if (need > done && late_bytes(&e->t)) late_count(e->t.serial);
+        list[k++] = e;
+    }
+    return k;
+}
+/* botw_gpu_copy_supersedes (submit thread): a GPU copy into these bytes is newer than the renderings not landed yet */
+void botw_late_copy_drop(uintptr_t lo, uintptr_t hi) {
+    for (int i = 0; i < g_late_nsub; i++) {
+        late_job *j = &g_late_sub[i];
+        if ((uintptr_t)j->t.mem >= hi || (uintptr_t)j->t.mem + j->t.L.size <= lo) continue;
+        free(j->edge); g_late_nsub--; g_late_sub[i] = g_late_sub[g_late_nsub]; g_late_tex[i] = g_late_tex[g_late_nsub]; g_late_tex[g_late_nsub] = nil; g_late_sub[g_late_nsub].edge = NULL; i--;
+    }
+    botw_late_drop(lo, hi);
+}
+/* mtl_pool_del: renderings of the finalized pool that have not landed are dropped (wb_drop_range) */
+void botw_late_drop(uintptr_t lo, uintptr_t hi) {
+    int busy = 0;
+    pthread_mutex_lock(&g_late_mu);
+    for (int k = 0; k < g_late_nfly; k++) { late_job *c = g_late_fly[k]; if ((uintptr_t)c->t.mem < hi && (uintptr_t)c->t.mem + c->t.L.size > lo) { c->cancel = 1; busy |= c->busy; } }
+    pthread_mutex_unlock(&g_late_mu);
+    if (busy) { pthread_mutex_lock(&g_late_land_mu); pthread_mutex_unlock(&g_late_land_mu); }   // the landing under way has finished writing
+}
 /* Write-back staging (BOTW_WB_* in nvn_obj.h; docs/botw-v1.9.0-port.md). Serials rendered in this submission are noted on the submit
    thread; at the submission's end each small one (WB_STAGE_MAX) is copied into its stage buffer in the same command
    buffer, so the invalidate waits for that fence only and swizzles from the stage without a read-back blit. */
@@ -16552,7 +16772,7 @@ void botw_wb_stage_encode(void) {
         uint64_t k = g_wb_sub[i]; size_t total = 0;
         pthread_mutex_lock(&g_smu);
         wb_ent *e = nvn_hm_get(&g_wb, &k);
-        if (!e || !wb_stageable(&e->t, &total)) { pthread_mutex_unlock(&g_smu); continue; }
+        if (!e || e->late_fence || !wb_stageable(&e->t, &total)) { pthread_mutex_unlock(&g_smu); continue; }   // late_fence: lands on completion (botw_late_commit)
         id o = (__bridge id)e->obj; id<MTLTexture> mt = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o;
         id<MTLBuffer> buf = e->stage ? (__bridge id<MTLBuffer>)e->stage : nil;
         int fresh_buf = 0;

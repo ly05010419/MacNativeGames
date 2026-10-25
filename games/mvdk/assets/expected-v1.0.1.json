@@ -1,0 +1,24 @@
+{
+  "_comment": "Hashes of what the build produces from genuine Mario vs. Donkey Kong base and 1.0.1 update NSPs (no game data). scripts/build_mvdk.py checks every step against them; a mismatch stops the build. The rewrite is the same rewriter's output, bound by hash.",
+  "title_id": "0100B99019412000",
+  "update_title_id": "0100B99019412800",
+  "name": "Mario vs. Donkey Kong",
+  "version": 65536,
+  "display_version": "1.0.1",
+  "exefs_sha256": {
+    "main": "95924ad2188c0921e43e5b2d5d911c89f54d86175d2b17c3b555ba6f2308c54b",
+    "main.npdm": "28cf24eb511628e4619fc6c15fde3478c2165796b6f27eba90e418c154e3e580",
+    "rtld": "28317605926caa40a5cbee3e3cb290c65783b4d9f8c3697b43ca41ab2866a44d",
+    "sdk": "040daafb8792342d7a5c61f06b20e9b15ead5fa77fef9433e3eb183e0e3c0afa",
+    "subsdk0": "9eb84a5f75500a5cb7429f66b66363982e9087c9fd0f5c5fca4db6189edd89dc"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "f1107c6a355c693b6ba019d440d41d830c7b1ea0bad2ea029a8e0357139c72c2",
+    "subsdk0.patched.bin": "ff60ccf52f13fb4a070e7453e5b8ad9b0c75201a73e33930211ce7dbea52e76b",
+    "sdk.patched.bin": "e1396b861812f25286b96c3a8adf4a95a75476c9adac4cd5cd13672cd0e71a9e"
+  },
+  "romfs": {
+    "size": 1348495600,
+    "sha256": "bfae850c212d513167086b0e57df233208a0800852b83ca108aec2384a853b5f"
+  }
+}
