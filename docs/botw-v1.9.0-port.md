@@ -94,6 +94,13 @@ compare-and-swap loops that retry inside the window. `prepare_runtime.py`, `prep
 - While a movie plays (movie player instance main+0x1e565a8), the pacing holds 30 fps. Every movie frame is shown
   (`MOVIE_PACE_DEFAULT` 0 for both BOTW versions, upstream's value). The first tower's movie plays at 31.7 fps, and the
   game goes on after it.
+- BotW 1.6.0 JobQueue contention: six verified LL/SC loops are replaced offline with equal-length CASA sequences
+  through the existing build-ID-scoped `CUTS` registry. Original bytes are checked before replacement and the final
+  image hash remains pinned. Successful status, NZCV, acquire ordering and exclusive-monitor clearing are preserved;
+  first-job ownership and scheduling do not change. No new trampolines, runtime CAS scan or generic atomic policy.
+  Other loops, BotW 1.9.0 and other games are unchanged. The separate acquire correction remains necessary.
+  `make build/botw-atomics-probe` builds native checks; run it with the rewritten 1.6.0 `main.patched.bin` to check
+  the registered instruction sequences and the actual three-thread JobQueue.
 - MetalFX keys 2 and 3: 1.9.0 upscales the 1600x900 picture into the 1920x1080 canvas with its own fragment shader
   (`bd7ffdd4`, nine texel reads). `BOTW_MFXUP_KEY` in `nvn_obj.h` is the upscale key of the version that is built. In
   docked play at 1920x1080 that draw is no upscale, so key 3 upscales the window output only.
