@@ -21,18 +21,29 @@ void runtime_oe_push_message(uint32_t message){(void)message;}
 void hle_bind_system_event(void *event,int autoclear){(void)event;(void)autoclear;}
 void hle_signal_system_event(void *event){(void)event;}
 uint64_t dm_nvn_frame_count(void){return 0;}
-int fps_overlay_toggle_hints(void){return 0;}
+void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
-int mfx_enabled(void){return 0;}
-int mfxup_output_enabled(void){return 0;}
-uint64_t runtime_output_size_current(void){return 1920|(uint64_t)1080<<32;}
 void runtime_aspect_view(double w,double h){(void)w;(void)h;}
-int runtime_aspect_step(void){return -1;}
-float runtime_aspect_now(void){return 0;}
 int taa_enabled(void){return 0;}
+/* The settings panel (runtime/settings_panel.h) is not opened here. */
+void taa_set(int on){(void)on;}
+int mfx_requested(void){return 0;}
+int fps_overlay_hud_mode(void){return 1;}
+void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
+int runtime_output_modes(void){return 0;}
+int runtime_output_mode(void){return 0;}
+int runtime_output_mode_set(int mode){(void)mode;return 0;}
+int runtime_aspect_set_ratio(float r){(void)r;return 0;}
+float runtime_aspect_ratio(void){return 0;}
+float runtime_aspect_start(void){return 0;}
+int runtime_output_native(int mode,unsigned *w,unsigned *h){(void)mode;(void)w;(void)h;return 0;}
+int runtime_gamepad_type_set(int type){return type;}
+int runtime_mouse_set(int on){return on;}
+void nvn_fps_lock_set(int fps){(void)fps;}
+int nvn_fps_lock(void){return 0;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

@@ -10,10 +10,10 @@
 #include <math.h>
 #include "game_patches.h"
 #include "game_version.h"
-#include "aspect_math.h"   /* key 4: TOTK_ASPECT parsing */
+#include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
 #include <TargetConditionals.h>
 uint32_t runtime_thread_current_handle(void);
-static void botw_aspect_install(Module *m);   /* key 4, end of the file */
+static void botw_aspect_install(Module *m);   /* the aspect ratio, end of the file */
 static int patch_output_res(Module *m);   /* native output size, after runtime_output_res */
 static void botw_output_tick(void);       /* the size static follows the canvas after the start */
 static void botw_aspect_apply(void);
@@ -172,7 +172,7 @@ static void pad_tick_advance(void) {
     }
 }
 void runtime_frame_step_update(uint64_t now_ns) {
-    botw_aspect_apply();   /* key 4 */
+    botw_aspect_apply();   /* the aspect ratio */
     botw_output_tick();    /* key 3 */
     if (!frame_step_data || !now_ns) return;
     frame_step_measure(now_ns);
@@ -843,7 +843,7 @@ static void botw_output_tick(void) {}
    30 fps they ran fast, out of step with their sound, and a cutscene could wait for ever (2026-10-20). main+0x2cbef40
    holds the movie object while one plays (stored at main+0x1600e74 when it is made, cleared at main+0x1a4d6f0 after it
    is freed; the community "60 FPS + FMV Cutscenes Speed Fix" for 1.6.0 keys on the same word). While it is set the
-   frame pacing holds the game at exactly 30 fps (hle_nvn.c game_holds_30, the pacing of the 30+30 mode); the real-time
+   frame pacing holds the game at exactly 30 fps (hle_nvn.c game_hold_fps, the pacing of the 30+30 mode); the real-time
    step then gives the shipped ratio 1.0. runtime/movie_host.c hands it every movie frame (TOTK_MOVIE_PACE).
    TOTK_MOVIE_30=0 turns it off.
    1.9.0: main+0x1e565a8 is the same word, the instance pointer of the movie player (a 0x30-byte object whose +0x20 is
@@ -862,28 +862,61 @@ int runtime_game_fps_limit(void) {
     static int was; if (!!movie != was) { was = !!movie; fprintf(stderr, "[botw] movie %s: frame pacing %s\n", was ? "starts" : "ends", was ? "held at 30 fps" : "back to normal"); }
     return movie ? 30 : 0;
 }
-int runtime_output_res_toggle(void) { return 0; }
-/* Key 3 (runtime/input.c). MetalFX 2K: MetalFX replaces the game's own upscale of the scene into the 1080p canvas
-   (nvn_mtl.m mfxup_dock, BOTW_MFXUP_DOCK_KEY) and upscales the canvas into a window or full screen bigger than 1080p at
-   the present (the output stage). 1.6.0 with a 2K-capable start (TOTK_OUTPUT_RES auto, the default): off -> MetalFX 2K ->
-   native 2K (the canvas and the scene at 2560x1440, output_switch) -> off; otherwise MetalFX 2K on / off. */
-int runtime_output_mode_cycle(void) {
-    extern int mfxup_enabled(void);
-    extern void dm_gfx_set_flag(const char *name, int value);
+/* The settings panel's picture (runtime.h OUTPUT_MODE_*). MetalFX 2K: MetalFX replaces the game's own upscale of the
+   scene into the 1080p canvas (nvn_mtl.m mfxup_dock, BOTW_MFXUP_DOCK_KEY) and upscales the canvas into a window or full
+   screen bigger than 1080p at the present (the output stage). 1.6.0 with a 2K-capable start (TOTK_OUTPUT_RES auto, the
+   default) also offers native 2K (the canvas and the scene at 2560x1440, output_switch) and 720p (both 1280x720);
+   otherwise off and MetalFX 2K. */
+static int output_switchable(void) {
 #ifdef GAME_BOTW160
-    if (g_out_mode == OUT_AUTO && g_out_page) {
-        unsigned cw = (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu);
-        if (cw > 1920) { output_switch(1920, 1080); fprintf(stderr, "[botw] key 3: 关闭 2K\n"); return 1; }
-        if (mfxup_enabled()) {
-            dm_gfx_set_flag("mfx_output", 0); dm_gfx_set_flag("mfx_upscale", 0);
-            output_switch(g_out_w, g_out_h); fprintf(stderr, "[botw] key 3: 原生 2K\n"); return 1;
-        }
+    return g_out_mode == OUT_AUTO && g_out_page;
+#else
+    return 0;
+#endif
+}
+static unsigned output_width_now(void) {
+#ifdef GAME_BOTW160
+    return (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu);
+#else
+    return 1920;
+#endif
+}
+/* No 4K here yet: the heaps are patched in the code for the 2K canvas (patch_output_res). */
+int runtime_output_native(int mode, unsigned *w, unsigned *h) {
+#ifdef GAME_BOTW160
+    if ((mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) && g_out_mode == OUT_AUTO && g_out_page) { *w = g_out_w; *h = g_out_h; return 1; }
+#endif
+    (void)mode; (void)w; (void)h; return 0;
+}
+int runtime_output_modes(void) {
+    unsigned w, h;
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | (output_switchable() ? 1 << OUTPUT_MODE_720P : 0) |
+           (runtime_output_native(OUTPUT_MODE_NATIVE, &w, &h) ? 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX : 0);
+}
+int runtime_output_mode(void) {
+    extern int mfxup_enabled(void);
+    if (output_switchable()) {
+        unsigned w = output_width_now();
+        if (w == 1280) return OUTPUT_MODE_720P;
+        if (w > 1920) return mfxup_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
+    }
+    return mfxup_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
+}
+int runtime_output_mode_set(int mode) {
+    extern void dm_gfx_set_flag(const char *name, int value);
+    if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_720P || !(runtime_output_modes() & 1 << mode)) return 0;
+    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;   /* 2K + MetalFX: the output stage scales the 2K canvas to the window */
+    dm_gfx_set_flag("mfx_output", mfx);
+    dm_gfx_set_flag("mfx_upscale", mfx);
+#ifdef GAME_BOTW160
+    if (output_switchable()) {
+        unsigned w = 1920, h = 1080;
+        if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) { w = g_out_w; h = g_out_h; }
+        if (output_width_now() != w) output_switch(w, h);
     }
 #endif
-    int next = !mfxup_enabled();
-    dm_gfx_set_flag("mfx_output", next);
-    dm_gfx_set_flag("mfx_upscale", next);
-    fprintf(stderr, "[botw] key 3: %s\n", next ? "MetalFX 2K" : "关闭 2K");
+    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE ? "native 2K" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
+            mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
 }
 /* Key 4 (runtime/input.c): ultrawide on / off (TOTK_ASPECT, default 21:9; also 32:9, 3440x1440 or 2.39; TOTK_ASPECT set
@@ -909,6 +942,7 @@ int runtime_output_mode_cycle(void) {
 #endif
 static uint8_t *g_uw_main;
 static float g_uw_wide;
+static float g_uw_start;   /* TOTK_ASPECT's ratio, 0 without it */
 static _Atomic(uint32_t) g_uw_on;
 static int g_uw_written;   /* the field holds the wide ratio this code wrote (present thread only) */
 static _Atomic int g_uw_effective;   /* the wide ratio stayed in the field from one present to the next: the picture is wide */
@@ -996,10 +1030,10 @@ static float g_uw_view;                  /* runtime_aspect_view, below */
 static void botw_aspect_phone(float a);
 static void botw_aspect_install(Module *m) {
     float start = aspect_requested();
-    g_uw_wide = start ? start : (float)ASPECT_WIDE;
+    g_uw_wide = start ? start : (float)ASPECT_WIDE; g_uw_start = start;
     g_uw_main = m->base; atomic_store(&g_uw_on, start != 0);
     botw_aspect_writer(m); botw_aspect_word(start != 0);
-    fprintf(stderr, "[botw] ultrawide: key 4 switches 16:9 / %.4f (TOTK_ASPECT), starts %s\n", g_uw_wide, start ? "wide" : "at 16:9");
+    fprintf(stderr, "[botw] ultrawide: the settings panel picks 16:9 / 16:10 / 21:9 / 32:9, starts %s (%.4f)\n", start ? "wide" : "at 16:9", g_uw_wide);
     if (g_uw_view > 0) botw_aspect_phone(g_uw_view);   /* the phone's screen was reported first */
 }
 static void botw_aspect_apply(void) {
@@ -1032,23 +1066,24 @@ static void botw_aspect_apply(void) {
 /* The present stretches the canvas only while the camera really draws wide (g_uw_effective): a ratio the game puts back,
    or a camera not made yet, leaves the picture 16:9 instead of stretching it (2026-10-23, 1.6.0 stretched). */
 float runtime_aspect_now(void) { return g_uw_main && atomic_load(&g_uw_on) && atomic_load(&g_uw_effective) ? g_uw_wide : 0; }
-int runtime_aspect_toggle(void) {
-    if (!g_uw_main) return 0;
-    int on = !atomic_load(&g_uw_on); atomic_store(&g_uw_on, on); botw_aspect_word(on);
-#if !TARGET_OS_IPHONE
-    runtime_front_resize_aspect(on ? g_uw_wide : ASPECT_GAME);
-#endif
-    fprintf(stderr, "[botw] key 4: aspect ratio %s\n", on ? "wide" : "16:9 (the game's own)");
+/* The settings panel (frontend.m, which also gives the window that shape): a ratio, 0.5..8; within 1% of 16:9 the
+   game's own. The camera writer takes the new ratio from the data page at the next frame, also from one wide ratio to
+   another. */
+int runtime_aspect_set_ratio(float r) {
+    if (!g_uw_main || !(r >= 0.5f && r <= 8)) return 0;
+    int on = !aspect_near(r, ASPECT_GAME);
+    if (on) g_uw_wide = r;
+    atomic_store(&g_uw_on, on); botw_aspect_word(on);
+    fprintf(stderr, "[botw] aspect: %s (%.4f)\n", on ? "wide" : "16:9 (the game's own)", on ? g_uw_wide : ASPECT_GAME);
     return 1;
 }
-/* Upstream's key 4 (#120) cycles 16:9 -> fit to the window -> 21:9 for TOTK; here key 4 switches 16:9 / wide only, so
-   the panel sees step 0 or 2 and the window size is not followed. */
-int runtime_aspect_step(void) { return g_uw_main ? (atomic_load(&g_uw_on) ? 2 : 0) : -1; }
+float runtime_aspect_ratio(void) { return g_uw_main ? (atomic_load(&g_uw_on) ? g_uw_wide : (float)ASPECT_GAME) : 0; }
+float runtime_aspect_start(void) { return g_uw_start; }
 /* iPhone (frontend_ios.m reports the drawable once the view is made): the phone fills its screen as Tears of the Kingdom
-   does there (aspect_patch.h, user 2026-10-23 "iphone 全屏"): key 4's wide ratio becomes the screen's shape (2.16 on an
+   does there (aspect_patch.h, user 2026-10-23 "iphone 全屏"): the wide ratio becomes the screen's shape (2.16 on an
    iPhone 14) and is on from the start, so the camera draws that view into the 1280x720 canvas, the present widens it over
    the screen and the UI is squeezed back to 16:9 (uw_ui_squeeze). No extra memory. A screen not wider than 16:9 (an iPad)
-   keeps the game's 16:9 with bars; TOTK_ASPECT=0 (or 16:9) keeps it everywhere. Mac: the window does not change key 4. */
+   keeps the game's 16:9 with bars; TOTK_ASPECT=0 (or 16:9) keeps it everywhere. Mac: the settings panel picks the ratio. */
 /* g_uw_view: the drawable's shape, which may come before the main module is patched (botw_aspect_install takes it then). */
 static void botw_aspect_phone(float a) {
 #if TARGET_OS_IPHONE

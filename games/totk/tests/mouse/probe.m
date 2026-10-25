@@ -41,7 +41,8 @@ int main(int argc, char **argv) { @autoreleasepool {
     check(!s.buttons && !s.rx && !s.ry, "mouse mode off: clicks and movement do nothing");
     runtime_mouse_button(0, 0);
 
-    check(runtime_mouse_toggle() == 1 && runtime_mouse_enabled() && file_says(saved, "on\n") && motionMouse == 1, "key 7: on, saved, the mouse takes the gyro");
+    check(runtime_mouse_set(1) == 1 && runtime_mouse_enabled() && file_says(saved, "on\n") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
+    check(runtime_mouse_set(1) == 1 && motionMouse == 1, "on again: no change");
     spin(); check(hookCalls == 1, "the window is told (to capture the pointer)");
     runtime_mouse_button(0, 1); s = settle(); check(s.buttons == Y, "left button: attack (Y)");
     runtime_mouse_button(0, 0); s = settle(); check(!s.buttons, "left button up");
@@ -58,20 +59,20 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_mouse_button(0, 1); runtime_mouse_release(); mouse_tick(); s = settle();
     check(!s.buttons && !s.rx && !s.ry, "release (the window lost the pointer): buttons up, stick centred");
 
-    check(runtime_mouse_toggle() == 0 && file_says(saved, "off\n") && motionMouse == 0, "key 7 again: off, saved, the gyro back to the controller");
+    check(runtime_mouse_set(0) == 0 && file_says(saved, "off\n") && motionMouse == 0, "settings: off, saved, the gyro back to the controller");
     spin(); check(hookCalls == 2, "the window is told again (to free the pointer)");
     FILE *f = fopen(saved, "w"); fputs("on\n", f); fclose(f);
     load_mouse_mode(); check(runtime_mouse_enabled() && motionMouse == 1, "the next start reads mouse mode on");
-    runtime_mouse_toggle(); f = fopen(saved, "w"); fputs("maybe\n", f); fclose(f);
+    runtime_mouse_set(0); f = fopen(saved, "w"); fputs("maybe\n", f); fclose(f);
     load_mouse_mode(); check(!runtime_mouse_enabled(), "a word other than on / off: off");
 
     setenv("TOTK_MOUSE_GYRO", "0", 1); motionMouse = -1;
-    int before = feeds; runtime_mouse_toggle(); runtime_mouse_move(10, 0); mouse_tick(); s = settle();
+    int before = feeds; runtime_mouse_set(1); runtime_mouse_move(10, 0); mouse_tick(); s = settle();
     check(motionMouse == 0 && feeds == before && s.rx > 0, "TOTK_MOUSE_GYRO=0: the stick only, the controller keeps the gyro");
-    runtime_mouse_toggle(); unsetenv("TOTK_MOUSE_GYRO");
-    gyroOn = 0; motionMouse = -1; before = feeds; runtime_mouse_toggle(); mouse_tick();
+    runtime_mouse_set(0); unsetenv("TOTK_MOUSE_GYRO");
+    gyroOn = 0; motionMouse = -1; before = feeds; runtime_mouse_set(1); mouse_tick();
     check(motionMouse == 0 && feeds == before, "TOTK_GYRO=0 (no six-axis device for the game): no mouse gyro either");
-    runtime_mouse_toggle();
+    runtime_mouse_set(0);
 
     printf("{\"status\":\"%s\",\"probe\":\"mouse\",\"checked\":%d,\"failures\":%d}\n", failures ? "fail" : "pass", checked, failures);
     return failures != 0;

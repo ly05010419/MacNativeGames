@@ -120,6 +120,10 @@ Two changes act on both BOTW versions:
   - Replaced after the merge (user 2026-10-22): the uncapped mode applies on any display, so this rule is gone. Its
     clock's ceiling went to 240, then back to 120 by default the same day (user; `TOTK_UNCAPPED_HZ` still allows up to 240). The real-time frame step lost its 1/120 s floor (TOTK and BOTW), which made a game
     above 120 fps run fast; the Unicorn checks of both versions pass at 144, 165, 240 and 360 fps.
+  - The display link that shows the uncapped frames keeps a display rate above 120 Hz too, up to 240 (`link_range` in
+    `nvn_mtl.m`; TOTK and BOTW). It turned such a rate into 60, so a 144 / 160 Hz display ticked at a divisor of its
+    refresh: on a 160 Hz display about 53 frames a second reached the screen, 18.75 / 25 ms apart, while the game ran
+    at 105-120 fps. Only an unknown rate (below 30) still falls back to 60.
 
 Write-back staging A/B on `29bc388`, with upstream's #140 and #143 in the build: Kakariko, uncapped, docked 1920x1080
 render, warm shader cache v6, still view from 115 s for 20 s, then a 15 s walk. The "off" build used the TOTK hooks.

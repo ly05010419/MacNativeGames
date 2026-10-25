@@ -40,7 +40,7 @@ static inline int gamepad_face_by_position(const char *category, const char *ven
     return !gamepad_names_nintendo(category) && !gamepad_names_nintendo(vendor);
 }
 
-/* Controller type, key 6 on the Mac (runtime/input.c -> runtime/gamepad.m): auto, as gamepad_face_by_position decides
+/* Controller type, in the Mac settings panel (runtime/frontend.m -> runtime/gamepad.m): auto, as gamepad_face_by_position decides
    from the name; Xbox and PlayStation map the face buttons by position; Switch maps them by label, GameController's
    buttonA being Switch A (on a Nintendo controller the right button, on an Xbox controller the bottom one, Xbox A). Xbox
    and PlayStation map the same way; they differ in name only, for the player to say which controller it is. The pick
@@ -64,10 +64,6 @@ static inline int gamepad_type_parse(const char *text) {
         if (n && strlen(name) == n && !strncmp(text, name, n)) return t;
     }
     return -1;
-}
-
-static inline int gamepad_type_next(int type) {   /* auto -> Xbox -> PlayStation -> Switch -> auto */
-    return type >= 0 && type < GAMEPAD_TYPE_COUNT - 1 ? type + 1 : GAMEPAD_TYPE_AUTO;
 }
 
 /* What auto takes a controller for (shown on the HUD): Nintendo names Switch, PlayStation names PlayStation, any other

@@ -2360,11 +2360,29 @@ static int phone_holds_30(void) {
     return 0;
 #endif
 }
-static int game_holds_30(void) { return runtime_game_fps_limit() == 30 || phone_holds_30(); }
-static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_holds_30() && (m == MFX_OFF || m == MFX_MAX); }
-/* 30+30 on a display whose rate is not a multiple of 30 (the user's 100 Hz): the game is paced by our own clock at exactly
-   30 fps instead of by the display link (3 refreshes would be 33 fps); the display link still shows each picture at a refresh. */
-static int mfx_own_clock(void) { return (mfx_enabled() == MFX_30 || game_holds_30()) && (g_paced_hz <= 0 || g_paced_hz % 30); }
+/* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40 or 60. The game is
+   then paced at exactly that rate as the 30 fps hold above does it (display ticks where the rate divides the display's,
+   our own clock otherwise), with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie
+   or the phone's 30 fps hold still wins; so do the interpolation modes that hold the game (30+30, 40+40, 50+50), which the
+   panel never leaves on together with a lock. */
+static _Atomic int g_fps_lock;
+void nvn_fps_lock_set(int fps) {
+    fps = fps == 30 || fps == 40 || fps == 60 ? fps : 0;
+    if (atomic_exchange(&g_fps_lock, fps) != fps) { if (fps) LOG("[nvn] 锁帧：%d 帧", fps); else LOG("[nvn] 锁帧：关"); }
+}
+int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
+/* The rate the game is held at now (0: not held): 30 for a movie or the phone's hold, then 30 / 40 / 50 for interpolation
+   30+30 / 40+40 / 50+50, else the frame lock. */
+static int game_hold_fps(void) {
+    if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
+    int m = mfx_hold_fps(mfx_enabled());
+    return m ? m : atomic_load(&g_fps_lock);
+}
+static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_hold_fps() && (m == MFX_OFF || m == MFX_MAX); }
+/* A held rate on a display whose rate is not a multiple of it (30 on the user's 100 Hz): the game is paced by our own clock
+   at exactly that rate instead of by the display link (3 refreshes would be 33 fps); the display link still shows each
+   picture at a refresh. */
+static int mfx_own_clock(void) { int r = game_hold_fps(); return r && (g_paced_hz <= 0 || g_paced_hz % r); }
 /* Opt-in until live scene/clock validation (Breath of the Wild: on by default, UNCAPPED_INTERVAL_FROM_ENV in nvn_obj.h).
    Only applies to the existing Mac real-time uncapped path; original timing, MetalFX and deterministic tests
    retain the guest interval. GPU/texture lifetime waits are unchanged. */
@@ -2744,23 +2762,22 @@ static void present_cfg(const win_t *o) {
 }
 static unsigned present_ticks(const win_t *o) {   /* display ticks per game frame */
     present_cfg(o);
-    /* TOTK_MFX / key 2: MetalFX makes the frame between two game frames. Half the refresh rate: the game presents every
-       second display tick (50 + 50 on a 100 Hz display); 30+30: hz / 30 ticks (2 at 60 Hz; at 100 Hz the own clock paces,
+    /* TOTK_MFX / the settings panel: MetalFX makes the frame between two game frames. 30+30 / 40+40 / 50+50 (and the frame
+       lock): hz / rate ticks (50 at 100 Hz: 2; where the rate does not divide the display's, the own clock paces,
        mfx_own_clock). Held here and not only by the game's controller, because the code carries the 60 FPS patch (the
        controller may choose 1); the real-time frame step keeps game speed right. Uncapped interpolation paces as uncapped. */
-    int m = mfx_enabled();
-    if (m == MFX_HALF && !game_holds_30()) return 2;
-    if (m == MFX_30 || game_holds_30()) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
+    int hold = game_hold_fps();
+    if (hold) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= hold * 3 / 2 ? (hz + hold / 2) / hold : 1); }
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
 static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
-        LOG("[nvn] 出图节拍切换：%s", m == MFX_30 ? (mfx_own_clock() ? "补帧 30+30：游戏按自己的时钟每秒 30 帧" : "补帧 30+30：跟随显示器，每秒 30 帧") :
-                                    m == MFX_HALF ? "补帧 刷新率一半：跟随显示器、每两次刷新一帧" :
+        LOG("[nvn] 出图节拍切换：%s%s", mfx_hold_fps(m) ? (mfx_own_clock() ? "补帧：游戏按自己的时钟每秒 " : "补帧：跟随显示器，游戏每秒 ") : "",
+                                    mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : "50 帧（50+50）") :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
-    if (m == MFX_30 || game_holds_30()) return 1000000000ull / 30;   /* exactly 30 fps, by display ticks or by our own clock */
+    { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
 }
 /* Exercise production policy, including the shrine's interval=2 and the
@@ -2786,19 +2803,45 @@ void dm_nvn_probe_present_interval(void) {
        over, so the uncapped pacing stays and the half-rate check fails. */
     extern void mfx_set(int mode); extern int mfx_latch(void);
     int saved_paced = g_paced_hz, saved_mfx = mfx_enabled();
-    mfx_set(MFX_HALF); if (!(neg && atoi(neg) == 20)) mfx_latch();
+    mfx_set(MFX_50); if (!(neg && atoi(neg) == 20)) mfx_latch();
     for (int uncapped = 0; uncapped < 2; uncapped++) for (int interval = -1; interval <= 3; interval++) {
         win_t w = {.interval = interval}; g_paced_hz = 100; g_hz = uncapped ? UNCAPPED_HZ : 100; g_display_mode = 0; g_uncapped = uncapped;
         if (present_ticks(&w) != 2 || present_period(&w) != 2 * 1000000000ull / 100 || uncapped_now() || mfx_own_clock())
-            die("present interval probe: frame interpolation must pace two display ticks at the display rate");
+            die("present interval probe: 50+50 on a 100 Hz display must pace two display ticks");
         checked++;
     }
+    /* 40+40: exactly 1/40 s, by display ticks at 120 Hz (3), our own clock at 60 / 100 / 144 Hz. */
+    mfx_set(MFX_40); mfx_latch();
+    { const int r40[] = {60, 100, 120, 144};
+      for (int r = 0; r < 4; r++) { win_t w = {.interval = 1}; g_paced_hz = r40[r]; g_hz = r40[r]; g_display_mode = 0; g_uncapped = 1;
+        if (present_period(&w) != 1000000000ull / 40 || uncapped_now() || mfx_own_clock() != (r40[r] % 40 != 0) || (r40[r] == 120 && present_ticks(&w) != 3))
+            die("present interval probe: 40+40 must pace exactly 40 fps");
+        checked++; } }
     mfx_set(MFX_30); mfx_latch();
     const int rates[] = {60, 100, 120, 144}; const unsigned ticks30[] = {2, 3, 4, 5};
     for (int r = 0; r < 4; r++) for (int uncapped = 0; uncapped < 2; uncapped++) {
         win_t w = {.interval = 1}; g_paced_hz = rates[r]; g_hz = uncapped ? UNCAPPED_HZ : rates[r]; g_display_mode = 0; g_uncapped = uncapped;
         if (present_period(&w) != 1000000000ull / 30 || present_ticks(&w) != ticks30[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 30 != 0))
             die("present interval probe: 30+30 must pace exactly 30 fps (display ticks at 60 / 120 Hz, our own clock at 100 / 144 Hz)");
+        checked++;
+    }
+    /* The frame lock at 60 (interpolation off): exactly 1/60 s, by display ticks at 60 / 120 Hz, our own clock at 100 / 144
+       Hz, the uncapped clock suspended; at 30 the same as the 30 fps hold. Off again: the uncapped pacing. */
+    mfx_set(MFX_OFF); mfx_latch();
+    const unsigned ticks60[] = {1, 2, 2, 2};
+    for (int r = 0; r < 4; r++) for (int uncapped = 0; uncapped < 2; uncapped++) {
+        win_t w = {.interval = 2}; g_paced_hz = rates[r]; g_hz = uncapped ? UNCAPPED_HZ : rates[r]; g_display_mode = 0; g_uncapped = uncapped;
+        nvn_fps_lock_set(60);
+        if (present_period(&w) != 1000000000ull / 60 || present_ticks(&w) != ticks60[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 60 != 0))
+            die("present interval probe: the 60 fps lock must pace exactly 60 fps");
+        nvn_fps_lock_set(30);
+        if (present_period(&w) != 1000000000ull / 30 || present_ticks(&w) != ticks30[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 30 != 0))
+            die("present interval probe: the 30 fps lock must pace as the 30 fps hold");
+        nvn_fps_lock_set(40);
+        if (present_period(&w) != 1000000000ull / 40 || uncapped_now() || mfx_own_clock() != (rates[r] % 40 != 0))
+            die("present interval probe: the 40 fps lock must pace exactly 40 fps");
+        nvn_fps_lock_set(0);
+        if (uncapped_now() != uncapped) die("present interval probe: the lock off must give the uncapped pacing back");
         checked++;
     }
     mfx_set(MFX_MAX); mfx_latch();

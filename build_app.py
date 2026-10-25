@@ -671,6 +671,10 @@ def check_mod_overlays(tree, mod, version):
 
 
 OVERLAY_RECORD = 'overlay.json'
+# The bigger outputs whose heap overlays the app carries: the settings panel's 2K. The game sizes its swapchain and heaps
+# for the largest one present and starts at 1080p. Not 4K yet: its heaps need one memory pool above the graphics layer's
+# 1 GiB zero-copy limit (games/totk/runtime/game_patches_v143.c, 2026-10-25: the game stopped at the start).
+OUTPUT_SIZES = ('2560x1440',)
 
 
 def overlay_record(path):
@@ -779,13 +783,14 @@ def step_data(tree, game, keys, logs, *, firmware=None, shared_fonts=None, mod=N
         say('2/4 data: RomFS overlays (quick-menu capture timing, game-over retry)')
         run([py, 'scripts/make_romfs_patches.py'], logs / 'romfs_patches.log', cwd=tree)
     heapdef = mod_heapdef(mod)
-    overlay = tree / 'extracted/v0/romfs-patches-out/2560x1440'
-    why = overlay_stale(overlay, heapdef, tree)
-    if why:
-        say(f'2/4 data: RomFS overlay for the 2560x1440 output (key 3 in the game): {why}'
-            + ('; built on top of the mod\'s heap sizes' if heapdef else ''))
-        run([py, 'scripts/make_output_res_overlay.py', '2560x1440', *(['--heapdef', heapdef] if heapdef else [])],
-            logs / 'output_res_overlay.log', cwd=tree)
+    for size in OUTPUT_SIZES:   # the game takes the largest one present (runtime/game_patches.c output_res_auto)
+        overlay = tree / f'extracted/v0/romfs-patches-out/{size}'
+        why = overlay_stale(overlay, heapdef, tree)
+        if why:
+            say(f'2/4 data: RomFS overlay for the {size} output (the settings panel\'s resolution): {why}'
+                + ('; built on top of the mod\'s heap sizes' if heapdef else ''))
+            run([py, 'scripts/make_output_res_overlay.py', size, *(['--heapdef', heapdef] if heapdef else [])],
+                logs / f'output_res_overlay-{size}.log', cwd=tree)
 
 
 def build_hactool(tree, logs):
@@ -913,10 +918,10 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None
     heapdef = mod_heapdef(mod)
     if heapdef:
         say(f'2/4 update: the overlays are built on the mod\'s heap sizes ({heapdef})')
-    steps = [('make_romfs_patches.py', []), ('make_output_res_overlay.py', ['2560x1440'])]
+    steps = [('make_romfs_patches.py', [])] + [('make_output_res_overlay.py', [size]) for size in OUTPUT_SIZES]
     if version == 'v143':   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches_v143.c)
         steps += [('make_output_res_overlay.py', [canvas, '--scene', scene])
-                  for canvas in ('1920x1080', '2560x1440') for scene in ('1920x1080', '2560x1440')]
+                  for canvas in ('1920x1080', *OUTPUT_SIZES) for scene in ('1920x1080', *OUTPUT_SIZES)]
     for i, (script, arguments) in enumerate(steps):
         if heapdef and script == 'make_output_res_overlay.py':   # every variant of the file keeps the mod's heap sizes
             arguments = [*arguments, '--heapdef', heapdef]
@@ -1323,6 +1328,13 @@ def install_app(new, out, *, verify=None, remove=None):
     return kept
 
 
+def source_commit():
+    """The short hash of the commit this checkout is on (user 2026-10-25: the HUD shows it, to tell which commit an app
+    was built from; uncommitted changes are not shown), or '' outside a git checkout."""
+    result = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=7', 'HEAD'], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
 def step_app(tree, out, logs, *, version="v0", game='totk'):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
@@ -1381,6 +1393,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk'):
         clone(icon, tmp / 'Contents/Resources/AppIcon.icns')
         info['CFBundleIconFile'] = 'AppIcon'
     info['MNGContributionFolder'] = str(contrib_folder())   # app/launcher.m contrib_file: where players find it
+    commit = source_commit()
+    if commit:
+        info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')

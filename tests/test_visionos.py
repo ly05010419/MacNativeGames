@@ -83,7 +83,7 @@ class VisionOS(unittest.TestCase):
 #include "totk_taa.m"
 int main(void) {
     for (int mode = -1; mode <= 3; mode++) {
-        mfx_set(mode); mfx_latch(); taa_toggle(); taa_frame_end();
+        mfx_set(mode); mfx_latch(); taa_set(mode & 1); taa_frame_end();
         if (mfx_enabled() || taa_enabled() || taa_active() || taa_ready()) return 1;
         if (mfx_frame_prepare(0.02) != -1 || mfx_output(0) || mfx_residency() || taa_residency()) return 2;
     }

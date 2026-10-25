@@ -18,10 +18,8 @@ uint64_t runtime_now_ns(void){return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);}
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-/* Keys 1, 3 and 4 (frontend.m, game_patches*.c, aspect_patch.h) are not part of this probe. */
-void runtime_shortcut_help_toggle(void){}
-int runtime_output_mode_cycle(void){return 0;}
-int runtime_aspect_toggle(void){return 0;}
+/* Key 1's settings panel (frontend.m) is not part of this probe. */
+void runtime_settings_toggle(void){}
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
@@ -40,7 +38,6 @@ void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit pro
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
-int runtime_output_res_toggle(void){runtime_fail("unexpected output size switch in unit probe");}
 _Noreturn void runtime_fail(const char *s){fprintf(stderr,"autoload probe: %s\n",s);exit(1);}
 
 typedef struct{int64_t sample;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attr,pad;} State;

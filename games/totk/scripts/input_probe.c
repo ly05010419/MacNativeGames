@@ -11,20 +11,14 @@ uint64_t runtime_now_ns(void){return probe_clock_fixed?probe_now:(probe_now+=100
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-static int help_toggles,interp_toggles,output_cycles,aspect_toggles,taa_toggles,pad_type_cycles,mouse_toggles;   // keys 1 / 2 / 3 / 4 / 5 / 6 / 7 (see the key checks)
+static int settings_toggles;   // key 1 (see the key checks)
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
-int runtime_output_res_toggle(void){runtime_fail("unexpected output size switch in unit probe");return 0;}
-void runtime_shortcut_help_toggle(void){help_toggles++;}
-int runtime_output_mode_cycle(void){output_cycles++;return 1;}
-int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
-void taa_toggle(void){taa_toggles++;}
-int runtime_gamepad_type_cycle(void){return ++pad_type_cycles;}
-int runtime_mouse_toggle(void){return ++mouse_toggles&1;}
-void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
+void runtime_settings_toggle(void){settings_toggles++;}
+void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
 void dm_gfx_window_shot(const char *p){(void)p;runtime_fail("unexpected window shot in unit probe");}
@@ -161,19 +155,18 @@ int main(void){
   need(out.state.buttons==(1ULL<<(12+i))&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry,"D-pad independent of analog sticks");
   runtime_input_key(dpad[i],0);read(&out.state,1,&id);need(!out.state.buttons,"D-pad release");
  }
- /* Keys 1-7 (Mac key codes 18-21, 23, 22, 26): one action per press; held-key repeats and the release do nothing more; no game
-    button; each key touches only its own action. 1 shows / hides the overlays (frontend.m), 2 frame interpolation (runtime
-    flag mfx_interp, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h), 5 edge
-    smoothing (totk_taa.m), 6 the controller type, 7 mouse mode (gamepad.m). */
- enum{SHORTCUTS=7};
- static const unsigned keys[SHORTCUTS]={18,19,20,21,23,22,26};int *count[SHORTCUTS]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles,&taa_toggles,&pad_type_cycles,&mouse_toggles};
- static const char *const pressed[SHORTCUTS]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)","key 5 toggles edge smoothing (only)","key 6 cycles the controller type (only)","key 7 toggles mouse mode (only)"};
- for(int k=0;k<SHORTCUTS;k++){
-  runtime_input_key(keys[k],1);for(int j=0;j<SHORTCUTS;j++)need(*count[j]==(j<k?2:j==k?1:0),pressed[k]);
-  runtime_input_key(keys[k],1);need(*count[k]==1,"a held key (auto-repeat) does not act again");
-  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 1-7 are no controller input");
-  runtime_input_key(keys[k],0);need(*count[k]==1,"releasing the key does not act");
-  runtime_input_key(keys[k],1);runtime_input_key(keys[k],0);need(*count[k]==2,"every press acts");
+ /* Key 1 (Mac key code 18) opens / closes the settings panel (frontend.m): once per press; held-key repeats and the
+    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more and no game buttons either. */
+ runtime_input_key(18,1);need(settings_toggles==1,"key 1 toggles the settings panel");
+ runtime_input_key(18,1);need(settings_toggles==1,"a held key (auto-repeat) does not act again");
+ read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
+ runtime_input_key(18,0);need(settings_toggles==1,"releasing the key does not act");
+ runtime_input_key(18,1);runtime_input_key(18,0);need(settings_toggles==2,"every press acts");
+ static const unsigned former[]={19,20,21,22,23,26};
+ for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
+  runtime_input_key(former[k],1);read(&out.state,1,&id);
+  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 do nothing");
+  runtime_input_key(former[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
  for(unsigned i=0;i<32;i++)need(out.guard[i]==0xa5,"state output guard");
@@ -189,5 +182,5 @@ int main(void){
  runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 overlays / key 2 frame interpolation / key 3 picture mode / key 4 ultrawide / key 5 edge smoothing / key 6 controller type / key 7 mouse mode (once per press), mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

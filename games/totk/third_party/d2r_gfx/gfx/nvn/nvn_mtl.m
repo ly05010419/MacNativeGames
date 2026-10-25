@@ -13254,7 +13254,7 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     return 1;
 }
 /* TOTK load line, bottom-right (user, 2026-10-16 night: every CPU core and the GPU, one line like the FPS counter):
-   "P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%  GPU 99% (70%)" -- performance / efficiency cores, the busiest thread, the GPU as macOS reports it (our
+   "GPU 99% (70%)  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%" (GPU first, user 2026-10-25) -- the GPU as macOS reports it (our
    keep-alive keeps it near 100 %) and in brackets the GPU time of the game's own work. Values from totk_sysload.c (0.5 s). */
 static int load_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
     if (!fps_overlay_full_hud() || !sysload_enabled() || slot < 0 || slot > 3 || !g_load_tex[slot]) return 0;
@@ -13328,13 +13328,18 @@ static void outup_note_gpu(int slot) {   // the present command buffer of this s
              (unsigned long long)mfxup_switches(MFXUP_OUTPUT));
     }
 }
-// The canvas fills the window whatever its shape: with the ratio of key 4 / TOTK_ASPECT (and the phone's full screen) the canvas holds a view projected
-// for that shape and squeezed across, so widening it restores the proportions (runtime/aspect_patch.h). TOTK_STRETCH=1 alone is an emulator's "Stretch
-// to Window": the 16:9 view itself is stretched. Off: the game picture keeps its shape, centred.
-static int present_stretch(void) {
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("TOTK_STRETCH"); on = e && !strcmp(e, "1"); }
-    return on || (runtime_aspect_now && runtime_aspect_now() > 0);   // key 4 / TOTK_ASPECT: runtime/aspect_patch.h
+// The picture's shape on screen: the canvas's own (16:9); the aspect ratio picked (runtime_aspect_now: the settings panel, TOTK_ASPECT, the phone's
+// screen), for which the canvas holds a view projected and squeezed across, so drawing it at that ratio restores the proportions
+// (runtime/aspect_patch.h); or the whole drawable with TOTK_STRETCH=1 (an emulator's "Stretch to Window": the 16:9 view itself is stretched). Centred,
+// black bars around it when the drawable has another shape (user 2026-10-25: 16:10 in full screen on a 3440x1440 display was stretched over all of
+// it, as was every ratio but 16:9). Within 1% (the remainder of a game width that is a multiple of 8, 1952x900 on 2868x1320 is 0.17%) it fills.
+static MTLViewport present_viewport(double dw, double dh, double cw, double ch) {
+    static int stretch = -1;
+    if (stretch < 0) { const char *e = getenv("TOTK_STRETCH"); stretch = e && !strcmp(e, "1"); }
+    double a = runtime_aspect_now ? runtime_aspect_now() : 0, want = stretch ? dw / dh : a > 0 ? a : cw / ch;
+    if (!(want > 0) || fabs((dw / dh) / want - 1) < 0.01) return (MTLViewport){0, 0, dw, dh, 0, 1};
+    double w = fmin(dw, dh * want), h = w / want;
+    return (MTLViewport){floor((dw - w) / 2), floor((dh - h) / 2), round(w), round(h), 0, 1};
 }
 static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int fps_overlay) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
@@ -13356,9 +13361,8 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     // 比例差 < 1%（全屏口径下游戏宽度取 8 的倍数带来的零头，如 1952x900 对 2868x1320 差 0.17%）直接铺满，不留几像素的边
     // Keep the game picture's aspect ratio and center it, leaving black bars in the rest (no stretching when the screen ratio differs from the game's, e.g. iPhone about 19.5:9 versus the game's 16:9);
     // when the ratio difference is < 1% (the remainder from the game width being a multiple of 8 in the full-screen setup, e.g. 1952x900 versus 2868x1320 differs by 0.17%) fill directly, leaving no few-pixel border
-    double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 || present_stretch()) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    double dw = dst.width, dh = dst.height;
+    MTLViewport vp = present_viewport(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     static double last_vp[4];   // 视口变化时记一行（真机屏幕级验收 screen_check.py 核宽高比用） | Log one line when the viewport changes (used by the real-device screen-level acceptance screen_check.py to check the aspect ratio)
     if (memcmp(last_vp, &vp, sizeof last_vp)) { memcpy(last_vp, &vp, sizeof last_vp);
@@ -13400,9 +13404,8 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     }
     if (crop) { atomic_store(&g_pic_big, cw > 1920 || ch > 1080); atomic_store(&g_out_w, (uint32_t)cw); atomic_store(&g_out_h, (uint32_t)ch); }   // a game frame (interpolated frames come without the crop)
     present_pipeline(dst.pixelFormat);
-    double dw = dst.width, dh = dst.height, s = fmin(dw / cw, dh / ch);
-    MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
-    if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 || present_stretch()) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
+    double dw = dst.width, dh = dst.height;
+    MTLViewport vp = present_viewport(dw, dh, cw, ch);
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
     id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // TOTK 2K output: MetalFX to the viewport, drawn 1:1 below
     id<MTLTexture> pic = up ? up : src;
@@ -14066,7 +14069,11 @@ static CAFrameRateRange link_range(int mode) {
     if (mode == 2) return CAFrameRateRangeMake(60, 120, 120);
     const char *explicit_hz = getenv("DM_PRESENT_HZ"), *rt = getenv("TOTK_REALTIME");
     int hz = explicit_hz ? atoi(explicit_hz) : (rt && !strcmp(rt, "0")) ? 60 : mtl_display_hz();
-    if (hz < 30 || hz > 120) hz = 60;
+    /* A display above 120 Hz (a 144 / 160 / 240 Hz monitor) keeps its own rate, up to 240 (hle_nvn.c UNCAPPED_HZ): the
+       fallback to 60 made the system tick at a divisor of the refresh instead (160 Hz: every third or fourth refresh,
+       18.75 / 25 ms on screen, about 53 FPS) and merge away half of the uncapped game frames. Only an unknown rate
+       (below 30) falls back to 60. */
+    if (hz < 30) hz = 60; else if (hz > 240) hz = 240;
     return CAFrameRateRangeMake(hz, hz, hz);
 }
 static int g_link_mode = 1;   // 节拍对象当前的模式：1 / 2 同 g_dm_present_link，3 = 省电模式 30 Hz | Current mode of the display link object: 1 / 2 same as g_dm_present_link, 3 = power-saving mode 30 Hz
