@@ -275,6 +275,19 @@ static void audio_observe(void) {
     setenv("TOTK_MFX_UPSCALE","0",0);
     setenv("TOTK_FPS_OVERLAY","0",0);
 #else
+    /* Settings › Full HD (docked), Tears of the Kingdom only, off by default (a Vision Pro contributor's patch, user
+       2026-10-25): the game's docked settings as the Vision Pro build uses them, 1920x1080 output on a 1080-row drawable
+       with the scene at 1600x900 (1.4.3 renders 960x540 on the phone otherwise, game_patches_v143.c render_res). Off is the
+       handheld 1280x720 the phones were tested at. The Settings pane of Breath of the Wild has no such switch
+       (build_ipa.py). */
+#ifndef GAME_BOTW
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DOCKED"]) {
+        setenv("TOTK_OPERATION_MODE","docked",1);
+        setenv("TOTK_IOS_DRAWABLE_H","1080",0);
+        setenv("TOTK_RENDER_RES","1600x900",0);
+        fprintf(stderr, "[totk] Settings › Full HD: docked, 1920x1080 output, 1600x900 scene\n");
+    } else
+#endif
     setenv("TOTK_OPERATION_MODE","handheld",1);
 #endif
     // Game language: the Settings app (Settings.bundle › TOTK_LANG) stores the choice in our defaults; empty means the
