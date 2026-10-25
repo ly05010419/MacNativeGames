@@ -22,7 +22,8 @@ class StepWarmMetalTests(unittest.TestCase):
         (self.tree / 'build/warm-metal-cache').write_text('tool')
         self.app_build = self.out / 'Contents/Resources/totk/build'
         self.app_build.mkdir(parents=True)
-        self.app_tool = self.app_build / 'warm-metal-cache'
+        self.app_tool = self.out / 'Contents/MacOS/warm-metal-cache'
+        self.app_tool.parent.mkdir(parents=True)
         self.said = []
 
     def tearDown(self):

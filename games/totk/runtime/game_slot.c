@@ -113,7 +113,10 @@ static int pid_is_game(pid_t pid) {
     char path[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pid, path, sizeof path) <= 0) return 0;
     const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
-    return !strncmp(b, "totk-native", 11);   /* also renamed copies such as totk-native.base */
+    if (!strncmp(b, "totk-native", 11)) return 1;   /* also renamed copies such as totk-native.base */
+    /* Packaged games run in the main app executable, without execing the diagnostic runtime. */
+    const char *app = strstr(path, ".app/Contents/MacOS/");
+    return app && (!strcmp(app + 20, "TOTK") || !strcmp(app + 20, "BotW"));
 }
 
 /* Live waiters in the queue (dead ones are removed). Returns how many; *head gets the oldest one's file name. */

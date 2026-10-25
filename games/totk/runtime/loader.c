@@ -1,5 +1,6 @@
 /* Native ARM64 module loader. Guest images and generated metadata stay local. */
 #include "runtime.h"
+#include "autoload.h"
 #include "totk_ui_lang.h"
 #include <TargetConditionals.h>
 #include <dlfcn.h>
@@ -532,10 +533,19 @@ static void abort_report(int num) {
  (void)num;void *frames[64];int n=backtrace(frames,64);write(2,"[totk] host abort, call stack:\n",31);backtrace_symbols_fd(frames,n,2);
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
+#if !TARGET_OS_IPHONE
+int runtime_app_launch(int argc,char **argv,int (*run_game)(int,char **));
+#endif
 int main(int argc,char **argv) {
+#if !TARGET_OS_IPHONE
+ if(argc==1||(argc==2&&!strcmp(argv[1],"--check"))){
+  int result=runtime_app_launch(argc,argv,main);if(result>=0)return result;
+ }
+#endif
  need(argc==3,"usage: totk-native rewritten-dir probe|boot");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
+ runtime_autoload_configure();runtime_input_start();
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
  else unsetenv("TOTK_PROBE_GPU");need(sysconf(_SC_PAGESIZE)==0x4000,"expected 16KB Apple pages");
  struct sigaction a={0};a.sa_sigaction=crash;a.sa_flags=SA_SIGINFO|SA_ONSTACK;sigemptyset(&a.sa_mask);

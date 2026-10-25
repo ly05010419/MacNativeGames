@@ -10,6 +10,7 @@
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
 #include "dmsh_chain.h"
+#include "totk_app_resources.h"
 #include "../../host/hle.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <mach-o/dyld.h>
@@ -55,6 +56,8 @@ static _Atomic int64_t g_cached_variants = -1;
 
 static NSString *root_dir(void) {   // native-port/ (the executable lives in native-port/build/)
     if (g_root) return g_root;
+    NSString *build = totk_app_shader_build_dir();
+    if (build) return g_root = build.stringByDeletingLastPathComponent;
     char path[4096]; uint32_t n = sizeof path;
     if (_NSGetExecutablePath(path, &n)) die("executable path too long");
     g_root = [[[@(path) stringByResolvingSymlinksInPath] stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
