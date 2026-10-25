@@ -783,12 +783,21 @@ void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the cam
       font width): fs' gives fs back, every other width (the bitmap fonts: 14, 19, 24, 31, 50 and 92) stays. An fs' that
       would equal a bitmap width or another fs' steps one pixel up. TextBox::GetFont (main+0x31c24) is inlined to make
       room.
+   The glyph cache (the owner, 2026-10-25: blank characters in a shrine title after long play). The CJK fonts share one
+   nn::font TextureCache of 2048x4096 (InitializeArg at main+0x13e693c: mov x8, #0x800 / movk x8, #0x1000, lsl #32). It
+   cuts rows of a power-of-two height from the glyph height (main+0x19344) and never frees a row; a glyph with no free
+   slot in a row of its own height (main+0x184b0 finds none) goes to the not-plotted list (main+0x17fe0) and draws blank
+   with its advance kept. At x2.70 the sizes 18 / 20 / 30 / 80 need rows of 64 / 64 / 128 / 256 instead of 32 / 32 / 32 /
+   128, so the cache holds about 7x fewer glyphs. The height becomes 16384, and the font heap the cache texture comes
+   from (main+0x13e629c: mov / movk w0) 0xd33333 -> 0x2533333: the 24 MiB the bigger texture adds, the same slack as
+   shipped.
    The sizes are for the largest canvas of the session (the swapchain size). Key 3 does not make the fonts again: a
    smaller canvas draws the bigger glyphs scaled down. TOTK_FONT_RES=0 keeps all three as shipped.
    1.6.0 has the same code, compiled differently (the site addresses below, from the data and the code of both mains):
    the font setup is one function (main+0x18439fc lets languages 13, 14 and 15 through; 17 does not exist), adrp / add
    pairs at main+0x1844174 pick its three tables (main+0x2bfcec0, f00, f40) and its loop reads the rows inline; the
-   reference table is main+0x2bfe430 (read at main+0x1a35774), and the TextScaleOn block is main+0x1366720.
+   reference table is main+0x2bfe430 (read at main+0x1a35774), and the TextScaleOn block is main+0x1366720. The glyph cache
+   height is main+0x1843b54 (movk x9) and the font heap main+0x18439c0, the only matches of the 1.9.0 instruction pairs.
    Not done: TOTK (it may not have the issue). */
 #ifdef GAME_BOTW190
 static const struct { uint32_t off, original; } g_font_rel[] = {   /* the table of each language, relative to 0x1727e10 */
@@ -807,6 +816,10 @@ static const struct { uint32_t off, original; } g_font_ref[] = {   /* {width, he
 static const struct { uint32_t off, original, word; } g_font_scvtf[] = {   /* main+0x13ebfc4 reads the reference sizes as floats */
     {0x13ec150u, 0x5e21d821u, 0xd503201fu},   /* scvtf s1, s1 -> nop */
     {0x13ec158u, 0x5e21d841u, 0x1e204041u},   /* scvtf s1, s2 -> fmov s1, s2 */
+};
+static const struct { uint32_t off, original, word; } g_font_cache[] = {
+    {0x13e6948u, 0xf2c20008u, 0xf2c80008u},   /* movk x8, #0x1000, lsl #32 -> #0x4000: cache height 16384 */
+    {0x13e62a0u, 0x72a01a60u, 0x72a04a60u},   /* movk w0, #0xd3, lsl #16 -> #0x253: font heap 0x2533333 */
 };
 enum { FONT_SCALE = 0xf67c04, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_TABLE_N = 3072 };
 static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont / ... / scvtf s0, w0 / ... */
@@ -829,6 +842,10 @@ static const struct { uint32_t off, original; } g_font_ref[] = {   /* {width, he
 static const struct { uint32_t off, original, word; } g_font_scvtf[] = {   /* main+0x1a35774 reads the reference sizes as floats */
     {0x1a35790u, 0x5e21d821u, 0xd503201fu},   /* scvtf s1, s1 -> nop */
     {0x1a35798u, 0x5e21d841u, 0x1e204041u},   /* scvtf s1, s2 -> fmov s1, s2 */
+};
+static const struct { uint32_t off, original, word; } g_font_cache[] = {
+    {0x1843b54u, 0xf2c20009u, 0xf2c80009u},   /* movk x9, #0x1000, lsl #32 -> #0x4000: cache height 16384 */
+    {0x18439c0u, 0x72a01a60u, 0x72a04a60u},   /* movk w0, #0xd3, lsl #16 -> #0x253: font heap 0x2533333 */
 };
 enum { FONT_SCALE = 0x1366720, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_TABLE_N = 3072 };
 static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont (main+0x1d51cc0) / ... */
@@ -876,6 +893,13 @@ static void patch_font_size(Module *m) {
             runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " TextScaleOn instructions");
         }
     }
+    for (size_t i = 0; i < sizeof g_font_cache / sizeof *g_font_cache; i++) {
+        memcpy(&word, m->base + g_font_cache[i].off, 4);
+        if (word != g_font_cache[i].original) {
+            fprintf(stderr, "[botw] font glyph cache main+%#x: found %08x expected %08x\n", g_font_cache[i].off, word, g_font_cache[i].original);
+            runtime_fail("the font raster size requires the " TOTK_GAME_VERSION " glyph cache instructions");
+        }
+    }
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size) runtime_fail("the font raster size: no data page after the main module");
     float *table = (float *)(void *)(m->base + data_off + FONT_TABLE);
@@ -913,6 +937,8 @@ static void patch_font_size(Module *m) {
         0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,   /* the user data's value, x it (as shipped) */
     };
     put_words(m, FONT_SCALE, scale, FONT_SCALE_WORDS, "font TextScaleOn width");
+    for (size_t i = 0; i < sizeof g_font_cache / sizeof *g_font_cache; i++) put_word(m, g_font_cache[i].off, g_font_cache[i].word, "font glyph cache");
+    fprintf(stderr, "[botw] font glyph cache 2048x16384 (shipped 2048x4096), font heap 0x2533333\n");
     fprintf(stderr, "[botw] font raster size x%.2f for the %u-pixel canvas: 18 -> %u, 20 -> %u, 30 -> %u, 80 -> %u; text sizes kept "
             "(reference table, main+%#x TextScaleOn) (TOTK_FONT_RES=0 keeps 720p)\n",
             h / 720.0, h, big[1], big[2], big[3], big[0], FONT_SCALE);
