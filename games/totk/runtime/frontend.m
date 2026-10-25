@@ -197,7 +197,7 @@ static NSString *shortcut_text(void){
  NSString *picture;
  if(mfxup_output_enabled())picture=@"MetalFX 2K";
  else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
- else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
+ else if(w!=1920||h!=1080)picture=@(TOTK_UI("原生画质","native quality"));
  else picture=@(TOTK_UI("关闭","off"));
  /* key 4 (runtime/aspect_patch.h): 16:9 -> fit to the window -> 21:9 (or TOTK_ASPECT's ratio) */
  int step=runtime_aspect_step();float ar=runtime_aspect_now();
@@ -278,9 +278,12 @@ void runtime_shortcut_help_toggle(void){int mode=fps_overlay_toggle_hints();disp
    scales it down for the screen. It lets a test exercise the 2K output path (a 2560x1440 picture) on a screen smaller than
    that (2026-10-17: the Mac reported a 1920x1080 display); the desktop launcher never sets it. */
 static CGFloat drawable_scale(void){static CGFloat f=-1;if(f<0){const char *e=getenv("TOTK_DRAWABLE_SCALE");f=e?atof(e):1;if(f<0.25||f>4)f=1;}return f;}
+uint32_t g_window_px_w,g_window_px_h;int g_window_px_ok;   /* the window's own pixel size: key 3's native step renders at its 16:9 slice */
+int runtime_window_pixels(unsigned *w,unsigned *h){if(!g_window_px_ok)return 0;*w=g_window_px_w;*h=g_window_px_h;return 1;}
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
+ g_window_px_w=(uint32_t)px.width;g_window_px_h=(uint32_t)px.height;g_window_px_ok=1;
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
  metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
 }

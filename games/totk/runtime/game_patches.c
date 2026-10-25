@@ -477,12 +477,19 @@ int runtime_output_mode_cycle(void) {
     _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
     uint64_t cur = atomic_load(size);
     unsigned nw = 0, nh = 0;
-    int has_native = display_slice(&nw, &nh);
+    int has_native = display_slice(&nw, &nh);   /* the heaps cover this boot-time maximum */
+    { extern int runtime_window_pixels(unsigned *, unsigned *);
+      unsigned ww = 0, wh = 0;   /* the native step renders at the window's own 16:9 slice, bounded by that maximum */
+      if (runtime_window_pixels(&ww, &wh)) {
+          unsigned sw = ww, sh = (unsigned)((uint64_t)ww * 9 / 16);
+          if (sh > wh || !sh) { sh = wh; sw = (unsigned)((uint64_t)wh * 16 / 9); }
+          if (sw >= 640 && sh >= 360 && (uint64_t)sw * sh <= (uint64_t)nw * nh) { nw = sw; nh = sh; }
+      } }
     extern int mfxup_output_enabled(void);
     extern void dm_gfx_set_flag(const char *name, int value);
     unsigned tw = 0; unsigned th = 0; int tmfx = 0; const char *name = NULL;
     if (has_native && cur == pack_size(nw, nh)) { tw = 1920; th = 1080; tmfx = 0; name = "关闭(1080p)"; }
-    else if (cur == pack_size(2560, 1440)) { if (has_native) { tw = nw; th = nh; tmfx = 0; name = "原生屏幕"; } else { tw = 1920; th = 1080; tmfx = 0; name = "关闭 2K"; } }
+    else if (cur == pack_size(2560, 1440)) { if (has_native) { tw = nw; th = nh; tmfx = 0; name = "原生画质"; } else { tw = 1920; th = 1080; tmfx = 0; name = "关闭 2K"; } }
     else if (mfxup_output_enabled()) { tw = 2560; th = 1440; tmfx = 0; name = "原生 2K"; }
     else { tw = 1920; th = 1080; tmfx = 1; name = "MetalFX 2K"; }
     if (!output_res_set(tw, th, name)) return 0;
