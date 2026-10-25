@@ -2,9 +2,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <Nullable>disable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize Condition="'$(Configuration)' == 'Release'">true</Optimize>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <UseSizeOptimizedLinq>false</UseSizeOptimizedLinq>
     <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../tooling/d2r-mobile/dm/third_party/ryujinx</RyuSrc>
   </PropertyGroup>
   <ItemGroup>

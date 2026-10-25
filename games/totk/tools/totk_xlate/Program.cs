@@ -132,6 +132,9 @@ static class SwshXlate
                 // 作业 debug = false：关 DebugMode（DebugMode 会跳过 AST 优化器，产物满是临时变量；不改语义）
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                // Preserve the ballot shape expected by the exact counter lowering.
+                if (VertexCounterLowering.RequiresStableShape(code, (string)job["stage"]))
+                    flags |= TranslationFlags.DebugMode;
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 ShaderProgram p = ctx.Translate();
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"),

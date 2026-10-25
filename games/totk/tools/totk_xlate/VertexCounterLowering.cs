@@ -16,6 +16,12 @@ static class VertexCounterLowering
     // 1.1.2's s0[8304 + vertex_id*4]. The guarded ballot/popcount/atomic tail
     // has the same reduction: one increment for every passing invocation.
     const string InstanceCodeHash = "F5F4D23149565ACD852F6B7091F64CC8CB3AA019CCB33BA3F88CED62C6D1FF7B";
+    internal static bool RequiresStableShape(byte[] code, string stage)
+    {
+        if (stage != "vs") return false;
+        string hash = Convert.ToHexString(SHA256.HashData(code));
+        return hash == VertexCodeHash || hash == InstanceCodeHash;
+    }
     internal static byte[] Apply(byte[] code, string stage, byte[] spirv, List<string> notes)
     {
         if (stage != "vs") return spirv;

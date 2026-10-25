@@ -770,7 +770,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                     reused = reply is not None
                     if not reused:
                         if process is None:
-                            process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
+                            process = subprocess.Popen([str(translator), '--service', '--optimize-spirv', '--spirv-cross', str(spirv_cross),
                                                         '--out', str(staging), '--chain', CHAIN],
                                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
                         code_path = staging/(variant+'.code')

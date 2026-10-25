@@ -39,7 +39,7 @@ what is already done and correct. Mac saves, shader cache and logs go to the use
 and the writable shader cache in the app's Documents container.
 
 Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
-    brew install opus libvpx python@3.14
+    brew install opus libvpx python@3.14 spirv-tools
 For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and Ninja.
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
@@ -85,7 +85,8 @@ SPIRV_CROSS = ('https://github.com/KhronosGroup/SPIRV-Cross.git', 'aa217aeb6c9f0
 SPIRV_CROSS_SOURCES = ('main.cpp', 'spirv_cfg.cpp', 'spirv_cpp.cpp', 'spirv_cross.cpp', 'spirv_cross_parsed_ir.cpp',
                        'spirv_cross_util.cpp', 'spirv_glsl.cpp', 'spirv_hlsl.cpp', 'spirv_msl.cpp', 'spirv_parser.cpp',
                        'spirv_reflect.cpp')
-SPIRV_CROSS_FLAGS = ('-O3', '-DNDEBUG', '-std=c++11', '-arch', 'arm64', '-Wno-deprecated-declarations')
+SPIRV_CROSS_FLAGS = ('-O3', '-flto=full', '-fvisibility=hidden', '-fwhole-program-vtables', '-fvirtual-function-elimination',
+                     '-DNDEBUG', '-std=c++11', '-arch', 'arm64', '-Wno-deprecated-declarations')
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin']
 
 
@@ -292,6 +293,9 @@ def prerequisites(args):
     missing = [p for p in ('opus', 'libvpx') if not (brew / 'opt' / p / 'lib').is_dir()]
     if missing:
         raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
+    if any(not shutil.which(tool, path=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '')]))
+           for tool in ('spirv-opt', 'spirv-val')):
+        raise BuildError('SPIRV-Tools missing: brew install spirv-tools')
     if not shutil.which('git', path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
         raise BuildError('git not found: xcode-select --install')
     py = next((p for p in (shutil.which(n, path=os.pathsep.join(TOOL_PATHS)) for n in ('python3.14', 'python3.15')) if p), None)
@@ -926,7 +930,8 @@ def build_spirv_cross(tree, logs):
             logs / 'spirv-cross' / (name + '.log'), quiet=False)
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
         list(pool.map(compile_one, SPIRV_CROSS_SOURCES))
-    run(['xcrun', 'clang++', '-arch', 'arm64', *[objs / (n + '.o') for n in SPIRV_CROSS_SOURCES], '-o', out / 'spirv-cross'],
+    run(['xcrun', 'clang++', '-O3', '-flto=full', '-fwhole-program-vtables', '-fvirtual-function-elimination', '-arch', 'arm64',
+         *[objs / (n + '.o') for n in SPIRV_CROSS_SOURCES], '-o', out / 'spirv-cross'],
         logs / 'spirv-cross' / 'link.log', quiet=False)
 
 
@@ -986,7 +991,8 @@ def metal_compiler():
 
 
 # The options of totk_precise_opts() in nvn_mtl.m: the translated shaders need exactly rounded float arithmetic.
-METAL_FLAGS = ['-fmetal-math-mode=safe']
+# Horizontal SLP's llvm.vector.reduce.or.v4i32 crashes the M1 Metal backend.
+METAL_FLAGS = ['-fmetal-math-mode=safe', '-flto=full', '-O3', '-mllvm', '-slp-vectorize-hor=false']
 
 
 def variant_folder(game):
