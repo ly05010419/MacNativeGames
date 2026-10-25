@@ -51,7 +51,7 @@ def card_image(folder):
     return xci
 
 
-def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True):
+def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True, card='botw160'):
     """build_app.main with the long steps mocked: it stops at `stop` (Stop) or at the first BuildError, which it returns
     with the started mocks. fonts=False leaves out --firmware."""
     keys = folder / 'prod.keys'
@@ -73,6 +73,7 @@ def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_c
         identify_game=mock.patch.object(build_app, 'identify_game', return_value=game),
         container=mock.patch.object(build_app, 'prepare_update_container', side_effect=lambda tree, source, keys, logs: source),
         identify_update=mock.patch.object(build_app, 'identify_botw_update', return_value='botw190'),   # by the update's ExeFS hashes
+        identify_card=mock.patch.object(build_app, 'identify_botw_card', return_value=card),   # by the card's ExeFS hashes
         step_code_botw=mock.patch.object(build_app, 'step_code_botw', side_effect=Stop if stop == 'step_code_botw' else None),
         step_data_botw=mock.patch.object(build_app, 'step_data_botw', side_effect=Stop if stop == 'step_data_botw' else None),
         step_code=mock.patch.object(build_app, 'step_code', side_effect=Stop),
@@ -164,8 +165,8 @@ class GameSelectionTests(unittest.TestCase):
                                          version='botw190', update=update)
 
     # ---- main() ----
-    def run_main(self, base, update=None, game='botw', fonts=True):
-        return run_main(self, self.root, base, update, game=game, fonts=fonts)
+    def run_main(self, base, update=None, game='botw', fonts=True, card='botw160'):
+        return run_main(self, self.root, base, update, game=game, fonts=fonts, card=card)
 
     def card_image(self):
         return card_image(self.root)
@@ -189,6 +190,16 @@ class GameSelectionTests(unittest.TestCase):
         self.assertIsInstance(error, Stop)
         self.assertEqual(started['step_code_botw'].call_args.kwargs['version'], 'botw160')
         self.assertEqual(started['prepare_work'].call_args[0][0], self.root.resolve() / 'BotW_build')
+
+    def test_botw_card_image_with_the_1_9_0_update_is_1_9_0(self):
+        # a card image that holds the 1.9.0 update has the same base + update + add-on-content structure:
+        # its ExeFS hashes choose the version, and the card stays step_code_botw's ExeFS source
+        card = self.card_image()
+        error, started = self.run_main(card, card='botw190')
+        self.assertIsInstance(error, Stop)
+        started['identify_card'].assert_called_once()
+        self.assertEqual(started['step_code_botw'].call_args[0][2], card.resolve())
+        self.assertEqual(started['step_code_botw'].call_args.kwargs['version'], 'botw190')
 
     def test_botw_nsp_with_update_is_1_9_0(self):
         base, update = package(self.root, 'botw.nsp', BOTW_BASE), package(self.root, 'botw-u.nsp', BOTW_UPDATE)
