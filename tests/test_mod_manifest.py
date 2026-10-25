@@ -225,6 +225,103 @@ class MergeWithBuildPatch(unittest.TestCase):
         self.assertFalse((self.mod/(COMMON + '.mod-original')).exists())
 
 
+class AddOnContent(unittest.TestCase):
+    """Breath of the Wild add-on content (DLC): a mod's aoc<N>/ folder replaces files of volume N, with a manifest of its own."""
+    DLC = {'Pack/Dungeon120.pack': b'original dungeon', 'Movie/Ending.mp4': b'ending'}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.romfs = fake_romfs(self.root/'extracted/botw160/romfs')
+        fake_romfs(self.root/'extracted/botw160/aoc/1', self.DLC)
+        self.mod = self.root/'mods/botw160'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def put(self, path, data):
+        (self.mod/path).parent.mkdir(parents=True, exist_ok=True)
+        (self.mod/path).write_bytes(data)
+
+    def lines(self, path):
+        return [l for l in path.read_text().splitlines() if not l.startswith('#')]
+
+    def test_aoc_manifest_lists_the_replaced_file_and_the_base_manifest_does_not(self):
+        self.put('Sound/B.bwav', b'dubbed')
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.lines(self.mod/'aoc1/manifest.tsv'), ['\t'.join([
+            'Pack/Dungeon120.pack', '11', hashlib.sha256(b'new dungeon').hexdigest(),
+            hashlib.sha256(self.DLC['Pack/Dungeon120.pack']).hexdigest()])])
+        self.assertEqual([l.split('\t')[0] for l in self.lines(self.mod/'manifest.tsv')], ['Sound/B.bwav'])
+
+    def test_added_aoc_file_is_refused(self):
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        self.put('aoc1/Pack/Dungeon999.pack', b'new file')
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('aoc1/Pack/Dungeon999.pack: not a file of add-on content volume 1', result.stderr)
+        self.assertFalse((self.mod/'aoc1/manifest.tsv').exists())
+
+    def test_missing_aoc_volume_is_refused(self):
+        self.put('aoc2/Pack/Dungeon120.pack', b'new dungeon')
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(str(self.root/'extracted/botw160/aoc/2/romfs.bin'), result.stderr)
+
+    def test_add_on_only_mod_writes_its_manifest_and_passes_check(self):
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        checked = run(self.mod, '--romfs', self.romfs, '--check')
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn('aoc1/manifest.tsv would hold 1 files', checked.stdout)
+        self.assertFalse((self.mod/'aoc1/manifest.tsv').exists())
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([l.split('\t')[0] for l in self.lines(self.mod/'aoc1/manifest.tsv')], ['Pack/Dungeon120.pack'])
+
+    def test_check_refuses_an_added_aoc_file(self):
+        self.put('aoc1/Pack/Dungeon999.pack', b'new file')
+        self.assertNotEqual(run(self.mod, '--romfs', self.romfs, '--check').returncode, 0)
+
+    def test_restoring_the_last_aoc_file_removes_its_manifest(self):
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        self.assertEqual(run(self.mod, '--romfs', self.romfs).returncode, 0)
+        self.put('aoc1/Pack/Dungeon120.pack', self.DLC['Pack/Dungeon120.pack'])
+        self.assertNotEqual(run(self.mod, '--romfs', self.romfs).returncode, 0)   # nothing left to replace
+        self.assertFalse((self.mod/'aoc1/manifest.tsv').exists())
+
+    def test_exclude_applies_to_aoc_files(self):
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        self.put('aoc1/Pack/Dungeon999.pack', b'new file')
+        self.put('Sound/B.bwav', b'dubbed')
+        result = run(self.mod, '--romfs', self.romfs, '--exclude', 'aoc1/Pack/Dungeon999.pack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([l.split('\t')[0] for l in self.lines(self.mod/'aoc1/manifest.tsv')], ['Pack/Dungeon120.pack'])
+        result = run(self.mod, '--romfs', self.romfs, '--exclude', 'aoc*/Pack/*999.pack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = run(self.mod, '--romfs', self.romfs, '--exclude', '*999.pack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_botw190_mod_gets_its_aoc_manifest(self):
+        romfs = fake_romfs(self.root/'extracted/botw190/romfs')
+        fake_romfs(self.root/'extracted/botw190/aoc/1', self.DLC)
+        self.mod = self.root/'mods/botw190'
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        result = run(self.mod, '--romfs', romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([l.split('\t')[0] for l in self.lines(self.mod/'aoc1/manifest.tsv')], ['Pack/Dungeon120.pack'])
+        self.assertFalse((self.mod/'manifest.tsv').exists())
+
+    def test_aoc_folder_of_a_totk_mod_is_as_before(self):
+        self.mod = self.root/'mods/v143'
+        self.put('aoc1/Pack/Dungeon120.pack', b'new dungeon')
+        result = run(self.mod, '--romfs', self.romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([l.split('\t')[0] for l in self.lines(self.mod/'manifest.tsv')], ['aoc1/Pack/Dungeon120.pack'])
+        self.assertFalse((self.mod/'aoc1/manifest.tsv').exists())
+
+
 class TheWriterToolsShare(unittest.TestCase):
     """make_button_icons.py writes a mod's manifest with write_manifest() - it used to unpack manifest()'s return into
     four names, which stopped working when the record grew. This runs the code that caller runs, on the same fake

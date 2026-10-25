@@ -39,6 +39,25 @@ static NSDictionary<NSString *, NSString *> *kv_read(NSString *path) {
     return out;
 }
 
+#if defined(GAME_BOTW190) || defined(GAME_BOTW160)
+/* HD texture packs (runtime/game_patches_botw.c runtime_botw_hd_heaps): the bytes the player's mod manifest replaces, and
+   the size of its Pack/TitleBG.pack. HDPacks 4k replaces 19.7 GiB, its TitleBG.pack 346 MiB (the shipped StarterPackMgr
+   heap is 225 MiB); the largest other mod seen, 0.24 GiB. */
+static unsigned long long mod_bytes(const char *mods, unsigned long long *title_bg) {
+    char path[4096]; snprintf(path, sizeof path, "%s/manifest.tsv", mods);
+    *title_bg = 0;
+    FILE *m = fopen(path, "r"); if (!m) return 0;
+    unsigned long long total = 0, size; char line[8192], name[4096];
+    while (fgets(line, sizeof line, m))
+        if (line[0] != '#' && sscanf(line, "%4095[^\t]\t%llu", name, &size) == 2) {
+            total += size;
+            if (!strcmp(name, "Pack/TitleBG.pack")) *title_bg = size;
+        }
+    fclose(m);
+    return total;
+}
+#endif
+
 static uint64_t pid_start(pid_t pid) {   // 0 if gone or a zombie; with the pid it names one process exactly
     struct proc_bsdinfo bi;
     if (pid <= 0 || proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof bi) != (int)sizeof bi || bi.pbi_status == SZOMB) return 0;
@@ -251,6 +270,18 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
+#if defined(GAME_BOTW190) || defined(GAME_BOTW160)
+        /* A mod that replaces 4 GiB or more, or Pack/TitleBG.pack with 200 MiB or more, is an HD texture pack, which needs
+           the HD heaps (about 6.3 GB of memory): TOTK_BOTW_HD_HEAPS=1 then, unless the environment sets it. After the
+           redirect, so the line is in the log. */
+        { unsigned long long title_bg, bytes = mod_bytes(getenv("TOTK_ROMFS_MODS"), &title_bg);
+          const char *heaps = getenv("TOTK_BOTW_HD_HEAPS");
+          if (heaps) fprintf(stderr, "[launcher] HD heaps: TOTK_BOTW_HD_HEAPS=%s from the environment (mods replace %.1f GiB)\n", heaps, bytes / 1073741824.0);
+          else if (bytes >= 4ULL << 30 || title_bg >= 200ULL << 20) {
+              setenv("TOTK_BOTW_HD_HEAPS", "1", 0);
+              fprintf(stderr, "[launcher] HD heaps: on, the mods replace %.1f GiB, TitleBG.pack %llu MiB (an HD texture pack)\n", bytes / 1073741824.0, title_bg >> 20);
+          } }
+#endif
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);
         int failed = errno;
