@@ -17,6 +17,7 @@ Not an emulator: the game's own ARM64 code runs directly on Apple chips, and its
 | Super Smash Bros. Ultimate | 13.0.2 | Mac | Community port | [`games/ssbu`](games/ssbu/README.md) |
 | Super Mario Odyssey | 1.3.0 | Mac | Community port, early | [`games/odyssey`](games/odyssey/README.md) |
 | Bayonetta 3 | 1.2.0 | Mac | Community port, work in progress | [`games/by3`](games/by3/README.md) |
+| Animal Crossing: New Horizons | 1.2.1 | Mac | Community port | [`games/acnh`](games/acnh/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
@@ -49,6 +50,7 @@ Update history:
 
 | Date | Platform | Update |
 |---|---|---|
+| Oct 25 | Mac | **Animal Crossing: New Horizons 1.2.1** (community port): boots natively on Apple Silicon, offline services, precompiled shaders, 30 fps; own runtime in [`games/acnh`](games/acnh/README.md) |
 | Oct 24 | Mac | **Super Smash Bros. Ultimate 13.0.2** (community port): fights, World of Light with the Spirit Board, saves, movies with sound; 1080p or 2K; own runtime in [`games/ssbu`](games/ssbu/README.md), with its one-command build there |
 | Oct 23 | iPhone | **Breath of the Wild 1.6.0** on the iPhone: full screen, add-on content, saves copied from the Mac; both games render at 960x540 on the phone and use their own upscale to 1280x720 (no MetalFX) |
 | Oct 23 | Mac | **Super Mario Odyssey 1.3.0** (community port, early): Cap Kingdom and Bonneton playable at 60 fps on an M3, own runtime in [`games/odyssey`](games/odyssey/README.md), which has the build steps |
@@ -114,6 +116,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 | 任天堂明星大乱斗 特别版 | 13.0.2 | Mac | 社区移植 | [`games/ssbu`](games/ssbu/README.md) |
 | 超级马力欧 奥德赛 | 1.3.0 | Mac | 社区移植，早期 | [`games/odyssey`](games/odyssey/README.md) |
 | 猎天使魔女 3 | 1.2.0 | Mac | 社区移植，开发中 | [`games/by3`](games/by3/README.md) |
+| 集合啦！动物森友会 | 1.2.1 | Mac | 社区移植 | [`games/acnh`](games/acnh/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
@@ -146,6 +149,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license: [THIRD_PAR
 
 | 日期 | 平台 | 更新 |
 |---|---|---|
+| 10 月 25 日 | Mac | **集合啦！动物森友会 1.2.1**（社区移植）：苹果芯片原生运行、离线系统服务、预编译着色器、稳定 30 帧；运行时独立放在 [`games/acnh`](games/acnh/README.md) |
 | 10 月 24 日 | Mac | **任天堂明星大乱斗 特别版 13.0.2**（社区移植）：对战、灯火之星和命魂板、存档、带声音的过场动画；1080p 或 2K；运行时独立放在 [`games/ssbu`](games/ssbu/README.md)，一条命令构建，步骤见那里 |
 | 10 月 23 日 | iPhone | **旷野之息 1.6.0** 上 iPhone：铺满屏幕、带 DLC、可拷入 Mac 的存档；两款游戏在手机上都是内部 960×540，用游戏自己的放大到 1280×720（不用 MetalFX） |
 | 10 月 23 日 | Mac | **超级马力欧 奥德赛 1.3.0**（社区移植，早期）：帽子王国和 Bonneton 在 M3 上 60 帧可玩，运行时独立放在 [`games/odyssey`](games/odyssey/README.md)，构建步骤见那里 |
