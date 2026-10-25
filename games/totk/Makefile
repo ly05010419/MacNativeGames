@@ -446,6 +446,8 @@ GFX_OBJECTS_BOTW190 := $(addprefix build/gfx-botw190/,$(addsuffix .o,$(GFX_SRC))
 build/gfx-botw190/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -DGAME_BOTW190=1 -c "$<" -o "$@"
+# nvn_mtl.m includes the texture-pack header for BotW (sharp UI art)
+build/gfx-botw/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m.o build/gfx-botw190/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m.o: ../botw/gfx/botw_texpack.h
 .PHONY: runtime-botw190
 build/botw190/runtime_tables.h: scripts/prepare_runtime.py analysis/botw190-port/phase12-validation.json
 	"$(PY)" scripts/prepare_runtime.py --version botw190
