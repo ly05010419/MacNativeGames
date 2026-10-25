@@ -20,6 +20,17 @@ KIRBY_BUILD = Path(os.environ.get("KIRBY_WORK", GAME_DIR / "Kirby_build")).resol
 DEFAULT_CACHE = KIRBY_BUILD / "build/shader-cache"
 OUTPUT = KIRBY_BUILD / "build/shader-libs"
 FLAGS = ("-fmetal-math-mode=safe",)
+# Must match kirby_shader_source() in nvn_mtl.m byte for byte: the launcher sets KIRBY_VERTEX_Y_FLIP=1, so the
+# runtime hashes the flipped vertex source when it looks up a library.
+VERTEX_FLIP = b"    out.gl_Position.y = -out.gl_Position.y;"
+RETURN = b"    return out;"
+
+
+def runtime_variants(data):
+    """The source bytes the runtime may hash: as translated, and with the vertex Y flip applied."""
+    yield data
+    if VERTEX_FLIP not in data and b"out.gl_Position" in data and RETURN in data:
+        yield data.replace(RETURN, VERTEX_FLIP + b"\n" + RETURN)
 
 
 def valid_library(path):
@@ -61,10 +72,10 @@ def compile_cache(cache, output, compiler, identity, jobs):
             print("Compiler identity absent or changed; rebuilding the selected libraries.")
         todo = {}
         for source in sources:
-            data = source.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
-            if not same_compiler or not valid_library(output / f"{digest}.metallib"):
-                todo.setdefault(digest, (source.name, data))
+            for data in runtime_variants(source.read_bytes()):
+                digest = hashlib.sha256(data).hexdigest()
+                if not same_compiler or not valid_library(output / f"{digest}.metallib"):
+                    todo.setdefault(digest, (source.name, data))
         print(f"Found {len(sources)} local variants; compiling {len(todo)} libraries with {jobs} workers...", flush=True)
 
         with tempfile.TemporaryDirectory(prefix=".compile-", dir=output) as temporary:

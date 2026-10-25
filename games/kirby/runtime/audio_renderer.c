@@ -208,7 +208,7 @@ static void request_update(AudioRenderer *r, const uint8_t *input, uint64_t in_s
     o.revision = REV(revision_number(h.revision) >= 1 ? revision_number(h.revision) : 1);
     o.memory_pools = npools * sizeof(AudrenPoolOut); o.voices = (uint32_t)vc * sizeof(AudrenVoiceOut);
     o.effects = (uint32_t)ec * eo; o.sinks = (uint32_t)sc * sizeof(AudrenSinkOut);
-    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = h.render_info ? RENDER_INFO_OUT : 0;
+    o.performance = 0x10; o.behavior = BEHAVIOR_OUT; o.render_info = RENDER_INFO_OUT;
     o.total = (uint32_t)sizeof o + o.memory_pools + o.voices + o.effects + o.sinks + o.performance + o.behavior + o.render_info;
     if (o.total > out_size) { fprintf(stderr, "[totk-audio] output needs %u bytes, client gave %llu (effect out %u)\n", o.total, (unsigned long long)out_size, eo); runtime_fail("audio renderer output size"); }
     memset(output, 0, out_size);

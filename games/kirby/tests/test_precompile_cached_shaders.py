@@ -124,6 +124,16 @@ class ShaderCacheTests(unittest.TestCase):
         self.assertEqual(PRECOMPILE.worker_count("1"), 1)
         self.assertEqual(PRECOMPILE.worker_count("16"), 16)
 
+    def test_vertex_source_also_yields_the_runtime_y_flipped_variant(self):
+        vertex = b"main0_out main0(){\n    main0_out out = {};\n    out.gl_Position = p;\n    return out;\n}\n"
+        variants = list(PRECOMPILE.runtime_variants(vertex))
+        self.assertEqual(variants[0], vertex)
+        self.assertEqual(variants[1], vertex.replace(b"    return out;",
+                         b"    out.gl_Position.y = -out.gl_Position.y;\n    return out;"))
+        self.assertEqual(list(PRECOMPILE.runtime_variants(b"fragment only\n    return out;\n")),
+                         [b"fragment only\n    return out;\n"])
+        self.assertEqual(list(PRECOMPILE.runtime_variants(variants[1])), [variants[1]])
+
 
 if __name__ == "__main__":
     unittest.main()

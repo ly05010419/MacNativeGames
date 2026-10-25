@@ -59,14 +59,13 @@ static inline int nvn_window_origin_is_lower_left(void) {
     if (env_origin >= 0) return env_origin == 0;
     return totk_window_origin_mode() == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
 }
+/* Linear textures are CPU-written in the game's own row order (Kirby's scalable-font glyph atlas among them):
+   flipping them by window origin moved every glyph off the rows the UI samples, so menu text was empty.
+   TOTK_LINEAR_TEX_FLIP=1 keeps the flip available as an experiment. */
 static inline int linear_tex_should_flip(void) {
-    static int env_flip = -2;
-    if (env_flip == -2) {
-        const char *e = getenv("TOTK_LINEAR_TEX_FLIP");
-        env_flip = e ? atoi(e) : -1;
-    }
-    if (env_flip >= 0) return env_flip != 0;
-    return nvn_window_origin_is_lower_left();
+    static int env_flip = -1;
+    if (env_flip < 0) { const char *e = getenv("TOTK_LINEAR_TEX_FLIP"); env_flip = e && atoi(e) != 0; }
+    return env_flip;
 }
 #include <setjmp.h>
 extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarded read of guest memory survives a fault
@@ -4998,7 +4997,9 @@ static void shmap_load(void) {
 /* Every compile path must use the same framebuffer orientation. Derived vertex
    functions (missing varyings/layers) reread MSL, bypassing shader_load's library. */
 static NSString *kirby_shader_source(NSString *src, int stage) {
-    if (!src || stage != 0 || !getenv("KIRBY_VERTEX_Y_FLIP")) return src;
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("KIRBY_VERTEX_Y_FLIP"); on = e && atoi(e) != 0; }
+    if (!src || stage != 0 || !on) return src;
     NSString *flip = @"    out.gl_Position.y = -out.gl_Position.y;";
     if ([src containsString:flip]) return src;
     if ([src containsString:@"out.gl_Position"] && [src containsString:@"    return out;"])

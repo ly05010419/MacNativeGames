@@ -80,6 +80,11 @@ int main(int argc, char **argv) {
     setenv("TOTK_SHADER_ASYNC", "0", 0);
     setenv("TOTK_MFX_UPSCALE", "0", 0);
     setenv("TOTK_MFX_OUTPUT", "0", 0);
+    /* Kirby renders with a lower-left origin: without these three the menu text is upside down and the
+       render-to-texture background shows magenta/black tiles (kirby-investigation verify-appenv-1). */
+    setenv("KIRBY_VERTEX_Y_FLIP", "1", 0);
+    setenv("KIRBY_PRESENT_FLIP_Y", "1", 0);
+    setenv("TOTK_GPU_WINDING_FLIP", "1", 0);
 
     for (const char *const *v = (const char *const[]){"TOTK_ASSUME_FOCUS", "TOTK_VERIFY_STARTUP", "TOTK_HEADLESS", NULL}; *v; v++) unsetenv(*v);
     if (chdir(data)) return 1;
