@@ -330,7 +330,12 @@ static int output_full_at_start = 1;
 /* The display's own 16:9 slice (a 3024x1964 Retina panel gives 3024x1701). Returns 0 when the slice
    is not larger than 2K (then key 3 keeps the three upstream steps). */
 static int display_slice(unsigned *w, unsigned *h) {
-    uint32_t dw = (uint32_t)CGDisplayPixelsWide(CGMainDisplayID()), dh = (uint32_t)CGDisplayPixelsHigh(CGMainDisplayID());
+    /* CGDisplayPixels* returns the scaled size on current macOS (1512x982 here); the mode's pixel size is the panel's own. */
+    CGDirectDisplayID dpy = CGMainDisplayID();
+    uint32_t dw = 0, dh = 0;
+    CGDisplayModeRef mode = CGDisplayCopyDisplayMode(dpy);
+    if (mode) { dw = (uint32_t)CGDisplayModeGetPixelWidth(mode); dh = (uint32_t)CGDisplayModeGetPixelHeight(mode); CGDisplayModeRelease(mode); }
+    if (!dw || !dh) { dw = (uint32_t)CGDisplayPixelsWide(dpy); dh = (uint32_t)CGDisplayPixelsHigh(dpy); }
     unsigned sw = dw, sh = (unsigned)((uint64_t)dw * 9 / 16);
     if (sh > dh || !sh) { sh = dh; sw = (unsigned)((uint64_t)dh * 16 / 9); }
     if (!sw || !sh || sw < 640 || sh < 360 || (uint64_t)sw * sh <= (uint64_t)2560 * 1440 || sw > 7680 || sh > 4320) return 0;
@@ -348,8 +353,10 @@ static int output_res_auto(unsigned *w, unsigned *h) {
     if (!f) { fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): off, %s is missing (make romfs-patches)\n", path); return 0; }
     fclose(f);
     *w = 2560; *h = 1440; output_full_at_start = 0;
-    fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K, 2560x1440 and the display slice %s\n",
-            display_slice(NULL, NULL) ? "" : "(not larger than 2K here, so no fourth step)");
+    { unsigned dw2 = 0, dh2 = 0; int nat = display_slice(&dw2, &dh2);
+      fprintf(stderr, "[totk] true 2K (TOTK_OUTPUT_RES=auto): starts at 1920x1080 (the default); key 3 cycles 1920x1080, MetalFX 2K, 2560x1440%s\n",
+              nat ? " and the display slice" : " (the display slice is not larger than 2K here, so no fourth step)");
+      if (nat) fprintf(stderr, "[totk] display slice: %ux%u\n", dw2, dh2); }
     if (display_slice(w, h)) { }   /* the switchable maximum becomes the display slice: its heaps cover 2K too */
     return 1;
 #else
