@@ -2476,6 +2476,7 @@ __attribute__((weak)) void dm_main_yield_stats(uint64_t *n, uint64_t *ns) { *n =
 __attribute__((weak)) uint32_t dm_guest_work_qos(unsigned *count) { if (count) *count = 0; return QOS_CLASS_UNSPECIFIED; }
 extern uint32_t mtl_present_qos(void);
 uint64_t g_frame_pub;
+_Atomic uint64_t g_fresh_frames;   /* frames that rendered a new picture (FPS box) */
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // 取图里节拍等待 / 等出图队列归还的累计，出图时按帧记（一帧内可有多次取图） | Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
 extern uint64_t g_t0_ns;   // 宿主进程起点（main.c；UIMSG 时间戳同基） | Host process start point (main.c; same base as the UIMSG timestamps)
@@ -2545,19 +2546,26 @@ static void dump_frame(void) {
         const char *t = getenv("DM_NVN_TSV"); if (t && !(g_tsv = fopen(t, "w"))) LOG("【红】打不开 %s", t);
         if (g_tsv) fprintf(g_tsv, "# kind: nvn-per-frame  name 为 NVN 函数名时值 = 调用次数；@ 开头为计时埋点（ms / 个）\nframe\tname\tvalue\n");
     }
-    uint64_t total = 0; unsigned nfn = 0;
+    uint64_t total = 0, draws = 0; unsigned nfn = 0;
     char line[8192]; size_t o = 0; line[0] = 0;
     for (unsigned i = 0; i < NVN_NFUNC; i++) {
         uint64_t c = atomic_load(&nvn_slot[i].cnt), d = c - g_prev[i];
         g_prev[i] = c;
         if (!d) continue;
         total += d; nfn++;
+        if (!strncmp(nvn_names[i], "nvnCommandBufferDraw", 20)) draws += d;
         if (g_tsv && calls) fprintf(g_tsv, "%llu\t%s\t%llu\n", g_frame, nvn_names[i], d);
         if (g_frame <= (uint64_t)nframes && o < sizeof line - 96) o += snprintf(line + o, sizeof line - o, " %s=%llu", nvn_names[i] + 3, d);
     }
     if (g_tsv) fflush(g_tsv);
     if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu：%u 个函数 %llu 次调用 |%s", g_frame ? "帧" : "初始化", g_frame, nfn, total, line);
     else if (g_frame % 300 == 0) LOG("[nvn] 帧 %llu：%u 个函数 %llu 次调用", g_frame, nfn, total);
+    /* Kirby: the game re-presents its last scene (a few draws, no UI pass) when its renderer skips a frame, so counting
+       presents overstated the frame rate. A frame counts as new when it draws at least a quarter of the recent maximum
+       (decaying, so menus with few draws still count); the FPS box shows the rate of new frames. */
+    { static double peak; peak = draws > peak ? (double)draws : peak * 0.98;
+      if (draws && (double)draws * 4 >= peak) atomic_fetch_add_explicit(&g_fresh_frames, 1, memory_order_relaxed);
+      static uint64_t last_fresh; if (g_frame && g_frame % 300 == 0) { uint64_t k = atomic_load(&g_fresh_frames); LOG("[nvn] new pictures to frame %llu: %llu of 300 presents", (unsigned long long)g_frame, (unsigned long long)(k - last_fresh)); last_fresh = k; } }
     g_frame++; g_frame_pub = g_frame; cs_dump();
     { void runtime_watch_tick(uint64_t); runtime_watch_tick(g_frame); }   // TOTK diagnostic write watchpoint (TOTK_WATCH_ADDR)
     // 每 300 帧读一次常驻内存，交图形层打内存读数行（mtl_mem_stat，低频封顶）。内存看门狗：常驻超过上限就报红自行退出——只在 Mac 宿主上缺省开（24 GB：宿主内存失控

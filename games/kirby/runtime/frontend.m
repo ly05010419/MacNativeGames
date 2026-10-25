@@ -101,6 +101,12 @@ static unsigned vsync_divide(void){static unsigned v;if(!v){const char *e=getenv
 static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,const CVTimeStamp *output,CVOptionFlags flags,CVOptionFlags *out,void *ctx){
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
  static unsigned tick;if(vsync_divide()>1&&tick++%vsync_divide())return kCVReturnSuccess;
+ /* The Switch display runs at 60 Hz and Kirby paces its frames by VI vsync counts. Signalled on every refresh of a
+    120 Hz panel, its loop ran ahead of its 30 Hz logic and filled the gaps by re-presenting the last scene without the
+    UI pass: the HUD blinked. Keep a 60 Hz schedule whatever the Mac's refresh rate (as games/wonder in Kolkka's fork). */
+ {static uint64_t next;uint64_t t=runtime_now_ns();const uint64_t period=16666667;
+  if(next&&t+2000000<next)return kCVReturnSuccess;
+  next=next&&t<next+3*period?next+period:t+period;}
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
 @interface TOTKInputView:NSView

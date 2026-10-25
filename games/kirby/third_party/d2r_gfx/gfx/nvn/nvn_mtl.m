@@ -12656,7 +12656,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
        well ("FPS 50+50"): the user found the plain displayed count misleading on the phone ("the number looks good, it
        feels slow"), so both are shown. */
     if (interp >= 0) { fps_overlay_note_gen(++g_gen_shown, CACurrentMediaTime()); atomic_store(&g_mfxi_last, frame ? frame : 1); }
-    else fps_overlay_note(ticket, CACurrentMediaTime());
+    else { extern _Atomic uint64_t g_fresh_frames; (void)ticket; fps_overlay_note(atomic_load_explicit(&g_fresh_frames, memory_order_relaxed), CACurrentMediaTime()); }
     if (g_use != USE_OFF && g_use != USE_DONE) use_tick();
     if (bootprof() && (g_present_n == 1 || g_present_n % 120 == 0)) {
         if (g_present_n == 1) g_bp_first_present = bp_now() - g_bp_t0;

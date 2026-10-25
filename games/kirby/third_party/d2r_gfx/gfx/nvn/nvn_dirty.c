@@ -34,7 +34,7 @@ enum { BUSY_WAIT_MS = 2000 };
 // 跟踪区间 = 各内存池（MemoryPoolInitialize 登记）。池销毁后复用 live=0 的槽，信号处理里无锁扫描。
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
 #define MAX_RANGE 16384 // 原为 256：内存池多于它时超出的池不跟踪，里面的贴图每次取用都当成脏的重传（暗黑实测峰值见内存读数行的「内存池」；塞尔达约 300 个，踩过）。扫描只到已用的槽数，容量大不增加开销 | was 256: with more memory pools than that the excess pools are untracked and their textures are treated as dirty and re-uploaded on every use (for Diablo's measured peak see "memory pools" in the memory readout line; Zelda has about 300 and hit this). The scan only covers slots in use, so a larger capacity costs nothing. TOTK (2026-10-17): 4096 was full in the user's own games and most long test games (about 3,900 live pools in the world, more when moving between regions); now 16384
-typedef struct { uintptr_t base, end; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; } range_t;   // latest (TOTK): highest page generation in the range
+typedef struct { uintptr_t base, end, pool; _Atomic uint8_t *state; _Atomic uint64_t *gen; size_t cap; _Atomic int live; _Atomic uint64_t latest; } range_t;   // latest (TOTK): highest page generation in the range
 static range_t g_r[MAX_RANGE];
 static _Atomic int g_nr;
 static uintptr_t g_pg, g_shift;
@@ -163,11 +163,24 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     pthread_mutex_lock(&g_slot_mu);
     int n = atomic_load(&g_nr);
     int slot = -1;
+    uintptr_t nb = (uintptr_t)mem & ~(g_pg - 1), ne = ((uintptr_t)mem + size + g_pg - 1) & ~(g_pg - 1);
     {   /* TOTK: a pool created over memory that another live pool already covers must not get a second tracking range: find() returns
            the first live range for an address, so a fault on a page protected under the older range would be looked up in the newer one
            (state NONE, generation 0) and reported as a crash. Inside an existing range the pages are tracked already; any other overlap
            leaves the new pool untracked (its textures are treated as always dirty, which is safe). */
-        uintptr_t nb = (uintptr_t)mem & ~(g_pg - 1), ne = ((uintptr_t)mem + size + g_pg - 1) & ~(g_pg - 1);
+        /* Kirby: Switch pools are 4 KiB aligned and packed back to back, so a pool often shares its first or last 16 KiB host
+           page with the pool beside it. That one shared page stays with the older range and the rest of the new pool is
+           tracked: left untracked, every texture in it was re-uploaded on every frame (about 400 per frame in the first
+           stage, most of the replay's CPU time). Textures on the shared page are looked up in the older range and fall
+           back to "always dirty", as before. */
+        for (int trimmed = 1; trimmed && nb < ne; ) {
+            trimmed = 0;
+            for (int i = 0; i < n; i++) {
+                if (!atomic_load_explicit(&g_r[i].live, memory_order_acquire) || ne <= g_r[i].base || nb >= g_r[i].end) continue;
+                if (g_r[i].base <= nb && g_r[i].end == nb + g_pg && ne > nb + g_pg) { nb += g_pg; trimmed = 1; }
+                else if (g_r[i].end >= ne && g_r[i].base == ne - g_pg && ne - g_pg > nb) { ne -= g_pg; trimmed = 1; }
+            }
+        }
         for (int i = 0; i < n; i++) {
             if (!atomic_load_explicit(&g_r[i].live, memory_order_acquire) || ne <= g_r[i].base || nb >= g_r[i].end) continue;
             static _Atomic int said; int expected = 0;
@@ -188,7 +201,8 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     }
     { int lv = atomic_fetch_add(&g_live, 1) + 1, pk = atomic_load(&g_live_peak); while (lv > pk && !atomic_compare_exchange_weak(&g_live_peak, &pk, lv)) {} }
     range_t *r = &g_r[slot];
-    uintptr_t base = (uintptr_t)mem & ~(g_pg - 1), end = ((uintptr_t)mem + size + g_pg - 1) & ~(g_pg - 1);
+    if (nb >= ne) { pthread_mutex_unlock(&g_slot_mu); return; }   /* Kirby: nothing left after the shared pages */
+    uintptr_t base = nb, end = ne;
     size_t np = (end - base) >> g_shift;
     _Atomic uint8_t *state = r->state;
     _Atomic uint64_t *gen = r->gen;
@@ -201,7 +215,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     } else {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen);
     }
-    r->base = base; r->end = end; r->state = state; r->gen = gen; atomic_store(&r->latest, 0);
+    r->base = base; r->end = end; r->pool = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->latest, 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
@@ -210,7 +224,9 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
 // Pool destruction: first restore still-protected pages to writable (the pool memory may be reused for something else once returned to the game), then mark invalid
 void nvn_dirty_remove_range(const void *mem) {
     pthread_mutex_lock(&g_slot_mu);
-    range_t *r = find((uintptr_t)mem);
+    /* Kirby: by the pool it was added for, not by address: a trimmed pool starts on a page its neighbour tracks. */
+    range_t *r = NULL;
+    for (int i = 0, n = atomic_load(&g_nr); i < n && !r; i++) if (atomic_load_explicit(&g_r[i].live, memory_order_acquire) && g_r[i].pool == (uintptr_t)mem) r = &g_r[i];
     if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
     pthread_mutex_unlock(&g_slot_mu);
 }
