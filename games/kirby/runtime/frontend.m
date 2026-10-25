@@ -136,22 +136,27 @@ static NSString *shortcut_text(void){
   case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
   default:interp=TOTK_UI("关闭","off");break;
  }
- /* Keys 3 (picture modes) and 4 (21:9) are not listed: for Odyssey runtime_output_mode_cycle and runtime_aspect_toggle
-    are stubs (runtime/game_patches.c), so those keys do nothing. */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（按键切换）","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (current; press to cycle)")),[NSString stringWithUTF8String:interp]];
+ if(!runtime_kirby_settings_available())
+  return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)")),[NSString stringWithUTF8String:interp]];
+ NSString *res=runtime_kirby_fixed_res()?@(TOTK_UI("固定 1920×1080","fixed 1920×1080")):@(TOTK_UI("动态（游戏默认）","dynamic (game default)"));
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  分辨率：当前 %@（按键切换）\n4  帧率：当前 %d FPS（按键切换）",
+  "Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Resolution: %@ (current; press to switch)\n4  Frame rate: %d FPS (current; press to switch)")),
+  [NSString stringWithUTF8String:interp],res,runtime_kirby_fps()];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
  if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;}
  [self refresh];__weak TOTKShortcutHelp *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}return self;}
 -(void)refresh{
- if(!hud_compact()){self.label.stringValue=shortcut_text();return;}
+ int minimal=fps_overlay_hud_mode()==2;
+ if(!hud_compact()){self.label.stringValue=minimal?@"":shortcut_text();return;}
  NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium],*small=[NSFont systemFontOfSize:10];
  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
  NSMutableAttributedString *a=[NSMutableAttributedString new];
- for(int i=0;i<3;i++){char t[128];int hl=0;if(!hud_snapshot(i,t,sizeof t,&hl))continue;
+ for(int i=0;i<(minimal?1:3);i++){char t[128];int hl=0;if(!hud_snapshot(i,t,sizeof t,&hl))continue;
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
- if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
+ if(minimal){if(a.length)[a deleteCharactersInRange:NSMakeRange(a.length-1,1)];}
+ else if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1],NSParagraphStyleAttributeName:gap}]];}
  else [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1]}]];
  if([a isEqualToAttributedString:self.label.attributedStringValue])return;
@@ -164,7 +169,10 @@ static NSString *shortcut_text(void){
  else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
 @end
-void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
+/* Key 1 and the Settings menu: all overlays -> FPS only -> off, kept in the app's preferences (KirbyOverlays). */
+static void front_overlays_apply(int mode){fps_overlay_set_hud_mode(mode);[NSUserDefaults.standardUserDefaults setInteger:mode forKey:@"KirbyOverlays"];
+ dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=mode==0||(mode==2&&!hud_compact());[(TOTKShortcutHelp *)shortcutHelp refresh];});}
+void runtime_shortcut_help_toggle(void){int m=fps_overlay_hud_mode();front_overlays_apply(m==1?2:m==2?0:1);}
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -234,14 +242,37 @@ static NSURL *front_data_folder(void){const char *p=getenv("TOTK_PROFILE_DIR");r
 static NSURL *front_log_file(void){NSURL *d=front_data_folder();NSURL *f=[d URLByAppendingPathComponent:@"last-run.log"];return f&&[NSFileManager.defaultManager fileExistsAtPath:f.path]?f:nil;}
 @interface TOTKMenuTarget:NSObject<NSMenuItemValidation>
 @end
+static void front_overlays_apply(int mode);
 @implementation TOTKMenuTarget
 -(void)showLog:(id)s{(void)s;NSURL *f=front_log_file();if(f)[NSWorkspace.sharedWorkspace openURL:f];}
 -(void)openDataFolder:(id)s{(void)s;NSURL *d=front_data_folder();if(d)[NSWorkspace.sharedWorkspace openURL:d];}
--(BOOL)validateMenuItem:(NSMenuItem *)item{return item.action==@selector(showLog:)?front_log_file()!=nil:front_data_folder()!=nil;}
+-(void)setFrameRate:(NSMenuItem *)s{runtime_kirby_set_fps((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
+-(void)setResolution:(NSMenuItem *)s{runtime_kirby_set_fixed_res((int)s.tag);[(TOTKShortcutHelp *)shortcutHelp refresh];}
+-(void)setOverlays:(NSMenuItem *)s{front_overlays_apply((int)s.tag);}
+-(BOOL)validateMenuItem:(NSMenuItem *)item{
+ if(item.action==@selector(setFrameRate:)){item.state=runtime_kirby_fps()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
+ if(item.action==@selector(setResolution:)){item.state=runtime_kirby_fixed_res()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return runtime_kirby_settings_available();}
+ if(item.action==@selector(setOverlays:)){item.state=fps_overlay_hud_mode()==item.tag?NSControlStateValueOn:NSControlStateValueOff;return YES;}
+ return item.action==@selector(showLog:)?front_log_file()!=nil:front_data_folder()!=nil;}
 @end
 static TOTKMenuTarget *menuTarget;
 static NSMenuItem *menu_item(NSMenu *menu,const char *title,SEL action,NSString *key,NSEventModifierFlags mods,id target){
  NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@(title) action:action keyEquivalent:key];item.keyEquivalentModifierMask=mods;item.target=target;[menu addItem:item];return item;
+}
+/* The live FPS in the menu bar (as TOTK): a menu after the app's own, titled with the rate of new pictures ("34 FPS"),
+   refreshed twice a second. Independent of key 1. TOTK_MENUBAR_FPS=0 leaves the menu bar alone. */
+static NSMenu *fpsMenu;static NSMenuItem *fpsMenuItem;static NSTimer *fpsTimer;
+static void front_menubar_fps_add(NSMenu *bar){
+ const char *e=getenv("TOTK_MENUBAR_FPS");if(e&&!strcmp(e,"0"))return;
+ fpsMenu=[[NSMenu alloc] initWithTitle:@"FPS --"];
+ NSMenuItem *about=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("实时帧率：每秒新画面数","Live frame rate: new pictures per second")) action:nil keyEquivalent:@""];
+ about.enabled=NO;[fpsMenu addItem:about];fpsMenu.autoenablesItems=NO;
+ fpsMenuItem=[[NSMenuItem alloc] initWithTitle:@"FPS --" action:nil keyEquivalent:@""];fpsMenuItem.submenu=fpsMenu;[bar addItem:fpsMenuItem];
+}
+static void front_menubar_fps(void){
+ if(!fpsMenu||fpsTimer)return;
+ fpsTimer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;int fps=fps_overlay_value();
+  NSString *title=fps<0?@"FPS --":[NSString stringWithFormat:@"%d FPS",fps];if(![fpsMenu.title isEqualToString:title]){fpsMenu.title=title;fpsMenuItem.title=title;}}];
 }
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
@@ -254,7 +285,20 @@ static void front_install_menu(void){
  menu_item(appMenu,TOTK_UI("隐藏 Kirby","Hide Kirby"),@selector(hide:),@"h",NSEventModifierFlagCommand,NSApp);
  [appMenu addItem:NSMenuItem.separatorItem];
  menu_item(appMenu,TOTK_UI("退出 Kirby","Quit Kirby"),@selector(performClose:),@"q",NSEventModifierFlagCommand,window);
+/* Settings (as TOTK's keys, with checkmarks): frame rate, resolution, overlays. */
+ NSMenu *settings=[[NSMenu alloc] initWithTitle:@(TOTK_UI("设置","Settings"))];
+ NSMenuItem *settingsItem=[NSMenuItem new];settingsItem.submenu=settings;[menu addItem:settingsItem];
+ menu_item(settings,TOTK_UI("帧率：60 FPS","Frame Rate: 60 FPS"),@selector(setFrameRate:),@"",0,menuTarget).tag=60;
+ menu_item(settings,TOTK_UI("帧率：30 FPS","Frame Rate: 30 FPS"),@selector(setFrameRate:),@"",0,menuTarget).tag=30;
+ [settings addItem:NSMenuItem.separatorItem];
+ menu_item(settings,TOTK_UI("分辨率：动态（游戏默认）","Resolution: Dynamic (game default)"),@selector(setResolution:),@"",0,menuTarget).tag=0;
+ menu_item(settings,TOTK_UI("分辨率：固定 1920×1080","Resolution: Fixed 1920×1080"),@selector(setResolution:),@"",0,menuTarget).tag=1;
+ [settings addItem:NSMenuItem.separatorItem];
+ menu_item(settings,TOTK_UI("提示：全部","Overlays: All"),@selector(setOverlays:),@"",0,menuTarget).tag=1;
+ menu_item(settings,TOTK_UI("提示：只显示 FPS","Overlays: FPS Only"),@selector(setOverlays:),@"",0,menuTarget).tag=2;
+ menu_item(settings,TOTK_UI("提示：隐藏","Overlays: Off"),@selector(setOverlays:),@"",0,menuTarget).tag=0;
  NSMenuItem *windowItem=[NSMenuItem new];windowItem.submenu=windowMenu;[menu addItem:windowItem];
+ front_menubar_fps_add(menu);
  menu_item(windowMenu,TOTK_UI("最小化","Minimize"),@selector(performMiniaturize:),@"m",NSEventModifierFlagCommand,window);
  menu_item(windowMenu,TOTK_UI("进入 / 退出全屏","Toggle Full Screen"),@selector(toggleFullScreen:),@"f",NSEventModifierFlagCommand|NSEventModifierFlagControl,window);
  NSApp.mainMenu=menu;NSApp.windowsMenu=windowMenu;
@@ -301,6 +345,9 @@ void runtime_front_run(void(*callback)(void)){
      overlay is hidden. Key 1 still controls its requested visibility. */
   [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
   [(TOTKShortcutHelp *)shortcutHelp position];
+  {NSUserDefaults *d=NSUserDefaults.standardUserDefaults;int m=[d objectForKey:@"KirbyOverlays"]?(int)[d integerForKey:@"KirbyOverlays"]:1;
+   if(m<0||m>2)m=1;fps_overlay_set_hud_mode(m);shortcutHelp.hidden=m==0||(m==2&&!hud_compact());}
+  front_menubar_fps();
   /* The FPS, shader and load lines: in the corner panel above (compact HUD), or with TOTK_HUD=corners drawn into the game picture's corners by the present encoder (gfx/nvn/fps_overlay.c). */
   [window makeFirstResponder:window.contentView];
   {NSRect f=window.frame;f.origin.x=NSMidX(vis)-f.size.width/2;f.origin.y=NSMidY(vis)-f.size.height/2;[window setFrame:f display:NO];}   /* centred on the chosen screen */

@@ -15,9 +15,14 @@ enum { FPS_OVERLAY_TEX_W = 768, FPS_OVERLAY_TEX_H = 64, FPS_OVERLAY_MAX_SCALE = 
 typedef struct { int fps, screen_w, screen_h, mfx, gen, big, render_w, render_h; } fps_overlay_info;
 
 int fps_overlay_enabled(void);
-/* Shared user toggle for every in-picture HUD layer: FPS, shader collection and load telemetry. */
-int fps_overlay_hints_enabled(void);
-int fps_overlay_toggle_hints(void);   /* atomically toggles all HUD layers and returns the new visibility */
+/* Key 1 (as TOTK): HUD_MODE_ALL (FPS, shader collection, load and the shortcut reminder) -> HUD_MODE_MINIMAL (FPS only)
+   -> HUD_MODE_OFF. */
+enum { HUD_MODE_OFF = 0, HUD_MODE_ALL = 1, HUD_MODE_MINIMAL = 2 };
+int fps_overlay_hud_mode(void);
+int fps_overlay_hints_enabled(void);   /* the FPS readout shows (all or minimal) */
+int fps_overlay_full_hud(void);        /* the shader, load and shortcut lines show too */
+void fps_overlay_set_hud_mode(int mode);
+int fps_overlay_toggle_hints(void);   /* atomically steps to the next mode and returns it (HUD_MODE_OFF = nothing shows) */
 /* Pixel scale (1..FPS_OVERLAY_MAX_SCALE) for a game picture view_h pixels tall: one text line is about 3% of its height. */
 int fps_overlay_scale(double view_h);
 /* The line in a 5x7 pixel font on a dark box, as BGRA8 pixels in out (FPS_OVERLAY_TEX_W x FPS_OVERLAY_TEX_H,

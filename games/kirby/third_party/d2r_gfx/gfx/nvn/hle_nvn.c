@@ -2823,6 +2823,7 @@ static void present_cfg(const win_t *o) {
     LOG("[nvn] 出图节拍 %d Hz，间隔模式 %s（游戏设的出图间隔 %d；%s）", g_hz, g_display_mode ? "display（每节拍一帧，剪口）" : "game（原版语义）", o->interval,
         e ? "显式指定" : g_uncapped ? "不限帧率" : realtime && scr > 0 ? "跟随显示器" : "固定 60 Hz");
 }
+extern int runtime_kirby_min_interval(void) __attribute__((weak_import));   /* runtime/game_patches.c */
 static unsigned present_ticks(const win_t *o) {   /* display ticks per game frame */
     present_cfg(o);
     /* TOTK_MFX / key 2: MetalFX makes the frame between two game frames. Half the refresh rate: the game presents every
@@ -2832,7 +2833,11 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     int m = mfx_enabled();
     if (m == MFX_HALF) return 2;
     if (m == MFX_30) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
-    return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
+    unsigned iv = g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
+    /* Kirby's 30 fps setting: every present takes at least two 60 Hz ticks. The game's own 30 fps mode presents its
+       repeated frames after one tick (about 45 presents a second); game speed follows real time either way. */
+    int kmin = runtime_kirby_min_interval ? runtime_kirby_min_interval() : 0;
+    return kmin > 0 && iv < (unsigned)kmin ? (unsigned)kmin : iv;
 }
 static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
