@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "game": "Kirby and the Forgotten Land",
+  "version": "1.0.0",
+  "title_id": "01004D300C5AE000",
+  "reference_commit": "cda93ea6a030b1e495a7d096859fecae51eb07a1",
+  "scope": "Exact locally observed prepared-data build. This manifest does not establish a fresh NSP extraction/rewrite pipeline.",
+  "files": {
+    "extracted/exefs/rtld": {
+      "size": 7187,
+      "sha256": "bc175ad9865adb48f9cbe9d7993ddb3367d3771bc06642c87d16ccf4f4dc9ff4",
+      "build_id": "6f8b1226cc8cd958021d6bfd226ebf23f892ab9b000000000000000000000000"
+    },
+    "extracted/exefs/main": {
+      "size": 5720825,
+      "sha256": "0e79778c8977aa2f3451427b32864ae11df7f7705d89e8e7387ceac02f3bcd1c",
+      "build_id": "d9ba7db72ffafecd07f5f5535dec05734e59bce1000000000000000000000000"
+    },
+    "extracted/exefs/sdk": {
+      "size": 5754872,
+      "sha256": "85aaf84172367499c02cbb5c317c419b9c768658f5a44de743da40d4c6441a4b",
+      "build_id": "b39add63421be525d352e576dab438d3812efdf0000000000000000000000000"
+    },
+    "extracted/exefs/subsdk0": {
+      "size": 3409290,
+      "sha256": "773153d0734c8feaacd5a1e6b21bd1ede8c060a142f9d91452897776f31d9827",
+      "build_id": "535249a546887cac875a099e9c8ef367077cf58b000000000000000000000000"
+    },
+    "extracted/exefs/main.npdm": {
+      "size": 1572,
+      "sha256": "ec36e21bcab54f9090b32af76d62e2d304eea4f147cd0654940a309f00112f73"
+    },
+    "rewritten/main.patched.bin": {
+      "size": 11298548,
+      "sha256": "c96c5b524f80b0e4c44abb9c59766a4a2226a435f191b0c060ab4a0559744263"
+    },
+    "rewritten/main.fixups.tsv": {
+      "size": 272,
+      "sha256": "0222ee8c2d21bf7c5f0222156329b721330ee71e464aa3adf7577c917927366c"
+    },
+    "rewritten/main.gates.tsv": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rewritten/sdk.patched.bin": {
+      "size": 15191756,
+      "sha256": "34a18a79199f662e5e0e2fa8cdd84eea8cdb27a0582ab92ca48cd6395bc0d21d"
+    },
+    "rewritten/sdk.fixups.tsv": {
+      "size": 272,
+      "sha256": "baa43e8ea422c007df3f5218101e4d70ca249ff6782ae33b75bf9d032fea8c45"
+    },
+    "rewritten/sdk.gates.tsv": {
+      "size": 2823,
+      "sha256": "2e5d7e62db31c5aea9d1ec436e57fbbd60ad17a01d7f79497735f1eb3d5d4f4d"
+    },
+    "rewritten/subsdk0.patched.bin": {
+      "size": 8228380,
+      "sha256": "f7d6dd6675e71600ba5560afb43ecc44b7164f7a05cced148520cacd6280d027"
+    },
+    "rewritten/subsdk0.fixups.tsv": {
+      "size": 272,
+      "sha256": "c85101736d757e55419a62555df5aef8350360c65fdcbd4c997a8b7a8f5fb8a4"
+    },
+    "rewritten/subsdk0.gates.tsv": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "romfs/romfs.bin": {
+      "size": 6140960984,
+      "sha256": "a8be832ac826bc6cb90a7365a2997571570e024eba26d954093baf27379a71a8"
+    },
+    "romfs/runtime-index.bin": {
+      "size": 725232,
+      "sha256": "02838fa6d7774bed0ccb156ebcff9a7172d2038a644cb66709a1cf1977b6f1f4"
+    },
+    "build/runtime_tables.h": {
+      "size": 6625409,
+      "sha256": "a5fdeb65716cf1a2c6d850eedd59c0c40022d58c239aa3f7ec363ae3bdba7aa2"
+    },
+    "build/romfs_config.h": {
+      "size": 227,
+      "sha256": "0234d613ed05f4aec3e34bbc1c177f4a188e8db4ba59d3a8b1676159e9b17918"
+    }
+  }
+}
