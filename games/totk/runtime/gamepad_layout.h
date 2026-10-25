@@ -85,6 +85,28 @@ static inline int gamepad_type_face_by_position(int type, const char *category, 
     return gamepad_face_by_position(category, vendor);
 }
 
+/* The button icons drawn in the game's prompts (app/launcher.m picks them at start, docs/mods.md): GAMEPAD_TYPE_XBOX,
+   GAMEPAD_TYPE_PLAYSTATION, GAMEPAD_TYPE_SWITCH (the game's own icons drawn sharp: only at a scale of 2 or more), or -1 for
+   the game's own icons as they are. type: the picked type (key 6); detected: what auto takes the connected controller for
+   (gamepad_type_detect), or the last one seen, -1 none; scale: gamepad_icon_scale, or 1 when the tool draws at the game's
+   size only. *by_position: the face mode the icons are drawn for, as gamepad_type_face_by_position maps the buttons. */
+static inline int gamepad_icon_style(int type, int detected, int scale, int *by_position) {
+    int style = type == GAMEPAD_TYPE_AUTO ? detected : type;
+    if (style != GAMEPAD_TYPE_XBOX && style != GAMEPAD_TYPE_PLAYSTATION && (style != GAMEPAD_TYPE_SWITCH || scale < 2)) return -1;
+    const char *e = getenv("TOTK_FACE_BUTTONS");
+    if (style == GAMEPAD_TYPE_SWITCH) *by_position = type == GAMEPAD_TYPE_AUTO && e && !strcmp(e, "position");
+    else *by_position = type != GAMEPAD_TYPE_AUTO || !e || strcmp(e, "label");
+    return style;
+}
+
+/* How many times the game's size the launcher draws the button icons for a display of width x height pixels: the height of
+   the 16:9 picture on it over 1080, rounded up, 1 to 4 (1080p 1, 3456x2234 2, 5K 3). */
+static inline int gamepad_icon_scale(double width, double height) {
+    double picture = height < width * 9 / 16 ? height : width * 9 / 16;
+    int scale = (int)((picture + 1079) / 1080);
+    return scale < 1 ? 1 : scale > 4 ? 4 : scale;
+}
+
 /* The physical positions of GameController's buttonA, buttonB, buttonX, buttonY (bits 0 south, 1 east, 2 west, 3 north:
    runtime/controller_map.h). By position they sit as on an Xbox controller (A bottom, B right, X left, Y top); by label
    they name a Nintendo layout (A right, B bottom, X top, Y left). controller_map.h's default layout turns positions into

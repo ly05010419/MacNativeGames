@@ -195,6 +195,20 @@ static void overlay_load(const char *dir,int required,int mods) {
  if(noverlay-first>16)fprintf(stderr,"[totk] RomFS overlay: %zu files from %s (%zu more not listed)\n",noverlay-first+replaced,dir,noverlay-first-16);
  if(noverlay>first||replaced)fprintf(stderr,"[totk] RomFS overlay: %s checked, %zu files, %.1f MB hashed in %.2f s\n",dir,noverlay-first+replaced,hashed/1048576.0,(runtime_now_ns()-t0)/1e9);
 }
+/* The first file in dir's manifest that an overlay from slot `from` on already replaces, or NULL. */
+static const char *overlay_taken(const char *dir,size_t from) {
+ static char name[4096];char path[4200];snprintf(path,sizeof(path),"%s/manifest.tsv",dir);FILE *m=fopen(path,"r");if(!m)return NULL;
+ char line[8192];const char *found=NULL;
+#ifdef GAME_BOTW   /* a line whose original is that overlay's file takes its place (overlay_load): the icons' resource size table made
+                      from the mods' own (botw_prompts.py --mods) */
+ while(!found&&fgets(line,sizeof(line),m)){char orig[65]="";if(line[0]=='#'||line[0]=='\n'||sscanf(line,"%4095[^\t]\t%*u\t%*64[0-9a-f]\t%64[0-9a-f-]",name,orig)<1)continue;
+  for(size_t k=from;k<noverlay;k++)if(!strcmp(overlays[k].name,name)&&strcmp(overlays[k].sha,orig)){found=name;break;}}
+#else
+ while(!found&&fgets(line,sizeof(line),m)){if(line[0]=='#'||line[0]=='\n'||sscanf(line,"%4095[^\t]",name)!=1)continue;
+  for(size_t k=from;k<noverlay;k++)if(!strcmp(overlays[k].name,name)){found=name;break;}}
+#endif
+ fclose(m);return found;
+}
 static int overlay_order(const void *a,const void *b) {uint64_t x=((const Overlay *)a)->index,y=((const Overlay *)b)->index;return (x>y)-(x<y);}
 static int added_order(const void *a,const void *b) {const Overlay *x=*(Overlay *const *)a,*y=*(Overlay *const *)b;return strcmp(x->name,y->name);}
 /* Number the added files in path order after the RomFS's own (file_count + k); two overlays adding one path stop the start. */
@@ -241,7 +255,13 @@ static void overlay_init(void) {
   if(access(m,R_OK)){fprintf(stderr,"[totk] RomFS overlay %s missing: make it with\n  .venv/bin/python scripts/make_output_res_overlay.py %ux%u%s%s --version " TOTK_GAME_DIR "%s%s\n",d,w,h,*scene?" --scene ":"",*scene?scene+7:"",out?" --output-root ":"",out?out:"");
    runtime_fail("HeapDef overlay for this output / scene size missing (see the line above)");}
   overlay_load(d,1,0);}
- const char *mods=getenv("TOTK_ROMFS_MODS");if(mods&&*mods&&strcmp(mods,"0"))overlay_load(mods,0,1);
+ const char *mods=getenv("TOTK_ROMFS_MODS");size_t mods_first=noverlay;if(mods&&*mods&&strcmp(mods,"0"))overlay_load(mods,0,1);
+ /* The button icons app/launcher.m picked for this start (TOTK_ROMFS_BUTTON_ICONS, docs/mods.md), loaded like a mod. When
+    the player's mods replace one of its files (a mod with its own icons), the whole folder is left out and the mod wins. */
+ const char *icons=getenv("TOTK_ROMFS_BUTTON_ICONS");
+ if(icons&&*icons){const char *taken=overlay_taken(icons,mods_first);
+  if(taken){fprintf(stderr,"[totk] RomFS overlay: button icons %s left out: the player's mods replace %s\n",icons,taken);setenv("TOTK_BUTTON_ICONS","mod",1);}
+  else overlay_load(icons,0,1);}
  added_init();
  if(noverlay)qsort(overlays,noverlay,sizeof(*overlays),overlay_order);
  for(size_t k=1;k<noverlay;k++)if(overlays[k].index==overlays[k-1].index){

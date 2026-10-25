@@ -125,6 +125,25 @@ class ModManifest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('1 files', result.stdout)
 
+    def test_botw190_app_path_takes_the_version_from_the_folder(self):   # Breath of the Wild 1.9.0
+        app = self.root/'Breath of the Wild.app'
+        fake_romfs(app/'Contents/Resources/totk/extracted/botw190/romfs')
+        self.mod = self.root/'mods/botw190'
+        self.put('Pack/A.pack.zs', b'modded a')
+        result = run(self.mod, '--app', app)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('1 files', result.stdout)
+
+    def test_botw190_named_by_version_when_the_folder_has_another_name(self):
+        app = self.root/'Breath of the Wild.app'
+        fake_romfs(app/'Contents/Resources/totk/extracted/botw190/romfs')
+        self.mod = self.root/'my-glyph-mod'
+        self.put('Pack/A.pack.zs', b'modded a')
+        self.assertNotEqual(run(self.mod, '--app', app).returncode, 0)           # the folder name says nothing: stop
+        result = run(self.mod, '--app', app, '--version', 'botw190')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('1 files', result.stdout)
+
 
 
 COMMON = 'UI/LayoutArchive/Common.Product.110.Nin_NX_NVN.blarc.zs'
