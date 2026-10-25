@@ -224,6 +224,8 @@ build/input-probe: scripts/input_probe.c runtime/input.c runtime/hid_feedback.c 
 probe-input: build/input-probe
 	build/input-probe > analysis/native-input-probe.json
 	@cat analysis/native-input-probe.json
+	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/input-probe > analysis/native-input-probe-autoload.json
+	@cat analysis/native-input-probe-autoload.json
 	@if TOTK_PROBE_NEGATIVE=20 build/input-probe > /dev/null 2> analysis/native-input-probe-negative.log; then echo "negative control 20 passed: the orientation check cannot see a reference-frame integration"; exit 1; else echo "negative control 20 (reference-frame integration) failed as expected: $$(cat analysis/native-input-probe-negative.log)"; fi
 
 # TOTK_AUTOLOAD (runtime/autoload.c) through the production controller state; the last run is the negative control
@@ -239,8 +241,10 @@ probe-movie: build/movie-probe
 	build/movie-probe analysis/movie-probe/frames.ivf analysis/movie-probe/reference.nv12 $$(cat analysis/movie-probe/meta.txt) paced | tee -a analysis/movie-probe.json
 build/autoload-probe: scripts/autoload_probe.c runtime/autoload.c runtime/autoload.h runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/runtime.h
 	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/autoload_probe.c runtime/autoload.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c -o "$@"
+	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror -DGAME_BOTW=1 scripts/autoload_probe.c runtime/autoload.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c -o "$@-botw"
 probe-autoload: build/autoload-probe
 	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe press
+	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe-botw press
 	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe nosave
 	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe key
 	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe pad
