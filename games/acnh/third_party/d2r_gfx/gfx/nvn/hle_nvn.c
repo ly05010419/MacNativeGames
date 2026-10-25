@@ -808,14 +808,76 @@ static void cb_check(const cmd_t *o, const char *where) {
 #endif
 #define OP_RESERVE 24                             // 段尾永远留够一条 JUMP / END | Always keep enough room at the segment end for one JUMP / END
 
+static struct {
+    void **ptrs;
+    size_t count;
+    size_t cap;
+    pthread_mutex_t mu;
+} g_live_segs = { .mu = PTHREAD_MUTEX_INITIALIZER };
+
+static void live_seg_replace(void *old_p, void *new_p) {
+    if (!new_p) return;
+    pthread_mutex_lock(&g_live_segs.mu);
+    if (old_p) {
+        for (size_t i = 0; i < g_live_segs.count; i++) {
+            if (g_live_segs.ptrs[i] == old_p) {
+                g_live_segs.ptrs[i] = new_p;
+                pthread_mutex_unlock(&g_live_segs.mu);
+                return;
+            }
+        }
+    }
+    for (size_t i = 0; i < g_live_segs.count; i++) {
+        if (g_live_segs.ptrs[i] == new_p) {
+            pthread_mutex_unlock(&g_live_segs.mu);
+            return;
+        }
+    }
+    if (g_live_segs.count >= g_live_segs.cap) {
+        size_t ncap = g_live_segs.cap ? g_live_segs.cap * 2 : 256;
+        void **np = realloc(g_live_segs.ptrs, ncap * sizeof(void *));
+        if (np) {
+            g_live_segs.ptrs = np;
+            g_live_segs.cap = ncap;
+        }
+    }
+    if (g_live_segs.count < g_live_segs.cap) {
+        g_live_segs.ptrs[g_live_segs.count++] = new_p;
+    }
+    pthread_mutex_unlock(&g_live_segs.mu);
+}
+
+static int live_seg_remove(void *p) {
+    if (!p) return 0;
+    pthread_mutex_lock(&g_live_segs.mu);
+    for (size_t i = 0; i < g_live_segs.count; i++) {
+        if (g_live_segs.ptrs[i] == p) {
+            g_live_segs.ptrs[i] = g_live_segs.ptrs[--g_live_segs.count];
+            pthread_mutex_unlock(&g_live_segs.mu);
+            return 1;
+        }
+    }
+    pthread_mutex_unlock(&g_live_segs.mu);
+    return 0;
+}
+
 NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
+    if (c && CB(c)->magic == MAGIC('C', 'M', 'D', 'B')) {
+        void *old_seg = CB(c)->seg;
+        if (old_seg && live_seg_remove(old_seg)) {
+            free(old_seg);
+        }
+    }
     memset(c, 0, sizeof(cmd_t)); CB(c)->magic = MAGIC('C', 'M', 'D', 'B'); CB(c)->dev = d; CB(c)->inline_cur = ~0ull; CB(c)->inline_end = 0; return 1;
 }
 NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) {
     if (!c || CB(c)->magic != MAGIC('C', 'M', 'D', 'B')) return;
-    if (CB(c)->seg && malloc_size(CB(c)->seg) > 0) free(CB(c)->seg);
+    void *seg = CB(c)->seg;
     CB(c)->seg = CB(c)->cur = CB(c)->end = NULL;
     CB(c)->magic = 0;
+    if (seg && live_seg_remove(seg)) {
+        free(seg);
+    }
 }
 NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb; }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
@@ -848,8 +910,10 @@ static void cmd_reserve(cmd_t *o, size_t need) {
     size_t used = o->seg ? (size_t)(o->cur - o->seg) : 0;
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0; if (!cap) cap = 64 << 10;
     while (used + need + OP_RESERVE > cap) cap *= 2;
+    void *old_seg = o->seg;
     uint8_t *b = realloc(o->seg, cap); if (!b) die("command recording buffer allocation (%zu bytes)", cap);
     o->seg = b; o->cur = b + used; o->end = b + cap;
+    live_seg_replace(old_seg, b);
 }
 
 // TOTK diagnostics: guest return chain of the current NVN call (frames link through runtime_hle_switch).
