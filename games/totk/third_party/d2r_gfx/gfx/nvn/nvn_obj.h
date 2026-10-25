@@ -5,6 +5,12 @@
 // Objects are stored in place in the NVN object memory allocated by the game, with size not exceeding the reserved size in nvn.h (FITS static assertion).
 // State objects (Blend / Color / ... 4–0x18 bytes) are small structs the game copies by value; their layout is packed in place with bit-fields.
 #pragma once
+/* 1 in a Breath of the Wild build: defaults measured on Tears of the Kingdom only stay off there (#750). */
+#ifdef GAME_BOTW
+#define TOTK_BOTW_BUILD 1
+#else
+#define TOTK_BOTW_BUILD 0
+#endif
 #include <stdint.h>
 #include <string.h>
 #include "nvn.h"
