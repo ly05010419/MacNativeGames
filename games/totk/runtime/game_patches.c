@@ -1,6 +1,7 @@
 #include "game_patches.h"
 #include "aspect_patch.h"
 #include "game_version.h"
+#include "pchtxt.h"
 #include "world_survey.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
@@ -494,57 +495,9 @@ static void check_site(const Module *m, const GamePatch *p) {
     }
 }
 
-/* TOTK_PCHTXT=<file>: an emulator ExeFS patch for main in pchtxt form, as community mods ship them (for example
-   TOTK-Ultrawide's aspect-ratio patch), for trying them here. Mac only: the phone's code is patched at build. Its
-   @nsobid must be main's build id, read from the extracted ExeFS (extracted/<version>/exefs/main at 0x40); the lines
-   after @enabled are "<main address> <bytes>", @disabled switches the lines that follow off again (a section the author
-   keeps without applying it) and @stop ends the file. "@flag offset_shift 0x100" must come before the first patch line:
-   it says the addresses leave out the NSO header only the IPS form counts, which is how they are applied here; a file
-   without it, or with another shift, would land 0x100 bytes off and stops the start. "@flag print_values" (a display
-   option of the patching tools) is accepted, any other flag stops the start. The same reading as the build's --mod
-   (scripts/mod_exefs.py). It is applied before this runtime's own patches, whose checks of the original words then
-   refuse a file that overlaps them. */
-static void patch_pchtxt(Module *m) {
-    const char *path = getenv("TOTK_PCHTXT");
-    if (!path || !*path) return;
-    FILE *f = fopen(path, "r");
-    if (!f) runtime_fail("TOTK_PCHTXT: cannot open the file");
-    char nso[256], want[41] = {0}; uint8_t id[20];
-    snprintf(nso, sizeof nso, "extracted/%s/exefs/main", TOTK_GAME_DIR);
-    FILE *n = fopen(nso, "rb");
-    if (!n || fseek(n, 0x40, SEEK_SET) || fread(id, 1, sizeof id, n) != sizeof id) runtime_fail("TOTK_PCHTXT: cannot read main's build id from extracted/<version>/exefs/main");
-    fclose(n);
-    for (int i = 0; i < 20; i++) snprintf(want + 2 * i, 3, "%02X", id[i]);
-    char line[1024]; int enabled = 0, matched = 0, shifted = 0; unsigned count = 0, bytes = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "@nsobid-", 8)) {
-            if (strncasecmp(line + 8, want, 40)) runtime_fail("TOTK_PCHTXT is for another build of main");
-            matched = 1; continue;
-        }
-        if (!strncmp(line, "@enabled", 8)) { enabled = 1; continue; }
-        if (!strncmp(line, "@disabled", 9)) { enabled = 0; continue; }
-        if (!strncmp(line, "@flag", 5)) {
-            char name[64] = "", value[64] = "";
-            sscanf(line + 5, "%63s %63s", name, value);
-            if (!strcmp(name, "print_values")) continue;
-            if (strcmp(name, "offset_shift")) runtime_fail("TOTK_PCHTXT: only @flag offset_shift 0x100 and print_values are supported");
-            if (strtoull(value, NULL, 16) != 0x100) runtime_fail("TOTK_PCHTXT: @flag offset_shift must be 0x100 (the addresses are main addresses)");
-            shifted = 1; continue;
-        }
-        if (!strncmp(line, "@stop", 5)) break;
-        unsigned long long at; char hex[512];
-        if (!enabled || line[0] == '@' || sscanf(line, "%llx %511s", &at, hex) != 2) continue;
-        size_t len = strlen(hex);
-        if (!matched) runtime_fail("TOTK_PCHTXT: patches before its @nsobid line");
-        if (!shifted) runtime_fail("TOTK_PCHTXT: no @flag offset_shift 0x100 before the first patch line");
-        if (len % 2 || at + len / 2 > m->file_size) runtime_fail("TOTK_PCHTXT: a patch line is malformed or outside main");
-        for (size_t i = 0; i < len / 2; i++) { unsigned v; sscanf(hex + 2 * i, "%2x", &v); m->base[at + i] = (uint8_t)v; }
-        count++; bytes += (unsigned)(len / 2);
-    }
-    fclose(f);
-    if (!matched) runtime_fail("TOTK_PCHTXT has no @nsobid line");
-    fprintf(stderr, "[totk] TOTK_PCHTXT %s: %u patches, %u bytes in main (build id %s)\n", path, count, bytes, want);
-}
+/* TOTK_PCHTXT=<file> (runtime/pchtxt.h, the reader both games share): this runtime's own patches check the original
+   words they replace, so they refuse a file that overlaps them; no further sites are reserved. */
+static void patch_pchtxt(Module *m) { pchtxt_apply(m, "totk", NULL, 0); }
 
 /* High frame rates (#61, sky-island trampolines): main+0xce3fec (1.0.0) compares X+0x28 with 100 and, when greater,
    scales the velocity Link takes over from the ground body by 0.1. X is the game's time object ([GOT]+0xc8; X+0x38 the

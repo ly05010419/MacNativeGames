@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -335,6 +336,95 @@ class TheOutputOverlayRecord(unittest.TestCase):
     def test_another_script_version_builds_again(self):
         self.assertEqual(self.build(script_sha256='0'*64, heapdef_sha256=None),
                          'built by another version of scripts/make_output_res_overlay.py')
+
+
+class BotwCodeMerge(unittest.TestCase):
+    """step_code_botw with a mod (Breath of the Wild 1.9.0): the merged main, not the retail one, goes to the rewriter, the
+    other two modules and the retail ExeFS stay as they were, and the report binds the loader to the merged rewrite."""
+
+    NAMES = ('main', 'main.npdm', 'rtld', 'sdk', 'subsdk0')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.tree = self.root/'work/totk'
+        exefs = self.tree/'extracted/botw190/exefs'
+        exefs.mkdir(parents=True)
+        for name in self.NAMES:
+            (exefs/name).write_bytes(name.encode())
+        sha = lambda data: hashlib.sha256(data).hexdigest()
+        self.expected = dict(display_version='1.9.0', exefs_sha256={name: sha(name.encode()) for name in self.NAMES},
+                             rewritten_sha256={f'{name}.patched.bin': sha(f'rewritten {name}'.encode())
+                                               for name in ('main', 'sdk', 'subsdk0')})
+        self.mod = self.root/'Mod'
+        (self.mod/'exefs').mkdir(parents=True)
+        self.rewrites, self.merges = [], []
+
+    def merge(self, tree, mod, version, logs):
+        self.merges.append((mod, version))
+        staged = tree/f'extracted/{version}/mod-exefs'
+        staged.mkdir(parents=True, exist_ok=True)
+        (staged/'main').write_bytes(b'patched main')
+        return dict(folder=str(mod), folder_sha256='f', build_id='b', patches=[dict(edit_count=1)], edit_bytes=4,
+                    reserved_sites=7, retail_main_sha256='r', patched_main_sha256='p' * 64, rewritten_main_sha256=None,
+                    rewriter_sha256='w', notes=[]), tree/f'extracted/{version}/mod-exefs.json'
+
+    def run_cmd(self, command, log, cwd=None, env=None, quiet=True):
+        source, out, name = command[2], Path(command[3]), command[4]
+        self.rewrites.append((name, Path(source).relative_to(self.tree).as_posix()))
+        text = b'rewritten patched main' if Path(source).name == 'main' and 'mod-exefs' in str(source) else f'rewritten {name}'.encode()
+        (out/f'{name}.patched.bin').write_bytes(text)
+
+    def step(self, mod):
+        patches = (mock.patch.dict(build_app.VERSIONS, {'botw190': self.expected}),
+                   mock.patch.object(build_app, 'source_matches', return_value=True),
+                   mock.patch.object(build_app, 'merge_mod_exefs', side_effect=self.merge),
+                   mock.patch.object(build_app, 'run', side_effect=self.run_cmd),
+                   mock.patch.object(build_app, 'say'))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        (self.tree/'extracted/botw190/elf').mkdir(parents=True, exist_ok=True)
+        (self.tree/'extracted/botw190/elf/main-inventory.json').write_text('{}')
+        build_app.step_code_botw(self.tree, self.root/'botw', self.root/'update.nsp', self.root/'keys', {}, self.root/'logs',
+                                 version='botw190', mod=mod)
+        return json.loads((self.tree/'analysis/botw190-port/phase12-validation.json').read_text())
+
+    def test_the_merged_main_is_what_the_rewriter_reads(self):
+        report = self.step(self.mod)
+        self.assertEqual(self.merges, [(self.mod, 'botw190')])
+        self.assertIn(('main', 'extracted/botw190/mod-exefs/main'), self.rewrites)
+        self.assertIn(('sdk', 'extracted/botw190/exefs/sdk'), self.rewrites)      # the other modules stay the retail ones
+        self.assertIn(('subsdk0', 'extracted/botw190/exefs/subsdk0'), self.rewrites)
+
+    def test_the_report_binds_the_loader_to_the_merged_rewrite(self):
+        report = self.step(self.mod)
+        files = report['module_file_sha256']
+        merged = hashlib.sha256(b'rewritten patched main').hexdigest()
+        self.assertEqual(files['rewritten/botw190/main.patched.bin'], merged)
+        self.assertEqual(files['rewritten/botw190/sdk.patched.bin'], self.expected['rewritten_sha256']['sdk.patched.bin'])
+        self.assertEqual(files['extracted/botw190/exefs/main'], self.expected['exefs_sha256']['main'])    # retail, as prepare_runtime.py asserts
+        self.assertEqual(report['mod_exefs']['rewritten_main_sha256'], merged)
+        self.assertIn('patches of', report['scope'])
+
+    def test_without_a_mod_nothing_is_merged_and_the_verified_rewrite_is_checked(self):
+        report = self.step(None)
+        self.assertEqual(self.merges, [])
+        self.assertIn(('main', 'extracted/botw190/exefs/main'), self.rewrites)
+        self.assertNotIn('mod_exefs', report)
+        self.assertEqual(report['module_file_sha256']['rewritten/botw190/main.patched.bin'],
+                         self.expected['rewritten_sha256']['main.patched.bin'])
+
+    def test_a_merged_rewrite_that_is_already_there_is_kept(self):
+        self.step(self.mod)
+        first = list(self.rewrites)
+        previous = self.merge
+        self.merge = lambda tree, mod, version, logs: (lambda m, p: (m.update(rewritten_main_sha256=hashlib.sha256(
+            b'rewritten patched main').hexdigest()), (m, p))[1])(*previous(tree, mod, version, logs))
+        self.rewrites.clear()
+        self.step(self.mod)
+        self.assertEqual(self.rewrites, [])         # all three images are there with the hashes the report names
 
 
 if __name__ == '__main__':

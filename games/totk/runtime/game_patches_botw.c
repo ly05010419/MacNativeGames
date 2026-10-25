@@ -10,6 +10,7 @@
 #include <math.h>
 #include "game_patches.h"
 #include "game_version.h"
+#include "pchtxt.h"
 #include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
 #include <TargetConditionals.h>
 uint32_t runtime_thread_current_handle(void);
@@ -585,9 +586,27 @@ static void patch_phone_render(Module *m) {
     put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
     fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
 }
+/* TOTK_PCHTXT=<file> (runtime/pchtxt.h, the reader both games share), 1.9.0 and 1.6.0 (1.6.0 untested: no 1.6.0 game
+   files were at hand). A line on a site the app patches or checks itself (g_pchtxt_reserved, the sites
+   scripts/patch_sites.py reserves for the build's --mod; tests/test_runtime_pchtxt.py keeps the two lists equal) stops
+   the start. */
+static const PchtxtSite g_pchtxt_reserved[] = {
+#ifdef GAME_BOTW160
+    {0xe536dc, 0x4}, {0xe53f8c, 0x4}, {0xe53fa0, 0x4}, {0xe550a0, 0x4}, {0xe563dc, 0x10}, {0xe56410, 0x10},
+    {0x113fb48, 0x10}, {0x1140208, 0x10}, {0x1186ce0, 0x10}, {0x1214474, 0x24}, {0x126e490, 0x98}, {0x12c1010, 0x4},
+    {0x12c1020, 0x4}, {0x13a0378, 0x4}, {0x13a0438, 0x4}, {0x13a0440, 0x4}, {0x13a0508, 0x4}, {0x15c2118, 0x38}, {0x161847c, 0xc},
+    {0x1804c44, 0x4}, {0x1805028, 0x10}, {0x1821564, 0x2c}, {0x1821670, 0x20}, {0x18216ac, 0x4}, {0x18216c8, 0xc}, {0x18522ec, 0x1c},
+    {0x1c0120c, 0x10}, {0x1c59fa8, 0xc}, {0x1c5a00c, 0x10}, {0x1c5a01c, 0x4}, {0x2128690, 0x4}, {0x2c7ef90, 0x8},
+#else
+    {0xc617e8, 0x4}, {0x10edae0, 0x34}, {0xeb0f78, 0x14}, {0x125f114, 0x20}, {0x12660bc, 0x14}, {0x1280ec8, 0x24}, {0x1281064, 0x10},
+    {0x1266114, 0xc}, {0x1281080, 0x8}, {0x151d484, 0x10}, {0x15a01a0, 0x4}, {0x1d78198, 0x8},
+#endif
+};
+static void patch_pchtxt(Module *m) { pchtxt_apply(m, "botw", g_pchtxt_reserved, sizeof g_pchtxt_reserved / sizeof *g_pchtxt_reserved); }
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
+    patch_pchtxt(m);   /* first: on a Mac the patches below check the original words they replace (the phone's code is patched at build, CODE_PATCHED_AT_BUILD) */
     if (!patch_output_res(m)) patch_render_1080(m);
     patch_phone_render(m);
     botw_aspect_install(m);

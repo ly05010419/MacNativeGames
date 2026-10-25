@@ -116,6 +116,33 @@ carries on, its code half is in the app, and its data half takes effect once the
 (`--install-mod-romfs`, or by hand). With `--update` the patch is merged into the updated module, which is the one
 the app runs.
 
+**Breath of the Wild 1.9.0 and 1.6.0.** The same `--mod` flag and the same patch formats work for both Breath of the Wild
+builds (give the game files as for any build of that version: the base NSP and `--update`, or the card image for 1.6.0).
+The patch is applied to the verified main of that version, and the `@nsobid-` line must name that main (the 20 bytes at
+0x40 of the extracted `main`). It is refused when it lands on a site the app patches or checks itself in this game: the
+real-time frame step, the pad repeat count (on 1.6.0 the whole 38-instruction pad loop and the 9-instruction pause menu
+countdown), the docked render size, the output size (`TOTK_OUTPUT_RES`, 1.6.0 only), the `TOTK_JQ_CHECK` sites (1.6.0 only) and the sites listed for that version in
+`runtime/game_version.h` (`games/totk/scripts/patch_sites.py` reads them out of `runtime/game_patches_botw.c`, and out of
+`game_version.h` and the runtime files that use those addresses). Three
+things differ from Tears of the Kingdom:
+
+- `--install-mod-romfs` is refused for this game. Copy the mod's RomFS files into
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160` (`botw190` for 1.9.0) and write the manifest as in
+  [Breath of the Wild](#breath-of-the-wild) below; the build prints this when the mod has a `romfs/`.
+- `--platform ios` builds the iPhone / iPad app from the same merged main, but a code mod was not tried on a phone.
+- To try a `.pchtxt` without a build, start the game from the work folder (`<work>/totk`, which holds
+  `extracted/botw190/exefs/main` or `extracted/botw160/exefs/main`) with `TOTK_PCHTXT=<file>` (a development switch, Mac
+  only; the same reading as the build, but the bytes go into the rewritten main the game runs, so a patch on an
+  instruction the rewriter changed behaves differently there). The game stops at start when the file is for another
+  build of main, touches a site the build refuses (the list above), reaches outside main or has a byte that is not two
+  hex digits.
+
+What was tested: 1.9.0 code mods were built and played on a Mac (M1 Pro). On 1.6.0 (M1 Pro, macOS 27, base v0 and the
+1.6.0 update, Great Plateau save, docked; October 24) `mod_exefs.py apply --version botw160` refuses a patch on a site the
+app reserves, and a one-word mod merged with `build_app.py --mod` builds and boots at 58-60 fps. `TOTK_PCHTXT` was not
+tried on 1.6.0, and the unit tests cover its site list and its reader. Nothing was tested on a device: there was no real Switch to compare with, and
+no `--mod` build was made for an iPhone / iPad.
+
 <a id="data"></a>
 ### The mod's RomFS files: `--install-mod-romfs`
 
@@ -444,6 +471,21 @@ App 没有模块加载器：启动时它映射的是构建时的那三个代码�
 就是没有代码要合并，没有 `romfs/` 时构建不会碰版本目录。`exefs/` 里没有可合并进 main 的东西（只有
 `subsdk9`、只有 `main.npdm`，甚至空的 `exefs/`）只算提示、不算失败：构建照常往下走，只是这个 mod 只生效数据
 那一半。带 `--update` 时补丁合并进更新后的模块，也就是 App 实际运行的那个。
+
+**旷野之息 1.9.0 和 1.6.0。** 同样的 `--mod` 参数和同样的补丁格式适用于旷野之息的两个版本（游戏文件按该版本的常规构建给出：基础 NSP 加 `--update`，1.6.0 也可以给卡带镜像）。
+补丁打在核对过的该版本 main 上，`@nsobid-` 一行必须是这个 main 的（解出的 `main` 偏移 0x40 起的 20 字节）。补丁落在这个游戏里 App 自己打补丁或检查的位置上会被拒绝：
+实时帧步长、手柄重复计数（1.6.0 上是整段 38 条指令的手柄循环和 9 条指令的暂停菜单倒计时）、底座模式渲染分辨率、输出分辨率（`TOTK_OUTPUT_RES`，仅 1.6.0）、`TOTK_JQ_CHECK` 的位置（仅 1.6.0），以及 `runtime/game_version.h` 里该版本一段列出的位置
+（`games/totk/scripts/patch_sites.py` 从 `runtime/game_patches_botw.c` 读出，`game_version.h` 的位置从它和用到这些地址的运行时文件读出）。与王国之泪有三处不同：
+
+- 这个游戏拒绝 `--install-mod-romfs`。把模组的 RomFS 文件复制到
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160`（1.9.0 是 `botw190`），再按下面「旷野之息」一节生成清单；模组带 `romfs/` 时构建会提示这一点。
+- `--platform ios` 用同一份合并后的 main 构建 iPhone / iPad 版，但没有在手机上试过代码模组。
+- 想不重新构建就试一个 `.pchtxt`，在工作目录（`<work>/totk`，里面有 `extracted/botw190/exefs/main` 或 `extracted/botw160/exefs/main`）里用 `TOTK_PCHTXT=<文件>` 启动游戏
+  （开发用开关，仅 Mac；读法与构建相同，但字节写进游戏实际运行的改写后 main，
+  所以补丁落在改写器改过的指令上时表现会不同）。文件是给另一个 main 的、改到构建会拒绝的位置（见上面的列表）、超出 main 的范围，或有一个字节不是两位十六进制数时，游戏在启动时停止。
+
+测试范围：1.9.0 的代码模组在 Mac（M1 Pro）上构建并实际玩过。1.6.0（M1 Pro，macOS 27，基础 v0 加 1.6.0 更新，初始台地存档，底座模式；10 月 24 日）：`mod_exefs.py apply --version botw160` 拒绝落在 App 保留位置上的补丁，用 `build_app.py --mod` 合并的单字模组能构建并启动，58-60 帧。`TOTK_PCHTXT` 没有在 1.6.0 上试过，单元测试覆盖它的位置列表和读取器。
+没有在任何设备上测试：没有真机 Switch 可以对比，也没有做过带 `--mod` 的 iPhone / iPad 构建。
 
 <a id="data-zh"></a>
 ### 模组的 RomFS 文件：`--install-mod-romfs`
