@@ -139,6 +139,9 @@ def package(work, data_work, fonts, output, icon=None):
                 clone(lib, game / "build/shader-libs" / lib.name)
             if (libraries / "compiler.txt").is_file():
                 clone(libraries / "compiler.txt", game / "build/shader-libs/compiler.txt")
+            # The runtime looks for shader-libs beside its unresolved executable path (Contents/MacOS/kirby-native);
+            # without this link every precompiled library is skipped and compiled again in play.
+            os.symlink("../Resources/game/build/shader-libs", macos / "shader-libs")
         notices = resources / "Licenses"
         for path in sorted((GAME / "third_party").rglob("*")):
             if path.is_file() and (path.name.lower().startswith("license") or path.parent.name == "licenses"):
