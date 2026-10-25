@@ -1,12 +1,13 @@
 /* Breath of the Wild add-on content (botw.md): the DLC's RomFS images, read-only volumes beside the game's (romfs.c), listed
    by nn::aoc and mounted as the game asks (nn::fs::MountAddOnContent("aoc", 1, ...)). The game lists two add-on contents
    (index 1: the expansion pass packs, 7,094 files; index 2: one file) and mounts index 1 only. Each volume is the image
-   games/botw/scripts/extract_aoc_romfs.py extracted and indexed, verified against aoc_config.h (SHA-256 of the image
+   games/botw/scripts/extract_aoc_romfs.py extracted and indexed, verified against aoc-config.txt in the game data folder
+   (game_data.h, scripts/prepare_romfs_backend.py --aoc: SHA-256 of the image
    once, then a proof record as romfs.c keeps one; the index on every start). Built into the Breath of the Wild runtime
    only; fs_host.c and services.c reach it through the GAME_BOTW macros of fs_host.h. */
 #ifdef GAME_BOTW
 #include "runtime.h"
-#include "aoc_config.h"
+#include "game_data.h"
 #include "game_version.h"
 #include "fs_host.h"
 #include "romfs_path.h"
@@ -31,14 +32,26 @@ typedef struct {
     int index; uint64_t image_size; const char *image_sha, *index_sha;
     uint8_t *index_bytes; size_t index_size; uint64_t file_count, strings_offset; int image_fd; char mount[32]; int loaded;
 } Vol;
-static Vol vols[AOC_MAX] = {
-    {1, AOC1_IMAGE_SIZE, AOC1_IMAGE_SHA256, AOC1_INDEX_SHA256, NULL, 0, 0, 0, -1, "", 0},
-    {2, AOC2_IMAGE_SIZE, AOC2_IMAGE_SHA256, AOC2_INDEX_SHA256, NULL, 0, 0, 0, -1, "", 0},
+static Vol vols[AOC_MAX] = {   /* sizes and hashes: config_load */
+    {1, 0, NULL, NULL, NULL, 0, 0, 0, -1, "", 0},
+    {2, 0, NULL, NULL, NULL, 0, 0, 0, -1, "", 0},
 };
 static struct { uint8_t vol; uint64_t entry; } handles[AOC_NH];   /* entry = file index + 1; 0 is free */
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static void need(int c, const char *m) { if (!c) runtime_fail(m); }
-static int present(const Vol *v) { return (AOC_PRESENT_MASK >> (v->index - 1)) & 1; }
+static pthread_once_t config_once = PTHREAD_ONCE_INIT;
+static unsigned present_mask;   /* bit index - 1: the volume was extracted and indexed */
+static void config_load(void) {
+    present_mask = (unsigned)runtime_game_number("aoc-config.txt", "AOC_PRESENT_MASK");
+    for (int i = 0; i < AOC_MAX; i++) {
+        if (!((present_mask >> i) & 1)) continue;
+        char key[32]; Vol *v = &vols[i];
+        snprintf(key, sizeof key, "AOC%d_IMAGE_SIZE", v->index); v->image_size = runtime_game_number("aoc-config.txt", key);
+        snprintf(key, sizeof key, "AOC%d_IMAGE_SHA256", v->index); v->image_sha = runtime_game_sha256("aoc-config.txt", key);
+        snprintf(key, sizeof key, "AOC%d_INDEX_SHA256", v->index); v->index_sha = runtime_game_sha256("aoc-config.txt", key);
+    }
+}
+static int present(const Vol *v) { pthread_once(&config_once, config_load); return (present_mask >> (v->index - 1)) & 1; }
 static void vol_dir(const Vol *v, char *out, size_t cap) {
     const char *dir = getenv("TOTK_AOC");   /* the folder holding <index>/; default beside the game's RomFS */
     need(snprintf(out, cap, "%s/%d", dir && *dir ? dir : "extracted/" TOTK_GAME_DIR "/aoc", v->index) < (int)cap, "add-on content path");

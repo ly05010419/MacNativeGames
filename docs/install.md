@@ -83,6 +83,17 @@ Signing and verifying a large updated app can add several minutes. Keep the buil
 **3. Play:** open the app from Finder. The build starts the launcher in `--check` mode, which checks that the game executable exists and allows macOS to perform its first-launch checks; it does not run a gameplay test. You can keep the app where it was built or move it to `/Applications`; the first start after a move compiles the shaders again in the background (macOS's Metal cache does not follow the app to its new place), so to keep it in `/Applications`, build it there with `-o`. Copying it to a different volume can use additional disk space and trigger another macOS check, during which no window may appear. The first game launch verifies the game data (about 20 seconds in local testing). Newly encountered shaders can cause stutters; cached shaders reduce this work on later visits.
 
 
+### Update the runtime without the game files
+
+After pulling a newer version of this repository, you do not have to build the app again from your game file. The app has two parts: the **runtime**, which this repository makes on its own (the game binary with the loader, system services and graphics; the launcher; the shader tools; the warm-up lists from the shared shader list), and the **game files** made from your copy (the rewritten code, the 17 GB RomFS, the shared fonts, the startup shaders and a small game data folder with the tables and hashes the runtime reads at start). `update_runtime.py` builds the runtime and puts it into the app in place of the old one. It reads no game file or keys and leaves the game files as they are:
+
+```sh
+python3.14 update_runtime.py "~/Games/Tears of the Kingdom.app"
+```
+
+It took 46 seconds for a 1.4.3 app on an M4 Mac. Quit the game first, or the script waits until it closes. An app built before this split has no game data folder yet: the script makes the folder once from the work folder of the build that made the app (`TOTK_build` next to the app, or `--work <folder>`). Whatever the source, the folder is checked against the app's own code modules, RomFS index and fonts before anything is replaced. When a new runtime changes the shader translation chain, the app's startup shaders no longer fit it and the script stops; add `--seed` to make them again from the work folder's RomFS and modules (a few minutes, still without the game file or keys; the folder is checked to hold the app's files). The game's code modules are kept too, so they must be what this repository's code rewriter (`patch_nso.py`) makes: the rewrites it pins for the version, or, for a build with a mod's code patches, modules made by the same `patch_nso.py`. Otherwise the script also stops, because a runtime can rely on what the rewriter puts into the code, and the modules must be rewritten with `build_app.py`. A new game version or a mod's code patches need `build_app.py` as well. Before anything is replaced, the new runtime is run against the app's own game files, and if the updated app then fails its start check, the previous one is put back. The runtime holds nothing from the game, so `make -C games/totk binary-v143` (or `binary`, `binary-v112`, …) builds it with no game files at all.
+
+
 ### Build version 1.1.2, 1.2.1 or 1.4.3
 
 ```sh
