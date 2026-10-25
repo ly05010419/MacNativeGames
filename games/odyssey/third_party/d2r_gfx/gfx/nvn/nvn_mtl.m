@@ -281,7 +281,7 @@ static void res_site_report(int top) {
     }
     pthread_mutex_unlock(&g_res_mu);
 }
-/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 40% of physical memory on the Mac (0 disables). Checked before every
+/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 50% of physical memory on the Mac (0 disables). Checked before every
    submission and residency commit, in the no-submit mode too, so the growth is reported with its sites instead of
    exhausting wired memory. Off by default on iOS: there the system's per-app limit bounds GPU memory and ends only the app,
    and 40% of an iPhone 14 (2284 MB) stopped the game in the world while it used 3.6 of its 4 GB (2026-10-19). */
@@ -291,7 +291,7 @@ static uint64_t gpu_budget_bytes(void) {
         init = 1; const char *e = getenv("TOTK_GPU_BUDGET_MB");
         if (e) b = strtoull(e, NULL, 10) << 20;
         else if (TARGET_OS_IPHONE) b = 0;
-        else { uint64_t phys = 0; size_t n = sizeof phys; if (sysctlbyname("hw.memsize", &phys, &n, NULL, 0) || !phys) MDIE("hw.memsize unavailable for the GPU memory budget"); b = phys / 5 * 2; }
+        else { uint64_t phys = 0; size_t n = sizeof phys; if (sysctlbyname("hw.memsize", &phys, &n, NULL, 0) || !phys) MDIE("hw.memsize unavailable for the GPU memory budget"); b = phys / 2; }   /* Odyssey: 50%, not TOTK's 40%: on an 8 GB Mac a larger kingdom holds 2.7-2.9 GB of Metal allocations for an hour and peaked at 3277 MB, 1 MB over 40%, which stopped the game (25 October); the kernel panics the budget guards against were at ~15 GB resident */
         MLOG("显存预算 %llu MB（TOTK_GPU_BUDGET_MB 覆盖，0 关闭）", (unsigned long long)(b >> 20));
     }
     return b;
@@ -2445,7 +2445,7 @@ static void pkg_owned_locked(uint64_t k) { id o = hm_get_id(&g_by_serial, &k); i
    so the result outlives a temporary texture object finalized before the submission runs); an invalidate over its
    memory waits for the GPU and writes every level back in the NVN layout, unless the CPU has written the memory since
    the rendering (then the CPU's bytes are newer). Runtime switch: TOTK_INPUT_FILE "flag writeback 0|1" (default 1). */
-typedef struct { tex_t t; uint64_t stamp, fence, prev_fence; void *obj; } wb_ent;   // fence: the submission that renders it (g_fence + 1 while it is encoded); prev_fence: the one before, while the newest is still being recorded
+typedef struct { tex_t t; uint64_t stamp, fence, prev_fence; void *obj; uint8_t *snap; uint32_t snap_n; } wb_ent;   // fence: the submission that renders it (g_fence + 1 while it is encoded); prev_fence: the one before, while the newest is still being recorded
 static nvn_hmap g_wb = {.klen = 8};   // serial -> wb_ent * (g_smu): rendered since the last write-back
 static _Atomic int g_wb_on = 1;
 /* TOTK: fill the driver segment c0 for vertex and compute shaders (thread-group counts, uniform / storage address tables,
@@ -2550,7 +2550,7 @@ static int tilelog_match(const tex_t *t) {
     return on && t && t->d.width == w && t->d.height == h;
 }
 #define TILELOG(t, fmt, ...) do { BOTW_TILELOG_NOTE(t) if (tilelog_match(t)) MLOG("[tile] f%llu ser=%llu mem=%p nvnfmt=%#x lv%u " fmt, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(t)->serial, (void *)(t)->mem, (t)->d.format, (t)->d.levels, ##__VA_ARGS__); } while (0)
-static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e); }
+static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e->snap); free(e); }
 /* A memory pool is finalized: its pending GPU renderings will never be read back. Drop their write-back records, which
    hold the texture objects (wb_note's retain kept them resident for ever: soak-60-a, 23 October, ~96 textures / 55 MB
    per "Throw Cap" movie play). It is also a correctness fix: a record left behind would match a later invalidate of a
@@ -2575,6 +2575,20 @@ static void wb_drop_range(uintptr_t lo, uintptr_t hi) {
         MLOG("[writeback] pool freed: dropped %llu pending write-back records (%llu MB)", (unsigned long long)dropped, (unsigned long long)(bytes >> 20));
 }
 static void pre_note(const tex_t *t, id o);
+/* From games/totk (8a29e0a, limit raised to 256 KiB later): a small target's few bytes can share a 16 KiB page with data
+   the CPU writes every frame, so the page-granular dirty tracking reports "CPU wrote since the render" and the rendering
+   never reaches the game. Small targets keep a copy of their own bytes when the rendering is noted; if those bytes are
+   unchanged at write-back time the CPU did not write this texture, and the rendering is written back. Odyssey's R32F
+   256x128 target (128 KiB) was skipped as "CPU wrote since" on about half of its write-backs (24 October, 151,020 of
+   302,010 in a 90-minute session); TOTK_WB_EXACT=0 restores the page-only decision. */
+enum { WB_SNAP_MAX = 256 * 1024 };
+static int wb_exact_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WB_EXACT"); v = !(e && !strcmp(e, "0")); } return v; }
+static uint64_t g_wb_exact_rescued;
+static void wb_snap(wb_ent *e) {
+    if (!wb_exact_on() || !e->t.mem || e->t.L.size > WB_SNAP_MAX) { free(e->snap); e->snap = NULL; e->snap_n = 0; return; }
+    uint32_t n = (uint32_t)e->t.L.size; if (e->snap_n != n) { free(e->snap); e->snap = malloc(n); e->snap_n = e->snap ? n : 0; }
+    if (e->snap) memcpy(e->snap, e->t.mem, n);
+}
 static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
     if (!atomic_load(&g_wb_on) || !t->mem || !t->L.size) return;
@@ -2586,9 +2600,9 @@ static void wb_note(const tex_t *t) {
     pthread_mutex_lock(&g_smu);
     wb_ent *e = nvn_hm_get(&g_wb, &k);
     uint64_t fence = g_fence + 1;   // replay thread: the submission being encoded commits with ++g_fence (mtl_sub_commit)
-    if (e) { if (e->fence != fence) e->prev_fence = e->fence; e->stamp = stamp; e->fence = fence; e->t = *t; pthread_mutex_unlock(&g_smu); pre_note(t, o); return; }
+    if (e) { if (e->fence != fence) e->prev_fence = e->fence; e->stamp = stamp; e->fence = fence; e->t = *t; wb_snap(e); pthread_mutex_unlock(&g_smu); pre_note(t, o); return; }
     e = calloc(1, sizeof *e); if (!e) MDIE("write-back record");
-    e->t = *t; e->stamp = stamp; e->fence = fence; e->obj = (void *)CFBridgingRetain(o);
+    e->t = *t; wb_snap(e); e->stamp = stamp; e->fence = fence; e->obj = (void *)CFBridgingRetain(o);
     nvn_hm_put(&g_wb, &k, e);
     pthread_mutex_unlock(&g_smu);
     pre_note(t, o);
@@ -2800,6 +2814,11 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
        the drain was ~35% of the time the game thread spent in invalidate). */
     int fresh[512], any = 0;
     for (int i = 0; i < nl; i++) fresh[i] = force || !nvn_dirty_since(list[i]->t.mem, list[i]->t.L.size, list[i]->stamp);
+    for (int i = 0; i < nl; i++)
+        if (!fresh[i] && list[i]->snap && list[i]->snap_n == list[i]->t.L.size && !memcmp(list[i]->snap, list[i]->t.mem, list[i]->snap_n)) {   // page dirty, texture's own bytes not
+            fresh[i] = 1; uint64_t r = ++g_wb_exact_rescued;
+            if (r <= 8 || r % 5000 == 0) MLOG("[writeback] small target ser=%llu %ux%u: page written by the CPU but not this texture, written back (%llu so far)", (unsigned long long)list[i]->t.serial, (unsigned)list[i]->t.d.width, (unsigned)list[i]->t.d.height, (unsigned long long)r);
+        }
     for (int i = 0; i < nl; i++) for (int j = 0; j < nl; j++)
         if (i != j && fresh[i] && fresh[j] && list[j]->t.mem == list[i]->t.mem && list[j]->stamp > list[i]->stamp) { fresh[i] = 2; break; }   // 2: superseded
     for (int i = 0; i < nl; i++) any |= fresh[i] == 1;

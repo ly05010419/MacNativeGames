@@ -1,0 +1,764 @@
+diff --git a/dm/gfx/nvn/dmsh_chain.h b/dm/gfx/nvn/dmsh_chain.h
+index 448392c..72d46f4 100644
+--- a/dm/gfx/nvn/dmsh_chain.h
++++ b/dm/gfx/nvn/dmsh_chain.h
+@@ -1,3 +1,3 @@
+ // Generated file (dm/gfx/tools/dmsh_chain.py --header): the B shader library translation chain version this source tree expects (default options), one for every game;
+ // the host loads only <library dir>/b-<V>/. Run dmsh_chain.py --header after changing the chain's tools and commit this file with the change
+-#define DMSH_CHAIN "657c42552d82"
++#define DMSH_CHAIN "e6e2d522054e"
+diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
+index 9b66e2d..d4e3e81 100644
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -678,6 +678,11 @@ NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *in
+ }
+ NVN(nvnQueueFlush, void, NVNqueue *q) { (void)q; }
+ NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; mtl_finish(); }
++// NVN 55 telemetry queries. The host does not allocate the builder's command / compute / control blocks, so their reported usage is zero; the game only reads these figures for diagnostics.
++NVN_NOPROTO(nvnQueueGetTotalCommandMemoryUsed, size_t, const NVNqueue *q) { (void)q; return 0; }
++NVN_NOPROTO(nvnQueueGetTotalControlMemoryUsed, size_t, const NVNqueue *q) { (void)q; return 0; }
++NVN_NOPROTO(nvnQueueGetTotalComputeMemoryUsed, size_t, const NVNqueue *q) { (void)q; return 0; }
++NVN_NOPROTO(nvnQueueResetMemoryUsageCounts, void, NVNqueue *q) { (void)q; }
+ 
+ // ---------- Command buffer: record into the game's command memory, perform CPU-visible side effects at submit ----------
+ #define CB(c) ((cmd_t *)(c))
+diff --git a/dm/gfx/nvn/nvn_mtl.m b/dm/gfx/nvn/nvn_mtl.m
+index 624ae64..4611f47 100644
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -2852,7 +2852,7 @@ static void shmap_load(void) {
+     warm_start();
+ }
+ 
+-@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn, fn_u, geo_fn;   // fn_u: the integer-output entry point (dmsh_build.py fs_uint), for pipelines whose colour attachments are all unsigned integer (pso_desc)
++@interface NvShader : NSObject { @public id<MTLFunction> fn, tf_fn, fn_u, geo_fn, discard_fn;   // fn_u: the integer-output entry point (dmsh_build.py fs_uint), for pipelines whose colour attachments are all unsigned integer (pso_desc)
+     uint16_t tf_stride[4]; uint32_t cb_ext[16], sb_ro; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr, layer_out; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+     uint32_t geo_vertices, geo_invocations, geo_output, geo_stride, geo_index_stride;
+     id<MTLComputePipelineState> geo_pso;
+@@ -2969,6 +2969,22 @@ static void pso_user_record(const char *fmt, ...) {
+ // while the default soft limit of an iOS process is 256; new shaders created in other acts raise it further). Here the file is mapped into memory and closed immediately, and the library is built from the in-memory data; the mapping is released when the library's data object is freed
+ static __thread int t_lib_layer;
+ static id<MTLLibrary> lib_from_file(NSString *path, NSError **err) {
++    const char *runtime = getenv("DM_METAL_RUNTIME");
++    if (runtime && *runtime && strcmp(runtime, "0")) {   // no Xcode Metal toolchain: compile the translated source with this Mac's Metal runtime, on first use
++        NSString *srcp = [[path stringByDeletingPathExtension] stringByAppendingPathExtension:@"metal"];
++        NSString *src = [NSString stringWithContentsOfFile:srcp encoding:NSUTF8StringEncoding error:nil];
++        if (src) {
++            MTLCompileOptions *options = [MTLCompileOptions new];
++            options.preserveInvariance = YES;
++            if (getenv("DM_METAL_SAFE")) { options.mathMode = MTLMathModeSafe; options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise; }
++            id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:options error:err];
++            if (lib) {
++                static _Atomic int logged;
++                if (!atomic_exchange(&logged, 1)) MLOG("shader Metal source compiled at run time (DM_METAL_RUNTIME=1): first %s", srcp.lastPathComponent.UTF8String);
++            }
++            return lib;
++        }
++    }
+     int fd = open(path.fileSystemRepresentation, O_RDONLY); struct stat st;
+     if (fd < 0 || fstat(fd, &st) || st.st_size <= 0) { if (fd >= 0) close(fd); if (err) *err = [NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"cannot open %@", path]}]; return nil; }
+     size_t len = (size_t)st.st_size; void *m = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0); close(fd);
+@@ -3021,6 +3037,11 @@ void mtl_set_depth_zero(int on) {
+         o->geo_fn = [lib newFunctionWithName:j[@"entry_geometry_capture"] constantValues:[MTLFunctionConstantValues new] error:&ge];
+         if (!o->geo_fn) MLOG("[RED] vertex shader %s: geometry capture entry failed: %s", pc.UTF8String, ge.localizedDescription.UTF8String);
+     }
++    if (j[@"entry_discard"]) {
++        NSError *de = nil;
++        o->discard_fn = [lib newFunctionWithName:j[@"entry_discard"] constantValues:[MTLFunctionConstantValues new] error:&de];
++        if (!o->discard_fn) MLOG("[RED] vertex shader %s: rasterizer-discard entry failed: %s", pc.UTF8String, de.localizedDescription.UTF8String);
++    }
+     NSDictionary *geo = j[@"geometry"];
+     if (j[@"geometry_reader"]) o->geo_output = [j[@"geometry_output"] unsignedIntValue];
+     if (geo) { o->geo_vertices = [geo[@"vertices"] unsignedIntValue]; o->geo_invocations = [geo[@"invocations"] unsignedIntValue];
+@@ -4078,9 +4099,10 @@ static MTLBlendFactor bfac(int f) {
+ static NSMutableDictionary<NSString *, id<MTLLibrary>> *g_bf_lib_cache;
+ static nvn_hmap g_pso = {.klen = sizeof(pso_key)}, g_dss;
+ static nvn_hmap g_pso_fail = {.klen = sizeof(pso_key)};   // pipelines that failed to build: remembered and never retried (previously every draw recompiled it, over 10,000 times in one iPhone session)
+-static const char g_tf_mark;
++static const char g_tf_mark, g_discard_mark;
+ static char g_geo_mark;
+ #define GEO_MARK ((const void *)&g_geo_mark)
++#define DISCARD_MARK ((const void *)&g_discard_mark)
+ #define TF_MARK ((const void *)&g_tf_mark)   // pso_key.fsfn of a transform feedback capture pipeline (tf_pso)
+ static int mtl_fmt_uint(MTLPixelFormat f) {
+     switch (f) { case MTLPixelFormatR8Uint: case MTLPixelFormatR16Uint: case MTLPixelFormatR32Uint: case MTLPixelFormatRG8Uint: case MTLPixelFormatRG16Uint: case MTLPixelFormatRG32Uint:
+@@ -4118,7 +4140,8 @@ static int pso_all_uint(const pso_key *k, NvShader *fs, int merged) {
+             if (hl) d.fragmentFunction = [hl newFunctionWithName:[NSString stringWithFormat:@"hl%d", i]];
+             break; } }
+     if (fs && fs->fn_u && !fsfn && d.fragmentFunction == fs->fn && pso_all_uint(k, fs, merged)) d.fragmentFunction = fs->fn_u;   // integer colour targets (dmsh_build.py fs_uint)
+-    if (vs->layer_out && k->fsfn != GEO_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
++    if (vs->layer_out && k->fsfn != GEO_MARK && k->fsfn != DISCARD_MARK) d.inputPrimitiveTopology = vs->geo_output == 1 ? MTLPrimitiveTopologyClassPoint : vs->geo_output == 6 ? MTLPrimitiveTopologyClassLine : MTLPrimitiveTopologyClassTriangle;
++    if (k->fsfn == DISCARD_MARK) { d.vertexFunction = vs->discard_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }
+     if (k->fsfn == TF_MARK || k->fsfn == GEO_MARK) { d.vertexFunction = k->fsfn == GEO_MARK ? vs->geo_fn : vs->tf_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO; }   // transform feedback capture (tf_draw)
+     d.rasterSampleCount = k->samples ? k->samples : 1;
+     d.alphaToCoverageEnabled = k->a2c;
+@@ -4144,7 +4167,7 @@ static int pso_all_uint(const pso_key *k, NvShader *fs, int merged) {
+     }
+     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
+     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
+-    const nvn_refl *rf = &vs->rf; int nconv = 0, on = vin_on(vs, k, k->fsfn == TF_MARK || k->fsfn == GEO_MARK);
++    const nvn_refl *rf = &vs->rf; int nconv = 0, on = vin_on(vs, k, k->fsfn == TF_MARK || k->fsfn == GEO_MARK || k->fsfn == DISCARD_MARK);
+     if (on) { d.vertexFunction = vs->vfn; g_vin_psos++; }   // the shadow-input entry point (see vin_on)
+     #define ZERO_ATTR(i, ct_) do { vd.attributes[i].format = (ct_) == NVN_CT_UINT ? MTLVertexFormatUInt4 : (ct_) == NVN_CT_INT ? MTLVertexFormatInt4 : MTLVertexFormatFloat4; vd.attributes[i].offset = 0; vd.attributes[i].bufferIndex = 30; \
+                                   vd.layouts[30].stride = 16; vd.layouts[30].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[30].stepRate = 0; } while (0)   // reads the zero buffer
+@@ -4548,7 +4571,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
+             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
+             void *mb; uint64_t mo, gpu;
+             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) {   // reads 0 (the all-zero bank), as an unbound texture slot does, instead of through a null pointer
+-                RED_ONCE(16, "stage %d cb%d has no uniform buffer bound", nvn_stage, reg); slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue; }
++                RED_ONCE(16, "stage %d cb%d has no uniform buffer bound (shader %s)", nvn_stage, reg, sh->key[0] ? sh->key : "?"); slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue; }
+             uint64_t ul = cb_len(sh, reg, u->size);   // what the shader can read of it
+             if (g_nubd && ubd_hits(u->addr, u->addr + ul)) {   // inline updates deferred in this pass (see mtl_sub_update); ubd_conflict made sure they cover the binding or the rest can be read from memory
+                 uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) gpu = ubd_shadow(u->addr, u->addr + ul);
+@@ -6596,31 +6619,33 @@ static int mdx_next(const p_draw *dw, const p_draw_idx *di) {
+ // these while its frame target is bound; a pass of that target would load and store it for nothing), and stores the outputs at TF_SLOT + b. Each draw writes from the buffer's current offset on.
+ // Only plain array draws are captured (all this game makes); the encoder's barriers order the writes before the draws that read them
+ enum { TF_SLOT = 8 };   // = dmsh_build.py TF_SLOT
+-static __unsafe_unretained id<MTLRenderPipelineState> tf_pso(NvShader *vs) {
+-    pso_key k; static const uint32_t cf[8]; pso_key_fill(&k, vs, nil, cf, 0, 0, 1, 0); k.fsfn = TF_MARK;
++static __unsafe_unretained id<MTLRenderPipelineState> tf_pso(NvShader *vs, int capture) {
++    pso_key k; static const uint32_t cf[8]; pso_key_fill(&k, vs, nil, cf, 0, 0, 1, 0); k.fsfn = capture ? TF_MARK : DISCARD_MARK;
+     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
+     if (cached) return cached;
+     if (hm_get_id(&g_pso_fail, &k)) return nil;
+     NSError *e = nil; id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pso_desc(&k, vs, nil, nil, 0) error:&e];
+-    if (!ps) { MLOG("[RED] failed to create the transform feedback pipeline (vertex %s): %s", vs->key, e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
++    if (!ps) { MLOG("[RED] failed to create the rasterizer-discard pipeline (vertex %s): %s", vs->key, e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
+     hm_put_id(&g_pso, &k, ps);
+     return ps;
+ }
+ static void tf_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+     __unsafe_unretained NvShader *vs = pr ? pr->sh[0] : nil;
+-    if (!S.tf_on) { PD("Z %llu draw skipped: rasterizer discard", g_stat_pass + !g_enc); return; }
+-    if (!vs || !vs->tf_fn) { RED_ONCE(100, "transform feedback with vertex shader %s, which has no capture entry point: nothing captured", vs ? vs->key : "-"); return; }
+-    if (!dw || dw->ind || dw->mdi_cnt || dw->instances > 1 || dw->prim == 6 || dw->prim == 7) { RED_ONCE(101, "transform feedback draw that is indexed, indirect, instanced or a fan / quad list (vertex %s): not captured", vs->key); return; }
++    int capture = S.tf_on;
++    // Rasterizer discard suppresses fragments, not vertex shader storage writes. Bezel generates its morph vertices this way, without transform feedback.
++    if (!capture && (!vs || !vs->discard_fn)) return;   // No feedback and no storage/image writes: no observable vertex effects
++    if (!vs || (capture && !vs->tf_fn)) { RED_ONCE(100, "transform feedback with vertex shader %s, which has no capture entry point: nothing captured", vs ? vs->key : "-"); return; }
++    if (!dw || dw->ind || dw->mdi_cnt || (capture && (dw->instances > 1 || dw->prim == 6 || dw->prim == 7))) { RED_ONCE(101, "transform feedback draw that is indexed, indirect, instanced or a fan / quad list (vertex %s): not captured", vs->key); return; }
+     if (dw->count <= 0) return;
+     uint64_t gpu[4] = {0};
+     for (int b = 0; b < 4; b++) {
+-        if (!vs->tf_stride[b]) continue;
++        if (!capture || !vs->tf_stride[b]) continue;
+         uint64_t n = (uint64_t)dw->count * vs->tf_stride[b], at = S.tf[b].addr + S.tf_off[b]; void *mb; uint64_t mo;
+         if (!S.tf[b].addr || S.tf_off[b] + n > S.tf[b].size || !mtl_gpu_addr(at, n, &mb, &mo, &gpu[b])) {
+             RED_ONCE(102, "transform feedback buffer %d of vertex %s is unbound, too small or in no memory pool (%#llx + %llu of %llu): not captured", b, vs->key, (unsigned long long)S.tf[b].addr, (unsigned long long)(S.tf_off[b] + n), (unsigned long long)S.tf[b].size);
+             return; }
+     }
+-    __unsafe_unretained id<MTLRenderPipelineState> ps = tf_pso(vs);
++    __unsafe_unretained id<MTLRenderPipelineState> ps = tf_pso(vs, capture);
+     if (!ps) return;
+     rp_end(); ubd_land();   // the deferred inline updates first: this draw comes before draw's conflict check (ubd_conflict) and writes its capture buffers
+     // ubd_land copies them in the copy encoder and leaves it open, as does a copy or dispatch just before: a render encoder opened beside it is invalid (Metal validation: "Command buffer already
+@@ -6632,14 +6657,22 @@ static void tf_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+     bind_vbufs(en);
+     vconv_bind(en, vs, 1, dw, NULL);
+     args_dirty_all(); encode_args(en, vs, 0, 1);
+-    for (int b = 0; b < 4; b++) if (vs->tf_stride[b]) {   // vertex v of the draw (first + i) stores at v × stride: the pointer starts first × stride before the write offset
++    if (!capture) {
++        g_wr_epoch++; g_mdx_epoch++;
++        for (int i = 0; i < vs->rf.nb; i++) { const nvn_rbind *b = &vs->rf.b[i];
++            if (b->kind != NVN_RB_SBUFP || !b->rw || b->reg >= 16 || (vs->sb_ro >> b->reg & 1)) continue;
++            const p_bind_buf *u = &S.ssbo[0][b->reg];
++            if (u->addr && u->size) pend_add(u->addr, u->size, 4);   // Later CPU index/attribute reads must not use the data from before this vertex write.
++        }
++    }
++    for (int b = 0; b < 4; b++) if (capture && vs->tf_stride[b]) {   // vertex v of the draw (first + i) stores at v × stride: the pointer starts first × stride before the write offset
+         enc_r_vbuf(en, TF_SLOT + b, gpu[b] - (uint64_t)dw->first * vs->tf_stride[b]);
+         uint64_t n = (uint64_t)dw->count * vs->tf_stride[b]; pend_add(S.tf[b].addr + S.tf_off[b], n, 4); S.tf_off[b] += n;
+     }
+-    enc_r_draw(en, MTLPrimitiveTypePoint, (NSUInteger)dw->first, (NSUInteger)dw->count);
++    enc_r_draw_instanced(en, MTLPrimitiveTypePoint, (NSUInteger)dw->first, (NSUInteger)dw->count, dw->instances > 0 ? dw->instances : 1, dw->base_instance);
+     m4_end(en);
+     args_dirty_all(); g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
+-    { static int once; if (!once++) MLOG("transform feedback: first capture (vertex %s, %d vertices)", vs->key, dw->count); }
++    { static int once; if (!once++) MLOG("rasterizer discard: vertex execution (vertex %s, %d vertices, feedback %s)", vs->key, dw->count, capture ? "on" : "off"); }
+     PD("T %llu tf capture vs=%s first=%d count=%d written %llu/%llu/%llu/%llu", g_stat_pass, vs->key, dw->first, dw->count,
+        (unsigned long long)S.tf_off[0], (unsigned long long)S.tf_off[1], (unsigned long long)S.tf_off[2], (unsigned long long)S.tf_off[3]);
+ }
+@@ -6747,7 +6780,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
+     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
+     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
+     draw_gs_check(pr);   // a geometry stage left with no function (see prog_fold_gs)
+-    if (S.rast_discard) { tf_draw(pr, dw, di); return; }   // the vertex stage only: transform feedback capture, or nothing (tf_draw)
++    if (S.rast_discard) { tf_draw(pr, dw, di); return; }   // Preserve vertex storage/image writes even without transform feedback
+     if (g_nubd && (g_enc || ubd_lazy()) && ubd_conflict(pr, dw, di)) { g_ubd_conflicts++; rp_end(); ubd_land(); }   // land the deferred inline updates before this draw (see ubd_conflict)
+     if (zskip_can_draw(pr)) {   // Zero-source skip: the output is always 0, writing 0 over 0, so this draw changes no result (see zskip_can_draw)
+         g_zskip_count++; { static int once; if (!once++) MLOG("zero-source skip: first case pass %llu", g_stat_pass + 1); }
+diff --git a/dm/gfx/tests/t_geometry.m b/dm/gfx/tests/t_geometry.m
+index 308d629..717f679 100644
+--- a/dm/gfx/tests/t_geometry.m
++++ b/dm/gfx/tests/t_geometry.m
+@@ -173,8 +173,40 @@ static void translated(const char *directory) {
+     }
+     mtl_pool_del(uniforms);mtl_drain();free(uniforms);
+ }
++static void discard_storage_writes(void) {
++    id<MTLLibrary> l=library(@"#include <metal_stdlib>\nusing namespace metal;\n"
++        "struct A {device uint* dst [[id(0)]];};\n"
++        "vertex float4 raster(uint v[[vertex_id]]) {return float4(0,0,0,1);}\n"
++        "vertex void discard(constant A&a[[buffer(0)]],uint v[[vertex_id]],uint i[[instance_id]]) {a.dst[(i-5)*8+v]=v*10+i;}\n"
++        "vertex void feedback(constant A&a[[buffer(0)]],uint v[[vertex_id]],device uint*tf[[buffer(8)]]) {a.dst[v]=200+v;tf[v]=100+v;}\n");
++    NvShader *vs=shader(l,@"raster",0,NULL,0);vs->discard_fn=[l newFunctionWithName:@"discard"];
++    vs->tf_fn=[l newFunctionWithName:@"feedback"];vs->tf_stride[0]=4;
++    vs->ae=[vs->discard_fn newArgumentEncoderWithBufferIndex:0];vs->arg_len=vs->ae.encodedLength;
++    vs->rf.nb=1;vs->rf.b[0]=(nvn_rbind){.kind=NVN_RB_SBUFP,.rw=1,.reg=0,.aid=0};
++    [g_keep addObject:vs];
++    NvProg *pr=[NvProg new];pr->sh[0]=vs;
++    uint32_t *out;if(posix_memalign((void**)&out,getpagesize(),65536))abort();memset(out,0xcc,65536);mtl_pool_add(out,65536);
++    state_reset();memset(&R,0,sizeof R);S.rast_discard=1;
++    S.ssbo[0][0]=(p_bind_buf){.stage=0,.index=0,.addr=(uint64_t)out,.size=64};
++    p_draw d={.prim=0,.first=2,.count=4,.instances=2,.base_instance=5};
++    mtl_sub_begin();tf_draw(pr,&d,NULL);
++    EXPECT("discard storage write tracked",1,pend_hits((uint64_t)(out+2),4));finish();
++    for(int i=0;i<2;i++)for(int v=0;v<8;v++)
++        EXPECT("discard runs vertices without feedback",v>=2&&v<6?(uint32_t)(v*10+i+5):0xcccccccc,out[i*8+v]);
++    EXPECT("discard output bound sentinel",0xcccccccc,out[16]);
++    S.tf_on=1;S.tf[0]=(p_tf_bind){.index=0,.addr=(uint64_t)(out+32),.size=16};
++    d.instances=1;d.base_instance=0;mtl_sub_begin();tf_draw(pr,&d,NULL);finish();
++    for(int v=0;v<4;v++) {
++        EXPECT("feedback selects its capture entry",102u+v,out[32+v]);
++        EXPECT("feedback preserves vertex storage writes",202u+v,out[2+v]);
++    }
++    EXPECT("feedback byte offset",16,S.tf_off[0]);
++    EXPECT("feedback output bound sentinel",0xcccccccc,out[36]);
++    mtl_pool_del(out);mtl_drain();free(out);
++}
+ int main(int argc,char **argv) {@autoreleasepool {
+     setvbuf(stdout,NULL,_IONBF,0);assembly();mtl_init();pack_test();for(int mode=0;mode<7;mode++)replay(mode);
++    discard_storage_writes();
+     if(argc>1)translated(argv[1]);
+     printf("t_geometry: %d checks, %d failed\n",checks,failed);return failed!=0;
+ }}
+diff --git a/dm/gfx/tools/dmsh_build.py b/dm/gfx/tools/dmsh_build.py
+index cc1cd73..c2992b7 100644
+--- a/dm/gfx/tools/dmsh_build.py
++++ b/dm/gfx/tools/dmsh_build.py
+@@ -24,6 +24,7 @@ XLATE = os.environ.get('XLATE', os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate')
+ FACTS = dmsh_facts.load()
+ if not os.path.exists(dmsh_facts.TABLE): sys.exit(f'[RED] no answer table {dmsh_facts.TABLE} (it comes with the game profile; an empty table = every query answered with defaults)')
+ IOSOUT = os.environ.get('IOSOUT')   # if set, also build the iOS version (iphoneos metallib + reflection) into that directory
++RUNTIME_METAL = os.environ.get('DM_METAL_RUNTIME') == '1'   # keep translated MSL and compile it with MTLDevice at first use (no Xcode Metal toolchain required)
+ if IOSOUT:
+     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ios/tools')); import ios_metal
+     IOSOUT = os.path.join(IOSOUT, 'b-' + CHAIN); os.makedirs(IOSOUT, exist_ok=True)
+@@ -46,6 +47,9 @@ PRE_STATS = collections.Counter()
+ MAC_METAL = ['xcrun', '-sdk', 'macosx', 'metal', '-c', '-fpreserve-invariance']
+ MAC_RECORD = ' '.join(MAC_METAL) + '; xcrun -sdk macosx metallib'
+ def mac_compile(msl, air, lib):   # same interface as ios_metal.compile
++    if RUNTIME_METAL:   # The host loads a valid metallib when one exists; the placeholder lets the existing cache and output checks treat the MSL as a complete build.
++        open(lib, 'wb').write(b'RUNTIME_METAL\n')
++        return
+     subprocess.run([*MAC_METAL, msl, '-o', air], check=True)
+     subprocess.run(['xcrun', '-sdk', 'macosx', 'metallib', air, '-o', lib], check=True)
+ # The NVN driver's constant segments have one layout in every game (NVN 53 and 55 drivers, SDK 6 to 21: the handles of every shader of every profile fit it); nvn_mtl.m fills them the same way at run time.
+@@ -230,7 +234,7 @@ def fetch_finish(key, src, refl):
+                 BF_STATS['compile'] += 1
+                 bf_cache_publish(digest, fmsl, flib, ilib, fmeta)
+         finally:
+-            for path in (fmsl, fmsl[:-6] + '.air', fmsl[:-6] + '.ios.air'):
++            for path in ((() if RUNTIME_METAL else (fmsl,)) + (fmsl[:-6] + '.air', fmsl[:-6] + '.ios.air')):
+                 try: os.unlink(path)
+                 except FileNotFoundError: pass
+     refl['fetch'] = fmeta
+@@ -256,14 +260,16 @@ def vin_finish(key, full, refl):
+     VIN_STATS['generated'] += 1
+     msl = os.path.join(w, key + '_bv.metal'); open(msl, 'w').write(v)
+     try:
+-        MTL.compile('mac', msl, libs[0])
++        mac_compile(msl, msl[:-6] + '.air', libs[0])
+         if IOSOUT: MTL.compile('ios', msl, libs[1])
++        if RUNTIME_METAL: clone(msl, os.path.join(out, key + '_bv.metal'))
+     except subprocess.CalledProcessError as e:
+         VIN_STATS['failed'] += 1; print(f'[RED] {key}: the shadow-input library does not compile ({str(e)[:120]}): its integer inputs keep the CPU conversion', flush=True)
+         drop(); return refl
+     finally:
+-        try: os.unlink(msl)
+-        except FileNotFoundError: pass
++        if not RUNTIME_METAL:
++            try: os.unlink(msl)
++            except FileNotFoundError: pass
+     refl['vin'] = {'entry': 'main0', 'entry_z': 'main0_z', 'shadow': shadows}
+     VIN_STATS['inputs'] += len(shadows); VIN_STATS['float only'] += sum(1 for s in shadows if 'sint' not in s and 'uint' not in s)
+     return refl
+@@ -364,6 +370,10 @@ def vs_tf(src, tf):
+     extra = ('' if vm else ', uint dm_vid [[vertex_id]]') + ''.join(f', device uint* dm_tf{b} [[buffer({TF_SLOT + b})]]' for b, e in enumerate(tf) if e)
+     return f'\nvertex void main0_tf({params}{extra})\n{{' + body.replace('return out;', '{' + stores + ' return; }')
+ 
++def vs_discard(src):
++    """Metal rasterization-disabled pipelines require a void vertex entry. Keep all storage/image writes; omit only the returned raster outputs."""
++    return vs_tf(src, [None] * 4).replace('main0_tf(', 'main0_discard(', 1)
++
+ def raster_facts(stage, src):
+     """Static facts needed for the runtime proof that the load can be skipped (full-coverage first draw) (nvn_mtl.m first_draw_covers):
+         Vertex: whether position x / y / z are taken unchanged from the .x / .y / .z of one and the same vertex attribute (w is the constant 1 or the same attribute's .w), with no branches and no clip distances in the main function - if so, pos_attr = attribute slot;
+@@ -496,7 +506,7 @@ def reflect(key, stage, msl, res):
+             elif b and b['cb_slot'] >= 3:   # the address is in the game's own uniform buffer c[n] = uniform slot n - 3 (Monster Hunter Rise's compute shaders: c3 + 0x38); the replay reads it there
+                 e.update(kind='sbuf_ubo', reg=b['cb_slot'] - 3, off=b['cb_offset'] * 4)
+             else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
+-            e['rw'] = bool(b and b['flags'] & 2)
++            e['rw'] = bool(b and b['flags'] & 1)   # Ryujinx BufferUsageFlags.Write = 1 << 0
+     return binds
+ 
+ DRV_FILL = {0: [(b, b + 0x100) for b in sorted(SSBO.values())],   # c0: storage buffer address tables (vertex / compute / pixel, 16 slots × 0x10 each)
+@@ -767,7 +777,7 @@ def geometry_finish(key, w, j, c1):
+                 'bindings': reflect(key, 'gs', src, res), 'vertex_inputs': [], 'raster': {}}
+         def save(suffix, text, meta):
+             path = os.path.join(out, key + suffix + '.metal'); open(path, 'w').write(text)
+-            MTL.compile('mac', path, os.path.join(out, key + suffix + '.metallib'))
++            mac_compile(path, path[:-6] + '.air', os.path.join(out, key + suffix + '.metallib'))
+             atomic_json(os.path.join(out, key + suffix + '.json'), dict(meta, chain_metal=MAC_RECORD))
+             if IOSOUT:
+                 MTL.compile('ios', path, os.path.join(IOSOUT, key + suffix + '.metallib'))
+@@ -822,23 +832,25 @@ def finish(key, w, j, c1):
+     if j['stage'] == 'vs' and PAIRS.get(key):   # outputs the pixel shader reads but the vertex shader does not write get (0,0,0,1) (see vs_pad)
+         src, pad = vs_pad(key, src)
+         if pad: open(msl, 'w').write(src)
++    res = json.load(open(os.path.join(w, key + '.res.json')))
++    discard = j['stage'] == 'vs' and (any(b['flags'] & 1 for b in res['sbufs']) or any(t['flags'] & 4 for t in res.get('images', ())))
+     lay = None
+     if j['stage'] == 'vs':   # the two depth-convention entry points (see vs_depth); the analysis below uses the source with only main0
+         capture = dmsh_geometry.capture(src)
+         src, full = vs_depth(src)
+         full += capture
++        if discard: full += vs_discard(src)
+         if j.get('tf'): full += vs_tf(src, j['tf'])   # transform feedback capture (see vs_tf)
+         plain = full
+         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
+         open(msl, 'w').write(full)
+     fu = fs_uint(src) if j['stage'] == 'ps' else None   # the integer-output entry point (see fs_uint); the analysis below uses the source with only main0
+     if fu: plain = src; open(msl, 'w').write(fu)
+-    res = json.load(open(os.path.join(w, key + '.res.json')))
+-    try: MTL.compile('mac', msl, lib)   # MSL identical to one compiled before takes that library (dmsh_mtlcache.py)
++    try: mac_compile(msl, msl[:-6] + '.air', lib)   # MSL identical to one compiled before takes that library (dmsh_mtlcache.py)
+     except subprocess.CalledProcessError as e:
+         if not lay and not fu: return 'metal failed', str(e)[:160], None
+         open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
+-        try: MTL.compile('mac', msl, lib)
++        try: mac_compile(msl, msl[:-6] + '.air', lib)
+         except subprocess.CalledProcessError as e: return 'metal failed', str(e)[:160], None
+     clone(msl, os.path.join(out, key + '_b.metal'))
+     if IOSOUT:   # iOS: the same MSL goes through iOS's single compile convention (dm/ios/tools/ios_metal.py) to produce an iphoneos metallib
+@@ -848,6 +860,7 @@ def finish(key, w, j, c1):
+     dr = drv_reads(src)
+     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
+             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
++            **({'entry_discard': 'main0_discard'} if discard else {}),
+             **({'entry_tf': 'main0_tf', 'tf_strides': [e[2] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
+             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}),
+             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
+diff --git a/dm/gfx/tools/own_compilers.py b/dm/gfx/tools/own_compilers.py
+index 41de2c1..7b93195 100644
+--- a/dm/gfx/tools/own_compilers.py
++++ b/dm/gfx/tools/own_compilers.py
+@@ -14,7 +14,10 @@ strict = dmsh_chain.check_tools
+ 
+ def check_tools():
+     bad, own = [], []
+-    for b in strict(): (own if OWN.fullmatch(b) else bad).append(b)
++    for b in strict():
++        if os.environ.get('DM_METAL_RUNTIME') == '1' and b.startswith(('metal_macosx:', 'metal_iphoneos:')):
++            continue   # The MTLDevice runtime compiles MSL; no offline Metal compiler is needed.
++        (own if OWN.fullmatch(b) else bad).append(b)
+     if own and not bad: print('note: built with this Mac\'s compilers, not the ones the shaders were tested with (dmsh_chain.lock): ' +
+                   '; '.join(f'{m[1]} {m[3]} (tested: {m[2]})' for m in map(OWN.fullmatch, own)), flush=True)
+     return bad
+diff --git a/dm/gfx/tools/shader_split.py b/dm/gfx/tools/shader_split.py
+index 01e4232..954d1a7 100644
+--- a/dm/gfx/tools/shader_split.py
++++ b/dm/gfx/tools/shader_split.py
+@@ -474,13 +474,16 @@ def bea_members(d, label):
+     """NintendoWare Bezel Engine archive ('.bea', magic 'SCNE', a NintendoWare binary file of version 0x10100; Big Brain Academy: Brain vs. Brain keeps nearly all of RomFS in 603 of them):
+     +0x20 u64 entry count, +0x28 u64 offset of the entry pointer array (u64 each), each pointing at a 0x30-byte 'ASST' entry {+0x10 u16 kind, u16 alignment shift, u32 stored length,
+     u32 length, +0x20 u64 data offset, +0x28 u64 name offset (u16 length + the path)}. Every entry of the game's 7,665 is one zstd frame (kind 2, and 258 for the one sound project),
+-    even the two whose stored length equals their length, so the frame magic decides. → (path, data) of each entry"""
++    even the two whose stored length equals their length, so the frame magic decides. Jamboree's version stores 0x48-byte ASST records directly at +0x28 instead of a pointer
++    array, with a 12-byte group name and a 32-byte hash before data offset (+0x38) and name offset (+0x40). → (path, data) of each entry"""
+     n, arr = struct.unpack_from('<QQ', d, 0x20)
+     zstd = None
++    inline, entry_size = d[arr:arr + 4] == b'ASST', 0x48
+     for i in range(n):
+-        o = struct.unpack_from('<Q', d, arr + 8 * i)[0]
++        o = arr + entry_size * i if inline else struct.unpack_from('<Q', d, arr + 8 * i)[0]
+         if d[o:o + 4] != b'ASST': red(f'{label}: entry {i} @{o:#x} is not an ASST entry')
+-        csz, usz, off, nm = struct.unpack_from('<II4xQQ', d, o + 0x14)
++        csz, usz = struct.unpack_from('<II', d, o + 0x14)
++        off, nm = struct.unpack_from('<QQ', d, o + (0x38 if inline else 0x20))
+         path = d[nm + 2:nm + 2 + struct.unpack_from('<H', d, nm)[0]].decode('utf-8', 'replace')
+         data = d[off:off + csz]
+         if data[:4] == ZSTD_MAGIC:
+diff --git a/dm/host/dm.h b/dm/host/dm.h
+index 7337ea2..09508cc 100644
+--- a/dm/host/dm.h
++++ b/dm/host/dm.h
+@@ -7,7 +7,7 @@
+ #include <string.h>
+ #include "game_profile.h"   // constants of the current game profile (generated from dm/games/<id>/game.tsv, chosen by the Makefile's GAME)
+ 
+-#define MAX_MOD 128   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98)
++#define MAX_MOD 160   // the profile's modules (up to 8) and the NROs a game loads at run time (Super Smash Bros. Ultimate: 98; Super Mario Party Jamboree: 139)
+ #define LOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
+ #define die(...) do { LOG("FATAL " __VA_ARGS__); abort(); } while (0)
+ 
+diff --git a/dm/host/front_mac.m b/dm/host/front_mac.m
+index 19e5b66..bba5487 100644
+--- a/dm/host/front_mac.m
++++ b/dm/host/front_mac.m
+@@ -2,7 +2,9 @@
+ // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
+ // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN starts it that way. ⌘Q quits; the left mouse button is the touchscreen.
+ // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
+-// Controllers: buttons by position as on the iPhone (right A, bottom B, top X, left Y), shoulders L R, triggers ZL ZR, Menu + Options −, both sticks and their presses.
++// Controllers: Nintendo-named pads use their labels (A right, B bottom, X top, Y left); other pads use positions as on the iPhone. GameController names
++// its face buttons by the Xbox positions (A bottom, B right, X left, Y top), so a Nintendo pad needs A/B and X/Y exchanged to keep its printed labels.
++// can force either mapping or swap A/B, and saves it next to the save directory. Shoulders, triggers, Menu / Options and both sticks are unchanged.
+ // Each controller is a player of its own (local co-op): the first one connected is player 1, together with the keyboard, the next player 2, and so on up to 8 (pad_slots.h);
+ // DM_PAD_MERGE=1 merges every controller into player 1 instead, DM_KBD_PLAYER=own makes the keyboard player 1 on its own, with the controllers from player 2 on.
+ #import <Cocoa/Cocoa.h>
+@@ -112,13 +114,104 @@ static void on_key(NSEvent *e, int down) {
+ static pad_slots g_slots;
+ static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
+ static int g_merge, g_kbd_own;
++enum { DM_FACE_AUTO, DM_FACE_POSITION, DM_FACE_LABEL };
++static int g_face_layout = DM_FACE_AUTO, g_swap_ab, g_start_fullscreen;
++static NSString *g_pad_settings_path;
++static NSMenuItem *g_face_items[3], *g_swap_item, *g_fullscreen_item;
++
++static NSString *pad_settings_path(void) {
++    const char *save = getenv("DM_SAVE");
++    if (!save || !*save) return nil;
++    return [[@(save) stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"controller-layout.txt"];
++}
++
++static void pad_settings_save(void) {
++    if (!g_pad_settings_path) return;
++    static const char *layout[] = {"auto", "position", "label"};
++    NSString *text = [NSString stringWithFormat:@"layout=%s\nswap_ab=%d\nfullscreen=%d\n",
++                                                layout[g_face_layout], !!g_swap_ab, !!g_start_fullscreen];
++    NSError *error = nil;
++    if (![text writeToFile:g_pad_settings_path atomically:YES encoding:NSUTF8StringEncoding error:&error])
++        LOG("front end: could not save controller settings to %s: %s", g_pad_settings_path.fileSystemRepresentation,
++            error.localizedDescription.UTF8String ?: "unknown error");
++}
++
++static void pad_settings_load(void) {
++    g_pad_settings_path = pad_settings_path();
++    g_face_layout = DM_FACE_AUTO;
++    g_swap_ab = 0;
++    g_start_fullscreen = 0;
++    const char *e;
++    NSString *text = g_pad_settings_path ? [NSString stringWithContentsOfFile:g_pad_settings_path encoding:NSUTF8StringEncoding error:nil] : nil;
++    for (NSString *raw in [text componentsSeparatedByString:@"\n"]) {
++        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
++        NSArray<NSString *> *pair = [line componentsSeparatedByString:@"="];
++        if (pair.count != 2) continue;
++        NSString *key = [pair[0] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++        NSString *value = [pair[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
++        if ([key isEqualToString:@"layout"]) {
++            if ([value isEqualToString:@"position"]) g_face_layout = DM_FACE_POSITION;
++            else if ([value isEqualToString:@"label"]) g_face_layout = DM_FACE_LABEL;
++        } else if ([key isEqualToString:@"swap_ab"]) g_swap_ab = value.intValue != 0;
++        else if ([key isEqualToString:@"fullscreen"]) g_start_fullscreen = value.intValue != 0;
++    }
++    e = getenv("DM_PAD_LAYOUT");
++    if (e && !strcmp(e, "auto")) g_face_layout = DM_FACE_AUTO;
++    else if (e && !strcmp(e, "position")) g_face_layout = DM_FACE_POSITION;
++    else if (e && !strcmp(e, "label")) g_face_layout = DM_FACE_LABEL;
++    e = getenv("DM_PAD_SWAP_AB");
++    if (e) g_swap_ab = atoi(e) != 0;
++    e = getenv("DM_FULLSCREEN");
++    if (e) g_start_fullscreen = atoi(e) != 0;
++    static const char *layout[] = {"auto", "position", "label"};
++    LOG("front end: controller face buttons %s%s%s", layout[g_face_layout], g_swap_ab ? ", A/B swapped" : "",
++        g_pad_settings_path ? "" : " (no DM_SAVE: settings are not kept)");
++}
++
++static int pad_names_nintendo(NSString *text) {
++    if (!text) return 0;
++    NSString *lower = text.lowercaseString;
++    for (NSString *word in @[@"nintendo", @"switch", @"joy-con", @"joycon", @"pro controller"])
++        if ([lower containsString:word]) return 1;
++    return 0;
++}
++
++static int pad_face_swap_abxy(GCController *controller) {
++    int nintendo = pad_names_nintendo(controller.vendorName) || pad_names_nintendo(controller.productCategory);
++    if (g_face_layout == DM_FACE_LABEL) return 1;
++    if (g_face_layout == DM_FACE_POSITION) return 0;   // GameController's native face-button positions are the Xbox / PlayStation layout
++    return nintendo;
++}
++
++static uint64_t pad_face_buttons(GCExtendedGamepad *g, int swap_abxy) {
++    uint64_t m = swap_abxy
++        ? (g.buttonA.isPressed ? DM_BTN_B : 0) | (g.buttonB.isPressed ? DM_BTN_A : 0) |
++          (g.buttonX.isPressed ? DM_BTN_Y : 0) | (g.buttonY.isPressed ? DM_BTN_X : 0)  // Nintendo printed labels (A right, B bottom, X top, Y left)
++        : (g.buttonA.isPressed ? DM_BTN_A : 0) | (g.buttonB.isPressed ? DM_BTN_B : 0) |
++          (g.buttonX.isPressed ? DM_BTN_X : 0) | (g.buttonY.isPressed ? DM_BTN_Y : 0); // Xbox / PlayStation printed positions
++    if (g_swap_ab) {
++        uint64_t a = m & DM_BTN_A, b = m & DM_BTN_B;
++        m &= ~(DM_BTN_A | DM_BTN_B);
++        m |= (a ? DM_BTN_B : 0) | (b ? DM_BTN_A : 0);
++    }
++    return m;
++}
++
++static void pad_read(GCExtendedGamepad *g);
++static void pad_apply_settings(void) {
++    for (GCController *controller in GCController.controllers)
++        if (controller.extendedGamepad) pad_read(controller.extendedGamepad);
++    for (int i = 0; i < 3; i++) if (g_face_items[i]) g_face_items[i].state = g_face_layout == i;
++    if (g_swap_item) g_swap_item.state = g_swap_ab;
++    if (g_fullscreen_item) g_fullscreen_item.state = g_start_fullscreen;
++}
++
+ static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
+ static void pad_read(GCExtendedGamepad *g) {
+     int p = g_merge ? 0 : pad_slot_of(&g_slots, (__bridge const void *)g.controller); if (p < 0) return;
+     dm_haptics_apple_controller(p, g.controller);
+-    uint64_t m = 0;
++    uint64_t m = pad_face_buttons(g, pad_face_swap_abxy(g.controller));
+     #define K(btn, bit) if (btn.isPressed) m |= bit
+-    K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
+     K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
+     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
+     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
+@@ -151,7 +244,8 @@ static void pads_changed(GCController *gone) {
+         if (p < 0) { LOG("controller '%s' connected: all %d players are taken, not used", pad_name(c), DM_PLAYERS); continue; }
+         g_held[p] = c;
+         c.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *g, GCControllerElement *el) { (void)el; pad_read(g); };
+-        npad_name(p, nb, sizeof nb); LOG("controller '%s' connected: player %d (npad %s)", pad_name(c), p + 1, nb);
++        npad_name(p, nb, sizeof nb); LOG("controller '%s' connected: player %d (npad %s), face buttons by %s", pad_name(c), p + 1, nb,
++                                         pad_face_swap_abxy(c) ? "Nintendo labels" : "Xbox / PlayStation positions");
+         pad_read(c.extendedGamepad);
+     }
+     dm_pad_players(pad_slot_mask(&g_slots));
+@@ -193,6 +287,69 @@ - (void)setFrameSize:(NSSize)s { [super setFrameSize:s]; [self fitDrawable]; }
+ - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self fitDrawable]; }
+ @end
+ 
++@interface DmSettingsMenu : NSObject
++- (void)chooseFaceLayout:(NSMenuItem *)item;
++- (void)toggleSwapAB:(NSMenuItem *)item;
++- (void)resetController:(id)sender;
++- (void)toggleStartFullscreen:(NSMenuItem *)item;
++@end
++
++@implementation DmSettingsMenu
++- (void)chooseFaceLayout:(NSMenuItem *)item {
++    g_face_layout = (int)item.tag;
++    pad_settings_save();
++    pad_apply_settings();
++    static const char *layout[] = {"auto", "position", "label"};
++    LOG("front end: controller face buttons %s%s", layout[g_face_layout], g_swap_ab ? ", A/B swapped" : "");
++}
++- (void)toggleSwapAB:(NSMenuItem *)item {
++    (void)item;
++    g_swap_ab = !g_swap_ab;
++    pad_settings_save();
++    pad_apply_settings();
++    LOG("front end: controller A/B %s", g_swap_ab ? "swapped" : "normal");
++}
++- (void)resetController:(id)sender {
++    (void)sender;
++    g_face_layout = DM_FACE_AUTO;
++    g_swap_ab = 0;
++    pad_settings_save();
++    pad_apply_settings();
++    LOG("front end: controller settings reset to auto, A/B normal");
++}
++- (void)toggleStartFullscreen:(NSMenuItem *)item {
++    (void)item;
++    g_start_fullscreen = !g_start_fullscreen;
++    pad_settings_save();
++    pad_apply_settings();
++    LOG("front end: start in full screen %s", g_start_fullscreen ? "on" : "off");
++}
++@end
++
++static DmSettingsMenu *g_settings_menu_target;
++static void install_controller_menu(NSMenu *bar) {
++    g_settings_menu_target = [DmSettingsMenu new];
++    NSMenu *controller = [[NSMenu alloc] initWithTitle:@"控制器"];
++    const char *titles[] = {"自动（推荐）", "按位置（Xbox / PlayStation）", "按标签（Nintendo）"};
++    for (int i = 0; i < 3; i++) {
++        NSMenuItem *item = [controller addItemWithTitle:@(titles[i]) action:@selector(chooseFaceLayout:) keyEquivalent:@""];
++        item.target = g_settings_menu_target;
++        item.tag = i;
++        g_face_items[i] = item;
++    }
++    [controller addItem:NSMenuItem.separatorItem];
++    g_swap_item = [controller addItemWithTitle:@"交换 A / B" action:@selector(toggleSwapAB:) keyEquivalent:@""];
++    g_swap_item.target = g_settings_menu_target;
++    [controller addItemWithTitle:@"恢复控制器默认设置" action:@selector(resetController:) keyEquivalent:@""].target = g_settings_menu_target;
++    [[bar addItemWithTitle:@"控制器" action:nil keyEquivalent:@""] setSubmenu:controller];
++
++    NSMenu *view = [[NSMenu alloc] initWithTitle:@"显示"];
++    g_fullscreen_item = [view addItemWithTitle:@"下次启动时全屏" action:@selector(toggleStartFullscreen:) keyEquivalent:@""];
++    g_fullscreen_item.target = g_settings_menu_target;
++    [[bar addItemWithTitle:@"显示" action:nil keyEquivalent:@""] setSubmenu:view];
++    pad_apply_settings();
++}
++
+ typedef struct { void (*fn)(void); } guest_arg;
+ static void *guest_tramp(void *p) {
+     static char alt[65536];                       // The signal alternate stack is per thread; crash printing must also work on the guest thread
+@@ -230,14 +387,16 @@ void front_run(void (*guest)(void)) {
+         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
+         g_win = win;
+         [NSApp activateIgnoringOtherApps:YES];
++        pad_settings_load();
+         // Main menu: AppKit runs ⌘ shortcuts only through menu items, so ⌘Q quits and ⌃⌘F toggles fullscreen from here (AppKit shows the item as Globe-F and keeps ⌃⌘F as a hidden twin)
+         NSMenu *bar = [NSMenu new], *app = [NSMenu new], *wm = [[NSMenu alloc] initWithTitle:@"Window"];
+         [[bar addItemWithTitle:@"" action:nil keyEquivalent:@""] setSubmenu:app];
+         [app addItemWithTitle:@"Quit " DM_GAME_NAME action:@selector(terminate:) keyEquivalent:@"q"];
++        install_controller_menu(bar);
+         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
+         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+         NSApp.mainMenu = bar;
+-        if (getenv("DM_FULLSCREEN")) dispatch_async(dispatch_get_main_queue(), ^{ [win toggleFullScreen:nil]; });   // start in fullscreen
++        if (g_start_fullscreen) dispatch_async(dispatch_get_main_queue(), ^{ [win toggleFullScreen:nil]; });
+         for (NSNotificationName nm in @[GCControllerDidConnectNotification, GCControllerDidDisconnectNotification])
+             [NSNotificationCenter.defaultCenter addObserverForName:nm object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+                 GCController *c = n.object; int conn = n.name == GCControllerDidConnectNotification;
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index eaa8117..45c2faf 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -240,6 +240,9 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
+     if (s->rx > STICK_THRESH) b |= 1u << 22;
+     if (s->ry < -STICK_THRESH) b |= 1u << 23;
+     s->buttons = b;
++    { static int log_on = -1; static uint64_t last; if (log_on < 0) log_on = getenv("DM_HID_LOG") != NULL;
++      if (log_on && b != last) LOG("hid state npad %#x style %#x buttons %#llx sticks %d,%d,%d,%d", id, style, (unsigned long long)b, a[0], a[1], a[2], a[3]);
++      last = b; }
+     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
+ }
+ // GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the
+diff --git a/dm/host/hle_movie.c b/dm/host/hle_movie.c
+index 1b1abe7..12b268e 100644
+--- a/dm/host/hle_movie.c
++++ b/dm/host/hle_movie.c
+@@ -5,6 +5,7 @@
+ #include <arm_neon.h>
+ #include <mach/mach.h>
+ #include <pthread.h>
++#include <stdatomic.h>
+ #include <unistd.h>
+ #include "vpx/vpx_decoder.h"
+ #include "vpx/vp8dx.h"
+@@ -113,6 +114,16 @@ static void md_syms(void) {
+     G.signal = msym("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
+ }
+ static mdec_t *md_of(void **self) { return self ? (mdec_t *)self[1] : NULL; }
++static _Atomic int g_video_eos;
++HLE_FORCE("_ZN2nn5bezel5Movie19IsPlaybackCompletedEv", "movie playback completion: also recognise the native-texture decoder's final EOS frame", int, h_movie_IsPlaybackCompleted, void *self) {
++    uint64_t impl = 0; int state = 0; vm_size_t got = 0;
++    if (!self || vm_read_overwrite(mach_task_self(), (vm_address_t)((uintptr_t)self + 0xb8), sizeof impl, (vm_address_t)&impl, &got) || got != sizeof impl || !impl ||
++        vm_read_overwrite(mach_task_self(), (vm_address_t)(impl + 8), sizeof state, (vm_address_t)&state, &got) || got != sizeof state) return 0;
++    if (state == 9) return 1;
++    // Jamboree 2.3.0's MoviePlayerThread does not wake for the decoder's final client event on the host. The final native-texture frame already proves that playback reached
++    // the end of the demuxed stream, so let UpdateCut00 leave its completion wait without changing the path for other games sharing this HLE.
++    return !strcmp(dm_main_build(), "d70ce1726c979e45ed4200e9c2b23b2a") && atomic_load(&g_video_eos);
++}
+ // An EventType pointer that can be signalled: 8-byte aligned and readable (vm_read_overwrite fails instead of faulting)
+ static int ev_ok(const void *p) {
+     uint64_t w; vm_size_t got = 0; uintptr_t a = (uintptr_t)p;
+@@ -467,6 +478,7 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
+     static void *vt; if (!vt) { uint8_t *t = guest_sym("_ZTVN5movie7DecoderE"); if (!t) die("movie: missing the vtable of movie::Decoder"); vt = t + 0x10; }
+     md_syms();
+     self[0] = vt; self[1] = NULL;
++    if (type >= 1 && type <= 3) atomic_store(&g_video_eos, 0);
+     // Only video (AVC / VP8 / VP9 = 1..3): NV12 output (Engage's Unity, CPU buffers), or RGBA output into the client's NVN texture (mode 2: Metroid Dread's VP9, Monster Hunter Rise's AVC);
+     // anything else (audio) keeps a null impl and every method returns the SDK's failure code. VP9 is decoded with libvpx, AVC with VideoToolbox (hle_movie_avc.c); VP8 gives black frames
+     // Audio: Vorbis to PCM16 (Link's Awakening's movies carry a Vorbis track; without a decoder the SDK's player plays them silent), AAC to PCM16 with AudioToolbox (Monster Hunter Rise)
+@@ -722,6 +734,16 @@ static int md_out_tex(mdec_t *d, int i, void *buf) {
+     if (d->out[i].pic && d->out[i].frm) nvn_host_write_texture(tex, d->out[i].frm, w, h, (size_t)d->w * 4, NULL, NULL);
+     void *sy = G.nvn_sync ? G.nvn_sync(buf) : NULL; if (sy && nvn_host_signal_sync(sy) && !d->red_dec++) LOG("[RED] movie: the buffer's sync object %p is not an NVNsync", sy);
+     MD_TRACE(d, 12, "GetOutputBuffer index %d → texture %p (%d×%d format %#x)%s", i, tex, tw, th, f, d->out[i].pic ? "" : " (no picture: the texture keeps its last frame)");
++    if (d->out[i].flags & 4) atomic_store(&g_video_eos, 1);
++    // DecoderImpl::GetOutputBuffer's mode-2 path calls CopyOutputBufferToClientTextureAndRelease, so GetOutputBuffer itself releases the output index. The client does not call
++    // ReleaseOutputBufferIndex afterwards. Leaving the slot used here stopped Jamboree after its first 16 decoded frames: every slot stayed occupied, no more packets decoded, and
++    // Movie::IsPlaybackCompleted never saw the end of the opening video.
++    pthread_mutex_lock(&d->mu);
++    d->out[i].used = 0;
++    d->out[i].pic = 0;
++    int queued = d->npend;
++    pthread_mutex_unlock(&d->mu);
++    if (queued) md_pump(d);
+     return 0;
+ }
+ HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "movie decoder: get a frame", int, h_movie_GetOut, void **self, int i, void *buf) {
+diff --git a/dm/tools/patch_nso.py b/dm/tools/patch_nso.py
+index 00456bc..c354d14 100644
+--- a/dm/tools/patch_nso.py
++++ b/dm/tools/patch_nso.py
+@@ -67,6 +67,8 @@ else:
+ #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
+ #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+ PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
++for games_dir in filter(None, os.environ.get('DM_GAMES_DIR', '').split(os.pathsep)):   # provisional / derived profiles outside the repository
++    PATCH_FILES += sorted(glob.glob(os.path.join(games_dir, '*/patches.py')))
+ def load_patches():
+     tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
+     for n, path in enumerate(PATCH_FILES):
+diff --git a/dm/tools/sdk_patches.py b/dm/tools/sdk_patches.py
+index ae55271..80e24b5 100644
+--- a/dm/tools/sdk_patches.py
++++ b/dm/tools/sdk_patches.py
+@@ -1,6 +1,13 @@
+ # The rewriter's patches of Nintendo SDK module builds (sdk), which several games can ship: dm/tools/patch_nso.py applies those of a module's NSO build ID, whatever the game.
+ # A patch of a game's own module (main) goes in its profile's patches.py (dm/games/<id>/patches.py). CUTS as described in patch_nso.py ("Registered patches")
+ CUTS = {
++  # Super Mario Party Jamboree 2.3.0 (v458752) sdk (SDK 17.5.9): the same node area cut as Ace Attorney Investigations Collection's SDK 17.5.3 build. Without
++  # it, the Bezel engine's nninitStartup StandardAllocator (main+0x982968) aborts at its first CentralHeap::Init: the region did not fit after the ~1 GB node
++  # area in the 4.375 GB alias region. The constructor and both mov immediates are at the same offsets as that SDK build.
++  'fcd139127b9c99988c2613230db18e26': [
++    (0x139468, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 -> mov w8,#0x3e00000'),
++    (0x1394fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 -> mov w9,#0x3e00000'),
++  ],
+   # Fire Emblem Engage 2.0.0 (v327680) sdk: AddressRegionManager node area 0x3fe00000 (about 1 GB) → 0x3e00000 (62 MB).
+   # The constructor (sdk+0x346420) carves the node area out of the start of the alias region (a unit heap of 0x30-byte nodes, mapped only as used) before AllocateAddressRegion hands out regions.
+   # The hardware alias region is 64 GB, so the 1 GB does not matter there; the host's alias region is only 5.375 GB (iOS caps a single reservation at 6 GB), and after StandardAllocator's 3.14 GB block (1 GB aligned)
+diff --git a/scripts/build_ipa_from_nsp.py b/scripts/build_ipa_from_nsp.py
+index d9c383c..e532460 100755
+--- a/scripts/build_ipa_from_nsp.py
++++ b/scripts/build_ipa_from_nsp.py
+@@ -774,11 +774,13 @@ def build_mismatch(d, name, g):   # the modules of an extraction whose build ID
+     return [f'{m} {build_id(d / "ExeFS" / m)} (registered {bid})' for m, bid in want.items() if m != 'display' and build_id(d / 'ExeFS' / m) != bid]
+ 
+ 
+-def patch_files(repo, exe_dir, mods):
+-    """The patch files that name one of the modules' builds (dm/tools/sdk_patches.py, dm/games/*/patches.py): patch_nso.py loads them all but applies only those of a module's
+-    build ID, so another game's patches do not change this game's rewrite"""
++def patch_files(repo, exe_dir, mods, profile_dir=None):
++    """The patch files that name one of the modules' builds (dm/tools/sdk_patches.py, dm/games/*/patches.py, and a provisional / derived profile outside the repository):
++    patch_nso.py loads them all but applies only those of a module's build ID, so another game's patches do not change this game's rewrite"""
+     ids = {build_id(exe_dir / m) for m in mods}
+-    return [p for p in [repo / 'dm/tools/sdk_patches.py'] + sorted((repo / 'dm/games').glob('*/patches.py')) if any(i in p.read_text(errors='replace') for i in ids)]
++    own = profile_dir / 'patches.py' if profile_dir else None
++    candidates = [repo / 'dm/tools/sdk_patches.py'] + sorted((repo / 'dm/games').glob('*/patches.py')) + ([own] if own and own.is_file() else [])
++    return [p for p in candidates if any(i in p.read_text(errors='replace') for i in ids)]
+ 
+ 
+ def collect_nros(py, repo, romfs, dst, env, logs):
+@@ -813,7 +815,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
+     src = {m: exe_dir / m for m in mods} | nros
+     names = list(src)
+     kf = out.with_name(out.name + '.key')
+-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
++    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods, getattr(g, 'dir', None)) + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+                       {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
+     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
+         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return
+@@ -1439,7 +1441,7 @@ def mac_run(py, repo, work, game, patched, msl, aoc, gfx, lang, env, logs, g, en
+     renv = {'DM_ROOT': work, 'DM_ROMFS': game / 'RomFS', 'DM_SAVE': rd / 'save', 'DM_TEMP': rd / 'temp', 'DM_MSL_DIR': msl, 'DM_FONT_DIR': font}
+     if aoc: renv['DM_AOC_DIR'] = aoc
+     if gfx == 'nvn': renv['DM_NVN_SHMAP'] = g.table('shader_map.tsv')
+-    renv.update(DM_LANG=lang, DM_WINDOW=1, DM_AUDIO=1)
++    renv.update(DM_LANG=lang, DM_WINDOW=1, DM_AUDIO=1, DM_METAL_RUNTIME=1)
+     if env_file: renv.update(env_file_pairs(env_file))
+     PROG.end(str(host))
+     q = lambda v: shlex.quote(str(v))
