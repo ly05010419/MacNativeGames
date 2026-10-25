@@ -1,4 +1,4 @@
-"""Exercise the actual Mac shortcut panel without game data or GPU work."""
+"""Exercise the actual Mac settings panel (key 1) without game data or GPU work."""
 from pathlib import Path
 import os
 import platform
@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'AppKit requires macOS')
-class ShortcutStatus(unittest.TestCase):
+class SettingsPanel(unittest.TestCase):
     def test_current_modes_and_refresh(self):
         compiler = shutil.which('clang')
         if not compiler:
@@ -23,12 +23,12 @@ class ShortcutStatus(unittest.TestCase):
         gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
         with tempfile.TemporaryDirectory() as directory:
             for version in ('', 'TOTK_GAME_V143'):
-                executable = Path(directory) / ('shortcut-status-' + (version or 'base'))
+                executable = Path(directory) / ('settings-panel-' + (version or 'base'))
                 command = [compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra',
                            '-Werror', '-Wno-deprecated-declarations', '-I' + str(gfx / 'include'),
                            '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
-                           str(ROOT / 'tests/shortcut_status_probe.m'),
-                           str(ROOT / 'tests/shortcut_output_fixture.c'),
+                           str(ROOT / 'tests/settings_panel_probe.m'),
+                           str(ROOT / 'tests/settings_output_fixture.c'),
                            str(gfx / 'totk_mfx.m'), str(gfx / 'totk_mfx_up.m'), str(gfx / 'totk_taa.m'),
                            str(gfx / 'fps_overlay.c'),
                            '-framework', 'Cocoa', '-framework', 'Metal',
@@ -49,4 +49,4 @@ class ShortcutStatus(unittest.TestCase):
                             run = subprocess.run([str(executable)], env=env,
                                                  capture_output=True, text=True, timeout=35)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-                            self.assertIn('pass: current modes', run.stdout)
+                            self.assertIn('pass: settings panel', run.stdout)

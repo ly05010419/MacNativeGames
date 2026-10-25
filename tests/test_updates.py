@@ -328,7 +328,9 @@ class Updates(unittest.TestCase):
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'new app')
         checks=[]
-        def processes(*_args,**_kwargs):
+        def processes(args,*_args,**_kwargs):
+            if args[0]=='git':   # build_app.source_commit: the commit the app records (MNGSourceCommit)
+                return SimpleNamespace(returncode=0,stdout='abc1234\n')
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')

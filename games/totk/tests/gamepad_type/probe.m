@@ -28,18 +28,19 @@ int main(int argc, char **argv) { @autoreleasepool {
     unsetenv("TOTK_CONTROLS");
     int detected = 7;
     check(runtime_gamepad_type(&detected) == GAMEPAD_TYPE_AUTO && detected == -1, "starts at auto; no controller: detected -1");
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_XBOX && access(saved, F_OK) != 0, "without TOTK_CONTROLS nothing is saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && access(saved, F_OK) != 0, "without TOTK_CONTROLS nothing is saved");
 
     setenv("TOTK_CONTROLS", controls, 1);
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO);
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_XBOX && file_says(saved, "xbox\n"), "key 6: Xbox, saved");
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_PLAYSTATION && file_says(saved, "playstation\n"), "key 6: PlayStation, saved");
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_SWITCH && file_says(saved, "switch\n"), "key 6: Switch, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && file_says(saved, "xbox\n"), "settings: Xbox, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_PLAYSTATION) == GAMEPAD_TYPE_PLAYSTATION && file_says(saved, "playstation\n"), "settings: PlayStation, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_SWITCH) == GAMEPAD_TYPE_SWITCH && file_says(saved, "switch\n"), "settings: Switch, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_COUNT) == GAMEPAD_TYPE_SWITCH && runtime_gamepad_type_set(-1) == GAMEPAD_TYPE_SWITCH, "not a type: unchanged");
     check(access(saved, F_OK) == 0 && runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the type holds");
 
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO); load_controller_type();
     check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the next start reads the saved type");
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_AUTO && file_says(saved, "auto\n"), "key 6 back to auto, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_AUTO) == GAMEPAD_TYPE_AUTO && file_says(saved, "auto\n"), "settings back to auto, saved");
 
     write_text(saved, "dualsense\n");
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO); load_controller_type();
@@ -48,7 +49,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_AUTO, "no file: auto");
 
     setenv("TOTK_CONTROLS", "/nonexistent-folder-for-probe/controls.txt", 1);
-    check(runtime_gamepad_type_cycle() == GAMEPAD_TYPE_XBOX, "a folder that cannot be written: the type still changes for this run");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX, "a folder that cannot be written: the type still changes for this run");
 
     printf("{\"status\":\"%s\",\"probe\":\"gamepad-type\",\"checked\":%d,\"failures\":%d}\n", failures ? "fail" : "pass", checked, failures);
     return failures != 0;

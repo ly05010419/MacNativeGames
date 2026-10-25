@@ -5,7 +5,7 @@
 // MFXUP_SCENE does with the spatial scaler).
 //  - Jitter: every frame the geometry drawn into the G-buffer depth has its viewport moved by a sub-pixel offset
 //    (Halton 2, 3; no shader changes; full-screen triangles and quads stay put). MetalFX gets the same offset.
-//  - Key 5 turns it on and off while playing (runtime/input.c); TOTK_TAA=1 starts it on.
+//  - The settings panel (key 1, runtime/frontend.m) turns it on and off while playing; TOTK_TAA=1 starts it on.
 //  - Motion vectors: from the camera only, as for frame interpolation (totk_mfx.m): the G-buffer depth reprojected with
 //    this and the previous frame's view-projection. What moves on its own (Link, enemies) gets the camera's motion;
 //    MetalFX rejects what does not match, at the cost of less smoothing there. The game keeps no motion vectors of its
@@ -29,7 +29,7 @@
 int taa_enabled(void) { return 0; }
 int taa_active(void) { return 0; }
 int taa_ready(void) { return 0; }
-void taa_toggle(void) {}
+void taa_set(int on) { (void)on; }
 int taa_pass(MTL4RenderPassDescriptor *pd) { (void)pd; return 0; }
 int taa_jittered(void) { return 0; }
 void taa_jitter(double *x, double *y) { *x = 0; *y = 0; }
@@ -86,12 +86,14 @@ int taa_enabled(void) {
     }
     return on;
 }
-/* Key 5: on / off while playing (the input thread). The replay takes it at the next frame end, so a frame is either
-   jittered in every pass on the G-buffer depth or in none (foliage drawn twice with an equal depth test needs both alike). */
-void taa_toggle(void) {
-    int on = !taa_enabled();
+/* The settings panel: on / off while playing (the main thread). The replay takes it at the next frame end, so a frame is
+   either jittered in every pass on the G-buffer depth or in none (foliage drawn twice with an equal depth test needs both
+   alike). */
+void taa_set(int on) {
+    on = !!on;
+    if (on == taa_enabled()) return;
     atomic_store(&g_on, on);
-    TLOG("key 5: temporal anti-aliasing %s", on ? "on" : "off");
+    TLOG("settings: temporal anti-aliasing %s", on ? "on" : "off");
 }
 int taa_active(void) { return g.active; }
 int taa_ready(void) { return g.active && !g.failed && g.frame >= g.retry_at && g.depth && g.cam_ok; }

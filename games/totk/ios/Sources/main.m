@@ -69,8 +69,8 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
     return nil;
 }
 static void *run_host(void *unused) { (void)unused; return (void *)(intptr_t)totk_host_main(3, host_argv); }
-/* The desktop keyboard-overlay shortcut has no counterpart on iOS. */
-void runtime_shortcut_help_toggle(void) {}
+/* Key 1's settings panel is Mac only (runtime/frontend.m). */
+void runtime_settings_toggle(void) {}
 
 @interface TOTKMetalView : UIView @end
 @implementation TOTKMetalView

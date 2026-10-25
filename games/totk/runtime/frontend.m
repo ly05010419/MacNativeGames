@@ -10,23 +10,26 @@
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
-int mfxup_output_enabled(void);
+#include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
-static NSView *shortcutHelp;
-/* Mouse mode (key 7, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the pointer --
-   moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and movement to
-   gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text entry and when
-   mouse mode goes off (front_mouse_update). */
+static NSView *hudBox;   /* the FPS / shader / load box (TOTKHudBox), nil with TOTK_HUD=corners */
+/* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
+static int settingsOpen;
+static void settings_show(int open);
+/* Mouse mode (the settings panel, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the
+   pointer -- moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and
+   movement to gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text
+   entry, while the settings panel is open and when mouse mode goes off (front_mouse_update). */
 static BOOL mouseHeld;
 static int textEntryOpen;
 static void front_mouse_update(void);
-int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: key 5 */
-int taa_effective(void);   /* a frame has been anti-aliased */
+int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: edge smoothing in the settings panel */
+void taa_set(int on);
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
@@ -114,9 +117,12 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
--(void)keyDown:(NSEvent *)e{runtime_input_key(e.keyCode,1);}
+/* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
+   menu) do anything; releases still go through so nothing stays held. */
+-(void)keyDown:(NSEvent *)e{if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
--(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
+-(void)flagsChanged:(NSEvent *)e{int shift=!!(e.modifierFlags&NSEventModifierFlagShift),option=!!(e.modifierFlags&NSEventModifierFlagOption);
+ if(e.keyCode==56&&(!settingsOpen||!shift))runtime_input_key(56,shift);if(e.keyCode==58&&(!settingsOpen||!option))runtime_input_key(58,option);}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
@@ -153,7 +159,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 }
 @end
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
- BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen;
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen;
  if(want==mouseHeld)return;
  mouseHeld=want;
  if(want){
@@ -164,9 +170,9 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
   CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];runtime_mouse_release();
   window.acceptsMouseMovedEvents=((TOTKInputView *)window.contentView).cursorAutoHideActive;
  }
- fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (key 7, or Command-Tab, lets it go)":"let go");
+ fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
 }
-@interface TOTKShortcutHelp:NSView
+@interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
 @property NSSize textSize;
@@ -174,67 +180,36 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
 -(void)refresh;
 @end
 /* Compact HUD (default): one small box in the window's top-right corner with the FPS, shader and load lines (published by
-   gfx/nvn/fps_overlay.c, refreshed twice a second) above the shortcuts. TOTK_HUD=corners: the lines stay in the picture's
-   corners and this is the larger centred shortcut box. */
-@implementation TOTKShortcutHelp
-/* Key 6 (runtime/gamepad.m): the controller type; auto says what it takes the connected controller for. */
-static NSString *pad_type_text(void){
- static const char *const names[GAMEPAD_TYPE_COUNT]={NULL,"Xbox","PlayStation","Switch"};
- int detected=-1,type=runtime_gamepad_type(&detected);
- if(type>GAMEPAD_TYPE_AUTO&&type<GAMEPAD_TYPE_COUNT)return @(names[type]);
- if(detected>GAMEPAD_TYPE_AUTO&&detected<GAMEPAD_TYPE_COUNT)return [NSString stringWithFormat:@(TOTK_UI("自动（%s）","auto (%s)")),names[detected]];
- return @(TOTK_UI("自动（未接手柄）","auto (no controller)"));
-}
-static NSString *shortcut_text(void){
- const char *interp;
- switch(mfx_enabled()){
-  case MFX_30:interp="30+30";break;
-  case MFX_HALF:interp=TOTK_UI("刷新率一半","half refresh rate");break;
-  case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
-  default:interp=TOTK_UI("关闭","off");break;
- }
- uint64_t size=runtime_output_size_current();unsigned w=(uint32_t)size,h=(uint32_t)(size>>32);
- NSString *picture;
- if(mfxup_output_enabled())picture=@"MetalFX 2K";
- else if(w==2560&&h==1440)picture=@(TOTK_UI("原生 2K","native 2K"));
- else if(w!=1920||h!=1080)picture=[NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","native %u×%u")),w,h];
- else picture=@(TOTK_UI("关闭","off"));
- /* key 4 (runtime/aspect_patch.h): 16:9 -> fit to the window -> 21:9 (or TOTK_ASPECT's ratio) */
- int step=runtime_aspect_step();float ar=runtime_aspect_now();
- NSString *ratio=!ar?@"16:9":fabsf(ar*9-21)<0.05f?@"21:9":[NSString stringWithFormat:@"%.2f:1",ar];
- NSString *shape=step==1?[NSString stringWithFormat:@(TOTK_UI("适配窗口 %@","fit to window %@")),ratio]:step==2?ratio:@"16:9";
- if(step<0)shape=@(TOTK_UI("本游戏暂不支持","not available in this game"));   /* runtime_aspect_step -1: this game version has no aspect sites */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）\n3  画质：当前 %@（按键切换）\n4  画面比例：当前 %@（按键切换）\n5  边缘平滑（MetalFX 时间性）：%@\n6  手柄类型：当前 %@（按键切换）\n7  鼠标操作：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)\n3  Picture: %@ (current; press to cycle)\n4  Aspect ratio: %@ (current; press to cycle)\n5  Edge smoothing (MetalFX Temporal): %@\n6  Controller type: %@ (current; press to cycle)\n7  Mouse: %@ (current; press to switch)")),[NSString stringWithUTF8String:interp],picture,shape,
-  taa_enabled()?(taa_effective()?@(TOTK_UI("开","on")):@(TOTK_UI("开（未生效）","on (not in effect)"))):@(TOTK_UI("关","off")),pad_type_text(),
-  runtime_mouse_enabled()?@(TOTK_UI("开（视角、按键，⌘Tab 释放指针）","on (camera, buttons; Command-Tab frees the pointer)")):@(TOTK_UI("关","off"))];
-}
--(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
- self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
- if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;}
- [self refresh];__weak TOTKShortcutHelp *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}return self;}
+   gfx/nvn/fps_overlay.c, refreshed twice a second); the settings panel's overlay row picks all, FPS only or none.
+   TOTK_HUD=corners: the lines stay in the picture's corners and there is no box. */
+@implementation TOTKHudBox
+-(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.72].CGColor;self.layer.cornerRadius=7;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor;
+ self.label=[NSTextField labelWithString:@""];self.label.alignment=NSTextAlignmentLeft;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByClipping;[self addSubview:self.label];
+ [self refresh];__weak TOTKHudBox *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}return self;}
 -(void)refresh{
- if(!hud_compact()){self.label.stringValue=shortcut_text();return;}
- NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium],*small=[NSFont systemFontOfSize:10];
+ self.hidden=fps_overlay_hud_mode()==HUD_MODE_OFF;if(self.hidden)return;
+ NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium];
  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
  NSMutableAttributedString *a=[NSMutableAttributedString new];
- int full=fps_overlay_full_hud();   // key 1 minimal: the FPS line (line 0) only; the others keep their last text, so skip them
+ int full=fps_overlay_full_hud();   // FPS only: the FPS line (line 0); the others keep their last text, so skip them
  for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
- if(!full){if(a.length)[a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the single FPS line
-  else [a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];}
- else if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
-  [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1],NSParagraphStyleAttributeName:gap}]];}
- else [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1]}]];
+ if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+ /* The commit the app was built from (user 2026-10-25), last and grey: TOTK_SOURCE_COMMIT from the launcher. */
+ const char *commit=getenv("TOTK_SOURCE_COMMIT");
+ if(commit&&*commit)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@(TOTK_UI("版本 %s\n","build %s\n")),commit]
+  attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.6 alpha:1]}]];
+ [a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the last one
  if([a isEqualToAttributedString:self.label.attributedStringValue])return;
  self.label.attributedStringValue=a;NSSize z=[self.label sizeThatFits:NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX)];self.textSize=NSMakeSize(ceil(z.width),ceil(z.height));[self position];}
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 -(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self position];}
 -(void)layout{[super layout];[self position];}
--(void)position{if(!self.superview)return;NSRect f,in;
- if(hud_compact()){CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);in=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
- else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=240;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
- if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
+-(void)position{if(!self.superview)return;
+ CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;NSRect f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);
+ if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
 @end
+#include "settings_panel.h"
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -248,6 +223,8 @@ static void front_menubar_fps_add(NSMenu *bar){   // from front_install_menu
  fpsMenu=[[NSMenu alloc] initWithTitle:@"FPS --"];
  NSMenuItem *about=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("实时帧率（TOTK_MENUBAR_FPS=0 可隐藏）","Live frame rate (TOTK_MENUBAR_FPS=0 hides it)")) action:nil keyEquivalent:@""];
  about.enabled=NO;[fpsMenu addItem:about];fpsMenu.autoenablesItems=NO;
+ const char *commit=getenv("TOTK_SOURCE_COMMIT");   /* the commit the app was built from (build_app.py, the launcher) */
+ if(commit&&*commit){NSMenuItem *build=[[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@(TOTK_UI("版本 %s","Build %s")),commit] action:nil keyEquivalent:@""];build.enabled=NO;[fpsMenu addItem:build];}
  fpsMenuItem=[[NSMenuItem alloc] initWithTitle:@"FPS --" action:nil keyEquivalent:@""];fpsMenuItem.submenu=fpsMenu;[bar addItem:fpsMenuItem];
 }
 /* TOTK_TITLE_FPS=1: the window title also ends in the frame rate ("Tears of the Kingdom  Mac — Ver. 1.4.3 — 60 FPS"),
@@ -269,8 +246,6 @@ static void front_menubar_fps(void){   // starts the refresh once the window exi
   if(fpsMenu&&![fpsMenu.title isEqualToString:title]){fpsMenu.title=title;fpsMenuItem.title=title;}
   front_title_fps(title);}];
 }
-void runtime_shortcut_help_toggle(void){int mode=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{   // key 1: all -> minimal (FPS only) -> off
- shortcutHelp.hidden=mode==0||(mode==2&&!hud_compact());[(TOTKShortcutHelp *)shortcutHelp refresh];});}   // mode 0 off, 2 minimal (fps_overlay.h HUD_MODE_*)
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -284,7 +259,7 @@ static void front_sync_drawable(void){
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
  metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
 }
-/* BotW key 4: the window takes the selected camera ratio. Keep the chosen height across toggles, even when a wide
+/* BotW, the settings panel's aspect ratio: the window takes the selected camera ratio. Keep the chosen height across toggles, even when a wide
    window has to shrink to fit the display; a manual resize establishes a new height. AppKit stays on the main queue. */
 void runtime_front_resize_aspect(double ratio){
  if(!isfinite(ratio)||ratio<0.5||ratio>8)return;
@@ -350,6 +325,7 @@ static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callbac
 void runtime_front_run(void(*callback)(void)){
  @autoreleasepool{
   bootStartNS=runtime_now_ns();
+  {const char *commit=getenv("TOTK_SOURCE_COMMIT");fprintf(stderr,"[totk] built from commit %s\n",commit&&*commit?commit:"(not recorded)");}
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
@@ -382,12 +358,10 @@ void runtime_front_run(void(*callback)(void)){
   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
   front_menubar_fps();
-  shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.autoresizingMask=hud_compact()?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
-  /* Keep discovery/warm-up visible; the help appears after the opaque boot
-     overlay is hidden. Key 1 still controls its requested visibility. */
-  [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
-  [(TOTKShortcutHelp *)shortcutHelp position];
-  /* The FPS, shader and load lines: in the corner panel above (compact HUD), or with TOTK_HUD=corners drawn into the game picture's corners by the present encoder (gfx/nvn/fps_overlay.c). */
+  /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
+     corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
+  if(hud_compact()){TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
+   [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];[box position];hudBox=box;}
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
