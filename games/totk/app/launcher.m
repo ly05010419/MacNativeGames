@@ -121,7 +121,8 @@ static void note(NSString *text) {
 
 /* Every TOTK_CONTRIB_STEP shaders and render pipelines the shared list does not have yet (totk_shader_contrib.h), before the game starts: ask
    the player to send the file in a GitHub issue. "Send" opens the issue form and shows the file in Finder to drag in.
-   With gh signed in, "Submit automatically" takes the place of "Remind me next time" and sends this file at once. */
+   With gh signed in, "Submit automatically" takes the place of "Remind me next time" and sends this file at once.
+   The star button only opens the project page (the player stars it there) and asks again next time. */
 static void contrib_reminder(NSString *path) {
     NSUInteger rows = totk_contrib_due(path);
     if (!rows) return;
@@ -140,7 +141,9 @@ static void contrib_reminder(NSString *path) {
     [alert addButtonWithTitle:@(TOTK_UI("发送", "Send"))];
     [alert addButtonWithTitle:gh ? @(TOTK_UI("自动提交", "Submit automatically")) : @(TOTK_UI("下次提醒", "Remind me next time"))];
     [alert addButtonWithTitle:@(TOTK_UI("不要提醒了", "Don't remind me again"))];
+    [alert addButtonWithTitle:@(TOTK_UI("⭐ 喜欢就点个 Star", "⭐ Like it? Star it on GitHub"))];
     NSModalResponse choice = [alert runModal];
+    if (choice == NSAlertThirdButtonReturn + 1) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_REPO_URL]];
     if (choice == NSAlertThirdButtonReturn) totk_contrib_never(path);
     if (choice == NSAlertSecondButtonReturn && gh) {
         NSString *issue = contrib_submit(gh, path, rows);

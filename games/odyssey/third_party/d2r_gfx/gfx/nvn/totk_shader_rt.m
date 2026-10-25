@@ -109,7 +109,9 @@ static void service_spawn(FILE **svc_in, FILE **svc_out) {
        workers' pipe ends, so after the game exited each kept another's stdin open, never read EOF and lived on (35
        orphaned translators by 22 October 08:20, all holding Metal's shader cache open). */
     posix_spawn_file_actions_addinherit_np(&fa, 2);
-    posix_spawnattr_t sa; posix_spawnattr_init(&sa); posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT);
+    posix_spawnattr_t sa; posix_spawnattr_init(&sa); sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&sa, &none);
+    // From games/totk: a service started from a GCD thread would inherit its blocked SIGCHLD and wait for spirv-cross for ever
+    posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
     // TOTK_SHADER_XLATE=<totk_xlate.dll> runs a trial translator build (e.g. build/totk_xlate-opt) without replacing the
     // shared one (through shader_service.py); TOTK_SHADER_DEBUGMODE=0|1 reaches either service through the environment.

@@ -235,25 +235,27 @@ rebuilds the overlay from the retail table instead of keeping the mod's heap siz
 
 ### Breath of the Wild
 
-The Breath of the Wild app reads its mods from
+The Breath of the Wild app reads its mods from the folder for its version, `botw160` for 1.6.0 or `botw190` for 1.9.0:
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
 The RomFS half above applies: copy the mod's RomFS contents into that folder and generate the manifest with the app,
-naming the folder `botw160` or passing `--version botw160`:
+naming the folder `botw160` or `botw190`, or passing `--version botw160` or `--version botw190` (1.6.0 shown):
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start.
+Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start
+(`mods/botw190 checked` on 1.9.0).
 
 - A mod that makes a resource larger than the original also has to ship the matching resource size table,
-  `System/Resource/ResourceSizeTable.product.srsizetable`, built for 1.6.0. Without it the game reserves the original
-  size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
+  `System/Resource/ResourceSizeTable.product.srsizetable`, built for the same version. Without it the game reserves the
+  original size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
 - The game's language follows the app's preferred language, which also picks the language folder a mod must use (`USen` for
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
@@ -317,6 +319,26 @@ call stack, for example `-[MTLTextureDescriptorInternal validateWithDevice:]` "r
 dimensions (1, 1, 1) can only support 1"). A texture with more mip levels than its size holds is something the Switch
 never checks and Metal refuses to build; the app caps the chain at what the dimensions allow and logs
 `[tex] <w>x<h>x<d> ... 声明 N 级 mip ...`, so check the mod's texture if the picture looks wrong.
+
+### Three packaging traps that look like a crash
+
+These come from how a pack was built, not from its content, and none of them prints one of the lines above.
+
+- **A `.pchtxt` without `@flag offset_shift 0x100`.** Its addresses are `main` addresses, while an IPS file's offsets
+  count the 0x100-byte NSO header. Both `TOTK_PCHTXT` and `--mod` stop the start when a patch line comes before that
+  flag, or when it names another shift: the alternative is every byte landing 0x100 bytes off without an error.
+  Converting an IPS by hand: `main address = IPS32 offset - 0x100`.
+- **A `.zs` whose zstd frame does not declare its content size.** The game's decompressor has no size to read for those
+  and decompresses to a null destination: the window dies right after `ENTER nnMain` and the log holds nothing of ours.
+  `zstd` writes such frames when compressing from a pipe (`zstd -c`); the descriptor byte of the frame header (`raw[4]`)
+  must have bits 7-6 set. Compress from the bytes with a library, assert `(raw[4] >> 6) & 3`, and keep the window size,
+  checksum and dictionary of the file being replaced (`zstd -l -v`).
+- **A merged `ResourceSizeTable` that kept the records but lost the slots.** A manager that merges `.rsizetable` files
+  can write the record array only; actors whose slot is gone then load with size 0. Slot names are logical resource
+  paths (`Actor/...`), not RomFS paths, so not finding them in the index is normal. Rebuild the table as a union of the
+  tables being merged - each value copied byte for byte, the record array kept sorted by key, since the game
+  binary-searches it - and check the frame header of the compressed result before installing it. `grow_restbl` in
+  `games/totk/scripts/make_button_icons.py` is one writer of that format.
 
 <a id="chinese"></a>
 ## 中文
@@ -519,22 +541,23 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 
 ### 旷野之息
 
-旷野之息 App 从这里读取 mod：
+旷野之息 App 按版本从对应目录读取 mod，1.6.0 是 `botw160`，1.9.0 是 `botw190`：
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
-上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160`，或加 `--version botw160`）：
+上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160` 或 `botw190`，或加 `--version botw160` 或 `--version botw190`；下面以 1.6.0 为例）：
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查。
+启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查（1.9.0 是 `mods/botw190 checked`）。
 
-- 如果 mod 让某个资源比原版大，还必须带上为 1.6.0 生成的资源大小表
+- 如果 mod 让某个资源比原版大，还必须带上为同一版本生成的资源大小表
   `System/Resource/ResourceSizeTable.product.srsizetable`。没有它游戏会按原版大小分配，启动时就会停止（例如
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：
@@ -586,3 +609,19 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
 `-[MTLTextureDescriptorInternal validateWithDevice:]` 报 “requests 9 mipmap levels, but the dimensions (1, 1, 1) can only
 support 1”）。mip 级数超过尺寸允许的贴图在 Switch 上没人检查，Metal 却拒绝创建；App 会把级数裁到尺寸允许的数量并记一行
 `[tex] <w>x<h>x<d> ... 声明 N 级 mip ...`，画面不对时应检查该模组的贴图。
+
+### 三种打包环节的陷阱，看起来像崩溃
+
+这三处出在包的打包方式上，而不是包的内容；它们都不会打印上面那些行。
+
+- **`.pchtxt` 缺 `@flag offset_shift 0x100`。** 文件里的地址是 `main` 地址，而 IPS 的偏移把 0x100 字节的 NSO 头也算了进去。
+  补丁行出现在这个 flag 之前、或写的不是 0x100，`TOTK_PCHTXT` 和 `--mod` 都会直接停止启动——否则每个字节都会静默地
+  偏 0x100 落错位置。手工把 IPS 转成 pchtxt：`main 地址 = IPS32 偏移 - 0x100`。
+- **`.zs` 的 zstd 帧没有声明内容大小。** 游戏的解压器无从得知解压后多大，会解到空指针上：窗口在 `ENTER nnMain` 之后
+  立刻消失，日志里没有我们这边的任何一行。`zstd` 从管道压缩（`zstd -c`）时会写出这种帧；帧头描述符字节（`raw[4]`）
+  的 bit7-6 必须非 0。改为对字节数组调用库压缩，断言 `(raw[4] >> 6) & 3`，窗口大小、校验和、字典都与被替换的原文件
+  保持一致（`zstd -l -v` 可看）。
+- **合并后的 `ResourceSizeTable` 留下了记录、丢了槽。** 只合并 `.rsizetable` 记录数组的管理器，会让槽位消失的那批 actor
+  按 0 大小加载。槽名是逻辑资源路径（`Actor/...`），不是 RomFS 路径，在索引里查不到属正常。按参与合并的各张表求并集
+  重建——值逐字节照抄，记录数组保持按 key 升序（游戏按 key 二分查找）——装进去之前再核对压缩结果的帧头。
+  `games/totk/scripts/make_button_icons.py` 里的 `grow_restbl` 就是这种格式的一个写入示例。

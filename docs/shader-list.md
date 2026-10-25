@@ -93,7 +93,7 @@ packages) and translates the boot and title packages' shaders for the default bi
 names (`games/botw/scripts/prepare_shader_seed.py`). Its players' contribution file is
 `~/Library/Application Support/MacNativeGames/BotW/shader-list-contribution.txt`, sent with the
 [Breath of the Wild issue form](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list-botw.yml)
-(label `shader-list-botw`; `collect_shader_issues.py --game botw` merges them). The lists never mix: a key names a
+(label `shader-list-botw`; `collect_shader_issues.py` merges both games' issues). The lists never mix: a key names a
 shader of one game only.
 
 Its shader key hashes the control section's own length (the word at +0x20: 0x7d1 for the game's archives, 0x848 for
@@ -109,15 +109,22 @@ on the spot would): run the game with `DM_PSO_MANIFEST=off`, an empty `DM_NVN_SH
 ## Merging what players sent (maintainers)
 
 ```sh
-# what each open shader-list issue would add (changes nothing); --seed drops the rows a build makes by itself
-python3 games/totk/scripts/collect_shader_issues.py --seed <work>/totk/build/shader-seed/v143
-# write the list; --close also thanks each merged issue and closes it
-python3 games/totk/scripts/collect_shader_issues.py --seed <work>/totk/build/shader-seed/v143 --apply --close
+# what each open shader-list issue of either game would add (changes nothing). Each --seed gives a game version's
+# shader keys (its shader-keys.json) and drops the rows its built-in variants serve; --keys <game>=<file> adds a key list
+S=<work>/totk/build/shader-seed
+python3 games/totk/scripts/collect_shader_issues.py --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160
+# write the lists; --close also thanks each merged issue and closes it
+python3 games/totk/scripts/collect_shader_issues.py --seed $S/v143 --seed <botw work>/totk/build/shader-seed/botw160 --apply --close
 # drop rows already in the list that the seed's default (or depth-bound) variants serve
 python3 games/totk/scripts/shader_list.py prune games/totk/assets/shader_list.tsv <work>/totk/build/shader-seed/v143
 ```
 
-It takes only `V` rows and render pipeline `R` / `B` rows from an attachment and drops everything else. Then check with `shader_list.py stats`, commit
+It takes only `V` rows and render pipeline `R` / `B` rows from an attachment (or from a comment's, when the upload
+failed) and drops everything else. One contribution file serves both games, so every row goes to the game its shader
+keys belong to, whatever the issue's title says. Rows of shaders neither game's keys hold are not merged and keep their
+issue open: a key list may lack a game version (give a seed of every version collected; a seed made before 2026-10-22
+has no shader-keys.json and is refused), or the file is another game's (#525, Super Mario Odyssey). Once checked,
+`--drop-unknown` leaves them out and closes the issue. Then check with `shader_list.py stats`, commit
 the list and push; the next builds carry the new variants.
 
 ## Adding what you played (with git)
@@ -164,7 +171,7 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
   - `S`、`C`、`R` 行：预热用的着色器库和管线。`B` 行：同一条管线带着它当时采样器的边框颜色（Metal 没有的颜色要在着色器里模拟），预热按它建好补丁着色器和这条管线。标记 `t` 是标题画面用的（第一帧只等这些），`m` 是其余预热。
   - 只有标识，不含游戏数据。
 - **玩家怎么贡献**：玩的时候什么都不用做。Mac 现场翻译的变体、iPhone / iPad 缺的变体，都说明清单里还没有，游戏会把它记进 `shader-list-contribution.txt`（Mac 在 `~/Library/Application Support/MacNativeGames/TOTK/`，iPhone / iPad 在“文件”App › 我的 iPhone（或 iPad）› Tears of the Kingdom）。每次打包都带着每个着色器的默认变体，所以只记默认变体用不了的状态，默认变体从不记（清单只收非默认变体，2026-10-22）。玩的时候建的、App 预热清单里没有的渲染管线也一起记（`R` 行，带边框色的再加 `B` 行；变体名换成别人打包时也会有的名字）。着色器和管线合计每攒够 100 条，启动器会在游戏开始前问一次要不要发送；iPhone / iPad 玩的时候从不提醒，设备连着打包它的那台 Mac 时，由 Mac 上的 `ios/tools/shader_contrib_watch.py`（打包 iOS 版时装的后台任务）把文件拷过来，每台设备每多 100 条在 Mac 上问一次。“下次提醒”等到下一个 100 条再问，“不要提醒了”以后就不再问（文件照样记）；点“发送”会打开 GitHub 的[提交着色器清单](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)页面，把文件拖进去即可。下次在 200、300 条时再提醒，每次发整个文件也没关系，清单里已有的会跳过。游戏不会自己上传任何东西。
-- **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py --seed <打包目录>/totk/build/shader-seed/v143` 先看每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件里只取 `V` 行和管线的 `R` / `B` 行，种子自带的默认变体能用的 `V` 行丢掉。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
+- **维护者合并**：`python3 games/totk/scripts/collect_shader_issues.py --seed <打包目录>/totk/build/shader-seed/v143 --seed <旷野之息打包目录>/totk/build/shader-seed/botw160` 先看两款游戏的每个 Issue 能加多少；`--apply --close` 写进清单、回复并关闭 Issue。附件（上传失败时也看评论里补传的）里只取 `V` 行和管线的 `R` / `B` 行，种子自带的默认变体能用的 `V` 行丢掉。贡献文件两款游戏共用，所以每一行按它的着色器键归到所属游戏，不看 Issue 标题；每个 `--seed` 提供该版本的键（`shader-keys.json`，2026-10-22 以前的旧种子没有，会被拒绝），`--keys <游戏>=<文件>` 可再加键清单。两款游戏的键都不认识的行不并入、Issue 保持开着（可能少给了某个版本的种子，也可能是别的游戏的文件，如奥德赛 #525）；核对后用 `--drop-unknown` 丢掉并关闭。旧行用 `shader_list.py prune <清单> <种子目录>` 清掉。
 - **用 git 贡献**：
   - Mac：`python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv <自己的翻译缓存目录>`，再运行 `locate_shaders.py` 补上定位行，用 `stats` 检查，提交清单并提 PR。
   - iOS：`fill_shaders.py` 补译后会自动把变体并进清单。

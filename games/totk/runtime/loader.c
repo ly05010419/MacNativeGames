@@ -306,8 +306,13 @@ static void thread_cleanup(void) {
 }
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
- for(unsigned i=0;i<NM;i++)for(unsigned j=0;j<modules[i].ngate;j++) {
-  const Gate *g=&modules[i].gates[j];if((uintptr_t)modules[i].base+g->ret!=ret)continue;
+ for(unsigned i=0;i<NM;i++) {
+  uintptr_t b=(uintptr_t)modules[i].base;if(!b||ret<b)continue;
+  unsigned lo=0,hi=modules[i].ngate;   // gates sorted by return address (prepare_runtime.py)
+  while(lo<hi){unsigned m=(lo+hi)/2;if(b+modules[i].gates[m].ret<ret)lo=m+1;else hi=m;}
+  if(lo==modules[i].ngate||b+modules[i].gates[lo].ret!=ret)continue;
+  const Gate *g=&modules[i].gates[lo];
+  if(g->timer==2){runtime_spin_wait(i,g->original);return;}   // spin wait (patch_nso.py "Spin waits"): no register changes
   if(g->timer){mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
    need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)(ns*12/625);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
   __atomic_fetch_add(&svc_calls,1,__ATOMIC_RELAXED);runtime_svc(g->arg,regs,modules[i].name,g->original);return;

@@ -35,3 +35,11 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_controller_map.c -o "$RUNNER_TEMP/test-controller-map"
           "$RUNNER_TEMP/test-controller-map"
+      - name: Check the game language mapping with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_game_language.c -o "$RUNNER_TEMP/test-game-language"
+          "$RUNNER_TEMP/test-game-language"
+      - name: Check the Breath of the Wild audio ramp arithmetic with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_audio_ramp.c -o "$RUNNER_TEMP/test-audio-ramp"
+          "$RUNNER_TEMP/test-audio-ramp"

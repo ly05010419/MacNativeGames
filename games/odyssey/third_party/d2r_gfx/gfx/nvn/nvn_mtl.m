@@ -23,6 +23,7 @@
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "totk_shader_rt.h"
 #include "totk_mfx.h"
+#include "odyssey_mfx.h"
 #include "totk_mfx_up.h"
 #include "totk_sysload.h"
 /* TOTK_MFX_UPSCALE: for the one compose draw that samples the smaller scene, the scene texture and its MetalFX upscale
@@ -280,7 +281,7 @@ static void res_site_report(int top) {
     }
     pthread_mutex_unlock(&g_res_mu);
 }
-/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 40% of physical memory on the Mac (0 disables). Checked before every
+/* GPU memory budget: TOTK_GPU_BUDGET_MB, default 50% of physical memory on the Mac (0 disables). Checked before every
    submission and residency commit, in the no-submit mode too, so the growth is reported with its sites instead of
    exhausting wired memory. Off by default on iOS: there the system's per-app limit bounds GPU memory and ends only the app,
    and 40% of an iPhone 14 (2284 MB) stopped the game in the world while it used 3.6 of its 4 GB (2026-10-19). */
@@ -290,7 +291,7 @@ static uint64_t gpu_budget_bytes(void) {
         init = 1; const char *e = getenv("TOTK_GPU_BUDGET_MB");
         if (e) b = strtoull(e, NULL, 10) << 20;
         else if (TARGET_OS_IPHONE) b = 0;
-        else { uint64_t phys = 0; size_t n = sizeof phys; if (sysctlbyname("hw.memsize", &phys, &n, NULL, 0) || !phys) MDIE("hw.memsize unavailable for the GPU memory budget"); b = phys / 5 * 2; }
+        else { uint64_t phys = 0; size_t n = sizeof phys; if (sysctlbyname("hw.memsize", &phys, &n, NULL, 0) || !phys) MDIE("hw.memsize unavailable for the GPU memory budget"); b = phys / 2; }   /* Odyssey: 50%, not TOTK's 40%: on an 8 GB Mac a larger kingdom holds 2.7-2.9 GB of Metal allocations for an hour and peaked at 3277 MB, 1 MB over 40%, which stopped the game (25 October); the kernel panics the budget guards against were at ~15 GB resident */
         MLOG("显存预算 %llu MB（TOTK_GPU_BUDGET_MB 覆盖，0 关闭）", (unsigned long long)(b >> 20));
     }
     return b;
@@ -719,6 +720,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
 
 static void stor_drop_range(uintptr_t lo, uintptr_t hi);
 static void stor_sweep(uint64_t fence);
+static void wb_drop_range(uintptr_t lo, uintptr_t hi);
 void mtl_pool_del(const void *mem) {
     g_reg_gen++;
     uintptr_t lo = 0, hi = 0;
@@ -733,6 +735,7 @@ void mtl_pool_del(const void *mem) {
     }
     pthread_mutex_unlock(&g_mu);
     if (hi > lo) stor_drop_range(lo, hi);   // TOTK: storage-shared textures of this pool
+    if (hi > lo) wb_drop_range(lo, hi);     // pending write-backs of this pool's textures, and their retained objects
 }
 
 static pidx_ent *pool_query(uintptr_t addr, uint64_t len) { // caller holds g_mu
@@ -2442,7 +2445,7 @@ static void pkg_owned_locked(uint64_t k) { id o = hm_get_id(&g_by_serial, &k); i
    so the result outlives a temporary texture object finalized before the submission runs); an invalidate over its
    memory waits for the GPU and writes every level back in the NVN layout, unless the CPU has written the memory since
    the rendering (then the CPU's bytes are newer). Runtime switch: TOTK_INPUT_FILE "flag writeback 0|1" (default 1). */
-typedef struct { tex_t t; uint64_t stamp, fence, prev_fence; void *obj; } wb_ent;   // fence: the submission that renders it (g_fence + 1 while it is encoded); prev_fence: the one before, while the newest is still being recorded
+typedef struct { tex_t t; uint64_t stamp, fence, prev_fence; void *obj; uint8_t *snap; uint32_t snap_n; } wb_ent;   // fence: the submission that renders it (g_fence + 1 while it is encoded); prev_fence: the one before, while the newest is still being recorded
 static nvn_hmap g_wb = {.klen = 8};   // serial -> wb_ent * (g_smu): rendered since the last write-back
 static _Atomic int g_wb_on = 1;
 /* TOTK: fill the driver segment c0 for vertex and compute shaders (thread-group counts, uniform / storage address tables,
@@ -2547,8 +2550,45 @@ static int tilelog_match(const tex_t *t) {
     return on && t && t->d.width == w && t->d.height == h;
 }
 #define TILELOG(t, fmt, ...) do { BOTW_TILELOG_NOTE(t) if (tilelog_match(t)) MLOG("[tile] f%llu ser=%llu mem=%p nvnfmt=%#x lv%u " fmt, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(t)->serial, (void *)(t)->mem, (t)->d.format, (t)->d.levels, ##__VA_ARGS__); } while (0)
-static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e); }
+static void wb_ent_free(wb_ent *e) { if (!e) return; if (e->obj) { defer_obj_release((__bridge id)e->obj); CFRelease(e->obj); } free(e->snap); free(e); }
+/* A memory pool is finalized: its pending GPU renderings will never be read back. Drop their write-back records, which
+   hold the texture objects (wb_note's retain kept them resident for ever: soak-60-a, 23 October, ~96 textures / 55 MB
+   per "Throw Cap" movie play). It is also a correctness fix: a record left behind would match a later invalidate of a
+   new pool reusing the address range and write the old rendering over the game's new data. */
+static void wb_drop_range(uintptr_t lo, uintptr_t hi) {
+    uint64_t dropped = 0, bytes = 0;
+    for (;;) {
+        wb_ent *list[64]; int nl = 0;
+        pthread_mutex_lock(&g_smu);
+        for (uint32_t i = 0; g_wb.n && g_wb.vals && i < g_wb.cap && nl < 64; i++) {
+            wb_ent *e = g_wb.vals[i];
+            if (!e || (uintptr_t)e->t.mem >= hi || (uintptr_t)e->t.mem + e->t.L.size <= lo) continue;
+            uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts entries: rescan
+        }
+        pthread_mutex_unlock(&g_smu);
+        for (int i = 0; i < nl; i++) { bytes += list[i]->t.L.size; wb_ent_free(list[i]); }
+        dropped += nl;
+        if (nl < 64) break;
+    }
+    static _Atomic unsigned shown;
+    if (dropped && atomic_fetch_add(&shown, 1) < 16)
+        MLOG("[writeback] pool freed: dropped %llu pending write-back records (%llu MB)", (unsigned long long)dropped, (unsigned long long)(bytes >> 20));
+}
 static void pre_note(const tex_t *t, id o);
+/* From games/totk (8a29e0a, limit raised to 256 KiB later): a small target's few bytes can share a 16 KiB page with data
+   the CPU writes every frame, so the page-granular dirty tracking reports "CPU wrote since the render" and the rendering
+   never reaches the game. Small targets keep a copy of their own bytes when the rendering is noted; if those bytes are
+   unchanged at write-back time the CPU did not write this texture, and the rendering is written back. Odyssey's R32F
+   256x128 target (128 KiB) was skipped as "CPU wrote since" on about half of its write-backs (24 October, 151,020 of
+   302,010 in a 90-minute session); TOTK_WB_EXACT=0 restores the page-only decision. */
+enum { WB_SNAP_MAX = 256 * 1024 };
+static int wb_exact_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_WB_EXACT"); v = !(e && !strcmp(e, "0")); } return v; }
+static uint64_t g_wb_exact_rescued;
+static void wb_snap(wb_ent *e) {
+    if (!wb_exact_on() || !e->t.mem || e->t.L.size > WB_SNAP_MAX) { free(e->snap); e->snap = NULL; e->snap_n = 0; return; }
+    uint32_t n = (uint32_t)e->t.L.size; if (e->snap_n != n) { free(e->snap); e->snap = malloc(n); e->snap_n = e->snap ? n : 0; }
+    if (e->snap) memcpy(e->snap, e->t.mem, n);
+}
 static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
     if (!atomic_load(&g_wb_on) || !t->mem || !t->L.size) return;
@@ -2560,9 +2600,9 @@ static void wb_note(const tex_t *t) {
     pthread_mutex_lock(&g_smu);
     wb_ent *e = nvn_hm_get(&g_wb, &k);
     uint64_t fence = g_fence + 1;   // replay thread: the submission being encoded commits with ++g_fence (mtl_sub_commit)
-    if (e) { if (e->fence != fence) e->prev_fence = e->fence; e->stamp = stamp; e->fence = fence; e->t = *t; pthread_mutex_unlock(&g_smu); pre_note(t, o); return; }
+    if (e) { if (e->fence != fence) e->prev_fence = e->fence; e->stamp = stamp; e->fence = fence; e->t = *t; wb_snap(e); pthread_mutex_unlock(&g_smu); pre_note(t, o); return; }
     e = calloc(1, sizeof *e); if (!e) MDIE("write-back record");
-    e->t = *t; e->stamp = stamp; e->fence = fence; e->obj = (void *)CFBridgingRetain(o);
+    e->t = *t; wb_snap(e); e->stamp = stamp; e->fence = fence; e->obj = (void *)CFBridgingRetain(o);
     nvn_hm_put(&g_wb, &k, e);
     pthread_mutex_unlock(&g_smu);
     pre_note(t, o);
@@ -2639,7 +2679,32 @@ static void pre_note(const tex_t *t, id o) {   // wb_note, replay thread
     if (g_pre_npend == PRE_PEND) return;
     g_pre_pend[g_pre_npend].t = *t; g_pre_pend[g_pre_npend].obj = (void *)CFBridgingRetain(o); g_pre_npend++;
 }
+/* Entries of textures no longer read back (cold, or the texture is gone: its serial is never seen again) release their
+   ring buffers once the GPU is done with them; an entry without buffers is dropped. Without this the ring buffers of
+   every texture ever read back stayed resident (soak-60-a, 23 October: 86 buffers after 23 minutes and rising). */
+enum { PRE_RELEASE = 4 * PRE_COOL };
+static void pre_sweep(void) {   // replay thread, at most every PRE_COOL frames
+    static uint64_t last;
+    uint64_t now = atomic_load(&g_cur_frame), done = g_done;
+    if (now - last < PRE_COOL) return;
+    last = now;
+    os_unfair_lock_lock(&g_pre_lock);
+    NSMutableArray<NSNumber *> *drop = [NSMutableArray array];
+    for (NSNumber *key in g_pre) {
+        NvPre *p = g_pre[key];
+        if (now - p->last_read <= PRE_RELEASE) continue;
+        int left = 0;
+        for (int k = 0; k < PRE_RING; k++) if (p->buf[k]) {
+            if (p->fence[k] > done) { left++; continue; }   // still being written by the GPU: next sweep
+            res_remove(p->buf[k]); p->buf[k] = nil; p->fence[k] = 0; atomic_fetch_sub(&g_pre_bufs, 1);
+        }
+        if (!left) [drop addObject:key];
+    }
+    [g_pre removeObjectsForKeys:drop];
+    os_unfair_lock_unlock(&g_pre_lock);
+}
 static void pre_emit(void) {   // mtl_sub_commit, before the copy encoder closes: this submission commits with fence g_fence + 1
+    if (pre_on() && g_pre) pre_sweep();
     if (!g_pre_npend) return;
     uint64_t fence = g_fence + 1, done = g_done;
     for (int i = 0; i < g_pre_npend; i++) {
@@ -2749,6 +2814,11 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
        the drain was ~35% of the time the game thread spent in invalidate). */
     int fresh[512], any = 0;
     for (int i = 0; i < nl; i++) fresh[i] = force || !nvn_dirty_since(list[i]->t.mem, list[i]->t.L.size, list[i]->stamp);
+    for (int i = 0; i < nl; i++)
+        if (!fresh[i] && list[i]->snap && list[i]->snap_n == list[i]->t.L.size && !memcmp(list[i]->snap, list[i]->t.mem, list[i]->snap_n)) {   // page dirty, texture's own bytes not
+            fresh[i] = 1; uint64_t r = ++g_wb_exact_rescued;
+            if (r <= 8 || r % 5000 == 0) MLOG("[writeback] small target ser=%llu %ux%u: page written by the CPU but not this texture, written back (%llu so far)", (unsigned long long)list[i]->t.serial, (unsigned)list[i]->t.d.width, (unsigned)list[i]->t.d.height, (unsigned long long)r);
+        }
     for (int i = 0; i < nl; i++) for (int j = 0; j < nl; j++)
         if (i != j && fresh[i] && fresh[j] && list[j]->t.mem == list[i]->t.mem && list[j]->stamp > list[i]->stamp) { fresh[i] = 2; break; }   // 2: superseded
     for (int i = 0; i < nl; i++) any |= fresh[i] == 1;
@@ -2888,6 +2958,42 @@ static int tex_swizzle_sel(const tex_t *t, const uint8_t *view_sel, int format, 
 }
 static int tex_swizzle(const tex_t *t, int format, MTLTextureSwizzleChannels *out) { return tex_swizzle_sel(t, NULL, format, out); }
 static int swizzle_eq(MTLTextureSwizzleChannels a, MTLTextureSwizzleChannels b) { return a.red == b.red && a.green == b.green && a.blue == b.blue && a.alpha == b.alpha; }
+// From games/totk (f864eb0): a texture that comes from a mod can carry descriptor fields the guest never validates and Metal refuses to
+// build - it aborts the process from -[MTLTextureDescriptorInternal validateWithDevice:] (seen with The Second Quest:
+// "requests 9 mipmap levels, but the dimensions (1, 1, 1) can only support 1"). Cap every guest-controlled field at
+// what the hardware allows; the game's own data is always inside these bounds, so nothing changes for it.
+static void tex_desc_fixup(const tex_t *t, MTLTextureDescriptor *d) {
+    static uint64_t capped;
+    char why[160] = "";
+    NSUInteger w = d.width, h = d.height, z = d.depth;
+    NSUInteger arr0 = d.arrayLength, smp0 = d.sampleCount, lv0 = d.mipmapLevelCount, w0 = d.width, h0 = d.height, z0 = d.depth;
+    int is_msaa = d.textureType == MTLTextureType2DMultisample || d.textureType == MTLTextureType2DMultisampleArray;
+    if (w < 1 || w > 16384) { d.width = w = w < 1 ? 1 : 16384; strlcat(why, "宽, ", sizeof why); }
+    if (h < 1 || h > 16384) { d.height = h = h < 1 ? 1 : 16384; strlcat(why, "高, ", sizeof why); }
+    if (z < 1 || z > 2048) { d.depth = z = z < 1 ? 1 : 2048; strlcat(why, "深, ", sizeof why); }
+    NSUInteger biggest = w > h ? w : h;
+    if (d.textureType == MTLTextureType3D && z > biggest) biggest = z;
+    unsigned allowed = 1;
+    for (NSUInteger v = biggest; v > 1; v >>= 1) allowed++;
+    if (d.mipmapLevelCount > allowed) { d.mipmapLevelCount = allowed; strlcat(why, "mip 级数, ", sizeof why); }
+    if (d.mipmapLevelCount < 1) { d.mipmapLevelCount = 1; strlcat(why, "mip 级数, ", sizeof why); }
+    if (d.arrayLength < 1 || d.arrayLength > 2048) { d.arrayLength = d.arrayLength < 1 ? 1 : 2048; strlcat(why, "数组长度, ", sizeof why); }
+    if (!(d.sampleCount == 1 || d.sampleCount == 2 || d.sampleCount == 4 || d.sampleCount == 8)) {
+        d.sampleCount = 1; strlcat(why, "采样数, ", sizeof why);
+    }
+    if (d.sampleCount > 1 && !is_msaa) { d.sampleCount = 1; strlcat(why, "采样数, ", sizeof why); }   // only the multisample types may sample more than once
+    if (d.sampleCount > 1) d.mipmapLevelCount = 1;
+    if (!why[0]) return;
+    if (capped++ < 6 || capped % 500 == 0) {
+        size_t n = strlen(why); if (n > 2) why[n - 2] = 0;      // drop the trailing ", "
+        MLOG("[tex] ser=%llu %ux%ux%u 目标 %d 声明 %lux%lux%lu arr=%lu smp=%lu 级数=%lu：%s 超出硬件允许，按 %lux%lux%lu arr=%lu smp=%lu 级数=%lu 创建（累计 %llu 张；Metal 否则会终止进程）",
+             (unsigned long long)t->serial, (uint32_t)t->d.width, (uint32_t)t->d.height, (uint32_t)t->d.depth, (int)t->d.target,
+             (unsigned long)w0, (unsigned long)h0, (unsigned long)z0, (unsigned long)arr0, (unsigned long)smp0, (unsigned long)lv0,
+             why, (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.depth, (unsigned long)d.arrayLength,
+             (unsigned long)d.sampleCount, (unsigned long)d.mipmapLevelCount, (unsigned long long)capped);
+    }
+}
+
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "贴图格式 %#x Metal 无对应（首例）", t->d.format); return nil; }
@@ -2908,6 +3014,7 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
         case 10: RED_ONCE(1, "缓冲贴图（TARGET_BUFFER）未实现"); return nil;
         default: d.textureType = MTLTextureType2D; break;
     }
+    tex_desc_fixup(t, d);
     d.storageMode = MTLStorageModePrivate;   // 渲染目标与素材都放 GPU 私有存储（可用无损压缩） | Render targets and assets both go in GPU private storage (lossless compression available)
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // 图像用途：着色器可写（计算核生成 3D 调色表等） | Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.)
@@ -4597,8 +4704,9 @@ static void canvas_learn(MTL4RenderPassDescriptor *pd) {
             g_mfx.last_c0 = t0->serial;
     }
 }
+/* G-buffer depth/camera and the post-scene UI attachment. With frame interpolation Odyssey's canvas is identified by
+   its final FXAA draw (odyssey_mfx_before_draw), not by canvas_learn's float-target heuristic. */
 static void mfx_pass_setup(MTL4RenderPassDescriptor *pd) {
-    canvas_learn(pd);
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
     id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil;
     id<MTLTexture> dt = pd.depthAttachment.texture;
@@ -4666,6 +4774,7 @@ static void mfx_snapshot_scene(void) {
     enc_b_end(g_blit); g_blit = nil;
     g_mfx.scene_done = 1; mfx_note_scene();
 }
+
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static int rt_none(void); static void noatt_dims(NSUInteger *w, NSUInteger *h);
@@ -7198,6 +7307,10 @@ int mtl_warm_wait(int timeout_ms) {
     uint64_t t0 = bp_now();
     while (atomic_load(&g_warm_running) && (timeout_ms < 0 || (bp_now() - t0) / 1000000ull < (uint64_t)timeout_ms)) usleep(2000);
     atomic_store(&g_warm_in_play, 1);   // the player goes into the world: the rest of the warm-up uses at most 2 threads
+    /* Odyssey: the game plays from here, so the boot overlay ("Warming shaders and pipelines N%") goes away now, not when
+       the whole list is done: on a first launch it covered the world for minutes while sound and input already ran (24
+       October). The rest of the warm-up keeps going behind the game. */
+    if (runtime_warm_done) runtime_warm_done();
     return (int)((bp_now() - t0) / 1000000ull) + 1;
 }
 /* TOTK (iOS): variants the phone was missing (shader-requests/, written by totk_rt_variant) that fill_shaders.py has since
@@ -9711,22 +9824,90 @@ static void prepare_draw_textures(NvProg *pr) {
         g_tex_prepare_split = 0; rp_end();
     }
 }
-/* TOTK_MFX: the camera of the G-buffer pass, from its first draw: vertex uniform 1, the 2368-byte block (view, view-projection,
-   projection, inverse view, near / far, aspect, field of view; floats 84..167 hold the camera of two frames earlier). */
+/* The FXAA destination is the tone-mapped scene canvas. Snapshot it before the first
+   later canvas draw (HUD, text, tutorial video), then duplicate those draws to UI.
+   A HUD-free frame snapshots at the final copy and supplies a transparent UI layer. */
+static odyssey_scene g_odyssey_scene;   // odyssey_mfx.h: the FXAA draw counts once encoded (odyssey_mfx_after_draw)
+/* Diagnostic summary (PR #568 review): where the final copy into the swapchain finds the canvas. It is assumed at
+   fragment texture 0; elsewhere the frame counts as missing its scene (safe: the real picture is shown). */
+static void odyssey_canvas_slot_note(int slot) {   // slot of the canvas, -1 = not bound; counted once a frame
+    static uint64_t at0, other, none, last_frame = ~0ull; static int said;
+    uint64_t f = atomic_load(&g_cur_frame); if (f == last_frame) return; last_frame = f;
+    if (slot == 0) at0++; else if (slot > 0) other++; else none++;
+    if (slot != 0 && said < 5) { said++; MLOG("[mfx] final copy F%llu: canvas %s %d (assumed 0)", (unsigned long long)atomic_load(&g_cur_frame),
+                                              slot > 0 ? "at fragment texture" : "not bound, fragment texture slot", slot > 0 ? slot : 0); }
+    if ((at0 + other + none) % 600 == 0) MLOG("[mfx] final copy: canvas at fragment texture 0 in %llu, at another slot %llu, not bound %llu",
+                                              (unsigned long long)at0, (unsigned long long)other, (unsigned long long)none);
+}
+static void odyssey_mfx_before_draw(NvProg *pr) {
+    if (!mfx_enabled()) return;
+    odyssey_scene_draw(&g_odyssey_scene);
+    if (!pr || !pr->sh[1] || !R.rt.n || !R.rt.color[0]) return;
+    const tex_t *target = R.rt.color[0];
+    if (g_mfx.depth_done && odyssey_mfx_fxaa(pr->sh[1]->key) && R.rt.n == 1 && !(S.color.blend_en & 1) &&
+        target->d.width >= 320 && target->d.height >= 180) {
+        odyssey_scene_fxaa(&g_odyssey_scene, target->serial); return;
+    }
+    if (!g_odyssey_scene.ready || g_mfx.scene_done) return;
+    if (target->serial == g_mfx.canvas) { mfx_snapshot_scene(); return; }
+    int swap = 0;
+    for (int i = 0; i < g_mfx.nswap; i++) swap |= g_mfx.swap[i] == target->serial;
+    if (!swap) return;
+    int tid = (int)(S.tex[1][0] & 0xfffff);
+    const tex_t *canvas = tid > 0 && tid < g_ntreg ? &g_treg[tid].t : NULL;
+    if (!canvas || canvas->serial != g_mfx.canvas) {
+        int found = -1;
+        for (int i = 1; i < 16 && found < 0; i++) { int t = (int)(S.tex[1][i] & 0xfffff); if (t > 0 && t < g_ntreg && g_treg[t].t.serial == g_mfx.canvas) found = i; }
+        odyssey_canvas_slot_note(found); return;
+    }
+    odyssey_canvas_slot_note(0);
+    R.rt.color[0] = canvas; mfx_snapshot_scene(); R.rt.color[0] = target;
+    id<MTLTexture> c = tex_mtl(canvas);
+    id<MTLTexture> ui = c ? mfx_ui_target(g_dev, c.width, c.height) : nil;
+    if (ui) {
+        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+        rp.colorAttachments[0].texture = ui; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+        rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        blit_close(); rs_sync();
+        id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; es_reset();
+        if (en) { [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; m4_end(en); }
+        args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    }
+}
+static void odyssey_mfx_after_draw(void) {   // draw_inner: the draw is encoded
+    uint64_t c = odyssey_scene_drawn(&g_odyssey_scene); if (c) g_mfx.canvas = c;
+}
+
+/* Odyssey camera bytes are materialized with pending updates, just like draw uniforms. */
+/* Publish only after all slots agree. Even a consistent view/inverse pair can describe another camera;
+   differing valid blocks make the input ambiguous, so this frame keeps its real picture. */
 static void mfx_take_camera(void) {
     g_mfx.want_cam = 0;
-    const p_bind_buf *u = &S.ubo[0][MFX_CAM_SLOT]; float cam[84];
-    if (u->addr && u->size == MFX_CAM_SIZE) {
-        pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);   // the bytes this draw sees: memory plus pending inline updates
-        mfx_note_camera(cam, 84);
-        /* TOTK_MFX_CAMLOG=<first>-<last frame>: every captured camera (diagnostic) */
-        static long c0 = -2, c1; if (c0 == -2) { const char *e = getenv("TOTK_MFX_CAMLOG"); c0 = e ? atol(e) : -1; c1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : c0; }
-        long f = (long)atomic_load(&g_cur_frame);
-        if (c0 >= 0 && f >= c0 && f <= c1) MLOG("[mfx] camera F%ld pass %llu block %#llx size %.0fx%.0f near %g fov %.4f yaw %.3f pos %.3f %.3f %.3f vp0 %.5f %.5f %.5f %.3f",
-            f, g_stat_pass, (unsigned long long)u->addr, cam[72], cam[73], cam[56], cam[70], atan2(cam[2], cam[0]) * 180 / M_PI, cam[47], cam[51], cam[55], cam[12], cam[13], cam[14], cam[15]);
-    } else { static int said; if (said++ < 5) MLOG("[mfx] G-buffer pass %llu: vertex uniform 1 is %#llx / %llu bytes, not the 2368-byte camera block (frame %llu)", g_stat_pass,
-                                                 (unsigned long long)u->addr, (unsigned long long)u->size, (unsigned long long)atomic_load(&g_cur_frame)); }
+    static uint64_t taken[16], ambiguous, captures; static int said;
+    int first = -1; float selected[84];
+    for (int slot = 0; slot < 16; slot++) {
+        const p_bind_buf *u = &S.ubo[0][slot];
+        if (!u->addr || u->size < 0x180) continue;
+        float h[0x180 / 4], cam[84];
+        pend_materialize(u->addr, (uint8_t *)h, sizeof h, 0);
+        if (!odyssey_mfx_camera(h, cam)) continue;
+        if (first < 0) { first = slot; memcpy(selected, cam, sizeof selected); continue; }
+        if (!memcmp(selected, cam, sizeof selected)) continue;   // the same camera bound twice
+        ambiguous++;
+        if (said < 5) { said++; MLOG("[mfx] camera F%llu: vertex uniforms %d and %d disagree; keeping real picture", (unsigned long long)atomic_load(&g_cur_frame), first, slot); }
+        return;
+    }
+    if (first < 0) return;
+    mfx_note_camera(selected, 84);
+    taken[first]++;
+    if (++captures % 600 == 0) {
+        char b[160]; int n = 0;
+        for (int i = 0; i < 16; i++) if (taken[i]) n += snprintf(b + n, sizeof b - n, " %d:%llu", i, (unsigned long long)taken[i]);
+        MLOG("[mfx] camera from vertex uniform slot (slot:frames)%s; ambiguous frames kept real %llu", b, (unsigned long long)ambiguous);
+    }
 }
+
 static void draw_inner(const p_draw *dw, const p_draw_idx *di);
 /* Diagnostic DM_NVN_NANDRAW=<first>-<last frame> (log DM_NVN_NANDRAW_LOG, default analysis/nandraw.tsv): after every
    draw into a full-size RG11B10F or R32F colour attachment (the HDR target, the linear depth), end the pass and count
@@ -10441,8 +10622,7 @@ frz_plain:;
     if (!g_enc) { g_fd_dw = dw; g_fd_di = di; }
     if (g_enc && g_lay.active && !lay_draw_ok(pr, dw, di)) {   // TOTK: this draw cannot write its layer: end the layered pass, draw in a plain one
         PD("L %llu 分层通道内的绘制不能写层号，在此切开", g_stat_pass); rp_end(); g_lay.refuse = 1; g_lay.refused++; }
-    if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && MFX_UI_DRAW(pr) && mfx_enabled())
-        mfx_snapshot_scene();   // TOTK_MFX: first UI draw into the canvas: copy the finished scene first
+    odyssey_mfx_before_draw(pr);
     if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // key 4: the UI begins
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
@@ -10623,6 +10803,7 @@ frz_plain:;
     if (pr && nan_trace_match(pr->sh[1]) && !pr->sh[1]->writes_depth) nan_trace_bind(en);   // diagnostic TOTK_NAN_TRACE
     g_nt_pass_draws++;
     g_stat_draw++;
+    if (g_odyssey_scene.pending) odyssey_mfx_after_draw();
     { static int tg; if (!tg) { tg = 1; const char *e = getenv("DM_TEST_GHOST"); float v[8];   // 测试开关 DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy（归一化；按下点、格网、跟手图中心）：不经前端直接开跟手图（Mac 宿主截图验证用） | Test switch DM_TEST_GHOST=px,py,gx,gy,gw,gh,cx,cy (normalized; press point, grid, center of the drag-follow image): turns on the drag-follow image directly without going through the front end (for Mac host screenshot verification)
         if (e && sscanf(e, "%f,%f,%f,%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) == 8) mtl_ui_ghost(1, v[0], v[1], &v[2], v[6], v[7]); } }
     if (dw && atomic_load(&g_ghost_on)) ghost_note(dw);
@@ -11980,12 +12161,19 @@ static _Atomic uint64_t g_drawable_ns;   // 出图里等 nextDrawable 的累计�
 uint64_t mtl_drawable_ns_take(void) { return atomic_exchange(&g_drawable_ns, 0); }
 // 有窗口时屏幕的最高刷新率（Hz）；无窗口返回 0。Mac 用 CoreGraphics 显示模式（线程安全的 C 接口，出图配置在游戏线程上读）
 // Maximum refresh rate (Hz) of the screen when there is a window; returns 0 without a window. Mac uses CoreGraphics display modes (thread-safe C interface; the present configuration is read on the game thread)
+/* Probes only (gfx_probe.c has no window): a forced rate stands in for the window's screen, so the pacing that depends on
+   it can be checked headless. 0 = the real screen. */
+static _Atomic int g_display_hz_forced;
+void mtl_display_hz_force(int hz) { atomic_store(&g_display_hz_forced, hz); }
 int mtl_display_hz(void) {
+    int forced = atomic_load(&g_display_hz_forced); if (forced > 0) return forced;
     if (!front_metal_layer()) return 0;
 #if TARGET_OS_OSX
-    CGDisplayModeRef m = CGDisplayCopyDisplayMode(CGMainDisplayID());
-    double hz = m ? CGDisplayModeGetRefreshRate(m) : 0; if (m) CGDisplayModeRelease(m);
-    return (int)(hz + 0.5);
+    /* The window's screen as the frontend sampled it on the main thread (front_sync_drawable). It is 0 until the first
+       sample; the frontend takes one when the window opens, before the game's first present (logs: "window drawable"
+       always comes first), and present_cfg falls back to 60 Hz and catches up (present_follow_display) if it did not. */
+    extern int runtime_front_display_hz(void) __attribute__((weak_import));
+    return runtime_front_display_hz ? runtime_front_display_hz() : 0;
 #else
     Class c = NSClassFromString(@"UIScreen"); id s = c ? [c valueForKey:@"mainScreen"] : nil;
     return s ? [[s valueForKey:@"maximumFramesPerSecond"] intValue] : 0;
@@ -12438,10 +12626,11 @@ static void cadence_note(double tt, int interp) {
     enum { N = 600 };
     static double last, iv[N]; static int n, ni, hz; static uint64_t dropped;
     pthread_mutex_lock(&mu);
+    int current_hz = mtl_display_hz(); if (current_hz <= 0) current_hz = 60;
+    if (current_hz != hz) { hz = current_hz; last = 0; n = ni = 0; dropped = 0; }   // another screen or mode: restart the window
     if (tt <= 0) dropped++;
     else { if (last > 0 && tt > last && n < N) { iv[n++] = (tt - last) * 1e3; ni += interp; } if (tt > last) last = tt; }
     if (n == N) {
-        if (!hz) { hz = mtl_display_hz(); if (hz <= 0) hz = 60; }
         double a[N]; memcpy(a, iv, sizeof a); qsort(a, N, sizeof *a, dcmp_mtl);
         double tick = 1000.0 / hz; int held = 0; for (int i = 0; i < N; i++) held += a[i] > 1.5 * tick;
         MLOG("上屏节奏（近 %d 张，至帧 %llu，显示器 %d Hz）：间隔 p50 %.2f / p95 %.2f / 最大 %.2f ms；多停一次刷新以上 %d 次（%.1f%%）；其中补帧 %d 张；系统丢弃 %llu 张",
@@ -12848,7 +13037,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         /* TOTK_MFX: the game frame goes up at the refresh nearest to half a game frame after its interpolated one, so the
            two pictures share the frame's time evenly (30+30 on a 100 Hz display: two refreshes later, not one; half the
            refresh rate and uncapped: the next refresh). Until then the interpolated picture stays up. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);
         if (tts < ip->interp_ts + ip->period / 2 - tick / 2) { pthread_mutex_unlock(&g_pq_mu); return; }
     }
     if (interp >= 0) { ip->interp_shown = 1; ip->interp_ts = tts; }
@@ -12905,15 +13094,24 @@ static void *link_main(void *arg) {   // 显示节拍线程：切到节拍模式
 static _Atomic int g_link_fallback; static _Atomic uint64_t g_link_fallback_at;
 static int link_fallback_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_PRESENT_LINK_FALLBACK"); on = e && !strcmp(e, "1"); } return on; }
 static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象的状态对齐到 g_dm_present_link 与省电模式（运行中可改） | Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
-    static int applied; int want = g_dm_present_link;
-    if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
+    /* requested: the last valid g_dm_present_link. An out-of-range value goes back to it, not to the applied mode, which
+       the overrides below change (power saving 3, fallback 0, 60+60's 2: the link stayed in the 120 Hz range after
+       interpolation was turned off). */
+    static int applied, applied_hz, requested; int hz = mtl_display_hz(), want = g_dm_present_link;
+    if (want < 0 || want > 2) { g_dm_present_link = requested; return; }
+    requested = want;
     if (want && atomic_load(&g_link_fallback)) {
         int visible = runtime_front_window_visible() != 0;   // unknown (-1) counts as visible
         if (visible && now_ns() - atomic_load(&g_link_fallback_at) > 10000000000ull) { atomic_store(&g_link_fallback, 0); MLOG("[present] display link tried again (window visible)"); }
         else want = 0;
     }
     if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz | Power-saving mode: display link at 30 Hz
-    if (want == applied) return;
+    /* Odyssey 60+60: at DM_PRESENT_HZ=60 the link ticks at 60 Hz and every tick took the generated picture, so the real
+       frames never reached the screen. A 120 Hz link gives each picture its own refresh; the game keeps its own 60 Hz
+       clock meanwhile (hle_nvn.c, odyssey_mfx_clock), so the link's tick count does not pace it. */
+    want = odyssey_link_mode(want, mfx_enabled());
+    if (want == applied && hz == applied_hz) return;
+    applied_hz = hz;
     g_link_mode = want;
     if (!g_link_started) {
         if (!want) { applied = 0; return; }
@@ -12963,7 +13161,7 @@ static void *present_main(void *arg) {
            the game frame for at least half a game frame (30+30 at 100 Hz: 1 + 2 refreshes within the 3.3 a frame lasts). When
            a newer game frame is already queued (uncapped interpolation above half the refresh rate) the interpolated
            picture is skipped: two pictures per game frame would fall further and further behind. */
-        static double tick; if (!tick) { int hz = mtl_display_hz(); tick = 1.0 / (hz > 0 ? hz : 60); }
+        int hz = mtl_display_hz(); double tick = 1.0 / (hz > 0 ? hz : 60);
         pthread_mutex_lock(&g_pq_mu); int behind = g_pq_read < g_pq_in; pthread_mutex_unlock(&g_pq_mu);
         int show_interp = it.interp >= 0 && !behind;
         if (show_interp) { @autoreleasepool { (void)present_now(&it.t, fmin(it.period / 2, tick), it.frame, ticket, it.crop, nil, 0, it.interp); } }
@@ -13045,7 +13243,7 @@ static int mfx_present_frame_body(const tex_t *t, double period, int discard) {
             d.storageMode = MTLStorageModeShared; g_mfx_swap_prev = [g_dev newTextureWithDescriptor:d]; }
         if (sc && g_mfx_swap_prev) { mtl_finish_gpu(); id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder]; [b copyFromTexture:sc toTexture:g_mfx_swap_prev]; [b endEncoding]; cb_commit(cb); cb_wait(cb); }
     }
-    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET()
+    g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; odyssey_scene_frame(&g_odyssey_scene); BOTW_MFX_FRAME_RESET()
     if (++g_mfx.frames % 300 == 0) { char b[256]; mfx_stats(b, sizeof b); MLOG("[mfx] 至帧 %llu：%s", (unsigned long long)atomic_load(&g_cur_frame), b); }
     return slot;
 }
@@ -13054,7 +13252,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
-    if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
+    if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; odyssey_scene_frame(&g_odyssey_scene); BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
     mtl_wb_eager();
     g_uw_ui = 0;

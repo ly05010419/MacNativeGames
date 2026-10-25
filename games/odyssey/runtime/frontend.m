@@ -23,6 +23,10 @@ static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
 static CVDisplayLinkRef displayLink;
 static _Atomic int focused;
+/* Refresh rate of the window's screen, sampled on the main thread by front_sync_drawable. 0 until its first call, which
+   runtime_front_run makes when the window opens, before the game can present; render threads read it (mtl_display_hz). */
+static _Atomic int frontDisplayHz;
+int runtime_front_display_hz(void){return atomic_load(&frontDisplayHz);}
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
 static void *vsyncEvents[16];
 static unsigned vsyncCount;
@@ -126,13 +130,13 @@ static NSString *shortcut_text(void){
  const char *interp;
  switch(mfx_enabled()){
   case MFX_30:interp="30+30";break;
-  case MFX_HALF:interp=TOTK_UI("刷新率一半","half refresh rate");break;
+  case MFX_HALF:interp="60+60 (120 Hz)";break;
   case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
   default:interp=TOTK_UI("关闭","off");break;
  }
  /* Keys 3 (picture modes) and 4 (21:9) are not listed: for Odyssey runtime_output_mode_cycle and runtime_aspect_toggle
     are stubs (runtime/game_patches.c), so those keys do nothing. */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（按键切换）","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (current; press to cycle)")),[NSString stringWithUTF8String:interp]];
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（仅 120 Hz；按键切换）","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (120 Hz only; press to toggle)")),[NSString stringWithUTF8String:interp]];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
@@ -168,6 +172,13 @@ void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();disp
 static CGFloat drawable_scale(void){static CGFloat f=-1;if(f<0){const char *e=getenv("TOTK_DRAWABLE_SCALE");f=e?atof(e):1;if(f<0.25||f>4)f=1;}return f;}
 static void front_sync_drawable(void){
  NSView *v=window.contentView;if(!v||!metalLayer)return;
+ NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ CGDirectDisplayID display=[screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+ CGDisplayModeRef mode=display?CGDisplayCopyDisplayMode(display):NULL;
+ double rate=mode?CGDisplayModeGetRefreshRate(mode):0;if(mode)CGDisplayModeRelease(mode);
+ int hz=rate>0?(int)lround(rate):(int)screen.maximumFramesPerSecond;
+ if(atomic_exchange(&frontDisplayHz,hz)!=hz)fprintf(stderr,"[odyssey-display] window screen %u: %d Hz\n",display,hz);
+ if(displayLink&&display)CVDisplayLinkSetCurrentCGDisplay(displayLink,display);
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
  metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);
@@ -189,6 +200,8 @@ static void front_sync_drawable(void){
   uint64_t t0=runtime_now_ns();while(runtime_fs_save_busy()&&runtime_now_ns()-t0<15000000000ull)usleep(20000);
   fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
 }
+-(void)screenParametersChanged:(NSNotification *)n{(void)n;front_sync_drawable();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
@@ -273,6 +286,7 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Super Mario Odyssey Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
+  [NSNotificationCenter.defaultCenter addObserver:windowDelegate selector:@selector(screenParametersChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
   front_install_menu();front_start_cursor_hiding();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
@@ -305,6 +319,7 @@ void runtime_front_run(void(*callback)(void)){
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");
+  front_sync_drawable();   /* the link exists now: point it at the window's screen (the call above came before it) */
   pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
   [NSApp run];runtime_fail("native event loop returned unexpectedly");
  }

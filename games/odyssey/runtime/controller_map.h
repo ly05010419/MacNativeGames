@@ -10,6 +10,9 @@
    the button is down, except while the fire button is also down (hold L2 to draw the bow, press R2 to shoot it; the
    fire button's own line applies only while the aim button is up). A mode byte keeps the kind in its low 3 bits and,
    for aim, the fire button's index in its high 5 bits.
+   A "reach <lstick|rstick> <up|down|left|right> = <0.3..1>" line says how far a worn stick actually gets in that
+   direction (measured 24 October: an Xbox controller's left stick reached only 0.67 downward); that half-axis is scaled
+   up so its full travel gives full input (controller_reach_parse).
    Pure C: app/launcher.m checks the file before the game starts (an alert names the bad line), runtime/gamepad.m
    applies it, tests/test_controller_map.c covers the parser. */
 #ifndef TOTK_CONTROLLER_MAP_H
@@ -54,7 +57,7 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
         if (hash) stop = hash;
         while (p < stop && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
         while (stop > p && (stop[-1] == ' ' || stop[-1] == '\t' || stop[-1] == '\r')) stop--;
-        if (p < stop) {
+        if (p < stop && !(stop - p > 6 && !strncasecmp(p, "reach", 5) && (p[5] == ' ' || p[5] == '\t'))) {   /* reach lines: controller_reach_parse */
             const char *eq = memchr(p, '=', (size_t)(stop - p));
             if (!eq) { *error = "expected \"button = Switch button [hold|tap|toggle]\""; return line; }
             const char *key_end = eq, *value = eq + 1;
@@ -95,6 +98,34 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
         p = end ? end + 1 : NULL;
     }
     memcpy(map, next, sizeof next); memcpy(modes, nextMode, sizeof nextMode);
+    return 0;
+}
+
+/* Stick reach lines (see the top): reach[stick * 4 + direction], stick 0 lstick / 1 rstick, direction 0 up / 1 down /
+   2 left / 3 right; 1 = full travel (the default). Returns 0, or the 1-based number of the first bad line with *error. */
+static inline int controller_reach_parse(const char *text, float reach[8], const char **error) {
+    float next[8]; for (int i = 0; i < 8; i++) next[i] = 1.0f;
+    static const char *const sticks[] = {"lstick", "rstick"}, *const dirs[] = {"up", "down", "left", "right"};
+    int line = 0;
+    for (const char *p = text; p && *p;) {
+        line++;
+        const char *end = strchr(p, '\n'), *stop = end ? end : p + strlen(p), *hash = memchr(p, '#', (size_t)(stop - p));
+        if (hash) stop = hash;
+        while (p < stop && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        if (stop - p > 6 && !strncasecmp(p, "reach", 5) && (p[5] == ' ' || p[5] == '\t')) {
+            char stick[16] = "", dir[16] = "", rest[64] = ""; float value = 0; char tail[8] = "";
+            size_t n = (size_t)(stop - p); char buf[128]; if (n >= sizeof buf) { *error = "reach line too long"; return line; }
+            memcpy(buf, p, n); buf[n] = 0;
+            if (sscanf(buf, "%*s %15s %15[^= \t] = %63s %7s", stick, dir, rest, tail) != 3 || sscanf(rest, "%f", &value) != 1) {
+                *error = "expected \"reach lstick down = 0.67\""; return line; }
+            int s = controller_name_index(sticks, 2, stick, strlen(stick)), d = controller_name_index(dirs, 4, dir, strlen(dir));
+            if (s < 0 || d < 0) { *error = "reach needs lstick or rstick, then up, down, left or right"; return line; }
+            if (!(value >= 0.3f && value <= 1.0f)) { *error = "reach must be between 0.3 and 1"; return line; }
+            next[s * 4 + d] = value;
+        }
+        p = end ? end + 1 : NULL;
+    }
+    memcpy(reach, next, sizeof next);
     return 0;
 }
 

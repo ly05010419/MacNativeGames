@@ -4,6 +4,7 @@
    reports (runtime/services.c: the Mac's language, or TOTK_LANG). Linked into the BotW program only (botw.md). */
 #include "ipc.h"
 #include "runtime.h"
+#include "game_language.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +16,12 @@ static uint64_t code(unsigned i) { uint64_t v = 0; memcpy(&v, CODES[i], strlen(C
 static uint64_t current(void) {
     uint64_t (*desired)(void) = (uint64_t (*)(void))runtime_override("_ZN2nn2oe18GetDesiredLanguageEv");
     return desired ? desired() : code(1);
+}
+
+/* The region a console playing this language has (game_language.h): 1, the Americas, for American English. */
+static int32_t current_region(void) {
+    uint64_t v = current(); char c[9] = {0}; memcpy(c, &v, 8);
+    return game_language_region_code(c);
 }
 
 /* Fill an out buffer with up to `limit` codes; a C buffer ("pointer") is also reported back to the client. */
@@ -40,7 +47,7 @@ static void settings_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
         uint64_t v = code((unsigned)language); IPC_OUT(rs, v); return;
     }
     case 3: { int32_t n = NCODES_V1; IPC_OUT(rs, n); return; }                          /* GetAvailableLanguageCodeCount */
-    case 4: { int32_t region = 1; IPC_OUT(rs, region); return; }                        /* GetRegionCode: USA */
+    case 4: { int32_t region = current_region(); IPC_OUT(rs, region); return; }         /* GetRegionCode: the language's */
     case 5: { int32_t n = put_codes(rq, rs, NCODES); IPC_OUT(rs, n); return; }          /* GetAvailableLanguageCodes2 */
     case 6: { int32_t n = NCODES; IPC_OUT(rs, n); return; }                             /* GetAvailableLanguageCodeCount2 */
     case 8: { uint8_t quest = 0; IPC_OUT(rs, quest); return; }                          /* GetQuestFlag: not a kiosk unit */

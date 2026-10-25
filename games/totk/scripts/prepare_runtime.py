@@ -83,8 +83,11 @@ for name in ['main', 'subsdk0', 'sdk']:
     gates = []
     for line in (ROOT / f'rewritten/{version}/{name}.gates.tsv').read_text().splitlines():
         ret, kind, arg, original = line.split()
-        assert kind in ['cntpct', 'cntvct', 'svc']
-        gates.append(dict(ret=int(ret, 0), timer=kind != 'svc', arg=int(arg), original=int(original, 0)))
+        assert kind in ['cntpct', 'cntvct', 'svc', 'spin']
+        # timer: 0 svc, 1 cntpct / cntvct, 2 spin wait (patch_nso.py "Spin waits"; threads.c runtime_spin_wait)
+        gates.append(dict(ret=int(ret, 0), timer={'svc': 0, 'spin': 2}.get(kind, 1), arg=int(arg), original=int(original, 0)))
+    gates.sort(key=lambda g: g['ret'])   # loader.c runtime_dispatch looks a return address up by binary search
+    assert len({g['ret'] for g in gates}) == len(gates), 'duplicate gate return address'
     # Match each compiler's actual DT_INIT state load before decoding it.
     flag_reg, load_offset = (19, 20) if version in ('v143', 'botw160', 'botw190') else (20, 24)
     a, w = struct.unpack_from('<I', image, tags[12]+16)[0], struct.unpack_from('<I', image, tags[12]+load_offset)[0]
@@ -122,7 +125,7 @@ for n, m in enumerate(modules):
     lines.extend('{' + f'{json.dumps(s["name"])},{s["value"]}ULL,{s["size"]}ULL,{int(s["defined"])},{s["binding"]},{s["type"]}' + '},' for s in m['symbols'])
     lines.append('};')
     lines.append(f'static const Gate gate_{n}[] = {{')
-    lines.extend(f'{{{g["ret"]}ULL,{g["original"]}ULL,{g["timer"]!s},{g["arg"]}}},'.replace('True','1').replace('False','0') for g in m['gates'])
+    lines.extend(f'{{{g["ret"]}ULL,{g["original"]}ULL,{g["timer"]},{g["arg"]}}},' for g in m['gates'])
     if not m['gates']: lines.append('{0,0,0,0},')
     lines.append('};')
 lines.append('static Module modules[] = {')

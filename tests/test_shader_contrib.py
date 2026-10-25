@@ -45,7 +45,9 @@ if __name__ == '__main__':
     unittest.main()
 
 
-from collect_shader_issues import attachment_urls, contribution_pipelines, contribution_rows  # noqa: E402
+import collect_shader_issues  # noqa: E402
+from collect_shader_issues import (attachment_urls, contribution_pipelines, contribution_rows, issue_urls, key_source,  # noqa: E402
+                                   reply_text, route)
 
 
 class IssueCollectionTests(unittest.TestCase):
@@ -83,6 +85,51 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(rows, {(self.KEY_A, '{"tex":{"10":"3d","9":"2d"}}'), (self.KEY_B, '{}')})
         self.assertEqual(dropped, 7)
         self.assertEqual(contribution_pipelines(text), [('R', 'abcd'), ('B', 'abcd', '-', '3:7:0x1p-1,0x1p-1,0x1p-1,0x1p-1;')])
+
+    @staticmethod
+    def pipeline(vs, fs):   # a pipeline key leads with two NUL-padded 80-byte names "<variant>_b"
+        name = lambda k: (f'{k}-0123456789ab_b'.encode() if k else b'').ljust(80, b'\0')
+        return ('R', (name(vs) + name(fs) + bytes(16)).hex())
+
+    def test_rows_go_to_the_game_their_shader_key_belongs_to(self):
+        # one contribution file serves both games, so an issue titled for one can carry the other's rows (2026-10-25)
+        key_c = 'c' * 64
+        keys = {'totk': {self.KEY_A}, 'botw': {self.KEY_B}}
+        rows = {(self.KEY_A, '{}'), (self.KEY_B, '{}'), (key_c, '{}')}
+        own, mixed, foreign, compute = (self.pipeline(self.KEY_A, self.KEY_A), self.pipeline(self.KEY_A, self.KEY_B),
+                                        self.pipeline(key_c, key_c), self.pipeline(self.KEY_B, None))
+        games, unknown = route(rows, [own, mixed, foreign, compute], keys)
+        self.assertEqual(games['totk'], ({(self.KEY_A, '{}')}, [own]))
+        self.assertEqual(games['botw'], ({(self.KEY_B, '{}')}, [compute]))
+        self.assertEqual(unknown, ({(key_c, '{}')}, [mixed, foreign]))
+
+    def test_shader_keys_come_from_a_seed_or_a_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            seed = Path(tmp) / 'botw160'; seed.mkdir()
+            (seed / 'shader-keys.json').write_text(json.dumps({'version': 'botw160', 'keys': [self.KEY_B]}))
+            self.assertEqual(key_source(str(seed)), ('botw', {self.KEY_B}))
+            listed = Path(tmp) / 'v121-keys.json'; listed.write_text(json.dumps([self.KEY_A]))
+            self.assertEqual(key_source(f'totk={listed}'), ('totk', {self.KEY_A}))
+            old = Path(tmp) / 'v0'; old.mkdir(); (old / f'{self.KEY_A}.variants').write_text('')
+            with self.assertRaises(ValueError):   # an old seed names only its startup shaders: not every key of the game
+                key_source(str(old))
+            with self.assertRaises(ValueError):
+                key_source(f'odyssey={listed}')
+
+    def test_attachments_in_comments_are_taken(self):
+        issue = {'body': 'upload failed', 'comments': [{'body': 'here: https://github.com/user-attachments/files/9/a.txt'}]}
+        self.assertEqual(issue_urls(issue), ['https://github.com/user-attachments/files/9/a.txt'])
+
+    def test_a_large_contribution_is_read(self):
+        # contributions carry render pipelines too: a 1.2.1 file had 10,188 rows, over the old 8 MiB (#435)
+        self.assertGreaterEqual(collect_shader_issues.MAX_BYTES, 64 << 20)
+
+    def test_the_reply_names_each_game_it_merged_into(self):
+        self.assertIn('15 of them new', reply_text({'totk': (100, 15)}, 'totk'))
+        mixed = reply_text({'totk': (54, 0), 'botw': (436, 2)}, 'botw')
+        self.assertIn("Tears of the Kingdom: 54 rows, 0 new; Breath of the Wild: 436 rows, 2 new", mixed)
+        self.assertIn('王国之泪 54 条，其中新增 0 条；旷野之息 436 条，其中新增 2 条', mixed)
+        self.assertIn('None of the shaders', reply_text({}, 'totk'))   # --drop-unknown on another game's file
 
 
 sys.path.insert(0, str(TOTK / 'ios/tools'))

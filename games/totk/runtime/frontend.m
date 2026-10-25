@@ -83,8 +83,8 @@ void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_
   if(!bootOverlay||bootOverlay.hidden)return;
   double percent=total ? fmin(100.0,(double)done/(double)total*100.0) : 100.0;
   bootStage.stringValue=[NSString stringWithFormat:@(TOTK_UI("预热着色器与管线 %.0f%%","Warming shaders and pipelines %.0f%%")),floor(percent)];
-  bootDetail.stringValue=[NSString stringWithFormat:@(TOTK_UI("已处理 %llu/%llu 项 · 着色器 %llu/%llu · 管线 %llu/%llu","%llu/%llu items · shaders %llu/%llu · pipelines %llu/%llu")),
-      (unsigned long long)done,(unsigned long long)total,(unsigned long long)shaders,(unsigned long long)shader_total,
+  bootDetail.stringValue=[NSString stringWithFormat:@(TOTK_UI("着色器 %llu/%llu · 管线 %llu/%llu","shaders %llu/%llu · pipelines %llu/%llu")),
+      (unsigned long long)shaders,(unsigned long long)shader_total,
       (unsigned long long)pipelines,(unsigned long long)pipeline_total];
   bootProgress.indeterminate=NO;
   bootProgress.doubleValue=percent;

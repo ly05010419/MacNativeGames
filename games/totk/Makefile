@@ -208,6 +208,13 @@ probe-audio: runtime
 	cat analysis/native-audio-probe.json
 	@if TOTK_AUDIO_STOP_RELEASE=0 build/totk-native rewritten/v0 probe-audio > /dev/null 2> analysis/native-audio-probe-stop-negative.log; then echo "audio stop negative control passed unexpectedly"; exit 1; \
 	else echo "audio negative control (a stopped voice keeps its queued buffers) failed as expected: $$(grep -o 'audio probe: [^"]*' analysis/native-audio-probe-stop-negative.log | head -1)"; fi
+# Breath of the Wild 1.9.0: the same probe in the BOTW binary, with the volume ramps and depop (audio_mixer.c voice_ramp_mix).
+.PHONY: probe-audio-botw190
+probe-audio-botw190: runtime-botw190
+	build/totk-native-botw190 rewritten/botw190 probe-audio > analysis/native-audio-probe-botw190.json
+	cat analysis/native-audio-probe-botw190.json
+	@if TOTK_AUDIO_RAMP=0 build/totk-native-botw190 rewritten/botw190 probe-audio > /dev/null 2> analysis/native-audio-probe-ramp-negative.log; then echo "audio ramp negative control passed unexpectedly"; exit 1; \
+	else echo "audio negative control (volume steps and stops not smoothed) failed as expected: $$(grep -o 'audio probe: [^"]*' analysis/native-audio-probe-ramp-negative.log | head -1)"; fi
 .PHONY: probe-vpool
 probe-vpool: runtime
 	build/totk-native rewritten/v0 probe-vpool > analysis/native-vpool-probe.json

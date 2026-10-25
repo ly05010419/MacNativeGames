@@ -23,6 +23,7 @@ static void refresh_gamepads(void);
 
 /* The player's button layout (controller_map.h): TOTK_CONTROLS names the file (the launcher: <data>/controls.txt and
    checks it first). No file: the default layout. */
+static float stickReach[8] = {1, 1, 1, 1, 1, 1, 1, 1};   /* controller_reach_parse: a worn stick's travel per direction */
 static void load_controller_map(void) {
     controller_map_default(controllerMap, controllerModes);
     const char *path = getenv("TOTK_CONTROLS");
@@ -33,13 +34,18 @@ static void load_controller_map(void) {
     text[n] = 0;
     const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, &error);
     if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
+    line = controller_reach_parse(text, stickReach, &error);
+    if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
+    for (int i = 0; i < 8; i++) if (stickReach[i] < 1.0f)
+        fprintf(stderr, "[totk-input] %s %s reaches %.2f: scaled to full input\n", i < 4 ? "left stick" : "right stick", (const char *[]){"up", "down", "left", "right"}[i % 4], stickReach[i]);
     uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS]; controller_map_default(defaults, defaultModes);
     int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
     fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
 }
 
-static int32_t stick_axis(float value) {
+static int32_t stick_axis(float value, float reach_negative, float reach_positive) {
     const float deadzone = 0.12f;
+    value /= value < 0 ? reach_negative : reach_positive;   /* a worn direction's full travel is full input */
     float magnitude = fabsf(value);
     if (magnitude <= deadzone) return 0;
     if (magnitude > 1.0f) magnitude = 1.0f;
@@ -84,10 +90,10 @@ static void refresh_gamepads(void) {
         if (!pad) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
-        next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value));
-        next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value));
-        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
-        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
+        next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value, stickReach[2], stickReach[3]));
+        next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value, stickReach[1], stickReach[0]));
+        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value, stickReach[6], stickReach[7]));
+        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value, stickReach[5], stickReach[4]));
     }
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */

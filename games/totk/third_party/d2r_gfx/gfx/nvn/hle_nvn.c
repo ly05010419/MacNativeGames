@@ -2078,8 +2078,9 @@ static int async_replay(void) {
 }
 static void submit_exec(int n, const uint64_t *h, void *ucap);
 static void present_exec(win_t *o, int idx, double period, const int crop[4], uint64_t frame);
+static _Thread_local int t_on_x_thread;   // set on the translation thread: x_drain there would wait for itself
 static void *x_thread(void *unused) {
-    (void)unused; pthread_setname_np("totk-translate");
+    (void)unused; pthread_setname_np("totk-translate"); t_on_x_thread = 1;
     for (;;) {
         pthread_mutex_lock(&g_xq_mu);
         while (g_xq_done == g_xq_in) pthread_cond_wait(&g_xq_cv, &g_xq_mu);
@@ -2127,7 +2128,7 @@ static void x_wait_job(uint64_t job) {
     pthread_mutex_lock(&g_xq_mu); while (g_xq_done < job) pthread_cond_wait(&g_xq_cv, &g_xq_mu); pthread_mutex_unlock(&g_xq_mu);
 }
 static void x_drain(void) {   // everything queued so far has run (no-op when synchronous or idle)
-    if (!async_replay()) return;
+    if (!async_replay() || t_on_x_thread) return;   // on the translation thread everything queued before this job has run
     NVN_BLOCKING();   // a guest thread gives its virtual core back while it waits (TOTK has three)
     pthread_mutex_lock(&g_xq_mu); uint64_t want = g_xq_in, have = g_xq_done; pthread_mutex_unlock(&g_xq_mu);
     if (have >= want) return;

@@ -91,6 +91,25 @@ int main(void) {
     setenv("TOTK_ROMFS", romfs, 1); setenv("TOTK_SHARED_FONTS", fonts, 1); setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_GAME_SLOT_DIR", slot, 1); setenv("TOTK_SLOT_OWNER", "user", 1); setenv("TOTK_SLOT_PURPOSE", "Odyssey.app", 1);
     setenv("TOTK_SHADER_ASYNC", "1", 0);
+    /* The RomFS check's proof file (runtime/romfs.c) goes next to the data, not into the bundle: written beside the
+       bundled RomFS it broke the app's code signature after the first launch (23 October). */
+    setenv("TOTK_ROMFS_PROOF_DIR", data, 1);
+    /* The player's button layout (runtime/controller_map.h), when "Odyssey Data/controls.txt" exists. */
+    char controls[PATH_MAX]; join(controls, data, "controls.txt");
+    if (!stat(controls, &st)) setenv("TOTK_CONTROLS", controls, 0);
+    /* How GameController's A/B/X/Y map to positions (runtime/gamepad_layout.h, TOTK_FACE_BUTTONS): "position" or "label"
+       in "Odyssey Data/face-buttons.txt". "position" makes an Xbox-style controls.txt (south = a ...) match the printed
+       letters on a Nintendo controller too (24 October: a Pro Controller had A and B swapped with that file). */
+    char face_path[PATH_MAX]; join(face_path, data, "face-buttons.txt");
+    FILE *ff = fopen(face_path, "r");
+    if (ff) { char mode[16] = ""; if (fscanf(ff, "%15s", mode) == 1 && (!strcmp(mode, "position") || !strcmp(mode, "label"))) setenv("TOTK_FACE_BUTTONS", mode, 0); fclose(ff); }
+    /* A freeze (no frame for 15 s) logs which threads hold and wait for the virtual cores (runtime/freeze_watchdog.c),
+       so a hang in play can be diagnosed afterwards (23 October: a world-travel hang left no such record). */
+    setenv("ODYSSEY_FREEZE_WATCHDOG", "15", 0);
+    /* Shader variants and pipelines the game met that the app's list lacks (docs/shader-list.md), for the player to send
+       in a shader-list issue: identifiers only. Without this the runtime writes no contribution file at all. */
+    char contrib[PATH_MAX]; join(contrib, data, "shader-list-contribution.txt");
+    setenv("TOTK_SHADER_CONTRIB", contrib, 0);
     /* MetalFX spatial upscale of the 1600x900 game output to the window (Applier's A/B, 22 October: no artifacts, no
        measurable cost, slightly crisper edges). On unless "Odyssey Data/no-metalfx" exists. */
     char no_mfx[PATH_MAX]; join(no_mfx, data, "no-metalfx");

@@ -42,7 +42,9 @@ from pathlib import Path
 
 HEADER = ('# TOTK shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
           '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v7-unverified.\n')
-HEADERS = {'botw': ('# Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
+HEADERS = {'odyssey': ('# Super Mario Odyssey shader list v1 (third_party/totk-scripts/shader_list.py; docs/shader-list.md). Mac only.\n'
+                       '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v4-unverified (games/odyssey).\n'),
+           'botw': ('# Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
                     '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v7-unverified.\n')}
 EXPORT = '# Generated from {} by scripts/shader_list.py; edit that list, not this file.\n'
 KEY = re.compile(r'^[0-9a-f]{64}$')

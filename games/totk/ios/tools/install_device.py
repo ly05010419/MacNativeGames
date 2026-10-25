@@ -176,6 +176,12 @@ def write_pack(seed, names, d, folder, size, done):
     write((0).to_bytes(2, 'little'))
     out.close(); done(d/f'{folder}.pack.{part:03d}')
 
+def seed_beside(ipa, app):
+    """The startup shaders build_ipa.py --image-outside leaves beside the IPA or .app (<name>-shader-seed), when the app
+    carries none of its own: an .ipa (the README's install) as well as an unsigned .app folder. None otherwise."""
+    seed = ipa.with_name(ipa.stem + '-shader-seed')
+    return seed if not (app/'GameData/shader-seed').is_dir() and (seed/'fingerprint.txt').is_file() else None
+
 def push_seed(dev, bundle_id, seed):
     """The startup shaders of an app built with --ios-game-data documents (<app>-shader-seed beside it) into Documents/
     GameData as one stream in 1 GiB parts (<folder>.pack.000, ...), then shader-seed.txt naming the folder; the app unpacks
@@ -272,8 +278,7 @@ def main():
     print('installing over Wi-Fi' if dev['hardwareProperties'].get('platform') == 'visionOS' else 'installing (a few minutes over the cable)')
     run(['xcrun','devicectl','device','install','app','--device',dev['identifier'],app])
     if a.game_data: push_game_data(dev['identifier'], bundle_id, a.game_data)
-    seed = a.ipa.with_name(a.ipa.stem + '-shader-seed')   # build_ipa.py --image-outside
-    if a.ipa.is_dir() and not (app/'GameData/shader-seed').is_dir() and (seed/'fingerprint.txt').is_file():
+    if seed := seed_beside(a.ipa, app):
         push_seed(dev['identifier'], bundle_id, seed)
     management = 'Device Management' if dev['hardwareProperties'].get('platform') == 'visionOS' else 'VPN & Device Management'
     print(f'installed. First time on this device: Settings > General > {management} > trust your Apple ID.')

@@ -12,15 +12,6 @@
 #include "game_version.h"
 #include "aspect_math.h"   /* key 4: TOTK_ASPECT parsing */
 #include <TargetConditionals.h>
-#include "runtime.h"
-#include <sched.h>
-#ifdef GAME_BOTW190
-#define JQ_SPIN_SITE 0xef63e8u
-#define JQ_SPIN_ORIG 0x34fffb6eu   /* cbz w14, 0xef6354 */
-static uint8_t *g_botw_main;
-static int g_jq_yield_on;
-static _Atomic uint64_t g_jq_yield_count;
-#endif
 uint32_t runtime_thread_current_handle(void);
 static void botw_aspect_install(Module *m);   /* key 4, end of the file */
 static int patch_output_res(Module *m);   /* native output size, after runtime_output_res */
@@ -31,7 +22,7 @@ static void botw_aspect_apply(void);
    patches on the Mac, and the patched text and patch area are embedded in the app (ios/tools/gen_embed.py), as for
    Tears of the Kingdom (game_patches.c). On the device the original words are not checked (they are patched already) and
    each patched word is checked instead of written. The switches that leave a patch out (TOTK_REALTIME=0,
-   TOTK_PAD_REPEAT=0, TOTK_RENDER_RES=900, TOTK_EXCL_ACQUIRE=0), the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) and the
+   TOTK_PAD_REPEAT=0, TOTK_SLINK_REALTIME=0, TOTK_RENDER_RES=900, TOTK_EXCL_ACQUIRE=0), the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) and the
    native output size (TOTK_OUTPUT_RES) are Mac only; the export ignores them too, so the device checks what it made. */
 #if TARGET_OS_IPHONE
 #define CODE_PATCHED_AT_BUILD 1
@@ -305,6 +296,50 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
             PAD_LOOP_WORDS, MENU_CD_WORDS);
     pad_log_arm(m);
 }
+/* Sound-link timers by real time (TOTK_SLINK_REALTIME=0: as shipped). xlink2 steps its asset timers (delays, durations)
+   by the frame rate its system holds at +0x84. The effect system's rate gets the VFR's ratio each frame
+   (main+0x1be7918); the sound system's ([main+0x2cc2028]) gets max(raw ratio, 1.0) (main+0x1c59fac..0x1c5a014),
+   which is the ratio on the Switch, where a frame is never shorter than 1/30 s. Above 30 fps the 1.0 made every SLink
+   timer count rendered frames: Cryonis' placement marker, emitted again when its sound event ends after about 24
+   frames, restarted 4-5 times a second at 120 fps instead of about 1.3, so the ice block preview never grew (measured
+   2026-10-23; 1.3 a second at 120 fps after the fix). The store now takes the unclamped ratio from the frame-step page;
+   the audio frame values computed from the clamped number just before it are unchanged. x9 and s0 are free there (a call follows):
+     main+0x1c5a014  str s0, [x8, #0x84]  -> b <veneer>
+     veneer          adrp x9, <page> / ldr s0, [x9] / str s0, [x8, #0x84] / b main+0x1c5a018 */
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
+    int64_t delta = (int64_t)target - (int64_t)site;
+    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
+    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+}
+static void patch_slink_rate(Module *m, uint64_t page) {
+    const char *e = getenv("TOTK_SLINK_REALTIME");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] sound-link timers at least one 30 fps frame per frame, as shipped (TOTK_SLINK_REALTIME=0)\n"); return; }
+    enum { SITE = 0x1c5a014, BACK = 0x1c5a018 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0x1c59fa8u, 0xbd400100u}, {0x1c59facu, 0x1e2e1001u}, {0x1c59fb0u, 0x1e214800u},
+        {0x1c5a00cu, 0x90008348u}, {0x1c5a010u, 0xf9401508u}, {SITE, 0xbd008500u}, {BACK, 0x91090300u}, {0x1c5a01cu, 0x94133c99u},
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {   /* the phone's text is patched already */
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] sound-link rate main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("sound-link timers by real time require the 1.6.0 rate update instructions");
+        }
+    }
+    const uint64_t stub = (m->text_end + 15) & ~15ULL;
+    const uint32_t veneer[] = {
+        adrp_reg(9, (uintptr_t)m->base + stub, page),
+        0xbd400120u,   /* ldr s0, [x9]         (the measured ratio) */
+        0xbd008500u,   /* str s0, [x8, #0x84]  (the sound system's rate) */
+        branch_to(stub + 12, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("sound-link veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("sound-link veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "sound-link veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "sound-link rate");
+    fprintf(stderr, "[botw] sound-link timers follow the measured frame ratio (veneer +%#llx; TOTK_SLINK_REALTIME=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     /* The loader reserved a writable page immediately after main's image; nothing else uses it in this game. */
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
@@ -344,6 +379,7 @@ static void patch_realtime(Module *m) {
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
+    patch_slink_rate(m, page);
 }
 #else
 /* Breath of the Wild 1.9.0: the same real-time step at the 1.9.0 sites (found by disassembly; MacNativeGames
@@ -565,22 +601,6 @@ void runtime_game_patches(Module *m) {
           if (!w) fprintf(stderr, "[botw] exclusive loads with acquire: set at build time (iOS), none left\n"); else
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
-#ifdef GAME_BOTW190
-    g_botw_main = m->base;
-    const char *ey = getenv("TOTK_JQ_YIELD");
-    if (!(ey && !strcmp(ey, "0"))) {   /* default on */
-        uint32_t w; memcpy(&w, m->base + JQ_SPIN_SITE, 4);
-        if (w == JQ_SPIN_ORIG) {
-            put_word(m, JQ_SPIN_SITE, 0xd420f540u, "job-queue spin yield hook");   /* brk #0x7aa */
-            g_jq_yield_on = 1;
-            fprintf(stderr, "[botw] armed job-queue spin yield hook at main+%#x (TOTK_JQ_YIELD=0: off)\n", JQ_SPIN_SITE);
-        } else {
-            fprintf(stderr, "[botw] JQ_SPIN_SITE mismatch: expected %08x found %08x\n", JQ_SPIN_ORIG, w);
-        }
-    } else {
-        fprintf(stderr, "[botw] job-queue spin yield hook off (TOTK_JQ_YIELD=0)\n");
-    }
-#endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
@@ -621,31 +641,6 @@ static int botw_pad_hook(ucontext_t *u) {
 int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was one of ours, handled */
 #ifdef GAME_BOTW160
     if (g_pad_log_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_pad_main + PAD_LOOP) return botw_pad_hook(context);
-#endif
-#ifdef GAME_BOTW190
-    if (g_jq_yield_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_botw_main + JQ_SPIN_SITE) {
-        ucontext_t *u = context;
-        uint64_t *x = u->uc_mcontext->__ss.__x;
-        uint32_t w14 = (uint32_t)x[14];
-        if (w14 != 0) {
-            u->uc_mcontext->__ss.__pc = (uintptr_t)g_botw_main + 0xef63ecu;
-            return 1;
-        }
-        uint64_t cnt = atomic_fetch_add(&g_jq_yield_count, 1) + 1;
-        if ((cnt & 0x3ff) == 1) {
-            static uint64_t last_log;
-            uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-            if (now - last_log >= 5000000000ull) {
-                last_log = now;
-                fprintf(stderr, "[botw] job-queue: %llu core yields from empty/ordered queue spin\n", (unsigned long long)cnt);
-            }
-        }
-        int away = runtime_core_away();
-        sched_yield();
-        runtime_core_back(&away);
-        u->uc_mcontext->__ss.__pc = (uintptr_t)g_botw_main + 0xef6354u;
-        return 1;
-    }
 #endif
     if (!g_jq_on) return 0;
     ucontext_t *u = context; uint64_t pc = u->uc_mcontext->__ss.__pc, *x = u->uc_mcontext->__ss.__x;
@@ -929,21 +924,12 @@ static float aspect_requested(void) {   /* TOTK's parser (aspect_math.h); "displ
    singleton, +0xe8 = projection +0x38 + aspect +0xb0). The straight run main+0x15c2118..0x15c214c (no branch lands in it)
    is rewritten so that store takes a float from the data page after the module (+0x20) when it is not 0.0, else the
    game's own ratio as shipped: near / far copied with one ldp / stp, the three repeated dirty-byte stores before the
-   aspect folded into one, x9 / s1..s3 / flags free there. Key 4 then only sets that word (g_uw_word). 1.9.0 has the
-   same path (main+0x10edaf8) yet kept a written ratio; not looked into. */
-static _Atomic uint32_t *g_uw_word;
-static void botw_aspect_writer(Module *m) {
-    static const uint32_t original[14] = {0x39010277, 0xb9406ec8, 0xb900d268, 0x39010277, 0xb94072c8, 0xb900d668, 0x39010277,
-                                          0x2d4806a0, 0x2d470ea2, 0x39010277, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00ea60};
-    const uint32_t at = 0x15c2118;
-    for (int i = 0; !CODE_PATCHED_AT_BUILD && i < 14; i++) {
-        uint32_t w; memcpy(&w, m->base + at + 4 * i, 4);
-        if (w != original[i]) { fprintf(stderr, "[botw] ultrawide main+%#x: found %08x expected %08x\n", at + 4 * i, w, original[i]); runtime_fail("ultrawide requires the 1.6.0 camera update"); }
-    }
-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
-    if (data_off + 0x4000 != m->size) runtime_fail("ultrawide: no data page after the main module");
-    const uint64_t page = (uintptr_t)m->base + data_off;
-    const uint32_t patched[14] = {
+   aspect folded into one, x9 / s1..s3 / flags free there. Key 4 then only sets that word (g_uw_word). */
+#define UW_WRITER_AT 0x15c2118u
+static const uint32_t uw_writer_original[] = {0x39010277, 0xb9406ec8, 0xb900d268, 0x39010277, 0xb94072c8, 0xb900d668, 0x39010277,
+                                              0x2d4806a0, 0x2d470ea2, 0x39010277, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00ea60};
+static void uw_writer_words(uint32_t *out, uint32_t adrp) {
+    const uint32_t patched[] = {
         0x39010277,   /* strb w23, [x19, #0x40]       dirty */
         0x294da6c8,   /* ldp w8, w9, [x22, #0x6c]     near, far */
         0x291a2668,   /* stp w8, w9, [x19, #0xd0] */
@@ -952,21 +938,60 @@ static void botw_aspect_writer(Module *m) {
         0x1e233821,   /* fsub s1, s1, s3 */
         0x1e223800,   /* fsub s0, s0, s2 */
         0x1e211800,   /* fdiv s0, s0, s1              the game's ratio */
-        adrp_reg(8, (uintptr_t)m->base + at + 32, page),
+        adrp,         /* adrp x8, <data page> */
         0xbd402101,   /* ldr s1, [x8, #0x20]          ours, 0.0 = none */
         0x1e202028,   /* fcmp s1, #0.0 */
         0x1e201c20,   /* fcsel s0, s1, s0, ne */
         0x39010277,   /* strb w23, [x19, #0x40]       dirty */
         0xbd00ea60,   /* str s0, [x19, #0xe8]         the aspect */
     };
-    put_words(m, at, patched, 14, "ultrawide aspect writer");
+    memcpy(out, patched, sizeof patched);
+}
+#else
+/* 1.9.0 keeps a written ratio at the title but writes the aspect every frame in the world too (2026-10-25, iPhone 14:
+   from the first world frames the picture flickered between full screen and 720p, as 1.6.0 did). Its camera update
+   main+0x10eda5c holds the projection at x19 + 0x10 (aspect +0xc0 = projection +0xb0, dirty byte +0x18) and after the
+   fovy call stores near / far and the layer rectangle's width / height in the straight run main+0x10edae0..0x10edb10
+   (13 words, no branch lands in it, x8 / x9 / s1..s3 / flags free before the return). The same rewrite: near / far with
+   one ldp / stp, one dirty-byte store, the aspect from the data page (+0x20) when it is not 0.0. */
+#define UW_WRITER_AT 0x10edae0u
+static const uint32_t uw_writer_original[] = {0xbd406e80, 0x39006276, 0xbd00aa60, 0xbd407280, 0x39006276, 0xbd00ae60, 0x2d4806a0,
+                                              0x2d470ea2, 0x39006276, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00c260};
+static void uw_writer_words(uint32_t *out, uint32_t adrp) {
+    const uint32_t patched[] = {
+        0x39006276,   /* strb w22, [x19, #0x18]       dirty */
+        0x294da688,   /* ldp w8, w9, [x20, #0x6c]     near, far */
+        0x29152668,   /* stp w8, w9, [x19, #0xa8] */
+        0x2d4806a0,   /* ldp s0, s1, [x21, #0x40]     the layer rectangle */
+        0x2d470ea2,   /* ldp s2, s3, [x21, #0x38] */
+        0x1e233821,   /* fsub s1, s1, s3 */
+        0x1e223800,   /* fsub s0, s0, s2 */
+        0x1e211800,   /* fdiv s0, s0, s1              the game's ratio */
+        adrp,         /* adrp x8, <data page> */
+        0xbd402101,   /* ldr s1, [x8, #0x20]          ours, 0.0 = none */
+        0x1e202028,   /* fcmp s1, #0.0 */
+        0x1e201c20,   /* fcsel s0, s1, s0, ne */
+        0xbd00c260,   /* str s0, [x19, #0xc0]         the aspect */
+    };
+    memcpy(out, patched, sizeof patched);
+}
+#endif
+#define UW_WRITER_N (sizeof uw_writer_original / sizeof *uw_writer_original)
+static _Atomic uint32_t *g_uw_word;
+static void botw_aspect_writer(Module *m) {
+    for (unsigned i = 0; !CODE_PATCHED_AT_BUILD && i < UW_WRITER_N; i++) {
+        uint32_t w; memcpy(&w, m->base + UW_WRITER_AT + 4 * i, 4);
+        if (w != uw_writer_original[i]) { fprintf(stderr, "[botw] ultrawide main+%#x: found %08x expected %08x\n", UW_WRITER_AT + 4 * i, w, uw_writer_original[i]); runtime_fail("ultrawide requires this game version's camera update"); }
+    }
+    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (data_off + 0x4000 != m->size) runtime_fail("ultrawide: no data page after the main module");
+    const uint64_t page = (uintptr_t)m->base + data_off;
+    uint32_t patched[UW_WRITER_N];
+    uw_writer_words(patched, adrp_reg(8, (uintptr_t)m->base + UW_WRITER_AT + 32, page));
+    put_words(m, UW_WRITER_AT, patched, UW_WRITER_N, "ultrawide aspect writer");
     g_uw_word = (_Atomic uint32_t *)(void *)(page + 0x20);
 }
 static void botw_aspect_word(int on) { float v = on ? g_uw_wide : 0.0f; uint32_t b; memcpy(&b, &v, 4); if (g_uw_word) atomic_store(g_uw_word, b); }
-#else
-static void botw_aspect_writer(Module *m) { (void)m; }
-static void botw_aspect_word(int on) { (void)on; }
-#endif
 static float g_uw_view;                  /* runtime_aspect_view, below */
 static void botw_aspect_phone(float a);
 static void botw_aspect_install(Module *m) {

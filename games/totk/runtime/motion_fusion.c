@@ -16,7 +16,15 @@
    enough for the aim to creep; a DualSense through GameController needs none.
    Mouse mode (Mac, key 7: runtime/gamepad.m, runtime/mouse_look.h): the mouse takes the sensor over. Its samples come in
    this frame already (runtime_motion_feed_mouse: no TOTK_GYRO_AXES remap, no dead zone), the controller's are dropped
-   meanwhile, and with mouse mode off the controller has it back (from a fresh start). */
+   meanwhile, and with mouse mode off the controller has it back (from a fresh start).
+   States on the console's 5 ms clock (2026-10-22, from the Breath of the Wild branch, 2026-10-19): the console's sensor
+   hands the game a state every 5 ms; a Mac controller's samples come in bursts (the 8BitDo Pro Controller: three samples
+   per HID report, 33 reports a second; GameController: 33 samples a second; the mouse: one per 10 ms tick). Breath of
+   the Wild marks a game frame without new states as one without motion, so at 60 FPS and above about half its frames
+   turned nothing and its motion aim came out much smaller than in TOTK (right at 30 FPS). So the states are produced
+   every 5 ms of real time, with the latest sample's rate held in between, up to the moment the game reads them (and up
+   to each new sample, before it takes over); at most 50 ms past the last sample, and no integration across a longer gap.
+   TOTK_GYRO_CLOCK=0: produced only as samples arrive (still in 5 ms steps). */
 #include "runtime.h"
 #include <math.h>
 #include <pthread.h>
@@ -96,6 +104,29 @@ static void integrate(const double gyro[3], const double acc[3], double dt) {
     }
     memcpy(R, out, sizeof R); orthonormalize();
 }
+static double cur_acc[3] = {0, 0, -1}, cur_gyro[3];   /* the latest sample, held until the next one */
+static uint64_t emit_ns;   /* the time of the newest state */
+static int motion_clock(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_GYRO_CLOCK"); on = !(e && !strcmp(e, "0")); }
+    return on;
+}
+static void push_state(double step) {
+    RuntimeMotionState *s = &ring[produced % MOTION_RING];
+    *s = (RuntimeMotionState){.sampling = produced + 1, .delta_ns = (uint64_t)(step * 1e9)};
+    for (int i = 0; i < 3; i++) {
+        double rps = cur_gyro[i] / (2 * M_PI); angle[i] += rps * step;
+        s->acc[i] = (float)cur_acc[i]; s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
+        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
+    }
+    produced++;
+}
+static void produce_until(uint64_t t) {   /* lock held: 5 ms states at the held rate, up to t */
+    const uint64_t step = 5000000ull;
+    if (!emit_ns || restart) return;
+    if (last_ns && t > last_ns + 50000000ull) t = last_ns + 50000000ull;
+    if (t > emit_ns + 100000000ull) emit_ns = t - step;   /* a gap (sensors were off, the app was in the background) */
+    for (int n = 0; emit_ns + step <= t && n < 64; n++) { integrate(cur_gyro, cur_acc, step / 1e9); push_state(step / 1e9); emit_ns += step; }
+}
 static void feed_locked(const double acc[3], const double gyro[3], uint64_t now);
 void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint64_t now) {
     double acc[3], gyro[3];
@@ -115,23 +146,15 @@ void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint
 }
 /* One sample in the reference controller frame (lock held). */
 static void feed_locked(const double acc[3], const double gyro[3], uint64_t now) {
-    double dt = last_ns && now > last_ns ? (now - last_ns) / 1e9 : 0.004;
-    if (dt > 0.05) dt = 0.004;   /* a gap (sensors were off, the app was in the background): no integration across it */
+    produce_until(now);   /* the time up to this sample at the rate held so far */
+    memcpy(cur_acc, acc, sizeof cur_acc); memcpy(cur_gyro, gyro, sizeof cur_gyro);
     last_ns = now; live = 1;
-    if (restart) { align_to(acc); memset(angle, 0, sizeof angle); restart = 0; }
-    else integrate(gyro, acc, dt);
-    RuntimeMotionState *s = &ring[produced % MOTION_RING];
-    *s = (RuntimeMotionState){.sampling = produced + 1, .delta_ns = (uint64_t)(dt * 1e9)};
-    for (int i = 0; i < 3; i++) {
-        double rps = gyro[i] / (2 * M_PI); angle[i] += rps * dt;
-        s->acc[i] = (float)acc[i]; s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
-        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
-    }
-    produced++;
+    if (restart) { align_to(acc); memset(angle, 0, sizeof angle); restart = 0; emit_ns = now; push_state(0.005); }
     if (!log_at) log_at = now;
-    if (now - log_at >= 30000000000ull) {
+    if (now - log_at >= 30000000000ull && produced) {
+        const RuntimeMotionState *s = &ring[(produced - 1) % MOTION_RING];
         uint64_t values, reads; runtime_hid_feedback_stats(&values, &reads);
-        fprintf(stderr, "[gyro] last 30 s: %llu samples (%.0f a second), the game read the states %llu times; now acc (%+.2f %+.2f %+.2f) G, gyro (%+.3f %+.3f %+.3f) rev/s\n",
+        fprintf(stderr, "[gyro] last 30 s: %llu states (%.0f a second), the game read the states %llu times; now acc (%+.2f %+.2f %+.2f) G, gyro (%+.3f %+.3f %+.3f) rev/s\n",
                 (unsigned long long)(produced - logged), (produced - logged) / ((now - log_at) / 1e9), (unsigned long long)(reads - reads_logged),
                 s->acc[0], s->acc[1], s->acc[2], s->gyro[0], s->gyro[1], s->gyro[2]);
         logged = produced; reads_logged = reads; log_at = now;
@@ -146,7 +169,9 @@ int runtime_motion_read(RuntimeMotionState *out, int max) {
     if (max <= 0) return 0;
     int n = 0;
     pthread_mutex_lock(&lock);
-    if (live && runtime_now_ns() - last_ns < 200000000ull) {   /* no sample for 200 ms: no motion */
+    uint64_t now = runtime_now_ns();
+    if (live && now - last_ns < 200000000ull) {   /* no sample for 200 ms: no motion */
+        if (motion_clock()) produce_until(now);
         uint64_t have = produced < MOTION_RING ? produced : MOTION_RING;
         n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
         for (int i = 0; i < n; i++) out[i] = ring[(produced - 1 - (uint64_t)i) % MOTION_RING];

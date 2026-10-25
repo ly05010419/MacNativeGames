@@ -38,7 +38,8 @@ def main():
             ctr = Ctr(source, record['nca_offset'], record['size'], nca_ctr_key(hdr, keys, tickets))
             require(end <= ctr.size, 'Control RomFS exceeds stored NCA')
             upper = fs[0x140:0x148][::-1]
-            with tempfile.TemporaryDirectory(dir=HERE / 'Odyssey_build') as temp:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=args.output.parent) as temp:   # the work folder (ignored), not a fixed Odyssey_build
                 image = Path(temp) / 'control-romfs.bin'
                 verify_ivfc(fs, end - start,
                             lambda offset, length: ctr.read(start + offset, length, upper), image)

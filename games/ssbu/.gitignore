@@ -1,0 +1,16 @@
+# Super Smash Bros. Ultimate: work folder, player mods (they hold game data) and game data by format, wherever it lands in this folder
+SSBU_build/
+/mods/
+/extracted/
+/rewritten/
+/analysis/
+/build/
+/user-data/
+romfs.bin
+# the player's own files, should one be copied here: game files, keys, saves
+*.xci
+*.nsp
+*.nsz
+*.nca
+*.keys
+*.app/

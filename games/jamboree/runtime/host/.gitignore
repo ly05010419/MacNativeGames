@@ -1,0 +1,7 @@
+# Generated from the original game's tables (dm/host/Makefile builds them from the player's own game files; not in the repository)
+dm_vault_tab.h
+dm_hud_exp.h
+dm_bright_levels.inc
+*.h.tmp
+*.inc.tmp
+gen/

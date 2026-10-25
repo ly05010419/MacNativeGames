@@ -24,6 +24,11 @@ typedef struct {
     uint64_t played; uint32_t consumed, drops;
     struct { int16_t history[2]; int32_t buffer; uint64_t at; } adpcm;   /* DSP-ADPCM decode cursor (buffer slot, next sample) and history */
     float biquad_state[2][6][2];   /* filter, channel, transposed direct-form II delays */
+#ifdef GAME_BOTW
+    /* Volume ramps and depop, as the DSP does them (audio_mixer.c, voice_ramp_mix): the volume the last frame ended at,
+       whether the voice was playing in the last frame, and the last sample it added to each buffer of its mix. */
+    float prev_volume; uint8_t ramp_ready, was_started, fade_in; float last[6][24];   /* fade_in: a new voice that starts over a kept tail ramps up from 0 */
+#endif
 } ServerVoice;
 
 enum { SV_STOPPED, SV_STARTED, SV_PAUSED, SV_STOPPING };
@@ -49,5 +54,8 @@ void audio_mixer_effect_result(AudioRenderer *r, int id, void *output, unsigned 
 uint32_t audio_mixer_sink_written(AudioRenderer *r, int id);
 void audio_mixer_render(AudioRenderer *r, double seconds);   /* called with r->lock held, after audio_voices_prepare, before voices advance */
 void audio_voices_prepare(AudioRenderer *r);                 /* audio_renderer.c: each render frame's voice state changes (flush, stop, start) */
+#ifdef GAME_BOTW
+int audio_mixer_voice_release(AudioRenderer *r, ServerVoice *v);   /* queues the tail of a stopped or paused voice before audio_renderer.c resets it; 1 if it did */
+#endif
 int audio_buffer_empty(const AudrenWaveBuffer *b);           /* no samples to decode: played as soon as it is reached */
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);

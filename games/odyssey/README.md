@@ -31,6 +31,19 @@ Tested on one Mac: MacBook Pro, Apple M3, 8 GB, macOS 26.6.
 
 Exact measurements and logs are in the development log below and in the project's test evidence.
 
+## Optional frame interpolation
+
+Key **2** toggles a request for **60 real + 60 generated pictures** on a 120 Hz
+window screen and supported Metal 4 GPU. It is off by default. Odyssey's game
+logic stays at 60 Hz; other screen rates suspend generation. Motion comes from
+camera reprojection, so moving characters can still show artifacts. See
+[frame interpolation](docs/frame-interpolation.md) for inputs, limits and checks.
+
+The modes copied from Tears of the Kingdom are gone: key 2 now toggles instead
+of cycling, and `TOTK_MFX=interp30`, `interpmax` and numeric values all request
+60+60. 30+30 no longer exists, so on 60, 100 or 144 Hz screens nothing is
+generated.
+
 ## What you need
 
 - An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1).
@@ -73,8 +86,10 @@ space in its path below `games/odyssey`, since `make` can't handle spaces), `--d
 
 **Tested 23 October 2026** from an empty folder on the M3 test Mac with a 1.3.0 card dump: about 9 minutes in all
 (the shader seed about 6, packaging about 2). The rewritten modules, the merged game data and all 129,602 shader-seed files came
-out byte-identical to the known-good build, and the new app started and showed the game's opening screen. Not yet
-tried on a second Mac or with an NSP.
+out byte-identical to the known-good build, and the new app started and showed the game's opening screen. That count
+was made with the translator the port was developed on; with the translator in `prebuilt/` (main since 069a999) the
+seed has 28,131 shaders in 89,892 files (24 October), which is what a correct build from main gives. Others have built
+and played it from NSPs (base + 1.3.0 update merged into one PFS0, #657) and with the Command Line Tools only (#655).
 
 Optional, after you've played a while: `scripts/precompile_cached_shaders.py` compiles the shaders your game has
 translated into Metal libraries ahead of time; then run the build command again to repackage.

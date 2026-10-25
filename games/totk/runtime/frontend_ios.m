@@ -73,6 +73,8 @@ uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
 static _Atomic int appActive=1;
 int runtime_front_focus(void){return atomic_load(&appActive);}
 void mtl_app_active(int active);
+void mtl_hud_safe_area(int w,int h,int side,int bottom);   /* gfx/nvn/nvn_mtl.m: the HUD boxes keep out of the safe area */
+void runtime_ios_sync_safe_area(UIView *host);
 /* Not active (background, Control Center, lock): stop GPU submission (iOS rejects background GPU work) and tell the game focus changed, like the Mac window. */
 static void app_active_changed(int active){
  if(atomic_exchange(&appActive,active)==active)return;
@@ -109,6 +111,16 @@ void runtime_ios_sync_drawable(UIView *host){
  if(CGSizeEqualToSize(metalLayer.drawableSize,CGSizeMake(vw,vh)))return;
  metalLayer.drawableSize=CGSizeMake(vw,vh);
  fprintf(stderr,"[totk] view drawable %.0fx%.0f (screen scale %.1f, TOTK_IOS_DRAWABLE_H=%ld)\n",vw,vh,s,want);runtime_aspect_view(vw,vh);   /* full screen: the camera takes the drawable's shape (aspect_patch.h) */
+ runtime_ios_sync_safe_area(host);
+}
+/* The safe area (notch, rounded corners, home indicator) in drawable pixels: the HUD's corner boxes keep out of it
+   (nvn_mtl.m). The view's safeAreaInsetsDidChange calls it too: at the first drawable the view is in no window yet and
+   the insets are 0. */
+void runtime_ios_sync_safe_area(UIView *host){
+ CGSize px=metalLayer?metalLayer.drawableSize:CGSizeZero;
+ if(px.width<1||host.bounds.size.width<1)return;
+ UIEdgeInsets in=host.safeAreaInsets;double k=px.width/host.bounds.size.width;   /* points -> drawable pixels */
+ mtl_hud_safe_area((int)px.width,(int)px.height,(int)lround(MAX(in.left,in.right)*k),(int)lround(in.bottom*k));
 }
 
 /* Called on the main thread by the app before the game thread starts. */

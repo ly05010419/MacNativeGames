@@ -98,7 +98,7 @@ class BotwImport(unittest.TestCase):
                 patch.object(build_app, 'build_hactool') as build:
             build_app.step_data_botw(tree, BOTW.parent, self.base, self.keys, self.root / 'logs', update=self.update)
         build.assert_not_called()
-        self.assertFalse(aoc.parent.exists())
+        self.assertFalse(aoc.exists())
         self.assertFalse(config.exists())
 
     def cached_romfs(self):

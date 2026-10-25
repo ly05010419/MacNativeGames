@@ -31,6 +31,31 @@ class Discard(unittest.TestCase):
             build_ipa.discard(Path(d)/'none')
 
 
+class SeedBeside(unittest.TestCase):
+    """--ios-game-data documents leaves the startup shaders beside the output; the README installs the .ipa, and the
+    seed was pushed only for an .app folder, so the game said 'No shaders' after a successful install."""
+    def layout(self, root, output):
+        (root/'Tears of the Kingdom-shader-seed').mkdir()
+        (root/'Tears of the Kingdom-shader-seed/fingerprint.txt').write_text('f' * 64)
+        app = root/'signed/Payload/TOTK.app'; (app/'GameData').mkdir(parents=True)
+        return root/output, app
+
+    def test_an_ipa_gets_its_seed(self):
+        with tempfile.TemporaryDirectory() as d:
+            ipa, app = self.layout(Path(d), 'Tears of the Kingdom.ipa'); ipa.write_bytes(b'PK')
+            self.assertEqual(install_device.seed_beside(ipa, app), Path(d)/'Tears of the Kingdom-shader-seed')
+
+    def test_an_app_folder_gets_its_seed(self):
+        with tempfile.TemporaryDirectory() as d:
+            out, app = self.layout(Path(d), 'Tears of the Kingdom.app'); out.mkdir()
+            self.assertEqual(install_device.seed_beside(out, out), Path(d)/'Tears of the Kingdom-shader-seed')
+
+    def test_an_app_that_carries_its_seed_gets_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            ipa, app = self.layout(Path(d), 'Tears of the Kingdom.ipa'); (app/'GameData/shader-seed').mkdir()
+            self.assertIsNone(install_device.seed_beside(ipa, app))
+
+
 def read_pack(parts):
     """ios/Sources/main.m seed_unpack, in Python: the files of a pack stream cut into parts."""
     data = b''.join(p.read_bytes() for p in parts); assert data[:9] == b'TOTKPACK1'; at, out = 9, {}

@@ -45,6 +45,7 @@ int runtime_front_text_input(const RuntimeTextRequest *req, char *out, size_t ou
 void runtime_front_text_test(const char *op, const char *text);   /* diagnostics: "type" text, "enter", "esc" into the open bar */
 int runtime_core_away(void);          /* runtime/threads.c: a guest thread gives its virtual core up around a long host wait */
 void runtime_core_back(int *away);
+void runtime_spin_wait(unsigned module, uint64_t head);   // threads.c: a pass of a gated spin wait (loader.c runtime_dispatch)
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
 uint8_t *runtime_module_base(const char *name);   /* runtime/loader.c: "main", "subsdk0", "sdk" (probes) */

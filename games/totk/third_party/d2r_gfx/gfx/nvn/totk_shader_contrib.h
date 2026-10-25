@@ -26,6 +26,7 @@
 #endif
 #define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
 #define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
+#define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */

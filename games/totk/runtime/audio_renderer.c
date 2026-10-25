@@ -56,11 +56,20 @@ static void voice_reset(ServerVoice *v) {
     v->index = 0; v->offset = 0; v->fraction = 0; v->played = 0; v->consumed = 0; v->loops_done = 0;
     memset(&v->adpcm, 0, sizeof v->adpcm); v->adpcm.buffer = -1;
     memset(v->biquad_state, 0, sizeof v->biquad_state);
+#ifdef GAME_BOTW
+    v->ramp_ready = 0; v->was_started = 0; memset(v->last, 0, sizeof v->last);   /* a new voice starts at its volume, with no depop */
+#endif
 }
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
     need(in->id < (uint32_t)r->param.voice_count, "voice id out of range");
     ServerVoice *v = &r->voices[in->id];
+#ifdef GAME_BOTW
+    int tail = (in->is_new || !in->in_use) && audio_mixer_voice_release(r, v);   /* v->in still holds the old mix: a voice stopped in this request fades out instead of being cut */
+#endif
     if (in->is_new || !in->in_use) voice_reset(v);
+#ifdef GAME_BOTW
+    if (tail) v->fade_in = 1;   /* until the next frame, a new voice in this slot ramps up over the old tail, so the two do not add to a step (kept through later resets) */
+#endif
     for (int i = 0; i < 2; i++) if (!in->biquads[i].enable)
         memset(v->biquad_state[i], 0, sizeof v->biquad_state[i]);
     v->in = *in;
@@ -398,12 +407,89 @@ static int probe_rev15(void){
     free(input);audio_mixer_close(r);free(r->voices);free(r->pools);free(r->mixes);free(r->sinks);free(r->effects);free(r->channels);free(r);
     return checked;
 }
+#ifdef GAME_BOTW
+/* Volume ramps and depop (audio_mixer.c voice_ramp_mix): a loud constant voice whose volume drops from 1 to 0.25 between
+   two frames, then stops. Neither may step the output: each sample stays within the ramp's per-sample change of the one
+   before, and after the stop the output decays from the last sample instead of jumping to 0. TOTK_AUDIO_RAMP=0 must fail. */
+static int probe_ramp(void) {
+    AudrenParameter p = {48000, 240, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, REV(11)};
+    AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
+    r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
+    r->sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 2, .inputs = {0, 1}};
+    static int16_t dc[480]; for (int i = 0; i < 480; i++) dc[i] = 26214;   /* 0.8 of full scale */
+    AudrenVoiceIn v = {.id = 0, .is_new = 1, .in_use = 1, .play_state = PLAY_STARTED, .sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1,
+                       .pitch = 1, .volume = 1, .mix_id = 0, .splitter_id = 0xffffffffu, .channel_ids = {0}};
+    v.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)dc, .size = sizeof dc, .end = 480, .loop = 1, .loop_count = -1};
+    r->channels[0].mix[0] = r->channels[0].mix[1] = 1; update_voice(r, &v);
+    const double frame = 240.0 / 48000; float lr[480], prev = 0; int checked = 0;
+    for (int f = 0; f < 6; f++) {
+        if (f == 2) { v.is_new = 0; v.wave_buffers[0].sent = 1; v.volume = 0.25f; update_voice(r, &v); }   /* the music ducks under a menu */
+        if (f == 4) { v.play_state = PLAY_STOPPED; update_voice(r, &v); }                                   /* and stops */
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, &r->voices[0], frame); audio_mixer_read(r, lr, 240);
+        for (int k = 0; k < 240; k++) {
+            float d = fabsf(lr[2 * k] - prev);
+            if (f > 0 && d > 0.04f) { fprintf(stderr, "ramp frame %d sample %d: %f after %f (step %f)\n", f, k, lr[2 * k], prev, d); runtime_fail("audio probe: volume step or stop is not smoothed"); }
+            prev = lr[2 * k]; checked++;
+        }
+        if (f == 1 && !near(lr[478], 0.8f)) runtime_fail("audio probe: steady volume before the ramp");
+        if (f == 3 && !near(lr[478], 0.2f)) runtime_fail("audio probe: volume after the ramp");
+    }
+    if (fabsf(prev) > 1e-3f) runtime_fail("audio probe: depop does not decay to silence");
+    audio_mixer_close(r); free(r->voices); free(r->pools); free(r->mixes); free(r->sinks); free(r->effects); free(r->channels); free(r);
+    return checked + 3;
+}
+/* Edge cases of the depop on a loud constant voice (0.8): the voice is stopped and then released, or reused by a new voice (stopped, or started at once, at the same level or silent), before the next frame, or its
+   channel is muted for a frame and the voice is then paused. Each must fade from the last sample (no step above 0.04), and a muted
+   voice that pauses must add nothing (its last added sample was 0). TOTK_AUDIO_RAMP=0 must fail. */
+enum { EDGE_RELEASE, EDGE_REUSE, EDGE_MUTE_PAUSE, EDGE_REUSE_STARTED, EDGE_REUSE_SILENT, EDGE_REUSE_TWICE };
+static int probe_ramp_edge(int kind) {
+    AudrenParameter p = {48000, 240, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, REV(11)};
+    AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
+    r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
+    r->sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 2, .inputs = {0, 1}};
+    static int16_t dc[480]; for (int i = 0; i < 480; i++) dc[i] = 26214;
+    AudrenVoiceIn v = {.id = 0, .is_new = 1, .in_use = 1, .play_state = PLAY_STARTED, .sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1,
+                       .pitch = 1, .volume = 1, .mix_id = 0, .splitter_id = 0xffffffffu, .channel_ids = {0}};
+    v.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)dc, .size = sizeof dc, .end = 480, .loop = 1, .loop_count = -1};
+    r->channels[0].mix[0] = r->channels[0].mix[1] = 1; update_voice(r, &v);
+    const double frame = 240.0 / 48000; float lr[480], prev = 0; int checked = 0;
+    for (int f = 0; f < 6; f++) {
+        if (f == 2) {
+            v.is_new = 0; v.wave_buffers[0].sent = 1;
+            if (kind == EDGE_RELEASE) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.in_use = 0; update_voice(r, &v); }   /* stop, then free it before the next render */
+            if (kind == EDGE_REUSE) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; update_voice(r, &v); }   /* and the id goes to a new, stopped voice */
+            if (kind == EDGE_REUSE_STARTED) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; update_voice(r, &v); }   /* and a new voice at the same level starts at once */
+            if (kind == EDGE_REUSE_SILENT) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; v.volume = 0; update_voice(r, &v); }   /* and a silent new voice starts at once */
+            if (kind == EDGE_REUSE_TWICE) {   /* a replacement starts, is freed and the slot is reused again, all before one frame */
+                v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; update_voice(r, &v);
+                v.in_use = 0; update_voice(r, &v); v.in_use = 1; update_voice(r, &v);
+            }
+            if (kind == EDGE_MUTE_PAUSE) r->channels[0].mix[0] = r->channels[0].mix[1] = 0;   /* the channel is muted: its volume ramps from 1 to 0 */
+        }
+        if (f == 4 && kind == EDGE_MUTE_PAUSE) { v.play_state = PLAY_PAUSED; update_voice(r, &v); }
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, &r->voices[0], frame); audio_mixer_read(r, lr, 240);
+        for (int k = 0; k < 240; k++) {
+            float d = fabsf(lr[2 * k] - prev);
+            if (f > 0 && d > 0.04f) { fprintf(stderr, "ramp edge %d frame %d sample %d: %f after %f (step %f)\n", kind, f, k, lr[2 * k], prev, d); runtime_fail("audio probe: volume step or stop is not smoothed"); }
+            if (kind == EDGE_MUTE_PAUSE && f >= 3 && fabsf(lr[2 * k]) > 1e-6f) { fprintf(stderr, "ramp edge %d frame %d sample %d: %f from a muted voice\n", kind, f, k, lr[2 * k]); runtime_fail("audio probe: a muted voice that pauses must stay silent"); }
+            prev = lr[2 * k]; checked++;
+        }
+    }
+    if (fabsf(prev - (kind == EDGE_REUSE_STARTED || kind == EDGE_REUSE_TWICE ? 0.8f : 0.0f)) > 1e-3f) runtime_fail("audio probe: depop does not decay to silence, or the new voice is not at its level");
+    audio_mixer_close(r); free(r->voices); free(r->pools); free(r->mixes); free(r->sinks); free(r->effects); free(r->channels); free(r);
+    return checked + 1;
+}
+#endif
 void runtime_audio_probe(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1);
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
     int checked = probe_rev15();
+#ifdef GAME_BOTW
+    checked += probe_ramp();
+    for (int kind = EDGE_RELEASE; kind <= EDGE_REUSE_TWICE; kind++) checked += probe_ramp_edge(kind);
+#endif
     /* final mix 0: buffers 0-1; submix 1: buffers 2-3 -> mix 0 with a swap matrix at volume 0.5 */
     r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
     r->mixes[1] = (AudrenMixIn){.volume = 0.5f, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 1, .dest_mix_id = 0, .dest_splitter_id = 0xffffffffu};
