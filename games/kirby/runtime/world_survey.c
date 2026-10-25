@@ -1,6 +1,8 @@
 #include "world_survey.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <mach/mach.h>
 
 /* The TotK world survey reads TotK's actor and scene structures; Kirby has none of them. One Kirby diagnostic instead:
    "memdump <path>" writes main's writable data and bss (main+data_off .. main+size) to <path>, so two dumps can be
@@ -22,6 +24,17 @@ static uint64_t chain_addr(const unsigned long long *off, int n) {
     return p;
 }
 int runtime_survey_command(const char *line) {
+    /* "watch <len> <main offset> <offset>...": arm the host write watchpoint (gfx_bridge.c) on that resolved address */
+    if (!strncmp(line, "watch ", 6) && survey_main) {
+        unsigned long long len, off[8]; int n = 0, used = 0, u;
+        if (sscanf(line + 6, "%llx%n", &len, &used) != 1) return 1;
+        const char *q = line + 6 + used;
+        while (n < 8 && sscanf(q, " %llx%n", &off[n], &u) == 1) { q += u; n++; }
+        uint64_t a = n ? chain_addr(off, n) : 0; if (!a) return 1;
+        extern void runtime_watch_set(uintptr_t addr, size_t len); runtime_watch_set((uintptr_t)a, (size_t)len);
+        fprintf(stderr, "[kirby] watch %#llx bytes at %#llx\n", len, (unsigned long long)a);
+        return 1;
+    }
     if (!strncmp(line, "pin32 ", 6) && survey_main && npins < 8) {
         unsigned long long v, off[8]; int n = 0, used = 0, u;
         if (sscanf(line + 6, "%llx%n", &v, &used) != 1) return 1;
@@ -58,4 +71,28 @@ int runtime_survey_command(const char *line) {
     return 1;
 }
 void runtime_survey_tick(uint64_t frame) { (void)frame; }
+/* Diagnostic KIRBY_SNAP=<lo>-<hi>:<dir>: at each present of frames lo..hi, dump 0xa0000 bytes of the render system
+   object ([[[main+0xa61e58]+8]+8]+0xac8) to <dir>/s<frame>.bin, frame-synchronous. */
+void runtime_kirby_snapshot(uint64_t frame) {
+    static int init; static uint64_t lo, hi; static char dir[512];
+    if (!init) { init = 1; const char *e = getenv("KIRBY_SNAP"); unsigned long long a, b; int n = 0;
+        if (e && sscanf(e, "%llu-%llu:%n", &a, &b, &n) == 2 && n) { lo = a; hi = b; snprintf(dir, sizeof dir, "%s", e + n); } }
+    if (!hi || frame < lo || frame > hi || !survey_main) return;
+    /* KIRBY_SNAP_CHAIN=loop: the frame controller [[main+0xa61e58]+8] instead of the render system */
+    const char *which = getenv("KIRBY_SNAP_CHAIN");
+    const unsigned long long off[] = {0xa61e58, 0x8, 0x8, 0xac8, 0x0}, loop[] = {0xa61e58, 0x8, 0x0};
+    uint64_t p = which && !strcmp(which, "loop") ? chain_addr(loop, 3) : chain_addr(off, 5); if (!p) return;
+    /* KIRBY_SNAP_SPAN=<before>,<size> (hex): a wider window around the object, readable pages only */
+    static uint64_t before, size = 0xa0000; static int span_init;
+    if (!span_init) { span_init = 1; const char *e = getenv("KIRBY_SNAP_SPAN"); unsigned long long a, b; if (e && sscanf(e, "%llx,%llx", &a, &b) == 2) { before = a; size = b; } }
+    { static int said; if (!said++) fprintf(stderr, "[kirby] snapshot object at %#llx, file starts at %#llx\n", (unsigned long long)p, (unsigned long long)((p - before) & ~0x3fffull)); }
+    char path[600]; snprintf(path, sizeof path, "%s/s%llu.bin", dir, (unsigned long long)frame);
+    FILE *f = fopen(path, "wb"); if (!f) return;
+    for (uint64_t q = (p - before) & ~0x3fffull; q < p - before + size; q += 0x4000) {
+        static uint8_t zero[0x4000]; vm_size_t got = 0; uint8_t page[0x4000];
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)q, 0x4000, (vm_address_t)page, &got) == KERN_SUCCESS && got == 0x4000) fwrite(page, 1, 0x4000, f);
+        else fwrite(zero, 1, 0x4000, f);
+    }
+    fclose(f);
+}
 void runtime_survey_cancel_user(void) {}

@@ -898,7 +898,14 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
    BindVertexAttribState 1+n words, BindVertexStreamState 16+n words, BindVertexBuffer 6 words each (address + limit). */
 static void hw_fix(cmd_t *o, size_t bytes) { o->hw_used += bytes; o->hw_used -= o->last_rec; o->last_rec = bytes; }
 static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLOG"); v = e ? atoi(e) : 0; } return v; }
-NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
+/* Diagnostic KIRBY_EVT_TRACE=<lo>-<hi>: per-thread timeline of recording, list calls, submits and presents. */
+static void evt_trace(const char *what, const void *obj, int n) {
+    static int init; static uint64_t lo, hi; if (!init) { init = 1; const char *e = getenv("KIRBY_EVT_TRACE"); unsigned long long x, y; if (e && sscanf(e, "%llu-%llu", &x, &y) == 2) { lo = x; hi = y; } }
+    if (!hi || g_frame < lo || g_frame > hi) return;
+    uint64_t tid; pthread_threadid_np(NULL, &tid);
+    LOG("[evt] F%llu t=%.3f tid=%llu %s %p %d", (unsigned long long)g_frame, now_ns() / 1e6, (unsigned long long)tid, what, obj, n);
+}
+NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) { evt_trace("begin", c, 0);
     cmd_t *o = CB(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
@@ -1066,7 +1073,7 @@ static void cbk_compact(void) {
     }
     free(ob); g_cbk_used = live; g_cbk_empty = 0; g_cbk_compactions++;
 }
-NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
+NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) { evt_trace("end", c, 0);
     cmd_t *o = CB(c);
     size_t hw_before = o->hw_used; uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_END, 8); o->hw_used -= 8;
     o->recording = 0;
@@ -1216,7 +1223,7 @@ NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcom
     for (int i = 0; i < n; i++) inline_recording(c, h[i]);
 #endif
 }
-NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
+NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) { evt_trace("call", h && n ? (const void *)(uintptr_t)h[0] : NULL, n);
     if (cmdlog_env()) for (int i = 0; i < n; i++) LOG("[cmd] CallCommands cb=%p handle=%#llx", (void *)c, (unsigned long long)h[i]);
     life_call(c, n, h, "call");
 #ifdef GAME_BOTW
@@ -2256,7 +2263,7 @@ static int fence_wait(uint64_t k, uint64_t timeout_ns) {
     return mtl_wait(f, timeout_ns > used ? timeout_ns - used : 0);
 }
 
-NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
+NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) { evt_trace("submit", q, n);
     NVN_BLOCKING();
 #ifdef GAME_BOTW
     NVNcommandHandle mapped[64]; NVNcommandHandle *heap = n > 64 ? malloc(sizeof *heap * (size_t)n) : NULL;
@@ -2911,7 +2918,8 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
     if (frame) mtl_set_frame(frame);
     gfx_leave();
 }
-NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
+extern void runtime_kirby_snapshot(uint64_t frame) __attribute__((weak_import));
+NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) { evt_trace("present", w, idx); if (runtime_kirby_snapshot) runtime_kirby_snapshot(g_frame);
     NVN_BLOCKING();
     (void)q; win_t *o = (win_t *)w; o->presents++;
     DM_SP_EVENT("present", "frame %llu", (unsigned long long)o->presents);   // Odyssey: frame boundaries for Instruments
