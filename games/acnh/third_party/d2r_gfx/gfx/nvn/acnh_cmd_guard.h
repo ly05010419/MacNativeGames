@@ -9,7 +9,7 @@
    - g_seg_mu: a segment is never freed (Initialize / Finalize), moved (cmd_reserve) or flattened (EndRecording) at the
      same time, and EndRecording hands back an empty recording if its segment was released during the call;
    - recorder ownership: BeginRecording claims the command buffer for its thread until EndRecording; Initialize, Finalize
-     and BeginRecording from another thread wait for that (virtual core given up), at most ACNH_REC_WAIT_NS;
+     and BeginRecording from another thread wait for that (virtual core given up), without taking over an active recording;
    - ACNH_STACKCB=1: recordings into a command buffer on another thread's stack, the moment that thread leaves the frame,
      and both threads' recent core events (diagnostics only);
    - TOTK_CB_CHECK=1: each record, BeginRecording and the flatten in EndRecording check that the host fields still make
@@ -17,7 +17,7 @@
 #ifndef ACNH_CMD_GUARD_H
 #define ACNH_CMD_GUARD_H
 #ifdef GAME_ACNH
-#include <errno.h>
+#include <limits.h>
 
 static uint8_t *flatten_recording(const uint8_t *p);
 static void guest_chain(const char *what);
@@ -160,28 +160,33 @@ static uint8_t *acnh_flatten(cmd_t *o, const NVNcommandBuffer *c) {
 }
 
 // ---------- one recorder per command buffer ----------
-#define ACNH_REC_OWN_MAX 256
-#define ACNH_REC_WAIT_NS 250000000ll
-static struct { const void *cb; pthread_t owner; uint32_t handle; } g_acnh_rec[ACNH_REC_OWN_MAX];
-static int g_acnh_rec_n;
+#define ACNH_REC_INITIAL_CAP 256
+static struct rec_owner { const void *cb; pthread_t owner; uint32_t handle; } *g_acnh_rec;
+static int g_acnh_rec_n, g_acnh_rec_cap;
 static pthread_mutex_t g_acnh_rec_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_acnh_rec_cv = PTHREAD_COND_INITIALIZER;
 static int acnh_rec_find(const void *cb) { for (int i = 0; i < g_acnh_rec_n; i++) if (g_acnh_rec[i].cb == cb) return i; return -1; }
 static int acnh_rec_other(int i) { return i >= 0 && !pthread_equal(g_acnh_rec[i].owner, pthread_self()); }
 static void acnh_rec_drop(int i) { g_acnh_rec[i] = g_acnh_rec[--g_acnh_rec_n]; pthread_cond_broadcast(&g_acnh_rec_cv); }
-/* g_acnh_rec_mu held (dropped while waiting): the command buffer's entry, owned by this thread, or another's after a timeout, or -1 */
+static void acnh_rec_reserve(void) {
+    if (g_acnh_rec_n < g_acnh_rec_cap) return;
+    if (g_acnh_rec_cap > INT_MAX / 2) { LOG("[cmd] recorder ownership table capacity overflow"); abort(); }
+    int cap = g_acnh_rec_cap ? g_acnh_rec_cap * 2 : ACNH_REC_INITIAL_CAP;
+    void *p = realloc(g_acnh_rec, (size_t)cap * sizeof *g_acnh_rec);
+    if (!p) { LOG("[cmd] cannot grow recorder ownership table"); abort(); }
+    g_acnh_rec = p;
+    g_acnh_rec_cap = cap;
+}
+/* g_acnh_rec_mu held (dropped while waiting): the command buffer's entry, owned by this thread, or -1 */
 static int acnh_rec_wait_locked(const void *cb, const char *what) {
     int i = acnh_rec_find(cb);
     if (!acnh_rec_other(i)) return i;
     uint32_t them = g_acnh_rec[i].handle; uint64_t t0 = mach_absolute_time();
-    struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl);
-    dl.tv_sec += (dl.tv_nsec + ACNH_REC_WAIT_NS) / 1000000000; dl.tv_nsec = (dl.tv_nsec + ACNH_REC_WAIT_NS) % 1000000000;
-    int timed_out = 0;
-    while (acnh_rec_other(i) && !timed_out) {
+    while (acnh_rec_other(i)) {
         pthread_mutex_unlock(&g_acnh_rec_mu);
         int away = runtime_core_away();
         pthread_mutex_lock(&g_acnh_rec_mu);
-        while (acnh_rec_other(i = acnh_rec_find(cb)) && !timed_out) timed_out = pthread_cond_timedwait(&g_acnh_rec_cv, &g_acnh_rec_mu, &dl) == ETIMEDOUT;
+        while (acnh_rec_other(i = acnh_rec_find(cb))) pthread_cond_wait(&g_acnh_rec_cv, &g_acnh_rec_mu);
         pthread_mutex_unlock(&g_acnh_rec_mu);
         runtime_core_back(&away);   /* no host lock held while taking a core back */
         pthread_mutex_lock(&g_acnh_rec_mu);
@@ -189,17 +194,16 @@ static int acnh_rec_wait_locked(const void *cb, const char *what) {
     }
     static _Atomic int said; if (atomic_fetch_add(&said, 1) < 16) {
         mach_timebase_info_data_t tb; mach_timebase_info(&tb);
-        LOG("%s[cmd] %s cb=%p by thread %#x waited %.3f ms for thread %#x to end its recording%s", timed_out ? "【红】" : "", what, cb, runtime_thread_current_handle(),
-            (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6, them, timed_out ? " -- timed out, taking it over" : "");
+        LOG("[cmd] %s cb=%p by thread %#x waited %.3f ms for thread %#x to end its recording",
+            what, cb, runtime_thread_current_handle(), (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6, them);
     }
     return i;
 }
 static void acnh_rec_claim(const void *cb) {   /* BeginRecording */
     pthread_mutex_lock(&g_acnh_rec_mu);
     int i = acnh_rec_wait_locked(cb, "BeginRecording");
-    if (i < 0 && g_acnh_rec_n < ACNH_REC_OWN_MAX) i = g_acnh_rec_n++;
-    if (i >= 0) { g_acnh_rec[i].cb = cb; g_acnh_rec[i].owner = pthread_self(); g_acnh_rec[i].handle = runtime_thread_current_handle(); }
-    else { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("【红】[cmd] more than %d command buffers recording at once: cb=%p unguarded", ACNH_REC_OWN_MAX, cb); }
+    if (i < 0) { acnh_rec_reserve(); i = g_acnh_rec_n++; }
+    g_acnh_rec[i] = (struct rec_owner){cb, pthread_self(), runtime_thread_current_handle()};
     pthread_mutex_unlock(&g_acnh_rec_mu);
     acnh_scb_begin(cb);
 }

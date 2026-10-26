@@ -8,35 +8,43 @@
    them, both rebuild the list and record into the same command buffers at once -- every command buffer crash of that day
    (NULL / garbage segment, a recording ended by another thread, a freed recording submitted). With the lock the second
    thread waits, then finds the bits cleared and skips the rebuild, as when the threads do not meet.
-   A wait gives the virtual core up (the holder may need it) and lasts at most CTX_WAIT_NS; past that the waiter goes ahead
-   and says so, so a holder blocked on the waiter cannot deadlock the game. The hook entry is acnh_ctx_lock.S. */
+   A waiter gives the virtual core up so the holder can run; it never proceeds until that holder releases the context.
+   The hook entry is acnh_ctx_lock.S. */
 #include "runtime.h"
-#include <errno.h>
+#include <limits.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define LOG(...) do { fprintf(stderr, "[acnh] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define CTX_FN 0x1be5b30ull
-#define CTX_WAIT_NS 250000000ll
-#define CTX_MAX 256
+#define CTX_INITIAL_CAP 256
 uint64_t acnh_ctx_resume;   /* main + CTX_FN + 16: where the displaced prologue continues (acnh_ctx_lock.S) */
 void acnh_ctx_hook(void);
 uint32_t runtime_thread_current_handle(void);
 int runtime_core_away(void);
 void runtime_core_back(int *away);
 
-static struct { uint64_t ctx; pthread_t owner; uint32_t handle; unsigned depth; } g_ctx[CTX_MAX];
-static int g_ctx_n;
+static struct ctx_owner { uint64_t ctx; pthread_t owner; uint32_t handle; unsigned depth; } *g_ctx;
+static int g_ctx_n, g_ctx_cap;
 static pthread_mutex_t g_ctx_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_ctx_cv = PTHREAD_COND_INITIALIZER;
-static _Atomic uint64_t g_ctx_calls, g_ctx_waits, g_ctx_timeouts;
+static _Atomic uint64_t g_ctx_calls, g_ctx_waits;
 static int ctx_find(uint64_t ctx) { for (int i = 0; i < g_ctx_n; i++) if (g_ctx[i].ctx == ctx) return i; return -1; }
 static int ctx_other(int i) { return i >= 0 && !pthread_equal(g_ctx[i].owner, pthread_self()); }
+
+static void ctx_reserve(void) {
+    if (g_ctx_n < g_ctx_cap) return;
+    if (g_ctx_cap > INT_MAX / 2) { LOG("[ctxlock] context table capacity overflow"); abort(); }
+    int cap = g_ctx_cap ? g_ctx_cap * 2 : CTX_INITIAL_CAP;
+    void *p = realloc(g_ctx, (size_t)cap * sizeof *g_ctx);
+    if (!p) { LOG("[ctxlock] cannot grow context ownership table"); abort(); }
+    g_ctx = p;
+    g_ctx_cap = cap;
+}
 
 void acnh_ctx_lock(uint64_t ctx) {
     uint64_t calls = atomic_fetch_add(&g_ctx_calls, 1) + 1;
@@ -44,32 +52,29 @@ void acnh_ctx_lock(uint64_t ctx) {
     int i = ctx_find(ctx);
     if (ctx_other(i)) {   /* another thread is inside this context: wait for it with the virtual core given up */
         uint32_t them = g_ctx[i].handle; uint64_t t0 = mach_absolute_time();
-        struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl);
-        dl.tv_sec += (dl.tv_nsec + CTX_WAIT_NS) / 1000000000; dl.tv_nsec = (dl.tv_nsec + CTX_WAIT_NS) % 1000000000;
-        int timed_out = 0;
-        while (ctx_other(i) && !timed_out) {
+        while (ctx_other(i)) {
             pthread_mutex_unlock(&g_ctx_mu);
             int away = runtime_core_away();
             pthread_mutex_lock(&g_ctx_mu);
-            while (ctx_other(i = ctx_find(ctx)) && !timed_out) timed_out = pthread_cond_timedwait(&g_ctx_cv, &g_ctx_mu, &dl) == ETIMEDOUT;
+            while (ctx_other(i = ctx_find(ctx))) pthread_cond_wait(&g_ctx_cv, &g_ctx_mu);
             pthread_mutex_unlock(&g_ctx_mu);
             runtime_core_back(&away);   /* no lock held while taking a core back */
             pthread_mutex_lock(&g_ctx_mu);
             i = ctx_find(ctx);
         }
         uint64_t n = atomic_fetch_add(&g_ctx_waits, 1);
-        if (timed_out) atomic_fetch_add(&g_ctx_timeouts, 1);
-        if (n < 20 || n % 1000 == 0 || timed_out) {
+        if (n < 20 || n % 1000 == 0) {
             mach_timebase_info_data_t tb; mach_timebase_info(&tb);
-            LOG("%s[ctxlock] thread %#x waited %.3f ms for thread %#x to leave context %#llx%s (wait %llu, %llu calls, %llu timeouts)", timed_out ? "【红】" : "",
-                runtime_thread_current_handle(), (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6, them, (unsigned long long)ctx,
-                timed_out ? " -- timed out, going ahead" : "", (unsigned long long)n + 1, (unsigned long long)calls, (unsigned long long)atomic_load(&g_ctx_timeouts));
+            LOG("[ctxlock] thread %#x waited %.3f ms for thread %#x to leave context %#llx (wait %llu, %llu calls)",
+                runtime_thread_current_handle(), (double)(mach_absolute_time() - t0) * tb.numer / tb.denom / 1e6, them,
+                (unsigned long long)ctx, (unsigned long long)n + 1, (unsigned long long)calls);
         }
     }
     if (i >= 0 && !ctx_other(i)) g_ctx[i].depth++;   /* this thread again (re-entered) */
-    else if (i >= 0) { g_ctx[i].owner = pthread_self(); g_ctx[i].handle = runtime_thread_current_handle(); g_ctx[i].depth = 1; }   /* taken over after a timeout */
-    else if (g_ctx_n < CTX_MAX) g_ctx[g_ctx_n++] = (__typeof__(g_ctx[0])){ctx, pthread_self(), runtime_thread_current_handle(), 1};
-    else { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) LOG("【红】[ctxlock] more than %d contexts held at once: context %#llx unguarded", CTX_MAX, (unsigned long long)ctx); }
+    else if (i < 0) {
+        ctx_reserve();
+        g_ctx[g_ctx_n++] = (struct ctx_owner){ctx, pthread_self(), runtime_thread_current_handle(), 1};
+    }
     pthread_mutex_unlock(&g_ctx_mu);
 }
 
