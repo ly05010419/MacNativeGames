@@ -81,6 +81,8 @@ void runtime_settings_toggle(void) {}
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; runtime_ios_sync_safe_area(self); }   // the HUD boxes keep out of the notch
 @end
 
+void phone_motion_start(void);   /* phone_motion.m: the device's motion sensors aim (TOTK_GYRO=1, no motion controller) */
+void phone_motion_orientation(UIInterfaceOrientation o);
 @interface TOTKGameController : UIViewController @property(nonatomic,strong) TOTKMetalView *gameView; @end
 @implementation TOTKGameController
 - (void)viewDidLoad {
@@ -142,6 +144,12 @@ void runtime_settings_toggle(void) {}
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 64u << 20);
     pthread_t thread; pthread_create(&thread, &attr, run_host, NULL);
     pthread_detach(thread); pthread_attr_destroy(&attr);
+    phone_motion_orientation(self.view.window.windowScene.effectiveGeometry.interfaceOrientation);
+    phone_motion_start();
+}
+- (void)viewDidLayoutSubviews {   /* the motion sensors follow which way round the phone is held */
+    [super viewDidLayoutSubviews];
+    phone_motion_orientation(self.view.window.windowScene.effectiveGeometry.interfaceOrientation);
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -269,6 +277,22 @@ static void audio_observe(void) {
                             : @"No shaders. Install the game again from the Mac with ios/tools/install_device.py (it copies them to the device).";
         fprintf(stderr, "[totk] no shader seed: %s\n", g_no_game_data.UTF8String);
     }
+    /* Settings.bundle › Picture / Overlay (read like the language below; overwrite=0 keeps devicectl --environment-variables
+       winning when testing from the Mac, and these choices win over Full HD's drawable and scene size below). Upscaling
+       "mfx": MetalFX upscales the picture to a 1080-row drawable, "mfx-native" to the screen's own pixels
+       (TOTK_MFX_OUTPUT needs TOTK_MFX_UPSCALE; below the picture's size MetalFX also draws the scene into it), instead of
+       the game's FSR 1 to 720 rows and the system's stretch. */
+    { NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
+      NSString *picture = [ud stringForKey:@"TOTK_PICTURE"];
+      if ([picture isEqualToString:@"mfx"]||[picture isEqualToString:@"mfx-native"]) {
+          setenv("TOTK_MFX_UPSCALE","1",0); setenv("TOTK_MFX_OUTPUT","1",0);
+          setenv("TOTK_IOS_DRAWABLE_H",[picture isEqualToString:@"mfx"]?"1080":"0",0); }
+      NSString *scene = [ud stringForKey:@"TOTK_RENDER_RES"];
+      if (scene.length>0&&scene.length<12) setenv("TOTK_RENDER_RES",scene.UTF8String,0);
+      NSString *overlay = [ud stringForKey:@"TOTK_OVERLAY"];   // "" everything, "fps" the FPS line only, "off" nothing
+      if ([overlay isEqualToString:@"fps"]||[overlay isEqualToString:@"off"]) { setenv("TOTK_SHADER_OVERLAY","0",0); setenv("TOTK_LOAD_OVERLAY","0",0); }
+      if ([overlay isEqualToString:@"off"]) setenv("TOTK_FPS_OVERLAY","0",0);
+      if ([ud boolForKey:@"TOTK_GYRO"]) setenv("TOTK_GYRO","1",0); }   // Settings › Motion aiming (phone_motion.m, or a controller's sensors)
 #if TARGET_OS_VISION
     setenv("TOTK_OPERATION_MODE","docked",1);
     setenv("TOTK_IOS_DRAWABLE_H","1080",0);

@@ -2,42 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>StringsTable</key>
-	<string>Root</string>
 	<key>PreferenceSpecifiers</key>
 	<array>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>遊戲語言 · Game language</string>
 			<key>FooterText</key>
 			<string>重新啟動遊戲後生效 · takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>遊戲語言 · Game language</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSRadioGroupSpecifier</string>
+			<key>DefaultValue</key>
+			<string></string>
 			<key>Key</key>
 			<string>TOTK_LANG</string>
 			<key>Title</key>
 			<string>語言 · Language</string>
-			<key>DefaultValue</key>
-			<string></string>
-			<key>Values</key>
-			<array>
-				<string></string>
-				<string>zh-Hant</string>
-				<string>zh-Hans</string>
-				<string>en-US</string>
-				<string>ja</string>
-				<string>de</string>
-				<string>es</string>
-				<string>fr</string>
-				<string>it</string>
-				<string>nl</string>
-				<string>ru</string>
-				<string>ko</string>
-			</array>
 			<key>Titles</key>
 			<array>
 				<string>自動 · 跟隨系統語言 · Follow system language</string>
@@ -53,71 +34,210 @@
 				<string>Русский</string>
 				<string>한국어</string>
 			</array>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>zh-Hant</string>
+				<string>zh-Hans</string>
+				<string>en-US</string>
+				<string>ja</string>
+				<string>de</string>
+				<string>es</string>
+				<string>fr</string>
+				<string>it</string>
+				<string>nl</string>
+				<string>ru</string>
+				<string>ko</string>
+			</array>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>畫面 · Display</string>
 			<key>FooterText</key>
 			<string>開啟：遊戲的底座設定，輸出 1920×1080、內部 1600×900，需要較快的 iPad。關閉：手持 1280×720（內部 960×540）。重新啟動遊戲後生效 · on: the game's docked settings, 1920×1080 output, 1600×900 inside (for a fast iPad). Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>畫面 · Display</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSToggleSwitchSpecifier</string>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_DOCKED</string>
 			<key>Title</key>
 			<string>Full HD（底座模式）· Full HD (docked)</string>
-			<key>DefaultValue</key>
-			<false/>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>幀率 · Frame rate</string>
 			<key>FooterText</key>
 			<string>鎖 30 幀畫面更穩、手機更涼；遊戲中也可以點觸控按鍵中間的 60 / 30 切換 · 30 is steadier and keeps the phone cooler; the 60 / 30 button between − and + of the touch controls switches it while playing</string>
+			<key>Title</key>
+			<string>幀率 · Frame rate</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
 		</dict>
 		<dict>
-			<key>Type</key>
-			<string>PSMultiValueSpecifier</string>
+			<key>DefaultValue</key>
+			<string>60</string>
 			<key>Key</key>
 			<string>TOTK_PHONE_FPS</string>
 			<key>Title</key>
 			<string>幀率 · Frame rate</string>
-			<key>DefaultValue</key>
-			<string>60</string>
-			<key>Values</key>
-			<array>
-				<string>60</string>
-				<string>30</string>
-			</array>
 			<key>Titles</key>
 			<array>
 				<string>最高 60 · Up to 60</string>
 				<string>鎖 30 · Held at 30</string>
 			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string>60</string>
+				<string>30</string>
+			</array>
 		</dict>
 		<dict>
+			<key>FooterText</key>
+			<string>MetalFX 把畫面放大到 1080 行或螢幕原生解析度，比系統拉伸更清晰；內部解析度越高越清晰，但更耗電、更熱。重新啟動遊戲後生效 · MetalFX upscales the picture to 1080 rows or to the screen's own resolution, sharper than the system's stretch; a higher internal resolution is sharper but uses more power and gets warmer. Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>畫質 · Picture quality</string>
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
-			<key>Title</key>
-			<string>除錯 · Debug</string>
-			<key>FooterText</key>
-			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
 		</dict>
 		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Key</key>
+			<string>TOTK_PICTURE</string>
+			<key>Title</key>
+			<string>放大 · Upscaling</string>
+			<key>Titles</key>
+			<array>
+				<string>遊戲 FSR 1 → 720p · Game (FSR 1) to 720p</string>
+				<string>MetalFX → 1080p</string>
+				<string>MetalFX → 原生解析度 · native resolution</string>
+			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>mfx</string>
+				<string>mfx-native</string>
+			</array>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Key</key>
+			<string>TOTK_RENDER_RES</string>
+			<key>Title</key>
+			<string>內部解析度 · Internal resolution</string>
+			<key>Titles</key>
+			<array>
+				<string>960x540（預設 · default）</string>
+				<string>1152x648</string>
+				<string>1280x720</string>
+			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>1152x648</string>
+				<string>1280x720</string>
+			</array>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>重新啟動遊戲後生效 · takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>疊加 · Overlay</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Key</key>
+			<string>TOTK_OVERLAY</string>
+			<key>Title</key>
+			<string>顯示 · Show</string>
+			<key>Titles</key>
+			<array>
+				<string>全部 · Everything</string>
+				<string>只有 FPS · FPS only</string>
+				<string>關 · Off</string>
+			</array>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>fps</string>
+				<string>off</string>
+			</array>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>按鍵的不透明度（左：更透明）· how visible the on-screen buttons are (left: more transparent)</string>
+			<key>Title</key>
+			<string>觸控按鍵 · Touch controls</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<real>0.32</real>
+			<key>Key</key>
+			<string>TOTK_TOUCH_OPACITY</string>
+			<key>MaximumValue</key>
+			<real>0.6</real>
+			<key>MinimumValue</key>
+			<real>0.05</real>
+			<key>Type</key>
+			<string>PSSliderSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>移動手機（或有體感的手把）來瞄準弓箭等，如 Switch。重新啟動遊戲後生效 · aim the bow and other aimed items by moving the device (or a controller with motion sensors), as on a Switch. Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>體感瞄準 · Motion aiming</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
+			<key>Key</key>
+			<string>TOTK_GYRO</string>
+			<key>Title</key>
+			<string>體感瞄準 · Motion aiming</string>
 			<key>Type</key>
 			<string>PSToggleSwitchSpecifier</string>
+		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
+			<key>Title</key>
+			<string>除錯 · Debug</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<false/>
 			<key>Key</key>
 			<string>TOTK_DEBUG_LOG</string>
 			<key>Title</key>
 			<string>記錄日誌 · Debug log</string>
-			<key>DefaultValue</key>
-			<false/>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
 		</dict>
 	</array>
+	<key>StringsTable</key>
+	<string>Root</string>
 </dict>
 </plist>
