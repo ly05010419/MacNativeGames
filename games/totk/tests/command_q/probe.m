@@ -10,6 +10,11 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_suspend(int on){(void)on;}
+void runtime_action_bindings_get(RuntimeActionBindings *b){action_bindings_default(b);}
+int runtime_action_bindings_set(const RuntimeActionBindings *b){return action_bindings_valid(b);}
+int runtime_action_bindings_available(void){return 0;}
+int runtime_action_bindings_supported(void){return 0;}
 void runtime_gamepad_start(void){}
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 int runtime_mouse_enabled(void){return 0;}
@@ -44,6 +49,18 @@ int runtime_gamepad_type_set(int type){return type;}
 int runtime_mouse_set(int on){return on;}
 void nvn_fps_lock_set(int fps){(void)fps;}
 int nvn_fps_lock(void){return 0;}
+/* The settings panel's rumble, gyro and trigger rows (gamepad_feedback.m, hid_feedback.c). */
+int runtime_feedback_present(int gyro){(void)gyro;return 0;}
+int runtime_feedback_choice(int gyro){(void)gyro;return 0;}
+int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
+void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
+float runtime_rumble_gain(void){return 1;}
+int runtime_rumble_gain_locked(void){return 0;}
+void runtime_rumble_gain_set(float gain){(void)gain;}
+int runtime_triggers_available(void){return 0;}
+int runtime_triggers_choice(void){return 0;}
+int runtime_triggers_locked(void){return 0;}
+void runtime_triggers_choose(int on){(void)on;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

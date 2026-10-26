@@ -579,6 +579,20 @@ static void patch_slowmo_bounce(Module *m) {
             TOTK_GAME_VERSION, (unsigned long long)stub);
 }
 
+/* The verified 1.0.0 player-operation sites use a live action binding table. Install
+   one guarded player-only translator; changing settings never rewrites RX text. */
+#if !TARGET_OS_IPHONE && !defined(TOTK_GAME_V112) && !defined(TOTK_GAME_V121) && !defined(TOTK_GAME_V143)
+#include "semantic_action_patch.h"
+static void patch_action_layout(Module *m){
+ if(!runtime_action_bindings_enabled())return;
+ if(!semantic_action_install(m)){runtime_action_bindings_attach(NULL);fprintf(stderr,"[totk] player action bindings unavailable: 1.0.0 instruction/padding guards failed; original layout retained\n");return;}
+ RuntimeActionBindings b;runtime_action_bindings_get(&b);
+ fprintf(stderr,"[totk] player action bindings installed (16 sources; edge/held/release + gameplay UI/query; 32 guards): A=%s B=%s X=%s Y=%s L=%s R=%s ZL=%s ZR=%s Up=%s Down=%s Left=%s Right=%s LStick=%s RStick=%s Plus=%s Minus=%s; menus/dialogue/map keep raw A/B\n",action_binding_name(b.target[0]),action_binding_name(b.target[1]),action_binding_name(b.target[2]),action_binding_name(b.target[3]),action_binding_name(b.target[4]),action_binding_name(b.target[5]),action_binding_name(b.target[6]),action_binding_name(b.target[7]),action_binding_name(b.target[8]),action_binding_name(b.target[9]),action_binding_name(b.target[10]),action_binding_name(b.target[11]),action_binding_name(b.target[12]),action_binding_name(b.target[13]),action_binding_name(b.target[14]),action_binding_name(b.target[15]));
+}
+#else
+static void patch_action_layout(Module *m){(void)m;}
+#endif
+
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
@@ -602,6 +616,7 @@ void runtime_game_patches(Module *m) {
         return;
     }
     patch_pchtxt(m);   /* first: the runtime's own patches check the original words they replace */
+    patch_action_layout(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr,"[totk] real-time frame step off (TOTK_REALTIME=0)\n");
     patch_render_res(m);

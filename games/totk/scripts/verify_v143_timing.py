@@ -15,7 +15,7 @@ def main():
  source=ROOT/'rewritten/v143/main.patched.bin';raw=source.read_bytes()
  assert hashlib.sha256(raw).hexdigest()==expected['rewritten_sha256']['main.patched.bin']
  layout=json.loads((out/'runtime-layout.json').read_text())[0]['layout']
- subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror','-Iruntime','scripts/v143_timing_fixture.c','runtime/game_patches_v143.c','-o','build/v143-timing-fixture'],check=True)
+ subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror','-Iruntime','scripts/v143_timing_fixture.c','runtime/game_patches_v143.c','runtime/semantic_action_stub.S','-o','build/v143-timing-fixture'],check=True)
  target=out/'main-timing-fixture.bin'
  # The render-resolution patch is on by default on the Mac (e8edbcd: the scene at the canvas size); the fixture runs it as
  # shipped, so a TOTK_RENDER_RES left in the caller's environment is dropped.
@@ -164,6 +164,6 @@ def main():
    bounce_cases.append(dict(hz=hz,scale=scale,compared=got))
  assert bounce_check(120,1,False)>100,'negative control: the original check fires at 120 FPS with time running normally'
  assert abs(bounce_check(30,.25,False)-bounce_check(30,.25))<1e-3,'at 30 Hz the patched check must equal the original'
- report=dict(status='pass',version='v143',scope='production ARM64 timing and secondary cloth/hair clock veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,realtime_cases=realtime_cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
+ report=dict(status='pass',version='v143',scope='production ARM64 timing and secondary cloth/hair clock veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,realtime_cases=realtime_cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','runtime/semantic_action_stub.S','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
  (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),realtime_ratios=[round(c['ratio'],6) for c in realtime_cases],cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),changed_original_words=len(changes))))
 if __name__=='__main__':main()

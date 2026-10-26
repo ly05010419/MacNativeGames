@@ -27,6 +27,7 @@ static void settings_show(int open);
    entry, while the settings panel is open and when mouse mode goes off (front_mouse_update). */
 static BOOL mouseHeld;
 static int textEntryOpen;
+static BOOL actionEditorOpen;
 static void front_mouse_update(void);
 int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: edge smoothing in the settings panel */
 void taa_set(int on);
@@ -159,7 +160,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 }
 @end
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
- BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen;
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen&&!actionEditorOpen;
  if(want==mouseHeld)return;
  mouseHeld=want;
  if(want){
@@ -172,6 +173,7 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  }
  fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
 }
+#include "action_editor.h"
 @interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
@@ -317,6 +319,9 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ actionEditor=[TOTKActionEditor new];
+ NSMenuItem *actions=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("玩家动作…","Player Actions…")) action:@selector(open:) keyEquivalent:@""];
+ actions.target=actionEditor;[appMenu addItem:actions];[appMenu addItem:NSMenuItem.separatorItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;

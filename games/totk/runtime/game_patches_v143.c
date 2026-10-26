@@ -4,6 +4,12 @@
 #include "game_patches.h"
 #include "game_version.h"
 #include "world_survey.h"
+#include "semantic_action_patch_v143.h"
+#if !TARGET_OS_IPHONE
+#define V143_MAIN_TAIL 0x8000
+#else
+#define V143_MAIN_TAIL 0x4000
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,7 +138,7 @@ static void patch_realtime(Module *m){
      * signed RX segment, so these bytes must be emitted by export-ios rather
      * than written after the app starts. */
     uint64_t stub=(m->text_end+15)&~15ULL;
-    if(data+0x4000!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
+    if(data+V143_MAIN_TAIL!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
     const Patch guards[]={
         {0x3e5658,0x1e210808,0},{0x2daa54,0xbd425260,0},{0x2daa58,0x52a84e08,0},
         {0x2daa6c,0x5e21d800,0},{0x2daa70,0x1e201820,0},{0x2daa74,0x1e2c1001,0},{0x2daa78,0x1e210800,0}};
@@ -261,9 +267,29 @@ void runtime_diag_xpoke(unsigned off,float value){
 static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 static void patch_fixed_res(Module *m);
+#if !TARGET_OS_IPHONE
+static void patch_action_layout_v143(Module *m){
+    if(!runtime_action_bindings_enabled())return;
+    if(!semantic_action_install_v143(m)){
+        runtime_action_bindings_attach(NULL);
+        fprintf(stderr,"[totk] 1.4.3 player action bindings unavailable: %s (main+%#x); original layout retained\n",
+            semantic_action_v143_failure?semantic_action_v143_failure:"guard failure",semantic_action_v143_failure_offset);
+        return;
+    }
+    RuntimeActionBindings b;runtime_action_bindings_get(&b);
+    fprintf(stderr,"[totk] 1.4.3 player action bindings installed (16 sources; operation masks, gameplay UI requests, query; menus/dialogue/map keep raw A/B): A=%s B=%s X=%s Y=%s L=%s R=%s ZL=%s ZR=%s Up=%s Down=%s Left=%s Right=%s LStick=%s RStick=%s Plus=%s Minus=%s\n",
+        action_binding_name(b.target[0]),action_binding_name(b.target[1]),action_binding_name(b.target[2]),action_binding_name(b.target[3]),
+        action_binding_name(b.target[4]),action_binding_name(b.target[5]),action_binding_name(b.target[6]),action_binding_name(b.target[7]),
+        action_binding_name(b.target[8]),action_binding_name(b.target[9]),action_binding_name(b.target[10]),action_binding_name(b.target[11]),
+        action_binding_name(b.target[12]),action_binding_name(b.target[13]),action_binding_name(b.target[14]),action_binding_name(b.target[15]));
+}
+#endif
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
+#if !TARGET_OS_IPHONE
+    patch_action_layout_v143(m);
+#endif
     patch_realtime(m);
     patch_output_res(m);
     patch_render_res(m);
@@ -404,7 +430,7 @@ static void picture_mode_restore(uint8_t *page){
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
     uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+16;
-    if(data+0x4000!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
+    if(data+V143_MAIN_TAIL!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
     const Patch guards[]={
         {0xbdb578,0xd280f008,0},{0xbdb584,0xf2c08708,0},
         {0x3dcb28,0xd360fc64,0},{0x3dcb2c,0xf9028663,0},{0x3dcb30,0xd001ac08,0}};

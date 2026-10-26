@@ -230,8 +230,14 @@ static void map_module(Module *m,const char *dir) {
  FILE *f=fopen(path,"rb");need(f!=NULL,"open patched module");
  struct stat st;need(fstat(fileno(f),&st)==0&&(size_t)st.st_size==m->file_size,"patched module size");
  /* The main module gets one private, writable page after its rewritten image. The
-    real-time frame-step patch reads its two floats from this page via ADRP. */
+    real-time frame-step patch reads its two floats from this page via ADRP. 1.4.3
+    also gets a second 16 KiB-aligned page for the action translators; older TOTK
+    versions keep only the writable page. */
+#if !TARGET_OS_IPHONE && defined(TOTK_GAME_V143)
+ m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x8000:0);
+#else
  m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
+#endif
  m->base=mmap(NULL,m->size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
  need(m->base!=MAP_FAILED,"map module");need(fread(m->base,1,m->file_size,f)==m->file_size,"read image");fclose(f);
  unsigned char digest[32];CC_SHA256(m->base,(CC_LONG)m->file_size,digest);char hex[65];
@@ -309,6 +315,13 @@ static void seal(Module *m) {
  need(mprotect(m->base+m->key_off,0x4000,PROT_READ)==0,"key page R");
  size_t patch_end=page_up(m->file_size);
  need(mprotect(m->base+m->patch_off,patch_end-m->patch_off,PROT_READ|PROT_EXEC)==0,"patch RX");
+#if !TARGET_OS_IPHONE && defined(TOTK_GAME_V143)
+ if(!strcmp(m->name,"main")){
+  size_t action=patch_end+RUNTIME_ACTION_CODE_OFFSET;
+  need(mprotect(m->base+action,RUNTIME_ACTION_CODE_SIZE,PROT_READ|PROT_EXEC)==0,"action code RX");
+  sys_icache_invalidate(m->base+action,RUNTIME_ACTION_CODE_SIZE);
+ }
+#endif
  sys_icache_invalidate(m->base,rx);sys_icache_invalidate(m->base+m->patch_off,patch_end-m->patch_off);
 }
 static void check_permissions(Module *m) {
@@ -319,9 +332,20 @@ static void check_permissions(Module *m) {
   need(mach_vm_region(mach_task_self(),&a,&size,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&info,&count,&obj)==KERN_SUCCESS&&a==requested&&size>0,"mapped region query");
   if(obj)mach_port_deallocate(mach_task_self(),obj);
   uint64_t off=a-(uintptr_t)m->base;
-  vm_prot_t expected=off>=page_up(m->file_size)?(VM_PROT_READ|VM_PROT_WRITE):
-   (off<page_up(m->text_end)||off>=m->patch_off)?(VM_PROT_READ|VM_PROT_EXECUTE):
-   ((off>=page_up(m->text_end)&&off<(m->data_off&~0x3fffULL))||off==m->key_off)?VM_PROT_READ:(VM_PROT_READ|VM_PROT_WRITE);
+  vm_prot_t expected;
+  if(off>=page_up(m->file_size)){
+#if !TARGET_OS_IPHONE && defined(TOTK_GAME_V143)
+   expected=off>=page_up(m->file_size)+RUNTIME_ACTION_CODE_OFFSET?(VM_PROT_READ|VM_PROT_EXECUTE):(VM_PROT_READ|VM_PROT_WRITE);
+#else
+   expected=VM_PROT_READ|VM_PROT_WRITE;
+#endif
+  }else if(off<page_up(m->text_end)||off>=m->patch_off){
+   expected=VM_PROT_READ|VM_PROT_EXECUTE;
+  }else if((off>=page_up(m->text_end)&&off<(m->data_off&~0x3fffULL))||off==m->key_off){
+   expected=VM_PROT_READ;
+  }else{
+   expected=VM_PROT_READ|VM_PROT_WRITE;
+  }
   need(info.protection==expected,"module permission mismatch");a+=size;
  }
 }
