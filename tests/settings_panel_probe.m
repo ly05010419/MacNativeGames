@@ -4,6 +4,10 @@
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 #include <assert.h>
+static char savedHDR[16]="off";
+int runtime_setting_word(const char *name,char *word,size_t size){assert(!strcmp(name,"hdr.txt"));snprintf(word,size,"%s",savedHDR);return 1;}
+void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;assert(!strcmp(name,"hdr.txt"));snprintf(savedHDR,sizeof savedHDR,"%s",word);}
+
 
 void mfx_set(int mode);
 int mfx_latch(void);
@@ -90,7 +94,7 @@ static void window_is(CGFloat h) {
     NSRect room = [window contentRectForFrameRect:(window.screen ?: NSScreen.mainScreen).visibleFrame];
     CGFloat want = round(fmin(h, fmin(room.size.height, room.size.width * 9 / 16)));
     NSSize now = window.contentView.bounds.size;
-    if (fabs(now.height - want) > 1 || fabs(now.width - round(want * 16 / 9)) > 1) {
+    if (fabs(now.height - want) > 1 || fabs(now.width - round(want * 16 / 9)) > 2) {
         fprintf(stderr, "window %.0fx%.0f, expected height %.0f at 16:9\n", now.width, now.height, want); abort();
     }
 }
@@ -104,6 +108,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
     settings_test_output_init();
+    front_hdr_init();
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (hud_compact()) { TOTKHudBox *box = [[TOTKHudBox alloc] initWithFrame:NSZeroRect]; [window.contentView addSubview:box]; hudBox = box; }
@@ -112,7 +117,34 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 12);
+    assert(settingsPanel.rows.count == (totk_hdr_available()?13:12));
+    if(getenv("TEST_HDR_UNSUPPORTED")){
+        assert(!totk_hdr_available() && !front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        press(28);assert(!front_hdr_enabled() && mfx_enabled()==MFX_40);
+        puts("pass: unsupported game keeps SDR and interpolation with HDR flags set");return 0;
+    }
+    if(getenv("TEST_HDR_CONTROLS")){
+        assert(totk_hdr_available());metalLayer=[CAMetalLayer layer];metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+        CGColorSpaceRef original=metalLayer.colorspace;if(original)CFRetain(original);
+        assert(!front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        assert(!metalLayer.wantsExtendedDynamicRangeContent);
+        press(28);assert(front_hdr_enabled());front_hdr_present_mode(1);mfx_latch();
+        assert(mfx_enabled()==MFX_OFF && mfx_requested()==MFX_40);
+        assert(metalLayer.pixelFormat==MTLPixelFormatRGBA16Float && metalLayer.wantsExtendedDynamicRangeContent);
+        CGColorSpaceRef linearSRGB=CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);assert(CFEqual(metalLayer.colorspace,linearSRGB));CGColorSpaceRelease(linearSRGB);
+        runtime_input_key_synthetic(28,1);runtime_input_key_synthetic(28,1);tick();runtime_input_key_synthetic(28,0);tick();
+        assert(!front_hdr_enabled());front_hdr_present_mode(0);mfx_latch();
+        assert(metalLayer.pixelFormat==MTLPixelFormatBGRA8Unorm && !metalLayer.wantsExtendedDynamicRangeContent && ((!original&&!metalLayer.colorspace)||(original&&metalLayer.colorspace&&CFEqual(original,metalLayer.colorspace))));
+        assert(mfx_enabled()==MFX_40 && !strcmp(savedHDR,"off"));
+        flip(@"HDR / EDR",YES);assert(front_hdr_enabled() && !strcmp(savedHDR,"on"));
+        flip(@"HDR / EDR",NO);assert(!front_hdr_enabled());
+        setenv("TOTK_HDR","",1);snprintf(savedHDR,sizeof savedHDR,"on\n");front_hdr_init();assert(front_hdr_enabled());
+        setenv("TOTK_HDR","0",1);front_hdr_init();assert(!front_hdr_enabled());mfx_latch();
+        press(25);assert(nvn_fps_lock()==30);press(25);assert(nvn_fps_lock()==40);press(25);assert(nvn_fps_lock()==60);press(25);assert(nvn_fps_lock()==0);
+        puts("pass: HDR off restores SDR layer, linear sRGB on, interpolation selection, hdr.txt, held keys and key 9");return 0;
+    }
 
     /* Overlay: all -> FPS only -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);

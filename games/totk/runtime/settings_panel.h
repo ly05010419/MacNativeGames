@@ -70,6 +70,7 @@ static void settings_refresh_all(void);
 @property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch */
 @property(copy) NSArray<NSNumber *> *values;    /* what each choice sets */
 @property(copy) int (^get)(void);
+@property(copy) BOOL (^available)(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
 @property(strong) NSControl *control;
@@ -84,6 +85,7 @@ static void settings_refresh_all(void);
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
 -(void)refresh{
+ if(self.available)self.control.enabled=self.available();
  int v=self.get?self.get():0;
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
  NSPopUpButton *p=(NSPopUpButton *)self.control;
@@ -151,7 +153,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),
   @[settings_text("关","Off"),@"30+30",@"40+40",@"50+50",settings_text("不限帧","Unlimited")],
   @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_MAX)],
-  ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);})];
+  ^int{return front_hdr_enabled()?MFX_OFF:mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);})];
+ rows.lastObject.available=^BOOL{return !front_hdr_enabled();};
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
  static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX};
@@ -190,6 +193,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ if(totk_hdr_available())[rows addObject:settings_row(settings_text("HDR / EDR（8 键）","HDR / EDR (key 8)"),nil,nil,
+  ^int{return front_hdr_enabled();},^(int v){runtime_front_hdr_set(v);})];
  return rows;
 }
 

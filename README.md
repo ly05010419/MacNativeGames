@@ -64,6 +64,9 @@ Everything from building the app to playing is in **[docs/install.md](docs/insta
 
 - [What you need](docs/install.md#what-you-need) · [Build the app](docs/install.md#build-the-app) · [Breath of the Wild](docs/install.md#breath-of-the-wild-160-and-190-early) · [iPhone and iPad](docs/install.md#iphone-and-ipad) · [Apple Vision Pro](docs/install.md#apple-vision-pro)
 - [Controls](docs/install.md#controls) · [Where things are](docs/install.md#where-things-are) · [Known issues](docs/install.md#known-issues)
+
+Experimental HDR / EDR is checked only on **TOTK 1.4.3 on Mac**. Key **8** or the key **1** settings panel switches it on/off (default off); the choice is kept in `hdr.txt` beside `controls.txt`. `TOTK_HDR=0` / `1` overrides the saved startup choice. HDR on uses extended linear sRGB to retain the source color primaries; off restores the original SDR layer, interpolation selection and cache location. Other game versions require checking their compose shader again; iOS and BotW keep SDR. Key **9** cycles the frame lock.
+
 - [Local testing](docs/install.md#local-testing) · [Audio fix](docs/install.md#audio-fix)
 
 ## How it works
@@ -147,6 +150,9 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 - [需要准备](docs/install.zh-CN.md#需要准备) · [打包 App](docs/install.zh-CN.md#打包-app) · [旷野之息](docs/install.zh-CN.md#旷野之息-160-和-190早期) · [iPhone 和 iPad](docs/install.zh-CN.md#iphone-和-ipad) · [Apple Vision Pro](docs/install.zh-CN.md#apple-vision-pro)
 - [操作](docs/install.zh-CN.md#操作) · [文件位置](docs/install.zh-CN.md#文件位置) · [已知问题](docs/install.zh-CN.md#已知问题)
+
+实验性 HDR / EDR 仅核对过 **Mac 上的 TOTK 1.4.3**。按 **8** 或在 **1** 键设置面板里开关（默认关闭）；选择保存在 `controls.txt` 旁的 `hdr.txt`，`TOTK_HDR=0` / `1` 可覆盖启动选择。开启时使用扩展线性 sRGB，保留源图像的色彩原色；关闭后恢复原来的 SDR 图层、补帧选择和缓存位置。其他游戏版本需要重新核对合成着色器；iOS 与旷野之息保持 SDR。**9** 键循环切换锁帧。
+
 - [本机测试](docs/install.zh-CN.md#本机测试) · [音频修复](docs/install.zh-CN.md#音频修复)
 
 ## 工作原理
