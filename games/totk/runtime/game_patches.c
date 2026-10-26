@@ -1,6 +1,7 @@
 #include "game_patches.h"
 #include "aspect_patch.h"
 #include "game_version.h"
+#include "settings_store.h"
 #include "world_survey.h"
 #include <TargetConditionals.h>
 #include <stdio.h>
@@ -391,6 +392,30 @@ uint64_t runtime_output_size_current(void) {
     uint8_t *page = atomic_load(&output_page);
     return page ? atomic_load((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE)) : pack_size(1920, 1080);
 }
+static const char *settings_picture_name(int mode) {
+    switch (mode) {
+        case OUTPUT_MODE_METALFX: return "metalfx";
+        case OUTPUT_MODE_NATIVE: return "native";
+        case OUTPUT_MODE_NATIVE_METALFX: return "native-metalfx";
+        case OUTPUT_MODE_720P: return "720p";
+        default: return "off";
+    }
+}
+/* The settings panel's resolution, kept in settings.txt: remembered when the player picks one. */
+void runtime_picture_save(int mode) { settings_write("resolution", settings_picture_name(mode)); }
+/* The mode the player picked last run; the swapchain decides whether it is still offered. */
+static void settings_picture_restore(void) {
+    char v[64];
+    if (!settings_read("resolution", v, sizeof v)) return;
+    int mode = !strcmp(v, "off") ? OUTPUT_MODE_OFF :
+               !strcmp(v, "metalfx") ? OUTPUT_MODE_METALFX :
+               !strcmp(v, "native") ? OUTPUT_MODE_NATIVE :
+               !strcmp(v, "native-metalfx") ? OUTPUT_MODE_NATIVE_METALFX :
+               !strcmp(v, "720p") ? OUTPUT_MODE_720P : -1;
+    if (mode < 0) { fprintf(stderr, "[totk] picture mode: %s is not a mode; starting at the default\n", v); return; }
+    if (runtime_output_mode_set(mode)) fprintf(stderr, "[totk] picture mode: starts in %s (kept from the last run)\n", v);
+    else fprintf(stderr, "[totk] picture mode: %s is not offered by this swapchain; starting at the default\n", v);
+}
 static void patch_output_res(Module *m) {
     unsigned w, h;
     if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;
@@ -415,6 +440,7 @@ static void patch_output_res(Module *m) {
     atomic_store((_Atomic uint64_t *)(void *)(page + DP_RENDERER), 0);
     for (int i = 0; i < 5; i++) memcpy(m->base + sites[i].offset, &sites[i].replacement, 4);
     atomic_store(&output_page, page);   /* Publish initialized state to the HUD on the main thread. */
+    settings_picture_restore();          /* the settings panel's resolution, kept from the last run */
     fprintf(stderr, "[totk] output resolution patch: swapchain %ux%u (main+0xe996ac), the game's output %s from the data page (main+0xc630a4); texture heap and Graphics +%llu KiB (HeapDef overlay)\n",
             w, h, output_full_at_start ? "at that size" : "1920x1080 for now", (unsigned long long)(runtime_output_res_extra_bytes() >> 10));
 }

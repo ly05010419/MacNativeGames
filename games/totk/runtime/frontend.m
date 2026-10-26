@@ -11,6 +11,7 @@
 #include "gamepad_layout.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
+#include "settings_store.h"   /* the settings panel's picks kept between runs */
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
@@ -210,6 +211,22 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
 @end
 #include "settings_panel.h"
+/* The picks that only apply once the game runs (frame lock, interpolation, HUD), kept in settings.txt: the panel saves
+   them, the next start replays them here. The aspect ratio and edge smoothing are set earlier (loader.c settings_apply_env). */
+static void settings_apply_late(void) {
+ char v[64];
+ if(settings_read("hud",v,sizeof v)){
+  int m=!strcmp(v,"all")?HUD_MODE_ALL:!strcmp(v,"fps")?HUD_MODE_MINIMAL:!strcmp(v,"off")?HUD_MODE_OFF:-1;
+  if(m>=0){fps_overlay_set_hud_mode(m);fprintf(stderr,"[totk] settings: HUD %s restored\n",v);}
+ }
+ if(settings_read("fpslock",v,sizeof v)){
+  int f=atoi(v);if(f==0||f==30||f==40||f==60){nvn_fps_lock_set(f);fprintf(stderr,"[totk] settings: frame lock %d restored\n",f);}
+ }
+ if(settings_read("mfx",v,sizeof v)){
+  int m=!strcmp(v,"off")?MFX_OFF:!strcmp(v,"30")?MFX_30:!strcmp(v,"40")?MFX_40:!strcmp(v,"50")?MFX_50:!strcmp(v,"max")?MFX_MAX:-1;
+  if(m>=0){dm_gfx_set_flag("mfx_interp",m);fprintf(stderr,"[totk] settings: frame interpolation %s restored\n",v);}
+ }
+}
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -329,6 +346,7 @@ void runtime_front_run(void(*callback)(void)){
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
+  settings_apply_late();   /* frame lock, interpolation and the HUD, as the panel left them */
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
