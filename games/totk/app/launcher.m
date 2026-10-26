@@ -15,7 +15,7 @@
 #include <unistd.h>
 #include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
 #include "game_version.h"
-#include "controller_map.h"
+#include "controls_layout.h"
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
@@ -193,9 +193,9 @@ int main(int argc, char **argv) {
         NSData *layout = [NSData dataWithContentsOfFile:controls];
         if (layout) {
             NSString *text = layout.length < 16384 ? [[NSString alloc] initWithData:layout encoding:NSUTF8StringEncoding] : nil;
-            uint16_t map[CONTROLLER_BUTTONS]; uint8_t modes[CONTROLLER_BUTTONS]; controller_map_default(map, modes);
+            ControlsLayout bindings; controls_layout_default(&bindings);
             const char *problem = layout.length < 16384 ? "not UTF-8 text" : "larger than 16 KB";
-            int line = text ? controller_map_parse(text.UTF8String, map, modes, &problem) : 1;
+            int line = text ? controls_layout_parse(text.UTF8String, &bindings, &problem) : 1;
             if (line) { show_error([NSString stringWithFormat:@"%@, line %d: %s", controls, line, problem]); return 1; }
         }
         setenv("TOTK_CONTROLS", controls.fileSystemRepresentation, 1);

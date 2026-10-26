@@ -161,7 +161,7 @@ static void feedback_checks(void){
  runtime_motion_mouse(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode off, no controller: no motion");
  probe_clock_fixed=0;
 }
-int main(void){
+int main(int argc,char **argv){
  void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
  int(*read)(State *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
  uint32_t id=0;struct{State state;unsigned char guard[32];} out;memset(&out,0xa5,sizeof(out));init();
@@ -184,15 +184,27 @@ int main(void){
  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
  runtime_input_key(18,0);need(settings_toggles==1,"releasing the key does not act");
  runtime_input_key(18,1);runtime_input_key(18,0);need(settings_toggles==2,"every press acts");
- static const unsigned former[]={19,20,21,22,23,26};
+ static const unsigned former[]={19,20,21,22,23,25,26,28};
  for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
   runtime_input_key(former[k],1);read(&out.state,1,&id);
-  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 do nothing");
+  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"reserved keys 2-9 produce no guest input");
   runtime_input_key(former[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
  for(unsigned i=0;i<32;i++)need(out.guard[i]==0xa5,"state output guard");
  /* Handheld mode (the iPhone): the input is the handheld controller (id 0x20, style bit 1); player 1 is not connected. */
+ id=0;
+ /* The editor publishes the same layout parsed from controls.txt. */
+ ControlsLayout layout;controls_layout_default(&layout);const char *layoutError=NULL;
+ need(!controls_layout_parse("key_38 = x\nkey_7 = x\nkey_0 = look_right\n",&layout,&layoutError),"edited keyboard layout parses");
+ runtime_keyboard_layout_set(layout.keys);
+ runtime_input_key(38,1);runtime_input_key(38,0);read(&out.state,1,&id);need(out.state.buttons==4,"edited short tap goes to new button only");
+ runtime_input_key(38,1);runtime_input_key(7,1);runtime_input_key(38,0);read(&out.state,1,&id);need(out.state.buttons==4,"alternate source remains held after first releases");
+ runtime_input_key(7,0);read(&out.state,1,&id);need(!out.state.buttons,"edited target releases");
+ runtime_input_key(0,1);read(&out.state,1,&id);need(out.state.rx==32767&&!out.state.lx,"edited stick direction");
+ runtime_input_suspend(1);fake_pad.buttons=1;runtime_input_key(38,1);read(&out.state,1,&id);need(out.state.attr==1&&!out.state.buttons&&!out.state.rx,"sheet isolates keyboard and controller");
+ runtime_input_suspend(0);read(&out.state,1,&id);need(!out.state.buttons&&!out.state.rx,"closing sheet clears held input");
+ controls_layout_default(&layout);runtime_keyboard_layout_set(layout.keys);
  handheld=1;
  void(*styles)(uint32_t)=runtime_input_override("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE");
  void(*ids)(const uint32_t *,uint64_t)=runtime_input_override("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm");
@@ -203,6 +215,8 @@ int main(void){
  void(*disc)(const uint32_t *)=runtime_input_override("_ZN2nn3hid14DisconnectNpadERKj");disc(&id);need(style(&hid)==2,"handheld mode: disconnecting player 1 keeps the handheld controller");
  runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
+ /* The controls editor probe only exercises input; the full service probe keeps its motion checks. */
+ if(argc==2&&!strcmp(argv[1],"--controls-only")){puts("{\"status\":\"pass\",\"scope\":\"controls editor input ABI, remapped taps, alternate holds, axes, sheet isolation, reserved keys 1-9, handheld input; no rumble or motion checks\"}");return 0;}
  feedback_checks();
  puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

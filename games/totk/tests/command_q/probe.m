@@ -10,6 +10,9 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_suspend(int on){(void)on;}
+void runtime_keyboard_layout_set(const uint8_t keys[CONTROLS_KEYS]){(void)keys;}
+void runtime_controller_layout_set(const ControlsLayout *layout){(void)layout;}
 void runtime_gamepad_start(void){}
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 int runtime_mouse_enabled(void){return 0;}
@@ -44,6 +47,18 @@ int runtime_gamepad_type_set(int type){return type;}
 int runtime_mouse_set(int on){return on;}
 void nvn_fps_lock_set(int fps){(void)fps;}
 int nvn_fps_lock(void){return 0;}
+/* The settings panel is linked but not exercised by this close/editor probe. */
+int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
+int runtime_feedback_present(int gyro){(void)gyro;return 0;}
+int runtime_feedback_choice(int gyro){(void)gyro;return 0;}
+void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
+int runtime_rumble_gain_locked(void){return 0;}
+float runtime_rumble_gain(void){return 1;}
+void runtime_rumble_gain_set(float gain){(void)gain;}
+int runtime_triggers_available(void){return 0;}
+int runtime_triggers_locked(void){return 0;}
+int runtime_triggers_choice(void){return 0;}
+void runtime_triggers_choose(int on){(void)on;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

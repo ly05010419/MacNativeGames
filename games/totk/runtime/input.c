@@ -14,8 +14,24 @@ static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
-/* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
-static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+static uint8_t keyboardTargets[CONTROLS_KEYS];
+static pthread_once_t keyboardOnce=PTHREAD_ONCE_INIT;
+static _Atomic int inputSuspended;
+static void keyboard_layout_load(void){
+ ControlsLayout b;controls_layout_default(&b);const char *path=getenv("TOTK_CONTROLS");
+ FILE *f=path&&*path?fopen(path,"rb"):NULL;
+ if(f){char text[16384];size_t n=fread(text,1,sizeof text-1,f);int whole=feof(f);fclose(f);text[n]=0;
+  const char *error=NULL;if(!whole||memchr(text,0,n)||controls_layout_parse(text,&b,&error))runtime_fail("invalid controls.txt");}
+ memcpy(keyboardTargets,b.keys,sizeof keyboardTargets);
+}
+void runtime_keyboard_layout_set(const uint8_t layout[CONTROLS_KEYS]){
+ pthread_once(&keyboardOnce,keyboard_layout_load);pthread_mutex_lock(&inputLock);
+ memcpy(keyboardTargets,layout,sizeof keyboardTargets);memset(keys,0,sizeof keys);pending=0;pthread_mutex_unlock(&inputLock);runtime_input_clear();
+}
+void runtime_input_suspend(int on){atomic_store(&inputSuspended,!!on);runtime_input_clear();}
+/* Called with inputLock held, after keyboardOnce. */
+static uint64_t button(unsigned code){unsigned t=keyboardTargets[code];return t&&t<=16?1ULL<<(t-1):0;}
+static int axis(unsigned positive,unsigned negative){int p=0,n=0;for(unsigned i=0;i<128;i++)if(keys[i]){p|=keyboardTargets[i]==positive;n|=keyboardTargets[i]==negative;}return 32767*(p-n);}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -33,7 +49,7 @@ static void user_input(const char *what){
    ratio, edge smoothing, controller type, mouse); held-key repeats do not toggle it. Keys 2-7 are no shortcuts any more
    (user 2026-10-25: the panel replaces them). */
 enum { KEY_SETTINGS = 18 };
-void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
+void runtime_input_key_synthetic(unsigned code,int down){if(code>=128||atomic_load(&inputSuspended))return;pthread_once(&keyboardOnce,keyboard_layout_load);pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
@@ -54,14 +70,14 @@ static uint32_t style(const uint32_t *id){if(!id)runtime_fail("controller id poi
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style);
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
-static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_once(&keyboardOnce,keyboard_layout_load);pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
+ state.attributes=1;if(!atomic_load(&inputSuspended)){for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+ state.lx=axis(18,17);state.ly=axis(19,20);state.rx=axis(22,21);state.ry=axis(23,24);
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
- }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ }}*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
 static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
