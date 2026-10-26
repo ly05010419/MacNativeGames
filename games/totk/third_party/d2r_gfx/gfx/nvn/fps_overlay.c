@@ -161,7 +161,22 @@ void fps_overlay_text(const fps_overlay_info *info, char *text, size_t n) {
     if (info->gen > 0 && info->fps >= 0) snprintf(gen, sizeof gen, "+%d", info->gen > 999 ? 999 : info->gen);   // interpolated frames a second (key 2)
     // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); 2K: true 2K output.
     // The whole line in the system font, so switching MetalFX does not switch the font.
+#ifdef GAME_BOTW190
+    // Breath of the Wild 1.9.0: in place of "2K", the native size now (game_patches_botw.c, key 3 switches it): "1440p"
+    // at 2560x1440, "screen" at the screen size of TOTK_OUTPUT_RES=screen; the output size before it shows any other size.
+    extern uint64_t runtime_output_size_current(void);
+    extern int runtime_output_res(unsigned *w, unsigned *h);
+    uint64_t size = runtime_output_size_current();
+    unsigned w = (uint32_t)size, h = (uint32_t)(size >> 32), big_w = 0, big_h = 0;
+    runtime_output_res(&big_w, &big_h);
+    const char *e = getenv("TOTK_OUTPUT_RES");
+    const char *res = "";
+    if (w == 2560 && h == 1440) res = "  1440p";
+    else if (e && !strcmp(e, "screen") && w == big_w && h == big_h && w > 1920) res = "  screen";
+    snprintf(text, n, "FPS %s%s  %s%s%s%s", fps, gen, ss, sc, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", res);
+#else
     snprintf(text, n, "FPS %s%s  %s%s%s%s", fps, gen, ss, sc, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big ? "  2K" : "");
+#endif
 }
 
 void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h) {
