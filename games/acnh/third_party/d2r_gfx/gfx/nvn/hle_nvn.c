@@ -861,41 +861,29 @@ static int live_seg_remove(void *p) {
     return 0;
 }
 
-/* ACNH: the game finalizes / re-initializes a command buffer on one thread while another is still inside EndRecording on it
-   (scene change after the intro movie: EndRecording read a NULL segment, 2026-10-25 last-run.log; the run before died in the
-   allocator on the same path). g_seg_mu covers a segment's lifetime -- Initialize / Finalize freeing it, cmd_reserve moving it,
-   EndRecording flattening it -- so a segment is never freed or moved while it is read. Recording records itself stays unlocked. */
-static pthread_mutex_t g_seg_mu = PTHREAD_MUTEX_INITIALIZER;
-static void guest_chain(const char *what);
-static void seg_teardown_log(const cmd_t *o, const char *what) {
-    if (!o->recording) return;
-    static _Atomic int said; if (atomic_fetch_add(&said, 1) < 8) { LOG("【红】[cmd] %s on command buffer %p while it is recording", what, (const void *)o); guest_chain(what); }
-}
+#include "acnh_cmd_guard.h"   /* Animal Crossing command buffer guards; no-ops for other games */
 NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
-    pthread_mutex_lock(&g_seg_mu);
+    acnh_teardown_begin(c, "Initialize");
     if (c && CB(c)->magic == MAGIC('C', 'M', 'D', 'B')) {
-        seg_teardown_log(CB(c), "Initialize");
         void *old_seg = CB(c)->seg;
         if (old_seg && live_seg_remove(old_seg)) {
             free(old_seg);
         }
     }
     memset(c, 0, sizeof(cmd_t)); CB(c)->magic = MAGIC('C', 'M', 'D', 'B'); CB(c)->dev = d; CB(c)->inline_cur = ~0ull; CB(c)->inline_end = 0;
-    pthread_mutex_unlock(&g_seg_mu);
+    acnh_teardown_end();
     return 1;
 }
 NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) {
-    if (!c) return;
-    pthread_mutex_lock(&g_seg_mu);
-    if (CB(c)->magic != MAGIC('C', 'M', 'D', 'B')) { pthread_mutex_unlock(&g_seg_mu); return; }
-    seg_teardown_log(CB(c), "Finalize");
+    acnh_teardown_begin(c, "Finalize");
+    if (!c || CB(c)->magic != MAGIC('C', 'M', 'D', 'B')) { acnh_teardown_end(); return; }
     void *seg = CB(c)->seg;
     CB(c)->seg = CB(c)->cur = CB(c)->end = NULL;
     CB(c)->magic = 0;
     if (seg && live_seg_remove(seg)) {
         free(seg);
     }
-    pthread_mutex_unlock(&g_seg_mu);
+    acnh_teardown_end();
 }
 NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb; }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
@@ -925,16 +913,15 @@ static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { op_hdr h = {op, si
 // encodings); our records are larger and would overwrite each other there. The game's memory is accounted only.
 static void cmd_reserve(cmd_t *o, size_t need) {
     if (o->seg && o->cur + need + OP_RESERVE <= o->end) return;
-    pthread_mutex_lock(&g_seg_mu);
-    /* a concurrent Finalize may have dropped the segment since the check above: start a fresh one then */
-    size_t used = o->seg && o->cur >= o->seg && o->cur <= o->end ? (size_t)(o->cur - o->seg) : 0;
+    acnh_seg_lock();
+    size_t used = acnh_seg_used(o);
     size_t cap = o->seg ? (size_t)(o->end - o->seg) : 0; if (!cap) cap = 64 << 10;
     while (used + need + OP_RESERVE > cap) cap *= 2;
     void *old_seg = o->seg;
     uint8_t *b = realloc(o->seg, cap); if (!b) die("command recording buffer allocation (%zu bytes)", cap);
     o->seg = b; o->cur = b + used; o->end = b + cap;
     live_seg_replace(old_seg, b);
-    pthread_mutex_unlock(&g_seg_mu);
+    acnh_seg_unlock();
 }
 
 // TOTK diagnostics: guest return chain of the current NVN call (frames link through runtime_hle_switch).
@@ -1003,6 +990,7 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
 #ifdef GAME_BOTW
     cb_check(o, "record");
 #endif
+    acnh_cb_check(o, "record");
     size = (size + 7) & ~7u;
     cmd_reserve(o, size);
     if (cs_on()) { pthread_mutex_lock(&g_cs_mu); g_cs.bytes += size; g_cs.recs++; pthread_mutex_unlock(&g_cs_mu); }
@@ -1010,6 +998,7 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
 #ifdef GAME_BOTW
     cb_seen_set(o);
 #endif
+    acnh_cb_seen(o);
     return p;
 }
 /* TOTK: the game sums nvnCommandBufferGetCommandMemoryUsed over recordings to size resource heaps (RSTB), so usage must be what
@@ -1020,11 +1009,13 @@ static void hw_fix(cmd_t *o, size_t bytes) { o->hw_used += bytes; o->hw_used -= 
 static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLOG"); v = e ? atoi(e) : 0; } return v; }
 NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
     cmd_t *o = CB(c);
+    acnh_rec_claim(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
 #ifdef GAME_BOTW
     cb_seen_set(o);
 #endif
+    acnh_cb_seen(o);
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_BEGIN, 8); o->hw_used -= 8;   /* BEGIN/END records have no hardware equivalent */
     o->hw_start = o->hw_used; memset(t_rec_hist, 0, sizeof t_rec_hist);
@@ -1193,15 +1184,7 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     if (reclog_limit() && (int)t_rec_n < reclog_limit()) { char line[1024]; size_t n = 0; t_rec_n++;
         for (unsigned i = 1; i < OP_COUNT_ && n < sizeof line - 24; i++) if (t_rec_hist[i]) n += snprintf(line + n, sizeof line - n, " op%u×%u", i, t_rec_hist[i]);
         LOG("[rec] #%u cb=%p ours=%zu hw=%zu%s", t_rec_n, (void *)c, o->cmd_used - o->rec_start - 16, hw_before - o->hw_start, line); }
-    uint8_t *copy;
-    pthread_mutex_lock(&g_seg_mu);
-    if (o->seg) copy = flatten_recording(o->seg);
-    else {   /* finalized / re-initialized by another thread since the END record went in: hand back an empty recording */
-        op_hdr empty[2] = {{OP_BEGIN, 8}, {OP_END, 8}};
-        copy = flatten_recording((const uint8_t *)empty);
-        static _Atomic int said; if (atomic_fetch_add(&said, 1) < 8) LOG("【红】[cmd] EndRecording cb=%p: its segment was released during the call; returning an empty recording", (void *)c);
-    }
-    pthread_mutex_unlock(&g_seg_mu);
+    uint8_t *copy = acnh_flatten(o, c);
     if (call_stats_on()) call_stats_end(c, copy);
     /* Finalizing the recorder does not retire its handle; only reusing the backing control region does. */
 #ifdef GAME_BOTW
@@ -1237,6 +1220,7 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     if (cmdlog_env()) LOG("[cmd] EndRecording cb=%p recorded=%p copy=%p ctl=%p", (void *)c, (void *)o->seg, (void *)copy, o->ctl);
     if (totk_life_on() && totk_life_cb_take(c)) { totk_life_log("end cb=%p handle=%p", (void *)c, (void *)copy); totk_life_handle_add((uint64_t)(uintptr_t)copy); }
     if (chainlog_env()) { static int n; if (n++ < 200) guest_chain("EndRecording"); }
+    acnh_rec_release(c);
 #ifdef GAME_BOTW
     if (lo) return (NVNcommandHandle)lo;
     { static uint64_t n; if (n++ < 4) LOG("[cmd] recording without room in its control memory: the handle is the copy itself (kept)"); }

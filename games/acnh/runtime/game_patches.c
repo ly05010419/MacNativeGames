@@ -2,9 +2,14 @@
 #include "world_survey.h"
 #include <stdio.h>
 
-/* No game-specific instruction patches are registered for ACNH 1.2.1. */
+/* ACNH 1.2.1 game-code hooks: one thread per context in main+0x1be5b30 (acnh_ctx_lock.c; ACNH_CTX_LOCK=0 leaves it out), and
+   with ACNH_DRAWHOOK=1 the diagnostics-only draw hook (acnh_draw_hook.c). */
+void acnh_ctx_lock_install(Module *m);
+void acnh_draw_hook_install(Module *m);
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
+    acnh_ctx_lock_install(m);
+    acnh_draw_hook_install(m);
     fprintf(stderr,"[acnh] verified main mapped at %p; no game instruction patches\n", (void *)m->base);
 }
 void runtime_frame_step_pin(double ms) { (void)ms; }

@@ -180,6 +180,9 @@ static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0
 static void initialize_debug_pad(void){fprintf(stderr,"[odyssey] debug pad unavailable; normal controller remains active\n");}
 static void debug_pad_state(void *out){if(!out)runtime_fail("debug pad state output");memset(out,0,0x20);}
 static void joy_dual(const uint32_t *id){if(!id)runtime_fail("joy-dual controller id");}
+typedef struct{uint32_t main,sub;} NpadColor;
+static uint32_t pad_color(NpadColor *out,const uint32_t *id){if(!out||!id)return 0x2c6ca;*out=(NpadColor){0xff323232u,0xffffffffu};return 0;}
+static uint32_t pad_colors(NpadColor *left,NpadColor *right,const uint32_t *id){if(!left||!right||!id)return 0x2c6ca;*left=*right=(NpadColor){0xff323232u,0xffffffffu};return 0;}
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -230,7 +233,9 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid18ParseVibrationFileEPNS0_17VibrationFileInfoEPNS0_26VibrationFileParserContextEPKvm",parse_vibration_file},
  {"_ZN2nn3hid22RetrieveVibrationValueEPNS0_14VibrationValueEiPNS0_26VibrationFileParserContextE",retrieve_vibration},
  {"_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",get_six_axis_handles},
- {"_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",get_vibration_device_handles}};
+ {"_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE",get_vibration_device_handles},
+ {"_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj",pad_color},
+ {"_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj",pad_colors}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 
