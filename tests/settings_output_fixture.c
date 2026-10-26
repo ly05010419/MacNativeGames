@@ -12,6 +12,28 @@ void settings_test_output_init(void) {
     output_w = 2560; output_h = 1440;
     atomic_store(&page[4], pack_size(1920, 1080));
     atomic_store(&output_page, (uint8_t *)page);
+#if defined(TOTK_GAME_V143)
+    static uint8_t scene[64];   /* the render-resolution patch's data page: the MetalFX presets set the scene there */
+    render_page = scene; render_canvas = 1;
+#endif
+}
+/* The scene size the 1.4.3 render-resolution page holds now (the asked size; 0 elsewhere). */
+uint64_t settings_test_scene(void) {
+#if defined(TOTK_GAME_V143)
+    return render_canvas ? 0 : (uint64_t)render_h << 32 | render_w;
+#else
+    return 0;
+#endif
+}
+/* A new start with this picture-mode file (1.4.3): the canvas and preset it starts in; -1 elsewhere. */
+int settings_test_picture_restart(uint64_t *size) {
+#if defined(TOTK_GAME_V143)
+    static _Atomic uint64_t fresh[8];
+    atomic_store(&picture_preset, 0); picture_mode_restore((uint8_t *)fresh);
+    *size = atomic_load(&fresh[4]); return atomic_load(&picture_preset);
+#else
+    (void)size; return -1;
+#endif
 }
 void settings_test_output_size(unsigned w, unsigned h) {
     atomic_store(&page[4], pack_size(w, h));

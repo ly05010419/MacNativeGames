@@ -902,6 +902,11 @@ int runtime_output_mode(void) {
     }
     return mfxup_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
 }
+/* The TOTK settings panel's canvas sizes (runtime.h): not here, the panel keeps the OUTPUT_MODE_* list. */
+int runtime_picture_canvas_max(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
+int runtime_picture_presets(void) { return 0; }
+int runtime_picture_preset(void) { return PICTURE_PRESET_OFF; }
+int runtime_picture_set(unsigned w, unsigned h, int preset) { (void)w; (void)h; (void)preset; return 0; }
 int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
     if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_720P || !(runtime_output_modes() & 1 << mode)) return 0;

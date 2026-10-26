@@ -10,6 +10,13 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_suspend(int on){(void)on;}
+void runtime_keyboard_layout_set(const uint8_t keys[CONTROLS_KEYS]){(void)keys;}
+void runtime_controller_layout_set(const ControlsLayout *layout){(void)layout;}
+void runtime_action_bindings_get(RuntimeActionBindings *b){action_bindings_default(b);}
+int runtime_action_bindings_set(const RuntimeActionBindings *b){return action_bindings_valid(b);}
+int runtime_action_bindings_available(void){return 0;}
+int runtime_action_bindings_supported(void){return 0;}
 void runtime_gamepad_start(void){}
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 int runtime_mouse_enabled(void){return 0;}
@@ -40,10 +47,28 @@ int runtime_aspect_set_ratio(float r){(void)r;return 0;}
 float runtime_aspect_ratio(void){return 0;}
 float runtime_aspect_start(void){return 0;}
 int runtime_output_native(int mode,unsigned *w,unsigned *h){(void)mode;(void)w;(void)h;return 0;}
+int runtime_picture_canvas_max(unsigned *w,unsigned *h){(void)w;(void)h;return 0;}
+int runtime_picture_presets(void){return 0;}
+int runtime_picture_preset(void){return 0;}
+int runtime_picture_set(unsigned w,unsigned h,int preset){(void)w;(void)h;(void)preset;return 0;}
+uint64_t runtime_output_size_current(void){return (uint64_t)1080<<32|1920;}
+int dm_gfx_vsync(void){return 1;}
 int runtime_gamepad_type_set(int type){return type;}
 int runtime_mouse_set(int on){return on;}
 void nvn_fps_lock_set(int fps){(void)fps;}
 int nvn_fps_lock(void){return 0;}
+/* The settings panel's rumble, gyro and trigger rows (gamepad_feedback.m, hid_feedback.c). */
+int runtime_feedback_present(int gyro){(void)gyro;return 0;}
+int runtime_feedback_choice(int gyro){(void)gyro;return 0;}
+int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
+void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
+float runtime_rumble_gain(void){return 1;}
+int runtime_rumble_gain_locked(void){return 0;}
+void runtime_rumble_gain_set(float gain){(void)gain;}
+int runtime_triggers_available(void){return 0;}
+int runtime_triggers_choice(void){return 0;}
+int runtime_triggers_locked(void){return 0;}
+void runtime_triggers_choose(int on){(void)on;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

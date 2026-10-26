@@ -27,6 +27,8 @@ static void settings_show(int open);
    entry, while the settings panel is open and when mouse mode goes off (front_mouse_update). */
 static BOOL mouseHeld;
 static int textEntryOpen;
+static BOOL controlsOpen;
+static BOOL actionEditorOpen;
 static void front_mouse_update(void);
 int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: edge smoothing in the settings panel */
 void taa_set(int on);
@@ -109,6 +111,15 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
+/* The game's window. Borderless (the settings panel's window mode) it still takes the keyboard, and Command-Q / the
+   close request still close it: without a title bar performClose: would only beep. */
+@interface TOTKGameWindow:NSWindow
+@end
+@implementation TOTKGameWindow
+-(BOOL)canBecomeKeyWindow{return YES;}
+-(BOOL)canBecomeMainWindow{return YES;}
+-(void)performClose:(id)sender{if(!(self.styleMask&NSWindowStyleMaskTitled)){[self close];return;}[super performClose:sender];}
+@end
 @interface TOTKInputView:NSView
 @property(strong) NSTimer *cursorHideTimer;
 @property BOOL cursorAutoHideActive;
@@ -121,8 +132,11 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
    menu) do anything; releases still go through so nothing stays held. */
 -(void)keyDown:(NSEvent *)e{if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
--(void)flagsChanged:(NSEvent *)e{int shift=!!(e.modifierFlags&NSEventModifierFlagShift),option=!!(e.modifierFlags&NSEventModifierFlagOption);
- if(e.keyCode==56&&(!settingsOpen||!shift))runtime_input_key(56,shift);if(e.keyCode==58&&(!settingsOpen||!option))runtime_input_key(58,option);}
+-(void)flagsChanged:(NSEvent *)e{
+ /* Device-specific bits distinguish left/right modifiers even when both are down. */
+ static const struct{unsigned key;uint64_t mask;} modifiers[]={{56,2},{60,4},{58,32},{61,64},{59,1},{62,8192},{57,NSEventModifierFlagCapsLock},{63,NSEventModifierFlagFunction}};
+ for(unsigned i=0;i<sizeof modifiers/sizeof *modifiers;i++)if(e.keyCode==modifiers[i].key){int down=!!(e.modifierFlags&modifiers[i].mask);if(!settingsOpen||!down)runtime_input_key(e.keyCode,down);}
+}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
@@ -159,7 +173,7 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 }
 @end
 static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
- BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!settingsOpen;
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen&&!controlsOpen&&!settingsOpen&&!actionEditorOpen;
  if(want==mouseHeld)return;
  mouseHeld=want;
  if(want){
@@ -172,6 +186,9 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  }
  fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
 }
+#include "panel_style.h"
+#include "action_editor.h"
+#include "controls_editor.h"
 @interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
@@ -264,7 +281,7 @@ static void front_sync_drawable(void){
 void runtime_front_resize_aspect(double ratio){
  if(!isfinite(ratio)||ratio<0.5||ratio>8)return;
  dispatch_async(dispatch_get_main_queue(), ^{
-  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+  if(!window||(window.styleMask&(NSWindowStyleMaskFullScreen|NSWindowStyleMaskTitled))!=NSWindowStyleMaskTitled)return;   /* full screen and borderless keep the screen */
   NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen)return;
   static NSSize lastSize;static CGFloat preferredHeight;
   NSRect oldFrame=window.frame;NSSize current=window.contentView.bounds.size;
@@ -300,7 +317,9 @@ void runtime_front_resize_aspect(double ratio){
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];}
--(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];}
+-(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];settings_window_mode_after_full();}
+-(void)windowDidBecomeMain:(NSNotification *)n{(void)n;settings_presentation();}
+-(void)windowDidResignMain:(NSNotification *)n{(void)n;settings_presentation();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */
@@ -317,6 +336,12 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ controlsEditor=[TOTKControlsEditor new];
+ NSMenuItem *bindings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("按键绑定…","Input Bindings…")) action:@selector(open:) keyEquivalent:@","];
+ bindings.target=controlsEditor;bindings.keyEquivalentModifierMask=NSEventModifierFlagCommand;[appMenu addItem:bindings];[appMenu addItem:NSMenuItem.separatorItem];
+ actionEditor=[TOTKActionEditor new];
+ NSMenuItem *actions=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("玩家动作…","Player Actions…")) action:@selector(open:) keyEquivalent:@""];
+ actions.target=actionEditor;[appMenu addItem:actions];[appMenu addItem:NSMenuItem.separatorItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
@@ -334,7 +359,7 @@ void runtime_front_run(void(*callback)(void)){
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
-  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window=[[TOTKGameWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");

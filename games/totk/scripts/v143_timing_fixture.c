@@ -17,7 +17,7 @@ int main(int argc,char **argv){
  if(argc<4)return 2;
  FILE *f=fopen(argv[1],"rb");struct stat st;
  if(!f||fstat(fileno(f),&st))return 2;
- size_t data=((size_t)st.st_size+0x3fff)&~(size_t)0x3fff,size=data+0x4000;
+ size_t data=((size_t)st.st_size+0x3fff)&~(size_t)0x3fff,size=data+0x8000;
  unsigned char *base=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_ANON|MAP_PRIVATE,-1,0);
  if(base==MAP_FAILED||fread(base,1,(size_t)st.st_size,f)!=(size_t)st.st_size)return 2;fclose(f);
  Module m={.name="main",.base=base,.file_size=(size_t)st.st_size,.size=size,.text_end=strtoull(argv[3],NULL,0)};
@@ -42,3 +42,8 @@ int main(int argc,char **argv){
  f=fopen(argv[2],"wb");if(!f||fwrite(base,1,size,f)!=size||fclose(f))return 2;
  munmap(base,size);return 0;
 }
+
+/* This fixture isolates timing/output patches; optional gameplay actions stay off. */
+int runtime_action_bindings_enabled(void){return 0;}
+void runtime_action_bindings_get(RuntimeActionBindings *b){action_bindings_default(b);}
+void runtime_action_bindings_attach(void *table){(void)table;}

@@ -58,6 +58,8 @@ The [shared shader list](docs/shader-list.md) now holds **13,422 shader variants
 
 **Stuttering when you first start playing or enter a new scene is expected while new shaders compile—don't be surprised.** Performance typically improves as the cache warms up, and every shader the [shared list](#lets-maintain-the-shader-list-together-no-more-stutter) gains is one nobody stutters on again.
 
+Mac keyboard, controller and mouse bindings: **[Input Bindings…](docs/controls-editor.md)** (Command+,).
+
 ## Install and play
 
 Everything from building the app to playing is in **[docs/install.md](docs/install.md)**. The recommended way is to hand it to an AI assistant with the [install skill](.claude/skills/install-zelda/SKILL.md) (see the top of this page) rather than run the steps yourself:

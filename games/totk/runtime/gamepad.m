@@ -53,8 +53,10 @@ static void load_controller_map(void) {
     char text[16384]; size_t n = fread(text, 1, sizeof text - 1, f); int whole = feof(f); fclose(f);
     if (!whole) runtime_fail("controller layout file too large");
     text[n] = 0;
-    const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, &error);
-    if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
+    ControlsLayout layout; controls_layout_default(&layout);
+    const char *error = NULL; int line = memchr(text, 0, n) ? 1 : controls_layout_parse(text, &layout, &error);
+    memcpy(controllerMap, layout.map, sizeof controllerMap); memcpy(controllerModes, layout.modes, sizeof controllerModes);
+    if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error ? error : "embedded NUL"); runtime_fail("controller layout file"); }
     uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS]; controller_map_default(defaults, defaultModes);
     int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
     fprintf(stderr, "[totk-input] controller layout: %s (%d buttons changed)\n", path, changed);
@@ -585,6 +587,14 @@ void runtime_gamepad_clear(void) {
     pressedEdges = 0;
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
+}
+
+/* The editor and controller callbacks run on the main queue; the guest only sees
+   the locked state. Clear old tap/toggle/edge state before publishing new input. */
+void runtime_controller_layout_set(const ControlsLayout *layout) {
+    memcpy(controllerMap,layout->map,sizeof controllerMap);
+    memcpy(controllerModes,layout->modes,sizeof controllerModes);
+    runtime_mouse_release();runtime_gamepad_clear();
 }
 
 /* On-screen touch controls (iPhone, ios/app/Sources/touch_controls.m) feed a second state merged with the physical

@@ -4,6 +4,12 @@
 #include "game_patches.h"
 #include "game_version.h"
 #include "world_survey.h"
+#include "semantic_action_patch_v143.h"
+#if !TARGET_OS_IPHONE
+#define V143_MAIN_TAIL 0x8000
+#else
+#define V143_MAIN_TAIL 0x4000
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,7 +138,7 @@ static void patch_realtime(Module *m){
      * signed RX segment, so these bytes must be emitted by export-ios rather
      * than written after the app starts. */
     uint64_t stub=(m->text_end+15)&~15ULL;
-    if(data+0x4000!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
+    if(data+V143_MAIN_TAIL!=m->size||stub+16>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 frame-step patch layout");
     const Patch guards[]={
         {0x3e5658,0x1e210808,0},{0x2daa54,0xbd425260,0},{0x2daa58,0x52a84e08,0},
         {0x2daa6c,0x5e21d800,0},{0x2daa70,0x1e201820,0},{0x2daa74,0x1e2c1001,0},{0x2daa78,0x1e210800,0}};
@@ -261,9 +267,29 @@ void runtime_diag_xpoke(unsigned off,float value){
 static void patch_output_res(Module *m);
 static void patch_render_res(Module *m);
 static void patch_fixed_res(Module *m);
+#if !TARGET_OS_IPHONE
+static void patch_action_layout_v143(Module *m){
+    if(!runtime_action_bindings_enabled())return;
+    if(!semantic_action_install_v143(m)){
+        runtime_action_bindings_attach(NULL);
+        fprintf(stderr,"[totk] 1.4.3 player action bindings unavailable: %s (main+%#x); original layout retained\n",
+            semantic_action_v143_failure?semantic_action_v143_failure:"guard failure",semantic_action_v143_failure_offset);
+        return;
+    }
+    RuntimeActionBindings b;runtime_action_bindings_get(&b);
+    fprintf(stderr,"[totk] 1.4.3 player action bindings installed (16 sources; operation masks, gameplay UI requests, query; menus/dialogue/map keep raw A/B): A=%s B=%s X=%s Y=%s L=%s R=%s ZL=%s ZR=%s Up=%s Down=%s Left=%s Right=%s LStick=%s RStick=%s Plus=%s Minus=%s\n",
+        action_binding_name(b.target[0]),action_binding_name(b.target[1]),action_binding_name(b.target[2]),action_binding_name(b.target[3]),
+        action_binding_name(b.target[4]),action_binding_name(b.target[5]),action_binding_name(b.target[6]),action_binding_name(b.target[7]),
+        action_binding_name(b.target[8]),action_binding_name(b.target[9]),action_binding_name(b.target[10]),action_binding_name(b.target[11]),
+        action_binding_name(b.target[12]),action_binding_name(b.target[13]),action_binding_name(b.target[14]),action_binding_name(b.target[15]));
+}
+#endif
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     if (strcmp(m->name, "main")) runtime_fail("1.4.3 game patches expect main");
+#if !TARGET_OS_IPHONE
+    patch_action_layout_v143(m);
+#endif
     patch_realtime(m);
     patch_output_res(m);
     patch_render_res(m);
@@ -373,23 +399,33 @@ uint64_t runtime_output_res_extra_bytes(void){
     uint64_t kib=(uint64_t)ceil(113664.0*(1+grow)/1024.0)*1024-113664;return kib<<10;
 }
 /* The settings panel's picture mode is kept between runs in the file TOTK_PICTURE_MODE names (the launcher: <data>/picture-mode.txt;
-   unset: nothing is kept, as before). It holds one word: off, metalfx, native-2k, native-2k-metalfx, native-4k or 720p. The next start with
-   automatic output sizes begins in that mode; a size larger than this app's swapchain falls back to the largest one it
-   has (native-4k on a 2K app starts at native 2K). An explicit TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
+   unset: nothing is kept, as before). It holds one word: off, metalfx, native-2k, native-2k-metalfx, native-4k or 720p, and
+   since 2026-10-26 also 900p, each of off (1080p), 720p, 900p and native-2k with "+quality", "+balanced" or "+performance"
+   for the MetalFX spatial preset (runtime_picture_set). The next start with automatic output sizes begins in that mode; a
+   size larger than this app's swapchain falls back to the largest one it has (native-4k on a 2K app starts at native 2K).
+   An explicit TOTK_OUTPUT_RES=<w>x<h> starts as it says. */
+static _Atomic int picture_preset;   /* the panel's MetalFX spatial preset, PICTURE_PRESET_* (runtime.h); 0 = the scene is the canvas */
+static const char *const preset_words[PICTURE_PRESETS]={"","+quality","+balanced","+performance"};
 static void picture_mode_save(uint64_t size){
     const char *path=getenv("TOTK_PICTURE_MODE");if(!path||!*path)return;
     extern int mfxup_output_enabled(void);
+    int preset=atomic_load(&picture_preset);
     const char *mode=mfxup_output_enabled()?(size==pack_size(2560,1440)?"native-2k-metalfx":"metalfx"):size==pack_size(2560,1440)?"native-2k":
-                     size==pack_size(3840,2160)?"native-4k":size==pack_size(1280,720)?"720p":"off";
+                     size==pack_size(3840,2160)?"native-4k":size==pack_size(1280,720)?"720p":size==pack_size(1600,900)?"900p":"off";
     FILE *f=fopen(path,"w");
-    if(!f||fprintf(f,"%s\n",mode)<0||fclose(f)){fprintf(stderr,"[totk] picture mode: cannot write %s\n",path);return;}
-    fprintf(stderr,"[totk] picture mode %s kept for the next start\n",mode);
+    if(!f||fprintf(f,"%s%s\n",mode,preset_words[preset])<0||fclose(f)){fprintf(stderr,"[totk] picture mode: cannot write %s\n",path);return;}
+    fprintf(stderr,"[totk] picture mode %s%s kept for the next start\n",mode,preset_words[preset]);
 }
 static void picture_mode_restore(uint8_t *page){
     const char *path=getenv("TOTK_PICTURE_MODE");if(!path||!*path||output_full_at_start)return;
     char mode[32]="";FILE *f=fopen(path,"r");if(!f)return;
     if(!fgets(mode,sizeof mode,f))mode[0]=0;
     fclose(f);mode[strcspn(mode,"\r\n")]=0;
+    int preset=0;char *plus=strchr(mode,'+');
+    if(plus){for(int i=1;i<PICTURE_PRESETS;i++)if(!strcmp(plus,preset_words[i]))preset=i;
+        if(!preset){fprintf(stderr,"[totk] picture mode: %s holds \"%s\", an unknown MetalFX preset; starting off\n",path,mode);return;}
+        *plus=0;
+        if(strcmp(mode,"off")&&strcmp(mode,"720p")&&strcmp(mode,"900p")&&strcmp(mode,"native-2k")){fprintf(stderr,"[totk] picture mode: %s holds a MetalFX preset on \"%s\"; starting off\n",path,mode);return;}}
     unsigned w=1920,h=1080;
     if(!strcmp(mode,"native-4k")&&output_w>=3840&&output_h>=2160){w=3840;h=2160;}
     else if((!strcmp(mode,"native-4k")||!strcmp(mode,"native-2k"))&&output_w>=2560&&output_h>=1440){w=2560;h=1440;}
@@ -397,14 +433,16 @@ static void picture_mode_restore(uint8_t *page){
         w=2560;h=1440;dm_gfx_set_flag("mfx_output",1);dm_gfx_set_flag("mfx_upscale",1);}
     else if(!strcmp(mode,"metalfx")){extern void dm_gfx_set_flag(const char *,int);dm_gfx_set_flag("mfx_output",1);dm_gfx_set_flag("mfx_upscale",1);}
     else if(!strcmp(mode,"720p")){w=1280;h=720;}
-    else if(strcmp(mode,"off")){fprintf(stderr,"[totk] picture mode: %s holds \"%s\", not off, metalfx, native-2k, native-2k-metalfx, native-4k or 720p; starting off\n",path,mode);return;}
+    else if(!strcmp(mode,"900p")){w=1600;h=900;}
+    else if(strcmp(mode,"off")&&strcmp(mode,"native-2k")){fprintf(stderr,"[totk] picture mode: %s holds \"%s\", not off, metalfx, native-2k, native-2k-metalfx, native-4k, 720p or 900p; starting off\n",path,mode);return;}
+    if(preset){extern void dm_gfx_set_flag(const char *,int);atomic_store(&picture_preset,preset);dm_gfx_set_flag("mfx_upscale",1);}   /* the scene size follows in patch_render_res */
     atomic_store((_Atomic uint64_t *)(void *)(page+32),pack_size(w,h));
-    fprintf(stderr,"[totk] picture mode: starts in %s (kept from the last run, %s)\n",mode,path);
+    fprintf(stderr,"[totk] picture mode: starts in %s%s (kept from the last run, %s)\n",mode,preset_words[preset],path);
 }
 static void patch_output_res(Module *m){
     unsigned w,h;if(!runtime_output_res(&w,&h))return;
     uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+16;
-    if(data+0x4000!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
+    if(data+V143_MAIN_TAIL!=m->size||stub+28>((m->text_end+0x3fff)&~0x3fffULL))runtime_fail("1.4.3 output patch layout");
     const Patch guards[]={
         {0xbdb578,0xd280f008,0},{0xbdb584,0xf2c08708,0},
         {0x3dcb28,0xd360fc64,0},{0x3dcb2c,0xf9028663,0},{0x3dcb30,0xd001ac08,0}};
@@ -467,6 +505,13 @@ static void patch_output_res(Module *m){
    holds (2026-10-25: 1920x1080 on the 720p canvas rendered 1280x720). The game reads this size only at the start: after
    that it scales the size it read there with the canvas (a 1600x900 written on the 1080p canvas was never taken). */
 static uint8_t *render_page;static unsigned render_w,render_h;static int render_canvas;
+/* The MetalFX spatial preset's scene: the canvas times 1/1.5 (quality, about 67 %), 1/1.7 (balanced, about 59 %) or 1/2
+   (performance), even sizes; MetalFX (mfx_upscale) rebuilds the canvas from it. Off: the scene is the canvas. */
+static void picture_scene(unsigned cw,unsigned ch){
+    static const float scale[PICTURE_PRESETS]={1,1/1.5f,1/1.7f,0.5f};
+    int p=atomic_load(&picture_preset);
+    render_canvas=!p;if(p){render_w=(unsigned)lroundf(cw*scale[p]/2)*2;render_h=(unsigned)lroundf(ch*scale[p]/2)*2;}
+}
 static void render_res_publish(unsigned canvas_w){
     if(!render_page)return;
     float k=canvas_w/1920.0f,v[2]={render_w/k,render_h/k};
@@ -531,6 +576,7 @@ static void patch_render_res(Module *m){
     for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)memcpy(m->base+sites[i].off,&want[i],4);
 #endif
     render_page=m->base+data;render_w=w;render_h=h;
+    if(atomic_load(&picture_preset)&&render_canvas){uint64_t c=runtime_output_size_current();picture_scene((unsigned)c,(unsigned)(c>>32));}   /* a preset kept from the last run */
     render_res_publish(output_w?(unsigned)runtime_output_size_current():1920);
     fprintf(stderr,"[totk] 1.4.3 render resolution patch: scene render size %ux%u%s (4 instructions at main+0x585e48, value on the data page)\n",
             w,h,set?"":" (the game's handheld size; TOTK_RENDER_RES not set)");
@@ -559,9 +605,9 @@ static void patch_fixed_res(Module *m){
 #endif
 }
 /* The game's canvas: any size up to the swapchain's. The scene size goes first (the game rebuilds when told). */
-static void output_size_set(uint64_t want){
+static void output_size_set(uint64_t want,int force){
     _Atomic uint64_t *size=(_Atomic uint64_t *)(void *)(output_page+32);
-    if(atomic_load(size)==want)return;
+    if(atomic_load(size)==want&&!force)return;
     atomic_store(size,want);render_res_publish((unsigned)want);
     uint64_t config=atomic_load((_Atomic uint64_t *)(void *)(output_page+40));
     if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
@@ -590,11 +636,30 @@ int runtime_output_mode_set(int mode){
     if(!output_page||mode<OUTPUT_MODE_OFF||mode>OUTPUT_MODE_720P||!(runtime_output_modes()&1<<mode))return 0;
     unsigned w=1920,h=1080;
     if(mode==OUTPUT_MODE_720P){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX)runtime_output_native(mode,&w,&h);
-    output_size_set(pack_size(w,h));
+    int force=atomic_exchange(&picture_preset,0)&&render_page;   /* the panel's MetalFX preset ends: the scene is the canvas again */
+    if(force)picture_scene(w,h);
+    output_size_set(pack_size(w,h),force);
     int mfx=mode==OUTPUT_MODE_METALFX||mode==OUTPUT_MODE_NATIVE_METALFX;
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
     fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
             mode==OUTPUT_MODE_NATIVE?"native":mode==OUTPUT_MODE_METALFX?"MetalFX 2K":"off (1080p)");
+    picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
+    return 1;
+}
+/* The settings panel's picture (user 2026-10-26, runtime.h): the canvas, 720p up to the swapchain (2K), and the MetalFX
+   spatial preset that sets the scene below it (picture_scene); the MetalFX output stage stays off, the window shows the
+   canvas. The scene size goes first and the game rebuilds its displays even when only the preset changed. */
+int runtime_picture_canvas_max(unsigned *w,unsigned *h){if(!output_page)return 0;*w=output_w;*h=output_h;return 1;}
+int runtime_picture_presets(void){return output_page&&render_page;}
+int runtime_picture_preset(void){return atomic_load(&picture_preset);}
+int runtime_picture_set(unsigned w,unsigned h,int preset){
+    extern void dm_gfx_set_flag(const char *,int);
+    if(!output_page||w<640||h<360||w>output_w||h>output_h||preset<0||preset>=PICTURE_PRESETS||(preset&&!render_page))return 0;
+    int was=atomic_exchange(&picture_preset,preset);
+    if(render_page)picture_scene(w,h);
+    dm_gfx_set_flag("mfx_output",0);dm_gfx_set_flag("mfx_upscale",preset!=0);
+    output_size_set(pack_size(w,h),was!=preset);
+    fprintf(stderr,"[totk] picture: canvas %ux%u, MetalFX %s (scene %ux%u)\n",w,h,preset?preset_words[preset]+1:"off",render_canvas?w:render_w,render_canvas?h:render_h);
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
     return 1;
 }

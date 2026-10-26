@@ -2613,7 +2613,15 @@ static int diag_shader_prefix_matches(const char *key, uint64_t value) {
     char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)value);
     return key && !strncmp(key, prefix, 16);
 }
+/* The settings panel's vertical sync ("flag vsync 0|1", runtime/settings_panel.h; default on, as before): off presents on
+   the classic present thread with displaySyncEnabled off and no display link, our own clock pacing alone. Frame
+   interpolation orders its two pictures on the display link, so vsync stays on while it runs. */
+static _Atomic int g_vsync_off;
+static int vsync_off(void) { return atomic_load_explicit(&g_vsync_off, memory_order_relaxed) && mfx_enabled() == MFX_OFF; }
+int dm_gfx_vsync(void) { return !atomic_load(&g_vsync_off); }   // the switch's state (interpolation keeps vsync whatever it says)
 void dm_gfx_set_flag(const char *name, int v) {
+    if (!strcmp(name, "vsync")) { atomic_store(&g_vsync_off, v == 0); MLOG("[flag] vsync = %d%s", v != 0, v ? "" : " (no display link; frame interpolation keeps it)"); return; }
+    if (!strcmp(name, "mfx_auto")) { extern void nvn_fi_auto_set(int); nvn_fi_auto_set(v); return; }
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
@@ -14474,7 +14482,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!layer) return 0;
     if (g_present_layer_resident != layer) { if (!layer.residencySet) MDIE("present layer has no residency set (layer device %s)", layer.device ? "set" : "missing"); [g_q4 addResidencySet:layer.residencySet]; g_present_layer_resident = layer; }
 #if TARGET_OS_OSX
-    if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // 窗口模式按显示器垂直同步，防撕裂 | Windowed mode follows the display's vsync to prevent tearing
+    { BOOL sync = !vsync_off();   // 窗口模式按显示器垂直同步，防撕裂；设置面板可关（flag vsync） | Windowed mode follows the display's vsync to prevent tearing; the settings panel can turn it off (flag vsync)
+      if (layer.displaySyncEnabled != sync) layer.displaySyncEnabled = sync; }
 #endif
     present_pipeline(layer.pixelFormat);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable
     window_shot_tick(g_present_n);
@@ -14763,6 +14772,7 @@ static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象
     int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
     if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz | Power-saving mode: display link at 30 Hz
+    if (want && vsync_off()) want = 0;   // 设置面板关垂直同步：不挂显示节拍（g_dm_present_link 不动，开回时恢复） | The settings panel's vsync off: no display link (g_dm_present_link kept for when it comes back on)
     if (want == applied) return;
     g_link_mode = want;
     if (!g_link_started) {

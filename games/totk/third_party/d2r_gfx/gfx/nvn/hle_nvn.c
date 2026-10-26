@@ -2425,14 +2425,15 @@ static int phone_holds_30(void) {
 }
 int runtime_phone_fps(void) { return phone_holds_30() ? 30 : 60; }
 void runtime_phone_fps_set(int fps) { atomic_store(&g_phone_hold30, fps == 30); fprintf(stderr, "[totk] phone frame rate: %s\n", fps == 30 ? "held at 30" : "up to 60"); }
-/* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40 or 60. The game is
-   then paced at exactly that rate as the 30 fps hold above does it (display ticks where the rate divides the display's,
-   our own clock otherwise), with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie
-   or the phone's 30 fps hold still wins; so do the interpolation modes that hold the game (30+30, 40+40, 50+50), which the
-   panel never leaves on together with a lock. */
+/* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, else the highest
+   frame rate, 20..240 (user 2026-10-26: 30 / 40 / 60 or one the player types in). The game is then paced at exactly that
+   rate as the 30 fps hold above does it (display ticks where the rate divides the display's, our own clock otherwise),
+   with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie or the phone's 30 fps hold
+   still wins; so do the interpolation modes that hold the game (30+30, 40+40, 50+50). The panel's adaptive frame
+   interpolation (nvn_fi_auto_set below) interpolates at this rate: a lock at N shows N + N. */
 static _Atomic int g_fps_lock;
 void nvn_fps_lock_set(int fps) {
-    fps = fps == 30 || fps == 40 || fps == 60 ? fps : 0;
+    fps = fps >= 20 && fps <= 240 ? fps : 0;
     if (atomic_exchange(&g_fps_lock, fps) != fps) { if (fps) LOG("[nvn] 锁帧：%d 帧", fps); else LOG("[nvn] 锁帧：关"); }
 }
 int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
@@ -2788,7 +2789,21 @@ static int g_hz = -1, g_display_mode;
    rate: the iPhone / iPad default (user 2026-10-17: at most 60 on the iPhone 14's 60 Hz screen, where frames above it are
    never shown and only heat the phone; since 2026-10-23 the phone holds 30, phone_holds_30). The game still does not wait for the display, so a scene slower than the ceiling
    is not held to 60 / 30 steps. */
+/* The settings panel's adaptive frame interpolation (user 2026-10-26, as DLSS 4 and Cyberpunk 2077's MetalFX frame
+   generation do it): one switch instead of the 30+30 / 40+40 / 50+50 list. It runs uncapped interpolation (MFX_MAX), every
+   game frame followed by one made between it and the next: with a frame lock at N the game is held at N (game_hold_fps)
+   and N + N reach the screen; without a lock the system picks the ceiling, half the display's refresh rate (60 + 60 on a
+   120 Hz screen, at least 30), the game running uncapped below it and every frame it makes interpolated. */
+static _Atomic int g_fi_auto;
+static int fi_auto_now(void) { return atomic_load(&g_fi_auto) && mfx_enabled() == MFX_MAX; }
+void nvn_fi_auto_set(int on) {
+    extern void mfx_set(int mode);
+    atomic_store(&g_fi_auto, on != 0); mfx_set(on ? MFX_MAX : MFX_OFF);
+    LOG("[nvn] 自适应补帧：%s", on ? (atomic_load(&g_fps_lock) ? "开，按帧率上限补" : "开，上限为显示器刷新率的一半") : "关");
+}
+int nvn_fi_auto(void) { return atomic_load(&g_fi_auto); }
 static int uncapped_cap(int scr) {
+    if (fi_auto_now()) { int half = (scr > 0 ? scr : 60) / 2; return half < 30 ? 30 : half > UNCAPPED_HZ ? UNCAPPED_HZ : half; }
     const char *e = getenv("TOTK_UNCAPPED_HZ");
 #if TARGET_OS_IPHONE
     if (!e) e = "display";   // at most the screen's rate (60 on an iPhone 14); TOTK_PHONE_FPS=30 holds 30 (phone_holds_30)
@@ -2835,11 +2850,21 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     if (hold) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= hold * 3 / 2 ? (hz + hold / 2) / hold : 1); }
     return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
 }
+/* The adaptive interpolation's ceiling follows its switch (on the guest thread that reads g_hz). */
+static int g_fi_auto_seen;   /* the switch as uncapped_follow last applied it */
+static void uncapped_follow(void) {
+    int now = fi_auto_now();
+    if (now == g_fi_auto_seen || !g_uncapped || g_hz < 0) return;
+    g_fi_auto_seen = now; g_hz = uncapped_cap(mtl_display_hz());
+    LOG("[nvn] 不限帧率的上限改为 %d 帧（%s）", g_hz, now ? "自适应补帧" : "补帧关");
+}
 static uint64_t present_period(const win_t *o) {
+    uncapped_follow();
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
         LOG("[nvn] 出图节拍切换：%s%s", mfx_hold_fps(m) ? (mfx_own_clock() ? "补帧：游戏按自己的时钟每秒 " : "补帧：跟随显示器，游戏每秒 ") : "",
                                     mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : "50 帧（50+50）") :
+                                    m == MFX_MAX && game_hold_fps() ? "补帧：按帧率上限，每帧补一帧" :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
     { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
@@ -2905,10 +2930,29 @@ void dm_nvn_probe_present_interval(void) {
         nvn_fps_lock_set(40);
         if (present_period(&w) != 1000000000ull / 40 || uncapped_now() || mfx_own_clock() != (rates[r] % 40 != 0))
             die("present interval probe: the 40 fps lock must pace exactly 40 fps");
+        nvn_fps_lock_set(72);   /* a limit the player typed in (settings panel): exactly that rate, our own clock off a multiple */
+        if (present_period(&w) != 1000000000ull / 72 || uncapped_now() || mfx_own_clock() != (rates[r] % 72 != 0))
+            die("present interval probe: a custom limit (72) must pace exactly 72 fps");
+        nvn_fps_lock_set(19); if (nvn_fps_lock()) die("present interval probe: a limit below 20 must turn the lock off");
         nvn_fps_lock_set(0);
         if (uncapped_now() != uncapped) die("present interval probe: the lock off must give the uncapped pacing back");
         checked++;
     }
+    /* The adaptive interpolation (uncapped interpolation): with a limit, held at it (45 + 45); without one, the uncapped
+       clock at half the display's rate (60 at 120 Hz, 72 at 144 Hz, at least 30). */
+    mfx_set(MFX_MAX); mfx_latch(); atomic_store(&g_fi_auto, 1);
+    for (int r = 0; r < 4; r++) {
+        win_t w = {.interval = 1}; g_paced_hz = rates[r]; g_hz = UNCAPPED_HZ; g_display_mode = 0; g_uncapped = 1;
+        nvn_fps_lock_set(45);
+        if (present_period(&w) != 1000000000ull / 45 || uncapped_now() || mfx_own_clock() != (rates[r] % 45 != 0))
+            die("present interval probe: interpolation at a 45 fps limit must hold the game at 45");
+        nvn_fps_lock_set(0);
+        int half = rates[r] / 2 < 30 ? 30 : rates[r] / 2;
+        if (uncapped_cap(rates[r]) != half || !uncapped_now()) die("present interval probe: adaptive interpolation without a limit must run uncapped at half the refresh rate");
+        checked++;
+    }
+    atomic_store(&g_fi_auto, 0); g_fi_auto_seen = 0;   /* the ceiling the cases below set stays theirs */
+    if (uncapped_cap(120) == 60 && !getenv("TOTK_UNCAPPED_HZ")) die("present interval probe: interpolation off must give the uncapped ceiling back");
     mfx_set(MFX_MAX); mfx_latch();
     for (int uncapped = 0; uncapped < 2; uncapped++) for (int interval = -1; interval <= 3; interval++) {
         win_t w = {.interval = interval}; g_paced_hz = 100; g_hz = uncapped ? UNCAPPED_HZ : 100; g_display_mode = 0; g_uncapped = uncapped;
