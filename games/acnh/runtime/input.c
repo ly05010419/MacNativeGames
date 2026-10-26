@@ -151,7 +151,7 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
    the handheld activation mode. */
 static void full_state(NpadState *out,const uint32_t *id){full_states(out,1,id);}
 static void handheld_state(NpadState *out,const uint32_t *id){handheld_states(out,1,id);}
-static void disconnected_state(NpadState *out,const uint32_t *id){disconnected_states(out,1,id);}
+__attribute__((unused)) static void disconnected_state(NpadState *out,const uint32_t *id){disconnected_states(out,1,id);}
 static void joy_dual_state(NpadState *out,const uint32_t *id){joy_dual_states(out,1,id);}
 static void joy_left_state(NpadState *out,const uint32_t *id){joy_left_states(out,1,id);}
 static void joy_right_state(NpadState *out,const uint32_t *id){joy_right_states(out,1,id);}
