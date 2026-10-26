@@ -105,6 +105,15 @@ static void setting_write(const char *name, const char *word, const char *what) 
     if (!ok) { fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path); unlink(temp); }
 }
 
+/* The same one-word files for the rest of the runtime: 1 with the file's text in word as written (the caller drops the
+   blanks around the word), 0 when there is no such file or no settings folder (a run without TOTK_CONTROLS). */
+int runtime_setting_word(const char *name, char *word, size_t size) {
+    char path[4096];
+    return setting_read(name, word, size, path, sizeof path);
+}
+/* ... and saves one, as controller-type.txt is saved (the settings panel's controller rows). */
+void runtime_setting_save(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
+
 /* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, in controller-type.txt. */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;
 

@@ -5970,6 +5970,7 @@ static struct {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard;
     float blend_color[4]; int64_t copy_stride, copy_image_stride;
+    float alpha_ref;   // Super Smash Bros. Ultimate (Q61): SetAlphaRef, the alpha test's reference value
 } S;
 /* TOTK: stage_sig compared 128 texture handles of the stage with its last copy on every draw (a 1 KiB memcmp, 0.13 ms a
    frame in a shrine). Every write to S.tex now gives that stage a fresh, never reused number, so equal numbers mean equal
@@ -6119,6 +6120,16 @@ static NSString *image_format(int f) {
 }
 static const treg_t *bound_tex(uint64_t h) { int tid = (int)(h & 0xfffff); return tid > 0 && tid < g_ntreg && g_treg[tid].ok ? &g_treg[tid] : NULL; }
 static int bound_target(const treg_t *r) { return r->has_v && r->v.set_target ? r->v.target : r->t.d.target; }
+/* Super Smash Bros. Ultimate (Q61): Metal has no fixed-function alpha test, so the fragment shader's translation does it
+   (Ryujinx discards when colour 0's alpha fails the compare). The answer is "<NVN alpha function>:<reference>", the
+   function numbered as Ryujinx's AlphaTestOp (1 never .. 8 always); without an alpha test there is no answer, so every
+   other variant keeps its name. TOTK_ALPHA_TEST=0 (comparison runs only) draws without it, as before Q61. */
+static int alpha_test_on(void) {
+    static int off = -1;
+    if (off < 0) { const char *e = getenv("TOTK_ALPHA_TEST"); off = e && !strcmp(e, "0"); if (off) MLOG("TOTK_ALPHA_TEST=0: the alpha test is ignored (drawn without it, comparison)"); }
+    return !off && S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS;
+}
+static NSString *alpha_answer(void) { return alpha_test_on() ? [NSString stringWithFormat:@"%u:%.9g", (unsigned)S.color.alpha_func, (double)S.alpha_ref] : nil; }
 static NSDictionary *rt_answers(int st) {
     NSMutableDictionary *tex = [NSMutableDictionary dictionary], *img = [NSMutableDictionary dictionary], *attr = [NSMutableDictionary dictionary], *fout = [NSMutableDictionary dictionary];
     registry_lock();   /* nested on this thread or wait for a different owner */
@@ -6134,6 +6145,8 @@ static NSDictionary *rt_answers(int st) {
     registry_unlock();
     if (st == 0) for (int i = 0; i < S.nattr && i < 16; i++) attr[@(i).stringValue] = fmt_class(S.attr[i].fmt);
     if (st == 1 && R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i]) fout[@(i).stringValue] = fmt_class(R.rt.has_cview[i] && R.rt.cview[i].set_format ? R.rt.cview[i].format : R.rt.color[i]->d.format);
+    NSString *alpha = st == 1 ? alpha_answer() : nil;
+    if (alpha) return @{@"tex": tex, @"img": img, @"attr": attr, @"fout": fout, @"alpha": alpha};
     return @{@"tex": tex, @"img": img, @"attr": attr, @"fout": fout};
 }
 // TOTK: value class of the bound state a translation depends on (fragment outputs per render target, vertex attributes).
@@ -6147,6 +6160,10 @@ static uint64_t stage_sig(int st) {
     if (st == 1 && R.has_rt) for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i])
         sg |= (uint64_t)(1 + cls_of(R.rt.has_cview[i] && R.rt.cview[i].set_format ? R.rt.cview[i].format : R.rt.color[i]->d.format)) << (3 * i);
     if (st == 0) for (int i = 0; i < S.nattr && i < 16; i++) sg |= (uint64_t)cls_of(S.attr[i].fmt) << (2 * i);
+    if (st == 1 && alpha_test_on()) {   // Q61: the alpha function and reference are part of the fragment translation
+        uint32_t rb; memcpy(&rb, &S.alpha_ref, 4);
+        sg ^= ((uint64_t)S.color.alpha_func << 32 | rb) * 0xD6E8FEB86659FD93ull | 1ull << 62;
+    }
     /* TOTK: which texture slots hold depth-format textures is part of the signature too (the MSL declares them depth2d),
        so a program first translated with other bindings is re-fitted at draw time. */
     /* The depth-slot mask only changes with this stage's bound handles or a descriptor registration (g_reg_gen): it is
@@ -8313,6 +8330,13 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                    Metal needs a matching texture type in the argument buffer, so bind a cached 1-slice view of the right type. */
                 id<MTLTexture> av = tex_type_view(t, (MTLTextureType)b->dtt);
                 if (av) { t = av; trid = av.gpuResourceID._impl; } }
+            else if (b->dtt == MTLTextureType3D && t.textureType != MTLTextureType3D) {
+                /* Q92 (Smash, 2026-10-25): the game bound a 2D depth texture where ps 9dcc392f… samples its 3D colour table;
+                   no view makes a 2D texture 3D, and a 2D resource in a texture3d slot is undefined on the GPU. The slot gets
+                   the empty 3D texture an unbound slot gets (reads 0), and the translator keeps the shader's texture3d. */
+                RED_ONCE(122, "Q92: a %lu texture (Metal format %lu, texture %d) is bound where the shader reads a 3D one: the empty 3D texture instead",
+                         (unsigned long)t.textureType, (unsigned long)t.pixelFormat, tid);
+                t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             if (g_mfxup_out && (__bridge void *)sh == (__bridge void *)g_mfxup_sh && t == g_mfxup_src) { t = g_mfxup_out; trid = t.gpuResourceID._impl; }   // TOTK_MFX_UPSCALE
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
@@ -8602,7 +8626,7 @@ static int lay_scan(const uint8_t *start, const p_set_rt *rt, int first, int nla
             case OP_DRAW: case OP_DRAW_IDX: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM: case OP_BIND_STATE:
             case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP:
             case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD:
-            case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: continue;
+            case OP_ALPHA_REF: case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: continue;
             default: return hi;   // copies, dispatches, texture / depth-stencil clears, events
         }
     }
@@ -8771,6 +8795,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_VIEWPORTS: { const p_viewports *b = a; for (int i = 0; i < b->n; i++) memcpy(S.vp[b->first + i], b->v[i], 16); S.has_vp = 1; break; }
         case OP_DEPTH_RANGE: { const p_depth_range *b = a; S.dr[0] = b->n; S.dr[1] = b->f; break; }
         case OP_BLEND_COLOR: memcpy(S.blend_color, ((const p_blend_color *)a)->rgba, 16); break;
+        case OP_ALPHA_REF: S.alpha_ref = ((const p_alpha_ref *)a)->ref; break;   // read by rt_answers / stage_sig at the next draw (prog_fit)
         case OP_COPY_STRIDE: if (((const p_copy_stride *)a)->image) S.copy_image_stride = ((const p_copy_stride *)a)->stride; else S.copy_stride = ((const p_copy_stride *)a)->stride; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = ((const p_flag *)a)->value; break;
         case OP_RENDER_ENABLE: S.render_disabled = !((const p_flag *)a)->value; break;
@@ -11069,6 +11094,24 @@ static int mfxup_draw(NvProg *pr) {
     return 0;
 }
 #include "nvn_cube_group.h"
+/* Q61: draws with an alpha test, which their fragment shader's translation does (alpha_answer). Each distinct fragment
+   shader is named once (48 at most) with the variant answer and what decides whether the test can be seen: blending,
+   depth test and write, the target. Logging only. */
+static void alpha_test_note(NvProg *pr) {
+    if (!alpha_test_on()) return;
+    static _Atomic uint64_t draws; static char seen[48][17]; static int nseen; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    uint64_t n = atomic_fetch_add(&draws, 1) + 1;
+    char fs[17]; snprintf(fs, sizeof fs, "%.16s", pr && pr->sh[1] ? pr->sh[1]->key : "-");
+    int added = 0;
+    pthread_mutex_lock(&mu);
+    int known = 0; for (int i = 0; i < nseen; i++) if (!strcmp(seen[i], fs)) known = 1;
+    if (!known && nseen < 48) { memcpy(seen[nseen++], fs, sizeof fs); added = 1; }
+    pthread_mutex_unlock(&mu);
+    const tex_t *rt = R.has_rt ? R.rt.color[0] : NULL;
+    if (added) MLOG("[alpha-test] fs %s answer %s (func %u ref %g) blend %#x depth test %d write %d target %ux%u fmt %#x frame %llu (draw %llu with an alpha test), done in the shader",
+                    fs, alpha_answer().UTF8String, S.color.alpha_func, (double)S.alpha_ref, (unsigned)S.color.blend_en, (int)S.ds.dt, (int)S.ds.dw,
+                    rt ? rt->d.width : 0, rt ? rt->d.height : 0, rt ? rt->d.format : 0, (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)n);
+}
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = prog_get(S.prog); g_prog_for_draw = 0;
@@ -11198,8 +11241,9 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
         for (int r = 0; r < 4; r++) if (S.tex[1][r]) { int tid = (int)(S.tex[1][r] & 0xfffff); const treg_t *t = tid < g_ntreg && g_treg[tid].ok ? &g_treg[tid] : NULL;
             MLOG("[draw]   ps slot %d handle %#llx tid %d %s %ux%u fmt=%#x tgt=%d layout=%d mem=%p ser=%llu", r, (unsigned long long)S.tex[1][r], tid, t ? "ok" : "UNREGISTERED",
                  t ? t->t.d.width : 0, t ? t->t.d.height : 0, t ? t->t.d.format : 0, t ? t->t.d.target : 0, t ? t->t.has_layout : 0, t ? (void *)t->t.mem : NULL, t ? (unsigned long long)t->t.serial : 0ull); } } }
-    if (S.color.logic_op != NVN_LOGIC_OP_COPY || (S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS))
-        RED_ONCE(70, "TOTK: logic op %u / alpha test %u not implemented on Metal (drawn without it)", S.color.logic_op, S.color.alpha_func);
+    if (S.color.logic_op != NVN_LOGIC_OP_COPY)   // the alpha test is done in the fragment shader (Q61, alpha_answer)
+        RED_ONCE(70, "TOTK: logic op %u not implemented on Metal (drawn without it)", S.color.logic_op);
+    alpha_test_note(pr);   // Q61
     if (S.render_disabled || S.raster_discard) { g_draw_skip[S.render_disabled ? 3 : 4]++; return; }   // TOTK: SetRenderEnable(false) / SetRasterizerDiscard(true)
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) { g_draw_skip[5]++; return; }
     if (exp_skip_fs(pr)) return;   // TOTK_EXP_SKIP_FS (measurement only)
@@ -11381,8 +11425,9 @@ frz_plain:;
         sc = (MTLScissorRect){(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
     }
     enc_r_scissor(en, sc);
-    if (S.color.logic_op != NVN_LOGIC_OP_COPY || (S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS))
-        RED_ONCE(70, "TOTK: logic op %u / alpha test %u not implemented on Metal (drawn without it)", S.color.logic_op, S.color.alpha_func);
+    if (S.color.logic_op != NVN_LOGIC_OP_COPY)   // the alpha test is done in the fragment shader (Q61, alpha_answer)
+        RED_ONCE(70, "TOTK: logic op %u not implemented on Metal (drawn without it)", S.color.logic_op);
+    alpha_test_note(pr);   // Q61
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) return;
     /* TOTK diagnostic TOTK_GPU_NOCULL_FROM=<frame>: from that frame on, face culling is disabled for every draw. */
     { static long nocull_from = -2; if (nocull_from == -2) { const char *e = getenv("TOTK_GPU_NOCULL_FROM"); nocull_from = e ? atol(e) : -1; }
@@ -12559,6 +12604,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_RENDER_ENABLE: case OP_RASTER_DISCARD: case OP_RENDER_COND:
+            case OP_ALPHA_REF:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
             case OP_COPY_T2B: copy_t2b(a); break;

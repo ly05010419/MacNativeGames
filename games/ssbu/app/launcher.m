@@ -49,6 +49,36 @@ static uint64_t pid_start(pid_t pid) {   // 0 if gone or a zombie; with the pid 
     return bi.pbi_start_tvsec;
 }
 
+/* Q90 (2026-10-25): <logs>/<game>.previous.log used to be deleted at every start, so two starts after a long session
+   (a restart from the Picture menu, a crash, a quick retry) took it with them: a 3 h 20 min session on 2K was gone the
+   same night. The log about to be dropped moves to <logs>/<game>-sessions/<game>-<its start>.log instead; the newest
+   SESSION_LOGS_MAX runs stay, and older ones go while the folder holds more than SESSION_LOGS_BYTES. */
+#define SESSION_LOGS_MAX 40
+#define SESSION_LOGS_BYTES (1ull << 30)
+static void keep_session_log(NSString *logs, NSString *old) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSDictionary *attr = [fm attributesOfItemAtPath:old error:nil];
+    if (!attr) return;
+    NSString *dir = [logs stringByAppendingPathComponent:@GAME_LOG "-sessions"];
+    [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSDateFormatter *f = [NSDateFormatter new]; f.dateFormat = @"yyyyMMdd-HHmmss";
+    f.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    NSString *name = [NSString stringWithFormat:@GAME_LOG "-%@.log", [f stringFromDate:attr.fileCreationDate ?: attr.fileModificationDate]];
+    NSString *dest = [dir stringByAppendingPathComponent:name];
+    [fm removeItemAtPath:dest error:nil];
+    if (![fm moveItemAtPath:old toPath:dest error:nil]) return;
+    NSArray<NSString *> *names = [[fm contentsOfDirectoryAtPath:dir error:nil] sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray<NSString *> *kept = [NSMutableArray array];
+    for (NSString *n in names) if ([n hasPrefix:@GAME_LOG "-"] && [n hasSuffix:@".log"]) [kept addObject:n];   // oldest first (the name sorts by time)
+    unsigned long long bytes = 0;
+    for (NSString *n in kept) bytes += [[fm attributesOfItemAtPath:[dir stringByAppendingPathComponent:n] error:nil] fileSize];
+    while (kept.count > 1 && (kept.count > SESSION_LOGS_MAX || bytes > SESSION_LOGS_BYTES)) {
+        NSString *p = [dir stringByAppendingPathComponent:kept.firstObject];
+        bytes -= MIN(bytes, [[fm attributesOfItemAtPath:p error:nil] fileSize]);
+        [fm removeItemAtPath:p error:nil]; [kept removeObjectAtIndex:0];
+    }
+}
+
 /* The game slot (runtime/game_slot.c): the running game holds an exclusive lock on <slot>/lock and names itself in
    <slot>/holder. Returns the running game's pid, or 0. */
 static pid_t running_game(NSString *slot) {
@@ -307,20 +337,61 @@ int main(int argc, char **argv) {
           FILE *cf = fopen(cmds.fileSystemRepresentation, "w"); if (cf) fclose(cf);
           setenv("TOTK_INPUT_FILE", cmds.fileSystemRepresentation, 1); }
 
+        /* Q96 (2026-10-25, the player: DLC on and off like the log, a folder chosen in the app): the game's DLC menu
+           (runtime/frontend.m) writes <data>/dlc.txt, "on" (the default) or "off", and <data>/dlc-folder.txt, the folder of
+           the player's DLC NSPs; the runtime reads that folder at the first DLC call (runtime/services.c, aoc_scan.h).
+           Explicit SSBU_DLC / SSBU_DLC_DIR from the environment still win (tests). */
+        NSString *dlcChoiceFile = [data stringByAppendingPathComponent:@"dlc.txt"];
+        NSString *dlcFolderFile = [data stringByAppendingPathComponent:@"dlc-folder.txt"];
+        NSString *dlcChoice = [[NSString stringWithContentsOfFile:dlcChoiceFile encoding:NSUTF8StringEncoding error:nil]
+                               stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *dlcFolder = [[NSString stringWithContentsOfFile:dlcFolderFile encoding:NSUTF8StringEncoding error:nil]
+                               stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        setenv("SSBU_DLC_FILE", dlcChoiceFile.fileSystemRepresentation, 1);
+        setenv("SSBU_DLC_FOLDER_FILE", dlcFolderFile.fileSystemRepresentation, 1);
+        if ([dlcChoice isEqualToString:@"off"]) setenv("SSBU_DLC", "0", 0);
+        if (dlcFolder.length) setenv("SSBU_DLC_DIR", dlcFolder.fileSystemRepresentation, 0);
+        /* Q56: the game's photos go to <data>/photo-folder.txt's folder (the Photos menu), else ~/Pictures/<game>
+           (runtime/album_service.c). */
+        NSString *photoFolderFile = [data stringByAppendingPathComponent:@"photo-folder.txt"];
+        NSString *photoFolder = [[NSString stringWithContentsOfFile:photoFolderFile encoding:NSUTF8StringEncoding error:nil]
+                                 stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        setenv("SSBU_PHOTO_FOLDER_FILE", photoFolderFile.fileSystemRepresentation, 1);
+        if (photoFolder.length) setenv("SSBU_PHOTO_DIR", photoFolder.fileSystemRepresentation, 0);
+
+        /* Q95 (2026-10-25, the player: on and off in the menu bar like the picture size): the game's Log menu
+           (runtime/frontend.m) writes <data>/game-log.txt, "on" (the default) or "off", for the next start. Off: this start
+           writes no game log and leaves the earlier logs and the session archive as they are; the game's output goes
+           nowhere. macOS still writes its own crash report. SSBU_GAME_LOG names this start's state for the menu. */
+        NSString *logChoiceFile = [data stringByAppendingPathComponent:@"game-log.txt"];
+        NSString *logChoice = [[NSString stringWithContentsOfFile:logChoiceFile encoding:NSUTF8StringEncoding error:nil]
+                               stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        BOOL logOff = [logChoice isEqualToString:@"off"];
+        setenv("SSBU_GAME_LOG_FILE", logChoiceFile.fileSystemRepresentation, 1);
+        setenv("SSBU_GAME_LOG", logOff ? "off" : "on", 1);
         NSString *log = [logs stringByAppendingPathComponent:@GAME_LOG ".log"];
-        [NSFileManager.defaultManager removeItemAtPath:[logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"] error:nil];
-        [NSFileManager.defaultManager moveItemAtPath:log toPath:[logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"] error:nil];
-        FILE *lf = fopen(log.fileSystemRepresentation, "w");
-        if (lf) {
-            dup2(fileno(lf), STDOUT_FILENO);
-            dup2(fileno(lf), STDERR_FILENO);
-            fclose(lf);
+        if (logOff) {
+            int nul = open("/dev/null", O_WRONLY);
+            if (nul >= 0) { dup2(nul, STDOUT_FILENO); dup2(nul, STDERR_FILENO); close(nul); }
+        } else {
+            keep_session_log(logs, [logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"]);
+            [NSFileManager.defaultManager removeItemAtPath:[logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"] error:nil];
+            [NSFileManager.defaultManager moveItemAtPath:log toPath:[logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"] error:nil];
+            FILE *lf = fopen(log.fileSystemRepresentation, "w");
+            if (lf) {
+                dup2(fileno(lf), STDOUT_FILENO);
+                dup2(fileno(lf), STDERR_FILENO);
+                fclose(lf);
+            }
+            if (logChoice.length && ![logChoice isEqualToString:@"on"]) fprintf(stderr, "[launcher] game-log.txt is neither on nor off: on\n");
         }
         if (sizeNote) fprintf(stderr, "[launcher] %s\n", sizeNote);
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);
-        fprintf(stderr, "[launcher] execv failed: %s\n", strerror(errno));
-        show_error([NSString stringWithFormat:@"Starting the game failed. See %@.", log]);
+        int err = errno;
+        fprintf(stderr, "[launcher] execv failed: %s\n", strerror(err));
+        show_error(logOff ? [NSString stringWithFormat:@"Starting the game failed: %s. The game log is off (Log menu; %@).", strerror(err), logChoiceFile]
+                          : [NSString stringWithFormat:@"Starting the game failed. See %@.", log]);
         return 1;
     }
 }

@@ -52,6 +52,12 @@ def fake_data_bundle(tree, version, _logs, **_names):
     return bundle
 
 
+def game_data(tree, version):
+    """The game data folder step_app copies into the app (build_app.place_game_data)."""
+    for name in build_app.game_data_files(version):
+        p=tree/f'build/game-data/{version}'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
+
+
 class Updates(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -264,6 +270,7 @@ class Updates(unittest.TestCase):
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
                        f'build/shader-seed/{version}/pso_manifest.tsv']+[f'rewritten/{version}/{n}.patched.bin' for n in ('main','sdk','subsdk0')]
+                files+=[f'build/game-data/{version}/{n}' for n in build_app.GAME_DATA]
                 for rel in files:
                     p=tree/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
                 import hashlib
@@ -284,12 +291,16 @@ class Updates(unittest.TestCase):
                 self.assertTrue((res/'build/shader-seed/seed-manifest.json').exists())
                 self.assertTrue((res/'build/pso_title.tsv').exists())   # the list the first frame waits for
                 self.assertEqual([p.name for p in (res/'rewritten').iterdir()], [version])
+                self.assertEqual(sorted(p.name for p in (res/'build/game-data').iterdir()), [version])   # runtime/game_data.h
+                for name in build_app.GAME_DATA:
+                    self.assertTrue((res/f'build/game-data/{version}'/name).is_file())
 
     def test_failed_bundle_seal_preserves_previous_app(self):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         (tree/'build/shader-seed/v143').mkdir(parents=True)
         import hashlib
+        game_data(tree,'v143')
         (tree/'build/shader-seed/v143/pso_manifest.tsv').write_bytes(b'test')
         (tree/'build/shader-seed/v143/seed-manifest.json').write_text(json.dumps(dict(
             version='v143',chain='totk-native-v8-unverified',shaders=8000,
@@ -323,6 +334,7 @@ class Updates(unittest.TestCase):
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
         (seed/'pso_manifest.tsv').write_bytes(b'test')
+        game_data(tree,'v143')
         (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v8-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):

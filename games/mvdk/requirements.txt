@@ -1,0 +1,5 @@
+# What build_app.py needs (Python 3.14: the build reads zstd with the standard library).
+cryptography==50.0.2   # decrypting the card image (NCA / XCI)
+lz4==4.4.5             # the code modules (NSO segments)
+capstone==5.0.9        # the code rewriter's disassembler
+nsz==5.0.0             # decompress update containers before NCA extraction

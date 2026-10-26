@@ -6,7 +6,8 @@
 // scripts/diag/retranslate_cache.py --service build/shader-service/totk_xlate --compare <cache> (every MSL byte for byte,
 // every reflection file as JSON).
 // Request: {"variant", "stage": "vs|ps|cs", "code": path, "c1": hex, "tex": {slot: type}, "img": {slot: {type, fmt}},
-//           "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint}, "local": [x, y, z], "depth_minus_w": bool}
+//           "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint}, "local": [x, y, z], "depth_minus_w": bool,
+//           "alpha": "<NVN alpha function>:<reference>" (ps with an alpha test only)}
 // Reply:   {"ok": true} or {"ok": false, "error": "..."}; outputs <out>/<variant>_b.metal and <variant>_b.json.
 using System;
 using System.Collections.Generic;
@@ -187,7 +188,10 @@ static class ShaderService
         {
             string ty = m.Groups[1].Value, name = m.Groups[2].Value;
             if (!depthSlots.Contains(TexSlotOfName(name))) continue;
-            if (!DepthTypes.ContainsKey(ty)) throw new RuntimeError($"depth texture {name} declared as {ty}: no depth equivalent");
+            // Q92 (Smash, 2026-10-25): a depth texture bound where the shader samples a type with no depth counterpart (ps
+            // 9dcc392f…, a 3D colour table) keeps the shader's own declaration; the runtime binds the empty texture of that type
+            // there (nvn_mtl.m), as for an unbound slot. This threw, and the game ended.
+            if (!DepthTypes.ContainsKey(ty)) continue;
             names.Add((ty, name));
         }
         foreach (var (ty, name) in names)
@@ -384,6 +388,10 @@ static class ShaderService
         };
         if (Truthy(Get(rq, "local"))) job["local"] = rq["local"].DeepClone();
         job["depth_minus_w"] = Truthy(Get(rq, "depth_minus_w"));   // nvnDeviceSetDepthMode(NEAR_IS_MINUS_W): clip z converted to Metal's 0..w
+        // Super Smash Bros. Ultimate (Q61): the alpha test "<function>:<reference>" (nvn_mtl.m alpha_answer), done by the
+        // translator in the fragment shader; Metal has no fixed-function alpha test.
+        string alpha = stage == "ps" ? GetStr(rq, "alpha", null) : null;
+        if (alpha != null) job["alpha"] = alpha;
         Translate(job);
         JsonObject res = ReadRes(variant);
         string spv = Path.Combine(outDir, variant + ".spv"), msl = Path.Combine(outDir, variant + "_b.metal");
@@ -452,6 +460,7 @@ static class ShaderService
             foreach (JsonNode v in vertexInputs) { string loc = Long(v["location"]).ToString(CultureInfo.InvariantCulture); deps["attr"][loc] = GetOr(job["attr"].AsObject(), loc, "float"); }
         if (stage == "ps")
             foreach (long c in colors) { string k = c.ToString(CultureInfo.InvariantCulture); deps["fout"][k] = GetOr(fout, k, "float"); }
+        if (alpha != null) deps["alpha"] = alpha;   // a variant with an alpha test serves only that test (totk_shader_rt.m deps_match)
         var refl = new JsonObject
         {
             ["key"] = variant + "_b", ["route"] = "B", ["chain"] = chain, ["stage"] = stage,

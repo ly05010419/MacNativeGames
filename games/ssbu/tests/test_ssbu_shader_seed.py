@@ -118,6 +118,20 @@ class SsbuShaderSeed(unittest.TestCase):
             self.assertIs(request['depth_minus_w'], False)
             self.assertEqual((Path(tmp)/'v.code').read_bytes(), body[0x30:])
 
+    def test_alpha_test_variant_serves_only_the_same_test(self):
+        # Q61: the alpha test is translated into the fragment shader (totk_shader_rt.m deps_match does the same)
+        plain = {'tex': {'0': '*'}, 'fout': {'0': 'float'}}
+        tested = {**plain, 'alpha': '5:0.5'}
+        self.assertTrue(seed.deps_match(plain, {'tex': {'0': '2d'}, 'fout': {'0': 'float'}}))
+        self.assertFalse(seed.deps_match(plain, {'tex': {'0': '2d'}, 'fout': {'0': 'float'}, 'alpha': '5:0.5'}))
+        self.assertTrue(seed.deps_match(tested, {'tex': {'0': '2d'}, 'fout': {'0': 'float'}, 'alpha': '5:0.5'}))
+        self.assertFalse(seed.deps_match(tested, {'tex': {'0': '2d'}, 'fout': {'0': 'float'}, 'alpha': '5:0'}))
+        self.assertFalse(seed.deps_match(tested, {'tex': {'0': '2d'}, 'fout': {'0': 'float'}}))
+        with tempfile.TemporaryDirectory() as tmp:   # a listed row's alpha answer reaches the translator
+            ctl, body = control(0, 0x100), code(0x100, 1)
+            request = seed.translation_request('v', 'ps', ctl, body, seed.answers_for(tested), Path(tmp)/'v.code', False)
+            self.assertEqual(request['alpha'], '5:0.5')
+
 
 if __name__ == '__main__':
     unittest.main()

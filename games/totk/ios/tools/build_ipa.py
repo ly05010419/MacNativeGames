@@ -2,7 +2,7 @@
 """Build an unsigned, sideloadable iPhone/iPad IPA from a prepared work tree: Tears of the Kingdom (v0, v112, v121, v143)
 or Breath of the Wild (botw160, botw190; the runtime and graphics layer built with GAME_BOTW, game_patches_botw.c, its own
 shader list and the add-on content beside the RomFS)."""
-import argparse, json, os, shutil, subprocess, sys, time
+import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
 from compile_seed import METAL_FLAGS
 from xcode_dir import developer_dir
@@ -83,10 +83,9 @@ def main():
     if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
-    version_dir=tree/'build'/('' if a.version=='v0' else a.version)
-    for name in ('runtime_tables.h','romfs_config.h')+(('aoc_config.h',) if botw else ()):
-        clone(version_dir/name,gen/name)
-    clone(tree/'build/shared_fonts_config.h',gen/'shared_fonts_config.h')
+    # The runtime's tables and hashes from the player's files (runtime/game_data.h) go into the app as files, not into its code.
+    game_data=tree/f'build/game-data/{a.version}'
+    if not (game_data/'runtime-tables.bin').is_file(): raise RuntimeError(f'missing game data: {game_data} (make game-data-{a.version})')
     # Export the final code after all verified runtime patches have been applied, then embed it in executable segments.
     host=tree/('build/totk-native' if a.version=='v0' else f'build/totk-native-{a.version}')
     rewritten=tree/f'rewritten/{a.version}'; modules=gen/'modules';modules.mkdir(exist_ok=True)
@@ -98,6 +97,13 @@ def main():
     if botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
         project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
+        # The Settings pane without Tears of the Kingdom's Full HD switch (main.m reads it for that game only).
+        settings=gen/'Settings.bundle'; shutil.rmtree(settings,ignore_errors=True); shutil.copytree(ios/'Settings.bundle',settings)
+        root=plistlib.loads((settings/'Root.plist').read_bytes()); specs=root['PreferenceSpecifiers']
+        at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+        del specs[at-1:at+1]   # the switch and its group
+        (settings/'Root.plist').write_bytes(plistlib.dumps(root))
+        project=project.replace('      - Settings.bundle','      - path: Gen/Settings.bundle',1)
     elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
     else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
     if not botw and a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
@@ -161,6 +167,7 @@ def main():
     dest=out if out.suffix=='.app' else tree/'build/ios-payload/Payload/TOTK.app'
     discard(dest); copy_tree(app,dest)
     res=dest/'GameData';res.mkdir(exist_ok=True)
+    copy_tree(game_data,res/'game-data')   # TOTK_GAME_DATA (Sources/main.m)
     romfs=tree/f'extracted/{a.version}/romfs'
     copy_tree(romfs,res/'romfs')
     if a.image_outside:   # the index stays (it changes with the build); the 17 GB image is in Documents/GameData (main.m)

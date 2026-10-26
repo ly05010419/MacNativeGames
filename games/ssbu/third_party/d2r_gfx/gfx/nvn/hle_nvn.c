@@ -1912,6 +1912,17 @@ NVN(nvnCommandBufferSetCopyRowStride, void, NVNcommandBuffer *c, ptrdiff_t st) {
 /* Super Smash Bros. Ultimate sets the image stride (bytes between the layers or slices of a buffer <-> texture copy); 0 = tightly packed. */
 NVN(nvnCommandBufferSetCopyImageStride, void, NVNcommandBuffer *c, ptrdiff_t st) { if (st < 0) die("negative copy image stride %td", st); p_copy_stride *p = REC(c, OP_COPY_STRIDE, p_copy_stride); p->stride = st; p->image = 1; }
 NVN(nvnCommandBufferSetBlendColor, void, NVNcommandBuffer *c, const float *v) { memcpy(REC(c, OP_BLEND_COLOR, p_blend_color)->rgba, v, 16); }
+/* Super Smash Bros. Ultimate (Q61): the alpha test's reference value, recorded for the replay, which hands it with the
+   colour state's alpha function to the fragment shader's translation (Metal has no fixed-function alpha test). The first
+   distinct values are logged once. */
+NVN(nvnCommandBufferSetAlphaRef, void, NVNcommandBuffer *c, float r) {
+    REC(c, OP_ALPHA_REF, p_alpha_ref)->ref = r;
+    static float seen[8]; static int n; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    int known = 0; for (int i = 0; i < n; i++) if (seen[i] == r) known = 1;
+    if (!known && n < 8) { seen[n++] = r; LOG("[alpha-test] reference value %g (%d distinct so far)", (double)r, n); }
+    pthread_mutex_unlock(&mu);
+}
 
 // ---------- 状态对象：就地打包（nvn_obj.h） ----------
 // ---------- State objects: packed in place (nvn_obj.h) ----------

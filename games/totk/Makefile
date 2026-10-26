@@ -64,12 +64,34 @@ test-call-window:
 verify:
 	"$(PY)" scripts/verify_rewrites.py
 
-.PHONY: runtime probe-loader boot
-build/runtime_tables.h: scripts/prepare_runtime.py analysis/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py
+# The game data folder (runtime/game_data.h): what the runtime reads from the player's own files at start (module tables,
+# RomFS / add-on content / shared-font sizes and hashes). The game binaries below are built from this repository alone and
+# hold nothing of the game, so one can replace another in an app without its game files (update_runtime.py):
+# make binary-<version> builds only them, game-data-<version> only this folder, runtime-<version> both.
+# $(1) the version, $(2) its validation report (scripts/verify_rewrites.py)
+define GAME_DATA
+.PHONY: game-data-$(1)
+build/game-data/$(1)/runtime-tables.bin: scripts/prepare_runtime.py $(2) rewritten/$(1)/build_src.sha256
+	"$$(PY)" scripts/prepare_runtime.py --version $(1)
+build/game-data/$(1)/rewriter.txt: build/game-data/$(1)/runtime-tables.bin
+	@test -f $$@ || "$$(PY)" scripts/prepare_runtime.py --version $(1)
+build/game-data/$(1)/romfs-config.txt: scripts/prepare_romfs_backend.py extracted/$(1)/romfs/index.json
+	"$$(PY)" scripts/prepare_romfs_backend.py --version $(1)
+build/game-data/$(1)/shared-fonts.txt: scripts/prepare_shared_fonts.py extracted/firmware/shared-fonts/manifest.json
+	"$$(PY)" scripts/prepare_shared_fonts.py --version $(1)
+game-data-$(1): build/game-data/$(1)/runtime-tables.bin build/game-data/$(1)/rewriter.txt build/game-data/$(1)/romfs-config.txt build/game-data/$(1)/shared-fonts.txt
+endef
+$(eval $(call GAME_DATA,v0,analysis/phase12-validation.json))
+$(eval $(call GAME_DATA,v112,analysis/v112-port/phase12-validation.json))
+$(eval $(call GAME_DATA,v121,analysis/v121-port/phase12-validation.json))
+$(eval $(call GAME_DATA,v143,analysis/v143-port/phase12-validation.json))
+$(eval $(call GAME_DATA,botw160,analysis/botw160-port/phase12-validation.json))
+$(eval $(call GAME_DATA,botw190,analysis/botw190-port/phase12-validation.json))
 
-build/totk-native: Makefile runtime/loader.c runtime/runtime.h runtime/game_patches.c runtime/game_patches.h runtime/game_version.h runtime/world_survey.c runtime/world_survey.h runtime/game_slot.c runtime/services.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/romfs.c runtime/romfs_path.h runtime/threads.c runtime/thread_compat.h runtime/thread_enter.S runtime/ipc.h runtime/audio_renderer.h runtime/audio_mixer.h runtime/audio_reverb.h runtime/audio_effects.h runtime/fs_host.h runtime/autoload.h runtime/autoload.c build/runtime_tables.h build/romfs_config.h build/shared_fonts_config.h runtime/gfx_bridge.c runtime/frontend.m runtime/settings_panel.h runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/gamepad.m runtime/gamepad_layout.h runtime/switch_left_fallback.h runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/movie_host.h runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS)
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+.PHONY: runtime binary probe-loader boot
+
+build/totk-native: Makefile runtime/loader.c runtime/runtime.h runtime/game_patches.c runtime/game_patches.h runtime/game_version.h runtime/world_survey.c runtime/world_survey.h runtime/game_slot.c runtime/services.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/romfs.c runtime/romfs_path.h runtime/threads.c runtime/thread_compat.h runtime/thread_enter.S runtime/ipc.h runtime/audio_renderer.h runtime/audio_mixer.h runtime/audio_reverb.h runtime/audio_effects.h runtime/fs_host.h runtime/autoload.h runtime/autoload.c runtime/game_data.c runtime/game_data.h runtime/gfx_bridge.c runtime/frontend.m runtime/settings_panel.h runtime/feedback_settings.h runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/gamepad.m runtime/gamepad_layout.h runtime/switch_left_fallback.h runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/movie_host.h runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS)
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 
 # Both warm-up lists come from the one shared shader list (docs/shader-list.md): pso_title.tsv is what the title screen,
 # its menu and the save list use, the only list the first frame waits for (nvn_mtl.m warm_start); pso_manifest.tsv the rest.
@@ -81,19 +103,14 @@ build/pso_manifest.tsv: $(SHADER_LIST) scripts/shader_list.py
 	"$(PY)" scripts/shader_list.py export $(SHADER_LIST) build/pso_manifest.tsv build/pso_title.tsv
 build/pso_title.tsv: build/pso_manifest.tsv
 
-runtime: build/totk-native build/pso_manifest.tsv build/pso_title.tsv
+binary: build/totk-native build/pso_manifest.tsv build/pso_title.tsv
+runtime: binary game-data-v0
 
 probe-loader: runtime
 	"$(PY)" scripts/verify_loader.py
 
 boot: runtime
 	build/totk-native rewritten/v0 boot
-
-build/shared_fonts_config.h: scripts/prepare_shared_fonts.py extracted/firmware/shared-fonts/manifest.json
-	"$(PY)" scripts/prepare_shared_fonts.py
-
-build/romfs_config.h: scripts/prepare_romfs_backend.py extracted/v0/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py
 
 .PHONY: probe-romfs verify-boot romfs-patches
 # Text entry with the Mac keyboard (nn::swkbd::ShowKeyboard, runtime/swkbd_host.c): the guest SDK builds the arguments and the
@@ -164,9 +181,9 @@ probe-account:
 probe-gfx: runtime
 	"$(PY)" scripts/verify_gfx.py
 
-.PHONY: probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias
+.PHONY: probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias
 # GPU paths isolated after a kernel panic: each probe runs alone, under the Metal API validation layer.
-probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: runtime
+probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: runtime
 	MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert TOTK_HEADLESS=1 build/totk-native rewritten/v0 $@ > analysis/native-$@.json
 	cat analysis/native-$@.json
 .PHONY: probe-game-slot desktop-launcher
@@ -226,7 +243,7 @@ probe-memory: runtime
 	@cat analysis/native-memory-probe.json
 
 .PHONY: probe-input
-build/input-probe: scripts/input_probe.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/autoload.h runtime/runtime.h
+build/input-probe: scripts/input_probe.c runtime/input.c runtime/hid_feedback.c runtime/feedback_settings.h runtime/motion_fusion.c runtime/autoload.c runtime/autoload.h runtime/runtime.h
 	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/input_probe.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c -o "$@"
 probe-input: build/input-probe
 	build/input-probe > analysis/native-input-probe.json
@@ -244,7 +261,7 @@ probe-movie: build/movie-probe
 	python3 scripts/movie_probe_inputs.py analysis/movie-probe
 	build/movie-probe analysis/movie-probe/frames.ivf analysis/movie-probe/reference.nv12 $$(cat analysis/movie-probe/meta.txt) buffers | tee analysis/movie-probe.json
 	build/movie-probe analysis/movie-probe/frames.ivf analysis/movie-probe/reference.nv12 $$(cat analysis/movie-probe/meta.txt) paced | tee -a analysis/movie-probe.json
-build/autoload-probe: scripts/autoload_probe.c runtime/autoload.c runtime/autoload.h runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/runtime.h
+build/autoload-probe: scripts/autoload_probe.c runtime/autoload.c runtime/autoload.h runtime/input.c runtime/hid_feedback.c runtime/feedback_settings.h runtime/motion_fusion.c runtime/runtime.h
 	xcrun clang -std=c11 -O1 -Wall -Wextra -Werror scripts/autoload_probe.c runtime/autoload.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c -o "$@"
 probe-autoload: build/autoload-probe
 	TOTK_AUTOLOAD=1 TOTK_AUTOLOAD_PERIOD_MS=400 build/autoload-probe press
@@ -349,35 +366,26 @@ probe-world-survey: build/world-survey-probe
 	@TOTK_PROBE_NEGATIVE=1 build/world-survey-probe > analysis/world-survey-negative.log 2>&1; test $$? -eq 1
 	@rg 'FAIL: position actually changed' analysis/world-survey-negative.log
 
-# Isolated 1.1.2 build; never replace the validated v0 executable or generated headers.
-.PHONY: runtime-v112
-build/v112/runtime_tables.h: scripts/prepare_runtime.py analysis/v112-port/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py --version v112
-build/v112/romfs_config.h: scripts/prepare_romfs_backend.py extracted/v112/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py --version v112
-build/totk-native-v112: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/v112/runtime_tables.h build/v112/romfs_config.h build/shared_fonts_config.h $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V112=1 -Ibuild/v112 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
-runtime-v112: build/totk-native-v112 build/pso_manifest.tsv build/pso_title.tsv
+# Isolated 1.1.2 build; never replace the validated v0 executable or its game data.
+.PHONY: runtime-v112 binary-v112
+build/totk-native-v112: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V112=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+binary-v112: build/totk-native-v112 build/pso_manifest.tsv build/pso_title.tsv
+runtime-v112: binary-v112 game-data-v112
 
-# Isolated 1.2.1 build (the same SDK modules as 1.0.0 and 1.1.2); never replace the validated v0 executable or generated headers.
-.PHONY: runtime-v121
-build/v121/runtime_tables.h: scripts/prepare_runtime.py analysis/v121-port/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py --version v121
-build/v121/romfs_config.h: scripts/prepare_romfs_backend.py extracted/v121/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py --version v121
-build/totk-native-v121: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/v121/runtime_tables.h build/v121/romfs_config.h build/shared_fonts_config.h $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V121=1 -Ibuild/v121 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
-runtime-v121: build/totk-native-v121 build/pso_manifest.tsv build/pso_title.tsv
+# Isolated 1.2.1 build (the same SDK modules as 1.0.0 and 1.1.2); never replace the validated v0 executable or its game data.
+.PHONY: runtime-v121 binary-v121
+build/totk-native-v121: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V121=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+binary-v121: build/totk-native-v121 build/pso_manifest.tsv build/pso_title.tsv
+runtime-v121: binary-v121 game-data-v121
 
-# Isolated 1.4.3 build; never replace the validated v0 executable or generated headers.
-.PHONY: runtime-v143
-build/v143/runtime_tables.h: scripts/prepare_runtime.py analysis/v143-port/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py --version v143
-build/v143/romfs_config.h: scripts/prepare_romfs_backend.py extracted/v143/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py --version v143
-build/totk-native-v143: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/v143/runtime_tables.h build/v143/romfs_config.h build/shared_fonts_config.h $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V143=1 -Ibuild/v143 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_v143.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
-runtime-v143: build/totk-native-v143 build/pso_manifest.tsv build/pso_title.tsv
+# Isolated 1.4.3 build; never replace the validated v0 executable or its game data.
+.PHONY: runtime-v143 binary-v143
+build/totk-native-v143: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DTOTK_GAME_V143=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches_v143.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+binary-v143: build/totk-native-v143 build/pso_manifest.tsv build/pso_title.tsv
+runtime-v143: binary-v143 game-data-v143
 
 # Keep standalone rendering probe binaries outside the source checkout.
 RENDER_PROBE_DIR ?= $(abspath $(CURDIR)/../../../TOTK_build/rendering-probes)
@@ -428,36 +436,32 @@ GFX_OBJECTS_BOTW := $(addprefix build/gfx-botw/,$(addsuffix .o,$(GFX_SRC)))
 build/gfx-botw/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -c "$<" -o "$@"
-.PHONY: runtime-botw160
-build/botw160/runtime_tables.h: scripts/prepare_runtime.py analysis/botw160-port/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py --version botw160
-build/botw160/romfs_config.h: scripts/prepare_romfs_backend.py extracted/botw160/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py --version botw160
+.PHONY: runtime-botw160 binary-botw160
 # The add-on content volumes (games/botw/scripts/extract_aoc_romfs.py -> extracted/botw160/aoc/<index>); a missing index is not listed.
-build/botw160/aoc_config.h: scripts/prepare_romfs_backend.py $(wildcard extracted/botw160/aoc/*/index.json)
+build/game-data/botw160/aoc-config.txt: scripts/prepare_romfs_backend.py $(wildcard extracted/botw160/aoc/*/index.json)
 	"$(PY)" scripts/prepare_romfs_backend.py --version botw160 --aoc
-build/totk-native-botw160: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/botw160/runtime_tables.h build/botw160/romfs_config.h build/botw160/aoc_config.h build/shared_fonts_config.h $(GFX_OBJECTS_BOTW) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW160=1 -Ibuild/botw160 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
-runtime-botw160: SHADER_LIST ?= ../botw/assets/shader_list.tsv
-runtime-botw160: build/totk-native-botw160 build/pso_manifest.tsv build/pso_title.tsv
+game-data-botw160: build/game-data/botw160/aoc-config.txt
+build/totk-native-botw160: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS_BOTW) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW160=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+runtime-botw160 binary-botw160: SHADER_LIST ?= ../botw/assets/shader_list.tsv
+binary-botw160: build/totk-native-botw160 build/pso_manifest.tsv build/pso_title.tsv
+runtime-botw160: binary-botw160 game-data-botw160
 # Breath of the Wild 1.9.0 (docs/botw-v1.9.0-port.md): the same runtime, and the graphics objects compiled with GAME_BOTW190
 # as well (build/gfx-botw190; the NVN version it reports differs from 1.6.0's).
 GFX_OBJECTS_BOTW190 := $(addprefix build/gfx-botw190/,$(addsuffix .o,$(GFX_SRC)))
 build/gfx-botw190/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_BOTW=1 -DGAME_BOTW190=1 -c "$<" -o "$@"
-.PHONY: runtime-botw190
-build/botw190/runtime_tables.h: scripts/prepare_runtime.py analysis/botw190-port/phase12-validation.json
-	"$(PY)" scripts/prepare_runtime.py --version botw190
-build/botw190/romfs_config.h: scripts/prepare_romfs_backend.py extracted/botw190/romfs/index.json
-	"$(PY)" scripts/prepare_romfs_backend.py --version botw190
+.PHONY: runtime-botw190 binary-botw190
 # 1.9.0: the add-on content volumes the build imported from the --dlc NSPs (extracted/botw190/aoc/<index>).
-build/botw190/aoc_config.h: scripts/prepare_romfs_backend.py $(wildcard extracted/botw190/aoc/*/index.json)
+build/game-data/botw190/aoc-config.txt: scripts/prepare_romfs_backend.py $(wildcard extracted/botw190/aoc/*/index.json)
 	"$(PY)" scripts/prepare_romfs_backend.py --version botw190 --aoc
-build/totk-native-botw190: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) build/botw190/runtime_tables.h build/botw190/romfs_config.h build/botw190/aoc_config.h build/shared_fonts_config.h $(GFX_OBJECTS_BOTW190) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW190=1 -Ibuild/botw190 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW190) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
-runtime-botw190: SHADER_LIST ?= ../botw/assets/shader_list.tsv
-runtime-botw190: build/totk-native-botw190 build/pso_manifest.tsv build/pso_title.tsv
+game-data-botw190: build/game-data/botw190/aoc-config.txt
+build/totk-native-botw190: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS_BOTW190) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_BOTW=1 -DGAME_BOTW190=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches_botw.c runtime/aoc_romfs.c runtime/settings_service.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_BOTW190) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+runtime-botw190 binary-botw190: SHADER_LIST ?= ../botw/assets/shader_list.tsv
+binary-botw190: build/totk-native-botw190 build/pso_manifest.tsv build/pso_title.tsv
+runtime-botw190: binary-botw190 game-data-botw190
 # Production Opus-wrapper regression checks; no game assets or audio device needed.
 OPUS_TEST_WORK ?= /tmp/totk-native-opus-codec
 OPUS_PREFIX ?= /opt/homebrew/opt/opus

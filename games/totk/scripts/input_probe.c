@@ -18,6 +18,9 @@ void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-ca
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
 void runtime_settings_toggle(void){settings_toggles++;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
+static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
+void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
@@ -87,6 +90,20 @@ static void feedback_checks(void){
  need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0&&rumble_seen[0][2]==0&&!vactual(&got,&left)&&got.al==0.7f,"muted: the game's value is kept, the controller gets silence");
  need(runtime_hid_feedback_flag("rumble",1)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"flag rumble 1 unmutes");
  need(runtime_hid_feedback_flag("mfx_upscale",1)==0,"other flags are not taken");
+ /* The settings panel's rumble and gyro switches (runtime_feedback_*, key 1): while TOTK_RUMBLE / TOTK_GYRO is set it decides
+    and a pick does nothing; without it a pick is saved in rumble.txt / gyro.txt and mutes or unmutes the device the game
+    has in this run at once. */
+ need(runtime_feedback_locked(0)&&runtime_feedback_locked(1)&&runtime_feedback_present(0),"the variables set: the panel shows them, greyed out");
+ runtime_feedback_choose(0,0);need(!saves&&!vsend(&left,&(Vib){0.6f,160,0.6f,320})&&rumble_seen[0][0]==0.6f,"a pick while the variable decides changes nothing");
+ unsetenv("TOTK_RUMBLE");unsetenv("TOTK_GYRO");
+ need(!runtime_feedback_locked(0)&&!runtime_feedback_locked(1)&&runtime_feedback_present(0)&&runtime_feedback_choice(0)==1&&runtime_feedback_choice(1)==1,"without the variables the switches are the panel's, on");
+ need(!vsend(&right,&(Vib){0.1f,90,0.3f,600})&&rumble_seen[1][2]==0.3f,"the right handle plays before the pick");
+ runtime_feedback_choose(0,0);
+ need(saves==1&&!strcmp(saved_name,"rumble.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(0)==0&&rumble_seen[0][0]==0&&rumble_seen[1][2]==0,"rumble off in the panel: saved, both handles silent at once");
+ need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0,"rumble off in the panel: the game's values play silence");
+ runtime_feedback_choose(0,1);
+ need(saves==2&&!strcmp(saved_word,"on")&&runtime_feedback_choice(0)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"rumble on in the panel: saved and playing again");
+ setenv("TOTK_RUMBLE","1",1);setenv("TOTK_GYRO","1",1);
  /* Six-axis: the SDK's full-key handle (nn::hid::utility::GetSixAxisSensorHandle) is 0x20003. */
  uint32_t(*sstart)(const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE");
  uint32_t(*sstates)(int *,Six *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE");
@@ -97,6 +114,11 @@ static void feedback_checks(void){
  memset(&buf,0xa5,sizeof buf);need(!sstart(&six)&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0&&near3(buf.s[0].acc,0,0,-1,0)&&near3(buf.s[0].dir,1,0,0,0)&&near3(buf.s[0].dir+6,0,0,1,0),"no controller motion: one still, unconnected state");
  runtime_motion_live(1);feed(100,0,0,-1,0,0,0);probe_now+=1000000;
  memset(&buf,0xa5,sizeof buf);need(!sstates(&n,buf.s,16,&six)&&n==16,"16 states when 100 samples are there");
+ /* The settings panel's gyro switch (runtime_feedback_choose, key 1), without TOTK_GYRO: saved, and at once a still controller / motion again. */
+ unsetenv("TOTK_GYRO");
+ runtime_feedback_choose(1,0);need(!strcmp(saved_name,"gyro.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(1)==0&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"gyro off in the panel: saved, a still controller at once");
+ runtime_feedback_choose(1,1);need(!strcmp(saved_word,"on")&&runtime_feedback_choice(1)==1&&!sstates(&n,buf.s,16,&six)&&n==16&&buf.s[0].attr==1,"gyro on in the panel: saved, motion again");
+ setenv("TOTK_GYRO","1",1);
  for(int i=0;i<16;i++)need(buf.s[i].sampling==100-i&&buf.s[i].attr==1&&buf.s[i].dt==4000000,"newest first, sampling numbers, connected, 4 ms apart");
  for(unsigned i=0;i<sizeof buf.guard;i++)need(buf.guard[i]==0xa5,"six-axis output guard");
  need(near3(buf.s[0].acc,0,0,-1,1e-6)&&near3(buf.s[0].dir,1,0,0,1e-6)&&near3(buf.s[0].dir+3,0,1,0,1e-6)&&near3(buf.s[0].dir+6,0,0,1,1e-6)&&near3(buf.s[0].angle,0,0,0,1e-9),"lying still and flat: identity direction, no angle");

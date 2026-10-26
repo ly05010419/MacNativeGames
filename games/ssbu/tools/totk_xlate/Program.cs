@@ -100,8 +100,20 @@ static class SwshXlate
             // The job says "depth_minus_w": true for that mode and the translator then emits z = z * 0.5 + w * 0.5 (Metal has no
             // depth clip control, see QueryHostSupportsDepthClipControl below).
             bool depthMinusW = _job["depth_minus_w"] is JsonValue dm && (dm.TryGetValue<bool>(out bool db) ? db : dm.TryGetValue<int>(out int di) && di != 0);
+            // Super Smash Bros. Ultimate (Q61): "alpha": "<NVN alpha function>:<reference>". Metal has no fixed-function alpha
+            // test; with it Ryujinx discards fragments whose colour 0 alpha fails the compare. NVN numbers the functions as
+            // AlphaTestOp does (1 never .. 8 always).
+            AlphaTestOp alphaOp = AlphaTestOp.Always; float alphaRef = 0f;
+            if (_job["alpha"] is JsonValue av && av.TryGetValue<string>(out string at))
+            {
+                string[] p = at.Split(':');
+                if (p.Length != 2 || !int.TryParse(p[0], out int fn) || fn < 1 || fn > 8
+                    || !float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out alphaRef))
+                    throw new InvalidDataException($"alpha test answer \"{at}\" is not <function 1-8>:<reference>");
+                alphaOp = (AlphaTestOp)fn;
+            }
             return new GpuGraphicsState(false, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
-                false, false, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
+                false, false, false, depthMinusW, false, 1f, alphaOp, alphaRef, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }
         public bool QueryHostSupportsDepthClipControl() => false;   // Metal clips z to 0..w only: a -w..w depth mode must be converted in the shader

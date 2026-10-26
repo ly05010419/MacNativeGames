@@ -2,26 +2,35 @@
    GetSharedFontAddress points 8 bytes past each file start (after the BFTTF header), as the SDK adds the
    service-provided offset to the shared memory base; the size is the decoded font size. */
 #include "runtime.h"
-#include "shared_fonts_config.h"
+#include "game_data.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* The six verified files: name, size, decoded font size and SHA-256 from shared-fonts.txt in the game data folder
+   (game_data.h, scripts/prepare_shared_fonts.py), read with the fonts. */
+#define SHARED_FONT_COUNT 6
 typedef struct{const char *path;uint64_t file_bytes,font_bytes;const char *sha256;} FontRow;
-static const FontRow rows[SHARED_FONT_COUNT]={SHARED_FONT_ROWS};
+static FontRow rows[SHARED_FONT_COUNT];
 static uint8_t *region;static uint64_t offsets[SHARED_FONT_COUNT];
 static pthread_once_t once=PTHREAD_ONCE_INIT;
 static void need(int c,const char *m){if(!c)runtime_fail(m);}
 static void load(void){
- uint64_t total=0;for(int i=0;i<SHARED_FONT_COUNT;i++)total+=rows[i].file_bytes;
+ uint64_t total=0;
+ for(int i=0;i<SHARED_FONT_COUNT;i++){char key[32];
+  snprintf(key,sizeof key,"FONT%d_FILE",i);rows[i].path=runtime_game_text("shared-fonts.txt",key);need(!strchr(rows[i].path,'/'),"shared font file name");
+  snprintf(key,sizeof key,"FONT%d_FILE_BYTES",i);rows[i].file_bytes=runtime_game_number("shared-fonts.txt",key);
+  snprintf(key,sizeof key,"FONT%d_FONT_BYTES",i);rows[i].font_bytes=runtime_game_number("shared-fonts.txt",key);
+  snprintf(key,sizeof key,"FONT%d_SHA256",i);rows[i].sha256=runtime_game_sha256("shared-fonts.txt",key);
+  need(rows[i].file_bytes==rows[i].font_bytes+8&&rows[i].file_bytes<(64u<<20),"shared font sizes");total+=rows[i].file_bytes;}
  region=malloc(total);need(region!=NULL,"shared font memory");
  uint64_t at=0;
  for(int i=0;i<SHARED_FONT_COUNT;i++){
   /* TOTK_SHARED_FONTS=<dir>: the same verified files in another directory (iOS: copied into the app's Documents). */
-  char path[4096];const char *dir=getenv("TOTK_SHARED_FONTS"),*base=strrchr(rows[i].path,'/');
-  if(dir)need(snprintf(path,sizeof path,"%s/%s",dir,base?base+1:rows[i].path)<(int)sizeof path,"shared font path");
-  FILE *f=fopen(dir?path:rows[i].path,"rb");need(f!=NULL,"open shared font");
+  char path[4096];const char *dir=getenv("TOTK_SHARED_FONTS");if(!dir||!*dir)dir="extracted/firmware/shared-fonts";
+  need(snprintf(path,sizeof path,"%s/%s",dir,rows[i].path)<(int)sizeof path,"shared font path");
+  FILE *f=fopen(path,"rb");need(f!=NULL,"open shared font");
   need(fread(region+at,1,rows[i].file_bytes,f)==rows[i].file_bytes&&fgetc(f)==EOF,"shared font size");fclose(f);
   uint8_t d[32];char hex[65];CC_SHA256(region+at,(CC_LONG)rows[i].file_bytes,d);for(int k=0;k<32;k++)snprintf(hex+k*2,3,"%02x",d[k]);
   need(!strcmp(hex,rows[i].sha256),"shared font integrity mismatch");

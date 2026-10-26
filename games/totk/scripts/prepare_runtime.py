@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Bind a native loader to verified v0 images; generated tables stay local."""
+"""Bind the native loader to the verified images: build/game-data/<version>/runtime-tables.bin (stays local).
+
+The loader reads the file at start (runtime/loader.c load_tables), so the program itself holds nothing of the game."""
 import argparse
 import hashlib
 import json
@@ -14,7 +16,7 @@ from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--version', choices=('v0','v112','v121','v143','botw160','botw190'), default='v0')
 version = parser.parse_args().version
-OUT = ROOT / ('build' if version == 'v0' else f'build/{version}')
+OUT = ROOT / f'build/game-data/{version}'
 OUT.mkdir(parents=True, exist_ok=True)
 report = json.loads((ROOT / ('analysis/phase12-validation.json' if version == 'v0' else f'analysis/{version}-port/phase12-validation.json')).read_text())
 assert report['status'] == 'pass' and report['rom_version'] == version
@@ -116,25 +118,42 @@ assert len(plt) == 1, f'PLT matches {plt}'
 main['probe_plt'] = plt[0]
 main['probe_slot'] = slot
 
-lines = ['/* Generated locally from validated player images; do not commit. */']
-for n, m in enumerate(modules):
-    lines.append(f'static const Reloc reloc_{n}[] = {{')
-    lines.extend(f'{{{r["where"]}ULL,{r["kind"]},{r["symbol"]},{r["addend"]}LL}},' for r in m['relocs'])
-    lines.append('};')
-    lines.append(f'static const Symbol symbol_{n}[] = {{')
-    lines.extend('{' + f'{json.dumps(s["name"])},{s["value"]}ULL,{s["size"]}ULL,{int(s["defined"])},{s["binding"]},{s["type"]}' + '},' for s in m['symbols'])
-    lines.append('};')
-    lines.append(f'static const Gate gate_{n}[] = {{')
-    lines.extend(f'{{{g["ret"]}ULL,{g["original"]}ULL,{g["timer"]},{g["arg"]}}},' for g in m['gates'])
-    if not m['gates']: lines.append('{0,0,0,0},')
-    lines.append('};')
-lines.append('static Module modules[] = {')
-for n, m in enumerate(modules):
-    l = m['layout']
-    lines.append('{' + f'.name={json.dumps(m["name"])},.digest={json.dumps(m["sha256"])},.file_size={m["size"]}ULL,.text_end={l["TEXT_END"]}ULL,.ro_off={l["RO_OFF"]}ULL,.data_off={l["DATA_OFF"]}ULL,.patch_off={l["PATCH_OFF"]}ULL,.key_off={l["KEY_PAGE_OFF"]}ULL,.symbols=symbol_{n},.nsym={len(m["symbols"])},.relocs=reloc_{n},.nreloc={len(m["relocs"])},.gates=gate_{n},.ngate={len(m["gates"])},.init={m["tags"].get(12,0)}ULL,.ctor_flag={m["ctor_flag"]}ULL,.init_array={m["tags"].get(25,0)}ULL,.init_size={m["tags"].get(27,0)}ULL' + '},')
-lines.append('};')
-lines.append(f'#define PROBE_PLT {main["probe_plt"]}ULL\n#define PROBE_SLOT {slot}ULL')
-(OUT / 'runtime_tables.h').write_text('\n'.join(lines) + '\n')
+# runtime-tables.bin in the layouts of runtime/loader.c load_tables: a 64-byte header, one 208-byte record per module, each
+# module's symbols, relocations and gates (24 bytes each, 8-byte aligned), then the symbol names.
+HEADER, RECORD = 64, 208
+strings, arrays, records = bytearray(), bytearray(), []
+def place(blob):
+    arrays.extend(bytes(-len(arrays) % 8))
+    arrays.extend(blob)
+    return HEADER + RECORD * len(modules) + len(arrays) - len(blob)
+for m in modules:
+    names = []
+    for s in m['symbols']:
+        names.append(len(strings))
+        strings.extend(s['name'].encode() + b'\0')
+    symbols = b''.join(struct.pack('<QQIBBBx', s['value'], s['size'], n, int(s['defined']), s['binding'], s['type'])
+                       for s, n in zip(m['symbols'], names))
+    relocs = b''.join(struct.pack('<QIIq', r['where'], r['kind'], r['symbol'], r['addend']) for r in m['relocs'])
+    gates = b''.join(struct.pack('<QQII', g['ret'], g['original'], int(g['timer']), g['arg']) for g in m['gates'])
+    l, t = m['layout'], m['tags']
+    records.append(struct.pack('<16s72s13Q4I', m['name'].encode(), m['sha256'].encode(), m['size'], l['TEXT_END'], l['RO_OFF'],
+                               l['DATA_OFF'], l['PATCH_OFF'] % 2**64, l['KEY_PAGE_OFF'], t.get(12, 0), m['ctor_flag'], t.get(25, 0),
+                               t.get(27, 0), place(symbols), place(relocs), place(gates), len(m['symbols']), len(m['relocs']),
+                               len(m['gates']), 0))
+arrays.extend(bytes(-len(arrays) % 8))
+strings_offset = HEADER + RECORD * len(modules) + len(arrays)
+size = strings_offset + len(strings)
+header = struct.pack('<8s8sIIQQQQQ', b'TOTKTAB1', version.encode(), len(modules), 1, main['probe_plt'], slot, strings_offset,
+                     len(strings), size)
+assert len(header) == HEADER and all(len(r) == RECORD for r in records)
+tables = OUT / 'runtime-tables.bin'
+tables.with_suffix('.partial').write_bytes(header + b''.join(records) + arrays + strings)
+tables.with_suffix('.partial').replace(tables)
+# The patch_nso.py that rewrote these modules (it records its own SHA-256 next to them): update_runtime.py refuses an app
+# whose rewriter is not the repository's, since a runtime can rely on gates and fixes a newer rewriter puts in the code.
+rewriter = (ROOT / f'rewritten/{version}/build_src.sha256').read_text().split()[0]
+assert len(rewriter) == 64 and all(c in '0123456789abcdef' for c in rewriter), 'build_src.sha256'
+(OUT / 'rewriter.txt').write_text(f'# SHA-256 of the patch_nso.py that rewrote rewritten/{version}\nREWRITER_SHA256 {rewriter}\n')
 # Details are evidence, not additional source code.
 (ROOT / ('analysis/runtime-layout.json' if version == 'v0' else f'analysis/{version}-port/runtime-layout.json')).write_text(json.dumps(modules, indent=2) + '\n')
 print(json.dumps(dict(modules=len(modules), relocations=sum(len(m['relocs']) for m in modules), original_main_plt=hex(plt[0]), original_main_slot=hex(slot))))

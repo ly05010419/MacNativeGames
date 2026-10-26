@@ -3,6 +3,7 @@
 
     python3.14 scripts/build_ssbu.py --game CARD.xci --update UPDATE-13.0.2.nsp --keys prod.keys [--work SSBU_build]
                                      [--out "Super Smash Bros. Ultimate.app"] [--firmware DIR | --shared-fonts DIR]
+                                     [--dlc FOLDER-OF-DLC-NSPs]
 
 The game file is the 1.0.0 card image (XCI, or the base NSP with --firmware), the update is the 13.0.2 NSP, whose code
 the app runs. Steps (each is skipped when its verified output is already there, so a stopped run can be started again):
@@ -14,7 +15,8 @@ the app runs. Steps (each is skipped when its verified output is already there, 
  4. the six system fonts (the card image's system update partition, --firmware or --shared-fonts) and the runtime tables
  5. the shader tools, the startup shaders (every shader in data.arc, the shared list assets/shader_list.tsv and what your
     own game noted while playing) and their Metal libraries
- 6. the game binary, the launcher and the game's icon
+ 6. the game binary, the launcher and the game's icon; with --dlc the DLC you own (scripts/extract_dlc.py: Smash's DLC
+    NSPs only unlock what the update carries, so the app gets the list of owned DLC; a later build without --dlc keeps it)
  7. the app: the game data as a signed bundle in Contents/Helpers, checked once by macOS
 
 Everything this writes stays in the work folder, which Git ignores: it holds game data, so never share or commit it. The
@@ -458,6 +460,27 @@ def install_app(new, out):
     return kept
 
 
+def step_dlc(work, py, dlc, keys, logs):
+    """Q96: the DLC the player owns into <work>/build/dlc (owned.txt, read by runtime/services.c), skipped when the same
+    NSPs were read before. Without --dlc an earlier list stays, so a plain rebuild keeps the fighters."""
+    out = work / 'build/dlc'
+    if dlc is None:
+        if (out / 'manifest.json').is_file():
+            say(f'6. dlc: keeping the {json.loads((out / "manifest.json").read_text())["count"]} owned DLC read before ({out})')
+        return
+    if not dlc.is_dir():
+        raise BuildError(f'--dlc: no such folder: {dlc}')
+    sources = [dict(name=p.name, size=p.stat().st_size) for p in sorted(dlc.glob('*.nsp'))]
+    if not sources:
+        raise BuildError(f'--dlc: no .nsp files in {dlc}')
+    m = json.loads((out / 'manifest.json').read_text()) if (out / 'manifest.json').is_file() else {}
+    if not (m.get('status') == 'pass' and m.get('source') == str(dlc) and m.get('sources') == sources):
+        say(f'6. dlc: reading {len(sources)} DLC NSPs')
+        run([py, 'scripts/extract_dlc.py', '--keys', keys, '--dlc', dlc, '--output', out], logs / 'extract-dlc.log')
+        m = json.loads((out / 'manifest.json').read_text())
+    say(f'6. dlc: {m["count"]} owned DLC (the fighters are indices 1-12)')
+
+
 def step_app(work, out, logs):
     tmp = out.with_name(out.name + '.partial')
     if tmp.exists():
@@ -480,6 +503,8 @@ def step_app(work, out, logs):
     copy_tree(seed, res / 'build/shader-seed')
     if (work / 'build/shader-libs').is_dir():
         copy_tree(work / 'build/shader-libs', res / 'build/shader-libs')
+    if (work / 'build/dlc/owned.txt').is_file():   # Q96: the owned DLC (step_dlc)
+        copy_tree(work / 'build/dlc', res / 'build/dlc')
     bundle = data_bundle(work, logs)   # after the checks above: signing it is slow
     copy_tree(bundle, tmp / 'Contents/Helpers' / bundle.name)
     link = res / f'extracted/{VERSION}/romfs/romfs.bin'
@@ -522,6 +547,7 @@ def main(argv):
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='an unpacked firmware NCA folder with the six system fonts (needed for an NSP)')
     fonts.add_argument('--shared-fonts', type=Path, help='a font folder an earlier build verified (manifest.json + six .bfttf)')
+    ap.add_argument('--dlc', type=Path, help='a folder with your DLC NSPs (fighters, costumes, spirit boards); kept for later builds')
     a = ap.parse_args(argv)
     t0 = time.time()
     game, update, keys = (p.expanduser().resolve() for p in (a.game, a.update, a.keys))
@@ -555,6 +581,7 @@ def main(argv):
               shared_fonts=a.shared_fonts and a.shared_fonts.expanduser().resolve())
     step_shaders(work, py, logs)
     step_binary(work, py, game, keys, logs)
+    step_dlc(work, py, a.dlc and a.dlc.expanduser().resolve(), keys, logs)
     say(f'7. app: assembling {out}')
     step_app(work, out, logs)
     run([LSREGISTER, '-f', out], logs / 'register-app.log')

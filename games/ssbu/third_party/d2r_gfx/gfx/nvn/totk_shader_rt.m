@@ -264,6 +264,10 @@ static int deps_match(NSDictionary *deps, NSDictionary *ans) {
             if (![h isEqual:w]) return 0;
         }
     }
+    /* Q61: the alpha test ("<function>:<reference>", nvn_mtl.m alpha_answer) is translated into the fragment shader, so a
+       variant serves only answers with the same one; a variant without it only answers without it. */
+    id wa = deps[@"alpha"], ha = ans[@"alpha"];
+    if ((wa || ha) && ![wa isEqual:ha]) return 0;
     return 1;
 }
 
@@ -303,6 +307,10 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     return nil;
 }
 static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil; }
+static NSString *variant_name(NSString *shader, NSDictionary *answers) {   // <shader>-<the first 6 bytes of SHA-256 of the answers' JSON>
+    uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
+    return [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
+}
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
@@ -311,8 +319,7 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
-    uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
-    NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
+    NSString *variant = variant_name(shader, answers);
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
     size_t skip = stage == 5 ? 0 : 0x30;
@@ -387,7 +394,18 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
     LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",
         [rq[@"stage"] UTF8String], variant.UTF8String, (unsigned long)missed.count);
 }
-/* One request through a translator service; the reflection of the new variant. */
+/* Q92 (Smash, 2026-10-25): a variant the translator cannot translate ended the game (die) after 73 minutes on 2K: ps
+   9dcc392f…-b2d176086b60, "depth texture fp_t_tcb_12 declared as texture3d: no depth equivalent". Such a variant now
+   answers nil like one still being translated, so its draws are skipped; it is tried once per session (g_rt_failed), and
+   its request goes to <cache>/failed/<variant>.json, where tools/totk_xlate can be run on it again. TOTK_SHADER_FAIL_TEST=<n>:
+   the first n translations count as failed, to drive this path. */
+static NSMutableSet<NSString *> *g_rt_failed;   // g_rt_lock
+static _Atomic uint64_t g_rt_failed_n;
+static void rt_failed_add(NSString *variant) {   // g_rt_lock held
+    if (!g_rt_failed) g_rt_failed = [NSMutableSet set];
+    [g_rt_failed addObject:variant];
+}
+/* One request through a translator service; the reflection of the new variant, or nil when it could not be translated. */
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
     service_start(svc);
@@ -395,11 +413,20 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
     char line[2048];
     if (!fgets(line, sizeof line, svc->out)) die("shader service exited while translating %s", variant.UTF8String);
     NSDictionary *reply = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:line length:strlen(line)] options:0 error:nil];
-    if (![reply[@"ok"] boolValue]) {
+    static _Atomic int fail_test = -1, fail_tested; if (fail_test < 0) { const char *e = getenv("TOTK_SHADER_FAIL_TEST"); fail_test = e ? atoi(e) : 0; }
+    BOOL forced = fail_test > 0 && atomic_fetch_add(&fail_tested, 1) < fail_test;
+    if (![reply[@"ok"] boolValue] || forced) {
+        NSString *why = forced ? @"TOTK_SHADER_FAIL_TEST" : [reply[@"error"] description];
         LOG("[survey-shader] frame %llu translation FAILED %s %s after %.2f ms: %s",
             (unsigned long long)dm_nvn_frame_count(), stage, variant.UTF8String,
-            (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, [[reply[@"error"] description] UTF8String]);
-        die("shader %s (%s) translation failed: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]);
+            (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, why.UTF8String);
+        NSString *dir = [totk_rt_dir() stringByAppendingPathComponent:@"failed"], *kept = [dir stringByAppendingFormat:@"/%@.json", variant];
+        [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        BOOL saved = [[json_string(rq) dataUsingEncoding:NSUTF8StringEncoding] writeToFile:kept atomically:YES];
+        LOG("【红】[shader-failed] %s %s could not be translated (%s): its draws are skipped; request %s %s (%llu this session)",
+            stage, variant.UTF8String, why.UTF8String, saved ? "kept in" : "NOT written to", kept.UTF8String,
+            (unsigned long long)atomic_fetch_add(&g_rt_failed_n, 1) + 1);
+        return nil;
     }
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
     NSDictionary *refl = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
@@ -467,9 +494,9 @@ static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint6
     if (![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     NSDictionary *refl = translate(svc, rq, started);
-    if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
+    if (refl && g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
     pthread_mutex_lock(&g_rt_lock);
-    variant_record(shader, rq, refl, existed, started, queued);
+    if (refl) variant_record(shader, rq, refl, existed, started, queued); else rt_failed_add(rq[@"variant"]);   // Q92: not again this session
     if (g_rt_pending[shader] == job) [g_rt_pending removeObjectForKey:shader];
     atomic_fetch_add(&g_rt_gen, 1);
     pthread_cond_broadcast(&g_rt_done);
@@ -538,13 +565,16 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         pthread_mutex_unlock(&g_rt_lock); return nil;
     }
     if (found || g_rt_pending[shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
+    if (g_rt_failed.count && [g_rt_failed containsObject:variant_name(shader, answers)]) { pthread_mutex_unlock(&g_rt_lock); return nil; }   // Q92: failed once, its draws stay skipped
     NSData *code_bytes = nil;   // written by the job when it is not translated here
     NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local, may_defer && !no_translator() ? &code_bytes : NULL);
     if (no_translator()) { record_miss(shader, rq, answers); pthread_mutex_unlock(&g_rt_lock); return nil; }
     BOOL existed = [NSFileManager.defaultManager fileExistsAtPath:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", rq[@"variant"]]];   // a re-translation of a broken variant is not a new one
     if (may_defer == 2) { urgent_translate(shader, rt_job_new(shader, stage, rq, existed, code_bytes)); pthread_mutex_unlock(&g_rt_lock); return nil; }
     if (may_defer) { bg_translate(shader, stage, rq, existed, code_bytes); pthread_mutex_unlock(&g_rt_lock); return nil; }
-    variant_record(shader, rq, translate(&g_svc, rq, started), existed, started, 0);
+    NSDictionary *refl = translate(&g_svc, rq, started);
+    if (!refl) { rt_failed_add(rq[@"variant"]); pthread_mutex_unlock(&g_rt_lock); return nil; }   // Q92
+    variant_record(shader, rq, refl, existed, started, 0);
     pthread_mutex_unlock(&g_rt_lock);
     return rq[@"variant"];
 }
