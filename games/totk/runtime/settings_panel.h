@@ -17,7 +17,18 @@
                                                              window any more); TOTK_ASPECT's ratio is offered too
      edge smoothing       switch                             taa_set (gfx/nvn/totk_taa.m)
      controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
+     DualSense bow trigger switch                            runtime_triggers_choose (gamepad_feedback.m), saved in
+                                                             dualsense-triggers.txt; Breath of the Wild 1.9.0 and Tears of
+                                                             the Kingdom 1.4.3 only; TOTK_DUALSENSE_TRIGGERS or an agent's
+                                                             test session decide first (greyed out)
      mouse                switch                             runtime_mouse_set (gamepad.m), saved
+     rumble               switch                             runtime_feedback_choose (hid_feedback.c), saved in rumble.txt
+     rumble strength      0.5x / 1x / 2x / 3x / 4x           runtime_rumble_gain_set (gamepad_feedback.m), rumble-gain.txt
+     gyro aiming          switch                             runtime_feedback_choose, saved in gyro.txt
+                                                             TOTK_RUMBLE / TOTK_GYRO or an agent's test session decide the
+                                                             switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
+                                                             out); a device the run started without comes at the next
+                                                             launch (its title says so)
    Below the rows two buttons (user 2026-10-25): contribute the shaders and pipelines the shared list lacks (sent with gh
    in the background when it is signed in, as the launcher's reminder does; else the GitHub form opens and Finder shows the
    file), and star the project (its GitHub page). A setting this game or start cannot change shows its one value, greyed out. While the panel is open the game gets no
@@ -99,6 +110,27 @@ static NSString *settings_ratio_text(float r) {
  if(fabsf(r*10-16)<0.02f)return @"16:10";
  return [NSString stringWithFormat:@"%.2f:1",r];
 }
+/* Rumble (gyro 0) or gyro aiming (gyro 1): a switch, or its one value greyed out when the environment or an agent's test
+   session decides; a device the game did not get at the start comes at the next launch, which the title says. */
+static TOTKSettingRow *settings_feedback_row(int gyro) {
+ NSString *t=gyro?settings_text("体感瞄准","Gyro aiming"):settings_text("震动","Rumble");
+ if(runtime_feedback_locked(gyro))return settings_fixed(t,runtime_feedback_present(gyro)?settings_text("开","On"):settings_text("关","Off"));
+ if(!runtime_feedback_present(gyro))t=[t stringByAppendingString:settings_text("（下次启动生效）"," (from the next launch)")];
+ return settings_row(t,nil,nil,^int{return runtime_feedback_choice(gyro);},^(int v){runtime_feedback_choose(gyro,v);});
+}
+/* Rumble strength in thousandths: 0.5x to 4x, and the strength in force when rumble-gain.txt holds another one. */
+static int settings_gain_now(void) { return (int)fmax(1, lroundf(runtime_rumble_gain()*1000)); }
+static TOTKSettingRow *settings_gain_row(void) {
+ NSString *t=settings_text("震动强度","Rumble strength");
+ int now=settings_gain_now();
+ NSString *(^text)(int)=^NSString *(int v){NSString *x=[NSString stringWithFormat:@"%g×",v/1000.0];
+  return v==1000?[x stringByAppendingString:settings_text("（默认）"," (default)")]:x;};
+ if(runtime_rumble_gain_locked())return settings_fixed(t,text(now));
+ NSMutableArray<NSNumber *> *values=[@[@500,@1000,@2000,@3000,@4000] mutableCopy];
+ if(![values containsObject:@(now)]){[values addObject:@(now)];[values sortUsingSelector:@selector(compare:)];}
+ NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
+ return settings_row(t,choices,values,^int{return settings_gain_now();},^(int v){runtime_rumble_gain_set(v/1000.0f);});
+}
 /* Auto's text: the type it takes the connected controller for (runtime/gamepad.m). */
 static NSString *settings_pad_auto_text(void) {
  static const char *const names[GAMEPAD_TYPE_COUNT]={NULL,"Xbox","PlayStation","Switch"};
@@ -149,8 +181,15 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_PLAYSTATION),@(GAMEPAD_TYPE_SWITCH)],
   ^int{return runtime_gamepad_type(NULL);},^(int v){runtime_gamepad_type_set(v);});
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
+ NSString *bow=settings_text("DualSense 拉弓扳机（R2）","DualSense bow trigger (R2)");
+ if(!runtime_triggers_available())[rows addObject:settings_fixed(bow,settings_text("这个版本没有","Not in this version"))];
+ else if(runtime_triggers_locked())[rows addObject:settings_fixed(bow,runtime_triggers_choice()?settings_text("开","On"):settings_text("关","Off"))];
+ else [rows addObject:settings_row(bow,nil,nil,^int{return runtime_triggers_choice();},^(int v){runtime_triggers_choose(v);})];
  [rows addObject:settings_row(settings_text("鼠标操作（视角、按键）","Mouse (camera, buttons)"),nil,nil,
   ^int{return runtime_mouse_enabled();},^(int v){runtime_mouse_set(v);})];
+ [rows addObject:settings_feedback_row(0)];
+ [rows addObject:settings_gain_row()];
+ [rows addObject:settings_feedback_row(1)];
  return rows;
 }
 
@@ -168,7 +207,11 @@ static NSPoint g_settings_at = {-1, -1};
 enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 54, SETTINGS_BOTTOM = 86, SETTINGS_POP_W = 260 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
- CGFloat h=SETTINGS_TOP+rows.count*(SETTINGS_ROW_H+SETTINGS_GAP)-SETTINGS_GAP+SETTINGS_BOTTOM;
+ /* The rows close up (down to 26 pt, 2 pt apart) when the panel would not fit the window (21:9 or 32:9 on a laptop
+    screen), so its title, close button and first rows stay in view. */
+ CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
+ if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(26,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
+ CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM;
  if(!(self=[super initWithFrame:NSMakeRect(0,0,SETTINGS_W,h)]))return nil;
  self.rows=rows;self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
  self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
@@ -179,13 +222,13 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(SETTINGS_W-40,h-40,28,28);[self addSubview:close];
  for(NSUInteger i=0;i<rows.count;i++){
-  TOTKSettingRow *r=rows[i];CGFloat y=h-SETTINGS_TOP-(i+1)*SETTINGS_ROW_H-i*SETTINGS_GAP,rw=SETTINGS_W-28;
-  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,SETTINGS_ROW_H)];band.wantsLayer=YES;
+  TOTKSettingRow *r=rows[i];CGFloat y=h-SETTINGS_TOP-(i+1)*rowH-i*gap,rw=SETTINGS_W-28;
+  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
   band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[self addSubview:band];
   NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-  label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,8,rw-SETTINGS_POP_W-24,18);[band addSubview:label];
-  if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(SETTINGS_ROW_H-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
-  else{NSPopUpButton *p=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,4,SETTINGS_POP_W,26) pullsDown:NO];[p addItemsWithTitles:r.choices];
+  label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-SETTINGS_POP_W-24,18);[band addSubview:label];
+  if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
+  else{NSPopUpButton *p=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[p addItemsWithTitles:r.choices];
    p.enabled=r.set!=nil;r.control=p;}
   r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
  }

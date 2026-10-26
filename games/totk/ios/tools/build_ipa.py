@@ -83,10 +83,9 @@ def main():
     if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
-    version_dir=tree/'build'/('' if a.version=='v0' else a.version)
-    for name in ('runtime_tables.h','romfs_config.h')+(('aoc_config.h',) if botw else ()):
-        clone(version_dir/name,gen/name)
-    clone(tree/'build/shared_fonts_config.h',gen/'shared_fonts_config.h')
+    # The runtime's tables and hashes from the player's files (runtime/game_data.h) go into the app as files, not into its code.
+    game_data=tree/f'build/game-data/{a.version}'
+    if not (game_data/'runtime-tables.bin').is_file(): raise RuntimeError(f'missing game data: {game_data} (make game-data-{a.version})')
     # Export the final code after all verified runtime patches have been applied, then embed it in executable segments.
     host=tree/('build/totk-native' if a.version=='v0' else f'build/totk-native-{a.version}')
     rewritten=tree/f'rewritten/{a.version}'; modules=gen/'modules';modules.mkdir(exist_ok=True)
@@ -168,6 +167,7 @@ def main():
     dest=out if out.suffix=='.app' else tree/'build/ios-payload/Payload/TOTK.app'
     discard(dest); copy_tree(app,dest)
     res=dest/'GameData';res.mkdir(exist_ok=True)
+    copy_tree(game_data,res/'game-data')   # TOTK_GAME_DATA (Sources/main.m)
     romfs=tree/f'extracted/{a.version}/romfs'
     copy_tree(romfs,res/'romfs')
     if a.image_outside:   # the index stays (it changes with the build); the 17 GB image is in Documents/GameData (main.m)

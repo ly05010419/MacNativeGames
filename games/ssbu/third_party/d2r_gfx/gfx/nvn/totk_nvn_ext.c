@@ -286,7 +286,7 @@ NVN(nvnCommandBufferSetConservativeRasterDilate, void, NVNcommandBuffer *c, floa
 NVN(nvnCommandBufferSetSampleMask, void, NVNcommandBuffer *c, int m) {
     (void)c; if ((m & 0xffff) != 0xffff) { static int once; if (!once++) LOG("【红】SetSampleMask %#x: fixed-function sample mask not applied", m); }
 }
-NVN(nvnCommandBufferSetAlphaRef, void, NVNcommandBuffer *c, float r) { (void)c; (void)r; }   /* only used with the alpha test, reported in the replay */
+/* nvnCommandBufferSetAlphaRef is recorded in hle_nvn.c (OP_ALPHA_REF, Q61). */
 /* Metal always restarts strips at the all-ones index; other restart indices are reported. */
 NVN(nvnCommandBufferSetPrimitiveRestart, void, NVNcommandBuffer *c, uint32_t e, int index) {
     (void)c; if ((e & 0xff) && index != -1 && index != 0xffff) { static int once; if (!once++) LOG("【红】SetPrimitiveRestart index %#x: Metal restarts only at the all-ones index", index); }

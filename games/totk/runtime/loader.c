@@ -18,14 +18,61 @@
 #include <mach/mach.h>
 #include "mach_vm_compat.h"
 #include <sys/ucontext.h>
-#include "runtime_tables.h"
+#include "game_data.h"
 #include "game_patches.h"
 #include "game_version.h"
-#define NM (sizeof(modules)/sizeof(modules[0]))
+#include <errno.h>
 pthread_key_t runtime_keys[8];
 static uint64_t timer_calls, svc_calls;
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr,"[totk] FAIL: %s\n",message); exit(1); }
 static void need(bool c,const char *m) { if(!c) runtime_fail(m); }
+/* The three modules' tables (layout, symbols, relocations, gates) that scripts/prepare_runtime.py derives from the player's
+   verified rewrites: runtime-tables.bin in the game data folder (game_data.h), mapped at start. Nothing of them is compiled
+   in, so this program can be replaced in an app on its own. Every count and offset is checked before use; each module's
+   SHA-256 in the file binds it to its image as before (map_module). */
+#define NM 3
+static Module modules[NM];
+static uint64_t probe_plt,probe_slot;   /* main's original PLT stub of nn::os::GetSystemTick and its GOT slot (probe) */
+#define PROBE_PLT probe_plt
+#define PROBE_SLOT probe_slot
+typedef struct {char magic[8],version[8];uint32_t nmodule,format;uint64_t probe_plt,probe_slot,strings,strings_size,size;} TablesHeader;
+typedef struct {char name[16],digest[72];uint64_t file_size,text_end,ro_off,data_off,patch_off,key_off,init,ctor_flag,init_array,init_size,symbols,relocs,gates;uint32_t nsym,nreloc,ngate,reserved;} TablesModule;
+typedef struct {uint64_t value,size;uint32_t name;uint8_t defined,binding,type,reserved;} TablesSymbol;
+_Static_assert(sizeof(TablesHeader)==64&&sizeof(TablesModule)==208&&sizeof(TablesSymbol)==24&&sizeof(Reloc)==24&&sizeof(Gate)==24,"runtime-tables.bin layout");
+static int gate_order(const void *a,const void *b){uint64_t x=((const Gate *)a)->ret,y=((const Gate *)b)->ret;return (x>y)-(x<y);}
+static int tables_range(uint64_t size,uint64_t off,uint64_t count,uint64_t each){return off%8==0&&off<=size&&count<=(size-off)/each;}
+static void load_tables(void) {
+ char path[4096];runtime_game_data_path("runtime-tables.bin",path,sizeof path);
+ int fd=open(path,O_RDONLY);
+ if(fd<0){fprintf(stderr,"[totk] %s: %s\n",path,strerror(errno));runtime_fail("game tables missing (build_app.py writes them into the app; update_runtime.py --work adds them to an older app)");}
+ struct stat st;need(fstat(fd,&st)==0&&st.st_size>=(off_t)sizeof(TablesHeader)&&st.st_size<(1LL<<30),"game tables size");
+ const uint8_t *b=mmap(NULL,(size_t)st.st_size,PROT_READ,MAP_PRIVATE,fd,0);close(fd);need(b!=MAP_FAILED,"map game tables");
+ const TablesHeader *h=(const void *)b;uint64_t size=(uint64_t)st.st_size;
+ need(!memcmp(h->magic,"TOTKTAB1",8)&&h->format==1&&h->size==size,"game tables format");
+ if(strncmp(h->version,TOTK_GAME_DIR,sizeof h->version)){fprintf(stderr,"[totk] game tables are for %.8s, this program for " TOTK_GAME_DIR "\n",h->version);runtime_fail("game tables of another game version");}
+ need(h->nmodule==NM&&tables_range(size,sizeof *h,NM,sizeof(TablesModule))&&h->strings_size>0&&tables_range(size,h->strings,h->strings_size,1)&&!b[h->strings+h->strings_size-1],"game tables layout");
+ const char *strings=(const char *)b+h->strings;static const char *const names[NM]={"main","subsdk0","sdk"};
+ for(unsigned i=0;i<NM;i++){
+  const TablesModule *t=(const TablesModule *)(b+sizeof *h)+i;Module *m=&modules[i];
+  need(!t->name[sizeof t->name-1]&&!strcmp(t->name,names[i])&&strnlen(t->digest,sizeof t->digest)==64,"game tables module");
+  need(tables_range(size,t->symbols,t->nsym,sizeof(TablesSymbol))&&tables_range(size,t->relocs,t->nreloc,sizeof(Reloc))&&tables_range(size,t->gates,t->ngate,sizeof(Gate)),"game tables bounds");
+  *m=(Module){.name=t->name,.digest=t->digest,.file_size=t->file_size,.text_end=t->text_end,.ro_off=t->ro_off,.data_off=t->data_off,.patch_off=t->patch_off,.key_off=t->key_off,
+   .init=t->init,.ctor_flag=t->ctor_flag,.init_array=t->init_array,.init_size=t->init_size,.nsym=t->nsym,.relocs=(const Reloc *)(b+t->relocs),.nreloc=t->nreloc,
+   .gates=(const Gate *)(b+t->gates),.ngate=t->ngate};
+  Symbol *symbols=calloc(t->nsym?t->nsym:1,sizeof *symbols);need(symbols!=NULL,"game tables memory");
+  const TablesSymbol *ts=(const TablesSymbol *)(b+t->symbols);
+  for(unsigned k=0;k<t->nsym;k++){need(ts[k].name<h->strings_size,"game tables symbol name");
+   symbols[k]=(Symbol){.name=strings+ts[k].name,.value=ts[k].value,.size=ts[k].size,.defined=ts[k].defined,.binding=ts[k].binding,.type=ts[k].type};}
+  m->symbols=symbols;
+  /* runtime_dispatch finds a gate by binary search: sorted here too, so tables written before prepare_runtime.py sorted them work. */
+  Gate *gates=malloc((t->ngate?t->ngate:1)*sizeof *gates);need(gates!=NULL,"game tables memory");
+  memcpy(gates,b+t->gates,t->ngate*sizeof *gates);qsort(gates,t->ngate,sizeof *gates,gate_order);
+  for(unsigned k=1;k<t->ngate;k++)need(gates[k].ret>gates[k-1].ret,"game tables: two gates with one return address");
+  m->gates=gates;
+ }
+ probe_plt=h->probe_plt;probe_slot=h->probe_slot;
+ fprintf(stderr,"[totk] game tables %s: %u+%u+%u relocations\n",path,modules[0].nreloc,modules[1].nreloc,modules[2].nreloc);
+}
 static size_t page_up(size_t x) { return (x+0x3fff)&~(size_t)0x3fff; }
 static unsigned hash_name(const char *s) { unsigned h=2166136261u; for(;*s;s++)h=(h^(uint8_t)*s)*16777619u;return h; }
 static void make_hash(Module *m) {
@@ -549,6 +596,7 @@ int main(int argc,char **argv) {
  for(unsigned i=0;i<8;i++)need(pthread_key_create(&runtime_keys[i],NULL)==0&&runtime_keys[i]!=0,"allocate Darwin key");
  runtime_hle_stack_init((uint64_t)runtime_keys[4]*8);
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
+ load_tables();
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
@@ -557,5 +605,5 @@ int main(int argc,char **argv) {
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
- if(!strcmp(argv[2],"probe-gpu-writeback")||!strcmp(argv[2],"probe-gpu-sampler-border")||!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-texels-region")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
+ if(!strcmp(argv[2],"probe-gpu-writeback")||!strcmp(argv[2],"probe-gpu-sampler-border")||!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-vin")||!strcmp(argv[2],"probe-gpu-fout")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-texels-region")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
 }

@@ -51,7 +51,7 @@ static int cg_op_safe(unsigned op) {
         case OP_END: case OP_JUMP: case OP_BEGIN: case OP_CALL: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM:
         case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX:
         case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR: case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD:
-        case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_RENDER_ENABLE: case OP_RENDER_COND: case OP_DRAW: case OP_DRAW_IDX: case OP_SET_RT: return 1;
+        case OP_ALPHA_REF: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_RENDER_ENABLE: case OP_RENDER_COND: case OP_DRAW: case OP_DRAW_IDX: case OP_SET_RT: return 1;
         default: return 0;
     }
 }

@@ -2558,7 +2558,7 @@ static int pkg_final_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_PKG_FINAL_CACHE"); v = !(e && !atoi(e)); atomic_store(&g_pkg_final_cache, v); }
     return v;
 }
-@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
+@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; BOTW_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
 /* TOTK: a mirrored texture the GPU starts rendering into is told directly (g_smu held), so tex_mtl no longer asks the owned
    set again every time any other serial joins it (a locked lookup per CPU-pool texture per new render target). */
 static void pkg_owned_locked(uint64_t k) {
@@ -2918,7 +2918,7 @@ static void wb_write_list_body(wb_ent **list, int nl, int force) {
         for (unsigned l = 0; l < t->d.levels && ok == 1; l++) for (unsigned y = 0; y < layers && ok == 1; y++) ok = wb_level_back(t, mt, l, y);
         nvn_dirty_gpu_write_end(tok);
         if (ok == WB_POOL_GONE) { wb_ent_free(e); continue; }   // counted and logged by wb_target_lock
-        if (ok) { uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
+        if (ok) { BOTW_WB_LANDED(t) uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
         else MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)t->serial, t->d.format);
         wb_ent_free(e);
     }
@@ -3903,7 +3903,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         /* TOTK: rendered into by the GPU since the upload: the pool memory is stale, never re-upload. The set only grows, so
            the answer is kept in the NvPkg and asked again only after it gained members (a locked lookup on every use before). */
         int reduced = pk && pk->tex && (pk->tex.mipmapLevelCount < (t->d.levels ? t->d.levels : 1u) || (tc_pf(t->d.format) != MTLPixelFormatInvalid && pk->tex.pixelFormat == tc_pf(t->d.format)));   // TOTK: copy without its top level (mip_drop_of) or transcoded (tex_tc): not something the GPU can render into
-        if (pk && pk->owned && pk->tex && !reduced) return (__bridge void *)pk->tex;
+        if (pk && pk->owned && pk->tex && !reduced) return (__bridge void *)pk->tex; BOTW_PKG_RENDER_ALIAS(pk, t)
         if (pk) {   // 已上传：自上次检查后有过客体写才查覆盖页 | Already uploaded: check the covered pages only if there has been a guest write since the last check
             uint64_t now = nvn_dirty_now(), h = 0; int clean;
             if (!pk->tex || (pk->owned && reduced)) {   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
@@ -3923,7 +3923,7 @@ static void *tex_mtl_p(const tex_t *ct) {
                range up again (the lookup was a linear scan over ~3,700 pools, about 14% of the replay). */
             int tracked = now == pk->seen && pk->tracked ? 1 : nvn_dirty_tracked(t->mem, t->L.size);
             clean = tracked && (now == pk->seen || !nvn_dirty_since(t->mem, t->L.size, pk->stamp));
-            if (!clean && tracked && pkg_edge_clean(t, pk)) clean = 1;   // TOTK (#90): only a shared first / last page was written
+            if (!clean && tracked && pkg_edge_clean(t, pk)) clean = 1; BOTW_PKG_WB_STALE(pk, t, clean)   // TOTK (#90): only a shared first / last page was written
             pk->seen = now; pk->tracked = tracked;
             }
             if (clean && atomic_load_explicit(&g_up_lost_n, memory_order_relaxed) && up_lost_take(pk->tex)) { clean = 0; uint64_t k = atomic_load(&g_up_lost_redo); if (k <= 3 || !atomic_load(&g_up_lost_n)) MLOG("上传被丢的贴图 ser=%llu 重传（累计 %llu 张，记录里还剩 %d 张）", (unsigned long long)t->serial, (unsigned long long)k, atomic_load(&g_up_lost_n)); }
@@ -3938,14 +3938,14 @@ static void *tex_mtl_p(const tex_t *ct) {
                 if (clean) return (__bridge void *)pk->tex;
             }
             TILELOG(t, "re-upload from the pool bytes");
-            uint64_t st; reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
-            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
+            uint64_t st; BOTW_PKG_WB_TAKE() reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
+            if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; BOTW_PKG_WB_SET(pk) g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
             else { free(pk->edge); pk->edge = NULL; }   // TOTK (#90): the bytes kept belong to the upload that failed
             return (__bridge void *)pk->tex;
         }
         TILELOG(t, "first upload from the pool bytes");
         NvPkg *npk = [NvPkg new]; pk = npk;
-        pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size;
+        pk->lo = (uintptr_t)t->mem; pk->hi = pk->lo + t->L.size; BOTW_PKG_WB_SEEN(pk)
         pk->tex = pkg_upload(t, &pk->stamp, &pk->key, pk);
         if (!pk->tex) return NULL;
         /* TOTK (#90): seen = the upload's stamp, not "now": a write that faulted during the copy moved "now" on, and the
@@ -3954,7 +3954,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         serial_put(t->serial, pk);
         pk->owned = gpu_owned(t->serial);   // after it is in the table: a later mark finds it there (pkg_owned_locked)
         if ((pk->hashed = pkg_hashed(t))) { pk->chash = pkg_hash(t->mem, t->L.size); pk->csub = g_sub_serial; }
-        if (serial_is_dead(t->serial)) dead_put_note(t->serial);
+        if (serial_is_dead(t->serial)) dead_put_note(t->serial); BOTW_PKG_RENDER_ALIAS(pk, t)
         return (__bridge void *)pk->tex;
     }
     if (have) return (__bridge void *)have;
@@ -4700,7 +4700,7 @@ static MTLPixelFormat attachment_format(const tex_t *t, const view_t *v, int has
     return (MTLPixelFormat)pf;
 }
 static id<MTLTexture> attachment_texture(const tex_t *t, const view_t *v, int has_v) {
-    __unsafe_unretained id<MTLTexture> b0 = tex_mtl(t); if (!b0) return nil;   // TOTK: held by the serial table (tex_mtl); the common answer takes no retain
+    __unsafe_unretained id<MTLTexture> b0 = BOTW_ATTACH_TEX_U(t); if (!b0) return nil;   // TOTK: held by the serial table (tex_mtl); the common answer takes no retain
     MTLPixelFormat bpf = b0.pixelFormat, pf = attachment_format(t, v, has_v, bpf);
     if (pf == bpf) return b0;
     id<MTLTexture> base = b0;
@@ -7065,6 +7065,16 @@ static int border_parse(NSString *key, border_in *b) {
     }
     return b->n > 0;
 }
+/* TOTK (2026-10-26): a fragment output is declared with the type class of the render target it writes, as NVN's
+   hardware has it: the shader writes untyped 32-bit registers and the colour unit takes their bits as integers for a
+   pure integer format (R8_UI to RGBA32_I) and as floats for every other one. Metal fixes each output's type in the
+   function and refuses a pipeline whose output type does not match its attachment, and the translator typed the outputs
+   from the bound target (the fout answers), each integer target a variant of its own (61 of the 1.4.3 shared list). The
+   pipeline redeclares such an output with the target's type and writes the bits of the value the code computed
+   (pso_desc: fn_retype_outputs on the fragment function it took, whichever patch built it), so any variant serves any
+   target format (deps_match). The MSL of a patched function is kept on it (fn_note_src); the base one is sh_src. */
+static const void *const k_fn_src = &k_fn_src, *const k_fn_fout = &k_fn_fout;
+static void fn_note_src(id<MTLFunction> fn, NSString *src) { if (fn && src) objc_setAssociatedObject(fn, k_fn_src, src, OBJC_ASSOCIATION_COPY_NONATOMIC); }
 static id<MTLFunction> fs_fn_border_with(NvShader *fs, int nodepth, NSString *key, border_in b, NSString **cache_key);
 /* The fragment function for the draw's samplers (border_key), nil when none needs the emulation. recipe: its border_key. */
 /* The peer and key are retained: pointer identity cannot alias a destroyed object. Never cache nil (pending).
@@ -7119,6 +7129,7 @@ static id<MTLFunction> fs_fn_border_with(NvShader *fs, int nodepth, NSString *bk
             NSError *err = nil; id<MTLLibrary> lib = variant_library(src, &err);
             f = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
             if (!f) MDIE("fragment shader %s with emulated sampler border colour: %s", fs->key, err.localizedDescription.UTF8String);
+            fn_note_src(f, src);
         }
         os_unfair_lock_lock(&g_bpatch_lock);
         if (!fs->bpatch) fs->bpatch = [NSMutableDictionary dictionary];
@@ -7158,6 +7169,7 @@ static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const in
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();   // about 90 ms cold on an M4 Max; Metal's cache keeps it, and the next packaging compiles it into the app (variant_library)
     NSError *err = nil; id<MTLLibrary> lib = src ? variant_library(src, &err) : nil;
     fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
+    fn_note_src(fn, src);
     if (fn) { static int logged; if (logged++ < 32) MLOG("[totk] shader %s: reads %d of its own attachments from the tile (%s, %.1f ms)", fs->key, n, key.UTF8String, (CFAbsoluteTimeGetCurrent() - t0) * 1e3); }
     else { static int warned; if (warned++ < 8) { if (src) MLOG("【红】shader %s: tile-reading variant (%s) does not compile: %s", fs->key, key.UTF8String, err.localizedDescription.UTF8String);
                                                   else MLOG("[totk] shader %s keeps sampling memory (%s): the textures are not only sampled", fs->key, key.UTF8String); } }
@@ -7168,36 +7180,94 @@ static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const in
     os_unfair_lock_unlock(&g_bpatch_lock);
     return fn == VARIANT_NONE ? nil : fn;
 }
-static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, NSString **cache_key);
+/* TOTK (2026-10-25): a vertex input is declared with the type of the format the game binds there, as NVN's hardware
+   has it: its vertex fetch fills a 32-bit register per component, with integer bits for a pure integer format (R8_UI to
+   RGBA32_I) and float bits for every other one (float, half, normalized, *_UI2F / *_I2F), and the shader code reads the
+   registers untyped. Metal fixes each input's type in the function, and the translator typed the inputs from their use
+   (Service.cs InferAttributeTypes): that differed from the bound format for 1,876 of the 2,069 non-default 1.4.3
+   variants in the shared list (1,873 inputs taken for integers had float formats bound), each a variant of its own. An
+   input whose declared type class differs from its format's is redeclared with the format's type and read back as the
+   declared type with as_type, so the code sees the bits the hardware's fetch gives (Metal converts *_UI2F / *_I2F to
+   float for a float input); the variant's recorded input types no longer matter (totk_shader_rt.m deps_match). */
+static char vfmt_class(int f) {   // 'u' / 's' pure unsigned / signed integer, 'f' any other, 0 unmapped or unbound
+    if (f >= 0x51 && f <= 0x68) return 'f';   // *_UI2F / *_I2F: converted to float values
+    switch (vfmt(f)) {
+        case MTLVertexFormatInvalid: return 0;
+        case MTLVertexFormatUChar: case MTLVertexFormatUChar2: case MTLVertexFormatUChar3: case MTLVertexFormatUChar4:
+        case MTLVertexFormatUShort: case MTLVertexFormatUShort2: case MTLVertexFormatUShort3: case MTLVertexFormatUShort4:
+        case MTLVertexFormatUInt: case MTLVertexFormatUInt2: case MTLVertexFormatUInt3: case MTLVertexFormatUInt4: return 'u';
+        case MTLVertexFormatChar: case MTLVertexFormatChar2: case MTLVertexFormatChar3: case MTLVertexFormatChar4:
+        case MTLVertexFormatShort: case MTLVertexFormatShort2: case MTLVertexFormatShort3: case MTLVertexFormatShort4:
+        case MTLVertexFormatInt: case MTLVertexFormatInt2: case MTLVertexFormatInt3: case MTLVertexFormatInt4: return 's';
+        default: return 'f';
+    }
+}
+/* "<location><u|s|f>," for each input of vs whose declared type the pipeline's bound formats change, nil for none. An
+   unbound input keeps its type: the replay feeds it a constant of the declared type (pso_desc). */
+static NSString *vs_vin(NvShader *vs, const pso_key *k) {
+    if (!vs || !k) return nil;
+    NSMutableString *s = nil; const nvn_refl *rf = &vs->rf;
+    for (int v = 0; v < rf->nv; v++) {
+        int a = rf->v[v].nvn; if (a >= 16) continue;
+        char want = vfmt_class(k->attr[a].fmt); if (!want) continue;
+        int ct = rf->v[v].ct; char have = ct == NVN_CT_UINT ? 'u' : ct == NVN_CT_INT ? 's' : 'f';
+        if (want == have) continue;
+        if (!s) s = [NSMutableString string];
+        [s appendFormat:@"%d%c,", rf->v[v].loc, want];
+    }
+    return s;
+}
+/* The MSL with the inputs vin names redeclared (vs_vin): "float4 m_49 [[attribute(6)]];" becomes
+   "uint4 m_49_vin [[attribute(6)]];", and every in.m_49 reads as_type<float4>(in.m_49_vin). */
+static NSString *msl_retype_inputs(NSString *msl, NSString *vin, const char *key) {
+    NSString *src = msl;
+    for (NSString *item in [vin componentsSeparatedByString:@","]) {
+        if (item.length < 2) continue;
+        int loc = item.intValue; unichar w = [item characterAtIndex:item.length - 1];
+        NSString *want = w == 'u' ? @"uint" : w == 's' ? @"int" : @"float";
+        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:@"\\b(float|uint|int)([234]?)\\s+(\\w+)\\s*\\[\\[attribute\\(%d\\)\\]\\];", loc] options:0 error:nil];
+        NSTextCheckingResult *m = [re firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
+        if (!m) MDIE("vertex shader %s: no declaration of vertex input %d to retype", key, loc);
+        NSString *type = [src substringWithRange:[m rangeAtIndex:1]], *width = [src substringWithRange:[m rangeAtIndex:2]], *name = [src substringWithRange:[m rangeAtIndex:3]];
+        src = [src stringByReplacingCharactersInRange:m.range withString:[NSString stringWithFormat:@"%@%@ %@_vin [[attribute(%d)]];", want, width, name, loc]];
+        NSRegularExpression *use = [NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:@"\\bin\\.%@\\b", name] options:0 error:nil];
+        src = [use stringByReplacingMatchesInString:src options:0 range:NSMakeRange(0, src.length) withTemplate:[NSString stringWithFormat:@"as_type<%@%@>(in.%@_vin)", type, width, name]];
+    }
+    return src;
+}
+static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, NSString **cache_key, const pso_key *pk);
 /* The vertex function for the pass (layer index), the fragment shader's varyings and, with border, the draw's vertex-stage
-   samplers with a border colour Metal lacks (PSO_VBORDER). recipe: their border_key. */
-static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int border, NSString **recipe) {
+   samplers with a border colour Metal lacks (PSO_VBORDER), and pk's bound vertex formats (vs_vin). recipe: their border_key. */
+static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int border, NSString **recipe, const pso_key *pk) {
     border_in b; b.n = 0;
     NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, b.c, b.a, b.x, b.p, &b.n) : nil;
     if (recipe) *recipe = bkey;
-    if (!function_cache_on()) return vs_fn_variant(vs, fs, layered, bkey, b, NULL);
+    if (!function_cache_on() || vs_vin(vs, pk)) return vs_fn_variant(vs, fs, layered, bkey, b, NULL, pk);   // retyped inputs: vs->vpatch caches them
     os_unfair_lock_lock(&g_vpatch_lock);
     id<MTLFunction> fn = function_cache_get(vs->vertex_cache, fs, bkey, layered);
     os_unfair_lock_unlock(&g_vpatch_lock);
     if (fn) return fn;
-    fn = vs_fn_variant(vs, fs, layered, bkey, b, NULL);
+    fn = vs_fn_variant(vs, fs, layered, bkey, b, NULL, NULL);
     os_unfair_lock_lock(&g_vpatch_lock);
     function_cache_put(&vs->vertex_cache, fs, bkey, layered, fn);
     os_unfair_lock_unlock(&g_vpatch_lock);
     return fn;
 }
-/* The same for a border key and its inputs (a draw's samplers, or a recipe); cache_key: its vpatch key (nil: vs->fn). */
-static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, NSString **cache_key) {
+/* The same for a border key and its inputs (a draw's samplers, or a recipe) and pk's bound vertex formats; cache_key: its
+   vpatch key (nil: vs->fn). */
+static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NSString *bkey, border_in b, NSString **cache_key, const pso_key *pk) {
     os_unfair_lock *lk = &g_vpatch_lock;
     if (cache_key) *cache_key = nil;
     if (layered && !vs_layerable(vs)) MDIE("vertex shader %s cannot write the render target array index", vs->key);
-    if (!sh_has_src(vs) || (!layered && !bkey && (!fs || !sh_has_src(fs)))) return vs->fn;
+    NSString *vin = vs_vin(vs, pk);
+    if (vin && !sh_has_src(vs)) { static int said; if (said++ < 8) MLOG("【红】vertex shader %s: inputs %s need their format's type, but there is no MSL to retype", vs->key, vin.UTF8String); vin = nil; }
+    if (!sh_has_src(vs) || (!layered && !bkey && !vin && (!fs || !sh_has_src(fs)))) return vs->fn;
     os_unfair_lock_lock(lk);
     NSDictionary *in = fs && sh_has_src(fs) ? msl_varyings(fs) : nil, *out = in ? msl_varyings(vs) : nil;
     NSMutableArray *miss = [NSMutableArray array];
     for (NSNumber *l in [in.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (!out[l]) [miss addObject:l];
-    if (!miss.count && !layered && !bkey) { os_unfair_lock_unlock(lk); return vs->fn; }
-    NSString *key = [NSString stringWithFormat:@"%@%@%@", layered ? @"layer;" : @"", bkey ? [NSString stringWithFormat:@"border:%@", bkey] : @"", [miss componentsJoinedByString:@","]];
+    if (!miss.count && !layered && !bkey && !vin) { os_unfair_lock_unlock(lk); return vs->fn; }
+    NSString *key = [NSString stringWithFormat:@"%@%@%@%@", layered ? @"layer;" : @"", vin ? [NSString stringWithFormat:@"vin:%@;", vin] : @"", bkey ? [NSString stringWithFormat:@"border:%@", bkey] : @"", [miss componentsJoinedByString:@","]];
     if (cache_key) *cache_key = key;
     id<MTLFunction> f = vs->vpatch[key];
     os_unfair_lock_unlock(lk);
@@ -7210,6 +7280,7 @@ static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NS
         NSString *head = @"struct main0_out\n{\n";
         NSString *vsrc0 = sh_src(vs);
         if (bkey) { NSString *bs = border_src(vs, vsrc0, v.c, v.a, v.x, v.p, v.n); if (bs) vsrc0 = bs; }
+        if (vin) vsrc0 = msl_retype_inputs(vsrc0, vin, vs->key);
         NSRange r = [vsrc0 rangeOfString:head];
         if (r.location == NSNotFound) MDIE("vertex shader %s: no main0_out to extend", vs->key);
         NSString *src = [vsrc0 stringByReplacingCharactersInRange:r withString:[head stringByAppendingString:add]];
@@ -7236,6 +7307,7 @@ static id<MTLFunction> vs_fn_variant(NvShader *vs, NvShader *fs, int layered, NS
             static int once, lonce;
             if (miss.count && once++ < 64) MLOG("[totk] fragment shader %s reads varyings the vertex shader %s leaves unwritten (locn %s): added as zero outputs", fs ? fs->key : "-", vs->key, [miss componentsJoinedByString:@","].UTF8String);
             if (layered && !lonce++) MLOG("[totk] layered pass: vertex shader %s writes the render target array index", vs->key);
+            static unsigned vonce; if (vin && (vonce++ < 8 || vonce % 1000 == 0)) MLOG("[vin] vertex shader %s: inputs %s redeclared with their bound formats' types (%u so far)", vs->key, vin.UTF8String, vonce);
         }
         g = vs->vpatch[key];
         os_unfair_lock_unlock(lk);
@@ -7270,6 +7342,7 @@ static id<MTLFunction> fs_fn_without_depth(NvShader *fs) {
         NSError *err = nil; id<MTLLibrary> lib = variant_library(src, &err);
         id<MTLFunction> f = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
         if (!f) MDIE("fragment shader %s without depth export: %s", fs->key, err.localizedDescription.UTF8String);
+        fn_note_src(f, src);
         os_unfair_lock_lock(&lock);
         if (!fs->no_depth_fn) { fs->no_depth_fn = f; MLOG("[totk] fragment depth export omitted for a color-only pass: %s", fs->key); }
         f = fs->no_depth_fn;
@@ -7306,6 +7379,7 @@ static id<MTLFunction> fs_fn_mfx(NvShader *fs, int role, int nodepth) {
             NSError *err = nil; id<MTLLibrary> lib = variant_library(src, &err);
             f = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
             if (!f) MDIE("fragment shader %s, MetalFX copy (role %d): %s", fs->key, role, err.localizedDescription.UTF8String);
+            fn_note_src(f, src);
         } else MLOG("【红】[mfx] fragment shader %s: colour 0 (%s) cannot be copied to the UI layer; this draw is left out of it", fs->key, type ? type.UTF8String : "none");
         os_unfair_lock_lock(&lock);
         if (!fs->mfx_tried[idx]) { fs->mfx_fn[idx] = f; fs->mfx_tried[idx] = 1; }
@@ -7453,10 +7527,89 @@ static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
     if (ps) par_add(g_dev, key, d);
     return ps;
 }
+static char pfmt_class(MTLPixelFormat f) {   // 'u' / 's' pure unsigned / signed integer colour format, 'f' any other, 0 none
+    switch (f) {
+        case MTLPixelFormatInvalid: return 0;
+        case MTLPixelFormatR8Uint: case MTLPixelFormatRG8Uint: case MTLPixelFormatRGBA8Uint: case MTLPixelFormatR16Uint: case MTLPixelFormatRG16Uint:
+        case MTLPixelFormatRGBA16Uint: case MTLPixelFormatR32Uint: case MTLPixelFormatRG32Uint: case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGB10A2Uint: return 'u';
+        case MTLPixelFormatR8Sint: case MTLPixelFormatRG8Sint: case MTLPixelFormatRGBA8Sint: case MTLPixelFormatR16Sint: case MTLPixelFormatRG16Sint:
+        case MTLPixelFormatRGBA16Sint: case MTLPixelFormatR32Sint: case MTLPixelFormatRG32Sint: case MTLPixelFormatRGBA32Sint: return 's';
+        default: return 'f';
+    }
+}
+static NSRegularExpression *fout_decl_re(int l) {
+    return [NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:@"\\b(float|half|uint|int)([234]?)\\s+(\\w+)\\s*\\[\\[color\\(%d\\)\\]\\];", l] options:0 error:nil];
+}
+/* "<output><u|s|f>," for each colour output of src whose declared type class differs from the pipeline's attachment
+   it writes (merged passes: attachment i takes output lmap[i]), nil for none. */
+static NSString *fout_retype_key(NSString *src, const pso_key *k, int merged) {
+    NSMutableString *s = nil;
+    for (int i = 0; i < 8; i++) {
+        if (!k->cfmt[i]) continue;
+        int l = merged ? k->lmap[i] : i; if (l == 0xff) continue;
+        char want = pfmt_class((MTLPixelFormat)k->cfmt[i]); if (!want) continue;
+        NSTextCheckingResult *m = [fout_decl_re(l) firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
+        if (!m) continue;
+        NSString *type = [src substringWithRange:[m rangeAtIndex:1]];
+        if ([type isEqualToString:@"half"]) continue;   // as_type needs 32-bit components: left as it is
+        char have = [type isEqualToString:@"uint"] ? 'u' : [type isEqualToString:@"int"] ? 's' : 'f';
+        if (have == want || (s && [s containsString:[NSString stringWithFormat:@"%d", l]])) continue;
+        if (!s) s = [NSMutableString string];
+        [s appendFormat:@"%d%c,", l, want];
+    }
+    return s;
+}
+/* The MSL with the outputs fo names redeclared: "float4 o [[color(0)]];" becomes "uint4 o_fout [[color(0)]];", the code
+   writes a local of the declared type instead of out.o, and each return stores its bits in out.o_fout. */
+static NSString *msl_retype_outputs(NSString *msl, NSString *fo, const char *key) {
+    NSString *src = msl, *init = @"main0_out out = {};";
+    NSMutableString *decls = [NSMutableString string], *stores = [NSMutableString string];
+    for (NSString *item in [fo componentsSeparatedByString:@","]) {
+        if (item.length < 2) continue;
+        int l = item.intValue; unichar w = [item characterAtIndex:item.length - 1];
+        NSString *want = w == 'u' ? @"uint" : w == 's' ? @"int" : @"float";
+        NSTextCheckingResult *m = [fout_decl_re(l) firstMatchInString:src options:0 range:NSMakeRange(0, src.length)];
+        if (!m) MDIE("fragment shader %s: no declaration of colour output %d to retype", key, l);
+        NSString *type = [src substringWithRange:[m rangeAtIndex:1]], *width = [src substringWithRange:[m rangeAtIndex:2]], *name = [src substringWithRange:[m rangeAtIndex:3]];
+        NSString *local = [NSString stringWithFormat:@"totk_fout_%d", l];
+        src = [src stringByReplacingCharactersInRange:m.range withString:[NSString stringWithFormat:@"%@%@ %@_fout [[color(%d)]];", want, width, name, l]];
+        NSRegularExpression *use = [NSRegularExpression regularExpressionWithPattern:[NSString stringWithFormat:@"\\bout\\.%@\\b", name] options:0 error:nil];
+        src = [use stringByReplacingMatchesInString:src options:0 range:NSMakeRange(0, src.length) withTemplate:local];
+        [decls appendFormat:@" %@%@ %@ = {};", type, width, local];
+        [stores appendFormat:@"out.%@_fout = as_type<%@%@>(%@); ", name, want, width, local];
+    }
+    if ([src rangeOfString:init].location == NSNotFound) MDIE("fragment shader %s: missing output initialization", key);
+    src = [src stringByReplacingOccurrencesOfString:init withString:[init stringByAppendingString:decls]];
+    return [src stringByReplacingOccurrencesOfString:@"return out;" withString:[NSString stringWithFormat:@"{ %@return out; }", stores]];
+}
+static id<MTLFunction> fn_retype_outputs(id<MTLFunction> fn, NvShader *fs, const pso_key *k, int merged) {
+    NSString *src = objc_getAssociatedObject(fn, k_fn_src);
+    if (!src && fs && fn == fs->fn && sh_has_src(fs)) src = sh_src(fs);
+    if (!src) return fn;   // a diagnostic function, or a shader without MSL: as before
+    NSString *fo = fout_retype_key(src, k, merged); if (!fo) return fn;
+    os_unfair_lock_lock(&g_bpatch_lock);
+    NSMutableDictionary *done = objc_getAssociatedObject(fn, k_fn_fout);
+    id<MTLFunction> g = done[fo];
+    os_unfair_lock_unlock(&g_bpatch_lock);
+    if (g) return g;
+    NSString *rsrc = msl_retype_outputs(src, fo, fs ? fs->key : "?");
+    NSError *e = nil; id<MTLLibrary> lib = variant_library(rsrc, &e);
+    g = lib ? [lib newFunctionWithName:fn.name] : nil;
+    if (!g) MDIE("fragment shader %s (outputs %s retyped): %s", fs ? fs->key : "?", fo.UTF8String, e.localizedDescription.UTF8String);
+    fn_note_src(g, rsrc);
+    os_unfair_lock_lock(&g_bpatch_lock);
+    done = objc_getAssociatedObject(fn, k_fn_fout);
+    if (!done) { done = [NSMutableDictionary dictionary]; objc_setAssociatedObject(fn, k_fn_fout, done, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+    if (!done[fo]) done[fo] = g;
+    g = done[fo];
+    os_unfair_lock_unlock(&g_bpatch_lock);
+    static unsigned n; if (++n <= 8 || n % 1000 == 0) MLOG("[fout] fragment shader %s: outputs %s redeclared with their render targets' types (%u so far)", fs ? fs->key : "?", fo.UTF8String, n);
+    return g;
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     // A border pipeline's key carries its vertex function (pso_get, warm_worker): built off the submit thread too, it reads no sampler here.
-    d.vertexFunction = (k->a2c & PSO_VBORDER) ? (__bridge id<MTLFunction>)k->vs : vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, 0, NULL); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
+    d.vertexFunction = (k->a2c & PSO_VBORDER) ? (__bridge id<MTLFunction>)k->vs : vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, 0, NULL, k); d.fragmentFunction = fsfn ? fsfn : fs ? (k->dfmt ? fs->fn : fs_fn_without_depth(fs)) : nil;
     if (!fsfn && nan_trace_match(fs) && !fs->writes_depth) d.fragmentFunction = nan_trace_fn(fs);   // diagnostic TOTK_NAN_TRACE
     // 诊断 DM_NVN_HILITE=片元着色器键,…：这些绘制改用纯色片元（第 1–6 个键依次 品红 / 绿 / 青 / 黄 / 蓝 / 白），看几何落在哪里
     // Diagnostic DM_NVN_HILITE=fragment shader key,...: these draws use a solid-color fragment instead (keys 1–6 in order magenta / green / cyan / yellow / blue / white), to see where the geometry lands
@@ -7528,6 +7681,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         }
     }
     d.depthAttachmentPixelFormat = (MTLPixelFormat)k->dfmt; d.stencilAttachmentPixelFormat = (MTLPixelFormat)k->sfmt;
+    if (d.fragmentFunction && !hilited) d.fragmentFunction = fn_retype_outputs(d.fragmentFunction, fs, k, merged);
     MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
     const nvn_refl *rf = &vs->rf;
     for (int v = 0; v < rf->nv; v++) {
@@ -7620,7 +7774,7 @@ static void pso_pend_kick(const pso_key *k, NvShader *vs, NvShader *fs) {   // �
     // compiled in the background (variant_defer) instead of here on the submission thread, where it took up to 225 ms
     // cold; the guess is left to a later scan or to its draw.
     g_vprobe = 1; g_vmissing = 0;
-    if (!(k->a2c & PSO_VBORDER)) vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, 0, NULL);
+    if (!(k->a2c & PSO_VBORDER)) vs_fn_for(vs, fs, (k->a2c & PSO_LAYERED) != 0, 0, NULL, k);
     if (fs && !k->dfmt) fs_fn_without_depth(fs);
     g_vprobe = 0;
     if (g_vmissing) { g_pp_vdefer++; return; }
@@ -7775,8 +7929,8 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
         // recipes clear this pointer in pso_skey_from, keeping the stable ABI.
         /* TOTK_PSO_MEMO: the key just made is the one vs_fn_for would make again (border_key's per-stage cache, under the
            registry lock once more); vs_fn_for takes it only from a vertex shader with source. */
-        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_variant(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, NULL); }
-        else k.vs = (__bridge void *)vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 1, &vrec);
+        if (pso_memo_on()) { vrec = sh_has_src(vs) ? vkey : nil; if (!vrec) vb.n = 0; k.vs = (__bridge void *)vs_fn_variant(vs, fs, (k.a2c & PSO_LAYERED) != 0, vrec, vb, NULL, &k); }
+        else k.vs = (__bridge void *)vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 1, &vrec, &k);
     } }
     g_vprobe = 0;
     if (g_vmissing && !plain) { g_pso_deferred = 1; return NULL; }
@@ -7800,7 +7954,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     } else if (g_vmissing) atomic_fetch_add_explicit(&g_stat_variant_plain, 1, memory_order_relaxed);
     if (probe) {   // the functions pso_desc takes for a new pipeline (apso_defer and the synchronous build call it here)
         g_vprobe = 1;
-        if (!(k.a2c & PSO_VBORDER)) vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 0, NULL);
+        if (!(k.a2c & PSO_VBORDER)) vs_fn_for(vs, fs, (k.a2c & PSO_LAYERED) != 0, 0, NULL, &k);
         if (fs && !bfn && !k.dfmt) fs_fn_without_depth(fs);
         if (fs && g_mfx.role) fs_fn_mfx(fs, g_mfx.role, k.dfmt == 0);
         g_vprobe = 0;
@@ -8077,7 +8231,7 @@ static int warm_border(NSArray<NSString *> *c, NSMutableDictionary<NSString *, N
     border_in bv, bf;
     if (!vs || (!hv && !hf) || (hv && !border_parse(c[2], &bv)) || (hf && (!fs || !border_parse(c[3], &bf)))) return 0;
     NSString *vk = nil, *fk = nil;
-    id<MTLFunction> vfn = hv ? vs_fn_variant(vs, fs, (sk.k.a2c & PSO_LAYERED) != 0, c[2], bv, &vk) : nil;
+    id<MTLFunction> vfn = hv ? vs_fn_variant(vs, fs, (sk.k.a2c & PSO_LAYERED) != 0, c[2], bv, &vk, &sk.k) : nil;
     id<MTLFunction> bfn = hf ? fs_fn_border_with(fs, sk.k.dfmt == 0, c[3], bf, &fk) : nil;
     if ((hv && (!vfn || !vk)) || (hf && !bfn)) return 0;
     pso_key k = sk.k; k.vs = (__bridge void *)(hv ? vfn : (id)vs); k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)bfn;
@@ -16055,6 +16209,120 @@ int mtl_probe_layer_merge(void) {
     return checked + 5 * 4;
 }
 
+/* probe-gpu-fout: a colour output reaches its render target as the bits the code wrote, whatever type the MSL declares
+   it with (fn_retype_outputs): a float output writing the bits of (7, 200, 3, 1) into RGBA8_UI gives those integers, a
+   uint output writing the bits of (1, 0.5, 0.25, 1) into RGBA8_UNORM gives (255, 128, 64, 255). TOTK_PROBE_NEGATIVE=17
+   skips the retyping: Metal then refuses the pipelines. */
+int mtl_probe_fragment_output_types(void) {
+    mtl_init(); int checked = 0;
+    int negative = getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 17;
+    NSString *vsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 p [[position]]; };\n"
+        "vertex V main0(uint i [[vertex_id]]) { float2 p[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)}; return {float4(p[i], 0, 1)}; }\n";
+    NSString *fsrc[2] = {
+        @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 out_var_SV_Target0 [[color(0)]];\n};\n\n"
+         "fragment main0_out main0()\n{\n    main0_out out = {};\n    out.out_var_SV_Target0 = as_type<float4>(uint4(7u, 200u, 3u, 1u));\n    return out;\n}\n",
+        @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    uint4 out_var_SV_Target0 [[color(0)]];\n};\n\n"
+         "fragment main0_out main0()\n{\n    main0_out out = {};\n    out.out_var_SV_Target0.xy = as_type<uint2>(float2(1.0, 0.5));\n    out.out_var_SV_Target0.zw = as_type<uint2>(float2(0.25, 1.0));\n    return out;\n}\n"};
+    const MTLPixelFormat target[2] = {MTLPixelFormatRGBA8Uint, MTLPixelFormatRGBA8Unorm};
+    const uint8_t want[2][4] = {{7, 200, 3, 1}, {255, 128, 64, 255}};
+    NSError *error = nil;
+    id<MTLLibrary> vl = [g_dev newLibraryWithSource:vsrc options:nil error:&error]; if (!vl) MDIE("fragment output probe vertex shader: %s", error.localizedDescription.UTF8String);
+    NvShader *vs = [NvShader new]; vs->fn = [vl newFunctionWithName:@"main0"]; vs->io = @{}; strcpy(vs->key, "probe-fragment-output-types-vs");
+    id<MTLBuffer> rb = probe_buf(1024); op_hdr end = {OP_END, 8};
+    for (int c = 0; c < 2; c++) {
+        id<MTLLibrary> fl = [g_dev newLibraryWithSource:fsrc[c] options:nil error:&error]; if (!fl) MDIE("fragment output probe shader %d: %s", c, error.localizedDescription.UTF8String);
+        NvShader *fs = [NvShader new]; fs->fn = [fl newFunctionWithName:@"main0"]; fs->src = fsrc[c]; fs->io = @{}; fs->stage = 1;
+        snprintf(fs->key, sizeof fs->key, "probe-fragment-output-types-%d", c);
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:target[c] width:16 height:16 mipmapped:NO];
+        td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget;
+        id<MTLTexture> texture = [g_dev newTextureWithDescriptor:td]; res_add(texture);
+        mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+        S.nattr = 0; memset(S.attr, 0, sizeof S.attr);
+        uint32_t formats[8] = {(uint32_t)target[c]}; pso_key key; pso_key_fill(&key, vs, fs, formats, 0, 0, 1, 0); key.chmask = 15;
+        NSString *fo = fout_retype_key(fsrc[c], &key, 0);
+        if (![fo isEqualToString:c ? @"0f," : @"0u,"]) MDIE("fragment output probe %d: outputs to retype %s", c, fo ? fo.UTF8String : "none");
+        checked++;
+        MTLRenderPipelineDescriptor *pd = pso_desc(&key, vs, fs, nil, 0);
+        if (negative) pd.fragmentFunction = fs->fn;
+        id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&error];
+        if (!ps) MDIE("fragment output probe pipeline %d: %s", c, error.localizedDescription.UTF8String);
+        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = texture; rp.colorAttachments[0].loadAction = MTLLoadActionClear; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        rp.renderTargetWidth = rp.renderTargetHeight = 16; id<MTL4RenderCommandEncoder> en = enc_r_begin(rp); enc_r_pso(en, ps); enc_r_cull(en, MTLCullModeNone);
+        enc_r_viewport(en, (MTLViewport){0, 0, 16, 16, 0, 1}); enc_r_scissor(en, (MTLScissorRect){0, 0, 16, 16});
+        enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3); enc_r_end(en);
+        enc_b_copy_texture_buffer(blit(), texture, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(16, 16, 1), rb, 0, 64, 1024); mtl_sub_commit(); mtl_finish();
+        for (unsigned i = 0; i < 1024; i++) {
+            int got = ((uint8_t *)rb.contents)[i];
+            if (abs(got - want[c][i % 4]) > 1) MDIE("fragment output probe %d: pixel %u channel %u is %d, expected %d", c, i / 4, i % 4, got, want[c][i % 4]);
+            checked++;
+        }
+        res_remove(texture);
+    }
+    return checked;
+}
+/* probe-gpu-vin: a vertex input reads the bits NVN's vertex fetch gives for the bound format, whatever type the MSL
+   declares it with (vs_vin). Three inputs of a translated-style shader: declared float with RGBA8_UI bound (integer
+   bits 7, 200), declared uint with RGBA32_F bound (1.5: 0x3fc00000, top byte 63), declared float with RGBA8_I bound (-1:
+   0xffffffff, top byte 255; read as the value -1.0 it would be 191). The draw writes those bytes as its colour.
+   TOTK_PROBE_NEGATIVE=16 skips the retyping: the integer inputs then arrive as float values (0, 0 and 191). */
+int mtl_probe_vertex_input_types(void) {
+    mtl_init(); int checked = 0;
+    const size_t size = 16384; void *mem = NULL; if (posix_memalign(&mem, size, size) || !mem) MDIE("vertex input probe memory");
+    memset(mem, 0, size); mtl_pool_add(mem, size);
+    float pos[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1}; memcpy(mem, pos, sizeof pos);
+    for (int v = 0; v < 3; v++) {
+        uint8_t u8[4] = {7, 200, 3, 1}; memcpy((uint8_t *)mem + 256 + 16 * v, u8, 4);
+        float f[4] = {1.5f, 0, 0, 0}; memcpy((uint8_t *)mem + 512 + 16 * v, f, 16);
+        int8_t s8[4] = {-1, 0, 0, 0}; memcpy((uint8_t *)mem + 768 + 16 * v, s8, 4);
+    }
+    NSString *vsrc = @"#include <metal_stdlib>\nusing namespace metal;\n\nstruct main0_out\n{\n    float4 c [[user(locn0)]];\n    float4 gl_Position [[position]];\n};\n\n"
+        "struct main0_in\n{\n    float4 m_p [[attribute(0)]];\n    float4 m_a [[attribute(1)]];\n    uint4 m_b [[attribute(2)]];\n    float4 m_s [[attribute(3)]];\n};\n\n"
+        "vertex main0_out main0(main0_in in [[stage_in]])\n{\n    main0_out out = {};\n    uint4 a = as_type<uint4>(in.m_a);\n    uint4 s = as_type<uint4>(in.m_s);\n"
+        "    out.c = float4(float(a.x & 0xff), float(a.y & 0xff), float((in.m_b.x >> 24) & 0xff), float((s.x >> 24) & 0xff)) / 255.0;\n"
+        "    out.gl_Position = in.m_p;\n    return out;\n}\n";
+    NSString *fsrc = @"#include <metal_stdlib>\nusing namespace metal;\nstruct V { float4 c [[user(locn0)]]; };\nfragment float4 main0(V i [[stage_in]]) { return i.c; }\n";
+    NSError *error = nil;
+    id<MTLLibrary> vl = [g_dev newLibraryWithSource:vsrc options:nil error:&error]; if (!vl) MDIE("vertex input probe shader: %s", error.localizedDescription.UTF8String);
+    id<MTLLibrary> fl = [g_dev newLibraryWithSource:fsrc options:nil error:&error]; if (!fl) MDIE("vertex input probe fragment: %s", error.localizedDescription.UTF8String);
+    NvShader *vs = [NvShader new], *fs = [NvShader new];
+    vs->fn = [vl newFunctionWithName:@"main0"]; vs->src = vsrc; vs->io = @{}; strcpy(vs->key, "probe-vertex-input-types");
+    fs->fn = [fl newFunctionWithName:@"main0"]; fs->io = @{}; fs->stage = 1; strcpy(fs->key, "probe-vertex-input-types-fs");
+    vs->rf.route_b = 1; vs->rf.nv = 4;
+    const int cts[4] = {NVN_CT_FLOAT, NVN_CT_FLOAT, NVN_CT_UINT, NVN_CT_FLOAT};
+    for (int i = 0; i < 4; i++) { vs->rf.v[i].loc = i; vs->rf.v[i].nvn = i; vs->rf.v[i].ct = cts[i]; }
+    int negative = getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 16;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO];
+    td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageRenderTarget;
+    id<MTLTexture> texture = [g_dev newTextureWithDescriptor:td]; res_add(texture); id<MTLBuffer> rb = probe_buf(1024);
+    op_hdr end = {OP_END, 8};
+    mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+    S.nattr = 4; memset(S.attr, 0, sizeof S.attr); memset(S.stream, 0, sizeof S.stream); memset(S.vbuf, 0, sizeof S.vbuf);
+    const int fmts[4] = {0x2e, 0x27, 0x2e, 0x28};   // RGBA32_F position, RGBA8_UI, RGBA32_F, RGBA8_I
+    for (int i = 0; i < 4; i++) { S.attr[i] = (va_st){.fmt = (uint32_t)fmts[i], .stream = (uint32_t)i}; S.stream[i].stride = 16; S.vbuf[i] = (NVNbufferRange){.address = (uint64_t)(uintptr_t)mem + 256 * i, .size = 48}; }
+    uint32_t formats[8] = {MTLPixelFormatRGBA8Unorm}; pso_key key; pso_key_fill(&key, vs, fs, formats, 0, 0, 1, 0); key.chmask = 15;
+    NSString *vin = vs_vin(vs, &key);
+    if (![vin isEqualToString:@"1u,2f,3s,"]) MDIE("vertex input probe: inputs to retype %s, expected 1u,2f,3s,", vin ? vin.UTF8String : "none");
+    checked++;
+    if (negative) { vs->rf.v[1].ct = NVN_CT_UINT; vs->rf.v[2].ct = NVN_CT_FLOAT; vs->rf.v[3].ct = NVN_CT_INT; }   // pretend they match: no retyping
+    MTLRenderPipelineDescriptor *pd = pso_desc(&key, vs, fs, nil, 0);
+    id<MTLRenderPipelineState> ps = [g_dev newRenderPipelineStateWithDescriptor:pd error:&error];
+    if (!ps) MDIE("vertex input probe pipeline: %s", error.localizedDescription.UTF8String);
+    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new]; rp.colorAttachments[0].texture = texture; rp.colorAttachments[0].loadAction = MTLLoadActionClear; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.renderTargetWidth = rp.renderTargetHeight = 16; id<MTL4RenderCommandEncoder> en = enc_r_begin(rp); enc_r_pso(en, ps); enc_r_cull(en, MTLCullModeNone);
+    enc_r_viewport(en, (MTLViewport){0, 0, 16, 16, 0, 1}); enc_r_scissor(en, (MTLScissorRect){0, 0, 16, 16});
+    bind_vertex_streams(en, vs);
+    enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3); enc_r_end(en);
+    enc_b_copy_texture_buffer(blit(), texture, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(16, 16, 1), rb, 0, 64, 1024); mtl_sub_commit(); mtl_finish();
+    const uint8_t want[4] = {7, 200, 63, 255};
+    for (unsigned i = 0; i < 1024; i++) {
+        int got = ((uint8_t *)rb.contents)[i];
+        if (abs(got - want[i % 4]) > 1) MDIE("vertex input probe: pixel %u channel %u is %d, expected %d (the bits of the bound format)", i / 4, i % 4, got, want[i % 4]);
+        checked++;
+    }
+    res_remove(texture); mtl_pool_del(mem);
+    return checked;
+}
+
 /* Render through the same descriptor and stream-binding helper as draw_inner.
    Populate every unused stream with poison; change the used color stream; use
    the descriptor's zero-input fallback; compare both modes to expected pixels. */
@@ -16644,7 +16912,7 @@ static void late_land(late_job **jobs, int m, NSArray<id<MTLBuffer>> *bufs) { @a
         }
         pthread_mutex_unlock(&g_late_mu);
         atomic_fetch_add(&g_late_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0);
-        if (landed) { atomic_fetch_add(&g_late_bytes, c->n); uint64_t d = atomic_fetch_add(&g_late_landed, 1) + 1;
+        if (landed) { BOTW_WB_LANDED(t) atomic_fetch_add(&g_late_bytes, c->n); uint64_t d = atomic_fetch_add(&g_late_landed, 1) + 1;
             if (d <= 4 || d % 5000 == 0) MLOG("[late-wb] ser=%llu %ux%u nvnfmt=%#x landed on completion (%llu so far, %llu MB, %.0f us each; %llu skipped, %llu flushes without a wait)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)d, (unsigned long long)(atomic_load(&g_late_bytes) >> 20), atomic_load(&g_late_ns) / 1e3 / (double)(d + atomic_load(&g_late_skipped)), (unsigned long long)atomic_load(&g_late_skipped), (unsigned long long)atomic_load(&g_late_freed)); }
         else atomic_fetch_add(&g_late_skipped, 1);
         free(post); free(c->edge); free(c);
@@ -16817,6 +17085,71 @@ int botw_wb_from_stage(void *ev) {
     pthread_mutex_unlock(&g_mu);
     if (++g_wb_from_stage == 1 || g_wb_from_stage % 5000 == 0) MLOG("[writeback] %llu written back from the submission's own copy (%llu copies staged)", (unsigned long long)g_wb_from_stage, (unsigned long long)g_wb_staged);
     return ok;
+}
+/* Sinking legs (2026-10-23): the game composes the terrain height clipmap on the GPU, one NVN texture object to render
+   into and another over the same memory to sample, and reads each level back with the CPU (Link's feet stand on those
+   heights). Here every object has its own Metal copy: the sampled one is uploaded from the memory at first use, and the
+   rendering reaches the memory only by the write-back at the game's invalidate, which the dirty tracker does not count
+   as a write. When the first composition ran before the height sources were loaded (most loads on a fast Mac), the
+   sampled copy of a coarse level kept those zeros, every finer level composed from it kept them, and the feet sank
+   0.77 m (the game's clamp under the physics hit). Each write-back now notes its memory; a sampled copy uploaded before
+   it is uploaded again at its next use. TOTK_BOTW_SAMPLED_COPY=0 turns this and the pending-rendering alias below off
+   (the sampled copies stay as first uploaded, as before). */
+static int bwb_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_BOTW_SAMPLED_COPY"); on = !(e && !strcmp(e, "0")); } return on; }
+static nvn_hmap g_bwb_at = {.klen = 8};   /* storage address -> generation of the last write-back there (g_bwb_mu) */
+static pthread_mutex_t g_bwb_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t g_bwb_gen;
+uint64_t botw_wb_gen(void) { return atomic_load(&g_bwb_gen); }
+/* The pending rendering of each memory (wb_note), until its write-back lands: a sampled copy over the same memory and
+   layout reads it. Without this a copy stayed stale until the game happened to read the memory back: when the first
+   read-back of a terrain material level came late, the sampled copy kept its first, all-zero upload through the early
+   compositions and tall grass covered the road near Link for good. */
+typedef struct { tex_t t; void *obj; uint64_t stamp; } bra_ent;   /* obj: CFBridgingRetain'ed rendering object */
+static nvn_hmap g_bra = {.klen = 8};   /* storage address -> bra_ent * (g_bwb_mu) */
+static uint64_t g_bra_hits;
+static void bra_drop_locked(uint64_t k) { bra_ent *r = nvn_hm_get(&g_bra, &k); if (r) { nvn_hm_del(&g_bra, &k); defer_obj_release((__bridge id)r->obj); CFRelease(r->obj); free(r); } }
+void botw_render_note(const tex_t *t, void *obj, uint64_t stamp) {
+    if (!bwb_on()) return;
+    uint64_t k = (uint64_t)(uintptr_t)t->mem; void *old = NULL;
+    pthread_mutex_lock(&g_bwb_mu);
+    bra_ent *r = nvn_hm_get(&g_bra, &k);
+    if (!r) { r = malloc(sizeof *r); if (!r) MDIE("render alias record"); r->obj = NULL; nvn_hm_put(&g_bra, &k, r); }
+    if (r->obj != obj) { old = r->obj; r->obj = (void *)CFRetain(obj); }
+    r->t = *t; r->stamp = stamp;
+    pthread_mutex_unlock(&g_bwb_mu);
+    if (old) { defer_obj_release((__bridge id)old); CFRelease(old); }
+}
+void *botw_render_alias(const tex_t *t, const void *ownp) {
+    id<MTLTexture> own = (__bridge id<MTLTexture>)ownp;
+    uint64_t k = (uint64_t)(uintptr_t)t->mem, stamp = 0, rser = 0; id<MTLTexture> mt = nil;
+    pthread_mutex_lock(&g_bwb_mu);
+    bra_ent *r = g_bra.n ? nvn_hm_get(&g_bra, &k) : NULL;
+    if (r && r->t.serial != t->serial && r->t.L.size == t->L.size && r->t.d.format == t->d.format && r->t.d.width == t->d.width &&
+        r->t.d.height == t->d.height && r->t.d.depth == t->d.depth && r->t.d.levels == t->d.levels && r->t.d.target == t->d.target &&
+        r->t.d.flags == t->d.flags && r->t.d.stride == t->d.stride && r->t.d.samples == t->d.samples && r->t.L.layer_size == t->L.layer_size &&
+        r->t.L.layers == t->L.layers && r->t.L.bpb == t->L.bpb && r->t.L.tileH == t->L.tileH && r->t.L.tileD == t->L.tileD) {
+        id o = (__bridge id)r->obj; mt = [o isKindOfClass:[NvPkg class]] ? ((NvPkg *)o)->tex : o; stamp = r->stamp; rser = r->t.serial;
+    }
+    pthread_mutex_unlock(&g_bwb_mu);
+    if (!mt || mt.pixelFormat != own.pixelFormat || mt.mipmapLevelCount != own.mipmapLevelCount || nvn_dirty_since(t->mem, t->L.size, stamp)) return NULL;
+    uint64_t n = ++g_bra_hits; if (n <= 4 || n % 5000 == 0) MLOG("[render-alias] ser=%llu %ux%u nvnfmt=%#x samples the pending GPU rendering ser=%llu of its memory (%llu so far)", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (unsigned long long)rser, (unsigned long long)n);
+    return (__bridge void *)mt;   /* not retained, as tex_mtl_p: the write-back record holds it until the write-back lands (bra_drop_locked) */
+}
+_Thread_local int botw_bra_attach;
+void botw_render_gone(const void *mem, const void *obj) {
+    uint64_t k = (uint64_t)(uintptr_t)mem;
+    pthread_mutex_lock(&g_bwb_mu); bra_ent *r = g_bra.n ? nvn_hm_get(&g_bra, &k) : NULL; if (r && obj && r->obj == obj) bra_drop_locked(k); pthread_mutex_unlock(&g_bwb_mu);
+}
+void botw_wb_landed(const void *mem) {
+    if (!bwb_on()) return;
+    uint64_t k = (uint64_t)(uintptr_t)mem, g = atomic_fetch_add(&g_bwb_gen, 1) + 1;
+    pthread_mutex_lock(&g_bwb_mu); nvn_hm_put(&g_bwb_at, &k, (void *)(uintptr_t)g); bra_drop_locked(k); pthread_mutex_unlock(&g_bwb_mu);
+}
+int botw_wb_newer(const void *mem, uint64_t gen) {
+    if (atomic_load(&g_bwb_gen) <= gen) return 0;
+    uint64_t k = (uint64_t)(uintptr_t)mem;
+    pthread_mutex_lock(&g_bwb_mu); uint64_t g = (uint64_t)(uintptr_t)nvn_hm_get(&g_bwb_at, &k); pthread_mutex_unlock(&g_bwb_mu);
+    return g > gen;
 }
 #endif
 

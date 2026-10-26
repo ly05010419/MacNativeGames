@@ -226,8 +226,8 @@ int botw_uw_scene_picture(void);   /* end of nvn_mtl.m */
    the submission whose end copied it into stage. */
 #define BOTW_WB_ENT_FIELDS uint64_t fence; void *stage; uint64_t stage_fence; uint64_t late_fence;
 void botw_wb_sub_note(uint64_t serial);
-#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k); (e)->late_fence = botw_late_note(&(e)->t, (e)->obj, (e)->stamp, (e)->fence);
-#define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); }
+#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k); (e)->late_fence = botw_late_note(&(e)->t, (e)->obj, (e)->stamp, (e)->fence); botw_render_note(&(e)->t, (e)->obj, (e)->stamp);
+#define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); } if (!((e)->late_fence && (e)->late_fence == (e)->fence)) botw_render_gone((e)->t.mem, (e)->obj);
 void botw_wb_stage_encode(void);
 #define BOTW_WB_STAGE() botw_wb_stage_encode();
 #define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; for (int i_ = 0; i_ < (nl); i_++) { if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
@@ -252,6 +252,25 @@ void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the m
 #define BOTW_TINY_COMMIT() botw_tiny_commit(); botw_late_commit();
 #define BOTW_LATE_FILTER(list, nl) (nl) = botw_late_filter((void **)(list), (nl));
 #define BOTW_LATE_DROP(lo, hi) botw_late_drop((lo), (hi));
+/* Sinking legs (end of nvn_mtl.m): a write-back puts a GPU rendering into memory that other texture objects sample from
+   copies uploaded earlier; their next use uploads the memory again, as their descriptors would read it on hardware. */
+void botw_wb_landed(const void *mem);
+uint64_t botw_wb_gen(void);
+int botw_wb_newer(const void *mem, uint64_t gen);
+#define BOTW_PKG_FIELDS uint64_t wb_gen;
+#define BOTW_WB_LANDED(t) botw_wb_landed((t)->mem);
+#define BOTW_PKG_WB_SEEN(pk) (pk)->wb_gen = botw_wb_gen();
+#define BOTW_PKG_WB_TAKE() uint64_t wbg_ = botw_wb_gen();
+#define BOTW_PKG_WB_SET(pk) (pk)->wb_gen = wbg_;
+#define BOTW_PKG_WB_STALE(pk, t, clean) if (clean && botw_wb_newer((t)->mem, (pk)->wb_gen)) clean = 0;
+/* ... and while a GPU rendering of the same memory and layout waits for its write-back (the CPU has not written there
+   since), a sampled copy reads that rendering, as its descriptor would on hardware. */
+void botw_render_note(const tex_t *t, void *obj, uint64_t stamp);
+void *botw_render_alias(const tex_t *t, const void *own);   /* the pending rendering's MTLTexture (not retained: its record holds it) or NULL */
+void botw_render_gone(const void *mem, const void *obj);   /* its write-back record was freed */
+extern _Thread_local int botw_bra_attach;   /* tex_mtl for a render target: its own copy, never the alias */
+#define BOTW_ATTACH_TEX_U(t) ((__bridge id<MTLTexture>)({ botw_bra_attach = 1; void *r_ = tex_mtl_p(t); botw_bra_attach = 0; r_; }))
+#define BOTW_PKG_RENDER_ALIAS(pk, t) if (pk && pk->tex && !pk->owned && !botw_bra_attach) { void *a_ = botw_render_alias(t, (__bridge const void *)pk->tex); if (a_) return a_; }
 #else
 #define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
 #define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
@@ -296,6 +315,14 @@ int totk_wb_fence_on(void);
 #define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
 #define BOTW_ASHOT_POLL(t, cur)
 #define BOTW_REUP_TRACKED(pk, t)
+#define BOTW_PKG_FIELDS
+#define BOTW_WB_LANDED(t)
+#define BOTW_PKG_WB_SEEN(pk)
+#define BOTW_PKG_WB_TAKE()
+#define BOTW_PKG_WB_SET(pk)
+#define BOTW_PKG_WB_STALE(pk, t, clean)
+#define BOTW_PKG_RENDER_ALIAS(pk, t)
+#define BOTW_ATTACH_TEX_U(t) tex_mtl(t)
 #endif
 /* Key 5 (MetalFX temporal anti-aliasing, totk_taa.m): the compose draw that samples the linear HDR scene at fragment
    texture slot 0 before tone mapping. TOTK: 0ac9a549 (tone mapping and bloom). Breath of the Wild 1.9.0: f7ee6fe1 (two

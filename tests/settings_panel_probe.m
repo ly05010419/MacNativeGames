@@ -31,10 +31,26 @@ void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
 void runtime_mouse_release(void) {}
 void runtime_gamepad_clear(void) {}
+/* runtime/hid_feedback.c's and gamepad_feedback.m's rumble, strength and gyro switches without a controller. */
+static int fakeFeedback[2] = {1, 1}, fakeFeedbackLocked[2], fakeFeedbackPresent[2] = {1, 1}, fakeGainLocked;
+static float fakeGain = 1;
+int runtime_feedback_locked(int gyro) { return fakeFeedbackLocked[gyro]; }
+int runtime_feedback_present(int gyro) { return fakeFeedbackPresent[gyro]; }
+int runtime_feedback_choice(int gyro) { return fakeFeedback[gyro]; }
+void runtime_feedback_choose(int gyro, int on) { fakeFeedback[gyro] = !!on; }
+int runtime_rumble_gain_locked(void) { return fakeGainLocked; }
+float runtime_rumble_gain(void) { return fakeGain; }
+void runtime_rumble_gain_set(float gain) { fakeGain = gain; }
 /* gfx/nvn/hle_nvn.c's frame lock (its pacing is checked by probe-gfx's present-interval probe). */
 static int fakeLock;
 void nvn_fps_lock_set(int fps) { fakeLock = fps == 30 || fps == 40 || fps == 60 ? fps : 0; }
 int nvn_fps_lock(void) { return fakeLock; }
+/* runtime/gamepad_feedback.m's DualSense bow trigger switch without a controller. */
+static int fakeTriggers = 1, fakeTriggersLocked, fakeTriggersAvailable = 1;
+int runtime_triggers_available(void) { return fakeTriggersAvailable; }
+int runtime_triggers_locked(void) { return fakeTriggersLocked; }
+int runtime_triggers_choice(void) { return fakeTriggers; }
+void runtime_triggers_choose(int on) { fakeTriggers = !!on; }
 /* A window key is the user's input (runtime/input.c user_input): it stops a survey and an auto-load, neither here. */
 void runtime_survey_cancel_user(void) {}
 void runtime_autoload_user_input(void) {}
@@ -96,7 +112,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 8);
+    assert(settingsPanel.rows.count == 12);
 
     /* Overlay: all -> FPS only -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
@@ -177,11 +193,41 @@ int main(int argc, const char **argv) { @autoreleasepool {
     flip(@"Edge smoothing", NO); assert(!taa_enabled());
     assert(!switched(@"Mouse")); flip(@"Mouse", YES); assert(fakeMouse && switched(@"Mouse")); flip(@"Mouse", NO); assert(!fakeMouse);
 
+    /* The DualSense bow trigger: a switch; greyed out while TOTK_DUALSENSE_TRIGGERS or a test session decides, and on a
+       game version without the bow's state (rows are made at each opening). */
+    assert(switched(@"DualSense bow trigger")); flip(@"DualSense bow trigger", NO); assert(!fakeTriggers && !switched(@"DualSense bow trigger"));
+    flip(@"DualSense bow trigger", YES); assert(fakeTriggers);
+    press(18); fakeTriggersLocked = 1; fakeTriggers = 0; press(18); assert(settingsOpen);
+    assert(!menu(@"DualSense bow trigger").enabled && [menu(@"DualSense bow trigger").titleOfSelectedItem isEqualToString:@"Off"]);
+    press(18); fakeTriggersLocked = 0; fakeTriggersAvailable = 0; press(18);
+    assert(!menu(@"DualSense bow trigger").enabled && [menu(@"DualSense bow trigger").titleOfSelectedItem isEqualToString:@"Not in this version"]);
+    press(18); fakeTriggersAvailable = 1; fakeTriggers = 1; press(18); assert(settingsOpen && switched(@"DualSense bow trigger"));
+
     /* Controller type: auto names the controller it sees. */
     shows(@"Controller type", @"Auto (PlayStation)");
     pick(@"Controller type", @"Switch"); assert(fakePadType == GAMEPAD_TYPE_SWITCH);
     pick(@"Controller type", @"Auto (PlayStation)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
     fakePadDetected = -1; shows(@"Controller type", @"Auto (no controller)");
+
+    /* Rumble, its strength and gyro aiming. */
+    assert(switched(@"Rumble")); flip(@"Rumble", NO); assert(!fakeFeedback[0] && !switched(@"Rumble")); flip(@"Rumble", YES); assert(fakeFeedback[0]);
+    shows(@"Rumble strength", @"1× (default)");
+    pick(@"Rumble strength", @"2×"); assert(fakeGain == 2); shows(@"Rumble strength", @"2×");
+    pick(@"Rumble strength", @"0.5×"); assert(fakeGain == 0.5f); pick(@"Rumble strength", @"1× (default)"); assert(fakeGain == 1);
+    assert(switched(@"Gyro aiming")); flip(@"Gyro aiming", NO); assert(!fakeFeedback[1]); flip(@"Gyro aiming", YES); assert(fakeFeedback[1]);
+    /* Rows are made at each opening: a variable that decides (greyed out), a device the run started without (the next
+       launch), a strength the file holds that is not a choice. */
+    press(18); fakeFeedbackLocked[1] = 1; fakeFeedbackPresent[0] = 0; fakeGain = 2.5f; press(18); assert(settingsOpen);
+    assert(!menu(@"Gyro aiming").enabled && [menu(@"Gyro aiming").titleOfSelectedItem isEqualToString:@"On"]);
+    (void)row(@"Rumble (from the next launch)"); flip(@"Rumble (from the next launch)", NO); assert(!fakeFeedback[0]);
+    shows(@"Rumble strength", @"2.5×"); pick(@"Rumble strength", @"3×"); assert(fakeGain == 3);
+    press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
+    press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
+    assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
+    /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
+    NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
+    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
+    press(18); [window setContentSize:was]; press(18); assert(settingsOpen);
 
     /* While it is open the game gets no keys (only key 1 and Esc act); after it closes, keys reach the game again. */
     key_event(38, YES); assert(!keys[38]); key_event(38, NO);
@@ -201,8 +247,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Chinese. */
     setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
     shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
+    assert(switched(@"DualSense 拉弓扳机"));
     fakePadDetected = GAMEPAD_TYPE_SWITCH; shows(@"手柄类型", @"自动（Switch）");
     pick(@"补帧", @"50+50"); assert(mfx_requested() == MFX_50);
+    shows(@"震动强度", @"1×（默认）"); assert(switched(@"震动") && switched(@"体感瞄准"));
 
     if (argc == 2) {
         NSBitmapImageRep *rep = [settingsPanel bitmapImageRepForCachingDisplayInRect:settingsPanel.bounds];
@@ -210,6 +258,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 2-7 inert, Chinese)");
     return 0;
 }}

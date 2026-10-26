@@ -12,26 +12,31 @@ This folder carries its own copy of everything it builds and runs with (runtime,
 translator, scripts); nothing outside `games/ssbu` is read. How the port was done and what was found on the way:
 [CHANGELOG.md](CHANGELOG.md).
 
-## Status (24 October 2026)
+## Status (26 October 2026)
 
-Tested on one Mac: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
+Tested on one Mac: MacBook Pro, Apple M1 Max, 64 GB, macOS 27. Sessions of 1-2 hours on 2K in World of Light and
+Versus run without a crash (after the first 10 minutes of warm-up, 0.1-0.8 % dropped frames per 10 minutes; thermal
+state nominal).
 
 | Works | Details |
 |---|---|
 | Start, title, menus | intro movie with sound, all main menus, options |
 | Fights | Smash with several fighters and stages, items; keyboard and game controllers |
-| World of Light (adventure) | map, spirit battles, the Spirit Board, saving and loading |
+| World of Light (adventure) | map, spirit battles (Giga Bowser included), the Spirit Board, saving and loading |
+| DLC fighters | your own dumps of the DLC you bought: choose their folder in the app's DLC menu (or `--dlc` at build time); the game announces the new fighters |
 | Saves | autosave and reload; the save picture of World of Light |
+| Photos | a photo taken in a fight is saved as a PNG on the Mac (app: Photos menu) |
 | Language | changing it in the game's options restarts the game, as on the console |
 | Picture | 1080p as shipped or 2K (2560x1440), chosen before the start (app: Picture menu); MetalFX can upscale to the window |
 | Sound and movies | game audio (hardware Opus), VP9 movies with Vorbis sound |
+| Logs | every session's log is kept (newest 40, at most 1 GB); the app's Log menu turns the game log off |
 
 | Not done or not verified | Details |
 |---|---|
 | Online | answered as a console without an internet connection; the online menu closes again |
 | Frame interpolation (key 2) | creates no frames in this game (the host lacks the game's camera, depth and UI) |
-| Album | saving a screenshot to the Switch album is not answered yet |
-| Known picture gaps | the alpha test of a few menu graphics is not applied; fighters were seen black once in a while (cause not found yet) |
+| Album | photos go to a Mac folder; the game's own album list stays empty |
+| Known picture gaps | fighters were seen black once in a while in early builds, not since (cause not found) |
 | iPhone / iPad | no build: the game loads code modules while it runs, which iOS does not allow |
 | Labo VR | not available on the Mac |
 
@@ -55,6 +60,9 @@ python3.14 scripts/build_ssbu.py --game "<your card image>.xci" --update "<your 
 - The app goes next to the game file (`--out` to choose). Saves, the shader cache and the log are in
   `~/Library/Application Support/MacNativeGames/SSBU` and `~/Library/Logs/MacNativeGames/ssbu.log`; a build never
   touches them.
+- `--dlc <folder with your own dumps of the DLC you bought>` builds that list into the app (every package verified
+  with your keys); later builds keep it.
+  The app's DLC menu does the same without a rebuild.
 
 ## Play
 
@@ -72,6 +80,15 @@ Q / E are L / R, Return is +. Game controllers recognized by macOS work as a Pro
 | 6 | controller type: auto or a fixed one |
 | 7 | mouse mode on or off |
 
+The app's menus (in the menu bar while the game runs):
+
+| Menu | What it does |
+|---|---|
+| Picture | 1080p or 2K for the next start |
+| Log | the game log on or off for the next start (off: nothing is written; the session archive stays) |
+| DLC | your DLC on or off, and Choose DLC Folder... for the folder with your own dumps of the DLC you bought; it says how many DLC and fighters it found, and they apply at the next start |
+| Photos | where the photos you take in a fight go (`~/Pictures/Super Smash Bros. Ultimate` unless you choose a folder), and Show in Finder |
+
 ## Shaders
 
 The app carries every shader of data.arc and every variant of the shared list (`assets/shader_list.tsv`: shader keys and
@@ -84,4 +101,6 @@ Mac and built in by your next build; nothing is sent anywhere.
 - `scripts/gap_report.py`: what the host reported it could not do yet, from its own logs (`--session <log>` for one).
 - `scripts/override_audit.py`: every SDK function the host replaces, checked against the original's return type in the
   SDK and how the game reads the answer.
-- `tests/`: probes of the input and graphics code, run like the other games' tests.
+- `tests/`: probes of the input and graphics code, run like the other games' tests, and Python tests of the DLC
+  reader, the gap report, the override audit and the shader seed (`python3 -m unittest discover -s games/ssbu/tests`
+  from the repository root; the override audit's real-SDK test needs the work folder and is skipped without it).

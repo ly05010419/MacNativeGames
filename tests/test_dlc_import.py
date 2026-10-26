@@ -227,9 +227,9 @@ class StepDlcBotw(Fixture):
     def test_a_pack_not_given_this_time_is_removed(self):
         self.step(DLC1, DLC2)
         self.assertEqual(sorted(p.name for p in self.aoc.iterdir()), ['1', '2'])
-        config = self.tree / 'build/botw190/aoc_config.h'
+        config = self.tree / 'build/game-data/botw190/aoc-config.txt'
         config.parent.mkdir(parents=True)
-        config.write_text('#define AOC_PRESENT_MASK 3\n')
+        config.write_text('AOC_PRESENT_MASK 3\n')
         self.step(DLC1)
         self.assertEqual([p.name for p in self.aoc.iterdir()], ['1'])
         self.assertEqual(len(self.calls), 2, 'pack 1 was reused')

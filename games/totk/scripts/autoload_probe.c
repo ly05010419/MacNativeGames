@@ -20,6 +20,8 @@ void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in 
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
 /* Key 1's settings panel (frontend.m) is not part of this probe. */
 void runtime_settings_toggle(void){}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt
+void runtime_setting_save(const char *name,const char *word,const char *what){(void)name;(void)word;(void)what;}   // nothing is saved here
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}

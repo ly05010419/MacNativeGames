@@ -143,6 +143,8 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
 void runtime_gamepad_clear(void);
 int runtime_gamepad_type_set(int type);     /* runtime/gamepad.m: the settings panel's controller type (gamepad_layout.h GAMEPAD_TYPE_*), saved; returns the type in force */
 int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
+int runtime_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting file next to controls.txt; 1 read, 0 none */
+void runtime_setting_save(const char *name, const char *word, const char *what);   /* runtime/gamepad.m: saves one; what names it in a failure line */
 int runtime_mouse_set(int on);              /* runtime/gamepad.m: the settings panel's mouse mode, saved; returns it */
 int runtime_mouse_enabled(void);
 void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */
@@ -150,6 +152,8 @@ void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX /
 void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
+int runtime_phone_fps(void);                /* d2r_gfx hle_nvn.c, iPhone / iPad: 30 while held at 30 (TOTK_PHONE_FPS), else 60 */
+void runtime_phone_fps_set(int fps);        /* 30 holds 30, anything else up to 60: the touch controls' button, at once */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
@@ -158,8 +162,26 @@ int runtime_rumble_enabled(void);
 int runtime_gyro_enabled(void);
 void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
+/* The settings panel's rumble (gyro 0) and gyro aiming (gyro 1) switches (runtime/hid_feedback.c): locked when TOTK_RUMBLE /
+   TOTK_GYRO or an agent's test session decides; present when the game has the device in this run; the choice in force, and
+   choosing saves rumble.txt / gyro.txt and mutes or unmutes a present device at once. Its strength
+   (runtime/gamepad_feedback.m): locked when TOTK_RUMBLE_GAIN is set; set saves rumble-gain.txt and applies at once. */
+int runtime_feedback_locked(int gyro);
+int runtime_feedback_present(int gyro);
+int runtime_feedback_choice(int gyro);
+void runtime_feedback_choose(int gyro, int on);
+int runtime_rumble_gain_locked(void);
+float runtime_rumble_gain(void);
+void runtime_rumble_gain_set(float gain);
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);
 void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);   /* side 0 left, 1 right */
+/* The settings panel's DualSense bow trigger switch (runtime/gamepad_feedback.m, main queue): available for Breath of the Wild
+   1.9.0 and Tears of the Kingdom 1.4.3; locked when TOTK_DUALSENSE_TRIGGERS or an agent's test session decides; the choice
+   in force; choosing saves dualsense-triggers.txt and turns the connected DualSense's triggers on or off at once. */
+int runtime_triggers_available(void);
+int runtime_triggers_locked(void);
+int runtime_triggers_choice(void);
+void runtime_triggers_choose(int on);
 int runtime_motion_read(RuntimeMotionState *out, int max);   /* newest first; 0 = no motion now */
 void runtime_motion_start(void);   /* the game (re)started its sensor: angle and direction start over */
 void runtime_motion_feed(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* runtime/motion_fusion.c */

@@ -142,6 +142,8 @@ void runtime_gamepad_clear(void);
 int runtime_gamepad_type_cycle(void);       /* runtime/gamepad.m: key 6, the controller type auto -> Xbox -> PlayStation -> Switch (gamepad_layout.h GAMEPAD_TYPE_*) */
 int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
 int runtime_mouse_toggle(void);             /* runtime/gamepad.m: key 7, mouse mode on (1) / off (0) */
+int runtime_aoc_owned(int *fighters);       /* runtime/services.c (Q96): DLC owned (*fighters of them), -1 when turned off */
+void runtime_album_set_photo_dir(const char *dir);   /* runtime/album_service.c (Q56): the Photos menu's folder, for the next photo */
 int runtime_mouse_enabled(void);
 void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */
 void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */

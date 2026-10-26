@@ -2411,15 +2411,20 @@ __attribute__((weak)) int runtime_game_fps_limit(void) { return 0; }
 /* TOTK_PHONE_FPS=30: the phone holds 30 fps the same way, presenting every second refresh of its 60 Hz screen, frame
    step and present interval agreeing (lowering the uncapped clock to 30 Hz instead left the game's interval in 60 Hz
    units: it raised it to 3 and the title ran at about 10 fps). The default is the screen's rate, at most 60 on an iPhone
-   14 (user 2026-10-23: 30 for an hour, then "iphone 改成锁60"). */
+   14 (user 2026-10-23: 30 for an hour, then "iphone 改成锁60"). The touch controls' 60 / 30 button switches it while
+   playing (runtime_phone_fps_set): every pacing decision reads it per frame. */
+static _Atomic int g_phone_hold30 = -1;   /* -1: TOTK_PHONE_FPS not read yet */
 static int phone_holds_30(void) {
 #if TARGET_OS_IPHONE
-    static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PHONE_FPS"); v = e && atoi(e) == 30; }
+    int v = atomic_load(&g_phone_hold30);
+    if (v < 0) { const char *e = getenv("TOTK_PHONE_FPS"); v = e && atoi(e) == 30; atomic_store(&g_phone_hold30, v); }
     return v;
 #else
     return 0;
 #endif
 }
+int runtime_phone_fps(void) { return phone_holds_30() ? 30 : 60; }
+void runtime_phone_fps_set(int fps) { atomic_store(&g_phone_hold30, fps == 30); fprintf(stderr, "[totk] phone frame rate: %s\n", fps == 30 ? "held at 30" : "up to 60"); }
 /* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40 or 60. The game is
    then paced at exactly that rate as the 30 fps hold above does it (display ticks where the rate divides the display's,
    our own clock otherwise), with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie

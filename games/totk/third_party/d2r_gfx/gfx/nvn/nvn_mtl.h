@@ -41,6 +41,8 @@ void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v);   // 完�
 void mtl_sub_counter(uint64_t addr, uint32_t type);                       // 完成后写计数器记录 | Write the counter record after completion
 uint64_t mtl_sub_commit(void);
 int mtl_probe_vertex_streams(void);
+int mtl_probe_vertex_input_types(void);
+int mtl_probe_fragment_output_types(void);
 int mtl_probe_arg_epoch(void);
 int mtl_probe_tex_slots(void);
 int mtl_probe_sampler_border(void);
