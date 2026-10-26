@@ -67,3 +67,9 @@ The small offline tools are adapted from Tyraelone's common tools at
 `2f00936366640ce6a7aa84536a66a96a4747f927`; provenance and MIT licensing are
 under `tools/`. Rewriting and Control RomFS verification use this checkout's
 existing d2r and TOTK tooling. No separate fork is required to run preparation.
+The shader translator (`totk_xlate`) is carried in `games/acnh/prebuilt/macos-arm64/` with its `totk_xlate.sha256`:
+it is the same NativeAOT build of this repository's Ryujinx-based translator (`games/totk/tools/totk_xlate`) that
+`games/wonder` carries, byte for byte. `build_host.py` and `scripts/package_native_app.py` copy it from
+there into `build/shader-service/totk_xlate` and refuse a file whose SHA-256 differs; nothing is downloaded or taken
+from outside this folder. SPIRV-Cross is compiled into it, so `build/spirv-cross/spirv-cross` is bundled only if a work
+folder has one (`TOTK_XLATE_SPIRV_CROSS=process`). See `prebuilt/macos-arm64/README.md`.

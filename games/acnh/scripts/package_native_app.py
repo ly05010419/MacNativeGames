@@ -21,6 +21,9 @@ GAME = HERE.parent
 EXPECTED_PATH = GAME / "assets/expected-v458752.json"
 REPO_ROOT = GAME.parents[1]
 WORKSPACE_ROOT = GAME.parents[2]
+# The shader translator is carried in this folder (prebuilt/macos-arm64/README.md) and pinned by its .sha256.
+TRANSLATOR = GAME / "prebuilt/macos-arm64/totk_xlate"
+TRANSLATOR_SHA256 = GAME / "prebuilt/macos-arm64/totk_xlate.sha256"
 
 
 def identity(path: Path):
@@ -46,6 +49,17 @@ def verify_file(path: Path, expected_size: int, expected_sha256: str, name: str)
     if actual_sha256 != expected_sha256:
         raise ValueError(f"SHA-256 mismatch for {name}: expected {expected_sha256}, got {actual_sha256}")
     return {"size": actual_size, "sha256": actual_sha256}
+
+
+def pinned_translator():
+    """Check the prebuilt shader translator against its pinned SHA-256."""
+    if not TRANSLATOR.is_file() or TRANSLATOR.is_symlink() or not os.access(TRANSLATOR, os.X_OK):
+        raise ValueError(f"Missing or non-executable shader translator: {TRANSLATOR}")
+    wanted = TRANSLATOR_SHA256.read_text().split()[0]
+    translator = identity(TRANSLATOR)
+    if translator["sha256"] != wanted:
+        raise ValueError(f"Shader translator differs from the pinned one: {translator['sha256']} != {wanted}")
+    return translator
 
 
 def font_rows(header: Path):
@@ -77,7 +91,7 @@ def find_default_paths():
     if not prepared or not prepared.exists():
         prepared = WORKSPACE_ROOT / "ACNH_build/verified-v458752"
     if not fonts or not fonts.exists():
-        fonts = WORKSPACE_ROOT / "TOTK_build/totk/extracted/firmware/shared-fonts"
+        fonts = WORKSPACE_ROOT / "ACNH_build/shared-fonts"
     return work, prepared, fonts
 
 
@@ -94,15 +108,14 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
     runtime_bytes = runtime.read_bytes()
 
     # 2. Shader translation tools
-    translator = work / "build/shader-service/totk_xlate"
-    if not translator.is_file() or not os.access(translator, os.X_OK):
-        raise ValueError(f"Missing or non-executable shader translator: {translator}")
-    verified["build/shader-service/totk_xlate"] = identity(translator)
+    verified["prebuilt/macos-arm64/totk_xlate"] = pinned_translator()
 
+    # Optional: the translator has SPIRV-Cross compiled in and starts this program only with TOTK_XLATE_SPIRV_CROSS=process.
     spirv = work / "build/spirv-cross/spirv-cross"
-    if not spirv.is_file() or not os.access(spirv, os.X_OK):
-        raise ValueError(f"Missing or non-executable spirv-cross: {spirv}")
-    verified["build/spirv-cross/spirv-cross"] = identity(spirv)
+    if spirv.exists():
+        if not spirv.is_file() or not os.access(spirv, os.X_OK):
+            raise ValueError(f"Non-executable spirv-cross: {spirv}")
+        verified["build/spirv-cross/spirv-cross"] = identity(spirv)
 
     # 3. Rewritten modules
     rewritten_dir = work / "rewritten"
@@ -209,8 +222,9 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
 
         # 2. Bundle game runtime and tools
         clone(work / "build/acnh-native", game / "build/acnh-native")
-        clone(work / "build/shader-service/totk_xlate", game / "build/shader-service/totk_xlate")
-        clone(work / "build/spirv-cross/spirv-cross", game / "build/spirv-cross/spirv-cross")
+        clone(TRANSLATOR, game / "build/shader-service/totk_xlate")   # where totk_shader_rt.m looks for it
+        if "build/spirv-cross/spirv-cross" in verified:
+            clone(work / "build/spirv-cross/spirv-cross", game / "build/spirv-cross/spirv-cross")
 
         # Symlink runtime in MacOS
         os.symlink("../Resources/game/build/acnh-native", macos / "acnh-native")
@@ -251,8 +265,8 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
                 dest = notices / path.relative_to(GAME / "third_party")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 clone(path, dest)
-        if (WORKSPACE_ROOT / "MacNativeGames-acnh/LICENSE").is_file():
-            clone(WORKSPACE_ROOT / "MacNativeGames-acnh/LICENSE", notices / "MacNativeGames-MIT.txt")
+        if (REPO_ROOT / "LICENSE").is_file():
+            clone(REPO_ROOT / "LICENSE", notices / "MacNativeGames-MIT.txt")
 
         # 8. Bundle icon
         icon_file_name = "AnimalCrossingIcon"

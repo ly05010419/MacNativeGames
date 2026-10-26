@@ -20,6 +20,24 @@ spec_pre.loader.exec_module(acnh_pre)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_pinned_translator(self):
+        self.assertTrue(acnh_pkg.TRANSLATOR.is_relative_to(GAME_DIR))
+        wanted = acnh_pkg.TRANSLATOR_SHA256.read_text().split()[0]
+        self.assertEqual(acnh_pkg.pinned_translator()["sha256"], wanted)
+
+    def test_translator_mismatch_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fake = Path(temp) / "totk_xlate"
+            fake.write_bytes(b"not the translator")
+            fake.chmod(0o755)
+            original = acnh_pkg.TRANSLATOR
+            acnh_pkg.TRANSLATOR = fake
+            try:
+                with self.assertRaisesRegex(ValueError, "differs from the pinned"):
+                    acnh_pkg.pinned_translator()
+            finally:
+                acnh_pkg.TRANSLATOR = original
+
     def test_font_rows_parsing(self):
         with tempfile.TemporaryDirectory() as temp:
             header = Path(temp) / "shared_fonts_config.h"

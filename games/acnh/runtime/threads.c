@@ -99,6 +99,7 @@ static thr_t *cur(void) {
     if (!t) die("非客体线程调用了线程 SVC");
     return t;
 }
+#include "acnh_thread_diag.h"   /* Animal Crossing: ACNH_STACKCB=1 core-event diagnostics; no-ops otherwise */
 
 // ---------- 等待原语（持 G 调用）----------
 // ---------- Wait primitives (called holding G) ----------
@@ -142,14 +143,16 @@ static void core_grant(int c) {   // holding G: give free core c to the best wai
     thr_t *b = NULL, **bp = NULL; uint64_t now = now_ns();
     for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
         if (core_allowed(*p, c) && now - (*p)->cwait_ns > CORE_STARVE_NS && (!b || (*p)->cwait_ns < b->cwait_ns)) { b = *p; bp = p; }
+    char why = b ? 'S' : 'G'; (void)why;   /* ACNH_STACKCB: granted after starving, or by priority */
     if (!b) for (thr_t **p = &g_core_wait; *p; p = &(*p)->cnext)
         if (core_allowed(*p, c) && (!b || (*p)->prio < b->prio || ((*p)->prio == b->prio && (*p)->cseq < b->cseq))) { b = *p; bp = p; }
     if (!b) return;
     *bp = b->cnext; b->cnext = NULL; b->cur_core = c; b->core_since = now_ns(); g_core_owner[c] = b; pthread_cond_signal(&b->cv);
+    ACNH_CORE_EV(b, c, why);
 }
 static void core_put(thr_t *t) {   // holding G
     if (t->cur_core < 0) return;
-    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; t->kicked = 0; g_core_owner[c] = NULL; core_grant(c);
+    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; t->kicked = 0; g_core_owner[c] = NULL; ACNH_CORE_EV(t, c, 'P'); core_grant(c);
 }
 static void core_watch_start(void);
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
@@ -157,7 +160,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
     int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
     for (int i = 0; c < 0 && i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) c = i;
-    if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
+    if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; ACNH_CORE_EV(t, c, 'T'); return; }
     core_watch_start();
     t->cseq = ++g_wseq; t->cwait_ns = now_ns(); t->cnext = g_core_wait; g_core_wait = t;
     /* Higher priority preempts; at equal priority a thread running away from its ideal core gives that core back to a
@@ -180,7 +183,7 @@ static void core_preempt_handler(int sig, siginfo_t *info, void *ctx) {
     thr_t *t = me_or_null(); const char *name; uint64_t off;
     uint64_t pc = arm_thread_state64_get_pc(((ucontext_t *)ctx)->uc_mcontext->__ss);
     if (t && t->cur_core >= 0 && runtime_module_offset(pc, &name, &off)) {
-        pthread_mutex_lock(&G); if (t->preempt && t->cur_core >= 0) { t->preempt = 0; core_put(t); core_take(t); } else t->kicked = 0; pthread_mutex_unlock(&G);
+        pthread_mutex_lock(&G); if (t->preempt && t->cur_core >= 0) { ACNH_CORE_EV(t, t->cur_core, 'X'); t->preempt = 0; core_put(t); core_take(t); } else t->kicked = 0; pthread_mutex_unlock(&G);
     } else if (t) t->kicked = 0;   /* host code: the next SVC checkpoint gives the core up */
     errno = saved;
 }
@@ -218,7 +221,7 @@ void runtime_core_back(int *away) {
 // Preemption point at SVC entry: a higher-priority thread waits for this core.
 void runtime_core_checkpoint(void) {
     thr_t *t = me_or_null(); if (!t || !t->preempt) return;
-    pthread_mutex_lock(&G); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
+    pthread_mutex_lock(&G); ACNH_CORE_EV(t, t->cur_core, 'X'); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
 
@@ -292,7 +295,7 @@ static void *thread_main(void *p) {
 
     guest_thread_init();
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); core_take(t); pthread_mutex_unlock(&G);
-    { volatile char marker = 0; runtime_hle_stack_set((uintptr_t)&marker - 1024); }   // host services of this thread run below this frame
+    { volatile char marker = 0; runtime_hle_stack_set((uintptr_t)&marker - 1024); ACNH_NOTE_HLE_TOP(t, (uintptr_t)&marker - 1024); }   // host services of this thread run below this frame
     dm_thread_enter(t->entry, t->arg, t->stack_top,t->host_context);   // 不返回：客体须经 ExitThread 退出 | Does not return: the guest must exit through ExitThread
     die("客体线程入口返回");
 }
@@ -497,7 +500,7 @@ int svc_thread(int num, uint64_t *regs) {
                  if (t == cur() && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) { core_put(t); core_take(t); } }   // migrate off a core no longer allowed
         regs[0] = t ? 0 : R_BAD_HANDLE;pthread_mutex_unlock(&G); return 1;
     }
-    case 0x10: { thr_t *t = cur(); regs[0] = (uint64_t)(uint32_t)(t->cur_core >= 0 ? t->cur_core : t->core); return 1; }   // GetCurrentProcessorNumber
+    case 0x10: { thr_t *t = cur(); regs[0] = (uint64_t)(uint32_t)(t->cur_core >= 0 ? t->cur_core : t->core); ACNH_CORE_EV(t, (int)regs[0], 'R'); return 1; }   // GetCurrentProcessorNumber
     case 0x25: { pthread_mutex_lock(&G);thr_t *t = h_get((uint32_t)regs[1], O_THREAD); regs[0] = t ? 0 : R_BAD_HANDLE; regs[1] = t ? t->id : 0;pthread_mutex_unlock(&G); return 1; }
 
     case 0x1A: {  // ArbitrateLock(w0 持有者句柄, x1 地址, w2 本线程标签) | ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)

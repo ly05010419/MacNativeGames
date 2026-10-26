@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
 from games.acnh.prepare import check_exefs, profile, require
-from games.acnh.tools.common import outside_repository, verified_file
+from games.acnh.tools.common import clone_file, outside_repository, verified_file
 from games.acnh.tools.runtime_preflight import prepare as preflight
 
 
@@ -101,10 +101,14 @@ def prepare_host(prepared, work, fonts):
     index = json.loads((target / "romfs/index.json").read_text())
     verified_file(target / "romfs/romfs.bin", expected["romfs_sha256"])
     require(index["romfs_sha256"] == expected["romfs_sha256"], "RomFS index identity mismatch")
+    # The runtime starts build/shader-service/totk_xlate (totk_shader_rt.m): the pinned prebuilt translator.
+    translator = HERE / "prebuilt/macos-arm64/totk_xlate"
+    verified_file(translator, (HERE / "prebuilt/macos-arm64/totk_xlate.sha256").read_text().split()[0])
     work.mkdir(parents=True)
     (work / "build").mkdir()
     (work / "rewritten").mkdir()
     (work / "logs").mkdir()
+    clone_file(translator, work / "build/shader-service/totk_xlate")
     with tempfile.TemporaryDirectory(dir=work) as temporary:
         preflight(target / "exefs", target / "extraction-manifest.json", target / "rewritten", Path(temporary) / "runtime")
         data = json.loads((Path(temporary) / "runtime/runtime-modules.json").read_text())

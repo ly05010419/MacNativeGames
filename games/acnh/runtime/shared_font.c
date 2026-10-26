@@ -15,7 +15,7 @@ static pthread_once_t once=PTHREAD_ONCE_INIT;
 static void need(int c,const char *m){if(!c)runtime_fail(m);}
 static void load(void){
  /* Bayonetta 3: the NSPs do not carry the system fonts; scripts/prepare_runtime.py leaves the rows empty without them. */
- if(!rows[0].path[0])runtime_fail("the game asked for the system shared fonts: extract them from your own Switch firmware to Kirby_build/extracted/firmware/shared-fonts (scripts/extract_shared_fonts.py) and run scripts/prepare_runtime.py again");
+ if(!rows[0].path[0])runtime_fail("the game asked for the system shared fonts: extract them from your own Switch firmware (tools/extract_shared_fonts.py) and run build_host.py again with --shared-fonts");
  uint64_t total=0;for(int i=0;i<SHARED_FONT_COUNT;i++)total+=rows[i].file_bytes;
  region=malloc(total);need(region!=NULL,"shared font memory");
  uint64_t at=0;
