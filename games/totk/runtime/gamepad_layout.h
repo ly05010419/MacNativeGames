@@ -40,16 +40,11 @@ static inline int gamepad_face_by_position(const char *category, const char *ven
     return !gamepad_names_nintendo(category) && !gamepad_names_nintendo(vendor);
 }
 
-/* Controller type, in the Mac settings panel (runtime/frontend.m -> runtime/gamepad.m): auto, as gamepad_face_by_position decides
-   from the name; Xbox and PlayStation map the face buttons by position; Switch maps them by label, GameController's
-   buttonA being Switch A (on a Nintendo controller the right button, on an Xbox controller the bottom one, Xbox A). Xbox
-   and PlayStation map the same way; they differ in name only, for the player to say which controller it is. The pick
-   applies to every GameController controller and is saved as one word (gamepad_type_name); the generic HID pads of
-   runtime/gamepad.m are Switch-style and always read by position. */
-enum { GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_XBOX, GAMEPAD_TYPE_PLAYSTATION, GAMEPAD_TYPE_SWITCH, GAMEPAD_TYPE_COUNT };
+enum { GAMEPAD_TYPE_AUTO, GAMEPAD_TYPE_PS5, GAMEPAD_TYPE_XBOX, GAMEPAD_TYPE_KEYBOARD,
+       GAMEPAD_TYPE_KEYBOARD_MOUSE, GAMEPAD_TYPE_COUNT, GAMEPAD_DETECTED_SWITCH };
 
 static inline const char *gamepad_type_name(int type) {
-    static const char *const names[GAMEPAD_TYPE_COUNT] = {"auto", "xbox", "playstation", "switch"};
+    static const char *const names[GAMEPAD_TYPE_COUNT] = {"auto", "ps5", "xbox", "keyboard", "keyboard-mouse"};
     return type >= 0 && type < GAMEPAD_TYPE_COUNT ? names[type] : "auto";
 }
 
@@ -66,18 +61,17 @@ static inline int gamepad_type_parse(const char *text) {
     return -1;
 }
 
-/* What auto takes a controller for (shown on the HUD): Nintendo names Switch, PlayStation names PlayStation, any other
+/* What auto takes a controller for (shown on the HUD): Nintendo names Switch, PlayStation names PS5, any other
    controller Xbox, as GameController names its buttons. */
 static inline int gamepad_type_detect(const char *category, const char *vendor) {
-    if (gamepad_names_nintendo(category) || gamepad_names_nintendo(vendor)) return GAMEPAD_TYPE_SWITCH;
-    if (gamepad_names_playstation(category) || gamepad_names_playstation(vendor)) return GAMEPAD_TYPE_PLAYSTATION;
+    if (gamepad_names_nintendo(category) || gamepad_names_nintendo(vendor)) return GAMEPAD_DETECTED_SWITCH;
+    if (gamepad_names_playstation(category) || gamepad_names_playstation(vendor)) return GAMEPAD_TYPE_PS5;
     return GAMEPAD_TYPE_XBOX;
 }
 
 /* 1: map the face buttons by position under the picked type; auto keeps gamepad_face_by_position (and TOTK_FACE_BUTTONS). */
 static inline int gamepad_type_face_by_position(int type, const char *category, const char *vendor) {
-    if (type == GAMEPAD_TYPE_XBOX || type == GAMEPAD_TYPE_PLAYSTATION) return 1;
-    if (type == GAMEPAD_TYPE_SWITCH) return 0;
+    if (type == GAMEPAD_TYPE_XBOX || type == GAMEPAD_TYPE_PS5) return 1;
     return gamepad_face_by_position(category, vendor);
 }
 

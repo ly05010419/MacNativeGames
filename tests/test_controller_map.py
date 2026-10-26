@@ -16,7 +16,7 @@ class ControllerMapTests(unittest.TestCase):
             build = subprocess.run(['xcrun', 'clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
                                     str(ROOT / 'tests/test_controller_map.c'), '-o', str(probe)], capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr[-2000:])
-            run = subprocess.run([str(probe)], capture_output=True, text=True, timeout=30)
+            run = subprocess.run([str(probe), str(Path(tmp) / "controls.txt")], capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('PASS', run.stdout)
 

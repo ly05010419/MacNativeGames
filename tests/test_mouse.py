@@ -1,4 +1,4 @@
-"""Mac mouse mode (key 7): runtime/mouse_look.h (stick panning and gyro) and runtime/gamepad.m (buttons, ticks, saved state)."""
+"""Mac Keyboard + Mouse mode: runtime/mouse_look.h (stick panning and gyro) and runtime/gamepad.m (buttons, ticks, saved state)."""
 import json
 import shutil
 import subprocess

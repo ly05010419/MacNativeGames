@@ -1,4 +1,4 @@
-/* runtime/gamepad.m's controller type (key 6): the cycle, the saved controller-type.txt next to controls.txt and reading it
+/* runtime/gamepad.m's input mode: the selection, the saved controller-type.txt next to controls.txt and reading it
    back at the next start. The real file is compiled in; no controller is needed (GameController lists none). */
 #include "../../runtime/gamepad.m"
 
@@ -7,6 +7,7 @@ uint64_t runtime_now_ns(void) { return 0; }
 void runtime_feedback_attach(GCController *controller) { (void)controller; }
 void runtime_feedback_detach(GCController *controller) { (void)controller; }
 void runtime_feedback_quiet(void) {}
+void runtime_input_clear(void) { runtime_gamepad_clear(); }
 int runtime_gyro_enabled(void) { return 0; }
 void runtime_motion_mouse(int on) { (void)on; }
 void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) { (void)acc; (void)gyro; (void)now; }
@@ -27,19 +28,20 @@ int main(int argc, char **argv) { @autoreleasepool {
 
     unsetenv("TOTK_CONTROLS");
     int detected = 7;
-    check(runtime_gamepad_type(&detected) == GAMEPAD_TYPE_AUTO && detected == -1, "starts at auto; no controller: detected -1");
+    check(runtime_gamepad_type(&detected) == GAMEPAD_TYPE_AUTO && detected == GAMEPAD_TYPE_KEYBOARD, "starts at auto; no controller: keyboard fallback");
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && access(saved, F_OK) != 0, "without TOTK_CONTROLS nothing is saved");
 
     setenv("TOTK_CONTROLS", controls, 1);
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO);
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && file_says(saved, "xbox\n"), "settings: Xbox, saved");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_PLAYSTATION) == GAMEPAD_TYPE_PLAYSTATION && file_says(saved, "playstation\n"), "settings: PlayStation, saved");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_SWITCH) == GAMEPAD_TYPE_SWITCH && file_says(saved, "switch\n"), "settings: Switch, saved");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_COUNT) == GAMEPAD_TYPE_SWITCH && runtime_gamepad_type_set(-1) == GAMEPAD_TYPE_SWITCH, "not a type: unchanged");
-    check(access(saved, F_OK) == 0 && runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the type holds");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_PS5) == GAMEPAD_TYPE_PS5 && file_says(saved, "ps5\n"), "settings: PS5, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_KEYBOARD) == GAMEPAD_TYPE_KEYBOARD && file_says(saved, "keyboard\n"), "settings: Keyboard, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_COUNT) == GAMEPAD_TYPE_KEYBOARD && runtime_gamepad_type_set(-1) == GAMEPAD_TYPE_KEYBOARD, "not a type: unchanged");
+    check(access(saved, F_OK) == 0 && runtime_gamepad_type(NULL) == GAMEPAD_TYPE_KEYBOARD, "the type holds");
 
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO); load_controller_type();
-    check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the next start reads the saved type");
+    check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_KEYBOARD, "the next start reads the saved type");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_KEYBOARD_MOUSE) == GAMEPAD_TYPE_KEYBOARD_MOUSE && runtime_mouse_enabled() && file_says(saved, "keyboard-mouse\n"), "Keyboard + Mouse enables mouse and is saved");
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_AUTO) == GAMEPAD_TYPE_AUTO && file_says(saved, "auto\n"), "settings back to auto, saved");
 
     write_text(saved, "dualsense\n");

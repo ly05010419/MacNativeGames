@@ -1,4 +1,4 @@
-"""Exercise the actual Mac settings panel (key 1) without game data or GPU work."""
+"""Exercise the actual Mac settings panel and hardcoded shortcuts without game data or GPU work."""
 from pathlib import Path
 import os
 import platform

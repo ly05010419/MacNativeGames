@@ -1,5 +1,5 @@
-/* runtime/gamepad.m's mouse mode (key 7): buttons through the controller layout, movement as the right stick and the gyro,
-   release, and the saved on / off. The real file is compiled in; the 10 ms ticks are driven here (mouseTicksByHand). */
+/* runtime/gamepad.m's Keyboard + Mouse mode: buttons through the controller layout, movement as the right stick and the gyro,
+   release, and the selected input mode. The real file is compiled in; the 10 ms ticks are driven here (mouseTicksByHand). */
 #include "../../runtime/gamepad.m"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
@@ -8,6 +8,7 @@ uint64_t runtime_now_ns(void) { return clockNow; }
 void runtime_feedback_attach(GCController *controller) { (void)controller; }
 void runtime_feedback_detach(GCController *controller) { (void)controller; }
 void runtime_feedback_quiet(void) {}
+void runtime_input_clear(void) { runtime_gamepad_clear(); }
 static int gyroOn = 1, motionMouse = -1, feeds, hookCalls;
 static double lastYaw, lastAcc;
 int runtime_gyro_enabled(void) { return gyroOn; }
@@ -29,7 +30,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     if (argc != 2) { fprintf(stderr, "usage: probe <empty folder>\n"); return 2; }
     char controls[1024], saved[1100];
     snprintf(controls, sizeof controls, "%s/controls.txt", argv[1]);
-    snprintf(saved, sizeof saved, "%s/mouse.txt", argv[1]);
+    snprintf(saved, sizeof saved, "%s/controller-type.txt", argv[1]);
     setenv("TOTK_CONTROLS", controls, 1);
     mouseTicksByHand = 1;
     controller_map_default(controllerMap, controllerModes);
@@ -41,7 +42,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     check(!s.buttons && !s.rx && !s.ry, "mouse mode off: clicks and movement do nothing");
     runtime_mouse_button(0, 0);
 
-    check(runtime_mouse_set(1) == 1 && runtime_mouse_enabled() && file_says(saved, "on\n") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_KEYBOARD_MOUSE) == GAMEPAD_TYPE_KEYBOARD_MOUSE && runtime_mouse_enabled() && file_says(saved, "keyboard-mouse\n") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
     check(runtime_mouse_set(1) == 1 && motionMouse == 1, "on again: no change");
     spin(); check(hookCalls == 1, "the window is told (to capture the pointer)");
     runtime_mouse_button(0, 1); s = settle(); check(s.buttons == Y, "left button: attack (Y)");
@@ -59,12 +60,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_mouse_button(0, 1); runtime_mouse_release(); mouse_tick(); s = settle();
     check(!s.buttons && !s.rx && !s.ry, "release (the window lost the pointer): buttons up, stick centred");
 
-    check(runtime_mouse_set(0) == 0 && file_says(saved, "off\n") && motionMouse == 0, "settings: off, saved, the gyro back to the controller");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_KEYBOARD) == GAMEPAD_TYPE_KEYBOARD && file_says(saved, "keyboard\n") && motionMouse == 0, "settings: off, saved, the gyro back to the controller");
     spin(); check(hookCalls == 2, "the window is told again (to free the pointer)");
-    FILE *f = fopen(saved, "w"); fputs("on\n", f); fclose(f);
-    load_mouse_mode(); check(runtime_mouse_enabled() && motionMouse == 1, "the next start reads mouse mode on");
-    runtime_mouse_set(0); f = fopen(saved, "w"); fputs("maybe\n", f); fclose(f);
-    load_mouse_mode(); check(!runtime_mouse_enabled(), "a word other than on / off: off");
+    check(runtime_keyboard_enabled(), "Keyboard mode enables keyboard input");
+    runtime_gamepad_type_set(GAMEPAD_TYPE_PS5); check(!runtime_keyboard_enabled(), "PS5 mode disables keyboard gameplay");
+    runtime_gamepad_type_set(GAMEPAD_TYPE_AUTO);
+    atomic_store(&controllerConnected, 0); check(runtime_keyboard_enabled(), "Auto without a controller uses keyboard");
+    atomic_store(&controllerConnected, 1); check(!runtime_keyboard_enabled(), "Auto with a controller disables keyboard gameplay");
 
     setenv("TOTK_MOUSE_GYRO", "0", 1); motionMouse = -1;
     int before = feeds; runtime_mouse_set(1); runtime_mouse_move(10, 0); mouse_tick(); s = settle();

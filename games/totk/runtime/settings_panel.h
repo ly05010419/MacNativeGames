@@ -1,6 +1,4 @@
-/* The settings panel (Mac; included by frontend.m): key 1 opens and closes it (runtime/input.c), Esc and its close
-   button close it. User 2026-10-25: it replaces the shortcut keys 2-7 and their reminder box. One row per setting, a
-   pop-up menu or a switch, each applied at once:
+/* The settings panel (Mac; included by frontend.m) opens from the app menu; Esc and its close button close it.
      overlay              all / FPS only / off               fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
      frame lock           off / 30 / 40 / 60                 nvn_fps_lock_set (gfx/nvn/hle_nvn.c; user 2026-10-25 "锁帧")
                                                              frame lock and frame interpolation exclude each other: picking
@@ -16,12 +14,11 @@
                                                              (runtime_front_resize_aspect; user 2026-10-25: no fitting the
                                                              window any more); TOTK_ASPECT's ratio is offered too
      edge smoothing       switch                             taa_set (gfx/nvn/totk_taa.m)
-     controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
+     controller type      Auto / PS5 / Xbox / Keyboard / Keyboard + Mouse runtime_gamepad_type_set (gamepad.m), saved
      DualSense bow trigger switch                            runtime_triggers_choose (gamepad_feedback.m), saved in
                                                              dualsense-triggers.txt; Breath of the Wild 1.9.0 and Tears of
                                                              the Kingdom 1.4.3 only; TOTK_DUALSENSE_TRIGGERS or an agent's
                                                              test session decide first (greyed out)
-     mouse                switch                             runtime_mouse_set (gamepad.m), saved
      rumble               switch                             runtime_feedback_choose (hid_feedback.c), saved in rumble.txt
      rumble strength      0.5x / 1x / 2x / 3x / 4x           runtime_rumble_gain_set (gamepad_feedback.m), rumble-gain.txt
      gyro aiming          switch                             runtime_feedback_choose, saved in gyro.txt
@@ -80,7 +77,7 @@ static void settings_refresh_all(void);
 -(void)changed:(id)sender{
  int v=[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
- [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
+ [self.control.window makeFirstResponder:self.control.window.contentView];   /* Esc keeps reaching the window */
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
 -(void)refresh{
@@ -133,10 +130,10 @@ static TOTKSettingRow *settings_gain_row(void) {
 }
 /* Auto's text: the type it takes the connected controller for (runtime/gamepad.m). */
 static NSString *settings_pad_auto_text(void) {
- static const char *const names[GAMEPAD_TYPE_COUNT]={NULL,"Xbox","PlayStation","Switch"};
- int detected=-1;runtime_gamepad_type(&detected);
- if(detected>GAMEPAD_TYPE_AUTO&&detected<GAMEPAD_TYPE_COUNT)return [NSString stringWithFormat:@(TOTK_UI("自动（%s）","Auto (%s)")),names[detected]];
- return settings_text("自动（未接手柄）","Auto (no controller)");
+ int detected=GAMEPAD_TYPE_KEYBOARD;runtime_gamepad_type(&detected);
+ NSString *name=detected==GAMEPAD_TYPE_PS5?@"PS5":detected==GAMEPAD_TYPE_XBOX?@"Xbox":
+                  detected==GAMEPAD_DETECTED_SWITCH?@"Switch":settings_text("键盘","Keyboard");
+ return [NSString stringWithFormat:@(TOTK_UI("自动（%@）","Auto (%@)")),name];
 }
 
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
@@ -177,16 +174,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    ^(int v){float r=ratios[(NSUInteger)v].floatValue;if(runtime_aspect_set_ratio(r))runtime_front_resize_aspect(r);})];}
  [rows addObject:settings_row(settings_text("边缘平滑（MetalFX 时间性）","Edge smoothing (MetalFX Temporal)"),nil,nil,
   ^int{return taa_enabled();},^(int v){taa_set(v);})];
- TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],
-  @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_PLAYSTATION),@(GAMEPAD_TYPE_SWITCH)],
+ TOTKSettingRow *pad=settings_row(settings_text("输入模式","Input mode"),@[settings_pad_auto_text(),@"PS5",@"Xbox",settings_text("键盘","Keyboard"),settings_text("键盘 + 鼠标","Keyboard + Mouse")],
+  @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_PS5),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_KEYBOARD),@(GAMEPAD_TYPE_KEYBOARD_MOUSE)],
   ^int{return runtime_gamepad_type(NULL);},^(int v){runtime_gamepad_type_set(v);});
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
  NSString *bow=settings_text("DualSense 拉弓扳机（R2）","DualSense bow trigger (R2)");
  if(!runtime_triggers_available())[rows addObject:settings_fixed(bow,settings_text("这个版本没有","Not in this version"))];
  else if(runtime_triggers_locked())[rows addObject:settings_fixed(bow,runtime_triggers_choice()?settings_text("开","On"):settings_text("关","Off"))];
  else [rows addObject:settings_row(bow,nil,nil,^int{return runtime_triggers_choice();},^(int v){runtime_triggers_choose(v);})];
- [rows addObject:settings_row(settings_text("鼠标操作（视角、按键）","Mouse (camera, buttons)"),nil,nil,
-  ^int{return runtime_mouse_enabled();},^(int v){runtime_mouse_set(v);})];
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];

@@ -3,6 +3,7 @@
 #include "runtime.h"
 #include "autoload.h"
 #include "world_survey.h"
+#include "controller_map.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +16,19 @@ static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
 /* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
-static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+static uint32_t keyboardMap[KEYBOARD_KEYS];
+static pthread_once_t keyboardOnce = PTHREAD_ONCE_INIT;
+static void load_keyboard_map(void) {
+ keyboard_map_default(keyboardMap);
+ const char *path=getenv("TOTK_CONTROLS");FILE *f=path&&*path?fopen(path,"rb"):NULL;
+ if(!f)return;
+ char text[16384];size_t n=fread(text,1,sizeof text-1,f);int whole=feof(f);fclose(f);
+ if(!whole)runtime_fail("keyboard layout file too large");
+ text[n]=0;uint16_t map[CONTROLLER_BUTTONS];uint8_t modes[CONTROLLER_BUTTONS];controller_map_default(map,modes);
+ const char *error=NULL;int line=controller_map_parse(text,map,modes,keyboardMap,&error);
+ if(line){fprintf(stderr,"[totk-input] %s line %d: %s\n",path,line,error);runtime_fail("keyboard layout file");}
+}
+static uint64_t button(unsigned code){return keyboardMap[code]&0xffffu;}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -28,16 +41,17 @@ static void user_input(const char *what){
  const char *owner=getenv("TOTK_SLOT_OWNER");bool agent=owner&&*owner&&strcmp(owner,"user");
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
-/* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m: overlay, frame interpolation, picture, aspect
-   ratio, edge smoothing, controller type, mouse); held-key repeats do not toggle it. Keys 2-7 are no shortcuts any more
-   (user 2026-10-25: the panel replaces them). */
-enum { KEY_SETTINGS = 18 };
-void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
- if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
+/* Keys 1-7 are hardcoded host shortcuts, independent of the gameplay layout. */
+void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_once(&keyboardOnce,load_keyboard_map);pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code]&&runtime_keyboard_enabled())pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
+#if TARGET_OS_OSX
+ if(press&&keyboard_key_reserved((int)code))runtime_input_shortcut(code);
+#else
+ (void)press;
+#endif
+}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
-static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
+static void initialize(void){pthread_once(&keyboardOnce,load_keyboard_map);pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
    the game reads only the handheld controller in that mode. */
@@ -55,8 +69,11 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
 static int full_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,1);}
 static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,2);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};if(enabled&&allowed&&*id==pad_id()&&want_style==pad_style()&&(styles&want_style)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
- state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+ state.attributes=1;if(runtime_keyboard_enabled()){for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;
+ uint32_t directions=0;for(unsigned i=0;i<KEYBOARD_KEYS;i++)if(keys[i])directions|=keyboardMap[i]>>KEYBOARD_STICK_FIRST;
+ state.lx=32767*((int)((directions>>1)&1)-(int)(directions&1));state.ly=32767*((int)((directions>>2)&1)-(int)((directions>>3)&1));
+ state.rx=32767*((int)((directions>>5)&1)-(int)((directions>>4)&1));state.ry=32767*((int)((directions>>6)&1)-(int)((directions>>7)&1));
+ }pending=0;
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;

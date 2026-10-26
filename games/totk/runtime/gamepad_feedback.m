@@ -175,7 +175,7 @@ static void gain_load(void) {
         }
     });
 }
-/* The settings panel's strength row (key 1, runtime/settings_panel.h): applied at once and saved in rumble-gain.txt;
+/* The settings panel's strength row (app menu, runtime/settings_panel.h): applied at once and saved in rumble-gain.txt;
    TOTK_RUMBLE_GAIN, when set, decides and the row shows it greyed out. */
 int runtime_rumble_gain_locked(void) { return getenv("TOTK_RUMBLE_GAIN") != NULL; }
 float runtime_rumble_gain(void) {
@@ -468,7 +468,7 @@ static void triggers_apply(GCController *c, const char *name) {   /* main queue 
     });
 }
 
-/* The settings panel (key 1, runtime/settings_panel.h; main queue). TOTK_DUALSENSE_TRIGGERS or an agent's test session decide
+/* The settings panel (app menu, runtime/settings_panel.h; main queue). TOTK_DUALSENSE_TRIGGERS or an agent's test session decide
    first: the row then shows that value, greyed out. A pick is saved in dualsense-triggers.txt and acts at once: on puts the
    connected DualSense's R2 on the bow (as at its attach), off lets both triggers go. */
 int runtime_triggers_available(void) { return bow_state_supported(); }

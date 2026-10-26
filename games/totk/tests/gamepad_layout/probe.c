@@ -27,21 +27,20 @@ int main(void) {
     check(!gamepad_face_by_position("DualSense", "DualSense Wireless Controller"), "TOTK_FACE_BUTTONS=label");
     setenv("TOTK_FACE_BUTTONS", "position", 1);
     check(gamepad_face_by_position("Switch Pro Controller", "Pro Controller"), "TOTK_FACE_BUTTONS=position");
-    // the settings panel's controller type (auto, Xbox, PlayStation, Switch), saved as one word
+    // The settings panel input mode, saved as one word.
     unsetenv("TOTK_FACE_BUTTONS");
     for (int t = 0; t < GAMEPAD_TYPE_COUNT; t++) check(gamepad_type_parse(gamepad_type_name(t)) == t, "every type name parses back");
-    check(gamepad_type_parse("  switch\n") == GAMEPAD_TYPE_SWITCH && gamepad_type_parse("xbox\r\n") == GAMEPAD_TYPE_XBOX, "the saved word may end in a newline");
-    check(gamepad_type_parse("ps5") < 0 && gamepad_type_parse("") < 0 && gamepad_type_parse(NULL) < 0 && gamepad_type_parse("switchx") < 0,
+    check(gamepad_type_parse("  keyboard\n") == GAMEPAD_TYPE_KEYBOARD && gamepad_type_parse("xbox\r\n") == GAMEPAD_TYPE_XBOX, "the saved word may end in a newline");
+    check(gamepad_type_parse("ps5") == GAMEPAD_TYPE_PS5 && gamepad_type_parse("") < 0 && gamepad_type_parse(NULL) < 0 && gamepad_type_parse("switchx") < 0,
           "anything else is not a type");
-    check(gamepad_type_detect("DualSense", "DualSense Wireless Controller") == GAMEPAD_TYPE_PLAYSTATION, "DualSense is detected as PlayStation");
-    check(gamepad_type_detect("DualShock 4", "Wireless Controller") == GAMEPAD_TYPE_PLAYSTATION, "DualShock 4 is detected as PlayStation");
-    check(gamepad_type_detect("Switch Pro Controller", "Pro Controller") == GAMEPAD_TYPE_SWITCH, "Switch Pro is detected as Switch");
+    check(gamepad_type_detect("DualSense", "DualSense Wireless Controller") == GAMEPAD_TYPE_PS5, "DualSense is detected as PlayStation");
+    check(gamepad_type_detect("DualShock 4", "Wireless Controller") == GAMEPAD_TYPE_PS5, "DualShock 4 is detected as PlayStation");
+    check(gamepad_type_detect("Switch Pro Controller", "Pro Controller") == GAMEPAD_DETECTED_SWITCH, "Switch Pro is detected as Switch");
     check(gamepad_type_detect("Xbox One", "Xbox Wireless Controller") == GAMEPAD_TYPE_XBOX, "Xbox is detected as Xbox");
     check(gamepad_type_detect("MFi", "8BitDo SN30 Pro") == GAMEPAD_TYPE_XBOX && gamepad_type_detect(NULL, NULL) == GAMEPAD_TYPE_XBOX,
           "other controllers count as Xbox (GameController names their buttons that way)");
     check(gamepad_type_face_by_position(GAMEPAD_TYPE_XBOX, "Switch Pro Controller", "Pro Controller"), "type Xbox: by position, whatever the name");
-    check(gamepad_type_face_by_position(GAMEPAD_TYPE_PLAYSTATION, "Switch Pro Controller", "Pro Controller"), "type PlayStation: by position");
-    check(!gamepad_type_face_by_position(GAMEPAD_TYPE_SWITCH, "Xbox One", "Xbox Wireless Controller"), "type Switch: by label, whatever the name");
+    check(gamepad_type_face_by_position(GAMEPAD_TYPE_PS5, "Switch Pro Controller", "Pro Controller"), "type PlayStation: by position");
     check(gamepad_type_face_by_position(GAMEPAD_TYPE_AUTO, "Xbox One", "Xbox Wireless Controller") &&
           !gamepad_type_face_by_position(GAMEPAD_TYPE_AUTO, "Switch Pro Controller", "Pro Controller"), "type auto: as detected");
     setenv("TOTK_FACE_BUTTONS", "label", 1);

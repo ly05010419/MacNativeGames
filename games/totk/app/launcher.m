@@ -190,12 +190,17 @@ int main(int argc, char **argv) {
         /* The player's controller layout (runtime/controller_map.h), checked here: a bad line shows this alert instead of
            the game closing at start. */
         NSString *controls = env_or("TOTK_CONTROLS", [data stringByAppendingPathComponent:@"controls.txt"]);
+        if (controls_file_create(controls.fileSystemRepresentation) < 0) {
+            show_error([NSString stringWithFormat:@"Cannot create %@: %s", controls, strerror(errno)]);
+            return 1;
+        }
         NSData *layout = [NSData dataWithContentsOfFile:controls];
         if (layout) {
             NSString *text = layout.length < 16384 ? [[NSString alloc] initWithData:layout encoding:NSUTF8StringEncoding] : nil;
+            uint32_t keyboard[KEYBOARD_KEYS]; keyboard_map_default(keyboard);
             uint16_t map[CONTROLLER_BUTTONS]; uint8_t modes[CONTROLLER_BUTTONS]; controller_map_default(map, modes);
             const char *problem = layout.length < 16384 ? "not UTF-8 text" : "larger than 16 KB";
-            int line = text ? controller_map_parse(text.UTF8String, map, modes, &problem) : 1;
+            int line = text ? controller_map_parse(text.UTF8String, map, modes, keyboard, &problem) : 1;
             if (line) { show_error([NSString stringWithFormat:@"%@, line %d: %s", controls, line, problem]); return 1; }
         }
         setenv("TOTK_CONTROLS", controls.fileSystemRepresentation, 1);

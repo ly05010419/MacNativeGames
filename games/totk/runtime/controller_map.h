@@ -2,10 +2,11 @@
    and a Nintendo controller: runtime/gamepad_layout.h gamepad_face_positions) drives one Switch Pro Controller button, or
    none. The default is the Switch's own layout by position: east -> A, south -> B, north -> X, west -> Y (issue #10); the
    other buttons i < 16 are FullKey bit i. The touchpad click (DualSense, DualShock 4) is physical button 16 and drives
-   nothing by default. The mouse's buttons (Mac, mouse mode on key 7: runtime/gamepad.m) are physical buttons 17-21:
-   left attacks (Y), right draws the bow (ZR, "aim mouse_left": a left click while it is held shoots instead of
+   nothing by default. The mouse's buttons (Mac, Keyboard + Mouse mode: runtime/gamepad.m) are physical buttons 17-21:
+   left attacks (Y), right draws the bow (ZR: a left click while it is held shoots instead of
    attacking), middle targets (ZL), the two side buttons drive nothing.
-   A layout file has one "physical = switch [mode]" line per change; '#' starts a comment; names are case-insensitive;
+   Keyboard and mouse bindings use "Switch action = key_<name> mouse_<button>"; a blank value unbinds the action.
+   Controller remapping uses "physical = switch [mode]"; '#' starts a comment; names are case-insensitive;
    "none" leaves a button unused; lines not given keep the default. The optional mode says how long the Switch button is
    held: "hold" (default) while the physical button is down, "tap" for 400 ms after each press (tap again to keep
    running), "toggle" on and off at each press (cleared when the stick returns to center), "aim <fire button>" while
@@ -17,6 +18,8 @@
 #ifndef TOTK_CONTROLLER_MAP_H
 #define TOTK_CONTROLLER_MAP_H
 #include <stdint.h>
+#include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
@@ -26,6 +29,68 @@ static const char *const controller_physical_names[CONTROLLER_BUTTONS] = {
     "touchpad", "mouse_left", "mouse_right", "mouse_middle", "mouse4", "mouse5"};
 static const char *const controller_switch_names[CONTROLLER_SWITCH_BUTTONS] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down"};
+
+enum { KEYBOARD_KEYS = 128, KEYBOARD_STICK_FIRST = 16 };
+static const char *const keyboard_names[KEYBOARD_KEYS] = {
+    [0]="a", [1]="s", [2]="d", [3]="f", [4]="h", [5]="g", [6]="z", [7]="x",
+    [8]="c", [9]="v", [11]="b", [12]="q", [13]="w", [14]="e", [15]="r", [16]="y", [17]="t",
+    [18]="1", [19]="2", [20]="3", [21]="4", [22]="6", [23]="5", [24]="equal", [25]="9",
+    [26]="7", [27]="minus", [28]="8", [29]="0", [30]="right_bracket", [31]="o", [32]="u",
+    [33]="left_bracket", [34]="i", [35]="p", [36]="return", [37]="l", [38]="j", [39]="quote",
+    [40]="k", [41]="semicolon", [42]="backslash", [43]="comma", [44]="slash", [45]="n", [46]="m",
+    [47]="period", [48]="tab", [49]="space", [50]="grave", [51]="backspace", [53]="escape",
+    [56]="shift", [58]="option", [123]="left", [124]="right", [125]="down", [126]="up"
+};
+static const char *const keyboard_stick_names[8] = {
+    "left_stick_left", "left_stick_right", "left_stick_up", "left_stick_down",
+    "right_stick_left", "right_stick_right", "right_stick_up", "right_stick_down"
+};
+static inline void keyboard_map_default(uint32_t map[KEYBOARD_KEYS]) {
+    memset(map, 0, KEYBOARD_KEYS * sizeof *map);
+    map[38]=1; map[40]=map[49]=2; map[34]=4; map[32]=8; map[6]=16; map[8]=32;
+    map[12]=64; map[14]=128; map[58]=256; map[56]=512; map[36]=1024; map[48]=map[53]=2048;
+    map[3]=4096; map[17]=8192; map[4]=16384; map[5]=32768;
+    map[0]=1u<<16; map[2]=1u<<17; map[13]=1u<<18; map[1]=1u<<19;
+    map[123]=1u<<20; map[124]=1u<<21; map[126]=1u<<22; map[125]=1u<<23;
+}
+
+static const char controls_default_text[] =
+    "a = key_j\n"
+    "b = key_k key_space\n"
+    "x = key_i\n"
+    "y = key_u mouse_left\n"
+    "lstick = key_z\n"
+    "rstick = key_c\n"
+    "l = key_q\n"
+    "r = key_e\n"
+    "zl = key_option mouse_middle\n"
+    "zr = key_shift mouse_right\n"
+    "plus = key_return\n"
+    "minus = key_tab key_escape\n"
+    "left = key_f\n"
+    "up = key_t\n"
+    "right = key_h\n"
+    "down = key_g\n"
+    "left_stick_left = key_a\n"
+    "left_stick_right = key_d\n"
+    "left_stick_up = key_w\n"
+    "left_stick_down = key_s\n"
+    "right_stick_left = key_left\n"
+    "right_stick_right = key_right\n"
+    "right_stick_up = key_up\n"
+    "right_stick_down = key_down\n";
+
+static inline int controls_file_create(const char *path) {
+    FILE *f = fopen(path, "wx");
+    if (!f) return errno == EEXIST ? 0 : -1;
+    int written = fputs(controls_default_text, f) != EOF;
+    int closed = fclose(f) == 0;
+    return written && closed ? 0 : -1;
+}
+
+static inline int keyboard_key_reserved(int key) {
+    return (key >= 18 && key <= 23) || key == 26;
+}
 
 enum { CONTROLLER_HOLD = 0, CONTROLLER_TAP = 1, CONTROLLER_TOGGLE = 2, CONTROLLER_AIM = 3 };
 static inline int controller_mode_kind(uint8_t mode) { return mode & 7; }
@@ -43,17 +108,18 @@ static inline void controller_map_default(uint16_t map[CONTROLLER_BUTTONS], uint
 /* Index of name [s, s + n) in the count names, or -1. */
 static inline int controller_name_index(const char *const names[], int count, const char *s, size_t n) {
     for (int i = 0; i < count; i++)
-        if (strlen(names[i]) == n && !strncasecmp(names[i], s, n)) return i;
+        if (names[i] && strlen(names[i]) == n && !strncasecmp(names[i], s, n)) return i;
     return -1;
 }
 
 /* Applies a layout file's text to map and modes (start from controller_map_default). Returns 0, or the 1-based number of
-   the first bad line with *error naming the problem; both arrays are then unchanged. */
+   the first bad line with *error naming the problem; all arrays are then unchanged. */
 static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER_BUTTONS],
-                                       uint8_t modes[CONTROLLER_BUTTONS], const char **error) {
+                                       uint8_t modes[CONTROLLER_BUTTONS], uint32_t keyboard[KEYBOARD_KEYS], const char **error) {
+    uint32_t nextKeyboard[KEYBOARD_KEYS]; memcpy(nextKeyboard, keyboard, sizeof nextKeyboard);
     uint16_t next[CONTROLLER_BUTTONS]; uint8_t nextMode[CONTROLLER_BUTTONS];
     memcpy(next, map, sizeof next); memcpy(nextMode, modes, sizeof nextMode);
-    int line = 0;
+    int line = 0, content = 0;
     for (const char *p = text; p && *p;) {
         line++;
         const char *end = strchr(p, '\n'), *stop = end ? end : p + strlen(p), *hash = memchr(p, '#', (size_t)(stop - p));
@@ -61,6 +127,7 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
         while (p < stop && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
         while (stop > p && (stop[-1] == ' ' || stop[-1] == '\t' || stop[-1] == '\r')) stop--;
         if (p < stop) {
+            content = 1;
             const char *eq = memchr(p, '=', (size_t)(stop - p));
             if (!eq) { *error = "expected \"button = Switch button [hold|tap|toggle]\""; return line; }
             const char *key_end = eq, *value = eq + 1;
@@ -70,8 +137,39 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
             while (value_end < stop && *value_end != ' ' && *value_end != '\t') value_end++;
             for (const char *q = value_end; q < stop; q++) if (*q != ' ' && *q != '\t') { mode = q; break; }
             if (mode) { mode_end = mode; while (mode_end < stop && *mode_end != ' ' && *mode_end != '\t') mode_end++; }
-            int physical = controller_name_index(controller_physical_names, CONTROLLER_BUTTONS, p, (size_t)(key_end - p));
-            if (physical < 0) { *error = "unknown controller button (south east west north l1 r1 l2 r2 l3 r3 menu view up down left right touchpad mouse_left mouse_right mouse_middle mouse4 mouse5)"; return line; }
+            int physical = controller_name_index(controller_physical_names, CONTROLLER_MOUSE_FIRST, p, (size_t)(key_end - p));
+            int action = controller_name_index(controller_switch_names, CONTROLLER_SWITCH_BUTTONS, p, (size_t)(key_end - p));
+            int stick = controller_name_index(keyboard_stick_names, 8, p, (size_t)(key_end - p));
+            int binding = value == stop || (stop - value >= 4 && !strncasecmp(value, "key_", 4)) ||
+                          (stop - value >= 5 && !strncasecmp(value, "mouse", 5));
+            if (binding || physical < 0) {
+                if (action < 0 && stick < 0) { *error = "unknown Switch action"; return line; }
+                uint32_t bit = 1u << (action >= 0 ? action : KEYBOARD_STICK_FIRST + stick);
+                for (int i = 0; i < KEYBOARD_KEYS; i++) nextKeyboard[i] &= ~bit;
+                if (action >= 0) for (int i = CONTROLLER_MOUSE_FIRST; i < CONTROLLER_BUTTONS; i++) {
+                    if (next[i] & bit) { next[i] = 0; nextMode[i] = CONTROLLER_HOLD; }
+                }
+                for (const char *q = value; q < stop;) {
+                    const char *word = q; while (q < stop && *q != ' ' && *q != '\t') q++;
+                    size_t n = (size_t)(q - word);
+                    if (n >= 4 && !strncasecmp(word, "key_", 4)) {
+                        int key = controller_name_index(keyboard_names, KEYBOARD_KEYS, word + 4, n - 4);
+                        if (key < 0) { *error = "unknown keyboard key"; return line; }
+                        if (keyboard_key_reserved(key)) { *error = "keys 1-7 are reserved for game shortcuts"; return line; }
+                        nextKeyboard[key] = bit;
+                    } else {
+                        int mouse = controller_name_index(controller_physical_names + CONTROLLER_MOUSE_FIRST,
+                                                          CONTROLLER_MOUSE_BUTTONS, word, n);
+                        if (mouse < 0) { *error = "expected key_<name> or mouse_left/right/middle/mouse4/mouse5"; return line; }
+                        if (action < 0) { *error = "mouse buttons need a Switch button action"; return line; }
+                        next[CONTROLLER_MOUSE_FIRST + mouse] = (uint16_t)bit;
+                        nextMode[CONTROLLER_MOUSE_FIRST + mouse] = CONTROLLER_HOLD;
+                    }
+                    while (q < stop && (*q == ' ' || *q == '\t')) q++;
+                }
+                p = end ? end + 1 : NULL;
+                continue;
+            }
             size_t n = (size_t)(value_end - value);
             int target = n == 4 && !strncasecmp(value, "none", 4) ? CONTROLLER_SWITCH_BUTTONS : controller_name_index(controller_switch_names, CONTROLLER_SWITCH_BUTTONS, value, n);
             if (target < 0) { *error = "unknown Switch button (a b x y l r zl zr plus minus lstick rstick up down left right none)"; return line; }
@@ -100,7 +198,11 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
         }
         p = end ? end + 1 : NULL;
     }
+    if (!content) memset(nextKeyboard, 0, sizeof nextKeyboard);
+    if (next[CONTROLLER_MOUSE_FIRST] == (1u << 3) && next[CONTROLLER_MOUSE_FIRST + 1] == (1u << 9))
+        nextMode[CONTROLLER_MOUSE_FIRST + 1] = (uint8_t)(CONTROLLER_AIM | CONTROLLER_MOUSE_FIRST << 3);
     memcpy(map, next, sizeof next); memcpy(modes, nextMode, sizeof nextMode);
+    memcpy(keyboard, nextKeyboard, sizeof nextKeyboard);
     return 0;
 }
 

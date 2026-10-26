@@ -18,8 +18,8 @@ uint64_t runtime_now_ns(void){return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);}
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-/* Key 1's settings panel (frontend.m) is not part of this probe. */
-void runtime_settings_toggle(void){}
+void runtime_input_shortcut(unsigned code){(void)code;}
+int runtime_keyboard_enabled(void){return 1;}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)name;(void)word;(void)what;}   // nothing is saved here
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}

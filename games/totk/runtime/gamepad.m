@@ -47,13 +47,14 @@ void runtime_gamepad_switch_left(void *source, int x, int y) {
    checks it first). No file: the default layout. */
 static void load_controller_map(void) {
     controller_map_default(controllerMap, controllerModes);
+    uint32_t keyboard[KEYBOARD_KEYS]; keyboard_map_default(keyboard);
     const char *path = getenv("TOTK_CONTROLS");
     FILE *f = path && *path ? fopen(path, "rb") : NULL;
     if (!f) { fprintf(stderr, "[totk-input] controller layout: default\n"); return; }
     char text[16384]; size_t n = fread(text, 1, sizeof text - 1, f); int whole = feof(f); fclose(f);
     if (!whole) runtime_fail("controller layout file too large");
     text[n] = 0;
-    const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, &error);
+    const char *error = NULL; int line = controller_map_parse(text, controllerMap, controllerModes, keyboard, &error);
     if (line) { fprintf(stderr, "[totk-input] %s line %d: %s\n", path, line, error); runtime_fail("controller layout file"); }
     uint16_t defaults[CONTROLLER_BUTTONS]; uint8_t defaultModes[CONTROLLER_BUTTONS]; controller_map_default(defaults, defaultModes);
     int changed = 0; for (int i = 0; i < CONTROLLER_BUTTONS; i++) changed += controllerMap[i] != defaults[i];
@@ -73,7 +74,7 @@ static int32_t stronger_axis(int32_t a, int32_t b) {
     return abs(b) > abs(a) ? b : a;
 }
 
-/* Settings the keys change (6: controller type, 7: mouse mode), one word each in a file next to controls.txt
+/* Settings from the panel, one word each in a file next to controls.txt
    (TOTK_CONTROLS; a run without it, such as a test, neither reads nor writes them), so they hold for the next launch. */
 static int setting_path(const char *name, char *out, size_t size) {
     const char *controls = getenv("TOTK_CONTROLS");
@@ -116,12 +117,18 @@ void runtime_setting_save(const char *name, const char *word, const char *what) 
 
 /* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, in controller-type.txt. */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;
+static _Atomic int controllerConnected;
+int runtime_keyboard_enabled(void) {
+    int type = atomic_load(&controllerType);
+    return type == GAMEPAD_TYPE_KEYBOARD || type == GAMEPAD_TYPE_KEYBOARD_MOUSE ||
+           (type == GAMEPAD_TYPE_AUTO && !atomic_load(&controllerConnected));
+}
 
 static void load_controller_type(void) {
     char path[4096], word[64] = {0};
     if (!setting_read("controller-type.txt", word, sizeof word, path, sizeof path)) return;
     int type = gamepad_type_parse(word);
-    if (type < 0) { fprintf(stderr, "[totk-input] %s: not a controller type (auto, xbox, playstation, switch); using auto\n", path); return; }
+    if (type < 0) { fprintf(stderr, "[totk-input] %s: not an input mode (auto, ps5, xbox, keyboard, keyboard-mouse); using auto\n", path); return; }
     atomic_store(&controllerType, type);
     fprintf(stderr, "[totk-input] controller type: %s (%s)\n", gamepad_type_name(type), path);
 }
@@ -331,7 +338,7 @@ static HIDPadState hidPad;
 static void hid_pad_start(void) {}
 #endif
 
-/* ---- Mouse mode (Mac, the settings panel; in mouse.txt) ----
+/* ---- Mouse input (Mac, Keyboard + Mouse mode) ----
    The window (runtime/frontend.m) holds the pointer while mouse mode is on and the window has the keyboard, and sends
    the mouse's buttons and movement here. Buttons are physical buttons 17-21 of the controller layout (controller_map.h:
    left attack, right draw the bow with left to shoot, middle target), so controls.txt can change them. Movement goes to
@@ -389,23 +396,14 @@ static void mouse_apply(int on) {   /* start or stop the ticks and the gyro take
     if (mouseHook) dispatch_async(dispatch_get_main_queue(), ^{ mouseHook(); });
 }
 
-static void load_mouse_mode(void) {
-    char path[4096], word[16] = {0};
-    if (!setting_read("mouse.txt", word, sizeof word, path, sizeof path)) return;
-    int on = !strcmp(word, "on\n") || !strcmp(word, "on");
-    if (!on && strcmp(word, "off\n") && strcmp(word, "off")) fprintf(stderr, "[totk-input] %s: not on or off; mouse mode off\n", path);
-    if (on != atomic_load(&mouseMode)) { atomic_store(&mouseMode, on); mouse_apply(on); }
-}
-
 int runtime_mouse_enabled(void) { return atomic_load(&mouseMode); }
 void runtime_mouse_set_hook(void (*hook)(void)) { mouseHook = hook; }
 
-/* The settings panel (key 1, frontend.m). */
+/* Applies the mouse state selected by the input mode. */
 int runtime_mouse_set(int on) {
     on = !!on;
     if (on == atomic_load(&mouseMode)) return on;
     atomic_store(&mouseMode, on);
-    setting_write("mouse.txt", on ? "on" : "off", "mouse mode");
     if (!on) dispatch_async(dispatch_get_main_queue(), ^{ runtime_mouse_release(); });
     mouse_apply(on);
     return on;
@@ -438,9 +436,14 @@ static void refresh_gamepads(void) {
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0;
     uint64_t rawAt = 0;
+    int connected = 0;
+    int type = atomic_load(&controllerType);
+    int useController = type == GAMEPAD_TYPE_AUTO || type == GAMEPAD_TYPE_PS5 || type == GAMEPAD_TYPE_XBOX;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
+        connected = 1;
+        if (!useController) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
         float lx = pad.leftThumbstick.xAxis.value, ly = pad.leftThumbstick.yAxis.value;
@@ -458,7 +461,9 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
         next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
     }
-    if (hidPad.present) {
+    if (hidPad.present) connected = 1;
+    atomic_store(&controllerConnected, connected);
+    if (hidPad.present && useController) {
         next.connected = 1;
         physical |= hidPad.buttons;
         next.lx = stronger_axis(next.lx, hidPad.lx);
@@ -521,14 +526,16 @@ static void attach_gamepad(GCController *controller) {
     refresh_gamepads();
 }
 
-/* The settings panel (key 1, frontend.m): auto, Xbox, PlayStation or Switch; the held buttons are read again at once. */
+/* The settings panel selects the input mode; held buttons are cleared when it changes. */
 int runtime_gamepad_type_set(int type) {
     if (type < GAMEPAD_TYPE_AUTO || type >= GAMEPAD_TYPE_COUNT) return atomic_load(&controllerType);
     if (type == atomic_load(&controllerType)) return type;
     atomic_store(&controllerType, type);
+    runtime_mouse_set(type == GAMEPAD_TYPE_KEYBOARD_MOUSE);
     save_controller_type(type);
     fprintf(stderr, "[totk-input] controller type: %s (settings)\n", gamepad_type_name(type));
     dispatch_async(dispatch_get_main_queue(), ^{
+        runtime_input_clear();
         for (GCController *controller in GCController.controllers)
             if (controller.extendedGamepad)
                 fprintf(stderr, "[totk-input] %s: face buttons by %s\n", (controller.vendorName ?: @"unknown").UTF8String,
@@ -538,15 +545,15 @@ int runtime_gamepad_type_set(int type) {
     return type;
 }
 
-/* For the HUD (main thread): the picked type; *detected = what auto takes the first connected controller for, -1 none. */
+/* For the HUD (main thread): the picked type; *detected = the connected controller type, or Keyboard when none is connected. */
 int runtime_gamepad_type(int *detected) {
     int found = -1;
     for (GCController *controller in GCController.controllers)
         if (controller.extendedGamepad) { found = gamepad_type_detect(controller.productCategory.UTF8String, controller.vendorName.UTF8String); break; }
 #if TARGET_OS_OSX
-    if (found < 0 && hidPad.present) found = GAMEPAD_TYPE_SWITCH;   /* the generic HID pads are Switch-style */
+    if (found < 0 && hidPad.present) found = GAMEPAD_DETECTED_SWITCH;   /* the generic HID pads are Switch-style */
 #endif
-    if (detected) *detected = found;
+    if (detected) *detected = found < 0 ? GAMEPAD_TYPE_KEYBOARD : found;
     return atomic_load(&controllerType);
 }
 
@@ -555,7 +562,7 @@ void runtime_gamepad_start(void) {
     started = YES;
     load_controller_map();
     load_controller_type();
-    load_mouse_mode();
+    runtime_mouse_set(atomic_load(&controllerType) == GAMEPAD_TYPE_KEYBOARD_MOUSE);
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_gamepad(notification.object); }];

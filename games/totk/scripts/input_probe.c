@@ -11,13 +11,14 @@ uint64_t runtime_now_ns(void){return probe_clock_fixed?probe_now:(probe_now+=100
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-static int settings_toggles;   // key 1 (see the key checks)
+static int shortcut_presses;   // key 1 (see the key checks)
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
-void runtime_settings_toggle(void){settings_toggles++;}
+void runtime_input_shortcut(unsigned code){(void)code;shortcut_presses++;}
+int runtime_keyboard_enabled(void){return 1;}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
 static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
@@ -90,7 +91,7 @@ static void feedback_checks(void){
  need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0&&rumble_seen[0][2]==0&&!vactual(&got,&left)&&got.al==0.7f,"muted: the game's value is kept, the controller gets silence");
  need(runtime_hid_feedback_flag("rumble",1)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"flag rumble 1 unmutes");
  need(runtime_hid_feedback_flag("mfx_upscale",1)==0,"other flags are not taken");
- /* The settings panel's rumble and gyro switches (runtime_feedback_*, key 1): while TOTK_RUMBLE / TOTK_GYRO is set it decides
+ /* The settings panel's rumble and gyro switches (runtime_feedback_*): while TOTK_RUMBLE / TOTK_GYRO is set it decides
     and a pick does nothing; without it a pick is saved in rumble.txt / gyro.txt and mutes or unmutes the device the game
     has in this run at once. */
  need(runtime_feedback_locked(0)&&runtime_feedback_locked(1)&&runtime_feedback_present(0),"the variables set: the panel shows them, greyed out");
@@ -114,7 +115,7 @@ static void feedback_checks(void){
  memset(&buf,0xa5,sizeof buf);need(!sstart(&six)&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0&&near3(buf.s[0].acc,0,0,-1,0)&&near3(buf.s[0].dir,1,0,0,0)&&near3(buf.s[0].dir+6,0,0,1,0),"no controller motion: one still, unconnected state");
  runtime_motion_live(1);feed(100,0,0,-1,0,0,0);probe_now+=1000000;
  memset(&buf,0xa5,sizeof buf);need(!sstates(&n,buf.s,16,&six)&&n==16,"16 states when 100 samples are there");
- /* The settings panel's gyro switch (runtime_feedback_choose, key 1), without TOTK_GYRO: saved, and at once a still controller / motion again. */
+ /* The settings panel's gyro switch (runtime_feedback_choose), without TOTK_GYRO: saved, and at once a still controller / motion again. */
  unsetenv("TOTK_GYRO");
  runtime_feedback_choose(1,0);need(!strcmp(saved_name,"gyro.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(1)==0&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"gyro off in the panel: saved, a still controller at once");
  runtime_feedback_choose(1,1);need(!strcmp(saved_word,"on")&&runtime_feedback_choice(1)==1&&!sstates(&n,buf.s,16,&six)&&n==16&&buf.s[0].attr==1,"gyro on in the panel: saved, motion again");
@@ -177,18 +178,17 @@ int main(void){
   need(out.state.buttons==(1ULL<<(12+i))&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry,"D-pad independent of analog sticks");
   runtime_input_key(dpad[i],0);read(&out.state,1,&id);need(!out.state.buttons,"D-pad release");
  }
- /* Key 1 (Mac key code 18) opens / closes the settings panel (frontend.m): once per press; held-key repeats and the
-    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more and no game buttons either. */
- runtime_input_key(18,1);need(settings_toggles==1,"key 1 toggles the settings panel");
- runtime_input_key(18,1);need(settings_toggles==1,"a held key (auto-repeat) does not act again");
+ /* Host shortcuts act once per press and never reach the game. */
+ runtime_input_key(18,1);need(shortcut_presses==1,"key 1 dispatches the overlay shortcut");
+ runtime_input_key(18,1);need(shortcut_presses==1,"a held key (auto-repeat) does not act again");
  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
- runtime_input_key(18,0);need(settings_toggles==1,"releasing the key does not act");
- runtime_input_key(18,1);runtime_input_key(18,0);need(settings_toggles==2,"every press acts");
- static const unsigned former[]={19,20,21,22,23,26};
- for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
-  runtime_input_key(former[k],1);read(&out.state,1,&id);
-  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 do nothing");
-  runtime_input_key(former[k],0);
+ runtime_input_key(18,0);need(shortcut_presses==1,"releasing the key does not act");
+ runtime_input_key(18,1);runtime_input_key(18,0);need(shortcut_presses==2,"every press acts");
+ static const unsigned shortcuts[]={19,20,21,22,23,26};
+ for(unsigned k=0;k<sizeof shortcuts/sizeof shortcuts[0];k++){
+  runtime_input_key(shortcuts[k],1);read(&out.state,1,&id);
+  need(shortcut_presses==3+(int)k&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 dispatch host shortcuts without game buttons");
+  runtime_input_key(shortcuts[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
  for(unsigned i=0;i<32;i++)need(out.guard[i]==0xa5,"state output guard");
@@ -204,5 +204,5 @@ int main(void){
  runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, keys 1-7 host shortcuts (once per press), mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

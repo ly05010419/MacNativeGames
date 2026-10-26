@@ -1,4 +1,4 @@
-/* The production Mac settings panel (key 1, runtime/settings_panel.h), its keyboard handling and the calls each row makes.
+/* The production Mac settings panel (app menu, runtime/settings_panel.h), its keyboard handling and the calls each row makes.
    No guest, save files, game data or GPU commands are used. */
 #include "../games/totk/runtime/frontend.m"
 #include "../games/totk/runtime/input.c"
@@ -21,8 +21,9 @@ void dm_gfx_set_flag(const char *name, int value) {
     else abort();
 }
 /* runtime/gamepad.m's controller type and mouse mode without GameController: a DualSense is connected. */
-static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYSTATION, fakeMouse;
-int runtime_gamepad_type_set(int type) { return fakePadType = type; }
+static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PS5, fakeMouse;
+int runtime_keyboard_enabled(void) { return fakePadType == GAMEPAD_TYPE_KEYBOARD || fakePadType == GAMEPAD_TYPE_KEYBOARD_MOUSE || (fakePadType == GAMEPAD_TYPE_AUTO && fakePadDetected < 0); }
+int runtime_gamepad_type_set(int type) { fakeMouse = type == GAMEPAD_TYPE_KEYBOARD_MOUSE; return fakePadType = type; }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -59,6 +60,7 @@ uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); 
 #define SIZE(w, h) ((uint64_t)(h) << 32 | (w))
 static void tick(void) { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]]; }
 static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
+static void panel_toggle(void) { runtime_settings_toggle(); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
                                  timestamp:0 windowNumber:window.windowNumber context:nil characters:@"x"
@@ -108,15 +110,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (hud_compact()) { TOTKHudBox *box = [[TOTKHudBox alloc] initWithFrame:NSZeroRect]; [window.contentView addSubview:box]; hudBox = box; }
 
-    /* Key 1 opens it; a held key acts once. */
-    runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
+    int originalOverlay=fps_overlay_hud_mode();
+    runtime_input_key_synthetic(18,1);runtime_input_key_synthetic(18,1);tick();runtime_input_key_synthetic(18,0);tick();
+    assert(fps_overlay_hud_mode()!=originalOverlay && !settingsOpen);
+    press(18);press(18);assert(fps_overlay_hud_mode()==originalOverlay);
+    panel_toggle();
     assert(settingsOpen && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 12);
+    assert(settingsPanel.rows.count == 11);
 
     /* Overlay: all -> FPS only -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
     shows(@"Overlay", @"All (FPS, shaders, load)");
+    if(hudBox){[(TOTKHudBox *)hudBox refresh];NSString *text=((TOTKHudBox *)hudBox).label.stringValue;assert([text containsString:@"Shortcuts"] && [text containsString:@"1 Overlay"] && [text containsString:@"7 Mouse"]);}
     pick(@"Overlay", @"FPS only"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
     if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440"]); }
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
@@ -169,7 +175,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(!menu(@"Aspect ratio").enabled && [menu(@"Aspect ratio").titleOfSelectedItem isEqualToString:@"16:9"]);
     settings_test_aspect_init(1.6);
     key_event(53, YES); key_event(53, NO); assert(!settingsOpen && settingsPanel.hidden);   /* Esc closes it */
-    press(18); assert(settingsOpen);
+    panel_toggle(); assert(settingsOpen);
     /* 16:9, 16:10, 21:9, 32:9 (no fitting the window any more); the window takes each shape at once. */
     assert(menu(@"Aspect ratio").enabled && menu(@"Aspect ratio").numberOfItems == 4 && [menu(@"Aspect ratio") indexOfItemWithTitle:@"Fit to window"] < 0);
     pick(@"Aspect ratio", @"16:10"); assert(fabsf(runtime_aspect_ratio() - 1.6f) < 0.001f && fabsf(runtime_aspect_now() - 1.6f) < 0.001f);
@@ -191,23 +197,25 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Switches. */
     assert(!switched(@"Edge smoothing")); flip(@"Edge smoothing", YES); assert(taa_enabled() && switched(@"Edge smoothing"));
     flip(@"Edge smoothing", NO); assert(!taa_enabled());
-    assert(!switched(@"Mouse")); flip(@"Mouse", YES); assert(fakeMouse && switched(@"Mouse")); flip(@"Mouse", NO); assert(!fakeMouse);
 
     /* The DualSense bow trigger: a switch; greyed out while TOTK_DUALSENSE_TRIGGERS or a test session decides, and on a
        game version without the bow's state (rows are made at each opening). */
     assert(switched(@"DualSense bow trigger")); flip(@"DualSense bow trigger", NO); assert(!fakeTriggers && !switched(@"DualSense bow trigger"));
     flip(@"DualSense bow trigger", YES); assert(fakeTriggers);
-    press(18); fakeTriggersLocked = 1; fakeTriggers = 0; press(18); assert(settingsOpen);
+    panel_toggle(); fakeTriggersLocked = 1; fakeTriggers = 0; panel_toggle(); assert(settingsOpen);
     assert(!menu(@"DualSense bow trigger").enabled && [menu(@"DualSense bow trigger").titleOfSelectedItem isEqualToString:@"Off"]);
-    press(18); fakeTriggersLocked = 0; fakeTriggersAvailable = 0; press(18);
+    panel_toggle(); fakeTriggersLocked = 0; fakeTriggersAvailable = 0; panel_toggle();
     assert(!menu(@"DualSense bow trigger").enabled && [menu(@"DualSense bow trigger").titleOfSelectedItem isEqualToString:@"Not in this version"]);
-    press(18); fakeTriggersAvailable = 1; fakeTriggers = 1; press(18); assert(settingsOpen && switched(@"DualSense bow trigger"));
+    panel_toggle(); fakeTriggersAvailable = 1; fakeTriggers = 1; panel_toggle(); assert(settingsOpen && switched(@"DualSense bow trigger"));
 
     /* Controller type: auto names the controller it sees. */
-    shows(@"Controller type", @"Auto (PlayStation)");
-    pick(@"Controller type", @"Switch"); assert(fakePadType == GAMEPAD_TYPE_SWITCH);
-    pick(@"Controller type", @"Auto (PlayStation)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
-    fakePadDetected = -1; shows(@"Controller type", @"Auto (no controller)");
+    shows(@"Input mode", @"Auto (PS5)");
+    pick(@"Input mode", @"PS5"); assert(fakePadType == GAMEPAD_TYPE_PS5);
+    pick(@"Input mode", @"Xbox"); assert(fakePadType == GAMEPAD_TYPE_XBOX);
+    pick(@"Input mode", @"Keyboard + Mouse"); assert(fakePadType == GAMEPAD_TYPE_KEYBOARD_MOUSE && fakeMouse);
+    pick(@"Input mode", @"Keyboard"); assert(fakePadType == GAMEPAD_TYPE_KEYBOARD && !fakeMouse);
+    pick(@"Input mode", @"Auto (PS5)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
+    fakePadDetected = -1; shows(@"Input mode", @"Auto (Keyboard)");
 
     /* Rumble, its strength and gyro aiming. */
     assert(switched(@"Rumble")); flip(@"Rumble", NO); assert(!fakeFeedback[0] && !switched(@"Rumble")); flip(@"Rumble", YES); assert(fakeFeedback[0]);
@@ -217,38 +225,43 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(switched(@"Gyro aiming")); flip(@"Gyro aiming", NO); assert(!fakeFeedback[1]); flip(@"Gyro aiming", YES); assert(fakeFeedback[1]);
     /* Rows are made at each opening: a variable that decides (greyed out), a device the run started without (the next
        launch), a strength the file holds that is not a choice. */
-    press(18); fakeFeedbackLocked[1] = 1; fakeFeedbackPresent[0] = 0; fakeGain = 2.5f; press(18); assert(settingsOpen);
+    panel_toggle(); fakeFeedbackLocked[1] = 1; fakeFeedbackPresent[0] = 0; fakeGain = 2.5f; panel_toggle(); assert(settingsOpen);
     assert(!menu(@"Gyro aiming").enabled && [menu(@"Gyro aiming").titleOfSelectedItem isEqualToString:@"On"]);
     (void)row(@"Rumble (from the next launch)"); flip(@"Rumble (from the next launch)", NO); assert(!fakeFeedback[0]);
     shows(@"Rumble strength", @"2.5×"); pick(@"Rumble strength", @"3×"); assert(fakeGain == 3);
-    press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
-    press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
+    panel_toggle(); fakeGainLocked = 1; panel_toggle(); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
+    panel_toggle(); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; panel_toggle(); assert(settingsOpen);
     assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
-    NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
+    NSSize was = window.contentView.bounds.size; panel_toggle(); [window setContentSize:NSMakeSize(1728, 486)]; panel_toggle(); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    press(18); [window setContentSize:was]; press(18); assert(settingsOpen);
+    panel_toggle(); [window setContentSize:was]; panel_toggle(); assert(settingsOpen);
 
-    /* While it is open the game gets no keys (only key 1 and Esc act); after it closes, keys reach the game again. */
+    /* While it is open the game gets no keys (Esc closes it); after it closes, keys reach the game again. */
     key_event(38, YES); assert(!keys[38]); key_event(38, NO);
-    key_event(18, YES); key_event(18, NO); assert(!settingsOpen);
+    key_event(53, YES); key_event(53, NO); assert(!settingsOpen);
     key_event(38, YES); assert(keys[38]); key_event(38, NO); assert(!keys[38]);
-    /* Keys 2-7 are no shortcuts any more. */
-    int interp = mfx_requested(); float shape = runtime_aspect_ratio();
-    for (unsigned k = 19; k <= 26; k++) if (k != 24 && k != 25) press(k);
-    assert(mfx_requested() == interp && runtime_aspect_ratio() == shape && !settingsOpen && !taa_enabled() && !fakeMouse);
+    memset(keyboardMap,0,sizeof keyboardMap);
+    int hud=fps_overlay_hud_mode();press(18);assert(fps_overlay_hud_mode()!=hud);press(18);press(18);assert(fps_overlay_hud_mode()==hud);
+    int interp=mfx_requested();press(19);assert(mfx_requested()!=interp);
+    int output=runtime_output_mode();press(20);assert(runtime_output_mode()!=output);press(20);press(20);assert(runtime_output_mode()==output);
+    float aspect=runtime_aspect_ratio();press(21);assert(!aspect_near(runtime_aspect_ratio(),aspect));press(21);assert(aspect_near(runtime_aspect_ratio(),aspect));
+    press(23);assert(taa_enabled());press(23);assert(!taa_enabled());
+    int oldType=fakePadType;press(22);assert(fakePadType==(oldType+1)%GAMEPAD_TYPE_COUNT);
+    press(26);assert(fakeMouse);press(26);assert(!fakeMouse);
+    fakePadType=GAMEPAD_TYPE_AUTO;
 
     /* The contribute button with no contribution file (TOTK_SHADER_CONTRIB unset): says so, sends nothing. */
-    press(18); assert(settingsOpen);
+    panel_toggle(); assert(settingsOpen);
     unsetenv("TOTK_SHADER_CONTRIB"); [settingsPanel contribute:[NSButton new]];
     assert([settingsPanel.hint.stringValue hasPrefix:@"Nothing to contribute"]);
-    press(18); assert(!settingsOpen);
+    panel_toggle(); assert(!settingsOpen);
 
     /* Chinese. */
-    setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
-    shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
+    setenv("TOTK_UI_LANG", "zh", 1); panel_toggle(); assert(settingsOpen);
+    shows(@"分辨率", @"1080p"); shows(@"输入模式", @"自动（键盘）");
     assert(switched(@"DualSense 拉弓扳机"));
-    fakePadDetected = GAMEPAD_TYPE_SWITCH; shows(@"手柄类型", @"自动（Switch）");
+    fakePadDetected = GAMEPAD_DETECTED_SWITCH; shows(@"输入模式", @"自动（Switch）");
     pick(@"补帧", @"50+50"); assert(mfx_requested() == MFX_50);
     shows(@"震动强度", @"1×（默认）"); assert(switched(@"震动") && switched(@"体感瞄准"));
 
@@ -258,6 +271,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (app menu / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 1-7 hardcoded, Chinese)");
     return 0;
 }}

@@ -1,4 +1,4 @@
-/* Other picture shapes on the Mac: the settings panel (key 1, frontend.m) picks 16:9 (the game's own), 16:10, 21:9 or
+/* Other picture shapes on the Mac: the settings panel (app menu, frontend.m) picks 16:9 (the game's own), 16:10, 21:9 or
    32:9, and the window takes that shape (user 2026-10-25; fitting the window's own shape was dropped then).
    TOTK_ASPECT=<w>:<h>, <w>x<h> or a ratio (2.39, 3440x1440) starts on that ratio, which the panel then also offers.
    iPhone / iPad: always the screen's shape (no panel; TOTK_ASPECT=0 keeps 16:9), see the TARGET_OS_IPHONE part of

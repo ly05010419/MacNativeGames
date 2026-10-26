@@ -18,9 +18,10 @@ static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
 static NSView *hudBox;   /* the FPS / shader / load box (TOTKHudBox), nil with TOTK_HUD=corners */
-/* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
+/* The settings panel (app menu, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
+static NSString *settings_pad_auto_text(void);
 /* Mouse mode (the settings panel, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the
    pointer -- moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and
    movement to gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text
@@ -117,9 +118,8 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
-/* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
-   menu) do anything; releases still go through so nothing stays held. */
--(void)keyDown:(NSEvent *)e{if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+/* Esc closes the settings panel; releases still go through so nothing stays held. */
+-(void)keyDown:(NSEvent *)e{if(settingsOpen){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{int shift=!!(e.modifierFlags&NSEventModifierFlagShift),option=!!(e.modifierFlags&NSEventModifierFlagOption);
  if(e.keyCode==56&&(!settingsOpen||!shift))runtime_input_key(56,shift);if(e.keyCode==58&&(!settingsOpen||!option))runtime_input_key(58,option);}
@@ -170,7 +170,7 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
   CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];runtime_mouse_release();
   window.acceptsMouseMovedEvents=((TOTKInputView *)window.contentView).cursorAutoHideActive;
  }
- fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel, key 1, or Command-Tab lets it go)":"let go");
+ fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (the settings panel or Command-Tab lets it go)":"let go");
 }
 @interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
@@ -195,6 +195,22 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
  if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+ if(full){
+  const char *interpolation[]={TOTK_UI("关","off"),"30+30","40+40","50+50",TOTK_UI("不限帧","unlimited")};
+  const char *picture[]={"1080p","MetalFX",TOTK_UI("原生","native"),TOTK_UI("原生 + MetalFX","native + MetalFX"),"720p"};
+  NSString *types[]={settings_pad_auto_text(),@"PS5",@"Xbox",@(TOTK_UI("键盘","Keyboard")),@(TOTK_UI("键盘 + 鼠标","Keyboard + Mouse"))};
+  double ratio=runtime_aspect_ratio();
+  NSString *aspect=fabs(ratio-16.0/9)<0.01?@"16:9":fabs(ratio-16.0/10)<0.01?@"16:10":
+                   fabs(ratio-21.0/9)<0.01?@"21:9":fabs(ratio-32.0/9)<0.01?@"32:9":[NSString stringWithFormat:@"%.3f",ratio];
+  NSString *on=@(TOTK_UI("开","on")),*off=@(TOTK_UI("关","off"));
+  NSString *reminder=[NSString stringWithFormat:@(TOTK_UI(
+   "\n快捷键\n1 性能信息：全部 → FPS → 关\n2 补帧：%@\n3 画质：%@\n4 画面比例：%@\n5 边缘平滑：%@\n6 输入模式：%@\n7 鼠标操作：%@\n",
+   "\nShortcuts\n1 Overlay: all → FPS only → off\n2 Interpolation: %@\n3 Picture: %@\n4 Aspect ratio: %@\n5 Edge smoothing: %@\n6 Input mode: %@\n7 Mouse: %@\n")),
+   @(interpolation[mfx_requested()]),@(picture[runtime_output_mode()]),aspect,taa_enabled()?on:off,
+   types[runtime_gamepad_type(NULL)],runtime_mouse_enabled()?on:off];
+  [a appendAttributedString:[[NSAttributedString alloc] initWithString:reminder attributes:@{NSFontAttributeName:mono,
+    NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.8 alpha:1]}]];
+ }
  /* The commit the app was built from (user 2026-10-25), last and grey: TOTK_SOURCE_COMMIT from the launcher. */
  const char *commit=getenv("TOTK_SOURCE_COMMIT");
  if(commit&&*commit)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@(TOTK_UI("版本 %s\n","build %s\n")),commit]
@@ -210,6 +226,37 @@ static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
 @end
 #include "settings_panel.h"
+void runtime_input_shortcut(unsigned code) {
+ dispatch_async(dispatch_get_main_queue(), ^{
+  switch(code) {
+   case 18: {
+    int mode=fps_overlay_hud_mode();
+    fps_overlay_set_hud_mode(mode==HUD_MODE_ALL?HUD_MODE_MINIMAL:mode==HUD_MODE_MINIMAL?HUD_MODE_OFF:HUD_MODE_ALL);
+    [(TOTKHudBox *)hudBox refresh];break;
+   }
+   case 19: {
+    int mode=(mfx_requested()+1)%MFX_NMODES;
+    dm_gfx_set_flag("mfx_interp",mode);if(mode!=MFX_OFF)nvn_fps_lock_set(0);break;
+   }
+   case 20: {
+    int mode=runtime_output_mode();
+    for(int i=0;i<3;i++) {
+     mode=mode==OUTPUT_MODE_METALFX?OUTPUT_MODE_NATIVE:mode==OUTPUT_MODE_NATIVE?OUTPUT_MODE_OFF:OUTPUT_MODE_METALFX;
+     if(runtime_output_mode_set(mode)){settings_window_for(mode);break;}
+    }
+    break;
+   }
+   case 21: {
+    float ratio=runtime_aspect_ratio();if(!(ratio>0))break;
+    float next=aspect_near(ratio,16.0/9)?21.0/9:16.0/9;
+    if(runtime_aspect_set_ratio(next))runtime_front_resize_aspect(next);break;
+   }
+   case 23:taa_set(!taa_enabled());break;
+   case 22:runtime_gamepad_type_set((runtime_gamepad_type(NULL)+1)%GAMEPAD_TYPE_COUNT);break;
+   case 26:runtime_gamepad_type_set(runtime_mouse_enabled()?GAMEPAD_TYPE_KEYBOARD:GAMEPAD_TYPE_KEYBOARD_MOUSE);break;
+  }
+ });
+}
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -285,6 +332,7 @@ void runtime_front_resize_aspect(double ratio){
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
+-(void)showSettings:(id)sender{(void)sender;runtime_settings_toggle();}
 -(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");}
 -(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
@@ -319,6 +367,8 @@ static void front_install_menu(void){
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
+ NSMenuItem *settings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("设置…","Settings…")) action:@selector(showSettings:) keyEquivalent:@""];
+ settings.target=windowDelegate;[appMenu addItem:settings];
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}

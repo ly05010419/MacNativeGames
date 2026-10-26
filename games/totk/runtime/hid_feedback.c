@@ -153,7 +153,7 @@ int runtime_hid_feedback_flag(const char *name, int v) {
     fprintf(stderr, "[hid] %s %s%s\n", name, v ? "on" : "muted", on ? "" : " (no effect: the game has no such device in this run; start it with TOTK_RUMBLE=1 / TOTK_GYRO=1, or without rumble.txt / gyro.txt saying off)");
     return 1;
 }
-/* The settings panel (key 1, runtime/settings_panel.h). The variable or an agent's test session decides first, as above; the
+/* The settings panel (app menu, runtime/settings_panel.h). The variable or an agent's test session decides first, as above; the
    row then shows that value, greyed out. Otherwise the switch shows the choice in force: until the player picks, whether
    the game has the device and it is not muted. A pick is saved in rumble.txt / gyro.txt for the next launch and, when the
    game has the device in this run, mutes or unmutes it at once, as "flag rumble|gyro 0|1" does. A device the run started

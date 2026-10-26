@@ -1,4 +1,4 @@
-"""Controller type on key 6 (runtime/gamepad.m): cycle, saved next to controls.txt, read back at the next start."""
+"""Input mode (runtime/gamepad.m): selection, saved next to controls.txt, read back at the next start."""
 import json
 import shutil
 import subprocess
