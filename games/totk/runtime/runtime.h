@@ -158,6 +158,8 @@ void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): m
 void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */
 void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_gamepad_switch_capture(void *controller, int pressed);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
 int runtime_phone_fps(void);                /* d2r_gfx hle_nvn.c, iPhone / iPad: 30 while held at 30 (TOTK_PHONE_FPS), else 60 */
 void runtime_phone_fps_set(int fps);        /* 30 holds 30, anything else up to 60: the touch controls' button, at once */
@@ -182,6 +184,7 @@ float runtime_rumble_gain(void);
 void runtime_rumble_gain_set(float gain);
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);
 void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);   /* side 0 left, 1 right */
+void runtime_rumble_pulse(float intensity, unsigned ms);
 /* The settings panel's DualSense bow trigger switch (runtime/gamepad_feedback.m, main queue): available for Breath of the Wild
    1.9.0 and Tears of the Kingdom 1.4.3; locked when TOTK_DUALSENSE_TRIGGERS or an agent's test session decides; the choice
    in force; choosing saves dualsense-triggers.txt and turns the connected DualSense's triggers on or off at once. */

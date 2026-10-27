@@ -31,6 +31,7 @@ void runtime_feedback_attach(GCController *c) { (void)c; }
 void runtime_feedback_detach(GCController *c) { (void)c; }
 void runtime_feedback_quiet(void) {}
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) { (void)side; (void)al; (void)fl; (void)ah; (void)fh; }
+void runtime_rumble_pulse(float intensity, unsigned ms) { (void)intensity; (void)ms; }
 int runtime_rumble_gain_locked(void) { return 1; }
 float runtime_rumble_gain(void) { return 1; }
 void runtime_rumble_gain_set(float g) { (void)g; }
@@ -62,6 +63,8 @@ static pthread_mutex_t wantLock = PTHREAD_MUTEX_INITIALIZER;
 static float want[2][4] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
 static uint64_t wantAt[2], wantCount, wantCountLogged;
 static float strongest;
+static float pulseIntensity;
+static uint64_t pulseUntil;
 static _Atomic float gain = 1.0f;   /* the rumble queue reads it; the settings panel sets it */
 
 void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) {
@@ -72,7 +75,13 @@ void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) {
     pthread_mutex_unlock(&wantLock);
 }
 void runtime_feedback_quiet(void) {
-    pthread_mutex_lock(&wantLock); wantAt[0] = wantAt[1] = 0; pthread_mutex_unlock(&wantLock);
+    pthread_mutex_lock(&wantLock); wantAt[0] = wantAt[1] = 0; pulseUntil = 0; pthread_mutex_unlock(&wantLock);
+}
+void runtime_rumble_pulse(float intensity, unsigned ms) {
+    if (!rumbleQueue || !runtime_feedback_choice(0) || !(intensity > 0) || !ms) return;
+    pthread_mutex_lock(&wantLock);
+    pulseIntensity = intensity < 1 ? intensity : 1; pulseUntil = runtime_now_ns() + (uint64_t)ms * 1000000ull;
+    pthread_mutex_unlock(&wantLock);
 }
 static float intensity_of(const float v[4]) {
     float a = sqrtf(v[0] * v[0] + v[2] * v[2]) * gain;
@@ -133,12 +142,13 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
     if (!playing[side]) { playing[side] = YES; playingSince[side] = now; }
     return YES;
 }
-static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
+static void rumble_tick(void) {
     uint64_t now = runtime_now_ns();
     for (int side = 0; side < 2; side++) {
-        float v[4]; uint64_t at;
-        pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pthread_mutex_unlock(&wantLock);
+        float v[4]; uint64_t at, pulseEnd; float pulse;
+        pthread_mutex_lock(&wantLock); memcpy(v, want[side], sizeof v); at = wantAt[side]; pulseEnd = pulseUntil; pulse = pulseIntensity; pthread_mutex_unlock(&wantLock);
         float intensity = at && now - at < RUMBLE_STALE_MS * 1000000ull ? intensity_of(v) : 0, sharpness = sharpness_of(v);
+        if (pulseEnd && now < pulseEnd && pulse > intensity) { intensity = pulse; sharpness = 0.5f; }
         if (intensity < 0.02f) {
             if (!playing[side]) continue;
             if (sentIntensity[side] != 0 && !send_params(players[side], side, 0, sharpness)) continue;
@@ -281,6 +291,7 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
     if (id != 0x30) return;
     runtime_gamepad_switch_left((__bridge void *)motionPad,
         p[6] | (p[7] & 15) << 8, (p[7] >> 4) | p[8] << 4);
+    runtime_gamepad_switch_capture((__bridge void *)motionPad, p[4] & 0x20);
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
     for (int k = 0; k < 3; k++) {
@@ -320,6 +331,7 @@ static void hid_motion_start(void) {   /* main queue */
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidDevice) return;
     runtime_gamepad_switch_left(NULL, -1, -1);
+    runtime_gamepad_switch_capture(NULL, 0);
     IOHIDDeviceRegisterInputReportCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);
     IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     IOHIDDeviceClose(hidDevice, kIOHIDOptionsTypeNone);

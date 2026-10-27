@@ -52,6 +52,10 @@ void runtime_mouse_button(int button,int down){(void)button;(void)down;}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_release(void){}
 #endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_capture_set_hook(void (*hook)(void)){(void)hook;}
+void runtime_rumble_pulse(float intensity,unsigned ms){(void)intensity;(void)ms;}
+#endif
 void runtime_oe_push_message(uint32_t message){(void)message;}
 void hle_bind_system_event(void *event,int autoclear){(void)event;(void)autoclear;}
 void hle_signal_system_event(void *event){(void)event;}

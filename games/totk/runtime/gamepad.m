@@ -45,6 +45,18 @@ static SwitchLeftFallback rawLeft;
 static uint64_t gamepadRawLeftAt;
 static int32_t gamepadNativeLx, gamepadNativeLy;
 static void refresh_gamepads(void);
+static void (*captureHook)(void);
+static int capturePrev;
+static int rawCapture;
+
+void runtime_capture_set_hook(void (*hook)(void)) { captureHook = hook; }
+void runtime_gamepad_switch_capture(void *source, int pressed) {
+    (void)source;
+    pressed = !!pressed;
+    if (pressed == rawCapture) return;
+    rawCapture = pressed;
+    refresh_gamepads();
+}
 
 /* Called on the main run loop by the already-open Switch HID motion stream. */
 void runtime_gamepad_switch_left(void *source, int x, int y) {
@@ -450,11 +462,13 @@ static void refresh_gamepads(void) {
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0;
     uint64_t rawAt = 0;
+    int capture = rawCapture;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
+        if (pad.buttons[GCInputButtonShare].isPressed) capture = 1;
         float lx = pad.leftThumbstick.xAxis.value, ly = pad.leftThumbstick.yAxis.value;
         nativeLx = stronger_axis(nativeLx, stick_axis(lx));
         nativeLy = stronger_axis(nativeLy, stick_axis(ly));
@@ -478,6 +492,8 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
     }
+    if (capture && !capturePrev && captureHook) captureHook();
+    capturePrev = capture;
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0;
@@ -534,6 +550,13 @@ static void attach_gamepad(GCController *controller) {
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
+    GCControllerButtonInput *share = pad.buttons[GCInputButtonShare];
+    if (share) {
+        BOOL bound = share.isBoundToSystemGesture;
+        share.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        fprintf(stderr, "[totk-input] %s: capture button (%s) takes a screenshot%s\n", (controller.vendorName ?: @"controller").UTF8String,
+                share.localizedName.UTF8String ?: "share", bound ? "; macOS had its own screenshot gesture on it, asked off" : "");
+    } else fprintf(stderr, "[totk-input] %s: no capture button in GameController's profile\n", (controller.vendorName ?: @"controller").UTF8String);
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }
