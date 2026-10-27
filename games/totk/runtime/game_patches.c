@@ -204,6 +204,57 @@ static void patch_cloth_clock(Module *m, uint64_t data_off) {
             TOTK_GAME_VERSION, (unsigned long long)base, (unsigned long long)at);
 }
 
+/* 1.0.0: pre-grab Ultrahand targeting calls the shared sensitivity getter at
+   main+0x1ce78e8, then uses its result for vertical stick movement without dt.
+   Runtime counters confirmed this call in targeting, but not ordinary control.
+   The UltraHand object camera at +0x1ceb7a8 is a different path: leave it alone.
+   Scale only this call's result by the measured 30 Hz ratio. The shared getter,
+   horizontal control and input mapping remain unchanged. Mac/v0 only.
+   TOTK_ULTRAHAND_REALTIME=0 disables this correction for A/B comparisons. */
+static void patch_ultrahand_vertical(Module *m, uint64_t data_off) {
+#if !TARGET_OS_IPHONE && !defined(TOTK_GAME_V112) && !defined(TOTK_GAME_V121)
+    const char *e = getenv("TOTK_ULTRAHAND_REALTIME");
+    if (e && !strcmp(e, "0")) return;
+    const uint64_t site = 0x1ce78e8, getter = 0x1cd3678;
+    const uint64_t stub = ((m->text_end + 15) & ~15ULL) + 400;
+    const uint64_t end = (m->text_end + 0xfff) & ~0xfffULL;
+    const uintptr_t mb = (uintptr_t)m->base;
+    if (site + 8 > m->text_end || getter + 8 > m->text_end || stub + 44 > end || end > m->size)
+        runtime_fail("Ultrahand vertical patch layout");
+    const struct { uint64_t off; uint32_t word; } guards[] = {
+        {site, branch_to(site, getter) | 0x80000000u},
+        {site + 4, 0xaa1303e0}, /* mov x0, x19 */
+        {getter, 0xbd4c2c00},   /* ldr s0, [x0, #0xc2c] */
+        {getter + 4, 0xd65f03c0}
+    };
+    for (unsigned i = 0; i < sizeof guards / sizeof *guards; i++) {
+        uint32_t word; memcpy(&word, m->base + guards[i].off, 4);
+        if (word != guards[i].word) runtime_fail("Ultrahand vertical: original instruction mismatch");
+    }
+    for (unsigned i = 0; i < 44; i++)
+        if (m->base[stub + i]) runtime_fail("Ultrahand vertical: veneer padding not empty");
+    const uint32_t code[] = {
+        0xbd4c2c00,              /* ldr s0, [x0, #0xc2c] (original getter) */
+        0xd10083ff,              /* sub sp, sp, #32 */
+        0xf90003e9,              /* str x9, [sp] */
+        0x3d8007ff,              /* str q31, [sp, #16] */
+        adrp_reg(9, mb + stub + 16, mb + data_off),
+        0xbd40013f,              /* ldr s31, [x9] */
+        0x1e3f0800,              /* fmul s0, s0, s31 */
+        0x3dc007ff,              /* ldr q31, [sp, #16] */
+        0xf94003e9,              /* ldr x9, [sp] */
+        0x910083ff,              /* add sp, sp, #32 */
+        0xd65f03c0               /* ret (the call site's original link) */
+    };
+    for (unsigned i = 0; i < sizeof code / sizeof *code; i++)
+        put_word(m, stub + 4 * i, code[i], "Ultrahand vertical veneer");
+    put_word(m, site, branch_to(site, stub) | 0x80000000u, "Ultrahand vertical call");
+    fprintf(stderr, "[totk] 1.0.0 Ultrahand vertical stick: real-time ratio at main+0x1ce78e8 (30 Hz baseline)\n");
+#else
+    (void)m; (void)data_off;
+#endif
+}
+
 static void patch_realtime(Module *m) {
     /* The loader reserved a writable page immediately after main's image.
        No game allocation or rewritten-code veneer can overlap this page. */
@@ -241,6 +292,7 @@ static void patch_realtime(Module *m) {
     frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
     atomic_store(frame_step_data, frame_step_bits(1.0f / 60.0f));
     patch_cloth_clock(m, data_off);
+    patch_ultrahand_vertical(m, data_off);
     fprintf(stderr,"[totk] real-time frame step: %zu verified instructions; initial 16.67 ms, sampled at each present\n",
             sizeof sites / sizeof *sites);
 }
