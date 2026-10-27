@@ -23,6 +23,7 @@ static int fpsGraphEnabled;
 /* The settings panel (key 1, settings_panel.h): while it is open the game gets no keyboard or mouse input. */
 static int settingsOpen;
 static void settings_show(int open);
+static void settings_shortcut_show(void);
 /* Mouse mode (the settings panel, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the
    pointer -- moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and
    movement to gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text
@@ -56,6 +57,7 @@ void *front_metal_layer(void){return (__bridge void *)metalLayer;}
 static void boot_overlay_hide(void){
  if(!bootOverlay||bootOverlay.hidden)return;
  bootOverlay.hidden=YES;
+ settings_shortcut_show();
  if(totk_sr_picture)totk_sr_picture(window.isKeyWindow,runtime_front_window_visible()!=0);
 }
 void front_frame_presented(void){

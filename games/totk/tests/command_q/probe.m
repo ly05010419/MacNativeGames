@@ -7,6 +7,7 @@ static uint64_t start;
 static uint64_t clock_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;}
 uint64_t runtime_now_ns(void){return (clock_ns()-start)*(mode==2?100:1);}
 int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000000ull);}
+const char *runtime_fs_save_root(void){return "/tmp/test-save-profile";}
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}

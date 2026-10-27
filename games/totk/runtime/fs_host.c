@@ -84,6 +84,7 @@ static void init(void) {
     fprintf(stderr, "[totk] host save storage: %s\n", save_root);
 }
 static void ready(void) { pthread_once(&once, init); }
+const char *runtime_fs_save_root(void) { ready(); return save_root; }
 
 /* ---------- mounts and paths ---------- */
 static unsigned mount_add(const char *name, int kind, const char *root) {

@@ -47,7 +47,7 @@ int main(int argc,char **argv){@autoreleasepool{
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+2);
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+3);
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
  TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};
@@ -69,6 +69,12 @@ int main(int argc,char **argv){@autoreleasepool{
   press(family==GAMEPAD_TYPE_SWITCH?1:2);CHECK(!settingsOpen&&textCapture==2);
   settings_show(1);CHECK(settingsOpen);
  }
+ /* Physical shoulder triggers switch tabs in both directions and wrap. */
+ CHECK(settingsPanel.projectOverlay.superview==window.contentView);
+ CHECK(settingsPanel.tab==0);press(1ull<<9);CHECK(settingsPanel.tab==1&&settingsPanel.projectOverlay.superview==window.contentView);
+ press(1ull<<8);CHECK(settingsPanel.tab==0);press(1ull<<8);CHECK(settingsPanel.tab==5&&settingsPanel.projectOverlay.superview==window.contentView);
+ press(1ull<<9);CHECK(settingsPanel.tab==0);
+ NSView *projectCard=settingsPanel.projectOverlay;settings_show(0);CHECK(!projectCard.superview);settings_show(1);CHECK(settingsPanel.projectOverlay.superview==window.contentView);
  [settingsPanel controllerPad:pad(0) time:2 active:NO];[settingsPanel controllerPad:pad(1ull<<15) time:3 active:YES];CHECK(!settingsPanel.controllerArmed);
  [settingsPanel controllerPad:pad(0) time:4 active:YES];CHECK(settingsPanel.controllerArmed);
  settingsPanel.controllerIndex=0;[settingsPanel controllerPad:pad(1ull<<15) time:5 active:YES];NSInteger first=settingsPanel.controllerIndex;

@@ -35,7 +35,10 @@ static char savedName[64], savedWord[16];
 void runtime_setting_save(const char *name, const char *word, const char *what) {
     (void)what; snprintf(savedName, sizeof savedName, "%s", name); snprintf(savedWord, sizeof savedWord, "%s", word);
 }
-int runtime_setting_word(const char *name, char *word, size_t size) { (void)name; (void)word; (void)size; return 0; }
+int runtime_setting_word(const char *name, char *word, size_t size) {
+    if (strcmp(name, "menu-language.txt") || strcmp(savedName, name)) return 0;
+    snprintf(word, size, "%s", savedWord); return 1;
+}
 static int fakeSettingsCapture;
 void runtime_gamepad_text_capture(int on) { fakeSettingsCapture = !!on; }
 /* runtime/hid_feedback.c's and gamepad_feedback.m's rumble, strength and gyro switches without a controller. */
@@ -75,6 +78,10 @@ static void key_event(unsigned short code, BOOL down) {
 }
 static TOTKSettingRow *row(NSString *title) {
     for (TOTKSettingRow *r in settingsPanel.rows) if ([r.title hasPrefix:title]) return r;
+    for (NSNumber *tab in @[@0,@1]) {
+        [settingsPanel selectTab:tab.integerValue];
+        for (TOTKSettingRow *r in settingsPanel.rows) if ([r.title hasPrefix:title]) return r;
+    }
     fprintf(stderr, "no row %s\n", title.UTF8String); abort();
 }
 static NSPopUpButton *menu(NSString *title) { return (NSPopUpButton *)row(title).control; }
@@ -115,11 +122,39 @@ int main(int argc, const char **argv) { @autoreleasepool {
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (hud_compact()) { TOTKHudBox *box = [[TOTKHudBox alloc] initWithFrame:NSZeroRect]; [window.contentView addSubview:box]; hudBox = box; }
 
+    if (argc == 2 && !strcmp(argv[1], "--hint")) {
+        assert(!settings_shortcut_controller(GAMEPAD_TYPE_AUTO,-1));
+        assert([settings_shortcut_controller(GAMEPAD_TYPE_AUTO,GAMEPAD_TYPE_PLAYSTATION) isEqualToString:@"L2 + R2 + L3"]);
+        assert([settings_shortcut_controller(GAMEPAD_TYPE_AUTO,GAMEPAD_TYPE_XBOX) isEqualToString:@"LT + RT + L3"]);
+        assert([settings_shortcut_controller(GAMEPAD_TYPE_AUTO,GAMEPAD_TYPE_SWITCH) isEqualToString:@"ZL + ZR + L3"]);
+        assert([settings_shortcut_controller(GAMEPAD_TYPE_XBOX,GAMEPAD_TYPE_PLAYSTATION) isEqualToString:@"LT + RT + L3"]);
+        settingsLanguage=1;
+        NSView *obstacle=[[NSView alloc] initWithFrame:NSMakeRect(900,650,340,60)];[window.contentView addSubview:obstacle];
+        TOTKSettingsShortcutHint *hint=settings_shortcut_view(window.contentView,GAMEPAD_TYPE_AUTO,GAMEPAD_TYPE_PLAYSTATION);
+        assert(hint && NSContainsRect(window.contentView.bounds,hint.frame) && !NSIntersectsRect(obstacle.frame,hint.frame));
+        assert(NSMinX(hint.frame)==12 && NSMaxY(hint.frame)==NSMaxY(window.contentView.bounds)-12);
+        assert([hint hitTest:NSMakePoint(3,3)] == nil);
+        assert([((NSTextField *)hint.subviews[0]).stringValue isEqualToString:@"Ouvrir le menu du jeu"]);
+        assert([((NSTextField *)hint.subviews[1]).stringValue containsString:@"L2 + R2 + L3"]);
+        [hint removeFromSuperview];settingsLanguage=2;
+        hint=settings_shortcut_view(window.contentView,GAMEPAD_TYPE_AUTO,-1);
+        assert([((NSTextField *)hint.subviews[0]).stringValue isEqualToString:@"打开游戏菜单"]);
+        assert([((NSTextField *)hint.subviews[1]).stringValue containsString:@"1"]);
+        [hint removeFromSuperview];[obstacle removeFromSuperview];settingsLanguage=0;
+        bootOverlay=[NSView new];[window.contentView addSubview:bootOverlay];
+        fakePadDetected=GAMEPAD_TYPE_XBOX;boot_overlay_hide();assert(bootOverlay.hidden);
+        NSView *last=window.contentView.subviews.lastObject;assert([last isKindOfClass:TOTKSettingsShortcutHint.class]);
+        assert([((NSTextField *)last.subviews[1]).stringValue containsString:@"LT + RT + L3"]);
+        boot_overlay_hide();assert(window.contentView.subviews.lastObject==last);
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:6.2]];
+        assert(!last.superview); puts("pass: timed menu shortcut hint"); return 0;
+    }
+
     /* Key 1 opens it; a held key acts once. */
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 13);
+    assert(settingsPanel.rows.count == 7);
 
     /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
     assert(!switched(@"FPS graph"));
@@ -256,8 +291,17 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.hint.stringValue hasPrefix:@"Nothing to contribute"]);
     press(18); assert(!settingsOpen);
 
-    /* Chinese. */
-    setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
+    /* Menu language is a separate saved preference: English default, French, Chinese, restored across openings. */
+    unsetenv("TOTK_UI_LANG"); settingsLanguage=-1; press(18); assert(settingsOpen);
+    [settingsPanel selectTab:5]; pick(@"Menu language", @"Français");
+    assert(settingsLanguage==1 && !strcmp(savedName,"menu-language.txt") && !strcmp(savedWord,"fr"));
+    [settingsPanel selectTab:0]; (void)row(@"Résolution");
+    press(18); settingsLanguage=-1; press(18); assert(settingsOpen && settingsLanguage==1);
+    [settingsPanel selectTab:5]; pick(@"Langue du menu", @"中文"); assert(settingsLanguage==2);
+    [settingsPanel selectTab:0]; (void)row(@"分辨率");
+    press(18);
+    /* Environment override still wins when explicitly supplied. */
+    setenv("TOTK_UI_LANG", "zh", 1); settingsLanguage=-1; press(18); assert(settingsOpen);
     shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
     assert(switched(@"DualSense 拉弓扳机"));
     fakePadDetected = GAMEPAD_TYPE_SWITCH; shows(@"手柄类型", @"自动（Switch）");
