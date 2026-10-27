@@ -220,12 +220,7 @@ static void settle(void) {   // queue
     totk_sr_gfx s = g_latest; int have = g_have_latest;
     uint64_t now = now_ns(), changed = g_latest_ns, pending = g_pending_ns;
     // leading: the first change after a quiet half second goes at once; later ones wait until quiet, at most MAXWAIT_NS
-    totk_sr_gfx without_view = s, reported_without_view = g_reported;
-    without_view.view_w = without_view.view_h = 0;
-    reported_without_view.view_w = reported_without_view.view_h = 0;
-    int view_only = g_have_reported && !memcmp(&without_view, &reported_without_view, sizeof s);
-    int leading = pending == changed && now - g_reported_ns >= SETTLE_NS && !view_only;
-    int quiet = now - changed >= SETTLE_NS, overdue = now - pending >= MAXWAIT_NS;
+    int leading = pending == changed && now - g_reported_ns >= SETTLE_NS, quiet = now - changed >= SETTLE_NS, overdue = now - pending >= MAXWAIT_NS;
     if (have && !leading && !quiet && !overdue) {
         uint64_t wait = SETTLE_NS - (now - changed), left = MAXWAIT_NS - (now - pending);
         pthread_mutex_unlock(&g_mu);
