@@ -46,7 +46,9 @@ generated.
 
 ## What you need
 
-- An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1).
+- An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1). The command
+  line tools are enough to run the one-command build below; a full Xcode is only needed for the optional
+  `scripts/precompile_cached_shaders.py`, which calls the `metal` compiler.
 - Super Mario Odyssey with the **1.3.0** update, as a combined XCI or NSP that you dumped yourself. Other versions are
   rejected by hash, including **1.4.1**: it has the same executables but slightly different data, and is not
   supported yet (see "Version naming" below).
