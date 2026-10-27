@@ -104,7 +104,9 @@ int main(int argc, char **argv) {
             totk_sr_start("botw", "1.9.0"); totk_sr_picture(1, 1);
             run_frames(0.8);
             expect(labels(G), @[L1], "first graphics state");
-            for (int i = 0; i < 30; i++) { totk_sr_view(2000 + 10 * i, 1700, 120, 0); run_frames(0.01); }   // a window dragged larger
+            // Keep the synthetic drag burst shorter than the 500 ms quiet window; sleeping two frames per
+            // resize made the test itself take about as long as the debounce and flaky under CI load.
+            for (int i = 0; i < 30; i++) { totk_sr_view(2000 + 10 * i, 1700, 120, 0); frame(120, SR_CAP_UNCAPPED, 0, 1); }
             fake_pic = (totk_sr_gfx){.out_w = 2560, .out_h = 1440, .upscale = 2, .taa = 1, .fi_mode = MFX_50};
             totk_sr_view(3840, 2160, 160, 1);   // full screen on another display
             upscaling = antialiasing = 1;

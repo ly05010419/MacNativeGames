@@ -107,6 +107,12 @@ int runtime_triggers_locked(void){return 0;}
 int runtime_triggers_choice(void){return 0;}
 void runtime_triggers_choose(int on){(void)on;}
 int fps_overlay_value(void){return 0;}   /* the HUD's FPS graph (PR #940) */
+/* frontend.m includes screenshot.h, but these probes intentionally omit the renderer. */
+void mtl_grab_next_present(void (^cb)(CGImageRef img)){(void)cb;}
+#ifdef FRONTEND_REAL_GAMEPAD
+/* The settings probe uses gamepad.m, without the production feedback backend. */
+void runtime_rumble_pulse(float intensity,unsigned ms){(void)intensity;(void)ms;}
+#endif
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0
