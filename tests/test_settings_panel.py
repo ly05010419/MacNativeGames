@@ -22,7 +22,7 @@ class SettingsPanel(unittest.TestCase):
             self.skipTest('The production Metal 4 mode implementations require macOS 26 and its SDK')
         gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
         with tempfile.TemporaryDirectory() as directory:
-            for version in ('', 'TOTK_GAME_V143'):
+            for version in ('', 'TOTK_GAME_V121', 'TOTK_GAME_V143'):
                 executable = Path(directory) / ('settings-panel-' + (version or 'base'))
                 command = [compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra',
                            '-Werror', '-Wno-deprecated-declarations', '-I' + str(gfx / 'include'),
@@ -38,6 +38,11 @@ class SettingsPanel(unittest.TestCase):
                     command.append('-D' + version + '=1')
                 build = subprocess.run(command, capture_output=True, text=True, timeout=90)
                 self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+                if not version:
+                    run = subprocess.run([str(executable), '--hint'], env={**os.environ, 'TOTK_UI_LANG': 'en'},
+                                         capture_output=True, text=True, timeout=20)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn('pass: timed menu shortcut hint', run.stdout)
                 for layout in ('compact', 'corners'):
                     for overridden in (False, True):
                         with self.subTest(version=version, layout=layout, overridden=overridden):

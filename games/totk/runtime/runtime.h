@@ -48,6 +48,7 @@ void runtime_core_back(int *away);
 void runtime_spin_wait(unsigned module, uint64_t head);   // threads.c: a pass of a gated spin wait (loader.c runtime_dispatch)
 void runtime_save_probe(void);
 int runtime_fs_save_busy(void);   /* runtime/fs_host.c: the game is writing save data (window close waits) */
+const char *runtime_fs_save_root(void); /* current account's actual save folder, initialized by fs_host.c */
 uint8_t *runtime_module_base(const char *name);   /* runtime/loader.c: "main", "subsdk0", "sdk" (probes) */
 uint64_t runtime_module_permission(uint64_t address,uint64_t size,unsigned permission);
 uint64_t runtime_module_lock_permission(uint64_t address,uint64_t size,unsigned mask,unsigned attribute);
