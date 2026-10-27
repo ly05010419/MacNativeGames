@@ -109,10 +109,6 @@ void runtime_triggers_choose(int on){(void)on;}
 int fps_overlay_value(void){return 0;}   /* the HUD's FPS graph (PR #940) */
 /* The fixture links frontend.m without nvn_mtl.m; the renderer owns this callback in the app. */
 void mtl_grab_next_present(void (^cb)(CGImageRef img)){(void)cb;}
-#ifdef FRONTEND_REAL_GAMEPAD
-/* The settings probe links the real gamepad code, but not its feedback backend. */
-void runtime_rumble_pulse(float intensity,unsigned ms){(void)intensity;(void)ms;}
-#endif
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0
