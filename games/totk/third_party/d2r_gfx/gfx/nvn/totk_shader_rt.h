@@ -27,7 +27,8 @@ void totk_rt_submit_stats(uint64_t *wait_n, uint64_t *wait_ns, uint64_t *sync_n,
 void totk_rt_urgent_stats(uint64_t *n, uint64_t *ns);   // urgent jobs done and their time from queued to recorded
 void totk_rt_service_prestart(void);   // start the submit thread's translator service in the background (Mac)
 // Called on the background worker after a translation, before the variant is recorded: compile its Metal library there.
-void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage));
+// urgent: an unskippable draw depends on this job; otherwise use the streaming compiler pool.
+void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage, int urgent));
 // The variant totk_rt_variant would return when the cache index already names one; nil otherwise (never translates).
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers);
 NSString *totk_rt_portable_variant(NSString *name);   // "<variant>_b" as another player's build names it (pipeline contributions)

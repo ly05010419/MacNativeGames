@@ -479,16 +479,16 @@ static NSMutableDictionary<NSString *, NSMutableArray *> *g_rt_pending;   // sha
 static _Atomic uint64_t g_rt_urgent_n, g_rt_urgent_ns;
 static pthread_cond_t g_rt_done = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_rt_gen;
-static void (*g_rt_ready_hook)(NSString *variant, int stage);
-void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage)) { g_rt_ready_hook = hook; }
+static void (*g_rt_ready_hook)(NSString *variant, int stage, int urgent);
+void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage, int urgent)) { g_rt_ready_hook = hook; }
 uint64_t totk_rt_ready_gen(void) { return atomic_load(&g_rt_gen); }
 /* One job: translate on svc, compile its Metal library (the ready hook), record it and wake the waiters. */
-static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint64_t queued) {
+static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint64_t queued, int urgent) {
     NSDictionary *rq = job[1]; int stage = [job[2] intValue]; BOOL existed = [job[3] boolValue]; NSData *code = job[4];
     if (![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     NSDictionary *refl = translate(svc, rq, started);
-    if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
+    if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage, urgent);   // publish only after the Metal library is ready
     pthread_mutex_lock(&g_rt_lock);
     variant_record(shader, rq, refl, existed, started, queued);
     if (g_rt_pending[shader] == job) [g_rt_pending removeObjectForKey:shader];
@@ -505,7 +505,7 @@ static NSMutableArray *rt_job_new(NSString *shader, int stage, NSDictionary *rq,
 static void bg_translate(NSString *shader, int stage, NSDictionary *rq, BOOL existed, NSData *code) {   // g_rt_lock held
     static rt_svc svc[RT_BG_MAX]; static dispatch_queue_t queue[RT_BG_MAX]; static unsigned next; int workers = rt_bg_workers();
     if (!queue[0]) for (int i = 0; i < workers; i++)
-        queue[i] = dispatch_queue_create("totk.shader.background", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
+        queue[i] = dispatch_queue_create("totk.shader.background", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, 0));
     NSMutableArray *job = rt_job_new(shader, stage, rq, existed, code);
     rt_svc *own = &svc[next % workers]; dispatch_queue_t q = queue[next++ % workers];
     uint64_t queued = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -516,7 +516,7 @@ static void bg_translate(NSString *shader, int stage, NSDictionary *rq, BOOL exi
         int mine = [job[0] intValue] == RT_JOB_QUEUED;   // not taken back by a draw, nor made urgent
         if (mine) job[0] = @(RT_JOB_RUNNING);
         pthread_mutex_unlock(&g_rt_lock);
-        if (mine) rt_job_run(shader, job, own, queued);
+        if (mine) rt_job_run(shader, job, own, queued, 0);
     } });
 }
 /* Run a job now on a free urgent service (g_rt_lock held; the job is marked running, so waiters wait for it). */
@@ -533,7 +533,7 @@ static void urgent_translate(NSString *shader, NSMutableArray *job) {
     dispatch_async(q, ^{ @autoreleasepool {
         dispatch_semaphore_wait(free_svc, DISPATCH_TIME_FOREVER);
         pthread_mutex_lock(&mu); int i = 0; while (busy[i]) i++; busy[i] = 1; pthread_mutex_unlock(&mu);
-        rt_job_run(shader, job, &svc[i], queued);
+        rt_job_run(shader, job, &svc[i], queued, 1);
         pthread_mutex_lock(&mu); busy[i] = 0; pthread_mutex_unlock(&mu);
         dispatch_semaphore_signal(free_svc);
         atomic_fetch_sub(&g_rt_urgent_busy, 1);

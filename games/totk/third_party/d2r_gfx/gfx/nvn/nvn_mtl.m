@@ -22,6 +22,7 @@
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "totk_shader_rt.h"
+#include "totk_compile_queue.h"
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
 #include "totk_taa.h"
@@ -5646,9 +5647,11 @@ static int rt_range_pr_ro(NvProg *p) {
 /* Libraries compiled by the background translation (async shaders), until shader_get takes them on the submit thread. */
 static NSMutableDictionary<NSString *, NvShader *> *g_async_libs;
 static os_unfair_lock g_async_lock = OS_UNFAIR_LOCK_INIT;
-static void async_ready(NSString *variant, int stage) {   // a translator worker (totk_rt_set_ready_hook)
+static void async_ready(NSString *variant, int stage, int urgent) {   // a translator worker (totk_rt_set_ready_hook)
     NSString *pc = [variant stringByAppendingString:@"_b"];
-    NvShader *sh = shader_load(pc, stage);   // safe on several threads at once (the warm-up loads with it)
+    __block NvShader *sh = nil;
+    if (urgent) sh = shader_load(pc, stage);   // work an unskippable draw is waiting for
+    else totk_compile_from_translator(g_dev, ^{ sh = shader_load(pc, stage); });
     if (!sh) return;   // shader_get loads it again on the submit thread and reports the failure there
     os_unfair_lock_lock(&g_async_lock);
     if (!g_async_libs) g_async_libs = [NSMutableDictionary dictionary];
@@ -5736,14 +5739,14 @@ static NvShader *plib_take(NSString *pc, int wait) {
    pipeline archive before the title, so play meets almost no new shader and one or two new pipelines a session, while a
    skipped draw stays missing until its pipeline is ready (behind a queue of predicted pipelines that took long: the
    Great Sky Island water's magenta lasted much longer with it on). */
+#include "../../../../runtime/async_shader_settings.h"
 static int async_shaders(void) {
 #if TARGET_OS_IPHONE
     return 0;   // no translator on the device: missing variants are skipped anyway
 #else
     static int on = -1;
     if (on < 0) {
-        const char *e = getenv("TOTK_ASYNC_SHADERS");
-        on = e && !strcmp(e, "1") && totk_rt_can_translate() && !tbdr_on();
+        on = async_shader_choice() && totk_rt_can_translate() && !tbdr_on();
         if (on) totk_rt_set_ready_hook(async_ready);
         MLOG("[async-shaders] %s", on ? "on: new shaders and pipelines are prepared in the background" : "off");
     }
@@ -7038,11 +7041,16 @@ static int variant_defer(NSString *job, void (^build)(void)) {
     if (fresh) [g_vbusy addObject:job];
     os_unfair_lock_unlock(&g_vbusy_lock);
     if (!fresh) return 1;   // compiling already: the draw waits for that one
-    static dispatch_queue_t q; static dispatch_once_t once;
-    dispatch_once(&once, ^{ q = dispatch_queue_create("totk.shader-variant", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0)); });
     uint64_t n = atomic_fetch_add(&g_vqueued, 1) + 1;
     if (n <= 8 || n % 100 == 0) MLOG("[async-shaders] patched shader variant compiled in the background (%llu so far): %s", (unsigned long long)n, job.UTF8String);
+#if TARGET_OS_IPHONE
+    // Keep the device's existing scheduling; this feature changes Mac streaming only.
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("totk.shader-variant", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0)); });
     dispatch_async(q, ^{ @autoreleasepool { g_variant_bg = 1; build(); g_variant_bg = 0; }
+#else
+    totk_compile_submit(g_dev, ^{ @autoreleasepool { g_variant_bg = 1; build(); g_variant_bg = 0; }
+#endif
         os_unfair_lock_lock(&g_vbusy_lock); [g_vbusy removeObject:job]; os_unfair_lock_unlock(&g_vbusy_lock); });
     return 1;
 }
@@ -7886,7 +7894,6 @@ static NSMutableArray<ApsoItem *> *g_apso_done;
 static os_unfair_lock g_apso_lock = OS_UNFAIR_LOCK_INIT;
 static _Atomic int g_apso_ready;
 static int g_pso_deferred;
-#define APSO_QUEUES 4
 static void apso_claim(void) {
     if (!atomic_exchange(&g_apso_ready, 0)) return;
     os_unfair_lock_lock(&g_apso_lock); NSArray<ApsoItem *> *done = g_apso_done; g_apso_done = nil; os_unfair_lock_unlock(&g_apso_lock);
@@ -7904,10 +7911,15 @@ static int apso_defer(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFuncti
     ApsoItem *it = [ApsoItem new]; it->k = *k; it->vs = vs; it->fs = fs; it->border = bfn != nil; it->bt = bp_now(); it->brec = brec;
     MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, bfn, 0); NSString *key = pso_archive_key(k, vs, fs, 0);
     hm_put_id(&g_apso_wait, k, @YES);
-    // A few serial queues: a new area can bring hundreds of pipelines at once, which should not take every core from the game.
+#if TARGET_OS_IPHONE
+    enum { APSO_QUEUES = 4 };
     static dispatch_queue_t q[APSO_QUEUES]; static unsigned next;
     if (!q[0]) for (int i = 0; i < APSO_QUEUES; i++) q[i] = dispatch_queue_create("totk.pipeline.background", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
     dispatch_async(q[next++ % APSO_QUEUES], ^{
+#else
+    // Share the device-sized streaming pool with patched libraries and prefetch.
+    totk_compile_submit(g_dev, ^{
+#endif
         NSError *e = nil; it->ps = pso_new(d, key, &e); it->e = e;
         os_unfair_lock_lock(&g_apso_lock);
         if (!g_apso_done) g_apso_done = [NSMutableArray array];
@@ -8158,12 +8170,17 @@ static int prefetch_on(void) { static int on = -1; if (on < 0) { const char *e =
 static _Atomic uint64_t g_pf_progs, g_pf_queued, g_pf_built, g_pf_ns, g_pf_last;
 void mtl_prog_prefetch(const prog_t *p) {
     if (!prefetch_on() || !p || !p->nstage) return;
-    static NSMutableSet<NSString *> *seen; static dispatch_queue_t q; static dispatch_semaphore_t slots; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+    static NSMutableSet<NSString *> *seen; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
+#if TARGET_OS_IPHONE
+    static dispatch_queue_t q; static dispatch_semaphore_t slots;
+#endif
     static dispatch_once_t once; dispatch_once(&once, ^{
         seen = [NSMutableSet set];
+#if TARGET_OS_IPHONE
         q = dispatch_queue_create("totk.shader-prefetch", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
-        slots = dispatch_semaphore_create(4);   // the system compiler service runs requests side by side; 4 leaves cores to the game
-        MLOG("[prefetch] 着色器预编已开（TOTK_SHADER_PREFETCH=1）：游戏设着色器时，后台编翻译缓存里已有的变体，最多 4 个同时编");
+        slots = dispatch_semaphore_create(4);
+#endif
+        MLOG("[prefetch] shader prefetch on: device-bounded default-QoS compilation");
     });
     atomic_fetch_add(&g_pf_progs, 1);
     for (unsigned i = 0; i < p->nstage && i < 6; i++) {
@@ -8179,14 +8196,22 @@ void mtl_prog_prefetch(const prog_t *p) {
         os_unfair_lock_lock(&lk); BOOL fresh = ![seen containsObject:shader]; if (fresh) [seen addObject:shader]; os_unfair_lock_unlock(&lk);
         if (!fresh) continue;
         int stage = (int)st;
+#if TARGET_OS_IPHONE
         dispatch_async(q, ^{ @autoreleasepool {
+#else
+        totk_compile_submit(g_dev, ^{ @autoreleasepool {
+#endif
             for (NSString *v in totk_rt_known_variants(shader)) {
                 NSString *pc = [v stringByAppendingString:@"_b"];
                 if (warm_failed(pc)) continue;
                 atomic_fetch_add(&g_pf_queued, 1);
+#if TARGET_OS_IPHONE
                 dispatch_semaphore_wait(slots, DISPATCH_TIME_FOREVER);
+#endif
                 uint64_t t0 = bp_now(); NvShader *sh = warm_shader_load(pc, stage); uint64_t dt = bp_now() - t0;
+#if TARGET_OS_IPHONE
                 dispatch_semaphore_signal(slots);
+#endif
                 if (!sh) { warm_fail(pc); continue; }
                 WarmItem *item = [WarmItem new]; item->kind = 0; item->key = pc; item->shader = sh; warm_enqueue(item);
                 atomic_fetch_add(&g_pf_built, 1); atomic_fetch_add(&g_pf_ns, dt);

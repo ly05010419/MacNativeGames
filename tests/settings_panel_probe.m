@@ -109,6 +109,10 @@ static BOOL switched(NSString *title) { [settingsPanel.timer fire]; return ((NSS
 
 int main(int argc, const char **argv) { @autoreleasepool {
     [NSApplication sharedApplication];
+    char profile[] = "/tmp/totk-settings-panel-XXXXXX";
+    assert(mkdtemp(profile));
+    setenv("TOTK_PROFILE_DIR", profile, 1);
+    unsetenv("TOTK_ASYNC_SHADERS");
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
     settings_test_output_init();
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
@@ -119,12 +123,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 13);
+    assert(settingsPanel.rows.count == 14);
 
     /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
     assert(!switched(@"FPS graph"));
     flip(@"FPS graph", YES); assert(fpsGraphEnabled && !strcmp(savedName, "fps-graph.txt") && !strcmp(savedWord, "on"));
     flip(@"FPS graph", NO); assert(!fpsGraphEnabled && !strcmp(savedWord, "off"));
+    /* The async setting is saved for the next launch and warns about missing draws. */
+    assert(!switched(@"Async shaders"));
+    assert([row(@"Async shaders").control.toolTip containsString:@"missing"]);
+    flip(@"Async shaders", YES); assert(async_shader_choice());
+    flip(@"Async shaders", NO); assert(!async_shader_choice());
+    char asyncPath[4096]; assert(async_shader_settings_path(asyncPath, sizeof asyncPath));
+    assert(unlink(asyncPath) == 0 && rmdir(profile) == 0);
 
     /* Overlay: all -> FPS only -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
