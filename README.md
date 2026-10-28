@@ -42,6 +42,7 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Animal Crossing: New Horizons | 1.2.1 | Mac | Community port | [`games/acnh`](games/acnh/README.md) |
 | Octopath Traveler 0 | 1.0.3, 1.0.4 | Mac | Community port, work in progress | [`games/ot0`](games/ot0/README.md) |
 | Hyrule Warriors: Age of Calamity | 1.3.0 | Mac | Community port, experimental | [`games/aoc`](games/aoc/README.md) |
+| Mario Kart 8 Deluxe | 4.0.1 | Mac | Community port, early | [`games/mk8d`](games/mk8d/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
@@ -133,6 +134,7 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 | 集合啦！动物森友会 | 1.2.1 | Mac | 社区移植 | [`games/acnh`](games/acnh/README.md) |
 | 歧路旅人0 | 1.0.3、1.0.4 | Mac | 社区移植，开发中 | [`games/ot0`](games/ot0/README.md) |
 | 塞尔达无双 灾厄启示录 | 1.3.0 | Mac | 社区移植，实验 | [`games/aoc`](games/aoc/README.md) |
+| 马力欧卡丁车8 豪华版 | 4.0.1 | Mac | 社区移植，早期 | [`games/mk8d`](games/mk8d/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 

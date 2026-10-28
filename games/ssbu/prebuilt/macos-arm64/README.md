@@ -7,6 +7,10 @@ reflection file), compiled ahead of time with .NET NativeAOT for arm64 macOS. It
 no .NET and the app needs no .NET runtime and no Python.
 
 - Built with `games/totk/tools/totk_xlate/publish_native.sh` from the sources in this repository (.NET SDK 10.0.301).
+- Rebuilt by the maintainers on 2026-10-28 (after PR #1226) with this folder's `publish_native.sh` from the sources in this
+  repository and the .NET SDK 10.0.401 (Microsoft's tarball, SHA-512 checked), replacing the contributor's build (1d0913b5...).
+  Replayed through both, the 4,356 + 1,204 shader variants of two Tears of the Kingdom caches gave byte-identical MSL,
+  SPIR-V and reflection files (22,240 files; spirv-cross `aa217aeb` where the service runs it as a program).
 - `totk_xlate.sha256` is its SHA-256; `build_app.py` refuses to package a different file.
 - NativeAOT builds are not byte-for-byte reproducible across folders (paths end up in the binary), so a rebuild gets a
   different hash; what matters is that it translates the same. Check a rebuild by replaying a shader cache through it

@@ -6,7 +6,12 @@ translator (`vendor/ryujinx`, MIT) with this project's patches (`games/ori/tools
 reflection file), compiled ahead of time with .NET NativeAOT for arm64 macOS. It is here so that building the app needs
 no .NET and the app needs no .NET runtime and no Python.
 
-- Built with `games/ori/tools/totk_xlate/publish_native.sh` from the sources in this repository (.NET SDK 10.0.402).
+- Built with `games/ori/tools/totk_xlate/publish_native.sh` from the sources in this repository (.NET SDK 10.0.402 by the
+  port's author).
+- Rebuilt by the maintainers on 2026-10-28 (after PR #1226) with this folder's `publish_native.sh` from the sources in this
+  repository and the .NET SDK 10.0.401 (Microsoft's tarball, SHA-512 checked), replacing the contributor's build (c111c369...).
+  Replayed through both, the 4,356 + 1,204 shader variants of two Tears of the Kingdom caches gave byte-identical MSL,
+  SPIR-V and reflection files (22,240 files; spirv-cross `aa217aeb` where the service runs it as a program).
   Service.cs passes a compute shader's shared memory size ("shared"): Ori's bloom kernels need it (without it, bands
   every 75 rows through bright areas).
 - `totk_xlate.sha256` is its SHA-256; `make runtime` refuses a different file.
