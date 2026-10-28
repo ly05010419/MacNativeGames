@@ -331,8 +331,10 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  int detected=-1,type=runtime_gamepad_type(&detected);if(!type)type=detected;
  BOOL ps=type==GAMEPAD_TYPE_PLAYSTATION,sw=type==GAMEPAD_TYPE_SWITCH;
  NSString *select=ps?@"×":@"A",*cancel=ps?@"○":@"B";
- NSString *chord=ps?@"L2 + R2 + L3":sw?@"ZL + ZR + L stick":@"LT + RT + LS";
- self.hint.stringValue=[NSString stringWithFormat:settings_text("↑↓ 选择 · ←→ 调整 · %@ 确定 · %@ 关闭\n按住 %@ 1 秒：打开 / 关闭 · 1 / Esc", "↑↓ Navigate · ←→ Change · %@ Select · %@ Close\nHold %@ for 1 s: open / close · 1 / Esc"),select,cancel,chord];
+ /* Each pad opens it on a button neither game uses (user 2026-10-28): the DualSense's touchpad, the Xbox Share button,
+    the Switch Capture button. */
+ NSString *hold=ps?settings_text("按住触摸板 1 秒","Hold the touchpad for 1 s"):sw?settings_text("按住 Capture（截图）键 1 秒","Hold the Capture button for 1 s"):settings_text("按住 Share 键 1 秒","Hold the Share button for 1 s");
+ self.hint.stringValue=[NSString stringWithFormat:settings_text("↑↓ 选择 · ←→ 调整 · %@ 确定 · %@ 关闭\n%@：打开 / 关闭 · 1 / Esc", "↑↓ Navigate · ←→ Change · %@ Select · %@ Close\n%@: open / close · 1 / Esc"),select,cancel,hold];
 }
 -(void)controllerMove:(int)step{
  NSInteger count=self.controllerTargets.count;

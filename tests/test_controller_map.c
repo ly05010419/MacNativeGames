@@ -60,14 +60,19 @@ int main(void) {
     expect(mode_of("l2 = zr aim touchpad\n", 8, &line) == (CONTROLLER_AIM | 16 << 3) && controller_mode_fire((uint8_t)(CONTROLLER_AIM | 16 << 3)) == 16 && !line, "the touchpad as a fire button");
     expect(press("", 1ULL << 16, &line) == 0 && !line, "the touchpad drives nothing by default");
     expect(press("touchpad = minus\n", 1ULL << 16, &line) == (1ULL << 11) && !line, "the touchpad opens the Purah Pad");
+    /* The share button (Xbox Share, Switch Capture, DualSense Create) is physical button 22, the other one the settings
+       panel opens on: also nothing until the layout file gives it a Switch button. */
+    expect(press("", 1ULL << CONTROLLER_SHARE, &line) == 0 && !line, "the share button drives nothing by default");
+    expect(press("share = minus\n", 1ULL << CONTROLLER_SHARE, &line) == (1ULL << 11) && !line, "the share button remapped");
     expect(mode_of("l2 = zr aim\n", 8, &line) == -1 && line == 1, "aim without a fire button");
     expect(mode_of("l2 = zr aim l2\n", 8, &line) == -1 && line == 1, "aim fired by itself");
     expect(mode_of("l2 = zr aim r2 extra\n", 8, &line) == -1 && line == 1, "aim with an extra word");
     /* Mouse buttons (runtime/gamepad.m, key 7 on the Mac) are physical buttons 17-21. Default: left attacks (Y), right
        draws the bow (ZR, released by a left click: the shot), middle targets (ZL), the side buttons drive nothing. */
     enum { ML = 17, MR = 18, MM = 19, M4 = 20, M5 = 21 };
-    expect(CONTROLLER_BUTTONS == 22 && !strcmp(controller_physical_names[ML], "mouse_left") && !strcmp(controller_physical_names[MR], "mouse_right") &&
-           !strcmp(controller_physical_names[MM], "mouse_middle") && !strcmp(controller_physical_names[M4], "mouse4") && !strcmp(controller_physical_names[M5], "mouse5"),
+    expect(CONTROLLER_BUTTONS == 23 && !strcmp(controller_physical_names[ML], "mouse_left") && !strcmp(controller_physical_names[MR], "mouse_right") &&
+           !strcmp(controller_physical_names[MM], "mouse_middle") && !strcmp(controller_physical_names[M4], "mouse4") && !strcmp(controller_physical_names[M5], "mouse5") &&
+           !strcmp(controller_physical_names[CONTROLLER_SHARE], "share"),
            "mouse button names");
     expect(press("", 1ULL << ML, &line) == Y && !line, "left click attacks (Y)");
     expect(press("", 1ULL << MR, &line) == ZR && mode_of("", MR, &line) == (CONTROLLER_AIM | ML << 3), "right button draws the bow, fired by the left");

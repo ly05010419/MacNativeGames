@@ -15,7 +15,7 @@
 | F T H G | 十字键 左 / 上 / 右 / 下 | | Z / C | 左 / 右摇杆按下 |
 | Return | +（菜单） | | Tab、Esc | −（地图） |
 
-手柄布局（Mac）：默认按位置对应 Switch 的布局，每种手柄都是右边的面键为 A、下边为 B、上边为 X、左边为 Y（任天堂手柄按标签，结果相同；`TOTK_FACE_BUTTONS=label` 让 PlayStation、Xbox 手柄改为按标签）。要改任何按钮，在 `~/Library/Application Support/MacNativeGames/TOTK/controls.txt` 写 `实体按钮 = Switch 按钮` 的行；没写的按钮保持默认，`#` 开始注释，`none` 表示不用这个按钮。实体按钮按位置命名：`south` `east` `west` `north`（面键），`l1` `r1` `l2` `r2` `l3` `r3`，`menu`（Options / Menu），`view`（Create / View），`up` `down` `left` `right`（十字键），`touchpad`（DualSense / DualShock 4 的触控板按下，默认不用；`touchpad = minus` 打开普尔亚平板）；打开鼠标模式（设置面板）后还有 `mouse_left` `mouse_right` `mouse_middle` `mouse4` `mouse5`（两个侧键，默认不用）。Switch 按钮：`a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `lstick` `rstick` `up` `down` `left` `right`。默认布局和下面这个文件相同（按位置）：
+手柄布局（Mac）：默认按位置对应 Switch 的布局，每种手柄都是右边的面键为 A、下边为 B、上边为 X、左边为 Y（任天堂手柄按标签，结果相同；`TOTK_FACE_BUTTONS=label` 让 PlayStation、Xbox 手柄改为按标签）。要改任何按钮，在 `~/Library/Application Support/MacNativeGames/TOTK/controls.txt` 写 `实体按钮 = Switch 按钮` 的行；没写的按钮保持默认，`#` 开始注释，`none` 表示不用这个按钮。实体按钮按位置命名：`south` `east` `west` `north`（面键），`l1` `r1` `l2` `r2` `l3` `r3`，`menu`（Options / Menu），`view`（Create / View），`up` `down` `left` `right`（十字键），`touchpad`（DualSense / DualShock 4 的触控板按下）、`share`（Xbox 的 Share 键、Switch 的 Capture 截图键、DualSense 的 Create 键）——两者默认都不用，长按其中任意一个一秒打开设置面板；`touchpad = minus` 打开普尔亚平板、`share = minus` 也一样，各自把这个键从面板手里交回游戏；打开鼠标模式（设置面板）后还有 `mouse_left` `mouse_right` `mouse_middle` `mouse4` `mouse5`（两个侧键，默认不用）。Switch 按钮：`a` `b` `x` `y` `l` `r` `zl` `zr` `plus` `minus` `lstick` `rstick` `up` `down` `left` `right`。默认布局和下面这个文件相同（按位置）：
 
 ```
 east = a
@@ -39,7 +39,7 @@ mouse_middle = zl
 
 **鼠标（Mac，设置面板）：** 在设置面板里打开或关闭“鼠标操作”，选择保存在 `controls.txt` 旁边的 `mouse.txt`，下次启动沿用。打开时只要游戏窗口在前台，窗口就锁住指针（隐藏，留在窗口里）；按 ⌘Tab 或打开设置面板就释放，给马取名这类文字输入时也会释放。移动鼠标转动视角：按 yuzu“鼠标平移”的思路（这里重新实现）驱动右摇杆，鼠标位移累加成摇杆偏转，每 10 毫秒交给游戏一次然后逐渐衰减，所以鼠标一直移动视角就一直转，停下后平滑停住。同样的移动也会转动手柄的陀螺仪：在游戏选项里打开体感操作后，拉弓、究极手等瞄准直接跟着鼠标走；鼠标模式开着时陀螺仪只听鼠标的（关掉后恢复手柄的体感）。按键：左键攻击（Y），右键拉弓（ZR）、按住时点左键射出，中键锁定（ZL）；可以像其他手柄按钮一样在 `controls.txt` 里改。设置：`TOTK_MOUSE_SENSITIVITY` 1–100（默认 50：移动 20 个点就是摇杆推满），`TOTK_MOUSE_INVERT_Y=1` 上下反转，`TOTK_MOUSE_COUNTERWEIGHT`（默认 20：最小的移动也至少推动摇杆的 20%，越过游戏的死区），`TOTK_MOUSE_DECAY`（18）和 `TOTK_MOUSE_MIN_DECAY`（6）调整停下来的快慢，`TOTK_MOUSE_GYRO=0` 只用摇杆、不用陀螺仪。
 
-**设置面板（Mac，1 键）：** 按 **1** 打开或关闭设置面板（Esc 或右上角 ✕ 也能关；按住面板空白处可以拖动，下次在同一位置打开）。用手柄时，**按住 L2 + R2 + L3 一秒**（Xbox：LT + RT + LS；Switch：ZL + ZR + 按下左摇杆）打开或关闭面板。要按住一秒，是因为这几个键在游戏里是 ZL + ZR + L3，潜行拉弓时可能会同时按到一下。面板里用十字键或左摇杆上下选行、左右改值，A（PlayStation 是 ×）确定，B（○）关闭。面板开着时键盘、鼠标和手柄都不会传给游戏；关掉后，松开手柄所有按键和摇杆，手柄就又回到游戏。每一项选了立刻生效：
+**设置面板（Mac，1 键）：** 按 **1** 打开或关闭设置面板（Esc 或右上角 ✕ 也能关；按住面板空白处可以拖动，下次在同一位置打开）。**按住触摸板一秒**（DualSense / DualShock 4）、**按住 Share 键一秒**（Xbox）或 **按住 Capture 截图键一秒**（Switch）即可打开或关闭面板。这两个键是实体按钮 16 和 22，两个游戏都不用它，这个“一秒”不可能误触。Share / Capture 键同时也是 macOS 的截图键：面板开着时它的系统手势让给游戏，所以长按能到，短按不再截图。如果在 `controls.txt` 里给它指定了 Switch 按钮（如 `touchpad = minus`、`share = minus`），这个键就交回给游戏，面板不再用它。面板里用十字键或左摇杆上下选行、左右改值，A（PlayStation 是 ×）确定，B（○）关闭。面板开着时键盘、鼠标和手柄都不会传给游戏；关掉后，松开手柄所有按键和摇杆，手柄就又回到游戏。每一项选了立刻生效：
 - **性能信息：** 全部（窗口右上角的小框：FPS 和分辨率——先输出分辨率，括号里是游戏的内部 3D 分辨率，如 `FPS 60  1920x1080 (1920x1080)`——、着色器和渲染管线计数、负载一行（GPU 在前，后面是 CPU 各核心），以及打包时的提交号）、只显示 FPS、关。`TOTK_HUD=corners` 改为画在画面四角。
 - **帧率图：** 在叠加框下面画最近 30 秒的帧率曲线，默认关。选择保存在 `controls.txt` 旁边的 `fps-graph.txt`（`on` 或 `off`）。
 - **锁帧：** 关、30、40、60 帧，帧率严格锁定（能整除显示器刷新率时按刷新节拍，否则按自己的时钟）。

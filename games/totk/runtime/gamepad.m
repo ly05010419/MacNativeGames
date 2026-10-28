@@ -26,14 +26,30 @@ static uint64_t textEdges;
 static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait for release, 0 game */
 static BOOL started;
 static _Atomic int settingsShortcutEnabled;
-static int settingsShortcutDown, settingsShortcutPending;
-/* The chord opens the settings panel only once it has been held for a second (user 2026-10-27): L2 + R2 + L3 is also
-   ZL + ZR + L3 in the game, pressed together for a moment while sneaking with the bow. Held still, the controller sends
-   no events, so the panel's 60 Hz timer (runtime_gamepad_settings_requested) decides when the second is up. */
+static int settingsShortcutPending;
+/* The settings panel opens on a button held for a second: the DualSense's touchpad click, or the share button (Xbox Share,
+   Switch Capture, DualSense Create). Neither game uses either, so a second cannot be a wrong press, unlike the L2 + R2 +
+   L3 chord this replaced (user 2026-10-27, 2026-10-28). Each counts only while the layout file leaves it unmapped
+   (controller_map.h maps both to nothing by default), so a player who gives it a Switch button keeps that button and
+   gets no panel. The share button is also macOS's screenshot and recording button: while the panel is on, its system
+   gesture is off (share_gesture) so a hold reaches the game. Held still, the controller sends no events, so the panel's
+   60 Hz timer (runtime_gamepad_settings_requested) decides when the second is up. */
 #define SETTINGS_HOLD_NS 1000000000ULL
-static uint64_t settingsChordSince;
-static int settingsChordFired;
-#define SETTINGS_CHORD ((1ull << 8) | (1ull << 9) | (1ull << 4))
+#define SETTINGS_TOUCHPAD (1ULL << CONTROLLER_TOUCHPAD)
+#define SETTINGS_SHARE (1ULL << CONTROLLER_SHARE)
+#define SETTINGS_TEXT_MASK (((1u << CONTROLLER_MOUSE_FIRST) - 1u) | SETTINGS_SHARE)   /* what the panel sees as the pad */
+typedef struct { uint64_t since; int down, fired; } SettingsHold;
+static SettingsHold settingsHold[2];   /* the touchpad, the share button */
+/* gamepadLock: the press starts the clock, and the panel's timer asks when the second is up (once per hold). */
+static void settings_hold_track(SettingsHold *h, int pressed, uint64_t now) {
+    if (pressed && !h->down) { h->since = now; h->fired = 0; }
+    h->down = pressed;
+}
+static int settings_hold_fired(SettingsHold *h, uint64_t now) {
+    if (!h->down || h->fired || now < h->since || now - h->since < SETTINGS_HOLD_NS) return 0;
+    h->fired = 1;
+    return 1;
+}
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
 static uint64_t physicalPrev;
@@ -169,6 +185,12 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
     if (pad.dpad.down.isPressed) buttons |= 1ULL << 15;
     if ([pad isKindOfClass:GCDualSenseGamepad.class] && ((GCDualSenseGamepad *)pad).touchpadButton.isPressed) buttons |= 1ULL << 16;
     if ([pad isKindOfClass:GCDualShockGamepad.class] && ((GCDualShockGamepad *)pad).touchpadButton.isPressed) buttons |= 1ULL << 16;
+    /* The share button, by its element name so that every pad's own one lands here: Xbox Share, Switch Capture, and the
+       DualSense's Create. macOS keeps it for screenshots unless the panel asks for it (share_gesture). */
+    if (@available(macOS 12.0, iOS 15.0, tvOS 15.0, *)) {
+        GCControllerButtonInput *share = (GCControllerButtonInput *)pad.buttons[GCInputButtonShare];
+        if (share.isPressed) buttons |= SETTINGS_SHARE;
+    }
     return buttons;
 }
 
@@ -183,14 +205,14 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
    handles is not read twice, and feeds the same physical button bits and stick values as the GameController path. From
    there the player's layout file (controller_map.h) applies unchanged, so face buttons, modes and remapping work the same.
 
-   Usages come from the pad's own descriptor, so nothing here is specific to one model: button usages 1-15, the hat switch,
+   Usages come from the pad's own descriptor, so nothing here is specific to one model: button usages 1-16, the hat switch,
    and the X/Y/Z/Rz axes. A pad whose buttons sit elsewhere simply leaves those bits unused. */
 typedef struct { int present; uint64_t buttons; int32_t lx, ly, rx, ry; } HIDPadState;
 static HIDPadState hidPad;
 static IOHIDManagerRef hidManager;
 static IOHIDDeviceRef hidDevice;
 static BOOL hidRefreshPending;
-static unsigned char hidButtons[16];          /* usage 1..15, 1 = pressed */
+static unsigned char hidButtons[17];          /* usage 1..16, 1 = pressed (16 is the share / capture button) */
 static int hidHat = 8;                        /* 0 N, 1 NE, 2 E ... 7 NW; 8 centred */
 static float hidX, hidY, hidZ, hidRz;         /* -1..1, 0 centred */
 
@@ -222,6 +244,7 @@ static void hid_pad_compute(void) {
     if (hidButtons[10]) buttons |= 1ULL << 9;    /* r2 = ZR */
     if (hidButtons[12]) buttons |= 1ULL << 10;   /* menu = plus (start) */
     if (hidButtons[11]) buttons |= 1ULL << 11;   /* view = minus (select) */
+    if (hidButtons[16]) buttons |= SETTINGS_SHARE;   /* share / capture */
     switch (hidHat) {
     case 0: buttons |= 1ULL << 13; break;
     case 1: buttons |= (1ULL << 13) | (1ULL << 14); break;
@@ -246,7 +269,7 @@ static void hid_value(void *context, IOReturn result, void *sender, IOHIDValueRe
     IOHIDElementRef element = IOHIDValueGetElement(value);
     uint32_t page = IOHIDElementGetUsagePage(element), usage = IOHIDElementGetUsage(element);
     int v = (int)IOHIDValueGetIntegerValue(value);
-    if (page == kHIDPage_Button && usage >= 1 && usage <= 15) {
+    if (page == kHIDPage_Button && usage >= 1 && usage <= 16) {
         hidButtons[usage] = (unsigned char)(v != 0);
     } else if (page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Hatswitch) {
         hidHat = hid_hat(element, v);
@@ -503,13 +526,13 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
         uint64_t bit = 1ULL << i;
         int kind = controller_mode_kind(controllerModes[i]);
-        if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && kind == CONTROLLER_TAP && (edges & bit)) {
+        if (!textCapture && kind == CONTROLLER_TAP && (edges & bit)) {
             tapUntil[i] = now + 400000000ULL;
             /* Release the pulse even if the controller sends no further event. */
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
         }
         if (kind == CONTROLLER_TOGGLE) {
-            if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
+            if (!textCapture && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
             if (toggleOn[i] && moving) toggleMoved[i] = 1;
             /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
                waits for the first move, and attacking while running does not stop it. */
@@ -529,16 +552,30 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
     pthread_mutex_lock(&gamepadLock);
-    int chord = settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD;
-    if (chord && !settingsShortcutDown) { settingsChordSince = now; settingsChordFired = 0; }   /* the game keeps it until the second is up */
-    settingsShortcutDown = chord;
-    textEdges |= (physical & 0x1ffffu) & ~textPad.buttons;
-    textPad = next; textPad.buttons = physical & 0x1ffffu;
+    /* The touchpad and the share button on their own; one a layout gives a Switch button does what the player mapped it to
+       and never opens the panel. */
+    int shortcut = settingsShortcutEnabled;
+    settings_hold_track(&settingsHold[0], shortcut && (physical & SETTINGS_TOUCHPAD) && !controllerMap[CONTROLLER_TOUCHPAD], now);
+    settings_hold_track(&settingsHold[1], shortcut && (physical & SETTINGS_SHARE) && !controllerMap[CONTROLLER_SHARE], now);
+    textEdges |= (physical & SETTINGS_TEXT_MASK) & ~textPad.buttons;
+    textPad = next; textPad.buttons = physical & SETTINGS_TEXT_MASK;
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
     gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
     gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
     pthread_mutex_unlock(&gamepadLock);
+}
+
+/* The share button is macOS's screenshot and recording button: its system gesture runs before the app, so a hold would
+   never reach it. While the panel is on, the element asks the system to stand down; a launch without the panel leaves
+   the button to the system. */
+static void share_gesture(int off) {
+    if (@available(macOS 12.0, iOS 15.0, tvOS 15.0, *)) {
+        for (GCController *controller in GCController.controllers) {
+            GCControllerButtonInput *share = (GCControllerButtonInput *)controller.physicalInputProfile.buttons[GCInputButtonShare];
+            if (share) share.preferredSystemGestureState = off ? GCSystemGestureStateDisabled : GCSystemGestureStateEnabled;
+        }
+    }
 }
 
 static void attach_gamepad(GCController *controller) {
@@ -552,6 +589,7 @@ static void attach_gamepad(GCController *controller) {
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
     runtime_feedback_attach(controller);
+    if (settingsShortcutEnabled) share_gesture(1);
     refresh_gamepads();
 }
 
@@ -617,7 +655,8 @@ void runtime_gamepad_clear(void) {
     gamepadRawLeftAt = 0; gamepadRawRightAt = 0;
     gamepadNativeLx = gamepadNativeLy = 0;
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
-    settingsShortcutDown = settingsShortcutPending = 0;
+    settingsShortcutPending = 0;
+    memset(settingsHold, 0, sizeof settingsHold);
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
@@ -637,18 +676,20 @@ void runtime_gamepad_settings_enable(int enabled) {
     pthread_mutex_lock(&gamepadLock);
     settingsShortcutEnabled = !!enabled;
     settingsShortcutPending = 0;
-    settingsShortcutDown = (textPad.buttons & SETTINGS_CHORD) == SETTINGS_CHORD;
-    settingsChordSince = runtime_now_ns(); settingsChordFired = 0;   /* a chord held through this counts from now */
+    /* a button held through this counts from now */
+    uint64_t now = runtime_now_ns();
+    settingsHold[0] = (SettingsHold){now, (textPad.buttons & SETTINGS_TOUCHPAD) != 0, 0};
+    settingsHold[1] = (SettingsHold){now, (textPad.buttons & SETTINGS_SHARE) != 0, 0};
     pthread_mutex_unlock(&gamepadLock);
+    share_gesture(!!enabled);
 }
 int runtime_gamepad_settings_requested(void) {
     pthread_mutex_lock(&gamepadLock);
     int requested = settingsShortcutPending; settingsShortcutPending = 0;
     uint64_t now = runtime_now_ns();
-    if (settingsShortcutEnabled && settingsShortcutDown && !settingsChordFired && now >= settingsChordSince && now - settingsChordSince >= SETTINGS_HOLD_NS) {
-        settingsChordFired = requested = 1;
-        if (!textCapture) textCapture = 2;   /* from here the game no longer gets the chord, until it is released */
-    }
+    int on = settingsShortcutEnabled;
+    if (on && settings_hold_fired(&settingsHold[0], now)) requested = 1;   /* nothing of the game's was held, so there is nothing to take away */
+    if (on && settings_hold_fired(&settingsHold[1], now)) requested = 1;
     pthread_mutex_unlock(&gamepadLock);
     return requested;
 }
