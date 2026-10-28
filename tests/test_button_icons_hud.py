@@ -52,6 +52,28 @@ class ButtonGuideTextures(unittest.TestCase):
             centre = struct.unpack_from('<Q', out, next(iter(data_at.values())))[0] + self.icons.gob_offset(size // 2, size // 2, (size + 63) // 64, 8)
             self.assertEqual(out[centre], 255, size)
 
+    def test_petal_symbols_join_a_text_font(self):
+        # a minimal CFF font with an X, as the text fonts have: the four symbols come out at new code points, the X unchanged
+        import io
+        from fontTools.fontBuilder import FontBuilder
+        from fontTools.pens.t2CharStringPen import T2CharStringPen
+        from fontTools.ttLib import TTFont
+        pen = T2CharStringPen(600, None); self.icons.polygon(pen, [(0, 0), (600, 0), (600, 700), (0, 700)])
+        fb = FontBuilder(1000, isTTF=False); fb.setupGlyphOrder(['.notdef', 'X'])
+        fb.setupCharacterMap({ord('X'): 'X'}); fb.setupCFF('Test', {}, {'.notdef': T2CharStringPen(500, None).getCharString(), 'X': pen.getCharString()}, {})
+        fb.setupHorizontalMetrics({'.notdef': (500, 0), 'X': (600, 0)}); fb.setupHorizontalHeader(); fb.setupOS2(); fb.setupPost(); fb.setupNameTable({})
+        out = io.BytesIO(); fb.font.save(out)
+        new, added = self.icons.add_petal_glyphs(out.getvalue(), list(self.icons.PETAL_GLYPHS))
+        self.assertEqual(added, 4)
+        font = TTFont(io.BytesIO(new)); cmap = font.getBestCmap(); glyphs = font.getGlyphSet()
+        self.assertTrue(set(self.icons.PETAL_GLYPHS) <= set(cmap))
+        self.assertEqual(font['maxp'].numGlyphs, 6)
+        from fontTools.pens.boundsPen import BoundsPen
+        for cp in self.icons.PETAL_GLYPHS:   # each symbol about as tall as the X and centred on it (the triangle on its centroid)
+            box = BoundsPen(glyphs); glyphs[cmap[cp]].draw(box); y0, y1 = box.bounds[1], box.bounds[3]
+            self.assertAlmostEqual((y0 + y1) / 2, 350, delta=80); self.assertTrue(600 < y1 - y0 < 800, (cp, y1 - y0))
+        self.assertEqual(self.icons.add_petal_glyphs(new, list(self.icons.PETAL_GLYPHS)), (new, 0))   # a second run adds nothing
+
 
 if __name__ == '__main__':
     unittest.main()

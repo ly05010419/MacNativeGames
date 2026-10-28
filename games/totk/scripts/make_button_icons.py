@@ -24,13 +24,16 @@ Styles:
   playstation-label  the same, but A B X Y = Cross Circle Square Triangle, for TOTK_FACE_BUTTONS=label or a
             controls.txt with south = a, east = b, west = x, north = y.
 The button guide in play is not drawn with this font but from eight textures of the common layout archive (A B X Y, L,
-ZL and two left-stick keys); they are redrawn from the same icons (HUD_TEXTURES). Other prompts drawn as fixed images
-(some tutorial animations) keep the Switch icons.
+ZL and two left-stick keys); they are redrawn from the same icons (HUD_TEXTURES). Its faded petals around the main button
+name the other face buttons as text, which each language's messages fill in (GUIDE_MESSAGES); they get the style's letter
+or symbol (GUIDE_LETTERS); the PlayStation symbols are drawn like the icons' and added to the text fonts (PETAL_GLYPHS).
+Other prompts drawn as fixed images (some tutorial animations) keep the Switch icons.
 
 Format notes (checked on 1.0.0 and 1.2.1): a .bfotf is an OpenType (CFF) font with an 8-byte header, XOR-ed with a
 32-bit key; the first word XOR 0x18029a7f gives the key and the second word, XOR the key, holds the big-endian size.
 The archive is a SARC; its members are packed again in their original order and alignment, and every member except
-External.bfotf must come out byte-identical. Each archive is compressed with the zstd dictionary it used (Pack/ZsDic).
+External.bfotf (and the text fonts given petal symbols) must come out byte-identical. Each archive is compressed with the
+zstd dictionary it used (Pack/ZsDic).
 The redrawn archives are about 1.4 KB larger than the originals, past the few hundred bytes the game's resource size table
 leaves them (System/Resource/ResourceSizeTable.Product.<n>.Nin_NX_NVN.rsizetable.zs: a RESTBL, entries keyed by the CRC32
 of the path without .zs), and the game stops at start when it loads one. So the script also writes that table into the
@@ -44,6 +47,7 @@ usage: make_button_icons.py <mod folder> (--app <Tears of the Kingdom.app> | --r
 """
 import argparse
 import io
+import re
 import struct
 import sys
 import zlib
@@ -326,30 +330,33 @@ def oriented(pen, points, hole):
     polygon(pen, points if (area > 0) != hole else points[::-1])
 
 
+def ps_symbol(pen, symbol, cx, cy, s, cut):
+    """A PlayStation symbol of half size s at (cx, cy): cut out of a shape drawn before it (cut), or as ink of its own."""
+    if symbol == 'circle':
+        circle(ReverseContourPen(pen) if cut else pen, cx, cy, s); circle(pen if cut else ReverseContourPen(pen), cx, cy, s * 0.70)
+    elif symbol == 'square':
+        oriented(pen, [(cx - s, cy - s), (cx + s, cy - s), (cx + s, cy + s), (cx - s, cy + s)], hole=cut)
+        t = s * 0.70
+        oriented(pen, [(cx - t, cy - t), (cx + t, cy - t), (cx + t, cy + t), (cx - t, cy + t)], hole=not cut)
+    elif symbol == 'triangle':
+        pts = [(cx, cy + s * 1.10), (cx - s * 1.10, cy - s * 0.75), (cx + s * 1.10, cy - s * 0.75)]
+        gx, gy = cx, sum(y for _, y in pts) / 3
+        oriented(pen, pts, hole=cut)
+        oriented(pen, [(gx + (x - gx) * 0.62, gy + (y - gy) * 0.62) for x, y in pts], hole=not cut)
+    else:   # cross: one 12-point outline, so the two strokes do not overlap as separate contours
+        a, w = s * 1.05, s * 0.22 * 2 ** 0.5   # arm reach along the diagonal, half stroke width
+        pts = [(cx, cy + w), (cx + a - w, cy + a), (cx + a, cy + a - w), (cx + w, cy),
+               (cx + a, cy - a + w), (cx + a - w, cy - a), (cx, cy - w), (cx - a + w, cy - a),
+               (cx - a, cy - a + w), (cx - w, cy), (cx - a, cy + a - w), (cx - a + w, cy + a)]
+        oriented(pen, pts, hole=cut)
+
+
 def playstation_style(g, by_label=False):
     """DualSense / DualShock symbols. By position (the default mapping): A B X Y = Circle Cross Triangle Square.
     by_label (TOTK_FACE_BUTTONS=label, or controls.txt south = a, east = b, west = x, north = y): Cross Circle Square Triangle."""
     def face(symbol, advance=640):
         def draw(pen):
-            cx, s = advance / 2, R * 0.50   # symbol half size
-            circle(pen, cx, CY, R)
-            if symbol == 'circle':
-                circle(ReverseContourPen(pen), cx, CY, s); circle(pen, cx, CY, s * 0.70)
-            elif symbol == 'square':
-                oriented(pen, [(cx - s, CY - s), (cx + s, CY - s), (cx + s, CY + s), (cx - s, CY + s)], hole=True)
-                t = s * 0.70
-                oriented(pen, [(cx - t, CY - t), (cx + t, CY - t), (cx + t, CY + t), (cx - t, CY + t)], hole=False)
-            elif symbol == 'triangle':
-                pts = [(cx, CY + s * 1.10), (cx - s * 1.10, CY - s * 0.75), (cx + s * 1.10, CY - s * 0.75)]
-                gx, gy = cx, sum(y for _, y in pts) / 3
-                oriented(pen, pts, hole=True)
-                oriented(pen, [(gx + (x - gx) * 0.62, gy + (y - gy) * 0.62) for x, y in pts], hole=False)
-            else:   # cross: one 12-point outline, so the two strokes do not overlap as separate holes
-                a, w = s * 1.05, s * 0.22 * 2 ** 0.5   # arm reach along the diagonal, half stroke width
-                pts = [(cx, CY + w), (cx + a - w, CY + a), (cx + a, CY + a - w), (cx + w, CY),
-                       (cx + a, CY - a + w), (cx + a - w, CY - a), (cx, CY - w), (cx - a + w, CY - a),
-                       (cx - a, CY - a + w), (cx - w, CY), (cx - a, CY + a - w), (cx - a + w, CY + a)]
-                oriented(pen, pts, hole=True)
+            circle(pen, advance / 2, CY, R); ps_symbol(pen, symbol, advance / 2, CY, R * 0.50, cut=True)
         return advance, draw
     def bumper(label, advance=820):
         def draw(pen):
@@ -387,6 +394,12 @@ AZERTY = str.maketrans('QWAZ', 'AZQW')   # US key position -> the letter an AZER
 
 STYLES = {'keyboard': keyboard_style, 'azerty': lambda g: keyboard_style(g, AZERTY), 'xbox': xbox_style, 'playstation': playstation_style,
           'playstation-label': lambda g: playstation_style(g, by_label=True)}
+# What the button guide's petals write for A B X Y: one character each. A language whose text font (fcpx/Normal_00) lacks one
+# of them keeps the Switch letters. The PlayStation symbols are not the fonts' own ○ × △ □ (thin, and × smaller than the
+# others, unlike the icons) but glyphs of PETAL_GLYPHS, which the script adds to the text fonts at private-use code points.
+PETAL_GLYPHS = {0xE0B0: 'circle', 0xE0B1: 'cross', 0xE0B2: 'triangle', 0xE0B3: 'square'}
+GUIDE_LETTERS = {'keyboard': 'JKIU', 'azerty': 'JKIU', 'xbox': 'BAYX',
+                 'playstation': '', 'playstation-label': ''}
 
 
 # ---- the HUD's button guide: images, not glyphs ----
@@ -399,6 +412,9 @@ HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00
                 'Nt_KeyTexLSt_00': 0xE052,   # the left stick with an arrow up: push it forward
                 'Nt_KeyTexLSt_01': 0xE05E}   # the left stick
 R8_UNORM, HUD_MARGIN, SUPERSAMPLE = 0x201, 4, 4
+# The petals are text panes of DoCommand_00 (T_A_nn, T_B_nn, T_X_nn, T_Y_nn); the game fills them from this message file of
+# each language's message archive (Mals/<language>.Product.<n>.sarc.zs), not from the layout.
+GUIDE_MESSAGES = 'LayoutMsg/DoCommand_00.msbt'
 
 
 def gob_offset(x, y, width_gobs, block_height):
@@ -466,6 +482,9 @@ def redraw_hud(bntx, icons):
         name = bntx[name_at + 2:name_at + 2 + length].decode().split('^')[0]
         if name not in HUD_TEXTURES:
             continue
+        done.append(name)
+        if HUD_TEXTURES[name] not in icons:   # the controller styles draw no sticks: the game's own image stays
+            continue
         mips, fmt, (w, h), layout = (struct.unpack_from('<H', bntx, i + 0x16)[0], struct.unpack_from('<I', bntx, i + 0x1C)[0],
                                      struct.unpack_from('<II', bntx, i + 0x24), struct.unpack_from('<I', bntx, i + 0x34)[0])
         assert fmt == R8_UNORM and w == h and mips == 1, f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'   # 72x72 to 1.2.1, 108x108 in 1.4.3
@@ -474,10 +493,83 @@ def redraw_hud(bntx, icons):
         for y in range(h):
             for x in range(w):
                 out[data + gob_offset(x, y, (w + 63) // 64, 1 << (layout & 7))] = mask[y * w + x]
-        done.append(name)
     missing = set(HUD_TEXTURES) - set(done)
     assert not missing, f'not in the layout archive: {", ".join(sorted(missing))}'
     return bytes(out)
+
+
+def relabel_guide(msbt, letters):
+    """The MSBT with each petal message (labels T_A_nn, T_B_nn, T_X_nn, T_Y_nn, one character) holding the character of
+    that button in `letters` (A B X Y), one UTF-16 unit for one, so the file keeps its size: (msbt, count). Matched by label,
+    not by text, so a translation's file or one relabelled before is relabelled the same way."""
+    assert msbt[:8] == b'MsgStdBn' and msbt[8:10] == b'\xff\xfe' and msbt[0x0C] == 1, 'not a little-endian UTF-16 MSBT'
+    sections, pos = {}, 0x20
+    while pos + 16 <= len(msbt):
+        size = struct.unpack_from('<I', msbt, pos + 4)[0]; sections[msbt[pos:pos + 4]] = pos + 16; pos = (pos + 16 + size + 15) & ~15
+    labels, lbl = {}, sections[b'LBL1']
+    for k in range(struct.unpack_from('<I', msbt, lbl)[0]):
+        count, at = struct.unpack_from('<II', msbt, lbl + 4 + 8 * k); at += lbl
+        for _ in range(count):
+            n = msbt[at]; labels[struct.unpack_from('<I', msbt, at + 1 + n)[0]] = msbt[at + 1:at + 1 + n].decode(); at += 5 + n
+    out, txt, count = bytearray(msbt), sections[b'TXT2'], 0
+    for index, label in labels.items():
+        if len(label) == 6 and label[:2] == 'T_' and label[2] in 'ABXY' and label[3] == '_':
+            at = txt + struct.unpack_from('<I', msbt, txt + 4 + 4 * index)[0]
+            assert msbt[at + 2:at + 4] == b'\0\0', f'{GUIDE_MESSAGES} {label}: more than one character'
+            out[at:at + 2] = letters['ABXY'.index(label[2])].encode('utf-16-le'); count += 1
+    assert count, f'{GUIDE_MESSAGES}: no petal messages found'
+    return bytes(out), count
+
+
+def normal_fonts(archive):
+    """The members of a decompressed font archive that its text font (fcpx/Normal_00.bfcpx) is made of, in its order."""
+    members = sarc_members(archive)
+    names = re.findall(rb'[\w\-]+\.bfotf', archive[slice(*members.get('fcpx/Normal_00.bfcpx', (0, 0)))])
+    return [m for m in dict.fromkeys('scft/' + name.decode() for name in names) if m in members]
+
+
+def normal_font_chars(archive):
+    """The characters the text font of a decompressed font archive can draw."""
+    members, chars = sarc_members(archive), set()
+    for name in normal_fonts(archive):
+        chars |= set(TTFont(io.BytesIO(bfotf_decode(archive[slice(*members[name])])[0])).getBestCmap())
+    return chars
+
+
+def add_petal_glyphs(otf, codes):
+    """The OpenType (CFF) font with a glyph of PETAL_GLYPHS for each of `codes` it lacks, as tall as its capital X and about
+    as heavy as its bold letters, drawn like the icons' symbols: (otf, how many were added). A font without an X is kept."""
+    font = TTFont(io.BytesIO(otf), recalcBBoxes=False, recalcTimestamp=False)
+    for tag in font.keys():   # every table read against the old glyph order before it grows
+        font[tag]
+    cmap = font.getBestCmap(); codes = [cp for cp in codes if cp not in cmap]
+    if not codes or ord('X') not in cmap:
+        return otf, 0
+    cff = font['CFF '].cff; top = cff.topDictIndex[0]; charstrings = top.CharStrings
+    cid = hasattr(top, 'ROS'); private = top.FDArray[0].Private if cid else top.Private
+    nominal = getattr(private, 'nominalWidthX', 0)
+    glyphs = font.getGlyphSet(); box = BoundsPen(glyphs); glyphs[cmap[ord('X')]].draw(box); cap = box.bounds[3]
+    s = cap * 0.50; advance = round(s * 2.2 + cap * 0.16)
+    order, next_cid = list(font.getGlyphOrder()), 1 + max((int(n[3:]) for n in top.charset if n.startswith('cid')), default=0)
+    for cp in codes:
+        name = f'cid{next_cid:05d}' if cid else f'uni{cp:04X}'; next_cid += 1
+        draw = lambda pen: ps_symbol(pen, PETAL_GLYPHS[cp], advance / 2, cap / 2, s, cut=False)
+        pen = T2CharStringPen(advance - nominal, None); draw(pen)
+        charstring = pen.getCharString(private=private, globalSubrs=cff.GlobalSubrs)
+        if charstrings.charStringsAreIndexed:
+            charstrings.charStringsIndex.append(charstring); charstrings.charStrings[name] = len(charstrings.charStringsIndex) - 1
+        else:
+            charstrings.charStrings[name] = charstring
+        top.charset.append(name); order.append(name)
+        if cid:
+            top.FDSelect.append(0)
+        ink = BoundsPen(None); draw(ink); font['hmtx'][name] = (advance, int(round(ink.bounds[0])))
+        for table in font['cmap'].tables:
+            if table.isUnicode():
+                table.cmap[cp] = name
+    font.setGlyphOrder(order)
+    out = io.BytesIO(); font.save(out)
+    return out.getvalue(), len(codes)
 
 
 def redraw(otf, text_fonts, style):
@@ -552,13 +644,15 @@ def main():
             d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
         raws = {path: read(path) for path in archives}
         restbl_raw = read(restbl)
+        messages = {path: read(path) for path in index if path.startswith('Mals/') and path.endswith('.sarc.zs')}
         layout = layout_path
         layout_raw = read(layout)
 
-    text_fonts, redrawn, growth = None, {}, {}
+    text_fonts, redrawn, growth, font_chars = None, {}, {}, {}
     for path in archives:
         info = zstd.get_frame_info(raws[path]); dictionary = dictionaries[info.dictionary_id]
         archive = zstd.decompress(raws[path], zstd_dict=dictionary); assert len(archive) == info.decompressed_size
+        font_chars[path] = normal_font_chars(archive)
         members = sarc_members(archive)
         if FONT not in members:
             continue
@@ -571,13 +665,21 @@ def main():
         new_otf, count = redrawn[otf]
         new_blob = bfotf_encode(new_otf, key); assert bfotf_decode(new_blob)[0] == new_otf
         new_archive = repack(archive, FONT, new_blob)
+        added = 0
+        for name in normal_fonts(archive):   # the petal symbols, in every font of the text font that lacks them
+            otf, key = bfotf_decode(archive[slice(*members[name])])
+            if otf not in redrawn:
+                redrawn[otf] = add_petal_glyphs(otf, [ord(c) for c in GUIDE_LETTERS[args.style] if ord(c) in PETAL_GLYPHS])
+            if redrawn[otf][1]:
+                new_archive = repack(new_archive, name, bfotf_encode(redrawn[otf][0], key)); added += redrawn[otf][1]
+        font_chars[path] = normal_font_chars(new_archive)
         data = zstd.compress(new_archive, level=19, zstd_dict=dictionary)
         assert zstd.decompress(data, zstd_dict=dictionary) == new_archive
         assert zstd.get_frame_info(data).dictionary_id == info.dictionary_id
 
         growth[path] = len(new_archive) - len(archive)
         target = args.mod / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
-        print(f'{target}: {count} icons redrawn ({args.style}), {len(data)} bytes')
+        print(f'{target}: {count} icons redrawn ({args.style})' + (f', {added} petal symbols added' if added else '') + f', {len(data)} bytes')
 
     info = zstd.get_frame_info(layout_raw); dictionary = dictionaries[info.dictionary_id]
     archive = zstd.decompress(layout_raw, zstd_dict=dictionary); members = sarc_members(archive)
@@ -588,6 +690,27 @@ def main():
     growth[layout] = 0
     target = args.mod / layout; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
     print(f'{target}: {len(HUD_TEXTURES)} button guide textures redrawn ({args.style}), {len(data)} bytes')
+
+    for path, raw in sorted(messages.items()):
+        font = f'Font/Font_{path.split("/")[1][:4]}.Nin_NX_NVN.bfarc.zs'   # Mals/CNzh.Product.142.sarc.zs -> Font_CNzh
+        if not set(map(ord, GUIDE_LETTERS[args.style])) <= font_chars[font if font in font_chars else ARCHIVE]:
+            print(f'{path}: the button guide petals keep the Switch letters (the {font if font in font_chars else ARCHIVE} '
+                  f'text font has no {GUIDE_LETTERS[args.style]})')
+            continue
+        if (args.mod / path).is_file():   # a translation's archive (or this tool's own): relabel that one
+            raw = (args.mod / path).read_bytes()
+        info = zstd.get_frame_info(raw); dictionary = dictionaries.get(info.dictionary_id)
+        archive = zstd.decompress(raw, zstd_dict=dictionary) if dictionary else zstd.decompress(raw)
+        members = sarc_members(archive)
+        if GUIDE_MESSAGES not in members:
+            continue
+        msbt, count = relabel_guide(archive[slice(*members[GUIDE_MESSAGES])], GUIDE_LETTERS[args.style])
+        new_archive = repack(archive, GUIDE_MESSAGES, msbt); assert len(new_archive) == len(archive)
+        data = zstd.compress(new_archive, level=19, zstd_dict=dictionary) if dictionary else zstd.compress(new_archive, level=19)
+        assert (zstd.decompress(data, zstd_dict=dictionary) if dictionary else zstd.decompress(data)) == new_archive
+        growth[path] = 0
+        target = args.mod / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+        print(f'{target}: {count} button guide petals relabelled ({args.style}), {len(data)} bytes')
 
     target = args.mod / restbl
     original = zstd.decompress(restbl_raw)
