@@ -48,7 +48,10 @@ static void input_log(const char *what,uint32_t id){static int on=-1;static uint
  uint64_t k=(uint64_t)(uintptr_t)what<<32^id^(uint64_t)styles<<48;for(unsigned i=0;i<n;i++)if(seen[i]==k)return;if(n<64)seen[n++]=k;
  fprintf(stderr,"[totk-input] game reads %s for controller %#x (supported styles %#x, ids allowed %d)\n",what,id,styles,allowed);}
 static uint32_t pad_id(void){return runtime_handheld_mode()?0x20u:0u;}
-static uint32_t pad_style(void){return runtime_handheld_mode()?2u:(1u|4u|8u|16u);}
+/* Kirby: one controller of one kind. With the pad reported under several styles and under both ids 0 and 0x20 the game
+   switched between them while playing (button prompts flashing, the car twitching, the world advancing ~2 frames in 7). */
+static uint32_t pad_style(void){return runtime_handheld_mode()?2u:1u;}
+static bool pad_id_ok(uint32_t id){return id==pad_id();}
 static void supported_ids(const uint32_t *ids,uint64_t n){if(n>10||(!ids&&n))runtime_fail("invalid controller ids");
  if(getenv("TOTK_INPUT_LOG")){char b[128];size_t o=0;for(uint64_t i=0;i<n&&o<100;i++)o+=(size_t)snprintf(b+o,sizeof b-o," %#x",ids[i]);b[o]=0;fprintf(stderr,"[totk-input] game supports controller ids:%s\n",b);}pthread_mutex_lock(&inputLock);allowed=false;for(uint64_t i=0;i<n;i++)if(ids[i]==pad_id()||ids[i]==0||ids[i]==0x20)allowed=true;pthread_mutex_unlock(&inputLock);}
 static void supported_styles(uint32_t value){pthread_mutex_lock(&inputLock);styles=value;pthread_mutex_unlock(&inputLock);}
@@ -57,11 +60,7 @@ static uint32_t style(const uint32_t *id){
     input_log("style set",*id);
     pthread_mutex_lock(&inputLock);
     uint32_t v = 0;
-    if(enabled && allowed && (*id == pad_id() || *id == 0 || *id == 0x20)){
-        if (runtime_handheld_mode()) v = 2u;
-        else if (styles & 4u) v = 4u;
-        else v = 1u;
-    }
+    if(enabled && allowed && pad_id_ok(*id)) v = pad_style();
     pthread_mutex_unlock(&inputLock);
     return v;
 }
@@ -71,7 +70,7 @@ static int handheld_states(NpadState *out,int max,const uint32_t *id){return pad
 static int joy_dual_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,4);}
 static int joy_left_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,8);}
 static int joy_right_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,16);}
-static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":want_style==4?"joy-dual state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};bool id_match=(!id||*id==pad_id()||*id==0||*id==0x20);if(enabled&&allowed&&id_match&&((want_style&pad_style())!=0)){
+static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":want_style==4?"joy-dual state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};bool id_match=(!id||pad_id_ok(*id));if(enabled&&allowed&&id_match&&((want_style&pad_style())!=0)){
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
