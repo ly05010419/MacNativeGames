@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract the verified local Odyssey 1.3.0 Control icon for a local test app.
+"""Extract the verified local Odyssey 1.3.0 (or 1.4.1) Control icon for a local test app.
 
 The icon is game-derived. Write it only under ignored Odyssey_build; never commit it.
 """
@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from inspect_version import (
-    Ctr, common_tickets, container_entries, index_romfs, load_keys,
+    Ctr, UPDATE_VERSIONS, common_tickets, container_entries, index_romfs, load_keys,
     nca_ctr_key, nca_inventory, require, romfs_section, verify_ivfc,
 )
 
@@ -23,8 +23,9 @@ def main():
                         default=HERE / 'Odyssey_build/app-assets/OdysseyIcon.jpg')
     args = parser.parse_args()
     out = args.output.resolve()   # a *_build folder in games/odyssey: ignored by .gitignore, like Odyssey_build
-    require(any(parent.parent == HERE.resolve() and parent.name.endswith('_build') for parent in out.parents),
-            'Icon output must stay under an ignored *_build folder of games/odyssey')
+    outside = HERE.resolve().parents[1] not in out.parents   # or outside the repository (build_odyssey.py --work elsewhere)
+    require(outside or any(parent.parent == HERE.resolve() and parent.name.endswith('_build') for parent in out.parents),
+            'Icon output must stay outside the repository or under an ignored *_build folder of games/odyssey')
     keys = load_keys(args.keys)
     with args.game.open('rb') as source:
         _, entries = container_entries(source, args.game.stat().st_size)
@@ -48,7 +49,7 @@ def main():
                 with image.open('rb') as data:
                     data.seek(nacp['offset'] + 0x3060)
                     version = data.read(16).split(b'\0', 1)[0].decode('ascii')
-                if version != '1.3.0':
+                if version not in UPDATE_VERSIONS:
                     continue
                 icons = [item for item in files if item['path'].startswith('icon_')]
                 require(icons, 'Update Control RomFS contains no title icon')
@@ -60,7 +61,9 @@ def main():
                         'Control icon is not a complete JPEG')
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_bytes(contents)
-                print(f'Verified local 1.3.0 title icon -> {args.output}')
+                # the update's version, for the window title (1.3.0 and 1.4.1 share their executables)
+                args.output.with_name('game-version.txt').write_text(version + '\n')
+                print(f'Verified local {version} title icon -> {args.output}')
                 return
     raise SystemExit('Update Control icon not found')
 

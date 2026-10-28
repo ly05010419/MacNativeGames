@@ -31,6 +31,10 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_romfs_paths.c -o "$RUNNER_TEMP/test-romfs-paths"
           "$RUNNER_TEMP/test-romfs-paths"
+      - name: Check the rumble and gyro settings files with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_feedback_settings.c -o "$RUNNER_TEMP/test-feedback-settings"
+          "$RUNNER_TEMP/test-feedback-settings"
       - name: Check the controller layout parser with the undefined-behavior sanitizer
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_controller_map.c -o "$RUNNER_TEMP/test-controller-map"
@@ -43,3 +47,7 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_audio_ramp.c -o "$RUNNER_TEMP/test-audio-ramp"
           "$RUNNER_TEMP/test-audio-ramp"
+      - name: Check the bow state reader (DualSense triggers) with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_bow_state.c -o "$RUNNER_TEMP/test-bow-state"
+          "$RUNNER_TEMP/test-bow-state"

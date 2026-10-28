@@ -5,7 +5,8 @@
 
 Steps (each is skipped when its verified output already exists, so a failed run can simply be started again):
  1. check the input (title, version, integrity; prints no keys or game data)
- 2. extract the program modules (main, sdk, subsdk0) and merge the base + update RomFS
+ 2. extract the program modules (main, sdk, subsdk0) and merge the base + update RomFS; the game's graphics table scaled
+    for key 3's bigger render size (--render-res, default 2560x1440) into the RomFS overlay folder
  3. extract the system fonts from the game card's system-update partition (NSP: pass --firmware)
  4. rewrite the ARM64 modules ahead of time (third_party/d2r/patch_nso.py, native ruleset)
  5. loader tables: verifies ExeFS, rewrite and RomFS against assets/expected-local-update.json
@@ -79,16 +80,30 @@ def preflight(args, py):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--game", type=Path, required=True, help="your Odyssey XCI or NSP holding the base game and update 1.3.0")
+    p.add_argument("--game", type=Path, required=True, help="your Odyssey XCI or NSP holding the base game and update 1.3.0 or 1.4.1")
+    p.add_argument("--update", type=Path, help="the update NSP, when --game is the base NSP alone: both are joined into "
+                   "<work>/input/odyssey.nsp first (scripts/merge_nsp.py)")
     p.add_argument("--keys", type=Path, required=True, help="prod.keys dumped from your own Switch")
     p.add_argument("--work", type=Path, default=GAME_DIR / "Odyssey_build", help="build folder (default Odyssey_build)")
     p.add_argument("--firmware", type=Path, help="unpacked firmware NCA directory, for the system fonts of an NSP build")
     p.add_argument("--developer-dir", default="/Applications/Xcode.app/Contents/Developer")
     p.add_argument("--skip-seed", action="store_true", help="leave out the whole-game shader seed (more first-play stutter)")
+    p.add_argument("--render-res", default="2560x1440",
+                   help="the largest docked 3D scene key 3 goes up to (default 2560x1440; the game starts at the shipped "
+                        "1600x900; 1600x900 here leaves the render size as shipped)")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
     args = p.parse_args()
     args.game, args.keys, args.work = args.game.resolve(), args.keys.resolve(), args.work.resolve()
     py = sys.executable
+    if args.update:
+        if not args.update.is_file():
+            raise SystemExit(f"cannot build:\n - {args.update} not found")
+        merged = args.work / "input/odyssey.nsp"
+        if not merged.is_file() or merged.stat().st_mtime < max(args.game.stat().st_mtime, args.update.stat().st_mtime):
+            t = step(0, "Join the base and update NSPs")
+            run([py, "scripts/merge_nsp.py", args.game, args.update.resolve(), "--output", merged])
+            done(t)
+        args.game = merged
     preflight(args, py)
     work, ext = args.work, args.work / "extracted"
     work.mkdir(parents=True, exist_ok=True)
@@ -109,6 +124,16 @@ def main():
         print("   RomFS already merged")
     else:
         run([py, "scripts/merge_romfs.py", args.game, *keyargs, "--output", ext / "local/romfs"])
+    # Key 3's bigger render size: the game's graphics table scaled into the RomFS overlay folder, with render-res.txt for
+    # the window and HUD size (runtime/game_patches.c), so code sizes and table cannot disagree.
+    patches = ext / "local/romfs-patches"
+    want = args.render_res.lower()
+    have = (patches / "render-res.txt").read_text().strip() if (patches / "render-res.txt").is_file() else "1600x900"
+    if want != have:
+        shutil.rmtree(patches, ignore_errors=True)
+        if want != "1600x900":
+            run([py, "scripts/make_render_res_overlay.py", want, "--romfs", ext / "local/romfs", "--out", patches, "--flat"])
+    print(f"   key 3 render size up to {want}")
     done(t)
 
     t = step(3, "System fonts")
@@ -187,7 +212,7 @@ def main():
 
     t = step(8, "Package the app")
     icon = work / "app-assets/OdysseyIcon.jpg"
-    if not icon.is_file():   # the game's own icon, from its Control data
+    if not icon.is_file() or not icon.with_name("game-version.txt").is_file():   # the game's own icon and version, from its Control data
         run([py, "scripts/extract_app_icon.py", args.game, *keyargs, "--output", icon])
     run([py, "scripts/package_native_app.py"], env={"ODYSSEY_WORK": str(work)})
     done(t)

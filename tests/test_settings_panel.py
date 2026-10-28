@@ -50,3 +50,22 @@ class SettingsPanel(unittest.TestCase):
                                                  capture_output=True, text=True, timeout=35)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: settings panel', run.stdout)
+                settings = Path(directory) / ('saved-' + (version or 'base'))
+                settings.mkdir()
+                env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
+                env.update(TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings))
+                for action in ('save', 'restore', 'override'):
+                    current = dict(env)
+                    if action == 'override':
+                        current.update(TOTK_MFX='interpmax', TOTK_TAA='0', TOTK_ASPECT='16:9', TOTK_OUTPUT_RES='1920x1080')
+                    run = subprocess.run([str(executable), action], env=current, capture_output=True, text=True, timeout=35)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn('pass: settings persistence', run.stdout)
+                (settings / 'graphics-frame.txt').write_text('lock-60\n')
+                run = subprocess.run([str(executable), 'lock'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                for name, value in {'graphics-overlay.txt': 'invalid', 'graphics-frame.txt': 'lock-60junk',
+                                    'graphics-output.txt': '999', 'graphics-aspect.txt': 'nan', 'graphics-taa.txt': '3'}.items():
+                    (settings / name).write_text(value)
+                run = subprocess.run([str(executable), 'corrupt'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

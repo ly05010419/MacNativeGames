@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "dread",
+  "name": "Metroid Dread",
+  "title_id": "010093801237C000",
+  "bundle_id": "org.macnativegames.dread",
+  "data_folder": "Dread",
+  "build": "games/dread/build.py",
+  "work_holds_game_data": true,
+  "sources": ["games/dread"],
+  "files": {"game": ["xci", "nsp"], "update": []},
+  "versions": ["1.0.0"]
+}

@@ -123,3 +123,87 @@ and nothing outside `games/ssbu` is read.
   was played with.
 - **Shared shader list** (`assets/shader_list.tsv`): Smash's own, 153 variants over 147 shaders met in play beyond the
   startup shaders (the folder had carried the Mario copy's list).
+
+### 2026-10-25: long sessions: no crash on an untranslatable shader, session logs
+
+- **A shader the translator cannot translate no longer ends the game.**
+  - *What players saw:* after 73 minutes on 2K in World of Light, in a mission with Giga Bowser, the game closed
+    without a crash report. The log's last lines: the Giga Bowser, Bowser and Lucario modules were loaded, then
+    `translation FAILED ps 9dcc392f... depth texture fp_t_tcb_12 declared as texture3d: no depth equivalent`.
+  - *Why:* a pixel shader of that scene samples slot 12 as a 3D colour table, and at that moment the game had a 2D
+    depth texture bound there. The Switch GPU reads whatever is bound. Metal needs every slot's type in the shader,
+    and it has no 3D depth texture, so the translator stopped; the runtime treated a failed translation as fatal and
+    called `die()` (log and `exit(2)`, which is why macOS wrote no crash report).
+  - *Why only there, after an hour:* the bind state is part of a variant's name. The same shader had run earlier with
+    another bind state; this combination appears in that scene only, was not in the app's shaders, and was
+    translated the first time it was drawn.
+  - *Fix:* the translator keeps the shader's own declaration for such a slot (prebuilt `totk_xlate` rebuilt). A
+    non-3D texture bound where a shader reads a 3D one gets the empty 3D texture an unbound slot gets. Any failed
+    translation now returns no variant: its draws are skipped like those of a variant still being translated, it is
+    tried once per session, a red `[shader-failed]` line names it and the request is kept in
+    `<shader cache>/failed/` for an offline rerun. The game keeps running; at worst one effect is missing.
+  - *Measured:* the shader seed tool given this request (slot 12 bound to a depth texture): the old translator skips
+    it with exactly this error, the new one translates it and its Metal compiles; the other 70,998 startup shaders
+    are byte-identical with both. `TOTK_SHADER_FAIL_TEST=3` (the first three translations fail) keeps the game
+    running, each failed variant tried once. Then 101 min of World of Light with 14 Giga Bowser loads: no crash
+    (that exact draw did not come up again in this session, so the game path of the fix is proven by the forced
+    failures, the translation by the saved request).
+- **Every session's log is kept.** The app moved `ssbu.log` to `ssbu.previous.log` at each start and deleted the one
+  before, so two starts after a long session lost it. The log about to go moves to
+  `~/Library/Logs/MacNativeGames/ssbu-sessions/ssbu-<its start>.log`; the newest 40 stay, older ones go while the
+  folder holds more than 1 GB. The log names the Mac's thermal state when it changes (`[thermal]`).
+
+### 2026-10-25: the alpha test, DLC, the Log menu
+
+- **Alpha test in the fragment shader.** Seven menu shaders ask for an alpha test (GREATER or LEQUAL, reference 0 or
+  0.5); Metal has none and `SetAlphaRef` was dropped, so those fragments were drawn ("alpha test 5 not implemented"
+  in every log). The reference is recorded now (`OP_ALPHA_REF`), and a fragment stage with an alpha test asks for a
+  variant with `"alpha": "<function>:<reference>"` (NVN numbers the functions as Ryujinx's `AlphaTestOp` does); the
+  translator discards when colour 0's alpha fails. Variants without an alpha test keep their names and cache files.
+  Measured: without the answer the translated Metal of a menu shader is byte-identical to the cached one, with
+  `5:0.5` it gains the discard; with and without the test the stage select differs in 0.20 % of its pixels, as much
+  as two runs with it (the animated background).
+- **DLC.** The runtime answered "no DLC", so fighters from DLC you own could not be chosen. The app's **DLC** menu
+  now turns DLC on or off and points the game at a folder with your own dumps of the DLC you bought; the runtime
+  lists the DLC packages it finds there (`runtime/aoc_scan.h`) and answers `nn::aoc::CountAddOnContent` /
+  `ListAddOnContent`. `build_ssbu.py --dlc FOLDER` builds the same list at build time and verifies every package with
+  your keys (`scripts/extract_dlc.py`, every RomFS through all six IVFC levels). Measured with 99 DLC packages: the
+  same 99 entries with and without the keys, 12 of them fighters; the game plays its "... joins the battle!"
+  announcements; Sephiroth and Pyra / Mythra fought in Versus.
+- **Log** menu: the game log on or off for the next start (off: nothing is written, earlier logs stay).
+
+### 2026-10-26: photos
+
+- **Taking a photo in a fight no longer ends the game.** Capture in a fight stopped the game ("caps:su: command 205
+  not implemented", SaveScreenShotEx1). caps:su 201/203/205/210 now answer "saved" with an empty album entry (an
+  invented error could make the SDK abort).
+- **The photo is kept on the Mac.** The picture (1280x720 RGBA, the last buffer of the request) is written in the
+  background as a PNG to `~/Pictures/Super Smash Bros. Ultimate`, or to the folder chosen in the app's new **Photos**
+  menu (applies to the next photo; Show in Finder opens it). One folder chooser now serves the DLC and Photos menus.
+  Measured: two photos without a crash, then a photo saved as a 1280x720 PNG without alpha, colours checked by eye
+  against the game.
+
+### 2026-10-27: 13.0.5
+
+- **What 13.0.5 changes.** The final update (1 September 2026: invalid data in online battles). Of the five ExeFS
+  modules only `main` and `main.npdm` differ: rtld, sdk (SDK 8.2.1) and subsdk0 are 13.0.2's byte for byte, and so are
+  their rewrites. The NRRs from `cross2_130001` to `cross2_130004` list the same 98 NRO modules, so the fighters,
+  stages and modes are 13.0.2's too; the RomFS has 15 files (13.0.2: 12, the three new NRRs).
+- **Which version.** `build_ssbu.py` extracts the update's ExeFS once and takes the version whose hashes it carries
+  (`identify_update`, as `build_app.py` does), never the file name; each version's files stay apart in the work folder
+  (`extracted/v1305`, `rewritten/v1305`). The Makefile's `VERSION` builds the runtime for one (`-DSSBU_GAME_V1305`,
+  `runtime/game_version.h`), and before the first start of 13.0.5 the launcher keeps the saves as
+  `profile-before-13.0.5`, as Tears of the Kingdom's updates do.
+- **Pins.** `assets/expected-v13.0.5.json`, from a base NSP and the 13.0.5 update NSP: the ExeFS from `extract_code.py`,
+  the RomFS from `merge_romfs.py` (all six IVFC levels), the rewrites from `patch_nso.py` (sdk and subsdk0 reproduce the
+  13.0.2 pins).
+- **2K.** 13.0.5's `main` has 0x9b0 bytes more code before main+0x35b407c: the 26 render size sites from there on sit
+  0x9b0 later with the same words (every sequence of two or more instructions occurs in the 13.0.5 image only at the
+  sites, and every single-instruction site matches at that shift). The UI factor sites at main+0x1534e18 / 0x153c348
+  stay, but rodata moved a page, so their adrp words name the next page (`RES_SHIFT`, `J1_X11` ... in
+  `game_patches.c`). Built as 13.0.2, `game_patches.c` and the launcher compile to the same machine code as before
+  (disassembly and strings compared). `SSBU_UI_LOG` and `SSBU_VP_LOG` keep 13.0.2's addresses and say so on 13.0.5.
+  Measured: the start in 2K, groups ABCDEGHIJ, 55 instructions, 372 viewports scaled and 38 kept.
+- **Played** on an Apple M5, 32 GB, macOS 27.2: matches in a 3420x1916 window, with MetalFX upscaling (key 3) on and
+  off. Presentation p50 and p95 16.67 ms at 60 Hz; after the first seconds of warm-up at most 0.8 % of the frames one
+  refresh late. `gap_report.py`: three warnings the graphics layer already handles (`hle_nvn.c`, `nvn_mtl.m`), no abort.

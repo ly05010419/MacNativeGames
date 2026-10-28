@@ -27,11 +27,12 @@ def clone_folder(src,dst):
     dst.parent.mkdir(parents=True,exist_ok=True)
     return libc.clonefile(os.fsencode(src),os.fsencode(dst),0)==0
 
-def discard(path):
+def discard(path,beside=None):
     """Out of the way at once (a rename), deleted in the background: tens of thousands of files take minutes to delete on
-    an external disk, and the build does not need to wait for it."""
+    an external disk, and the build does not need to wait for it. `beside`: the folder to rename it into, when its own
+    folder is copied or zipped next (a folder inside the app, the app inside Payload)."""
     if not path.exists(): return
-    old=path.with_name(f'.{path.name}.old-{os.getpid()}-{time.time_ns()}')
+    old=(beside or path.parent)/f'.{path.name}.old-{os.getpid()}-{time.time_ns()}'
     os.rename(path,old); subprocess.Popen(['/bin/rm','-rf',str(old)],start_new_session=True)
 
 def copy_tree(src,dst):
@@ -97,11 +98,13 @@ def main():
     if botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
         project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
-        # The Settings pane without Tears of the Kingdom's Full HD switch (main.m reads it for that game only).
+        # The Settings pane with the Full HD switch described for this game: its docked scene is 1920x1080, not 1600x900.
         settings=gen/'Settings.bundle'; shutil.rmtree(settings,ignore_errors=True); shutil.copytree(ios/'Settings.bundle',settings)
         root=plistlib.loads((settings/'Root.plist').read_bytes()); specs=root['PreferenceSpecifiers']
         at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
-        del specs[at-1:at+1]   # the switch and its group
+        specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出和畫面都是 1920×1080，需要較快的 iPad（M 系列）。關閉：手持 1280×720（內部 960×540）。'
+                                   '重新啟動遊戲後生效 · on: the game\'s docked settings, 1920×1080 output and scene (for an M-series iPad). '
+                                   'Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game')
         (settings/'Root.plist').write_bytes(plistlib.dumps(root))
         project=project.replace('      - Settings.bundle','      - path: Gen/Settings.bundle',1)
     elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
@@ -149,7 +152,7 @@ def main():
     # Generate the app project with resolved identity and the embedded-segment linker flags.
     env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
     xcconfig=gen/'totk.xcconfig'
-    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','AVFAudio','Security'])
+    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','AVFAudio','Security'])
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a {flags}\n')
     run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
     derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
@@ -163,9 +166,12 @@ def main():
     # The game data goes into a copy of Xcode's product, never into the product itself: it then stays small (its own
     # files only), and each build copies it once instead of three times (product -> Payload -> output, ~27,000 seed
     # files each, 5 of the 7 minutes of a build, 2026-10-23). Products of earlier builds still carry GameData.
-    if (app/'GameData').exists(): discard(app/'GameData')
+    # Renamed beside the product, not inside it: inside, the copy below took the half-deleted folder along (a 33 GB IPA,
+    # zip stopped at files the background delete had removed, 2026-10-25).
+    if (app/'GameData').exists(): discard(app/'GameData',beside=app.parent)
     dest=out if out.suffix=='.app' else tree/'build/ios-payload/Payload/TOTK.app'
-    discard(dest); copy_tree(app,dest)
+    discard(dest,beside=dest.parent.parent if out.suffix!='.app' else None)   # not in Payload, which is zipped whole
+    copy_tree(app,dest)
     res=dest/'GameData';res.mkdir(exist_ok=True)
     copy_tree(game_data,res/'game-data')   # TOTK_GAME_DATA (Sources/main.m)
     romfs=tree/f'extracted/{a.version}/romfs'

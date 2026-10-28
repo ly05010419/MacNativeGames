@@ -38,10 +38,18 @@ static uint64_t alias_requested(void){const char *e=getenv("TOTK_ALIAS_GIB");uin
 static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();return alias_len;}
 #define ALIAS_SIZE alias_size()
 #define LOW_SEARCH_FROM 0x300000000ULL
+/* TOTK_DRAM_8GB (Mac, docs/mods.md): the 8 GB mode for big texture packs. Unset or "0" leaves the retail layout. */
+static int dram_8gb(void){
+#if TARGET_OS_IPHONE
+ return 0;
+#else
+ static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
+#endif
+}
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE (6ULL<<30)
+#define LOW_SIZE (dram_8gb()?8ULL<<30:6ULL<<30)   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -62,11 +70,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
-#define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
+#define HEAP_CAP (dram_8gb()?7ULL<<30:4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup; ~5.8 GiB in the 8 GB mode */
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
-/* TOTK: application memory pool reported to the game (default: retail 3.2 GiB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
+ v=e?strtoull(e,NULL,0):(dram_8gb()?0x1b3400000ULL:0xcd500000ULL)+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
+/* TOTK: application memory pool reported to the game (default: retail 3.2 GiB, or 6.8 GiB as in an emulator's 8 GB DRAM mode with TOTK_DRAM_8GB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
 #define ASLR_START ((uintptr_t)low_space)
@@ -442,3 +450,4 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
 #ifdef GAME_BOTW
 #undef runtime_svc
 #endif
+#include "mem_scan.h"   /* Mac diagnostics: mscan commands (memory scan, write watch) */

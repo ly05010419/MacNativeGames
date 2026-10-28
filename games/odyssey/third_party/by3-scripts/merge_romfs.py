@@ -167,14 +167,17 @@ class Patched:
         gen0, self.secure = struct.unpack_from('<II', fs, 0x140)
         require(fs[4] == 4, 'Expected an AES-CTR-Ex (BKTR) update section')
         require(ind_off + ind_size <= ex_off and ex_off + ex_size <= end - start, 'Patch tables out of bounds')
-        # The AES-CTR-Ex table itself is plain AES-CTR; it covers everything before it, the indirect table included.
+        # The AES-CTR-Ex table itself is plain AES-CTR. Its extent says what it covers: up to itself, the indirect table
+        # included (1.3.0, Bayonetta 3 1.2.0), or only the data before the indirect table, which is then plain AES-CTR too
+        # (the 1.4.1 update). A wrong choice fails the indirect table's bucket checks or the IVFC hashes.
         plain = upper_iv(gen0, self.secure)
         ex_rows, ex_total = bucket_tree(lambda o, n: ctr.read(start + ex_off + o, n, plain), ex_size,
                                         fs[0x130:0x140], 0x10, ctr_ex_row)
-        require(ex_total == ex_off, 'AES-CTR-Ex table must cover the section up to itself')
+        require(ex_total in (ex_off, ind_off), 'AES-CTR-Ex table must cover the section up to itself or up to the indirect table')
         self.ctr, self.start, self.base, self.ex = ctr, start, base, Ranges(ex_rows)
-        ind_rows, total = bucket_tree(lambda o, n: self.update_data(ind_off + o, n), ind_size,
-                                      fs[0x110:0x120], 0x14, indirect_row)
+        read_table = (lambda o, n: self.update_data(ind_off + o, n)) if ex_total == ex_off else \
+                     (lambda o, n: ctr.read(start + ind_off + o, n, plain))
+        ind_rows, total = bucket_tree(read_table, ind_size, fs[0x110:0x120], 0x14, indirect_row)
         require(all(r[3] in (0, 1) for r in ind_rows), 'Indirect storage index')
         self.total, self.ind, self.data_size = total, Ranges(ind_rows), ind_off
         self.from_base = self.from_update = 0

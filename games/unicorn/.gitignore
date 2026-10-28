@@ -1,0 +1,12 @@
+UNICORN_build/
+UNICORN_build-1.05/
+*.app/
+__pycache__/
+*.keys
+*.xci
+*.nsp
+*.nsz
+*.nca
+*.bin
+*.bfttf
+*.sav

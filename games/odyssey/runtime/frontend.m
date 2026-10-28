@@ -9,6 +9,7 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "gamepad_layout.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 int mfxup_output_enabled(void);
 static NSWindow *window;
@@ -18,6 +19,14 @@ static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
 static NSView *shortcutHelp;
+/* Mouse mode (key 7, runtime/gamepad.m): while it is on and the window has the keyboard, the window holds the pointer --
+   moved to the window's centre, detached from the mouse and hidden -- and sends the mouse's buttons and movement to
+   gamepad.m. It lets go when the window loses the keyboard (Command-Tab, a click elsewhere), during text entry and when
+   mouse mode goes off (front_mouse_update). */
+static BOOL mouseHeld;
+static int textEntryOpen;
+static void front_mouse_update(void);
+int taa_enabled(void);   /* third_party/d2r_gfx/gfx/nvn/totk_taa.m: key 5 */
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
@@ -114,7 +123,32 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 -(void)keyDown:(NSEvent *)e{[NSCursor setHiddenUntilMouseMoves:YES];runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 -(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
+/* Mouse mode (key 7): while the window holds the pointer, its movement and buttons go to runtime/gamepad.m. */
+-(void)mouseMoved:(NSEvent *)e{if(mouseHeld)runtime_mouse_move(e.deltaX,e.deltaY);}
+-(void)mouseDragged:(NSEvent *)e{if(mouseHeld)runtime_mouse_move(e.deltaX,e.deltaY);}
+-(void)rightMouseDragged:(NSEvent *)e{if(mouseHeld)runtime_mouse_move(e.deltaX,e.deltaY);}
+-(void)otherMouseDragged:(NSEvent *)e{if(mouseHeld)runtime_mouse_move(e.deltaX,e.deltaY);}
+-(void)mouseDown:(NSEvent *)e{(void)e;if(mouseHeld)runtime_mouse_button(0,1);}
+-(void)mouseUp:(NSEvent *)e{(void)e;runtime_mouse_button(0,0);}
+-(void)rightMouseDown:(NSEvent *)e{(void)e;if(mouseHeld)runtime_mouse_button(1,1);}   /* no context menu */
+-(void)rightMouseUp:(NSEvent *)e{(void)e;runtime_mouse_button(1,0);}
+-(void)otherMouseDown:(NSEvent *)e{if(mouseHeld)runtime_mouse_button((int)e.buttonNumber,1);}   /* 2 middle, 3 and 4 the side buttons */
+-(void)otherMouseUp:(NSEvent *)e{runtime_mouse_button((int)e.buttonNumber,0);}
 @end
+static void front_mouse_update(void){   /* main thread; also runtime/gamepad.m's hook when mouse mode changes */
+ BOOL want=window&&runtime_mouse_enabled()&&window.isKeyWindow&&!textEntryOpen;
+ if(want==mouseHeld)return;
+ mouseHeld=want;
+ if(want){
+  NSRect f=[window convertRectToScreen:window.contentView.frame];CGFloat top=NSMaxY(NSScreen.screens.firstObject.frame);
+  CGWarpMouseCursorPosition(CGPointMake(NSMidX(f),top-NSMidY(f)));   /* clicks land in the window */
+  CGAssociateMouseAndMouseCursorPosition(false);[NSCursor hide];window.acceptsMouseMovedEvents=YES;
+ }else{
+  CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];runtime_mouse_release();
+  window.acceptsMouseMovedEvents=NO;
+ }
+ fprintf(stderr,"[totk] mouse %s\n",want?"held by the window (key 7, or Command-Tab, lets it go)":"let go");
+}
 @interface TOTKShortcutHelp:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
@@ -126,6 +160,14 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
    gfx/nvn/fps_overlay.c, refreshed twice a second) above the shortcuts. TOTK_HUD=corners: the lines stay in the picture's
    corners and this is the larger centred shortcut box. */
 @implementation TOTKShortcutHelp
+/* Key 6 (runtime/gamepad.m): the controller type; auto says what it takes the connected controller for. */
+static NSString *pad_type_text(void){
+ static const char *const names[GAMEPAD_TYPE_COUNT]={NULL,"Xbox","PlayStation","Switch"};
+ int detected=-1,type=runtime_gamepad_type(&detected);
+ if(type>GAMEPAD_TYPE_AUTO&&type<GAMEPAD_TYPE_COUNT)return @(names[type]);
+ if(detected>GAMEPAD_TYPE_AUTO&&detected<GAMEPAD_TYPE_COUNT)return [NSString stringWithFormat:@(TOTK_UI("自动（%s）","auto (%s)")),names[detected]];
+ return @(TOTK_UI("自动（未接手柄）","auto (no controller)"));
+}
 static NSString *shortcut_text(void){
  const char *interp;
  switch(mfx_enabled()){
@@ -134,9 +176,20 @@ static NSString *shortcut_text(void){
   case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
   default:interp=TOTK_UI("关闭","off");break;
  }
- /* Keys 3 (picture modes) and 4 (21:9) are not listed: for Odyssey runtime_output_mode_cycle and runtime_aspect_toggle
-    are stubs (runtime/game_patches.c), so those keys do nothing. */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（仅 120 Hz；按键切换）","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (120 Hz only; press to toggle)")),[NSString stringWithUTF8String:interp]];
+ /* Key 3 (runtime/game_patches.c): the 3D scene size at a bigger render size, else MetalFX to the window on / off. */
+ const char *scene=runtime_picture_name();
+ NSString *picture=scene?@(scene):mfxup_output_enabled()?@(TOTK_UI("MetalFX 放大到窗口","MetalFX to the window")):@(TOTK_UI("关闭","off"));
+ /* Key 4 (runtime/odyssey_aspect.c): 16:9 -> fit to the window -> 21:9 (or TOTK_ASPECT's ratio). */
+ int step=runtime_aspect_step();float ar=runtime_aspect_now();
+ NSString *ratio=!ar?@"16:9":fabsf(ar*9-21)<0.05f?@"21:9":[NSString stringWithFormat:@"%.2f:1",ar];
+ NSString *shape=step==1?[NSString stringWithFormat:@(TOTK_UI("适配窗口 %@","fit to window %@")),ratio]:step==2?ratio:@"16:9";
+ /* The picture settings of the window before the game and the GPU line (odyssey_gfx.h, odyssey_gfx_present.inc
+    dm_gfx_panel_text; after PR #910 they moved from keys 3-7 to that window, keys 3-7 are TOTK's) */
+ extern void dm_gfx_panel_text(char *out, size_t n);
+ char gfx[640]; dm_gfx_panel_text(gfx, sizeof gfx);
+ return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  显示 / 隐藏所有提示\n2  补帧：当前 %@（仅 120 Hz；按键切换）\n3  画质：当前 %@（按键切换）\n4  画面比例：当前 %@（按键切换）\n5  边缘平滑（MetalFX 时间性）：%@\n6  手柄类型：当前 %@（按键切换）\n7  鼠标操作：当前 %@（按键切换）\n%@","Shortcuts\n1  Show / hide all overlays\n2  Interpolation: %@ (120 Hz only; press to toggle)\n3  Picture: %@ (current; press to cycle)\n4  Aspect ratio: %@ (current; press to cycle)\n5  Edge smoothing (MetalFX Temporal): %@\n6  Controller type: %@ (current; press to cycle)\n7  Mouse: %@ (current; press to switch)\n%@")),[NSString stringWithUTF8String:interp],picture,shape,
+  taa_enabled()?@(TOTK_UI("开","on")):@(TOTK_UI("关","off")),pad_type_text(),
+  runtime_mouse_enabled()?@(TOTK_UI("开（视角、按键，⌘Tab 释放指针）","on (camera, buttons; Command-Tab frees the pointer)")):@(TOTK_UI("关","off")),[NSString stringWithUTF8String:gfx]];
 }
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
  self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
@@ -159,7 +212,7 @@ static NSString *shortcut_text(void){
 -(void)layout{[super layout];[self position];}
 -(void)position{if(!self.superview)return;NSRect f,in;
  if(hud_compact()){CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);in=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
- else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
+ else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=256;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
  if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
 @end
 void runtime_shortcut_help_toggle(void){int show=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{shortcutHelp.hidden=!show;});}
@@ -181,19 +234,20 @@ static void front_sync_drawable(void){
  if(displayLink&&display)CVDisplayLinkSetCurrentCGDisplay(displayLink,display);
  CGFloat s=window.backingScaleFactor>0?window.backingScaleFactor:1,ts=drawable_scale();CGSize px=CGSizeMake(round(v.bounds.size.width*s*ts),round(v.bounds.size.height*s*ts));
  if(px.width<1||px.height<1||CGSizeEqualToSize(metalLayer.drawableSize,px))return;
- metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);
+ metalLayer.contentsScale=s;metalLayer.drawableSize=px;fprintf(stderr,"[totk] window drawable %.0fx%.0f (scale %.0f)\n",px.width,px.height,s);runtime_aspect_view(px.width,px.height);
 }
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
--(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);runtime_oe_push_message(15);fprintf(stderr,"[totk] window gained focus\n");front_update_awake();}
--(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_update_awake();}
+-(void)windowDidBecomeKey:(NSNotification *)n{(void)n;atomic_store(&focused,1);runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_update_awake();}
+-(void)windowDidResignKey:(NSNotification *)n{(void)n;atomic_store(&focused,0);front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_update_awake();}
 -(void)windowDidMiniaturize:(NSNotification *)n{(void)n;front_update_awake();}
 -(void)windowDidDeminiaturize:(NSNotification *)n{(void)n;front_update_awake();}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;
  window_closing=1;front_update_awake();
+ if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
@@ -271,6 +325,7 @@ void runtime_front_run(void(*callback)(void)){
  @autoreleasepool{
   bootStartNS=runtime_now_ns();
   [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
@@ -284,13 +339,15 @@ void runtime_front_run(void(*callback)(void)){
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
-  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Super Mario Odyssey Mac — Ver. %s",TOTK_GAME_VERSION];
+  /* the update the app was built from (the app launcher sets it; 1.3.0 and 1.4.1 share their executables) */
+  const char *version=getenv("ODYSSEY_GAME_VERSION");if(!version||!*version)version=TOTK_GAME_VERSION;
+  window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,version,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@"Super Mario Odyssey Mac — Ver. %s",version];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
   [NSNotificationCenter.defaultCenter addObserver:windowDelegate selector:@selector(screenParametersChanged:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
   front_install_menu();front_start_cursor_hiding();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
-  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);
+  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
@@ -399,12 +456,13 @@ int runtime_front_text_input(const RuntimeTextRequest *req,char *out,size_t out_
   NSTextField *field=secure?[[NSSecureTextField alloc] initWithFrame:NSMakeRect(18,16,w-36,34)]:[[NSTextField alloc] initWithFrame:NSMakeRect(18,16,w-36,34)];
   field.font=[NSFont systemFontOfSize:20];field.stringValue=initial;field.delegate=bar;field.bezelStyle=NSTextFieldRoundedBezel;bar.field=field;
   __weak TOTKTextBar *weakBar=bar;
-  bar.done=^(NSString *text){result=[text copy];[weakBar removeFromSuperview];[window makeFirstResponder:window.contentView];dispatch_semaphore_signal(sem);};
+  bar.done=^(NSString *text){result=[text copy];[weakBar removeFromSuperview];[window makeFirstResponder:window.contentView];textEntryOpen=0;front_mouse_update();dispatch_semaphore_signal(sem);};
   [bar addSubview:label];[bar addSubview:hint];[bar addSubview:field];[cv addSubview:bar];openBar=bar;
   runtime_input_clear();
   if(window.miniaturized)[window deminiaturize:nil];
   if(!assume_focus()){[NSApp activateIgnoringOtherApps:YES];[window makeKeyAndOrderFront:nil];}   /* test windows never take the keyboard */
   [window makeFirstResponder:field];
+  textEntryOpen=1;front_mouse_update();   /* the pointer is the player's while typing */
   fprintf(stderr,"[totk] keyboard: text entry bar shown (%s)\n",prompt.UTF8String);
  });
  dispatch_semaphore_wait(sem,DISPATCH_TIME_FOREVER);

@@ -13,6 +13,7 @@ void runtime_oe_push_message(uint32_t m){(void)m;}
 void dm_gfx_set_flag(const char *s,int v){(void)s;(void)v;}
 void runtime_survey_init(Module *m){(void)m;}
 void *runtime_symbol(const char *n){(void)n;return 0;}
+uint8_t *runtime_bench_cam;
 int main(int argc,char **argv){
  if(argc<4)return 2;
  FILE *f=fopen(argv[1],"rb");struct stat st;

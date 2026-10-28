@@ -18,6 +18,9 @@ void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-ca
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
 void runtime_settings_toggle(void){settings_toggles++;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
+static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
+void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
@@ -87,6 +90,20 @@ static void feedback_checks(void){
  need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0&&rumble_seen[0][2]==0&&!vactual(&got,&left)&&got.al==0.7f,"muted: the game's value is kept, the controller gets silence");
  need(runtime_hid_feedback_flag("rumble",1)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"flag rumble 1 unmutes");
  need(runtime_hid_feedback_flag("mfx_upscale",1)==0,"other flags are not taken");
+ /* The settings panel's rumble and gyro switches (runtime_feedback_*, key 1): while TOTK_RUMBLE / TOTK_GYRO is set it decides
+    and a pick does nothing; without it a pick is saved in rumble.txt / gyro.txt and mutes or unmutes the device the game
+    has in this run at once. */
+ need(runtime_feedback_locked(0)&&runtime_feedback_locked(1)&&runtime_feedback_present(0),"the variables set: the panel shows them, greyed out");
+ runtime_feedback_choose(0,0);need(!saves&&!vsend(&left,&(Vib){0.6f,160,0.6f,320})&&rumble_seen[0][0]==0.6f,"a pick while the variable decides changes nothing");
+ unsetenv("TOTK_RUMBLE");unsetenv("TOTK_GYRO");
+ need(!runtime_feedback_locked(0)&&!runtime_feedback_locked(1)&&runtime_feedback_present(0)&&runtime_feedback_choice(0)==1&&runtime_feedback_choice(1)==1,"without the variables the switches are the panel's, on");
+ need(!vsend(&right,&(Vib){0.1f,90,0.3f,600})&&rumble_seen[1][2]==0.3f,"the right handle plays before the pick");
+ runtime_feedback_choose(0,0);
+ need(saves==1&&!strcmp(saved_name,"rumble.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(0)==0&&rumble_seen[0][0]==0&&rumble_seen[1][2]==0,"rumble off in the panel: saved, both handles silent at once");
+ need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0,"rumble off in the panel: the game's values play silence");
+ runtime_feedback_choose(0,1);
+ need(saves==2&&!strcmp(saved_word,"on")&&runtime_feedback_choice(0)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"rumble on in the panel: saved and playing again");
+ setenv("TOTK_RUMBLE","1",1);setenv("TOTK_GYRO","1",1);
  /* Six-axis: the SDK's full-key handle (nn::hid::utility::GetSixAxisSensorHandle) is 0x20003. */
  uint32_t(*sstart)(const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE");
  uint32_t(*sstates)(int *,Six *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE");
@@ -97,10 +114,16 @@ static void feedback_checks(void){
  memset(&buf,0xa5,sizeof buf);need(!sstart(&six)&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0&&near3(buf.s[0].acc,0,0,-1,0)&&near3(buf.s[0].dir,1,0,0,0)&&near3(buf.s[0].dir+6,0,0,1,0),"no controller motion: one still, unconnected state");
  runtime_motion_live(1);feed(100,0,0,-1,0,0,0);probe_now+=1000000;
  memset(&buf,0xa5,sizeof buf);need(!sstates(&n,buf.s,16,&six)&&n==16,"16 states when 100 samples are there");
- for(int i=0;i<16;i++)need(buf.s[i].sampling==100-i&&buf.s[i].attr==1&&buf.s[i].dt==4000000,"newest first, sampling numbers, connected, 4 ms apart");
+ /* The settings panel's gyro switch (runtime_feedback_choose, key 1), without TOTK_GYRO: saved, and at once a still controller / motion again. */
+ unsetenv("TOTK_GYRO");
+ runtime_feedback_choose(1,0);need(!strcmp(saved_name,"gyro.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(1)==0&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"gyro off in the panel: saved, a still controller at once");
+ runtime_feedback_choose(1,1);need(!strcmp(saved_word,"on")&&runtime_feedback_choice(1)==1&&!sstates(&n,buf.s,16,&six)&&n==16&&buf.s[0].attr==1,"gyro on in the panel: saved, motion again");
+ setenv("TOTK_GYRO","1",1);
+ /* States come on the console's 5 ms clock (motion_fusion.c): 100 samples 4 ms apart are 400 ms, 80 states. */
+ for(int i=0;i<16;i++)need(buf.s[i].sampling==80-i&&buf.s[i].attr==1&&buf.s[i].dt==5000000,"newest first, sampling numbers, connected, 5 ms apart (the console clock)");
  for(unsigned i=0;i<sizeof buf.guard;i++)need(buf.guard[i]==0xa5,"six-axis output guard");
  need(near3(buf.s[0].acc,0,0,-1,1e-6)&&near3(buf.s[0].dir,1,0,0,1e-6)&&near3(buf.s[0].dir+3,0,1,0,1e-6)&&near3(buf.s[0].dir+6,0,0,1,1e-6)&&near3(buf.s[0].angle,0,0,0,1e-9),"lying still and flat: identity direction, no angle");
- Six one;need(!sstate(&one,&six)&&one.sampling==100,"single state = the newest");
+ Six one;need(!sstate(&one,&six)&&one.sampling==80,"single state = the newest");
  /* Turning 90 degrees a second about z (counterclockwise seen from above) for 1 s: a quarter turn. */
  sstart(&six);feed(1,0,0,-1,0,0,0);feed(250,0,0,-1,0,0,M_PI/2);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near(buf.s[0].angle[2],0.25,0.002)&&near(buf.s[0].gyro[2],0.25,1e-6)&&near3(buf.s[0].dir,0,1,0,0.01)&&near3(buf.s[0].dir+3,-1,0,0,0.01)&&near3(buf.s[0].dir+6,0,0,1,0.01),"quarter turn about z: angle 0.25 rev, x axis now along y");
@@ -114,7 +137,8 @@ static void feedback_checks(void){
  need(near3(buf.s[0].dir+6,0,-0.5,0.8660254,0.02)&&near3(buf.s[0].dir,1,0,0,0.02),"gravity pulls the tilt in, heading unchanged");
  /* TOTK_GYRO_AXES: a rotation remaps both alike; a reflection also flips the rotation's sense. */
  need(runtime_motion_axes(NULL)==0&&runtime_motion_axes("x,x,z")<0&&runtime_motion_axes("x,y")<0&&runtime_motion_axes("a,b,c")<0&&runtime_motion_axes("x,y,z,")<0,"malformed axis specs rejected");
- need(runtime_motion_axes("-x,y,-z")==1,"axis spec");feed(1,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+ /* two samples (8 ms): a state on the 5 ms clock after the new sample, not the held one before it */
+ need(runtime_motion_axes("-x,y,-z")==1,"axis spec");feed(2,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near3(buf.s[0].acc,-0.1,0.2,0.9,1e-6)&&near3(buf.s[0].gyro,-1,2,-3,1e-5),"a half turn about y remaps acceleration and rotation alike");
  need(runtime_motion_axes("-x,y,z")==1,"axis spec");feed(1,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near3(buf.s[0].acc,-0.1,0.2,-0.9,1e-6)&&near3(buf.s[0].gyro,1,-2,-3,1e-5),"a mirror flips the rotation's sense");
@@ -124,12 +148,13 @@ static void feedback_checks(void){
  probe_now+=300000000;need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"no sample for 300 ms: no motion");
  feed(1,0,0,-1,0,0,0);runtime_motion_live(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"controller detached: no motion");
  /* Mouse mode (key 7, runtime/gamepad.m): the mouse takes the sensor over. Its samples go in as they are (no TOTK_GYRO_AXES
-    remap, no dead zone), the controller's are dropped meanwhile; mouse mode off, the controller has it back. */
+    remap, no dead zone), the controller's are dropped meanwhile; mouse mode off, the controller has it back. The mouse's
+    last rate is held on the 5 ms clock up to the read (motion_fusion.c): 1 s of -0.25 rev/s and 15 ms more. */
  runtime_motion_mouse(1);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode, no sample yet: no motion");
  runtime_motion_live(1);need(runtime_motion_axes("-x,y,-z")==1,"axis spec");
  {const double acc[3]={0,0,-1},g[3]={0,0,-M_PI/2};for(int i=0;i<100;i++){probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);}}
  feed(5,0.3,0.3,-0.5,0,0,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
- need(buf.s[0].attr==1&&near(buf.s[0].gyro[2],-0.25,1e-6)&&near(buf.s[0].angle[2],-0.2475,0.003)&&near3(buf.s[0].acc,0,0,-1,1e-6),
+ need(buf.s[0].attr==1&&near(buf.s[0].gyro[2],-0.25,1e-6)&&near(buf.s[0].angle[2],-0.2537,0.003)&&near3(buf.s[0].acc,0,0,-1,1e-6),
       "mouse mode: the mouse's samples as they are, the controller's dropped");
  runtime_motion_mouse(0);feed(1,0.1,0.2,-0.9,0,0,0);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(buf.s[0].attr==1&&near3(buf.s[0].acc,-0.1,0.2,0.9,1e-6),"mouse mode off: the controller's samples again, remapped");

@@ -360,14 +360,15 @@ class ShaderKeyScope(unittest.TestCase):
             _, again, _ = self.prepare_with_service(root, root/'seed', listed, compare={shadow})
             self.assertEqual(again, [])
 
-    def test_deps_match_reads_wildcard_texture_kinds_and_unbound_vertex_inputs_as_the_runtime_does(self):
+    def test_deps_match_reads_wildcard_texture_kinds_and_ignores_vertex_input_types_as_the_runtime_does(self):
         deps = {'tex': {'1': '*', '2': '*_depth', '3': '2d'}, 'attr': {'0': 'uint'}, 'fout': {}, 'img': {}}
         self.assertTrue(seed.deps_match(deps, {'tex': {'1': 'cube', '2': '2darray_depth'}, 'attr': {'0': 'uint'}}))
         self.assertTrue(seed.deps_match(deps, {'tex': {'2': '2d_depth'}}))              # unbound slot 1 and input 0
         self.assertFalse(seed.deps_match(deps, {'tex': {'1': '2d_depth', '2': '2d_depth'}}))
         self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d'}}))
         self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d_depth', '3': '3d'}}))   # a queried kind still counts
-        self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d_depth'}, 'attr': {'0': 'float'}}))
+        # the pipeline redeclares an input with its bound format's type (nvn_mtl.m vs_vin): any variant serves it
+        self.assertTrue(seed.deps_match(deps, {'tex': {'2': '2d_depth'}, 'attr': {'0': 'float'}}))
         self.assertEqual(seed.answers_for({'tex': {'1': '*', '2': '*_depth', '3': 'cube'}})['tex'],
                          {'1': '2d', '2': '2d_depth', '3': 'cube'})
 
@@ -401,8 +402,9 @@ class ShaderKeyScope(unittest.TestCase):
             (root/f'{key}-{seed.SUFFIX}_b.json').write_text(json.dumps({'compare_slots': [3]}))
             self.assertTrue(seed.builtin_serves(root, key, '{"tex":{"3":"2darray"},"attr":{"6":"uint"}}'))
             self.assertTrue(seed.builtin_serves(root, key, {'tex': {'3': '2d_depth'}}))      # the depth-bound one
-            self.assertFalse(seed.builtin_serves(root, key, {'attr': {'6': 'float'}}))      # a float input: its own variant
-            self.assertFalse(seed.builtin_serves(root, key, {'fout': {'0': 'uint'}}))      # served by a listed variant only
+            self.assertTrue(seed.builtin_serves(root, key, {'attr': {'6': 'float'}}))       # a float input: the pipeline retypes it
+            self.assertTrue(seed.builtin_serves(root, key, {'fout': {'0': 'uint'}}))       # an integer target: the pipeline retypes the output
+            self.assertEqual(len(seed.builtin_variants(root, key)), 2)                     # the listed variant the seed also made is not built in
             self.assertFalse(seed.builtin_serves(root, other, {}))                          # not a shader of this seed
             lst = root/'list.tsv'
             lst.write_text(f'V\t{key}\t{{"attr":{{"6":"uint"}},"fout":{{}},"img":{{}},"tex":{{"3":"2d"}}}}\n'
@@ -412,8 +414,7 @@ class ShaderKeyScope(unittest.TestCase):
                                   capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, done.stderr)
             kept = [l for l in lst.read_text().splitlines() if l.startswith('V')]
-            self.assertEqual(kept, [f'V\t{key}\t{{"attr":{{"6":"float"}},"fout":{{}},"img":{{}},"tex":{{}}}}',
-                                    f'V\t{other}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}'])
+            self.assertEqual(kept, [f'V\t{other}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}'])   # input types: served too
 
     def test_a_new_translator_empties_the_translation_cache(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -96,7 +96,8 @@ def deps_match(deps, answers):
                     return False
             elif got != want:
                 return False
-    return True
+    # Q61: the alpha test ("<function>:<reference>") is translated into the fragment shader: only the same one serves.
+    return deps.get('alpha') == answers.get('alpha')
 
 
 def answers_for(deps):

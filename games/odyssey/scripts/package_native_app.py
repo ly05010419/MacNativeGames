@@ -12,6 +12,7 @@ import os
 import plistlib
 import shutil
 import subprocess
+import sys
 
 GAME = Path(__file__).resolve().parents[1]
 BUILD = Path(os.environ.get("ODYSSEY_WORK", GAME / "Odyssey_build")).resolve()   # ODYSSEY_WORK: another build folder (scripts/build_odyssey.py)
@@ -75,8 +76,23 @@ def main():
     os.symlink("../rewritten", game / "rewritten/local")   # the module directory the runtime is given, as in Odyssey_build
     for name in ("romfs.bin", "runtime-index.bin"):
         clone(BUILD / "extracted/local/romfs" / name, game / "romfs" / name)
+    # key 3's bigger render size (build_odyssey.py --render-res): the scaled graphics table and render-res.txt, which the
+    # launcher hands the runtime as TOTK_ROMFS_PATCHES
+    for item in sorted((BUILD / "extracted/local/romfs-patches").rglob("*")):
+        if item.is_file():
+            clone(item, game / "romfs-patches" / item.relative_to(BUILD / "extracted/local/romfs-patches"))
     for font in sorted((BUILD / "extracted/firmware/shared-fonts").glob("*.bfttf")):
         clone(font, game / "fonts" / font.name)
+    # The settings window's render sizes (odyssey_gfx.h): the game's quality table for each, made from this dump's RomFS
+    # (scripts/make_resolution_overlay.py); the launcher passes the chosen one as TOTK_ROMFS_PATCHES with TOTK_RENDER_RES.
+    for size in ("1920x1080", "2240x1260", "2560x1440"):
+        out = BUILD / "romfs-res" / size
+        if not (out / "manifest.tsv").is_file():
+            subprocess.run([sys.executable, str(GAME / "scripts/make_resolution_overlay.py"), size, "--work", str(BUILD), "--output", str(out)],
+                           check=True, stdout=subprocess.DEVNULL)
+        for item in sorted(out.rglob("*")):
+            if item.is_file():
+                clone(item, game / "romfs-res" / size / item.relative_to(out))
     slot = BUILD / "analysis/game-slot"
     if slot.is_dir():
         (game / "slot-dir.txt").write_text(str(slot) + "\n")
@@ -101,10 +117,15 @@ def main():
     if title.is_file():
         clone(title, game / "build/pso_title.tsv")
         os.symlink("../Resources/game/build/pso_title.tsv", macos / "pso_title.tsv")
-    subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-o", str(macos / "Odyssey"),
-                    str(GAME / "scripts/odyssey_app_launcher.c")], check=True)
+    # The launcher and its settings window (shown before the game; the game's icon, the graphics and play settings).
+    subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-fobjc-arc", "-o", str(macos / "Odyssey"),
+                    str(GAME / "scripts/odyssey_app_launcher.c"), str(GAME / "scripts/odyssey_launcher_ui.m"),
+                    "-framework", "Cocoa", "-framework", "CoreGraphics"], check=True)
     subprocess.run(["sips", "-s", "format", "icns", str(ICON), "--out", str(resources / "OdysseyIcon.icns")],
                    check=True, stdout=subprocess.DEVNULL)
+    version = ICON.with_name("game-version.txt")   # extract_app_icon.py: the update's version, for the window title
+    if version.is_file():
+        shutil.copyfile(version, resources / "game-version.txt")
     info = {
         "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": "Odyssey", "CFBundleName": "Odyssey",
         "CFBundleExecutable": "Odyssey", "CFBundleIconFile": "OdysseyIcon",

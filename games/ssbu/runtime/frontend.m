@@ -10,6 +10,11 @@
 #include "game_version.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
+
+/* Q90 (2026-10-25): the Mac's thermal state for the present line of hle_nvn.c (「温控」, every 300 frames; its weak default
+   says -1 on the Mac): 0 nominal, 1 fair, 2 serious, 3 critical (NSProcessInfoThermalState). A change also gets a line of
+   its own, so a long session shows when the Mac got hot (25.10.: a GPU slowdown after hours could not be told from heat). */
+int dm_thermal_now(void){static int last=-1;int t=(int)NSProcessInfo.processInfo.thermalState;if(t!=last){fprintf(stderr,"[thermal] macOS thermal state %d -> %d (0 nominal, 1 fair, 2 serious, 3 critical)\n",last,t);last=t;}return t;}
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 int mfxup_output_enabled(void);
 static NSWindow *window;
@@ -341,35 +346,134 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
-/* Q80, the Picture menu of the app (only when the launcher names SSBU_RENDER_SIZE_FILE): the 3D picture size for the next
-   start, 1080p as shipped or 2K. Smash makes its render images once at start (game_patches.c, TOTK_RENDER_RES), so the
-   choice is written to the file and the launcher passes it on next time; nothing restarts, a fight goes on (the player's
-   rule, 2026-10-24: no key that can restart the game by accident). */
-@interface TOTKPictureMenu:NSObject
-@property(nonatomic,copy) NSString *path;
+/* A menu of the app whose choice is a word in a file the launcher reads at the next start (the Picture and Log menus).
+   The first value is the default, also for a file that is missing or holds another word; nothing restarts, a fight goes on
+   (the player's rule, 2026-10-24: no key that can restart the game by accident). */
+@interface TOTKStartChoice:NSObject
+@property(nonatomic,copy) NSString *path,*what;
 @property(nonatomic,strong) NSArray<NSMenuItem *> *items;
 @end
-@implementation TOTKPictureMenu
--(NSString *)saved{NSString *s=[[NSString stringWithContentsOfFile:self.path encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];return [s isEqualToString:@"2k"]?@"2k":@"1080p";}
+@implementation TOTKStartChoice
+-(NSString *)saved{NSString *s=[[NSString stringWithContentsOfFile:self.path encoding:NSUTF8StringEncoding error:nil] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ for(NSMenuItem *i in self.items)if([i.representedObject isEqualToString:s])return s;return self.items.firstObject.representedObject;}
 -(void)mark{NSString *s=[self saved];for(NSMenuItem *i in self.items)i.state=[i.representedObject isEqualToString:s]?NSControlStateValueOn:NSControlStateValueOff;}
 -(void)pick:(NSMenuItem *)sender{NSError *e=nil;NSString *v=sender.representedObject;
  if(![[v stringByAppendingString:@"\n"] writeToFile:self.path atomically:YES encoding:NSUTF8StringEncoding error:&e])
-  fprintf(stderr,"[ssbu] picture size: cannot write %s: %s\n",self.path.fileSystemRepresentation,e.localizedDescription.UTF8String);
- else fprintf(stderr,"[ssbu] picture size for the next start: %s\n",v.UTF8String);
+  fprintf(stderr,"[ssbu] %s: cannot write %s: %s\n",self.what.UTF8String,self.path.fileSystemRepresentation,e.localizedDescription.UTF8String);
+ else fprintf(stderr,"[ssbu] %s for the next start: %s\n",self.what.UTF8String,v.UTF8String);
  [self mark];}
 @end
-static TOTKPictureMenu *pictureMenu;
+static TOTKStartChoice *pictureMenu,*logMenu;
+/* Adds menu <title> to the bar: a disabled line with <now>, then one item per title / value pair (the first one the default). */
+static TOTKStartChoice *front_start_choice_add(NSMenu *bar,const char *file,NSString *title,NSString *what,NSString *now,NSArray<NSString *> *titles,NSArray<NSString *> *values){
+ TOTKStartChoice *c=[TOTKStartChoice new];c.path=@(file);c.what=what;
+ NSMenu *m=[[NSMenu alloc] initWithTitle:title];m.autoenablesItems=NO;
+ NSMenuItem *info=[[NSMenuItem alloc] initWithTitle:now action:nil keyEquivalent:@""];info.enabled=NO;[m addItem:info];[m addItem:NSMenuItem.separatorItem];
+ NSMutableArray<NSMenuItem *> *items=[NSMutableArray array];
+ for(NSUInteger k=0;k<titles.count;k++){NSMenuItem *i=[[NSMenuItem alloc] initWithTitle:titles[k] action:@selector(pick:) keyEquivalent:@""];
+  i.representedObject=values[k];i.target=c;[m addItem:i];[items addObject:i];}
+ c.items=items;[c mark];
+ NSMenuItem *top=[[NSMenuItem alloc] initWithTitle:m.title action:nil keyEquivalent:@""];top.submenu=m;[bar addItem:top];
+ return c;
+}
+/* Q80, the Picture menu of the app (only when the launcher names SSBU_RENDER_SIZE_FILE): the 3D picture size for the next
+   start, 1080p as shipped or 2K. Smash makes its render images once at start (game_patches.c, TOTK_RENDER_RES), so the
+   choice is written to the file and the launcher passes it on next time. */
 static void front_picture_menu_add(NSMenu *bar){
  const char *file=getenv("SSBU_RENDER_SIZE_FILE");if(!file||!*file)return;   // the start script (ssbu-play.sh) chooses its own size
- pictureMenu=[TOTKPictureMenu new];pictureMenu.path=@(file);
- NSMenu *m=[[NSMenu alloc] initWithTitle:@(TOTK_UI("画面","Picture"))];m.autoenablesItems=NO;
  const char *now=getenv("TOTK_RENDER_RES");
- NSMenuItem *info=[[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@(TOTK_UI("现在 %s，改动下次启动生效","Now %s; a change applies at the next start")),now&&*now?now:"1920x1080"] action:nil keyEquivalent:@""];
- info.enabled=NO;[m addItem:info];[m addItem:NSMenuItem.separatorItem];
- NSMenuItem *a=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("1080p（1920x1080，原版）","1080p (1920x1080, as shipped)")) action:@selector(pick:) keyEquivalent:@""];
- NSMenuItem *b=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("2K（2560x1440）","2K (2560x1440)")) action:@selector(pick:) keyEquivalent:@""];
- a.representedObject=@"1080p";b.representedObject=@"2k";a.target=b.target=pictureMenu;[m addItem:a];[m addItem:b];
- pictureMenu.items=@[a,b];[pictureMenu mark];
+ pictureMenu=front_start_choice_add(bar,file,@(TOTK_UI("画面","Picture")),@"picture size",
+  [NSString stringWithFormat:@(TOTK_UI("现在 %s，改动下次启动生效","Now %s; a change applies at the next start")),now&&*now?now:"1920x1080"],
+  @[@(TOTK_UI("1080p（1920x1080，原版）","1080p (1920x1080, as shipped)")),@(TOTK_UI("2K（2560x1440）","2K (2560x1440)"))],@[@"1080p",@"2k"]);
+}
+/* Q95, the Log menu of the app (only when the launcher names SSBU_GAME_LOG_FILE): whether the next start writes the game
+   log (~/Library/Logs/MacNativeGames/ssbu.log and its session archive), on as shipped or off. The launcher redirects the
+   game's output at start, so the choice applies then; SSBU_GAME_LOG names this start's state. */
+static void front_log_menu_add(NSMenu *bar){
+ const char *file=getenv("SSBU_GAME_LOG_FILE");if(!file||!*file)return;   // start scripts keep their own logs
+ const char *now=getenv("SSBU_GAME_LOG");int off=now&&!strcmp(now,"off");
+ logMenu=front_start_choice_add(bar,file,@(TOTK_UI("日志","Log")),@"game log",
+  @(off?TOTK_UI("现在关闭，改动下次启动生效","Now off; a change applies at the next start"):TOTK_UI("现在开启，改动下次启动生效","Now on; a change applies at the next start")),
+  @[@(TOTK_UI("开启（查崩溃和卡顿需要）","On (needed to find crashes and stutters)")),@(TOTK_UI("关闭（不写日志文件）","Off (no log file)"))],@[@"on",@"off"]);
+}
+/* Q96, the DLC menu of the app (only when the launcher names SSBU_DLC_FILE and SSBU_DLC_FOLDER_FILE): DLC on as shipped
+   or off, and the folder of the player's DLC NSPs (Choose DLC Folder...). Both apply at the next start, since the game asks
+   for its DLC once, at boot (runtime/services.c). A chosen folder is counted at once (aoc_scan.h), so the menu says what
+   the next start will find. */
+#include "aoc_scan.h"
+/* A menu item that chooses a folder (the DLC and Photos menus): the folder goes to a file the launcher reads at start, and
+   describe() turns it into the menu's folder line (and does what applies at once). */
+@interface TOTKFolderPick:NSObject
+@property(nonatomic,copy) NSString *path,*message,*what;
+@property(nonatomic,strong) NSMenuItem *line;
+@property(nonatomic,copy) NSString *(^describe)(NSString *dir);
+@end
+@implementation TOTKFolderPick
+-(void)choose:(id)sender{(void)sender;
+ NSOpenPanel *p=[NSOpenPanel openPanel];p.canChooseDirectories=YES;p.canChooseFiles=NO;p.allowsMultipleSelection=NO;p.canCreateDirectories=YES;
+ p.message=self.message;p.prompt=@(TOTK_UI("选择","Choose"));
+ [p beginWithCompletionHandler:^(NSModalResponse r){
+  if(r!=NSModalResponseOK||!p.URL)return;
+  NSString *dir=p.URL.path;NSError *e=nil;
+  if(![[dir stringByAppendingString:@"\n"] writeToFile:self.path atomically:YES encoding:NSUTF8StringEncoding error:&e]){
+   fprintf(stderr,"[ssbu] %s folder: cannot write %s: %s\n",self.what.UTF8String,self.path.fileSystemRepresentation,e.localizedDescription.UTF8String);
+   self.line.title=[NSString stringWithFormat:@(TOTK_UI("%@ 文件夹没能保存","The %@ folder could not be saved")),self.what];return;}
+  self.line.title=self.describe(dir);
+ }];
+}
+@end
+static TOTKStartChoice *dlcMenu;static TOTKFolderPick *dlcFolder,*photoFolder;
+static void front_dlc_menu_add(NSMenu *bar){
+ const char *file=getenv("SSBU_DLC_FILE"),*folderFile=getenv("SSBU_DLC_FOLDER_FILE");
+ if(!file||!*file||!folderFile||!*folderFile)return;   // start scripts: build/dlc/owned.txt or SSBU_DLC_DIR
+ int fighters=0,n=runtime_aoc_owned(&fighters);
+ NSString *now=n<0?@(TOTK_UI("现在关闭，改动下次启动生效","Now off; a change applies at the next start")):
+  [NSString stringWithFormat:@(TOTK_UI("现在 %d 个 DLC（%d 名斗士），改动下次启动生效","Now %d DLC (%d fighters); a change applies at the next start")),n,fighters];
+ dlcMenu=front_start_choice_add(bar,file,@"DLC",@"DLC",now,@[@(TOTK_UI("开启","On")),@(TOTK_UI("关闭（不告诉游戏有 DLC）","Off (the game sees no DLC)"))],@[@"on",@"off"]);
+ NSMenu *m=dlcMenu.items.firstObject.menu;[m addItem:NSMenuItem.separatorItem];
+ const char *dir=getenv("SSBU_DLC_DIR");
+ NSMenuItem *folder=[[NSMenuItem alloc] initWithTitle:dir&&*dir?[NSString stringWithFormat:@(TOTK_UI("文件夹：%s","Folder: %s")),dir]:@(TOTK_UI("还没有选 DLC 文件夹","No DLC folder chosen")) action:nil keyEquivalent:@""];
+ folder.enabled=NO;[m addItem:folder];
+ dlcFolder=[TOTKFolderPick new];dlcFolder.path=@(folderFile);dlcFolder.line=folder;dlcFolder.what=@"DLC";
+ dlcFolder.message=@(TOTK_UI("选择放 DLC（.nsp 文件）的文件夹","Choose the folder with your DLC (.nsp files)"));
+ dlcFolder.describe=^NSString *(NSString *d){
+  static int found[2048];int nsps=0,skipped=0,n=aoc_scan_dir(d.fileSystemRepresentation,GAME_TITLE_ID,found,2048,&nsps,&skipped);
+  int f=n>0?aoc_fighters(found,n):0;if(n<0)n=0;
+  fprintf(stderr,"[ssbu] DLC folder for the next start: %s (%d DLC, %d fighters; %d of %d NSPs not a Smash DLC)\n",d.fileSystemRepresentation,n,f,skipped,nsps);
+  return [NSString stringWithFormat:@(TOTK_UI("下次启动：%d 个 DLC（%d 名斗士），来自 %s","Next start: %d DLC (%d fighters) from %s")),n,f,d.lastPathComponent.UTF8String];};
+ NSMenuItem *choose=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("选择 DLC 文件夹…","Choose DLC Folder…")) action:@selector(choose:) keyEquivalent:@""];
+ choose.target=dlcFolder;[m addItem:choose];
+}
+/* Q56, the Photos menu (only when the launcher names SSBU_PHOTO_FOLDER_FILE): where the photos taken in the game go
+   (runtime/album_service.c writes each as a PNG), ~/Pictures/Super Smash Bros. Ultimate unless a folder is chosen; a
+   folder chosen here applies to the next photo at once and is kept for the next start. */
+@interface TOTKPhotoShow:NSObject
+@end
+@implementation TOTKPhotoShow
+-(void)show:(id)sender{(void)sender;
+ const char *d=getenv("SSBU_PHOTO_DIR");NSString *dir=photoFolder.line.representedObject?:(d&&*d?@(d):[NSHomeDirectory() stringByAppendingPathComponent:@"Pictures/Super Smash Bros. Ultimate"]);
+ [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+ [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:dir isDirectory:YES]];}
+@end
+static TOTKPhotoShow *photoShow;
+static void front_photo_menu_add(NSMenu *bar){
+ const char *file=getenv("SSBU_PHOTO_FOLDER_FILE");if(!file||!*file)return;
+ const char *d=getenv("SSBU_PHOTO_DIR");
+ NSString *dir=d&&*d?@(d):[NSHomeDirectory() stringByAppendingPathComponent:@"Pictures/Super Smash Bros. Ultimate"];
+ NSMenu *m=[[NSMenu alloc] initWithTitle:@(TOTK_UI("照片","Photos"))];m.autoenablesItems=NO;
+ NSMenuItem *line=[[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@(TOTK_UI("游戏里拍的照片存到：%@","Photos from the game go to: %@")),dir] action:nil keyEquivalent:@""];
+ line.enabled=NO;line.representedObject=dir;[m addItem:line];[m addItem:NSMenuItem.separatorItem];
+ photoFolder=[TOTKFolderPick new];photoFolder.path=@(file);photoFolder.line=line;photoFolder.what=@"photo";
+ photoFolder.message=@(TOTK_UI("选择保存游戏照片的文件夹","Choose the folder for the photos you take in the game"));
+ photoFolder.describe=^NSString *(NSString *dd){
+  runtime_album_set_photo_dir(dd.fileSystemRepresentation);photoFolder.line.representedObject=dd;
+  fprintf(stderr,"[ssbu] photo folder: %s (from the next photo)\n",dd.fileSystemRepresentation);
+  return [NSString stringWithFormat:@(TOTK_UI("游戏里拍的照片存到：%@","Photos from the game go to: %@")),dd];};
+ NSMenuItem *choose=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("选择照片文件夹…","Choose Photo Folder…")) action:@selector(choose:) keyEquivalent:@""];
+ choose.target=photoFolder;[m addItem:choose];
+ photoShow=[TOTKPhotoShow new];
+ NSMenuItem *show=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("在访达中显示","Show in Finder")) action:@selector(show:) keyEquivalent:@""];
+ show.target=photoShow;[m addItem:show];
  NSMenuItem *top=[[NSMenuItem alloc] initWithTitle:m.title action:nil keyEquivalent:@""];top.submenu=m;[bar addItem:top];
 }
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
@@ -378,7 +482,7 @@ static void front_install_menu(void){
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
- [appMenu addItem:quit];front_picture_menu_add(menu);front_menubar_fps_add(menu);NSApp.mainMenu=menu;
+ [appMenu addItem:quit];front_picture_menu_add(menu);front_log_menu_add(menu);front_dlc_menu_add(menu);front_photo_menu_add(menu);front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){

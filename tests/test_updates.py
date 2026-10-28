@@ -277,11 +277,15 @@ class Updates(unittest.TestCase):
                 (tree/f'build/shader-seed/{version}/seed-manifest.json').write_text(json.dumps(dict(
                     version=version, chain='totk-native-v8-unverified', shaders=8000,
                     files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
-                with patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing:
+                revision = {'v112': 'a'*40, 'v121': 'invalid', 'v143': subprocess.CalledProcessError(128, 'git')}[version]
+                with patch.object(build_app.subprocess, 'check_output', side_effect=[revision]), \
+                     patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing:
                     build_app.step_app(tree,out,self.root/'logs',version=version)
                 signing.assert_called_once_with(out.with_name(out.name+'.partial'),self.root/'logs')
                 info=plistlib.loads((out/'Contents/Info.plist').read_bytes())
                 self.assertEqual(info['CFBundleShortVersionString'],display)
+                if version == 'v112': self.assertEqual(info['MNGSourceRevision'], 'a'*40)
+                else: self.assertNotIn('MNGSourceRevision', info)
                 self.assertIn('zh-Hans',info['CFBundleLocalizations']);self.assertIn('zh-Hant',info['CFBundleLocalizations'])
                 self.assertEqual('pt-BR' in info['CFBundleLocalizations'],version=='v143')
                 res=out/'Contents/Resources/totk'
@@ -347,6 +351,7 @@ class Updates(unittest.TestCase):
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'app_seal_valid',return_value=True), \
+             patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
             build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual(len(checks),2);pause.assert_called_once_with(2)

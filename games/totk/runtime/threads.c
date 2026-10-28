@@ -173,7 +173,15 @@ static thr_t *pick(int kind, uint64_t a) {
 #ifdef GAME_BOTW
 static void wake_queue(thr_t *t);   /* below, with the virtual cores */
 #endif
-static void wake(thr_t *t, int64_t res) { wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+/* TOTK_TIMELINE (diagnostics, off by default): guest waits, wakes and core waits in the gfx timeline (totk_timeline.c,
+   whose definitions replace these weak ones; the thread probes and tests link threads.c without it). */
+__attribute__((weak)) int totk_tl_on(void) { return 0; }
+__attribute__((weak)) void totk_tl(int kind, uint64_t a, uint64_t b) { (void)kind; (void)a; (void)b; }
+enum { TLK_GW_IN = 19, TLK_GW_OUT, TLK_GWAKE, TLK_CW_IN, TLK_CW_OUT };   /* totk_timeline.h TL_GW_IN ... */
+static int tl_on(void) { return totk_tl_on(); }
+static void wake(thr_t *t, int64_t res) {
+    if (tl_on()) { uint64_t id = 0; pthread_threadid_np(t->pt, &id); totk_tl(TLK_GWAKE, id, (uint64_t)t->wkind); }
+    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
 #ifdef GAME_BOTW
     wake_queue(t);
 #endif
@@ -497,13 +505,15 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
 #ifdef GAME_BOTW
     if (c >= 0) { core_unqueue(t); t->cur_core = c; t->core_since = now_ns(); core_wait_complete(t, t->core_since); g_core_owner[c] = t; return; }
     if (!t->cqueued) { t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t; t->cqueued = 1; t->cwait_ns = now_ns(); }
-    int reported = 0;
+    int reported = 0, tlc = tl_on();
+    if (tlc) totk_tl(TLK_CW_IN, 0, 0);
     while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance)
         struct timespec again = {0, core_kick(t) ? 1000000 : 20000000};
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && t->cur_core < 0 && t->cwait_ns && now_ns() - t->cwait_ns >= STARVE_NS) { if (core_diag_on()) core_wait_report(t, t->cwait_ns); reported = 1; }
     }
     t->cwait_ns = 0;
+    if (tlc) totk_tl(TLK_CW_OUT, (uint64_t)t->cur_core, 0);
 #else
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
@@ -599,7 +609,11 @@ int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_cor
 
 static int64_t block(thr_t *t,int kind,int64_t ns) {
     if (ns == 0) return block_inner(t, kind, ns);
-    core_put(t); int64_t r = block_inner(t, kind, ns); core_take(t); return r;
+    int tl = tl_on();
+    if (tl) { uint64_t k = kind == 2 ? t->wkey : kind == 4 ? t->wh[0] : t->waddr; totk_tl(TLK_GW_IN, (uint64_t)kind << 56 | (k & 0x00ffffffffffffffull), t->last_lr); }
+    core_put(t); int64_t r = block_inner(t, kind, ns);
+    if (tl) totk_tl(TLK_GW_OUT, (uint64_t)kind, (uint64_t)r);
+    core_take(t); return r;
 }
 static int64_t block_inner(thr_t *t, int kind, int64_t ns) {
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
@@ -1320,7 +1334,14 @@ static void dump_threads(unsigned secs) {
             }
     }
 }
-void runtime_dump_threads(void) { dump_threads(0); }   // TOTK_INPUT_FILE "threads"
+void runtime_dump_threads(void) { dump_threads(0); }
+/* runtime/mem_scan.h: the mach ports of the running guest threads, so a diagnostic watchpoint is armed only where the
+   game's code runs (2026-10-27: armed in every thread, a read watch closed the game from a host thread). */
+int runtime_guest_thread_ports(unsigned *out, int max) {
+    int n = 0; pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < max; t = t->all) if (t->started && !t->exited && t->mport) out[n++] = t->mport;
+    pthread_mutex_unlock(&G); return n;
+}   // TOTK_INPUT_FILE "threads"
 __attribute__((constructor)) static void dump_init(void) {
     const char *c = getenv("TOTK_LISTCHECK");
     if (c) { pthread_t th; pthread_create(&th, NULL, list_check, (void *)(uintptr_t)strtoull(c, NULL, 0)); pthread_detach(th); }

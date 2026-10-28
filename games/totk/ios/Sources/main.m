@@ -12,6 +12,7 @@
 #include "runtime.h"
 #include "dmsh_chain.h"
 #import "touch_pad.h"
+#import "start_screen.h"
 
 int totk_host_main(int argc, char **argv);
 void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *host);
@@ -47,6 +48,7 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
     NSString *tmp = [dest stringByAppendingString:@".tmp"]; [fm removeItemAtPath:tmp error:nil];
     if (![fm createDirectoryAtPath:tmp withIntermediateDirectories:YES attributes:nil error:nil]) { if (f) fclose(f); return @"cannot make the folder"; }
     char magic[9]; NSString *why = nil; size_t cap = 1 << 20; uint8_t *buf = malloc(cap); uint64_t files = 0, last = 0;
+    if (!buf) { if (f) fclose(f); [fm removeItemAtPath:tmp error:nil]; return @"not enough memory to unpack"; }
     if (!take(magic, 9) || memcmp(magic, "TOTKPACK1", 9)) why = @"not a shader pack";
     while (!why) {
         uint16_t nl; if (!take(&nl, 2)) { why = @"truncated"; break; }
@@ -57,7 +59,9 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
         if (strchr(name, '/') || !strcmp(name, ".") || !strcmp(name, "..") || !take(&size, 8)) { why = @"bad entry"; break; }
         FILE *o = fopen([tmp stringByAppendingPathComponent:@(name)].fileSystemRepresentation, "wb"); if (!o) { why = @"cannot write"; break; }
         while (size && !why) { size_t n = size < cap ? (size_t)size : cap; if (!take(buf, n) || fwrite(buf, 1, n, o) != n) why = @"truncated or disk full"; size -= n; }
-        fclose(o); files++;
+        // Buffered writes can report success until fclose flushes the final bytes (for example, ENOSPC).
+        if (fclose(o) != 0 && !why) why = @"cannot finish writing the shader file";
+        files++;
         if (progress && done - last > (32u << 20)) { last = done; progress(done, total); }
     }
     free(buf); if (f) fclose(f);
@@ -71,6 +75,32 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
 static void *run_host(void *unused) { (void)unused; return (void *)(intptr_t)totk_host_main(3, host_argv); }
 /* Key 1's settings panel is Mac only (runtime/frontend.m). */
 void runtime_settings_toggle(void) {}
+
+#if !TARGET_OS_VISION
+/* The picture and the frame rate, from the defaults the Settings app and the start screen (start_screen.m)
+   write; applied just before the game thread starts, so the start screen's choice counts. */
+static void apply_display_settings(void) {
+    /* Settings › Full HD (docked), Tears of the Kingdom only, off by default (a Vision Pro contributor's patch, user
+       2026-10-25): the game's docked settings as the Vision Pro build uses them, 1920x1080 output on a 1080-row drawable
+       with the scene at 1600x900 (1.4.3 renders 960x540 on the phone otherwise, game_patches_v143.c render_res). Off is the
+       handheld 1280x720 the phones were tested at. Breath of the Wild has the switch too (the player, 2026-10-26, an
+       iPad Air M3): its docked branch renders the scene at 1920x1080 (game_patches_botw.c patch_render_1080). */
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DOCKED"]) {
+        setenv("TOTK_OPERATION_MODE","docked",1);
+        setenv("TOTK_IOS_DRAWABLE_H","1080",0);
+#ifdef GAME_BOTW
+        fprintf(stderr, "[totk] Settings › Full HD: docked, 1920x1080 output and scene\n");
+#else
+        setenv("TOTK_RENDER_RES","1600x900",0);
+        fprintf(stderr, "[totk] Settings › Full HD: docked, 1920x1080 output, 1600x900 scene\n");
+#endif
+    } else
+    setenv("TOTK_OPERATION_MODE","handheld",1);
+    // Frame rate: Settings.bundle › TOTK_PHONE_FPS, or the 60 / 30 button of the touch controls, which saves it here too.
+    NSString *fps = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_PHONE_FPS"];
+    if ([fps isEqualToString:@"30"]) setenv("TOTK_PHONE_FPS","30",0);
+}
+#endif
 
 @interface TOTKMetalView : UIView @end
 @implementation TOTKMetalView
@@ -108,6 +138,24 @@ void runtime_settings_toggle(void) {}
         runtime_boot_status(zh ? "无法开始游戏" : "Cannot start the game", g_no_game_data.UTF8String);
         return;
     }
+#if TARGET_OS_VISION
+    [self boot];
+#else
+    __weak TOTKGameController *weak = self;
+    void (^start)(void) = ^{
+        apply_display_settings();
+        runtime_ios_sync_drawable(weak.gameView);   // the drawable follows the chosen picture (TOTK_IOS_DRAWABLE_H)
+        [weak boot];
+    };
+    /* A run started by a script skips the start screen, which would wait for a tap: devicectl ... --environment-variables
+       '{"TOTK_START_SCREEN":"0"}'. The Settings app's choices apply as they are (after PR #1174). */
+    const char *screen = getenv("TOTK_START_SCREEN");
+    if (screen && !strcmp(screen, "0")) start();
+    else [self.view addSubview:[[TOTKStartView alloc] initWithFrame:self.view.bounds onStart:start]];
+#endif
+}
+- (void)boot {
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
     if (g_seed_pack) {   // shaders installed as a pack: unpack once, on screen, then start (not on the main thread: a long launch is killed)
         static const char *stage_zh = "正在准备着色器（更新后只做一次）", *stage_en = "Preparing the shaders (once after an update)";
         const char *stage = zh ? stage_zh : stage_en;
@@ -219,7 +267,7 @@ static void audio_observe(void) {
     NSString *log = [docs stringByAppendingPathComponent:@"log.txt"];
     const char *debugEnv = getenv("TOTK_DEBUG_LOG");
     BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv,"0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
-    if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); }
+    if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); setenv("TOTK_UW_CATALOG","1",0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     setenv("TOTK_GAME_DATA",[res stringByAppendingPathComponent:@"game-data"].fileSystemRepresentation,1);   // runtime/game_data.h
@@ -276,20 +324,7 @@ static void audio_observe(void) {
     setenv("TOTK_MFX_UPSCALE","0",0);
     setenv("TOTK_FPS_OVERLAY","0",0);
 #else
-    /* Settings › Full HD (docked), Tears of the Kingdom only, off by default (a Vision Pro contributor's patch, user
-       2026-10-25): the game's docked settings as the Vision Pro build uses them, 1920x1080 output on a 1080-row drawable
-       with the scene at 1600x900 (1.4.3 renders 960x540 on the phone otherwise, game_patches_v143.c render_res). Off is the
-       handheld 1280x720 the phones were tested at. The Settings pane of Breath of the Wild has no such switch
-       (build_ipa.py). */
-#ifndef GAME_BOTW
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DOCKED"]) {
-        setenv("TOTK_OPERATION_MODE","docked",1);
-        setenv("TOTK_IOS_DRAWABLE_H","1080",0);
-        setenv("TOTK_RENDER_RES","1600x900",0);
-        fprintf(stderr, "[totk] Settings › Full HD: docked, 1920x1080 output, 1600x900 scene\n");
-    } else
-#endif
-    setenv("TOTK_OPERATION_MODE","handheld",1);
+    /* The picture and frame rate are applied when the game starts (apply_display_settings), after the start screen. */
 #endif
     // Game language: the Settings app (Settings.bundle › TOTK_LANG) stores the choice in our defaults; empty means the
     // system language, which is what the runtime already follows. iOS 27 does not honour Info.plist LSEnvironment, so
@@ -332,6 +367,12 @@ static void audio_observe(void) {
     setenv("TOTK_ROMFS_PROOF_DIR",docs.fileSystemRepresentation,1);   // hash the 17 GB RomFS once, not on every launch
     for (NSString *name in @[@"TOTK_GPU_ALLOW_SUBMIT",@"TOTK_GPU_WIDEN",@"TOTK_GPU_BLOCKRT",@"TOTK_GPU_MIDCLEAR"]) setenv(name.UTF8String,"1",1);
     setenv("TOTK_SLOT_OWNER","user",0); setenv("TOTK_SLOT_PURPOSE","player",0);
+    /* Settings › Controller rumble / Controller gyro: the runtime reads TOTK_RUMBLE / TOTK_GYRO (runtime/feedback_settings.h,
+       on unless "0"); a switch the player turned off is passed on, an explicit devicectl variable still wins (after PR #432). */
+    for (NSString *key in @[@"TOTK_RUMBLE", @"TOTK_GYRO"]) {
+        id saved = [NSUserDefaults.standardUserDefaults objectForKey:key];
+        if (saved && ![saved boolValue]) setenv(key.UTF8String, "0", 0);
+    }
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
     host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");

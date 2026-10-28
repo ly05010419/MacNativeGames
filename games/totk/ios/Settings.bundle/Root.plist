@@ -76,6 +76,94 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>幀率 · Frame rate</string>
+			<key>FooterText</key>
+			<string>鎖 30 幀畫面更穩、手機更涼；遊戲中也可以點觸控按鍵中間的 60 / 30 切換 · 30 is steadier and keeps the phone cooler; the 60 / 30 button between − and + of the touch controls switches it while playing</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_PHONE_FPS</string>
+			<key>Title</key>
+			<string>幀率 · Frame rate</string>
+			<key>DefaultValue</key>
+			<string>60</string>
+			<key>Values</key>
+			<array>
+				<string>60</string>
+				<string>30</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>最高 60 · Up to 60</string>
+				<string>鎖 30 · Held at 30</string>
+			</array>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>觸控操作 · Touch controls</string>
+			<key>FooterText</key>
+			<string>未連接手柄時使用手機的陀螺儀和觸覺馬達；接上手柄後自動讓位。重新啟動遊戲後生效 · uses the phone's gyro and haptic actuator with no controller connected; a connected controller takes over. Takes effect after relaunching the game</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_PHONE_GYRO</string>
+			<key>Title</key>
+			<string>手機體感 · Phone gyro</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_PHONE_HAPTICS</string>
+			<key>Title</key>
+			<string>手機震動 · Phone haptics</string>
+			<key>DefaultValue</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>手柄 · Controller</string>
+			<key>FooterText</key>
+			<string>震动与陀螺仪只对支持的手柄生效。体感瞄准同时受游戏内选项影响。重新启动游戏后生效 · rumble and gyro apply only to controllers that have them, and motion aiming is also subject to the game's own option. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_RUMBLE</string>
+			<key>Title</key>
+			<string>手柄震动 · Controller rumble</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>只对带触感的手柄生效；关掉后手机本身的震动也一起关 · applies to controllers with haptics; off also turns the phone's own vibration off</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_GYRO</string>
+			<key>Title</key>
+			<string>手柄陀螺仪 · Controller gyro</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>体感瞄准同时受游戏内选项影响 · motion aiming is also subject to the game's own option</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>

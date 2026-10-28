@@ -43,7 +43,7 @@ static int from[3] = {0, 1, 2};
 static double sign[3] = {1, 1, 1}, det = 1;
 static double deadzone = -1;   /* rad/s; -1 until read from TOTK_GYRO_DEADZONE */
 static double deadzone_default;   /* deg/s, when TOTK_GYRO_DEADZONE is unset */
-static int mouse_owns, controller_live;
+static int mouse_owns, controller_live, phone_live;
 
 /* TOTK_GYRO_AXES: reference axis i = sign * controller axis from[i]. 0 if unset, -1 if malformed. */
 int runtime_motion_axes(const char *spec) {
@@ -183,8 +183,18 @@ void runtime_motion_start(void) { pthread_mutex_lock(&lock); restart = 1; pthrea
 /* The dead zone in deg/s when TOTK_GYRO_DEADZONE is unset: the HID reader sets 1.2, a GameController controller 0. */
 void runtime_motion_deadzone_default(double deg) { pthread_mutex_lock(&lock); deadzone_default = deg; deadzone = -1; pthread_mutex_unlock(&lock); }
 void runtime_motion_live(int on) {
-    pthread_mutex_lock(&lock); controller_live = on; live = on || mouse_owns; if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
+    pthread_mutex_lock(&lock); controller_live = on; live = controller_live || phone_live || mouse_owns;
+    if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
+}
+/* The iPhone's own sensor is a second source: it feeds the same ring, and only one source is live at a time (phone_motion
+   starts only when no controller is attached). Stopping it drops its samples at once so the game cannot read the phone's
+   last states through a controller that just took over. */
+void runtime_motion_phone(int on) {
+    pthread_mutex_lock(&lock); phone_live = on; live = controller_live || phone_live || mouse_owns;
+    if (on && !mouse_owns) restart = 1; else if (!live) last_ns = 0;
+    pthread_mutex_unlock(&lock);
 }
 void runtime_motion_mouse(int on) {
-    pthread_mutex_lock(&lock); mouse_owns = on; live = on || controller_live; restart = 1; last_ns = 0; pthread_mutex_unlock(&lock);
+    pthread_mutex_lock(&lock); mouse_owns = on; live = mouse_owns || controller_live || phone_live;
+    restart = 1; last_ns = 0; pthread_mutex_unlock(&lock);
 }

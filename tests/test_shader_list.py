@@ -94,6 +94,18 @@ class ShaderList(unittest.TestCase):
             self.assertEqual(rows(root/'one.tsv', 'B'), [f'B\t{PIPELINE}\t-\t{fs}', f'B\t{PIPELINE}\t{vs}\t-'])
             self.assertIn('2 B', self.run_tool('stats', out))
 
+    def test_tile_reads_travel_with_their_pipeline(self):
+        # the variant reading the draw's attachments from the tile (nvn_mtl.m warm_tileread); only pso_user.tsv had them
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); out = root/'list.tsv'
+            later = root/'pso_user.tsv'
+            later.write_text(f'R\t{PIPELINE}\nT\t{PIPELINE}\t5:3;7:1;\nT\t{PIPELINE}\t15:0;\nT\t{PIPELINE}\t5:3;7:1;\n'
+                             f'T\t{PIPELINE}\t-\nT\t{PIPELINE}\t5:9;\nT\t{PIPELINE}\t5:3\nT\tnot hex\t5:3;\n')
+            self.assertIn('2 T', self.run_tool('merge', out, later))
+            self.assertEqual(rows(out, 'T'), [f'T\t{PIPELINE}\t5:3;7:1;\tm', f'T\t{PIPELINE}\t15:0;\tm'])
+            self.run_tool('export', out, root/'one.tsv')
+            self.assertEqual(rows(root/'one.tsv', 'T'), [f'T\t{PIPELINE}\t5:3;7:1;', f'T\t{PIPELINE}\t15:0;'])
+
     def test_a_runtime_without_a_title_list_gets_every_warm_row_in_one_file(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); out = root/'list.tsv'
@@ -178,7 +190,7 @@ class ShaderList(unittest.TestCase):
         for game in ('totk', 'botw'):
             for line in rows(ROOT/f'games/{game}/assets/shader_list.tsv'):
                 f = line.split('\t')
-                if f[0] in ('R', 'B'):
+                if f[0] in ('R', 'B', 'T'):
                     self.assertEqual(shader_list.pipeline_key(f[1]), f[1], game)
 
 

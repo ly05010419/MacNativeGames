@@ -25,7 +25,9 @@
 #include "totk_mfx.h"
 #include "odyssey_mfx.h"
 #include "totk_mfx_up.h"
+#include "totk_taa.h"
 #include "totk_sysload.h"
+#include "odyssey_gfx.h"   // Odyssey graphics settings, keys 3-7 (the present part: odyssey_gfx_present.inc)
 /* TOTK_MFX_UPSCALE: for the one compose draw that samples the smaller scene, the scene texture and its MetalFX upscale
    (mfxup_draw before the draw, encode_args swaps the binding). */
 static __strong id<MTLTexture> g_mfxup_src, g_mfxup_out; static __unsafe_unretained id g_mfxup_sh;
@@ -170,7 +172,8 @@ static uint64_t g_treg_replaced_views;
 static void type_views_sweep_retired(void);
 static void pkg_evict_sweep(void);
 static void pkg_orphan_report(void);
-static uint64_t g_type_retired_views;
+static uint64_t g_type_retired_views, g_type_views_made, g_type_idle_views;
+static uint64_t g_type_idle_after = 64;   // submissions a type view may go unasked before the sweep drops it
 static void tp_note_fs(const char *key, uint64_t ser, const tex_t *t);
 static _Atomic int g_q4_inflight;        // game command buffers committed and not yet completed (GPU keep-alive, keepalive_start)
 static dispatch_semaphore_t g_ka_idle;   // signalled when g_q4_inflight drops to 0
@@ -580,10 +583,12 @@ void mtl_init(void) {
     pad.maxTextureBindCount = 1; pad.maxSamplerStateBindCount = 1; pad.maxBufferBindCount = 1;
     g_bloomq_args = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
     if (!g_bloomq_args) MDIE("建立泛光 1/4 argument table 失败：%s", ate.localizedDescription.UTF8String);
+    MTL4ArgumentTableDescriptor *ppad = [MTL4ArgumentTableDescriptor new];   // the present
+    ppad.maxTextureBindCount = 1; ppad.maxSamplerStateBindCount = 1; ppad.maxBufferBindCount = 1;
     for (int i = 0; i < 3; i++) {
-        g_present_args[i] = [g_dev newArgumentTableWithDescriptor:pad error:&ate];
+        g_present_args[i] = [g_dev newArgumentTableWithDescriptor:ppad error:&ate];
         if (!g_present_args[i]) MDIE("建立出图 argument table[%d] 失败：%s", i, ate.localizedDescription.UTF8String);
-        g_present_uv[i] = [g_dev newBufferWithLength:sizeof(float) * 8 options:MTLResourceStorageModeShared];
+        g_present_uv[i] = [g_dev newBufferWithLength:288 options:MTLResourceStorageModeShared];   // the final draw's constants at 0, the graphics passes' at 96 and 192 (odyssey_gfx_present.inc)
         if (!g_present_uv[i]) MDIE("建立出图 UV 缓冲[%d] 失败", i);
         res_add(g_present_uv[i]);
         if (g_present_probe) {
@@ -2476,6 +2481,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
+    if (!strncmp(name, "gfx_", 4)) { for (int w = 0; w < GX_N; w++) if (!strcmp(name + 4, gx_key[w])) { dm_gfx_opt_set(w, v); return; } }   // flag gfx_aa / gfx_cas / gfx_upscaler / gfx_textures / gfx_resolution <value>, -1 cycles (odyssey_gfx.h)
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // TOTK_MFX_UPSCALE at run time (manual key 3 picture mode)
     if (!strcmp(name, "mfx_interp")) { mfx_set(v); return; }
     if (!strcmp(name, "draw_log")) { extern _Atomic long g_draw_log; atomic_store(&g_draw_log, v); MLOG("[flag] draw_log: every draw and dispatch of the next %d frames", v); return; }
@@ -4962,6 +4968,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
     ser_gate();
+    if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // key 5: the G-buffer pass found; its first draw gives the camera
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
     g_enc = enc_r_begin(pd);
@@ -5982,6 +5989,10 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     }
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
+    {   // key 6 (odyssey_gfx.h): at least this much anisotropic filtering on the game's mipmapped, linearly filtered samplers
+        NSUInteger ga = (NSUInteger)gx_aniso();
+        if (ga > d.maxAnisotropy && d.mipFilter != MTLSamplerMipFilterNotMipmapped && d.minFilter == MTLSamplerMinMagFilterLinear && !p.cmp_mode) d.maxAnisotropy = ga;
+    }
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);
@@ -5991,7 +6002,23 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
     return s;
 }
+/* Key 6: the cached samplers are rebuilt with the new filtering. The old ones stay alive until the flush after next (a
+   frame in flight may still name them); the caller holds g_rmu, the registry lock (the same lock, re-entered). */
+static void samp_flush_all(void) {
+    static void **old[2]; static int nold[2], gen;
+    registry_lock();
+    if (atomic_exchange(&g_samp_flush, 0)) {
+        int k = gen++ & 1;
+        for (int i = 0; i < nold[k]; i++) if (old[k][i]) CFRelease(old[k][i]);
+        free(old[k]); old[k] = calloc((size_t)g_nsreg + 1, sizeof **old); nold[k] = 0;
+        for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) { if (old[k]) old[k][nold[k]++] = g_sview[i]; else CFRelease(g_sview[i]); g_sview[i] = NULL; g_srid[i] = 0; }
+        g_reg_gen++;
+        MLOG("[gfx] texture filtering: %d samplers rebuilt at %dx", nold[k], gx_aniso());
+    }
+    registry_unlock();
+}
 static inline __attribute__((always_inline)) void *samp_fast(int sid) {
+    if (__builtin_expect(atomic_load_explicit(&g_samp_flush, memory_order_relaxed), 0)) samp_flush_all();
     if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid] && g_sview[sid]) return g_sview[sid];
     return (__bridge void *)samp_by_id(sid);
 }
@@ -7505,33 +7532,46 @@ static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
 // Unbound resources read 0: give all-zero dummy resources (NVN descriptors 0..255 are reserved for the driver; the game binding handle 0 means 'this slot is empty')
 static uint64_t g_dummy_tex_rid[8][4], g_dummy_img_rid[8][4], g_dummy_tbuf_rid[4];
 /* TOTK: cached views of a texture as another texture type (2D <-> 2D array, 1 slice); keyed by the base texture object. */
-static NSMapTable<id, id<MTLTexture>> *g_type_views;
+@interface NvTypeView : NSObject { @public id<MTLTexture> view; uint64_t used; } @end   // used: the last submission that asked for it
+@implementation NvTypeView @end
+static NSMapTable<id, NvTypeView *> *g_type_views;
 /* Cached views retain their parent allocation. Evict after that allocation has been removed from
    residency by the completed-fence retirement path; a strong cache must not keep every upload alive.
+   Also evict a view no draw asked for since the previous sweep: Super Mario Odyssey rebuilds the sampling view of one resident
+   1600x900 2D-array render target twice a frame, every rebuilt view became a new key of the same allocation, and this
+   sweep walked 28,000 of them after four minutes (12 ms every 64th frame, 200 ms after an hour of play).
    Caller cadence is bounded, and deferral also protects views used by the most recent submission. */
 static void type_views_sweep_retired(void) {
     if (g_sub_serial & 63) return;
+    uint64_t t0 = bp_now();
     registry_lock();
     pthread_mutex_lock(&g_res_mu);
     for (id key in g_type_views.keyEnumerator.allObjects) {
-        id<MTLTexture> view = [g_type_views objectForKey:key], base = view;
-        while (base.parentTexture) base = base.parentTexture;
-        id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
-        if ([g_res_objects containsObject:allocation]) continue;
+        NvTypeView *e = [g_type_views objectForKey:key]; id<MTLTexture> view = e->view, base = view;
+        if (e->used + g_type_idle_after >= g_sub_serial) {
+            while (base.parentTexture) base = base.parentTexture;
+            id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
+            if ([g_res_objects containsObject:allocation]) continue;
+        } else g_type_idle_views++;
         defer_obj_unref(view); defer_obj_unref(key);
         [g_type_views removeObjectForKey:key]; g_type_retired_views++;
     }
+    if (!(g_sub_serial % 3840))   // about once a minute: the cache must stay flat over a long session
+        MLOG("[type-views] at submit %llu: %lu cached, %llu made, %llu retired (%llu unused); sweep %.2f ms", (unsigned long long)g_sub_serial,
+             (unsigned long)g_type_views.count, (unsigned long long)g_type_views_made, (unsigned long long)g_type_retired_views,
+             (unsigned long long)g_type_idle_views, (bp_now() - t0) / 1e6);
     pthread_mutex_unlock(&g_res_mu);
     registry_unlock();
 }
 static id<MTLTexture> tex_type_view(id<MTLTexture> base, MTLTextureType want) {
     if (!g_type_views) g_type_views = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
-    id<MTLTexture> v = [g_type_views objectForKey:base];
-    if (v && v.textureType == want) return v;
-    if (v) defer_obj_unref(v);   // another type requested: earlier encoded draws may still use the old view
-    v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, 1)];
+    NvTypeView *e = [g_type_views objectForKey:base];
+    if (e && e->view.textureType == want) { e->used = g_sub_serial; return e->view; }
+    if (e) defer_obj_unref(e->view);   // another type requested: earlier encoded draws may still use the old view
+    id<MTLTexture> v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, 1)];
     if (!v) { RED_ONCE(46, "贴图类型视图建不出（%lu → %lu）", (unsigned long)base.textureType, (unsigned long)want); return nil; }
-    [g_type_views setObject:v forKey:base];
+    if (!e) { e = [NvTypeView new]; [g_type_views setObject:e forKey:base]; }
+    e->view = v; e->used = g_sub_serial; g_type_views_made++;
     static int said; if (said++ < 3) MLOG("texture type view: %lu -> %lu for a %lux%lu texture", (unsigned long)base.textureType, (unsigned long)want, (unsigned long)base.width, (unsigned long)base.height);
     return v;
 }
@@ -9900,6 +9940,7 @@ static void mfx_take_camera(void) {
     }
     if (first < 0) return;
     mfx_note_camera(selected, 84);
+    if (taa_active()) taa_note_camera(selected, 84);
     taken[first]++;
     if (++captures % 600 == 0) {
         char b[160]; int n = 0;
@@ -10423,9 +10464,28 @@ static int mfxup_dock(__unsafe_unretained NvShader *fs) {
    Returns 1 when the draw was replaced (not to be encoded). */
 static int mfxup_draw(NvProg *pr) {
     g_mfxup_src = nil; g_mfxup_out = nil; g_mfxup_sh = nil;
-    if (!pr || !mfxup_enabled()) return 0;
+    if (!pr) return 0;
     __unsafe_unretained NvShader *fs = pr->sh[1];
     if (!fs) return 0;
+    /* Key 5: the compose shader's scene goes through the MetalFX temporal scaler (1:1) first; encode_args binds the result,
+       or the spatial upscale below takes it as its input when the scene is smaller than the canvas. Odyssey's scene is a
+       one-slice 2D array that the compose shader samples as 2D. MetalFX takes a 2D texture, and encode_args binds the 2D
+       type view and compares that with g_mfxup_src: the scaler gets the same view. */
+    id<MTLTexture> taa_out = nil;
+    if (taa_ready() && TAA_COMPOSE(fs) && R.rt.n && R.rt.color[0]) {
+        int tid = (int)(S.tex[1][0] & 0xfffff);
+        id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast(tid) : nil;
+        if (src && src.textureType == MTLTextureType2DArray && src.arrayLength == 1) src = tex_type_view(src, MTLTextureType2D);
+        if (src) {
+            rp_end(); blit_close(); rs_sync();
+            taa_out = taa_encode(g_cb, src);
+            if (taa_out) {
+                static int added; if (!added && taa_residency()) { [g_q4 addResidencySet:taa_residency()]; added = 1; }
+                g_mfxup_src = src; g_mfxup_out = taa_out; g_mfxup_sh = fs;
+            }
+        }
+    }
+    if (!mfxup_enabled()) return 0;
     if (mfxup_dock(fs)) {
         static unsigned n; if (++n % 1800 == 1) { char b[200]; mfxup_stats(MFXUP_DOCKED, b, sizeof b);
             MLOG("[mfx-up] 至帧 %llu：%s；替换游戏放大 %llu 次，保留 %llu 次（建不出或在后台建 %llu、目标不符 %llu、混合/掩码/深度 %llu、尺寸 %llu、视口/剪裁 %llu、常量 %llu）",
@@ -10441,8 +10501,8 @@ static int mfxup_draw(NvProg *pr) {
     if (!src || !dst || src.width >= dst.width || src.height >= dst.height) return 0;
     rp_end(); blit_close(); rs_sync();
     pt_mark(g_cb, 'X', nil);   // TOTK_PASS_GPU: the MetalFX upscale as its own entry
-    id<MTLTexture> out = mfxup_encode(g_cb, src, dst.width, dst.height);
-    if (!out) return 0;
+    id<MTLTexture> out = mfxup_encode(g_cb, taa_out ? taa_out : src, dst.width, dst.height);
+    if (!out) return 0;   // the anti-aliased scene, if any, stays bound (g_mfxup_out)
     mfxup_queue_residency();
     g_mfxup_src = src; g_mfxup_out = out; g_mfxup_sh = fs; atomic_store(&g_mfxup_last, atomic_load(&g_cur_frame));
     static unsigned n; if (++n % 1800 == 1) { char b[200]; mfxup_stats(MFXUP_SCENE, b, sizeof b); MLOG("[mfx-up] 至帧 %llu：%s", (unsigned long long)atomic_load(&g_cur_frame), b); }
@@ -10717,8 +10777,14 @@ frz_plain:;
             }
         }
     }
-    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx, S.vp[0][1] + vo, vw, S.vp[0][3] * vs, S.dr[0], S.dr[1]});
-    else enc_r_viewport(en, (MTLViewport){vx, vo, vw, th * vs, 0, 1});
+    /* Key 5: the G-buffer pass's geometry moves by this frame's sub-pixel jitter (taa_jitter), as games/totk does. Not the
+       full-screen triangles and quads (6 vertices or fewer), not moved or squeezed UI (vo, vs, ux), not draws counted by an
+       occlusion query (g_vis_counting: a light scaled by its sample count would pulse), and not draws that sample an
+       attachment of their pass (decals read their own pixel; moved, they blend in their neighbours). */
+    double jx = 0, jy = 0; unsigned nv = di ? di->count : dw ? dw->count : 0;
+    if (taa_jittered() && nv > 6 && vo == 0 && vs == 1 && ux == 1 && !g_vis_counting && !draw_samples_rt(pr)) taa_jitter(&jx, &jy);
+    if (S.has_vp) enc_r_viewport(en, (MTLViewport){vx + jx, S.vp[0][1] + vo + jy, vw, S.vp[0][3] * vs, S.dr[0], S.dr[1]});
+    else enc_r_viewport(en, (MTLViewport){vx + jx, vo + jy, vw, th * vs, 0, 1});
     MTLScissorRect sc = {0, 0, tw, th};
     if (R.has_sc) {
         long sx0 = R.sc.x, sx1 = (long)R.sc.x + R.sc.w;
@@ -12391,6 +12457,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     [en endEncoding];
     return 1;
 }
+#include "odyssey_gfx_present.inc"
 static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst, const int crop[4], int uv_i) {
     NSUInteger cx = 0, cy = 0, cw = src.width, ch = src.height;
     if (crop && (crop[2] || crop[3])) {
@@ -12407,9 +12474,11 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     MTLViewport vp = {floor((dw - cw * s) / 2), floor((dh - ch * s) / 2), round(cw * s), round(ch * s), 0, 1};
     if (fabs((dw / dh) / ((double)cw / ch) - 1) < 0.01 || present_stretch()) vp = (MTLViewport){0, 0, dw, dh, 0, 1};
     int full = vp.originX == 0 && vp.originY == 0 && vp.width == dw && vp.height == dh;
-    id<MTLTexture> up = output_upscale(cb, src, cx, cy, cw, ch, vp, uv_i);   // TOTK 2K output: MetalFX to the viewport, drawn 1:1 below
-    id<MTLTexture> pic = up ? up : src;
-    if (up) { cx = 0; cy = 0; cw = up.width; ch = up.height; }
+    gx_stamp_begin(cb, uv_i);
+    NSUInteger r[4] = {cx, cy, cw, ch}; int final_fn = -1;
+    id<MTLTexture> pic = gx_picture(cb, src, r, vp, dst.pixelFormat, uv_i, &final_fn);   // keys 3-5: anti-aliasing, the upscale, CAS
+    cx = r[0]; cy = r[1]; cw = r[2]; ch = r[3];
+    id<MTLRenderPipelineState> final_pso = final_fn >= 0 ? gx_pso(final_fn, dst.pixelFormat) : nil;
     MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
     rp.colorAttachments[0].texture = dst;
     rp.colorAttachments[0].loadAction = full ? MTLLoadActionDontCare : MTLLoadActionClear;
@@ -12424,10 +12493,12 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
     float *uv = g_present_uv[uv_i].contents;
     uv[0] = (float)cx / pic.width; uv[1] = (float)cy / pic.height; uv[2] = (float)cw / pic.width; uv[3] = (float)ch / pic.height;
     uv[4] = (cx + 0.5f) / pic.width; uv[5] = (cy + 0.5f) / pic.height; uv[6] = (cx + cw - 0.5f) / pic.width; uv[7] = (cy + ch - 0.5f) / pic.height;
+    if (final_pso) gx_consts(uv_i, 0, pic, r, (NSUInteger)vp.width, (NSUInteger)vp.height);   // the same Crop first, then the graphics constants
     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setArgumentTable:args atStages:MTLRenderStageFragment];
-    [en setViewport:vp]; [en setRenderPipelineState:g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:final_pso ? final_pso : g_blit_pso];
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (final_pso) [en setRenderPipelineState:g_blit_pso];   // the overlays below without the filter
     MTLViewport ovp; float fuv[8];
     if (fps_overlay_prepare(uv_i, vp, &ovp, fuv)) {   // argument-table bindings are captured per draw, so rebinding here leaves the game picture's draw intact
         memcpy(g_fps_uv[uv_i].contents, fuv, sizeof fuv);
@@ -12451,6 +12522,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
         [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     }
     m4_end(en);
+    gx_stamp_end(cb, uv_i);
     return 1;
 }
 static double g_link_it_tin;   // 节拍回调正在上屏的那一帧的入队时刻（只在节拍线程读写） | Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
@@ -12888,7 +12960,8 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     { int timed = alloc_i >= 0 && alloc_i < 3 && g_outup_timed[alloc_i], slot = alloc_i;
       [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
           sysload_note_gpu(f.GPUStartTime, f.GPUEndTime);   // the load line's game GPU share includes the present (and its MetalFX upscale)
-          if (timed && !f.error) outup_note_gpu(slot); }]; }
+          if (timed && !f.error) outup_note_gpu(slot);
+          if (!f.error) gx_note_gpu(slot); }]; }
     if (src_buf) { id<MTLBuffer> buf = src_buf; size_t w = src_w, h = src_h; NSString *path = grab_src;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             if (!f.error) { CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -13251,6 +13324,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
     @autoreleasepool { return mfx_present_frame_body(t, period, discard); }
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+    taa_frame_end();   // key 5: next frame's jitter, this frame's depth and camera forgotten (also while off)
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; odyssey_scene_frame(&g_odyssey_scene); BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
@@ -13920,7 +13994,7 @@ int mtl_probe_texture_retire(void) {
     mtl_sub_begin();mtl_exec((const uint8_t *)&end);
     registry_lock();id<MTLTexture> again=tex_by_id(1);registry_unlock();
     if(again!=old[N-1])MDIE("texture retire: old descriptor failed to rebuild with current storage");checked++;
-    id __weak replaced_type=[g_type_views objectForKey:again];
+    NvTypeView *again_e=[g_type_views objectForKey:again];id __weak replaced_type=again_e?again_e->view:nil;again_e=nil;
     registry_lock();(void)tex_type_view(again,MTLTextureType2D);registry_unlock();
     if(!replaced_type)MDIE("texture retire: changing type released a view before its submission finished");checked++;
     enc_b_copy_texture_buffer(blit(),replaced_type,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,1,1),rb,0,128,128);
@@ -13963,6 +14037,36 @@ int mtl_probe_texture_retire(void) {
     }
     if(g_reup_reused<reused_before+7)MDIE("texture final cache: missing allocation reuse");checked++;
     atomic_store(&g_pkg_final_cache,saved_final);res_remove(final_rb);
+    /* Super Mario Odyssey: the game rebuilds the sampling view of one resident 2D-array render target twice a frame, and every
+       rebuilt view asked for its 2D type view under a new key. Ask 300 submissions in a row with a fresh view of one
+       resident base: only views asked for since the last sweep may stay, and the first one is released once the GPU is
+       done with it. TOTK_PROBE_NEGATIVE=8 turns the eviction of unused views off; the probe must then fail. */
+    {
+        uint64_t saved_idle=g_type_idle_after; if(ne&&atoi(ne)==8)g_type_idle_after=UINT64_MAX/2;
+        MTLTextureDescriptor *cd=[MTLTextureDescriptor new]; cd.textureType=MTLTextureType2DArray; cd.pixelFormat=MTLPixelFormatRGBA8Unorm;
+        cd.width=64; cd.height=36; cd.arrayLength=1; cd.storageMode=MTLStorageModePrivate; cd.usage=MTLTextureUsageShaderRead;
+        id<MTLTexture> churn_base=[g_dev newTextureWithDescriptor:cd]; if(!churn_base)MDIE("type view churn: base texture");
+        res_add(churn_base);
+        id __weak first=nil;
+        for(unsigned k=0;k<300;k++) @autoreleasepool {
+            mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+            id<MTLTexture> key=[churn_base newTextureViewWithPixelFormat:churn_base.pixelFormat textureType:MTLTextureType2DArray levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)];
+            registry_lock();id<MTLTexture> tv=tex_type_view(key,MTLTextureType2D);registry_unlock();
+            if(!tv||tv.textureType!=MTLTextureType2D)MDIE("type view churn: no 2D view in submission %u",k);
+            if(!k)first=tv;
+            mtl_sub_commit();mtl_finish();
+        }
+        for(unsigned i=0;i<2;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+        unsigned long same=0;
+        registry_lock();pthread_mutex_lock(&g_res_mu);
+        for(id key in g_type_views.keyEnumerator.allObjects){id<MTLTexture> r=key;while(r.parentTexture)r=r.parentTexture;same+=r==churn_base;}
+        pthread_mutex_unlock(&g_res_mu);registry_unlock();
+        g_type_idle_after=saved_idle;
+        MLOG("type view churn: %lu of 300 views of one resident texture still cached",same);
+        if(same>130)MDIE("type view churn: %lu cached views of one resident texture after 300 submissions (at most 130)",same);checked++;
+        if(first)MDIE("type view churn: the first view, unused for 300 submissions, is still alive");checked++;
+        res_remove(churn_base);
+    }
     mtl_pool_del(mem);nvn_dirty_remove_range(mem);mtl_finish();res_remove(rb);munmap(mem,size);
     return checked;
 }

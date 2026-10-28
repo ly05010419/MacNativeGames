@@ -105,7 +105,7 @@ static NSString *contrib_submit(NSString *gh, NSString *path, NSUInteger rows) {
     if (!m) return nil;
     NSString *link = [NSString stringWithFormat:@"https://gist.githubusercontent.com/%@/%@/raw/shader-list-contribution.txt",
                       [gist substringWithRange:[m rangeAtIndex:1]], [gist substringWithRange:[m rangeAtIndex:2]]];
-    NSString *body = [NSString stringWithFormat:@"### Game version / 游戏版本\n\n%s\n\n### Device / 设备\n\nMac\n\n### shader-list-contribution.txt\n\n%@\n\n"
+    NSString *body = [NSString stringWithFormat:@"### Game / 游戏\n\n" GAME_CONTRIB_GAME "\n\n### Game version / 游戏版本\n\n%s\n\n### Device / 设备\n\nMac\n\n### shader-list-contribution.txt\n\n%@\n\n"
                       "### Where you played (optional) / 玩了哪些地方（可选）\n\n_No response_\n", TOTK_GAME_VERSION, link];
     NSString *title = [NSString stringWithFormat:@GAME_CONTRIB_TITLE " %lu shaders from Mac (%@ %s)", (unsigned long)rows, @GAME_FOLDER, TOTK_GAME_VERSION];
     NSString *issue = run_tool(gh, @[@"issue", @"create", @"--repo", @TOTK_CONTRIB_REPO, @"--title", title, @"--body", body], nil, &status);
@@ -166,9 +166,9 @@ static NSString *contrib_file(NSString *data) {
     NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGContributionFolder"];
     if (![folder isKindOfClass:NSString.class] || !folder.length || ![fm fileExistsAtPath:folder.stringByDeletingLastPathComponent]) return old;
     if (![fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]) return old;
-    // one file for the Mac and every iPhone / iPad (ios/tools/shader_contrib_watch.py merges theirs in): the rows are the same
-    // for every platform; Breath of the Wild has a list of its own
-    NSString *mine = [folder stringByAppendingPathComponent:strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution-botw.txt" : @"shader-list-contribution.txt"];
+    // this game's own file (GAME_CONTRIB_FILE, totk_shader_contrib.h), beside Tears of the Kingdom's and Breath of the
+    // Wild's in the same folder: its rows go to its own list (user 2026-10-28), not into theirs
+    NSString *mine = [folder stringByAppendingPathComponent:@GAME_CONTRIB_FILE];
     if (![fm fileExistsAtPath:mine] && [fm fileExistsAtPath:old]) {
         [fm moveItemAtPath:old toPath:mine error:nil];
         NSString *state = [old stringByAppendingString:@".reminded"];   // where the state was kept before (totk_contrib_state)

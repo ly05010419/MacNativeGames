@@ -3,6 +3,7 @@
 #include "game_version.h"
 #include <TargetConditionals.h>
 #include "ipc.h"
+#include "aoc_scan.h"   /* Q96: the DLC in a folder of NSPs */
 #include <mach/mach.h>
 #include "mach_vm_compat.h"
 #include <stdio.h>
@@ -274,10 +275,61 @@ void runtime_guest_resident(uint64_t *resident,uint64_t *dirty,uint64_t *compres
 }
 static void host_diag_init(void) { fprintf(stderr,"[totk] native diagnostics initialized\n"); }
 static void host_oe_init(void) { fprintf(stderr,"[totk] application environment: local macOS process\n"); }
-static void host_aoc_init(void) { fprintf(stderr,"[totk] add-on content: no DLC\n"); }
-static int host_aoc_count(void) { return 0; }
+/* Super Smash Bros. Ultimate (Q96): the add-on content the player owns. Smash's DLC NSPs hold only a marker file (the
+   fighters and costumes ship in the update), so owning one is the index the game is told. Two sources, both read at the
+   first aoc call: SSBU_DLC_DIR, a folder of the player's own DLC NSPs (the app's DLC menu; on iOS Documents/DLC), read
+   without keys (aoc_scan.h), and build/dlc/owned.txt below the game folder (build_ssbu.py --dlc, checked with the keys).
+   Neither: no DLC, as before. SSBU_DLC=0 (the DLC menu's Off, comparison runs) reports none. */
+#define AOC_MAX 2048
+static int aoc_index[AOC_MAX],aoc_n,aoc_off,aoc_dir_nsps,aoc_dir_skipped;
+static pthread_once_t aoc_once=PTHREAD_ONCE_INIT;
+static void aoc_add(int v){for(int i=0;i<aoc_n;i++)if(aoc_index[i]==v)return;if(aoc_n<AOC_MAX)aoc_index[aoc_n++]=v;}
+static void aoc_load(void){
+ const char *off=getenv("SSBU_DLC");
+ if(off&&!strcmp(off,"0")){aoc_off=1;fprintf(stderr,"[totk] add-on content: off (SSBU_DLC=0), none reported\n");return;}
+ int from_file=0,from_dir=-1,bad=0;
+ FILE *f=fopen("build/dlc/owned.txt","r");
+ if(f){
+  char line[512];
+  while(fgets(line,sizeof line,f)){
+   if(line[0]=='#'||line[0]=='\n')continue;
+   char *end;long v=strtol(line,&end,10);
+   if(end==line||v<1||v>=AOC_MAX){bad++;continue;}
+   aoc_add((int)v);from_file++;
+  }
+  fclose(f);
+ }
+ const char *dir=getenv("SSBU_DLC_DIR");
+ if(dir&&*dir){
+  static int found[AOC_MAX];
+  from_dir=aoc_scan_dir(dir,GAME_TITLE_ID,found,AOC_MAX,&aoc_dir_nsps,&aoc_dir_skipped);
+  if(from_dir<0)fprintf(stderr,"【红】[totk] add-on content: the DLC folder %s cannot be read (DLC menu: choose it again)\n",dir);
+  for(int i=0;i<from_dir;i++)aoc_add(found[i]);
+ }
+ for(int i=1;i<aoc_n;i++)for(int j=i;j>0&&aoc_index[j-1]>aoc_index[j];j--){int t=aoc_index[j];aoc_index[j]=aoc_index[j-1];aoc_index[j-1]=t;}
+ int fighters=aoc_fighters(aoc_index,aoc_n);
+ fprintf(stderr,"[totk] add-on content: %d owned, %d of them fighters (build/dlc/owned.txt %s",aoc_n,fighters,f?"":"none");
+ if(f)fprintf(stderr,"%d",from_file);
+ if(from_dir>=0)fprintf(stderr,"; folder %s: %d of %d NSPs, %d not a Smash DLC",dir,from_dir,aoc_dir_nsps,aoc_dir_skipped);
+ fprintf(stderr,")%s",aoc_n?":":"");
+ for(int i=0;i<aoc_n;i++)fprintf(stderr," %d",aoc_index[i]);
+ fprintf(stderr,"\n");
+ if(bad)fprintf(stderr,"【红】[totk] add-on content: %d lines of build/dlc/owned.txt are not an index 1-%d, left out\n",bad,AOC_MAX-1);
+}
+/* For the DLC menu (runtime/frontend.m): how many are owned and how many are fighters; -1 when the menu turned them off. */
+int runtime_aoc_owned(int *fighters){
+ pthread_once(&aoc_once,aoc_load);
+ if(fighters)*fighters=aoc_fighters(aoc_index,aoc_n);
+ return aoc_off?-1:aoc_n;
+}
+static void host_aoc_init(void) { pthread_once(&aoc_once,aoc_load); }
+static int host_aoc_count(void) { pthread_once(&aoc_once,aoc_load); return aoc_n; }
 static int host_aoc_list(int *out,int offset,int count) {
- (void)out;if(offset<0||count<0)runtime_fail("invalid add-on content list range");return 0;
+ if(offset<0||count<0)runtime_fail("invalid add-on content list range");
+ pthread_once(&aoc_once,aoc_load);
+ int n=0;for(int i=offset;i<aoc_n&&n<count;i++)out[n++]=aoc_index[i];
+ static int said;if(!said++)fprintf(stderr,"[totk] add-on content: the game lists %d from %d (asked for %d)\n",n,offset,count);
+ return n;
 }
 static void host_error_init(void) { fprintf(stderr,"[totk] error contexts: local diagnostics\n"); }
 static void host_fs_init(void) { runtime_fs_init(); }

@@ -373,7 +373,6 @@ static void walk_skip_empty(Walk *w) {   /* the same as skip_empty in audio_rend
         const AudrenWaveBuffer *b = &w->v->buffers[w->index];
         if (b->loop && b->loop_count < 0) break;
         w->valid[w->index] = 0; w->offset = 0; w->loops = 0; w->index = (w->index + 1) & 3;
-        if (b->end_of_stream) w->ended = 1;
     }
 }
 static void walk_step(Walk *w) {   /* the same transitions as advance_voice in audio_renderer.c */
@@ -382,8 +381,7 @@ static void walk_step(Walk *w) {   /* the same transitions as advance_voice in a
     uint64_t length = (uint64_t)(b->end - b->start);
     if (++w->offset < length) return;
     if (b->loop && (b->loop_count < 0 || w->loops < b->loop_count)) { w->loops++; w->offset = b->loop_start > b->start && b->loop_start < b->end ? (uint64_t)(b->loop_start - b->start) : 0; return; }
-    w->valid[w->index] = 0; w->offset = 0; w->loops = 0; w->index = (w->index + 1) & 3;
-    if (b->end_of_stream) w->ended = 1;
+    w->valid[w->index] = 0; w->offset = 0; w->loops = 0; w->index = (w->index + 1) & 3;   /* end of stream goes on too */
     walk_skip_empty(w);
 }
 /* Decodes `frames` output samples per channel into out[c][k]; the renderer advances the voice afterwards by the same amount. */

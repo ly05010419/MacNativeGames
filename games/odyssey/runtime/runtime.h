@@ -91,6 +91,8 @@ void runtime_boot_count(const char *stage,uint64_t done,uint64_t total);   /* a 
    adds to the texture heap and to Graphics, and so to the application pool (runtime/services.c). */
 int runtime_output_res(unsigned *w,unsigned *h);
 uint64_t runtime_output_res_extra_bytes(void);
+uint64_t runtime_render_pool_extra(void);               /* bytes the bigger render target pool adds to the application pool (key 3, game_patches.c) */
+const char *runtime_picture_name(void);                 /* key 3's state for the shortcut box; NULL without a bigger render size */
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
 int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
@@ -101,7 +103,9 @@ void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
 void runtime_shortcut_help_toggle(void);
 int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
-int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
+int runtime_aspect_toggle(void);   /* runtime/odyssey_aspect.c: key 4, 16:9 -> fit to the window / display -> 21:9 (or TOTK_ASPECT); 0 where unavailable */
+int runtime_aspect_step(void);     /* key 4's step: 0 16:9, 1 fit to the window, 2 21:9 / TOTK_ASPECT; -1 where unavailable */
+void runtime_aspect_view(double w, double h);   /* frontend.m: the window's drawable size, which key 4 follows */
 float runtime_aspect_now(void);     /* the ratio in force, 0 = the game's own 16:9 */
 int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the window's corner panel (TOTK_HUD=corners: in the picture) */
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..2: FPS, shaders, load; 0 = not published */
@@ -124,6 +128,14 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
 /* Forget held buttons and sticks: macOS stops delivering controller events (including releases) while the app is in
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
+int runtime_gamepad_type_cycle(void);       /* runtime/gamepad.m: key 6, the controller type auto -> Xbox -> PlayStation -> Switch (gamepad_layout.h GAMEPAD_TYPE_*) */
+int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
+int runtime_mouse_toggle(void);             /* runtime/gamepad.m: key 7, mouse mode on (1) / off (0) */
+int runtime_mouse_enabled(void);
+void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */
+void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */
+void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
+void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
@@ -141,6 +153,8 @@ void runtime_motion_feed(const double acc_g[3], const double gyro_rad_s[3], uint
 int runtime_motion_axes(const char *spec);   /* TOTK_GYRO_AXES ("-x,y,-z"): 1 set, 0 unset, -1 malformed */
 void runtime_motion_deadzone_default(double deg_s);   /* when TOTK_GYRO_DEADZONE is unset: 1.2 for HID motion, else 0 */
 void runtime_motion_live(int on);   /* a controller with motion attached (1) / detached (0) */
+void runtime_motion_mouse(int on);  /* mouse mode (key 7) takes the sensor over (1) / gives it back to the controller (0) */
+void runtime_motion_feed_mouse(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* already in the reference frame */
 void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 #ifdef __OBJC__
 @class GCController;
