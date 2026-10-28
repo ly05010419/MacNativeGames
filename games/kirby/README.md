@@ -40,7 +40,7 @@ Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to
 |---|---|---|
 | Boot & Title | Verified | Smooth 60 FPS presentation, controller & keyboard input |
 | Graphics & Shaders | Verified | 609 variants over 604 shaders prepared; precompiled into `.metallib` |
-| Audio & Video | Verified | Opus audio decoding and video playback supported |
+| Audio & Video | Verified | Opus audio; VP9 movies with libvpx, their Vorbis sound track with stb_vorbis (`runtime/movie_host.c`, after nxnative's `hle_movie.c`) |
 | Saves | Verified | Auto-save backups retained across sessions |
 
 ## Shaders & Precompilation
