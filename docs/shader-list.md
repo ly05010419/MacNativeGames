@@ -29,6 +29,10 @@ The list holds identifiers only, never game data. Each build makes the shaders f
 | `B` | pipeline key, vertex border, fragment border, flags | That render pipeline with the sampler border colours Metal lacks, emulated in its shaders (`-` for a stage without). The warm-up builds the patched shaders and the pipeline. |
 | `T` | pipeline key, tile reads, flags | That render pipeline with the fragment variant that reads the draw's own colour attachments from the tile, `<argument id>:<attachment>;` per read (`nvn_mtl.m warm_tileread`). Before 2026-10-26 only `pso_user.tsv` had these, so every new install built them in play (all 58 a 5-minute route built in the world with the list). |
 
+- **Pipeline key:** the runtime's 544-byte `pso_skey` (`nvn_pso_skey.h`). The Tears of the Kingdom and Breath of the
+  Wild lists keep it packed: `<vertex variant>:<fragment variant>:<the other 384 bytes in hex>`, each run of four or
+  more zero bytes written `z<count in hex>.`. This is about a quarter of the hex size. Contribution files and the
+  exported warm-up lists use plain hex; `shader_list.py` reads both.
 - **Shader key:** the SHA-256 of the shader's NVN control section and code, computed the same way as the runtime.
 - **Deps:** the translator's `deps` as compact, sorted JSON. They record the texture, image, attribute and fragment
   output types the shader depends on.

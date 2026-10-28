@@ -238,12 +238,17 @@ def main():
     ap.add_argument('--team', help='Apple team ID (default: the only team with an Apple Development certificate)')
     ap.add_argument('--bundle-id', help='default: the build\'s identifier (org.macnativegames.totk or .botw) + .<team>, so it is free to register on your team')
     ap.add_argument('--game-data', type=Path, help='romfs.bin (index.json beside it) for an IPA built with --ios-game-data documents')
+    ap.add_argument('--wifi', action='store_true', help='install on an iPhone / iPad that is not on the cable (slow; 14 GiB of game data over Wi-Fi took about 2 minutes per GiB and dropped)')
     a = ap.parse_args()
     team = a.team or (lambda t: t[0] if len(t) == 1 else sys.exit(
         f'choose the team with --team: {", ".join(t)}' if t else 'no Apple Development certificate: add your Apple ID in Xcode > Settings > Accounts'))(teams())
     bundle_id = a.bundle_id or f'{built_bundle_id(a.ipa, team)}.{team.lower()}'
     dev = pick_device(a.device)
     udid = dev['hardwareProperties']['udid']
+    if (dev['hardwareProperties'].get('platform') != 'visionOS' and not a.wifi
+            and dev.get('connectionProperties', {}).get('transportType') == 'localNetwork'):
+        sys.exit(f"{dev['deviceProperties'].get('name')} is connected over Wi-Fi: connect it with the cable (unlocked) and run "
+                 "this again; --wifi installs over Wi-Fi anyway (slow, and a copy of the game data can drop)")
     print(f"team {team}, bundle {bundle_id}, device {dev['deviceProperties'].get('name')} ({udid})")
 
     print('provisioning profile: asking Xcode')

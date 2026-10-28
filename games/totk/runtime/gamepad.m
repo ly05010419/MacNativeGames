@@ -359,7 +359,8 @@ static void hid_pad_start(void) {}
    left attack, right draw the bow with left to shoot, middle target), so controls.txt can change them. Movement goes to
    runtime/mouse_look.h, ticked every 10 ms by a timer while mouse mode is on: the right stick (the stronger of it and a
    controller's) and, unless TOTK_MOUSE_GYRO=0 or the game has no six-axis device (TOTK_GYRO=0), the gyro, which the
-   mouse then has to itself (runtime_motion_mouse). Settings: TOTK_MOUSE_SENSITIVITY 1-100 (50), TOTK_MOUSE_INVERT_Y=1,
+   mouse then has to itself (runtime_motion_mouse). Settings: TOTK_MOUSE_SENSITIVITY 1-100 (50; else the settings
+   panel's, in mouse-sensitivity.txt), TOTK_MOUSE_INVERT_Y=1,
    TOTK_MOUSE_COUNTERWEIGHT, TOTK_MOUSE_DECAY, TOTK_MOUSE_MIN_DECAY 0-100 (20, 18, 6). */
 static _Atomic int mouseMode;
 static unsigned mouseButtons;                  /* main thread; bit i = mouse button i (0 left, 1 right, 2 middle, 3, 4) */
@@ -374,6 +375,10 @@ static void (*mouseHook)(void);                /* the window: mouse mode changed
 static void mouse_tick(void) {
     double gyro[3], acc[3]; int32_t rx, ry;
     pthread_mutex_lock(&gamepadLock);
+#ifndef GAME_BOTW
+    /* L held (keys or controller): the ability wheel is open and the mouse points at an ability (mouse_look.h) */
+    mouse_look_point(&mouseLook, (int)(((runtime_keyboard_buttons() | gamepadState.buttons) >> 6) & 1));
+#endif
     mouse_look_tick(&mouseLook, &mouseSettings, &rx, &ry, gyro, acc);
     mouseRX = rx; mouseRY = ry;
     int feed = mouseGyro;
@@ -381,11 +386,44 @@ static void mouse_tick(void) {
     if (feed) runtime_motion_feed_mouse(acc, gyro, runtime_now_ns());
 }
 
+/* The settings panel's sensitivity row (key 1, runtime/settings_panel.h): TOTK_MOUSE_SENSITIVITY decides when set (the
+   row greyed out), else mouse-sensitivity.txt, else 50. A pick is saved and applies at once, also in the middle of a turn. */
+static _Atomic int mouseSensitivity;           /* 0: mouse-sensitivity.txt not read yet */
+int runtime_mouse_sensitivity_locked(void) { return getenv("TOTK_MOUSE_SENSITIVITY") != NULL; }
+int runtime_mouse_sensitivity(void) {
+    if (runtime_mouse_sensitivity_locked()) return mouse_look_setting(getenv("TOTK_MOUSE_SENSITIVITY"), 1, 100, 50);
+    int s = atomic_load(&mouseSensitivity);
+    if (s) return s;
+    char path[4096], word[16] = {0};
+    s = 50;
+    if (setting_read("mouse-sensitivity.txt", word, sizeof word, path, sizeof path)) {
+        size_t n = strlen(word);
+        while (n && (word[n - 1] == '\n' || word[n - 1] == '\r' || word[n - 1] == ' ' || word[n - 1] == '\t')) word[--n] = 0;
+        s = mouse_look_setting(word, 1, 100, 0);
+        if (!s) { fprintf(stderr, "[totk-input] %s: not a number from 1 to 100; sensitivity 50\n", path); s = 50; }
+    }
+    int none = 0;
+    atomic_compare_exchange_strong(&mouseSensitivity, &none, s);
+    return atomic_load(&mouseSensitivity);
+}
+void runtime_mouse_sensitivity_set(int sensitivity) {
+    if (runtime_mouse_sensitivity_locked() || sensitivity < 1 || sensitivity > 100) return;
+    atomic_store(&mouseSensitivity, sensitivity);
+    char word[8];
+    snprintf(word, sizeof word, "%d", sensitivity);
+    setting_write("mouse-sensitivity.txt", word, "mouse sensitivity");
+    pthread_mutex_lock(&gamepadLock);
+    mouseSettings.sensitivity = sensitivity;
+    pthread_mutex_unlock(&gamepadLock);
+    fprintf(stderr, "[totk-input] mouse sensitivity %d (settings)\n", sensitivity);
+}
+
 static void mouse_apply(int on) {   /* start or stop the ticks and the gyro takeover */
     if (on) {
         const char *g = getenv("TOTK_MOUSE_GYRO");
         MouseLookSettings settings = mouse_look_settings(getenv("TOTK_MOUSE_SENSITIVITY"), getenv("TOTK_MOUSE_INVERT_Y"),
                                                          getenv("TOTK_MOUSE_COUNTERWEIGHT"), getenv("TOTK_MOUSE_DECAY"), getenv("TOTK_MOUSE_MIN_DECAY"));
+        settings.sensitivity = runtime_mouse_sensitivity();
         int gyro = runtime_gyro_enabled() && !(g && !strcmp(g, "0"));
         pthread_mutex_lock(&gamepadLock);
         mouseSettings = settings; mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0; mouseGyro = gyro;
@@ -587,6 +625,83 @@ int runtime_gamepad_type(int *detected) {
     return atomic_load(&controllerType);
 }
 
+/* For the HUD (main thread): the first controller's battery as a whole percent, -1 none or unknown. */
+int runtime_gamepad_battery_percent(void) {
+    for (GCController *controller in GCController.controllers)
+        if (controller.battery && controller.battery.batteryState != GCDeviceBatteryStateUnknown)
+            return (int)lroundf(controller.battery.batteryLevel * 100.0f);
+    return -1;
+}
+
+/* Hardware keyboards (Magic Keyboard, Smart Keyboard, Bluetooth) feed the same virtual controller the Mac keyboard
+   drives, with the macOS input.c key layout. iOS only: the Mac already gets the keyboard through the window
+   (frontend.m keyDown/keyUp), and a second source there would fight it. Strictly additive on iOS: the GCController
+   path below is untouched, the keyboard can be switched off with TOTK_KEYBOARD=off, and touch / a controller always
+   remain available. */
+#if TARGET_OS_IPHONE
+static GCKeyboard *keyboardPad;
+/* While UIKit's text field is up, the same physical keys type into it; they must not also drive the game. */
+static volatile int keyboardPaused;
+void runtime_keyboard_capture(int on) {
+    if (on && !keyboardPaused) for (unsigned mac = 0; mac < 128; mac++) runtime_input_key(mac, 0);
+    keyboardPaused = on;
+}
+
+static int mac_key_code(GCKeyCode code) {
+    /* GCKeyCode values are extern const objects, not enum constants, so this cannot be a switch. */
+    if (code == GCKeyCodeKeyA) return 0;           /* WASD: left stick, as on the Mac */
+    if (code == GCKeyCodeKeyS) return 1;
+    if (code == GCKeyCodeKeyD) return 2;
+    if (code == GCKeyCodeKeyW) return 13;
+    if (code == GCKeyCodeLeftArrow) return 123;    /* arrows: right stick */
+    if (code == GCKeyCodeRightArrow) return 124;
+    if (code == GCKeyCodeDownArrow) return 125;
+    if (code == GCKeyCodeUpArrow) return 126;
+    if (code == GCKeyCodeKeyF) return 3;           /* F/T/H/G: D-pad */
+    if (code == GCKeyCodeKeyT) return 17;
+    if (code == GCKeyCodeKeyH) return 4;
+    if (code == GCKeyCodeKeyG) return 5;
+    if (code == GCKeyCodeKeyJ) return 38;          /* J/K/I/U: face buttons */
+    if (code == GCKeyCodeKeyK) return 40;
+    if (code == GCKeyCodeKeyI) return 34;
+    if (code == GCKeyCodeKeyU) return 32;
+    if (code == GCKeyCodeKeyZ) return 6;           /* Z/C: stick clicks (runtime/input.c's bits 4/5) */
+    if (code == GCKeyCodeKeyC) return 8;
+    if (code == GCKeyCodeKeyQ) return 12;          /* Q/E: L/R */
+    if (code == GCKeyCodeKeyE) return 14;
+    if (code == GCKeyCodeLeftAlt || code == GCKeyCodeRightAlt) return 58;    /* Option: ZL */
+    if (code == GCKeyCodeLeftShift || code == GCKeyCodeRightShift) return 56; /* Shift: ZR */
+    if (code == GCKeyCodeReturnOrEnter) return 36;  /* Return: + */
+    if (code == GCKeyCodeTab) return 48;            /* Tab / Esc: - */
+    if (code == GCKeyCodeEscape) return 53;
+    if (code == GCKeyCodeSpacebar) return 49;       /* Space: B, as on the Mac */
+    return -1;
+}
+static void attach_keyboard(GCKeyboard *keyboard) {
+    if (!keyboard) return;
+    const char *mode = getenv("TOTK_KEYBOARD");
+    if (mode && (!strcmp(mode, "off") || !strcmp(mode, "0"))) return;   /* "0": the Settings switch (main.m), as touch_pad.m reads it */
+    keyboardPad = keyboard;
+    keyboard.keyboardInput.keyChangedHandler = ^(GCKeyboardInput *input, GCControllerButtonInput *key, GCKeyCode code, BOOL pressed) {
+        (void)input; (void)key;
+        if (keyboardPaused) return;
+        int mac = mac_key_code(code);
+        if (mac >= 0) runtime_input_key((unsigned)mac, pressed);
+    };
+    fprintf(stderr, "[totk-input] hardware keyboard connected: %s\n", (keyboard.vendorName ?: @"keyboard").UTF8String);
+}
+static void detach_keyboard(GCKeyboard *keyboard) {
+    if (keyboardPad == keyboard) {
+        keyboard.keyboardInput.keyChangedHandler = nil;
+        keyboardPad = nil;
+    }
+    /* Release every key on any keyboard disconnect: a held W/Space must not keep the game walking after the keyboard
+       sleeps or is detached, and the notification's object is not guaranteed to be the one attached. */
+    for (unsigned mac = 0; mac < 128; mac++) runtime_input_key(mac, 0);
+    fprintf(stderr, "[totk-input] hardware keyboard disconnected\n");
+}
+#endif
+
 void runtime_gamepad_start(void) {
     if (started) return;
     started = YES;
@@ -607,6 +722,13 @@ void runtime_gamepad_start(void) {
     for (GCController *controller in GCController.controllers) attach_gamepad(controller);
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     hid_pad_start();
+#if TARGET_OS_IPHONE
+    [center addObserverForName:GCKeyboardDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
+                   usingBlock:^(NSNotification *notification) { attach_keyboard(notification.object); }];
+    [center addObserverForName:GCKeyboardDidDisconnectNotification object:nil queue:NSOperationQueue.mainQueue
+                   usingBlock:^(NSNotification *notification) { detach_keyboard(notification.object); }];
+    attach_keyboard(GCKeyboard.coalescedKeyboard);
+#endif
 }
 
 void runtime_gamepad_clear(void) {

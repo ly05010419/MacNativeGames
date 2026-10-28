@@ -53,5 +53,12 @@ class ButtonGuideTextures(unittest.TestCase):
             self.assertEqual(out[centre], 255, size)
 
 
+    def test_every_style_draws_every_hud_texture(self):
+        # redraw_hud takes each Nt_KeyTex* from the style's icons; a style without the stick icons (U+E052, U+E05E) stopped
+        # the tool with a KeyError before writing the mod (xbox, playstation, playstation-label)
+        for name, style in self.icons.STYLES.items():
+            missing = set(self.icons.HUD_TEXTURES.values()) - set(style(None))
+            self.assertFalse(missing, f'{name}: no icon for {", ".join(f"U+{cp:04X}" for cp in sorted(missing))}')
+
 if __name__ == '__main__':
     unittest.main()

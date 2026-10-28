@@ -26,6 +26,9 @@ It holds no game data, only identifiers; the build turns them into shaders from 
                                 (58 of the 58 a 5-minute route built in the world with the list, 2026-10-26).
                                 Flags t: the title screen's (the first frame waits for these only), m: the rest of the
                                 warm-up. Warm rows keep the order they were recorded in.
+  A 544-byte pipeline key is kept packed in the TOTK and BotW lists (pack_key): "<vertex variant>:<fragment variant>:<the
+  other 384 bytes in hex, each run of 4 or more zero bytes as z<count in hex>.>", about 280 characters instead of 1,088
+  (the TOTK list was 79 MB, 71 MB of it render pipeline keys, 2026-10-28). Rows read either form; exports write hex.
 
   shader_list.py merge [--title] <list> <source>...  add a translation cache folder (its *.variants: shaders only; a cache's
                                                      pso_collected.tsv holds every pipeline ever built, tens of thousands,
@@ -110,10 +113,43 @@ def pipeline_key(key):
     return b.hex()
 
 
+PACKED = re.compile(r'^([0-9a-f_-]{0,80}):([0-9a-f_-]{0,80}):((?:[0-9a-f]{2}|z[0-9a-f]+\.)*)$')
+ZERO_RUN = re.compile(rb'\0{4,}')
+
+
+def unpack_key(text):
+    """A pipeline key as hex: a packed one (pack_key) unpacked, anything else as it is."""
+    m = PACKED.match(text)
+    if not m:
+        return text
+    vs, fs, rest = m.groups()
+    key = (vs.encode().hex().ljust(2 * NAME, '0') + fs.encode().hex().ljust(2 * NAME, '0')
+           + re.sub(r'z([0-9a-f]+)\.', lambda z: '00' * int(z.group(1), 16), rest))
+    return key if len(key) == 2 * SKEY_SIZE else text
+
+
+def pack_key(key):
+    """A 544-byte pipeline key as the TOTK and BotW lists keep it; a key that would not unpack to itself stays hex."""
+    if len(key) != 2 * SKEY_SIZE or not PIPELINE.match(key):
+        return key
+    b = bytes.fromhex(key)
+    vs, fs = b[:NAME].rstrip(b'\0'), b[NAME:2 * NAME].rstrip(b'\0')
+    rest, at = [], 2 * NAME
+    for m in ZERO_RUN.finditer(b, at):
+        rest += [b[at:m.start()].hex(), f'z{m.end() - m.start():x}.']; at = m.end()
+    try:
+        text = f'{vs.decode()}:{fs.decode()}:' + ''.join(rest) + b[at:].hex()
+    except UnicodeDecodeError:
+        return key
+    return text if unpack_key(text) == key else key
+
+
 def warm_row(fields):
     """A warm row without flags ('S', variant, stage) / ('C', variant) / ('R', key) / ('B', key, vertex, fragment) /
-    ('T', key, tile), or None when it is not one."""
+    ('T', key, tile), or None when it is not one. Pipeline keys come back as hex, packed ones unpacked."""
     kind = fields[0] if fields else ''
+    if kind in ('R', 'B', 'T') and len(fields) >= 2:
+        fields = [kind, unpack_key(fields[1]), *fields[2:]]
     if kind == 'S' and len(fields) >= 3 and VARIANT.match(fields[1]) and fields[2] in ('0', '1', '5'):
         return tuple(fields[:3])
     if kind == 'C' and len(fields) >= 2 and VARIANT.match(fields[1]):
@@ -134,11 +170,15 @@ def list_name(path):
     return '/'.join(parts[-4:]) if len(parts) >= 4 and parts[-4] == 'games' and parts[-2] == 'assets' else Path(path).name
 
 
+def list_game(path):
+    """The game folder a list is kept in (games/<game>/assets/...), or None."""
+    parts = Path(path).resolve().parts
+    return parts[-3] if len(parts) >= 3 and parts[-2] == 'assets' else None
+
+
 def header_for(path):
     """The list's header comment: by the game folder it is kept in (games/<game>/assets/...), Tears of the Kingdom's otherwise."""
-    parts = Path(path).resolve().parts
-    game = parts[-3] if len(parts) >= 3 and parts[-2] == 'assets' else None
-    return HEADERS.get(game, HEADER)
+    return HEADERS.get(list_game(path), HEADER)
 
 
 class ShaderList:
@@ -180,7 +220,9 @@ class ShaderList:
     def save(self, path):
         lines = [f'V\t{key}\t{deps}' for key, deps in sorted(self.variants)]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
-        lines += ['\t'.join(row + (flags,)) for row, flags in self.warm.items()]
+        packed = list_game(path) in (None, 'totk', 'botw')   # other games' own tools read their lists as hex
+        lines += ['\t'.join((row[0], pack_key(row[1]), *row[2:]) if packed and row[0] in ('R', 'B', 'T') else row) + '\t' + flags
+                  for row, flags in self.warm.items()]
         Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
 
     def add_warm(self, row, flag):

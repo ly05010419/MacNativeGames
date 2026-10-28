@@ -467,6 +467,13 @@ static uint8_t hidReport[64];
 static BOOL hidJoyConRight; /* local: paired original Joy-Con uses the right IMU */
 static uint64_t hidLast;
 static BOOL hidUserCalibration;
+/* The IMU-on subcommand can be lost (a controller drops subcommands sent close together, and a Joy-Con a Switch has
+   used can keep its IMU off), and then every 0x30 report carries six zero axes -- which a working sensor never reads.
+   While that lasts it is sent again, every 2 s, at most HID_IMU_RETRIES times; the first nonzero sample ends it. */
+enum { HID_IMU_RETRIES = 5 };
+static uint64_t hidZeroSince, hidImuTriedAt;   /* main run loop; reset by hid_motion_start */
+static int hidImuRetries;
+static BOOL hidImuLive;
 static double hidAccScale[3] = {8.0 / 32768, 8.0 / 32768, 8.0 / 32768}, hidGyroScale[3] = {2000.0 / 32768, 2000.0 / 32768, 2000.0 / 32768}, hidGyroOrigin[3];
 static int16_t le16(const uint8_t *p) { return (int16_t)(p[0] | p[1] << 8); }
 /* Output report `id`: the packet counter, then `body` (0x01: rumble for both sides, subcommand, its argument; 0x10: rumble). */
@@ -531,6 +538,21 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         p[9] | (p[10] & 15) << 8, (p[10] >> 4) | p[11] << 4);
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
+    if (!hidImuLive) {
+        BOOL zero = YES;
+        for (int i = 13; i < 13 + 36 && zero; i++) zero = !p[i];
+        if (!zero) {
+            hidImuLive = YES;
+            if (hidImuRetries) fprintf(stderr, "[gyro] six-axis sensor on after %d resend%s of the IMU-on subcommand\n", hidImuRetries, hidImuRetries == 1 ? "" : "s");
+        } else if (!hidZeroSince) hidZeroSince = now;
+        else if (hidImuRetries < HID_IMU_RETRIES && now - hidZeroSince > 1000000000ull && now - hidImuTriedAt > 2000000000ull) {
+            hidImuTriedAt = now; ++hidImuRetries;
+            static const uint8_t imuOn[1] = {0x01};
+            hid_subcommand(0x40, imuOn, sizeof imuOn);
+            fprintf(stderr, "[gyro] six-axis sensor reads all zeros: IMU-on subcommand sent again (%d of %d)%s\n", hidImuRetries, HID_IMU_RETRIES,
+                    hidImuRetries == HID_IMU_RETRIES ? "; not sent again after this one" : "");
+        }
+    }
     for (int k = 0; k < 3; k++) {
         const uint8_t *s = p + 13 + 12 * k;
         double raw[6];
@@ -585,6 +607,7 @@ static void hid_motion_start(void) {   /* main queue */
         return;
     }
     hidMotion = YES; hidLast = 0; hidUserCalibration = NO;
+    hidZeroSince = hidImuTriedAt = 0; hidImuRetries = 0; hidImuLive = NO;
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
     runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
     fprintf(stderr, "[gyro] %s: reading the six-axis sensor from its HID reports (right Joy-Con for a paired set)\n", name);

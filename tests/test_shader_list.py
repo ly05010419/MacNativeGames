@@ -181,8 +181,9 @@ class ShaderList(unittest.TestCase):
             root = Path(folder); out = root/'list.tsv'
             (root/'pso_user.tsv').write_text(f'R\t{stale}\nR\t{other}\nR\t{clean}\nB\t{stale}\t-\t3:7:0x1p-1,0x1p-1,0x1p-1,0x1p-1;\n')
             self.run_tool('merge', out, root/'pso_user.tsv')
-            self.assertEqual(rows(out, 'R'), [f'R\t{clean}\tm'])
-            self.assertEqual([r.split('\t')[1] for r in rows(out, 'B')], [clean])
+            unpack = self.load_module().unpack_key
+            self.assertEqual([unpack(r.split('\t')[1]) for r in rows(out, 'R')], [clean])
+            self.assertEqual([unpack(r.split('\t')[1]) for r in rows(out, 'B')], [clean])
         self.assertEqual(self.load_module().pipeline_key(PIPELINE), PIPELINE)   # a key of another size stays
 
     def test_the_repository_lists_hold_normalised_pipeline_keys(self):
@@ -191,7 +192,33 @@ class ShaderList(unittest.TestCase):
             for line in rows(ROOT/f'games/{game}/assets/shader_list.tsv'):
                 f = line.split('\t')
                 if f[0] in ('R', 'B', 'T'):
-                    self.assertEqual(shader_list.pipeline_key(f[1]), f[1], game)
+                    key = shader_list.unpack_key(f[1])
+                    self.assertEqual(shader_list.pipeline_key(key), key, game)
+
+    def test_full_pipeline_keys_are_kept_packed_and_exported_as_hex(self):
+        import struct
+        shader_list = self.load_module()
+        b = bytearray(544); b[0:len(VARIANT)] = VARIANT.encode(); b[80:80+len(VARIANT)] = VARIANT.encode()
+        struct.pack_into('<8I', b, 216, 70, 0x10, 0, 0, 0, 0, 0, 0); b[400:404] = bytes([1, 0, 0, 0x10]); b[543] = 9
+        key = b.hex()
+        packed = shader_list.pack_key(key)
+        self.assertLess(len(packed), len(key) // 3)
+        self.assertEqual(shader_list.unpack_key(packed), key)
+        self.assertEqual(shader_list.pack_key(PIPELINE), PIPELINE)   # a key of another size stays hex
+        self.assertEqual(shader_list.unpack_key(packed[:-3]), packed[:-3])   # a damaged one does not unpack to a short key
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); out = root/'list.tsv'
+            (root/'pso_user.tsv').write_text(f'R\t{key}\nT\t{key}\t5:3;\n')
+            self.run_tool('merge', out, root/'pso_user.tsv')
+            self.assertEqual(rows(out, 'R'), [f'R\t{packed}\tm'])
+            self.assertEqual(rows(out, 'T'), [f'T\t{packed}\t5:3;\tm'])
+            self.run_tool('merge', root/'again.tsv', out)   # a packed list reads back as the same rows
+            self.assertEqual(rows(root/'again.tsv'), rows(out))
+            self.run_tool('export', out, root/'one.tsv')
+            self.assertEqual(rows(root/'one.tsv'), [f'R\t{key}', f'T\t{key}\t5:3;'])
+            other = root/'games/odyssey/assets/shader_list.tsv'; other.parent.mkdir(parents=True)
+            self.run_tool('merge', other, root/'pso_user.tsv')   # other games' own tools read hex
+            self.assertEqual(rows(other, 'R'), [f'R\t{key}\tm'])
 
 
 if __name__ == '__main__':

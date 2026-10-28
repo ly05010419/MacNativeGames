@@ -21,17 +21,29 @@
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeGamepadState gamepadState;
 static uint64_t pressedEdges;
+static RuntimeGamepadState textPad;
+static uint64_t textEdges;
+static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait for release, 0 game */
 static BOOL started;
+static _Atomic int settingsShortcutEnabled;
+static int settingsShortcutDown, settingsShortcutPending;
+/* The chord opens the settings panel only once it has been held for a second (user 2026-10-27): L2 + R2 + L3 is also
+   ZL + ZR + L3 in the game, pressed together for a moment while sneaking with the bow. Held still, the controller sends
+   no events, so the panel's 60 Hz timer (runtime_gamepad_settings_requested) decides when the second is up. */
+#define SETTINGS_HOLD_NS 1000000000ULL
+static uint64_t settingsChordSince;
+static int settingsChordFired;
+#define SETTINGS_CHORD ((1ull << 8) | (1ull << 9) | (1ull << 4))
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
 static uint64_t physicalPrev;
 static uint64_t tapUntil[CONTROLLER_BUTTONS];   /* ns, for tap */
 static int toggleOn[CONTROLLER_BUTTONS];        /* for toggle */
 static int toggleMoved[CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
-static __weak GCController *rawLeftController;
-static SwitchLeftFallback rawLeft;
-static uint64_t gamepadRawLeftAt;
-static int32_t gamepadNativeLx, gamepadNativeLy;
+static __weak GCController *rawLeftController, *rawRightController;
+static SwitchLeftFallback rawLeft, rawRight;
+static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
+static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
 static void refresh_gamepads(void);
 
 /* Called on the main run loop by the already-open Switch HID motion stream. */
@@ -40,6 +52,13 @@ void runtime_gamepad_switch_left(void *source, int x, int y) {
     if (rawLeftController != controller) rawLeft = (SwitchLeftFallback){0};
     rawLeftController = controller;
     switch_left_feed(&rawLeft, x, y, runtime_now_ns());
+    refresh_gamepads();
+}
+void runtime_gamepad_switch_right(void *source, int x, int y) {
+    GCController *controller = (__bridge GCController *)source;
+    if (rawRightController != controller) rawRight = (SwitchLeftFallback){0};
+    rawRightController = controller;
+    switch_left_feed(&rawRight, x, y, runtime_now_ns());
     refresh_gamepads();
 }
 
@@ -105,7 +124,16 @@ static void setting_write(const char *name, const char *word, const char *what) 
     if (!ok) { fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path); unlink(temp); }
 }
 
-/* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), key 6 on the Mac, in controller-type.txt. */
+/* The same one-word files for the rest of the runtime: 1 with the file's text in word as written (the caller drops the
+   blanks around the word), 0 when there is no such file or no settings folder (a run without TOTK_CONTROLS). */
+int runtime_setting_word(const char *name, char *word, size_t size) {
+    char path[4096];
+    return setting_read(name, word, size, path, sizeof path);
+}
+/* ... and saves one, as controller-type.txt is saved (the settings panel's controller rows). */
+void runtime_setting_save(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
+
+/* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, in controller-type.txt. */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;
 
 static void load_controller_type(void) {
@@ -131,6 +159,9 @@ static uint64_t gamepad_buttons(GCExtendedGamepad *pad, int by_position) {
     if (pad.rightThumbstickButton.isPressed) buttons |= 1ULL << 5;
     if (pad.leftShoulder.isPressed) buttons |= 1ULL << 6;
     if (pad.rightShoulder.isPressed) buttons |= 1ULL << 7;
+    /* ZL / ZR: GameController counts a DualSense trigger as pressed from its first step of travel (value > 0, 1/255) and
+       released at 0, with no chatter in between and nothing from a finger resting on it (measured over Bluetooth on macOS
+       27.2, 2026-10-27), so a threshold of our own could only make the bow draw later. */
     if (pad.leftTrigger.isPressed) buttons |= 1ULL << 8;
     if (pad.rightTrigger.isPressed) buttons |= 1ULL << 9;
     if (pad.buttonMenu.isPressed) buttons |= 1ULL << 10;
@@ -322,7 +353,7 @@ static HIDPadState hidPad;
 static void hid_pad_start(void) {}
 #endif
 
-/* ---- Mouse mode (Mac, key 7; in mouse.txt) ----
+/* ---- Mouse mode (Mac, the settings panel; in mouse.txt) ----
    The window (runtime/frontend.m) holds the pointer while mouse mode is on and the window has the keyboard, and sends
    the mouse's buttons and movement here. Buttons are physical buttons 17-21 of the controller layout (controller_map.h:
    left attack, right draw the bow with left to shoot, middle target), so controls.txt can change them. Movement goes to
@@ -391,9 +422,10 @@ static void load_mouse_mode(void) {
 int runtime_mouse_enabled(void) { return atomic_load(&mouseMode); }
 void runtime_mouse_set_hook(void (*hook)(void)) { mouseHook = hook; }
 
-/* Key 7 (runtime/input.c). */
-int runtime_mouse_toggle(void) {
-    int on = !atomic_load(&mouseMode);
+/* The settings panel (key 1, frontend.m). */
+int runtime_mouse_set(int on) {
+    on = !!on;
+    if (on == atomic_load(&mouseMode)) return on;
     atomic_store(&mouseMode, on);
     setting_write("mouse.txt", on ? "on" : "off", "mouse mode");
     if (!on) dispatch_async(dispatch_get_main_queue(), ^{ runtime_mouse_release(); });
@@ -426,8 +458,8 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
 static void refresh_gamepads(void) {
     RuntimeGamepadState next = {0};
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
-    int32_t nativeLx = 0, nativeLy = 0;
-    uint64_t rawAt = 0;
+    int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
+    uint64_t rawAt = 0, rawRightAt = 0;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
@@ -445,8 +477,18 @@ static void refresh_gamepads(void) {
         }
         next.lx = stronger_axis(next.lx, stick_axis(lx));
         next.ly = stronger_axis(next.ly, stick_axis(ly));
-        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value));
-        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value));
+        float rx = pad.rightThumbstick.xAxis.value, ry = pad.rightThumbstick.yAxis.value;
+        nativeRx = stronger_axis(nativeRx, stick_axis(rx));
+        nativeRy = stronger_axis(nativeRy, stick_axis(ry));
+        int rightWasActive = rawRight.active;
+        float rawRX, rawRY;
+        if (controller == rawRightController && switch_left_get(&rawRight, rx, ry, runtime_now_ns(), &rawRX, &rawRY)) {
+            rx = rawRX; ry = rawRY;
+            rawRightAt = rawRight.at;
+            if (!rightWasActive) fprintf(stderr, "[totk-input] Switch right stick: native axes stuck at zero; using live HID input\n");
+        }
+        next.rx = stronger_axis(next.rx, stick_axis(rx));
+        next.ry = stronger_axis(next.ry, stick_axis(ry));
     }
     if (hidPad.present) {
         next.connected = 1;
@@ -464,13 +506,13 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
         uint64_t bit = 1ULL << i;
         int kind = controller_mode_kind(controllerModes[i]);
-        if (kind == CONTROLLER_TAP && (edges & bit)) {
+        if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && kind == CONTROLLER_TAP && (edges & bit)) {
             tapUntil[i] = now + 400000000ULL;
             /* Release the pulse even if the controller sends no further event. */
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
         }
         if (kind == CONTROLLER_TOGGLE) {
-            if (edges & bit) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
+            if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
             if (toggleOn[i] && moving) toggleMoved[i] = 1;
             /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
                waits for the first move, and attacking while running does not stop it. */
@@ -490,10 +532,15 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
     pthread_mutex_lock(&gamepadLock);
+    int chord = settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD;
+    if (chord && !settingsShortcutDown) { settingsChordSince = now; settingsChordFired = 0; }   /* the game keeps it until the second is up */
+    settingsShortcutDown = chord;
+    textEdges |= (physical & 0x1ffffu) & ~textPad.buttons;
+    textPad = next; textPad.buttons = physical & 0x1ffffu;
     pressedEdges |= next.buttons & ~gamepadState.buttons;
     gamepadState = next;
-    gamepadRawLeftAt = rawAt;
-    gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy;
+    gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
+    gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
     pthread_mutex_unlock(&gamepadLock);
 }
 
@@ -511,12 +558,13 @@ static void attach_gamepad(GCController *controller) {
     refresh_gamepads();
 }
 
-/* Key 6 (runtime/input.c): the next type (auto -> Xbox -> PlayStation -> Switch); the held buttons are read again at once. */
-int runtime_gamepad_type_cycle(void) {
-    int type = gamepad_type_next(atomic_load(&controllerType));
+/* The settings panel (key 1, frontend.m): auto, Xbox, PlayStation or Switch; the held buttons are read again at once. */
+int runtime_gamepad_type_set(int type) {
+    if (type < GAMEPAD_TYPE_AUTO || type >= GAMEPAD_TYPE_COUNT) return atomic_load(&controllerType);
+    if (type == atomic_load(&controllerType)) return type;
     atomic_store(&controllerType, type);
     save_controller_type(type);
-    fprintf(stderr, "[totk-input] controller type: %s (key 6)\n", gamepad_type_name(type));
+    fprintf(stderr, "[totk-input] controller type: %s (settings)\n", gamepad_type_name(type));
     dispatch_async(dispatch_get_main_queue(), ^{
         for (GCController *controller in GCController.controllers)
             if (controller.extendedGamepad)
@@ -569,9 +617,10 @@ void runtime_gamepad_clear(void) {
     memset(toggleMoved, 0, sizeof toggleMoved);
     pthread_mutex_lock(&gamepadLock);
     gamepadState = (RuntimeGamepadState){0};
-    gamepadRawLeftAt = 0;
+    gamepadRawLeftAt = 0; gamepadRawRightAt = 0;
     gamepadNativeLx = gamepadNativeLy = 0;
-    pressedEdges = 0;
+    pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
+    settingsShortcutDown = settingsShortcutPending = 0;
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
@@ -587,11 +636,60 @@ void runtime_touch_pad_set(const RuntimeGamepadState *s) {
     pthread_mutex_unlock(&gamepadLock);
 }
 
+void runtime_gamepad_settings_enable(int enabled) {
+    pthread_mutex_lock(&gamepadLock);
+    settingsShortcutEnabled = !!enabled;
+    settingsShortcutPending = 0;
+    settingsShortcutDown = (textPad.buttons & SETTINGS_CHORD) == SETTINGS_CHORD;
+    settingsChordSince = runtime_now_ns(); settingsChordFired = 0;   /* a chord held through this counts from now */
+    pthread_mutex_unlock(&gamepadLock);
+}
+int runtime_gamepad_settings_requested(void) {
+    pthread_mutex_lock(&gamepadLock);
+    int requested = settingsShortcutPending; settingsShortcutPending = 0;
+    uint64_t now = runtime_now_ns();
+    if (settingsShortcutEnabled && settingsShortcutDown && !settingsChordFired && now >= settingsChordSince && now - settingsChordSince >= SETTINGS_HOLD_NS) {
+        settingsChordFired = requested = 1;
+        if (!textCapture) textCapture = 2;   /* from here the game no longer gets the chord, until it is released */
+    }
+    pthread_mutex_unlock(&gamepadLock);
+    return requested;
+}
+void runtime_gamepad_text_capture(int on) {
+    pthread_mutex_lock(&gamepadLock);
+    textCapture = on ? 1 : 2;
+    textEdges = pressedEdges = 0;
+    pthread_mutex_unlock(&gamepadLock);
+    /* UI actions must not start persistent gameplay tap/toggle bindings. */
+    memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn);
+    memset(toggleMoved, 0, sizeof toggleMoved);
+    refresh_gamepads();
+}
+int runtime_gamepad_game_input(void) { return !atomic_load(&textCapture); }   /* the bow thread (gamepad_feedback.m) */
+/* Keep the Switch HID fallback's expiry identical for the UI and the game. gamepadLock held. */
+static RuntimeGamepadState text_state_locked(void) {
+    RuntimeGamepadState state = textPad;
+    if (gamepadRawLeftAt && runtime_now_ns() - gamepadRawLeftAt > 250000000ULL) {
+        state.lx = gamepadNativeLx; state.ly = gamepadNativeLy;
+    }
+    if (gamepadRawRightAt && runtime_now_ns() - gamepadRawRightAt > 250000000ULL) {   /* the right stick's HID fallback too (after PR #844) */
+        state.rx = gamepadNativeRx; state.ry = gamepadNativeRy;
+    }
+    return state;
+}
+void runtime_gamepad_text_read(RuntimeGamepadState *out) {
+    pthread_mutex_lock(&gamepadLock);
+    *out = text_state_locked(); out->buttons |= textEdges; textEdges = 0;
+    pthread_mutex_unlock(&gamepadLock);
+}
 void runtime_gamepad_read(RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
     *out = gamepadState;
     if (gamepadRawLeftAt && runtime_now_ns() - gamepadRawLeftAt > 250000000ULL) {
         out->lx = gamepadNativeLx; out->ly = gamepadNativeLy;
+    }
+    if (gamepadRawRightAt && runtime_now_ns() - gamepadRawRightAt > 250000000ULL) {   /* the HID reports stopped: GameController's right stick */
+        out->rx = gamepadNativeRx; out->ry = gamepadNativeRy;
     }
     out->buttons |= touchState.buttons | pressedEdges;
     out->lx = stronger_axis(out->lx, touchState.lx); out->ly = stronger_axis(out->ly, touchState.ly);
@@ -599,5 +697,11 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
     out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
     if (touchState.connected) out->connected = 1;
     pressedEdges = 0;
+    if (textCapture) {
+        RuntimeGamepadState held = text_state_locked();
+        if (textCapture == 2 && !held.buttons && !held.lx && !held.ly && !held.rx && !held.ry)
+            textCapture = 0;
+        *out = (RuntimeGamepadState){.connected = out->connected};
+    }
     pthread_mutex_unlock(&gamepadLock);
 }

@@ -1459,6 +1459,17 @@ def source_commit():
     return result.stdout.strip() if result.returncode == 0 else ''
 
 
+def source_revision():
+    """The full hash of the commit this checkout is on (Info.plist MNGSourceRevision: app/update_check.h compares it
+    against GitHub main to offer updates), or '' outside a git checkout. Identifies the source baseline, not the
+    Nintendo game version; local patches may also be present."""
+    try:
+        revision = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ''  # Source archives without Git metadata simply do not check for updates.
+    return revision if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision) else ''
+
+
 def write_main_build_id(nso, target):
     if not nso.is_file():
         return
@@ -1516,13 +1527,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
-    # Identify the source baseline, not the Nintendo game version; local patches may also be present.
-    try:
-        revision = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
-        if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision):
-            info['MNGSourceRevision'] = revision
-    except (OSError, subprocess.CalledProcessError):
-        pass  # Source archives without Git metadata simply do not check for updates.
+    revision = source_revision()
+    if revision:
+        info['MNGSourceRevision'] = revision
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
@@ -2059,7 +2066,8 @@ def main(argv):
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs, version=version)
-        step_shader_libs(tree, logs, version=version)
+        if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own (6 of a 21-minute iPhone build, 2026-10-28)
+            step_shader_libs(tree, logs, version=version)
         # The work folder's copy of games/botw (prepare_work), relative: make splits a path with spaces into several targets
         step_binary(tree, game, keys, {**env, 'SHADER_LIST': '../botw/assets/shader_list.tsv'}, logs, version=version, title='01007ef00011e000')
         say(f'4/4 app: assembling {out}')
@@ -2122,7 +2130,8 @@ def main(argv):
     if mod:
         check_mod_overlays(tree, mod, version)
     step_shaders(tree, logs, version=version)
-    step_shader_libs(tree, logs, version=version)
+    if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own
+        step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
     if device_app:

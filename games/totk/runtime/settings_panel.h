@@ -29,6 +29,9 @@
                                                              switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
                                                              out); a device the run started without comes at the next
                                                              launch (its title says so)
+     mouse sensitivity    a number box, 1-100 (50)           runtime_mouse_sensitivity_set (gamepad.m), saved in
+                                                             mouse-sensitivity.txt; TOTK_MOUSE_SENSITIVITY decides first
+                                                             (greyed out)
    Below the rows two buttons (user 2026-10-25): contribute the shaders and pipelines the shared list lacks (sent with gh
    in the background when it is signed in, as the launcher's reminder does; else the GitHub form opens and Finder shows the
    file), and star the project (its GitHub page). A setting this game or start cannot change shows its one value, greyed out. While the panel is open the game gets no
@@ -122,9 +125,11 @@ static void settings_restore_start(void) {
 }
 
 static void settings_refresh_all(void);
-@interface TOTKSettingRow:NSObject
+@interface TOTKSettingRow:NSObject<NSTextFieldDelegate>
 @property(copy) NSString *title;
-@property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch */
+@property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch, or a number box when hi is set */
+@property int lo, hi;                            /* a number box's range */
+@property BOOL leaving;                          /* the box is giving the keys back, which ends its editing once more */
 @property(copy) NSArray<NSNumber *> *values;    /* what each choice sets */
 @property(copy) int (^get)(void);
 @property(copy) void (^set)(int value);
@@ -135,13 +140,26 @@ static void settings_refresh_all(void);
 @end
 @implementation TOTKSettingRow
 -(void)changed:(id)sender{
+ if(self.hi){   /* a number box: Return or leaving it; text that is not a number in range puts the value in force back */
+  NSString *text=[((NSTextField *)sender).stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  NSInteger v=text.integerValue;
+  if(self.set&&text.length&&[text isEqualToString:@(v).stringValue]&&v>=self.lo&&v<=self.hi)self.set((int)v);
+  if(self.control.currentEditor&&!self.leaving){self.leaving=YES;[self.control.window makeFirstResponder:self.control.window.contentView];self.leaving=NO;}
+  settings_refresh_all();return;
+ }
  int v=[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
  [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
+/* Esc in the number box drops the typing and gives the keys back to the window (a second Esc closes the panel). */
+-(BOOL)control:(NSControl *)c textView:(NSTextView *)t doCommandBySelector:(SEL)command{
+ (void)t;if(command!=@selector(cancelOperation:))return NO;
+ c.stringValue=@(self.get?self.get():0).stringValue;self.leaving=YES;[c.window makeFirstResponder:c.window.contentView];self.leaving=NO;return YES;
+}
 -(void)refresh{
  int v=self.get?self.get():0;
+ if(self.hi){if(!self.control.currentEditor)((NSTextField *)self.control).stringValue=@(v).stringValue;return;}   /* not while typing */
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
  NSPopUpButton *p=(NSPopUpButton *)self.control;
  if(self.firstTitle&&p.numberOfItems){NSString *t=self.firstTitle();if(![[p itemAtIndex:0].title isEqualToString:t])[p itemAtIndex:0].title=t;}
@@ -154,6 +172,10 @@ static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_U
 static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                     int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
+}
+/* A number from lo to hi, typed in a box. */
+static TOTKSettingRow *settings_number(NSString *title, int lo, int hi, int (^get)(void), void (^set)(int)) {
+ TOTKSettingRow *r=settings_row(title,nil,nil,get,set);r.lo=lo;r.hi=hi;return r;
 }
 /* A setting this game or start cannot change: its one value, greyed out. */
 static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
@@ -187,6 +209,12 @@ static TOTKSettingRow *settings_gain_row(void) {
  if(![values containsObject:@(now)]){[values addObject:@(now)];[values sortUsingSelector:@selector(compare:)];}
  NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
  return settings_row(t,choices,values,^int{return settings_gain_now();},^(int v){runtime_rumble_gain_set(v/1000.0f);});
+}
+/* Mouse sensitivity, 1 to 100 typed in a box (50 the default). */
+static TOTKSettingRow *settings_sensitivity_row(void) {
+ NSString *t=settings_text("鼠标灵敏度（1–100，默认 50）","Mouse sensitivity (1–100, default 50)");
+ if(runtime_mouse_sensitivity_locked())return settings_fixed(t,@(runtime_mouse_sensitivity()).stringValue);
+ return settings_number(t,1,100,^int{return runtime_mouse_sensitivity();},^(int v){runtime_mouse_sensitivity_set(v);});
 }
 /* Auto's text: the type it takes the connected controller for (runtime/gamepad.m). */
 static NSString *settings_pad_auto_text(void) {
@@ -256,6 +284,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ [rows addObject:settings_sensitivity_row()];
  return rows;
 }
 
@@ -282,10 +311,11 @@ static NSPoint g_settings_at = {-1, -1};
 enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 54, SETTINGS_BOTTOM = 86, SETTINGS_POP_W = 260 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
- /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
-    screen), so its title, close button and first rows stay in view. */
+ /* The rows close up (down to 22 pt, 2 pt apart: a 26 pt menu's frame then reaches 2 pt past its row, into the gap, while its
+    drawn bezel stays inside) when the panel would not fit the window (21:9 or 32:9 on a laptop screen: 1728x486 points on a
+    16-inch MacBook Pro holds fourteen rows at 22 pt, not at 24), so it stays whole in view. */
  CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
- if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
+ if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(22,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
  CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM;
  if(!(self=[super initWithFrame:NSMakeRect(0,0,SETTINGS_W,h)]))return nil;
  self.rows=rows;self.controllerTargets=[NSMutableArray array];self.controllerIndex=0;self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
@@ -301,11 +331,13 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
   NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
   band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[self addSubview:band];
   NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
-  label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-SETTINGS_POP_W-24,18);[band addSubview:label];
-  if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
+  label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),r.hi?rw-100:rw-SETTINGS_POP_W-24,18);[band addSubview:label];
+  if(r.hi){NSTextField *f=[NSTextField textFieldWithString:@""];f.alignment=NSTextAlignmentRight;f.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
+   f.frame=NSMakeRect(rw-12-64,floor((rowH-22)/2),64,22);f.delegate=r;((NSTextFieldCell *)f.cell).sendsActionOnEndEditing=YES;r.control=f;}
+  else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
   else{NSPopUpButton *p=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[p addItemsWithTitles:r.choices];
    p.enabled=r.set!=nil;r.control=p;}
-  r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];[self.controllerTargets addObject:band];
+  r.control.refusesFirstResponder=!r.hi;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];[self.controllerTargets addObject:band];
  }
  CGFloat bw=(SETTINGS_W-28-10)/2;
  NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
@@ -358,6 +390,10 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
   NSPopUpButton *p=(NSPopUpButton *)r.control;NSInteger n=p.numberOfItems;if(n<2)return;
   NSInteger index=p.indexOfSelectedItem;if(index<0)index=0;
   [p selectItemAtIndex:(index+step+n)%n];
+ }else if(r.hi){
+  if(select)return;   /* typed with the keyboard; the controller steps it */
+  int v=(r.get?r.get():r.lo)+step;if(v<r.lo||v>r.hi)return;
+  ((NSTextField *)r.control).stringValue=@(v).stringValue;
  }else{
   NSSwitch *s=(NSSwitch *)r.control;
   s.state=select?(s.state==NSControlStateValueOn?NSControlStateValueOff:NSControlStateValueOn):(step>0?NSControlStateValueOn:NSControlStateValueOff);

@@ -272,6 +272,19 @@ def keyboard_style(g, layout=None):
     }
 
 
+def stick(g, label, up=False, advance=640):
+    """The left stick as a controller's own label in a circle (L3 on a DualSense, LS on an Xbox pad); up: with an arrow up,
+    the button guide's "push it forward" (Nt_KeyTexLSt_00, U+E052). The Xbox and PlayStation styles need these too: the
+    HUD redraw takes every texture of HUD_TEXTURES from the style."""
+    def draw(pen):
+        cx = advance / 2; circle(pen, cx, CY, R)
+        if up:
+            g.hole(pen, label, cx, CY - R * 0.25, R * 0.55, R * 1.1); arrow_hole(pen, '↑', cx, CY + R * 0.5, R * 0.6)
+        else:
+            g.hole(pen, label, cx, CY, R * 0.95, R * 1.3)
+    return advance, draw
+
+
 def xbox_style(g):
     def face(letter, advance=640):
         def draw(pen):
@@ -317,6 +330,7 @@ def xbox_style(g):
         0xE04B: menu(), 0xE04C: view(),
         0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
         0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
+        0xE052: stick(g, 'LS', up=True), 0xE05E: stick(g, 'LS'),
     }
 
 
@@ -377,6 +391,7 @@ def playstation_style(g, by_label=False):
         0xE040: face(a), 0xE041: face(b), 0xE042: face(x), 0xE043: face(y),
         0xE044: bumper('L1'), 0xE045: bumper('R1'), 0xE046: trigger('L2'), 0xE047: trigger('R2'),
         0xE04B: options(), 0xE04C: create(),
+        0xE052: stick(g, 'L3', up=True), 0xE05E: stick(g, 'L3'),
     }
     for cp in (0xE049, 0xE060, 0xE061, 0xE062, 0xE063, 0xE064, 0xE065):   # the d-pad is drawn as for Xbox
         icons[cp] = dpad_style[cp]

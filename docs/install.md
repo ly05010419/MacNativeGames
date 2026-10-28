@@ -44,6 +44,32 @@ A Tears of the Kingdom XCI carries the fonts itself.
 
 The work folder is created next to the game file (`TOTK_build`, or `BotW_build` for Breath of the Wild). Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
 
+## Build with a window
+
+Rather not type the command? With the tools of step 1 below installed, double-click **Build Game.command** in this folder (or run `python3.14 -m tools.builder`). A window opens: choose the game, then your game file, update, `prod.keys` and, when the game needs them, a firmware or shared-fonts folder (the work folder and the output app are under **Advanced**). **Check files** checks this Mac and your files and shows each problem, with the exact command that fixes it when there is one. **Build app** then runs `build_app.py` with those paths, and shows its four stages, the elapsed time and the log. When it is done, **Open app** and **Show in Finder** are one click away. Nothing is copied: the window saves the paths you chose, and the game, version, app and commit of the last successful build, in `~/Library/Application Support/MacNativeGames/Builder/settings.json`. Each run's output is also saved as `~/Library/Logs/MacNativeGames/builder-<game>-<date>-<time>.log`.
+
+**Cancel** sends the build and everything it started an interrupt (SIGINT), then SIGKILL if it is still running 10 seconds later. The window then says how the build ended and whether that matches the signal it sent; it never claims more. Build again with the same work folder to go on: what was already done is reused. Closing the window or quitting it during a build asks first, cancels, and closes once the build has stopped; closing the Terminal window that opens with it cancels the build the same way, so keep it open while it builds.
+
+**Your own picture:** the builder ships no image. Under **Details**, **Choose picture...** puts a picture of yours (PNG, JPEG, HEIC, GIF or TIFF) beside the form; **Left**, **Center** and **Right** pick the part it shows, and **Remove** takes it away. A copy is kept in `~/Library/Application Support/MacNativeGames/Builder/`, so the original can move.
+
+**Settings tab:** for an app built from Tears of the Kingdom 1.4.3 or Breath of the Wild 1.9.0, the game starts with its automatic settings unless you choose otherwise here: picture at start (MetalFX 2K, native 2K where the version has it), frame interpolation (offered only when this Mac's GPU has Metal 4 MetalFX frame interpolation), edge smoothing, sharper ground at a distance and, on 1.4.3, the picture shape. **Play** starts the game. The picture, frame interpolation, edge smoothing and picture shape are the game's own settings, the ones its settings panel (key 1) keeps beside `controls.txt`: they hold for a start from Finder too, and changing them in either place changes both. Only the sharper ground at a distance, which the panel does not have, holds just when the game is started with **Play**. Settings are not changed while the game is running: close it first.
+
+**Mods tab:** for Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0, **Add mod...** takes a mod folder of yours (with `romfs/`, and for Tears of the Kingdom `exefs/` for code patches; Breath of the Wild's code patches are not used); the builder ships no mod. Mod manager packages (TKMM's `.tkcl`, BCML's `.bnp`) are refused: install them with their manager, or use a RomFS version. A mod made for Breath of the Wild 1.6.0 may install but still not work on 1.9.0: try it in the game. Each one is checked against your built app: its paths must fit this version and it must replace a file of the game; only then can it be switched on (that does not test it in play). Files another mod also replaces, files the app replaces itself and code patches (which need a build with `--mod`) are listed under the mod. **Apply mods** puts the mods that are on, in order (the lower one wins), into the game's mod folder through the repository's own installer, which writes the manifest and keeps the previous folder as a backup; the game loads them at its next start, from Finder or Play. Your own backups are never removed unless you ask.
+
+**Updates:** in a `git clone`, the window checks when it opens whether MacNativeGames has new commits on its `main`, and lists them. It looks only at the remote whose URL is github.com/ly05010419/MacNativeGames (in a fork, usually `upstream`): other remotes, such as your fork, are never fetched. On `main`, **Update** then fetches and fast-forwards it: it never merges, rebases or discards anything, and when files were changed here or `main` has commits of its own it says so and leaves the update to you. On any other branch it only says how many commits are waiting, to merge by hand. After an update, close and reopen the builder and build again; your saved paths, and the saves of the game, stay where they are. A ZIP download cannot update itself: download the new version.
+
+The window needs Tk (`brew install python-tk@3.14`); without it, **Build Game.command** says so. The same checks and build run in Terminal too:
+
+```sh
+python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
+```
+
+`--dry-run` prints the exact `build_app.py` command instead, and without either it asks before building (`--yes` does not ask). `python3.14 -m tools.builder --help` lists every option.
+
+**The first double-click after downloading the ZIP:** macOS blocks a downloaded script it has not opened before. Open **System Settings › Privacy & Security** and click **Open Anyway** for `Build Game.command`, or run `xattr -d com.apple.quarantine "Build Game.command"` in this folder once. A `git clone` is not affected. The builder never removes the quarantine itself.
+
+How the builder is made, for anyone changing it (people or AI assistants): [builder.md](builder.md).
+
 ## Build the app
 
 **1. Tools** (once). An internet connection is needed:
@@ -52,6 +78,7 @@ The work folder is created next to the game file (`TOTK_build`, or `BotW_build` 
 xcode-select --install
 # Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
 brew install opus libvpx python@3.14
+brew install python-tk@3.14   # only for the builder window (Build with a window, above)
 ```
 
 Instead of Homebrew's Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
@@ -131,6 +158,7 @@ python3.14 games/totk/ios/tools/install_device.py "<folder>/Tears of the Kingdom
 ```
 
 - `<version>` is the folder that is there (`v143` for 1.4.3; `ls "<work folder>/totk/extracted"`). The first install copies the 17 GB image once.
+- The script stops when the iPhone or iPad is connected over Wi-Fi only: plug in the cable, unlock the device and run it again. `--wifi` installs over Wi-Fi anyway; it is slow, and the game data copy can drop.
 - A free Apple ID signs for 7 days, a paid one for a year. Run the same command again to renew; your saves are kept.
 - If the device asks, trust the developer in Settings › General › VPN & Device Management.
 

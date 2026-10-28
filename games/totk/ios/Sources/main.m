@@ -373,6 +373,11 @@ static void audio_observe(void) {
         id saved = [NSUserDefaults.standardUserDefaults objectForKey:key];
         if (saved && ![saved boolValue]) setenv(key.UTF8String, "0", 0);
     }
+    /* Settings › Use a hardware keyboard (on by default) and Keep touch with a keyboard (off by default): gamepad.m and
+       touch_pad.m read TOTK_KEYBOARD ("0" off) and TOTK_TOUCH_WITH_KEYBOARD ("1" on) (after PR #431). */
+    id keyboard = [NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_KEYBOARD"];
+    if (keyboard && ![keyboard boolValue]) setenv("TOTK_KEYBOARD", "0", 0);
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_TOUCH_WITH_KEYBOARD"]) setenv("TOTK_TOUCH_WITH_KEYBOARD", "1", 0);
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
     host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");

@@ -16,7 +16,10 @@
    enough for the aim to creep; a DualSense through GameController needs none.
    Mouse mode (Mac, key 7: runtime/gamepad.m, runtime/mouse_look.h): the mouse takes the sensor over. Its samples come in
    this frame already (runtime_motion_feed_mouse: no TOTK_GYRO_AXES remap, no dead zone), the controller's are dropped
-   meanwhile, and with mouse mode off the controller has it back (from a fresh start).
+   meanwhile, and with mouse mode off the controller has it back (from a fresh start). The mouse's rate has no bias, so
+   there is no gravity pull (2026-10-28): its ticks come late now and then and its own pitch (10 ms a tick) parts a
+   little from the one integrated here, which the pull then crept the aim up or down for seconds after the mouse stopped.
+   The gravity reported is the integrated orientation's down instead, so the game sees the two agree.
    States on the console's 5 ms clock (2026-10-22, from the Breath of the Wild branch, 2026-10-19): the console's sensor
    hands the game a state every 5 ms; a Mac controller's samples come in bursts (the 8BitDo Pro Controller: three samples
    per HID report, 33 reports a second; GameController: 33 samples a second; the mouse: one per 10 ms tick). Breath of
@@ -83,7 +86,7 @@ static void align_to(const double acc[3]) {
 }
 static void integrate(const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
-    if (fabs(n - 1) < 0.15) {   /* not being accelerated: turn the estimated down toward the measured one */
+    if (!mouse_owns && fabs(n - 1) < 0.15) {   /* not being accelerated: turn the estimated down toward the measured one */
         const double kp = 0.5;
         double measured[3] = {acc[0] / n, acc[1] / n, acc[2] / n}, estimated[3] = {-R[2][0], -R[2][1], -R[2][2]}, e[3];
         cross3(measured, estimated, e);
@@ -115,7 +118,7 @@ static void push_state(double step) {
     *s = (RuntimeMotionState){.sampling = produced + 1, .delta_ns = (uint64_t)(step * 1e9)};
     for (int i = 0; i < 3; i++) {
         double rps = cur_gyro[i] / (2 * M_PI); angle[i] += rps * step;
-        s->acc[i] = (float)cur_acc[i]; s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
+        s->acc[i] = (float)(mouse_owns ? -R[2][i] : cur_acc[i]); s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
         for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
     }
     produced++;

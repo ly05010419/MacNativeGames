@@ -1,0 +1,7 @@
+# Locked binary-only shader compiler tooling
+
+`dmsh_xlate/` contains only the 12 required files from nxnative's `dm/gfx/tools/dmsh_xlate_bin` at commit `7861e7c1a9913e020600b1cc7f65132427e9cc50`: the apphost, runtime/dependency metadata and required DLLs. Retained files are byte-identical; `.pdb` files and Humanizer satellite resource DLLs are removed. `SHA256SUMS` covers the exact retained file set, verified before staging. Existing workspaces have obsolete translator sources/binaries pruned before staging.
+
+This is a framework-dependent .NET 10 **shader translator**, not translated game shaders. It is build tooling and is never bundled in the generated game app. Its source is deliberately **not duplicated in this target**. The source and dependency provenance is the pinned [nxnative tree](https://github.com/seedds/nxnative/tree/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/gfx/tools/dmsh_xlate), including its shader-only Ryujinx subset. Required license texts and the upstream modification record are in [third-party notices](../../THIRD_PARTY_NOTICES.md).
+
+`runtime/gfx/tools/dmsh_chain.lock` pins the translator DLL fingerprints and its embedded source hash (`--source-sha`). The chain uses that pinned source hash rather than requiring a duplicate source checkout. Updating the binary requires new full SHA-256 sums, its source provenance and lock, a regenerated chain header, and a full private shader/host rebuild. No tool is downloaded or rebuilt implicitly.

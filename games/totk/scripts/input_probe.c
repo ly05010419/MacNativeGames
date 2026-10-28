@@ -161,6 +161,19 @@ static void feedback_checks(void){
  need(runtime_motion_axes("x,y,z")==1,"axis spec");
  runtime_motion_live(0);runtime_motion_mouse(1);{const double acc[3]={0,0,-1},g[3]={0,0,0};probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);}
  probe_now+=1000000;need(!sstates(&n,buf.s,1,&six)&&buf.s[0].attr==1,"mouse mode without a controller: motion");
+ /* The mouse's ticks come late now and then, so its own pitch (runtime/mouse_look.h: 10 ms a tick) and the one integrated
+    here part a little; a gravity pull would then creep the aim up or down for seconds after the mouse stops. With the
+    mouse there is no bias to pull out: once it stops, the direction holds, and the gravity reported is its own. */
+ runtime_motion_mouse(1);
+ {double acc[3]={0,0,-1},g[3]={M_PI/2,0,0},p=0;
+  for(int i=0;i<30;i++){p+=0.01*M_PI/2;acc[1]=-sin(p);acc[2]=-cos(p);probe_now+=12000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  g[0]=0;probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  float held[9];memcpy(held,buf.s[0].dir,sizeof held);
+  for(int i=0;i<300;i++){probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].dir,held[0],held[1],held[2],1e-4)&&near3(buf.s[0].dir+3,held[3],held[4],held[5],1e-4)&&near3(buf.s[0].dir+6,held[6],held[7],held[8],1e-4),
+       "mouse stopped after late ticks: the direction holds for 3 s (no gravity pull)");
+  need(near3(buf.s[0].acc,-buf.s[0].dir[2],-buf.s[0].dir[5],-buf.s[0].dir[8],1e-4),"mouse mode: the gravity reported is the direction's down");}
  runtime_motion_mouse(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode off, no controller: no motion");
  probe_clock_fixed=0;
 }

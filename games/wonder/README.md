@@ -39,11 +39,12 @@ python3.14 scripts/build_wonder.py --game "<your 1.0.0 game>.nsp" --keys "<your 
 | --- | --- |
 | `assets/expected-v1.0.0.json`, `expected-v1.2.1.json` | the hashes every build step is checked against (ExeFS, the two rewritten modules, the RomFS) |
 | `scripts/build_wonder.py` | the one-command build; it copies this folder into the work folder and runs the steps there |
-| `Makefile` | the game binary (`make runtime`, `build/wonder-native`; `VERSION=wonder121`: `build/wonder-native-wonder121`, with `WONDER_V121`) |
+| `Makefile` | the game binary (`make binary`, `build/wonder-native`; `VERSION=wonder121`: `build/wonder-native-wonder121`, with `WONDER_V121`), built from this folder alone, and the game data folder it reads at start (`make game-data`, `build/game-data/<version>`: module tables, RomFS and font hashes; `make runtime` makes both) |
 | `runtime/game_patches_wonder.c` | the game's patch file, in place of TOTK's: the real-time frame step (its sites per version, found in the game's own code); exclusive loads take acquire (see the file) |
 | `runtime/offline_host.c` | the services an offline console answers for: network (nifm, sockets, ssl, nsd), friends, local wireless, play reports, the console identity |
 
-Forked from `games/totk` (commit `33e8fa8`, 2026-10-25) with the game's changes: its block in `runtime/game_version.h`
+Forked from `games/totk` (commit `33e8fa8`, 2026-10-25; brought up to date with it at `1dcf40d`, 2026-10-28: the settings panel, frame lock,
+mouse, controller and graphics fixes, and the game data folder) with the game's changes: its block in `runtime/game_version.h`
 (`GAME_WONDER`), user selection and the profile image (`account.c`), the FS context and the game's own save-data calls
 (`fs_host.c`), a 60 Hz VI vsync on any display (`frontend.m`), the Nintendo Extension font handed over with its BFTTF
 header (`shared_font.c`), and bindless texture handles read from uniform blocks (`third_party/d2r_gfx`). The scripts

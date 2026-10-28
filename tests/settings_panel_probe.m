@@ -24,12 +24,17 @@ void dm_gfx_set_flag(const char *name, int value) {
 static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYSTATION, fakeMouse;
 int runtime_gamepad_type_set(int type) { return fakePadType = type; }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
+int runtime_gamepad_battery_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
 void runtime_mouse_release(void) {}
+static int fakeSensitivity = 50, fakeSensitivityLocked;
+int runtime_mouse_sensitivity(void) { return fakeSensitivity; }
+int runtime_mouse_sensitivity_locked(void) { return fakeSensitivityLocked; }
+void runtime_mouse_sensitivity_set(int sensitivity) { fakeSensitivity = sensitivity; }
 void runtime_gamepad_clear(void) {}
 static char savedName[64], savedWord[16];
 void runtime_setting_save(const char *name, const char *word, const char *what) {
@@ -206,7 +211,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 13);
+    assert(settingsPanel.rows.count == 14);
 
     /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
     assert(!switched(@"FPS graph"));
@@ -328,6 +333,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
     press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
     assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
+    /* Mouse sensitivity, the last row: a number box, 1-100. Text that is not a whole number in range puts the value in
+       force back; the variable shows its value greyed out. */
+    NSTextField *box = (NSTextField *)row(@"Mouse sensitivity").control;
+    [settingsPanel.timer fire]; assert([box isKindOfClass:NSTextField.class] && box.editable && [box.stringValue isEqualToString:@"50"]);
+    box.stringValue = @"73"; [row(@"Mouse sensitivity") changed:box]; assert(fakeSensitivity == 73 && [box.stringValue isEqualToString:@"73"]);
+    box.stringValue = @" 1 "; [row(@"Mouse sensitivity") changed:box]; assert(fakeSensitivity == 1);
+    for (NSString *bad in @[@"0", @"101", @"fast", @"", @"5.5", @"-3"]) {
+        box.stringValue = bad; [row(@"Mouse sensitivity") changed:box]; assert(fakeSensitivity == 1 && [box.stringValue isEqualToString:@"1"]);
+    }
+    box.stringValue = @"100"; [row(@"Mouse sensitivity") changed:box]; assert(fakeSensitivity == 100);
+    press(18); fakeSensitivityLocked = 1; fakeSensitivity = 20; press(18);
+    assert(!menu(@"Mouse sensitivity").enabled && [menu(@"Mouse sensitivity").titleOfSelectedItem isEqualToString:@"20"]);
+    press(18); fakeSensitivityLocked = 0; fakeSensitivity = 50; press(18); assert(settingsOpen);
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));

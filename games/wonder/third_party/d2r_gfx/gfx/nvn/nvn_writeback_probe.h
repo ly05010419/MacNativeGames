@@ -1,5 +1,6 @@
 /* Production write-back regression: fake-shared pages must not discard a terrain normal map; the CPU's own changes
-   must still win. BotW additionally exercises the tiny-target completion path on real GPU clears, without an invalidate.
+   must still win. BotW additionally exercises the tiny-target completion path on real GPU clears, without an invalidate,
+   and the grass masks that land on completion once learned.
    No game data. Included after the production helpers, as the sampler-border and texel-region probes are. */
 int mtl_probe_writeback(void) {
     int checked = 0;
@@ -154,6 +155,64 @@ int mtl_probe_writeback(void) {
             flush((const NVNmemoryPool *)&cached, 1, 2);
             for (size_t i = 0; i < mask.L.size; i++) if (backing[i]) MDIE("mapped flush probe wrote back a texture that runs past its pool (byte %zu)", i);
             checked++;
+        }
+        if (layout) {   /* Grass masks landing on completion (botw_late_*): once learned, the flush frees the record without waiting and
+                           the submission's completion writes the rendering. As in the game, the mask starts 4 KiB into a page, so its
+                           first and last pages hold neighbour bytes the CPU writes; only its own bytes count there. */
+            size_t off = 4096; uint8_t *lm = backing + off; size_t pg = (size_t)getpagesize();
+            mask.mem = lm;
+            for (int k = 0; k < LATE_LEARN; k++) late_count(mask.serial);
+            if (late_ring(mask.serial) < 0) MDIE("late write-back probe: the mask was not learned");
+            checked++;
+            for (int scenario = 0; scenario < 4; scenario++) {   /* 0 plain, 1 neighbours on the edge pages written, 2 an own byte on an edge page, 3 an own byte on a full page */
+                dm_guest_write_prepare(backing, span); memset(backing, 0, span);
+                mtl_sub_begin(); op_hdr end = {OP_END, 8}; mtl_exec((const uint8_t *)&end);
+                MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+                rp.colorAttachments[0].texture = rendered; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+                rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+                rp.colorAttachments[0].clearColor = MTLClearColorMake(.25, 1, .75, 1);
+                rp.renderTargetWidth = rp.renderTargetHeight = side;
+                id<MTL4RenderCommandEncoder> en = enc_r_begin(rp); enc_r_end(en);
+                wb_note(&mask);   /* the CPU writes below come after the rendering and before its submission can complete */
+                size_t own = scenario == 2 ? 1 : scenario == 3 ? pg * 4 + 1 : 0;
+                if (scenario == 1) { dm_guest_write_prepare(backing, 1); backing[0] = 11; dm_guest_write_prepare(lm + mask.L.size + 5, 1); lm[mask.L.size + 5] = 12; }
+                if (own) { dm_guest_write_prepare(lm + own, 1); lm[own] = 77; }
+                mtl_sub_commit();
+                uint64_t freed = atomic_load(&g_late_freed);
+                flush((const NVNmemoryPool *)&cached, off + 1, 2);
+                if (atomic_load(&g_late_freed) != freed + 1) MDIE("late write-back probe scenario %d: the flush did not hand the rendering to its completion", scenario);
+                mtl_finish();   /* the commit blocks have run */
+                for (size_t i = 0; i < (size_t)side * side; i++) {
+                    uint8_t want = own ? (i * bpp + 1 == own ? 77 : 0) : 255;
+                    if (lm[i * bpp + 1] != want) MDIE("late write-back probe scenario %d pixel %zu: %u != %u", scenario, i, lm[i * bpp + 1], want);
+                    checked++;
+                }
+                if (own && lm[own] != 77) MDIE("late write-back probe scenario %d lost the CPU's own write", scenario);
+                if (scenario == 1 && (backing[0] != 11 || lm[mask.L.size + 5] != 12)) MDIE("late write-back probe overwrote a neighbour byte");
+                checked++;
+            }
+            {   /* a learned mask that no live pool holds whole is not written (wb_target_lock, #764) */
+                nvn_dirty_remove_range(backing); mtl_pool_del(backing);
+                mtl_pool_add(backing, off + mask.L.size / 2); nvn_dirty_add_range(backing, span);
+                dm_guest_write_prepare(backing, span); memset(backing, 0, span);
+                mtl_sub_begin(); op_hdr end = {OP_END, 8}; mtl_exec((const uint8_t *)&end);
+                MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+                rp.colorAttachments[0].texture = rendered; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+                rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+                rp.colorAttachments[0].clearColor = MTLClearColorMake(.25, 1, .75, 1);
+                rp.renderTargetWidth = rp.renderTargetHeight = side;
+                id<MTL4RenderCommandEncoder> en = enc_r_begin(rp); enc_r_end(en);
+                wb_note(&mask); mtl_sub_commit();
+                uint64_t freed = atomic_load(&g_late_freed), gone = atomic_load(&g_wb_pool_gone);
+                flush((const NVNmemoryPool *)&cached, off + 1, 2);
+                if (atomic_load(&g_late_freed) != freed + 1) MDIE("late write-back probe: the flush did not hand the rendering to its completion (short pool)");
+                mtl_finish();
+                for (size_t i = 0; i < mask.L.size; i++) if (lm[i]) MDIE("late write-back probe wrote a mask that runs past its pool (byte %zu)", i);
+                if (atomic_load(&g_wb_pool_gone) != gone + 1) MDIE("late write-back probe: the refused landing was not counted");
+                checked++;
+                nvn_dirty_remove_range(backing); mtl_pool_del(backing); mtl_pool_add(backing, span); nvn_dirty_add_range(backing, span);
+            }
+            mask.mem = backing;
         }
         mtl_finish(); serial_del(mask.serial); defer_obj_release(rendered);
         nvn_dirty_remove_range(backing); mtl_pool_del(backing); munmap(backing, span);

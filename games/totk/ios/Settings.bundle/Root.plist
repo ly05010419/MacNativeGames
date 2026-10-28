@@ -164,6 +164,38 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>键盘 · Keyboard</string>
+			<key>FooterText</key>
+			<string>外接键盘会自动识别。插着键盘时触控按键会隐藏，打开第二项可保留触控。重新启动游戏后生效 · a hardware keyboard is detected automatically; while one is connected the touch controls hide, and the second switch below keeps them. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_KEYBOARD</string>
+			<key>Title</key>
+			<string>使用外接键盘 · Use a hardware keyboard</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>关闭后键盘按键不再操作游戏，触控与手柄不受影响 · off: the keyboard no longer drives the game; touch and controllers keep working</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_TOUCH_WITH_KEYBOARD</string>
+			<key>Title</key>
+			<string>插着键盘时保留触控 · Keep touch with a keyboard</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>默认隐藏触控按键，避免误触；打开后两者可同时使用 · the touch controls hide by default to avoid stray taps; on: both work at once</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>

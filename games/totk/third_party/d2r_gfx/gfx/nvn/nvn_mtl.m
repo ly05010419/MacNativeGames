@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include "nvn_mtl.h"
 #include "nvn_obj.h"
+#include "nvn_quad_strip.h"
 #include "nvn_impl.h"   // NVN_BLOCKING: release the guest core only while a write-back waits
 #include "../tex/nvn_fmt_mtl.h"
 #include "../tex/nvn_deswizzle.h"
@@ -73,6 +74,27 @@ extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarde
 #pragma clang attribute push(__attribute__((objc_externally_retained)), apply_to = function)
 
 #define MLOG(...) do { flockfile(stderr); fprintf(stderr, "[dm] [nvn-mtl] " __VA_ARGS__); fputc('\n', stderr); funlockfile(stderr); } while (0)   // one whole line even when the warm-up threads log at once
+/* TOTK (2026-10-28): reads of a texture's guest memory made by the replay after the submit call returned. The game may
+   have taken that memory away meanwhile (a range it moved into the stack region with svcMapMemory and moved back:
+   the pages are PROT_NONE), which ended the process with SIGBUS. These reads have no side effects, so a fault only
+   makes them report failure (0) and the caller takes its "unknown" branch. */
+static _Atomic uint64_t g_guarded_read_faults;
+static void guarded_read_fault(const char *what, const void *at, size_t n) {
+    uint64_t k = atomic_fetch_add(&g_guarded_read_faults, 1) + 1;
+    if (k <= 4 || k % 1000 == 0) MLOG("【红】%s读到不可访问的内存（%p+%zu，第 %llu 次）：这次跳过", what, at, n, (unsigned long long)k);
+}
+static int guarded_memcpy(void *dst, const void *src, size_t n, const char *what) {   // 1 copied, 0 faulted
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; guarded_read_fault(what, src, n); return 0; }
+    runtime_fault_guard = &jb; memcpy(dst, src, n); runtime_fault_guard = prev;
+    return 1;
+}
+static int guarded_memcmp(const void *a, const void *b, size_t n, int *differ, const char *what) {   // 1 compared (*differ set), 0 faulted
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; guarded_read_fault(what, a, n); return 0; }
+    runtime_fault_guard = &jb; *differ = memcmp(a, b, n) != 0; runtime_fault_guard = prev;
+    return 1;
+}
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
 #define TOTK_SERIAL_SET_FAIL() MDIE("serial history: out of memory")
 #include "totk_serial_set.h"
@@ -2732,7 +2754,7 @@ int totk_wb_fence_on(void) { static int v = -1; if (v < 0) { const char *e = get
 static void wb_snap(wb_ent *e) {
     if (!wb_exact_on() || !e->t.mem || e->t.L.size > WB_SNAP_MAX) { free(e->snap); e->snap = NULL; e->snap_n = 0; return; }
     uint32_t n = (uint32_t)e->t.L.size; if (e->snap_n != n) { free(e->snap); e->snap = malloc(n); e->snap_n = e->snap ? n : 0; }
-    if (e->snap) memcpy(e->snap, e->t.mem, n);
+    if (e->snap && !guarded_memcpy(e->snap, e->t.mem, n, "渲染目标留底快照")) { free(e->snap); e->snap = NULL; e->snap_n = 0; }   // no snapshot: the page-only decision
 }
 static void wb_note(const tex_t *t) {
     TILELOG(t, "GPU render (owned %d)", gpu_owned(t->serial));
@@ -3644,6 +3666,12 @@ static uint64_t pkg_hash(const void *p, uint64_t n) {
     for (; i < n; i++) h = (h ^ b[i]) * 0x100000001b3ull;
     h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ull; return h ^ (h >> 33);
 }
+static int pkg_hash_guarded(const tex_t *t, uint64_t *h) {   // 1 hashed, 0 the texture's memory faulted (see guarded_memcpy)
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; guarded_read_fault("小贴图内容校验", t->mem, (size_t)t->L.size); return 0; }
+    runtime_fault_guard = &jb; *h = pkg_hash(t->mem, t->L.size); runtime_fault_guard = prev;
+    return 1;
+}
 /* TOTK (#90): a texture whose first or last host page (16 KB) also holds other data is marked written whenever that data
    is. The glyph cache's last page holds the glyph records the font code flags as used on every frame, so the whole 8 MB
    texture was uploaded again on every frame. When only those shared pages were written since the stamp, the texture's
@@ -3658,7 +3686,8 @@ static void pkg_edge_snap(const tex_t *t, NvPkg *pk) {   // in pkg_upload_, afte
     free(pk->edge); pk->edge = NULL; pk->eh = pk->et = 0;
     if (tl <= h || (h == a && tl == e) || !(pk->edge = malloc((h - a) + (e - tl)))) return;
     pk->eh = (uint32_t)(h - a); pk->et = (uint32_t)(e - tl);
-    memcpy(pk->edge, t->mem, pk->eh); memcpy(pk->edge + pk->eh, (const void *)tl, pk->et);
+    if (!guarded_memcpy(pk->edge, t->mem, pk->eh, "贴图首尾页留底") || !guarded_memcpy(pk->edge + pk->eh, (const void *)tl, pk->et, "贴图首尾页留底")) {
+        free(pk->edge); pk->edge = NULL; pk->eh = pk->et = 0; }   // no kept bytes: the next shared-page write uploads again (pkg_edge_clean)
 }
 static uint64_t g_pkg_edge_same;
 static int pkg_edge_clean(const tex_t *t, NvPkg *pk) {   // 1: only the shared pages were written, and the texture's bytes there are unchanged
@@ -3669,7 +3698,8 @@ static int pkg_edge_clean(const tex_t *t, NvPkg *pk) {   // 1: only the shared p
     if (h > a) nvn_dirty_protect(t->mem, h - a);
     if (e > tl) nvn_dirty_protect((const void *)tl, e - tl);
     /* compared after protecting: a write before it is in the bytes compared, a write after it faults and is newer than st */
-    if (memcmp(t->mem, pk->edge, pk->eh) || memcmp((const void *)tl, pk->edge + pk->eh, pk->et) ||
+    int d1 = 1, d2 = 1;   // a fault counts as changed: the upload that follows checks the memory itself (pkg_upload)
+    if (!guarded_memcmp(t->mem, pk->edge, pk->eh, &d1, "贴图首尾页对比") || d1 || !guarded_memcmp((const void *)tl, pk->edge + pk->eh, pk->et, &d2, "贴图首尾页对比") || d2 ||
         nvn_dirty_since((const void *)h, tl - h, pk->stamp)) return 0;   // changed, or its own pages written meanwhile
     pk->stamp = st;
     if (!g_pkg_edge_same++ || g_pkg_edge_same % 5000 == 0)
@@ -3677,9 +3707,37 @@ static int pkg_edge_clean(const tex_t *t, NvPkg *pk) {   // 1: only the shared p
     return 1;
 }
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk);
+static uint64_t g_pkg_upload_faults, g_pkg_upload_unreadable;
+/* 1 when every page of [mem, mem+size) can be read now: one byte per host page (and the last byte) is read under the
+   fault guard. A walk with mach_vm_region was one system call per VM entry, and the dirty tracker splits a texture's
+   range into an entry per page it unprotected: ~1 ms for a 16 MiB texture in alternating protections, ~16 us this way. */
+static int guest_probe(const void *mem, uint64_t size) {
+    if (!size) return 1;
+    static uintptr_t pg; if (!pg) pg = (uintptr_t)getpagesize();
+    const volatile uint8_t *m = mem; uintptr_t a = (uintptr_t)mem, e = a + size;
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; return 0; }
+    runtime_fault_guard = &jb;
+    uint8_t sink = 0;
+    for (uintptr_t at = a; at < e; at = (at & ~(pg - 1)) + pg) sink ^= m[at - a];
+    sink ^= m[size - 1];
+    runtime_fault_guard = prev;
+    (void)sink;
+    return 1;
+}
 static id<MTLTexture> pkg_upload(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    id<MTLTexture> r = pkg_upload_(t, stamp, key, pk);
+    /* TOTK (2026-10-28): the copy reads the texture's guest memory, which the game can take away meanwhile. A texture made
+       in memory the game had moved into the stack region (svcMapMemory) was uploaded after the move was undone: the
+       submit thread read the decommitted page (PROT_NONE) in nvn_deswizzle and the process died with SIGBUS (100% save, about
+       15 minutes after launch). Memory already gone (a draw recorded before the game took it away, or a retry after that)
+       is refused here, before a Metal texture is made: nil, so a re-upload keeps the texture it had and a first upload binds
+       none. Memory taken away during the copy is caught by the guard around the CPU copy in pkg_upload_. */
+    id<MTLTexture> r = nil;
+    if (!guest_probe(t->mem, t->L.size)) {
+        uint64_t k = ++g_pkg_upload_unreadable;
+        if (k <= 4 || k % 1000 == 0) MLOG("【红】贴图的内存已不可读，不上传（ser=%llu %ux%u 格式 %#x 存储 %p+%llu，第 %llu 次）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (const void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)k);
+    } else r = pkg_upload_(t, stamp, key, pk);
     clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d_ = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + b.tv_nsec - a.tv_nsec);
     atomic_fetch_add(&g_upload_ns, d_); g_up_total_ns += d_;
     return r;
@@ -3789,8 +3847,12 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     { static int fs = -1; static uint64_t by[256], n[256], gpuby[256], last; if (fs < 0) fs = getenv("DM_TEX_FMT_STATS") != NULL;   // TOTK: bytes uploaded per NVN format (first uploads + re-uploads)
       static uint64_t b4, b3, b3t;   // BC1 block kinds: four-colour, three-colour without / with transparent texels
       if (fs && (t->d.format == 0x41 || t->d.format == 0x42 || t->d.format == 0x45 || t->d.format == 0x46)) {
+        sigjmp_buf jb, *prev = runtime_fault_guard;   // the scan reads guest memory too: guarded like the upload (after PR #1232)
+        if (!sigsetjmp(jb, 1)) { runtime_fault_guard = &jb;
         const uint8_t *m = t->mem; for (uint64_t i = 0; i + 8 <= t->L.size; i += 8) { uint16_t c0 = m[i] | m[i + 1] << 8, c1 = m[i + 2] | m[i + 3] << 8; uint32_t ix = m[i + 4] | m[i + 5] << 8 | m[i + 6] << 16 | (uint32_t)m[i + 7] << 24;
-          if (c0 > c1) b4++; else { int t3 = 0; for (int k = 0; k < 16; k++) if (((ix >> (2 * k)) & 3) == 3) t3 = 1; if (t3) b3t++; else b3++; } } }
+          if (c0 > c1) b4++; else { int t3 = 0; for (int k = 0; k < 16; k++) if (((ix >> (2 * k)) & 3) == 3) t3 = 1; if (t3) b3t++; else b3++; } }
+        } else guarded_read_fault("BC1 统计", t->mem, (size_t)t->L.size);
+        runtime_fault_guard = prev; }
       if (fs && (n[0x46] + n[0x42]) % 500 == 1) MLOG("[fmtstats] BC1 块：四色 %llu，三色无透明 %llu，三色含透明 %llu", (unsigned long long)b4, (unsigned long long)b3, (unsigned long long)b3t);
       if (fs) { uint32_t f = t->d.format & 255; by[f] += total; n[f]++; if (t->d.target != 2) gpuby[f] += total;
         if (g_bp_up_bytes - last > (256u << 20)) { last = g_bp_up_bytes; char line[2048]; size_t o = 0;
@@ -3881,25 +3943,40 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         if (!stg) MDIE("shared upload staging %#zx", total);
         res_add(stg); [g_up_keep addObject:stg];
     }
+    /* The copy below reads the guest memory (see pkg_upload). Guarded here, after the texture and the staging are made and
+       no lock is held: a fault drops the copies this texture recorded, returns the texture to the recycle pool (it is still
+       resident and never was read) and gives nil, as a refused upload. */
+    int nb0 = g_nup_blits; void *volatile tmp = NULL;
+    sigjmp_buf cjb, *cprev = runtime_fault_guard;
+    if (sigsetjmp(cjb, 1)) {
+        runtime_fault_guard = cprev;
+        free(tmp); g_nup_blits = nb0;
+        if (!g_cb) up_flush();
+        reup_retire(mt, key);
+        uint64_t k = ++g_pkg_upload_faults;
+        if (k <= 4 || k % 1000 == 0) MLOG("【红】贴图上传读到一半内存被收回（ser=%llu %ux%u 格式 %#x 存储 %p+%llu，第 %llu 次）：这次不传，留用旧贴图", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, (const void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)k);
+        return nil;
+    }
+    runtime_fault_guard = &cjb;
     for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) {
         uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
         size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
         for (unsigned y = 0; y < layers; y++) {
             if (tca) {   // BC1 -> ASTC on the CPU (linear textures, storage outside memory pools, no GPU transcoder)
-                uint8_t *cb = malloc(pitch * rows * z); uint32_t bw4 = (w + 3) / 4, bh4 = (h + 3) / 4; size_t arow = (size_t)bw4 * 16;
-                if (!cb || (nvn_tex_is_linear(&t->d) ? 0 : nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch))) { free(cb); RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
+                uint8_t *cb = malloc(pitch * rows * z); tmp = cb; uint32_t bw4 = (w + 3) / 4, bh4 = (h + 3) / 4; size_t arow = (size_t)bw4 * 16;
+                if (!cb || (nvn_tex_is_linear(&t->d) ? 0 : nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch))) { tmp = NULL; free(cb); RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
                 if (nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows * z; r++) memcpy(cb + r * pitch, t->mem + r * stride, pitch); }
                 for (uint32_t zi = 0; zi < z; zi++) nvn_bc1_to_astc_image(cb + zi * pitch * rows, pitch, bw4, bh4, (uint8_t *)stg.contents + off + zi * arow * bh4, bc1_rgba(t->d.format));
-                free(cb);
+                tmp = NULL; free(cb);
                 up_blit_add(stg, off, arow, arow * bh4, MTLSizeMake(w, h, z), mt, y, l - drop);
                 off += arow * bh4 * z;
                 continue;
             }
             if (unp) {   // 无 BC：先解排布到临时区（压缩块），再逐层解压进暂存区 | No BC: first deswizzle into a temporary area (compressed blocks), then decompress layer by layer into the staging area
-                uint8_t *cb = malloc(pitch * rows * z); size_t up = (size_t)w * ubpp;
-                if (!cb || nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch)) { free(cb); RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
+                uint8_t *cb = malloc(pitch * rows * z); tmp = cb; size_t up = (size_t)w * ubpp;
+                if (!cb || nvn_deswizzle(&t->d, l, y, t->mem, cb, pitch)) { tmp = NULL; free(cb); RED_ONCE(9, "解排布失败 格式 %#x 目标 %d", t->d.format, t->d.target); break; }
                 for (uint32_t zi = 0; zi < z; zi++) nvn_bc_decode(t->d.format, cb + zi * pitch * rows, pitch, w, h, (uint8_t *)stg.contents + off + zi * up * h, up);
-                free(cb);
+                tmp = NULL; free(cb);
                 up_blit_add(stg, off, up, up * h, MTLSizeMake(w, h, z), mt, y, l - drop);
                 off += up * h * z;
                 continue;
@@ -3913,6 +3990,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
             off += pitch * rows * z;
         }
     }
+    runtime_fault_guard = cprev;   // the guest reads are done
     /* TOTK: during a replay submission the batch is flushed by mtl_sub_commit (or q_cb) before the game command buffer,
        like the GPU-deswizzle path above. Committing per texture made ~20 command buffers and residency commits per frame
        and stalled the submit thread on the three upload allocators. */
@@ -3956,11 +4034,11 @@ static void *tex_mtl_p(const tex_t *ct) {
             uint64_t now = nvn_dirty_now(), h = 0; int clean;
             if (!pk->tex || (pk->owned && reduced)) {   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
                 clean = 0; g_pkg_restored++;
-                if (pk->hashed) { pk->csub = g_sub_serial; h = pkg_hash(t->mem, t->L.size); }
+                if (pk->hashed) { pk->csub = g_sub_serial; if (!pkg_hash_guarded(t, &h)) h = 0; }   // a fault: the upload below refuses too
             } else
             if (pk->hashed) {   // TOTK: small texture, content hash once per submission (see pkg_hashed)
                 if (pk->csub == g_sub_serial) return (__bridge void *)pk->tex;
-                pk->csub = g_sub_serial; h = pkg_hash(t->mem, t->L.size); clean = h == pk->chash;
+                pk->csub = g_sub_serial; clean = !pkg_hash_guarded(t, &h) || h == pk->chash;   // memory gone: keep the texture it has
             } else {
             /* TOTK: once per submission, as for the small hashed ones: the contents are those of the submit call (the rule
                of the uniform snapshot). Re-checking on every use, whenever any game thread had written any page since,
@@ -4001,7 +4079,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         pk->seen = pk->stamp; g_pkg_uploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size);
         serial_put(t->serial, pk);
         pk->owned = gpu_owned(t->serial);   // after it is in the table: a later mark finds it there (pkg_owned_locked)
-        if ((pk->hashed = pkg_hashed(t))) { pk->chash = pkg_hash(t->mem, t->L.size); pk->csub = g_sub_serial; }
+        if ((pk->hashed = pkg_hashed(t))) { if (!pkg_hash_guarded(t, &pk->chash)) pk->chash = 0; pk->csub = g_sub_serial; }
         if (serial_is_dead(t->serial)) dead_put_note(t->serial); BOTW_PKG_RENDER_ALIAS(pk, t)
         return (__bridge void *)pk->tex;
     }
@@ -9354,6 +9432,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
     return 1;
 }
 static id<MTLBuffer> g_quad_ib; static uint64_t g_quad_gpu;
+static id<MTLBuffer> g_quad_strip_ib;
 static id<MTL4RenderCommandEncoder> rp_begin(void);
 // ---------- 通道前瞻：本通道是否用到深度 / 模板 ----------
 // 开通道时从当前绘制的下一条起往后扫，模拟深度模板状态的变化，直到本通道必然结束处（重设目标、拷贝、计算派发——
@@ -9523,7 +9602,7 @@ static int lay_scan(const uint8_t *start, const p_set_rt *rt, int first, int nla
 // The draw can run in a layered pass: triangles, and a vertex function that can write the layer.
 static int lay_draw_ok(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     int prim = dw ? dw->prim : di ? di->prim : -1;
-    return (prim == 4 || prim == 5 || prim == 7) && pr && vs_layerable(pr->sh[0]);
+    return (prim == 4 || prim == 5 || prim == 7 || prim == 8) && pr && vs_layerable(pr->sh[0]);
 }
 // rp_begin_ex: the number of layers of a layered pass starting at *first, or 0 for a plain pass. Only for a pass opened by a
 // replayed draw or colour clear (g_exec_cur), with no pending clear (a Clear load action would clear every layer of the range).
@@ -12629,7 +12708,7 @@ frz_plain:;
     MTLPrimitiveType mp;
     switch (prim) {
         case 0: mp = MTLPrimitiveTypePoint; break; case 1: mp = MTLPrimitiveTypeLine; break; case 3: mp = MTLPrimitiveTypeLineStrip; break;
-        case 4: case 7: mp = MTLPrimitiveTypeTriangle; break; case 5: mp = MTLPrimitiveTypeTriangleStrip; break;
+        case 4: case 7: case 8: mp = MTLPrimitiveTypeTriangle; break; case 5: mp = MTLPrimitiveTypeTriangleStrip; break;
         default: RED_ONCE(19, "图元类型 %d 未实现", prim); g_draw_skip[11]++; return;
     }
     if (g_vis_counting && perdraw_vis_on() && g_enc_has_vis && g_vis && g_vis_n < VIS_SLOTS - 256) {
@@ -12708,7 +12787,27 @@ frz_plain:;
     if (!att_n) for (int i = 0; i < g_nsd; i++) if (g_sd[i].wrote) g_sd_plain |= 1u << i;   // att_unstored_read: draws of a sampling run do not count
     // 0 个图元的绘制（游戏会发 count=0）不画任何像素，跳过编码；Metal 规定计数必须非零，校验层否则当场中止（营地 / 野外 / 战斗页实测）
     // A draw with 0 primitives (the game does send count=0) draws no pixels, so skip encoding; Metal requires the count to be non-zero, otherwise the validation layer aborts on the spot (measured on the camp / wilderness / combat pages)
-    if (dw && prim == 7) {   // 四边形：共享索引 0,1,2,0,2,3 | Quads: shared indices 0,1,2,0,2,3
+    if (dw && prim == NVN_DRAW_PRIMITIVE_QUAD_STRIP) {
+        /* Hero's Path uses quad strips for its route. Pair boundaries and winding must survive the conversion;
+           incomplete final pairs draw nothing. Batch long strips over one shared index buffer, preserving vertex IDs. */
+        enum { QUAD_STRIP_BATCH = 65536 };
+        uint32_t quads = dw->count > 0 ? nvn_quad_strip_quads((uint32_t)dw->count) : 0;
+        if (quads && !g_quad_strip_ib) {
+            size_t bytes = QUAD_STRIP_BATCH * 6 * sizeof(uint32_t);
+            g_quad_strip_ib = [g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+            if (!g_quad_strip_ib) MDIE("quad strip index buffer allocation failed");
+            nvn_quad_strip_indices(g_quad_strip_ib.contents, QUAD_STRIP_BATCH);
+            res_add(g_quad_strip_ib);
+        }
+        for (uint32_t at = 0; at < quads;) {
+            uint32_t n = quads - at; if (n > QUAD_STRIP_BATCH) n = QUAD_STRIP_BATCH;
+            enc_r_draw_indexed(en, mp, (NSUInteger)n * 6, MTLIndexTypeUInt32,
+                g_quad_strip_ib.gpuAddress, g_quad_strip_ib.length, dw->instances > 1 ? dw->instances : 1,
+                (NSInteger)dw->first + (NSInteger)at * 2, dw->base_instance);
+            at += n;
+        }
+        static int once; if (quads && !once++) MLOG("NVN quad strip: %d vertices converted to %u quads", dw->count, quads);
+    } else if (dw && prim == 7) {   // 四边形：共享索引 0,1,2,0,2,3 | Quads: shared indices 0,1,2,0,2,3
         if (!g_quad_ib) {
             uint32_t n = 65536; uint32_t *ix = malloc(n * 6 * 4);
             for (uint32_t q = 0; q < n; q++) { uint32_t b = q * 4; uint32_t v[6] = {b, b + 1, b + 2, b, b + 2, b + 3}; memcpy(ix + q * 6, v, 24); }
@@ -12720,6 +12819,34 @@ frz_plain:;
         else if (dw->count && dw->instances >= 0) enc_r_draw(en, mp, dw->first, dw->count);
     } else {
         if (prim == 7) { RED_ONCE(20, "带索引的四边形未实现"); return; }
+        if (prim == NVN_DRAW_PRIMITIVE_QUAD_STRIP) {
+            if (di->count < 4) return;
+            if (di->itype < 0 || di->itype > 2) MDIE("quad strip index type %d", di->itype);
+            unsigned width = 1u << di->itype;
+            uint64_t bytes = (uint64_t)di->count * width;
+            /* Never read stale CPU data for an index buffer written earlier on the GPU timeline. */
+            if (pend_hits(di->ibuf, bytes)) {
+                RED_ONCE(19, "GPU-written indexed quad strips require GPU conversion");
+                g_draw_skip[11]++; return;
+            }
+            void *source; uint64_t offset;
+            if (!mtl_addr(di->ibuf, bytes, &source, &offset)) {
+                RED_ONCE(22, "quad strip index buffer is outside its memory pool"); return;
+            }
+            const uint8_t *indices = [(__bridge id<MTLBuffer>)source contents];
+            if (!indices) MDIE("quad strip index buffer is not host visible");
+            id<MTLBuffer> converted;
+            size_t length = (size_t)nvn_quad_strip_quads((uint32_t)di->count) * 6 * sizeof(uint32_t);
+            size_t converted_offset = arena_alloc(length, &converted);
+            uint32_t *out = (uint32_t *)((uint8_t *)converted.contents + converted_offset);
+            size_t count = nvn_quad_strip_indexed(out, indices + offset, (uint32_t)di->count, width);
+            if (count) enc_r_draw_indexed(en, mp, count, MTLIndexTypeUInt32,
+                converted.gpuAddress + converted_offset, length, di->instances ? di->instances : 1,
+                di->base_vertex, di->base_instance);
+            static int once; if (count && !once++) MLOG("NVN indexed quad strip: %d %u-bit indices converted to %zu triangles",
+                di->count, width * 8, count / 3);
+            return;
+        }
         void *mb; uint64_t mo;
         uint64_t gpu;
         if (!mtl_gpu_addr(di->ibuf, 1, &mb, &mo, &gpu)) { RED_ONCE(22, "索引缓冲不在内存池里"); return; }

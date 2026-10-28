@@ -58,4 +58,6 @@ void audio_voices_prepare(AudioRenderer *r);                 /* audio_renderer.c
 int audio_mixer_voice_release(AudioRenderer *r, ServerVoice *v);   /* queues the tail of a stopped or paused voice before audio_renderer.c resets it; 1 if it did */
 #endif
 int audio_buffer_empty(const AudrenWaveBuffer *b);           /* no samples to decode: played as soon as it is reached */
+int audio_mixer_read(AudioRenderer *r, float *out, int frames);
+int audio_mixer_channels(AudioRenderer *r);
 void audio_device_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs);
