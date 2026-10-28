@@ -11,3 +11,4 @@ to another game never changes this one. Update the copies here, by hand, when Ki
 | `../scripts/prepare_runtime.py`, `prepare_romfs_backend.py`, `prepare_shared_fonts.py` | `games/mvdk/scripts` (6233eb3), changed to read this folder's work-directory layout | `scripts/build_kirby.py` |
 | `totk-scripts/` | `games/totk/scripts` (daf270e): extract_exefs, extract_romfs, extract_shared_fonts, prepare_shader_seed, shader_list | not used by the build (kept from the first version of the port) |
 | `by3-scripts/` | `games/by3/scripts` (daf270e): merge_romfs (with its extract_exefs / extract_romfs), prepare_modules | not used by the build (kept from the first version of the port) |
+| `stb_vorbis/` (MIT or public domain, see its LICENSE) | nxnative's `dm/third_party/stb_vorbis` (seedds/nxnative beea17c, 2026-10-29), unchanged; see its README | `runtime/movie_host.c` (the movies' Vorbis sound track) |

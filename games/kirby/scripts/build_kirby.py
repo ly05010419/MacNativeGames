@@ -11,7 +11,9 @@ stopped run can be started again):
  2. the ExeFS and its three modules (main, subsdk0, sdk) rewritten for the Mac with third_party/d2r/patch_nso.py
  3. the RomFS (6.1 GB, all six IVFC levels verified), its runtime index and the six system fonts
  4. the runtime tables, SPIRV-Cross, the game binary and the shader translator
- 5. the app (scripts/package_native_app.py: every input checked against assets/expected-v1.0.0.json, then --check)
+ 5. the game's ~27,000 shaders translated (scripts/prepare_shader_seed.py) and compiled to Metal libraries
+    (scripts/precompile_cached_shaders.py), so play does not stop the first time it meets one (--no-shaders skips it)
+ 6. the app (scripts/package_native_app.py: every input checked against assets/expected-v1.0.0.json, then --check)
 
 Every extracted and rewritten file is compared with assets/expected-v1.0.0.json, the files of the port author's own build.
 Two are not compared byte for byte: main.npdm (a dump tool may sign it again; the game does not use it) and
@@ -236,11 +238,22 @@ def step_binary(work, py, game, keys, logs):
     return icon if icon.is_file() else None
 
 
-# ---- 5. the app ----
+# ---- 5. shaders ----
+def step_shaders(work, py, logs):
+    """Every shader of the game translated (prepare_shader_seed.py) and compiled to Metal libraries
+    (precompile_cached_shaders.py) now, instead of in play the first time a scene needs it."""
+    say('5. shaders: translating the game\'s 27,000 shaders (about two minutes the first time)')
+    run([py, 'scripts/prepare_shader_seed.py', '--work', work], logs / 'shader-seed.log')
+    say('5. shaders: compiling them to Metal libraries (22,000, about half an hour the first time; later builds reuse them)')
+    run([py, 'scripts/precompile_cached_shaders.py', '--cache', work / 'build/shader-seed', '--output', work / 'build/shader-libs',
+         '--jobs', str(min(16, os.cpu_count() or 4)), '--flipped-only'], logs / 'shader-libs.log')
+
+
+# ---- 6. the app ----
 def step_app(work, py, out, icon, logs):
     if out.exists():
         raise BuildError(f'{out} already exists: quit the game and move it away (saves stay in "Kirby Data"), or pass --out')
-    say(f'5. app: assembling and checking {out}')
+    say(f'6. app: assembling and checking {out}')
     run([py, 'scripts/package_native_app.py', '--work', work, '--shared-fonts', work / 'fonts', '--output', out,
          *(['--icon', icon] if icon else [])], logs / 'package.log')
 
@@ -254,6 +267,8 @@ def main(argv):
     fonts.add_argument('--shared-fonts', type=Path, help='a verified font folder from an earlier build (manifest.json and six .bfttf)')
     parser.add_argument('--work', type=Path, help='work folder (default: Kirby_build next to the game file)')
     parser.add_argument('--out', type=Path, help='the app (default: Kirby.app next to the game file)')
+    parser.add_argument('--no-shaders', action='store_true',
+                        help='skip step 5: a faster build whose game stops briefly the first time it meets each shader')
     args = parser.parse_args(argv)
     game, keys = args.game.expanduser().resolve(), args.keys.expanduser().resolve()
     for path in (game, keys):
@@ -270,6 +285,10 @@ def main(argv):
     step_data(work, py, game, keys, logs, firmware=args.firmware and args.firmware.expanduser().resolve(),
               shared_fonts=args.shared_fonts and args.shared_fonts.expanduser().resolve())
     icon = step_binary(work, py, game, keys, logs)
+    if args.no_shaders:
+        say('5. shaders: skipped (--no-shaders); the game translates and compiles each shader the first time it meets it')
+    else:
+        step_shaders(work, py, logs)
     step_app(work, py, out, icon, logs)
     say(f'done in {(time.time() - T0) / 60:.0f} min: {out}')
     say('Open it from Finder. Saves, the shader cache and the log (last-run.log) are in "Kirby Data" next to the app.')

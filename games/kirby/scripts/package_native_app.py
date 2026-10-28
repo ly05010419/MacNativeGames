@@ -112,6 +112,17 @@ def clone(source, destination):
         shutil.copy2(source, destination)
 
 
+def clone_all(sources, folder):
+    """Clone many files into one folder, a thousand per cp (the shader libraries and seed are tens of thousands)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    sources = [str(s) for s in sources]
+    for start in range(0, len(sources), 1000):
+        result = subprocess.run(["/bin/cp", "-c", *sources[start:start + 1000], str(folder)], capture_output=True)
+        if result.returncode:
+            for source in sources[start:start + 1000]:
+                shutil.copy2(source, folder)
+
+
 def require_new_output(output):
     if output.suffix != ".app":
         raise ValueError("--output must name a new .app directory")
@@ -146,16 +157,28 @@ def package(work, data_work, fonts, output, icon=None):
         os.symlink("../Resources/game/build/kirby-native", macos / "kirby-native")
         libraries = work / "build/shader-libs"
         if libraries.is_dir():
-            for lib in sorted(libraries.glob("*.metallib")):
+            libs = sorted(libraries.glob("*.metallib"))
+            for lib in libs:
                 with lib.open("rb") as f:
                     if f.read(4) != b"MTLB":
                         raise ValueError(f"Invalid Metal library: {lib.name}")
-                clone(lib, game / "build/shader-libs" / lib.name)
+            clone_all(libs, game / "build/shader-libs")
             if (libraries / "compiler.txt").is_file():
                 clone(libraries / "compiler.txt", game / "build/shader-libs/compiler.txt")
             # The runtime looks for shader-libs beside its unresolved executable path (Contents/MacOS/kirby-native);
             # without this link every precompiled library is skipped and compiled again in play.
             os.symlink("../Resources/game/build/shader-libs", macos / "shader-libs")
+        seed = work / "build/shader-seed"
+        if (seed / "seed-manifest.json").is_file():
+            # Shaders translated from the game files at build time (scripts/prepare_shader_seed.py); the runtime imports
+            # them into "Kirby Data/shader-cache" at its first start and checks every file against the manifest.
+            manifest = json.loads((seed / "seed-manifest.json").read_text())
+            for name in manifest["files"]:
+                if not re.fullmatch(r"[0-9a-f]{64}(\.variants|-[0-9a-f]{12}_b\.(metal|json))", name) or not (seed / name).is_file():
+                    raise ValueError(f"Invalid shader seed entry: {name}")
+            clone_all([seed / name for name in sorted(manifest["files"])] + [seed / "seed-manifest.json"],
+                      game / "build/shader-seed")
+            verified["build/shader-seed/seed-manifest.json"] = identity(seed / "seed-manifest.json")
         notices = resources / "Licenses"
         for path in sorted((GAME / "third_party").rglob("*")):
             if path.is_file() and (path.name.lower().startswith("license") or path.parent.name == "licenses"):
