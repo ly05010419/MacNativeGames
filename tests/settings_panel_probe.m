@@ -454,11 +454,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 25 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
-                                                                 background input on the input page), then the effects
-                                                                 page: FOV, two distances, shadows, depth of field, FXAA,
-                                                                 sharpening and effect switches (1.4.3), or eight greyed
-                                                                 rows (Breath of the Wild 1.9.0's shadow resolution live) */
+    assert(settingsPanel.allRows.count == 29 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
+                                                                 background input on the input page), the saves page's
+                                                                 four WebDAV rows, then the effects page: FOV, two
+                                                                 distances, shadows, depth of field, FXAA, sharpening
+                                                                 and effect switches (1.4.3), or eight greyed rows
+                                                                 (Breath of the Wild 1.9.0's shadow resolution live) */
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */
@@ -673,6 +674,26 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Rumble strength", @"2×"); assert(fakeGain == 2); shows(@"Rumble strength", @"2×");
     pick(@"Rumble strength", @"0.5×"); assert(fakeGain == 0.5f); pick(@"Rumble strength", @"1× (default)"); assert(fakeGain == 1);
     assert(switched(@"Gyro aiming")); flip(@"Gyro aiming", NO); assert(!fakeFeedback[1]); flip(@"Gyro aiming", YES); assert(fakeFeedback[1]);
+
+    /* Save sync over WebDAV: greyed out without an address, the typed address is trimmed into the defaults and the
+       switch follows at once, the password hides what is typed, an emptied field removes the key. No WebDAV state is
+       left in the defaults. */
+    assert(!menu(@"Save sync (WebDAV)").enabled && [menu(@"Save sync (WebDAV)").titleOfSelectedItem isEqualToString:@"Off"]);
+    TOTKSettingRow *urlRow = row(@"WebDAV address");
+    NSTextField *urlField = (NSTextField *)urlRow.control;
+    assert(urlField.enabled && !urlRow.secure && ![urlField isKindOfClass:[NSSecureTextField class]] && [urlField.placeholderString hasPrefix:@"https://"]);
+    assert([row(@"WebDAV password").control isKindOfClass:[NSSecureTextField class]]);
+    urlField.stringValue = @" https://dav.jianguoyun.com/dav/ "; [urlRow changed:urlField];
+    assert([[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_WEBDAV_URL"] isEqualToString:@"https://dav.jianguoyun.com/dav/"]);
+    [settingsPanel.timer fire];
+    assert(menu(@"Save sync (WebDAV)").enabled && [menu(@"Save sync (WebDAV)").titleOfSelectedItem isEqualToString:@"On"]);
+    pick(@"Save sync (WebDAV)", @"Off"); assert(![NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_WEBDAV_ENABLED"]);
+    shows(@"Save sync (WebDAV)", @"Off");
+    pick(@"Save sync (WebDAV)", @"On"); assert([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_WEBDAV_ENABLED"]);
+    urlField.stringValue = @"   "; [urlRow changed:urlField];
+    assert([NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_WEBDAV_URL"] == nil);
+    [settingsPanel.timer fire]; assert(!menu(@"Save sync (WebDAV)").enabled);
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"TOTK_WEBDAV_ENABLED"];
     /* Rows are made at each opening: a variable that decides (greyed out), a device the run started without (the next
        launch), a strength the file holds that is not a choice. */
     press(18); fakeFeedbackLocked[1] = 1; fakeFeedbackPresent[0] = 0; fakeGain = 2.5f; press(18); assert(settingsOpen);
@@ -909,6 +930,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, WebDAV save sync, game keys blocked while open, keys 2-7 inert, Chinese)");
     return 0;
 }}

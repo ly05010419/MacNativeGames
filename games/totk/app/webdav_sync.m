@@ -30,9 +30,20 @@ static NSString *setting(NSString *key) {
     return [NSUserDefaults.standardUserDefaults stringForKey:key];
 }
 
+/* The settings panel's switch (runtime/settings_panel.h; the Mac also has the defaults key). The environment's
+   TOTK_WEBDAV_ENABLED decides first, then the defaults; a missing key means on, so what was configured before the
+   switch existed (the iPhone's Settings pane, an earlier defaults write) keeps running. */
+static BOOL webdav_enabled(void) {
+    const char *e = getenv("TOTK_WEBDAV_ENABLED");
+    if (e && *e) return strcmp(e, "0") != 0;
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_WEBDAV_ENABLED"];
+    return v == nil || [v boolValue];
+}
+
 mng_webdav_config mng_webdav_config_read(void) {
     static char url[1024], user[256], password[256];
     mng_webdav_config c = {NULL, NULL, NULL};
+    if (!webdav_enabled()) return c;
     NSString *u = setting(@"TOTK_WEBDAV_URL");
     if (![u isKindOfClass:NSString.class]) return c;
     u = [u stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];

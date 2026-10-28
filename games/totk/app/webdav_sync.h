@@ -1,8 +1,9 @@
 /* The WebDAV backend of app/save_sync.h, plus the configuration the Mac launcher and the iPhone app share:
    TOTK_WEBDAV_URL / TOTK_WEBDAV_USER / TOTK_WEBDAV_PASSWORD in the environment win, then NSUserDefaults (the iPhone's
-   Settings pane, `defaults write org.macnativegames.totk TOTK_WEBDAV_URL ...` on the Mac; Basic auth over HTTPS).
-   Off unless a URL is configured. Works with the common servers (坚果云, Nextcloud, Apache, nginx): PROPFIND with
-   Depth 1 only, GET, PUT, MKCOL, DELETE. */
+   Settings pane, the Mac game's settings panel (key 1) and `defaults write org.macnativegames.totk TOTK_WEBDAV_URL ...`;
+   Basic auth over HTTPS). TOTK_WEBDAV_ENABLED in the environment or the defaults switches the sync off ("0"; the key's
+   absence means on). Off unless a URL is configured. Works with the common servers (坚果云, Nextcloud, Apache, nginx):
+   PROPFIND with Depth 1 only, GET, PUT, MKCOL, DELETE. */
 #pragma once
 
 typedef struct { const char *url, *user, *password; } mng_webdav_config;
