@@ -119,7 +119,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.rows.count == 13);
+    assert(settingsPanel.rows.count == (totk_hdr_available() ? 15u : 13u));
 
     /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
     assert(!switched(@"FPS graph"));

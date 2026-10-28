@@ -33,9 +33,13 @@ static void user_input(const char *what){
    Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m: overlay, frame interpolation, picture, aspect
    ratio, edge smoothing, controller type, mouse); held-key repeats do not toggle it. Keys 2-7 are no shortcuts any more
    (user 2026-10-25: the panel replaces them). */
-enum { KEY_SETTINGS = 18 };
+enum { KEY_SETTINGS = 18, KEY_HDR = 28 };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
- if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
+#if TARGET_OS_OSX
+ if(press&&code==KEY_HDR)runtime_front_hdr_toggle();
+#endif
+}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}

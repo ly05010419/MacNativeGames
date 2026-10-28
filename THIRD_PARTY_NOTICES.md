@@ -14,6 +14,7 @@ Code in this repository that comes from other projects keeps its license; the li
 | in `games/totk/runtime/threads.c`: SignalToAddress that wakes all waiters subtracts 2, SystemEvent bindings that end with their write handle, signals that wake only the waiters of the signalled object (checked by `games/totk/tests/system_event_bind`) | [nxnative](https://github.com/seedds/nxnative) commits `d47f899`, `49ee623`, `df7badd`, rewritten for this runtime (via PR #159) | MIT | `games/totk/third_party/licenses/nxnative.txt` |
 | spin-wait search and copy in `games/totk/third_party/d2r/patch_nso.py` ("Spin waits") and its test `tests/test_spin_waits.py` | [nxnative](https://github.com/seedds/nxnative) commits `066f2af`, `6d34984`, adapted to this rewriter | MIT | `games/totk/third_party/licenses/nxnative.txt` |
 | audio effects in `games/totk/runtime/audio_reverb.c`, `games/totk/runtime/audio_effects.c` (delay, reverb, compressor) and the mixer | ported from Ryujinx.Audio | MIT | `games/totk/third_party/licenses/Ryujinx-Audio.txt` |
+| Scene HDR math and grading in `games/totk/third_party/d2r_gfx/gfx/nvn/totk_hdr_compose.h` | [RenoDX TOTK](https://github.com/Souperman9/renodx/tree/40d764d88719ab06c8e46139b5454e7dafc8cbcc/src/games/totk) | MIT | `games/totk/third_party/d2r_gfx/gfx/nvn/LICENSE.renodx` |
 
 Fetched or linked at build time (not in this repository):
 

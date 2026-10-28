@@ -65,11 +65,19 @@ static void settings_window_for(int mode) {
 }
 
 static void settings_refresh_all(void);
+static void settings_navigate(int hdr);
 @interface TOTKSettingRow:NSObject
 @property(copy) NSString *title;
+@property(copy) NSString *help;
+@property(copy) NSString *actionTitle;
+@property BOOL slider;
+@property int minimum,maximum,step;
+@property(copy) NSString *(^valueTitle)(int value);
+@property(strong) NSTextField *readout;
 @property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch */
 @property(copy) NSArray<NSNumber *> *values;    /* what each choice sets */
 @property(copy) int (^get)(void);
+@property(copy) BOOL (^available)(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
 @property(strong) NSControl *control;
@@ -78,13 +86,20 @@ static void settings_refresh_all(void);
 @end
 @implementation TOTKSettingRow
 -(void)changed:(id)sender{
- int v=[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
+ int v=0;
+ if(self.slider){
+  v=self.minimum+(int)lround((((NSSlider *)sender).doubleValue-self.minimum)/self.step)*self.step;
+  v=MAX(self.minimum,MIN(self.maximum,v));((NSSlider *)sender).doubleValue=v;
+ }else if(!self.actionTitle)v=[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
- [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
- settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
+ if(!self.slider)[self.control.window makeFirstResponder:self.control.window.contentView];
+ settings_refresh_all();
 }
 -(void)refresh{
+ if(self.available)self.control.enabled=self.available();
+ if(self.actionTitle)return;
  int v=self.get?self.get():0;
+ if(self.slider){((NSSlider *)self.control).doubleValue=v;self.readout.stringValue=self.valueTitle?self.valueTitle(v):[NSString stringWithFormat:@"%d",v];return;}
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
  NSPopUpButton *p=(NSPopUpButton *)self.control;
  if(self.firstTitle&&p.numberOfItems){NSString *t=self.firstTitle();if(![[p itemAtIndex:0].title isEqualToString:t])[p itemAtIndex:0].title=t;}
@@ -139,6 +154,29 @@ static NSString *settings_pad_auto_text(void) {
  return settings_text("自动（未接手柄）","Auto (no controller)");
 }
 
+/* Numeric controls use live sliders; categories such as resolution keep menus. */
+static TOTKSettingRow *settings_hdr_parameter(int which,NSString *title){
+ const TotkHDRParameter *p=&totk_hdr_parameters[which];
+ TOTKSettingRow *r=settings_row(title,nil,nil,^int{return (int)lroundf(front_hdr_parameter(which)*1000);},^(int v){front_hdr_parameter_save(which,v/1000.0f);});
+ r.slider=YES;r.minimum=(int)lroundf(p->minimum*1000);r.maximum=(int)lroundf(p->maximum*1000);
+ r.step=which==TOTK_HDR_PEAK?1000:which==TOTK_HDR_CONTRAST||which>=TOTK_HDR_SDR_PIVOT?10:50;
+ r.valueTitle=^NSString *(int v){
+  float f=v/1000.0f;
+  if(which==TOTK_HDR_PEAK&&v==0)return settings_text("自动","Auto");
+  if(which==TOTK_HDR_EXPOSURE)return [NSString stringWithFormat:@"%+.2f EV",f];
+  if(which==TOTK_HDR_SDR_PIVOT)return [NSString stringWithFormat:@"%.2f",f];
+  if(which>TOTK_HDR_SDR_PIVOT)return [NSString stringWithFormat:@"%.0f%%",f*100];
+  return [NSString stringWithFormat:which==TOTK_HDR_PEAK?@"%.0f×":@"%.2f×",f];
+ };
+ r.help=settings_text("拖动即时生效，停止拖动后自动保存。游戏／界面白点以屏幕当前 SDR 白为 1×，峰值受实际 EDR 余量限制。","Applies while dragging and saves after the drag. Game/UI white uses current SDR white as 1×; peak is bounded by actual EDR headroom.");
+ return r;
+}
+static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
+ static const char *const zh[TOTK_HDR_PARAMETER_COUNT]={"峰值亮度","游戏白点","界面白点","曝光","高光","暗部","对比度","饱和度","Bloom 泛光","SDR 暗部拐点","原版色相保留","原版褪色保留","原版饱和度"};
+ static const char *const en[TOTK_HDR_PARAMETER_COUNT]={"Peak brightness","Game white","UI white","Exposure","Highlights","Shadows","Contrast","Saturation","Bloom","SDR toe pivot","SDR hue","SDR blowout","Vanilla saturation"};
+ for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++)[rows addObject:settings_hdr_parameter(i,settings_text(zh[i],en[i]))];
+}
+
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),
@@ -153,7 +191,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),
   @[settings_text("关","Off"),@"30+30",@"40+40",@"50+50",settings_text("不限帧","Unlimited")],
   @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_MAX)],
-  ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);})];
+  ^int{return front_hdr_enabled()?MFX_OFF:mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);})];
+ rows.lastObject.available=^BOOL{return !front_hdr_enabled();};
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
  static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX};
@@ -192,11 +231,19 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ if(totk_hdr_available()){
+  [rows addObject:settings_row(settings_text("HDR / EDR（8 键）","HDR / EDR (key 8)"),nil,nil,^int{return front_hdr_enabled();},^(int v){runtime_front_hdr_set(v);})];
+  TOTKSettingRow *hdr=settings_row(settings_text("HDR 映射","HDR tone mapping"),nil,nil,^int{return 0;},^(int v){(void)v;settings_navigate(1);});
+  hdr.actionTitle=settings_text("参数设置…  ›","Adjust…  ›");[rows addObject:hdr];
+ }
  return rows;
 }
 
 @interface TOTKSettingsPanel:NSView
+@property BOOL hdrPage;
+-(instancetype)initWithHDR:(BOOL)hdr;
 @property(strong) NSArray<TOTKSettingRow *> *rows;
+@property(strong) NSScrollView *rowsScroll;
 @property(strong) NSMutableArray<NSView *> *controllerTargets;
 @property NSInteger controllerIndex;
 @property BOOL controllerArmed;
@@ -216,37 +263,54 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 static NSPoint g_settings_at = {-1, -1};
 @implementation TOTKSettingsPanel
 enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 54, SETTINGS_BOTTOM = 86, SETTINGS_POP_W = 260 };
--(instancetype)init{
- NSArray<TOTKSettingRow *> *rows=settings_rows();
+-(instancetype)init{return [self initWithHDR:NO];}
+-(instancetype)initWithHDR:(BOOL)hdr{
+ NSMutableArray<TOTKSettingRow *> *hdrRows=[NSMutableArray array];
+ if(hdr)settings_hdr_rows(hdrRows);
+ NSArray<TOTKSettingRow *> *rows=hdr?hdrRows:settings_rows();
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button and first rows stay in view. */
  CGFloat n=rows.count,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
  if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
- CGFloat h=SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM;
+ CGFloat listH=n*(rowH+gap)-gap;
+ CGFloat h=fmin(SETTINGS_TOP+listH+SETTINGS_BOTTOM,fmax(SETTINGS_TOP+SETTINGS_BOTTOM+80,room));
  if(!(self=[super initWithFrame:NSMakeRect(0,0,SETTINGS_W,h)]))return nil;
- self.rows=rows;self.controllerTargets=[NSMutableArray array];self.controllerIndex=0;self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+ self.hdrPage=hdr;self.rows=rows;self.controllerTargets=[NSMutableArray array];self.controllerIndex=0;self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
  self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
  self.layer.cornerRadius=12;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.12].CGColor;
  self.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
- NSTextField *title=[NSTextField labelWithString:settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
- title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
+ NSTextField *title=[NSTextField labelWithString:hdr?settings_text("HDR 映射设置","HDR tone mapping"):settings_text("设置","Settings")];title.font=[NSFont systemFontOfSize:17 weight:NSFontWeightSemibold];
+ title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(hdr?100:18,h-38,hdr?350:300,24);[self addSubview:title];
+ if(hdr){NSButton *back=[NSButton buttonWithTitle:settings_text("‹ 返回","‹ Back") target:self action:@selector(back:)];back.bordered=NO;back.refusesFirstResponder=YES;back.frame=NSMakeRect(12,h-39,80,26);[self addSubview:back];}
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(SETTINGS_W-40,h-40,28,28);[self addSubview:close];
+ NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(14,SETTINGS_BOTTOM,SETTINGS_W-28,h-SETTINGS_TOP-SETTINGS_BOTTOM)];
+ scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.scrollerStyle=NSScrollerStyleOverlay;
+ NSView *document=[[NSView alloc] initWithFrame:NSMakeRect(0,0,SETTINGS_W-28,listH)];scroll.documentView=document;self.rowsScroll=scroll;[self addSubview:scroll];
  for(NSUInteger i=0;i<rows.count;i++){
-  TOTKSettingRow *r=rows[i];CGFloat y=h-SETTINGS_TOP-(i+1)*rowH-i*gap,rw=SETTINGS_W-28;
-  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
-  band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[self addSubview:band];
+  TOTKSettingRow *r=rows[i];CGFloat y=listH-(i+1)*rowH-i*gap,rw=SETTINGS_W-28;
+  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(0,y,rw,rowH)];band.wantsLayer=YES;
+  band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[document addSubview:band];
   NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
   label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((rowH-18)/2),rw-SETTINGS_POP_W-24,18);[band addSubview:label];
-  if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
+  if(r.slider){
+   NSSlider *slider=[NSSlider sliderWithValue:r.get?r.get():r.minimum minValue:r.minimum maxValue:r.maximum target:r action:@selector(changed:)];
+   slider.continuous=YES;slider.frame=NSMakeRect(rw-SETTINGS_POP_W-8,(rowH-24)/2,SETTINGS_POP_W-90,24);r.control=slider;
+   NSTextField *value=[NSTextField labelWithString:@""];value.alignment=NSTextAlignmentRight;value.font=[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
+   value.textColor=label.textColor;value.frame=NSMakeRect(rw-88,(rowH-18)/2,78,18);[band addSubview:value];r.readout=value;
+  }
+  else if(r.actionTitle){NSButton *b=[NSButton buttonWithTitle:r.actionTitle target:r action:@selector(changed:)];b.frame=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26);r.control=b;}
+  else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
   else{NSPopUpButton *p=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[p addItemsWithTitles:r.choices];
    p.enabled=r.set!=nil;r.control=p;}
+  r.control.toolTip=r.help;label.toolTip=r.help;
   r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];[self.controllerTargets addObject:band];
  }
+ [document scrollPoint:NSMakePoint(0,fmax(0,listH-scroll.contentSize.height))];
  CGFloat bw=(SETTINGS_W-28-10)/2;
- NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
+ NSButton *contrib=[NSButton buttonWithTitle:hdr?settings_text("‹ 返回设置","‹ Back to settings"):settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:hdr?@selector(back:):@selector(contribute:)];
  contrib.frame=NSMakeRect(14,40,bw,30);contrib.refusesFirstResponder=YES;[self addSubview:contrib];[self.controllerTargets addObject:contrib];
- NSButton *star=[NSButton buttonWithTitle:settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:@selector(star:)];
+ NSButton *star=[NSButton buttonWithTitle:hdr?settings_text("恢复 HDR 默认值","Reset HDR defaults"):settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:hdr?@selector(resetHDR:):@selector(star:)];
  star.frame=NSMakeRect(14+bw+10,40,bw,30);star.refusesFirstResponder=YES;[self addSubview:star];[self.controllerTargets addObject:star];
  NSTextField *hint=[NSTextField labelWithString:settings_text("按 1 或 Esc 关闭 · 打开时键盘和鼠标不会传给游戏","1 or Esc closes it · keyboard and mouse do not reach the game while it is open")];
  hint.font=[NSFont systemFontOfSize:11];hint.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];hint.alignment=NSTextAlignmentCenter;
@@ -270,13 +334,16 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
   v.layer.borderWidth=(NSInteger)i==self.controllerIndex?2:0;
   v.layer.borderColor=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1].CGColor;
  }
+ if(self.controllerIndex>=0&&self.controllerIndex<(NSInteger)self.rows.count){NSView *v=self.controllerTargets[self.controllerIndex];[v scrollRectToVisible:v.bounds];}
 }
 -(void)controllerHint{
  int detected=-1,type=runtime_gamepad_type(&detected);if(!type)type=detected;
  BOOL ps=type==GAMEPAD_TYPE_PLAYSTATION,sw=type==GAMEPAD_TYPE_SWITCH;
  NSString *select=ps?@"×":@"A",*cancel=ps?@"○":@"B";
  NSString *chord=ps?@"L2 + R2 + L3":sw?@"ZL + ZR + L stick":@"LT + RT + LS";
- self.hint.stringValue=[NSString stringWithFormat:settings_text("↑↓ 选择 · ←→ 调整 · %@ 确定 · %@ 关闭\n按住 %@ 1 秒：打开 / 关闭 · 1 / Esc", "↑↓ Navigate · ←→ Change · %@ Select · %@ Close\nHold %@ for 1 s: open / close · 1 / Esc"),select,cancel,chord];
+ self.hint.stringValue=self.hdrPage?
+  [NSString stringWithFormat:settings_text("↑↓ 选择 · ←→ 调整 · %@ 返回\nEsc 返回设置 · 1 关闭 · 8 切换 HDR", "↑↓ Navigate · ←→ Adjust · %@ Back\nEsc returns to settings · 1 closes · 8 toggles HDR"),cancel]:
+  [NSString stringWithFormat:settings_text("↑↓ 选择 · ←→ 调整 · %@ 确定 · %@ 关闭\n按住 %@ 1 秒：打开 / 关闭 · 1 / Esc", "↑↓ Navigate · ←→ Change · %@ Select · %@ Close\nHold %@ for 1 s: open / close · 1 / Esc"),select,cancel,chord];
 }
 -(void)controllerMove:(int)step{
  NSInteger count=self.controllerTargets.count;
@@ -290,7 +357,9 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  NSInteger i=self.controllerIndex;if(![self controllerEnabled:i])return;
  if(i>=(NSInteger)self.rows.count){if(select)[(NSButton *)self.controllerTargets[i] performClick:nil];return;}
  TOTKSettingRow *r=self.rows[i];
- if(r.choices){
+ if(r.actionTitle){if(select)[(NSButton *)r.control performClick:nil];return;}
+ if(r.slider){NSSlider *slider=(NSSlider *)r.control;slider.doubleValue=MAX(r.minimum,MIN(r.maximum,slider.doubleValue+step*r.step));}
+ else if(r.choices){
   NSPopUpButton *p=(NSPopUpButton *)r.control;NSInteger n=p.numberOfItems;if(n<2)return;
   NSInteger index=p.indexOfSelectedItem;if(index<0)index=0;
   [p selectItemAtIndex:(index+step+n)%n];
@@ -307,7 +376,7 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  if(!self.controllerArmed){if(!pad.buttons&&!direction)self.controllerArmed=YES;self.previousButtons=pad.buttons;return;}
  uint64_t edges=pad.buttons&~self.previousButtons;self.previousButtons=pad.buttons;
  int detected=-1,type=runtime_gamepad_type(&detected);if(!type)type=detected;
- if(edges&(type==GAMEPAD_TYPE_SWITCH?1u:2u)){settings_show(0);return;}
+ if(edges&(type==GAMEPAD_TYPE_SWITCH?1u:2u)){settings_back();return;}
  if(direction&&(direction!=self.previousDirection||now>=self.repeatAt)){
   if(direction<=2)[self controllerMove:direction==1?-1:1];else [self controllerChange:direction==3?-1:1 select:NO];
   self.repeatAt=now+(direction==self.previousDirection?0.14:0.4);
@@ -315,6 +384,8 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
  self.previousDirection=direction;
  if(edges&(type==GAMEPAD_TYPE_SWITCH?2u:1u))[self controllerChange:1 select:YES];
 }
+-(void)back:(id)sender{(void)sender;settings_back();}
+-(void)resetHDR:(id)sender{(void)sender;front_hdr_parameters_reset();[self refresh];}
 -(void)close:(id)sender{(void)sender;settings_show(0);}
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
@@ -353,9 +424,24 @@ enum { SETTINGS_W = 520, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 5
 
 static TOTKSettingsPanel *settingsPanel;
 static void settings_refresh_all(void) { [settingsPanel refresh]; }
+/* Rebuild only the settings view. Navigation keeps the game's input captured. */
+static void settings_navigate(int hdr){
+ dispatch_async(dispatch_get_main_queue(),^{
+  if(!settingsOpen||!window||textEntryOpen)return;
+  front_hdr_parameters_flush();
+  [settingsPanel.timer invalidate];[settingsPanel removeFromSuperview];
+  settingsPanel=[[TOTKSettingsPanel alloc] initWithHDR:hdr!=0];
+  [window.contentView addSubview:settingsPanel];[settingsPanel center];
+  if(!hdr&&totk_hdr_available()){settingsPanel.controllerIndex=settingsPanel.rows.count-1;[settingsPanel controllerHighlight];}
+  [window makeFirstResponder:window.contentView];
+ });
+}
+static void settings_back(void){if(settingsOpen&&settingsPanel.hdrPage)settings_navigate(0);else settings_show(0);}
+
 static void settings_show(int open) {   /* main thread */
  open=!!open;
  if(!window||open==settingsOpen||(open&&textEntryOpen))return;
+ if(!open)front_hdr_parameters_flush();
  /* Made again at every opening: what the game offers (aspect ratio, resolution) is known only once its code is in. */
  if(open){[settingsPanel.timer invalidate];[settingsPanel removeFromSuperview];settingsPanel=[TOTKSettingsPanel new];[window.contentView addSubview:settingsPanel];}
  settingsOpen=open;
