@@ -71,8 +71,9 @@ class ScrollArea:
     The wheel and the trackpad use Tk 9.1's own handlers, in units of yscrollincrement, through a bind tag put in front
     of the class tag of every widget inside (the build log's Text keeps its own scrolling). The plain wheel scrolls the
     body and stops there (an Entry's own vertical wheel does nothing useful); Shift+wheel and the trackpad's sideways
-    part go on to an Entry's class binding, so long paths still scroll sideways (C1). sync() brings the scroll region
-    and the tags up to date; the view calls it after adding or removing rows and after a panel switch (C2). A focused
+    part go on to an Entry's class binding, so long paths still scroll sideways (C1; on Tk 9.0, which has no Entry
+    wheel bindings, the tag scrolls the Entry on Shift+wheel itself). sync() brings the scroll region and the tags up
+    to date; the view calls it after adding or removing rows and after a panel switch (C2). A focused
     field that is not fully visible is brought into view by the least scroll (C4)."""
 
     def __init__(self, parent):
@@ -86,8 +87,13 @@ class ScrollArea:
         self._window = self.canvas.create_window(0, 0, window=self.inner, anchor='nw')
         self.tag, canvas = f'BuilderWheel{id(self)}', str(self.canvas)
         self.canvas.bind_class(self.tag, '<MouseWheel>', f'tk::MouseWheel {canvas} y %D -40.0 units; break')
-        for sequence in ('<Shift-MouseWheel>', '<Shift-Mod2-MouseWheel>'):
-            self.canvas.bind_class(self.tag, sequence, 'list')         # nothing here, and no break: the class runs
+        # Entry's own wheel bindings came with Tk 9.1; Tk 9.0 (python.org's Python, the CI runner) has none, so there
+        # Shift+wheel did nothing and long paths could not be scrolled sideways. Without them the tag scrolls the Entry
+        # itself, by Tk 9.1's amounts (40 per unit, 12 with Option).
+        entry_wheel = bool(self.canvas.bind_class('Entry', '<Shift-MouseWheel>'))
+        for sequence, factor in (('<Shift-MouseWheel>', -40.0), ('<Shift-Mod2-MouseWheel>', -12.0)):
+            self.canvas.bind_class(self.tag, sequence, 'list' if entry_wheel else    # 9.1: no break, the class runs
+                                   f'if {{[winfo class %W] eq "Entry"}} {{tk::MouseWheel %W x %D {factor} units}}')
         self.canvas.bind_class(self.tag, '<TouchpadScroll>', TOUCHPAD.replace('CANVAS', canvas))
         self.canvas.bind_class(self.tag, '<FocusIn>', lambda e: self.reveal(e.widget))
         self.inner.bind('<Configure>', lambda e: self._region())       # a backup; sync() is the one relied on
