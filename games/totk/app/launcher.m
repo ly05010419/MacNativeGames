@@ -24,6 +24,7 @@
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
 #include "auto_update.h"           // the settings panel's Update page: --update-check, --update-install
+#include "webdav_sync.h"   // the save sync over WebDAV (off unless configured)
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -438,6 +439,10 @@ int main(int argc, char **argv) {
             fclose(lf);
         }
         setenv("TOTK_UPDATE_LAUNCHER", NSBundle.mainBundle.executablePath.fileSystemRepresentation, 1);   // the Update page starts it
+        /* Save sync over WebDAV (docs/save-sync-webdav.md): off unless TOTK_WEBDAV_URL is set here or in the defaults
+           (defaults write org.macnativegames.totk TOTK_WEBDAV_URL ...). The game is not running (checked above), so the
+           saves are settled; progress made in this session is uploaded at the next start, the launcher execv's away. */
+        mng_webdav_sync_profile(GAME_FOLDER, profile.fileSystemRepresentation, slot.fileSystemRepresentation);
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);
         int failed = errno;

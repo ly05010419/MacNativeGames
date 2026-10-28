@@ -186,6 +186,16 @@ probe-gfx: runtime
 probe-gpu-pool-retire probe-gpu-tex-slots probe-gpu-arg-epoch probe-gpu-vertex-streams probe-gpu-vin probe-gpu-fout probe-gpu-pipeline-archive probe-gpu-widen probe-gpu-blockrt probe-gpu-midclear probe-gpu-winding probe-gpu-tile probe-gpu-depth-output probe-gpu-srgb-view probe-gpu-ds-clear probe-gpu-ub-rename probe-gpu-ubo-snapshot probe-gpu-upload-batch probe-gpu-storage-view probe-gpu-linear-rt probe-gpu-texture-retire probe-gpu-texels-region probe-gpu-layer-merge probe-gpu-cube-merge probe-gpu-compressed-alias probe-gpu-drv-c0 probe-gpu-dispatch-chain probe-gpu-copy-alias: runtime
 	MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=assert TOTK_HEADLESS=1 build/totk-native rewritten/v0 $@ > analysis/native-$@.json
 	cat analysis/native-$@.json
+
+# One WebDAV save sync through the launcher's own code path (app/webdav_sync.h): a profile laid out as the apps make it
+# (profile/save/<account>, account.uid beside it), a server named by TOTK_WEBDAV_URL/_USER/_PASSWORD —
+# scripts/mini_webdav.py can stand in for the server.   make -C games/totk probe-save-sync PROFILE=/tmp/save-sync-profile
+probe-save-sync:
+	xcrun clang -fobjc-arc -O1 -g -Wall -Wextra -Werror -Iapp tests/save_sync/probe.m app/save_sync.c app/webdav_sync.m -framework Foundation -o build/probe-save-sync
+	TOTK_WEBDAV_URL="$(TOTK_WEBDAV_URL)" TOTK_WEBDAV_USER="$(TOTK_WEBDAV_USER)" TOTK_WEBDAV_PASSWORD="$(TOTK_WEBDAV_PASSWORD)" \
+		./build/probe-save-sync "$(PROFILE)" "$(GAME)"
+.PHONY: probe-save-sync
+
 .PHONY: probe-game-slot desktop-launcher
 # One game at a time: queue order, the user's game going first and stopping an agent's game, the slot passed down
 # by a wrapper, refusals of a wrong descriptor, games outside the slot, wait limit; dry runs only (no game boots).
