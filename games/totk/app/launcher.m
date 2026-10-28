@@ -28,6 +28,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_contrib_upload.h"
+#include "webdav_sync.h"   // the save sync over WebDAV (off unless configured)
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -399,6 +400,10 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
+        /* Save sync over WebDAV (docs/save-sync-webdav.md): off unless TOTK_WEBDAV_URL is set here or in the defaults
+           (defaults write org.macnativegames.totk TOTK_WEBDAV_URL ...). The game is not running (checked above), so the
+           saves are settled; progress made in this session is uploaded at the next start, before the game boots. */
+        mng_webdav_sync_profile(GAME_FOLDER, profile.fileSystemRepresentation, slot.fileSystemRepresentation);
         static char *arguments[4] = {NULL, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         arguments[0] = argv[0];
         *boot = arguments;

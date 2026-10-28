@@ -2,6 +2,10 @@
 #include "../games/totk/app/launcher.m"
 #undef main
 #include <assert.h>
+/* The launcher's one save-sync call (app/webdav_sync.h) is outside this probe: its main never runs here. */
+void mng_webdav_sync_profile(const char *game_folder, const char *profile, const char *slot_dir) {
+    (void)game_folder; (void)profile; (void)slot_dir;
+}
 int main(void){@autoreleasepool{
  NSFileManager *fm=NSFileManager.defaultManager;NSString *folder=[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
  [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];

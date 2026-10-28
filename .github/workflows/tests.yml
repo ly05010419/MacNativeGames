@@ -75,3 +75,7 @@ jobs:
       # The C test list lives in the root Makefile (C_TESTS); keep CI and `make check` in lockstep.
       - name: Check C unit tests with the undefined-behavior sanitizer
         run: make check-c
+      - name: Check the save sync merge with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_save_sync.c games/totk/app/save_sync.c -Igames/totk/app -o "$RUNNER_TEMP/test-save-sync"
+          "$RUNNER_TEMP/test-save-sync"
