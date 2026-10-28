@@ -22,7 +22,10 @@
 
 ## 怎么开启
 
-三个值，各平台同一个名字。Mac 上：
+三个值，各平台同一个名字。Mac 上最省事的是游戏自带的面板：**游戏里按 1**，在面板
+底部的「WebDAV 地址 / 用户名 / 密码」里填好，上方的「存档同步（WebDAV）」行负责
+开关（没填地址前开关是灰的）。这里写入的值和下面的 `defaults write` 等效，下次启动
+游戏时同步生效。也可以用终端：
 
 ```sh
 defaults write org.macnativegames.totk TOTK_WEBDAV_URL https://dav.jianguoyun.com/dav
@@ -31,8 +34,8 @@ defaults write org.macnativegames.totk TOTK_WEBDAV_PASSWORD <应用密码>
 ```
 
 （BotW 用 `org.macnativegames.botw`。）iPhone 上是 **设置 › TOTK › 存档同步
-（WebDAV）** 的三个输入框。同名的环境变量优先，测试就是这样传入的。坚果云和
-Nextcloud 请用应用专用密码，不要用账号密码。
+（WebDAV）** 的三个输入框。同名的环境变量优先——包括 `TOTK_WEBDAV_ENABLED=0`，设了
+它就会整体关掉同步。坚果云和 Nextcloud 请用应用专用密码，不要用账号密码。
 
 存档在服务器上落在 `MacNativeGames/<game>/saves/`，首次同步时自动建目录。
 
