@@ -6,7 +6,7 @@
                                                              frame lock and frame interpolation exclude each other: picking
                                                              one turns the other off (user 2026-10-25, not to mislead)
      frame interpolation  off / 30+30 / 40+40 / 50+50 /      runtime flag mfx_interp (gfx/nvn/totk_mfx.m)
-                          unlimited
+                          half the refresh rate / unlimited
      resolution           720p / 1080p / + MetalFX / 2K /    runtime_output_mode_set (game_patches*.c); the player picks,
                           2K + MetalFX (a 4K screen)
                                                              1080p is the start (1.4.3 keeps the last pick); the window
@@ -90,7 +90,8 @@ static void settings_restore_begin(void) {
  if(!getenv("TOTK_MFX")&&runtime_setting_word("graphics-frame.txt",word,sizeof word)){
   int n=0;char tail=0;
   if(sscanf(word,"lock-%d %c",&n,&tail)==1&&(n==30||n==40||n==60)){dm_gfx_set_flag("mfx_interp",MFX_OFF);nvn_fps_lock_set(n);}
-  else if(sscanf(word,"interp-%d %c",&n,&tail)==1&&n>=MFX_30&&n<=MFX_MAX){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",n);}
+  /* MFX_HALF is the last entry in the enum, after MFX_MAX, so it is named apart from the 30 / 40 / 50 range. */
+  else if(sscanf(word,"interp-%d %c",&n,&tail)==1&&((n>=MFX_30&&n<=MFX_MAX)||n==MFX_HALF)){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",n);}
   else if(!strcmp(word,"off")||!strcmp(word,"off\n")){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",MFX_OFF);}
  }
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
@@ -207,8 +208,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[settings_text("关","Off"),settings_text("30 帧","30 fps"),settings_text("40 帧","40 fps"),settings_text("60 帧","60 fps")],@[@0,@30,@40,@60],
   ^int{return nvn_fps_lock();},^(int v){nvn_fps_lock_set(v);if(v)dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();})];
  [rows addObject:settings_row(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),
-  @[settings_text("关","Off"),@"30+30",@"40+40",@"50+50",settings_text("不限帧","Unlimited")],
-  @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_MAX)],
+  @[settings_text("关","Off"),@"30+30",@"40+40",@"50+50",settings_text("半刷新率","Half the refresh rate"),settings_text("不限帧","Unlimited")],
+  @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_HALF),@(MFX_MAX)],
   ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);settings_save_frame();})];
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];

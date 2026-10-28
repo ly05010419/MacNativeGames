@@ -133,6 +133,8 @@ static void persistence_probe(const char *action) {
         assert(settingsPendingOutput == -1 && settingsPendingAspect == 0 && mfx_requested() == MFX_MAX && !taa_enabled()); return;
     }
     if (!strcmp(action, "lock")) { assert(fakeLock == 60 && mfx_requested() == MFX_OFF); return; }
+    /* Half the refresh rate is the last entry in the enum, past MFX_MAX, so a kept "interp-5" must come back as it was. */
+    if (!strcmp(action, "half")) { assert(fakeLock == 0 && mfx_requested() == MFX_HALF); return; }
     assert(fakeLock == 0 && mfx_requested() == MFX_40 && taa_enabled());
     assert(settingsPendingOutput == OUTPUT_MODE_NATIVE && settingsPendingAspect > 2.3f);
     settings_restore_ready(); assert(settingsPendingOutput == OUTPUT_MODE_NATIVE && settingsPendingAspect > 2.3f);
@@ -197,7 +199,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     mfx_set(MFX_MAX); shows(@"Frame interpolation", @"Unlimited");
     pick(@"Frame interpolation", @"40+40"); assert(mfx_requested() == MFX_40);
     pick(@"Frame interpolation", @"50+50"); assert(mfx_requested() == MFX_50);
-    assert(menu(@"Frame interpolation").numberOfItems == 5 && menu(@"Frame lock").numberOfItems == 4);
+    pick(@"Frame interpolation", @"Half the refresh rate"); assert(mfx_requested() == MFX_HALF);
+    assert(menu(@"Frame interpolation").numberOfItems == 6 && menu(@"Frame lock").numberOfItems == 4);
     pick(@"Frame interpolation", @"Off"); mfx_latch(); assert(!mfx_enabled());
 
     /* Resolution: the player picks; 1080p without MetalFX at the start. */

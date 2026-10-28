@@ -1,12 +1,12 @@
-/* Rumble and gyro settings a player can keep (Mac): one-word files next to controls.txt, like controller-type.txt and
-   mouse.txt (runtime/gamepad.m runtime_setting_word), so they can be set without the environment of a launch:
-     rumble.txt       on | off    the same as TOTK_RUMBLE (runtime/hid_feedback.c)
-     gyro.txt         on | off    the same as TOTK_GYRO
-     rumble-gain.txt  a number in (0, 4], the same as TOTK_RUMBLE_GAIN (runtime/gamepad_feedback.m)
+/* Rumble and gyro settings a player can keep (Mac): one word each in settings.json next to controls.txt, like every other
+   setting (runtime/gamepad.m runtime_setting_word), so they can be set without the environment of a launch:
+     rumble       on | off    the same as TOTK_RUMBLE (runtime/hid_feedback.c)
+     gyro         on | off    the same as TOTK_GYRO
+     rumble-gain  a number in (0, 4], the same as TOTK_RUMBLE_GAIN (runtime/gamepad_feedback.m)
    The environment still decides first, and an agent's test session (TOTK_SLOT_OWNER claude / codex) still leaves rumble
-   and gyro off unless the environment turns them on: the player's rumble.txt and gyro.txt do not decide for a test.
-   rumble-gain.txt sets the strength whenever rumble is on, also in a test whose environment turned it on. A word the
-   runtime does not know keeps the default and is logged, as mouse.txt does: a file never stops the game.
+   and gyro off unless the environment turns them on: the player's rumble and gyro words do not decide for a test.
+   rumble-gain sets the strength whenever rumble is on, also in a test whose environment turned it on. A word the
+   runtime does not know keeps the default and is logged, as mouse does: a file never stops the game.
    Plain C, shared by the runtime and tests/test_feedback_settings.c. */
 #pragma once
 #include <ctype.h>

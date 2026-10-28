@@ -1,5 +1,5 @@
-/* runtime/gamepad.m's controller type (key 6): the cycle, the saved controller-type.txt next to controls.txt and reading it
-   back at the next start. The real file is compiled in; no controller is needed (GameController lists none). */
+/* runtime/gamepad.m's controller type (key 6): the cycle, the word it keeps in settings.json (the one file every setting
+   is in) and reading it back at the next start. The real file is compiled in; no controller is needed. */
 #include "../../runtime/gamepad.m"
 
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
@@ -14,16 +14,19 @@ void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64
 static int failures, checked;
 static void check(int ok, const char *what) { checked++; if (!ok) { failures++; fprintf(stderr, "FAIL: %s\n", what); } }
 static void write_text(const char *path, const char *text) { FILE *f = fopen(path, "w"); fputs(text, f); fclose(f); }
-static int file_says(const char *path, const char *text) {
-    char got[64] = {0}; FILE *f = fopen(path, "r"); if (!f) return 0;
-    size_t n = fread(got, 1, sizeof got - 1, f); fclose(f); got[n] = 0; return !strcmp(got, text);
+static int word_is(const char *path, const char *key, const char *word) {
+    char got[2048] = {0}, want[80];
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    size_t n = fread(got, 1, sizeof got - 1, f); fclose(f); got[n] = 0;
+    snprintf(want, sizeof want, "\"%s\" : \"%s\"", key, word);
+    return strstr(got, want) != NULL;
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
     if (argc != 2) { fprintf(stderr, "usage: probe <empty folder>\n"); return 2; }
     char controls[1024], saved[1100];
     snprintf(controls, sizeof controls, "%s/controls.txt", argv[1]);
-    snprintf(saved, sizeof saved, "%s/controller-type.txt", argv[1]);
+    snprintf(saved, sizeof saved, "%s/settings.json", argv[1]);
 
     unsetenv("TOTK_CONTROLS");
     int detected = 7;
@@ -32,21 +35,22 @@ int main(int argc, char **argv) { @autoreleasepool {
 
     setenv("TOTK_CONTROLS", controls, 1);
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO);
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && file_says(saved, "xbox\n"), "settings: Xbox, saved");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_PLAYSTATION) == GAMEPAD_TYPE_PLAYSTATION && file_says(saved, "playstation\n"), "settings: PlayStation, saved");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_SWITCH) == GAMEPAD_TYPE_SWITCH && file_says(saved, "switch\n"), "settings: Switch, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX && word_is(saved, "controller-type", "xbox"), "settings: Xbox, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_PLAYSTATION) == GAMEPAD_TYPE_PLAYSTATION && word_is(saved, "controller-type", "playstation"), "settings: PlayStation, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_SWITCH) == GAMEPAD_TYPE_SWITCH && word_is(saved, "controller-type", "switch"), "settings: Switch, saved");
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_COUNT) == GAMEPAD_TYPE_SWITCH && runtime_gamepad_type_set(-1) == GAMEPAD_TYPE_SWITCH, "not a type: unchanged");
     check(access(saved, F_OK) == 0 && runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the type holds");
 
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO); load_controller_type();
     check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_SWITCH, "the next start reads the saved type");
-    check(runtime_gamepad_type_set(GAMEPAD_TYPE_AUTO) == GAMEPAD_TYPE_AUTO && file_says(saved, "auto\n"), "settings back to auto, saved");
+    check(runtime_gamepad_type_set(GAMEPAD_TYPE_AUTO) == GAMEPAD_TYPE_AUTO && word_is(saved, "controller-type", "auto"), "settings back to auto, saved");
 
-    write_text(saved, "dualsense\n");
+    write_text(saved, "{\"controller-type\":\"dualsense\"}");
+    settingsWords = nil;   /* the store reads once a session; a hand-edited file is a new session */
     atomic_store(&controllerType, GAMEPAD_TYPE_AUTO); load_controller_type();
     check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_AUTO, "a word that is not a type: auto");
-    unlink(saved); load_controller_type();
-    check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_AUTO, "no file: auto");
+    unlink(saved); settingsWords = nil; load_controller_type();
+    check(runtime_gamepad_type(NULL) == GAMEPAD_TYPE_AUTO, "no settings.json: auto");
 
     setenv("TOTK_CONTROLS", "/nonexistent-folder-for-probe/controls.txt", 1);
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX, "a folder that cannot be written: the type still changes for this run");

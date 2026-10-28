@@ -1,8 +1,8 @@
-// TOTK: MetalFX frame interpolation (TOTK_MFX=interp30 / interp / interpmax, or key 2 / flag mfx_interp at run time; not in
-// D2R). MetalFX makes one more frame between two game frames. Modes (totk_mfx.h): the game at 30 fps ("30+30"), at every
-// second display refresh ("50+50" on the user's 100 Hz display: every refresh a new picture, steadier than the uncapped
-// 65-97 fps, about one refresh more latency), or uncapped with every frame interpolated. First planned for the phone
-// (60 fps on a GPU about a third of the M4's).
+// TOTK: MetalFX frame interpolation (TOTK_MFX=interp30 / interp / interphalf / interpmax, or key 2 / flag mfx_interp at
+// run time; not in D2R). MetalFX makes one more frame between two game frames. Modes (totk_mfx.h): the game at 30 fps
+// ("30+30"), at half the display's rate ("half the refresh rate", 60+60 on 120 Hz: every refresh a new picture), at
+// every second display refresh ("50+50" on the user's 100 Hz display: the same thing there), or uncapped with every frame
+// interpolated. First planned for the phone (60 fps on a GPU about a third of the M4's).
 // The replay (nvn_mtl.m) hands over per game frame:
 //  - the scene before the UI: the canvas copied before the first UI draw (docked the upscaled 1600x900 scene, handheld the
 //    1280x720 scene drawn in the canvas itself);
@@ -118,7 +118,7 @@ static id<MTL4FXFrameInterpolator> fi_cached(NSUInteger iw, NSUInteger ih) {
 static _Atomic int g_on, g_req;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 const char *mfx_mode_name(int m) {
-    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "40+40 (the game at 40 fps)", "50+50 (the game at 50 fps)", "uncapped (every game frame interpolated)"};
+    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "40+40 (the game at 40 fps)", "50+50 (the game at 50 fps)", "uncapped (every game frame interpolated)", "half the refresh rate (60+60 at 120 Hz)"};
     return m >= 0 && m < MFX_NMODES ? names[m] : "?";
 }
 static void mfx_init(void) {
@@ -127,8 +127,9 @@ static void mfx_init(void) {
     else if (!strcmp(e, "interp30")) v = MFX_30;
     else if (!strcmp(e, "interp40")) v = MFX_40;
     else if (!strcmp(e, "interp50") || !strcmp(e, "interp")) v = MFX_50;
+    else if (!strcmp(e, "interphalf")) v = MFX_HALF;
     else if (!strcmp(e, "interpmax")) v = MFX_MAX;
-    else MDIE("TOTK_MFX must be interp30, interp40, interp50 (interp), interpmax or 0, got %s", e);
+    else MDIE("TOTK_MFX must be interp30, interp40, interp50 (interp), interphalf, interpmax or 0, got %s", e);
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }

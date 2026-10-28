@@ -2405,6 +2405,7 @@ static void set_time_constraint(uint64_t period_ns);
 static void rt_comp_tick(uint64_t period_ns);
 static int g_uncapped;   // TOTK_UNCAPPED configured, see present_cfg; suspended while frame interpolation paces the game (uncapped_now)
 static int g_paced_hz;   // the display-following rate, used instead of the uncapped clock while interpolation paces the game
+static int g_hz = -1;    // the display's rate (present_cfg); declared here because game_hold_fps (half the refresh rate) reads it
 #include "totk_mfx_mode.h"   /* totk_mfx.m: frame interpolation mode of this game frame (TOTK_MFX, key 2) */
 /* TOTK: frame interpolation at 30 fps or at half the refresh rate paces the game itself, so it suspends the uncapped mode;
    the uncapped interpolation mode keeps it. Key 2 cycles the modes at run time (2026-10-16 night). */
@@ -2444,8 +2445,13 @@ int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
    30+30 / 40+40 / 50+50, else the frame lock. */
 static int game_hold_fps(void) {
     if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
-    int m = mfx_hold_fps(mfx_enabled());
-    return m ? m : atomic_load(&g_fps_lock);
+    int m = mfx_enabled();
+    if (mfx_half(m)) {   /* half the display's rate (2026-10-28): 60 at 120 Hz, 50 at 100 Hz; the generated frame fills the refresh between */
+        int hz = g_paced_hz > 0 ? g_paced_hz : g_hz;
+        return hz > 1 ? hz / 2 : 0;
+    }
+    int h = mfx_hold_fps(m);
+    return h ? h : atomic_load(&g_fps_lock);
 }
 static int uncapped_now(void) { int m = mfx_enabled(); return g_uncapped && !game_hold_fps() && (m == MFX_OFF || m == MFX_MAX); }
 /* A held rate on a display whose rate is not a multiple of it (30 on the user's 100 Hz): the game is paced by our own clock
@@ -2785,7 +2791,7 @@ static void sleep_until_ns(uint64_t dl) {   // 单调时钟上的绝对时刻 | 
 // Present is fixed at 60 Hz: the adaptive mechanism stepped down at frame 60 in 24/24 real-device logs and never came back up, so for this phase 60 fps is the hard floor.
 // DM_PRESENT_HZ=0 (uncapped frame rate) serves only as an explicit performance profiling switch: some of the game's UI logic counts frames (with the same save, uncapped gives
 // 4181 SaveIndicatorPanel entries and capped at 60 fps gives 0, which matches the ground truth), so uncapped is a semantically wrong way to run and must not be used as a criterion / cross-check / default. Unit tests set it directly with nvn_present_config
-static int g_hz = -1, g_display_mode;
+static int g_display_mode;
 /* TOTK_UNCAPPED (Mac and iPhone, default on; =0 off): like vsync off in other games. The game no longer waits for the display: it is
    paced by our own clock at UNCAPPED_HZ, and the display link shows the newest finished frame at every refresh (older ones
    are merged away, as when the game runs ahead). The Mac's ceiling is 120 by default (user 2026-10-22: 240 back to 120);
@@ -2848,7 +2854,9 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
 static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
-        LOG("[nvn] 出图节拍切换：%s%s", mfx_hold_fps(m) ? (mfx_own_clock() ? "补帧：游戏按自己的时钟每秒 " : "补帧：跟随显示器，游戏每秒 ") : "",
+        LOG("[nvn] 出图节拍切换：%s%s", mfx_half(m) ? (mfx_own_clock() ? "补帧 半刷新率：游戏按自己的时钟每秒 " : "补帧 半刷新率：跟随显示器，游戏每秒 ") :
+                                    mfx_hold_fps(m) ? (mfx_own_clock() ? "补帧：游戏按自己的时钟每秒 " : "补帧：跟随显示器，游戏每秒 ") : "",
+                                    mfx_half(m) ? "显示器刷新率的一半（120 Hz 上 60+60）" :
                                     mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : "50 帧（50+50）") :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
@@ -2883,11 +2891,11 @@ void dm_nvn_probe_present_interval(void) {
             die("present interval probe: effective pacing differs from expected");
         checked++;
     }
-    /* Frame interpolation modes (key 2 / flag mfx_interp, taken over at the frame boundary). Half the refresh rate: two
-       display ticks per game frame at the display rate, also when the uncapped mode is configured (suspended). 30+30:
-       exactly 1/30 s, by display ticks where the rate is a multiple of 30 and by our own clock otherwise (100 Hz).
-       Uncapped interpolation: the same pacing as without interpolation. Negative control 20: the request is never taken
-       over, so the uncapped pacing stays and the half-rate check fails. */
+    /* Frame interpolation modes (key 2 / flag mfx_interp, taken over at the frame boundary). 50+50: two display ticks per
+       game frame on a 100 Hz display, also when the uncapped mode is configured (suspended). Half the refresh rate: the
+       same two ticks at any display rate (see below). 30+30: exactly 1/30 s, by display ticks where the rate is a multiple
+       of 30 and by our own clock otherwise (100 Hz). Uncapped interpolation: the same pacing as without interpolation.
+       Negative control 20: the request is never taken over, so the uncapped pacing stays and the half-rate check fails. */
     extern void mfx_set(int mode); extern int mfx_latch(void);
     int saved_paced = g_paced_hz, saved_mfx = mfx_enabled();
     mfx_set(MFX_50); if (!(neg && atoi(neg) == 20)) mfx_latch();
@@ -2897,6 +2905,16 @@ void dm_nvn_probe_present_interval(void) {
             die("present interval probe: 50+50 on a 100 Hz display must pace two display ticks");
         checked++;
     }
+    /* Half the refresh rate (2026-10-28): the game at half the display's rate, two display ticks per game frame on every
+       screen (60+60 at 120 Hz, 50+50 at 100 Hz, 30+30 at 60 Hz), the uncapped mode suspended. */
+    mfx_set(MFX_HALF); mfx_latch();
+    { const int rates[] = {60, 100, 120, 144};
+      for (int r = 0; r < 4; r++) for (int uncapped = 0; uncapped < 2; uncapped++) {
+        win_t w = {.interval = 1}; g_paced_hz = rates[r]; g_hz = uncapped ? UNCAPPED_HZ : rates[r]; g_display_mode = 0; g_uncapped = uncapped;
+        if (present_ticks(&w) != 2 || present_period(&w) != 1000000000ull / (unsigned)(rates[r] / 2) || uncapped_now() || mfx_own_clock())
+            die("present interval probe: half the refresh rate must pace two display ticks (%d+%d at %d Hz)", rates[r] / 2, rates[r] / 2, rates[r]);
+        checked++;
+      } }
     /* 40+40: exactly 1/40 s, by display ticks at 120 Hz (3), our own clock at 60 / 100 / 144 Hz. */
     mfx_set(MFX_40); mfx_latch();
     { const int r40[] = {60, 100, 120, 144};

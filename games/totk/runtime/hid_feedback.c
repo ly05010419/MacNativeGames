@@ -158,7 +158,7 @@ int runtime_hid_feedback_flag(const char *name, int v) {
     int on = muted == &rumble_muted ? runtime_rumble_enabled() : runtime_gyro_enabled();
     atomic_store(muted, !v);
     if (!v && muted == &rumble_muted) { runtime_rumble_set(0, 0, 160, 0, 320); runtime_rumble_set(1, 0, 160, 0, 320); }
-    fprintf(stderr, "[hid] %s %s%s\n", name, v ? "on" : "muted", on ? "" : " (no effect: the game has no such device in this run; start it with TOTK_RUMBLE=1 / TOTK_GYRO=1, or without rumble.txt / gyro.txt saying off)");
+    fprintf(stderr, "[hid] %s %s%s\n", name, v ? "on" : "muted", on ? "" : " (no effect: the game has no such device in this run; start it with TOTK_RUMBLE=1 / TOTK_GYRO=1, or without \"rumble\" / \"gyro\" saying off in settings.json)");
     return 1;
 }
 /* The settings panel (key 1, runtime/settings_panel.h). The variable or an agent's test session decides first, as above; the

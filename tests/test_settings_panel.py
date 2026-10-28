@@ -64,6 +64,11 @@ class SettingsPanel(unittest.TestCase):
                 (settings / 'graphics-frame.txt').write_text('lock-60\n')
                 run = subprocess.run([str(executable), 'lock'], env=env, capture_output=True, text=True, timeout=35)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                # half the refresh rate is the last interpolation mode, past the 30 / 40 / 50 / unlimited range
+                (settings / 'graphics-overlay.txt').write_text('2')   # HUD_MODE_MINIMAL
+                (settings / 'graphics-frame.txt').write_text('interp-5\n')
+                run = subprocess.run([str(executable), 'half'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 for name, value in {'graphics-overlay.txt': 'invalid', 'graphics-frame.txt': 'lock-60junk',
                                     'graphics-output.txt': '999', 'graphics-aspect.txt': 'nan', 'graphics-taa.txt': '3'}.items():
                     (settings / name).write_text(value)
