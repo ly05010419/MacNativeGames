@@ -26,10 +26,13 @@ VERTEX_FLIP = b"    out.gl_Position.y = -out.gl_Position.y;"
 RETURN = b"    return out;"
 
 
-def runtime_variants(data):
-    """The source bytes the runtime may hash: as translated, and with the vertex Y flip applied."""
-    yield data
-    if VERTEX_FLIP not in data and b"out.gl_Position" in data and RETURN in data:
+def runtime_variants(data, flipped_only=False):
+    """The source bytes the runtime may hash: as translated, and with the vertex Y flip applied. flipped_only: a vertex
+    shader only as the app hashes it (its launcher sets KIRBY_VERTEX_Y_FLIP=1), a third fewer libraries."""
+    flip = VERTEX_FLIP not in data and b"out.gl_Position" in data and RETURN in data
+    if not (flip and flipped_only):
+        yield data
+    if flip:
         yield data.replace(RETURN, VERTEX_FLIP + b"\n" + RETURN)
 
 
@@ -52,7 +55,7 @@ def worker_count(value):
     return count
 
 
-def compile_cache(cache, output, compiler, identity, jobs):
+def compile_cache(cache, output, compiler, identity, jobs, flipped_only=False):
     """Stage all results before publication; a failed compile keeps the old cache.
 
     compiler.txt certifies one compiler/option generation, not just a tool name.
@@ -72,7 +75,7 @@ def compile_cache(cache, output, compiler, identity, jobs):
             print("Compiler identity absent or changed; rebuilding the selected libraries.")
         todo = {}
         for source in sources:
-            for data in runtime_variants(source.read_bytes()):
+            for data in runtime_variants(source.read_bytes(), flipped_only):
                 digest = hashlib.sha256(data).hexdigest()
                 if not same_compiler or not valid_library(output / f"{digest}.metallib"):
                     todo.setdefault(digest, (source.name, data))
@@ -137,6 +140,11 @@ def main(argv=None):
         default=OUTPUT,
         help="folder to write compiled .metallib files",
     )
+    parser.add_argument(
+        "--flipped-only",
+        action="store_true",
+        help="compile vertex shaders only with the Y flip the app's launcher turns on (KIRBY_VERTEX_Y_FLIP=1)",
+    )
     args = parser.parse_args(argv)
 
     found = subprocess.run(["xcrun", "--find", "metal"], text=True, capture_output=True)
@@ -153,7 +161,7 @@ def main(argv=None):
         "deployment_target": os.environ.get("MACOSX_DEPLOYMENT_TARGET"),
         "sdkroot": os.environ.get("SDKROOT"),
     }, sort_keys=True) + "\n"
-    compile_cache(args.cache, args.output, compiler, identity, args.jobs)
+    compile_cache(args.cache, args.output, compiler, identity, args.jobs, args.flipped_only)
 
 
 if __name__ == "__main__":

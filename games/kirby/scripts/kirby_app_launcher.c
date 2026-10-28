@@ -80,6 +80,10 @@ int main(int argc, char **argv) {
     setenv("TOTK_SHADER_ASYNC", "0", 0);
     setenv("TOTK_MFX_UPSCALE", "0", 0);
     setenv("TOTK_MFX_OUTPUT", "0", 0);
+    /* The app carries ~38,000 shader variants translated at build time (scripts/prepare_shader_seed.py). Warm only what
+       this Mac has used (pso_collected.tsv, pso_user.tsv); the rest load from their precompiled libraries at first use
+       instead of all being loaded at every start. */
+    setenv("TOTK_WARM_SCOPE", "observed", 0);
     /* Kirby renders with a lower-left origin: without these three the menu text is upside down and the
        render-to-texture background shows magenta/black tiles (kirby-investigation verify-appenv-1). */
     setenv("KIRBY_VERTEX_Y_FLIP", "1", 0);

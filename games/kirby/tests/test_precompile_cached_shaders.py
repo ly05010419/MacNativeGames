@@ -134,6 +134,13 @@ class ShaderCacheTests(unittest.TestCase):
                          [b"fragment only\n    return out;\n"])
         self.assertEqual(list(PRECOMPILE.runtime_variants(variants[1])), [variants[1]])
 
+    def test_flipped_only_skips_the_unflipped_vertex_source(self):
+        vertex = b"main0_out main0(){\n    main0_out out = {};\n    out.gl_Position = p;\n    return out;\n}\n"
+        self.assertEqual(list(PRECOMPILE.runtime_variants(vertex, flipped_only=True)),
+                         list(PRECOMPILE.runtime_variants(vertex))[1:])
+        fragment = b"fragment only\n    return out;\n"
+        self.assertEqual(list(PRECOMPILE.runtime_variants(fragment, flipped_only=True)), [fragment])
+
 
 if __name__ == "__main__":
     unittest.main()

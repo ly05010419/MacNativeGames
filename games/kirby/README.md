@@ -17,7 +17,10 @@ python3.14 games/kirby/scripts/build_kirby.py --game ~/Games/kirby.nsp --keys ~/
 
 The app is `Kirby.app` next to the game file (`--out` to choose another path); everything in between is in `Kirby_build`
 next to it (`--work`). It holds game data: never share or commit it. A stopped build can be started again: each step is
-skipped when its verified output is already there. A clean build took 3 minutes on an M3 Pro.
+skipped when its verified output is already there. A clean build took 3 minutes on an M3 Pro before the shaders were
+prepared at build time; that step adds about 2 minutes of translation and half an hour of Metal compilation on an M5 Pro
+the first time (later builds reuse both). `--no-shaders` leaves it out, and the game then stops briefly the first time
+it meets each shader.
 
 Every extracted and rewritten file is compared with `assets/expected-v1.0.0.json`, the port author's own build. Two are
 not compared byte for byte: `main.npdm` (a dump tool may sign it again; the game does not use it) and
@@ -30,6 +33,7 @@ binds them). Updates are not supported yet.
 | Code rewrite | `third_party/d2r/patch_nso.py` |
 | Runtime tables, RomFS index, font table | `scripts/prepare_runtime.py`, `prepare_romfs_backend.py`, `prepare_shared_fonts.py` |
 | Runtime | `Makefile` (`make WORK=<work folder>`) |
+| Shaders | `scripts/prepare_shader_seed.py`, `precompile_cached_shaders.py` (see [Shaders](#shaders)) |
 | App | `scripts/package_native_app.py` |
 
 Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to the app.
@@ -39,18 +43,62 @@ Saves, the shader cache and the log (`last-run.log`) are in `Kirby Data` next to
 | Component | Status | Details |
 |---|---|---|
 | Boot & Title | Verified | Smooth 60 FPS presentation, controller & keyboard input |
-| Graphics & Shaders | Verified | 609 variants over 604 shaders prepared; precompiled into `.metallib` |
+| Graphics & Shaders | Verified | All 27,278 shaders of the game translated and compiled to `.metallib` when the app is built |
 | Audio & Video | Verified | Opus audio; VP9 movies with libvpx, their Vorbis sound track with stb_vorbis (`runtime/movie_host.c`, after nxnative's `hle_movie.c`) |
 | Saves | Verified | Auto-save backups retained across sessions |
 
-## Shaders & Precompilation
+## Shaders
 
-Kirby shaders are catalogued in `games/kirby/assets/shader_list.tsv` (shader keys and bind state dependencies only).
+The game's GPU shaders are Switch (Maxwell) code. Each is translated to Metal Shading Language by
+`prebuilt/macos-arm64/totk_xlate` (pinned by `totk_xlate.sha256`) and compiled to a Metal library. Done in play, that
+stops the game for a moment each time it meets a shader for the first time, up to several seconds at a scene load. The
+build does both ahead of time instead (step 5 of `build_kirby.py`):
 
-The shader translator is kept local to this game folder in `games/kirby/prebuilt/macos-arm64/totk_xlate` and pinned by `totk_xlate.sha256`, so the app can build and run without fetching anything remotely or depending on a shared repo path.
+1. `scripts/prepare_shader_seed.py` finds every shader in your game files: the BNSH archives in the RomFS, most of them
+   inside HAL's `.cmp` containers (a 4-byte size, then a zstd frame), and the few in the `main` module. That is 27,278
+   shaders. It keys each one as the runtime does: SHA-256 of the control section and code.
+2. It translates each for the bind state the game draws it with:
+   - vertex inputs are floats, and clip depth is -w..w;
+   - pixel shaders that write colour target 5 also get a variant with that target as an unsigned integer (the G-buffer);
+   - shaders that compare-sample get a variant with depth textures (shadow maps);
+   - every bind state the `V` rows of `assets/shader_list.tsv` name (shader key and deps only, no game data).
 
-To compile translated shaders into Metal libraries ahead of time:
-```bash
-python3 games/kirby/scripts/precompile_cached_shaders.py
-```
-This generates `.metallib` archives into `Kirby_build/build/shader-libs`, matching what the runtime loads directly on startup to eliminate shader compilation stutter.
+   The runtime picks a translation by these dependencies, not by name, so any matching variant serves the draw. The
+   result is 33,202 variants in `Kirby_build/build/shader-seed` (0.9 GB).
+3. `scripts/precompile_cached_shaders.py --flipped-only` compiles them to 21,982 Metal libraries in
+   `Kirby_build/build/shader-libs` (0.3 GB). Libraries are named by the SHA-256 of their MSL, as the runtime looks them up.
+4. The app carries both. At its first start, the runtime checks the seed and imports it into `Kirby Data/shader-cache`;
+   that took 7 s once. The launcher sets `TOTK_WARM_SCOPE=observed`, so each start warms only the shaders this Mac has
+   used, and every other shader loads its precompiled library on first use.
+
+What this cannot do ahead of time: build Metal **pipelines**. A pipeline combines shaders with render state that is known
+only at the draw, and the GPU code is generated then, cached by macOS afterwards. The seed also misses a bind state that
+neither the code nor the list shows. Such a variant is translated in play as before, and
+`prepare_shader_seed.py --work Kirby_build --list-from "Kirby Data/shader-cache"` adds it to the list for the next build.
+
+Checked against a played cache of 1,449 variants: every seed variant with the same dependencies as a played one had
+byte-identical MSL. The code and list alone served 1,361 of them (94%); adding that session's other 88 bind states to the
+list serves all of them.
+
+### Measuring
+
+`scripts/measure_shader_stalls.py --app Kirby.app --data "Kirby Data" --out <new folder>` plays a fixed route on a copy of
+your save with an empty shader cache: Continue on the title, then 60 s forward. It then sums the runtime's long-frame
+lines (`[长帧]`) and its counts of libraries loaded precompiled (`预编译加载`) versus compiled in play (`现编`). macOS
+keeps its own cache of compiled Metal code, in `com.apple.metal` under `getconf DARWIN_USER_CACHE_DIR` and in the app's
+`local.projectidea.kirby` folder there. For a true first session, move both aside for the run and put them back after.
+
+M5 Pro, macOS 27.0.1, both Metal caches empty, 2026-10-28:
+
+| | Before (no seed) | After |
+|---|---|---|
+| Time in long frames | 35.8 s (39 frames) | 7.1 s (29 frames) |
+| Frames over 100 ms | 27, 35.3 s | 8, 6.1 s |
+| Longest frame | 12.9 s (the save's world loading) | 2.3 s |
+| Shaders translated in play | 300 or more | 0 |
+| Libraries: precompiled / compiled in play | 0 / 201 or more | 201 or more / 0 |
+| Pipelines / libraries made in long frames | 346 / 345 | 342 / 340 |
+
+The two runs got the same inputs at the same times. The slower one finished loading the save later, so it ended
+somewhere else, but it met nearly the same number of shaders (last row). The remaining 6 s is pipeline creation (342 pipelines), which macOS caches after the first time. A second start of the
+same data reached its first frame in 2.1 s, warming the 342 shaders and 347 pipelines it had used in 0.87 s.
