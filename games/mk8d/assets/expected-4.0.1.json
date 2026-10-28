@@ -1,0 +1,20 @@
+{
+  "title_id": "0100152000022000",
+  "version": "4.0.1",
+  "update_version": 1507328,
+  "main_build_id": "158c0c7399aabd7bf83795c2ef3484c700000000000000000000000000000000",
+  "exefs_sha256": {
+    "main": "92edeef4827338f0a481b9e150cdb2b46e258cef5656bc3eae7de67c88defe4a",
+    "sdk": "427404f3218eaa790f611acd9e45fe0336efb9504f02949054b14de3578bd1c2",
+    "subsdk0": "78310913ab1c10486169b13795856f8dfae2a0a3b89068517d3835c1d03b2a41"
+  },
+  "romfs": {
+    "size": 12132176152,
+    "sha256": "6242fff4f50bfa03099a93b5436427c78bc287ab9a51015534e7ef97ffe6e126"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "2141d48851b0dd46948d1c0fabbea40e5ae47879f3fa2aaf0a48e7e9530bd09f",
+    "sdk.patched.bin": "2f98ce6aabcbb2d32bceb4c23556b31cd819f197e377bf2bc64d61052e4d868b",
+    "subsdk0.patched.bin": "751fbaa3cb26072e0a208435e8bf01cfa145c2626147fbee462ee86d107991f2"
+  }
+}

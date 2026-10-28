@@ -1,0 +1,8 @@
+# Game files, keys and build results stay out of source control (build into a work folder outside the checkout).
+*.xci
+*.nsp
+*.nsz
+*.keys
+*_build/
+.venv/
+__pycache__/
