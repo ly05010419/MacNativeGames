@@ -31,27 +31,29 @@ mouse_middle = zl
 
 启动器每次启动都会检查这个文件，有错时弹窗指出第一行错误。删除文件即恢复默认布局。
 
-**震动（Mac，设置面板）：** 游戏的 HD 震动由手柄的触觉马达播放（macOS 提供触觉功能的手柄，如 DualSense），默认开启。设置面板（1 键）里有“震动”开关、“震动强度”（0.5× 到 4×）和“体感瞄准”开关：开关立即生效，强度从下一次震动起生效；游戏启动时没开的震动或体感，打开后从下次启动起生效，该行会写明。面板把选择保存在 `controls.txt` 旁边的三个单词文件里，每次启动沿用，和 `controller-type.txt`、`mouse.txt` 一样：`rumble.txt`（`on` 或 `off`）、`rumble-gain.txt`（震动强度，大于 0、最大 4 的数，默认 1：`2` 让游戏的震动加倍，超过满强度的部分按满强度播放）和 `gyro.txt`（`on` 或 `off`，见下面的体感瞄准）。也可以自己写这些文件，例如在 `~/Library/Application Support/MacNativeGames/TOTK`（旷野之息是 `BotW`）里建 `rumble.txt`，写上 `off`。设置了 `TOTK_RUMBLE`、`TOTK_RUMBLE_GAIN` 或 `TOTK_GYRO` 时，环境变量仍然优先于文件，面板里对应一行显示为灰色的当前值。文件里写了游戏不认识的内容时保持默认值并写进日志，不会让游戏无法启动。
+**震动（Mac，设置面板）：** 游戏的 HD 震动由手柄的触觉马达播放（macOS 提供触觉功能的手柄，如 DualSense），默认开启。设置面板（1 键）里有“震动”开关、“震动强度”（0.5× 到 4×）和“体感瞄准”开关：开关立即生效，强度从下一次震动起生效；游戏启动时没开的震动或体感，打开后从下次启动起生效，该行会写明。面板把选择保存在 `controls.txt` 旁边的 `settings.json` 里，每次启动沿用：`rumble`（`on` 或 `off`）、`rumble-gain`（震动强度，大于 0、最大 4 的数，默认 1：`2` 让游戏的震动加倍，超过满强度的部分按满强度播放）和 `gyro`（`on` 或 `off`，见下面的体感瞄准）。也可以自己写这些文件，例如在 `~/Library/Application Support/MacNativeGames/TOTK`（旷野之息是 `BotW`）里写 `"rumble":"off"`。设置了 `TOTK_RUMBLE`、`TOTK_RUMBLE_GAIN` 或 `TOTK_GYRO` 时，环境变量仍然优先于文件，面板里对应一行显示为灰色的当前值。文件里写了游戏不认识的内容时保持默认值并写进日志，不会让游戏无法启动。
 
-**体感瞄准（Mac）：** 手柄的陀螺仪会作为 Switch Pro 手柄的体感传给游戏，默认开启（设置面板的“体感瞄准”开关、`gyro.txt` 写 `off` 或设 `TOTK_GYRO=0` 即关闭）。支持向 macOS 提供体感数据的手柄（DualSense、DualShock），以及 Switch 风格的 Pro 手柄（包括 Switch 模式下的 8BitDo），后者直接从手柄自己的 HID 报告读取体感、使用手柄出厂校准。蓝牙连接的 8BitDo Ultimate 2 Wireless（固件 1.03 及以上）macOS 不给它体感，游戏改从它的 HID 报告里读取（`games/totk/runtime/hid_imu.h` 里列着这类手柄）。Xbox 手柄没有陀螺仪；macOS 不认的普通 HID 手柄只有按键和摇杆。在游戏选项里打开体感操作，然后转动手柄瞄准（弓、究极手等）。`TOTK_GYRO_DEADZONE=<度/秒>` 设置小幅转动的死区；转动方向不对时用 `TOTK_GYRO_AXES` 重映射轴向（例如 `-x,y,-z`）。iPhone / iPad 见下面的“手机体感与震动”。已在 Mac 上用王国之泪测试。
+**体感瞄准（Mac）：** 手柄的陀螺仪会作为 Switch Pro 手柄的体感传给游戏，默认开启（设置面板的“体感瞄准”开关、`gyro` 写 `off` 或设 `TOTK_GYRO=0` 即关闭）。支持向 macOS 提供体感数据的手柄（DualSense、DualShock），以及 Switch 风格的 Pro 手柄（包括 Switch 模式下的 8BitDo），后者直接从手柄自己的 HID 报告读取体感、使用手柄出厂校准。蓝牙连接的 8BitDo Ultimate 2 Wireless（固件 1.03 及以上）macOS 不给它体感，游戏改从它的 HID 报告里读取（`games/totk/runtime/hid_imu.h` 里列着这类手柄）。Xbox 手柄没有陀螺仪；macOS 不认的普通 HID 手柄只有按键和摇杆。在游戏选项里打开体感操作，然后转动手柄瞄准（弓、究极手等）。`TOTK_GYRO_DEADZONE=<度/秒>` 设置小幅转动的死区；转动方向不对时用 `TOTK_GYRO_AXES` 重映射轴向（例如 `-x,y,-z`）。iPhone / iPad 见下面的“手机体感与震动”。已在 Mac 上用王国之泪测试。
 
-**DualSense 自适应扳机（Mac）：** 用 DualSense 时，林克拉弓期间 R2（ZR）会像弓弦一样越按越紧，箭射出或收弓的一刻立即放松；其他时候两个扳机都没有阻力，L2 从不加阻力。游戏不会把拉弓状态告诉手柄，所以运行时每 10 毫秒从游戏内存里读取一次（`runtime/bow_state.h`，只读；支持旷野之息 1.9.0 和王国之泪 1.4.3，其他版本不动扳机）。USB 和蓝牙都能用；蓝牙下拉弓刚开始约 30–45 毫秒还没有阻力。默认开启：设置面板（1 键）里的“DualSense 拉弓扳机”开关可以立即关闭或打开，选择保存在 `controls.txt` 旁边的 `dualsense-triggers.txt`（内容为 `off` 或 `on`，也可以自己写）。`TOTK_DUALSENSE_TRIGGERS=on` / `off` 优先于该文件，此时开关显示为灰色的当前值。已知限制：王国之泪打开菜单时会保持拉弓状态，所以 R2 的阻力会持续到关闭菜单。`TOTK_TRIGGER_LOG=1` 记录扳机的模式和状态。已在 Mac 上用两款游戏测试，DualSense 蓝牙连接。
+**DualSense 自适应扳机（Mac）：** 用 DualSense 时，林克拉弓期间 R2（ZR）会像弓弦一样越按越紧，箭射出或收弓的一刻立即放松；其他时候两个扳机都没有阻力，L2 从不加阻力。游戏不会把拉弓状态告诉手柄，所以运行时每 10 毫秒从游戏内存里读取一次（`runtime/bow_state.h`，只读；支持旷野之息 1.9.0 和王国之泪 1.4.3，其他版本不动扳机）。USB 和蓝牙都能用；蓝牙下拉弓刚开始约 30–45 毫秒还没有阻力。默认开启：设置面板（1 键）里的“DualSense 拉弓扳机”开关可以立即关闭或打开，选择保存在 `controls.txt` 旁边的 `settings.json` 的 `dualsense-triggers`（内容为 `off` 或 `on`，也可以自己写）。`TOTK_DUALSENSE_TRIGGERS=on` / `off` 优先于该文件，此时开关显示为灰色的当前值。已知限制：王国之泪打开菜单时会保持拉弓状态，所以 R2 的阻力会持续到关闭菜单。`TOTK_TRIGGER_LOG=1` 记录扳机的模式和状态。已在 Mac 上用两款游戏测试，DualSense 蓝牙连接。
 
-**鼠标（Mac，设置面板）：** 在设置面板里打开或关闭“鼠标操作”，选择保存在 `controls.txt` 旁边的 `mouse.txt`，下次启动沿用。打开时只要游戏窗口在前台，窗口就锁住指针（隐藏，留在窗口里）；按 ⌘Tab 或打开设置面板就释放，给马取名这类文字输入时也会释放。移动鼠标转动视角：按 yuzu“鼠标平移”的思路（这里重新实现）驱动右摇杆，鼠标位移累加成摇杆偏转，每 10 毫秒交给游戏一次然后逐渐衰减，所以鼠标一直移动视角就一直转，停下后平滑停住。同样的移动也会转动手柄的陀螺仪：在游戏选项里打开体感操作后，拉弓、究极手等瞄准直接跟着鼠标走；鼠标模式开着时陀螺仪只听鼠标的（关掉后恢复手柄的体感）。按键：左键攻击（Y），右键拉弓（ZR）、按住时点左键射出，中键锁定（ZL）；可以像其他手柄按钮一样在 `controls.txt` 里改。设置：`TOTK_MOUSE_SENSITIVITY` 1–100（默认 50：移动 20 个点就是摇杆推满），`TOTK_MOUSE_INVERT_Y=1` 上下反转，`TOTK_MOUSE_COUNTERWEIGHT`（默认 20：最小的移动也至少推动摇杆的 20%，越过游戏的死区），`TOTK_MOUSE_DECAY`（18）和 `TOTK_MOUSE_MIN_DECAY`（6）调整停下来的快慢，`TOTK_MOUSE_GYRO=0` 只用摇杆、不用陀螺仪。
+**鼠标（Mac，设置面板）：** 在设置面板里打开或关闭“鼠标操作”，选择保存在 `controls.txt` 旁边的 `settings.json` 的 `mouse`，下次启动沿用。打开时只要游戏窗口在前台，窗口就锁住指针（隐藏，留在窗口里）；按 ⌘Tab 或打开设置面板就释放，给马取名这类文字输入时也会释放。移动鼠标转动视角：按 yuzu“鼠标平移”的思路（这里重新实现）驱动右摇杆，鼠标位移累加成摇杆偏转，每 10 毫秒交给游戏一次然后逐渐衰减，所以鼠标一直移动视角就一直转，停下后平滑停住。同样的移动也会转动手柄的陀螺仪：在游戏选项里打开体感操作后，拉弓、究极手等瞄准直接跟着鼠标走；鼠标模式开着时陀螺仪只听鼠标的（关掉后恢复手柄的体感）。按键：左键攻击（Y），右键拉弓（ZR）、按住时点左键射出，中键锁定（ZL）；可以像其他手柄按钮一样在 `controls.txt` 里改。设置：`TOTK_MOUSE_SENSITIVITY` 1–100（默认 50：移动 20 个点就是摇杆推满），`TOTK_MOUSE_INVERT_Y=1` 上下反转，`TOTK_MOUSE_COUNTERWEIGHT`（默认 20：最小的移动也至少推动摇杆的 20%，越过游戏的死区），`TOTK_MOUSE_DECAY`（18）和 `TOTK_MOUSE_MIN_DECAY`（6）调整停下来的快慢，`TOTK_MOUSE_GYRO=0` 只用摇杆、不用陀螺仪。
 
 **设置面板（Mac，1 键）：** 按 **1** 打开或关闭设置面板（Esc 或右上角 ✕ 也能关；按住面板空白处可以拖动，下次在同一位置打开）。用手柄时，**按住 L2 + R2 + L3 一秒**（Xbox：LT + RT + LS；Switch：ZL + ZR + 按下左摇杆）打开或关闭面板。要按住一秒，是因为这几个键在游戏里是 ZL + ZR + L3，潜行拉弓时可能会同时按到一下。面板里用十字键或左摇杆上下选行、左右改值，A（PlayStation 是 ×）确定，B（○）关闭。面板开着时键盘、鼠标和手柄都不会传给游戏；关掉后，松开手柄所有按键和摇杆，手柄就又回到游戏。每一项选了立刻生效：
 - **性能信息：** 全部（窗口右上角的小框：FPS 和分辨率——先输出分辨率，括号里是游戏的内部 3D 分辨率，如 `FPS 60  1920x1080 (1920x1080)`——、着色器和渲染管线计数、负载一行（GPU 在前，后面是 CPU 各核心），以及打包时的提交号）、只显示 FPS、关。`TOTK_HUD=corners` 改为画在画面四角。
-- **帧率图：** 在叠加框下面画最近 30 秒的帧率曲线，默认关。选择保存在 `controls.txt` 旁边的 `fps-graph.txt`（`on` 或 `off`）。
+- **帧率图：** 在叠加框下面画最近 30 秒的帧率曲线，默认关。选择保存在 `controls.txt` 旁边的 `settings.json` 的 `fps-graph`（`on` 或 `off`）。
 - **锁帧：** 关、30、40、60 帧，帧率严格锁定（能整除显示器刷新率时按刷新节拍，否则按自己的时钟）。
 - **补帧（MetalFX）：** 关、30+30、40+40、50+50（游戏锁在 30 / 40 / 50 帧，MetalFX 在每两帧之间补一帧）、不限帧。选了补帧会自动关掉锁帧，反过来也一样。
 - **分辨率：** 720p、1080p、1080p + MetalFX 放大到窗口、2K（2560×1440，游戏画布和界面）、2K + MetalFX 放大（4K 屏）。首次开局是 1080p，选择会保留到下次启动。窗口模式下窗口立刻变成对应大小（屏幕放不下就缩小）。旷野之息 1.9.0 只有 1080p 和 MetalFX 两项。
 - **画面比例：** 16:9、16:10、21:9、32:9（1.2.1、1.4.3、旷野之息 1.6.0 和 1.9.0）。相机两侧看到更多（16:10 时保持纵向视野；`TOTK_ASPECT_VERT=1`，1.4.3，实验性，改为上下看到更多，部分界面特效位置不对）；HUD、菜单和地图保持原比例、在中间 16:9；跟随世界物体的标记暂时不跟着移。窗口模式下窗口变成这个形状，全屏时画面保持这个比例、四周留黑边。`TOTK_ASPECT=2.39`（或 `3440x1440`）从这个比例开局，并加进列表。
 - **边缘平滑（MetalFX 时间性）：** 3D 场景的时间性抗锯齿，开局关（`TOTK_TAA=1` 开局就开；1.4.3 和旷野之息）；`TOTK_ANISO=16` 另外打开 16 倍各向异性过滤。
-- **手柄类型：** 自动（会写出认出的手柄，如“自动（PlayStation）”）、Xbox、PlayStation、Switch。Xbox 和 PlayStation 按位置映射面键，Switch 按标签。记在 `controls.txt` 旁边的 `controller-type.txt`；通用 HID 手柄保持 Switch 式。游戏里提示的按键图标不跟着变（见 `make_button_icons.py`）。
+- **手柄类型：** 自动（会写出认出的手柄，如“自动（PlayStation）”）、Xbox、PlayStation、Switch。Xbox 和 PlayStation 按位置映射面键，Switch 按标签。记在 `controls.txt` 旁边的 `settings.json` 的 `controller-type`；通用 HID 手柄保持 Switch 式。游戏里提示的按键图标不跟着变（见 `make_button_icons.py`）。
 - **DualSense 拉弓扳机（R2）：** 开 / 关（见上面“DualSense 自适应扳机”；旷野之息 1.9.0 和王国之泪 1.4.3）。
 - **鼠标操作：** 鼠标模式开 / 关（见上面“鼠标”）。
 - **震动、震动强度（0.5× 到 4×）和体感瞄准：** 见上面“震动”和“体感瞄准”。
 - 底部两个按钮：**贡献着色器和管线** 把游戏遇到、公共清单里还没有的着色器和管线发出去（这台 Mac 登录了 GitHub 命令行 `gh` 时在后台直接提交；否则打开 GitHub 提交页，并在访达里显示文件，拖进去即可）；**给作者点赞** 打开 GitHub 项目页。
+
+叠加信息、锁帧或补帧、分辨率、画面比例和边缘平滑的选择保存在 `controls.txt` 旁边的 `settings.json`（`graphics-overlay`、`graphics-frame`、`graphics-output`、`graphics-aspect`、`graphics-taa`），下次启动沿用；分辨率和画面比例要等对应补丁就绪、并且这个选项可用时才恢复。启动时显式设了 `TOTK_MFX`、`TOTK_TAA`、`TOTK_ASPECT`、`TOTK_MFX_OUTPUT`、`TOTK_MFX_UPSCALE`，或 `TOTK_OUTPUT_RES` 不是 `auto` 时，以环境变量为准。其他保存的设置也是同一个对象的键：`controller-type`、`mouse`、`fps-graph`、`rumble`、`rumble-gain`、`gyro`、`dualsense-triggers`、`keyboard-layout`，写法如 `"mouse":"off"`。整个 JSON 只读一次、保存时整体写回；目录里旧版留下的 `*.txt` 保留不删，但不再被读取。`controls.txt` 仍是独立文件：那是按键布局，不是设置。
 
 2–7 键不再是快捷键。iPhone / iPad 使用触屏控件或兼容手柄，没有设置面板。触屏按 Switch 手柄排布：左上 L、ZL，右上 R、ZR，中间 − 和 +，左边十字键，右边 A、B、X、Y。十字键在左摇杆上方，A、B、X、Y 在右摇杆上方，L3、R3（按下摇杆）在左下角和右下角。在左半屏避开按钮的地方按住拖动是左摇杆，在右半屏是转镜头（右摇杆）；摇杆以手指按下的位置为中心。接上手柄时触屏控件自动隐藏：碰一下屏幕就会显示，可以照常使用，手指离开 3 秒后再次隐藏。
 
@@ -87,7 +89,7 @@ mouse_middle = zl
 - 键盘页里有拉丁字母、法语重音字母、数字和标点；其他文字用 Mac 的输入法。
 - 输入内容遵守游戏的限制：长度和不允许的字符。
 - 键盘上的文字按 Mac 的语言显示中文、法语或英语（`TOTK_UI_LANG` 可改）。
-- 法语系统默认 AZERTY，其他默认 QWERTY；选择保存在 `controls.txt` 旁边的 `keyboard-layout.txt`。
+- 法语系统默认 AZERTY，其他默认 QWERTY；选择保存在 `controls.txt` 旁边的 `settings.json` 的 `keyboard-layout`。
 - 不需要游戏文件就能检查：`python -m unittest tests.test_text_keyboard`；`games/totk/tests/text_keyboard/test.py --preview` 打开它看效果。
 
 ## 按键图标

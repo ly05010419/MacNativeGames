@@ -17,9 +17,13 @@ static void hook(void) { hookCalls++; }
 
 static int failures, checked;
 static void check(int ok, const char *what) { checked++; if (!ok) { failures++; fprintf(stderr, "FAIL: %s\n", what); } }
-static int file_says(const char *path, const char *text) {
-    char got[64] = {0}; FILE *f = fopen(path, "r"); if (!f) return 0;
-    size_t n = fread(got, 1, sizeof got - 1, f); fclose(f); got[n] = 0; return !strcmp(got, text);
+/* settings.json, where every setting is (runtime/gamepad.m): the word under a key, as written. */
+static int word_is(const char *path, const char *key, const char *word) {
+    char got[2048] = {0}, want[80];
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    size_t n = fread(got, 1, sizeof got - 1, f); fclose(f); got[n] = 0;
+    snprintf(want, sizeof want, "\"%s\" : \"%s\"", key, word);
+    return strstr(got, want) != NULL;
 }
 static RuntimeGamepadState settle(void) { RuntimeGamepadState s; runtime_gamepad_read(&s); runtime_gamepad_read(&s); return s; }   /* past latched presses */
 static void spin(void) { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]]; }
@@ -29,7 +33,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     if (argc != 2) { fprintf(stderr, "usage: probe <empty folder>\n"); return 2; }
     char controls[1024], saved[1100];
     snprintf(controls, sizeof controls, "%s/controls.txt", argv[1]);
-    snprintf(saved, sizeof saved, "%s/mouse.txt", argv[1]);
+    snprintf(saved, sizeof saved, "%s/settings.json", argv[1]);
     setenv("TOTK_CONTROLS", controls, 1);
     mouseTicksByHand = 1;
     controller_map_default(controllerMap, controllerModes);
@@ -41,7 +45,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     check(!s.buttons && !s.rx && !s.ry, "mouse mode off: clicks and movement do nothing");
     runtime_mouse_button(0, 0);
 
-    check(runtime_mouse_set(1) == 1 && runtime_mouse_enabled() && file_says(saved, "on\n") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
+    check(runtime_mouse_set(1) == 1 && runtime_mouse_enabled() && word_is(saved, "mouse", "on") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
     check(runtime_mouse_set(1) == 1 && motionMouse == 1, "on again: no change");
     spin(); check(hookCalls == 1, "the window is told (to capture the pointer)");
     runtime_mouse_button(0, 1); s = settle(); check(s.buttons == Y, "left button: attack (Y)");
@@ -59,11 +63,13 @@ int main(int argc, char **argv) { @autoreleasepool {
     runtime_mouse_button(0, 1); runtime_mouse_release(); mouse_tick(); s = settle();
     check(!s.buttons && !s.rx && !s.ry, "release (the window lost the pointer): buttons up, stick centred");
 
-    check(runtime_mouse_set(0) == 0 && file_says(saved, "off\n") && motionMouse == 0, "settings: off, saved, the gyro back to the controller");
+    check(runtime_mouse_set(0) == 0 && word_is(saved, "mouse", "off") && motionMouse == 0, "settings: off, saved, the gyro back to the controller");
     spin(); check(hookCalls == 2, "the window is told again (to free the pointer)");
-    FILE *f = fopen(saved, "w"); fputs("on\n", f); fclose(f);
+    FILE *f = fopen(saved, "w"); fputs("{\"mouse\":\"on\"}", f); fclose(f);
+    settingsWords = nil;   /* the store reads once a session; a hand-written file is a new session */
     load_mouse_mode(); check(runtime_mouse_enabled() && motionMouse == 1, "the next start reads mouse mode on");
-    runtime_mouse_set(0); f = fopen(saved, "w"); fputs("maybe\n", f); fclose(f);
+    runtime_mouse_set(0); f = fopen(saved, "w"); fputs("{\"mouse\":\"maybe\"}", f); fclose(f);
+    settingsWords = nil;
     load_mouse_mode(); check(!runtime_mouse_enabled(), "a word other than on / off: off");
 
     setenv("TOTK_MOUSE_GYRO", "0", 1); motionMouse = -1;

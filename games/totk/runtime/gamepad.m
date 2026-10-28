@@ -92,8 +92,14 @@ static int32_t stronger_axis(int32_t a, int32_t b) {
     return abs(b) > abs(a) ? b : a;
 }
 
-/* Settings the keys change (6: controller type, 7: mouse mode), one word each in a file next to controls.txt
-   (TOTK_CONTROLS; a run without it, such as a test, neither reads nor writes them), so they hold for the next launch. */
+/* Every setting lives in one file, settings.json next to controls.txt (user 2026-10-28: one file, not a pile of *.txt).
+   The name a caller passes names its key without the "@.txt" ("gyro.txt" is "gyro"), and the words are the ones the old
+   files held, so no call site changed. The object is read once and every save writes all of it, at once. A run without
+   TOTK_CONTROLS (a test) neither reads nor writes it. */
+#define SETTINGS_STORE_FILE "settings.json"
+static NSMutableDictionary<NSString *, NSString *> *settingsWords;
+static pthread_mutex_t settingsWordsLock = PTHREAD_MUTEX_INITIALIZER;
+
 static int setting_path(const char *name, char *out, size_t size) {
     const char *controls = getenv("TOTK_CONTROLS");
     if (!controls || !*controls) return 0;
@@ -102,38 +108,60 @@ static int setting_path(const char *name, char *out, size_t size) {
     int n = slash ? snprintf(out, size, "%.*s/%s", dir, controls, name) : snprintf(out, size, "%s", name);
     return n > 0 && (size_t)n < size;
 }
+/* settingsWordsLock held: the file's words into settingsWords, once (an empty object when there is none or it is not a
+   JSON object, which leaves every default standing). */
+static void settings_load_locked(const char *path) {
+    if (settingsWords) return;
+    settingsWords = [NSMutableDictionary dictionary];
+    NSData *data = [NSData dataWithContentsOfFile:[NSString stringWithUTF8String:path]];
+    id object = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+    if (![object isKindOfClass:NSDictionary.class]) {
+        if (data) fprintf(stderr, "[totk-input] %s is not a JSON object; the defaults stand\n", path);
+        return;
+    }
+    for (NSString *key in (NSDictionary *)object)
+        if ([((NSDictionary *)object)[key] isKindOfClass:NSString.class]) settingsWords[key] = ((NSDictionary *)object)[key];
+}
+static NSString *setting_key(const char *name) {
+    NSString *key = [NSString stringWithUTF8String:name];
+    return [key hasSuffix:@".txt"] ? [key substringToIndex:key.length - 4] : key;
+}
 
 static int setting_read(const char *name, char *word, size_t size, char *path, size_t path_size) {   /* 1: read */
-    if (!setting_path(name, path, path_size)) return 0;
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;   /* never changed: the default */
-    size_t n = fread(word, 1, size - 1, f);
-    fclose(f);
-    word[n] = 0;
+    if (!setting_path(SETTINGS_STORE_FILE, path, path_size)) return 0;
+    pthread_mutex_lock(&settingsWordsLock);
+    settings_load_locked(path);
+    NSString *value = settingsWords[setting_key(name)];
+    pthread_mutex_unlock(&settingsWordsLock);
+    if (!value) return 0;   /* never changed: the default */
+    snprintf(word, size, "%s", value.UTF8String);
     return 1;
 }
 
 static void setting_write(const char *name, const char *word, const char *what) {
-    char path[4096], temp[4200];
-    if (!setting_path(name, path, sizeof path)) return;
-    snprintf(temp, sizeof temp, "%s.tmp", path);
-    FILE *f = fopen(temp, "w");
-    int ok = f && fprintf(f, "%s\n", word) > 0;
-    if (f && fclose(f)) ok = 0;
-    if (ok && rename(temp, path)) ok = 0;
-    if (!ok) { fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path); unlink(temp); }
+    char path[4096];
+    if (!setting_path(SETTINGS_STORE_FILE, path, sizeof path)) return;
+    NSData *data = nil;
+    pthread_mutex_lock(&settingsWordsLock);
+    settings_load_locked(path);
+    settingsWords[setting_key(name)] = [NSString stringWithUTF8String:word];
+    data = [NSJSONSerialization dataWithJSONObject:settingsWords
+                                           options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:NULL];
+    int ok = data && [data writeToFile:[NSString stringWithUTF8String:path] atomically:YES];
+    pthread_mutex_unlock(&settingsWordsLock);
+    if (!ok) fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path);
 }
 
-/* The same one-word files for the rest of the runtime: 1 with the file's text in word as written (the caller drops the
-   blanks around the word), 0 when there is no such file or no settings folder (a run without TOTK_CONTROLS). */
+/* One setting for the rest of the runtime: 1 with its word in word (the caller drops the blanks around it), 0 when it
+   was never set or there is no settings folder (a run without TOTK_CONTROLS). The name is the key plus ".txt". */
 int runtime_setting_word(const char *name, char *word, size_t size) {
     char path[4096];
     return setting_read(name, word, size, path, sizeof path);
 }
-/* ... and saves one, as controller-type.txt is saved (the settings panel's controller rows). */
+/* ... and saves one. */
 void runtime_setting_save(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
 
-/* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, in controller-type.txt. */
+/* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, kept as the word "controller-type". */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;
 
 static void load_controller_type(void) {
@@ -350,7 +378,7 @@ static HIDPadState hidPad;
 static void hid_pad_start(void) {}
 #endif
 
-/* ---- Mouse mode (Mac, the settings panel; in mouse.txt) ----
+/* ---- Mouse mode (Mac, the settings panel; the word "mouse") ----
    The window (runtime/frontend.m) holds the pointer while mouse mode is on and the window has the keyboard, and sends
    the mouse's buttons and movement here. Buttons are physical buttons 17-21 of the controller layout (controller_map.h:
    left attack, right draw the bow with left to shoot, middle target), so controls.txt can change them. Movement goes to

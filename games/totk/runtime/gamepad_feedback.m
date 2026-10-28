@@ -363,8 +363,8 @@ static void gain_load(void) {
         const char *g = getenv("TOTK_RUMBLE_GAIN"); char word[32] = {0}; float saved;
         if (g) { char *end; double v = strtod(g, &end); if (end == g || *end || !(v > 0) || v > 4) runtime_fail("TOTK_RUMBLE_GAIN must be a number in (0, 4]"); gain = (float)v; }
         else if (runtime_setting_word("rumble-gain.txt", word, sizeof word)) {
-            if (feedback_gain_word(word, &saved)) { gain = saved; fprintf(stderr, "[rumble] strength %g (rumble-gain.txt)\n", saved); }
-            else fprintf(stderr, "[rumble] rumble-gain.txt: not a number in (0, 4]; strength 1\n");
+            if (feedback_gain_word(word, &saved)) { gain = saved; fprintf(stderr, "[rumble] strength %g (settings.json's rumble-gain)\n", saved); }
+            else fprintf(stderr, "[rumble] settings.json's rumble-gain: not a number in (0, 4]; strength 1\n");
         }
     });
 }
@@ -625,7 +625,7 @@ static int triggers_wanted(void) {
     while (*w && strchr(" \t\n\v\f\r", *w)) w++;   /* the blanks around the word go, as for every one-word file */
     for (size_t n = strlen(w); n && strchr(" \t\n\v\f\r", w[n - 1]); n--) w[n - 1] = 0;
     if (!strcmp(w, "off")) return triggerChoice = 0;
-    if (strcmp(w, "on")) fprintf(stderr, "[triggers] dualsense-triggers.txt: not on or off; on\n");
+    if (strcmp(w, "on")) fprintf(stderr, "[triggers] settings.json's dualsense-triggers: not on or off; on\n");
     return triggerChoice = 1;
 }
 static int bow_state_supported(void) {
