@@ -25,7 +25,13 @@ on a device before its first sync, so the account identity exists.
 
 ## Turning it on
 
-Three values, the same keys everywhere. On the Mac:
+Three values, the same keys everywhere. The easiest way on the Mac is the game's
+own settings panel: **press 1 in the game**, and fill in the WebDAV address,
+user and password at the bottom of the panel — the "Save sync (WebDAV)" row
+above them switches the feature off and on (it stays off until an address is
+filled in). What is typed there is stored the same way as the `defaults write`
+below, and reaches the saves at the next start of the game. Or, from the
+terminal:
 
 ```sh
 defaults write org.macnativegames.totk TOTK_WEBDAV_URL https://dav.jianguoyun.com/dav
@@ -35,8 +41,9 @@ defaults write org.macnativegames.totk TOTK_WEBDAV_PASSWORD <app password>
 
 (`org.macnativegames.botw` for Breath of the Wild.) On the iPhone they are the
 **Settings › TOTK › Save sync (WebDAV)** fields. Environment variables of the
-same names win, which is how tests pass theirs. 坚果云 and Nextcloud take an
-app-specific password — use that, not the account password.
+same names win — including `TOTK_WEBDAV_ENABLED=0`, which switches the sync off
+wherever it is set. 坚果云 and Nextcloud take an app-specific password — use
+that, not the account password.
 
 The saves land in `MacNativeGames/<game>/saves/` on the server; the folder is
 made on the first sync.
