@@ -6,6 +6,7 @@ Every check reads its paths through _paths(ctx), never ctx.paths directly, so al
 IsADirectoryError around open(); everything else propagates to run_checks (K4)."""
 import json
 from pathlib import Path
+import re
 
 from tools.builder.checks import CheckResult, Status
 from tools.builder.inputs import BaseKind, Fonts, InputChoice, Status as InputStatus, UpdateKind, evaluate_inputs
@@ -146,6 +147,50 @@ class InputRules:
         return CheckResult(self.id, Status.OK, 'ok', ', '.join(verdict.notes))
 
 
+# The keys build_app.py's own --keys file holds: every line "name = 32 or 64 hex digits", and the
+# names a usable prod.keys has at least (its header key and the first key area key). A line that is
+# not that shape means the file is not a prod.keys, which build_app.py would report far later.
+KEY_LINE = re.compile(r'^([A-Za-z0-9_]+)\s*=\s*([0-9A-Fa-f]+)$')
+KEY_NAMES = ('master_key_00', 'header_key', 'key_area_key_application_00')
+
+
+class KeysStructure:
+    """prod.keys: that it reads as key lines, and that the names a build needs are present."""
+
+    id, requires = 'keys', ('input_files',)
+
+    def run(self, ctx):
+        paths = _paths(ctx)
+        if paths.keys is None:
+            return CheckResult(self.id, Status.SKIP, 'skipped', 'no keys file chosen')
+        try:
+            text = Path(paths.keys).read_text(encoding='utf-8', errors='replace')
+        except OSError as error:
+            return _block(self.id, 'keys_unreadable', f'{paths.keys}: {error.strerror or error}')
+        names, bad = set(), []
+        for number, raw in enumerate(text.splitlines(), 1):
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+            match = KEY_LINE.match(line)
+            if match is None:
+                bad.append(f'line {number}')
+                continue
+            name, value = match.group(1), match.group(2)
+            if len(value) not in (32, 64):
+                bad.append(f'line {number}: {name} has {len(value)} hex digits')
+                continue
+            names.add(name.lower())
+        if not names:
+            return _block(self.id, 'keys_invalid', f'{paths.keys}: no "name = hex" lines')
+        if bad:
+            return CheckResult(self.id, Status.WARN, 'keys_invalid', '; '.join(bad[:3]))
+        missing = [name for name in KEY_NAMES if name not in names]
+        if missing:
+            return CheckResult(self.id, Status.WARN, 'keys_missing_names', ', '.join(missing))
+        return CheckResult(self.id, Status.OK, 'ok', f'{len(names)} keys')
+
+
 def _work_target(paths):
     """build_app.py's volume target for the work folder (l. 1619, 1647)."""
     return paths.work.parent if paths.work.parent.exists() else paths.game.parent
@@ -180,4 +225,4 @@ class OutputVolume:
         return CheckResult(self.id, Status.OK, 'ok', str(out.probed))
 
 
-INPUT_CHECKS = (Repository(), InputFiles(), InputRules(), DiskSpace(), OutputVolume())
+INPUT_CHECKS = (Repository(), InputFiles(), KeysStructure(), InputRules(), DiskSpace(), OutputVolume())

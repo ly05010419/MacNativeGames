@@ -24,8 +24,9 @@ SAVED = {'totk': {'game': '/t.xci', 'keys': '/t.keys', 'update': '/u.nsp'},
 
 @unittest.skipIf(tk is None, 'this Python has no Tk')
 class Base(unittest.TestCase):
-    def start(self, **fake):
+    def start(self, home=None, **fake):
         self.root = tk.Tk()
+        self.home = home
         self.root.withdraw()
         self.ctl = FakeController(**fake)
         self.ctl.saved = SAVED
@@ -36,7 +37,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.check_callback_errors)                            # runs last: sees close()'s errors
         self.addCleanup(self.teardown_window, self.root, self.ctl, made)       # before any assertion
         self.view = GuiView(self.root, self.ctl, self.choose, self.copied.append, self.opened.append, self.confirm,
-                            lambda: self.now)
+                            lambda: self.now, home=self.home)
         made.append(self.view)
         return self.view
 

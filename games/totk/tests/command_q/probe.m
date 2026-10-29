@@ -39,6 +39,10 @@ int runtime_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z
 void runtime_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
+int runtime_shared_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z;return 0;}
+void runtime_shared_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD

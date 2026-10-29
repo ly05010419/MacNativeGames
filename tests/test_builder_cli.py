@@ -2,9 +2,11 @@
 Loop turns: 1 is the settings load, 2.. the checks, then one interrupted() before the prompt (S2.1b, g1) and one
 before start_build() (S2.2, from S2.1b P3-1); a build's turns follow."""
 import signal
+import tempfile
 import unittest
 
 from collections import deque
+from pathlib import Path
 
 from builder_fake_controller import CtrlC, FakeController, cli_args
 from tools.builder.checks import CheckResult, Status
@@ -43,6 +45,16 @@ class Checks(Base):
         code = self.run_cli(FakeController(checks=READY), check_only=True)
         self.assertEqual((code, self.lines), (0, ['  OK    git', 'Checks: ready.']))
         self.assertNotIn('start_build', self.ctl.calls)
+
+    def test_check_only_prints_the_logs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'builder-totk-20260101-000000.log'
+            log.write_text('x')
+            ctl = FakeController(checks=READY)
+            ctl.logs_dir = Path(folder)
+            code = self.run_cli(ctl, check_only=True)
+        self.assertEqual((code, self.lines),
+                         (0, ['  OK    git', 'Checks: ready.', f'  logs: builder: {log}']))
 
     def test_a_block_with_a_fix_and_a_skip(self):
         block = CheckResult('homebrew', Status.BLOCK, 'homebrew_missing', '/opt/homebrew/bin/brew', 'install-brew')

@@ -12,7 +12,7 @@ Tested on one Mac: Apple M5 Max, 64 GB, macOS 27.
 
 | Stage | State |
 |---|---|
-| Code and data | done: 1.0.3 and 1.0.4 code extracted and rewritten, all three modules verified (structure and emulator equivalence), RomFS merged and verified |
+| Code and data | done: 1.0.3, 1.0.4 and 1.0.5 code extracted and rewritten, all three modules verified (structure and emulator equivalence), RomFS merged and verified |
 | Boot | done: SDK startup, 1,453 constructors, the engine's own startup |
 | Menus | done: Initial Settings (saved to the profile), logos, title screen with its CRIWARE background movie, main menu |
 | New game | done: storybook intro, character creation (appearance, skill, belongings), favourite dish and name typed in the Mac text bar, story narration, the first town in HD-2D |
@@ -20,6 +20,7 @@ Tested on one Mac: Apple M5 Max, 64 GB, macOS 27.
 | Battles | 1.0.4: many battles played on the Mac, including Ultimate Techniques, whose rendering problems were found and fixed this way ([CHANGELOG.md](CHANGELOG.md)) |
 | Frame rate | up to 120 fps (the Switch version is held to 30); 8.3 ms per frame in the first town on a 120 Hz display |
 | 1.0.3 | played on the Mac (27 October 2026): to Atlas Dam, with a few battles just outside it |
+| 1.0.5 | started on the Mac (28 October 2026): title screen, main menu and the world map from a save, at 120 fps |
 | App | `scripts/build_ot0.py` (or `make app`) builds a self-contained `Octopath Traveler 0.app`: a settings window (frame rate, monitor, window or full screen, size, output resolution, MetalFX, HUD), then the game |
 
 Known gaps: a shader the game uses for the first time is built in the background and the objects that need it appear a moment late; draws into smaller targets (shadows, lookup tables) still wait for it, a pause of up to about 150 ms the first time. Each shader is built once; later sessions load it from the cache.
@@ -31,7 +32,7 @@ The app's "Frame rate" setting (up to 120, 60 or 30; 120 by default) sets the en
 ## Inputs
 
 - Base game: the card image `01005270232F2000` (XCI; a trimmed image works). It also carries a bundled update, which is not used.
-- Update 1.0.3 (v196608) or 1.0.4 (v262144): `01005270232F2800` (NSP). Its code is what the app runs; the RomFS is the base plus this update. The scripts tell the versions apart by their contents, never by the file name: `extract_code.py` by the ExeFS hashes and `merge_romfs.py` by the update's Program NCA, against `assets/expected-v1.0.3.json` and `assets/expected-v1.0.4.json` (hashes only). An update that matches neither stops.
+- Update 1.0.3 (v196608), 1.0.4 (v262144) or 1.0.5 (v327680): `01005270232F2800` (NSP). Its code is what the app runs; the RomFS is the base plus this update. The scripts tell the versions apart by their contents, never by the file name: `extract_code.py` by the ExeFS hashes and `merge_romfs.py` by the update's Program NCA, against `assets/expected-v1.0.3.json`, `assets/expected-v1.0.4.json` and `assets/expected-v1.0.5.json` (hashes only). An update that matches none of them stops.
 - Engine and SDK, read from the code: Unreal Engine 5.4.2 on Nintendo SDK 19.3.13, NVN graphics, CRIWARE audio and movies.
 
 ## Build
@@ -40,14 +41,14 @@ You need Xcode's Command Line Tools, Python 3.14 and, from Homebrew, `opus` and 
 
 ```sh
 cd games/ot0
-python3.14 scripts/build_ot0.py --game "<card image>.xci" --update "<1.0.3 or 1.0.4 update>.nsp" -k "<prod.keys>"
+python3.14 scripts/build_ot0.py --game "<card image>.xci" --update "<1.0.3, 1.0.4 or 1.0.5 update>.nsp" -k "<prod.keys>"
 ```
 
 It makes the Python environment, extracts the update's code and tells the version by its hashes, merges and verifies the RomFS, rewrites the three modules and checks them against the pinned hashes, builds the runtime and puts `Octopath Traveler 0.app` next to the game file (`--out` chooses another folder). A second run reuses every finished step, and the logs are in `OT0_build/logs`. The first build needs internet access (Python packages and SPIRV-Cross) and about 10 GB free; the work folder's path must not contain a space, `:` or `$`, which `make` cannot handle (`--work` chooses another), and the app must go on an APFS or Mac OS Extended volume, not an exFAT card. One app holds one version: building the other update into the same folder replaces it, so give that build another `--out` to keep both.
 
 ## Building step by step
 
-For working on the port, the same steps run one by one from `games/ot0`, with the Python environment the build made (`PY=OT0_build/venv/bin/python`). `extract_code.py` prints the version it found (`v103` or `v104`); `V` below is that version.
+For working on the port, the same steps run one by one from `games/ot0`, with the Python environment the build made (`PY=OT0_build/venv/bin/python`). `extract_code.py` prints the version it found (`v103`, `v104` or `v105`); `V` below is that version.
 
 ```sh
 $PY scripts/extract_code.py "<update>.nsp" --keys prod.keys --work OT0_build
@@ -61,7 +62,7 @@ cd OT0_build && TOTK_GPU_ALLOW_SUBMIT=1 ./build/ot0-native-$V rewritten/$V boot
 
 Verification of the rewrite (each module): `third_party/d2r/structck.py` (which needs Homebrew's `llvm`) and `third_party/d2r/equiv.py` with `OT0_build/rewritten/$V <module> OT0_build/extracted/$V/exefs/<module>`.
 
-Both versions can be prepared in one work folder: each has its own `extracted/<version>`, `rewritten/<version>`, generated headers in `build/<version>` and runtime `build/ot0-native-<version>`, while the shader cache and the tools in `build/` are shared. The runtime stays directly in `build/` because the graphics layer finds the shader tools and cache next to it. `VERSION` defaults to the newest version extracted. Code patches go in `mods/<version>/<name>/exefs` (`mods/1.0.3`, `mods/1.0.4`), are made into tables by `make patches` and checked against that version's build ID; the game applies the ones `OT0_PATCHES` names when it is run this way.
+Several versions can be prepared in one work folder: each has its own `extracted/<version>`, `rewritten/<version>`, generated headers in `build/<version>` and runtime `build/ot0-native-<version>`, while the shader cache and the tools in `build/` are shared. The runtime stays directly in `build/` because the graphics layer finds the shader tools and cache next to it. `VERSION` defaults to the newest version extracted. Code patches go in `mods/<version>/<name>/exefs` (`mods/1.0.3`, `mods/1.0.4`, `mods/1.0.5`), are made into tables by `make patches` and checked against that version's build ID; the game applies the ones `OT0_PATCHES` names when it is run this way.
 
 Keys as in the other ports: WASD the left stick, arrow keys the right stick, J is A, K or Space is B, I is X, U is Y, Q / E are L / R, Return is +. When the game asks for text, a bar opens at the bottom of the window: type, Return confirms. The mouse pointer hides after 5 seconds without moving over the game window and comes back when it moves.
 

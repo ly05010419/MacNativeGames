@@ -463,7 +463,7 @@ static const HidImuProfile *imuProfile;   /* main run loop: the pad hid_imu_star
 static GCController *hidRumblePad;   /* main queue */
 static dispatch_queue_t hidOut;      /* every output report, in order; the packet counter is its own */
 static uint8_t hidPacket;            /* hidOut */
-static uint8_t hidReport[64];
+static uint8_t hidReport[128];   /* room for the DS4's 78-byte report, the largest */
 static BOOL hidJoyConRight; /* local: paired original Joy-Con uses the right IMU */
 static uint64_t hidLast;
 static BOOL hidUserCalibration;
@@ -883,8 +883,8 @@ static void hid_imu_report(void *ctx, IOReturn result, void *sender, IOHIDReport
     if (!tb.denom) mach_timebase_info(&tb);
     runtime_motion_feed(acc, gyro, hid_imu_time((uint64_t)((__uint128_t)stamp * tb.numer / tb.denom), runtime_now_ns(), &imuLast));   /* the report's own receive time: see hid_imu.h */
 }
-static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion */
-    if (![c.productCategory isEqualToString:GCProductCategoryHID]) return NO;   /* not an Xbox pad that merely sits beside one of these */
+static BOOL hid_imu_start(GCController *c) {   /* main queue: c has no GCMotion, or a DualShock 4 whose GCMotion yields nothing */
+    if (![c.productCategory isEqualToString:GCProductCategoryHID] && ![c.productCategory isEqualToString:@"DualShock 4"]) return NO;   /* not an Xbox pad that merely sits beside one of these */
     NSMutableArray *matching = [NSMutableArray array];
     for (int i = 0; i < HID_IMU_PROFILES; i++)
         [matching addObject:@{@kIOHIDVendorIDKey: @(hid_imu_profiles[i].vendor), @kIOHIDProductIDKey: @(hid_imu_profiles[i].product)}];
@@ -957,7 +957,16 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
             if (r > 0) fprintf(stderr, "[gyro] axes remapped by TOTK_GYRO_AXES=%s\n", axes);
         });
         GCMotion *m = c.motion;
-        if (!m || !m.hasRotationRate) {
+        if ([c.productCategory isEqualToString:@"DualShock 4"]) {   /* its GCMotion yields 0 samples: read its HID IMU instead */
+            GCController *before = motionPad;
+            if (hid_imu_start(c)) {   /* the v1 Bluetooth profile; v2 or USB has no matching profile and keeps GCMotion below */
+                if (before && before != c) {   /* one motion feed only, as below (hid_imu_start has made c the feed) */
+                    before.motion.valueChangedHandler = nil;
+                    if (before.motion.sensorsRequireManualActivation) before.motion.sensorsActive = NO;
+                }
+                return;
+            }
+        } else if (!m || !m.hasRotationRate) {
             if ([c.productCategory containsString:@"Joy-Con"]) {   /* PR #889: a paired Joy-Con's right HID sensor */
                 hid_motion_stop(); zeroSince = 0; motionSeen = hidAsked = NO;
                 motionPad = c; hid_motion_start();

@@ -13,6 +13,7 @@ import sys
 GAME = Path(__file__).resolve().parents[1]
 TITLE, UPDATE = '0100152000022000', '0100152000022800'
 VERSION = 'v1507328'   # 4.0.1
+AOC, AOC_VERSION = '0100152000023001', 'v65536'   # the Booster Course Pass: its licence data only (contents.dat, version.txt); the courses are in the 4.0.1 update
 APP_NAME = 'Mario Kart 8 Deluxe'
 BUNDLE_ID = 'org.macnativegames.mk8d'
 LIBHAC_SHA256 = '1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19'
@@ -153,19 +154,20 @@ def pfs0_names(path):
 
 
 def classify(path):
-    """'base', 'update' or None, from the NSP's ticket (else its [title ID] tag), and the [v…] tag of the name."""
+    """'base', 'update', 'aoc' or None, from the NSP's ticket (else its [title ID] tag; add-on content only from its own ticket), and the [v…] tag of the name."""
     names = pfs0_names(path)
     if names is None:
         return None, None
     tickets = {n[:16].upper() for n in names if re.fullmatch(r'[0-9A-Fa-f]{32}\.tik', n)}
     tag = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
-    title = (tickets.pop() if len(tickets) == 1 else None) or (tag.group(1).upper() if tag and not tickets else None)
+    title = (next(iter(tickets)) if len(tickets) == 1 else None) or (tag.group(1).upper() if tag and not tickets else None)
     version = re.search(r'\[(v\d+)\]', path.name)
-    return {TITLE: 'base', UPDATE: 'update'}.get(title), version.group(1) if version else None
+    kind = {TITLE: 'base', UPDATE: 'update'}.get(title) or ('aoc' if tickets == {AOC} else None)
+    return kind, version.group(1) if version else None
 
 
 def link_inputs(inputs, work):
-    """Link the base game and the 4.0.1 update, under names that carry their title and version tags. Everything else, such as add-on content, is left out."""
+    """Link the base game, the 4.0.1 update and, when present, the Booster Course Pass, under names that carry their title and version tags. Everything else is left out."""
     destination = work / 'input'
     destination.mkdir(parents=True, exist_ok=True)
     picks, skipped = {}, []
@@ -175,6 +177,8 @@ def link_inputs(inputs, work):
         kind, version = classify(path)
         if kind == 'update' and version not in (None, VERSION):
             raise ValueError(f'this target supports only the 4.0.1 update ({VERSION}); remove or move {path.name}')
+        if kind == 'aoc' and version not in (None, AOC_VERSION):
+            raise ValueError(f'this target supports only the Booster Course Pass {AOC_VERSION}; remove or move {path.name}')
         if kind is None:
             skipped.append(path.name)
             continue
@@ -185,8 +189,10 @@ def link_inputs(inputs, work):
         if kind not in picks:
             raise ValueError(f'the input folder has no Mario Kart 8 Deluxe {"base game" if kind == "base" else "4.0.1 update"} NSP')
     for name in skipped:
-        print(f'ignored (not the base game or the 4.0.1 update): {name}', flush=True)
+        print(f'ignored (not the base game, the 4.0.1 update or the Booster Course Pass): {name}', flush=True)
     wanted = {f'{APP_NAME} [{TITLE}][v0].nsp': picks['base'], f'{APP_NAME} [{UPDATE}][{VERSION}].nsp': picks['update']}
+    if 'aoc' in picks:
+        wanted[f'{APP_NAME} [{AOC}][{AOC_VERSION}].nsp'] = picks['aoc']
     for old in destination.iterdir():
         if old.is_symlink() and old.name not in wanted:
             old.unlink()
@@ -194,6 +200,8 @@ def link_inputs(inputs, work):
         dst = destination / name
         if dst.is_symlink() and dst.resolve() == src:
             continue
+        if dst.is_symlink() and not dst.exists():   # its original was moved or renamed since the last build
+            dst.unlink()
         if dst.exists() or dst.is_symlink():
             raise ValueError(f'refusing to replace an existing input: {dst}')
         dst.symlink_to(src)
@@ -212,7 +220,7 @@ def environment(work):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('inputs', type=Path, help='folder with the base NSP and the 4.0.1 update NSP (other files are ignored)')
+    parser.add_argument('inputs', type=Path, help='folder with the base NSP, the 4.0.1 update NSP and optionally the Booster Course Pass NSP (other files are ignored)')
     parser.add_argument('--keys', required=True, type=Path, help='your local prod.keys (never copied into the app)')
     parser.add_argument('--libhac-package', required=True, type=Path, help='local LibHac 0.19.0 .nupkg (SHA-256 pinned; no download)')
     parser.add_argument('--work-dir', required=True, type=Path, help='private build directory outside the checkout')

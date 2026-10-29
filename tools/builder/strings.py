@@ -23,6 +23,7 @@ EN = {
     'check.input_rules': 'Input combination',
     'check.disk_space': 'Free disk space',
     'check.output_volume': 'Output folder volume',
+    'check.keys': 'Keys file (prod.keys)',
 
     # one sentence per message id; {detail} is the check's detail
     'msg.ok': 'Ready.',
@@ -56,6 +57,9 @@ EN = {
     'reason.fonts_needed': 'this game needs the system fonts (choose a firmware folder or a shared-fonts folder)',
     'reason.botw_needs_update': 'a Breath of the Wild base NSP needs its 1.6.0 update',
     'msg.disk_space': 'Not enough free space: {detail}.',
+    'msg.keys_unreadable': 'The keys file cannot be read: {detail}.',
+    'msg.keys_invalid': 'The keys file has lines that are not "name = 32 or 64 hex digits": {detail}.',
+    'msg.keys_missing_names': 'The keys file lacks {detail}.',
     'msg.output_other_volume': 'The app goes to another volume than the work folder ({detail}); copying takes longer.',
 
     # outcomes (CANCELLED is the sentence for a cancel before anything ran; T7 covers the others)
@@ -82,6 +86,7 @@ EN = {
     'cli.fix': '        fix: {fix}',
     'cli.checks_ready': 'Checks: ready.',
     'cli.checks_blocked': 'Checks: blocked. Nothing was started.',
+    'cli.logs': '  logs: {path}',
     'cli.command': 'Command: {command}',
     'cli.prompt': 'Build now? [y/N] ',
     'cli.not_started': 'Not started.',

@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -346,6 +347,13 @@ static int handle_access_log_disabled(const void *p) { (void)p; return 0; }
 
 /* make probe-save: the "save in progress" state the window close waits on, through the fs entry points the game uses
    (a fresh profile in build/probe-save-profile; no game). */
+enum { DEVICE_SAVE_START = 0x6f00000, DEVICE_SAVE_MAX = 0x24000000 };
+static unsigned commit_option(const char *name, const void *option);
+static unsigned device_save_size(int64_t *size, int64_t *journal);
+static unsigned extend_device_save(int64_t size, int64_t journal);
+static unsigned restore_flag(bool *out, const char *mount);
+static unsigned rename_directory(const char *from, const char *to);
+static unsigned directory_entry_count(int64_t *out, uint64_t h);
 void runtime_save_probe(void) {
     const char *dir = "build/probe-save-profile";   /* a fresh profile each run (a failed run leaves it for a look) */
     remove_tree(dir); setenv("TOTK_PROFILE_DIR", dir, 1);
@@ -371,9 +379,29 @@ void runtime_save_probe(void) {
     CHECK(create_file("temp:/t.bin", 4) == 0 && !runtime_fs_save_busy(), "temporary storage does not count");
     CHECK(rename_file("save:/b.sav", "save:/c.sav") == 0 && runtime_fs_save_busy(), "renaming save data");
     CHECK(commit("save") == 0 && !runtime_fs_save_busy() && delete_file("save:/c.sav") == 0 && runtime_fs_save_busy() && commit("save") == 0, "delete and commit");
+    /* Animal Crossing 3.0.1's save calls (2026-10-29): commit with options, the device save size and its extension,
+       the restore flag, renaming a directory, counting a directory's entries. */
+    CHECK(create_file("save:/d.sav", 4) == 0 && commit_option("save", NULL) == 0 && !runtime_fs_save_busy(), "commit with options");
+    int64_t size = 0, journal = 0;
+    CHECK(device_save_size(&size, &journal) == 0 && size == DEVICE_SAVE_START && journal == DEVICE_SAVE_START, "a new device save has the NACP's size");
+    CHECK(extend_device_save(0x10000000, 0x10000000) == 0 && device_save_size(&size, &journal) == 0 && size == 0x10000000 && journal == 0x10000000, "extended and remembered");
+    CHECK(extend_device_save(DEVICE_SAVE_START, DEVICE_SAVE_START) && extend_device_save(DEVICE_SAVE_MAX + 1ll, DEVICE_SAVE_MAX) &&
+          device_save_size(&size, &journal) == 0 && size == 0x10000000, "no shrinking, no growth past the NACP's maximum");
+    bool restored = true; CHECK(restore_flag(&restored, "save") == 0 && !restored, "never restored from a backup");
+    CHECK(create_directory("save:/slot1") == 0 && create_file("save:/slot1/main.dat", 8) == 0 && create_directory("save:/slot2") == 0, "two slots");
+    CHECK(rename_directory("save:/slot1", "save:/slot2") == R_ALREADY_EXISTS, "a rename onto an existing directory is refused");
+    CHECK(rename_directory("save:/slot1", "save:/slot3") == 0 && runtime_fs_save_busy(), "a directory renamed in save data");
+    int type = -1; CHECK(entry_type(&type, "save:/slot3/main.dat") == 0 && type == 1 && entry_type(&type, "save:/slot1") == R_PATH_NOT_FOUND, "its files moved with it");
+    CHECK(rename_directory("save:/missing", "save:/x") == R_PATH_NOT_FOUND, "a missing directory");
+    uint64_t d = 0; int64_t count = -1, read = 0; DirectoryEntry entries[8];
+    CHECK(open_directory(&d, "save:/", 3) == 0 && directory_entry_count(&count, d) == 0, "count the save root");
+    CHECK(read_directory(&read, entries, d, 8) == 0 && read == count && count == 4, "counting does not move the listing (a.sav d.sav slot2 slot3)");
+    close_directory(d);
+    CHECK(open_directory(&d, "save:/", 1) == 0 && directory_entry_count(&count, d) == 0 && count == 2, "directories only");
+    close_directory(d); commit("save");
 #undef CHECK
     remove_tree(dir);
-    printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close\"}\n", checks);
+    printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close; commit with options, device save size and extension, restore flag, directory rename and entry count\"}\n", checks);
 }
 
 static unsigned mount_device_save(const char *name) {
@@ -405,6 +433,61 @@ static unsigned commit_multi(const char *const *names, int count) {
         if (r) res = r;
     }
     return res;
+}
+/* Commit with options (Animal Crossing 3.0.1): the options only concern the system's journal; the same flush. */
+static unsigned commit_option(const char *name, const void *option) { (void)option; return commit(name); }
+/* The device save's size. Animal Crossing (2.0 and later) reads it and grows it with ExtendDeviceSaveData before it
+   saves more (its NACP: 0x6f00000 bytes and as much journal at the start, up to 0x24000000 each). Host files have no
+   fixed size, so the size the game asked for is only remembered (device-save-size.txt in the profile folder) and
+   reported back; it starts at the NACP's size, as a new save on a console does. */
+static void device_save_size_path(char *out, size_t cap) { ready(); snprintf(out, cap, "%s/device-save-size.txt", profile); }
+static void device_save_size_read(int64_t *size, int64_t *journal) {
+    char p[1100]; device_save_size_path(p, sizeof p); *size = *journal = DEVICE_SAVE_START;
+    FILE *f = fopen(p, "r"); long long a, b;
+    if (f) { if (fscanf(f, "%lld %lld", &a, &b) == 2 && a >= DEVICE_SAVE_START && b >= DEVICE_SAVE_START && a <= DEVICE_SAVE_MAX && b <= DEVICE_SAVE_MAX) { *size = a; *journal = b; } fclose(f); }
+}
+static unsigned device_save_size(int64_t *size, int64_t *journal) {
+    if (!size || !journal) return R_INVALID_ARGUMENT;
+    device_save_size_read(size, journal);
+    static int once; if (!once++) fprintf(stderr, "[totk] device save size %#llx, journal %#llx\n", (long long)*size, (long long)*journal);
+    return 0;
+}
+static unsigned extend_device_save(int64_t size, int64_t journal) {
+    int64_t now, now_journal; device_save_size_read(&now, &now_journal);
+    if (size < now || journal < now_journal || size > DEVICE_SAVE_MAX || journal > DEVICE_SAVE_MAX) {
+        fprintf(stderr, "[totk] device save extension to %#llx / %#llx refused (now %#llx / %#llx, at most %#x)\n",
+                (long long)size, (long long)journal, (long long)now, (long long)now_journal, DEVICE_SAVE_MAX);
+        return R_INVALID_ARGUMENT;
+    }
+    char p[1100], t[1200]; device_save_size_path(p, sizeof p); snprintf(t, sizeof t, "%s.tmp", p);
+    FILE *f = fopen(t, "w"); int ok = f && fprintf(f, "%lld %lld\n", (long long)size, (long long)journal) > 0;
+    if (f && fclose(f)) ok = 0;
+    if (!ok || rename(t, p)) { unlink(t); fprintf(stderr, "[totk] device save size could not be recorded in %s\n", p); return R_INVALID_ARGUMENT; }
+    fprintf(stderr, "[totk] device save extended to %#llx, journal %#llx\n", (long long)size, (long long)journal);
+    return 0;
+}
+/* Saves restored from a backup on a console are flagged; never here. */
+static unsigned restore_flag(bool *out, const char *mount) { (void)mount; if (!out) return R_INVALID_ARGUMENT; *out = false; return 0; }
+static unsigned rename_directory(const char *from, const char *to) {
+    char a[1100], b[1100]; unsigned r = save_change_path(from, a, sizeof a); if (!r) r = host_path(to, b, sizeof b); if (r) return r;
+    struct stat st; if (stat(a, &st) || !S_ISDIR(st.st_mode)) return R_PATH_NOT_FOUND;
+    if (!stat(b, &st)) return R_ALREADY_EXISTS;
+    return rename(a, b) ? errno_result() : 0;
+}
+/* The entries a directory handle lists (its mode: directories, files or both), without moving its read position. */
+static unsigned directory_entry_count(int64_t *out, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) return R_INVALID_ARGUMENT;
+    pthread_mutex_lock(&lock); Dir d = dirs[h - DIR_BASE]; pthread_mutex_unlock(&lock);
+    if (d.rom) { *out = d.nrom; return 0; }
+    if (!d.dir) return R_INVALID_ARGUMENT;
+    DIR *again = opendir(d.path); if (!again) return errno_result();
+    int64_t n = 0; struct dirent *e;
+    while ((e = readdir(again))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || strlen(e->d_name) > 768) continue;
+        char child[2048]; snprintf(child, sizeof child, "%s/%s", d.path, e->d_name); struct stat st; if (stat(child, &st)) continue;
+        if (d.mode & (S_ISDIR(st.st_mode) ? 1 : 2)) n++;
+    }
+    closedir(again); *out = n; return 0;
 }
 static unsigned mount_rom(const char *name, void *cache, size_t cache_size) {
     (void)name; (void)cache; (void)cache_size;
@@ -443,6 +526,12 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs19MountDeviceSaveDataEPKcNS_3ncm13ApplicationIdE", mount_device_save_app},
         {"_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", clean_directory},
         {"_ZN2nn2fs6CommitEPKPKci", commit_multi},
+        {"_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE", commit_option},
+        {"_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_", device_save_size},
+        {"_ZN2nn2fs20ExtendDeviceSaveDataEll", extend_device_save},
+        {"_ZN2nn2fs22GetSaveDataRestoreFlagEPbPKc", restore_flag},
+        {"_ZN2nn2fs15RenameDirectoryEPKcS2_", rename_directory},
+        {"_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", directory_entry_count},
         {"_ZN2nn2fs8MountRomEPKcPvm", mount_rom},
         {"_ZN2nn2fs22QueryMountRomCacheSizeEPm", query_mount_rom},
         {"_ZN2nn2fs17MountAddOnContentEPKciPvm", mount_aoc},

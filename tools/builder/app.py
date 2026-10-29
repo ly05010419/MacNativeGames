@@ -4,6 +4,7 @@ Separate from __main__ so that tests can build the real composition with a tempo
 point."""
 from pathlib import Path
 
+from tools.builder.check_report import logs_dir
 from tools.builder.checks import CheckContext
 from tools.builder.checks_inputs import INPUT_CHECKS
 from tools.builder.checks_system import SYSTEM_CHECKS
@@ -12,10 +13,6 @@ from tools.builder.controller import BuildController
 from tools.builder.jobs import DaemonJobs, Jobs
 from tools.builder.ports import CommandRunner, DiskInfo, RealClock
 from tools.builder.process import BuildProcess
-
-
-def logs_dir(home):
-    return Path(home) / 'Library' / 'Logs' / 'MacNativeGames'
 
 
 def build_controller(home, repo_root, jobs=None):

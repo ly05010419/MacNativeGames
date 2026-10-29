@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
-FILES = {'v103': 'expected-v1.0.3.json', 'v104': 'expected-v1.0.4.json'}
+FILES = {'v103': 'expected-v1.0.3.json', 'v104': 'expected-v1.0.4.json', 'v105': 'expected-v1.0.5.json'}
 VERSIONS = {version: json.loads((HERE / 'assets' / name).read_text()) for version, name in FILES.items()}
 
 

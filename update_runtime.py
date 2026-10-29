@@ -377,6 +377,7 @@ def main(argv):
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
         record_commit(tmp)
         probe_runtime(tmp, version, logs)
+        build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
         build_app.sign_app(tmp, logs)
         build_app.wait_until_closed(app)
         replaced = []   # the replaced Contents are deleted only once the updated app passes its check

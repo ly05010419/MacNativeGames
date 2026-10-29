@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -80,19 +81,48 @@ class BuildTests(unittest.TestCase):
         chain = subprocess.check_output([sys.executable, str(GAME / 'runtime/gfx/tools/dmsh_chain.py')], text=True).strip()
         self.assertIn(f'"{chain}"', (GAME / 'runtime/gfx/nvn/dmsh_chain.h').read_text())
 
-    def test_input_selection_skips_add_on_content(self):
+    def test_input_selection_takes_the_booster_course_pass_by_its_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()   # macOS: the temporary folder is under /var, a link to /private/var
             inputs, work = root / 'originals', root / 'build'
             inputs.mkdir(); work.mkdir()
             base = nsp(inputs / 'any name.nsp', [f'{build.TITLE}0000000000000000.tik', 'a.nca'])
             update = nsp(inputs / 'update [v1507328].nsp', [f'{build.UPDATE}0000000000000004.tik', 'b.nca'])
-            nsp(inputs / 'add-on [0100152000023001].nsp', ['0100152000023001000000000000000a.tik'])
+            game = [f'Mario Kart 8 Deluxe [{build.TITLE}][v0].nsp', f'Mario Kart 8 Deluxe [{build.UPDATE}][v1507328].nsp']
+            self.assertEqual(sorted(p.name for p in build.link_inputs(inputs, work).iterdir()), game)   # the add-on content is optional
+            nsp(inputs / f'no ticket [{build.AOC}][v65536].nsp', ['c.nca'])   # a name alone does not make it add-on content
+            nsp(inputs / 'other add-on [0100152000023002].nsp', ['0100152000023002000000000000000d.tik'])
+            aoc = nsp(inputs / 'booster [v65536].nsp', [f'{build.AOC}000000000000000d.tik', 'd.nca'])
             result = build.link_inputs(inputs, work)
             links = sorted(p.name for p in result.iterdir())
-            self.assertEqual(links, [f'Mario Kart 8 Deluxe [{build.TITLE}][v0].nsp', f'Mario Kart 8 Deluxe [{build.UPDATE}][v1507328].nsp'])
-            self.assertEqual((result / links[0]).resolve(), base)
-            self.assertEqual((result / links[1]).resolve(), update)
+            self.assertEqual(links, game + [f'Mario Kart 8 Deluxe [{build.AOC}][v65536].nsp'])
+            self.assertEqual([(result / name).resolve() for name in links], [base, update, aoc])
+
+    def test_input_selection_rejects_other_add_on_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            inputs = root / 'originals'; inputs.mkdir()
+            nsp(inputs / 'base.nsp', [f'{build.TITLE}0000000000000000.tik'])
+            nsp(inputs / 'update [v1507328].nsp', [f'{build.UPDATE}0000000000000004.tik'])
+            nsp(inputs / 'booster [v131072].nsp', [f'{build.AOC}000000000000000d.tik'])
+            with self.assertRaisesRegex(ValueError, 'only the Booster Course Pass v65536'):
+                build.link_inputs(inputs, root / 'build')
+
+    def test_input_selection_replaces_links_to_moved_originals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            old, new, work = root / 'old', root / 'new', root / 'build'
+            old.mkdir(); work.mkdir()
+            nsp(old / 'base.nsp', [f'{build.TITLE}0000000000000000.tik'])
+            nsp(old / 'update [v1507328].nsp', [f'{build.UPDATE}0000000000000004.tik'])
+            result = build.link_inputs(old, work)
+            old.rename(new)   # the player moved the folder: the links now lead nowhere
+            build.link_inputs(new, work)
+            self.assertTrue(all(p.resolve().parent == new for p in result.iterdir()))
+            (result / f'Mario Kart 8 Deluxe [{build.TITLE}][v0].nsp').unlink()
+            (result / f'Mario Kart 8 Deluxe [{build.TITLE}][v0].nsp').write_bytes(b'not a link')
+            with self.assertRaisesRegex(ValueError, 'refusing to replace an existing input'):
+                build.link_inputs(new, work)
 
     def test_input_selection_rejects_other_updates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,10 +159,12 @@ class BuildTests(unittest.TestCase):
         module = load_builder()
         fam = {'base': Path('base.nsp'), 'updates': [(1507328, Path('u.nsp'))], 'dlc': []}
         module.target_inputs(0x0100152000022000, fam)
+        module.target_inputs(0x0100152000022000, dict(fam, dlc=[(0x0100152000023001, 65536, Path('aoc.nsp'))]))   # the Booster Course Pass
         with self.assertRaisesRegex(module.BuildError, 'supports only Mario Kart 8 Deluxe'):
             module.target_inputs(0x0100965017338000, fam)
-        with self.assertRaisesRegex(module.BuildError, 'add-on content is not supported'):
-            module.target_inputs(0x0100152000022000, dict(fam, dlc=[(0x0100152000023001, 65536, Path('aoc.nsp'))]))
+        for dlc in ((0x0100152000023002, 65536), (0x0100152000023001, 131072), (0x0100152000023001, None)):
+            with self.assertRaisesRegex(module.BuildError, 'other than the Booster Course Pass'):
+                module.target_inputs(0x0100152000022000, dict(fam, dlc=[(*dlc, Path('aoc.nsp'))]))
         with self.assertRaisesRegex(module.BuildError, 'exactly the 4.0.1 update'):
             module.target_inputs(0x0100152000022000, dict(fam, updates=[(1441792, Path('u.nsp'))]))
 
@@ -153,6 +185,21 @@ class BuildTests(unittest.TestCase):
             with self.assertRaisesRegex(module.BuildError, 'not the pinned'):
                 module.verify_originals(repo, 'v1507328', exefs)
 
+    def test_builder_rejects_modified_add_on_content(self):
+        module = load_builder()
+        pin = json.loads((GAME / 'assets/expected-4.0.1.json').read_text())['add_on_content'][build.AOC]['romfs_image']
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, aoc = Path(tmp), Path(tmp) / 'aoc'
+            (repo / 'assets').mkdir(); aoc.mkdir()
+            shutil.copy2(GAME / 'assets/expected-4.0.1.json', repo / 'assets')
+            (aoc / '1.img').write_bytes(bytes(pin['size']))   # the pinned size, other bytes
+            with self.assertRaisesRegex(module.BuildError, 'differs from assets/expected-4.0.1.json'):
+                module.verify_aoc(repo, aoc)
+            (aoc / '1.img').unlink()
+            (aoc / '2.img').write_bytes(b'x')
+            with self.assertRaisesRegex(module.BuildError, 'no pin'):
+                module.verify_aoc(repo, aoc)
+
     def test_pins_name_the_profile_builds(self):
         pins = json.loads((GAME / 'assets/expected-4.0.1.json').read_text())
         self.assertEqual((pins['title_id'], pins['package'], pins['version']), (build.TITLE, build.VERSION, '4.0.1'))
@@ -165,6 +212,16 @@ class BuildTests(unittest.TestCase):
         for pin in pins['update']['exefs'].values():
             self.assertRegex(pin['sha256'], r'^[0-9a-f]{64}$')
 
+    def test_add_on_pins_match_the_gates(self):
+        module = load_builder()
+        pins = json.loads((GAME / 'assets/expected-4.0.1.json').read_text())['add_on_content']
+        self.assertEqual(list(pins), [build.AOC])
+        pin = pins[build.AOC]
+        self.assertEqual(pin['package'], build.AOC_VERSION)
+        self.assertEqual(module.TARGET_AOC, {int(build.AOC, 16): int(build.AOC_VERSION[1:])})
+        self.assertEqual(pin['index'], int(build.AOC, 16) - int(build.TITLE, 16) - 0x1000)   # extract_aoc's <index>.img
+        self.assertRegex(pin['romfs_image']['sha256'], r'^[0-9a-f]{64}$')
+
     def test_profile_carries_no_original_paths(self):
         profile = GAME / f'runtime/games/{build.TITLE}'
         for name in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv'):
@@ -175,6 +232,54 @@ class BuildTests(unittest.TestCase):
         rows = dict(line.split('\t', 1) for line in (profile / 'game.tsv').read_text().splitlines() if '\t' in line and not line.startswith('#'))
         self.assertEqual(rows['romfs_marker'], '.')
         self.assertEqual(rows['shader_groups'], '/=archive')
+
+    @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'), 'the launcher builds on macOS only')
+    def test_launcher_backs_up_saves(self):
+        harness = ('#define main launcher_main\n#include "launcher.c"\n#undef main\nint dm_mac_launcher(void) { return 0; }\n'
+                   'int main(int argc, char **argv) { (void)argc; back_up_saves(argv[1], (time_t)atoll(argv[2])); return 0; }\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / 'harness.c').write_text(harness)
+            subprocess.run(['xcrun', 'clang', '-arch', 'arm64', '-Wall', '-I', GAME / 'runtime/mac', '-I', GAME / 'runtime/host', root / 'harness.c',
+                            '-framework', 'CoreFoundation', '-o', root / 'harness'], check=True)
+            data = root / 'nxnative/0100152000022000'
+            save, device, backups = data / 'save', data / 'save_device', data / 'backups'
+            start = 1792540800   # 2026-10-21 00:00:00 UTC
+            def launch(minutes):
+                out = subprocess.run([root / 'harness', save, str(start + 60 * minutes)], capture_output=True, text=True, check=True, env=dict(os.environ, TZ='UTC'))
+                return out.stderr, sorted(p.name for p in backups.iterdir()) if backups.is_dir() else []
+            save.mkdir(parents=True)
+            self.assertEqual(launch(0)[1], [])   # nothing saved yet
+            (save / 'userdata.dat').write_bytes(b'progress 1'); device.mkdir(); (device / 'rp00.dat').write_bytes(b'replay')
+            log, names = launch(1)
+            self.assertEqual(names, ['20261021-000100'])
+            self.assertIn('saves backed up to', log)
+            self.assertEqual((backups / names[0] / 'save/userdata.dat').read_bytes(), b'progress 1')
+            self.assertEqual((backups / names[0] / 'save_device/rp00.dat').read_bytes(), b'replay')
+            self.assertIn('saves unchanged', launch(2)[0])   # the same bytes: no second copy of them
+            (backups / '20261021-000200.partial').mkdir(); (backups / 'mine').mkdir()   # an interrupted backup, and a folder of the player's
+            for minute in range(3, 10):
+                (save / 'userdata.dat').write_bytes(b'progress %d' % minute)
+                names = launch(minute)[1]
+            self.assertEqual(names, [f'20261021-00{m:02d}00' for m in range(5, 10)] + ['mine'])   # the five newest, the player's folder kept
+            self.assertEqual((backups / '20261021-000900/save/userdata.dat').read_bytes(), b'progress 9')
+            (device / 'rp00.dat').write_bytes(b'replay 2')   # a change in the device save alone is a change too
+            self.assertIn('saves backed up to', launch(10)[0])
+
+    @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('make') and shutil.which('clang'), 'the host tests build on macOS only')
+    def test_controller_applet_gives_focus_back(self):
+        # The copied host's t_hid.c (players, controllers, the controller applet): the game profile header comes from the committed game.tsv, as the host makes it
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            for name in ('host', 'games'):
+                shutil.copytree(GAME / 'runtime' / name, root / name)
+            host = root / 'host'
+            subprocess.run(['make', '-s', f'GAME={build.TITLE}', f'gen/{build.TITLE}/game_profile.h'], cwd=host, check=True, capture_output=True)
+            subprocess.run(['clang', '-O1', '-Wall', '-Werror', '-Wno-unused-function', '-I..', f'-I../gen/{build.TITLE}', f'-I../../games/{build.TITLE}',
+                            '-o', root / 't_hid', 't_hid.c', '../hle_haptics.c'], cwd=host / 'tests', check=True)
+            out = subprocess.run([root / 't_hid'], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+            self.assertRegex(out.stdout, r'hid players: \d+ checks, 0 failed')
 
     def test_build_environment_disables_nuget_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

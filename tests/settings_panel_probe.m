@@ -49,6 +49,9 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); FILE *f = fopen(path, "r"); if (!f) return 0;
     size_t n = fread(word, 1, size - 1, f); word[n] = 0; fclose(f); return 1;
 }
+static int sharedSaves;   /* saves of a setting both games share (runtime_shared_setting_save) */
+void runtime_shared_setting_save(const char *name, const char *word, const char *what) { sharedSaves++; runtime_setting_save(name, word, what); }
+int runtime_shared_setting_word(const char *name, char *word, size_t size) { return runtime_setting_word(name, word, size); }
 static char removedName[64];
 void runtime_setting_remove(const char *name) { snprintf(removedName, sizeof removedName, "%s", name); }
 /* runtime/gamepad.m's controller layout and mouse sensitivity, kept here. */
@@ -257,10 +260,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
     assert(settingsPanel.allRows.count == 14);
 
-    /* FPS graph: a switch, off at start, kept in fps-graph.txt. */
+    /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
+       that both games share (user 2026-10-29). */
     assert(!switched(@"FPS graph"));
-    flip(@"FPS graph", YES); assert(fpsGraphEnabled && !strcmp(savedName, "fps-graph.txt") && !strcmp(savedWord, "on"));
-    flip(@"FPS graph", NO); assert(!fpsGraphEnabled && !strcmp(savedWord, "off"));
+    int shared0 = sharedSaves;
+    flip(@"FPS graph", YES); assert(fpsGraphEnabled && !strcmp(savedName, "fps-graph.txt") && !strcmp(savedWord, "on") && sharedSaves == shared0 + 1);
+    flip(@"FPS graph", NO); assert(!fpsGraphEnabled && !strcmp(savedWord, "off") && sharedSaves == shared0 + 2);
 
     /* Overlay: all -> FPS + playtime -> off; the corner box follows. */
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);

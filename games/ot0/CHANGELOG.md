@@ -109,3 +109,10 @@ Verified: from an empty work folder, a signed 1.0.4 app in 2 minutes on an M5 Ma
 ### 2026-10-28: no GPU memory budget by default
 
 - **The budget is off unless `TOTK_GPU_BUDGET_MB` is set,** as in `games/totk` since `5ee33ea`, copied from there. Without the variable the runtime stopped the game once Metal had allocated more than 40 % of the Mac's memory: 25.6 GB on a 64 GB Mac, never reached here, but about 6.4 GB on a 16 GB Mac, the kind of line that stopped normal play in Tears of the Kingdom (#72, #614, #616, #1143). The variable stays as a diagnostic that stops the game with the residency sites.
+
+### 2026-10-28: 1.0.5
+
+- **What differs.** Of the five ExeFS files only `main` and `main.npdm` differ from 1.0.4; `sdk`, `subsdk0` and `rtld` are the same bytes, and so are their rewrites. main's build ID is `9FE60A212CFF9B9A3656AB63D4F882E5`; its text is 6,784 bytes longer. `UGameEngine::GetMaxTickRate` is still at `main+0x25f8940` with the same three words (its call target is unchanged too), so the frame rate patch is the same.
+- **RomFS.** 4.16 GB, 370 files, all six IVFC levels verified; 1.76 GB from the base, 2.41 GB from the update.
+
+Verified: main passes `structck.py` and `equiv.py` (59,818 sites, 0 that differ; the 300 injected faults were all caught), `make prepare` checks every input against `assets/expected-v1.0.5.json`, and the 1.0.5 runtime reaches the title screen at 8.4 ms per frame on a 120 Hz display.

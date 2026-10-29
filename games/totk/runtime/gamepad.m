@@ -103,6 +103,20 @@ static int setting_path(const char *name, char *out, size_t size) {
     int n = slash ? snprintf(out, size, "%.*s/%s", dir, controls, name) : snprintf(out, size, "%s", name);
     return n > 0 && (size_t)n < size;
 }
+/* A setting both games share (user 2026-10-29: the FPS graph, "改成两个游戏共用"): the folder above the game's own, on the
+   Mac Application Support/MacNativeGames next to TOTK/ and BotW/. Without such a folder (controls.txt has no parent
+   folder) there is none and the default holds. */
+static int shared_setting_path(const char *name, char *out, size_t size) {
+    const char *controls = getenv("TOTK_CONTROLS");
+    if (!controls || !*controls) return 0;
+    const char *slash = strrchr(controls, '/');
+    if (!slash) return 0;
+    const char *up = slash;
+    while (up > controls && up[-1] != '/') up--;
+    if (up <= controls) return 0;
+    int n = snprintf(out, size, "%.*s%s", (int)(up - controls), controls, name);
+    return n > 0 && (size_t)n < size;
+}
 
 static int setting_read(const char *name, char *word, size_t size, char *path, size_t path_size) {   /* 1: read */
     if (!setting_path(name, path, path_size)) return 0;
@@ -140,6 +154,23 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
 }
 /* ... and saves one, as controller-type.txt is saved (the settings panel's controller rows). */
 void runtime_setting_save(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
+/* The same for a setting both games share (shared_setting_path). */
+int runtime_shared_setting_word(const char *name, char *word, size_t size) {
+    char path[4096];
+    if (!shared_setting_path(name, path, sizeof path)) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(word, 1, size - 1, f);
+    fclose(f);
+    word[n] = 0;
+    return 1;
+}
+void runtime_shared_setting_save(const char *name, const char *word, const char *what) {
+    char path[4096], text[64];
+    if (!shared_setting_path(name, path, sizeof path)) return;
+    snprintf(text, sizeof text, "%s\n", word);
+    file_write(path, text, what);
+}
 /* ... or removes it: the default again (the settings panel's resets). */
 void runtime_setting_remove(const char *name) {
     char path[4096];

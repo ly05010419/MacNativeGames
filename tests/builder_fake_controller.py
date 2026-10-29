@@ -158,7 +158,7 @@ class FakeController:
     """The BuildController methods the CLI uses. Each command queues its script, one batch of events per tick; after
     the build's batches, the controller stays busy (not idle) for saving_ticks more ticks, then becomes idle."""
 
-    def __init__(self, load=None, checks=None, build=(), saving_ticks=0):
+    def __init__(self, load=None, checks=None, build=(), saving_ticks=0, store=None):
         self.load = [[SettingsLoaded(())]] if load is None else load
         self.checks = [[ChecksDone(True)]] if checks is None else checks
         self.build, self.saving_ticks = list(build), saving_ticks
@@ -167,6 +167,8 @@ class FakeController:
         self.planned = ['/py', 'build_app.py', 'totk']
         self.tick_errors = deque()              # S2.1b: exceptions tick() raises during a build, one per call
         self.saved, self.game, self.fields = {}, None, {}       # S2.2: like the controller's selection
+        self.saved_paths_value = None                           # S2.3 storage: what saved_paths() answers
+        self.store = store                                      # S2.3: settings.json's path, for the home
         self.update_calls, self.repo_root = [], '/repo'
         self.background_calls = []                                  # S4.3
         self.update_pending = self.background_pending = False       # S4.4b: refused like the real controller
@@ -201,6 +203,12 @@ class FakeController:
 
     def selection(self):
         return self.game, dict(self.fields)
+
+    def saved_paths(self):
+        return self.saved_paths_value
+
+    def save_paths(self, **fields):
+        self.calls.append(('save_paths', fields))
 
     def games(self):
         return (('totk', 'Tears of the Kingdom'), ('botw', 'Breath of the Wild'))

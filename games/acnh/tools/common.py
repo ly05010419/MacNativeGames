@@ -2,6 +2,7 @@
 
 import hashlib
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -31,9 +32,19 @@ def _git_worktree_roots(repository: Path) -> tuple[Path, ...]:
 
 
 def outside_repository(path: Path, repository: Path) -> Path:
-    """Resolve an output or work path, excluding every source worktree."""
+    """Keep artifacts outside source, allowing the owner's explicit ACNH build layout."""
     resolved = path.expanduser().resolve()
     root = repository.resolve()
+    # Compare the resolved target with literal checkout-relative paths: a symlink
+    # from build/ or game-assets/ back into tracked source must not grant access.
+    relative = resolved.relative_to(root) if resolved.is_relative_to(root) else None
+    if relative is not None:
+        parts = relative.parts
+        if (len(parts) >= 3 and parts[0] == "build" and
+                re.fullmatch(r"acnh-\d+\.\d+\.\d+", parts[1]) and parts[2] == "work"):
+            return resolved
+        if parts[:3] == ("game-assets", "shared", "fonts"):
+            return resolved
     if any(resolved == checkout or checkout in resolved.parents
            for checkout in _git_worktree_roots(root)):
         raise ValueError(f"generated files must stay outside the source project: {resolved}")

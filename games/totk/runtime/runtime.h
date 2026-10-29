@@ -108,6 +108,7 @@ int runtime_output_native(int mode, unsigned *w, unsigned *h);   /* the canvas o
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
+void runtime_audio_hold(int on);   /* audio_mixer.c: silent output while the first frame waits for the warm-up */
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
@@ -166,6 +167,8 @@ int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: t
 int runtime_gamepad_battery_percent(void);  /* runtime/gamepad.m, main thread: the first controller's battery as a whole percent, -1 none or unknown */
 int runtime_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting file next to controls.txt; 1 read, 0 none */
 void runtime_setting_save(const char *name, const char *word, const char *what);   /* runtime/gamepad.m: saves one; what names it in a failure line */
+int runtime_shared_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: the same, shared by both games (the folder above controls.txt's) */
+void runtime_shared_setting_save(const char *name, const char *word, const char *what);
 void runtime_setting_remove(const char *name);   /* runtime/gamepad.m: back to the default (a settings panel reset) */
 /* runtime/gamepad.m, main thread: the controller layout (controller_map.h, CONTROLLER_BUTTONS entries each) in force;
    set puts one in force and saves it in controls.txt, reset goes back to the default and removes the file. */

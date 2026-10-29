@@ -7,6 +7,7 @@ drive it the same way). The path flags come in as args.paths, only those given (
 from collections import deque
 import shlex
 
+from tools.builder import check_report
 from tools.builder.session import (BuildStarted, CancelStuck, CheckResultReady, ChecksDone, Finished, Heartbeat,
                                    LogLine, Outcome, PathsIncomplete, ProcessError, SettingsLoaded, SettingsNotSaved,
                                    StageChanged)
@@ -62,6 +63,7 @@ class CliView:
             return 0
         self.say('cli.checks_ready')
         if args.check_only:
+            self._say_logs(args.game)               # S2.3: the same log lines the window's summary shows
             return 0
         if not args.yes and self.ask(text('cli.prompt')).strip().lower() != 'y':
             self.say('cli.not_started')
@@ -94,6 +96,14 @@ class CliView:
             self.say('cli.process_error', where=event.where, error=event.error)
             return True
         return None
+
+    def _say_logs(self, game):
+        """The logs folder and each log, from check_report.py: the window's summary reads the same source."""
+        logs = getattr(self.controller, 'logs_dir', None)
+        if logs is None:
+            return
+        for line in check_report.log_lines(logs, game):
+            self.say('cli.logs', path=line)
 
     def _on_check(self, event):
         if isinstance(event, PathsIncomplete):

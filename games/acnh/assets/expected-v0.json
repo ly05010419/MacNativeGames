@@ -2,6 +2,10 @@
   "title_id": "01006F8002326000",
   "package_kind": "base",
   "cnmt_version_raw": 0,
+  "npdm_sha256_alternates": [
+    "06823e10ea105c36c92b26d7763415d4ca53deb68acd70f05d6a883f0c4139dd"
+  ],
+  "npdm_alternate_verification": "Nintendo ACID signature verified; all four NSO hashes match the reference base.",
   "exefs_sha256": {
     "main": "f8d248109ff72999b4600ae3749f8c7397fb960f7ad3ab8dee3018ae9e14e900",
     "main.npdm": "8078374891b3d4115e00de0acb7ebde0a5e3d85addf9ae1fa39c398141170077",

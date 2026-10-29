@@ -14,9 +14,15 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
-from games.acnh.prepare import check_exefs, profile, require
+from games.acnh.prepare import check_exefs, prepared_profile, require
 from games.acnh.tools.common import clone_file, outside_repository, verified_file
 from games.acnh.tools.runtime_preflight import prepare as preflight
+
+
+def write_changed(path, data):
+    payload = data.encode() if isinstance(data, str) else data
+    if not path.is_file() or path.read_bytes() != payload:
+        path.write_bytes(payload)
 
 
 def constructor_flag(image, module):
@@ -87,16 +93,22 @@ def emit_tables(target, output, data):
             plt, slot = clock_plt(image, module)
     rows += ["static Module modules[] = {", *initializers, "};",
              f"#define PROBE_PLT {plt}ULL", f"#define PROBE_SLOT {slot}ULL"]
-    (output / "runtime_tables.h").write_text("\n".join(rows) + "\n")
+    write_changed(output / "runtime_tables.h", "\n".join(rows) + "\n")
 
 
 def prepare_host(prepared, work, fonts):
     prepared = outside_repository(prepared, ROOT)
     work = outside_repository(work, ROOT)
     fonts = outside_repository(fonts, ROOT)
-    require(not work.exists(), "Host work directory exists; use make for subsequent source rebuilds")
     target = prepared / "update"
-    expected = profile(458752)
+    expected = prepared_profile(prepared)
+    if work.exists():
+        info_path = work / "host-info.json"
+        require(info_path.is_file(), "Existing host work has no identity record")
+        info = json.loads(info_path.read_text())
+        require(info.get("prepared") == str(prepared) and
+                info.get("display_version") == expected["display_version"],
+                "Existing host work belongs to another prepared game/version")
     check_exefs(json.loads((target / "extraction-manifest.json").read_text()), expected)
     index = json.loads((target / "romfs/index.json").read_text())
     verified_file(target / "romfs/romfs.bin", expected["romfs_sha256"])
@@ -104,10 +116,11 @@ def prepare_host(prepared, work, fonts):
     # The runtime starts build/shader-service/totk_xlate (totk_shader_rt.m): the pinned prebuilt translator.
     translator = HERE / "prebuilt/macos-arm64/totk_xlate"
     verified_file(translator, (HERE / "prebuilt/macos-arm64/totk_xlate.sha256").read_text().split()[0])
-    work.mkdir(parents=True)
-    (work / "build").mkdir()
-    (work / "rewritten").mkdir()
-    (work / "logs").mkdir()
+    work.mkdir(parents=True, exist_ok=True)
+    for folder in ("build", "rewritten", "logs"):
+        (work / folder).mkdir(exist_ok=True)
+    write_changed(work / "build/version-config.h",
+        f'#define ACNH_VERSION_RAW {expected["cnmt_version_raw"]}\n')
     clone_file(translator, work / "build/shader-service/totk_xlate")
     with tempfile.TemporaryDirectory(dir=work) as temporary:
         preflight(target / "exefs", target / "extraction-manifest.json", target / "rewritten", Path(temporary) / "runtime")
@@ -119,8 +132,8 @@ def prepare_host(prepared, work, fonts):
         entries.extend(struct.pack("<QQII", row["offset"], row["size"], len(strings), len(name)))
         strings.extend(name)
     binary_index = struct.pack("<8sQQ", b"TOTKRFS1", len(index["files"]), 24 + len(entries)) + entries + strings
-    (target / "romfs/runtime-index.bin").write_bytes(binary_index)
-    (work / "build/romfs_config.h").write_text(
+    write_changed(target / "romfs/runtime-index.bin", binary_index)
+    write_changed(work / "build/romfs_config.h",
         f'#define ROMFS_IMAGE_SIZE {expected["romfs_size"]}ULL\n#define ROMFS_IMAGE_SHA256 "{expected["romfs_sha256"]}"\n'
         f'#define ROMFS_INDEX_SHA256 "{hashlib.sha256(binary_index).hexdigest()}"\n')
     font_manifest = json.loads((fonts / "manifest.json").read_text())
@@ -130,7 +143,7 @@ def prepare_host(prepared, work, fonts):
         path = fonts / f'{font["type"]}-{font["name"]}.bfttf'
         verified_file(path, font["sha256"])
         rows.append("{" + f'{json.dumps(str(path))},{font["bfttf_bytes"]}ULL,{font["font_bytes"]}ULL,"{font["sha256"]}"' + "}")
-    (work / "build/shared_fonts_config.h").write_text("#define SHARED_FONT_COUNT 6\n#define SHARED_FONT_ROWS " + ",".join(rows) + "\n")
+    write_changed(work / "build/shared_fonts_config.h", "#define SHARED_FONT_COUNT 6\n#define SHARED_FONT_ROWS " + ",".join(rows) + "\n")
     info = {"title_id": expected["title_id"], "display_version": expected["display_version"],
             "prepared": str(prepared), "work": str(work), "shared_fonts": str(fonts),
             "scope": "Diagnostic host build; execution is a separate validation step"}

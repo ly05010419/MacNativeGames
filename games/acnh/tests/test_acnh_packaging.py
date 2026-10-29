@@ -6,6 +6,7 @@ import plistlib
 import subprocess
 import tempfile
 import unittest
+from games.acnh.prepare import profile
 
 GAME_DIR = Path(__file__).resolve().parents[1]
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,6 +21,24 @@ spec_pre.loader.exec_module(acnh_pre)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_packager_rejects_old_runtime_with_new_version_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            prepared, work = root / "prepared", root / "host"
+            prepared.mkdir()
+            (work / "build").mkdir(parents=True)
+            expected = profile(2097152)
+            summary = {"status": "prepared_for_host_bringup", "title_id": expected["title_id"],
+                       "inputs": {"update": {key: expected[key] for key in
+                                  ("title_id", "package_kind", "cnmt_version_raw")}}}
+            (prepared / "preparation.json").write_text(json.dumps(summary))
+            (work / "host-info.json").write_text(json.dumps({"display_version": "3.0.1", "prepared": str(prepared)}))
+            runtime = work / "build/acnh-native"
+            runtime.write_bytes(b"MNG_ACNH_VERSION:1.2.1")
+            runtime.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "another ACNH version"):
+                acnh_pkg.verify_inputs(work, prepared, root / "fonts")
+
     def test_pinned_translator(self):
         self.assertTrue(acnh_pkg.TRANSLATOR.is_relative_to(GAME_DIR))
         wanted = acnh_pkg.TRANSLATOR_SHA256.read_text().split()[0]

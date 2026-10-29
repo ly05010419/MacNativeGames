@@ -716,6 +716,47 @@ static void patch_bench_cam(Module *m) {
 }
 #endif
 
+/* Texture storage offsets past 2 GiB (2026-10-29). The texture loader (1.2.1 main+0xad43e8, 1.0.0 main+0xa7d318) places
+   each texture at a 32-bit offset w25 in its texture pool and widens it to 64 bits as a signed number twice: sxtw x2, w25
+   for nvnTextureBuilderSetStorage's offset, and add x1, x8, w25, sxtw for SetPackagedTextureData's source (the pool's CPU
+   address + offset; the same address as the storage, the data is already in place). The shipping pool is far below
+   2 GiB, but the 8 GB mode with a large texture pack (TOTK_DRAM_8GB, the pack's heap table) makes it 3.58 GiB, and every
+   texture past 2 GiB then got a negative offset: storage and source 4 GiB below the pool, in the stack region or other
+   memory (refused uploads, garbage textures, a SIGBUS in ReadTexels, one in the packaged-data copy). It was the only pool
+   over 2 GiB (the next is 252 MiB). Both now widen the offset unsigned, which covers a pool of up to 4 GiB.
+   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words); 1.1.2 is not mapped yet (no image
+   here) and stays as shipped; 1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
+static void patch_pool_offset(Module *m) {
+#if defined(TOTK_GAME_V121)
+    static const uint64_t sites[] = {0xad43f0, 0xad440c};
+#elif defined(TOTK_GAME_V112)
+    static const uint64_t *const sites = NULL;   /* not mapped */
+#else
+    static const uint64_t sites[] = {0xa7d320, 0xa7d33c};
+#endif
+#if !defined(TOTK_GAME_V112)
+    const char *e = getenv("TOTK_POOL_OFFSET_PATCH");   /* the Mac only: an iPhone / iPad build ships the code already patched */
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[totk] %s texture pool offsets: as shipped (TOTK_POOL_OFFSET_PATCH=0)\n", TOTK_GAME_VERSION); return; }
+    const struct { uint64_t site; uint32_t original, replacement; const char *what; } words[] = {
+        {sites[0], 0x93407f22, 0x2a1903e2, "sxtw x2, w25 -> mov w2, w25 (SetStorage offset)"},
+        {sites[1], 0x8b39c101, 0x8b394101, "add x1, x8, w25, sxtw -> uxtw (packaged data source)"},
+    };
+    for (unsigned i = 0; !CODE_PATCHED_AT_BUILD && i < 2; i++) {   /* there put_word checks the replacement instead (cloth_site) */
+        uint32_t w; memcpy(&w, m->base + words[i].site, 4);
+        if (w != words[i].original) {
+            fprintf(stderr, "[totk] texture pool offset main+%#llx: found %08x expected %08x (%s)\n", (unsigned long long)words[i].site, w, words[i].original, words[i].what);
+            runtime_fail("texture pool offset: original instruction mismatch");
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) put_word(m, words[i].site, words[i].replacement, "texture pool offset");
+    fprintf(stderr, "[totk] %s texture pool offsets: widened unsigned at main+%#llx and main+%#llx\n", TOTK_GAME_VERSION,
+            (unsigned long long)words[0].site, (unsigned long long)words[1].site);
+#else
+    (void)m; (void)sites;
+    fprintf(stderr, "[totk] %s texture pool offsets: as shipped (the loader's sites are not mapped for this version)\n", TOTK_GAME_VERSION);
+#endif
+}
+
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
@@ -747,6 +788,7 @@ void runtime_game_patches(Module *m) {
 #if defined(TOTK_GAME_V121)
     patch_cursor_speed(m);
 #endif
+    patch_pool_offset(m);
     patch_trap(m);
 #if defined(TOTK_GAME_V121)
     { static const uint64_t sites[] = {0xcb4b10, 0x12521cc, 0x19b36f0, 0x1ecdf68};   /* camera x2, viewport x2 (aspect_patch.h) */

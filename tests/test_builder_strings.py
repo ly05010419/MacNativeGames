@@ -68,7 +68,7 @@ class Drift(unittest.TestCase):
         for source in real_sources():
             c, m = emitted_ids(source)
             checks, messages = checks | c, messages | m
-        self.assertEqual((len(checks), len(messages)), (14, 26))
+        self.assertEqual((len(checks), len(messages)), (15, 29))
         self.assertLessEqual({'ok', 'skipped', 'check_crashed', 'command_failed', 'input_missing', 'disk_space'},
                              messages)
 

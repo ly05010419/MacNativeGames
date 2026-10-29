@@ -75,6 +75,7 @@ static void bsd_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
 #define NIFM_UNAVAILABLE RESULT(110, 300)
 #define SSL_UNAVAILABLE RESULT(123, 300)
 #define NSA_UNAVAILABLE RESULT(124, 280)
+#define NSD_UNAVAILABLE RESULT(141, 1)
 #define RES_FAIL 0x2A2u
 static void nop(void) {}
 static uint32_t ok(void) { return 0; }
@@ -87,6 +88,7 @@ static uint8_t network_available(void) { return 0; }
 static uint32_t nifm_unavailable(void) { return NIFM_UNAVAILABLE; }
 static uint32_t ssl_unavailable(void) { return SSL_UNAVAILABLE; }
 static uint32_t nsa_unavailable(void) { return NSA_UNAVAILABLE; }
+static uint32_t nsd_unavailable(void) { return NSD_UNAVAILABLE; }
 static uint32_t empty_delivery_directories(int *count,void *names,int capacity){
     (void)names; (void)capacity;
     if(!count)runtime_fail("delivery-cache directory count pointer");
@@ -136,6 +138,16 @@ void *runtime_by3_override(const char *name) {
         {"_ZN2nn4nifm31HandleNetworkRequestErrorResultEv", nifm_unavailable},
         {"_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", nifm_unavailable},
         {"_ZN2nn4nifm26GetCurrentPrimaryIpAddressEPNS_6socket6InAddrE", nifm_unavailable},
+        /* Animal Crossing 3.0.1 (2026-10-29, after the mailbox crash): the rest of its network imports, reached from the
+           online and local-play menus, answer "unavailable" too instead of going to services this host does not run. */
+        {"_ZN2nn4nifm19SetLocalNetworkModeEb", nop},
+        {"_ZN2nn4nifm22GetCurrentIpConfigInfoEP7in_addrS2_S2_S2_S2_", nifm_unavailable},
+        {"_ZN2nn3ssl7Context6CreateENS1_10SslVersionE", ssl_unavailable},
+        {"_ZN2nn3ssl7Context15ImportServerPkiEPmPKcjNS0_17CertificateFormatE", ssl_unavailable},
+        {"_ZN2nn3ssl7Context15ImportClientPkiEPmPKcS4_jj", ssl_unavailable},
+        {"_ZN2nn3ssl7Context9ImportCrlEPmPKcj", ssl_unavailable},
+        {"_ZN2nn3ssl10Connection19SetSessionCacheModeENS1_16SessionCacheModeE", ssl_unavailable},
+        {"_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", nsd_unavailable},
         {"_ZN2nn3ssl10InitializeEv", ok}, {"_ZN2nn3ssl8FinalizeEv", ok},
         {"_ZN2nn3ssl14BuiltInManager22GetBuiltInCertificatesEPPNS0_26BuiltInCertificateInfoBaseEPhjPNS0_15CaCertificateIdEj", ssl_unavailable},
         {"_ZN2nn3ssl14BuiltInManager28GetBuiltInCertificateBufSizeEPjPNS0_15CaCertificateIdEj", ssl_unavailable},

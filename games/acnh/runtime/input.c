@@ -2,6 +2,7 @@
 #include "runtime.h"
 #include "autoload.h"
 #include "world_survey.h"
+#include "keyboard_map.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,8 +14,36 @@ static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
 static unsigned char keys[128];static uint64_t pending;
 static uint32_t styles=1;static bool enabled,allowed=true;static int holdType;
 static int64_t sample;static uint64_t padSeen;
-/* F/T/H/G map the D-pad left/up/right/down, keeping both analog-stick mappings independent. */
+/* Scripted and auto-load presses (runtime_input_key_synthetic: TOTK_INPUT_SCRIPT, TOTK_INPUT_FILE, autoload.c) keep this
+   fixed layout, whatever the player's, so test scripts mean the same keys on every Mac: J A, K / Space B, I X, U Y, Q / E
+   L / R, Option / Shift ZL / ZR, Return +, Tab / Esc -, F T H G the d-pad, Z / C the stick presses; W A S D and the arrow
+   keys the sticks (pad_states). */
 static uint64_t button(unsigned code){switch(code){case 38:return 1;case 40:case 49:return 2;case 34:return 4;case 32:return 8;case 6:return 16;case 8:return 32;case 12:return 64;case 14:return 128;case 58:return 256;case 56:return 512;case 36:return 1024;case 48:case 53:return 2048;case 3:return 4096;case 17:return 8192;case 4:return 16384;case 5:return 32768;default:return 0;}}
+/* The player's keys and mouse buttons go through their layout (keyboard_map.h, keyboard.txt next to controls.txt, the
+   settings panel's key bindings). held: inputs down (keys 0-127, mouse buttons 128-132); heldOut what they drive. */
+static KeyMap keyMap;static int keyMapLoaded;
+static unsigned char held[KEYMAP_INPUTS];static KeyMapOutput heldOut;
+static void keymap_load_locked(void){
+ if(keyMapLoaded)return;keyMapLoaded=1;keymap_default(&keyMap);
+ char text[8192];if(!runtime_setting_word("keyboard.txt",text,sizeof text)){fprintf(stderr,"[totk-input] keyboard layout: default\n");return;}
+ const char *error=NULL;int line=keymap_parse(text,&keyMap,&error);
+ if(line)fprintf(stderr,"[totk-input] keyboard.txt line %d: %s; using the default keyboard layout\n",line,error);
+ else fprintf(stderr,"[totk-input] keyboard layout: keyboard.txt\n");
+}
+/* inputLock held: what the held inputs drive now; a press shorter than one game read is latched in pending. */
+static void held_changed_locked(void){keymap_load_locked();KeyMapOutput out=keymap_apply(&keyMap,held);pending|=out.buttons&~heldOut.buttons;heldOut=out;}
+void runtime_keymap_get(KeyMap *out){pthread_mutex_lock(&inputLock);keymap_load_locked();*out=keyMap;pthread_mutex_unlock(&inputLock);}
+/* The settings panel's key bindings: in force at once and saved (keyboard.txt); reset: the default, the file removed. */
+void runtime_keymap_set(const KeyMap *map){
+ char text[8192];int n=keymap_format(map,text,sizeof text);
+ pthread_mutex_lock(&inputLock);keyMapLoaded=1;keyMap=*map;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ if(n>0)runtime_setting_save("keyboard.txt",text,"keyboard layout");
+}
+void runtime_keymap_reset(void){
+ KeyMap map;keymap_default(&map);
+ pthread_mutex_lock(&inputLock);keyMapLoaded=1;keyMap=map;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ runtime_setting_remove("keyboard.txt");fprintf(stderr,"[totk-input] keyboard layout: default (reset)\n");
+}
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
@@ -27,18 +56,23 @@ static void user_input(const char *what){
  const char *owner=getenv("TOTK_SLOT_OWNER");bool agent=owner&&*owner&&strcmp(owner,"user");
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
-/* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
-   off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
-   MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Held-key repeats do not cycle. */
-enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21 };   /* 21: key 4, ultrawide on / off (aspect_patch.h) */
+/* Keys from the window are the user's (their layout); scripted and auto-load presses use the synthetic entry (the fixed
+   layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
+   not toggle it. Keys 2-4 are no shortcuts any more (reported in play, PR #1305: the panel replaces them, as in games/totk). */
+enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
- if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
- if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
- if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
- if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();}
-void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
-void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
+void runtime_input_key(unsigned code,int down){
+ if(code>=128)return;if(down)user_input("keyboard");
+ pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
+}
+/* A mouse button over the game window (frontend.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
+void runtime_input_mouse(int button,int down){
+ if(button<0||button>=KEYMAP_MOUSE_BUTTONS)return;if(down)user_input("mouse");
+ pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
+}
+void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
@@ -72,8 +106,9 @@ static int joy_dual_states(NpadState *out,int max,const uint32_t *id){return pad
 static int joy_left_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,8);}
 static int joy_right_states(NpadState *out,int max,const uint32_t *id){return pad_states(out,max,id,16);}
 static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_style){if(max<=0)return 0;if(id)input_log(want_style==2?"handheld state":want_style==4?"joy-dual state":"full-key state",*id);if(!out||!id)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);NpadState state={.sampling=++sample};bool id_match=(!id||*id==pad_id()||*id==0||*id==0x20);if(enabled&&allowed&&id_match&&((want_style&pad_style())!=0)){
- state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=pending;pending=0;
+ state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=heldOut.buttons|pending;pending=0;
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
+ if(heldOut.lx)state.lx=heldOut.lx;if(heldOut.ly)state.ly=heldOut.ly;if(heldOut.rx)state.rx=heldOut.rx;if(heldOut.ry)state.ry=heldOut.ry;
  RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
@@ -180,6 +215,9 @@ static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0
 static void initialize_debug_pad(void){fprintf(stderr,"[odyssey] debug pad unavailable; normal controller remains active\n");}
 static void debug_pad_state(void *out){if(!out)runtime_fail("debug pad state output");memset(out,0,0x20);}
 static void joy_dual(const uint32_t *id){if(!id)runtime_fail("joy-dual controller id");}
+/* Pairing two single Joy-Con as one (the game's controller settings): there is one virtual controller here; nothing to merge
+   (2026-10-29: the SDK version goes to the hid service, which this host does not run). */
+static uint32_t merge_single_joy(const uint32_t *a,const uint32_t *b){(void)a;(void)b;return 0;}
 typedef struct{uint32_t main,sub;} NpadColor;
 static uint32_t pad_color(NpadColor *out,const uint32_t *id){if(!out||!id)return 0x2c6ca;*out=(NpadColor){0xff323232u,0xffffffffu};return 0;}
 static uint32_t pad_colors(NpadColor *left,NpadColor *right,const uint32_t *id){if(!left||!right||!id)return 0x2c6ca;*left=*right=(NpadColor){0xff323232u,0xffffffffu};return 0;}
@@ -213,6 +251,7 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE",debug_pad_state},
  {"_ZN2nn3hid17GetDebugPadStatesEPNS0_13DebugPadStateEi",seven_axis_states},
  {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
+ {"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",merge_single_joy},
  {"_ZN2nn3hid18GetNpadJoyHoldTypeEv",get_hold_type},
  {"_ZN2nn3hid24ShowControllerStrapGuideEv",strap_guide},
  {"_ZN2nn3hid20ControllerSupportArg10SetDefaultEv",controller_support_default},
@@ -262,7 +301,7 @@ __attribute__((constructor)) static void input_script_start(void) {
 /* Optional local integration-test command stream. Appending complete lines lets tests inspect each
    actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally.
    Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, wshot <path>, passdump <frames>, gpucapture <path>.gputrace, querylog <frames>, anomdump,
-   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), close. */
+   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), panelshot <page 0-3> <path> (the settings panel), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), close. */
 extern void dm_gfx_shot_at(long frames, const char *path);
 extern void runtime_front_request_close(void);
 static void *input_file(void *arg) {
@@ -307,6 +346,8 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
+        } else if (sscanf(line, "panelshot %u %n", &code, &used) == 1 && used && code <= 3 && line[used]) {   /* "panelshot <page 0-3> <path>": the settings panel as a PNG */
+            line[strcspn(line, "\r\n")] = 0; extern void runtime_settings_shot(int page, const char *path); runtime_settings_shot((int)code, line + used);
         } else if (!strcmp(line, "kbtest\n")) {   /* text entry bar the way the game names a horse (runtime/swkbd_host.c) */
             runtime_swkbd_selftest();
         } else if (!strncmp(line, "kbtype ", 7)) {   /* "kbtype <text>": typed into the open bar */

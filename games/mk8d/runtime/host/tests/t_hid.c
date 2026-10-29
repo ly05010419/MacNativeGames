@@ -21,6 +21,9 @@ static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock
 static int hid_usleep(useconds_t usec) { (void)usec; if (script_hold) script_hold(); return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
 int dm_opmode(void) { return g_mode; }
+static int g_focus = 1, g_focus_trail[8], g_focus_n;   // the focus states the controller applet passes through (hle_oe.c's dm_focus_set)
+int dm_focus_now(void) { return g_focus; }
+void dm_focus_set(int st) { g_focus = st; if (g_focus_n < 8) g_focus_trail[g_focus_n++] = st; }
 uint64_t guest_ns(void) { return 1000000000ull; }
 uint64_t now_ns(void) { return motion_now; }
 uint64_t dm_guest_frame(void) { return 0; }
@@ -91,6 +94,13 @@ static void t_npads(void) {
     CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && info[1] == 0, "the controller applet reports two players, player 1 selected");
     arg[1] = 1; h_hid_ShowCtrl(info, arg);
     CHECK(info[0] == 1, "the applet's count is capped at the game's maximum");
+    g_focus_n = 0; h_hid_ShowCtrl(info, arg);
+    CHECK(g_focus_n == 2 && g_focus_trail[0] == 2 && g_focus_trail[1] == 1 && g_focus == 1, "the controller applet takes the focus and gives it back, as the system's applet does");
+    g_focus_n = 0; h_hid_ShowCtrl0(arg);
+    CHECK(g_focus_n == 2 && g_focus == 1, "the one-argument controller applet makes the same round trip");
+    g_focus = 2; g_focus_n = 0; h_hid_ShowCtrl(info, arg);
+    CHECK(g_focus_n == 0 && g_focus == 2, "out of focus already: the applet leaves the focus alone");
+    g_focus = 1;
     CHECK(six_connected(0x0100 | 0) && !six_connected(0x0200 | 0), "player 2 has a six-axis sensor, No3 none");
 
     // A one-player game ({No1, Handheld}): player 2's controller plays as player 1, No2 reads as not connected

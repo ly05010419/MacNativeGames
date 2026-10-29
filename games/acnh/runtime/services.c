@@ -247,7 +247,7 @@ int runtime_handheld_mode(void){return handheld_mode();}   /* runtime/input.c: t
 static int operation_mode(void) {return handheld_mode()?0:1;}
 static int performance_mode(void) {return handheld_mode()?0:1;}
 static int focus_policy;
-static void focus_mode(int mode) {if(mode<0||mode>3)runtime_fail("unknown focus handling mode");focus_policy=mode;runtime_startup_checkpoint((uintptr_t)__builtin_return_address(0));fprintf(stderr,"[totk] focus policy stored: %d (window lifecycle pending)\n",focus_policy);}
+static void focus_mode(int mode) {if(mode<0||mode>3)runtime_fail("unknown focus handling mode");focus_policy=mode;runtime_startup_checkpoint((uintptr_t)__builtin_return_address(0), "focus setup");fprintf(stderr,"[totk] focus policy stored: %d (window lifecycle pending)\n",focus_policy);}
 static int focus_state(void) {return runtime_front_focus();}
 static unsigned resume_notification,operation_notification,performance_notification;
 static void resume_enabled(unsigned value) {resume_notification=value&255;}
@@ -263,7 +263,15 @@ static uint32_t get_performance_config(int mode){
    launcher sets to the app's first preferred language (BCP 47, e.g. "pt-BR"; it follows a per-app language), or else
    the Mac's current locale. Brazil maps to "pt-BR" only in the 1.4.3 build, whose RomFS has the official USpt text. */
 uint64_t runtime_desired_language(void) {
- const char *explicit=getenv("TOTK_LANG");char code[8]={0};
+ const char *explicit=getenv("TOTK_LANG");char code[8]={0},saved[32]={0};
+ /* The settings panel's game language (language.txt next to controls.txt, a Switch language code), when TOTK_LANG is
+    unset; a word that is not a code of this game is ignored. */
+ if(!explicit&&runtime_setting_word("language.txt",saved,sizeof saved)){
+  static const char *const known[]={"ja","en-US","en-GB","fr","fr-CA","de","it","es","es-419","nl","ru","ko","zh-Hans","zh-Hant"};
+  saved[strcspn(saved," \t\r\n")]=0;
+  for(size_t i=0;i<sizeof known/sizeof *known;i++)if(!strcmp(saved,known[i]))explicit=known[i];
+  static int once;if(!once++)fprintf(stderr,"[totk] game language: %s (language.txt)\n",explicit?explicit:"not a known code; following the Mac");
+ }
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
  else {
   char language[16]={0},region[4]={0};const char *tag=getenv("TOTK_LOCALE");
@@ -353,6 +361,7 @@ void *runtime_override(const char *name) {
   {"_ZN2nn2oe23BeginBlockingHomeButtonEv",host_oe_home_block},{"_ZN2nn2oe21EndBlockingHomeButtonEv",host_oe_home_block},{"_ZN2nn4diag34InitializeApplicationAbortObserverEv",host_abort_init}};
  for(size_t i=0;i<sizeof(entries)/sizeof(entries[0]);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;
  void *by3=runtime_by3_override(name);if(by3)return by3;
+ void *applets=runtime_applets_override(name);if(applets)return applets;   /* runtime/system_applets.c: pctl, err, ec, album */
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);
 }
 void runtime_core_checkpoint(void);

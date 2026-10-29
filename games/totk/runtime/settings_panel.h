@@ -5,7 +5,7 @@
    or a slider, each applied at once:
    Display
      overlay              all / FPS + playtime / off               fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
-     FPS graph            switch                             fps-graph.txt
+     FPS graph            switch, default on                 fps-graph.txt above the game's folder (both games)
      frame lock           off / 30 / 40 / 60 / 72 / 90 / 120  nvn_fps_lock_set (gfx/nvn/hle_nvn.c; user 2026-10-25 "锁帧")
                                                              frame lock and frame interpolation exclude each other: picking
                                                              one turns the other off (user 2026-10-25, not to mislead)
@@ -246,7 +246,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(HUD_MODE_ALL),@(HUD_MODE_MINIMAL),@(HUD_MODE_OFF)],
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
-  ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
+  ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_shared_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
  NSMutableArray<NSString *> *lockChoices=[NSMutableArray array];
  NSMutableArray<NSNumber *> *lockValues=[NSMutableArray array];
  for(unsigned i=0;i<TOTK_FPS_LIMIT_COUNT;i++){

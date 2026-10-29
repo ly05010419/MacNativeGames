@@ -26,7 +26,7 @@ Super Smash Bros. Ultimate had already met some of the same problems. These were
 - The file system answers `SetAllocator` and `GetDirectoryEntryCount` (`runtime/fs_host.c`).
 - Thread stacks in a module's writable data (`runtime/`).
 
-`assets/expected-v1.0.3.json`, `assets/expected-v1.0.4.json`, `scripts/versions.py`, `scripts/build_ot0.py`, `README.md` and `CHANGELOG.md` were written for this game; `build_ot0.py` follows the one-command builds of `games/ori` and `games/wonder` without copying their code.
+`assets/expected-v1.0.3.json`, `assets/expected-v1.0.4.json`, `assets/expected-v1.0.5.json`, `scripts/versions.py`, `scripts/build_ot0.py`, `README.md` and `CHANGELOG.md` were written for this game; `build_ot0.py` follows the one-command builds of `games/ori` and `games/wonder` without copying their code.
 
 ## Updating
 

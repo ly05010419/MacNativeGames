@@ -368,11 +368,13 @@ def build_id(nso):
 TARGET_TITLE, TARGET_VERSION = 0x0100152000022000, 'v1507328'   # Mario Kart 8 Deluxe, update 4.0.1
 TARGET_TABLES = False   # the profile has no shader_map / shader_facts / shader_pairs / pso_pairs: every build derives them from the update's own files
 TARGET_PINS = 'assets/expected-4.0.1.json'
+TARGET_AOC = {0x0100152000023001: 65536}   # the Booster Course Pass v65536: licence data only (contents.dat, version.txt); the courses are in the 4.0.1 update
 
 
-def target_inputs(app, fam):   # the folder must hold the base game and the 4.0.1 update only: other updates, add-on content and other titles stop the build before extraction
+def target_inputs(app, fam):   # the folder must hold the base game, the 4.0.1 update and at most the Booster Course Pass: other updates, add-on content and titles stop the build before extraction
     if app != TARGET_TITLE: raise BuildError(f'this target supports only Mario Kart 8 Deluxe ({TARGET_TITLE:016X}), not {app:016X}')
-    if fam['dlc']: raise BuildError(f'add-on content is not supported by this target: {", ".join(p.name for _, _, p in fam["dlc"])}')
+    other = [p.name for t, v, p in fam['dlc'] if TARGET_AOC.get(t) != v]
+    if other: raise BuildError(f'add-on content other than the Booster Course Pass ({", ".join(f"{t:016X} v{v}" for t, v in TARGET_AOC.items())}) is not supported by this target: {", ".join(other)}')
     versions = sorted(f'v{v}' for v, _ in fam['updates'])   # version_of: the [v…] tag of the file name
     if versions != [TARGET_VERSION]: raise BuildError(f'this target needs exactly the 4.0.1 update ({TARGET_VERSION}); the folder holds {", ".join(versions) or "no update"}')
 
@@ -387,6 +389,16 @@ def verify_originals(repo, ver, exe):   # every module of the packed version aga
         if len(data) != pin['size'] or hashlib.sha256(data).hexdigest() != pin['sha256']: raise BuildError(f'original ExeFS module {name} differs from {TARGET_PINS} (not the 4.0.1 build this target was tested with)')
         if 'build_id' in pin and data[0x40:0x50].hex() != pin['build_id']: raise BuildError(f'original ExeFS module {name} has build ID {data[0x40:0x50].hex()}, not {pin["build_id"]}')
     say(f'original 4.0.1 modules match {TARGET_PINS}: {", ".join(sorted(pins))}')
+
+
+def verify_aoc(repo, aoc):   # every extracted add-on content image (nx_extract's RomFS image of the DLC's data NCA) against its pinned size and SHA-256, before it is split or packed
+    pins = {f'{p["index"]}.img': p['romfs_image'] for p in json.loads((repo / TARGET_PINS).read_text()).get('add_on_content', {}).values()}
+    found = sorted(p.name for p in aoc.iterdir())
+    for name in found:
+        if name not in pins: raise BuildError(f'add-on content {name} has no pin in {TARGET_PINS}')
+        data = (aoc / name).read_bytes()
+        if len(data) != pins[name]['size'] or hashlib.sha256(data).hexdigest() != pins[name]['sha256']: raise BuildError(f'add-on content {name} differs from {TARGET_PINS} (not the Booster Course Pass this target was tested with)')
+    say(f'add-on content matches {TARGET_PINS}: {", ".join(found)}')
 
 
 def _gone(func, path, exc):   # shutil.rmtree's onexc hook (Python 3.12+, the script's floor)
@@ -2311,6 +2323,7 @@ def main(args=None):
         if on: say(src[k][1])
     PROG.add(glslc + vkcap + glcap + uedec + (gfx == 'nvn'))
     aoc = extract_aoc(nx, keys, repo, work, app, fam, logs)
+    if aoc: verify_aoc(repo, aoc)   # MacNativeGames mk8d: the pinned Booster Course Pass image, before the shader split and the packer read it
     dlc_roms = sorted(p for p in aoc.iterdir() if p.is_dir() or p.suffix == '.img') if aoc else []
     base = next((dirs[v] for v in versions if picks[v][1] is None), dirs[versions[0]])   # the folder the base game was extracted to alone
     # the app name and bundle ID both come from the base NSP: the game name in its control data, and a bundle ID from its title ID; a setting / the command line overrides them

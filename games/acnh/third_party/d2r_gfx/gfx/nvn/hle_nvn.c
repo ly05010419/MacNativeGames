@@ -156,7 +156,9 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 设备属性：Tegra X1 实测值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐项调 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
-#if defined(GAME_ACNH)
+#if defined(GAME_ACNH) && ACNH_VERSION_RAW == 2097152
+    [0x00] = 55, [0x01] = 15,   // 3.0.1 main+0x37b6eec checks major 55, minor >= 15. Unsupported calls still stop.
+#elif defined(GAME_ACNH)
     [0x00] = 53, [0x01] = 312,  // ACNH 1.2.1 main+0x1a845e4 requires minor >= 312 (0x138).
 #elif defined(GAME_BOTW) || defined(GAME_ODYSSEY) || defined(GAME_KIRBY)
     [0x00] = 53, [0x01] = 311,  // Odyssey 1.3.0 main+0x9414c4 checks 53; +0x9414d0 requires minor >= 311.
