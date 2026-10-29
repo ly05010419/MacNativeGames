@@ -420,6 +420,44 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>存檔同步 · Save sync</string>
+			<key>FooterText</key>
+			<string>存檔仍保存在本機，只把副本放進所選資料夾（例如 iCloud 雲碟裡與其他 Apple ID 共享的資料夾），Mac 選同一個資料夾即可接續遊玩。下次開啟遊戲時會出現資料夾選擇器；也可長按主畫面圖示選擇 · Saves stay on this device; a copy goes to the chosen folder (e.g. an iCloud Drive folder shared with another Apple ID). Choose the same folder on the Mac to carry on there. The folder picker appears the next time the game opens; or long-press the Home Screen icon</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSTitleValueSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_CLOUD_SAVE_FOLDER_NAME</string>
+			<key>Title</key>
+			<string>資料夾 · Folder</string>
+			<key>DefaultValue</key>
+			<string>—</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_CLOUD_SAVE_PICK</string>
+			<key>Title</key>
+			<string>選擇資料夾 · Choose folder</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_CLOUD_SAVE_STOP</string>
+			<key>Title</key>
+			<string>停止同步 · Stop syncing</string>
+			<key>DefaultValue</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>

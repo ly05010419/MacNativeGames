@@ -1,5 +1,8 @@
-// The launcher inside the packaged app (build_app.py compiles it as Contents/MacOS/TOTK).
-// The game itself is Contents/Resources/totk/build/totk-native; everything it writes goes to the player's own folders:
+// The launcher inside the packaged app. It is part of the game binary, which build_app.py places as Contents/MacOS/TOTK
+// (and, for tools, as Contents/Resources/totk/build/totk-native): started from Contents/MacOS, runtime/loader.c main runs
+// runtime_app_launch first and then boots the game in the same process. One process on purpose: an app that execs another
+// binary after it started is left out of the Cmd+Tab switcher (macOS 27; the Dock still shows it).
+// Everything the game writes goes to the player's own folders:
 //   ~/Library/Application Support/MacNativeGames/TOTK/   profile (account, saves), shader cache, game slot, RomFS proof (BotW/ for Breath of the Wild)
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
@@ -16,12 +19,13 @@
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <unistd.h>
-#include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
-#include "game_version.h"
-#include "controller_map.h"
-#include "include/totk_ui_lang.h"
-#include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
-#include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
+#include "../third_party/d2r_gfx/gfx/nvn/dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
+#include "../runtime/game_version.h"
+#include "../runtime/controller_map.h"
+#include "../runtime/runtime.h"
+#include "totk_ui_lang.h"
+#include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   // the shared shader list contribution and its reminder
+#include "../runtime/contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
 #include "update_notice.h"
 
 static void show_error(NSString *detail) {
@@ -92,6 +96,32 @@ static void note(NSString *text) {
     NSAlert *alert = [NSAlert new];
     alert.messageText = text;
     [alert runModal];
+}
+
+/* Saves sync (runtime/cloud_save.m): a start with no sync folder offers to choose one, before the game reads its save, so
+   it syncs from this start. "Not now" asks again at the next start; "Don't ask again" (or Stop Syncing in the app menu,
+   runtime/frontend.m) never. Returns the folder chosen now, or nil. */
+static NSString *cloud_folder_offer(NSUserDefaults *sync) {
+    if ([sync boolForKey:@"TOTK_CLOUD_SAVE_ASKED"]) return nil;
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = @(TOTK_UI("要和其他设备同步存档吗？", "Sync saves with your other devices?"));
+    alert.informativeText = @(TOTK_UI("选择一个每台设备都能看到的文件夹，例如 iCloud 云盘里的文件夹（也可以是和另一个 Apple ID 共享的文件夹）。存档仍保存在这台 Mac 上，只把副本放进这个文件夹，其他设备在那里接续。以后也可以在应用菜单 › 存档同步里更改。",
+                                      "Choose a folder every device can see, such as a folder in iCloud Drive (one shared with another Apple ID works too). Saves stay on this Mac; a copy goes to the folder, and your other devices carry on from there. You can change it later in the app menu › Save Sync."));
+    [alert addButtonWithTitle:@(TOTK_UI("选择文件夹…", "Choose Folder…"))];
+    [alert addButtonWithTitle:@(TOTK_UI("以后再说", "Not Now"))];
+    [alert addButtonWithTitle:@(TOTK_UI("不要再问", "Don't Ask Again"))];
+    NSModalResponse choice = [alert runModal];
+    if (choice == NSAlertThirdButtonReturn) [sync setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"];
+    if (choice != NSAlertFirstButtonReturn) return nil;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO; panel.canChooseDirectories = YES; panel.canCreateDirectories = YES; panel.allowsMultipleSelection = NO;
+    panel.message = @(TOTK_UI("选择每台设备都能看到的文件夹（例如 iCloud 云盘里共享的文件夹）。", "Choose a folder every device can see (e.g. a shared folder in iCloud Drive)."));
+    panel.prompt = @(TOTK_UI("选择", "Choose"));
+    panel.directoryURL = [NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Mobile Documents/com~apple~CloudDocs"] isDirectory:YES];
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) return nil;   // cancelled: asked again at the next start
+    [sync setObject:panel.URL.path forKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+    return panel.URL.path;
 }
 
 /* Every TOTK_CONTRIB_STEP shaders and render pipelines the shared list does not have yet (totk_shader_contrib.h), before the game starts: ask
@@ -208,21 +238,22 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
     }
 }
 
-int main(int argc, char **argv) {
+/* Returns -1 with *boot set to the arguments the game boots with (rewritten folder, "boot"), or the status to exit with. */
+int runtime_app_launch(int argc, char **argv, char ***boot) {
     @autoreleasepool {
         NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
-        NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
+        NSString *binary = [root stringByAppendingPathComponent:@"rewritten/" TOTK_GAME_DIR "/main.patched.bin"];   // the game's code
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
            app is when macOS scans the whole bundle (minutes for 16 GB, with nothing on screen); doing it during the build
            makes the player's first start immediate. */
         if (argc > 1 && !strcmp(argv[1], "--check")) {
-            int ok = access(binary.fileSystemRepresentation, X_OK) == 0;
+            int ok = access(binary.fileSystemRepresentation, R_OK) == 0;
             NSString *declared = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
             ok = ok && [declared isEqualToString:@TOTK_GAME_VERSION];
-            printf("%s: game version %s\n", ok ? "ok" : "missing binary or version mismatch", TOTK_GAME_VERSION);
+            printf("%s: game version %s\n", ok ? "ok" : "missing game files or version mismatch", TOTK_GAME_VERSION);
             return ok ? 0 : 1;
         }
-        if (access(binary.fileSystemRepresentation, X_OK) != 0) {
+        if (access(binary.fileSystemRepresentation, R_OK) != 0) {
             show_error(@"The game files are missing from this app. Build it again with build_app.py.");
             return 1;
         }
@@ -308,6 +339,15 @@ int main(int argc, char **argv) {
             setenv("TOTK_ROMFS_DATA", library.fileSystemRepresentation, 1);   // runtime/romfs.c
         }
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
+        /* The folder the game binary's own files are in (shader-service, shader-seed, shader-libs, pso lists: totk_shader_rt.m
+           root_dir, nvn_mtl.m exe_rel), which is no longer the folder of the running executable (Contents/MacOS). */
+        setenv("TOTK_NATIVE_DIR", [root stringByAppendingPathComponent:@"build"].fileSystemRepresentation, 1);
+        /* Save sync (runtime/cloud_save.m): the folder the player chose in the app menu (runtime/frontend.m) or in
+           cloud_folder_offer, which asks at a start that has none. TOTK_CLOUD_SAVE_DIR wins over it; 0 = off. */
+        NSUserDefaults *sync = [[NSUserDefaults alloc] initWithSuiteName:@RUNTIME_SAVE_SYNC_DEFAULTS];
+        NSString *chosen = [sync stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+        if (!getenv("TOTK_CLOUD_SAVE_DIR") && !getenv("TOTK_CLOUD_SAVE_FOLDER") && !chosen.length) chosen = cloud_folder_offer(sync);
+        if (!getenv("TOTK_CLOUD_SAVE_DIR") && chosen.length) setenv("TOTK_CLOUD_SAVE_FOLDER", chosen.fileSystemRepresentation, 0);
         /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
            start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
            scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
@@ -355,11 +395,9 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
-        char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
-        execv(arguments[0], arguments);
-        int failed = errno;
-        fprintf(stderr, "[launcher] execv failed: %s\n", strerror(failed));
-        show_error([NSString stringWithFormat:@"Starting the game failed: %s.", strerror(failed)]);
-        return 1;
+        static char *arguments[4] = {NULL, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
+        arguments[0] = argv[0];
+        *boot = arguments;
+        return -1;
     }
 }

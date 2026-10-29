@@ -481,17 +481,18 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
 -(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_input_clear();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
-   save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
+   save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy).
+   Then a save not in the sync folder yet goes up (runtime_cloud_save_quit). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);
  if(totk_sr_closing)totk_sr_closing();
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
- if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
+ if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");runtime_cloud_save_quit();_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
   uint64_t t0=runtime_now_ns();while(runtime_fs_save_busy()&&runtime_now_ns()-t0<15000000000ull)usleep(20000);
-  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
+  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
@@ -510,10 +511,46 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+/* Save sync (runtime/cloud_save.m): the folder the saves are copied to, e.g. an iCloud Drive folder shared with the
+   iPhone / iPad or another Apple ID. Stored in RUNTIME_SAVE_SYNC_DEFAULTS (TOTK_CLOUD_SAVE_FOLDER, read by app/launcher.m)
+   and used from the next start: the running game already chose its save. A sheet, so the game keeps drawing. */
+static NSUserDefaults *syncDefaults(void){static NSUserDefaults *d;static dispatch_once_t once;dispatch_once(&once,^{d=[[NSUserDefaults alloc] initWithSuiteName:@RUNTIME_SAVE_SYNC_DEFAULTS];});return d;}
+@interface TOTKCloudMenu:NSObject @property(nonatomic,strong) NSMenuItem *status; @end
+@implementation TOTKCloudMenu
+-(void)refresh{NSString *f=[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+ self.status.title=f.length?[NSString stringWithFormat:@(TOTK_UI("同步文件夹：%@","Sync folder: %@")),[f stringByAbbreviatingWithTildeInPath]]:@(TOTK_UI("未选择同步文件夹","No sync folder chosen"));}
+-(void)note:(NSString *)text{NSAlert *a=[NSAlert new];a.messageText=text;a.informativeText=@(TOTK_UI("下次启动游戏时生效。","Takes effect the next time the game starts."));[a beginSheetModalForWindow:window completionHandler:nil];}
+-(void)choose:(id)sender{(void)sender;
+ NSOpenPanel *p=[NSOpenPanel openPanel];p.canChooseFiles=NO;p.canChooseDirectories=YES;p.canCreateDirectories=YES;p.allowsMultipleSelection=NO;
+ p.message=@(TOTK_UI("选择每台设备都能看到的文件夹（例如 iCloud 云盘里共享的文件夹）。存档仍保存在本机，只把副本放进这里。","Choose a folder every device can see (e.g. a shared folder in iCloud Drive). Saves stay on this Mac; only a copy goes here."));
+ p.prompt=@(TOTK_UI("选择","Choose"));
+ NSString *cur=[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+ NSString *drive=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Mobile Documents/com~apple~CloudDocs"];
+ p.directoryURL=[NSURL fileURLWithPath:cur.length?cur:drive isDirectory:YES];
+ [p beginSheetModalForWindow:window completionHandler:^(NSModalResponse r){
+  if(r!=NSModalResponseOK||!p.URL)return;
+  [syncDefaults() setObject:p.URL.path forKey:@"TOTK_CLOUD_SAVE_FOLDER"];[self refresh];
+  dispatch_async(dispatch_get_main_queue(),^{[self note:[NSString stringWithFormat:@(TOTK_UI("存档会同步到 %@","Saves will sync through %@")),[p.URL.path stringByAbbreviatingWithTildeInPath]]];});
+ }];}
+-(void)stop:(id)sender{(void)sender;[syncDefaults() removeObjectForKey:@"TOTK_CLOUD_SAVE_FOLDER"];[syncDefaults() setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"];[self refresh];   // and no offer at start (app/launcher.m)
+ [self note:@(TOTK_UI("不再使用同步文件夹","The sync folder is no longer used"))];}
+-(BOOL)validateMenuItem:(NSMenuItem *)item{return item.action!=@selector(stop:)||[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"].length>0;}
+@end
+static TOTKCloudMenu *cloudMenu;
+static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
+ cloudMenu=[TOTKCloudMenu new];
+ NSMenu *sub=[[NSMenu alloc] initWithTitle:@(TOTK_UI("存档同步","Save Sync"))];
+ cloudMenu.status=[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];cloudMenu.status.enabled=NO;[sub addItem:cloudMenu.status];
+ NSMenuItem *choose=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("选择同步文件夹…","Choose Sync Folder…")) action:@selector(choose:) keyEquivalent:@""];choose.target=cloudMenu;[sub addItem:choose];
+ NSMenuItem *stop=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("停止同步","Stop Syncing")) action:@selector(stop:) keyEquivalent:@""];stop.target=cloudMenu;[sub addItem:stop];
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:sub.title action:nil keyEquivalent:@""];item.submenu=sub;[appMenu addItem:item];
+ [appMenu addItem:[NSMenuItem separatorItem]];[cloudMenu refresh];
+}
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+ front_menu_cloud_add(appMenu);
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;

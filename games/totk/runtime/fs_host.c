@@ -71,6 +71,10 @@ static int remove_tree(const char *path) {
     closedir(d);
     return ok | rmdir(path);
 }
+/* cloud_save.m (the game binaries); the probes that link this file alone keep their saves local. */
+__attribute__((weak)) void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) { (void)save_dir; (void)profile_dir; }
+__attribute__((weak)) void runtime_cloud_save_changed(void) {}
+__attribute__((weak)) void runtime_cloud_save_quit(void) {}
 static void init(void) {
     const char *dir = getenv("TOTK_PROFILE_DIR"); if (!dir) dir = "user-data";
     need(snprintf(profile, sizeof profile, "%s", dir) < (int)sizeof profile, "profile path");
@@ -82,6 +86,7 @@ static void init(void) {
     snprintf(p, sizeof p, "%s/temp", profile); remove_tree(p); make_dir(p);
     snprintf(p, sizeof p, "%s/cache", profile); make_dir(p);
     fprintf(stderr, "[totk] host save storage: %s\n", save_root);
+    runtime_cloud_save_start(save_root, profile);   /* the sync folder's copy, when it is newer, before the game reads a save */
 }
 static void ready(void) { pthread_once(&once, init); }
 
@@ -185,6 +190,7 @@ static unsigned commit(const char *name) {
     if (!found) return R_PATH_NOT_FOUND;
     for (int i = 0; i < NFILES; i++) { pthread_mutex_lock(&lock); int fd = files[i].fd; pthread_mutex_unlock(&lock); if (fd > 0) fcntl(fd, F_FULLFSYNC); }
     if (save && !(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 23)) atomic_store(&save_dirty, 0);   /* 23: probe-save's negative control */
+    if (save) runtime_cloud_save_changed();   /* a complete save: copied to the sync folder shortly */
     return 0;
 }
 

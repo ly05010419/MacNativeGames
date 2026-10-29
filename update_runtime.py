@@ -352,9 +352,8 @@ def main(argv):
         if not stale:
             say('   the app\'s startup shaders are of this runtime\'s translation chain; making them again as asked (--seed)')
         make_seed(tree, work, game, version, logs, env)
-    say('building the runtime from this repository (the game binary, the launcher, the shader tools)')
+    say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')
     run(['make', f'-j{os.cpu_count() or 4}', 'binary' if version == 'v0' else f'binary-{version}'], logs / 'runtime.log', cwd=tree, env=env)
-    build_app.build_launcher(tree, version, logs, env)
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         build_app.build_spirv_cross(tree, logs)
     build_app.check_translator(tree)

@@ -131,6 +131,7 @@ int runtime_triggers_locked(void){return 0;}
 int runtime_triggers_choice(void){return 0;}
 void runtime_triggers_choose(int on){(void)on;}
 void runtime_triggers_release(void){fprintf(stderr,"[probe] triggers released\n");}   /* the window's close lets the DualSense go */
+void runtime_cloud_save_quit(void){}   /* the window's close uploads a save not in the sync folder yet (runtime/cloud_save.m) */
 int fps_overlay_value(void){return 0;}   /* the HUD's FPS graph (PR #940) */
 
 static NSEvent *key(NSEventModifierFlags flags){
