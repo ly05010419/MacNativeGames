@@ -21,6 +21,8 @@ void runtime_settings_toggle(void){settings_toggles++;}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
 static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
+void runtime_setting_remove(const char *name){(void)name;}
+int runtime_mouse_enabled(void){return 0;}
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
@@ -181,20 +183,21 @@ int main(void){
  void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
  int(*read)(State *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
  uint32_t id=0;struct{State state;unsigned char guard[32];} out;memset(&out,0xa5,sizeof(out));init();
- runtime_input_key(38,1);runtime_input_key(38,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
+ /* Window keys go through the player's layout (runtime/keyboard_map.h; the default here): E confirms (A). */
+ runtime_input_key(14,1);runtime_input_key(14,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
  need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
  runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
- const unsigned dpad[]={3,17,4,5};
+ const unsigned dpad[]={19,20,21,23};   /* 2 3 4 5: d-pad left, up, right, down */
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
   need(out.state.buttons==(1ULL<<(12+i))&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry,"D-pad independent of analog sticks");
   runtime_input_key(dpad[i],0);read(&out.state,1,&id);need(!out.state.buttons,"D-pad release");
  }
  /* Key 1 (Mac key code 18) opens / closes the settings panel (frontend.m): once per press; held-key repeats and the
-    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more and no game buttons either. */
+    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more; 6 and 7 drive nothing. */
  runtime_input_key(18,1);need(settings_toggles==1,"key 1 toggles the settings panel");
  runtime_input_key(18,1);need(settings_toggles==1,"a held key (auto-repeat) does not act again");
  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
@@ -203,7 +206,7 @@ int main(void){
  static const unsigned former[]={19,20,21,22,23,26};
  for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
   runtime_input_key(former[k],1);read(&out.state,1,&id);
-  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 do nothing");
+  need(settings_toggles==2&&((former[k]!=22&&former[k]!=26)||!out.state.buttons)&&!out.state.lx&&!out.state.ly,"keys 2-7 are no shortcuts");
   runtime_input_key(former[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
@@ -217,7 +220,7 @@ int main(void){
  const uint32_t both[]={0,0x20};styles(3);ids(both,2);
  uint32_t hid=0x20;id=0;need(style(&hid)==2&&style(&id)==0,"handheld mode: handheld controller only");
  void(*disc)(const uint32_t *)=runtime_input_override("_ZN2nn3hid14DisconnectNpadERKj");disc(&id);need(style(&hid)==2,"handheld mode: disconnecting player 1 keeps the handheld controller");
- runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
+ runtime_input_key(14,1);runtime_input_key(14,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
  puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");

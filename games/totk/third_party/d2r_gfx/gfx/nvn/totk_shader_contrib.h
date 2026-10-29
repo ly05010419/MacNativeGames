@@ -95,14 +95,21 @@ static inline void totk_contrib_json(NSMutableString *out, id value) {
 }
 
 /* Appends one row (a whole line without its newline), once. Not thread-safe: the runtime calls it under its translation
-   lock. */
+   lock. TOTK_CONTRIB_GAME (the iPhone / iPad app: "TOTK 1.4.3") adds a "# Game: " line, once per file and game, so the Mac
+   that sends a device's file names the game and version in the issue (ios/tools/shader_contrib_watch.py). */
 static inline void totk_contrib_add_line(NSString *line) {
-    static NSString *path; static NSMutableSet<NSString *> *rows; static int off;
+    static NSString *path, *gameLine; static NSMutableSet<NSString *> *rows; static int off, tagged;
     if (off) return;
     if (!rows) {
         path = totk_contrib_path();
         if (!path) { off = 1; return; }
         rows = totk_contrib_read(path);
+        const char *game = getenv("TOTK_CONTRIB_GAME");
+        if (game && *game && !strchr(game, '\n')) {
+            gameLine = [NSString stringWithFormat:@"# Game: %s", game];
+            NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            tagged = text && [[text componentsSeparatedByString:@"\n"] containsObject:gameLine];
+        } else tagged = 1;
     }
     if ([rows containsObject:line]) return;
     FILE *f = fopen(path.fileSystemRepresentation, "a");
@@ -112,6 +119,7 @@ static inline void totk_contrib_add_line(NSString *line) {
         fputs("# Shaders and render pipelines this game met that the shared shader list does not have yet (docs/shader-list.md).\n"
               "# Only shader keys, bind states and pipeline descriptors: no game data, saves or personal information.\n"
               "# Send it in a GitHub issue: " TOTK_CONTRIB_ISSUE_URL "\n", f);
+    if (!tagged) { fprintf(f, "%s\n", gameLine.UTF8String); tagged = 1; }   /* an older file, or another version since */
     fprintf(f, "%s\n", line.UTF8String);
     fclose(f);
     [rows addObject:line];

@@ -11,6 +11,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <unistd.h>
 #include "runtime.h"
 #include "gamepad_layout.h"   // face buttons by position (PlayStation, Xbox) or label (Nintendo)
@@ -27,13 +28,13 @@ static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait fo
 static BOOL started;
 static _Atomic int settingsShortcutEnabled;
 static int settingsShortcutDown, settingsShortcutPending;
-/* The chord opens the settings panel only once it has been held for a second (user 2026-10-27): L2 + R2 + L3 is also
-   ZL + ZR + L3 in the game, pressed together for a moment while sneaking with the bow. Held still, the controller sends
-   no events, so the panel's 60 Hz timer (runtime_gamepad_settings_requested) decides when the second is up. */
-#define SETTINGS_HOLD_NS 1000000000ULL
-static uint64_t settingsChordSince;
-static int settingsChordFired;
-#define SETTINGS_CHORD ((1ull << 8) | (1ull << 9) | (1ull << 4))
+/* The controller's way to the settings panel (user 2026-10-29): L3 and R3 pressed together by default, or one button the
+   player picks in the key bindings (the touchpad, say), kept in controller-settings.txt. It opens or closes the panel as
+   soon as it is all down; from there the game gets no controller input until everything is released. A picked button
+   drives nothing in the game. (Until 2026-10-29: L2 + R2 + L3 held for a second, user 2026-10-27.) */
+#define SETTINGS_CHORD ((1ull << 4) | (1ull << 5))
+static _Atomic int settingsButton = -1;   /* physical button (controller_map.h), -1 the chord */
+static uint64_t settings_trigger(void) { int b = atomic_load(&settingsButton); return b >= 0 ? 1ull << b : SETTINGS_CHORD; }
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
 static uint64_t physicalPrev;
@@ -113,15 +114,22 @@ static int setting_read(const char *name, char *word, size_t size, char *path, s
     return 1;
 }
 
-static void setting_write(const char *name, const char *word, const char *what) {
-    char path[4096], temp[4200];
-    if (!setting_path(name, path, sizeof path)) return;
+static void file_write(const char *path, const char *text, const char *what) {   /* whole or not at all */
+    char temp[4200];
     snprintf(temp, sizeof temp, "%s.tmp", path);
     FILE *f = fopen(temp, "w");
-    int ok = f && fprintf(f, "%s\n", word) > 0;
+    int ok = f && fprintf(f, "%s", text) >= 0;
     if (f && fclose(f)) ok = 0;
     if (ok && rename(temp, path)) ok = 0;
     if (!ok) { fprintf(stderr, "[totk-input] could not save the %s to %s; it holds until the game closes\n", what, path); unlink(temp); }
+}
+
+static void setting_write(const char *name, const char *word, const char *what) {
+    char path[4096], text[16384];
+    if (!setting_path(name, path, sizeof path)) return;
+    size_t n = strlen(word);
+    snprintf(text, sizeof text, "%s%s", word, n && word[n - 1] == '\n' ? "" : "\n");
+    file_write(path, text, what);
 }
 
 /* The same one-word files for the rest of the runtime: 1 with the file's text in word as written (the caller drops the
@@ -132,6 +140,36 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
 }
 /* ... and saves one, as controller-type.txt is saved (the settings panel's controller rows). */
 void runtime_setting_save(const char *name, const char *word, const char *what) { setting_write(name, word, what); }
+/* ... or removes it: the default again (the settings panel's resets). */
+void runtime_setting_remove(const char *name) {
+    char path[4096];
+    if (setting_path(name, path, sizeof path)) unlink(path);
+}
+
+/* The settings panel's key bindings (main thread, as refresh_gamepads): the layout in force, a new one (saved in the
+   TOTK_CONTROLS file with only what differs from the default), or the default (the file removed). */
+void runtime_controller_map_get(uint16_t *map, uint8_t *modes) {
+    memcpy(map, controllerMap, sizeof controllerMap); memcpy(modes, controllerModes, sizeof controllerModes);
+}
+static void controller_map_changed(void) {
+    physicalPrev = 0;
+    memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn); memset(toggleMoved, 0, sizeof toggleMoved);
+    refresh_gamepads();
+}
+void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes) {
+    memcpy(controllerMap, map, sizeof controllerMap); memcpy(controllerModes, modes, sizeof controllerModes);
+    controller_map_changed();
+    const char *path = getenv("TOTK_CONTROLS"); char text[8192];
+    if (path && *path && controller_map_format(controllerMap, controllerModes, text, sizeof text) > 0) file_write(path, text, "controller layout");
+    fprintf(stderr, "[totk-input] controller layout: changed in the settings panel\n");
+}
+void runtime_controller_map_reset(void) {
+    controller_map_default(controllerMap, controllerModes);
+    controller_map_changed();
+    const char *path = getenv("TOTK_CONTROLS");
+    if (path && *path) unlink(path);
+    fprintf(stderr, "[totk-input] controller layout: default (reset)\n");
+}
 
 /* Controller type (gamepad_layout.h GAMEPAD_TYPE_*), in the Mac settings panel, in controller-type.txt. */
 static _Atomic int controllerType = GAMEPAD_TYPE_AUTO;
@@ -355,8 +393,9 @@ static void hid_pad_start(void) {}
 
 /* ---- Mouse mode (Mac, the settings panel; in mouse.txt) ----
    The window (runtime/frontend.m) holds the pointer while mouse mode is on and the window has the keyboard, and sends
-   the mouse's buttons and movement here. Buttons are physical buttons 17-21 of the controller layout (controller_map.h:
-   left attack, right draw the bow with left to shoot, middle target), so controls.txt can change them. Movement goes to
+   the mouse's buttons and movement here. Buttons go to the keyboard and mouse layout (runtime/input.c, keyboard_map.h:
+   left attack, right draw the bow with left to shoot, middle lock on), which the settings panel's key bindings change;
+   they are also physical buttons 17-21 of the controller layout, for mouse lines in controls.txt. Movement goes to
    runtime/mouse_look.h, ticked every 10 ms by a timer while mouse mode is on: the right stick (the stronger of it and a
    controller's) and, unless TOTK_MOUSE_GYRO=0 or the game has no six-axis device (TOTK_GYRO=0), the gyro, which the
    mouse then has to itself (runtime_motion_mouse). Settings: TOTK_MOUSE_SENSITIVITY 1-100 (50; else the settings
@@ -421,7 +460,7 @@ void runtime_mouse_sensitivity_set(int sensitivity) {
 static void mouse_apply(int on) {   /* start or stop the ticks and the gyro takeover */
     if (on) {
         const char *g = getenv("TOTK_MOUSE_GYRO");
-        MouseLookSettings settings = mouse_look_settings(getenv("TOTK_MOUSE_SENSITIVITY"), getenv("TOTK_MOUSE_INVERT_Y"),
+        MouseLookSettings settings = mouse_look_settings(NULL, getenv("TOTK_MOUSE_INVERT_Y"),
                                                          getenv("TOTK_MOUSE_COUNTERWEIGHT"), getenv("TOTK_MOUSE_DECAY"), getenv("TOTK_MOUSE_MIN_DECAY"));
         settings.sensitivity = runtime_mouse_sensitivity();
         int gyro = runtime_gyro_enabled() && !(g && !strcmp(g, "0"));
@@ -460,6 +499,34 @@ static void load_mouse_mode(void) {
 int runtime_mouse_enabled(void) { return atomic_load(&mouseMode); }
 void runtime_mouse_set_hook(void (*hook)(void)) { mouseHook = hook; }
 
+/* The settings panel's button (key bindings): -1 the L3 + R3 chord, else the physical button, saved in
+   controller-settings.txt by its controls.txt name; -1 removes the file. */
+static void load_settings_button(void) {
+    char path[4096], word[32] = {0};
+    if (!setting_read("controller-settings.txt", word, sizeof word, path, sizeof path)) return;
+    word[strcspn(word, " \t\r\n")] = 0;
+    for (int i = 0; i <= CONTROLLER_SWITCH_BUTTONS; i++)   /* the controller's buttons and the touchpad, not the mouse's */
+        if (!strcasecmp(word, controller_physical_names[i])) {
+            atomic_store(&settingsButton, i);
+            fprintf(stderr, "[totk-input] settings panel button: %s (%s)\n", controller_physical_names[i], path);
+            return;
+        }
+    fprintf(stderr, "[totk-input] %s: not a controller button; the settings panel stays on L3 + R3\n", path);
+}
+int runtime_gamepad_settings_button(void) { return atomic_load(&settingsButton); }
+void runtime_gamepad_settings_button_set(int physical) {
+    if (physical > CONTROLLER_SWITCH_BUTTONS) return;
+    if (physical < 0) physical = -1;
+    atomic_store(&settingsButton, physical);
+    pthread_mutex_lock(&gamepadLock);
+    settingsShortcutDown = (textPad.buttons & settings_trigger()) == settings_trigger();
+    pthread_mutex_unlock(&gamepadLock);
+    if (physical < 0) runtime_setting_remove("controller-settings.txt");
+    else setting_write("controller-settings.txt", controller_physical_names[physical], "settings panel button");
+    fprintf(stderr, "[totk-input] settings panel button: %s\n", physical < 0 ? "L3 + R3" : controller_physical_names[physical]);
+    refresh_gamepads();
+}
+
 /* The settings panel (key 1, frontend.m). */
 int runtime_mouse_set(int on) {
     on = !!on;
@@ -483,6 +550,7 @@ void runtime_mouse_button(int button, int down) {   /* main thread */
     unsigned bit = 1u << button, next = down ? mouseButtons | bit : mouseButtons & ~bit;
     if (next == mouseButtons) return;
     mouseButtons = next;
+    runtime_input_mouse(button, down);
     refresh_gamepads();
 }
 
@@ -490,7 +558,10 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
     pthread_mutex_lock(&gamepadLock);
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
-    if (mouseButtons) { mouseButtons = 0; refresh_gamepads(); }
+    if (mouseButtons) {
+        for (int i = 0; i < CONTROLLER_MOUSE_BUTTONS; i++) if (mouseButtons >> i & 1) runtime_input_mouse(i, 0);
+        mouseButtons = 0; refresh_gamepads();
+    }
 }
 
 static void refresh_gamepads(void) {
@@ -538,19 +609,20 @@ static void refresh_gamepads(void) {
     }
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
-    uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0;
+    uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
+    if (atomic_load(&settingsButton) >= 0) suppressed |= trigger;   /* a picked button is the panel's only */
     int moving = next.lx || next.ly;
     physicalPrev = physical;
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
         uint64_t bit = 1ULL << i;
         int kind = controller_mode_kind(controllerModes[i]);
-        if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && kind == CONTROLLER_TAP && (edges & bit)) {
+        if (!textCapture && !(settingsShortcutEnabled && (physical & trigger) == trigger) && kind == CONTROLLER_TAP && (edges & bit)) {
             tapUntil[i] = now + 400000000ULL;
             /* Release the pulse even if the controller sends no further event. */
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
         }
         if (kind == CONTROLLER_TOGGLE) {
-            if (!textCapture && !(settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD) && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
+            if (!textCapture && !(settingsShortcutEnabled && (physical & trigger) == trigger) && (edges & bit)) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
             if (toggleOn[i] && moving) toggleMoved[i] = 1;
             /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
                waits for the first move, and attacking while running does not stop it. */
@@ -570,8 +642,11 @@ static void refresh_gamepads(void) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
     pthread_mutex_lock(&gamepadLock);
-    int chord = settingsShortcutEnabled && (physical & SETTINGS_CHORD) == SETTINGS_CHORD;
-    if (chord && !settingsShortcutDown) { settingsChordSince = now; settingsChordFired = 0; }   /* the game keeps it until the second is up */
+    int chord = settingsShortcutEnabled && (physical & trigger) == trigger;
+    if (chord && !settingsShortcutDown) {
+        settingsShortcutPending = 1;
+        if (!textCapture) textCapture = 2;   /* from here the game no longer gets the controller, until it is released */
+    }
     settingsShortcutDown = chord;
     textEdges |= (physical & 0x1ffffu) & ~textPad.buttons;
     textPad = next; textPad.buttons = physical & 0x1ffffu;
@@ -707,6 +782,7 @@ void runtime_gamepad_start(void) {
     started = YES;
     load_controller_map();
     load_controller_type();
+    load_settings_button();
     load_mouse_mode();
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
@@ -762,18 +838,12 @@ void runtime_gamepad_settings_enable(int enabled) {
     pthread_mutex_lock(&gamepadLock);
     settingsShortcutEnabled = !!enabled;
     settingsShortcutPending = 0;
-    settingsShortcutDown = (textPad.buttons & SETTINGS_CHORD) == SETTINGS_CHORD;
-    settingsChordSince = runtime_now_ns(); settingsChordFired = 0;   /* a chord held through this counts from now */
+    settingsShortcutDown = (textPad.buttons & settings_trigger()) == settings_trigger();   /* one held through this waits for a new press */
     pthread_mutex_unlock(&gamepadLock);
 }
 int runtime_gamepad_settings_requested(void) {
     pthread_mutex_lock(&gamepadLock);
     int requested = settingsShortcutPending; settingsShortcutPending = 0;
-    uint64_t now = runtime_now_ns();
-    if (settingsShortcutEnabled && settingsShortcutDown && !settingsChordFired && now >= settingsChordSince && now - settingsChordSince >= SETTINGS_HOLD_NS) {
-        settingsChordFired = requested = 1;
-        if (!textCapture) textCapture = 2;   /* from here the game no longer gets the chord, until it is released */
-    }
     pthread_mutex_unlock(&gamepadLock);
     return requested;
 }

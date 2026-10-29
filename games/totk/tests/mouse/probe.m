@@ -1,4 +1,5 @@
-/* runtime/gamepad.m's mouse mode (key 7): buttons through the controller layout, movement as the right stick and the gyro,
+/* runtime/gamepad.m's mouse mode: buttons to the keyboard and mouse layout (runtime/input.c, here a stand-in) and, for
+   mouse lines in controls.txt, the controller layout; movement as the right stick and the gyro; the sensitivity slider;
    release, and the saved on / off. The real file is compiled in; the 10 ms ticks are driven here (mouseTicksByHand). */
 #include "../../runtime/gamepad.m"
 
@@ -16,6 +17,8 @@ int runtime_gyro_enabled(void) { return gyroOn; }
 void runtime_motion_mouse(int on) { motionMouse = on; }
 void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) { (void)now; feeds++; lastYaw = gyro[2]; lastAcc = acc[2]; }
 static void hook(void) { hookCalls++; }
+static unsigned layoutHeld; static int layoutCalls;   /* runtime/input.c's mouse buttons: what reached the layout */
+void runtime_input_mouse(int button, int down) { layoutCalls++; layoutHeld = down ? layoutHeld | 1u << button : layoutHeld & ~(1u << button); }
 
 static int failures, checked;
 static void check(int ok, const char *what) { checked++; if (!ok) { failures++; fprintf(stderr, "FAIL: %s\n", what); } }
@@ -46,20 +49,27 @@ int main(int argc, char **argv) { @autoreleasepool {
     check(runtime_mouse_set(1) == 1 && runtime_mouse_enabled() && file_says(saved, "on\n") && motionMouse == 1, "settings: on, saved, the mouse takes the gyro");
     check(runtime_mouse_set(1) == 1 && motionMouse == 1, "on again: no change");
     spin(); check(hookCalls == 1, "the window is told (to capture the pointer)");
+    runtime_mouse_button(0, 1); s = settle(); check(layoutHeld == 1 && !s.buttons, "left button: to the keyboard and mouse layout, nothing from the controller's");
+    runtime_mouse_button(0, 1); check(layoutCalls == 1, "a button already down: no second call");
+    runtime_mouse_button(0, 0); runtime_mouse_button(1, 1); runtime_mouse_button(2, 1); check(layoutHeld == 6, "right and middle reach the layout");
+    runtime_mouse_button(1, 0); runtime_mouse_button(2, 0); runtime_mouse_button(9, 1); check(!layoutHeld, "a button number out of range is ignored");
+    /* A mouse line in controls.txt still drives its Switch button, the bow's aim included. */
+    const char *error = NULL;
+    check(!controller_map_parse("mouse_left = y\nmouse_right = zr aim mouse_left\nmouse_middle = zl\n", controllerMap, controllerModes, &error), "mouse lines parse");
     runtime_mouse_button(0, 1); s = settle(); check(s.buttons == Y, "left button: attack (Y)");
     runtime_mouse_button(0, 0); s = settle(); check(!s.buttons, "left button up");
     runtime_mouse_button(1, 1); s = settle(); check(s.buttons == ZR, "right button held: draw the bow (ZR)");
     runtime_mouse_button(0, 1); s = settle(); check(!s.buttons, "left click while drawing: ZR let go (the shot), no attack");
     runtime_mouse_button(0, 0); s = settle(); check(s.buttons == ZR, "left up, right still held: drawing again");
     runtime_mouse_button(1, 0); runtime_mouse_button(2, 1); s = settle(); check(s.buttons == ZL, "middle button: target (ZL)");
-    runtime_mouse_button(2, 0); runtime_mouse_button(9, 1); s = settle(); check(!s.buttons, "a button number out of range is ignored");
-
+    runtime_mouse_button(2, 0); s = settle(); check(!s.buttons, "middle up");
+    controller_map_default(controllerMap, controllerModes);
     runtime_mouse_move(10, 0); mouse_tick(); s = settle();
     check(abs(s.rx - 16384) <= 1 && !s.ry, "10 points right: half the right stick right");
     check(feeds == 1 && lastYaw < 0 && lastAcc == -1, "and the gyro turns clockwise, lying flat");
     mouse_tick(); s = settle(); check(s.rx > 0 && s.rx < 16384 && feeds == 2, "it decays tick by tick, the gyro keeps sampling");
     runtime_mouse_button(0, 1); runtime_mouse_release(); mouse_tick(); s = settle();
-    check(!s.buttons && !s.rx && !s.ry, "release (the window lost the pointer): buttons up, stick centred");
+    check(!s.buttons && !s.rx && !s.ry && !layoutHeld, "release (the window lost the pointer): buttons up, also in the layout, stick centred");
     /* The ability wheel (L held, here from the keys): the mouse points and the stick stays there; L up, centred. */
     keyboardButtons = L; mouse_tick(); runtime_mouse_move(10, 0); for (int i = 0; i < 30; i++) mouse_tick();
     int fed = feeds; s = settle();

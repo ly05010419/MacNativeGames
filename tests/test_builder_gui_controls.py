@@ -40,7 +40,8 @@ class Table(unittest.TestCase):
         targets, modes = cf.default()
         self.assertIn('map[0] = 1u << 1; map[1] = 1u << 0; map[2] = 1u << 3; map[3] = 1u << 2;', HEADER.read_text())
         self.assertEqual(targets[:16], [1, 0, 3, 2] + list(range(4, 16)))
-        self.assertEqual((targets[17:20], modes[18]), ([3, 9, 8], cf.AIM | 17 << 3))
+        # the mouse's buttons drive nothing in the controller layout since PR #1210 (the keyboard and mouse layout has them)
+        self.assertEqual((targets[16:], set(modes)), ([cf.NONE] * 6, {cf.HOLD}))
         for by_label in (False, True):                                   # B2: no custom row in the default layout
             self.assertEqual(cf.layout(cf.parse(b''), by_label)[1], {})
 

@@ -39,6 +39,10 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_controller_map.c -o "$RUNNER_TEMP/test-controller-map"
           "$RUNNER_TEMP/test-controller-map"
+      - name: Check the keyboard and mouse layout parser with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_keyboard_map.c -o "$RUNNER_TEMP/test-keyboard-map"
+          "$RUNNER_TEMP/test-keyboard-map"
       - name: Check the game language mapping with the undefined-behavior sanitizer
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_game_language.c -o "$RUNNER_TEMP/test-game-language"

@@ -67,10 +67,46 @@
 			<string>PSToggleSwitchSpecifier</string>
 			<key>Key</key>
 			<string>TOTK_DOCKED</string>
+			<key>TOTKPhone</key>
+			<true/>
 			<key>Title</key>
 			<string>Full HD（底座模式）· Full HD (docked)</string>
 			<key>DefaultValue</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>画面比例 · Aspect ratio</string>
+			<key>FooterText</key>
+			<string>与预设、自定义无关，两种模式下都生效。重新启动游戏后生效 · independent of the presets and the custom layer; applies in both. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_ASPECT</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>画面比例 · Aspect ratio</string>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Values</key>
+			<array>
+				<string></string>
+				<string>0</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>填满屏幕（按屏幕比例取景）· Fill the screen</string>
+				<string>16:9（黑边）· 16:9 letterbox</string>
+			</array>
+			<key>FooterText</key>
+			<string>填满屏幕不拉伸画面：相机按屏幕比例取景，呈现时再还原比例。iPad 比 16:9 窄，所以两侧会少一点、上下填满；16:9 保留完整宽度并加黑边。部分 UI 特效可能随取景偏移 · fill does not stretch: the camera takes the screen's aspect and the present pass restores the proportions. An iPad is narrower than 16:9, so a little is lost at the sides and the height is filled; 16:9 keeps the full width with bars. A few UI effects may sit off with this framing</string>
 		</dict>
 		<dict>
 			<key>Type</key>
@@ -85,6 +121,8 @@
 			<string>PSMultiValueSpecifier</string>
 			<key>Key</key>
 			<string>TOTK_PHONE_FPS</string>
+			<key>TOTKPhone</key>
+			<true/>
 			<key>Title</key>
 			<string>幀率 · Frame rate</string>
 			<key>DefaultValue</key>
@@ -191,6 +229,192 @@
 			<false/>
 			<key>FooterText</key>
 			<string>默认隐藏触控按键，避免误触；打开后两者可同时使用 · the touch controls hide by default to avoid stray taps; on: both work at once</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>自定义画质与帧率 · Custom picture and frame rate</string>
+			<key>FooterText</key>
+			<string>关闭时使用上面的「Full HD（底座模式）」与「帧率」两个预设；打开后本组生效，那两个预设不生效。MetalFX、界面等设置始终生效。重启游戏后生效 · off: the two presets above decide the size and the frame rate; on: this group does, and the presets do not. MetalFX and the interface apply either way. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_CUSTOM_PICTURE</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>使用自定义设置 · Use custom settings</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>打开：画质模式、场景分辨率与帧率上限由本组决定；关闭：由上面的 Full HD 与帧率预设决定 · on: the picture mode, scene resolution and frame-rate cap below decide; off: the Full HD and frame-rate presets above do</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_IOS_PICTURE_MODE</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>画质模式 · Picture mode</string>
+			<key>DefaultValue</key>
+			<string>720</string>
+			<key>Values</key>
+			<array>
+				<string>mfx</string>
+				<string>1080</string>
+				<string>720</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>MetalFX 2K（原生画布 + 两级超分，文字最清楚）· MetalFX 2K (native canvas + both upscales, sharpest text)</string>
+				<string>1080p（画布原生，不做输出超分，更凉）· 1080p (native canvas, no output upscaling, cooler)</string>
+				<string>720p（默认，最省电）· 720p (default, lowest power)</string>
+			</array>
+			<key>FooterText</key>
+			<string>画质模式决定显示缓冲的大小、画布要不要由 MetalFX 放大到面板，以及是否使用游戏的底座设定（1080 档）；MetalFX 2K 还会打开场景超分，因为输出超分需要它。场景分辨率只影响 3D 世界。以上设置在「使用自定义设置」打开时生效。重启游戏后生效 · the picture mode sets the drawable, whether MetalFX upscales the canvas to the panel, and whether the game runs its docked settings (the 1080 entry); MetalFX 2K also turns the scene upscale on, which the output upscale needs. The scene resolution affects the 3D world only. Both apply while "Use custom settings" is on. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_RENDER_RES</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>场景分辨率 · Scene resolution</string>
+			<key>DefaultValue</key>
+			<string>960x540</string>
+			<key>Values</key>
+			<array>
+				<string>1600x900</string>
+				<string>1280x720</string>
+				<string>960x540</string>
+				<string>800x450</string>
+				<string>640x360</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>1600x900（清晰，可用的最高档）· 1600x900 (sharpest available)</string>
+				<string>1280x720（均衡，易掉帧）· 1280x720 (mixed, drops frames)</string>
+				<string>960x540（默认）· 960x540 (default)</string>
+				<string>800x450（流畅，画面软）· 800x450 (smoother, soft)</string>
+				<string>640x360（最省 GPU，画面最软）· 640x360 (cheapest, softest)</string>
+			</array>
+			<key>FooterText</key>
+			<string>只影响 3D 世界，与画质模式独立。GPU 开销几乎与像素数成正比（2026-10-23 实测：960x540 12.9 ms，1280x720 26.2 ms）。1600x900 是游戏本身的场景尺寸，也是 iOS 上不需要额外堆内存覆盖的最高档。大世界里 960x540 热机后会从 60 掉到 30；800x450 约 8.9 ms，代价是画面更软。重启游戏后生效 · affects the 3D world only, independent of the picture mode. GPU cost is nearly linear in pixels (measured 2026-10-23: 12.9 ms at 960x540, 26.2 ms at 1280x720). 1600x900 is the game's own scene size and the highest value iOS runs without a bigger HeapDef overlay. In heavy areas 960x540 drops from 60 to 30 once the SoC heats up; 800x450 costs about 8.9 ms at the price of a softer picture. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSRadioGroupSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_FPS_CAP</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>帧率上限 · Frame rate cap</string>
+			<key>DefaultValue</key>
+			<string>60</string>
+			<key>Values</key>
+			<array>
+				<string>30</string>
+				<string>60</string>
+			</array>
+			<key>Titles</key>
+			<array>
+				<string>30 帧（省电，最稳）· 30 fps (coolest, steadiest)</string>
+				<string>60 帧（推荐）· 60 fps</string>
+			</array>
+			<key>FooterText</key>
+			<string>30 最省电也最稳，长时间不变；60 推荐，发热后可能临时降到 30，冷却后自行回到 60。iOS 的显示链路固定 60 Hz，没有更高的档位可给。重启游戏后生效 · 30 is the coolest and holds steady over time; 60 is recommended — after the SoC heats up the game may drop to 30 for a while and return to 60 once it cools. The iOS display link is fixed at 60 Hz, so there is no higher rate to offer. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>MetalFX · 超分与抗锯齿</string>
+			<key>FooterText</key>
+			<string>管线：场景按「场景分辨率」渲染 → 场景超分 → 画布 → 输出超分（仅自定义模式的 MetalFX 2K 档）→ 面板。两段超分都是 MetalFX 空间放大，不增加帧延迟；边缘平滑是 MetalFX 的时间抗锯齿。重启游戏后生效 · pipeline: the scene renders at the scene resolution → scene upscaling → canvas → output upscaling (custom mode's MetalFX 2K entry only) → panel. Both stages are MetalFX spatial scaling with no added latency; edge smoothing is MetalFX temporal anti-aliasing. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_MFX_UPSCALE</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>场景超分 · Scene upscaling</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>默认关闭，与 iPhone 的决定一致：游戏自带的放大已经是一道便宜的 pass，MetalFX 不增加画面收益时就不开。打开后 3D 场景由 MetalFX 放大到画布（场景 → 画布这一段），画面更锐，实测 GPU 代价不到 0.2 ms。重启游戏后生效 · off by default, as decided for the iPhone: the game's own upscale is already one cheap pass. On, MetalFX upscales the 3D scene into the canvas (the scene → canvas stage): sharper for under 0.2 ms of GPU in our measurements. Takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_TAA</string>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>边缘平滑（MetalFX 时间抗锯齿）· Edge smoothing (MetalFX TAA)</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>对 3D 画面做时间性抗锯齿，边缘更稳；可能有轻微拖影，默认关闭。重启游戏后生效 · MetalFX temporal anti-aliasing of the 3D scene; slight ghosting is possible. Off by default; takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
+			<string>界面 · Interface</string>
+			<key>FooterText</key>
+			<string>重启游戏后生效 · takes effect after relaunching</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_FPS_OVERLAY</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>状态行（右上角）· Status line (top-right)</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>显示帧率、上屏尺寸和 MetalFX 是否生效；行尾是待补译的着色器数量 · shows the frame rate, the presented size and whether MetalFX is upscaling, ending with the number of shaders waiting for translation</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_SHADER_OVERLAY</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>Title</key>
+			<string>着色器与管线（左下角）· Shaders and pipelines (bottom-left)</string>
+			<key>DefaultValue</key>
+			<true/>
+			<key>FooterText</key>
+			<string>显示本次新翻译的着色器 / 缓存总数，以及本次新建的渲染管线；收集到新东西时会变黄 · shows the shaders translated this run against the cache total, plus the render pipelines built this run; it turns yellow when something new is collected</string>
 		</dict>
 		<dict>
 			<key>Type</key>

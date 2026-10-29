@@ -150,6 +150,7 @@ python3.14 build_app.py "<本体 1.0.0.xci>" -k "<prod.keys>" --update "<1.4.3 �
 
 - 第一次打 iOS 包时，还会下载并编译设备用的库。
 - `--ios-game-data documents` 不把 17 GB 的游戏镜像放进 IPA，以后重装只要几分钟。
+- 打包时用数据线连着 iPhone / iPad：打包会在 Mac 上为它的 GPU 编好游戏的管线（第一次多约 10 分钟），首次启动进标题前就不用长时间填充。设备没连着时加 `--device-gpu <架构>`（iPhone 14 是 `applegpu_g14p`）。
 
 **2. 安装**，设备用线连着 Mac：
 

@@ -49,9 +49,9 @@ class Parsed:
 def default():
     targets = list(range(16)) + [NONE] * 6
     targets[0:4] = [1, 0, 3, 2]                                     # south B, east A, west Y, north X
-    targets[17], targets[18], targets[19] = 3, 9, 8                # mouse: attack (Y), the bow (ZR), target (ZL)
+    # the mouse's buttons drive nothing here: since PR #1210 they belong to the keyboard and mouse layout
+    # (runtime/keyboard_map.h, keyboard.txt), which attacks with the left and draws the bow with the right
     modes = [HOLD] * 22
-    modes[18] = AIM | 17 << 3                                       # a left click while the right is held shoots
     return targets, modes
 
 

@@ -22,7 +22,7 @@ class SettingsPanel(unittest.TestCase):
             self.skipTest('The production Metal 4 mode implementations require macOS 26 and its SDK')
         gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
         with tempfile.TemporaryDirectory() as directory:
-            for version in ('', 'TOTK_GAME_V143'):
+            for version in ('', 'TOTK_GAME_V143', 'GAME_BOTW160', 'GAME_BOTW190'):
                 executable = Path(directory) / ('settings-panel-' + (version or 'base'))
                 command = [compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra',
                            '-Werror', '-Wno-deprecated-declarations', '-I' + str(gfx / 'include'),
@@ -36,6 +36,8 @@ class SettingsPanel(unittest.TestCase):
                            '-framework', 'CoreVideo', '-o', str(executable)]
                 if version:
                     command.append('-D' + version + '=1')
+                if version.startswith('GAME_BOTW'):
+                    command.append('-DGAME_BOTW=1')
                 build = subprocess.run(command, capture_output=True, text=True, timeout=90)
                 self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
                 for layout in ('compact', 'corners'):

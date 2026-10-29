@@ -1539,6 +1539,14 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
         say('4/4 app: the game data is unchanged; kept the installed copy, so the first start need not verify it again')
 
 
+def say_device_pipelines(logs):
+    """What build_ipa.py did about the device's pipeline archive (its "pipelines:" lines), for the player."""
+    log = logs / 'build-ipa.log'
+    for line in log.read_text(errors='replace').splitlines() if log.is_file() else []:
+        if line.startswith('pipelines: '):
+            say('   ' + line)
+
+
 def last_json(log):
     """The tool's report: its last line that is a JSON object."""
     for line in reversed(log.read_text(errors='replace').splitlines()):
@@ -1933,6 +1941,10 @@ def parse_args(argv):
     ap.add_argument('--ios-game-data', choices=('app', 'documents'), default='app',
                     help='iOS: carry the 17 GB RomFS image in the IPA (default), or leave it out for the app\'s Documents/GameData '
                          '(ios/tools/install_device.py --game-data copies it there once; later builds install in minutes)')
+    ap.add_argument('--device-gpu', action='append', metavar='ARCH',
+                    help='iOS: compile the pipeline archive on this Mac for this GPU (applegpu_g14p for an iPhone 14; repeat for '
+                         'more; none: no archive). Default: the GPUs of the iPhones / iPads on the cable. The first start then '
+                         'needs no fill before the title (about 10 minutes on an iPhone 14); the app is about 430 MB larger per GPU')
     ap.add_argument('--mac-game-data', choices=('app', 'library'), default='app',
                     help='Mac: carry the 16 GB RomFS image in the app (default), or keep it in ~/Library/Application Support/'
                          'MacNativeGames/<TOTK|BotW>/GameData/<version>, put there once (the app is then a few hundred MB, '
@@ -2074,7 +2086,9 @@ def main(argv):
         if device_app:   # the same IPA tooling as Tears of the Kingdom (ios/tools/build_ipa.py --version botw160 / botw190)
             run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
                  '--logs', logs, '--app-name', APPS['botw'][2], '--bundle-id', APPS['botw'][1],
-                 *(['--image-outside'] if args.ios_game_data == 'documents' else [])], logs / 'build-ipa.log', cwd=tree, env=env)
+                 *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+                 *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs / 'build-ipa.log', cwd=tree, env=env)
+            say_device_pipelines(logs)
             say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
             say('Install it with games/totk/ios/tools/install_device.py' + (f' --game-data {tree}/extracted/{version}/romfs/romfs.bin'
                 if args.ios_game_data == 'documents' else '') + '; saves and the shader cache stay in the app\'s Documents.')
@@ -2137,7 +2151,9 @@ def main(argv):
     if device_app:
         run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
              '--logs', logs, '--app-name', IOS_APP_NAME, '--bundle-id', BUNDLE_ID, '--platform', args.platform,
-             *(['--image-outside'] if args.ios_game_data == 'documents' else [])], logs/'build-ipa.log', cwd=tree, env=env)
+             *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+             *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs/'build-ipa.log', cwd=tree, env=env)
+        say_device_pipelines(logs)
         if not args.no_shader_reminder:
             # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the
             # shared list lacks (ios/tools/shader_contrib_watch.py). Not essential: a failure only says so.

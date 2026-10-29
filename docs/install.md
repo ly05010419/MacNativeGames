@@ -151,6 +151,8 @@ python3.14 build_app.py "<base 1.0.0.xci>" -k "<prod.keys>" --update "<1.4.3 upd
 
 The first iOS build also downloads and compiles device libraries. `--ios-game-data documents` leaves the 17 GB game image out of the IPA, so later installs take minutes.
 
+Keep the iPhone or iPad connected by cable while building: the build then compiles the game's pipelines for its GPU on the Mac (about 10 more minutes the first time), and its first start needs no long fill before the title. For a device that is not connected, add `--device-gpu <arch>` (`applegpu_g14p` for an iPhone 14).
+
 **2. Install it** with the device connected by cable:
 
 ```sh

@@ -39,6 +39,10 @@ class ContributionFileTests(unittest.TestCase):
             self.assertEqual(noseed.returncode, 0, noseed.stderr)
             self.assertEqual(json.loads(noseed.stdout)['status'], 'pass')
             self.assertFalse(contrib.exists(), 'a run without the seed writes no contribution file')
+            game = subprocess.run([str(probe), str(contrib), 'game'], capture_output=True, text=True)   # the iPhone / iPad app's tag
+            self.assertEqual(game.returncode, 0, game.stderr)
+            self.assertEqual(json.loads(game.stdout)['status'], 'pass')
+            self.assertEqual(watch.contribution_game(contrib.read_text()), 'TOTK 1.4.3')
 
 
 if __name__ == '__main__':
@@ -69,6 +73,11 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(attachment_urls(body), [link])
         self.assertIn('### Device / 设备\n\niPad\n', body)
         self.assertNotIn('udid', body.lower())
+        self.assertIn('### Game version / 游戏版本\n\nSent automatically / 自动提交\n', body)   # an app from before the tag
+        tagged = watch.issue_body('iPhone', link, 'TOTK 1.4.3')   # the device's file names its game and version (2026-10-29)
+        self.assertIn('### Game version / 游戏版本\n\n1.4.3\n\n### Device / 设备\n\niPhone\n', tagged)
+        self.assertEqual(watch.contribution_game('# x\n# Game: TOTK 1.2.1\nV\ta\t{}\n# Game: TOTK 1.4.3\n'), 'TOTK 1.4.3')
+        self.assertIsNone(watch.contribution_game('# Game: TOTK\n# Game: TOTK 1.4.3 and more\nV\ta\t{}\n'))
 
     def test_only_shader_rows_are_taken(self):
         text = '\n'.join([
