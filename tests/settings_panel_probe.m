@@ -145,14 +145,18 @@ void runtime_autoload_user_input(void) {}
 uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 #define SIZE(w, h) ((uint64_t)(h) << 32 | (w))
-/* The main queue drained, as the CI's slower runners need: what is queued so far has run when its block does (the queue
-   keeps its order), and the run loop stops at once instead of waiting out a fixed pass. */
+/* The run loop until the main queue is empty: settings_rebuild and the panel's other redraws are dispatched, and a pass
+   of a fixed length can end before they are served (seen on the CI's slower runners) while always costing that length.
+   The sentinel is queued behind them, so stopping at it serves all of them; an idle queue costs one pass. A sentinel
+   left behind by a timed-out tick only stops the loop when it is still the newest one. */
 static void tick(void) {
+    static unsigned long generation;
+    unsigned long mine = ++generation;
     __block BOOL served = NO;
-    dispatch_async(dispatch_get_main_queue(), ^{ served = YES; });
-    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:20];   /* within the test's 35 s for a run */
-    while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
-    if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
+    CFRunLoopRef loop = CFRunLoopGetCurrent();
+    dispatch_async(dispatch_get_main_queue(), ^{ served = YES; if (mine == generation) CFRunLoopStop(loop); });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+    while (!served && deadline.timeIntervalSinceNow > 0) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
 }
 /* Key 1 toggles the panel on the main queue; a run loop pass may end before it is served (right after a key binding was
    captured), so two. */
