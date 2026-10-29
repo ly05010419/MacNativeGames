@@ -24,7 +24,7 @@ uint64_t runtime_account_lock_owner(void){const uint32_t *w=(const uint32_t *)(c
 static uint64_t tokens[64],nextToken=1;
 static void initialize(void){
  lock_acquire();if(local.lo||local.hi){lock_release();return;}
- const char *dir=getenv("TOTK_PROFILE_DIR");if(!dir)dir="user-data";
+ const char *dir=getenv("TOTK_SAVE_PROFILE_DIR");if(!dir)dir=getenv("TOTK_PROFILE_DIR");if(!dir)dir="user-data";
  if(mkdir(dir,0700)&&errno!=EEXIST)runtime_fail("create local account directory");
  char path[4096];if(snprintf(path,sizeof(path),"%s/account.uid",dir)>=(int)sizeof(path))runtime_fail("local account path length");
  int fd=open(path,O_RDWR|O_CREAT|O_NOFOLLOW,0600);if(fd<0||flock(fd,LOCK_EX))runtime_fail("open local account identity");

@@ -8,6 +8,9 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "../app/update_check.h"
+#ifndef GAME_BOTW
+#import "progress_sync.h"
+#endif
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #import "playtime.h"
@@ -517,6 +520,16 @@ static void front_install_menu(void){
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
+#ifndef GAME_BOTW
+ NSMenuItem *progress=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("游戏进度…","Game Progress…")) action:@selector(showMenu:) keyEquivalent:@""];
+ progress.target=TOTKProgressSync.class;[appMenu insertItem:progress atIndex:0];
+ [NSNotificationCenter.defaultCenter addObserverForName:TOTKProgressDidChange object:TOTKProgressSync.shared queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){
+  (void)note;NSDictionary *state=TOTKProgressSync.shared.viewState;
+  NSString *hint=[state[@"heads"] count]>1?@(TOTK_UI("进度待选","Choose progress")):([state[@"restartToContinue"] boolValue]||[state[@"pendingAction"] count]?@(TOTK_UI("等待重开","Restart to continue")):nil);
+  progress.title=hint?[NSString stringWithFormat:@(TOTK_UI("游戏进度（%@）…","Game Progress (%@)…")),hint]:@(TOTK_UI("游戏进度…","Game Progress…"));
+  NSApp.dockTile.badgeLabel=hint;
+ }];
+#endif
 }
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
@@ -578,7 +591,14 @@ void runtime_front_run(void(*callback)(void)){
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");
-  pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
+#ifndef GAME_BOTW
+  const char *profile=getenv("TOTK_PROFILE_DIR");
+  [[TOTKProgressSync shared] prepareProfile:[NSURL fileURLWithPath:profile?@(profile):@"user-data" isDirectory:YES] gameVersion:@TOTK_GAME_VERSION host:window completion:^{
+#endif
+   pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
+#ifndef GAME_BOTW
+  }];
+#endif
   [NSApp run];runtime_fail("native event loop returned unexpectedly");
  }
 }

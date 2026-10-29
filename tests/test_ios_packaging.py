@@ -3,6 +3,9 @@ import sys
 import tempfile
 import time
 import unittest
+import plistlib
+import json
+import subprocess
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]/'games/totk/ios/tools'
@@ -54,6 +57,33 @@ class SeedBeside(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ipa, app = self.layout(Path(d), 'Tears of the Kingdom.ipa'); (app/'GameData/shader-seed').mkdir()
             self.assertIsNone(install_device.seed_beside(ipa, app))
+
+
+class ProgressShortcut(unittest.TestCase):
+    def test_new_totk_install_has_manager_entry_and_botw_does_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            app=Path(d)/'Game.app'; app.mkdir(); path=app/'Info.plist'
+            original={'CFBundleIdentifier':'fixture.game','UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False}}
+            path.write_bytes(plistlib.dumps(original))
+            build_ipa.configure_shortcuts(app,False)
+            configured=plistlib.loads(path.read_bytes())
+            item,=configured.pop('UIApplicationShortcutItems')
+            self.assertEqual(item['UIApplicationShortcutItemType'],'org.macnativegames.totk.progress')
+            self.assertEqual(item['UIApplicationShortcutItemTitle'], 'Game Progress')
+            self.assertEqual(configured,original)
+            build_ipa.configure_shortcuts(app,True)
+            self.assertEqual(plistlib.loads(path.read_bytes()),original)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Apple strings-file parser")
+    def test_shortcut_localization_resources(self):
+        source = TOOLS.parent / 'Sources'
+        for language, title in [('en', 'Game Progress'), ('zh-Hans', '游戏进度'), ('zh-Hant', '遊戲進度')]:
+            with self.subTest(language=language):
+                result = subprocess.run(['plutil', '-convert', 'json', '-o', '-', str(source / (language + '.lproj') / 'InfoPlist.strings')],
+                                        check=True, capture_output=True, text=True)
+                strings = json.loads(result.stdout)
+                self.assertEqual(strings['Game Progress'], title)
+                self.assertTrue(strings['Sync, history and backups'])
 
 
 def read_pack(parts):
@@ -113,7 +143,7 @@ class FullHD(unittest.TestCase):
         self.assertEqual(main.count('totk_preset_env_build('), 1, 'the presets\' picture goes in one place')
         # Both games have the switch: Breath of the Wild's docked branch renders 1920x1080 too (ad35dfa), so no
         # game-specific exception is left in the helper. The only other operation-mode site is visionOS's default.
-        self.assertNotIn('#ifndef GAME_BOTW', main)
+        self.assertNotIn('#ifndef GAME_BOTW', body)   # only the shared preset helper; other features can be TOTK-only
         vision = 'setenv("TOTK_OPERATION_MODE","docked",1);'
         self.assertIn(vision, main)
         self.assertEqual(main.replace(vision, '').count('setenv("TOTK_OPERATION_MODE",'), 1,

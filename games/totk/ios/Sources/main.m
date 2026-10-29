@@ -13,6 +13,9 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#ifndef GAME_BOTW
+#import "progress_sync.h"
+#endif
 #import "touch_pad.h"
 #import "start_screen.h"
 
@@ -23,6 +26,7 @@ void runtime_ios_sync_safe_area(UIView *host);
 static char *host_argv[3];
 static NSString *g_no_game_data;   // set when there is no RomFS image to play from (didFinishLaunching)
 static NSString *g_seed_pack, *g_seed_unpack_to;   // a pushed shader pack to unpack before the game starts (seed_unpack)
+static BOOL g_game_requested;
 
 /* The startup shaders arrive as one stream cut into 1 GiB parts (<folder>.pack.000, .001, ...; ios/tools/install_device.py
    push_seed): devicectl stops after ~25,000 of the seed's 128,000 files when it copies a folder (2026-10-23). Stream:
@@ -90,7 +94,13 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; runtime_ios_sync_safe_area(self); }   // the HUD boxes keep out of the notch
 @end
 
-@interface TOTKGameController : UIViewController @property(nonatomic,strong) TOTKMetalView *gameView; @end
+@interface TOTKGameController : UIViewController
+@property(nonatomic,strong) TOTKMetalView *gameView;
+#ifndef GAME_BOTW
+@property(nonatomic) BOOL progressPrepared, wantsProgress;
+- (void)showProgress;
+#endif
+@end
 @implementation TOTKGameController
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -106,7 +116,24 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
     [self.view addSubview:self.gameView];
     runtime_ios_attach_layer((CAMetalLayer *)self.gameView.layer, self.gameView);
     TOTKTouchPad *pad=[[TOTKTouchPad alloc] initWithFrame:self.view.bounds];pad.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;[self.view addSubview:pad];
+#ifndef GAME_BOTW
+    NSNotificationCenter *center=NSNotificationCenter.defaultCenter;
+    [center addObserver:self selector:@selector(progressChanged:) name:TOTKProgressDidChange object:TOTKProgressSync.shared];
+#endif
 }
+#ifndef GAME_BOTW
+- (void)showProgress {
+    if(self.presentedViewController)return;
+    self.wantsProgress=YES;[self progressChanged:nil];
+}
+- (void)progressChanged:(NSNotification *)note {
+    (void)note;
+    if(self.wantsProgress&&self.progressPrepared&&[TOTKProgressSync.shared.viewState[@"localPrepared"] boolValue]) {
+        self.wantsProgress=NO;[TOTKProgressSync.shared showFrom:self];
+    }
+}
+- (void)dealloc {[NSNotificationCenter.defaultCenter removeObserver:self];}
+#endif
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     static BOOL started; if (started) return; started = YES;
@@ -166,9 +193,17 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
     fprintf(stderr, "[totk-audio] audio session category=%s active=%d route=%s err=%s%s\n",
             audio.category.UTF8String ?: "?", (int)activated, audio.currentRoute.outputs.firstObject.portType.UTF8String ?: "?",
             catErr ? catErr.localizedDescription.UTF8String : "none", actErr ? actErr.localizedDescription.UTF8String : "");
+#ifndef GAME_BOTW
+    const char *profile=getenv("TOTK_PROFILE_DIR");
+    [[TOTKProgressSync shared] prepareProfile:[NSURL fileURLWithPath:profile?@(profile):@"user-data" isDirectory:YES] gameVersion:@TOTK_GAME_VERSION host:self completion:^{
+#endif
     pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 64u << 20);
     pthread_t thread; pthread_create(&thread, &attr, run_host, NULL);
     pthread_detach(thread); pthread_attr_destroy(&attr);
+#ifndef GAME_BOTW
+    }];
+    self.progressPrepared=YES;[self progressChanged:nil];
+#endif
 }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (BOOL)prefersStatusBarHidden { return YES; }
@@ -179,11 +214,40 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
    _UIApplicationEvaluateRuntimeIssueForNoSceneLifecycleAdoption at launch), so the window belongs to a window scene. */
 @interface TOTKSceneDelegate : UIResponder <UIWindowSceneDelegate> @property(nonatomic,strong) UIWindow *window; @end
 @implementation TOTKSceneDelegate
+- (void)enterGame {
+    g_game_requested=YES;
+    UIApplication.sharedApplication.idleTimerDisabled=YES;
+    self.window.rootViewController=[TOTKGameController new];
+}
+#ifndef GAME_BOTW
+- (BOOL)openProgressShortcut:(UIApplicationShortcutItem *)shortcut {
+    if(![shortcut.type isEqual:@"org.macnativegames.totk.progress"])return NO;
+    UIViewController *root=self.window.rootViewController;
+    if([root isKindOfClass:TOTKGameController.class])[(TOTKGameController *)root showProgress];
+    else if(!root) {
+        __weak TOTKSceneDelegate *weakSelf=self;
+        UIViewController *manager=totk_progress_make_manager(TOTKProgressSync.shared,^{[weakSelf enterGame];});
+        self.window.rootViewController=manager;
+        UIApplication.sharedApplication.idleTimerDisabled=NO;
+        const char *profile=getenv("TOTK_PROFILE_DIR");
+        [TOTKProgressSync.shared prepareProfile:[NSURL fileURLWithPath:profile?@(profile):@"user-data" isDirectory:YES] gameVersion:@TOTK_GAME_VERSION host:manager completion:nil];
+    }
+    return YES;
+}
+- (void)windowScene:(UIWindowScene *)scene performActionForShortcutItem:(UIApplicationShortcutItem *)shortcut completionHandler:(void (^)(BOOL))completion {
+    (void)scene;completion([self openProgressShortcut:shortcut]);
+}
+#endif
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)session; (void)options;
     if (![scene isKindOfClass:UIWindowScene.class]) return;
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-    self.window.rootViewController = [TOTKGameController new]; [self.window makeKeyAndVisible];
+#ifndef GAME_BOTW
+    if(![self openProgressShortcut:options.shortcutItem])[self enterGame];
+#else
+    [self enterGame];
+#endif
+    [self.window makeKeyAndVisible];
 #if TARGET_OS_VISION
     UIWindowSceneGeometryPreferencesVision *prefs = [[UIWindowSceneGeometryPreferencesVision alloc] initWithSize:CGSizeMake(1280, 720)];
     prefs.resizingRestrictions = UIWindowSceneResizingRestrictionsUniform;
@@ -216,7 +280,7 @@ static void audio_observe(void) {
         (void)n; fprintf(stderr,"[totk-audio] media services were reset\n"); audio_resume(1,"media services reset");
     }];
     [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:main usingBlock:^(NSNotification *n) {
-        (void)n; UIApplication.sharedApplication.idleTimerDisabled = YES;
+        (void)n; UIApplication.sharedApplication.idleTimerDisabled = g_game_requested;
         if (g_audio_interrupted) audio_resume(0,"became active during an interruption");
     }];
 }

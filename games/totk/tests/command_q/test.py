@@ -5,11 +5,13 @@ import subprocess
 import tempfile
 
 source = pathlib.Path(__file__).with_name("probe.m")
+progress_sources = [str(source.parents[2] / 'runtime' / name) for name in
+                    ('progress_store.m', 'progress_transport.m', 'progress_sync.m', 'progress_ui.m')]
 with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     binary = pathlib.Path(work) / "probe"
     subprocess.run([
         "xcrun", "clang", "-std=c11", "-fobjc-arc", "-Wall", "-Wextra", "-Werror",
-        "-Wno-deprecated-declarations", "-I" + str(source.parents[2] / "third_party/d2r_gfx/gfx/nvn/include"), str(source), "-framework", "Cocoa",
+        "-Wno-deprecated-declarations", "-I" + str(source.parents[2] / "third_party/d2r_gfx/gfx/nvn/include"), str(source), *progress_sources, "-framework", "Cocoa",
         "-framework", "QuartzCore", "-framework", "Metal", "-framework", "CoreVideo",
         "-o", str(binary),
     ], check=True)

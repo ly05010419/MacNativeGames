@@ -35,6 +35,19 @@ def run(args, cwd, log, env):
 def clone(src,dst):
     dst.parent.mkdir(parents=True,exist_ok=True)
     if subprocess.run(['cp','-c',str(src),str(dst)],capture_output=True).returncode: shutil.copy2(src,dst)
+
+def configure_shortcuts(app, botw):
+    path=app/'Info.plist'
+    info=plistlib.loads(path.read_bytes())
+    if botw: info.pop('UIApplicationShortcutItems',None)
+    else:
+        info['UIApplicationShortcutItems']=[{
+            'UIApplicationShortcutItemType':'org.macnativegames.totk.progress',
+            'UIApplicationShortcutItemTitle':'Game Progress',
+            'UIApplicationShortcutItemSubtitle':'Sync, history and backups',
+            'UIApplicationShortcutItemIconType':'UIApplicationShortcutIconTypeBookmark',
+        }]
+    path.write_bytes(plistlib.dumps(info))
 def clone_folder(src,dst):
     """One APFS clone of a whole folder (macOS clonefile), as build_app.py copy_tree: the seed is ~100,000 files, which
     cp -cR clones one by one (minutes per copy, 2026-10-22)."""
@@ -183,6 +196,7 @@ def main():
         ios,logs/f'xcodebuild-{a.platform}.log',env)
     app=derived/f'Build/Products/Release-{sdk_name}/TOTK.app'
     if not app.is_dir(): raise RuntimeError(f'Xcode did not produce {app}')
+    configure_shortcuts(app,botw)
     # Carry the increased-memory-limit entitlement in the executable's ad-hoc signature so re-signing tools keep it;
     # the game's 3.2 GiB pool exceeds the default iOS footprint limit.
     run(['codesign','--force','--sign','-','--entitlements',ios/'Sources/TOTK.entitlements',app/'TOTK'],ios,logs/'ios-entitlements.log',env)

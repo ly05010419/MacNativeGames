@@ -1,6 +1,11 @@
 /* Exercise the real AppKit menu and window-close handler without game data. */
 #include "../../runtime/frontend.m"
 #include <time.h>
+/* The frontend links the production progress UI; these probes never start a game or sync real data. */
+void runtime_fs_progress_enable(void) {}
+int runtime_fs_progress_snapshot_begin(uint64_t *generation) {(void)generation;return 0;}
+void runtime_fs_progress_snapshot_end(void) {}
+int runtime_fs_progress_save_pending(void) {return 0;}
 
 static int mode;
 static uint64_t start;

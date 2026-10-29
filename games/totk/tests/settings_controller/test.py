@@ -6,11 +6,13 @@ import sys
 import tempfile
 
 source = pathlib.Path(__file__).with_name('probe.m')
+progress_sources = [str(source.parents[2] / 'runtime' / name) for name in
+                    ('progress_store.m', 'progress_transport.m', 'progress_sync.m', 'progress_ui.m')]
 with tempfile.TemporaryDirectory(prefix='totk-settings-controller-') as work:
     binary = pathlib.Path(work) / 'probe'
     subprocess.run(['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
                     '-Wno-deprecated-declarations', '-I' + str(source.parents[2] / 'third_party/d2r_gfx/gfx/nvn/include'),
-                    str(source), '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'CoreVideo',
+                    str(source), *progress_sources, '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'CoreVideo',
                     '-framework', 'QuartzCore', '-framework', 'GameController', '-framework', 'IOKit',
                     '-o', str(binary)], check=True)
     subprocess.run([str(binary), work, *sys.argv[1:]], check=True,
