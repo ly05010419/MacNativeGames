@@ -145,10 +145,8 @@ void runtime_autoload_user_input(void) {}
 uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 #define SIZE(w, h) ((uint64_t)(h) << 32 | (w))
-/* Key 1, a page that needs another panel and the aspect ratio's window size all act through the main queue. This returns when
-   what is queued so far has run: the queue keeps its order, so a block queued behind them shows it. A fixed wait does not
-   do: a run loop pass can use up the time before it looks at the queue (10-19 ms on an M5 Pro right after the panel with the
-   drawings was made, more on a busy runner) and then leaves, the queue unserved. */
+/* The main queue drained, as the CI's slower runners need: what is queued so far has run when its block does (the queue
+   keeps its order), and the run loop stops at once instead of waiting out a fixed pass. */
 static void tick(void) {
     __block BOOL served = NO;
     dispatch_async(dispatch_get_main_queue(), ^{ served = YES; });
@@ -156,7 +154,9 @@ static void tick(void) {
     while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
     if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
 }
-static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
+/* Key 1 toggles the panel on the main queue; a run loop pass may end before it is served (right after a key binding was
+   captured), so two. */
+static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
                                  timestamp:0 windowNumber:window.windowNumber context:nil characters:@"x"
@@ -675,6 +675,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Rumble strength", @"0.5×"); assert(fakeGain == 0.5f); pick(@"Rumble strength", @"1× (default)"); assert(fakeGain == 1);
     assert(switched(@"Gyro aiming")); flip(@"Gyro aiming", NO); assert(!fakeFeedback[1]); flip(@"Gyro aiming", YES); assert(fakeFeedback[1]);
 
+    [settingsPanel selectPage:SETTINGS_PAGE_SAVES]; tick();   /* the saves page: its four WebDAV rows */
     /* Save sync over WebDAV: greyed out without an address, the typed address is trimmed into the defaults and the
        switch follows at once, the password hides what is typed, an emptied field removes the key. No WebDAV state is
        left in the defaults. */
@@ -703,6 +704,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
     press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
     assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; tick();   /* back to the input rows (the page listed next) */
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
