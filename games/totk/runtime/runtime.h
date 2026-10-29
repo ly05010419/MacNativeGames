@@ -77,7 +77,8 @@ int svc_thread(int num,uint64_t *regs);
 void *runtime_gfx_override(const char *name);
 int runtime_gfx_fault(void *addr,int is_write,void *context);
 /* A thread that reads guest memory it does not own (uniform snapshot copies) sets this around the read: a SIGBUS / SIGSEGV
-   on that thread then returns 1 from sigsetjmp instead of taking the process down (loader.c signal handler). */
+   on that thread then returns 1 from sigsetjmp instead of taking the process down (loader.c signal handler; the jump is
+   made after the handler returned, so sigsetjmp(jb, 0) is enough). */
 #include <setjmp.h>
 extern __thread sigjmp_buf *runtime_fault_guard;
 void dm_guest_write_prepare(void *addr,size_t n);

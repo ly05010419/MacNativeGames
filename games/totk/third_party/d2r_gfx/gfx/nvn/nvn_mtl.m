@@ -227,6 +227,25 @@ static uint64_t g_fence;                        // 已提交的最大栅栏值�
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;                         // 已完成的最大栅栏值（完成回调写） | Highest completed fence value (written by the completion callback)
+/* TOTK_PIPELINE (totk_pipeline.h): the game's frame wait one frame deeper. The replay notes the guest memory the GPU
+   reads / writes in place and reads snapshots of recently CPU-written ranges (pl_read / pl_bind / pl_write). */
+static int g_pl = -1;
+/* the translate thread per submission (mtl_sub_begin .. mtl_sub_commit): wall and thread CPU time, and the waits that
+   sleep (TOTK_PIPELINE stats, or TOTK_XLATE_STATS=1 without it): wall - CPU = sleeping waits + preemption */
+static uint64_t g_plx_t0, g_plx_c0, g_plx_rs0, g_plx_rsf0, g_plx_wait[4];   // waits: 0 allocator, 1 visibility ring, 2 pipeline slot, 3 render-stream (snapshot at begin)
+static void pl_sub_end_stats(void);
+enum { PLK_VB, PLK_IB, PLK_SB, PLK_UB, PLK_CP, PLK_TX, PLK_N };   // kinds of GPU reads (statistics)
+enum { PLG_OTHER, PLG_INVAL, PLG_POOL, PLG_PROG, PLG_TEXELS, PLG_VREMAP, PLG_FINISH, PLG_N };   // why the game waited for the real completion
+enum { PLW_OTHER, PLW_UPDATE, PLW_UPDFLUSH, PLW_COPY, PLW_T2B, PLW_STORAGE, PLW_STORAGE64, PLW_KERNEL, PLW_IMAGE, PLW_N };   // kinds of GPU writes (the invalidate log)
+static int g_pl_wk;   // the kind of the GPU write being noted, set by the call site
+static void pl_write(uint64_t a, uint64_t n);
+static int pl_read(uint64_t a, uint64_t n, int kind, void **buf, uint64_t *off, uint64_t *gpu);
+static int pl_bind(uint64_t a, uint64_t n, int rw, int kind, int compute, void **buf, uint64_t *gpu);
+static void plds_touch(uint64_t a, uint64_t n, const char *what);
+static int plds_redirect_off(uint64_t a, uint64_t n, int rw, void **buf, uint64_t *off);
+static void plds_pool_gone(uintptr_t lo, uintptr_t hi);
+static void pl_sub_begin(void);
+static void pl_invalidate(const void *a, uint64_t n, uint64_t caller);
 static _Atomic int g_last_commit_error;
 static _Atomic int g_up_pending;
 
@@ -806,6 +825,7 @@ void mtl_pool_del(const void *mem) {
     }
     pthread_mutex_unlock(&g_mu);
     if (hi > lo) { stor_drop_range(lo, hi); wb_drop_range(lo, hi); BOTW_LATE_DROP(lo, hi) }   // TOTK: storage-shared textures and pending write-backs of this pool
+    if (hi > lo && g_pl > 0) plds_pool_gone(lo, hi);   // TOTK_PIPELINE: depth statistics snapshots of this pool retire without going back to memory
 }
 
 static pidx_ent *pool_query(uintptr_t addr, uint64_t len) { // caller holds g_mu
@@ -1049,6 +1069,7 @@ static uint64_t g_usnap_skip_gpu;
 static int g_usnap_drop_off;   // probe-gpu-ubo-snapshot negative control only
 static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) within this submission
     if (!n) return;
+    if (g_pl > 0) pl_write(a, n);   // TOTK_PIPELINE: never snapshotted, protected at the release
     if (usnap_on()) {
         int dup = 0;   // the same buffer bound for many dispatches in a row: log it once
         for (int j = g_ngw - 1; j >= 0 && j >= g_ngw - 8; j--) if (g_gw[j].lo == a && g_gw[j].hi == a + n && g_gw[j].fence == g_fence + 1) { dup = 1; break; }
@@ -1139,6 +1160,7 @@ static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void 
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
 void mtl_sub_begin(void) {
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    g_plx_t0 = g_fc_begin0; g_plx_c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
        thread has no pool of its own that drains (frontend.m's lasts the whole game), so what defer_drain, defer_reset,
        warm_claim and pt_apply_request autoreleased before it piled up every submission (nxnative found the same leak:
@@ -1165,7 +1187,7 @@ void mtl_sub_begin(void) {
     if (alloc_i < 0 && g_alloc_n < ALLOC_MAX) { NSError *ae = nil; MTL4CommandAllocatorDescriptor *ad = [MTL4CommandAllocatorDescriptor new];
         g_alloc4[g_alloc_n] = [g_dev newCommandAllocatorWithDescriptor:ad error:&ae]; if (!g_alloc4[g_alloc_n]) MDIE("新建 MTL4CommandAllocator 失败：%s", ae.localizedDescription.UTF8String);
         alloc_i = g_alloc_n++; g_alloc_grown++; }
-    if (alloc_i < 0) { alloc_i = 0; for (int i = 1; i < g_alloc_n; i++) if (g_alloc_fence[i] < g_alloc_fence[alloc_i]) alloc_i = i; g_alloc_waits++; mtl_wait(g_alloc_fence[alloc_i], UINT64_MAX); }
+    if (alloc_i < 0) { alloc_i = 0; for (int i = 1; i < g_alloc_n; i++) if (g_alloc_fence[i] < g_alloc_fence[alloc_i]) alloc_i = i; g_alloc_waits++; uint64_t w0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); mtl_wait(g_alloc_fence[alloc_i], UINT64_MAX); g_plx_wait[0] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w0; }
     g_alloc_cur = alloc_i;
     [g_alloc4[alloc_i] reset];
     [g_cb beginCommandBufferWithAllocator:g_alloc4[alloc_i]];
@@ -1178,12 +1200,13 @@ void mtl_sub_begin(void) {
     int pick = -1;
     for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
     if (pick < 0 && g_vis_ring_n < 4) pick = g_vis_ring_n++;
-    if (pick < 0) { uint64_t oldest = UINT64_MAX; for (int i = 0; i < 4; i++) if (g_vis_ring[i].fence < oldest) { oldest = g_vis_ring[i].fence; pick = i; } if (oldest > g_done) mtl_wait(oldest, UINT64_MAX); }
+    if (pick < 0) { uint64_t oldest = UINT64_MAX; for (int i = 0; i < 4; i++) if (g_vis_ring[i].fence < oldest) { oldest = g_vis_ring[i].fence; pick = i; } if (oldest > g_done) { uint64_t w0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); mtl_wait(oldest, UINT64_MAX); g_plx_wait[1] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - w0; } }
     g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
     if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
     g_vis = g_vis_ring[pick].buf;
     void pg_sub_begin_ext(uint64_t fence); pg_sub_begin_ext(g_fence + 1);
     void arena_begin(void); arena_begin();
+    pl_sub_begin();   // TOTK_PIPELINE: per-submission state; depth statistics snapshots activated / merged / retired here
     g_fc_t[0] += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - g_fc_begin0;
 }
 
@@ -1747,11 +1770,14 @@ void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     g_copy_n++; g_copy_split += g_enc != nil;
     upd_guard(src, src + n); upd_guard(dst, dst + n);
     pend_note(dst, n, (const void *)(uintptr_t)src, 1); pd_xfer("copy", src, dst, n);
-    usnap_drop(dst, n);   // TOTK: later readers see the copied bytes (memory, on the GPU timeline)
+    g_pl_wk = PLW_COPY; usnap_drop(dst, n); g_pl_wk = 0;   // TOTK: later readers see the copied bytes (memory, on the GPU timeline)
     anom_note_xfer('Y', src, dst, n, NULL);   // TOTK_ANOMALY
     void *sb, *db; uint64_t so, dof;
     if (!mtl_addr(src, n, &sb, &so) || !mtl_addr(dst, n, &db, &dof))
         MDIE("缓冲拷贝地址不在任何内存池内 src=%#llx dst=%#llx n=%#llx", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n);
+    if (g_pl > 0) { uint64_t pg;   // TOTK_PIPELINE: readback snapshots (host buffers) as source / target; a recently CPU-written source is copied from its snapshot
+        if (!plds_redirect_off(dst, n, 1, &db, &dof)) {}
+        if (!plds_redirect_off(src, n, 0, &sb, &so)) pl_read(src, n, PLK_CP, &sb, &so, &pg); }
     enc_b_copy_buffer(blit_buffer((__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n), (__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n);
 }
 
@@ -1894,7 +1920,7 @@ static void upd_flush(void) {
         for (; j < g_nupd && g_upd[j].lo <= hi; j++) if (g_upd[j].hi > hi) hi = g_upd[j].hi;   // merge overlapping / touching ranges
         void *db; uint64_t dof;
         if (!mtl_addr(lo, hi - lo, &db, &dof)) MDIE("renamed uniform update %#llx+%#llx is no longer in one memory pool", (unsigned long long)lo, (unsigned long long)(hi - lo));
-        usnap_drop(lo, hi - lo);   // TOTK: from here on the update is in memory (GPU timeline): later readers read it there
+        g_pl_wk = PLW_UPDFLUSH; usnap_drop(lo, hi - lo); g_pl_wk = 0;   // TOTK: from here on the update is in memory (GPU timeline): later readers read it there
         __unsafe_unretained id<MTLBuffer> sb; uint8_t *scpu; size_t so = arena_alloc_u((size_t)(hi - lo), &sb, &scpu, NULL);
         pend_materialize(lo, scpu, (size_t)(hi - lo), 0);   // every byte here is covered by a logged update: the newest one wins
         if (!b) b = blit();
@@ -1944,6 +1970,7 @@ static uint64_t upd_shadow(uint64_t lo, uint64_t size) {
 static void mtl_sub_update(const void *data, uint64_t dst, uint64_t n) {
     void *db; uint64_t dof;
     g_upd_n++;
+    if (g_pl > 0) { plds_touch(dst, n, "inline uniform update"); g_pl_wk = PLW_UPDATE; pl_write(dst, n); g_pl_wk = 0; }   // TOTK_PIPELINE: written on the GPU timeline (also when renamed: flushed at the end)
     pd_update_bytes(data, dst, n, g_upd_n);
     if (!mtl_addr(dst, n, &db, &dof)) MDIE("uniform update target not in any memory pool dst=%#llx n=%#llx", (unsigned long long)dst, (unsigned long long)n);
     __unsafe_unretained id<MTLBuffer> sb; uint8_t *scpu; size_t so = arena_alloc_u((size_t)n, &sb, &scpu, NULL);
@@ -1982,6 +2009,14 @@ static void cpend_done(uint64_t fence) {   // the records of this submit are now
     pthread_mutex_lock(&g_cpend_mu);
     if (g_cpend_head - g_cpend_tail > CPEND_N) g_cpend_tail = g_cpend_head - CPEND_N;
     for (unsigned i = g_cpend_tail; i != g_cpend_head; i++) if (g_cpend[i % CPEND_N].addr && g_cpend[i % CPEND_N].fence <= fence) g_cpend[i % CPEND_N].addr = 0;
+    while (g_cpend_tail != g_cpend_head && !g_cpend[g_cpend_tail % CPEND_N].addr) g_cpend_tail++;
+    pthread_mutex_unlock(&g_cpend_mu);
+}
+/* TOTK_PIPELINE: the known values of fence's records (constant reports) were written at an early release */
+static void cpend_done_known(uint64_t fence) {
+    pthread_mutex_lock(&g_cpend_mu);
+    if (g_cpend_head - g_cpend_tail > CPEND_N) g_cpend_tail = g_cpend_head - CPEND_N;
+    for (unsigned i = g_cpend_tail; i != g_cpend_head; i++) { cpend_ent *e = &g_cpend[i % CPEND_N]; if (e->addr && e->known && e->fence <= fence) e->addr = 0; }
     while (g_cpend_tail != g_cpend_head && !g_cpend[g_cpend_tail % CPEND_N].addr) g_cpend_tail++;
     pthread_mutex_unlock(&g_cpend_mu);
 }
@@ -2181,6 +2216,7 @@ void mtl_blit_stats(uint64_t v[6]) { v[0] = g_blit_opens; v[1] = g_blit_splits; 
    chunk's command buffer object. That work now runs first and overlaps the encode stage's tail; the chunk is ended and
    committed after the wait as before, so the GPU sees the same commits in the same order. Nothing is replayed in
    between, so no upload can be recorded after the flush for this chunk. */
+#include "totk_pipeline.h"   // TOTK_PIPELINE: the game's frame wait one frame deeper
 static int split_early_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_SPLIT_EARLY"); v = !(e && !atoi(e)); if (!v) MLOG("TOTK_SPLIT_EARLY=0: a chunk split waits for the encode stage first"); } return v; }
 static void mtl_sub_split(void) {
     uint64_t fc0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); int fc_first = g_sub_chunks == 0, early = split_early_on();
@@ -2205,6 +2241,7 @@ static void mtl_sub_split(void) {
     g_cb = next;
     [g_cb beginCommandBufferWithAllocator:g_alloc4[g_alloc_cur]];
     g_sub_chunks++; g_chunk_commits++; g_chunk_mark = g_stat_draw;
+    pl_sub_split();   // TOTK_PIPELINE: depth statistics candidates are those of the last command buffer
     if (fc_first) { uint64_t fc4 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), wait = fc1 - fc0;   // [2] the wait, [3] up_flush, [4] res_commit, [5] the rest
         g_fc_t[1] += fc0 - g_fc_snap_end; g_fc_t[2] += wait; g_fc_t[3] += fc2 - (early ? fc0 : fc1); g_fc_t[4] += fc3 - fc2; g_fc_t[5] += fc4 - fc3 - (early ? wait : 0); g_fc_n++; }
 }
@@ -2222,6 +2259,8 @@ uint64_t mtl_sub_commit(void) {
     usnap_finish();   // TOTK: the helper threads must be done with the copies (they are, long before this)
     g_nusnap = 0;   // TOTK: the replay is done; the uniform copies stay in this submission's arena until it completes
     upd_flush(); BOTW_WB_STAGE() BOTW_TINY_COMMIT()   // TOTK: renamed uniform updates reach memory here, after every draw that read them through private copies
+    upd_flush(); BOTW_WB_STAGE()   // TOTK: renamed uniform updates reach memory here, after every draw that read them through private copies
+    if (g_pl > 0 && g_pl_dsnap) plds_commit(g_fence + 1);   // TOTK_PIPELINE: depth statistics this submission wrote -> ring slots
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     rs_sub_end();   // TOTK: encode stage drained before the command buffer is ended
     up_flush();
@@ -2231,6 +2270,7 @@ uint64_t mtl_sub_commit(void) {
     // CPU-visible effects after completion: copy the op table into the callback
     int n = g_npost; post_op *ops = n ? malloc(n * sizeof *ops) : NULL;
     if (n) memcpy(ops, g_post, n * sizeof *ops);
+    if (g_pl > 0) { n = pl_commit(fence, ops, n); pl_stats_line(); }   // TOTK_PIPELINE: early results (events, constant reports) and in-place pages -> the fence's slot
     if (g_skv_n) {   // TOTK_EXP_SKIP_INVISIBLE: read this submission's per-draw counters on completion
         skv_item *l = g_skv_list; int n = g_skv_n; uint32_t fr = (uint32_t)atomic_load(&g_cur_frame); g_skv_list = NULL; g_skv_n = g_skv_cap = 0;
         [g_commit_blocks addObject:^{ skv_done(l, n, fr); }];
@@ -2249,6 +2289,7 @@ uint64_t mtl_sub_commit(void) {
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
         if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
+        { int ne = 0; post_op *e = pl_complete_take(fence, &ne); if (e) { pl_apply_early(e, ne); free(e); } }   // TOTK_PIPELINE: unless an early release wrote them
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
@@ -2316,6 +2357,7 @@ uint64_t mtl_sub_commit(void) {
     g_cb = nil;
     g_commit_blocks = nil;
     objc_autoreleasePoolPop(g_sub_pool); g_sub_pool = NULL;
+    pl_sub_end_stats();
     return fence;
 }
 
@@ -2847,7 +2889,10 @@ void mtl_wb_eager(void) {
     pthread_mutex_unlock(&g_smu);
     wb_write_list(list, nl, 1);
 }
-void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
+void mtl_pool_invalidate_from(const pool_t *p, uint64_t off, uint64_t n, uint64_t caller);
+void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) { mtl_pool_invalidate_from(p, off, n, 0); }
+void mtl_pool_invalidate_from(const pool_t *p, uint64_t off, uint64_t n, uint64_t caller) {
+    if (g_pl > 0 && p && p->mem) pl_invalidate(p->mem + off, n, caller);   // TOTK_PIPELINE: GPU results of a released submission are read next
     if (!p || !p->mem || !atomic_load(&g_wb_on)) return;
     pthread_mutex_lock(&g_smu);
     if (!g_wb.n) { pthread_mutex_unlock(&g_smu); return; }
@@ -3870,6 +3915,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     if (tck) for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) { uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u); xtotal += (size_t)((w + 3) / 4) * tco * ((h + 3) / 4) * layers; }
     int use_gpu = (!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d) && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // TOTK: linear textures take the CPU row copy
     if (g_nvn_deswz_gpu && !use_gpu && !unp) RED_ONCE(40, "预排布贴图存储不在内存池里，回退 CPU");
+    if (use_gpu && g_pl > 0) pl_live_read((uint64_t)(uintptr_t)t->mem, t->L.size, PLK_TX);   // TOTK_PIPELINE: the upload reads the pool on the GPU (TOTK_PIPELINE_TEXHOLD)
     if (use_gpu) {
         // GPU 执行时读内存池，比 CPU 上传时刻快照更接近 Switch 真机；脏页戳仍在编码前取，之后写入仍会触发重传。
         // The GPU reads the memory pool at execution time, which is closer to a real Switch than a snapshot at CPU upload time; the dirty-page stamp is still taken before encoding, and later writes still trigger a re-upload.
@@ -9402,7 +9448,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow)
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && ui_mat_on()) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
-            else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
+            else if (g_pl > 0 && plds_redirect(u->addr, u->size ? u->size : 1, 0, &mb, &gpu)) {}   // TOTK_PIPELINE: the depth statistics host buffer
+            else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo);   // TOTK: contents as of the submit call
+                   else if (g_pl > 0) { void *pb; uint64_t po, pg; if (pl_read(u->addr, u->size ? u->size : 1, PLK_UB, &pb, &po, &pg)) { gpu = pg; mb = pb; } } }   // TOTK_PIPELINE: not captured: a snapshot when recently CPU-written
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -9475,6 +9523,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
+            if (t && g_pl > 0 && tid < g_ntreg && g_treg[tid].t.d.target == 10 && g_treg[tid].t.mem) { int bw_, bh_, bpb_ = nvn_fmt_bpb(g_treg[tid].t.d.format, &bw_, &bh_); plds_touch((uint64_t)(uintptr_t)g_treg[tid].t.mem, (uint64_t)g_treg[tid].t.d.width * (uint64_t)(bpb_ ? bpb_ : 16), "image store into a buffer texture"); g_pl_wk = PLW_IMAGE; pl_write((uint64_t)(uintptr_t)g_treg[tid].t.mem, (uint64_t)g_treg[tid].t.d.width * (uint64_t)(bpb_ ? bpb_ : 16)); g_pl_wk = 0; }   // TOTK_PIPELINE: an image store into a buffer texture writes memory (a readback snapshot there retires)
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
@@ -9484,6 +9533,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (t && treg_view_type(tid, t) != MTLTextureTypeTextureBuffer) { RED_ONCE(40, "类型化缓冲槽绑的不是缓冲贴图（贴图号 %d 类型 %lu）", tid, (unsigned long)t.textureType); t = nil; }
             if (bl) PD("B %llu st%d tbuf reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (!t) { t = dummy_tbuf(b->dpf); trid = g_dummy_tbuf_rid[b->dpf & 3]; }
+            else if (g_pl > 0 && tid < g_ntreg && g_treg[tid].t.mem) { int bw_, bh_, bpb_ = nvn_fmt_bpb(g_treg[tid].t.d.format, &bw_, &bh_); plds_touch((uint64_t)(uintptr_t)g_treg[tid].t.mem, (uint64_t)g_treg[tid].t.d.width * (uint64_t)(bpb_ ? bpb_ : 16), "buffer texture"); pl_live_read((uint64_t)(uintptr_t)g_treg[tid].t.mem, (uint64_t)g_treg[tid].t.d.width * (uint64_t)(bpb_ ? bpb_ : 16), PLK_TX); }   // TOTK_PIPELINE: a buffer texture reads memory
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_SBUFU) {   // TOTK: the shader loads this storage buffer's address from a user uniform block (slot reg, byte offset off); resolve that pointer now
@@ -9496,8 +9546,10 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             }
             void *mb; uint64_t mo, gpu;
             if (va && g_nupd && upd_overlap_seq(va, va + 65536)) { g_ren_late++; RED_ONCE(60, "uniform 槽里的存储缓冲指针 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)va); }
-            if (va && b->rw) usnap_drop(va, 65536);   // TOTK: the shader may write there (extent unknown: 64 KiB as for the update check)
-            if (va && mtl_gpu_addr(va, 1, &mb, &mo, &gpu)) { use_rec("buf", va, 1, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
+            if (va && b->rw) { g_pl_wk = PLW_STORAGE64; usnap_drop(va, 65536); g_pl_wk = 0; }   // TOTK: the shader may write there (extent unknown: 64 KiB as for the update check)
+            if (va && g_pl > 0 && plds_redirect(va, 1, b->rw, &mb, &gpu)) { slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }   // TOTK_PIPELINE: the depth statistics host buffer
+            else if (va && mtl_gpu_addr(va, 1, &mb, &mo, &gpu)) { use_rec("buf", va, 1, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead);
+                if (g_pl > 0 && !b->rw) pl_live_read(va, 65536, PLK_SB); }   // TOTK_PIPELINE: extent unknown (64 KiB as above): read in place, pages noted
             else { RED_ONCE(40, "阶段 %d uniform 槽 %d 偏移 %u 处的存储缓冲指针 %#llx 不在内存池里（uniform %s）", nvn_stage, reg, b->off, (unsigned long long)va, u && u->addr ? "已绑" : "未绑"); slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead);
                 /* TOTK diagnostic (first 12): which bound uniform block of this stage holds a pool pointer at this offset, and the head of every bound block */
                 static uint64_t dn; if (dn < 12 && sh) { dn++; char line[1400]; size_t o = 0;
@@ -9517,11 +9569,14 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 if (b->kind == NVN_RB_UBOP) ren = upd_shadow(u->addr, u->size);
                 else if (upd_overlap_seq(u->addr, u->addr + (u->size ? u->size : 1))) { g_ren_late++; RED_ONCE(59, "存储缓冲 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)u->addr); }
             }
-            if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) usnap_drop(u->addr, u->size ? u->size : 1);   // TOTK: the shader may write it: no stale uniform copy from here on
+            if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) { g_pl_wk = PLW_STORAGE; usnap_drop(u->addr, u->size ? u->size : 1); g_pl_wk = 0; }   // TOTK: the shader may write it: no stale uniform copy from here on
             const usnap_t *usc = !ren && b->kind == NVN_RB_UBOP && u && u->addr ? usnap_find(u->addr, u->size ? u->size : 1) : NULL;   // TOTK: compute uniforms as of the submit call
             if (ren) { slots[aid] = ren; USE(dummy_buf(), MTLResourceUsageRead); }
             else if (usc) { slots[aid] = usc->gpu + (u->addr - usc->lo); USE(dummy_buf(), MTLResourceUsageRead); }
-            else if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
+            else if (u && u->addr && g_pl > 0 && (u->size || b->rw) && pl_bind(u->addr, u->size ? u->size : 1, b->kind == NVN_RB_SBUFP && b->rw, b->kind == NVN_RB_UBOP ? PLK_UB : PLK_SB, nvn_stage == 5, &mb, &gpu)) {   // TOTK_PIPELINE: depth statistics host buffer or a snapshot
+                slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
+            else if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead);
+                if (g_pl > 0 && !(b->kind == NVN_RB_SBUFP && b->rw)) pl_live_read(u->addr, u->size ? u->size : 65536, b->kind == NVN_RB_UBOP ? PLK_UB : PLK_SB); }   // TOTK_PIPELINE: read in place (pages noted; no-op when pl_bind noted them)
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) { /* TOTK: first 16 bytes and the count of non-zero 32-bit words (CPU view of the pool: what earlier GPU work left there) */
                 uint64_t nz = 0, nw = 0; uint32_t w4[4] = {0, 0, 0, 0}; void *mb2; uint64_t mo2;
@@ -11604,6 +11659,7 @@ static void widen_indices_gpu(const p_draw_idx *di) {
     gpu_path_on("TOTK_GPU_WIDEN", "GPU widening of 8-bit indices written earlier in the submit");
     void *mb; uint64_t mo, gpu;
     if (!mtl_gpu_addr(di->ibuf, (uint64_t)di->count, &mb, &mo, &gpu)) MDIE("8-bit index buffer range %#llx+%d not in a memory pool", (unsigned long long)di->ibuf, di->count);
+    if (g_pl > 0) pl_live_read(di->ibuf, (uint64_t)di->count, PLK_IB);   // TOTK_PIPELINE: written earlier on the GPU, read in place
     if (wide_find(di) >= 0) return;
     if (g_draw_depth > 1) MDIE("8-bit indices written earlier in the submit need GPU widening inside a replayed deferred draw");
     if (g_nwide == WIDE_MAX) MDIE("too many GPU-widened index buffers in one submit");
@@ -12201,6 +12257,45 @@ static uint16_t vertex_stream_mask(NvShader *vs) {
     }
     return mask;
 }
+/* TOTK_PIPELINE: the bytes of a vertex stream the current draw can read (a snapshot holds only them: bindings often
+   reach to the end of their pool). Per-vertex streams: the draw's last vertex (indexed draws with more than 256 KiB
+   bound: the largest index, scanned); per-instance streams: the last instance. Every attribute is taken as 16 bytes.
+   TOTK_PIPELINE_VB_EXTENT=0: the bound size. */
+static const p_draw *g_pl_dw; static const p_draw_idx *g_pl_di;
+/* The largest index of a draw, kept per (index buffer, count, type) while no page of the indices is written (their pages
+   are write-protected for that); a GPU write in flight over them: unknown. */
+typedef struct { uint64_t ibuf, stamp, sub; int32_t count, itype; uint32_t mx; } pl_mi;
+static pl_mi g_pl_mi[4096];
+static int pl_max_index(const p_draw_idx *di, uint32_t *mx) {
+    if (!di->ibuf || di->count <= 0 || di->count > (1 << 20) || di->itype < 0 || di->itype > 2) return 0;
+    void *mb; uint64_t mo; size_t isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4, len = (size_t)di->count * isz;
+    if (!mtl_addr(di->ibuf, len, &mb, &mo)) return 0;
+    pl_mi *c = &g_pl_mi[((di->ibuf >> 4) ^ (di->ibuf >> 17) ^ (uint64_t)di->count * 31) & 4095];
+    if (c->sub == g_sub_serial && c->ibuf == di->ibuf && c->count == di->count && c->itype == di->itype) { *mx = c->mx; return 1; }   // checked this submission
+    if (nvn_pl_gpu_written((const void *)(uintptr_t)di->ibuf, len, pl_done_fn())) return 0;
+    if (c->ibuf == di->ibuf && c->count == di->count && c->itype == di->itype && !nvn_dirty_since((const void *)(uintptr_t)di->ibuf, len, c->stamp)) { c->sub = g_sub_serial; *mx = c->mx; return 1; }
+    uint64_t stamp = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)di->ibuf, len); g_plmi_scans++; g_plmi_idx += (uint64_t)di->count;
+    uint32_t m = 0, restart = di->itype == 0 ? 0xff : di->itype == 1 ? 0xffff : 0xffffffffu;
+    const uint8_t *p = (const uint8_t *)(uintptr_t)di->ibuf;
+    for (int i = 0; i < di->count; i++) { uint32_t v = isz == 1 ? p[i] : isz == 2 ? ((const uint16_t *)p)[i] : ((const uint32_t *)p)[i]; if (v != restart && v > m) m = v; }
+    *c = (pl_mi){di->ibuf, stamp, g_sub_serial, di->count, di->itype, m};
+    *mx = m; return 1;
+}
+static uint64_t pl_vb_extent(unsigned stream, uint64_t size) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_PIPELINE_VB_EXTENT"); on = !(e && !atoi(e)); }
+    const p_draw *dw = g_pl_dw; const p_draw_idx *di = g_pl_di;
+    if (!on || (!dw && !di)) return size;
+    uint64_t stride = S.stream[stream].stride, div = S.stream[stream].divisor, maxend = 0;
+    for (int a = 0; a < S.nattr && a < 16; a++) if (S.attr[a].stream == stream) { uint64_t e = (uint64_t)S.attr[a].offset + 16; if (e > maxend) maxend = e; }
+    if (!maxend) return size;
+    int64_t nv;
+    if (div) { int32_t inst = dw ? dw->instances : di->instances, bi = dw ? dw->base_instance : di->base_instance; if (inst < 1) inst = 1; nv = (int64_t)bi + (inst - 1) / (int64_t)div + 1; }
+    else if (dw) nv = (int64_t)dw->first + dw->count;
+    else { if (size <= (256u << 10)) return size; uint32_t mx; if (!pl_max_index(di, &mx)) return size; nv = (int64_t)di->base_vertex + mx + 1; }
+    if (nv <= 0) return size;
+    uint64_t ext = stride ? (uint64_t)(nv - 1) * stride + maxend : maxend;
+    return ext < size ? ext : size;
+}
 /* TOTK_VBUF_LOG=1 (diagnostic, off by default): each new combination of the draw's shaders, the vertex attributes its vertex
    shader reads (location:format:offset:stream), the streams' stride, divisor and bound size, and the draw's index type, count
    and base vertex, as "[vbuf] vs fs a=... s=... i=type:count:base" (at most 200,000 lines). The index count is what ties a
@@ -12231,6 +12326,12 @@ static void bind_vertex_streams(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
         if(!S.vbuf[stream].address)continue;
         if(!(mask&(1u<<stream))){omitted++;continue;}
         void *mb;uint64_t mo,gpu;
+        if(g_pl>0) {   // TOTK_PIPELINE: depth statistics host buffer, or a snapshot of recently CPU-written vertex data
+            void *pb;uint64_t pg;uint64_t full=S.vbuf[stream].size?S.vbuf[stream].size:UINT64_MAX/2;
+            if(plds_redirect(S.vbuf[stream].address,1,0,&pb,&pg)||pl_read_vb(S.vbuf[stream].address,full,pl_vb_extent,stream,&pb,&pg)) {
+                enc_r_vbuf(en,16+stream,pg);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;continue;
+            }
+        }
         if(mtl_gpu_addr(S.vbuf[stream].address,1,&mb,&mo,&gpu)) {
             enc_r_vbuf(en,16+stream,gpu);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;
         }
@@ -12872,6 +12973,7 @@ frz_plain:;
     { static int noclamp = -1; if (noclamp < 0) noclamp = getenv("TOTK_GPU_NOCLAMP") != NULL;   // TOTK diagnostic: TOTK_GPU_NOCLAMP=1 ignores SetDepthClamp (always clip)
       enc_r_clip(en, S.depth_clamp && !noclamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip); }   // TOTK: SetDepthClamp
     enc_r_blend_color(en, S.blend_color[0], S.blend_color[1], S.blend_color[2], S.blend_color[3]);
+    g_pl_dw = dw; g_pl_di = di;   // TOTK_PIPELINE: vertex stream extents
     bind_vertex_streams((id<MTL4RenderCommandEncoder>)en,pr->sh[0]);
     vbuf_log(pr->sh[0], pr->sh[1], dw, di);
     if (g_lay.active) enc_r_vbuf(en, LAY_BUF_INDEX, lay_gpu(g_lay_probe_neg == 1 ? 0 : g_lay.cur - g_lay.base));   // TOTK: this draw's layer within the layered pass
@@ -13046,7 +13148,10 @@ frz_plain:;
             return;
         }
         use_rec("buf", di->ibuf, (uint64_t)di->count * (di->itype == 1 ? 2 : 4), 0, NULL);
-        if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
+        uint64_t ilen = ((__bridge id<MTLBuffer>)mb).length - mo;
+        if (g_pl > 0 && di->count) { void *pb; uint64_t po, pg, n = (uint64_t)di->count * (di->itype == 1 ? 2 : 4);   // TOTK_PIPELINE: a snapshot of recently CPU-written indices
+            if (pl_read(di->ibuf, n, PLK_IB, &pb, &po, &pg)) { gpu = pg; ilen = n; } }
+        if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ilen,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
     if (g_rt_range_pending) { PD("j rt_level_range pass=%llu vc=%u", g_stat_pass, (unsigned)(dw ? dw->count : di->count)); g_rt_range_pending=0; }
@@ -13179,6 +13284,11 @@ static void dispatch(const p_dispatch *dp) {
         if (g_nupd) { upd_guard(u->addr, u->addr + 16); upd_guard(a0->addr, a0->addr + (a0->size ? a0->size : 8)); upd_guard(a1->addr, a1->addr + (a1->size ? a1->size : 8)); }   // the built-in kernel reads its uniform from memory
         void *ub, *sb, *db; uint64_t uo, so, dof;
         if (!mtl_addr(u->addr, 4, &ub, &uo) || !mtl_addr(a0->addr, 8, &sb, &so) || !mtl_addr(a1->addr, 8, &db, &dof)) { RED_ONCE(30, "内嵌计算核 %s 的缓冲没绑全", cs->builtin); return; }
+        if (g_pl > 0) {   // TOTK_PIPELINE: the kernel reads its uniform and source and writes its target in memory
+            plds_touch(u->addr, 16, "built-in kernel uniform"); plds_touch(a0->addr, a0->size ? a0->size : 8, "built-in kernel source"); plds_touch(a1->addr, a1->size ? a1->size : 8, "built-in kernel target");
+            uint64_t pg; g_pl_wk = PLW_KERNEL; pl_write(a1->addr, a1->size ? a1->size : 8); g_pl_wk = 0;
+            if (u->size) pl_read(u->addr, u->size, PLK_UB, &ub, &uo, &pg); else pl_live_read(u->addr, 16, PLK_UB);
+            if (a0->size) pl_read(a0->addr, a0->size, PLK_SB, &sb, &so, &pg); else pl_live_read(a0->addr, 65536, PLK_SB); }
         if (!cs->logged++) {
             module_t *m = module_of((void *)dp->caller);
             MLOG("内嵌计算核 %s 首次派发：调用点 %s+%#llx，线程组 %dx%dx%d，元素数（CPU 侧当前值）%u", cs->builtin, m ? m->name : "?",
@@ -13246,7 +13356,8 @@ static void copy_t2b(const p_copy_b2t *c) {
     void *mb; uint64_t mo;
     upd_guard(c->src, c->src + img * nz);   // TOTK: renamed uniform updates before a GPU write to the range
     if (!mtl_addr(c->src, img * nz, &mb, &mo)) { RED_ONCE(31, "贴图→缓冲拷贝的目标不在内存池里"); return; }
-    usnap_drop(c->src, img * nz);   // TOTK: a GPU write: no uniform copy of these bytes from here on
+    if (g_pl > 0) plds_redirect_off(c->src, img * nz, 1, &mb, &mo);   // TOTK_PIPELINE: a readback snapshot receives the copy in its host buffer (the write itself: usnap_drop)
+    g_pl_wk = PLW_T2B; usnap_drop(c->src, img * nz); g_pl_wk = 0;   // TOTK: a GPU write: no uniform copy of these bytes from here on
     id<MTL4ComputeCommandEncoder> b = blit(); BOTW_T2B_NOTE(c, t, mb, mo, img * nz) BOTW_GPU_COPY_SUPERSEDES(mb, mo, img * nz)
     if (is3d)
         enc_b_copy_texture_buffer(b, t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset), MTLSizeMake(c->r.width, c->r.height, nz), (__bridge id<MTLBuffer>)mb, mo, row, img);
@@ -13449,6 +13560,7 @@ static void copy_b2t(const p_copy_b2t *c) {
         defer_obj_release(tb);   // 本次提交跑完再放（并撤驻留） | Release after this submit has finished running (and remove from residency)
         return;
     }
+    if (g_pl > 0) { uint64_t pg; if (!plds_redirect_off(c->src, img * nz, 0, &mb, &mo)) pl_read(c->src, img * nz, PLK_CP, &mb, &mo, &pg); }   // TOTK_PIPELINE: a recently CPU-written source is copied from its snapshot
     id<MTL4ComputeCommandEncoder> b = blit();
     if (is3d)
         enc_b_copy_buffer_texture(b, (__bridge id<MTLBuffer>)mb, mo, row, img, MTLSizeMake(c->r.width, c->r.height, nz), t, 0, level, MTLOriginMake(c->r.xoffset, c->r.yoffset, c->r.zoffset));

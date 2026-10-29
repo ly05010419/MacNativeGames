@@ -73,6 +73,16 @@ int mtl_probe_tile(void);
 
 uint64_t mtl_last_fence(void);                       // 最近一次提交的栅栏值（0 = 从未提交） | Fence value of the most recent submit (0 = never submitted)
 int mtl_wait(uint64_t fence, uint64_t timeout_ns);   // GPU 完成到 fence 返回 1，超时 0 | Returns 1 when the GPU has completed up to fence, 0 on timeout
+/* TOTK_PIPELINE (totk_pipeline.h): the game's frame wait one frame deeper. mtl_pl_release: the frame wait for fence ends
+   now (dry = 0: early, prev = the previous frame's fence has completed; dry = 1: after the completion, bookkeeping of the
+   dry run). mtl_pl_gate: every early-released submission has really completed (before state is destroyed / read back). */
+void mtl_pl_release(uint64_t fence, uint64_t prev, int dry);
+void mtl_pl_gate(void);
+void mtl_pl_gate_r(int reason);   // reason: PLG_* in nvn_mtl.m (1 invalidate, 2 pool finalize, 3 program finalize, 4 texels, 5 virtual remap, 6 finish / suspend)
+int mtl_pl_gate_pool(const void *mem, uint64_t size);   // pool finalize: waits only if a released frame accesses the pool in place; 1 = waited
+void mtl_pl_frame_wait_note(void);
+void mtl_pl_publish(void);
+uint64_t mtl_done_fence(void);
 void mtl_finish(void);                               // 等所有已提交的命令完成 | Wait for all submitted commands to complete
 void mtl_drain(void);                                // 等队列上全部命令（含出图）完成：提交空命令缓冲并等它 | Wait for all commands on the queue (including presents) to complete: submit an empty command buffer and wait for it
 void mtl_xv_window_tex(uint64_t serial);   // 登记窗口（交换链）贴图：跨提交有效性账本永不收它 | Register a window (swapchain) texture: the cross-submit validity ledger never collects it

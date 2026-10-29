@@ -368,6 +368,7 @@ void runtime_dispatch(uint64_t ret,uint64_t *regs) {
 }
 /* Signal diagnostics use only stack buffers + write; no guest continuation. */
 __thread sigjmp_buf *runtime_fault_guard;
+static void fault_guard_resume(sigjmp_buf *g) { siglongjmp(*g,1); }
 static void signal_hex(const char *label,uint64_t value) {
  char b[128];size_t n=0;while(*label)b[n++]=*label++;b[n++]='0';b[n++]='x';
  for(int i=15;i>=0;i--)b[n++]="0123456789abcdef"[(value>>(i*4))&15];b[n++]='\n';write(2,b,n);
@@ -449,7 +450,11 @@ static void crash(int num,siginfo_t *info,void *context) {
   if((insn&~31u)==0xd53b0020u){if(rt!=31)u->uc_mcontext->__ss.__x[rt]=HOST_CTR_EL0;u->uc_mcontext->__ss.__pc+=4;return;}   /* mrs Xt, CTR_EL0 */
   if((insn&~31u)==0xd50b7e20u){uintptr_t a=rt==31?0:(uintptr_t)u->uc_mcontext->__ss.__x[rt];sys_dcache_flush((void *)(a&~(uintptr_t)127),128);u->uc_mcontext->__ss.__pc+=4;return;}   /* dc civac, Xt */
  }
- if((num==SIGBUS||num==SIGSEGV)&&runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;siglongjmp(*g,1);}   /* guarded host read of guest memory (uniform snapshot copies) */
+ /* Guarded host read of guest memory (uniform snapshot copies): the thread resumes in fault_guard_resume after the handler
+    returns, so the kernel restores the signal mask and the alternate-stack state; the guard's sigsetjmp need not save the
+    mask (two system calls per guard on Darwin, 2026-10-25). */
+ if((num==SIGBUS||num==SIGSEGV)&&runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;
+  u->uc_mcontext->__ss.__x[0]=(uint64_t)(uintptr_t)g;u->uc_mcontext->__ss.__lr=u->uc_mcontext->__ss.__pc;u->uc_mcontext->__ss.__pc=(uint64_t)(uintptr_t)fault_guard_resume;return;}
  if(runtime_gfx_fault(info->si_addr,(u->uc_mcontext->__es.__esr>>6)&1,context))return;uint64_t pc=u->uc_mcontext->__ss.__pc,fp=u->uc_mcontext->__ss.__fp;
  signal_hex("[totk] signal=",num);signal_hex("fault=",(uintptr_t)info->si_addr);signal_hex("esr=",u->uc_mcontext->__es.__esr);
  {mach_vm_address_t ra=(uintptr_t)info->si_addr;mach_vm_size_t rs=0;vm_region_basic_info_data_64_t ri;mach_msg_type_number_t rc=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t ro=0;

@@ -24,6 +24,8 @@ enum {
     TL_CW_IN, TL_CW_OUT,            /* a guest thread waits for a virtual core (threads.c core_take) */
     TL_WB_IN, TL_WB_OUT,            /* GPU renderings written back to memory (nvn_mtl.m wb_write_list): in a = entries; out a = entries, b = 1 a read-back blit was among them */
     TL_WB_STEP,                     /* inside it: a = 1 the renderings' fences passed (b = fence), 2 the uploads finished, 3 a texture read back, all levels and layers (b = serial) */
+    TL_EARLY,                       /* TOTK_PIPELINE: the frame wait for fence a returned early (fence b, the previous frame's, completed) */
+    TL_GATE_IN, TL_GATE_OUT,        /* TOTK_PIPELINE: waiting until early-released submissions really completed (a = fence) */
 };
 
 int totk_tl_on(void);                                   /* the window is open (cheap after the first call) */

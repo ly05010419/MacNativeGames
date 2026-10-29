@@ -6,6 +6,7 @@
 #include "nvn_obj.h"
 #include "nvn_tex.h"
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 
 // ---------- Debug labels, markers, groups, checkpoints: meaningful only to NVN debugging tools ----------
@@ -44,8 +45,23 @@ NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNc
 // ---------- Memory pools and buffers: unified memory, CPU and GPU views are coherent ----------
 NVN(nvnMemoryPoolGetSize, size_t, const NVNmemoryPool *p) { return (size_t)((const pool_t *)p)->size; }
 // The CPU is about to read what the GPU wrote: GPU renderings into this pool's textures are written back (nvn_mtl.m).
-void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n);
-NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { if (off >= 0) mtl_pool_invalidate((const pool_t *)p, (uint64_t)off, n); }
+void mtl_pool_invalidate_from(const pool_t *p, uint64_t off, uint64_t n, uint64_t caller);
+/* Offset in main of the first guest return address on the frame chain (0 = none): who invalidates (TOTK_PIPELINE log). */
+static uint64_t inval_caller(void) {
+    extern int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off) __attribute__((weak));
+    if (!runtime_module_offset) return 0;
+    uint64_t *fp = (uint64_t *)__builtin_frame_address(0);
+    for (int i = 0; i < 16 && fp && !((uintptr_t)fp & 7); i++) {
+        const char *nm; uint64_t o;
+        if (runtime_module_offset(fp[1], &nm, &o) && !strcmp(nm, "main")) return o;
+        if ((uint64_t *)fp[0] == fp) break; fp = (uint64_t *)fp[0];
+    }
+    return 0;
+}
+NVN(nvnMemoryPoolInvalidateMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {
+    static int pl = -1; if (pl < 0) { int nvn_pl_mode(void); pl = nvn_pl_mode() > 0; }   /* TOTK_PIPELINE (nvn_dirty.c) */
+    if (off >= 0) mtl_pool_invalidate_from((const pool_t *)p, (uint64_t)off, n, pl ? inval_caller() : 0);
+}
 NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *b, ptrdiff_t off, size_t n) { (void)b; (void)off; (void)n; }
 
 // ---------- Texture builder and texture queries ----------

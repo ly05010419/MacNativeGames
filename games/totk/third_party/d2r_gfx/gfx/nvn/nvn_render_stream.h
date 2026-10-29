@@ -39,6 +39,43 @@ static id g_rs_sentinel;                   /* what A sees as the encoder while B
 static uint64_t g_rs_passes, g_rs_packets, g_rs_syncs, g_rs_sync_ns, g_rs_sync_max_ns, g_rs_full_waits, g_rs_full_ns, g_rs_subs;
 static _Atomic uint64_t g_rs_b_sleeps, g_rs_b_passes, g_rs_b_busy_ns;   /* busy: from the first packet after an idle spell to the next idle spell */
 static int g_rs_probe_negative;
+/* TOTK_PIPELINE: B's core types (thread_selfcounts 4: P cycles, P ticks, E cycles, E ticks, published by B when it goes to
+   sleep and every 4096 packets) and its time-constraint policy (mtl_rs_rt, set from the translate thread). */
+static _Atomic uint64_t g_rs_lv[4]; static _Atomic int g_rs_rt_state;   // 0 not set, 1 in effect, 2 set but not in effect
+static _Atomic uint64_t g_rs_rt_per, g_rs_rt_comp; static pthread_t g_rs_thread; static _Atomic int g_rs_thread_set;
+extern int thread_selfcounts(int type, void *buf, size_t nbytes);
+static void rs_publish_levels(void) {
+    uint64_t v[8] = {0}; static uint64_t last[4];
+    if (thread_selfcounts(4, v, sizeof v)) return;
+    uint64_t now[4] = {v[1], v[2] + v[3], v[5], v[6] + v[7]};
+    for (int i = 0; i < 4; i++) { atomic_fetch_add_explicit(&g_rs_lv[i], now[i] - last[i], memory_order_relaxed); last[i] = now[i]; }
+}
+static void rs_apply_rt(mach_port_t th) {
+    uint64_t per = atomic_load(&g_rs_rt_per), comp = atomic_load(&g_rs_rt_comp);
+    if (!per || !comp) return;
+    mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+    thread_time_constraint_policy_data_t p = {.period = (uint32_t)(per * tb.denom / tb.numer), .computation = (uint32_t)(comp * tb.denom / tb.numer),
+                                              .constraint = (uint32_t)(per * tb.denom / tb.numer), .preemptible = 1};
+    kern_return_t kr = thread_policy_set(th, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&p, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+    thread_time_constraint_policy_data_t q; mach_msg_type_number_t qc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0;
+    int live = thread_policy_get(th, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&q, &qc, &def) == KERN_SUCCESS && !def;
+    atomic_store(&g_rs_rt_state, live ? 1 : 2);
+    static int logged; if (logged++ < 6) MLOG("[nvn] encode stage: time-constraint policy (period %.3f ms, computation %.3f ms) %s", per / 1e6, comp / 1e6, kr == KERN_SUCCESS ? (live ? "set" : "set, not in effect") : "failed");
+}
+/* the translate thread, TOTK_PIPELINE=1: B becomes a real-time thread like the translate thread (period, computation in ns) */
+void mtl_rs_rt(uint64_t period_ns, uint64_t comp_ns) {
+    atomic_store(&g_rs_rt_comp, comp_ns); atomic_store(&g_rs_rt_per, period_ns);
+    if (atomic_load(&g_rs_thread_set)) rs_apply_rt(pthread_mach_thread_np(g_rs_thread));   // else B applies it when it starts
+}
+void mtl_rs_cores(uint64_t v[5]) {
+    for (int i = 0; i < 4; i++) v[i] = atomic_load(&g_rs_lv[i]);
+    int st = atomic_load(&g_rs_rt_state);
+    if (st && atomic_load(&g_rs_thread_set)) {   // still in effect?
+        thread_time_constraint_policy_data_t q; mach_msg_type_number_t qc = THREAD_TIME_CONSTRAINT_POLICY_COUNT; boolean_t def = 0;
+        st = thread_policy_get(pthread_mach_thread_np(g_rs_thread), THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&q, &qc, &def) == KERN_SUCCESS && !def ? 1 : 2;
+    }
+    v[4] = (uint64_t)st;
+}
 static int tbdr_on(void);
 static int enc_label_on(void);
 int mfx_enabled(void);
@@ -105,8 +142,9 @@ static void *rs_worker(void *unused) {
     (void)unused;
     pthread_setname_np("TOTK encode stage");
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    rs_apply_rt(pthread_mach_thread_np(pthread_self()));   // TOTK_PIPELINE: declared before B existed
     id<MTL4RenderCommandEncoder> enc = nil; id<MTL4ArgumentTable> vt = nil, ft = nil;
-    uint64_t idle_since = 0, busy_since = 0;
+    uint64_t idle_since = 0, busy_since = 0; unsigned npk = 0;
     for (;;) {
         const nvn_encode_packet *p = nvn_encode_fifo_peek(&g_rs_fifo);
         if (!p) {
@@ -114,6 +152,7 @@ static void *rs_worker(void *unused) {
             if (busy_since) { atomic_fetch_add_explicit(&g_rs_b_busy_ns, now - busy_since, memory_order_relaxed); busy_since = 0; }
             if (!idle_since) idle_since = now;
             if (now - idle_since < RS_SPIN_NS) { __builtin_arm_wfe(); continue; }   /* low-power wait; A does sev after every publish */
+            rs_publish_levels();
             atomic_store_explicit(&g_rs_sleeping, 1, memory_order_seq_cst);
             atomic_thread_fence(memory_order_seq_cst);
             if (!nvn_encode_fifo_peek(&g_rs_fifo)) { dispatch_semaphore_wait(g_rs_sem, DISPATCH_TIME_FOREVER); atomic_fetch_add_explicit(&g_rs_b_sleeps, 1, memory_order_relaxed); }
@@ -125,6 +164,7 @@ static void *rs_worker(void *unused) {
         @autoreleasepool { rs_apply(&enc, &vt, &ft, p); }
         nvn_encode_fifo_consume(&g_rs_fifo);
         __builtin_arm_sev();
+        if (!(++npk & 4095)) rs_publish_levels();
     }
     return NULL;
 }
@@ -178,6 +218,7 @@ static int rs_stream_pass(void) {
         nvn_encode_fifo_reset(&g_rs_fifo);
         pthread_t thread; pthread_attr_t attr; pthread_attr_init(&attr); pthread_attr_setstacksize(&attr, 1 << 20);
         if (pthread_create(&thread, &attr, rs_worker, NULL)) MDIE("render stream worker creation failed");
+        g_rs_thread = thread; atomic_store(&g_rs_thread_set, 1);
         pthread_detach(thread); g_rs_created = 1;
         MLOG("[nvn] 编码线程：渲染通道的 Metal 编码在独立线程上（TOTK_RENDER_STREAM=1；flag render_stream 0 关）");
     }

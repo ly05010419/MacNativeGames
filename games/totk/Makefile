@@ -346,6 +346,23 @@ probe-dirty-race:
 	xcrun clang -std=gnu11 -O1 -Wall -Wextra -Werror -Wno-unused-function -Ithird_party/d2r_gfx/gfx/nvn tests/dirty_race/probe.c -o build/dirty-race-probe
 	build/dirty-race-probe | tee analysis/dirty-race-probe.log
 
+.PHONY: probe-pipeline-hold
+# CPU only: TOTK_PIPELINE page state (nvn_dirty.c): snapshot / in-place classification, probation, release-time protection,
+# writes held while a released frame still runs; dry run; negative control (a fence that never completes times out).
+probe-pipeline-hold:
+	@mkdir -p build analysis
+	xcrun clang -std=gnu11 -O1 -Wall -Wextra -Werror -Wno-unused-function -Ithird_party/d2r_gfx/gfx/nvn tests/pipeline_hold/probe.c -o build/pipeline-hold-probe
+	build/pipeline-hold-probe | tee analysis/pipeline-hold-probe.log
+	build/pipeline-hold-probe dry | tee -a analysis/pipeline-hold-probe.log
+	TOTK_PROBE_NEGATIVE=1 build/pipeline-hold-probe | tee -a analysis/pipeline-hold-probe.log
+
+.PHONY: probe-pipeline-stress
+# CPU only, AddressSanitizer: TOTK_PIPELINE protection queue (helper thread) and range index rebuilds under concurrent use.
+probe-pipeline-stress:
+	@mkdir -p build analysis
+	xcrun clang -std=gnu11 -O1 -g -fsanitize=address,undefined -Wall -Wextra -Wno-unused-function -Ithird_party/d2r_gfx/gfx/nvn tests/pipeline_stress/stress.c -o build/pipeline-stress
+	build/pipeline-stress | tee analysis/pipeline-stress.log
+
 .PHONY: probe-pool-index
 # CPU only: memory pool address index vs the old linear scan, with two negative controls and a timing line.
 probe-pool-index:
