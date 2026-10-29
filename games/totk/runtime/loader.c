@@ -598,6 +598,11 @@ int main(int argc,char **argv) {
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);
  if(strcmp(argv[2],"boot"))setenv("TOTK_PROBE_GPU","1",1);   /* standalone probes submit GPU work; the game does not unless TOTK_GPU_ALLOW_SUBMIT=1 */
  else unsetenv("TOTK_PROBE_GPU");need(sysconf(_SC_PAGESIZE)==0x4000,"expected 16KB Apple pages");
+#if defined(TOTK_GAME_V143)
+ /* TOTK_PIPELINE (hle_nvn.c, built once for every version) knows 1.2.1's frame submit and frame wait. 1.4.3 fences its frame
+    from main+0x2dc288 and waits for it from main+0x2db99c only (seen in play, 2026-10-29); a value from outside still wins. */
+ setenv("TOTK_PIPELINE_FENCE_LR","2dc288",0);setenv("TOTK_PIPELINE_WAIT_LR","2db99c",0);
+#endif
  struct sigaction a={0};a.sa_sigaction=crash;a.sa_flags=SA_SIGINFO|SA_ONSTACK;sigemptyset(&a.sa_mask);
  sigaction(SIGSEGV,&a,NULL);sigaction(SIGBUS,&a,NULL);sigaction(SIGILL,&a,NULL);sigaction(SIGTRAP,&a,NULL);
  {struct sigaction ab={0};ab.sa_handler=abort_report;ab.sa_flags=SA_ONSTACK;sigemptyset(&ab.sa_mask);sigaction(SIGABRT,&ab,NULL);}

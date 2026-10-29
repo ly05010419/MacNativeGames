@@ -655,8 +655,8 @@ static int sync_chain_left(int k) {
    from the end of N until N+1 arrives. The sync fenced from main+0x8c1504 is the frame fence (bit 3 of fenced); only
    main+0xb23d58 waits for it. TOTK_PIPELINE=1: that wait returns once N has been translated and N-1 has completed
    (mtl_pl_release does the rest); =2: exact wait plus the dry-run bookkeeping. Another game version: the return
-   addresses differ (TOTK_PIPELINE_FENCE_LR / TOTK_PIPELINE_WAIT_LR=<hex>,<hex> override them); unrecognised, every
-   wait stays exact and it says so once. */
+   addresses differ (TOTK_PIPELINE_FENCE_LR / TOTK_PIPELINE_WAIT_LR=<hex>,<hex> override them; runtime/loader.c sets
+   1.4.3's); unrecognised, every wait stays exact and it says so once. */
 static uint64_t guest_main_caller(void);
 static int x_sub_translated(uint64_t k, uint64_t timeout_ns, uint64_t *fence);
 static uint64_t g_pl_fence_lr = 0x8c1508, g_pl_wait_lr[2] = {0xb23dfc, 0xb23f40};
