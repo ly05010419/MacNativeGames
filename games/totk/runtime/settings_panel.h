@@ -42,6 +42,16 @@
                                                              switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
                                                              out); a device the run started without comes at the next
                                                              launch (its title says so)
+   User
+     user this run        fixed (greyed)                     runtime_users_active (runtime/users.h): the preselected user
+                                                             the game opened with, as on a console
+     user                 pop-up of the users,               runtime_users_choose: names the user the next launch opens
+                          from the next launch               with (at most 8, as on a console); each user's save area is
+                                                             named after the user's id, so another user plays on their
+                                                             own saves; a running game keeps its user
+     Add User… (bottom    the game's text bar                runtime_front_text_input takes the name (at most 10
+     right)               takes the name                     characters), runtime_users_add keeps it; the panel closes
+                                                             while the bar is up and comes back after
    Key bindings: one row per game action with two keyboard and mouse inputs (keyboard_map.h, runtime_keymap_set: in force
    at once, saved in keyboard.txt) and the controller buttons that drive it (controller_map.h, runtime_controller_map_set:
    controls.txt). Click a box, then press a key or a mouse button (key 1 cancels; Command keys stay the system's) or, in
@@ -63,6 +73,7 @@
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
+#include "users.h"           /* the local users (runtime/account.c): the User page */
 
 void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
@@ -168,7 +179,7 @@ static void settings_restore_start(void) {
  [NSRunLoop.mainRunLoop addTimer:settingsRestoreTimer forMode:NSRunLoopCommonModes];
 }
 
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
@@ -209,6 +220,7 @@ static void settings_pointer_used(void);
 @end
 
 static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_UI(zh, en)); }
+static void settings_user_added(NSString *name);   /* the User page's add: runs after the global panel is made again */
 static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                     int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
@@ -348,7 +360,24 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
- for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:SETTINGS_PAGE_INPUT;
+ NSUInteger input=rows.count;
+ /* User (runtime/users.h): the user this run opened with, and the one the next launch gets — the save area is named
+    after the user's id, so another user plays on their own saves. A running game keeps its user. */
+ RuntimeUser usersAll[RUNTIME_USERS_MAX],usersMe;
+ int usersCount=runtime_users_get(usersAll,RUNTIME_USERS_MAX);
+ runtime_users_active(&usersMe);
+ NSMutableArray<NSString *> *userNames=[NSMutableArray array];NSMutableArray<NSNumber *> *userIndex=[NSMutableArray array];
+ int userPicked=0;
+ for(int i=0;i<usersCount;i++){
+  [userNames addObject:@(usersAll[i].name)];[userIndex addObject:@(i)];
+  if(usersAll[i].lo==usersMe.lo&&usersAll[i].hi==usersMe.hi)userPicked=i;
+ }
+ [rows addObject:settings_fixed(settings_text("本次运行的用户","User this run"),usersCount?@(usersMe.name):settings_text("（无）","(none)"))];
+ [rows addObject:settings_row(settings_text("用户（下次启动生效）","User (from the next launch)"),userNames,userIndex,
+  ^int{return userPicked;},^(int v){runtime_users_choose(v);
+   /* the list's order does not change, but the pick does: the row is made again with the new one in force */
+   dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});})];
+ for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:SETTINGS_PAGE_USERS;
  return rows;
 }
 
@@ -461,6 +490,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) NSArray<NSView *> *pages;
 @property(strong) NSTextField *versionLabel;   /* the bottom-left corner */
 @property(strong) NSArray<NSButton *> *displayButtons;   /* the display page: contribute shaders, star the project */
+@property(strong) NSArray<NSButton *> *userButtons;   /* the user page: add a user */
 @property(strong) NSArray<NSButton *> *resetButtons;   /* the key bindings page: keyboard and mouse, controller */
 @property(strong) NSMutableArray<TOTKBindingButton *> *bindingButtons;
 @property(strong) NSMutableArray<NSView *> *bindingTargets;   /* rows with controller buttons, then the reset buttons */
@@ -522,10 +552,10 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
        SETTINGS_CELL_W = 118, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
- NSUInteger perPage[2]={0,0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
+ NSUInteger perPage[3]={0,0,0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
- CGFloat n=MAX(perPage[0],perPage[1]),rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
+ CGFloat n=MAX(perPage[0],MAX(perPage[1],perPage[2])),rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
  if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
  /* The key bindings drawings need a wider, taller panel (PR #1210); it is made at that size while they are shown. */
  BOOL drawings=settings_drawings_for(g_settings_page);
@@ -541,11 +571,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("按键设置","Key bindings")]
+ NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("按键设置","Key bindings")]
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
- for(NSInteger p=0;p<2;p++){
+ for(NSInteger p=0;p<3;p++){
   NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];NSUInteger k=0;
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
@@ -588,6 +618,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  for(NSButton *b in @[contrib,star]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
   b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
  self.displayButtons=@[star,contrib];
+ /* The user page's bottom right: name a new user in the game's text bar. */
+ NSButton *addUser=[NSButton buttonWithTitle:settings_text("添加用户…","Add User…") target:self action:@selector(addUser:)];
+ addUser.controlSize=NSControlSizeSmall;addUser.font=[NSFont systemFontOfSize:11];addUser.refusesFirstResponder=YES;[addUser sizeToFit];
+ addUser.frame=NSMakeRect(0,5,addUser.frame.size.width,24);addUser.wantsLayer=YES;[self addSubview:addUser];
+ self.userButtons=@[addUser];
  [self selectPage:g_settings_page];[self refresh];
  __weak TOTKSettingsPanel *weak=self;
  self.clickMonitor=[NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown|NSEventMaskRightMouseDown handler:^NSEvent *(NSEvent *e){
@@ -664,8 +699,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
    reset of the device shown (both resets with the list). */
 -(void)layoutFooter{
  BOOL bindings=self.page==SETTINGS_PAGE_BINDINGS;
- NSArray<NSButton *> *shown=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:!bindings?@[]:self.drawings?@[self.resetButtons[g_settings_bindings_device?1:0],self.listToggle]:@[self.resetButtons[1],self.resetButtons[0],self.listToggle];
- for(NSButton *b in [@[self.resetButtons[0],self.resetButtons[1],self.listToggle] arrayByAddingObjectsFromArray:self.displayButtons])b.hidden=![shown containsObject:b];
+ NSArray<NSButton *> *shown=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:!bindings?@[]:self.drawings?@[self.resetButtons[g_settings_bindings_device?1:0],self.listToggle]:@[self.resetButtons[1],self.resetButtons[0],self.listToggle];
+ for(NSButton *b in [@[self.resetButtons[0],self.resetButtons[1],self.listToggle] arrayByAddingObjectsFromArray:[self.displayButtons arrayByAddingObjectsFromArray:self.userButtons]])b.hidden=![shown containsObject:b];
  CGFloat right=self.panelW-14;
  for(NSButton *b in shown){b.frame=NSMakeRect(right-b.frame.size.width,5,b.frame.size.width,24);right-=b.frame.size.width+6;}
 }
@@ -677,7 +712,10 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   TOTKSettingsPanel *panel=weak;if(!panel||![panel.versionLabel.stringValue isEqualToString:shown])return;
   panel.versionLabel.stringValue=settings_version_text();panel.versionLabel.frame=NSMakeRect(18,9,230,16);});
 }
--(CGFloat)footerButtonsWidth{CGFloat w=0;for(NSButton *b in self.displayButtons)if(!b.hidden)w+=b.frame.size.width+6;return w;}
+-(CGFloat)footerButtonsWidth{
+ NSArray<NSButton *> *shown=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
+ CGFloat w=0;for(NSButton *b in shown)if(!b.hidden)w+=b.frame.size.width+6;return w;
+}
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
 -(void)contribute:(NSButton *)button{
@@ -700,12 +738,28 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 /* The project's GitHub page, where the player stars it (as the launcher's star button). */
 -(void)star:(id)sender{(void)sender;[NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@TOTK_REPO_URL]];
  [self note:settings_text("谢谢支持！在打开的 GitHub 页面右上角点 Star","Thank you! Click Star at the top right of the GitHub page")];}
+/* The user page's button: the game's text bar takes the name (the panel closes while it is up, as it does for the
+   game's own keyboards); the user is kept, and the panel comes back with the users read again. */
+-(void)addUser:(NSButton *)button{
+ (void)button;settings_pointer_used();
+ __weak TOTKSettingsPanel *weak=self;
+ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+  RuntimeTextRequest req={TOTK_UI("给新用户取名（最多 10 个字；回车确认，Esc 取消）","Name the new user (at most 10 characters; Return confirms, Escape cancels)"),"",10,1,0,0,0};
+  char name[128];int named=runtime_front_text_input(&req,name,sizeof name);
+  NSString *typed=named&&name[0]?@(name):nil;   /* a block cannot capture the array itself */
+  dispatch_async(dispatch_get_main_queue(),^{
+   TOTKSettingsPanel *panel=weak;if(!panel)return;   /* the window is gone */
+   settings_user_added(typed);
+  });
+ });
+}
 /* What a controller moves through: the rows; on the list, its rows and the buttons below; on the drawings, the device
    switch, the controller's buttons (the controller drawing) and the buttons below. */
 -(void)updateTargets{
  [self.controllerTargets removeAllObjects];self.padOrder=@[];
  if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
-  for(NSButton *b in self.displayButtons.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];}
+  NSArray<NSButton *> *foot=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
+  for(NSButton *b in foot.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];}
  else if(!self.drawings){[self.controllerTargets addObjectsFromArray:self.bindingTargets];
   for(NSButton *b in @[self.resetButtons[0],self.resetButtons[1],self.listToggle])if(!b.hidden&&b.enabled)[self.controllerTargets addObject:b];}
  else{
@@ -1021,6 +1075,19 @@ static void settings_show(int open) {   /* main thread */
  front_mouse_update();
  fprintf(stderr,"[totk] settings panel %s\n",open?"open":"closed");
  if(totk_sr_settings)totk_sr_settings(open);   /* TOTK_STATE_REPORTING: the game gets no input while it is open */
+}
+/* A user named in the game's text bar (main queue, from addUser:): kept before the panel is made again, so its list
+   has it, and the result shows for a few seconds where the version is. nil: the bar was cancelled — just come back. */
+static void settings_user_added(NSString *name) {
+ if(!window||!settingsPanel)return;
+ if(name){
+  int added=runtime_users_add(name.UTF8String);
+  settings_show(1);
+  [settingsPanel note:added>=0
+   ?[NSString stringWithFormat:@(TOTK_UI("已添加用户“%s”，从下次启动开始玩自己的存档","User \"%s\" added; their saves start from the next launch")),name.UTF8String]
+   :settings_text("最多 8 个用户，且名字不能为空","At most 8 users, and the name cannot be empty")];
+  fprintf(stderr,"[totk] settings: user \"%s\" %s\n",name.UTF8String,added>=0?"added":"not added (the console is full, or the name is empty)");
+ }else settings_show(1);
 }
 /* A single window-lifetime timer owns settings input. It never consumes the text keyboard's edges. */
 static NSTimer *settingsControllerTimer;

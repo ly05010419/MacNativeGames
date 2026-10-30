@@ -42,6 +42,11 @@ void runtime_setting_save(const char *n,const char *s,const char *w){(void)n;(vo
 int runtime_shared_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z;return 0;}
 void runtime_shared_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
 #endif
+/* runtime/account.c's local users (the panel's User page): the empty store of a fresh profile. */
+int runtime_users_get(RuntimeUser *out,int max){(void)out;(void)max;return 0;}
+int runtime_users_active(RuntimeUser *out){if(out)*out=(RuntimeUser){0};return 0;}
+int runtime_users_add(const char *name){(void)name;return -1;}
+int runtime_users_choose(int index){(void)index;return -1;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 #endif

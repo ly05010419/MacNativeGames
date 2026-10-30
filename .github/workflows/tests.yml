@@ -43,6 +43,10 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_keyboard_map.c -o "$RUNNER_TEMP/test-keyboard-map"
           "$RUNNER_TEMP/test-keyboard-map"
+      - name: Check the local users store with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_users.c games/totk/runtime/account.c -Igames/totk/runtime -o "$RUNNER_TEMP/test-users"
+          "$RUNNER_TEMP/test-users"
       - name: Check the game language mapping with the undefined-behavior sanitizer
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_game_language.c -o "$RUNNER_TEMP/test-game-language"
