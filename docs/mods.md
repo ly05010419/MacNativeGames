@@ -24,6 +24,16 @@ The launcher points `TOTK_ROMFS_MODS` at
 where `<version>` is the game version the app was built from: `v0` (1.0.0), `v112` (1.1.2), `v121`
 (1.2.1) or `v143` (1.4.3).
 
+When no controller is connected at start and `mods/<version>-keyboard/manifest.tsv` exists, the launcher points
+`TOTK_ROMFS_MODS` at that folder instead, so the prompts show the Mac keyboard's keys while you play on the keyboard:
+
+```sh
+python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNativeGames/TOTK/mods/v0-keyboard" \
+  --app "Tears of the Kingdom.app" --version v0 --style azerty   # or --style keyboard for a US layout
+```
+
+The choice is made once per start: connecting a controller later keeps the keyboard icons until the next start.
+
 ### What `manifest.tsv` is
 
 Only the files listed in `manifest.tsv` are served. Each line has four tab-separated fields:
@@ -116,11 +126,24 @@ carries on, its code half is in the app, and its data half takes effect once the
 (`--install-mod-romfs`, or by hand). With `--update` the patch is merged into the updated module, which is the one
 the app runs.
 
+### Code patches at launch (`TOTK_PCHTXT`, Mac)
+
+A main `.pchtxt` can also be applied when the game starts, without a build:
+
+```bash
+open --env TOTK_PCHTXT="/path/to/mods.pchtxt" "/path/to/Tears of the Kingdom.app"
+```
+
+It is read the way `--mod` reads it, and its `@nsobid` must match main's build ID, which a built app keeps in
+`extracted/<version>/exefs/main.build-id`. The rewriter doesn't see these bytes, so a patch that makes system calls,
+uses the thread-pointer or counter registers, or uses x18 still needs a build with `--mod`. A line on a site the app
+patches itself stops the start.
+
 <a id="data"></a>
 ### The mod's RomFS files: `--install-mod-romfs`
 
-A build does not write to the version folder (`~/Library/Application Support/MacNativeGames/TOTK/mods/<version>`)
-unless this flag is given: the folder may hold another mod's files, or files copied by hand. With the flag, the
+A build does not write to the version folder (`~/Library/Application Support/MacNativeGames/TOTK/mods/<version>`;
+Breath of the Wild's is `BotW/mods/botw160` or `botw190`, see [below](#breath-of-the-wild)) unless this flag is given: the folder may hold another mod's files, or files copied by hand. With the flag, the
 build replaces it with the mod's `romfs/` and writes its `manifest.tsv`:
 
 ```bash
@@ -233,27 +256,63 @@ rewriter's own SHA-256 too, so a changed `patch_nso.py` makes it rewrite instead
 The 2K output overlay records the heap table it was built on: a build without `--mod` after a build with it
 rebuilds the overlay from the retail table instead of keeping the mod's heap sizes.
 
+### Large texture packs (8 GB mode)
+
+Some texture packs are made for an emulator's 8 GB DRAM mode and do not fit the 3.2 GiB a retail console gives the game.
+One such pack is the **[Tears of the Kingdom 4K Texture Pack by HDPacks](https://www.hdpacks.com/)** (made by
+HDPacks.com, who offer it as a free download on their site; it is their work and is not part of this repository: get it
+from them and follow their terms). Played on the Mac with 1.4.3:
+
+1. Put the pack's `romfs` files (for the HDPacks pack, `4kTextures/RomFS`) into the version's mod folder
+   (`mods/v143`), together with any other mod you use.
+2. The pack's heap table and resource size tables are made for the version it was built for (the HDPacks pack: up to
+   1.2.1). Fit them to the app's version:
+
+   ```sh
+   python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
+       --app "Tears of the Kingdom.app"
+   ```
+
+   It writes 1.4.3's own `HeapDef` with only the heaps the pack makes bigger raised (for the HDPacks pack: `TextureHeap`,
+   `ゲームグラフィックス` and `草`), and 1.4.3's `ResourceSizeTable.Product.143` with every replaced texture's entry grown
+   by as much as the file grew. Then write the manifest with `make_mod_manifest.py` as usual. Run both again whenever
+   the folder changes.
+3. Start the game in 8 GB mode:
+
+   ```sh
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
+   ```
+
+   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does) and lets one
+   memory pool be a zero-copy GPU buffer of up to 4 GiB (the pack's `TextureHeap` pool is about 3.8 GiB; the limit is
+   1 GiB otherwise).
+
+Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
+bottleneck). A Mac with less memory than that is not expected to run it.
+
 ### Breath of the Wild
 
-The Breath of the Wild app reads its mods from
+The Breath of the Wild app reads its mods from the folder for its version, `botw160` for 1.6.0 or `botw190` for 1.9.0:
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
 The RomFS half above applies: copy the mod's RomFS contents into that folder and generate the manifest with the app,
-naming the folder `botw160` or passing `--version botw160`:
+naming the folder `botw160` or `botw190`, or passing `--version botw160` or `--version botw190` (1.6.0 shown):
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start.
+Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` after the start
+(`mods/botw190 checked` on 1.9.0).
 
 - A mod that makes a resource larger than the original also has to ship the matching resource size table,
-  `System/Resource/ResourceSizeTable.product.srsizetable`, built for 1.6.0. Without it the game reserves the original
-  size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
+  `System/Resource/ResourceSizeTable.product.srsizetable`, built for the same version. Without it the game reserves the
+  original size and stops at start (for example a translation whose `Pack/Bootup_<lang>.pack` grew).
 - The game's language follows the app's preferred language, which also picks the language folder a mod must use (`USen` for
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
@@ -318,6 +377,26 @@ dimensions (1, 1, 1) can only support 1"). A texture with more mip levels than i
 never checks and Metal refuses to build; the app caps the chain at what the dimensions allow and logs
 `[tex] <w>x<h>x<d> ... 声明 N 级 mip ...`, so check the mod's texture if the picture looks wrong.
 
+### Three packaging traps that look like a crash
+
+These come from how a pack was built, not from its content, and none of them prints one of the lines above.
+
+- **A `.pchtxt` without `@flag offset_shift 0x100`.** Its addresses are `main` addresses, while an IPS file's offsets
+  count the 0x100-byte NSO header. Both `TOTK_PCHTXT` and `--mod` stop the start when a patch line comes before that
+  flag, or when it names another shift: the alternative is every byte landing 0x100 bytes off without an error.
+  Converting an IPS by hand: `main address = IPS32 offset - 0x100`.
+- **A `.zs` whose zstd frame does not declare its content size.** The game's decompressor has no size to read for those
+  and decompresses to a null destination: the window dies right after `ENTER nnMain` and the log holds nothing of ours.
+  `zstd` writes such frames when compressing from a pipe (`zstd -c`); the descriptor byte of the frame header (`raw[4]`)
+  must have bits 7-6 set. Compress from the bytes with a library, assert `(raw[4] >> 6) & 3`, and keep the window size,
+  checksum and dictionary of the file being replaced (`zstd -l -v`).
+- **A merged `ResourceSizeTable` that kept the records but lost the slots.** A manager that merges `.rsizetable` files
+  can write the record array only; actors whose slot is gone then load with size 0. Slot names are logical resource
+  paths (`Actor/...`), not RomFS paths, so not finding them in the index is normal. Rebuild the table as a union of the
+  tables being merged - each value copied byte for byte, the record array kept sorted by key, since the game
+  binary-searches it - and check the frame header of the compressed result before installing it. `grow_restbl` in
+  `games/totk/scripts/make_button_icons.py` is one writer of that format.
+
 <a id="chinese"></a>
 ## 中文
 
@@ -338,6 +417,16 @@ never checks and Metal refuses to build; the app caps the chain at what the dime
 
 `<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v112`（1.1.2）、`v121`（1.2.1）、
 `v143`（1.4.3）。
+
+启动时没有连接手柄、且 `mods/<version>-keyboard/manifest.tsv` 存在时，启动器改把 `TOTK_ROMFS_MODS` 指向那个目录，
+用键盘玩的时候提示里显示的就是 Mac 键盘的按键：
+
+```sh
+python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNativeGames/TOTK/mods/v0-keyboard" \
+  --app "Tears of the Kingdom.app" --version v0 --style azerty   # 美式键盘用 --style keyboard
+```
+
+每次启动只选一次：游戏中途再接上手柄，键盘图标会保留到下次启动。
 
 ### manifest.tsv 是什么
 
@@ -422,6 +511,18 @@ App 没有模块加载器：启动时它映射的是构建时的那三个代码�
 就是没有代码要合并，没有 `romfs/` 时构建不会碰版本目录。`exefs/` 里没有可合并进 main 的东西（只有
 `subsdk9`、只有 `main.npdm`，甚至空的 `exefs/`）只算提示、不算失败：构建照常往下走，只是这个 mod 只生效数据
 那一半。带 `--update` 时补丁合并进更新后的模块，也就是 App 实际运行的那个。
+
+### 启动时的代码补丁（`TOTK_PCHTXT`，Mac）
+
+main 的 `.pchtxt` 也可以在游戏启动时应用，无需重新构建：
+
+```bash
+open --env TOTK_PCHTXT="/path/to/mods.pchtxt" "/path/to/Tears of the Kingdom.app"
+```
+
+读法与 `--mod` 相同，`@nsobid` 必须与 main 的构建 ID 一致；构建好的 App 把它存放在 `extracted/<版本>/exefs/main.build-id`。
+改写器看不到这些字节，所以含系统调用、使用线程指针或计数器寄存器、或使用 x18 的补丁仍需在构建时用 `--mod`。补丁行落在 App
+自己修改的位置时启动会停止。
 
 <a id="data-zh"></a>
 ### 模组的 RomFS 文件：`--install-mod-romfs`
@@ -517,24 +618,53 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 一改就会重新改写，而不是复用旧镜像。2K 输出覆盖文件会记下它是在哪份堆表上生成的：先带 `--mod` 构建、之后不带
 `--mod` 再构建时，会按原版堆表重新生成，而不是继续沿用 mod 的堆大小。
 
+### 大型材质包（8 GB 模式）
+
+有些材质包是给模拟器的 8 GB DRAM 模式做的，装不进真机给游戏的 3.2 GiB。例如 **[HDPacks 的王国之泪 4K 材质包](https://www.hdpacks.com/)**
+（HDPacks.com 制作，可在其网站免费下载；这是他们的作品，不在本仓库里：请从他们那里获取并遵守他们的条款）。在 Mac 上配合
+1.4.3 使用：
+
+1. 把材质包的 `romfs` 文件（HDPacks 的包是 `4kTextures/RomFS`）和你用的其他 mod 一起放进该版本的 mod 文件夹（`mods/v143`）。
+2. 材质包自带的堆表和资源尺寸表是按它对应的版本做的（HDPacks 的包最高到 1.2.1），先改成 App 的版本：
+
+   ```sh
+   python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
+       --app "Tears of the Kingdom.app"
+   ```
+
+   它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（HDPacks 的包：`TextureHeap`、`ゲームグラフィックス`、`草`），
+   并写出 1.4.3 的 `ResourceSizeTable.Product.143`，每个被替换贴图的条目按文件变大的量加大。然后照常用
+   `make_mod_manifest.py` 生成清单。文件夹有变化时两步都要重跑。
+3. 用 8 GB 模式启动：
+
+   ```sh
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
+   ```
+
+   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样），并允许单个内存池做成最大 4 GiB 的零拷贝
+   GPU 缓冲（材质包的 `TextureHeap` 池约 3.8 GiB，平时上限 1 GiB）。
+
+在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
+
 ### 旷野之息
 
-旷野之息 App 从这里读取 mod：
+旷野之息 App 按版本从对应目录读取 mod，1.6.0 是 `botw160`，1.9.0 是 `botw190`：
 
 ```text
 ~/Library/Application Support/MacNativeGames/BotW/mods/botw160
+~/Library/Application Support/MacNativeGames/BotW/mods/botw190
 ```
 
-上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160`，或加 `--version botw160`）：
+上面的 RomFS 部分都适用：把 mod 的 RomFS 内容复制进这个目录，再用 App 生成清单（目录名为 `botw160` 或 `botw190`，或加 `--version botw160` 或 `--version botw190`；下面以 1.6.0 为例）：
 
 ```bash
 MODDIR="$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw160"
 python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath of the Wild.app"
 ```
 
-启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查。
+启动后用 `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail -1` 检查（1.9.0 是 `mods/botw190 checked`）。
 
-- 如果 mod 让某个资源比原版大，还必须带上为 1.6.0 生成的资源大小表
+- 如果 mod 让某个资源比原版大，还必须带上为同一版本生成的资源大小表
   `System/Resource/ResourceSizeTable.product.srsizetable`。没有它游戏会按原版大小分配，启动时就会停止（例如
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：
@@ -586,3 +716,19 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
 `-[MTLTextureDescriptorInternal validateWithDevice:]` 报 “requests 9 mipmap levels, but the dimensions (1, 1, 1) can only
 support 1”）。mip 级数超过尺寸允许的贴图在 Switch 上没人检查，Metal 却拒绝创建；App 会把级数裁到尺寸允许的数量并记一行
 `[tex] <w>x<h>x<d> ... 声明 N 级 mip ...`，画面不对时应检查该模组的贴图。
+
+### 三种打包环节的陷阱，看起来像崩溃
+
+这三处出在包的打包方式上，而不是包的内容；它们都不会打印上面那些行。
+
+- **`.pchtxt` 缺 `@flag offset_shift 0x100`。** 文件里的地址是 `main` 地址，而 IPS 的偏移把 0x100 字节的 NSO 头也算了进去。
+  补丁行出现在这个 flag 之前、或写的不是 0x100，`TOTK_PCHTXT` 和 `--mod` 都会直接停止启动——否则每个字节都会静默地
+  偏 0x100 落错位置。手工把 IPS 转成 pchtxt：`main 地址 = IPS32 偏移 - 0x100`。
+- **`.zs` 的 zstd 帧没有声明内容大小。** 游戏的解压器无从得知解压后多大，会解到空指针上：窗口在 `ENTER nnMain` 之后
+  立刻消失，日志里没有我们这边的任何一行。`zstd` 从管道压缩（`zstd -c`）时会写出这种帧；帧头描述符字节（`raw[4]`）
+  的 bit7-6 必须非 0。改为对字节数组调用库压缩，断言 `(raw[4] >> 6) & 3`，窗口大小、校验和、字典都与被替换的原文件
+  保持一致（`zstd -l -v` 可看）。
+- **合并后的 `ResourceSizeTable` 留下了记录、丢了槽。** 只合并 `.rsizetable` 记录数组的管理器，会让槽位消失的那批 actor
+  按 0 大小加载。槽名是逻辑资源路径（`Actor/...`），不是 RomFS 路径，在索引里查不到属正常。按参与合并的各张表求并集
+  重建——值逐字节照抄，记录数组保持按 key 升序（游戏按 key 二分查找）——装进去之前再核对压缩结果的帧头。
+  `games/totk/scripts/make_button_icons.py` 里的 `grow_restbl` 就是这种格式的一个写入示例。

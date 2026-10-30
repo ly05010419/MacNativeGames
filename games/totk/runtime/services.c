@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <ctype.h>
+#include "game_language.h"
 #include <string.h>
 #include <sys/mman.h>
 
@@ -37,10 +38,18 @@ static uint64_t alias_requested(void){const char *e=getenv("TOTK_ALIAS_GIB");uin
 static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();return alias_len;}
 #define ALIAS_SIZE alias_size()
 #define LOW_SEARCH_FROM 0x300000000ULL
+/* TOTK_DRAM_8GB (Mac, docs/mods.md): the 8 GB mode for big texture packs. Unset or "0" leaves the retail layout. */
+static int dram_8gb(void){
+#if TARGET_OS_IPHONE
+ return 0;
+#else
+ static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
+#endif
+}
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE (6ULL<<30)
+#define LOW_SIZE (dram_8gb()?8ULL<<30:6ULL<<30)   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -61,11 +70,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
-#define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
+#define HEAP_CAP (dram_8gb()?7ULL<<30:4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup; ~5.8 GiB in the 8 GB mode */
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
-/* TOTK: application memory pool reported to the game (default: retail 3.2 GiB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
+ v=e?strtoull(e,NULL,0):(dram_8gb()?0x1b3400000ULL:0xcd500000ULL)+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
+/* TOTK: application memory pool reported to the game (default: retail 3.2 GiB, or 6.8 GiB as in an emulator's 8 GB DRAM mode with TOTK_DRAM_8GB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
 #define ASLR_START ((uintptr_t)low_space)
@@ -279,8 +288,8 @@ static uint32_t performance_configuration[2];
 static void performance_config(int mode,int cfg) {if(mode<0||mode>1)runtime_fail("invalid performance mode");performance_configuration[mode]=(uint32_t)cfg;fprintf(stderr,"[totk] performance request mode=%d cfg=%x: native macOS scheduling\n",mode,(uint32_t)cfg);}
 /* The game's language: TOTK_LANG as given (a Switch language code), otherwise from a locale: TOTK_LOCALE, which the
    launcher sets to the app's first preferred language (BCP 47, e.g. "pt-BR"; it follows a per-app language), or else
-   the Mac's current locale. Brazil maps to "pt-BR" only in the 1.4.3 build and in Breath of the Wild 1.9.0, whose RomFS have the official USpt text.
-   Chinese is zh-Hant for the Hant script or, without a script, for Taiwan, Hong Kong and Macau; zh-Hans otherwise. */
+   the Mac's current locale, mapped by game_language.h (regional variants as on the console: en-GB, fr-CA, es-419, and pt-BR
+   only in the 1.4.3 build and in Breath of the Wild 1.9.0, whose RomFS have the official USpt text). */
 static uint64_t desired_language(void) {
  const char *explicit=getenv("TOTK_LANG");char code[8]={0};
  if(explicit){if(strlen(explicit)>7)runtime_fail("language code too long");memcpy(code,explicit,strlen(explicit));}
@@ -289,7 +298,8 @@ static uint64_t desired_language(void) {
   if(tag&&*tag){
    size_t n=strcspn(tag,"-_");if(n<sizeof(language))memcpy(language,tag,n);
    for(const char *p=tag+n;*p;){p+=strspn(p,"-_");size_t k=strcspn(p,"-_");
-    if(k==2&&isalpha((unsigned char)p[0])&&isalpha((unsigned char)p[1])){region[0]=(char)toupper((unsigned char)p[0]);region[1]=(char)toupper((unsigned char)p[1]);}
+    if(k==2&&isalpha((unsigned char)p[0])&&isalpha((unsigned char)p[1])){region[0]=(char)toupper((unsigned char)p[0]);region[1]=(char)toupper((unsigned char)p[1]);region[2]=0;}
+    if(k==3&&isdigit((unsigned char)p[0])&&isdigit((unsigned char)p[1])&&isdigit((unsigned char)p[2]))memcpy(region,p,3);   /* UN M.49, e.g. es-419 */
     if(k==4&&!script[0]&&isalpha((unsigned char)p[0])&&isalpha((unsigned char)p[3])){for(size_t i=0;i<4;i++)script[i]=(char)(i?tolower((unsigned char)p[i]):toupper((unsigned char)p[i]));}
     p+=k;}
   } else {
@@ -302,12 +312,11 @@ static uint64_t desired_language(void) {
    if(value)CFStringGetCString(value,region,sizeof(region),kCFStringEncodingUTF8);CFRelease(locale);
   }
 #if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)
-  const char *portuguese=!strcmp(region,"BR")?"pt-BR":"pt";
+  const int brazil=1;
 #else
-  const char *portuguese="pt";
+  const int brazil=0;
 #endif
-  const char *chinese=!strcmp(script,"Hant")||(!script[0]&&(!strcmp(region,"TW")||!strcmp(region,"HK")||!strcmp(region,"MO")))?"zh-Hant":"zh-Hans";
-  const char *selected=!strcmp(language,"ja")?"ja":!strcmp(language,"de")?"de":!strcmp(language,"fr")?"fr":!strcmp(language,"es")?"es":!strcmp(language,"it")?"it":!strcmp(language,"nl")?"nl":!strcmp(language,"ru")?"ru":!strcmp(language,"ko")?"ko":!strcmp(language,"zh")?chinese:!strcmp(language,"pt")?portuguese:"en-US";
+  const char *selected=game_language(language,script,region,brazil);
   memcpy(code,selected,strlen(selected));
  }
  uint64_t result;memcpy(&result,code,8);
@@ -428,6 +437,10 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  case 0x0e: r[0]=0;r[1]=0;r[2]=15;return 0;
  case 0x25: {uint64_t id;pthread_threadid_np(NULL,&id);r[0]=0;r[1]=id;return 0;}
  case 0x10:r[0]=0;return 0;
+ /* SynchronizePreemptionState: the SDK calls it after clearing ThreadLocalRegion disable_count (+0x100) when interrupt_flag
+    (+0x102) was set by a preemption that had to wait (threads.c totk_preempt_signal). The switch itself happened at this
+    SVC's entry (runtime_core_checkpoint); here the flag is cleared, as Horizon does. */
+ case 0x36:{volatile uint16_t *tlr=pthread_getspecific(runtime_keys[2]);if(tlr)tlr[0x102/2]=0;r[0]=0;return 0;}
  case 0x26: {uint32_t result=0;if(r[1]&&r[2]>=4)memcpy(&result,(void *)(uintptr_t)r[1],4);fprintf(stderr,"[totk] guest Break reason=%llx result=%x\n",(unsigned long long)r[0],result);runtime_trace_guest(r[29],r[30]);if(r[0]&0x80000000ULL)return 0;runtime_fail("original SDK Break");}
  case 0x27: {size_t n=r[1];if(n>65536)runtime_fail("debug string too long");fwrite((void *)(uintptr_t)r[0],1,n,stderr);r[0]=0;return 0;}
  case 0x0b:{int64_t ns=(int64_t)r[0];if(ns>0){struct timespec t={ns/1000000000,ns%1000000000};nanosleep(&t,NULL);}r[0]=0;return 0;}
@@ -437,3 +450,4 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
 #ifdef GAME_BOTW
 #undef runtime_svc
 #endif
+#include "mem_scan.h"   /* Mac diagnostics: mscan commands (memory scan, write watch) */

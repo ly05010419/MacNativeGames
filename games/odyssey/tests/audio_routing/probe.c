@@ -89,11 +89,49 @@ static void stall_backlog(void) {
     free(m);
 }
 
+/* The production decoder at end of stream: the samples after an end-of-stream buffer come from the next queued buffer
+   in the same frame (Super Mario Odyssey's music, 64 silent samples every 0.3 s while the frame stopped there).
+   Independent PCM buffers make an accidental read into the next stream visible. */
+static int eos_samples(void) {
+    int16_t first[100], second[480];
+    for (int i = 0; i < 100; i++) first[i] = 8192;
+    for (int i = 0; i < 480; i++) second[i] = -16384;
+    AudioRenderer r = {.param = {.sample_rate = 48000}};
+    ServerVoice v = {.in = {.sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1, .pitch = 1},
+        .valid = {1, 1}, .adpcm = {.buffer = -1}};
+    v.buffers[0] = (AudrenWaveBuffer){.address = (uintptr_t)first, .size = sizeof first, .end = 100, .end_of_stream = 1};
+    v.buffers[1] = (AudrenWaveBuffer){.address = (uintptr_t)second, .size = sizeof second, .end = 480};
+    float out[6][MAX_FRAME] = {{0}};
+    int failed = 0;
+    for (int scenario = 0; scenario < 3; scenario++) {   /* end of stream, no end, endless loop */
+        v.buffers[0].end_of_stream = scenario != 1;
+        v.buffers[0].loop = scenario == 2; v.buffers[0].loop_count = -1;
+        voice_render(&r, &v, out, 240);
+        for (int i = 0; i < 240; i++) {
+            float want = i < 100 || scenario == 2 ? .25f : -.5f;
+            if (fabsf(out[0][i] - want) > 1e-6f) {
+                fprintf(stderr, "EOS samples scenario %d sample %d: %g != %g\n", scenario, i, out[0][i], want);
+                failed = 1; break;
+            }
+        }
+    }
+    /* An empty end-of-stream buffer after a partial one: the same, the next queued buffer plays on. */
+    v.buffers[0].loop = 0; v.buffers[0].end_of_stream = 0;
+    v.buffers[2] = v.buffers[1]; v.buffers[1] = (AudrenWaveBuffer){.end_of_stream = 1}; v.valid[2] = 1;
+    voice_render(&r, &v, out, 240);
+    for (int i = 0; i < 240; i++) {
+        float want = i < 100 ? .25f : -.5f;
+        if (fabsf(out[0][i] - want) > 1e-6f) { failed = 1; fprintf(stderr, "empty EOS sample %d\n", i); break; }
+    }
+    puts("4 EOS sample paths checked (stream boundary, continuous, loop, empty EOS)");
+    return failed;
+}
+
 int main(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1); unsetenv("TOTK_AUDIO_CAPTURE");
     unsetenv("TOTK_AUDIO_PREFILL_MS");
     stall_backlog();
-    int failed = 0;
+    int failed = eos_samples();
     for (int i = 0; i < 4; ++i) failed += run_case(i);
     if (failed) return 1;
     puts("4 audio routing graphs / 64 stereo frames (128 channel samples) passed");

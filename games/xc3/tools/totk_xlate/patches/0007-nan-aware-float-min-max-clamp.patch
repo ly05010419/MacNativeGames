@@ -1,0 +1,29 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-10-26 01:29:19
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-10-26 01:29:19
+@@ -333,7 +333,7 @@
+ 
+         private static OperationResult GenerateClamp(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateTernary(context, operation, context.Delegates.GlslFClamp, context.Delegates.GlslSClamp);
++            return GenerateTernary(context, operation, context.GlslNClamp, context.Delegates.GlslSClamp);
+         }
+ 
+         private static OperationResult GenerateClampU32(CodeGenContext context, AstOperation operation)
+@@ -953,7 +953,7 @@
+ 
+         private static OperationResult GenerateMaximum(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateBinary(context, operation, context.Delegates.GlslFMax, context.Delegates.GlslSMax);
++            return GenerateBinary(context, operation, context.GlslNMax, context.Delegates.GlslSMax);
+         }
+ 
+         private static OperationResult GenerateMaximumU32(CodeGenContext context, AstOperation operation)
+@@ -969,7 +969,7 @@
+ 
+         private static OperationResult GenerateMinimum(CodeGenContext context, AstOperation operation)
+         {
+-            return GenerateBinary(context, operation, context.Delegates.GlslFMin, context.Delegates.GlslSMin);
++            return GenerateBinary(context, operation, context.GlslNMin, context.Delegates.GlslSMin);
+         }
+ 
+         private static OperationResult GenerateMinimumU32(CodeGenContext context, AstOperation operation)

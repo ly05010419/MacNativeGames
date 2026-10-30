@@ -51,9 +51,9 @@ def card_image(folder):
     return xci
 
 
-def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True):
+def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_code_botw', fonts=True, version='botw190'):
     """build_app.main with the long steps mocked: it stops at `stop` (Stop) or at the first BuildError, which it returns
-    with the started mocks. fonts=False leaves out --firmware."""
+    with the started mocks. fonts=False leaves out --firmware; version is what the update is identified as."""
     keys = folder / 'prod.keys'
     keys.write_text('')
     firmware = folder / 'firmware'
@@ -72,7 +72,7 @@ def run_main(case, folder, base, update=None, dlcs=(), game='botw', stop='step_c
         prepare_work=mock.patch.object(build_app, 'prepare_work', side_effect=prepare_work),
         identify_game=mock.patch.object(build_app, 'identify_game', return_value=game),
         container=mock.patch.object(build_app, 'prepare_update_container', side_effect=lambda tree, source, keys, logs: source),
-        identify_update=mock.patch.object(build_app, 'identify_botw_update', return_value='botw190'),   # by the update's ExeFS hashes
+        identify_update=mock.patch.object(build_app, 'identify_botw_update', return_value=version),   # by the update's ExeFS hashes
         step_code_botw=mock.patch.object(build_app, 'step_code_botw', side_effect=Stop if stop == 'step_code_botw' else None),
         step_data_botw=mock.patch.object(build_app, 'step_data_botw', side_effect=Stop if stop == 'step_data_botw' else None),
         step_code=mock.patch.object(build_app, 'step_code', side_effect=Stop),

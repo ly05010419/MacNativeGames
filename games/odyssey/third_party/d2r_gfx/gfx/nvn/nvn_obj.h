@@ -220,6 +220,11 @@ void botw_mfx_frame_reset(void);
 #define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
 #define BOTW_ASHOT_POLL(t, cur)
 #endif
+/* Key 5 (totk_taa.m): the compose draw whose scene texture (fragment texture 0) MetalFX anti-aliases first. Odyssey's tone
+   mapping is one full-screen triangle into a 1600x900 target, fragment shader 1068aa25 (texture 0 the 1600x900 R11G11B10F
+   scene, a one-slice 2D array; texture 4 the 400x225 bloom; texture 2 an 8x8x8 colour table), found in a captured Sand
+   Kingdom frame. */
+#define TAA_COMPOSE(fs) !strncmp((fs)->key, "1068aa25d67ab129bf151b3f598bf9cc456853212d2db1267dc687de991682a9-", 65)
 typedef struct { float depth; int32_t depth_mask, stencil, stencil_mask; } p_clear_ds;
 typedef struct { int32_t first, n; float v[16][6]; } p_viewports;          // x, y, w, h, 近, 远（近远由 DEPTH_RANGE 覆盖） | x, y, w, h, near, far (near and far are overridden by DEPTH_RANGE)
 typedef struct { int32_t x, y, w, h; } p_scissor;

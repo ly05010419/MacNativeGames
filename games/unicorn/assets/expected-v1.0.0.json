@@ -1,0 +1,18 @@
+{
+  "title_id": "010054B01AD92000",
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "38f6c81d44d653387a5053f7c01f2fe7d9adbdf5d2d7c06633638bf9a13614a6",
+    "main.npdm": "34aec3d8dc948bd6323371a0d9a16be5085a6e1d8626fc717a28ea9bd13e0f09",
+    "rtld": "70d47e8ffa857b93ba69fcec3eee294b0bc5c32065a18c455c8eaf74a336acbd",
+    "sdk": "52523b917913f595773b5bccb6517769d5017d8434bb7b397abe1732e525c09d"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "3f36178b2e756fe749da18c85a7b87e3a7b2d9a1c7658c6f145157709154d014",
+    "sdk.patched.bin": "bf516a55fcf8d043bc305162880015b011796c28144cc305211c25779777f891"
+  },
+  "romfs": {
+    "sha256": "76b6eb51736ccd3ce5d3c43b83715c5676cc3c0c896eb3585d6a0484c91f079d",
+    "size": 3126738276
+  }
+}

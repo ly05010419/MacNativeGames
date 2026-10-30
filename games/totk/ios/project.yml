@@ -12,7 +12,7 @@ targets:
     platform: iOS
     sources:
       - Sources
-      - Settings.bundle   # the Settings app pane (game language picker); stored in NSUserDefaults, applied in main.m
+      - Settings.bundle   # the Settings app pane; options stored in NSUserDefaults
       - path: ../runtime
         excludes:
           - frontend.m
@@ -23,6 +23,9 @@ targets:
       - path: Gen/embed.S
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"
+    dependencies:
+      - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
+      - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
     info:
       path: Sources/Info.plist
       properties:
@@ -42,6 +45,7 @@ targets:
         UIViewControllerBasedStatusBarAppearance: false
         UIApplicationSupportsIndirectInputEvents: true
         GCSupportsControllerUserInteraction: true
+        NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
         CADisableMinimumFrameDurationOnPhone: true

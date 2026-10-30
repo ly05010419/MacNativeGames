@@ -1,4 +1,5 @@
-// totk_shader_contrib.h: the contribution file and its reminder. Usage: probe <file> [noseed]; writes the file, prints JSON.
+// totk_shader_contrib.h: the contribution file and its reminder. Usage: probe <file> [noseed | game]; writes the file, prints JSON.
+// game: a file an older app wrote (no "# Game:" line) gets the TOTK_CONTRIB_GAME line once, before its next row.
 // noseed: with TOTK_SHADER_SEED=off nothing is written (a process of its own: totk_contrib_add keeps its file once opened).
 #import <Foundation/Foundation.h>
 #include "totk_shader_contrib.h"
@@ -9,11 +10,25 @@ static NSString *key(unsigned i) { return [NSString stringWithFormat:@"%064x", i
 
 int main(int argc, char **argv) {
     @autoreleasepool {
-        if (argc != 2 && !(argc == 3 && !strcmp(argv[2], "noseed"))) return 2;
+        if (argc != 2 && !(argc == 3 && (!strcmp(argv[2], "noseed") || !strcmp(argv[2], "game")))) return 2;
         NSString *path = @(argv[1]);
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         [NSFileManager.defaultManager removeItemAtPath:totk_contrib_state(path) error:nil];
         setenv("TOTK_SHADER_CONTRIB", argv[1], 1);
+        if (argc == 3 && !strcmp(argv[2], "game")) {
+            NSString *old = [NSString stringWithFormat:@"# header\nV\t%@\t{}\n", key(1)];
+            [old writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            setenv("TOTK_CONTRIB_GAME", "TOTK 1.4.3", 1);
+            totk_contrib_add(key(1), @{});                     // a row it has: nothing written, no tag yet
+            check([[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] isEqualToString:old], "a known row: untouched");
+            totk_contrib_add(key(2), @{}); totk_contrib_add(key(3), @{});
+            NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            NSString *want = [NSString stringWithFormat:@"%@# Game: TOTK 1.4.3\nV\t%@\t{}\nV\t%@\t{}\n", old, key(2), key(3)];
+            check([text isEqualToString:want], "the game line once, before the first new row");
+            check(totk_contrib_read(path).count == 3, "the game line is no row");
+            printf("{\"status\":\"%s\",\"probe\":\"shader-contrib-game\",\"checked\":%d,\"failures\":%d}\n", failures ? "fail" : "pass", checked, failures);
+            return failures != 0;
+        }
         if (argc == 3) {
             setenv("TOTK_SHADER_SEED", "off", 1);
             totk_contrib_add(key(1), @{@"tex": @{@"9": @"2d"}});

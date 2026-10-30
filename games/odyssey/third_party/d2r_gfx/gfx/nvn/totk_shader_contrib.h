@@ -13,12 +13,17 @@
 #include <string.h>
 
 #define TOTK_CONTRIB_STEP 500
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets Breath of the Wild's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
+/* This game's own shader list, games/odyssey/assets/shader_list.tsv (user 2026-10-28: every game its own list, never mixed
+   into Tears of the Kingdom's): the issue form of the other games with the game and the title filled in, an automatic
+   submission titled with the game (games/totk/scripts/collect_shader_issues.py OTHER finds it by that title), and a
+   contribution file named after it. */
+#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
+#define GAME_CONTRIB_GAME "Super Mario Odyssey"
+#define GAME_CONTRIB_TITLE "Shader list (Super Mario Odyssey):"
+#define GAME_CONTRIB_FILE "shader-list-contribution-odyssey.txt"
 #define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
+#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
+    "&game=Super+Mario+Odyssey&title=Shader+list+%28Super+Mario+Odyssey%29%3A+"
 
 static inline NSString *totk_contrib_path(void) {
     const char *e = getenv("TOTK_SHADER_CONTRIB");

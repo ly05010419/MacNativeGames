@@ -11,20 +11,19 @@ uint64_t runtime_now_ns(void){return probe_clock_fixed?probe_now:(probe_now+=100
 void dm_gfx_shot_at(long frames,const char *path){(void)frames;(void)path;runtime_fail("unexpected screenshot in unit probe");}
 void dm_gfx_passdump_next(long n){(void)n;runtime_fail("unexpected pass dump in unit probe");}
 void dm_gfx_texdump_next(const char *path){(void)path;runtime_fail("unexpected texture dump in unit probe");}
-static int help_toggles,interp_toggles,output_cycles,aspect_toggles,taa_toggles,pad_type_cycles,mouse_toggles;   // keys 1 / 2 / 3 / 4 / 5 / 6 / 7 (see the key checks)
+static int settings_toggles;   // key 1 (see the key checks)
 void runtime_swkbd_selftest(void){runtime_fail("unexpected keyboard self-test in unit probe");}
 void runtime_dump_threads(void){runtime_fail("unexpected thread dump in unit probe");}
 void runtime_hle_trace_set(int mode){(void)mode;runtime_fail("unexpected host-call trace in unit probe");}
 void runtime_frame_step_pin(double ms){(void)ms;runtime_fail("unexpected frame step pin in unit probe");}
 void runtime_front_text_test(const char *op,const char *text){(void)op;(void)text;runtime_fail("unexpected keyboard test in unit probe");}
-int runtime_output_res_toggle(void){runtime_fail("unexpected output size switch in unit probe");return 0;}
-void runtime_shortcut_help_toggle(void){help_toggles++;}
-int runtime_output_mode_cycle(void){output_cycles++;return 1;}
-int runtime_aspect_toggle(void){aspect_toggles++;return 1;}
-void taa_toggle(void){taa_toggles++;}
-int runtime_gamepad_type_cycle(void){return ++pad_type_cycles;}
-int runtime_mouse_toggle(void){return ++mouse_toggles&1;}
-void dm_gfx_set_flag(const char *name,int v){if(!strcmp(name,"mfx_interp")&&v==-1){interp_toggles++;return;}runtime_fail("unexpected runtime flag in unit probe");}
+void runtime_settings_toggle(void){settings_toggles++;}
+int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
+static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
+void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
+void runtime_setting_remove(const char *name){(void)name;}
+int runtime_mouse_enabled(void){return 0;}
+void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
 void dm_gfx_window_shot(const char *p){(void)p;runtime_fail("unexpected window shot in unit probe");}
@@ -93,6 +92,20 @@ static void feedback_checks(void){
  need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0&&rumble_seen[0][2]==0&&!vactual(&got,&left)&&got.al==0.7f,"muted: the game's value is kept, the controller gets silence");
  need(runtime_hid_feedback_flag("rumble",1)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"flag rumble 1 unmutes");
  need(runtime_hid_feedback_flag("mfx_upscale",1)==0,"other flags are not taken");
+ /* The settings panel's rumble and gyro switches (runtime_feedback_*, key 1): while TOTK_RUMBLE / TOTK_GYRO is set it decides
+    and a pick does nothing; without it a pick is saved in rumble.txt / gyro.txt and mutes or unmutes the device the game
+    has in this run at once. */
+ need(runtime_feedback_locked(0)&&runtime_feedback_locked(1)&&runtime_feedback_present(0),"the variables set: the panel shows them, greyed out");
+ runtime_feedback_choose(0,0);need(!saves&&!vsend(&left,&(Vib){0.6f,160,0.6f,320})&&rumble_seen[0][0]==0.6f,"a pick while the variable decides changes nothing");
+ unsetenv("TOTK_RUMBLE");unsetenv("TOTK_GYRO");
+ need(!runtime_feedback_locked(0)&&!runtime_feedback_locked(1)&&runtime_feedback_present(0)&&runtime_feedback_choice(0)==1&&runtime_feedback_choice(1)==1,"without the variables the switches are the panel's, on");
+ need(!vsend(&right,&(Vib){0.1f,90,0.3f,600})&&rumble_seen[1][2]==0.3f,"the right handle plays before the pick");
+ runtime_feedback_choose(0,0);
+ need(saves==1&&!strcmp(saved_name,"rumble.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(0)==0&&rumble_seen[0][0]==0&&rumble_seen[1][2]==0,"rumble off in the panel: saved, both handles silent at once");
+ need(!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0,"rumble off in the panel: the game's values play silence");
+ runtime_feedback_choose(0,1);
+ need(saves==2&&!strcmp(saved_word,"on")&&runtime_feedback_choice(0)==1&&!vsend(&left,&(Vib){0.7f,160,0.7f,320})&&rumble_seen[0][0]==0.7f,"rumble on in the panel: saved and playing again");
+ setenv("TOTK_RUMBLE","1",1);setenv("TOTK_GYRO","1",1);
  /* Six-axis: the SDK's full-key handle (nn::hid::utility::GetSixAxisSensorHandle) is 0x20003. */
  uint32_t(*sstart)(const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE");
  uint32_t(*sstates)(int *,Six *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid6detail22GetSixAxisSensorStatesEPiPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE");
@@ -103,10 +116,16 @@ static void feedback_checks(void){
  memset(&buf,0xa5,sizeof buf);need(!sstart(&six)&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0&&near3(buf.s[0].acc,0,0,-1,0)&&near3(buf.s[0].dir,1,0,0,0)&&near3(buf.s[0].dir+6,0,0,1,0),"no controller motion: one still, unconnected state");
  runtime_motion_live(1);feed(100,0,0,-1,0,0,0);probe_now+=1000000;
  memset(&buf,0xa5,sizeof buf);need(!sstates(&n,buf.s,16,&six)&&n==16,"16 states when 100 samples are there");
- for(int i=0;i<16;i++)need(buf.s[i].sampling==100-i&&buf.s[i].attr==1&&buf.s[i].dt==4000000,"newest first, sampling numbers, connected, 4 ms apart");
+ /* The settings panel's gyro switch (runtime_feedback_choose, key 1), without TOTK_GYRO: saved, and at once a still controller / motion again. */
+ unsetenv("TOTK_GYRO");
+ runtime_feedback_choose(1,0);need(!strcmp(saved_name,"gyro.txt")&&!strcmp(saved_word,"off")&&runtime_feedback_choice(1)==0&&!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"gyro off in the panel: saved, a still controller at once");
+ runtime_feedback_choose(1,1);need(!strcmp(saved_word,"on")&&runtime_feedback_choice(1)==1&&!sstates(&n,buf.s,16,&six)&&n==16&&buf.s[0].attr==1,"gyro on in the panel: saved, motion again");
+ setenv("TOTK_GYRO","1",1);
+ /* States come on the console's 5 ms clock (motion_fusion.c): 100 samples 4 ms apart are 400 ms, 80 states. */
+ for(int i=0;i<16;i++)need(buf.s[i].sampling==80-i&&buf.s[i].attr==1&&buf.s[i].dt==5000000,"newest first, sampling numbers, connected, 5 ms apart (the console clock)");
  for(unsigned i=0;i<sizeof buf.guard;i++)need(buf.guard[i]==0xa5,"six-axis output guard");
  need(near3(buf.s[0].acc,0,0,-1,1e-6)&&near3(buf.s[0].dir,1,0,0,1e-6)&&near3(buf.s[0].dir+3,0,1,0,1e-6)&&near3(buf.s[0].dir+6,0,0,1,1e-6)&&near3(buf.s[0].angle,0,0,0,1e-9),"lying still and flat: identity direction, no angle");
- Six one;need(!sstate(&one,&six)&&one.sampling==100,"single state = the newest");
+ Six one;need(!sstate(&one,&six)&&one.sampling==80,"single state = the newest");
  /* Turning 90 degrees a second about z (counterclockwise seen from above) for 1 s: a quarter turn. */
  sstart(&six);feed(1,0,0,-1,0,0,0);feed(250,0,0,-1,0,0,M_PI/2);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near(buf.s[0].angle[2],0.25,0.002)&&near(buf.s[0].gyro[2],0.25,1e-6)&&near3(buf.s[0].dir,0,1,0,0.01)&&near3(buf.s[0].dir+3,-1,0,0,0.01)&&near3(buf.s[0].dir+6,0,0,1,0.01),"quarter turn about z: angle 0.25 rev, x axis now along y");
@@ -120,7 +139,8 @@ static void feedback_checks(void){
  need(near3(buf.s[0].dir+6,0,-0.5,0.8660254,0.02)&&near3(buf.s[0].dir,1,0,0,0.02),"gravity pulls the tilt in, heading unchanged");
  /* TOTK_GYRO_AXES: a rotation remaps both alike; a reflection also flips the rotation's sense. */
  need(runtime_motion_axes(NULL)==0&&runtime_motion_axes("x,x,z")<0&&runtime_motion_axes("x,y")<0&&runtime_motion_axes("a,b,c")<0&&runtime_motion_axes("x,y,z,")<0,"malformed axis specs rejected");
- need(runtime_motion_axes("-x,y,-z")==1,"axis spec");feed(1,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+ /* two samples (8 ms): a state on the 5 ms clock after the new sample, not the held one before it */
+ need(runtime_motion_axes("-x,y,-z")==1,"axis spec");feed(2,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near3(buf.s[0].acc,-0.1,0.2,0.9,1e-6)&&near3(buf.s[0].gyro,-1,2,-3,1e-5),"a half turn about y remaps acceleration and rotation alike");
  need(runtime_motion_axes("-x,y,z")==1,"axis spec");feed(1,0.1,0.2,-0.9,2*M_PI,4*M_PI,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(near3(buf.s[0].acc,-0.1,0.2,-0.9,1e-6)&&near3(buf.s[0].gyro,1,-2,-3,1e-5),"a mirror flips the rotation's sense");
@@ -130,18 +150,32 @@ static void feedback_checks(void){
  probe_now+=300000000;need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"no sample for 300 ms: no motion");
  feed(1,0,0,-1,0,0,0);runtime_motion_live(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"controller detached: no motion");
  /* Mouse mode (key 7, runtime/gamepad.m): the mouse takes the sensor over. Its samples go in as they are (no TOTK_GYRO_AXES
-    remap, no dead zone), the controller's are dropped meanwhile; mouse mode off, the controller has it back. */
+    remap, no dead zone), the controller's are dropped meanwhile; mouse mode off, the controller has it back. The mouse's
+    last rate is held on the 5 ms clock up to the read (motion_fusion.c): 1 s of -0.25 rev/s and 15 ms more. */
  runtime_motion_mouse(1);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode, no sample yet: no motion");
  runtime_motion_live(1);need(runtime_motion_axes("-x,y,-z")==1,"axis spec");
  {const double acc[3]={0,0,-1},g[3]={0,0,-M_PI/2};for(int i=0;i<100;i++){probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);}}
  feed(5,0.3,0.3,-0.5,0,0,6*M_PI);probe_now+=1000000;sstates(&n,buf.s,1,&six);
- need(buf.s[0].attr==1&&near(buf.s[0].gyro[2],-0.25,1e-6)&&near(buf.s[0].angle[2],-0.2475,0.003)&&near3(buf.s[0].acc,0,0,-1,1e-6),
+ need(buf.s[0].attr==1&&near(buf.s[0].gyro[2],-0.25,1e-6)&&near(buf.s[0].angle[2],-0.2537,0.003)&&near3(buf.s[0].acc,0,0,-1,1e-6),
       "mouse mode: the mouse's samples as they are, the controller's dropped");
  runtime_motion_mouse(0);feed(1,0.1,0.2,-0.9,0,0,0);probe_now+=1000000;sstates(&n,buf.s,1,&six);
  need(buf.s[0].attr==1&&near3(buf.s[0].acc,-0.1,0.2,0.9,1e-6),"mouse mode off: the controller's samples again, remapped");
  need(runtime_motion_axes("x,y,z")==1,"axis spec");
  runtime_motion_live(0);runtime_motion_mouse(1);{const double acc[3]={0,0,-1},g[3]={0,0,0};probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);}
  probe_now+=1000000;need(!sstates(&n,buf.s,1,&six)&&buf.s[0].attr==1,"mouse mode without a controller: motion");
+ /* The mouse's ticks come late now and then, so its own pitch (runtime/mouse_look.h: 10 ms a tick) and the one integrated
+    here part a little; a gravity pull would then creep the aim up or down for seconds after the mouse stops. With the
+    mouse there is no bias to pull out: once it stops, the direction holds, and the gravity reported is its own. */
+ runtime_motion_mouse(1);
+ {double acc[3]={0,0,-1},g[3]={M_PI/2,0,0},p=0;
+  for(int i=0;i<30;i++){p+=0.01*M_PI/2;acc[1]=-sin(p);acc[2]=-cos(p);probe_now+=12000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  g[0]=0;probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  float held[9];memcpy(held,buf.s[0].dir,sizeof held);
+  for(int i=0;i<300;i++){probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].dir,held[0],held[1],held[2],1e-4)&&near3(buf.s[0].dir+3,held[3],held[4],held[5],1e-4)&&near3(buf.s[0].dir+6,held[6],held[7],held[8],1e-4),
+       "mouse stopped after late ticks: the direction holds for 3 s (no gravity pull)");
+  need(near3(buf.s[0].acc,-buf.s[0].dir[2],-buf.s[0].dir[5],-buf.s[0].dir[8],1e-4),"mouse mode: the gravity reported is the direction's down");}
  runtime_motion_mouse(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode off, no controller: no motion");
  probe_clock_fixed=0;
 }
@@ -149,31 +183,31 @@ int main(void){
  void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
  int(*read)(State *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
  uint32_t id=0;struct{State state;unsigned char guard[32];} out;memset(&out,0xa5,sizeof(out));init();
- runtime_input_key(38,1);runtime_input_key(38,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
+ /* Window keys go through the player's layout (runtime/keyboard_map.h; the default here): E confirms (A). */
+ runtime_input_key(14,1);runtime_input_key(14,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
  need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
  runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
  runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
- const unsigned dpad[]={3,17,4,5};
+ const unsigned dpad[]={19,20,21,23};   /* 2 3 4 5: d-pad left, up, right, down */
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
   need(out.state.buttons==(1ULL<<(12+i))&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry,"D-pad independent of analog sticks");
   runtime_input_key(dpad[i],0);read(&out.state,1,&id);need(!out.state.buttons,"D-pad release");
  }
- /* Keys 1-7 (Mac key codes 18-21, 23, 22, 26): one action per press; held-key repeats and the release do nothing more; no game
-    button; each key touches only its own action. 1 shows / hides the overlays (frontend.m), 2 frame interpolation (runtime
-    flag mfx_interp, v = -1), 3 the picture mode (game_patches*.c), 4 the ultrawide aspect ratio (aspect_patch.h), 5 edge
-    smoothing (totk_taa.m), 6 the controller type, 7 mouse mode (gamepad.m). */
- enum{SHORTCUTS=7};
- static const unsigned keys[SHORTCUTS]={18,19,20,21,23,22,26};int *count[SHORTCUTS]={&help_toggles,&interp_toggles,&output_cycles,&aspect_toggles,&taa_toggles,&pad_type_cycles,&mouse_toggles};
- static const char *const pressed[SHORTCUTS]={"key 1 toggles the overlays (only)","key 2 toggles frame interpolation (only)","key 3 cycles the picture mode (only)","key 4 toggles ultrawide (only)","key 5 toggles edge smoothing (only)","key 6 cycles the controller type (only)","key 7 toggles mouse mode (only)"};
- for(int k=0;k<SHORTCUTS;k++){
-  runtime_input_key(keys[k],1);for(int j=0;j<SHORTCUTS;j++)need(*count[j]==(j<k?2:j==k?1:0),pressed[k]);
-  runtime_input_key(keys[k],1);need(*count[k]==1,"a held key (auto-repeat) does not act again");
-  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 1-7 are no controller input");
-  runtime_input_key(keys[k],0);need(*count[k]==1,"releasing the key does not act");
-  runtime_input_key(keys[k],1);runtime_input_key(keys[k],0);need(*count[k]==2,"every press acts");
+ /* Key 1 (Mac key code 18) opens / closes the settings panel (frontend.m): once per press; held-key repeats and the
+    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more; 6 and 7 drive nothing. */
+ runtime_input_key(18,1);need(settings_toggles==1,"key 1 toggles the settings panel");
+ runtime_input_key(18,1);need(settings_toggles==1,"a held key (auto-repeat) does not act again");
+ read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
+ runtime_input_key(18,0);need(settings_toggles==1,"releasing the key does not act");
+ runtime_input_key(18,1);runtime_input_key(18,0);need(settings_toggles==2,"every press acts");
+ static const unsigned former[]={19,20,21,22,23,26};
+ for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
+  runtime_input_key(former[k],1);read(&out.state,1,&id);
+  need(settings_toggles==2&&((former[k]!=22&&former[k]!=26)||!out.state.buttons)&&!out.state.lx&&!out.state.ly,"keys 2-7 are no shortcuts");
+  runtime_input_key(former[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
  for(unsigned i=0;i<32;i++)need(out.guard[i]==0xa5,"state output guard");
@@ -186,8 +220,8 @@ int main(void){
  const uint32_t both[]={0,0x20};styles(3);ids(both,2);
  uint32_t hid=0x20;id=0;need(style(&hid)==2&&style(&id)==0,"handheld mode: handheld controller only");
  void(*disc)(const uint32_t *)=runtime_input_override("_ZN2nn3hid14DisconnectNpadERKj");disc(&id);need(style(&hid)==2,"handheld mode: disconnecting player 1 keeps the handheld controller");
- runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
+ runtime_input_key(14,1);runtime_input_key(14,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 overlays / key 2 frame interpolation / key 3 picture mode / key 4 ultrawide / key 5 edge smoothing / key 6 controller type / key 7 mouse mode (once per press), mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

@@ -1,0 +1,50 @@
+# Game profile of Mario Kart 8 Deluxe (Switch, updates 4.0.0 = v1441792 and 4.0.1 = v1507328). Plays on the iPhone and the Mac (boot, the title screen's demo race, the Mii pick, the menus, Grand Prix races at 60 fps with sound)
+# Format: see dm/games/README.md
+# Nintendo's sead / agl / gsys engine with NintendoWare (G3d, Ui2d, Vfx, Atk) and Pia networking, on SDK 4.4.0, the oldest SDK so far (DARK SOULS: REMASTERED is 4.5.0), NVN;
+# subsdk0 is the SDK's movie library (the menus' H.264 previews). RomFS is mostly Yaz0-compressed SARC (.szs), BFRES models and BNTX textures, which the game reads itself.
+# Three host parts it needed: the Mii database (hle_mii.c: the six default Miis it lists at boot and never counts, random Miis for the title's demo race), a MiiModel system data
+# stand-in (hle_mii.c / hle_fs.c MountSystemData: the firmware's Mii heads are not the host's to ship, so every head is empty and draws nothing), and SDK 4's audio renderer
+# (hle_audren.c: its DeviceSink is command 0xf of 0x130 bytes, and the update lock is an nn::os::MutexType at +0x1d0). Its add-on content (0100152000023001) holds only contents.dat
+# and version.txt (the courses are in the update): the game decrypts it in a 0x3130-byte heap, which the add-on content cache must leave room in (hle_fs.c romfs_work_size)
+
+# ---- Identity ----
+title_id	0100152000022000
+program_id	0100152000022000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	Mario Kart 8 Deluxe
+ipa	MarioKart8Deluxe.ipa
+app_category	public.app-category.racing-games
+# the race records SetRenderEnableConditional as a course loads: evaluated at replay, as on the GPU (drawn anyway, the same race route at the same frames looked the same; evaluated is NVN's behaviour)
+render_cond	on
+
+# ---- Versions ----
+# MacNativeGames games/mk8d: only update 4.0.1 (v1507328). The original modules are pinned in assets/expected-4.0.1.json; upstream's profile also registers 4.0.0 (v1441792).
+# This copy carries no shader tables: each build splits them from its own 4.0.1 files (the build script's TARGET_TABLES), so the profile is always derived for v1507328
+build	v1507328	4.0.1	main=158c0c7399aabd7bf83795c2ef3484c7	subsdk0=d9de423efc1512328c3c05378c7cb031	sdk=ba520906609c503227871a314a94fb5f
+package	v1507328
+shader_versions	v1507328
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+# MacNativeGames games/mk8d: the extraction root, not a game file (nx_extract writes the image into a .partial folder and swaps it in whole); upstream names a RomFS file
+romfs_marker	.
+zip_store	.bfres:.bfstm:.bslnk:.mp4:.ptcl:.sarc:.szs:.webm:.metallib
+
+# ---- Memory ----
+# no system resource: the game sets a 3.03 GB heap (pool − 64 MB) in the 4 GB layout's 3.25 GB heap region; about 2.4 GB resident and 1.26 GB of Metal allocations in a race on the Mac
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon
+sys_resource	0x0
+
+# ---- Shader split ----
+# 29,650 shaders (12,529 vertex, 17,092 pixel, 28 compute, 1 geometry): BNSH in the courses' and objects' .bfsha / .bfres archives inside the .szs SARCs, the effects' .ptcl, the layouts,
+# agl's two BAHS sharcb and 37 in main; 18,747 variation pairs
+# MacNativeGames games/mk8d: one generic group for every RomFS shader (upstream groups them by RomFS top-level folder); main's shaders keep their own group
+shader_groups	/=archive
+shader_note	Mario Kart 8 Deluxe shaders

@@ -1,0 +1,43 @@
+{
+  "title_id": "01006F8002326000",
+  "package_kind": "base",
+  "cnmt_version_raw": 0,
+  "npdm_sha256_alternates": [
+    "06823e10ea105c36c92b26d7763415d4ca53deb68acd70f05d6a883f0c4139dd"
+  ],
+  "npdm_alternate_verification": "Nintendo ACID signature verified; all four NSO hashes match the reference base.",
+  "exefs_sha256": {
+    "main": "f8d248109ff72999b4600ae3749f8c7397fb960f7ad3ab8dee3018ae9e14e900",
+    "main.npdm": "8078374891b3d4115e00de0acb7ebde0a5e3d85addf9ae1fa39c398141170077",
+    "rtld": "a71c5118f08ec8707a6c68754607ad069f5be50fa60cea6d805e0bc2ad4655a5",
+    "sdk": "31ce67e8701584ba812dceeae9b590d7a6ad642bcb5aa74d2fe3ea5c5474250d",
+    "subsdk0": "16f53a607b788aadb95019914a2754206771f74991458bf06a0cff69d53ad83a"
+  },
+  "modules": [
+    {
+      "name": "rtld",
+      "build_id": "31a2773ea6928ffe3d32b17b3ad08f54826da39f000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "main",
+      "build_id": "7fc1baff976aeca414520cb89f4616cb00000000000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "sdk",
+      "build_id": "ad3fdfbd62a5f4b082d385ffe420d4400abb831d000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "subsdk0",
+      "build_id": "5a7ada8dd7447c10aa244944f64d0aff17c50539000000000000000000000000",
+      "segment_hashes_verified": true
+    }
+  ],
+  "schema": 1,
+  "game": "Animal Crossing: New Horizons",
+  "scope": "Exact inspected code identity; native execution has not been verified.",
+  "display_version": "1.0.0",
+  "control_nacp_sha256": "f2d15eb2c06eec0b54d03a414958ba19b22e8837aa6dd14660b179f5c6e4dead"
+}

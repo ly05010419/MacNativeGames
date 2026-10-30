@@ -91,14 +91,14 @@ class BotwImport(unittest.TestCase):
         aoc = tree / 'extracted/botw160/aoc/1'
         aoc.mkdir(parents=True)
         (aoc / 'index.json').write_text('{}')
-        config = tree / 'build/botw160/aoc_config.h'
+        config = tree / 'build/game-data/botw160/aoc-config.txt'
         config.parent.mkdir(parents=True)
-        config.write_text('#define AOC_PRESENT_MASK 3')
+        config.write_text('AOC_PRESENT_MASK 3')
         with patch.dict(build_app.VERSIONS, {'botw160': expected}), patch.object(build_app, 'fonts_valid', return_value=True), \
                 patch.object(build_app, 'build_hactool') as build:
             build_app.step_data_botw(tree, BOTW.parent, self.base, self.keys, self.root / 'logs', update=self.update)
         build.assert_not_called()
-        self.assertFalse(aoc.parent.exists())
+        self.assertFalse(aoc.exists())
         self.assertFalse(config.exists())
 
     def cached_romfs(self):
@@ -135,6 +135,7 @@ class BotwImport(unittest.TestCase):
                  'extracted/botw160/romfs/romfs.bin', 'extracted/botw160/romfs/runtime-index.bin',
                  'build/shader-seed/botw160/pso_manifest.tsv']
         files += [f'rewritten/botw160/{n}.patched.bin' for n in ('main', 'sdk', 'subsdk0')]
+        files += [f'build/game-data/botw160/{n}' for n in build_app.game_data_files('botw160')]
         for rel in files:
             path = tree / rel
             path.parent.mkdir(parents=True, exist_ok=True)

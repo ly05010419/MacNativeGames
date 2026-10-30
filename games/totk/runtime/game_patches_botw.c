@@ -10,10 +10,10 @@
 #include <math.h>
 #include "game_patches.h"
 #include "game_version.h"
-#include "aspect_math.h"   /* key 4: TOTK_ASPECT parsing */
+#include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
 #include <TargetConditionals.h>
 uint32_t runtime_thread_current_handle(void);
-static void botw_aspect_install(Module *m);   /* key 4, end of the file */
+static void botw_aspect_install(Module *m);   /* the aspect ratio, end of the file */
 static int patch_output_res(Module *m);   /* native output size, after runtime_output_res */
 static void botw_output_tick(void);       /* the size static follows the canvas after the start */
 static void botw_aspect_apply(void);
@@ -22,7 +22,7 @@ static void botw_aspect_apply(void);
    patches on the Mac, and the patched text and patch area are embedded in the app (ios/tools/gen_embed.py), as for
    Tears of the Kingdom (game_patches.c). On the device the original words are not checked (they are patched already) and
    each patched word is checked instead of written. The switches that leave a patch out (TOTK_REALTIME=0,
-   TOTK_PAD_REPEAT=0, TOTK_RENDER_RES=900, TOTK_EXCL_ACQUIRE=0), the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) and the
+   TOTK_PAD_REPEAT=0, TOTK_SLINK_REALTIME=0, TOTK_RENDER_RES=900, TOTK_EXCL_ACQUIRE=0), the brk diagnostics (TOTK_PAD_LOG, TOTK_JQ_CHECK) and the
    native output size (TOTK_OUTPUT_RES) are Mac only; the export ignores them too, so the device checks what it made. */
 #if TARGET_OS_IPHONE
 #define CODE_PATCHED_AT_BUILD 1
@@ -172,7 +172,7 @@ static void pad_tick_advance(void) {
     }
 }
 void runtime_frame_step_update(uint64_t now_ns) {
-    botw_aspect_apply();   /* key 4 */
+    botw_aspect_apply();   /* the aspect ratio */
     botw_output_tick();    /* key 3 */
     if (!frame_step_data || !now_ns) return;
     frame_step_measure(now_ns);
@@ -296,6 +296,50 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
             PAD_LOOP_WORDS, MENU_CD_WORDS);
     pad_log_arm(m);
 }
+/* Sound-link timers by real time (TOTK_SLINK_REALTIME=0: as shipped). xlink2 steps its asset timers (delays, durations)
+   by the frame rate its system holds at +0x84. The effect system's rate gets the VFR's ratio each frame
+   (main+0x1be7918); the sound system's ([main+0x2cc2028]) gets max(raw ratio, 1.0) (main+0x1c59fac..0x1c5a014),
+   which is the ratio on the Switch, where a frame is never shorter than 1/30 s. Above 30 fps the 1.0 made every SLink
+   timer count rendered frames: Cryonis' placement marker, emitted again when its sound event ends after about 24
+   frames, restarted 4-5 times a second at 120 fps instead of about 1.3, so the ice block preview never grew (measured
+   2026-10-23; 1.3 a second at 120 fps after the fix). The store now takes the unclamped ratio from the frame-step page;
+   the audio frame values computed from the clamped number just before it are unchanged. x9 and s0 are free there (a call follows):
+     main+0x1c5a014  str s0, [x8, #0x84]  -> b <veneer>
+     veneer          adrp x9, <page> / ldr s0, [x9] / str s0, [x8, #0x84] / b main+0x1c5a018 */
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
+    int64_t delta = (int64_t)target - (int64_t)site;
+    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
+    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+}
+static void patch_slink_rate(Module *m, uint64_t page) {
+    const char *e = getenv("TOTK_SLINK_REALTIME");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] sound-link timers at least one 30 fps frame per frame, as shipped (TOTK_SLINK_REALTIME=0)\n"); return; }
+    enum { SITE = 0x1c5a014, BACK = 0x1c5a018 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0x1c59fa8u, 0xbd400100u}, {0x1c59facu, 0x1e2e1001u}, {0x1c59fb0u, 0x1e214800u},
+        {0x1c5a00cu, 0x90008348u}, {0x1c5a010u, 0xf9401508u}, {SITE, 0xbd008500u}, {BACK, 0x91090300u}, {0x1c5a01cu, 0x94133c99u},
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {   /* the phone's text is patched already */
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] sound-link rate main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("sound-link timers by real time require the 1.6.0 rate update instructions");
+        }
+    }
+    const uint64_t stub = (m->text_end + 15) & ~15ULL;
+    const uint32_t veneer[] = {
+        adrp_reg(9, (uintptr_t)m->base + stub, page),
+        0xbd400120u,   /* ldr s0, [x9]         (the measured ratio) */
+        0xbd008500u,   /* str s0, [x8, #0x84]  (the sound system's rate) */
+        branch_to(stub + 12, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("sound-link veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("sound-link veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "sound-link veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "sound-link rate");
+    fprintf(stderr, "[botw] sound-link timers follow the measured frame ratio (veneer +%#llx; TOTK_SLINK_REALTIME=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     /* The loader reserved a writable page immediately after main's image; nothing else uses it in this game. */
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
@@ -335,6 +379,7 @@ static void patch_realtime(Module *m) {
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
+    patch_slink_rate(m, page);
 }
 #else
 /* Breath of the Wild 1.9.0: the same real-time step at the 1.9.0 sites (found by disassembly; MacNativeGames
@@ -798,7 +843,7 @@ static void botw_output_tick(void) {}
    30 fps they ran fast, out of step with their sound, and a cutscene could wait for ever (2026-10-20). main+0x2cbef40
    holds the movie object while one plays (stored at main+0x1600e74 when it is made, cleared at main+0x1a4d6f0 after it
    is freed; the community "60 FPS + FMV Cutscenes Speed Fix" for 1.6.0 keys on the same word). While it is set the
-   frame pacing holds the game at exactly 30 fps (hle_nvn.c game_holds_30, the pacing of the 30+30 mode); the real-time
+   frame pacing holds the game at exactly 30 fps (hle_nvn.c game_hold_fps, the pacing of the 30+30 mode); the real-time
    step then gives the shipped ratio 1.0. runtime/movie_host.c hands it every movie frame (TOTK_MOVIE_PACE).
    TOTK_MOVIE_30=0 turns it off.
    1.9.0: main+0x1e565a8 is the same word, the instance pointer of the movie player (a 0x30-byte object whose +0x20 is
@@ -817,28 +862,61 @@ int runtime_game_fps_limit(void) {
     static int was; if (!!movie != was) { was = !!movie; fprintf(stderr, "[botw] movie %s: frame pacing %s\n", was ? "starts" : "ends", was ? "held at 30 fps" : "back to normal"); }
     return movie ? 30 : 0;
 }
-int runtime_output_res_toggle(void) { return 0; }
-/* Key 3 (runtime/input.c). MetalFX 2K: MetalFX replaces the game's own upscale of the scene into the 1080p canvas
-   (nvn_mtl.m mfxup_dock, BOTW_MFXUP_DOCK_KEY) and upscales the canvas into a window or full screen bigger than 1080p at
-   the present (the output stage). 1.6.0 with a 2K-capable start (TOTK_OUTPUT_RES auto, the default): off -> MetalFX 2K ->
-   native 2K (the canvas and the scene at 2560x1440, output_switch) -> off; otherwise MetalFX 2K on / off. */
-int runtime_output_mode_cycle(void) {
-    extern int mfxup_enabled(void);
-    extern void dm_gfx_set_flag(const char *name, int value);
+/* The settings panel's picture (runtime.h OUTPUT_MODE_*). MetalFX 2K: MetalFX replaces the game's own upscale of the
+   scene into the 1080p canvas (nvn_mtl.m mfxup_dock, BOTW_MFXUP_DOCK_KEY) and upscales the canvas into a window or full
+   screen bigger than 1080p at the present (the output stage). 1.6.0 with a 2K-capable start (TOTK_OUTPUT_RES auto, the
+   default) also offers native 2K (the canvas and the scene at 2560x1440, output_switch) and 720p (both 1280x720);
+   otherwise off and MetalFX 2K. */
+static int output_switchable(void) {
 #ifdef GAME_BOTW160
-    if (g_out_mode == OUT_AUTO && g_out_page) {
-        unsigned cw = (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu);
-        if (cw > 1920) { output_switch(1920, 1080); fprintf(stderr, "[botw] key 3: 关闭 2K\n"); return 1; }
-        if (mfxup_enabled()) {
-            dm_gfx_set_flag("mfx_output", 0); dm_gfx_set_flag("mfx_upscale", 0);
-            output_switch(g_out_w, g_out_h); fprintf(stderr, "[botw] key 3: 原生 2K\n"); return 1;
-        }
+    return g_out_mode == OUT_AUTO && g_out_page;
+#else
+    return 0;
+#endif
+}
+static unsigned output_width_now(void) {
+#ifdef GAME_BOTW160
+    return (unsigned)(atomic_load(&g_out_cur) & 0xffffffffu);
+#else
+    return 1920;
+#endif
+}
+/* No 4K here yet: the heaps are patched in the code for the 2K canvas (patch_output_res). */
+int runtime_output_native(int mode, unsigned *w, unsigned *h) {
+#ifdef GAME_BOTW160
+    if ((mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) && g_out_mode == OUT_AUTO && g_out_page) { *w = g_out_w; *h = g_out_h; return 1; }
+#endif
+    (void)mode; (void)w; (void)h; return 0;
+}
+int runtime_output_modes(void) {
+    unsigned w, h;
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | (output_switchable() ? 1 << OUTPUT_MODE_720P : 0) |
+           (runtime_output_native(OUTPUT_MODE_NATIVE, &w, &h) ? 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX : 0);
+}
+int runtime_output_mode(void) {
+    extern int mfxup_enabled(void);
+    if (output_switchable()) {
+        unsigned w = output_width_now();
+        if (w == 1280) return OUTPUT_MODE_720P;
+        if (w > 1920) return mfxup_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
+    }
+    return mfxup_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
+}
+int runtime_output_mode_set(int mode) {
+    extern void dm_gfx_set_flag(const char *name, int value);
+    if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_720P || !(runtime_output_modes() & 1 << mode)) return 0;
+    int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;   /* 2K + MetalFX: the output stage scales the 2K canvas to the window */
+    dm_gfx_set_flag("mfx_output", mfx);
+    dm_gfx_set_flag("mfx_upscale", mfx);
+#ifdef GAME_BOTW160
+    if (output_switchable()) {
+        unsigned w = 1920, h = 1080;
+        if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) { w = g_out_w; h = g_out_h; }
+        if (output_width_now() != w) output_switch(w, h);
     }
 #endif
-    int next = !mfxup_enabled();
-    dm_gfx_set_flag("mfx_output", next);
-    dm_gfx_set_flag("mfx_upscale", next);
-    fprintf(stderr, "[botw] key 3: %s\n", next ? "MetalFX 2K" : "关闭 2K");
+    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE ? "native 2K" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
+            mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
 }
 /* Key 4 (runtime/input.c): ultrawide on / off (TOTK_ASPECT, default 21:9; also 32:9, 3440x1440 or 2.39; TOTK_ASPECT set
@@ -864,6 +942,7 @@ int runtime_output_mode_cycle(void) {
 #endif
 static uint8_t *g_uw_main;
 static float g_uw_wide;
+static float g_uw_start;   /* TOTK_ASPECT's ratio, 0 without it */
 static _Atomic(uint32_t) g_uw_on;
 static int g_uw_written;   /* the field holds the wide ratio this code wrote (present thread only) */
 static _Atomic int g_uw_effective;   /* the wide ratio stayed in the field from one present to the next: the picture is wide */
@@ -879,21 +958,12 @@ static float aspect_requested(void) {   /* TOTK's parser (aspect_math.h); "displ
    singleton, +0xe8 = projection +0x38 + aspect +0xb0). The straight run main+0x15c2118..0x15c214c (no branch lands in it)
    is rewritten so that store takes a float from the data page after the module (+0x20) when it is not 0.0, else the
    game's own ratio as shipped: near / far copied with one ldp / stp, the three repeated dirty-byte stores before the
-   aspect folded into one, x9 / s1..s3 / flags free there. Key 4 then only sets that word (g_uw_word). 1.9.0 has the
-   same path (main+0x10edaf8) yet kept a written ratio; not looked into. */
-static _Atomic uint32_t *g_uw_word;
-static void botw_aspect_writer(Module *m) {
-    static const uint32_t original[14] = {0x39010277, 0xb9406ec8, 0xb900d268, 0x39010277, 0xb94072c8, 0xb900d668, 0x39010277,
-                                          0x2d4806a0, 0x2d470ea2, 0x39010277, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00ea60};
-    const uint32_t at = 0x15c2118;
-    for (int i = 0; !CODE_PATCHED_AT_BUILD && i < 14; i++) {
-        uint32_t w; memcpy(&w, m->base + at + 4 * i, 4);
-        if (w != original[i]) { fprintf(stderr, "[botw] ultrawide main+%#x: found %08x expected %08x\n", at + 4 * i, w, original[i]); runtime_fail("ultrawide requires the 1.6.0 camera update"); }
-    }
-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
-    if (data_off + 0x4000 != m->size) runtime_fail("ultrawide: no data page after the main module");
-    const uint64_t page = (uintptr_t)m->base + data_off;
-    const uint32_t patched[14] = {
+   aspect folded into one, x9 / s1..s3 / flags free there. Key 4 then only sets that word (g_uw_word). */
+#define UW_WRITER_AT 0x15c2118u
+static const uint32_t uw_writer_original[] = {0x39010277, 0xb9406ec8, 0xb900d268, 0x39010277, 0xb94072c8, 0xb900d668, 0x39010277,
+                                              0x2d4806a0, 0x2d470ea2, 0x39010277, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00ea60};
+static void uw_writer_words(uint32_t *out, uint32_t adrp) {
+    const uint32_t patched[] = {
         0x39010277,   /* strb w23, [x19, #0x40]       dirty */
         0x294da6c8,   /* ldp w8, w9, [x22, #0x6c]     near, far */
         0x291a2668,   /* stp w8, w9, [x19, #0xd0] */
@@ -902,29 +972,68 @@ static void botw_aspect_writer(Module *m) {
         0x1e233821,   /* fsub s1, s1, s3 */
         0x1e223800,   /* fsub s0, s0, s2 */
         0x1e211800,   /* fdiv s0, s0, s1              the game's ratio */
-        adrp_reg(8, (uintptr_t)m->base + at + 32, page),
+        adrp,         /* adrp x8, <data page> */
         0xbd402101,   /* ldr s1, [x8, #0x20]          ours, 0.0 = none */
         0x1e202028,   /* fcmp s1, #0.0 */
         0x1e201c20,   /* fcsel s0, s1, s0, ne */
         0x39010277,   /* strb w23, [x19, #0x40]       dirty */
         0xbd00ea60,   /* str s0, [x19, #0xe8]         the aspect */
     };
-    put_words(m, at, patched, 14, "ultrawide aspect writer");
+    memcpy(out, patched, sizeof patched);
+}
+#else
+/* 1.9.0 keeps a written ratio at the title but writes the aspect every frame in the world too (2026-10-25, iPhone 14:
+   from the first world frames the picture flickered between full screen and 720p, as 1.6.0 did). Its camera update
+   main+0x10eda5c holds the projection at x19 + 0x10 (aspect +0xc0 = projection +0xb0, dirty byte +0x18) and after the
+   fovy call stores near / far and the layer rectangle's width / height in the straight run main+0x10edae0..0x10edb10
+   (13 words, no branch lands in it, x8 / x9 / s1..s3 / flags free before the return). The same rewrite: near / far with
+   one ldp / stp, one dirty-byte store, the aspect from the data page (+0x20) when it is not 0.0. */
+#define UW_WRITER_AT 0x10edae0u
+static const uint32_t uw_writer_original[] = {0xbd406e80, 0x39006276, 0xbd00aa60, 0xbd407280, 0x39006276, 0xbd00ae60, 0x2d4806a0,
+                                              0x2d470ea2, 0x39006276, 0x1e233821, 0x1e223800, 0x1e211800, 0xbd00c260};
+static void uw_writer_words(uint32_t *out, uint32_t adrp) {
+    const uint32_t patched[] = {
+        0x39006276,   /* strb w22, [x19, #0x18]       dirty */
+        0x294da688,   /* ldp w8, w9, [x20, #0x6c]     near, far */
+        0x29152668,   /* stp w8, w9, [x19, #0xa8] */
+        0x2d4806a0,   /* ldp s0, s1, [x21, #0x40]     the layer rectangle */
+        0x2d470ea2,   /* ldp s2, s3, [x21, #0x38] */
+        0x1e233821,   /* fsub s1, s1, s3 */
+        0x1e223800,   /* fsub s0, s0, s2 */
+        0x1e211800,   /* fdiv s0, s0, s1              the game's ratio */
+        adrp,         /* adrp x8, <data page> */
+        0xbd402101,   /* ldr s1, [x8, #0x20]          ours, 0.0 = none */
+        0x1e202028,   /* fcmp s1, #0.0 */
+        0x1e201c20,   /* fcsel s0, s1, s0, ne */
+        0xbd00c260,   /* str s0, [x19, #0xc0]         the aspect */
+    };
+    memcpy(out, patched, sizeof patched);
+}
+#endif
+#define UW_WRITER_N (sizeof uw_writer_original / sizeof *uw_writer_original)
+static _Atomic uint32_t *g_uw_word;
+static void botw_aspect_writer(Module *m) {
+    for (unsigned i = 0; !CODE_PATCHED_AT_BUILD && i < UW_WRITER_N; i++) {
+        uint32_t w; memcpy(&w, m->base + UW_WRITER_AT + 4 * i, 4);
+        if (w != uw_writer_original[i]) { fprintf(stderr, "[botw] ultrawide main+%#x: found %08x expected %08x\n", UW_WRITER_AT + 4 * i, w, uw_writer_original[i]); runtime_fail("ultrawide requires this game version's camera update"); }
+    }
+    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
+    if (data_off + 0x4000 != m->size) runtime_fail("ultrawide: no data page after the main module");
+    const uint64_t page = (uintptr_t)m->base + data_off;
+    uint32_t patched[UW_WRITER_N];
+    uw_writer_words(patched, adrp_reg(8, (uintptr_t)m->base + UW_WRITER_AT + 32, page));
+    put_words(m, UW_WRITER_AT, patched, UW_WRITER_N, "ultrawide aspect writer");
     g_uw_word = (_Atomic uint32_t *)(void *)(page + 0x20);
 }
 static void botw_aspect_word(int on) { float v = on ? g_uw_wide : 0.0f; uint32_t b; memcpy(&b, &v, 4); if (g_uw_word) atomic_store(g_uw_word, b); }
-#else
-static void botw_aspect_writer(Module *m) { (void)m; }
-static void botw_aspect_word(int on) { (void)on; }
-#endif
 static float g_uw_view;                  /* runtime_aspect_view, below */
 static void botw_aspect_phone(float a);
 static void botw_aspect_install(Module *m) {
     float start = aspect_requested();
-    g_uw_wide = start ? start : (float)ASPECT_WIDE;
+    g_uw_wide = start ? start : (float)ASPECT_WIDE; g_uw_start = start;
     g_uw_main = m->base; atomic_store(&g_uw_on, start != 0);
     botw_aspect_writer(m); botw_aspect_word(start != 0);
-    fprintf(stderr, "[botw] ultrawide: key 4 switches 16:9 / %.4f (TOTK_ASPECT), starts %s\n", g_uw_wide, start ? "wide" : "at 16:9");
+    fprintf(stderr, "[botw] ultrawide: the settings panel picks 16:9 / 16:10 / 21:9 / 32:9, starts %s (%.4f)\n", start ? "wide" : "at 16:9", g_uw_wide);
     if (g_uw_view > 0) botw_aspect_phone(g_uw_view);   /* the phone's screen was reported first */
 }
 static void botw_aspect_apply(void) {
@@ -957,23 +1066,24 @@ static void botw_aspect_apply(void) {
 /* The present stretches the canvas only while the camera really draws wide (g_uw_effective): a ratio the game puts back,
    or a camera not made yet, leaves the picture 16:9 instead of stretching it (2026-10-23, 1.6.0 stretched). */
 float runtime_aspect_now(void) { return g_uw_main && atomic_load(&g_uw_on) && atomic_load(&g_uw_effective) ? g_uw_wide : 0; }
-int runtime_aspect_toggle(void) {
-    if (!g_uw_main) return 0;
-    int on = !atomic_load(&g_uw_on); atomic_store(&g_uw_on, on); botw_aspect_word(on);
-#if !TARGET_OS_IPHONE
-    runtime_front_resize_aspect(on ? g_uw_wide : ASPECT_GAME);
-#endif
-    fprintf(stderr, "[botw] key 4: aspect ratio %s\n", on ? "wide" : "16:9 (the game's own)");
+/* The settings panel (frontend.m, which also gives the window that shape): a ratio, 0.5..8; within 1% of 16:9 the
+   game's own. The camera writer takes the new ratio from the data page at the next frame, also from one wide ratio to
+   another. */
+int runtime_aspect_set_ratio(float r) {
+    if (!g_uw_main || !(r >= 0.5f && r <= 8)) return 0;
+    int on = !aspect_near(r, ASPECT_GAME);
+    if (on) g_uw_wide = r;
+    atomic_store(&g_uw_on, on); botw_aspect_word(on);
+    fprintf(stderr, "[botw] aspect: %s (%.4f)\n", on ? "wide" : "16:9 (the game's own)", on ? g_uw_wide : ASPECT_GAME);
     return 1;
 }
-/* Upstream's key 4 (#120) cycles 16:9 -> fit to the window -> 21:9 for TOTK; here key 4 switches 16:9 / wide only, so
-   the panel sees step 0 or 2 and the window size is not followed. */
-int runtime_aspect_step(void) { return g_uw_main ? (atomic_load(&g_uw_on) ? 2 : 0) : -1; }
+float runtime_aspect_ratio(void) { return g_uw_main ? (atomic_load(&g_uw_on) ? g_uw_wide : (float)ASPECT_GAME) : 0; }
+float runtime_aspect_start(void) { return g_uw_start; }
 /* iPhone (frontend_ios.m reports the drawable once the view is made): the phone fills its screen as Tears of the Kingdom
-   does there (aspect_patch.h, user 2026-10-23 "iphone 全屏"): key 4's wide ratio becomes the screen's shape (2.16 on an
+   does there (aspect_patch.h, user 2026-10-23 "iphone 全屏"): the wide ratio becomes the screen's shape (2.16 on an
    iPhone 14) and is on from the start, so the camera draws that view into the 1280x720 canvas, the present widens it over
    the screen and the UI is squeezed back to 16:9 (uw_ui_squeeze). No extra memory. A screen not wider than 16:9 (an iPad)
-   keeps the game's 16:9 with bars; TOTK_ASPECT=0 (or 16:9) keeps it everywhere. Mac: the window does not change key 4. */
+   keeps the game's 16:9 with bars; TOTK_ASPECT=0 (or 16:9) keeps it everywhere. Mac: the settings panel picks the ratio. */
 /* g_uw_view: the drawable's shape, which may come before the main module is patched (botw_aspect_install takes it then). */
 static void botw_aspect_phone(float a) {
 #if TARGET_OS_IPHONE

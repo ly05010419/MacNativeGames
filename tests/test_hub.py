@@ -26,7 +26,8 @@ def fake_tree(root, version):
              'build/hub', 'build/AppIcon.icns', f'extracted/{version}/romfs/romfs.bin',
              f'extracted/{version}/romfs/runtime-index.bin', f'build/shader-seed/{version}/pso_manifest.tsv',
              f'build/shader-seed/{version}/a_b.metal', f'build/shader-seed/{version}/b_b.metal'] + \
-            [f'rewritten/{version}/{n}.patched.bin' for n in ('main', 'sdk', 'subsdk0')]
+            [f'rewritten/{version}/{n}.patched.bin' for n in ('main', 'sdk', 'subsdk0')] + \
+            [f'build/game-data/{version}/{n}' for n in build_app.game_data_files(version)]
     for rel in files:
         p = tree / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(f'{version} {rel}'.encode())
     seed = tree / f'build/shader-seed/{version}'
@@ -63,7 +64,8 @@ class StepHub(unittest.TestCase):
             games.append((tree, game, version))
         with patch.object(build_app, 'sign_app') as signing, patch.object(build_app, 'data_bundle', fake_data_bundle), \
              patch.object(build_app, 'app_seal_valid', return_value=True), \
-             patch.object(build_app, 'remove_in_background', build_app.remove_tree):
+             patch.object(build_app, 'remove_in_background', build_app.remove_tree), \
+             patch.object(build_app, 'mac_pipelines'):
             build_app.step_hub(self.hub, self.logs, games)
         signing.assert_called_once_with(self.hub.with_name(self.hub.name + '.partial'), self.logs)
 

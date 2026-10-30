@@ -1,6 +1,7 @@
 """make_mod_manifest.py: the manifest of a player's RomFS mod, checked against a small fake RomFS (no game data)."""
 import hashlib
 import importlib.util
+import os
 import struct
 import subprocess
 import sys
@@ -116,14 +117,89 @@ class ModManifest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('1 files', result.stdout)
 
-    def test_botw_app_path_takes_the_version_from_the_folder(self):
-        app = self.root/'Breath of the Wild.app'
-        fake_romfs(app/'Contents/Resources/totk/extracted/botw160/romfs')
-        self.mod = self.root/'mods/botw160'
+    def test_library_app_reads_the_image_from_game_data(self):   # build_app.py --mac-game-data library
+        app = self.root/'Tears of the Kingdom.app'
+        (fake_romfs(app/'Contents/Resources/totk/extracted/v143/romfs')/'romfs.bin').unlink()
+        home = self.root/'home'
+        fake_romfs(home/'Library/Application Support/MacNativeGames/TOTK/GameData/v143')
         self.put('Pack/A.pack.zs', b'modded a')
-        result = run(self.mod, '--app', app)
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.mod), '--app', str(app)], capture_output=True,
+                                text=True, env={**os.environ, 'HOME': str(home)})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('1 files', result.stdout)
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.mod), '--app', str(app)], capture_output=True,
+                                text=True, env={**os.environ, 'HOME': str(self.root/'nobody')})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('GameData/v143/romfs.bin not found', result.stderr)
+
+    def test_library_app_reads_the_image_from_the_folder_the_build_was_given(self):   # --mac-game-data-folder
+        import plistlib
+        app = self.root/'Tears of the Kingdom.app'
+        (fake_romfs(app/'Contents/Resources/totk/extracted/v143/romfs')/'romfs.bin').unlink()
+        fake_romfs(self.root/'disk/Games/v143')
+        (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'MNGGameDataFolder': str(self.root/'disk/Games')}))
+        self.put('Pack/A.pack.zs', b'modded a')
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.mod), '--app', str(app)], capture_output=True,
+                                text=True, env={**os.environ, 'HOME': str(self.root/'nobody')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(make_mod_manifest.app_image_dir(app, 'v143'), self.root/'disk/Games/v143')
+        (self.root/'disk/Games/v143/romfs.bin').unlink()   # that disk not connected: the data folder's GameData
+        home = self.root/'home'
+        fake_romfs(home/'Library/Application Support/MacNativeGames/TOTK/GameData/v143')
+        result = subprocess.run([sys.executable, str(SCRIPT), str(self.mod), '--app', str(app)], capture_output=True,
+                                text=True, env={**os.environ, 'HOME': str(home)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_library_app_reads_the_image_from_the_folder_chosen_when_it_asked(self):   # app/launcher.m game_data_ask
+        import plistlib
+        domain = 'org.macnativegames.test-mod-manifest'
+        app = self.root/'Breath of the Wild.app'
+        (fake_romfs(app/'Contents/Resources/totk/extracted/botw190/romfs')/'romfs.bin').unlink()
+        (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': domain,
+                                                                'MNGGameDataFolder': str(self.root/'disk/Games')}))
+        fake_romfs(self.root/'disk/Games/botw190')
+        fake_romfs(self.root/'picked')   # romfs.bin right in the folder the player chose
+        subprocess.run(['defaults', 'write', domain, 'MNGGameDataFolder.botw190', str(self.root/'picked')], check=True)
+        self.addCleanup(subprocess.run, ['defaults', 'delete', domain], capture_output=True)
+        self.assertEqual(make_mod_manifest.app_image_dir(app, 'botw190'), self.root/'picked')
+        (self.root/'picked/romfs.bin').unlink()   # gone: the build's folder
+        self.assertEqual(make_mod_manifest.app_image_dir(app, 'botw190'), self.root/'disk/Games/botw190')
+
+    def test_romfs_data_names_the_folder_of_the_image(self):
+        index = self.root/'index-only'
+        index.mkdir()
+        (index/'runtime-index.bin').write_bytes((self.romfs/'runtime-index.bin').read_bytes())
+        self.put('Sound/B.bwav', b'dubbed')
+        self.assertNotEqual(run(self.mod, '--romfs', index).returncode, 0)
+        result = run(self.mod, '--romfs', index, '--romfs-data', self.romfs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(hashlib.sha256(FILES['Sound/B.bwav']).hexdigest(), (self.mod/'manifest.tsv').read_text())
+
+    def test_botw_app_path_takes_the_version_from_the_folder(self):
+        for version in ('botw160', 'botw190'):
+            with self.subTest(version):
+                app = self.root/version/'Breath of the Wild.app'
+                fake_romfs(app/'Contents/Resources/totk/extracted'/version/'romfs')
+                self.mod = self.root/version/'mods'/version
+                self.put('Pack/A.pack.zs', b'modded a')
+                result = run(self.mod, '--app', app)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('1 files', result.stdout)
+
+    def test_botw190_app_with_a_named_version(self):   # a mod folder under any name, with the version passed
+        app = self.root/'Breath of the Wild.app'
+        romfs = app/'Contents/Resources/totk/extracted/botw190/romfs'
+        fake_romfs(self.root/'data')                       # the app holds a link to romfs.bin (build_app.py place_data_bundle)
+        romfs.mkdir(parents=True)
+        (romfs/'romfs.bin').symlink_to(self.root/'data/romfs.bin')
+        (romfs/'runtime-index.bin').write_bytes((self.root/'data/runtime-index.bin').read_bytes())
+        self.mod = self.root/'library'
+        self.put('Sound/B.bwav', b'dubbed')
+        result = run(self.mod, '--app', app, '--version', 'botw190')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [l for l in (self.mod/'manifest.tsv').read_text().splitlines() if not l.startswith('#')]
+        self.assertEqual(lines, ['\t'.join(['Sound/B.bwav', '6', hashlib.sha256(b'dubbed').hexdigest(),
+                                            hashlib.sha256(FILES['Sound/B.bwav']).hexdigest()])])
 
 
 
@@ -190,6 +266,22 @@ class MergeWithBuildPatch(unittest.TestCase):
         again = run(self.mod, '--romfs', self.romfs)   # a second run merges the kept copy again, the same way
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual((self.mod/COMMON).read_bytes(), merged)
+
+    @unittest.skipUnless(importlib.util.find_spec('fontTools'), 'needs fontTools')
+    def test_button_icons_merge_the_common_archive_too(self):
+        # make_button_icons.py redraws the button guide in this archive; its manifest used to name the RomFS original,
+        # and the game stopped at start: two overlays replaced the same file
+        import make_button_icons
+        self.put_mod({**self.members, 'timg/__Combined.bntx': b'keyboard textures' * 40})
+        index = make_mod_manifest.read_index(self.romfs/'runtime-index.bin')
+        merged, found = make_button_icons.write_mod_manifest(self.mod, self.romfs, index)
+        self.assertEqual(list(merged), [COMMON])
+        data = (self.mod/COMMON).read_bytes()
+        self.assertEqual(self.member(data, 'timg/__Combined.bntx'), b'keyboard textures' * 40)
+        for name in CAPTURE:
+            self.assertEqual(self.member(data, name), self.member(self.build, name))
+        self.assertEqual(found.lines, ['\t'.join([COMMON, str(len(data)), hashlib.sha256(data).hexdigest(),
+                                                  hashlib.sha256(self.build).hexdigest()])])
 
     def test_mod_that_changes_a_patched_member_is_refused(self):
         changed = bflan(CAPTURE['anim/AutoBuilder_00_In.bflan'], frame=0.5)

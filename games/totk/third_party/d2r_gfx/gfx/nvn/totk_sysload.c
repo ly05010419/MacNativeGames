@@ -48,11 +48,12 @@ void sysload_note_gpu(double s, double e) { pthread_mutex_lock(&g_mu); sysload_b
 void sysload_text(char *out, size_t n, const sysload_info *in) {
     size_t o = 0;
     #define PUT(...) do { int k = snprintf(out + o, o < n ? n - o : 0, __VA_ARGS__); if (k > 0) o += (size_t)k; } while (0)
-    PUT("P"); for (int i = 0; i < in->np; i++) PUT(" %2d%%", in->p[i]);   // every value with % (user, 2026-10-16 night)
+    /* the GPU first, then the CPU cores (user 2026-10-25) */
+    if (in->gpu_sys >= 0) PUT("GPU %d%%", in->gpu_sys); else PUT("GPU --");
+    if (in->gpu_game >= 0) PUT(" (%d%%)", in->gpu_game);
+    PUT("  P"); for (int i = 0; i < in->np; i++) PUT(" %2d%%", in->p[i]);   // every value with % (user, 2026-10-16 night)
     PUT("  E"); for (int i = 0; i < in->ne; i++) PUT(" %2d%%", in->e[i]);
     if (in->thread_max >= 0) PUT("  T %d%%", in->thread_max);   // the busiest thread (user, 2026-10-16 night)
-    if (in->gpu_sys >= 0) PUT("  GPU %d%%", in->gpu_sys); else PUT("  GPU --");
-    if (in->gpu_game >= 0) PUT(" (%d%%)", in->gpu_game);
     #undef PUT
     if (n) out[n - 1 < o ? n - 1 : o] = 0;
 }

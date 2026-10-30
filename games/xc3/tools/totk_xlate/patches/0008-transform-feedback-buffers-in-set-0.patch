@@ -1,0 +1,24 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs	2026-10-28 17:38:17
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs	2026-10-28 17:38:17
+@@ -157,7 +157,9 @@
+ 
+         public int GetTfeBufferStorageBufferBinding(int bufferIndex)
+         {
+-            return _tfeBufferSbBaseBinding + bufferIndex;
++            // TOTK: the emulated transform feedback buffers live in set 0 next to the shader's own resources, whose bindings the
++            // host accessor numbers from 1 upwards; 1000 + index keeps them apart (the MSL ids follow the bindings).
++            return 1000 + bufferIndex;
+         }
+ 
+         public int GetVertexBufferTextureBinding(int vaLocation)
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-10-28 17:38:17
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-10-28 17:38:17
+@@ -392,7 +392,7 @@
+                 for (int i = 0; i < ResourceReservations.TfeBuffersCount; i++)
+                 {
+                     int binding = resourceManager.Reservations.GetTfeBufferStorageBufferBinding(i);
+-                    BufferDefinition tfeDataBuffer = new(BufferLayout.Std430, 1, binding, $"tfe_data{i}", tfeDataStruct);
++                    BufferDefinition tfeDataBuffer = new(BufferLayout.Std430, 0, binding, $"tfe_data{i}", tfeDataStruct);   // TOTK: set 0, the only set the NVN-on-Metal layer binds
+                     resourceManager.Properties.AddOrUpdateStorageBuffer(tfeDataBuffer);
+                 }
+             }

@@ -29,17 +29,22 @@ int main(int argc, char **argv) {
     atomic_store(&output_page, (uint8_t *)page);
 
     assert(restart() == pack_size(1920, 1080) && !mfx_on);            /* no file yet: the game's own start */
-    runtime_output_mode_cycle(); expect_file("metalfx");
+    runtime_output_mode_set(OUTPUT_MODE_METALFX); expect_file("metalfx");
     assert(restart() == pack_size(1920, 1080) && mfx_on);              /* MetalFX comes back on */
-    runtime_output_mode_cycle(); expect_file("native-2k");
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE); expect_file("native-2k");
     assert(restart() == pack_size(2560, 1440) && !mfx_on);
-    runtime_output_mode_cycle(); expect_file("off");
+    runtime_output_mode_set(OUTPUT_MODE_OFF); expect_file("off");
     assert(restart() == pack_size(1920, 1080) && !mfx_on);
 
     write_file("native-4k");                                           /* a 4K choice on a 2K app: native 2K */
     assert(restart() == pack_size(2560, 1440));
     output_w = 3840; output_h = 2160;
     assert(restart() == pack_size(3840, 2160));
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE); expect_file("native-4k"); assert(restart() == pack_size(3840, 2160));   /* native: the swapchain's */
+    output_w = 2560; output_h = 1440;
+    /* 2K + MetalFX: the 2K canvas with the MetalFX output stage (a 4K screen), kept as one word. */
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE_METALFX); expect_file("native-2k-metalfx");
+    assert(restart() == pack_size(2560, 1440) && mfx_on && runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);
     write_file("sideways");                                            /* not a mode: the game's own start */
     assert(restart() == pack_size(1920, 1080) && !mfx_on);
 
@@ -50,7 +55,15 @@ int main(int argc, char **argv) {
     unsetenv("TOTK_PICTURE_MODE"); write_file("native-2k");            /* unset: nothing is kept or read */
     assert(restart() == pack_size(1920, 1080));
     atomic_store(&page[4], pack_size(1920, 1080)); mfx_on = 0;
-    runtime_output_mode_cycle(); expect_file("native-2k");
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE); expect_file("native-2k");
+    assert(!runtime_output_mode_set(7));                               /* not a mode */
+    setenv("TOTK_PICTURE_MODE", file, 1); output_w = 2560; output_h = 1440;
+    runtime_output_mode_set(OUTPUT_MODE_720P); expect_file("720p");           /* 720p: a 1280x720 canvas */
+    assert(restart() == pack_size(1280, 720) && runtime_output_mode() == OUTPUT_MODE_720P);
+    static uint8_t scene[64]; render_page = scene; render_canvas = 1;        /* the scene follows the canvas */
+    runtime_output_mode_set(OUTPUT_MODE_OFF); runtime_output_mode_set(OUTPUT_MODE_720P);
+    float v[2]; memcpy(v, scene + 16, sizeof v); assert(v[0] == 1920 && v[1] == 1080);   /* x 1280 / 1920 by the game: 1280x720 */
+    runtime_output_mode_set(OUTPUT_MODE_OFF); expect_file("off");
 
     remove(file);
     printf("pass: picture mode kept between runs\n");
