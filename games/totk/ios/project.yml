@@ -26,6 +26,7 @@ targets:
     dependencies:
       - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
       - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
+      - sdk: Photos.framework        # a controller's capture button saves to the photo library (runtime/frontend_ios.m)
     info:
       path: Sources/Info.plist
       properties:
@@ -46,6 +47,7 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         GCSupportsControllerUserInteraction: true
         NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
+        NSPhotoLibraryAddUsageDescription: Saves the screenshots you take with a controller to your photo library.
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
         CADisableMinimumFrameDurationOnPhone: true

@@ -45,7 +45,22 @@ static __weak GCController *rawLeftController, *rawRightController;
 static SwitchLeftFallback rawLeft, rawRight;
 static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
 static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
+static void (*captureHook)(void);
+static int captureDown, captureSeen;   /* the capture button as the reports say, and as refresh_gamepads last saw it */
 static void refresh_gamepads(void);
+
+/* The capture button (the window's screenshot, runtime/screenshot.h): macOS's Share button on a controller GameController
+   reports, or bit 5 of a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The
+   Switch report arrives on the main run loop, and the GameController value from a value-changed handler; both only set a
+   flag, and the refresh that follows calls the hook once per press. A macOS shortcut already bound to the button keeps
+   it (System Settings > Game Center): the button then takes no picture. */
+void runtime_capture_set_hook(void (*hook)(void)) { captureHook = hook; }
+/* A Switch 0x30 report: 1 while its button 5 is down, which arrives every few milliseconds while it is held. */
+void runtime_gamepad_switch_capture(void *controller, int pressed) {
+    if (!controller) captureDown = 0;
+    else if (pressed && !captureDown) { captureDown = 1; refresh_gamepads(); }   /* the refresh calls the hook once */
+    else if (!pressed && captureDown) captureDown = 0;
+}
 
 /* Called on the main run loop by the already-open Switch HID motion stream. */
 void runtime_gamepad_switch_left(void *source, int x, int y) {
@@ -367,7 +382,7 @@ static void hid_pad_attach(IOHIDDeviceRef device) {
     CFTypeRef vendorId = IOHIDDeviceGetProperty(device, CFSTR(kIOHIDVendorIDKey));
     int vid = 0;
     if (vendorId && CFGetTypeID(vendorId) == CFNumberGetTypeID()) CFNumberGetValue((CFNumberRef)vendorId, kCFNumberIntType, &vid);
-    if (vid == 0x057e || vid == 0x054c || vid == 0x045e) return;
+    if (vid == 0x057e || vid == 0x054c || vid == 0x045e) return;   /* Nintendo's pads keep their capture button to the Switch 0x30 path */
     CFTypeRef supported = IOHIDDeviceGetProperty(device, CFSTR("GameControllerSupportedHIDDevice"));
     if (!supported || CFGetTypeID(supported) != CFBooleanGetTypeID() || CFBooleanGetValue((CFBooleanRef)supported)) return;
     if (IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone) != kIOReturnSuccess) return;
@@ -600,11 +615,13 @@ static void refresh_gamepads(void) {
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
     uint64_t rawAt = 0, rawRightAt = 0;
+    int capture = captureDown;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
+        if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
         float lx = pad.leftThumbstick.xAxis.value, ly = pad.leftThumbstick.yAxis.value;
         nativeLx = stronger_axis(nativeLx, stick_axis(lx));
         nativeLy = stronger_axis(nativeLy, stick_axis(ly));
@@ -640,6 +657,8 @@ static void refresh_gamepads(void) {
     }
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
+    if (capture && !captureSeen && captureHook) captureHook();
+    captureSeen = capture;
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
     if (atomic_load(&settingsButton) >= 0) suppressed |= trigger;   /* a picked button is the panel's only */
     int moving = next.lx || next.ly;
@@ -698,6 +717,16 @@ static void attach_gamepad(GCController *controller) {
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
+    /* The capture button takes this game's picture (runtime_capture_set_hook). macOS keeps a Share button for its own
+       gesture -- a screenshot to the Desktop -- while a system gesture has it; asked off, the button reaches the game.
+       A shortcut the player bound to it in System Settings > Game Center keeps it, and then it takes no picture. */
+    GCControllerButtonInput *capture = pad.buttons[GCInputButtonShare];
+    if (capture) {
+        BOOL reserved = capture.isBoundToSystemGesture;
+        capture.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        fprintf(stderr, "[totk-input] %s: the capture button (%s) saves a screenshot%s\n", (controller.vendorName ?: @"controller").UTF8String,
+                capture.localizedName.UTF8String ?: "share", reserved ? "; macOS had a system gesture on it, asked off" : "");
+    }
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }
@@ -860,6 +889,7 @@ void runtime_gamepad_clear(void) {
     gamepadNativeLx = gamepadNativeLy = 0;
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
     settingsShortcutDown = settingsShortcutPending = 0;
+    captureDown = captureSeen = 0;   /* a button held at focus loss must not shoot on the way back */
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }

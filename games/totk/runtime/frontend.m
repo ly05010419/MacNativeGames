@@ -394,7 +394,21 @@ enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
  if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
 }
 @end
+/* The controller's capture button (gamepad.m): a picture of the game's next frame, saved as a PNG (screenshot.h). Its
+   folder is one of the settings panel's rows, so that header comes second; a probe that links this file without the
+   renderer (tests/command_q/probe.m) offers its own picture and write. */
+/* The controller's capture button (gamepad.m): a picture of the game's next frame, saved as a PNG (screenshot.h). Its
+   folder is one of the panel's rows, so it comes first; a probe that links this file without the renderer
+   (tests/command_q/probe.m) offers its own picture and write. */
+#if defined(__APPLE__) && TARGET_OS_OSX
+#define TOTK_SCREENSHOT_WINDOW 1
+#endif
+#include "screenshot.h"
 #include "settings_panel.h"
+#ifndef TOTK_SCREENSHOT_WINDOW
+/* gamepad.m calls the hook; there is nothing to take a picture with here. */
+static void screenshot_request(void) {}
+#endif
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -563,6 +577,7 @@ void runtime_front_run(void(*callback)(void)){
   front_menubar_fps();
   settings_restore_start();
   settings_controller_start();
+  runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: a picture of the game (screenshot.h) */
   front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */

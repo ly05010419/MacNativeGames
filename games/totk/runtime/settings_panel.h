@@ -238,6 +238,57 @@ static NSString *settings_pad_auto_text(void) {
  return settings_text("自动（未接手柄）","Auto (no controller)");
 }
 
+/* The panel (below) shows a note in its footer for a few seconds; a row's editor reports through these. */
+@class TOTKSettingsPanel;
+static TOTKSettingsPanel *settingsPanel;
+static void settings_footer_note(NSString *text, BOOL bad);
+/* Where the capture button's pictures go (runtime/screenshot.h). On a desktop, a folder: the row opens the system's own
+   folder chooser (the panel the launcher opens for its game data), not a text field, and the chosen folder is checked
+   before it is kept (screenshot_problem), so a read-only disk or another account's folder is refused here with its reason
+   instead of failing at the next capture. On a phone the pictures go into the photo library, which the player cannot point
+   at: the row reads that and has nothing to choose. */
+static void settings_choose_screenshot_folder(void);
+static TOTKSettingRow *settings_screenshot_row(void) {
+#if TARGET_OS_IPHONE
+ TOTKSettingRow *r=settings_fixed(settings_text("截图保存","Screenshots"),
+  [NSString stringWithFormat:@(TOTK_UI("「照片」· %s","Photos · %s")),TOTK_SCREENSHOT_ALBUM]);
+ (void)settings_choose_screenshot_folder;
+ return r;
+#else
+ TOTKSettingRow *r=[TOTKSettingRow new];
+ char folder[PATH_MAX];screenshot_directory(folder,sizeof folder);
+ NSString *shown=@(folder);   /* kept as the object the block captures: an array cannot cross into one */
+ r.title=settings_text("截图保存目录","Screenshot folder");
+ r.choices=@[shown];   /* shown by the button, refreshed when the choice changes */
+ r.get=^int{char now[PATH_MAX];screenshot_directory(now,sizeof now);return (int)strcmp(now,shown.UTF8String);};
+ r.set=^(int v){(void)v;settings_choose_screenshot_folder();};
+ return r;
+#endif
+}
+#if !TARGET_OS_IPHONE
+static void settings_choose_screenshot_folder(void) {
+ char now[PATH_MAX];screenshot_directory(now,sizeof now);
+ NSOpenPanel *panel=[NSOpenPanel openPanel];
+ panel.canChooseFiles=NO;panel.canChooseDirectories=YES;panel.allowsMultipleSelection=NO;
+ panel.canCreateDirectories=YES;   /* New Folder, as Finder */
+ panel.message=[NSString stringWithFormat:@(TOTK_UI("选择截图保存目录。当前：%s","Choose where screenshots are saved. Now: %s")),now];
+ panel.prompt=settings_text("选择","Choose");
+ [panel setDirectoryURL:[NSURL fileURLWithPath:@(now) isDirectory:YES]];
+ if([panel runModal]!=NSModalResponseOK||!panel.URL)return;
+ const char *why=NULL;int problem=SHOT_OK;uint64_t freeBytes=0;
+ NSString *path=panel.URL.path;
+ if(!screenshot_directory_set(path.UTF8String,&why,&problem,&freeBytes)){
+  settings_footer_note([NSString stringWithFormat:@(TOTK_UI("未更改：%@（%@）","Not changed: %@ (%@)")),path,@(why?:"?")],YES);
+  fprintf(stderr,"[totk] settings: screenshot folder %s refused: %s\n",path.UTF8String,why?why:"?");
+  return;
+ }
+ char kept[PATH_MAX];screenshot_directory(kept,sizeof kept);
+ settings_footer_note([NSString stringWithFormat:@(TOTK_UI("截图保存目录：%@","Screenshots: %@")),@(kept)],NO);
+ fprintf(stderr,"[totk] settings: screenshot folder %s\n",kept);
+ settings_refresh_all();   /* the button shows the folder in force (settings_refresh_all, below) */
+}
+#endif
+
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
@@ -304,6 +355,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ /* The capture button's pictures (runtime/screenshot.h): a folder here, the photo library on a phone. */
+ [rows addObject:settings_screenshot_row()];
  for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:SETTINGS_PAGE_INPUT;
  return rows;
 }
@@ -625,6 +678,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  CGFloat right=self.panelW-14;
  for(NSButton *b in shown){b.frame=NSMakeRect(right-b.frame.size.width,5,b.frame.size.width,24);right-=b.frame.size.width+6;}
 }
+/* The panel's note about a row: the tab of the page shown. */
+static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [settingsPanel note:text]; }
 /* A result of the display page's buttons, in the bottom-left corner for a few seconds instead of the version. */
 -(void)note:(NSString *)text{
  self.versionLabel.stringValue=text;self.versionLabel.frame=NSMakeRect(18,9,self.panelW-36-[self footerButtonsWidth],16);
@@ -950,7 +1005,6 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self center];}
 @end
 
-static TOTKSettingsPanel *settingsPanel;
 static void settings_refresh_all(void) { [settingsPanel refresh]; }
 /* A mouse click in the panel: the controller's highlight goes until a controller moves again. */
 static void settings_pointer_used(void) { if(!g_settings_controller_active)return;g_settings_controller_active=NO;[settingsPanel controllerHighlight]; }

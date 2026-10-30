@@ -186,6 +186,11 @@ void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): m
 void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */
 void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
+/* The controller's capture button (runtime/gamepad.m): the Share button of a controller GameController reports, or bit 5 of
+   a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The hook is called once per
+   press, on the main queue; the window (frontend.m) sets it to save a picture of the game's next frame (runtime/screenshot.h). */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
 int runtime_phone_fps(void);                /* d2r_gfx hle_nvn.c, iPhone / iPad: 30 while held at 30 (TOTK_PHONE_FPS), else 60 */
 void runtime_phone_fps_set(int fps);        /* 30 holds 30, anything else up to 60: the touch controls' button, at once */

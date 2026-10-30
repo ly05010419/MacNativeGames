@@ -1,7 +1,32 @@
 /* Exercise the real AppKit menu and window-close handler without game data. */
+#import <CoreGraphics/CoreGraphics.h>
+#define TOTK_SCREENSHOT_WINDOW 1   /* frontend.m's capture button, tested below */
+#define TOTK_SCREENSHOT_WRITE 0    /* no ImageIO in this build: the write below is the probe's own */
+#define TOTK_SCREENSHOT_SAVE screenshot_picture_save
+static CGImageRef screenshot_picture(CGImageRef img, BOOL present);   /* the renderer's frame: this probe's small image */
+#define TOTK_SCREENSHOT_PICTURE screenshot_picture
 #include "../../runtime/frontend.m"
 #include <time.h>
 
+/* The renderer's next frame, for screenshot.h: this probe has none, so each request is a small image of its own (one per
+   press); the write says it saved the game's picture. */
+static int screenshotsTaken;
+static CGImageRef screenshot_picture(CGImageRef img, BOOL present) {
+    (void)img; (void)present;
+    screenshotsTaken++;
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(NULL, 8, 8, 8, 32, space, (uint32_t)kCGImageAlphaPremultipliedLast);
+    CGImageRef image = context ? CGBitmapContextCreateImage(context) : NULL;
+    if (context) CGContextRelease(context);
+    CGColorSpaceRelease(space);
+    return image;
+}
+static int screenshot_picture_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
+                           char *album, size_t album_size) {
+    (void)img; (void)game; (void)why; (void)problem; (void)album; (void)album_size;
+    snprintf(path, size, "/tmp/probe-%d.png", screenshotsTaken);
+    return 1;
+}
 static int mode;
 static uint64_t start;
 static uint64_t clock_ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;}
@@ -54,6 +79,9 @@ int runtime_mouse_enabled(void){return 0;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_set_hook(void (*hook)(void)){(void)hook;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_capture_set_hook(void (*hook)(void)){(void)hook;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_move(double dx,double dy){(void)dx;(void)dy;}
@@ -162,6 +190,14 @@ int main(int argc,char **argv){
   }
   if([NSApp.mainMenu performKeyEquivalent:key(0)])runtime_fail("plain Q triggered Quit");
   if([NSApp.mainMenu performKeyEquivalent:key(NSEventModifierFlagControl)])runtime_fail("Control-Q triggered Quit");
+  /* The capture button (screenshot.h): nothing while the game shows no picture, exactly one picture once it does. */
+  if(!bootOverlay){bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];[window.contentView addSubview:bootOverlay];}
+  bootOverlay.hidden=NO;
+  screenshot_request();[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  if(screenshotsTaken!=0)runtime_fail("a screenshot was taken before the game showed a picture");
+  bootOverlay.hidden=YES;
+  screenshot_request();[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+  if(screenshotsTaken!=1)runtime_fail("the capture button did not take exactly one screenshot");
   dispatch_async(dispatch_get_main_queue(),^{
    start=clock_ns();
    if(![NSApp.mainMenu performKeyEquivalent:key(NSEventModifierFlagCommand)])runtime_fail("Command-Q was not handled");

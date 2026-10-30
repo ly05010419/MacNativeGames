@@ -47,6 +47,10 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_game_language.c -o "$RUNNER_TEMP/test-game-language"
           "$RUNNER_TEMP/test-game-language"
+      - name: Check the screenshot folder and file name with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_screenshot.c -o "$RUNNER_TEMP/test-screenshot"
+          "$RUNNER_TEMP/test-screenshot"
       - name: Check the Breath of the Wild audio ramp arithmetic with the undefined-behavior sanitizer
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_audio_ramp.c -o "$RUNNER_TEMP/test-audio-ramp"

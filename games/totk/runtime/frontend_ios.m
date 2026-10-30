@@ -150,6 +150,81 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  vsyncTarget=[TOTKVsync new];displayLink=[CADisplayLink displayLinkWithTarget:vsyncTarget selector:@selector(tick:)];
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
+/* The controller's capture button (runtime/gamepad.m): the picture goes into the system photo library, as a console's
+   Capture button does -- not into a folder, which the player cannot reach on an iPhone. The frame is the one the renderer is
+   about to show (mtl_grab_next_present copies the drawable on the present thread, the same grab a Mac's wshot uses). */
+#define TOTK_SCREENSHOT_VIEW 1
+#define TOTK_SCREENSHOT_WRITE 0
+#if TARGET_OS_IOS
+#import <Photos/Photos.h>
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img));
+#endif
+#include "game_version.h"   /* GAME_NAME: the picture's name in the photo library */
+#include "screenshot.h"
+
+#if TARGET_OS_IOS
+/* One picture: the renderer's grab hands it over on the present thread, so screenshot_grab's call returns at once. */
+static CGImageRef totk_ios_screenshot_picture(CGImageRef img, BOOL present) {
+    (void)img; (void)present;
+    __block CGImageRef taken = NULL;
+    mtl_grab_next_present(^(CGImageRef frame) { if (!taken) taken = frame ? CGImageRetain(frame) : NULL; });
+    while (!taken && shotPendingAt && runtime_now_ns() - shotPendingAt < 1500ull * 1000000ull) usleep(2000);
+    return taken;   /* released by screenshot_grab once saved */
+}
+#endif
+
+#if TARGET_OS_IOS
+/* Saves the picture into the photo library, in the game's own album, and says where. Runs on the screenshot queue, never
+   the main queue, so the album lookup and the write do not hold the frame. */
+__attribute__((unused)) static int screenshot_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
+                           char *album, size_t album_size) {
+    (void)path; (void)size;
+    *problem = SHOT_OK;
+    if (!img) { *why = TOTK_UI("没有画面", "no picture"); return 0; }
+    if (CGImageGetWidth(img) > 8192 || CGImageGetHeight(img) > 8192) { *problem = SHOT_TOO_LARGE; *why = screenshot_problem_text(*problem); return 0; }
+    if ([PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly] != PHAuthorizationStatusAuthorized) {
+        *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem); return 0;
+    }
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+    char name[NAME_MAX + 1];
+    screenshot_name(game, &local, name, sizeof name);
+    name[strlen(name) - 4] = 0;   /* the photo library names its own copies: no extension */
+    UIImage *picture = [UIImage imageWithCGImage:img];
+    if (!picture) { *why = TOTK_UI("无法编码图片", "picture not encoded"); return 0; }
+    __block NSError *failure = nil;
+    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+        PHAssetCollection *collection = nil;
+        PHFetchResult<PHAssetCollection *> *found = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum
+                                                                                             subtype:PHAssetCollectionSubtypeAny
+                                                                                             options:nil];
+        for (PHAssetCollection *candidate in found)
+            if ([candidate.localizedTitle isEqualToString:@(TOTK_SCREENSHOT_ALBUM)]) { collection = candidate; break; }
+        PHAssetCollectionChangeRequest *into = collection
+            ? [PHAssetCollectionChangeRequest changeRequestForAssetCollection:collection]
+            : [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:@(TOTK_SCREENSHOT_ALBUM)];
+        PHObjectPlaceholder *placeholder = [PHAssetChangeRequest creationRequestForAssetFromImage:picture].placeholderForCreatedAsset;
+        if (placeholder) [into addAssets:@[placeholder]];
+    } error:&failure];
+    if (failure) {
+        /* The album could not be made or written (the library's own checks differ per version): the picture still goes in. */
+        fprintf(stderr, "[totk] screenshot: the album was refused (%s); saving to the library itself\n", failure.localizedDescription.UTF8String);
+        failure = nil;
+        [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+            (void)[PHAssetChangeRequest creationRequestForAssetFromImage:picture];
+        } error:&failure];
+    }
+    if (failure) {
+        fprintf(stderr, "[totk] screenshot: the photo library refused the picture (%s)\n", failure.localizedDescription.UTF8String);
+        *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem);
+        return 0;
+    }
+    snprintf(album, album_size, "%s", TOTK_SCREENSHOT_ALBUM);
+    return 1;
+}
+#endif
+
 /* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
 #if TARGET_OS_IOS
 extern void totk_phone_motion_start(void);
@@ -157,6 +232,10 @@ extern void totk_phone_haptics_start(void);
 #endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
+#if TARGET_OS_IOS
+ totk_screenshot_picture=totk_ios_screenshot_picture;   /* the renderer's frame, asked for by the capture button */
+#endif
+ runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: the picture into Photos (screenshot.h) */
  runtime_gamepad_start();
 #if TARGET_OS_IOS
  /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
