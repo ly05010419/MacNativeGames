@@ -1,8 +1,9 @@
 /* The settings panel (Mac; included by frontend.m): key 1 opens and closes it (runtime/input.c), Esc and its close
    button close it. User 2026-10-25: it replaces the shortcut keys 2-7 and their reminder box. PR #1210: the pages
    (Display, Input, User, Saves, Effects, Key bindings, Update) are chosen by the tabs at the top, or L1 / R1 on a
-   controller; the version in the bottom-left corner instead of the overlay box; no key hints at the bottom. One row
-   per setting, a pop-up menu, a switch or a slider, each applied at once:
+   controller; PR #1227: the WebDAV save-sync rows get their own Saves page; the version in the bottom-left corner
+   instead of the overlay box; no key hints at the bottom. One row per setting, a pop-up menu, a switch or a slider,
+   each applied at once:
    Display
      overlay              all / FPS + playtime / off               fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
      FPS graph            switch, default on                 fps-graph.txt above the game's folder (both games)

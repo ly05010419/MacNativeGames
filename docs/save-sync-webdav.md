@@ -26,8 +26,8 @@ on a device before its first sync, so the account identity exists.
 ## Turning it on
 
 Three values, the same keys everywhere. The easiest way on the Mac is the game's
-own settings panel: **press 1 in the game**, and fill in the WebDAV address,
-user and password at the bottom of the panel — the "Save sync (WebDAV)" row
+own settings panel: **press 1 in the game**, open the **Saves** tab, and fill in
+the WebDAV address, user and password — the "Save sync (WebDAV)" row
 above them switches the feature off and on (it stays off until an address is
 filled in). What is typed there is stored the same way as the `defaults write`
 below, and reaches the saves at the next start of the game. Or, from the
