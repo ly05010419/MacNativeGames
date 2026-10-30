@@ -182,6 +182,10 @@ static int nogpu(void) {
 }
 @interface TotkCommitOptions : MTL4CommitOptions { @public NSMutableArray *handlers; } @end
 @implementation TotkCommitOptions
+static int g_bn_on;   // 前向（定义见 bn 小节）：q4_commit 的 C 记录要标当前模式
+static _Atomic int g_bn_on_req = -1;   // flag bn 的待生效请求（输入线程写，提交线程在帧边界应用）
+static _Atomic uint64_t g_cur_frame;   // 前向（定义见后）：q4_commit 的 C 记录标帧号
+static id g_cb;   // 前向（定义见提交段）：q4_commit 只在主命令缓冲上取 bn 导出/链计数
 - (void)addFeedbackHandler:(MTL4CommitFeedbackHandler)block { if (!handlers) handlers = [NSMutableArray array]; [handlers addObject:[block copy]]; [super addFeedbackHandler:block]; }
 @end
 static void gpu_budget_check(const char *where);
@@ -214,11 +218,30 @@ static void bg_gate(void) {
     pthread_mutex_lock(&g_bg_mu); while (atomic_load(&g_app_inactive)) pthread_cond_wait(&g_bg_cv, &g_bg_mu); pthread_mutex_unlock(&g_bg_mu);
     MLOG("App 不在前台：GPU 提交暂停了 %.1f s，现在继续", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
 }
+/* TOTK_BN_CSV/TOTK_BN_FLIP：引擎内快速交替测量（复核修正④，替代跨运行 ABAB）。mtl_set_frame 按
+   TOTK_BN_FLIP=N 每 N 帧翻转一次 bn（经 g_bn_on_req 帧边界生效），块首 2 帧标 ramp=1（离线丢弃）；
+   q4_commit 的提交反馈自带 GPUStartTime/GPUEndTime（整个提交的 GPU 执行起止），每命令缓冲写一行 C 记录；
+   mtl_set_frame 在帧边界写上一帧的 F 记录（该帧的链派发数）。离线按相邻块配对差 + 95%CI。 */
+static FILE *g_bn_ab; static pthread_mutex_t g_bn_ab_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int g_bn_ramp; static _Atomic unsigned g_bn_chains;
+static void bn_ab_row(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void res_remove(id<MTLResource> r);
+static void bn_ab_row(const char *fmt, ...) {
+    if (!g_bn_ab) return;
+    pthread_mutex_lock(&g_bn_ab_mu);
+    va_list ap; va_start(ap, fmt); vfprintf(g_bn_ab, fmt, ap); va_end(ap); fputc('\n', g_bn_ab);
+    pthread_mutex_unlock(&g_bn_ab_mu);
+}
 static void q4_commit(id<MTL4CommandBuffer> cb, TotkCommitOptions *o) {
     bg_gate();
     gpu_budget_check("提交命令缓冲");
     atomic_fetch_add(&g_q4_inflight, 1);
-    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; if (atomic_fetch_sub(&g_q4_inflight, 1) == 1 && g_ka_idle) dispatch_semaphore_signal(g_ka_idle); }];
+    /* 链派发计数只在主命令缓冲（cb == g_cb）提交前由本线程取走，消除"提交线程累加、游戏线程清零"的错位 */
+    unsigned ab_ch = 0;
+    if (cb == g_cb) ab_ch = atomic_exchange(&g_bn_chains, 0);
+    int ab_fr = (int)atomic_load(&g_cur_frame), ab_mode = g_bn_on, ab_ramp = atomic_load(&g_bn_ramp);
+    [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { (void)f; if (atomic_fetch_sub(&g_q4_inflight, 1) == 1 && g_ka_idle) dispatch_semaphore_signal(g_ka_idle);
+        bn_ab_row("C,%d,%d,%d,%.6f,%.6f,%.3f,%s,%u", ab_fr, ab_mode, ab_ramp, f.GPUStartTime, f.GPUEndTime, (f.GPUEndTime - f.GPUStartTime) * 1e3, cb.label ? cb.label.UTF8String : "-", ab_ch); }];
     if (!nogpu()) { id<MTL4CommandBuffer> buffers[] = {cb}; [g_q4 commit:buffers count:1 options:o]; return; }
     for (MTL4CommitFeedbackHandler h in o->handlers) h(nil);
 }
@@ -1138,8 +1161,19 @@ static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交
 static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
+#if !TARGET_OS_IPHONE
+static int bn_step(void);       // TOTK_BLOOM_NATIVE（plan.md 阶段 1）：定义在 bloomq 之后的独立小节
+static void bn_flush(void);
+static void bn_latch(void);     // flag bn 的帧边界锁存（定义在 bn 小节）：输入线程只写请求，这里统一应用
+int totk_tex_label_chain(uint64_t ser);   // totk_nvn_ext.c：游戏调试标签 → 链上纹理判定
+const char *totk_tex_label_str(uint64_t ser);   // 同上：标签原文（bn-sw 清单打印用）
+#endif
 void mtl_sub_begin(void) {
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+#if !TARGET_OS_IPHONE
+    bn_latch();    // flag bn 帧边界生效（运行时切换 / TOTK_BN_FLIP 交替都在这里落定）
+    bn_flush();   // TOTK_BLOOM_NATIVE：链中途提交（不应发生）也不丢已捕获的步
+#endif
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
        thread has no pool of its own that drains (frontend.m's lasts the whole game), so what defer_drain, defer_reset,
        warm_claim and pt_apply_request autoreleased before it piled up every submission (nxnative found the same leak:
@@ -2102,7 +2136,25 @@ static int ub_skip(const char *key) {   // 本相要不要丢掉这个片元着�
     for (int i = 0; i < g_ub_nk[uc]; i++) { const char *k = g_ub_keys[uc][i]; if (k[0] == '@') continue; if (k[0] == '*' || !strncmp(key, k, strlen(k))) return 1; }
     return 0;
 }
-void mtl_set_frame(uint64_t f) { atomic_store(&g_cur_frame, f); if (g_ub_n) ub_frame(f); }
+void mtl_set_frame(uint64_t f) {
+    static int fl = -1;
+    if (fl < 0) {   // 复核修正④：引擎内快速交替——TOTK_BN_FLIP=N 每 N 帧翻转一次 bn，TOTK_BN_CSV=path 落测量数据
+        const char *e = getenv("TOTK_BN_FLIP"); fl = e && *e ? atoi(e) : 0;
+        const char *c = getenv("TOTK_BN_CSV");
+        if (c && *c) { g_bn_ab = fopen(c, "w"); if (g_bn_ab) { setvbuf(g_bn_ab, NULL, _IOLBF, 0); fprintf(g_bn_ab, "kind,frame,mode,ramp,start_s,end_s,gpu_ms,label,chains\n"); } }
+        if (g_bn_ab || fl > 0) MLOG("引擎内快速交替测量：FLIP=%d CSV=%s（块首 2 帧标 ramp，离线丢弃）", fl, g_bn_ab ? c : "关");
+    }
+    if (fl > 0) {
+        static int prev_mode = -1;
+        if (g_bn_ab) {   // 帧边界 F 记录（链派发数已改由主命令缓冲的 C 行携带——F 行在游戏线程、累加在提交线程，跨线程清零曾错位 ~10% 帧）
+            bn_ab_row("F,%llu,%d,%d", (unsigned long long)(f ? f - 1 : f), prev_mode, atomic_load(&g_bn_ramp));
+        }
+        prev_mode = (int)((f / (uint64_t)fl) & 1);
+        atomic_store(&g_bn_on_req, prev_mode);   // 不直写 g_bn_on：经帧边界锁存生效
+        atomic_store(&g_bn_ramp, (int)((f % (uint64_t)fl) < 2));   // 块首 2 帧标 ramp（含翻转帧本身）
+    }
+    atomic_store(&g_cur_frame, f); if (g_ub_n) ub_frame(f);
+}
 // GPU 计时登记：提交前 gpu_tag_begin(帧)，完成时 gpu_tag_done(帧, GPU 起, GPU 止)（CACurrentMediaTime 基准秒）。
 // 旧队列命令缓冲走 gpu_tag_f；Metal 4 主提交在 mtl_sub_commit 的 feedback 里回填（换 Metal 4 时调用点全丢，「计时」行的 GPU 一栏成了空）
 // GPU timing registration: gpu_tag_begin(frame) before commit, gpu_tag_done(frame, GPU start, GPU end) on completion (seconds on the CACurrentMediaTime base).
@@ -2646,12 +2698,14 @@ static int diag_shader_prefix_matches(const char *key, uint64_t value) {
     char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)value);
     return key && !strncmp(key, prefix, 16);
 }
+static int g_bn_on;   // 前向：定义与初始化在 bn 小节（flag 通道同进程切换用）
 void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
     if (!strcmp(name, "tex_slots")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_on, v != 0); MLOG("[flag] tex_slots = %d", v != 0); return; }
     if (!strcmp(name, "tex_slots_check")) { (void)tex_slots_on(); atomic_store(&g_tex_slots_check, v != 0); MLOG("[flag] tex_slots_check = %d verified=%llu hits=%llu", v != 0, (unsigned long long)atomic_load(&g_tex_slots_verified), (unsigned long long)atomic_load(&g_tex_slots_hits)); return; }
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
+    if (!strcmp(name, "bn")) { atomic_store(&g_bn_on_req, v != 0); MLOG("[flag] bn = %d（bloom 原生链运行时切换；下一帧边界生效）", v != 0); return; }   // 同进程 ABAB：固定场景内切开关，消除跨运行噪声/热漂移
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // TOTK_MFX_UPSCALE at run time (manual key 3 picture mode)
@@ -3101,6 +3155,24 @@ static void tex_desc_fixup(const tex_t *t, MTLTextureDescriptor *d) {
     }
 }
 
+static int bn_sw_enabled(void) {   // TOTK_BLOOM_NATIVE_SW 开关必须真生效（复核修正④）：=0 既不在创建时加 ShaderWrite，
+    static int sw = -1;            // 也禁止惰性升级——无损压缩完整保留，原生链因纹理不可写整体回退渲染路径
+    if (sw < 0) { const char *e = getenv("TOTK_BLOOM_NATIVE_SW"); sw = !(e && !strcmp(e, "0"));
+        if (!sw) MLOG("TOTK_BLOOM_NATIVE_SW=0：链纹理不加/不升级 ShaderWrite（原生链将回退渲染路径）"); }
+    return sw;
+}
+static int bn_run_enabled(void) {   // 创建期只看运行级开关：BN=0 不能因为链纹理清单而丢掉无损压缩
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("TOTK_BLOOM_NATIVE"); on = e && !strcmp(e, "1"); }
+    return on;
+}
+
+static BOOL bn_tex_chain_write(const tex_t *t) {   // TOTK_BLOOM_NATIVE: 标签命中的链纹理才在创建时获得 compute 写入用途
+    if (!bn_sw_enabled() || !bn_run_enabled()) return NO;
+    uint32_t pf = 0; uint8_t swz[4];
+    return (t->d.target == 1 || t->d.target == 7) && nvn_fmt_to_mtl(t->d.format, &pf, swz) && pf == 92 && totk_tex_label_chain(t->serial);
+}   // target 1/7 = 2D（cube=4、3D=2 加 ShaderWrite 会在 Metal 崩——实测）
+
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_mtl(t->d.format, &pf, swz) || !pf) { RED_ONCE(0, "贴图格式 %#x Metal 无对应（首例）", t->d.format); return nil; }
@@ -3123,9 +3195,14 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     }
     tex_desc_fixup(t, d);
     d.storageMode = MTLStorageModePrivate;   // 渲染目标与素材都放 GPU 私有存储（可用无损压缩） | Render targets and assets both go in GPU private storage (lossless compression available)
+    int bn_sw = bn_tex_chain_write(t);
+    if (bn_sw) {   // 复核修正：实际获得 ShaderWrite 的纹理清单打到日志（标签+尺寸），核对 strstr 收窄范围是否误伤/漏配
+        static int nsw; if (++nsw <= 24 || (nsw & 255) == 1) { const char *lb = totk_tex_label_str(t->serial);
+            MLOG("[bn-sw] 清单 #%d ser=%llu \"%s\" %ux%u lv%u", nsw, (unsigned long long)t->serial, lb ? lb : "?", t->d.width, t->d.height, t->d.levels); } }
     d.usage = MTLTextureUsageShaderRead | (fmt_compressed(t->d.format) || packaged ? 0 : MTLTextureUsageRenderTarget)
             | (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE ? MTLTextureUsageShaderWrite : 0)   // 图像用途：着色器可写（计算核生成 3D 调色表等） | Image usage: shader-writable (compute kernels generating the 3D color lookup table, etc.)
             | (t->d.target == 8 && t->d.width <= 64 && !fmt_compressed(t->d.format) && !packaged ? MTLTextureUsageShaderWrite : 0)   // TOTK: small cube render targets: the cube-merge copy-out kernel writes them (nvn_cube_group.h)
+            | (bn_sw ? MTLTextureUsageShaderWrite : 0)   // TOTK_BLOOM_NATIVE: 仅链格式 RG11B10F+标签命中的纹理加 compute 写入（压缩、sRGB 等加 ShaderWrite 会在 Metal 创建时抛异常——实测两轮）
             | (unp ? MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView : 0);
     // TOTK: Metal rejects descriptor swizzle on render targets and on shader-writable textures (image use, and BC textures
     // decoded by the bcd kernel on GPUs without BC support); those get the swizzle on their sampling view (tex_by_id).
@@ -4954,6 +5031,9 @@ static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static int rt_none(void); static void noatt_dims(NSUInteger *w, NSUInteger *h);
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     if (g_enc) return g_enc;
+#if !TARGET_OS_IPHONE
+    if (clear_only != 1 && bn_step()) return nil;   // 链步命中：该 pass 由 compute 编码器代跑（返回 NULL，draw 路径跳过这次绘制）；失配时内部先 flush 再走原路径
+#endif
     chunk_maybe_split();
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
     g_enc_mode = clear_only;
@@ -11431,6 +11511,393 @@ static int bloomq_capture(void) {
     [en setViewport:(MTLViewport){0,0,dst.width,dst.height,0,1}]; [en setRenderPipelineState:g_bloomq_pso]; [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
     g_bloomq_i = (g_bloomq_i + 1) % 3; args_dirty_all(); g_pso_dirty = g_dss_dirty = 1; return 1;
 }
+
+// ===== TOTK_BLOOM_NATIVE（plan.md 阶段 1，仅 macOS）：bloom/reduce 链 17 步合并进一个 compute 编码器 =====
+// 依据 calib-20261024/REPORT.md：Apple GPU 每个 render pass 约 48 µs 固定空档；bench 验证这条链
+// 17 个 render pass 1.095 ms → 1 compute 编码器 17 次 dispatch 0.078 ms（14×），输出能量差 0.15%。
+// 链（帧内 #107..#123，03-draw-material.md）：dd3d1e0e(1/2) → 79b89ff1(1/4，c3) → [1e774a23 →
+// 03bd7a38(c1) → 3742d076(c1)]×4 → 327ae8bb(c3[6])×3。
+// 机制：rp_begin_ex 逐 pass 识别（FS key + 目标尺寸关系 + 单色 RG11B10F + 无深度 + 无混合）；
+// 命中则不开 render encoder（返回 NULL，draw 路径自带跳过），捕获当帧数据；链完成或失配时 flush——
+// 开一个 compute 编码器按捕获顺序派发（步间 dispatch 级屏障），失配的 pass 照常走原路径。
+// 数据全部取当帧绑定（plan.md 1.2）：c1/c3 常量块（pend_materialize 含内联更新）、游戏采样器
+// （samp_by_id）、源纹理的注册视图（mip 级随视图）、每级尺寸（动态分辨率随动，07-resolution-chain.md）。
+// 开关：TOTK_BLOOM_NATIVE=0 一键退回翻译路径。限制：仅 macOS 构建（iOS 不编译此块）。
+#if !TARGET_OS_IPHONE
+typedef struct { const tex_t *t; uint32_t lv, sl; id<MTLTexture> mtl; } bn_tex;
+static struct {
+    int active, n;
+    bn_tex src[20], dst[20];
+    int kind[20];               // 0 down 1 thresh(降采样+双目标) 2 blur降(c1) 3 blur升(c1) 4 up(c3[6]) 5 同尺寸 copy
+    float c[20][32];            // 当帧常量块（thresh/up: c3；blur: c1；copy 无）
+    int clr1[20];               // thresh 步：附件 1 有待决清除 → flush 时 bn_clear 复刻（捕获时已确保可写）
+    float cc1[20][4];           // 附件 1 的清除色（R.cc[1]）
+    const tex_t *a1[20]; uint32_t a1lv[20], a1sl[20];   // 附件 1 的纹理与视图级/层
+    id<MTLTexture> a1m[20];     // 附件 1 已确保 ShaderWrite 的写入视图（bn_clear 派发用；nil=无清除）
+    uint32_t samp[20];          // 游戏采样器 id（g_sreg 下标）
+} g_bn;
+static int g_bn_on_init = -1;   // 见顶部前向声明；这里只初始化一次
+static id<MTLComputePipelineState> g_bn_ps[7];
+static NSMutableDictionary<NSNumber *, id<MTLTexture>> *g_bn_views;
+static NSMutableArray<id<MTLTexture>> *g_bn_hold, *g_bn_hold_prev;   // 链内保活：视图字典超限清空/游戏释放临时纹理时，本链 flush 前仍要用的对象不能先掉
+static void bn_hold(id<MTLTexture> t) { if (!t) return; if (!g_bn_hold) g_bn_hold = [NSMutableArray new]; [g_bn_hold addObject:t]; }
+
+static int bn_enabled(void) {
+    if (g_bn_on_init < 0) { const char *e = getenv("TOTK_BLOOM_NATIVE"); g_bn_on = e && !strcmp(e, "1"); g_bn_on_init = 1;
+        { int req = atomic_load(&g_bn_on_req); if (req >= 0) g_bn_on = req; }   // flag/FLIP 请求可能先于首次 bn_enabled 到达——以请求为准
+        if (getenv("TOTK_BLOOM_NATIVE_LOG")) setvbuf(stderr, NULL, _IONBF, 0);   // 诊断：日志逐行落盘，崩溃前不丢尾部   // 默认关：世界帧入口仍有未定位的停顿/转储（见 calib plan 阶段 1 记录），TOTK_BLOOM_NATIVE=1 显式启用
+        if (g_bn_on) MLOG("TOTK_BLOOM_NATIVE：bloom/reduce 链 17 步合并进一个 compute 编码器（实验；TOTK_BLOOM_NATIVE=0 或不设退回翻译路径）"); }
+    return g_bn_on;
+}
+static id<MTLTexture> bn_write_view(const tex_t *t, uint32_t lv, uint32_t sl) {
+    id<MTLTexture> base = tex_mtl(t); if (!base) return nil;
+    // The bloom kernels write texture2d. Menu/probe passes can share the key but target cube faces;
+    // a cube view with one slice aborts in Metal validation before an Objective-C exception can be caught.
+    if (base.textureType != MTLTextureType2D) return nil;
+    if (!lv && !sl) return base;
+    // 三轮复核②：key 用「基纹理指针+级+层」——游戏每帧给临时纹理发新 serial，按 serial 缓存会让驻留集
+    // 每帧 +4 对象直到崩（soak 63 分钟 host abort：IOGPUMetalResidencySet）。视图不 res_add（基纹理在驻留集
+    // 里已覆盖共享存储）；parentTexture 复核防基纹理地址复用串台；字典超上限整体清空（视图重建廉价）。
+    NSNumber *k = [NSNumber numberWithUnsignedLongLong:(((uint64_t)(uintptr_t)base) << 12) | ((uint64_t)lv << 6) | sl];
+    id<MTLTexture> v = g_bn_views[k];
+    if (v && v.parentTexture != base) v = nil;
+    if (!v) {
+        NSUInteger levels = base.textureType == MTLTextureType3D ? 1 : base.mipmapLevelCount;
+        v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:base.textureType
+            levels:NSMakeRange(MIN(lv, MAX(1, levels) - 1), 1) slices:NSMakeRange(MIN(sl, MAX(1, base.arrayLength) - 1), 1)];
+        if (!v) return nil;
+        if (!g_bn_views) g_bn_views = [NSMutableDictionary new];
+        if (g_bn_views.count >= 64) [g_bn_views removeAllObjects];
+        g_bn_views[k] = v;
+    }
+    bn_hold(v);
+    return v;
+}
+// 确保视图/基纹理可被 compute 写入；没有 ShaderWrite 则按存储基址惰性升级一次（stor_recreate 同存储加 usage）。
+// 返回可写视图，失败 nil（调用方回退渲染路径）。SW=0 时禁止升级（复核修正④：开关必须真生效）。
+static id<MTLTexture> bn_ensure_write(const tex_t *t, uint32_t lv, uint32_t sl, id<MTLTexture> mtl) {
+    if (!mtl) return nil;
+    if (mtl.usage & MTLTextureUsageShaderWrite) return mtl;
+    if (!bn_sw_enabled()) return nil;
+    static uint64_t tried[128]; static unsigned ntried;   // 已试升级的存储基址：按基纹理去重（游戏每帧给临时纹理发新 serial，按 serial 会耗尽；同一存储升一次即持久）
+    id<MTLTexture> tb = mtl.parentTexture ? mtl.parentTexture : mtl;
+    uint64_t tkey = (uint64_t)(uintptr_t)tb;
+    for (unsigned q = 0; q < ntried; q++) if (tried[q] == tkey) return nil;
+    if (ntried < 128) tried[ntried++] = tkey;
+    stor_key k;
+    if (!stor_key_lookup(tb, &k)) return nil;
+    id<MTLTexture> up = stor_recreate(&k, tb.usage | MTLTextureUsageShaderWrite);
+    if (!up) { static int rn; if (rn++ < 4) MLOG("[bn] stor_recreate 拒绝升级（pass 内/线程不符）——本 serial 回退"); return nil; }
+    registry_lock();
+    id<MTLTexture> re = tex_mtl(t);   // ser_bump 后按 serial 重新解析
+    registry_unlock();
+    if (!re || !(re.usage & MTLTextureUsageShaderWrite)) return nil;
+    { static int upn; if (upn++ < 6) MLOG("[bn] ser=%llu 惰性升级 ShaderWrite 成功（%lux%lu）", (unsigned long long)t->serial, (unsigned long)re.width, (unsigned long)re.height); }
+    registry_lock();
+    id<MTLTexture> view = (lv || sl) ? bn_write_view(t, lv, sl) : re;
+    registry_unlock();
+    return view;
+}
+// Preflight every attachment before any storage replacement. Lookup failure must leave the render fallback intact.
+static int bn_can_write(id<MTLTexture> mtl) {
+    if (!mtl) return 0;
+    if (mtl.usage & MTLTextureUsageShaderWrite) return 1;
+    if (!bn_sw_enabled() || !on_sub_thread() || rp_active()) return 0;
+    stor_key k;
+    return stor_key_lookup(mtl.parentTexture ? mtl.parentTexture : mtl, &k);
+}
+static long long bn_arm_frame(void) {   // TOTK_BN_ARM_FRAME=N：帧号 < N 时 BN 不生效（加载/早期世界门控）
+    static long long v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_BN_ARM_FRAME"); v = e ? atoll(e) : 0; if (v) MLOG("[bn-arm] 帧 < %lld 时 BN 不生效", v); }
+    return v;
+}
+static void bn_latch(void) {   // flag bn 的帧边界锁存（mtl_sub_begin 开头调用）：输入线程只写 g_bn_on_req，这里统一应用
+    int req = atomic_load(&g_bn_on_req);
+    if (req >= 0 && req != g_bn_on) { g_bn_on = req; MLOG("[bn] 帧边界锁存 bn=%d（帧 %llu）", req, (unsigned long long)atomic_load(&g_cur_frame)); }
+    if (g_bn_on && bn_arm_frame() && (long long)atomic_load(&g_cur_frame) < bn_arm_frame()) g_bn_on = 0;
+}
+static id<MTLComputePipelineState> bn_pso(int kind) {
+    if (g_bn_ps[kind]) return g_bn_ps[kind];
+    static const char *src =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "#define BN_WRITE(v) d.write((v),g)\n"
+        // k_blur 的 ±1.3846154 / ±3.2307692 偏移来自游戏 blur 顶点着色器（H=530b17c1 / V=63e0a0b9）的 c1：
+        // (0.0702703, 0.227027, 0.3162162) 是权重而非偏移——按 03bd7a38 的五个采样点反译：
+        // 中心 = c.y(0.227027)、±1.3846 = c.z(0.3162162)、±3.2308 = c.x(0.0702703)，三者合计 1.0。
+        "kernel void bn_down(texture2d<float> s [[texture(0)]], texture2d<float,access::write> d [[texture(1)]], sampler sm [[sampler(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x>=d.get_width()||g.y>=d.get_height()) return; float2 uv=(float2(g)+0.5)/float2(d.get_width(),d.get_height()); BN_WRITE(s.sample(sm,uv)); }\n"
+        "kernel void bn_thresh(texture2d<float> s [[texture(0)]], texture2d<float,access::write> d [[texture(1)]], sampler sm [[sampler(0)]], constant float4* c [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x>=d.get_width()||g.y>=d.get_height()) return; float2 uv=(float2(g)+0.5)/float2(d.get_width(),d.get_height()); float4 v=s.sample(sm,uv);\n"
+        "  float3 m=min(v.xyz,c[1].w); float l=dot(m,c[0].xyz); float k=saturate(c[1].x/l)*saturate(fma(v.w,c[0].w,l))*c[1].z; BN_WRITE(float4(m*k,v.w*k)); }\n"
+        "kernel void bn_blur(texture2d<float> s [[texture(0)]], texture2d<float,access::write> d [[texture(1)]], sampler sm [[sampler(0)]], constant float4* c [[buffer(0)]], constant float4& prm [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x>=d.get_width()||g.y>=d.get_height()) return; float2 uv=(float2(g)+0.5)/float2(d.get_width(),d.get_height()); float2 o1=prm.xy*1.3846154, o2=prm.xy*3.2307692;\n"
+        // H blur 的源是上一级纹理（320x180→160x90 这类跨级降采样），游戏的片元着色器按导数选 mip；compute 无导数，必须显式 level(prm.z)
+        "  float4 r=s.sample(sm,uv,level(prm.z))*c[0].y; r=fma(s.sample(sm,uv-o1,level(prm.z)),c[0].z,r); r=fma(s.sample(sm,uv+o1,level(prm.z)),c[0].z,r); r=fma(s.sample(sm,uv-o2,level(prm.z)),c[0].x,r); r=fma(s.sample(sm,uv+o2,level(prm.z)),c[0].x,r); BN_WRITE(r); }\n"
+        "kernel void bn_up(texture2d<float> s [[texture(0)]], texture2d<float,access::write> d [[texture(1)]], sampler sm [[sampler(0)]], constant float4* c [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x>=d.get_width()||g.y>=d.get_height()) return; float2 uv=(float2(g)+0.5)/float2(d.get_width(),d.get_height()); BN_WRITE(float4(s.sample(sm,uv).xyz*c[6].xyz,0)); }\n"
+        "kernel void bn_clear(texture2d<float,access::write> d [[texture(1)]], constant float4* c [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+        "  if (g.x>=d.get_width()||g.y>=d.get_height()) return; BN_WRITE(*c); }\n";
+    static dispatch_once_t once; static id<MTLLibrary> lib;
+    dispatch_once(&once, ^{ NSError *e = nil; lib = [g_dev newLibraryWithSource:@(src) options:totk_precise_opts() error:&e];   // 与被替代的翻译着色器同一数学模式（安全数学），否则 fast math 的除法/乘加舍入与渲染路径差 ulp
+        if (!lib) MLOG("【红】TOTK_BLOOM_NATIVE 内核编译失败：%s", e.localizedDescription.UTF8String); });
+    if (!lib) return nil;
+    NSError *e = nil;
+    static const char *names[7] = {"bn_down", "bn_thresh", "bn_blur", "bn_blur", "bn_up", "bn_down", "bn_clear"};   // kind5(copy) 复用 bn_down（同尺寸=逐像素同结果）；kind6=附件 1 清除
+    id<MTLFunction> f = [lib newFunctionWithName:@(names[kind])];
+    id<MTLComputePipelineState> ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+    if (!ps) { MLOG("【红】TOTK_BLOOM_NATIVE 管线 %s 失败：%s", names[kind], e.localizedDescription.UTF8String); return nil; }
+    g_bn_ps[kind] = ps; return ps;
+}
+// 把第 i 步编进已打开的 compute 编码器（dst_mtl=写入目标纹理）
+static int bn_encode_step(id<MTL4ComputeCommandEncoder> ce, int i, id<MTLTexture> dst_mtl) {
+    int kind = g_bn.kind[i];
+    id<MTLComputePipelineState> ps = bn_pso(kind); if (!ps) return 0;
+    id<MTLTexture> s = g_bn.src[i].mtl; if (!s || !dst_mtl) return 0;
+    id<MTLBuffer> constants, params;
+    size_t co = arena_alloc(128, &constants), po = arena_alloc(16, &params);
+    uint8_t *cb = (uint8_t *)constants.contents + co, *pb = (uint8_t *)params.contents + po;
+    memset(cb, 0, 128); memset(pb, 0, 16); memcpy(cb, g_bn.c[i], kind == 4 ? 7 * 16 : (kind == 1 ? 32 : 16));
+    if (kind == 3 || kind == 2) {   // 偏移按目标级纹素尺寸（游戏 VS 的 c3 尺寸是目标分辨率，不是源 320）——用 src 会让半径小一半
+        float dx = kind == 2 ? 1.0f / dst_mtl.width : 0.0f, dy = kind == 3 ? 1.0f / dst_mtl.height : 0.0f;
+        float lod = 0.0f;
+        {   // 跨级降采样时游戏按导数选 mip（2×→LOD1、4×→LOD2…）；compute 无导数，这里按尺寸比显式给级别
+            float r = fmaxf((float)s.width / dst_mtl.width, (float)s.height / dst_mtl.height);
+            if (r > 1.0f) lod = log2f(r);
+            registry_lock();
+            uint32_t sid = g_bn.samp[i];
+            if (sid > 0 && sid < (uint32_t)g_nsreg && g_sreg_ok[sid]) {
+                samp_par sp = g_sreg[sid];
+                // The game's blur samplers pin a single mip (N..N), including rounded dimensions such as 644x360.
+                lod = fminf(fmaxf(lod, fmaxf(0.0f, sp.lod_min)), sp.lod_max);
+            }
+            registry_unlock();
+            NSUInteger nl = s.mipmapLevelCount ? s.mipmapLevelCount : 1;
+            if (lod > (float)(nl - 1)) lod = (float)(nl - 1);
+        }
+        memcpy(pb, &dx, 4); memcpy(pb + 4, &dy, 4); memcpy(pb + 8, &lod, 4); }
+    id<MTLSamplerState> sm = (__bridge id<MTLSamplerState>)samp_fast((int)g_bn.samp[i]);
+    [ce setComputePipelineState:ps];
+    [g_ct setTexture:s.gpuResourceID atIndex:0]; [g_ct setTexture:dst_mtl.gpuResourceID atIndex:1];
+    [g_ct setSamplerState:sm.gpuResourceID atIndex:0];
+    [g_ct setAddress:constants.gpuAddress + co atIndex:0];
+    if (kind == 2 || kind == 3) [g_ct setAddress:params.gpuAddress + po atIndex:1];
+    [ce dispatchThreadgroups:MTLSizeMake((dst_mtl.width + 15) / 16, (dst_mtl.height + 15) / 16, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+    [ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+    return 1;
+}
+// 一次 flush：把捕获的步骤按序派发进一个 compute 编码器。调用点保证当前没有打开的渲染编码器。
+static void bn_flush(void) {
+    int n = g_bn.n; g_bn.active = 0; g_bn.n = 0;
+    if (!n || !g_cb) return;
+    // 复核修正（二轮 1.1）：不再按链长丢弃——步进时已返回 1 跳过了渲染 pass，这里再丢就把该步变成既没渲染
+    // 也没 compute 的洞。1-2 步链（探针降采样）照常派发：1 编码器换 1 编码器无收益，但正确性优先。
+    // 三轮复核③：开编码器前预检全部步骤（管线、源/目标纹理）——开了编码器再 return 会留下未闭合的编码器并丢掉剩余步骤
+    for (int i = 0; i < n; i++) {
+        if (!bn_pso(g_bn.kind[i]) || !g_bn.src[i].mtl || !g_bn.dst[i].mtl) { MLOG("【红】TOTK_BLOOM_NATIVE：步 %d 预检失败（管线/纹理缺）——整链不派发", i); return; }
+        if (g_bn.clr1[i] && g_bn.a1m[i] && !bn_pso(6)) { MLOG("【红】TOTK_BLOOM_NATIVE：bn_clear 管线缺——整链不派发"); return; }
+    }
+    id<MTL4ComputeCommandEncoder> ce = enc_c_begin(nil);
+    if (!ce) { MLOG("【红】TOTK_BLOOM_NATIVE：compute 编码器建不出（丢一帧链）"); return; }
+    ce.label = @"totk-native-bloom-chain";
+    for (int i = 0; i < n; i++) {
+        if (g_bn.clr1[i] && g_bn.a1m[i]) {   // 附件 1 清除：独立 arena 槽，直到本命令缓冲完成前不重用。
+            id<MTLBuffer> clear_constants; size_t clear_off = arena_alloc(16, &clear_constants);
+            float *ccb = (float *)((uint8_t *)clear_constants.contents + clear_off);
+            ccb[0] = g_bn.cc1[i][0]; ccb[1] = g_bn.cc1[i][1]; ccb[2] = g_bn.cc1[i][2]; ccb[3] = g_bn.cc1[i][3];
+            id<MTLTexture> a1 = g_bn.a1m[i];
+            [ce setComputePipelineState:bn_pso(6)];
+            [g_ct setTexture:a1.gpuResourceID atIndex:1];
+            [g_ct setAddress:clear_constants.gpuAddress + clear_off atIndex:0];
+            [ce dispatchThreadgroups:MTLSizeMake((a1.width + 15) / 16, (a1.height + 15) / 16, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            [ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+            { static int w; if (w++ < 5) MLOG("[bn] 复刻附件 1 清除（步 %d %lux%lu 色 %.3f %.3f %.3f %.3f）", i, (unsigned long)a1.width, (unsigned long)a1.height, g_bn.cc1[i][0], g_bn.cc1[i][1], g_bn.cc1[i][2], g_bn.cc1[i][3]); }
+        }
+        bn_encode_step(ce, i, g_bn.dst[i].mtl);
+    }
+    m4_end(ce);
+    atomic_fetch_add(&g_bn_chains, 1);   // 引擎内交替测量的每帧链派发数（q4_commit 的 C 记录取走并清零）
+    g_pt_key_pending = 0;
+    args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
+    static uint64_t said; if (++said <= 3 || (said & 255) == 0) MLOG("[bn] 链完成：%d 步 → 1 个 compute 编码器（帧 %llu）", n, (unsigned long long)atomic_load(&g_cur_frame));
+}
+// 捕获源 = 该步片元着色器实际绑定的贴图（反射取槽位；注册视图自带 mip 级）；返回 0 = 证不出
+static int bn_src_of(NvShader *fs, bn_tex *o) {
+    if (!fs) return 0;
+    for (int i = 0; i < fs->rf.nb; i++) {
+        const nvn_rbind *b = &fs->rf.b[i];
+        if (b->kind != NVN_RB_TEX || b->reg >= 128) continue;
+        uint64_t h = S.tex[1][b->reg]; int tid = (int)(h & 0xfffff);
+        if (!tid || tid >= g_ntreg || !g_treg[tid].ok) return 0;
+        o->t = &g_treg[tid].t;
+        void *tv = NULL; (void)tex_fast_rid(tid, &tv);
+        o->mtl = (__bridge id<MTLTexture>)tv; if (!o->mtl) return 0;
+        uint32_t lv = 0, sl = 0;
+        if (o->mtl.parentTexture) { lv = (uint32_t)o->mtl.parentRelativeLevel; sl = (uint32_t)o->mtl.parentRelativeSlice; }
+        o->lv = lv; o->sl = sl;
+        return 1;
+    }
+    return 0;
+}
+// 该步的常量块。三轮复核真因（影子比对+全 slot 扫描+反译 MSL 定位）：
+// ① blur（03bd7a38/3742d076）的 fp_c1 是「着色器自带常数段」（反射 kind="c1"，NVN_RB_C1）——静态权重在
+//    sh->c1buf（翻译时从原版着色器提取；03bd7a38 的 c1 = 0.0702703 / 0.227027 / 0.3162162，即远/中/近三档权重），根本不是游戏绑定；
+//    此前按 cbuf 读 S.ubo 拿到的是别人的缓冲（~5-8 的值 → 每级 blur ×17 放大）。
+// ② thresh/up（79b89ff1/327ae8bb）的 fp_c3 才是游戏绑定的 cbuf（反射 kind="cbuf" reg=0）——值经「重命名
+//    内联更新」写进影子缓冲（池内存保持零），必须按回放同优先级取：upd_shadow 影子 > usnap 快照 > 实时内存。
+static int bn_consts_of(NvShader *fs, int kind, float *out) {
+    size_t need = kind == 4 ? 112 : kind == 1 ? 32 : 16;   // 元素号经反译 MSL 核对：blur=_m0[0]、thresh=_m0[0]+_m0[1]、up=_m0[6]
+    for (int i = 0; i < fs->rf.nb; i++) {
+        const nvn_rbind *b = &fs->rf.b[i];
+        if (b->kind == NVN_RB_C1) {   // 着色器自带常数段：静态、随 shader 而来
+            if (!fs->c1buf || fs->rf.c1_len < need) return 0;
+            memcpy(out, (uint8_t *)fs->c1buf.contents + fs->c1off, need);
+            return 1;
+        }
+        if (b->kind != NVN_RB_CBUF || b->reg >= 16) continue;   // 真正的游戏绑定（thresh/up 实测 reg=0）
+        const p_bind_buf *u = &S.ubo[1][b->reg];
+        uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // 与回放 draw 路径同款优先级（见 8190 段）
+        if (ren) { const uint8_t *p = bound_uniform_bytes(ren, need, nil); if (p) { memcpy(out, p, need); return 1; } }
+        const usnap_t *sc = usnap_find(u->addr, need);
+        if (sc) memcpy(out, sc->cpu + (u->addr - sc->lo), need);
+        else pend_materialize(u->addr, (uint8_t *)out, need, 0);
+        return 1;
+    }
+    return 0;
+}
+// 识别一步。返回：1 = 命中并捕获；0 = 不匹配（若链活跃先 flush）。
+static void bn_fail_log(uint64_t pass, const char *k, int exp, const char *fmt, ...) {
+    static int dbg = -1; static uint64_t nlog;
+    if (dbg < 0) { const char *e = getenv("TOTK_BLOOM_NATIVE_LOG"); dbg = e && *e && strcmp(e, "0") ? 1 : 0; }
+    if (!dbg || (long)atomic_load(&g_cur_frame) < 1400 || ++nlog > 60000) return;   // 链在世界帧 ~2400 起；之前的深度 pass 失配会刷屏
+    char line[192]; va_list ap; va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);   // 参数与格式同源（宏拼接错位曾使 %.8s 拿到整型——崩溃根因）
+    va_end(ap);
+    MLOG("[bn] pass %llu fs %.8s expect %d 失配: %s", (unsigned long long)pass, k ? k : "", exp, line);
+}
+static int bn_step_impl(void) {
+    static int bn_dbg = -1;
+    if (bn_dbg < 0) { const char *e = getenv("TOTK_BLOOM_NATIVE_LOG"); bn_dbg = e && *e && strcmp(e, "0") ? 1 : 0; }
+#define BN_FAIL(...) do { bn_fail_log(g_stat_pass, k, g_bn.n, __VA_ARGS__); bn_flush(); return 0; } while (0)
+    __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil;
+    NvShader *fs = pr ? pr->sh[1] : nil;
+    const char *k = fs ? fs->key : NULL;
+    if (!k) { if (g_bn.active) bn_flush(); return 0; }
+    int exp = g_bn.n;
+    if (exp == 0) { g_bn_hold_prev = g_bn_hold; g_bn_hold = nil; }   // 上一条链已 flush；再保活一帧（GPU 可能还在执行），两帧前的才释放
+    // 实测序列（TOTK_BLOOM_NATIVE_LOG，2560x1440 画布）：copy(1/2) → thresh(1/4，rt.n=2，只写附件 0) →
+    // [copy(同尺寸) → blur降(1/2) → blur升(×2)]×4 → up×3；尺寸有分配器取整，用 ±8 容差。共 17 步。
+    static const char *expk[17] = { "dd3d1e0e", "79b89ff1", "1e774a23", "03bd7a38", "3742d076", "1e774a23", "03bd7a38", "3742d076",
+                                    "1e774a23", "03bd7a38", "3742d076", "1e774a23", "03bd7a38", "3742d076", "327ae8bb", "327ae8bb", "327ae8bb" };
+    static int expkind[17] = { 0, 1, 5, 2, 3, 5, 2, 3, 5, 2, 3, 5, 2, 3, 4, 4, 4 };
+    int kind;
+    if (exp < 17 && !strncmp(k, expk[exp], 8)) kind = expkind[exp];
+    else { if (g_bn.active) bn_flush(); return 0; }
+    // 守卫：无深度模板、混合只看目标 0 位（缺席目标的残留位不算，fz 合并同口径）；thresh 步 rt.n 可为 2
+    // （游戏确实用 2 个附件但 FS 只写 1 个输出——附件 1 必须 load 原样、无待决清除，跳过整个 pass 才无损）
+    if (!R.has_rt || !R.rt.color[0] || R.rt.depth || (S.color.blend_en & 1)) BN_FAIL("rt/depth/blend n=%d d=%d blend=%#x dst %ux%u", R.has_rt ? R.rt.n : -1, (int)(R.rt.depth != NULL), S.color.blend_en, R.rt.color[0] ? R.rt.color[0]->d.width : 0, R.rt.color[0] ? R.rt.color[0]->d.height : 0);
+    if (R.rt.n != 1 && !(R.rt.n == 2 && fs->rf.nfc <= 1)) BN_FAIL("rt.n=%d nfc=%d clr1=%d", R.rt.n, fs->rf.nfc, R.clear_c[1]);   // nfc=0 亦收（79b89ff1 反射报 0，MSL 实写 1 个输出）；clr1 由 flush 复刻
+    if (S.has_vp && !(S.vp[0][0] == 0 && S.vp[0][1] == 0)) BN_FAIL("vp %g,%g", S.vp[0][0], S.vp[0][1]);   // 全视口才可整图替代
+    if (R.has_sc && !scissor_full(R.rt.color[0], &R.rt.cview[0], R.rt.has_cview[0])) BN_FAIL("scissor %d,%d %dx%d", R.sc.x, R.sc.y, R.sc.w, R.sc.h);   // 覆盖整目标的 scissor 无害（游戏链 pass 常带）
+    bn_tex src = {0}, dst = {0};
+    registry_lock();   // tex_by_id/tex_mtl 契约要求持 g_rmu（bn_step 跑在提交线程，与资源线程并发——裸调即崩溃根因）
+    int src_ok = bn_src_of(fs, &src);
+    registry_unlock();
+    if (!src_ok) BN_FAIL("src 绑定取不出");
+    uint64_t ser; int dlv = 0, dsl = 0;
+    rt_sub(&R.rt, 0, &ser, &dlv, &dsl);
+    dst.t = R.rt.color[0]; dst.lv = (uint32_t)dlv; dst.sl = (uint32_t)dsl;
+    registry_lock();
+    dst.mtl = bn_write_view(dst.t, dst.lv, dst.sl);
+    registry_unlock();
+    if (!dst.mtl || !src.mtl) BN_FAIL("mtl 贴图取不出");
+    if (src.mtl.textureType != MTLTextureType2D) BN_FAIL("源不是 2D 纹理——回退渲染路径");
+    // 三轮复核③：dst 的惰性升级挪到「全部检查通过」之后（bn_step_impl 尾部）——升级会 ser_bump 替换存储，
+    // 若尺寸/常量/附件 1 检查随后 BN_FAIL，本 pass 就带着被换掉的渲染目标回退渲染（ref 第 1 种崩溃机制）
+    float sw = (float)src.mtl.width, sh_ = (float)src.mtl.height, dw = (float)dst.mtl.width, dh = (float)dst.mtl.height;
+    int ok = 0;
+    // 尺寸关系按 key 宽松接受（守卫已保证链形；实测 2560 画布有 ÷4 直降档）；内核经归一化 UV 对各形态同构
+    int downish = dw < sw && dh < sh_, upish = dw > sw && dh > sh_;
+    int same = dw == sw && dh == sh_;
+    if (kind == 5) ok = same || downish;                                                             // 1e774a23：copy 或任意降
+    else if (kind == 0)                                                                              // 链首：旧比例范围保留；单 mip 源可扩到 4×（2K 配置 1704→638，双方均采 LOD0）
+        ok = downish && sw / dw >= 1.3f && sh_ / dh >= 1.3f &&
+            ((sw / dw <= 2.3f && sh_ / dh <= 2.3f) ||
+             (src.mtl.mipmapLevelCount == 1 && sw / dw <= 4.0f && sh_ / dh <= 4.0f));
+    else if (kind == 1) ok = downish;                                                                // 79b89ff1：降
+    else if (kind == 2) ok = same || downish;                                                        // 03bd7a38：blur 同尺寸或降
+    else if (kind == 3) ok = same || upish;                                                          // 3742d076：blur 同尺寸或升
+    else ok = upish;                                                                                 // 327ae8bb：升
+    if (!ok) BN_FAIL("尺寸 %.0fx%.0f -> %.0fx%.0f kind%d", sw, sh_, dw, dh, kind);
+    // 链首几何下限：dd3d1e0e 也被 180x34←360x69/480x92、36x36←48x48 这类非 bloom 小效果使用（soak 实测），
+    // 它们只命中 1 步就被当链接管。真链首在 2K 是 638x360、1080p 是 640x360，540p 最低 480x270；下限取
+    // 320x180 只排除这些误报，更低的分辨率会安全回退渲染路径。
+    if (exp == 0 && (dw < 320.0f || dh < 180.0f)) BN_FAIL("链首尺寸 %.0fx%.0f 低于接管下限", dw, dh);
+    if (kind != 0 && kind != 5 && !bn_consts_of(fs, kind, g_bn.c[exp])) BN_FAIL("c 块 kind%d 取不出", kind);
+    if (kind == 2 || kind == 3) {   // c1 = (远 0.0702703, 中 0.227027, 近 0.3162162)：三档权重必须合计 1，异常即回退
+        float ws = g_bn.c[exp][1] + 2.0f * g_bn.c[exp][2] + 2.0f * g_bn.c[exp][0];
+        if (!(ws > 0.97f && ws < 1.03f)) BN_FAIL("blur 权重和 %.4f（c1 读取异常？）", ws);
+    }
+    // 三轮复核修正：blur 权重映射按反译 MSL + VS c1 为 (中心 c.y=0.227027, ±o1 c.z=0.3162162, ±o2 c.x=0.0702703)；
+    // 03bd7a38 里写死的 0.3162162 是近端权重而非中心；旧权重映射改变核形状，约 17 倍放大的根因是 c1 来源误读。
+    int sid = 0;
+    for (int i = 0; i < fs->rf.nb; i++) { const nvn_rbind *b = &fs->rf.b[i];
+        if (b->kind == NVN_RB_SAMPT && b->reg < 128) { sid = (int)(S.tex[1][b->reg] >> 20); break; }
+        if (b->kind == NVN_RB_SAMP && b->reg < 128) { sid = (int)(S.samp[1][b->reg] >> 20); break; } }
+    g_bn.src[exp] = src; g_bn.dst[exp] = dst; g_bn.kind[exp] = kind; g_bn.samp[exp] = (uint32_t)sid;
+    g_bn.clr1[exp] = 0; g_bn.a1m[exp] = nil;
+    if (kind == 1 && R.rt.n == 2 && R.rt.color[1] && R.clear_c[1]) {
+        uint64_t s1; int l1, l2;
+        rt_sub(&R.rt, 1, &s1, &l1, &l2);
+        g_bn.a1[exp] = R.rt.color[1]; g_bn.a1lv[exp] = (uint32_t)l1; g_bn.a1sl[exp] = (uint32_t)l2;
+        g_bn.cc1[exp][0] = (float)R.cc[1].red; g_bn.cc1[exp][1] = (float)R.cc[1].green; g_bn.cc1[exp][2] = (float)R.cc[1].blue; g_bn.cc1[exp][3] = (float)R.cc[1].alpha;
+        g_bn.clr1[exp] = 1;   // 信息捕获到此为止；可写性升级在全部检查通过后统一做（见下）
+        for (int q = 0; q < exp; q++) {   // 链内读者探针：后续步把附件 1 当源（读）或当目标（覆写）都记一笔——链外读者靠端到端画面对比裁决
+            if (!g_bn.a1[q]) continue;
+            uint64_t a1s = g_bn.a1[q]->serial;
+            if ((src.t && src.t->serial == a1s) || (dst.t && dst.t->serial == a1s)) { static int pn; if (pn++ < 8)
+                MLOG("[bn-a1] 链内命中：步 %d %.8s 附件1(serial %llu) 被%s", exp, expk[exp], (unsigned long long)a1s,
+                     dst.t && dst.t->serial == a1s ? "当目标覆写" : "当源读取"); }
+        }
+    }
+    // —— 全部检查通过：此刻起本步确定接管，升级替换存储不再有"检查失败带旧目标回退"的风险 ——
+    {
+        id<MTLTexture> a1v = nil;
+        if (g_bn.clr1[exp]) {
+            registry_lock();
+            a1v = bn_write_view(R.rt.color[1], g_bn.a1lv[exp], g_bn.a1sl[exp]);
+            registry_unlock();
+        }
+        if (!bn_can_write(dst.mtl) || (g_bn.clr1[exp] && !bn_can_write(a1v)))
+            BN_FAIL("dst/附件 1 升级预检失败——保持原存储回退渲染路径");
+        if (!(dst.mtl.usage & MTLTextureUsageShaderWrite)) {
+            id<MTLTexture> up = bn_ensure_write(dst.t, dst.lv, dst.sl, dst.mtl);
+            if (!up) BN_FAIL("dst 无 ShaderWrite 且升级失败——回退渲染路径");
+            dst.mtl = up;
+        }
+        if (g_bn.clr1[exp]) {   // 附件 1 的清除要复刻（bn_clear），同样现在才升级
+            id<MTLTexture> a1ok = bn_ensure_write(R.rt.color[1], g_bn.a1lv[exp], g_bn.a1sl[exp], a1v);
+            if (!a1ok) BN_FAIL("附件 1 无 ShaderWrite 且升级失败 %ux%u", R.rt.color[1]->d.width, R.rt.color[1]->d.height);
+            g_bn.a1m[exp] = a1ok;
+        }
+    }
+    g_bn.src[exp] = src; g_bn.dst[exp] = dst; g_bn.kind[exp] = kind; g_bn.samp[exp] = (uint32_t)sid;
+    g_bn.active = 1; g_bn.n = exp + 1;
+    if (bn_dbg) { static uint64_t nok; if (++nok <= 24 || (nok & 255) == 1) MLOG("[bn] pass %llu 步 %d/%.8s kind%d %.0fx%.0f vp %.0fx%.0f 命中 src %.0fx%.0f lv%u sl%u mips%lu samp%u c %.4f %.4f %.4f", (unsigned long long)g_stat_pass, exp, expk[exp], kind, dw, dh,
+        S.has_vp ? S.vp[0][2] : 0, S.has_vp ? S.vp[0][3] : 0, (float)src.mtl.width, (float)src.mtl.height, src.lv, src.sl, (unsigned long)src.mtl.mipmapLevelCount, sid, g_bn.c[exp][0], g_bn.c[exp][1], g_bn.c[exp][2]); }
+    if (g_bn.n == 17) bn_flush();   // 链完成：立即派发（下一 pass 开之前）
+    return 1;
+#undef BN_FAIL
+}
+static int bn_step(void) {
+    if (!bn_enabled()) return 0;
+    @try { return bn_step_impl(); }   // Metal 对某些用法抛 ObjC 异常（实测）：兜底退回翻译路径并打出原因
+    @catch (NSException *e) {
+        static int said; if (said++ < 5) MLOG("【红】TOTK_BLOOM_NATIVE 步进异常：%s (%s)——退回翻译路径", e.name.UTF8String, e.reason.UTF8String);
+        bn_flush(); return 0;
+    }
+}
+#endif /* !TARGET_OS_IPHONE */
+// ---------- 拖货跟手图：商人货架上的货没有「拿起」态，拖动时由回放层把「画这件货图标的那次绘制」在同一趟末尾平移到手指处再画一遍 ----------
 // ---------- 拖货跟手图：商人货架上的货没有「拿起」态，拖动时由回放层把「画这件货图标的那次绘制」在同一趟末尾平移到手指处再画一遍 ----------
 // 界面那一趟每个矩形是一次 4 顶点绘制（顶点 20 字节：位置 3 浮点 + 贴图坐标 2 浮点，位置经顶点常量 0 号的矩阵到裁剪坐标）。
 // 前端（front_ios.m）给出手指按下的那一点、货架格网与跟手图中心（归一化，左上原点）；这里在界面趟里找「盖住这一点、四边都压在格线上、面积最小」的矩形 = 那件货

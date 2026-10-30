@@ -5,6 +5,7 @@
 #include "nvn_impl.h"
 #include "nvn_obj.h"
 #include "nvn_tex.h"
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -17,7 +18,61 @@ NVN(nvnMemoryPoolSetDebugLabel, void, NVNmemoryPool *o, const char *s) { (void)o
 NVN(nvnTexturePoolSetDebugLabel, void, NVNtexturePool *o, const char *s) { (void)o; (void)s; }
 NVN(nvnSamplerPoolSetDebugLabel, void, NVNsamplerPool *o, const char *s) { (void)o; (void)s; }
 NVN(nvnBufferSetDebugLabel, void, NVNbuffer *o, const char *s) { (void)o; (void)s; }
-NVN(nvnTextureSetDebugLabel, void, NVNtexture *o, const char *s) { (void)o; (void)s; }
+// TOTK_BLOOM_NATIVE（plan.md 阶段 1）：游戏给 bloom/reduce 链上的纹理打调试标签（'Blur0(Reduce)'、
+// 'bloom:%d'、'countup' 等，见 03-draw-material.md / 04-resource-lifetime.md）。按 serial 记录，
+// 贴图创建时查它决定是否加 MTLTextureUsageShaderWrite（compute 写入需要；只给链上纹理加，
+// 避免整类目标失去无损压缩——plan.md 明确这一条）。tex_t 已贴近 NVNtexture 的 128 字节上限，不能加字段。
+/* 复核修正：①标签只存"链标签"（Blur0/Blur1/bloom:/countup——收窄到会进 compute 链的分配器标签，
+   裸 Blur/reduce/detect 会误伤 Mask(BlurX)、Blur(r-half) 等链外纹理）；②游戏每帧给临时纹理发新 serial，
+   任何按 serial 的表都会饱和——改环形缓冲只留最近 2048 条，链标签在纹理首次使用前一刻记录，近因窗口必命中；
+   ③无探测上限问题。C 文件不能用 NSDictionary，保持纯 C。 */
+#include <pthread.h>
+#define BN_RING 2048
+static struct { uint64_t ser; char label[24]; } g_bn_ring[BN_RING];
+static unsigned g_bn_ring_i;
+static pthread_mutex_t g_bn_mu = PTHREAD_MUTEX_INITIALIZER;
+static int bn_label_chain_str(const char *l) {
+    return strstr(l, "Blur0") != NULL || strstr(l, "Blur1") != NULL ||
+           strncmp(l, "bloom:", 6) == 0 || strncmp(l, "bloom_ex", 8) == 0 || strstr(l, "countup") != NULL;
+}
+void totk_tex_note_label(uint64_t ser, const char *s) {
+    if (!ser || !s || !*s) return;
+    if (!bn_label_chain_str(s)) return;   // 只存链标签：表永远只有几十条，饱和与污染同时解决
+    pthread_mutex_lock(&g_bn_mu);
+    g_bn_ring_i = (g_bn_ring_i + 1) & (BN_RING - 1);
+    g_bn_ring[g_bn_ring_i].ser = ser;
+    snprintf(g_bn_ring[g_bn_ring_i].label, sizeof g_bn_ring[g_bn_ring_i].label, "%s", s);
+    pthread_mutex_unlock(&g_bn_mu);
+    { static int n; if (n++ < 12) fprintf(stderr, "[totk-gfx] [bn-lab] 链标签 ser=%llu \"%s\"（将获得 ShaderWrite）\n", (unsigned long long)ser, s); }
+}
+int totk_tex_label_chain(uint64_t ser) {
+    if (!ser) return 0;
+    pthread_mutex_lock(&g_bn_mu);
+    int r = 0;
+    for (unsigned k = 0; k < BN_RING; k++) {
+        unsigned i = (g_bn_ring_i + BN_RING - k) & (BN_RING - 1);   // 从最新往回扫
+        if (g_bn_ring[i].ser == ser) { r = 1; break; }
+        if (!g_bn_ring[i].ser) break;
+    }
+    pthread_mutex_unlock(&g_bn_mu);
+    return r;
+}
+// bn-sw 清单打印用：标签原文（静态缓冲快照，仅诊断——并发调用最坏串了打印内容）
+const char *totk_tex_label_str(uint64_t ser) {
+    static char buf[24];
+    if (!ser) return NULL;
+    pthread_mutex_lock(&g_bn_mu);
+    for (unsigned k = 0; k < BN_RING; k++) {
+        unsigned i = (g_bn_ring_i + BN_RING - k) & (BN_RING - 1);
+        if (g_bn_ring[i].ser == ser) { snprintf(buf, sizeof buf, "%s", g_bn_ring[i].label); pthread_mutex_unlock(&g_bn_mu); return buf; }
+        if (!g_bn_ring[i].ser) break;
+    }
+    pthread_mutex_unlock(&g_bn_mu);
+    return NULL;
+}
+NVN(nvnTextureSetDebugLabel, void, NVNtexture *o, const char *s) {
+    if (o && s && ((const tex_t *)o)->magic == MAGIC('T', 'E', 'X', 0)) totk_tex_note_label(((const tex_t *)o)->serial, s);
+}
 NVN(nvnSamplerSetDebugLabel, void, NVNsampler *o, const char *s) { (void)o; (void)s; }
 NVN(nvnCommandBufferSetDebugLabel, void, NVNcommandBuffer *o, const char *s) { (void)o; (void)s; }
 NVN(nvnSyncSetDebugLabel, void, NVNsync *o, const char *s) { (void)o; (void)s; }
