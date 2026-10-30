@@ -21,6 +21,22 @@ spec_pre.loader.exec_module(acnh_pre)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_packager_rejects_runtime_with_a_different_dlc_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            prepared, work = root / "prepared", root / "host"
+            prepared.mkdir(); (work / "build").mkdir(parents=True)
+            expected = profile(2097152)
+            (prepared / "preparation.json").write_text(json.dumps({
+                "status": "prepared_for_host_bringup", "title_id": expected["title_id"],
+                "inputs": {"update": {key: expected[key] for key in ("title_id", "package_kind", "cnmt_version_raw")}}}))
+            (work / "host-info.json").write_text(json.dumps({"display_version": "3.0.1", "prepared": str(prepared),
+                "dlc_manifest_sha256": "1" * 64, "dlc": str(root / "dlc")}))
+            runtime = work / "build/acnh-native"
+            runtime.write_bytes(b"MNG_ACNH_VERSION:3.0.1\0MNG_ACNH_DLC:none\0"); runtime.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "Runtime DLC configuration differs"):
+                acnh_pkg.verify_inputs(work, prepared, root / "fonts")
+
     def test_packager_rejects_old_runtime_with_new_version_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

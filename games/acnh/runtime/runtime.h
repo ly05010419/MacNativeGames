@@ -32,6 +32,13 @@ void runtime_swkbd_selftest(void);
 void runtime_dump_threads(void);   /* threads.c: every guest thread's wait state and guest return chain (TOTK_INPUT_FILE "threads") */   /* diagnostic "kbtest": show the text entry bar from a thread of its own */
 void runtime_frame_step_pin(double ms);                  /* game_patches.c: pin the real-time frame step (diagnostics), 0 = real time */
 void runtime_frame_step_update(uint64_t now_ns);
+/* 3.0.1 optional 60 FPS: original 30 by default; choice is saved for the next launch. */
+int runtime_frame_rate_active(void);
+int runtime_frame_rate_available(void);
+int runtime_frame_rate_choice(void);
+int runtime_frame_rate_locked(void);
+int runtime_frame_rate_choose(int value);
+void runtime_frame_rate_install(Module *module);
 void runtime_thread_note_hle(unsigned index);            /* threads.c: the calling guest thread's last host call (hletrace) */
 uint32_t runtime_thread_current_handle(void);            /* threads.c: handle of the calling guest thread, 0 on a host thread */
 void *runtime_hle_wrap_named(void *fn, const char *name);/* hle_stack.c: runtime_hle_wrap with a name for diagnostics */

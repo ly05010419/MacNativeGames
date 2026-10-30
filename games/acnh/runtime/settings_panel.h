@@ -6,10 +6,9 @@
    Display
      overlay              all / FPS + controller / off   fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c), graphics-overlay.txt
      FPS graph            switch                         fps-graph.txt
-     frame rate           30 fps, greyed out             Animal Crossing runs its world at 30 frames a second and paces
-                                                         itself by the display's vsync counts (frontend.m vsync_callback);
-                                                         a lock above 30 would only show the same picture again, so there
-                                                         is no lock to pick
+     frame rate           30 / 60 fps, next launch        3.0.1 with prepared SpeedFix data: code and parameter corrections
+                                                         must be loaded together, so changing modes requires a restart.
+                                                         Builds without that data (including 1.2.1) retain 30 fps.
      frame interpolation  not available, greyed out      MetalFX frame interpolation (gfx/nvn/totk_mfx.m) needs the game's
                                                          scene, depth, camera and UI passes; its hooks know Tears of the
                                                          Kingdom's, and in Animal Crossing every frame lacks all four (test
@@ -149,7 +148,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];})];
  [rows addObject:settings_row(settings_text("帧率图","FPS graph"),nil,nil,
   ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
- [rows addObject:settings_fixed(settings_text("帧率上限","Frame rate"),settings_text("30 帧（游戏本身的帧率）","30 fps (the game's own rate)"))];
+ if(runtime_frame_rate_available()&&!runtime_frame_rate_locked()) {
+  [rows addObject:settings_row(settings_text("帧率上限（重启生效）","Frame rate (restart required)"),
+   @[settings_text("30 帧","30 fps"),settings_text("60 帧（实验性）","60 fps (experimental)")],@[@30,@60],
+   ^int{return runtime_frame_rate_choice();},^(int v){runtime_frame_rate_choose(v);})];
+ } else {
+  [rows addObject:settings_fixed(settings_text("帧率上限","Frame rate"),
+   runtime_frame_rate_active()==60?settings_text("60 帧（启动配置）","60 fps (launch setting)"):settings_text("30 帧","30 fps"))];
+ }
  [rows addObject:settings_fixed(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),settings_text("这个游戏暂不支持","Not available in this game yet"))];
  NSString *picture=settings_text("画面","Picture");
  NSArray<NSString *> *pictures=@[@"1080p",settings_text("1080p + MetalFX 放大（大窗口、全屏）","1080p + MetalFX upscaling (large window, full screen)")];

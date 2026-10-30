@@ -13,7 +13,8 @@ not pinned by this build flow.
 
 Use base **1.0.0** and a **separate 3.0.1 update NSP**. The builder selects the
 update profile from verified CNMT metadata. It rejects unknown code/data
-identities. Combined update images, cheats and DLC are not part of this flow.
+identities. Combined update images and cheats are not part of this flow. The three
+separate, pinned DLC packages can optionally be added as described below.
 
 On Apple silicon with macOS 26+, the command-line tools and Homebrew libraries
 `opus`, `libvpx`, `libvorbis`, and `libogg`, create the isolated environment once:
@@ -72,6 +73,91 @@ patches. It uses a separate version data folder and does not import old saves.
 The launcher keeps writable caches, verification proofs and game locks beside
 the app under `Animal Crossing Data`, preserving the signed app resources.
 No DMG or installation is performed by these commands.
+
+### Optional DLCs for 3.0.1
+
+Three DLCs are pinned: **Pocket Camp Special Order Ticket** (`01006F800232712C`,
+index 300), **Nook Inc. Silk Rug** (`01006F800232712D`, index 301), and **Happy Home
+Paradise** (`01006F80023273E8`, index 1000), all version 0. Supply any of the owner's
+separate NSPs (one `--source` each); the others are simply absent. No game content is
+distributed with the source. The preparer checks
+their exact package hashes, AddOnContent CNMT type/version/application identity,
+FS headers and all six IVFC levels against `assets/expected-dlc-v0.json`.
+
+```sh
+build/acnh-3.0.1/work/venv/bin/python -B games/acnh/tools/prepare_dlc.py \
+  --source game-assets/animal-crossing-new-horizons/dlc/v0/acnh-dlc-pocket-camp-special-order-ticket-v0-01006f800232712c.nsp \
+  --source game-assets/animal-crossing-new-horizons/dlc/v0/acnh-dlc-nook-inc-silk-rug-v0-01006f800232712d.nsp \
+  --source game-assets/animal-crossing-new-horizons/dlc/v0/acnh-dlc-happy-home-paradise-v0-01006f80023273e8.nsp \
+  --keys game-assets/shared/keys/prod.keys --output build/acnh-3.0.1/work/dlc
+```
+
+Reuse this verified output on subsequent builds. Add `--dlc build/acnh-3.0.1/work/dlc`
+to the `build_host.py` command above, then repackage. The native work folder remembers
+the DLC path; `--no-dlc` forgets it. Builds in a new work folder without this option
+report zero DLCs. The packager refuses a runtime built for a different DLC manifest and
+bundles every prepared read-only image. The runtime checks each image's full hash, keeps
+a verification record under `Animal Crossing Data` and reuses it while the image file is
+unchanged (as for the base RomFS; `TOTK_ROMFS_VERIFY=full` forces a new hash), enumerates
+the actual DLC indices and serves file slices from each mounted image. A missing or
+changed image stops the launch rather than hiding content a save may need. The base/update RomFS
+and existing saves remain separate from the DLC images.
+
+To check the packaged runtime without launching gameplay:
+
+```sh
+ACNH_DLC_DIR="$PWD/build/acnh-3.0.1/Animal Crossing New Horizons.app/Contents/Resources/game/dlc" \
+  "build/acnh-3.0.1/Animal Crossing New Horizons.app/Contents/MacOS/acnh-native" \
+  "build/acnh-3.0.1/Animal Crossing New Horizons.app/Contents/Resources/game/rewritten" probe-dlc
+```
+
+With all three DLCs this probe checks all 1,173 DLC file slices, guest-facing enumeration/mount/cache
+queries, size/read/EOF behavior, write rejection and traversal rejection. It does
+not establish that Happy Home Paradise or the promotional rewards work in gameplay;
+3.0.1 and its DLC support remain experimental.
+
+### Optional 30 / 60 FPS selection for 3.0.1
+
+30 FPS remains the default. A build with the optional speed-correction inputs
+offers **30 FPS** and **60 FPS (experimental)** under **Settings > Display**
+(key 1). The choice is saved as `Animal Crossing Data/frame-rate.txt` and applies
+after quitting and restarting the game. Code and parameter corrections must be
+loaded together; selecting 30 restores the original game timing on the next
+launch. No other cheats are enabled, and MetalFX frame interpolation remains
+unavailable.
+
+The local 60 FPS inputs are [tmouh's ACNH 60 FPS + SpeedFix](https://github.com/tmouh/acnh-60fps)
+at commit `e5e03e64739334c9fbd36f19658b98e805f8ba8d`, under **CC BY-NC 4.0**.
+Keep the source checkout outside tracked code, for example under
+`game-assets/animal-crossing-new-horizons/mods/v3.0.1/acnh-60fps-source`.
+Its code/parameter data is not redistributed in this repository. No external
+mod tools or emulator code are executed or imported by the build.
+
+Add this option to the 3.0.1 `build_host.py` command above, then repackage:
+
+```sh
+--fps-mod game-assets/animal-crossing-new-horizons/mods/v3.0.1/acnh-60fps-source
+```
+
+The work folder remembers this input for subsequent rebuilds; `--no-fps-mod` forgets it. The builder checks
+the six source-file hashes, the original NSO and RomFS identities and all 6,417
+patch sites against the original and rewritten main module. It derives a separate
+parameter overlay from the owner's files, verifies its result, and packages both
+the complete speed corrections and the original license/attribution. On a 60 FPS
+launch the loader rechecks every original word before changing any of them, then
+seals executable memory before the game starts. Original NSOs, rewritten files,
+RomFS and saves are not patched on disk. The builder also rejects any replacement
+that the instruction rewriter would have gated (`svc`, system-register access, x18)
+or that branches outside the code or into rewritten code. Selecting 30 FPS locks
+presentation at 30; builds without these inputs, including 1.2.1, keep the game's own
+presentation interval and timing.
+
+For isolated diagnostics, `ACNH_FPS=30|60` overrides the saved choice and locks
+the panel's row; a standalone native run also needs `ACNH_FPS_ASSETS` set to the
+absolute `<native work>/build/fps60` directory. The packaged launcher sets the
+asset path automatically. 60 FPS is a fixed-rate experimental mode: sustained
+performance below its target can slow frame-counted actions. Full gameplay
+coverage is still required before treating it as a verified release.
 
 ## Verified Milestones
 
@@ -169,8 +255,8 @@ nothing to aim and no camera to turn with it.
 The layout, the settings panel and the host functions behind the crash fixes are the same for 1.2.1 and 3.0.1.
 Key 1, or L3 + R3 together on a controller, opens the settings panel; Esc or key 1 closes it. It has three pages:
 
-- **Display:** the overlay (FPS, shaders and load; FPS only; off), an FPS graph, the frame rate (30 fps, the game's
-  own; there is no lock to pick because the game cannot run faster), MetalFX frame interpolation (shown as not
+- **Display:** the overlay (FPS, shaders and load; FPS only; off), an FPS graph, the frame rate (30 or experimental
+  60 fps for 3.0.1 builds with speed-correction data, applied after restarting; otherwise 30 fps), MetalFX frame interpolation (shown as not
   available: its hooks do not find this game's scene, depth, camera and UI yet), the picture (1080p, or 1080p with MetalFX upscaling for a larger window or full screen) and the game language
   (follow the Mac or one of the game's 14 languages; it applies at the next launch).
 - **Input:** the controller type (auto, Xbox, PlayStation, Switch) and rumble.
@@ -178,9 +264,9 @@ Key 1, or L3 + R3 together on a controller, opens the settings panel; Esc or key
   does; a list view is also available. Each device has its own reset button.
 
 The choices are saved next to the app in `Animal Crossing Data` (`controls.txt`, `keyboard.txt` and one small file per
-setting). Scripted input (`commands.txt`, `TOTK_INPUT_SCRIPT`) keeps the fixed test layout, so scripts mean the same keys
+setting, including `frame-rate.txt`). Scripted input (`commands.txt`, `TOTK_INPUT_SCRIPT`) keeps the fixed test layout, so scripts mean the same keys
 whatever the player picks. `TOTK_LANG`, `TOTK_MFX_UPSCALE` / `TOTK_MFX_OUTPUT` and `TOTK_RUMBLE` decide
-before the panel's choices; the panel then shows their value greyed out.
+before the panel's choices; the panel then shows their value greyed out. `ACNH_FPS` likewise takes priority over the frame-rate choice.
 
 The small offline tools are adapted from Tyraelone's common tools at
 `2f00936366640ce6a7aa84536a66a96a4747f927`; provenance and MIT licensing are
