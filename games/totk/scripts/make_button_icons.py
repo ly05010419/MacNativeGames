@@ -573,12 +573,13 @@ def redraw(otf, text_fonts, style):
     return out.getvalue(), len(icons)
 
 
-def write_mod_manifest(mod, romfs, index):
+def write_mod_manifest(mod, romfs, index, app_replaced=None):
     """Merge the mod's Common archive with the build's own patch of it (make_romfs_patches.py patches the same archive),
     then write the manifest: (merged paths, Manifest). The merged file's line names the build's file as the original, so
-    the game loads it in place of the build's overlay; without the merge both replace one file and the game stops at start."""
+    the game loads it in place of the build's overlay; without the merge both replace one file and the game stops at start.
+    For the same reason a file the app replaces itself (app_replaced, make_mod_manifest.app_overlays) is left out."""
     merged = merge_build_patches(mod, romfs, index)
-    return merged, write_manifest(mod, romfs, merged=merged)
+    return merged, write_manifest(mod, romfs, app_replaced=app_replaced, merged=merged)
 
 
 def report_progress(on, step, steps):
@@ -688,7 +689,8 @@ def main():
     target.write_bytes(zstd.compress(grow_restbl(table, original, growth), level=19))
     print(f'{target}: ' + ', '.join(f'{p} {g:+d}' for p, g in growth.items()))
     try:
-        merged, found = write_mod_manifest(args.mod, romfs, index)
+        replaced = make_mod_manifest.app_overlays(args.app, version) if args.app else None
+        merged, found = write_mod_manifest(args.mod, romfs, index, replaced)
     except ValueError as error:
         sys.exit(f'manifest not written: {error}')
     for name in merged:
