@@ -457,6 +457,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property double repeatAt;
 @property(strong) NSTimer *timer;
 @property NSPoint grab;   /* where in the panel the drag started */
+@property BOOL dragging;   /* the press being dragged was the panel's own */
 @property(strong) NSSegmentedControl *tabs;
 @property(strong) NSArray<NSView *> *pages;
 @property(strong) NSTextField *versionLabel;   /* the bottom-left corner */
@@ -984,9 +985,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(void)center{if(!self.superview)return;NSSize s=self.superview.bounds.size,p=self.frame.size;
  CGFloat fx=g_settings_at.x<0?0.5:g_settings_at.x,fy=g_settings_at.y<0?0.5:g_settings_at.y;
  [self setFrameOrigin:NSMakePoint(floor(fmax(0,s.width-p.width)*fx),floor(fmax(0,s.height-p.height)*fy))];}
-/* Dragging the panel's background (not its controls) moves it, kept inside the window. */
--(void)mouseDown:(NSEvent *)e{self.grab=[self convertPoint:e.locationInWindow fromView:nil];}
--(void)mouseDragged:(NSEvent *)e{if(!self.superview)return;
+/* Dragging the panel's background (not its controls) moves it, kept inside the window. A drag that started on a view
+   keeping its press (the drawings) still reaches the panel: it moves only for a press it saw, or it jumps to a stale grab. */
+-(void)mouseDown:(NSEvent *)e{self.grab=[self convertPoint:e.locationInWindow fromView:nil];self.dragging=YES;}
+-(void)mouseUp:(NSEvent *)e{(void)e;self.dragging=NO;}
+-(void)mouseDragged:(NSEvent *)e{if(!self.superview||!self.dragging)return;
  NSPoint at=[self.superview convertPoint:e.locationInWindow fromView:nil];NSSize s=self.superview.bounds.size,p=self.frame.size;
  CGFloat x=fmin(fmax(0,at.x-self.grab.x),fmax(0,s.width-p.width)),y=fmin(fmax(0,at.y-self.grab.y),fmax(0,s.height-p.height));
  [self setFrameOrigin:NSMakePoint(floor(x),floor(y))];

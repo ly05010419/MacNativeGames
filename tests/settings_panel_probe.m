@@ -571,6 +571,22 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([kb inputAt:NSMakePoint(NSMidX(oneKey), NSMidY(oneKey)) rect:NULL] == -1);   /* key 1 opens the panel: not changeable */
     assert([kb inputAt:NSMakePoint(NSMidX(wheel), NSMidY(wheel)) rect:NULL] == KEYMAP_MOUSE_FIRST + 2);
     assert([kb inputAt:NSMakePoint(NSMinX(leftClick) + 8, NSMidY(leftClick)) rect:NULL] == KEYMAP_MOUSE_FIRST);
+    /* Only a press on the panel itself drags it: a drag that started on the drawing still reaches the panel, and it used to
+       jump there from the last press's spot. */
+    NSEvent *(^mouse)(NSEventType, NSPoint) = ^NSEvent *(NSEventType type, NSPoint at) {
+        return [NSEvent mouseEventWithType:type location:at modifierFlags:0 timestamp:0 windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1]; };
+    NSPoint spot = settingsPanel.frame.origin, savedAt = g_settings_at, background = [settingsPanel convertPoint:NSMakePoint(6, settingsPanel.bounds.size.height - 6) toView:nil];
+    [settingsPanel mouseDown:mouse(NSEventTypeLeftMouseDown, background)];
+    [settingsPanel mouseDragged:mouse(NSEventTypeLeftMouseDragged, NSMakePoint(background.x + 3, background.y + 2))];
+    [settingsPanel mouseUp:mouse(NSEventTypeLeftMouseUp, NSMakePoint(background.x + 3, background.y + 2))];
+    assert(NSEqualPoints(settingsPanel.frame.origin, NSMakePoint(spot.x + 3, spot.y + 2)));
+    spot = settingsPanel.frame.origin;
+    NSPoint onDrawing = [kb convertPoint:NSMakePoint(NSMidX(oneKey), NSMidY(oneKey)) toView:nil];   /* no menu there */
+    [kb mouseDown:mouse(NSEventTypeLeftMouseDown, onDrawing)];
+    [kb mouseDragged:mouse(NSEventTypeLeftMouseDragged, NSMakePoint(onDrawing.x + 3, onDrawing.y + 2))];
+    [kb mouseUp:mouse(NSEventTypeLeftMouseUp, NSMakePoint(onDrawing.x + 3, onDrawing.y + 2))];
+    assert(NSEqualPoints(settingsPanel.frame.origin, spot));
+    g_settings_at = savedAt; [settingsPanel center];
     NSMenu *actions = [settingsPanel menuForInput:14 pad:NO]; NSMenuItem *ticked = nil, *jump = nil;
     for (NSMenuItem *i in actions.itemArray) { if (i.state == NSControlStateValueOn) ticked = i; if (i.action && i.tag == KEYMAP_X) jump = i; }
     assert([actions.itemArray.firstObject.title isEqualToString:@"E"] && ticked && ticked.tag == KEYMAP_A && jump && [actions.itemArray.lastObject.title isEqualToString:@"None (unused)"]);
