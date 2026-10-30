@@ -13,6 +13,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(sys.platform == 'darwin', 'AppKit requires macOS')
 class SettingsPanel(unittest.TestCase):
+    def test_update_page_never_forks(self):
+        self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
+
     def test_current_modes_and_refresh(self):
         compiler = shutil.which('clang')
         if not compiler:
@@ -56,6 +59,9 @@ class SettingsPanel(unittest.TestCase):
                 settings.mkdir()
                 env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
                 env.update(TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings))
+                run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn('pass: update page', run.stdout)
                 for action in ('save', 'restore', 'override'):
                     current = dict(env)
                     if action == 'override':

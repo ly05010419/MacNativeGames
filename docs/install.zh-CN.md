@@ -196,6 +196,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 - **本仓库有新版本**（`git pull` 之后）：
   - 先退出游戏，再运行 `python3.14 update_runtime.py "<App 路径>"`，约一分钟更新完，不需要游戏文件和密钥。
   - 它提示启动着色器不再匹配时，加上 `--seed`。
+- **设置面板（按 1）的「更新」页**列出上游的新内容。为此每次启动都会向 GitHub 公开 API 查询你的提交之后的改动；设 `TOTK_UPDATE_SUMMARY=0` 可以关掉。可选的 AI 总结一开启就生效；没有一个命令行登录时，页面上的登录按钮会运行第一个命令行自己的登录。它会把提示词依次交给本机的 `claude`、`codex`、`qodercli`，用第一个能运行的，并关掉能碰到 shell、你的文件和网络的工具，也不加载你的 hooks 和设置。Codex 没有关掉子代理的开关，仍会读它自己的 `AGENTS.md`，并使用默认的服务和模型，不用你的 `config.toml`。运行失败时会交给下一个，所以一次启动可能碰到不止一个账号；总结失败的话，下次启动会再试一次。其他 AI 命令行（Gemini CLI、Cursor、GitHub Copilot 等）暂时没测试，不会自动调用；想用的话，就在 `~/Library/Application Support/MacNativeGames/TOTK/update/ai-command`（旷野之息是 `BotW/`）里写一行命令，它从标准输入读提示词、把回答打印出来，例如 `/path/to/your-ai --print`。提示词里有来自网上的提交信息，所以这条命令不要带能运行工具或读你文件的能力。
 - **退回更新前的版本**（新版本玩起来有问题时）：
   - 先退出游戏，用 `git reflog` 找到 `git pull` 之前所在的提交（`pull` 那一行下面的一行）。
   - 运行 `git checkout <那个提交>`（git 会提示 "detached HEAD"，这是正常的），再运行一次 `python3.14 update_runtime.py "<App 路径>"`；它要求时加上 `--seed`。

@@ -22,6 +22,7 @@
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
+#include "update_summary.h"        // the settings panel's update page
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -207,8 +208,31 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
     }
 }
 
+/* --update-summary: what mng_summary_start below and the settings panel's update page run, detached, for that page. */
+static void update_summary_run(void) {
+    setpriority(PRIO_PROCESS, 0, 20);
+    const char *controls = getenv("TOTK_CONTROLS");   // the folder the page reads
+    NSString *data = controls && *controls ? @(controls).stringByDeletingLastPathComponent
+        : [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/" GAME_FOLDER];
+#ifdef GAME_BOTW
+    NSString *game = @"botw";
+#else
+    NSString *game = @"totk";
+#endif
+    mng_summary_run([data stringByAppendingPathComponent:@"update"], game, [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"],
+                    NSBundle.mainBundle.bundlePath, NSDate.date.timeIntervalSince1970,
+                    ^NSDictionary *(NSString *query, NSInteger *http) { return mng_summary_fetch(query, http); },
+                    mng_summary_dirs(), MNG_SUMMARY_COMMAND_SECONDS);
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
+        if (argc > 1 && !strcmp(argv[1], "--update-summary")) {
+            update_summary_run();
+            return 0;
+        }
+        if (argc > 1 && !strcmp(argv[1], "--ai-login"))   // the page's login button, in a terminal
+            return mng_summary_login(mng_summary_dirs(), ^{ update_summary_run(); });
         NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
         NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
@@ -353,6 +377,7 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
+        mng_summary_start(NSBundle.mainBundle.executablePath.fileSystemRepresentation);
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);
         int failed = errno;

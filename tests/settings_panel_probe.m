@@ -1,5 +1,9 @@
 /* The production Mac settings panel (key 1, runtime/settings_panel.h), its keyboard handling and the calls each row makes.
    No guest, save files, game data or GPU commands are used. */
+#import <Foundation/Foundation.h>
+static NSURL *updateOpened;
+#define UPDATE_TAB_OPEN(url) (updateOpened = (url))   /* never Terminal */
+#define UPDATE_TAB_PASTEBOARD [NSPasteboard pasteboardWithName:@"totk-update-tab-probe"]   /* not the clipboard of whoever runs this */
 #include "../games/totk/runtime/frontend.m"
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
@@ -60,7 +64,11 @@ static int sharedSaves;   /* saves of a setting both games share (runtime_shared
 void runtime_shared_setting_save(const char *name, const char *word, const char *what) { sharedSaves++; runtime_setting_save(name, word, what); }
 int runtime_shared_setting_word(const char *name, char *word, size_t size) { return runtime_setting_word(name, word, size); }
 static char removedName[64];
-void runtime_setting_remove(const char *name) { snprintf(removedName, sizeof removedName, "%s", name); }
+void runtime_setting_remove(const char *name) {
+    snprintf(removedName, sizeof removedName, "%s", name);
+    const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
+    char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); unlink(path);
+}
 /* runtime/gamepad.m's controller layout and mouse sensitivity, kept here. */
 static uint16_t fakeMap[CONTROLLER_BUTTONS]; static uint8_t fakeModes[CONTROLLER_BUTTONS];
 void runtime_controller_map_get(uint16_t *map, uint8_t *modes) { memcpy(map, fakeMap, sizeof fakeMap); memcpy(modes, fakeModes, sizeof fakeModes); }
@@ -247,10 +255,301 @@ static void frame_probe(void) {
     puts("pass: frame lock choices, shared persistence, interpolation, overrides, invalid/deleted files, key 9 inert");
 }
 
+/* The 更新 page (update_tab.h), on its own so it also runs where the window sizes in main do not fit the screen. */
+@interface UpdateProbeClicks:NSObject
+@property int hits;
+@end
+@implementation UpdateProbeClicks
+-(void)hit:(id)sender{(void)sender;self.hits++;}
+@end
+static NSString *updateDir;
+static double padAt = 1000;
+enum { PAD_A = 1u << 0, PAD_L1 = 1u << 6, PAD_R1 = 1u << 7, PAD_LEFT = 1u << 12, PAD_RIGHT = 1u << 14, PAD_UP = 1u << 13, PAD_DOWN = 1u << 15 };
+static void pad_press(uint64_t buttons) {
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:padAt += 1 active:YES];
+    [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = buttons} time:padAt += 0.1 active:YES];
+}
+static TOTKUpdatePage *update_page(void) { return (TOTKUpdatePage *)settingsPanel.pages[SETTINGS_PAGE_UPDATE]; }
+static NSString *update_text(void) { return update_page().text.stringValue; }
+static void update_bytes(NSData *bytes) {
+    NSString *path = [updateDir stringByAppendingPathComponent:@"summary.json"];
+    if (bytes) assert([bytes writeToFile:path atomically:YES]); else [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets];
+}
+/* A behind document with the AI's answer, as app/update_summary.h writes it, with these fields changed. */
+static NSDictionary *update_doc(NSDictionary *fields) {
+    NSMutableDictionary *d = [@{@"version": @1, @"game": @"totk", @"generated_at": @1793000000.5, @"key": @"a|b|on", @"source": @"model",
+        @"installed": @"ab6ebe84aaaa", @"installed_date": @"2026-10-29", @"head": @"f0cfa3f9bbbb", @"total": @42,
+        @"status": @"behind", @"verdict": @"update", @"reason": @"修好了一个卡顿", @"points": @[@"要点一", @"要点二"], @"note": @"",
+        @"copy": @"git pull\npython3.14 update_runtime.py \"/A.app\"\n"} mutableCopy];
+    [d addEntriesFromDictionary:fields]; return d;
+}
+static void update_summary(NSDictionary *fields) { update_bytes([NSJSONSerialization dataWithJSONObject:update_doc(fields) options:0 error:nil]); }
+/* The launcher writes a document and the panel's own tick finds it. */
+static void update_arrives(NSDictionary *fields) {
+    assert([[NSJSONSerialization dataWithJSONObject:update_doc(fields) options:0 error:nil] writeToFile:[updateDir stringByAppendingPathComponent:@"summary.json"] atomically:YES]);
+    [settingsPanel.timer fire];
+}
+static void says(NSString *part) {
+    if ([update_text() containsString:part]) return;
+    fprintf(stderr, "the page lacks %s:\n%s\n", part.UTF8String, update_text().UTF8String); abort();
+}
+static void lacks(NSString *part) {
+    if (![update_text() containsString:part]) return;
+    fprintf(stderr, "the page should not say %s:\n%s\n", part.UTF8String, update_text().UTF8String); abort();
+}
+static void status_is(NSString *text) {
+    if ([update_page().status.stringValue isEqualToString:text]) return;
+    fprintf(stderr, "status %s, expected %s\n", update_page().status.stringValue.UTF8String, text.UTF8String); abort();
+}
+static void update_empty(void) {
+    assert([update_text() isEqualToString:@"还没有更新信息，下次启动游戏时会查一次\n开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。"] && update_page().commandButton.hidden && !update_page().aiSwitch.hidden);
+    status_is(@""); assert([update_page().time.stringValue isEqualToString:@""]);
+    assert(settingsPanel.controllerTargets.count == 1 && settingsPanel.controllerTargets[0] == update_page().aiSwitch);
+}
+/* What the page starts in the probe: this program, which reports how it was started. */
+static void update_spawned_child(void) {
+    usleep(200000);   /* the click has long returned */
+    struct stat null, s; assert(!stat("/dev/null", &null));
+    int stdio = 1; for (int fd = 0; fd < 3; fd++) stdio = stdio && !fstat(fd, &s) && s.st_rdev == null.st_rdev;
+    int fds = 0; for (int fd = 3; fd < 1024; fd++) if (fcntl(fd, F_GETFD) != -1) fds++;
+    FILE *report = fopen(getenv("UPDATE_PROBE_REPORT"), "a"); assert(report);
+    fprintf(report, "session=%d stdio=%d fds=%d controls=%d\n", getsid(0) == getpid(), stdio, fds, !!getenv("TOTK_CONTROLS"));
+    fclose(report);
+}
+static void update_wait_spawned(NSUInteger count) {
+    NSString *report = @(getenv("UPDATE_PROBE_REPORT")), *text = nil;
+    for (int i = 0; i < 200; i++) {
+        text = [NSString stringWithContentsOfFile:report encoding:NSUTF8StringEncoding error:nil];
+        if ([text componentsSeparatedByString:@"\n"].count == count + 1) break;
+        usleep(25000);
+    }
+    NSArray<NSString *> *lines = [text ?: @"" componentsSeparatedByString:@"\n"];
+    if (lines.count != (text ? count + 1 : 1)) { fprintf(stderr, "started %s\n", text.UTF8String); abort(); }
+    for (NSString *line in lines) assert(!line.length || [line isEqualToString:@"session=1 stdio=1 fds=0 controls=1"]);
+}
+static void update_redraw(void) { update_page().shown = NO; [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets]; }
+static void update_probe(const char *self) {
+    unsetenv("TOTK_UPDATE_LAUNCHER");
+    const char *dir = getenv("SETTINGS_TEST_DIR"); assert(dir);
+    updateDir = [@(dir) stringByAppendingPathComponent:@"update"];
+    assert([NSFileManager.defaultManager createDirectoryAtPath:updateDir withIntermediateDirectories:YES attributes:nil error:nil]);
+    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
+    settings_test_output_init();
+    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+    settings_show(1); assert(settingsOpen);
+    assert(settingsPanel.tabs.segmentCount == 4 && SETTINGS_PAGE_UPDATE == 3 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
+    for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
+
+    /* The display page: the controller past the last row (it used to raise here), the contribute button clicks. Its real
+       action could send a player's list, so the button is pointed at the probe. */
+    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
+    UpdateProbeClicks *clicks = [UpdateProbeClicks new]; NSButton *contribute = settingsPanel.displayButtons[1];
+    contribute.target = clicks; contribute.action = @selector(hit:);
+    pad_press(PAD_DOWN); assert(g_settings_controller_active);
+    for (int n = 0; n < 20 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] != contribute; n++) pad_press(PAD_DOWN);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == contribute && contribute.layer.borderWidth == 2);
+    pad_press(PAD_A); assert(clicks.hits == 1);
+    pad_press(PAD_DOWN); pad_press(PAD_DOWN); assert(settingsPanel.controllerIndex == 0);   /* round again */
+
+    /* L1 / R1: the page is one more tab, both ways. */
+    pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_UPDATE);
+    pad_press(PAD_R1); assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
+    pad_press(PAD_L1); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE && settingsPanel.rows.count == 0);
+    for (NSButton *b in settingsPanel.displayButtons) assert(b.hidden);
+    for (NSButton *b in settingsPanel.resetButtons) assert(b.hidden);
+    assert(!update_page().text.selectable && update_page().text.refusesFirstResponder && update_page().commandButton.refusesFirstResponder && update_page().aiSwitch.refusesFirstResponder);
+    assert([update_page().aiSwitch.title isEqualToString:@"Turn on the AI summary"] && [update_page().commandButton.title isEqualToString:@"Copy the update command"]);
+    update_summary(@{}); status_is(@"Update available"); says(@"Advice: worth updating"); says(@"42 commits upstream since");
+    update_summary(@{@"status": @"latest", @"copy": @""}); status_is(@"Up to date");
+    update_summary(@{@"status": @"unknown", @"copy": @""}); status_is(@"Updates cannot be checked right now");
+    says(@"It uses the claude, codex or qodercli you are logged in to, on your own account.");
+    /* All three buttons fit, in the longer language. */
+    [@"on\n" writeToFile:[updateDir stringByAppendingPathComponent:@"ai"] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    setenv("TOTK_UPDATE_LAUNCHER", self, 1);
+    update_summary(@{@"verdict": @"", @"reason": @"", @"source": @"fallback", @"points": @[@"title"], @"note": @"The AI is not logged in, or did not answer this time", @"login": @YES});
+    lacks(@"It uses the claude"); lacks(@"The AI is summarizing…");
+    assert([update_page().loginButton.title isEqualToString:@"Log in to the AI"] && [update_page().aiSwitch.title isEqualToString:@"Turn off the AI summary"]);
+    assert(NSMinX(update_page().commandButton.frame) >= 0 && NSMaxX(update_page().commandButton.frame) <= NSMinX(update_page().loginButton.frame) && NSMaxX(update_page().loginButton.frame) <= NSMinX(update_page().aiSwitch.frame));
+    update_summary(@{@"verdict": @"", @"reason": @"", @"source": @"fallback", @"points": @[@"title"]}); says(@"The AI is summarizing…");
+    unsetenv("TOTK_UPDATE_LAUNCHER");
+    assert([NSFileManager.defaultManager removeItemAtPath:[updateDir stringByAppendingPathComponent:@"ai"] error:nil]);
+    update_bytes(nil);
+
+    /* The rest in Chinese. */
+    settings_show(0); setenv("TOTK_UI_LANG", "zh", 1); settings_show(1); g_settings_controller_active = YES;
+    assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_UPDATE && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"更新"]);
+    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
+    TOTKUpdatePage *page = update_page(); NSButton *copy = page.commandButton, *loginButton = page.loginButton, *aiButton = page.aiSwitch;
+    assert(loginButton.refusesFirstResponder && loginButton.hidden);
+    /* The AI button before the launcher ever made the folder. */
+    assert([NSFileManager.defaultManager removeItemAtPath:updateDir error:nil]);
+    [aiButton performClick:nil]; assert([NSFileManager.defaultManager fileExistsAtPath:[updateDir stringByAppendingPathComponent:@"ai"]]);
+    [aiButton performClick:nil]; assert(![NSFileManager.defaultManager fileExistsAtPath:[updateDir stringByAppendingPathComponent:@"ai"]]);
+
+    /* Nothing yet, and everything that is not a whole version 1 document: never a crash, never the copy button. */
+    update_empty();
+    NSData *big = [NSJSONSerialization dataWithJSONObject:update_doc(@{@"note": [@"" stringByPaddingToLength:70000 withString:@"x" startingAtIndex:0]}) options:0 error:nil];
+    NSData *whole = [NSJSONSerialization dataWithJSONObject:update_doc(@{}) options:0 error:nil];
+    NSArray<NSData *> *bad = @[big, [@"{ not json" dataUsingEncoding:NSUTF8StringEncoding], [whole subdataWithRange:NSMakeRange(0, whole.length / 2)], NSData.data,
+        [@"[1]" dataUsingEncoding:NSUTF8StringEncoding], [NSData dataWithBytes:"\xff\xfe" length:2]];
+    for (NSData *bytes in bad) { update_bytes(bytes); update_empty(); }
+    for (NSDictionary *fields in @[@{@"version": @2}, @{@"version": @YES}, @{@"version": @"1"}, @{@"total": @"7"}, @{@"total": @YES}, @{@"generated_at": NSNull.null}, @{@"points": @"一"},
+                                   @{@"points": @[@1]}, @{@"status": @"other"}, @{@"status": @1}, @{@"verdict": @"maybe"}, @{@"reason": @3}, @{@"copy": @[]}, @{@"key": @1}]) {
+        update_summary(fields); update_empty();
+    }
+    /* A summary.json that is a folder. */
+    update_bytes(nil); assert([NSFileManager.defaultManager createDirectoryAtPath:[updateDir stringByAppendingPathComponent:@"summary.json"] withIntermediateDirectories:YES attributes:nil error:nil]);
+    [settingsPanel refreshUpdatePage]; update_empty();
+    assert([NSFileManager.defaultManager removeItemAtPath:[updateDir stringByAppendingPathComponent:@"summary.json"] error:nil]);
+
+    /* Behind with the AI's answer. The page is told by the document, whatever the file says now. */
+    update_summary(@{}); status_is(@"有新版本");
+    says(@"当前版本 ab6ebe84aaaa（2026-10-29） · 上游之后 42 个提交"); says(@"建议：值得更新  修好了一个卡顿"); says(@"•  要点一"); says(@"退出游戏后，到仓库文件夹里运行");
+    assert(!copy.hidden && settingsPanel.controllerTargets.count == 2 && settingsPanel.controllerTargets[0] == copy && settingsPanel.controllerTargets[1] == aiButton);
+    assert(CGRectIntersectsRect(copy.frame, page.bounds) && NSMaxX(copy.frame) <= NSMinX(aiButton.frame) && NSMaxX(page.status.frame) <= NSMinX(page.time.frame));
+    assert([page.time.stringValue hasPrefix:@"内容更新于 "] && page.time.stringValue.length == 17);
+    lacks(@"下次启动游戏时"); says(@"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。");   /* the document was made with it on; the file is not there */
+    update_summary(@{@"verdict": @"wait"}); says(@"建议：可以等等");
+    update_summary(@{@"verdict": @"skip"}); says(@"建议：不用更新");
+    /* Without AI: the titles. */
+    update_summary(@{@"verdict": @"", @"reason": @"", @"key": @"a|b|off", @"source": @"fallback", @"points": @[@"标题"]}); says(@"•  标题"); lacks(@"建议："); lacks(@"AI 总结");
+    /* Latest and unknown: no copy button, no hint, the note. */
+    update_summary(@{@"status": @"latest", @"verdict": @"skip", @"reason": @"上游没有新的提交", @"points": @[], @"copy": @"", @"key": @"a|a|off"});
+    status_is(@"已是最新"); says(@"建议：不用更新"); lacks(@"上游之后"); assert(copy.hidden && settingsPanel.controllerTargets.count == 1);
+    update_summary(@{@"status": @"unknown", @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"连不上", @"copy": @"", @"installed": @"", @"installed_date": @"", @"key": @"||off"});
+    status_is(@"暂时查不到更新"); assert([update_text() isEqualToString:@"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。\n连不上"]);
+
+    /* The copy button: to the probe's pasteboard, with the first responder back on the window. */
+    NSString *commands = update_doc(@{})[@"copy"];
+    update_summary(@{}); NSPasteboard *board = UPDATE_TAB_PASTEBOARD; [board clearContents];
+    [window makeFirstResponder:nil]; [copy performClick:nil];
+    assert([[board stringForType:NSPasteboardTypeString] isEqualToString:commands] && window.firstResponder == window.contentView);
+    status_is(@"有新版本 · 命令已复制");
+    [settingsPanel.timer fire]; status_is(@"有新版本 · 命令已复制");   /* nothing changed: it stays */
+    [board releaseGlobally];
+
+    /* The AI button without a launcher (tests, agent runs, an old launcher): the file, and nothing starts or claims to run. */
+    NSString *aiFile = [updateDir stringByAppendingPathComponent:@"ai"], *spawned = [@(dir) stringByAppendingPathComponent:@"spawned"]; NSFileManager *files = NSFileManager.defaultManager;
+    setenv("UPDATE_PROBE_REPORT", spawned.fileSystemRepresentation, 1);
+    NSString *off = @"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。", *busy = @"AI 正在总结…";
+    NSDictionary *titles = @{@"verdict": @"", @"reason": @"", @"key": @"a|b|off", @"source": @"fallback", @"points": @[@"标题"]};
+    NSMutableDictionary *loggedOut = [titles mutableCopy]; [loggedOut addEntriesFromDictionary:@{@"key": @"a|b|on", @"note": @"AI 还没登录，或这次没有回答", @"login": @YES}];
+    update_summary(titles); assert([aiButton.title isEqualToString:@"开启 AI 总结"]); says(off); lacks(busy); assert(loginButton.hidden);
+    [aiButton performClick:nil]; assert([files fileExistsAtPath:aiFile] && [aiButton.title isEqualToString:@"关闭 AI 总结"]); lacks(off); lacks(busy); lacks(@"下次启动"); assert(window.firstResponder == window.contentView);
+    update_summary(loggedOut); says(@"AI 还没登录"); assert(loginButton.hidden && settingsPanel.controllerTargets.count == 2);
+    [aiButton performClick:nil]; assert(![files fileExistsAtPath:aiFile] && [aiButton.title isEqualToString:@"开启 AI 总结"]); says(off); lacks(@"下次启动");
+    assert(![files fileExistsAtPath:spawned]);
+
+    /* With one: each click refreshes the document, on or off, without waiting for it, cut off from the game. */
+    setenv("TOTK_UPDATE_LAUNCHER", self, 1);
+    update_summary(titles);
+    double clickedAt = NSProcessInfo.processInfo.systemUptime;
+    [aiButton performClick:nil]; assert([files fileExistsAtPath:aiFile] && NSProcessInfo.processInfo.systemUptime - clickedAt < 0.15 && ![files fileExistsAtPath:spawned]);
+    says(busy); says(@"•  标题"); lacks(off);   /* at once, this version's titles */
+    update_wait_spawned(1); says(busy);
+    [aiButton performClick:nil]; assert(![files fileExistsAtPath:aiFile]); says(off); lacks(busy); update_wait_spawned(2);
+    usleep(500000);
+    pid_t left; do { left = waitpid(-1, NULL, WNOHANG); if (!left) usleep(50000); } while (!left);
+    assert(left == -1 && errno == ECHILD);   /* reaped */
+    [aiButton performClick:nil]; update_wait_spawned(3);
+    /* 「AI 正在总结…」 only while that can be so. */
+    update_summary(@{@"verdict": @"", @"reason": @"", @"source": @"fallback", @"points": @[@"标题"], @"note": @"别的"}); lacks(busy); says(@"别的");
+    update_summary(@{}); lacks(busy);
+    update_summary(@{@"status": @"latest", @"verdict": @"", @"reason": @"", @"source": @"fallback", @"copy": @""}); lacks(busy);
+    update_summary(@{@"status": @"unknown", @"verdict": @"", @"reason": @"", @"source": @"fallback", @"copy": @""}); lacks(busy);
+    update_summary(titles); says(busy); unsetenv("TOTK_UPDATE_LAUNCHER"); update_redraw(); lacks(busy); setenv("TOTK_UPDATE_LAUNCHER", self, 1); update_redraw();
+
+    /* The login button: logged out, AI on and a launcher; else none. A login field of an old or odd document is none. */
+    update_summary(loggedOut); says(@"AI 还没登录"); lacks(busy); assert(!loginButton.hidden && [loginButton.title isEqualToString:@"登录 AI"]);
+    assert(settingsPanel.controllerTargets.count == 3 && settingsPanel.controllerTargets[0] == copy && settingsPanel.controllerTargets[1] == loginButton && settingsPanel.controllerTargets[2] == aiButton);
+    assert(NSMaxX(copy.frame) <= NSMinX(loginButton.frame) && NSMaxX(loginButton.frame) <= NSMinX(aiButton.frame));
+    NSMutableDictionary *notLogin = [loggedOut mutableCopy]; notLogin[@"login"] = @NO;
+    update_summary(notLogin); assert(loginButton.hidden && settingsPanel.controllerTargets.count == 2);
+    notLogin[@"login"] = @"true"; update_summary(notLogin); assert(loginButton.hidden);
+    [notLogin removeObjectForKey:@"login"]; update_summary(notLogin); assert(loginButton.hidden);
+    assert([files removeItemAtPath:aiFile error:nil]); update_summary(loggedOut); assert(loginButton.hidden);
+    runtime_setting_save(UPDATE_TAB_AI, "on", "AI summary"); [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets]; assert(!loginButton.hidden);
+    /* Its click: Terminal gets a script of this process's own making, whatever the document says and the folder is called. */
+    NSString *top = [@(dir) stringByAppendingPathComponent:@"It's \"quoted\" $HOME `x`"], *fakeLauncher = [top stringByAppendingPathComponent:@"The \"Game\" $1's.app-launcher"];
+    NSString *quotedControls = [top stringByAppendingPathComponent:@"controls.txt"], *quotedUpdate = [top stringByAppendingPathComponent:@"update"];
+    NSString *loginReport = [@(dir) stringByAppendingPathComponent:@"login-report"], *script = [quotedUpdate stringByAppendingPathComponent:@"ai-login.command"];
+    assert([files createDirectoryAtPath:quotedUpdate withIntermediateDirectories:YES attributes:nil error:nil] && [files copyItemAtPath:aiFile toPath:[quotedUpdate stringByAppendingPathComponent:@"ai"] error:nil]);
+    assert(([[NSString stringWithFormat:@"#!/bin/sh\nprintf '%%s\\n' \"$0\" \"$@\" \"$TOTK_CONTROLS\" \"$PATH\" \"$TOTK_UI_LANG\" > '%@'\n", loginReport] writeToFile:fakeLauncher atomically:NO encoding:NSUTF8StringEncoding error:nil]));
+    chmod(fakeLauncher.fileSystemRepresentation, 0755);
+    setenv("TOTK_UPDATE_LAUNCHER", fakeLauncher.fileSystemRepresentation, 1); setenv("TOTK_CONTROLS", quotedControls.fileSystemRepresentation, 1);
+    NSString *gamePath = @(getenv("PATH")), *oddPath = @"/usr/bin:/It's \"a\" $HOME `x`:/bin"; setenv("PATH", oddPath.fileSystemRepresentation, 1);   /* what the game searches, not what the login shell would */
+    assert([@"#!/bin/sh\nexit 9\n" writeToFile:script atomically:NO encoding:NSUTF8StringEncoding error:nil]); chmod(script.fileSystemRepresentation, 0600);   /* replaced each time */
+    NSUInteger before = [NSString stringWithContentsOfFile:spawned encoding:NSUTF8StringEncoding error:nil].length;
+    updateOpened = nil; [window makeFirstResponder:nil]; [loginButton performClick:nil];
+    assert(updateOpened.isFileURL && [updateOpened.path isEqualToString:script] && window.firstResponder == window.contentView);
+    assert([update_page().status.stringValue hasSuffix:@"已打开登录窗口"]);
+    struct stat mode; assert(!stat(script.fileSystemRepresentation, &mode) && (mode.st_mode & 07777) == 0700);
+    NSArray<NSString *> *inFolder = [files contentsOfDirectoryAtPath:quotedUpdate error:nil]; assert(inFolder.count == 2);
+    NSString *written = [NSString stringWithContentsOfFile:script encoding:NSUTF8StringEncoding error:nil];
+    assert([written hasPrefix:@"#!/bin/sh\nexport TOTK_CONTROLS='"] && ![written containsString:@"git pull"] && ![written containsString:@"AI 还没登录"]);
+    NSTask *shell = [NSTask new]; shell.executableURL = [NSURL fileURLWithPath:@"/bin/sh"]; shell.arguments = @[script];
+    NSMutableDictionary *shellEnvironment = [NSProcessInfo.processInfo.environment mutableCopy]; [shellEnvironment removeObjectForKey:@"TOTK_CONTROLS"]; shellEnvironment[@"PATH"] = @"/login-shell"; shellEnvironment[@"TOTK_UI_LANG"] = @"en"; shell.environment = shellEnvironment;
+    assert([shell launchAndReturnError:nil]); [shell waitUntilExit]; assert(!shell.terminationStatus);
+    NSArray<NSString *> *wrote = [[NSString stringWithContentsOfFile:loginReport encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
+    assert(wrote.count == 6 && [wrote[0] isEqualToString:fakeLauncher] && [wrote[1] isEqualToString:@"--ai-login"] && [wrote[2] isEqualToString:quotedControls] && [wrote[3] isEqualToString:oddPath] && [wrote[4] isEqualToString:@"zh"]);
+    /* Neither set: none written, and no throw. */
+    unsetenv("PATH"); unsetenv("TOTK_UI_LANG"); [loginButton performClick:nil];
+    written = [NSString stringWithContentsOfFile:script encoding:NSUTF8StringEncoding error:nil]; assert(![written containsString:@"PATH"] && ![written containsString:@"TOTK_UI_LANG"]);
+    setenv("PATH", gamePath.fileSystemRepresentation, 1); setenv("TOTK_UI_LANG", "zh", 1);
+    /* A controller's A on it; no refresh of its own: the login's run does that. */
+    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
+    [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets];
+    updateOpened = nil; settingsPanel.controllerIndex = 1; g_settings_controller_active = YES; [settingsPanel controllerHighlight]; pad_press(PAD_A); assert(updateOpened && loginButton.layer.borderWidth == 2);   /* a real tick can fall in the wait above, on the other folder, and clear the place */
+    assert([NSString stringWithContentsOfFile:spawned encoding:NSUTF8StringEncoding error:nil].length == before);
+    unsetenv("TOTK_UPDATE_LAUNCHER");
+    assert([files removeItemAtPath:aiFile error:nil] && [files removeItemAtPath:spawned error:nil]);
+    [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets]; settingsPanel.controllerIndex = 0; [settingsPanel controllerHighlight];
+
+    /* A controller: left / right pick the button, A presses it, up / down read a long text and a refresh leaves the place. */
+    NSMutableArray<NSString *> *lines = [NSMutableArray array]; for (int i = 0; i < 5; i++) [lines addObject:[@"" stringByPaddingToLength:200 withString:@"很长的一行字 " startingAtIndex:0]];
+    update_summary(@{@"points": lines, @"key": @"a|b|off"});
+    assert(settingsPanel.controllerIndex == 0 && copy.layer.borderWidth == 2);
+    pad_press(PAD_RIGHT); assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == aiButton && aiButton.layer.borderWidth == 2 && copy.layer.borderWidth == 0);
+    pad_press(PAD_A); assert([files fileExistsAtPath:aiFile]); pad_press(PAD_A); assert(![files fileExistsAtPath:aiFile]);
+    NSClipView *clip = page.scroll.contentView;
+    if (page.scroll.documentView.frame.size.height <= clip.bounds.size.height) { fprintf(stderr, "text not long enough\n"); abort(); }
+    pad_press(PAD_DOWN); assert(clip.bounds.origin.y == UPDATE_TAB_SCROLL && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == aiButton);
+    [settingsPanel.timer fire]; assert(clip.bounds.origin.y == UPDATE_TAB_SCROLL);
+    pad_press(PAD_UP); pad_press(PAD_UP); assert(clip.bounds.origin.y == 0);
+    /* The copy button goes: the place is on what is left. */
+    update_summary(@{@"status": @"latest", @"copy": @"", @"key": @"a|b|off"}); assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == aiButton);
+    /* A document changes the buttons with no input from the player. A button that stays keeps the place. */
+    runtime_setting_save(UPDATE_TAB_AI, "on", "AI summary"); setenv("TOTK_UPDATE_LAUNCHER", self, 1);
+    update_arrives(loggedOut);
+    assert(settingsPanel.controllerTargets.count == 3 && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == aiButton && aiButton.layer.borderWidth == 2 && g_settings_controller_active);
+    /* The login's own refresh takes the login button from under the place: the next A shows the new place, and the AI stays on. */
+    pad_press(PAD_LEFT); assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == loginButton && loginButton.layer.borderWidth == 2);
+    update_arrives(notLogin);
+    assert(loginButton.hidden && settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == copy && !g_settings_controller_active && copy.layer.borderWidth == 0 && aiButton.layer.borderWidth == 0);
+    pad_press(PAD_A); assert([files fileExistsAtPath:aiFile] && g_settings_controller_active && copy.layer.borderWidth == 2);
+    unsetenv("TOTK_UPDATE_LAUNCHER"); assert([files removeItemAtPath:aiFile error:nil]);
+    /* Only the AI switch is left: a press meant for the copy button does not turn the AI on, a second one does. */
+    update_arrives(@{@"key": @"a|b|off"}); assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex] == copy && copy.layer.borderWidth == 2 && g_settings_controller_active);
+    update_arrives(@{@"status": @"latest", @"copy": @"", @"key": @"a|b|off"});
+    assert(settingsPanel.controllerTargets.count == 1 && settingsPanel.controllerIndex == 0 && !g_settings_controller_active && aiButton.layer.borderWidth == 0);
+    pad_press(PAD_A); assert(![files fileExistsAtPath:aiFile] && g_settings_controller_active && aiButton.layer.borderWidth == 2);
+    pad_press(PAD_A); assert([files fileExistsAtPath:aiFile]);
+    assert([files removeItemAtPath:aiFile error:nil]);
+    /* A newer document appears by itself while the page shows. */
+    NSData *newer = [NSJSONSerialization dataWithJSONObject:update_doc(@{@"reason": @"新的一份", @"key": @"a|b|off"}) options:0 error:nil];
+    assert([newer writeToFile:[updateDir stringByAppendingPathComponent:@"summary.json"] atomically:YES]);
+    [settingsPanel.timer fire]; says(@"新的一份");
+    settings_show(0);
+}
+
 int main(int argc, const char **argv) { @autoreleasepool {
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
+    if (argc == 2 && !strcmp(argv[1], "--update-summary")) { update_spawned_child(); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(argv[0]); puts("pass: update page"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
@@ -549,7 +848,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     [settingsPanel endCapture];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:102 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 7} time:102.1 active:YES];
-    assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
+    assert(settingsPanel.page == SETTINGS_PAGE_UPDATE);
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1} time:103 active:YES];
     [settingsPanel controllerPad:(RuntimeGamepadState){.connected = 1, .buttons = 1u << 6} time:103.1 active:YES];
     assert(settingsPanel.page == SETTINGS_PAGE_BINDINGS);
