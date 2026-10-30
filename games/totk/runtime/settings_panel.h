@@ -60,8 +60,12 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "contrib_submit.h"   /* gh_path, contrib_submit (shared with app/launcher.m) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
+#import <QuartzCore/CATransaction.h>   /* the Apply button icons' fill */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
+#ifndef GAME_BOTW
+#include "icons_apply.h"     /* Apply button icons: the keyboard icons for the layout in force, from the next start */
+#endif
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 
 void dm_gfx_set_flag(const char *name, int value);
@@ -171,6 +175,9 @@ static void settings_restore_start(void) {
 enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
+#ifndef GAME_BOTW
+static void settings_icons_update(int state, int step, int steps, NSString *detail);   /* to the panel shown now */
+#endif
 static void settings_pointer_used(void);
 @interface TOTKSettingRow:NSObject
 @property(copy) NSString *title;
@@ -478,11 +485,14 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) NSButton *listToggle;   /* "Show as list" / "Show drawings" */
 @property(strong) NSArray<NSNumber *> *padOrder;   /* the controller buttons a controller moves through on the drawing */
 @property(strong) id clickMonitor;   /* any click in the panel hides the controller's highlight */
+@property(strong) NSButton *applyIconsButton;   /* the key bindings page (Tears of the Kingdom): runtime/icons_apply.m */
+@property(strong) CALayer *applyIconsFill;   /* inside it, filling from the left while the icons are drawn */
 -(void)selectPage:(NSInteger)page;
 -(void)controllerPad:(RuntimeGamepadState)pad time:(double)now active:(BOOL)active;
 -(void)controllerHighlight;
 -(void)refresh;
 -(void)refreshBindings;
+-(void)iconsState:(int)state step:(int)step of:(int)steps detail:(NSString *)detail;
 -(void)beginCapture:(TOTKBindingButton *)box;
 -(void)endCapture;
 -(void)clearBinding:(TOTKBindingButton *)box;
@@ -581,6 +591,18 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  for(NSButton *b in @[resetPad,resetKeys,toggle]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
   b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
  self.resetButtons=@[resetKeys,resetPad];self.listToggle=toggle;
+#ifndef GAME_BOTW
+ /* The key bindings page's Apply button icons (runtime/icons_apply.m): the game reads its icons once at start, so they
+    are drawn in the background for the next start; the button fills like a progress bar with the drawing's steps (user
+    2026-10-31: a bar under it crossed the panel's border). */
+ NSButton *apply=[NSButton buttonWithTitle:settings_text("应用按键图标","Apply button icons") target:self action:@selector(applyIcons:)];
+ apply.controlSize=NSControlSizeSmall;apply.font=[NSFont systemFontOfSize:11];apply.refusesFirstResponder=YES;[apply sizeToFit];
+ apply.frame=NSMakeRect(0,5,apply.frame.size.width,24);apply.wantsLayer=YES;[self addSubview:apply];
+ CALayer *fill=[CALayer layer];fill.backgroundColor=[NSColor.controlAccentColor colorWithAlphaComponent:0.35].CGColor;
+ fill.cornerRadius=4;fill.hidden=YES;[apply.layer addSublayer:fill];
+ self.applyIconsButton=apply;self.applyIconsFill=fill;
+ {int step=0,steps=0;int now=(int)icons_apply_state(&step,&steps);[self iconsState:now==IconsApplyRunning?now:IconsApplyIdle step:step of:steps detail:nil];}
+#endif
  /* The display page's bottom right (user 2026-10-25, kept on the first page only): contribute the shaders and pipelines the
     shared list lacks, and star the project. */
  NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
@@ -657,6 +679,10 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  for(TOTKSettingRow *r in self.allRows)if(r.page==page)[rows addObject:r];
  self.rows=rows;self.controllerIndex=0;
  [self layoutFooter];[self updateTargets];[self refreshBindings];
+#ifndef GAME_BOTW
+ if(page==SETTINGS_PAGE_BINDINGS&&icons_apply_state(NULL,NULL)!=IconsApplyRunning&&icons_apply_stale())
+  [self note:settings_text("按键图标早于模组的变更：请重新应用","The icons predate a mod change: apply them again")];
+#endif
  [self.bindingsScroll.documentView scrollPoint:NSZeroPoint];   /* the list from its top (moving with a controller scrolls) */
  [self.window makeFirstResponder:self.window.contentView];   /* key 1 and Esc keep reaching the window */
 }
@@ -665,9 +691,14 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(void)layoutFooter{
  BOOL bindings=self.page==SETTINGS_PAGE_BINDINGS;
  NSArray<NSButton *> *shown=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:!bindings?@[]:self.drawings?@[self.resetButtons[g_settings_bindings_device?1:0],self.listToggle]:@[self.resetButtons[1],self.resetButtons[0],self.listToggle];
- for(NSButton *b in [@[self.resetButtons[0],self.resetButtons[1],self.listToggle] arrayByAddingObjectsFromArray:self.displayButtons])b.hidden=![shown containsObject:b];
+ if(bindings&&self.applyIconsButton)shown=[shown arrayByAddingObject:self.applyIconsButton];
+ NSMutableArray<NSButton *> *all=[NSMutableArray arrayWithArray:@[self.resetButtons[0],self.resetButtons[1],self.listToggle]];
+ [all addObjectsFromArray:self.displayButtons];if(self.applyIconsButton)[all addObject:self.applyIconsButton];
+ for(NSButton *b in all)b.hidden=![shown containsObject:b];
  CGFloat right=self.panelW-14;
  for(NSButton *b in shown){b.frame=NSMakeRect(right-b.frame.size.width,5,b.frame.size.width,24);right-=b.frame.size.width+6;}
+ /* the version gives way when the buttons need its room (the key bindings list); a note still shows there */
+ self.versionLabel.hidden=right<NSMaxX(self.versionLabel.frame)&&[self.versionLabel.stringValue isEqualToString:settings_version_text()];
 }
 /* A result of the display page's buttons, in the bottom-left corner for a few seconds instead of the version. */
 -(void)note:(NSString *)text{
@@ -677,7 +708,30 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   TOTKSettingsPanel *panel=weak;if(!panel||![panel.versionLabel.stringValue isEqualToString:shown])return;
   panel.versionLabel.stringValue=settings_version_text();panel.versionLabel.frame=NSMakeRect(18,9,230,16);});
 }
--(CGFloat)footerButtonsWidth{CGFloat w=0;for(NSButton *b in self.displayButtons)if(!b.hidden)w+=b.frame.size.width+6;return w;}
+-(CGFloat)footerButtonsWidth{CGFloat w=0;for(NSButton *b in self.subviews)if([b isKindOfClass:NSButton.class]&&!b.hidden&&b.frame.origin.y<34&&b.superview==self)w+=b.frame.size.width+6;return w;}
+-(void)applyIcons:(id)sender{(void)sender;
+#ifndef GAME_BOTW
+ if(icons_apply_start(^(IconsApplyState state,int step,int steps,NSString *detail){settings_icons_update((int)state,step,steps,detail);}))
+  [self iconsState:IconsApplyRunning step:0 of:8 detail:nil];
+#endif
+}
+/* What the Apply button icons run is at: the button waits and fills while it draws; its end shows as a note. */
+-(void)iconsState:(int)state step:(int)step of:(int)steps detail:(NSString *)detail{
+#ifndef GAME_BOTW
+ BOOL running=state==IconsApplyRunning;
+ self.applyIconsButton.enabled=!running;
+ NSRect inside=NSInsetRect(self.applyIconsButton.bounds,2,3);
+ [CATransaction begin];[CATransaction setDisableActions:!running];
+ self.applyIconsFill.frame=NSMakeRect(inside.origin.x,inside.origin.y,inside.size.width*fmin(1,(double)step/(steps>0?steps:8)),inside.size.height);
+ self.applyIconsFill.hidden=!running;
+ [CATransaction commit];
+ if(state==IconsApplyDone)[self note:settings_text("图标已生成：下次启动时显示","Done: the new icons show from the next start")];
+ if(state==IconsApplyNoTools)[self note:settings_text("请先在构建器中安装图标工具（控制选项卡）","Install the icon tools in the builder first (Controls tab)")];
+ if(state==IconsApplyFailed)[self note:[NSString stringWithFormat:@(TOTK_UI("图标未生成（第 %d 步）：%@","Icons not made (step %d): %@")),step+1,detail?:@""]];
+#else
+ (void)state;(void)step;(void)steps;(void)detail;
+#endif
+}
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
 -(void)contribute:(NSButton *)button{
@@ -996,6 +1050,9 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 
 static TOTKSettingsPanel *settingsPanel;
 static void settings_refresh_all(void) { [settingsPanel refresh]; }
+#ifndef GAME_BOTW
+static void settings_icons_update(int state, int step, int steps, NSString *detail) { [settingsPanel iconsState:state step:step of:steps detail:detail]; }
+#endif
 /* A mouse click in the panel: the controller's highlight goes until a controller moves again. */
 static void settings_pointer_used(void) { if(!g_settings_controller_active)return;g_settings_controller_active=NO;[settingsPanel controllerHighlight]; }
 static void settings_panel_replace(void) {   /* main thread; made again: what the game offers is known only once its code is in */

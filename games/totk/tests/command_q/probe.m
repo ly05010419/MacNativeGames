@@ -137,6 +137,11 @@ int runtime_triggers_choice(void){return 0;}
 void runtime_triggers_choose(int on){(void)on;}
 void runtime_triggers_release(void){fprintf(stderr,"[probe] triggers released\n");}   /* the window's close lets the DualSense go */
 int fps_overlay_value(void){return 0;}   /* the HUD's FPS graph (PR #940) */
+/* Apply button icons (runtime/icons_apply.m): the window's close stops a drawing. */
+BOOL icons_apply_start(IconsApplyUpdate update){(void)update;return NO;}
+IconsApplyState icons_apply_state(int *step,int *steps){if(step)*step=0;if(steps)*steps=0;return IconsApplyIdle;}
+void icons_apply_cancel(void){fprintf(stderr,"[probe] icons drawing stopped\n");}
+int icons_apply_stale(void){return 0;}
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0

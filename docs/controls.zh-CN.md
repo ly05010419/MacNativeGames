@@ -117,3 +117,5 @@ west = y
 ## 按键图标
 
 `python3.14 games/totk/scripts/make_button_icons.py <模组文件夹> --app <Tears of the Kingdom.app> --style keyboard`（或 `--style xbox`）生成一个模组，把游戏按键提示里的 Switch 图标换成默认的键盘和鼠标布局（A B X Y 对应 E、Shift、空格、鼠标左键，W A S D、方向键等；在设置面板里改过的布局不会画出来）或 Xbox 按键（按 Switch 位置排列的 B A Y X、LB/RB、LT/RT、Menu/View）。它用你自己的 RomFS 重绘每种语言字体包里的图标字体（项目里不含任何游戏内容），所以每种游戏语言（包括韩语和中文）都会换成新图标，并写好 manifest，同时把游戏的资源大小表调大以容纳变大的字体（不调的话游戏启动时就会停止）；文件夹里已有的文件会保留。用旧版脚本生成的模组只覆盖其他语言，请加 `--replace` 重新生成。需要 Python 3.14 和 `python3.14 -m pip install fonttools`。文件夹里已有字体包（别的模组的，或者上次生成的）时会停下，加 `--replace` 才覆盖，换风格也要加它。Xbox 图标对应默认的按位置映射；设了 `TOTK_FACE_BUTTONS=label` 或在 `controls.txt` 里改过面键时会对不上。删除模组里的 `Font` 文件夹和 `System/Resource/ResourceSizeTable.*` 后运行 `make_mod_manifest.py` 即可恢复。以固定图片显示的提示（部分教程动画）仍是 Switch 图标。
+
+在 Mac 上，设置面板（按 1）的按键设置页有 **应用按键图标**：按你在那里设置的键鼠布局（而不是默认布局）重画这些图标。游戏只在启动时读取一次图标，所以它在你玩的时候于后台绘制（按钮随步骤逐渐填满，约一分钟），下次启动、且没有连接手柄时生效（`mods/<version>-keyboard`，以 `mods/<version>` 的副本为基础）。它使用构建器的图标工具：先在构建器的控制选项卡里安装一次。之后若添加或移除模组，启动器会停用这些键盘图标，直到你重新应用，页面上也会提示。

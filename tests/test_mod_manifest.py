@@ -283,6 +283,21 @@ class MergeWithBuildPatch(unittest.TestCase):
         self.assertEqual(found.lines, ['\t'.join([COMMON, str(len(data)), hashlib.sha256(data).hexdigest(),
                                                   hashlib.sha256(self.build).hexdigest()])])
 
+    @unittest.skipUnless(importlib.util.find_spec('fontTools'), 'needs fontTools')
+    def test_button_icons_leave_the_files_the_app_replaces_out(self):
+        # the settings panel's Apply button icons draws into a copy of mods/<v>, which can hold a file the builder left
+        # out of its manifest because the app replaces it (the 2K HeapDef): listed again, the game stopped at start
+        import make_button_icons
+        self.put_mod({**self.members, 'timg/__Combined.bntx': b'keyboard textures' * 40})
+        heapdef = make_mod_manifest.HEAPDEF
+        (self.mod/heapdef).parent.mkdir(parents=True)
+        (self.mod/heapdef).write_bytes(b'a bigger heap')
+        index = make_mod_manifest.read_index(self.romfs/'runtime-index.bin')
+        merged, found = make_button_icons.write_mod_manifest(self.mod, self.romfs, index, {heapdef: Path('app/HeapDef')})
+        self.assertEqual(list(merged), [COMMON])
+        self.assertEqual([line.split('\t')[0] for line in found.lines], [COMMON])
+        self.assertEqual(list(found.taken), [heapdef])
+
     def test_mod_that_changes_a_patched_member_is_refused(self):
         changed = bflan(CAPTURE['anim/AutoBuilder_00_In.bflan'], frame=0.5)
         self.put_mod({**self.members, 'anim/AutoBuilder_00_In.bflan': changed})
