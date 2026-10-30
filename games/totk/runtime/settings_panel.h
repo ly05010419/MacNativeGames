@@ -1,6 +1,7 @@
 /* The settings panel (Mac; included by frontend.m): key 1 opens and closes it (runtime/input.c), Esc and its close
    button close it. User 2026-10-25: it replaces the shortcut keys 2-7 and their reminder box. PR #1210: three
-   pages (Display, Input, Key bindings) chosen by the tabs at the top, or L1 / R1 on a controller; the version in the
+   pages (Display, Input, Key bindings) chosen by the tabs at the top, or L1 / R1 on a controller; PR #1227: the WebDAV
+   save-sync rows get their own Saves page (four pages); the version in the
    bottom-left corner instead of the overlay box; no key hints at the bottom. One row per setting, a pop-up menu, a switch
    or a slider, each applied at once:
    Display
@@ -42,6 +43,14 @@
                                                              switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
                                                              out); a device the run started without comes at the next
                                                              launch (its title says so)
+   Saves (PR #1227: the save sync over WebDAV, docs/save-sync-webdav.md; the launcher reads these defaults at its next
+   start, so what is typed here reaches the saves then; the environment's TOTK_WEBDAV_* still wins)
+     save sync            off / on, greyed out without       the sync runs only with an address; the switch is kept in
+                          an address                         the defaults (TOTK_WEBDAV_ENABLED; a missing key means on)
+     WebDAV address       a text box                         TOTK_WEBDAV_URL; Enter or leaving the box saves it,
+                                                             emptied removes it
+     WebDAV user          a text box, optional               TOTK_WEBDAV_USER
+     WebDAV password      a secure text box, optional        TOTK_WEBDAV_PASSWORD
    Key bindings: one row per game action with two keyboard and mouse inputs (keyboard_map.h, runtime_keymap_set: in force
    at once, saved in keyboard.txt) and the controller buttons that drive it (controller_map.h, runtime_controller_map_set:
    controls.txt). Click a box, then press a key or a mouse button (key 1 cancels; Command keys stay the system's) or, in
@@ -168,17 +177,21 @@ static void settings_restore_start(void) {
  [NSRunLoop.mainRunLoop addTimer:settingsRestoreTimer forMode:NSRunLoopCommonModes];
 }
 
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_SAVES, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGES };
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
-@interface TOTKSettingRow:NSObject
+@interface TOTKSettingRow:NSObject<NSTextFieldDelegate>
 @property(copy) NSString *title;
-@property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch, or a slider */
+@property(copy) NSArray<NSString *> *choices;   /* nil: an on / off switch, a slider, or a text row when settext is set */
 @property(copy) NSArray<NSNumber *> *values;    /* what each choice sets */
 @property(copy) int (^get)(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
+@property(copy) void (^settext)(NSString *value);   /* a text row: the trimmed value, nil once the field is emptied */
+@property(copy) NSString *placeholder, *initial;   /* the text row's hint and the value it starts with */
+@property BOOL secure;                             /* the text row hides what is typed (the password) */
+@property(copy) BOOL (^enabled)(void);   /* a configuration that keeps the control off (WebDAV without an address) */
 @property int sliderMin, sliderMax;              /* a slider when sliderMax > sliderMin */
 @property NSInteger page;                        /* SETTINGS_PAGE_DISPLAY or SETTINGS_PAGE_INPUT */
 @property(strong) NSControl *control;
@@ -189,7 +202,17 @@ static void settings_pointer_used(void);
 @end
 @implementation TOTKSettingRow
 -(BOOL)slider{return self.sliderMax>self.sliderMin;}
+-(void)saveText:(NSTextField *)field{
+ NSString *t=[field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ if(self.settext)self.settext(t.length?t:nil);
+ settings_refresh_all();   /* the WebDAV switch follows the address just typed */
+}
 -(void)changed:(id)sender{
+ if([sender isKindOfClass:NSTextField.class]){
+  [self saveText:sender];
+  [self.control.window makeFirstResponder:self.control.window.contentView];   /* Enter commits and leaves the field */
+  return;
+ }
  int v=[sender isKindOfClass:NSSlider.class]?((NSSlider *)sender).intValue:[sender isKindOfClass:NSSwitch.class]?((NSSwitch *)sender).state==NSControlStateValueOn:
   self.values[(NSUInteger)MAX(0,((NSPopUpButton *)sender).indexOfSelectedItem)].intValue;
  if(self.set)self.set(v);
@@ -197,8 +220,11 @@ static void settings_pointer_used(void);
  [self.control.window makeFirstResponder:self.control.window.contentView];   /* key 1 and Esc keep reaching the window */
  settings_refresh_all();   /* a pick may change another row (frame lock / interpolation) */
 }
+-(void)controlTextDidEndEditing:(NSNotification *)n{(void)n;[self saveText:(NSTextField *)n.object];}
 -(void)refresh{
+ if(self.set||self.settext)self.control.enabled=!self.enabled||self.enabled();
  int v=self.get?self.get():0;
+ if(self.settext)return;   /* the field keeps what is being typed; the switch and pop-up branches do not fit it */
  if(self.slider){NSSlider *s=(NSSlider *)self.control;if(s.intValue!=v)s.intValue=v;self.valueLabel.stringValue=[NSString stringWithFormat:@"%d",v];return;}
  if(!self.choices){((NSSwitch *)self.control).state=v?NSControlStateValueOn:NSControlStateValueOff;return;}
  NSPopUpButton *p=(NSPopUpButton *)self.control;
@@ -260,6 +286,32 @@ static NSString *settings_pad_auto_text(void) {
  int detected=-1;runtime_gamepad_type(&detected);
  if(detected>GAMEPAD_TYPE_AUTO&&detected<GAMEPAD_TYPE_COUNT)return [NSString stringWithFormat:@(TOTK_UI("自动（%s）","Auto (%s)")),names[detected]];
  return settings_text("自动（未接手柄）","Auto (no controller)");
+}
+/* The WebDAV sync would run (webdav_sync.m's rule: the environment's TOTK_WEBDAV_URL wins, then the field here, and it
+   must start with http:// or https://). The runtime does not link webdav_sync.m, so the rule is checked here too. */
+static BOOL settings_webdav_ready(void) {
+ const char *e=getenv("TOTK_WEBDAV_URL");
+ NSString *u=e&&*e?@(e):[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_WEBDAV_URL"];
+ if(![u isKindOfClass:NSString.class])return NO;
+ u=[u stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+ return [u.lowercaseString hasPrefix:@"http://"]||[u.lowercaseString hasPrefix:@"https://"];
+}
+/* The switch beside it: the environment's TOTK_WEBDAV_ENABLED decides first, then the defaults; a missing key means on,
+   so what was configured before the panel grew these rows keeps running. */
+static BOOL settings_webdav_on(void) {
+ const char *e=getenv("TOTK_WEBDAV_ENABLED");
+ NSString *ev=e&&*e?@(e):nil;
+ if(ev.length)return ![ev isEqualToString:@"0"];
+ id v=[NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_WEBDAV_ENABLED"];
+ return v==nil||[v boolValue];
+}
+/* A row that edits one defaults key: the launcher reads it at the next start (app/webdav_sync.m). */
+static TOTKSettingRow *settings_text_row(NSString *title,NSString *key,BOOL secure,NSString *placeholder){
+ TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.secure=secure;r.placeholder=placeholder;
+ NSUserDefaults *d=NSUserDefaults.standardUserDefaults;
+ NSString *have=[d stringForKey:key];r.initial=[have isKindOfClass:NSString.class]?have:@"";
+ r.settext=^(NSString *v){if(v)[d setObject:v forKey:key];else[d removeObjectForKey:key];};
+ return r;
 }
 
 /* Ambient occlusion: off, or the shadow pre-pass's AO with strength and radius both scaled (1.5x is the PR's tested
@@ -348,7 +400,22 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
- for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:SETTINGS_PAGE_INPUT;
+ NSUInteger input=rows.count;
+ /* Save sync over WebDAV (docs/save-sync-webdav.md): the launcher reads these at its next start, so what is typed here
+    reaches the saves then; the environment's TOTK_WEBDAV_* still wins, and the switch is off without an address. */
+ TOTKSettingRow *dav=settings_row(settings_text("存档同步（WebDAV）","Save sync (WebDAV)"),
+  @[settings_text("关","Off"),settings_text("开","On")],@[@0,@1],
+  ^int{return settings_webdav_ready()&&settings_webdav_on();},
+  ^(int v){[NSUserDefaults.standardUserDefaults setBool:v!=0 forKey:@"TOTK_WEBDAV_ENABLED"];});
+ dav.enabled=^BOOL{return settings_webdav_ready();};
+ [rows addObject:dav];
+ [rows addObject:settings_text_row(settings_text("WebDAV 地址","WebDAV address"),@"TOTK_WEBDAV_URL",NO,
+  settings_text("https://dav.example.com/dav/","https://dav.example.com/dav/"))];
+ [rows addObject:settings_text_row(settings_text("WebDAV 用户名","WebDAV user"),@"TOTK_WEBDAV_USER",NO,
+  settings_text("可选","optional"))];
+ [rows addObject:settings_text_row(settings_text("WebDAV 密码","WebDAV password"),@"TOTK_WEBDAV_PASSWORD",YES,
+  settings_text("可选","optional"))];
+ for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:SETTINGS_PAGE_SAVES;
  return rows;
 }
 
@@ -522,10 +589,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
        SETTINGS_CELL_W = 118, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
- NSUInteger perPage[2]={0,0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
+ NSUInteger perPage[3]={0,0,0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
-    screen), so its title, close button, tabs and first rows stay in view. */
- CGFloat n=MAX(perPage[0],perPage[1]),rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
+    screen), so its title, close button, tabs and first rows stay in view. The panel is as tall as its fullest page, so it
+    keeps one size while the tabs switch. */
+ CGFloat n=MAX(perPage[0],MAX(perPage[1],perPage[2])),rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
  if(n&&SETTINGS_TOP+n*(rowH+gap)-gap+SETTINGS_BOTTOM>room){gap=2;rowH=fmax(24,floor((room-SETTINGS_TOP-SETTINGS_BOTTOM+gap)/n-gap));}
  /* The key bindings drawings need a wider, taller panel (PR #1210); it is made at that size while they are shown. */
  BOOL drawings=settings_drawings_for(g_settings_page);
@@ -541,11 +609,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("按键设置","Key bindings")]
+ NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("存档","Saves"),settings_text("按键设置","Key bindings")]
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
- for(NSInteger p=0;p<2;p++){
+ for(NSInteger p=0;p<3;p++){
   NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];NSUInteger k=0;
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
@@ -559,10 +627,15 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
     s.continuous=YES;s.frame=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-20)/2),SETTINGS_POP_W-44,20);r.control=s;
     NSTextField *value=[NSTextField labelWithString:@""];value.font=[NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     value.textColor=label.textColor;value.alignment=NSTextAlignmentRight;value.frame=NSMakeRect(rw-46,floor((rowH-18)/2),34,18);[band addSubview:value];r.valueLabel=value;
-   }else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
+   }else if(r.settext){NSRect tf=NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2)+2,SETTINGS_POP_W,22);
+    NSTextField *t=r.secure?[[NSSecureTextField alloc] initWithFrame:tf]:[[NSTextField alloc] initWithFrame:tf];
+    t.bezeled=YES;t.bezelStyle=NSTextFieldSquareBezel;t.font=[NSFont systemFontOfSize:13];t.placeholderString=r.placeholder;
+    t.stringValue=r.initial?:@"";t.delegate=r;r.control=t;}   /* editable: the shared refusesFirstResponder below is off */
+   else if(!r.choices){NSSwitch *s=[NSSwitch new];[s sizeToFit];s.frame=NSMakeRect(rw-12-s.frame.size.width,(rowH-s.frame.size.height)/2,s.frame.size.width,s.frame.size.height);r.control=s;}
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
-   r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
+   r.control.refusesFirstResponder=![r.control isKindOfClass:NSTextField.class];   /* the fields take the keyboard */
+   r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
   }
   [self addSubview:page];[pages addObject:page];
  }

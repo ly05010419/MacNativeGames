@@ -66,5 +66,10 @@
  "Debug": "Débogage",
  "writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game": "écrit Documents/log.txt, à lire sur un Mac (un peu plus lent) ; désactivé, rien n'est enregistré. Prend effet au prochain lancement du jeu",
  "Debug log": "Journal de débogage",
- "on: the game's docked settings, 1920×1080 output and scene (for an M-series iPad). Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie et scène en 1920×1080 (pour un iPad à puce M). Désactivé : mode portable 1280×720 (960×540 en interne). Prend effet au prochain lancement du jeu"
+ "on: the game's docked settings, 1920×1080 output and scene (for an M-series iPad). Off: handheld 1280×720 (960×540 inside). Takes effect after relaunching the game": "activé : réglages du mode TV du jeu, sortie et scène en 1920×1080 (pour un iPad à puce M). Désactivé : mode portable 1280×720 (960×540 en interne). Prend effet au prochain lancement du jeu",
+ "Save sync (WebDAV)": "Synchronisation des sauvegardes (WebDAV)",
+ "Saves sync between all your devices through one WebDAV server. Leave empty to keep it off.": "les sauvegardes se synchronisent entre tous vos appareils via un même serveur WebDAV. Laissez vide pour désactiver.",
+ "Server URL": "Adresse du serveur",
+ "Account": "Compte",
+ "App password": "Mot de passe d'application"
 }

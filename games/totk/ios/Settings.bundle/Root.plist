@@ -434,6 +434,46 @@
 			<key>DefaultValue</key>
 			<false/>
 		</dict>
+		<dict>
+			<key>FooterText</key>
+			<string>所有设备同步存档：填同一个 WebDAV 服务器（坚果云、Nextcloud 等）。留空关闭。服务器地址如 https://dav.jianguoyun.com/dav · Saves sync between all your devices through one WebDAV server. Leave empty to keep it off.</string>
+			<key>Title</key>
+			<string>存档同步（WebDAV）· Save sync (WebDAV)</string>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Key</key>
+			<string>TOTK_WEBDAV_URL</string>
+			<key>Title</key>
+			<string>服务器 · Server URL</string>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>Key</key>
+			<string>TOTK_WEBDAV_USER</string>
+			<key>Title</key>
+			<string>账户 · Account</string>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+		</dict>
+		<dict>
+			<key>DefaultValue</key>
+			<string></string>
+			<key>IsSecure</key>
+			<true/>
+			<key>Key</key>
+			<string>TOTK_WEBDAV_PASSWORD</string>
+			<key>Title</key>
+			<string>应用密码 · App password</string>
+			<key>Type</key>
+			<string>PSTextFieldSpecifier</string>
+		</dict>
 	</array>
 </dict>
 </plist>
