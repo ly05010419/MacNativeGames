@@ -434,8 +434,7 @@
 		</dict>
 		<dict>
 			<key>FooterText</key>
-			<string>所有设备同步存档：填同一个 WebDAV 服务器（坚果云、Nextcloud 等）。留空关闭。服务器地址如 https://dav.jianguoyun.com/dav
-Saves sync between all your devices through one WebDAV server. Leave empty to keep it off.</string>
+			<string>所有设备同步存档：填同一个 WebDAV 服务器（坚果云、Nextcloud 等）。留空关闭。服务器地址如 https://dav.jianguoyun.com/dav · Saves sync between all your devices through one WebDAV server. Leave empty to keep it off.</string>
 			<key>Title</key>
 			<string>存档同步（WebDAV）· Save sync (WebDAV)</string>
 			<key>Type</key>
