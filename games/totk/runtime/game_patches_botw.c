@@ -845,7 +845,8 @@ static void botw_output_tick(void) {}
    is freed; the community "60 FPS + FMV Cutscenes Speed Fix" for 1.6.0 keys on the same word). While it is set the
    frame pacing holds the game at exactly 30 fps (hle_nvn.c game_hold_fps, the pacing of the 30+30 mode); the real-time
    step then gives the shipped ratio 1.0. runtime/movie_host.c hands it every movie frame (TOTK_MOVIE_PACE).
-   TOTK_MOVIE_30=0 turns it off.
+   Off by default since 2026-10-26: its frames took 53 ms, not 33, and the sound was chopped; runtime/movie_host.c paces the
+   movie by its presentation times instead (TOTK_MOVIE_30=1 brings the hold back).
    1.9.0: main+0x1e565a8 is the same word, the instance pointer of the movie player (a 0x30-byte object whose +0x20 is
    the decoder and +0x28 its heap). The movie manager's start (main+0x13fc558) makes it through main+0x13fc9cc, which
    stores it at main+0x13fca24; its stop (main+0x13fc68c) frees it through main+0x13fca3c, which clears the word at
@@ -856,7 +857,7 @@ enum { MOVIE_WORD = 0x2cbef40 };
 enum { MOVIE_WORD = 0x1e565a8 };
 #endif
 int runtime_game_fps_limit(void) {
-    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_MOVIE_30"); on = !(e && !strcmp(e, "0")); }
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_MOVIE_30"); on = e && !strcmp(e, "1"); }
     if (!on || !frame_step_main) return 0;
     uint64_t movie; memcpy(&movie, frame_step_main + MOVIE_WORD, 8);
     static int was; if (!!movie != was) { was = !!movie; fprintf(stderr, "[botw] movie %s: frame pacing %s\n", was ? "starts" : "ends", was ? "held at 30 fps" : "back to normal"); }

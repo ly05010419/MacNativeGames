@@ -72,13 +72,16 @@ static int negative(void) { if (g_negative < 0) { const char *e = getenv("TOTK_P
 static uint64_t now_ns(void);
 static uint64_t (*g_clock)(void) = now_ns;
 void movie_host_set_clock(uint64_t (*clock)(void)) { g_clock = clock ? clock : now_ns; }
-/* Breath of the Wild: off by default. The frame pacing holds that game at 30 fps while a movie plays (game_patches_botw.c
-   runtime_game_fps_limit), so it takes every frame at the movie's rate as on the console; dropping late frames left the
-   first tower's cutscene on a black screen after its last frame, the decoder never stopped (2026-10-20). */
-#ifdef GAME_BOTW
-#define MOVIE_PACE_DEFAULT 0
-#else
+/* On for both games. Breath of the Wild used to rely on the 30 fps hold while a movie plays (game_patches_botw.c), but the
+   hold made 53 ms frames and chopped the sound; paced by presentation time the game runs at its full rate and the movie
+   at its own. That game's movie player ends only after it has been handed every frame (late ones dropped left the first
+   tower's cutscene on a black screen after its last frame, the decoder never stopped: 2026-10-20 and 2026-10-26), so
+   there a late frame is handed over late instead of dropped. */
 #define MOVIE_PACE_DEFAULT 1
+#ifdef GAME_BOTW
+#define MOVIE_DROP_LATE 0
+#else
+#define MOVIE_DROP_LATE 1
 #endif
 static int pace_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_MOVIE_PACE"); v = e ? strcmp(e, "0") != 0 : MOVIE_PACE_DEFAULT; } return v; }
 static Movie *g_movies[MAX_MOVIES];
@@ -167,7 +170,8 @@ static uint64_t due_at(Movie *m, const Ready *d) {
 /* One game frame (a present): drop leading frames that are more than 1.5 frame periods late while the next one is due
    too, then hand over at most one due frame (end of stream right after the last frame). */
 static void release_due(Movie *m, Signals *s, uint64_t now) {
-    while (m->ndecoded > 1 && !(m->decoded[0].flags & FLAG_EOS) && !(m->decoded[1].flags & FLAG_EOS) && m->t0) {
+    if (m->nready) note(m, s, EV_OUTPUT);   /* the game takes one output per wake-up: wake it again while it has not emptied the queue (two hand-overs a frame apart can make one wake-up) */
+    while (MOVIE_DROP_LATE && m->ndecoded > 1 && !(m->decoded[0].flags & FLAG_EOS) && !(m->decoded[1].flags & FLAG_EOS) && m->t0) {
         uint64_t due = due_at(m, &m->decoded[0]), next = due_at(m, &m->decoded[1]);
         if (now < next || now - due <= (next - due) * 3 / 2) break;
         m->out_held[m->decoded[0].index] = 0; m->dropped++;
@@ -356,7 +360,7 @@ static int h_acquire_input(void *obj, int *index, int *remaining) {
     if (!index || !remaining) return ST_NULL;
     pthread_mutex_lock(&m->mu);
     *index = -1; *remaining = 0; int st = ST_NO_INPUT;
-    if (m->started && m->nin_free > 0) {
+    if (m->started && !m->eos_in && m->nin_free > 0) {   /* none after the end of stream: the game would feed buffers for ever instead of taking the frames still queued */
         *index = m->in_free[0]; memmove(m->in_free, m->in_free + 1, (size_t)--m->nin_free * sizeof m->in_free[0]);
         *remaining = m->nin_free; st = ST_OK;
     }
