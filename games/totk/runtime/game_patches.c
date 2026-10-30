@@ -716,6 +716,46 @@ static void patch_bench_cam(Module *m) {
 }
 #endif
 
+/* A start-up race (2026-10-30, 1.2.1: about one start in four or five ended at main+0x8e0580, SIGSEGV reading address 0,
+   just after the graphics setup and before the first frame; also seen 2026-10-29). A game thread's per-frame update
+   (1.2.1: main+0x8e0540, called from main+0x8d35e0 with the object at [x19 + 0xa10]) loads a pointer from that object's
+   +0x2b0 and reads through it at once. Another thread fills that pointer while the game starts; on the Switch its
+   scheduling always gets there first, on the Mac the threads truly run side by side and the update sometimes comes
+   first. The update returns nothing its caller reads. The veneer skips it while the pointer is still empty: it branches
+   to the function's own epilogue (add sp, sp, #<frame>, then the saved registers, which are unchanged), so that frame
+   keeps the previous values; once the pointer is set the update runs as shipped. 1.0.0 has the same function with the
+   same load and a 0x8b0 frame (main+0x84dc74, epilogue main+0x84e26c); 1.1.2 is not mapped (no image here) and 1.4.3
+   has its own patch source. TOTK_BOOT_RACE_GUARD=0 leaves the code as shipped (Mac). */
+static void patch_boot_race(Module *m) {
+#if defined(TOTK_GAME_V112)
+    (void)m; fprintf(stderr, "[totk] %s start-up race guard: as shipped (the update's site is not mapped for this version)\n", TOTK_GAME_VERSION);
+#else
+#if defined(TOTK_GAME_V121)
+    const uint64_t site = 0x8e0570, epilogue = 0x8e0ab4; const uint32_t frame_pop = 0x912283ff;   /* add sp, sp, #0x8a0 */
+#else
+    const uint64_t site = 0x84dc74, epilogue = 0x84e26c; const uint32_t frame_pop = 0x9122c3ff;   /* add sp, sp, #0x8b0 */
+#endif
+    const char *e = getenv("TOTK_BOOT_RACE_GUARD");   /* the Mac only: an iPhone / iPad build ships the code already patched */
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[totk] %s start-up race guard: as shipped (TOTK_BOOT_RACE_GUARD=0)\n", TOTK_GAME_VERSION); return; }
+    const uint64_t stub = ((m->text_end + 15) & ~15ULL) + 640;   /* after the 1.2.1 cursor veneers (+512..+592) */
+    if (stub + 16 > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("start-up race guard layout");
+    if (!CODE_PATCHED_AT_BUILD) {
+        uint32_t w, x; memcpy(&w, m->base + site, 4); memcpy(&x, m->base + epilogue, 4);
+        if (w != 0xf9415816 || x != frame_pop) {   /* ldr x22, [x0, #0x2b0]; add sp, sp, #<frame> */
+            fprintf(stderr, "[totk] start-up race guard: found %08x / %08x\n", w, x);
+            runtime_fail("start-up race guard: original instruction mismatch");
+        }
+        for (unsigned i = 0; i < 16; i++) if (m->base[stub + i]) runtime_fail("start-up race guard padding not empty");
+    }
+    put_word(m, stub,      0xf9415816, "start-up race guard");   /* ldr x22, [x0, #0x2b0]: the replaced instruction */
+    put_word(m, stub + 4,  0xb4000056, "start-up race guard");   /* cbz x22, +8 */
+    put_word(m, stub + 8,  branch_to(stub + 8, site + 4), "start-up race guard");    /* set: on as shipped */
+    put_word(m, stub + 12, branch_to(stub + 12, epilogue), "start-up race guard");   /* empty: return */
+    put_word(m, site, branch_to(site, stub), "start-up race guard");
+    fprintf(stderr, "[totk] %s start-up race guard: the per-frame update at main+%#llx waits for its pointer, veneer +%#llx\n",
+            TOTK_GAME_VERSION, (unsigned long long)(site - 0x30), (unsigned long long)stub);
+#endif
+}
 /* Texture storage offsets past 2 GiB (2026-10-29). The texture loader (1.2.1 main+0xad43e8, 1.0.0 main+0xa7d318) places
    each texture at a 32-bit offset w25 in its texture pool and widens it to 64 bits as a signed number twice: sxtw x2, w25
    for nvnTextureBuilderSetStorage's offset, and add x1, x8, w25, sxtw for SetPackagedTextureData's source (the pool's CPU
@@ -788,6 +828,7 @@ void runtime_game_patches(Module *m) {
 #if defined(TOTK_GAME_V121)
     patch_cursor_speed(m);
 #endif
+    patch_boot_race(m);
     patch_pool_offset(m);
     patch_trap(m);
 #if defined(TOTK_GAME_V121)
