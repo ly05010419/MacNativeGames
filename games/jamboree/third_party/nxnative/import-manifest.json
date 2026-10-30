@@ -1,0 +1,2137 @@
+{
+  "repository": "https://github.com/seedds/nxnative",
+  "commit": "7861e7c1a9913e020600b1cc7f65132427e9cc50",
+  "files": [
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Gommon.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Gommon.dll",
+      "sha256": "1648a882b8986d660e8e0063445c41abb0641fe57edc49143af165c3f00f2bd7"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Humanizer.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Humanizer.dll",
+      "sha256": "2769ed8265b691a5482c72506ed274dc52446fa1641997a8c12c66f5b9263d39"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Microsoft.IO.RecyclableMemoryStream.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Microsoft.IO.RecyclableMemoryStream.dll",
+      "sha256": "631a5fc41df9498d032c0655ebd0e1209430ccffbec55667d89c2566b338ccc0"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/MsgPack.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/MsgPack.dll",
+      "sha256": "c7fe37ad67035bffbb634a497847a94496b96de755d42bbce1a3518cac0dd889"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Ryujinx.Common.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Ryujinx.Common.dll",
+      "sha256": "b99db57e72c1fa162f5f1b7f33def792098db12e0b496ba902bda06fb26b6e82"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Ryujinx.Graphics.Shader.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Ryujinx.Graphics.Shader.dll",
+      "sha256": "eb315f0da558ca5a8ad9a8b5b8374cc24cc1e73104d759098bc6824c974affa8"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/Spv.Generator.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/Spv.Generator.dll",
+      "sha256": "9ab32752a6941d3db9a513f229b5b69273b50154055cb732312cf8e67beb6003"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/System.CodeDom.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/System.CodeDom.dll",
+      "sha256": "5aec78c69334fc1cd1c926f4a9c857260dd2e03ff1739e96def1d68296b86b8b"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate",
+      "sha256": "69b0f8c7e8848c1bb5e6f682e6f8b271565a092dc39e7fd3c56f2687be748165"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.deps.json",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.deps.json",
+      "sha256": "1c70cee37771ec372510e2246f94798aebd7087ad446eb78432271e8dc6dbac8"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.dll",
+      "sha256": "08d31903d666ea0cfa9faa6ed61a8a5da21ba40c36430888304d32e77bcc8fa3"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.runtimeconfig.json",
+      "destination": "prebuilt/macos-arm64/dmsh_xlate/dmsh_xlate.runtimeconfig.json",
+      "sha256": "9950d4583cfc9a106857c0d5b8a75b53e8774852b57b80bc3823a74d44a4d87f"
+    },
+    {
+      "source": "dm/games/game.py",
+      "destination": "runtime/games/game.py",
+      "sha256": "87a4629789f7edffe176a2bf04a3a501df97082e9b2bcef4637e220056eeeb92"
+    },
+    {
+      "source": "dm/games/profile_guess.py",
+      "destination": "runtime/games/profile_guess.py",
+      "sha256": "0020d109202ab3949644116efbc2a448a7cb991bb1fd122e6bcd0ef25f514b77"
+    },
+    {
+      "source": "dm/gfx/README.md",
+      "destination": "runtime/gfx/README.md",
+      "sha256": "18be9e74a3b63c1a7d71e65aada4baaa81e38eec7574d04b9d82d64f5de4a293"
+    },
+    {
+      "source": "dm/gfx/gl/hle_gl.m",
+      "destination": "runtime/gfx/gl/hle_gl.m",
+      "sha256": "44d1704b937ab267bec679e109405c6e6c5d9783000ac1aea096f81dece0a408"
+    },
+    {
+      "source": "dm/gfx/hle_nv.c",
+      "destination": "runtime/gfx/hle_nv.c",
+      "sha256": "2b60112f0a13c4bb290b3770491e7d2a7169ac7755672df3836567889f5a0e92"
+    },
+    {
+      "source": "dm/gfx/hle_vi.c",
+      "destination": "runtime/gfx/hle_vi.c",
+      "sha256": "39a6ede4d35ac517edcaa7ffa80d0d1eadab0054cd88118e7b39d577859b1fe0"
+    },
+    {
+      "source": "dm/gfx/metal/.gitignore",
+      "destination": "runtime/gfx/metal/.gitignore",
+      "sha256": "eb0dd0743bea252a8dd97df8577cd70c9d0171ad943e1b1748bdfd543e9b09f4"
+    },
+    {
+      "source": "dm/gfx/metal/Makefile",
+      "destination": "runtime/gfx/metal/Makefile",
+      "sha256": "c5d3e405306c20ba9d7e92e623756355ff4aff8a124dcad0d148948744e54344"
+    },
+    {
+      "source": "dm/gfx/metal/README.md",
+      "destination": "runtime/gfx/metal/README.md",
+      "sha256": "b2073011cbed28fbe5cabb8eb7fbbc8db16fe576ecf360ac237c9188a0b4e61d"
+    },
+    {
+      "source": "dm/gfx/metal/mtl_backend.h",
+      "destination": "runtime/gfx/metal/mtl_backend.h",
+      "sha256": "304202bfe8c32d161202b2b9df69c7ec8ad037a8c1060f192506f64065297f55"
+    },
+    {
+      "source": "dm/gfx/metal/mtl_backend.m",
+      "destination": "runtime/gfx/metal/mtl_backend.m",
+      "sha256": "034ee83f0e40be8ae57d63e9a415652bf6300f2278d63e6f0cad5c514df59c9a"
+    },
+    {
+      "source": "dm/gfx/metal/probe/.gitignore",
+      "destination": "runtime/gfx/metal/probe/.gitignore",
+      "sha256": "39293fddf4325f53d05c09b307f5a34c73698528650c0741d8102911c3cf0c40"
+    },
+    {
+      "source": "dm/gfx/metal/probe/p_nocopy.m",
+      "destination": "runtime/gfx/metal/probe/p_nocopy.m",
+      "sha256": "9c75330dd9bbb036cee02af553d5bc98d7947a7c9006fd7249552490dd115ab7"
+    },
+    {
+      "source": "dm/gfx/metal/test_offscreen.c",
+      "destination": "runtime/gfx/metal/test_offscreen.c",
+      "sha256": "a61a68a8e62d52114989ca8b217a79ba9000c3333b293bd384a89c109430043f"
+    },
+    {
+      "source": "dm/gfx/nvn/dmsh_chain.h",
+      "destination": "runtime/gfx/nvn/dmsh_chain.h",
+      "sha256": "5ad6868f8e85be9736aed69b28a62047e227e96428d889dc5c2fc80abbd2499c"
+    },
+    {
+      "source": "dm/gfx/nvn/hle_nvn.c",
+      "destination": "runtime/gfx/nvn/hle_nvn.c",
+      "sha256": "63af6d49c9dee511762c9f6484fdd05683862d8b674d8ac6415d00b97e9898c7"
+    },
+    {
+      "source": "dm/gfx/nvn/include/nvn.h",
+      "destination": "runtime/gfx/nvn/include/nvn.h",
+      "sha256": "7e691b24b7881ee02f99883406bde30574aae2951d0219da654f4be200f7c4d2"
+    },
+    {
+      "source": "dm/gfx/nvn/names.txt",
+      "destination": "runtime/gfx/nvn/names.txt",
+      "sha256": "b7bc34477c5dae53df76a37374264c0ac39e41a47427ec55d5da6c4f03884f38"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_builtin.h",
+      "destination": "runtime/gfx/nvn/nvn_builtin.h",
+      "sha256": "313c6e4883a552dc62fbf53ada39cc28d3441b9a2e3cb814e245eeda7407818a"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_count.h",
+      "destination": "runtime/gfx/nvn/nvn_count.h",
+      "sha256": "056f92eabeba1de2bb5e533021039166cce15408a4bd88d564b244bd500d5574"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_cover.h",
+      "destination": "runtime/gfx/nvn/nvn_cover.h",
+      "sha256": "3838d97999181ab0ef5a3345ff33168f0ef02c6cfb22bb6e7788618802b02462"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_dirty.c",
+      "destination": "runtime/gfx/nvn/nvn_dirty.c",
+      "sha256": "47baef31d6b28e034c508409649e3708b78271e862578c709e61636352f63d8c"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_dirty.h",
+      "destination": "runtime/gfx/nvn/nvn_dirty.h",
+      "sha256": "a906f01f49998f997b25042dc1299217b097a2e0957f9df79b6d22ba627587b3"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_entry.S",
+      "destination": "runtime/gfx/nvn/nvn_entry.S",
+      "sha256": "b95e595b02bc9c92b2931f0ecc0798e2e7d9853e1fbf327d82ae67ec08128f76"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_fstep.h",
+      "destination": "runtime/gfx/nvn/nvn_fstep.h",
+      "sha256": "c827a865ae2a1c8021233609a572933049865d44d46727c4a0ab41d18254d608"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_geometry.h",
+      "destination": "runtime/gfx/nvn/nvn_geometry.h",
+      "sha256": "35ef0b7ac26049a481431ea576689618e47cb9ede2b7a5bda169bfe46c663bf0"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_geometry.inc",
+      "destination": "runtime/gfx/nvn/nvn_geometry.inc",
+      "sha256": "76eec8859f025d0a992f0f1def63222d219549660f3a5c0c484a6768d5ef55e4"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_hmap.h",
+      "destination": "runtime/gfx/nvn/nvn_hmap.h",
+      "sha256": "fef0d96e2d0df5321a4d8ca4082b37bb61610f1a75ce436533c8c47eb20e7ab4"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_mtl.h",
+      "destination": "runtime/gfx/nvn/nvn_mtl.h",
+      "sha256": "bb3f2779473a68c09ab5d4f88b2cd7b0f7106c9b1b798769321ad8809b952c49"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_mtl.m",
+      "destination": "runtime/gfx/nvn/nvn_mtl.m",
+      "sha256": "b664cb1e7af21c3556e391c400a9ba236467751d3df19e775cc33e204e924652"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_obj.h",
+      "destination": "runtime/gfx/nvn/nvn_obj.h",
+      "sha256": "a79494d449b3919b744cf75d0d5ae9df6eec339cb684caca4afd460f11f2f59a"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_pace.h",
+      "destination": "runtime/gfx/nvn/nvn_pace.h",
+      "sha256": "af5eb6ab45aec93a6c8c3d7d67d6b86b1ac6acfd090faac90cc9d4ac6cea3a0a"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_primitive.h",
+      "destination": "runtime/gfx/nvn/nvn_primitive.h",
+      "sha256": "10608d7a1e7858b8fb2e1aee885c3010e6e76a8d1a61c89897def5be966d6185"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_protos.h",
+      "destination": "runtime/gfx/nvn/nvn_protos.h",
+      "sha256": "5d6fe2990dce08d24fe0043ecf509be93ec8db9475bd87b58c55dff5c1763a90"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_pso_skey.h",
+      "destination": "runtime/gfx/nvn/nvn_pso_skey.h",
+      "sha256": "17a07f06bf8904803a28b062118cbb8f3ba45325a4e462b60cd80375f5efd2d5"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_rec.h",
+      "destination": "runtime/gfx/nvn/nvn_rec.h",
+      "sha256": "7d450b2be33ab06744d878b6c4be0e34228ed6dadf94b87b452d47e7ea98cd45"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_refl.h",
+      "destination": "runtime/gfx/nvn/nvn_refl.h",
+      "sha256": "bc752a742ed975eccddac47b696097442df4075894fae098c8380c8765076ca0"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_refl.m",
+      "destination": "runtime/gfx/nvn/nvn_refl.m",
+      "sha256": "341ac6de29147ebde464b8b7b748cac37584d603a4497b4bc0b741009a2c7300"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_tex.c",
+      "destination": "runtime/gfx/nvn/nvn_tex.c",
+      "sha256": "752e0f9866f6cdf9fd5839691f58c24cba89885835fd81f56369d67589f2581c"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_tex.h",
+      "destination": "runtime/gfx/nvn/nvn_tex.h",
+      "sha256": "6ce45f68fb14a9f015fa6c0af75cf9689c21c35e33add03896a200bb77d08ad4"
+    },
+    {
+      "source": "dm/gfx/nvn/nvn_thunks.S",
+      "destination": "runtime/gfx/nvn/nvn_thunks.S",
+      "sha256": "e1039b25ead6d5b7c0e6e458b3d3f3be972722381a6386825a8a734165952e5c"
+    },
+    {
+      "source": "dm/gfx/nvn/rt_range_check.inc",
+      "destination": "runtime/gfx/nvn/rt_range_check.inc",
+      "sha256": "da5d75f6d1567cfff672b330036e08db6ed305c3c31f34d0a4f073bc82c399af"
+    },
+    {
+      "source": "dm/gfx/nvn_metal_mapping.md",
+      "destination": "runtime/gfx/nvn_metal_mapping.md",
+      "sha256": "4546a59068c6364144d69c60a8e8ecc4fdbbc44a35c8ad2f449ebc69f1bdea57"
+    },
+    {
+      "source": "dm/gfx/tests/.gitignore",
+      "destination": "runtime/gfx/tests/.gitignore",
+      "sha256": "e256ecea1eb14e742b5056ed2fc633231c4d80fab6db99deceec7d4dd5b7bf1e"
+    },
+    {
+      "source": "dm/gfx/tests/Makefile",
+      "destination": "runtime/gfx/tests/Makefile",
+      "sha256": "ac1fe5630a5a5574aa3f5d1b9e0af9d2b89e4bb25c10a059bfb6b6f34ca50ead"
+    },
+    {
+      "source": "dm/gfx/tests/t_builtin.m",
+      "destination": "runtime/gfx/tests/t_builtin.m",
+      "sha256": "684eb301ec84f7e42589846fa88eb6a248359bc6e466941eeb53902e4f893e17"
+    },
+    {
+      "source": "dm/gfx/tests/t_clear_ds.m",
+      "destination": "runtime/gfx/tests/t_clear_ds.m",
+      "sha256": "22d6f85b8480190f25ac7886b7969641f59601757f14eff4bc2e38bc5aee8062"
+    },
+    {
+      "source": "dm/gfx/tests/t_cover.c",
+      "destination": "runtime/gfx/tests/t_cover.c",
+      "sha256": "943eb9ac8be922237205cb66e72047c8735968305dbb2dd31042e2e6e4f389a8"
+    },
+    {
+      "source": "dm/gfx/tests/t_defer_chain.m",
+      "destination": "runtime/gfx/tests/t_defer_chain.m",
+      "sha256": "f7f8f4ebc5e832a408036d364fff66219fb9236da318ea6cce6d067e489646f2"
+    },
+    {
+      "source": "dm/gfx/tests/t_deswz_gpu.m",
+      "destination": "runtime/gfx/tests/t_deswz_gpu.m",
+      "sha256": "441504056a2a28cbb100c9fbfbcc5b76d23bd374fc9e4f235438919207eb4c78"
+    },
+    {
+      "source": "dm/gfx/tests/t_dirty_race.c",
+      "destination": "runtime/gfx/tests/t_dirty_race.c",
+      "sha256": "f05f1c65da431e212a5abd4227caf1d1f7552abfff95bfba547f787d96583b6d"
+    },
+    {
+      "source": "dm/gfx/tests/t_dirty_slots.c",
+      "destination": "runtime/gfx/tests/t_dirty_slots.c",
+      "sha256": "af534199cc6e28676880fa3343e8232bd873840350f939796344619247a93829"
+    },
+    {
+      "source": "dm/gfx/tests/t_fstep.c",
+      "destination": "runtime/gfx/tests/t_fstep.c",
+      "sha256": "ea5494dbd62eb2e7525833b79ed0edb1cfe348071e1be819e4f9f0812f7451cd"
+    },
+    {
+      "source": "dm/gfx/tests/t_fuse_check.m",
+      "destination": "runtime/gfx/tests/t_fuse_check.m",
+      "sha256": "6e7d43b905fd1309adcc470d2ccc683d68c129573104811cbe3ee8a13d8cc5d0"
+    },
+    {
+      "source": "dm/gfx/tests/t_geometry.m",
+      "destination": "runtime/gfx/tests/t_geometry.m",
+      "sha256": "18df6fdcbc4e1583cd72ee1e278c7ed41511bf34dc357587cf94b1b308cea6a8"
+    },
+    {
+      "source": "dm/gfx/tests/t_hmap.c",
+      "destination": "runtime/gfx/tests/t_hmap.c",
+      "sha256": "92800af5a7ed481945a8bf7202ced42f5e067e12c5bad2e46c5a7e3179b81a74"
+    },
+    {
+      "source": "dm/gfx/tests/t_host_stubs.c",
+      "destination": "runtime/gfx/tests/t_host_stubs.c",
+      "sha256": "899fcd38ea5c2d20b2def5d935cab1bcb1656cf9526f13cfbd56ee8690dbee0f"
+    },
+    {
+      "source": "dm/gfx/tests/t_integer_blend.m",
+      "destination": "runtime/gfx/tests/t_integer_blend.m",
+      "sha256": "fff28e508618f94e39fc85773b4979facb5519cbf496e7fe71837f81a36d99f5"
+    },
+    {
+      "source": "dm/gfx/tests/t_linear_readback.m",
+      "destination": "runtime/gfx/tests/t_linear_readback.m",
+      "sha256": "d0d9b408c5a1e2ef0e5be1e581215f5df11833e37f5f5b2466c78707f7ad6a9b"
+    },
+    {
+      "source": "dm/gfx/tests/t_mip_extent.m",
+      "destination": "runtime/gfx/tests/t_mip_extent.m",
+      "sha256": "4c87421519e06f85ca7519b05111d89c8151b0ce939fbdc3f5e0331c207bb7bf"
+    },
+    {
+      "source": "dm/gfx/tests/t_nvn.c",
+      "destination": "runtime/gfx/tests/t_nvn.c",
+      "sha256": "bdaff0019dee52c13d6eda5bb5aec65aae70d6dc0ac01883e66efbf1ef3b5a8b"
+    },
+    {
+      "source": "dm/gfx/tests/t_pace.c",
+      "destination": "runtime/gfx/tests/t_pace.c",
+      "sha256": "377f9950946851aab8c49dbff05eca5bfdfc210742929a5a1aa7a752465aa1aa"
+    },
+    {
+      "source": "dm/gfx/tests/t_pfv.m",
+      "destination": "runtime/gfx/tests/t_pfv.m",
+      "sha256": "6e3537220d6aa4bdfe09f53fdfc969b24f21fb876ca29fedc2ecfc12612d9a43"
+    },
+    {
+      "source": "dm/gfx/tests/t_present_crop.m",
+      "destination": "runtime/gfx/tests/t_present_crop.m",
+      "sha256": "748deaaa57e968116cf00c87f8e488e443700b2f36b538c1bf92a1ca31bbbd98"
+    },
+    {
+      "source": "dm/gfx/tests/t_primitive_restart.m",
+      "destination": "runtime/gfx/tests/t_primitive_restart.m",
+      "sha256": "2c6217a2cde2dae1d072c388d379bf7e118a144156eb873b7f19c290b670d984"
+    },
+    {
+      "source": "dm/gfx/tests/t_pso_pending.m",
+      "destination": "runtime/gfx/tests/t_pso_pending.m",
+      "sha256": "e0cb34cd11ebb95d8048a461604b30352c65a8f20f7e95114c6bd17e1c065aca"
+    },
+    {
+      "source": "dm/gfx/tests/t_pso_skey.m",
+      "destination": "runtime/gfx/tests/t_pso_skey.m",
+      "sha256": "c44b8f2d54dd99ec83aa66d7a820fb95ee92d2b91fe9ae2e7621ff65860c15ed"
+    },
+    {
+      "source": "dm/gfx/tests/t_readback.m",
+      "destination": "runtime/gfx/tests/t_readback.m",
+      "sha256": "da2424e561d6b40266c4c0678fda8efe48ff1e116b250f43009d23f683cbe544"
+    },
+    {
+      "source": "dm/gfx/tests/t_refl.m",
+      "destination": "runtime/gfx/tests/t_refl.m",
+      "sha256": "cbcb754964ef1c47d77ee397149f09a29ba917dc4617c9853b102d097774baf0"
+    },
+    {
+      "source": "dm/gfx/tests/t_reorder_chain.m",
+      "destination": "runtime/gfx/tests/t_reorder_chain.m",
+      "sha256": "13a17d533a9110bc75401bb10f0e4fc11661f2c19f0948f847b22d0b80eda7bb"
+    },
+    {
+      "source": "dm/gfx/tests/t_rt_depth_ro.m",
+      "destination": "runtime/gfx/tests/t_rt_depth_ro.m",
+      "sha256": "01d7881f53849778399445f6934e716659db227e35dbe87b9f9c991fdcf995fd"
+    },
+    {
+      "source": "dm/gfx/tests/t_rt_range.m",
+      "destination": "runtime/gfx/tests/t_rt_range.m",
+      "sha256": "040617fcd9dfada97b5f46ec7245fe3ec9e130bd24258cff19265b113b8e55e5"
+    },
+    {
+      "source": "dm/gfx/tests/t_rt_range_ro.m",
+      "destination": "runtime/gfx/tests/t_rt_range_ro.m",
+      "sha256": "98f7ce958d0fe55fb06ba09cd2df0eade9ba433e87e0563ee8eb275cee80c7b4"
+    },
+    {
+      "source": "dm/gfx/tests/t_rt_range_shape.m",
+      "destination": "runtime/gfx/tests/t_rt_range_shape.m",
+      "sha256": "dffadc81eebe51db63a000ec9c5a26b0ec3c34385f5a7593d27de3b53a49fe94"
+    },
+    {
+      "source": "dm/gfx/tests/t_stencil_view.m",
+      "destination": "runtime/gfx/tests/t_stencil_view.m",
+      "sha256": "b5bc4c62c2eb1bd2a3dba9a676382d63e99e7ab77b59b742d45795754f86930c"
+    },
+    {
+      "source": "dm/gfx/tests/t_tbuf2d.m",
+      "destination": "runtime/gfx/tests/t_tbuf2d.m",
+      "sha256": "c4b243dcb958afea7ac0be19ddffd69b9eeae1aa08eb7787b1ae82bc3d38be39"
+    },
+    {
+      "source": "dm/gfx/tests/t_ub.m",
+      "destination": "runtime/gfx/tests/t_ub.m",
+      "sha256": "c6ad469fea88d9f19f5a461b01107e78633fe8eb07081c28bdc7dfa1821b2629"
+    },
+    {
+      "source": "dm/gfx/tests/t_upgrade_alias.m",
+      "destination": "runtime/gfx/tests/t_upgrade_alias.m",
+      "sha256": "357ae17c21edf4fc8a62b4f13dfcf346bffa93edd90609df4d3069263d8c552c"
+    },
+    {
+      "source": "dm/gfx/tests/t_vbuf.m",
+      "destination": "runtime/gfx/tests/t_vbuf.m",
+      "sha256": "7d9a2991e4e0a0c66e487e36f73448df8fbe1199c621ea179c879eaa7e2ab885"
+    },
+    {
+      "source": "dm/gfx/tests/t_view_levels.m",
+      "destination": "runtime/gfx/tests/t_view_levels.m",
+      "sha256": "88aeacf48b843b2eab2a4ec3a807cdf24c6a61a8e0b1e4008b41a1fe71e420b1"
+    },
+    {
+      "source": "dm/gfx/tests/t_view_swizzle.m",
+      "destination": "runtime/gfx/tests/t_view_swizzle.m",
+      "sha256": "2ea01ee6c57f247f53f777302c0deac0efc0bcac59c5126a26e0b70f765122ce"
+    },
+    {
+      "source": "dm/gfx/tests/t_vin.m",
+      "destination": "runtime/gfx/tests/t_vin.m",
+      "sha256": "3998686a902365bf355207efdf2905ea5d2e8e9f19173fe3ec408bfdd53ebb67"
+    },
+    {
+      "source": "dm/gfx/tests/t_vk_desc.m",
+      "destination": "runtime/gfx/tests/t_vk_desc.m",
+      "sha256": "921e28c958532d65f7c52aee4e1e65aaadefa5eadfafef08e39dde50f84b7643"
+    },
+    {
+      "source": "dm/gfx/tests/t_xv.m",
+      "destination": "runtime/gfx/tests/t_xv.m",
+      "sha256": "61df53718961786eab5a3274190248eab87c972cb289a0d02862349b909a51a1"
+    },
+    {
+      "source": "dm/gfx/tests/t_zskip.m",
+      "destination": "runtime/gfx/tests/t_zskip.m",
+      "sha256": "962dc23551b22c53500663ffe58901ab86fe0f58a0752d768fe60414bfca54ff"
+    },
+    {
+      "source": "dm/gfx/tests/test_dmsh_vin.py",
+      "destination": "runtime/gfx/tests/test_dmsh_vin.py",
+      "sha256": "add6196e69c84a4279b77081bb011b9a49d72e35f9c5ab550c73784a07f8dc6f"
+    },
+    {
+      "source": "dm/gfx/tests/test_tbdr_budget.py",
+      "destination": "runtime/gfx/tests/test_tbdr_budget.py",
+      "sha256": "241ac695a3ffd1534d4e9f3bf67687bb2cfc662bf6a37ff7894d9b2a0962630a"
+    },
+    {
+      "source": "dm/gfx/tex/README.md",
+      "destination": "runtime/gfx/tex/README.md",
+      "sha256": "ac876685a9d48e754da7d9c54b558e11ea50e6aa67c8c2005eec53a991392f68"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_deswizzle.c",
+      "destination": "runtime/gfx/tex/nvn_deswizzle.c",
+      "sha256": "65ce310be9b1f980d5ecc8bc49e8185f8eb5f422a8b4d6e4f2c6f832209f1125"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_deswizzle.h",
+      "destination": "runtime/gfx/tex/nvn_deswizzle.h",
+      "sha256": "86d6235a44904dff8cd93157a0693f974c34db49329c75353885572ad4aa7ba2"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_deswizzle_gpu.h",
+      "destination": "runtime/gfx/tex/nvn_deswizzle_gpu.h",
+      "sha256": "b828e3bd428af26e15af34a0654034138d97daa8dbf7d4667aab996d1c3030cd"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_deswizzle_gpu.m",
+      "destination": "runtime/gfx/tex/nvn_deswizzle_gpu.m",
+      "sha256": "f2c4aef95bb5775f32d1d900ef6d7574926fd198295fe7cc13ca37dbbe5660f0"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_fmt_mtl.c",
+      "destination": "runtime/gfx/tex/nvn_fmt_mtl.c",
+      "sha256": "e01dad3248973a891d5b65e66820c03cfa189177ba77f0e4391d5f2870bc697c"
+    },
+    {
+      "source": "dm/gfx/tex/nvn_fmt_mtl.h",
+      "destination": "runtime/gfx/tex/nvn_fmt_mtl.h",
+      "sha256": "2de49a9ebd4a863c6b4d0fd1be4acd729f582786b10a6eb12412beed83a74bf9"
+    },
+    {
+      "source": "dm/gfx/tex/tests/.gitignore",
+      "destination": "runtime/gfx/tex/tests/.gitignore",
+      "sha256": "5f64b45eaee61053baee3b206fb3f997b4cb6e086558a1bf66a43f180994c73c"
+    },
+    {
+      "source": "dm/gfx/tex/tests/Makefile",
+      "destination": "runtime/gfx/tex/tests/Makefile",
+      "sha256": "795e273b88c65b7abd0be967bc022aeeb0c61298aea8310a8ab8ac954926e31c"
+    },
+    {
+      "source": "dm/gfx/tex/tests/t_fmt_mtl.m",
+      "destination": "runtime/gfx/tex/tests/t_fmt_mtl.m",
+      "sha256": "c630c649d67c573587fc6c7e35a637f7876499f330a19161e09b0aea355b1c61"
+    },
+    {
+      "source": "dm/gfx/tex/tests/t_tex.c",
+      "destination": "runtime/gfx/tex/tests/t_tex.c",
+      "sha256": "6040d448cccbe327171efea010e56fdeef98c91c61521c78a6ba906c0ed08b54"
+    },
+    {
+      "source": "dm/gfx/tools/c1_guard.py",
+      "destination": "runtime/gfx/tools/c1_guard.py",
+      "sha256": "3f3926ad03ed6b1859e5a74b1b63d5f54c508d4a298f0686c70458d86cf5523b"
+    },
+    {
+      "source": "dm/gfx/tools/cb_extent.py",
+      "destination": "runtime/gfx/tools/cb_extent.py",
+      "sha256": "0b3cc87d5e0e3783bc5bc2a09c993479b11e2327f9cd9b82b41cb971fdc68afa"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_build.py",
+      "destination": "runtime/gfx/tools/dmsh_build.py",
+      "sha256": "103f7d0c5abe57d2df1d428610bac69ec17aa567ae1c85bad443ccb7ab38bad7"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_chain.lock",
+      "destination": "runtime/gfx/tools/dmsh_chain.lock",
+      "sha256": "aeaff9a5518896a224e2eaa40a293cb500946a34990f0e0e9e5af827a29ccc55"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_chain.py",
+      "destination": "runtime/gfx/tools/dmsh_chain.py",
+      "sha256": "ae7a91d6d7e18a487b8925f7515e2277e8e878213cbfbf7ccce3b2782fb1e0a8"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_dryrun.py",
+      "destination": "runtime/gfx/tools/dmsh_dryrun.py",
+      "sha256": "6c9d2d6288c9218f14296129cb4121ad8561d773d7164eed842407a76de79ff9"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_facts.py",
+      "destination": "runtime/gfx/tools/dmsh_facts.py",
+      "sha256": "43fb6fc8c654e0f4ce0c989cdbb771cd24fae700c96e461f81f7b5b009a1cae2"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_fetch.py",
+      "destination": "runtime/gfx/tools/dmsh_fetch.py",
+      "sha256": "ebe8cbcc03238544145b9bad045c53504e2f8fe3eed37d923c57d8df90070e65"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_geometry.py",
+      "destination": "runtime/gfx/tools/dmsh_geometry.py",
+      "sha256": "69c70dbc39cdf43f2aba468f234299da2bd2d2e57294ed38adf4b74209bc0b82"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_mtlcache.py",
+      "destination": "runtime/gfx/tools/dmsh_mtlcache.py",
+      "sha256": "39270f4c870df5e22f71fc49f2b8a9821def285c038fcf342b9ba32812cc3cab"
+    },
+    {
+      "source": "dm/gfx/tools/dmsh_vin.py",
+      "destination": "runtime/gfx/tools/dmsh_vin.py",
+      "sha256": "5076c6bc3f587435f3d60723d11ef92ac105730c7214fee1135e21a4d0d63f14"
+    },
+    {
+      "source": "dm/gfx/tools/gen_protos.py",
+      "destination": "runtime/gfx/tools/gen_protos.py",
+      "sha256": "55db8ab16c67526eaab3e6e6328276913e2be22ae55fa125cd8745009e6bfc38"
+    },
+    {
+      "source": "dm/gfx/tools/gl_shaders.py",
+      "destination": "runtime/gfx/tools/gl_shaders.py",
+      "sha256": "3b8c5d7f056e18187d3d530776d1e9632ff6ec29a58c2b654e5bfdb3d39186eb"
+    },
+    {
+      "source": "dm/gfx/tools/mvgl.py",
+      "destination": "runtime/gfx/tools/mvgl.py",
+      "sha256": "c4d9c7a8e81347019b8e395b80c23252f62b48d76243131feedbbbf9a106ffee"
+    },
+    {
+      "source": "dm/gfx/tools/own_compilers.py",
+      "destination": "runtime/gfx/tools/own_compilers.py",
+      "sha256": "1e1a6420c74b44907f5b844760e31db4385a2db4317dfca4b9613385e356e376"
+    },
+    {
+      "source": "dm/gfx/tools/passgpu_top.py",
+      "destination": "runtime/gfx/tools/passgpu_top.py",
+      "sha256": "9d46beb4e9dcef23dc53ec639b279227e70693468da3603c071ef5f3152cd0dc"
+    },
+    {
+      "source": "dm/gfx/tools/shader_split.py",
+      "destination": "runtime/gfx/tools/shader_split.py",
+      "sha256": "3ff5ee7a1cf0558e4a69c358f9a45905245967687e8445e257efe876aa809419"
+    },
+    {
+      "source": "dm/gfx/tools/smash_arc.py",
+      "destination": "runtime/gfx/tools/smash_arc.py",
+      "sha256": "64c418c40925aaf439a4e37dc8b136dece020797894571a4bc2cb0f04a1afa4a"
+    },
+    {
+      "source": "dm/gfx/tools/tbdr_budget.py",
+      "destination": "runtime/gfx/tools/tbdr_budget.py",
+      "sha256": "4180d607dfa45baeab8a83d764a7196a804f433988e5e55ed77ed0fce022bcdc"
+    },
+    {
+      "source": "dm/gfx/tools/tbdr_load_dead.py",
+      "destination": "runtime/gfx/tools/tbdr_load_dead.py",
+      "sha256": "c2d1cbf2fc00fbcf1a542a7844adb2addbd07f7b300ebee3af7bf693849471e6"
+    },
+    {
+      "source": "dm/gfx/tools/tbdr_pass_merge.py",
+      "destination": "runtime/gfx/tools/tbdr_pass_merge.py",
+      "sha256": "3bca1e1478959b4bbb3ad9d0a9c3fbedccfbdd42fd69c9135d38659c95173917"
+    },
+    {
+      "source": "dm/gfx/tools/tbdr_store_dead.py",
+      "destination": "runtime/gfx/tools/tbdr_store_dead.py",
+      "sha256": "a83fb7fe88d2b86bfce6c1df421b919d534930c85d512d1579d1ca041349938e"
+    },
+    {
+      "source": "dm/gfx/tools/uepak.py",
+      "destination": "runtime/gfx/tools/uepak.py",
+      "sha256": "c48d151b82d27880f91ec91e1ba3811fc96a0db949666126fc3736c575f962c7"
+    },
+    {
+      "source": "dm/gfx/tools/unityfs.py",
+      "destination": "runtime/gfx/tools/unityfs.py",
+      "sha256": "6c0d858fce83a994f4bcd10518170a67b8b2cd22acf776d2fb863871db5eac22"
+    },
+    {
+      "source": "dm/gfx/tools/vk_shaders.py",
+      "destination": "runtime/gfx/tools/vk_shaders.py",
+      "sha256": "3e269d70527ca43ff01f9a8f84adf3c865d28f9b51ce847ea2fd6b732aea2c0c"
+    },
+    {
+      "source": "dm/gfx/vk/hle_vk.m",
+      "destination": "runtime/gfx/vk/hle_vk.m",
+      "sha256": "9ae73add76e8daf43b407212c30bd8b56109a13861f0f12df07f6a4a9ef36173"
+    },
+    {
+      "source": "dm/host/.gitignore",
+      "destination": "runtime/host/.gitignore",
+      "sha256": "23fc1eea830f0f692a46eca2610922dc737e9a90281ba776dd825c7f4364a875"
+    },
+    {
+      "source": "dm/host/Makefile",
+      "destination": "runtime/host/Makefile",
+      "sha256": "d1ccdd32f053d4844ac2fa2378f2dff524a060c0b1b0524a26dfafe8bffdd0eb"
+    },
+    {
+      "source": "dm/host/crash.c",
+      "destination": "runtime/host/crash.c",
+      "sha256": "ada08ff3418de674480c8a1a688c571a8ad1afeba62d4dfce5c101fee485b9d9"
+    },
+    {
+      "source": "dm/host/dm.h",
+      "destination": "runtime/host/dm.h",
+      "sha256": "fb0b7ff8f4ae5c713d239102307859a631bf0999f4f652dd80fba8d7952e8b69"
+    },
+    {
+      "source": "dm/host/dm_input.h",
+      "destination": "runtime/host/dm_input.h",
+      "sha256": "2a23ca4ce2e3349aebd61e898832b2e5d02b0e3c1baf0e3728e228834f7bef8d"
+    },
+    {
+      "source": "dm/host/entry.S",
+      "destination": "runtime/host/entry.S",
+      "sha256": "ac753892dcc7d1bfdd940a6935f73d627060b1790106569cffc4fab2a1b0a102"
+    },
+    {
+      "source": "dm/host/front.h",
+      "destination": "runtime/host/front.h",
+      "sha256": "d5cd3e4e8b1ebcf4f3adc973cc8b6c7db6c4a562cfb1170e6f906d3968020cf2"
+    },
+    {
+      "source": "dm/host/front_mac.m",
+      "destination": "runtime/host/front_mac.m",
+      "sha256": "4703a2498bc5fa3349fc56f5cc8b4346910c4d309e6b6c0f8d32c6af14d1e48c"
+    },
+    {
+      "source": "dm/host/haptics_apple.h",
+      "destination": "runtime/host/haptics_apple.h",
+      "sha256": "b160fda424eead686e747c60a6ab066e40155aba0912b09d5ff21ace261d7868"
+    },
+    {
+      "source": "dm/host/haptics_apple.m",
+      "destination": "runtime/host/haptics_apple.m",
+      "sha256": "e827d5d89eaf8faab6921b96adaedbc17be9fc7644f2f6fe1a463724d071461a"
+    },
+    {
+      "source": "dm/host/hle.c",
+      "destination": "runtime/host/hle.c",
+      "sha256": "8cb6b9c23ae0f6d2a10704ed55acb4e108cbeede6f1589241764082819185fb7"
+    },
+    {
+      "source": "dm/host/hle.h",
+      "destination": "runtime/host/hle.h",
+      "sha256": "21148808728304292a1952e6d143e311e021f768d9d926931dce8f1b04326b24"
+    },
+    {
+      "source": "dm/host/hle_account.c",
+      "destination": "runtime/host/hle_account.c",
+      "sha256": "675fee916ca9f121e32a7739f90ef65c78fa8ec5fd6286ce07f98f83cf0c817f"
+    },
+    {
+      "source": "dm/host/hle_audio.c",
+      "destination": "runtime/host/hle_audio.c",
+      "sha256": "e83773647f05e4a3e54cfac75fdf1655283a72f2b34770046e53def049e4933b"
+    },
+    {
+      "source": "dm/host/hle_audren.c",
+      "destination": "runtime/host/hle_audren.c",
+      "sha256": "9d19725571e2c4744a97e46c8f2a6fcb09e888f7c8dd275f644ce46c1ab9ac20"
+    },
+    {
+      "source": "dm/host/hle_bigstack.c",
+      "destination": "runtime/host/hle_bigstack.c",
+      "sha256": "08b46d4720bb2ec87c826dfd2a56d54266eb4497a99b37c697de521dc1e50a15"
+    },
+    {
+      "source": "dm/host/hle_codec.c",
+      "destination": "runtime/host/hle_codec.c",
+      "sha256": "bfd9a70d9e5ff90ccb4cc2c9f3d52fb9861dc17823f069a40e664f37aa016144"
+    },
+    {
+      "source": "dm/host/hle_count.c",
+      "destination": "runtime/host/hle_count.c",
+      "sha256": "1f262f075d651eb420e4daf9c27a2fdffe2b819576e10080a7e57302d8aac5a4"
+    },
+    {
+      "source": "dm/host/hle_fdstat.c",
+      "destination": "runtime/host/hle_fdstat.c",
+      "sha256": "498196023b174a809c43fd9fa46e68d74358dfd6596ff6db6ad0214c047bae14"
+    },
+    {
+      "source": "dm/host/hle_fpslock.c",
+      "destination": "runtime/host/hle_fpslock.c",
+      "sha256": "d12881db12f7c2853cf32b0541368158420082a9e6565bead9143458174cdc7a"
+    },
+    {
+      "source": "dm/host/hle_friends.c",
+      "destination": "runtime/host/hle_friends.c",
+      "sha256": "1608b8894289cc72d54edca77f7effa018fe8f3f9066dc39b69a0322b0adc8da"
+    },
+    {
+      "source": "dm/host/hle_fs.c",
+      "destination": "runtime/host/hle_fs.c",
+      "sha256": "a731758f3a495a02c1ef49f54bda4d77b69c8f11f825c4cec61681a9bbe230c7"
+    },
+    {
+      "source": "dm/host/hle_glslc.c",
+      "destination": "runtime/host/hle_glslc.c",
+      "sha256": "184593626be1b6238784fdd35746548d330aeb5c7655c9b100a2976bae3480c8"
+    },
+    {
+      "source": "dm/host/hle_guestthread.c",
+      "destination": "runtime/host/hle_guestthread.c",
+      "sha256": "3d56a78755a3b51c1a393a07f2e82ff101e9d935d57d129583df284b9a0138cb"
+    },
+    {
+      "source": "dm/host/hle_haptics.c",
+      "destination": "runtime/host/hle_haptics.c",
+      "sha256": "094fa4608412448a56b428dac2a2253719adbc61cb9661c63c2c08cb1722d6c2"
+    },
+    {
+      "source": "dm/host/hle_haptics.h",
+      "destination": "runtime/host/hle_haptics.h",
+      "sha256": "b545bc3c786d153097fc271fdb92f81692eff7b2e173c8e073006af9d8401ee8"
+    },
+    {
+      "source": "dm/host/hle_hid.c",
+      "destination": "runtime/host/hle_hid.c",
+      "sha256": "3c1a8a95577215441ae6efb69002b41a61ffeae01d47a8a0ce25f8b4f15f1b46"
+    },
+    {
+      "source": "dm/host/hle_lifecycle.c",
+      "destination": "runtime/host/hle_lifecycle.c",
+      "sha256": "fb0059165e5e4346681a54819062b94b0fb61ccd7e917f4a7eb2f36c5b54cb05"
+    },
+    {
+      "source": "dm/host/hle_mii.c",
+      "destination": "runtime/host/hle_mii.c",
+      "sha256": "ce8561a9293a18eb8f23dafe25899a52e46c4dd76d633643ef57f6addb0b072b"
+    },
+    {
+      "source": "dm/host/hle_misc.c",
+      "destination": "runtime/host/hle_misc.c",
+      "sha256": "f28ded5ed1b616eeb720839f6fc0178572741aa1761d6c5e11ed357fdbcd9b9d"
+    },
+    {
+      "source": "dm/host/hle_movie.c",
+      "destination": "runtime/host/hle_movie.c",
+      "sha256": "9cb064dc008a203b915665b35395174880bc256fc72bba733e530d471d4dc14f"
+    },
+    {
+      "source": "dm/host/hle_movie_avc.c",
+      "destination": "runtime/host/hle_movie_avc.c",
+      "sha256": "15dea8cd0c7c454046b8072a9f1c4f4f79e0ac05b5d72fd06f44c768b6631137"
+    },
+    {
+      "source": "dm/host/hle_movie_avc.h",
+      "destination": "runtime/host/hle_movie_avc.h",
+      "sha256": "60f2e98381f485ca8e88841d04de904624cc8367745284d952f54457c6fef04d"
+    },
+    {
+      "source": "dm/host/hle_net.c",
+      "destination": "runtime/host/hle_net.c",
+      "sha256": "6680f3fbbca7e44f6d112ec8c86aec829718cbad45468208dda43d414bac632e"
+    },
+    {
+      "source": "dm/host/hle_nvdrv.c",
+      "destination": "runtime/host/hle_nvdrv.c",
+      "sha256": "a3dee3d64ffeb1cd9335e2c0fb50d8a7b0d4aecafb758993b24b1aa552aa7dd2"
+    },
+    {
+      "source": "dm/host/hle_oe.c",
+      "destination": "runtime/host/hle_oe.c",
+      "sha256": "35426681ed32c17b7e84ba278c387e22513d000c10e73e3bd706b55602902a5d"
+    },
+    {
+      "source": "dm/host/hle_offline.c",
+      "destination": "runtime/host/hle_offline.c",
+      "sha256": "c7c7565e1fa7f61d8172885af08dd63cf5ce8e7e9446eaea7646bbe6b074e38f"
+    },
+    {
+      "source": "dm/host/hle_oodle.c",
+      "destination": "runtime/host/hle_oodle.c",
+      "sha256": "c4fc13a76f95c641c8ecd6e6f298ea30c4ef626b7782ac4d05e7dd9e6ddaff4d"
+    },
+    {
+      "source": "dm/host/hle_os.c",
+      "destination": "runtime/host/hle_os.c",
+      "sha256": "c32b1bdf0fa4a5a57c8f3525efb052964f52865316df441d15c3a54eadedafb1"
+    },
+    {
+      "source": "dm/host/hle_ro.c",
+      "destination": "runtime/host/hle_ro.c",
+      "sha256": "7f09a3e8be6d18833025398ad889a80e025d6d81af52eb7542be4901f0d9d78a"
+    },
+    {
+      "source": "dm/host/hle_sdk16.c",
+      "destination": "runtime/host/hle_sdk16.c",
+      "sha256": "0d8af306887ed8686bf83204cfd5eff884204a3c022c3bb59fc3b70876e76fdf"
+    },
+    {
+      "source": "dm/host/hle_sdkinit.c",
+      "destination": "runtime/host/hle_sdkinit.c",
+      "sha256": "0831daee533dc23a322c61a3ad9b2a9f3f97442bf63013c79ad01da332357779"
+    },
+    {
+      "source": "dm/host/hle_sf.c",
+      "destination": "runtime/host/hle_sf.c",
+      "sha256": "4e37968a18e54f1a00b4bb516665aaa6973cb96cb8d14f83e608b953cd99b6f4"
+    },
+    {
+      "source": "dm/host/hle_svc.c",
+      "destination": "runtime/host/hle_svc.c",
+      "sha256": "9bdf7e6880ef80880eea6e2862269b9a261a99ec3e222bf17d5b01b8aafdc2a4"
+    },
+    {
+      "source": "dm/host/hle_swkbd.c",
+      "destination": "runtime/host/hle_swkbd.c",
+      "sha256": "b187bcda8a7b34154e2fdc741d1eae57c3bb2460c9c95dc0a64dd2bdaabfd350"
+    },
+    {
+      "source": "dm/host/hle_table.c",
+      "destination": "runtime/host/hle_table.c",
+      "sha256": "9163a0947c3d51177b9dee0ef71cd90e806810e5a9f0da1c492415b03fab5a68"
+    },
+    {
+      "source": "dm/host/hle_thread.c",
+      "destination": "runtime/host/hle_thread.c",
+      "sha256": "87feeb609e94519518a95d21cbf212f7c538f50e47d542592b42a6928b99d1de"
+    },
+    {
+      "source": "dm/host/hle_time.c",
+      "destination": "runtime/host/hle_time.c",
+      "sha256": "873cda4fefcc9af37a1541717a675c99145afdc572992bb159cdf06384d790e3"
+    },
+    {
+      "source": "dm/host/hle_touch.c",
+      "destination": "runtime/host/hle_touch.c",
+      "sha256": "cd5a8b43ee637767e776fee97b2e08e41fc361991ec1227449cb3b86f46f054e"
+    },
+    {
+      "source": "dm/host/hle_uemalloc.c",
+      "destination": "runtime/host/hle_uemalloc.c",
+      "sha256": "c51af4f0809a1026f8867a70b61a1345bf5e2d36d412e4d03af20f395bf98e23"
+    },
+    {
+      "source": "dm/host/loader.c",
+      "destination": "runtime/host/loader.c",
+      "sha256": "6bd426c937c79efa2cf5b5e5b8a136667050a1443874d0fa2bf15fd7f41c18bd"
+    },
+    {
+      "source": "dm/host/main.c",
+      "destination": "runtime/host/main.c",
+      "sha256": "3b0551dddb0154e2568c8e50ebd2bf50b4518e833d0e86f9f96cb2bb08cadcea"
+    },
+    {
+      "source": "dm/host/memstat.m",
+      "destination": "runtime/host/memstat.m",
+      "sha256": "d9bfa881df770d3038d312b19830335b6c8c241313bb80f9682410bdf47eeb5c"
+    },
+    {
+      "source": "dm/host/pad_slots.h",
+      "destination": "runtime/host/pad_slots.h",
+      "sha256": "4f2f954c48c4165b97705b35c26cd808554963cd1a485d36583084e94d98f6a5"
+    },
+    {
+      "source": "dm/host/probe.c",
+      "destination": "runtime/host/probe.c",
+      "sha256": "6636e3078590b515a0c38f6b040856519509bcb1f99935c8734f98586a272bf3"
+    },
+    {
+      "source": "dm/host/tests/.gitignore",
+      "destination": "runtime/host/tests/.gitignore",
+      "sha256": "181314065df2f2fdaf920b1a8b5311daa216a2d6489a06ada5b49cc514d89417"
+    },
+    {
+      "source": "dm/host/tests/Makefile",
+      "destination": "runtime/host/tests/Makefile",
+      "sha256": "4e8ce91bf4cb5945511237af46ef7d8cccd905e78e3e02832030127806025fd6"
+    },
+    {
+      "source": "dm/host/tests/t_altstack.c",
+      "destination": "runtime/host/tests/t_altstack.c",
+      "sha256": "c8daa32f5632297675a5f2fc16046dcca01244b03a019d54bdc1039f4ad2496a"
+    },
+    {
+      "source": "dm/host/tests/t_altstack_stub.c",
+      "destination": "runtime/host/tests/t_altstack_stub.c",
+      "sha256": "ba57ebefdafb4e824346d6f674900baeb245355fa4fcf6b53579d73bf5d1bbfc"
+    },
+    {
+      "source": "dm/host/tests/t_audio.c",
+      "destination": "runtime/host/tests/t_audio.c",
+      "sha256": "78819838113c3dcc0b3e05c9d2d52d96e9546103719b885c6dc88a2a539f284f"
+    },
+    {
+      "source": "dm/host/tests/t_audio_spsc.c",
+      "destination": "runtime/host/tests/t_audio_spsc.c",
+      "sha256": "467a9643d57f5243ab615a8a7868ea158296146003692dbb6d0071633df671ff"
+    },
+    {
+      "source": "dm/host/tests/t_condvar.c",
+      "destination": "runtime/host/tests/t_condvar.c",
+      "sha256": "1c5eb8ac53b40886b40d16de03b860af3c354fd6fc5958f4f75aa7549da624ce"
+    },
+    {
+      "source": "dm/host/tests/t_condvar_stub.c",
+      "destination": "runtime/host/tests/t_condvar_stub.c",
+      "sha256": "114484ae63b0d2df0917a09d6996741597bce3672a4d6dbea08b32a5279cfdfc"
+    },
+    {
+      "source": "dm/host/tests/t_fs.c",
+      "destination": "runtime/host/tests/t_fs.c",
+      "sha256": "980166dcb39353a8be3ae6a0670c66fd361de0fdf2affbd881ce32bd200918a5"
+    },
+    {
+      "source": "dm/host/tests/t_fs_case.c",
+      "destination": "runtime/host/tests/t_fs_case.c",
+      "sha256": "b1528279046b7436dd7911606e8645bd30baceab81d417ddc38335e4bbb01950"
+    },
+    {
+      "source": "dm/host/tests/t_fs_commit_list.c",
+      "destination": "runtime/host/tests/t_fs_commit_list.c",
+      "sha256": "8f9425c950d2ba3c1159bd8c17b51e2126619579b267d36c86907fd3b1f0765d"
+    },
+    {
+      "source": "dm/host/tests/t_fs_stub.c",
+      "destination": "runtime/host/tests/t_fs_stub.c",
+      "sha256": "47c14ebb613e3104cdebb98a6cc8fe7820babd9342b83f044fc68534b9142e1f"
+    },
+    {
+      "source": "dm/host/tests/t_gesture.c",
+      "destination": "runtime/host/tests/t_gesture.c",
+      "sha256": "a32b96a4b10fdd515dd9ebd38cbc7f7852f57b0dd3b7e683800d74e5f2ee2286"
+    },
+    {
+      "source": "dm/host/tests/t_haptics.c",
+      "destination": "runtime/host/tests/t_haptics.c",
+      "sha256": "5075024b4297ec1ffe7a57c97087c854078effcf16de90c1c8139c71ec33e7cd"
+    },
+    {
+      "source": "dm/host/tests/t_haptics_apple.m",
+      "destination": "runtime/host/tests/t_haptics_apple.m",
+      "sha256": "043f4da8f0e9d87d272ea247871ccca854544a55d3f0d061a05641f1fe4f3699"
+    },
+    {
+      "source": "dm/host/tests/t_hid.c",
+      "destination": "runtime/host/tests/t_hid.c",
+      "sha256": "5ab4b6e2ab9a67c15e433a03ff7e8793446bb289adae72b9ffef53e9ac5ee2ba"
+    },
+    {
+      "source": "dm/host/tests/t_nro.c",
+      "destination": "runtime/host/tests/t_nro.c",
+      "sha256": "32c533f11372c7ad8334b2786e3e7457b296eeae303064310ef0010241315124"
+    },
+    {
+      "source": "dm/host/tests/t_oe.c",
+      "destination": "runtime/host/tests/t_oe.c",
+      "sha256": "f0e60b1db0c66f443af80084232756ea1659b50e1177125b4588eedec75fa928"
+    },
+    {
+      "source": "dm/host/tests/t_pctl.c",
+      "destination": "runtime/host/tests/t_pctl.c",
+      "sha256": "0403525fa0e6305d2440f8e0690ae00781cec0ffe9e3fec1d1c941a4bc9cecbb"
+    },
+    {
+      "source": "dm/host/tests/t_shared_font.c",
+      "destination": "runtime/host/tests/t_shared_font.c",
+      "sha256": "6b8016ac5c39f8137b76180475102ec1bd93bf502bb09ac9161fe32007873e44"
+    },
+    {
+      "source": "dm/host/tests/t_swkbd.c",
+      "destination": "runtime/host/tests/t_swkbd.c",
+      "sha256": "e7f48b916f0f61cd31e0dd517e6f02acf89f3a6d4a25a1e9e0ea2f49e8350e49"
+    },
+    {
+      "source": "dm/host/tests/t_thread_leak.c",
+      "destination": "runtime/host/tests/t_thread_leak.c",
+      "sha256": "f2426bcb19ee225869ad8744d4cecef9e1a370a0b9bbcef13f8335c3f3f757a2"
+    },
+    {
+      "source": "dm/host/tests/t_time.c",
+      "destination": "runtime/host/tests/t_time.c",
+      "sha256": "0ef745837d0a078dc3f4136499aebbbe53ea8aedf8efb10abd5859a42261cd1f"
+    },
+    {
+      "source": "dm/host/tests/t_touch.c",
+      "destination": "runtime/host/tests/t_touch.c",
+      "sha256": "310b69cb9adcd3023dd3a0e3d87619f712a9824635bf986221cdfb95d538020a"
+    },
+    {
+      "source": "dm/host/tests/t_vorbis.c",
+      "destination": "runtime/host/tests/t_vorbis.c",
+      "sha256": "8a44e39c9b944e2023615bd0db1f59b8ea4146a452216a69d823cbd09d501799"
+    },
+    {
+      "source": "dm/host/thread.c",
+      "destination": "runtime/host/thread.c",
+      "sha256": "7218b33d0930d09a3d7ef4a0142941e33fadfac830bdd4900f6edd5e5a614b01"
+    },
+    {
+      "source": "dm/ios/tools/build_ipa.sh",
+      "destination": "runtime/ios/tools/build_ipa.sh",
+      "sha256": "90c9dc6dec55902d69746a33ec6cd3cdb7514d0dc4df65bd280827b03ca5fdc7"
+    },
+    {
+      "source": "dm/ios/tools/gen_build.py",
+      "destination": "runtime/ios/tools/gen_build.py",
+      "sha256": "479ef9630d92478ac415b4829e396e5d0c1c31df146a4cd5c40030afa54ed6c4"
+    },
+    {
+      "source": "dm/ios/tools/gen_embed.py",
+      "destination": "runtime/ios/tools/gen_embed.py",
+      "sha256": "311b1a7d0fd30e9d4499f594303cd9d05bcfdf99b47cff9e93fe459d94269b7c"
+    },
+    {
+      "source": "dm/ios/tools/gen_resources.py",
+      "destination": "runtime/ios/tools/gen_resources.py",
+      "sha256": "28cc8c6ebca1d86c5217cd5625f053c74f45c2fc3e1459ea2faefe5457be5535"
+    },
+    {
+      "source": "dm/ios/tools/ios_metal.py",
+      "destination": "runtime/ios/tools/ios_metal.py",
+      "sha256": "fcb9ca62e6880040ce85c043a908a2141b718893a76d6172a4461b2aa3279bf7"
+    },
+    {
+      "source": "dm/ios/tools/pack_ipa.py",
+      "destination": "runtime/ios/tools/pack_ipa.py",
+      "sha256": "09008c97ed7073926ecf1c145bfd63773737b49bd315ebf12387c2b68ad7bd3d"
+    },
+    {
+      "source": "dm/ios/tools/stage_resources.sh",
+      "destination": "runtime/ios/tools/stage_resources.sh",
+      "sha256": "a0628ab4de4514bc0b7506188a76b67b61dcd88d1eec72dd1c911f5c7ca3c7f9"
+    },
+    {
+      "source": "dm/ios/tools/xcode_projects.py",
+      "destination": "runtime/ios/tools/xcode_projects.py",
+      "sha256": "ece82beb4ce8c0aa30b3e4dfaf97e350ff09952859ac524ffff1cbda2593117d"
+    },
+    {
+      "source": "dm/third_party/README.md",
+      "destination": "runtime/third_party/README.md",
+      "sha256": "9d24b4e609f0ae12f4ce3fbfeddd43d5f821844424ffaeaf7319496f6a4c3aae"
+    },
+    {
+      "source": "dm/third_party/libvpx/AUTHORS",
+      "destination": "runtime/third_party/libvpx/AUTHORS",
+      "sha256": "8a98b560e5314713550e6d3ba2d8acf3ef54dfc870fc448bef08a7c57648a0bd"
+    },
+    {
+      "source": "dm/third_party/libvpx/LICENSE",
+      "destination": "runtime/third_party/libvpx/LICENSE",
+      "sha256": "8267348d5af1262c11d1a08de2f5afc77457755f1ac658627dd9acf71011d615"
+    },
+    {
+      "source": "dm/third_party/libvpx/PATENTS",
+      "destination": "runtime/third_party/libvpx/PATENTS",
+      "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c"
+    },
+    {
+      "source": "dm/third_party/libvpx/README.md",
+      "destination": "runtime/third_party/libvpx/README.md",
+      "sha256": "cea5e1aacad99abe5bc86f418c013510af73feabd1a8c405455144b9534db728"
+    },
+    {
+      "source": "dm/third_party/libvpx/config/vp9_rtcd.h",
+      "destination": "runtime/third_party/libvpx/config/vp9_rtcd.h",
+      "sha256": "b6743df3eb2393cb1ab9ac3c4e2977fbc01da287dfa0aaa341d5ac544679b18c"
+    },
+    {
+      "source": "dm/third_party/libvpx/config/vpx_config.h",
+      "destination": "runtime/third_party/libvpx/config/vpx_config.h",
+      "sha256": "76edfebd810398169d6c2822aa8a656579b5dabd0edc3f41ab37d129503ec47a"
+    },
+    {
+      "source": "dm/third_party/libvpx/config/vpx_dsp_rtcd.h",
+      "destination": "runtime/third_party/libvpx/config/vpx_dsp_rtcd.h",
+      "sha256": "d77b2da1f8c0b5ddddb22fa7f62ff96b62336aa015e115c13c99f49cfe3b6e8e"
+    },
+    {
+      "source": "dm/third_party/libvpx/config/vpx_scale_rtcd.h",
+      "destination": "runtime/third_party/libvpx/config/vpx_scale_rtcd.h",
+      "sha256": "f638f6223ae6410cb57e31d68c080e748b0547bd2ca6bf915e6203d4ad5df29f"
+    },
+    {
+      "source": "dm/third_party/libvpx/config/vpx_version.h",
+      "destination": "runtime/third_party/libvpx/config/vpx_version.h",
+      "sha256": "d4b08cdef471aef5fd45879607fb590713c588e854cfb24cb9002219de2d79ce"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/arm/neon/vp9_iht16x16_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/arm/neon/vp9_iht16x16_add_neon.c",
+      "sha256": "772026cab6941e71bb3eabd0bd5c9476923bf673c54f2d90da503c892d988e92"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/arm/neon/vp9_iht4x4_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/arm/neon/vp9_iht4x4_add_neon.c",
+      "sha256": "9d2b00551d2f6751e4f87077c1755d3cfaa68dc04ba2d6b4a7a6268b2d3525dc"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/arm/neon/vp9_iht8x8_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/arm/neon/vp9_iht8x8_add_neon.c",
+      "sha256": "83091bf02963fb2c012c9f3f0194878d9b0ba21a07821a2084c006f47c50d75b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/arm/neon/vp9_iht_neon.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/arm/neon/vp9_iht_neon.h",
+      "sha256": "0b4ec226fac62aaa2da6ccbe0ad139b0eb363a6e87edcedfd83bed395deb9182"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_alloccommon.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_alloccommon.c",
+      "sha256": "3e59e9e63403ac83b279eb49c9ac04bb8cbe0dea5ad7296142822916f17c0909"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_alloccommon.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_alloccommon.h",
+      "sha256": "4434598d809f16a187f9b08bff75406c4f461717cea2866ce8e7f1873274bf16"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_blockd.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_blockd.c",
+      "sha256": "9693f43fb88ec5706e2f18dac74a434a60e75db67742ebf0f9088718d5de834d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_blockd.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_blockd.h",
+      "sha256": "a3628f60842999fc7165b0dc045529734c7cc98609142582d8eda6434b9f059d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_common.h",
+      "sha256": "43f1f24ab723fb3eeb4fa35111ba98c423cd05b083c878d35536a37a84076377"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_common_data.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_common_data.c",
+      "sha256": "de3b11445ddab6e6704f161c2c55cac9931ee565b45c7f79114604a947c59599"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_common_data.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_common_data.h",
+      "sha256": "c7f7dfb97b9f8db4d3ef41cd4ba143c411674d87cde44bfe1b1961771638be3a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropy.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropy.c",
+      "sha256": "d6084c983bd9848bb19a32ef87305e822873815e1ea3a30e158b6e1a489519a1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropy.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropy.h",
+      "sha256": "8c83251171ea2490555971216e1d465f442e93d869f3ba6209d2fa5f5a942f3c"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropymode.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropymode.c",
+      "sha256": "0cb4940de5b9add383387c749c4c3f4bf13618782e0fe89677c8333d45b7e1e3"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropymode.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropymode.h",
+      "sha256": "d3e9ac5ebb30f151b4ee71d4c85f23e30ecb596317dc76c4a6c66236fb83a5da"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropymv.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropymv.c",
+      "sha256": "9ec4c5ac7c35e9a7360055d91486a9d3e8e12050f8bcbf6e72bba8d1c749fee1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_entropymv.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_entropymv.h",
+      "sha256": "f61e4944fc60afd2be83e92674aacfa91def3d972e9c758ae35ef6ecd29cb2be"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_enums.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_enums.h",
+      "sha256": "49409e547d24b817deadb5f5bb194758f6df63b4cef969ad2faf868e2adeab69"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_filter.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_filter.c",
+      "sha256": "d4097ff80fcc12bbaf395e13d6323ab7854e98cb05eb8a90c31314e77224e19f"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_filter.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_filter.h",
+      "sha256": "8452c18994f9774583b45f1e7c21e9fb7a21a74eb9d3a3112979fbc885d0b80d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_frame_buffers.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_frame_buffers.c",
+      "sha256": "5cc3b72fb8186839cbfa8c023a240147fb681879682b87879cc7c5fa06dd6594"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_frame_buffers.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_frame_buffers.h",
+      "sha256": "0206619b21b33d95b280a0ea1c7c960ce30e3b3f9d35a9eee1cd2b9a8700b357"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_idct.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_idct.c",
+      "sha256": "e0a49272ea0870d8933820d4cc00ca2f78e2016af79b7dff94790896a278c693"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_idct.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_idct.h",
+      "sha256": "289d7dfc3f1d189c291b09e2005a21e883b8756d231b52250522226c3ff3a5ee"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_loopfilter.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_loopfilter.c",
+      "sha256": "5ffec54badf3b1a9b8626560f91b66e8a32be7b8001f36424e6d514bf48abd62"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_loopfilter.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_loopfilter.h",
+      "sha256": "5b48890c3ba0699ad886f7dcd01db0a86ea5d0e7e9f53ba3315793df6c118f0e"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_mv.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_mv.h",
+      "sha256": "7bff936cc11aa886a9f1ad8407c3bcca275399b8dc7d399a4a1705017c522ef1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_mvref_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_mvref_common.c",
+      "sha256": "eb3a09ad2649227a2fd6086077c4d16851c7542ae6efbdd62c5fc6c956aec5d3"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_mvref_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_mvref_common.h",
+      "sha256": "dbe074fd92d93418275a5169f42fef7a1044559b55f2f4bcd2fe1edb96004131"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_onyxc_int.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_onyxc_int.h",
+      "sha256": "2c44a00c9c9f22e83be4835395a6692d30be18b049701bce49e2581289e0b060"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_ppflags.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_ppflags.h",
+      "sha256": "f0d5cb8ddca7ff4a1c9c541f082a60738feaf0a42d302eb2862e5f72b8c0ef8d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_pred_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_pred_common.c",
+      "sha256": "f95811f5ba9fd7c31fa18d564c19916d230371996aa76625a67e316f2e4bfb86"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_pred_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_pred_common.h",
+      "sha256": "da628da570d8c9d221204d25bd89eba75fa6b1b26a1fabf2703f762ef0df07fc"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_quant_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_quant_common.c",
+      "sha256": "da0d83da3036bd6d064030aa381583dbe21b1af7585fc09a72e37190b5be050a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_quant_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_quant_common.h",
+      "sha256": "7fa79f1384eadda4dce37c6fcac107aaec53dbbf1a16439e2bc352dfd91fdc6a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_reconinter.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_reconinter.c",
+      "sha256": "ac745ced3a941b3ef57747ed83e29d38e13b16ed39f317924c32887dffd18b28"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_reconinter.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_reconinter.h",
+      "sha256": "181d17be26170511e2ac0de07cb6d9400179c23163fae478074ae1932378954b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_reconintra.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_reconintra.c",
+      "sha256": "108a51affbdcb30a7c6ee536bdedb0bcfd986ea83513bc416630fe30b1670238"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_reconintra.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_reconintra.h",
+      "sha256": "fcc73b90d77486d6685d51f6117782dab82328d8f4f10a543f022bf16fa6b87f"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_rtcd.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_rtcd.c",
+      "sha256": "aa08911047f2e075ca1d356dc20196e07f1a072393076a0f4abb0870f481111e"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_scale.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_scale.c",
+      "sha256": "201551b8d0078b21b2b11b4e6f1eba221c70965f9a0c5bb69b90bd5ece568c5e"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_scale.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_scale.h",
+      "sha256": "f1c4560a1b96d31e0b8c7235515b8bc3fabbd2f4d45fd810e50b947701ad3db0"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_scan.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_scan.c",
+      "sha256": "010507b0c768b108385bdea7f312220f222b43ff6581f08cde4662176893e5c3"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_scan.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_scan.h",
+      "sha256": "7ff077d6a1881bd03c969fc66a4efd3212826d0598d32385f52a446fa656439c"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_seg_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_seg_common.c",
+      "sha256": "04769ba128cdb514363d9ba501091541fdf63830b5e71d92659e36ab49ad4b82"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_seg_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_seg_common.h",
+      "sha256": "d70d52cf7ff456d3b8c34d681983e28c8077b577ce16b1215ab6e3f9f049c3a9"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_thread_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_thread_common.c",
+      "sha256": "09de6e576669a075850f213b94588cac7f3023904a1270351b0ec3449117594e"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_thread_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_thread_common.h",
+      "sha256": "2f958f8e33140566c176412f8179595d2c52ae52b57766eb22cd60270a4273f8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_tile_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_tile_common.c",
+      "sha256": "f9f229f5b92ad51c671dbfe6be7cf026e61fc2d2f4e9f3aca21b30f22f73af8c"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/common/vp9_tile_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/common/vp9_tile_common.h",
+      "sha256": "7cf3c2a2172b9a3e5fba2d23fead32503c7a58a7a83030b07371bb02d1bcb708"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decodeframe.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decodeframe.c",
+      "sha256": "796aac2d4515aa4647dbd5aa59f370d5c6d7a7295eda26803ae74a0475333fd2"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decodeframe.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decodeframe.h",
+      "sha256": "69459b8806ad4e1bed0004d3739de909d0b9503f4dc8d0923b92066768d5c67b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decodemv.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decodemv.c",
+      "sha256": "17eb975fc28e2691f3ba39ecaa75890a7ba65a9f10e1bee93081013ef0a8ac62"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decodemv.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decodemv.h",
+      "sha256": "32646b69fd85bccda3b77a373ad96ba8507c7f4aafe1630f9010b5212287f183"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decoder.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decoder.c",
+      "sha256": "4543211ee73906da678d882f256f14766bef8835ea9d96b7d3a24510705d3d33"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_decoder.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_decoder.h",
+      "sha256": "58b2d06e7e17adf74a27e5b75edb2a9da76fef2626bbf26f8c877717a01aec4a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_detokenize.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_detokenize.c",
+      "sha256": "d1c752bb754750b732c6b6bcbf2b6508ba249b153e0c405e690656abac87e748"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_detokenize.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_detokenize.h",
+      "sha256": "8291cb1747dac83008b6121ea12834796f3201125f9f86c030d86fa0809c86f8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_dsubexp.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_dsubexp.c",
+      "sha256": "da858e014dbea6c19e046577d96ecdbe8f1ec54710b7778b3fe951f484f38ee1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_dsubexp.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_dsubexp.h",
+      "sha256": "6fd426372f340d9b2ab74aef17776cab8199757ac036c9b4a1b831bff5b5bc73"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_job_queue.c",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_job_queue.c",
+      "sha256": "88abab5fab482d6c3e44c6c2df272762fc1c70638ed198bcfb07cdef7825a34d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/decoder/vp9_job_queue.h",
+      "destination": "runtime/third_party/libvpx/vp9/decoder/vp9_job_queue.h",
+      "sha256": "79e7a4a9d5035cc733c5a588616c3e7661d98f8c9d4926a8b25bdbb9cecfb651"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/vp9_dx_iface.c",
+      "destination": "runtime/third_party/libvpx/vp9/vp9_dx_iface.c",
+      "sha256": "0a32980632a37588a85cf026b8246e06927c796a80347c8aa9adb22f8c33eecf"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/vp9_dx_iface.h",
+      "destination": "runtime/third_party/libvpx/vp9/vp9_dx_iface.h",
+      "sha256": "a82c2b7a4a1a5b64fb477361c351775f7a86a97739e30075fc2ba0d7e17c489c"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/vp9_iface_common.c",
+      "destination": "runtime/third_party/libvpx/vp9/vp9_iface_common.c",
+      "sha256": "90607baf56e31f2afd68afbf86b684a7180470b92eec79fe44234e715a477016"
+    },
+    {
+      "source": "dm/third_party/libvpx/vp9/vp9_iface_common.h",
+      "destination": "runtime/third_party/libvpx/vp9/vp9_iface_common.h",
+      "sha256": "50f870c131d983639525f98e9208cc6648001698e784e4ba373f3c04645ba1ec"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/internal/vpx_codec_internal.h",
+      "destination": "runtime/third_party/libvpx/vpx/internal/vpx_codec_internal.h",
+      "sha256": "592237daf5d4d6982731a7a4a6c73d10760825c29f5c3755720bf9985c116f7f"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/src/vpx_codec.c",
+      "destination": "runtime/third_party/libvpx/vpx/src/vpx_codec.c",
+      "sha256": "aa4a30998250101bfdfcf9f4def2ac9cc908b69224a0fae802d54456fb4a732b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/src/vpx_decoder.c",
+      "destination": "runtime/third_party/libvpx/vpx/src/vpx_decoder.c",
+      "sha256": "efedaa74f48c6d59e582bcb4ffbb49d3fc34970720febf5d4bb98614f3c8e916"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/src/vpx_encoder.c",
+      "destination": "runtime/third_party/libvpx/vpx/src/vpx_encoder.c",
+      "sha256": "70281c8fa4c995d2c6a080f0c8899c10229d42be34eb42859281b84f166ac448"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/src/vpx_image.c",
+      "destination": "runtime/third_party/libvpx/vpx/src/vpx_image.c",
+      "sha256": "e790ff79886e0486e590315b58416c9d91b6d3f583d1db1757267818ef0fcc1c"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vp8.h",
+      "destination": "runtime/third_party/libvpx/vpx/vp8.h",
+      "sha256": "8bd4f03ef5771d7f08b103733f09bd5fdb665c0b1a0f039a5ca1b9c4fbd0bdb8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vp8dx.h",
+      "destination": "runtime/third_party/libvpx/vpx/vp8dx.h",
+      "sha256": "f3d98bda5d043879b8e37f01ee2fcfe9419461367a277c34eaef7811680f4021"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_codec.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_codec.h",
+      "sha256": "713a1a1a82968c084f5aab4e7026891001e67b98af420ca3896c7fbdcb0c1890"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_decoder.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_decoder.h",
+      "sha256": "aa784c3f27af14aa7a9e4d14386aee523eb3e50f957194e5c690bb83855eff43"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_encoder.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_encoder.h",
+      "sha256": "16f5d79236eaccec01460d744a5cb2f8ee132af03b31bc46d26a44263159c421"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_ext_ratectrl.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_ext_ratectrl.h",
+      "sha256": "9e76374c929ff0d93820af19944934a0539feaaad8a779c8d91dd199bf1fe854"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_frame_buffer.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_frame_buffer.h",
+      "sha256": "edc0bc4626e4c93e668a9d1ed6c58316df905c2187384480d58f47c44acfcb22"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_image.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_image.h",
+      "sha256": "64266026294553542b6a894d1aa339dc6348aec87465cea48e6eb4043e067aae"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_integer.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_integer.h",
+      "sha256": "531c1ea958f1ad7e29cc95dd7bb1dc7ee4b2cde00c099883f05924e2e5930eb1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx/vpx_tpl.h",
+      "destination": "runtime/third_party/libvpx/vpx/vpx_tpl.h",
+      "sha256": "171e470f7118595b1467a9181edbae879a5a1ac48cdc3b2d01edd84ccf699243"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct16x16_1_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct16x16_1_add_neon.c",
+      "sha256": "fc3b7b87012619d96a409c4c211ec0279daf35043e72093ae06c4d1f677a7f10"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct16x16_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct16x16_add_neon.c",
+      "sha256": "f59819e8b6ea1efbae088bb4436323d41a0de9536419c64df2892d16882a2648"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct32x32_135_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct32x32_135_add_neon.c",
+      "sha256": "c0b199c4e67f05359de60a2273dda4aa87d7ebf0316888a4c4010da3acd1fa52"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct32x32_1_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct32x32_1_add_neon.c",
+      "sha256": "82fc4e206ef92eeeba00616c705b68bc011981cdcc1932f8f56d037158128070"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct32x32_34_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct32x32_34_add_neon.c",
+      "sha256": "f5c4d38474df46a3c1b9d34a2f68967ca7a311e5ef069987eb1f36ad0fb627ee"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct32x32_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct32x32_add_neon.c",
+      "sha256": "81a6e56c21349c54cd72e854e349cd5561dfea306d448adca89c740b457149ac"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct4x4_1_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct4x4_1_add_neon.c",
+      "sha256": "239246dfcdf0be32a70e1aaad8c66bad5ee47ef5099bd0ec5ad558ea8e02e343"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct4x4_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct4x4_add_neon.c",
+      "sha256": "5a016c55a54541d56edb128c81a3b8a5f72957dca814b8beb802af1ea7e5b2a8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct8x8_1_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct8x8_1_add_neon.c",
+      "sha256": "749c6541a1e82033006614eb2791592558c8985d6cbd07b73212269abda66f8d"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct8x8_add_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct8x8_add_neon.c",
+      "sha256": "ef822327f4536e2f3e53ba4a2fcfb37fb38134ff219ea17bf4095f746b6f0416"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/idct_neon.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/idct_neon.h",
+      "sha256": "3f8b46843cef1e1f3153628f3ba769116708c5ec9334d642a428388d33485b17"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/intrapred_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/intrapred_neon.c",
+      "sha256": "761f006390810766de50eb75cf5c04ab657a386fe8443a86e9dc7df9353b48a8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/loopfilter_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/loopfilter_neon.c",
+      "sha256": "2244b681274667d30a8265dd6c3d41ce668ad426eca18abd5b0f7250bd7cc09e"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/mem_neon.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/mem_neon.h",
+      "sha256": "9553ca59e2ba1a29527bb992b1aaded889f1dfaf15808246472571e9b893eaa1"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/sum_neon.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/sum_neon.h",
+      "sha256": "1a165d802f5da790abdac36b6bcfb8a0b98d132e012c0ad6ff668a4a3c2d8565"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/transpose_neon.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/transpose_neon.h",
+      "sha256": "52f655d0bc88c65006a5fbc93ea8b81f9ed488be034691704205ef9ab5df5e25"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_convolve8_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_convolve8_neon.c",
+      "sha256": "ea06604bc94c6bfacc846852bb17b99ce9621e818d49b5b98271c18cb9df9d92"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_convolve8_neon.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_convolve8_neon.h",
+      "sha256": "09b2c127d9df4bf61ec9550e87b7ee7775d2de8cc29cd6660fce655cfe2d1b63"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_convolve_avg_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_convolve_avg_neon.c",
+      "sha256": "319ad00ffe5345d556663092110ac1be1cbb8d62890b8209c56a460f52128a43"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_convolve_copy_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_convolve_copy_neon.c",
+      "sha256": "2529e8092b6c221efd5e171b7117b444069372e824630b32cf0f07c86569e846"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_convolve_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_convolve_neon.c",
+      "sha256": "6559dc35dfd5149479cd1c3f5fb6832194417bb74926e10e58273dc4ade366d8"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/arm/vpx_scaled_convolve8_neon.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/arm/vpx_scaled_convolve8_neon.c",
+      "sha256": "c0bc2b8b40f023438c14f6e3c613512e0f24b0778361a342b6b1a5329b9c75bb"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/bitreader.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/bitreader.c",
+      "sha256": "2e89f06a6ab348948e52953a5386724824ca6e5eabdb7837e13e30667565a868"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/bitreader.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/bitreader.h",
+      "sha256": "3473a2156222b8b789cf8aff174533536586ec0ac7201b69b57694456541c91f"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/bitreader_buffer.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/bitreader_buffer.c",
+      "sha256": "8bcb377dafd1a91d9e536e5024e4a03925a1618c34f75064869901643b8fafbb"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/bitreader_buffer.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/bitreader_buffer.h",
+      "sha256": "f77467188a3d972b3e1b5922c813e0479b441eb90ba264d83bbc1a3ce0345867"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/intrapred.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/intrapred.c",
+      "sha256": "a12832eeaf5c74b765d001f278f02698b435baad64b486522ab80de269968cea"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/inv_txfm.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/inv_txfm.c",
+      "sha256": "847951b1decc939d5b72d60c49fe976709bb0832a10e0ad40609fb47164867c7"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/inv_txfm.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/inv_txfm.h",
+      "sha256": "272c4a0c7d649481a2876076f037192254054e915aa7f692849f6f12988bab83"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/loopfilter.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/loopfilter.c",
+      "sha256": "6e4225b7168bb9f96c828d1689a874877f5b2f3dc314b484e10f775c84b17791"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/prob.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/prob.c",
+      "sha256": "fe4239ef8ffd2e0f36884e963c20bb87337d39b87a84c5b580372a9f1b348346"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/prob.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/prob.h",
+      "sha256": "7c178c1ba1efc37ed138bde298c9c370e52f9c408e5754b637592272c4b23368"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/skin_detection.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/skin_detection.c",
+      "sha256": "66f206270350caa412f4e2e88800a2ebc7541b9d5ce5308b56e4a54955629d5a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/skin_detection.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/skin_detection.h",
+      "sha256": "5b216b94bf9c35b117acdf6aa89f0072bbfcec4974ef60e07cfdb9a9fca143bf"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/txfm_common.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/txfm_common.h",
+      "sha256": "159370639195bdab8c110b38ceb73019e68f7ee21a2f230207f15f69f5e06329"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/vpx_convolve.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/vpx_convolve.c",
+      "sha256": "3cabc454b003551d29349d27b4f484e458e2098f40bef6b9c8ac6b33758de42b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/vpx_convolve.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/vpx_convolve.h",
+      "sha256": "c43aad525236c5f1f29d3af381ea7bf409cda6f5936962ee6109b71b5af753b4"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/vpx_dsp_common.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/vpx_dsp_common.h",
+      "sha256": "2c33e52935eefc7a2aa72ee04e2e235b25d64c7fa06ea51215ee2bcc6baf2893"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/vpx_dsp_rtcd.c",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/vpx_dsp_rtcd.c",
+      "sha256": "a35c2d8d291a86d0ab4b6b3b8e342c71d029461fe1a586332b907bd9256fc025"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_dsp/vpx_filter.h",
+      "destination": "runtime/third_party/libvpx/vpx_dsp/vpx_filter.h",
+      "sha256": "e61cb71e81ddccb763d342b3a859830a25aceb79bf1dd9c00748818febac7663"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_mem/include/vpx_mem_intrnl.h",
+      "destination": "runtime/third_party/libvpx/vpx_mem/include/vpx_mem_intrnl.h",
+      "sha256": "32b6edc8651f0aaadca8364e994c2b99ea2d31d5dec9c4e992012088109f9a95"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_mem/vpx_mem.c",
+      "destination": "runtime/third_party/libvpx/vpx_mem/vpx_mem.c",
+      "sha256": "6417e5f4f291bfbca66215bdc28064eb727667500c436ed06f903902804d3e86"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_mem/vpx_mem.h",
+      "destination": "runtime/third_party/libvpx/vpx_mem/vpx_mem.h",
+      "sha256": "429e18c0fbe4254634ef1115375bd2a534e3234849bffd8e06972a11555cbe1b"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/aarch64_cpudetect.c",
+      "destination": "runtime/third_party/libvpx/vpx_ports/aarch64_cpudetect.c",
+      "sha256": "8781d11c4574a917b62eef2971614a730fb34d675e58b5d242a712768b6ab6ba"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/arm.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/arm.h",
+      "sha256": "eb2a15afd5d56743d3f7d5930fe89a38a1c9872617ea58838d184288c93efc25"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/arm_cpudetect.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/arm_cpudetect.h",
+      "sha256": "7a3f07d55864ab051cfc07a315b01cbc57d9a67dfae830693be454b5fbfad9f9"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/bitops.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/bitops.h",
+      "sha256": "df32e29c582ec5818ff2de0d5f8bd113d6c576629e3271f507b7e9a057cf0935"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/mem.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/mem.h",
+      "sha256": "157dcfcf32f7e16543d49f81de95ac77ae0cd093be3efcb7c657cbfe2aff8bed"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/mem_ops.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/mem_ops.h",
+      "sha256": "ec1c28b46887e77517229ca186fec5650c57fc8c515b4646d24f64c9943bc45a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/mem_ops_aligned.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/mem_ops_aligned.h",
+      "sha256": "1e4ea4f57be7257be08c2f2f68aba2a8b53aa1d821cf064888ce88fb0a18b890"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/system_state.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/system_state.h",
+      "sha256": "54e50a15577b044f3f5c618dac64e6dd29ebcb48850456ac0ad8960e97e8ccf5"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/vpx_once.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/vpx_once.h",
+      "sha256": "483f46db1243752050eea0fd7868a6ce577276f3ed0df626848c03d7b3fc3de4"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_ports/vpx_timer.h",
+      "destination": "runtime/third_party/libvpx/vpx_ports/vpx_timer.h",
+      "sha256": "39e9ae80660bcb9383f5db5f1d4abaa88df0edea98536a0456f8beb8fa69079f"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/generic/gen_scalers.c",
+      "destination": "runtime/third_party/libvpx/vpx_scale/generic/gen_scalers.c",
+      "sha256": "573bc1ff8509d1dc515748851a1f926bec9eb4c066deab5841a87908d7f401f5"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/generic/vpx_scale.c",
+      "destination": "runtime/third_party/libvpx/vpx_scale/generic/vpx_scale.c",
+      "sha256": "c334b2ce05f3c141f4af8cfe2e736e51a3aa993e6bbb5c8c04808393a8eda312"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/generic/yv12config.c",
+      "destination": "runtime/third_party/libvpx/vpx_scale/generic/yv12config.c",
+      "sha256": "4b248ec01e4ec24194247379a3a9891b4f6d3ea024bb1c209ade86c514a92148"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/generic/yv12extend.c",
+      "destination": "runtime/third_party/libvpx/vpx_scale/generic/yv12extend.c",
+      "sha256": "d6b28db3b7fe03f04e291d69a993a4f01e6dc471613d9a72fc1e17a3de0d78af"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/vpx_scale.h",
+      "destination": "runtime/third_party/libvpx/vpx_scale/vpx_scale.h",
+      "sha256": "84d82bb1e9382f6395b92575968330ef27f61a5d91bfd960bb38a93c94e69e68"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/vpx_scale_rtcd.c",
+      "destination": "runtime/third_party/libvpx/vpx_scale/vpx_scale_rtcd.c",
+      "sha256": "330eaaa366691301afbc155186cd16aa64d2d6c0d01d9e08c99ebd683c05c2ff"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_scale/yv12config.h",
+      "destination": "runtime/third_party/libvpx/vpx_scale/yv12config.h",
+      "sha256": "1c1a7b9e4fc2e4accc1ad207ce2325491dcf1e27790deb3390ff1d5f8deadd5a"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/endian_inl.h",
+      "destination": "runtime/third_party/libvpx/vpx_util/endian_inl.h",
+      "sha256": "7e0974b960737dd162817c1f577a0146fa8fd0350255546e03fbbef65bf64af9"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/vpx_pthread.h",
+      "destination": "runtime/third_party/libvpx/vpx_util/vpx_pthread.h",
+      "sha256": "c40569a5914d941ee890202c3c727075d12094ae2d485695e46efc988eecfabc"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/vpx_thread.c",
+      "destination": "runtime/third_party/libvpx/vpx_util/vpx_thread.c",
+      "sha256": "edf65676ab72769fdbee6961ab9f628dce36053f9602e1ba88e71245be4680a7"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/vpx_thread.h",
+      "destination": "runtime/third_party/libvpx/vpx_util/vpx_thread.h",
+      "sha256": "50ab8787f9c673101a39ccc2bb0783ddc0ba68cab2cea1a31f8fa01ef4e17824"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/vpx_write_yuv_frame.c",
+      "destination": "runtime/third_party/libvpx/vpx_util/vpx_write_yuv_frame.c",
+      "sha256": "401cc4b088b0ba52653d75a4813f0907ea7e7e190c6ece1814102685659a64f6"
+    },
+    {
+      "source": "dm/third_party/libvpx/vpx_util/vpx_write_yuv_frame.h",
+      "destination": "runtime/third_party/libvpx/vpx_util/vpx_write_yuv_frame.h",
+      "sha256": "0efa1dda16a58418bc58f6e3fd9970aba4c792957d8e21df14ccd8b880933760"
+    },
+    {
+      "source": "dm/third_party/macnativegames/LICENSE",
+      "destination": "runtime/third_party/macnativegames/LICENSE",
+      "sha256": "a035ee21f927d2247f30bedc8964c95b3a4d794f76c78cad178b68731815a79a"
+    },
+    {
+      "source": "dm/third_party/stb_vorbis/LICENSE",
+      "destination": "runtime/third_party/stb_vorbis/LICENSE",
+      "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
+    },
+    {
+      "source": "dm/third_party/stb_vorbis/README.md",
+      "destination": "runtime/third_party/stb_vorbis/README.md",
+      "sha256": "4c171eaa54235ffc8f927c0ccd0b3524566531e254cf09d00634cd66d76fd7b0"
+    },
+    {
+      "source": "dm/third_party/stb_vorbis/stb_vorbis.c",
+      "destination": "runtime/third_party/stb_vorbis/stb_vorbis.c",
+      "sha256": "fb84b37852e9c46a8479bb06216982262ba0e5cafc79da6a61e5ebb1d6f83a7f"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/LICENSE.md",
+      "destination": "runtime/third_party/vulkan-headers/LICENSE.md",
+      "sha256": "95ad366d23fadf701d355bc45fb8b82ae2d700239471d35d41286ac3b08ff903"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/README.md",
+      "destination": "runtime/third_party/vulkan-headers/README.md",
+      "sha256": "25f391fec0c506855b7f2e1a023557f60710d164a69a42e56782677a47d739d9"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std.h",
+      "sha256": "c75c1d324b97d247aef0008024bc7f3adb98c741ab7f66c882ec38fdacc7ee33"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std_decode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std_decode.h",
+      "sha256": "7e3a1ce177c12546d410f3179ce1b81f2da7a8eba4f525b29cd563ab4099c0e5"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std_encode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_av1std_encode.h",
+      "sha256": "8d166b4543260a38347860443b1a59c7a5e86cdb0d0facaf4c704f667de030e3"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std.h",
+      "sha256": "fded484cef9f90fbbd089e0647268f36e5f4292179fbc5428a2c9e8d7709bbe9"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std_decode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std_decode.h",
+      "sha256": "37b970c3d80536ad1ac074cfe19b58ee03c3075378e02179e1dc5e4351266821"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std_encode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h264std_encode.h",
+      "sha256": "227e092b53c4e7ca1a948ed021704511c1ed16040cd6188ff6703e5ae66db64d"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std.h",
+      "sha256": "0b81f8986ada015ef2e127449eff9d9634899bb59a0a9277a4054e9ec4416c12"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std_decode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std_decode.h",
+      "sha256": "879a0dd370a1b1ad184638906c52bdfe7d80d639fbc5a5baa8b02d7c5b60b147"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std_encode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_h265std_encode.h",
+      "sha256": "abb3e72af22e4e0a3dbe5dff7be1b275949388809fb3987830341e8f495ea1c7"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_vp9std.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_vp9std.h",
+      "sha256": "0a47125865376a3fe7014b69ff6db9d04e30ebf8c4d15664f1d894649ad5c09d"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_vp9std_decode.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codec_vp9std_decode.h",
+      "sha256": "1ceb1a8d0e3370e508cf688a6e57dc314cd82186b60f3cef420ea4b1b483865d"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vk_video/vulkan_video_codecs_common.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vk_video/vulkan_video_codecs_common.h",
+      "sha256": "d2e7caa396c521d03d491a269572b1d31b925b5127d22fda14199951ebae89f8"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vulkan/vk_platform.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vulkan/vk_platform.h",
+      "sha256": "a2cd9085c66776845d2524c3b0e73ccf4827ba046aa6f676c4b8ddbed47d6552"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vulkan/vulkan_core.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vulkan/vulkan_core.h",
+      "sha256": "2f64fd6c7c3f342b0e44f039f1c359b7f0e6cfcb71a7dca1cc5156282faa3b51"
+    },
+    {
+      "source": "dm/third_party/vulkan-headers/include/vulkan/vulkan_vi.h",
+      "destination": "runtime/third_party/vulkan-headers/include/vulkan/vulkan_vi.h",
+      "sha256": "a53e35bb1b3113e6ef4932cb9358a27861a198d7865227ecd93555fecc73dd68"
+    },
+    {
+      "source": "dm/tools/insn_census.py",
+      "destination": "runtime/tools/insn_census.py",
+      "sha256": "3dc025c614cc0a8b604378e42f443b4a89ee297862974cb50a4ef908d3686c0b"
+    },
+    {
+      "source": "dm/tools/loader_census.py",
+      "destination": "runtime/tools/loader_census.py",
+      "sha256": "94b7e8331ed5172e77b3a64f2b0f314ecfe0ce60d61fb0dfa777b373e50144e3"
+    },
+    {
+      "source": "dm/tools/make_ext_font.py",
+      "destination": "runtime/tools/make_ext_font.py",
+      "sha256": "020fbf5f34460ab62eecae1867fcd34b3f6d4408a13461ea3bce6fa71c46cc9e"
+    },
+    {
+      "source": "dm/tools/nacp.py",
+      "destination": "runtime/tools/nacp.py",
+      "sha256": "960509f77544f9733614b4786160ce59d479a7ad85f6eca64b4762cdb9825beb"
+    },
+    {
+      "source": "dm/tools/nro_collect.py",
+      "destination": "runtime/tools/nro_collect.py",
+      "sha256": "6686a0256821a5c567cf93978172103a5d97976380e24751bc5e8dfcf5cad3fe"
+    },
+    {
+      "source": "dm/tools/nso.py",
+      "destination": "runtime/tools/nso.py",
+      "sha256": "7e2a69b39a16951e791083f2dc10f37e1c0be57f7f95698e30e2cb8d3a967b21"
+    },
+    {
+      "source": "dm/tools/nso2elf.py",
+      "destination": "runtime/tools/nso2elf.py",
+      "sha256": "a86bf2251402bee92feffc27c3bb34fcb912348a0709f5cda2738990cd474dce"
+    },
+    {
+      "source": "dm/tools/nso_asm.py",
+      "destination": "runtime/tools/nso_asm.py",
+      "sha256": "ae1b3d83bec3720fd6c806b2c8caa559a5652ac333ad44c5e3e6ef091deb7d20"
+    },
+    {
+      "source": "dm/tools/nso_code.py",
+      "destination": "runtime/tools/nso_code.py",
+      "sha256": "0b9d0317438b2cf729030ccc5fa37fbc8abb9fad72d1d8babe448faebdc1d0bb"
+    },
+    {
+      "source": "dm/tools/nso_fnmap.py",
+      "destination": "runtime/tools/nso_fnmap.py",
+      "sha256": "1a4808775022938a5aef3875f074ba811aaffeba95f2af5b7a3a2c77fc33fbe8"
+    },
+    {
+      "source": "dm/tools/nso_syms.py",
+      "destination": "runtime/tools/nso_syms.py",
+      "sha256": "b6a8c82c9140bce83ad76df92df28ff09f6917fd9705c91b39a8951892a85700"
+    },
+    {
+      "source": "dm/tools/nvn_slots_got.py",
+      "destination": "runtime/tools/nvn_slots_got.py",
+      "sha256": "4bad8737550cd6ac847e93c7e9e7f62d8853922ec146341e28e3856c84d5afdd"
+    },
+    {
+      "source": "dm/tools/nx_extract/Program.cs",
+      "destination": "runtime/tools/nx_extract/Program.cs",
+      "sha256": "8012d699da9bccdcda11768def92a2e3078f3492415f4d4802d1b38880676b3d"
+    },
+    {
+      "source": "dm/tools/nx_extract/nx_extract.csproj",
+      "destination": "runtime/tools/nx_extract/nx_extract.csproj",
+      "sha256": "135b84f2010c437ff341deed9c5883d01f82a3e16b67646b6d32a168afe1ff39"
+    },
+    {
+      "source": "dm/tools/patch_nso.py",
+      "destination": "runtime/tools/patch_nso.py",
+      "sha256": "1762ea5588d5376fc5716866758d882e18d4a5b8b59d2f670d154dc34312888a"
+    },
+    {
+      "source": "dm/tools/sdis.py",
+      "destination": "runtime/tools/sdis.py",
+      "sha256": "b6cb8a6034946293a23c4172abe88f141ad85c966448d5862fb05ebbca3a8208"
+    },
+    {
+      "source": "dm/tools/sdk_patches.py",
+      "destination": "runtime/tools/sdk_patches.py",
+      "sha256": "4618674ed303479030d39a9ff7e62721a992c55d1ea892de9690abf140ab64b5"
+    },
+    {
+      "source": "dm/tools/tests/test_shader_discard.py",
+      "destination": "runtime/tools/tests/test_shader_discard.py",
+      "sha256": "a5d32716289cd2d21d326869ce046185eee44fe937dc20ba44c14a18baf151c9"
+    },
+    {
+      "source": "dm/third_party/ryujinx/README.md",
+      "destination": "third_party/licenses/ryujinx-build.md",
+      "sha256": "ba9b77d3ee20995d94b58f6b342ccfdfefa82b562661a7fe4c792078507dde88"
+    },
+    {
+      "source": "dm/third_party/ryujinx/LICENSE.txt",
+      "destination": "third_party/licenses/ryujinx.txt",
+      "sha256": "781bbdf040b7d0286c47cca6bffdb9148dfe751c0c9cabdf1a1752412a2e56b4"
+    },
+    {
+      "source": "dm/third_party/ryujinx/src/Spv.Generator/LICENSE",
+      "destination": "third_party/licenses/spv-generator.txt",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "third_party/nxnative/LICENSE",
+      "sha256": "a65554a74de59bf4d2210f3d4381c67d6fc6fa78f237f83c85543773319efa7b"
+    },
+    {
+      "source": "scripts/build_ipa_from_nsp.py",
+      "destination": "third_party/nxnative/build_ipa_from_nsp.py",
+      "sha256": "3dce5586af6cec64bb6d095296fcce83a7aad8a7667393bc93a97c03fd17106f"
+    }
+  ],
+  "scope": "Files retained after review cleanup; translator is binary-only. Hashes record imported content before local adaptations, except the relocated license documentation."
+}

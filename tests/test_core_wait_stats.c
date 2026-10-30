@@ -8,10 +8,9 @@
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL %s\n", message); exit(2); }
 static _Atomic uint64_t clock_reads;
 uint64_t runtime_now_ns(void) { atomic_fetch_add(&clock_reads,1); mach_timebase_info_data_t t; mach_timebase_info(&t); return (uint64_t)((__uint128_t)mach_absolute_time()*t.numer/t.denom); }
-#ifdef GAME_BOTW
-uint64_t runtime_hle_tsd_off;
+uint64_t runtime_hle_tsd_off;   // both games' asynchronous preemption reads these (TOTK's since PR #488)
 int runtime_guest_code_pc(uint64_t pc) { (void)pc; return 0; }
-#endif
+pthread_key_t runtime_keys[8];
 static thr_t owner, waiter;
 static _Atomic int finished;
 static uint64_t own_wait;

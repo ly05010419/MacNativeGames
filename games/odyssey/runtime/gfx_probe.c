@@ -100,7 +100,9 @@ void runtime_gfx_probe(int negative){
  if(CALL(nvnTextureGetStorageClass,&texture.value)!=CALL(nvnTextureBuilderGetStorageClass,&builder))runtime_fail("texture storage class identity");
  CALL(nvnTextureFinalize,&texture.value);
  for(unsigned i=0;i<64;i++)if(texture.guard[i]!=0xa5)runtime_fail("NVN texture finalize overflow");
- int major=0,minor=0;CALL(nvnDeviceGetInteger,NULL,0,&major);CALL(nvnDeviceGetInteger,NULL,1,&minor);if(major!=55||minor<15)runtime_fail("TOTK NVN ABI target");
+ /* Odyssey's ABI (hle_nvn.c g_devinfo, GAME_ODYSSEY): 53 / 311. The copied check expected TotK's 55 / 15, so the probe
+    stopped here and none of the probes below ran. */
+ int major=0,minor=0;CALL(nvnDeviceGetInteger,NULL,0,&major);CALL(nvnDeviceGetInteger,NULL,1,&minor);if(major!=53||minor<311)runtime_fail("Odyssey NVN ABI target");
  if(lookup("TOTK_not_an_nvn_entry"))runtime_fail("unknown NVN lookup should be null");
  probe_linear_layout();
  probe_minimal_layout();

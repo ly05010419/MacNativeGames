@@ -1,0 +1,46 @@
+{
+  "title_id": "0100152000022000",
+  "update_title_id": "0100152000022800",
+  "version": "4.0.1",
+  "package": "v1507328",
+  "sdk": "4.4.0",
+  "update": {
+    "exefs": {
+      "main": {
+        "size": 10444681,
+        "sha256": "92edeef4827338f0a481b9e150cdb2b46e258cef5656bc3eae7de67c88defe4a",
+        "build_id": "158c0c7399aabd7bf83795c2ef3484c7"
+      },
+      "main.npdm": {
+        "size": 1476,
+        "sha256": "0ce80e156fa01f70f3aa154f447ea43ccce994887e25708a870bb5ee4cfcf201"
+      },
+      "rtld": {
+        "size": 7112,
+        "sha256": "2cfa67cd7d8a23a013802428e93af6bc4d686a7b6feff85218e23076dfa45201",
+        "build_id": "d33817c0c763d8faf97d9a6534c19db2"
+      },
+      "sdk": {
+        "size": 4407918,
+        "sha256": "427404f3218eaa790f611acd9e45fe0336efb9504f02949054b14de3578bd1c2",
+        "build_id": "ba520906609c503227871a314a94fb5f"
+      },
+      "subsdk0": {
+        "size": 3276015,
+        "sha256": "78310913ab1c10486169b13795856f8dfae2a0a3b89068517d3835c1d03b2a41",
+        "build_id": "d9de423efc1512328c3c05378c7cb031"
+      }
+    }
+  },
+  "add_on_content": {
+    "0100152000023001": {
+      "name": "Booster Course Pass",
+      "package": "v65536",
+      "index": 1,
+      "romfs_image": {
+        "size": 4228,
+        "sha256": "320918616dc8a6b17be85fc07ec44ef4620a31f6a04ce4e4e4b91ce39105357a"
+      }
+    }
+  }
+}

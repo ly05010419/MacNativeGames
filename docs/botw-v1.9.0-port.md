@@ -25,7 +25,7 @@ python3.14 build_app.py ~/Games/botw-base.nsp -k ~/keys/prod.keys --update ~/Gam
 `build_app.py` picks the game by the title IDs in the file, never by its name. A card image builds 1.6.0. A base NSP
 needs `--update`: with the 1.9.0 update it builds 1.9.0, with the 1.6.0 update 1.6.0 (by the update's verified ExeFS
 hashes). A package on the wrong option stops the build and names the option it belongs on. `--dlc` with a 1.6.0 card
-image or with TOTK also stops the build. A 1.9.0 build takes its DLC packs from `--dlc` only. Both BOTW versions use
+image or with TOTK also stops the build. A build with a separate update (1.9.0 or 1.6.0) takes its DLC packs from `--dlc` only. Both BOTW versions use
 the work folder `BotW_build`, the app `Breath of the Wild.app` and the data folder
 `~/Library/Application Support/MacNativeGames/BotW`.
 
@@ -112,6 +112,13 @@ Two changes act on both BOTW versions:
   staged texture from its stage. Larger textures keep the read-back blit. With staging, Kakariko holds 59.5 FPS at the
   60 FPS cap. A timer in a test build measured the stage copies at 107 us per game frame (103-113 us, 14 copies and
   4.7 new buffers a frame). That is 1.3 % of a 120 FPS frame.
+- Grass masks (after f1043e5): the game flushes its 512x512 grass density mask right after rendering it and reads it on
+  the CPU to choose the grass cells 50-130 m away. The flush write-back waited about 3.7 ms a frame for that rendering.
+  A target the flush has had to wait for 120 times (1 MiB at most) now lands in memory when its submission completes,
+  and the flush no longer waits: the CPU reads the last completed mask, as on hardware, where the game does not wait for
+  it either. This also learns the 64x64 light-probe cube maps. Great Plateau at the 120 FPS ceiling: 114-120 FPS and p99
+  11.7-15.6 ms before, 119.6-120 FPS and p99 10.6-11.0 ms after. `TOTK_BOTW_LATE_WB=0` restores the waiting write-back.
+  `probe-gpu-writeback` covers the landing, neighbour and own CPU writes on the shared edge pages, and a short pool.
 - 120 Hz displays: the uncapped mode stays off on a display of 120 Hz or more (`UNCAPPED_HZ`). The BOTW rule that
   ignores the game's present interval 2 acted only in that mode, so BOTW ran at 60 FPS on a 120 Hz display. The
   display-following path now ignores interval 2 in the same cases: real time, `DM_PRESENT_HZ` unset, `TOTK_UNCAPPED`,
@@ -120,6 +127,10 @@ Two changes act on both BOTW versions:
   - Replaced after the merge (user 2026-10-22): the uncapped mode applies on any display, so this rule is gone. Its
     clock's ceiling went to 240, then back to 120 by default the same day (user; `TOTK_UNCAPPED_HZ` still allows up to 240). The real-time frame step lost its 1/120 s floor (TOTK and BOTW), which made a game
     above 120 fps run fast; the Unicorn checks of both versions pass at 144, 165, 240 and 360 fps.
+  - The display link that shows the uncapped frames keeps a display rate above 120 Hz too, up to 240 (`link_range` in
+    `nvn_mtl.m`; TOTK and BOTW). It turned such a rate into 60, so a 144 / 160 Hz display ticked at a divisor of its
+    refresh: on a 160 Hz display about 53 frames a second reached the screen, 18.75 / 25 ms apart, while the game ran
+    at 105-120 fps. Only an unknown rate (below 30) still falls back to 60.
 
 Write-back staging A/B on `29bc388`, with upstream's #140 and #143 in the build: Kakariko, uncapped, docked 1920x1080
 render, warm shader cache v6, still view from 115 s for 20 s, then a 15 s walk. The "off" build used the TOTK hooks.
@@ -300,11 +311,13 @@ Every file under `games/totk` that this port changes (`git diff --stat ab4c9d2 H
 
 | File | What changed | Guard |
 |---|---|---|
-| `Makefile` | new rules `runtime-botw190`, `build/totk-native-botw190`, `build/gfx-botw190/*.o` and `build/botw190/*.h` | additive; no TOTK rule changed |
+| `Makefile` | new rules `runtime-botw190`, `build/totk-native-botw190`, `build/gfx-botw190/*.o`, `build/botw190/*.h` and `probe-audio-botw190` | additive; no TOTK rule changed |
 | `runtime/account.c` | `nn::account::PopOpenUsers` gives the one local user | `#ifdef GAME_BOTW` |
 | `runtime/aoc_romfs.c` | default DLC folder `extracted/<TOTK_GAME_DIR>/aoc` instead of the fixed `extracted/botw160/aoc` | the file is inside `#ifdef GAME_BOTW` |
-| `runtime/audio_mixer.h` | two fields keep the voice-drop parameter | `#ifdef GAME_BOTW` |
-| `runtime/audio_renderer.c` | `IAudioRenderer` commands 12 and 13 (Set/GetVoiceDropParameter) | `#ifdef GAME_BOTW` |
+| `runtime/audio_mixer.h` | two fields keep the voice-drop parameter; four more keep the ramp state (`prev_volume`, `ramp_ready`, `was_started`, `last`) | `#ifdef GAME_BOTW` |
+| `runtime/audio_mixer.c` | volume ramps and depop (`voice_ramp_mix`, `voice_depop_prepare`, `mix_depop`, `audio_mixer_voice_release`) | `#ifdef GAME_BOTW` |
+| `runtime/audio_ramp.h` | new header with the ramp arithmetic | included only under `GAME_BOTW` |
+| `runtime/audio_renderer.c` | `IAudioRenderer` commands 12 and 13 (Set/GetVoiceDropParameter); the ramp state is reset with the voice, after the tail of a stopped voice is queued; `probe_ramp` and `probe_ramp_edge` in the audio probe | `#ifdef GAME_BOTW` |
 | `runtime/game_patches_botw.c` | The 1.9.0 real-time, UI-step, physics-substep, held-count, docked 1080p, movie-hold and ultrawide-camera sites. The 1.6.0 sites are unchanged. A `runtime_render_res` stub answers 0 for the shared `romfs.c` of `466330d`. Without it, no BOTW binary links | `#ifdef GAME_BOTW160` / `#else`. Only BOTW binaries compile this file |
 | `runtime/game_version.h` | the 1.9.0 version block | `#elif defined(GAME_BOTW190)`, before the TOTK blocks |
 | `runtime/loader.c` | the five-argument `nn::init::Start` of SDK 20.5; `module_finis` is compiled for 1.9.0 too | `#ifdef GAME_BOTW160` / `#elif defined(GAME_BOTW)`; `#ifndef GAME_BOTW` became `#ifndef GAME_BOTW160` |
@@ -338,10 +351,30 @@ them, 4 versions). The Python scripts keep the TOTK defaults, and the Makefile o
 ## Long run and the sinking legs
 
 Sinking legs: Link stands idle after a load of the 08:29 Great Plateau autosave, and his legs sink into the stone
-path by the ruin wall. One re-test on this branch showed the same. With the write-back off (`flag writeback 0`), the
-legs sank the same, so the write-back is not the cause. On an earlier build, one move or attack cleared it on the same
-spot. A new save at the same spot (System > Save, slot 1) gives the same: five seconds after its load, the legs sink
-mid-thigh. The cause is unknown.
+path by the ruin wall. A new save at the same spot (System > Save, slot 1) gives the same: five seconds after its load,
+the legs sink mid-thigh. With the write-back off (`flag writeback 0`) the legs sank the same, which fits the cause
+below: nothing is copied back then.
+
+Cause (2026-10-22): the game renders a 1x1 target on the GPU and reads the result on the CPU with no invalidate over its
+memory, as the idle foot placement and the water material loader do. The port copied GPU renderings to memory only at an
+invalidate, so the CPU read stale bytes: legs that sink, and water whose colour block stayed zero (the Bottomless Bog
+rendered clear and milky). One local fix on the old base 7305d4e (`bedb076`) wrote such 1x1 renderings back at each
+present: legs straight at 60, 75 and 90 s, bog dark and opaque; the same build with `TOTK_WB_EAGER=1x1` also kept the
+legs straight, without it they sank.
+
+Test on origin/main `daf270e` (M1 Pro, macOS 27, scratch apps built from the worktrees, copied saves, the same inputs;
+legs: save slot 5 of the 08:29 autosave, no input after the load; bog: save slot 2, camera turned left and down; frames
+at 38 to 90 s after the start):
+
+| Build | Legs | Bog |
+|---|---|---|
+| origin/main | sunk to the knees at 42 s; a bokoblin that stays hidden in the other runs attacks; Game Over at 60 s | no water: the ground shows through (milky, clear) |
+| origin/main with pull request #239 (tiny GPU targets copied to memory when their submission completes) | straight at 42, 60 and 90 s, bokoblin hidden, about 59 fps | dark and opaque water |
+
+So the cause above holds on current main. #239 cures the clear bog water; the straight legs in this row were not repeated:
+on #239's head (merged as `eda6340`) Link sank 3 of 3 times (2026-10-24). Pull request #511 (open) fixes the legs. This
+branch carries no fix of its own. Not tested: our own write-back fix on current main (it did not run there; it passed on
+the old base only), and #239 on 1.6.0.
 
 Leak fix: the first 25-minute run (Shrine route, `f3ad878` merged) stopped at 1509 s at the 5000 MB GPU budget. Its
 485,380 write-back stage buffers (2.9 GB) were never freed, because the game thread has no autorelease pool. `5ab49a2`
@@ -353,9 +386,40 @@ the forest and no Game Over. GPU allocation: 1138 MB at frame 300, 1823 MB at ab
 the warm-up this is about 4 MB/min, against 10 MB/min before the fix. Resident memory: 2686 to 2900 MB. A first
 moving try on the field route is void, because Link died before 245 s and the run stayed on Game Over.
 
+## Audio: volume ramps and depop (2026-10-22)
+
+The mixer applied a new voice volume or channel mix volume as a step at the 5 ms frame edge, and a stopped or paused
+voice dropped to zero at once. BOTW ducks the music when the pause menu or the map opens, and each step on a loud sample
+is a click. The Switch DSP ramps the voice volume and each channel's mix volume from the last frame's value and decays a
+stopped voice's last samples (Ryujinx.Audio `CommandGenerator.GenerateVoice`: `VolumeRamp`, `MixRamp`,
+`DepopPrepare`, `DepopForMixBuffers`, 0.962189 per sample at 48 kHz). `audio_mixer.c` does the same under `GAME_BOTW`;
+`TOTK_AUDIO_RAMP=0` gives the old mixer for a comparison.
+
+- `tests/test_audio_ramp.c` (CI, no game data) runs `audio_ramp.h`: a duck from 1 to 0.25, a mix volume that falls to 0
+  and a stopped voice's decay may not step a sample by more than 0.04. With `-DAUDIO_RAMP_STEP` it fails (steps 0.6,
+  0.4 and 0.5).
+- `make probe-audio-botw190` (needs game data): a 0.8 voice ducks and stops, no sample steps more than 0.04. Run on the
+  packaged binary of this branch (origin/main `daf270e`): it passes, and with `TOTK_AUDIO_RAMP=0` it fails with "volume
+  step or stop is not smoothed".
+- The same probe has three edge cases of the depop: a voice that is stopped and then released, or reused by a new voice,
+  before the next frame still fades from its last sample, and a voice whose channel was muted for a frame adds nothing
+  when it is paused afterwards (its last added sample is 0). Run on a build of origin/main `a988b5e` with this
+  branch's runtime: without the fix the release and reuse cases step 0.8 and the mute-then-pause case adds 0.0032; with
+  it the probe passes (and fails with `TOTK_AUDIO_RAMP=0`). A voice freed while it is still started is cut. When a new voice starts at once in the place of a stopped one, the old tail still fades and the new voice ramps up from 0 over its first frame, so the two do not add to a clipped step (0.8 plus 0.77 would clip to 1.0) and a silent new voice does not cut the tail to 0.
+- Game A/B on the old base `bedb076` (Kakariko save, 7 pause-menu and map cycles, the same inputs, 30 s capture): 4
+  clicks (steps 0.15-0.20, about 12 times the local step) with the old mixer, 0 with the fix, 0 underruns in both.
+- Game run on origin/main `daf270e` (bog save, 290 s, menu and map cycles from 100 s, 30 s capture): 0 clicks with the fix
+  and 0 without, the largest step 0.133 in both captures, 0 underruns, exit 0, about 60 fps. This scene did not repeat the
+  clicks of the old base, so it proves no gain; it shows no harm.
+- BOTW 1.6.0 (2026-10-24, M1 Pro, macOS 27, base v0 + 1.6.0 update, Great Plateau save, docked): the ramps act, and 5
+  pause-menu and map cycles gave 0 clicks with the ramps and 0 with `TOTK_AUDIO_RAMP=0`: no harm, no gain shown.
+- Not tested: a listening test by the owner (pause menu, map, shrine, fast travel) and splitter voices (BOTW opens none).
+- A run that ends in Game Over has no world sound (digital zero): the first runs of this check, started from the legs
+  save on a build without the legs cure, were silent for that reason.
+
 ## Not tested and known issues
 
-- Sinking legs after a save loads: deferred, cause unknown (see "Long run and the sinking legs").
+- Sinking legs after a save loads, and the clear Bottomless Bog: the clear water is cured by #239 (merged), the legs are not (pull request #511, open; see "Long run and the sinking legs").
 - GPU allocation grows about 4 MB/min after warm-up (1916 MB after 27 minutes): deferred. At that rate, the 5 GB
   budget is about 13 hours away.
 - Key 2 with no UI: fixed by `75cadf2`, with light proof (4 to 5 frames lost per HUD hide, against 408 before). A long
@@ -366,8 +430,9 @@ moving try on the field route is void, because Link died before 245 s and the ru
 - Rumble and motion aiming with a real controller: not tested, because no controller was connected.
 - A cold start with an empty shader cache: not tested. Every route run had a warm cache.
 - A card image as the game file with a 1.9.0 `--update`: not tested. The build takes the DLC packs from `--dlc` only.
-- BOTW 1.6.0 and the iPhone and iPad builds: not built. The write-back staging and the 120 Hz rule also act on 1.6.0.
-- Keys 4 and 5 do nothing on 1.6.0. No 1.6.0 game files were at hand for a test.
+- The iPhone and iPad builds: not built. The write-back staging and the 120 Hz rule also act on 1.6.0, which was built
+  and run on 2026-10-24 (see the audio section).
+- Keys 4 and 5 do nothing on 1.6.0.
 - TOTK: not played on this branch. The evidence is the 68 of 68 preprocessed identity.
 - Upstream's `[dead-keep]` set grows linearly (30k to 397k entries in 25 minutes, from `e0ad452`): not changed here,
   because it is upstream's shared code, and a change to it changes TOTK.

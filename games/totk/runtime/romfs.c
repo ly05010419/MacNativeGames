@@ -1,7 +1,7 @@
 /* Read-only game RomFS, backed by the player's fully IVFC-verified image. */
 #include "runtime.h"
 #include "totk_ui_lang.h"
-#include "romfs_config.h"
+#include "game_data.h"
 #include "game_version.h"
 #include "fs_host.h"
 #include "romfs_path.h"
@@ -20,6 +20,12 @@
 #define UNSUPPORTED 0x6402u
 #define INVALID 0xe402u
 #define NH 65536
+/* The image's size and SHA-256 and the index's SHA-256 from the player's verified extraction: romfs-config.txt in the game
+   data folder (game_data.h, scripts/prepare_romfs_backend.py), read when the RomFS is opened. */
+static uint64_t romfs_image_size;static const char *romfs_image_sha256,*romfs_index_sha256;
+#define ROMFS_IMAGE_SIZE romfs_image_size
+#define ROMFS_IMAGE_SHA256 romfs_image_sha256
+#define ROMFS_INDEX_SHA256 romfs_index_sha256
 static uint8_t *index_bytes;
 static size_t index_size;
 static uint64_t file_count,strings_offset;
@@ -250,6 +256,8 @@ static void overlay_init(void) {
 }
 void runtime_fs_init(void) {
  if(image_fd>=0)return;
+ romfs_image_size=runtime_game_number("romfs-config.txt","ROMFS_IMAGE_SIZE");romfs_image_sha256=runtime_game_sha256("romfs-config.txt","ROMFS_IMAGE_SHA256");
+ romfs_index_sha256=runtime_game_sha256("romfs-config.txt","ROMFS_INDEX_SHA256");
  const char *dir=getenv("TOTK_ROMFS");if(!dir)dir="extracted/" TOTK_GAME_DIR "/romfs";char path[4096];
  need(snprintf(path,sizeof(path),"%s/runtime-index.bin",dir)<(int)sizeof(path),"RomFS path");int fd=open(path,O_RDONLY);need(fd>=0,"RomFS index missing");
  struct stat st;need(fstat(fd,&st)==0&&st.st_size>=24&&st.st_size<128*1024*1024,"RomFS index size");runtime_boot_progress(TOTK_UI("读取资源索引","Reading the data index"),0,0);sha_fd(fd,ROMFS_INDEX_SHA256,0,NULL);

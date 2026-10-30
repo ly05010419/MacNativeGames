@@ -1,0 +1,78 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs	2026-10-28 18:07:25
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs	2026-10-28 18:07:25
+@@ -11,7 +11,7 @@
+ 
+         public const int MaxVertexBufferTextures = 32;
+ 
+-        private const int TextureSetIndex = 2; // TODO: Get from GPU accessor.
++        private const int TextureSetIndex = 0; // TOTK: set 0, the only set the NVN-on-Metal layer binds (was 2)
+ 
+         public int VertexInfoConstantBufferBinding { get; }
+         public int VertexOutputStorageBufferBinding { get; }
+@@ -52,21 +52,21 @@
+             if (vertexAsCompute)
+             {
+                 // One constant buffer reserved for vertex related state.
+-                VertexInfoConstantBufferBinding = ReservedConstantBuffers++;
++                VertexInfoConstantBufferBinding = 1100; ReservedConstantBuffers++;   // TOTK: fixed bindings in set 0, apart from the host accessor's (from 1)
+ 
+                 // One storage buffer for the output vertex data.
+-                VertexOutputStorageBufferBinding = ReservedStorageBuffers++;
++                VertexOutputStorageBufferBinding = 1200; ReservedStorageBuffers++;
+ 
+                 // One storage buffer for the output geometry vertex data.
+-                GeometryVertexOutputStorageBufferBinding = ReservedStorageBuffers++;
++                GeometryVertexOutputStorageBufferBinding = 1201; ReservedStorageBuffers++;
+ 
+                 // One storage buffer for the output geometry index data.
+-                GeometryIndexOutputStorageBufferBinding = ReservedStorageBuffers++;
++                GeometryIndexOutputStorageBufferBinding = 1202; ReservedStorageBuffers++;
+ 
+                 // Enough textures reserved for all vertex attributes, plus the index buffer.
+-                IndexBufferTextureBinding = ReservedTextures;
+-                TopologyRemapBufferTextureBinding = ReservedTextures + 1;
+-                _vertexBufferTextureBaseBinding = ReservedTextures + 2;
++                IndexBufferTextureBinding = 1300;
++                TopologyRemapBufferTextureBinding = 1301;
++                _vertexBufferTextureBaseBinding = 1302;
+                 ReservedTextures += 2 + MaxVertexBufferTextures;
+             }
+         }
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-10-28 18:07:25
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs	2026-10-28 18:07:25
+@@ -409,7 +409,7 @@
+                 });
+ 
+                 int vertexOutputSbBinding = resourceManager.Reservations.VertexOutputStorageBufferBinding;
+-                BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 1, vertexOutputSbBinding, "vertex_output", vertexOutputStruct);
++                BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexOutputSbBinding, "vertex_output", vertexOutputStruct);   // TOTK: set 0
+                 resourceManager.Properties.AddOrUpdateStorageBuffer(vertexOutputBuffer);
+ 
+                 if (Stage == ShaderStage.Vertex)
+@@ -437,7 +437,7 @@
+                     resourceManager.Properties.AddOrUpdateTexture(remapBuffer);
+ 
+                     int geometryVbOutputSbBinding = resourceManager.Reservations.GeometryVertexOutputStorageBufferBinding;
+-                    BufferDefinition geometryVbOutputBuffer = new(BufferLayout.Std430, 1, geometryVbOutputSbBinding, "geometry_vb_output", vertexOutputStruct);
++                    BufferDefinition geometryVbOutputBuffer = new(BufferLayout.Std430, 0, geometryVbOutputSbBinding, "geometry_vb_output", vertexOutputStruct);   // TOTK: set 0
+                     resourceManager.Properties.AddOrUpdateStorageBuffer(geometryVbOutputBuffer);
+ 
+                     StructureType geometryIbOutputStruct = new(new StructureField[]
+@@ -446,7 +446,7 @@
+                     });
+ 
+                     int geometryIbOutputSbBinding = resourceManager.Reservations.GeometryIndexOutputStorageBufferBinding;
+-                    BufferDefinition geometryIbOutputBuffer = new(BufferLayout.Std430, 1, geometryIbOutputSbBinding, "geometry_ib_output", geometryIbOutputStruct);
++                    BufferDefinition geometryIbOutputBuffer = new(BufferLayout.Std430, 0, geometryIbOutputSbBinding, "geometry_ib_output", geometryIbOutputStruct);   // TOTK: set 0
+                     resourceManager.Properties.AddOrUpdateStorageBuffer(geometryIbOutputBuffer);
+                 }
+ 
+@@ -506,7 +506,7 @@
+             });
+ 
+             int vertexDataSbBinding = reservations.VertexOutputStorageBufferBinding;
+-            BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 1, vertexDataSbBinding, "vb_input", vertexInputStruct);
++            BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexDataSbBinding, "vb_input", vertexInputStruct);   // TOTK: set 0
+             resourceManager.Properties.AddOrUpdateStorageBuffer(vertexOutputBuffer);
+ 
+             EmitterContext context = new EmitterContext();

@@ -73,15 +73,23 @@ uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
 static _Atomic int appActive=1;
 int runtime_front_focus(void){return atomic_load(&appActive);}
 void mtl_app_active(int active);
+void mtl_hud_safe_area(int w,int h,int side,int bottom);   /* gfx/nvn/nvn_mtl.m: the HUD boxes keep out of the safe area */
+void runtime_ios_sync_safe_area(UIView *host);
 /* Not active (background, Control Center, lock): stop GPU submission (iOS rejects background GPU work) and tell the game focus changed, like the Mac window. */
 static void app_active_changed(int active){
  if(atomic_exchange(&appActive,active)==active)return;
  if(!active)runtime_input_clear();
  mtl_app_active(active);runtime_oe_push_message(15);
+ if(active)runtime_feedback_active();
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
+
+/* The display link's rate, which paces the game (mtl_display_hz): 60 on every iPhone / iPad, also a ProMotion one, whose
+   screen reports 120 (UIScreen.maximumFramesPerSecond with CADisableMinimumFrameDurationOnPhone). */
+#define TOTK_IOS_LINK_HZ 60
+int front_display_link_hz(void){return TOTK_IOS_LINK_HZ;}
 
 @interface TOTKVsync:NSObject
 @end
@@ -109,6 +117,16 @@ void runtime_ios_sync_drawable(UIView *host){
  if(CGSizeEqualToSize(metalLayer.drawableSize,CGSizeMake(vw,vh)))return;
  metalLayer.drawableSize=CGSizeMake(vw,vh);
  fprintf(stderr,"[totk] view drawable %.0fx%.0f (screen scale %.1f, TOTK_IOS_DRAWABLE_H=%ld)\n",vw,vh,s,want);runtime_aspect_view(vw,vh);   /* full screen: the camera takes the drawable's shape (aspect_patch.h) */
+ runtime_ios_sync_safe_area(host);
+}
+/* The safe area (notch, rounded corners, home indicator) in drawable pixels: the HUD's corner boxes keep out of it
+   (nvn_mtl.m). The view's safeAreaInsetsDidChange calls it too: at the first drawable the view is in no window yet and
+   the insets are 0. */
+void runtime_ios_sync_safe_area(UIView *host){
+ CGSize px=metalLayer?metalLayer.drawableSize:CGSizeZero;
+ if(px.width<1||host.bounds.size.width<1)return;
+ UIEdgeInsets in=host.safeAreaInsets;double k=px.width/host.bounds.size.width;   /* points -> drawable pixels */
+ mtl_hud_safe_area((int)px.width,(int)px.height,(int)lround(MAX(in.left,in.right)*k),(int)lround(in.bottom*k));
 }
 
 /* Called on the main thread by the app before the game thread starts. */
@@ -130,12 +148,20 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(0);}];
  [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(1);}];
  vsyncTarget=[TOTKVsync new];displayLink=[CADisplayLink displayLinkWithTarget:vsyncTarget selector:@selector(tick:)];
- displayLink.preferredFrameRateRange=CAFrameRateRangeMake(60,60,60);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+ displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 /* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
+#if TARGET_OS_IOS
+extern void totk_phone_motion_start(void);
+extern void totk_phone_haptics_start(void);
+#endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
  runtime_gamepad_start();
+#if TARGET_OS_IOS
+ /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
+ dispatch_async(dispatch_get_main_queue(), ^{ totk_phone_motion_start(); totk_phone_haptics_start(); });
+#endif
  @autoreleasepool{callback();}
 }
 static int viReady;

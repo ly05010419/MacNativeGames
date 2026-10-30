@@ -1,0 +1,41 @@
+{
+    "_comment": "Verified Echoes of Wisdom 1.1.0 code (ExeFS from the update), rewrite bytes (DM_RULESET=native DM_PRIVATE_GATES=0) and merged, decompressed RomFS. Runtime validation is recorded separately.",
+    "title_id": "01008CF01BAAC000",
+    "update_title_id": "01008CF01BAAC800",
+    "version": 196608,
+    "display_version": "1.1.0",
+    "main_build_id": "9F221E1AFA65BA5443E955158AB97DA871E5E41F",
+    "base_program_nca": {
+        "name": "7f18d795b8f6c8722a467af0de1a6ba3.nca",
+        "nca_offset": 400,
+        "size": 5804949504
+    },
+    "update_program_nca": {
+        "name": "7c2244c20eca38c9f033534a3449efed.nca",
+        "nca_offset": 400,
+        "size": 197587968
+    },
+    "exefs_sha256": {
+        "main": "f180cb64ad2b801a8519462a49ce6dc79beeb17964347611f7acfc51c19cda2f",
+        "main.npdm": "b25a7c7acfab2eefb54cfcd66d86a825da0e8dcddc59df6ae00d51d669cca052",
+        "rtld": "f4844ac21032c9c749014863a0da7ff7abee45b0c1929e8fe2ccdf002f2d851a",
+        "sdk": "797019ba22ea8a18a96784817a59f6aa03ad274d8af3adb7fa822acffb2bd015",
+        "subsdk0": "475a3c89ec86b1968ed3783281ae36f0ee4416351d59fdb29d75ca81f5099cf9",
+        "subsdk1": "25fb20a51d992525c6dfdf043e2c9e45b99a806686b2bcbbef2506c0b58b6158"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "49264db39468bce1bc9dcc1d4375ad3a96cc4ed180dd435e322ba66ed51969e2",
+        "sdk.patched.bin": "2eb3b1033e4b9b4dc1633be900e1a77c06af2e3e0b3538e0713c3f7c2a271fe7",
+        "subsdk0.patched.bin": "5eda9387722948217a78f781c5e37ecc309a27d4f41281b4446826c3d843c305",
+        "subsdk1.patched.bin": "fc1889812b1a51d6fc8b1b5f21265235864d0b17ae54a81248b5217c95a334db"
+    },
+    "romfs": {
+        "size": 8036390636,
+        "sha256": "6854222fabc60f71a28fdc971c9aa8c0b686e8e94c8a65e4ca0bc8561252d60c",
+        "files": 10965,
+        "bytes_from_base": 5604718160,
+        "bytes_from_update": 154962352,
+        "stored_size": 5748359168,
+        "stored_sha256": "8859513be90167b5e0b7b75ff1cb04490402d765bae2f399a50ceed97df967e4"
+    }
+}

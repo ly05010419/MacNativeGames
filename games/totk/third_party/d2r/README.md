@@ -24,6 +24,12 @@
 5. 等价检查器在 C 窗口内继续执行原调用位置的 BLR，再比较被调用函数入口状态。
    其余判据保持原有方式；独占访问仍使用原有 deexcl 测试模型。
 
+6. 自旋等待（`patch_nso.py`「Spin waits」）：从 nxnative（https://github.com/seedds/nxnative ，MIT，
+   提交 066f2af、6d34984，许可证见 `games/totk/third_party/licenses/nxnative.txt`）移植循环搜索与复制。
+   只对 `SPIN_BUILDS` 登记的构建号生效（现为旷野之息 1.9.0 main）；没有代码内数据表，改为要求循环在同一个
+   eh_frame 函数里；已改写的字按与解码映像（`IMG0`）的差异判定；门用本工程的 `runtime_gate`，宿主侧为
+   `threads.c` 的 `runtime_spin_wait`。结构检查器 ⑫ 核对回跳、跳板、副本与门块。
+
 main/sdk/subsdk0 均已使用本地版本重新生成并完成全量结构和逐站点等价检查。
 新增调用方式另有递归、异常目标、负对照与 M4 原生多线程测试；修复的独占窗口
 另有未简化的 LDXR/STXR 成功路径与注入失败状态测试。

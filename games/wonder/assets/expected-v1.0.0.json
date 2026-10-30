@@ -1,0 +1,22 @@
+{
+  "_comment": "Hashes of what the build produces from a genuine Super Mario Bros. Wonder v1.0.0 NSP (no game data). build_app.py checks every step against them; a mismatch stops the build. The rewrite was not verified site by site as TOTK's were: it is the same rewriter's output, bound by hash.",
+  "title_id": "010015100B514000",
+  "name": "Super Mario Bros. Wonder",
+  "version": 0,
+  "display_version": "1.0.0",
+  "program_nca": "16f19496d4458261195c2d9778044bd8.nca",
+  "exefs_sha256": {
+    "main": "f197aa237cb7de76888bc29077796fb85eb2bad5b762e15d26d48789bdfe0dbb",
+    "main.npdm": "e260262394afa8496c4b06934f21491f58bd09c9740573537559018386d23af2",
+    "rtld": "f0a66ec5118206dcfb4040d764add059544bf03a75273b7cb0302865b9d8665b",
+    "sdk": "41fed8e6b6f877750cc8459e5ffc37503f2998815a5a29e47f0b5c4f0949ff14"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "f0272a83ce819e431f82e44cf61b0d8bab76b1f07a1180ab715900a38bf3c5f0",
+    "sdk.patched.bin": "644b5e18160ef15a650671e41806c4e4ebb0b5826feb5fe029ae76d48a2ef5b5"
+  },
+  "romfs": {
+    "size": 3726437684,
+    "sha256": "93f395acc2cb55ab2b7a9ad9b74a39a797f3e82483d7fedc85a3bc229baf8aab"
+  }
+}

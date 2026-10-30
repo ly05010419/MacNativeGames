@@ -1,7 +1,9 @@
 #import "touch_pad.h"
 #import <GameController/GameController.h>
 #include <math.h>
+#include <stdlib.h>
 #include "runtime.h"
+#include "settings_map.h"
 
 /* Layout inside the safe area (clear of the iPhone's notch, rounded corners and home indicator), like a Switch
    controller: ZL/L and R/ZR along the top with − and + between them, and two columns mirroring each other: on the left
@@ -10,11 +12,15 @@
    under ZL / ZR.
    A touch that misses every button is a stick, centred where the finger went down: the left stick on the left half,
    the camera (right stick) on the right half. Bits are the Npad buttons. While a game controller is connected the layer
-   is hidden; a touch shows it and works as usual, and it hides again 3 seconds after the last finger lifts. */
+   is hidden; a touch shows it and works as usual, and it hides again 3 seconds after the last finger lifts.
+   Between − and + a smaller button shows the frame rate the game is held to; a tap switches it at once. With the
+   custom layer off it saves the choice in the pane's preset row (TOTK_PHONE_FPS) for the next start; with it on the
+   pane owns the cap, so the button only holds 30 until the next launch. */
 typedef struct { CGPoint at; uint64_t bit; NSString *label; CGFloat size; } TouchButton;
 enum { kButtonCount = 16 };
 static const CGFloat kButtonSize = 46;
 static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger lifts, with a controller connected
+static const CGFloat kFpsButtonSize = 34;
 
 @implementation TOTKTouchPad {
     NSMapTable<UITouch *, NSValue *> *points;
@@ -33,6 +39,8 @@ static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger l
         NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidConnectNotification object:nil];
         [center addObserver:self selector:@selector(controllersChanged:) name:GCControllerDidDisconnectNotification object:nil];
+        [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidConnectNotification object:nil];
+        [center addObserver:self selector:@selector(controllersChanged:) name:GCKeyboardDidDisconnectNotification object:nil];
         [self controllersChanged:nil];
     }
     return self;
@@ -42,8 +50,24 @@ static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger l
     BOOL connected = NO;
     for (GCController *controller in GCController.controllers)
         if (controller.extendedGamepad && !([note.name isEqualToString:GCControllerDidDisconnectNotification] && controller == note.object)) connected = YES;
-    if (connected == gamepad) return;
-    gamepad = connected; [hideTimer invalidate]; hideTimer = nil;
+    /* A connect notification carries the keyboard itself; coalescedKeyboard is the one that stays. A disconnect's object
+       is already gone, so ask for the remaining keyboard instead. */
+    GCKeyboard *keyboard = [note.name isEqualToString:GCKeyboardDidConnectNotification] && [note.object isKindOfClass:GCKeyboard.class]
+                         ? note.object : GCKeyboard.coalescedKeyboard;
+    const char *keyboardMode = getenv("TOTK_KEYBOARD");
+    /* The pane's switch arrives as "1"/"0" (the generic dispatch in main.m); "off" is the older spelling. */
+    BOOL keyboardOn = !(keyboardMode && (!strcmp(keyboardMode, "off") || !strcmp(keyboardMode, "0"))) && keyboard != nil;
+    const char *touchWithKeyboard = getenv("TOTK_TOUCH_WITH_KEYBOARD");
+    BOOL keepTouch = touchWithKeyboard && !strcmp(touchWithKeyboard, "1");
+    BOOL hidden = connected || (keyboardOn && !keepTouch);
+    /* coalescedKeyboard can still name the departing keyboard when the notification arrives; look again when the
+       system has settled, so the touch layer cannot stay hidden with no keyboard attached. */
+    if ([note.name isEqualToString:GCKeyboardDidDisconnectNotification])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self controllersChanged:nil];
+        });
+    if (hidden == gamepad) return;
+    gamepad = hidden; [hideTimer invalidate]; hideTimer = nil;
     if (gamepad) [self conceal]; else { concealed = NO; [self setNeedsDisplay]; }
 }
 
@@ -103,6 +127,19 @@ static const NSTimeInterval kHideAfter = 3;   // seconds after the last finger l
     for (int i = 0; i < kButtonCount; i++) b[i] = all[i];
 }
 
+- (CGPoint)fpsButton { CGRect a = self.area; return CGPointMake(CGRectGetMidX(a), CGRectGetMinY(a) + a.size.height * .12); }
+- (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
+- (void)switchFrameRate {
+    /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
+       cap in the pane, so this only holds 30 until the next launch and saves nothing. */
+    BOOL custom = [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CUSTOM_PICTURE"];
+    int fps = totk_frame_button_target(runtime_phone_fps() == 30);
+    runtime_phone_fps_set(fps);
+    const char *key = totk_frame_button_key(custom);
+    if (key) [NSUserDefaults.standardUserDefaults setObject:fps == 30 ? @"30" : @"60" forKey:@(key)];
+    [self setNeedsDisplay];
+}
+
 - (uint64_t)buttonAt:(CGPoint)p {
     TouchButton b[kButtonCount]; [self buttons:b]; CGFloat hit = self.hitRadius; uint64_t bits = 0;
     for (int i = 0; i < kButtonCount; i++) if (hypot(p.x - b[i].at.x, p.y - b[i].at.y) < MIN(hit, b[i].size * .75)) bits |= b[i].bit;
@@ -130,6 +167,7 @@ static void stick_axes(CGPoint from, CGPoint to, CGFloat radius, int32_t *x, int
     (void)event; concealed = NO; [hideTimer invalidate]; hideTimer = nil;
     for (UITouch *t in touches) {
         CGPoint p = [t locationInView:self]; NSValue *v = [NSValue valueWithCGPoint:p]; [points setObject:v forKey:t];
+        if ([self fpsButtonAt:p]) { [self switchFrameRate]; continue; }   // pressed no Npad button and moves no stick
         if ([self buttonAt:p]) continue;
         [(p.x < CGRectGetMidX(self.bounds) ? leftOrigins : rightOrigins) setObject:v forKey:t];
     }
@@ -174,5 +212,14 @@ static void draw_stick(CGContextRef c, CGPoint o, CGPoint p, CGFloat r) {
         CGContextSetFillColorWithColor(c, fill); CGContextFillEllipseInRect(c, box); CGContextStrokeEllipseInRect(c, box);
         CGSize z = [b[i].label sizeWithAttributes:attrs]; [b[i].label drawAtPoint:CGPointMake(b[i].at.x - z.width / 2, b[i].at.y - z.height / 2) withAttributes:attrs];
     }
+    // The frame rate button: a smaller rounded square, its label the rate the game is held to now.
+    CGPoint f = self.fpsButton; CGRect box = CGRectMake(f.x - kFpsButtonSize / 2, f.y - kFpsButtonSize / 2, kFpsButtonSize, kFpsButtonSize);
+    UIBezierPath *key = [UIBezierPath bezierPathWithRoundedRect:box cornerRadius:8];
+    CGContextSetFillColorWithColor(c, fill); [key fill]; [key stroke];
+    /* The runtime only knows "held at 30" or not, so the label shows that state: after a tap that lifts the pane's cap
+       it agrees with the pacing instead of repeating the stale pane value. */
+    NSString *rate = runtime_phone_fps() == 30 ? @"30" : @"60";
+    NSDictionary *small = @{NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold], NSForegroundColorAttributeName: ink};
+    CGSize z = [rate sizeWithAttributes:small]; [rate drawAtPoint:CGPointMake(f.x - z.width / 2, f.y - z.height / 2) withAttributes:small];
 }
 @end

@@ -1,0 +1,23 @@
+{
+  "_comment": "Hashes of what the build produces from genuine Super Mario Bros. Wonder 1.0.0 and 1.2.1 update NSPs (no game data). scripts/build_wonder.py checks every step against them; a mismatch stops the build. The rewrite is the same rewriter's output, bound by hash.",
+  "title_id": "010015100B514000",
+  "update_title_id": "010015100B514800",
+  "name": "Super Mario Bros. Wonder",
+  "version": 327680,
+  "display_version": "1.2.1",
+  "program_nca": "ef4fafc120d3b724c1e876f66ca94d69.nca",
+  "exefs_sha256": {
+    "main": "ff9a3728246d45a750a686d1625bdeafb0a361ea75e19964675a14f629f98c32",
+    "main.npdm": "62afed032660a5f6c3e4b2f6e3badd538eab2e82e0e74f4360bb570f5e0f36d0",
+    "rtld": "70d47e8ffa857b93ba69fcec3eee294b0bc5c32065a18c455c8eaf74a336acbd",
+    "sdk": "73bec5989030d4d9f056503066180a6100bb7937370a4d818c8ba53960dfa2f3"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "10a9a247221bce33610ed4d057a400030f3bde58e022774201fdd594d26b87bc",
+    "sdk.patched.bin": "b9becba31f9bb23ba5bb3439424055048872249f12ac9a881fd90e8d7ea2abc7"
+  },
+  "romfs": {
+    "size": 3732302808,
+    "sha256": "e68e6b26c3d4edbdc879a54edcaf70c0be7877d881eb41a42cfcdb1d3b8d328b"
+  }
+}

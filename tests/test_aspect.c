@@ -22,7 +22,7 @@ static void parsing(void) {
     CHECK(near(aspect_parse("1.6"), 1.6), "1.6");
     CHECK(near(aspect_parse("21:9"), 21.0 / 9), "21:9");
     CHECK(near(aspect_parse("3440x1440"), 3440.0 / 1440), "3440x1440");
-    CHECK(aspect_parse("display") == ASPECT_DISPLAY, "display");
+    CHECK(aspect_parse("display") == ASPECT_BAD, "display (fitting the window) is gone");
     const char *bad[] = {"wide", "16:", "16:10x", "1.6 ", "0.4", "9", "1:3", "0:9", "-2", "16:0", "Display"};
     for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) CHECK(aspect_parse(bad[i]) == ASPECT_BAD, "\"%s\" refused", bad[i]);
 }
@@ -30,7 +30,7 @@ static void parsing(void) {
 static void factors(void) {
     CHECK(aspect_effective(16.0 / 9) == 0, "16:9 is the game's own");
     CHECK(aspect_effective(1920.0 / 1088) == 0, "within 1%% of 16:9");
-    CHECK(aspect_effective(0) == 0 && aspect_effective(ASPECT_DISPLAY) == 0, "unset");
+    CHECK(aspect_effective(0) == 0 && aspect_effective(ASPECT_BAD) == 0, "unset");
     CHECK(near(aspect_effective(1.6), 1.6), "16:10 kept");
     CHECK(!aspect_vert_wanted(NULL) && !aspect_vert_wanted("") && !aspect_vert_wanted("0") && !aspect_vert_wanted("yes"), "Vert+ off by default");
     CHECK(aspect_vert_wanted("1"), "TOTK_ASPECT_VERT=1 turns it on");
@@ -58,25 +58,10 @@ static void factors(void) {
 
 static void steps(void) {
     const double wide = ASPECT_WIDE, mac = 2560.0 / 1600;
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, mac, wide) == ASPECT_STEP_FIT, "16:9 -> fit on a 16:10 window");
-    CHECK(aspect_next_step(ASPECT_STEP_FIT, mac, wide) == ASPECT_STEP_WIDE, "fit -> 21:9");
-    CHECK(aspect_next_step(ASPECT_STEP_WIDE, mac, wide) == ASPECT_STEP_GAME, "21:9 -> 16:9");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, 1920.0 / 1080, wide) == ASPECT_STEP_WIDE, "fit skipped on a 1920x1080 window");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, 1920.0 / 1088, wide) == ASPECT_STEP_WIDE, "fit skipped within 1%% of 16:9");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, 2520.0 / 1080, wide) == ASPECT_STEP_WIDE, "fit skipped on a 2520x1080 window");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, 3440.0 / 1440, wide) == ASPECT_STEP_FIT, "3440x1440 is 2.39, not 21:9");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, 0, wide) == ASPECT_STEP_WIDE, "no window shape yet: fit skipped");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, mac, 1.6) == ASPECT_STEP_WIDE, "TOTK_ASPECT=16:10 on a 16:10 window: fit skipped");
-    CHECK(aspect_next_step(ASPECT_STEP_GAME, mac, 32.0 / 9) == ASPECT_STEP_FIT, "TOTK_ASPECT=32:9 on a 16:10 window");
     CHECK(aspect_step_ratio(ASPECT_STEP_GAME, mac, wide) == 0, "16:9 step");
     CHECK(aspect_step_ratio(ASPECT_STEP_FIT, mac, wide) == mac, "fit step");
     CHECK(aspect_step_ratio(ASPECT_STEP_WIDE, mac, wide) == wide, "21:9 step");
     CHECK(aspect_effective(aspect_step_ratio(ASPECT_STEP_FIT, 1920.0 / 1080, wide)) == 0, "fit on a 16:9 window puts in nothing");
-    int step = ASPECT_STEP_GAME;
-    for (int i = 0; i < 3; i++) step = aspect_next_step(step, mac, wide);
-    CHECK(step == ASPECT_STEP_GAME, "three presses come back to 16:9 on a 16:10 window");
-    for (int i = 0; i < 2; i++) step = aspect_next_step(step, 1920.0 / 1080, wide);
-    CHECK(step == ASPECT_STEP_GAME, "two on a 16:9 window");
 }
 
 /* A few A64 encodings: the camera and viewport sites below are built from them here, none of the game's code is used. */

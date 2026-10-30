@@ -12,6 +12,9 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
+# 1.4.1 has 1.3.0's executables, and its RomFS merged with the base is 1.3.0's merged image, byte for byte (the same
+# size and SHA-256 as assets/expected-local-update.json); only the update's Control data names the later version.
+UPDATE_VERSIONS = ('1.3.0', '1.4.1')
 sys.path.insert(0, str(HERE / 'third_party/by3-scripts'))
 from extract_exefs import (load_keys, container_entries, common_tickets,
                            nca_inventory, nca_ctr_key, require)
@@ -55,10 +58,10 @@ def main():
                     data.seek(nacp[0]['offset'] + 0x3060)
                     raw = data.read(16)
                 version = raw.split(b'\0', 1)[0].decode('ascii')
-                require(version in ('1.0.0', '1.3.0'), 'Unexpected Odyssey display version')
+                require(version in ('1.0.0', *UPDATE_VERSIONS), 'Unexpected Odyssey display version')
                 versions.append(dict(nca=record['name'], display_version=version,
                                      romfs_size=size, romfs_sha256=digest, ivfc_blocks=counts))
-    require(sorted(item['display_version'] for item in versions) == ['1.0.0', '1.3.0'],
+    require(sorted(item['display_version'] for item in versions) in (['1.0.0', v] for v in UPDATE_VERSIONS),
             'Base and update versions do not match the expected pair')
     report = dict(status='pass', versions=versions,
                   integrity='Both Control FS headers and all six IVFC levels verified; RSA signatures not checked')

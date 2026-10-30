@@ -1,0 +1,17 @@
+# Super Mario Bros. Wonder: work folder and the files make writes when run in this folder (they hold game data)
+Wonder_build/
+/.venv
+/extracted/
+/rewritten/
+/analysis/
+/build/
+/tooling/
+/user-data/
+romfs.bin
+# the player's own files, should one be copied here: game files, keys, saves
+*.xci
+*.nsp
+*.nsz
+*.nca
+*.keys
+*.app/
