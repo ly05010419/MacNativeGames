@@ -36,6 +36,7 @@ void taa_set(int on);
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
+static _Atomic int titleFree;   /* runtime_warm_title: the warm-up no longer holds the title back */
 /* Counts foreground time after warm-up, including menus, like Screen Time.
    Diagnostic profiles have their own counter and never update the user's file. */
 static TOTKPlaytime *playtime;
@@ -82,16 +83,18 @@ extern void totk_sr_closing(void) __attribute__((weak_import));
 extern void totk_sr_settings(int open) __attribute__((weak_import));
 int runtime_front_window_visible(void);   /* below: 1 seen, 0 covered, -1 not known yet */
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
-/* The start-up screen goes once a frame was presented and the warm-up is done: the player sees the game from here on. */
+/* The start-up screen goes once a frame was presented and the warm-up is done, or lets the title come before it ends
+   (runtime_warm_title): the player sees the game from here on. */
 static void boot_overlay_hide(void){
  if(!bootOverlay||bootOverlay.hidden)return;
  bootOverlay.hidden=YES;
+ fprintf(stderr,"[totk-boot] %.3f start-up screen hidden\n",(runtime_now_ns()-bootStartNS)/1e9);
  if(totk_sr_picture)totk_sr_picture(window.isKeyWindow,runtime_front_window_visible()!=0);
 }
 void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
-  dispatch_async(dispatch_get_main_queue(), ^{if(!atomic_load(&warmPending))boot_overlay_hide();});
+  dispatch_async(dispatch_get_main_queue(), ^{if(!atomic_load(&warmPending)||atomic_load(&titleFree))boot_overlay_hide();});
  }
 }
 void runtime_boot_progress(const char *stage,uint64_t done,uint64_t total){
@@ -142,6 +145,13 @@ void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_
 }
 void runtime_warm_done(void){
  atomic_store(&warmPending,0);
+ dispatch_async(dispatch_get_main_queue(), ^{if(atomic_load(&presentedFrames))boot_overlay_hide();});
+}
+/* nvn_mtl.m warm_start, where the game's sound starts: the title may be seen. With the rest of the warm-up going on behind
+   the menu (a Mac with a complete pipeline archive, TOTK_WARM_BEFORE_TITLE=0) the start-up screen covered a title that
+   already played its music and took input until the warm-up ended (2026-10-30); it now goes with the first frame. */
+void runtime_warm_title(void){
+ atomic_store(&titleFree,1);
  dispatch_async(dispatch_get_main_queue(), ^{if(atomic_load(&presentedFrames))boot_overlay_hide();});
 }
 uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
