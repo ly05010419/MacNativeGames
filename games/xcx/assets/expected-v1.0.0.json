@@ -1,0 +1,47 @@
+{
+  "title_id": "0100453019AA8000",
+  "display_version": "1.0.0",
+  "scope": "Pinned diagnostic host; no gameplay claim",
+  "exefs_sha256": {
+    "main": "64d531f510073450d0cc34a401a1b908bf4b9e8d403998d6a71df20d6b8ebab3",
+    "main.npdm": "dfc7219c8a68a6b1a77aacac1d5a2aae92bf2c8c700caa5375355a0cec2fdc98",
+    "rtld": "ccc8301636595a6273681568f919435238c1a9f2a31263e991a0d6f11bf16771",
+    "sdk": "0b72afe99b4c2e4ee89ddbf449351aed2036b077536bf01be02f4991c8af22d3",
+    "subsdk0": "24bc0737080524edcb690523ece78a610ca2260dfacff4a8fbeb463d5a0aec97"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "6592788b4bc1ecad1161564b21813620d71672a7c04f8743c965be18585eff7a",
+    "sdk.patched.bin": "9d629869f383b2966067391a3c3cf2102550274f523c0d550fff7cde1b605680",
+    "subsdk0.patched.bin": "407f783cf6f501131b140ba597897166dc3acac914b80e1b3cb15c1eb12e4907"
+  },
+  "rewrite_metadata_sha256": {
+    "subsdk0.fixups.tsv": "aa3ee6b66370bc1f10470778d925eef98da68907f071a536ee1ca29ab2207475",
+    "sdk.gates.tsv": "e13c57595c62e333af921420898b9feda26f792423d01f7fc37f684496641f43",
+    "subsdk0.cuts.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0",
+    "main.cuts.tsv": "14057e2dbd302bbd0fabeb18df4f5bdf5c94d64800f9c980fa98b05bb903e566",
+    "main.params.tsv": "14057e2dbd302bbd0fabeb18df4f5bdf5c94d64800f9c980fa98b05bb903e566",
+    "sdk.cuts.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "sdk.params.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "sdk.sites.tsv": "8973a30701cc0a7a8c2e4a961ba7f591b6c953a25707c120325bbb57d607b651",
+    "main.sites.tsv": "47263941436d89d03ac971e360e273d09f37ae27fb7a8395a5cac87a847c843b",
+    "subsdk0.sites.tsv": "18fc59b0caca02231ca762b224646426dcda696a584d99067798aed6ac21e3a8",
+    "sdk.obs.tsv": "c6fd762c2a1d1e6aca1bcd625ebb81c8aad86b30b41e706076c9ffe0c011961b",
+    "main.gates.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "subsdk0.params.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0",
+    "main.obs.tsv": "14057e2dbd302bbd0fabeb18df4f5bdf5c94d64800f9c980fa98b05bb903e566",
+    "main.fixups.tsv": "78d36028a40d57065f2800404eb0ab944c775f143b097e789020315bba51e7c8",
+    "subsdk0.gates.tsv": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk.fixups.tsv": "77847140d9801fd243c51e0ca8afec893b92c21c70c2ac53a2442e646549eada",
+    "subsdk0.obs.tsv": "1bf59b87ff55adc1ffa4cb01459417da80cb4442ad86752b3611cb5f161e36b0"
+  },
+  "romfs": {
+    "sha256": "f3cb7bb9bbf9a62185101b2062232e1f07d9e52f887a870d9e05b67c58fc77ee",
+    "size": 14326985704
+  },
+  "rewrite_validation": {
+    "source_commit": "788174fffa8703548808670fb699ea22dd02d40e",
+    "structure_modules_passed": 3,
+    "semantic_sites": 36687,
+    "mutation_controls_caught": 900
+  }
+}
