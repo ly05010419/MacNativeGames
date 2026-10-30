@@ -10,8 +10,15 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+/* runtime/cheats.c: an app built without --cheats (no Cheats menu). */
+int runtime_cheats_count(void){return 0;}
+const char *runtime_cheats_name(int i){(void)i;return "";}
+int runtime_cheats_state(int i){(void)i;return 0;}
+const char *runtime_cheats_problem(int i){(void)i;return NULL;}
+int runtime_cheats_set(int i,int on){(void)i;(void)on;return 0;}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_gamepad_set_overlay(int (*hook)(uint64_t held,uint64_t pressed)){(void)hook;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_settings_enable(int on){(void)on;}

@@ -4,7 +4,7 @@
 
 This page only covers turning **your own** game files into an app on your Mac, iPhone or iPad. One build takes 20–40 minutes, most of it waiting. Controls and settings: [controls.md](controls.md). What has been tested: [test-records.md](test-records.md). AI assistants: the same steps as a checklist are in the [install skill](../.claude/skills/install-zelda/SKILL.md).
 
-Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
+Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Cheats](#cheats-optional) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
 
 Ground rules: use only files from your own Switch and your own game. Nothing is downloaded for you, and nothing from the game is in this repository. Never edit `games/totk/assets/expected-*.json` or the scripts to get past a check: the error message says what is wrong. The app you build contains the game: it is for you only.
 
@@ -120,6 +120,16 @@ If `/Applications` is on another volume than the work folder, choose a folder on
 - If macOS asks for access to files on a removable volume, click Allow.
 - New places can stutter briefly the first time.
 - Key **1** opens the settings panel. Controls: [controls.md](controls.md).
+
+## Cheats (optional)
+
+`--cheats` builds a cheat file into the app: an Atmosphère cheat file (the format Atmosphère, Yuzu and Ryujinx use) named after the selected version's build ID, or a folder that holds it. Base 1.0.0 is `082CE09B06E33A12.txt`. Only the file for the version you build is used; one for another version stops the build. The repository ships no cheat codes.
+
+```sh
+python3.14 build_app.py "<totk.xci>" -k "<prod.keys>" --cheats "<cheats folder>"
+```
+
+The app then lists every cheat in the file, all off until you choose them, in a **Cheats** menu and in a panel over the game (**Cheats > Show Cheat Panel**; no key or button opens it, so the game keeps all of them; ↑↓ or the D-pad select, Space or A toggles, Esc or B closes, and the game receives no input while it is open). Your choices are kept, and **Turn off all cheats** (last row of the panel, or the menu) switches everything off. Cheats that only change values in memory (arrows, rupees, moon jump) switch on and off immediately. Cheats that patch the game's code (for example infinite durability) take effect when the game restarts, and the panel says when a restart is needed: the code is never made writable while the game runs. A code patch is refused, and listed as not supported, when it would overwrite an instruction this project rewrites or jump out of the game's code. The first time you enable a cheat, your profile is copied to `profile-before-cheats`; cheats can corrupt saves on a real console too. An app built without `--cheats` has no Cheats menu.
 
 ## Breath of the Wild
 
