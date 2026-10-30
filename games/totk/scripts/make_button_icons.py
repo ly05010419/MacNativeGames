@@ -25,6 +25,9 @@ Styles:
             L R = L1 R1, ZL ZR = L2 R2, + - = Options and Create, the d-pad as a cross.
   playstation-label  the same, but A B X Y = Cross Circle Square Triangle, for TOTK_FACE_BUTTONS=label or a
             controls.txt with south = a, east = b, west = x, north = y.
+  plan      the keyboard style's keys with the labels a plan file names (--plan, runtime/keyboard_icons.h): the layout
+            changed in the settings panel, which its Apply button icons draws this way (runtime/icons_apply.m, with
+            --progress for its progress bar). A plan of the default layout draws the keyboard style exactly.
 The button guide in play is not drawn with this font but from eight textures of the common layout archive (A B X Y, L,
 ZL and two left-stick keys); they are redrawn from the same icons (HUD_TEXTURES). Other prompts drawn as fixed images
 (some tutorial animations) keep the Switch icons.
@@ -46,6 +49,7 @@ usage: make_button_icons.py <mod folder> (--app <Tears of the Kingdom.app> | --r
 """
 import argparse
 import io
+import json
 import struct
 import sys
 import zlib
@@ -239,25 +243,58 @@ def key(glyphs, pen, x0, y0, x1, y1, label, radius=None, cap=None):
         glyphs.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap or h * 0.56, w * 0.78)
 
 
+def shaped(shape, advance, draw):
+    """An icon (advance, draw) that remembers its keyboard shape, so a plan can keep the advance of an unchanged one."""
+    draw.shape = shape
+    return advance, draw
+
+
+# The keyboard keys: k turns a label into the letter another layout prints on the same physical key.
+def single_key(g, label, advance=640, k=str):
+    return shaped('single', advance, lambda pen: key(g, pen, 40, Y0, advance - 40, Y1, k(label)))
+
+
+def wide_key(g, label, advance):
+    return shaped('wide', advance, lambda pen: key(g, pen, 40, Y0 + 40, advance - 40, Y1 - 40, label, radius=110, cap=230))
+
+
+def key_pair(g, a, b, advance=960, k=str):
+    def draw(pen):
+        w = (advance - 80 - 50) / 2
+        key(g, pen, 40, Y0 + 60, 40 + w, Y1 - 60, k(a)); key(g, pen, 40 + w + 50, Y0 + 60, advance - 40, Y1 - 60, k(b))
+    return shaped('pair', advance, draw)
+
+
+def key_cluster(g, top, left, mid, right, advance=960, k=str):
+    def draw(pen):
+        gap = 24; w = (advance - 80 - 2 * gap) / 3; h = (Y1 + 40 - (Y0 - 40) - gap) / 2
+        bottom = Y0 - 40; upper = bottom + h + gap; xs = [40, 40 + w + gap, 40 + 2 * (w + gap)]
+        for label, (x, y) in ((top, (xs[1], upper)), (left, (xs[0], bottom)), (mid, (xs[1], bottom)), (right, (xs[2], bottom))):
+            key(g, pen, x, y, x + w, y + h, k(label), radius=w * 0.18, cap=h * 0.6)
+    return shaped('cluster', advance, draw)
+
+
+def no_key(advance=640):
+    """A crossed circle: a prompt for a button no key drives (tools/builder/icons_generate.py draws the same)."""
+    def draw(pen):
+        mid, bar = advance / 2, R * 0.16
+        circle(pen, mid, CY, R)
+        polygon(ReverseContourPen(pen), [(mid - R * 0.62 - bar, CY - R * 0.62 + bar), (mid - R * 0.62 + bar, CY - R * 0.62 - bar),
+                                         (mid + R * 0.62 + bar, CY + R * 0.62 - bar), (mid + R * 0.62 - bar, CY + R * 0.62 + bar)])
+    return shaped('none', advance, draw)
+
+
 def keyboard_style(g, layout=None):
     def k(label):   # the letter another layout prints on the same physical key
         return label.translate(layout) if layout and len(label) == 1 else label
     def single(label, advance=640):
-        return advance, lambda pen: key(g, pen, 40, Y0, advance - 40, Y1, k(label))
+        return single_key(g, label, advance, k)
     def wide(label, advance):
-        return advance, lambda pen: key(g, pen, 40, Y0 + 40, advance - 40, Y1 - 40, label, radius=110, cap=230)
+        return wide_key(g, label, advance)
     def pair(a, b, advance=960):
-        def draw(pen):
-            w = (advance - 80 - 50) / 2
-            key(g, pen, 40, Y0 + 60, 40 + w, Y1 - 60, k(a)); key(g, pen, 40 + w + 50, Y0 + 60, advance - 40, Y1 - 60, k(b))
-        return advance, draw
+        return key_pair(g, a, b, advance, k)
     def cluster(top, left, mid, right, advance=960):
-        def draw(pen):
-            gap = 24; w = (advance - 80 - 2 * gap) / 3; h = (Y1 + 40 - (Y0 - 40) - gap) / 2
-            bottom = Y0 - 40; upper = bottom + h + gap; xs = [40, 40 + w + gap, 40 + 2 * (w + gap)]
-            for label, (x, y) in ((top, (xs[1], upper)), (left, (xs[0], bottom)), (mid, (xs[1], bottom)), (right, (xs[2], bottom))):
-                key(g, pen, x, y, x + w, y + h, k(label), radius=w * 0.18, cap=h * 0.6)
-        return advance, draw
+        return key_cluster(g, top, left, mid, right, advance, k)
     return {
         0xE040: single('E'), 0xE041: wide('Shift', 1080), 0xE042: wide('Space', 1080), 0xE043: wide('LMB', 900),
         0xE044: single('F', 720), 0xE045: single('R', 720), 0xE046: single('Q', 720), 0xE047: wide('RMB', 900),
@@ -402,6 +439,28 @@ def playstation_style(g, by_label=False):
 
 AZERTY = str.maketrans('QWAZ', 'AZQW')   # US key position -> the letter an AZERTY keyboard prints there
 
+PLAN_ADVANCE = {'single': 640, 'wide': 900, 'pair': 960, 'cluster': 960, 'none': 640}
+
+
+def plan_style(g, plan):
+    """The keyboard style's glyphs drawn as a plan says (runtime/keyboard_icons.h: {"glyphs": {"E040": ["single", "E"],
+    ...}}, the settings panel's Apply button icons). A glyph keeps the keyboard style's advance while its shape is the
+    same, so a plan of the default layout draws the keyboard style exactly; a changed shape takes PLAN_ADVANCE's."""
+    default = keyboard_style(g)
+    makers = {'single': lambda a, label: single_key(g, label, a), 'wide': lambda a, label: wide_key(g, label, a),
+              'pair': lambda a, *labels: key_pair(g, *labels, advance=a), 'none': lambda a: no_key(a),
+              'cluster': lambda a, *labels: key_cluster(g, *labels, advance=a)}
+    icons = {}
+    for code, (shape, *labels) in plan['glyphs'].items():
+        if shape not in makers:
+            raise ValueError(f'plan glyph {code}: unknown shape {shape!r}')
+        cp = int(code, 16)
+        known = default.get(cp)
+        advance = known[0] if known and known[1].shape == shape else PLAN_ADVANCE[shape]
+        icons[cp] = makers[shape](advance, *labels)
+    return icons
+
+
 STYLES = {'keyboard': keyboard_style, 'azerty': lambda g: keyboard_style(g, AZERTY), 'xbox': xbox_style, 'playstation': playstation_style,
           'playstation-label': lambda g: playstation_style(g, by_label=True)}
 
@@ -522,6 +581,12 @@ def write_mod_manifest(mod, romfs, index):
     return merged, write_manifest(mod, romfs, merged=merged)
 
 
+def report_progress(on, step, steps):
+    """--progress: one line the settings panel's progress bar reads (runtime/icons_apply.m), flushed at once."""
+    if on:
+        print(f'progress {step}/{steps}', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('mod', type=Path, help='the mod folder to write into (other files in it are kept and listed too)')
@@ -531,9 +596,16 @@ def main():
     parser.add_argument('--romfs-data', type=Path, help='the folder holding romfs.bin when it is not beside the index (an app '
                         'built with --mac-game-data library: <data>/GameData/<version>; with --app that folder is the default)')
     parser.add_argument('--version', choices=VERSIONS, help='the game version (default: the mod folder name)')
-    parser.add_argument('--style', choices=sorted(STYLES), default='keyboard')
+    parser.add_argument('--style', choices=sorted(STYLES) + ['plan'], default='keyboard')
+    parser.add_argument('--plan', type=Path, help='for --style plan: the plan file (runtime/keyboard_icons.h)')
     parser.add_argument('--replace', action='store_true', help='overwrite a font archive already in the mod folder')
+    parser.add_argument('--progress', action='store_true', help="print 'progress <step>/<steps>' after each file written")
     args = parser.parse_args()
+    if args.style == 'plan':
+        if not args.plan:
+            parser.error('--style plan needs --plan <plan file>')
+        plan = json.loads(args.plan.read_text())
+        STYLES['plan'] = lambda g: plan_style(g, plan)
     version = args.version or (args.mod.name if args.mod.name in VERSIONS else None)
     romfs = args.romfs
     if args.app:
@@ -573,6 +645,7 @@ def main():
         layout_raw = read(layout)
 
     text_fonts, redrawn, growth = None, {}, {}
+    steps = len(archives) + 2   # the font archives, the button guide, the size table with the manifest
     for path in archives:
         info = zstd.get_frame_info(raws[path]); dictionary = dictionaries[info.dictionary_id]
         archive = zstd.decompress(raws[path], zstd_dict=dictionary); assert len(archive) == info.decompressed_size
@@ -595,6 +668,7 @@ def main():
         growth[path] = len(new_archive) - len(archive)
         target = args.mod / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
         print(f'{target}: {count} icons redrawn ({args.style}), {len(data)} bytes')
+        report_progress(args.progress, len(growth), steps)
 
     info = zstd.get_frame_info(layout_raw); dictionary = dictionaries[info.dictionary_id]
     archive = zstd.decompress(layout_raw, zstd_dict=dictionary); members = sarc_members(archive)
@@ -605,6 +679,7 @@ def main():
     growth[layout] = 0
     target = args.mod / layout; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
     print(f'{target}: {len(HUD_TEXTURES)} button guide textures redrawn ({args.style}), {len(data)} bytes')
+    report_progress(args.progress, steps - 1, steps)
 
     target = args.mod / restbl
     original = zstd.decompress(restbl_raw)
@@ -622,6 +697,7 @@ def main():
         sys.exit('manifest not written: ' + ', '.join(f'{a} (the RomFS has {b})' for a, b in found.misspelt))
     print(f'{args.mod / "manifest.tsv"}: {len(found.lines)} files '
           f'({len(found.lines) - len(found.added)} replaced, {len(found.added)} added)')
+    report_progress(args.progress, steps, steps)
 
 
 if __name__ == '__main__':
