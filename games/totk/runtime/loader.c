@@ -590,7 +590,25 @@ static void abort_report(int num) {
  (void)num;void *frames[64];int n=backtrace(frames,64);write(2,"[totk] host abort, call stack:\n",31);backtrace_symbols_fd(frames,n,2);
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
+#if !TARGET_OS_IPHONE
+#include <limits.h>
+#include <mach-o/dyld.h>
+/* The packaged Mac app runs this binary as its own executable (build_app.py: Contents/MacOS/<name>). Started that way it
+   is the launcher first (app/launcher.m), in this process: an app that execs another binary after it started is left out
+   of the Cmd+Tab switcher. Tools and tests run the binary from build/ with its arguments, as before. */
+int runtime_app_mode(void){
+ static int v=-1;if(v>=0)return v;
+ char p[PATH_MAX];uint32_t n=sizeof p;v=0;
+ if(!_NSGetExecutablePath(p,&n)){char *s=strrchr(p,'/');if(s){*s=0;size_t l=strlen(p);v=l>=15&&!strcmp(p+l-15,"/Contents/MacOS");}}
+ return v;
+}
+#else
+int runtime_app_mode(void){return 0;}
+#endif
 int main(int argc,char **argv) {
+#if !TARGET_OS_IPHONE
+ if(runtime_app_mode()){char **boot=NULL;int r=runtime_app_launch(argc,argv,&boot);if(r>=0)return r;argc=3;argv=boot;runtime_input_file_start();}
+#endif
  need(argc==3||(argc>3&&!strcmp(argv[2],"pipeline-archive")),"usage: totk-native rewritten-dir probe|boot (pipeline-archive <list>...)");
  /* One game or GPU probe at a time (memory, GPU time): wait for the slot before anything is loaded. */
  if(!strcmp(argv[2],"boot")||!strncmp(argv[2],"probe-gpu",9))runtime_game_slot_acquire(argv[2]);

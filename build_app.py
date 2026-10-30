@@ -1082,14 +1082,6 @@ def step_shader_libs(tree, logs, *, version='v0'):
         say(f'   {len(failed)} shaders did not compile ahead of time; they are compiled at launch ({log})')
 
 
-def build_launcher(tree, version, logs, env):
-    """build/app-launcher: per game and version (runtime/game_version.h: the data folder, the log name, the backup of saves)."""
-    defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') else [f'-DTOTK_GAME_{version.upper()}=1']
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit',
-         '-framework', 'GameController', '-framework', 'IOKit',
-         '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
-
-
 def build_warm_tool(tree, logs, env):
     """build/warm-metal-cache: used only while packaging (step_warm_metal); not part of the app."""
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Wextra', 'tools/warm_metal_cache.m', '-framework', 'Metal',
@@ -1097,9 +1089,8 @@ def build_warm_tool(tree, logs, env):
 
 
 def step_binary(tree, game, keys, env, logs, *, version="v0", title='0100f2c0115b6000'):
-    say('4/4 app: building the game binary and the launcher')
+    say('4/4 app: building the game binary (the launcher, app/launcher.m, is part of it)')
     run(['make', f'-j{os.cpu_count() or 4}', 'runtime' if version == 'v0' else f'runtime-{version}'], logs / 'runtime.log', cwd=tree, env=env)
-    build_launcher(tree, version, logs, env)
     build_warm_tool(tree, logs, env)
     if not (tree / 'build/AppIcon.icns').exists():   # the game's own icon from its control data; optional
         try:
@@ -1246,7 +1237,9 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     if lists and aliases.is_file():
         run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'rename', aliases, res/'build/pso_manifest.tsv',
              res/'build/pso_title.tsv'], logs/'shader-list-rename.log', cwd=tree)
-    clone(tree / 'build/app-launcher', app / f'Contents/MacOS/{APPS[game][2]}')
+    # The app's executable is the game binary itself (its launcher part runs first, app/launcher.m): an app that execs another
+    # binary after it started is left out of the Cmd+Tab switcher (macOS 27). The copy in build/ stays for tools.
+    clone(res / 'build/totk-native', app / f'Contents/MacOS/{APPS[game][2]}')
 
 
 def place_data_bundle(bundle, app, res, version):
@@ -1440,11 +1433,13 @@ def place_seed(tree, res, version, *, game='totk'):
 def wait_until_closed(out, prefix=''):
     """Preparing/signing a replacement is safe while playing; replacing the resources of an active game is not. Wait
     without closing the player."""
-    old_binary = out/'Contents/Resources/totk/build/totk-native'
+    old_binaries = [out/'Contents/Resources/totk/build/totk-native'] + [out/f'Contents/MacOS/{a[2]}' for a in APPS.values()]
+    old_binaries = [b for b in old_binaries if b.is_file()]   # the game runs as the app's executable (Contents/MacOS)
     notified = 0
-    while old_binary.is_file():
+    while old_binaries:
         processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
-        if str(old_binary.resolve()) not in (p.strip() for p in processes):
+        running = {p.strip() for p in processes}
+        if not any(str(b.resolve()) in running for b in old_binaries):
             break
         if time.monotonic()-notified >= 60:
             say(f'{prefix}replacement is ready; waiting for the running game to close before updating it')
@@ -1683,7 +1678,8 @@ def step_warm_metal(tree, out, logs):
         say('4/4 app: the startup shaders are compiled into the app (step_shader_libs), so Metal\'s cache needs no warming')
         return
     users = metal_cache_users()
-    if users or subprocess.run(['pgrep', '-q', 'totk-native']).returncode == 0:
+    if users or subprocess.run(['pgrep', '-q', 'totk-native']).returncode == 0 or \
+            subprocess.run(['pgrep', '-qf', '/Contents/MacOS/(TOTK|BotW)$']).returncode == 0:
         who = ', '.join(users) if users else 'a game'
         say(f"4/4 app: {who} has Metal's shader cache open, so the startup shaders are compiled on the first start instead "
             '(what this build compiled now would be lost when that program quits)')

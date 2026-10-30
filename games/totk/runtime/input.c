@@ -284,7 +284,12 @@ static void *input_file(void *arg) {
     }
     fclose(f); return NULL;
 }
-__attribute__((constructor)) static void input_file_start(void) {
+/* loader.c has the real one; the input and autoload probes link this file without it and are never the app. */
+__attribute__((weak)) int runtime_app_mode(void) { return 0; }
+void runtime_input_file_start(void) {
+    static int started; if (started) return;
     const char *e = getenv("TOTK_INPUT_FILE"); if (!e || !*e) return;
-    pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
+    started = 1; pthread_t t; if (pthread_create(&t, NULL, input_file, (void *)e)) runtime_fail("diagnostic input thread"); pthread_detach(t);
 }
+/* Started as the Mac app, the launcher part (runtime_app_launch) names the file only later: main starts it then. */
+__attribute__((constructor)) static void input_file_start(void) { if (!runtime_app_mode()) runtime_input_file_start(); }

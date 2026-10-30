@@ -1,5 +1,8 @@
-// The launcher inside the packaged app (build_app.py compiles it as Contents/MacOS/TOTK).
-// The game itself is Contents/Resources/totk/build/totk-native; everything it writes goes to the player's own folders:
+// The launcher inside the packaged app. It is part of the game binary, which build_app.py places as Contents/MacOS/TOTK
+// (and, for tools, as Contents/Resources/totk/build/totk-native): started from Contents/MacOS, runtime/loader.c main runs
+// runtime_app_launch first and then boots the game in the same process. One process on purpose: an app that execs another
+// binary after it started is left out of the Cmd+Tab switcher (macOS 27; the Dock still shows it).
+// Everything the game writes goes to the player's own folders:
 //   ~/Library/Application Support/MacNativeGames/TOTK/   profile (account, saves), shader cache, game slot, RomFS proof (BotW/ for Breath of the Wild)
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
@@ -16,12 +19,13 @@
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <unistd.h>
-#include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
-#include "game_version.h"
-#include "controller_map.h"
-#include "include/totk_ui_lang.h"
-#include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
-#include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
+#include "../third_party/d2r_gfx/gfx/nvn/dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
+#include "../runtime/game_version.h"
+#include "../runtime/controller_map.h"
+#include "../runtime/runtime.h"
+#include "totk_ui_lang.h"
+#include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   // the shared shader list contribution and its reminder
+#include "../runtime/contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
 #include "update_notice.h"
 
 static void show_error(NSString *detail) {
@@ -208,21 +212,22 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
     }
 }
 
-int main(int argc, char **argv) {
+/* Returns -1 with *boot set to the arguments the game boots with (rewritten folder, "boot"), or the status to exit with. */
+int runtime_app_launch(int argc, char **argv, char ***boot) {
     @autoreleasepool {
         NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
-        NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
+        NSString *binary = [root stringByAppendingPathComponent:@"rewritten/" TOTK_GAME_DIR "/main.patched.bin"];   // the game's code
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
            app is when macOS scans the whole bundle (minutes for 16 GB, with nothing on screen); doing it during the build
            makes the player's first start immediate. */
         if (argc > 1 && !strcmp(argv[1], "--check")) {
-            int ok = access(binary.fileSystemRepresentation, X_OK) == 0;
+            int ok = access(binary.fileSystemRepresentation, R_OK) == 0;
             NSString *declared = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
             ok = ok && [declared isEqualToString:@TOTK_GAME_VERSION];
-            printf("%s: game version %s\n", ok ? "ok" : "missing binary or version mismatch", TOTK_GAME_VERSION);
+            printf("%s: game version %s\n", ok ? "ok" : "missing game files or version mismatch", TOTK_GAME_VERSION);
             return ok ? 0 : 1;
         }
-        if (access(binary.fileSystemRepresentation, X_OK) != 0) {
+        if (access(binary.fileSystemRepresentation, R_OK) != 0) {
             show_error(@"The game files are missing from this app. Build it again with build_app.py.");
             return 1;
         }
@@ -308,6 +313,9 @@ int main(int argc, char **argv) {
             setenv("TOTK_ROMFS_DATA", library.fileSystemRepresentation, 1);   // runtime/romfs.c
         }
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
+        /* The folder the game binary's own files are in (shader-service, shader-seed, shader-libs, pso lists: totk_shader_rt.m
+           root_dir, nvn_mtl.m exe_rel), which is no longer the folder of the running executable (Contents/MacOS). */
+        setenv("TOTK_NATIVE_DIR", [root stringByAppendingPathComponent:@"build"].fileSystemRepresentation, 1);
         /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
            start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
            scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
@@ -355,11 +363,9 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
-        char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
-        execv(arguments[0], arguments);
-        int failed = errno;
-        fprintf(stderr, "[launcher] execv failed: %s\n", strerror(failed));
-        show_error([NSString stringWithFormat:@"Starting the game failed: %s.", strerror(failed)]);
-        return 1;
+        static char *arguments[4] = {NULL, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
+        arguments[0] = argv[0];
+        *boot = arguments;
+        return -1;
     }
 }

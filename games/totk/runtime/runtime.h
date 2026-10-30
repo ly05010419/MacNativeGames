@@ -14,6 +14,9 @@ typedef struct {
 } Module;
 extern pthread_key_t runtime_keys[8];
 _Noreturn void runtime_fail(const char *message);
+int runtime_app_mode(void);   /* loader.c: 1 when this binary is the Mac app's own executable (Contents/MacOS), started as the app */
+int runtime_app_launch(int argc, char **argv, char ***boot);   /* app/launcher.m: the player's folders and settings, then -1 to boot */
+void runtime_input_file_start(void);   /* input.c: the TOTK_INPUT_FILE command channel (at start, or after runtime_app_launch) */
 void *runtime_symbol(const char *name);
 void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);

@@ -55,6 +55,8 @@ static _Atomic int64_t g_cached_variants = -1;
 
 static NSString *root_dir(void) {   // native-port/ (the executable lives in native-port/build/)
     if (g_root) return g_root;
+    const char *native = getenv("TOTK_NATIVE_DIR");   // the Mac app: its executable is Contents/MacOS/<name> (app/launcher.m)
+    if (native && *native) return g_root = [@(native) stringByDeletingLastPathComponent];
     char path[4096]; uint32_t n = sizeof path;
     if (_NSGetExecutablePath(path, &n)) die("executable path too long");
     g_root = [[[@(path) stringByResolvingSymlinksInPath] stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];

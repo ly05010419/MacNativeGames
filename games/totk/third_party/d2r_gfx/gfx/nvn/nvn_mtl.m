@@ -5190,6 +5190,8 @@ static NSMutableDictionary<NSString *, NSString *> *g_shmap;
 static NSMutableDictionary<NSString *, NSString *> *g_shassets;
 static NSString *g_shmap_path, *g_msl_dir;
 static NSString *exe_rel(const char *rel) {
+    const char *native = getenv("TOTK_NATIVE_DIR");   // the Mac app: its executable is Contents/MacOS/<name> (app/launcher.m)
+    if (native && *native) return [NSString stringWithFormat:@"%@/%@", @(native), @(rel)];
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
     char *dir = dirname(buf);

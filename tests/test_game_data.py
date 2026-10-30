@@ -356,7 +356,7 @@ class UpdateRuntime(unittest.TestCase):
         app, res, _ = self.app()
         tree = self.root / 'tree'
         for rel in ('build/totk-native-v143', 'build/spirv-cross/spirv-cross', 'prebuilt/macos-arm64/totk_xlate',
-                    'build/pso_manifest.tsv', 'build/pso_title.tsv', 'build/app-launcher'):
+                    'build/pso_manifest.tsv', 'build/pso_title.tsv'):
             (tree / rel).parent.mkdir(parents=True, exist_ok=True)
             (tree / rel).write_bytes(b'new ' + rel.encode())
         before = {p: p.read_bytes() for p in res.rglob('*') if p.is_file()}
@@ -364,7 +364,7 @@ class UpdateRuntime(unittest.TestCase):
             build_app.place_runtime(tree, app, 'v143', self.root / 'logs', lists=False)
         run.assert_not_called()   # no aliases: nothing renamed
         self.assertEqual((res / 'build/totk-native').read_bytes(), b'new build/totk-native-v143')
-        self.assertEqual((app / 'Contents/MacOS/TOTK').read_bytes(), b'new build/app-launcher')
+        self.assertEqual((app / 'Contents/MacOS/TOTK').read_bytes(), b'new build/totk-native-v143')   # the game is the app's executable
         self.assertFalse((res / 'build/pso_title.tsv').exists(), 'lists=False keeps the app\'s lists')
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content, f'{path} is a game file')

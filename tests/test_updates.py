@@ -266,7 +266,7 @@ class Updates(unittest.TestCase):
             with self.subTest(version=version):
                 tree=self.root/version;out=self.root/f'{version}.app'
                 files=[f'build/totk-native-{version}','build/pso_manifest.tsv','build/pso_title.tsv','build/spirv-cross/spirv-cross',
-                       'prebuilt/macos-arm64/totk_xlate','build/app-launcher',f'extracted/{version}/romfs/romfs.bin',
+                       'prebuilt/macos-arm64/totk_xlate',f'extracted/{version}/romfs/romfs.bin',
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
                        f'build/shader-seed/{version}/pso_manifest.tsv']+[f'rewritten/{version}/{n}.patched.bin' for n in ('main','sdk','subsdk0')]
@@ -291,6 +291,7 @@ class Updates(unittest.TestCase):
                 res=out/'Contents/Resources/totk'
                 self.assertFalse((res/'build'/f'totk-native-{version}').exists())
                 self.assertTrue((res/'build/totk-native').exists())
+                self.assertTrue((out/'Contents/MacOS/TOTK').is_file())   # the game binary is the app's executable
                 self.assertTrue((res/f'rewritten/{version}/main.patched.bin').exists())
                 self.assertTrue((res/'build/shader-seed/seed-manifest.json').exists())
                 self.assertTrue((res/'build/pso_title.tsv').exists())   # the list the first frame waits for
