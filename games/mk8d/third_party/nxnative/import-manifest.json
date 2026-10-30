@@ -1291,7 +1291,8 @@
     {
       "source": "dm/host/hle_hid.c",
       "destination": "runtime/host/hle_hid.c",
-      "sha256": "d268e448a9341765679b9f4832c7ce559d553be09e173ddde4cea92169d1e7bb"
+      "sha256": "d268e448a9341765679b9f4832c7ce559d553be09e173ddde4cea92169d1e7bb",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_lifecycle.c",
@@ -1571,7 +1572,8 @@
     {
       "source": "dm/host/tests/t_hid.c",
       "destination": "runtime/host/tests/t_hid.c",
-      "sha256": "5649b9b3815c7e19120edf740ec95507a27709cf72aa84a0d9a27dc3474541f4"
+      "sha256": "5649b9b3815c7e19120edf740ec95507a27709cf72aa84a0d9a27dc3474541f4",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_motion.c",
@@ -1751,7 +1753,8 @@
     {
       "source": "dm/mac/launcher.c",
       "destination": "runtime/mac/launcher.c",
-      "sha256": "3e320900353bbf6c2aa1849e611b78547f9627a37bf06445b1d9dc972e541a62"
+      "sha256": "3e320900353bbf6c2aa1849e611b78547f9627a37bf06445b1d9dc972e541a62",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/mac/pack_app.py",

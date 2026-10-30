@@ -5018,7 +5018,7 @@ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
     // TOTK: translation inputs and the variant per bound-state signature (prog_fit)
     const uint8_t *ctl[6], *code[6]; NSString *key[6]; uint64_t sig[6]; NSMutableDictionary<NSNumber *, NvShader *> *alt[6];
     void *udc_sh[6]; uint8_t udc_ok, udc_img, udc_imgw; uint32_t udc_cmask;   // udc_*: udc_note_draw's summary of sh[] (valid while sh[] is the same)
-    int missing, miss_has[2]; uint64_t miss_sig[2], miss_seen, fit_seen; int exp_skip; int keeps; } @end   // keeps (async shaders): a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped. TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
+    int missing, unsupported, miss_has[2]; uint64_t miss_sig[2], miss_seen, fit_seen; int exp_skip; int keeps; } @end   // keeps (async shaders): a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped. TOTK (iOS): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip)
 @implementation NvProg @end
 /* TOTK_EXP_SKIP_FS=<fragment key prefix>[,<prefix>...] (measurement only, 2026-10-16): drop every draw whose fragment shader key
    starts with one of the prefixes. A render pass whose draws are all dropped is never opened, so the GPU time saved is the
@@ -5489,7 +5489,18 @@ static __unsafe_unretained NvProg *prog_get(const prog_t *cp) {   // 只在提�
         CC_SHA256_Update(&ctx,(const void *)(uintptr_t)p->sd[i].data,length);CC_SHA256_Final(md,&ctx);
         char key[65];for(unsigned j=0;j<32;j++)snprintf(key+2*j,3,"%02x",md[j]);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
-        int st=(int)nvn_stage;if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
+        int st=(int)nvn_stage;
+        /* Animal Crossing (reported in play, PR #1305): the Chinese input's candidate list in the name entry keyboard draws with a
+           geometry shader (NVN stage 2), and Metal has none; the game ended here (MDIE). Such a stage (2 geometry, 3 and 4
+           tessellation) has no translation chain: the program is marked missing for good (unsupported), so its draws are
+           skipped as an untranslated program's are, and the game goes on without that one element. */
+        if(st!=0&&st!=1&&st!=5){
+            if(nvn_stage>5)MDIE("TOTK shader %s: invalid NVN stage %u",key,nvn_stage);
+            static NSMutableSet<NSString *> *told; if(!told)told=[NSMutableSet set];
+            if(![told containsObject:@(key)]){[told addObject:@(key)];
+                MLOG("【红】shader %s: NVN stage %u (%s) has no Metal equivalent: draws of its program are skipped",key,nvn_stage,nvn_stage==2?"geometry":"tessellation");}
+            o->missing|=1<<st;o->unsupported|=1<<st;o->ctl[st]=control;o->code[st]=(const uint8_t *)(uintptr_t)p->sd[i].data;o->key[st]=@(key);continue;
+        }
         if (getenv("TOTK_CTL_DUMP")) {   // diagnostic: the control section the game hands NVN, per shader (offline shader discovery is checked against it)
             static FILE *df; if (!df) df = fopen(getenv("TOTK_CTL_DUMP"), "a");
             if (df) { uint8_t cm[32]; char ch[65]; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data; size_t skip = st == 5 ? 0 : 0x30;
@@ -5518,7 +5529,7 @@ static int prog_resolve(NvProg *o, int may_skip) {
     o->miss_seen = done;
     int filled = 0;
     for (int st = 0; st < 6; st++) {
-        if (!(o->missing & 1 << st)) continue;
+        if (!(o->missing & 1 << st) || (o->unsupported & 1 << st)) continue;   // a geometry / tessellation stage stays missing
         NSString *variant = totk_rt_variant(o->key[st], st, o->ctl[st], o->code[st], rt_answers(st), rt_local(o->ctl[st], st), may_skip);
         if (!variant) continue;
         NvShader *sh = shader_get([variant stringByAppendingString:@"_b"], st);
@@ -10381,7 +10392,7 @@ static int mfxup_draw(NvProg *pr) {
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = prog_get(S.prog); g_prog_for_draw = 0;
-    if (pr && pr->missing && async_shaders() && prog_resolve(pr, draw_may_skip(pr))) g_pso_dirty = 1;
+    if (pr && pr->missing && !pr->unsupported && async_shaders() && prog_resolve(pr, draw_may_skip(pr))) g_pso_dirty = 1;
     if (pr && pr->missing) { async_skip_targets(); g_draw_skip[15]++; return; }   // TOTK (iOS): not translated yet; Mac (async shaders): still in the background
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { async_skip_targets(); g_draw_skip[15]++; return; } if (fit) g_pso_dirty = 1; }

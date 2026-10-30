@@ -25,7 +25,7 @@ HEADROOM = 2 << 30
 HELP = f"""Build {APP_NAME} for Apple silicon from your own game files, in one command.
 
     cd games/ot0
-    python3.14 scripts/build_ot0.py --game <card image or base game> --update <1.0.3 or 1.0.4 update.nsp> -k <prod.keys>
+    python3.14 scripts/build_ot0.py --game <card image or base game> --update <1.0.3, 1.0.4 or 1.0.5 update.nsp> -k <prod.keys>
                                     [--work <folder>] [--out <folder>]
 
 Steps (a second run reuses every finished one):

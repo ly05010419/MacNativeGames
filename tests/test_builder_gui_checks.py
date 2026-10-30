@@ -1,9 +1,14 @@
 """tools/builder/gui_checks.py (S2.3, R1): the checks panel on a real withdrawn Tk root (builder_tk_base.py), against
 the scripted FakeController. Each pump delivers one scripted batch."""
+import json
+import tempfile
 import unittest
+
+from pathlib import Path
 
 from builder_tk_base import Base
 from tools.builder.checks import CheckResult, Status
+from tools.builder.strings import EN
 from tools.builder.session import CheckResultReady, ChecksDone, ChecksInvalidated, PathsIncomplete, ProcessError
 
 OK_ROW = [CheckResultReady(CheckResult('git', Status.OK, 'ok', '/usr/bin/git'))]
@@ -91,6 +96,19 @@ class Checks(ChecksBase):
         self.assertNotIn('start_build', self.ctl.calls)
         self.assertEqual((self.state('build'), self.view.checks.status.cget('text')),
                          ('disabled', 'A path changed: check again.'))
+
+    def test_export_writes_a_report(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / 'report.json'
+            self.chosen(checks=READY, home=folder)
+            self.answer = str(out)
+            self.check()
+            self.view.checks.export_button.invoke()
+            self.assertTrue(out.is_file(), 'the export must write the file')
+            data = json.loads(out.read_text())
+        self.assertEqual((data['game']['id'], [check['id'] for check in data['checks']]), ('totk', ['git']))
+        self.assertIn(EN['gui.checks.exported'].split('{')[0].strip(),
+                      self.view.checks.report_status.cget('text'))
 
     def test_paths_incomplete_and_a_checks_error(self):
         self.chosen(checks=[[PathsIncomplete(('keys',))]])

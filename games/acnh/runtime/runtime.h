@@ -65,7 +65,7 @@ void runtime_fs_probe(void);
 
 void *runtime_observer(const char *name);
 
-void runtime_startup_checkpoint(uintptr_t caller);
+void runtime_startup_checkpoint(uintptr_t caller, const char *boundary);
 
 uint64_t runtime_now_ns(void);
 uint32_t svc_thread_main_init(void);
@@ -99,8 +99,6 @@ void runtime_warm_done(void);
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
-void runtime_shortcut_help_toggle(void);
-int fps_overlay_toggle_hints(void);   /* key 1: all -> minimal (FPS only) -> off; returns the new mode, 0 = off */
 int fps_overlay_hud_mode(void);
 int fps_overlay_full_hud(void);
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */
@@ -109,6 +107,7 @@ int hud_compact(void);   /* gfx/nvn/fps_overlay.c: the overlay lines go to the w
 int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..2: FPS, shaders, load; 0 = not published */
 
 void *runtime_account_override(const char *name);
+void runtime_account_uid(uint64_t out[2]);
 
 void runtime_gfx_probe(int negative);
 void runtime_vpool_probe(void);
@@ -116,10 +115,23 @@ void runtime_vpool_probe(void);
 void runtime_memory_probe(void);
 
 void runtime_input_key(unsigned code,int down);
+void runtime_input_key_synthetic(unsigned code,int down);   /* scripted input: the fixed test layout (runtime/input.c) */
+void runtime_input_mouse(int button,int down);   /* a mouse button over the game window: 0 left, 1 right, 2 middle, 3-4 side */
 void runtime_input_clear(void);
+struct KeyMap;
+void runtime_keymap_get(struct KeyMap *out);   /* the keyboard and mouse layout in force (keyboard_map.h) */
+void runtime_keymap_set(const struct KeyMap *map);   /* in force at once, saved in keyboard.txt */
+void runtime_keymap_reset(void);   /* the default, keyboard.txt removed */
+void runtime_settings_toggle(void);   /* key 1 / the controller shortcut: open or close the settings panel (frontend.m) */
+/* The settings panel's files, one word each next to controls.txt (TOTK_CONTROLS): runtime/gamepad.m. A run without
+   TOTK_CONTROLS (a test) neither reads nor writes them. */
+int runtime_setting_word(const char *name, char *word, size_t size);
+void runtime_setting_save(const char *name, const char *word, const char *what);
+void runtime_setting_remove(const char *name);
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
-void *runtime_by3_override(const char *name);   /* runtime/system_services.c: Bayonetta 3 network and system functions */
+void *runtime_by3_override(const char *name);
+void *runtime_applets_override(const char *name);   /* runtime/system_applets.c: parental controls, error applet, eShop, album */   /* runtime/system_services.c: Bayonetta 3 network and system functions */
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
 void runtime_gamepad_start(void);
 void runtime_gamepad_read(RuntimeGamepadState *out);
@@ -127,12 +139,32 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
+/* The settings panel (runtime/settings_panel.h) and runtime/gamepad.m: the controller layout (controller_map.h), the
+   controller type (gamepad_layout.h GAMEPAD_TYPE_*), the controller's way to the panel (L3 + R3, or one button), and the
+   controller read by the panel while it owns the input. */
+void runtime_controller_map_get(uint16_t *map, uint8_t *modes);
+void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes);
+void runtime_controller_map_reset(void);
+int runtime_gamepad_type(int *detected);
+int runtime_gamepad_type_set(int type);
+int runtime_gamepad_battery_percent(void);
+int runtime_gamepad_settings_button(void);
+void runtime_gamepad_settings_button_set(int physical);
+void runtime_gamepad_settings_enable(int enabled);
+int runtime_gamepad_settings_requested(void);
+void runtime_gamepad_text_capture(int on);
+void runtime_gamepad_text_read(RuntimeGamepadState *out);
 /* Controller rumble and motion (opt-in TOTK_RUMBLE=1 / TOTK_GYRO=1): the game's hid side in runtime/hid_feedback.c, the
    Mac controller's haptics and motion sensors in runtime/gamepad_feedback.m. */
 #define RUNTIME_MOTION_MAX 32
 typedef struct { uint64_t sampling, delta_ns; float acc[3], gyro[3], angle[3], dir[9]; } RuntimeMotionState;   /* G, rev/s, rev, 3 axes */
 int runtime_rumble_enabled(void);
 int runtime_gyro_enabled(void);
+/* The settings panel's rumble switch: in force at once when the game has the vibration devices (it got them at start), else
+   from the next launch; saved in rumble.txt. TOTK_RUMBLE or an agent's test session decide first (locked). */
+int runtime_rumble_locked(void);
+int runtime_rumble_choice(void);
+void runtime_rumble_choose(int on);
 void *runtime_hid_feedback_override(const char *name);
 int runtime_hid_feedback_flag(const char *name, int v);   /* "flag rumble|gyro 0|1"; 0 = not one of these names */
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);

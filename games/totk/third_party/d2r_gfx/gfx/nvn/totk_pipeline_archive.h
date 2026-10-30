@@ -189,14 +189,17 @@ static NSString *par_pre_file(NSString *name) { return [g_par_pre_base stringByA
 static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     g_par_pre = [NSMutableSet set];
     const char *off = getenv("TOTK_PIPELINE_PREBUILT"), *seed = getenv("TOTK_SHADER_SEED_DIR");
-    NSString *arch = dev.architecture.name;
-    if ((off && !strcmp(off, "0")) || !seed || !*seed || !arch.length) return 0;
-    NSString *base = [@(seed) stringByAppendingPathComponent:[@"pipelines-" stringByAppendingString:arch]];
+    NSString *arch = dev.architecture.name, *dir = seed && *seed ? @(seed) : nil;
+#if !TARGET_OS_IPHONE
+    if (!dir) dir = exe_rel("shader-seed");   // the Mac app's own seed (build_app.py mac_pipelines; the launcher names no seed)
+#endif
+    if ((off && !strcmp(off, "0")) || !dir.length || !arch.length) return 0;
+    NSString *base = [dir stringByAppendingPathComponent:[@"pipelines-" stringByAppendingString:arch]];
     NSData *jd = [NSData dataWithContentsOfFile:[base stringByAppendingString:@".json"]];
     NSDictionary *stamp = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (![stamp isKindOfClass:NSDictionary.class]) {
         NSMutableArray *other = [NSMutableArray array];
-        for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:@(seed) error:nil] ?: @[])
+        for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] ?: @[])
             if ([n hasPrefix:@"pipelines-"] && [n hasSuffix:@".json"]) [other addObject:[[n substringFromIndex:10] stringByDeletingPathExtension]];
         if (other.count) MLOG("管线存档：App 带的 Mac 编好的管线是给 %s 的，这台设备的 GPU 是 %s，首次启动照常在本机填充",
                               [other componentsJoinedByString:@"、"].UTF8String, arch.UTF8String);

@@ -12,8 +12,12 @@ import json
 import struct
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers import modes
-from extract_exefs import decrypt, read_at, require, load_keys, hfs, nca_ctr_key
-from extract_romfs import index_romfs
+if __package__:
+    from .extract_exefs import decrypt, read_at, require, load_keys, hfs, nca_ctr_key
+    from .extract_romfs import index_romfs
+else:
+    from extract_exefs import decrypt, read_at, require, load_keys, hfs, nca_ctr_key
+    from extract_romfs import index_romfs
 
 FIRMWARE = Path.home() / 'Library/Application Support/Ryujinx/bis/system/Contents/registered'
 # nn::pl::SharedFontType -> (system data title, BFTTF file name)

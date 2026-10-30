@@ -1505,6 +1505,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
     place_runtime(tree, tmp, version, logs, game=game)
+    mac_pipelines(tree, res, version, logs)   # before the seal: the files go into the app's seed
     if game_data == 'library':
         folder = library_game_data(game, version, game_data_folder)
         say(f'4/4 app: the game data goes to {folder}, not into the app (put there once; later builds reuse it)')
@@ -1537,6 +1538,87 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     wait_until_closed(out, '4/4 app: ')
     if install_app(tmp, out):
         say('4/4 app: the game data is unchanged; kept the installed copy, so the first start need not verify it again')
+
+
+PAR_SCHEMA = 5   # games/totk/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive.h PAR_SCHEMA
+
+
+def mac_pipeline_files(made, seed, arch, chain):
+    """The pipeline-archive mode's files (<name>.metalarchive + <name>.keys) into the app's seed as the runtime reads them
+    (totk_pipeline_archive.h par_load_prebuilt): pipelines-<arch>-<name>.metalarchive, pipelines-<arch>.tsv ("<key>\\t<name>")
+    and pipelines-<arch>.json (schema, chain, arch). The last build's files go first. Returns how many pipelines."""
+    for old in seed.glob('pipelines-*'):
+        old.unlink()
+    index = []
+    for archive in sorted(made.glob('*.metalarchive')):
+        keys = archive.with_suffix('.keys')
+        if not keys.is_file():
+            continue
+        clone(archive, seed / f'pipelines-{arch}-{archive.stem}.metalarchive')
+        index += [f'{key}\t{archive.stem}' for key in keys.read_text().split('\n') if key]
+    if not index:
+        return 0
+    (seed / f'pipelines-{arch}.tsv').write_text('\n'.join(index) + '\n')
+    (seed / f'pipelines-{arch}.json').write_text(json.dumps({'schema': PAR_SCHEMA, 'chain': chain, 'arch': arch,
+                                                             'pipelines': len(index)}, indent=1) + '\n')
+    return len(index)
+
+
+def mac_pipelines(tree, res, version, logs):
+    """The Mac's pipeline archive, made while packaging (user 2026-10-29: "mac的 管线 预热 和iPhone 一样 放在打包阶段做 不在app里做了"):
+    the game binary's pipeline-archive mode (TOTK_PIPELINE_ARCHIVE_HOST=1) makes every pipeline of the warm-up lists from
+    the libraries the game itself loads (the app's shader-libs) on this Mac's GPU, so the first start takes them from the
+    app instead of filling its archive before the title (par_load_prebuilt). They are kept in build/mac-pipelines/<version>
+    and made again only when the lists, the seed or the game binary changed. The tool runs from the app's build folder
+    (where the game finds shader-libs and the seed) under its own name: the game lock takes any totk-native* process for
+    a game (runtime/game_slot.c pid_is_game). On another Mac's GPU the files are not used and that Mac fills its own, as
+    before; nothing here can make the build fail."""
+    build = res / 'build'
+    seed = build / 'shader-seed'
+    lists = [p for p in (build / 'pso_title.tsv', build / 'pso_manifest.tsv', seed / 'pso_manifest.tsv') if p.is_file()]
+    manifest = seed / 'seed-manifest.json'
+    if not lists or not manifest.is_file():
+        say('4/4 app: no warm-up lists or no seed, so the first start fills the pipeline archive itself')
+        return
+    work = tree / f'build/mac-pipelines/{version}'
+    want = hashlib.sha256(b''.join(p.read_bytes() for p in [manifest, *lists, build / 'totk-native'])).hexdigest()
+    stamp = work / 'inputs.txt'
+    was = stamp.read_text().split() if stamp.is_file() else []
+    kept = was == [want]
+    if was[:1] != [want]:
+        shutil.rmtree(work, ignore_errors=True)   # pipelines of other shaders, lists or binary; a partial run is completed
+    work.mkdir(parents=True, exist_ok=True)
+    tool = build / 'mac-pipeline-archive'
+    tool.unlink(missing_ok=True)   # left by an interrupted build
+    say("4/4 app: making the pipeline archive for this Mac's GPU, so the first start needs no warm-up before the title"
+        + (' (kept from the last build)' if kept else ' (a few minutes the first time)'))
+    t0 = time.time()
+    try:
+        clone(build / 'totk-native', tool)
+        run([tool, f'rewritten/{version}', 'pipeline-archive', *lists], logs / 'mac-pipelines.log', cwd=res,
+            env=dict(os.environ, TOTK_SHADER_CACHE=str(work / 'cache'), TOTK_SHADER_SEED_DIR=str(seed),
+                     TOTK_PIPELINE_ARCHIVE_HOST='1', TOTK_DEBUG_LOG='1'))
+    except (BuildError, OSError) as e:
+        report = last_json(logs / 'mac-pipelines.log') or {}
+        if not report.get('write_failed') or not report.get('render'):
+            say(f'   not done, the first start fills it instead: {str(e).splitlines()[0]}')
+            return
+        # Some files could not be written (another program removed Metal's work folder, 2026-10-29: 21 of 3,400): the
+        # rest go in, the first start makes the missing ones, the next build retries them (the stamp says partial).
+        say(f"   {report['write_failed']} archive files not written, the first start makes those pipelines")
+        stamp.write_text(want + ' partial\n')
+    else:
+        stamp.write_text(want + '\n')
+        report = last_json(logs / 'mac-pipelines.log') or {}
+    finally:
+        tool.unlink(missing_ok=True)
+    arch, chain = report.get('arch'), json.loads(manifest.read_text()).get('chain')
+    if not arch or not chain:
+        say(f'   no GPU architecture or chain in the report, the first start fills it instead (see {logs / "mac-pipelines.log"})')
+        return
+    n = mac_pipeline_files(work / 'cache/pipelines', seed, arch, chain)
+    say(f"   {n:,} pipelines for {arch} in {time.time() - t0:.0f} s ({report.get('failed', 0)} failed); "
+        "another Mac's GPU fills its own on the first start")
 
 
 def say_device_pipelines(logs):

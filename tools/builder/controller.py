@@ -14,11 +14,11 @@ from tools.builder.controller_controls import ControlsController
 from tools.builder.controller_mods import ModsController
 from tools.builder.controller_start import StartController
 from tools.builder.checks import BuildPaths, Status, iter_checks, ready
-from tools.builder.config import PATH_FIELDS
+from tools.builder.config import PATH_FIELDS, SavedPaths
 from tools.builder.games import GAMES
 from tools.builder.session import (BuildSession, CheckResultReady, ChecksDone, ChecksInvalidated, Finished, Outcome,
-                                   PathsIncomplete, ProcessError, SettingsLoaded, UpdateApplied, UpdateStatusReady,
-                                   BackgroundChanged)
+                                   PathsIncomplete, PathsSaved, ProcessError, SettingsLoaded, UpdateApplied,
+                                   UpdateStatusReady, BackgroundChanged)
 
 _END = object()
 
@@ -45,6 +45,7 @@ class BuildController:
         self._events, self._game, self._fields, self._saved = [], None, {}, {}
         self._load_job, self._check, self._ready, self._preparing, self._run = None, None, None, None, None
         self._update_check = self._update_apply = self._background = None          # S4.1, S4.3
+        self._save_job = None                                                      # S2.3 storage: work and cache paths
         self._closed = False
         self.start = StartController(self)                     # S5.1: the Settings tab's part
         self.mods = ModsController(self)                       # S5.2: the Mods tab's part
@@ -68,6 +69,39 @@ class BuildController:
 
     def selection(self):
         return self._game, dict(self._fields)
+
+    def save_paths(self, **fields):
+        """S2.3 storage tab: write paths for the chosen game into settings.json now, without a build.
+        Known path fields go where a build puts them; any other name (shader_cache) is kept as that
+        game's extra key, which to_json/from_json carry verbatim. PathsSaved when the job ends."""
+        self._open()
+        game, _ = self.selection()
+        if game is None:
+            raise RuntimeError('choose a game first')
+        unknown = set(fields) - set(PATH_FIELDS) - {'shader_cache'}
+        if unknown:
+            raise ValueError(f'unknown path fields {sorted(unknown)}')
+
+        def job():
+            settings = self.store.load().settings
+            saved = settings.paths.get(game, SavedPaths())
+            work = saved.work
+            extra = dict(saved.extra)
+            for key, value in fields.items():
+                if key == 'work':
+                    work = str(value) if value else None
+                elif key in PATH_FIELDS:
+                    raise ValueError(f'{key} is not a storage path')
+                else:
+                    extra[key] = str(value) if value else None
+            entry = replace(saved, work=work, extra=extra)
+            self.store.save(replace(settings, paths={**settings.paths, game: entry}))
+            return game, entry
+        self._save_job = self.load_jobs.submit(job)
+
+    def saved_paths(self):
+        """S2.3 storage tab: the game's SavedPaths the settings file held at load (or after the last save)."""
+        return self._saved.get(self._game) if self._game else None
 
     def games(self):
         """S2.2 W5: (id, display name) of every game, for the window's choice; read-only."""
@@ -190,6 +224,7 @@ class BuildController:
         if self._closed:
             return
         self._tick_load()
+        self._tick_save()
         self._tick_updates()
         self.start.tick()
         self.mods.tick()
@@ -224,6 +259,18 @@ class BuildController:
             return
         self._saved = dict(result.settings.paths)      # only what select_game fills from; the selection is untouched
         self._emit(SettingsLoaded(result.problems))
+
+    def _tick_save(self):
+        if self._save_job is None or not self._save_job.done():
+            return
+        job, self._save_job = self._save_job, None        # removed before its result is read (R5)
+        value, error = collect(job)
+        if error is not None:
+            self._emit(PathsSaved(self._game or '', False, str(error)))
+            return
+        game, saved = value
+        self._saved[game] = saved
+        self._emit(PathsSaved(game, True))
 
     def _tick_updates(self):
         for attr, event, where in (('_update_check', UpdateStatusReady, 'update'),

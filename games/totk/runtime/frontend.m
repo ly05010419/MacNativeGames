@@ -568,8 +568,9 @@ void runtime_front_run(void(*callback)(void)){
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
   TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
   [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];hudBox=box;
-  /* The settings panel's FPS graph switch, kept in fps-graph.txt next to controls.txt ("on" / "off", default off). */
-  {char word[16];if(runtime_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!strncmp(word,"on",2);}
+  /* The settings panel's FPS graph switch, one for both games (user 2026-10-29: "改成两个游戏共用 默认打开"): fps-graph.txt
+     in the folder above the game's ("on" / "off"), on when there is none. */
+  {char word[16];fpsGraphEnabled=1;if(runtime_shared_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!!strncmp(word,"off",3);}
   TOTKFpsGraph *graph=[[TOTKFpsGraph alloc] initWithFrame:NSZeroRect];[box addSubview:graph];fpsGraphBox=graph;[graph setEnabled:fpsGraphEnabled];[box refresh];
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */

@@ -26,8 +26,19 @@ static void set_balance(float l, float r) {
     pthread_mutex_lock(&lock); balance[0] = l; balance[1] = r; pthread_mutex_unlock(&lock);
 }
 static int64_t total_active_time(void) { return (int64_t)(runtime_now_ns() - start_ns); }   /* TimeSpan in ns */
-/* The host never sleeps the console; the extended inactivity window has no further effect. */
-static void inactivity_extended(unsigned char on) { (void)on; }
+/* Preserve the SDK's read-after-write state. macOS display sleep is managed by
+ * the native window, rather than a Horizon applet service. */
+static unsigned char inactivity_is_extended;
+static void inactivity_extended(unsigned char on) {
+    pthread_mutex_lock(&lock); inactivity_is_extended = !!on; pthread_mutex_unlock(&lock);
+}
+static unsigned char inactivity_extended_get(void) {
+    pthread_mutex_lock(&lock); unsigned char on = inactivity_is_extended; pthread_mutex_unlock(&lock); return on;
+}
+/* The native application's local account has no configured Horizon parental
+ * restriction. This is permission, not network reachability (nifm stays offline).
+ * 3.0.1 queries it after the introductory movie, through sdk+0x40a8a0. */
+static unsigned char free_communication_available(void) { return 1; }
 /* No system startup logo is drawn on the host, so there is nothing to dismiss. */
 static void finish_startup_logo(void) { fprintf(stderr, "[totk] game finished startup logo\n"); }
 /* The single native executable was launched directly; it has no predecessor
@@ -121,6 +132,8 @@ void *runtime_applet_override(const char *name) {
         {"_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_", get_balance}, {"_ZN2nn2oe24SetExpectedVolumeBalanceEff", set_balance},
         {"_ZN2nn2oe25GetProgramTotalActiveTimeEv", total_active_time}, {"_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb", inactivity_extended},
         {"_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", inactivity_extended},
+        {"_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", inactivity_extended_get},
+        {"_ZN2nn4pctl28IsFreeCommunicationAvailableEv", free_communication_available},
         {"_ZN2nn2oe17FinishStartupLogoEv", finish_startup_logo}, {"_ZN2nn2oe25TryPopNotificationMessageEPj", try_pop},
         {"_ZN2nn2oe22PopNotificationMessageEv", pop},
         {"_ZN2nn5prepo10PlayReport4SaveEv", report_save}, {"_ZN2nn5prepo10PlayReport4SaveERKNS_7account3UidE", report_save_uid},

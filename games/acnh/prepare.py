@@ -19,6 +19,7 @@ from games.acnh.tools.common import outside_repository, sha256_file, verified_fi
 from games.acnh.tools.identity import select_program
 
 TITLE_ID = "01006F8002326000"
+SUPPORTED_UPDATES = (458752, 2097152)
 SERVICE_GROUPS = ("nn::time", "nn::bcat", "nn::fs", "nn::account", "nn::nifm",
                   "nn::ldn", "nn::socket", "nn::friends", "nn::nfp", "nn::prepo")
 
@@ -37,7 +38,18 @@ def write_json(path, value):
 
 
 def profile(version):
+    require(type(version) is int and version in (0, *SUPPORTED_UPDATES),
+            f"Unsupported ACNH version: {version}; expected base 1.0.0 or update 1.2.1 / 3.0.1")
     return read_json(HERE / "assets" / f"expected-v{version}.json")
+
+
+def prepared_profile(prepared):
+    summary = read_json(prepared / "preparation.json")
+    require(summary.get("status") == "prepared_for_host_bringup", "Preparation did not finish successfully")
+    expected = profile(summary["inputs"]["update"]["cnmt_version_raw"])
+    check_identity(summary["inputs"]["update"], expected)
+    require(summary.get("title_id") == TITLE_ID, "Prepared title ID mismatch")
+    return expected
 
 
 def check_identity(identity, expected):
@@ -50,6 +62,8 @@ def check_exefs(manifest, expected):
     rows = manifest["files"]
     hashes = {row["name"]: row["sha256"] for row in rows}
     require(len(hashes) == len(rows), "Duplicate ExeFS manifest rows")
+    if hashes.get("main.npdm") in expected.get("npdm_sha256_alternates", ()):
+        hashes["main.npdm"] = expected["exefs_sha256"]["main.npdm"]
     require(hashes == expected["exefs_sha256"], "Unknown ExeFS build; exact pinned hashes required")
 
 
@@ -108,9 +122,9 @@ def run_step(work, name, script, *args):
 
 
 def prepare(base, update, keys, work, hactool=None):
-    # Reject every checkout, including a path that reaches one through a symlink.
+    # Keep generated files outside tracked source, including through symlinks.
     work = outside_repository(work, ROOT)
-    require(not work.exists(), "Work directory already exists; use a new external directory")
+    require(not work.exists(), "Work directory already exists; use a new prepared subdirectory")
     for source in (base, update, keys):
         require(source.is_file() and not source.is_symlink(), f"Missing regular input: {source}")
     base, update, keys = (path.expanduser().resolve() for path in (base, update, keys))
@@ -119,8 +133,8 @@ def prepare(base, update, keys, work, hactool=None):
         hactool = hactool.resolve()
     sources = {"base": base, "update": update}
     stamps = {role: (path.stat().st_size, path.stat().st_mtime_ns) for role, path in sources.items()}
-    expected = {"base": profile(0), "update": profile(458752)}
     identities = {role: select_program(path, keys, TITLE_ID) for role, path in sources.items()}
+    expected = {"base": profile(0), "update": profile(identities["update"]["cnmt_version_raw"])}
     for role in sources:
         check_identity(identities[role], expected[role])
 
@@ -180,7 +194,7 @@ def main():
     parser.add_argument("base", type=Path)
     parser.add_argument("--update", required=True, type=Path)
     parser.add_argument("--keys", required=True, type=Path)
-    parser.add_argument("--work", required=True, type=Path, help="new directory outside all source checkouts")
+    parser.add_argument("--work", required=True, type=Path, help="new directory outside tracked source, or below build/acnh-<version>/work")
     parser.add_argument("--hactool", type=Path, help="also merge/verify RomFS using the project's patched hactool")
     args = parser.parse_args()
     try:

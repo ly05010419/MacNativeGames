@@ -82,7 +82,7 @@ static id<MTL4FXFrameInterpolator> fi_cached(NSUInteger iw, NSUInteger ih) {
 }
 
 /* g_on: the mode of this game frame (read by the replay, the present path and the pacing in hle_nvn.c); g_req: what the
-   user asked for (key 2 / flag mfx_interp), taken over at the next present. */
+   user asked for (the settings panel / flag mfx_interp), taken over at the next present. */
 static _Atomic int g_on, g_req;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 const char *mfx_mode_name(int m) {
@@ -100,6 +100,7 @@ static void mfx_init(void) {
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
 int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load(&g_req); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }

@@ -6,12 +6,12 @@
 #   make prepare   # scripts/prepare_runtime.py: tables, RomFS index, fonts config
 #   make runtime   # OT0_build/build/ot0-native-<version>
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)
-# VERSION picks the game version (v103, v104); by default the newest one extracted in the work folder.
+# VERSION picks the game version (v103, v104, v105); by default the newest one extracted in the work folder.
 
 WORK ?= OT0_build
 OUT := $(WORK)/build
-VERSIONS := v103 v104
-VERSION ?= $(or $(lastword $(sort $(filter $(VERSIONS),$(notdir $(wildcard $(WORK)/extracted/v*))))),v104)
+VERSIONS := v103 v104 v105
+VERSION ?= $(or $(lastword $(sort $(filter $(VERSIONS),$(notdir $(wildcard $(WORK)/extracted/v*))))),v105)
 ifeq ($(filter $(VERSION),$(VERSIONS)),)
 $(error VERSION=$(VERSION) is not one of $(VERSIONS))
 endif

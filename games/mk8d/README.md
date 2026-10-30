@@ -10,10 +10,10 @@ The game's ARM64 code runs natively after an ahead-of-time rewrite; a host answe
 
 Checked on an M1 Max MacBook Pro, macOS 27.0.1, with scripted runs of the built app ([details](docs/validation.md)):
 
-- **Works:** boot to the title with its music, "Select a Mii" and the six default Miis, the menus with their movie previews, a full 50cc Grand Prix race at Mario Kart Stadium to the results, saves written and read again. 60 fps in the race (18,873 of 18,900 frames on screen), about 2.7 GB of memory.
-- **Not available:** Mii heads draw nothing (no MiiModel firmware data; bodies and colours show). Online Play shows "Connecting…" and returns to the menu, Wireless Play finds nothing: both are cut on purpose. The Booster Course Pass needs its purchased add-on content, which this target does not take.
-- **By hand:** a DualSense became player 1 with its gyro in both sessions played by hand. A race with it was played in an unmodified upstream build of the same inputs, whose rewritten modules are byte-identical to this target's. This target's own app was only started by hand (the title and menus), and its race is the scripted one ([played by hand](docs/validation.md#played-by-hand)).
-- **Not yet checked:** a race by hand in this target's app, fullscreen in it, the other cups, battle mode, multiplayer on one screen, long sessions. The scripted runs press buttons through `DM_KEYS`.
+- **Works:** boot to the title with its music, "Select a Mii" and the six default Miis, the menus with their movie previews, a full 50cc Grand Prix race at Mario Kart Stadium to the results, saves written and read again. 60 fps in the race (18,873 of 18,900 frames on screen), about 2.7 GB of memory. With the Booster Course Pass in the input folder, its 12 cups are on the cup screen's next page (without it, choosing one only opens the game's purchase notice), and a scripted 50cc Grand Prix of the Golden Dash Cup ran Paris Promenade, Toad Circuit and Choco Mountain to their results and into Coconut Mall. The scripted race in full screen drops no more frames than in a window (58 and 68 of 18,900). Minus on the character screen (the Switch's controller applet) returns to the game at once; before the [fix of 2026-10-29](docs/validation.md#2026-10-29-the-controller-applet-froze-the-character-screen) it froze the game.
+- **Not available:** Mii heads draw nothing (no MiiModel firmware data; bodies and colours show). Online Play shows "Connecting…" and returns to the menu, Wireless Play finds nothing: both are cut on purpose.
+- **By hand:** a DualSense became player 1 with its gyro in every session played by hand. On 2026-10-28 a race was played in an unmodified upstream build of the same inputs, and this target's app was only started by hand ([played by hand](docs/validation.md#played-by-hand)). On 2026-10-29 the player played **a whole Booster Course Pass Grand Prix in this target's app, in full screen**, with no problem seen: 61,184 of 61,200 frames on screen in 17 minutes, no audio underrun ([by hand, a Booster Grand Prix](docs/validation.md#by-hand-a-booster-grand-prix-in-full-screen)).
+- **Not yet checked:** the other cups by hand, battle mode, multiplayer on one screen, sessions much longer than 17 minutes. The scripted runs press buttons through `DM_KEYS`.
 
 ## Build
 
@@ -25,9 +25,9 @@ Build prerequisites:
 - .NET SDK **10**, `make`, `clang` and `zstd` (Homebrew) on `PATH`. glslang and xcodegen are not needed.
 - A **local LibHac 0.19.0 NuGet package**, passed with `--libhac-package`. SHA-256 `1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19` (nuget.org's `libhac.0.19.0.nupkg`). It is a build prerequisite like .NET and the Python packages, not redistributed here. The build never downloads it: `nx_extract` restores from a NuGet configuration that clears every other feed and fallback folder.
 - The shader translator is carried as **binaries only** under `prebuilt/`, with SHA-256 checksums and upstream provenance; SPIRV-Cross is built at packaging from its pinned release (fetched from GitHub).
-- Your own **base game NSP** and **4.0.1 update NSP** (`v1507328`), and your own `prod.keys`. They are private build inputs; this repository supplies none of them.
+- Your own **base game NSP** and **4.0.1 update NSP** (`v1507328`), and your own `prod.keys`. Optionally, your own purchased **Booster Course Pass NSP** (`0100152000023001`, `v65536`). They are private build inputs; this repository supplies none of them.
 
-Put both NSPs in one folder; other files there, such as add-on content, are ignored. The base game and the update are told apart by their tickets (else the `[title ID]` in the file name), and the update must be 4.0.1. After extraction and before rewriting, every file of the 4.0.1 ExeFS is checked against its size, SHA-256 and build ID in [expected-4.0.1.json](assets/expected-4.0.1.json); a filename alone cannot pass. Other updates, add-on content (the Booster Course Pass) and XCI or NSZ inputs are outside this target's scope.
+Put the NSPs in one folder; other files there are ignored. The base game and the update are told apart by their tickets (else the `[title ID]` in the file name), and the update must be 4.0.1. The Booster Course Pass is taken only by its own ticket, never by a file name. It holds the licence data only (`contents.dat` and `version.txt`): its 48 courses are already in the 4.0.1 update, and the game offers them when the add-on content is there. After extraction, every file of the 4.0.1 ExeFS is checked against its size, SHA-256 and build ID, and the Booster Course Pass's RomFS image against its size and SHA-256, all in [expected-4.0.1.json](assets/expected-4.0.1.json); a filename alone cannot pass. Other updates, other add-on content and XCI or NSZ inputs are outside this target's scope.
 
 From the repository root:
 
@@ -45,13 +45,13 @@ or `make -C games/mk8d build INPUTS=… KEYS=… LIBHAC=… WORK=… OUTPUT=… 
 
 The work folder and the app must be outside the Git checkout. Give a new output path for each build; an existing app is never replaced. Allow about **40 GB** free: the extracted game is 11.3 GB and the app holds a clone or copy of it. The first build compiles 29,651 Mac shaders, which takes most of an hour on an M1 Max; a repeat build reuses every stage whose inputs did not change.
 
-The wrapper stages the runtime, scripts and tools in `<work>/source` and never reads another game's directory. The original NSPs are linked into `<work>/input`; extracted files, rewritten modules, logs, shader tables and libraries stay in `<work>/input/0100152000022000_build`, and .NET and temporary files in `<work>/cache` and `<work>/tmp`. The shader tables are made there from your files on every build (they name RomFS paths, so none is committed). Do not edit generated binaries; change the declared rules and rebuild from the original inputs. The built app needs neither Python nor .NET. It is ad-hoc signed and verified, not notarized.
+The wrapper stages the runtime, scripts and tools in `<work>/source` and never reads another game's directory. The original NSPs are linked into `<work>/input` (a link whose original has since moved is replaced); extracted files, the Booster Course Pass image (`aoc/1.img`), rewritten modules, logs, shader tables and libraries stay in `<work>/input/0100152000022000_build`, and .NET and temporary files in `<work>/cache` and `<work>/tmp`. The shader tables are made there from your files on every build (they name RomFS paths, so none is committed). Do not edit generated binaries; change the declared rules and rebuild from the original inputs. The built app needs neither Python nor .NET. It is ad-hoc signed and verified, not notarized.
 
 ## Launch, controls and saves
 
 To keep the game with your other apps, move the finished app into `/Applications` (in Finder, or `mv`); on the same disk the move is instant and takes no extra space, and the saves stay where they are. Build to a private folder and move the app afterwards rather than giving an `--output` in `/Applications`: the packer keeps its reuse key (`<app>.key`) and, while it builds, a `.partial` app next to the output.
 
-Open the app. A settings window comes first (resolution, frame rate, docked or handheld, language, rumble); **Play** starts the game.
+Open the app. A settings window comes first (docked or handheld, upscaling, language, window or full screen, rumble, and a few performance switches); **Play** starts the game. It has no resolution or frame-rate rows: those need rewriter patches this game does not have, and it already runs at 60 fps at its own 1080p docked.
 
 | Keyboard | Game input | In the race |
 |---|---|---|
@@ -67,11 +67,13 @@ A game controller works through Apple's controller support. Online play and loca
 Private state:
 
 ```text
-~/Library/Application Support/nxnative/0100152000022000/   save/, temp/, env.txt, the pipeline list
+~/Library/Application Support/nxnative/0100152000022000/   save/ (progress), save_device/ (the console's save), backups/, temp/, env.txt, the pipeline list
 ~/Library/Logs/nxnative/0100152000022000.log              the last run's log (.prev.log the one before)
 ```
 
-The folder name is nxnative's launcher's; another nxnative-built Mario Kart 8 Deluxe app uses the same saves. Rebuilding the app keeps them. Back up `save/` before trying a new build.
+The folder name is nxnative's launcher's; another nxnative-built Mario Kart 8 Deluxe app uses the same saves. Rebuilding the app keeps them.
+
+The game writes into a working copy (`save.work`), which the host swaps in whole when the game commits, so a crash or a forced quit leaves the last committed save. Before each start, the app also keeps the saves as they were in `backups/<date-time>/` (`save/` and `save_device/`), the five newest; the copies are APFS clones and take no space until the game rewrites the saves. The game saves within seconds of every boot (a start count and a time in `userdata.dat`), so each start that reaches the game adds a backup; a start that stops before the game's first save, such as a build that fails at boot, adds none and pushes no older one out. To go back to one, quit the game and copy that backup's `save` and `save_device` folders over the two beside `backups/`.
 
 ## Tests
 

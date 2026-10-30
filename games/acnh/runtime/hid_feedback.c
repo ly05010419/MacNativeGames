@@ -36,9 +36,40 @@ static bool env_on(const char *name) {
     const char *o = getenv("TOTK_SLOT_OWNER");
     return !(o && (!strcmp(o, "claude") || !strcmp(o, "codex")));
 }
-int runtime_rumble_enabled(void) { return env_on("TOTK_RUMBLE"); }
-int runtime_gyro_enabled(void) { return env_on("TOTK_GYRO"); }
 static _Atomic int rumble_muted, gyro_muted;
+/* The settings panel's rumble switch (runtime/settings_panel.h), saved in rumble.txt ("on" / "off") next to controls.txt:
+   it decides when TOTK_RUMBLE is unset and the run is not an agent's test session. The game gets its vibration devices
+   only at start, so turning rumble on in a run started without them takes effect at the next launch; with them, the
+   switch mutes and unmutes at once (as "flag rumble"). */
+static int agent_session(void) { const char *o = getenv("TOTK_SLOT_OWNER"); return o && (!strcmp(o, "claude") || !strcmp(o, "codex")); }
+int runtime_rumble_locked(void) { return getenv("TOTK_RUMBLE") || agent_session(); }
+static int rumble_file(void) {   /* 1 on, 0 off, -1 no file */
+    char word[16];
+    if (!runtime_setting_word("rumble.txt", word, sizeof word)) return -1;
+    return strncmp(word, "off", 3) != 0;
+}
+int runtime_rumble_enabled(void) {
+    static _Atomic int v = -1;
+    int now = atomic_load(&v);
+    if (now < 0) { int f = runtime_rumble_locked() ? -1 : rumble_file(); now = f < 0 ? env_on("TOTK_RUMBLE") : f; atomic_store(&v, now); }
+    return now;
+}
+int runtime_gyro_enabled(void) { return env_on("TOTK_GYRO"); }
+static _Atomic int rumble_wanted = -1;   /* the panel's pick in this run, -1 none */
+int runtime_rumble_choice(void) {
+    int w = atomic_load(&rumble_wanted);
+    return w >= 0 ? w : runtime_rumble_enabled() && !atomic_load(&rumble_muted);
+}
+void runtime_rumble_choose(int on) {
+    if (runtime_rumble_locked()) return;
+    on = !!on; atomic_store(&rumble_wanted, on);
+    runtime_setting_save("rumble.txt", on ? "on" : "off", "rumble setting");
+    if (runtime_rumble_enabled()) {
+        atomic_store(&rumble_muted, !on);
+        if (!on) { runtime_rumble_set(0, 0, 160, 0, 320); runtime_rumble_set(1, 0, 160, 0, 320); }
+    }
+    fprintf(stderr, "[hid] rumble %s (settings)%s\n", on ? "on" : "off", on && !runtime_rumble_enabled() ? ", from the next launch" : "");
+}
 static pthread_mutex_t lastLock = PTHREAD_MUTEX_INITIALIZER;
 static VibrationValue last[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   /* lastLock */
 static _Atomic uint64_t values_in, reads;

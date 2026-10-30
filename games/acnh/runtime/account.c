@@ -41,9 +41,21 @@ static unsigned preselected(UserHandle *out){if(!out)runtime_fail("account null 
 static uint32_t open_preselected(UserHandle *out){return preselected(out)?0:0x7c67;}
 static uint32_t user_id(Uid *out,const UserHandle *handle){lock_acquire();bool ok=out&&valid(handle);if(ok)*out=local;lock_release();return ok?0:0x7c67;}
 static uint32_t last_opened_user(Uid *out){if(!out)return 0x7c67;initialize();*out=local;return 0;}
+static uint32_t user_count(int *out){if(!out)return 0x7c67;initialize();*out=1;return 0;}
+static uint32_t list_all_users(int *count,Uid *out,int capacity){
+ if(!count||capacity<0||(capacity>0&&!out))return 0x7c67;
+ initialize();lock_acquire();*count=capacity>0?1:0;if(capacity>0)out[0]=local;lock_release();return 0;
+}
 static void close_user(const UserHandle *handle){lock_acquire();if(!valid(handle))runtime_fail("invalid local account handle close");for(unsigned i=0;i<64;i++)if(tokens[i]==handle->token){tokens[i]=0;break;}lock_release();}
 static uint32_t existence(unsigned char *out,const Uid *uid){if(!out||!uid)return 0x7c67;initialize();*out=same(uid);return 0;}
 static uint32_t nickname(char *out,const Uid *uid){initialize();if(!out||!same(uid))return 0x7c67;memset(out,0,33);memcpy(out,"Local",5);return 0;}
+/* Animal Crossing 3.0.1 also opens the user by its Uid and lists the users who may play online (reported in play, PR #1305: the
+   unhandled calls went to the account service, which this host does not run). The one local user is both. Its profile
+   picture: runtime/system_applets.c. */
+static uint32_t open_user(UserHandle *out,const Uid *uid){if(!out)return 0x7c67;initialize();if(!same(uid))return 0x7c67;return preselected(out)?0:0x7c67;}
+static uint32_t promote_qualification(const Uid *uid){initialize();return same(uid)?0:0x7c67;}
+/* The "Nintendo Switch Online is required" dialog: there is no online service here; as if the player closed it. */
+static uint32_t show_license_requirements(const UserHandle *handle){(void)handle;fprintf(stderr,"[totk] account: online licence dialog requested; there is no online service here\n");return 0;}
 static int query_play_stats_uid(void *out, const void *uid, const uint64_t *app_id, int count) {
     (void)uid; (void)app_id;
     if (out && count > 0) memset(out, 0, (size_t)count * 16);
@@ -60,7 +72,12 @@ void *runtime_account_override(const char *name){
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},
  {"_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE",last_opened_user},
+ {"_ZN2nn7account12GetUserCountEPi",user_count},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_all_users},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
+ {"_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE",open_user},
+ {"_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi",list_all_users},
+ {"_ZN2nn7account20PromoteQualificationERKNS0_3UidE",promote_qualification},
+ {"_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE",show_license_requirements},
  {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname},
  {"_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsERKNS_7account3UidEPKNS_13ApplicationIdEi",query_play_stats_uid},
  {"_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsEPKNS_13ApplicationIdEi",query_play_stats}};

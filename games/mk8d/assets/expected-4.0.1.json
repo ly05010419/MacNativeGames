@@ -31,5 +31,16 @@
         "build_id": "d9de423efc1512328c3c05378c7cb031"
       }
     }
+  },
+  "add_on_content": {
+    "0100152000023001": {
+      "name": "Booster Course Pass",
+      "package": "v65536",
+      "index": 1,
+      "romfs_image": {
+        "size": 4228,
+        "sha256": "320918616dc8a6b17be85fc07ec44ef4620a31f6a04ce4e4e4b91ce39105357a"
+      }
+    }
   }
 }

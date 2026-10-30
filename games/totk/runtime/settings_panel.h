@@ -16,7 +16,7 @@
                           50 -> 100 / unlimited               other off); runtime flag mfx_interp (gfx/nvn/totk_mfx.m)
      edge smoothing       switch                             taa_set (gfx/nvn/totk_taa.m)
      performance info     all / FPS + playtime / off         fps_overlay_set_hud_mode (gfx/nvn/fps_overlay.c)
-     frame graph          switch                             fps-graph.txt
+     FPS graph            switch, default on                 fps-graph.txt above the game's folder (both games)
    Input
      input method         controller / keyboard + mouse      settings-keys-device.txt; decides which Keys page and which
                                                              hints (A / B or the key caps) are shown, and greys the mouse
@@ -459,7 +459,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   ^int{return fps_overlay_hud_mode();},^(int v){fps_overlay_set_hud_mode(v);settings_save_int("graphics-overlay.txt",v,"overlay");[(TOTKHudBox *)hudBox refresh];});
  overlay.divider=YES;[rows addObject:overlay];
  [rows addObject:settings_row(settings_text("帧率曲线","FPS graph"),nil,nil,
-  ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
+  ^int{return fpsGraphEnabled;},^(int v){fpsGraphEnabled=v;runtime_shared_setting_save("fps-graph.txt",v?"on":"off","FPS graph");[(TOTKFpsGraph *)fpsGraphBox setEnabled:v];[(TOTKHudBox *)hudBox refresh];})];
  NSUInteger display=rows.count;
  /* Input: input method, controller type, rumble, gyro aiming, bow trigger | mouse, sensitivity */
  [rows addObject:settings_row(settings_text("输入方式","Input method"),@[settings_text("手柄","Controller"),settings_text("键鼠","Keyboard & mouse")],@[@1,@0],

@@ -104,6 +104,7 @@ static void warm_claim(void);
 int mtl_warm_wait(int timeout_ms);
 extern void runtime_warm_progress(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t) __attribute__((weak_import));
 extern void runtime_warm_done(void) __attribute__((weak_import));
+extern void runtime_audio_hold(int) __attribute__((weak_import));
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
 
 static id<MTLDevice> g_dev;
@@ -8753,59 +8754,95 @@ static void warm_light(void) {
 // and shows its progress on the start-up screen.
 static NSArray<NSString *> *g_shared_fill;   // warm_shared(): lists written into the archive only, before the title
 static struct { uint64_t render, compute, have, failed; double seconds; } g_fill_last;   // the last fill (mtl_pipeline_archive_tool)
+typedef struct { _Atomic uint64_t nr, nc, nfail, nhave; } fill_counts;
+/* One row of a pipeline list into the archive (warm_fill_archive): made from its shaders, written, dropped. Thread-safe:
+   warm_shader locks the dictionary and par_add batches per thread. */
+static void fill_row(NSString *line, NSMutableDictionary<NSString *, NvShader *> *dict, fill_counts *fc) {
+    NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
+    id ps = nil;
+    if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
+        pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) return;
+        /* already in the archive: nothing to make (the key pso_archive_key gives a warm-built one: no fragment
+           state description); a start then reads the list without loading a shader */
+        pso_skey ak = sk; memset(&ak.fz_desc, 0, sizeof ak.fz_desc);
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&ak, sizeof ak)]; pthread_mutex_unlock(&g_par_mu);
+        if (have) { atomic_fetch_add(&fc->nhave, 1); return; }
+        NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
+        NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
+        if (!vs || (fkey.length && !fs)) { atomic_fetch_add(&fc->nfail, 1); return; }
+        pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = NULL;
+        NSError *er = nil; ps = pso_new(pso_desc(&k, vs, fs, nil, sk.merged), pso_archive_key(&k, vs, fs, sk.merged, nil), &er);
+        if (ps) atomic_fetch_add(&fc->nr, 1);
+    } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
+        const char *ck = c[1].UTF8String;
+        pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
+        if (have) { atomic_fetch_add(&fc->nhave, 1); return; }
+        NvShader *cs = warm_shader(dict, c[1], 5); if (!cs) { atomic_fetch_add(&fc->nfail, 1); return; }
+        NSError *er = nil; ps = cs_new(cs, &er);
+        if (ps) atomic_fetch_add(&fc->nc, 1);
+    } else if (([c[0] isEqualToString:@"B"] && c.count >= 4) || ([c[0] isEqualToString:@"T"] && c.count >= 3)) {   // border and tile-read
+        // variants too, otherwise built in play (BotW 1.6.0: about 80 on a 5-minute route, 2026-10-28)
+        int r = [c[0] isEqualToString:@"B"] ? warm_border(c, dict, 0) : warm_tileread(c, dict, 0);
+        if (r == 2) { atomic_fetch_add(&fc->nhave, 1); return; }
+        ps = r ? @YES : nil;
+        if (ps) atomic_fetch_add(&fc->nr, 1);
+    } else return;
+    if (!ps) atomic_fetch_add(&fc->nfail, 1);
+}
 static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t done) {
     dispatch_async(dispatch_get_global_queue(done ? QOS_CLASS_USER_INITIATED : QOS_CLASS_BACKGROUND, 0), ^{
         par_pre_check();   // the app's Mac-built pipelines this system's Metal does not take are filled here instead
-        uint64_t t0 = bp_now(), nr = 0, nc = 0, nfail = 0, rows = 0, at = 0, nhave = 0; NSMutableSet<NSString *> *seen = [NSMutableSet set];
-        if (done) for (NSString *path in paths) @autoreleasepool {
-            for (NSString *line in [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"])
-                rows += [line hasPrefix:@"R\t"] || [line hasPrefix:@"C\t"] || [line hasPrefix:@"B\t"] || [line hasPrefix:@"T\t"];
+        uint64_t t0 = bp_now(); NSMutableSet<NSString *> *seen = [NSMutableSet set];
+        NSMutableArray<NSString *> *todo = [NSMutableArray array];
+        for (NSString *path in paths) @autoreleasepool {
+            for (NSString *line in [[NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"]) {
+                if (line.length < 2 || [line characterAtIndex:1] != '\t' || [seen containsObject:line]) continue;
+                unichar t = [line characterAtIndex:0];
+                if (t != 'R' && t != 'C' && t != 'B' && t != 'T') continue;
+                [seen addObject:line]; [todo addObject:line];
+            }
         }
+        seen = nil;
         atomic_store(&par_filling, 1); par_write_in_place = 1;
+        /* Waited for (packaging's pipeline-archive mode, the title on a first run): on warm_threads() threads, a block's
+           shaders first, then its pipelines, as the warm-up does (warm_load_rows, warm_build_rows). One thread took 22 min
+           for 27,301 pipelines on an M4 (2026-10-29). In the background (in play) and on iOS one thread, few shaders kept. */
+        size_t workers = done ? (size_t)warm_threads() : 1;
+        fill_counts *fc = calloc(1, sizeof *fc); if (!fc) MDIE("管线存档：内存不足");
         NSMutableDictionary<NSString *, NvShader *> *dict = [NSMutableDictionary dictionary];
-        MLOG("管线存档：后台填充开始（%lu 份管线清单，每条建完写成自己的文件就丢）", (unsigned long)paths.count);
-        for (NSString *path in paths) {
-            NSString *txt = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-            for (NSString *line in [txt componentsSeparatedByString:@"\n"]) @autoreleasepool {
-                if (!line.length || [line hasPrefix:@"#"] || [seen containsObject:line]) continue;
-                [seen addObject:line];
-                NSArray<NSString *> *c = [line componentsSeparatedByString:@"\t"];
-                id ps = nil; int tried = 0;
-                if (([c[0] isEqualToString:@"R"] || [c[0] isEqualToString:@"C"] || [c[0] isEqualToString:@"B"] || [c[0] isEqualToString:@"T"]) && done && runtime_warm_progress && !(++at % 32)) runtime_warm_progress(at, rows, 0, 0, at, rows);
-                if ([c[0] isEqualToString:@"R"] && c.count >= 2) {
-                    pso_skey sk; if (pso_skey_parse(c[1].UTF8String, &sk) || sk.fz) continue;
-                    /* already in the archive: nothing to make (the key pso_archive_key gives a warm-built one: no fragment
-                       state description); a start then reads the list without loading a shader */
-                    pso_skey ak = sk; memset(&ak.fz_desc, 0, sizeof ak.fz_desc);
-                    pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:par_hash(&ak, sizeof ak)]; pthread_mutex_unlock(&g_par_mu);
-                    if (have) { nhave++; continue; }
-                    NSString *vkey = warm_key(sk.vs, sizeof sk.vs), *fkey = warm_key(sk.fs, sizeof sk.fs);
-                    NvShader *vs = vkey.length ? warm_shader(dict, vkey, sk.vs_stage) : nil, *fs = fkey.length ? warm_shader(dict, fkey, sk.fs_stage) : nil;
-                    if (!vs || (fkey.length && !fs)) { nfail++; continue; }
-                    pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = NULL;
-                    NSError *er = nil; ps = pso_new(pso_desc(&k, vs, fs, nil, sk.merged), pso_archive_key(&k, vs, fs, sk.merged, nil), &er); tried = 1; nr += ps != nil;
-                } else if ([c[0] isEqualToString:@"C"] && c.count >= 2 && [c[1] length]) {
-                    const char *ck = c[1].UTF8String;
-                    pthread_mutex_lock(&g_par_mu); BOOL have = [g_par_have containsObject:[@"c" stringByAppendingString:par_hash(ck, strlen(ck))]]; pthread_mutex_unlock(&g_par_mu);
-                    if (have) { nhave++; continue; }
-                    NvShader *cs = warm_shader(dict, c[1], 5); if (!cs) { nfail++; continue; }
-                    NSError *er = nil; ps = cs_new(cs, &er); tried = 1; nc += ps != nil;
-                } else if (([c[0] isEqualToString:@"B"] && c.count >= 4) || ([c[0] isEqualToString:@"T"] && c.count >= 3)) {   // border and tile-read
-                    // variants too, otherwise built in play (BotW 1.6.0: about 80 on a 5-minute route, 2026-10-28)
-                    int r = [c[0] isEqualToString:@"B"] ? warm_border(c, dict, 0) : warm_tileread(c, dict, 0);
-                    if (r == 2) { nhave++; continue; }
-                    tried = 1; ps = r ? @YES : nil; nr += ps != nil;
-                } else continue;
-                if (tried && !ps) nfail++;
+        MLOG("管线存档：后台填充开始（%lu 份管线清单 %lu 条，%zu 个线程，每条建完写成自己的文件就丢）",
+             (unsigned long)paths.count, (unsigned long)todo.count, workers);
+        NSUInteger rows = todo.count;
+        for (NSUInteger at = 0; at < rows; at += WARM_BLOCK) @autoreleasepool {
+            NSArray<NSString *> *block = [todo subarrayWithRange:NSMakeRange(at, MIN((NSUInteger)WARM_BLOCK, rows - at))];
+            if (workers > 1) {
+                warm_load_rows(block, dict);
+                __block _Atomic size_t next = 0;
+                dispatch_apply(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) { (void)w;
+                    int owip = par_write_in_place; par_write_in_place = 1;   // dispatch_apply may run a share on the calling thread
+                    for (;;) @autoreleasepool {
+                        size_t i = atomic_fetch_add(&next, 1);
+                        if (i >= block.count) break;
+                        fill_row(block[i], dict, fc);
+                    }
+                    par_flush_thread();   // each share's own batch (per thread), as in warm_build_rows
+                    par_write_in_place = owip;
+                });
+                [dict removeAllObjects];
+            } else for (NSString *line in block) @autoreleasepool {
+                fill_row(line, dict, fc);
                 if (dict.count > 256) [dict removeAllObjects];
             }
+            if (done && runtime_warm_progress) { uint64_t d = at + block.count; runtime_warm_progress(d, rows, 0, 0, d, rows); }
         }
         [dict removeAllObjects];
         par_flush_thread(); atomic_store(&par_filling, 0); par_write_in_place = 0;
+        uint64_t nr = atomic_load(&fc->nr), nc = atomic_load(&fc->nc), nhave = atomic_load(&fc->nhave), nfail = atomic_load(&fc->nfail);
+        free(fc);
         g_fill_last.render = nr; g_fill_last.compute = nc; g_fill_last.have = nhave; g_fill_last.failed = nfail; g_fill_last.seconds = (bp_now() - t0) / 1e9;
-        if (done) dispatch_semaphore_signal(done);
         MLOG("管线存档：填充完成，新建渲染管线 %llu 条、计算管线 %llu 条，存档里已有 %llu 条，失败 / 缺着色器 %llu，用时 %.1f s；下次启动从存档取",
              nr, nc, nhave, nfail, (bp_now() - t0) / 1e9);
+        if (done) dispatch_semaphore_signal(done);   // after the line: the packaging tool's JSON report follows it on its own line
     });
 }
 #if !TARGET_OS_IPHONE
@@ -8813,11 +8850,19 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
    makes the pipelines of the lists from the device seed's metallibs (TOTK_SHADER_SEED_DIR, read in place;
    TOTK_SHADER_DEVICE_LIBS), one file each in TOTK_SHADER_CACHE/pipelines, as the device's own first start does
    (warm_fill_archive, par_fill_light), and prints what it made as JSON. ios/tools/device_pipelines.py turns those files
-   into the device GPU's code with metal-tt (par_load_prebuilt). Runs no game code; files already there are kept. */
+   into the device GPU's code with metal-tt (par_load_prebuilt). Runs no game code; files already there are kept.
+   Packaging a Mac app (build_app.py mac_pipelines, user 2026-10-29: "mac的 管线 预热 和iPhone 一样 放在打包阶段做"):
+   TOTK_PIPELINE_ARCHIVE_HOST=1, run from the app's own build folder, makes them from the libraries the Mac game loads
+   itself (shader-libs, shader_lib_prebuilt) in files of the Mac's size; they are this Mac's GPU code already, so they go
+   into the app as they are. The JSON names the GPU architecture the files are for. */
 int mtl_pipeline_archive_tool(int argc, char **argv) {
     if (argc < 1 || !getenv("TOTK_SHADER_CACHE") || !getenv("TOTK_SHADER_SEED_DIR"))
         MDIE("pipeline-archive: TOTK_SHADER_CACHE=<folder> TOTK_SHADER_SEED_DIR=<device seed> totk-native <rewritten> pipeline-archive <list>...");
-    setenv("TOTK_SHADER_DEVICE_LIBS", "1", 1); setenv("TOTK_SHADER_SEED_IN_PLACE", "1", 1); setenv("TOTK_PIPELINE_ARCHIVE_BATCH", "1", 1);
+    const char *host = getenv("TOTK_PIPELINE_ARCHIVE_HOST");
+    if (!(host && !strcmp(host, "1"))) {   // the device's libraries one at a time, as before 2026-10-29 (host: warm_threads())
+        setenv("TOTK_SHADER_DEVICE_LIBS", "1", 1); setenv("TOTK_PIPELINE_ARCHIVE_BATCH", "1", 1); setenv("TOTK_WARM_THREADS", "1", 0);
+    }
+    setenv("TOTK_SHADER_SEED_IN_PLACE", "1", 1);
     setenv("TOTK_PIPELINE_PREBUILT", "0", 1); unsetenv("TOTK_PIPELINE_ARCHIVE");
     mtl_init();
     par_open_dir(g_dev);
@@ -8829,8 +8874,9 @@ int mtl_pipeline_archive_tool(int argc, char **argv) {
     }
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     warm_fill_archive(lists, done); dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
-    printf("{\"render\": %llu, \"compute\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu}\n",
-           g_fill_last.render, g_fill_last.compute, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed));
+    printf("{\"render\": %llu, \"compute\": %llu, \"kept\": %llu, \"failed\": %llu, \"seconds\": %.1f, \"write_failed\": %llu, \"arch\": \"%s\"}\n",
+           g_fill_last.render, g_fill_last.compute, g_fill_last.have, g_fill_last.failed, g_fill_last.seconds, (unsigned long long)atomic_load(&g_par_write_failed),
+           g_dev.architecture.name.UTF8String ?: "");
     fflush(stdout);
     return atomic_load(&g_par_write_failed) ? 1 : 0;
 }
@@ -8839,7 +8885,7 @@ static void warm_start(void) {
     if (g_warm_started++) return;
     warm_filled();
     const char *e = getenv("DM_PSO_MANIFEST");
-    if (e && !strcmp(e, "off")) { warm_light(); return; }
+    if (e && !strcmp(e, "off")) { warm_light(); if (runtime_audio_hold) runtime_audio_hold(0); return; }
     NSArray<NSString *> *paths;
     if (e && *e) {
         paths = @[@(e)];
@@ -8939,7 +8985,19 @@ static void warm_start(void) {
        take them from the archive. The start-up screen shows the progress. TOTK_WARM_BEFORE_TITLE=0: the title after its
        own list, the rest behind it (before 2026-10-23). */
     const char *bt = getenv("TOTK_WARM_BEFORE_TITLE");
-    if (!(bt && !atoi(bt))) {
+    int before = !(bt && !atoi(bt));
+#if !TARGET_OS_IPHONE
+    /* Mac with a valid archive (user 2026-10-29: "桌面 王国 每次打开 都预热"): nothing is left to compile or save, the wait
+       only read 19,908 libraries and 30,642 pipelines back from disk, 16.7-18.6 s before the title on every start. The
+       title comes now and that goes on behind the menu; the first world frame still waits for all of it (hle_nvn.c,
+       mtl_warm_wait without a limit on the Mac), so play starts with every listed pipeline ready, as before.
+       TOTK_WARM_BEFORE_TITLE=1: wait before the title anyway. */
+    if (!bt && g_par_valid && !g_par_fill_lists && !g_shared_fill) {
+        before = 0;
+        MLOG("预热：管线存档齐全，标题不等预热读完，剩下的在菜单后面读，进世界前等它做完");
+    }
+#endif
+    if (before) {
         uint64_t t1 = bp_now();
         while (atomic_load(&g_warm_running)) usleep(5000);
         warm_claim();
@@ -8947,6 +9005,7 @@ static void warm_start(void) {
         if (fill) { dispatch_semaphore_t d = dispatch_semaphore_create(0); warm_fill_archive(fill, d); dispatch_semaphore_wait(d, DISPATCH_TIME_FOREVER); g_par_fill_lists = g_shared_fill = nil; }
         MLOG("预热和管线存档完成后才进标题：又等了 %.1f s，可用渲染管线 %llu / 计算管线 %llu", (bp_now() - t1) / 1e9, g_warm_claim_rps, g_warm_claim_cps);
     } else if (g_par_fill_lists || g_shared_fill) warm_fill_archive(g_par_fill_lists ? g_par_fill_lists : g_shared_fill, nil);
+    if (runtime_audio_hold) runtime_audio_hold(0);   // the game's sound, silent until here (audio_mixer.c)
 }
 static int g_rt_ovr;   // 运行时外推的模板覆盖：0 不覆盖；1 只在单位 / 特效 / 外推洞位（0xD0）上通过、不写模板；3 照常深度测试，通过处写特效位 0x40 | Stencil override for runtime extrapolation: 0 no override; 1 pass only on the unit / effect / extrapolation-hole bits (0xD0), no stencil write; 3 depth test as usual, write the effect bit 0x40 where it passes
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
@@ -13254,6 +13313,23 @@ static int texels_gpu_region(const tex_t *t,unsigned level,unsigned layer0,const
     atomic_fetch_add(to_linear?&g_texels_gpu_reads:&g_texels_gpu_writes,1);atomic_fetch_add(&g_texels_gpu_bytes,total);
     return 1;
 } }
+/* TOTK (2026-10-29): ReadTexels and WriteTexels unpack and pack a mirrored texture's guest memory on the game's thread,
+   unguarded until now: a fault there ended the process with SIGBUS (ReadTexels, 1.2.1; that texture's storage was 4 GiB
+   below its pool, see game_patches.c patch_pool_offset). A fault now returns -2 and the call is skipped: a read gives
+   zeros, a write leaves the memory as it was. The write tracking resolves its own read-only pages first (loader.c), so
+   only a page that is really gone ends up here. */
+static int texels_unpack_guarded(const nvn_texdesc *d, unsigned level, unsigned layer, const void *mem, void *lin, size_t lp, const char *what) {
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; guarded_read_fault(what, mem, lp); return -2; }
+    runtime_fault_guard = &jb; int rc = nvn_deswizzle(d, level, layer, mem, lin, lp); runtime_fault_guard = prev;
+    return rc;
+}
+static int texels_pack_guarded(const nvn_texdesc *d, unsigned level, unsigned layer, const void *lin, size_t lp, void *mem, const char *what) {
+    sigjmp_buf jb, *prev = runtime_fault_guard;
+    if (sigsetjmp(jb, 1)) { runtime_fault_guard = prev; guarded_read_fault(what, mem, lp); return -2; }
+    runtime_fault_guard = &jb; int rc = nvn_swizzle(d, level, layer, lin, lp, mem); runtime_fault_guard = prev;
+    return rc;
+}
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     xv_check(t->serial, level, layer0, "CPU读回");
     PD("U cpu_read ser=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d dst=%p row=%lu img=%lu", t->serial, level, layer0, r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth, dst, (unsigned long)row, (unsigned long)img);
@@ -13275,7 +13351,9 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
         uint8_t *lin = malloc(lp * lr * lz);
         for (int z = 0; z < nz; z++) {
             unsigned layer = is3d ? 0 : layer0 + r->zoffset + z;
-            if ((is3d && z == 0) || !is3d) if (nvn_deswizzle(&t->d, level, layer, t->mem, lin, lp)) { RED_ONCE(32, "ReadTexels 解排布失败"); free(lin); return; }
+            int rc = (is3d && z) ? 0 : texels_unpack_guarded(&t->d, level, layer, t->mem, lin, lp, "ReadTexels 解排布");
+            if (rc == -2) { for (int zz = 0; zz < nz; zz++) for (size_t y = 0; y < hb; y++) memset(dst + zz * img + y * row, 0, wb); free(lin); return; }
+            if (rc) { RED_ONCE(32, "ReadTexels 解排布失败"); free(lin); return; }
             const uint8_t *src = lin + (is3d ? (size_t)(r->zoffset + z) * lp * lr : 0);
             for (size_t y = 0; y < hb; y++) memcpy(dst + z * img + y * row, src + (y0 + y) * lp + x0, wb);
         }
@@ -13313,10 +13391,14 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
             if (!lin) die("WriteTexels: out of memory");
             for (int z = 0; z < nz; z++) {
                 unsigned layer = is3d ? 0 : layer0 + r->zoffset + z;
-                if ((is3d && z == 0) || !is3d) if (nvn_deswizzle(&t->d, level, layer, t->mem, lin, lp)) die("WriteTexels: unsupported layout");
+                int rc = (is3d && z) ? 0 : texels_unpack_guarded(&t->d, level, layer, t->mem, lin, lp, "WriteTexels 解排布");
+                if (rc == -2) break;
+                if (rc) die("WriteTexels: unsupported layout");
                 uint8_t *dst = lin + (is3d ? (size_t)(r->zoffset + z) * lp * lr : 0);
                 for (size_t y = 0; y < hb; y++) memcpy(dst + (y0 + y) * lp + x0, src + z * img + y * row, wb);
-                if (!is3d || z == nz - 1) if (nvn_swizzle(&t->d, level, layer, lin, lp, t->mem)) die("WriteTexels: unsupported layout");
+                rc = (!is3d || z == nz - 1) ? texels_pack_guarded(&t->d, level, layer, lin, lp, t->mem, "WriteTexels 写回排布") : 0;
+                if (rc == -2) break;
+                if (rc) die("WriteTexels: unsupported layout");
             }
             free(lin);
         }

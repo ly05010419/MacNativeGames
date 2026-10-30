@@ -2,6 +2,9 @@
 label, long paths showing their end. A real withdrawn Tk root (builder_tk_base.py) and the scripted FakeController."""
 import unittest
 
+from pathlib import Path
+from types import SimpleNamespace
+
 from builder_tk_base import Base, tk
 from tools.builder.config import PATH_FIELDS
 from tools.builder.session import ChecksDone
@@ -21,6 +24,15 @@ class Layout(Base):
         self.radio('botw').invoke()
         colours = {r.cget('value'): r.cget('background') for r in self.view.files.radios}
         self.assertEqual(colours, {'totk': FIELD, 'botw': ACCENT})
+
+    def test_the_home_is_read_from_the_settings_path(self):
+        self.start(store=SimpleNamespace(path='/Users/me/Library/Application Support/'
+                                              'MacNativeGames/Builder/settings.json'))
+        self.assertEqual(self.view.home, Path('/Users/me'))
+
+    def test_the_home_falls_back_to_path_home_without_a_store(self):
+        self.start()
+        self.assertEqual(self.view.home, Path.home())
 
     def test_the_form_keeps_its_width_and_the_picture_zone_takes_the_rest(self):
         self.start()
