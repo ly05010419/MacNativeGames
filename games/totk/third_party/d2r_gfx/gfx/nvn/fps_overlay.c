@@ -1,4 +1,5 @@
 #include "fps_overlay.h"
+#include "frame_record.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -243,7 +244,31 @@ static void rate_note(rate_meter *m, uint64_t k, double now_s) {
     pthread_mutex_unlock(&m->mu);
 }
 
-void fps_overlay_note(uint64_t ticket, double now_s) { rate_note(&g_game, ticket, now_s); }
+/* TOTK_FPS_RECORD: one CSV row per second of play (frame_record.h), written as the game runs. */
+static pthread_mutex_t g_rec_mu = PTHREAD_MUTEX_INITIALIZER;
+static frame_record g_rec;
+static FILE *g_rec_file;
+static _Atomic int g_rec_state;   /* 0 not looked at, 1 recording, -1 off */
+static void record_note(uint64_t ticket, double now_s) {
+    if (atomic_load_explicit(&g_rec_state, memory_order_relaxed) < 0) return;
+    pthread_mutex_lock(&g_rec_mu);
+    if (!atomic_load(&g_rec_state)) {
+        const char *path = getenv("TOTK_FPS_RECORD");
+        g_rec_file = path && *path ? fopen(path, "w") : NULL;
+        atomic_store(&g_rec_state, g_rec_file ? 1 : -1);
+        if (g_rec_file) { fputs(FRAME_RECORD_HEADER, g_rec_file); fflush(g_rec_file); fprintf(stderr, "[fps] recording the frame rate to %s\n", path); }
+        else if (path && *path) fprintf(stderr, "[fps] cannot write the frame-rate recording %s\n", path);
+        frame_record_init(&g_rec);
+    }
+    frame_record_row row;
+    if (atomic_load(&g_rec_state) > 0 && frame_record_note(&g_rec, ticket, now_s, &row)) {
+        char line[96]; frame_record_format(&row, line, sizeof line);
+        fputs(line, g_rec_file); fflush(g_rec_file);
+    }
+    pthread_mutex_unlock(&g_rec_mu);
+}
+
+void fps_overlay_note(uint64_t ticket, double now_s) { rate_note(&g_game, ticket, now_s); record_note(ticket, now_s); }
 int fps_overlay_value(void) { return atomic_load(&g_game.value); }
 void fps_overlay_note_gen(uint64_t n, double now_s) { rate_note(&g_gen, n, now_s); }
 int fps_overlay_gen_value(void) { return atomic_load(&g_gen.value); }
