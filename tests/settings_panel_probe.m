@@ -371,7 +371,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     flip(@"Edge smoothing", NO); assert(!taa_enabled());
     /* Stronger ambient occlusion (PR #1316): off by default; every level acts at once (the Mac's shaders always carry the
        parameters) and is saved; a run without them (TOTK_SSAO=0) shows off, greyed out (rows are made at each opening). */
-#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190)
+#if defined(TOTK_GAME_V143) || defined(GAME_BOTW190) || defined(TOTK_GAME_V121)
     shows(@"Stronger ambient occlusion", @"Off (as the game has it)"); assert(fakeSsaoStart == -1);
     pick(@"Stronger ambient occlusion", @"1.5×"); assert(settingsSsao == 150 && fakeSsaoSet == 150 && !strcmp(savedName, "ssao.txt") && !strcmp(savedWord, "150"));
     pick(@"Stronger ambient occlusion", @"2×"); assert(fakeSsaoSet == 200 && !strcmp(savedWord, "200"));
