@@ -29,3 +29,33 @@ static inline int keyboard_mods_stale(NSString *mods) {
     return ![[recorded stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
              isEqualToString:keyboard_mods_source(mods)];
 }
+
+/* At start, before the mods are chosen: a staged <mods>-keyboard.next whose drawing finished (its complete marker)
+   becomes <mods>-keyboard, the one it replaces kept as <mods>-keyboard.previous (one only). A staged folder without the
+   marker is left for the settings panel to replace. */
+static inline void keyboard_mods_promote(NSString *mods) {
+    NSFileManager *files = NSFileManager.defaultManager;
+    NSString *keyboard = [mods stringByAppendingString:@"-keyboard"], *next = [keyboard stringByAppendingString:@".next"];
+    NSString *previous = [keyboard stringByAppendingString:@".previous"], *complete = [next stringByAppendingPathComponent:@"complete"];
+    if (![files fileExistsAtPath:complete]) return;
+    [files removeItemAtPath:previous error:nil];
+    if ([files fileExistsAtPath:keyboard] && ![files moveItemAtPath:keyboard toPath:previous error:nil]) return;
+    if (![files moveItemAtPath:next toPath:keyboard error:nil]) { [files moveItemAtPath:previous toPath:keyboard error:nil]; return; }
+    [files removeItemAtPath:[keyboard stringByAppendingPathComponent:@"complete"] error:nil];
+    fprintf(stderr, "[launcher] keyboard icons: the ones the settings panel drew are in place\n");
+}
+
+/* Whether there is a <mods>-keyboard with a manifest (the launcher asks for a controller only then). */
+static inline BOOL keyboard_mods_present(NSString *mods) {
+    NSString *manifest = [[mods stringByAppendingString:@"-keyboard"] stringByAppendingPathComponent:@"manifest.tsv"];
+    return [NSFileManager.defaultManager fileExistsAtPath:manifest];
+}
+
+/* Whether <mods>-keyboard can be loaded: it has a manifest and is not stale. */
+static inline BOOL keyboard_mods_usable(NSString *mods) {
+    if (!keyboard_mods_present(mods)) return NO;
+    if (!keyboard_mods_stale(mods)) return YES;
+    fprintf(stderr, "[launcher] keyboard icons skipped: they predate a change to %s (apply them again in the settings panel)\n",
+            mods.fileSystemRepresentation);
+    return NO;
+}
