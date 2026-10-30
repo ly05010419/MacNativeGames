@@ -38,6 +38,8 @@ static int test_sleep(const struct timespec *ts, struct timespec *left) {
 #undef pthread_create
 #undef pthread_detach
 #undef nanosleep
+void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop stand-ins hold the game out of focus
+void dm_applet_leave(void) {}
 
 struct dm_flags g_flag;
 module_t *g_mod;

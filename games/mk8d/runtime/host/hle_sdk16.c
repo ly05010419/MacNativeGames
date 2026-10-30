@@ -159,8 +159,8 @@ HLE_FORCE("_ZN2nn2pl9EndVrModeEv", "leave VR mode (through am)", void, h_pl_EndV
 
 // ---------- ec: shop applet (the upgrade-to-Switch-2-Edition page) ----------
 // The shop is out of scope: no-op. The game does not look at the return value (both overloads are handled as returning nothing)
-HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionE", "shop upgrade page, out of scope; no-op", void, h_ec_ShowUpg, int ed) { LOG("ec::ShowShopApplicationInformationForUpgrade(%d) (cut)", ed); }
-HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionERKNS_7account10UserHandleE", "shop upgrade page (given user), out of scope; no-op", void, h_ec_ShowUpgU, int ed, const void *user) { (void)user; LOG("ec::ShowShopApplicationInformationForUpgrade(%d, user) (cut)", ed); }
+HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionE", "shop upgrade page, out of scope; no-op", void, h_ec_ShowUpg, int ed) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformationForUpgrade(%d) (cut)", ed); }
+HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionERKNS_7account10UserHandleE", "shop upgrade page (given user), out of scope; no-op", void, h_ec_ShowUpgU, int ed, const void *user) { DM_APPLET("shop"); (void)user; LOG("ec::ShowShopApplicationInformationForUpgrade(%d, user) (cut)", ed); }
 
 // ---------- nfp: amiibo ----------
 // From Mario 1.2.1 the game initializes nfp at boot (v0 did not use it). The real SDK would connect to the sm: service, which the host lacks → abort, so the whole family is taken over.

@@ -1,5 +1,7 @@
 // Shared-font ownership and LoadFont forwarding through the real forced registration; no game module or font file is needed.
 #include "../hle_sdk16.c"
+void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop stand-ins hold the game out of focus
+void dm_applet_leave(void) {}
 #include <mach-o/getsect.h>
 #include <sys/wait.h>
 #include <sys/resource.h>

@@ -59,6 +59,7 @@ The game builds Mii heads from the console's MiiModel system data, starting at b
 - The work folder's `run/ctl.sh` drives a run started with `DM_CTL`.
 - `run/race.sh` boots from a copy of a save past the Mii pick into a 50cc Grand Prix (Mario, Mushroom Cup) with frame-timed keys and holds accelerate: `DM_KEYS=f960:L+R~0.3,f1260:A,f1500:A,f1740:A,f2000:A,f2240:A,f2400:A,f2560:A,f2800:A,f3040:A,f4300:A~70`.
 - From a fresh save, L+R at the title opens "Select a Mii" (Right, A takes the first default Mii).
+- 2P: from a save past the Mii pick, L+R at the title, Down, A (2P), A (Grand Prix), A (50cc) opens the controller applet; 1.5–4 s between presses, or the menu fades drop them. Headless runs report one player; two players need a second controller.
 
 ## Found on this game
 
@@ -67,6 +68,7 @@ The game builds Mii heads from the console's MiiModel system data, starting at b
 - **Audio layout detection after incomplete startup lists (resolved):** [Incomplete startup lists must not select the command layout](../../../docs/reference/audio.md#incomplete-startup-lists-must-not-select-the-command-layout).
 - **Rumble on a DualShock 4-style controller (resolved, Mac):** a GameSir Cyclone takes the [DualShock 4 effects report](../../../docs/reference/services.md#dualshock-4-rumble-through-its-effects-report). The game holds its low band at 0.1–0.4 all race long, which rotating motors play as constant rumble; `DM_RUMBLE_MIN=0.45` leaves crashes and drifts ([low levels on rotating motors](../../../docs/reference/services.md#controller-haptic-engines-without-advanced-players), open).
 - **Fullscreen slowdown to 15 frames a second on an M4's ProMotion screen (#348, closed into #347):** the display link skipped refreshes at frame latency 1; latency 2 in fullscreen is the workaround: [Frame latency 2 for the display link in fullscreen](../../../docs/reference/frame-rate.md#frame-latency-2-for-the-display-link-in-fullscreen). Measured on TotK; not yet checked on this game.
+- **2P hung on its 2P screen until the window lost and regained focus (resolved, GitHub issue #550):** the game applies the controller applet's answer only after the InFocus notification that follows a library applet, and with one controller it reopened the applet on an answer a Switch never gives: [Library applets take the application's focus](../../../docs/reference/services.md#library-applets-take-the-applications-focus). Checked on the Mac with 4.0.0, headless: two players (player 2 reported by a test build) reach the 2P character select, which takes input; one player goes back to the engine class menu. Leaving 2P and entering it again in one session did not hang before the fix either (reported, not traced).
 - **Save-write failure isolation (resolved; host regression):** the separate device and account saves make this game a relevant two-save case. Failure state, recovery and commit synchronization now belong to each backing transaction: [Save-write failures stay with their backing transaction](../../../docs/reference/services.md#save-write-failures-stay-with-their-backing-transaction).
 
 General host changes first needed here; each applies to every game:

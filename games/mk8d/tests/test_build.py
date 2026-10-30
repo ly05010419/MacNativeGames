@@ -267,19 +267,31 @@ class BuildTests(unittest.TestCase):
             self.assertIn('saves backed up to', launch(10)[0])
 
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('make') and shutil.which('clang'), 'the host tests build on macOS only')
-    def test_controller_applet_gives_focus_back(self):
-        # The copied host's t_hid.c (players, controllers, the controller applet): the game profile header comes from the committed game.tsv, as the host makes it
+    def test_library_applets_take_the_focus(self):
+        # The copied host's t_hid.c (players, the controller applet's answer, canceled with too few players) and t_oe.c (focus notifications, applets opening and
+        # closing), with their Makefile's flags; the game profile header comes from the committed game.tsv, as the host makes it
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             for name in ('host', 'games'):
                 shutil.copytree(GAME / 'runtime' / name, root / name)
             host = root / 'host'
             subprocess.run(['make', '-s', f'GAME={build.TITLE}', f'gen/{build.TITLE}/game_profile.h'], cwd=host, check=True, capture_output=True)
-            subprocess.run(['clang', '-O1', '-Wall', '-Werror', '-Wno-unused-function', '-I..', f'-I../gen/{build.TITLE}', f'-I../../games/{build.TITLE}',
-                            '-o', root / 't_hid', 't_hid.c', '../hle_haptics.c'], cwd=host / 'tests', check=True)
-            out = subprocess.run([root / 't_hid'], capture_output=True, text=True)
-            self.assertEqual(out.returncode, 0, out.stderr[-2000:])
-            self.assertRegex(out.stdout, r'hid players: \d+ checks, 0 failed')
+            inc = ['-I..', f'-I../gen/{build.TITLE}', f'-I../../games/{build.TITLE}']
+            for name, flags, sources, done in (('t_hid', ['-Wall', '-Werror'], ['t_hid.c', '../hle_haptics.c'], r'hid players: \d+ checks, 0 failed'),
+                                               ('t_oe', [], ['t_oe.c'], r'== oe \d+ checks, 0 failed ==')):
+                subprocess.run(['clang', '-O1', *flags, '-Wno-unused-function', *inc, '-o', root / name, *sources], cwd=host / 'tests', check=True)
+                out = subprocess.run([root / name], capture_output=True, text=True)
+                self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+                self.assertRegex(out.stdout, done)
+
+    def test_keyboard_player_is_a_setting(self):
+        rows = [line.split('\t') for line in (GAME / 'runtime/games/settings.tsv').read_text().splitlines() if line.startswith('DM_KBD_PLAYER\t')]
+        self.assertEqual(len(rows), 1)
+        variable, kind, values, default, shown, section = rows[0][:6]
+        self.assertEqual((kind, default, shown, section), ('choice', 'shared', 'platform:mac', 'Controls'))
+        self.assertEqual([v.split('=', 1)[0] for v in values.split(',')], ['shared', 'own'])
+        self.assertIn('level=basic', rows[0][8:])   # among the basic settings: the Mac window folds the others under Advanced settings
+        self.assertIn('!strcmp(e, "own")', (GAME / 'runtime/host/front_mac.m').read_text())   # the front end's own value for the keyboard as a player of its own
 
     def test_build_environment_disables_nuget_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
