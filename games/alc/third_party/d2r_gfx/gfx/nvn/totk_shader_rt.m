@@ -60,6 +60,27 @@ NSString *totk_rt_dir(void) {
         g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%s", DMSH_CHAIN];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
+        /* The shader seed the app carries (Contents/Resources/shader-seed, the launcher sets TOTK_SHADER_SEED_DIR): the
+           translations and their per-shader index files, copied once into this session's cache — the same "import into
+           the local cache if needed" step as the TotK tree's packed seed, in the loose form this fork's translator
+           writes (a marker file keeps later starts from walking the folder again). */
+        { const char *seedPath = getenv("TOTK_SHADER_SEED_DIR");
+          if (seedPath && *seedPath) {
+            NSString *marker = [g_dir stringByAppendingPathComponent:@".seed-imported"];
+            if (![NSFileManager.defaultManager fileExistsAtPath:marker]) {
+                NSFileManager *fm = NSFileManager.defaultManager;
+                NSUInteger imported = 0, seen = 0;
+                for (NSString *name in [fm contentsOfDirectoryAtPath:@(seedPath) error:nil]) {
+                    NSString *from = [@(seedPath) stringByAppendingPathComponent:name];
+                    NSString *to = [g_dir stringByAppendingPathComponent:name];
+                    seen++;
+                    if ([fm fileExistsAtPath:to]) continue;
+                    if ([fm copyItemAtPath:from toPath:to error:nil]) imported++;
+                }
+                [[@"" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:marker atomically:YES];
+                LOG("[shader-seed] 导入 App 附带的着色器文件 %lu / %lu 个（%s）；首次启动即可预热", (unsigned long)imported, (unsigned long)seen, seedPath);
+            }
+          } }
         const char *seedMode = getenv("TOTK_SHADER_SEED");
         if (!(seedMode && !strcmp(seedMode, "off"))) {
             NSError *error = nil;

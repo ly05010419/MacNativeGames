@@ -1,0 +1,15 @@
+@nsobid-4B159F0F7A360669738390EE8657B4F000000000000000000000000000000000
+
+# Astral Chain internal resolution 1920x1080 (docked base size; the handheld pair and the
+# dynamic-resolution arithmetic stay as they are — see scripts/make_res_patch.py)
+@enabled
+
+0040D5E4 09f08052
+0040D5F0 09878052
+0040FB04 09f08052
+0040FB14 09878052
+004328C0 08f08052
+004328C8 08878052
+0040F184 1f001e71
+0040F1AC 1f001e71
+0040F1D0 1f001e71
