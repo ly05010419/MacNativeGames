@@ -109,10 +109,18 @@ void runtime_autoload_user_input(void) {}
 uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 #define SIZE(w, h) ((uint64_t)(h) << 32 | (w))
-static void tick(void) { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.02]]; }
-/* Key 1 toggles the panel on the main queue; a run loop pass may end before it is served (right after a key binding was
-   captured), so two. */
-static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); tick(); }
+/* Key 1, a page that needs another panel and the aspect ratio's window size all act through the main queue. This returns when
+   what is queued so far has run: the queue keeps its order, so a block queued behind them shows it. A fixed wait does not
+   do: a run loop pass can use up the time before it looks at the queue (10-19 ms on an M5 Pro right after the panel with the
+   drawings was made, more on a busy runner) and then leaves, the queue unserved. */
+static void tick(void) {
+    __block BOOL served = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ served = YES; });
+    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:20];   /* within the test's 35 s for a run */
+    while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
+    if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
+}
+static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
                                  timestamp:0 windowNumber:window.windowNumber context:nil characters:@"x"
@@ -139,12 +147,13 @@ static void shows(NSString *title, NSString *choice) {
     NSString *now = menu(title).titleOfSelectedItem;
     if (![now isEqualToString:choice]) { fprintf(stderr, "%s shows %s, expected %s\n", title.UTF8String, now.UTF8String, choice.UTF8String); abort(); }
 }
-/* The window's content: that height (or the most the screen's visible area holds), 16:9. */
+/* The window's content: that height (or the most the screen's visible area holds), 16:9, each side within a point of the
+   exact size: whole points cannot always be 16:9 (a 1512-point screen holds 1512x850.5; 1511x850 fits, 851 high would need 1513). */
 static void window_is(CGFloat h) {
     NSRect room = [window contentRectForFrameRect:(window.screen ?: NSScreen.mainScreen).visibleFrame];
-    CGFloat want = round(fmin(h, fmin(room.size.height, room.size.width * 9 / 16)));
+    CGFloat want = fmin(h, fmin(room.size.height, room.size.width * 9 / 16));
     NSSize now = window.contentView.bounds.size;
-    if (fabs(now.height - want) > 1 || fabs(now.width - round(want * 16 / 9)) > 1) {
+    if (fabs(now.height - want) > 1 || fabs(now.width - want * 16 / 9) > 1) {
         fprintf(stderr, "window %.0fx%.0f, expected height %.0f at 16:9\n", now.width, now.height, want); abort();
     }
 }
