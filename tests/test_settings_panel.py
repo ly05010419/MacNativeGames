@@ -28,7 +28,7 @@ class SettingsPanel(unittest.TestCase):
                            '-Werror', '-Wno-deprecated-declarations', '-I' + str(gfx / 'include'),
                            '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
                            str(ROOT / 'tests/settings_panel_probe.m'),
-                           str(ROOT / 'tests/settings_output_fixture.c'),
+                           str(ROOT / 'tests/settings_output_fixture.c'), str(ROOT / 'games/totk/runtime/icons_apply.m'),
                            str(gfx / 'totk_mfx.m'), str(gfx / 'totk_mfx_up.m'), str(gfx / 'totk_taa.m'),
                            str(gfx / 'fps_overlay.c'),
                            '-framework', 'Cocoa', '-framework', 'Metal',
