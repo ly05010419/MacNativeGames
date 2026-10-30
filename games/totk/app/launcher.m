@@ -412,6 +412,8 @@ int main(int argc, char **argv) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
+        /* The app, whose scripts and RomFS the settings panel's Apply button icons draws from (runtime/icons_apply.m). */
+        setenv("TOTK_APP_BUNDLE", NSBundle.mainBundle.bundlePath.fileSystemRepresentation, 1);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         contrib_reminder(contrib);
