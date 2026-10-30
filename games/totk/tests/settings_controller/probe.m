@@ -63,33 +63,40 @@ int main(int argc,char **argv){@autoreleasepool{
  mode=0;
  hidPad=(HIDPadState){0};runtime_gamepad_clear();
  settings_controller_tick(pad(0),NO,YES,0);settings_controller_tick(pad(SETTINGS_CHORD),YES,YES,0.1);CHECK(settingsOpen&&textCapture==1);
- CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count+(settingsPanel.page==SETTINGS_PAGE_DISPLAY?settingsPanel.displayButtons.count:0));   /* the display page: its buttons after the rows */
+ CHECK(settingsPanel.controllerTargets.count==settingsPanel.rows.count);   /* the display page: its rows */
  /* Replace row setters with test-local values; changes must use each row's original control action. */
  __block int choice=0,toggle=0;
- TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};
- NSPopUpButton *popup=(NSPopUpButton *)r.control;[popup removeAllItems];[popup addItemsWithTitles:r.choices];[r refresh];
- settingsPanel.rows[1].set=nil;settingsPanel.rows[1].control.enabled=NO;
+ TOTKSettingRow *r=settingsPanel.rows[0];r.choices=@[@"Off",@"30",@"60"];r.values=@[@0,@30,@60];r.get=^int{return choice;};r.set=^(int v){choice=v;};r.enabledIf=nil;
+ settingsPanel.rows[1].set=nil;CHECK(!settingsPanel.rows[1].enabled);
  /* The first switch past row 1, found by kind: rows move when the panel gains one (PR #940's FPS graph). */
- NSUInteger sw=NSNotFound;for(NSUInteger i=2;i<settingsPanel.rows.count&&sw==NSNotFound;i++)if(!settingsPanel.rows[i].choices&&settingsPanel.rows[i].control.enabled)sw=i;
+ NSUInteger sw=NSNotFound;for(NSUInteger i=2;i<settingsPanel.rows.count&&sw==NSNotFound;i++)if(!settingsPanel.rows[i].choices&&!settingsPanel.rows[i].slider&&settingsPanel.rows[i].enabled)sw=i;
  CHECK(sw!=NSNotFound);
  TOTKSettingRow *s=settingsPanel.rows[sw];s.get=^int{return toggle;};s.set=^(int v){toggle=v;};
  settingsPanel.controllerIndex=0;[settingsPanel controllerHighlight];
  [settingsPanel controllerPad:pad(1) time:0.2 active:YES];CHECK(choice==0); /* opening input must be released */
- for(NSView *v in settingsPanel.controllerTargets)CHECK(v.layer.borderWidth==0);   /* nothing highlighted before the controller moves */
- press(1ull<<14);CHECK(choice==0&&settingsPanel.controllerTargets[0].layer.borderWidth==2);   /* the first move only shows where it is */
- press(1ull<<14);CHECK(choice==30);press(1ull<<12);CHECK(choice==0);
- press(1ull<<15);CHECK(settingsPanel.controllerIndex!=1&&settingsPanel.controllerIndex>1);
- settingsPanel.controllerIndex=sw;press(1ull<<14);CHECK(toggle==1);press(1ull<<14);CHECK(toggle==1);press(1ull<<12);CHECK(toggle==0);
+ CHECK(settingsPanel.controllerTargets[0].focus&&settingsPanel.controllerTargets[1].focus==NO);   /* one item is always the picked one */
+ press(1ull<<14);CHECK(choice==30);press(1ull<<14);CHECK(choice==60);press(1ull<<14);CHECK(choice==0);   /* right steps a choice, and wraps */
+ press(1ull<<12);CHECK(choice==60);press(1ull<<12);CHECK(choice==30);
+ press(1);CHECK(choice==30);   /* A does nothing on a choice: left / right change it */
+ press(1ull<<15);CHECK(settingsPanel.controllerIndex>1&&settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex].focus);   /* down skips the greyed row */
+ press(1ull<<13);CHECK(settingsPanel.controllerIndex==0);
+ settingsPanel.controllerIndex=sw;[settingsPanel controllerHighlight];
+ press(1ull<<14);CHECK(toggle==1);press(1ull<<14);CHECK(toggle==1);press(1ull<<12);CHECK(toggle==0);   /* a switch: right on, left off */
+ press(1);CHECK(toggle==1);press(1);CHECK(toggle==0);   /* A flips it */
  for(int family=GAMEPAD_TYPE_XBOX;family<=GAMEPAD_TYPE_SWITCH;family++){
-  runtime_gamepad_type_set(family);settingsPanel.controllerIndex=sw;toggle=0;g_settings_controller_active=YES;
+  runtime_gamepad_type_set(family);settingsPanel.controllerIndex=sw;toggle=0;[settingsPanel controllerHighlight];
   settingsPanel.rows[sw].get=^int{return toggle;};settingsPanel.rows[sw].set=^(int v){toggle=v;};
   press(family==GAMEPAD_TYPE_SWITCH?2:1);CHECK(toggle==1);
   press(family==GAMEPAD_TYPE_SWITCH?1:2);CHECK(!settingsOpen&&textCapture==2);
   settings_show(1);CHECK(settingsOpen);
  }
+ /* L / R switch the tabs, B goes back; the page shown stays the page shown at the next opening */
+ press(1ull<<7);CHECK(settingsPanel.page==SETTINGS_PAGE_INPUT);press(1ull<<7);CHECK(settingsPanel.page==SETTINGS_PAGE_BINDINGS);
+ press(1ull<<7);CHECK(settingsPanel.page==SETTINGS_PAGE_DISPLAY);press(1ull<<6);CHECK(settingsPanel.page==SETTINGS_PAGE_BINDINGS);
+ [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
  [settingsPanel controllerPad:pad(0) time:2 active:NO];[settingsPanel controllerPad:pad(1ull<<15) time:3 active:YES];CHECK(!settingsPanel.controllerArmed);
  [settingsPanel controllerPad:pad(0) time:4 active:YES];CHECK(settingsPanel.controllerArmed);
- g_settings_controller_active=YES;settingsPanel.controllerIndex=0;[settingsPanel controllerPad:pad(1ull<<15) time:5 active:YES];NSInteger first=settingsPanel.controllerIndex;
+ settingsPanel.controllerIndex=0;[settingsPanel controllerPad:pad(1ull<<15) time:5 active:YES];NSInteger first=settingsPanel.controllerIndex;
  [settingsPanel controllerPad:pad(1ull<<15) time:5.1 active:YES];CHECK(settingsPanel.controllerIndex==first);
  [settingsPanel controllerPad:pad(1ull<<15) time:5.5 active:YES];CHECK(settingsPanel.controllerIndex!=first);
  settings_show(0);textEntryOpen=1;settings_show(1);CHECK(!settingsOpen);
