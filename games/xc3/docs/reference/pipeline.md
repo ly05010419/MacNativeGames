@@ -1,0 +1,16 @@
+# How the port works, stage by stage
+
+A short map from the root `docs/how-it-works.md` (written for TotK) to the files in this folder. Read the original for details.
+
+| Step | What it does | Files in `games/xc3` | Plan stage |
+|---|---|---|---|
+| Container import | Reads the PFS0 (NSP) and gets the title key from the common ticket using the titlekek in `prod.keys`. Decrypts the Program NCA in place and verifies the ExeFS hash table and all 6 RomFS IVFC levels. Updates are merged through BKTR. | `scripts/extract_code.py`, `extract_exefs.py`, `extract_romfs.py`, `merge_romfs.py`, `versions.py`, `extract_shared_fonts.py`, `assets/expected-v*.json` | 2, 8 |
+| NSO rewriter | Ahead of time, turns x18, TLS-register, `svc` and counter-register uses into jumps to stubs in a patch area. Verified by structure (`structck`) and equivalence on random states (`equiv`, Unicorn, offline only). | `third_party/d2r/patch_nso.py`, `structck.py`, `equiv.py`, `nsoimg.py`, `relr.py`, `call_window.py` | 3 |
+| Tables | Symbols, relocations, svc and timer gates, the constructor flag, RomFS index and font config, all generated after every hash is re-checked. | `scripts/prepare_runtime.py`, `prepare_modules.py` → `$WORK/build/<v>/runtime_tables.h`, `romfs_config.h`, `shared_fonts_config.h` | 4 |
+| Loader | Maps the modules at their original layout (guest addresses below 2^39, or the alias region high with `GUEST_ALIAS_HIGH`), resolves imports, calls `nn::init::Start`, then `nnMain`. | `runtime/loader.c`, `gate.S`, `hle_stack.{c,S}`, `thread_enter.S` | 4 |
+| Horizon host | Answers syscalls and IPC: threads, memory, file system and saves, time, settings, account, applets, input, text entry, movies, fonts. | `runtime/services.c`, `ipc.c`, `threads.c`, `fs_host.c`, `romfs.c`, `time_host.c`, `settings_service.c`, `system_services.c`, `account.c`, `applet_host.c`, `input.c`, `gamepad.m`, `swkbd_host.c`, `movie_host.c`, `shared_font.c`, `game_version.h`, `game_patches.c` | 4, 6 |
+| Audio | The audio renderer and its effects, plus AudioOut, mixed and played through Core Audio; libopus. | `runtime/audio_renderer.c`, `audio_mixer.c`, `audio_effects.c`, `audio_reverb.c`, `opus_codec.c` | 6 |
+| NVN on Metal 4 | Replays NVN command buffers on Metal. Memory pools become Metal resources with dirty-page tracking; render targets become passes; MetalFX upscaling. | `third_party/d2r_gfx/gfx/nvn/` (`nvn_mtl.m`, `hle_nvn.c`, `nvn_thunks.S`, `nvn_dirty.c`, `nvn_tex.c`, …), `third_party/d2r_gfx/gfx/tex/`, `runtime/gfx_bridge.c` | 5 |
+| Shaders | At run time, Maxwell → patched Ryujinx translator → SPIR-V → SPIRV-Cross → MSL → Metal, cached in the data folder. The translator is a NativeAOT binary checked by SHA-256; its source and patches are in `tools/`. | `prebuilt/macos-arm64/totk_xlate(.sha256)`, `tools/totk_xlate/` (`Program.cs`, `Service.cs`, `patches/*.patch`, `publish_native.sh`), Makefile `shader-tools` | 5 |
+| App | The launcher with its settings window; the runtime, tools, rewritten modules and RomFS are cloned into `Contents/Resources/game` and the app is signed. | `app/launcher.m`, `runtime/frontend.m`, Makefile `app`, `scripts/extract_app_icon.py` | 7 |
+| Mods | A RomFS mod folder with a `manifest.tsv`, plus code patches checked against the build ID. | `scripts/make_mod_manifest.py`, `prepare_patches.py` | later |

@@ -18,6 +18,7 @@ void *runtime_symbol(const char *name);
 void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);
 void runtime_gpu_path_probe(const char *which);
+int mtl_pipeline_archive_tool(int argc, char **argv);   // Mac only (nvn_mtl.m): the device's pipeline archive for packaging
 void runtime_audio_probe(void);
 void runtime_audio_output_restart(int recreate);   /* audio_mixer.c: start the outputs again after an audio session interruption (iOS) */
 void *runtime_hle_wrap(void *fn);
@@ -27,7 +28,7 @@ void *runtime_codec_override(const char *name);
 void *runtime_movie_override(const char *name);   /* runtime/movie_host.c: movie::Decoder for VP9 cutscenes */
 void *runtime_time_override(const char *name);
 void *runtime_applet_override(const char *name);
-void *runtime_swkbd_override(const char *name);   /* runtime/swkbd_host.c: nn::swkbd text entry with the Mac keyboard */
+void *runtime_swkbd_override(const char *name);   /* runtime/swkbd_host.c: nn::swkbd text entry with keyboard or controller */
 void runtime_swkbd_probe(void);
 void runtime_swkbd_selftest(void);
 void runtime_dump_threads(void);   /* threads.c: every guest thread's wait state and guest return chain (TOTK_INPUT_FILE "threads") */   /* diagnostic "kbtest": show the text entry bar from a thread of its own */
@@ -38,7 +39,7 @@ uint32_t runtime_thread_current_handle(void);            /* threads.c: handle of
 void *runtime_hle_wrap_named(void *fn, const char *name);/* hle_stack.c: runtime_hle_wrap with a name for diagnostics */
 void runtime_hle_trace_set(int mode);                    /* hle_stack.c: 1 count host calls, 2 also log the first call of each, 0 stop and print */
 void runtime_hle_describe(unsigned index, char *out, size_t cap);   /* hle_stack.c: readable name of a host-call wrapper */
-/* Text entry bar in the game window (runtime/frontend.m, Mac): the player types on the keyboard, Return confirms (1, the text
+/* Text entry in the game window (runtime/frontend.m, Mac): controller keyboard and Mac typing, Return confirms (1, the text
    as UTF-8 in out), Escape cancels (0). The caller waits; give the virtual core up around it (runtime_core_away). */
 typedef struct { const char *prompt, *initial; int max_units, min_units, secure, digits_only; uint32_t disabled; } RuntimeTextRequest;
 int runtime_front_text_input(const RuntimeTextRequest *req, char *out, size_t out_size);
@@ -107,6 +108,7 @@ int runtime_output_native(int mode, unsigned *w, unsigned *h);   /* the canvas o
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
+void runtime_audio_hold(int on);   /* audio_mixer.c: silent output while the first frame waits for the warm-up */
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
@@ -131,21 +133,52 @@ void runtime_vpool_probe(void);
 
 void runtime_memory_probe(void);
 
-void runtime_input_key(unsigned code,int down);
+void runtime_input_key(unsigned code,int down);   /* a window key: the player's layout (runtime/keyboard_map.h) */
+void runtime_input_mouse(int button,int down);    /* runtime/gamepad.m, mouse mode: a mouse button through the same layout */
+void runtime_keyboard_capture(int on);   /* iOS only (runtime/gamepad.m, TARGET_OS_IPHONE): a UIKit text field takes the hardware keyboard; it must not also drive the game */
 void runtime_input_clear(void);
+uint64_t runtime_keyboard_buttons(void);   /* runtime/input.c: the Switch buttons the held keys drive now (no lock) */
+struct KeyMap;   /* runtime/keyboard_map.h */
+void runtime_keymap_get(struct KeyMap *out);       /* runtime/input.c: the keyboard and mouse layout in force */
+void runtime_keymap_set(const struct KeyMap *map); /* in force at once, saved in keyboard.txt (the settings panel) */
+void runtime_keymap_reset(void);                   /* the default layout, keyboard.txt removed */
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
 void runtime_gamepad_start(void);
 void runtime_gamepad_switch_left(void *controller, int x, int y);
+void runtime_gamepad_switch_right(void *controller, int x, int y);
 void runtime_gamepad_read(RuntimeGamepadState *out);
+/* Mac software keyboard: exclusive controller capture; UI reads physical positions (controller_map.h),
+   independent of gameplay remaps. Main-thread only. Closing waits for release before gameplay resumes. */
+void runtime_gamepad_text_capture(int on);
+void runtime_gamepad_text_read(RuntimeGamepadState *out);
+int runtime_gamepad_game_input(void);   /* any thread: 1 while the game gets the controllers (no capture, nor its release wait) */
+/* macOS opts in; the controller's settings button (L3 + R3 together, or the one picked in the key bindings) is latched
+   independently of guest polling. */
+void runtime_gamepad_settings_enable(int enabled);
+int runtime_gamepad_settings_requested(void);
+int runtime_gamepad_settings_button(void);               /* -1: L3 + R3 together; else the physical button (controller_map.h) */
+void runtime_gamepad_settings_button_set(int physical);   /* the key bindings; saved in controller-settings.txt, -1 the default */
 /* Forget held buttons and sticks: macOS stops delivering controller events (including releases) while the app is in
    the background, so a button held at focus loss would otherwise stay pressed for the game. */
 void runtime_gamepad_clear(void);
 int runtime_gamepad_type_set(int type);     /* runtime/gamepad.m: the settings panel's controller type (gamepad_layout.h GAMEPAD_TYPE_*), saved; returns the type in force */
 int runtime_gamepad_type(int *detected);    /* runtime/gamepad.m, main thread: the picked type; *detected = auto's guess for the connected controller, -1 none */
+int runtime_gamepad_battery_percent(void);  /* runtime/gamepad.m, main thread: the first controller's battery as a whole percent, -1 none or unknown */
 int runtime_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting file next to controls.txt; 1 read, 0 none */
 void runtime_setting_save(const char *name, const char *word, const char *what);   /* runtime/gamepad.m: saves one; what names it in a failure line */
+int runtime_shared_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: the same, shared by both games (the folder above controls.txt's) */
+void runtime_shared_setting_save(const char *name, const char *word, const char *what);
+void runtime_setting_remove(const char *name);   /* runtime/gamepad.m: back to the default (a settings panel reset) */
+/* runtime/gamepad.m, main thread: the controller layout (controller_map.h, CONTROLLER_BUTTONS entries each) in force;
+   set puts one in force and saves it in controls.txt, reset goes back to the default and removes the file. */
+void runtime_controller_map_get(uint16_t *map, uint8_t *modes);
+void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes);
+void runtime_controller_map_reset(void);
+int runtime_mouse_sensitivity(void);          /* runtime/gamepad.m: mouse mode's sensitivity, 1-100 (50) */
+int runtime_mouse_sensitivity_locked(void);   /* TOTK_MOUSE_SENSITIVITY decides (the panel's slider greyed out) */
+void runtime_mouse_sensitivity_set(int value);   /* the settings panel's slider: at once, saved in mouse-sensitivity.txt */
 int runtime_mouse_set(int on);              /* runtime/gamepad.m: the settings panel's mouse mode, saved; returns it */
 int runtime_mouse_enabled(void);
 void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): mouse mode changed, on the main queue */
@@ -183,17 +216,20 @@ int runtime_triggers_available(void);
 int runtime_triggers_locked(void);
 int runtime_triggers_choice(void);
 void runtime_triggers_choose(int on);
+void runtime_triggers_release(void);   /* the game ends (atexit, and the window's close, whose _exit skips it): both triggers off */
 int runtime_motion_read(RuntimeMotionState *out, int max);   /* newest first; 0 = no motion now */
 void runtime_motion_start(void);   /* the game (re)started its sensor: angle and direction start over */
 void runtime_motion_feed(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* runtime/motion_fusion.c */
 int runtime_motion_axes(const char *spec);   /* TOTK_GYRO_AXES ("-x,y,-z"): 1 set, 0 unset, -1 malformed */
 void runtime_motion_deadzone_default(double deg_s);   /* when TOTK_GYRO_DEADZONE is unset: 1.2 for HID motion, else 0 */
 void runtime_motion_live(int on);   /* a controller with motion attached (1) / detached (0) */
+void runtime_motion_phone(int on);  /* the iPhone's own sensor feeds the six-axis device (1) / stops (0) */
 void runtime_motion_mouse(int on);  /* mouse mode (key 7) takes the sensor over (1) / gives it back to the controller (0) */
 void runtime_motion_feed_mouse(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* already in the reference frame */
 void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
 #ifdef __OBJC__
 @class GCController;
 void runtime_feedback_attach(GCController *controller);
+void runtime_feedback_active(void);   /* the app became active: manual-activation controllers need their sensors on again */
 void runtime_feedback_detach(GCController *controller);
 #endif

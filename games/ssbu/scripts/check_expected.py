@@ -8,7 +8,7 @@ import argparse, hashlib, json, sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
-VERSIONS = {'v1302': 'expected-v13.0.2.json'}
+VERSIONS = {'v1302': 'expected-v13.0.2.json', 'v1305': 'expected-v13.0.5.json'}
 
 
 def sha256(path):

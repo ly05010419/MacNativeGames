@@ -4,6 +4,9 @@
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log, wonder.log for the other games)
 // If the game is already running, the launcher only brings it to the front.
 #import <AppKit/AppKit.h>
+#import <GameController/GameController.h>
+#include <IOKit/hid/IOHIDManager.h>
+#include <IOKit/hid/IOHIDUsageTables.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <libproc.h>
@@ -18,12 +21,34 @@
 #include "controller_map.h"
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
+#include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
+#include "update_notice.h"
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
     alert.messageText = @"The game could not start";
     alert.informativeText = detail;
     [alert runModal];
+}
+
+/* Whether a game controller is connected: a HID joystick / gamepad (DualSense, Pro Controller, Xbox over Bluetooth),
+   or one the GameController framework adopts (Xbox over USB), which it reports a moment after the first run loop turns. */
+static BOOL controller_connected(void) {
+    IOHIDManagerRef hid = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    NSMutableArray *matching = [NSMutableArray array];
+    for (NSNumber *usage in @[@(kHIDUsage_GD_Joystick), @(kHIDUsage_GD_GamePad), @(kHIDUsage_GD_MultiAxisController)])
+        [matching addObject:@{@kIOHIDDeviceUsagePageKey: @(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey: usage}];
+    IOHIDManagerSetDeviceMatchingMultiple(hid, (__bridge CFArrayRef)matching);
+    CFSetRef devices = IOHIDManagerCopyDevices(hid);
+    BOOL found = devices && CFSetGetCount(devices) > 0;
+    if (devices) CFRelease(devices);
+    CFRelease(hid);
+    for (int i = 0; !found && i < 10; i++) {
+        for (GCController *controller in GCController.controllers)
+            if (controller.extendedGamepad) found = YES;
+        if (!found) [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+    }
+    return found;
 }
 
 static NSDictionary<NSString *, NSString *> *kv_read(NSString *path) {
@@ -61,56 +86,6 @@ static pid_t running_game(NSString *slot) {
         (!requestOwner || !*requestOwner || !strcmp(requestOwner, "user"))) return 0;
     pid_t pid = [h[@"game_pid"] intValue];
     return pid > 0 && pid_start(pid) == (uint64_t)[h[@"game_start"] longLongValue] ? pid : 0;
-}
-
-/* A tool's standard output and exit status (input, if any, goes to its standard input); nil if it did not start. */
-static NSString *run_tool(NSString *exe, NSArray<NSString *> *args, NSString *input, int *status) {
-    NSTask *task = [NSTask new];
-    task.executableURL = [NSURL fileURLWithPath:exe]; task.arguments = args;
-    NSPipe *out = [NSPipe pipe], *in = [NSPipe pipe];
-    task.standardOutput = out; task.standardInput = in; task.standardError = [NSFileHandle fileHandleWithNullDevice];
-    *status = -1;
-    if (![task launchAndReturnError:nil]) return nil;
-    if (input) [in.fileHandleForWriting writeData:[input dataUsingEncoding:NSUTF8StringEncoding]];
-    [in.fileHandleForWriting closeFile];
-    NSData *data = [out.fileHandleForReading readDataToEndOfFile];
-    [task waitUntilExit]; *status = task.terminationStatus;
-    return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-}
-
-/* The GitHub CLI when it is installed and signed in, else nil (an app started from Finder has no Homebrew in its PATH). */
-static NSString *gh_path(void) {
-    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-    for (NSString *dir in [NSProcessInfo.processInfo.environment[@"PATH"] componentsSeparatedByString:@":"])
-        if (dir.length) [candidates addObject:[dir stringByAppendingPathComponent:@"gh"]];
-    [candidates addObjectsFromArray:@[@"/opt/homebrew/bin/gh", @"/usr/local/bin/gh"]];
-    for (NSString *exe in candidates) {
-        if (![NSFileManager.defaultManager isExecutableFileAtPath:exe]) continue;
-        int status; run_tool(exe, @[@"auth", @"status"], nil, &status);
-        return status == 0 ? exe : nil;
-    }
-    return nil;
-}
-
-/* "Submit automatically": a secret gist with the file, then an issue in the shader-list form's layout linking its raw
-   file (scripts/collect_shader_issues.py finds it by its title; GitHub drops labels set by people without write access).
-   The issue's link, or nil. */
-static NSString *contrib_submit(NSString *gh, NSString *path, NSUInteger rows) {
-    NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-    if (!text) return nil;
-    int status;
-    NSString *gist = run_tool(gh, @[@"gist", @"create", @"--filename", @"shader-list-contribution.txt", @"--desc", @"MacNativeGames shader list contribution", @"-"], text, &status);
-    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"https://gist\\.github\\.com/([\\w-]+)/([0-9a-f]+)" options:0 error:nil];
-    NSTextCheckingResult *m = status == 0 && gist ? [re firstMatchInString:gist options:0 range:NSMakeRange(0, gist.length)] : nil;
-    if (!m) return nil;
-    NSString *link = [NSString stringWithFormat:@"https://gist.githubusercontent.com/%@/%@/raw/shader-list-contribution.txt",
-                      [gist substringWithRange:[m rangeAtIndex:1]], [gist substringWithRange:[m rangeAtIndex:2]]];
-    NSString *body = [NSString stringWithFormat:@"### Game version / 游戏版本\n\n%s\n\n### Device / 设备\n\nMac\n\n### shader-list-contribution.txt\n\n%@\n\n"
-                      "### Where you played (optional) / 玩了哪些地方（可选）\n\n_No response_\n", TOTK_GAME_VERSION, link];
-    NSString *title = [NSString stringWithFormat:@GAME_CONTRIB_TITLE " %lu shaders from Mac (%@ %s)", (unsigned long)rows, @GAME_FOLDER, TOTK_GAME_VERSION];
-    NSString *issue = run_tool(gh, @[@"issue", @"create", @"--repo", @TOTK_CONTRIB_REPO, @"--title", title, @"--body", body], nil, &status);
-    NSRange r = status == 0 && issue ? [issue rangeOfString:@"https://github\\.com/\\S+/issues/[0-9]+" options:NSRegularExpressionSearch] : NSMakeRange(NSNotFound, 0);
-    return r.location == NSNotFound ? nil : [issue substringWithRange:r];
 }
 
 static void note(NSString *text) {
@@ -166,9 +141,9 @@ static NSString *contrib_file(NSString *data) {
     NSString *folder = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGContributionFolder"];
     if (![folder isKindOfClass:NSString.class] || !folder.length || ![fm fileExistsAtPath:folder.stringByDeletingLastPathComponent]) return old;
     if (![fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil]) return old;
-    // one file for the Mac and every iPhone / iPad (ios/tools/shader_contrib_watch.py merges theirs in): the rows are the same
-    // for every platform; Breath of the Wild has a list of its own
-    NSString *mine = [folder stringByAppendingPathComponent:strcmp(GAME_FOLDER, "TOTK") ? @"shader-list-contribution-botw.txt" : @"shader-list-contribution.txt"];
+    // this game's own file (GAME_CONTRIB_FILE, totk_shader_contrib.h), beside Tears of the Kingdom's and Breath of the
+    // Wild's in the same folder: its rows go to its own list (user 2026-10-28), not into theirs
+    NSString *mine = [folder stringByAppendingPathComponent:@GAME_CONTRIB_FILE];
     if (![fm fileExistsAtPath:mine] && [fm fileExistsAtPath:old]) {
         [fm moveItemAtPath:old toPath:mine error:nil];
         NSString *state = [old stringByAppendingString:@".reminded"];   // where the state was kept before (totk_contrib_state)
@@ -179,6 +154,58 @@ static NSString *contrib_file(NSString *data) {
 
 static BOOL make_dir(NSString *path) {
     return [NSFileManager.defaultManager createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
+}
+
+/* build_app.py --mac-game-data library: the app carries no RomFS image. A folder holds it when its romfs.bin (in it, or in
+   <folder>/<version>) has the size the build pinned (romfs-config.txt) and a romfs.sha256 beside it, if any, names the
+   pinned image: the build copies to romfs.bin.partial first, so a romfs.bin of the full size is a complete copy. Its hash
+   is checked by the runtime at the first start (TOTK_ROMFS_PROOF_DIR). Returns the folder of the image, or nil. */
+static NSString *game_data_in(NSString *folder, unsigned long long size, NSString *sha) {
+    if (!folder.length) return nil;
+    for (NSString *place in @[[folder stringByAppendingPathComponent:@TOTK_GAME_DIR], folder]) {
+        NSDictionary *image = [NSFileManager.defaultManager attributesOfItemAtPath:[place stringByAppendingPathComponent:@"romfs.bin"] error:nil];
+        if (!image || image.fileSize != size) continue;
+        NSString *mark = [NSString stringWithContentsOfFile:[place stringByAppendingPathComponent:@"romfs.sha256"] encoding:NSUTF8StringEncoding error:nil];
+        mark = [mark stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!mark.length || [mark caseInsensitiveCompare:sha] == NSOrderedSame) return place;
+    }
+    return nil;
+}
+
+/* No folder holds the image (the app copied to another Mac, or its disk not connected): ask where it is, and keep the
+   answer for the next starts (defaults MNGGameDataFolder.<version>). The image is read where it is, never moved or
+   copied. Returns its folder, or nil to quit. */
+static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long size, NSString *sha) {
+    [NSApplication sharedApplication]; [NSApp activateIgnoringOtherApps:YES];
+    for (;;) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @(TOTK_UI("游戏数据在哪里？", "Where is the game data?"));
+        alert.informativeText = [NSString stringWithFormat:@(TOTK_UI("这个 App 不包含游戏数据（romfs.bin，%.1f GB），在 %@ 里没有找到。如果它在没有连接的磁盘上，请连接后点“重试”；否则请选择存放它的文件夹。游戏会在原处读取它，不会移动或复制。",
+                                                                    "This app keeps its game data (romfs.bin, %.1f GB) outside the app, and it is not in %@. If it is on a disk that is not connected, connect it and choose Try Again; otherwise choose the folder it is in. The game reads it where it is, without moving or copying it.")),
+                                     size / 1e9, [looked componentsJoinedByString:@(TOTK_UI("、", ", "))]];
+        [alert addButtonWithTitle:@(TOTK_UI("选择文件夹…", "Choose Folder…"))];
+        [alert addButtonWithTitle:@(TOTK_UI("重试", "Try Again"))];
+        [alert addButtonWithTitle:@(TOTK_UI("退出", "Quit"))];
+        NSModalResponse choice = [alert runModal];
+        if (choice == NSAlertThirdButtonReturn) return nil;
+        if (choice == NSAlertSecondButtonReturn) {
+            for (NSString *folder in looked) { NSString *found = game_data_in(folder, size, sha); if (found) return found; }
+            continue;
+        }
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.canChooseFiles = NO; panel.canChooseDirectories = YES; panel.allowsMultipleSelection = NO;
+        panel.message = @(TOTK_UI("选择存放 romfs.bin 的文件夹（或它上一层、以版本命名的文件夹所在的文件夹）。",
+                                  "Choose the folder that holds romfs.bin (or the folder that holds its " TOTK_GAME_DIR " folder)."));
+        panel.prompt = @(TOTK_UI("选择", "Choose"));
+        if ([panel runModal] != NSModalResponseOK || !panel.URL) continue;
+        NSString *found = game_data_in(panel.URL.path, size, sha);
+        if (found) {
+            [NSUserDefaults.standardUserDefaults setObject:found forKey:@"MNGGameDataFolder." TOTK_GAME_DIR];
+            return found;
+        }
+        note([NSString stringWithFormat:@(TOTK_UI("%@ 里没有这个版本的 romfs.bin（应为 %llu 字节）。", "%@ holds no romfs.bin of this version (%llu bytes).")),
+              panel.URL.path, size]);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -218,6 +245,7 @@ int main(int argc, char **argv) {
             [[NSRunningApplication runningApplicationWithProcessIdentifier:running] activateWithOptions:NSApplicationActivateAllWindows];
             return 0;
         }
+        mng_update_notice(data);
 #if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143) || defined(WONDER_V121)
         NSString *backup = [profile stringByAppendingFormat:@"-before-%s", TOTK_GAME_VERSION];
         NSFileManager *fm = NSFileManager.defaultManager;
@@ -254,9 +282,41 @@ int main(int argc, char **argv) {
         setenv("TOTK_SHADER_CACHE", cache.fileSystemRepresentation, 1);
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);   // the app bundle stays read-only
+        /* build_app.py --mac-game-data library: the app carries no RomFS image, so a new build is a few hundred MB and
+           copies to another Mac without it. It is looked for in the folder chosen at an earlier start (game_data_ask), the
+           folder the build put it in (Info.plist MNGGameDataFolder, e.g. on another disk), and <data>/GameData; with none
+           holding it, the player is asked. An app with its own image uses that. */
+        NSFileManager *files = NSFileManager.defaultManager;
+        if (![files fileExistsAtPath:@"extracted/" TOTK_GAME_DIR "/romfs/romfs.bin"]) {
+            NSString *pins = [NSString stringWithContentsOfFile:@"build/game-data/" TOTK_GAME_DIR "/romfs-config.txt" encoding:NSUTF8StringEncoding error:nil];
+            unsigned long long size = 0; NSString *sha = @"";
+            for (NSString *line in [pins componentsSeparatedByString:@"\n"]) {
+                NSArray<NSString *> *kv = [line componentsSeparatedByString:@" "];
+                if (kv.count != 2) continue;
+                if ([kv[0] isEqualToString:@"ROMFS_IMAGE_SIZE"]) size = strtoull(kv[1].UTF8String, NULL, 10);
+                if ([kv[0] isEqualToString:@"ROMFS_IMAGE_SHA256"]) sha = kv[1];
+            }
+            if (!size) { show_error(@"The game files are missing from this app. Build it again with build_app.py."); return 1; }
+            NSMutableArray<NSString *> *places = [NSMutableArray array];
+            for (id place in @[[NSUserDefaults.standardUserDefaults stringForKey:@"MNGGameDataFolder." TOTK_GAME_DIR] ?: @"",
+                               [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGGameDataFolder"] ?: @"",
+                               [data stringByAppendingPathComponent:@"GameData"]])
+                if ([place isKindOfClass:NSString.class] && [place length] && ![places containsObject:place]) [places addObject:place];
+            NSString *library = nil;
+            for (NSString *place in places) if ((library = game_data_in(place, size, sha))) break;
+            if (!library && !(library = game_data_ask(places, size, sha))) return 0;
+            setenv("TOTK_ROMFS_DATA", library.fileSystemRepresentation, 1);   // runtime/romfs.c
+        }
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
-        /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. */
-        setenv("TOTK_ROMFS_MODS", [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR].fileSystemRepresentation, 0);
+        /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
+           start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
+           scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
+        NSString *mods = [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR];
+        NSString *keyboardMods = [mods stringByAppendingString:@"-keyboard"];
+        if (!getenv("TOTK_ROMFS_MODS") && [NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
+            !controller_connected())
+            mods = keyboardMods;
+        setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
         /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
         NSString *preferred = NSLocale.preferredLanguages.firstObject;
@@ -265,13 +325,11 @@ int main(int argc, char **argv) {
         setenv("TOTK_GPU_WIDEN", "1", 1);
         setenv("TOTK_GPU_BLOCKRT", "1", 1);
         setenv("TOTK_GPU_MIDCLEAR", "1", 1);
-        { /* 5000 MB was sized for 16 GB Macs; scale with memory (30%, never below 5000) so native 4K fits on bigger
-             Macs. An explicit TOTK_GPU_BUDGET_MB from the environment still wins. */
-          unsigned long long mb = NSProcessInfo.processInfo.physicalMemory / 10 * 3 >> 20;
-          char budget[32]; snprintf(budget, sizeof budget, "%llu", mb < 5000 ? 5000ULL : mb);
-          setenv("TOTK_GPU_BUDGET_MB", budget, 0); }
         setenv("TOTK_SLOT_OWNER", "user", 0);
         setenv("TOTK_SLOT_PURPOSE", "player", 0);
+        /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
+        NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
+        if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         contrib_reminder(contrib);

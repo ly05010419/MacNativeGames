@@ -1,5 +1,6 @@
 /* Test the bow-drawn reader (games/totk/runtime/bow_state.h) on a fake guest memory: the pointer paths of Breath of the
-   Wild 1.9.0 and Tears of the Kingdom 1.4.3, and every way a path can be missing or wrong. */
+   Wild 1.9.0 and Tears of the Kingdom 1.4.3 (with 1.4.3's pause word), every way a path can be missing, wrong or stale,
+   and the rule that lets R2 resist only when every part agrees. */
 #include "../games/totk/runtime/bow_state.h"
 #include <math.h>
 #include <stdio.h>
@@ -29,6 +30,8 @@ static int fake_read(uint64_t address, void *out, size_t size) {
 static int reads;
 static int counting_read(uint64_t address, void *out, size_t size) { reads++; return fake_read(address, out, size); }
 static int failing_read(uint64_t address, void *out, size_t size) { (void)address; (void)out; (void)size; return 0; }
+/* fails only on the pause word of the actor at link 3 (actor_of(3) + 0x5ac, below) */
+static int pause_word_failing_read(uint64_t address, void *out, size_t size) { return address == 0x7100030000ull + 0x5ac ? 0 : fake_read(address, out, size); }
 static void put64(uint64_t address, uint64_t v) { memcpy(at(address, 8), &v, 8); }
 static void put32(uint64_t address, uint32_t v) { memcpy(at(address, 4), &v, 4); }
 static void putf(uint64_t address, float v) { memcpy(at(address, 4), &v, 4); }
@@ -118,6 +121,40 @@ int main(void) {
     expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_UNKNOWN, "totk_null_block: a missing state block is unknown");
     totk(9, 3, 0x20, 55); cache = (BowTotkCache){0, 0};
     expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, failing_read, &cache) == BOW_UNKNOWN, "totk_unreadable: a failed read is unknown");
+
+    /* a menu pauses the world: the Player's word at +0x5ac gets bit 0x40, and the drawn bit keeps whatever it was */
+    totk(9, 3, 0x20, 55); put32(actor_of(3) + 0x5ac, 0x080001e2); cache = (BowTotkCache){0, 0};   /* as read in the pause menu */
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_PAUSED, "totk_paused_drawn: a bow drawn under a menu is paused");
+    totk(9, 3, 0x00, 55); put32(actor_of(3) + 0x5ac, 0x40); cache = (BowTotkCache){0, 0};
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_PAUSED, "totk_paused_idle: a paused Player is paused");
+    totk(9, 3, 0x20, 55); put32(actor_of(3) + 0x5ac, 0x08000122); cache = (BowTotkCache){0, 0};   /* as read in play */
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_DRAWN, "totk_play_flags: the word's other bits do not pause");
+    totk(9, 3, 0x20, 55); put32(actor_of(3) + 0x5ac, 0xffffffbfu); cache = (BowTotkCache){0, 0};
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_DRAWN, "totk_play_flags: every bit but 0x40 does not pause");
+    totk(9, 3, 0x20, 55); put32(actor_of(3) + 0x5ac, 0x080001e2); cache = (BowTotkCache){0, 0};
+    bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache);
+    put32(actor_of(3) + 0x5ac, 0x08000122);   /* the menu closed, ZR still held */
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_DRAWN, "totk_unpaused: the draw counts again once the menu closes");
+    totk(9, 3, 0x20, 55); cache = (BowTotkCache){0, 0};
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, pause_word_failing_read, &cache) == BOW_UNKNOWN, "totk_pause_word_unreadable: an unreadable pause word is unknown");
+
+    /* stale state: a cached Player no link holds any more, and a scene count past the limit */
+    totk(9, -1, 0, 55); cache = (BowTotkCache){0x7400000000, 3};   /* freed memory that still reads Player, drawn, not paused */
+    put64(0x7400000000 + 0x218, 0x7400000800); puts_(0x7400000800, "Player");
+    put64(0x7400000000 + 0x248, 0x7300000000); put64(0x7300000000 + 0x760, 0x7300010000); put8(0x7300010000 + 9, 0x20);
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_UNKNOWN, "totk_stale_no_player: a cached Player no link holds is unknown");
+    expect(cache.actor == 0, "totk_stale_no_player: the cache is dropped");
+    totk(9, 3, 0x20, 257); cache = (BowTotkCache){0, 0};
+    expect(bow_state_totk143(MAIN, TOTK_SCENE_SLOT, TOTK_ACTOR, fake_read, &cache) == BOW_UNKNOWN, "totk_count_out_of_range: 257 components is unknown");
+
+    /* R2 resists only when every part agrees */
+    expect(bow_resists(BOW_DRAWN, 1, 1), "resists: drawn, the game has the controller, the app in front");
+    expect(!bow_resists(BOW_PAUSED, 1, 1), "resists: not while paused");
+    expect(!bow_resists(BOW_NOT_DRAWN, 1, 1), "resists: not when not drawn");
+    expect(!bow_resists(BOW_UNKNOWN, 1, 1), "resists: not when the state is unknown");
+    expect(!bow_resists(BOW_DRAWN, 0, 1), "resists: not while the settings panel or keyboard has the controller");
+    expect(!bow_resists(BOW_DRAWN, 1, 0), "resists: not while the app is in the background");
+    expect(!bow_resists(7, 1, 1) && !bow_resists(-2, 1, 1), "resists: not for a value no reader returns");
 
     if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     printf("bow state: all checks passed\n");

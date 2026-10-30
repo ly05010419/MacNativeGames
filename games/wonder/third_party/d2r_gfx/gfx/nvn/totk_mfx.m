@@ -118,20 +118,22 @@ static id<MTL4FXFrameInterpolator> fi_cached(NSUInteger iw, NSUInteger ih) {
 static _Atomic int g_on, g_req;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 const char *mfx_mode_name(int m) {
-    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "half the refresh rate (50+50 on a 100 Hz display)", "uncapped (every game frame interpolated)"};
+    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "40+40 (the game at 40 fps)", "50+50 (the game at 50 fps)", "uncapped (every game frame interpolated)"};
     return m >= 0 && m < MFX_NMODES ? names[m] : "?";
 }
 static void mfx_init(void) {
     const char *e = getenv("TOTK_MFX"); int v;
     if (!e || !*e || !strcmp(e, "0")) v = MFX_OFF;
     else if (!strcmp(e, "interp30")) v = MFX_30;
-    else if (!strcmp(e, "interp")) v = MFX_HALF;
+    else if (!strcmp(e, "interp40")) v = MFX_40;
+    else if (!strcmp(e, "interp50") || !strcmp(e, "interp")) v = MFX_50;
     else if (!strcmp(e, "interpmax")) v = MFX_MAX;
-    else MDIE("TOTK_MFX must be interp30, interp, interpmax or 0, got %s", e);
+    else MDIE("TOTK_MFX must be interp30, interp40, interp50 (interp), interpmax or 0, got %s", e);
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
 int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }

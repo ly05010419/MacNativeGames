@@ -43,6 +43,17 @@ static void nifm_request(void) { static int once; if (!once++) fprintf(stderr, "
 static int64_t network_clock_now(void) { return (int64_t)time(NULL); }   /* time_point: seconds since the epoch */
 static void environment_identifier(char *out) { if (!out) runtime_fail("nsd environment output"); memset(out, 0, 8); memcpy(out, "lp1", 3); }
 static void friends_initialize(void) { fprintf(stderr, "[smo] friends: offline\n"); }
+/* nn::ldn, local wireless (Q126): Smash 13.0.2 opened ldn:u when the player went into local wireless, and the host, which
+   has no ldn:u, stopped the game ("IPC service not implemented"). It now answers as a Switch whose wireless communication
+   is off, so the SDK client never opens the service: Initialize fails with 2203-0022 (module 203 Ldn, description 22,
+   switchbrew "Error codes"), the state stays None, Finalize has nothing to close, and the state change event is a plain
+   event that never fires. */
+#define LDN_WIRELESS_OFF RESULT(203, 22)
+static uint32_t ldn_initialize(void) {
+    static int once; if (!once++) fprintf(stderr, "[totk-net] local wireless: off (ldn Initialize answered 2203-0022)\n");
+    return LDN_WIRELESS_OFF;
+}
+static void ldn_attach_state_event(void *event) { if (!event) runtime_fail("ldn state change event"); hle_bind_system_event(event, 0); }
 /* Super Smash Bros. Ultimate 13.0.2 reads the friend list and the blocked users at the title, registers play history and
    keeps a friend notification queue. A console that never went online has no friends, blocks no one and never gets a
    notification: lists are empty, the queue's event is never signaled and popping finds nothing (friends module 121). */
@@ -147,6 +158,8 @@ void *runtime_system_override(const char *name) {
         {"_ZN2nn2oe23BeginBlockingHomeButtonEv", home_button_blocking}, {"_ZN2nn2oe21EndBlockingHomeButtonEv", home_button_blocking},
         {"_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", no},
         {"_ZN2nn4nifm10InitializeEv", ok}, {"_ZN2nn4nifm18IsNetworkAvailableEv", no},
+        {"_ZN2nn3ldn10InitializeEv", ldn_initialize}, {"_ZN2nn3ldn8FinalizeEv", ok}, {"_ZN2nn3ldn8GetStateEv", ok},
+        {"_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", ldn_attach_state_event},
         {"_ZN2nn4nifm27SubmitNetworkRequestAndWaitEv", nifm_request}, {"_ZN2nn4nifm20CancelNetworkRequestEv", nop},
         /* A bool in the SDK, true = the error was handled and the request may be submitted again (sdk+0x322d90 ends in
            `and w0, w0, #1`). The Result answered before only read as false because its low bit is 0 (Q72). */

@@ -1,24 +1,28 @@
 # Super Mario Odyssey native Mac port
 
-Super Mario Odyssey **1.3.0** running natively on Apple silicon Macs, built from **your own copy** of the game. The
-game's own ARM64 code is rewritten ahead of time and runs directly on the Mac's CPU: no interpreter, no JIT, no CPU
+Super Mario Odyssey **1.3.0 or 1.4.1** running natively on Apple silicon Macs, built from **your own copy** of the game.
+The game's own ARM64 code is rewritten ahead of time and runs directly on the Mac's CPU: no interpreter, no JIT, no CPU
 emulator. System services are answered by a small native host, and the Switch's NVN graphics are rebuilt on Metal 4,
 with the game's GPU shaders translated to Metal.
 
 **No game content is in this repository, and none will ever be.** You need a legal dump of your own cartridge or
 download, and keys from your own Switch. We do not help anyone obtain keys or game files.
 
-## Status (23 October 2026)
+What changed and how each change was measured: [CHANGELOG.md](CHANGELOG.md).
 
-Tested on one Mac: MacBook Pro, Apple M3, 8 GB, macOS 26.6.
+## Status (26 October 2026)
+
+Tested on a MacBook Pro, Apple M3, 8 GB, macOS 26.6 (1.3.0, 23 October), and on a MacBook Pro, Apple M1 Max, 64 GB,
+macOS 27.0.1 (1.4.1 from a base NSP and the update NSP, 26 October).
 
 | Works | Details |
 |---|---|
 | Boot, title menu, save list | resume, new game |
-| Play in Cap Kingdom and Bonneton | keyboard and game controllers; cap throw; camera |
+| Play in Cap Kingdom, Bonneton and the Wooded Kingdom | keyboard, game controllers and mouse mode; cap throw; camera |
 | Saves | autosave and reload; the app keeps the saves from before each of the last five sessions |
-| Sound and movies | game audio; H.264 tutorial and story movies |
-| Performance | locked 60 fps in Bonneton on the M3 (frame time p95 about 17.5 ms); MetalFX upscaling to the window |
+| Sound and movies | game audio, without a tick where the music's stream buffers join; H.264 tutorial and story movies |
+| Performance | locked 60 fps in Bonneton on the M3 (frame time p95 about 17.5 ms); 60 fps in the Wooded Kingdom with the 3D scene at 2560x1440 on the M1 Max |
+| Picture | key 3: the 3D scene at the shipped 1600x900, with MetalFX to the window, 1920x1080 or 2560x1440; key 4: 16:9, fitted to the window or 21:9; key 5: MetalFX edge smoothing |
 | Latency | full screen by default: about 30 ms from game frame to screen (63 ms windowed) |
 
 | Not done or not verified | Details |
@@ -27,9 +31,10 @@ Tested on one Mac: MacBook Pro, Apple M3, 8 GB, macOS 26.6.
 | Long sessions | the packaged app closes the game after 20 minutes (`session-minutes.txt`): earlier, longer runs of this renderer caused macOS GPU-driver panics, and longer sessions have not been re-verified |
 | VR mode (Labo) | starts without crashing but stops at the game's "remove the console from the dock" screen; not supported |
 | Online features | answered as offline |
-| Memory | about 3.5 GB in play; on an 8 GB Mac close other large apps |
+| Memory | about 3.5 GB in play; on an 8 GB Mac close other large apps. The 2560x1440 render size adds 60 MiB; it was not measured on an 8 GB Mac (`--render-res 1600x900` leaves it out) |
 
-Exact measurements and logs are in the development log below and in the project's test evidence.
+Exact measurements and logs are in the development log below, in [CHANGELOG.md](CHANGELOG.md) and in the project's
+test evidence.
 
 ## Optional frame interpolation
 
@@ -47,9 +52,10 @@ generated.
 ## What you need
 
 - An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1).
-- Super Mario Odyssey with the **1.3.0** update, as a combined XCI or NSP that you dumped yourself. Other versions are
-  rejected by hash, including **1.4.1**: it has the same executables but slightly different data, and is not
-  supported yet (see "Version naming" below).
+- Super Mario Odyssey with the **1.3.0** or **1.4.1** update that you dumped yourself: a combined XCI or NSP, or the base
+  game NSP and the update NSP (`--update`, joined into one NSP first). Other versions are rejected by hash. 1.3.0 and
+  1.4.1 have the same executables, and the base game merged with either update gives the same game data byte for byte
+  (see "Version naming" below).
 - `prod.keys` dumped from your own Switch.
 - Your Switch's **firmware** files (its NCA folder), dumped from your own Switch: the system fonts come from there.
   Some game cards carry them in their system-update partition, but not all (the tested 1.3.0 card doesn't).
@@ -69,20 +75,34 @@ python3 -m venv .venv && .venv/bin/pip install capstone cryptography lz4
 open Odyssey_build/Odyssey.app
 ```
 
-The script runs eight steps and stops with a clear message if something is missing:
+With a base game NSP and a separate update NSP:
 
+```bash
+.venv/bin/python scripts/build_odyssey.py --game YOUR_BASE.nsp --update YOUR_UPDATE.nsp --keys prod.keys --firmware YOUR_FIRMWARE_FOLDER
+```
+
+The script runs eight steps (nine with `--update`) and stops with a clear message if something is missing:
+
+0. with `--update`: join the base and update NSPs into `<work>/input/odyssey.nsp` (every entry copied unchanged);
 1. check the input (title, version, integrity; it prints no keys or game data);
-2. extract the program modules and merge the base game with the update;
+2. extract the program modules and merge the base game with the update; scale the game's graphics table for key 3's
+   bigger render size into a RomFS overlay (`--render-res`, default 2560x1440; `1600x900` leaves the game as shipped);
 3. extract the system fonts;
 4. rewrite the ARM64 modules ahead of time;
-5. verify the modules, the rewrite and the game data against the pinned 1.3.0 hashes;
+5. verify the modules, the rewrite and the game data against the pinned hashes;
 6. build the shader tools (pinned SPIRV-Cross) and the runtime;
 7. prepare the whole-game shader seed, so first play stutters much less (`--skip-seed` leaves it out);
-8. extract the game's icon and package `Odyssey.app`, with saves, shader cache and logs in `Odyssey Data` beside it.
+8. extract the game's icon and version and package `Odyssey.app`, with saves, shader cache and logs in `Odyssey Data`
+   beside it.
 
 Each step is skipped when its verified output is already there, so after an error you fix the cause and run the same
-command again. Other options: `--work FOLDER` (a folder inside `games/odyssey` whose name ends in `_build`, with no
-space in its path below `games/odyssey`, since `make` can't handle spaces), `--developer-dir` for another Xcode.
+command again. Other options: `--work FOLDER` (a folder outside the repository, or one inside `games/odyssey` whose
+name ends in `_build`; no space in its path below `games/odyssey`, since `make` can't handle spaces), `--developer-dir`
+for another Xcode.
+
+**Tested 26 October 2026** with a base NSP and the 1.4.1 update NSP on the M1 Max (work folder outside the repository):
+the merged game data came out as 4,972 files, 5,678,168,236 bytes, the size and SHA-256 that
+`assets/expected-local-update.json` pins for 1.3.0, and the app started with a save in the Wooded Kingdom.
 
 **Tested 23 October 2026** from an empty folder on the M3 test Mac with a 1.3.0 card dump: about 9 minutes in all
 (the shader seed about 6, packaging about 2). The rewritten modules, the merged game data and all 129,602 shader-seed files came
@@ -96,11 +116,62 @@ translated into Metal libraries ahead of time; then run the build command again 
 
 ## Playing
 
+- Opening Odyssey.app shows a settings window first, with the game's icon (made from your dump when the app is
+  packaged): render size, anti-aliasing, upscaler, texture filtering, sharpening, 60+60 at start, full screen or
+  window, the session limit and the controller's A/B/X/Y layout. **Play** saves them in `Odyssey Data` and starts the
+  game. Untick "Show this window at every launch" to go straight in; hold ⌥ Option while opening the app to see it again.
 - Keyboard: WASD move, J jump (A), K (B), U throw cap (Y), I (X), arrows camera, Return pause (+). Game controllers
   supported by macOS work too.
 - Full screen by default; ⌃⌘F or the green button leaves it. Create an empty file `windowed` in `Odyssey Data` to
   start in a window, or `no-metalfx` to turn off MetalFX upscaling.
 - The app is built from your own game files: do not share it.
+
+### The settings window
+
+| Setting | Choices | What it does |
+|---|---|---|
+| Resolution (render size) | 1600 × 900 (the game's own) / 1920 × 1080 / 2240 × 1260 / 2560 × 1440 | How many pixels the game draws: sharper and the best edge smoothing higher up, at the most GPU time |
+| Anti-aliasing | Off / FXAA / SMAA | Smooths jagged edges before the upscale; SMAA looks better, FXAA is nearly free |
+| Upscaler | MetalFX / FSR 1 / Lanczos / Bilinear | How the picture is enlarged to the screen; bilinear is the cheapest and softest |
+| Texture filtering | Game default / 4× / 8× / 16× anisotropic | Keeps floors and walls sharp at an angle |
+| Sharpen the picture (CAS) | on / off | Counters softness from upscaling and 60+60 |
+| Frame rate | 60 fps / 60+60 frame generation | 60+60 adds a generated picture between game frames on a 120 Hz screen |
+| Display | Full screen / Window | How the game starts |
+| Session limit | 20 / 60 / 90 / 120 minutes / No limit | Closes the game after this time (it saves first) |
+| Controller A / B / X / Y | By label / By position | "By position" makes an Xbox-style layout match the printed letters on a Nintendo controller |
+
+Return plays, Esc quits. Everything is kept in `Odyssey Data`: `graphics.txt` (`aa`, `cas`, `upscaler`, `textures`,
+`resolution`, `frame_generation`, `launcher`, one `name=value` per line), `windowed`, `session-minutes.txt` and
+`face-buttons.txt`; editing them by hand works too. If the game stutters, watch the GPU line in the overlay and try, in
+order: resolution back to 1600 × 900, sharpening off, FSR 1 instead of MetalFX.
+
+### Keys
+
+The keys are the same as in Tears of the Kingdom. The settings window's picture choices (anti-aliasing, sharpening,
+upscaler, texture filtering, resolution) are not on keys: change them in the window before the game; the top-right
+overlay (key 1) lists them with the GPU load and the GPU time of the picture work.
+
+| Key | What it does |
+|---|---|
+| 1 | overlays (FPS, shaders, load and this list) on or off |
+| 2 | frame interpolation 60+60 on a 120 Hz screen, on or off (above) |
+| 3 | picture: the 3D scene at the shipped 1600x900, 1600x900 with MetalFX to the window, native 1920x1080, native 2560x1440 (the game starts as shipped; window and HUD stay at 2560x1440). Built with `--render-res 1600x900`: MetalFX to the window on or off |
+| 4 | aspect ratio: 16:9, fitted to the window, 21:9 (`TOTK_ASPECT=<w>:<h>` sets the wide step); the HUD stays 16:9 |
+| 5 | edge smoothing (MetalFX temporal anti-aliasing), off by default (`TOTK_TAA=1` starts it on) |
+| 6 | controller type: auto, Xbox, PlayStation, Switch (how the face buttons map to the Switch's A, B, X, Y; kept for the next start) |
+| 7 | mouse mode: the mouse turns the camera and its buttons act as controller buttons; Command-Tab frees the pointer |
+
+Anti-aliasing, sharpening and the upscaler act while 60+60 is on (key 2); with it off the picture is the default (MetalFX,
+no filter). A resolution picked in the window uses key 3's render size patch (`runtime/game_patches.c`: framework,
+canvas, console viewport, and the render target pool and memory heap grown with it) with the game's own quality table
+rewritten for that size (`scripts/make_resolution_overlay.py`, run from your dump at packaging); the game starts at it and
+key 3 still steps down to 1600x900. SMAA uses the area and search tables from [iryoku/smaa](https://github.com/iryoku/smaa)
+(MIT, `third_party/smaa`).
+
+Measured on an M-series Mac with 8 GB (Seaside Kingdom, output 3024x1700; GPU time of the picture work per presented
+frame): MetalFX 1.81 ms, FSR 1 1.68 ms, Lanczos 1.89 ms, bilinear 0.26 ms; FXAA +0.03 ms, SMAA +0.18 ms, CAS +0.4 ms;
+16x texture filtering no measurable picture cost. 1920x1080 and 2240x1260 hold 16.7 ms frames; at 1920x1080 with 60+60,
+SMAA, CAS, FSR 1 and 16x the 120 Hz cadence held (p50 8.33 ms) with the GPU near its limit.
 
 ---
 
@@ -138,16 +209,20 @@ Upstream MacNativeGames is 359 commits ahead of our `43f53b4` checkout (`origin/
 
 The new Metal compile flag `shouldMaximizeConcurrentCompilation` is also set (`DM_MAX_CONCURRENT_COMPILE=0` turns it off). The renderer objects compile. `tests/system_event_bind/probe.c` passes all three parts against the new `threads.c` and fails against the old one. Four bounded 90 s GPU runs resumed a copy of the Cap Kingdom save and alternated prefetch off and on; all exited 0 and reached the same in-game scene. In run order (off/on/off/on), long frames after 45 s were 26/40/10/4, worst 644/174/104/87 ms, with no in-game compile stalls after the first run. Warming across runs dominates, so prefetch's own effect is not established. The startup critical-pipeline wait swung between 0.2 and 38.9 s with Metal cache state (`boot-ab-prefetch-*.log`). The upstream **pipeline binary archive** was then ported and is on by default (`TOTK_PIPELINE_ARCHIVE=0` turns it off). Five bounded runs cut startup warm-up from 4.4 s (off) to 1.6 s (149 archived pipelines). After a rebuild, though, the first runs can spend more than 90 s compiling shader libraries from source before the first frame. Removing that needs precompiled `.metallib` files and the Metal Toolchain, whose download is still pending. [`PLAYBOOK.md`](PLAYBOOK.md) collects outside techniques for later problems, with sources: emulator bug history for SMO, 1.3.0 mod offsets, test and replay tools, the save format, GPU fault reporting, pacing, audio, input and packaging. [`TECHNIQUES.md`](TECHNIQUES.md) lists each backport with its upstream measurement, the upstream work still to port (pipeline binary archive first), and external techniques with sources.
 
-### Version naming: 1.3.0 and 1.4.1 share their executables, not their data
+### Version naming: 1.3.0 and 1.4.1 share their executables and their merged data
 
-This port is built and verified against update **1.3.0** (the update's Control NACP, `scripts/inspect_version.py`,
-`Odyssey_build/analysis/versions.json`). Update **1.4.1** is a later update with the **same executables** but
-**slightly different data**:
+This port was built and verified against update **1.3.0** (the update's Control NACP, `scripts/inspect_version.py`,
+`Odyssey_build/analysis/versions.json`). Update **1.4.1** is a later update with the **same executables**, and the base
+game merged with it gives **the same game data**:
 
 - Checked 23 October 2026 against a local 1.4.1 update NSP (metadata and hashes only): its NACP says **1.4.1**;
   `main`, `sdk`, `subsdk0` and `rtld` are byte-identical to 1.3.0's (same SHA-256 and build IDs); `main.npdm` differs
   only in a 512-byte block near its start (the signature area); its program NCA is 16,896 bytes larger, so its RomFS
-  patch differs. Which RomFS files differ is not known yet.
+  patch differs.
+- Checked 26 October 2026 by building from a base NSP and that 1.4.1 update NSP: the merged RomFS is 4,972 files,
+  5,678,168,236 bytes, with the SHA-256 `assets/expected-local-update.json` pins for 1.3.0. The patch differs in its
+  layout only: 1.4.1's AES-CTR-Ex table covers the data up to the indirect table, which `third_party/by3-scripts/
+  merge_romfs.py` now reads as plain AES-CTR too.
 - Other projects target the same executables under the 1.4.1 name: **[nxnative](https://github.com/seedds/nxnative)**
   (profile `dm/games/0100000000010000/game.tsv`, `build v393216 1.4.1`, with these build IDs) and probably
   **[smo-recomp](https://github.com/Coz-0/smo-recomp)** (no build IDs published; our main already imports the Labo VR
@@ -163,9 +238,9 @@ What this means:
 
 - Code addresses (`main+0x…`, `sdk+0x…`) from nxnative or smo-recomp apply to this build; per AGENTS.md rule 5,
   still verify each one by disassembly before using it.
-- **The build accepts 1.3.0 only.** `scripts/prepare_runtime.py` checks the merged RomFS against
-  `assets/expected-local-update.json`, so 1.4.1's different data is rejected until it is examined and added as a
-  supported version.
+- **The build accepts 1.3.0 and 1.4.1.** `scripts/prepare_runtime.py` still checks the merged RomFS against
+  `assets/expected-local-update.json`; both updates pass it. Only the Control data names the version, which the app's
+  window title shows.
 
 ## Open in Xcode
 

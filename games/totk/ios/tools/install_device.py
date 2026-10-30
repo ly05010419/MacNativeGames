@@ -95,11 +95,20 @@ def device_files(dev, bundle_id, sub):
     device stale before failing (2026-10-23, the phone had locked)."""
     with tempfile.NamedTemporaryFile(suffix='.json') as f:
         r = subprocess.run(['xcrun','devicectl','device','info','files','--device',dev,'--domain-type','appDataContainer',
-                            '--domain-identifier',bundle_id,'--subdirectory',sub,'--json-output',f.name], capture_output=True)
+                            '--domain-identifier',bundle_id,'--subdirectory',sub,'--no-recurse','--json-output',f.name], capture_output=True)
         if r.returncode:
-            if sub != 'Documents' and device_files(dev, bundle_id, 'Documents') is not None: return {}   # reachable: the folder is not there yet
-            sys.exit(f'cannot read Documents/{sub} on the device (is it connected by cable and unlocked?): {r.stderr.decode(errors="replace").strip()[-300:]}')
-        files = json.load(open(f.name)).get('result', {}).get('files', [])
+            # A readable Documents folder alone says nothing about an existing child's permissions or availability.
+            # Only the immediate parent's successful listing can prove that this exact leaf is absent.
+            if sub != 'Documents':
+                folder = Path(sub)
+                if folder.name not in device_files(dev, bundle_id, folder.parent.as_posix()): return {}
+            sys.exit(f'cannot read {sub} on the device (is it connected by cable and unlocked?): {r.stderr.decode(errors="replace").strip()[-300:]}')
+        try:
+            report = json.loads(Path(f.name).read_text())
+            files = report['result']['files']
+            if report.get('error') or not isinstance(files, list): raise ValueError('not a successful file listing')
+        except (OSError, ValueError, KeyError, TypeError):
+            sys.exit(f'cannot read {sub} on the device: invalid file listing; no absence was confirmed')
     return {Path(x.get('relativePath', x.get('name', ''))).name: x.get('metadata', {}).get('size', 0) for x in files}   # devicectl's JSON
 
 def push_game_data(dev, bundle_id, image):
@@ -109,29 +118,22 @@ def push_game_data(dev, bundle_id, image):
     sha = json.loads((image.parent/'index.json').read_text())['romfs_sha256']
     size = image.stat().st_size; parts = (size + PART - 1) // PART
     have = device_files(dev, bundle_id, 'Documents/GameData')
-    if have.get('romfs.sha256') == 64 + 1 and all(f'romfs.bin.{i:03d}' in have for i in range(parts)):
-        with tempfile.TemporaryDirectory() as d:
-            got = Path(d)/'romfs.sha256'
-            r = subprocess.run(['xcrun','devicectl','device','copy','from','--device',dev,'--domain-type','appDataContainer',
-                                '--domain-identifier',bundle_id,'--source','Documents/GameData/romfs.sha256','--destination',got], capture_output=True)
-            if r.returncode == 0 and got.read_text().strip() == sha:
-                print('game data: the device already has this image'); return
-    # every part there at its full size but the marker not (an install stopped between writing "stale" and the first part):
-    # the parts are this image, only the marker is written again
-    if all(have.get(f'romfs.bin.{i:03d}') == min(PART, size - i * PART) for i in range(parts)) and have.get('romfs.sha256') != 64 + 1:
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d)/'romfs.sha256').write_text(sha + '\n')
-            run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
-                 bundle_id,'--source',Path(d)/'romfs.sha256','--destination','Documents/GameData/romfs.sha256'], capture_output=True)
-        print('game data: every part is on the device; only its marker was written again'); return
+    expected_sizes = {f'romfs.bin.{i:03d}': min(PART, size - i * PART) for i in range(parts)}
     copying = f'copying {sha}'
-    resume = False
-    if have.get('romfs.sha256') == len(copying) + 1:
+    marker = None
+    if have.get('romfs.sha256') in (64 + 1, len(copying) + 1):
         with tempfile.TemporaryDirectory() as d:
             got = Path(d)/'romfs.sha256'
             r = subprocess.run(['xcrun','devicectl','device','copy','from','--device',dev,'--domain-type','appDataContainer',
                                 '--domain-identifier',bundle_id,'--source','Documents/GameData/romfs.sha256','--destination',got], capture_output=True)
-            resume = r.returncode == 0 and got.read_text().strip() == copying
+            if r.returncode or not got.is_file():
+                sys.exit('game data: cannot read the existing image marker; keep the device unlocked and connected, then retry')
+            marker = got.read_text().strip()
+    if marker == sha and all(have.get(name) == length for name, length in expected_sizes.items()):
+        print('game data: the device already has this image'); return
+    # Equal lengths alone cannot identify an image. Reuse complete parts only after reading a marker of this SHA.
+    # A committed image with a truncated part can be repaired too, after marking the transfer in progress again.
+    resume = marker in (sha, copying)
     print(f'game data: copying {size / 2**30:.1f} GiB in {parts} parts (once; later installs keep it)' +
           (', going on from the parts already there' if resume else ''), flush=True)
     with tempfile.TemporaryDirectory() as d, open(image, 'rb') as src:
@@ -144,7 +146,7 @@ def push_game_data(dev, bundle_id, image):
                 print(f'  {name}: copy failed (attempt {attempt + 1} of 3): {(r.stderr or r.stdout).strip().splitlines()[-1:]}', flush=True)
                 time.sleep(10)
             sys.exit(f'game data: {name} could not be copied (keep the device unlocked and connected); run this again to go on from there')
-        if not resume: (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
+        if marker != copying: (Path(d)/'romfs.sha256').write_text(copying + '\n'); copy(Path(d)/'romfs.sha256', 'romfs.sha256')   # until every part is there
         for i in range(parts):
             part = Path(d)/f'romfs.bin.{i:03d}'
             if resume and have.get(part.name) == min(PART, size - i * PART):
@@ -236,12 +238,17 @@ def main():
     ap.add_argument('--team', help='Apple team ID (default: the only team with an Apple Development certificate)')
     ap.add_argument('--bundle-id', help='default: the build\'s identifier (org.macnativegames.totk or .botw) + .<team>, so it is free to register on your team')
     ap.add_argument('--game-data', type=Path, help='romfs.bin (index.json beside it) for an IPA built with --ios-game-data documents')
+    ap.add_argument('--wifi', action='store_true', help='install on an iPhone / iPad that is not on the cable (slow; 14 GiB of game data over Wi-Fi took about 2 minutes per GiB and dropped)')
     a = ap.parse_args()
     team = a.team or (lambda t: t[0] if len(t) == 1 else sys.exit(
         f'choose the team with --team: {", ".join(t)}' if t else 'no Apple Development certificate: add your Apple ID in Xcode > Settings > Accounts'))(teams())
     bundle_id = a.bundle_id or f'{built_bundle_id(a.ipa, team)}.{team.lower()}'
     dev = pick_device(a.device)
     udid = dev['hardwareProperties']['udid']
+    if (dev['hardwareProperties'].get('platform') != 'visionOS' and not a.wifi
+            and dev.get('connectionProperties', {}).get('transportType') == 'localNetwork'):
+        sys.exit(f"{dev['deviceProperties'].get('name')} is connected over Wi-Fi: connect it with the cable (unlocked) and run "
+                 "this again; --wifi installs over Wi-Fi anyway (slow, and a copy of the game data can drop)")
     print(f"team {team}, bundle {bundle_id}, device {dev['deviceProperties'].get('name')} ({udid})")
 
     print('provisioning profile: asking Xcode')

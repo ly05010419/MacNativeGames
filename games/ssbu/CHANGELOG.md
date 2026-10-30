@@ -182,3 +182,63 @@ and nothing outside `games/ssbu` is read.
   menu (applies to the next photo; Show in Finder opens it). One folder chooser now serves the DLC and Photos menus.
   Measured: two photos without a crash, then a photo saved as a 1280x720 PNG without alpha, colours checked by eye
   against the game.
+
+### 2026-10-27: 13.0.5
+
+- **What 13.0.5 changes.** The final update (1 September 2026: invalid data in online battles). Of the five ExeFS
+  modules only `main` and `main.npdm` differ: rtld, sdk (SDK 8.2.1) and subsdk0 are 13.0.2's byte for byte, and so are
+  their rewrites. The NRRs from `cross2_130001` to `cross2_130004` list the same 98 NRO modules, so the fighters,
+  stages and modes are 13.0.2's too; the RomFS has 15 files (13.0.2: 12, the three new NRRs).
+- **Which version.** `build_ssbu.py` extracts the update's ExeFS once and takes the version whose hashes it carries
+  (`identify_update`, as `build_app.py` does), never the file name; each version's files stay apart in the work folder
+  (`extracted/v1305`, `rewritten/v1305`). The Makefile's `VERSION` builds the runtime for one (`-DSSBU_GAME_V1305`,
+  `runtime/game_version.h`), and before the first start of 13.0.5 the launcher keeps the saves as
+  `profile-before-13.0.5`, as Tears of the Kingdom's updates do.
+- **Pins.** `assets/expected-v13.0.5.json`, from a base NSP and the 13.0.5 update NSP: the ExeFS from `extract_code.py`,
+  the RomFS from `merge_romfs.py` (all six IVFC levels), the rewrites from `patch_nso.py` (sdk and subsdk0 reproduce the
+  13.0.2 pins).
+- **2K.** 13.0.5's `main` has 0x9b0 bytes more code before main+0x35b407c: the 26 render size sites from there on sit
+  0x9b0 later with the same words (every sequence of two or more instructions occurs in the 13.0.5 image only at the
+  sites, and every single-instruction site matches at that shift). The UI factor sites at main+0x1534e18 / 0x153c348
+  stay, but rodata moved a page, so their adrp words name the next page (`RES_SHIFT`, `J1_X11` ... in
+  `game_patches.c`). Built as 13.0.2, `game_patches.c` and the launcher compile to the same machine code as before
+  (disassembly and strings compared). `SSBU_UI_LOG` and `SSBU_VP_LOG` keep 13.0.2's addresses and say so on 13.0.5.
+  Measured: the start in 2K, groups ABCDEGHIJ, 55 instructions, 372 viewports scaled and 38 kept.
+- **Played** on an Apple M5, 32 GB, macOS 27.2: matches in a 3420x1916 window, with MetalFX upscaling (key 3) on and
+  off. Presentation p50 and p95 16.67 ms at 60 Hz; after the first seconds of warm-up at most 0.8 % of the frames one
+  refresh late. `gap_report.py`: three warnings the graphics layer already handles (`hle_nvn.c`, `nvn_mtl.m`), no abort.
+
+### 2026-10-28: a PowerA controller for Switch 2, a controller that reconnects, local wireless, the display
+
+- **The PowerA controller.** It pairs over Bluetooth as "Lic3 Pro Controller" with vendor 0, and macOS marks it
+  `GameControllerSupportedHIDDevice = No`: GameController lists no controller, the HID reader (`runtime/gamepad.m`)
+  takes it. Measured on it: B A Y X L R ZL ZR minus plus as button usages 1-10 and Home 13 (a Pro Controller's simple
+  report), the right stick on Rx/Ry, and sticks that reach only 8,400..56,464 (X) and 3,823..58,943 (Y) of 0..65,535.
+  The reader assumed B 1, A 2, Y 4, X 5, L 7, R 8, ZL 9, ZR 10 and a right stick on Z/Rz: X, L, ZL, ZR, minus and plus
+  came out as other buttons, Y, R and the right stick did nothing, and a full push read 0.66-0.71 after the dead zone,
+  so a flick walked where it should dash. Now a pad named "... Pro Controller" is read in the Pro Controller's order
+  (`gamepad_hid_order`, `gamepad_hid_buttons`), Rx/Ry are the right stick when a pad has them and no Z/Rz, and in that
+  order each stick direction is scaled by the furthest it has reached since the pad connected, from 0.65, full at 0.85
+  of that reach (`gamepad_hid_reach`). The pad sends about 70 reports a second (p50 15 ms): flicks that went from 0.25
+  to 0.8 in two reports dashed, in three walked; over the same 15 flicks, full at 0.85 left none taking three (1.0: one,
+  0.9: one, 0.8: two), and the slow pushes to the end still walk. The full input mode (subcommand 0x03 0x30) was
+  measured too and kept out: the same report rate, the same reach, and no stick calibration stored in the pad (its SPI
+  calibration reads 0xFF). `tests/gamepad_layout/probe.c` checks both orders usage by usage and the reach (73 checks),
+  `tests/test_ssbu_gamepad_layout.py` runs it.
+- **A controller that reconnects.** After a Bluetooth disconnect and Home, the PowerA came back but was never taken
+  again: `hid_pad_attach` returned at four places without a word. It now names why it did not take a pad, and one that
+  is not ready yet is tried again after 0.25, 0.5, 1, 2 and 4 s. The reconnect then logged "not ready: ...
+  GameControllerSupportedHIDDevice not set; trying again" and "taken at try 2".
+- **Local wireless.** Going into local wireless stopped the game: `sm: service "ldn:u" not implemented`. nn::ldn is now
+  answered by name, as nfp and nifm are, like a Switch with wireless communication off: Initialize returns 2203-0022
+  (module 203, description 22), GetState stays None, Finalize returns 0, the state change event never fires.
+  `scripts/override_audit.py --name ldn`: MISMATCH 0.
+- **The display.** macOS counts the keyboard and the mouse as activity, not a game controller: playing with a
+  controller only, the screen saver came in the middle of a fight (`pmset -g assertions` listed nothing from the game).
+  While the controller's state changes, the game holds a PreventUserIdleDisplaySleep assertion ("Super Smash Bros.
+  Ultimate: controller in use") and lets it go once the controller has been still for the Mac's own screen saver time
+  (`com.apple.screensaver` idleTime of this host, 300 s when none is set): measured, the assertion while playing and
+  "display may sleep again: no controller input for 180 s" afterwards.
+- **Played** on a MacBook Pro (Apple M1 Max, 64 GB, macOS 27.0.1) with the PowerA, on 13.0.2 and on 13.0.5: on 13.0.5
+  44 min at 2K, no abort; the presentation windows the log holds (frames 105,300 to 158,100, the last 14.7 min) have
+  p99 16.67 ms in 175 of 177 windows of 300 frames (two at 25.00 ms) and 211 of 53,025 frames dropped (0.40 %).

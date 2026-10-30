@@ -80,6 +80,7 @@ static void app_active_changed(int active){
  if(atomic_exchange(&appActive,active)==active)return;
  if(!active)runtime_input_clear();
  mtl_app_active(active);runtime_oe_push_message(15);
+ if(active)runtime_feedback_active();
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
@@ -150,9 +151,17 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 /* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
+#if TARGET_OS_IOS
+extern void totk_phone_motion_start(void);
+extern void totk_phone_haptics_start(void);
+#endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
  runtime_gamepad_start();
+#if TARGET_OS_IOS
+ /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
+ dispatch_async(dispatch_get_main_queue(), ^{ totk_phone_motion_start(); totk_phone_haptics_start(); });
+#endif
  @autoreleasepool{callback();}
 }
 static int viReady;

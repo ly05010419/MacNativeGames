@@ -1,9 +1,9 @@
 # Super Smash Bros. Ultimate native Mac port
 
-Super Smash Bros. Ultimate **13.0.2** running natively on Apple silicon Macs, built from **your own copy** of the game.
-The game's own ARM64 code (the program and the 98 NRO modules for fighters, stages and modes) is rewritten ahead of time
-and runs directly on the Mac's CPU: no interpreter, no JIT, no CPU emulator. System services are answered by a small
-native host, and the Switch's NVN graphics are rebuilt on Metal 4, with the game's GPU shaders translated to Metal.
+Super Smash Bros. Ultimate **13.0.2 or 13.0.5** running natively on Apple silicon Macs, built from **your own copy** of
+the game. The game's own ARM64 code (the program and the 98 NRO modules for fighters, stages and modes) is rewritten ahead
+of time and runs directly on the Mac's CPU: no interpreter, no JIT, no CPU emulator. System services are answered by a
+small native host, and the Switch's NVN graphics are rebuilt on Metal 4, with the game's GPU shaders translated to Metal.
 
 **No game content is in this repository, and none will ever be.** You need a legal dump of your own cartridge and its
 update, and keys from your own Switch. We do not help anyone obtain keys or game files.
@@ -17,6 +17,12 @@ translator, scripts); nothing outside `games/ssbu` is read. How the port was don
 Tested on one Mac: MacBook Pro, Apple M1 Max, 64 GB, macOS 27. Sessions of 1-2 hours on 2K in World of Light and
 Versus run without a crash (after the first 10 minutes of warm-up, 0.1-0.8 % dropped frames per 10 minutes; thermal
 state nominal).
+
+13.0.5 (the final update, September 2026: a fix for online battles only) builds next to it, tested on 27 October on an
+Apple M5, 32 GB, macOS 27.2, from a base NSP and the 13.0.5 update NSP: matches at a steady 60 Hz in a 3420x1916
+window, with MetalFX upscaling on and off, and the start in 2K with every render size site checked and applied. Its
+fighters, stages and modes are the 13.0.2 ones (the same 98 NRO modules), and so is everything but `main` (see
+[CHANGELOG.md](CHANGELOG.md)).
 
 | Works | Details |
 |---|---|
@@ -47,12 +53,14 @@ Needs a Mac with Apple silicon and macOS 26 or later, Xcode with the Metal toolc
 
 ```sh
 cd games/ssbu
-python3.14 scripts/build_ssbu.py --game "<your card image>.xci" --update "<your 13.0.2 update>.nsp" --keys "<your prod.keys>"
+python3.14 scripts/build_ssbu.py --game "<your card image>.xci" --update "<your 13.0.2 or 13.0.5 update>.nsp" --keys "<your prod.keys>"
 ```
 
 - The game file is the 1.0.0 card image (`01006A800016E000`, XCI); a base NSP works with `--firmware <unpacked firmware
-  NCA folder>` for the system fonts. The update is 13.0.2 (`01006A800016E800`), whose code the app runs. Every input is
-  checked against `assets/expected-v13.0.2.json` (hashes only).
+  NCA folder>` for the system fonts. The update is 13.0.2 or 13.0.5 (`01006A800016E800`), whose code the app runs; the
+  build tells them apart by the update's verified ExeFS, never by the file name. Every input is checked against
+  `assets/expected-v13.0.2.json` or `assets/expected-v13.0.5.json` (hashes only). An NSZ update is decompressed first
+  (`nsz -D`).
 - The first build takes a while (the 17.6 GB RomFS, the rewrite, and the startup shaders from data.arc); a second build
   reuses every verified step.
 - The work folder is `games/ssbu/SSBU_build` (`--work` to choose another). It holds game data: never share or commit
@@ -67,7 +75,8 @@ python3.14 scripts/build_ssbu.py --game "<your card image>.xci" --update "<your 
 ## Play
 
 Keys as in Tears of the Kingdom: WASD the left stick, arrow keys the right stick, J is A, K or Space is B, I is X, U is Y,
-Q / E are L / R, Return is +. Game controllers recognized by macOS work as a Pro Controller. The **Picture** menu sets
+Q / E are L / R, Return is +. Game controllers recognized by macOS work as a Pro Controller; so do pads macOS leaves to
+the game (a PowerA controller for Switch 2, other HID gamepads), read over HID. The **Picture** menu sets
 1080p or 2K for the next start (Smash makes its render images once, at start).
 
 | Key | What it does in Smash |

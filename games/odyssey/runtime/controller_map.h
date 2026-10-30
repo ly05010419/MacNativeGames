@@ -2,7 +2,9 @@
    and a Nintendo controller: runtime/gamepad_layout.h gamepad_face_positions) drives one Switch Pro Controller button, or
    none. The default is the Switch's own layout by position: east -> A, south -> B, north -> X, west -> Y (issue #10); the
    other buttons i < 16 are FullKey bit i. The touchpad click (DualSense, DualShock 4) is physical button 16 and drives
-   nothing by default.
+   nothing by default. The mouse's buttons (Mac, mouse mode on key 7: runtime/gamepad.m) are physical buttons 17-21:
+   left attacks (Y), right draws the bow (ZR, "aim mouse_left": a left click while it is held shoots instead of
+   attacking), middle targets (ZL), the two side buttons drive nothing.
    A layout file has one "physical = switch [mode]" line per change; '#' starts a comment; names are case-insensitive;
    "none" leaves a button unused; lines not given keep the default. The optional mode says how long the Switch button is
    held: "hold" (default) while the physical button is down, "tap" for 400 ms after each press (tap again to keep
@@ -21,10 +23,10 @@
 #include <string.h>
 #include <strings.h>
 
-enum { CONTROLLER_BUTTONS = 17, CONTROLLER_SWITCH_BUTTONS = 16 };
+enum { CONTROLLER_BUTTONS = 22, CONTROLLER_SWITCH_BUTTONS = 16, CONTROLLER_MOUSE_FIRST = 17, CONTROLLER_MOUSE_BUTTONS = 5 };
 static const char *const controller_physical_names[CONTROLLER_BUTTONS] = {
     "south", "east", "west", "north", "l3", "r3", "l1", "r1", "l2", "r2", "menu", "view", "left", "up", "right", "down",
-    "touchpad"};
+    "touchpad", "mouse_left", "mouse_right", "mouse_middle", "mouse4", "mouse5"};
 static const char *const controller_switch_names[CONTROLLER_SWITCH_BUTTONS] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down"};
 
@@ -35,6 +37,10 @@ static inline int controller_mode_fire(uint8_t mode) { return mode >> 3; }
 static inline void controller_map_default(uint16_t map[CONTROLLER_BUTTONS], uint8_t modes[CONTROLLER_BUTTONS]) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) { map[i] = i < CONTROLLER_SWITCH_BUTTONS ? (uint16_t)(1u << i) : 0; modes[i] = CONTROLLER_HOLD; }
     map[0] = 1u << 1; map[1] = 1u << 0; map[2] = 1u << 3; map[3] = 1u << 2;   /* south B, east A, west Y, north X */
+    enum { LEFT = CONTROLLER_MOUSE_FIRST, RIGHT, MIDDLE };
+    map[LEFT] = 1u << 3;                                                    /* attack (Y) */
+    map[RIGHT] = 1u << 9; modes[RIGHT] = (uint8_t)(CONTROLLER_AIM | LEFT << 3);   /* draw the bow (ZR); a left click shoots */
+    map[MIDDLE] = 1u << 8;                                                  /* target (ZL) */
 }
 
 /* Index of name [s, s + n) in the count names, or -1. */
@@ -68,7 +74,7 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
             for (const char *q = value_end; q < stop; q++) if (*q != ' ' && *q != '\t') { mode = q; break; }
             if (mode) { mode_end = mode; while (mode_end < stop && *mode_end != ' ' && *mode_end != '\t') mode_end++; }
             int physical = controller_name_index(controller_physical_names, CONTROLLER_BUTTONS, p, (size_t)(key_end - p));
-            if (physical < 0) { *error = "unknown controller button (south east west north l1 r1 l2 r2 l3 r3 menu view up down left right touchpad)"; return line; }
+            if (physical < 0) { *error = "unknown controller button (south east west north l1 r1 l2 r2 l3 r3 menu view up down left right touchpad mouse_left mouse_right mouse_middle mouse4 mouse5)"; return line; }
             size_t n = (size_t)(value_end - value);
             int target = n == 4 && !strncasecmp(value, "none", 4) ? CONTROLLER_SWITCH_BUTTONS : controller_name_index(controller_switch_names, CONTROLLER_SWITCH_BUTTONS, value, n);
             if (target < 0) { *error = "unknown Switch button (a b x y l r zl zr plus minus lstick rstick up down left right none)"; return line; }

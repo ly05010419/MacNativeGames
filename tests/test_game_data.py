@@ -157,6 +157,35 @@ class UpdateRuntime(unittest.TestCase):
         with self.assertRaisesRegex(build_app.BuildError, r'other shared fonts .*3-font'):
             update_runtime.check_game_data(data, res, 'v143')
 
+    def test_refusals_ask_for_a_full_rebuild(self):
+        """The refusals that no flag of update_runtime.py can fix say that a full rebuild is required (issue #1182)."""
+        _, res, data = self.app()
+        (res / 'rewritten/v143/sdk.patched.bin').write_bytes(b'a modded sdk')
+        with self.assertRaisesRegex(build_app.BuildError, r'\(sdk\); a full rebuild with build_app.py is required'):
+            update_runtime.check_game_data(data, res, 'v143')
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, data = self.app()
+        (res / 'extracted/v143/romfs/runtime-index.bin').write_bytes(b'another index')
+        with self.assertRaisesRegex(build_app.BuildError, 'another RomFS index.*a full rebuild with build_app.py is required'):
+            update_runtime.check_game_data(data, res, 'v143')
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, data = self.app()
+        (res / 'extracted/firmware/shared-fonts/3-font.bfttf').write_bytes(b'x')
+        with self.assertRaisesRegex(build_app.BuildError, r'other shared fonts .*3-font.*a full rebuild'):
+            update_runtime.check_game_data(data, res, 'v143')
+        want = update_runtime.rewriter_sha256()
+        with self.assertRaisesRegex(build_app.BuildError, 'no record of the rewriter.*a full rebuild with build_app.py is required'):
+            update_runtime.check_rewriter(data, res, 'v143', want)
+        (data / 'rewriter.txt').write_text(f'REWRITER_SHA256 {"0" * 64}\n')
+        with self.assertRaisesRegex(build_app.BuildError, 'another patch_nso.py.*A full rebuild with build_app.py is required'):
+            update_runtime.check_rewriter(data, res, 'v143', want)
+        shutil.rmtree(self.root / 'Game.app')
+        _, res, _ = self.app()
+        (res / 'build/shader-seed').mkdir(parents=True)
+        (res / 'build/shader-seed/seed-manifest.json').write_text('{"chain": "totk-native-v1-unverified"}')
+        with self.assertRaisesRegex(build_app.BuildError, 'or do a full rebuild with build_app.py'):
+            update_runtime.check_seed_chain(res, update_runtime.runtime_chain())
+
     def test_seed_of_another_chain_is_refused(self):
         _, res, _ = self.app()
         chain = update_runtime.runtime_chain()
@@ -280,13 +309,18 @@ class UpdateRuntime(unittest.TestCase):
     def test_record_commit(self):
         app, _, _ = self.app()
         import plistlib
-        with patch.object(build_app, 'source_commit', return_value='abc1234'):
+        with patch.object(build_app, 'source_commit', return_value='abc1234'), \
+             patch.object(build_app, 'source_revision', return_value='a' * 40):
             update_runtime.record_commit(app)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual((info['MNGSourceCommit'], info['CFBundleExecutable']), ('abc1234', 'TOTK'))
-        with patch.object(build_app, 'source_commit', return_value=''):   # not a git checkout: no stale commit shown
+        self.assertEqual(info['MNGSourceRevision'], 'a' * 40)
+        with patch.object(build_app, 'source_commit', return_value=''), \
+             patch.object(build_app, 'source_revision', return_value=''):   # not a git checkout: no stale commit, no stale update base
             update_runtime.record_commit(app)
-        self.assertNotIn('MNGSourceCommit', plistlib.loads((app / 'Contents/Info.plist').read_bytes()))
+        info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+        self.assertNotIn('MNGSourceCommit', info)
+        self.assertNotIn('MNGSourceRevision', info)
 
     def test_restore_replaced_app(self):
         app = self.root / 'Game.app'

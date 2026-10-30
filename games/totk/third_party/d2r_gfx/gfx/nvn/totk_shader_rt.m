@@ -609,6 +609,7 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows) {   //
     pthread_mutex_unlock(&g_rt_lock);
 }
 
+uint64_t totk_rt_new_variants(void) { return atomic_load(&g_new_variants); }
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{

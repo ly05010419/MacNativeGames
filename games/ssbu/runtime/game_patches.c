@@ -37,7 +37,24 @@ static const char *const probed_gpu_paths[] = {"TOTK_GPU_MIDCLEAR"};
    D  main+0x363c5c4 turns the screen width into an index (1280 -> 1, 1920 -> 2); compared with the new width instead.
    E  other docked 1920x1080 values: main+0x378e8a8 is the UI's size when the byte main+0x593b8d4 is set (else it takes
       the screen size from main+0x523d480); main+0x36e4cd8 and main+0x35b407c are object defaults whose use is not traced.
-   SSBU_RES_SITES=<letters> (diagnostics) patches only those groups; default all. Every word is checked first. */
+   SSBU_RES_SITES=<letters> (diagnostics) patches only those groups; default all. Every word is checked first.
+   The addresses here are 13.0.2's. 13.0.5 (game_version.h; measured on a 13.0.5 dump, 27.10.) has 0x9b0 bytes more code
+   before main+0x35b407c: every site from there on sits RES_SHIFT later with the same words. The J sites at
+   main+0x1534e18 / 0x153c348 stay where they are, but their adrp words name a page further (J1_X11 ...). */
+#if defined(SSBU_GAME_V1305)
+#define RES_SHIFT 0x9b0u
+#define J1_X11 0xb00179ebu
+#define J1_X10 0xd00179eau
+#define J2_X11 0xb00179abu
+#define J2_X10 0xd00179aau
+#else
+#define RES_SHIFT 0u
+#define J1_X11 0x900179ebu
+#define J1_X10 0xb00179eau
+#define J2_X11 0x900179abu
+#define J2_X10 0xb00179aau
+#endif
+#define RES_AT(off) ((off) >= 0x35b407cu ? (off) + RES_SHIFT : (off))
 static unsigned g_res_w, g_res_h;   /* 0 = shipped */
 static uint8_t *g_main_base;
 /* G  the other render targets (80 of the 92 the pipeline makes at boot, the game picture 7883 among them) take their size
@@ -240,27 +257,27 @@ static void patch_render_res(Module *m) {
         {0x378ed28, 7, {0x1e2e1001, 0x711e017f, 0x1a9f17eb, 0x2a0b014a, 0x7200015f, 0xd000670a, 0xbd4ed140},
                        /* scvtf s0, w11; mov w11, #1920.0f; fmov s1, w11; fdiv s0, s0, s1; fmov s1, #1.0; tst w10, #1; nop */
                        {0x1e220160, 0x52a89e0b, 0x1e270161, 0x1e211800, 0x1e2e1001, 0x7200015f, 0xd503201f}},
-        {0x1534e18, 9, {0x900179eb, 0xbd4ed160, 0x711e015f, 0xb00179ea, 0xbd4d5944, 0xb00179ea, 0x1e2e1001, 0xbd48ad45, 0x1a9f17ea},
+        {0x1534e18, 9, {J1_X11, 0xbd4ed160, 0x711e015f, J1_X10, 0xbd4d5944, J1_X10, 0x1e2e1001, 0xbd48ad45, 0x1a9f17ea},
                        /* scvtf s0, w10; mov w11, #<w>.0f; fmov s3, w11; (adrp x10; ldr s4); fdiv s0, s0, s3; (fmov s1, #1.0; ldr s5); mov w10, wzr */
-                       {0x1e220140, 0x52a0000b | hw << 5, 0x1e270163, 0xb00179ea, 0xbd4d5944, 0x1e231800, 0x1e2e1001, 0xbd48ad45, 0x2a1f03ea}},
-        {0x153c348, 9, {0x900179ab, 0xbd4ed160, 0x711e015f, 0xb00179aa, 0xbd4d5944, 0xb00179aa, 0x1e2e1001, 0xbd48ad45, 0x1a9f17ea},
-                       {0x1e220140, 0x52a0000b | hw << 5, 0x1e270163, 0xb00179aa, 0xbd4d5944, 0x1e231800, 0x1e2e1001, 0xbd48ad45, 0x2a1f03ea}},
+                       {0x1e220140, 0x52a0000b | hw << 5, 0x1e270163, J1_X10, 0xbd4d5944, 0x1e231800, 0x1e2e1001, 0xbd48ad45, 0x2a1f03ea}},
+        {0x153c348, 9, {J2_X11, 0xbd4ed160, 0x711e015f, J2_X10, 0xbd4d5944, J2_X10, 0x1e2e1001, 0xbd48ad45, 0x1a9f17ea},
+                       {0x1e220140, 0x52a0000b | hw << 5, 0x1e270163, J2_X10, 0xbd4d5944, 0x1e231800, 0x1e2e1001, 0xbd48ad45, 0x2a1f03ea}},
     };
     for (size_t i = 0; i < 3; i++)
-        if (memcmp(m->base + ui_site[i].off, ui_site[i].shipped, 4 * ui_site[i].n)) {
-            fprintf(stderr, "[ssbu] render size: the UI factor at main+%#x is not the 13.0.2 code\n", ui_site[i].off);
-            runtime_fail("TOTK_RENDER_RES needs the 13.0.2 instructions it replaces");
+        if (memcmp(m->base + RES_AT(ui_site[i].off), ui_site[i].shipped, 4 * ui_site[i].n)) {
+            fprintf(stderr, "[ssbu] render size: the UI factor at main+%#x is not the " TOTK_GAME_VERSION " code\n", RES_AT(ui_site[i].off));
+            runtime_fail("TOTK_RENDER_RES needs the " TOTK_GAME_VERSION " instructions it replaces");
         }
     for (size_t i = 0; i < 3; i++)
-        if (memcmp(m->base + rec_site[i].off, rec_site[i].shipped, 16)) {
-            fprintf(stderr, "[ssbu] render size: pipeline record copy at main+%#x is not the 13.0.2 code\n", rec_site[i].off);
-            runtime_fail("TOTK_RENDER_RES needs the 13.0.2 instructions it replaces");
+        if (memcmp(m->base + RES_AT(rec_site[i].off), rec_site[i].shipped, 16)) {
+            fprintf(stderr, "[ssbu] render size: pipeline record copy at main+%#x is not the " TOTK_GAME_VERSION " code\n", RES_AT(rec_site[i].off));
+            runtime_fail("TOTK_RENDER_RES needs the " TOTK_GAME_VERSION " instructions it replaces");
         }
     for (size_t i = 0; i < sizeof site / sizeof *site; i++) {
-        uint32_t word; memcpy(&word, m->base + site[i].off, 4);
+        uint32_t word; memcpy(&word, m->base + RES_AT(site[i].off), 4);
         if (word != site[i].shipped) {
-            fprintf(stderr, "[ssbu] render size main+%#x: found %08x expected %08x\n", site[i].off, word, site[i].shipped);
-            runtime_fail("TOTK_RENDER_RES needs the 13.0.2 instructions it replaces");
+            fprintf(stderr, "[ssbu] render size main+%#x: found %08x expected %08x\n", RES_AT(site[i].off), word, site[i].shipped);
+            runtime_fail("TOTK_RENDER_RES needs the " TOTK_GAME_VERSION " instructions it replaces");
         }
     }
     if (strchr(groups, 'G')) {
@@ -268,13 +285,13 @@ static void patch_render_res(Module *m) {
         for (size_t i = 0; i < 3; i++) {
             uint32_t s = rec_site[i].scratch, code[2] = {0x58000040u | s, 0xd61f0000u | s << 5};   /* ldr xS, #8; br xS */
             uint64_t to = (uint64_t)(uintptr_t)rec_site[i].shim;
-            ssbu_rec_back[i] = m->base + rec_site[i].off + 16;
-            memcpy(m->base + rec_site[i].off, code, 8); memcpy(m->base + rec_site[i].off + 8, &to, 8);
+            ssbu_rec_back[i] = m->base + RES_AT(rec_site[i].off) + 16;
+            memcpy(m->base + RES_AT(rec_site[i].off), code, 8); memcpy(m->base + RES_AT(rec_site[i].off) + 8, &to, 8);
         }
     }
     unsigned n = 0;
     if (strchr(groups, 'J'))
-        for (size_t i = 0; i < 3; i++) { memcpy(m->base + ui_site[i].off, ui_site[i].code, 4 * ui_site[i].n); n += ui_site[i].n; }
+        for (size_t i = 0; i < 3; i++) { memcpy(m->base + RES_AT(ui_site[i].off), ui_site[i].code, 4 * ui_site[i].n); n += ui_site[i].n; }
     for (size_t i = 0; i < sizeof site / sizeof *site; i++) {
         if (!strchr(groups, site[i].group)) continue;
         unsigned v = site[i].kind == FMOV_S_W ? site[i].val : site[i].val == V_W ? w : site[i].val == V_H ? h : site[i].val == V_FW ? fw.u >> 16
@@ -283,7 +300,7 @@ static void patch_render_res(Module *m) {
                       : site[i].kind == MOVK_X32 ? 0xf2c00000u | v << 5 | r : site[i].kind == MOVZ_W16 ? 0x52a00000u | v << 5 | r
                       : site[i].kind == CMP_W ? 0x7100001fu | v << 10 | r << 5 : site[i].kind == FMOV_S_W ? 0x1e270000u | v << 5 | r
                       : 0xb90003e0u | (v / 4) << 10 | r;
-        memcpy(m->base + site[i].off, &word, 4); n++;
+        memcpy(m->base + RES_AT(site[i].off), &word, 4); n++;
     }
     g_res_w = w; g_res_h = h;
     fprintf(stderr, "[ssbu] docked render size %ux%u (shipped 1920x1080; TOTK_RENDER_RES), groups %s, %u instructions\n", w, h, groups, n);
@@ -303,6 +320,7 @@ void runtime_frame_step_update(uint64_t now_ns) {
     (void)now_ns;
     static long at = -2, n; if (at == -2) { const char *e = getenv("SSBU_UI_LOG"); at = e ? atol(e) : -1; }
     if (at < 0 || ++n != at || !g_main_base) return;
+    if (RES_SHIFT) { fprintf(stderr, "[ssbu] ui log: its addresses are 13.0.2's, not " TOTK_GAME_VERSION "'s\n"); return; }
     int32_t ui[2]; uint8_t flag; float drs[2], base[4];
     memcpy(ui, g_main_base + 0x523d480, 8); memcpy(&flag, g_main_base + 0x593b8d4, 1); memcpy(drs, g_main_base + 0x5238178, 8); memcpy(base, g_main_base + 0x744701c, 16);
     fprintf(stderr, "[ssbu] ui log at present %ld: ui size %dx%d, flag 0x593b8d4 %u, drs %g x %g, floats 0x744701c.. %g %g %g %g\n", n, ui[0], ui[1], flag, drs[0], drs[1], base[0], base[1], base[2], base[3]);

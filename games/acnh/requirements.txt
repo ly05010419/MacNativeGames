@@ -1,0 +1,4 @@
+# Python dependencies for ACNH NSP preparation and instruction rewriting.
+cryptography==50.0.2
+lz4==4.4.5
+capstone==5.0.9

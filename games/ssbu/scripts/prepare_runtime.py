@@ -2,11 +2,11 @@
 """Bind the native loader to the verified Super Smash Bros. Ultimate rewrite and RomFS: generated headers stay in the work folder.
 
 Writes <work>/build/runtime_tables.h (modules, symbols, relocations, gates), romfs_config.h and
-extracted/v1302/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
+extracted/<version>/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
 Adapted from games/by3/scripts/prepare_runtime.py (itself from games/totk's three generators); every input is checked
-against assets/expected-v13.0.2.json first. The NSPs carry no system fonts: --shared-fonts copies a verified font folder
-(a Tears of the Kingdom build's extracted/firmware/shared-fonts) into the work folder, each file checked against its
-manifest.
+against assets/expected-v13.0.2.json (--version v1302) or expected-v13.0.5.json (v1305) first. The NSPs carry no system
+fonts: --shared-fonts copies a verified font folder (a Tears of the Kingdom build's extracted/firmware/shared-fonts) into
+the work folder, each file checked against its manifest.
 """
 import argparse
 import hashlib
@@ -20,8 +20,9 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE / 'third_party/d2r'))   # this folder's own copy of the rewriter
 from relr import decode_relr
 
-VERSION = 'v1302'
-EXPECTED = json.loads((HERE / 'assets/expected-v13.0.2.json').read_text())
+VERSIONS = {'v1302': 'expected-v13.0.2.json', 'v1305': 'expected-v13.0.5.json'}
+VERSION = 'v1302'   # main() sets the one --version names
+EXPECTED = json.loads((HERE / 'assets' / VERSIONS[VERSION]).read_text())
 
 
 def sha(path):
@@ -195,10 +196,13 @@ def shared_fonts_config(work, out):
 
 
 def main():
+    global VERSION, EXPECTED   # --version chooses them
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, default=HERE / 'SSBU_build')
     parser.add_argument('--shared-fonts', type=Path, help="a verified font folder, e.g. a TotK build's extracted/firmware/shared-fonts")
+    parser.add_argument('--version', default=VERSION, choices=sorted(VERSIONS), help='the game version (scripts/build_ssbu.py chooses it)')
     args = parser.parse_args()
+    VERSION, EXPECTED = args.version, json.loads((HERE / 'assets' / VERSIONS[args.version]).read_text())
     work = args.work.resolve()
     out = work / 'build'
     out.mkdir(parents=True, exist_ok=True)

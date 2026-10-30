@@ -19,8 +19,16 @@ It holds no game data, only identifiers; the build turns them into shaders from 
                                 the same pipeline with the border colours its samplers had (nvn_mtl.m border_parse): per
                                 stage "<argument id>:<axes>:<r>,<g>,<b>,<a>;" for each sampler, colours as C %a floats,
                                 or - for none; the warm-up builds the shader variants that emulate them and that pipeline.
+  T <pipeline key> <tile> <flags>
+                                the same pipeline with the fragment variant that reads the draw's own colour attachments
+                                from the tile (nvn_mtl.m att_fb_take / warm_tileread): "<argument id>:<attachment>;" per
+                                read. Recorded only in pso_user.tsv before, so every new install built these in play
+                                (58 of the 58 a 5-minute route built in the world with the list, 2026-10-26).
                                 Flags t: the title screen's (the first frame waits for these only), m: the rest of the
                                 warm-up. Warm rows keep the order they were recorded in.
+  A 544-byte pipeline key is kept packed in the TOTK and BotW lists (pack_key): "<vertex variant>:<fragment variant>:<the
+  other 384 bytes in hex, each run of 4 or more zero bytes as z<count in hex>.>", about 280 characters instead of 1,088
+  (the TOTK list was 79 MB, 71 MB of it render pipeline keys, 2026-10-28). Rows read either form; exports write hex.
 
   shader_list.py merge [--title] <list> <source>...  add a translation cache folder (its *.variants: shaders only; a cache's
                                                      pso_collected.tsv holds every pipeline ever built, tens of thousands,
@@ -56,6 +64,7 @@ _HEXFLOAT = r'-?0x[0-9a-f]+(?:\.[0-9a-f]*)?p[-+]\d+'
 # it every B row a player sent was dropped, 51 of 51 on 2026-10-22)
 _FILTER = rf':f\d+,\d+,\d+,\d+,\d+,{_HEXFLOAT},{_HEXFLOAT},(?:{_HEXFLOAT}|inf)'
 BORDER = re.compile(rf'^(?:-|(?:\d+:[0-7]:{_HEXFLOAT},{_HEXFLOAT},{_HEXFLOAT},{_HEXFLOAT}(?:{_FILTER})?;){{1,8}})$')
+TILE = re.compile(r'^(?:\d+:[0-7];){1,8}$')   # nvn_mtl.m g_pso_fbrec: "<argument id>:<colour attachment>;" per tile read
 SOURCE = re.compile(r'^(?:module:[a-z0-9]+|[A-Za-z0-9_.()+-]+(?:/[A-Za-z0-9_.()+-]+)*)$')
 DEPS_FIELDS = {'tex', 'img', 'attr', 'fout'}
 
@@ -104,10 +113,43 @@ def pipeline_key(key):
     return b.hex()
 
 
+PACKED = re.compile(r'^([0-9a-f_-]{0,80}):([0-9a-f_-]{0,80}):((?:[0-9a-f]{2}|z[0-9a-f]+\.)*)$')
+ZERO_RUN = re.compile(rb'\0{4,}')
+
+
+def unpack_key(text):
+    """A pipeline key as hex: a packed one (pack_key) unpacked, anything else as it is."""
+    m = PACKED.match(text)
+    if not m:
+        return text
+    vs, fs, rest = m.groups()
+    key = (vs.encode().hex().ljust(2 * NAME, '0') + fs.encode().hex().ljust(2 * NAME, '0')
+           + re.sub(r'z([0-9a-f]+)\.', lambda z: '00' * int(z.group(1), 16), rest))
+    return key if len(key) == 2 * SKEY_SIZE else text
+
+
+def pack_key(key):
+    """A 544-byte pipeline key as the TOTK and BotW lists keep it; a key that would not unpack to itself stays hex."""
+    if len(key) != 2 * SKEY_SIZE or not PIPELINE.match(key):
+        return key
+    b = bytes.fromhex(key)
+    vs, fs = b[:NAME].rstrip(b'\0'), b[NAME:2 * NAME].rstrip(b'\0')
+    rest, at = [], 2 * NAME
+    for m in ZERO_RUN.finditer(b, at):
+        rest += [b[at:m.start()].hex(), f'z{m.end() - m.start():x}.']; at = m.end()
+    try:
+        text = f'{vs.decode()}:{fs.decode()}:' + ''.join(rest) + b[at:].hex()
+    except UnicodeDecodeError:
+        return key
+    return text if unpack_key(text) == key else key
+
+
 def warm_row(fields):
-    """A warm row without flags ('S', variant, stage) / ('C', variant) / ('R', key) / ('B', key, vertex, fragment), or None
-    when it is not one."""
+    """A warm row without flags ('S', variant, stage) / ('C', variant) / ('R', key) / ('B', key, vertex, fragment) /
+    ('T', key, tile), or None when it is not one. Pipeline keys come back as hex, packed ones unpacked."""
     kind = fields[0] if fields else ''
+    if kind in ('R', 'B', 'T') and len(fields) >= 2:
+        fields = [kind, unpack_key(fields[1]), *fields[2:]]
     if kind == 'S' and len(fields) >= 3 and VARIANT.match(fields[1]) and fields[2] in ('0', '1', '5'):
         return tuple(fields[:3])
     if kind == 'C' and len(fields) >= 2 and VARIANT.match(fields[1]):
@@ -117,6 +159,8 @@ def warm_row(fields):
     if (kind == 'B' and len(fields) >= 4 and PIPELINE.match(fields[1]) and BORDER.match(fields[2]) and BORDER.match(fields[3])
             and fields[2:4] != ['-', '-']):
         return ('B', pipeline_key(fields[1]), fields[2], fields[3])
+    if kind == 'T' and len(fields) >= 3 and PIPELINE.match(fields[1]) and TILE.match(fields[2]):
+        return ('T', pipeline_key(fields[1]), fields[2])
     return None
 
 
@@ -126,11 +170,15 @@ def list_name(path):
     return '/'.join(parts[-4:]) if len(parts) >= 4 and parts[-4] == 'games' and parts[-2] == 'assets' else Path(path).name
 
 
+def list_game(path):
+    """The game folder a list is kept in (games/<game>/assets/...), or None."""
+    parts = Path(path).resolve().parts
+    return parts[-3] if len(parts) >= 3 and parts[-2] == 'assets' else None
+
+
 def header_for(path):
     """The list's header comment: by the game folder it is kept in (games/<game>/assets/...), Tears of the Kingdom's otherwise."""
-    parts = Path(path).resolve().parts
-    game = parts[-3] if len(parts) >= 3 and parts[-2] == 'assets' else None
-    return HEADERS.get(game, HEADER)
+    return HEADERS.get(list_game(path), HEADER)
 
 
 class ShaderList:
@@ -172,7 +220,9 @@ class ShaderList:
     def save(self, path):
         lines = [f'V\t{key}\t{deps}' for key, deps in sorted(self.variants)]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
-        lines += ['\t'.join(row + (flags,)) for row, flags in self.warm.items()]
+        packed = list_game(path) in (None, 'totk', 'botw')   # other games' own tools read their lists as hex
+        lines += ['\t'.join((row[0], pack_key(row[1]), *row[2:]) if packed and row[0] in ('R', 'B', 'T') else row) + '\t' + flags
+                  for row, flags in self.warm.items()]
         Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
 
     def add_warm(self, row, flag):
@@ -225,11 +275,11 @@ class ShaderList:
         return EXPORT.format(source) + ''.join('\t'.join(row) + '\n' for row in out)
 
     def counts(self):
-        kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRB'}
+        kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRBT'}
         title = sum(1 for flags in self.warm.values() if 't' in flags)
         return (f'{len(self.variants)} variants over {len({k for k, _ in self.variants})} shaders, '
                 f'{len(self.locators)} located; warm rows: '
-                f'{kinds["S"]} S, {kinds["C"]} C, {kinds["R"]} R, {kinds["B"]} B ({title} for the title screen)')
+                f'{kinds["S"]} S, {kinds["C"]} C, {kinds["R"]} R, {kinds["B"]} B, {kinds["T"]} T ({title} for the title screen)')
 
 
 NAME = 80   # nvn_pso_skey.h pso_skey: char vs[80], fs[80] lead the pipeline key, each a NUL-padded "<variant>_b"
@@ -247,14 +297,14 @@ def load_aliases(path):
 
 
 def rename_row(line, aliases):
-    """A warm row with the variants it names renamed through aliases (S / C: the variant; R / B: the two names in the
+    """A warm row with the variants it names renamed through aliases (S / C: the variant; R / B / T: the two names in the
     pipeline key), anything else as it is."""
     fields = line.split('\t')
     def name(v):   # "<variant>_b"
         return aliases.get(v[:-2], v[:-2])+'_b' if v.endswith('_b') else v
     if fields[0] in ('S', 'C') and len(fields) >= 2:
         fields[1] = name(fields[1])
-    elif fields[0] in ('R', 'B') and len(fields) >= 2 and PIPELINE.match(fields[1]) and len(fields[1]) >= 4*NAME:
+    elif fields[0] in ('R', 'B', 'T') and len(fields) >= 2 and PIPELINE.match(fields[1]) and len(fields[1]) >= 4*NAME:
         key = bytearray.fromhex(fields[1])
         for at in (0, NAME):
             old = bytes(key[at:at+NAME]).split(b'\0')[0].decode('ascii', 'replace')

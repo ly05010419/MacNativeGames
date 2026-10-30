@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <sys/stat.h>
 typedef struct{int64_t sampling;uint64_t buttons;int32_t lx,ly,rx,ry;uint32_t attributes,pad;} NpadState;
 _Static_assert(sizeof(NpadState)==40,"Npad full-key ABI");
 static pthread_mutex_t inputLock=PTHREAD_MUTEX_INITIALIZER;
@@ -29,20 +30,12 @@ static void user_input(const char *what){
  fprintf(stderr,"[input] user input (%s)%s%s\n",what,agent?": the user is playing this test session of ":"",agent?owner:"");
 }
 /* Keys from the window are the user's; scripted and auto-load presses use the synthetic entry.
-   Key 1 toggles the shortcut reminder in frontend.m. Key 2 (Mac key code 19) cycles MetalFX frame interpolation:
-   off -> 30+30 -> half the refresh rate -> uncapped (totk_mfx.m). Key 3 (key code 20) cycles 2K modes:
-   MetalFX 2K -> native 2K -> off (runtime_output_mode_cycle). Key 6 (key code 22) cycles the controller type: auto -> Xbox ->
-   PlayStation -> Switch (runtime_gamepad_type_cycle, gamepad.m). Key 7 (key code 26) turns mouse mode on / off
-   (runtime_mouse_toggle, gamepad.m; the window holds the pointer: frontend.m). Held-key repeats do not cycle. */
-enum { KEY_INTERP_TOGGLE = 19, KEY_OUTPUT_MODE_CYCLE = 20, KEY_ASPECT_TOGGLE = 21, KEY_PAD_TYPE_CYCLE = 22, KEY_TAA_TOGGLE = 23, KEY_MOUSE_TOGGLE = 26 };   /* 21: key 4, 16:9 -> fit to the window -> 21:9 (aspect_patch.h); 22: key 6; 23: key 5, MetalFX temporal anti-aliasing (totk_taa.m) */
+   Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m: overlay, frame interpolation, picture, aspect
+   ratio, edge smoothing, controller type, mouse); held-key repeats do not toggle it. Keys 2-7 are no shortcuts any more
+   (user 2026-10-25: the panel replaces them). */
+enum { KEY_SETTINGS = 18 };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
- if(press&&code==18){extern void runtime_shortcut_help_toggle(void);runtime_shortcut_help_toggle();}
- if(press&&code==KEY_INTERP_TOGGLE){extern void dm_gfx_set_flag(const char *name,int v);dm_gfx_set_flag("mfx_interp",-1);}
- if(press&&code==KEY_OUTPUT_MODE_CYCLE)runtime_output_mode_cycle();
- if(press&&code==KEY_ASPECT_TOGGLE)runtime_aspect_toggle();
- if(press&&code==KEY_TAA_TOGGLE){extern void taa_toggle(void);taa_toggle();}
- if(press&&code==KEY_PAD_TYPE_CYCLE)runtime_gamepad_type_cycle();
- if(press&&code==KEY_MOUSE_TOGGLE)runtime_mouse_toggle();}
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
 void runtime_input_key(unsigned code,int down){if(down&&code<128)user_input("keyboard");runtime_input_key_synthetic(code,down);}
 void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));pending=0;pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
@@ -163,14 +156,30 @@ __attribute__((constructor)) static void input_script_start(void) {
 /* Optional local integration-test command stream. Appending complete lines lets tests inspect each
    actual frame before choosing the next input, instead of guessing load/menu timings. Disabled normally.
    Commands: key <Mac keycode> <milliseconds>, down/up <Mac keycode>, shot <path>, wshot <path>, passdump <frames>, querylog <frames>, anomdump,
-   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), close. */
+   kbtest / kbtype <text> / kbenter / kbesc / kbshot <path> (the text entry bar), threads (dump every guest thread's wait), hletrace <0|1|2> (host calls the game makes), framestep <ms> (pin the frame step), mscan ... (memory scan and write watch, runtime/mem_scan.h), close. */
 extern void dm_gfx_shot_at(long frames, const char *path);
 extern void runtime_front_request_close(void);
+/* "mscan ...": memory scan and write watch (runtime/mem_scan.h, in services.c); this default answers in the probes that
+   link input.c alone, which have no game memory. */
+__attribute__((weak)) int runtime_mem_scan_command(const char *line) { (void)line; return 0; }
 static void *input_file(void *arg) {
     FILE *f = fopen((const char *)arg, "r"); if (!f) runtime_fail("cannot open TOTK_INPUT_FILE");
     char line[1200];
     for (;;) {
-        if (!fgets(line, sizeof line, f)) { if (ferror(f)) runtime_fail("diagnostic input read"); clearerr(f); usleep(100000); continue; }
+        if (!fgets(line, sizeof line, f)) {
+            if (ferror(f)) runtime_fail("diagnostic input read");
+            clearerr(f); usleep(100000);
+            /* A file replaced instead of appended to (devicectl device copy to an iPhone's Documents writes a new file, so
+               this stream would stay on the old one and never see another line): open the new one. The writer copies the
+               whole command list again, so it is read on from where the old one ended; a shorter file is a new list, read
+               from its start. */
+            struct stat now, held; FILE *n;
+            if (!stat((const char *)arg, &now) && !fstat(fileno(f), &held) && now.st_ino != held.st_ino && (n = fopen((const char *)arg, "r"))) {
+                long at = ftell(f); fclose(f); f = n;
+                if (at > 0 && now.st_size >= at) fseek(f, at, SEEK_SET);
+            }
+            continue;
+        }
         if (runtime_survey_command(line)) continue;
         unsigned code, ms; int used = 0;
         if (sscanf(line, "down %u %n", &code, &used) == 1 && used && !line[used] && code < 128) {
@@ -234,6 +243,7 @@ static void *input_file(void *arg) {
             unsigned off; float value; if (sscanf(line + 6, "%x %f", &off, &value) != 2 || off > 0x400 || off % 4) runtime_fail("xpoke <hex offset, a multiple of 4> <value>");
             runtime_diag_xpoke(off, value);
 #endif
+        } else if (!strncmp(line, "mscan ", 6) && runtime_mem_scan_command(line + 6)) {   /* results in memscan.txt */
         } else if (!strcmp(line, "threads\n")) {   /* every guest thread's wait state and guest return chain, now (a hang: what is each thread waiting for) */
             runtime_dump_threads();
         } else if (!strcmp(line, "close\n")) { runtime_front_request_close(); break; }

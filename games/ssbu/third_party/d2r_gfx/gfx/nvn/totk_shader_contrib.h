@@ -20,12 +20,17 @@
 #ifndef TOTK_CONTRIB_STEP   /* runtime/game_version.h keeps Breath of the Wild's at 500 */
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
 #endif
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets Breath of the Wild's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
+/* This game's own shader list, games/ssbu/assets/shader_list.tsv (user 2026-10-28: every game its own list, never mixed
+   into Tears of the Kingdom's): the issue form of the other games with the game and the title filled in, an automatic
+   submission titled with the game (games/totk/scripts/collect_shader_issues.py OTHER finds it by that title), and a
+   contribution file named after it. */
+#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
+#define GAME_CONTRIB_GAME "Super Smash Bros. Ultimate"
+#define GAME_CONTRIB_TITLE "Shader list (Super Smash Bros. Ultimate):"
+#define GAME_CONTRIB_FILE "shader-list-contribution-ssbu.txt"
 #define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
+#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
+    "&game=Super+Smash+Bros.+Ultimate&title=Shader+list+%28Super+Smash+Bros.+Ultimate%29%3A+"
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play
    then, so each would look new to the list (one such session wrote 1,670 false rows and set off the reminder). */

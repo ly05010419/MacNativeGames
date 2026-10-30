@@ -20,12 +20,17 @@
 #ifndef TOTK_CONTRIB_STEP
 #define TOTK_CONTRIB_STEP 100   // rows of both kinds (user 2026-10-22; 500 shaders only before)
 #endif
-#ifndef GAME_CONTRIB_TEMPLATE   /* the issue form, label and title prefix of this game's list (runtime/game_version.h sets Breath of the Wild's) */
-#define GAME_CONTRIB_TEMPLATE "shader-list.yml"
-#define GAME_CONTRIB_TITLE "Shader list:"   /* what the Mac reminder's automatic submission titles its issue with; collect_shader_issues.py finds it by this */
-#endif
+/* This game's own shader list, games/mvdk/assets/shader_list.tsv (user 2026-10-28: every game its own list, never mixed
+   into Tears of the Kingdom's): the issue form of the other games with the game and the title filled in, an automatic
+   submission titled with the game (games/totk/scripts/collect_shader_issues.py OTHER finds it by that title), and a
+   contribution file named after it. */
+#define GAME_CONTRIB_TEMPLATE "shader-list-other.yml"
+#define GAME_CONTRIB_GAME "Mario vs. Donkey Kong"
+#define GAME_CONTRIB_TITLE "Shader list (Mario vs. Donkey Kong):"
+#define GAME_CONTRIB_FILE "shader-list-contribution-mvdk.txt"
 #define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
-#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE
+#define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
+    "&game=Mario+vs.+Donkey+Kong&title=Shader+list+%28Mario+vs.+Donkey+Kong%29%3A+"
 #define TOTK_REPO_URL "https://github.com/" TOTK_CONTRIB_REPO   // the Mac reminder's star button: the page, where the player stars it
 
 /* Nothing is written without the seed (TOTK_SHADER_SEED=off, a test of a first run): every variant is translated in play

@@ -15,6 +15,7 @@
    Layouts: VibrationValue {amplitude low, frequency low, amplitude high, frequency high} (0..1 and Hz; neutral 0/160/0/320,
    sdk+0x4a2df8); VibrationDeviceInfo {type, position} (8 bytes, sdk+0x49da78); SixAxisSensorState 0x60 bytes. */
 #include "runtime.h"
+#include <TargetConditionals.h>
 #include "feedback_settings.h"
 #include <math.h>
 #include <pthread.h>
@@ -24,6 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if TARGET_OS_IOS
+/* ios/Sources/phone_haptics.m: the game's vibration on the iPhone's own Taptic Engine while the touch controls are used. */
+void runtime_phone_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);
+#endif
 typedef struct { float amp_low, freq_low, amp_high, freq_high; } VibrationValue;
 typedef struct { uint32_t type, position; } VibrationDeviceInfo;       /* type 1 = linear resonant actuator; position 1 left, 2 right */
 typedef struct { int64_t delta_ns, sampling; float acc[3], gyro[3], angle[3], dir[9]; uint32_t attributes, reserved; } SixAxisState;
@@ -85,6 +90,9 @@ static void play(int side, const VibrationValue *v) {
                                                                          side ? "right" : "left", c.amp_low, c.freq_low, c.amp_high, c.freq_high);
     if (atomic_load(&rumble_muted)) c.amp_low = c.amp_high = 0;
     runtime_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
+#if TARGET_OS_IOS
+    runtime_phone_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
+#endif
 }
 static uint32_t vib_init(const uint32_t *h) {
     int side = vibration_side(h); static _Atomic int once;

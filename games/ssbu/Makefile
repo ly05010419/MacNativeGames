@@ -12,6 +12,13 @@ OUT := $(WORK)/build
 PY ?= $(WORK)/venv/bin/python
 NATIVE_OPT ?= -O2
 SHARED_FONTS ?=
+# The game version (scripts/build_ssbu.py chooses it from the update's verified ExeFS): v1302 or v1305. The runtime is built
+# for one (runtime/game_version.h: 13.0.2 without a define); its stamp makes a change of version compile it again.
+VERSION ?= v1302
+ifeq ($(filter $(VERSION),v1302 v1305),)
+$(error VERSION must be v1302 or v1305)
+endif
+VERSION_FLAGS := $(if $(filter v1305,$(VERSION)),-DSSBU_GAME_V1305=1)
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -24,7 +31,7 @@ GENERATED := $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_c
 
 .PHONY: prepare runtime boot clean
 prepare:
-	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)" $(if $(SHARED_FONTS),--shared-fonts "$(SHARED_FONTS)")
+	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)" --version $(VERSION) $(if $(SHARED_FONTS),--shared-fonts "$(SHARED_FONTS)")
 
 $(GENERATED):
 	@echo "missing $@: run make prepare" && false
@@ -33,8 +40,11 @@ $(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
 	@mkdir -p "$(dir $@)"
 	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
-$(OUT)/ssbu-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+$(OUT)/version-$(VERSION):
+	@mkdir -p "$(OUT)" && rm -f "$(OUT)"/version-v* && touch "$@"
+
+$(OUT)/ssbu-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) $(OUT)/version-$(VERSION) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations $(VERSION_FLAGS) \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include -I/opt/homebrew/opt/libvorbis/include -I/opt/homebrew/opt/libogg/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a /opt/homebrew/opt/libvorbis/lib/libvorbis.a /opt/homebrew/opt/libogg/lib/libogg.a \
 	  -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics \
@@ -72,9 +82,9 @@ $(OUT)/spirv-cross/spirv-cross:
 # (Q55). Game-derived: it stays in the work folder.
 .PHONY: seed shader-list
 seed: shader-tools
-	"$(PY)" scripts/prepare_shader_seed.py --game ssbu --romfs "$(WORK)/extracted/v1302/romfs" --output "$(OUT)/shader-seed" \
-	  --translator "$(OUT)/shader-service/totk_xlate" --spirv-cross "$(OUT)/spirv-cross/spirv-cross" --version v1302 \
-	  --modules "$(WORK)/rewritten/v1302"
+	"$(PY)" scripts/prepare_shader_seed.py --game ssbu --romfs "$(WORK)/extracted/$(VERSION)/romfs" --output "$(OUT)/shader-seed" \
+	  --translator "$(OUT)/shader-service/totk_xlate" --spirv-cross "$(OUT)/spirv-cross/spirv-cross" --version $(VERSION) \
+	  --modules "$(WORK)/rewritten/$(VERSION)"
 # The game's shaders compiled into Metal libraries ahead of time (scripts/build_shader_libs.py; build_app.py step 3/4):
 # <work>/build/shader-libs/<SHA-256 of the source>.metallib, next to the runtime, which loads an exact match instead of
 # compiling the source while the game draws. The sources are the seed (when `make seed` made one: every shader of
@@ -108,7 +118,7 @@ test-utex:
 SSBU_LOG ?= $(WORK)/logs/boot.log
 boot: runtime
 	@mkdir -p "$(dir $(SSBU_LOG))"
-	cd "$(WORK)" && TOTK_GPU_ALLOW_SUBMIT=$${TOTK_GPU_ALLOW_SUBMIT-1} TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/ssbu-native rewritten/v1302 boot 2> "$(abspath $(SSBU_LOG))"; echo "exit $$?; log: $(SSBU_LOG)"
+	cd "$(WORK)" && TOTK_GPU_ALLOW_SUBMIT=$${TOTK_GPU_ALLOW_SUBMIT-1} TOTK_HEADLESS=$${TOTK_HEADLESS-} ./build/ssbu-native rewritten/$(VERSION) boot 2> "$(abspath $(SSBU_LOG))"; echo "exit $$?; log: $(SSBU_LOG)"
 
 clean:
 	rm -rf "$(OUT)/obj" "$(OUT)/ssbu-native"

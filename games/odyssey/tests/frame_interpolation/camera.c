@@ -17,6 +17,8 @@ static void pend_materialize(uint64_t a, uint8_t *out, size_t n, int depth) {
 static void mfx_note_camera(const float *cam, int n) {
     assert(n == 84); memcpy(observed, cam, sizeof observed); received++;
 }
+static int taa_active(void) { return 0; }   /* key 5 (totk_taa.m) off: the camera goes to frame interpolation only */
+static void taa_note_camera(const float *cam, int n) { (void)cam; (void)n; assert(0); }
 /* The Python driver inserts the production mfx_take_camera here. */
 PRODUCTION_CAMERA
 

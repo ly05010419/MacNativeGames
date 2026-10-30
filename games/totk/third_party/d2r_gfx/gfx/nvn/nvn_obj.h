@@ -157,7 +157,7 @@ static inline int rt_dup_of(const p_set_rt *r, int i) {
 /* "ashot <path>" requests (end of nvn_mtl.m), taken at the game's present call with the screenshot queue lock held */
 void botw_ashot_poll(const void *t, long cur);
 #define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
-/* Uncapped pacing ignores the game's present interval 2 by default (user 2026-10-19: "放开到120帧"; 2026-10-22: 120 by default, up to 240 with TOTK_UNCAPPED_HZ); the
+/* Uncapped pacing ignores the game's present interval 2 by default (user 2026-10-19: "放开到120帧"; 2026-10-22: 120 by default, 2026-10-28: 144, up to 240 with TOTK_UNCAPPED_HZ); the
    real-time frame step keeps the game's speed (botw.md). TOTK_UNCAPPED_INTERVAL=0 keeps the interval where a clock
    divides it (TOTK_UNCAPPED_HZ, or the display rate on a phone). */
 #define UNCAPPED_INTERVAL_FROM_ENV(e) ((e) ? atoi(e) != 0 : 1)
@@ -230,8 +230,17 @@ void botw_wb_sub_note(uint64_t serial);
 #define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); } if (!((e)->late_fence && (e)->late_fence == (e)->fence)) botw_render_gone((e)->t.mem, (e)->obj);
 void botw_wb_stage_encode(void);
 #define BOTW_WB_STAGE() botw_wb_stage_encode();
-#define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; for (int i_ = 0; i_ < (nl); i_++) { if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
-        if ((list)[i_]->stage_fence > need_) need_ = (list)[i_]->stage_fence; } if (need_) mtl_wait(need_, UINT64_MAX); while (atomic_load(&g_up_pending)) usleep(1000); }
+/* Only a read-back blit (an entry not staged after its last rendering, wb_tex_back) needs the uploads finished: it runs
+   on the other queue. A staged entry is swizzled from its stage once its fence has passed, so a list of staged entries
+   does not wait for them: the uploads the replay of the next frame keeps committing sit behind this frame's GPU work, and
+   the 1 ms polls held the game's main thread there for about a quarter of its time (1.6.0, Hebra, 2026-10-27). */
+#define WB_STAGED(e) ((e)->stage && (e)->stage_fence >= (e)->fence)
+#define BOTW_WB_IS_STAGED(e) WB_STAGED(e)   /* TOTK_TIMELINE wb_out: a list with a read-back blit */
+#define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; int blit_ = 0; for (int i_ = 0; i_ < (nl); i_++) { if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
+        if ((list)[i_]->stage_fence > need_) need_ = (list)[i_]->stage_fence; blit_ |= !WB_STAGED((list)[i_]); } if (need_) mtl_wait(need_, UINT64_MAX); \
+        if (totk_tl_on()) totk_tl(TL_WB_STEP, 1, need_); \
+        if (blit_ || !botw_wb_staged_skip_on()) { while (atomic_load(&g_up_pending)) usleep(1000); if (totk_tl_on()) totk_tl(TL_WB_STEP, 2, 0); } }
+int botw_wb_staged_skip_on(void);   /* TOTK_WB_STAGED_NOWAIT=0 waits for the uploads also for staged lists (the old behaviour) */
 int botw_wb_from_stage(void *e);   /* 1 written back from the stage, 0 failed, WB_POOL_GONE, -1 not staged */
 #define BOTW_WB_FROM_STAGE(e, ok, layers) { int s_ = botw_wb_from_stage(e); if (s_ != -1) { (ok) = s_; (layers) = 0; } }
 /* BOTW (nvn_mtl.m, after a re-upload): the range that tracked the texture can be gone by now (a neighbour pool destroyed,
@@ -301,6 +310,7 @@ extern _Thread_local int botw_bra_attach;   /* tex_mtl for a render target: its 
 int totk_wb_fence_on(void);
 /* TOTK_WB_FENCE=0 waits for all submitted GPU work, as before. Otherwise a write-back waits only for the submissions that
    rendered the listed textures (the game waits for its own sync before invalidating), then for uploads to finish. */
+#define BOTW_WB_IS_STAGED(e) 0
 #define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; for (int i_ = 0; i_ < (nl); i_++) if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
     if (totk_wb_fence_on()) { if (need_) mtl_wait(need_, UINT64_MAX); while (atomic_load(&g_up_pending)) usleep(1000); } else mtl_finish_gpu(); }
 #define BOTW_WB_FROM_STAGE(e, ok, layers)

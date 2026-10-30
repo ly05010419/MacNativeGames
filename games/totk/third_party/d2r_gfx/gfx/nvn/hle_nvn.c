@@ -31,6 +31,7 @@
 #include "nvn_dirty.h"
 #include "totk_vpool.h"
 #include "totk_lifelog.h"
+#include "totk_state_report.h"
 #include <mach/mach_time.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -637,8 +638,19 @@ static int synclog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK
    fence is unchanged, and with the translation thread the newest submission must still be translated (its command memory
    is free again) before the wait returns; only the GPU part lags by one frame. */
 static _Atomic int g_sync_lag = -1;
+/* Metal fences that ended the last two submissions replayed on the game thread (no translation thread): a wait for the
+   newest one, or for a later commit such as the present copy (Breath of the Wild presents between its submit and the
+   wait), settles for the one before under TOTK_SYNC_LAG. */
+static _Atomic uint64_t g_sub_fence_last, g_sub_fence_prev;
 void nvn_set_sync_lag(int on) { atomic_store(&g_sync_lag, on != 0); LOG("[flag] sync_lag = %d", on != 0); }
-static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e && atoi(e) > 0; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
+/* Breath of the Wild has it on by default (user 2026-10-28; 1.6.0 Hebra: 8.78 -> 7.29 ms a frame with p95 unchanged, where
+   Tears of the Kingdom's p95 went up to 22 ms and stays off); TOTK_SYNC_LAG=0 turns it off. */
+#ifdef GAME_BOTW
+#define SYNC_LAG_DEFAULT 1
+#else
+#define SYNC_LAG_DEFAULT 0
+#endif
+static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { const char *e = getenv("TOTK_SYNC_LAG"); v = e ? atoi(e) > 0 : SYNC_LAG_DEFAULT; atomic_store(&g_sync_lag, v); if (v) LOG("[nvn] TOTK_SYNC_LAG=1：游戏等最近一次提交的 GPU 完成时放宽到上一次提交 | waits for the newest submission settle for the one before it"); } return v; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     NVN_BLOCKING();
     const sync_t *o = (const sync_t *)s;
@@ -647,7 +659,12 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (lg) { atomic_fetch_add(&g_sw_calls[k], 1); if (o->fence == mtl_last_fence()) atomic_fetch_add(&g_sw_newest[k], 1); }
     int tok = (o->fenced & 4) != 0;
     uint64_t want = o->fence;   // the fence whose GPU completion is waited for (TOTK_SYNC_LAG: one submission earlier)
-    if (want > 1 && sync_lag_on()) { int t; if (tok ? fence_now(&t) == want : want == mtl_last_fence()) want--; }
+    if (want > 1 && sync_lag_on()) {
+        int t; uint64_t last = atomic_load(&g_sub_fence_last), prev = atomic_load(&g_sub_fence_prev);
+        if (tok) { if (fence_now(&t) == want) want--; }
+        else if (last && want >= last && prev < last) want = prev;
+        else if (want == mtl_last_fence()) want--;
+    }
     if (tok ? fence_wait_to(o->fence, want, 0) : mtl_wait(want, 0)) { survey_after_wait(s); mtl_wb_fence_done(); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = lg ? now_ns() : 0;
     totk_tl(TL_WAIT_IN, o->fence, o->fence == mtl_last_fence());
@@ -1002,6 +1019,7 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
 }
 
 static uint64_t g_copy_drop_readd, g_copy_drop_token, g_copy_mark_faults;   /* why copies were released: their control memory was added again / their mark there is gone (of those: unmapped) */
+static uint64_t g_copy_mark_late;   /* Breath of the Wild: handles called after their mark was found gone (botw_handle_copy; the copy was kept) */
 static void copy_drop(copy_bucket *b, uint32_t i, int by_token) {   /* g_copy_mu held: release copy i of bucket b */
     cmd_copy *c = &b->v[i];
     c->stale_at = g_submits + 1;
@@ -1093,7 +1111,12 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
        2026-10-19 runs with either rule died calling a handle whose memory had been added again (boot33, boot35-40). */
     uintptr_t lo = o->ctl && o->ctl_used + 64 <= o->ctl_size ? (uintptr_t)o->ctl + o->ctl_used : 0;
     uintptr_t hi = lo ? lo + 1 : 0;
-    int token = 0;
+    /* The mark goes at the position too (copy_token_write), as the original driver writes its descriptor there: once the
+       game reuses that control memory for something else or gives it back to its heap, the handle is gone on hardware as
+       well, and the sweep releases the copy after a grace window (botw_mark_gone_keep). Without it every position the
+       game stopped recording at kept its copy for the whole session (#1117, 1.9.0: 352,000 live copies and 256,000
+       finalised textures kept for them after 44 minutes). */
+    int token = lo && copy_token_on();
 #else
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
@@ -1110,9 +1133,9 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
       if (b->n == b->cap) { b->cap = b->cap ? b->cap * 2 : 8; b->v = realloc(b->v, b->cap * sizeof *b->v); if (!b->v) die("command copy table"); }
       b->v[b->n++] = (cmd_copy){lo, hi, copy, 0, (uint32_t)token}; g_ncopies++; }
     { static uint64_t made; if (++made % 20000 == 0)
-        LOG("[cmd] recording copies: %llu made, %zu live, %.1f MiB, submit %llu; released %llu at a re-added control memory, %llu whose mark there was gone (%llu unmapped); index %zu buckets (%zu empty) of %zu, compacted %llu times",
+        LOG("[cmd] recording copies: %llu made, %zu live, %.1f MiB, submit %llu; released %llu at a re-added control memory, %llu whose mark there was gone (%llu unmapped, %llu called after it was gone and kept); index %zu buckets (%zu empty) of %zu, compacted %llu times",
             (unsigned long long)made, g_ncopies, g_copy_bytes / 1048576.0, (unsigned long long)g_submits, (unsigned long long)g_copy_drop_readd, (unsigned long long)g_copy_drop_token, (unsigned long long)g_copy_mark_faults,
-            g_cbk_used, g_cbk_empty, g_cbk_cap, (unsigned long long)g_cbk_compactions); }
+            (unsigned long long)g_copy_mark_late, g_cbk_used, g_cbk_empty, g_cbk_cap, (unsigned long long)g_cbk_compactions); }
     pthread_mutex_unlock(&g_copy_mu);
     if (cmdlog_env()) LOG("[cmd] EndRecording cb=%p recorded=%p copy=%p ctl=%p", (void *)c, (void *)o->seg, (void *)copy, o->ctl);
     if (totk_life_on() && totk_life_cb_take(c)) { totk_life_log("end cb=%p handle=%p", (void *)c, (void *)copy); totk_life_handle_add((uint64_t)(uintptr_t)copy); }
@@ -1129,7 +1152,15 @@ static NVNcommandHandle botw_handle_copy(NVNcommandHandle h) {
     uint8_t *copy = NULL;
     pthread_mutex_lock(&g_copy_mu);
     copy_bucket *b = cbk_get((uintptr_t)h >> COPY_PAGE_SHIFT, 0);
-    if (b) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == (uintptr_t)h) { copy = b->v[i].copy; break; }
+    if (b) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == (uintptr_t)h) {
+        cmd_copy *c = &b->v[i]; copy = c->copy;
+        if (c->stale_at) {   /* called after the sweep found its mark gone: the mark rule is wrong for this position; keep it for good */
+            static uint64_t n; if (n++ < 16) LOG("【红】[cmd] handle %#llx was called %llu submits after its control-memory mark was found gone: its copy stays (no more reclaiming at this position)",
+                                              (unsigned long long)(uintptr_t)h, (unsigned long long)(g_submits - c->stale_at));
+            g_copy_mark_late++; c->stale_at = 0; c->token = 0;
+        }
+        break;
+    }
     pthread_mutex_unlock(&g_copy_mu);
     return copy ? (NVNcommandHandle)(uintptr_t)copy : h;
 }
@@ -1178,7 +1209,10 @@ static int inline_bulk_on(void) {
     int v = atomic_load_explicit(&g_inline_bulk_on, memory_order_relaxed);
     if (v < 0) {
         const char *e = getenv("TOTK_INLINE_BULK"); int expected = -1;
-        atomic_compare_exchange_strong(&g_inline_bulk_on, &expected, e ? strcmp(e, "0") != 0 : !TOTK_BOTW_BUILD);   // default on since 2026-10-21 (TOTK; Breath of the Wild =1); TOTK_INLINE_BULK=0 off
+        /* Default on since 2026-10-21 (TOTK) and 2026-10-27 (Breath of the Wild 1.6.0, Hebra, same-run flag A/B: frame
+           9.09 / 9.14 -> 8.96 / 8.98 ms and 9.30 / 9.36 -> 9.08 / 9.10 ms; the record-by-record copy was 9% of its main
+           thread). TOTK_INLINE_BULK=0 off. */
+        atomic_compare_exchange_strong(&g_inline_bulk_on, &expected, e ? strcmp(e, "0") != 0 : 1);
         v = atomic_load_explicit(&g_inline_bulk_on, memory_order_relaxed);
     }
     return v;
@@ -1368,6 +1402,14 @@ static void pin_window_start(uint64_t now) {   /* g_copy_mu held */
     cbk_compact();
     g_pin_win_end = now + PIN_SWEEP_SUBMITS; g_pin_scan_pos = 0; g_pin_scan_cap = g_cbk_cap; g_pin_scan_done = 0; g_pin_scan_ok = 1; g_pin_scanned = 0;
 }
+#ifdef GAME_BOTW
+/* Breath of the Wild: a copy whose mark is gone is released only after PIN_SWEEP_SUBMITS more submits; a call in between
+   (botw_handle_copy) clears stale_at and keeps it. 1 = keep it for now. */
+static int botw_mark_gone_keep(cmd_copy *c) {
+    if (!c->stale_at) { c->stale_at = g_submits ? g_submits : 1; return 1; }
+    return g_submits < c->stale_at + PIN_SWEEP_SUBMITS;
+}
+#endif
 static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     if (g_pin_scan_done) return;
     if (g_cbk_cap != g_pin_scan_cap) { g_pin_scan_ok = 0; g_pin_scan_done = 1; return; }
@@ -1379,7 +1421,11 @@ static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     for (; k < end; k++, i = 0) {
         copy_bucket *b = &g_cbk[k]; if (!b->used) continue;
         while (i < b->n) {
-            if (b->v[i].token && !copy_token_intact(&b->v[i])) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
+            if (b->v[i].token && !copy_token_intact(&b->v[i])
+#ifdef GAME_BOTW
+                && !botw_mark_gone_keep(&b->v[i])
+#endif
+               ) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
             pin_mark_ops(b->v[i].copy); g_pin_scanned++; i++;
         }
     }
@@ -2131,7 +2177,7 @@ static win_t *g_xp_win; static uint64_t g_xp_job[4];   // job number of each swa
 static _Atomic uint64_t g_x_drains, g_x_drain_ns;
 static int async_replay(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("TOTK_ASYNC_REPLAY"); v = e ? atoi(e) > 0 : TARGET_OS_OSX && !TOTK_BOTW_BUILD;   /* Breath of the Wild: not measured with it yet, =1 turns it on */ if (v) LOG("[nvn] 翻译线程：提交与出图排队交给独立线程回放（TOTK_ASYNC_REPLAY=0 关）"); }
+    if (v < 0) { const char *e = getenv("TOTK_ASYNC_REPLAY"); v = e ? atoi(e) > 0 : TARGET_OS_OSX && !TOTK_BOTW_BUILD;   /* Breath of the Wild: off, 2026-10-27 1.6.0 Hebra 9.30 / 9.08 ms against 9.09 / 8.96 without it, no gain; =1 turns it on */ if (v) LOG("[nvn] 翻译线程：提交与出图排队交给独立线程回放（TOTK_ASYNC_REPLAY=0 关）"); }
     return v;
 }
 static void submit_exec(int n, const uint64_t *h, void *ucap);
@@ -2255,6 +2301,7 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
         return;
     }
     submit_exec(n, (const uint64_t *)h, NULL);
+    atomic_store(&g_sub_fence_prev, atomic_load(&g_sub_fence_last)); atomic_store(&g_sub_fence_last, mtl_last_fence());
     totk_tl(TL_SUB_OUT, 0, 0);
 #ifdef GAME_BOTW
     free(heap);
@@ -2425,14 +2472,15 @@ static int phone_holds_30(void) {
 }
 int runtime_phone_fps(void) { return phone_holds_30() ? 30 : 60; }
 void runtime_phone_fps_set(int fps) { atomic_store(&g_phone_hold30, fps == 30); fprintf(stderr, "[totk] phone frame rate: %s\n", fps == 30 ? "held at 30" : "up to 60"); }
-/* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40 or 60. The game is
+/* The frame lock (the Mac settings panel, runtime/settings_panel.h; user 2026-10-25 "锁帧"): 0 off, 30, 40, 60, 72, 90 or 120. The game is
    then paced at exactly that rate as the 30 fps hold above does it (display ticks where the rate divides the display's,
    our own clock otherwise), with the uncapped clock suspended; the real-time frame step keeps game speed right. A movie
    or the phone's 30 fps hold still wins; so do the interpolation modes that hold the game (30+30, 40+40, 50+50), which the
    panel never leaves on together with a lock. */
+#include "totk_fps_limit.h"
 static _Atomic int g_fps_lock;
 void nvn_fps_lock_set(int fps) {
-    fps = fps == 30 || fps == 40 || fps == 60 ? fps : 0;
+    if (!totk_fps_limit_valid(fps)) return;
     if (atomic_exchange(&g_fps_lock, fps) != fps) { if (fps) LOG("[nvn] 锁帧：%d 帧", fps); else LOG("[nvn] 锁帧：关"); }
 }
 int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
@@ -2555,6 +2603,12 @@ static void dump_frame(void) {
     if (g_frame <= (uint64_t)nframes) LOG("[nvn] %s %llu：%u 个函数 %llu 次调用 |%s", g_frame ? "帧" : "初始化", g_frame, nfn, total, line);
     else if (g_frame % 300 == 0) LOG("[nvn] 帧 %llu：%u 个函数 %llu 次调用", g_frame, nfn, total);
     g_frame++; g_frame_pub = g_frame; cs_dump();
+    /* TOTK_BENCH_FRAMES=<file> (benchmark, 2026-10-20): "<frame> <ns>" at every game frame, on the clock the survey
+       reports use (scripts/bench_run.py cuts the run into its fly segments by those frame numbers). */
+    { static FILE *bf; static int on = -1;
+      if (on < 0) { const char *e = getenv("TOTK_BENCH_FRAMES"); on = e && *e && (bf = fopen(e, "w")) != NULL; }
+      if (on) { fprintf(bf, "%llu %llu\n", (unsigned long long)g_frame, (unsigned long long)clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+                if (!(g_frame % 60)) fflush(bf); } }
     { void runtime_watch_tick(uint64_t); runtime_watch_tick(g_frame); }   // TOTK diagnostic write watchpoint (TOTK_WATCH_ADDR)
     // 每 300 帧读一次常驻内存，交图形层打内存读数行（mtl_mem_stat，低频封顶）。内存看门狗：常驻超过上限就报红自行退出——只在 Mac 宿主上缺省开（24 GB：宿主内存失控
     // 会把整机拖进内核崩溃，同机别的程序两次如此），或测试时用 DM_MEM_CAP_GB=<整数> 指定；玩家的 iOS 包不设上限（被系统杀之前自己退没有意义，反而多一种闪退）
@@ -2778,13 +2832,15 @@ static void sleep_until_ns(uint64_t dl) {   // 单调时钟上的绝对时刻 | 
 static int g_hz = -1, g_display_mode;
 /* TOTK_UNCAPPED (Mac and iPhone, default on; =0 off): like vsync off in other games. The game no longer waits for the display: it is
    paced by our own clock at UNCAPPED_HZ, and the display link shows the newest finished frame at every refresh (older ones
-   are merged away, as when the game runs ahead). The Mac's ceiling is 120 by default (user 2026-10-22: 240 back to 120);
+   are merged away, as when the game runs ahead). The Mac's ceiling is 144 by default (user 2026-10-22: 240 back to 120;
+   2026-10-28: 240, then 144, "上限改成 144", after #1192: TOTK 1.0.0 crashed on its title screen within two minutes
+   with the 240 ceiling, not with the uncapped clock off);
    TOTK_UNCAPPED_HZ goes up to 240: the real-time frame step (game_patches*.c) follows the measured frame time at any
    rate, so the game keeps its speed above 120 fps and on displays above 120 Hz. No ceiling at all (no present period) halved Breath of the Wild 1.9.0 on the same save, 81-93 ->
    42-47 fps, also with a time-constraint declaration from the measured frame time; the cause is not known yet. */
 #define UNCAPPED_HZ 240           /* the highest TOTK_UNCAPPED_HZ takes */
-#define UNCAPPED_DEFAULT_HZ 120   /* the Mac's ceiling without TOTK_UNCAPPED_HZ */
-/* TOTK_UNCAPPED_HZ: the uncapped clock's ceiling, 30..240 (default 120 on the Mac), or "display" for the display's refresh
+#define UNCAPPED_DEFAULT_HZ 144   /* the Mac's ceiling without TOTK_UNCAPPED_HZ */
+/* TOTK_UNCAPPED_HZ: the uncapped clock's ceiling, 30..240 (default 144 on the Mac), or "display" for the display's refresh
    rate: the iPhone / iPad default (user 2026-10-17: at most 60 on the iPhone 14's 60 Hz screen, where frames above it are
    never shown and only heat the phone; since 2026-10-23 the phone holds 30, phone_holds_30). The game still does not wait for the display, so a scene slower than the ceiling
    is not held to 60 / 30 steps. */
@@ -2844,6 +2900,18 @@ static uint64_t present_period(const win_t *o) {
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
     { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
     return hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0;
+}
+/* TOTK_STATE_REPORTING (totk_state_report.m): this frame's cap as the pacing applies it (present_ticks / present_period):
+   a held rate and why (and whether our own clock paces it, mfx_own_clock), else the uncapped ceiling (divided by the
+   game's present interval unless that is ignored), else the game's interval at the display's rate. Game thread. */
+static void sr_frame(const win_t *o) {
+    int hold = game_hold_fps(), src, cap = hold;
+    if (hold) src = runtime_game_fps_limit() == 30 ? SR_CAP_MOVIE : phone_holds_30() ? SR_CAP_PHONE : mfx_hold_fps(mfx_enabled()) ? SR_CAP_INTERP : SR_CAP_LOCK;
+    else if (!g_hz) src = SR_CAP_NONE;
+    else if (g_display_mode) { src = SR_CAP_DISPLAY; cap = g_hz; }
+    else if (uncapped_now()) { cap = g_hz; src = !dm_detclock_enabled() && uncapped_interval_on() ? SR_CAP_UNCAPPED : SR_CAP_UNCAPPED_INTERVAL; }
+    else { cap = g_hz; src = SR_CAP_GAME; }
+    totk_sr_frame(cap, src, hold && mfx_own_clock(), g_paced_hz, present_ticks(o));
 }
 /* Exercise production policy, including the shrine's interval=2 and the
    legacy 30 FPS path. No sleep, present or GPU allocation is involved. */
@@ -3091,6 +3159,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     // 真机语义：出图只入队、立即返回；本帧显示时刻按节拍器排，该贴图到「显示时刻 + 一个周期」才可再获取（阻塞在 AcquireTexture）
     // Real-device semantics: present only enqueues and returns immediately; this frame's display time is scheduled by the pacer, and the texture can be acquired again only at "display time + one period" (blocking in AcquireTexture)
     uint64_t period = present_period(o), now = dm_detclock_enabled() ? guest_ns() : now_ns();
+    if (totk_sr_on()) sr_frame(o);
     nvn_pacer pc = {o->pace};
     uint64_t slot = now + nvn_pace(&pc, now, period);
     o->pace = pc.target;

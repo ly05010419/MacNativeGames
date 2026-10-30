@@ -39,6 +39,10 @@ class ContributionFileTests(unittest.TestCase):
             self.assertEqual(noseed.returncode, 0, noseed.stderr)
             self.assertEqual(json.loads(noseed.stdout)['status'], 'pass')
             self.assertFalse(contrib.exists(), 'a run without the seed writes no contribution file')
+            game = subprocess.run([str(probe), str(contrib), 'game'], capture_output=True, text=True)   # the iPhone / iPad app's tag
+            self.assertEqual(game.returncode, 0, game.stderr)
+            self.assertEqual(json.loads(game.stdout)['status'], 'pass')
+            self.assertEqual(watch.contribution_game(contrib.read_text()), 'TOTK 1.4.3')
 
 
 if __name__ == '__main__':
@@ -69,6 +73,11 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(attachment_urls(body), [link])
         self.assertIn('### Device / 设备\n\niPad\n', body)
         self.assertNotIn('udid', body.lower())
+        self.assertIn('### Game version / 游戏版本\n\nSent automatically / 自动提交\n', body)   # an app from before the tag
+        tagged = watch.issue_body('iPhone', link, 'TOTK 1.4.3')   # the device's file names its game and version (2026-10-29)
+        self.assertIn('### Game version / 游戏版本\n\n1.4.3\n\n### Device / 设备\n\niPhone\n', tagged)
+        self.assertEqual(watch.contribution_game('# x\n# Game: TOTK 1.2.1\nV\ta\t{}\n# Game: TOTK 1.4.3\n'), 'TOTK 1.4.3')
+        self.assertIsNone(watch.contribution_game('# Game: TOTK\n# Game: TOTK 1.4.3 and more\nV\ta\t{}\n'))
 
     def test_only_shader_rows_are_taken(self):
         text = '\n'.join([
@@ -79,12 +88,14 @@ class IssueCollectionTests(unittest.TestCase):
             f'S\t{self.KEY_A}-0123456789ab_b\t0\tm',                  # shader libraries are not taken from contributions
             f'L\t{self.KEY_A}\tShader/x.bnsh\t0\t880\t100',            # nor locators
             'R\tabcd', 'R\tabcd', 'B\tabcd\t-\t3:7:0x1p-1,0x1p-1,0x1p-1,0x1p-1;',   # render pipelines are (a row once)
+            'T\tabcd\t5:3;7:1;', 'T\tabcd\t5:9;',                   # and tile reads (an attachment past 7 is none)
             'R\tnot hex', 'B\tabcd\t-\t-',
             'V\tnot-a-key\t{}', f'V\t{self.KEY_B}\t{{"local":[1]}}', f'V\t{self.KEY_B}\tnot json'])
         rows, dropped = contribution_rows(text)
         self.assertEqual(rows, {(self.KEY_A, '{"tex":{"10":"3d","9":"2d"}}'), (self.KEY_B, '{}')})
-        self.assertEqual(dropped, 7)
-        self.assertEqual(contribution_pipelines(text), [('R', 'abcd'), ('B', 'abcd', '-', '3:7:0x1p-1,0x1p-1,0x1p-1,0x1p-1;')])
+        self.assertEqual(dropped, 8)
+        self.assertEqual(contribution_pipelines(text), [('R', 'abcd'), ('B', 'abcd', '-', '3:7:0x1p-1,0x1p-1,0x1p-1,0x1p-1;'),
+                                                        ('T', 'abcd', '5:3;7:1;')])
 
     @staticmethod
     def pipeline(vs, fs):   # a pipeline key leads with two NUL-padded 80-byte names "<variant>_b"
@@ -130,6 +141,82 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertIn("Tears of the Kingdom: 54 rows, 0 new; Breath of the Wild: 436 rows, 2 new", mixed)
         self.assertIn('王国之泪 54 条，其中新增 0 条；旷野之息 436 条，其中新增 2 条', mixed)
         self.assertIn('None of the shaders', reply_text({}, 'totk'))   # --drop-unknown on another game's file
+
+
+class OtherGamesTests(unittest.TestCase):
+    """Every other game's rows go to its own list (user 2026-10-28: "每个游戏支持自己的着色器清单 收到自己游戏里 不要混了")."""
+    KEY_A, KEY_W = 'a' * 64, 'e' * 64
+
+    @staticmethod
+    def issue(title, body='', number=1):
+        return {'number': number, 'title': title, 'body': body, 'labels': [], 'comments': [], 'author': {'login': 'p'}}
+
+    def test_the_game_comes_from_the_title_the_form_or_the_data_folder(self):
+        titled = collect_shader_issues.titled_game
+        self.assertEqual(titled(self.issue('Shader list: 120 shaders from Mac (TOTK 1.4.3)')), 'totk')
+        self.assertEqual(titled(self.issue('Shader list (Breath of the Wild): 3 shaders')), 'botw')
+        self.assertEqual(titled(self.issue('Shader list (Super Mario Bros. Wonder): 40 shaders from Mac (Wonder 1.2.1)')), 'wonder')
+        self.assertEqual(titled(self.issue('Shader list (other games): ', '### Game / 游戏\n\nMario vs. Donkey Kong\n')), 'mvdk')
+        self.assertEqual(titled(self.issue('Shader list (other games): ', '### Game / 游戏\n\n超级马力欧 奥德赛\n')), 'odyssey')
+        # sent before the games had their own titles: the launcher's "(<data folder> <version>)"
+        self.assertEqual(titled(self.issue('Shader list: 1365 shaders from Mac (Wonder 1.2.1)')), 'wonder')
+        self.assertEqual(titled(self.issue('Shader list: 915 shaders from Mac (SMO 1.3.0)')), 'odyssey')
+        self.assertEqual(titled(self.issue('Shader list: 13 shaders from Mac (SSBU 13.0.2)')), 'ssbu')
+        self.assertEqual(titled(self.issue('Shader list: Wonder')), 'wonder')   # #1001: the game named in a typed title
+        self.assertEqual(titled(self.issue('Shader list: my iPhone, 2 hours')), 'totk')
+
+    def test_rows_pasted_into_the_issue_are_read(self):
+        body = f'notes\n```tsv\nV\t{self.KEY_A}\t{{}}\nR\tabcd\nnot a row\n```'
+        self.assertEqual(collect_shader_issues.inline_text(self.issue('Shader list:', body)), f'V\t{self.KEY_A}\t{{}}\nR\tabcd')
+        self.assertEqual(collect_shader_issues.inline_text(self.issue('Shader list:', 'Failed to upload')), '')
+
+    def merge(self, issue, keys):
+        lists = {g: ShaderList() for g in collect_shader_issues.GAMES}
+        line, per_game = collect_shader_issues.merge_issue(issue, lists, keys, {}, '', False)
+        return lists, line, per_game
+
+    def test_another_game_takes_every_row_no_seeded_game_has(self):
+        keys = {g: set() for g in collect_shader_issues.GAMES}; keys['totk'] = {self.KEY_A}
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'   # a file shared with Tears of the Kingdom
+        lists, line, per_game = self.merge(self.issue('Shader list (Super Mario Bros. Wonder): 2 shaders', body), keys)
+        self.assertEqual(lists['wonder'].variants, {(self.KEY_W, '{}')})
+        self.assertEqual(lists['totk'].variants, {(self.KEY_A, '{}')})
+        self.assertEqual(per_game, {'totk': (1, 1), 'wonder': (1, 1)})
+        self.assertIn(self.KEY_W, keys['wonder'], 'what it merged teaches later issues the game\'s keys')
+        # a plain "Shader list:" issue then finds those keys in Wonder's list, and what no game has is Wonder's too: a file
+        # comes from one game, and the seeds name every Tears of the Kingdom and Breath of the Wild shader
+        later = self.issue('Shader list:', f'V\t{self.KEY_W}\t{{"tex":{{"1":"2d"}}}}\nV\t{"f" * 64}\t{{}}')
+        lists, line, per_game = self.merge(later, keys)
+        self.assertEqual(lists['wonder'].variants, {(self.KEY_W, '{"tex":{"1":"2d"}}'), ('f' * 64, '{}')})
+        self.assertEqual(per_game, {'wonder': (2, 2)})
+        # nothing names another game: an unknown key keeps the issue open
+        lists, line, per_game = self.merge(self.issue('Shader list:', f'V\t{"9" * 64}\t{{}}'), keys)
+        self.assertIsNone(per_game)
+        self.assertIn('neither game has', line)
+
+    def test_another_game_s_reply_names_its_own_list(self):
+        reply = reply_text({'wonder': (40, 12)}, 'wonder')
+        self.assertIn("12 of them new to Super Mario Bros. Wonder's own shader list (`games/wonder/assets/shader_list.tsv`)", reply)
+        self.assertIn('超级马力欧兄弟 惊奇自己的着色器清单', reply)
+        self.assertNotIn('next build', reply)   # its build may not read the list yet
+
+    def test_another_game_s_list_keeps_its_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'odyssey/assets/shader_list.tsv'
+            saved = collect_shader_issues.GAMES['odyssey']
+            collect_shader_issues.GAMES['odyssey'] = (path,) + saved[1:]
+            try:
+                shared = ShaderList(); shared.variants.add((self.KEY_W, '{}'))
+                collect_shader_issues.save_list('odyssey', shared)   # a new list: a header naming the game
+                self.assertTrue(path.read_text().startswith('# Super Mario Odyssey shader list v1'))
+                path.write_text('# Odyssey list, chain v4\n' + path.read_text().split('\n', 2)[2])
+                shared.variants.add((self.KEY_A, '{}'))
+                collect_shader_issues.save_list('odyssey', shared)
+                text = path.read_text()
+                self.assertTrue(text.startswith('# Odyssey list, chain v4\nV\t'), text[:80])
+                self.assertEqual(len(ShaderList.load(path).variants), 2)
+            finally:
+                collect_shader_issues.GAMES['odyssey'] = saved
 
 
 sys.path.insert(0, str(TOTK / 'ios/tools'))

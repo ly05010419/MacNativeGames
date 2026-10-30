@@ -13,6 +13,7 @@
 #include "romfs_path.h"
 #include "totk_ui_lang.h"
 #include <CommonCrypto/CommonDigest.h>
+#include <TargetConditionals.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -70,7 +71,13 @@ static void sha_fd(int fd, const char *expected, uint64_t total, const char *wha
 typedef struct { uint64_t size, dev, ino; int64_t mtime_s, mtime_ns, ctime_s, ctime_ns; char sha[65]; } Proof;
 static Proof proof_for(const struct stat *s, const char *sha) {
     Proof p; memset(&p, 0, sizeof p); p.size = (uint64_t)s->st_size; p.dev = (uint64_t)s->st_dev; p.ino = (uint64_t)s->st_ino;
+#if !TARGET_OS_IPHONE
     p.mtime_s = s->st_mtimespec.tv_sec; p.mtime_ns = s->st_mtimespec.tv_nsec; p.ctime_s = s->st_ctimespec.tv_sec; p.ctime_ns = s->st_ctimespec.tv_nsec;
+#else
+    /* iOS rewrites ctime and birthtime when a sealed app bundle is read for the first time (romfs.c proof_equal), and a
+       reinstall moves the bundle: the record names the bytes only (size and the expected SHA-256 the hash proved). */
+    p.dev = p.ino = 0;
+#endif
     snprintf(p.sha, sizeof p.sha, "%s", sha); return p;
 }
 /* The image's full SHA-256 once; afterwards a record of the file's identity (size, inode, times, expected hash) in the

@@ -6,6 +6,7 @@
    tools next to the real file. The game runs as the user's (TOTK_SLOT_OWNER=user), so it takes the one-game slot ahead
    of test runs. "Odyssey Data/session-minutes.txt" sets a session limit (default 20, 0 = none): the copied renderer
    has caused GPU driver panics in long sessions, so sessions stay bounded until longer runs are verified. */
+#include <CoreGraphics/CoreGraphics.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -52,11 +53,23 @@ static void back_up_saves(const char *profile, const char *data, const char *sta
         free(names[i]);
     }
 }
+int odyssey_settings_window(const char *data_dir);   /* scripts/odyssey_launcher_ui.m */
+/* The settings window (odyssey_launcher_ui.m) before the game: shown unless graphics.txt says launcher=skip and Option is
+   not held. It runs as a child (this executable with --settings) so the game starts from a process without a window.
+   Returns 0 to play, 1 when the player chose Quit. */
+static int settings_before_launch(const char *exe, const char *data, const char *gfx_path) {
+    int skip = 0; char line[128];
+    FILE *f = fopen(gfx_path, "r");
+    if (f) { while (fgets(line, sizeof line, f)) if (!strncmp(line, "launcher=skip", 13)) skip = 1; fclose(f); }
+    if (skip && !(CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState) & kCGEventFlagMaskAlternate)) return 0;
+    return run((const char *const[]){exe, "--settings", data, NULL}) == 0 ? 0 : 1;
+}
 static void append(const char *path, const char *line) {
     FILE *f = fopen(path, "a"); if (f) { fputs(line, f); fclose(f); }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 3 && !strcmp(argv[1], "--settings")) return odyssey_settings_window(argv[2]);
     char exe[PATH_MAX], real[PATH_MAX]; uint32_t size = sizeof exe;
     if (_NSGetExecutablePath(exe, &size) || !realpath(exe, real)) return 1;
     char macos[PATH_MAX], contents[PATH_MAX], app[PATH_MAX], home[PATH_MAX];
@@ -72,6 +85,8 @@ int main(void) {
     join(cache, data, "shader-cache/rt-totk-native-v4-unverified");
     join(commands, data, "commands.txt"); join(log, data, "last-run.log"); join(minutes_path, data, "session-minutes.txt");
     mkdir(data, 0755); mkdir(profile, 0700);
+    char gfx_path[PATH_MAX]; join(gfx_path, data, "graphics.txt");
+    if (settings_before_launch(real, data, gfx_path)) return 0;
 
     /* The project's slot directory when the app was packaged there (so test runs and the app never overlap),
        otherwise one next to the data. */
@@ -91,6 +106,17 @@ int main(void) {
     setenv("TOTK_ROMFS", romfs, 1); setenv("TOTK_SHARED_FONTS", fonts, 1); setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_GAME_SLOT_DIR", slot, 1); setenv("TOTK_SLOT_OWNER", "user", 1); setenv("TOTK_SLOT_PURPOSE", "Odyssey.app", 1);
     setenv("TOTK_SHADER_ASYNC", "1", 0);
+    /* Key 3's bigger render size (build_odyssey.py --render-res): the scaled graphics table and render-res.txt in the
+       bundle; without that folder the game runs as shipped. */
+    const int user_patches = getenv("TOTK_ROMFS_PATCHES") != NULL, user_res = getenv("TOTK_RENDER_RES") != NULL;
+    { char patches[PATH_MAX]; join(patches, game, "romfs-patches");
+      setenv("TOTK_ROMFS_PATCHES", stat(patches, &st) == 0 && S_ISDIR(st.st_mode) ? patches : "0", 0); }
+    /* The update's version the app was built from (package_native_app.py), for the window title: 1.3.0 and 1.4.1 share
+       their executables, so the runtime itself cannot tell them apart. */
+    { char path[PATH_MAX], version[32] = ""; join(path, resources, "game-version.txt");
+      FILE *vf = fopen(path, "r");
+      if (vf) { if (fgets(version, sizeof version, vf)) version[strcspn(version, "\r\n")] = 0; fclose(vf); }
+      if (*version) setenv("ODYSSEY_GAME_VERSION", version, 1); }
     /* The RomFS check's proof file (runtime/romfs.c) goes next to the data, not into the bundle: written beside the
        bundled RomFS it broke the app's code signature after the first launch (23 October). */
     setenv("TOTK_ROMFS_PROOF_DIR", data, 1);
@@ -119,6 +145,28 @@ int main(void) {
        "Odyssey Data/windowed" exists. */
     char windowed[PATH_MAX]; join(windowed, data, "windowed");
     if (stat(windowed, &st)) setenv("BY3_FULLSCREEN", "1", 0);
+    /* Picture settings of the settings window (third_party/d2r_gfx/gfx/nvn/odyssey_gfx.h), kept in "Odyssey Data/graphics.txt";
+       keys 3-7 are TOTK's (after PR #910 and #1076). The render size applies here, at launch: key 3's render size patch
+       (runtime/game_patches.c, TOTK_RENDER_RES, with the render target pool and memory heap grown) together with that
+       size's quality table in the bundle (romfs-res/<w>x<h>, scripts/package_native_app.py); the game starts at it
+       (ODYSSEY_SCENE_START=max) and key 3 still cycles down to 1600x900. A size without its table, or a TOTK_RENDER_RES /
+       TOTK_ROMFS_PATCHES set outside, leaves key 3's build-time size (romfs-patches) as it is. */
+    setenv("ODYSSEY_GFX_SETTINGS", gfx_path, 0);
+    FILE *gf = fopen(gfx_path, "r");
+    if (gf) {
+        char line[128], res_dir[PATH_MAX], manifest[PATH_MAX];
+        while (fgets(line, sizeof line, gf)) {
+            unsigned w, h;
+            if (!strncmp(line, "frame_generation=on", 19)) { setenv("TOTK_MFX", "interp", 0); continue; }   /* 60+60 from the start (key 2 still toggles) */
+            if (sscanf(line, "resolution=%ux%u", &w, &h) != 2 || (w == 1600 && h == 900)) continue;
+            snprintf(line, sizeof line, "romfs-res/%ux%u", w, h); join(res_dir, game, line); join(manifest, res_dir, "manifest.tsv");
+            if (stat(manifest, &st)) continue;
+            if (user_patches || user_res) continue;
+            snprintf(line, sizeof line, "%ux%u", w, h); setenv("TOTK_RENDER_RES", line, 1); setenv("TOTK_ROMFS_PATCHES", res_dir, 1);
+            setenv("ODYSSEY_SCENE_START", "max", 0);
+        }
+        fclose(gf);
+    }
     for (const char *const *v = (const char *const[]){"TOTK_ASSUME_FOCUS", "TOTK_VERIFY_STARTUP", "TOTK_HEADLESS", NULL}; *v; v++) unsetenv(*v);
     if (chdir(data)) return 1;
     char stamp[32]; time_t launched = time(NULL); strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", localtime(&launched));

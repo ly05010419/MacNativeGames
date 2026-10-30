@@ -22,7 +22,7 @@ class SettingsPanel(unittest.TestCase):
             self.skipTest('The production Metal 4 mode implementations require macOS 26 and its SDK')
         gfx = ROOT / 'games/totk/third_party/d2r_gfx/gfx/nvn'
         with tempfile.TemporaryDirectory() as directory:
-            for version in ('', 'TOTK_GAME_V143'):
+            for version in ('', 'TOTK_GAME_V143', 'GAME_BOTW160', 'GAME_BOTW190'):
                 executable = Path(directory) / ('settings-panel-' + (version or 'base'))
                 command = [compiler, '-std=c11', '-fobjc-arc', '-Wall', '-Wextra',
                            '-Werror', '-Wno-deprecated-declarations', '-I' + str(gfx / 'include'),
@@ -36,6 +36,8 @@ class SettingsPanel(unittest.TestCase):
                            '-framework', 'CoreVideo', '-o', str(executable)]
                 if version:
                     command.append('-D' + version + '=1')
+                if version.startswith('GAME_BOTW'):
+                    command.append('-DGAME_BOTW=1')
                 build = subprocess.run(command, capture_output=True, text=True, timeout=90)
                 self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
                 for layout in ('compact', 'corners'):
@@ -58,3 +60,22 @@ class SettingsPanel(unittest.TestCase):
                     run=subprocess.run([str(executable)],env=env,capture_output=True,text=True,timeout=35)
                     self.assertEqual(run.returncode,0,run.stdout+run.stderr)
                     self.assertIn('pass: HDR off restores SDR',run.stdout)
+                settings = Path(directory) / ('saved-' + (version or 'base'))
+                settings.mkdir()
+                env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
+                env.update(TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings))
+                for action in ('save', 'restore', 'override'):
+                    current = dict(env)
+                    if action == 'override':
+                        current.update(TOTK_MFX='interpmax', TOTK_TAA='0', TOTK_ASPECT='16:9', TOTK_OUTPUT_RES='1920x1080')
+                    run = subprocess.run([str(executable), action], env=current, capture_output=True, text=True, timeout=35)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn('pass: settings persistence', run.stdout)
+                (settings / 'graphics-frame.txt').write_text('lock-60\n')
+                run = subprocess.run([str(executable), 'lock'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                for name, value in {'graphics-overlay.txt': 'invalid', 'graphics-frame.txt': 'lock-60junk',
+                                    'graphics-output.txt': '999', 'graphics-aspect.txt': 'nan', 'graphics-taa.txt': '3'}.items():
+                    (settings / name).write_text(value)
+                run = subprocess.run([str(executable), 'corrupt'], env=env, capture_output=True, text=True, timeout=35)
+                self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

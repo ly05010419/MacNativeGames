@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Build Super Smash Bros. Ultimate.app from your own dump of Super Smash Bros. Ultimate in one command.
 
-    python3.14 scripts/build_ssbu.py --game CARD.xci --update UPDATE-13.0.2.nsp --keys prod.keys [--work SSBU_build]
+    python3.14 scripts/build_ssbu.py --game CARD.xci --update UPDATE.nsp --keys prod.keys [--work SSBU_build]
                                      [--out "Super Smash Bros. Ultimate.app"] [--firmware DIR | --shared-fonts DIR]
                                      [--dlc FOLDER-OF-DLC-NSPs]
 
-The game file is the 1.0.0 card image (XCI, or the base NSP with --firmware), the update is the 13.0.2 NSP, whose code
-the app runs. Steps (each is skipped when its verified output is already there, so a stopped run can be started again):
+The game file is the 1.0.0 card image (XCI, or the base NSP with --firmware), the update is the 13.0.2 or the 13.0.5 NSP,
+whose code the app runs; its verified ExeFS hashes choose which, never its file name. Steps (each is skipped when its
+verified output is already there, so a stopped run can be started again):
  1. the Python environment (<work>/venv, from requirements.txt; Python 3.14 reads the NRO modules' zstd frames)
- 2. the 13.0.2 code from the update and the RomFS of the card image plus the update (17.6 GB, all six IVFC levels
-    verified), each against assets/expected-v13.0.2.json
+ 2. the update's code, which names the version, and the RomFS of the card image plus the update (17.6 GB, all six IVFC
+    levels verified), each against assets/expected-v13.0.2.json or expected-v13.0.5.json
  3. the three program modules rewritten for the Mac, then the NRO modules (fighters, stages, modes) found in data.arc by
     the digests the game's NRR lists and rewritten the same way
  4. the six system fonts (the card image's system update partition, --firmware or --shared-fonts) and the runtime tables
@@ -39,8 +40,10 @@ import time
 from pathlib import Path
 
 GAME_DIR = Path(__file__).resolve().parents[1]
-VERSION = 'v1302'
-EXPECTED = json.loads((GAME_DIR / 'assets/expected-v13.0.2.json').read_text())
+VERSIONS = {v: json.loads((GAME_DIR / f'assets/expected-{name}.json').read_text())
+            for v, name in (('v1302', 'v13.0.2'), ('v1305', 'v13.0.5'))}
+VERSION = 'v1302'   # main() sets the one identify_update chose
+EXPECTED = VERSIONS[VERSION]
 APP_NAME, BUNDLE_ID, EXECUTABLE = 'Super Smash Bros. Ultimate', 'org.macnativegames.ssbu', 'SSBU'
 DATA_FOLDER = 'SSBU'   # runtime/game_version.h GAME_FOLDER
 TITLE_ID = '01006a800016e000'
@@ -206,22 +209,53 @@ def nro_record(nro, out):
                                        else None for kind in NRO_FILES} for m in modules})
 
 
+def exefs_matches(exefs, want):
+    return all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items())
+
+
+def identify_update(work, py, update, keys, logs):
+    """The version whose verified ExeFS the update carries, never chosen by the file name (build_app.py identify_update).
+    The given update's ExeFS is always extracted and compared (a few seconds): an ExeFS another build left in the work
+    folder says nothing about this update, and trusting it made a 13.0.5 update build 13.0.2 (after PR #1138). An
+    extracted ExeFS that already matches the version found is kept."""
+    staging = work / 'extracted/update-detection'
+    if staging.exists():
+        shutil.rmtree(staging)
+    say('2. code: the program from the update, to tell its version')
+    run([py, 'scripts/extract_code.py', update, '--keys', keys, '--output', staging / 'exefs'], logs / 'extract-code.log')
+    version = next((v for v, expected in VERSIONS.items() if exefs_matches(staging / 'exefs', expected['exefs_sha256'])), None)
+    if version is None:
+        raise BuildError(f'ExeFS main: SHA-256 {sha256(staging / "exefs/main")[:16]}... is neither 13.0.2 nor 13.0.5 '
+                         '(is this a supported update, and the dump complete?)')
+    target = work / f'extracted/{version}'
+    if exefs_matches(target / 'exefs', VERSIONS[version]['exefs_sha256']):   # this version was extracted before
+        shutil.rmtree(staging)
+        return version
+    if (target / 'exefs').exists():
+        shutil.rmtree(target / 'exefs')
+    target.mkdir(parents=True, exist_ok=True)
+    (staging / 'exefs').rename(target / 'exefs')
+    (staging / 'extraction-manifest.json').replace(target / 'extraction-manifest.json')   # extract_code.py writes it there
+    staging.rmdir()
+    return version
+
+
 def step_code(work, py, base, update, keys, logs):
     exefs, romfs, out = work / f'extracted/{VERSION}/exefs', work / f'extracted/{VERSION}/romfs', work / f'rewritten/{VERSION}'
-    want = EXPECTED['exefs_sha256']
-    if not all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items()):
-        say('2. code: the 13.0.2 program from the update')
+    want, shown = EXPECTED['exefs_sha256'], EXPECTED['display_version']
+    if not exefs_matches(exefs, want):
+        say(f'2. code: the {shown} program from the update')
         if exefs.exists():
             shutil.rmtree(exefs)
         run([py, 'scripts/extract_code.py', update, '--keys', keys, '--output', exefs], logs / 'extract-code.log')
         for n, h in want.items():
             check(f'ExeFS {n}', sha256(exefs / n), h)
     if not romfs_valid(romfs):
-        say('2. data: the RomFS of the card image and the 13.0.2 update, all six IVFC levels verified (17.6 GB, minutes)')
+        say(f'2. data: the RomFS of the card image and the {shown} update, all six IVFC levels verified (17.6 GB, minutes)')
         if romfs.exists():
             shutil.rmtree(romfs)
         run([py, 'scripts/merge_romfs.py', base, update, '--keys', keys, '--output', romfs], logs / 'merge-romfs.log')
-        check('13.0.2 RomFS', json.loads((romfs / 'index.json').read_text())['romfs_sha256'], EXPECTED['romfs']['sha256'])
+        check(f'{shown} RomFS', json.loads((romfs / 'index.json').read_text())['romfs_sha256'], EXPECTED['romfs']['sha256'])
     env = dict(os.environ, DM_RULESET='native', DM_PRIVATE_GATES='0')
     for m in MODULES:
         image, h = out / f'{m}.patched.bin', EXPECTED['rewritten_sha256'][f'{m}.patched.bin']
@@ -288,7 +322,7 @@ def step_data(work, py, game, keys, logs, firmware=None, shared_fonts=None):
     say('4. data: runtime tables, RomFS index and fonts')
     # fonts already in the work folder are read there; --shared-fonts copies another folder in
     copy = [] if Path(source).resolve() == fonts.resolve() else ['--shared-fonts', source]
-    run([py, 'scripts/prepare_runtime.py', '--work', work, *copy], logs / 'prepare-runtime.log')
+    run([py, 'scripts/prepare_runtime.py', '--work', work, '--version', VERSION, *copy], logs / 'prepare-runtime.log')
 
 
 def make_path(work):
@@ -333,7 +367,7 @@ def list_with_notes(work, py, logs):
 
 def step_shaders(work, py, logs):
     mk = make_path(work)
-    make = ['make', f'WORK={mk}', f'PY={mk / "venv/bin/python"}']
+    make = ['make', f'WORK={mk}', f'PY={mk / "venv/bin/python"}', f'VERSION={VERSION}']
     run([*make, 'shader-tools'], logs / 'shader-tools.log')
     lst = list_with_notes(work, py, logs)
     say('5. shaders: the startup shaders from data.arc and the shared list (long the first time; a rerun reuses them)')
@@ -352,8 +386,10 @@ def step_shaders(work, py, logs):
 def step_binary(work, py, game, keys, logs):
     say('6. app: the game binary and the launcher')
     mk = make_path(work)
-    run(['make', f'-j{os.cpu_count() or 4}', f'WORK={mk}', f'PY={mk / "venv/bin/python"}', 'runtime'], logs / 'runtime.log')
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', 'app/launcher.m',
+    run(['make', f'-j{os.cpu_count() or 4}', f'WORK={mk}', f'PY={mk / "venv/bin/python"}', f'VERSION={VERSION}', 'runtime'],
+        logs / 'runtime.log')
+    defines = [] if VERSION == 'v1302' else [f'-DSSBU_GAME_{VERSION.upper()}=1']   # runtime/game_version.h, as the Makefile
+    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', *defines, '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', 'app/launcher.m',
          '-framework', 'AppKit', '-o', work / 'build/app-launcher'], logs / 'launcher.log')
     icon = work / 'build/AppIcon.icns'
     if not icon.exists():   # the game's own icon from its control data; optional
@@ -538,9 +574,10 @@ def step_app(work, out, logs):
 
 
 def main(argv):
+    global VERSION, EXPECTED   # identify_update chooses them
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--game', type=Path, required=True, help='the 1.0.0 card image (XCI), or the base NSP with --firmware')
-    ap.add_argument('--update', type=Path, required=True, help='the 13.0.2 update NSP')
+    ap.add_argument('--update', type=Path, required=True, help='the 13.0.2 or 13.0.5 update NSP')
     ap.add_argument('--keys', type=Path, required=True, help='your prod.keys')
     ap.add_argument('--work', type=Path, default=GAME_DIR / 'SSBU_build', help='work folder (default games/ssbu/SSBU_build)')
     ap.add_argument('--out', type=Path, help='the app to write (default: next to the game file)')
@@ -556,7 +593,7 @@ def main(argv):
             raise BuildError(f'no such file: {p}')
     input_kind(game)
     if input_kind(update) != 'nsp':
-        raise BuildError(f'{update}: the 13.0.2 update is an NSP')
+        raise BuildError(f'{update}: the update is an NSP')
     work = a.work.expanduser().resolve()
     out = (a.out.expanduser().resolve() if a.out else game.parent / f'{APP_NAME}.app')
     if out.suffix != '.app':
@@ -566,9 +603,7 @@ def main(argv):
         raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
     work.mkdir(parents=True, exist_ok=True)
     logs = work / 'logs/build'
-    if shutil.disk_usage(work).free / 2**30 < 30 and not romfs_valid(work / f'extracted/{VERSION}/romfs'):
-        raise BuildError('needs about 30 GB free for the work folder (the app itself is an APFS clone of it on the same volume)')
-    say(f'{APP_NAME} {EXPECTED["display_version"]}; work folder {work}')
+    say(f'{APP_NAME}; work folder {work}')
     notified = 0
     while pids := running_from(work):
         if time.monotonic() - notified >= 60:
@@ -576,6 +611,11 @@ def main(argv):
             notified = time.monotonic()
         time.sleep(5)
     py = step_environment(work, sys.executable, logs)
+    VERSION = identify_update(work, py, update, keys, logs)
+    EXPECTED = VERSIONS[VERSION]
+    say(f'update identified by verified ExeFS hashes: {EXPECTED["display_version"]}')
+    if shutil.disk_usage(work).free / 2**30 < 30 and not romfs_valid(work / f'extracted/{VERSION}/romfs'):
+        raise BuildError('needs about 30 GB free for the work folder (the app itself is an APFS clone of it on the same volume)')
     step_code(work, py, game, update, keys, logs)
     step_data(work, py, game, keys, logs, firmware=a.firmware and a.firmware.expanduser().resolve(),
               shared_fonts=a.shared_fonts and a.shared_fonts.expanduser().resolve())
