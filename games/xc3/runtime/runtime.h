@@ -236,6 +236,12 @@ void runtime_feedback_detach(GCController *controller);
 uint64_t runtime_desired_language(void);   /* services.c: the game language as a Switch language code (8 bytes) */
 int runtime_output_res_toggle(void);                    /* legacy two-state output size switch */
 int runtime_output_mode_cycle(void);                    /* key 3: MetalFX 2K -> native 2K -> off */
+/* Xenoblade Chronicles 3's render scale (game_patches.c, stage 13): offered (this version has the sites), saved (the
+   choice for the next start: 0 original, 1 full, 2 2K), saved by the panel, and in use (what this start applied). */
+int runtime_render_scale_offered(void);
+int runtime_render_scale_saved(void);
+void runtime_render_scale_save(int choice);
+int runtime_render_scale(void);
 void runtime_shortcut_help_toggle(void);
 int fps_overlay_toggle_hints(void);   /* shared key 1 toggle for FPS, shader and system-load overlays */
 int runtime_aspect_toggle(void);   /* runtime/aspect_patch.h: key 4, 16:9 <-> ultrawide (Mac, 1.2.1 / 1.4.3); 0 where unavailable */

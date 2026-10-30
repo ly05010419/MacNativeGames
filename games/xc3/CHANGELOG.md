@@ -2,13 +2,62 @@
 
 ## Status
 
-Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next.
+Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next. The work plan is [docs/PLAN.md](docs/PLAN.md).
 
 ## Where the folder comes from
 
 A copy of `games/ot0` at upstream commit `5ab07b7` (2026-10-28); see [third_party/COPIES.md](third_party/COPIES.md).
 
 ## Log
+
+### 2026-10-30: black, flickering plants fixed
+
+Grass and bushes showed black patches that changed every frame (seen in play, 2.2.1, at every render scale). The game captures the plants' wind-bent shapes with transform feedback and draws them from that buffer in the same render pass, first into depth (a pre-pass), then in colour with a depth test EQUAL. The graphics layer put no barrier after a capturing draw, so the pre-pass read the previous frame's shapes. The colour pass then failed the EQUAL test wherever the wind had moved the plant.
+- **`gfx/nvn/nvn_mtl.m` `draw()`:** the vertex→vertex barrier that already followed vertex-only draws now also follows transform feedback captures.
+- **Pass dump:** new `Y` lines (vertex-buffer binds as replayed) and `T` lines (transform feedback binds and begin / end). `XC3_POSDUMP_MAX` sets how many draws the position dump logs. `DM_NVN_SKIP_FS` takes up to 512 shader keys, for bisecting a scene.
+
+Verified (2.2.1, M5, the player's save at Yzana Plains and the main game's save in Everblight Plain):
+
+| Check | Before | After |
+|---|---|---|
+| Plants, 6 shots, original scale | black patches in every shot | none |
+| Plants, 6 shots, full scale | black patches | none |
+| Everblight Plain | right | right, no GPU errors |
+| Frames over 25 s | 750–752 | 750 |
+
+### 2026-10-30: stage 13, full render resolution (2.2.1)
+
+The game draws its scene at half the output size, 960×544 of 1920×1080, as on the Switch. The scale comes from two start values in the renderer (0.5 in one mode, 0.53 in the other) that the game sets with code immediates.
+- **`runtime/game_patches.c`:** an optional built-in patch sets both to one scale, 1.0 or 1.328 (three sites in `game_version.h`, each checked against the loaded word; a mismatch stops the start). 2.2.1 only.
+- **Panel:** "Render resolution (next start)": Original (960×540), Full (1920×1080) or 2K (2552×1440, scaled down by the game to its 1080p picture), saved in `render-scale.txt`; `XC3_RENDER_SCALE=original|full|2k` decides first. Off by default.
+- **Not offered:** 2.0 (3840×2160). Metal stopped taking the game's work after GPU errors, and the picture froze.
+- **`runtime/mem_scan.h`** (copied from `games/totk`): memory scan, write watch and code breakpoints through the diagnostic command file; it found the source.
+
+Verified (2.2.1, M5, title screen and the main game's save in Everblight Plain):
+
+| Check | Original | Full | 2K |
+|---|---|---|---|
+| Scene targets (pass dump, free roam) | 235 at 960×544 | 237 at 1920×1080 | 243 at 2552×1440 |
+| Picture | right | right, sharper at 1:1 | right; one run showed a bright streak, also seen in play at the original scale |
+| Frames over the same 25 s | 752 | 751–753 | 750 (30 fps held) |
+| GPU errors | none | none | none |
+| 1.0.0 with `render-scale.txt` set | starts, original scale | — | — |
+
+### 2026-10-29: stage 16, startup shaders bundled with the app
+
+A fresh app translated every shader while playing. The first entry into Future Redeemed waited on about 10,000 of them, and a loading screen in the main game waited 50 s once.
+- **`scripts/prepare_shader_seed.py` (`make shader-seed`):** builds `build/shader-seed` from the translation caches this Mac already has (the work folder's and the app's). It takes the variant indexes, MSL and reflection of every variant met in play, with SHA-256 in `seed-manifest.json`, in the format the graphics layer already imports (`gfx/nvn/totk_shader_seed.h`).
+- **`make app`:** bundles the seed. It holds game-derived data and stays in the work folder and the local app, never in the repository.
+- **No pipeline list:** the runtime waits at start until a seed's pipeline list is built, and with every pipeline met in play that took 35 s. The shaders are still compiled in the background from the start.
+
+Verified (2.2.1, empty shader cache, the main game's save):
+
+| Check | Result |
+|---|---|
+| Seed | 12,867 shaders, 38,477 files, 360 MB, built in about 10 s |
+| Import at first start | 7 s; start-up wait 0.4 s (35 s with the pipeline list) |
+| Shaders translated while playing | 8 (geometry as compute), against thousands before |
+| First 93 s | all shaders compile in the background on 8 threads; a save loading in that time took 15 s |
 
 ### 2026-10-29: the enlarged picture after cutscenes (MetalFX output)
 

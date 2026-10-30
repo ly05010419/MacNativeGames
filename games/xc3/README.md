@@ -5,7 +5,7 @@ Xenoblade Chronicles 3 running natively on Apple silicon Macs, the way `games/to
 - Horizon's services are answered by a native host,
 - NVN graphics are replayed on Metal 4, with the game's shaders translated to Metal.
 
-This folder started as a copy of `games/ot0` (Octopath Traveler 0), itself a copy of `games/by3` and `games/totk`. It keeps its own copies of everything it builds and runs with: `runtime/`, `third_party/d2r`, `third_party/d2r_gfx`, `prebuilt/`, `scripts/`, and the shader translator's source in `tools/totk_xlate`. Nothing here reads another game's folder; [third_party/COPIES.md](third_party/COPIES.md) says where each copy came from. How the port was done and what was found on the way: [CHANGELOG.md](CHANGELOG.md). Technical notes (transform feedback, geometry shaders, NVN coverage, services, game facts) are in [docs/reference](docs/reference/).
+This folder started as a copy of `games/ot0` (Octopath Traveler 0), itself a copy of `games/by3` and `games/totk`. It keeps its own copies of everything it builds and runs with: `runtime/`, `third_party/d2r`, `third_party/d2r_gfx`, `prebuilt/`, `scripts/`, and the shader translator's source in `tools/totk_xlate`. Nothing here reads another game's folder; [third_party/COPIES.md](third_party/COPIES.md) says where each copy came from. How the port was done and what was found on the way: [CHANGELOG.md](CHANGELOG.md). The plan and working notes are in [docs/](docs/PLAN.md).
 
 You must own the game: use your own NSP and the `prod.keys` and system fonts dumped from your own Switch. Nothing from the game is in this repository. `XC3_build/` (the work folder) and `mods/` are ignored by git.
 
@@ -34,6 +34,7 @@ Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
 - Under the game's second sampler pool, a combined handle with sampler 0 is read as a separate texture handle.
 - Rare, brief screen tearing or thin black lines while playing.
+- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K).
 - A shader seen for the first time is translated and compiled when it is first used. On the first run (of `make boot` or of the app, which keeps its own cache) a loading screen can wait for that, once for up to about a minute; later runs load the shaders from the cache.
 
 ## What the game uses
@@ -98,13 +99,13 @@ Both versions live in one work folder (`extracted/<version>`, `rewritten/<versio
 
 Verification of the rewrite (each module): `third_party/d2r/structck.py XC3_build/rewritten/v100 <module> XC3_build/extracted/v100/exefs/<module>` and `third_party/d2r/equiv.py` with the same arguments plus `--min-eff 8`. Set `DM_ROOT` to the work folder so `structck.py` keeps its cache there. `make prepare` checks every rewritten module against `rewritten_sha256` in the manifest.
 
-Keys as in the other ports: WASD the left stick, arrow keys the right stick (camera), J is A, K or Space is B, I is X, U is Y, Q / E are L / R, Option / Shift are ZL / ZR, Return is +, Tab or Escape is −, T F G H the D-pad. A game controller works too. Key 1 opens the settings panel (from TotK): overlay and FPS graph, controller type, mouse, rumble, and key bindings for keyboard, mouse and controller, saved for the next start. Rows this game cannot use yet (frame lock above 30, frame interpolation, resolution, aspect ratio) show one fixed value. On a controller, L3 + R3 together open it.
+Keys as in the other ports: WASD the left stick, arrow keys the right stick (camera), J is A, K or Space is B, I is X, U is Y, Q / E are L / R, Option / Shift are ZL / ZR, Return is +, Tab or Escape is −, T F G H the D-pad. A game controller works too. Key 1 opens the settings panel (from TotK): overlay and FPS graph, controller type, mouse, rumble, and key bindings for keyboard, mouse and controller, saved for the next start. In 2.2.1, **Render resolution** draws the game's scene at the full 1920×1080, or at 2K (2552×1440, which the game scales down to its 1080p picture), instead of its own 960×540 (half the output, as the Switch does); it applies at the next start and is off by default. Rows this game cannot use yet (frame lock above 30, frame interpolation, output resolution, aspect ratio) show one fixed value. On a controller, L3 + R3 together open it.
 
 Run this way, saves, the profile and the pseudo device id are written to `XC3_build/user-data`.
 
 ## The app
 
-`make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
+`make shader-seed PY=$PY` first (optional) gathers the shaders already translated on this Mac (the work folder's cache and the app's) into `build/shader-seed`; `make app` then bundles them, so a fresh app does not translate them while playing. `make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
 
 The settings window chooses the monitor, window or full screen, the window size or full-screen resolution, MetalFX or plain upscaling, the frame rate overlay, and whether new shaders are built in the background. There is no frame rate choice: the game holds itself to 30 fps, as on the Switch.
 

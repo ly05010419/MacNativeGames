@@ -88,6 +88,14 @@ boot: runtime
 # (sizes and SHA-256 of the replacements and the originals).
 DATA ?= $(HOME)/Library/Application Support/MacNativeGames/XC3
 .PHONY: patches mods app
+# The app's startup shaders (scripts/prepare_shader_seed.py): the variants met in play on this Mac, from the work folder's
+# translation cache and the app's own (SEED_CACHE, SEED_APP_CACHE), so a fresh app does not translate them while playing. Game-derived:
+# it stays in the work folder and the local app.
+SEED_CACHE ?= $(WORK)/build/shader-cache/rt-totk-native-v4-unverified
+SEED_APP_CACHE ?= $(DATA)/shader-cache
+.PHONY: shader-seed
+shader-seed:
+	"$(PY)" scripts/prepare_shader_seed.py --out "$(OUT)/shader-seed" "$(SEED_CACHE)" "$(SEED_APP_CACHE)"
 patches:
 	"$(PY)" scripts/prepare_patches.py --work "$(WORK)" --version $(VERSION)
 mods:
@@ -118,6 +126,7 @@ app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	cp -cR "$(WORK)/extracted/$(VERSION)/romfs" "$(IN_APP)/extracted/$(VERSION)/"
 	[ ! -d "$(WORK)/extracted/firmware/shared-fonts" ] || cp -cR "$(WORK)/extracted/firmware" "$(IN_APP)/extracted/"
 	[ "$(VERSION)" != v221 ] || [ ! -d "$(WORK)/extracted/aoc" ] || cp -cR "$(WORK)/extracted/aoc" "$(IN_APP)/extracted/"   # add-ons (2.2.1 only)
+	[ ! -f "$(OUT)/shader-seed/seed-manifest.json" ] || cp -cR "$(OUT)/shader-seed" "$(IN_APP)/build/"   # make shader-seed first
 	[ -f "$(OUT)/AppIcon.icns" ] && cp "$(OUT)/AppIcon.icns" "$(APP)/Contents/Resources/" || true
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \

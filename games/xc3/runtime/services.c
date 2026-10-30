@@ -430,3 +430,4 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  default:fprintf(stderr,"[totk] unimplemented SVC 0x%x at %s+%#llx\n",num,module,(unsigned long long)offset);if(num==0x1f)fprintf(stderr,"[totk] named port %.12s\n",(const char *)(uintptr_t)r[1]);runtime_trace_guest(r[29],r[30]);runtime_fail("system service not implemented");return 0;
  }
 }
+#include "mem_scan.h"   /* Mac diagnostics: mscan commands (memory scan, write watch; copied from games/totk) */

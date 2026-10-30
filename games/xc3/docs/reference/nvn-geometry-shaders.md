@@ -86,3 +86,13 @@ It has to be written in the NVN layer. Work items, in order:
 Several days. The steps can be checked one by one:
 - each compute pass's output buffers can be dumped and compared with the GS's expected quads (4 vertices per input primitive);
 - the final draw shows as sprites in the window screenshots.
+
+## Line and triangle input (2026-10-30, experimental, off by default)
+- **Index output cleared:** the geometry kernel writes only the indices a primitive emits, and the final draw reads every slot (`maxout + 1` per primitive). `vtg_draw` now fills `geometry_ib_output` with the restart index first; before, a primitive that emitted nothing left the arena's old bytes there as indices. On for every geometry draw.
+- **Topologies:** `vtg_draw` takes points, lines, line strips, triangles, triangle strips and fans: the translator gets `lines` / `triangles`, the topology remap lists each primitive's vertices (strips unrolled, odd strip triangles with their first two vertices swapped, fans around vertex 0), `geometry_counts.x` is the primitive count and the geometry kernel runs once per primitive.
+- **Off unless `TOTK_GS_TRIANGLES=1`:** with it on (2.2.1, Everblight Plain), Noah's hair disappeared from the scene; off, it is back. Not understood yet (the triangle programs draw elsewhere).
+- **What the game draws with them:** program `ef6ec091…` (triangle strip input) draws into two 64×64 targets (format 92) and its passthrough vertex shader writes the layer: probably a cube / array probe rendered in one pass, the geometry shader choosing the face. A second one, `4c0a9c8e…`, appears later in play.
+- **Open:**
+  - Metal: a vertex function writing `render_target_array_index` needs `inputPrimitiveTopology` set, and these passthrough functions also write the point size, which the triangle class refuses: the point size has to be dropped from the passthrough MSL of line / triangle programs (`vtg_tri` marks them).
+  - The pass must cover every layer of the target (`renderTargetArrayLength`) for the layer the geometry shader picks; the layered-pass code (`g_lay`) covers only per-draw layer constants.
+  - The hair regression above.

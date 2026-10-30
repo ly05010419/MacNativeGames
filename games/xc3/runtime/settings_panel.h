@@ -290,6 +290,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,
   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+ #ifdef GAME_XC3
+ /* XC3's render scale (game_patches.c, stage 13): the game draws its scene at half the output size; "full" and "2K" patch that
+    at the next start, since the game sets its scale only when its renderer starts. */
+ if(runtime_render_scale_offered())[rows addObject:settings_row(settings_text("渲染分辨率（下次启动生效）","Render resolution (next start)"),
+  @[settings_text("原版（960×540）","Original (960×540)"),settings_text("完整（1920×1080）","Full (1920×1080)"),
+    settings_text("2K（2552×1440）","2K (2552×1440)")],@[@0,@1,@2],
+  ^int{return runtime_render_scale_saved();},^(int v){runtime_render_scale_save(v);})];
+ #endif
  NSString *aspect=settings_text("画面比例","Aspect ratio");
  if(!(runtime_aspect_ratio()>0))[rows addObject:settings_fixed(aspect,@"16:9")];
  else{NSMutableArray<NSNumber *> *ratios=[@[@(16.0/9),@(16.0/10),@(21.0/9),@(32.0/9)] mutableCopy];

@@ -730,7 +730,7 @@ int mtl_gpu_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off, uint64_
 // ---------- 提交 ----------
 // ---------- Submission ----------
 static void defer_reset(void); static void defer_fallback(void);
-typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; void *vis; int qlog; float sph[4]; } post_op;   // vis：kind 3 的可见性槽表 | vis: the visibility slot table for kind 3; qlog / sph: "querylog" diagnostic
+typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; void *vis; int qlog; float sph[4]; uint64_t ts; } post_op;   // vis：kind 3 的可见性槽表 | vis: the visibility slot table for kind 3; qlog / sph: "querylog" diagnostic
 static _Atomic int g_occl_vis; static _Atomic long g_ql_until = -1;   // TOTK occlusion diagnostics (see dm_gfx_querylog_next)
 void dm_gfx_querylog_next(long n); void dm_gfx_passdump_next(long n); void dm_gfx_texdump_next(const char *path);
 // ---------- 遮挡查询（NVN_COUNTER_TYPE_SAMPLES_PASSED）----------
@@ -1723,7 +1723,11 @@ static void post(post_op o) {
     g_post[g_npost++] = o;
 }
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, NULL}); }
-void mtl_sub_counter(uint64_t addr, uint32_t type) { post((post_op){2, NULL, 0, 0, addr, type, NULL}); }
+static uint64_t gpu_ticks(void);
+/* TOTK_TS_REPLAY=1 (diagnostic, Xenoblade Chronicles 3 stage 13): TIMESTAMP counter reports carry the time they were
+   replayed instead of the time their submit completed (both CPU clocks; the GPU's own time is not read). */
+static int ts_at_replay(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_TS_REPLAY"); v = e && atoi(e); } return v; }
+void mtl_sub_counter(uint64_t addr, uint32_t type) { post_op q = {2, NULL, 0, 0, addr, type, NULL}; if (ts_at_replay()) q.ts = gpu_ticks(); post(q); }
 // ---------- TOTK: conditional rendering evaluated in GPU order ----------
 // Counter reports replayed earlier in GPU order whose memory write has not happened yet (it happens in the completion
 // handler of their submit) are kept in a ring with the value they will write: 0 for timestamp / unimplemented types,
@@ -2007,7 +2011,7 @@ uint64_t mtl_sub_commit(void) {
             }
             // TOTK: NVNcounterData = {counter, timestamp}; TIMESTAMP / TIMESTAMP_TOP reports write counter 0 (the timestamp is the second word).
             // The game's conditional clears depend on that 0 (see cond_eval); other unimplemented counter types also report 0.
-            else { uint64_t t = gpu_ticks(), rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
+            else { uint64_t t = ops[i].ts ? ops[i].ts : gpu_ticks(), rec[2] = {0, t}; memcpy((void *)ops[i].addr, rec, sizeof rec); }
         }
         free(ops);
         /* TOTK_OCCL_AUTODUMP=<dir>: when every occlusion query of a frame reported 0 (the game then culls all queried
@@ -4675,7 +4679,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, vtg_tri; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
@@ -6423,14 +6427,14 @@ static id<MTLFunction> posdump_fn(NvShader *vs) {
     return fn;
 }
 static void posdump_bind(id<MTL4RenderCommandEncoder> en, const NvShader *vs, const NvShader *fs, int instances) {
-    static int logged; static long from = -1; if (from < 0) { const char *e = getenv("XC3_POSDUMP_FRAME"); from = e ? atol(e) : 2700; }
+    static int logged, most = -1; static long from = -1; if (from < 0) { const char *e = getenv("XC3_POSDUMP_FRAME"), *m = getenv("XC3_POSDUMP_MAX"); from = e ? atol(e) : 2700; most = m ? atoi(m) : 40; }
     long fr = (long)atomic_load(&g_cur_frame);
     id<MTLBuffer> b = [g_dev newBufferWithLength:256 * 8 * 16 options:MTLResourceStorageModeShared]; memset(b.contents, 0xff, b.length); res_add(b);
     enc_r_args(en, MTLRenderStageVertex, b.gpuAddress, 28);
     { const char *ff = getenv("XC3_POSDUMP_FS"); if (ff && *ff && (!fs || strncmp(fs->key, ff, strlen(ff)))) { defer_obj_release(b); return; } }
     int armed = atomic_load(&g_posdump_arm) > 0;
     if (armed) atomic_fetch_sub(&g_posdump_arm, 1);
-    if (armed || (fr >= from && logged < 40)) {
+    if (armed || (fr >= from && logged < most)) {
         if (!armed) logged++; NSString *key = [NSString stringWithFormat:@"%.16s", vs->key]; uint64_t u1 = S.ubo[0][1].addr; int n = instances > 256 ? 256 : instances;
         [g_commit_blocks addObject:^{
             const float *v = (const float *)b.contents; char line[2048]; size_t o = 0;
@@ -6491,6 +6495,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     d.rasterSampleCount = k->samples ? k->samples : 1;
     d.alphaToCoverageEnabled = (k->a2c & 1) != 0;
     if (k->a2c & PSO_LAYERED) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;   // TOTK: required with a layer output; layered passes take triangle draws only (lay_draw_ok)
+    else if (vs && vs->vtg_tri) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;   // geometry passthrough of a line / triangle input program (vtg_draw): a triangle strip that may write the layer
     for (int i = 0; i < 8; i++) {
         if (!k->cfmt[i]) continue;
         MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[i];
@@ -8046,7 +8051,9 @@ static int state_op(uint32_t op, const void *a) {
         }
         case OP_BIND_VATTR: { const p_bind_vattr *b = a; if (S.nattr != b->n || memcmp(S.attr, b->st, 4 * b->n)) { memcpy(S.attr, b->st, 4 * b->n); S.nattr = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *b = a; if (S.nstream != b->n || memcmp(S.stream, b->st, 8 * b->n)) { memcpy(S.stream, b->st, 8 * b->n); S.nstream = b->n; g_pso_dirty = 1; } break; }
-        case OP_BIND_VBUF: { const p_bind_vbuf *b = a; memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
+        case OP_BIND_VBUF: { const p_bind_vbuf *b = a; memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n);
+            for (int i = 0; i < b->n; i++) PD("Y %llu vbuf %d = %#llx/%llu", g_stat_pass, b->first + i, (unsigned long long)b->r[i].address, (unsigned long long)b->r[i].size);   // the pass dump: every vertex-buffer bind as replayed
+            break; }
         case OP_BIND_UBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; args_dirty_stage(b->stage); } break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; args_dirty_stage(b->stage); } break; }
         case OP_BIND_TEX: { const p_bind_handles *b = a; if (b->stage < 6 && b->first + b->n <= 128 && memcmp(&S.tex[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.tex[b->stage][b->first], b->h, 8 * b->n); args_dirty_stage(b->stage); if (b->first + b->n > g_tex_hi[b->stage]) g_tex_hi[b->stage] = b->first + b->n; } break; }
@@ -9969,32 +9976,55 @@ static nvn_hmap g_vtg_cps = {.klen = sizeof(void *)};   // compute pipelines of 
 @implementation NvVtg @end
 static void vtg_draw(const p_draw *dw, const p_draw_idx *di, NvProg *pr) {
     int prim = dw ? dw->prim : di->prim;
-    if (prim != NVN_DRAW_PRIMITIVE_POINTS) { RED_ONCE(71, "geometry shader with input primitive %d: only points are emulated yet, draw skipped", prim); return; }
+    /* the geometry kernel's input: kv vertices per primitive, read through the topology remap (primitive p's vertex j is the
+       draw's vertex trb[p * kv + j]); strips and fans are unrolled into lists here, odd strip triangles with their first two
+       vertices swapped to keep the winding (as the GPU does) */
+    NSString *topo; uint32_t kv;
+    switch (prim) {
+        case NVN_DRAW_PRIMITIVE_POINTS: topo = @"points"; kv = 1; break;
+        case NVN_DRAW_PRIMITIVE_LINES: case NVN_DRAW_PRIMITIVE_LINE_STRIP: topo = @"lines"; kv = 2; break;
+        case NVN_DRAW_PRIMITIVE_TRIANGLES: case NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP: case NVN_DRAW_PRIMITIVE_TRIANGLE_FAN: topo = @"triangles"; kv = 3; break;
+        default: RED_ONCE(71, "geometry shader with input primitive %d: not emulated (points, lines, line strips, triangles, strips, fans are), draw skipped", prim); return;
+    }
+    if (prim != NVN_DRAW_PRIMITIVE_POINTS && !getenv("TOTK_GS_TRIANGLES")) { RED_ONCE(72, "geometry shader with input primitive %d: skipped (line / triangle input is experimental: TOTK_GS_TRIANGLES=1)", prim); return; }
     uint32_t n = (uint32_t)(dw ? dw->count : di->count), inst = (uint32_t)((dw ? dw->instances : di->instances) > 1 ? (dw ? dw->instances : di->instances) : 1);
     if (!n || !pr->sh[1] || !pr->ctl[0] || !pr->code[0] || !pr->ctl[2] || !pr->code[2]) return;
+    uint32_t np = prim == NVN_DRAW_PRIMITIVE_POINTS ? n : prim == NVN_DRAW_PRIMITIVE_LINES ? n / 2 : prim == NVN_DRAW_PRIMITIVE_LINE_STRIP ? (n >= 2 ? n - 1 : 0) :
+                  prim == NVN_DRAW_PRIMITIVE_TRIANGLES ? n / 3 : n >= 3 ? n - 2 : 0;   // input primitives
+    if (!np) return;
     uint32_t w2, w4; memcpy(&w2, pr->code[2] + 0x30 + 8, 4); memcpy(&w4, pr->code[2] + 0x30 + 16, 4);   // geometry SPH: invocations, max output vertices
     uint32_t maxout = w4 & 0xfff, invoc = (w2 >> 24) & 0xff; if (!invoc) invoc = 1;
     if (!maxout) return;
     NSString *gkey = pr->key[2];
     NSDictionary *gans = rt_answers(2);
-    NSString *v1 = totk_rt_vtg(gkey, @"vsc", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], @"points", @{});
-    NSString *v2 = totk_rt_vtg(gkey, @"gsc", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], @"points", gans);
-    NSString *v3 = totk_rt_vtg(gkey, @"vpt", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], @"points", @{});
+    NSString *v1 = totk_rt_vtg(gkey, @"vsc", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], topo, @{});
+    NSString *v2 = totk_rt_vtg(gkey, @"gsc", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], topo, gans);
+    NSString *v3 = totk_rt_vtg(gkey, @"vpt", pr->ctl[0], pr->code[0], pr->ctl[2], pr->code[2], topo, @{});
     if (!v1 || !v2 || !v3) return;
     NvShader *vsc = shader_get([v1 stringByAppendingString:@"_b"], 0), *gsc = shader_get([v2 stringByAppendingString:@"_b"], 2), *vpt = shader_get([v3 stringByAppendingString:@"_b"], 0);
     if (!vsc || !gsc || !vpt || !vsc->rf.out_words || !gsc->rf.out_words) { RED_ONCE(73, "geometry-as-compute shaders missing or without sizes"); return; }
+    vpt->vtg_tri = prim != NVN_DRAW_PRIMITIVE_POINTS;   // its pipelines declare the triangle class (a point program's passthrough writes the point size, which that class refuses)
     // the program to draw with: passthrough vertex shader + this program's fragment shader (one per pair, kept)
     static NSMutableDictionary<NSString *, NvVtg *> *progs; if (!progs) progs = [NSMutableDictionary dictionary];
     NSString *pk = [NSString stringWithFormat:@"%@|%s", v3, pr->sh[1]->key];
     NvVtg *vg = progs[pk];
     if (!vg) { vg = [NvVtg new]; NvProg *dp = [NvProg new]; dp->sh[0] = vpt; dp->sh[1] = pr->sh[1]; dp->ctl[1] = pr->ctl[1]; dp->code[1] = pr->code[1]; dp->key[1] = pr->key[1];
                dp->ctl[0] = pr->ctl[0]; dp->code[0] = pr->code[0]; dp->key[0] = v3; vg->draw_prog = dp; progs[pk] = vg; }
-    // inputs: vertex indices (identity, or the draw's own) and the topology remap (identity for points)
-    id<MTLBuffer> ab; size_t ao = arena_alloc((size_t)n * 8 + 512, &ab);
+    // inputs: vertex indices (identity, or the draw's own) and the topology remap
+    size_t ntr = (size_t)np * kv, asz = (size_t)n * 4 + ntr * 4 + 512;
+    id<MTLBuffer> ab; size_t ao = arena_alloc(asz, &ab);
     uint8_t *abase = (uint8_t *)ab.contents; size_t iv_at = (ao + 255) & ~(size_t)255, id_at = iv_at + (((size_t)n * 4 + 255) & ~(size_t)255);
-    if (id_at + (size_t)n * 4 > ao + (size_t)n * 8 + 512) { RED_ONCE(74, "geometry: arena layout"); return; }
+    if (id_at + ntr * 4 > ao + asz) { RED_ONCE(74, "geometry: arena layout"); return; }
     uint32_t *ident = (uint32_t *)(abase + id_at), *iv = (uint32_t *)(abase + iv_at);
-    for (uint32_t i = 0; i < n; i++) ident[i] = i;
+    for (uint32_t p = 0; p < np; p++) {
+        uint32_t *t = ident + (size_t)p * kv;
+        switch (prim) {
+            case NVN_DRAW_PRIMITIVE_LINE_STRIP: t[0] = p; t[1] = p + 1; break;
+            case NVN_DRAW_PRIMITIVE_TRIANGLE_STRIP: t[0] = p & 1 ? p + 1 : p; t[1] = p & 1 ? p : p + 1; t[2] = p + 2; break;
+            case NVN_DRAW_PRIMITIVE_TRIANGLE_FAN: t[0] = 0; t[1] = p + 1; t[2] = p + 2; break;
+            default: for (uint32_t j = 0; j < kv; j++) t[j] = p * kv + j;
+        }
+    }
     int32_t first = dw ? dw->first : di->base_vertex, finst = dw ? dw->base_instance : di->base_instance;
     if (di) {
         void *mb; uint64_t mo; int isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4;
@@ -10007,13 +10037,13 @@ static void vtg_draw(const p_draw *dw, const p_draw_idx *di, NvProg *pr) {
     memset(&g_vtg, 0, sizeof g_vtg);
     g_vtg.ibtex = vtg_buftex(ab, iv_at, (uint64_t)n * 4, MTLPixelFormatR32Float, 4, &eo);
     uint32_t ib_base = eo;
-    g_vtg.trbtex = vtg_buftex(ab, id_at, (uint64_t)n * 4, MTLPixelFormatR32Float, 4, &eo);
+    g_vtg.trbtex = vtg_buftex(ab, id_at, (uint64_t)ntr * 4, MTLPixelFormatR32Float, 4, &eo);
     if (eo) { RED_ONCE(76, "geometry: topology remap buffer not aligned"); return; }
     // vb_info: vertex_counts, geometry_counts, vertex_strides[32], vertex_offsets[32] (uvec4 each)
     id<MTLBuffer> ib; size_t io = arena_alloc(1056 + 256, &ib); io = (io + 255) & ~(size_t)255;
     uint32_t *vi = (uint32_t *)((uint8_t *)ib.contents + io); memset(vi, 0, 1056);
     vi[0] = n; vi[1] = inst; vi[2] = (uint32_t)first; vi[3] = (uint32_t)finst;
-    vi[4] = n; vi[7] = ib_base;
+    vi[4] = np; vi[7] = ib_base;   // geometry_counts: the geometry kernel runs once per input primitive
     for (int i = 0; i < vsc->rf.nb; i++) {
         const nvn_rbind *b = &vsc->rf.b[i]; if (b->kind != NVN_RB_VBTEX) continue;
         int a = b->reg; if (a >= 16 || a >= S.nattr) { RED_ONCE(77, "geometry: vertex attribute %d not bound", a); return; }
@@ -10035,6 +10065,9 @@ static void vtg_draw(const p_draw *dw, const p_draw_idx *di, NvProg *pr) {
     id<MTLBuffer> ob; size_t oo = arena_alloc((size_t)(vout + gvout + giout + 768), &ob); oo = (oo + 255) & ~(size_t)255;
     uint64_t og = ob.gpuAddress + oo;
     g_vtg.vtxout = og; g_vtg.gsvout = og + ((vout + 255) & ~255ull); g_vtg.gsiout = g_vtg.gsvout + ((gvout + 255) & ~255ull);
+    /* every index slot starts as a restart: the kernel writes only what each primitive emits, and the final draw reads every
+       slot (a primitive that emits nothing, such as a culled particle, would otherwise draw the arena's old bytes as indices) */
+    memset((uint8_t *)ob.contents + oo + (g_vtg.gsiout - og), 0xff, (size_t)giout);
     g_vtg.active = 1;
     // 1 + 2: the two kernels, each in its own compute encoder (the layer's encoder barriers order them)
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -10046,7 +10079,7 @@ static void vtg_draw(const p_draw *dw, const p_draw_idx *di, NvProg *pr) {
                    if (!ps) { RED_ONCE(82, "geometry kernel pipeline: %s", e.localizedDescription.UTF8String); g_vtg.active = 0; return; } hm_put_id(&g_vtg_cps, &key, ps); }
         id<MTLComputeCommandEncoder> ce = pg_compute(); enc_c_pso(ce, ps);
         g_vtg_compute = 1; encode_args(ce, ks[k], k == 0 ? 0 : 2, 0); g_vtg_compute = 0;   // each kernel binds its own stage's state (vertex: uniforms, storage buffers, c0 table at 0x110)
-        MTLSize grid = k == 0 ? MTLSizeMake((n + 31) / 32, (inst + 31) / 32, 1) : MTLSizeMake((n + 31) / 32, (inst + 31) / 32, invoc);
+        MTLSize grid = k == 0 ? MTLSizeMake((n + 31) / 32, (inst + 31) / 32, 1) : MTLSizeMake((np + 31) / 32, (inst + 31) / 32, invoc);
         enc_c_dispatch(ce, grid, MTLSizeMake(32, 32, 1)); enc_c_end(ce);
     }
     // 3: the strips, with the passthrough vertex shader reading the geometry output
@@ -10055,7 +10088,7 @@ static void vtg_draw(const p_draw *dw, const p_draw_idx *di, NvProg *pr) {
     g_vtg_prog = vg->draw_prog; g_vtg_ib_gpu = g_vtg.gsiout; g_vtg_ib_len = (size_t)giout;
     g_pso_dirty = 1; draw_inner(NULL, &fake); g_pso_dirty = 1;
     g_vtg_prog = nil; g_vtg_ib_gpu = 0; g_vtg.active = 0;
-    { static int logged; if (logged++ < 3) MLOG("[gs] geometry draw: %u points x %u instances, %u invocations, up to %u vertices each (%s)", n, inst, invoc, maxout, gkey.UTF8String); }
+    { static int logged; if (logged++ < 3) MLOG("[gs] geometry draw: %u %s (%u vertices) x %u instances, %u invocations, up to %u vertices each (%s)", np, topo.UTF8String, n, inst, invoc, maxout, gkey.UTF8String); }
 }
 /* Begin starts every buffer at offset 0; Pause / End keep the bytes written per control address; Resume goes on from them;
    DrawTransformFeedback draws bytes / stride of vertex stream 0 from what End kept for its control address. */
@@ -10110,7 +10143,11 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     }
     g_draw_depth++; draw_inner(dw, di); if (g_draw_depth == 1) nan_draw_probe(dw, di); g_draw_depth--;
     if (g_draw_depth == 0) g_vs_only = was_vs_only;
-    if (vs_only && !tf && g_enc) enc_r_barrier(g_enc);   // later draws of this pass read what the vertex stage stored
+    /* Later draws of this pass read what the vertex stage stored: memory a vertex shader wrote, and transform feedback.
+       Xenoblade Chronicles 3 captures its plants' wind-bent shapes with transform feedback at the start of the depth pre-pass
+       and draws them from that buffer in the same pass; without the barrier the pre-pass read the previous frame's shapes
+       and the colour pass (depth EQUAL) failed in moving patches: black, flickering plants (seen in play). */
+    if (vs_only && g_enc) enc_r_barrier(g_enc);
     if (g_draw_depth == 0 && g_bc_pend.count) bc_flush();   // blocks a fragment shader wrote: copied after the pass (blit ends it)
     if (tf) {
         g_tf_draw = 0; __unsafe_unretained NvProg *pr = prog_get(S.prog); uint16_t stride[4]; uint8_t locs[4][128];
@@ -10565,8 +10602,8 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     { uint64_t skip = atomic_load(&g_diag_skip_fs);
       if (skip && pr->sh[1] && !g_defer_replaying) { char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)skip);
           if (!strncmp(pr->sh[1]->key, prefix, 16)) return; }
-      static char sk[16][20]; static int nsk = -1;
-      if (nsk < 0) { nsk = 0; for (const char *q = getenv("DM_NVN_SKIP_FS"); q && *q && nsk < 16; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 16) n = 16; memcpy(sk[nsk], q, n); sk[nsk++][n] = 0; }
+      static char sk[512][20]; static int nsk = -1;   // XC3: up to 512 keys, to bisect a scene's shaders
+      if (nsk < 0) { nsk = 0; for (const char *q = getenv("DM_NVN_SKIP_FS"); q && *q && nsk < 512; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 16) n = 16; memcpy(sk[nsk], q, n); sk[nsk++][n] = 0; }
                      if (nsk) MLOG("DM_NVN_SKIP_FS：丢弃 %d 个片元着色器的绘制（诊断，画面不对）", nsk); }
       if (g_ub_n > 0 && pr->sh[1] && !g_defer_replaying && ub_skip(pr->sh[1]->key)) return;   // 同进程交替测量：本相丢这一类 | In-process alternating measurement: this phase drops this class
       if (nsk && pr->sh[1] && !g_defer_replaying) for (int i = 0; i < nsk; i++) if (!strncmp(pr->sh[1]->key, sk[i], strlen(sk[i]))) return; }
@@ -11806,8 +11843,9 @@ void mtl_exec(const uint8_t *p) {
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_DEPTH_CLAMP: case OP_RENDER_ENABLE: case OP_RASTER_DISCARD: case OP_RENDER_COND:
                 state_op(h.op, a); break;
-            case OP_TF_BIND: { const p_tf_bind *t = a; if (t->index >= 0 && t->index < 4) { g_tf.addr[t->index] = t->addr; g_tf.size[t->index] = t->size; } break; }
-            case OP_TF_CTL: tf_ctl_op(a); break;
+            case OP_TF_BIND: { const p_tf_bind *t = a; if (t->index >= 0 && t->index < 4) { g_tf.addr[t->index] = t->addr; g_tf.size[t->index] = t->size; }
+                PD("T %llu bind %d = %#llx/%llu", g_stat_pass, t->index, (unsigned long long)t->addr, (unsigned long long)t->size); break; }   // the pass dump: transform feedback binds and control
+            case OP_TF_CTL: { const p_tf_ctl *c = a; PD("T %llu ctl kind %d control %#llx (offset before %llu)", g_stat_pass, c->kind, (unsigned long long)c->ctl, (unsigned long long)g_tf.off[0]); tf_ctl_op(a); break; }
             case OP_COPY_B2T: copy_b2t(a); if (((const p_copy_b2t *)a)->tex) gpu_owned_mark(((const p_copy_b2t *)a)->tex->serial); break;
             case OP_COPY_T2B: copy_t2b(a); break;
             case OP_COPY_T2T: copy_t2t(a); if (((const p_copy_t2t *)a)->dst) gpu_owned_mark(((const p_copy_t2t *)a)->dst->serial); break;
