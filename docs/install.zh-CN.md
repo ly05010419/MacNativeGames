@@ -4,7 +4,7 @@
 
 本页只讲一件事：用**你自己的**游戏文件，在 Mac、iPhone 或 iPad 上打包出 App。一次打包 20–40 分钟，大部分时间是等待。操作与设置见 [controls.zh-CN.md](controls.zh-CN.md)，测过什么见 [test-records.zh-CN.md](test-records.zh-CN.md)。AI 助理：同样的步骤写成了清单，在[安装 skill](../.claude/skills/install-zelda/SKILL.md) 里。
 
-目录：[需要准备](#需要准备) · [打包 App](#打包-app) · [旷野之息](#旷野之息) · [iPhone 和 iPad](#iphone-和-ipad) · [Apple Vision Pro](#apple-vision-pro) · [更新 App](#更新-app) · [打包报错](#打包报错) · [文件位置](#文件位置) · [已知问题](#已知问题)
+目录：[需要准备](#需要准备) · [打包 App](#打包-app) · [旷野之息](#旷野之息) · [游戏大厅](#一个-app-装下所有游戏游戏大厅) · [iPhone 和 iPad](#iphone-和-ipad) · [Apple Vision Pro](#apple-vision-pro) · [更新 App](#更新-app) · [打包报错](#打包报错) · [文件位置](#文件位置) · [已知问题](#已知问题)
 
 基本规则：
 - 只用你自己的 Switch 和你自己的游戏导出的文件。打包不会替你下载任何东西，本仓库里也没有游戏内容。
@@ -133,6 +133,25 @@ python3.14 build_app.py "<旷野之息本体.nsp>" -k "<prod.keys>" --update "<1
 ```
 
 用单独的更新包时，App 里只有你用 `--dlc` 给的 DLC 包。卡带镜像自带 DLC，这时不要加 `--dlc`。
+
+## 一个 App 装下所有游戏：游戏大厅
+
+加上 `--hub`，游戏会打包进 `MacNativeGames.app`，而不是单独的 App（默认在游戏文件旁边，也可写 `--hub "<路径>/MacNativeGames.app"`）。大厅为每个游戏显示一张卡片，各个版本是卡片上的按钮；在游戏文件夹里找到、但还没打包进来的版本显示为带 + 的虚线按钮。用 ← →（十字键或左摇杆）选游戏，↑ ↓ 或 L / R 选版本，回车或 A 键开始；也可以点版本再点 **开始**。每次打包会加入这次的游戏和版本；同一版本再打包一次会替换旧的。每个新版本需要工作目录里约 19 GB 空闲空间（旷野之息约 22 GB，在旁边的 `BotW_build` 里）。
+
+```sh
+# 一个版本，用和单独 App 一样的文件（旷野之息 1.9.0 加 --dlc）
+python3.14 build_app.py "<王国之泪.xci>" -k "<prod.keys>" --update "<1.4.3.nsp>" --hub
+# 本体，以及旁边（或 --updates-dir 里）所有受支持的更新
+python3.14 build_app.py "<王国之泪.xci>" -k "<prod.keys>" --hub --all-versions
+# 游戏文件夹里的全部内容，打包到 ~/Applications/MacNativeGames.app
+python3.14 build_app.py --hub
+```
+
+**游戏文件夹：** `~/Games/MacNativeGames`，或在大厅里用 **更改…** 选的另一个（也可用 `--library "<文件夹>"`，下次也用它）。把两个游戏的本体、更新、旷野之息的 DLC 和 `prod.keys` 放进去，再放一个 `firmware` 文件夹或装着六个 `.bfttf` 字体的文件夹。文件按校验过的代码或票据识别，从不看文件名。大厅会列出每个文件：已在大厅、还没加入，或不使用（并说明原因）。还没加入的文件旁边有 **加入** 按钮：它会在终端里打包这个文件所属的版本（`--only "<文件>"`，每个约 15 分钟），完成后大厅自动重新打开。文件夹、大厅和工作目录记在 `~/Library/Application Support/MacNativeGames/library.json`。
+
+每张卡片显示启动着色器的进度：第一次启动前，是编译进 App 的比例；启动之后，是那次预热完成的比例。关闭游戏后大厅会回来。游戏菜单里有 **返回游戏大厅**（⇧⌘B）；**退出 MacNativeGames**（⌥⌘Q）会两个都关。
+
+大厅里的游戏与对应的单独 App 共用存档、设置、着色器缓存和偏好设置（`defaults write org.macnativegames.botw TOTK_DEBUG_LOG -bool YES`）。密钥不会被复制进大厅。`open MacNativeGames.app --env MNG_GAME=totk-v143`（或 `botw-v190`）可跳过列表直接启动游戏。
 
 ## iPhone 和 iPad
 

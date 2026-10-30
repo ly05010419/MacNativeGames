@@ -3,6 +3,8 @@
 //   ~/Library/Application Support/MacNativeGames/TOTK/   profile (account, saves), shader cache, game slot, RomFS proof (BotW/ for Breath of the Wild)
 //   ~/Library/Logs/MacNativeGames/totk.log             this run, only with the debug log on (totk.previous.log: the one before; botw.log for Breath of the Wild)
 // If the game is already running, the launcher only brings it to the front.
+// In the hub app (hub/hub.m) this launcher is Contents/Resources/games/<id>/launcher and the hub starts it with
+// MNG_GAME_ROOT (that game's totk folder) and MNG_GAME_VERSION (its version, which the hub's Info.plist does not carry).
 #import <AppKit/AppKit.h>
 #import <GameController/GameController.h>
 #include <IOKit/hid/IOHIDManager.h>
@@ -23,6 +25,14 @@
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
 #include "update_notice.h"
+
+/* The player's settings for this game (TOTK_DEBUG_LOG, a per-app AppleLanguages) are read from the game's own domain, the
+   bundle identifier of its single-game app (build_app.py APPS), also when the hub app (org.macnativegames.hub) runs it. */
+#ifdef GAME_BOTW
+#define GAME_DEFAULTS CFSTR("org.macnativegames.botw")
+#else
+#define GAME_DEFAULTS CFSTR("org.macnativegames.totk")
+#endif
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -210,14 +220,17 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
 
 int main(int argc, char **argv) {
     @autoreleasepool {
-        NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
+        const char *hubRoot = getenv("MNG_GAME_ROOT"), *hubVersion = getenv("MNG_GAME_VERSION");
+        NSString *root = hubRoot && *hubRoot ? @(hubRoot) : [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
+        unsetenv("MNG_GAME_ROOT"); unsetenv("MNG_GAME_VERSION");   // not passed on to the game
         NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
            app is when macOS scans the whole bundle (minutes for 16 GB, with nothing on screen); doing it during the build
            makes the player's first start immediate. */
         if (argc > 1 && !strcmp(argv[1], "--check")) {
             int ok = access(binary.fileSystemRepresentation, X_OK) == 0;
-            NSString *declared = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+            NSString *declared = hubRoot && *hubRoot ? (hubVersion ? @(hubVersion) : nil)
+                                                     : [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
             ok = ok && [declared isEqualToString:@TOTK_GAME_VERSION];
             printf("%s: game version %s\n", ok ? "ok" : "missing binary or version mismatch", TOTK_GAME_VERSION);
             return ok ? 0 : 1;
@@ -317,9 +330,11 @@ int main(int argc, char **argv) {
             !controller_connected())
             mods = keyboardMods;
         setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
-        /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
+        /* The game's language (runtime/services.c): the game's first preferred language, which also follows a per-app
            language (defaults write org.macnativegames.totk AppleLanguages -array pt-BR). TOTK_LANG still overrides it. */
-        NSString *preferred = NSLocale.preferredLanguages.firstObject;
+        NSArray *languages = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("AppleLanguages"), GAME_DEFAULTS));   // else the Mac's
+        NSString *preferred = [languages isKindOfClass:NSArray.class] && [languages.firstObject isKindOfClass:NSString.class]
+                            ? languages.firstObject : NSLocale.preferredLanguages.firstObject;
         if (preferred) setenv("TOTK_LOCALE", preferred.UTF8String, 1);
         setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1);
         setenv("TOTK_GPU_WIDEN", "1", 1);
@@ -332,6 +347,8 @@ int main(int argc, char **argv) {
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
+        /* How far the shader warm-up got (runtime/frontend.m), which the hub app's game list shows. */
+        setenv("TOTK_SHADER_STATUS", [data stringByAppendingPathComponent:@"shader-status-" TOTK_GAME_DIR ".json"].fileSystemRepresentation, 0);
         contrib_reminder(contrib);
         unsetenv("TOTK_AUTOLOAD");   // the game starts at its title screen, as on the console
         /* runtime command channel (runtime/input.c): echo "shot ~/Desktop/shot.png" >> "<data>/input.txt" */
@@ -343,7 +360,7 @@ int main(int argc, char **argv) {
            -bool YES (org.macnativegames.botw for Breath of the Wild), or TOTK_DEBUG_LOG=1 in the environment, which wins
            (the test tools pass it). Off, the game's output goes to /dev/null and the logs of earlier runs are removed. */
         const char *debugEnv = getenv("TOTK_DEBUG_LOG");
-        BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv, "0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
+        BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv, "0")) : CFPreferencesGetAppBooleanValue(CFSTR("TOTK_DEBUG_LOG"), GAME_DEFAULTS, NULL);
         NSString *log = [logs stringByAppendingPathComponent:@GAME_LOG ".log"];
         NSString *previous = [logs stringByAppendingPathComponent:@GAME_LOG ".previous.log"];
         [NSFileManager.defaultManager removeItemAtPath:previous error:nil];

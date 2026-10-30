@@ -4,7 +4,7 @@
 
 This page only covers turning **your own** game files into an app on your Mac, iPhone or iPad. One build takes 20–40 minutes, most of it waiting. Controls and settings: [controls.md](controls.md). What has been tested: [test-records.md](test-records.md). AI assistants: the same steps as a checklist are in the [install skill](../.claude/skills/install-zelda/SKILL.md).
 
-Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
+Contents: [What you need](#what-you-need) · [Build the app](#build-the-app) · [Breath of the Wild](#breath-of-the-wild) · [The hub](#one-app-for-every-game-the-hub) · [iPhone and iPad](#iphone-and-ipad) · [Apple Vision Pro](#apple-vision-pro) · [Update the app](#update-the-app) · [When the build stops](#when-the-build-stops) · [Where things are](#where-things-are) · [Known issues](#known-issues)
 
 Ground rules: use only files from your own Switch and your own game. Nothing is downloaded for you, and nothing from the game is in this repository. Never edit `games/totk/assets/expected-*.json` or the scripts to get past a check: the error message says what is wrong. The app you build contains the game: it is for you only.
 
@@ -134,6 +134,25 @@ python3.14 build_app.py "<botw base.nsp>" -k "<prod.keys>" --update "<1.9.0 upda
 ```
 
 With a separate update the app holds only the DLC packs you give with `--dlc`. A card image brings its own DLC: leave out `--dlc` then.
+
+## One app for every game: the hub
+
+Add `--hub` to build the game into `MacNativeGames.app` instead of its own app (next to the game file, or `--hub "<path>/MacNativeGames.app"`). The hub opens on a card for each game, with its versions as buttons; versions found in your games folder but not built in yet show dashed, with a +. Choose a game with ← → (d-pad or left stick), a version with ↑ ↓ or L / R, and play with Return or A, or click the version and **Play**. Each build adds its game and version; building the same version again replaces it. Each new version needs about 19 GB free in the work folder (Breath of the Wild about 22 GB, in `BotW_build` next to it).
+
+```sh
+# one version, with the same files as its own app (Breath of the Wild 1.9.0 with --dlc)
+python3.14 build_app.py "<totk.xci>" -k "<prod.keys>" --update "<1.4.3.nsp>" --hub
+# the base game and every supported update next to it (or in --updates-dir)
+python3.14 build_app.py "<totk.xci>" -k "<prod.keys>" --hub --all-versions
+# everything in the games folder, into ~/Applications/MacNativeGames.app
+python3.14 build_app.py --hub
+```
+
+**Games folder:** `~/Games/MacNativeGames`, or another one chosen with **Change…** in the hub (or `--library "<folder>"`, remembered for next time). Put both games' base games, updates, Breath of the Wild's DLC and `prod.keys` there, and a `firmware` folder or a folder with the six `.bfttf` fonts. Files are identified by their verified code or their tickets, never by their names. The hub lists each file as in the hub, not added yet, or not used, with the reason. A file not in the hub yet has an **Add** button: it builds the versions that file is part of in Terminal (`--only "<file>"`, about 15 minutes each), and the hub reopens when it is done. The folder, the hub and the work folders are remembered in `~/Library/Application Support/MacNativeGames/library.json`.
+
+Each card shows how far its startup shaders are: before the first start, the share compiled into the app; after a start, how far its warm-up got. When a game closes, the hub comes back. The game's menu has **Back to Game Hub** (⇧⌘B), and **Quit MacNativeGames** (⌥⌘Q) closes both.
+
+Every game in the hub uses the same saves, settings, shader cache and preferences as its own app (`defaults write org.macnativegames.botw TOTK_DEBUG_LOG -bool YES`). Keys are never copied into the hub. `open MacNativeGames.app --env MNG_GAME=totk-v143` (or `botw-v190`) starts a game without the list.
 
 ## iPhone and iPad
 
