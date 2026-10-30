@@ -82,7 +82,7 @@ def run_point(args, point):
         'TOTK_MFX': '0', 'TOTK_MFX_UPSCALE': '0', 'TOTK_MFX_OUTPUT': '0', 'TOTK_OUTPUT_RES': 'auto',
         'TOTK_WINDOW_SIZE': '1280x720', 'TOTK_DRAWABLE_SCALE': '1',
         'TOTK_GPU_ALLOW_SUBMIT': '1', 'TOTK_GPU_WIDEN': '1', 'TOTK_GPU_BLOCKRT': '1',
-        'TOTK_GPU_MIDCLEAR': '1', 'TOTK_GPU_BUDGET_MB': '5000',
+        'TOTK_GPU_MIDCLEAR': '1',
         'DM_NVN_TSV': str(tsv), 'DM_NVN_TSV_CALLS': '0',
     }
     env.pop('TOTK_INPUT_SCRIPT', None)

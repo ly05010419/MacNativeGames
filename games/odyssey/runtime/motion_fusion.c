@@ -13,7 +13,10 @@
    faster rotation, so the rate never jumps at its edge. Default 0, except 1.2 while a controller's motion comes from its
    HID reports (runtime_motion_deadzone_default, gamepad_feedback.m): an 8BitDo Pro Controller lying on the desk read
    0.83 deg/s on average (bias 0.05, 0.73, 0.38 deg/s after its factory calibration), at most 1.07 deg/s, in 616 samples,
-   enough for the aim to creep; a DualSense through GameController needs none. */
+   enough for the aim to creep; a DualSense through GameController needs none.
+   Mouse mode (Mac, key 7: runtime/gamepad.m, runtime/mouse_look.h): the mouse takes the sensor over. Its samples come in
+   this frame already (runtime_motion_feed_mouse: no TOTK_GYRO_AXES remap, no dead zone), the controller's are dropped
+   meanwhile, and with mouse mode off the controller has it back (from a fresh start). */
 #include "runtime.h"
 #include <math.h>
 #include <pthread.h>
@@ -32,6 +35,7 @@ static int from[3] = {0, 1, 2};
 static double sign[3] = {1, 1, 1}, det = 1;
 static double deadzone = -1;   /* rad/s; -1 until read from TOTK_GYRO_DEADZONE */
 static double deadzone_default;   /* deg/s, when TOTK_GYRO_DEADZONE is unset */
+static int mouse_owns, controller_live;
 
 /* TOTK_GYRO_AXES: reference axis i = sign * controller axis from[i]. 0 if unset, -1 if malformed. */
 int runtime_motion_axes(const char *spec) {
@@ -92,6 +96,7 @@ static void integrate(const double gyro[3], const double acc[3], double dt) {
     }
     memcpy(R, out, sizeof R); orthonormalize();
 }
+static void feed_locked(const double acc[3], const double gyro[3], uint64_t now);
 void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint64_t now) {
     double acc[3], gyro[3];
     pthread_mutex_lock(&lock);
@@ -104,6 +109,12 @@ void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint
     }
     double rate = norm3(gyro), keep = rate > deadzone ? (rate - deadzone) / rate : 0;
     for (int i = 0; i < 3; i++) gyro[i] *= keep;
+    if (mouse_owns) { pthread_mutex_unlock(&lock); return; }
+    feed_locked(acc, gyro, now);
+    pthread_mutex_unlock(&lock);
+}
+/* One sample in the reference controller frame (lock held). */
+static void feed_locked(const double acc[3], const double gyro[3], uint64_t now) {
     double dt = last_ns && now > last_ns ? (now - last_ns) / 1e9 : 0.004;
     if (dt > 0.05) dt = 0.004;   /* a gap (sensors were off, the app was in the background): no integration across it */
     last_ns = now; live = 1;
@@ -125,6 +136,10 @@ void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint
                 s->acc[0], s->acc[1], s->acc[2], s->gyro[0], s->gyro[1], s->gyro[2]);
         logged = produced; reads_logged = reads; log_at = now;
     }
+}
+void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) {
+    pthread_mutex_lock(&lock);
+    if (mouse_owns) feed_locked(acc, gyro, now);
     pthread_mutex_unlock(&lock);
 }
 int runtime_motion_read(RuntimeMotionState *out, int max) {
@@ -142,4 +157,9 @@ int runtime_motion_read(RuntimeMotionState *out, int max) {
 void runtime_motion_start(void) { pthread_mutex_lock(&lock); restart = 1; pthread_mutex_unlock(&lock); }
 /* The dead zone in deg/s when TOTK_GYRO_DEADZONE is unset: the HID reader sets 1.2, a GameController controller 0. */
 void runtime_motion_deadzone_default(double deg) { pthread_mutex_lock(&lock); deadzone_default = deg; deadzone = -1; pthread_mutex_unlock(&lock); }
-void runtime_motion_live(int on) { pthread_mutex_lock(&lock); live = on; if (on) restart = 1; pthread_mutex_unlock(&lock); }
+void runtime_motion_live(int on) {
+    pthread_mutex_lock(&lock); controller_live = on; live = on || mouse_owns; if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
+}
+void runtime_motion_mouse(int on) {
+    pthread_mutex_lock(&lock); mouse_owns = on; live = on || controller_live; restart = 1; last_ns = 0; pthread_mutex_unlock(&lock);
+}

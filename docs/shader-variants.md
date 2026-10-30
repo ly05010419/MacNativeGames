@@ -30,7 +30,26 @@ differed in its logic, only in declarations:
   834 of 837 integer inputs found, no float input taken for an integer one. An answered input keeps its answer.
 
 The runtime (`totk_shader_rt.m deps_match`) and the seed (`prepare_shader_seed.py deps_match`) match `"*"` to any
-non-depth answer and `"*_depth"` to any depth one; an unanswered vertex input (not bound) matches any variant.
+non-depth answer and `"*_depth"` to any depth one. Vertex input types are not compared at all (next section).
+
+## Vertex inputs take their bound format's type (2026-10-25)
+
+On the Switch a vertex shader has no input types: the hardware's vertex fetch converts each attribute by its format
+into 32-bit registers (integer bits for a pure integer format such as `R8_UI` or `RGBA16_I`, float bits for every
+other one: float, half, normalized, `*_UI2F` / `*_I2F`), and the code reads the registers untyped. Metal declares
+each input's type in the function, so the translated MSL had to guess it, and the guess decided the variant: of the
+2,069 non-default 1.4.3 variants in the shared list, 1,876 differed from a built-in one only in a vertex input type
+(1,873 inputs typed `uint` from their use had float formats bound). Breath of the Wild's list was 88 % such rows.
+
+The pipeline now gives each input the type of the format bound to it (`nvn_mtl.m vs_vin`): an input whose declared
+type class differs is redeclared with the format's type and read back as the declared type with `as_type`
+(`msl_retype_inputs`, a patched vertex function like the varyings and border patches), so the code sees exactly the
+bits the hardware's fetch gives. Any variant serves any vertex formats, and the list rows that differed only there
+were pruned (3,675 of Tears of the Kingdom, 3,289 of Breath of the Wild). `make probe-gpu-vin` checks the bits for a
+float input with `RGBA8_UI` / `RGBA8_I` bound and a `uint` input with `RGBA32_F` bound (`TOTK_PROBE_NEGATIVE=16`
+skips the retyping: Metal then refuses the pipeline). Function constants could not do this: Metal requires every
+function with function constants to be specialized before a pipeline takes it, which would add a compile per vertex
+shader at load.
 
 ## The seed
 
@@ -44,8 +63,16 @@ Offline check (2026-10-22): of 2,681 variants the game translated on this Mac, t
 for every one with the same answers, and 2,641 (98.5 %) are served by the default or the depth-bound variant with
 identical MSL.
 
-What still needs its own variant: a depth texture read without a compare, a queried texture kind other than 2D, an
-integer colour output, and an integer vertex input used as a float somewhere. The shared list keeps naming those.
+Colour outputs work the same way (2026-10-26): on the Switch the fragment shader writes untyped registers and the
+colour unit takes their bits as integers for a pure integer render target and as floats otherwise; Metal refuses a
+pipeline whose output type does not match its attachment. `pso_desc` redeclares such an output on whichever fragment
+function it took (plain, border, tile-reading, no-depth, MetalFX: each patched function keeps the MSL it was compiled
+from), and the code's value is stored with `as_type` (`fn_retype_outputs`, `make probe-gpu-fout`,
+`TOTK_PROBE_NEGATIVE=17`). The 61 1.4.3 list rows with an integer colour output (and 8 of the older versions, 3 of
+Breath of the Wild) were pruned.
+
+What still needs its own variant: a depth texture read without a compare and a queried texture kind other than 2D.
+The shared list keeps naming those.
 
 The translation chain went from `totk-native-v6-unverified` to `totk-native-v7-unverified` with this change: a v6 cache
 indexes the default variants under the same names with the old, stricter deps, and the runtime takes a cache's index

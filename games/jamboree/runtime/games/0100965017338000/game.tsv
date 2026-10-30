@@ -1,0 +1,41 @@
+# Super Mario Party Jamboree 2.3.0: experimental macOS profile.
+# See README.md and docs/validation.md for the tested scope.
+
+# ---- Identity ----
+title_id	0100965017338000
+program_id	0100965017338000
+
+# ---- App ----
+name	Super Mario Party Jamboree
+ipa	SuperMarioPartyJamboree.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v458752	2.3.0	main=d70ce1726c979e45ed4200e9c2b23b2a	subsdk0=ff2b1a8f14147dc58034940e78a104ef	sdk=fcd139127b9c99988c2613230db18e26
+package	v458752
+shader_versions	v458752
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+# Extraction is atomic; check its root without shipping an original asset path.
+romfs_marker	.
+zip_store	.bea:.bfstm:.mp4:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MiB of system resource; the native profile reserves 17 GiB, including a 16 GiB alias region.
+# Address-space reservation is not physical resident memory; see patches.py for the allocator cut.
+mem_reserve	0x440000000
+mem_alias	0x400000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/=archive
+shader_note	Super Mario Party Jamboree shaders (provisional profile)
+
+# ---- Graphics ----
+# The title sequence and its 2D UI wrap clears and draws in SetRenderEnableConditional
+render_cond	on

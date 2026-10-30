@@ -1,0 +1,5 @@
+# What the Xenoblade Chronicles 3 scripts need (Python 3.14).
+cryptography==50.0.2   # decrypting the game files (NCA)
+lz4==4.4.5             # the code modules (NSO segments)
+capstone==5.0.9        # the code rewriter's disassembler
+unicorn==2.1.4         # third_party/d2r/equiv.py: checks each rewritten site against the original (verification only)

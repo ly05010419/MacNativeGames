@@ -1,0 +1,148 @@
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+index c40568a..76c9384 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+@@ -70,7 +70,10 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+ 
+             Operand bindlessHandle = texOp.GetSource(0);
+ 
+-            if (bindlessHandle.AsgOp is PhiNode phi)
++            if (ComesFromHandleTable(bindlessHandle, 0))
++            {
++            }
++            else if (bindlessHandle.AsgOp is PhiNode phi)
+             {
+                 for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
+                 {
+@@ -141,6 +144,57 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             return true;
+         }
+ 
++        private const int HandleTableSlot = 2;
++        private const int TextureHandleTableStart = 0x168;
++        private const int TextureHandleTableEnd = 0x568;
++
++        private static bool IsTextureHandleTableLoad(Operand operand)
++        {
++            if (operand.Type != OperandType.ConstantBuffer || operand.GetCbufSlot() != HandleTableSlot)
++            {
++                return false;
++            }
++
++            int offset = operand.GetCbufOffset() * 4;
++
++            return offset >= TextureHandleTableStart && offset < TextureHandleTableEnd;
++        }
++
++        private static bool ComesFromHandleTable(Operand operand, int depth)
++        {
++            if (operand == null || depth > 6)
++            {
++                return false;
++            }
++
++            operand = FollowCopies(operand);
++
++            if (IsTextureHandleTableLoad(operand))
++            {
++                return true;
++            }
++
++            if (operand.AsgOp is PhiNode phi)
++            {
++                for (int index = 0; index < phi.SourcesCount; index++)
++                {
++                    if (ComesFromHandleTable(phi.GetSource(index), depth + 1))
++                    {
++                        return true;
++                    }
++                }
++
++                return false;
++            }
++
++            if (operand.AsgOp is Operation op && op.Inst == Instruction.BitwiseOr)
++            {
++                return ComesFromHandleTable(op.GetSource(0), depth + 1) || ComesFromHandleTable(op.GetSource(1), depth + 1);
++            }
++
++            return false;
++        }
++
+         private static bool IsBindlessAccessAllowed(Operand bindlessHandle)
+         {
+             if (bindlessHandle.Type == OperandType.ConstantBuffer)
+@@ -178,7 +232,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                     bindlessHandle = shuffleOp.GetSource(0);
+                 }
+ 
+-                bindlessHandle = Utils.FindLastOperation(bindlessHandle, block);
++                bindlessHandle = SeeThroughPhi(Utils.FindLastOperation(bindlessHandle, block));
+ 
+                 // Some instructions do not encode an accurate sampler type:
+                 // - Most instructions uses the same type for 1D and Buffer.
+@@ -214,8 +268,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                     return false;
+                 }
+ 
+-                Operand src0 = Utils.FindLastOperation(handleCombineOp.GetSource(0), block);
+-                Operand src1 = Utils.FindLastOperation(handleCombineOp.GetSource(1), block);
++                Operand src0 = SeeThroughPhi(Utils.FindLastOperation(handleCombineOp.GetSource(0), block));
++                Operand src1 = SeeThroughPhi(Utils.FindLastOperation(handleCombineOp.GetSource(1), block));
+ 
+                 // For cases where we have a constant, ensure that the constant is always
+                 // the second operand.
+@@ -353,6 +407,53 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             return false;
+         }
+ 
++        private static Operand FollowCopies(Operand operand)
++        {
++            for (int depth = 0; depth < 8 && operand.AsgOp is Operation copy && copy.Inst == Instruction.Copy && copy.SourcesCount == 1; depth++)
++            {
++                operand = copy.GetSource(0);
++            }
++
++            return operand;
++        }
++
++        private static bool IsHandleShaped(Operand operand)
++        {
++            return operand.Type == OperandType.ConstantBuffer ||
++                (operand.AsgOp is Operation op && op.Inst == Instruction.BitwiseOr);
++        }
++
++        private static Operand SeeThroughPhi(Operand operand, int depth = 0)
++        {
++            if (depth > 4 || operand.AsgOp is not PhiNode phi)
++            {
++                return operand;
++            }
++
++            Operand found = null;
++
++            for (int index = 0; index < phi.SourcesCount; index++)
++            {
++                Operand source = FollowCopies(SeeThroughPhi(phi.GetSource(index), depth + 1));
++
++                if (!IsHandleShaped(source))
++                {
++                    continue;
++                }
++
++                if (found == null)
++                {
++                    found = source;
++                }
++                else if (found != source && !AreBothEqualConstantBuffers(found, source) && !IsSameOperand(found, source))
++                {
++                    return operand;
++                }
++            }
++
++            return found ?? operand;
++        }
++
+         private static bool TryGetOperation(INode asgOp, out Operation outOperation)
+         {
+             if (asgOp is PhiNode phi)

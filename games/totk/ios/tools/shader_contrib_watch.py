@@ -58,6 +58,13 @@ def game_bundle(apps):
     return None
 
 
+def contribution_game(text):
+    """The game and version the device's app wrote into its file ("# Game: TOTK 1.4.3", the last one), or None: an app built
+    before 2026-10-29 writes none."""
+    found = re.findall(r'^# Game: ([A-Za-z]+ \d+\.\d+\.\d+)$', text, re.M)
+    return found[-1] if found else None
+
+
 def contribution_rows(text):
     return len({line for line in text.splitlines() if line.startswith(('V\t', 'R\t', 'B\t'))})   # shaders and pipelines
 
@@ -110,13 +117,15 @@ def gist_raw(gist_url):
     return f'https://gist.githubusercontent.com/{m[1]}/{m[2]}/raw/{UPLOAD_NAME}' if m else None
 
 
-def issue_body(platform, link):
-    """An issue laid out like the shader-list form, so scripts/collect_shader_issues.py reads it the same way."""
-    return (f'### Game version / 游戏版本\n\nSent automatically / 自动提交\n\n### Device / 设备\n\n{platform}\n\n'
+def issue_body(platform, link, game=None):
+    """An issue laid out like the shader-list form, so scripts/collect_shader_issues.py reads it the same way. game: the
+    device's "TOTK 1.4.3", whose version fills the form's field (an older app gives none: the field says how it came)."""
+    version = game.split()[-1] if game else 'Sent automatically / 自动提交'
+    return (f'### Game version / 游戏版本\n\n{version}\n\n### Device / 设备\n\n{platform}\n\n'
             f'### {UPLOAD_NAME}\n\n{link}\n\n### Where you played (optional) / 玩了哪些地方（可选）\n\n_No response_\n')
 
 
-def submit(gh, path, rows, platform):
+def submit(gh, path, rows, platform, game=None):
     """Sends the file with gh: a secret gist, then an issue linking its raw file. The issue's link, or None."""
     try:
         made = subprocess.run([gh, 'gist', 'create', '--filename', UPLOAD_NAME, '--desc', 'MacNativeGames shader list contribution', '-'],
@@ -124,8 +133,8 @@ def submit(gh, path, rows, platform):
         link = gist_raw(made.stdout) if made.returncode == 0 else None
         if not link:
             return None
-        issue = subprocess.run([gh, 'issue', 'create', '--repo', REPO, '--title', f'Shader list: {rows} shaders from {platform}',
-                                '--body', issue_body(platform, link)], capture_output=True, text=True, timeout=120)
+        issue = subprocess.run([gh, 'issue', 'create', '--repo', REPO, '--title', f'Shader list: {rows} shaders from {platform}' + (f' ({game})' if game else ''),
+                                '--body', issue_body(platform, link, game)], capture_output=True, text=True, timeout=120)
         found = re.search(r'https://github\.com/\S+/issues/\d+', issue.stdout) if issue.returncode == 0 else None
         return found[0] if found else None
     except (OSError, subprocess.TimeoutExpired):
@@ -141,7 +150,7 @@ def quote(s):
     return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def ask(rows, device, path, platform='iPhone'):
+def ask(rows, device, path, platform='iPhone', game=None):
     """Shows the reminder; 'auto', 'send', 'never' or 'later' (also when it times out unanswered)."""
     gh = gh_path()
     title, text, middle, never, send = message(rows, device, auto=bool(gh))
@@ -150,7 +159,7 @@ def ask(rows, device, path, platform='iPhone'):
     subprocess.run(['open', '-R', str(path)])   # the folder in Finder with the file selected, before the question (user 2026-10-22)
     answer = subprocess.run(['osascript', '-e', script], capture_output=True, text=True).stdout
     if gh and f'button returned:{middle}' in answer:
-        link = submit(gh, path, rows, platform)
+        link = submit(gh, path, rows, platform, game)
         zh = chinese()
         if link:
             note((f'感谢你的 shader 贡献，让我们一起让游戏更流畅！\n{link}' if zh else
@@ -216,12 +225,13 @@ def check():
         if devicectl('device', 'copy', 'from', '--device', ident, '--domain-type', 'appDataContainer', '--domain-identifier',
                      bundle, '--source', 'Documents/shader-list-contribution.txt', '--destination', str(path)) is None:
             continue
+        game = contribution_game(path.read_text(errors='replace'))   # the device's game and version, for the issue
         rows = merge_rows(path, merged)   # into the one file players send, with the Mac's rows
         reminded = reminded_at(state.read_text() if state.exists() else '')
         print(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {name}: {rows} rows (reminded at {reminded})', flush=True)
         if due(rows, reminded):
             state.write_text(f'{rows}\n')   # "next time": STEP rows later
-            if ask(rows, name or platform, merged, platform) == 'never':
+            if ask(rows, name or platform, merged, platform, game) == 'never':
                 state.write_text('never\n')
 
 

@@ -1,8 +1,5 @@
-// TOTK: MetalFX frame interpolation (TOTK_MFX=interp30 / interp / interpmax, or key 2 / flag mfx_interp at run time; not in
-// D2R). MetalFX makes one more frame between two game frames. Modes (totk_mfx.h): the game at 30 fps ("30+30"), at every
-// second display refresh ("50+50" on the user's 100 Hz display: every refresh a new picture, steadier than the uncapped
-// 65-97 fps, about one refresh more latency), or uncapped with every frame interpolated. First planned for the phone
-// (60 fps on a GPU about a third of the M4's).
+// Odyssey: optional 60+60 MetalFX interpolation on a 120 Hz screen (key 2 or TOTK_MFX=interp).
+// Other refresh rates keep the 60 Hz guest clock and suspend generation. Disabled by default.
 // The replay (nvn_mtl.m) hands over per game frame:
 //  - the scene before the UI: the canvas copied before the first UI draw (docked the upscaled 1600x900 scene, handheld the
 //    1280x720 scene drawn in the canvas itself);
@@ -22,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_mfx.h"
+#include "odyssey_mfx.h"
+extern int mtl_display_hz(void);
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
@@ -86,7 +85,7 @@ static id<MTL4FXFrameInterpolator> fi_cached(NSUInteger iw, NSUInteger ih) {
 static _Atomic int g_on, g_req;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 const char *mfx_mode_name(int m) {
-    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "half the refresh rate (50+50 on a 100 Hz display)", "uncapped (every game frame interpolated)"};
+    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "60+60 (120 Hz display)", "uncapped (every game frame interpolated)"};
     return m >= 0 && m < MFX_NMODES ? names[m] : "?";
 }
 static void mfx_init(void) {
@@ -96,20 +95,26 @@ static void mfx_init(void) {
     else if (!strcmp(e, "interp")) v = MFX_HALF;
     else if (!strcmp(e, "interpmax")) v = MFX_MAX;
     else MDIE("TOTK_MFX must be interp30, interp, interpmax or 0, got %s", e);
-    atomic_store(&g_req, v); atomic_store(&g_on, v);
-    if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
+    /* All nonzero legacy requests mean 60+60 here; never 30 Hz or uncapped logic. */
+    atomic_store(&g_req, v ? MFX_HALF : MFX_OFF); atomic_store(&g_on, MFX_OFF);
+    if (v) MLOG("TOTK_MFX=%s: request 60+60; waiting for a 120 Hz window screen", e);
 }
 int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }
-    int v = m < 0 ? (atomic_load(&g_req) + 1) % MFX_NMODES : m;
+    int v = m < 0 ? (atomic_load(&g_req) ? MFX_OFF : MFX_HALF) : m ? MFX_HALF : MFX_OFF;
     atomic_store(&g_req, v);
     MLOG("[flag] mfx_interp = %d: %s (from the next game frame)", v, mfx_mode_name(v));
 }
 int mfx_latch(void) {
     pthread_once(&g_once, mfx_init);
-    int r = atomic_load(&g_req), was = atomic_load(&g_on);
+    int r = odyssey_mfx_mode(atomic_load(&g_req), mtl_display_hz()), was = atomic_load(&g_on);
+    if (r) {
+        static int supported = -1;
+        if (supported < 0) supported = [MTLFXFrameInterpolatorDescriptor supportsMetal4FX:MTLCreateSystemDefaultDevice()];
+        if (!supported) r = MFX_OFF;
+    }
     if (r == was) return 0;
     g.prev_ok = g.hist_ok = 0; g.scene_ok = g.cam_ok = 0; g.depth = nil; g.last_prepare_s = 0;   // the next interpolated pair starts fresh
     atomic_store(&g_on, r);
@@ -227,10 +232,27 @@ static void mul4(const double a[16], const double b[16], double r[16]) {
     for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) { double s = 0; for (int k = 0; k < 4; k++) s += a[i * 4 + k] * b[k * 4 + j]; r[i * 4 + j] = s; }
 }
 // A camera jump (teleport, cutscene cut) or a turn of more than 25 degrees in one game frame is not interpolated.
+static int dcmp_mfx(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
+/* Diagnostic (PR #568 review: the evidence for 800 cm): the camera's step and turn per game frame, p50 / p99 / max over
+   600 frames, and every cut found (the first 20), so the threshold can be set from play rather than assumed. */
+static void camera_step_note(int cut) {
+    enum { N = 600 };
+    static double step[N], turn[N]; static int n, cuts_said;
+    double x = g.cam[47] - g.prev_cam[47], y = g.cam[51] - g.prev_cam[51], z = g.cam[55] - g.prev_cam[55];
+    double f = g.cam[8] * g.prev_cam[8] + g.cam[9] * g.prev_cam[9] + g.cam[10] * g.prev_cam[10];
+    double d = sqrt(x * x + y * y + z * z), a = acos(f < -1 ? -1 : f > 1 ? 1 : f) * 180 / M_PI;
+    if (cut && cuts_said < 20) { cuts_said++; MLOG("camera cut at game frame %llu: step %.0f cm, turn %.1f deg", (unsigned long long)g.frames, d, a); }
+    if (!isfinite(d + a)) return;
+    step[n] = d; turn[n] = a;
+    if (++n < N) return;
+    n = 0; qsort(step, N, sizeof *step, dcmp_mfx); qsort(turn, N, sizeof *turn, dcmp_mfx);
+    MLOG("camera per game frame (last %d): step p50 %.1f / p99 %.1f / max %.1f cm; turn p50 %.2f / p99 %.2f / max %.2f deg",
+         N, step[N / 2], step[N * 99 / 100], step[N - 1], turn[N / 2], turn[N * 99 / 100], turn[N - 1]);
+}
 static int camera_cut(void) {
-    double dx = g.cam[47] - g.prev_cam[47], dy = g.cam[51] - g.prev_cam[51], dz = g.cam[55] - g.prev_cam[55];
-    double f = g.cam[8] * g.prev_cam[8] + g.cam[9] * g.prev_cam[9] + g.cam[10] * g.prev_cam[10];   // view z axes
-    return sqrt(dx * dx + dy * dy + dz * dz) > 8.0 || f < cos(25.0 * M_PI / 180.0);
+    int cut = odyssey_mfx_cut(g.cam, g.prev_cam);
+    camera_step_note(cut);
+    return cut;
 }
 
 int mfx_frame_prepare(double frame_s) {

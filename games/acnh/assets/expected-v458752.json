@@ -1,0 +1,42 @@
+{
+  "title_id": "01006F8002326000",
+  "package_kind": "update",
+  "cnmt_version_raw": 458752,
+  "exefs_sha256": {
+    "main": "ffdae000e844e9dfdfd50ae416e5b214b164c2ac4c626d93a7b1c728d93fb9d9",
+    "main.npdm": "ed27586e6c1f8d0ebd984823ea12fdb8b49c4b5ccc57200de96c58ff6c89ff81",
+    "rtld": "a71c5118f08ec8707a6c68754607ad069f5be50fa60cea6d805e0bc2ad4655a5",
+    "sdk": "718ed771f098d40e25201c694ad648d46b33689332a1ecf15c56714e34e4fae3",
+    "subsdk0": "996c87c4f41e9c73830104a4d4723f6c6f790ef90beb7cae5ef49f5a2627542c"
+  },
+  "modules": [
+    {
+      "name": "rtld",
+      "build_id": "31a2773ea6928ffe3d32b17b3ad08f54826da39f000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "main",
+      "build_id": "9429fc5202937d7fc8120a53d88e989e00000000000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "sdk",
+      "build_id": "28414826d5ec67cebbc76beaf678e78b541f205c000000000000000000000000",
+      "segment_hashes_verified": true
+    },
+    {
+      "name": "subsdk0",
+      "build_id": "8c8feb8c11b94b1ce02939b3e3388b655ada2df4000000000000000000000000",
+      "segment_hashes_verified": true
+    }
+  ],
+  "schema": 1,
+  "game": "Animal Crossing: New Horizons",
+  "scope": "Exact inspected code identity; native execution has not been verified.",
+  "display_version": "1.2.1",
+  "control_nacp_sha256": "e3f73b189e26b3b298a98184a609297cae8a47000857c3ca67c17088f8f3b7d3",
+  "romfs_size": 6817228144,
+  "romfs_sha256": "64d0e639ad36dd1895f09650c25cedcacb0379b84f69ce1520ca56d377609cc6",
+  "romfs_file_count": 69268
+}

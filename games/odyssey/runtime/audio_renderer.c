@@ -89,7 +89,7 @@ static void skip_empty(AudioRenderer *r, ServerVoice *v) {
         if (b->loop && b->loop_count < 0) break;   /* an endless empty loop starves the voice, as on the DSP */
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
         if (r) r->empty_played++;
-        if (b->end_of_stream) { v->played = 0; break; }
+        if (b->end_of_stream) v->played = 0;   /* the DSP only restarts the played count and goes on with the next buffer */
     }
 }
 static int stop_release(void) {
@@ -244,7 +244,10 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
         if (v->offset < length) break;
         if (b->loop && (b->loop_count < 0 || v->loops_done < b->loop_count)) { v->loops_done++; v->offset = b->loop_start > b->start && b->loop_start < b->end ? (uint64_t)(b->loop_start - b->start) : 0; continue; }
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
-        if (b->end_of_stream) { v->played = 0; break; }
+        /* End of stream restarts the played count and the frame goes on with the next queued buffer (yuzu
+           DecodeFromWaveBuffers / Ryujinx DataSourceHelper). Stopping the frame there cut Super Mario Odyssey's
+           music, whose ADPCM stream marks every 14,336-sample buffer as an end: 64 silent samples every 0.3 s. */
+        if (b->end_of_stream) v->played = 0;
         skip_empty(r, v);
     }
 }
@@ -593,6 +596,25 @@ void runtime_audio_probe(void) {
         }
         checked += 3;
         x.flush_wave_buffer_count = 0; x.in_use = 0; update_voice(r, &x);
+        /* 8. End of stream with another buffer queued: the voice goes on into it within the same frame, with the played
+           count restarted (Super Mario Odyssey's music marks every stream buffer as an end; stopping the frame there
+           left 64 silent samples every 0.3 s). */
+        x.in_use = 1; x.is_new = 1; x.wave_buffer_index = 0;
+        x.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)a7, .size = sizeof a7, .end = 100, .end_of_stream = 1};
+        x.wave_buffers[1] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)b7, .size = sizeof b7, .end = 480, .end_of_stream = 1};
+        x.wave_buffers[2] = (AudrenWaveBuffer){.sent = 1}; x.wave_buffers[3] = (AudrenWaveBuffer){.sent = 1};
+        update_voice(r, &x); audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != 140 || sv7->played != 140) {
+            fprintf(stderr, "end of stream: consumed %u index %u offset %llu played %llu, want 1 1 140 140\n", sv7->consumed, sv7->index, (unsigned long long)sv7->offset, (unsigned long long)sv7->played);
+            runtime_fail("audio probe: end of stream stopped the frame");
+        }
+        checked += 4;
+        x.is_new = 0; x.wave_buffers[0].sent = x.wave_buffers[1].sent = 1; update_voice(r, &x);
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != 380 || sv7->played != 380)
+            runtime_fail("audio probe: voice did not go on after an end-of-stream boundary");
+        checked += 4;
+        x.in_use = 0; update_voice(r, &x);
     }
     printf("{\"status\":\"pass\",\"probe\":\"probe-audio\",\"checked\":%d,\"scope\":\"REV15 wire parsing, native float voice/splitter biquads and consecutive request state; PCM16 channel mix, pitch interpolation, DSP-ADPCM decode, splitter to submix to final mix, device sink, stereo cascaded biquads, ordered submix reverb, auxiliary ring exchange, output limiter, bypass, frame continuity and reset\"}\n", checked);
 }

@@ -26,7 +26,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.jobs <= 8:
         parser.error('--jobs must be between 1 and 8')
-    env = dict(os.environ, DEVELOPER_DIR='/Applications/Xcode.app/Contents/Developer')
+    env = dict(os.environ, DEVELOPER_DIR=os.environ.get('DEVELOPER_DIR', '/Applications/Xcode.app/Contents/Developer'))
     sources = sorted(args.cache.glob('*_b.metal'))
     if not sources:
         raise SystemExit('No translated local shader variants found')

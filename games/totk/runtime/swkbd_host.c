@@ -1,9 +1,9 @@
-/* Text entry for the game (nn::swkbd::ShowKeyboard) with the Mac keyboard.
+/* Text entry for the game (nn::swkbd::ShowKeyboard) with the Mac keyboard or, on iPhone / iPad, a system alert.
 
    On the Switch the call starts the software-keyboard library applet, which takes the screen until the player confirms
    or cancels. Here the player types on the Mac keyboard in a bar inside the game window (runtime_front_text_input in
-   runtime/frontend.m; input methods work, Return confirms, Escape cancels). User, 2026-10-17: "no software keyboard,
-   just support the user's keyboard". TOTK calls it in one place: naming a horse (main+0x1e5cb58 -> main+0x1adb720:
+   runtime/frontend.m; input methods work, Return confirms, Escape cancels), or on a system alert (ios/Sources/
+   text_input.m). User, 2026-10-17: "no software keyboard, just support the user's keyboard". TOTK calls it in one place: naming a horse (main+0x1e5cb58 -> main+0x1adb720:
    user-name preset, at most 9 characters, '@' '%' '\' disabled, UTF-16 output; an empty name counts as cancelled).
 
    ABI of TOTK 1.0.0's SDK, read from the original sdk+0x3cbd40 (ShowKeyboard with a trigger) and the setters
@@ -136,7 +136,7 @@ static unsigned show_keyboard(void *out_string, const void *arg_ptr) {
         confirmed = strcmp(forced, "<cancel>") != 0;
         snprintf(text, sizeof text, "%s", strcmp(forced, "<initial>") ? forced : initial);
     } else {
-#if TARGET_OS_OSX
+#if TARGET_OS_OSX || TARGET_OS_IPHONE
         RuntimeTextRequest req = { prompt, initial, max_len, min_len, password != 0, type == KB_TYPE_NUMPAD, disabled };
         int away = runtime_core_away();   /* the other guest threads keep running while the player types */
         confirmed = runtime_front_text_input(&req, text, sizeof text);
