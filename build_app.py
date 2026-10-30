@@ -1482,7 +1482,33 @@ def write_main_build_id(nso, target):
     target.write_text(build_id.hex().upper() + '\n')
 
 
-def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None):
+def main_build_id(tree, version):
+    """The main module's build ID (NSO header +0x40), the name Atmosphère cheat files are keyed by."""
+    with open(tree / f'extracted/{version}/exefs/main', 'rb') as f:
+        return f.read(0x48)[0x40:].hex().upper()
+
+
+def select_cheats(path, build_id):
+    """--cheats: an Atmosphère cheat file named <build ID>.txt, or a folder holding it. Only the file for the selected
+    version's build ID is baked into the app; a file for another version is refused instead of patching the wrong code."""
+    if path.is_dir():
+        found = [p for p in sorted(path.iterdir()) if p.is_file() and p.name.upper() == f'{build_id}.TXT']
+        if not found:
+            raise BuildError(f'--cheats: no {build_id}.txt (the build ID of the selected game version) in {path}')
+        path = found[0]
+    elif path.stem.upper() != build_id:
+        raise BuildError(f'--cheats: {path.name} is not for the selected game version; the file for it is named {build_id}.txt')
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as error:
+        raise BuildError(f'--cheats: cannot read {path}: {error}') from None
+    names = [line.strip()[1:-1] for line in text.splitlines() if line.strip().startswith('[') and line.strip().endswith(']')]
+    if not names:
+        raise BuildError(f'--cheats: {path} has no [cheat name] sections')
+    return path, len(names)
+
+
+def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None, cheats=None):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
     tmp = out.with_name(out.name + '.partial')
@@ -1502,6 +1528,8 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)
     place_seed(tree, res, version, game=game)
+    if cheats:   # the game reads it relative to its folder (runtime/cheats.c)
+        clone(cheats, res / 'cheats/cheats.txt')
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
     place_runtime(tree, tmp, version, logs, game=game)
@@ -2052,6 +2080,7 @@ def parse_args(argv):
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available; Breath of the Wild 1.9.0 too)')
     fonts.add_argument('--shared-fonts', type=Path, help='previously extracted shared-font directory containing the six verified .bfttf files')
+    ap.add_argument('--cheats', type=Path, help='an Atmosphère cheat file named <build ID>.txt, or a folder holding one, to build into the app (Cheats menu; all off until chosen)')
     return ap.parse_args(argv)
 
 
@@ -2095,6 +2124,11 @@ def main(argv):
     version = 'v0'
     firmware = args.firmware.expanduser().resolve() if args.firmware else None
     shared_fonts = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
+    cheats = args.cheats.expanduser().resolve() if args.cheats else None
+    if cheats and not cheats.exists():
+        raise BuildError(f'no such cheat file or folder: {cheats}')
+    if cheats and device_app:
+        raise BuildError('--cheats builds the Mac app\'s Cheats menu; the iPhone / iPad and Vision Pro builds have none yet (leave out --cheats)')
     if firmware and not firmware.is_dir():
         raise BuildError(f'no firmware directory: {firmware}')
     if shared_fonts:
@@ -2158,6 +2192,9 @@ def main(argv):
         botw = work / 'botw'
         say(f'Breath of the Wild {expected["display_version"]}; work folder {work}')
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
+        if cheats:   # checked once the ExeFS is in place, before the long steps
+            cheats, count = select_cheats(cheats, main_build_id(tree, version))
+            say(f'4/4 app: building in {count} cheat entries from {cheats.name}')
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs, version=version)
         if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own (6 of a 21-minute iPhone build, 2026-10-28)
@@ -2175,7 +2212,8 @@ def main(argv):
             say('Install it with games/totk/ios/tools/install_device.py' + (f' --game-data {tree}/extracted/{version}/romfs/romfs.bin'
                 if args.ios_game_data == 'documents' else '') + '; saves and the shader cache stay in the app\'s Documents.')
             return
-        step_app(tree, out, logs, version=version, game='botw', game_data=args.mac_game_data, game_data_folder=game_data_folder)
+        step_app(tree, out, logs, version=version, game='botw', game_data=args.mac_game_data, game_data_folder=game_data_folder,
+                 cheats=cheats)
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
         t1 = time.time()
@@ -2229,6 +2267,9 @@ def main(argv):
     if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own
         step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
+    if cheats:
+        cheats, count = select_cheats(cheats, main_build_id(tree, version))
+        say(f'4/4 app: building in {count} cheat entries from {cheats.name}')
     say(f'4/4 app: assembling {out}')
     if device_app:
         run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
@@ -2247,7 +2288,7 @@ def main(argv):
             except BuildError as e:
                 say(f'   the Mac reminder for iPhone / iPad shader contributions was not installed: {e}')
     else:
-        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder)
+        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder, cheats=cheats)
     # Refresh an existing app's version, executable and signing identity before
     # the next Finder launch; the desktop alias keeps pointing to this bundle.
     if args.platform=='macos': run([LSREGISTER, '-f', out], logs / 'register-app.log')
