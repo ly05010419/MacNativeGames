@@ -122,7 +122,8 @@ def main():
         0x2db204, 0x2db208, 0x2db22c, 0x2db360, 0x2db36c, 0x2db340, 0x2db34c,
         0x3e5658, 0x2daa54, 0x2daa58, 0x2daa6c, 0x2daa70, 0x2daa74, 0x2daa78,
     } | {frame_step + 4 * i for i in range(4)} | {stub + 4 * i for i in range(7)} \
-      | {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0} | {frame_step + 48 + 4 * i for i in range(32)}   # ultrawide (aspect_patch.h, always installed)
+      | {0x628c74, 0xb43460, 0x1ff04f4, 0x253fbb0} | {frame_step + 48 + 4 * i for i in range(32)} \
+      | {0x18e468, 0x23be9b4, 0x23d756c, 0x23d2dd0}   # ultrawide + direct mouse camera (always guarded; disabled until mouse mode)
     assert changes == want, [hex(p) for p in sorted(changes ^ want)]
 
     def execute(w, h, scale, apply):

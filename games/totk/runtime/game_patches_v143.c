@@ -275,6 +275,153 @@ static void patch_fade_increment(Module *m){
 #endif
     fprintf(stderr,"[totk] 1.4.3 high-FPS fix: LOD/actor fade counters clamped to >= 1 at 4 sites (prevents translucent objects above 60 FPS), veneer +%#llx\n",(unsigned long long)stub);
 }
+
+/* AppKit deltas are accumulated by gamepad.m;
+   these veneers call a host helper at the game's camera calculation sites, so
+   mouse movement changes the camera's angles directly instead of synthesizing
+   a right stick or gyro. This is Mac-only; older game builds keep the existing
+   mouse look path. */
+#if !TARGET_OS_IPHONE
+typedef struct { uint64_t x[31], nzcv; } NativeMouseFrame;
+static _Atomic int nativeMouseCameraReady, nativeMouseCameraOn;
+static _Atomic int32_t nativeMouseDX, nativeMouseDY;
+static _Atomic uint64_t nativeMouseLastTake;
+static _Atomic uint64_t nativeMouseHoldUntil;
+static _Atomic float nativeMouseYawScale, nativeMousePitchScale;
+static double nativeMouseFractionX, nativeMouseFractionY;  /* AppKit calls are serialized on the main thread */
+
+static float mouse_float(uintptr_t p, uint64_t off) { return *(float *)(p + off); }
+static void mouse_store_float(uintptr_t p, uint64_t off, float v) { *(float *)(p + off) = v; }
+static void native_mouse_hook(NativeMouseFrame *f, uint64_t kind) {
+    if (!atomic_load_explicit(&nativeMouseCameraOn, memory_order_relaxed)) return;
+    uint64_t now = runtime_now_ns(), previous = atomic_load_explicit(&nativeMouseLastTake, memory_order_relaxed);
+    if (previous && now - previous > 125000000ull) {
+        atomic_exchange_explicit(&nativeMouseDX, 0, memory_order_relaxed);
+        atomic_exchange_explicit(&nativeMouseDY, 0, memory_order_relaxed);
+    }
+    atomic_store_explicit(&nativeMouseLastTake, now, memory_order_relaxed);
+    int32_t dx = atomic_exchange_explicit(&nativeMouseDX, 0, memory_order_relaxed);
+    int32_t dy = atomic_exchange_explicit(&nativeMouseDY, 0, memory_order_relaxed);
+    uintptr_t r19=f->x[19], r20=f->x[20], r22=f->x[22], r23=f->x[23], r24=f->x[24], r26=f->x[26], r29=f->x[29];
+    uintptr_t cam = kind==1 ? r26 : kind==2 ? r22 : kind==3 ? r24 : r23;
+    if ((dx || dy) && cam) {
+        uintptr_t yaw = kind==1 ? r26+0x414 : kind==2 ? r22+0x414 : kind==3 ? r19+0xbc : r29-0x44;
+        uintptr_t pitch = kind==1 ? r20+0x108 : kind==2 ? r19+0x15c : kind==3 ? r19+0xa4 : r19+0x50;
+        uintptr_t pitch2 = kind==2 ? r19+0x154 : kind==4 ? r19+0x160 : 0;
+        uintptr_t bounds = kind==1 ? r20 : kind==2 ? r19 : kind==4 ? r19 : 0;
+        uintptr_t yawFixed = r19+0x54;
+        if (kind==4 && ( *(uint32_t *)(cam+0x15c) & (1u<<8) )) yaw = yawFixed;  /* Recall uses its base yaw node */
+        float y = mouse_float(yaw,0) - (float)dx * atomic_load_explicit(&nativeMouseYawScale,memory_order_relaxed);
+        y = remainderf(y,360.0f); if (y >= 180.0f) y -= 360.0f;
+        mouse_store_float(yaw,0,y);
+        float p = mouse_float(pitch,0) + (float)dy * atomic_load_explicit(&nativeMousePitchScale,memory_order_relaxed);
+        if (bounds) {
+            uint64_t lo = kind==1 ? 0xf8 : kind==2 ? 0x1d4 : 0x1ac;
+            uint64_t hi = kind==1 ? 0xfc : kind==2 ? 0x1d8 : 0x1b0;
+            float a=mouse_float(bounds,lo), b=mouse_float(bounds,hi);
+            if (p<a) p=a;
+            if (p>b) p=b;
+        }
+        mouse_store_float(pitch,0,p); if (pitch2) mouse_store_float(pitch2,0,p);
+        atomic_store_explicit(&nativeMouseHoldUntil,now+333000000ull,memory_order_relaxed);
+    }
+    if (now<atomic_load_explicit(&nativeMouseHoldUntil,memory_order_relaxed) && cam) {
+        float *sx=(float *)(cam+0x420), *sy=(float *)(cam+0x424);
+        if (fabsf(*sx)+fabsf(*sy)==0.0f) *sx=*sy=0.001f;  /* keep the camera player-controlled after a mouse turn */
+    }
+}
+
+static uint32_t stp_x(unsigned a,unsigned b,unsigned rn,unsigned off,int load) {
+    return (load?0xa9400000u:0xa9000000u) | (((off/8)&0x7fu)<<15) | (b<<10) | (rn<<5) | a;
+}
+static uint32_t stp_q(unsigned a,unsigned b,unsigned rn,unsigned off,int load) {
+    return (load?0xad400000u:0xad000000u) | (((off/16)&0x7fu)<<15) | (b<<10) | (rn<<5) | a;
+}
+static uint32_t str_x(unsigned rt,unsigned rn,unsigned off,int load) {
+    return (load?0xf9400000u:0xf9000000u) | ((off/8)<<10) | (rn<<5) | rt;
+}
+typedef struct { uint32_t w[160]; unsigned n; } NativeMouseCode;
+static void mouse_emit(NativeMouseCode *c,uint32_t w) { if(c->n>=160)runtime_fail("native mouse veneer is too large"); c->w[c->n++]=w; }
+static void mouse_stub(Module *m,uint64_t site,uint32_t original,unsigned kind,uint64_t *cursor) {
+    uint64_t stub=*cursor, limit=(m->file_size+0x3fff)&~0x3fffULL;
+    NativeMouseCode c={0};
+    mouse_emit(&c,0xd10c03ff);                    /* sub sp,sp,#768 */
+    for(unsigned r=0;r<30;r+=2) mouse_emit(&c,stp_x(r,r+1,31,r*8,0));
+    mouse_emit(&c,str_x(30,31,240,0));
+    mouse_emit(&c,0xd53b4210); mouse_emit(&c,str_x(16,31,248,0)); /* NZCV */
+    for(unsigned r=0;r<32;r+=2) mouse_emit(&c,stp_q(r,r+1,31,256+r*16,0));
+    mouse_emit(&c,0x910003e0);                    /* add x0,sp,#0 */
+    mouse_emit(&c,0x52800001u|(kind<<5));          /* mov w1,#camera kind */
+    unsigned literalLoad=c.n; mouse_emit(&c,0x58000010); /* ldr x16, literal */
+    mouse_emit(&c,0xd63f0200);                    /* blr x16 */
+    mouse_emit(&c,str_x(16,31,248,1)); mouse_emit(&c,0xd51b4210); /* restore NZCV */
+    for(unsigned r=0;r<32;r+=2) mouse_emit(&c,stp_q(r,r+1,31,256+r*16,1));
+    for(unsigned r=0;r<30;r+=2) mouse_emit(&c,stp_x(r,r+1,31,r*8,1));
+    mouse_emit(&c,str_x(30,31,240,1));
+    mouse_emit(&c,0x910c03ff);                    /* add sp,sp,#768 */
+    mouse_emit(&c,original); mouse_emit(&c,branch(stub+c.n*4,site+4));
+    if(c.n&1)mouse_emit(&c,0xd503201f);            /* align literal to 8 bytes */
+    unsigned literal=c.n; mouse_emit(&c,0); mouse_emit(&c,0);
+    uint64_t end=stub+(uint64_t)c.n*4;
+    if(stub<m->patch_off || end>limit)runtime_fail("native mouse veneers exceed the available 1.4.3 patch area");
+    for(uint64_t p=stub;p<end;p++)if(m->base[p])runtime_fail("native mouse veneer padding is not empty");
+    int64_t d=(int64_t)(stub+(uint64_t)literal*4)-(int64_t)(stub+(uint64_t)literalLoad*4);
+    if((d&3)||d<-(1<<20)||d>=(1<<20))runtime_fail("native mouse literal is out of range");
+    c.w[literalLoad]=0x58000010u|(((uint32_t)(d>>2)&0x7ffffu)<<5);
+    void (*fn)(NativeMouseFrame *,uint64_t)=native_mouse_hook;
+    _Static_assert(sizeof fn==sizeof(uintptr_t),"native mouse callback pointer size");
+    memcpy(c.w+literal,&fn,sizeof fn);
+    uint32_t jump=branch(site,stub);memcpy(m->base+stub,c.w,(size_t)c.n*4);memcpy(m->base+site,&jump,4);
+    *cursor=end;
+}
+static void patch_native_mouse_camera(Module *m) {
+    const Patch sites[]={{0x18e468,0x91103348,0},{0x23be9b4,0x911032c8,0},
+                         {0x23d756c,0xbd442300,0},{0x23d2dd0,0xb85bc3a9,0}};
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++){uint32_t w;memcpy(&w,m->base+sites[i].off,4);if(w!=sites[i].original)runtime_fail("1.4.3 native mouse camera instruction mismatch");}
+    uint64_t cursor=(m->file_size+15)&~15ULL;
+    if(runtime_bench_cam)cursor=(cursor+127)&~15ULL;  /* reserve 128 bytes for the survey-camera veneer */
+    uint64_t limit=(m->file_size+0x3fff)&~0x3fffULL;
+    if(cursor+4*320>limit){fprintf(stderr,"[totk] 1.4.3 native mouse camera: not enough executable patch tail; keeping the existing mouse panning path\n");return;}
+    for(unsigned i=0;i<sizeof sites/sizeof *sites;i++)mouse_stub(m,sites[i].off,sites[i].original,i+1,&cursor);
+    atomic_store(&nativeMouseCameraReady,1);
+    fprintf(stderr,"[totk] 1.4.3 native mouse camera: direct yaw/pitch veneers at four camera calculations\n");
+}
+#endif
+
+int runtime_mouse_camera_available(void) {
+#if TARGET_OS_IPHONE
+    return 0;
+#else
+    return atomic_load_explicit(&nativeMouseCameraReady,memory_order_relaxed);
+#endif
+}
+void runtime_mouse_camera_set(int on,int sensitivity,int invert_y) {
+#if !TARGET_OS_IPHONE
+    if(!runtime_mouse_camera_available())return;
+    if(sensitivity<1||sensitivity>100)sensitivity=50;
+    atomic_store_explicit(&nativeMouseYawScale,(float)sensitivity/500.0f,memory_order_relaxed);
+    atomic_store_explicit(&nativeMousePitchScale,(float)sensitivity/500.0f*(invert_y?1.0f:-1.0f),memory_order_relaxed);
+    atomic_store_explicit(&nativeMouseDX,0,memory_order_relaxed);atomic_store_explicit(&nativeMouseDY,0,memory_order_relaxed);
+    atomic_store_explicit(&nativeMouseLastTake,on?runtime_now_ns():0,memory_order_relaxed);atomic_store_explicit(&nativeMouseHoldUntil,0,memory_order_relaxed);
+    nativeMouseFractionX=nativeMouseFractionY=0;
+    atomic_store_explicit(&nativeMouseCameraOn,!!on,memory_order_relaxed);
+#else
+    (void)on;(void)sensitivity;(void)invert_y;
+#endif
+}
+void runtime_mouse_camera_move(double dx,double dy) {
+#if !TARGET_OS_IPHONE
+    if(!atomic_load_explicit(&nativeMouseCameraOn,memory_order_relaxed))return;
+    nativeMouseFractionX+=dx;nativeMouseFractionY+=dy;
+    int32_t ix=(int32_t)nativeMouseFractionX,iy=(int32_t)nativeMouseFractionY;
+    nativeMouseFractionX-=ix;nativeMouseFractionY-=iy;
+    if(ix)atomic_fetch_add_explicit(&nativeMouseDX,ix,memory_order_relaxed);
+    if(iy)atomic_fetch_add_explicit(&nativeMouseDY,iy,memory_order_relaxed);
+#else
+    (void)dx;(void)dy;
+#endif
+}
+
 /* Benchmark camera (survey sessions only, 2026-10-20). The look-at camera update stores the frame's eye (doubles +0x60,
    floats +0x38), target (doubles +0x78, floats +0x44) and normalised up (+0x50) into the camera in x20 at
    main+0x6287b4..0x628824, then builds the view matrix from d1,d2,d0 / d3,d4,d5 / s7,s16,s17. The adrp at main+0x628828
@@ -405,6 +552,9 @@ void runtime_game_patches(Module *m) {
                      ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
     patch_bench_cam(m);
+#if !TARGET_OS_IPHONE
+    patch_native_mouse_camera(m);
+#endif
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");

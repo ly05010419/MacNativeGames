@@ -247,7 +247,7 @@ static TOTKSettingRow *settings_gain_row(void) {
  NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
  return settings_row(t,choices,values,^int{return settings_gain_now();},^(int v){runtime_rumble_gain_set(v/1000.0f);});
 }
-/* Mouse mode's sensitivity: a slider from 1 to 100 (50: 20 points of movement turn the camera at full speed). */
+/* Mouse mode's sensitivity: a slider from 1 to 100 (legacy panning reaches full stick at 20 points; 1.4.3 direct camera uses 0.1 degree/count at 50). */
 static TOTKSettingRow *settings_sensitivity_row(void) {
  NSString *t=settings_text("鼠标灵敏度","Mouse sensitivity");
  if(runtime_mouse_sensitivity_locked())return settings_fixed(t,[NSString stringWithFormat:@"%d",runtime_mouse_sensitivity()]);

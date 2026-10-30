@@ -442,16 +442,27 @@ static dispatch_source_t mouseTimer;
 static int mouseTicksByHand;                   /* tests/mouse/probe.m drives mouse_tick itself */
 static void (*mouseHook)(void);                /* the window: mouse mode changed */
 
+static int mouse_native_camera_available(void) {
+#if defined(TOTK_GAME_V143) && TARGET_OS_OSX
+    return runtime_mouse_camera_available();
+#else
+    return 0;
+#endif
+}
+
 static void mouse_tick(void) {
     double gyro[3], acc[3]; int32_t rx, ry;
     pthread_mutex_lock(&gamepadLock);
+    int native = mouse_native_camera_available() && atomic_load(&mouseMode);
 #ifndef GAME_BOTW
     /* L held (keys or controller): the ability wheel is open and the mouse points at an ability (mouse_look.h) */
     mouse_look_point(&mouseLook, (int)(((runtime_keyboard_buttons() | gamepadState.buttons) >> 6) & 1));
 #endif
-    mouse_look_tick(&mouseLook, &mouseSettings, &rx, &ry, gyro, acc);
+    int wheel = (((runtime_keyboard_buttons() | gamepadState.buttons) >> 6) & 1) != 0;
+    if (native && !wheel) { mouse_look_reset(&mouseLook); rx=ry=0; gyro[0]=gyro[1]=gyro[2]=0; acc[0]=acc[1]=acc[2]=0; }
+    else mouse_look_tick(&mouseLook, &mouseSettings, &rx, &ry, gyro, acc);
     mouseRX = rx; mouseRY = ry;
-    int feed = mouseGyro;
+    int feed = mouseGyro && !native;
     pthread_mutex_unlock(&gamepadLock);
     if (feed) runtime_motion_feed_mouse(acc, gyro, runtime_now_ns());
 }
@@ -484,7 +495,11 @@ void runtime_mouse_sensitivity_set(int sensitivity) {
     setting_write("mouse-sensitivity.txt", word, "mouse sensitivity");
     pthread_mutex_lock(&gamepadLock);
     mouseSettings.sensitivity = sensitivity;
+    int invertY = mouseSettings.invert_y;
     pthread_mutex_unlock(&gamepadLock);
+#if defined(TOTK_GAME_V143) && TARGET_OS_OSX
+    runtime_mouse_camera_set(atomic_load(&mouseMode),sensitivity,invertY);
+#endif
     fprintf(stderr, "[totk-input] mouse sensitivity %d (settings)\n", sensitivity);
 }
 
@@ -494,14 +509,18 @@ static void mouse_apply(int on) {   /* start or stop the ticks and the gyro take
         MouseLookSettings settings = mouse_look_settings(NULL, getenv("TOTK_MOUSE_INVERT_Y"),
                                                          getenv("TOTK_MOUSE_COUNTERWEIGHT"), getenv("TOTK_MOUSE_DECAY"), getenv("TOTK_MOUSE_MIN_DECAY"));
         settings.sensitivity = runtime_mouse_sensitivity();
-        int gyro = runtime_gyro_enabled() && !(g && !strcmp(g, "0"));
+        int native = mouse_native_camera_available();
+        int gyro = !native && runtime_gyro_enabled() && !(g && !strcmp(g, "0"));
         pthread_mutex_lock(&gamepadLock);
         mouseSettings = settings; mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0; mouseGyro = gyro;
         pthread_mutex_unlock(&gamepadLock);
+#if defined(TOTK_GAME_V143) && TARGET_OS_OSX
+        runtime_mouse_camera_set(native,settings.sensitivity,settings.invert_y);
+#endif
         runtime_motion_mouse(gyro);
-        fprintf(stderr, "[totk-input] mouse mode on: sensitivity %d%s, counterweight %d, decay %d, minimum decay %d, gyro %s\n",
+        fprintf(stderr, "[totk-input] mouse mode on: sensitivity %d%s, counterweight %d, decay %d, minimum decay %d, %s\n",
                 settings.sensitivity, settings.invert_y ? " (Y inverted)" : "", settings.counterweight, settings.decay, settings.min_decay,
-                gyro ? "from the mouse" : "not from the mouse");
+                native ? "native camera angles" : gyro ? "gyro from the mouse" : "stick camera panning");
         if (!mouseTicksByHand && !mouseTimer) {
             mouseTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_queue_create("totk.mouse", DISPATCH_QUEUE_SERIAL));
             dispatch_source_set_timer(mouseTimer, dispatch_time(DISPATCH_TIME_NOW, MOUSE_LOOK_TICK_NS), MOUSE_LOOK_TICK_NS, 1000000);
@@ -513,6 +532,9 @@ static void mouse_apply(int on) {   /* start or stop the ticks and the gyro take
         pthread_mutex_lock(&gamepadLock);
         mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0; mouseGyro = 0;
         pthread_mutex_unlock(&gamepadLock);
+#if defined(TOTK_GAME_V143) && TARGET_OS_OSX
+        runtime_mouse_camera_set(0,50,0);
+#endif
         runtime_motion_mouse(0);
         fprintf(stderr, "[totk-input] mouse mode off\n");
     }
@@ -571,9 +593,19 @@ int runtime_mouse_set(int on) {
 
 void runtime_mouse_move(double dx, double dy) {   /* the window, while it holds the pointer */
     if (!atomic_load(&mouseMode)) return;
+    uint64_t keys = runtime_keyboard_buttons();
+    int direct = 0;
     pthread_mutex_lock(&gamepadLock);
-    mouse_look_move(&mouseLook, dx, dy, &mouseSettings);
+    int wheel = ((keys | gamepadState.buttons) >> 6) & 1;
+    if (mouse_native_camera_available() && !wheel) {
+        mouse_look_reset(&mouseLook); mouseRX=mouseRY=0; direct=1;
+    } else mouse_look_move(&mouseLook, dx, dy, &mouseSettings);
     pthread_mutex_unlock(&gamepadLock);
+    if (direct) {
+#if defined(TOTK_GAME_V143) && TARGET_OS_OSX
+        runtime_mouse_camera_move(dx,-dy);    /* AppKit y grows down; the camera patch takes y up */
+#endif
+    }
 }
 
 void runtime_mouse_button(int button, int down) {   /* main thread */

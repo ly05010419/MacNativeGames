@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <string.h>
 _Noreturn void runtime_fail(const char *s){fprintf(stderr,"%s\n",s);exit(1);}
+uint64_t runtime_now_ns(void){static uint64_t now;return now+=1000000;}
 int mfxup_output_enabled(void){return 0;}
 void runtime_oe_push_message(uint32_t m){(void)m;}
 void dm_gfx_set_flag(const char *s,int v){(void)s;(void)v;}
