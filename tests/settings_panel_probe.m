@@ -436,7 +436,7 @@ static void update_probe(void) {
 }
 #ifndef GAME_BOTW
 /* Apply button icons (runtime/icons_apply.m) on the key bindings page, with a fake icons Python that reports the drawing's
-   six steps and writes nothing: the button and its progress bar sit in the footer without overlapping, the bar fills,
+   six steps and writes nothing: the button sits in the footer without overlapping, fills like a progress bar,
    the button waits while it runs, and the result shows where the version is. */
 static void check_apply_icons(void) {
     char root[] = "/tmp/settings-icons-XXXXXX"; assert(mkdtemp(root));
@@ -451,8 +451,8 @@ static void check_apply_icons(void) {
     setenv("TOTK_ICONS_DATA", root, 1); setenv("TOTK_ICONS_PYTHON", python.fileSystemRepresentation, 1);
     setenv("TOTK_APP_BUNDLE", app.fileSystemRepresentation, 1);
 
-    NSButton *apply = settingsPanel.applyIconsButton; NSProgressIndicator *bar = settingsPanel.applyIconsProgress;
-    assert([apply.title isEqualToString:@"Apply button icons"] && !apply.hidden && apply.enabled && bar.hidden);
+    NSButton *apply = settingsPanel.applyIconsButton; CALayer *fill = settingsPanel.applyIconsFill;
+    assert([apply.title isEqualToString:@"Apply button icons"] && !apply.hidden && apply.enabled && fill.hidden);
     CGFloat left = settingsPanel.frame.size.width;
     for (NSButton *b in @[apply, settingsPanel.resetButtons[0], settingsPanel.resetButtons[1], settingsPanel.listToggle]) {
         assert(NSMaxX(b.frame) <= settingsPanel.frame.size.width - 14 && b.frame.origin.y < 34);
@@ -461,15 +461,16 @@ static void check_apply_icons(void) {
     assert(NSMaxX(apply.frame) <= NSMinX(settingsPanel.resetButtons[1].frame));
     assert(settingsPanel.versionLabel.hidden || NSMaxX(settingsPanel.versionLabel.frame) <= left);
     [apply performClick:nil];
-    assert(!apply.enabled && !bar.hidden && bar.maxValue == 8);
+    /* the button is the progress bar (user 2026-10-31): a bar under it crossed the panel's border */
+    assert(!apply.enabled && !fill.hidden && fill.superlayer == apply.layer);
     double seen = 0;
     NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:10];
-    while (icons_apply_state(NULL, NULL) == IconsApplyRunning && [limit timeIntervalSinceNow] > 0) { tick(); seen = fmax(seen, bar.doubleValue); }
+    while (icons_apply_state(NULL, NULL) == IconsApplyRunning && [limit timeIntervalSinceNow] > 0) { tick(); seen = fmax(seen, fill.frame.size.width / apply.bounds.size.width); }
     tick(); tick();
-    assert(icons_apply_state(NULL, NULL) == IconsApplyDone && seen >= 3 && apply.enabled && bar.hidden);
+    assert(icons_apply_state(NULL, NULL) == IconsApplyDone && seen >= 0.3 && seen <= 1 && apply.enabled && fill.hidden);
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Done: the new icons show from the next start"]);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
-    assert(apply.hidden && bar.hidden);
+    assert(apply.hidden);
     [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; tick();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
     unsetenv("TOTK_ICONS_DATA"); unsetenv("TOTK_ICONS_PYTHON"); unsetenv("TOTK_APP_BUNDLE");
