@@ -50,7 +50,7 @@ class FrameLock(unittest.TestCase):
                               str(GAME / 'tests/fps_limit/pacing.c'), str(GAME / 'tests/fps_limit/hold.c'),
                               str(GFX / 'nvn_entry.S'), str(GFX / 'nvn_thunks.S'), '-o', str(executable)])
             output = self.run_checked([str(executable)])
-            self.assertIn('PASS: 140 production pacing scenarios', output)
+            self.assertIn('PASS: 168 production pacing scenarios', output)
 
 
 if __name__ == '__main__':

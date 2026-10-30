@@ -311,7 +311,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     mfx_set(MFX_MAX); shows(@"Frame interpolation", @"Unlimited");
     pick(@"Frame interpolation", @"40+40"); assert(mfx_requested() == MFX_40);
     pick(@"Frame interpolation", @"50+50"); assert(mfx_requested() == MFX_50);
-    assert(menu(@"Frame interpolation").numberOfItems == 5 && menu(@"Frame lock").numberOfItems == 7);
+    pick(@"Frame interpolation", @"60+60"); assert(mfx_requested() == MFX_60);
+    assert(menu(@"Frame interpolation").numberOfItems == 6 && menu(@"Frame lock").numberOfItems == 7);
     pick(@"Frame interpolation", @"Off"); mfx_latch(); assert(!mfx_enabled());
 
     /* Resolution: the player picks; 1080p without MetalFX at the start. */
