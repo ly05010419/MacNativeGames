@@ -33,6 +33,10 @@ python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNa
 ```
 
 The choice is made once per start: connecting a controller later keeps the keyboard icons until the next start.
+The settings panel's Apply button icons stages such a folder as `mods/<version>-keyboard.next` (a copy of
+`mods/<version>` with the icons drawn for your layout) and the launcher puts it in place at the next start. A folder
+it made records the `manifest.tsv` of the `mods/<version>` it copied (`made-from.txt`): once that changes, the
+launcher loads `mods/<version>` instead. A `-keyboard` folder without `made-from.txt` is used as before.
 
 ### What `manifest.tsv` is
 
@@ -426,6 +430,9 @@ python3.14 scripts/make_button_icons.py "$HOME/Library/Application Support/MacNa
 ```
 
 每次启动只选一次：游戏中途再接上手柄，键盘图标会保留到下次启动。
+设置面板的“应用按键图标”会把这样的目录先放在 `mods/<version>-keyboard.next`（`mods/<version>` 的副本，图标按你的布局重画），
+启动器在下次启动时换上。它做的目录会记下所复制的 `mods/<version>` 的 `manifest.tsv`（`made-from.txt`）：那份清单一变，
+启动器就改加载 `mods/<version>`。没有 `made-from.txt` 的 `-keyboard` 目录照旧使用。
 
 ### manifest.tsv 是什么
 
