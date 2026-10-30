@@ -688,6 +688,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSTextField *urlField = (NSTextField *)urlRow.control;
     assert(urlField.enabled && !urlRow.secure && ![urlField isKindOfClass:[NSSecureTextField class]] && [urlField.placeholderString hasPrefix:@"https://"]);
     assert([row(@"WebDAV password").control isKindOfClass:[NSSecureTextField class]]);
+    /* The panel is as tall as its tallest page below the key bindings, so the Saves page's rows keep that page's room. */
+    NSUInteger perPage[SETTINGS_PAGES] = {0};
+    for (TOTKSettingRow *r in settingsPanel.allRows) perPage[r.page]++;
+    NSUInteger tallest = 0;
+    for (NSInteger page = 0; page < SETTINGS_PAGE_BINDINGS; page++) if (perPage[page] > tallest) tallest = perPage[page];
+    NSRect lastSaveRow = [row(@"WebDAV password").control.superview convertRect:row(@"WebDAV password").control.superview.bounds toView:settingsPanel];
+    assert(settingsPanel.frame.size.height >= SETTINGS_TOP + tallest * SETTINGS_ROW_H + SETTINGS_BOTTOM - 1 && NSMinY(lastSaveRow) >= SETTINGS_BOTTOM);
     urlField.stringValue = @" https://dav.jianguoyun.com/dav/ "; [urlRow changed:urlField];
     assert([[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_WEBDAV_URL"] isEqualToString:@"https://dav.jianguoyun.com/dav/"]);
     [settingsPanel.timer fire];
@@ -744,6 +751,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsPanel.rows.count == 8 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
+
+    /* The Saves page (PR #1227): the four WebDAV rows live here, and Input is back to its own eight. */
+    [settingsPanel selectPage:SETTINGS_PAGE_SAVES];
+    assert(settingsPanel.rows.count == 4 && [settingsPanel.rows[0].title isEqualToString:@"Save sync (WebDAV)"] &&
+           settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_SAVES &&
+           !settingsPanel.pages[SETTINGS_PAGE_SAVES].hidden && settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden);
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
 
     /* Mouse sensitivity: a slider from 1 to 100, at once; greyed out while TOTK_MOUSE_SENSITIVITY decides. */
     NSSlider *slider = (NSSlider *)row(@"Mouse sensitivity").control;
@@ -936,6 +950,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, WebDAV save sync, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, WebDAV save sync on its own Saves page, game keys blocked while open, keys 2-7 inert, Chinese)");
     return 0;
 }}

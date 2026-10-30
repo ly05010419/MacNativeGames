@@ -22,10 +22,10 @@
 
 ## 怎么开启
 
-三个值，各平台同一个名字。Mac 上最省事的是游戏自带的面板：**游戏里按 1**，在面板
-底部的「WebDAV 地址 / 用户名 / 密码」里填好，上方的「存档同步（WebDAV）」行负责
-开关（没填地址前开关是灰的）。这里写入的值和下面的 `defaults write` 等效，下次启动
-游戏时同步生效。也可以用终端：
+三个值，各平台同一个名字。Mac 上最省事的是游戏自带的面板：**游戏里按 1**，切到
+「存档」页，在「WebDAV 地址 / 用户名 / 密码」里填好，上方的「存档同步（WebDAV）」行
+负责开关（没填地址前开关是灰的）。这里写入的值和下面的 `defaults write` 等效，下次
+启动游戏时同步生效。也可以用终端：
 
 ```sh
 defaults write org.macnativegames.totk TOTK_WEBDAV_URL https://dav.jianguoyun.com/dav
