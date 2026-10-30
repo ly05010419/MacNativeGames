@@ -74,5 +74,10 @@
   "Folder": "Dossier",
   "Choose folder": "Choisir un dossier",
   "Stop syncing": "Arrêter la synchronisation",
-  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil"
+  "Saves stay on this device; a copy goes to the chosen folder. Syncing across devices requires the same game user ID; matching display names remain separate, and fresh installations have different IDs. The folder picker appears the next time the game opens; or long-press the Home Screen icon": "Les sauvegardes restent sur cet appareil ; une copie est placée dans le dossier choisi. La synchronisation entre appareils nécessite le même identifiant de joueur ; des noms identiques restent séparés et les nouvelles installations ont des identifiants différents. Le sélecteur de dossier apparaît au prochain lancement du jeu ; vous pouvez aussi maintenir le doigt sur l’icône de l’écran d’accueil",
+  "Save sync (WebDAV)": "Synchronisation des sauvegardes (WebDAV)",
+  "Saves sync between all your devices through one WebDAV server. Leave empty to keep it off.": "les sauvegardes se synchronisent entre tous vos appareils via un même serveur WebDAV. Laissez vide pour désactiver.",
+  "Server URL": "Adresse du serveur",
+  "Account": "Compte",
+  "App password": "Mot de passe d'application"
 }
