@@ -21,6 +21,7 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
             assert expected in result.stderr, result.stderr
             assert "[probe] state report: closing" in result.stderr, result.stderr   # reported before _exit
             assert "[probe] triggers released" in result.stderr, result.stderr   # the triggers too: _exit skips atexit
+            assert "[probe] icons drawing stopped" in result.stderr, result.stderr   # and an Apply button icons drawing
             if mode:
                 assert "quitting when the save is done" in result.stderr, result.stderr
             print(f"PASS: save mode {mode}, text entry {text_entry}")

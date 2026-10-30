@@ -26,7 +26,7 @@ class FrameLock(unittest.TestCase):
                            '-Wno-deprecated-declarations', '-I' + str(GFX / 'include'),
                            '-Wl,-undefined,dynamic_lookup', '-Wl,-dead_strip',
                            str(ROOT / 'tests/settings_panel_probe.m'),
-                           str(ROOT / 'tests/settings_output_fixture.c'),
+                           str(ROOT / 'tests/settings_output_fixture.c'), str(ROOT / 'games/totk/runtime/icons_apply.m'),
                            str(GFX / 'totk_mfx.m'), str(GFX / 'totk_mfx_up.m'),
                            str(GFX / 'totk_taa.m'), str(GFX / 'fps_overlay.c'),
                            '-framework', 'Cocoa', '-framework', 'Metal', '-framework', 'MetalFX',
