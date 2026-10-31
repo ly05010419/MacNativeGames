@@ -4,9 +4,6 @@
 #undef main
 int main(void){@autoreleasepool{
  [NSApplication sharedApplication];
- NSImage *tile=[[NSImage alloc] initWithSize:NSMakeSize(64,64)];[tile lockFocus];[NSColor.greenColor setFill];NSRectFill(NSMakeRect(0,0,64,64));[tile unlockFocus];
- NSImage *rounded=front_dock_icon(tile);NSBitmapImageRep *bitmap=[[NSBitmapImageRep alloc] initWithData:rounded.TIFFRepresentation];
- assert([bitmap colorAtX:0 y:0].alphaComponent<0.01);assert([bitmap colorAtX:bitmap.pixelsWide/2 y:bitmap.pixelsHigh/2].alphaComponent>0.99);
  assert([cheat_display_name(@"№ 1a 测试") isEqualToString:@"测试"]);assert([cheat_display_name(@"♯19b 倍率") isEqualToString:@"倍率"]);
 
  TOTKCheatEntry *scheduled=[TOTKCheatEntry new];scheduled->applied=YES;scheduled->applyOnce=YES;

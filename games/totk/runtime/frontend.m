@@ -526,7 +526,7 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 -(void)openCheats:(id)sender;
 @end
 @implementation TOTKCheatMenuActions
--(void)openCheats:(id)sender{(void)sender;cheat_panel_show();}
+-(void)openCheats:(id)sender{(void)sender;cheat_panel_dismiss();cheat_panel_show();}
 @end
 static TOTKCheatMenuActions *cheatMenuActions;
 #endif
