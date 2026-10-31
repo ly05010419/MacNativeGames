@@ -1,10 +1,10 @@
 /* The settings panel's 更新 page (Mac; included by settings_panel.h): what upstream did after this version and, with the AI
    summary on, whether that is worth updating. It reads update/summary.json in the game's data folder, the folder of
-   TOTK_CONTROLS, which the launcher rewrites at each launch (app/update_summary.h), and shows its texts as plain text.
-   Nothing is installed from here: a button copies the commands. The AI button has the launcher (TOTK_UPDATE_LAUNCHER, which
-   only a launcher sets) refresh the document at once, and the page shows it when it is written; the login button has it run
-   the AI command line's own login in Terminal. A controller's L1 / R1 reach the page, left / right pick a button, A presses
-   it and up / down scroll the text. */
+   TOTK_CONTROLS, and shows its texts as plain text. The launcher (TOTK_UPDATE_LAUNCHER, which only a launcher sets) rewrites
+   that document (app/update_summary.h) the first time the page shows in a game run and when the AI button is pressed; the
+   page keeps what it has until then, and shows the new one when it is written. Nothing is installed from here: a button
+   copies the commands. The login button has the launcher run the AI command line's own login in Terminal. A controller's
+   L1 / R1 reach the page, left / right pick a button, A presses it and up / down scroll the text. */
 #pragma once
 #include <errno.h>
 #include <fcntl.h>
@@ -41,6 +41,7 @@ static void update_tab_refresh_document(void) {
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND,0),^{while(waitpid(pid,NULL,0)<0&&errno==EINTR){}});
  posix_spawn_file_actions_destroy(&actions);posix_spawnattr_destroy(&attributes);
 }
+static BOOL update_tab_asked;   /* this game run's one refresh for a look at the page */
 static NSString *update_tab_shell_quoted(const char *text) { return [NSString stringWithFormat:@"'%@'",[@(text) stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]]; }
 /* Terminal runs the launcher's --ai-login: a script written here, from this process's environment, never from the document.
    With this process's PATH and language, not the login shell's: it logs in to the command line the game asks, and answers in the page's language. */
@@ -66,15 +67,29 @@ static NSDictionary *update_tab_parse(NSData *data) {
  if(![d isKindOfClass:NSDictionary.class]||!update_tab_number(d[@"version"])||![d[@"version"] isEqual:@1])return nil;
  for(NSString *k in @[@"key",@"installed",@"installed_date",@"status",@"verdict",@"reason",@"note",@"copy"])if(![d[k] isKindOfClass:NSString.class])return nil;
  for(NSString *k in @[@"total",@"generated_at"])if(!update_tab_number(d[k]))return nil;
+ if((d[@"reach"]&&![d[@"reach"] isKindOfClass:NSString.class])||(d[@"carried_from"]&&!update_tab_number(d[@"carried_from"])))return nil;   /* neither in a document of an older launcher */
  if(![d[@"points"] isKindOfClass:NSArray.class])return nil;
  for(id v in d[@"points"])if(![v isKindOfClass:NSString.class])return nil;
- if(![@[@"behind",@"latest",@"unknown"] containsObject:d[@"status"]]||![@[@"update",@"wait",@"skip",@""] containsObject:d[@"verdict"]])return nil;
+ if(![@[@"behind",@"latest",@"unknown",@"incomparable"] containsObject:d[@"status"]]||![@[@"update",@"wait",@"skip",@""] containsObject:d[@"verdict"]])return nil;
  return d;
 }
 static NSString *update_tab_time(double at) {
  time_t t=(time_t)(at>0&&at<4e9?at:0);struct tm when;char text[16];
  if(!t||!localtime_r(&t,&when)||!strftime(text,sizeof text,"%m-%d %H:%M",&when))return @"";
- return [settings_text("内容更新于 ","Updated ") stringByAppendingString:@(text)];
+ return [settings_text("上次检查 ","Last checked ") stringByAppendingString:@(text)];
+}
+/* How far the range has moved since the answer the launcher kept: both GitHub's count from this installed commit, merges among them. */
+static long long update_tab_since(NSDictionary *d) { return d[@"carried_from"]?[d[@"total"] longLongValue]-[d[@"carried_from"] longLongValue]:0; }
+/* Under an answer the launcher kept: while it asks for a new one (source "asking"), or after that failed ("carried"). */
+static NSString *update_tab_carried(NSDictionary *d, BOOL ai) {
+ long long since=update_tab_since(d);
+ if([d[@"source"] isEqual:@"carried"]){
+  NSString *failed=settings_text("这次没有拿到新的 AI 总结，上面是之前的建议","No new AI summary this time; the advice above is the earlier one");
+  return since>0?[failed stringByAppendingFormat:since==1?@(TOTK_UI("，之后又有 %lld 个提交（含合并）没读","; %lld commit since (with merges) was not read")):@(TOTK_UI("，之后又有 %lld 个提交（含合并）没读","; %lld commits since (with merges) were not read")),since]:failed;
+ }
+ if(![d[@"source"] isEqual:@"asking"])return nil;
+ NSString *earlier=since>0?[NSString stringWithFormat:since==1?@(TOTK_UI("这是之前的建议，之后又有 %lld 个提交（含合并）","This is the earlier advice; %lld commit since (with merges)")):@(TOTK_UI("这是之前的建议，之后又有 %lld 个提交（含合并）","This is the earlier advice; %lld commits since (with merges)")),since]:settings_text("这是之前的建议","This is the earlier advice");
+ return ai&&update_tab_launcher()?[earlier stringByAppendingString:settings_text("；正在重新判断…","; checking again…")]:earlier;
 }
 static NSAttributedString *update_tab_text(NSDictionary *d, BOOL ai) {
  NSMutableAttributedString *all=[NSMutableAttributedString new];
@@ -86,26 +101,32 @@ static NSAttributedString *update_tab_text(NSDictionary *d, BOOL ai) {
  NSColor *white=[NSColor colorWithCalibratedWhite:0.92 alpha:1],*dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1],*accent=[NSColor colorWithCalibratedRed:0.7 green:0.95 blue:0.8 alpha:1];
  NSString *offLine=settings_text("开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。","It uses the claude, codex or qodercli you are logged in to, on your own account.");
  if(!d){
-  add(settings_text("还没有更新信息，下次启动游戏时会查一次","No update information yet; it is checked the next time the game starts"),plain,white,0);
+  if(!update_tab_launcher()){add(settings_text("更新检查已关闭","Update checks are off"),plain,white,0);return all;}
+  add(settings_text("正在查询更新…","Checking for updates…"),plain,white,0);
   if(!ai)add(offLine,small,dim,0);
   return all;
  }
  NSString *verdict=d[@"verdict"],*reason=d[@"reason"],*installed=d[@"installed"],*date=d[@"installed_date"];BOOL behind=[d[@"status"] isEqualToString:@"behind"];
- if(installed.length){
-  NSMutableString *line=[settings_text("当前版本 ","Installed ") mutableCopy];[line appendString:installed];
-  if(date.length)[line appendFormat:@"%@%@%@",settings_text("（"," ("),date,settings_text("）",")")];
-  long long total=[d[@"total"] longLongValue];
-  if(behind)[line appendFormat:total==1?@(TOTK_UI(" · 上游之后 %lld 个提交"," · %lld commit upstream since")):@(TOTK_UI(" · 上游之后 %lld 个提交"," · %lld commits upstream since")),total];
-  add(line,small,dim,0);
- }
- if(!ai)add(offLine,small,dim,0);   /* above the list: the button beside it acts at once, and the list may run past the fold */
  NSString *advice=[verdict isEqualToString:@"update"]?settings_text("建议：值得更新","Advice: worth updating"):[verdict isEqualToString:@"wait"]?settings_text("建议：可以等等","Advice: it can wait"):
   [verdict isEqualToString:@"skip"]?settings_text("建议：不用更新","Advice: no need to update"):nil;
- if(advice)add(reason.length?[NSString stringWithFormat:@"%@  %@",advice,reason]:advice,strong,accent,0);
+ if(advice){
+  add(reason.length?[NSString stringWithFormat:@"%@  %@",advice,reason]:advice,strong,accent,0);
+  NSString *carried=update_tab_carried(d,ai);if(carried)add(carried,small,dim,0);
+  if([d[@"reach"] length])add(update_tab_since(d)?[settings_text("当时：","At the time: ") stringByAppendingString:d[@"reach"]]:d[@"reach"],small,dim,0);   /* true of the range it was made for */
+ }
  else if(ai&&update_tab_launcher()&&behind&&[d[@"source"] isEqual:@"fallback"]&&![d[@"note"] length])add(settings_text("AI 正在总结…","The AI is summarizing…"),strong,accent,0);   /* the launcher's run writes a note or an answer when it ends */
+ if(!ai&&![d[@"status"] isEqualToString:@"incomparable"])add(offLine,small,dim,0);   /* above the list: the button beside it acts at once, and the list may run past the fold */
  for(NSString *point in d[@"points"])add([@"•  " stringByAppendingString:point],plain,white,12);
  if([d[@"note"] length])add(d[@"note"],small,dim,0);
  if(behind&&[d[@"copy"] length])add(settings_text("复制的命令要在退出游戏后，到仓库文件夹里运行。","Quit the game, then run the copied commands in the repository folder."),small,dim,0);
+ if(installed.length){   /* last; the commit at its end, for a maintainer to tell which build it is */
+  NSMutableString *line=[settings_text("你的版本","Your version") mutableCopy];
+  if(date.length)[line appendFormat:@" %@",date];
+  long long total=[d[@"total"] longLongValue];
+  if(behind)[line appendFormat:total==1?@(TOTK_UI(" · 上游之后 %lld 个提交（含合并）"," · %lld commit upstream since (with merges)")):@(TOTK_UI(" · 上游之后 %lld 个提交（含合并）"," · %lld commits upstream since (with merges)")),total];
+  add(line,small,dim,0);
+  [all appendAttributedString:[[NSAttributedString alloc] initWithString:[@" · " stringByAppendingString:installed] attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:10],NSForegroundColorAttributeName:dim}]];
+ }
  return all;
 }
 
@@ -141,7 +162,7 @@ static NSAttributedString *update_tab_text(NSDictionary *d, BOOL ai) {
 -(NSString *)statusLine{
  NSString *state=self.summary[@"status"];
  return [state isEqualToString:@"behind"]?settings_text("有新版本","Update available"):[state isEqualToString:@"latest"]?settings_text("已是最新","Up to date"):
-  [state isEqualToString:@"unknown"]?settings_text("暂时查不到更新","Updates cannot be checked right now"):@"";
+  [state isEqualToString:@"incomparable"]?settings_text("无法和上游比较","Cannot compare with upstream"):[state isEqualToString:@"unknown"]?settings_text("暂时查不到更新","Updates cannot be checked right now"):@"";
 }
 -(void)refresh{
  NSData *data=update_tab_read();BOOL ai=update_tab_ai();
@@ -153,7 +174,7 @@ static NSAttributedString *update_tab_text(NSDictionary *d, BOOL ai) {
  self.text.frame=NSMakeRect(18,2,width,height);self.scroll.documentView.frame=NSMakeRect(0,0,w,fmax(height+8,room));
  [self.scroll.documentView scrollPoint:NSZeroPoint];
  self.status.stringValue=[self statusLine];
- self.time.stringValue=d?update_tab_time([d[@"generated_at"] doubleValue]):@"";
+ self.time.stringValue=[d[@"installed"] length]?update_tab_time([d[@"generated_at"] doubleValue]):@"";   /* no commit: nothing was asked */
  self.commandButton.hidden=!([d[@"status"] isEqualToString:@"behind"]&&[d[@"copy"] length]);
  self.commandButton.title=settings_text("复制更新命令","Copy the update command");
  self.loginButton.hidden=!(ai&&update_tab_launcher()&&[d[@"login"] isEqual:@YES]);
@@ -196,6 +217,8 @@ static NSAttributedString *update_tab_text(NSDictionary *d, BOOL ai) {
 @implementation TOTKSettingsPanel (UpdateTab)
 -(NSView *)updatePageWithFrame:(NSRect)frame{self.updatePageTargets=[NSMutableArray array];return [[TOTKUpdatePage alloc] initWithFrame:frame];}
 -(void)refreshUpdatePage{
+ /* This is reached with the page selected, also while a panel is made for an opening and by a closed panel's refresh: so only when open. */
+ if(settingsOpen&&self.page==SETTINGS_PAGE_UPDATE&&!update_tab_asked){update_tab_asked=YES;update_tab_refresh_document();}
  TOTKUpdatePage *page=(TOTKUpdatePage *)self.pages[SETTINGS_PAGE_UPDATE];[page refresh];
  [self.updatePageTargets removeAllObjects];
  for(NSButton *b in @[page.commandButton,page.loginButton,page.aiSwitch])if(!b.hidden)[self.updatePageTargets addObject:b];

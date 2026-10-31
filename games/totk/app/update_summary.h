@@ -1,5 +1,5 @@
-/* What upstream did since this app was built, for the settings panel's 更新 page (runtime/update_tab.h). The launcher starts
-   itself detached with --update-summary at each launch and goes on to the game; the page starts it the same way when its
+/* What upstream did since this app was built, for the settings panel's 更新 page (runtime/update_tab.h). A launch asks
+   nothing: the page starts the launcher detached with --update-summary the first time it shows in a game run, and when its
    AI button changes something. Public GitHub metadata only; it never downloads or installs anything. It writes
    <data>/update/summary.json, whole or not at all. Off: TOTK_UPDATE_SUMMARY=0.
 
@@ -16,42 +16,23 @@
 #include <spawn.h>
 #include <string.h>
 #include <sys/file.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "include/totk_ui_lang.h"
 
-enum { MNG_SUMMARY_PAGE = 100, MNG_SUMMARY_PROMPT_COMMITS = 60, MNG_SUMMARY_TITLES = 5, MNG_SUMMARY_TEXT = 200, MNG_SUMMARY_BODY = 400 };
+enum { MNG_SUMMARY_PAGE = 100, MNG_SUMMARY_PROMPT_COMMITS = 60, MNG_SUMMARY_TITLES = 5, MNG_SUMMARY_POINTS = 5, MNG_SUMMARY_TEXT = 200, MNG_SUMMARY_BODY = 400 };
 static const double MNG_SUMMARY_COMMAND_SECONDS = 180, MNG_SUMMARY_FETCH_SECONDS = 15;
 static NSString *const MNG_SUMMARY_END = @"<<<COMMITS_END>>>";
 
 /* The GitHub API with `query` after the repository: the JSON object, and the HTTP status (0: no reply). */
 typedef NSDictionary *(^MNGSummaryFetch)(NSString *query, NSInteger *http);
 
-/* Start this program again with --update-summary, cut off from the caller, and tell the game where it is, for the page's
-   buttons. Nothing but async-signal-safe calls after fork. */
+/* Tell the game where this program is, for the page, which starts it with --update-summary. */
 static inline void mng_summary_start(const char *executable) {
     const char *off = getenv("TOTK_UPDATE_SUMMARY");
     if (off && !strcmp(off, "0")) return;
     setenv("TOTK_UPDATE_LAUNCHER", executable, 1);
-    char *const arguments[] = {(char *)executable, "--update-summary", NULL};
-    struct rlimit files;
-    int most = getrlimit(RLIMIT_NOFILE, &files) || files.rlim_cur > 65536 ? 65536 : (int)files.rlim_cur;
-    pid_t first = fork();
-    if (first < 0) return;
-    if (!first) {
-        setsid();
-        pid_t second = fork();
-        if (second) _exit(0);
-        int null = open("/dev/null", O_RDWR);
-        if (null < 0) _exit(1);
-        dup2(null, 0); dup2(null, 1); dup2(null, 2);
-        for (int fd = 3; fd < most; fd++) close(fd);
-        execv(executable, arguments);
-        _exit(1);
-    }
-    while (waitpid(first, NULL, 0) < 0 && errno == EINTR) {}
 }
 
 /* 7 to 40 hex: MNGSourceCommit is the short form (build_app.py), GitHub's own the long one. */
@@ -114,7 +95,13 @@ static inline NSString *mng_summary_prompt(NSString *game, NSArray<NSDictionary 
         mng_summary_game_name(game), (long)total, totk_ui_zh() ? @"Chinese" : @"English", data, MNG_SUMMARY_END];
 }
 
-/* The first complete JSON object of the output, as one answer of exactly the agreed shape; nil for anything else. */
+/* Text an answer may hold: not empty and with no link, as commit text can ask for one and the page gives no way to check it. */
+static inline BOOL mng_summary_fit(id text) {
+    if (![text isKindOfClass:NSString.class]) return NO;
+    NSString *whole = mng_summary_clean(text, NSUIntegerMax);
+    return whole.length && ![whole containsString:@"://"];
+}
+/* The first complete JSON object of the output, as one answer of the agreed shape, its first 5 points; nil for anything else. */
 static inline NSDictionary *mng_summary_answer(NSData *output) {
     const char *bytes = output.bytes;
     NSUInteger start = 0, length = output.length, end = 0;
@@ -130,16 +117,34 @@ static inline NSDictionary *mng_summary_answer(NSData *output) {
     if (!end) return nil;
     NSDictionary *d = [NSJSONSerialization JSONObjectWithData:[output subdataWithRange:NSMakeRange(start, end - start)] options:0 error:nil];
     if (![d isKindOfClass:NSDictionary.class] || ![@[@"update", @"wait", @"skip"] containsObject:d[@"verdict"] ?: @""]) return nil;
-    NSString *reason = mng_summary_dig(d, @[@"reason"], NSString.class);
     NSArray *points = mng_summary_dig(d, @[@"points"], NSArray.class);
-    if (!reason.length || points.count < 1 || points.count > 5) return nil;
+    if (!mng_summary_fit(d[@"reason"]) || !points.count) return nil;
     NSMutableArray *clean = [NSMutableArray array];
     for (NSString *point in points) {
-        if (![point isKindOfClass:NSString.class] || !mng_summary_clean(point, MNG_SUMMARY_TEXT).length) return nil;
-        [clean addObject:mng_summary_clean(point, MNG_SUMMARY_TEXT)];
+        if (!mng_summary_fit(point)) return nil;
+        if (clean.count < MNG_SUMMARY_POINTS) [clean addObject:mng_summary_clean(point, MNG_SUMMARY_TEXT)];
     }
-    reason = mng_summary_clean(reason, MNG_SUMMARY_TEXT);
-    return reason.length ? @{@"verdict": d[@"verdict"], @"reason": reason, @"points": clean} : nil;
+    return @{@"verdict": d[@"verdict"], @"reason": mng_summary_clean(d[@"reason"], MNG_SUMMARY_TEXT), @"points": clean};
+}
+
+/* The page's line on what the answer rests on. `shown` as sent to mng_summary_prompt; `fetched` of the `total` commits came
+   back, and total (GitHub's ahead_by) counts merges, so how many are not merges is known only when all came back. The date
+   is the oldest committer date among those sent: GitHub sorts by that, not by when a commit landed, so commits of that time
+   can still have been passed over. */
+static inline NSString *mng_summary_reach(NSString *command, NSArray<NSDictionary *> *shown, NSUInteger fetched, NSInteger total) {
+    NSUInteger sent = MIN(shown.count, (NSUInteger)MNG_SUMMARY_PROMPT_COMMITS);
+    NSString *who = [NSString stringWithFormat:@(TOTK_UI("由 %@ 总结 · ", "Summarized by %@ · ")), mng_summary_clean(command.lastPathComponent, MNG_SUMMARY_TEXT)];
+    if (fetched >= (NSUInteger)total && shown.count <= sent)
+        return [who stringByAppendingFormat:sent == 1 ? @(TOTK_UI("读了这段全部 %lu 个提交（不算合并），较长的正文只读了开头", "read the %lu commit in this range (not counting merges), only the start of longer messages"))
+            : @(TOTK_UI("读了这段全部 %lu 个提交（不算合并），较长的正文只读了开头", "read all %lu commits in this range (not counting merges), only the start of longer messages")), (unsigned long)sent];
+    NSString *oldest = nil;
+    for (NSDictionary *one in [shown subarrayWithRange:NSMakeRange(shown.count - sent, sent)]) {
+        NSString *date = mng_summary_dig(one, @[@"commit", @"committer", @"date"], NSString.class);
+        if (date.length >= 10 && (!oldest || [date compare:oldest] == NSOrderedAscending)) oldest = date;
+    }
+    NSString *since = oldest ? [NSString stringWithFormat:@(TOTK_UI("（%@ 之后）", " (since %@)")), mng_summary_clean([oldest substringWithRange:NSMakeRange(5, 5)], 5)] : @"";
+    return [who stringByAppendingFormat:sent == 1 ? @(TOTK_UI("只读了最新 %lu 个提交%@，较长的正文只读了开头；上游这段共 %ld 个提交（含合并），更早的没读", "read only the newest %lu commit%@, only the start of longer messages; upstream has %ld commits in this range (with merges), the earlier ones were not read"))
+        : @(TOTK_UI("只读了最新 %lu 个提交%@，较长的正文只读了开头；上游这段共 %ld 个提交（含合并），更早的没读", "read only the newest %lu commits%@, only the start of longer messages; upstream has %ld commits in this range (with merges), the earlier ones were not read")), (unsigned long)sent, since, (long)total];
 }
 
 static inline NSString *mng_summary_find(NSString *name, NSArray<NSString *> *dirs) {
@@ -201,7 +206,7 @@ static inline int mng_summary_login(NSArray<NSString *> *dirs, void (^refresh)(v
         if (posix_spawn(&pid, arguments[0], NULL, NULL, arguments, environ)) return 1;
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
         int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-        /* Closing the window now must not end the refresh: its AI call is paid for, and the page would wait until the next launch. */
+        /* Closing the window now must not end the refresh: its AI call is paid for, and the page would wait until the next game run. */
         if (!code) { signal(SIGHUP, SIG_IGN); refresh(); }
         return code;
     }
@@ -260,18 +265,17 @@ static inline NSData *mng_summary_ask(NSArray<NSString *> *command, NSString *pr
     return output;
 }
 
-/* `commits` oldest first, the part of the comparison that was fetched; nil from a failure. GitHub pages a comparison oldest
-   first, so past one page the newest are on the last two. */
-static inline NSArray *mng_summary_commits(NSString *query, NSDictionary *first, NSInteger ahead, MNGSummaryFetch fetch) {
+/* `commits` oldest first, the part of the comparison that was fetched; nil from a failure, with its status in `http`. GitHub
+   pages a comparison oldest first, so past one page the newest are on the last two. */
+static inline NSArray *mng_summary_commits(NSString *query, NSDictionary *first, NSInteger ahead, MNGSummaryFetch fetch, NSInteger *http) {
     NSArray *commits = mng_summary_dig(first, @[@"commits"], NSArray.class);
     if (ahead <= MNG_SUMMARY_PAGE) return commits;
     NSInteger last = (ahead + MNG_SUMMARY_PAGE - 1) / MNG_SUMMARY_PAGE;
     NSArray *all = @[];
     for (NSInteger page = last - 1; page <= last; page++) {
-        NSInteger http = 0;
-        NSDictionary *reply = page == 1 ? first : fetch([query stringByAppendingFormat:@"&page=%ld", (long)page], &http);
+        NSDictionary *reply = page == 1 ? first : fetch([query stringByAppendingFormat:@"&page=%ld", (long)page], http);
         NSArray *part = mng_summary_dig(reply, @[@"commits"], NSArray.class);
-        if ((page != 1 && http != 200) || !part) return nil;
+        if (*http != 200 || !part) return nil;
         all = [all arrayByAddingObjectsFromArray:part];
     }
     return all;
@@ -284,6 +288,19 @@ static inline void mng_summary_write(NSString *folder, NSDictionary *document) {
 
 static inline BOOL mng_summary_ai_on(NSString *folder) { return [NSFileManager.defaultManager fileExistsAtPath:[folder stringByAppendingPathComponent:@"ai"]]; }
 
+/* The last model answer in the document, for this same installed commit, with the total it was made at: it stays on the page
+   while a new one is asked and after a failed one. Its reach is as of that total; the page says how far the range has moved
+   since. Nil when the document holds none. */
+static inline NSDictionary *mng_summary_carried(NSDictionary *old, NSString *commit) {
+    NSString *source = mng_summary_dig(old, @[@"source"], NSString.class), *reason = mng_summary_dig(old, @[@"reason"], NSString.class);
+    NSArray *points = mng_summary_dig(old, @[@"points"], NSArray.class);
+    NSNumber *from = mng_summary_dig(old, @[[source isEqual:@"model"] ? @"total" : @"carried_from"], NSNumber.class);
+    if (![@[@"model", @"asking", @"carried"] containsObject:source ?: @""] || ![mng_summary_dig(old, @[@"key"], NSString.class) hasPrefix:[commit stringByAppendingString:@"|"]]) return nil;
+    if (![@[@"update", @"wait", @"skip"] containsObject:old[@"verdict"] ?: @""] || !reason.length || !points.count || !from) return nil;
+    for (id point in points) if (![point isKindOfClass:NSString.class]) return nil;
+    return @{@"verdict": old[@"verdict"], @"reason": reason, @"points": points, @"reach": mng_summary_dig(old, @[@"reach"], NSString.class) ?: @"", @"carried_from": from};
+}
+
 /* One pass of a refresh, the lock held. */
 static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *commit, NSString *app, double now, BOOL ai, MNGSummaryFetch fetch, NSArray<NSString *> *dirs, double limit) {
     NSData *saved = [NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"summary.json"]];
@@ -293,9 +310,10 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
     NSString *onOff = ai ? @"on" : @"off", *base = revision ? commit : @"";
     NSMutableDictionary *document = [@{@"version": @1, @"game": game, @"generated_at": @(now), @"key": [NSString stringWithFormat:@"%@||%@", base, onOff], @"source": @"fallback",
         @"installed": revision ? mng_summary_short(commit) : @"", @"installed_date": @"", @"head": @"", @"total": @0, @"status": @"unknown",
-        @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"", @"copy": @"", @"login": @NO} mutableCopy];
+        @"verdict": @"", @"reason": @"", @"reach": @"", @"points": @[], @"note": @"", @"copy": @"", @"login": @NO} mutableCopy];
     if (!revision) {
-        document[@"note"] = @(TOTK_UI("这个 App 没有记录它的提交", "This app does not record its commit"));
+        document[@"status"] = @"incomparable";
+        document[@"note"] = @(TOTK_UI("这个 App 没有记录它的提交。ZIP 安装要重新下载才能更新", "This app does not record its commit. A ZIP install updates by downloading it again"));
         mng_summary_write(folder, document);
         return;
     }
@@ -303,6 +321,7 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
     NSInteger http = 0;
     NSDictionary *first = fetch(query, &http);
     if (http == 404) {
+        document[@"status"] = @"incomparable";
         document[@"note"] = @(TOTK_UI("上游没有这个提交，可能是本地构建的版本", "Upstream does not have this commit; this may be a local build"));
         mng_summary_write(folder, document);
         return;
@@ -311,18 +330,22 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
     NSString *state = mng_summary_dig(first, @[@"status"], NSString.class);
     BOOL usable = http == 200 && aheadBy && CFGetTypeID((__bridge CFTypeRef)aheadBy) != CFBooleanGetTypeID() && aheadBy.integerValue >= 0 &&
         [@[@"ahead", @"diverged", @"behind", @"identical"] containsObject:state ?: @""];
-    NSArray *commits = usable ? mng_summary_commits(query, first, aheadBy.integerValue, fetch) : nil;
+    NSArray *commits = usable ? mng_summary_commits(query, first, aheadBy.integerValue, fetch, &http) : nil;
     if (!commits) {
-        NSString *unreachable = @(TOTK_UI("连不上 GitHub", "Could not reach GitHub"));
-        if ([mng_summary_dig(old, @[@"key"], NSString.class) hasPrefix:commit]) {   /* what it knew about this version stays */
-            if (ai && [old[@"source"] isEqual:@"fallback"] && ![old[@"note"] length]) {   /* the page would go on saying the AI is at work */
+        NSString *limited = @(TOTK_UI("GitHub 暂时限制了查询，下次再试", "GitHub is limiting queries for now; try again later")), *unreachable = @(TOTK_UI("连不上 GitHub", "Could not reach GitHub"));
+        NSString *failure = http == 403 || http == 429 ? limited : unreachable;
+        if ([mng_summary_dig(old, @[@"key"], NSString.class) hasPrefix:commit] && ![old[@"status"] isEqual:@"unknown"]) {   /* what it knew about this version stays; a document of an earlier failure knew nothing, and this one replaces it */
+            BOOL asking = [old[@"source"] isEqual:@"asking"];   /* a run that ended without a word */
+            BOOL other = [@[limited, unreachable] containsObject:old[@"note"] ?: @""] && ![old[@"note"] isEqual:failure];   /* the note of another failure: not what happened now */
+            if (other || (ai && (asking || ([old[@"source"] isEqual:@"fallback"] && ![old[@"note"] length])))) {   /* the page would go on saying the AI is at work */
                 NSMutableDictionary *noted = [old mutableCopy];
-                noted[@"note"] = unreachable;
+                noted[@"note"] = failure;
+                if (asking) noted[@"source"] = @"carried";
                 mng_summary_write(folder, noted);
             }
             return;
         }
-        document[@"note"] = unreachable;
+        document[@"note"] = failure;
         mng_summary_write(folder, document);
         return;
     }
@@ -360,16 +383,19 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
         [titles addObject:mng_summary_title(one)];
     }
     document[@"points"] = titles;
-    NSDictionary *answer = nil;
+    NSDictionary *answer = nil, *carried = ai ? mng_summary_carried(old, commit) : nil;
+    NSString *answering = nil;
     if (ai && shown.count) {
-        mng_summary_write(folder, document);   /* the page has this version's titles while the AI thinks */
+        NSMutableDictionary *waiting = [document mutableCopy];   /* the page has this version's titles while the AI thinks, or the last answer; "asking", as this run may not get to end it */
+        if (carried) { [waiting addEntriesFromDictionary:carried]; waiting[@"source"] = @"asking"; }
+        mng_summary_write(folder, waiting);
         BOOL players = NO;
         NSArray<NSArray<NSString *> *> *commands = mng_summary_commands(folder, dirs, &players);
         NSUInteger failed = 0;
         for (NSArray<NSString *> *command in commands) {
             if (!mng_summary_ai_on(folder)) break;   /* turned off meanwhile */
             NSData *output = mng_summary_ask(command, mng_summary_prompt(game, shown, aheadBy.integerValue), dirs, limit);
-            if (output) { answer = mng_summary_answer(output); break; }   /* it ran: a bad answer does not spend another account */
+            if (output) { answer = mng_summary_answer(output); answering = command[0]; break; }   /* it ran: a bad answer does not spend another account */
             failed++;
         }
         if (!players && !commands.count) document[@"note"] = @(TOTK_UI("没有找到 AI 命令行（claude、codex 或 qodercli），装好并登录一个后这里会显示总结", "No AI command line found (claude, codex or qodercli). Install one and log in, and the summary shows here"));
@@ -381,6 +407,10 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
     if (answer) {
         [document addEntriesFromDictionary:answer];
         document[@"source"] = @"model";
+        document[@"reach"] = mng_summary_reach(answering, shown, commits.count, aheadBy.integerValue);
+    } else if (carried) {
+        [document addEntriesFromDictionary:carried];
+        document[@"source"] = @"carried";
     } else if (ai && ![document[@"note"] length]) {
         document[@"note"] = @(TOTK_UI("这次没有拿到 AI 总结，只列出提交标题", "No AI summary this time; listing the commit titles only"));
     }
@@ -388,8 +418,8 @@ static inline void mng_summary_pass(NSString *folder, NSString *game, NSString *
 }
 
 /* One whole refresh; a second one while it runs leaves at once. `folder` is <data>/update, `dirs` where commands are looked
-   for, `limit` the seconds a command gets. The page's button starts one too, and that one leaves when this one holds the
-   lock: so, looked at after letting go, a choice changed meanwhile gets another pass. */
+   for, `limit` the seconds a command gets. The page's button can start a second one, and that one leaves when this one holds
+   the lock: so, looked at after letting go, a choice changed meanwhile gets another pass. */
 static inline void mng_summary_run(NSString *folder, NSString *game, NSString *commit, NSString *app, double now, MNGSummaryFetch fetch, NSArray<NSString *> *dirs, double limit) {
     [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
     BOOL ai;

@@ -56,6 +56,10 @@ static void run_with(NSString *commitId, NSDictionary *reply, NSInteger http, do
     }, @[bin, @"/usr/bin", @"/bin"], limit);
 }
 static void run_behind(void) { run_with((NSString *)BASE, compare(@"ahead", 8, some_commits()), 200, 5); }
+/* One run at a time of its own that GitHub does not answer. */
+static void failed_at(NSInteger http, double at) {
+    mng_summary_run(folder, @"totk", (NSString *)BASE, @"/A.app", at, ^NSDictionary *(NSString *q, NSInteger *status) { (void)q; *status = http; return nil; }, @[bin], 5);
+}
 static NSString *GOOD = @"echo 'Sure: {\"verdict\":\"wait\",\"reason\":\"small {fix}\",\"points\":[\"one\",\"two\"]} and more {'";
 static void titles_with_note(void) {
     NSDictionary *d = doc();
@@ -84,6 +88,7 @@ static void statuses(void) {
     assert([d[@"installed"] isEqual:@"aaaaaaaaaaaa"] && [d[@"head"] isEqual:@"bbbbbbbbbbbb"] && [d[@"total"] isEqual:@8] && [d[@"installed_date"] isEqual:@"2026-10-29"]);
     assert([d[@"points"] isEqual:(@[@"newest", @"sixth", @"fifth", @"fourth", @"third"])]);
     assert(([d[@"key"] isEqual:[NSString stringWithFormat:@"%@|%@|off", BASE, HEAD]]));
+    assert([d[@"reach"] isEqual:@""]);   /* nobody read anything */
     assert([d[@"copy"] isEqual:@"git pull\npython3.14 update_runtime.py \"/Applications/The \\\"Game\\\" \\$1.app\"\n"]);
     assert(!ran(@"claude"));
     /* Latest: skip with a reason, no AI even when it is on. */
@@ -93,14 +98,15 @@ static void statuses(void) {
     assert(!ran(@"claude"));
     /* Installed newer than main: nothing to update to. */
     fresh(); run_with((NSString *)BASE, compare(@"behind", 0, @[]), 200, 5); assert([doc()[@"status"] isEqual:@"latest"]);
-    /* A commit upstream does not have, none at all, or not a commit: unknown with a note, no network for the last two. */
+    /* A commit upstream does not have, none at all, or not a commit: for good, with a note, no network for the last two. */
     fresh(); run_with((NSString *)BASE, nil, 404, 5); d = doc();
-    assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] length] && [d[@"installed"] isEqual:@"aaaaaaaaaaaa"]);
+    assert([d[@"status"] isEqual:@"incomparable"] && [d[@"note"] isEqual:(zh ? @"上游没有这个提交，可能是本地构建的版本" : @"Upstream does not have this commit; this may be a local build")] && [d[@"installed"] isEqual:@"aaaaaaaaaaaa"]);
+    NSString *zip = zh ? @"这个 App 没有记录它的提交。ZIP 安装要重新下载才能更新" : @"This app does not record its commit. A ZIP install updates by downloading it again";
     for (NSString *bad in @[@"", @"main", @"../../etc", [BASE substringToIndex:6], [BASE stringByAppendingString:@"a"], @"ABCDEF1"]) {
         fresh(); run_with(bad, nil, 200, 5); d = doc();
-        assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] length] && [d[@"installed"] isEqual:@""] && !fetches);
+        assert([d[@"status"] isEqual:@"incomparable"] && [d[@"note"] isEqual:zip] && [d[@"installed"] isEqual:@""] && !fetches);
     }
-    fresh(); run_with(nil, nil, 200, 5); assert([doc()[@"status"] isEqual:@"unknown"] && !fetches);
+    fresh(); run_with(nil, nil, 200, 5); assert([doc()[@"status"] isEqual:@"incomparable"] && [doc()[@"note"] isEqual:zip] && !fetches);
     /* The short commit a built or updated app records (build_app.py), behind and latest. */
     for (NSNumber *ahead in @[@8, @0]) {
         fresh();
@@ -117,14 +123,49 @@ static void statuses(void) {
 
 static void failures(void) {
     /* Network failure: unknown with no document, the document untouched with one. */
+    NSString *unreachable = zh ? @"连不上 GitHub" : @"Could not reach GitHub", *limited = zh ? @"GitHub 暂时限制了查询，下次再试" : @"GitHub is limiting queries for now; try again later";
     fresh(); run_with((NSString *)BASE, nil, 0, 5); NSDictionary *d = doc();
-    assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] length]);
+    assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] isEqual:unreachable]);
+    /* GitHub saying no is not being out of reach, also when it says so past a good first page. */
+    for (NSNumber *code in @[@403, @429]) {
+        fresh(); run_with((NSString *)BASE, @{@"message": @"API rate limit exceeded"}, code.integerValue, 5); d = doc();
+        assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] isEqual:limited]);
+        fresh();
+        mng_summary_run(folder, @"totk", (NSString *)BASE, @"/A.app", 1000, ^NSDictionary *(NSString *query, NSInteger *status) {
+            BOOL paged = [query containsString:@"&page="];
+            *status = paged ? code.integerValue : 200;
+            return paged ? nil : compare(@"ahead", 627, @[commit((NSString *)HEAD, @"oldest", 1)]);
+        }, @[bin], 5);
+        assert([doc()[@"status"] isEqual:@"unknown"] && [doc()[@"note"] isEqual:limited]);
+    }
+    /* What it knew about this version stays then too. */
+    fresh(); run_behind(); NSData *known = [NSData dataWithContentsOfFile:in_folder(@"summary.json")];
+    run_with((NSString *)BASE, @{@"message": @"API rate limit exceeded"}, 403, 5); assert([known isEqual:[NSData dataWithContentsOfFile:in_folder(@"summary.json")]]);
     fresh(); run_behind(); NSData *before = [NSData dataWithContentsOfFile:in_folder(@"summary.json")];
     run_with((NSString *)BASE, nil, 0, 5); assert([before isEqual:[NSData dataWithContentsOfFile:in_folder(@"summary.json")]]);
     run_with((NSString *)BASE, nil, 500, 5); assert([before isEqual:[NSData dataWithContentsOfFile:in_folder(@"summary.json")]]);
+    /* A document that only says a query failed knows nothing about this version: the newest failure replaces it, its time too, either way round and AI on or off. */
+    for (NSNumber *on in @[@NO, @YES]) {
+        fresh(); ai(on.boolValue);
+        failed_at(0, 5000); d = doc(); assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] isEqual:unreachable] && [d[@"generated_at"] isEqual:@5000.0]);
+        failed_at(403, 6000); d = doc(); assert([d[@"status"] isEqual:@"unknown"] && [d[@"note"] isEqual:limited] && [d[@"generated_at"] isEqual:@6000.0]);
+        failed_at(0, 7000); d = doc(); assert([d[@"note"] isEqual:unreachable] && [d[@"generated_at"] isEqual:@7000.0]);
+        failed_at(429, 8000); d = doc(); assert([d[@"note"] isEqual:limited] && [d[@"generated_at"] isEqual:@8000.0] && [d[@"key"] hasSuffix:on.boolValue ? @"|on" : @"|off"]);
+    }
+    /* So does the note of an earlier failure on a document that knows more; that stays, and its time, as what it knows is that old. A note about anything else stays too. */
+    fresh(); run_behind(); ai(YES);
+    failed_at(0, 2000); assert([doc()[@"note"] isEqual:unreachable]);
+    failed_at(403, 3000); d = doc();
+    assert([d[@"note"] isEqual:limited] && [d[@"status"] isEqual:@"behind"] && [d[@"points"] count] == 5 && [d[@"generated_at"] isEqual:@1000.0]);
+    failed_at(0, 4000); assert([doc()[@"note"] isEqual:unreachable]);
+    ai(NO); failed_at(429, 5000); assert([doc()[@"note"] isEqual:limited]);
+    fresh(); ai(YES); fake(@"claude", @"exit 1"); run_behind(); titles_logged_out();
+    NSData *other = [NSData dataWithContentsOfFile:in_folder(@"summary.json")];
+    failed_at(403, 2000); assert([other isEqual:[NSData dataWithContentsOfFile:in_folder(@"summary.json")]]);
+    fresh(); ai(NO); run_behind();
     /* With the AI on, a kept document whose run can never answer says so: the page would go on saying the AI is at work. */
     ai(YES); run_with((NSString *)BASE, nil, 0, 5); d = doc();
-    assert([d[@"note"] isEqual:(zh ? @"连不上 GitHub" : @"Could not reach GitHub")] && [d[@"points"] count] == 5 && [d[@"status"] isEqual:@"behind"] && [d[@"login"] isEqual:@NO]);
+    assert([d[@"note"] isEqual:unreachable] && [d[@"points"] count] == 5 && [d[@"status"] isEqual:@"behind"] && [d[@"login"] isEqual:@NO]);
     NSData *noted = [NSData dataWithContentsOfFile:in_folder(@"summary.json")];
     run_with((NSString *)BASE, nil, 0, 5); assert([noted isEqual:[NSData dataWithContentsOfFile:in_folder(@"summary.json")]]);
     ai(NO); run_behind(); before = [NSData dataWithContentsOfFile:in_folder(@"summary.json")];
@@ -265,8 +306,12 @@ static void garbage(void) {
         @"{\"verdict\":\"update\",\"reason\":\"\",\"points\":[\"p\"]}", @"{\"verdict\":\"update\",\"reason\":\" \\u0001 \",\"points\":[\"p\"]}",
         @"{\"verdict\":\"update\",\"reason\":3,\"points\":[\"p\"]}", @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[]}",
         @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":\"p\"}", @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"\"]}",
-        @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[1]}", @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"1\",\"2\",\"3\",\"4\",\"5\",\"6\"]}",
-        @"{not json} {\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"p\"]}"];
+        @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[1]}",
+        @"{not json} {\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"p\"]}",
+        /* A link, wherever it is, also where cleaning would make one or a cap would cut it off. */
+        @"{\"verdict\":\"update\",\"reason\":\"see https://example.com/x\",\"points\":[\"p\"]}", @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"p\",\"ftp://x\"]}",
+        @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"a:\\u0007//b\"]}", @"{\"verdict\":\"update\",\"reason\":\"r\",\"points\":[\"1\",\"2\",\"3\",\"4\",\"5\",\"see a://b\"]}",
+        [NSString stringWithFormat:@"{\"verdict\":\"update\",\"reason\":\"%@ a://b\",\"points\":[\"p\"]}", long300]];
     for (NSString *answer in bad) {
         fresh(); ai(YES); NSString *file = [marks stringByAppendingPathComponent:@"answer"];
         assert([answer writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil]);
@@ -278,6 +323,11 @@ static void garbage(void) {
     assert([capped writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil]);
     fake(@"claude", [NSString stringWithFormat:@"/bin/cat '%@'", file]); run_behind();
     assert([doc()[@"reason"] length] == 200 && [doc()[@"points"] isEqual:(@[@"abc"])]);
+    /* More than five: the first five. */
+    fresh(); ai(YES); file = [marks stringByAppendingPathComponent:@"answer"];
+    assert([@"{\"verdict\":\"wait\",\"reason\":\"r\",\"points\":[\"1\",\"2\",\"3\",\"4\",\"5\",\"6\",\"7\"]}" writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil]);
+    fake(@"claude", [NSString stringWithFormat:@"/bin/cat '%@'", file]); run_behind();
+    assert([doc()[@"source"] isEqual:@"model"] && [doc()[@"points"] isEqual:(@[@"1", @"2", @"3", @"4", @"5"])]);
 }
 
 static void hostile(void) {
@@ -399,43 +449,180 @@ static void ai_login(void) {
     assert([doc()[@"source"] isEqual:@"model"] && [doc()[@"login"] isEqual:@NO] && [doc()[@"note"] isEqual:@""]);
 }
 
-/* The detached start: this program started as the launcher starts itself, its report written by the --update-summary below. */
-static void detached_child(void) {
-    usleep(300000);   /* the starter has long gone on */
-    struct stat null, s; assert(!stat("/dev/null", &null));
-    int stdio = 1; for (int fd = 0; fd < 3; fd++) stdio = stdio && !fstat(fd, &s) && s.st_rdev == null.st_rdev;
-    int open_fds = 0; for (int fd = 3; fd < 1024; fd++) if (fcntl(fd, F_GETFD) != -1) open_fds++;
-    NSString *report = [NSString stringWithFormat:@"ppid=%d sid=%d stdio=%d fds=%d", getppid(), getsid(0), stdio, open_fds];
-    [report writeToFile:@(getenv("DETACH_REPORT")) atomically:YES encoding:NSUTF8StringEncoding error:nil];
+/* n commits, oldest first, every committer date this one, the author's another: compare goes by the committer. */
+static NSDictionary *dated(int i, NSString *date, int parents) {
+    NSMutableDictionary *one = [commit([NSString stringWithFormat:@"%040d", i + 1], [NSString stringWithFormat:@"title %d", i], parents) mutableCopy];
+    one[@"commit"] = @{@"message": [NSString stringWithFormat:@"title %d", i], @"committer": @{@"date": date}, @"author": @{@"date": @"2001-01-01T00:00:00Z"}};
+    return one;
 }
-static void detached(const char *self) {
+static NSArray *dated_list(int from, int count, NSString *date) {
+    NSMutableArray *list = [NSMutableArray array];
+    for (int i = from; i < from + count; i++) [list addObject:dated(i, date, 1)];
+    return list;
+}
+static NSString *read_all(NSUInteger read) {
+    return zh ? [NSString stringWithFormat:@"由 claude 总结 · 读了这段全部 %lu 个提交（不算合并），较长的正文只读了开头", (unsigned long)read]
+              : [NSString stringWithFormat:@"Summarized by claude · read %@ in this range (not counting merges), only the start of longer messages", read == 1 ? @"the 1 commit" : [NSString stringWithFormat:@"all %lu commits", (unsigned long)read]];
+}
+static NSString *read_newest(NSUInteger read, NSString *since, NSInteger total) {
+    if (zh) return [NSString stringWithFormat:@"由 claude 总结 · 只读了最新 %lu 个提交%@，较长的正文只读了开头；上游这段共 %ld 个提交（含合并），更早的没读", (unsigned long)read, since ? [NSString stringWithFormat:@"（%@ 之后）", since] : @"", (long)total];
+    return [NSString stringWithFormat:@"Summarized by claude · read only the newest %lu %@%@, only the start of longer messages; upstream has %ld commits in this range (with merges), the earlier ones were not read",
+            (unsigned long)read, read == 1 ? @"commit" : @"commits", since ? [NSString stringWithFormat:@" (since %@)", since] : @"", (long)total];
+}
+static void reach_is(NSString *text) {
+    if ([doc()[@"reach"] isEqual:text]) return;
+    fprintf(stderr, "reach %s, expected %s\n", [doc()[@"reach"] description].UTF8String, text.UTF8String); abort();
+}
+static void reach(void) {
+    /* All came back, at most 60 without merges: the number read, in that unit. */
+    fresh(); ai(YES); fake(@"claude", GOOD); run_behind(); reach_is(read_all(7));
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"ahead", 1, @[commit((NSString *)HEAD, @"one", 1)]), 200, 5); reach_is(read_all(1));
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"ahead", 60, dated_list(0, 60, @"2026-10-29T12:00:00Z")), 200, 5); reach_is(read_all(60));
+    /* All came back, more than 60: only the sent ones date it, and the oldest of them, not the first. */
+    NSMutableArray *list = [dated_list(1, 60, @"2026-10-20T01:00:00Z") mutableCopy];
+    [list insertObject:dated(0, @"2026-09-01T01:00:00Z", 1) atIndex:0]; [list replaceObjectAtIndex:30 withObject:dated(30, @"2026-10-05T23:00:00Z", 1)];
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"ahead", 61, list), 200, 5); reach_is(read_newest(60, @"10-05", 61));
+    /* Merges count in the total only. */
+    list = [dated_list(2, 3, @"2026-10-29T12:00:00Z") mutableCopy]; [list addObject:dated(9, @"2026-10-29T12:00:00Z", 2)];
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"ahead", 4, list), 200, 5); reach_is(read_all(3));
+    /* 150 behind: two pages, all of it. */
+    fresh(); ai(YES); fake(@"claude", GOOD);
+    mng_summary_run(folder, @"totk", (NSString *)BASE, @"/A.app", 1000, ^NSDictionary *(NSString *query, NSInteger *status) {
+        *status = 200;
+        return compare(@"ahead", 150, [query hasSuffix:@"&page=2"] ? dated_list(100, 50, @"2026-10-29T12:00:00Z") : dated_list(0, 100, @"2026-10-28T12:00:00Z"));
+    }, @[bin], 5);
+    reach_is(read_newest(60, @"10-28", 150));   /* 50 of the newest page, 10 of the one before */
+    /* 627 behind: the last two pages, 127 commits, with merges among them. What the first pages hold is not known. */
+    fresh(); ai(YES); fake(@"claude", GOOD);
+    mng_summary_run(folder, @"totk", (NSString *)BASE, @"/A.app", 1000, ^NSDictionary *(NSString *query, NSInteger *status) {
+        *status = 200;
+        NSArray *page = [query hasSuffix:@"&page=7"] ? dated_list(500, 27, @"2026-10-30T12:00:00Z") : [query hasSuffix:@"&page=6"] ? dated_list(400, 100, @"2026-10-29T12:00:00Z") : dated_list(0, 100, @"2026-10-01T12:00:00Z");
+        return compare(@"ahead", 627, page);
+    }, @[bin], 5);
+    reach_is(read_newest(60, @"10-29", 627));
+    /* Fewer than 60 among those fetched, with more upstream: it says the number sent. */
+    fresh(); ai(YES); fake(@"claude", GOOD);
+    mng_summary_run(folder, @"totk", (NSString *)BASE, @"/A.app", 1000, ^NSDictionary *(NSString *query, NSInteger *status) {
+        *status = 200;
+        return compare(@"ahead", 201, @[dated([query hasSuffix:@"&page=3"] ? 1 : 2, @"2026-10-29T12:00:00Z", 1)]);
+    }, @[bin], 5);
+    reach_is(read_newest(2, @"10-29", 201));
+    /* No date among those sent: it names none. */
+    list = [NSMutableArray array];
+    for (int i = 0; i < 61; i++) [list addObject:@{@"sha": [NSString stringWithFormat:@"%040d", i], @"parents": @[], @"commit": @{@"message": @"title"}}];
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"ahead", 61, list), 200, 5); reach_is(read_newest(60, nil, 61));
+    /* The one that answered, by name; not one that failed before it. */
+    fresh(); ai(YES); fake(@"claude", @"exit 1"); fake(@"codex", GOOD); run_behind();
+    assert([doc()[@"reach"] hasPrefix:zh ? @"由 codex 总结 · " : @"Summarized by codex · "]);
+    fresh(); ai(YES); fake(@"mine", GOOD);
+    assert([[[bin stringByAppendingPathComponent:@"mine"] stringByAppendingString:@" x"] writeToFile:in_folder(@"ai-command") atomically:NO encoding:NSUTF8StringEncoding error:nil]);
+    run_behind(); assert([doc()[@"reach"] hasPrefix:zh ? @"由 mine 总结 · " : @"Summarized by mine · "]);
+    /* No answer, nothing claimed. */
+    fresh(); ai(YES); fake(@"claude", @"echo nonsense"); run_behind(); titles_with_note(); reach_is(@"");
+    fresh(); ai(YES); fake(@"claude", GOOD); run_with((NSString *)BASE, compare(@"identical", 0, @[]), 200, 5); reach_is(@"");
+    /* The prompt says nothing of it. */
+    fresh(); ai(YES); fake(@"claude", GOOD); run_behind(); assert(![mark(@"prompt") containsString:@"claude"]);
+}
+
+static void edit_doc(void (^change)(NSMutableDictionary *)) {
+    NSMutableDictionary *d = [doc() mutableCopy]; change(d);
+    assert([[NSJSONSerialization dataWithJSONObject:d options:0 error:nil] writeToFile:in_folder(@"summary.json") atomically:YES]);
+}
+/* The last answer stays, labelled by the page, while a new one is asked and after a failed one. */
+static void titles_not_answer(void) {
+    NSDictionary *d = doc();
+    assert([d[@"verdict"] isEqual:@""] && ![d[@"source"] isEqual:@"carried"] && !d[@"carried_from"] && [d[@"reach"] isEqual:@""]);
+}
+static void carry_good(NSInteger total, NSInteger from) {
+    NSDictionary *d = doc();
+    assert([d[@"source"] isEqual:@"carried"] && [d[@"verdict"] isEqual:@"wait"] && [d[@"reason"] isEqual:@"small {fix}"] && [d[@"points"] isEqual:(@[@"one", @"two"])]);
+    assert([d[@"total"] isEqual:@(total)] && [d[@"carried_from"] isEqual:@(from)] && [d[@"status"] isEqual:@"behind"] && [d[@"copy"] length] && [d[@"head"] isEqual:@"999999999999"]);
+    assert([d[@"reach"] hasSuffix:zh ? @"较长的正文只读了开头" : @"only the start of longer messages"]);
+}
+static void carry(void) {
+    NSMutableArray *later = [some_commits() mutableCopy]; [later addObject:commit(@"9999999999999999999999999999999999999999", @"newer", 1)];
+    NSString *other = @"echo '{\"verdict\":\"update\",\"reason\":\"new\",\"points\":[\"three\"]}'";
+    void (^answered)(void) = ^{ fresh(); ai(YES); fake(@"claude", GOOD); run_behind(); assert([doc()[@"source"] isEqual:@"model"] && !doc()[@"carried_from"] && [doc()[@"total"] isEqual:@8]); };
+    /* While it is asked: the old answer, and what is new about it. Not "model": a run that dies here must not look answered. */
+    answered();
+    fake(@"claude", [NSString stringWithFormat:@"/bin/cp '%@' '%@/during'\n%@", in_folder(@"summary.json"), marks, other]);
+    run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5);
+    NSDictionary *during = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[marks stringByAppendingPathComponent:@"during"]] options:0 error:nil];
+    assert([during[@"source"] isEqual:@"asking"] && [during[@"verdict"] isEqual:@"wait"] && [during[@"points"] isEqual:(@[@"one", @"two"])] && [during[@"reach"] length]);
+    assert([during[@"total"] isEqual:@11] && [during[@"carried_from"] isEqual:@8] && [during[@"head"] isEqual:@"999999999999"] && [during[@"note"] isEqual:@""] && [during[@"login"] isEqual:@NO]);
+    /* The new answer replaces it, whole. */
+    NSDictionary *d = doc();
+    assert([d[@"source"] isEqual:@"model"] && [d[@"verdict"] isEqual:@"update"] && [d[@"points"] isEqual:(@[@"three"])] && !d[@"carried_from"] && [d[@"note"] isEqual:@""] && [d[@"total"] isEqual:@11]);
+    /* A failed one keeps it, and the count goes on from that answer, not from the last failure. */
+    answered();
+    fake(@"claude", @"echo nonsense"); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5); carry_good(11, 8); assert([doc()[@"note"] isEqual:@""]);
+    run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5); carry_good(14, 8);
+    /* Asked again under the same key: it was not answered. */
+    [NSFileManager.defaultManager removeItemAtPath:[marks stringByAppendingPathComponent:@"claude"] error:nil];
+    run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5); assert(ran(@"claude")); carry_good(14, 8);
+    /* A link is no answer, and keeps it too. */
+    fake(@"claude", @"echo '{\"verdict\":\"update\",\"reason\":\"http://x\",\"points\":[\"p\"]}'"); run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5); carry_good(14, 8);
+    /* Logged out, and no command at all: kept, with the page's note and the login button as ever. */
+    fake(@"claude", @"exit 1"); run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5); carry_good(14, 8);
+    assert([doc()[@"note"] isEqual:(zh ? @"AI 还没登录，或这次没有回答" : @"The AI is not logged in, or did not answer this time")] && [doc()[@"login"] isEqual:@YES]);
+    [NSFileManager.defaultManager removeItemAtPath:[bin stringByAppendingPathComponent:@"claude"] error:nil];
+    run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5); carry_good(14, 8); assert([doc()[@"login"] isEqual:@NO] && [doc()[@"note"] hasPrefix:zh ? @"没有找到" : @"No AI command"]);
+    /* Only merges where it looked: nothing to ask, kept. */
+    run_with((NSString *)BASE, compare(@"ahead", 14, @[commit(@"9999999999999999999999999999999999999999", @"Merge", 2)]), 200, 5); carry_good(14, 8);
+    /* An answer ends it. */
+    fake(@"claude", other); run_with((NSString *)BASE, compare(@"ahead", 14, later), 200, 5);
+    assert([doc()[@"source"] isEqual:@"model"] && !doc()[@"carried_from"] && [doc()[@"verdict"] isEqual:@"update"]);
+    /* A run that died while asking: the next one that cannot reach GitHub ends the label, as nothing is asked any more. */
+    answered();
+    fake(@"claude", @"exit 1"); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5); edit_doc(^(NSMutableDictionary *o) { o[@"source"] = @"asking"; o[@"note"] = @""; o[@"login"] = @NO; });
+    run_with((NSString *)BASE, nil, 0, 5); carry_good(11, 8); assert([doc()[@"note"] isEqual:(zh ? @"连不上 GitHub" : @"Could not reach GitHub")]);
+    run_with((NSString *)BASE, @{@"message": @"limit"}, 403, 5); carry_good(11, 8); assert([doc()[@"note"] isEqual:(zh ? @"GitHub 暂时限制了查询，下次再试" : @"GitHub is limiting queries for now; try again later")]);
+    edit_doc(^(NSMutableDictionary *o) { o[@"source"] = @"asking"; o[@"note"] = @""; });
+    run_with((NSString *)BASE, @{@"message": @"limit"}, 429, 5); carry_good(11, 8); assert([doc()[@"note"] isEqual:(zh ? @"GitHub 暂时限制了查询，下次再试" : @"GitHub is limiting queries for now; try again later")]);
+    /* ...and with GitHub back it asks. */
+    edit_doc(^(NSMutableDictionary *o) { o[@"source"] = @"asking"; });
+    fake(@"claude", other); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5); assert([doc()[@"source"] isEqual:@"model"]);
+    /* Only for the same installed commit, the same string, not one that starts alike. */
+    answered(); fake(@"claude", @"echo nonsense");
+    mng_summary_run(folder, @"totk", @"cccccccccccccccccccccccccccccccccccccccc", @"/A.app", 1000, ^NSDictionary *(NSString *q, NSInteger *status) { (void)q; *status = 200; return compare(@"ahead", 11, later); }, @[bin], 5);
+    titles_not_answer(); assert([doc()[@"points"] count] == 5 && [doc()[@"note"] length]);
+    answered(); fake(@"claude", @"echo nonsense");
+    mng_summary_run(folder, @"totk", [BASE substringToIndex:7], @"/A.app", 1000, ^NSDictionary *(NSString *q, NSInteger *status) { (void)q; *status = 200; return compare(@"ahead", 11, later); }, @[bin], 5);
+    titles_not_answer();
+    /* AI off: it has no business showing; up to date: nothing to advise. */
+    answered(); ai(NO); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5); titles_not_answer();
+    answered(); run_with((NSString *)BASE, compare(@"identical", 0, @[]), 200, 5); assert([doc()[@"status"] isEqual:@"latest"] && [doc()[@"verdict"] isEqual:@"skip"] && [doc()[@"source"] isEqual:@"fallback"] && !doc()[@"carried_from"] && [doc()[@"reach"] isEqual:@""]);
+    /* An answer of the writer before this one, with no reach: kept, claiming none. */
+    answered(); edit_doc(^(NSMutableDictionary *o) { [o removeObjectForKey:@"reach"]; });
+    fake(@"claude", @"echo nonsense"); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5);
+    assert([doc()[@"source"] isEqual:@"carried"] && [doc()[@"reach"] isEqual:@""] && [doc()[@"carried_from"] isEqual:@8]);
+    /* What is not an answer is not carried: an odd document, and titles. */
+    for (NSDictionary *odd in @[@{@"verdict": @"maybe"}, @{@"verdict": @""}, @{@"reason": @""}, @{@"reason": @3}, @{@"points": @"one"}, @{@"points": @[@1]}, @{@"points": @[]}, @{@"total": @"8"}, @{@"source": @"fallback"}, @{@"source": @"carried"}]) {
+        answered(); edit_doc(^(NSMutableDictionary *o) { [o addEntriesFromDictionary:odd]; });
+        fake(@"claude", @"echo nonsense"); run_with((NSString *)BASE, compare(@"ahead", 11, later), 200, 5); titles_not_answer();
+    }
+}
+
+/* A launch asks nothing and starts nothing: it only tells the game where the launcher is, for the page. */
+static void launch_asks_nothing(const char *self) {
     NSString *report = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
-    setenv("DETACH_REPORT", report.fileSystemRepresentation, 1);
-    int leak = open("/dev/null", O_RDONLY); assert(leak >= 3);   /* a descriptor without close-on-exec */
-    setenv("TOTK_UPDATE_SUMMARY", "0", 1); mng_summary_start(self); usleep(500000);
-    assert(![NSFileManager.defaultManager fileExistsAtPath:report] && waitpid(-1, NULL, WNOHANG) == -1);
+    setenv("LAUNCH_REPORT", report.fileSystemRepresentation, 1);
+    setenv("TOTK_UPDATE_SUMMARY", "0", 1); unsetenv("TOTK_UPDATE_LAUNCHER"); mng_summary_start(self);
     assert(!getenv("TOTK_UPDATE_LAUNCHER"));   /* so the page starts nothing and offers no login */
-    unsetenv("TOTK_UPDATE_SUMMARY");
-    double start = NSProcessInfo.processInfo.systemUptime;
-    mng_summary_start(self);
-    assert(NSProcessInfo.processInfo.systemUptime - start < 0.2);
+    unsetenv("TOTK_UPDATE_SUMMARY"); mng_summary_start(self);
     assert(!strcmp(getenv("TOTK_UPDATE_LAUNCHER"), self));
-    assert(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);   /* no zombie, no child left */
-    NSString *text = nil;
-    for (int i = 0; i < 100 && !text; i++) { usleep(50000); text = [NSString stringWithContentsOfFile:report encoding:NSUTF8StringEncoding error:nil]; }
-    assert(text); [NSFileManager.defaultManager removeItemAtPath:report error:nil]; close(leak);
-    int ppid, sid, stdio, fds;
-    assert(sscanf(text.UTF8String, "ppid=%d sid=%d stdio=%d fds=%d", &ppid, &sid, &stdio, &fds) == 4);
-    if (ppid != 1 || sid == getsid(0) || !stdio || fds) { fprintf(stderr, "detached: %s\n", text.UTF8String); abort(); }
+    setenv("TOTK_UPDATE_SUMMARY", "1", 1); unsetenv("TOTK_UPDATE_LAUNCHER"); mng_summary_start(self); assert(getenv("TOTK_UPDATE_LAUNCHER"));
+    usleep(300000);
+    assert(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD && ![NSFileManager.defaultManager fileExistsAtPath:report]);
 }
 
 int main(int argc, char **argv) { @autoreleasepool {
-    if (argc > 1 && !strcmp(argv[1], "--update-summary")) { detached_child(); return 0; }
+    if (argc > 1 && !strcmp(argv[1], "--update-summary")) { assert([@"started" writeToFile:@(getenv("LAUNCH_REPORT")) atomically:YES encoding:NSUTF8StringEncoding error:nil]); return 0; }
     assert(argc == 2);
     setenv("TOTK_UI_LANG", argv[1], 1); zh = !strcmp(argv[1], "zh");
     NSString *top = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
     folder = [top stringByAppendingPathComponent:@"update"]; bin = [top stringByAppendingPathComponent:@"bin"]; marks = [top stringByAppendingPathComponent:@"marks"];
-    statuses(); failures(); long_comparison(); commands(); garbage(); hostile(); key_and_lock(); ai_login(); detached(argv[0]);
+    statuses(); failures(); long_comparison(); commands(); garbage(); hostile(); key_and_lock(); reach(); carry(); ai_login(); launch_asks_nothing(argv[0]);
     [NSFileManager.defaultManager removeItemAtPath:top error:nil];
     puts("pass: update summary");
     return 0;

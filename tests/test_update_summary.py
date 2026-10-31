@@ -27,6 +27,13 @@ class UpdateSummary(unittest.TestCase):
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                     self.assertIn('pass: update summary', run.stdout)
 
+    def test_launch_starts_nothing(self):
+        summary = (ROOT / 'games/totk/app/update_summary.h').read_text(encoding='utf-8')
+        self.assertNotIn('fork(', summary)
+        start = summary.split('static inline void mng_summary_start(const char *executable) {')[1].split('\n}')[0]
+        self.assertNotIn('posix_spawn', start)
+        self.assertNotIn('execv', start)
+
     def test_launcher_modes(self):
         launcher = (ROOT / 'games/totk/app/launcher.m').read_text(encoding='utf-8')
         run = launcher.split('static void update_summary_run(void) {')[1]

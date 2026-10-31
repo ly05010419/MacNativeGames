@@ -302,8 +302,9 @@ static void status_is(NSString *text) {
     if ([update_page().status.stringValue isEqualToString:text]) return;
     fprintf(stderr, "status %s, expected %s\n", update_page().status.stringValue.UTF8String, text.UTF8String); abort();
 }
+/* No launcher here (TOTK_UPDATE_SUMMARY=0): nothing is on its way, and the AI could not run either. */
 static void update_empty(void) {
-    assert([update_text() isEqualToString:@"还没有更新信息，下次启动游戏时会查一次\n开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。"] && update_page().commandButton.hidden && !update_page().aiSwitch.hidden);
+    assert([update_text() isEqualToString:@"更新检查已关闭"] && update_page().commandButton.hidden && !update_page().aiSwitch.hidden);
     status_is(@""); assert([update_page().time.stringValue isEqualToString:@""]);
     assert(settingsPanel.controllerTargets.count == 1 && settingsPanel.controllerTargets[0] == update_page().aiSwitch);
 }
@@ -327,6 +328,12 @@ static void update_wait_spawned(NSUInteger count) {
     NSArray<NSString *> *lines = [text ?: @"" componentsSeparatedByString:@"\n"];
     if (lines.count != (text ? count + 1 : 1)) { fprintf(stderr, "started %s\n", text.UTF8String); abort(); }
     for (NSString *line in lines) assert(!line.length || [line isEqualToString:@"session=1 stdio=1 fds=0 controls=1"]);
+}
+static void update_no_more_spawned(NSUInteger count) {
+    usleep(450000);   /* a child reports after 200 ms */
+    NSString *text = [NSString stringWithContentsOfFile:@(getenv("UPDATE_PROBE_REPORT")) encoding:NSUTF8StringEncoding error:nil];
+    NSUInteger lines = text ? [text componentsSeparatedByString:@"\n"].count - 1 : 0;
+    if (lines != count) { fprintf(stderr, "started %lu, expected %lu\n", (unsigned long)lines, (unsigned long)count); abort(); }
 }
 static void update_redraw(void) { update_page().shown = NO; [settingsPanel refreshUpdatePage]; [settingsPanel updateTargets]; }
 static void update_probe(const char *self) {
@@ -361,8 +368,17 @@ static void update_probe(const char *self) {
     for (NSButton *b in settingsPanel.resetButtons) assert(b.hidden);
     assert(!update_page().text.selectable && update_page().text.refusesFirstResponder && update_page().commandButton.refusesFirstResponder && update_page().aiSwitch.refusesFirstResponder);
     assert([update_page().aiSwitch.title isEqualToString:@"Turn on the AI summary"] && [update_page().commandButton.title isEqualToString:@"Copy the update command"]);
-    update_summary(@{}); status_is(@"Update available"); says(@"Advice: worth updating"); says(@"42 commits upstream since");
+    update_summary(@{}); status_is(@"Update available"); says(@"Advice: worth updating"); says(@"Your version 2026-10-29 · 42 commits upstream since (with merges)");
+    assert([update_page().time.stringValue hasPrefix:@"Last checked "]);
+    update_summary(@{@"total": @1}); says(@"1 commit upstream since (with merges)");
+    update_summary(@{@"source": @"asking", @"carried_from": @40}); says(@"This is the earlier advice; 2 commits since (with merges)");
+    update_summary(@{@"source": @"asking", @"carried_from": @41}); says(@"This is the earlier advice; 1 commit since (with merges)");
+    update_summary(@{@"source": @"carried", @"carried_from": @40, @"reach": @"Summarized by claude · read all 13 commits"});
+    says(@"No new AI summary this time; the advice above is the earlier one; 2 commits since (with merges) were not read"); says(@"\nAt the time: Summarized by claude · read all 13 commits");
+    update_summary(@{@"source": @"carried", @"carried_from": @41}); says(@"the earlier one; 1 commit since (with merges) was not read");
+    update_summary(@{@"source": @"carried", @"carried_from": @42, @"reach": @"Summarized by claude · read all 13 commits"}); says(@"the earlier one\nSummarized by claude"); lacks(@"At the time");
     update_summary(@{@"status": @"latest", @"copy": @""}); status_is(@"Up to date");
+    update_summary(@{@"status": @"incomparable", @"verdict": @"", @"reason": @"", @"points": @[], @"copy": @"", @"note": @"x"}); status_is(@"Cannot compare with upstream");
     update_summary(@{@"status": @"unknown", @"copy": @""}); status_is(@"Updates cannot be checked right now");
     says(@"It uses the claude, codex or qodercli you are logged in to, on your own account.");
     /* All three buttons fit, in the longer language. */
@@ -373,9 +389,12 @@ static void update_probe(const char *self) {
     assert([update_page().loginButton.title isEqualToString:@"Log in to the AI"] && [update_page().aiSwitch.title isEqualToString:@"Turn off the AI summary"]);
     assert(NSMinX(update_page().commandButton.frame) >= 0 && NSMaxX(update_page().commandButton.frame) <= NSMinX(update_page().loginButton.frame) && NSMaxX(update_page().loginButton.frame) <= NSMinX(update_page().aiSwitch.frame));
     update_summary(@{@"verdict": @"", @"reason": @"", @"source": @"fallback", @"points": @[@"title"]}); says(@"The AI is summarizing…");
+    update_summary(@{@"source": @"asking", @"carried_from": @40}); says(@"This is the earlier advice; 2 commits since (with merges); checking again…");
+    update_summary(@{@"source": @"asking"}); says(@"This is the earlier advice; checking again…");
+    update_bytes(nil); assert([update_text() isEqualToString:@"Checking for updates…"]);
     unsetenv("TOTK_UPDATE_LAUNCHER");
     assert([NSFileManager.defaultManager removeItemAtPath:[updateDir stringByAppendingPathComponent:@"ai"] error:nil]);
-    update_bytes(nil);
+    update_bytes(nil); assert([update_text() isEqualToString:@"Update checks are off"]);
 
     /* The rest in Chinese. */
     settings_show(0); setenv("TOTK_UI_LANG", "zh", 1); settings_show(1); g_settings_controller_active = YES;
@@ -396,7 +415,7 @@ static void update_probe(const char *self) {
         [@"[1]" dataUsingEncoding:NSUTF8StringEncoding], [NSData dataWithBytes:"\xff\xfe" length:2]];
     for (NSData *bytes in bad) { update_bytes(bytes); update_empty(); }
     for (NSDictionary *fields in @[@{@"version": @2}, @{@"version": @YES}, @{@"version": @"1"}, @{@"total": @"7"}, @{@"total": @YES}, @{@"generated_at": NSNull.null}, @{@"points": @"一"},
-                                   @{@"points": @[@1]}, @{@"status": @"other"}, @{@"status": @1}, @{@"verdict": @"maybe"}, @{@"reason": @3}, @{@"copy": @[]}, @{@"key": @1}]) {
+                                   @{@"points": @[@1]}, @{@"status": @"other"}, @{@"status": @1}, @{@"verdict": @"maybe"}, @{@"reason": @3}, @{@"copy": @[]}, @{@"key": @1}, @{@"reach": @1}, @{@"carried_from": @"8"}, @{@"carried_from": @YES}]) {
         update_summary(fields); update_empty();
     }
     /* A summary.json that is a folder. */
@@ -406,18 +425,36 @@ static void update_probe(const char *self) {
 
     /* Behind with the AI's answer. The page is told by the document, whatever the file says now. */
     update_summary(@{}); status_is(@"有新版本");
-    says(@"当前版本 ab6ebe84aaaa（2026-10-29） · 上游之后 42 个提交"); says(@"建议：值得更新  修好了一个卡顿"); says(@"•  要点一"); says(@"退出游戏后，到仓库文件夹里运行");
+    says(@"建议：值得更新  修好了一个卡顿"); says(@"•  要点一"); says(@"退出游戏后，到仓库文件夹里运行");
+    /* The order: the verdict first, the version last, its commit last of all and smaller. A document without reach is an old one: no line, and it is read. */
+    assert([update_text() hasPrefix:@"建议：值得更新"] && [update_text() hasSuffix:@"\n你的版本 2026-10-29 · 上游之后 42 个提交（含合并） · ab6ebe84aaaa"]);
+    NSAttributedString *versionLine = update_page().text.attributedStringValue;
+    NSFont *versionFont = [versionLine attribute:NSFontAttributeName atIndex:versionLine.length - 20 effectiveRange:nil], *commitFont = [versionLine attribute:NSFontAttributeName atIndex:versionLine.length - 1 effectiveRange:nil];
+    assert(commitFont.pointSize < versionFont.pointSize);
+    NSString *reachText = @"由 claude 总结 · 读了这段全部 13 个提交（不算合并），较长的正文只读了开头";
+    update_summary(@{@"reach": reachText}); says(reachText);
+    NSArray<NSString *> *lines0 = [update_text() componentsSeparatedByString:@"\n"];
+    assert([lines0[0] hasPrefix:@"建议："] && [lines0[1] isEqualToString:reachText] && [lines0[2] hasPrefix:@"开启后"] && [lines0[3] hasPrefix:@"•  要点一"]);
+    update_summary(@{});
     assert(!copy.hidden && settingsPanel.controllerTargets.count == 2 && settingsPanel.controllerTargets[0] == copy && settingsPanel.controllerTargets[1] == aiButton);
     assert(CGRectIntersectsRect(copy.frame, page.bounds) && NSMaxX(copy.frame) <= NSMinX(aiButton.frame) && NSMaxX(page.status.frame) <= NSMinX(page.time.frame));
-    assert([page.time.stringValue hasPrefix:@"内容更新于 "] && page.time.stringValue.length == 17);
-    lacks(@"下次启动游戏时"); says(@"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。");   /* the document was made with it on; the file is not there */
+    assert([page.time.stringValue hasPrefix:@"上次检查 "] && page.time.stringValue.length == 16);
+    lacks(@"内容更新于"); says(@"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。");   /* the document was made with it on; the file is not there */
     update_summary(@{@"verdict": @"wait"}); says(@"建议：可以等等");
     update_summary(@{@"verdict": @"skip"}); says(@"建议：不用更新");
     /* Without AI: the titles. */
     update_summary(@{@"verdict": @"", @"reason": @"", @"key": @"a|b|off", @"source": @"fallback", @"points": @[@"标题"]}); says(@"•  标题"); lacks(@"建议："); lacks(@"AI 总结");
     /* Latest and unknown: no copy button, no hint, the note. */
     update_summary(@{@"status": @"latest", @"verdict": @"skip", @"reason": @"上游没有新的提交", @"points": @[], @"copy": @"", @"key": @"a|a|off"});
-    status_is(@"已是最新"); says(@"建议：不用更新"); lacks(@"上游之后"); assert(copy.hidden && settingsPanel.controllerTargets.count == 1);
+    status_is(@"已是最新"); says(@"建议：不用更新"); says(@"你的版本 2026-10-29 · ab6ebe84aaaa"); lacks(@"上游之后"); assert(copy.hidden && settingsPanel.controllerTargets.count == 1);
+    /* For good, the local build and the app with no commit: not called temporary, and nothing for the AI to do. No time on the second: nothing was asked. */
+    update_summary(@{@"status": @"incomparable", @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"上游没有这个提交，可能是本地构建的版本", @"copy": @"", @"installed_date": @"", @"key": @"a||off"});
+    status_is(@"无法和上游比较"); assert([update_text() isEqualToString:@"上游没有这个提交，可能是本地构建的版本\n你的版本 · ab6ebe84aaaa"] && copy.hidden && [page.time.stringValue hasPrefix:@"上次检查 "]);
+    update_summary(@{@"status": @"incomparable", @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"这个 App 没有记录它的提交。ZIP 安装要重新下载才能更新", @"copy": @"", @"installed": @"", @"installed_date": @"", @"key": @"||off"});
+    status_is(@"无法和上游比较"); assert([update_text() isEqualToString:@"这个 App 没有记录它的提交。ZIP 安装要重新下载才能更新"] && copy.hidden && [page.time.stringValue isEqualToString:@""]);
+    /* Not reachable, or GitHub limiting: that can pass. */
+    update_summary(@{@"status": @"unknown", @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"GitHub 暂时限制了查询，下次再试", @"copy": @"", @"installed_date": @"", @"key": @"a||off"});
+    status_is(@"暂时查不到更新"); says(@"GitHub 暂时限制了查询");
     update_summary(@{@"status": @"unknown", @"verdict": @"", @"reason": @"", @"points": @[], @"note": @"连不上", @"copy": @"", @"installed": @"", @"installed_date": @"", @"key": @"||off"});
     status_is(@"暂时查不到更新"); assert([update_text() isEqualToString:@"开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。\n连不上"]);
 
@@ -461,6 +498,37 @@ static void update_probe(const char *self) {
     update_summary(@{@"status": @"unknown", @"verdict": @"", @"reason": @"", @"source": @"fallback", @"copy": @""}); lacks(busy);
     update_summary(titles); says(busy); unsetenv("TOTK_UPDATE_LAUNCHER"); update_redraw(); lacks(busy); setenv("TOTK_UPDATE_LAUNCHER", self, 1); update_redraw();
 
+    /* The last answer while a new one is asked: labelled at once under the verdict, with what the document knows. */
+    NSString *checking = @"正在重新判断…";
+    NSDictionary *asking = @{@"verdict": @"wait", @"reason": @"旧的理由", @"points": @[@"旧要点"], @"source": @"asking", @"reach": reachText, @"total": @42, @"carried_from": @30, @"key": @"a|c|on"};
+    update_summary(asking); lacks(busy); says(@"•  旧要点");
+    NSArray<NSString *> *carriedLines = [update_text() componentsSeparatedByString:@"\n"];
+    assert([carriedLines[0] isEqualToString:@"建议：可以等等  旧的理由"] && [carriedLines[1] isEqualToString:@"这是之前的建议，之后又有 12 个提交（含合并）；正在重新判断…"] && [carriedLines[2] isEqualToString:[@"当时：" stringByAppendingString:reachText]]);
+    /* A count it cannot honestly make: none. */
+    NSMutableDictionary *uncounted = [asking mutableCopy]; [uncounted removeObjectForKey:@"carried_from"];
+    update_summary(uncounted); says(@"这是之前的建议；正在重新判断…");
+    uncounted[@"carried_from"] = @42; update_summary(uncounted); says(@"这是之前的建议；正在重新判断…");
+    uncounted[@"carried_from"] = @50; update_summary(uncounted); says(@"这是之前的建议；正在重新判断…");
+    /* The AI turned off, or no launcher: nobody is asking. */
+    update_summary(asking); assert([files removeItemAtPath:aiFile error:nil]); update_redraw(); says(@"这是之前的建议，之后又有 12 个提交（含合并）"); lacks(checking);
+    runtime_setting_save(UPDATE_TAB_AI, "on", "AI summary"); unsetenv("TOTK_UPDATE_LAUNCHER"); update_redraw(); lacks(checking); setenv("TOTK_UPDATE_LAUNCHER", self, 1); update_redraw(); says(checking);
+    /* A failed one: it ends, and says so; a login button with it when that is why. */
+    NSMutableDictionary *failed = [asking mutableCopy]; failed[@"source"] = @"carried";
+    update_summary(failed); lacks(checking); lacks(busy); says(@"这次没有拿到新的 AI 总结，上面是之前的建议"); says(@"建议：可以等等");
+    /* The page must not say the AI read all of a range that has grown since: how much has come since, and the reach as of then. */
+    void (^failedLines)(NSNumber *, NSNumber *, NSString *, NSString *, NSString *) = ^(NSNumber *total, NSNumber *from, NSString *reach, NSString *label, NSString *shownReach) {
+        NSMutableDictionary *one = [failed mutableCopy]; [one addEntriesFromDictionary:@{@"total": total, @"carried_from": from, @"reach": reach}];
+        update_summary(one); NSArray<NSString *> *lines = [update_text() componentsSeparatedByString:@"\n"];
+        assert([lines[1] isEqualToString:label] && [lines[2] isEqualToString:shownReach]);
+    };
+    NSString *newest = @"由 claude 总结 · 只读了最新 60 个提交（10-29 之后），较长的正文只读了开头；上游这段共 627 个提交（含合并），更早的没读";
+    failedLines(@27, @13, reachText, @"这次没有拿到新的 AI 总结，上面是之前的建议，之后又有 14 个提交（含合并）没读", [@"当时：" stringByAppendingString:reachText]);
+    failedLines(@650, @627, newest, @"这次没有拿到新的 AI 总结，上面是之前的建议，之后又有 23 个提交（含合并）没读", [@"当时：" stringByAppendingString:newest]);
+    failedLines(@27, @27, reachText, @"这次没有拿到新的 AI 总结，上面是之前的建议", reachText);   /* the same range: all true as it stands */
+    failed[@"note"] = @"AI 还没登录，或这次没有回答"; failed[@"login"] = @YES;
+    update_summary(failed); says(@"这次没有拿到新的 AI 总结"); says(@"AI 还没登录"); assert(!loginButton.hidden); lacks(checking);
+    /* The real answer: no label. */
+    update_summary(@{@"verdict": @"wait", @"reason": @"新的理由", @"points": @[@"新要点"], @"reach": reachText, @"key": @"a|c|on"}); lacks(@"之前的建议"); lacks(checking); says(@"新的理由");
     /* The login button: logged out, AI on and a launcher; else none. A login field of an old or odd document is none. */
     update_summary(loggedOut); says(@"AI 还没登录"); lacks(busy); assert(!loginButton.hidden && [loginButton.title isEqualToString:@"登录 AI"]);
     assert(settingsPanel.controllerTargets.count == 3 && settingsPanel.controllerTargets[0] == copy && settingsPanel.controllerTargets[1] == loginButton && settingsPanel.controllerTargets[2] == aiButton);
@@ -544,12 +612,65 @@ static void update_probe(const char *self) {
     settings_show(0);
 }
 
+/* The one refresh of a game run: none at launch, none for a panel on another page or a closed one, one when the page shows,
+   however it comes to show. A process each, as the mark of it stays for the run. */
+static void update_open_setup(const char *self) {
+    const char *dir = getenv("SETTINGS_TEST_DIR"); assert(dir);
+    updateDir = [@(dir) stringByAppendingPathComponent:@"update"];
+    assert([NSFileManager.defaultManager createDirectoryAtPath:updateDir withIntermediateDirectories:YES attributes:nil error:nil]);
+    setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
+    setenv("UPDATE_PROBE_REPORT", [@(dir) stringByAppendingPathComponent:@"spawned"].fileSystemRepresentation, 1);
+    setenv("TOTK_UPDATE_LAUNCHER", self, 1); setenv("TOTK_UI_LANG", "zh", 1);
+    settings_test_output_init();
+    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
+}
+static void update_turn_run_loop(void) { [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]]; }
+/* The page was the last one shown in an earlier opening. Closed, it spawns nothing, whatever reaches it. */
+static void update_open_again_probe(const char *self) {
+    update_open_setup(self);
+    g_settings_page = SETTINGS_PAGE_UPDATE; settings_panel_replace(); settingsPanel.hidden = YES;
+    assert(!settingsOpen && settingsPanel.page == SETTINGS_PAGE_UPDATE);
+    settings_refresh_all(); [settingsPanel refreshUpdatePage]; [settingsPanel selectPage:SETTINGS_PAGE_UPDATE]; [settingsPanel.timer fire]; settings_rebuild();
+    settingsPanel.hidden = NO; [settingsPanel.timer fire];   /* a panel not hidden, still not open */
+    update_no_more_spawned(0);
+    settings_show(1); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_UPDATE);
+    update_wait_spawned(1);
+    assert([update_text() isEqualToString:@"正在查询更新…\n开启后会用你已登录的 claude、codex 或 qodercli 总结，用的是你自己的账号。"]); status_is(@"");
+    /* Never again in this run: other openings, tabs, a panel made again, the tick. */
+    settings_show(0); settings_show(1); [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; [settingsPanel selectPage:SETTINGS_PAGE_UPDATE]; settings_rebuild(); [settingsPanel.timer fire];
+    update_no_more_spawned(1);
+    /* The document of the last run stays until the new one is written, and that one shows by itself. */
+    update_arrives(@{@"reason": @"旧的一份", @"generated_at": @1793000000.5});
+    NSString *oldTime = update_page().time.stringValue; says(@"旧的一份");
+    [settingsPanel.timer fire]; says(@"旧的一份"); assert([update_page().time.stringValue isEqualToString:oldTime]);
+    update_arrives(@{@"reason": @"新的一份", @"generated_at": @1793090000.5}); says(@"新的一份"); lacks(@"旧的一份"); assert(![update_page().time.stringValue isEqualToString:oldTime]);
+    settings_show(0);
+}
+/* Opened on another page, then a tab, through the panel made again that some pages need. */
+static void update_open_tab_probe(const char *self) {
+    update_open_setup(self);
+    g_settings_page = SETTINGS_PAGE_DISPLAY;
+    settings_show(1); assert(settingsPanel.page == SETTINGS_PAGE_DISPLAY);
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; update_turn_run_loop();
+    [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; update_turn_run_loop(); assert(settingsPanel.page == SETTINGS_PAGE_BINDINGS);
+    settings_show(0); settings_show(1); update_turn_run_loop();
+    update_no_more_spawned(0);
+    [settingsPanel selectPage:SETTINGS_PAGE_UPDATE]; update_turn_run_loop(); assert(settingsPanel.page == SETTINGS_PAGE_UPDATE);
+    update_wait_spawned(1);
+    [settingsPanel selectPage:SETTINGS_PAGE_BINDINGS]; update_turn_run_loop(); [settingsPanel selectPage:SETTINGS_PAGE_UPDATE]; update_turn_run_loop();
+    update_no_more_spawned(1);
+    settings_show(0);
+}
+
 int main(int argc, const char **argv) { @autoreleasepool {
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
     if (argc == 2 && !strcmp(argv[1], "--update-summary")) { update_spawned_child(); return 0; }
     if (argc == 2 && !strcmp(argv[1], "update")) { update_probe(argv[0]); puts("pass: update page"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "update-open-again")) { update_open_again_probe(argv[0]); puts("pass: update page open"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "update-open-tab")) { update_open_tab_probe(argv[0]); puts("pass: update page open"); return 0; }
     if (argc == 2) { persistence_probe(argv[1]); puts("pass: settings persistence"); return 0; }
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */

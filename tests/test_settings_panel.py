@@ -62,6 +62,12 @@ class SettingsPanel(unittest.TestCase):
                 run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: update page', run.stdout)
+                for mode in ('update-open-again', 'update-open-tab'):
+                    opened = Path(directory) / (mode + '-' + (version or 'base'))
+                    opened.mkdir()
+                    run = subprocess.run([str(executable), mode], env={**env, 'SETTINGS_TEST_DIR': str(opened)}, capture_output=True, text=True, timeout=35)
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn('pass: update page open', run.stdout)
                 for action in ('save', 'restore', 'override'):
                     current = dict(env)
                     if action == 'override':

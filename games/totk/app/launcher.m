@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/proc.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
 #include "game_version.h"
@@ -208,7 +209,7 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
     }
 }
 
-/* --update-summary: what mng_summary_start below and the settings panel's update page run, detached, for that page. */
+/* --update-summary: what the settings panel's update page runs, detached (mng_summary_start below tells it this program). */
 static void update_summary_run(void) {
     setpriority(PRIO_PROCESS, 0, 20);
     const char *controls = getenv("TOTK_CONTROLS");   // the folder the page reads
