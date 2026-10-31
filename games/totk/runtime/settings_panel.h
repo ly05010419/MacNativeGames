@@ -666,6 +666,9 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  if(!runtime_triggers_available())[rows addObject:settings_fixed(bow,settings_text("这个版本没有","Not in this version"))];
  else if(runtime_triggers_locked())[rows addObject:settings_fixed(bow,settings_on_off(runtime_triggers_choice()))];
  else [rows addObject:settings_row(bow,nil,nil,^int{return runtime_triggers_choice();},^(int v){runtime_triggers_choose(v);})];
+ NSString *autoArrow=settings_text("箭矢自动附加上次素材","Auto-attach last item to arrow");
+ if(!runtime_auto_attach_available())[rows addObject:settings_fixed(autoArrow,settings_text("这个版本没有","Not in this version"))];
+ else [rows addObject:settings_row(autoArrow,nil,nil,^int{return runtime_auto_attach_choice();},^(int v){runtime_auto_attach_choose(v);})];
  [rows addObject:settings_row(settings_text("鼠标操作（视角、按键）","Mouse (camera, buttons)"),nil,nil,
   ^int{return runtime_mouse_enabled();},^(int v){runtime_mouse_set(v);})];
  [rows addObject:settings_sensitivity_row()];

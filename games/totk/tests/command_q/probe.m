@@ -156,6 +156,12 @@ void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
 int runtime_rumble_gain_locked(void){return 0;}
 float runtime_rumble_gain(void){return 1;}
 void runtime_rumble_gain_set(float gain){(void)gain;}
+int runtime_auto_attach_available(void){return 0;}
+int runtime_auto_attach_choice(void){return 0;}
+void runtime_auto_attach_choose(int on){(void)on;}
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_gamepad_game_input(void){return 1;}
+#endif
 int runtime_triggers_available(void){return 0;}
 int runtime_triggers_locked(void){return 0;}
 int runtime_triggers_choice(void){return 0;}
