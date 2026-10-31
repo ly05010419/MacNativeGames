@@ -32,6 +32,9 @@ static int fakePadType = GAMEPAD_TYPE_AUTO, fakePadDetected = GAMEPAD_TYPE_PLAYS
 int runtime_gamepad_type_set(int type) { return fakePadType = type; }
 int runtime_gamepad_type(int *detected) { if (detected) *detected = fakePadDetected; return fakePadType; }
 int runtime_gamepad_battery_percent(void) { return -1; }
+static int fakePadBackground;
+int runtime_gamepad_background_enabled(void) { return fakePadBackground; }
+void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
@@ -265,7 +268,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 15);
+    assert(settingsPanel.allRows.count == 16);
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */
@@ -404,6 +407,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Controller type", @"Auto (PlayStation)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
     fakePadDetected = -1; shows(@"Controller type", @"Auto (no controller)");
 
+    assert(!switched(@"Controller input in background"));
+    flip(@"Controller input in background", YES); assert(fakePadBackground && switched(@"Controller input in background"));
+    flip(@"Controller input in background", NO); assert(!fakePadBackground && !switched(@"Controller input in background"));
+
     /* Rumble, its strength and gyro aiming. */
     assert(switched(@"Rumble")); flip(@"Rumble", NO); assert(!fakeFeedback[0] && !switched(@"Rumble")); flip(@"Rumble", YES); assert(fakeFeedback[0]);
     shows(@"Rumble strength", @"1× (default)");
@@ -450,7 +457,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(contribute.hidden && starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 7 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
+    assert(settingsPanel.rows.count == 8 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 

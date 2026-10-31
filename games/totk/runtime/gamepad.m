@@ -46,6 +46,9 @@ static SwitchLeftFallback rawLeft, rawRight;
 static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
 static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
 static void refresh_gamepads(void);
+#if TARGET_OS_OSX
+static _Atomic int gamepadBackground, gamepadFocused = 1;
+#endif
 
 /* Called on the main run loop by the already-open Switch HID motion stream. */
 void runtime_gamepad_switch_left(void *source, int x, int y) {
@@ -175,6 +178,51 @@ void runtime_shared_setting_save(const char *name, const char *word, const char 
 void runtime_setting_remove(const char *name) {
     char path[4096];
     if (setting_path(name, path, sizeof path)) unlink(path);
+}
+
+/* macOS normally routes controllers to the frontmost app. Opting in also lets a foreground app receive the same
+   controller, so this is a saved, default-off choice rather than an unconditional policy. Main thread only. */
+int runtime_gamepad_background_enabled(void) {
+#if TARGET_OS_OSX
+    return atomic_load(&gamepadBackground);
+#else
+    return 0;
+#endif
+}
+#if TARGET_OS_OSX
+static void gamepad_background_apply(int on) {
+    atomic_store(&gamepadBackground, !!on);
+    GCController.shouldMonitorBackgroundEvents = !!on;
+    if (!on && !atomic_load(&gamepadFocused)) runtime_gamepad_clear();
+    else refresh_gamepads();
+}
+static void load_gamepad_background(void) {
+    char path[4096], word[64] = {0}, value[16], extra;
+    int on = 0;
+    if (setting_read("controller-background.txt", word, sizeof word, path, sizeof path)) {
+        if (sscanf(word, "%15s %c", value, &extra) == 1 && (!strcmp(value, "on") || !strcmp(value, "off")))
+            on = !strcmp(value, "on");
+        else fprintf(stderr, "[totk-input] %s: expected on or off; background controller input stays off\n", path);
+    }
+    gamepad_background_apply(on);
+}
+#endif
+void runtime_gamepad_background_set(int on) {
+#if TARGET_OS_OSX
+    gamepad_background_apply(on);
+    setting_write("controller-background.txt", on ? "on" : "off", "background controller input");
+#else
+    (void)on;
+#endif
+}
+void runtime_gamepad_focus(int on) {
+#if TARGET_OS_OSX
+    atomic_store(&gamepadFocused, !!on);
+    if (!on && !runtime_gamepad_background_enabled()) runtime_gamepad_clear();
+    else refresh_gamepads();
+#else
+    (void)on;
+#endif
 }
 
 /* The settings panel's key bindings (main thread, as refresh_gamepads): the layout in force, a new one (saved in the
@@ -596,6 +644,10 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
 }
 
 static void refresh_gamepads(void) {
+#if TARGET_OS_OSX
+    /* The raw HID fallback must obey the same focus policy as GameController. Do not latch background presses. */
+    if (!atomic_load(&gamepadFocused) && !runtime_gamepad_background_enabled()) return;
+#endif
     RuntimeGamepadState next = {0};
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
@@ -825,6 +877,9 @@ void runtime_gamepad_start(void) {
     load_controller_type();
     load_settings_button();
     load_mouse_mode();
+#if TARGET_OS_OSX
+    load_gamepad_background();
+#endif
     NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
     [center addObserverForName:GCControllerDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_gamepad(notification.object); }];

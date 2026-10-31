@@ -4,6 +4,8 @@
 
 装好 App 之后怎么玩：手柄、键盘、鼠标、震动、体感和设置面板（1 键）。
 
+Mac 上可在 **设置（1 键）→ 输入 → 后台手柄输入** 开启后台控制，默认关闭。开启后，点击另一个屏幕上的浏览器时，手柄仍可操控游戏；前台其他支持手柄的应用也可能同时响应。选择立即生效，保存在 `controls.txt` 旁边的 `controller-background.txt`（`on` / `off`），重启后保留。键盘和鼠标仍只在游戏窗口获得焦点时控制游戏，切换窗口会释放其按住状态。
+
 在 Mac 上，macOS 能识别的手柄（如 DualSense、Xbox 手柄）会映射为 Switch Pro 手柄。PlayStation 和 Xbox 手柄的四个面键按位置映射，和游戏里的按键提示位置一致：右边是 A、下边是 B、上边是 X、左边是 Y（圆圈 / 叉 / 三角 / 方块；Xbox 的 B / A / Y / X）。任天堂手柄按标签映射。按 **6** 可以手动选手柄类型（Xbox、PlayStation 按位置，Switch 按标签）；类型为自动时，设置 `TOTK_FACE_BUTTONS=label` 可以让所有手柄都按标签映射。震动和体感需要手柄及 macOS 提供对应能力，并非所有手柄都有陀螺仪。macOS 不给震动能力的手柄（显示为通用 HID 手柄）仍然可以震：游戏会按手柄配置表，把震动直接写进它的 HID 设备（内置：8BitDo Ultimate 2 Wireless，固件 1.03 及以上）。要加别的手柄，在 `controls.txt` 旁边的 `rumble-profiles.txt` 里每个手柄写一行：`厂商号 产品号 报告ID 长度 低频偏移 高频偏移 [1]`（最后可选的 1 表示高频马达很弱，由低频马达承担较强的一边；十进制或 `0x` 十六进制；格式见 `games/totk/runtime/gamepad_feedback.m` 里配置表上方的注释；SDL 的 HIDAPI 驱动里能查到很多手柄的报告格式）。下面两行是按 SDL 的 HIDAPI 驱动推出来的，**没有在手柄上试过**（抄进 `rumble-profiles.txt` 试，能不能用请告诉我们）：8BitDo Pro 3 `0x2dc8 0x6009 0x05 5 1 2`，NVIDIA Shield V103 `0x0955 0x7210 0x01 7 2 4`。报告里带固定命令字节的手柄（Xbox 360、GameSir、飞智）暂时写不成配置行。`TOTK_RUMBLE_HID=0` 关闭这个功能；`TOTK_RUMBLE_HID_FLOOR`（0..255）和 `TOTK_RUMBLE_HID_HOLD_MS` 决定游戏里很弱很短的震动被加强多少、多维持多久。
 
 **键盘和鼠标（Mac）：** 默认布局让左手留在键盘上、右手握鼠标（需打开鼠标模式，见下面“鼠标”）。按键指物理键位，按美式布局命名：

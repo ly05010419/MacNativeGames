@@ -198,9 +198,15 @@ int main(void){
  runtime_input_key(14,1);runtime_input_key(14,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
  need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
  runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
+ runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"full input reset");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
+ runtime_input_key(13,1);runtime_input_key(123,1);runtime_input_mouse(0,1);
+ fake_pad.lx=12345;fake_pad.ry=-23456;
+ runtime_input_clear_window();read(&out.state,1,&id);
+ need(out.state.buttons==1&&out.state.lx==12345&&!out.state.ly&&!out.state.rx&&out.state.ry==-23456,"focus loss releases keyboard/mouse while preserving held controller buttons and sticks");
+ read(&out.state,1,&id);need(out.state.buttons==1&&out.state.lx==12345&&out.state.ry==-23456,"background controller remains held without a new input event");
+ fake_pad.buttons=0;fake_pad.lx=fake_pad.ry=0;read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ry,"controller release while unfocused clears the game input");
+ fake_pad.buttons=1;runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"full input reset still releases a held controller button");
  const unsigned dpad[]={19,20,21,23};   /* 2 3 4 5: d-pad left, up, right, down */
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
@@ -234,5 +240,5 @@ int main(void){
  runtime_input_key(14,1);runtime_input_key(14,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, window focus clear preserves the controller; full input reset clears all devices, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

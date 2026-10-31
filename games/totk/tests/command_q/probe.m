@@ -10,8 +10,12 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_clear_window(void){}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_gamepad_focus(int on){(void)on;}
+int runtime_gamepad_background_enabled(void){return 0;}
+void runtime_gamepad_background_set(int on){(void)on;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_settings_enable(int on){(void)on;}
