@@ -3799,7 +3799,10 @@ static id<MTLTexture> reup_take(const reup_key *k) {
    at least two levels and both sides >= TOTK_MIP_DROP_MIN (512). Not lower: at 256 the grass disappeared and the ground
    took wrong colours on an iPhone 14 (2026-10-23): data textures of that size (terrain material / grass maps) are read
    by integer texel coordinates, which a copy one level smaller does not match. TOTK_MIP_DROP=0 off, =1 on (default on
-   iOS only). */
+   iOS only). Only block-compressed textures (BC / ASTC: the art) lose their top level. Uncompressed ones are kept whole
+   at any size: the 1000x800 R16 / RG8 world maps the Depths load are data textures too, and without their top level
+   the Gloom near Link was drawn where there is none, with stair-stepped edges (#337; iPhone 17 Pro Max, 1.2.1,
+   2026-10-31). */
 static uint64_t g_mip_dropped;
 static unsigned mip_drop_of(const tex_t *t) {
     static int on = -1; static unsigned minside;
@@ -3808,6 +3811,7 @@ static unsigned mip_drop_of(const tex_t *t) {
     if (!on || g_mip_nodrop) return 0;
     uint32_t g = t->d.target;
     if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
+    int bw = 1, bh = 1; if (nvn_fmt_bpb(t->d.format, &bw, &bh) <= 0 || bw < 2) return 0;   // uncompressed: a data texture
     return 1;
 }
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
