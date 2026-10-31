@@ -265,7 +265,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 15);
+    assert(settingsPanel.allRows.count == 16);
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */
@@ -381,6 +381,25 @@ int main(int argc, const char **argv) { @autoreleasepool {
 #else
     shows(@"Stronger ambient occlusion", @"Not in this version"); assert(!menu(@"Stronger ambient occlusion").enabled);
 #endif
+    /* Sun shadows (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c): the next launch's choice,
+       saved in shadows.txt (this run keeps the size it started with: tests/test_botw_shadow_res.c); greyed out while
+       TOTK_SHADOW_RES decides (rows are made at each opening). */
+#ifdef GAME_BOTW190
+    assert([row(@"Sun shadows").title isEqualToString:@"Sun shadows (from the next launch)"]);
+    shows(@"Sun shadows", @"As the game has it");
+    pick(@"Sun shadows", @"2048"); assert(runtime_shadow_res_saved() == 2048 && !strcmp(savedName, "shadows.txt") && !strcmp(savedWord, "2048"));
+    shows(@"Sun shadows", @"2048");
+    pick(@"Sun shadows", @"As the game has it"); assert(!runtime_shadow_res_saved() && !strcmp(savedWord, "off"));
+    press(18); setenv("TOTK_SHADOW_RES", "2048", 1); press(18); assert(settingsOpen && !menu(@"Sun shadows").enabled);
+    shows(@"Sun shadows", @"Set by TOTK_SHADOW_RES");
+    press(18); unsetenv("TOTK_SHADOW_RES"); press(18); assert(settingsOpen && menu(@"Sun shadows").enabled);
+    /* Where the patch does not act (ios_code(): the iOS export's run here, the device's code there) nothing is offered. */
+    press(18); setenv("TOTK_EXPORT_IOS", "/nonexistent", 1); press(18); assert(settingsOpen && !menu(@"Sun shadows").enabled);
+    shows(@"Sun shadows", @"Not in this version");
+    press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Sun shadows").enabled);
+#else
+    shows(@"Sun shadows", @"Not in this version"); assert(!menu(@"Sun shadows").enabled);
+#endif
     assert(!switched(@"Mouse")); flip(@"Mouse", YES); assert(fakeMouse && switched(@"Mouse")); flip(@"Mouse", NO); assert(!fakeMouse);
 
     /* The DualSense bow trigger: a switch; greyed out while TOTK_DUALSENSE_TRIGGERS or a test session decides, and on a
@@ -437,14 +456,14 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Pages: Display, Input and Key bindings; the page shown last opens again. */
     press(18); assert(settingsOpen);
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY];
-    assert(settingsPanel.rows.count == 8 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);
+    assert(settingsPanel.rows.count == 9 && [settingsPanel.rows[0].title isEqualToString:@"Overlay"]);
     /* The display page's bottom right: contribute shaders and star the project, after the rows for a controller; the
        version stays clear of them; a result shows for a moment where the version is. */
     NSButton *contribute = settingsPanel.displayButtons[1], *starButton = settingsPanel.displayButtons[0];
     assert([contribute.title isEqualToString:@"Contribute shaders and pipelines"] && [starButton.title isEqualToString:@"⭐ Star the project"]);
     assert(!contribute.hidden && !starButton.hidden && NSMaxX(contribute.frame) < NSMinX(starButton.frame) && NSMaxX(starButton.frame) <= settingsPanel.frame.size.width - 14);
     assert(NSMaxX(settingsPanel.versionLabel.frame) <= NSMinX(contribute.frame) && contribute.frame.origin.y < 34 && starButton.frame.origin.y < 34);
-    assert(settingsPanel.controllerTargets.count == 10 && settingsPanel.controllerTargets[8] == contribute && settingsPanel.controllerTargets[9] == starButton);
+    assert(settingsPanel.controllerTargets.count == 11 && settingsPanel.controllerTargets[9] == contribute && settingsPanel.controllerTargets[10] == starButton);
     NSString *versionText = settingsPanel.versionLabel.stringValue;
     [settingsPanel note:@"Thank you!"]; assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Thank you!"]);
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);

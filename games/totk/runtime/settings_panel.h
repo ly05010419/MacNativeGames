@@ -26,6 +26,11 @@
                                                              are always the patched ones on the Mac (off: the stock AO,
                                                              bit for bit), so every choice acts at once (user 2026-10-30);
                                                              TOTK_SSAO / _STRENGTH / _RADIUS decide first (greyed out)
+     sun shadows          as the game has it / 2048          runtime_shadow_res_save (game_patches_botw.c,
+                                                             botw_shadow_res.h), saved in shadows.txt (off or 2048);
+                                                             Breath of the Wild 1.9.0 only. The game sizes the map once,
+                                                             at the start, so the choice is the next launch's (its title
+                                                             says so); TOTK_SHADOW_RES decides first (greyed out)
    Input
      controller type      auto / Xbox / PlayStation / Switch runtime_gamepad_type_set (gamepad.m), saved
      DualSense bow trigger switch                            runtime_triggers_choose (gamepad_feedback.m), saved in
@@ -66,6 +71,10 @@
 
 void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
+#ifdef GAME_BOTW190
+int runtime_shadow_res_available(void); int runtime_shadow_res_locked(void); int runtime_shadow_res_saved(void);
+void runtime_shadow_res_save(int size);   /* game_patches_botw.c */
+#endif
 void nvn_fps_lock_set(int fps);   /* gfx/nvn/hle_nvn.c: the shared totk_fps_limits choices */
 int nvn_fps_lock(void);
 
@@ -280,6 +289,21 @@ static TOTKSettingRow *settings_ssao_row(void) {
   if(v)settings_save_int("ssao.txt",v,"ambient occlusion");else runtime_setting_save("ssao.txt","off","ambient occlusion");});
 #endif
 }
+/* Sun shadows (Breath of the Wild 1.9.0, botw_shadow_res.h): the game's sizes or 2048 per cascade. The game sizes its map
+   once, at the start, so the row shows and saves the next launch's choice, never this run's. Where the patch does not act
+   (the iOS export's run) the row offers nothing to save. */
+static TOTKSettingRow *settings_shadow_row(void) {
+ NSString *t=settings_text("太阳阴影","Sun shadows");
+#ifndef GAME_BOTW190
+ return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
+#else
+ if(!runtime_shadow_res_available())return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
+ if(runtime_shadow_res_locked())return settings_fixed(t,settings_text("由 TOTK_SHADOW_RES 设置","Set by TOTK_SHADOW_RES"));
+ t=[t stringByAppendingString:settings_text("（下次启动生效）"," (from the next launch)")];
+ return settings_row(t,@[settings_text("游戏原样","As the game has it"),@"2048"],@[@0,@2048],
+  ^int{return runtime_shadow_res_saved();},^(int v){runtime_shadow_res_save(v);});
+#endif
+}
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
@@ -332,6 +356,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("边缘平滑（MetalFX 时间性）","Edge smoothing (MetalFX Temporal)"),nil,nil,
   ^int{return taa_enabled();},^(int v){taa_set(v);settings_save_int("graphics-taa.txt",v,"edge smoothing");})];
  [rows addObject:settings_ssao_row()];
+ [rows addObject:settings_shadow_row()];
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],
