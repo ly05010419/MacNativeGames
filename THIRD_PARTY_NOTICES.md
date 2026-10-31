@@ -20,6 +20,7 @@ Fetched or linked at build time (not in this repository):
 | Code | Use | License |
 |---|---|---|
 | [SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross) at `aa217ae` | SPIR-V to Metal Shading Language | Apache-2.0 |
+| [maxmetal](https://github.com/svich/maxmetal) at `919805d` | Maxwell shaders to Metal Shading Language, in the iPhone / iPad app | MIT |
 | [hactool](https://github.com/SciresM/hactool) at `1d64a83` (with explicit private title-key-file hook), including its bundled mbedTLS | Base + update BKTR merge at build time only | ISC (hactool), Apache-2.0 (mbedTLS); see fetched source LICENSE files |
 | libopus (Homebrew), linked statically | Opus audio | BSD-3-Clause |
 | libvpx (Homebrew), linked statically | VP9 movies | BSD-3-Clause |

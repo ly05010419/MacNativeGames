@@ -43,5 +43,7 @@ void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
 uint64_t totk_rt_new_variants(void);   // shader variants translated this run (no cache scan, unlike totk_rt_counts)
 // Distinct shader variants this run needed and the cache did not have (the iPhone, which translates nothing).
 uint64_t totk_rt_missed(void);
+// The iPhone / iPad: variants maxmetal translated this run, and (*ns, may be NULL) the time it took (0 on the Mac).
+uint64_t totk_rt_maxmetal_stats(uint64_t *ns);
 uint64_t totk_rt_ready_gen(void);   // moves each time a background translation has been recorded
-int totk_rt_can_translate(void);   // 0 on iOS and with TOTK_SHADER_NO_TRANSLATE=1
+int totk_rt_can_translate(void);   // 0 with TOTK_SHADER_NO_TRANSLATE=1 (iOS: maxmetal in the app, totk_maxmetal_rt.h)

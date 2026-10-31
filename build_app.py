@@ -26,7 +26,9 @@ signature, or signed again by a dump tool once all four code modules match, shar
   3. shaders: SPIRV-Cross (fetched at a pinned commit, compiled with clang) and the shader translator, which ships
      ready-made as a native program (games/totk/prebuilt/macos-arm64: vendor/ryujinx + patches + Service.cs, made with
      games/totk/tools/totk_xlate/publish_native.sh); startup shaders are extracted from your selected RomFS and
-     translated into a bundled seed, ready for GPU warm-up even with an empty cache on the first launch
+     translated into a bundled seed, ready for GPU warm-up even with an empty cache on the first launch. The iPhone /
+     iPad app also carries maxmetal (Maxwell code straight to Metal Shading Language, fetched at a pinned commit) and
+     translates on the device the shaders its seed lacks instead of skipping them; the Mac keeps the Ryujinx translator
   4. the game binary and either a macOS app bundle or an unsigned iPhone/iPad IPA (large game data is cloned when possible);
      for the Mac the startup shaders are then compiled once into this Mac's Metal cache (about 12 minutes for 1.4.3 on an M4 Max), so the
      first start does not compile them in the background (games/totk/tools/warm_metal_cache.m); with --mod
@@ -88,6 +90,8 @@ SPIRV_CROSS_SOURCES = ('main.cpp', 'spirv_cfg.cpp', 'spirv_cpp.cpp', 'spirv_cros
                        'spirv_cross_util.cpp', 'spirv_glsl.cpp', 'spirv_hlsl.cpp', 'spirv_msl.cpp', 'spirv_parser.cpp',
                        'spirv_reflect.cpp')
 SPIRV_CROSS_FLAGS = ('-O3', '-DNDEBUG', '-std=c++11', '-arch', 'arm64', '-Wno-deprecated-declarations')
+# maxmetal: the shader translator in the iPhone / iPad app (ios/project.yml, totk_maxmetal_rt.h)
+MAXMETAL = ('https://github.com/svich/maxmetal.git', '919805d2567ddd7a53e96492d0abb7c42830d0e2')
 # Homebrew first; then the folder of the running interpreter (the Python uv selected, or an activated virtual environment),
 # last so that a system Python's /usr/bin never shadows the Homebrew tools for the build's subprocesses.
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', str(Path(sys.executable).parent)]
@@ -972,6 +976,14 @@ def build_spirv_cross(tree, logs):
         list(pool.map(compile_one, SPIRV_CROSS_SOURCES))
     run(['xcrun', 'clang++', '-arch', 'arm64', *[objs / (n + '.o') for n in SPIRV_CROSS_SOURCES], '-o', out / 'spirv-cross'],
         logs / 'spirv-cross' / 'link.log', quiet=False)
+
+
+def fetch_maxmetal(tree, logs):
+    """maxmetal's sources at the pinned commit (MAXMETAL) in work/src/maxmetal, linked as the tree's tooling/maxmetal."""
+    say('fetching the pinned maxmetal sources')
+    src = tree.parent / 'src/maxmetal'
+    git_fetch(*MAXMETAL, src, logs / 'fetch-maxmetal.log')
+    link(tree / 'tooling/maxmetal', src)
 
 
 def check_translator(tree):
@@ -2071,6 +2083,11 @@ def parse_args(argv):
                          'held is moved next to it as <version>.backup-<date>-<time>, not deleted. Without this flag '
                          'the build leaves the folder alone and prints the two commands that fill it by hand')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
+    ap.add_argument('--no-startup-shaders', action='store_true',
+                    help='iPhone / iPad: prepare no startup shaders (the build skips translating and compiling about 30,000 '
+                         'of them, about an hour of a first build here); maxmetal in the app translates each shader the '
+                         'first time the game asks for it and Metal compiles it on the device, so the first play stutters '
+                         'until the device has them (the device keeps them)')
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
     ap.add_argument('--native-4k', action=argparse.BooleanOptionalAction, default=None,
                     help='Mac, 1.4.3: the settings panel also offers native 4K (a 3840x2160 canvas, UI and scene); the game then '
@@ -2085,6 +2102,8 @@ def parse_args(argv):
 def main(argv):
     args = parse_args(argv)
     device_app = args.platform in ('ios', 'visionos')
+    if args.no_startup_shaders and not device_app:
+        raise BuildError('--no-startup-shaders is for iPhone / iPad builds: the Mac app translates with Ryujinx and needs them')
     game, keys = args.game.expanduser().resolve(), args.keys.expanduser().resolve()
     if not game.is_file():
         raise BuildError(f'no such file: {game}')
@@ -2186,16 +2205,20 @@ def main(argv):
         say(f'Breath of the Wild {expected["display_version"]}; work folder {work}')
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
-        step_shaders_botw(tree, botw, logs, version=version)
+        if not args.no_startup_shaders:
+            step_shaders_botw(tree, botw, logs, version=version)
+        else:
+            say('3/4 shaders: none prepared (--no-startup-shaders); maxmetal in the app translates each one on the device')
         if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own (6 of a 21-minute iPhone build, 2026-10-28)
             step_shader_libs(tree, logs, version=version)
         # The work folder's copy of games/botw (prepare_work), relative: make splits a path with spaces into several targets
         step_binary(tree, game, keys, {**env, 'SHADER_LIST': '../botw/assets/shader_list.tsv'}, logs, version=version, title='01007ef00011e000')
         say(f'4/4 app: assembling {out}')
         if device_app:   # the same IPA tooling as Tears of the Kingdom (ios/tools/build_ipa.py --version botw160 / botw190)
+            fetch_maxmetal(tree, logs)   # the shader translator in the app
             run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
                  '--logs', logs, '--app-name', APPS['botw'][2], '--bundle-id', APPS['botw'][1],
-                 *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+                 *(['--image-outside'] if args.ios_game_data == 'documents' else []), *(['--no-seed'] if args.no_startup_shaders else []),
                  *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs / 'build-ipa.log', cwd=tree, env=env)
             say_device_pipelines(logs)
             say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
@@ -2260,18 +2283,22 @@ def main(argv):
         step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k)
     if mod:
         check_mod_overlays(tree, mod, version)
-    step_shaders(tree, logs, version=version)
+    if not args.no_startup_shaders:
+        step_shaders(tree, logs, version=version)
+    else:
+        say('3/4 shaders: none prepared (--no-startup-shaders); maxmetal in the app translates each one on the device')
     if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own
         step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
     if device_app:
+        fetch_maxmetal(tree, logs)   # the shader translator in the app
         run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
              '--logs', logs, '--app-name', IOS_APP_NAME, '--bundle-id', BUNDLE_ID, '--platform', args.platform,
-             *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+             *(['--image-outside'] if args.ios_game_data == 'documents' else []), *(['--no-seed'] if args.no_startup_shaders else []),
              *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs/'build-ipa.log', cwd=tree, env=env)
         say_device_pipelines(logs)
-        if not args.no_shader_reminder:
+        if not args.no_shader_reminder and not args.no_startup_shaders:   # without them nothing says what the shared list lacks
             # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the
             # shared list lacks (ios/tools/shader_contrib_watch.py). Not essential: a failure only says so.
             try:

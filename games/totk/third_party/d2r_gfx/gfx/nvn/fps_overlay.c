@@ -146,6 +146,17 @@ void fps_overlay_raster_line_tex(const char *text, int highlight, int scale, uin
     draw_text(out, tex_w, text, n, scale, highlight ? HIGHLIGHT_BGRA : TEXT_BGRA);
     *box_w = w; *box_h = h;
 }
+void fps_overlay_raster_lines_tex(const char *first, int hl_first, const char *second, int hl_second, int scale, uint8_t *out,
+                                  int tex_w, int tex_h, int *box_w, int *box_h) {
+    int w1, h1, w2, h2;
+    fps_overlay_raster_line_tex(first, hl_first, scale, out, tex_w, tex_h / 2, &w1, &h1);
+    uint8_t *below = out + (size_t)h1 * tex_w * 4;   // clears only its own rows, from the first line's box down
+    fps_overlay_raster_line_tex(second, hl_second, scale, below, tex_w, tex_h - h1, &w2, &h2);
+    int w = w1 > w2 ? w1 : w2;
+    if (w1 < w) fill(out, tex_w, w1, 0, w - w1, h1, BOX_BGRA);
+    if (w2 < w) fill(below, tex_w, w2, 0, w - w2, h2, BOX_BGRA);
+    *box_w = w; *box_h = h1 + h2;
+}
 void fps_overlay_raster_line(const char *text, int highlight, int scale, uint8_t *out, int *box_w, int *box_h) {
     fps_overlay_raster_line_tex(text, highlight, scale, out, FPS_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H, box_w, box_h);
 }
@@ -213,8 +224,8 @@ void shader_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total, uin
     (void)pipelines;   // user 2026-10-17: the pipeline count is not shown
     if (total < 0) snprintf(t, sizeof t, "--"); else snprintf(t, sizeof t, "%lld", (long long)(total > 999999 ? 999999 : total));
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-    // The phone translates nothing: "fresh" is the shaders it was missing this run (their draws are skipped until the
-    // Mac fills them, ios/tools/fill_shaders.py).
+    // "fresh" is the shaders the phone was missing this run: those maxmetal could not translate (their draws are skipped
+    // until the Mac fills them, ios/tools/fill_shaders.py).
     snprintf(out, n, TOTK_UI("缺着色器 %llu / 总计 %s", "Missing shaders %llu / total %s"), (unsigned long long)(fresh > 99999 ? 99999 : fresh), t);
 #else
     snprintf(out, n, TOTK_UI("新着色器 %llu / 总计 %s", "New shaders %llu / total %s"), (unsigned long long)(fresh > 99999 ? 99999 : fresh), t);
@@ -227,6 +238,11 @@ void pso_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total) {
     char t[16];
     if (total < 0) snprintf(t, sizeof t, "--"); else snprintf(t, sizeof t, "%lld", (long long)(total > 999999 ? 999999 : total));
     snprintf(out, n, TOTK_UI("新渲染管线 %llu / 总计 %s", "New render pipelines %llu / total %s"), (unsigned long long)(fresh > 99999 ? 99999 : fresh), t);
+}
+void compiled_overlay_text(char *out, size_t n, uint64_t compiled, uint64_t compiled_ns, uint64_t translated, uint64_t translated_ns) {
+    snprintf(out, n, TOTK_UI("已编译着色器 %llu（%.0f 秒）  maxmetal 翻译 %llu（%.0f 秒）", "Compiled shaders %llu (%.0f s)  maxmetal %llu (%.0f s)"),
+             (unsigned long long)(compiled > 99999 ? 99999 : compiled), compiled_ns / 1e9,
+             (unsigned long long)(translated > 99999 ? 99999 : translated), translated_ns / 1e9);
 }
 
 /* A count's rate, re-measured every half second (game presents; interpolated frames shown). stale_s > 0: a gap longer

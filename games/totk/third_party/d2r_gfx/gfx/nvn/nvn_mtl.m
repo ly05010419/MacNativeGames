@@ -137,10 +137,15 @@ static id<MTLBuffer> g_load_uv[3];
 static int g_load_box[4][2];
 static struct { char text[96]; int scale; } g_load_key[4];
 // TOTK automatic shader collection box (bottom-left, shader_overlay_prepare): same slots as the FPS box.
+#if TARGET_OS_IPHONE
+enum { SHD_TEX_H = 2 * FPS_OVERLAY_TEX_H };   // two lines: the shaders and render pipelines, then what the device compiled
+#else
+enum { SHD_TEX_H = FPS_OVERLAY_TEX_H };
+#endif
 static id<MTLTexture> g_shd_tex[4];
 static id<MTLBuffer> g_shd_uv[3];
 static int g_shd_box[4][2];
-static struct { char text[160]; int hl, scale; } g_shd_key[4];
+static struct { char text[256]; int hl, scale; } g_shd_key[4];
 int g_bloom_q = -1;   // 泛光 1/4 起点（非 static：真机同进程交替直接改 0 / 1） | Bloom 1/4 starting point (non-static: real-device same-process alternation sets it to 0 / 1 directly)
 static id<MTL4ArgumentTable> g_bloomq_args;
 static id<MTLBuffer> g_bloomq_const[3];
@@ -676,7 +681,7 @@ void mtl_init(void) {
         g_fps_tex[i] = [g_dev newTextureWithDescriptor:fd];
         if (!g_fps_tex[i]) MDIE("建立帧数贴图[%d] 失败", i);
         res_add(g_fps_tex[i]);
-        MTLTextureDescriptor *sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:LOAD_OVERLAY_TEX_W height:FPS_OVERLAY_TEX_H mipmapped:NO];
+        MTLTextureDescriptor *sd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:LOAD_OVERLAY_TEX_W height:SHD_TEX_H mipmapped:NO];
         sd.usage = MTLTextureUsageShaderRead; sd.storageMode = MTLStorageModeShared;   // shaders and render pipelines in one line (picture corners)
         g_shd_tex[i] = [g_dev newTextureWithDescriptor:sd];
         if (!g_shd_tex[i]) MDIE("建立着色器计数框贴图[%d] 失败", i);
@@ -5534,11 +5539,14 @@ static NSString *msl_fix_depth_gather(NSString *src) {
     }
     return src;
 }
+static _Atomic uint64_t g_msl_compiled, g_msl_compiled_ns;   // libraries compiled from MSL this run and their time (the iPhone's shader box)
 static id<MTLLibrary> totk_msl_library(NSString *source, NSError **err) {
     NSError *e = nil;
     NSString *src = msl_fix_depth_gather(source);
     for (int attempt = 1;; attempt++) {
+        uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        if (lib) { atomic_fetch_add(&g_msl_compiled, 1); atomic_fetch_add(&g_msl_compiled_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0); }
         BOOL interrupted = !lib && [e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"];
         if (lib || !interrupted || attempt == 4) { if (err) *err = e; return lib; }
         MLOG("【红】着色器编译服务连接中断（第 %d 次），%d ms 后重试", attempt, attempt * 100);
@@ -5890,7 +5898,7 @@ static NvShader *plib_take(NSString *pc, int wait) {
    Great Sky Island water's magenta lasted much longer with it on). */
 static int async_shaders(void) {
 #if TARGET_OS_IPHONE
-    return 0;   // no translator on the device: missing variants are skipped anyway
+    return 0;   // the device translates in the app (maxmetal), on the spot: no background services
 #else
     static int on = -1;
     if (on < 0) {
@@ -14506,11 +14514,11 @@ static int fps_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float
 static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, float uv[8]) {
     if (!fps_overlay_full_hud() || !shader_overlay_enabled() || slot < 0 || slot > 3 || !g_shd_tex[slot]) return 0;
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    static uint8_t px[LOAD_OVERLAY_TEX_W * FPS_OVERLAY_TEX_H * 4];
+    static uint8_t px[LOAD_OVERLAY_TEX_W * SHD_TEX_H * 4];
     uint64_t fresh = 0, last = 0; int64_t total = -1; totk_rt_counts(&fresh, &total, &last);
     uint64_t pso = atomic_load(&g_collect_new[1]) + atomic_load(&g_collect_new[2]), plast = atomic_load(&g_collect_last_ns);
 #if TARGET_OS_IPHONE
-    {   // the phone translates nothing: show the shaders it is missing, yellow for 3 s after a new one
+    {   // show the shaders the phone is missing (maxmetal could not translate them), yellow for 3 s after a new one
         static _Atomic uint64_t seen, seen_ns; uint64_t m = totk_rt_missed();
         if (m != atomic_exchange(&seen, m)) atomic_store(&seen_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
         fresh = m; last = atomic_load(&seen_ns); plast = 0;
@@ -14526,13 +14534,22 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
         return 0;
     }
     size_t at = strlen(text); snprintf(text + at, sizeof text - at, "   %s", line);   // picture corners (the iPhone): one line
-    pthread_mutex_lock(&mu);
-    if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, text)) {
-        fps_overlay_raster_line_tex(text, hl, scale, px, LOAD_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H, &g_shd_box[slot][0], &g_shd_box[slot][1]);
-        [g_shd_tex[slot] replaceRegion:MTLRegionMake2D(0, 0, LOAD_OVERLAY_TEX_W, FPS_OVERLAY_TEX_H) mipmapLevel:0 withBytes:px bytesPerRow:LOAD_OVERLAY_TEX_W * 4];
-        snprintf(g_shd_key[slot].text, sizeof g_shd_key[slot].text, "%s", text); g_shd_key[slot].hl = hl; g_shd_key[slot].scale = scale;
+    char compiled[96] = "";
+#if TARGET_OS_IPHONE
+    {   // under it, what the device made itself: Metal libraries compiled from MSL, variants maxmetal translated
+        uint64_t tns = 0, tn = totk_rt_maxmetal_stats(&tns);
+        compiled_overlay_text(compiled, sizeof compiled, atomic_load(&g_msl_compiled), atomic_load(&g_msl_compiled_ns), tn, tns);
     }
-    float bw = g_shd_box[slot][0], bh = g_shd_box[slot][1], W = LOAD_OVERLAY_TEX_W, H = FPS_OVERLAY_TEX_H;
+#endif
+    char key[sizeof g_shd_key[0].text]; snprintf(key, sizeof key, "%s\n%s", text, compiled);
+    pthread_mutex_lock(&mu);
+    if (g_shd_key[slot].scale != scale || g_shd_key[slot].hl != hl || strcmp(g_shd_key[slot].text, key)) {
+        if (compiled[0]) fps_overlay_raster_lines_tex(text, hl, compiled, 0, scale, px, LOAD_OVERLAY_TEX_W, SHD_TEX_H, &g_shd_box[slot][0], &g_shd_box[slot][1]);
+        else fps_overlay_raster_line_tex(text, hl, scale, px, LOAD_OVERLAY_TEX_W, SHD_TEX_H, &g_shd_box[slot][0], &g_shd_box[slot][1]);
+        [g_shd_tex[slot] replaceRegion:MTLRegionMake2D(0, 0, LOAD_OVERLAY_TEX_W, SHD_TEX_H) mipmapLevel:0 withBytes:px bytesPerRow:LOAD_OVERLAY_TEX_W * 4];
+        snprintf(g_shd_key[slot].text, sizeof g_shd_key[slot].text, "%s", key); g_shd_key[slot].hl = hl; g_shd_key[slot].scale = scale;
+    }
+    float bw = g_shd_box[slot][0], bh = g_shd_box[slot][1], W = LOAD_OVERLAY_TEX_W, H = SHD_TEX_H;
     pthread_mutex_unlock(&mu);
     double m = 3.0 * scale;
 #if TARGET_OS_IPHONE

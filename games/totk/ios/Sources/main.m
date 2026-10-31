@@ -448,7 +448,7 @@ static void apply_settings(void) {
     /* The startup shaders likewise (build_app.py --ios-game-data documents): install_device.py puts the seed into its own
        folder in Documents/GameData once per content and writes shader-seed.txt last ("<folder>\n<fingerprint>"), so the app
        carries none and a new build installs in seconds. Read in place like the app's own (totk_shader_seed.h); folders of
-       earlier seeds are removed in the background. Without either seed the game has no shaders: said on the screen. */
+       earlier seeds are removed in the background. Without either seed maxmetal translates every shader as it first appears. */
     NSString *seedDir = [res stringByAppendingPathComponent:@"shader-seed"];
     NSArray<NSString *> *seedMark = [[NSString stringWithContentsOfFile:[gameData stringByAppendingPathComponent:@"shader-seed.txt"] encoding:NSUTF8StringEncoding error:nil] componentsSeparatedByString:@"\n"];
     NSString *pushedName = seedMark.count >= 2 && seedMark[1].length == 64 && [seedMark[0] hasPrefix:@"shader-seed-"] && ![seedMark[0] containsString:@"/"] ? seedMark[0] : nil;
@@ -456,19 +456,17 @@ static void apply_settings(void) {
     BOOL packed = pushed && ![fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]] &&
                   [fm fileExistsAtPath:[pushed stringByAppendingString:@".pack.000"]];
     if (packed) { g_seed_pack = [pushed stringByAppendingString:@".pack"]; g_seed_unpack_to = pushed; }   // unpacked in viewDidAppear
-    if (pushed && (packed || [fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]])) {
-        seedDir = pushed; setenv("TOTK_SHADER_SEED_PUSHED", pushed.fileSystemRepresentation, 1);
+    BOOL usePushed = pushed && (packed || [fm fileExistsAtPath:[pushed stringByAppendingPathComponent:@"seed-manifest.json"]]);
+    if (usePushed) { seedDir = pushed; setenv("TOTK_SHADER_SEED_PUSHED", pushed.fileSystemRepresentation, 1); }
+    else if (![fm fileExistsAtPath:[seedDir stringByAppendingPathComponent:@"seed-manifest.json"]])
+        fprintf(stderr, "[totk] no shader seed: maxmetal translates every shader on the device (totk_maxmetal_rt.h)\n");
+    // "none": install_device.py, for a build without startup shaders (build_app.py --no-startup-shaders); every pushed one goes
+    if (usePushed || [seedMark.firstObject isEqualToString:@"none"])
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
             NSFileManager *files = [NSFileManager new];
             for (NSString *name in [files contentsOfDirectoryAtPath:gameData error:nil] ?: @[])
-                if ([name hasPrefix:@"shader-seed-"] && ![name hasPrefix:pushedName]) [files removeItemAtPath:[gameData stringByAppendingPathComponent:name] error:nil];
+                if ([name hasPrefix:@"shader-seed-"] && !(usePushed && [name hasPrefix:pushedName])) [files removeItemAtPath:[gameData stringByAppendingPathComponent:name] error:nil];
         });
-    } else if (!g_no_game_data && ![fm fileExistsAtPath:[seedDir stringByAppendingPathComponent:@"seed-manifest.json"]]) {
-        BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
-        g_no_game_data = zh ? @"没有着色器。请在 Mac 上用 ios/tools/install_device.py 重新安装（会把着色器复制到手机上）。"
-                            : @"No shaders. Install the game again from the Mac with ios/tools/install_device.py (it copies them to the device).";
-        fprintf(stderr, "[totk] no shader seed: %s\n", g_no_game_data.UTF8String);
-    }
 #if TARGET_OS_VISION
     setenv("TOTK_OPERATION_MODE","docked",1);
     setenv("TOTK_IOS_DRAWABLE_H","1080",0);
