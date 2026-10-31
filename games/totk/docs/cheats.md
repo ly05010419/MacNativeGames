@@ -1,7 +1,12 @@
 # Optional native player-cheat panel (macOS, TOTK 1.2.1)
 
 The app menu's **金手指…** (Command-Option-C) opens a searchable native panel.
-Use the mouse or controller Up/Down, A to toggle and B to close. The panel captures
+Use the mouse or controller Up/Down, A to toggle and B to close.
+**全部开启** selects batch-eligible compatible entries, keeping existing variant
+choices; **全部关闭** clears the selection. Packs explicitly opt entries into batch
+activation with `bulk: true` and may provide `bulk_rank` to prefer a default variant.
+Inventory add/remove and progress edits remain individually selectable. Number
+prefixes in imported names are hidden without changing stable IDs or attribution. The panel captures
 controller input while open. **暂停全部** retains the selection; preferences live
 in `cheats.json` beside the profile directory. New entries start off.
 
@@ -34,7 +39,10 @@ suspended section performs no Objective-C calls or allocations. Thread creation 
 blocked across snapshot and suspension so a newly created guest cannot escape it. A periodic tick
 has a four-millisecond execution deadline, a bounded page cache/write set, and
 round-robin progress. No selections means no memory reads or guest suspensions;
-static patches without hotkeys do no ongoing work after applying.
+static patches without hotkeys do no ongoing work after applying. Catalog entries
+may set `apply_once: true` for single-application data edits or `interval_ms`
+(33–5000 ms) for recurring work. Failed applications retry after 500 ms. Status
+refreshes update existing visible fields only when their text changes.
 
 Unchecking restores guarded nonzero code/constant words after their last owner
 leaves. Dormant originally-zero cave bodies stay until the next clean process

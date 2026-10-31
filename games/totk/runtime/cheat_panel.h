@@ -2,7 +2,7 @@
    no game addresses, instructions, keys or player data belong in this repository. */
 #import "cheat_native.h"
 @interface TOTKCheatEntry:NSObject {
- @public CvProgram program;BOOL selected,applied,pure,hotkeys;uint64_t lastKeys;int result,hostIssue;
+ @public CvProgram program;BOOL selected,applied,pure,hotkeys,applyOnce;uint64_t lastKeys,nextRunNS,periodNS;int result,hostIssue;
 }
 @property NSDictionary *record;
 @property NSString *status;
@@ -14,7 +14,7 @@
  CnMemory *_memory;unsigned _cursor;BOOL _master,_valid;NSArray<TOTKCheatEntry *> *_entries,*_visible;
  uint64_t _padLast;BOOL _padReady;
  NSPanel *_panel;NSTableView *_table;NSSearchField *_search;NSPopUpButton *_category;
- NSTextField *_detail,*_summary;NSButton *_pause;NSTimer *_timer;NSString *_configPath,*_catalogError;
+ NSTextField *_detail,*_summary,*_batchHint;NSButton *_pause;NSTimer *_timer;NSString *_configPath,*_catalogError;
 }
 -(void)show;
 -(void)dismiss;
@@ -25,6 +25,20 @@ static NSBundle *cheat_bundle(void){
  if(!path.isAbsolutePath)path=[NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:path];
  path=path.stringByResolvingSymlinksInPath;
  while(path.length>1){if([path.pathExtension.lowercaseString isEqualToString:@"app"])return [NSBundle bundleWithPath:path];path=path.stringByDeletingLastPathComponent;}return NSBundle.mainBundle;
+}
+/* Metadata scheduling is resolved before guest suspension. State-setting entries
+   need no perpetual 30 Hz stop-the-world loop after a successful one-shot write. */
+static BOOL cheat_entry_due(TOTKCheatEntry *e,uint64_t now,uint64_t keys){
+ if(now<e->nextRunNS)return NO;
+ if(!e->applied)return YES;
+ if(e->pure)return e->hotkeys&&e->lastKeys!=keys;
+ return !e->applyOnce;
+}
+/* Display labels are independent of stable catalog IDs and source attribution. */
+static NSString *cheat_display_name(NSString *name){
+ static NSRegularExpression *prefix;static dispatch_once_t once;
+ dispatch_once(&once,^{prefix=[NSRegularExpression regularExpressionWithPattern:@"^\\s*(?:№|♯|#|No\\.?)\\s*\\d+[A-Za-z]?\\s*[.、:：-]?\\s*" options:0 error:nil];});
+ return [prefix stringByReplacingMatchesInString:name options:0 range:NSMakeRange(0,name.length) withTemplate:@""];
 }
 @implementation TOTKCheatPanel
 -(instancetype)init{
@@ -46,7 +60,8 @@ static NSBundle *cheat_bundle(void){
  NSMutableArray *entries=[NSMutableArray new];
  if(_valid)for(NSDictionary *record in catalog[@"entries"]){
   if(entries.count==CN_ENTRIES||![record isKindOfClass:NSDictionary.class]||![record[@"name"] isKindOfClass:NSString.class]||![record[@"id"] isKindOfClass:NSString.class])continue;
-  TOTKCheatEntry *e=[TOTKCheatEntry new];e.record=record;e.status=@"关闭";e->pure=YES;
+  TOTKCheatEntry *e=[TOTKCheatEntry new];NSMutableDictionary *display=[record mutableCopy];display[@"name"]=cheat_display_name(record[@"name"]);e.record=display;e.status=@"关闭";e->pure=YES;e->applyOnce=[record[@"apply_once"] boolValue];
+  uint64_t period=[record[@"interval_ms"] unsignedLongLongValue];if(period<33)period=33;if(period>5000)period=5000;e->periodNS=period*UINT64_C(1000000);
   NSArray *words=record[@"words"];
   if([words isKindOfClass:NSArray.class]&&words.count&&words.count<=65536){
    uint32_t *raw=calloc(words.count,4);BOOL good=raw!=NULL;
@@ -88,7 +103,8 @@ static NSBundle *cheat_bundle(void){
  if(!_valid||!_memory||!runtime_cheat_module||!runtime_cheat_suspend_threads||!runtime_cheat_region_bases)return;
  Module *module=runtime_cheat_module();if(!module)return;_memory->module=module;
  uint64_t keys=(runtime_gamepad_peek_buttons?runtime_gamepad_peek_buttons():0)|runtime_keyboard_buttons();
- BOOL needed=NO;for(TOTKCheatEntry *e in _entries){BOOL want=_master&&e->selected&&e->program.code;if((e->applied&&!want)||(want&&(!e->pure||!e->applied||(e->hotkeys&&e->lastKeys!=keys)))){needed=YES;break;}}
+ uint64_t now=runtime_now_ns();
+ BOOL needed=NO;for(TOTKCheatEntry *e in _entries){BOOL want=_master&&e->selected&&e->program.code;if((e->applied&&!want)||(want&&cheat_entry_due(e,now,keys))){needed=YES;break;}}
  if(!needed)return;
  /* Foundation and allocations finish BEFORE suspending any game thread. */
  TOTKCheatEntry *__unsafe_unretained objects[CN_ENTRIES];unsigned n=(unsigned)_entries.count;for(unsigned i=0;i<n;i++)objects[i]=_entries[i];
@@ -101,11 +117,12 @@ static NSBundle *cheat_bundle(void){
   for(unsigned k=0;k<n;k++){
    unsigned i=(_cursor+k)%n;TOTKCheatEntry *__unsafe_unretained e=objects[i];BOOL want=_master&&e->selected&&e->program.code;
    if(e->applied&&!want){if(cn_release(_memory,i))e->applied=NO;else e->result=CV_MEMORY;}
-   if(want&&(!e->pure||!e->applied||(e->hotkeys&&e->lastKeys!=keys))){
+   if(want&&cheat_entry_due(e,now,keys)){
     _memory->entry=i;_memory->npages=_memory->nwrites=0;_memory->issue=0;
     e->result=cv_execute(&e->program,&host);
     if(e->result==CV_OK){if(cn_commit(_memory)){e->applied=YES;e->lastKeys=keys;}else e->result=CV_MEMORY;}
     e->hostIssue=_memory->issue;
+    e->nextRunNS=now+(e->result==CV_OK?e->periodNS:UINT64_C(500000000));
    }
    if(runtime_now_ns()>=_memory->deadline){_cursor=(i+1)%n;break;}
   }
@@ -133,23 +150,50 @@ static NSBundle *cheat_bundle(void){
 -(void)controlTextDidChange:(NSNotification *)note{(void)note;[self filter:nil];}
 -(void)refreshStatus{
  NSUInteger active=0,available=0;for(TOTKCheatEntry *e in _entries){if(e->selected)active++;if(e->program.code)available++;}
- _summary.stringValue=_catalogError.length?_catalogError:[NSString stringWithFormat:@"1.2.1 · %lu 项代码 · 已选 %lu · %@ · 手柄 ↑↓ 选择 / A 开关 / B 关闭",(unsigned long)available,(unsigned long)active,_master?@"运行中":@"已暂停"];
- _pause.title=_master?@"暂停全部":@"恢复已选";
- NSIndexSet *rows=[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0,_visible.count)];[_table reloadDataForRowIndexes:rows columnIndexes:[NSIndexSet indexSetWithIndex:2]];
+ NSString *summary=_catalogError.length?_catalogError:[NSString stringWithFormat:@"1.2.1 · %lu 项代码 · 已选 %lu · %@ · 手柄 ↑↓ 选择 / A 开关 / B 关闭",(unsigned long)available,(unsigned long)active,_master?@"运行中":@"已暂停"];
+ if(![_summary.stringValue isEqualToString:summary])_summary.stringValue=summary;
+ NSString *pauseTitle=_master?@"暂停全部":@"恢复已选";if(![_pause.title isEqualToString:pauseTitle])_pause.title=pauseTitle;
+ /* Updating status must not recreate row views at 30 Hz. Besides layout work,
+    rebuilding an active row invalidates accessibility/mouse targets mid-click. */
+ NSRange rows=[_table rowsInRect:_table.visibleRect];
+ if(rows.location!=NSNotFound)for(NSUInteger i=rows.location;i<NSMaxRange(rows)&&i<_visible.count;i++){
+  NSTextField *field=(NSTextField *)[_table viewAtColumn:2 row:(NSInteger)i makeIfNecessary:NO];
+  if([field isKindOfClass:NSTextField.class]&&![field.stringValue isEqualToString:_visible[i].status])field.stringValue=_visible[i].status;
+ }
 }
--(void)pause:(id)sender{(void)sender;_master=!_master;[self save];[self tick];[self refreshStatus];}
--(void)toggle:(NSButton *)sender{
- NSInteger row=sender.tag;if(row<0||(NSUInteger)row>=_visible.count)return;TOTKCheatEntry *e=_visible[row];if(!e->program.code)return;
- e->selected=!e->selected;
- if(e->selected){
-  NSString *group=e.record[@"group"];NSDictionary *writes=e.record[@"writes"];
-  for(TOTKCheatEntry *other in _entries)if(other!=e&&other->selected){
-   BOOL conflict=group.length&&[group isEqualToString:other.record[@"group"]];
-   NSDictionary *ow=other.record[@"writes"];for(NSString *address in writes)if(ow[address]&&![ow[address] isEqual:writes[address]]){conflict=YES;break;}
-   if(conflict)other->selected=NO;
-  }
+-(void)pause:(id)sender{(void)sender;_master=!_master;if(_master)for(TOTKCheatEntry *e in _entries)e->nextRunNS=0;[self save];[self tick];[self refreshStatus];}
+-(BOOL)entry:(TOTKCheatEntry *)e conflictsWith:(TOTKCheatEntry *)other{
+ NSString *group=e.record[@"group"];
+ if(group.length&&[group isEqualToString:other.record[@"group"]])return YES;
+ NSDictionary *writes=e.record[@"writes"],*ow=other.record[@"writes"];
+ for(NSString *address in writes)if(ow[address]&&![ow[address] isEqual:writes[address]])return YES;
+ return NO;
+}
+-(void)enableAll:(id)sender{
+ (void)sender;_master=YES;NSUInteger conflicts=0,manual=0;
+ NSArray *ordered=[_entries sortedArrayUsingComparator:^NSComparisonResult(TOTKCheatEntry *a,TOTKCheatEntry *b){
+  return [b.record[@"bulk_rank"]?:@0 compare:a.record[@"bulk_rank"]?:@0];}];
+ for(TOTKCheatEntry *e in ordered){
+  if(!e->program.code||e->selected)continue;
+  /* A pack must opt entries into batch activation. Inventory removal, quest
+     edits and opposite/restoration variants remain individually selectable. */
+  if(![e.record[@"bulk"] boolValue]){manual++;continue;}
+  BOOL clash=NO;for(TOTKCheatEntry *other in _entries)if(other!=e&&other->selected&&[self entry:e conflictsWith:other]){clash=YES;break;}
+  if(clash)conflicts++;else {e->selected=YES;e->nextRunNS=0;}
  }
  [self save];[self tick];[self filter:nil];
+ _batchHint.stringValue=[NSString stringWithFormat:@"已开启兼容项；%lu 项互斥，%lu 项需单独开启",(unsigned long)conflicts,(unsigned long)manual];
+}
+-(void)disableAll:(id)sender{
+ (void)sender;for(TOTKCheatEntry *e in _entries)e->selected=NO;_master=YES;
+ [self save];[self tick];[self filter:nil];_batchHint.stringValue=@"全部已关闭；已写入的物品和存档不会自动还原。";
+}
+-(void)toggle:(NSButton *)sender{
+ NSInteger row=sender.tag;if(row<0||(NSUInteger)row>=_visible.count)return;TOTKCheatEntry *e=_visible[row];if(!e->program.code)return;
+ e->selected=!e->selected;e->nextRunNS=0;NSMutableArray *replaced=[NSMutableArray new];
+ if(e->selected)for(TOTKCheatEntry *other in _entries)if(other!=e&&other->selected&&[self entry:e conflictsWith:other]){other->selected=NO;[replaced addObject:other.record[@"name"]];}
+ [self save];[self tick];[self filter:nil];
+ _batchHint.stringValue=replaced.count?[@"已替换互斥项：" stringByAppendingString:[replaced componentsJoinedByString:@"、"]]:@"不同功能可以同时勾选；只有互斥项会替换。";
 }
 -(NSInteger)numberOfRowsInTableView:(NSTableView *)table{(void)table;return _visible.count;}
 -(NSView *)tableView:(NSTableView *)table viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row{
@@ -170,10 +214,14 @@ static NSBundle *cheat_bundle(void){
   _panel=[[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,900,650) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   _panel.title=@"王国之泪 · 金手指";_panel.delegate=self;_panel.releasedWhenClosed=NO;_panel.minSize=NSMakeSize(740,500);_panel.collectionBehavior=NSWindowCollectionBehaviorFullScreenAuxiliary;
   NSView *v=_panel.contentView;CGFloat w=v.bounds.size.width,h=v.bounds.size.height;
-  _search=[[NSSearchField alloc] initWithFrame:NSMakeRect(20,h-56,400,30)];_search.placeholderString=@"搜索功能 / 倍率 / 热键";_search.delegate=self;_search.autoresizingMask=NSViewMinYMargin;[v addSubview:_search];
-  _category=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(435,h-56,170,30)];[_category addItemsWithTitles:@[@"全部",@"已选",@"战斗",@"移动",@"物品",@"生存",@"地图",@"贤者",@"更多"]];_category.target=self;_category.action=@selector(filter:);_category.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:_category];
+  _search=[[NSSearchField alloc] initWithFrame:NSMakeRect(20,h-56,w-500,30)];_search.placeholderString=@"搜索功能 / 倍率 / 热键";_search.delegate=self;_search.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;[v addSubview:_search];
+  _category=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(w-465,h-56,170,30)];[_category addItemsWithTitles:@[@"全部",@"已选",@"战斗",@"移动",@"物品",@"生存",@"地图",@"贤者",@"更多"]];_category.target=self;_category.action=@selector(filter:);_category.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:_category];
   _pause=[NSButton buttonWithTitle:@"暂停全部" target:self action:@selector(pause:)];_pause.frame=NSMakeRect(w-155,h-56,135,30);_pause.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;[v addSubview:_pause];
-  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(20,155,w-40,h-230)];scroll.hasVerticalScroller=YES;scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
+  NSButton *allOn=[NSButton buttonWithTitle:@"全部开启" target:self action:@selector(enableAll:)];allOn.frame=NSMakeRect(20,h-96,105,28);allOn.autoresizingMask=NSViewMinYMargin;allOn.toolTip=@"开启可批量使用的兼容功能，保留已选倍率；物品增删和进度修改需单独开启。";[v addSubview:allOn];
+  NSButton *allOff=[NSButton buttonWithTitle:@"全部关闭" target:self action:@selector(disableAll:)];allOff.frame=NSMakeRect(137,h-96,105,28);allOff.autoresizingMask=NSViewMinYMargin;[v addSubview:allOff];
+  _batchHint=[NSTextField labelWithString:@"互斥项保留一种；物品增删和进度修改需单独开启。"];
+  _batchHint.frame=NSMakeRect(255,h-94,w-275,24);_batchHint.autoresizingMask=NSViewWidthSizable|NSViewMinYMargin;_batchHint.textColor=NSColor.secondaryLabelColor;_batchHint.lineBreakMode=NSLineBreakByTruncatingTail;[v addSubview:_batchHint];
+  NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(20,155,w-40,h-272)];scroll.hasVerticalScroller=YES;scroll.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   _table=[[NSTableView alloc] initWithFrame:scroll.bounds];_table.rowHeight=31;_table.usesAlternatingRowBackgroundColors=YES;_table.delegate=self;_table.dataSource=self;
   NSArray *ids=@[@"toggle",@"name",@"status"],*titles=@[@"开关",@"功能",@"状态"];
   for(unsigned i=0;i<3;i++){NSTableColumn *c=[[NSTableColumn alloc] initWithIdentifier:ids[i]];c.title=titles[i];c.width=i==0?50:i==1?480:260;[_table addTableColumn:c];}
