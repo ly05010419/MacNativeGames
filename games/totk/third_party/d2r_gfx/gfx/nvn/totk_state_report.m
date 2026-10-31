@@ -172,7 +172,7 @@ static void life_event(void) {
     pthread_mutex_unlock(&mu);
 }
 
-static NSString *fi_name(int m) { return m == MFX_30 ? @"30+30" : m == MFX_40 ? @"40+40" : m == MFX_50 ? @"50+50" : m == MFX_MAX ? @"max" : @"off"; }
+static NSString *fi_name(int m) { return m == MFX_30 ? @"30+30" : m == MFX_40 ? @"40+40" : m == MFX_50 ? @"50+50" : m == MFX_60 ? @"60+60" : m == MFX_MAX ? @"max" : @"off"; }
 static NSString *aspect_name(int milli) {
     static const struct { int milli; const char *name; } known[] = {{1600, "16:10"}, {2333, "21:9"}, {2370, "21:9"}, {2389, "43:18"}, {3556, "32:9"}};
     for (size_t i = 0; i < sizeof known / sizeof *known; i++) if (abs(milli - known[i].milli) <= 8) return @(known[i].name);
