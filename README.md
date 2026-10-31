@@ -47,6 +47,7 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, work in progress | [`games/xc3`](games/xc3/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
+- 2026-10-31: [Tomodachi Life: Living the Dream](games/tomodachi) 1.0.0 — experimental native Mac port with native controls and text entry; validation and known limitations are documented in its folder.
 
 > **Recommended: let an AI assistant install and test it for you.** Open this repository in Claude Code, Codex, or any other AI assistant you like, tell it where your own game file and `prod.keys` are, and ask it to build and install the app and to sort out whatever comes up on your Mac. It follows the [install skill](.claude/skills/install-zelda/SKILL.md), runs every step and checks the result; you just wait with a coffee. Installing and testing by hand is not recommended: there are many steps, and every Mac, game version and dump is a little different. That's why I haven't provided a one-click build option: an AI assistant is my one-click build option.
 >
