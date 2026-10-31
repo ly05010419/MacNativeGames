@@ -47,6 +47,13 @@ int fps_overlay_line_pixel_font(const char *text);   // 0: the line has a charac
 int shader_overlay_enabled(void);
 void shader_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total, uint64_t pipelines);   /* total < 0: "--" (not counted yet) */
 void pso_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total);   /* "新渲染管线 N / 总计 M", the line under the shaders */
+/* The iPhone / iPad's second line in that box (user 2026-10-31): the Metal libraries compiled from MSL on the device this
+   run and the variants maxmetal translated, each with the seconds it took. */
+void compiled_overlay_text(char *out, size_t n, uint64_t compiled, uint64_t compiled_ns, uint64_t translated, uint64_t translated_ns);
+/* Two lines in one box, the second under the first, each as fps_overlay_raster_line_tex; the shorter one's box is widened
+   to the longer one's. tex_h holds both (2 * FPS_OVERLAY_TEX_H). */
+void fps_overlay_raster_lines_tex(const char *first, int hl_first, const char *second, int hl_second, int scale, uint8_t *out,
+                                  int tex_w, int tex_h, int *box_w, int *box_h);
 /* Record that the game's present number `ticket` reached the screen at now_s (seconds). The rate of game presents is
    re-measured every half second; fps_overlay_value() returns it, or -1 before the first measurement. */
 void fps_overlay_note(uint64_t ticket, double now_s);

@@ -32,7 +32,7 @@ void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage));
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers);
 void totk_rt_variant_broken(NSString *key);   // shader_load found it unusable: translated again at its next use
 NSString *totk_rt_portable_variant(NSString *name);   // "<variant>_b" as another player's build names it (pipeline contributions)
-int totk_rt_contrib_on(void);                       // a contribution file is kept (TOTK_SHADER_CONTRIB set, seed on)
+int totk_rt_contrib_on(void);                       // a contribution file is kept (TOTK_SHADER_CONTRIB set, a seed found)
 void totk_rt_contrib_line(NSString *line);           // one row into the contribution file (totk_shader_contrib.h)
 void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows);   // probe-gfx only
 #endif
@@ -41,7 +41,9 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows);   // 
    the CLOCK_UPTIME_RAW time of the last new one (0: none yet). Any pointer may be NULL. */
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
 uint64_t totk_rt_new_variants(void);   // shader variants translated this run (no cache scan, unlike totk_rt_counts)
-// Distinct shader variants this run needed and the cache did not have (the iPhone, which translates nothing).
+// Distinct shader variants this run needed and could not get: TOTK_SHADER_NO_TRANSLATE=1, or maxmetal failed on the iPhone.
 uint64_t totk_rt_missed(void);
+// The iPhone / iPad: variants maxmetal translated this run, and (*ns, may be NULL) the time it took (0 on the Mac).
+uint64_t totk_rt_maxmetal_stats(uint64_t *ns);
 uint64_t totk_rt_ready_gen(void);   // moves each time a background translation has been recorded
-int totk_rt_can_translate(void);   // 0 on iOS and with TOTK_SHADER_NO_TRANSLATE=1
+int totk_rt_can_translate(void);   // 0 with TOTK_SHADER_NO_TRANSLATE=1 (iOS: maxmetal in the app, totk_maxmetal_rt.h)
