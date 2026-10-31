@@ -78,6 +78,22 @@ void runtime_rumble_set(unsigned side, float al, float fl, float ah, float fh) {
         });
     }
 }
+void runtime_rumble_snapshot_full(float values[2][4]) {
+    uint64_t now=runtime_now_ns();
+    int enabled=runtime_rumble_enabled(); float g=runtime_rumble_gain();
+    pthread_mutex_lock(&wantLock);
+    for (int i=0;i<2;i++) {
+        memcpy(values[i],want[i],sizeof want[i]);
+        int fresh=enabled && wantAt[i] && now-wantAt[i]<RUMBLE_STALE_MS*1000000ull;
+        values[i][0]=fresh?fmaxf(0,fminf(1,want[i][0]*g)):0;
+        values[i][2]=fresh?fmaxf(0,fminf(1,want[i][2]*g)):0;
+    }
+    pthread_mutex_unlock(&wantLock);
+}
+void runtime_rumble_snapshot(float *low, float *high) {
+    float v[2][4]; runtime_rumble_snapshot_full(v);
+    *low=fmaxf(v[0][0],v[1][0]); *high=fmaxf(v[0][2],v[1][2]);
+}
 void runtime_feedback_quiet(void) {
     pthread_mutex_lock(&wantLock); wantAt[0] = wantAt[1] = 0; pthread_mutex_unlock(&wantLock);
 }

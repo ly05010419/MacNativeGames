@@ -117,3 +117,11 @@ west = y
 ## 按键图标
 
 `python3.14 games/totk/scripts/make_button_icons.py <模组文件夹> --app <Tears of the Kingdom.app> --style keyboard`（或 `--style xbox`）生成一个模组，把游戏按键提示里的 Switch 图标换成默认的键盘和鼠标布局（A B X Y 对应 E、Shift、空格、鼠标左键，W A S D、方向键等；在设置面板里改过的布局不会画出来）或 Xbox 按键（按 Switch 位置排列的 B A Y X、LB/RB、LT/RT、Menu/View）。它用你自己的 RomFS 重绘每种语言字体包里的图标字体（项目里不含任何游戏内容），所以每种游戏语言（包括韩语和中文）都会换成新图标，并写好 manifest，同时把游戏的资源大小表调大以容纳变大的字体（不调的话游戏启动时就会停止）；文件夹里已有的文件会保留。用旧版脚本生成的模组只覆盖其他语言，请加 `--replace` 重新生成。需要 Python 3.14 和 `python3.14 -m pip install fonttools`。文件夹里已有字体包（别的模组的，或者上次生成的）时会停下，加 `--replace` 才覆盖，换风格也要加它。Xbox 图标对应默认的按位置映射；设了 `TOTK_FACE_BUTTONS=label` 或在 `controls.txt` 里改过面键时会对不上。删除模组里的 `Font` 文件夹和 `System/Resource/ResourceSizeTable.*` 后运行 `make_mod_manifest.py` 即可恢复。以固定图片显示的提示（部分教程动画）仍是 Switch 图标。
+
+## Mac 上的 Switch 2 Pro（本机 UDP 兼容）
+
+先运行 Finally the Controller Works，再长按手柄 SYNC 配对。运行时自动订阅该程序的 `127.0.0.1:24800`（玩家 1），无需系统虚拟 HID 权限，也无需 SDL。按键和双摇杆进入现有按键映射，L3+R3 可打开设置。连续 500 ms 没有有效数据会释放输入；桥接程序恢复后自动重连。`TOTK_SWITCH2_UDP=0` 可关闭这条路径。
+
+本机 UDP 路径支持震动和六轴体感：普通桥接使用合并后的低/高频强度，支持扩展的配套桥接则保留左右独立频率与振幅，尊重游戏的震动开关和强度；250 ms 无新值、切后台或断线时停止。体感进入现有融合器，包含静止零偏校准，只有游戏在前台且无其他系统手柄时使用。连接后先静置约 2 秒；游戏里也要开启体感瞄准。`switch2-gyro-dps.txt`（controls.txt 同目录）保存整圈实测得到的度/秒/原始计数比例，`TOTK_SWITCH2_GYRO_DPS` 可覆盖。默认名义值为 2000/32768，不能当成每只手柄的精密校准。游戏内自动型号/电量显示仍来自系统 GameController/HID，UDP 手柄的电量请在桥接程序中查看。协议参考：<https://github.com/Peterksharma/switch2mac/blob/main/Sources/FinallyTheControllerWorks/Output/UDPHub.swift>；客户端为独立实现。
+
+完整震动需要[支持扩展的配套桥接](https://github.com/boleyn/switch2mac/commit/27f1c31)：游戏收到 `S2C1` 版本 1 后，以 `S2H1` 发送左右手柄各自的高低频振幅与频率，轮询周期为 8 ms；普通桥接仍回退到 `S2R1`。实测范围为 M4 Mac、王国之泪 1.2.1 和一只 Pro Controller 2：按键、摇杆、方向正确的体感瞄准、游戏内连续震动已由玩家确认。其他型号未验证。
