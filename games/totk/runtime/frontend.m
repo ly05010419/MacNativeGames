@@ -520,10 +520,26 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+#if defined(TOTK_GAME_V121)
+#include "cheat_panel.h"
+@interface TOTKCheatMenuActions:NSObject
+-(void)openCheats:(id)sender;
+@end
+@implementation TOTKCheatMenuActions
+-(void)openCheats:(id)sender{(void)sender;cheat_panel_dismiss();cheat_panel_show();}
+@end
+static TOTKCheatMenuActions *cheatMenuActions;
+#endif
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
  NSMenu *menu=[NSMenu new],*appMenu=[NSMenu new];
  NSMenuItem *appItem=[NSMenuItem new];appItem.submenu=appMenu;[menu addItem:appItem];
+#if defined(TOTK_GAME_V121)
+ cheatMenuActions=[TOTKCheatMenuActions new];
+ NSMenuItem *cheats=[[NSMenuItem alloc] initWithTitle:@"金手指…" action:@selector(openCheats:) keyEquivalent:@"c"];
+ cheats.keyEquivalentModifierMask=NSEventModifierFlagCommand|NSEventModifierFlagOption;cheats.target=cheatMenuActions;[appMenu addItem:cheats];
+ [appMenu addItem:NSMenuItem.separatorItem];
+#endif
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;
  [appMenu addItem:quit];front_menubar_fps_add(menu);NSApp.mainMenu=menu;
@@ -572,6 +588,9 @@ void runtime_front_run(void(*callback)(void)){
   front_menubar_fps();
   settings_restore_start();
   settings_controller_start();
+#if defined(TOTK_GAME_V121)
+  cheatPanel=[TOTKCheatPanel new];
+#endif
   front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
