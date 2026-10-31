@@ -92,6 +92,19 @@ typedef struct thr {
 static thr_t *g_all;
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
+unsigned runtime_cheat_thread_ports(uint32_t *ports,unsigned capacity){
+ unsigned count=0;mach_port_t self=pthread_mach_thread_np(pthread_self());
+ pthread_mutex_lock(&G);
+ for(thr_t *t=g_all;t;t=t->all){
+  if(!t->started||t->exited||!t->mport||t->mport==self)continue;
+  if(count==capacity){
+   for(unsigned i=0;i<count;i++)mach_port_deallocate(mach_task_self(),ports[i]);
+   pthread_mutex_unlock(&G);return UINT32_MAX;
+  }
+  if(mach_port_mod_refs(mach_task_self(),t->mport,MACH_PORT_RIGHT_SEND,1)==KERN_SUCCESS)ports[count++]=t->mport;
+ }
+ pthread_mutex_unlock(&G);return count;
+}
 #define MAX_H 4096
 static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
