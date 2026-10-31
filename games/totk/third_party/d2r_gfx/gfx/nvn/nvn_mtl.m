@@ -129,7 +129,7 @@ static int g_present_probe;
 static id<MTLTexture> g_fps_tex[4];
 static id<MTLBuffer> g_fps_uv[3];
 static struct { fps_overlay_info info; int scale; } g_fps_key[4] = {{{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}};
-static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: true 2K (" 2K" in the FPS box) */
+static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: 1 = true 2K (" 2K" in the FPS box), 2 = native 4K */
 static int g_fps_box[4][2];
 // TOTK load line (bottom-right, load_overlay_prepare; totk_sysload.c): same slots as the FPS box, a wider texture.
 static id<MTLTexture> g_load_tex[4];
@@ -712,20 +712,15 @@ uint64_t dm_mtl_l3_sample(uint32_t tick) {
 }
 
 static _Atomic uint64_t g_reg_gen = 1;   // 内存池 / 贴图 / 采样器登记的变更代号：参数缓冲复用以它为失效条件之一 | Change generation of memory pool / texture / sampler registration: one of the invalidation conditions for argument buffer reuse
-/* TOTK safety guard: twice a full-game run kernel-panicked macOS inside IOGPUFamily right after the driver returned
-   kIOReturnNoMemory. A zero-copy buffer makes the whole range resident, so ranges with inaccessible pages (sparse
-   virtual pools) or very large ranges are refused here, with details, instead of being handed to the driver. */
+/* TOTK: a zero-copy buffer makes the whole range resident, so ranges with unmapped holes or pages that are not
+   read-write (sparse virtual pools) are refused here, with details, instead of being handed to the driver. There is no
+   size limit (2026-10-30, the user: "做真 4K 根本方案"): the 1 GiB one came from the hypothesis that a huge zero-copy
+   pool caused the IOGPUFamily kernel panics of 2026-10-12; the panics went on with it in place and it never triggered,
+   and their cause was GPU memory leaks that wired ~15 GB (fixed 2026-10-13; Tears of the Kingdom
+   native-port/docs/gpu-kernel-panic.md). A 3.8 GiB pool (a 4K texture pack, TOTK_DRAM_8GB) has run as one buffer since,
+   and a 3840x2160 scene's heaps need a 1,490 MiB one at the start. */
 #include "mach_vm_compat.h"
-/* TOTK_DRAM_8GB (the 8 GB pool for big texture packs, whose TextureHeap pool is ~3.8 GiB): 4 GiB. Read once. */
-static uint64_t pool_buffer_max(void) {
-    static uint64_t v;
-    if (!v) { const char *e = getenv("TOTK_DRAM_8GB"); v = e && *e && strcmp(e, "0") ? 4ull << 30 : 1ull << 30; }
-    return v;
-}
-#define POOL_BUFFER_MAX pool_buffer_max()
 static void pool_range_check(uintptr_t a, uintptr_t b, const void *mem, uint64_t size) {
-    if (b - a > POOL_BUFFER_MAX) MDIE("memory pool %p+%#llx: %llu MiB zero-copy GPU buffer refused (limit %llu MiB)", mem, (unsigned long long)size,
-                                      (unsigned long long)((b - a) >> 20), POOL_BUFFER_MAX >> 20);
     for (mach_vm_address_t at = a; at < b;) {
         mach_vm_address_t ra = at; mach_vm_size_t rs = 0; vm_region_basic_info_data_64_t ri; mach_msg_type_number_t rc = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ro = MACH_PORT_NULL;
         if (mach_vm_region(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&ri, &rc, &ro) != KERN_SUCCESS || ra > at)
@@ -5748,13 +5743,24 @@ static NvShader *shader_load(NSString *pc, int stage) {
        them in memory (the Mac's behaviour before). */
     static int keep_src = -1; if (keep_src < 0) { const char *e = getenv("TOTK_KEEP_MSL"); keep_src = e && !strcmp(e, "1"); }
     if (keep_src || o->ssao_slot) o->src = full;   // TOTK_SSAO: the variants made from sh_src (border colours, no depth, MetalFX) start from the patch
+    /* A library without the entry (an empty MSL: a translation cut short, 2026-10-30) or an argument block unlike the
+       reflection: not loaded, and a runtime translation is made again at its next use (totk_rt_variant_broken). The game
+       ended here before (user: "坏了 就重新翻译 不能奔溃"). */
+    if (!o->fn) {
+        MLOG("【红】着色器 %s 的库里没有入口 %s（源文件可能没写完）：不加载，下次用到时重新翻译", o->key, [[j[@"entry"] description] UTF8String]);
+        if (rt) totk_rt_variant_broken(pc);
+        return nil;
+    }
     if (o->rf.nb) {
         o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
         int max_aid = -1;
         for (int i = 0; i < o->rf.nb; i++) max_aid = MAX(max_aid, o->rf.b[i].aid);
         o->arg_len = o->ae.encodedLength;
-        if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7))
-            MDIE("着色器 %s 参数块布局异常：encodedLength=%lu maxAid=%d", o->key, (unsigned long)o->arg_len, max_aid);
+        if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7)) {
+            MLOG("【红】着色器 %s 参数块布局异常：encodedLength=%lu maxAid=%d：不加载，下次用到时重新翻译", o->key, (unsigned long)o->arg_len, max_aid);
+            if (rt) totk_rt_variant_broken(pc);
+            return nil;
+        }
     }
     if (o->rf.has_c1) c1_store(o, full);
     if (o->ssao_slot && o->c1buf) ssao_put(o);   // TOTK_SSAO: before any draw can read the slot
@@ -14688,7 +14694,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
         }
         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
     }
-    if (crop) { atomic_store(&g_pic_big, cw > 1920 || ch > 1080); atomic_store(&g_out_w, (uint32_t)cw); atomic_store(&g_out_h, (uint32_t)ch); }   // a game frame (interpolated frames come without the crop)
+    if (crop) { atomic_store(&g_pic_big, cw >= 3840 && ch >= 2160 ? 2 : cw > 1920 || ch > 1080); atomic_store(&g_out_w, (uint32_t)cw); atomic_store(&g_out_h, (uint32_t)ch); }   // a game frame (interpolated frames come without the crop)
     present_pipeline(dst.pixelFormat);
     double dw = dst.width, dh = dst.height;
     MTLViewport vp = present_viewport(dw, dh, cw, ch);

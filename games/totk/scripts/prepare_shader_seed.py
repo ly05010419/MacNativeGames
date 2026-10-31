@@ -286,9 +286,16 @@ class TranslationCache:
             return dict(ok=False, error=json.loads(failed.read_text()).get('error'))
         files = [variant+'_b.metal', variant+'_b.json']
         try:
-            cached = [os.stat(self.folder/name).st_ino for name in files]
+            stats = [os.stat(self.folder/name) for name in files]
         except FileNotFoundError:
             return None
+        if any(st.st_size == 0 for st in stats):
+            # A translation cut short (2026-10-30: an empty MSL from 10-26 in the shared cache ended the game's warm-up):
+            # not a cached reply, translated again.
+            for name in files:
+                (self.folder/name).unlink(missing_ok=True)
+            return None
+        cached = [st.st_ino for st in stats]
         for name, inode in zip(files, cached):
             try:
                 if os.stat(staging/name).st_ino == inode:
@@ -303,6 +310,8 @@ class TranslationCache:
         if not reply.get('ok'):
             (self.folder/(variant+'.failed')).write_text(json.dumps(dict(error=reply.get('error'))))
             return
+        if any(not (staging/name).is_file() or (staging/name).stat().st_size == 0 for name in (variant+'_b.metal', variant+'_b.json')):
+            return   # an empty reply is not kept: the next packaging translates it again
         for name in (variant+'_b.metal', variant+'_b.json'):
             (self.folder/name).unlink(missing_ok=True)
             try:
@@ -782,6 +791,12 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                             process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
                                                         '--out', str(staging), '--chain', CHAIN],
                                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                        # The translator writes the MSL over the file in place (Service.cs File.WriteAllBytes), and a staging
+                        # file may be a hard link to the translation cache (take / put link them): a translation made again
+                        # rewrote the cached file through it, and one cut short left it empty (2026-10-30, the 0-byte
+                        # 5e0447ea... that ended the game). Unlinked first, the translator writes a file of its own.
+                        for name in (variant+'_b.metal', variant+'_b.json'):
+                            (staging/name).unlink(missing_ok=True)
                         code_path = staging/(variant+'.code')
                         request = translation_request(variant, stage, control, code, answers, code_path)
                         process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
@@ -846,8 +861,9 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
         produced[key] = produced[first]
     failed, rows, completed = [], [], []
     for result in outcome+[result for key in sorted(derived) for result in derived[key]]:
-        if result and result[0] == 'ok':
-            completed.append(result[1]); rows.extend(result[2])
+        if result and result[0] == 'ok' and all((staging/(result[1]+end)).is_file() and (staging/(result[1]+end)).stat().st_size
+                                               for end in ('_b.metal', '_b.json')):
+            completed.append(result[1]); rows.extend(result[2])   # an empty MSL or reflection is a failure, not a shipped shader
         elif result:
             failed.append(result[1])
     ready = sum(1 for key in startup if key in produced)

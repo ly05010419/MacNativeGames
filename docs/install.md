@@ -99,6 +99,8 @@ python3.14 build_app.py "<base 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 upd
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
 
+On a Mac with 16 GB of memory or more, a 1.4.3 build includes native 4K (the settings panel's 3840×2160 resolution); it reserves about 1.4 GiB more memory at every start. Add `--no-native-4k` to leave it out, or `--native-4k` to include it on a Mac with less memory.
+
 **4. Let it run to the end.** A fresh build takes **20–40 minutes** on an M-series Mac, longer on an 8 GB Mac:
 
 | Step | Time |

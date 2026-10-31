@@ -40,8 +40,12 @@ int main(int argc, char **argv) {
     assert(restart() == pack_size(2560, 1440));
     output_w = 3840; output_h = 2160;
     assert(restart() == pack_size(3840, 2160));
-    runtime_output_mode_set(OUTPUT_MODE_NATIVE); expect_file("native-4k"); assert(restart() == pack_size(3840, 2160));   /* native: the swapchain's */
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE); expect_file("native-2k"); assert(restart() == pack_size(2560, 1440));   /* a 4K app's 2K stays 2560x1440 */
+    assert(runtime_output_modes() & 1 << OUTPUT_MODE_NATIVE_4K);       /* --native-4k: the panel offers native 4K */
+    runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K); expect_file("native-4k"); assert(restart() == pack_size(3840, 2160));
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K && !mfx_on);
     output_w = 2560; output_h = 1440;
+    assert(!(runtime_output_modes() & 1 << OUTPUT_MODE_NATIVE_4K));    /* a 2K app: no native 4K */
     /* 2K + MetalFX: the 2K canvas with the MetalFX output stage (a 4K screen), kept as one word. */
     runtime_output_mode_set(OUTPUT_MODE_NATIVE_METALFX); expect_file("native-2k-metalfx");
     assert(restart() == pack_size(2560, 1440) && mfx_on && runtime_output_mode() == OUTPUT_MODE_NATIVE_METALFX);

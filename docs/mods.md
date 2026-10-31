@@ -283,9 +283,8 @@ from them and follow their terms). Played on the Mac with 1.4.3:
    open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does) and lets one
-   memory pool be a zero-copy GPU buffer of up to 4 GiB (the pack's `TextureHeap` pool is about 3.8 GiB; the limit is
-   1 GiB otherwise).
+   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does); the pack's
+   `TextureHeap` pool, about 3.8 GiB, becomes one zero-copy GPU buffer.
 
 Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
 bottleneck). A Mac with less memory than that is not expected to run it.
@@ -641,8 +640,8 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
    open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样），并允许单个内存池做成最大 4 GiB 的零拷贝
-   GPU 缓冲（材质包的 `TextureHeap` 池约 3.8 GiB，平时上限 1 GiB）。
+   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样）；材质包约 3.8 GiB 的 `TextureHeap`
+   池做成一个零拷贝 GPU 缓冲。
 
 在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 

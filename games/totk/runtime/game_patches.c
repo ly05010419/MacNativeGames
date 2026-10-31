@@ -329,8 +329,8 @@ static int output_full_at_start = 1;
 static int output_res_auto(unsigned *w, unsigned *h) {
 #if TARGET_OS_OSX
     if (getenv("TOTK_EXPORT_IOS")) return 0;
-    /* The largest canvas whose heap overlay the app carries: 2K. Not 4K: see game_patches_v143.c (its heaps need one memory
-       pool above the graphics layer's 1 GiB zero-copy limit). */
+    /* The largest canvas whose heap overlay the app carries: 2K. Native 4K is 1.4.3's (game_patches_v143.c), where the
+       scene follows the canvas. */
     const char *dir = getenv("TOTK_ROMFS_PATCHES_OUT"); char path[4096];
     static const unsigned sizes[][2] = {{2560, 1440}};
     for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {

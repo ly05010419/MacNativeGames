@@ -203,6 +203,11 @@ class MetalCompilerTests(unittest.TestCase):
         self.assertEqual((metal, version, env['DEVELOPER_DIR']),
                          ('/toolchain/metal', 'Apple metal version 32023', '/Volumes/x/Xcode.app/Contents/Developer'))
 
+    def test_native_4k_is_built_by_default_on_a_mac_with_16_gb_or_more(self):
+        self.assertTrue(build_app.native_4k_default(16 << 30))   # what a 16 GB Mac reports
+        self.assertTrue(build_app.native_4k_default(36 << 30))
+        self.assertFalse(build_app.native_4k_default(8 << 30))
+
     def test_volume_search_finds_xcodes_and_does_not_follow_symlinks(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
