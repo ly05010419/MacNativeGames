@@ -15,7 +15,7 @@
 extern Module *runtime_cheat_module(void) __attribute__((weak_import));
 extern void runtime_cheat_region_bases(uint64_t *) __attribute__((weak_import));
 extern int runtime_cheat_guest_range(uint64_t,size_t) __attribute__((weak_import));
-extern unsigned runtime_cheat_thread_ports(uint32_t *,unsigned) __attribute__((weak_import));
+extern unsigned runtime_cheat_suspend_threads(uint32_t *,unsigned) __attribute__((weak_import));
 extern uint64_t runtime_gamepad_peek_buttons(void) __attribute__((weak_import));
 typedef struct {uint64_t offset;uint32_t original;} CnGuard;
 typedef struct {uint64_t address,value,old;unsigned width;} CnWrite;

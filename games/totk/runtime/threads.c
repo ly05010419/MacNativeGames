@@ -1,3 +1,4 @@
+#include <unistd.h>
 /* Adapted from pinned D2R Mobile host/hle_thread.c, MIT.
  * Game-specific diagnostics and optional timing accounting removed.
  * Core affinity is virtual bookkeeping; Darwin schedules pthreads. */
@@ -92,18 +93,24 @@ typedef struct thr {
 static thr_t *g_all;
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
-unsigned runtime_cheat_thread_ports(uint32_t *ports,unsigned capacity){
- unsigned count=0;mach_port_t self=pthread_mach_thread_np(pthread_self());
+/* Hold the lifecycle lock across snapshot AND suspension. A snapshot followed by
+   unlocked suspension could miss a guest created in between. No guest can create
+   a new thread until all collected threads are stopped and G has been released. */
+unsigned runtime_cheat_suspend_threads(uint32_t *ports,unsigned capacity){
+ unsigned count=0,suspended=0;mach_port_t self=pthread_mach_thread_np(pthread_self());
  pthread_mutex_lock(&G);
  for(thr_t *t=g_all;t;t=t->all){
-  if(!t->started||t->exited||!t->mport||t->mport==self)continue;
-  if(count==capacity){
-   for(unsigned i=0;i<count;i++)mach_port_deallocate(mach_task_self(),ports[i]);
-   pthread_mutex_unlock(&G);return UINT32_MAX;
-  }
-  if(mach_port_mod_refs(mach_task_self(),t->mport,MACH_PORT_RIGHT_SEND,1)==KERN_SUCCESS)ports[count++]=t->mport;
+  if(!t->started||t->exited||t->mport==self)continue;
+  if(!t->mport||count==capacity)goto fail;
+  if(mach_port_mod_refs(mach_task_self(),t->mport,MACH_PORT_RIGHT_SEND,1)!=KERN_SUCCESS)goto fail;
+  ports[count++]=t->mport;
  }
+ for(;suspended<count;suspended++)if(thread_suspend(ports[suspended])!=KERN_SUCCESS)goto fail;
  pthread_mutex_unlock(&G);return count;
+fail:
+ for(unsigned i=0;i<suspended;i++)if(thread_resume(ports[i])!=KERN_SUCCESS)_exit(75);
+ for(unsigned i=0;i<count;i++)mach_port_deallocate(mach_task_self(),ports[i]);
+ pthread_mutex_unlock(&G);return UINT32_MAX;
 }
 #define MAX_H 4096
 static struct { int type; void *obj; } g_h[MAX_H];

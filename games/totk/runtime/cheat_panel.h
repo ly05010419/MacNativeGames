@@ -85,17 +85,16 @@ static NSBundle *cheat_bundle(void){
   if(edge&((1u<<13)|(1u<<15))){NSInteger row=_table.selectedRow+(edge&(1u<<15)?1:-1);if(row<0)row=0;if((NSUInteger)row<_visible.count){[_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];[_table scrollRowToVisible:row];}}
   if((edge&1)&&_table.selectedRow>=0){NSButton *sender=[NSButton new];sender.tag=_table.selectedRow;[self toggle:sender];}
  }
- if(!_valid||!_memory||!runtime_cheat_module||!runtime_cheat_thread_ports||!runtime_cheat_region_bases)return;
+ if(!_valid||!_memory||!runtime_cheat_module||!runtime_cheat_suspend_threads||!runtime_cheat_region_bases)return;
  Module *module=runtime_cheat_module();if(!module)return;_memory->module=module;
  uint64_t keys=(runtime_gamepad_peek_buttons?runtime_gamepad_peek_buttons():0)|runtime_keyboard_buttons();
  BOOL needed=NO;for(TOTKCheatEntry *e in _entries){BOOL want=_master&&e->selected&&e->program.code;if((e->applied&&!want)||(want&&(!e->pure||!e->applied||(e->hotkeys&&e->lastKeys!=keys)))){needed=YES;break;}}
  if(!needed)return;
  /* Foundation and allocations finish BEFORE suspending any game thread. */
  TOTKCheatEntry *__unsafe_unretained objects[CN_ENTRIES];unsigned n=(unsigned)_entries.count;for(unsigned i=0;i<n;i++)objects[i]=_entries[i];
- uint32_t ports[512];unsigned count=runtime_cheat_thread_ports(ports,512);if(count==UINT32_MAX)return;
  CvHost host={.context=_memory,.read=cn_read,.write=cn_write,.keys=keys,.budget=50000};runtime_cheat_region_bases(host.bases);host.bases[0]=(uintptr_t)module->base;
- if(!count)return;
- unsigned suspended=0;for(;suspended<count;suspended++)if(thread_suspend(ports[suspended]))break;
+ uint32_t ports[512];unsigned count=runtime_cheat_suspend_threads(ports,512);if(count==UINT32_MAX||!count)return;
+ unsigned suspended=count;
  _memory->deadline=runtime_now_ns()+UINT64_C(4000000);_memory->timedout=0;
  if(suspended==count){
   /* Pure C only in this section, including failure/rollback paths. */

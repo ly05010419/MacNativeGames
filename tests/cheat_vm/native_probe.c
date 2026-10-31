@@ -8,7 +8,7 @@ uint64_t runtime_now_ns(void){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&
 Module *runtime_cheat_module(void){return NULL;}
 void runtime_cheat_region_bases(uint64_t *p){(void)p;}
 int runtime_cheat_guest_range(uint64_t a,size_t n){(void)a;(void)n;return 0;}
-unsigned runtime_cheat_thread_ports(uint32_t *p,unsigned n){(void)p;(void)n;return 0;}
+unsigned runtime_cheat_suspend_threads(uint32_t *p,unsigned n){(void)p;(void)n;return 0;}
 uint64_t runtime_gamepad_peek_buttons(void){return 0;}
 int main(void){
  mach_vm_address_t a=0;assert(!mach_vm_allocate(mach_task_self(),&a,CN_PAGE*2,VM_FLAGS_ANYWHERE));

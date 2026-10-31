@@ -30,7 +30,8 @@ The native adapter stages one entry's writes, checks pointers and guards, then
 commits it while this runtime's retained guest threads are suspended. It makes
 readonly pages temporarily RW, never RWX, invalidates their instruction caches,
 restores protections, and resumes the threads on every recoverable path. The
-suspended section performs no Objective-C calls or allocations. A periodic tick
+suspended section performs no Objective-C calls or allocations. Thread creation is
+blocked across snapshot and suspension so a newly created guest cannot escape it. A periodic tick
 has a four-millisecond execution deadline, a bounded page cache/write set, and
 round-robin progress. No selections means no memory reads or guest suspensions;
 static patches without hotkeys do no ongoing work after applying.
