@@ -251,6 +251,7 @@ void runtime_motion_live(int on) {
     pthread_mutex_lock(&lock); controller_live = on; live = controller_live || phone_live || mouse_owns;
     if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
 }
+int runtime_motion_controller_live(void) { pthread_mutex_lock(&lock); int on = controller_live; pthread_mutex_unlock(&lock); return on; }
 /* The iPhone's own sensor is a second source: it feeds the same ring, and only one source is live at a time (phone_motion
    starts only when no controller is attached). Stopping it drops its samples at once so the game cannot read the phone's
    last states through a controller that just took over. */

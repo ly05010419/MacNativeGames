@@ -44,7 +44,9 @@
                                                              launch (its title says so)
    Key bindings: one row per game action with two keyboard and mouse inputs (keyboard_map.h, runtime_keymap_set: in force
    at once, saved in keyboard.txt) and the controller buttons that drive it (controller_map.h, runtime_controller_map_set:
-   controls.txt). Click a box, then press a key or a mouse button (key 1 cancels; Command keys stay the system's) or, in
+   controls.txt). Under the controller (the drawing's controller side, or the list's bottom; user 2026-10-30), while no
+   controller with a gyro of its own is connected, tilt mode's two menus: tilt speed 60 / 90 / 180 / 360 degrees a second (runtime_tilt_speed_set) and reverse tilt off / all / one stick axis
+   (runtime_tilt_invert_set), both in tilt.txt (gamepad.m) and in force at the next tick. Click a box, then press a key or a mouse button (key 1 cancels; Command keys stay the system's) or, in
    the controller column, a controller button; with a controller, pick a row and press A, then the new button. An input
    another action holds swaps places with this box's. Right-click clears a box. Two buttons reset the keyboard and mouse,
    or the controller, to the default (the file removed). A capture ends after 6 seconds without input.
@@ -62,6 +64,7 @@
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
+#include "gyro_tilt.h"        /* TILT_INVERT_*: the reverse tilt choices */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 
 void dm_gfx_set_flag(const char *name, int value);
@@ -349,6 +352,18 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
  for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:SETTINGS_PAGE_INPUT;
+ /* Tilt mode (LB + LT on a controller without a gyro, gamepad.m), on the key bindings page under the controller (user
+    2026-10-30): its top speed and which stick axis it reverses (one or all three); both in force at the next tick, also
+    while it is on, and saved in tilt.txt. */
+ NSUInteger tilt=rows.count;
+ [rows addObject:settings_row(settings_text("倾斜速度","Tilt speed"),
+  @[settings_text("60°/秒（默认）","60°/s (default)"),settings_text("90°/秒","90°/s"),settings_text("180°/秒","180°/s"),settings_text("360°/秒","360°/s")],@[@60,@90,@180,@360],
+  ^int{return runtime_tilt_speed();},^(int v){runtime_tilt_speed_set(v);})];
+ [rows addObject:settings_row(settings_text("反转倾斜","Reverse tilt"),
+  @[settings_on_off(0),settings_text("全部","All"),settings_text("左摇杆左右","Left stick left / right"),settings_text("左摇杆上下","Left stick up / down"),
+    settings_text("右摇杆左右","Right stick left / right")],@[@0,@(TILT_INVERT_ALL),@(TILT_INVERT_LX),@(TILT_INVERT_LY),@(TILT_INVERT_RX)],
+  ^int{return runtime_tilt_invert();},^(int v){runtime_tilt_invert_set(v);})];
+ for(NSUInteger i=tilt;i<rows.count;i++)rows[i].page=SETTINGS_PAGE_BINDINGS;
  return rows;
 }
 
@@ -474,6 +489,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) TOTKKeyboardDiagram *keyboardDiagram;
 @property(strong) TOTKControllerDiagram *padDiagram;
 @property(strong) NSSegmentedControl *deviceTabs;   /* keyboard and mouse, or controller */
+@property(strong) NSView *tiltStrip;   /* the key bindings page: tilt mode's two menus, under the controller */
 @property(strong) NSTextField *drawingsHelp;
 @property(strong) NSButton *listToggle;   /* "Show as list" / "Show drawings" */
 @property(strong) NSArray<NSNumber *> *padOrder;   /* the controller buttons a controller moves through on the drawing */
@@ -522,7 +538,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
        SETTINGS_CELL_W = 118, SETTINGS_CELL_GAP = 6, SETTINGS_BIND_ROW_H = 28, SETTINGS_SECTION_H = 24 };
 -(instancetype)init{
  NSArray<TOTKSettingRow *> *rows=settings_rows();
- NSUInteger perPage[2]={0,0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
+ NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
  CGFloat n=MAX(perPage[0],perPage[1]),rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
@@ -613,7 +629,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  CGFloat xs[4]={24,14+cx0,14+cx1,14+cx2},ws[4]={cx0-16,SETTINGS_CELL_W,SETTINGS_CELL_W,SETTINGS_CELL_W};
  for(int i=0;i<4;i++){NSTextField *t=[NSTextField labelWithString:titles[i]];t.font=[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];t.textColor=dim;
   t.alignment=i?NSTextAlignmentCenter:NSTextAlignmentLeft;t.lineBreakMode=NSLineBreakByTruncatingTail;t.frame=NSMakeRect(xs[i],h-50,ws[i],16);[page addSubview:t];if(i==3)self.padHeader=t;}
- NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,w,fmax(0,h-54))];
+ NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,SETTINGS_ROW_H+6,w,fmax(0,h-60-SETTINGS_ROW_H))];
+ [page addSubview:[self tiltStripWithWidth:w]];
  scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
  TOTKFlippedView *list=[[TOTKFlippedView alloc] initWithFrame:NSMakeRect(0,0,w,0)];
  int count;const SettingsAction *actions=settings_actions(&count);CGFloat y=0;
@@ -702,19 +719,48 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  [self note:settings_text("谢谢支持！在打开的 GitHub 页面右上角点 Star","Thank you! Click Star at the top right of the GitHub page")];}
 /* What a controller moves through: the rows; on the list, its rows and the buttons below; on the drawings, the device
    switch, the controller's buttons (the controller drawing) and the buttons below. */
+/* Tilt mode's menus show only while no controller with a gyro of its own (DualSense, DualShock, Switch Pro) is connected
+   (user 2026-10-30), and on the drawings only with the controller: the list or the controller drawing then gives up their
+   row. YES when that changed. */
+-(BOOL)tiltLayout{
+ BOOL shown=!runtime_motion_controller_live()&&(!self.drawings||g_settings_bindings_device);
+ if(!self.tiltStrip||self.tiltStrip.hidden!=shown)return NO;
+ self.tiltStrip.hidden=!shown;
+ NSView *area=self.drawings?self.padDiagram:self.bindingsScroll;CGFloat top=NSMaxY(area.frame),bottom=shown?SETTINGS_ROW_H+6:0;
+ area.frame=NSMakeRect(area.frame.origin.x,bottom,area.frame.size.width,top-bottom);
+ return YES;
+}
 -(void)updateTargets{
+ [self tiltLayout];
  [self.controllerTargets removeAllObjects];self.padOrder=@[];
  if(self.page!=SETTINGS_PAGE_BINDINGS){for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];
   for(NSButton *b in self.displayButtons.reverseObjectEnumerator)if(!b.hidden)[self.controllerTargets addObject:b];}
  else if(!self.drawings){[self.controllerTargets addObjectsFromArray:self.bindingTargets];
+  if(!self.tiltStrip.hidden)for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];   /* tilt mode's menus */
   for(NSButton *b in @[self.resetButtons[0],self.resetButtons[1],self.listToggle])if(!b.hidden&&b.enabled)[self.controllerTargets addObject:b];}
  else{
   [self.controllerTargets addObject:self.deviceTabs];
-  if(g_settings_bindings_device){self.padOrder=[self.padDiagram order];for(NSUInteger i=0;i<self.padOrder.count;i++)[self.controllerTargets addObject:self.padDiagram];}
+  if(g_settings_bindings_device){self.padOrder=[self.padDiagram order];for(NSUInteger i=0;i<self.padOrder.count;i++)[self.controllerTargets addObject:self.padDiagram];
+   if(!self.tiltStrip.hidden)for(TOTKSettingRow *r in self.rows)[self.controllerTargets addObject:r.control.superview];}   /* tilt mode's menus */
   for(NSButton *b in @[self.resetButtons[0],self.resetButtons[1],self.listToggle])if(!b.hidden)[self.controllerTargets addObject:b];
  }
  if(self.controllerIndex>=(NSInteger)self.controllerTargets.count)self.controllerIndex=0;
  [self controllerHighlight];
+}
+/* Tilt mode's two menus side by side in one band (the rows on the key bindings page), at the page's bottom. */
+-(NSView *)tiltStripWithWidth:(CGFloat)w{
+ NSView *strip=[[NSView alloc] initWithFrame:NSMakeRect(0,0,w,SETTINGS_ROW_H)];NSUInteger k=0;
+ CGFloat bw=floor((w-28-SETTINGS_GAP)/2),popW=fmin(SETTINGS_POP_W,bw-120);
+ for(TOTKSettingRow *r in self.allRows){
+  if(r.page!=SETTINGS_PAGE_BINDINGS)continue;
+  NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14+k*(bw+SETTINGS_GAP),0,bw,SETTINGS_ROW_H)];band.wantsLayer=YES;k++;
+  band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[strip addSubview:band];
+  NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];label.lineBreakMode=NSLineBreakByTruncatingTail;
+  label.textColor=[NSColor colorWithCalibratedWhite:0.92 alpha:1];label.frame=NSMakeRect(12,floor((SETTINGS_ROW_H-18)/2),bw-popW-28,18);[band addSubview:label];
+  NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(bw-popW-8,floor((SETTINGS_ROW_H-26)/2),popW,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
+  r.control=pop;pop.refusesFirstResponder=YES;pop.target=r;pop.action=@selector(changed:);[band addSubview:pop];[r refresh];
+ }
+ self.tiltStrip=strip;return strip;
 }
 /* The key bindings drawings: the device switch with a line of help, and the keyboard and mouse or the controller. */
 -(NSView *)drawingsPageWithFrame:(NSRect)frame{
@@ -725,12 +771,13 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  device.selectedSegment=g_settings_bindings_device;[page addSubview:device];self.deviceTabs=device;
  NSTextField *help=[NSTextField labelWithString:@""];help.font=[NSFont systemFontOfSize:11];help.textColor=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
  help.lineBreakMode=NSLineBreakByTruncatingTail;help.frame=NSMakeRect(362,h-25,w-380,16);[page addSubview:help];self.drawingsHelp=help;
- NSRect area=NSMakeRect(14,0,w-28,h-36);__weak TOTKSettingsPanel *weak=self;
+ NSRect area=NSMakeRect(14,0,w-28,h-36),padArea=NSMakeRect(14,SETTINGS_ROW_H+6,w-28,h-42-SETTINGS_ROW_H);__weak TOTKSettingsPanel *weak=self;
  TOTKKeyboardDiagram *keys=[[TOTKKeyboardDiagram alloc] initWithFrame:area];
  keys.pick=^(int input,NSRect at){settings_pointer_used();[weak popMenuForInput:input pad:NO at:at];};
- TOTKControllerDiagram *pad=[[TOTKControllerDiagram alloc] initWithFrame:area];
+ TOTKControllerDiagram *pad=[[TOTKControllerDiagram alloc] initWithFrame:padArea];
  pad.pick=^(int physical,NSRect at){settings_pointer_used();[weak popMenuForInput:physical pad:YES at:at];};
  [page addSubview:keys];[page addSubview:pad];self.keyboardDiagram=keys;self.padDiagram=pad;
+ [page addSubview:[self tiltStripWithWidth:w]];
  [self showDevice];
  return page;
 }
@@ -794,7 +841,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  fprintf(stderr,"[totk] settings: controller %s -> %s\n",controller_physical_names[physical],action<0?"nothing":controller_switch_names[action]);
  [self refreshBindings];
 }
--(void)refresh{for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];}
+-(void)refresh{for(TOTKSettingRow *r in self.allRows)[r refresh];if(self.page==SETTINGS_PAGE_BINDINGS&&[self tiltLayout])[self updateTargets];[self refreshBindings];}
 -(void)refreshBindings{
  if(self.page!=SETTINGS_PAGE_BINDINGS)return;
  if(self.drawings){[self.keyboardDiagram setNeedsDisplay:YES];[self.padDiagram setNeedsDisplay:YES];return;}
@@ -935,6 +982,11 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
    uint16_t map[CONTROLLER_BUTTONS];uint8_t modes[CONTROLLER_BUTTONS];runtime_controller_map_get(map,modes);
    int now=runtime_gamepad_settings_button()==physical?SETTINGS_BIND_PANEL:controller_map_target(map[physical]),at=n-1;for(int k=0;k<n;k++)if(cycle[k]==now)at=k;
    [self assignPad:physical action:cycle[(at+(select?1:step)+n)%n]];return;
+  }
+  for(TOTKSettingRow *r in self.rows)if(r.control.superview==target){   /* tilt mode's menus: left / right (or A) the next choice */
+   NSPopUpButton *p=(NSPopUpButton *)r.control;NSInteger n=p.numberOfItems,index=MAX(0,p.indexOfSelectedItem);
+   if(n>1){[p selectItemAtIndex:(index+(select?1:step)+n)%n];[r changed:p];}
+   [self controllerHighlight];return;
   }
   if(!select)return;
   if([target isKindOfClass:NSButton.class]){[(NSButton *)target performClick:nil];return;}

@@ -33,6 +33,7 @@ void runtime_front_request_close(void){runtime_fail("unexpected window close in 
 /* Test double for the native controller layer (runtime/gamepad.m is not linked into this probe). */
 static RuntimeGamepadState fake_pad;
 void runtime_gamepad_read(RuntimeGamepadState *out){*out=fake_pad;}
+int runtime_tilt_active(void){return 0;}   /* tilt mode (runtime/gamepad.m) is not linked */
 void runtime_gamepad_clear(void){fake_pad=(RuntimeGamepadState){0};}
 /* Test double for the Mac controller's haptics (runtime/gamepad_feedback.m): the last value per side. */
 static int rumble_calls;static float rumble_seen[2][4];

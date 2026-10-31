@@ -15,6 +15,8 @@ static int gyroOn = 1, motionMouse = -1, feeds, hookCalls;
 static double lastYaw, lastAcc;
 int runtime_gyro_enabled(void) { return gyroOn; }
 void runtime_motion_mouse(int on) { motionMouse = on; }
+int runtime_motion_controller_live(void) { return 0; }   /* tilt mode's gate (runtime/gamepad.m) */
+int runtime_motion_read(RuntimeMotionState *out, int max) { (void)out; (void)max; return 0; }   /* tilt mode reads the pose shown */
 void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) { (void)now; feeds++; lastYaw = gyro[2]; lastAcc = acc[2]; }
 static void hook(void) { hookCalls++; }
 static unsigned layoutHeld; static int layoutCalls;   /* runtime/input.c's mouse buttons: what reached the layout */

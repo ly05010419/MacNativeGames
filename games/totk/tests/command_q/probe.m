@@ -131,6 +131,13 @@ void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
 int runtime_rumble_gain_locked(void){return 0;}
 float runtime_rumble_gain(void){return 1;}
 void runtime_rumble_gain_set(float gain){(void)gain;}
+#ifndef FRONTEND_REAL_GAMEPAD   /* the settings panel's tilt menus (runtime/gamepad.m when it is in) */
+int runtime_tilt_speed(void){return 60;}
+void runtime_tilt_speed_set(int speed){(void)speed;}
+int runtime_tilt_invert(void){return 0;}
+void runtime_tilt_invert_set(int invert){(void)invert;}
+int runtime_motion_controller_live(void){return 0;}
+#endif
 int runtime_triggers_available(void){return 0;}
 int runtime_triggers_locked(void){return 0;}
 int runtime_triggers_choice(void){return 0;}

@@ -55,3 +55,7 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_bow_state.c -o "$RUNNER_TEMP/test-bow-state"
           "$RUNNER_TEMP/test-bow-state"
+      - name: Check Breath of the Wild's tilt mode (virtual controller, LT + RT chord, when it is allowed) with the undefined-behavior sanitizer
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all tests/test_gyro_tilt.c -o "$RUNNER_TEMP/test-gyro-tilt"
+          "$RUNNER_TEMP/test-gyro-tilt"

@@ -10,6 +10,8 @@ void runtime_feedback_detach(GCController *c){(void)c;}
 void runtime_feedback_quiet(void){}
 int runtime_gyro_enabled(void){return 0;}
 void runtime_motion_mouse(int on){(void)on;}
+int runtime_motion_controller_live(void) { return 0; }   /* tilt mode's gate (runtime/gamepad.m) */
+int runtime_motion_read(RuntimeMotionState *out, int max) { (void)out; (void)max; return 0; }   /* tilt mode reads the pose shown */
 void runtime_motion_feed_mouse(const double a[3],const double g[3],uint64_t n){(void)a;(void)g;(void)n;}
 uint64_t runtime_keyboard_buttons(void){return 0;}
 static unsigned checks;

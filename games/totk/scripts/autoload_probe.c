@@ -33,6 +33,7 @@ void runtime_survey_cancel_user(void){}
 void runtime_front_request_close(void){runtime_fail("unexpected window close in unit probe");}
 static RuntimeGamepadState fake_pad;
 void runtime_gamepad_read(RuntimeGamepadState *out){*out=fake_pad;}
+int runtime_tilt_active(void){return 0;}   /* tilt mode (runtime/gamepad.m) is not linked */
 void runtime_gamepad_clear(void){fake_pad=(RuntimeGamepadState){0};}
 int runtime_handheld_mode(void){return 0;}   /* docked, as the Mac runs */
 /* The controller feedback side (runtime/gamepad_feedback.m) is not linked; auto-load never makes the game rumble. */
