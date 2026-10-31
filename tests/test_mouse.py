@@ -29,7 +29,7 @@ class MouseTests(unittest.TestCase):
 
     def test_mouse_mode(self):
         run_probe(self, ['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror', str(TOTK / 'tests/mouse/probe.m'),
-                         '-framework', 'Foundation', '-framework', 'GameController', '-framework', 'IOKit'], '<data>')
+                         '-framework', 'AppKit', '-framework', 'Foundation', '-framework', 'GameController', '-framework', 'IOKit'], '<data>')
 
 
 if __name__ == '__main__':

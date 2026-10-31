@@ -17,7 +17,7 @@ class GamepadTypeTests(unittest.TestCase):
             probe, data = Path(tmp) / 'probe', Path(tmp) / 'data'
             data.mkdir()
             build = subprocess.run(['xcrun', 'clang', '-std=c11', '-fobjc-arc', '-Wall', '-Wextra', '-Werror',
-                                    str(TOTK / 'tests/gamepad_type/probe.m'), '-framework', 'Foundation',
+                                    str(TOTK / 'tests/gamepad_type/probe.m'), '-framework', 'AppKit', '-framework', 'Foundation',
                                     '-framework', 'GameController', '-framework', 'IOKit', '-o', str(probe)],
                                    capture_output=True, text=True, timeout=120)
             self.assertEqual(build.returncode, 0, build.stderr[-2000:])

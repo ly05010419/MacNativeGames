@@ -3,8 +3,13 @@
 #import <GameController/GameController.h>
 #include <TargetConditionals.h>
 #if TARGET_OS_OSX
+#import <AppKit/AppKit.h>
 #import <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDUsageTables.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include "switch2_udp.h"
 #endif
 #include <math.h>
 #include <pthread.h>
@@ -46,6 +51,88 @@ static SwitchLeftFallback rawLeft, rawRight;
 static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
 static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
 static void refresh_gamepads(void);
+#if TARGET_OS_OSX
+static Switch2UDPState udpPad;
+static int udpConnected;
+static uint64_t udpLast;
+static int udpMotionOwned;
+static double udpGyroDPS = 2000.0/32768.0; /* nominal range; per-install whole-turn calibration below */
+static void switch2_udp_motion(const Switch2UDPState *s, uint64_t now) {
+    int allowed=s && NSApp.active && runtime_gyro_enabled();
+    int native=0;
+    for (GCController *c in GCController.controllers) if (c.extendedGamepad) native=1;
+    if (native) { udpMotionOwned=0; return; } /* native attach owns the fusion live flag */
+    if (allowed != udpMotionOwned) {
+        udpMotionOwned=allowed; runtime_motion_live(allowed);
+        if (allowed) runtime_motion_deadzone_default(0.3);
+    }
+    if (!allowed) return;
+    double acc[3],gyro[3]; s2udp_motion(s,udpGyroDPS,acc,gyro);
+    runtime_motion_feed(acc,gyro,now);
+}
+static dispatch_source_t udpTimer;
+/* Main queue, same as refresh_gamepads: no socket I/O under gamepadLock. A connected UDP
+   socket accepts only the loopback server's replies. No listener or LAN exposure. */
+static void switch2_udp_start(void) {
+    if (getenv("TOTK_SWITCH2_UDP") && !strcmp(getenv("TOTK_SWITCH2_UDP"), "0")) return;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return;
+    struct sockaddr_in addr = {.sin_len=sizeof addr, .sin_family=AF_INET,
+        .sin_port=htons(24800), .sin_addr={.s_addr=htonl(INADDR_LOOPBACK)}};
+    if (connect(fd,(struct sockaddr *)&addr,sizeof addr) || fcntl(fd,F_SETFL,O_NONBLOCK)<0) { close(fd); return; }
+    char calibrated[64];
+    const char *scale=getenv("TOTK_SWITCH2_GYRO_DPS");
+    if (!scale && runtime_setting_word("switch2-gyro-dps.txt",calibrated,sizeof calibrated)) scale=calibrated;
+    udpGyroDPS=s2udp_gyro_scale(scale,udpGyroDPS);
+    if (runtime_motion_axes(getenv("TOTK_GYRO_AXES"))<0) runtime_fail("invalid TOTK_GYRO_AXES");
+    __block uint64_t pingAt = 0, rumbleAt = 0;
+    typedef struct { unsigned char bytes[36]; } RumbleBytes;
+    __block RumbleBytes lastRumbleBytes={0};
+    __block size_t lastRumbleLength=0;
+    __block uint64_t hdCapAt=0;
+    udpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_main_queue());
+    dispatch_source_set_timer(udpTimer,DISPATCH_TIME_NOW,8*NSEC_PER_MSEC,2*NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(udpTimer, ^{
+        uint64_t now = runtime_now_ns();
+        if (!pingAt || now-pingAt >= 1000000000ull) {
+            (void)send(fd,"S2Q1",4,0); pingAt=now; /* refresh server's 30 second subscription */
+        }
+        unsigned char packet[128];
+        for (int i=0;i<256;i++) {
+            ssize_t n=recv(fd,packet,sizeof packet,0);
+            if (n<0) break;
+            if (n==8 && !memcmp(packet,"S2C1",4) && s2udp_u32(packet+4)==1) { hdCapAt=now; continue; }
+            Switch2UDPState state;
+            if (!s2udp_decode(packet,(size_t)n,&state)) continue;
+            udpPad=state; udpLast=now;
+            if (!udpConnected) fprintf(stderr,"[totk-input] Switch 2 UDP connected (127.0.0.1:24800)\n");
+            udpConnected=1;
+            switch2_udp_motion(&state,now);
+            refresh_gamepads(); /* preserve taps shorter than a game frame */
+        }
+        if (udpConnected && now-udpLast>500000000ull) {
+            udpConnected=0; udpPad=(Switch2UDPState){0};
+            fprintf(stderr,"[totk-input] Switch 2 UDP timed out; input released\n");
+        }
+        if (!udpConnected || !NSApp.active || !runtime_gyro_enabled()) switch2_udp_motion(NULL,now);
+        if (!rumbleAt || now-rumbleAt>=8000000ull) {
+            float v[2][4]={{0,160,0,320},{0,160,0,320}};
+            if (udpConnected && NSApp.active) runtime_rumble_snapshot_full(v);
+            unsigned char packet[36]; size_t length;
+            if (hdCapAt && now-hdCapAt<3000000000ull) { s2udp_hd_packet(packet,v); length=36; }
+            else { s2udp_rumble_packet(packet,fmaxf(v[0][0],v[1][0]),fmaxf(v[0][2],v[1][2])); length=6; }
+            int active=v[0][0]>0 || v[0][2]>0 || v[1][0]>0 || v[1][2]>0;
+            if (active || length!=lastRumbleLength || memcmp(packet,lastRumbleBytes.bytes,length)) {
+                (void)send(fd,packet,length,0); memcpy(lastRumbleBytes.bytes,packet,length); lastRumbleLength=length;
+            }
+            rumbleAt=now;
+        }
+        if (udpConnected || udpLast) refresh_gamepads();
+    });
+    dispatch_resume(udpTimer);
+}
+#endif
+
 
 /* Called on the main run loop by the already-open Switch HID motion stream. */
 void runtime_gamepad_switch_left(void *source, int x, int y) {
@@ -638,6 +725,15 @@ static void refresh_gamepads(void) {
         next.rx = stronger_axis(next.rx, hidPad.rx);
         next.ry = stronger_axis(next.ry, hidPad.ry);
     }
+#if TARGET_OS_OSX
+    if (udpConnected) {
+        next.connected=1; physical |= udpPad.buttons;
+        next.lx=stronger_axis(next.lx,stick_axis(udpPad.axes[0]));
+        next.ly=stronger_axis(next.ly,stick_axis(udpPad.axes[1]));
+        next.rx=stronger_axis(next.rx,stick_axis(udpPad.axes[2]));
+        next.ry=stronger_axis(next.ry,stick_axis(udpPad.axes[3]));
+    }
+#endif
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
@@ -839,6 +935,9 @@ void runtime_gamepad_start(void) {
     for (GCController *controller in GCController.controllers) attach_gamepad(controller);
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     hid_pad_start();
+#if TARGET_OS_OSX
+    switch2_udp_start();
+#endif
 #if TARGET_OS_IPHONE
     [center addObserverForName:GCKeyboardDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_keyboard(notification.object); }];

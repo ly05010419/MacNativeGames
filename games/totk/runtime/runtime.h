@@ -211,6 +211,8 @@ int runtime_rumble_gain_locked(void);
 float runtime_rumble_gain(void);
 void runtime_rumble_gain_set(float gain);
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);
+void runtime_rumble_snapshot_full(float values[2][4]); /* per-side amplitude low, Hz low, amplitude high, Hz high */
+void runtime_rumble_snapshot(float *low, float *high); /* current enabled, gain-adjusted two-band strengths; silence after 250 ms */
 void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);   /* side 0 left, 1 right */
 /* The settings panel's DualSense bow trigger switch (runtime/gamepad_feedback.m, main queue): available for Breath of the Wild
    1.9.0 and Tears of the Kingdom 1.4.3; locked when TOTK_DUALSENSE_TRIGGERS or an agent's test session decides; the choice

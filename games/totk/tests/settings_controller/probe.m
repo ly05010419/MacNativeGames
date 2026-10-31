@@ -113,3 +113,12 @@ int main(int argc,char **argv){@autoreleasepool{
  }
  [settingsPanel.timer invalidate];[settingsControllerTimer invalidate];runtime_gamepad_settings_enable(0);return 0;
 }}
+
+/* The standalone routing probes do not start the localhost feedback transport. */
+void runtime_rumble_snapshot(float *l,float *h){*l=*h=0;}
+void runtime_motion_live(int on){(void)on;}
+void runtime_motion_deadzone_default(double d){(void)d;}
+int runtime_motion_axes(const char *s){(void)s;return 0;}
+void runtime_motion_feed(const double a[3],const double g[3],uint64_t n){(void)a;(void)g;(void)n;}
+
+void runtime_rumble_snapshot_full(float v[2][4]){memset(v,0,8*sizeof(float));}
