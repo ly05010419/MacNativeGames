@@ -236,7 +236,13 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    /* #1367 (TOTK 1.2.1): the game now and then initialises a memory pool of zero bytes (the crashing one was
+       GPU-visible). mtl_pool_add then asked Metal for a zero-copy buffer of length 0, which always comes back nil,
+       and the game aborted after 8 retries. A pool without bytes holds no address the GPU can use: the pool object
+       stays valid as is (Map, GetBufferAddress, buffers), it only gets no zero-copy buffer and no dirty range, for
+       there is nothing in it to track. */
+    if (o->mem && o->size && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    else if (o->mem && !o->size) { static _Atomic unsigned said; if (atomic_fetch_add(&said, 1) < 4) LOG("MemoryPoolInitialize 池 %p 没有字节（size=0，flags=%#x）：不建零拷贝缓冲，也不进脏页跟踪", (void *)o->mem, o->flags); }
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -248,7 +254,10 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    /* The same condition nvnMemoryPoolInitialize registered the pool under: an empty pool (size 0) was given no
+       buffer and no dirty range, so its teardown is a no-op — a removal by address could otherwise hit a live
+       neighbour's range when the game's allocator handed the empty pool an address next to one (#1367). */
+    if (o->mem && o->size && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
     totk_vpool_fini(o); o->magic = 0;
 }
 /* A mirrored render target has private Metal storage. Reconcile GPU writes at mapped-range cache maintenance too:
