@@ -10,8 +10,8 @@ The game builds a shader *variant* from each shader for the bind state of a draw
 slot, attribute types, output formats. A variant can only be translated once it is known.
 
 - On the Mac, a missing variant is translated while you play. That costs a short stall the first time.
-- An iPhone or iPad cannot translate. It skips any draw whose variant the app does not already carry. A new install
-  with only the default variants shows little or nothing of the picture.
+- An iPhone or iPad translates it on the spot too, with maxmetal inside the app, at the same cost. It skips the draws of
+  a variant maxmetal cannot translate and records it for `fill_shaders.py`.
 
 The list names the variants players have met, so each build carries them from the start.
 
@@ -74,8 +74,8 @@ app) the whole cache is warmed as before; `TOTK_WARM_ALL=1` does that for compar
 
 ## Sending what you played (players)
 
-You do not need to do anything while playing. When the Mac has to translate a shader variant, or an iPhone or iPad
-misses one, that variant is not in the list yet, so the game writes it to `shader-list-contribution.txt`: one `V` row
+You do not need to do anything while playing. When the Mac or an iPhone or iPad has to translate a shader variant, or
+a device misses one, that variant is not in the list yet, so the game writes it to `shader-list-contribution.txt`: one `V` row
 per shader and bind state, nothing else (`third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h`). Since every build carries
 each shader's default variant ([shader-variants.md](shader-variants.md); `all_default` in the seed's manifest), only
 states those variants do not serve are written, never a default variant (`totk_shader_rt.m contrib_wanted`): the list
@@ -202,7 +202,7 @@ The tool drops rows that are not shader identifiers. Merging the same source twi
 
 `games/totk/assets/shader_list.tsv` 是唯一的一份着色器清单。Mac、iPhone、iPad 都用它，所有人玩出来的新变体都加进这一份，欢迎提 PR。
 
-- **为什么要有它**：iOS 不能当场翻译着色器，缺哪个变体就跳过用到它的绘制。清单里的变体在打包时就用玩家自己的游戏文件翻译好。
+- **为什么要有它**：缺的变体要当场翻译（iPhone / iPad 用 App 里的 maxmetal），第一次会卡一下；maxmetal 翻译不了的，就跳过用到它的绘制。清单里的变体在打包时就用玩家自己的游戏文件翻译好。
 - **里面是什么**：
   - `V` 行：着色器键 + 绑定状态（deps）。
   - `L` 行：打包程序自己找不到的着色器在玩家游戏文件中的位置：文件路径、控制段和代码的偏移、代码长度。打包时从玩家自己的文件读出，核对哈希等于键才用。BNSH 文件、agl 的 `.sharcb` 包和游戏程序里的着色器，打包程序会自己找到。

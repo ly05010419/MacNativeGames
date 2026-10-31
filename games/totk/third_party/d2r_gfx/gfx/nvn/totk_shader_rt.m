@@ -4,6 +4,7 @@
 // bound state; otherwise a new one is produced by the translation service and cached on disk: the native program
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
+// The iPhone / iPad starts no program: maxmetal's library in the app answers the same requests (totk_maxmetal_rt.h).
 #import <Foundation/Foundation.h>
 #include <os/lock.h>
 #include <stdatomic.h>
@@ -28,6 +29,9 @@
 #include "totk_shader_seed.h"
 #include "totk_shader_observed.h"
 #include "totk_shader_contrib.h"
+#if TARGET_OS_IPHONE
+#include "totk_maxmetal_rt.h"
+#endif
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
 extern void runtime_boot_count(const char *,uint64_t,uint64_t) __attribute__((weak_import));
 static void seed_progress(int pass, NSUInteger done, NSUInteger total) {   // the bar under "Checking the shader cache"
@@ -65,11 +69,13 @@ static void seed_mark_broken(NSString *name) {
     os_unfair_lock_unlock(&g_seed_broken_lock);
 }
 static BOOL g_seed_all_default;   // seed-manifest.json all_default: every shader has its default variant (contrib_wanted)
+static BOOL g_seed_available;     // a seed was found (contrib_wanted: without one nothing says what the shared list lacks)
 static uint64_t g_translated;
 /* The bottom-left box (nvn_mtl.m shader_overlay_prepare): variants new to the cache this run, when the last one came,
    and the variants in the cache (counted once in the background, plus the new ones since). */
 static _Atomic uint64_t g_new_variants, g_new_variant_ns, g_new_at_count;
 static _Atomic int64_t g_cached_variants = -1;
+static _Atomic uint64_t g_maxmetal_n, g_maxmetal_ns;   // the device: variants maxmetal translated this run and its time
 
 static NSString *root_dir(void) {   // native-port/ (the executable lives in native-port/build/)
     if (g_root) return g_root;
@@ -108,6 +114,7 @@ NSString *totk_rt_dir(void) {
                     }
             }
             if ([seed[@"available"] boolValue]) {
+                g_seed_available = YES;
                 NSData *md = [NSData dataWithContentsOfFile:[source stringByAppendingPathComponent:@"seed-manifest.json"]];
                 NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:nil] : nil;
                 g_seed_all_default = [m isKindOfClass:NSDictionary.class] && [m[@"all_default"] isEqual:@YES];
@@ -181,6 +188,7 @@ NSSet<NSString *> *totk_rt_shader_scope(void) {
 /* Several services can start at once (async shaders): one at a time, and each child keeps only its own stdin / stdout and
    the shared stderr (POSIX_SPAWN_CLOEXEC_DEFAULT). A child holding another's pipe ends would keep that service alive after
    the game exits and hide its crash from the reader (fgets would wait instead of seeing EOF). */
+#if !TARGET_OS_IPHONE
 static pthread_mutex_t g_svc_start_lock = PTHREAD_MUTEX_INITIALIZER;
 static void service_start(rt_svc *svc) {
     if (svc->in) return;
@@ -226,6 +234,7 @@ static void service_start(rt_svc *svc) {
         use_native ? "native build/shader-service/totk_xlate" : "python3 scripts/shader_service.py + .NET", totk_rt_dir().UTF8String);
     pthread_mutex_unlock(&g_svc_start_lock);
 }
+#endif
 
 static NSString *hex(const uint8_t *p, size_t n) {
     NSMutableString *s = [NSMutableString stringWithCapacity:n * 2];
@@ -293,16 +302,12 @@ static int deps_match(NSDictionary *deps, NSDictionary *ans) {
     return 1;
 }
 
-/* No translator: the iPhone / iPad, or TOTK_SHADER_NO_TRANSLATE=1 on the Mac (tests: what a device with only the prepared
-   shaders would skip, with the same miss records and skipped draws). */
+/* No translator: TOTK_SHADER_NO_TRANSLATE=1 (tests: what a device with only the prepared shaders would skip, with the
+   same miss records and skipped draws). The iPhone / iPad translates with maxmetal in the app (totk_maxmetal_rt.h). */
 static int no_translator(void) {
-#if TARGET_OS_IPHONE
-    return 1;
-#else
     static int v = -1;
     if (v < 0) { const char *e = getenv("TOTK_SHADER_NO_TRANSLATE"); v = e && !strcmp(e, "1"); }
     return v;
-#endif
 }
 int totk_rt_can_translate(void) { return !no_translator(); }
 /* The submit thread's service, started in the background when the warm-up starts: with a seed holding every default
@@ -310,12 +315,14 @@ int totk_rt_can_translate(void) { return !no_translator(); }
    in one frame, 72 ms for the same variant with the service running; 2026-10-23). Stalls in the first 20 s after the
    start do not count (user 2026-10-23). */
 void totk_rt_service_prestart(void) {
+#if !TARGET_OS_IPHONE   // the device has no service to start
     if (no_translator()) return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         pthread_mutex_lock(&g_rt_lock);   // g_svc is used under it (totk_rt_variant)
         service_start(&g_svc);
         pthread_mutex_unlock(&g_rt_lock);
     });
+#endif
 }
 
 /* The cached variant whose deps match the answers, or nil (g_rt_lock held). A variant whose Metal source is missing or
@@ -386,6 +393,7 @@ static NSString *default_variant(NSString *shader) {   // the default bind state
     return [shader stringByAppendingString:suffix];
 }
 static BOOL contrib_wanted(NSString *shader, NSString *variant) {
+    if (!g_seed_available) return NO;   // build_app.py --no-startup-shaders: every variant is new here, not to the list
     if (!g_seed_all_default) return YES;
     NSString *builtin = default_variant(shader);
     if ([variant isEqualToString:builtin]) return NO;
@@ -422,7 +430,8 @@ void totk_rt_contrib_line(NSString *line) {   // totk_contrib_add_line under the
     totk_contrib_add_line(line);
     pthread_mutex_unlock(&g_rt_lock);
 }
-/* No translator on the phone (Python + .NET + SPIRV-Cross): the variant cache is translated on the Mac and copied over.
+/* A variant there is no translation for (TOTK_SHADER_NO_TRANSLATE=1, or one maxmetal could not translate on the iPhone /
+   iPad): it can be translated on the Mac and copied over.
    A miss records the complete request (with the guest code bytes) under shader-requests/ for ios/tools/fill_shaders.py.
    A miss no longer stops the game: the caller skips the draws / dispatches that need this variant (draw-skip reason
    "shader-missing"). The request is written once per variant; after fill_shaders.py pushed the translation, the next
@@ -440,9 +449,23 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
     LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",
         [rq[@"stage"] UTF8String], variant.UTF8String, (unsigned long)missed.count);
 }
-/* One request through a translator service; the reflection of the new variant. */
-static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
+/* One request through a translator service; the reflection of the new variant. code: the guest code to write where the
+   request says (nil: written already). The iPhone / iPad translates it with maxmetal in the app instead, and returns nil
+   when maxmetal cannot (the caller skips the draws as for a miss). */
+static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, NSData *code, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
+#if TARGET_OS_IPHONE
+    (void)svc;
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    NSString *error = totk_maxmetal_request(rq, code, totk_rt_dir(), DMSH_CHAIN);
+    if (!error) { atomic_fetch_add(&g_maxmetal_n, 1); atomic_fetch_add(&g_maxmetal_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0); }
+    if (error) {
+        LOG("[shader] maxmetal could not translate %s %s (%.2f ms): %s", stage, variant.UTF8String,
+            (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, error.UTF8String);
+        return nil;
+    }
+#else
+    if (code && ![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     service_start(svc);
     fprintf(svc->in, "%s\n", json_string(rq).UTF8String); fflush(svc->in);
     char line[2048];
@@ -454,6 +477,7 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
             (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, [[reply[@"error"] description] UTF8String]);
         die("shader %s (%s) translation failed: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]);
     }
+#endif
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
     NSDictionary *refl = jd ? [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil] : nil;
     if (![refl isKindOfClass:[NSDictionary class]]) die("shader %s: reflection missing", variant.UTF8String);
@@ -517,9 +541,9 @@ uint64_t totk_rt_ready_gen(void) { return atomic_load(&g_rt_gen); }
 /* One job: translate on svc, compile its Metal library (the ready hook), record it and wake the waiters. */
 static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint64_t queued) {
     NSDictionary *rq = job[1]; int stage = [job[2] intValue]; BOOL existed = [job[3] boolValue]; NSData *code = job[4];
-    if (![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-    NSDictionary *refl = translate(svc, rq, started);
+    NSDictionary *refl = translate(svc, rq, code, started);
+    if (!refl) die("shader %s: no translation", [rq[@"variant"] UTF8String]);   // background jobs: the Mac's services only
     if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
     pthread_mutex_lock(&g_rt_lock);
     variant_record(shader, rq, refl, existed, started, queued);
@@ -582,6 +606,11 @@ void totk_rt_submit_stats(uint64_t *wait_n, uint64_t *wait_ns, uint64_t *sync_n,
 }
 
 NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, const uint8_t *code, NSDictionary *answers, NSArray *local, int may_defer) {
+#if TARGET_OS_IPHONE
+    /* The device translates on the spot: a background job would never be taken up (nvn_mtl.m async_shaders is off there,
+       so prog_fit keeps skipping a signature it once missed), and a failed one would stop the game instead of skipping. */
+    may_defer = 0;
+#endif
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     pthread_mutex_lock(&g_rt_lock);
     // Called for the game's actual shader bytes, including when a prepared
@@ -600,14 +629,26 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         pthread_mutex_unlock(&g_rt_lock); return nil;
     }
     if (found || g_rt_pending[shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
-    NSData *code_bytes = nil;   // written by the job when it is not translated here
-    NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local, may_defer && !no_translator() ? &code_bytes : NULL);
+    NSData *code_bytes = nil;   // written by the job when it is not translated here; the device's translator reads it
+    NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local,
+                                              (may_defer || TARGET_OS_IPHONE) && !no_translator() ? &code_bytes : NULL);
     if (no_translator()) { record_miss(shader, rq, answers); pthread_mutex_unlock(&g_rt_lock); return nil; }
+    static NSMutableSet<NSString *> *failed;   // the device: variants maxmetal could not translate, not tried again this run
+    if ([failed containsObject:rq[@"variant"]]) { pthread_mutex_unlock(&g_rt_lock); return nil; }
     BOOL existed = [NSFileManager.defaultManager fileExistsAtPath:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.metal", rq[@"variant"]]];   // a re-translation of a broken variant is not a new one
     if (may_defer == 2) { urgent_translate(shader, rt_job_new(shader, stage, rq, existed, code_bytes)); pthread_mutex_unlock(&g_rt_lock); return nil; }
     if (may_defer) { bg_translate(shader, stage, rq, existed, code_bytes); pthread_mutex_unlock(&g_rt_lock); return nil; }
     uint64_t s0 = dm_wait_stats_enabled() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
-    variant_record(shader, rq, translate(&g_svc, rq, started), existed, started, 0);
+    NSDictionary *refl = translate(&g_svc, rq, code_bytes, started);
+    if (!refl) {   // the device: skipped as a miss, its request kept for fill_shaders.py
+        if (!failed) failed = [NSMutableSet set];
+        [failed addObject:rq[@"variant"]];
+        rq[@"code_hex"] = hex(code_bytes.bytes, code_bytes.length);
+        record_miss(shader, rq, answers);
+        pthread_mutex_unlock(&g_rt_lock);
+        return nil;
+    }
+    variant_record(shader, rq, refl, existed, started, 0);
     if (s0) { atomic_fetch_add(&g_rt_sync_n, 1); atomic_fetch_add(&g_rt_sync_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - s0); }
     pthread_mutex_unlock(&g_rt_lock);
     return rq[@"variant"];
@@ -660,6 +701,7 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows) {   //
 }
 
 uint64_t totk_rt_new_variants(void) { return atomic_load(&g_new_variants); }
+uint64_t totk_rt_maxmetal_stats(uint64_t *ns) { if (ns) *ns = atomic_load(&g_maxmetal_ns); return atomic_load(&g_maxmetal_n); }
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{

@@ -211,6 +211,17 @@ def push_seed(dev, bundle_id, seed):
         write_pack(seed, names, Path(d), folder, PART, push)
         got.write_text(f'{folder}\n{fp}\n'); copy(got, 'shader-seed.txt')
 
+def forget_seed(dev, bundle_id):
+    """An app built with build_app.py --no-startup-shaders (GameData/no-startup-shaders in it): the startup shaders an
+    earlier install put into Documents/GameData are no longer named (shader-seed.txt says "none"), so maxmetal translates
+    every shader, and the app removes their folder on its next start (ios/Sources/main.m)."""
+    if 'shader-seed.txt' not in device_files(dev, bundle_id, 'Documents/GameData'): return
+    with tempfile.TemporaryDirectory() as d:
+        mark = Path(d)/'shader-seed.txt'; mark.write_text('none\n')
+        run(['xcrun','devicectl','device','copy','to','--device',dev,'--domain-type','appDataContainer','--domain-identifier',
+             bundle_id,'--source',mark,'--destination','Documents/GameData/shader-seed.txt'], capture_output=True)
+    print('shaders: none in this build; the device stops using the ones an earlier install put there')
+
 def built_bundle_id(ipa, team):
     """The identifier build_app.py gave the app (org.macnativegames.totk, or .botw for Breath of the Wild); a .app folder
     signed before carries it with the team suffix this script added."""
@@ -287,6 +298,8 @@ def main():
     if a.game_data: push_game_data(dev['identifier'], bundle_id, a.game_data)
     if seed := seed_beside(a.ipa, app):
         push_seed(dev['identifier'], bundle_id, seed)
+    elif (app/'GameData/no-startup-shaders').is_file():
+        forget_seed(dev['identifier'], bundle_id)
     management = 'Device Management' if dev['hardwareProperties'].get('platform') == 'visionOS' else 'VPN & Device Management'
     print(f'installed. First time on this device: Settings > General > {management} > trust your Apple ID.')
 
