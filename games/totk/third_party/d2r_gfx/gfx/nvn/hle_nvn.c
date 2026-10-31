@@ -2967,6 +2967,9 @@ void dm_nvn_probe_present_interval(void) {
         nvn_fps_lock_set(60);
         if (present_period(&w) != 1000000000ull / 60 || present_ticks(&w) != ticks60[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 60 != 0))
             die("present interval probe: the 60 fps lock must pace exactly 60 fps");
+        nvn_fps_lock_set(120);
+        if (present_period(&w) != 1000000000ull / 120 || mfx_own_clock() != (rates[r] % 120 != 0))
+            die("present interval probe: switching 60 to 120 must immediately use 1/120 seconds");
         nvn_fps_lock_set(30);
         if (present_period(&w) != 1000000000ull / 30 || present_ticks(&w) != ticks30[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 30 != 0))
             die("present interval probe: the 30 fps lock must pace as the 30 fps hold");

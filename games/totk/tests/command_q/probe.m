@@ -114,7 +114,8 @@ int runtime_mouse_sensitivity(void){return 50;}
 int runtime_mouse_sensitivity_locked(void){return 0;}
 void runtime_mouse_sensitivity_set(int sensitivity){(void)sensitivity;}
 #endif
-void nvn_fps_lock_set(int fps){(void)fps;}
+static int fixtureFrameLimit;
+void nvn_fps_lock_set(int fps){fixtureFrameLimit=fps;}
 /* TOTK_STATE_REPORTING (gfx/nvn/totk_state_report.m): frontend.m declares them weak, the linker still wants them. */
 void totk_sr_start(const char *game,const char *version){(void)game;(void)version;}
 void totk_sr_picture(int key,int visible){(void)key;(void)visible;}
@@ -122,7 +123,7 @@ void totk_sr_window(int key,int visible){(void)key;(void)visible;}
 void totk_sr_view(int w,int h,int hz,int fullscreen){(void)w;(void)h;(void)hz;(void)fullscreen;}
 void totk_sr_settings(int open){(void)open;}
 void totk_sr_closing(void){fprintf(stderr,"[probe] state report: closing\n");}
-int nvn_fps_lock(void){return 0;}
+int nvn_fps_lock(void){return fixtureFrameLimit;}
 /* The controller rows of the settings panel (PR #477, #523): the panel is not opened here. */
 int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
 int runtime_feedback_present(int gyro){(void)gyro;return 0;}
@@ -159,6 +160,22 @@ int main(int argc,char **argv){
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(10,10,200,25)];
    [window.contentView addSubview:field];[window makeFirstResponder:field];
    if(![window.firstResponder isKindOfClass:NSTextView.class])runtime_fail("text field has no editor");
+  }
+  if(mode==3){
+   NSMenu *app=NSApp.mainMenu.itemArray[0].submenu;
+   NSMenuItem *settings=app.itemArray[0];
+   if(![settings.keyEquivalent isEqualToString:@","]||settings.action!=@selector(openSettings:))runtime_fail("native settings menu missing");
+   [NSApp sendAction:settings.action to:settings.target from:settings];
+   if(!settingsOpen)runtime_fail("native settings action did not open panel");
+   settings_show(0);
+   NSMenu *view=NSApp.mainMenu.itemArray[1].submenu;
+   if(view.itemArray[0].action!=@selector(toggleFullscreen:) || (view.itemArray[0].keyEquivalentModifierMask!=(NSEventModifierFlagControl|NSEventModifierFlagCommand) && view.itemArray[0].keyEquivalentModifierMask!=NSEventModifierFlagFunction))runtime_fail("native full screen action missing");
+   NSMenu *rates=view.itemArray[1].submenu;
+   for(int i=0;i<2;i++)for(NSMenuItem *item in rates.itemArray)if(item.tag==(i?120:60)){
+    [NSApp sendAction:item.action to:item.target from:item];
+    if(nvn_fps_lock()!=(i?120:60))runtime_fail("native frame limit did not apply");
+   }
+   puts("PASS: native Settings, Full Screen and live 60-to-120 menu actions");return 0;
   }
   if([NSApp.mainMenu performKeyEquivalent:key(0)])runtime_fail("plain Q triggered Quit");
   if([NSApp.mainMenu performKeyEquivalent:key(NSEventModifierFlagControl)])runtime_fail("Control-Q triggered Quit");

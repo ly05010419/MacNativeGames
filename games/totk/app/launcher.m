@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/proc.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include "dmsh_chain.h"   // DMSH_CHAIN: the shader translation chain the cache folder is named after
 #include "game_version.h"
@@ -162,8 +163,16 @@ static BOOL make_dir(NSString *path) {
 static NSString *game_data_in(NSString *folder, unsigned long long size, NSString *sha) {
     if (!folder.length) return nil;
     for (NSString *place in @[[folder stringByAppendingPathComponent:@TOTK_GAME_DIR], folder]) {
+#if defined(TOTK_GAME_V121)
+        /* Only the size is needed. Foundation also queries extended attributes,
+           which can block on a large image on a removable volume before any UI. */
+        struct stat image;
+        if (stat([place stringByAppendingPathComponent:@"romfs.bin"].fileSystemRepresentation, &image) ||
+            !S_ISREG(image.st_mode) || image.st_size < 0 || (uint64_t)image.st_size != size) continue;
+#else
         NSDictionary *image = [NSFileManager.defaultManager attributesOfItemAtPath:[place stringByAppendingPathComponent:@"romfs.bin"] error:nil];
         if (!image || image.fileSize != size) continue;
+#endif
         NSString *mark = [NSString stringWithContentsOfFile:[place stringByAppendingPathComponent:@"romfs.sha256"] encoding:NSUTF8StringEncoding error:nil];
         mark = [mark stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (!mark.length || [mark caseInsensitiveCompare:sha] == NSOrderedSame) return place;

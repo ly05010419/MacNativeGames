@@ -24,3 +24,8 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
             if mode:
                 assert "quitting when the save is done" in result.stderr, result.stderr
             print(f"PASS: save mode {mode}, text entry {text_entry}")
+
+    menus = subprocess.run([str(binary), "3", "0"], capture_output=True, text=True, timeout=15)
+    assert menus.returncode == 0, menus.stdout + menus.stderr
+    assert "live 60-to-120" in menus.stdout
+    print(menus.stdout.strip())
