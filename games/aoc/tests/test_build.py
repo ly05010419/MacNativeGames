@@ -48,6 +48,138 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(result.returncode,1);self.assertIn('outside the signed app',result.stderr)
             self.assertEqual({p.relative_to(app):p.read_bytes() for p in app.rglob('*') if p.is_file()},original)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'native macOS launcher')
+    def test_default_profile_migration_and_active_session(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            app = root / 'Test.app/Contents'
+            mac = app / 'MacOS'; game = app / 'Resources/game'
+            mac.mkdir(parents=True); game.mkdir(parents=True)
+            binary = mac / 'AgeOfCalamity'
+            subprocess.run(['clang', '-Wall', '-Wextra', '-Werror', str(GAME / 'app/launcher.c'),
+                            '-o', str(binary)], check=True)
+            host = game / 'dmhost'
+            host.write_text('#!/bin/sh\nexit 23\n'); host.chmod(0o755)
+            env = dict(os.environ, HOME=str(root))
+            env.pop('DM_AOC_PROFILE', None)
+            legacy = root / 'Library/Application Support/Hyrule Warriors Age of Calamity'
+            target = root / 'Library/Application Support/MacNativeGames/AoC'
+            legacy.mkdir(parents=True)
+            (legacy / 'save').mkdir(); (legacy / 'save/progress').write_bytes(b'save data')
+            (legacy / 'controller-layout.txt').write_text('preferences')
+            with (legacy / 'session.lock').open('w') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                result = subprocess.run([str(binary)], env=env, capture_output=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertFalse(target.exists())
+                self.assertTrue((legacy / 'save/progress').exists())
+            result = subprocess.run([str(binary)], env=env, capture_output=True)
+            self.assertEqual(result.returncode, 23, result.stderr)
+            self.assertFalse(legacy.exists())
+            self.assertEqual((target / 'save/progress').read_bytes(), b'save data')
+            self.assertEqual((target / 'controller-layout.txt').read_text(), 'preferences')
+            # Both profiles exist: the new profile wins, without merging saves.
+            (legacy / 'save').mkdir(parents=True)
+            (legacy / 'save/progress').write_bytes(b'older data')
+            self.assertEqual(subprocess.run([str(binary)], env=env).returncode, 23)
+            self.assertEqual((target / 'save/progress').read_bytes(), b'save data')
+            self.assertEqual((legacy / 'save/progress').read_bytes(), b'older data')
+            # Fresh install creates all Application Support parents too.
+            shutil.rmtree(root / 'Library')
+            self.assertEqual(subprocess.run([str(binary)], env=env).returncode, 23)
+            self.assertTrue((target / 'save').is_dir())
+
+    def test_container_extraction_checks_pins_before_publication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / 'source'
+            base = work / "User's Base.XCI"; update = work / 'Update.nsp'; keys = work / 'prod.keys'
+            destination = work / 'container-input'
+            destination.mkdir(); (destination / 'keep').write_text('verified input')
+            commands = []
+            def run(command, **kwargs):
+                commands.append(command)
+                if command[:2] == ['dotnet', 'build']:
+                    (Path(command[-1]) / 'nx_extract').touch()
+                if command[0].endswith('/nx_extract'):
+                    Path(command[-1]).mkdir()
+            with mock.patch.object(build.subprocess, 'run', side_effect=run), \
+                 mock.patch('inspect_inputs.inspect', side_effect=ValueError('wrong build')) as inspect:
+                with self.assertRaisesRegex(ValueError, 'wrong build'):
+                    build.extract_container(source, work, base, update, keys)
+                self.assertEqual((destination / 'keep').read_text(), 'verified input')
+                self.assertEqual(commands[-1][1:4], [str(keys), str(base), str(update)])
+                self.assertNotIn('--allow-damaged', commands[-1])
+                inspect.assert_called_once_with(work / 'container-input.partial', GAME / 'assets/expected-1.3.0.json')
+            shutil.rmtree(work / 'container-input.partial')
+            with mock.patch.object(build.subprocess, 'run', side_effect=run), \
+                 mock.patch('inspect_inputs.inspect'):
+                self.assertEqual(build.extract_container(source, work, base, None, keys), destination)
+                self.assertEqual(commands[-1][3], '-')
+                self.assertFalse((destination / 'keep').exists())
+                self.assertFalse((work / 'container-input.partial').exists())
+            restore = commands[0]
+            self.assertIn(str(work / 'dependencies/nuget'), restore)
+            self.assertIn('--configfile', restore)
+
+    def test_container_failures_never_publish(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            with mock.patch.object(build.subprocess, 'run', side_effect=subprocess.CalledProcessError(3, ['extract'])):
+                with self.assertRaisesRegex(ValueError, 'restore failed; see'):
+                    build.extract_container(work / 'source', work, work / 'base.nsp', None, work / 'keys')
+            self.assertFalse((work / 'container-input').exists())
+
+    def test_container_integrity_failure_stops_before_pin_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            def run(command, **kwargs):
+                if command[:2] == ['dotnet', 'build']:
+                    (Path(command[-1]) / 'nx_extract').touch()
+                if command[0].endswith('/nx_extract'):
+                    raise subprocess.CalledProcessError(3, command)
+            with mock.patch.object(build.subprocess, 'run', side_effect=run), \
+                 mock.patch('inspect_inputs.inspect') as inspect:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    build.extract_container(work / 'source', work, work / 'base.nsp', None, work / 'keys')
+                inspect.assert_not_called()
+            self.assertFalse((work / 'container-input').exists())
+
+    def test_container_inspect_cli_wires_extraction_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); work = root / 'work'
+            base = root / 'base.XCI'; update = root / 'update.nsp'
+            keys = root / 'prod.keys'; dependency = root / 'libhac.nupkg'
+            for path in (base, update, keys, dependency):
+                path.write_bytes(b'synthetic')
+            argv = ['build_aoc.py', str(base), '--update', str(update), '--keys', str(keys),
+                    '--libhac-package', str(dependency), '--work-dir', str(work), '--phase', 'inspect']
+            report = {'romfs': {'files': 1}, 'container_integrity': 'unavailable'}
+            with mock.patch.object(sys, 'argv', argv), \
+                 mock.patch.object(build, 'prepare_offline_dependencies') as prepare, \
+                 mock.patch.object(build, 'stage', return_value=work / 'source'), \
+                 mock.patch.object(build, 'extract_container', return_value=work / 'container-input') as extract, \
+                 mock.patch('inspect_inputs.inspect', return_value=report), \
+                 mock.patch('builtins.print'):
+                build.main()
+            prepare.assert_called_once_with(work, dependency)
+            extract.assert_called_once_with(work / 'source', work, base, update, keys)
+            saved = json.loads((work / 'input-report.json').read_text())
+            self.assertIn('ErrorOnInvalid', saved['container_integrity'])
+            self.assertNotIn(str(keys), (work / 'input-report.json').read_text())
+            self.assertFalse((work / 'prod.keys').exists())
+
+    def test_container_cli_requires_explicit_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); base = root / 'base.nsp'; base.touch()
+            result = subprocess.run([sys.executable, str(GAME / 'scripts/build_aoc.py'), str(base),
+                                     '--work-dir', str(root / 'work'), '--phase', 'inspect'],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('requires --keys and --libhac-package', result.stderr)
+            self.assertFalse((root / 'work').exists())
+
     def test_tooling_checksums(self):
         build.verify_prebuilt()
 

@@ -10,11 +10,15 @@ gameplay has been reached with keyboard and DualSense input and audio. Full
 rendering, save/reload and packaged-app acceptance remain in progress; a
 successful build is not a claim that the full game works.
 
-The supported input is an unmodified, already merged **1.3.0 / v327680 extracted
-directory**, containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}` and a `RomFS/`
-directory tree. NSP/XCI files, keys and LibHac are not needed for this mode.
-Other builds and RomFS images are rejected. This path does not claim base/update
-composition, NCA signature verification or container integrity verification.
+The builder accepts a base **NSP or XCI** plus local `prod.keys` and an optional
+1.3.0 update container, or an unmodified, already merged **1.3.0 / v327680
+extracted directory** containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}` and a
+`RomFS/` directory tree. Both modes must match the pinned 1.3.0 files. Other
+builds and standalone RomFS images are rejected. Extracted-directory mode needs
+no keys or LibHac and cannot verify container integrity or base/update composition.
+Container mode uses LibHac to merge the update and check the extracted NCA
+Code/Data sections; it does not authenticate container signatures or verify
+unread content. DLC installation is not supported by this builder.
 
 The inspected input's NSO hashes/build IDs, segment hashes, NPDM and RomFS tree
 digest are pinned in [expected-1.3.0.json](assets/expected-1.3.0.json). Every
@@ -39,12 +43,39 @@ python3 -m venv /path/to/aoc-python
   --output "/path/to/Hyrule Warriors Age of Calamity.app"
 ```
 
+For NSP/XCI input, supply your base dump and the 1.3.0 update explicitly (filenames
+need no title/version tags):
+
+```sh
+/path/to/aoc-python/bin/python games/aoc/scripts/build_aoc.py "/path/to/base.xci" \
+  --update "/path/to/update-1.3.0.nsp" --keys "/path/to/prod.keys" \
+  --libhac-package "/path/to/libhac.0.19.0.nupkg" \
+  --work-dir "/path/to/private-aoc-work" \
+  --output "/path/to/Hyrule Warriors Age of Calamity.app"
+```
+
+Container mode additionally requires a local LibHac **0.19.0** NuGet package,
+SHA-256 `1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19`.
+Restore uses only that local package; the builder never downloads it. Keys are
+read from their original path and never copied into the app. `--update` may be
+omitted only if the base itself yields the exact pinned 1.3.0 files. Extraction
+runs afresh for each invocation, including `--phase inspect`, under the work
+directory; logs are in `WORK/logs/nx_extract*.log`. Failed extraction or a hash
+mismatch stops before rewriting. Inspect/remove `WORK/container-input.partial`
+before retrying an interrupted extraction. Original containers remain untouched.
+
 Work and output must be outside the checkout and original input directory. Use a
 new output path; an existing app is preserved. The builder supports `--phase
 inspect`, `rewrite`, `host`, `shaders`, or `package`; the default `all` runs all
 stages. Packaging publishes a temporary bundle only after signing and strict
 verification. The app stores save data, preferences, temporary files and logs
-under `~/Library/Application Support/Hyrule Warriors Age of Calamity/`.
+under `~/Library/Application Support/MacNativeGames/AoC/` (saves in `save/`).
+On first launch, an existing profile at
+`~/Library/Application Support/Hyrule Warriors Age of Calamity/` is moved there
+with its saves and preferences. Close the old app before migration. If both
+locations already exist, the new location is used and the old one is left
+untouched; saves are never merged or overwritten. `DM_AOC_PROFILE` bypasses
+migration for disposable validation sessions.
 
 ## Controls and diagnostics
 

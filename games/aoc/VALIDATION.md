@@ -1,5 +1,32 @@
 # Age of Calamity validation — 2026-10-27
 
+## Container inputs and profile storage — 2026-10-30
+
+- The public builder now accepts base NSP/XCI files, explicit local `prod.keys`,
+  and an optional update NSP/XCI. LibHac 0.19.0 restores only from an explicit,
+  SHA-256-pinned local package. Original inputs are read-only; keys and extraction
+  tools are not packaged. Merged files must pass the existing 1.3.0 identity pins
+  before rewriting. DLC is outside this change.
+- Default packaged state is `~/Library/Application Support/MacNativeGames/AoC/`,
+  with saves in `save/`. Native launcher tests verify fresh creation, whole-profile
+  migration, retained preferences/save bytes, refusal to migrate an active legacy
+  session, and preservation of both profiles if the destination already exists.
+  `DM_AOC_PROFILE` retains its existing disposable-session behavior.
+- Synthetic container tests verify base/update/key argument forwarding, strict
+  extraction failure handling, pin checks before publication, preservation of a
+  prior verified extraction on failure, and offline restore configuration.
+- The staged snapshot, excluding unrelated timing edits, passed 41 AoC tests
+  and 5 runtime-tool tests with `/tmp/aoc-cutscene-venv/bin/python`. The launcher also compiles for arm64/macOS 26 with
+  `-Wall -Wextra -Werror`; `git diff --check` passed. The shared root suite ran
+  1,302 tests with 164 skips and 16 failures in the TOTK/BotW settings-panel
+  checks (including window-height assertions). Those tests compile sources under
+  `games/totk/third_party/d2r_gfx`, outside this change; no baseline comparison
+  was run. This is not a clean shared-suite result.
+- Real NSP/XCI extraction and a rebuilt packaged-app gameplay/save-reload check
+  have **not** been performed for this change. Synthetic subprocess tests do not
+  establish real container compatibility. Container signatures and unread content
+  are not authenticated; LibHac checks the extracted Code/Data sections.
+
 ## Keyboard shortcut follow-up — 2026-10-27
 
 The game-window number shortcuts now include 2 (Original 30 → 60 → 120),
