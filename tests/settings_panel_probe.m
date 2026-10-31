@@ -12,6 +12,7 @@ void mfxup_output_set(int on);
 int mfxup_output_enabled(void);
 void settings_test_output_init(void);
 void settings_test_output_size(unsigned w, unsigned h);
+void settings_test_output_4k(int on);
 void settings_test_aspect_init(double view);
 void settings_test_aspect_frame(void);
 
@@ -266,6 +267,20 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
     assert(settingsPanel.allRows.count == 15);
+
+    /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
+       the rows below read the mode. */
+#ifndef GAME_BOTW
+    settings_test_output_4k(1);
+    assert(runtime_output_modes() & 1 << OUTPUT_MODE_NATIVE_4K);
+    unsigned nw4 = 0, nh4 = 0;
+    assert(runtime_output_native(OUTPUT_MODE_NATIVE_4K, &nw4, &nh4) && nw4 == 3840 && nh4 == 2160);
+    assert(runtime_output_native(OUTPUT_MODE_NATIVE, &nw4, &nh4) && nw4 == 2560 && nh4 == 1440);   /* native stays 2K */
+    assert(runtime_output_mode_set(OUTPUT_MODE_NATIVE_4K));
+    assert(runtime_output_mode() == OUTPUT_MODE_NATIVE_4K);
+    assert(runtime_output_mode_set(OUTPUT_MODE_OFF) && runtime_output_mode() == OUTPUT_MODE_OFF);
+    settings_test_output_4k(0);
+#endif
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */

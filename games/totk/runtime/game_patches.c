@@ -320,7 +320,8 @@ static void patch_render_res(Module *m) {
    swapchain's top-left (the crop says so) and the present scales it to the window (MetalFX when the window is bigger: the
    2K output). The scene keeps its render size either way; its final upscale (MetalFX on the Mac, shader a3a570eb) writes
    the canvas.
-   TOTK_OUTPUT_RES: auto (the Mac default) = a 2560x1440 swapchain and heaps so that the settings panel can switch at any time, starting at
+   TOTK_OUTPUT_RES: auto (the Mac default) = the largest swapchain whose heap overlay the app carries (2K, or 4K when the app carries the
+   4K heap overlay) and heaps so that the settings panel can switch at any time, starting at
    1920x1080 (the user's choice, 2026-10-17: "default 1080p"; needs the HeapDef overlay built by make romfs-patches; without
    it the game's own 1920x1080, no switching); <w>x<h> = that largest size, starting there (TOTK_OUTPUT_RES=2560x1440 starts
    in true 2K); 0 = the game's own 1920x1080, no switching. iOS and the iOS export (TOTK_EXPORT_IOS) keep the game's own size. Decided once;
@@ -329,10 +330,10 @@ static int output_full_at_start = 1;
 static int output_res_auto(unsigned *w, unsigned *h) {
 #if TARGET_OS_OSX
     if (getenv("TOTK_EXPORT_IOS")) return 0;
-    /* The largest canvas whose heap overlay the app carries: 2K. Native 4K is 1.4.3's (game_patches_v143.c), where the
-       scene follows the canvas. */
+    /* The largest canvas whose heap overlay the app carries; the scene keeps the game's own render size (1.4.3's scene
+       follows the canvas, game_patches_v143.c). */
     const char *dir = getenv("TOTK_ROMFS_PATCHES_OUT"); char path[4096];
-    static const unsigned sizes[][2] = {{2560, 1440}};
+    static const unsigned sizes[][2] = {{3840, 2160}, {2560, 1440}};
     for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
         snprintf(path, sizeof path, "%s/%ux%u/manifest.tsv", dir ? dir : "extracted/" TOTK_GAME_DIR "/romfs-patches-out", sizes[i][0], sizes[i][1]);
         FILE *f = fopen(path, "r");
@@ -434,36 +435,44 @@ static void output_size_set(uint64_t want) {
             renderer ? " from the next layout" : "; the game has not laid out its displays yet, it takes this size when it does", before);
 }
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*): 1080p, 1080p with the MetalFX output scaler, or the game's
-   canvas and UI at the native size (the swapchain's, 2K), the same with the MetalFX output scaler up to the window (a 4K
-   screen), or 720p, a 1280x720 canvas (the scene scales with it). All need a bigger-output start (TOTK_OUTPUT_RES=auto
-   with the HeapDef overlay, or <w>x<h>). */
+   canvas and UI at the native size (up to the swapchain's, 2K), the same with the MetalFX output scaler up to the window (a 4K
+   screen), or 720p, a 1280x720 canvas (the scene scales with it); native 4K is the same idea at 3840x2160 when the app
+   carries the 4K heap overlay. All need a bigger-output start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>). */
 int runtime_output_native(int mode, unsigned *w, unsigned *h) {
-    if (!output_page || (mode != OUTPUT_MODE_NATIVE && mode != OUTPUT_MODE_NATIVE_METALFX)) return 0;
-    *w = output_w; *h = output_h; return 1;
+    if (!output_page) return 0;
+    if (mode == OUTPUT_MODE_NATIVE_4K) {
+        if (output_w < 3840 || output_h < 2160) return 0;
+        *w = 3840; *h = 2160; return 1;
+    }
+    if (mode != OUTPUT_MODE_NATIVE && mode != OUTPUT_MODE_NATIVE_METALFX) return 0;
+    *w = output_w >= 3840 ? 2560 : output_w; *h = output_h >= 2160 ? 1440 : output_h; return 1;   /* native stays 2K; 4K is its own mode */
 }
 int runtime_output_modes(void) {
     if (!output_page) return 0;
-    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX;
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX |
+           (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_NATIVE_4K : 0);
 }
 int runtime_output_mode(void) {
     extern int mfxup_output_enabled(void);
     if (!output_page) return OUTPUT_MODE_OFF;
     uint64_t now = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE));
     if (now == pack_size(1280, 720)) return OUTPUT_MODE_720P;
+    if (now == pack_size(3840, 2160) && !mfxup_output_enabled()) return OUTPUT_MODE_NATIVE_4K;
     if ((unsigned)now > 1920) return mfxup_output_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
     return mfxup_output_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
 }
 int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
-    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_720P || !(runtime_output_modes() & 1 << mode)) return 0;
+    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_NATIVE_4K || !(runtime_output_modes() & 1 << mode)) return 0;
     unsigned w = 1920, h = 1080;
     if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; }
-    else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) runtime_output_native(mode, &w, &h);
+    else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K) runtime_output_native(mode, &w, &h);
     output_size_set(pack_size(w, h));
     int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;
     dm_gfx_set_flag("mfx_output", mfx);
     dm_gfx_set_flag("mfx_upscale", mfx);
-    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
+    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" :
+            mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
             mode == OUTPUT_MODE_NATIVE ? "native" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
