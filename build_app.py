@@ -943,13 +943,13 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None
     if heapdef:
         say(f'2/4 update: the overlays are built on the mod\'s heap sizes ({heapdef})')
     steps = [('make_romfs_patches.py', [])] + [('make_output_res_overlay.py', [size]) for size in OUTPUT_SIZES]
-    if version == 'v143':   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches_v143.c)
+    if version in ('v143', 'v121'):   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches*.c)
         steps += [('make_output_res_overlay.py', [canvas, '--scene', scene])
                   for canvas in ('1920x1080', *OUTPUT_SIZES) for scene in ('1920x1080', *OUTPUT_SIZES)]
     remove_4k_overlay(tree, version)   # an earlier build's 4K overlays go; native 4K makes the current ones
     if native_4k:   # the runtime takes 3840x2160 as its largest output size (the settings panel gains native 4K)
         steps.append(('make_output_res_overlay.py', ['3840x2160']))   # TOTK_RENDER_RES=0: the game's own scene size
-        # 3840x2160: the scene at the canvas size (runtime/game_patches_v143.c); 1920x1080 / 2560x1440: TOTK_RENDER_RES
+        # 3840x2160: the scene at the canvas size (runtime/game_patches*.c); 1920x1080 / 2560x1440: TOTK_RENDER_RES
         steps += [('make_output_res_overlay.py', ['3840x2160', '--scene', scene])
                   for scene in ('1920x1080', '2560x1440', '3840x2160')]
     for i, (script, arguments) in enumerate(steps):
@@ -2243,12 +2243,12 @@ def main(argv):
             f'<folder>.backup-<date>-<time>, not deleted. Without the flag the build leaves the folder alone.')
     if update:
         version, update = identify_update(tree, update, keys, logs)
-    if args.native_4k and (args.platform != 'macos' or version != 'v143'):
-        raise BuildError('--native-4k needs the 1.4.3 update and a Mac build (the other versions and iPhone / iPad have no 4K output)')
+    if args.native_4k and (args.platform != 'macos' or version not in ('v143', 'v121')):
+        raise BuildError('--native-4k needs 1.2.1 or the 1.4.3 update and a Mac build (the other versions and iPhone / iPad have no 4K output)')
     native_4k = args.native_4k
     if native_4k is None:
-        native_4k = args.platform == 'macos' and version == 'v143' and native_4k_default()
-    if version == 'v143' and args.platform == 'macos':
+        native_4k = args.platform == 'macos' and version in ('v143', 'v121') and native_4k_default()
+    if version in ('v143', 'v121') and args.platform == 'macos':
         say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
             ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
     step_code(tree, game, keys, env, logs, mod=None if update else code_mod)

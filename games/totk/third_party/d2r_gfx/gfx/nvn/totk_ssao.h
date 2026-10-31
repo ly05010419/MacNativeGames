@@ -4,9 +4,10 @@
 // variant_library (SSAO_MARK: patched sources stay out of the recorded variants) and pso_archive_key (patched pipelines
 // stay out of the pipeline archive).
 // Why the shader and not the game's settings: the AO the player sees is computed inside the shadow pre-pass fragment
-// shader (TOTK 1.4.3 9a5e3335514e4cbb / abbbf48f9b5e6598 at render/4, BotW 1.9.0 0eeb23f2b287a638 at render/2) and
-// written to the shadow mask's .z. Pair count, radius and strength are literals or the shader's own c1 constants, so
-// the game's ssao_parameter data and its agl::sdw::SSAO fields do not reach the screen.
+// shader (TOTK 1.4.3 9a5e3335514e4cbb / abbbf48f9b5e6598 and TotK 1.2.1 dd93068627010533 / 67acb7c322ece44d at render/4,
+// BotW 1.9.0 0eeb23f2b287a638 at render/2) and written to the shadow mask's .z. Pair count, radius and strength are
+// literals or the shader's own c1 constants, so the game's ssao_parameter data and its agl::sdw::SSAO fields do not reach
+// the screen.
 
 /* On the Mac those shaders are rebuilt when they load (shader_load) with a tunable AO, always (user 2026-10-30: the
    settings panel's level acts at once, also from off), unless TOTK_SSAO=0 keeps the shipped ones. Its parameters sit in a free
@@ -241,6 +242,16 @@ static const struct { const char *prefix; int slot; const char *helper, *store, 
      "_455 = as_type<int>(_2366);",
      "_455 = as_type<int>(totk_ssao_ao(_2366, _2358, (*spvDescriptorSet0.fp_c1)._m0[48], float2(_1870, _88), float2(_1874, _1872), float2(_1900, _1902), float3(_252, _248, _232), float3(_439, _427, _431), (*spvDescriptorSet0.fp_c4)._m0[16].x, (*spvDescriptorSet0.fp_c4)._m0[14].x, (*spvDescriptorSet0.fp_c1)._m0, spvDescriptorSet0.fp_t_tcb_A, spvDescriptorSet0.fp_t_tcb_ASmplr));"},
     {"abbbf48f9b5e6598", 48, k_ssao_helper_totk,
+     "_461 = as_type<int>(_2370);",
+     "_461 = as_type<int>(totk_ssao_ao(_2370, _2362, (*spvDescriptorSet0.fp_c1)._m0[48], float2(_1874, _92), float2(_1878, _1876), float2(_1904, _1908), float3(_252, _244, _228), float3(_433, _437, _441), (*spvDescriptorSet0.fp_c4)._m0[16].x, (*spvDescriptorSet0.fp_c4)._m0[14].x, (*spvDescriptorSet0.fp_c1)._m0, spvDescriptorSet0.fp_t_tcb_A, spvDescriptorSet0.fp_t_tcb_ASmplr));"},
+    /* TotK 1.2.1: the same two shaders as 1.4.3 with new keys (the 1.4.3 rebuild kept the compiled code, only the NVN
+       control section's metadata changed), so their translations and every anchor here are identical to the pair above:
+       checked against all four seed sources of the two 1.2.1 keys (v121 seed, chain v8) and the c1 data (tap offsets
+       c1[34].y .. c1[36].x = +/-0.005 .. +/-0.035, c1[48] zero-filled, the store line exactly once per source). */
+    {"dd93068627010533", 48, k_ssao_helper_totk,
+     "_455 = as_type<int>(_2366);",
+     "_455 = as_type<int>(totk_ssao_ao(_2366, _2358, (*spvDescriptorSet0.fp_c1)._m0[48], float2(_1870, _88), float2(_1874, _1872), float2(_1900, _1902), float3(_252, _248, _232), float3(_439, _427, _431), (*spvDescriptorSet0.fp_c4)._m0[16].x, (*spvDescriptorSet0.fp_c4)._m0[14].x, (*spvDescriptorSet0.fp_c1)._m0, spvDescriptorSet0.fp_t_tcb_A, spvDescriptorSet0.fp_t_tcb_ASmplr));"},
+    {"67acb7c322ece44d", 48, k_ssao_helper_totk,
      "_461 = as_type<int>(_2370);",
      "_461 = as_type<int>(totk_ssao_ao(_2370, _2362, (*spvDescriptorSet0.fp_c1)._m0[48], float2(_1874, _92), float2(_1878, _1876), float2(_1904, _1908), float3(_252, _244, _228), float3(_433, _437, _441), (*spvDescriptorSet0.fp_c4)._m0[16].x, (*spvDescriptorSet0.fp_c4)._m0[14].x, (*spvDescriptorSet0.fp_c1)._m0, spvDescriptorSet0.fp_t_tcb_A, spvDescriptorSet0.fp_t_tcb_ASmplr));"},
     {"0eeb23f2b287a638", 3, k_ssao_helper_botw,

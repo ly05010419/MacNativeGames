@@ -44,6 +44,15 @@ void settings_test_output_size(unsigned w, unsigned h) {
     assert(runtime_output_size_current() == pack_size(w, h));
 #endif
 }
+/* A swapchain as if the app carried the 4K heap overlay, for the native-4K mode tests; restore before the rows matter. */
+void settings_test_output_4k(int on) {
+#ifndef GAME_BOTW
+    if (on) { output_w = 3840; output_h = 2160; }
+    else { output_w = 2560; output_h = 1440; }
+#else
+    (void)on;
+#endif
+}
 /* The aspect ratio as runtime/aspect_patch.h sets it (production code), with a synthetic data-page slot and a window of
    ratio view instead of the stubs aspect_install writes into the game. */
 void settings_test_aspect_init(double view) {

@@ -52,7 +52,7 @@ parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.R
 parser.add_argument('size', help='<width>x<height>, e.g. 2560x1440')
 parser.add_argument('--output-root', type=Path, default=root / 'extracted/v0/romfs-patches-out')
 parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
-parser.add_argument('--scene', help='<width>x<height> scene render size (TOTK_RENDER_RES, 1.4.3) the heaps must also hold')
+parser.add_argument('--scene', help='<width>x<height> scene render size (TOTK_RENDER_RES, 1.4.3 / 1.2.1) the heaps must also hold')
 parser.add_argument('--heapdef', type=Path,
                     help='a mod\'s replacement HeapDef(.zs) to build on: its heap sizes are kept, the 2K sizes added')
 args = parser.parse_args()
@@ -62,7 +62,7 @@ w, h = (int(v) for v in args.size.lower().split('x'))
 sw, sh = (int(v) for v in args.scene.lower().split('x')) if args.scene else (0, 0)
 scene_dir = f'-scene-{sw}x{sh}' if sw * sh > SCENE_W * SCENE_H else ''
 assert 640 <= w <= 7680 and 360 <= h <= 4320, 'size out of range'
-assert not args.scene or version == 'v143', '--scene: only 1.4.3 renders its scene at TOTK_RENDER_RES'
+assert not args.scene or version in ('v143', 'v121'), '--scene: 1.4.3 and 1.2.1 render their scene at TOTK_RENDER_RES'
 assert not args.scene or (64 <= sw <= 4096 and 64 <= sh <= 4096), 'scene size out of range (TOTK_RENDER_RES: 64..4096)'
 manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
 assert manifest['status'] == 'pass'
