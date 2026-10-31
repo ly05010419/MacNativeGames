@@ -46,10 +46,15 @@ static int dram_8gb(void){
  static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
 #endif
 }
+/* The output/scene overlays grow the texture heaps (runtime_output_res_extra_bytes, scripts/make_output_res_overlay.py):
+   a scene at the canvas (TOTK_RENDER_RES auto, a 4K canvas renders 3840x2160) adds ~1.35 GiB, past the 8 GB mode's
+   6.8 GiB application pool and 7 GiB heap cap - nninitStartup would break while creating them (user 2026-10-31). Give
+   that build a bigger guest; the reservation is PROT_NONE, so the machine only pays for what the game touches. */
+static uint64_t heap_extra(void){static uint64_t v;if(!v)v=runtime_output_res_extra_bytes();return v;}
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE (dram_8gb()?8ULL<<30:6ULL<<30)   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
+#define LOW_SIZE (dram_8gb()?(heap_extra()>=1ULL<<30?12ULL<<30:8ULL<<30):6ULL<<30)   /* 12 GiB: room for the scene heaps after the stack; 8 GiB: room for the 7 GiB heap cap */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -70,7 +75,7 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
-#define HEAP_CAP (dram_8gb()?7ULL<<30:4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup; ~5.8 GiB in the 8 GB mode */
+#define HEAP_CAP (dram_8gb()?(heap_extra()>=1ULL<<30?10ULL<<30:7ULL<<30):4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup; ~5.8 GiB in the 8 GB mode, and the scene heaps add ~1.35 GiB more */
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
  v=e?strtoull(e,NULL,0):(dram_8gb()?0x1b3400000ULL:0xcd500000ULL)+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
