@@ -120,6 +120,9 @@ launching the executable to append a native runtime log to that profile.
   isolated the cause; this does not establish picture accuracy in every scene.
   Full island gameplay, long sessions, and save round-trips require more testing.
   Photo capture has separately hit an unsupported geometry-stage shader.
+  Clicking a Mii dream bubble once triggered a null shader-entry abort. The
+  bubble disappeared before the instrumented retry, so the cause is unresolved;
+  subsequent play without another crash is not a verified fix.
 - Some services are partial implementations; some audio effects remain unsupported.
   The runtime expands verified Mii/cloth child heaps and aligns physical NVN pool
   backing for Darwin pages; these guarded compatibility patches need review.
@@ -170,3 +173,6 @@ MTL_DEBUG_LAYER=1 /path/to/host/build/tomodachi-native-metal4 \
 The probe uses synthetic shaders and textures; game shaders and saves are not
 part of the test source. This result covers the reproduced highlight defect,
 not all Mii rendering or the separate unsupported photo shader.
+
+The current contribution scope, per-platform evidence, and remaining gaps are
+recorded in [validation notes](docs/validation.md).

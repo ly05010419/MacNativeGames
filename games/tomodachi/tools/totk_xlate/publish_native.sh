@@ -1,11 +1,11 @@
 #!/bin/zsh
 # Build the shader translation service the packaged app runs (totk_xlate --service): the Ryujinx shader translator
-# (vendor/ryujinx) with this project's patches (patches/*.patch) and the service (Service.cs), compiled ahead of time
+# (third_party/ryujinx) with this project's patches (patches/*.patch) and the service (Service.cs), compiled ahead of time
 # with NativeAOT into one arm64 program that needs no .NET runtime.
-# build_app.py uses the copy in games/totk/prebuilt/macos-arm64 (made with this script), so building the app needs no
+# build_host.py uses the copy in games/tomodachi/prebuilt/macos-arm64 (made with this script), so building the app needs no
 # .NET at all; run this only after changing the translator, its patches or Service.cs. Needs the .NET 10 SDK and network
 # access the first time (NuGet packages, the NativeAOT compiler).
-# usage: games/totk/tools/totk_xlate/publish_native.sh [dotnet]   -> games/totk/prebuilt/macos-arm64/totk_xlate (+ .sha256)
+# usage: games/tomodachi/tools/totk_xlate/publish_native.sh [dotnet]   -> games/tomodachi/prebuilt/macos-arm64/totk_xlate (+ .sha256)
 set -e
 HERE=${0:A:h}
 TITLE=${HERE:h:h}
