@@ -1,7 +1,7 @@
 /* Odyssey graphics settings, the present part (odyssey_gfx.h has the settings; nvn_mtl.m includes this before
    present_encode_m4). The game picture goes through, in order:
-     anti-aliasing (key 3: FXAA, or SMAA's three passes) at the picture's own size into gx_aa[slot]  ->  the upscale to the viewport (key 5): MetalFX
-     (output_upscale), or FSR 1 EASU / Lanczos-2 drawn by a shader, or the bilinear blit  ->  CAS (key 4) on the result.
+     anti-aliasing (FXAA, or SMAA's three passes) at the picture's own size into gx_aa[slot]  ->  the upscale to the viewport: MetalFX
+     (output_upscale), or FSR 1 EASU / Lanczos-2 drawn by a shader, or the bilinear blit  ->  CAS on the result.
    A stage that is off costs nothing; a shader upscale followed by CAS goes through gx_up[slot] (the viewport's size).
    The passes read their constants from the slot's present buffer: the final draw at 0 (its Crop as before), the
    anti-aliasing pass at 96, the upscale pass at 192. Two timestamps per slot bracket the whole picture work (after a
@@ -227,7 +227,7 @@ static int gx_pass(id<MTL4CommandBuffer> cb, int fn, id<MTLTexture> in, const NS
     m4_end(en);
     return 1;
 }
-/* SMAA (key 3): the lookup tables as textures, its argument tables (three textures, linear and point samplers) and the
+/* SMAA: the lookup tables as textures, its argument tables (three textures, linear and point samplers) and the
    three passes from a whole texture `in` into g_gx_aa[slot]. */
 #include "../../../smaa/AreaTex.h"
 #include "../../../smaa/SearchTex.h"
@@ -329,28 +329,16 @@ static double gx_picture_ms(void) {
     double a[128]; memcpy(a, g_gx_ms, sizeof a); qsort(a, (size_t)n, sizeof *a, dcmp_gx);
     return a[n / 2];
 }
-/* The HUD's graphics lines (frontend.m shortcut_text): keys 3-7 with their values, then the GPU line. */
+/* Diagnostic picture settings and GPU work. The native HUD/settings panel owns the visible interface. */
 void dm_gfx_panel_text(char *out, size_t n) {
-    size_t o = 0; int live = gx_live();
-    /* after PR #910: keys 3-7 are TOTK's (runtime/input.c); these are set in the window before the game */
-    o += (size_t)snprintf(out + o, n - o, "%s", TOTK_UI("画质（在启动前的设置窗口里改）\n", "Picture (set in the window before the game)\n"));
+    size_t o = 0;
+    o += (size_t)snprintf(out + o, n - o, "%s", TOTK_UI("画质（按 1 打开设置）\n", "Picture (press 1 for settings)\n"));
     for (int w = 0; w < GX_N && o < n; w++) {
         int v = gx_get(w);
-        /* The resolution is the one this launch started at; key 3 changes the picture while playing, so this line is not
-           the picture now (key 3's line above is). */
-        if (w == GX_RES && v != g_gx_res_now)
-            o += (size_t)snprintf(out + o, n - o, "   %s: %s at next launch (now %s)", gx_title[w], gx_label[w][v], gx_label[w][g_gx_res_now]);
-        else if (w == GX_RES)
-            o += (size_t)snprintf(out + o, n - o, "   %s at launch: %s (key 3 changes the picture while playing)", gx_title[w], gx_label[w][v]);
-        else
-            o += (size_t)snprintf(out + o, n - o, "   %s: %s", gx_title[w], gx_label[w][v]);
-        /* MetalFX upscales only at key 3's "MetalFX to the window" step (output_upscale); at its other steps the picture is
-           drawn bilinear, which is a choice of key 3, not something this build lacks. */
-        if (w == GX_UP && v == GX_UP_METALFX && !(mfxup_enabled() && mfxup_output_enabled()) && o < n)
-            o += (size_t)snprintf(out + o, n - o, " (runs only at key 3's \"MetalFX to the window\"; now bilinear)");
+        o += (size_t)snprintf(out + o, n - o, "   %s: %s", gx_title[w], gx_label[w][v]);
+        if (w == GX_UP && v == GX_UP_METALFX && !(mfxup_enabled() && mfxup_output_enabled()) && o < n) o += (size_t)snprintf(out + o, n - o, " (off in this build: bilinear)");
         if (o < n) o += (size_t)snprintf(out + o, n - o, "\n");
     }
-    if (!live && o < n) o += (size_t)snprintf(out + o, n - o, "   (anti-aliasing, sharpen and upscaler apply while 60+60 is on)\n");
     sysload_start();
     sysload_info li; int have = sysload_get(&li);
     double ms = gx_picture_ms();

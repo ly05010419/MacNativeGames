@@ -31,3 +31,11 @@ repository that `games/ssbu` was copied from as well, so the closest copy in the
 
 `../runtime/odyssey_aspect.c` is Odyssey's own (key 4); it reads the camera projections the way `games/totk`'s
 `game_patches_botw.c` describes them, without using that file.
+
+## Added on 2026-11-01 (settings)
+
+The frontend, panel, binding diagrams, keyboard mapping, playtime and controller input/feedback follow games/totk
+at 4227378, including d3389b0 and the prior graph, persistence and controller revisions. FPS/sysload follow 0fd9358
+(95422a7, d8b16b1 and 95e04c0). Odyssey's stick calibration, keyboard defaults and input ABI are retained. Zelda-specific
+bow/Ultrahand key transforms and ability-wheel mouse pointing are omitted. Output-resolution scaling uses the standalone
+local BOTW helper, copied here; the build/runtime never reads another game's folder.

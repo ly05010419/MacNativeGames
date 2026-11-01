@@ -1,9 +1,4 @@
-"""Odyssey's copy of the Mac input code (runtime: gamepad.m, gamepad_layout.h, mouse_look.h) runs the probes games/totk
-has for it: the face-button layout, the controller type on key 6 and mouse mode on key 7.
-
-Run with Xcode selected: python -m unittest discover -s games/odyssey/tests.
-No game files, save data or controller are required.
-"""
+"""Odyssey's production controller layout, saved type and mouse handling. No game files or controller required."""
 from pathlib import Path
 import json
 import shutil
@@ -26,7 +21,14 @@ class OdysseyInput(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stderr[-2000:])
             run = subprocess.run([str(probe)] + ([str(data)] if with_data else []), capture_output=True, text=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertEqual(json.loads(run.stdout.strip().splitlines()[-1])["status"], "pass")
+            if run.stdout.strip().startswith("{"):
+                self.assertEqual(json.loads(run.stdout.strip().splitlines()[-1])["status"], "pass")
+            else:
+                self.assertIn("pass:", run.stdout)
+
+    def test_keyboard_mapping(self):
+        self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                        str(GAME / "tests/keyboard_map/probe.c")], False)
 
     def test_layout(self):
         self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME / "runtime"),

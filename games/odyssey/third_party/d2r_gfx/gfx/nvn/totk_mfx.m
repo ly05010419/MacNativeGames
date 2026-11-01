@@ -100,6 +100,7 @@ static void mfx_init(void) {
     if (v) MLOG("TOTK_MFX=%s: request 60+60; waiting for a 120 Hz window screen", e);
 }
 int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }

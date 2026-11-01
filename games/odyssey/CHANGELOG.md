@@ -17,6 +17,17 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 ## Log
 
+### 2026-11-01: Complete in-game settings and FPS history
+
+Port the complete three-tab Mac panel and its graph/persistence/controller/remapping revisions to Odyssey. Key 1
+opens settings; L3 + R3 or a chosen controller button does the same. Include the independent 30-second FPS graph,
+HUD modes, playtime, battery, sensitivity, keyboard/controller diagrams, a small-window list and binding capture/reset.
+Odyssey retains its keyboard defaults, calibrated sticks and 60 Hz game logic; only supported 60+60 interpolation
+is offered. Render caps stay within the checked allocated canvas and output scaling is independent. Keep the upstream
+root-arena fix and per-game shader-contribution routing. The combined port was played on macOS with Odyssey 1.4.1 in
+Cap Kingdom, and graph/HUD/render/sensitivity preferences were verified across restart. Physical controller gameplay
+and an Odyssey iOS app build remain unverified.
+
 ### 2026-10-26: update 1.4.1, from a base NSP and an update NSP
 
 - `scripts/merge_nsp.py` joins a base NSP and an update NSP into one NSP (PFS0), every entry copied unchanged; a name in
