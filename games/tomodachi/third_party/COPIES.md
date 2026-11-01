@@ -22,3 +22,10 @@ The port is self-contained as required by the parent contribution guide.
 
 Paths under other games in this file and COPIES.json are provenance only, never
 build-time dependencies. See `../THIRD_PARTY_NOTICES.md` for the retained licenses.
+
+Local modifications after the recorded copy inputs include the corrected inline
+keyboard state/submit lifecycle and depth-attachment feedback snapshots for Mii
+lighting. `nvn_depth_feedback_probe.h` adds synthetic GPU coverage for pending
+clears, read-only reuse, depth writes, pass changes, and resource replacement on
+D16, D32, and depth-stencil textures. The hashes identify copied inputs, not
+post-modification outputs.

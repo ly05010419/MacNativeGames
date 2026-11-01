@@ -2402,6 +2402,19 @@ static void driver_cache_check_set(int v);
 // Diagnostic only: measurements with this enabled are never valid performance results.
 static _Atomic uint64_t g_diag_skip_fs;
 static _Atomic int g_att_snapshot = -1;
+static _Atomic int g_depth_feedback_on = -1;
+static int depth_feedback_on(void) {
+    int on=atomic_load(&g_depth_feedback_on);
+    if(on<0){const char *e=getenv("TOMODACHI_DEPTH_SNAPSHOT");
+#if NATIVE_APPLICATION_ID == 0x010051F0207B2000ULL
+        on=!e || atoi(e)!=0;
+#else
+        on=e && atoi(e)!=0;
+#endif
+        atomic_store(&g_depth_feedback_on,on);
+    }
+    return on;
+}
 static int att_snapshot_on(void){int on=atomic_load(&g_att_snapshot);if(on<0){const char *e=getenv("TOTK_ATT_SNAPSHOT");on=e&&atoi(e);atomic_store(&g_att_snapshot,on);}return on;}
 static _Atomic uint64_t g_diag_texpng_fs, g_diag_geometry_fs;
 static int diag_shader_prefix_matches(const char *key, uint64_t value) {
@@ -2442,6 +2455,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "usnap_index")) { atomic_store(&g_usnap_index_on, v != 0); MLOG("[flag] usnap_index = %d", v != 0); return; }
     if (!strcmp(name, "usnap_index_check")) { atomic_store(&g_usnap_index_check, v != 0); MLOG("[flag] usnap_index_check = %d", v != 0); return; }
     if (!strcmp(name, "vertex_streams")) { atomic_store(&g_vertex_streams_on, v != 0); MLOG("[flag] vertex_streams = %d", v != 0); return; }
+    if (!strcmp(name, "depth_snapshot")) {atomic_store(&g_depth_feedback_on,v!=0);MLOG("[flag] diagnostic depth_snapshot = %d",v!=0);return;}
     if (!strcmp(name, "att_snapshot")) {atomic_store(&g_att_snapshot,v!=0);MLOG("[flag] att_snapshot = %d",v!=0);return;}
     if (!strcmp(name, "arg_bind_cache")) { atomic_store(&g_arg_bind_cache_on, v != 0); MLOG("[flag] arg_bind_cache = %d", v != 0); return; }
     if (!strcmp(name, "pool_query_cache")) { atomic_store(&g_pool_query_on, v != 0); MLOG("[flag] pool_query_cache = %d", v != 0); return; }
@@ -5502,10 +5516,14 @@ static id<MTLTexture> tex_by_id(int tid) {   // 调用方持 g_rmu | Caller hold
 }
 // 热路径取对象：表里有效就直接返回表持有的指针（不经 ARC 的 retain / autorelease），否则走慢路建 / 校验。调用方持 g_rmu。
 // Hot-path object fetch: if the table entry is valid, return the table-held pointer directly (without ARC retain / autorelease), otherwise take the slow path to build / validate. Caller holds g_rmu.
-/* Diagnostic immutable input for single-level 2D colour attachment feedback.
-   Retained on the submit timeline, never substituted for storage images. */
-static uint64_t g_att_copy_ser[8];
-static id<MTLTexture> g_att_copy_tex[8];
+/* Immutable sampled inputs for single-level 2D attachment feedback. Depth and
+   stencil remain attached to their writable originals. Copies stay resident on
+   the submission timeline, and never replace storage-image bindings. */
+static uint64_t g_att_copy_ser[9];
+static id<MTLTexture> g_depth_feedback_copy, g_depth_feedback_source;
+static uint64_t g_depth_feedback_ser,g_depth_feedback_epoch,g_depth_feedback_pass,g_depth_write_epoch;
+static uint64_t g_depth_feedback_copies,g_depth_feedback_reuses;
+static id<MTLTexture> g_att_copy_tex[9];
 static int g_att_copy_n;
 static id<MTLTexture> att_copy_lookup(int tid) {
     if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return nil;
@@ -7677,8 +7695,8 @@ static int rt_range_same(const p_set_rt *a, const p_set_rt *b) {
         depth.textureType == MTLTextureType2D && color.sampleCount == 1 && depth.sampleCount == 1 &&
         g_pass.reg_gen == g_reg_gen && g_pass.ser_gen == g_ser_gen && g_pass.range_dirty == nvn_dirty_now();
 }
-/* Resolve all sampled colour attachments, including full bindless handle arrays.
-   Depth reads and storage-image accesses do not request colour snapshots. */
+/* Resolve sampled attachments, including full bindless handle arrays. Bit 8 is
+   depth; storage-image bindings never request a read-only snapshot. */
 static unsigned draw_feedback_colors(NvProg *pr) {
     unsigned mask=0;
     if(!pr)return 0;
@@ -7693,10 +7711,58 @@ static unsigned draw_feedback_colors(NvProg *pr) {
                 unsigned tid=h&0xfffff;if(!tid)continue;
                 uint64_t ser=atomic_load_explicit(&g_tser[tid],memory_order_relaxed);
                 for(int k=0;k<R.rt.n && k<8;k++)if(R.rt.color[k] && R.rt.color[k]->serial==ser)mask|=1u<<k;
+                if(depth_feedback_on() && R.rt.depth && R.rt.depth->serial==ser)mask|=1u<<8;
             }
         }
     }
     return mask;
+}
+/* Sample a stored image, not a depth attachment whose tiles are still live.
+   Reuse is restricted to one unchanged read-only render pass. Any pass boundary,
+   pending clear, depth write, or replacement of the source requires a new copy. */
+static void snapshot_feedback_inputs(NvProg *pr) {
+    unsigned feedback=att_snapshot_on()?draw_feedback_colors(pr):0;
+    if(feedback&(1u<<8)) {
+        const tex_t *dt=R.rt.depth;
+        id<MTLTexture> source=tex_mtl(dt);
+        if(g_enc && g_depth_feedback_copy && g_depth_feedback_ser==dt->serial &&
+           g_depth_feedback_source==source && g_depth_feedback_pass==g_pass.serial &&
+           g_depth_feedback_epoch==g_depth_write_epoch && !R.clear_d && !R.clear_s) {
+            g_att_copy_ser[g_att_copy_n]=dt->serial;
+            g_att_copy_tex[g_att_copy_n++]=g_depth_feedback_copy;
+            g_depth_feedback_reuses++; feedback&=~(1u<<8); args_dirty_all();
+        }
+    }
+    if(!feedback)return;
+    /* A clear may be queued before the first sampling draw. Land it before
+       taking the copy, including when no earlier encoder has been opened. */
+    if(feedback&(1u<<8))rp_flush();
+    rp_end();blit_close();rs_sync();
+    for(int i=0;i<9;i++) {
+        const tex_t *ct=i==8?R.rt.depth:i<R.rt.n?R.rt.color[i]:NULL;
+        if(!ct || !(feedback&(1u<<i)))continue;
+        id<MTLTexture> src=tex_mtl(ct);
+        if(src.textureType!=MTLTextureType2D || src.mipmapLevelCount!=1 || src.sampleCount!=1)continue;
+        MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
+        td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageShaderRead;
+        id<MTLTexture> copy=[g_dev newTextureWithDescriptor:td];
+        if(!copy)MDIE("attachment snapshot allocation");res_add(copy);
+        enc_b_copy_texture(blit(),src,0,0,MTLOriginMake(0,0,0),MTLSizeMake(src.width,src.height,1),copy,0,0,MTLOriginMake(0,0,0));
+        if(i==8) {
+            g_depth_feedback_copy=copy;g_depth_feedback_source=src;
+            g_depth_feedback_ser=ct->serial;g_depth_feedback_epoch=g_depth_write_epoch;
+            g_depth_feedback_pass=0;g_depth_feedback_copies++;
+        }
+        g_att_copy_ser[g_att_copy_n]=ct->serial;g_att_copy_tex[g_att_copy_n++]=copy;
+        defer_obj_release(copy);
+    }
+    blit_close();args_dirty_all();g_pso_dirty=g_dss_dirty=1;
+}
+static void depth_feedback_note_pass(void) {
+    if(S.ds.dw || !R.rt.depth)return;
+    for(int i=0;i<g_att_copy_n;i++)
+        if(g_att_copy_ser[i]==R.rt.depth->serial && g_att_copy_tex[i]==g_depth_feedback_copy)
+            g_depth_feedback_pass=g_pass.serial;
 }
 static int draw_samples_rt(NvProg *pr) {   // 采样附件保持原ser级保守guard，不分级/层 | Sampled attachments keep the original conservative ser-level guard, not split by level/layer
     uint64_t rs[9]; int nr = 0;
@@ -9630,23 +9696,8 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (g_rt_range_active && (!rt_range_pr_ro(pr) || !S.ds.dt || S.ds.dw || S.ds.st)) rp_end();   // 原encoder边界的外部写可见性不删 | The external write visibility at the original encoder boundary is not removed
     if (g_rt_merged && draw_samples_rt(pr)) { static int once; if (!once++) MLOG("同目标续用：续用通道内绘制要采样附件，在此切开（首例 通道 %llu）", g_stat_pass);
         PD("M %llu 续用通道内绘制要采样附件，在此切开", g_stat_pass); rp_end(); }
-    unsigned feedback_colors=att_snapshot_on()?draw_feedback_colors(pr):0;
-    if (feedback_colors) {
-        rp_end(); blit_close(); rs_sync();
-        for(int i=0;i<R.rt.n && i<8;i++) {
-            const tex_t *ct=R.rt.color[i]; if(!ct || !(feedback_colors&(1u<<i)))continue;
-            id<MTLTexture> src=tex_mtl(ct);
-            if(src.textureType!=MTLTextureType2D || src.mipmapLevelCount!=1 || src.sampleCount!=1)continue;
-            MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:src.width height:src.height mipmapped:NO];
-            td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageShaderRead;
-            id<MTLTexture> copy=[g_dev newTextureWithDescriptor:td];if(!copy)MDIE("attachment snapshot allocation");
-            res_add(copy);
-            id<MTL4ComputeCommandEncoder> be=blit();
-            enc_b_copy_texture(be,src,0,0,MTLOriginMake(0,0,0),MTLSizeMake(src.width,src.height,1),copy,0,0,MTLOriginMake(0,0,0));
-            g_att_copy_ser[g_att_copy_n]=ct->serial;g_att_copy_tex[g_att_copy_n++]=copy;defer_obj_release(copy);
-        }
-        blit_close();args_dirty_all();g_pso_dirty=g_dss_dirty=1;
-    }
+    if(S.ds.dw)g_depth_write_epoch++;
+    snapshot_feedback_inputs(pr);
     static id<MTLFunction> fz_fn;   // 合并通道后一个通道本次绘制的特化片元函数（nil = 用原版本） | Specialized fragment function for this draw of the later pass in a merged render pass (nil = use the original version)
     if (g_fz.active && g_enc && g_fz.phase == 2 && !fz_p2_draw(pr, dw, di, g_fz.lmap2, &fz_fn)) {   // 证不出：结束合并通道（前一个通道的结果照常写回），按后一个通道的原目标重开 | Cannot be proven: end the merged render pass (the earlier pass's result is stored as usual) and reopen with the later pass's original targets
         static int once3; if (!once3++) MLOG("可读 tile 通道合并：后一个通道的绘制证不出，退回分开（首例 通道 %llu）", g_stat_pass);
@@ -9683,6 +9734,7 @@ frz_plain:;
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { g_draw_skip[8]++; return; }
+    depth_feedback_note_pass();
     if (g_pass.mfx || g_mfx.role) {   // TOTK_MFX: every draw into the canvas after the scene copy goes to the UI layer too
         int r = 0;
         if (g_pass.mfx) {
@@ -14064,3 +14116,5 @@ int mtl_probe_arg_epoch(void) {
 
 #include "nvn_pool_retire_probe.h"
 #include "nvn_cube_group_probe.h"
+
+#include "nvn_depth_feedback_probe.h"

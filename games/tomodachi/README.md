@@ -1,6 +1,6 @@
 # Tomodachi Life: Living the Dream — experimental native Mac port
 
-**Status: draft / work in progress. Face textures still render incorrectly.**
+**Status: draft / work in progress. Broader gameplay and visual validation remain.**
 The game starts, native menus and text entry work, and an existing island has
 been exercised on an Apple silicon Mac. This is not a claim of complete picture
 accuracy, full gameplay coverage, or proven save compatibility. Keep a backup of
@@ -115,15 +115,17 @@ launching the executable to append a native runtime log to that profile.
   separate native copies during development.
 - Fresh self-contained Metal 3 and Metal 4 builds passed the native cross-module loader
   probe: 4,000 calls across four threads. This checks loading/linkage, not gameplay.
-- Known merge blocker: **incorrect face textures**. Other Mii/hair rendering
-  artifacts have also been observed; the scope needs further comparison.
+- The reproduced flickering highlight patches on Mii faces, hair, and clothing
+  were corrected by depth-feedback snapshots. Same-process on/off/on comparisons
+  isolated the cause; this does not establish picture accuracy in every scene.
   Full island gameplay, long sessions, and save round-trips require more testing.
+  Photo capture has separately hit an unsupported geometry-stage shader.
 - Some services are partial implementations; some audio effects remain unsupported.
   The runtime expands verified Mii/cloth child heaps and aligns physical NVN pool
   backing for Darwin pages; these guarded compatibility patches need review.
 - No performance improvement is claimed from local work counters or FPS alone.
   Rendering correctness takes priority over speed. Keep this contribution a
-  draft until the face-texture defect and the required gameplay validation are resolved.
+  draft until the remaining graphics and gameplay validation are complete.
 
 Run the parent repository suite and the title-local tests:
 
@@ -141,3 +143,30 @@ validation, guest input remapping, and controller settings navigation.
 `run.py --mode probe` is a bounded local-data loader diagnostic; `--mode startup`
 and `--mode boot` perform additional native checks with isolated profiles. They
 need your prepared host and must not run alongside another game.
+
+## Character highlight regression
+
+The lighting shader sampled the same depth image used as its live attachment.
+The renderer now lands pending clears and samples an immutable depth copy. Reuse
+is limited to an unchanged read-only pass; pass boundaries, depth writes, and
+source replacement force a fresh copy. The change defaults on only for this
+title. Current snapshot support is single-level, single-sample 2D textures.
+Extra copies/pass boundaries have a cost; no performance improvement is claimed.
+
+On the reproduced lineup, snapshots on (8 frames), off (16 frames), then on
+again (24 frames) removed, restored, then removed the block-shaped highlights.
+Metal 3 and Metal 4 each passed 3,117 synthetic GPU checks with Metal validation.
+Disabling snapshots made the regression fail at the live-attachment assertion.
+Run this optional check with a built host and your own rewritten modules, with
+all games closed:
+
+```sh
+MTL_DEBUG_LAYER=1 /path/to/host/build/tomodachi-native-metal4 \
+  /path/to/host/rewritten probe-gpu-depth-feedback
+# Metal 3: use build/tomodachi-native instead.
+# Negative control (expected failure): add TOMODACHI_DEPTH_SNAPSHOT=0.
+```
+
+The probe uses synthetic shaders and textures; game shaders and saves are not
+part of the test source. This result covers the reproduced highlight defect,
+not all Mii rendering or the separate unsupported photo shader.
