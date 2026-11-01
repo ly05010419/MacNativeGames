@@ -3,7 +3,7 @@
 A game shader is translated for the bind state of a draw (`deps`: texture kinds, image formats, vertex input and
 fragment output types). Until 2026-10-22 almost every bound texture slot was a dependency, so one shader had up to nine
 variants, and the ones a build did not carry had to be met in play and collected in the shared list
-([shader-list.md](shader-list.md)). An iPhone or iPad, which cannot translate, skips draws whose variant it lacks.
+([shader-list.md](shader-list.md)). An iPhone or iPad translates a variant it lacks with maxmetal in the app, and skips its draws only when that fails.
 
 ## What the variants differed in (measured 2026-10-22)
 
