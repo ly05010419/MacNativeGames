@@ -61,6 +61,9 @@ void runtime_thread_init(void);
 void runtime_dispatch(uint64_t ret, uint64_t *regs);
 
 uint64_t runtime_image_bytes(void);
+int runtime_dram_8gb(void);          /* services.c: TOTK_DRAM_8GB on (Mac) */
+uint64_t runtime_app_pool(void);     /* services.c: the application pool SetHeapSize and MapPhysicalMemory check against */
+uint64_t runtime_heap_cap(void);     /* services.c: the largest heap SetHeapSize accepts */
 
 void runtime_fs_init(void);
 void *runtime_fs_override(const char *name);

@@ -586,6 +586,39 @@ static void patch_phone_render(Module *m) {
     put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
     fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
 }
+/* Heap sizes (botw_heap.c): the 2K output's +224 MiB and the 8 GB mode (TOTK_DRAM_8GB), Mac 1.6.0 and 1.9.0 (1.9.0 has no
+   2K output here: the 8 GB mode only), each with its own table of sites. Prepared before any patch here writes (a
+   refusal stops the start with nothing written), applied right after the output size. */
+#if (defined(GAME_BOTW160) || defined(GAME_BOTW190)) && !TARGET_OS_IPHONE
+#include "botw_heap.h"
+#ifdef GAME_BOTW160
+#define HEAP_TABLE botw_heap_160
+#else
+#define HEAP_TABLE botw_heap_190
+#endif
+static BotwHeapPlan g_heap;
+static void heap_prepare(Module *m) {
+    if (ios_code()) return;   /* the iOS export: the shipped sizes (no 2K output, no 8 GB mode on the phone) */
+    char err[256];
+    if (botw_heap_prepare(&HEAP_TABLE, m->base, m->size, m->text_end, runtime_output_res(NULL, NULL), runtime_dram_8gb(),
+                          runtime_app_pool(), runtime_heap_cap(), runtime_image_bytes(), &g_heap, err, sizeof err)) {
+        fprintf(stderr, "[botw] heap plan refused: %s\n", err);
+        runtime_fail("the heap plan was refused (see the [botw] heap plan line); nothing was patched");
+    }
+    if (runtime_dram_8gb())
+        fprintf(stderr, "[botw] heap plan: 8 GB mode, SetMemoryHeapSize %#llx, root block %#llx, %u words (veneers at +%#llx); "
+                        "the pool %#llx leaves %#llx after the heap and the code\n", (unsigned long long)g_heap.heap,
+                (unsigned long long)g_heap.root, g_heap.n, (unsigned long long)g_heap.veneer, (unsigned long long)runtime_app_pool(),
+                (unsigned long long)(runtime_app_pool() - g_heap.heap - runtime_image_bytes()));
+}
+static void heap_apply(Module *m) { botw_heap_apply(m->base, &g_heap); }
+#else
+static void heap_prepare(Module *m) {
+    (void)m;
+    if (runtime_dram_8gb()) fprintf(stderr, "[botw] the 8 GB mode has no %s heap sites yet: the game keeps its own heap sizes\n", TOTK_GAME_VERSION);
+}
+static void heap_apply(Module *m) { (void)m; }
+#endif
 #ifdef GAME_BOTW190
 /* The sun shadow map at 2048 per cascade (botw_shadow_res.h): TOTK_SHADOW_RES=2048, or 2048 in shadows.txt (the settings
    panel's row), read once before the guest starts; Mac only (the phone's memory is tighter and it was not tried there),
@@ -618,8 +651,10 @@ void runtime_shadow_res_save(int size) {   /* the settings panel: the next launc
 #endif
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
+    heap_prepare(m);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
     if (!patch_output_res(m)) patch_render_1080(m);
+    heap_apply(m);
     patch_phone_render(m);
 #ifdef GAME_BOTW190
     patch_shadow_res(m);
@@ -858,10 +893,8 @@ static int patch_output_res(Module *m) {
     memcpy(m->base + 0x1821684, &branch[2], 4); memcpy(m->base + 0x1821688, &branch[3], 4);
     const uint32_t heap_render = 0x52a28008u;   /* mov w8, #0x14000000: 320 MiB */
     const uint32_t heap_gfx = 0x320603e0u;      /* mov w0, #0x4000000: 64 MiB */
-    const uint32_t heap_size = 0x52ba2000u;     /* mov w0, #0xd1000000: SetMemoryHeapSize +224 MiB */
-    const uint32_t heap_root = 0x52b9e015u;     /* mov w21, #0xcf000000: the root block +224 MiB */
     memcpy(m->base + 0x1804c44, &heap_render, 4); memcpy(m->base + 0xe550a0, &heap_gfx, 4);
-    memcpy(m->base + 0xe536dc, &heap_size, 4); memcpy(m->base + 0xe53fa0, &heap_root, 4);
+    /* SetMemoryHeapSize and the root block +224 MiB: botw_heap.c writes them (heap_apply), one plan with the 8 GB mode. */
     fprintf(stderr, "[botw] output: a %ux%u swapchain, starting at %s; heaps: render 320 MiB, graphics 64 MiB, +224 MiB (23 instructions verified)%s\n",
             w, h, g_out_mode == OUT_AUTO ? "1920x1080" : "that size", g_out_mode == OUT_AUTO ? "; key 3: off -> MetalFX 2K -> native 2K" : "");
     return 1;
