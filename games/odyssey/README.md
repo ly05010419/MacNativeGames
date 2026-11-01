@@ -114,6 +114,12 @@ and played it from NSPs (base + 1.3.0 update merged into one PFS0, #657) and wit
 Optional, after you've played a while: `scripts/precompile_cached_shaders.py` compiles the shaders your game has
 translated into Metal libraries ahead of time; then run the build command again to repackage.
 
+The app now includes Odyssey's shared render-pipeline recipes as well as its shader libraries. Startup finishes
+warming these and the pipelines recorded by earlier sessions before the first frame, so the opening scene does not
+compete with that compilation. A longer loading screen is expected. `ODYSSEY_WARM_BEFORE_PLAY=0` restores the earlier
+title-only wait for comparison. Draw-skipping shader translation is off by default, as in the newer TOTK/BOTW host;
+`TOTK_SHADER_ASYNC=1` opts back in. New pipelines absent from every warm-up list can still cause first-use pauses.
+
 ## Playing
 
 - Opening Odyssey.app shows a settings window first, with the game's icon (made from your dump when the app is
