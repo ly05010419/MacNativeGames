@@ -9,7 +9,8 @@ the builder installed carries `.made-by-builder` with the path, size and mtime o
 included, the marker itself excluded); an older backup is removed only when it is a real folder named <version>.backup-*
 whose files still match its marker exactly, the newest builder backup kept. Anything else is the player's and is never
 removed by the builder. Apply refuses while the game runs or the free space is short. A load folder found without a
-marker is first imported as one mod, "Installed before the builder"."""
+marker is first imported as one mod, "Installed before the builder". S9.2: the texture pack is a reserved, hidden mod
+(TEXTURES); with it enabled Apply fits the size tables to the app (texture_fit) before the manifest."""
 from dataclasses import dataclass, field
 import json
 import os
@@ -19,10 +20,12 @@ import shutil
 import subprocess
 import sys
 
-from tools.builder import game_state, mod_shared, mod_tools
+from tools.builder import cancellable, game_state, mod_shared, mod_tools, texture_fit
 
 MARKER, STATE, IMPORTED = '.made-by-builder', 'library.json', 'installed-before-the-builder'
 ICONS = 'builder-button-icons'      # E6 S6.3: the builder's icons mod, reserved, always last (its size table wins)
+TEXTURES = 'builder-textures'       # S9.2: the Textures tab's pack, reserved, hidden, after the player's mods
+HIDDEN = (TEXTURES,)                # no row in the Mods tab, never moved, after the player's mods in this order
 TITLE_IDS = {'v143': '0100F2C0115B6000', 'botw190': '01007EF00011E000'}
 MARGIN = 1 << 30                    # free space kept beyond the composed size
 COPY_S = 1800.0
@@ -42,7 +45,8 @@ class Mod:
 @dataclass(frozen=True)
 class ApplyResult:
     ok: bool
-    reason: str = ''                # '' or: running, no_space, nothing, set_aside, install_failed
+    reason: str = ''                # '' or: running, no_space, nothing, set_aside, install_failed, textures_failed,
+                                    # cancelled (S19.1: the pack's fit was stopped; the game's folder is untouched)
     lines: tuple = ()
     removed_backups: int = 0
 
@@ -74,9 +78,9 @@ def open_library(data_dir, version, load):
 
 
 def save(library):
-    for key in ('order', 'enabled'):                # E6 S6.3 B1: the icons mod last, whatever moved
-        if ICONS in library.state[key]:
-            library.state[key] = [m for m in library.state[key] if m != ICONS] + [ICONS]
+    for key in ('order', 'enabled'):                # E6 S6.3 B1, S9.2: the hidden mods, then the icons mod
+        ids, last = library.state[key], (*HIDDEN, ICONS)
+        library.state[key] = [m for m in ids if m not in last] + [m for m in last if m in ids]
     library.root.mkdir(parents=True, exist_ok=True)
     partial = library.root / (STATE + '.partial')
     partial.write_text(json.dumps({'format': 1, **library.state}, indent=2) + '\n')
@@ -111,7 +115,7 @@ def clone(runner, source, dest):
 def _new_id(library, name):
     base = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')[:40] or 'mod'
     mod_id, n = base, 2
-    while library.path(mod_id).exists() or mod_id in library.state['order'] or mod_id == ICONS:
+    while library.path(mod_id).exists() or mod_id in library.state['order'] or mod_id in (ICONS, *HIDDEN):
         mod_id, n = f'{base}-{n}', n + 1
     return mod_id
 
@@ -133,7 +137,7 @@ def validation(library, mod_id):
 
 
 def _shared(library):
-    return mod_shared.owners(library, library.state['enabled'])
+    return mod_shared.owners(library, [m for m in library.state['enabled'] if m not in HIDDEN])
 
 
 def record_same(library):
@@ -143,12 +147,12 @@ def record_same(library):
 
 
 def mods(library):
-    """The player's mods. A path whose files are the same bytes in every mod that replaces it is no conflict
-    (mod_shared)."""
+    """The player's mods (S9.2: the hidden mods are not: no row, and no conflicts line names them). A path whose
+    files are the same bytes in every mod that replaces it is no conflict (mod_shared)."""
     shared = mod_shared.conflicts(library, _shared(library))
     return tuple(Mod(m, library.state['names'].get(m, m), m in library.state['enabled'], validation(library, m),
                      tuple(sorted(p for p, ids in shared.items() if m in ids)), m in library.state['code'],
-                     tuple(library.state['notes'].get(m, ()))) for m in library.state['order'])
+                     tuple(library.state['notes'].get(m, ()))) for m in library.state['order'] if m not in HIDDEN)
 
 
 def set_enabled(library, mod_id, on):
@@ -160,11 +164,12 @@ def set_enabled(library, mod_id, on):
 
 
 def move(library, mod_id, step):
-    order = library.state['order']
+    order = [m for m in library.state['order'] if m not in HIDDEN]    # S9.2: a move never swaps with a hidden mod
     i = order.index(mod_id)
     j = max(0, min(len(order) - 1, i + step))
     order.insert(j, order.pop(i))
-    library.state['enabled'] = [m for m in order if m in library.state['enabled']]
+    library.state['order'] = order + [m for m in HIDDEN if m in library.state['order']]
+    library.state['enabled'] = [m for m in library.state['order'] if m in library.state['enabled']]
     save(library)
 
 
@@ -240,7 +245,7 @@ def _set_aside(library, folder_tool):
         library.load.rename(folder_tool.backup_name(library.load))
 
 
-def apply(repo, spec, app, version, library, data_dir):
+def apply(repo, spec, app, version, library, data_dir, cancel=None):
     _, folder_tool = mod_tools.tools(repo)
     if game_state.game_running(Path(data_dir) / spec.data_folder):
         return ApplyResult(False, 'running')
@@ -254,6 +259,15 @@ def apply(repo, spec, app, version, library, data_dir):
         shutil.copytree(library.path(mod_id) / 'romfs', staging / 'romfs', dirs_exist_ok=True,
                         copy_function=clone_file)
     try:
+        if TEXTURES in enabled:                      # S9.2 C3: the pack's tables fitted to the app, before the manifest
+            try:
+                failed = texture_fit.fit(repo, app, version, staging / 'romfs', cancel)
+            except cancellable.Stopped as stop:      # S19.1: only a cancel leaves fit; nothing was installed yet
+                if stop.reason != 'cancelled':
+                    raise
+                return ApplyResult(False, 'cancelled')
+            if failed is not None:
+                return ApplyResult(False, 'textures_failed', failed)
         library.load.parent.mkdir(parents=True, exist_ok=True)
         if shutil.disk_usage(library.load.parent).free < _size(staging) + MARGIN:
             return ApplyResult(False, 'no_space')

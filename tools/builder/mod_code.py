@@ -8,7 +8,9 @@ into <library>/Builder code mods/exefs: a .pchtxt as <mod id>-<name>.pchtxt (its
 does), an .ips under its own name, and two IPS patches for main are refused before the build. The composed set (mod ids
 and each file's SHA-256) travels with the request, and code-in-app.json records it under the app's path (a player may
 have two apps) only on that run's success; a failed or cancelled build leaves the record as it was. A successful TOTK
-build with no code (none switched on, or no update file) records an empty set (O2)."""
+build with no code (none switched on, or no update file) records an empty set (O2). S9.2: a texture pack's fitted
+heap table rides in the same folder (romfs/System/HeapSize) and the record, as the entry HEAP; code pending ignores
+it."""
 import hashlib
 import json
 import os
@@ -17,6 +19,8 @@ import shutil
 
 FOLDER, RECORD = 'Builder code mods', 'code-in-app.json'
 PATCHES = ('.pchtxt', '.ips', '.ips32')
+HEAP = 'builder-textures'          # S9.2: mod_library.TEXTURES, the record's entry for the pack's heap table
+HEAPDEF = 'System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs'
 INCLUDABLE = ('ok', 'unchecked')
 
 
@@ -53,9 +57,10 @@ def _patches(exefs):
     return sorted(exefs.iterdir()) if exefs.is_dir() else []
 
 
-def compose(library, mod_ids):
-    """The patch files of mod_ids into <library>/Builder code mods/exefs; (that folder, the record) or (None, ())."""
-    if not mod_ids:
+def compose(library, mod_ids, heap=None):
+    """The patch files of mod_ids into <library>/Builder code mods/exefs, and heap ((the fitted HeapDef, the pack's
+    HeapDef SHA-256), S9.2) under its romfs/; (that folder, the record) or (None, ()) when there is neither."""
+    if not mod_ids and heap is None:
         return None, ()
     target = folder(library)
     shutil.rmtree(target, ignore_errors=True)
@@ -78,6 +83,10 @@ def compose(library, mod_ids):
             shutil.copy2(patch, target / 'exefs' / name)
             files.append((name, _sha(patch)))
         record.append((mod_id, tuple(files)))
+    if heap is not None:
+        (target / 'romfs' / HEAPDEF).parent.mkdir(parents=True)
+        shutil.copyfile(heap[0], target / 'romfs' / HEAPDEF)
+        record.append((HEAP, (('heapdef', heap[1]),)))
     return target, tuple(record)
 
 
@@ -93,6 +102,13 @@ def write_record(library_root, record, app):
     os.replace(partial, path)
 
 
+def built_heap(library_root, app):
+    """S9.2: the pack HeapDef SHA-256 the app at app was built with, or None."""
+    entries = read_records(library_root).get(str(app), [])
+    entry = next((m for m in entries if isinstance(m, dict) and m.get('id') == HEAP), None)
+    return (entry.get('files') or {}).get('heapdef') if entry else None
+
+
 def read_records(library_root):
     """{app path: [{'id', 'files'}]}; {} when there is no readable record."""
     try:
@@ -104,7 +120,7 @@ def read_records(library_root):
 
 def pending(library, app):
     """True when the code the app was built with differs from the code toggles now (a build is needed)."""
-    built = {m['id']: m['files'] for m in read_records(library.root).get(str(app), [])}
+    built = {m['id']: m['files'] for m in read_records(library.root).get(str(app), []) if m.get('id') != HEAP}
     now = {}
     for mod_id in included(library):
         exefs = library.path(mod_id) / 'exefs'

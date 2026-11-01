@@ -23,4 +23,5 @@ def build_controller(home, repo_root, jobs=None):
                            store=SettingsStore(default_settings_path(home), clock),
                            process_factory=lambda: BuildProcess(clock),       # one BuildProcess runs one build
                            jobs=jobs if jobs is not None else Jobs(), runner=runner, clock=clock,
-                           repo_root=Path(repo_root), logs_dir=logs_dir(home), load_jobs=DaemonJobs())
+                           repo_root=Path(repo_root), logs_dir=logs_dir(home), load_jobs=DaemonJobs(),
+                           age_jobs=DaemonJobs())

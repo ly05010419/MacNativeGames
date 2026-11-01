@@ -5,6 +5,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 
+from tools.builder import cancellable
 from tools.builder.build_run import BuildRequest
 from tools.builder.checks import BuildPaths
 from tools.builder.command import build_argv
@@ -30,20 +31,27 @@ def reserve_log(logs_dir, game, wall):
     raise FileExistsError(f'no free log name for {base} (tried {LOG_NAMES})')
 
 
-def request_argv(spec, fields, repo_root, python, code_mod=None):
+def request_argv(spec, fields, repo_root, python, code_mod=None, native_4k=None):
     """A snapshot's raw BuildPaths and the argv build_app.py gets; shared by prepare_request and planned_command
     (S2.1, T6). With checks ready, build_argv raises no ValueError (input_rules and input_files block first)."""
     raw = BuildPaths(**{f: Path(v) if v else None for f, v in fields})
-    return raw, build_argv(spec, raw, repo_root, python, code_mod)
+    return raw, build_argv(spec, raw, repo_root, python, code_mod, native_4k)
 
 
-def prepare_request(spec, fields, repo_root, python, logs_dir, wall, runner, cancel, compose_code=None):
+def prepare_request(spec, fields, repo_root, python, logs_dir, wall, runner, cancel, compose_code=None, native_4k=None):
     """Worker job: the BuildRequest, or None when the cancel came first (no log is reserved then). compose_code
-    (S5.4) composes the code mods of this snapshot here, at the build's start: (folder, record, on_success)."""
+    (S5.4) composes the code mods of this snapshot here, at the build's start: (folder, record, on_success); then
+    native_4k(that folder) (E17) says what to pass for native 4K. S19.1: a cancel that stops the texture pack's fit
+    inside compose_code is the cancel coming first (None); any other error goes up."""
     if cancel.is_set():
         return None
-    code_mod, record, on_success = compose_code() if compose_code else (None, (), None)
-    raw, argv = request_argv(spec, fields, repo_root, python, code_mod)
+    try:
+        code_mod, record, on_success = compose_code() if compose_code else (None, (), None)
+    except cancellable.Stopped as stop:
+        if stop.reason != 'cancelled':
+            raise
+        return None
+    raw, argv = request_argv(spec, fields, repo_root, python, code_mod, native_4k(code_mod) if native_4k else None)
     log_path = reserve_log(logs_dir, spec.id, wall)
     git = runner.run(['git', '-C', str(repo_root), 'rev-parse', 'HEAD'])
     commit = git.stdout.strip() if git.outcome is CommandOutcome.OK and git.stdout.strip() else 'unknown'

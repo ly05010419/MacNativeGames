@@ -156,7 +156,7 @@ class Picture(Base):
 
     def test_reading_the_file(self):
         path = self.tmp / 'picture-mode.txt'
-        for word, choice in (('native-4k', 'native-2k'), ('off', 'auto'), ('metalfx', 'metalfx')):
+        for word, choice in (('native-4k', 'native-4k'), ('off', 'auto'), ('metalfx', 'metalfx')):     # E17: 4K
             path.write_text(word + '\n')
             self.assertEqual(read_picture(path), (choice, ''))
         path.write_text('sharp\n')

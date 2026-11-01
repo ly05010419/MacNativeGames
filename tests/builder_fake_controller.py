@@ -3,6 +3,7 @@ from argparse import Namespace
 from collections import deque
 
 from tools.builder.config import PATH_FIELDS
+from tools.builder.controller_mods import mods_key
 from tools.builder.session import ChecksDone, SettingsLoaded
 
 
@@ -16,6 +17,8 @@ class FakeStart:
     @property
     def busy(self):
         return self.pending
+
+    holds = property(lambda self: bool(self.pending and self.calls[-1][0] in ('choose', 'play')))   # E12: choice, Play
 
     def _call(self, *call):
         self.calls.append(call)
@@ -36,8 +39,9 @@ class FakeStart:
         self._game()
 
     def play(self):
+        idle = self.owner.idle                  # read before the call, as the real one checks it before submitting
         self._call('play')
-        if not self.owner.idle:
+        if not idle:
             raise RuntimeError('a build is running or being prepared')
         self._game()
 
@@ -48,10 +52,11 @@ class FakeStart:
 
 class FakeMods:
     """controller.mods (S5.2): records calls; busy while a call waits for the next tick, refused then like the real
-    one; Apply refused unless the controller is idle; the test delivers ModsStateReady / ModsApplied."""
+    one; Apply refused unless the controller is idle; the test delivers ModsStateReady / ModsApplied. Like the real one,
+    the tick that ends a call sets answered to (its kind, its mods_key) (E14 S14.1)."""
 
     def __init__(self, owner):
-        self.owner, self.calls, self.pending = owner, [], False
+        self.owner, self.calls, self.pending, self.asked, self.answered = owner, [], False, None, None
 
     @property
     def busy(self):
@@ -63,7 +68,7 @@ class FakeMods:
 
     @property
     def holds(self):
-        return self.applying
+        return bool(self.pending and self.calls[-1] != ('state', 'quick'))     # E11 G3: all but a quick read
 
     def cancel(self):
         self.cancels = getattr(self, 'cancels', 0) + 1
@@ -74,7 +79,7 @@ class FakeMods:
             raise RuntimeError('a mods change is still running')
         if self.owner.selection()[0] is None:
             raise RuntimeError('no game chosen')
-        self.pending = True
+        self.pending, self.asked = True, (call[0], mods_key(self.owner.selection()))
 
     def state(self, full=True):
         self._call('state') if full else self._call('state', 'quick')
@@ -187,7 +192,7 @@ class FakeController:
 
     @property
     def idle(self):
-        return not self.busy and not self.controls.holds
+        return not self.busy and not self.mods.holds and not self.controls.holds and not self.start.holds
 
     def load_settings(self):
         self.calls.append('load_settings')
@@ -241,6 +246,7 @@ class FakeController:
 
     def tick(self):
         self.ticks += 1
+        self.mods.answered = self.mods.asked if self.mods.pending else self.mods.answered
         self.background_pending = self.start.pending = self.mods.pending = False
         self.controls.pending = False
         if self.busy and self.tick_errors:

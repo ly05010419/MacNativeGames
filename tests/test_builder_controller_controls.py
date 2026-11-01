@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -220,7 +221,8 @@ class IconsHandoff(ControllerBase):                                        # E6 
             self.ctl.tick()                                             # handed over now
             jobs.run_next()
             self.ctl.tick()
-        self.assertEqual(install.call_args.args[-3:], (tmp / 'work', {'controls': 'h'}, ('xbox-icons',)))
+        self.assertEqual(install.call_args.args[-4:-1], (tmp / 'work', {'controls': 'h'}, ('xbox-icons',)))
+        self.assertIsInstance(install.call_args.args[-1], threading.Event)      # S19.1: the job's own cancel
         self.assertIn(IconsDone(installed), self.events())
         self.assertTrue(self.ctl.idle)
 

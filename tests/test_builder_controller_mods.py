@@ -136,6 +136,55 @@ class Mods(Base):
             self.ctl.mods.state()
             self.assertEqual(self.run_load(), [ProcessError('mods', "OSError('disk')")])
 
+    def test_each_answer_names_the_job_and_the_selection_it_was_asked_for(self):    # E14 S14.1
+        asked, seen = controller_mods.mods_key(self.ctl.selection()), []
+        emit = self.ctl._emit
+        with patch.object(controller_mods, 'read_state', return_value='state'), \
+                patch.object(self.ctl, '_emit', side_effect=lambda e: (seen.append(self.ctl.mods.answered), emit(e))):
+            self.ctl.mods.state(full=False)
+            self.ctl.set_paths(out=str(self.tmp / 'Other.app'))             # changed while the read runs
+            self.run_load()
+            self.assertEqual(seen, [('read', asked)])                       # set before its event: the earlier app
+            with patch.object(controller_mods, 'apply', side_effect=OSError('disk')):
+                self.ctl.mods.apply()
+                self.run_load()
+        self.assertEqual(seen[-1], ('apply', controller_mods.mods_key(self.ctl.selection())))
+
+    def test_mods_and_textures_never_change_the_library_together(self):            # E11 G3: one job slot
+        textures, mods = self.ctl.textures, self.ctl.mods
+        refused = {'mods': (mods.apply, lambda: mods.remove('a'), lambda: mods.enable('a', True), mods.state),
+                   'textures': (lambda: textures.add(self.tmp), lambda: textures.switch(True), textures.remove)}
+        with patch.object(controller_mods, 'change', return_value='state'), \
+                patch.object(controller_mods.controller_textures, 'change', return_value='state'), \
+                patch.object(controller_mods, 'apply', return_value=mod_library.ApplyResult(True)):
+            for first, other in ((mods.apply, 'textures'), (textures.remove, 'mods')):
+                with self.subTest(first=other):
+                    first()
+                    for call in refused[other]:
+                        self.assertRaises(RuntimeError, call)
+                    self.assertEqual(self.load_jobs.pending(), 1)                   # nothing else was queued
+                    self.run_load()
+                    self.assertEqual((mods.busy, self.load_jobs.pending()), (False, 0))
+
+    def test_every_change_holds_closing_and_only_a_quick_read_does_not(self):       # E11 G3
+        textures, mods = self.ctl.textures, self.ctl.mods
+        writes = (lambda: mods.remove('a'), lambda: mods.enable('a', True), lambda: mods.move('a', 1),
+                  lambda: mods.remove_backups(['b']), lambda: mods.code('a', True), lambda: textures.switch(False),
+                  textures.remove, lambda: textures.add(self.tmp), mods.state)      # a full read imports, re-checks
+        with patch.object(controller_mods, 'change', return_value='state'), \
+                patch.object(controller_mods.controller_textures, 'change', return_value='state'), \
+                patch.object(controller_mods, 'read_state', return_value='state'):
+            for n, call in enumerate(writes):
+                with self.subTest(n=n):
+                    call()
+                    self.assertEqual((mods.holds, self.ctl.idle), (True, False))   # the window asks and waits
+                    self.assertRaises(RuntimeError, self.ctl.close)
+                    self.run_load()
+                    self.assertTrue(self.ctl.idle)
+            mods.state(full=False)
+            self.assertEqual((mods.busy, mods.holds, self.ctl.idle), (True, False, True))
+            self.run_load()
+
 
 class MainsTools(unittest.TestCase):
     """Drift: the functions and names of main's mod tools the builder calls."""

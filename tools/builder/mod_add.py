@@ -5,7 +5,8 @@ A folder, or an archive extracted by mod_archive into <library>/.unzip (removed 
 One candidate becomes one mod named after what was picked; a pack of several becomes one mod each, named "<picked> /
 <its folder>", all off. The Add is atomic: every id is reserved first, every candidate cloned and validated, and
 library.json saved once at the end; any exception removes every folder this Add made and puts the library's state back
-as it was. Links are refused (the validation would not follow them, the composition would)."""
+as it was. Links are refused (the validation would not follow them, the composition would). S9.2: reserved gives the
+one candidate a fixed id (the Textures tab's pack); prune(mod folder) runs on it before the validation."""
 import copy
 from pathlib import Path
 import shutil
@@ -19,7 +20,7 @@ def is_archive(path):
     return Path(path).is_file()
 
 
-def add(runner, repo, app, version, library, source, name=None, cancel=None):
+def add(runner, repo, app, version, library, source, name=None, cancel=None, reserved=None, prune=None):
     """The ids added, in order; mod_find.Refused says why when nothing usable is there."""
     source, unzip = Path(source), library.root / UNZIP
     name = name or (source.stem if source.is_file() else source.name)
@@ -30,6 +31,8 @@ def add(runner, repo, app, version, library, source, name=None, cancel=None):
             source = mod_archive.extract(source, unzip, cancel)
         tops, title_id = mod_tools.top_folders(repo, app, version), mod_library.TITLE_IDS.get(version, '')
         found = mod_find.find(source, tops, title_id)
+        if reserved and len(found) > 1:
+            raise mod_find.Refused('several', ', '.join(c.name for c in found[:4]))
         for candidate in found:
             parts = [part for part in (candidate.romfs, candidate.exefs) if part]
             links = [p for part in parts for p in part.rglob('*') if p.is_symlink()]
@@ -37,7 +40,7 @@ def add(runner, repo, app, version, library, source, name=None, cancel=None):
                 raise mod_find.Refused('links', links[0].name)
         for candidate in found:
             label = f'{name} / {candidate.name}' if len(found) > 1 and candidate.name else name
-            mod_id = mod_library._new_id(library, label)
+            mod_id = reserved or mod_library._new_id(library, label)
             library.state['order'].append(mod_id)              # reserved: the next id differs
             made.append(mod_id)
             library.state['names'][mod_id] = label
@@ -45,6 +48,8 @@ def add(runner, repo, app, version, library, source, name=None, cancel=None):
             for part, folder in (('romfs', candidate.romfs), ('exefs', candidate.exefs)):
                 if folder:
                     mod_library.clone(runner, folder, library.path(mod_id) / part)
+        for mod_id in made if prune else ():
+            prune(library.path(mod_id))
         mod_library.revalidate(repo, app, version, library, made)
         mod_library.save(library)
     except BaseException:

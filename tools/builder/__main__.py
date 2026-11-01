@@ -97,7 +97,7 @@ def main(argv=None, home=None, repo_root=REPO_ROOT):
         except ImportError:
             out(text('gui.no_tk'))
         else:
-            from tools.builder.gui import open_window
+            from tools.builder.gui_open import open_window
             return open_window(build_controller(home, repo_root), args.game, args.paths)
     if args.game is None:
         parser.error('--game is required for the text mode')

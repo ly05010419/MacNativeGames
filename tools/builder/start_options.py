@@ -12,7 +12,13 @@ show and change the same setting, a Finder start keeps it, and Play passes no va
 has no choice for (a 72 fps lock, 40+40) reads as "auto" with a note and is left alone. Only the 16x ground filter,
 which the panel does not have, is passed by Play (`open --env`) and kept in Builder/start-options.json. Files are written
 only while the game is not running (the panel saves its own over them). A player who sets TOTK_CONTROLS or
-TOTK_GAME_SLOT_DIR by hand moves the game's files elsewhere; the builder keeps looking at the default places."""
+TOTK_GAME_SLOT_DIR by hand moves the game's files elsewhere; the builder keeps looking at the default places.
+
+E17 S17.1: 1.4.3's picture also offers native 4K (the panel's OUTPUT_MODE_NATIVE_4K). Only an app built with native 4K
+has it (its 3840x2160 overlays: app_4k), so the build follows the choice (build_native_4k), except while the texture
+pack's heaps are in it: native 4K and the pack's 8 GB mode do not start together yet (E17). The state says when the app
+must be built again (rebuild): native 4K chosen and the app has none (picture_4k), or a native 4K app built with the
+pack's heaps (native_4k_8gb), which Play refuses instead of starting a game that stops at once."""
 from dataclasses import dataclass, field, replace
 import json
 import os
@@ -32,7 +38,7 @@ class Option:
     choices: tuple                  # choice ids; the first is "auto"
 
 
-V143 = (Option('picture', FILE, ('auto', 'metalfx', 'native-2k')),
+V143 = (Option('picture', FILE, ('auto', 'metalfx', 'native-2k', 'native-4k')),
         Option('interpolation', FILE, ('auto', 'interp30', 'interp', 'interpmax')),
         Option('smoothing', FILE, ('auto', 'on')),
         Option('ground', PLAY, ('auto', '16')),
@@ -46,11 +52,12 @@ ENV = {('ground', '16'): {'TOTK_ANISO': '16'}}
 HOLD_ENV = {'interpolation': {'TOTK_MFX': '0'}}   # a held choice: this start without it, the panel's file kept
 # The panel's file and the word it holds for each choice (settings_panel.h: graphics-output.txt the OUTPUT_MODE_*
 # number, graphics-frame.txt interp-<MFX_*> / lock-<fps> / off, graphics-taa.txt 0 / 1, graphics-aspect.txt the ratio).
-PANEL = {'picture': ('graphics-output.txt', {'metalfx': '1', 'native-2k': '2'}),
+PANEL = {'picture': ('graphics-output.txt', {'metalfx': '1', 'native-2k': '2', 'native-4k': '5'}),
          'interpolation': ('graphics-frame.txt', {'interp30': 'interp-1', 'interp': 'interp-3', 'interpmax': 'interp-4'}),
          'smoothing': ('graphics-taa.txt', {'on': '1'}),
          'aspect': ('graphics-aspect.txt', {'21:9': '2.3333333'})}
-PICTURE_WORDS = {'metalfx': 'metalfx', 'native-2k': 'native-2k', 'native-4k': 'native-2k', 'off': 'auto'}
+PICTURE_WORDS = {'metalfx': 'metalfx', 'native-2k': 'native-2k', 'native-4k': 'native-4k', 'off': 'auto'}
+FOUR_K = 'Contents/Resources/totk/extracted/v143/romfs-patches-out/3840x2160'   # a native 4K app's (build_app.py)
 
 
 @dataclass(frozen=True)
@@ -70,12 +77,13 @@ class StartState:
     notes: tuple = ()               # one-line notes: a broken store, a value the panel set, the game running
     name: str = ''                  # the game's display name, for the tab's title
     version_label: str = ''         # the version as players know it (1.4.3), '' when unknown
+    rebuild: str = ''               # E17: '' or why the app must be built again: picture_4k, native_4k_8gb
 
 
 @dataclass(frozen=True)
 class PlayResult:
     ok: bool
-    reason: str = ''                # '' or: running, no_app, unknown_version, open_failed
+    reason: str = ''                # '' or: running, no_app, unknown_version, open_failed, native_4k_8gb (E17)
     detail: str = ''
     env: dict = field(default_factory=dict)
     held: tuple = ()                # chosen options not used this start: ('interpolation',) while the GPU has not said yes
@@ -151,10 +159,31 @@ def read_panel(spec, paths, option):
     return 'auto', f'{option.id}: the game\'s settings panel set "{word[:40]}" ({PANEL[option.id][0]}), kept'
 
 
-def read_state(spec, app, paths):
+def app_4k(app):
+    return app is not None and (Path(app) / FOUR_K).is_dir()
+
+
+def read_state(spec, app, paths, heaps=False):
+    """heaps: the app was built with the texture pack's heaps (Play starts it in the 8 GB mode)."""
     state = _read_state(spec, app, paths)
     label = next((v.display for v in spec.versions if v.key == state.version), '')
-    return replace(state, name=spec.display_name, version_label=label)
+    state = replace(state, name=spec.display_name, version_label=label)
+    if state.version != 'v143' or state.reason:
+        return state
+    four, chosen = app_4k(app), state.choices.get('picture') == 'native-4k'
+    if four and heaps:
+        return replace(state, rebuild='native_4k_8gb')
+    if chosen and heaps:
+        return _with_note(state, 'native 4K is not built while the texture pack\'s 8 GB mode is used (E17)')
+    return replace(state, rebuild='picture_4k') if chosen and not four else state
+
+
+def build_native_4k(spec, fields, paths, heaps):
+    """What a TOTK build with the 1.4.3 update passes: True (--native-4k) when native 4K is chosen and the build carries
+    no texture pack heaps, False (--no-native-4k) otherwise; None (nothing) for another game or without an update."""
+    if spec.data_folder != 'TOTK' or not fields.get('update'):
+        return None
+    return read_panel(spec, paths, V143[0])[0] == 'native-4k' and not heaps
 
 
 def _read_state(spec, app, paths):
@@ -178,15 +207,15 @@ def _read_state(spec, app, paths):
     return StartState(spec.id, app, version, '', OPTIONS[version], choices, notes)
 
 
-def choose(spec, app, paths, option_id, choice):
+def choose(spec, app, paths, option_id, choice, heaps=False):
     """Keep one choice; the new state. ValueError for an option or choice outside the table."""
-    state = read_state(spec, app, paths)
+    state = read_state(spec, app, paths, heaps)
     option = next((o for o in state.options if o.id == option_id), None)
     if option is None or choice not in option.choices:
         raise ValueError(f'no choice {choice!r} for {option_id!r} on {state.version}')
     if option.how == FILE:
         if game_state.game_running(paths.data / spec.data_folder):
-            return _with_note(read_state(spec, app, paths), 'running')
+            return _with_note(read_state(spec, app, paths, heaps), 'running')
         target = panel_file(spec, paths, option_id)
         word, _ = _panel_word(target)
         if choice != 'auto':
@@ -204,7 +233,7 @@ def choose(spec, app, paths, option_id, choice):
             mine[option_id] = choice
         games = {**games, spec.id: mine}
         _write(paths.store, json.dumps({'format': 1, 'games': games}, indent=2) + '\n')
-    return read_state(spec, app, paths)
+    return read_state(spec, app, paths, heaps)
 
 
 def _with_note(state, note):
@@ -231,13 +260,15 @@ def env_for(state, gpu):
     return env
 
 
-def play(runner, spec, app, paths, gpu):
+def play(runner, spec, app, paths, gpu, extra_env=None):
     state = read_state(spec, app, paths)
     if state.reason:
         return PlayResult(False, state.reason)
     if game_state.game_running(paths.data / spec.data_folder):
         return PlayResult(False, 'running')
-    env = env_for(state, gpu)
+    if (extra_env or {}).get('TOTK_DRAM_8GB') and app_4k(app):
+        return PlayResult(False, 'native_4k_8gb')           # E17: it would stop at once
+    env = {**env_for(state, gpu), **(extra_env or {})}      # S9.2 C6: a texture pack's 8 GB mode
     argv = ['/usr/bin/open'] + [a for k, v in sorted(env.items()) for a in ('--env', f'{k}={v}')] + [str(app)]
     result = runner.run(argv, timeout_s=OPEN_S)
     if result.outcome is not Outcome.OK:

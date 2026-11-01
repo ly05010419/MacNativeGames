@@ -21,11 +21,11 @@ The builder is MVC with the effects at the edges.
 
 | Layer | Modules | Rule |
 |---|---|---|
-| Model | `games`, `manifests`, `inputs`, `checks*`, `paths`, `command`, `progress`, `session`, `process`, `config`, `game_state`, `start_options`, `mod_*`, `controls_file`, `icons_*`, `updates`, `background` | No Tk. Pure where it can be; effects only through the ports it is given |
-| Controller | `controller` (with `build_run`, `build_request`), `controller_start`, `controller_mods`, `controller_controls`, `controller_icons` | Blocking work runs as jobs on one worker thread (`jobs.py`); the view calls `tick()`, which never waits; results come back as events |
+| Model | `games`, `manifests`, `inputs`, `checks*`, `paths`, `command`, `progress`, `session`, `process`, `config`, `game_state`, `start_options`, `mod_*`, `textures`, `texture_fit`, `app_age`, `controls_file`, `icons_*`, `background` | No Tk. Pure where it can be; effects only through the ports it is given |
+| Controller | `controller` (with `build_run`, `build_request`), `controller_start`, `controller_mods` (with `controller_textures`), `controller_controls`, `controller_icons`, `controller_background` | Blocking work runs as jobs on one worker thread (`jobs.py`); the view calls `tick()`, which never waits; results come back as events |
 | View | `gui*.py` (Tk), `cli.py` (text) | Draws the state and events it receives and calls the controller. No rule lives in a view |
 | Composition root | `app.py` | The one place that creates the real adapters (`ports.py`: commands, clock, files) and wires them; tests pass fakes with the same methods |
-| Texts | `strings.py`, `strings_tabs.py` | Every visible text, in English, by id. A missing id is a bug that a test finds |
+| Texts | `strings.py`, `strings_tabs.py`, `strings_mods.py`, `strings_textures.py` | Every visible text, in English, by id. A missing id is a bug that a test finds |
 
 Each tab has its own part of the controller and its own job at a time: a second request while one runs is refused, not
 queued. Work that may take long (an archive, a download, a build) runs in its own process group and can be cancelled
@@ -94,6 +94,7 @@ Python 3.14 is needed (`compression.zstd`); the window's tests need Tk. The whol
   match). The Settings and Mods tabs name the version they serve (`start_options.py`, `controller_mods.LATEST`,
   `mod_library.TITLE_IDS`); a version they do not know is said in words, never guessed.
 - **A tab:** a model module with its contract, a controller part with its own job, a `gui_<tab>.py` view that only
-  draws, its texts in `strings_tabs.py`, and the view registered in `gui.py`.
+  draws, its texts in `strings_tabs.py` (or a `strings_<tab>.py` of its own when that file nears 300 lines), and the
+  view registered in `gui.py`.
 - **A mod layout or a mod check:** `mod_find.py` finds the mod's folders, `mod_tools.py` validates it with the
   repository's scripts, and every refusal has a text that says why in words.

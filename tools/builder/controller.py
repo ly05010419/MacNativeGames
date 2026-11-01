@@ -7,18 +7,19 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 
-from tools.builder import background
+from tools.builder import app_age
 from tools.builder.build_request import LOG_NAMES, prepare_request, request_argv, reserve_log  # noqa: F401
 from tools.builder.build_run import BuildRun, collect
+from tools.builder.controller_background import BackgroundPart
 from tools.builder.controller_controls import ControlsController
 from tools.builder.controller_mods import ModsController
 from tools.builder.controller_start import StartController
+from tools.builder.controller_textures import TexturesController
 from tools.builder.checks import BuildPaths, Status, iter_checks, ready
-from tools.builder.config import PATH_FIELDS, SavedPaths
+from tools.builder.config import PATH_FIELDS
 from tools.builder.games import GAMES
-from tools.builder.session import (BuildSession, CheckResultReady, ChecksDone, ChecksInvalidated, Finished, Outcome,
-                                   PathsIncomplete, PathsSaved, ProcessError, SettingsLoaded,
-                                   BackgroundChanged)
+from tools.builder.session import (AppAge, BuildSession, CheckResultReady, ChecksDone, ChecksInvalidated, Finished,
+                                   Outcome, PathsIncomplete, PathsSaved, ProcessError, SettingsLoaded)
 
 _END = object()
 
@@ -37,19 +38,22 @@ class _CheckRun:
 
 class BuildController:
     def __init__(self, *, base_context, system_checks, input_checks, store, process_factory, jobs, runner, clock,
-                 repo_root, logs_dir, load_jobs=None):
+                 repo_root, logs_dir, load_jobs=None, age_jobs=None):
         self.base_context, self.checks = base_context, tuple(system_checks) + tuple(input_checks)
         self.store, self.process_factory, self.jobs, self.runner = store, process_factory, jobs, runner
         self.load_jobs = jobs if load_jobs is None else load_jobs       # S3.4 f4: a stuck load must not hold the worker
+        self.age_jobs = age_jobs                        # S8.1: its own queue (None: no app age is asked)
         self.clock, self.repo_root, self.logs_dir = clock, Path(repo_root), Path(logs_dir)
         self._events, self._game, self._fields, self._saved = [], None, {}, {}
         self._load_job, self._check, self._ready, self._preparing, self._run = None, None, None, None, None
-        self._background = None          # S4.3
+        self._app_age = None                            # S8.1
         self._save_job = None                                                      # S2.3 storage: work and cache paths
         self._closed = False
         self.start = StartController(self)                     # S5.1: the Settings tab's part
         self.mods = ModsController(self)                       # S5.2: the Mods tab's part
         self.controls = ControlsController(self)               # E6: the Controls tab's part
+        self.pictures = BackgroundPart(self)                   # S4.3: the background picture
+        self.textures = TexturesController(self)               # S9.2: the Mods tab's Textures section (Mods jobs)
 
     # selection
     def select_game(self, game_id):
@@ -71,9 +75,8 @@ class BuildController:
         return self._game, dict(self._fields)
 
     def save_paths(self, **fields):
-        """S2.3 storage tab: write paths for the chosen game into settings.json now, without a build.
-        Known path fields go where a build puts them; any other name (shader_cache) is kept as that
-        game's extra key, which to_json/from_json carry verbatim. PathsSaved when the job ends."""
+        """S2.3 storage tab: write paths for the chosen game into settings.json now, without a build, on load_jobs
+        (SettingsStore.save_storage). PathsSaved when the job ends."""
         self._open()
         game, _ = self.selection()
         if game is None:
@@ -81,23 +84,7 @@ class BuildController:
         unknown = set(fields) - set(PATH_FIELDS) - {'shader_cache'}
         if unknown:
             raise ValueError(f'unknown path fields {sorted(unknown)}')
-
-        def job():
-            settings = self.store.load().settings
-            saved = settings.paths.get(game, SavedPaths())
-            work = saved.work
-            extra = dict(saved.extra)
-            for key, value in fields.items():
-                if key == 'work':
-                    work = str(value) if value else None
-                elif key in PATH_FIELDS:
-                    raise ValueError(f'{key} is not a storage path')
-                else:
-                    extra[key] = str(value) if value else None
-            entry = replace(saved, work=work, extra=extra)
-            self.store.save(replace(settings, paths={**settings.paths, game: entry}))
-            return game, entry
-        self._save_job = self.load_jobs.submit(job)
+        self._save_job = self.load_jobs.submit(self.store.save_storage, game, dict(fields))
 
     def saved_paths(self):
         """S2.3 storage tab: the game's SavedPaths the settings file held at load (or after the last save)."""
@@ -115,6 +102,7 @@ class BuildController:
         return self._game, tuple((f, self._fields.get(f)) for f in PATH_FIELDS)
 
     def _invalidate(self):
+        self._ask_app_age()
         if self._check is not None or self._ready is not None:      # S2.3: ready checks are dropped visibly too
             self._check = None                          # the running job's result is never read
             self._emit(ChecksInvalidated())
@@ -126,19 +114,12 @@ class BuildController:
         self._load_job = self.load_jobs.submit(self.store.load)
 
     def background(self, action, *args):
-        """S4.3: 'saved' (screen size), 'save' (chosen file, screen size), 'focus' (screen size, left|center|right)
-        or 'remove' the background image next to the settings, on load_jobs (the disk and sips may be slow);
-        BackgroundChanged when done. One at a time: two would race on the files."""
-        self._open()
-        if self._background is not None:
-            raise RuntimeError('a background change is still running')
-        fn = {'saved': background.saved, 'save': background.save, 'remove': background.remove,
-              'focus': background.focus}[action]
-        self._background = self.load_jobs.submit(fn, self.runner, self.store.path.parent, *args)
+        """S4.3: one background picture change (controller_background)."""
+        self.pictures.change(action, *args)
 
     @property
     def background_busy(self):
-        return self._background is not None
+        return self.pictures.busy
 
     def run_checks(self):
         self._open()
@@ -161,9 +142,10 @@ class BuildController:
             raise RuntimeError('a build is running or being prepared')
         snapshot, python = self._fresh_ready()
         cancel = threading.Event()
-        compose = self.mods.code_for_build(snapshot)    # S5.4: None, or the code mods composed at the build's start
+        compose = self.mods.code_for_build(snapshot, cancel)    # S5.4; S19.1: its texture fit hears the cancel
         job = self.jobs.submit(prepare_request, GAMES[snapshot[0]], snapshot[1], self.repo_root, python,
-                               self.logs_dir, self.clock.wall(), self.runner, cancel, compose)
+                               self.logs_dir, self.clock.wall(), self.runner, cancel, compose,
+                               self.start.native_4k_for(snapshot))      # E17: the Settings tab's picture
         self._preparing = (job, cancel)
 
     def planned_command(self):
@@ -172,7 +154,8 @@ class BuildController:
         self._open()                                # S2.1b, H4
         snapshot, python = self._fresh_ready()
         code = self.mods.code_folder(snapshot)          # S5.4: the path --mod would get; nothing is written
-        return request_argv(GAMES[snapshot[0]], snapshot[1], self.repo_root, python, code)[1]
+        native = self.start.native_4k_for(snapshot)(code)          # E17: the heap table the last build composed
+        return request_argv(GAMES[snapshot[0]], snapshot[1], self.repo_root, python, code, native)[1]
 
     def cancel(self):
         if self._preparing is not None:
@@ -190,9 +173,10 @@ class BuildController:
     @property
     def idle(self):
         """S2.1 T8: no start is being prepared, no run is active and no mods are being applied (S5.2) nor added (S5.5),
-        no controls saved (E6), so close() and start_build() are allowed."""
-        return (self._preparing is None and not self.mods.holds
-                and not self.controls.holds and not (self._run is not None and self._run.active))
+        no controls saved (E6), no Settings choice saved nor Play starting (E12), so close() and start_build() are
+        allowed."""
+        return (self._preparing is None and not self.mods.holds and not self.controls.holds and not self.start.holds
+                and not (self._run is not None and self._run.active))
 
     def close(self):
         if not self.idle:
@@ -201,6 +185,8 @@ class BuildController:
         self.jobs.shutdown()
         if self.load_jobs is not self.jobs:
             self.load_jobs.shutdown()
+        if self.age_jobs is not None:
+            self.age_jobs.shutdown()
         self._closed = True
 
     def take_events(self):
@@ -212,7 +198,8 @@ class BuildController:
             return
         self._tick_load()
         self._tick_save()
-        self._tick_background()
+        self.pictures.tick()
+        self._tick_app_age()
         self.start.tick()
         self.mods.tick()
         self.controls.tick()
@@ -235,6 +222,16 @@ class BuildController:
 
     def _emit(self, event):
         self._events.append(event)
+        if isinstance(event, Finished):
+            self._ask_app_age()                         # S8.1: a new app
+
+    def _ask_app_age(self):
+        """S8.1: whether the chosen game's app is older than the code, on age_jobs (git may be slow). A new question
+        replaces the pending one, whose answer is never read: only the selection still chosen is answered (AppAge)."""
+        if self._game is not None and not self._closed and self.age_jobs is not None:
+            snapshot = self._snapshot()
+            self._app_age = (self.age_jobs.submit(app_age.older, self.runner, self.repo_root, GAMES[self._game],
+                                                   snapshot[1]), snapshot)
 
     def _tick_load(self):
         if self._load_job is None or not self._load_job.done():
@@ -259,14 +256,12 @@ class BuildController:
         self._saved[game] = saved
         self._emit(PathsSaved(game, True))
 
-    def _tick_background(self):
-        for attr, event, where in (('_background', BackgroundChanged, 'background'),):
-            job = getattr(self, attr)
-            if job is None or not job.done():
-                continue
-            setattr(self, attr, None)                   # removed before its result is read (R5)
-            value, error = collect(job)
-            self._emit(ProcessError(where, repr(error)) if error is not None else event(value))
+    def _tick_app_age(self):
+        if self._app_age is None or not self._app_age[0].done():
+            return
+        (job, snapshot), self._app_age = self._app_age, None
+        older, error = collect(job)
+        self._emit(AppAge(snapshot[0], None if error is not None else older))
 
     def _tick_checks(self):
         run = self._check

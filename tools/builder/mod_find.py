@@ -7,7 +7,8 @@ loose files such as a readme are ignored). Archives are mod_archive's. find() re
 up to MAX_PACK (S5.5 C3: each becomes its own mod); more is refused as several. A candidate under another game's title
 id is set aside (refused only when nothing else is left), the __MACOSX/ folder Finder's Compress adds is not searched,
 and a folder too big to search, only cheat files, a TKMM package (.tkcl), a BCML package (.bnp, or an extracted one:
-info.json and logs/; S9.2) or nothing usable is refused with a reason id the view turns into words."""
+info.json and logs/; S9.2) or nothing usable is refused with a reason id the view turns into words. romfs/, exefs/ and
+cheats/ are found in any case (a texture pack ships RomFS/; S9.2 Textures C2)."""
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -31,13 +32,18 @@ class Found:
     name: str = ''                  # S5.5 C3: its folder below the picked one ('' when it is the picked one)
 
 
+def _child(folder, name):
+    """folder's sub-folder called name in any case (RomFS, romfs), or None."""
+    return next((p for p in sorted(folder.iterdir()) if p.name.lower() == name and p.is_dir() and not p.is_symlink()),
+                None)
+
+
 def _pair(folder):
-    romfs, exefs = folder / 'romfs', folder / 'exefs'
-    return (romfs if romfs.is_dir() else None), (exefs if exefs.is_dir() else None)
+    return _child(folder, 'romfs'), _child(folder, 'exefs')
 
 
 def _notes(folder):
-    return ('cheats_ignored',) if (folder / 'cheats').is_dir() else ()
+    return ('cheats_ignored',) if _child(folder, 'cheats') else ()
 
 
 def _other_title(path, base, title_id):
@@ -49,7 +55,7 @@ def _other_title(path, base, title_id):
 def find(source, top_folders, title_id):
     """The mods in a picked folder: a list of Found (C1, C3). top_folders: the app RomFS's top-level folder names."""
     source = Path(source)
-    if source.name == 'romfs' and source.is_dir():
+    if source.name.lower() == 'romfs' and source.is_dir():
         source = source.parent
     if TITLE.match(source.name) and source.name.upper() != title_id.upper():
         raise Refused('other_game', source.name)
@@ -71,10 +77,10 @@ def find(source, top_folders, title_id):
             walked += 1
             if walked > MAX_WALK:
                 raise Refused('too_big', str(source))
-            if child.name in ('romfs', 'exefs'):
+            if child.name.lower() in ('romfs', 'exefs'):
                 if folder not in roots:
                     roots.append(folder)
-            elif child.name == 'cheats':
+            elif child.name.lower() == 'cheats':
                 cheats = True
             elif depth + 1 < MAX_DEPTH:
                 frontier.append((child, depth + 1))

@@ -4,7 +4,7 @@ controller tests; the model's own behaviour is in test_builder_start_options.py.
 import unittest
 from unittest.mock import patch
 
-from tools.builder import game_state, start_options
+from tools.builder import controller_start, game_state, start_options
 from tools.builder.jobs import InlineJobs
 from tools.builder.session import GpuProbed, PlayDone, ProcessError, StartStateReady
 from tools.builder.start_options import StartPaths
@@ -60,9 +60,38 @@ class Start(Base):
         self.assertEqual(play.call_args.args[2:4], (self.app, self.ctl.start.paths))
 
     def test_errors_are_reported_by_kind(self):
-        with patch.object(start_options, 'choose', side_effect=OSError('disk')):
-            self.ctl.start.choose('ground', '16')
-            self.assertEqual(self.run_load(), [ProcessError('settings', "OSError('disk')")])
+        """E12: a read and a choice still report as 'settings' and Play as 'play' (where the window sends them), and a
+        failed save releases the hold."""
+        choose = lambda: self.ctl.start.choose('ground', '16')                   # noqa: E731
+        for module, name, call, where in ((start_options, 'read_state', self.ctl.start.state, 'settings'),
+                                          (start_options, 'choose', choose, 'settings'),
+                                          (controller_start, '_play', self.ctl.start.play, 'play')):
+            with self.subTest(job=name), patch.object(module, name, side_effect=OSError('disk')):
+                call()
+                self.assertEqual(self.run_load(), [ProcessError(where, "OSError('disk')")])
+                self.assertEqual((self.ctl.start.holds, self.ctl.idle), (False, True))
+
+    def test_a_choice_and_play_hold_the_controller_until_they_end(self):          # E12
+        with patch.object(controller_start, '_play', return_value=start_options.PlayResult(True)):
+            for name, call in (('choose', lambda: self.ctl.start.choose('interpolation', 'interp')),
+                               ('play', self.ctl.start.play)):
+                with self.subTest(job=name):
+                    call()
+                    self.assertEqual((self.ctl.start.holds, self.ctl.idle), (True, False))
+                    for refused in (self.ctl.close, self.ctl.start_build, self.ctl.mods.apply):
+                        self.assertRaises(RuntimeError, refused)                 # the window asks and waits
+                    self.run_load()
+                    self.assertEqual((self.ctl.start.holds, self.ctl.idle), (False, True))
+        self.ctl.start.state()
+        self.assertEqual(self.run_load()[0].state.choices['interpolation'], 'interp')   # the choice was kept
+
+    def test_a_read_and_the_gpu_probe_do_not_hold(self):                           # E12
+        with patch.object(game_state, 'probe_metal4fx', return_value='yes'):
+            self.ctl.start.state()
+            self.ctl.start.probe()
+            self.assertEqual((self.ctl.start.busy, self.ctl.start.holds, self.ctl.idle), (True, False, True))
+            self.run_load()
+            self.run_load()
 
     def test_the_gpu_is_probed_once(self):
         with patch.object(game_state, 'probe_metal4fx', return_value='no') as probe:

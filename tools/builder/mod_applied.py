@@ -32,10 +32,11 @@ def not_applied(library, extra=()):
     return library.state['applied_failed'] or library.state['applied'] != applied_key(library, extra)
 
 
-def apply_and_record(repo, spec, app, version, library, data_dir, extra=()):
-    """mod_library.apply, recorded (the only caller of it in tools/builder)."""
+def apply_and_record(repo, spec, app, version, library, data_dir, extra=(), cancel=None):
+    """mod_library.apply, recorded (the only caller of it in tools/builder); cancel (S19.1) stops a texture pack's fit,
+    a result like any other failure."""
     try:
-        result = mod_library.apply(repo, spec, app, version, library, data_dir)
+        result = mod_library.apply(repo, spec, app, version, library, data_dir, cancel)
     except BaseException as error:
         try:
             library.state['applied_failed'] = True

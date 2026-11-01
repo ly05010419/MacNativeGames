@@ -36,7 +36,8 @@ class Drift(unittest.TestCase):
                           'interpmax': f'interp-{number["MFX_MAX"]}'})
         outputs = re.search(r'enum \{ (OUTPUT_MODE_OFF.*?) \}', source(RUNTIME / 'runtime.h'))[1].split(', ')
         self.assertEqual(PANEL['picture'][1], {'metalfx': str(outputs.index('OUTPUT_MODE_METALFX')),
-                                               'native-2k': str(outputs.index('OUTPUT_MODE_NATIVE'))})
+                                               'native-2k': str(outputs.index('OUTPUT_MODE_NATIVE')),
+                                               'native-4k': str(outputs.index('OUTPUT_MODE_NATIVE_4K'))})   # E17
         self.assertIn('(v==0||v==1))taa_set(v)', restore.replace(' ', ''))
         self.assertIn('ratio>=0.5f&&ratio<=8', restore.replace(' ', ''))
         self.assertAlmostEqual(float(PANEL['aspect'][1]['21:9']), 21 / 9, places=6)

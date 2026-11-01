@@ -121,7 +121,7 @@ class Branches(unittest.TestCase):                                              
             self.addCleanup(controller.close)
             seen.append((game, paths))
             return 0
-        with patch('tools.builder.gui.open_window', side_effect=opened):
+        with patch('tools.builder.gui_open.open_window', side_effect=opened):
             self.assertEqual(self.main('--game', 'botw', '--keys', '/k'), 0)
         self.assertEqual(seen, [('botw', {'keys': '/k'})])
 
