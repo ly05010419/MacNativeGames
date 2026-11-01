@@ -47,6 +47,7 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, work in progress | [`games/xc3`](games/xc3/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
+- 2026-10-31: [Tomodachi Life: Living the Dream](games/tomodachi) 1.0.0 — experimental native Mac port with native controls and text entry; validation and known limitations are documented in its folder.
 
 ### Windows games
 
