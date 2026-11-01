@@ -9,6 +9,8 @@ static BOOL probe_spawn(const char *mode, const char *arg) { if (!spawn_ok) retu
 #include "../games/totk/runtime/input.c"
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 #include <assert.h>
+static char savedHDR[16]="off";
+
 
 void mfx_set(int mode);
 int mfx_latch(void);
@@ -78,12 +80,14 @@ void runtime_mouse_sensitivity_set(int sensitivity) { fakeSensitivity = sensitiv
 void runtime_gamepad_clear(void) {}
 static char savedName[64], savedWord[16];
 void runtime_setting_save(const char *name, const char *word, const char *what) {
+    if(!strcmp(name,"hdr.txt"))snprintf(savedHDR,sizeof savedHDR,"%s",word);
     (void)what; snprintf(savedName, sizeof savedName, "%s", name); snprintf(savedWord, sizeof savedWord, "%s", word);
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name);
     FILE *f = fopen(path, "w"); assert(f); assert(fprintf(f, "%s\n", word) > 0); assert(!fclose(f));
 }
 int runtime_setting_word(const char *name, char *word, size_t size) {
+    if(!strcmp(name,"hdr.txt")){snprintf(word,size,"%s",savedHDR);return 1;}
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return 0;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); FILE *f = fopen(path, "r"); if (!f) return 0;
     size_t n = fread(word, 1, size - 1, f); word[n] = 0; fclose(f); return 1;
@@ -444,6 +448,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     unsetenv("TOTK_MFX"); /* priority/disabled row covered by the headless frame probe */
     setenv("TOTK_OUTPUT_RES", "2560x1440", 1);   /* the native size the resolution row names */
     settings_test_output_init();
+    front_hdr_init();
     // In-memory fixture only: do not start the timer or touch a player's profile.
     playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
@@ -454,11 +459,42 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 25 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 25 + TOTK_V143 + !!totk_hdr_available());   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), then the effects
                                                                  page: FOV, two distances, shadows, depth of field, FXAA,
                                                                  sharpening and effect switches (1.4.3), or eight greyed
                                                                  rows (Breath of the Wild 1.9.0's shadow resolution live) */
+    if(getenv("TEST_HDR_UNSUPPORTED")){
+        assert(!totk_hdr_available() && !front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        press(28);assert(!front_hdr_enabled() && mfx_enabled()==MFX_40);
+        puts("pass: unsupported game keeps SDR and interpolation with HDR flags set");return 0;
+    }
+    if(getenv("TEST_HDR_CONTROLS")){
+        assert(totk_hdr_available());metalLayer=[CAMetalLayer layer];metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+        CGColorSpaceRef original=metalLayer.colorspace;if(original)CFRetain(original);
+        assert(!front_hdr_enabled());
+        mfx_set(MFX_40);mfx_latch();assert(mfx_enabled()==MFX_40);
+        assert(!metalLayer.wantsExtendedDynamicRangeContent);
+        /* Neither the synthetic nor the user's keys switch HDR or the frame cap. */
+        press(28);press(25);runtime_input_key(28,1);runtime_input_key(28,0);runtime_input_key(25,1);runtime_input_key(25,0);tick();
+        assert(!front_hdr_enabled() && nvn_fps_lock()==0 && mfx_enabled()==MFX_40);
+        [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];tick();
+        assert(row(@"HDR / EDR").page==SETTINGS_PAGE_EFFECTS && [row(@"HDR / EDR").title isEqualToString:@"HDR / EDR"]);
+        flip(@"HDR / EDR",YES);assert(front_hdr_enabled() && !strcmp(savedHDR,"on"));
+        front_hdr_present_mode(1);mfx_latch();
+        assert(mfx_enabled()==MFX_OFF && mfx_requested()==MFX_40 && !row(@"Frame interpolation").control.enabled);
+        assert(metalLayer.pixelFormat==MTLPixelFormatRGBA16Float && metalLayer.wantsExtendedDynamicRangeContent);
+        CGColorSpaceRef linearSRGB=CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);assert(CFEqual(metalLayer.colorspace,linearSRGB));CGColorSpaceRelease(linearSRGB);
+        press(28);press(25);assert(front_hdr_enabled() && nvn_fps_lock()==0);
+        flip(@"HDR / EDR",NO);assert(!front_hdr_enabled() && !strcmp(savedHDR,"off"));front_hdr_present_mode(0);mfx_latch();
+        assert(metalLayer.pixelFormat==MTLPixelFormatBGRA8Unorm && !metalLayer.wantsExtendedDynamicRangeContent && ((!original&&!metalLayer.colorspace)||(original&&metalLayer.colorspace&&CFEqual(original,metalLayer.colorspace))));
+        assert(mfx_enabled()==MFX_40 && row(@"Frame interpolation").control.enabled);
+        setenv("TOTK_HDR","",1);snprintf(savedHDR,sizeof savedHDR,"on\n");front_hdr_init();assert(front_hdr_enabled());
+        setenv("TOTK_HDR","0",1);front_hdr_init();assert(!front_hdr_enabled());mfx_latch();
+        if(original)CFRelease(original);
+        puts("pass: HDR off restores SDR; Effects switch, linear sRGB, interpolation, hdr.txt; keys 8 and 9 inert");return 0;
+    }
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */

@@ -233,6 +233,10 @@ static void *input_file(void *arg) {
             extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
         } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
             extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
+#if TARGET_OS_OSX
+        } else if (sscanf(line,"edr %u %n",&code,&used)==1 && used && !line[used] && code<=1) {
+            extern void runtime_front_hdr_set(int enabled);runtime_front_hdr_set((int)code);
+#endif
         } else if (!strncmp(line, "flag ", 5)) {
             /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
             char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");

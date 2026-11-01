@@ -50,11 +50,19 @@ class SettingsPanel(unittest.TestCase):
                             env.update(TOTK_UI_LANG='en', TOTK_HUD=layout,
                                        TOTK_MFX='interp' if overridden else '0',
                                        TOTK_MFX_OUTPUT='1' if overridden else '0',
-                                       TOTK_MFX_UPSCALE='0', TOTK_TAA='0')
+                                       TOTK_MFX_UPSCALE='0', TOTK_TAA='0',
+                                       TOTK_HDR='0', TOTK_HDR_CONTROL='0')
                             run = subprocess.run([str(executable)], env=env,
                                                  capture_output=True, text=True, timeout=35)
                             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                             self.assertIn('pass: settings panel', run.stdout)
+
+                if version == 'TOTK_GAME_V143':
+                    env=os.environ.copy()
+                    env.update(TOTK_UI_LANG='en',TOTK_HDR='0',TOTK_HDR_CONTROL='1',TEST_HDR_CONTROLS='1')
+                    run=subprocess.run([str(executable)],env=env,capture_output=True,text=True,timeout=35)
+                    self.assertEqual(run.returncode,0,run.stdout+run.stderr)
+                    self.assertIn('pass: HDR off restores SDR',run.stdout)
                 settings = Path(directory) / ('saved-' + (version or 'base'))
                 settings.mkdir()
                 env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
