@@ -74,17 +74,25 @@ static void appear(void *object,const uint8_t *arg){Keyboard *s=state(object);if
  if(pthread_create(&worker,NULL,input_worker,s))runtime_fail("Inline input thread");pthread_detach(worker);
 }
 static void disappear(void *object){Keyboard *s=state(object);if(!s)return;pthread_mutex_lock(&s->lock);int active=s->active&&!s->hiding;if(active)s->hiding=1;pthread_mutex_unlock(&s->lock);if(active)runtime_front_text_cancel(s);}
-static void calc(void *object){Keyboard *s=state(object);if(!s)return;atomic_fetch_add(&s->refs,1);
+/* Calc returns nn::swkbd::State (SDK Calc tail-calls the implementation).
+   Returning void leaves an arbitrary x0: the title can mistake Shown for hidden
+   and repeatedly dismiss/reopen the native field. */
+static int calc(void *object){Keyboard *s=state(object);if(!s)return 0;atomic_fetch_add(&s->refs,1);
  pthread_mutex_lock(&s->lock);EnterArg text=s->text;int init=s->init_pending,change=s->changed,pending=s->pending,cursor=s->cursor;
  s->init_pending=s->changed=s->pending=0;
- void(*init_cb)(void)=s->init_cb;void(*finish_cb)(void)=s->finish_cb;void(*cancel_cb)(void)=s->cancel_cb;
+ void(*init_cb)(void)=s->init_cb;void(*cancel_cb)(void)=s->cancel_cb;
  void(*change_cb)(const ChangedArg*)=s->change_cb;void(*cursor_cb)(const CursorArg*)=s->cursor_cb;void(*enter_cb)(const EnterArg*)=s->enter_cb;
  pthread_mutex_unlock(&s->lock);
  if(init&&init_cb)init_cb();
  if(change&&change_cb){ChangedArg arg={text,-1,-1,cursor};change_cb(&arg);}
  if(change&&cursor_cb){CursorArg arg={text,cursor};cursor_cb(&arg);}
  if(pending==1&&enter_cb)enter_cb(&text);if(pending==2&&cancel_cb)cancel_cb();
- if(pending&&finish_cb)finish_cb();release(s);
+ /* FinishedKeyboard means applet exit, not Enter, Cancel, or Disappear.
+    Sending it here makes the title tear down/reinitialize its text-entry state
+    immediately after DecidedEnter, losing the submitted name. The native
+    keyboard stays initialized and can appear again until Finalize. */
+ pthread_mutex_lock(&s->lock);int current=s->closed?0:s->active?(s->hiding?4:3):1;pthread_mutex_unlock(&s->lock);
+ release(s);return current;
 }
 #define SET_CALLBACK(function,field,type) static void function(void *object,type callback){Keyboard*s=state(object);if(!s)return;pthread_mutex_lock(&s->lock);s->field=callback;pthread_mutex_unlock(&s->lock);}
 typedef void(*VoidCallback)(void);typedef void(*ChangeCallback)(const ChangedArg*);typedef void(*CursorCallback)(const CursorArg*);typedef void(*EnterCallback)(const EnterArg*);
