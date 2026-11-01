@@ -1283,7 +1283,19 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
     if lists:
         resolve_lists(tree, res, game, logs)
+    if game == 'totk':
+        place_icon_scripts(res)
     clone(tree / 'build/app-launcher', app / f'Contents/MacOS/{APPS[game][2]}')
+
+
+ICON_SCRIPTS = ('make_button_icons.py', 'make_mod_manifest.py', 'make_romfs_patches.py')
+
+
+def place_icon_scripts(res):
+    """The scripts the settings panel's Apply button icons runs (runtime/icons_apply.m), with the builder's Python: they
+    draw the icons from the app's own RomFS, so the app needs none of this repository."""
+    for name in ICON_SCRIPTS:
+        clone(GAME / 'scripts' / name, res / 'scripts' / name)
 
 
 def place_data_bundle(bundle, app, res, version):

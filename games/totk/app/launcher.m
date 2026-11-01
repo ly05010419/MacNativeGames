@@ -24,6 +24,7 @@
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
 #include "auto_update.h"           // the settings panel's Update page: --update-check, --update-install
+#include "keyboard_mods.h"         // the keyboard icons mod the settings panel stages (runtime/icons_apply.m)
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -392,11 +393,13 @@ int main(int argc, char **argv) {
         setenv("TOTK_SHARED_FONTS", "extracted/firmware/shared-fonts", 1);
         /* Player mods (runtime/romfs.c): <data>/mods/<version>/manifest.tsv, when present. With no controller connected at
            start, <data>/mods/<version>-keyboard takes its place when it holds a manifest (keyboard key icons in the prompts:
-           scripts/make_button_icons.py --style keyboard or azerty). The fonts are read once, so it holds for the session. */
+           scripts/make_button_icons.py --style keyboard or azerty, or the settings panel's Apply button icons, whose staged
+           copy is put in place first). The fonts are read once, so it holds for the session. One older than the mods it
+           was copied from is passed over (keyboard_mods.h). */
         NSString *mods = [data stringByAppendingPathComponent:@"mods/" TOTK_GAME_DIR];
         NSString *keyboardMods = [mods stringByAppendingString:@"-keyboard"];
-        if (!getenv("TOTK_ROMFS_MODS") && [NSFileManager.defaultManager fileExistsAtPath:[keyboardMods stringByAppendingPathComponent:@"manifest.tsv"]] &&
-            !controller_connected())
+        if (!getenv("TOTK_ROMFS_MODS")) keyboard_mods_promote(mods);
+        if (!getenv("TOTK_ROMFS_MODS") && keyboard_mods_present(mods) && !controller_connected() && keyboard_mods_usable(mods))
             mods = keyboardMods;
         setenv("TOTK_ROMFS_MODS", mods.fileSystemRepresentation, 0);
         /* The game's language (runtime/services.c): the app's first preferred language, which also follows a per-app
@@ -412,6 +415,8 @@ int main(int argc, char **argv) {
         /* The commit the app was built from (build_app.py MNGSourceCommit): the HUD box shows it (runtime/frontend.m). */
         NSString *commit = [NSBundle.mainBundle objectForInfoDictionaryKey:@"MNGSourceCommit"];
         if ([commit isKindOfClass:NSString.class] && commit.length) setenv("TOTK_SOURCE_COMMIT", commit.UTF8String, 1);
+        /* The app, whose scripts and RomFS the settings panel's Apply button icons draws from (runtime/icons_apply.m). */
+        setenv("TOTK_APP_BUNDLE", NSBundle.mainBundle.bundlePath.fileSystemRepresentation, 1);
         NSString *contrib = env_or("TOTK_SHADER_CONTRIB", contrib_file(data));
         setenv("TOTK_SHADER_CONTRIB", contrib.fileSystemRepresentation, 1);
         contrib_reminder(contrib);
