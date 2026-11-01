@@ -6,11 +6,12 @@ E9 S9.1 C5: only the games in ICONS are offered; for the others the tab says so,
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.builder import icons_env, icons_mod, icons_plan
+from tools.builder import game_state, icons_env, icons_mod, icons_plan
 from tools.builder import controller_controls      # read_state, at call time (it imports this module)
 from tools.builder.controller_mods import LATEST, _library
 
-ICONS = ('totk',)                   # the games whose button icons the builder can make (make_button_icons.py)
+ICONS = ('totk', 'botw')            # the games whose button icons the builder can make (make_button_icons.py, and
+NO_ENV = ('botw',)                  # make_botw_button_icons.py, which needs no fontTools: no venv for these)
 
 
 @dataclass(frozen=True)
@@ -38,14 +39,16 @@ def icons_info(game_dir, store, repo, spec, app, data_dir, builder_dir):
         return IconsInfo(False, 'not_offered')
     state = controller_controls.read_state(game_dir, store, spec.id)
     why = 'not_offered' if state.reason else 'no_app' if app is None or not Path(app).is_dir() else \
+        'not_latest' if spec.id in NO_ENV and game_state.app_version(app) != LATEST[spec.id] else \
         'broken_file' if state.error else 'ask' if state.by_label is None else 'nintendo' if state.by_label else ''
     if why:
         return IconsInfo(False, why)
     library = _library(repo, spec, LATEST[spec.id], data_dir)
     now = icons_mod.current(repo, app, LATEST[spec.id], library, game_dir, store, spec.id)
-    names = library.state['names']
-    return IconsInfo(True, '', icons_env.status(builder_dir), icons_mod.status(library, now),
-                     tuple((m, names.get(m, m)) for m in icons_mod.font_mods(library)), icons_plan.shared(state.inputs))
+    names, env = library.state['names'], 'ready' if spec.id in NO_ENV else icons_env.status(builder_dir)
+    return IconsInfo(True, '', env, icons_mod.status(library, now),
+                     tuple((m, names.get(m, m)) for m in icons_mod.font_mods(library, LATEST[spec.id])),
+                     icons_plan.shared(state.inputs))
 
 
 def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_env, cancel):
@@ -53,9 +56,9 @@ def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_
     if spec.id not in ICONS:
         return IconsBuilt(False, 'not_offered')
     try:
-        if install_env:
+        if install_env and spec.id not in NO_ENV:
             icons_env.install(builder_dir, cancel)
-        if icons_env.status(builder_dir, cancel) != 'ready':
+        if spec.id not in NO_ENV and icons_env.status(builder_dir, cancel) != 'ready':
             return IconsBuilt(False, 'env', 'fontTools is not ready')
         state = controller_controls.read_state(game_dir, store, spec.id)
         if state.by_label is None or state.by_label or state.error:

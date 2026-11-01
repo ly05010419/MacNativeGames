@@ -114,9 +114,10 @@ TABS = {
                                    'size table changed): update them.',
     'gui.controls.icons.current': 'The game\'s button icons show the buttons of the saved layout.',
     'gui.controls.icons.shared': 'Two buttons do {inputs}: its prompt names the first.',
-    'gui.controls.icons.not.not_offered': "The game's button icons can be updated for Tears of the Kingdom only, for "
-                                          'now.',
+    'gui.controls.icons.not.not_offered': "The game's button icons can be updated for Tears of the Kingdom and Breath "
+                                          'of the Wild only, for now.',
     'gui.controls.icons.not.no_app': 'Button icons: build the app first.',
+    'gui.controls.icons.not.not_latest': 'Button icons: Breath of the Wild 1.9.0 only (this app is another version).',
     'gui.controls.icons.not.ask': 'Button icons: say which controller you use first.',
     'gui.controls.icons.not.nintendo': 'Button icons: with a Nintendo controller (or key 6 on Switch) the game\'s own '
                                        'icons are kept; this draws Xbox names.',
@@ -127,10 +128,12 @@ TABS = {
     'gui.controls.icons.download.broken': 'The builder\'s Python environment for the icons no longer works (Python '
                                           'was probably upgraded). Make it again, downloading fontTools 4.67.0 from '
                                           'pypi.org (pinned SHA-256 hashes)?',
-    'gui.controls.icons.switch_off': '{mods} also replace the game\'s font archives, so the two would clash. Switch '
+    'gui.controls.icons.switch_off': '{mods} also replace the game\'s font archives (or Breath of the Wild\'s '
+                                     'Pack/Bootup.pack), so the two would clash. Switch '
                                      'them off (they stay in your list)?',
     'gui.controls.icons.kept': 'Icons not updated: {mods} still replace the same fonts.',
-    'gui.controls.icons.making': 'Making the button icons (the first time, fontTools is downloaded first); then '
+    'gui.controls.icons.making': 'Making the button icons (Tears of the Kingdom: the first time, fontTools is '
+                                 'downloaded first); then '
                                  'Apply mods runs for your whole list, as in the Mods tab...',
     'gui.controls.icons.done': 'Button icons updated and the mods applied: the game shows them at its next start.',
     'gui.controls.icons.failed': 'Button icons not updated ({reason}): {detail}',

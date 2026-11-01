@@ -86,9 +86,13 @@ class Files(unittest.TestCase):
         self.assertTrue(self.save('totk').ok)
 
     def test_icons_only_for_the_listed_games_and_names_for_every_game(self):     # C2, C5
-        self.assertEqual(ICONS, ('totk',))
+        self.assertEqual(ICONS, ('totk', 'botw'))                         # make_botw_button_icons.py
         self.assertEqual(icons_info(self.dirs['botw'], self.store, None, BOTW, None, self.tmp, self.tmp),
-                         IconsInfo(False, 'not_offered'))
+                         IconsInfo(False, 'no_app'))
+        old = self.tmp / 'Breath of the Wild.app'
+        (old / 'Contents/Resources/totk/extracted/botw160').mkdir(parents=True)
+        self.assertEqual(icons_info(self.dirs['botw'], self.store, None, BOTW, old, self.tmp, self.tmp),
+                         IconsInfo(False, 'not_latest'))                # 1.6.0's code points are not checked
         self.assertEqual(sorted(NAMES), sorted(GAMES))
         for game, names in NAMES.items():
             self.assertEqual(tuple(names), ORDER, game)                  # the D-pad's four stay separate rows
