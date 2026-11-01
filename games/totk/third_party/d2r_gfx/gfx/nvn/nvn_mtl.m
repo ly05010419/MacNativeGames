@@ -13752,7 +13752,9 @@ void mtl_rt_force_full(int n) { g_rt.force_full = n; }   // 宿主调：要换 3
 // On: the display link object changes to 30 Hz (frame rate range 30–30, a ProMotion screen lowers its refresh rate accordingly; the frame rate hint in front_ios.m is lowered together), the game presents one frame per display-link tick; runtime extrapolation off (really draws every frame).
 // Game logic already runs at 25 ticks / second and unit positions are interpolated by time, so there are no repeated frames at 30 frames (measured on a real device: coefficient of variation of per-frame camera displacement 0.292 at 30 frames, 0.296 at 60 frames).
 // The switch is on the 「自定义」(Custom) page (dm_custom.c eco_fps, off by default, takes effect on apply); the test switch DM_FPS=30/60 pins it.
-__attribute__((weak)) int dm_fps_setting(void) { return 60; }   // 宿主 dm_custom.c 提供强定义；图形单测不链宿主时恒 60 | The host's dm_custom.c provides the strong definition; always 60 when graphics unit tests do not link the host
+__attribute__((weak)) int dm_fps_setting(void) {   // 宿主 dm_custom.c 提供强定义；这个移植没有宿主，面板的 30 档就是它 | The host's dm_custom.c provides the strong definition; this port has no host, so the pane's 30 entry decides
+    const char *p = getenv("TOTK_PHONE_FPS");   // 预设的「鎖 30」设它（ios/Sources/main.m） | the pane's "held at 30" row sets it
+    return p && !strcmp(p, "30") ? 30 : 60; }
 int mtl_fps_target(void) { static int env = -2; if (env == -2) { const char *e = getenv("DM_FPS"); env = e ? atoi(e) : -1; if (env != 30 && env != 60) env = -1; else MLOG("DM_FPS=%d：帧数由测试开关钉住", env); }
     return env > 0 ? env : dm_fps_setting() == 30 ? 30 : 60; }
 // 外推启用状态一变（省电模式切换、世界冻结接手 / 交回）：先让「跨帧不写回」账本重学（试用期里照常写回），外推晚一帧再真正切换——
@@ -15494,7 +15496,12 @@ static void link_sync(void) {   // 游戏出图线程每帧调：把节拍对象
         MLOG("显示节拍：抢救期满，换回节拍模式 %d 再试（帧 %llu）", g_dm_present_link, (unsigned long long)atomic_load(&g_cur_frame)); }
     int want = g_dm_present_link;
     if (want < 0 || want > 2) { g_dm_present_link = applied == 3 ? 1 : applied; return; }
+#if TARGET_OS_IPHONE
+    /* The phone holds the game back with the queue instead (the wait in present_now): a 30 Hz link and the tamed
+       producer overlap into 15 fps (measured 66.67 ms presents, 2026-10-26). */
+#else
     if (want && mtl_fps_target() == 30) want = 3;   // 省电模式：显示节拍 30 Hz | Power-saving mode: display link at 30 Hz
+#endif
     if (want == applied) return;
     g_link_mode = want;
     if (!g_link_started) {
@@ -15683,6 +15690,17 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         }
     }
     pthread_mutex_lock(&g_pq_mu);
+    /* 省电模式（30 帧）：显示节拍每次只取队列里最新的一帧、把更早的直接丢掉（needsUpdate 里的 g_link_dropped）。只做这一半，
+       游戏仍按 60 帧生产、GPU 每秒干的活一点没少，发热不变——实测正是如此（上屏 33.33 ms 间隔，帧时间仍 16.58 ms）。
+       把队列压到「只排一帧」让游戏自己也等节拍，才是这个模式想要的效果。带超时：节拍不回调时不能把游戏卡死。 */
+    /* Power-saving mode (30 fps): the display link takes only the newest queued frame and drops the older ones (g_link_dropped
+       in needsUpdate). With that alone the game keeps producing 60 frames and the GPU does the same work per second, so the
+       heat does not drop - which is what the device showed (33.33 ms presents, 16.58 ms game frames). Holding the queue to one
+       waiting frame makes the game wait for the link too. Timed, so a display link that stops calling back cannot hang it. */
+    if (mtl_fps_target() == 30 && g_link_owns_layer) {
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until); until.tv_sec += 1;
+        while (g_pq_in - g_pq_done >= 2 && pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &until) != ETIMEDOUT) {}
+    }
     while (g_pq_in - g_pq_done >= PQ) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // 队满才等；正常由 AcquireTexture 先挡住 | Wait only when the queue is full; normally AcquireTexture blocks first
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // 当帧状态随票号入队，不在出图线程晚读可变window | The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
