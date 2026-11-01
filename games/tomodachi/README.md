@@ -1,6 +1,6 @@
 # Tomodachi Life: Living the Dream — experimental native Mac port
 
-**Status: draft / work in progress. Broader gameplay and visual validation remain.**
+**Status: experimental / work in progress. Broader gameplay and visual validation remain.**
 The game starts, native menus and text entry work, and an existing island has
 been exercised on an Apple silicon Mac. This is not a claim of complete picture
 accuracy, full gameplay coverage, or proven save compatibility. Keep a backup of
@@ -87,7 +87,7 @@ Default keyboard controls: J confirms, K/Space goes back, I is X, U is Y,
 WASD moves, arrows drive the right stick, Return is Plus, Tab/Escape is Minus.
 The mouse remains touch input; its buttons are not reassigned to Zelda actions.
 L3+R3 toggles Settings; L/R changes tabs; d-pad/stick navigates; B closes it.
-Controller navigation was covered with simulated events; this draft does not
+Controller navigation was covered with simulated events; this port does not
 claim a hardware sweep across Xbox, PlayStation, Switch, and reconnect cases.
 
 Preferences live in the native profile's `settings.json`. Existing ten-key and
@@ -127,8 +127,8 @@ launching the executable to append a native runtime log to that profile.
   The runtime expands verified Mii/cloth child heaps and aligns physical NVN pool
   backing for Darwin pages; these guarded compatibility patches need review.
 - No performance improvement is claimed from local work counters or FPS alone.
-  Rendering correctness takes priority over speed. Keep this contribution a
-  draft until the remaining graphics and gameplay validation are complete.
+  Rendering correctness takes priority over speed. This contribution remains
+  experimental while the remaining graphics and gameplay validation are completed.
 
 Run the parent repository suite and the title-local tests:
 

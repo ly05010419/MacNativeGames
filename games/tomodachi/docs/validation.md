@@ -82,5 +82,5 @@ without a crash does not establish a fix. Temporary dream-crash diagnostics are
 kept on the development branch and omitted from this proposed contribution.
 Broader picture accuracy, long gameplay sessions, save round-trips, incomplete
 services/audio effects, and guarded Mii/cloth heap changes still need review.
-Keep the contribution a draft while these remain. Normal packaged diagnostics
+The contribution remains experimental with these gaps. Normal packaged diagnostics
 are off by default (`TOMODACHI_DEBUG_LOG=1` opts in).
