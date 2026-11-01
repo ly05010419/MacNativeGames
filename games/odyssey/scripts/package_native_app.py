@@ -126,6 +126,12 @@ def main():
     version = ICON.with_name("game-version.txt")   # extract_app_icon.py: the update's version, for the window title
     if version.is_file():
         shutil.copyfile(version, resources / "game-version.txt")
+    revision = subprocess.run(["git", "-C", str(GAME), "rev-parse", "--short=10", "HEAD"],
+                              capture_output=True, text=True)
+    if revision.returncode == 0:
+        dirty = subprocess.run(["git", "-C", str(GAME), "status", "--porcelain", "--", "."],
+                               capture_output=True, text=True)
+        (resources / "source-commit.txt").write_text(revision.stdout.strip() + ("+local" if dirty.stdout else "") + "\n")
     info = {
         "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": "Odyssey", "CFBundleName": "Odyssey",
         "CFBundleExecutable": "Odyssey", "CFBundleIconFile": "OdysseyIcon",

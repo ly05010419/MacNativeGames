@@ -1,6 +1,6 @@
 # Optional 60+60 frame interpolation
 
-Press **2** to request or disable MetalFX frame interpolation. It starts disabled.
+Press **1**, then choose **Display → Frame interpolation → 60+60 (120 Hz)** to request MetalFX frame interpolation. It starts disabled; the panel saves the choice.
 `TOTK_MFX=interp` requests it at launch. The request takes effect at a game-frame
 boundary, only on a supported Metal 4 GPU and a window screen reporting 120 Hz.
 On 60, 100, 144 Hz or an unknown screen rate, generation stays off. Moving back
@@ -82,7 +82,7 @@ from, how many ambiguous frames were kept real (`[mfx] camera ...`), and where t
 final copy found the canvas (`[mfx] final copy ...`).
 
 For a short game check, use a separate test profile and cache, the pinned 1.3.0
-inputs and this directory's own runtime. Resume into a 3D scene, enable key 2,
+inputs and this directory's own runtime. Resume into a 3D scene, enable 60+60 in the settings panel,
 move the camera, open and close the menu, disable it and exit. Inspect both
 `[mfx]` generation counts and `上屏节奏` (drawable `presentedTime`) lines: generated
 counts alone do not establish that the pictures reached the screen. Capture a

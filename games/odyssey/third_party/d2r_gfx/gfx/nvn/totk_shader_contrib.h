@@ -21,6 +21,7 @@
 #define GAME_CONTRIB_GAME "Super Mario Odyssey"
 #define GAME_CONTRIB_TITLE "Shader list (Super Mario Odyssey):"
 #define GAME_CONTRIB_FILE "shader-list-contribution-odyssey.txt"
+#define TOTK_REPO_URL "https://github.com/ly05010419/MacNativeGames"
 #define TOTK_CONTRIB_REPO "ly05010419/MacNativeGames"   // the Mac reminder's "Submit automatically" (gh issue create)
 #define TOTK_CONTRIB_ISSUE_URL "https://github.com/ly05010419/MacNativeGames/issues/new?template=" GAME_CONTRIB_TEMPLATE \
     "&game=Super+Mario+Odyssey&title=Shader+list+%28Super+Mario+Odyssey%29%3A+"

@@ -18,7 +18,8 @@ int runtime_front_text_input(const RuntimeTextRequest *req, char *out, size_t ou
 }
 void runtime_front_text_test(const char *op, const char *text) { (void)op; (void)text; }
 void runtime_front_request_close(void) { runtime_fail("window unavailable in headless probe"); }
-void runtime_shortcut_help_toggle(void) {}
+void runtime_settings_toggle(void) {}
+int dm_gfx_opt_get(int option) { (void)option; return 0; }
 void runtime_boot_progress(const char *stage, uint64_t done, uint64_t total) {
     fprintf(stderr, "[odyssey] %s: %llu/%llu\n", stage,
             (unsigned long long)done, (unsigned long long)total);
@@ -35,3 +36,8 @@ void dm_gfx_set_flag(const char *name, int v) { (void)name; (void)v; }
 void dm_gfx_shot_at(long frames, const char *path) { (void)frames; (void)path; }
 void dm_gfx_texdump_next(const char *path) { (void)path; }
 void dm_gfx_window_shot(const char *path) { (void)path; }
+
+uint64_t dm_nvn_frame_count(void) { return 0; }
+uint64_t mtl_present_count(void) { return 0; }
+void mtl_wait_state_dump(void) {}
+int mfxup_enabled(void) { return 0; }
