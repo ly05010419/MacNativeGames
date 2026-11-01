@@ -3,7 +3,7 @@
 
 Plays from the app's own test profile (Odyssey_build/manual-test/profile). On first use, when that profile holds no
 save, it is seeded from the Cap Kingdom baseline (Odyssey_build/profiles/cap-kingdom-start), so Resume continues in
-Cap Kingdom; an existing save is never replaced. Async shader translation is on (needed to get past scene loads).
+Cap Kingdom; an existing save is never replaced. Recorded shaders and pipelines are warmed before play.
 The session closes itself after ODYSSEY_TEST_MINUTES (default 20).
 """
 from pathlib import Path
@@ -42,7 +42,6 @@ def main() -> int:
         TOTK_SLOT_OWNER="user",   # the user's game goes ahead of agent test runs (runtime/game_slot.c)
         TOTK_SLOT_PURPOSE="personal bounded test",
     )
-    env.setdefault("TOTK_SHADER_ASYNC", "1")
     print("Opening Odyssey test window. Use a controller or the Mac keyboard.")
     print("Keyboard: W/A/S/D move, arrow keys turn the camera, J or K/Space jump (A / B), U or I throw Cappy (Y / X),")
     print("Option/Shift crouch (ZL / ZR), Q/E are L/R, Return is Plus (menu), Tab is Minus (map).")

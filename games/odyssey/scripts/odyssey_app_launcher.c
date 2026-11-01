@@ -105,7 +105,6 @@ int main(int argc, char **argv) {
     setenv("TOTK_PROFILE_DIR", profile, 1); setenv("TOTK_SHADER_CACHE", cache, 1);
     setenv("TOTK_ROMFS", romfs, 1); setenv("TOTK_SHARED_FONTS", fonts, 1); setenv("TOTK_INPUT_FILE", commands, 1);
     setenv("TOTK_GAME_SLOT_DIR", slot, 1); setenv("TOTK_SLOT_OWNER", "user", 1); setenv("TOTK_SLOT_PURPOSE", "Odyssey.app", 1);
-    setenv("TOTK_SHADER_ASYNC", "1", 0);
     /* Key 3's bigger render size (build_odyssey.py --render-res): the scaled graphics table and render-res.txt in the
        bundle; without that folder the game runs as shipped. */
     const int user_patches = getenv("TOTK_ROMFS_PATCHES") != NULL, user_res = getenv("TOTK_RENDER_RES") != NULL;

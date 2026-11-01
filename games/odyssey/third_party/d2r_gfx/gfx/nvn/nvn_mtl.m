@@ -7491,9 +7491,16 @@ static void warm_start(void) {
     // the prepared shaders and the remaining translated variants finish behind
     // the menu, then mtl_warm_wait at save-load waits before entering play.
     uint64_t wait_start = bp_now();
-    while (!atomic_load(&g_warm_priority_done)) usleep(2000);
+    /* Odyssey can start its opening movie directly from the title. Unlike TOTK's save-load transition, that path
+       offers no later loading screen at which to wait. Finish the recorded pipelines and libraries before handing
+       the first frame back to the game, so their compilation cannot interrupt the movie or starve its audio stream.
+       ODYSSEY_WARM_BEFORE_PLAY=0 keeps the old title-only wait for comparisons. */
+    const char *warm_before = getenv("ODYSSEY_WARM_BEFORE_PLAY");
+    int wait_all = !(warm_before && !strcmp(warm_before, "0"));
+    while (wait_all ? atomic_load(&g_warm_running) : !atomic_load(&g_warm_priority_done)) usleep(2000);
     int ms = (int)((bp_now() - wait_start) / 1000000ull) + 1;
     warm_claim();
+    MLOG("[odyssey-warm] %s ready before play; waited %d ms", wait_all ? "recorded pipelines and shader libraries" : "title list", ms);
     MLOG("启动关键管线已就绪：等待 %d ms，可用着色器 %lu / 渲染管线 %llu / 计算管线 %llu；其余后台继续预热",
          ms, (unsigned long)g_shcache.count, g_warm_claim_rps, g_warm_claim_cps);
 }
