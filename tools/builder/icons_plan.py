@@ -40,13 +40,53 @@ def shape(drawn):
     return ['none']
 
 
-def plan(inputs):
+def plan(inputs, single=SINGLE, combined=COMBINED):
     """[[code point, kind, *args]] for every glyph to redraw, in code point order."""
-    out = {cp: shape(driver(inputs, s)) for cp, s in SINGLE.items()}
-    for cp, names in COMBINED.items():
+    out = {cp: shape(driver(inputs, s)) for cp, s in single.items()}
+    for cp, names in combined.items():
         drawn = [driver(inputs, s) for s in names]
         out[cp] = ['dpad', drawn] if all(d in ARMS for d in drawn) else ['labels', [SHORT[d] for d in drawn]]
     return [[cp, *out[cp]] for cp in sorted(out)]
+
+
+# Breath of the Wild 1.9.0 (make_botw_button_icons.py): External_00.bffnt has its own code points past U+E048, and the
+# font already holds an icon for each button it can name, so a glyph is not drawn but shown in another code point's place:
+# LB RB LT RT as L R ZL ZR, Menu and View as + and -, a cross (U+E070) for an input no button drives.
+BOTW_SINGLE = {0xE040: 'a', 0xE041: 'b', 0xE042: 'x', 0xE043: 'y', 0xE044: 'l', 0xE045: 'r', 0xE046: 'zl', 0xE047: 'zr',
+               0xE04B: 'plus', 0xE04C: 'minus', 0xE053: 'lstick', 0xE054: 'rstick', 0xE05C: 'up', 0xE05D: 'down',
+               0xE05E: 'left', 0xE05F: 'right'}
+BOTW_COMBINED = {0xE060: ('up', 'down'), 0xE061: ('left', 'right'), 0xE049: ARMS}
+BOTW_SHOWN = {('face', 'A'): 0xE040, ('face', 'B'): 0xE041, ('face', 'X'): 0xE042, ('face', 'Y'): 0xE043,
+              ('face', 'L3'): 0xE053, ('face', 'R3'): 0xE054, ('bumper', 'LB'): 0xE044, ('bumper', 'RB'): 0xE045,
+              ('trigger', 'LT'): 0xE046, ('trigger', 'RT'): 0xE047, ('menu',): 0xE04B, ('view',): 0xE04C, ('none',): 0xE070}
+BOTW_ARMS = {('up',): 0xE05C, ('down',): 0xE05D, ('left',): 0xE05E, ('right',): 0xE05F, ('down', 'up'): 0xE060,
+             ('left', 'right'): 0xE061, ('down', 'left', 'right', 'up'): 0xE049}
+
+
+BOTW_SLOTS = {'south': 'bottom', 'east': 'right', 'west': 'left', 'north': 'top'}
+
+
+def botw_diamond(inputs):
+    """{Switch face input: the place of the face button that drives it} for the action guide's diamond; an input on
+    another button, or on none, is left out, and its part keeps the Switch's drawing."""
+    return {s: BOTW_SLOTS[d] for s in 'abxy' if (d := driver(inputs, s)) in BOTW_SLOTS}
+
+
+def botw_glyphs(inputs):
+    """{code point: code point whose icon it shows} for Breath of the Wild, the code points that change only. A combined
+    d-pad icon whose inputs sit on two arms the font has no icon for (up and right) shows all four arms; one whose inputs
+    are not all on the d-pad keeps its own icon."""
+    out = {}
+    for cp, kind, *args in plan(inputs, BOTW_SINGLE, BOTW_COMBINED):
+        if kind == 'dpad':
+            shown = BOTW_ARMS.get(tuple(sorted(set(args[0]))), 0xE049)
+        elif kind != 'labels':
+            shown = BOTW_SHOWN.get((kind, *args))
+        else:
+            shown = None
+        if shown is not None and shown != cp:
+            out[cp] = shown
+    return out
 
 
 def shared(inputs):

@@ -8,18 +8,29 @@ only writer of library.json): the mod gets the reserved id 'builder-button-icons
 beside it, the old one renamed aside, the new one renamed in, the old one removed), enabled, kept last in the list
 (mod_library.save), revalidated, with the record of what it was made from; mods the player agreed to switch off (other
 font mods) are switched off. record() hashes controls.txt, controller-type.txt, the answer kept for auto and the seeded
-table, so the tabs can say when the icons no longer match."""
+table, so the tabs can say when the icons no longer match.
+
+Breath of the Wild (a version named botw...): games/totk/scripts/make_botw_button_icons.py runs instead, with the builder's
+own Python (it needs only the standard library), on the code points icons_plan.botw_glyphs gives; its font archives keep
+their size, so there is no size table to seed. It writes every archive (--write-all), also when the layout's prompts
+already name the right buttons: the mod then puts back the game's own icons, and an empty one would not be valid."""
 import hashlib
 import json
 from pathlib import Path
 import os
 import shutil
+import sys
 
 from tools.builder import cancellable, controls_file, icons_env, icons_plan, mod_library, mod_tools
 
 NAME = 'Button icons (your controls)'
 GENERATE_S = 300.0
 SCRIPT = Path(__file__).with_name('icons_generate.py')
+BOTW_SCRIPT = Path(__file__).resolve().parents[2] / 'games/totk/scripts/make_botw_button_icons.py'
+
+
+def botw(version):
+    return version.startswith('botw')
 
 
 class BuildError(Exception):
@@ -29,6 +40,8 @@ class BuildError(Exception):
 
 
 def table_name(repo, app, version):
+    if botw(version):                               # the archives keep their size: no table
+        return None
     manifest_tool, _ = mod_tools.tools(repo)
     index = manifest_tool.read_index(mod_tools.app_index(app, version))
     return next(p for p in index if p.startswith('System/Resource/ResourceSizeTable.') and p.endswith('.rsizetable.zs'))
@@ -41,16 +54,22 @@ def others(library):
 def seed_table(library, name):
     """The table the other enabled mods would install (the last one wins), or None."""
     found = None
-    for mod_id in others(library):
+    for mod_id in others(library) if name else ():
         path = library.path(mod_id) / 'romfs' / name
         if path.is_file():
             found = path.read_bytes()
     return found
 
 
-def font_mods(library):
-    """Other enabled mods that replace the font archives (an older icons mod such as xbox-icons)."""
-    return [m for m in others(library) if any((library.path(m) / 'romfs/Font').glob('*.bfarc.zs'))]
+def archives(version):
+    return '*.sbfarc' if botw(version) else '*.bfarc.zs'
+
+
+def font_mods(library, version=''):
+    """Other enabled mods that replace the font archives (an older icons mod such as xbox-icons), or for Breath of the
+    Wild the pack that holds the action guide."""
+    return [m for m in others(library) if any((library.path(m) / 'romfs/Font').glob(archives(version))) or
+            botw(version) and (library.path(m) / 'romfs/Pack/Bootup.pack').is_file()]
 
 
 def _sha(data):
@@ -88,8 +107,14 @@ def build(repo, app, version, library, inputs, builder_dir, cancel=None):
             (romfs / name).parent.mkdir(parents=True, exist_ok=True)
             (romfs / name).write_bytes(table)
         plan_file = work / 'plan.json'
-        plan_file.write_text(json.dumps(icons_plan.plan(inputs)))
-        argv = [icons_env.python(icons_env.venv(builder_dir)), '-I', SCRIPT, romfs, app, version, plan_file]
+        if botw(version):
+            plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs).items()),
+                                             'diamond': icons_plan.botw_diamond(inputs)}))
+            argv = [sys.executable, '-I', BOTW_SCRIPT, romfs, '--app', app, '--version', version, '--plan', plan_file,
+                    '--write-all']
+        else:
+            plan_file.write_text(json.dumps(icons_plan.plan(inputs)))
+            argv = [icons_env.python(icons_env.venv(builder_dir)), '-I', SCRIPT, romfs, app, version, plan_file]
         try:
             code, _, err = cancellable.run(argv, cancel, GENERATE_S)
         except cancellable.Stopped as stop:
@@ -98,7 +123,7 @@ def build(repo, app, version, library, inputs, builder_dir, cancel=None):
             raise BuildError('generator', cancellable.last_line(err))
         (romfs / 'manifest.tsv').unlink(missing_ok=True)
         plan_file.unlink()
-        if len(list((romfs / 'Font').glob('*.bfarc.zs'))) == 0:
+        if not any((romfs / 'Font').glob(archives(version))):
             raise BuildError('generator', 'no font archive was written')
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
