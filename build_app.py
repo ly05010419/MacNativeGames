@@ -1120,8 +1120,9 @@ def step_shader_libs(tree, logs, *, version='v0'):
 def build_launcher(tree, version, logs, env):
     """build/app-launcher: per game and version (runtime/game_version.h: the data folder, the log name, the backup of saves)."""
     defines = [] if version == 'v0' else [f'-DGAME_{version.upper()}=1'] if version.startswith('botw') else [f'-DTOTK_GAME_{version.upper()}=1']
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines, 'app/launcher.m', '-framework', 'AppKit',
-         '-framework', 'GameController', '-framework', 'IOKit',
+    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', '-Iapp', *defines,
+         'app/launcher.m', 'app/save_sync.c', 'app/webdav_sync.m', '-framework', 'AppKit',
+         '-framework', 'GameController', '-framework', 'IOKit', '-framework', 'Foundation',
          '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree, env=env)
 
 

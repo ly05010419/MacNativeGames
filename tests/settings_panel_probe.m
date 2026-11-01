@@ -145,18 +145,22 @@ void runtime_autoload_user_input(void) {}
 uint64_t runtime_now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 #define SIZE(w, h) ((uint64_t)(h) << 32 | (w))
-/* Key 1, a page that needs another panel and the aspect ratio's window size all act through the main queue. This returns when
-   what is queued so far has run: the queue keeps its order, so a block queued behind them shows it. A fixed wait does not
-   do: a run loop pass can use up the time before it looks at the queue (10-19 ms on an M5 Pro right after the panel with the
-   drawings was made, more on a busy runner) and then leaves, the queue unserved. */
+/* The run loop until the main queue is empty: settings_rebuild and the panel's other redraws are dispatched, and a pass
+   of a fixed length can end before they are served (seen on the CI's slower runners) while always costing that length.
+   The sentinel is queued behind them, so stopping at it serves all of them; an idle queue costs one pass. A sentinel
+   left behind by a timed-out tick only stops the loop when it is still the newest one. */
 static void tick(void) {
+    static unsigned long generation;
+    unsigned long mine = ++generation;
     __block BOOL served = NO;
-    dispatch_async(dispatch_get_main_queue(), ^{ served = YES; });
-    NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:20];   /* within the test's 35 s for a run */
-    while (!served && limit.timeIntervalSinceNow > 0) [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:limit];
-    if (!served) { fprintf(stderr, "the main queue was not served in 20 s\n"); abort(); }
+    CFRunLoopRef loop = CFRunLoopGetCurrent();
+    dispatch_async(dispatch_get_main_queue(), ^{ served = YES; if (mine == generation) CFRunLoopStop(loop); });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+    while (!served && deadline.timeIntervalSinceNow > 0) CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
 }
-static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); }
+/* Key 1 toggles the panel on the main queue; a run loop pass may end before it is served (right after a key binding was
+   captured), so two. */
+static void press(unsigned key) { runtime_input_key_synthetic(key, 1); runtime_input_key_synthetic(key, 0); tick(); tick(); }
 static void key_event(unsigned short code, BOOL down) {
     NSEvent *e = [NSEvent keyEventWithType:down ? NSEventTypeKeyDown : NSEventTypeKeyUp location:NSZeroPoint modifierFlags:0
                                  timestamp:0 windowNumber:window.windowNumber context:nil characters:@"x"
@@ -454,11 +458,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 25 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
-                                                                 background input on the input page), then the effects
-                                                                 page: FOV, two distances, shadows, depth of field, FXAA,
-                                                                 sharpening and effect switches (1.4.3), or eight greyed
-                                                                 rows (Breath of the Wild 1.9.0's shadow resolution live) */
+    assert(settingsPanel.allRows.count == 29 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
+                                                                 background input on the input page), the saves page's
+                                                                 four WebDAV rows, then the effects page: FOV, two
+                                                                 distances, shadows, depth of field, FXAA, sharpening
+                                                                 and effect switches (1.4.3), or eight greyed rows
+                                                                 (Breath of the Wild 1.9.0's shadow resolution live) */
 
     /* FPS graph: a switch (here off at start; frontend.m turns it on when nothing is saved), kept in fps-graph.txt
        that both games share (user 2026-10-29). */
@@ -673,6 +678,34 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Rumble strength", @"2×"); assert(fakeGain == 2); shows(@"Rumble strength", @"2×");
     pick(@"Rumble strength", @"0.5×"); assert(fakeGain == 0.5f); pick(@"Rumble strength", @"1× (default)"); assert(fakeGain == 1);
     assert(switched(@"Gyro aiming")); flip(@"Gyro aiming", NO); assert(!fakeFeedback[1]); flip(@"Gyro aiming", YES); assert(fakeFeedback[1]);
+
+    [settingsPanel selectPage:SETTINGS_PAGE_SAVES]; tick();   /* the saves page: its four WebDAV rows */
+    /* Save sync over WebDAV: greyed out without an address, the typed address is trimmed into the defaults and the
+       switch follows at once, the password hides what is typed, an emptied field removes the key. No WebDAV state is
+       left in the defaults. */
+    assert(!menu(@"Save sync (WebDAV)").enabled && [menu(@"Save sync (WebDAV)").titleOfSelectedItem isEqualToString:@"Off"]);
+    TOTKSettingRow *urlRow = row(@"WebDAV address");
+    NSTextField *urlField = (NSTextField *)urlRow.control;
+    assert(urlField.enabled && !urlRow.secure && ![urlField isKindOfClass:[NSSecureTextField class]] && [urlField.placeholderString hasPrefix:@"https://"]);
+    assert([row(@"WebDAV password").control isKindOfClass:[NSSecureTextField class]]);
+    /* The panel is as tall as its tallest page below the key bindings, so the Saves page's rows keep that page's room. */
+    NSUInteger perPage[SETTINGS_PAGES] = {0};
+    for (TOTKSettingRow *r in settingsPanel.allRows) perPage[r.page]++;
+    NSUInteger tallest = 0;
+    for (NSInteger page = 0; page < SETTINGS_PAGE_BINDINGS; page++) if (perPage[page] > tallest) tallest = perPage[page];
+    NSRect lastSaveRow = [row(@"WebDAV password").control.superview convertRect:row(@"WebDAV password").control.superview.bounds toView:settingsPanel];
+    assert(settingsPanel.frame.size.height >= SETTINGS_TOP + tallest * SETTINGS_ROW_H + SETTINGS_BOTTOM - 1 && NSMinY(lastSaveRow) >= SETTINGS_BOTTOM);
+    urlField.stringValue = @" https://dav.jianguoyun.com/dav/ "; [urlRow changed:urlField];
+    assert([[NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_WEBDAV_URL"] isEqualToString:@"https://dav.jianguoyun.com/dav/"]);
+    [settingsPanel.timer fire];
+    assert(menu(@"Save sync (WebDAV)").enabled && [menu(@"Save sync (WebDAV)").titleOfSelectedItem isEqualToString:@"On"]);
+    pick(@"Save sync (WebDAV)", @"Off"); assert(![NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_WEBDAV_ENABLED"]);
+    shows(@"Save sync (WebDAV)", @"Off");
+    pick(@"Save sync (WebDAV)", @"On"); assert([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_WEBDAV_ENABLED"]);
+    urlField.stringValue = @"   "; [urlRow changed:urlField];
+    assert([NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_WEBDAV_URL"] == nil);
+    [settingsPanel.timer fire]; assert(!menu(@"Save sync (WebDAV)").enabled);
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"TOTK_WEBDAV_ENABLED"];
     /* Rows are made at each opening: a variable that decides (greyed out), a device the run started without (the next
        launch), a strength the file holds that is not a choice. */
     press(18); fakeFeedbackLocked[1] = 1; fakeFeedbackPresent[0] = 0; fakeGain = 2.5f; press(18); assert(settingsOpen);
@@ -682,6 +715,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); fakeGainLocked = 1; press(18); assert(!menu(@"Rumble strength").enabled && [menu(@"Rumble strength").titleOfSelectedItem isEqualToString:@"3×"]);
     press(18); fakeFeedbackLocked[1] = 0; fakeFeedbackPresent[0] = 1; fakeFeedback[0] = 1; fakeGainLocked = 0; fakeGain = 1; press(18); assert(settingsOpen);
     assert(switched(@"Rumble") && menu(@"Rumble strength").enabled);
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT]; tick();   /* back to the input rows (the page listed next) */
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
@@ -717,6 +751,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert(settingsPanel.rows.count == 8 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
+
+    /* The Saves page (PR #1227): the four WebDAV rows live here, and Input is back to its own eight. */
+    [settingsPanel selectPage:SETTINGS_PAGE_SAVES];
+    assert(settingsPanel.rows.count == 4 && [settingsPanel.rows[0].title isEqualToString:@"Save sync (WebDAV)"] &&
+           settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_SAVES &&
+           !settingsPanel.pages[SETTINGS_PAGE_SAVES].hidden && settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden);
+    [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
 
     /* Mouse sensitivity: a slider from 1 to 100, at once; greyed out while TOTK_MOUSE_SENSITIVITY decides. */
     NSSlider *slider = (NSSlider *)row(@"Mouse sensitivity").control;
@@ -909,6 +950,6 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert([[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[1]) atomically:YES]);
     }
     [settingsPanel.timer invalidate];
-    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, game keys blocked while open, keys 2-7 inert, Chinese)");
+    puts("pass: settings panel (key 1 / Esc, overlay, frame lock, interpolation, resolution 1080p / MetalFX / 2K / 4K and window size, aspect 16:9 / 16:10 / 21:9 / 32:9, aspect ratio, switches, controller type, rumble / rumble strength / gyro aiming, WebDAV save sync on its own Saves page, game keys blocked while open, keys 2-7 inert, Chinese)");
     return 0;
 }}

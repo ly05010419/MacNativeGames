@@ -11,6 +11,7 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
+#include "webdav_sync.h"   // the save sync over WebDAV (off unless configured)
 #include "dmsh_chain.h"
 #include "settings_map.h"
 #import "touch_pad.h"
@@ -395,7 +396,27 @@ static void apply_settings(void) {
 
 @interface TOTKApp : UIResponder <UIApplicationDelegate> @end
 @implementation TOTKApp
-- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    /* The WebDAV save sync when the run goes to the background or ends (app/webdav_sync.h): skipped while the game is
+       still writing save data — the next start merges then. A background task gives the sync its few seconds after the
+       window is gone; at termination it runs inline, before the process is gone. */
+    - (void)syncSaves:(UIApplication *)application why:(const char *)why {
+        if (runtime_fs_save_busy()) { fprintf(stderr, "[save-sync] a save is in progress (%s); syncing another time\n", why); return; }
+        __block UIBackgroundTaskIdentifier keep = UIBackgroundTaskInvalid;
+        void (^sync)(void) = ^{
+            mng_webdav_sync_profile("TOTK", [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                                             stringByAppendingPathComponent:@"save"].fileSystemRepresentation, NULL);
+            if (runtime_fs_save_busy()) fprintf(stderr, "[save-sync] a save started during the sync (%s); the next start merges again\n", why);
+        };
+        if (!application) { sync(); return; }
+        keep = [application beginBackgroundTaskWithExpirationHandler:^{ [application endBackgroundTask:keep]; }];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            sync();
+            [application endBackgroundTask:keep];
+        });
+    }
+    - (void)applicationDidEnterBackground:(UIApplication *)application { [self syncSaves:application why:"background"]; }
+    - (void)applicationWillTerminate:(UIApplication *)application { [self syncSaves:application why:"termination"]; }
+    - (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)application; (void)options;
     UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:session.role];
     c.delegateClass = TOTKSceneDelegate.class; return c;
@@ -532,6 +553,10 @@ static void apply_settings(void) {
     id keyboard = [NSUserDefaults.standardUserDefaults objectForKey:@"TOTK_KEYBOARD"];
     if (keyboard && ![keyboard boolValue]) setenv("TOTK_KEYBOARD", "0", 0);
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_TOUCH_WITH_KEYBOARD"]) setenv("TOTK_TOUCH_WITH_KEYBOARD", "1", 0);
+    /* Save sync over WebDAV (app/webdav_sync.h, docs/save-sync-webdav.md): off unless configured in the Settings app
+       (TOTK_WEBDAV_URL) or devicectl's environment. The game thread does not run yet, so the saves are settled; what
+       this run writes goes to the server when the app goes to the background (applicationDidEnterBackground). */
+    mng_webdav_sync_profile("TOTK", [docs stringByAppendingPathComponent:@"save"].fileSystemRepresentation, NULL);
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
     host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");

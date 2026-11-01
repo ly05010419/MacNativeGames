@@ -20,6 +20,8 @@ targets:
           - game_patches_botw.c
       - path: ../third_party/d2r_gfx/gfx/nvn
       - path: ../third_party/d2r_gfx/gfx/tex
+      - path: ../app/save_sync.c   # the save sync (app/webdav_sync.h), shared with the Mac launcher
+      - path: ../app/webdav_sync.m
       - path: Gen/embed.S
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"
@@ -73,4 +75,4 @@ targets:
         - ../third_party/d2r_gfx/gfx/nvn/include
         - Gen
         - Gen/deps/include
-      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I../runtime -I../third_party/d2r_gfx/gfx/nvn -I../third_party/d2r_gfx/gfx/nvn/include -IGen -I../build
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I../runtime -I../app -I../third_party/d2r_gfx/gfx/nvn -I../third_party/d2r_gfx/gfx/nvn/include -IGen -I../build
