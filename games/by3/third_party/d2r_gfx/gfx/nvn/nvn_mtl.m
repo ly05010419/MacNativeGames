@@ -167,7 +167,8 @@ static uint64_t g_treg_replaced_views;
 static void type_views_sweep_retired(void);
 static void pkg_evict_sweep(void);
 static void pkg_orphan_report(void);
-static uint64_t g_type_retired_views;
+static uint64_t g_type_retired_views, g_type_views_made, g_type_idle_views;
+static uint64_t g_type_idle_after = 64;   // submissions a type view may go unasked before the sweep drops it
 static void tp_note_fs(const char *key, uint64_t ser, const tex_t *t);
 static _Atomic int g_q4_inflight;        // game command buffers committed and not yet completed (GPU keep-alive, keepalive_start)
 static dispatch_semaphore_t g_ka_idle;   // signalled when g_q4_inflight drops to 0
@@ -6825,33 +6826,46 @@ static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
 // Unbound resources read 0: give all-zero dummy resources (NVN descriptors 0..255 are reserved for the driver; the game binding handle 0 means 'this slot is empty')
 static uint64_t g_dummy_tex_rid[8][4], g_dummy_img_rid[8][4], g_dummy_tbuf_rid[4];
 /* TOTK: cached views of a texture as another texture type (2D <-> 2D array, 1 slice); keyed by the base texture object. */
-static NSMapTable<id, id<MTLTexture>> *g_type_views;
+@interface NvTypeView : NSObject { @public id<MTLTexture> view; uint64_t used; } @end   // used: the last submission that asked for it
+@implementation NvTypeView @end
+static NSMapTable<id, NvTypeView *> *g_type_views;
 /* Cached views retain their parent allocation. Evict after that allocation has been removed from
    residency by the completed-fence retirement path; a strong cache must not keep every upload alive.
+   Also evict a view no draw asked for since the previous sweep: Super Mario Odyssey rebuilds the sampling view of one resident
+   1600x900 2D-array render target twice a frame, every rebuilt view became a new key of the same allocation, and this
+   sweep walked 28,000 of them after four minutes (12 ms every 64th frame, 200 ms after an hour of play).
    Caller cadence is bounded, and deferral also protects views used by the most recent submission. */
 static void type_views_sweep_retired(void) {
     if (g_sub_serial & 63) return;
+    uint64_t t0 = bp_now();
     registry_lock();
     pthread_mutex_lock(&g_res_mu);
     for (id key in g_type_views.keyEnumerator.allObjects) {
-        id<MTLTexture> view = [g_type_views objectForKey:key], base = view;
-        while (base.parentTexture) base = base.parentTexture;
-        id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
-        if ([g_res_objects containsObject:allocation]) continue;
+        NvTypeView *e = [g_type_views objectForKey:key]; id<MTLTexture> view = e->view, base = view;
+        if (e->used + g_type_idle_after >= g_sub_serial) {
+            while (base.parentTexture) base = base.parentTexture;
+            id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
+            if ([g_res_objects containsObject:allocation]) continue;
+        } else g_type_idle_views++;
         defer_obj_unref(view); defer_obj_unref(key);
         [g_type_views removeObjectForKey:key]; g_type_retired_views++;
     }
+    if (!(g_sub_serial % 3840))   // about once a minute: the cache must stay flat over a long session
+        MLOG("[type-views] at submit %llu: %lu cached, %llu made, %llu retired (%llu unused); sweep %.2f ms", (unsigned long long)g_sub_serial,
+             (unsigned long)g_type_views.count, (unsigned long long)g_type_views_made, (unsigned long long)g_type_retired_views,
+             (unsigned long long)g_type_idle_views, (bp_now() - t0) / 1e6);
     pthread_mutex_unlock(&g_res_mu);
     registry_unlock();
 }
 static id<MTLTexture> tex_type_view(id<MTLTexture> base, MTLTextureType want) {
     if (!g_type_views) g_type_views = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
-    id<MTLTexture> v = [g_type_views objectForKey:base];
-    if (v && v.textureType == want) return v;
-    if (v) defer_obj_unref(v);   // another type requested: earlier encoded draws may still use the old view
-    v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, 1)];
+    NvTypeView *e = [g_type_views objectForKey:base];
+    if (e && e->view.textureType == want) { e->used = g_sub_serial; return e->view; }
+    if (e) defer_obj_unref(e->view);   // another type requested: earlier encoded draws may still use the old view
+    id<MTLTexture> v = [base newTextureViewWithPixelFormat:base.pixelFormat textureType:want levels:NSMakeRange(0, base.mipmapLevelCount) slices:NSMakeRange(0, 1)];
     if (!v) { RED_ONCE(46, "贴图类型视图建不出（%lu → %lu）", (unsigned long)base.textureType, (unsigned long)want); return nil; }
-    [g_type_views setObject:v forKey:base];
+    if (!e) { e = [NvTypeView new]; [g_type_views setObject:e forKey:base]; }
+    e->view = v; e->used = g_sub_serial; g_type_views_made++;
     static int said; if (said++ < 3) MLOG("texture type view: %lu -> %lu for a %lux%lu texture", (unsigned long)base.textureType, (unsigned long)want, (unsigned long)base.width, (unsigned long)base.height);
     return v;
 }
@@ -13261,7 +13275,7 @@ int mtl_probe_texture_retire(void) {
     mtl_sub_begin();mtl_exec((const uint8_t *)&end);
     registry_lock();id<MTLTexture> again=tex_by_id(1);registry_unlock();
     if(again!=old[N-1])MDIE("texture retire: old descriptor failed to rebuild with current storage");checked++;
-    id __weak replaced_type=[g_type_views objectForKey:again];
+    NvTypeView *again_e=[g_type_views objectForKey:again];id __weak replaced_type=again_e?again_e->view:nil;again_e=nil;
     registry_lock();(void)tex_type_view(again,MTLTextureType2D);registry_unlock();
     if(!replaced_type)MDIE("texture retire: changing type released a view before its submission finished");checked++;
     enc_b_copy_texture_buffer(blit(),replaced_type,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,1,1),rb,0,128,128);
@@ -13304,6 +13318,36 @@ int mtl_probe_texture_retire(void) {
     }
     if(g_reup_reused<reused_before+7)MDIE("texture final cache: missing allocation reuse");checked++;
     atomic_store(&g_pkg_final_cache,saved_final);res_remove(final_rb);
+    /* Super Mario Odyssey: the game rebuilds the sampling view of one resident 2D-array render target twice a frame, and every
+       rebuilt view asked for its 2D type view under a new key. Ask 300 submissions in a row with a fresh view of one
+       resident base: only views asked for since the last sweep may stay, and the first one is released once the GPU is
+       done with it. TOTK_PROBE_NEGATIVE=8 turns the eviction of unused views off; the probe must then fail. */
+    {
+        uint64_t saved_idle=g_type_idle_after; if(ne&&atoi(ne)==8)g_type_idle_after=UINT64_MAX/2;
+        MTLTextureDescriptor *cd=[MTLTextureDescriptor new]; cd.textureType=MTLTextureType2DArray; cd.pixelFormat=MTLPixelFormatRGBA8Unorm;
+        cd.width=64; cd.height=36; cd.arrayLength=1; cd.storageMode=MTLStorageModePrivate; cd.usage=MTLTextureUsageShaderRead;
+        id<MTLTexture> churn_base=[g_dev newTextureWithDescriptor:cd]; if(!churn_base)MDIE("type view churn: base texture");
+        res_add(churn_base);
+        id __weak first=nil;
+        for(unsigned k=0;k<300;k++) @autoreleasepool {
+            mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+            id<MTLTexture> key=[churn_base newTextureViewWithPixelFormat:churn_base.pixelFormat textureType:MTLTextureType2DArray levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)];
+            registry_lock();id<MTLTexture> tv=tex_type_view(key,MTLTextureType2D);registry_unlock();
+            if(!tv||tv.textureType!=MTLTextureType2D)MDIE("type view churn: no 2D view in submission %u",k);
+            if(!k)first=tv;
+            mtl_sub_commit();mtl_finish();
+        }
+        for(unsigned i=0;i<2;i++){mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();}
+        unsigned long same=0;
+        registry_lock();pthread_mutex_lock(&g_res_mu);
+        for(id key in g_type_views.keyEnumerator.allObjects){id<MTLTexture> r=key;while(r.parentTexture)r=r.parentTexture;same+=r==churn_base;}
+        pthread_mutex_unlock(&g_res_mu);registry_unlock();
+        g_type_idle_after=saved_idle;
+        MLOG("type view churn: %lu of 300 views of one resident texture still cached",same);
+        if(same>130)MDIE("type view churn: %lu cached views of one resident texture after 300 submissions (at most 130)",same);checked++;
+        if(first)MDIE("type view churn: the first view, unused for 300 submissions, is still alive");checked++;
+        res_remove(churn_base);
+    }
     mtl_pool_del(mem);nvn_dirty_remove_range(mem);mtl_finish();res_remove(rb);munmap(mem,size);
     return checked;
 }
