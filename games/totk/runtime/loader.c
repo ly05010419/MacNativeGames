@@ -32,6 +32,10 @@ static void need(bool c,const char *m) { if(!c) runtime_fail(m); }
    SHA-256 in the file binds it to its image as before (map_module). */
 #define NM 3
 static Module modules[NM];
+Module *runtime_cheat_module(void){
+ for(unsigned i=0;i<NM;i++)if(modules[i].base&&modules[i].name&&!strcmp(modules[i].name,"main"))return &modules[i];
+ return NULL;
+}
 static uint64_t probe_plt,probe_slot;   /* main's original PLT stub of nn::os::GetSystemTick and its GOT slot (probe) */
 #define PROBE_PLT probe_plt
 #define PROBE_SLOT probe_slot

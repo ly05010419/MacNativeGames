@@ -12,6 +12,13 @@ typedef struct {
  const Gate *gates; unsigned ngate; unsigned *hash, hash_mask;
  uint8_t *base; unsigned relative, symbolic, cross, weak;
 } Module;
+/* Native cheat-panel accessors. They expose only this runtime's guest mappings and
+   already-suspended retained guest-thread ports (caller resumes and deallocates), never a debugger attachment to another process. */
+Module *runtime_cheat_module(void);
+void runtime_cheat_region_bases(uint64_t bases[5]);
+int runtime_cheat_guest_range(uint64_t address,size_t size);
+unsigned runtime_cheat_suspend_threads(uint32_t *ports,unsigned capacity);
+uint64_t runtime_gamepad_peek_buttons(void); /* does not consume the game's pressed edges */
 extern pthread_key_t runtime_keys[8];
 _Noreturn void runtime_fail(const char *message);
 void *runtime_symbol(const char *name);

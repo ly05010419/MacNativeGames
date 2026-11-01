@@ -1092,6 +1092,17 @@ void runtime_gamepad_text_read(RuntimeGamepadState *out) {
     *out = text_state_locked(); out->buttons |= textEdges; textEdges = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
+uint64_t runtime_gamepad_peek_buttons(void){
+ pthread_mutex_lock(&gamepadLock);
+ uint64_t buttons=gamepadState.buttons|touchState.buttons;
+ int lx=gamepadState.lx,ly=gamepadState.ly,rx=gamepadState.rx,ry=gamepadState.ry;
+ if(lx< -16384)buttons|=1u<<16;if(ly>16384)buttons|=1u<<17;
+ if(lx>16384)buttons|=1u<<18;if(ly< -16384)buttons|=1u<<19;
+ if(rx< -16384)buttons|=1u<<20;if(ry>16384)buttons|=1u<<21;
+ if(rx>16384)buttons|=1u<<22;if(ry< -16384)buttons|=1u<<23;
+ pthread_mutex_unlock(&gamepadLock);
+ return buttons;
+}
 void runtime_gamepad_read(RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
     *out = gamepadState;

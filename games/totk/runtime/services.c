@@ -227,6 +227,15 @@ static uint64_t alias_map(int unmap,uint64_t addr,uint64_t size){
  pthread_mutex_unlock(&memory_lock);return 0;
 }
 uint64_t runtime_heap_base(void){return (uintptr_t)heap;}
+void runtime_cheat_region_bases(uint64_t bases[5]){
+ bases[1]=(uintptr_t)heap;bases[2]=(uintptr_t)alias_space;bases[3]=(uintptr_t)low_space;bases[4]=0;
+}
+int runtime_cheat_guest_range(uint64_t address,size_t size){
+ if(!size||address+size<address)return 0;
+ uint64_t low=(uintptr_t)low_space,alias=(uintptr_t)alias_space;
+ return (low&&address>=low&&address+size<=low+LOW_SIZE)||
+        (alias&&address>=alias&&address+size<=alias+ALIAS_SIZE);
+}
 /* Guest memory the game has committed (heap size + mapped alias pages), for memory reports (iOS app monitor). */
 void runtime_guest_committed(uint64_t *heap_bytes,uint64_t *alias_mapped){*heap_bytes=heap_size;*alias_mapped=alias_bytes;}
 /* Physical memory behind the guest regions (stack+heap and alias): resident pages, of which dirty, and pages the system
