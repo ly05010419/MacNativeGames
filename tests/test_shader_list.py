@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT/'games/totk/scripts/shader_list.py'
 KEY = 'a'*64
-VARIANT = KEY+'-'+'b'*12+'_b'
+VARIANT = KEY+'-b7530f698e76_b'   # the default bind state's name (prepare_shader_seed.py SUFFIX)
 PIPELINE = '3'*80
 
 
@@ -30,27 +30,79 @@ class ShaderList(unittest.TestCase):
         self.assertEqual(r.returncode, 0 if good else 1, r.stderr)
         return r.stdout
 
-    def test_rename_moves_warm_rows_to_the_variants_the_seed_carries(self):
-        old, new = KEY+'-'+'1'*12, KEY+'-'+'2'*12
-        other = 'c'*64+'-'+'3'*12
-        def key(vs, fs):   # nvn_pso_skey.h: vs[80], fs[80], then the rest of the key
+    def test_resolve_names_each_variant_as_the_versions_seed_serves_its_bind_state(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        from prepare_shader_seed import SUFFIX, suffix, answers_for
+        mine, two, gone = 'a'*64, 'c'*64, 'd'*64
+        attr = answers_for({'attr': {'0': 'float'}})   # a bind state that made a variant of its own before 2026-10-26
+        cube = answers_for({'tex': {'0': 'cube'}})
+        old, default = f'{mine}-{suffix(attr)}', f'{mine}-{SUFFIX}'
+        def key(vs, fs):
+            return (vs.encode().ljust(80, b'\0')+fs.encode().ljust(80, b'\0')+b'\x07'*40).hex()
+        def a_row(answers):
+            text = json.dumps(answers, sort_keys=True, separators=(',', ':'))
+            return f'A\t{suffix(answers)}\t{text}\n'
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            seed = cache(root/'seed', {mine: [{'variant': default, 'deps': {}}],
+                                       two: [{'variant': f'{two}-{SUFFIX}', 'deps': {'tex': {'0': '2d'}}},
+                                             {'variant': f'{two}-{suffix(cube)}', 'deps': {'tex': {'0': 'cube'}}}]})
+            (seed/'shader-keys.json').write_text(json.dumps({'keys': [mine, two]}))
+            shared = root/'shader_list.tsv'
+            plain = ('R', key(default+'_b', f'{two}-{SUFFIX}_b'))
+            shared.write_text(a_row(attr) + a_row(cube)
+                              + f'R\t{plain[1]}\tt\n'
+                              + f'S\t{gone}-{SUFFIX}_b\t1\tm\n'                                   # another version's shader
+                              + f'R\t{key(old+"_b", f"{two}-{SUFFIX}_b")}\tm\n'                     # the title's row under its old name
+                              + f'R\t{key(old+"_b", f"{two}-{suffix(cube)}_b")}\tm\n'               # named as the seed serves it
+                              + f'R\t{key(f"{gone}-{SUFFIX}_b", f"{two}-{SUFFIX}_b")}\tm\n'         # another version's vertex shader
+                              + f'C\t{two}-{SUFFIX}_b\tm\n')
+            out = self.run_tool('resolve', seed, shared, root/'pso_manifest.tsv', root/'pso_title.tsv')
+            self.assertIn('2 of other game versions', out)
+            self.assertEqual(rows(root/'pso_title.tsv'), ['\t'.join(plain)])
+            self.assertEqual(rows(root/'pso_manifest.tsv'), [f'R\t{key(default+"_b", f"{two}-{suffix(cube)}_b")}',
+                                                            f'C\t{two}-{SUFFIX}_b'])
+
+    def test_resolve_names_a_shader_served_by_another_through_its_index(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        from prepare_shader_seed import SUFFIX
+        first, twin = 'a'*64, 'c'*64   # a translation cannot tell them apart (prepare_shader_seed.py translation_input)
+        def key(vs, fs):
             return (vs.encode().ljust(80, b'\0')+fs.encode().ljust(80, b'\0')+b'\x07'*40).hex()
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root/'seed.aliases.tsv').write_text(f'{old}\t{new}\n')
-            listed = root/'pso_manifest.tsv'
-            listed.write_text('# exported\n'
-                              f'S\t{old}_b\t1\n'
-                              f'S\t{new}_b\t1\n'                         # the same row once renamed: kept once
-                              f'R\t{key(other+"_b", old+"_b")}\n'
-                              f'B\t{key(old+"_b", other+"_b")}\t-\t0:0:0x1p-1,0x1p-1,0x1p-1,0x1p-1;\n'
-                              f'C\t{other}_b\n')
-            self.run_tool('rename', root/'seed.aliases.tsv', listed)
-            self.assertEqual(rows(listed), [f'S\t{new}_b\t1', f'R\t{key(other+"_b", new+"_b")}',
-                                             f'B\t{key(new+"_b", other+"_b")}\t-\t0:0:0x1p-1,0x1p-1,0x1p-1,0x1p-1;',
-                                             f'C\t{other}_b'])
-            (root/'bad.tsv').write_text('not\tan alias\n')
-            self.run_tool('rename', root/'bad.tsv', listed, good=False)
+            index = [{'variant': f'{first}-{SUFFIX}', 'deps': {}}]
+            seed = cache(root/'seed', {first: index, twin: index})
+            (seed/'shader-keys.json').write_text(json.dumps({'keys': [first, twin]}))
+            shared = root/'shader_list.tsv'
+            shared.write_text(f'R\t{key(twin+"-"+SUFFIX+"_b", twin+"-"+SUFFIX+"_b")}\tm\n'
+                              f'R\t{key(first+"-"+SUFFIX+"_b", first+"-"+SUFFIX+"_b")}\tm\n')
+            self.run_tool('resolve', seed, shared, root/'pso_manifest.tsv', root/'pso_title.tsv')
+            self.assertEqual(rows(root/'pso_manifest.tsv'), [f'R\t{key(first+"-"+SUFFIX+"_b", first+"-"+SUFFIX+"_b")}'])
+
+    def test_the_list_keeps_the_bind_state_behind_every_name_and_refuses_rows_without_one(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        from prepare_shader_seed import SUFFIX, suffix, answers_for
+        def key(vs, fs):
+            return (vs.encode().ljust(80, b'\0')+fs.encode().ljust(80, b'\0')+b'\x07'*40).hex()
+        deps = '{"tex":{"0":"cube"}}'
+        named = f'{KEY}-{suffix(answers_for(json.loads(deps)))}_b'
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            shared = root/'shader_list.tsv'
+            (root/'contribution.tsv').write_text(f'V\t{KEY}\t{deps}\n'                       # what a game writes with the row
+                                                 f'R\t{key(KEY+"-"+SUFFIX+"_b", named)}\n'
+                                                 f'R\t{key(KEY+"-"+"9"*12+"_b", named)}\n')   # a bind state it does not give
+            out = self.run_tool('merge', shared, root/'contribution.tsv')
+            self.assertIn('1 warm rows refused', out)
+            self.assertEqual(len(rows(shared, 'R')), 1)
+            self.assertEqual(rows(shared, 'A'), [f'A\t{named[65:77]}\t' + json.dumps(answers_for(json.loads(deps)), sort_keys=True, separators=(',', ':'))])
+            self.run_tool('stats', shared)
+            text = shared.read_text()   # prune drops the V row a seed's built-in variant serves; the bind state stays
+            shared.write_text(text.replace(f'V\t{KEY}\t{deps}\n', ''))
+            self.run_tool('stats', shared)
+            shared.write_text(text.replace(rows(shared, 'A')[0] + '\n', '').replace(f'V\t{KEY}\t{deps}\n', ''))
+            self.run_tool('stats', shared, good=False)
 
     def test_variants_are_the_shader_and_its_bind_state_not_a_variant_name(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -26,12 +26,11 @@ from tools.builder.gui_settings import SettingsPanel
 from tools.builder.gui_storage import StoragePanel
 from tools.builder.gui_layout import IMAGE_TYPES, ScrollArea, TabBar, dialog_chooser, zones  # noqa: F401
 from tools.builder.gui_style import PAD, apply, muted
-from tools.builder.gui_update import UpdatePanel
+from tools.builder.gui_details import DetailsPanel
 from tools.builder.session import (BackgroundChanged, BuildStarted, CancelStuck, CheckResultReady, ChecksDone,
                                    ChecksInvalidated, Finished, GpuProbed, Heartbeat, LogLine, ModsApplied,
                                    ModsStateReady, PathsIncomplete, PathsSaved, PlayDone, ProcessError,
-                                   SettingsLoaded, SettingsNotSaved, StageChanged, StartStateReady,
-                                   UpdateApplied, UpdateStatusReady)
+                                   SettingsLoaded, SettingsNotSaved, StageChanged, StartStateReady)
 from tools.builder.strings import text
 
 PUMP_MS = 200
@@ -68,8 +67,8 @@ class GuiView:
         tk.Label(form, text=text('gui.title'), font=self.fonts['title']).pack(anchor='w', padx=PAD, pady=(22, 6))
         top = tk.Frame(form)
         top.pack(fill='x', padx=PAD)
-        self.updates = UpdatePanel(top, controller, self.fonts)  # S4.1: discreet, at the top
-        self.updates.frame.pack(fill='x')
+        self.details = DetailsPanel(top, controller, self.fonts)  # discreet, at the top
+        self.details.frame.pack(fill='x')
         self.tabs = TabBar(form, self.fonts['section'], self._tab)
         self.tabs.frame.pack(fill='x', padx=PAD, pady=(14, 0))
         self.footer = tk.Frame(form)                            # S4.4b, B1: packed before the body, so it always fits
@@ -92,7 +91,7 @@ class GuiView:
                                   self._checking, self.fonts, home=self.home, choose=choose, now=time.time)
         self.build = BuildPanel(self.body, self.footer, controller, monotonic, self._show_log)
         self.done = DonePanel(self.body, self.footer, controller, opener, copy, self.new_build)
-        self.background = BackgroundPanel(root, controller, choose, self.updates.details, self.fonts)   # S4.3
+        self.background = BackgroundPanel(root, controller, choose, self.details.details, self.fonts)   # S4.3
         self.background.frame.pack(fill='x')
         self.background.canvas.grid(row=0, column=picture_column, sticky='nsew')
         self._panels = (self.files, self.checks)
@@ -100,7 +99,6 @@ class GuiView:
         self._show_problems()
         root.protocol('WM_DELETE_WINDOW', self.close)
         controller.load_settings()
-        self.updates.check()                                    # the window looks for updates on its own
         self._schedule()
 
     @property
@@ -210,8 +208,7 @@ class GuiView:
 
     def on_event(self, event):
         where = event.where if isinstance(event, ProcessError) else None
-        for panel, kinds, wheres in ((self.updates, (UpdateStatusReady, UpdateApplied), ('update',)),
-                                     (self.background, (BackgroundChanged,), ('background',)),
+        for panel, kinds, wheres in ((self.background, (BackgroundChanged,), ('background',)),
                                      (self.settings, SETTINGS_EVENTS, ('settings', 'play')),
                                      (self.mods, MODS_EVENTS, ('mods',)),
                                      (self.controls, self.controls.EVENTS, ('controls',)),
@@ -250,13 +247,11 @@ class GuiView:
         """R5: what is enabled follows the controller: nothing while it is busy (preparing, running or saving)."""
         idle = self.controller.idle
         self.files.set_busy(not idle)
-        self.updates.set_idle(idle)
         self.background.refresh()
         for tab in (self.settings, self.mods, self.controls, self.storage, self.saves):
             tab.refresh(idle)
         self._show_problems()
-        can_build = not self.updates.restart_needed             # S4.1: the old code is loaded until reopened
-        self.checks.set_enabled(self.controller.selection()[0] is not None and can_build, idle and can_build)
+        self.checks.set_enabled(self.controller.selection()[0] is not None, idle)
         self.done.set_idle(idle)
         if self._building:
             self.build.refresh()

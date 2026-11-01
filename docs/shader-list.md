@@ -22,6 +22,7 @@ The list holds identifiers only, never game data. Each build makes the shaders f
 | Row | Fields | Meaning |
 |---|---|---|
 | `V` | shader key, deps | A shader and the bind state it was translated for. |
+| `A` | suffix, answers | A bind state warm rows name: a variant is `<shader key>-<suffix>_b`, the suffix the first 12 hex digits of the SHA-256 of the answers it was translated for. The list keeps one for every bind state its warm rows name but the default one, also after `prune` drops the `V` row that brought it. |
 | `L` | shader key, source, control offset, code offset, length | Where a shader that is not a BNSH file sits in the player's game files. |
 | `S` | `<variant>_b`, stage, flags | A shader library the warm-up loads. |
 | `C` | `<variant>_b`, flags | A compute pipeline the warm-up builds. |
@@ -51,8 +52,17 @@ shader and deps can carry different names on different machines.
 `V` rows are sorted. Warm rows keep the order they were recorded in. Keys of every game version may be present; a
 build uses only those found in the selected game files.
 
-The build exports the warm rows to `build/pso_title.tsv` (rows marked `t`) and `build/pso_manifest.tsv` (rows marked
-`m`), which the runtime reads. Edit the list, never those files.
+Packaging writes the app's `build/pso_title.tsv` (rows marked `t`) and `build/pso_manifest.tsv` (the other rows marked
+`m`), which the runtime reads, with `shader_list.py resolve <seed> <list> <pso_manifest.tsv> <pso_title.tsv>`: only
+rows of the selected game version's shaders (its seed's `shader-keys.json`), each variant named as that seed serves its
+bind state (the seed's `.variants` index, picked as the runtime picks one), and no row the seed cannot build. Edit the
+list, never those files. Merging refuses a warm row naming a bind state that neither the list nor the merged file
+keeps (the game writes the `V` row behind every name in a pipeline row it contributes, `totk_shader_rt.m
+totk_rt_portable_variant`). Until 2026-10-30 the list had no `A` rows: the 4,561 Tears of the Kingdom rows naming bind
+states nothing recorded (none of them could be built: 45,673 of 73,336 exported rows failed the Mac pipeline archive's
+fill, mostly other versions' shaders and names from before vertex input and colour output types stopped making
+variants) were dropped once, and the bind states of the rest recovered from the list's history and the translation
+caches on the maintainer's Mac.
 
 ## Warm-up scope
 

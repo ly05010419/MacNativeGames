@@ -1,3 +1,15 @@
+diff --git a/dm/games/settings.tsv b/dm/games/settings.tsv
+index 688d5d0..22c61de 100644
+--- a/dm/games/settings.tsv
++++ b/dm/games/settings.tsv
+@@ -23,6 +23,7 @@ DM_LANG	choice	languages	build:DM_LANG	languages>1	Game	Game language		level=bas
+ DM_FULLSCREEN	choice	0=Window,1=Fullscreen	0	platform:mac	Game	Display mode		level=basic
+ DM_SHOW_FPS	toggle	-	build:DM_SHOW_FPS	platform:ios	Game	Frame-rate counter
+ DM_TOUCH_HAPTICS	toggle	-	1	platform:ios	Controls	Touch feedback
++DM_KBD_PLAYER	choice	shared=Plays with player 1,own=Own player (controllers from player 2)	shared	platform:mac	Controls	Keyboard		level=basic
+ DM_RUMBLE	toggle	-	1	always	Controls	Game rumble		level=basic
+ DM_RUMBLE_GAIN	range	0:3:0.1	1.0	always	Controls	Rumble strength		needs=DM_RUMBLE=1
+ DM_RUMBLE_MIN	range	0:0.9:0.05	0	always	Controls	Rumble cutoff
 diff --git a/dm/gfx/nvn/dmsh_chain.h b/dm/gfx/nvn/dmsh_chain.h
 index 8552c74..7256eff 100644
 --- a/dm/gfx/nvn/dmsh_chain.h
@@ -86,68 +98,431 @@ index f3561a3..5d7c73f 100644
          open(LOCK, 'w').write('# Translation chain tool fingerprints (written by dmsh_chain.py --update-lock; regenerate after changing tools and commit it)\n' + ''.join(f'{k}\t{v}\n' for k, v in t.items()))
          print('wrote', LOCK)
      elif a == ['--check-tools']:
-diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
-index 148fdb3..832ed36 100644
---- a/dm/host/hle_hid.c
-+++ b/dm/host/hle_hid.c
-@@ -298,6 +298,12 @@ HLE_FORCE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKj", "Joy-Con single assi
- HLE_FORCE("_ZN2nn3hid18SwapNpadAssignmentERKjS2_", "swap controller ids; ignored by the host", void, h_hid_Swap, const uint32_t *a, const uint32_t *b) { (void)a; (void)b; }
- HLE_FORCE("_ZN2nn3hid21StartLrAssignmentModeEv", "L/R assignment mode; ignored by the host", void, h_hid_LrStart, void) {}
- HLE_FORCE("_ZN2nn3hid20StopLrAssignmentModeEv", "L/R assignment mode; ignored by the host", void, h_hid_LrStop, void) {}
-+// Focus round trip (MacNativeGames games/mk8d): on the Switch the applet takes the foreground, so the game is out of focus while it runs and gets focus message 15
-+// when it closes. Mario Kart 8 Deluxe 4.0.1 stops its scene for the controller applet (Minus on the character screen, main+0x861e3c) and starts it again only on
-+// that message in focus 1 (main+0x8da0a8, then main+0x86b0bc): without one the screen stayed still and took no input. The host's applet closes at once, so the
-+// game goes out of focus and back as it would around the real one (only from focus 1: a window already out of focus gets its own message when it comes back)
-+int dm_focus_now(void);
-+static void applet_focus_round_trip(void) { if (dm_focus_now() == 1) { dm_focus_set(2); dm_focus_set(1); } }
- // Controller applet (system UI): report the connected players right away, with player 1's controller selected. ControllerSupportResultInfo = { int playerCount; uint32_t selectedId; };
- // ControllerSupportArg starts with { int8 playerCountMin, playerCountMax }: the count is capped at the maximum (a min the connected players do not reach is not waited for, as before)
- HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "controller applet; the host reports the connected players right away",
-@@ -305,6 +311,7 @@ HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoE
-     int count = 0; for (int p = 0; p < DM_PLAYERS; p++) count += reported(p);
-     if (arg && arg[1] > 0 && count > arg[1]) count = arg[1];
-     if (info) { info[0] = count; info[1] = (int32_t)connected_id(); }
-+    applet_focus_round_trip();
+diff --git a/dm/host/hle.h b/dm/host/hle.h
+index c376424..0489611 100644
+--- a/dm/host/hle.h
++++ b/dm/host/hle.h
+@@ -52,6 +52,13 @@ int dm_opmode(void);
+ void dm_set_opmode(int m);          // On change, push notification 30 / 31 according to the switches the game has turned on
+ // Focus (1 foreground / 2 focus lost / 3 background): called by the front end on lifecycle changes; a change pushes notification 15
+ void dm_focus_set(int st);
++// Library applet stand-ins (controller, keyboard, error, Mii, account, shop): on Horizon the applet takes the application's focus until it closes, and the Show call returns after
++// that. DM_APPLET("name"); first in the stand-in's body holds the game out of focus until the body returns, notifying 15 on the way in and out (hle_oe.c). Not for stand-ins that
++// report the applet could not start (RES_FAIL cuts): those never had an applet open
++void dm_applet_enter(const char *name);
++void dm_applet_leave(void);
++static inline void dm_applet_leave_(const char *const *name) { (void)name; dm_applet_leave(); }
++#define DM_APPLET(name) const char *const dm_applet_ __attribute__((cleanup(dm_applet_leave_))) = (name); dm_applet_enter(dm_applet_)
+ // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
+ extern uint8_t *dm_fps_state;   // frame step state page (loader.c install_fps_state): +0 float target fps, +4 movie flag, +0x10 float render scale, +0x18 double game seconds stepped; NULL when the build has none
+ void dm_audio_suspend(int on);
+diff --git a/dm/host/hle_account.c b/dm/host/hle_account.c
+index 18aac01..0a4197d 100644
+--- a/dm/host/hle_account.c
++++ b/dm/host/hle_account.c
+@@ -21,7 +21,7 @@ HLE_FORCE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", "list of all users; alwa
+     if (max > 0) { out[0] = k_uid; *n = 1; }
      return RES_OK;
  }
+-HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "user selection applet; the host picks the local user directly", Result, h_acc_ShowSel, Uid *out, const void *settings) {
++HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "user selection applet; the host picks the local user directly", Result, h_acc_ShowSel, Uid *out, const void *settings) { DM_APPLET("user selector");
+     (void)settings; *out = k_uid; return RES_OK;
+ }
+ // Take the users the system opened on the application's behalf (Mario 1.2.1 asks this first and falls back to TryOpenPreselectedUser on 0; the game only reads the count, not the return value):
+@@ -96,7 +96,7 @@ HLE_FORCE("_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi", "list of qualified
+ HLE_FORCE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", "whether a user exists; true for the local user", Result, h_acc_Exists, uint8_t *out, const Uid *uid) {
+     *out = uid->v[0] == k_uid.v[0] && uid->v[1] == k_uid.v[1]; return RES_OK;
+ }
+-HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "user creation applet; the host already has its local user", Result, h_acc_ShowCreator, void) { return RES_OK; }
++HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "user creation applet; the host already has its local user", Result, h_acc_ShowCreator, void) { DM_APPLET("user creator"); return RES_OK; }
+ HLE_FORCE("_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE", "user profile image; the host has none (fails)", Result, h_acc_LoadImage, uint64_t *n, void *buf, uint64_t sz, const Uid *uid) {
+     (void)buf; (void)sz; (void)uid; if (n) *n = 0; return RES_FAIL;
+ }
+diff --git a/dm/host/hle_hid.c b/dm/host/hle_hid.c
+index 148fdb3..461b994 100644
+--- a/dm/host/hle_hid.c
++++ b/dm/host/hle_hid.c
+@@ -299,13 +299,23 @@ HLE_FORCE("_ZN2nn3hid18SwapNpadAssignmentERKjS2_", "swap controller ids; ignored
+ HLE_FORCE("_ZN2nn3hid21StartLrAssignmentModeEv", "L/R assignment mode; ignored by the host", void, h_hid_LrStart, void) {}
+ HLE_FORCE("_ZN2nn3hid20StopLrAssignmentModeEv", "L/R assignment mode; ignored by the host", void, h_hid_LrStop, void) {}
+ // Controller applet (system UI): report the connected players right away, with player 1's controller selected. ControllerSupportResultInfo = { int playerCount; uint32_t selectedId; };
+-// ControllerSupportArg starts with { int8 playerCountMin, playerCountMax }: the count is capped at the maximum (a min the connected players do not reach is not waited for, as before)
+-HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "controller applet; the host reports the connected players right away",
+-          Result, h_hid_ShowCtrl, int32_t *info, const int8_t *arg) {
++// ControllerSupportArg starts with { int8 playerCountMin, playerCountMax }: the count is capped at the maximum. Fewer players than the minimum: on a Switch the applet stays open
++// until enough controllers connect or the player closes it, and the SDK's ShowControllerSupportCore (Mario Kart 8 Deluxe 4.0.0 sdk+0x24eeb0) turns the applet's result into
++// 0 success, 2 → 2202-3102, anything else → ResultControllerSupportCanceled (2202-3101). The host has nothing to wait for, so it answers as the player closing it. An OK with
++// fewer players is an answer a Switch never gives: Mario Kart 8 Deluxe asks for two in 2P and opened the applet again every few frames on it (GitHub issue #550)
++#define RES_CTRL_CANCELED (202u | 3101u << 9)
++static Result ctrl_support(int32_t *info, const int8_t *arg) {
+     int count = 0; for (int p = 0; p < DM_PLAYERS; p++) count += reported(p);
++    int canceled = arg && arg[0] > count;
++    if (arg) LOG("hid controller applet: %d to %d players wanted, %d connected%s", arg[0], arg[1], count, canceled ? ": too few, closed as the player would (canceled)" : "");
+     if (arg && arg[1] > 0 && count > arg[1]) count = arg[1];
+     if (info) { info[0] = count; info[1] = (int32_t)connected_id(); }
+-    return RES_OK;
++    return canceled ? RES_CTRL_CANCELED : RES_OK;
++}
++HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "controller applet; the host reports the connected players right away (canceled with fewer than the minimum)",
++          Result, h_hid_ShowCtrl, int32_t *info, const int8_t *arg) {
++    DM_APPLET("controller support");
++    return ctrl_support(info, arg);
+ }
  // Six-axis sensor (accelerometer + gyroscope) of the connected controller. SixAxisSensorState (0x60): acceleration in G, angular velocity in revolutions / s, angle in revolutions,
-@@ -551,7 +558,7 @@ HLE_FORCE("_ZN2nn3hid19GetPlayerLedPatternERKj", "player LED: the Switch's patte
+ // direction = the controller's three axes. At rest it lies flat: gravity (0, 0, -1), no rotation, the identity direction. While shaking (DM_BTN_SHAKE: the iPhone shaken, DmGamepad.m;
+@@ -551,9 +561,9 @@ HLE_FORCE("_ZN2nn3hid19GetPlayerLedPatternERKj", "player LED: the Switch's patte
  static void ctrl_color(uint32_t *c) { c[0] = 0xff828282u; c[1] = 0xff0f0f0fu; }
  HLE_FORCE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorERKj", "controller color", Result, h_hid_Color, uint32_t *c, const uint32_t *id) { (void)id; ctrl_color(c); return RES_OK; }
  HLE_FORCE("_ZN2nn3hid22GetNpadControllerColorEPNS0_19NpadControllerColorES2_RKj", "left and right Joy-Con colors", Result, h_hid_Color2, uint32_t *l, uint32_t *r, const uint32_t *id) { (void)id; ctrl_color(l); ctrl_color(r); return RES_OK; }
 -HLE_FORCE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", "controller applet (no result wanted); the host reports a selection right away", Result, h_hid_ShowCtrl0, const void *arg) { (void)arg; return RES_OK; }
-+HLE_FORCE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", "controller applet (no result wanted); the host reports a selection right away", Result, h_hid_ShowCtrl0, const void *arg) { (void)arg; applet_focus_round_trip(); return RES_OK; }
- HLE_FORCE("_ZN2nn3hid24ShowControllerStrapGuideEv", "strap guide applet; not shown by the host", Result, h_hid_Strap, void) { return RES_OK; }
- HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUpdateArgE", "controller firmware update applet; not shown by the host", Result, h_hid_FwUpd, const void *arg) { (void)arg; return RES_OK; }
+-HLE_FORCE("_ZN2nn3hid24ShowControllerStrapGuideEv", "strap guide applet; not shown by the host", Result, h_hid_Strap, void) { return RES_OK; }
+-HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUpdateArgE", "controller firmware update applet; not shown by the host", Result, h_hid_FwUpd, const void *arg) { (void)arg; return RES_OK; }
++HLE_FORCE("_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE", "controller applet (no result wanted); the host answers as the overload above", Result, h_hid_ShowCtrl0, const int8_t *arg) { DM_APPLET("controller support"); return ctrl_support(NULL, arg); }
++HLE_FORCE("_ZN2nn3hid24ShowControllerStrapGuideEv", "strap guide applet; not shown by the host", Result, h_hid_Strap, void) { DM_APPLET("controller strap guide"); return RES_OK; }
++HLE_FORCE("_ZN2nn3hid28ShowControllerFirmwareUpdateERKNS0_27ControllerFirmwareUpdateArgE", "controller firmware update applet; not shown by the host", Result, h_hid_FwUpd, const void *arg) { DM_APPLET("controller firmware update"); (void)arg; return RES_OK; }
+ 
+ // Touch screen: TouchScreenState<N> = { int64 sampling number; int32 count; int32 reserved; TouchState[N] }, filled from the front end's touch points (hle_touch.c touch_fill_n:
+ // the Mac's mouse, the iPhone touches no gamepad control takes, DM_KEYS taps) in handheld mode, as on the Switch, whose screen is out of reach when docked: a game may read touches
+diff --git a/dm/host/hle_mii.c b/dm/host/hle_mii.c
+index ac56353..d2148a0 100644
+--- a/dm/host/hle_mii.c
++++ b/dm/host/hle_mii.c
+@@ -152,5 +152,5 @@ int dm_mii_standin(const char *dir) {   // written once per process (the query a
+ }
+ 
+ // The Mii editor (MiiEdit library applet): the player closed it without adding a Mii
+-HLE_FORCE("_ZN2nn3mii9AppendMiiEPi", "MiiEdit applet; cancelled", Result, h_mii_Append, int *index) { (void)index; LOG("mii: AppendMii (the host has no Mii editor: cancelled)"); return MII_RES_CANCELED; }
+-HLE_FORCE("_ZN2nn3mii11ShowMiiEditEv", "MiiEdit applet; closed at once", Result, h_mii_Edit, void) { LOG("mii: ShowMiiEdit (the host has no Mii editor)"); return RES_OK; }
++HLE_FORCE("_ZN2nn3mii9AppendMiiEPi", "MiiEdit applet; cancelled", Result, h_mii_Append, int *index) { DM_APPLET("Mii editor"); (void)index; LOG("mii: AppendMii (the host has no Mii editor: cancelled)"); return MII_RES_CANCELED; }
++HLE_FORCE("_ZN2nn3mii11ShowMiiEditEv", "MiiEdit applet; closed at once", Result, h_mii_Edit, void) { DM_APPLET("Mii editor"); LOG("mii: ShowMiiEdit (the host has no Mii editor)"); return RES_OK; }
+diff --git a/dm/host/hle_misc.c b/dm/host/hle_misc.c
+index 291efc0..0309298 100644
+--- a/dm/host/hle_misc.c
++++ b/dm/host/hle_misc.c
+@@ -42,40 +42,40 @@ HLE_FORCE_BIG("_ZN2nn3aoc16ListAddOnContentEPiii", "add-on content list: the own
+ }
+ // The event object is created on demand by the nn::os side table (not signaled), the game waiting on it only times out / gets not-signaled
+ HLE_FORCE("_ZN2nn3aoc31GetAddOnContentListChangedEventEPNS_2os11SystemEventE", "add-on content change event, out of scope; bound to a kernel event, never signalled (the game polls it with TryWait and aborts if it is uninitialized)", void, h_aoc_GetEv, void *ev) { hle_bind_system_event(ev, 0); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ShowShop, void) { LOG("ec::ShowShopAddOnContentList (cut)"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ShowShop, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut)"); }
+ // The other shop entry points (Engage's title menu item "DLC" calls ShowShopAddOnContentList(ApplicationId, UserHandle)): the original starts the shop applet through applet::CreateLibraryApplet,
+ // the host has no applet proxy (oe initialization is a no-op), and the SDK reads through the null proxy and crashes (sdk+0x38660). All return void: as if the player closed the shop at once, the game goes back to its menu.
+-HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList1, void) { LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList2, void) { LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList3, void) { LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo1, void) { LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo2, void) { LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub1, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub2, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS0_8CourseIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub3, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS0_8CourseIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub4, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList1, void) { LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList2, void) { LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailENS_13ApplicationIdERKNS0_12ConsumableIdENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet1, void) { LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailENS_13ApplicationIdERKNS0_12ConsumableIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet2, void) { LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec22ShowShopEnterCodeSceneEv", "shop applet, out of scope; cut: no-op", void, h_ec_Code1, void) { LOG("ec::ShowShopEnterCodeScene (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec22ShowShopEnterCodeSceneERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Code2, void) { LOG("ec::ShowShopEnterCodeScene (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_Prod1, void) { LOG("ec::ShowShopProductDetails (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Prod2, void) { LOG("ec::ShowShopProductDetails (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec19ShowShopProductListEPKNS0_5NsUidEiPKc", "shop applet, out of scope; cut: no-op", void, h_ec_ProdList1, void) { LOG("ec::ShowShopProductList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec19ShowShopProductListEPKNS0_5NsUidEiPKcRKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ProdList2, void) { LOG("ec::ShowShopProductList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList1, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList2, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList3, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo1, void) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo2, void) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub1, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub2, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS0_8CourseIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub3, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListENS_13ApplicationIdERKNS0_8CourseIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub4, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList1, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListENS_13ApplicationIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList2, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailENS_13ApplicationIdERKNS0_12ConsumableIdENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet1, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailENS_13ApplicationIdERKNS0_12ConsumableIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet2, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec22ShowShopEnterCodeSceneEv", "shop applet, out of scope; cut: no-op", void, h_ec_Code1, void) { DM_APPLET("shop"); LOG("ec::ShowShopEnterCodeScene (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec22ShowShopEnterCodeSceneERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Code2, void) { DM_APPLET("shop"); LOG("ec::ShowShopEnterCodeScene (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_Prod1, void) { DM_APPLET("shop"); LOG("ec::ShowShopProductDetails (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec22ShowShopProductDetailsENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Prod2, void) { DM_APPLET("shop"); LOG("ec::ShowShopProductDetails (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec19ShowShopProductListEPKNS0_5NsUidEiPKc", "shop applet, out of scope; cut: no-op", void, h_ec_ProdList1, void) { DM_APPLET("shop"); LOG("ec::ShowShopProductList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec19ShowShopProductListEPKNS0_5NsUidEiPKcRKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ProdList2, void) { DM_APPLET("shop"); LOG("ec::ShowShopProductList (cut): the host has no shop"); }
+ // The overloads without an ApplicationId (the calling application's own pages; The Great Ace Attorney Chronicles, SDK 10, imports these beside the ones above)
+-HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationEv", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo3, void) { LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo4, void) { LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListEv", "shop applet, out of scope; cut: no-op", void, h_ec_Sub5, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub6, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS0_8CourseIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub7, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS0_8CourseIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub8, void) { LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList3, void) { LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList4, void) { LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailERKNS0_12ConsumableIdENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet3, void) { LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailERKNS0_12ConsumableIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet4, void) { LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
+-HLE_FORCE("_ZN2nn2ec27ShowShopSubscriptionDetailsERKNS0_8CourseIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_SubDet, void) { LOG("ec::ShowShopSubscriptionDetails (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationEv", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo3, void) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec30ShowShopApplicationInformationERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_AppInfo4, void) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformation (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListEv", "shop applet, out of scope; cut: no-op", void, h_ec_Sub5, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub6, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS0_8CourseIdE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub7, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec24ShowShopSubscriptionListERKNS0_8CourseIdERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_Sub8, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList3, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec26ShowShopConsumableItemListERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsList4, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemList (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailERKNS0_12ConsumableIdENS0_5NsUidE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet3, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec28ShowShopConsumableItemDetailERKNS0_12ConsumableIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_ConsDet4, void) { DM_APPLET("shop"); LOG("ec::ShowShopConsumableItemDetail (cut): the host has no shop"); }
++HLE_FORCE("_ZN2nn2ec27ShowShopSubscriptionDetailsERKNS0_8CourseIdENS0_5NsUidERKNS_7account10UserHandleE", "shop applet, out of scope; cut: no-op", void, h_ec_SubDet, void) { DM_APPLET("shop"); LOG("ec::ShowShopSubscriptionDetails (cut): the host has no shop"); }
+ // The shop service accessor (Unreal's online subsystem, DRAGON QUEST XI S: FOnlineSubsystemSwitch::Init calls InitializeForShopServiceAccessors, whose SDK version connects to the ec service:
+ // an abort in sm::Initialize at the start of nnMain). The library init succeeds with nothing to set up; an accessor never initializes, so no request is ever sent. The accessor and its async
+ // response are stubbed whole: the SDK's destructor calls Finalize and aborts unless it succeeds. A response is complete at once and holds nothing
+@@ -97,10 +97,10 @@ HLE_FORCE("_ZN2nn2ec31FinalizeForShopServiceAccessorsEv", "shop service accessor
+ HLE_FORCE("_ZN2nn2ec19ShopServiceAccessor13AsyncResponse6CancelEv", "shop async response: nothing to cancel (cut)", void, h_ec_ArCancel, void *self) { (void)self; }
+ HLE_FORCE("_ZNK2nn2ec19ShopServiceAccessor13AsyncResponse12GetErrorCodeEv", "shop async response: no error code (cut)", uint64_t, h_ec_ArErr, const void *self) { (void)self; return 0; }
+ // The "add-on content lost" error screen is an applet too: logged only
+-HLE_FORCE("_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", "add-on content lost error applet; the host only logs it", void, h_aoc_LostErr, const int *idx, int n) { (void)idx; LOG("aoc::ShowAddOnContentLostError (%d entries) (cut)", n); }
++HLE_FORCE("_ZN2nn3aoc25ShowAddOnContentLostErrorEPKii", "add-on content lost error applet; the host only logs it", void, h_aoc_LostErr, const int *idx, int n) { DM_APPLET("error"); (void)idx; LOG("aoc::ShowAddOnContentLostError (%d entries) (cut)", n); }
+ 
+ // ---------- err error applet: printed by the host ----------
+-HLE_FORCE("_ZN2nn3err9ShowErrorENS_6ResultE", "error display applet; the host prints the module / description number", void, h_err_ShowError, Result r) {
++HLE_FORCE("_ZN2nn3err9ShowErrorENS_6ResultE", "error display applet; the host prints the module / description number", void, h_err_ShowError, Result r) { DM_APPLET("error");
+     LOG("err::ShowError Result=%#x (module %u, description %u)", r, r & 0x1ff, (r >> 9) & 0x1fff);
+ }
+ 
+diff --git a/dm/host/hle_oe.c b/dm/host/hle_oe.c
+index d6eb5b2..71a90bc 100644
+--- a/dm/host/hle_oe.c
++++ b/dm/host/hle_oe.c
+@@ -56,21 +56,38 @@ void dm_set_opmode(int m) {   // called by the front end (overheat downgrade etc
+     if (g_ntf_perfmode) mq_push(MSG_PERFMODE);
+ }
+ // FocusState: 1 InFocus, 2 OutOfFocus, 3 Background. The front end calls dm_focus_set (iOS lifecycle / Mac window losing focus)
+-static _Atomic int g_focus = 1; static _Atomic uint64_t g_focus_in_ns;   // time of the most recent entry into InFocus
++static _Atomic int g_focus = 1; static _Atomic uint64_t g_focus_in_ns;   // the front end's state; time of its most recent entry into InFocus
+ // Focus handling mode the game set (-1: none). The SDK's oe::SetFocusHandlingMode (SDK 18 sdk+0x3c5770) turns it into am's SetFocusHandlingMode(notify, ?, suspend) and
+ // SetOutOfFocusSuspendingEnabled: 0 → (0, 0, 1), 1 → (1, 1, 0), 2 → (1, 0, 1), 3 → (0, 0, 1) + out-of-focus suspending. Only 1 and 2 ask for focus notifications; under 0 and 3
+ // the system suspends the game out of focus and it never sees message 15 (the host's suspend is the guest clock freeze and the graphics gate). Super Mario Galaxy 2 sets 3, and
+ // its Wii layer's pause on focus 2 (main+0x663ba0) never finished: the main loop waits for the GX thread to pause (main+0x5ce870), which waits for work the paused CPU never sends
+ static _Atomic int g_focus_mode = -1;
+ static int focus_notifies(void) { int m = atomic_load(&g_focus_mode); return m != 0 && m != 3; }   // no mode set: notify, as before
+-int dm_focus_now(void) { return atomic_load(&g_focus); }
++// Library applets the game has open (dm_applet_enter / dm_applet_leave, DM_APPLET in hle.h). On Horizon an applet the application starts takes its focus: am sends message 15
++// with OutOfFocus when it opens (libnx: AppletFocusState_OutOfFocus, "LibraryApplet open") and 15 with InFocus when it closes, and the application's Show call returns once it
++// has closed. The host's stand-ins answer on the caller's thread, so the game sees that pair around the call. Mario Kart 8 Deluxe applies the controller applet's answer only
++// after the InFocus notification (its notification thread main+0x8ea560 sets the flag main+0x87b5d0 takes each frame); with none its 2P character select never took input
++// (GitHub issue #550). The game sees the front end's state, or 2 while an applet is open over an application in focus; a change of what it sees is one notification 15
++static int g_applets; static _Atomic int g_seen = 1; static pthread_mutex_t g_seen_lock = PTHREAD_MUTEX_INITIALIZER;
++static void focus_sync(int applets) {   // applets: +1 an applet opens, -1 one closes, 0 the front end's state changed
++    pthread_mutex_lock(&g_seen_lock);
++    g_applets += applets;
++    if (g_applets < 0) die("dm_applet_leave without dm_applet_enter");
++    int w = atomic_load(&g_focus), s = w == 1 && g_applets ? 2 : w, changed = atomic_exchange(&g_seen, s) != s;
++    pthread_mutex_unlock(&g_seen_lock);
++    if (!changed) return;   // pushed outside the lock: 15 only says "query the state again", so pushes from two threads need no order
++    LOG("oe focus state → %d%s", s, applets > 0 ? " (library applet open)" : applets < 0 ? " (library applet closed)" : "");
++    if (focus_notifies()) mq_push(MSG_FOCUS);
++}
++void dm_applet_enter(const char *name) { LOG("oe library applet: %s", name); focus_sync(1); }
++void dm_applet_leave(void) { focus_sync(-1); }
++int dm_focus_now(void) { return atomic_load(&g_focus); }   // the front end's state, not an applet's: the display link follows the window
+ uint64_t dm_focus_in_since(void) { return atomic_load(&g_focus_in_ns); }   // graphics layer display link watchdog: stalls are only computed while active, counted from activation (nvn_mtl.m mtl_present_wait)
+ void dm_focus_set(int st) {
+     if (st < 1 || st > 3) die("dm_focus_set: invalid state %d", st);
+     if (st == 1) atomic_store(&g_focus_in_ns, now_ns());
+     if (atomic_exchange(&g_focus, st) == st) return;
+-    LOG("oe focus state → %d", st);
+-    if (focus_notifies()) mq_push(MSG_FOCUS);
++    focus_sync(0);
+ }
+ static int opmode(void) { return dm_opmode(); }
+ 
+@@ -182,7 +199,7 @@ static void oe_script_start(void) {
+ }
+ static pthread_once_t g_oe_once = PTHREAD_ONCE_INIT;
+ 
+-HLE_FORCE("_ZN2nn2oe20GetCurrentFocusStateEv", "foreground / background state; driven by the front end's dm_focus_set", int, h_oe_GetFocus, void) { return g_focus; }
++HLE_FORCE("_ZN2nn2oe20GetCurrentFocusStateEv", "foreground / background state; the front end's dm_focus_set, out of focus while a library applet is open", int, h_oe_GetFocus, void) { return atomic_load(&g_seen); }
+ HLE_FORCE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", "focus handling mode; 1 and 2 get focus notifications, 0 and 3 none (see g_focus_mode)", void, h_oe_SetFocusMode, int m) {
+     atomic_store(&g_focus_mode, m); LOG("oe::SetFocusHandlingMode %d (%s)", m, focus_notifies() ? "focus notifications" : "suspended out of focus, no focus notifications");
+ }
+@@ -201,6 +218,7 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "system notification queue;
+ // The blocking form (Link's Awakening pops on a thread of its own, main+0xfa1ff8): the SDK's version waits on the system event oe::Initialize would have created,
+ // and the host's oe::Initialize is a no-op, so it aborted on an uninitialized event. Wait for the host queue instead, then take the message the Try path's way
+ HLE_FORCE("_ZN2nn2oe22PopNotificationMessageEv", "system notification queue (blocking); waits on the host queue", uint32_t, h_oe_PopMsg, void) {
++    pthread_once(&g_oe_once, oe_script_start);   // DM_OE_SCRIPT also for games that only pop this way (Mario Kart 8 Deluxe): the wait below reaches the Try path only once a notification is queued
+     uint32_t m = 0;
+     for (;;) {
+         pthread_mutex_lock(&g_mq_lock);
+diff --git a/dm/host/hle_offline.c b/dm/host/hle_offline.c
+index f1101ad..3270ea1 100644
+--- a/dm/host/hle_offline.c
++++ b/dm/host/hle_offline.c
+@@ -138,14 +138,14 @@ HLE_FORCE("_ZN2nn3ngc15ProfanityFilter19CheckProfanityWordsEPjjPPKDsm", "profani
+ }
+ 
+ // ---------- err: error display applet. Only logged, no UI is shown ----------
+-HLE_FORCE("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", "error display applet; the host only logs it", void, h_err_ShowCode, uint64_t code) { LOG("game asks to show an error: %04u-%04u", (unsigned)(code & 0xffffffff), (unsigned)(code >> 32)); }
+-HLE_FORCE("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; the host only logs it", void, h_err_ShowVar, const void *v) { (void)v; LOG("game asks to show an error (ErrorResultVariant)"); }
+-HLE_FORCE("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch error applet; the host only logs it", void, h_err_AocVer, void) { LOG("game asks to show an error: add-on content version mismatch"); }
+-HLE_FORCE("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version mismatch error applet; the host only logs it", void, h_err_AppVer, void) { LOG("game asks to show an error: game version mismatch"); }
++HLE_FORCE("_ZN2nn3err9ShowErrorENS0_9ErrorCodeE", "error display applet; the host only logs it", void, h_err_ShowCode, uint64_t code) { DM_APPLET("error"); LOG("game asks to show an error: %04u-%04u", (unsigned)(code & 0xffffffff), (unsigned)(code >> 32)); }
++HLE_FORCE("_ZN2nn3err9ShowErrorERKNS0_18ErrorResultVariantE", "error display applet; the host only logs it", void, h_err_ShowVar, const void *v) { DM_APPLET("error"); (void)v; LOG("game asks to show an error (ErrorResultVariant)"); }
++HLE_FORCE("_ZN2nn3err40ShowUnacceptableAddOnContentVersionErrorEv", "add-on content version mismatch error applet; the host only logs it", void, h_err_AocVer, void) { DM_APPLET("error"); LOG("game asks to show an error: add-on content version mismatch"); }
++HLE_FORCE("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version mismatch error applet; the host only logs it", void, h_err_AppVer, void) { DM_APPLET("error"); LOG("game asks to show an error: game version mismatch"); }
+ // Pokémon Legends: Z-A (SDK 19): the application's own error screen (an error code number and two messages in the argument) goes through the error applet as well
+-HLE_FORCE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; the host only logs it", void, h_err_ShowApp, const void *arg) { (void)arg; LOG("game asks to show an application error (ApplicationErrorArg)"); }
++HLE_FORCE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; the host only logs it", void, h_err_ShowApp, const void *arg) { DM_APPLET("error"); (void)arg; LOG("game asks to show an application error (ApplicationErrorArg)"); }
+ // Pokémon Sword (SDK 7.3.2): the error applet's network service form, after a failed online call
+-HLE_FORCE("_ZN2nn3err23ShowNetworkServiceErrorENS0_9ErrorCodeE", "network service error applet; the host only logs it", void, h_err_ShowNet, uint64_t code) { LOG("game asks to show a network service error: %04u-%04u", (unsigned)(code & 0xffffffff), (unsigned)(code >> 32)); }
++HLE_FORCE("_ZN2nn3err23ShowNetworkServiceErrorENS0_9ErrorCodeE", "network service error applet; the host only logs it", void, h_err_ShowNet, uint64_t code) { DM_APPLET("error"); LOG("game asks to show a network service error: %04u-%04u", (unsigned)(code & 0xffffffff), (unsigned)(code >> 32)); }
+ 
+ // ---------- pdm: the system's play log ----------
+ // Pokémon Sword asks at boot how often this user has launched two other games (main+0xc88074, one ID each call, 0x18 bytes {application ID, play time, launch count} per entry; the result is
+diff --git a/dm/host/hle_sdk16.c b/dm/host/hle_sdk16.c
+index e8f8af5..25317e9 100644
+--- a/dm/host/hle_sdk16.c
++++ b/dm/host/hle_sdk16.c
+@@ -159,8 +159,8 @@ HLE_FORCE("_ZN2nn2pl9EndVrModeEv", "leave VR mode (through am)", void, h_pl_EndV
+ 
+ // ---------- ec: shop applet (the upgrade-to-Switch-2-Edition page) ----------
+ // The shop is out of scope: no-op. The game does not look at the return value (both overloads are handled as returning nothing)
+-HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionE", "shop upgrade page, out of scope; no-op", void, h_ec_ShowUpg, int ed) { LOG("ec::ShowShopApplicationInformationForUpgrade(%d) (cut)", ed); }
+-HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionERKNS_7account10UserHandleE", "shop upgrade page (given user), out of scope; no-op", void, h_ec_ShowUpgU, int ed, const void *user) { (void)user; LOG("ec::ShowShopApplicationInformationForUpgrade(%d, user) (cut)", ed); }
++HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionE", "shop upgrade page, out of scope; no-op", void, h_ec_ShowUpg, int ed) { DM_APPLET("shop"); LOG("ec::ShowShopApplicationInformationForUpgrade(%d) (cut)", ed); }
++HLE_FORCE("_ZN2nn2ec40ShowShopApplicationInformationForUpgradeENS0_14UpgradeEditionERKNS_7account10UserHandleE", "shop upgrade page (given user), out of scope; no-op", void, h_ec_ShowUpgU, int ed, const void *user) { DM_APPLET("shop"); (void)user; LOG("ec::ShowShopApplicationInformationForUpgrade(%d, user) (cut)", ed); }
+ 
+ // ---------- nfp: amiibo ----------
+ // From Mario 1.2.1 the game initializes nfp at boot (v0 did not use it). The real SDK would connect to the sm: service, which the host lacks → abort, so the whole family is taken over.
+diff --git a/dm/host/hle_swkbd.c b/dm/host/hle_swkbd.c
+index 31e86e0..24ea60b 100644
+--- a/dm/host/hle_swkbd.c
++++ b/dm/host/hle_swkbd.c
+@@ -98,6 +98,7 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
+ 
+ HLE_FORCE("_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE", "software keyboard applet → host native input box (DM_KBD gives the text directly)",
+           Result, h_swkbd_Show, void *out, const void *arg) {
++    DM_APPLET("software keyboard");
+     return swkbd_show(out, arg, front_text_input);
+ }
  
 diff --git a/dm/host/tests/t_hid.c b/dm/host/tests/t_hid.c
-index 58b9b3b..9d94d65 100644
+index 58b9b3b..df7b939 100644
 --- a/dm/host/tests/t_hid.c
 +++ b/dm/host/tests/t_hid.c
-@@ -21,6 +21,9 @@ static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock
- static int hid_usleep(useconds_t usec) { (void)usec; if (script_hold) script_hold(); return 0; }
- #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
- int dm_opmode(void) { return g_mode; }
-+static int g_focus = 1, g_focus_trail[8], g_focus_n;   // the focus states the controller applet passes through (hle_oe.c's dm_focus_set)
-+int dm_focus_now(void) { return g_focus; }
-+void dm_focus_set(int st) { g_focus = st; if (g_focus_n < 8) g_focus_trail[g_focus_n++] = st; }
- uint64_t guest_ns(void) { return 1000000000ull; }
- uint64_t now_ns(void) { return motion_now; }
- uint64_t dm_guest_frame(void) { return 0; }
-@@ -91,6 +94,13 @@ static void t_npads(void) {
+@@ -39,6 +39,9 @@ void dm_ctl_cvar_i32(uint64_t off, int32_t v) { (void)off; (void)v; }
+ void dm_ctl_cvar_f32(uint64_t off, float v) { (void)off; (void)v; }
+ void dm_gfx_texdump_next(const char *path) { (void)path; }
+ void dm_gfx_passdump_next(long n) { (void)n; }
++static int applet_depth, applet_opens, applet_closes_at_depth0;   // hle_oe.c: the applet stand-ins open and close their applet around the answer
++void dm_applet_enter(const char *name) { (void)name; applet_depth++; applet_opens++; }
++void dm_applet_leave(void) { applet_closes_at_depth0 += --applet_depth == 0; }
+ 
+ static uint64_t buttons_of(uint32_t id, uint32_t style) { NpadState s; fill(&s, id, style); return s.attributes ? s.buttons & 0xffff : 0; }
+ static int32_t lx_of(uint32_t id) { NpadState s; fill(&s, id, STYLE_FULLKEY); return s.lx; }
+@@ -89,8 +92,15 @@ static void t_npads(void) {
+     CHECK(h_hid_Led(&(uint32_t){0}) == 0x1 && h_hid_Led(&(uint32_t){1}) == 0x3 && h_hid_Led(&(uint32_t){7}) == 0x6, "player LED patterns");
+     int32_t info[2]; int8_t arg[8] = {1, 4};
      CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && info[1] == 0, "the controller applet reports two players, player 1 selected");
++    CHECK(applet_opens == 1 && applet_depth == 0 && applet_closes_at_depth0 == 1, "the controller applet opens and closes once around its answer (focus 2, then 1)");
      arg[1] = 1; h_hid_ShowCtrl(info, arg);
      CHECK(info[0] == 1, "the applet's count is capped at the game's maximum");
-+    g_focus_n = 0; h_hid_ShowCtrl(info, arg);
-+    CHECK(g_focus_n == 2 && g_focus_trail[0] == 2 && g_focus_trail[1] == 1 && g_focus == 1, "the controller applet takes the focus and gives it back, as the system's applet does");
-+    g_focus_n = 0; h_hid_ShowCtrl0(arg);
-+    CHECK(g_focus_n == 2 && g_focus == 1, "the one-argument controller applet makes the same round trip");
-+    g_focus = 2; g_focus_n = 0; h_hid_ShowCtrl(info, arg);
-+    CHECK(g_focus_n == 0 && g_focus == 2, "out of focus already: the applet leaves the focus alone");
-+    g_focus = 1;
++    arg[0] = 3; arg[1] = 4;
++    CHECK(h_hid_ShowCtrl(info, arg) == RES_CTRL_CANCELED && info[0] == 2, "fewer players than the game's minimum: canceled (2202-3101), as the player closing the applet");
++    CHECK(h_hid_ShowCtrl0(arg) == RES_CTRL_CANCELED, "the overload without a result: canceled too");
++    arg[0] = 2; CHECK(h_hid_ShowCtrl0(arg) == RES_OK, "the overload without a result: OK when the minimum is met");
++    CHECK(applet_opens == 5 && applet_depth == 0, "every answer opened and closed its applet");
++    arg[0] = 1;
      CHECK(six_connected(0x0100 | 0) && !six_connected(0x0200 | 0), "player 2 has a six-axis sensor, No3 none");
  
      // A one-player game ({No1, Handheld}): player 2's controller plays as player 1, No2 reads as not connected
+diff --git a/dm/host/tests/t_oe.c b/dm/host/tests/t_oe.c
+index 42afeb0..36b502c 100644
+--- a/dm/host/tests/t_oe.c
++++ b/dm/host/tests/t_oe.c
+@@ -18,7 +18,7 @@ void hle_signal_system_event(void *g) { (void)g; ev_sig = 1; }
+ void hle_clear_system_event(void *g) { (void)g; ev_sig = 0; }
+ static int checks, fails;
+ #define CHECK(c, s) do { checks++; int ok = !!(c); fails += !ok; printf("%s %s\n", ok ? "✓" : "✗", s); } while (0)
+-static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; g_focus_mode = -1; }
++static void reset(void) { g_mqh = g_mqn = 0; g_focus = 1; g_seen = 1; g_applets = 0; g_opmode = 1; g_ntf_opmode = g_ntf_perfmode = 0; g_focus_mode = -1; }
+ static int pop_is(uint32_t want) { uint32_t m = 999; return h_oe_TryPopMsg(&m) && m == want; }
+ static int empty(void) { uint32_t m = 999; return !h_oe_TryPopMsg(&m) && m == 999; }
+ static int child_kind;
+@@ -130,5 +130,28 @@ int main(void) {
+     CHECK(pop_is(15) && empty(), "focus mode 2: focus notification 15");
+     h_oe_SetFocusMode(1); dm_focus_set(2);
+     CHECK(pop_is(15) && empty(), "focus mode 1: focus notification 15");
++    // Library applets (DM_APPLET): on Horizon an applet the application opens takes its focus, 15 with OutOfFocus on the way in and 15 with InFocus on the way out. Mario Kart 8
++    // Deluxe applies the controller applet's answer only after that InFocus notification (GitHub issue #550). The front end's own state is kept apart from the applet's
++    reset();
++    dm_applet_enter("test"); CHECK(h_oe_GetFocus() == 2 && pop_is(15) && empty(), "applet opens over a game in focus: 15, state 2");
++    dm_applet_leave(); CHECK(h_oe_GetFocus() == 1 && pop_is(15) && empty(), "applet closes: 15, state 1");
++    dm_applet_enter("test"); dm_applet_leave();
++    CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "an applet answered at once: one 15 (not popped in between), queried as 1");
++    CHECK(dm_focus_now() == 1, "an applet leaves the front end's own state alone");
++    dm_applet_enter("test"); pop_is(15);
++    dm_focus_set(2); CHECK(empty() && h_oe_GetFocus() == 2 && dm_focus_now() == 2, "window loses focus while an applet is open: no change the game sees");
++    dm_focus_set(1); CHECK(empty() && h_oe_GetFocus() == 2, "window regains focus while an applet is open: still 2, the applet keeps focus");
++    dm_applet_leave(); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "then the applet closes: 15, state 1");
++    dm_applet_enter("test"); pop_is(15); dm_focus_set(2); dm_applet_leave();
++    CHECK(empty() && h_oe_GetFocus() == 2, "applet closes while the window is out of focus: still 2, no notification");
++    dm_focus_set(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "window regains focus after the applet closed: 15, state 1");
++    dm_applet_enter("test"); pop_is(15); dm_focus_set(3);
++    CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 3, "background while an applet is open: 15, state 3");
++    dm_focus_set(2); dm_focus_set(1); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 2, "back to the foreground with the applet still open: 15, state 2");
++    dm_applet_enter("test"); dm_applet_leave(); CHECK(empty() && h_oe_GetFocus() == 2, "a nested applet: the outer one keeps the game out of focus");
++    dm_applet_leave(); CHECK(pop_is(15) && empty() && h_oe_GetFocus() == 1, "the outer applet closes: 15, state 1");
++    h_oe_SetFocusMode(3); dm_applet_enter("test");
++    CHECK(empty() && h_oe_GetFocus() == 2, "focus mode 3: an applet changes the state without a notification");
++    dm_applet_leave(); CHECK(empty() && h_oe_GetFocus() == 1, "focus mode 3: back to 1 without a notification");
+     printf("== oe %d checks, %d failed ==\n", checks, fails); return fails != 0;
+ }
+diff --git a/dm/host/tests/t_pctl.c b/dm/host/tests/t_pctl.c
+index 9ba49d9..2d1488a 100644
+--- a/dm/host/tests/t_pctl.c
++++ b/dm/host/tests/t_pctl.c
+@@ -1,6 +1,8 @@
+ // pctl free communication offline policy (hle_misc.c, from PR #38): the hooks are looked up by their mangled names in the real swforce registrations, so a missing or misspelled
+ // takeover fails; no guest module, IPC session or system applet exists in this test
+ #include "../hle_misc.c"
++void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop and error stand-ins hold the game out of focus
++void dm_applet_leave(void) {}
+ #include <mach-o/getsect.h>
+ 
+ static int unexpected, checks, fails;
+diff --git a/dm/host/tests/t_shared_font.c b/dm/host/tests/t_shared_font.c
+index 7c85b43..8b1e0f6 100644
+--- a/dm/host/tests/t_shared_font.c
++++ b/dm/host/tests/t_shared_font.c
+@@ -1,5 +1,7 @@
+ // Shared-font ownership and LoadFont forwarding through the real forced registration; no game module or font file is needed.
+ #include "../hle_sdk16.c"
++void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop stand-ins hold the game out of focus
++void dm_applet_leave(void) {}
+ #include <mach-o/getsect.h>
+ #include <sys/wait.h>
+ #include <sys/resource.h>
+diff --git a/dm/host/tests/t_swkbd.c b/dm/host/tests/t_swkbd.c
+index 00b9d72..d10f9da 100644
+--- a/dm/host/tests/t_swkbd.c
++++ b/dm/host/tests/t_swkbd.c
+@@ -36,6 +36,8 @@ static int bytes_eq(const uint8_t *want, size_t n) {   // the first n bytes equa
+     return 1;
+ }
+ 
++void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: ShowKeyboard holds the game out of focus; swkbd_show, tested here, does not
++void dm_applet_leave(void) {}
+ void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }   // the real implementation is in hle_os.c; the unit test does not care about the clock
+ int main(void) {
+     unsetenv("DM_KBD");
+diff --git a/dm/host/tests/t_system_event.c b/dm/host/tests/t_system_event.c
+index 66c7dc2..1608c56 100644
+--- a/dm/host/tests/t_system_event.c
++++ b/dm/host/tests/t_system_event.c
+@@ -38,6 +38,8 @@ static int test_sleep(const struct timespec *ts, struct timespec *left) {
+ #undef pthread_create
+ #undef pthread_detach
+ #undef nanosleep
++void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop stand-ins hold the game out of focus
++void dm_applet_leave(void) {}
+ 
+ struct dm_flags g_flag;
+ module_t *g_mod;
 diff --git a/dm/mac/launcher.c b/dm/mac/launcher.c
 index e9f154e..68eb680 100644
 --- a/dm/mac/launcher.c

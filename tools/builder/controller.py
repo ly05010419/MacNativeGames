@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 
-from tools.builder import background, updates
+from tools.builder import background
 from tools.builder.build_request import LOG_NAMES, prepare_request, request_argv, reserve_log  # noqa: F401
 from tools.builder.build_run import BuildRun, collect
 from tools.builder.controller_controls import ControlsController
@@ -17,8 +17,8 @@ from tools.builder.checks import BuildPaths, Status, iter_checks, ready
 from tools.builder.config import PATH_FIELDS, SavedPaths
 from tools.builder.games import GAMES
 from tools.builder.session import (BuildSession, CheckResultReady, ChecksDone, ChecksInvalidated, Finished, Outcome,
-                                   PathsIncomplete, PathsSaved, ProcessError, SettingsLoaded, UpdateApplied,
-                                   UpdateStatusReady, BackgroundChanged)
+                                   PathsIncomplete, PathsSaved, ProcessError, SettingsLoaded,
+                                   BackgroundChanged)
 
 _END = object()
 
@@ -44,7 +44,7 @@ class BuildController:
         self.clock, self.repo_root, self.logs_dir = clock, Path(repo_root), Path(logs_dir)
         self._events, self._game, self._fields, self._saved = [], None, {}, {}
         self._load_job, self._check, self._ready, self._preparing, self._run = None, None, None, None, None
-        self._update_check = self._update_apply = self._background = None          # S4.1, S4.3
+        self._background = None          # S4.3
         self._save_job = None                                                      # S2.3 storage: work and cache paths
         self._closed = False
         self.start = StartController(self)                     # S5.1: the Settings tab's part
@@ -125,19 +125,6 @@ class BuildController:
         self._open()
         self._load_job = self.load_jobs.submit(self.store.load)
 
-    def check_updates(self):
-        """S4.1 U1: on load_jobs, like the settings load: a fetch can be slow or hang. UpdateStatusReady when done."""
-        self._open()
-        if self._update_check is None:
-            self._update_check = self.load_jobs.submit(updates.check_updates, self.runner, self.repo_root)
-
-    def apply_update(self):
-        """S4.1 U2: on the worker, so it never runs beside a build start; only when idle. UpdateApplied when done."""
-        self._open()
-        if not self.idle:
-            raise RuntimeError('a build is running or being prepared')
-        self._update_apply = self.jobs.submit(updates.apply_update, self.runner, self.repo_root)
-
     def background(self, action, *args):
         """S4.3: 'saved' (screen size), 'save' (chosen file, screen size), 'focus' (screen size, left|center|right)
         or 'remove' the background image next to the settings, on load_jobs (the disk and sips may be slow);
@@ -202,9 +189,9 @@ class BuildController:
 
     @property
     def idle(self):
-        """S2.1 T8: no start is being prepared, no run is active, no update is being applied (S4.1) and no mods are
-        being applied (S5.2) nor added (S5.5), no controls saved (E6), so close() and start_build() are allowed."""
-        return (self._preparing is None and self._update_apply is None and not self.mods.holds
+        """S2.1 T8: no start is being prepared, no run is active and no mods are being applied (S5.2) nor added (S5.5),
+        no controls saved (E6), so close() and start_build() are allowed."""
+        return (self._preparing is None and not self.mods.holds
                 and not self.controls.holds and not (self._run is not None and self._run.active))
 
     def close(self):
@@ -225,7 +212,7 @@ class BuildController:
             return
         self._tick_load()
         self._tick_save()
-        self._tick_updates()
+        self._tick_background()
         self.start.tick()
         self.mods.tick()
         self.controls.tick()
@@ -272,10 +259,8 @@ class BuildController:
         self._saved[game] = saved
         self._emit(PathsSaved(game, True))
 
-    def _tick_updates(self):
-        for attr, event, where in (('_update_check', UpdateStatusReady, 'update'),
-                                   ('_update_apply', UpdateApplied, 'update'),
-                                   ('_background', BackgroundChanged, 'background')):
+    def _tick_background(self):
+        for attr, event, where in (('_background', BackgroundChanged, 'background'),):
             job = getattr(self, attr)
             if job is None or not job.done():
                 continue

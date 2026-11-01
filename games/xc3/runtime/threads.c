@@ -729,3 +729,10 @@ __attribute__((constructor)) static void dump_init(void) {
     const char *e = getenv("TOTK_DUMP_AFTER"); if (!e) return;
     pthread_t th; pthread_create(&th, NULL, dump_after, (void *)(uintptr_t)strtoul(e, NULL, 10)); pthread_detach(th);
 }
+/* runtime/mem_scan.h: the mach ports of the running guest threads, so a diagnostic watchpoint is armed only where the
+   game's code runs (as in games/totk). */
+int runtime_guest_thread_ports(unsigned *out, int max) {
+    int n = 0; pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < max; t = t->all) if (t->started && !t->exited && t->mport) out[n++] = t->mport;
+    pthread_mutex_unlock(&G); return n;
+}

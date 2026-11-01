@@ -75,18 +75,27 @@ $(OUT)/spirv-cross/spirv-cross:
 
 # XC3_LOG: where the boot's stderr goes (the host is loud on purpose; every abort names what is missing).
 # TOTK_HEADLESS is passed through only when set: the runtime goes headless when it exists at all, even empty.
+# TOTK_CONTROLS: the settings panel (key 1) keeps its choices next to it, in the work folder's user-data.
 # TOTK_UNCAPPED defaults to 0, as in the app: the game keeps its own pacing (30 fps) on every display.
 # TOTK_GPU_ALLOW_SUBMIT defaults to 1, as in the app: the shared layer submits nothing to the GPU without it (TOTK_GPU_ALLOW_SUBMIT=0 for a CPU-only run).
 XC3_LOG ?= $(WORK)/logs/boot.log
 boot: runtime
 	@mkdir -p "$(dir $(XC3_LOG))"
-	cd "$(WORK)" && TOTK_GPU_ALLOW_SUBMIT=$${TOTK_GPU_ALLOW_SUBMIT-1} TOTK_UNCAPPED=$${TOTK_UNCAPPED-0} ./build/xc3-native-$(VERSION) rewritten/$(VERSION) boot 2> "$(abspath $(XC3_LOG))"; echo "exit $$?; log: $(XC3_LOG)"
+	cd "$(WORK)" && TOTK_GPU_ALLOW_SUBMIT=$${TOTK_GPU_ALLOW_SUBMIT-1} TOTK_UNCAPPED=$${TOTK_UNCAPPED-0} TOTK_CONTROLS="$${TOTK_CONTROLS-$(abspath $(WORK))/user-data/controls.txt}" ./build/xc3-native-$(VERSION) rewritten/$(VERSION) boot 2> "$(abspath $(XC3_LOG))"; echo "exit $$?; log: $(XC3_LOG)"
 
 # The player's mods, made into checked tables: exefs patches (mods/<display version>/<name>/exefs/*.pchtxt) -> <work>/patches/<version>,
 # RomFS mods (files under their RomFS paths in $(DATA)/mods/<version>, the folder the app reads) -> its manifest.tsv
 # (sizes and SHA-256 of the replacements and the originals).
 DATA ?= $(HOME)/Library/Application Support/MacNativeGames/XC3
 .PHONY: patches mods app
+# The app's startup shaders (scripts/prepare_shader_seed.py): the variants met in play on this Mac, from the work folder's
+# translation cache and the app's own (SEED_CACHE, SEED_APP_CACHE), so a fresh app does not translate them while playing. Game-derived:
+# it stays in the work folder and the local app.
+SEED_CACHE ?= $(WORK)/build/shader-cache/rt-totk-native-v4-unverified
+SEED_APP_CACHE ?= $(DATA)/shader-cache
+.PHONY: shader-seed
+shader-seed:
+	"$(PY)" scripts/prepare_shader_seed.py --out "$(OUT)/shader-seed" "$(SEED_CACHE)" "$(SEED_APP_CACHE)"
 patches:
 	"$(PY)" scripts/prepare_patches.py --work "$(WORK)" --version $(VERSION)
 mods:
@@ -116,6 +125,8 @@ app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	cp -cR "$(WORK)/rewritten/$(VERSION)" "$(IN_APP)/rewritten/"
 	cp -cR "$(WORK)/extracted/$(VERSION)/romfs" "$(IN_APP)/extracted/$(VERSION)/"
 	[ ! -d "$(WORK)/extracted/firmware/shared-fonts" ] || cp -cR "$(WORK)/extracted/firmware" "$(IN_APP)/extracted/"
+	[ "$(VERSION)" != v221 ] || [ ! -d "$(WORK)/extracted/aoc" ] || cp -cR "$(WORK)/extracted/aoc" "$(IN_APP)/extracted/"   # add-ons (2.2.1 only)
+	[ ! -f "$(OUT)/shader-seed/seed-manifest.json" ] || cp -cR "$(OUT)/shader-seed" "$(IN_APP)/build/"   # make shader-seed first
 	[ -f "$(OUT)/AppIcon.icns" ] && cp "$(OUT)/AppIcon.icns" "$(APP)/Contents/Resources/" || true
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \

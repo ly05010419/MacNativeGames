@@ -216,6 +216,8 @@ int main(int argc, char **argv) {
         setenv("TOTK_SHADER_CACHE", [data stringByAppendingPathComponent:@"shader-cache"].fileSystemRepresentation, 0);
 
         setenv("TOTK_PROFILE_DIR", profile.fileSystemRepresentation, 1);
+        /* The in-game settings panel (key 1) keeps its choices next to this file (controls, keyboard, overlay, rumble ...). */
+        setenv("TOTK_CONTROLS", [data stringByAppendingPathComponent:@"controls.txt"].fileSystemRepresentation, 0);
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);
         NSString *preferred = NSLocale.preferredLanguages.firstObject; if (preferred) setenv("TOTK_LOCALE", preferred.UTF8String, 1);

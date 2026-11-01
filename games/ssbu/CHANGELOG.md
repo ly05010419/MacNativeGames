@@ -242,3 +242,18 @@ and nothing outside `games/ssbu` is read.
 - **Played** on a MacBook Pro (Apple M1 Max, 64 GB, macOS 27.0.1) with the PowerA, on 13.0.2 and on 13.0.5: on 13.0.5
   44 min at 2K, no abort; the presentation windows the log holds (frames 105,300 to 158,100, the last 14.7 min) have
   p99 16.67 ms in 175 of 177 windows of 300 frames (two at 25.00 ms) and 211 of 53,025 frames dropped (0.40 %).
+
+### 2026-10-30: two threads that submit at once
+
+- **"FATAL 提交重入"**: the game ended twice with this abort in `mtl_sub_begin`, on 25 October 33 s after a start and on
+  28 October after 124 minutes on 13.0.5, at frame 440,484. Smash makes two NVN queues (`QueueInitialize=2` in the log),
+  and the replay has one open submission (`g_cb` in `nvn_mtl.m`). The crash report of 28 October names both sides:
+  one thread (the game's main thread) inside `mtl_sub_commit`, called from `submit_exec`, while another thread began the
+  next submission in `mtl_sub_begin`. Nothing kept the two apart.
+- `submit_exec`, the one caller of `mtl_sub_begin` and `mtl_sub_commit`, now takes a lock for the whole submission. The
+  waiting thread has already given its virtual core back (`NVN_BLOCKING` at the top of `nvnQueueSubmitCommands`). Each
+  wait is counted; the first five and every 1,000th are logged with both threads ("[nvn] submission lock: thread A
+  waited for thread B's submission to end"). A submission inside a submission on the same thread, which ended in the
+  same abort, still ends the game, with a message, instead of waiting forever.
+- **Played** after the fix on 13.0.5, 21 and 28 minutes: no abort, and no wait in the log either, so these sessions did
+  not reach the overlap; the abort is rare (twice before the fix).

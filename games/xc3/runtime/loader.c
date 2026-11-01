@@ -320,6 +320,7 @@ static void signal_hex(const char *label,uint64_t value) {
 #define HOST_CTR_EL0 0x8555c005ULL
 static void crash(int num,siginfo_t *info,void *context) {
  ucontext_t *u=context;
+ if(num==SIGTRAP){extern int runtime_mem_scan_trap(void *);if(runtime_mem_scan_trap(context))return;}   /* mscan watch / bp (diagnostic, runtime/mem_scan.h) */
  /* (The TotK fault workaround for an invalid optional menu reference is TotK-only and not carried over.) */
  /* EL0 cache maintenance that Darwin traps but Horizon allows: emulate exactly two encodings (SDK only). */
  if(num==SIGILL){uint32_t insn=*(const uint32_t *)(uintptr_t)u->uc_mcontext->__ss.__pc;unsigned rt=insn&31;

@@ -195,6 +195,16 @@ def translation_request(variant, stage, control, code, answers, code_path):
     return request
 
 
+def translation_input(stage, control, code):
+    """Everything a translation reads of a shader, as one digest: the stage, the code the translator is given, where its
+    constants (c1) start, a compute shader's group size and a fragment shader's early fragment tests (translation_request;
+    totk_shader_rt.m variant_request reads the same). Shaders that differ only in other control bytes translate to the
+    same files: 3,416 of Tears of the Kingdom 1.4.3's 28,771, nearly all effects, differ only at +0x7d0..+0x7df."""
+    c1, length = struct.unpack_from('<II', control, 0x700)
+    return digest(stage.encode() + struct.pack('<II', c1, length) + code[min(c1, 0 if stage == 'cs' else 0x30):length] +
+                  (control[0x748:0x754] if stage == 'cs' else b'') + (b'E' if early_fragment_tests(stage, control) else b''))
+
+
 def translations_folder(beside, identity):
     """Where the translations live: beside the seed (<output>.translations), or with TOTK_TRANSLATION_CACHE set, in a
     folder there named after the identity, which packagings of other work folders (an APFS clone, another session's)
@@ -276,9 +286,16 @@ class TranslationCache:
             return dict(ok=False, error=json.loads(failed.read_text()).get('error'))
         files = [variant+'_b.metal', variant+'_b.json']
         try:
-            cached = [os.stat(self.folder/name).st_ino for name in files]
+            stats = [os.stat(self.folder/name) for name in files]
         except FileNotFoundError:
             return None
+        if any(st.st_size == 0 for st in stats):
+            # A translation cut short (2026-10-30: an empty MSL from 10-26 in the shared cache ended the game's warm-up):
+            # not a cached reply, translated again.
+            for name in files:
+                (self.folder/name).unlink(missing_ok=True)
+            return None
+        cached = [st.st_ino for st in stats]
         for name, inode in zip(files, cached):
             try:
                 if os.stat(staging/name).st_ino == inode:
@@ -293,6 +310,8 @@ class TranslationCache:
         if not reply.get('ok'):
             (self.folder/(variant+'.failed')).write_text(json.dumps(dict(error=reply.get('error'))))
             return
+        if any(not (staging/name).is_file() or (staging/name).stat().st_size == 0 for name in (variant+'_b.metal', variant+'_b.json')):
+            return   # an empty reply is not kept: the next packaging translates it again
         for name in (variant+'_b.metal', variant+'_b.json'):
             (self.folder/name).unlink(missing_ok=True)
             try:
@@ -640,24 +659,26 @@ def source_reader(romfs, modules, game='totk'):
 def builtin_variants(seed, key):
     """The variants a seed made from the game code alone for a shader: its default bind state, and with compare slots
     (shadow maps) the one with them bound to depth textures; [] when the seed has no default variant of it. A seed
-    prepared with the shared list also holds listed variants of the shader; those are not built in."""
+    prepared with the shared list also holds listed variants of the shader; those are not built in. Rows are taken by
+    the bind state's suffix: a shader another one's translations serve (prepare, translation_input) names that one's."""
     index = Path(seed)/f'{key}.variants'
     try:
-        rows = {r['variant']: r for r in json.loads(index.read_text()) if isinstance(r, dict) and 'variant' in r}
+        rows = {'-'+str(r['variant']).split('-')[-1]: r for r in json.loads(index.read_text())
+                if isinstance(r, dict) and 'variant' in r}
     except (OSError, ValueError):
         return []
-    default = rows.get(key+'-'+SUFFIX)
+    default = rows.get('-'+SUFFIX)
     if not default:
         return []
     try:
-        refl = json.loads((Path(seed)/f'{key}-{SUFFIX}_b.json').read_text())
+        refl = json.loads((Path(seed)/f'{default["variant"]}_b.json').read_text())
     except (OSError, ValueError):
         refl = {}
     found = [default]
     if refl.get('compare_slots'):
         depth = answers_for({'tex': {str(s): '*_depth' for s in refl['compare_slots']}})
-        if rows.get(key+'-'+suffix(depth)):
-            found.append(rows[key+'-'+suffix(depth)])
+        if rows.get('-'+suffix(depth)):
+            found.append(rows['-'+suffix(depth)])
     return found
 
 
@@ -679,14 +700,6 @@ def plan(shaders, startup, listed, all_default=False):
             answers = answers_for(json.loads(deps))
             jobs.append((key, answers, key+'-'+suffix(answers), 'listed'))
     return jobs
-
-
-def write_aliases(path, aliases):
-    """<seed>.aliases.tsv: each listed variant the seed does not carry, because a variant it does carry serves the same
-    bind state, and that variant. The packaging renames the warm-up rows through it (shader_list.py rename), since
-    rows recorded on a player's Mac name the variant translated there."""
-    path.with_name(path.name+'.tmp').write_text(''.join(f'{old}\t{new}\n' for old, new in sorted(aliases.items())))
-    path.with_name(path.name+'.tmp').replace(path)
 
 
 def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, modules=None, game='totk'):
@@ -727,8 +740,17 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     extra = located({where for where in shared.locators if where[0] not in shaders}, source_reader(romfs, modules, game), game)
     shaders.update(extra)
     print(f'{len(extra)} more shaders read where the shared list locates them (agl .sharcb, game module)', flush=True)
-    jobs = plan(shaders, startup, listed, GAMES[game]['all_default'])
-    aliases = {}   # listed variant -> the variant serving its bind state (write_aliases)
+    # Shaders with the same translation_input are translated once, as the first of them by key: the others get a .variants
+    # index naming its variants (the runtime loads a variant by the name its row gives, and shares the Metal library of
+    # one name); shader_list.py resolve names warm-up rows recorded with their own names through that index.
+    same = {}
+    for key in sorted(shaders):
+        stage, control, code, _ = shaders[key]
+        same.setdefault(translation_input(stage, control, code), []).append(key)
+    served = {key: keys[0] for keys in same.values() for key in keys[1:]}   # shader -> the shader translated for it
+    print(f'{len(served)} shaders translate as another one does and are served by its variants', flush=True)
+    jobs = plan({key: shader for key, shader in shaders.items() if key not in served}, {served.get(key, key) for key in startup},
+                {(served.get(key, key), deps) for key, deps in listed}, GAMES[game]['all_default'])
     # One translator service per core. A shader's jobs (its default bind state, then its listed ones) run in order on
     # one service, because whether a listed job is translated and kept depends on that shader's earlier results; the
     # files each job writes are named after its own shader. The results are then taken in the order of `jobs`, so the
@@ -760,10 +782,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                     index, answers, variant, why = queue.pop(0)
                     stage, control, code, source = shaders[key]
                     if why != 'default':   # a variant made already serves this bind state, as the runtime would pick it
-                        serving = next((v for d, v in mine.items() if deps_match(json.loads(d), answers)), None)
-                        if serving:
-                            with lock:
-                                aliases[variant] = serving
+                        if any(deps_match(json.loads(d), answers) for d in mine):   # (shader_list.py resolve names rows so)
                             continue
                     reply = cache.take(variant, staging)
                     reused = reply is not None
@@ -772,6 +791,12 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                             process = subprocess.Popen([str(translator), '--service', '--spirv-cross', str(spirv_cross),
                                                         '--out', str(staging), '--chain', CHAIN],
                                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                        # The translator writes the MSL over the file in place (Service.cs File.WriteAllBytes), and a staging
+                        # file may be a hard link to the translation cache (take / put link them): a translation made again
+                        # rewrote the cached file through it, and one cut short left it empty (2026-10-30, the 0-byte
+                        # 5e0447ea... that ended the game). Unlinked first, the translator writes a file of its own.
+                        for name in (variant+'_b.metal', variant+'_b.json'):
+                            (staging/name).unlink(missing_ok=True)
                         code_path = staging/(variant+'.code')
                         request = translation_request(variant, stage, control, code, answers, code_path)
                         process.stdin.write(json.dumps(request)+'\n'); process.stdin.flush()
@@ -789,8 +814,6 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
                         if deps in mine:   # same deps as a variant already made: keep one
                             for name in (variant+'_b.metal', variant+'_b.json'):
                                 (staging/name).unlink(missing_ok=True)
-                            with lock:
-                                aliases[variant] = mine[deps]
                             continue
                         mine[deps] = variant
                         rows =[f'S\t{variant}_b\t'+str({'vs': 0, 'ps': 1, 'cs': 5}[stage])]
@@ -831,10 +854,16 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         for future in [pool.submit(worker) for _ in range(workers)]:
             future.result()
+    for key, first in sorted(served.items()):
+        if first not in produced:
+            continue
+        (staging/(key+'.variants')).write_text((staging/(first+'.variants')).read_text())
+        produced[key] = produced[first]
     failed, rows, completed = [], [], []
     for result in outcome+[result for key in sorted(derived) for result in derived[key]]:
-        if result and result[0] == 'ok':
-            completed.append(result[1]); rows.extend(result[2])
+        if result and result[0] == 'ok' and all((staging/(result[1]+end)).is_file() and (staging/(result[1]+end)).stat().st_size
+                                               for end in ('_b.metal', '_b.json')):
+            completed.append(result[1]); rows.extend(result[2])   # an empty MSL or reflection is a failure, not a shipped shader
         elif result:
             failed.append(result[1])
     ready = sum(1 for key in startup if key in produced)
@@ -845,6 +874,7 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     wanted = set()
     for variant in completed:
         wanted.update([variant+'_b.metal', variant+'_b.json', variant.split('-')[0]+'.variants'])
+    wanted.update(key+'.variants' for key in served if key in produced)
     for p in staging.iterdir():
         if p.name not in wanted:
             p.unlink(missing_ok=True)
@@ -859,13 +889,13 @@ def prepare(romfs, output, translator, spirv_cross, version, shader_list=None, m
     # Each completed variant's two files are links to the translation cache, whose digests it keeps; the rest are read.
     linked = {variant+end for variant in completed for end in ('_b.metal', '_b.json')}
     report = dict(**identity, shaders=len(completed), discovered=len(shaders), located=len(extra), startup_shaders=ready,
+                  served_by_another=sum(1 for key in served if key in produced),   # translation_input: no files of their own
                   all_default=GAMES[game]['all_default'],   # every shader has its default variant: the runtime contributes only other states
                   listed_variants=sum(1 for _, _, _, why in jobs if why == 'listed'), skipped=failed,
                   archives=archives, seconds=time.monotonic()-started,
                   files={p.name: cache.digest(p.name, p) if p.name in linked else digest(p.read_bytes())
                          for p in sorted(staging.iterdir()) if p.name in wanted_final})
     (staging/'seed-manifest.json').write_text(json.dumps(report, indent=2)+'\n')
-    write_aliases(output.with_name(output.name+'.aliases.tsv'), {old: new for old, new in aliases.items() if new in completed})
     if output.exists():
         shutil.rmtree(output)
     staging.rename(output)

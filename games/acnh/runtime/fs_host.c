@@ -7,6 +7,7 @@
 #include "autoload.h"
 #include "runtime.h"
 #include "fs_host.h"
+#include "dlc.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -37,7 +38,7 @@ enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
 #define NDIRS 256
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
-typedef struct { int fd, mode, save; } File;   /* save: on a save-data mount (counts for runtime_fs_save_busy) */
+typedef struct { int fd, mode, save, dlc; uint64_t base, size; } File;   /* DLC files are bounded read-only image slices. */
 /* A RomFS directory is a snapshot of its children taken at open (rom != NULL; dir stays NULL). */
 struct RomEntry; typedef struct { DIR *dir; char path[1024]; int mode; struct RomEntry *rom; int64_t nrom, pos; } Dir;
 static Mount mounts[16];
@@ -87,7 +88,9 @@ static void ready(void) { pthread_once(&once, init); }
 /* ---------- mounts and paths ---------- */
 static unsigned mount_add(const char *name, int kind, const char *root) {
     if (!name || !*name || strlen(name) >= 32 || strchr(name, ':') || strchr(name, '/')) return R_INVALID_ARGUMENT;
+    char prefix[40]; snprintf(prefix, sizeof prefix, "%s:/", name);
     pthread_mutex_lock(&lock);
+    if (runtime_dlc_owns(prefix) || runtime_romfs_owns(prefix)) { pthread_mutex_unlock(&lock); return R_ALREADY_EXISTS; }
     int slot = -1;
     for (int i = 0; i < 16; i++) { if (mounts[i].kind && !strcmp(mounts[i].name, name)) { pthread_mutex_unlock(&lock); return R_ALREADY_EXISTS; } if (!mounts[i].kind && slot < 0) slot = i; }
     if (slot < 0) runtime_fail("fs mount table full");
@@ -172,6 +175,7 @@ static unsigned read_cache_list(int *count, CacheStorageInfo *out, uint64_t h, i
 }
 static void close_cache_list(uint64_t h) { free((void *)(uintptr_t)h); }
 static void unmount(const char *name) {
+    if (runtime_dlc_unmount(name)) return;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; pthread_mutex_unlock(&lock); return; }
     pthread_mutex_unlock(&lock);
@@ -204,15 +208,21 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
-    char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
-    struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+    int dlc = runtime_dlc_owns(path), fd, kind = M_FREE; uint64_t base = 0, size = 0;
+    char p[1100]; unsigned r;
+    if (dlc) {
+        r = runtime_dlc_open(&fd, &base, &size, path, mode); if (r) return r;
+    } else {
+        r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
+        struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+        fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
+        if (fd < 0) return errno_result();
+    }
     int save_writer = kind == M_SAVE && (mode & OPEN_WRITE);
-    int fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
-    if (fd < 0) return errno_result();
     runtime_autoload_save_file_opened(path);   /* TOTK_AUTOLOAD: a slot's caption.sav starts the presses, its progress.sav ends them */
     pthread_mutex_lock(&lock);
     for (int i = 0; i < NFILES; i++) if (files[i].fd <= 0) {
-        files[i] = (File){fd, mode, save_writer}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
+        files[i] = (File){fd, mode, save_writer, dlc, base, size}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
         if (save_writer) { atomic_fetch_add(&save_writers, 1); save_touched(); }
         return 0;
     }
@@ -220,11 +230,18 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
 }
 static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
     if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size);
-    int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
+    int fd, mode; File *file;
+    if (!out || offset < 0 || (!buffer && size) || !(file = file_of(h, &fd, &mode))) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
+    uint64_t base = 0;
+    if (file->dlc) {
+        if ((uint64_t)offset > file->size) return R_INVALID_ARGUMENT;
+        if (size > file->size - (uint64_t)offset) size = file->size - (uint64_t)offset;
+        base = file->base;
+    }
     dm_guest_write_prepare(buffer, (size_t)size);
     uint64_t done = 0;
-    while (done < size) { ssize_t n = pread(fd, (uint8_t *)buffer + done, (size_t)(size - done), offset + (off_t)done); if (n < 0) runtime_fail("host save read failure"); if (!n) break; done += (uint64_t)n; }
+    while (done < size) { ssize_t n = pread(fd, (uint8_t *)buffer + done, (size_t)(size - done), (off_t)(base + (uint64_t)offset + done)); if (n < 0) runtime_fail("host file read failure"); if (!n) break; done += (uint64_t)n; }
     *out = done; return 0;
 }
 static unsigned read_options(uint64_t *out, uint64_t h, int64_t off, void *buf, uint64_t size, const void *options) { (void)options; return read_file(out, h, off, buf, size); }
@@ -246,8 +263,9 @@ static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint6
 }
 static unsigned file_size(int64_t *out, uint64_t h) {
     if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h);
-    int fd; struct stat st; if (!out || !file_of(h, &fd, NULL) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
-    *out = st.st_size; return 0;
+    int fd; struct stat st; File *file;
+    if (!out || !(file = file_of(h, &fd, NULL)) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
+    *out = file->dlc ? (int64_t)file->size : st.st_size; return 0;
 }
 static unsigned set_file_size(uint64_t h, int64_t size) {
     int fd, mode; if (size < 0 || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
@@ -276,6 +294,7 @@ static unsigned rename_file(const char *from, const char *to) {
 }
 static unsigned entry_type(int *out, const char *path) {
     if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
+    if (runtime_dlc_owns(path)) return runtime_dlc_entry_type(out, path);
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
@@ -295,7 +314,8 @@ static void rom_add(void *ctx, const char *name, int is_dir, int64_t size) {
 }
 static unsigned open_rom_directory(uint64_t *out, const char *path, int mode) {
     if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
-    RomList l = {0}; unsigned r = runtime_romfs_list(path, mode, rom_add, &l);
+    RomList l = {0}; unsigned r = runtime_dlc_owns(path)
+        ? runtime_dlc_directory(path, mode, rom_add, &l) : runtime_romfs_list(path, mode, rom_add, &l);
     if (r) { fprintf(stderr, "[totk] RomFS directory %s: result %#x\n", path, r); free(l.list); return r; }
     fprintf(stderr, "[totk] RomFS directory %s: %lld entries\n", path, (long long)l.n);
     pthread_mutex_lock(&lock);
@@ -307,7 +327,7 @@ static unsigned open_rom_directory(uint64_t *out, const char *path, int mode) {
 }
 static unsigned open_directory(uint64_t *out, const char *path, int mode) {
     if (getenv("TOTK_FS_LOG")) fprintf(stderr, "[totk-fs] OpenDirectory %s mode %d\n", path ? path : "(null)", mode);
-    if (runtime_romfs_owns(path)) return open_rom_directory(out, path, mode);
+    if (runtime_romfs_owns(path) || runtime_dlc_owns(path)) return open_rom_directory(out, path, mode);
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
     DIR *d = opendir(p); if (!d) return errno_result();
     pthread_mutex_lock(&lock);
@@ -498,12 +518,19 @@ static unsigned query_mount_rom(size_t *out) {
     return 0;
 }
 static unsigned mount_aoc(const char *name, int index, void *cache, size_t cache_size) {
-    (void)name; (void)index; (void)cache; (void)cache_size;
-    return 0;
+    (void)cache; (void)cache_size;
+    if (!name || strlen(name) >= 32) return R_INVALID_ARGUMENT;
+    char prefix[40]; snprintf(prefix, sizeof prefix, "%s:/", name);
+    if (runtime_romfs_owns(prefix)) return R_ALREADY_EXISTS;
+    pthread_mutex_lock(&lock); int exists = 0;
+    for (unsigned i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(name, mounts[i].name)) exists = 1;
+    unsigned result = exists ? R_ALREADY_EXISTS : runtime_dlc_mount(name, index);
+    pthread_mutex_unlock(&lock); return result;
 }
 static unsigned query_mount_aoc(size_t *out, int index) {
-    (void)index;
-    if (out) *out = 0;
+    if (!out) return R_INVALID_ARGUMENT;
+    if (!runtime_dlc_has(index)) return R_TARGET_NOT_FOUND;
+    *out = 0;
     return 0;
 }
 static unsigned mount_system_data(const char *name, uint64_t data_id, void *cache, size_t cache_size) {

@@ -110,6 +110,7 @@ static void warm_claim(void);
 int mtl_warm_wait(int timeout_ms);
 extern void runtime_warm_progress(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t) __attribute__((weak_import));
 extern void runtime_warm_done(void) __attribute__((weak_import));
+extern void runtime_warm_title(void) __attribute__((weak_import));
 extern void runtime_audio_hold(int) __attribute__((weak_import));
 extern void runtime_boot_status(const char *,const char *) __attribute__((weak_import));
 
@@ -135,7 +136,7 @@ static int g_present_probe;
 static id<MTLTexture> g_fps_tex[4];
 static id<MTLBuffer> g_fps_uv[3];
 static struct { fps_overlay_info info; int scale; } g_fps_key[4] = {{{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}, {{.fps = -1000}, 0}};
-static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: true 2K (" 2K" in the FPS box) */
+static _Atomic int g_pic_big;   /* the game picture (its crop) is bigger than 1920x1080: 1 = true 2K (" 2K" in the FPS box), 2 = native 4K */
 static int g_fps_box[4][2];
 // TOTK load line (bottom-right, load_overlay_prepare; totk_sysload.c): same slots as the FPS box, a wider texture.
 static id<MTLTexture> g_load_tex[4];
@@ -718,20 +719,15 @@ uint64_t dm_mtl_l3_sample(uint32_t tick) {
 }
 
 static _Atomic uint64_t g_reg_gen = 1;   // 内存池 / 贴图 / 采样器登记的变更代号：参数缓冲复用以它为失效条件之一 | Change generation of memory pool / texture / sampler registration: one of the invalidation conditions for argument buffer reuse
-/* TOTK safety guard: twice a full-game run kernel-panicked macOS inside IOGPUFamily right after the driver returned
-   kIOReturnNoMemory. A zero-copy buffer makes the whole range resident, so ranges with inaccessible pages (sparse
-   virtual pools) or very large ranges are refused here, with details, instead of being handed to the driver. */
+/* TOTK: a zero-copy buffer makes the whole range resident, so ranges with unmapped holes or pages that are not
+   read-write (sparse virtual pools) are refused here, with details, instead of being handed to the driver. There is no
+   size limit (2026-10-30, the user: "做真 4K 根本方案"): the 1 GiB one came from the hypothesis that a huge zero-copy
+   pool caused the IOGPUFamily kernel panics of 2026-10-12; the panics went on with it in place and it never triggered,
+   and their cause was GPU memory leaks that wired ~15 GB (fixed 2026-10-13; Tears of the Kingdom
+   native-port/docs/gpu-kernel-panic.md). A 3.8 GiB pool (a 4K texture pack, TOTK_DRAM_8GB) has run as one buffer since,
+   and a 3840x2160 scene's heaps need a 1,490 MiB one at the start. */
 #include "mach_vm_compat.h"
-/* TOTK_DRAM_8GB (the 8 GB pool for big texture packs, whose TextureHeap pool is ~3.8 GiB): 4 GiB. Read once. */
-static uint64_t pool_buffer_max(void) {
-    static uint64_t v;
-    if (!v) { const char *e = getenv("TOTK_DRAM_8GB"); v = e && *e && strcmp(e, "0") ? 4ull << 30 : 1ull << 30; }
-    return v;
-}
-#define POOL_BUFFER_MAX pool_buffer_max()
 static void pool_range_check(uintptr_t a, uintptr_t b, const void *mem, uint64_t size) {
-    if (b - a > POOL_BUFFER_MAX) MDIE("memory pool %p+%#llx: %llu MiB zero-copy GPU buffer refused (limit %llu MiB)", mem, (unsigned long long)size,
-                                      (unsigned long long)((b - a) >> 20), POOL_BUFFER_MAX >> 20);
     for (mach_vm_address_t at = a; at < b;) {
         mach_vm_address_t ra = at; mach_vm_size_t rs = 0; vm_region_basic_info_data_64_t ri; mach_msg_type_number_t rc = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t ro = MACH_PORT_NULL;
         if (mach_vm_region(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&ri, &rc, &ro) != KERN_SUCCESS || ra > at)
@@ -2644,9 +2640,10 @@ static uint64_t g_wb_done, g_wb_skip_cpu, g_wb_skip_fmt, g_wb_bytes;
 void dm_gfx_querylog_next(long n) { long f = (long)atomic_load(&g_cur_frame); atomic_store(&g_ql_until, f + (n > 0 ? n : 1)); MLOG("[query] logging occlusion queries until frame %ld", f + n); }
 static void driver_cache_set(int v);
 static void driver_cache_check_set(int v);
+static int ssao_flag(const char *name, int v);   // TOTK_SSAO (totk_ssao.h): "flag ssao_strength_pct | ssao_radius_pct | ssao_pairs"
 // One shader class can be hidden for geometry fault isolation without restarting.
 // Diagnostic only: measurements with this enabled are never valid performance results.
-static _Atomic uint64_t g_diag_skip_fs;
+static _Atomic uint64_t g_diag_skip_fs, g_diag_skip_cs;
 static _Atomic uint64_t g_diag_texpng_fs, g_diag_geometry_fs;
 static int diag_shader_prefix_matches(const char *key, uint64_t value) {
     char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)value);
@@ -2711,6 +2708,19 @@ void dm_gfx_set_flag(const char *name, int v) {
         atomic_store(&g_diag_skip_fs, v ? strtoull(p, NULL, 16) : 0);
         MLOG("[flag] diagnostic skipfs %.16s = %d (incomplete geometry; invalid FPS)", p, v != 0); return;
     }
+    if (!strcmp(name, "fxaa_off")) { extern void dm_gfx_fxaa_set(int on); dm_gfx_fxaa_set(!v); return; }   // totk_finish.h
+    if (!strcmp(name, "sharpen_pct")) { extern void dm_gfx_sharpen_set(int pct); dm_gfx_sharpen_set(v); return; }
+    if (!strncmp(name, "fx_", 3)) {   // "flag fx_<id> <0|1>": an effect switch (totk_fx.h), 0 = off
+        extern int dm_gfx_fx_count(void); extern const char *dm_gfx_fx_id(int i); extern void dm_gfx_fx_set(int i, int on);
+        for (int i = 0; i < dm_gfx_fx_count(); i++) if (!strcmp(name + 3, dm_gfx_fx_id(i))) { dm_gfx_fx_set(i, v != 0); return; }
+        MLOG("[flag] no effect %s", name + 3); return;
+    }
+    if (!strncmp(name, "skipcs_", 7)) {   // the same for the dispatches of a compute shader
+        const char *p = name + 7;
+        if (strlen(p) != 16 || strspn(p, "0123456789abcdefABCDEF") != 16) { MLOG("[flag] skipcs needs exactly 16 hex digits"); return; }
+        atomic_store(&g_diag_skip_cs, v ? strtoull(p, NULL, 16) : 0);
+        MLOG("[flag] diagnostic skipcs %.16s = %d (the picture is wrong; invalid FPS)", p, v != 0); return;
+    }
     if (!strncmp(name, "texpngfs_", 9) || !strncmp(name, "geodumpfs_", 10)) {
         int geometry = !strncmp(name, "geodumpfs_", 10);
         const char *p = name + (geometry ? 10 : 9);
@@ -2735,6 +2745,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "occl_visible")) { atomic_store(&g_occl_vis, v); MLOG("[flag] occl_visible = %d", v); return; }
     if (!strcmp(name, "drvfill")) { atomic_store(&g_drvfill_on, v != 0); MLOG("[flag] drvfill = %d", v != 0); return; }
     if (!strcmp(name, "ubo_snapshot")) { (void)usnap_on(); atomic_store(&g_usnap_on, v != 0); MLOG("[flag] ubo_snapshot = %d", v != 0); return; }
+    if (ssao_flag(name, v)) return;
     MLOG("【红】unknown runtime flag %s", name);
 }
 /* TOTK diagnostic DM_NVN_TILELOG=WxH: every event on textures of that size (render, CPU texel read / write, invalidate,
@@ -5252,7 +5263,7 @@ static void shmap_load(void) {
     id peer[4]; NSString *key[4]; id<MTLFunction> fn[4]; int mode[4]; unsigned next;
 } @end
 @implementation NvFunctionCache @end
-@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, hdr_compose; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     uint8_t guard_idx[NVN_REFL_MAXB], guard_count, guard_plan_ready;   // TOTK: the bindings upd_guard_stage looks at (storage / typed buffers), from the reflection once
     // 上次编好的参数缓冲
@@ -5584,6 +5595,8 @@ static int shader_device_libs(void) {
     return on;
 #endif
 }
+#include "totk_ssao.h"   // TOTK_SSAO=1 (Mac only, off by default): a tunable ambient occlusion
+#include "totk_fx.h"     // the settings panel's effect switches
 /* iOS (and the Mac's pipeline-archive mode): the variant compiled for the device while packaging (2026-10-29;
    ios/tools/device_pipelines.py --variants, from the sources the Mac recorded making the device's pipelines), in the seed as
    variant-<SHA-256 of the source>.metallib: loaded instead of compiled (45-225 ms each on an iPhone 14), and the pipeline
@@ -5612,7 +5625,7 @@ static id<MTLLibrary> variant_library(NSString *src, NSError **err) {
         atomic_fetch_add_explicit(&g_stat_variant_ns, bp_now() - t0, memory_order_relaxed);
     }
 #if !TARGET_OS_IPHONE
-    if (lib && raw) variant_record(raw);
+    if (lib && raw && ![src hasPrefix:@SSAO_MARK]) variant_record(raw);   // TOTK_SSAO variants stay out of the packaged shader-libs
 #endif
     return lib;
 }
@@ -5744,13 +5757,14 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (stage == 1 && o->rf.has_c1 && ssao_on()) full = ssao_patch(o, full, j[@"entry"]);   // TOTK_SSAO (totk_ssao.h): the scans below then see the patched source
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
     if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     /* TOTK (2026-10-17): the MSL is read again from its file when a variant needs it (sh_src), on the Mac too -- keeping
        every source cost 255 MB of strings (7,691 of them) in a long session (analysis/long18 heap). TOTK_KEEP_MSL=1 keeps
        them in memory (the Mac's behaviour before). */
     static int keep_src = -1; if (keep_src < 0) { const char *e = getenv("TOTK_KEEP_MSL"); keep_src = e && !strcmp(e, "1"); }
-    if (keep_src) o->src = full;
+    if (keep_src || o->ssao_slot) o->src = full;
     if (totk_hdr_available() && stage==1 && [pc hasPrefix:@TOTK_HDR_COMPOSE_KEY]) {
         NSString *modified=totk_hdr_compose_source(full);
         if(modified) {
@@ -5760,15 +5774,27 @@ static NvShader *shader_load(NSString *pc, int stage) {
             else MLOG("[hdr] compose variant failed; keeping SDR shader: %s",err.localizedDescription.UTF8String);
         } else MLOG("[hdr] compose source layout unknown; keeping SDR shader");
     }
+    /* A library without the entry (an empty MSL: a translation cut short, 2026-10-30) or an argument block unlike the
+       reflection: not loaded, and a runtime translation is made again at its next use (totk_rt_variant_broken). The game
+       ended here before (user: "坏了 就重新翻译 不能奔溃"). */
+    if (!o->fn) {
+        MLOG("【红】着色器 %s 的库里没有入口 %s（源文件可能没写完）：不加载，下次用到时重新翻译", o->key, [[j[@"entry"] description] UTF8String]);
+        if (rt) totk_rt_variant_broken(pc);
+        return nil;
+    }
     if (o->rf.nb) {
         o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
         int max_aid = -1;
         for (int i = 0; i < o->rf.nb; i++) max_aid = MAX(max_aid, o->rf.b[i].aid);
         o->arg_len = o->ae.encodedLength;
-        if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7))
-            MDIE("着色器 %s 参数块布局异常：encodedLength=%lu maxAid=%d", o->key, (unsigned long)o->arg_len, max_aid);
+        if (o->arg_len != (NSUInteger)(8 * (max_aid + 1)) || (o->arg_len & 7)) {
+            MLOG("【红】着色器 %s 参数块布局异常：encodedLength=%lu maxAid=%d：不加载，下次用到时重新翻译", o->key, (unsigned long)o->arg_len, max_aid);
+            if (rt) totk_rt_variant_broken(pc);
+            return nil;
+        }
     }
     if (o->rf.has_c1) c1_store(o, full);
+    if (o->ssao_slot && o->c1buf) ssao_put(o);   // TOTK_SSAO: before any draw can read the slot
     return o;
 }
 
@@ -6457,6 +6483,53 @@ static MTLSamplerAddressMode wrapm(int w) {
         case 6: return MTLSamplerAddressModeMirrorRepeat; }
     return MTLSamplerAddressModeRepeat;
 }
+/* Anisotropic filtering for the game's material textures (samp_by_id): TOTK_ANISO, or the settings panel's choice given
+   before the guest starts (dm_gfx_aniso_start; graphics-aniso.txt) or in play (dm_gfx_aniso_set). The game's sampler
+   pools hold sampler numbers; the Metal sampler each number stands for is made at its first use and kept (g_sview /
+   g_srid), and the argument encoding reads it at every encode. A change drops those Metal samplers the way a game's
+   re-registration of a sampler does (registry lock, g_reg_gen, so no argument buffer is reused with the old ones), but
+   released only after the GPU is done with them; each is made again at its next use with the new level. */
+static _Atomic int g_aniso_saved, g_aniso_now = -1;
+void dm_gfx_aniso_start(int n) { atomic_store(&g_aniso_saved, n < 0 ? 0 : n > 16 ? 16 : n); }
+int dm_gfx_aniso_locked(void) { return getenv("TOTK_ANISO") != NULL; }
+int dm_gfx_aniso(void) {
+    int v = atomic_load(&g_aniso_now);
+    if (v < 0) { const char *e = getenv("TOTK_ANISO"); v = e ? atoi(e) : atomic_load(&g_aniso_saved); v = v < 0 ? 0 : v > 16 ? 16 : v;
+                 int was = -1; if (atomic_compare_exchange_strong(&g_aniso_now, &was, v)) { if (v > 1) MLOG("各向异性过滤 %dx（材质贴图；%s）", v, getenv("TOTK_ANISO") ? "TOTK_ANISO" : "设置面板"); }
+                 else v = was; }
+    return v;
+}
+/* Drops the Metal samplers made for the game's sampler numbers (each is made again at its next use), the way a game
+   re-registration does: under the registry lock, g_reg_gen so no argument buffer is reused with the old ones, the old
+   ones released only after the GPU is done with them. Returns how many were dropped. */
+static int samp_cache_flush(void) {
+    int dropped = 0;
+    for (int i = 0; i < g_nsreg; i++) if (g_sview && g_sview[i]) { defer_obj_release(CFBridgingRelease(g_sview[i])); g_sview[i] = NULL; g_srid[i] = 0; dropped++; }
+    g_reg_gen++;
+    return dropped;
+}
+void dm_gfx_aniso_set(int n) {
+    n = n < 0 ? 0 : n > 16 ? 16 : n;
+    if (getenv("TOTK_ANISO") || dm_gfx_aniso() == n) return;
+    registry_lock();
+    atomic_store(&g_aniso_now, n);
+    int dropped = samp_cache_flush();
+    registry_unlock();
+    MLOG("各向异性过滤 %dx（设置面板，立即生效：%d 个采样器重建）", n, dropped);
+}
+/* Shadows off (the effects page, totk_fx.h): every comparison sampler compares "always", so each sample_compare of a
+   shadow map reads lit, in whichever shader reads it (the shadow pre-pass, the deferred lighting tiles that are in
+   shadow, the volumetric fog's light shafts, compute passes: nine shaders in a field frame of 1.4.3). The samplers are
+   made again (samp_cache_flush). */
+static _Atomic int g_shadow_cmp_off;
+void dm_gfx_shadow_samplers_off(int off) {
+    if (atomic_load(&g_shadow_cmp_off) == !!off) return;
+    registry_lock();
+    atomic_store(&g_shadow_cmp_off, !!off);
+    int dropped = samp_cache_flush();
+    registry_unlock();
+    MLOG("阴影%s：比较采样器%s（%d 个采样器重建）", off ? "关" : "开", off ? "一律“总是通过”" : "恢复游戏的比较方式", dropped);
+}
 static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Caller holds g_rmu
     if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "采样器号 %d 未登记", sid); return nil; }
     if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
@@ -6477,16 +6550,16 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
        mipmapped and repeating ones (ground, walls, foliage seen at a grazing angle; the game asks for 1x everywhere).
        Clamped samplers keep the game's setting: some read data rather than colour, and anisotropy there left bright
        green pixels along Link's outline in the inventory (150-240 per frame at 3440x1440, 8-17 without). Point-sampled
-       lookups, unmipmapped targets, shadow-compare and min / max samplers keep it too; values above 16 mean 16. */
-    static int aniso = -1;
-    if (aniso < 0) { const char *e = getenv("TOTK_ANISO"); aniso = e ? atoi(e) : 0; aniso = aniso < 0 ? 0 : aniso > 16 ? 16 : aniso; }
+       lookups, unmipmapped targets, shadow-compare and min / max samplers keep it too; values above 16 mean 16.
+       Without TOTK_ANISO, the settings panel's choice (graphics-aniso.txt, dm_gfx_aniso_start before the guest starts). */
+    int aniso = dm_gfx_aniso();
     BOOL repeats = (d.sAddressMode == MTLSamplerAddressModeRepeat || d.sAddressMode == MTLSamplerAddressModeMirrorRepeat) &&
                    (d.tAddressMode == MTLSamplerAddressModeRepeat || d.tAddressMode == MTLSamplerAddressModeMirrorRepeat);
     BOOL material = !p.cmp_mode && !p.reduction && d.minFilter == MTLSamplerMinMagFilterLinear && d.magFilter == MTLSamplerMinMagFilterLinear &&
                     d.mipFilter != MTLSamplerMipFilterNotMipmapped && repeats;
     if (aniso > 1 && material && d.maxAnisotropy < (NSUInteger)aniso) d.maxAnisotropy = (NSUInteger)aniso;
     if (material) d.lodBias = tup_mip_bias();   // TOTK_MFX_TEMPORAL_MIPBIAS (totk_taa.m): finer mip levels for a scene upscaled temporally; 0 unless set
-    if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
+    if (p.cmp_mode) d.compareFunction = atomic_load(&g_shadow_cmp_off) ? MTLCompareFunctionAlways : (MTLCompareFunction)(p.cmp_func - 1);   // shadows off: dm_gfx_shadow_samplers_off
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);
     d.reductionMode = (MTLSamplerReductionMode)p.reduction;   // TOTK: NVN AVERAGE/MIN/MAX = Metal WeightedAverage/Minimum/Maximum
@@ -7679,7 +7752,11 @@ static NSString *pso_archive_key(const pso_key *k, NvShader *vs, NvShader *fs, i
     if (!variant && !merged && ((k->a2c & PSO_VBORDER) || k->fsfn)) return nil;
     pso_skey sk; pso_skey_from(k, vs, fs, merged, NULL, &sk);
     NSString *key;
-    if (variant) { NSMutableData *b = [NSMutableData dataWithBytes:&sk length:sizeof sk]; [b appendData:[variant dataUsingEncoding:NSUTF8StringEncoding]]; key = par_hash(b.bytes, b.length); }
+    /* TOTK_SSAO (totk_ssao.h): a patched AO shader is another function than the shipped one with the same key, so its
+       pipelines get keys of their own (2026-10-30: archived, the packaging tool patches them too); TOTK_SSAO=0's
+       shipped ones keep the old keys. The parameters sit in c1, not in the pipeline: one key for every level. */
+    NSString *tail = fs && fs->ssao_slot ? (variant ? [variant stringByAppendingString:@"|ssao"] : @"ssao") : variant;
+    if (tail) { NSMutableData *b = [NSMutableData dataWithBytes:&sk length:sizeof sk]; [b appendData:[tail dataUsingEncoding:NSUTF8StringEncoding]]; key = par_hash(b.bytes, b.length); }
     else key = par_hash(&sk, sizeof sk);
     if (fs && fs->hdr_compose) key = [@"hdr-compose1-" stringByAppendingString:key];
     static int on = -1; if (on < 0) { const char *p = getenv("TOTK_PAR_MISS_LOG"); on = p && *p; }
@@ -9023,6 +9100,7 @@ static void warm_start(void) {
         MLOG("预热和管线存档完成后才进标题：又等了 %.1f s，可用渲染管线 %llu / 计算管线 %llu", (bp_now() - t1) / 1e9, g_warm_claim_rps, g_warm_claim_cps);
     } else if (g_par_fill_lists || g_shared_fill) warm_fill_archive(g_par_fill_lists ? g_par_fill_lists : g_shared_fill, nil);
     if (runtime_audio_hold) runtime_audio_hold(0);   // the game's sound, silent until here (audio_mixer.c)
+    if (runtime_warm_title) runtime_warm_title();   // and its picture: the start-up screen goes with the first frame (frontend.m)
 }
 static int g_rt_ovr;   // 运行时外推的模板覆盖：0 不覆盖；1 只在单位 / 特效 / 外推洞位（0xD0）上通过、不写模板；3 照常深度测试，通过处写特效位 0x40 | Stencil override for runtime extrapolation: 0 no override; 1 pass only on the unit / effect / extrapolation-hole bits (0xD0), no stencil write; 3 depth test as usual, write the effect bit 0x40 where it passes
 static id<MTLDepthStencilState> dss_get(int has_depth, int has_stencil) {
@@ -12411,12 +12489,14 @@ static void scene_size_note(__unsafe_unretained NvShader *fs) {   // the compose
     if (ow != w || oh != h) MLOG("内部分辨率（合成采样的场景）：%ux%u", w, h);
 }
 #include "totk_hdr_render.h"
+#include "totk_finish.h"   // FXAA off and sharpening (the settings panel's effects page)
 static int mfxup_draw(NvProg *pr) {
     if (g_mfxup_src || g_mfxup_out) { g_mfxup_src = nil; g_mfxup_out = nil; } g_mfxup_sh = nil;   // TOTK: nil stores were two objc_release calls on every draw
     if (!pr) return 0;
     __unsafe_unretained NvShader *fs = pr->sh[1];
     if (!fs) return 0;
     scene_size_note(fs);
+    if (fin_draw(fs)) return 1;   // FXAA off: our pass writes its image before the reader (totk_finish.h)
     /* TOTK_TAA: the compose shader's scene goes through the MetalFX temporal scaler (1:1) first; encode_args binds the
        result, or the spatial upscale below takes it as its input when the scene is smaller than the canvas. The docked
        upscale (mfxup_dock) is a later draw of another shader and reads the composed picture: unaffected.
@@ -12602,6 +12682,7 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     { uint64_t skip = atomic_load(&g_diag_skip_fs);
       if (skip && pr->sh[1] && !g_defer_replaying) { char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)skip);
           if (!strncmp(pr->sh[1]->key, prefix, 16)) return; }
+      if (!g_defer_replaying && fx_drop(pr->sh[1], 1, pr->sh[0])) return;   // an effect switched off (totk_fx.h)
       static char sk[16][20]; static int nsk = -1;
       if (nsk < 0) { nsk = 0; for (const char *q = getenv("DM_NVN_SKIP_FS"); q && *q && nsk < 16; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 16) n = 16; memcpy(sk[nsk], q, n); sk[nsk++][n] = 0; }
                      if (nsk) MLOG("DM_NVN_SKIP_FS：丢弃 %d 个片元着色器的绘制（诊断，画面不对）", nsk); }
@@ -12806,7 +12887,7 @@ frz_plain:;
     if (ux != 1) { vx = ax + (vx - ax) * kx; vw *= kx; }
     if (uy != 1) { vy = cy + (vy - cy) / uy; vh /= uy; }
     if ((atomic_load(&g_uw_log) > 0 && uw_on_canvas()) || atomic_load(&g_draw_log) > 0)
-        MLOG("[uw] F%llu pass %llu ui %d squeeze %.3f/%.3f vs %.8s fs %.8s count %u inst %d vp %s%g,%g,%g,%g sc %s%d,%d,%d,%d blend %#x tex %ux%u fmt %#x ser %llu bl %u,%u,%u/%u,%u,%u cm %#x prim %d",
+        MLOG("[uw] F%llu pass %llu ui %d squeeze %.3f/%.3f vs %.16s fs %.16s count %u inst %d vp %s%g,%g,%g,%g sc %s%d,%d,%d,%d blend %#x tex %ux%u fmt %#x ser %llu bl %u,%u,%u/%u,%u,%u cm %#x prim %d",
              (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, g_uw_ui, ux, uy, pr && pr->sh[0] ? pr->sh[0]->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-",
              dw ? dw->count : di ? di->count : 0, dw ? dw->instances : di ? di->instances : 0, S.has_vp ? "" : "none ", S.has_vp ? S.vp[0][0] : 0, S.has_vp ? S.vp[0][1] : 0, S.has_vp ? S.vp[0][2] : 0, S.has_vp ? S.vp[0][3] : 0,
              R.has_sc ? "" : "none ", R.sc.x, R.sc.y, R.sc.w, R.sc.h, S.color.blend_en, (unsigned)tw, (unsigned)th,
@@ -13188,6 +13269,9 @@ static void dispatch(const p_dispatch *dp) {
     if (cpr->missing) { static uint64_t n; if (!n++) MLOG("[shader-miss] 计算着色器还没翻译：跳过这个派发（以后同类不再提示）"); return; }
     NvShader *cs = cpr->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+    { uint64_t skip = atomic_load(&g_diag_skip_cs);   // diagnostic "flag skipcs_<key> 1"
+      if (skip && !g_defer_replaying) { char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)skip); if (!strncmp(cs->key, prefix, 16)) return; }
+      if (!g_defer_replaying && fx_drop(cs, 5, nil)) return; }   // an effect switched off (totk_fx.h)
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
@@ -13237,7 +13321,7 @@ static void dispatch(const p_dispatch *dp) {
     else { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } ce = pg_compute(); }
     enc_c_pso(ce, ps);
     if (!pre) encode_args(ce, cs, 5, 0);
-    if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.8s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
+    if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.16s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (!reuse) enc_c_end(ce);
     bright_lut(cs);   // 3D 画面加亮：游戏算完调色表之后重写 | 3D picture brightening: rewrite after the game finishes computing the color lookup table
@@ -14709,7 +14793,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
         }
         cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3];
     }
-    if (crop) { atomic_store(&g_pic_big, cw > 1920 || ch > 1080); atomic_store(&g_out_w, (uint32_t)cw); atomic_store(&g_out_h, (uint32_t)ch); }   // a game frame (interpolated frames come without the crop)
+    if (crop) { atomic_store(&g_pic_big, cw >= 3840 && ch >= 2160 ? 2 : cw > 1920 || ch > 1080); atomic_store(&g_out_w, (uint32_t)cw); atomic_store(&g_out_h, (uint32_t)ch); }   // a game frame (interpolated frames come without the crop)
     present_pipeline(dst.pixelFormat,hdr_on() && src.pixelFormat==MTLPixelFormatRGBA16Float);
     double dw = dst.width, dh = dst.height;
     MTLViewport vp = present_viewport(dw, dh, cw, ch);
@@ -14961,6 +15045,21 @@ static id<MTLTexture> g_pring[PRING_N]; static uint64_t g_pring_tk[PRING_N]; sta
 static __thread int t_pn_ring = -1;   // the slot present_now shows instead of the game's image (set by its callers)
 static uint64_t g_pring_n, g_pring_full;
 static int pring_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PRESENT_RING"); v = !(e && !strcmp(e, "0")); } return v; }
+/* The minimum display time of a picture (presentAfterMinimumDuration): the present period cut down to whole refreshes,
+   less a millisecond. The period itself was too long wherever it is not a whole number of refreshes: a 90 or 72 fps
+   frame lock on a 120 Hz display (11.1 / 13.9 ms) waited for the second refresh every time and ran at 60, and the 120
+   lock (8.33 ms, exactly one refresh) took a second refresh whenever the timing was a little short: 25-53 of every 300
+   frames (2026-10-30). Whole refreshes still keep the stutter guard below (a picture is never replaced at the very next
+   refresh when its period is two); a period shorter than one refresh (uncapped) is unchanged. */
+#if !TARGET_OS_SIMULATOR
+static double present_min_duration(double period) {
+    static double tick; static unsigned n;   // the refresh interval, read again every 240 pictures (the window may move)
+    if (!tick || ++n % 240 == 0) { int hz = mtl_display_hz(); tick = hz > 0 ? 1.0 / hz : 0; }
+    if (tick <= 0 || period < tick * 0.98) return period;
+    double whole = floor(period / tick + 0.02) * tick;
+    return whole - fmin(0.001, tick / 4);
+}
+#endif
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], __strong id<CAMetalDrawable> supplied, double target_ts, int interp) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
@@ -15322,7 +15421,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     // 每张至少显示一个出图周期：GPU 完成时刻在 120 Hz 刷新边界附近抖动时，不再出现「25 ms + 8.33 ms」成对的顿挫
     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
     if (target_ts > 0) [dr present];
-    else if (period > 0) [dr presentAfterMinimumDuration:period]; else [dr present];
+    else if (period > 0) [dr presentAfterMinimumDuration:present_min_duration(period)]; else [dr present];
 #endif
     (void)frame;
     return 1;

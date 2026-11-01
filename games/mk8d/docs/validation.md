@@ -139,6 +139,42 @@ Both headless runs printed the one known `[RED] texture ID … not registered` l
 
 Not checked: the fix by hand with a controller, and other screens that may open the controller applet (such as multiplayer).
 
+## 2026-10-30: 2P and every library applet
+
+**Found.** After the fix above, a headless run of the installed app on the Multiplayer path showed a new problem: L+R at the title, Down, A (2P), A (Grand Prix), A (50cc), with the one player a headless run has. The 2P character select appeared, and the game called the controller applet **642 times in about 50 s**. The game wants two players there. The host answered OK with one player, and with the focus pair the game applied that answer and opened the applet again. Before the fix it froze there instead.
+
+**Upstream.** nxnative fixed the same game the same day, in `137c2291` ("Library applets take the application's focus", GitHub issue #550, found through 2P):
+- every applet stand-in holds the game out of focus while it runs (`DM_APPLET`);
+- the controller applet answers canceled (2202-3101) when fewer players are connected than the game's minimum.
+
+It is ported here as it is, in place of this target's own fix. `third_party/COPIES.md` lists the files.
+
+**Keyboard row.** The settings window gets a Keyboard choice for the host's `DM_KBD_PLAYER`. "Own player" makes the keyboard player 1 and the controllers players 2 on, so two can play with the keyboard and one controller.
+
+**Checks.** Headless runs started the host directly with `DM_WINDOW` unset, from a copy of the player's save. The host was built from this commit's sources and put into an APFS copy of the installed app, with the settings list made again; the app in `/Applications` was not changed.
+
+| Check | Result |
+|---|---|
+| `make -C games/mk8d test` | **21 passed.** New: the copied `t_hid` (124 checks, among them the applet's focus and the canceled answer) and `t_oe` (53 checks: applets opening and closing, nesting, the window's focus while one is open) built and run; the Keyboard row's values. The commit's other tests, `t_swkbd`, `t_pctl`, `t_shared_font` and `t_system_event`, were built and run once by hand: all passed |
+| Settings list | `settings.py` writes 13 rows for this app, the Keyboard row among them; the other 12 are as before |
+| 1P, Minus on the character grid and then on Link's variant panel | Each opened the controller applet once: `oe library applet: controller support`, `oe focus state → 2 (library applet open)`, `hid controller applet: 1 to 1 players wanted, 1 connected`, `oe focus state → 1 (library applet closed)`, and the game took the message. It went on to the kart parts and the cup screen |
+| 2P with one controller | **One** applet call: `2 to 2 players wanted, 1 connected: too few, closed as the player would (canceled)`. The game went back to the engine class menu, and B twice reached the main menu |
+
+Both runs printed the one known `[RED] texture ID … not registered` line and no other.
+
+**The built app.** The app was then built from this branch (`45dcf62`; the branch was later rebased onto `main`, which changed no file in `games/mk8d`): only the shader split ran again, and all 29,651 Mac shaders came from the cache. It is 13.1 GB, `codesign --verify --deep --strict` passed, its `launcher.json` holds the Keyboard row, and it was installed in `/Applications` (the previous app moved to the Trash). The same two headless runs on the installed app gave the same results. In 1P, the applet was called twice (`1 to 1 players wanted`), and the game went on to the kart parts. In 2P, it was called once (`canceled`), and the game went back to the engine class menu and then, with B twice, to the main menu.
+
+**By hand, then fixed.** The player tried 2P twice, with a DualSense, and both times the game went back from the character select. The logs show `DM_KBD_PLAYER=shared` and `2 to 2 players wanted, 1 connected`: the Keyboard row was among the Advanced settings, which the window keeps folded, so it was never changed. The row is now among the basic settings, under Controls (`fd84538`). The app was built again (only the packing ran) and installed, and one headless 2P run gave the same answer as before.
+
+**By hand, after the fix.** The player then tested on that app, in full screen with a DualSense.
+
+| Session | From the host log |
+|---|---|
+| 2P, 13:27 | Keyboard set to Own player in the window: `DM_KBD_PLAYER=own (changed)`, `the keyboard is player 1, each controller a player of its own from player 2 on`. The DualSense was player 2 (npad 1), with gyro. The player reached the 2P character select and reported that it works; the draws per frame rose to about 320 there (262 with the one player of the scripted runs). The game opened no controller applet in this session, since two players were connected. No 2P race was played |
+| 1P, 13:28–13:41 | Keyboard back on Plays with player 1, the DualSense player 1. One more race session by hand: 47,400 frames, **47,382 on screen**, 74 dropped, p99 over 16.7 ms in 5 of 158 windows (33.3 ms each). Footprint 2.32–3.00 GB, 0 audio underruns in 79 reports, 15 save commits, no focus change, the one known red line, host exit 0 |
+
+Not checked: a race with two players, how the single-player modes treat a controller that is player 2, and this game's keyboard, Mii and error applets.
+
 ## Known limitations
 
 - Mii heads draw nothing: the host ships no MiiModel firmware data (nxnative's stand-in has every part empty). Bodies and favourite colours show.

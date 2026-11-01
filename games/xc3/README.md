@@ -34,7 +34,22 @@ Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
 - Under the game's second sampler pool, a combined handle with sampler 0 is read as a separate texture handle.
 - Rare, brief screen tearing or thin black lines while playing.
+- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K).
 - A shader seen for the first time is translated and compiled when it is first used. On the first run (of `make boot` or of the app, which keeps its own cache) a loading screen can wait for that, once for up to about a minute; later runs load the shaders from the cache.
+
+## What the game uses
+
+- **NVN:** SDK 12.3.9, the same in 1.0.0 and 2.2.1. The game asks `nvnDeviceGetProcAddress` for entry points 1,050 times at start. The graphics layer's table has 523 NVN names: 432 implemented, 7 intentional no-ops, and the other 84 abort with their name when called. None of those 84 was called in 15-minute runs of either version.
+- **Features Metal lacks, emulated here:**
+  - transform feedback;
+  - geometry shaders (point input; one triangle-strip program is skipped);
+  - BC7 encoding on the GPU;
+  - two texture and sampler pools switched every frame;
+  - skinning in vertex shaders under rasterizer discard;
+  - quads.
+  See [docs/reference/nvn-coverage.md](docs/reference/nvn-coverage.md).
+- **Sound and movies:** Wwise sound through `audren:u` / `audout:u`, and 238 WebM (VP9) movies through the SDK `movie` library and `runtime/movie_host.c` (libvpx).
+- **Online and DLC:** no online play. In 2.2.1 the game sees your own add-ons (Expansion Pass volumes 1–4) once they are extracted, and the eShop's "Purchase" returns at once.
 
 ## Inputs
 
@@ -72,19 +87,25 @@ make prepare runtime shader-tools VERSION=v221 PY=$PY
 make boot VERSION=v221
 ```
 
+Add-on content (2.2.1 only): your own Expansion Pass NSPs, each checked against `assets/expected-aoc.json` (hashes only):
+
+```sh
+$PY scripts/extract_aoc.py "<wave 1>.nsp" "<wave 2>.nsp" "<wave 3>.nsp" "<wave 4>.nsp" --keys prod.keys --work XC3_build   # -> XC3_build/extracted/aoc/1..4
+```
+
 Both versions live in one work folder (`extracted/<version>`, `rewritten/<version>`, `build/<version>` and `build/xc3-native-<version>`); the shader cache and the tools are shared. `VERSION` defaults to the newest version extracted. `make app VERSION=v221 …` builds the app for 2.2.1.
 
 `make boot` opens the game window and writes its log to `XC3_build/logs/boot.log`. The first start translates the game's shaders as they are used; later starts warm them from the cache in a second or two. The system shared fonts can be extracted from your own firmware with `scripts/extract_shared_fonts.py`.
 
 Verification of the rewrite (each module): `third_party/d2r/structck.py XC3_build/rewritten/v100 <module> XC3_build/extracted/v100/exefs/<module>` and `third_party/d2r/equiv.py` with the same arguments plus `--min-eff 8`. Set `DM_ROOT` to the work folder so `structck.py` keeps its cache there. `make prepare` checks every rewritten module against `rewritten_sha256` in the manifest.
 
-Keys as in the other ports: WASD the left stick, arrow keys the right stick (camera), J is A, K or Space is B, I is X, U is Y, Q / E are L / R, Option / Shift are ZL / ZR, Return is +, Tab or Escape is −, T F G H the D-pad. A game controller works too. Key 1 shows or hides the overlays; the other TotK shortcut keys (2–4) do nothing in this port.
+Keys as in the other ports: WASD the left stick, arrow keys the right stick (camera), J is A, K or Space is B, I is X, U is Y, Q / E are L / R, Option / Shift are ZL / ZR, Return is +, Tab or Escape is −, T F G H the D-pad. A game controller works too. Key 1 opens the settings panel (from TotK): overlay and FPS graph, controller type, mouse, rumble, and key bindings for keyboard, mouse and controller, saved for the next start. In 2.2.1, **Render resolution** draws the game's scene at the full 1920×1080, or at 2K (2552×1440, which the game scales down to its 1080p picture), instead of its own 960×540 (half the output, as the Switch does); it applies at the next start and is off by default. Rows this game cannot use yet (frame lock above 30, frame interpolation, output resolution, aspect ratio) show one fixed value. On a controller, L3 + R3 together open it.
 
 Run this way, saves, the profile and the pseudo device id are written to `XC3_build/user-data`.
 
 ## The app
 
-`make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
+`make shader-seed PY=$PY` first (optional) gathers the shaders already translated on this Mac (the work folder's cache and the app's) into `build/shader-seed`; `make app` then bundles them, so a fresh app does not translate them while playing. `make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
 
 The settings window chooses the monitor, window or full screen, the window size or full-screen resolution, MetalFX or plain upscaling, the frame rate overlay, and whether new shaders are built in the background. There is no frame rate choice: the game holds itself to 30 fps, as on the Switch.
 

@@ -22,7 +22,6 @@
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
-#include "update_notice.h"
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -245,7 +244,6 @@ int main(int argc, char **argv) {
             [[NSRunningApplication runningApplicationWithProcessIdentifier:running] activateWithOptions:NSApplicationActivateAllWindows];
             return 0;
         }
-        mng_update_notice(data);
 #if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143) || defined(WONDER_V121)
         NSString *backup = [profile stringByAppendingFormat:@"-before-%s", TOTK_GAME_VERSION];
         NSFileManager *fm = NSFileManager.defaultManager;

@@ -99,6 +99,8 @@ python3.14 build_app.py "<base 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 upd
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
 
+On a Mac with 16 GB of memory or more, a 1.4.3 build includes native 4K (the settings panel's 3840×2160 resolution); it reserves about 1.4 GiB more memory at every start. Add `--no-native-4k` to leave it out, or `--native-4k` to include it on a Mac with less memory.
+
 **4. Let it run to the end.** A fresh build takes **20–40 minutes** on an M-series Mac, longer on an 8 GB Mac:
 
 | Step | Time |
@@ -186,6 +188,8 @@ With `--update`, use that version's folder (`v112`, `v121` or `v143`) instead of
 ## Update the app
 
 - **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` updates it in about a minute, without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`.
+- **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
+- **Back to the version you had** (when a new version plays worse): quit the game, find the commit your checkout was on before `git pull` with `git reflog` (the line just below the `pull` line), `git checkout <that commit>` (git calls this a "detached HEAD"; that is expected) and run `python3.14 update_runtime.py "<the app>"` again, with `--seed` if it asks for it. Then `git checkout main`: the app keeps the older runtime until you update it again. This works for commits from 685f940 (26 October 2026) on; your saves and settings are not changed.
 - **Another game version:** run `build_app.py` again with the new `--update` and the same `-o`. It replaces the app. Before the first start on the new version, the app backs up your saves next to them as `profile-before-<version>`; keep that backup if you may go back.
 - **Mods:** `--mod "<mod folder>" --install-mod-romfs` builds the app with a mod's code patches and installs its data. See [mods.md](mods.md), [merged-mod-pack.md](merged-mod-pack.md) and [translation-mods.md](translation-mods.md).
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.

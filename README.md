@@ -57,7 +57,7 @@ Community ports keep their own runtime, graphics layer and scripts in their fold
 > [!TIP]
 > **Every shader in the shared list is ready before you play.** On a Mac the game does not stop to compile it, and on an iPhone or iPad nothing is missing from the picture. The more places players cover, the smoother the game gets for everyone.
 
-The [shared shader list](docs/shader-list.md) now holds **13,821 shader variants** (12,280 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
+The [shared shader list](docs/shader-list.md) now holds **14,243 shader variants** (12,436 shaders) from the Mac, iPhone and iPad: only states a build does not make by itself, since every build makes each shader's default variant. Every build makes them from the player's own game files, so the list holds identifiers only, never game data. Helping takes no setup:
 
 1. **Play.** Every build carries each shader of the game for its default bind state. When your game meets a shader in a state that variant does not serve, or builds a render pipeline the app's list lacks, it notes it in `shader-list-contribution.txt`; default variants are never noted.
 2. **On a Mac, every 100 new rows (shaders and pipelines together) it asks you once, before the game starts.** Click "Send": the GitHub form opens and the file is shown, ready to drag in. If the GitHub CLI (`gh`) is installed and signed in, the dialog offers "Submit automatically" instead, which sends this batch for you (a private gist and an issue) without opening the browser. An iPhone or iPad never asks during play: while it is connected to the Mac that built its app (cable or the same Wi-Fi), the Mac asks instead. "Don't remind me again" stops the reminders.
@@ -75,7 +75,7 @@ Everything from building the app to playing is in **[docs/install.md](docs/insta
 - [Controls](docs/controls.md) · [Where things are](docs/install.md#where-things-are) · [Known issues](docs/install.md#known-issues)
 - [Test records](docs/test-records.md)
 
-Experimental HDR / EDR is checked only on **TOTK 1.4.3 on Mac**. Key **8** or the key **1** settings panel switches it on/off (default off); the choice is kept in `hdr.txt` beside `controls.txt`. `TOTK_HDR=0` / `1` overrides the saved startup choice. HDR on uses extended linear sRGB to retain the source color primaries; off restores the original SDR layer, interpolation selection and cache location. Other game versions require checking their compose shader again; iOS and BotW keep SDR. Key **9** cycles the frame lock.
+Experimental HDR / EDR is checked only on **TOTK 1.4.3 on Mac**. The settings menu’s **Effects → HDR / EDR** switch turns it on/off (default off); the choice is kept in `hdr.txt` beside `controls.txt`. `TOTK_HDR=0` / `1` overrides the saved startup choice. HDR on uses extended linear sRGB to retain the source color primaries; off restores the original SDR layer, interpolation selection and cache location. Other game versions require checking their compose shader again; iOS and BotW keep SDR.
 
 ## How it works
 
@@ -153,7 +153,7 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 > [!TIP]
 > **公共清单里的每个着色器，开玩之前就已经准备好。** Mac 上不用停下来现场编译，iPhone 和 iPad 上画面也不会缺东西。大家玩过的地方越多，所有人玩得越流畅。
 
-[公共着色器清单](docs/shader-list.md)现在有 **13,821 个着色器变体**（12,280 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
+[公共着色器清单](docs/shader-list.md)现在有 **14,243 个着色器变体**（12,436 个着色器），来自 Mac、iPhone 和 iPad：只收打包自己做不出的状态，因为每次打包都会给每个着色器做好默认变体。每次打包都用玩家自己的游戏文件生成，所以清单里只有标识，不含任何游戏数据。参与不需要任何设置：
 
 1. **照常玩。** 每次打包都会把游戏里每个着色器按默认绑定状态各备一份。游戏遇到默认那份用不了的状态，或者建了 App 清单里没有的渲染管线，才会记进 `shader-list-contribution.txt`；默认变体不记。
 2. **在 Mac 上，着色器和管线合计每攒够 100 条，它会在游戏启动前问你一次。** 点“发送”，GitHub 提交页面会打开，文件也会显示出来，拖进去就行。装了 GitHub 命令行工具（`gh`）并已登录时，对话框里会多一个“自动提交”，点了就直接替你把这一批发出去（私密 gist 加一个 issue），不用打开浏览器。iPhone 和 iPad 玩的时候从不提醒：设备连着打包它的那台 Mac（线连或同一 Wi‑Fi）时，由 Mac 来问。点“不要提醒了”以后就不再问。
@@ -171,7 +171,7 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 - [操作](docs/controls.zh-CN.md) · [文件位置](docs/install.zh-CN.md#文件位置) · [已知问题](docs/install.zh-CN.md#已知问题)
 - [测试记录](docs/test-records.zh-CN.md)
 
-实验性 HDR / EDR 仅核对过 **Mac 上的 TOTK 1.4.3**。按 **8** 或在 **1** 键设置面板里开关（默认关闭）；选择保存在 `controls.txt` 旁的 `hdr.txt`，`TOTK_HDR=0` / `1` 可覆盖启动选择。开启时使用扩展线性 sRGB，保留源图像的色彩原色；关闭后恢复原来的 SDR 图层、补帧选择和缓存位置。其他游戏版本需要重新核对合成着色器；iOS 与旷野之息保持 SDR。**9** 键循环切换锁帧。
+实验性 HDR / EDR 仅核对过 **Mac 上的 TOTK 1.4.3**。在设置菜单的**效果 → HDR / EDR**中开关（默认关闭）；选择保存在 `controls.txt` 旁的 `hdr.txt`，`TOTK_HDR=0` / `1` 可覆盖启动选择。开启时使用扩展线性 sRGB，保留源图像的色彩原色；关闭后恢复原来的 SDR 图层、补帧选择和缓存位置。其他游戏版本需要重新核对合成着色器；iOS 与旷野之息保持 SDR。
 
 ## 工作原理
 

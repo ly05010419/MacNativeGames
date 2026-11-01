@@ -234,11 +234,12 @@ void runtime_guest_resident(uint64_t *resident,uint64_t *dirty,uint64_t *compres
 }
 static void host_diag_init(void) { fprintf(stderr,"[totk] native diagnostics initialized\n"); }
 static void host_oe_init(void) { fprintf(stderr,"[totk] application environment: local macOS process\n"); }
-static void host_aoc_init(void) { fprintf(stderr,"[totk] add-on content: no DLC\n"); }
-static int host_aoc_count(void) { return 0; }
+static void host_aoc_init(void) { fprintf(stderr,"[totk] add-on content: %d present\n",runtime_aoc_list(NULL,0,0)); }
+static int host_aoc_count(void) { return runtime_aoc_list(NULL,0,0); }
 static void host_aoc_changed_event(void *event) { if(!event)runtime_fail("aoc list changed event");hle_bind_system_event(event,0); }
-static int host_aoc_list(int *out,int offset,int count) {
- (void)out;if(offset<0||count<0)runtime_fail("invalid add-on content list range");return 0;
+static int host_aoc_list(int *out,int offset,int count) {   /* fs_host.c: the verified add-ons in extracted/aoc */
+ if(offset<0||count<0)runtime_fail("invalid add-on content list range");if(count&&!out)runtime_fail("add-on content list output");
+ return runtime_aoc_list(out,offset,count);
 }
 static void host_error_init(void) { fprintf(stderr,"[totk] error contexts: local diagnostics\n"); }
 static void host_fs_init(void) { runtime_fs_init(); }
@@ -429,3 +430,4 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  default:fprintf(stderr,"[totk] unimplemented SVC 0x%x at %s+%#llx\n",num,module,(unsigned long long)offset);if(num==0x1f)fprintf(stderr,"[totk] named port %.12s\n",(const char *)(uintptr_t)r[1]);runtime_trace_guest(r[29],r[30]);runtime_fail("system service not implemented");return 0;
  }
 }
+#include "mem_scan.h"   /* Mac diagnostics: mscan commands (memory scan, write watch; copied from games/totk) */

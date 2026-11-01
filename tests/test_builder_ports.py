@@ -7,6 +7,7 @@ import errno
 import os
 from pathlib import Path
 import signal
+import subprocess
 import tempfile
 import time
 from types import SimpleNamespace
@@ -40,8 +41,29 @@ def group_is_empty(pid, wait_s=10.0):
             REAL_KILLPG(pid, 0)
         except ProcessLookupError:
             return True
+        except PermissionError:
+            pass        # EPERM means the group exists; on macOS its only member is a zombie not reaped yet (S1.8c)
         time.sleep(0.05)
     return False
+
+
+class GroupIsEmpty(unittest.TestCase):
+    def start(self, argv):
+        proc = subprocess.Popen(argv, start_new_session=True)
+        self.addCleanup(proc.wait)                  # runs after stop_group: tells Popen its process is gone
+        self.addCleanup(stop_group, proc.pid)
+        return proc
+
+    def test_a_live_member_is_not_empty(self):
+        proc = self.start(['/bin/sleep', '30'])
+        self.assertFalse(group_is_empty(proc.pid, wait_s=0.2))
+
+    def test_a_zombie_is_not_empty_until_it_is_reaped(self):
+        proc = self.start(['/usr/bin/true'])
+        os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT)      # dead and not reaped: a zombie now
+        self.assertFalse(group_is_empty(proc.pid, wait_s=0.2))      # before the fix: PermissionError
+        proc.wait()
+        self.assertTrue(group_is_empty(proc.pid))
 
 
 class Commands(unittest.TestCase):

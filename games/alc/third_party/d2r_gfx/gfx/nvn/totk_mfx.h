@@ -11,7 +11,8 @@
    takes effect at the next game frame boundary (mfx_latch at the present), so a frame is never half on. */
 #include "totk_mfx_mode.h"
 const char *mfx_mode_name(int mode);
-void mfx_set(int mode);  // mode < 0 cycles the requested mode
+void mfx_set(int mode);
+int mfx_requested(void);   // the mode the player picked (the settings panel)  // mode < 0 cycles the requested mode
 int mfx_latch(void);     // at the game's present, after this frame's interpolation: take the requested mode; 1 = it changed
 // Per game frame, from the replay: the scene copy (the canvas copied before the first UI draw, in the canvas format),
 // the UI layer (colour attachment 7 of the later canvas passes), the G-buffer depth and the camera block (84 floats of

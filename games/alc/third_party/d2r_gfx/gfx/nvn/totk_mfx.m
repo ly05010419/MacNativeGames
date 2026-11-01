@@ -31,6 +31,7 @@ static struct {
     id<MTLDevice> dev;
     id<MTL4FXFrameInterpolator> fi;
     NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat scene_fmt;
+    MTLPixelFormat depth_fmt;      // Astral Chain's D24S8 runs as Depth32Float_Stencil8; TotK's G-buffer is D32F
     id<MTLTexture> scene[2], ui, mv, out[MFX_OUT], outv[MFX_OUT];
     id<MTLResidencySet> rs;
     id<MTLComputePipelineState> mv_ps;
@@ -100,6 +101,7 @@ static void mfx_init(void) {
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
 int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }
@@ -141,8 +143,8 @@ static void ensure_out(id<MTLDevice> dev, NSUInteger w, NSUInteger h, MTLPixelFo
     g.scene_fmt = fmt;
     g.ui = mk(MTLPixelFormatRGBA16Float, w, h, rt);
     for (int i = 0; i < MFX_OUT; i++) {
-        g.out[i] = mk(MTLPixelFormatRGBA8Unorm_sRGB, w, h, MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsagePixelFormatView);
-        g.outv[i] = [g.out[i] newTextureViewWithPixelFormat:MTLPixelFormatRGBA8Unorm];
+        g.out[i] = mk(MTLPixelFormatRGBA8Unorm, w, h, MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget);
+        g.outv[i] = g.out[i];   // linear output: no sRGB view needed (see ensure_fi)
     }
     g.out_w = w; g.out_h = h; g.fi = nil; g.prev_ok = g.hist_ok = 0;
     MLOG("scene (format %lu) / UI / output textures %lux%lu", (unsigned long)fmt, (unsigned long)w, (unsigned long)h);
@@ -151,7 +153,11 @@ id<MTLTexture> mfx_scene_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h, M
 id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { ensure_out(dev, w, h, 0); return g.ui; }
 id<MTLResidencySet> mfx_residency(void) { return g.rs; }
 void mfx_note_scene(void) { g.scene_ok = 1; }
-void mfx_note_depth(id<MTLTexture> d) { if (d && d.pixelFormat == MTLPixelFormatDepth32Float && d.textureType == MTLTextureType2D) g.depth = d; }
+void mfx_note_depth(id<MTLTexture> d) {
+    if (!d || d.textureType != MTLTextureType2D) return;
+    if (d.pixelFormat != MTLPixelFormatDepth32Float && d.pixelFormat != MTLPixelFormatDepth32Float_Stencil8) return;
+    g.depth = d; g.depth_fmt = d.pixelFormat;
+}
 void mfx_note_camera(const float *c, int n) {
     if (n < 84) return;
     for (int i = 0; i < 84; i++) g.cam[i] = c[i];
@@ -164,8 +170,12 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
     g.fi = fi_cached(iw, ih);
     if (!g.fi) {
         MTLFXFrameInterpolatorDescriptor *d = [MTLFXFrameInterpolatorDescriptor new];
-        d.colorTextureFormat = g.scene_fmt; d.outputTextureFormat = MTLPixelFormatRGBA8Unorm_sRGB;
-        d.depthTextureFormat = MTLPixelFormatDepth32Float; d.motionTextureFormat = MTLPixelFormatRG16Float; d.uiTextureFormat = MTLPixelFormatRGBA16Float;
+        /* Astral Chain's canvas already holds display-encoded values (the game's own composite writes them), so the
+           interpolator's sRGB output encoding would gamma-lift every interpolated frame (measured: sky 20,28,80 in the
+           game frame vs 84,94,152 in the interpolated one — exactly the sRGB encode). Linear output keeps the round
+           trip at identity; TotK's canvas is linear and keeps its own sRGB path in its own fork. */
+        d.colorTextureFormat = g.scene_fmt; d.outputTextureFormat = MTLPixelFormatRGBA8Unorm;
+        d.depthTextureFormat = g.depth_fmt ? g.depth_fmt : MTLPixelFormatDepth32Float; d.motionTextureFormat = MTLPixelFormatRG16Float; d.uiTextureFormat = MTLPixelFormatRGBA16Float;
         d.inputWidth = iw; d.inputHeight = ih; d.outputWidth = g.out_w; d.outputHeight = g.out_h;
         id<MTL4Compiler> comp = [g.dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
         if (!comp) MDIE("MTL4 compiler: %s", e.localizedDescription.UTF8String);
@@ -296,8 +306,11 @@ NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int s, id<MTL4CounterHeap> h
 }
 /* TOTK_MFX_MVLOG=<every n frames>: read the motion texture back after the interpolation and log its median and the
    camera step (diagnostic; waits for the GPU). */
+static _Atomic int g_mvlog_req;
+void mfx_mv_log_set(int n) { atomic_store(&g_mvlog_req, n); }
 void mfx_mv_log(void) {
     static int every = -1; if (every < 0) { const char *e = getenv("TOTK_MFX_MVLOG"); every = e ? atoi(e) : 0; }
+    { int req = atomic_load(&g_mvlog_req); if (req > 0) { every = req; atomic_store(&g_mvlog_req, 0); } else if (req < 0) every = 0; }
     if (every <= 0 || !g.mv || g.made % (uint64_t)every) return;
     static id<MTLCommandQueue> q; if (!q) q = [g.dev newCommandQueue];
     NSUInteger w = g.mv.width, h = g.mv.height;

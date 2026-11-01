@@ -6,6 +6,14 @@ It holds no game data, only identifiers; the build turns them into shaders from 
                                 bind state it was translated for (the translator's deps: texture, image, attribute and
                                 fragment output types). The runtime picks a variant by its deps (totk_shader_rt.m
                                 deps_match), so an entry is the shader plus its deps, never a variant name.
+  A <suffix> <answers>          a bind state warm rows name: a variant is "<shader key>-<suffix>_b", the suffix the first 12
+                                hex digits of the SHA-256 of the answers it was translated for (prepare_shader_seed.py
+                                suffix, totk_shader_contrib.h totk_contrib_listed_name). The list keeps one for every
+                                suffix its warm rows name but the default one (no answers), also when prune drops the V
+                                rows that brought it: packaging resolves each name through it to the variant the seed
+                                serves that bind state with (resolve), as the runtime picks one, so a row stays right
+                                whatever names the seed gives. A warm row naming a bind state the list does not know is
+                                not merged (2026-10-30: 6,855 rows named bind states whose V rows prune had dropped).
   L <shader key> <source> <control> <code> <length>
                                 where a shader that is no BNSH file sits in the player's game files: <source> is a RomFS
                                 path (a package member after a '/', .zs decompressed) or module:<name> (a game module's
@@ -34,15 +42,21 @@ It holds no game data, only identifiers; the build turns them into shaders from 
                                                      pso_collected.tsv holds every pipeline ever built, tens of thousands,
                                                      so pipelines join only from a file named here), or a pso_user.tsv /
                                                      pso_collected.tsv / older list file
-  shader_list.py export <list> <pso_manifest.tsv> <pso_title.tsv>   the two files the runtime reads (nvn_mtl.m warm_start)
-  shader_list.py export <list> <pso_manifest.tsv>   one file with every warm row, title rows first, for a runtime
-                                                     without a title list (the original port, native-port)
-  shader_list.py rename <seed>.aliases.tsv <file>... rename the variants exported warm rows name through the aliases the
-                                                     seed's preparation wrote (listed variants another one serves)
+  shader_list.py resolve <seed folder> <list> <pso_manifest.tsv> <pso_title.tsv>
+                                                     the two files the runtime reads (nvn_mtl.m warm_start) for the game
+                                                     version of that seed: rows of other versions' shaders left out, each
+                                                     variant named as the seed serves its bind state, rows it cannot
+                                                     build (a shader or bind state it failed to translate) left out
+  shader_list.py export <list> <pso_manifest.tsv> <pso_title.tsv>   the two files as listed, every game version's
+                                                     rows under the names the list keeps (games/totk/Makefile, for
+                                                     development runs; an app gets resolve's)
+  shader_list.py export <list> <pso_manifest.tsv>   one file with every warm row as listed, title rows first, for a
+                                                     runtime without a title list (the original port, native-port)
   shader_list.py prune <list> <seed folder>          drop the V rows the seed's built-in variants serve (prepare_shader_seed.py
                                                      builtin_serves): the list keeps only non-default variants
   shader_list.py stats <list>                        check the list and count it
 """
+import hashlib
 import json
 import re
 import struct
@@ -67,6 +81,24 @@ BORDER = re.compile(rf'^(?:-|(?:\d+:[0-7]:{_HEXFLOAT},{_HEXFLOAT},{_HEXFLOAT},{_
 TILE = re.compile(r'^(?:\d+:[0-7];){1,8}$')   # nvn_mtl.m g_pso_fbrec: "<argument id>:<colour attachment>;" per tile read
 SOURCE = re.compile(r'^(?:module:[a-z0-9]+|[A-Za-z0-9_.()+-]+(?:/[A-Za-z0-9_.()+-]+)*)$')
 DEPS_FIELDS = {'tex', 'img', 'attr', 'fout'}
+SUFFIX_RE = re.compile(r'^[0-9a-f]{12}$')
+
+
+def answers_suffix(answers):
+    """The suffix a variant translated for these answers (compact sorted JSON) is named with: prepare_shader_seed.py suffix."""
+    return hashlib.sha256(answers.encode()).hexdigest()[:12]
+
+
+DEFAULT_SUFFIX = answers_suffix('{"attr":{},"fout":{},"img":{},"tex":{}}')   # no answers: prepare_shader_seed.py SUFFIX
+
+
+def listed_answers(deps):
+    """The answers a build translates a V row's deps (compact JSON) with, as compact JSON: prepare_shader_seed.py
+    answers_for, so its variant is named "<key>-" + answers_suffix of them (and so is a pipeline row's, by the runtime's
+    totk_contrib_listed_name)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))   # also when run with python -I
+    from prepare_shader_seed import answers_for   # it imports this module
+    return json.dumps(answers_for(json.loads(deps)), sort_keys=True, separators=(',', ':'))
 
 
 def canonical(deps):
@@ -186,11 +218,15 @@ class ShaderList:
         self.variants = set()   # (key, deps)
         self.warm = {}          # warm row -> flags; dicts keep insertion order, the order rows were recorded in
         self.locators = set()   # (key, source, control offset, code offset, length)
+        self.path = None
+        self.answers = {}       # suffix -> answers (compact JSON): the bind states warm rows name (A rows)
+        self.refused = 0        # warm rows merged from a source that named a bind state the list does not know
 
     @classmethod
     def load(cls, path):
         lst = cls()
         path = Path(path)
+        lst.path = path
         if not path.exists():
             return lst
         for number, line in enumerate(path.read_text().splitlines(), 1):
@@ -200,10 +236,13 @@ class ShaderList:
             if fields[0] == 'V' and len(fields) == 3 and KEY.match(fields[1]):
                 try:
                     if canonical(json.loads(fields[2])) == fields[2]:
-                        lst.variants.add((fields[1], fields[2]))
+                        lst.add_variant(fields[1], fields[2])
                         continue
                 except ValueError:
                     pass
+            if fields[0] == 'A' and len(fields) == 3 and SUFFIX_RE.match(fields[1]) and answers_suffix(fields[2]) == fields[1]:
+                lst.answers[fields[1]] = fields[2]
+                continue
             if fields[0] == 'L':
                 where = locator(fields)
                 if where:
@@ -219,11 +258,25 @@ class ShaderList:
 
     def save(self, path):
         lines = [f'V\t{key}\t{deps}' for key, deps in sorted(self.variants)]
+        if list_game(path) in (None, 'totk', 'botw'):   # other games' own tools know no A rows
+            named = {n[:-2].rpartition('-')[2] for row in self.warm for n in row_variants(row) if VARIANT.match(n)}
+            lines += [f'A\t{suffix}\t{answers}' for suffix, answers in sorted(self.answers.items()) if suffix in named]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
         packed = list_game(path) in (None, 'totk', 'botw')   # other games' own tools read their lists as hex
         lines += ['\t'.join((row[0], pack_key(row[1]), *row[2:]) if packed and row[0] in ('R', 'B', 'T') else row) + '\t' + flags
                   for row, flags in self.warm.items()]
         Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
+
+    def add_variant(self, key, deps):
+        """A V row, and the bind state its variant's name stands for."""
+        self.variants.add((key, deps))
+        answers = listed_answers(deps)
+        self.answers[answers_suffix(answers)] = answers
+
+    def knows(self, row):
+        """Whether every variant a warm row names is the default one or one of a bind state the list keeps."""
+        return all(name[:-2].rpartition('-')[2] in self.answers or name[:-2].rpartition('-')[2] == DEFAULT_SUFFIX
+                   for name in row_variants(row) if VARIANT.match(name))
 
     def add_warm(self, row, flag):
         old = self.warm.get(row, '')
@@ -240,30 +293,40 @@ class ShaderList:
             for entry in entries if isinstance(entries, list) else []:
                 deps = canonical(entry.get('deps')) if isinstance(entry, dict) else None
                 if deps is not None:
-                    self.variants.add((index.stem, deps))
+                    self.add_variant(index.stem, deps)
 
     def add_rows(self, path, flag):
-        for line in Path(path).read_text().splitlines():
-            if not line or line.startswith('#'):
-                continue
-            fields = line.split('\t')
-            if fields[0] == 'V' and len(fields) == 3 and KEY.match(fields[1]):   # another copy of this list
+        """A contribution file, a pso_user.tsv / pso_collected.tsv or another copy of a list: its V, A and L rows first,
+        then the warm rows whose bind states are known with them (the rest counted in refused)."""
+        lines = [line.split('\t') for line in Path(path).read_text().splitlines() if line and not line.startswith('#')]
+        for fields in lines:
+            if fields[0] == 'V' and len(fields) == 3 and KEY.match(fields[1]):
                 try:
                     deps = canonical(json.loads(fields[2]))
                 except ValueError:
                     deps = None
                 if deps is not None:
-                    self.variants.add((fields[1], deps))
-                continue
-            if fields[0] == 'L':
+                    self.add_variant(fields[1], deps)
+            elif fields[0] == 'A' and len(fields) == 3 and SUFFIX_RE.match(fields[1]):
+                try:
+                    answers = canonical(json.loads(fields[2]))
+                except ValueError:
+                    answers = None
+                if answers is not None and answers_suffix(answers) == fields[1]:
+                    self.answers[fields[1]] = answers
+            elif fields[0] == 'L':
                 where = locator(fields)
                 if where:
                     self.locators.add(where)
+        for fields in lines:
+            row = warm_row(fields) if fields[0] in 'SCRBT' else None
+            if not row:
                 continue
-            row = warm_row(fields)
-            if row:
-                listed = fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else ''
-                self.add_warm(row, listed or flag)
+            if not self.knows(row):
+                self.refused += 1
+                continue
+            listed = fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else ''
+            self.add_warm(row, listed or flag)
 
     def export(self, *flags, source='games/totk/assets/shader_list.tsv'):
         """The warm rows carrying one of these flags; rows of the first flag come first, each row once."""
@@ -274,61 +337,90 @@ class ShaderList:
                     out.append(row); seen.add(row)
         return EXPORT.format(source) + ''.join('\t'.join(row) + '\n' for row in out)
 
+    def resolve(self, seed, flag, given=()):
+        """The warm rows carrying this flag for the game version of a seed folder, each variant named as the seed serves
+        its bind state, without those in given (rows resolved before) and those naming a shader of another version
+        (neither in the seed's shader-keys.json nor in the seed) or one the seed cannot build. Returns rows and counts."""
+        from prepare_shader_seed import deps_match   # it imports this module
+        seed = Path(seed)
+        keys = set(json.loads((seed/'shader-keys.json').read_text())['keys'])
+        index, names = {}, {}
+        def variants_of(key):   # the seed's variants of a shader, as totk_shader_rt.m variants_of
+            if key not in index:
+                try:
+                    rows = json.loads((seed/f'{key}.variants').read_text())
+                except (OSError, ValueError):
+                    rows = []
+                index[key] = [r for r in rows if isinstance(r, dict) and isinstance(r.get('variant'), str)]
+            return index[key]
+        def served(name):   # "<key>-<suffix>_b" -> the seed's name for it, '' another version's, None the seed lacks it
+            if name not in names and not VARIANT.match(name):   # no variant name (a hand-made row): as it is
+                names[name] = name
+            if name not in names:
+                key, _, suffix = name[:-2].partition('-')
+                mine = variants_of(key)
+                if not mine and key not in keys:
+                    names[name] = ''
+                elif any(r['variant'] == name[:-2] for r in mine):   # the seed carries it (its default, depth-bound or a listed one)
+                    names[name] = name
+                elif same := next((r['variant'] for r in mine if r['variant'].endswith('-' + suffix)), None):
+                    names[name] = same + '_b'   # the same bind state of the shader translated for this one (prepare_shader_seed.py translation_input)
+                elif suffix == DEFAULT_SUFFIX:
+                    names[name] = None
+                else:
+                    answers = json.loads(self.answers[suffix])
+                    hit = next((r['variant'] for r in mine if deps_match(r.get('deps') or {}, answers)), None)
+                    names[name] = hit+'_b' if hit else None
+            return names[name]
+        out, seen, counts = [], set(given), dict(other=0, missing=0, renamed=0, merged=0)
+        for row, have in self.warm.items():
+            if flag not in have:
+                continue
+            old = row_variants(row)
+            new = [served(name) for name in old]
+            if '' in new:
+                counts['other'] += 1; continue
+            if None in new:
+                counts['missing'] += 1; continue
+            renamed = rename_warm(row, dict(zip(old, new)))
+            counts['renamed'] += renamed != row
+            if renamed in seen:
+                counts['merged'] += 1; continue
+            seen.add(renamed); out.append(renamed)
+        return out, counts
+
     def counts(self):
         kinds = {k: sum(1 for row in self.warm if row[0] == k) for k in 'SCRBT'}
         title = sum(1 for flags in self.warm.values() if 't' in flags)
         return (f'{len(self.variants)} variants over {len({k for k, _ in self.variants})} shaders, '
-                f'{len(self.locators)} located; warm rows: '
+                f'{len(self.answers)} bind states, {len(self.locators)} located; warm rows: '
                 f'{kinds["S"]} S, {kinds["C"]} C, {kinds["R"]} R, {kinds["B"]} B, {kinds["T"]} T ({title} for the title screen)')
 
 
 NAME = 80   # nvn_pso_skey.h pso_skey: char vs[80], fs[80] lead the pipeline key, each a NUL-padded "<variant>_b"
 
 
-def load_aliases(path):
-    """<seed>.aliases.tsv (prepare_shader_seed.py write_aliases): variant -> the variant the seed carries in its place."""
-    aliases = {}
-    for line in Path(path).read_text().splitlines():
-        old, new = line.split('\t')
-        if not (VARIANT.match(old+'_b') and VARIANT.match(new+'_b')):
-            raise ValueError(f'{path}: not an alias row: {line!r}')
-        aliases[old] = new
-    return aliases
+def row_variants(row):
+    """The variant names ("<key>-<suffix>_b") a warm row names: S / C its variant, R / B / T the two in the key."""
+    if row[0] in ('S', 'C'):
+        return [row[1]]
+    key = bytes.fromhex(row[1])
+    return [n for n in (key[at:at+NAME].split(b'\0')[0].decode('ascii', 'replace') for at in (0, NAME)) if n]
 
 
-def rename_row(line, aliases):
-    """A warm row with the variants it names renamed through aliases (S / C: the variant; R / B / T: the two names in the
-    pipeline key), anything else as it is."""
-    fields = line.split('\t')
-    def name(v):   # "<variant>_b"
-        return aliases.get(v[:-2], v[:-2])+'_b' if v.endswith('_b') else v
-    if fields[0] in ('S', 'C') and len(fields) >= 2:
-        fields[1] = name(fields[1])
-    elif fields[0] in ('R', 'B', 'T') and len(fields) >= 2 and PIPELINE.match(fields[1]) and len(fields[1]) >= 4*NAME:
-        key = bytearray.fromhex(fields[1])
-        for at in (0, NAME):
-            old = bytes(key[at:at+NAME]).split(b'\0')[0].decode('ascii', 'replace')
-            new = name(old)
-            if new != old:
-                if len(new) >= NAME:
-                    raise ValueError(f'variant name {new} does not fit a pipeline key')
-                key[at:at+NAME] = new.encode().ljust(NAME, b'\0')
-        fields[1] = key.hex()
-    return '\t'.join(fields)
-
-
-def rename(text, aliases):
-    """An exported warm-up list (or a seed's pso_manifest.tsv) with its variants renamed; a row renamed into one it
-    already has is dropped."""
-    out, seen = [], set()
-    for line in text.splitlines():
-        row = rename_row(line, aliases) if line and not line.startswith('#') else line
-        if row and not row.startswith('#'):
-            if row in seen:
-                continue
-            seen.add(row)
-        out.append(row)
-    return ''.join(line+'\n' for line in out)
+def rename_warm(row, names):
+    """A warm row with the variants it names replaced (names: "<variant>_b" -> "<variant>_b")."""
+    if row[0] in ('S', 'C'):
+        return (row[0], names.get(row[1], row[1]), *row[2:])
+    key = bytearray.fromhex(row[1])
+    for at in (0, NAME):
+        old = bytes(key[at:at+NAME]).split(b'\0')[0].decode('ascii', 'replace')
+        new = names.get(old, old)
+        if new != old:
+            if len(new) >= NAME:
+                raise ValueError(f'variant name {new} does not fit a pipeline key')
+            key[at:at+NAME] = new.encode().ljust(NAME, b'\0')
+    return (row[0], key.hex(), *row[2:])
 
 
 def main(argv):
@@ -345,21 +437,24 @@ def main(argv):
             else:
                 lst.add_rows(source, 't' if title else 'm')
         lst.save(args[0])
-        print(f'{len(lst.variants) + len(lst.warm) + len(lst.locators) - before} new; {lst.counts()}')
+        refused = f'; {lst.refused} warm rows refused: they name bind states neither the list nor the source keeps' if lst.refused else ''
+        print(f'{len(lst.variants) + len(lst.warm) + len(lst.locators) - before} new; {lst.counts()}{refused}')
+    elif argv[:1] == ['resolve'] and len(argv) == 5:
+        lst = ShaderList.load(argv[2])
+        title, counts_t = lst.resolve(argv[1], 't')
+        rest, counts_m = lst.resolve(argv[1], 'm', given=title)   # the runtime reads both: a row goes where it is first
+        for path, rows, counts in ((argv[4], title, counts_t), (argv[3], rest, counts_m)):
+            Path(path).unlink(missing_ok=True)   # often a clone of an older file: written anew, not through the shared blocks
+            Path(path).write_text(EXPORT.format(list_name(argv[2])) + ''.join('\t'.join(row) + '\n' for row in rows))
+            print(f'{path}: {len(rows)} rows; left out {counts["other"]} of other game versions\' shaders and '
+                  f'{counts["missing"]} the seed cannot build; {counts["renamed"]} named as the seed serves them, '
+                  f'{counts["merged"]} rows given before')
     elif argv[:1] == ['export'] and len(argv) == 4:
         lst = ShaderList.load(argv[1])
         Path(argv[2]).write_text(lst.export('m', source=list_name(argv[1])))
         Path(argv[3]).write_text(lst.export('t', source=list_name(argv[1])))
     elif argv[:1] == ['export'] and len(argv) == 3:
         Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm', source=list_name(argv[1])))
-    elif argv[:1] == ['rename'] and len(argv) >= 3:
-        aliases = load_aliases(argv[1])
-        for path in argv[2:]:
-            text = Path(path).read_text()
-            renamed = rename(text, aliases)
-            if renamed != text:   # often a clone of the exported file: written anew, not through the shared blocks
-                Path(path).unlink()
-                Path(path).write_text(renamed)
     elif argv[:1] == ['prune'] and len(argv) == 3:
         sys.path.insert(0, str(Path(__file__).resolve().parent))   # also when run with python -I
         from prepare_shader_seed import builtin_serves   # it imports this module
@@ -372,7 +467,11 @@ def main(argv):
         lst = ShaderList.load(argv[1])
         lines = [l for l in Path(argv[1]).read_text().splitlines() if l and not l.startswith('#')]
         variant_lines = [l for l in lines if l.startswith('V\t')]
-        if variant_lines != sorted(variant_lines) or len(lines) != len(lst.variants) + len(lst.warm) + len(lst.locators):
+        unknown = sum(1 for row in lst.warm if not lst.knows(row))
+        if unknown:
+            raise ValueError(f'{argv[1]}: {unknown} warm rows name a bind state the list has no A row for')
+        answer_lines = sum(1 for l in lines if l.startswith('A\t'))
+        if variant_lines != sorted(variant_lines) or len(lines) != len(lst.variants) + answer_lines + len(lst.warm) + len(lst.locators):
             raise ValueError(f'{argv[1]}: variant rows must be sorted and no row repeated (merge rewrites it so)')
         print(lst.counts())
     else:

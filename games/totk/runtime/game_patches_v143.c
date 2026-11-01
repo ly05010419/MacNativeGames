@@ -324,6 +324,247 @@ static void patch_bench_cam(Module *m){
             (unsigned long long)stub);
 #endif
 }
+/* Model LOD distance (Mac, the settings panel's effects page or TOTK_LOD_SCALE=<K>, 2026-10-30). The renderer picks a model's level of detail
+   from the view-space depth z of its bounding sphere (negative in front; the caller stores it at the entry's +0x10 next to
+   the projected radius): v = z + bias, the first level while v >= renderer+0xc50, beyond that one level per 1/k of depth
+   (bias and k from the model's LOD table). main+0x1ee8424 is that function; callers that see its vtable slot inline it,
+   so the sum appears at 12 sites. Each `fadd v, z, bias` branches to a stub computing z * c + bias, c = 1/K read from the
+   data page at every call, so the level at depth d is the one the game picks at d / K (K = 1: the same bits as fadd).
+   "lodscale <K>" changes K live. The community "LOD Improvement" pchtxt patches only the function, which the inlined
+   copies never call. Always installed on the Mac: at K = 1 the level is the game's own, bit for bit. */
+#define LOD_DATA_SLOT 0x180u
+#if !TARGET_OS_IPHONE
+/* The LOD, render distance, field of view, shadow resolution and depth of field patches read their factors from the
+   data page, which only the Mac's settings panel and input commands write. The iOS export (TOTK_EXPORT_IOS) runs these
+   patches on the Mac to make the phone's code, and on the phone that page would read 0 (no LOD distance, no far plane,
+   no field of view, the smallest shadow map), so the export leaves them out: the phone runs the game's own code there. */
+static int live_tuned(void){return !getenv("TOTK_EXPORT_IOS");}
+static _Atomic uint32_t *lod_factor;
+static double lod_k=1,far_k=1;   /* the factors asked for (the settings panel may ask before the patches are installed) */
+static void factor_store(_Atomic uint32_t *slot,double k){float f=(float)k;uint32_t bits;memcpy(&bits,&f,4);atomic_store(slot,bits);}
+static double env_factor(const char *name,double lo){
+    const char *e=getenv(name);if(!e||!*e)return 0;
+    double k=strtod(e,NULL);if(!(k>=lo&&k<=100)){fprintf(stderr,"[totk] %s takes %g to 100\n",name,lo);runtime_fail("factor out of range");}
+    return k;
+}
+#endif
+static void patch_lod_distance(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    if(!live_tuned())return;
+    double k=env_factor("TOTK_LOD_SCALE",0.1);if(k)lod_k=k;else k=lod_k;
+    static const uint64_t sites[]={0x7ad1c,0x7c00c,0x7c4b0,0x7d4a8,0x80f30,0x1ee8474,
+                                   0x2870578,0x287200c,0x2872a30,0x2874924,0x2874cfc,0x287f53c};
+    enum{N=sizeof sites/sizeof *sites,W=5};
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+128;   /* after the benchmark camera */
+    if(stub+N*W*4>data||data+LOD_DATA_SLOT+4>m->size)runtime_fail("1.4.3 LOD distance layout");
+    for(unsigned i=0;i<N*W*4;i++)if(m->base[stub+i])runtime_fail("1.4.3 LOD distance padding not empty");
+    for(unsigned i=0;i<N;i++){
+        uint32_t add,next;memcpy(&add,m->base+sites[i],4);memcpy(&next,m->base+sites[i]+4,4);
+        if((add&0xffe0fc00)!=0x1e202800||(next&0xfffffc00)!=0xbd4c5000)runtime_fail("1.4.3 LOD distance: the LOD code does not match");
+        unsigned d=add&31,n=(add>>5)&31,s=(add>>16)&31;   /* fadd sd, sn (depth), ss (bias) */
+        uint64_t at=stub+i*W*4,lit=data+LOD_DATA_SLOT-(at+4);
+        uint32_t words[W]={
+            0xfc1f0fff,                                   /* str d31, [sp, #-16]! */
+            0x1c000000|(((uint32_t)(lit>>2)&0x7ffff)<<5)|31,   /* ldr s31, <data page factor> */
+            0x1f000000|(31u<<16)|(s<<10)|(n<<5)|d,        /* fmadd sd, sn, s31, ss */
+            0xfc4107ff,                                   /* ldr d31, [sp], #16 */
+            branch(at+16,sites[i]+4)};
+        if(d==31||n==31||s==31||lit>=(1u<<20))runtime_fail("1.4.3 LOD distance stub");
+        memcpy(m->base+at,words,sizeof words);
+    }
+    lod_factor=(_Atomic uint32_t *)(void *)(m->base+data+LOD_DATA_SLOT);float c=(float)(1.0/k);factor_store(lod_factor,1.0/k);
+    for(unsigned i=0;i<N;i++){uint32_t j=branch(sites[i],stub+i*W*4);memcpy(m->base+sites[i],&j,4);}
+    fprintf(stderr,"[totk] 1.4.3 LOD distance x%g at %u sites (depth scaled by %g for the level choice), stub +%#llx\n",
+            k,(unsigned)N,c,(unsigned long long)stub);
+#endif
+}
+/* Render distance (Mac, the settings panel's effects page or TOTK_FAR_SCALE=<K>, 2026-10-30): the camera update copies the controller's near / far
+   (+0x134 / +0x138) and FOV (+0x13c) into the projection (+0x98 / +0x9c / +0xa0, sead's PerspectiveProjection order) at
+   main+0x628c20..0x628c44. The far load branches to a stub that keeps the game's value on the data page (+0x188, for
+   "farscale" to print) and multiplies it by the factor at +0x184. x8 is reloaded at 0x628c6c and s2 is caller-saved across
+   the sin / cos / tan calls that follow, so the stub may use both. The game's far is 25000 (measured 2026-10-30 in the
+   field and in Lookout Landing), more than the whole map: a smaller factor cuts the distance (fewer distant draws); the
+   panel offers 1x to 10x (user 2026-10-30), past what the map needs. Always installed on the Mac: at 1 the far plane is the game's own. */
+#define FAR_DATA_SLOT 0x184u
+#if !TARGET_OS_IPHONE
+static _Atomic uint32_t *far_factor;
+static const float *far_game;
+#endif
+static void patch_far_distance(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    if(!live_tuned())return;
+    double k=env_factor("TOTK_FAR_SCALE",0.001);if(k)far_k=k;else k=far_k;
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+128+12*5*4;   /* after the LOD stubs */
+    if(stub+24>data||data+FAR_DATA_SLOT+8>m->size)runtime_fail("1.4.3 render distance layout");
+    for(unsigned i=0;i<24;i++)if(m->base[stub+i])runtime_fail("1.4.3 render distance padding not empty");
+    static const Patch guards[]={{0x628c30,0xbd413a60,0},{0x628c38,0xbd009e80,0},{0x628c6c,0x91051268,0}};
+    for(unsigned i=0;i<3;i++){uint32_t w;memcpy(&w,m->base+guards[i].off,4);if(w!=guards[i].original)runtime_fail("1.4.3 render distance: the camera code does not match");}
+    uint32_t words[6]={
+        0xbd413a60,                                              /* ldr s0, [x19, #0x138]: the game's far */
+        adrp(8,(uintptr_t)m->base+stub+4,(uintptr_t)m->base+data),
+        0xbd000100|(((FAR_DATA_SLOT+4)/4)<<10),                  /* str s0, [x8, #+0x188] */
+        0xbd400102|((FAR_DATA_SLOT/4)<<10),                      /* ldr s2, [x8, #+0x184] */
+        0x1e220800,                                              /* fmul s0, s0, s2 */
+        branch(stub+20,0x628c34)};
+    memcpy(m->base+stub,words,sizeof words);
+    far_factor=(_Atomic uint32_t *)(void *)(m->base+data+FAR_DATA_SLOT);far_game=(const float *)(const void *)(m->base+data+FAR_DATA_SLOT+4);
+    factor_store(far_factor,k);
+    uint32_t j=branch(0x628c30,stub);memcpy(m->base+0x628c30,&j,4);
+    fprintf(stderr,"[totk] 1.4.3 render distance x%g (camera far plane), stub +%#llx\n",k,(unsigned long long)stub);
+#endif
+}
+/* Field of view (Mac, the settings panel's effects page or TOTK_FOV_SCALE=<K>, 2026-10-30): the same camera update loads the
+   controller's vertical FOV (+0x13c, radians) at main+0x628c3c, stores it at the projection's +0xa0 and derives the sine,
+   cosine and tangent of half of it (sead's setFovy, inlined). The load branches to a stub that keeps the game's value
+   (+0x194, for the log) and multiplies it by the factor at +0x190, so every value sead derives agrees (aspect_math.h:
+   widening only the tangent left the lighting wrong). The game's own zooms (bow, scope) scale with it. x8 and s2 are free
+   there as at the far load; s1 holds the 0.5 the next instruction uses. Vert+ (TOTK_ASPECT_VERT=1) takes that load
+   first; the FOV then stays the game's. The event camera setup (main+0xb43420..) keeps its own. */
+#define FOV_DATA_SLOT 0x190u
+#if !TARGET_OS_IPHONE
+static _Atomic uint32_t *fov_factor;
+static double fov_k=1;
+static int fov_taken;   /* Vert+ holds the FOV load: the FOV stays the game's */
+#endif
+static void patch_fov(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    if(!live_tuned())return;
+    double k=env_factor("TOTK_FOV_SCALE",0.5);if(k)fov_k=k;else k=fov_k;
+    if(k>2)runtime_fail("TOTK_FOV_SCALE takes 0.5 to 2");
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+128+12*5*4+24;   /* after the far stub */
+    if(stub+24>data||data+FOV_DATA_SLOT+8>m->size)runtime_fail("1.4.3 field of view layout");
+    for(unsigned i=0;i<24;i++)if(m->base[stub+i])runtime_fail("1.4.3 field of view padding not empty");
+    uint32_t w;memcpy(&w,m->base+0x628c3c,4);
+    if(w!=0xbd413e60){fov_taken=1;fprintf(stderr,"[totk] 1.4.3 field of view: the FOV load is taken (Vert+, TOTK_ASPECT_VERT=1); the game's FOV\n");return;}
+    static const Patch guards[]={{0x628c40,0x1e210808,0},{0x628c44,0xbd00a280,0},{0x628c6c,0x91051268,0}};
+    for(unsigned i=0;i<3;i++){memcpy(&w,m->base+guards[i].off,4);if(w!=guards[i].original)runtime_fail("1.4.3 field of view: the camera code does not match");}
+    uint32_t words[6]={
+        0xbd413e60,                                              /* ldr s0, [x19, #0x13c]: the game's vertical FOV */
+        adrp(8,(uintptr_t)m->base+stub+4,(uintptr_t)m->base+data),
+        0xbd000100|(((FOV_DATA_SLOT+4)/4)<<10),                  /* str s0, [x8, #+0x194] */
+        0xbd400102|((FOV_DATA_SLOT/4)<<10),                      /* ldr s2, [x8, #+0x190] */
+        0x1e220800,                                              /* fmul s0, s0, s2 */
+        branch(stub+20,0x628c40)};
+    memcpy(m->base+stub,words,sizeof words);
+    fov_factor=(_Atomic uint32_t *)(void *)(m->base+data+FOV_DATA_SLOT);factor_store(fov_factor,k);
+    uint32_t j=branch(0x628c3c,stub);memcpy(m->base+0x628c3c,&j,4);
+    fprintf(stderr,"[totk] 1.4.3 field of view x%g (the game camera's vertical FOV), stub +%#llx\n",k,(unsigned long long)stub);
+#endif
+}
+/* Shadow resolution (Mac, the settings panel's effects page or TOTK_SHADOW_SCALE=<K>, 2026-10-30): the shadow setup works
+   out each cascade's size as align8(max(32, s0 x base)) from the settings' base size (+0x190 / +0x194, 800 x 800) and a
+   scale the game clamps (main+0xf5998 width, +0xf59b8 height), stores it (+0x3d8 / +0x3f8) and makes or updates the
+   cascade's textures from it at once (main+0xf5a1c -> 0xfca60; found with TOTK_SIZE_CHAIN=800x800). Each multiply
+   branches to a stub that multiplies by K from the data page (+0x198), so the textures, viewports and everything sized
+   from those fields follow; K = 1 is the game's own (an exact multiply by 1). s3 was last read at 0xf5960. */
+#define SHADOW_DATA_SLOT 0x198u
+#if !TARGET_OS_IPHONE
+static _Atomic uint32_t *shadow_factor;
+static double shadow_k=1;
+#endif
+static void patch_shadow_res(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    if(!live_tuned())return;
+    double k=env_factor("TOTK_SHADOW_SCALE",0.25);if(k)shadow_k=k;else k=shadow_k;
+    if(k>8)runtime_fail("TOTK_SHADOW_SCALE takes 0.25 to 8");
+    static const Patch sites[]={{0xf5998,0x1e220801,0x1e230821},{0xf59b8,0x1e210800,0x1e230800}};   /* fmul s1,s0,s2 / s0,s0,s1; then x K in s3 */
+    static const Patch next[]={{0xf599c,0x1e380029,0},{0xf59bc,0x1e38000a,0}};   /* fcvtzs w9,s1 / w10,s0 */
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+128+12*5*4+24+24;   /* after the FOV stub */
+    if(stub+32>data||data+SHADOW_DATA_SLOT+4>m->size)runtime_fail("1.4.3 shadow resolution layout");
+    for(unsigned i=0;i<32;i++)if(m->base[stub+i])runtime_fail("1.4.3 shadow resolution padding not empty");
+    for(unsigned i=0;i<2;i++){uint32_t w,n;memcpy(&w,m->base+sites[i].off,4);memcpy(&n,m->base+next[i].off,4);
+        if(w!=sites[i].original||n!=next[i].original)runtime_fail("1.4.3 shadow resolution: the shadow setup does not match");}
+    for(unsigned i=0;i<2;i++){
+        uint64_t at=stub+i*16,lit=data+SHADOW_DATA_SLOT-(at+4);
+        uint32_t words[4]={sites[i].original,0x1c000000|(((uint32_t)(lit>>2)&0x7ffff)<<5)|3,sites[i].replacement,branch(at+12,sites[i].off+4)};
+        memcpy(m->base+at,words,sizeof words);
+    }
+    shadow_factor=(_Atomic uint32_t *)(void *)(m->base+data+SHADOW_DATA_SLOT);factor_store(shadow_factor,k);
+    for(unsigned i=0;i<2;i++){uint32_t j=branch(sites[i].off,stub+i*16);memcpy(m->base+sites[i].off,&j,4);}
+    fprintf(stderr,"[totk] 1.4.3 shadow resolution x%g (cascades %gx%g), stub +%#llx\n",k,800*k,800*k,(unsigned long long)stub);
+#endif
+}
+/* Depth of field off (Mac, the settings panel's effects page, 2026-10-31; UltraCam turns it off through the game's DOF
+   state rather than a shader, and so does this). The game runs its DOF passes (dof_near_mask .. dof_coc_composite) only
+   while a DOF request is stored: the camera's DOF requester takes them at main+0x1ec606c (focus distance, f-number, blur
+   level per requester type; callers: the event commands ExecuteCameraSetDof / ExecuteCameraSetCoCDof at main+0x224c560
+   and main+0x6a0cd8) and the final blur at main+0x1ec6180 (the event command only). With DOF off both entries return
+   without storing, so no DOF is requested; an event command still marks itself done (main+0x224c5b0), so cutscenes go on.
+   The flag sits on the data page (+0x19c); x9 is free at both entries. */
+#define DOF_DATA_SLOT 0x19cu
+#if !TARGET_OS_IPHONE
+static _Atomic uint32_t *dof_flag;
+static int dof_off;
+#endif
+static void patch_dof(Module *m){
+#if TARGET_OS_IPHONE
+    (void)m;
+#else
+    if(!live_tuned())return;
+    static const Patch sites[]={{0x1ec606c,0xb9400808,0},{0x1ec6180,0xa9ba7bfd,0}};   /* ldr w8,[x0,#8] / stp x29,x30,[sp,#-0x60]! */
+    static const Patch next[]={{0x1ec6070,0x7100007f,0},{0x1ec6184,0xf9000bfb,0}};
+    uint64_t data=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->file_size+15)&~15ULL)+128+12*5*4+24+24+32;   /* after the shadow stubs */
+    if(stub+48>data||data+DOF_DATA_SLOT+4>m->size)runtime_fail("1.4.3 depth of field layout");
+    for(unsigned i=0;i<48;i++)if(m->base[stub+i])runtime_fail("1.4.3 depth of field padding not empty");
+    for(unsigned i=0;i<2;i++){uint32_t w,n;memcpy(&w,m->base+sites[i].off,4);memcpy(&n,m->base+next[i].off,4);
+        if(w!=sites[i].original||n!=next[i].original)runtime_fail("1.4.3 depth of field: the DOF requester does not match");}
+    for(unsigned i=0;i<2;i++){
+        uint64_t at=stub+i*24;
+        uint32_t words[6]={
+            adrp(9,(uintptr_t)m->base+at,(uintptr_t)m->base+data),
+            0xb9400129|((DOF_DATA_SLOT/4)<<10),     /* ldr w9, [x9, #+0x19c]: DOF off? */
+            0x35000069,                             /* cbnz w9, ret (3 words on) */
+            sites[i].original,                      /* the first instruction */
+            branch(at+16,sites[i].off+4),
+            0xd65f03c0};                            /* ret: no request stored */
+        memcpy(m->base+at,words,sizeof words);
+    }
+    dof_flag=(_Atomic uint32_t *)(void *)(m->base+data+DOF_DATA_SLOT);atomic_store(dof_flag,(uint32_t)dof_off);
+    for(unsigned i=0;i<2;i++){uint32_t j=branch(sites[i].off,stub+i*24);memcpy(m->base+sites[i].off,&j,4);}
+    fprintf(stderr,"[totk] 1.4.3 depth of field %s (DOF requests at main+0x1ec606c / 0x1ec6180), stub +%#llx\n",dof_off?"off":"on",(unsigned long long)stub);
+#endif
+}
+#if !TARGET_OS_IPHONE
+void runtime_dof_set(int on){dof_off=!on;if(dof_flag)atomic_store(dof_flag,(uint32_t)dof_off);fprintf(stderr,"[totk] depth of field %s\n",on?"on":"off");}
+int runtime_dof_on(void){return !dof_off;}
+void runtime_shadow_scale_set(double k){
+    shadow_k=k;if(shadow_factor)factor_store(shadow_factor,k);
+    fprintf(stderr,"[totk] shadowscale: shadow resolution x%g\n",k);
+}
+double runtime_shadow_scale(void){return shadow_k;}
+int runtime_shadow_scale_locked(void){const char *e=getenv("TOTK_SHADOW_SCALE");return e&&*e;}
+void runtime_fov_scale_set(double k){
+    fov_k=k;if(fov_factor)factor_store(fov_factor,k);
+    float g=fov_factor?((const volatile float *)fov_factor)[1]:0;
+    fprintf(stderr,"[totk] fovscale: field of view x%g (the game's vertical FOV now %.1f degrees)\n",k,g*57.29578f);
+}
+double runtime_fov_scale(void){return fov_k;}
+int runtime_fov_scale_locked(void){const char *e=getenv("TOTK_FOV_SCALE");return e&&*e;}
+int runtime_fov_available(void){return !fov_taken;}
+#endif
+#if !TARGET_OS_IPHONE
+/* The settings panel and the input file's "farscale" / "lodscale": in force at once, or from the patch's installation. */
+void runtime_far_scale_set(double k){
+    far_k=k;if(far_factor)factor_store(far_factor,k);
+    fprintf(stderr,"[totk] farscale: render distance x%g (the game's far plane %.1f)\n",k,far_game?*(const volatile float *)far_game:0.0f);
+}
+void runtime_lod_scale_set(double k){
+    lod_k=k;if(lod_factor)factor_store(lod_factor,1.0/k);
+    fprintf(stderr,"[totk] lodscale: LOD distance x%g\n",k);
+}
+double runtime_far_scale(void){return far_k;}
+double runtime_lod_scale(void){return lod_k;}
+int runtime_far_scale_locked(void){const char *e=getenv("TOTK_FAR_SCALE");return e&&*e;}
+int runtime_lod_scale_locked(void){const char *e=getenv("TOTK_LOD_SCALE");return e&&*e;}
+#endif
 #if !TARGET_OS_IPHONE
 /* High-frame-rate diagnostics (Mac, TOTK_INPUT_FILE commands). Such bugs sit in game code that compares the game's time
    values with constants tuned for 30 Hz (#61: X+0x28 > 100 above). The time values: the FrameRateMgr singleton
@@ -405,6 +646,11 @@ void runtime_game_patches(Module *m) {
                      ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
     patch_bench_cam(m);
+    patch_lod_distance(m);
+    patch_far_distance(m);
+    patch_fov(m);   /* after aspect_install: Vert+ may hold the same load */
+    patch_shadow_res(m);
+    patch_dof(m);
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");
@@ -457,14 +703,15 @@ int runtime_output_res(unsigned *w,unsigned *h){
         }else if(e&&!strcmp(e,"0"))on=0;
         else if(!e||!*e||!strcmp(e,"auto")){
             /* The largest canvas whose heap overlay the app carries (romfs.c loads <canvas>-scene-<canvas>, the scene
-               following the canvas): 2K. The start stays 1080p; only the swapchain and the heaps are sized for 2K.
-               Not 4K (2026-10-25, user "添加 4k 支持"): its heaps make the game create one 1490 MiB memory pool at the
-               start, which the graphics layer's 1 GiB zero-copy limit refuses (nvn_mtl.m POOL_BUFFER_MAX, set after two
-               macOS kernel panics in IOGPUFamily); the game stopped at once. 4K needs that pool split first. */
+               following the canvas): 4K when the build made it (build_app.py native 4K: on by default on a Mac with
+               16 GB or more, user 2026-10-30), else 2K. The start stays 1080p; only the swapchain and the heaps are
+               sized for the largest. A 4K scene's heaps make the game create one 1,490 MiB memory pool at the start
+               (+1,380 MiB for the application pool), which the graphics layer takes since it has no size limit on a
+               pool's zero-copy buffer (nvn_mtl.m pool_range_check, 2026-10-30). */
             const char *dir=getenv("TOTK_ROMFS_PATCHES_OUT");char path[4096];
-            static const unsigned sizes[][2]={{2560,1440}};
+            static const unsigned sizes[][4]={{3840,2160,3840,2160},{2560,1440,2560,1440}};   /* canvas, scene */
             for(unsigned i=0;i<sizeof sizes/sizeof *sizes&&!on;i++){
-                snprintf(path,sizeof path,"%s/%ux%u-scene-%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i][0],sizes[i][1],sizes[i][0],sizes[i][1]);
+                snprintf(path,sizeof path,"%s/%ux%u-scene-%ux%u/manifest.tsv",dir?dir:"extracted/v143/romfs-patches-out",sizes[i][0],sizes[i][1],sizes[i][2],sizes[i][3]);
                 FILE *f=fopen(path,"r");if(f){fclose(f);on=1;cw=sizes[i][0];ch=sizes[i][1];}
             }
             output_full_at_start=0;
@@ -699,30 +946,35 @@ static void output_size_set(uint64_t want){
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*), kept for the next start (picture_mode_save). Native is
    the swapchain's size (2K); with MetalFX the output stage then scales the 2K canvas up to the window (a 4K screen). */
 int runtime_output_native(int mode,unsigned *w,unsigned *h){
-    if(!output_page||(mode!=OUTPUT_MODE_NATIVE&&mode!=OUTPUT_MODE_NATIVE_METALFX))return 0;
+    if(!output_page)return 0;
+    if(mode==OUTPUT_MODE_NATIVE_4K){if(output_w<3840||output_h<2160)return 0;*w=3840;*h=2160;return 1;}   /* a native 4K app */
+    if(mode!=OUTPUT_MODE_NATIVE&&mode!=OUTPUT_MODE_NATIVE_METALFX)return 0;
+    if(output_w>2560){*w=2560;*h=1440;return 1;}   /* a 4K app's 2K stays 2560x1440 */
     *w=output_w;*h=output_h;return 1;
 }
 int runtime_output_modes(void){
     if(!output_page)return 0;
-    return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX;
+    return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX|
+           (output_w>=3840&&output_h>=2160?1<<OUTPUT_MODE_NATIVE_4K:0);
 }
 int runtime_output_mode(void){
     extern int mfxup_output_enabled(void);
     if(!output_page)return OUTPUT_MODE_OFF;
     uint64_t now=atomic_load((_Atomic uint64_t *)(void *)(output_page+32));
     if(now==pack_size(1280,720))return OUTPUT_MODE_720P;
+    if(now==pack_size(3840,2160)&&!mfxup_output_enabled())return OUTPUT_MODE_NATIVE_4K;
     if((unsigned)now>1920)return mfxup_output_enabled()?OUTPUT_MODE_NATIVE_METALFX:OUTPUT_MODE_NATIVE;
     return mfxup_output_enabled()?OUTPUT_MODE_METALFX:OUTPUT_MODE_OFF;
 }
 int runtime_output_mode_set(int mode){
     extern void dm_gfx_set_flag(const char *,int);
-    if(!output_page||mode<OUTPUT_MODE_OFF||mode>OUTPUT_MODE_720P||!(runtime_output_modes()&1<<mode))return 0;
+    if(!output_page||mode<OUTPUT_MODE_OFF||mode>OUTPUT_MODE_NATIVE_4K||!(runtime_output_modes()&1<<mode))return 0;
     unsigned w=1920,h=1080;
-    if(mode==OUTPUT_MODE_720P){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX)runtime_output_native(mode,&w,&h);
+    if(mode==OUTPUT_MODE_720P){w=1280;h=720;}else if(mode==OUTPUT_MODE_NATIVE||mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K)runtime_output_native(mode,&w,&h);
     output_size_set(pack_size(w,h));
     int mfx=mode==OUTPUT_MODE_METALFX||mode==OUTPUT_MODE_NATIVE_METALFX;
     dm_gfx_set_flag("mfx_output",mfx);dm_gfx_set_flag("mfx_upscale",mfx);
-    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
+    fprintf(stderr,"[totk] picture: %s\n",mode==OUTPUT_MODE_NATIVE_4K?"native 4K":mode==OUTPUT_MODE_720P?"720p":mode==OUTPUT_MODE_NATIVE_METALFX?"native 2K, MetalFX to the window":
             mode==OUTPUT_MODE_NATIVE?"native":mode==OUTPUT_MODE_METALFX?"MetalFX 2K":"off (1080p)");
     picture_mode_save(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));
     return 1;

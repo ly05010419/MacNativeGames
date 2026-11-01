@@ -3,6 +3,8 @@
      rumble.txt       on | off    the same as TOTK_RUMBLE (runtime/hid_feedback.c)
      gyro.txt         on | off    the same as TOTK_GYRO
      rumble-gain.txt  a number in (0, 4], the same as TOTK_RUMBLE_GAIN (runtime/gamepad_feedback.m)
+     rumble-hid.txt   on | off    the same as TOTK_RUMBLE_HID: a Switch Pro Controller's or Joy-Con's rumble through
+                                  its HID reports (on) or Core Haptics (off) (runtime/gamepad_feedback.m)
    The environment still decides first, and an agent's test session (TOTK_SLOT_OWNER claude / codex) still leaves rumble
    and gyro off unless the environment turns them on: the player's rumble.txt and gyro.txt do not decide for a test.
    rumble-gain.txt sets the strength whenever rumble is on, also in a test whose environment turned it on. A word the

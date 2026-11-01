@@ -21,9 +21,6 @@ static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock
 static int hid_usleep(useconds_t usec) { (void)usec; if (script_hold) script_hold(); return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
 int dm_opmode(void) { return g_mode; }
-static int g_focus = 1, g_focus_trail[8], g_focus_n;   // the focus states the controller applet passes through (hle_oe.c's dm_focus_set)
-int dm_focus_now(void) { return g_focus; }
-void dm_focus_set(int st) { g_focus = st; if (g_focus_n < 8) g_focus_trail[g_focus_n++] = st; }
 uint64_t guest_ns(void) { return 1000000000ull; }
 uint64_t now_ns(void) { return motion_now; }
 uint64_t dm_guest_frame(void) { return 0; }
@@ -42,6 +39,9 @@ void dm_ctl_cvar_i32(uint64_t off, int32_t v) { (void)off; (void)v; }
 void dm_ctl_cvar_f32(uint64_t off, float v) { (void)off; (void)v; }
 void dm_gfx_texdump_next(const char *path) { (void)path; }
 void dm_gfx_passdump_next(long n) { (void)n; }
+static int applet_depth, applet_opens, applet_closes_at_depth0;   // hle_oe.c: the applet stand-ins open and close their applet around the answer
+void dm_applet_enter(const char *name) { (void)name; applet_depth++; applet_opens++; }
+void dm_applet_leave(void) { applet_closes_at_depth0 += --applet_depth == 0; }
 
 static uint64_t buttons_of(uint32_t id, uint32_t style) { NpadState s; fill(&s, id, style); return s.attributes ? s.buttons & 0xffff : 0; }
 static int32_t lx_of(uint32_t id) { NpadState s; fill(&s, id, STYLE_FULLKEY); return s.lx; }
@@ -92,15 +92,15 @@ static void t_npads(void) {
     CHECK(h_hid_Led(&(uint32_t){0}) == 0x1 && h_hid_Led(&(uint32_t){1}) == 0x3 && h_hid_Led(&(uint32_t){7}) == 0x6, "player LED patterns");
     int32_t info[2]; int8_t arg[8] = {1, 4};
     CHECK(h_hid_ShowCtrl(info, arg) == RES_OK && info[0] == 2 && info[1] == 0, "the controller applet reports two players, player 1 selected");
+    CHECK(applet_opens == 1 && applet_depth == 0 && applet_closes_at_depth0 == 1, "the controller applet opens and closes once around its answer (focus 2, then 1)");
     arg[1] = 1; h_hid_ShowCtrl(info, arg);
     CHECK(info[0] == 1, "the applet's count is capped at the game's maximum");
-    g_focus_n = 0; h_hid_ShowCtrl(info, arg);
-    CHECK(g_focus_n == 2 && g_focus_trail[0] == 2 && g_focus_trail[1] == 1 && g_focus == 1, "the controller applet takes the focus and gives it back, as the system's applet does");
-    g_focus_n = 0; h_hid_ShowCtrl0(arg);
-    CHECK(g_focus_n == 2 && g_focus == 1, "the one-argument controller applet makes the same round trip");
-    g_focus = 2; g_focus_n = 0; h_hid_ShowCtrl(info, arg);
-    CHECK(g_focus_n == 0 && g_focus == 2, "out of focus already: the applet leaves the focus alone");
-    g_focus = 1;
+    arg[0] = 3; arg[1] = 4;
+    CHECK(h_hid_ShowCtrl(info, arg) == RES_CTRL_CANCELED && info[0] == 2, "fewer players than the game's minimum: canceled (2202-3101), as the player closing the applet");
+    CHECK(h_hid_ShowCtrl0(arg) == RES_CTRL_CANCELED, "the overload without a result: canceled too");
+    arg[0] = 2; CHECK(h_hid_ShowCtrl0(arg) == RES_OK, "the overload without a result: OK when the minimum is met");
+    CHECK(applet_opens == 5 && applet_depth == 0, "every answer opened and closed its applet");
+    arg[0] = 1;
     CHECK(six_connected(0x0100 | 0) && !six_connected(0x0200 | 0), "player 2 has a six-axis sensor, No3 none");
 
     // A one-player game ({No1, Handheld}): player 2's controller plays as player 1, No2 reads as not connected

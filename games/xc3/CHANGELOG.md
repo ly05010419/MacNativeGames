@@ -2,7 +2,7 @@
 
 ## Status
 
-Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next.
+Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next. The work plan is [docs/PLAN.md](docs/PLAN.md).
 
 ## Where the folder comes from
 
@@ -10,13 +10,123 @@ A copy of `games/ot0` at upstream commit `5ab07b7` (2026-10-28); see [third_part
 
 ## Log
 
+### 2026-10-30: black, flickering plants fixed
+
+Grass and bushes showed black patches that changed every frame (seen in play, 2.2.1, at every render scale). The game captures the plants' wind-bent shapes with transform feedback and draws them from that buffer in the same render pass, first into depth (a pre-pass), then in colour with a depth test EQUAL. The graphics layer put no barrier after a capturing draw, so the pre-pass read the previous frame's shapes. The colour pass then failed the EQUAL test wherever the wind had moved the plant.
+- **`gfx/nvn/nvn_mtl.m` `draw()`:** the vertex→vertex barrier that already followed vertex-only draws now also follows transform feedback captures.
+- **Pass dump:** new `Y` lines (vertex-buffer binds as replayed) and `T` lines (transform feedback binds and begin / end). `XC3_POSDUMP_MAX` sets how many draws the position dump logs. `DM_NVN_SKIP_FS` takes up to 512 shader keys, for bisecting a scene.
+
+Verified (2.2.1, M5, the player's save at Yzana Plains and the main game's save in Everblight Plain):
+
+| Check | Before | After |
+|---|---|---|
+| Plants, 6 shots, original scale | black patches in every shot | none |
+| Plants, 6 shots, full scale | black patches | none |
+| Everblight Plain | right | right, no GPU errors |
+| Frames over 25 s | 750–752 | 750 |
+
+### 2026-10-30: stage 13, full render resolution (2.2.1)
+
+The game draws its scene at half the output size, 960×544 of 1920×1080, as on the Switch. The scale comes from two start values in the renderer (0.5 in one mode, 0.53 in the other) that the game sets with code immediates.
+- **`runtime/game_patches.c`:** an optional built-in patch sets both to one scale, 1.0 or 1.328 (three sites in `game_version.h`, each checked against the loaded word; a mismatch stops the start). 2.2.1 only.
+- **Panel:** "Render resolution (next start)": Original (960×540), Full (1920×1080) or 2K (2552×1440, scaled down by the game to its 1080p picture), saved in `render-scale.txt`; `XC3_RENDER_SCALE=original|full|2k` decides first. Off by default.
+- **Not offered:** 2.0 (3840×2160). Metal stopped taking the game's work after GPU errors, and the picture froze.
+- **`runtime/mem_scan.h`** (copied from `games/totk`): memory scan, write watch and code breakpoints through the diagnostic command file; it found the source.
+
+Verified (2.2.1, M5, title screen and the main game's save in Everblight Plain):
+
+| Check | Original | Full | 2K |
+|---|---|---|---|
+| Scene targets (pass dump, free roam) | 235 at 960×544 | 237 at 1920×1080 | 243 at 2552×1440 |
+| Picture | right | right, sharper at 1:1 | right; one run showed a bright streak, also seen in play at the original scale |
+| Frames over the same 25 s | 752 | 751–753 | 750 (30 fps held) |
+| GPU errors | none | none | none |
+| 1.0.0 with `render-scale.txt` set | starts, original scale | — | — |
+
+### 2026-10-29: stage 16, startup shaders bundled with the app
+
+A fresh app translated every shader while playing. The first entry into Future Redeemed waited on about 10,000 of them, and a loading screen in the main game waited 50 s once.
+- **`scripts/prepare_shader_seed.py` (`make shader-seed`):** builds `build/shader-seed` from the translation caches this Mac already has (the work folder's and the app's). It takes the variant indexes, MSL and reflection of every variant met in play, with SHA-256 in `seed-manifest.json`, in the format the graphics layer already imports (`gfx/nvn/totk_shader_seed.h`).
+- **`make app`:** bundles the seed. It holds game-derived data and stays in the work folder and the local app, never in the repository.
+- **No pipeline list:** the runtime waits at start until a seed's pipeline list is built, and with every pipeline met in play that took 35 s. The shaders are still compiled in the background from the start.
+
+Verified (2.2.1, empty shader cache, the main game's save):
+
+| Check | Result |
+|---|---|
+| Seed | 12,867 shaders, 38,477 files, 360 MB, built in about 10 s |
+| Import at first start | 7 s; start-up wait 0.4 s (35 s with the pipeline list) |
+| Shaders translated while playing | 8 (geometry as compute), against thousands before |
+| First 93 s | all shaders compile in the background on 8 threads; a save loading in that time took 15 s |
+
+### 2026-10-29: the enlarged picture after cutscenes (MetalFX output)
+
+With the app's MetalFX output stage on, the picture stayed enlarged into its top-left corner after a 1280×720 cutscene. It was seen in play after the main game's opening (first app session) and after Future Redeemed's opening.
+
+The game's own frames were right. New diagnostic `TOTK_DRAWABLE_SHOT` saves what goes to the window, and it showed the output stage drew the top-left 1280×720 of the 1920×1080 frame. MetalFX's content region (`inputContentWidth` smaller than the colour texture) does not hold in that sequence. A scaler built for the content size but reading the larger texture drew the picture in the corner instead.
+
+Fix in `gfx/nvn/totk_mfx_up.m`: when the game's crop is smaller than its texture, the crop is copied into a texture of exactly its size first. Each content size has its own cached scaler, and a scaler always reads a whole texture of its input size.
+
+The earlier diagnosis (key 2's frame interpolation) was wrong: interpolation never made a frame in XC3. Keys 2–4 stay off anyway, since the panel has replaced them.
+
+Verified (main game opening replayed with the app's settings, `TOTK_DRAWABLE_SHOT` before and after the fix):
+
+| Frame | Before | After |
+|---|---|---|
+| Cutscene (crop 1280×720) | full window | full window |
+| Battle after it (1920×1080) | top-left 1280×720 enlarged | full window |
+
+### 2026-10-29: stage 17, add-on content
+
+Version 2.2.1 sees and loads the player's own four add-ons (Expansion Pass volumes 1–4; volume 4 is Future Redeemed).
+- **`scripts/extract_aoc.py`:** decrypts each add-on's data NCA with the NSP's common ticket and verifies all six IVFC levels. It writes the files to `extracted/aoc/<index>/romfs`, and anything not matching `assets/expected-aoc.json` stops.
+- **The runtime:** `nn::aoc` lists the add-ons present, and `nn::fs::MountAddOnContent` mounts their folder read-only. This is for 2.2.1 only; `XC3_AOC=0` hides them.
+- **The app:** `make app VERSION=v221` bundles them.
+
+Verified (Apple M5, macOS 27.0.1, 2.2.1, a copy of the save):
+
+| Check | Result |
+|---|---|
+| Four add-ons: data NCA, all six IVFC levels | pass (2, 6, 6 and 80 files; 40 MB, 201 MB, 181 MB, 4.0 GB) |
+| The game's view | "4 present", `aoc1`–`aoc4` mounted; the title screen offers "To DLC: Future Redeemed" |
+| Expansion Pass menu | volumes 1–4 "Now Available!"; volume 1's items with "Receive Contents" |
+| Volumes 1–3 in game (in play) | work |
+| Future Redeemed played | not yet: not reached in play; scripted presses with fixed timing do not reach volume 4 in the menu |
+
+### 2026-10-29: stage 12, TotK's settings panel under key 1
+
+Key 1 opens TotK's in-game settings panel (Display, Input, Key bindings). The panel and the input host it needs were copied from `games/totk` at upstream `c330ec7`, file by file (`third_party/COPIES.md`). This port's own runtime and graphics fixes stay.
+
+What works in XC3:
+- **Display:** the overlay (all / FPS + playtime / off) and the FPS graph.
+- **Input:** the controller type, mouse mode and its sensitivity, rumble and its strength.
+- **Key bindings:** the keyboard, mouse and controller layouts, with drawings and a list. Changes apply at once and are saved.
+
+Some rows show one fixed value until their stage:
+- frame lock: "30 fps (the game's own)", stage 14;
+- frame interpolation, stage 11;
+- resolution: "1080p", stage 13;
+- aspect ratio: "16:9";
+- edge smoothing and gyro aiming: not in this game.
+
+TotK's shader contribution button is hidden. The default keys are the ones this port had (J K I U for A B X Y…), not TotK's, and actions are named after the Switch buttons. Settings are kept next to `controls.txt`: in `XC3_build/user-data` for `make boot`, and in the app's data folder for the app.
+
+Verified (Apple M5, macOS 27.0.1, 2.2.1; `TOTK_PANEL_SHOT` pictures of each page):
+
+| Check | Result |
+|---|---|
+| Key 1 (script) | the panel opens; all three pages draw |
+| Scripted A presses with the new input host | title, Continue, the 1.0.0 save loads in Everblight Plain |
+| Both versions build | yes |
+| By hand, in play (app and `make boot`) | open/close (key 1, Esc, the close button, L3 + R3), overlay and FPS graph, controller type, rumble in game, rebinding, settings kept after a restart, default keys as before: all work. Rumble strength not tried. |
+
 ### 2026-10-29: stage 8, 2.2.1
 
-Version 2.2.1 is built from the base NSP plus the owner's update NSP, side by side with 1.0.0 in one work folder (`VERSION=v221`).
+Version 2.2.1 is built from the base NSP plus the player's update NSP, side by side with 1.0.0 in one work folder (`VERSION=v221`).
 - **Identification by content:** `extract_code.py` finds 2.2.1 by its ExeFS hashes and `merge_romfs.py` by its update Program NCA, both pinned in `assets/expected-v2.2.1.json`. The display version was read from the update's `control.nacp`.
 - **Code:** only `main` changed. `sdk` and `subsdk0` are identical to 1.0.0, and their rewritten images came out byte-identical too.
 - **One host change:** 2.2.1 calls `nn::oe::GetDisplayVersion` while starting. The SDK reads it through an applet proxy the host does not serve, so the game crashed at address 0. The host now answers with the build's version.
-- **DLC menu:** "Purchase" calls `nn::ec::ShowShopAddOnContentList`, which opens the eShop applet. The SDK crashed there, since the host runs no applets. The shop now opens and closes at once, and the game reports no add-on content as before (seen in play, PR #1309).
+- **DLC menu:** "Purchase" calls `nn::ec::ShowShopAddOnContentList`, which opens the eShop applet. The SDK crashed there, since the host runs no applets. The shop now opens and closes at once, and the game reports no add-on content as before (seen in play, 2026-10-29).
 - **Saves:** 2.2.1 opens a 1.0.0 save. Its save is 20 MiB instead of 10 MiB, and a save written by 2.2.1 may not load in 1.0.0.
 
 Verified (Apple M5, macOS 27.0.1, 2.2.1, a copy of the 1.0.0 save):
@@ -26,13 +136,13 @@ Verified (Apple M5, macOS 27.0.1, 2.2.1, a copy of the 1.0.0 save):
 | ExeFS, update Program NCA, merged RomFS (all six IVFC levels) | pass, pinned |
 | `structck.py`, `equiv.py --min-eff 8` | OK for all three modules; 0 divergent sites; 300 of 300 mutations caught |
 | Boot with A presses | title screen "Ver. 2.2.1", Continue loads the 1.0.0 save, a battle in Everblight Plain renders; 230 s with no crash |
-| Played by hand | works (owner); "Purchase" in the DLC menu crashed the game, and after the fix it returns to the menu |
+| Played by hand | works (in play); "Purchase" in the DLC menu crashed the game, and after the fix it returns to the menu |
 
 ### 2026-10-29: stage 7, the app
 
 `make app` builds `Xenoblade Chronicles 3.app` from the work folder, with the launcher copied from ot0. Changes for this game:
 - The frame rate choice is gone. Ot0 needed it for its Unreal tick-rate patch, but this game holds itself to 30 fps and has no unlock. The app and `make boot` now both run with `TOTK_UNCAPPED=0`, so frames follow the game's own present interval on any display.
-- TOTK's shortcut keys 2–4 are off. The owner's first session in the app showed cutscenes enlarged and shifted to the top-left corner. The log showed key 2 had turned on MetalFX frame interpolation, and interpolated frames are shown without the game's crop: the game draws its cutscenes at 1280×720 in the corner of a 1920×1080 picture. Keys 3 and 4 (2K modes, ultrawide) had nothing behind them for this game. The in-game help now lists key 1 only.
+- TOTK's shortcut keys 2–4 are off. The first session played in the app showed cutscenes enlarged and shifted to the top-left corner. The log showed key 2 had turned on MetalFX frame interpolation, and interpolated frames are shown without the game's crop: the game draws its cutscenes at 1280×720 in the corner of a 1920×1080 picture. Keys 3 and 4 (2K modes, ultrawide) had nothing behind them for this game. The in-game help now lists key 1 only.
 - The system fonts were found through absolute paths into the work folder. They are now relative to the folder the runtime runs from (the work folder, or the app's `game` folder), and `make app` bundles them. The game has not asked for them so far.
 
 Verified (Apple M5, macOS 27.0.1, 1.0.0):
@@ -43,19 +153,19 @@ Verified (Apple M5, macOS 27.0.1, 1.0.0):
 | Work folder renamed, game started from inside the app with the launcher's settings (MetalFX on, 1920×1080 window) | boots, difficulty selection renders, 150 s with no crash |
 | First run with an empty shader cache | one loading screen waits about 50 s for 92 pipelines and 10 libraries to compile |
 | Second run | no wait; 30 fps |
-| Started from Finder | works (owner): settings window, then the game through the opening |
+| Started from Finder | works (in play): settings window, then the game through the opening |
 | Cutscene after pressing 2 | enlarged into the top-left corner until restart; fixed by turning keys 2–4 off |
 
 ### 2026-10-29: stage 6, played by hand; save and load
 
-The owner played the game through `make boot` (two fixes to the target: it opened no window and submitted no GPU work). They walked and fought in Everblight Plain, saved, quit, started again and loaded the save. All worked. Rare, brief screen tearing or thin black lines remain.
+The game was played by hand through `make boot` (two fixes to the target: it opened no window and submitted no GPU work). They walked and fought in Everblight Plain, saved, quit, started again and loaded the save. All worked. Rare, brief screen tearing or thin black lines remain.
 
 Verified (Apple M5, macOS 27.0.1, 1.0.0, Everblight Plain):
 
 | Check | Result |
 |---|---|
-| Walking, camera and battle with keyboard or controller | works (owner) |
-| Save, quit, start again, load | the save loads at the same place (owner) |
+| Walking, camera and battle with keyboard or controller | works (in play) |
+| Save, quit, start again, load | the save loads at the same place (in play) |
 | Frame rate | 30 fps (frame time p50 33.2 ms, p95 33.7 ms); GPU about 6–7 ms per frame |
 | Picture | rare tearing or thin black lines (not investigated yet) |
 
@@ -78,7 +188,7 @@ Verified:
 | Check | Result |
 |---|---|
 | Frames 15500 / 16300 (first battle) | party, enemies and weapons render |
-| Sound | working (the owner, by ear) |
+| Sound | working (by ear, in play) |
 | 575 s with A presses | ends at the time limit |
 
 ### 2026-10-28: stage 6, the first battle renders

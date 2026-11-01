@@ -175,9 +175,13 @@ static int use_cached(int ci, ctx_t *c, const cfg_t *want) {
     return 0;
 }
 /* 1 when the scaler for this configuration is current; otherwise starts building it (in the background) and returns 0. */
-static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode) {
+/* iw x ih: the scaler's input size, the content region read from src's top-left corner (Xenoblade Chronicles 3,
+   2026-10-29: one scaler per content size. A 1920x1080 scaler fed inputContentWidth 1280 during a 1280x720 cutscene went
+   on showing the top-left 1280x720, enlarged, after the content was 1920x1080 again; with the input size equal to the
+   content, inputContentWidth never changes for a scaler. Both sizes stay in the cache.) */
+static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode, NSUInteger iw, NSUInteger ih) {
     ctx_t *c = &g_c[ci]; int own = dst == nil;
-    cfg_t want = {src.width, src.height, ow, oh, src.pixelFormat, own ? MTLPixelFormatInvalid : dst.pixelFormat, mode, own};
+    cfg_t want = {iw, ih, ow, oh, src.pixelFormat, own ? MTLPixelFormatInvalid : dst.pixelFormat, mode, own};
     if (c->cur >= 0 && cfg_eq(&c->cache[c->cur].cfg, &want)) { c->cache[c->cur].used = ++c->tick; return 1; }
     if (use_cached(ci, c, &want)) return 1;
     if (g_unavailable || is_bad(c, &want)) return 0;
@@ -197,7 +201,7 @@ static int ensure(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow,
 int mfxup_prepare(int ci, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ow, NSUInteger oh, int mode) {
     if (ci < 0 || ci >= MFXUP_NCTX || !src) return 0;
     if (dst) { ow = dst.width; oh = dst.height; }
-    return ensure(ci, src, dst, ow, oh, mode);
+    return ensure(ci, src, dst, ow, oh, mode, src.width, src.height);
 }
 
 id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger in_w, NSUInteger in_h,
@@ -206,7 +210,7 @@ id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> 
     ctx_t *c = &g_c[ci];
     if (dst) { ow = dst.width; oh = dst.height; }
     if (!cb || !src || src.textureType != MTLTextureType2D || (dst && dst.textureType != MTLTextureType2D) || !in_w || !in_h ||
-        in_w > src.width || in_h > src.height || !ow || !oh || !ensure(ci, src, dst, ow, oh, mode)) { c->refused++; return nil; }
+        in_w > src.width || in_h > src.height || !ow || !oh || !ensure(ci, src, dst, ow, oh, mode, in_w, in_h)) { c->refused++; return nil; }
     built_t *b = &c->cache[c->cur];
     id<MTLTexture> out = dst ? dst : b->out;
     /* MetalFX waits on the fence before reading: signal it after everything before (the producer of src, earlier users of
@@ -220,6 +224,36 @@ id<MTLTexture> mfxup_encode_ex(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> 
     c->done++;
     sweep(c);
     return out;
+}
+
+/* The window output stage's input when the game's picture is a crop of its texture (Xenoblade Chronicles 3, 2026-10-29:
+   1280x720 cutscenes in the corner of a 1920x1080 window texture). MetalFX's content region (inputContentWidth smaller
+   than the colour texture) did not hold: after a cutscene the output stayed the enlarged 1280x720 corner, and a
+   1280x720-input scaler reading the 1920x1080 texture drew the picture in the corner. So the crop is copied into a texture
+   of exactly its size first, and the scaler always reads a whole texture of its input size. One copy texture per
+   context, made again when the size or format changes (the old one stays resident: a cutscene and the game alternate). */
+id<MTLTexture> mfxup_encode_region(int ci, id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger in_w, NSUInteger in_h,
+                                   NSUInteger ow, NSUInteger oh, int mode) {
+    if (!src || !in_w || !in_h || in_w > src.width || in_h > src.height) return nil;
+    if (in_w == src.width && in_h == src.height) return mfxup_encode_ex(ci, cb, src, in_w, in_h, nil, ow, oh, mode);
+    static id<MTLTexture> region[MFXUP_NCTX][2];   // two sizes kept per context (the cutscene's and another)
+    id<MTLTexture> t = nil;
+    for (int i = 0; i < 2; i++) { id<MTLTexture> r = region[ci][i]; if (r && r.width == in_w && r.height == in_h && r.pixelFormat == src.pixelFormat) t = r; }
+    if (!t) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat width:in_w height:in_h mipmapped:NO];
+        d.usage = src.usage | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+        t = [g_dev newTextureWithDescriptor:d];
+        if (!t) return nil;
+        rs_change(t, region[ci][1]);
+        region[ci][1] = region[ci][0]; region[ci][0] = t;
+        ULOG("%s: crop %lux%lu copied to its own texture before scaling", g_name[ci], (unsigned long)in_w, (unsigned long)in_h);
+    }
+    id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
+    [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];
+    [e copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(in_w, in_h, 1)
+             toTexture:t destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [e endEncoding];
+    return mfxup_encode_ex(ci, cb, t, in_w, in_h, nil, ow, oh, mode);
 }
 
 id<MTLTexture> mfxup_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger out_w, NSUInteger out_h) {

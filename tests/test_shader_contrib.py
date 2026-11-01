@@ -194,6 +194,19 @@ class OtherGamesTests(unittest.TestCase):
         self.assertIsNone(per_game)
         self.assertIn('neither game has', line)
 
+    def test_a_pipeline_naming_a_bind_state_the_file_does_not_give_is_not_merged(self):
+        keys = {g: set() for g in collect_shader_issues.GAMES}; keys['totk'] = {self.KEY_A}
+        deps = '{"tex":{"0":"cube"}}'
+        named = f'{self.KEY_A}-{suffix(answers_for(json.loads(deps)))}_b'
+        def key(vs, fs):
+            return (vs.encode().ljust(80, b'\0') + fs.encode().ljust(80, b'\0') + b'\x07' * 40).hex()
+        body = (f'```\nV\t{self.KEY_A}\t{deps}\nR\t{key(named, named)}\n'
+                f'R\t{key(self.KEY_A + "-" + "9" * 12 + "_b", named)}\n```')   # an older game wrote no V row for this one
+        lists, line, per_game = self.merge(self.issue('Shader list: 3 rows', body), keys)
+        self.assertEqual(len(lists['totk'].warm), 1)
+        self.assertIn('1 naming bind states the file does not give', line)
+        self.assertIn(named[65:77], lists['totk'].answers)
+
     def test_another_game_s_reply_names_its_own_list(self):
         reply = reply_text({'wonder': (40, 12)}, 'wonder')
         self.assertIn("12 of them new to Super Mario Bros. Wonder's own shader list (`games/wonder/assets/shader_list.tsv`)", reply)

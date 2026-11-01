@@ -2,10 +2,10 @@
 
 How many NVN entry points the game loads through `nvnBootstrapLoader`, compared with how many `third_party/d2r_gfx/gfx/nvn/` implements. This feeds the README's "What the game uses" section, in the same form as `games/by3/README.md`.
 
-- NVN API version reported by the game:
-- Names loaded:
-- Implemented:
-- Called at least once before the title screen:
+- NVN SDK: 12.3.9 (`NintendoSDK_NVN-12_3_9`), the same in 1.0.0 and 2.2.1.
+- Entry points asked for: 1,050 `nvnDeviceGetProcAddress` calls at start (both versions).
+- The layer's name table: 523 names; 439 implemented (432 with semantics, 7 no-ops), 84 abort with their name when called (log line `[nvn] 空设备：名字 523，已实现 439…`).
+- Unimplemented names called: none in 900 s (1.0.0) and 2.2.1 sessions played by hand; earlier, `nvnCommandBufferClearColori` and the transform feedback calls (boots 14–15), both implemented since.
 
 ## Missing entry points the game calls
 

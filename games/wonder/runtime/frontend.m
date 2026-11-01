@@ -7,7 +7,6 @@
 #include <math.h>
 #include "runtime.h"
 #include "game_version.h"
-#include "../app/update_check.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #import "playtime.h"
@@ -513,7 +512,6 @@ static void front_install_menu(void){
 static void *guest_main(void *callback){@autoreleasepool{((void(*)(void))callback)();}return NULL;}
 void runtime_front_run(void(*callback)(void)){
  @autoreleasepool{
-  mng_update_background(); // cache for a later launch; never wait for GitHub or show UI during play
   bootStartNS=runtime_now_ns();
   {const char *commit=getenv("TOTK_SOURCE_COMMIT");fprintf(stderr,"[totk] built from commit %s\n",commit&&*commit?commit:"(not recorded)");}
 #ifdef GAME_BOTW

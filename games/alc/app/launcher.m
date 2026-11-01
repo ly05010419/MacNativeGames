@@ -14,6 +14,7 @@
    Patches come from <work>/patches (scripts/prepare_patches.py); a missing one is left out and the
    window says so. */
 #import <Cocoa/Cocoa.h>
+#include "../runtime/game_version.h"   /* GAME_FOLDER / GAME_NAME: the per-game names every port shares */
 #include <errno.h>
 #include <string.h>
 #include <unistd.h>
@@ -21,14 +22,15 @@
 static BOOL spanish(void) { return [NSLocale.preferredLanguages.firstObject hasPrefix:@"es"]; }
 #define T(es, en) (spanish() ? @es : @en)
 
-/* output: 0 = the monitor's native pixels, else the height of a 16:9 output (2160, 1440, 1080, 900). */
-typedef struct { const char *name_es, *name_en; int fps, fixed900, fullscreen, metalfx, output, lod, nograin, size; } Preset;
+/* output: 0 = the monitor's native pixels, else the height of a 16:9 output (2160, 1440, 1080, 900).
+   interp: MetalFX frame interpolation, 0 = off, 1 = 30+30, 2 = half the refresh rate, 3 = every frame interpolated. */
+typedef struct { const char *name_es, *name_en; int fps, fixed900, fullscreen, metalfx, output, lod, nograin, size, interp; } Preset;
 static const Preset presets[] = {
-    {"Original (30 fps, como en la consola)", "Original (30 fps, as on the console)", 30, 0, 0, 0, 0, 0, 0, 2},
-    {"Recomendado (60 fps, ventana)", "Recommended (60 fps, window)", 60, 0, 0, 1, 0, 0, 0, 2},
-    {"Rendimiento (60 fps, 900p fija)", "Performance (60 fps, fixed 900p)", 60, 1, 0, 1, 0, 0, 0, 2},
-    {"Calidad (60 fps, pantalla completa, MetalFX nativo, sin grano)", "Quality (60 fps, full screen, native MetalFX, no grain)", 60, 1, 1, 1, 0, 0, 1, 2},
-    {"Monitor rápido (120 fps experimental, pantalla completa, MetalFX)", "Fast monitor (120 fps experimental, full screen, MetalFX)", 120, 1, 1, 1, 0, 0, 1, 2},
+    {"Original (30 fps, como en la consola)", "Original (30 fps, as on the console)", 30, 0, 0, 0, 0, 0, 0, 2, 0},
+    {"Recomendado (60 fps, 1080p, MetalFX)", "Recommended (60 fps, 1080p, MetalFX)", 60, 2, 0, 1, 0, 0, 0, 2, 0},
+    {"Rendimiento (60 fps, 900p fija, MetalFX)", "Performance (60 fps, fixed 900p, MetalFX)", 60, 1, 0, 1, 0, 0, 0, 2, 0},
+    {"Calidad (60 fps, 1080p, pantalla completa, MetalFX, sin grano)", "Quality (60 fps, 1080p, full screen, MetalFX, no grain)", 60, 2, 1, 1, 0, 0, 1, 2, 0},
+    {"Monitor rápido (120 fps experimental, 1080p, pantalla completa, MetalFX)", "Fast monitor (120 fps experimental, 1080p, full screen, MetalFX)", 120, 2, 1, 1, 0, 0, 1, 2, 0},
 };
 enum { NPRESETS = sizeof presets / sizeof *presets };
 static const int fps_values[] = {30, 60, 120};
@@ -37,12 +39,25 @@ static const int outputs[] = {0, 2160, 1440, 1080, 900};
 
 static NSString *work_folder(void) {
     const char *e = getenv("ALC_WORK");
-    return e && *e ? @(e) : [NSBundle.mainBundle objectForInfoDictionaryKey:@"ALCWorkFolder"];
+    if (e && *e) return @(e);
+    /* A self-contained bundle carries the runtime in Contents/Resources/work (make app copies it in): that folder wins,
+       so the app runs from anywhere — another Mac, a copy, a USB disk — without this repository. */
+    NSString *res = NSBundle.mainBundle.resourcePath;
+    NSArray<NSString *> *cands = @[ res ? [res stringByAppendingPathComponent:@"work"] : @"",
+                                    [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"Contents/Resources/work"] ];
+    for (NSString *packed in cands)
+        if (packed.length && [NSFileManager.defaultManager fileExistsAtPath:[packed stringByAppendingPathComponent:@"rewritten/v101"]]) return packed;
+    return [NSBundle.mainBundle objectForInfoDictionaryKey:@"ALCWorkFolder"];
 }
 static BOOL have_patch(NSString *slug) {
     return [NSFileManager.defaultManager fileExistsAtPath:[work_folder() stringByAppendingFormat:@"/patches/%@.tsv", slug]];
 }
 static NSString *fixed900_patch(void) { return have_patch(@"res-1600x900") ? @"res-1600x900" : have_patch(@"force-scaling-900p-v3") ? @"force-scaling-900p-v3" : nil; }
+/* The internal-resolution patches: the game renders at its own dynamic size up to 900p unless one of these is applied. */
+static NSString *res_patch_for(int fixed900) {
+    if (fixed900 == 2 && have_patch(@"res-1920x1080")) return @"res-1920x1080";
+    return fixed900 ? fixed900_patch() : nil;
+}
 /* RomFS mods: <work>/../mods/<name>/romfs with a manifest.tsv (make mods). */
 static NSString *mods_folder(void) { return [[work_folder() stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"mods"]; }
 static NSArray<NSString *> *romfs_mods(void) {
@@ -57,7 +72,7 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
 @interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property NSWindow *window;
 @property NSPopUpButton *preset, *size, *internal, *monitor, *output, *mod;
-@property NSSegmentedControl *fps, *display, *scaler;
+@property NSSegmentedControl *fps, *display, *scaler, *interp;
 @property NSButton *lod, *grain, *hud, *play; @property NSTextField *note;
 @property NSArray<NSString *> *mods; @property BOOL applying, launch;
 @end
@@ -76,7 +91,7 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
     [self.preset addItemWithTitle:T("Personalizado", "Custom")];
     self.preset.target = self; self.preset.action = @selector(presetChanged:);
     self.fps = [self segments:@[@"30", @"60", T("120 (experimental)", "120 (experimental)")]];
-    self.internal = [self popup:@[T("Dinámica (la del juego, hasta 900p)", "Dynamic (the game's own, up to 900p)"), T("900p fija", "Fixed 900p")]];
+    self.internal = [self popup:@[T("Dinámica (la del juego, hasta 900p)", "Dynamic (the game's own, up to 900p)"), T("900p fija", "Fixed 900p"), T("1080p fija (más nítida)", "Fixed 1080p (sharper)")]];
     self.monitor = [NSPopUpButton new]; self.monitor.target = self; self.monitor.action = @selector(monitorChanged:);
     for (NSScreen *s in NSScreen.screens) {
         NSSize px = screen_pixels(s);
@@ -88,6 +103,7 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
     self.size = [self popup:sizeTitles];
     self.output = [NSPopUpButton new]; self.output.target = self; self.output.action = @selector(changed:);
     self.scaler = [self segments:@[T("MetalFX (más nítido)", "MetalFX (sharper)"), T("Normal", "Plain")]];
+    self.interp = [self segments:@[T("No", "Off"), T("30+30 (experimental)", "30+30 (experimental)"), T("Mitad de la frecuencia", "Half the rate"), T("Cada fotograma", "Every frame")]];
     self.lod = [NSButton checkboxWithTitle:T("LOD mejorado (más detalle a distancia)", "Improved LOD (more distant detail)") target:self action:@selector(changed:)];
     self.grain = [NSButton checkboxWithTitle:T("Quitar el grano de película", "Remove film grain") target:self action:@selector(changed:)];
     self.mod = [self popup:@[T("Ninguno", "None")]]; self.mods = romfs_mods(); [self.mod addItemsWithTitles:self.mods];
@@ -105,6 +121,7 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
         @[[self label:T("Tamaño de la ventana", "Window size")], self.size],
         @[[self label:T("Resolución de salida", "Output resolution")], self.output],
         @[[self label:T("Escalado", "Scaling")], self.scaler],
+        @[[self label:T("Fotogramas interpolados", "Interpolated frames")], self.interp],
         @[[self label:T("Mejoras", "Extras")], self.lod],
         @[NSGridCell.emptyContentView, self.grain],
         @[[self label:T("Mod de interfaz", "Interface mod")], self.mod],
@@ -150,9 +167,10 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
 }
 - (void)load:(NSUserDefaults *)d {
     int fps = (int)[d integerForKey:@"fps"]; self.fps.selectedSegment = fps == 120 ? 2 : fps == 30 ? 0 : 1;
-    [self.internal selectItemAtIndex:[d boolForKey:@"fixed900"]]; self.display.selectedSegment = [d boolForKey:@"fullscreen"];
+    { NSInteger ir = [d integerForKey:@"fixed900"]; [self.internal selectItemAtIndex:ir >= 0 && ir <= 2 ? ir : 0]; } self.display.selectedSegment = [d boolForKey:@"fullscreen"];
     NSInteger s = [d objectForKey:@"size"] ? [d integerForKey:@"size"] : 2; [self.size selectItemAtIndex:s >= 0 && s < 4 ? s : 2];
     self.scaler.selectedSegment = [d objectForKey:@"metalfx"] && ![d boolForKey:@"metalfx"] ? 1 : 0;
+    { NSInteger ip = [d integerForKey:@"interp"]; self.interp.selectedSegment = ip >= 0 && ip <= 3 ? ip : 0; }
     [self fillOutputs:(int)[d integerForKey:@"output"]];
     self.lod.state = [d boolForKey:@"lod"]; self.grain.state = [d boolForKey:@"nograin"];
 }
@@ -161,6 +179,7 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
     [self.preset selectItemAtIndex:i]; self.fps.selectedSegment = p->fps == 30 ? 0 : p->fps == 60 ? 1 : 2;
     [self.internal selectItemAtIndex:p->fixed900]; self.display.selectedSegment = p->fullscreen; [self.size selectItemAtIndex:p->size];
     self.scaler.selectedSegment = p->metalfx ? 0 : 1; [self fillOutputs:p->output];
+    self.interp.selectedSegment = p->interp;
     self.lod.state = p->lod; self.grain.state = p->nograin; self.applying = NO;
 }
 /* Every change is saved at once (and written to disk), so the next start shows the same choices. */
@@ -197,9 +216,10 @@ static NSString *screen_name(NSScreen *s) { return s.localizedName ?: @"?"; }
 - (void)save {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d setInteger:self.preset.indexOfSelectedItem forKey:@"preset"];
-    [d setInteger:fps_values[self.fps.selectedSegment] forKey:@"fps"]; [d setBool:self.internal.indexOfSelectedItem == 1 forKey:@"fixed900"];
+    [d setInteger:fps_values[self.fps.selectedSegment] forKey:@"fps"]; [d setInteger:self.internal.indexOfSelectedItem forKey:@"fixed900"];
     [d setBool:self.display.selectedSegment == 1 forKey:@"fullscreen"]; [d setInteger:self.size.indexOfSelectedItem forKey:@"size"];
     [d setInteger:self.output.selectedItem.tag forKey:@"output"]; [d setBool:self.scaler.selectedSegment == 0 forKey:@"metalfx"];
+    [d setInteger:self.interp.indexOfSelectedItem forKey:@"interp"];
     [d setObject:screen_name(self.chosenScreen) forKey:@"monitor"];
     [d setBool:self.lod.state forKey:@"lod"]; [d setBool:self.grain.state forKey:@"nograin"]; [d setBool:self.hud.state forKey:@"hud"];
     if (self.mod.indexOfSelectedItem > 0) [d setObject:self.mods[self.mod.indexOfSelectedItem - 1] forKey:@"mod"]; else [d removeObjectForKey:@"mod"];
@@ -220,20 +240,53 @@ int main(int argc, char **argv) {
     (void)argc; (void)argv;
     @autoreleasepool {
         [NSApplication sharedApplication]; NSApp.activationPolicy = NSApplicationActivationPolicyRegular;
-        Launcher *l = [Launcher new]; NSApp.delegate = l;
-        [NSApp run];
-        if (!l.launch) return 0;
+        /* Like the TotK app: straight into the game. The window is shown only when it has something to say — the first
+           run (no saved settings yet) or when Option is held at launch, which is also how the saved settings are
+           changed (the presets, internal resolution, fullscreen, mods); the in-game settings panel (key 1) covers the
+           rest during play. */
+        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+        if ([defaults objectForKey:@"fps"] == nil) {
+            /* First run: the Recommended preset written in place (60 fps, fixed 1080p, MetalFX), no window — the game
+               starts at once like the TotK app; Option at launch opens the settings window to change it. */
+            [defaults setInteger:60 forKey:@"fps"];
+            [defaults setInteger:2 forKey:@"fixed900"];
+            [defaults setBool:YES forKey:@"metalfx"];
+            [defaults setInteger:0 forKey:@"interp"];
+            [defaults setBool:NO forKey:@"fullscreen"];
+            [defaults setInteger:2 forKey:@"size"];
+            [defaults setBool:YES forKey:@"hud"];
+            [defaults setBool:NO forKey:@"lod"];
+            [defaults setBool:NO forKey:@"nograin"];
+            [defaults setInteger:1 forKey:@"preset"];
+            [defaults synchronize];
+        }
+        BOOL wantWindow = (NSEvent.modifierFlags & NSEventModifierFlagOption) != 0;   /* hold Option to change settings */
+        if (wantWindow) {
+            Launcher *l = [Launcher new]; NSApp.delegate = l;
+            [NSApp run];
+            if (!l.launch) return 0;
+        }
         NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
         NSString *work = work_folder(), *home = NSHomeDirectory();
-        NSString *data = [home stringByAppendingPathComponent:@"Library/Application Support/MacNativeGames/ALC"];
+        /* Same layout as every port in this repository: ~/Library/Application Support/MacNativeGames/<GAME_FOLDER>
+           (game_version.h), with profile / game-slot / RomFS proof inside — one place to manage all games' saves. */
+        NSString *data = [home stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Application Support/MacNativeGames/%s", GAME_FOLDER]];
         NSString *logs = [home stringByAppendingPathComponent:@"Library/Logs/MacNativeGames"];
         NSString *profile = [data stringByAppendingPathComponent:@"profile"], *slot = [data stringByAppendingPathComponent:@"game-slot"];
         if (!make_dir(profile) || !make_dir(slot) || !make_dir(logs)) { fail([NSString stringWithFormat:@"%@", data]); return 1; }
+        /* Translations this run makes go to the user's data folder, never into the bundle (so a shipped app stays as
+           built, and the seed inside it stays the reference). */
+        { NSString *cache = [data stringByAppendingPathComponent:@"shader-cache"]; make_dir(cache);
+          setenv("TOTK_SHADER_CACHE", cache.fileSystemRepresentation, 1); }
+        /* The shader seed shipped inside the app (make shader-seed; TotK's TOTK_SHADER_SEED_DIR): read in place, so a
+           first run with it translates nothing and starts at full pace. */
+        { NSString *seed = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"shader-seed"];
+          if ([NSFileManager.defaultManager fileExistsAtPath:seed]) setenv("TOTK_SHADER_SEED_DIR", seed.fileSystemRepresentation, 1); }
         if (chdir(work.fileSystemRepresentation)) { fail(work); return 1; }   // the runtime reads extracted/ and rewritten/ relative to it
 
         int fps = (int)[d integerForKey:@"fps"]; NSMutableArray *patches = [NSMutableArray array];
         if (fps >= 60 && have_patch(@"60fps")) [patches addObject:@"60fps"];
-        if ([d boolForKey:@"fixed900"] && fixed900_patch()) [patches addObject:fixed900_patch()];
+        { NSString *rp = res_patch_for((int)[d integerForKey:@"fixed900"]); if (rp) [patches addObject:rp]; }
         if ([d boolForKey:@"lod"] && have_patch(@"improved-lod-v2")) [patches addObject:@"improved-lod-v2"];
         if ([d boolForKey:@"nograin"] && have_patch(@"remove-film-grain")) [patches addObject:@"remove-film-grain"];
         setenv("ALC_PATCHES", [patches componentsJoinedByString:@","].UTF8String, 1);
@@ -250,8 +303,20 @@ int main(int argc, char **argv) {
             if (h > 0 && h < px.height) setenv("TOTK_DRAWABLE_SCALE", [NSString stringWithFormat:@"%.4f", h / px.height].UTF8String, 1);
         }
         NSInteger s = [d integerForKey:@"size"]; if (s < 0 || s > 3) s = 2;
-        setenv("TOTK_WINDOW_SIZE", [NSString stringWithFormat:@"%dx%d", sizes[s][0], sizes[s][1]].UTF8String, 1);
+        {   /* A window larger than the screen opens partly off it, and a covered window stops presenting; keep the
+               chosen size when it fits, else the largest that does (points, so the drawable stays that size x the
+               backing scale — MetalFX still gets more pixels than the game renders). */
+            NSScreen *sc = all.count ? all[mi] : NSScreen.mainScreen;
+            NSSize vis = sc.visibleFrame.size; int w = sizes[s][0], h = sizes[s][1];
+            if (w > vis.width - 24) w = (int)vis.width - 24;
+            if (h > vis.height - 48) h = (int)vis.height - 48;
+            setenv("TOTK_WINDOW_SIZE", [NSString stringWithFormat:@"%dx%d", w, h].UTF8String, 1);
+        }
         if (![d objectForKey:@"metalfx"] || [d boolForKey:@"metalfx"]) { setenv("TOTK_MFX_UPSCALE", "1", 1); setenv("TOTK_MFX_OUTPUT", "1", 1); }
+        { NSInteger ip = [d integerForKey:@"interp"];
+          if (ip == 1) setenv("TOTK_MFX", "interp30", 1);
+          else if (ip == 2) setenv("TOTK_MFX", "interp", 1);
+          else if (ip == 3) setenv("TOTK_MFX", "interpmax", 1); }
         if ([d objectForKey:@"hud"] && ![d boolForKey:@"hud"]) setenv("TOTK_FPS_OVERLAY", "0", 1); else setenv("ALC_HUD_RENDER", "1", 1);
         NSString *mod = [d stringForKey:@"mod"];
         if (mod && [romfs_mods() containsObject:mod]) setenv("TOTK_ROMFS_MODS", [mods_folder() stringByAppendingFormat:@"/%@/romfs", mod].fileSystemRepresentation, 1);
@@ -261,6 +326,10 @@ int main(int argc, char **argv) {
         setenv("TOTK_GAME_SLOT_DIR", slot.fileSystemRepresentation, 1);
         setenv("TOTK_ROMFS_PROOF_DIR", data.fileSystemRepresentation, 1);
         NSString *preferred = NSLocale.preferredLanguages.firstObject; if (preferred) setenv("TOTK_LOCALE", preferred.UTF8String, 1);
+        /* TOTK_FREE_CORES: the game's task manager waits on its fiber with a user-space spin that never enters an
+           SVC, so the virtual-core model cannot preempt it and the fiber starves — without this the boot parks at
+           frame 0 with no present (CHANGELOG, stage 3). The Makefile's boot target sets it too. */
+        setenv("TOTK_FREE_CORES", "1", 1);
         setenv("TOTK_GPU_ALLOW_SUBMIT", "1", 1); setenv("TOTK_GPU_WIDEN", "1", 1); setenv("TOTK_GPU_BLOCKRT", "1", 1);
         setenv("TOTK_GPU_MIDCLEAR", "1", 1); setenv("TOTK_GPU_BUDGET_MB", "5000", 1);
         setenv("DM_PRESENT_LINK_FALLBACK", "1", 1);   // keep presenting when macOS pauses the display link for a window it thinks covered
@@ -272,9 +341,9 @@ int main(int argc, char **argv) {
         NSString *log = [logs stringByAppendingPathComponent:@"alc.log"], *prev = [logs stringByAppendingPathComponent:@"alc.previous.log"];
         [NSFileManager.defaultManager removeItemAtPath:prev error:nil]; [NSFileManager.defaultManager moveItemAtPath:log toPath:prev error:nil];
         FILE *lf = fopen(log.fileSystemRepresentation, "w"); if (lf) { dup2(fileno(lf), STDOUT_FILENO); dup2(fileno(lf), STDERR_FILENO); fclose(lf); }
-        fprintf(stderr, "[launcher] work %s, patches %s, present %s Hz, display %s, fullscreen %s, window %s, drawable scale %s, MetalFX %s, mod %s\n",
+        fprintf(stderr, "[launcher] work %s, patches %s, present %s Hz, display %s, fullscreen %s, window %s, drawable scale %s, MetalFX %s, interp %s, mod %s\n",
                 work.UTF8String, getenv("ALC_PATCHES"), getenv("DM_PRESENT_HZ"), getenv("ALC_DISPLAY"), full ? "yes" : "no", getenv("TOTK_WINDOW_SIZE"),
-                getenv("TOTK_DRAWABLE_SCALE") ?: "1", getenv("TOTK_MFX_OUTPUT") ? "on" : "off", getenv("TOTK_ROMFS_MODS"));
+                getenv("TOTK_DRAWABLE_SCALE") ?: "1", getenv("TOTK_MFX_OUTPUT") ? "on" : "off", getenv("TOTK_MFX") ?: "-", getenv("TOTK_ROMFS_MODS"));
         NSString *binary = [work stringByAppendingPathComponent:@"build/alc-native"];
         char *const args[] = {(char *)binary.fileSystemRepresentation, "rewritten/v101", "boot", NULL};
         execv(args[0], args);

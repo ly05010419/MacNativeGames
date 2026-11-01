@@ -138,7 +138,8 @@
     {
       "source": "dm/games/settings.tsv",
       "destination": "runtime/games/settings.tsv",
-      "sha256": "97617918e9ddc71e330a85a08465ece5fc8fc19af8d34478be4bca783385202f"
+      "sha256": "97617918e9ddc71e330a85a08465ece5fc8fc19af8d34478be4bca783385202f",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/gfx/README.md",
@@ -1216,12 +1217,14 @@
     {
       "source": "dm/host/hle.h",
       "destination": "runtime/host/hle.h",
-      "sha256": "f86f59b92eca933899b28e9d4a502e4008d9698af44c233fcd9b09eab7b76336"
+      "sha256": "f86f59b92eca933899b28e9d4a502e4008d9698af44c233fcd9b09eab7b76336",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_account.c",
       "destination": "runtime/host/hle_account.c",
-      "sha256": "675fee916ca9f121e32a7739f90ef65c78fa8ec5fd6286ce07f98f83cf0c817f"
+      "sha256": "675fee916ca9f121e32a7739f90ef65c78fa8ec5fd6286ce07f98f83cf0c817f",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_audio.c",
@@ -1302,12 +1305,14 @@
     {
       "source": "dm/host/hle_mii.c",
       "destination": "runtime/host/hle_mii.c",
-      "sha256": "ce8561a9293a18eb8f23dafe25899a52e46c4dd76d633643ef57f6addb0b072b"
+      "sha256": "ce8561a9293a18eb8f23dafe25899a52e46c4dd76d633643ef57f6addb0b072b",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_misc.c",
       "destination": "runtime/host/hle_misc.c",
-      "sha256": "078a0cb0d93f16496600397e85d3b6f0515e41d614b8a1f739ec100bf6c87a79"
+      "sha256": "078a0cb0d93f16496600397e85d3b6f0515e41d614b8a1f739ec100bf6c87a79",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_movie.c",
@@ -1337,12 +1342,14 @@
     {
       "source": "dm/host/hle_oe.c",
       "destination": "runtime/host/hle_oe.c",
-      "sha256": "7079d6b870787a0e36f16e5bf0386c50d25d963546d4655215ac693387bb16cc"
+      "sha256": "7079d6b870787a0e36f16e5bf0386c50d25d963546d4655215ac693387bb16cc",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_offline.c",
       "destination": "runtime/host/hle_offline.c",
-      "sha256": "0e37757c60ab59afd80e37ac9cb0cc289d5410ec4ba0dd6ac84639a6ac455db7"
+      "sha256": "0e37757c60ab59afd80e37ac9cb0cc289d5410ec4ba0dd6ac84639a6ac455db7",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_oodle.c",
@@ -1362,7 +1369,8 @@
     {
       "source": "dm/host/hle_sdk16.c",
       "destination": "runtime/host/hle_sdk16.c",
-      "sha256": "92d7239764d4ff5f9a56f725620b2e3d4eb4f38fff7e8fe4bc0bd8863b1e1abe"
+      "sha256": "92d7239764d4ff5f9a56f725620b2e3d4eb4f38fff7e8fe4bc0bd8863b1e1abe",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_sdkinit.c",
@@ -1382,7 +1390,8 @@
     {
       "source": "dm/host/hle_swkbd.c",
       "destination": "runtime/host/hle_swkbd.c",
-      "sha256": "482d2e870ed30fc92fa098ba9d9983b256379ec5389808fc07c41a6f44e4bc83"
+      "sha256": "482d2e870ed30fc92fa098ba9d9983b256379ec5389808fc07c41a6f44e4bc83",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/hle_table.c",
@@ -1613,12 +1622,14 @@
     {
       "source": "dm/host/tests/t_oe.c",
       "destination": "runtime/host/tests/t_oe.c",
-      "sha256": "6b0a9566a22b66fcf4bc47d0b4f87866a04fee441249edee5207d947ff94e6f8"
+      "sha256": "6b0a9566a22b66fcf4bc47d0b4f87866a04fee441249edee5207d947ff94e6f8",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_pctl.c",
       "destination": "runtime/host/tests/t_pctl.c",
-      "sha256": "0403525fa0e6305d2440f8e0690ae00781cec0ffe9e3fec1d1c941a4bc9cecbb"
+      "sha256": "0403525fa0e6305d2440f8e0690ae00781cec0ffe9e3fec1d1c941a4bc9cecbb",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_preempt.c",
@@ -1633,7 +1644,8 @@
     {
       "source": "dm/host/tests/t_shared_font.c",
       "destination": "runtime/host/tests/t_shared_font.c",
-      "sha256": "1500f6b7315bfb564dfbff695c5579ea7c9914ac1c8b65a5153ee4b805a5a7c3"
+      "sha256": "1500f6b7315bfb564dfbff695c5579ea7c9914ac1c8b65a5153ee4b805a5a7c3",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_svc_memory.c",
@@ -1643,7 +1655,8 @@
     {
       "source": "dm/host/tests/t_swkbd.c",
       "destination": "runtime/host/tests/t_swkbd.c",
-      "sha256": "1be62426c3442b56accdb1a276041ff3c8df9bcad303b9b6c6348e1eff79e3c2"
+      "sha256": "1be62426c3442b56accdb1a276041ff3c8df9bcad303b9b6c6348e1eff79e3c2",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_symbols.c",
@@ -1653,7 +1666,8 @@
     {
       "source": "dm/host/tests/t_system_event.c",
       "destination": "runtime/host/tests/t_system_event.c",
-      "sha256": "a5506b483b8b0a49f4abe4008fa740d7703999c1f26e5b10e8ab832372cb1a9b"
+      "sha256": "a5506b483b8b0a49f4abe4008fa740d7703999c1f26e5b10e8ab832372cb1a9b",
+      "modified": "local-changes.patch"
     },
     {
       "source": "dm/host/tests/t_thread_leak.c",

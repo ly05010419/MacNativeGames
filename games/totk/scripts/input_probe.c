@@ -177,6 +177,17 @@ static void feedback_checks(void){
        "mouse stopped after late ticks: the direction holds for 3 s (no gravity pull)");
   need(near3(buf.s[0].acc,-buf.s[0].dir[2],-buf.s[0].dir[5],-buf.s[0].dir[8],1e-4),"mouse mode: the gravity reported is the direction's down");}
  runtime_motion_mouse(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode off, no controller: no motion");
+ /* Gyro bias at rest (motion_fusion.c): a controller lying still that reads +10.28 +5.81 -0.70 deg/s. The still seconds
+    before (gravity pull) learned zero, so each still second moves the bias 30 % of the way: after 10 s it is within 3 %. */
+ {const double b[3]={10.28*M_PI/180,5.81*M_PI/180,-0.70*M_PI/180};
+  runtime_motion_live(1);sstart(&six);feed(2500,0,0,-1,b[0],b[1],b[2]);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].gyro,0,0,0,0.002),"a still controller's gyro bias is learned and taken off");
+  feed(250,0,0,-1,b[0],b[1],b[2]+M_PI/2);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near(buf.s[0].gyro[2],0.25,0.002)&&near(buf.s[0].gyro[0],0,0.002)&&near(buf.s[0].gyro[1],0,0.002),"a turn of 90 degrees a second on top of the bias: 0.25 rev/s, the bias not learned from it");
+  /* Another controller (every source change sets its dead zone): the old one's bias is dropped, not taken off its samples. */
+  runtime_motion_deadzone_default(0);feed(50,0,0,-1,0,0,0);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].gyro,0,0,0,0.002),"another controller: the learned bias starts over");
+  runtime_motion_live(0);}
  probe_clock_fixed=0;
 }
 int main(void){
@@ -187,9 +198,15 @@ int main(void){
  runtime_input_key(14,1);runtime_input_key(14,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
  need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
  runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
+ runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"full input reset");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
+ runtime_input_key(13,1);runtime_input_key(123,1);runtime_input_mouse(0,1);
+ fake_pad.lx=12345;fake_pad.ry=-23456;
+ runtime_input_clear_window();read(&out.state,1,&id);
+ need(out.state.buttons==1&&out.state.lx==12345&&!out.state.ly&&!out.state.rx&&out.state.ry==-23456,"focus loss releases keyboard/mouse while preserving held controller buttons and sticks");
+ read(&out.state,1,&id);need(out.state.buttons==1&&out.state.lx==12345&&out.state.ry==-23456,"background controller remains held without a new input event");
+ fake_pad.buttons=0;fake_pad.lx=fake_pad.ry=0;read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ry,"controller release while unfocused clears the game input");
+ fake_pad.buttons=1;runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"full input reset still releases a held controller button");
  const unsigned dpad[]={19,20,21,23};   /* 2 3 4 5: d-pad left, up, right, down */
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
@@ -223,5 +240,5 @@ int main(void){
  runtime_input_key(14,1);runtime_input_key(14,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, window focus clear preserves the controller; full input reset clears all devices, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

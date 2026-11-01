@@ -10,10 +10,10 @@ The game's ARM64 code runs natively after an ahead-of-time rewrite; a host answe
 
 Checked on an M1 Max MacBook Pro, macOS 27.0.1, with scripted runs of the built app ([details](docs/validation.md)):
 
-- **Works:** boot to the title with its music, "Select a Mii" and the six default Miis, the menus with their movie previews, a full 50cc Grand Prix race at Mario Kart Stadium to the results, saves written and read again. 60 fps in the race (18,873 of 18,900 frames on screen), about 2.7 GB of memory. With the Booster Course Pass in the input folder, its 12 cups are on the cup screen's next page (without it, choosing one only opens the game's purchase notice), and a scripted 50cc Grand Prix of the Golden Dash Cup ran Paris Promenade, Toad Circuit and Choco Mountain to their results and into Coconut Mall. The scripted race in full screen drops no more frames than in a window (58 and 68 of 18,900). Minus on the character screen (the Switch's controller applet) returns to the game at once; before the [fix of 2026-10-29](docs/validation.md#2026-10-29-the-controller-applet-froze-the-character-screen) it froze the game.
+- **Works:** boot to the title with its music, "Select a Mii" and the six default Miis, the menus with their movie previews, a full 50cc Grand Prix race at Mario Kart Stadium to the results, saves written and read again. 60 fps in the race (18,873 of 18,900 frames on screen), about 2.7 GB of memory. With the Booster Course Pass in the input folder, its 12 cups are on the cup screen's next page (without it, choosing one only opens the game's purchase notice), and a scripted 50cc Grand Prix of the Golden Dash Cup ran Paris Promenade, Toad Circuit and Choco Mountain to their results and into Coconut Mall. The scripted race in full screen drops no more frames than in a window (58 and 68 of 18,900). Minus on the character screen (the Switch's controller applet) returns to the game at once; before the [fix of 2026-10-29](docs/validation.md#2026-10-29-the-controller-applet-froze-the-character-screen) it froze the game. Multiplayer 2P with one controller goes back to the engine class menu, as on a Switch when the applet is closed; before the [fix of 2026-10-30](docs/validation.md#2026-10-30-2p-and-every-library-applet) it opened the applet again every few frames.
 - **Not available:** Mii heads draw nothing (no MiiModel firmware data; bodies and colours show). Online Play shows "Connecting…" and returns to the menu, Wireless Play finds nothing: both are cut on purpose.
 - **By hand:** a DualSense became player 1 with its gyro in every session played by hand. On 2026-10-28 a race was played in an unmodified upstream build of the same inputs, and this target's app was only started by hand ([played by hand](docs/validation.md#played-by-hand)). On 2026-10-29 the player played **a whole Booster Course Pass Grand Prix in this target's app, in full screen**, with no problem seen: 61,184 of 61,200 frames on screen in 17 minutes, no audio underrun ([by hand, a Booster Grand Prix](docs/validation.md#by-hand-a-booster-grand-prix-in-full-screen)).
-- **Not yet checked:** the other cups by hand, battle mode, multiplayer on one screen, sessions much longer than 17 minutes. The scripted runs press buttons through `DM_KEYS`.
+- **Not yet checked:** the other cups by hand, battle mode, a race with two players on one screen (2P reached its character select by hand with the keyboard and a DualSense), sessions much longer than 17 minutes. The scripted runs press buttons through `DM_KEYS`.
 
 ## Build
 
@@ -51,7 +51,7 @@ The wrapper stages the runtime, scripts and tools in `<work>/source` and never r
 
 To keep the game with your other apps, move the finished app into `/Applications` (in Finder, or `mv`); on the same disk the move is instant and takes no extra space, and the saves stay where they are. Build to a private folder and move the app afterwards rather than giving an `--output` in `/Applications`: the packer keeps its reuse key (`<app>.key`) and, while it builds, a `.partial` app next to the output.
 
-Open the app. A settings window comes first (docked or handheld, upscaling, language, window or full screen, rumble, and a few performance switches); **Play** starts the game. It has no resolution or frame-rate rows: those need rewriter patches this game does not have, and it already runs at 60 fps at its own 1080p docked.
+Open the app. A settings window comes first (docked or handheld, upscaling, language, window or full screen, the keyboard's player, rumble, and a few performance switches); **Play** starts the game. It has no resolution or frame-rate rows: those need rewriter patches this game does not have, and it already runs at 60 fps at its own 1080p docked.
 
 | Keyboard | Game input | In the race |
 |---|---|---|
@@ -62,7 +62,7 @@ Open the app. A settings window comes first (docked or handheld, upscaling, lang
 | Return / Tab | Plus / Minus | pause |
 | F / G | Left / right stick click | |
 
-A game controller works through Apple's controller support. Online play and local wireless are cut by the host (the network is always unavailable and local wireless never starts), so the game takes its offline paths.
+A game controller works through Apple's controller support. Each controller is a player of its own, from the first one connected: by default the keyboard plays with player 1. For two players with the keyboard and one controller (Multiplayer, 2P), set **Keyboard** to **Own player** in the settings window: the keyboard is then player 1 and the controller player 2. For one player keep the default: with Own player the controller is player 2, and how the single-player modes treat a player 2 was not checked. Online play and local wireless are cut by the host (the network is always unavailable and local wireless never starts), so the game takes its offline paths.
 
 Private state:
 

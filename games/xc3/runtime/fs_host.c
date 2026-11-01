@@ -30,7 +30,7 @@
 #define R_APPEND_REQUIRED 0x2f5e02u
 #include "game_version.h"
 #define TOTK_APPLICATION_ID GAME_TITLE_ID
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE };
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_AOC };   /* M_AOC: an add-on's extracted RomFS, read-only */
 enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
 #define FILE_BASE 0x200000000ULL
 #define DIR_BASE 0x300000000ULL
@@ -122,6 +122,7 @@ static unsigned host_path(const char *path, char *out, size_t cap) { return host
 /* A change to save data through a path (create, delete, rename, directories): marks the save as in progress. */
 static unsigned save_change_path(const char *path, char *out, size_t cap) {
     int kind = M_FREE; unsigned r = host_path_kind(path, out, cap, &kind);
+    if (!r && kind == M_AOC) return R_INVALID_ARGUMENT;   /* add-on content is read-only */
     if (!r && kind == M_SAVE) save_touched();
     return r;
 }
@@ -225,6 +226,7 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+    if (kind == M_AOC && (mode & OPEN_WRITE)) return R_INVALID_ARGUMENT;   /* add-on content is read-only */
     int save_writer = kind == M_SAVE && (mode & OPEN_WRITE);
     int fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
     if (fd < 0) return errno_result();
@@ -443,10 +445,32 @@ static unsigned directory_entry_count(int64_t *count, uint64_t h) {
     closedir(s); *count = n; return 0;
 }
 static unsigned mount_cache_first(const char *name) { return mount_cache(name, 0); }
+/* Add-on content (Xenoblade Chronicles 3 2.2.1: Expansion Pass waves 1-4): scripts/extract_aoc.py verifies each add-on
+   against assets/expected-aoc.json and writes its RomFS files to extracted/aoc/<index>/romfs (with index.json), next to
+   extracted/<version> in the work folder or the app's game folder (the working directory). nn::aoc lists the indices
+   present; MountAddOnContent mounts that folder read-only. 2.2.1 only (the add-ons need it); XC3_AOC=0 hides them all. */
+static int aoc_present(int index) {
+#ifndef XC3_GAME_V221
+    (void)index; return 0;   /* 1.0.0: no add-ons */
+#endif
+    if (index < 1 || index > 64) return 0;
+    const char *off = getenv("XC3_AOC"); if (off && !strcmp(off, "0")) return 0;
+    char p[256]; struct stat st;
+    snprintf(p, sizeof p, "extracted/aoc/%d/index.json", index); if (stat(p, &st) || !S_ISREG(st.st_mode)) return 0;
+    snprintf(p, sizeof p, "extracted/aoc/%d/romfs", index); return !stat(p, &st) && S_ISDIR(st.st_mode);
+}
+int runtime_aoc_list(int *out, int offset, int count) {   /* out may be NULL: the count only (CountAddOnContent) */
+    int n = 0, written = 0;
+    for (int i = 1; i <= 64; i++) if (aoc_present(i)) { if (n >= offset && written < count && out) out[written++] = i; n++; }
+    static int logged; if (!logged++) fprintf(stderr, "[totk] add-on content: %d present%s\n", n, n ? " (extracted/aoc)" : "");
+    return out ? written : n;
+}
 static unsigned aoc_cache_size(uint64_t *out, int index) { (void)index; if (!out) return R_INVALID_ARGUMENT; *out = 0; return 0; }
 static unsigned mount_aoc(const char *name, int index, void *cache, uint64_t size) {
-    (void)cache; (void)size; fprintf(stderr, "[totk] MountAddOnContent(%s, %d): no add-on content on this host\n", name ? name : "?", index);
-    return R_TARGET_NOT_FOUND;
+    (void)cache; (void)size;
+    if (!aoc_present(index)) { fprintf(stderr, "[totk] MountAddOnContent(%s, %d): not present\n", name ? name : "?", index); return R_TARGET_NOT_FOUND; }
+    char root[256]; snprintf(root, sizeof root, "extracted/aoc/%d/romfs", index);
+    return mount_add(name, M_AOC, root);
 }
 void *runtime_fs_host_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {

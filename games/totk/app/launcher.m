@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/event.h>
 #include <sys/file.h>
 #include <sys/proc.h>
 #include <unistd.h>
@@ -22,7 +23,7 @@
 #include "include/totk_ui_lang.h"
 #include "totk_shader_contrib.h"   // the shared shader list contribution and its reminder
 #include "contrib_submit.h"        // its "Submit automatically" (gh), shared with the settings panel
-#include "update_notice.h"
+#include "auto_update.h"           // the settings panel's Update page: --update-check, --update-install
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];
@@ -208,8 +209,90 @@ static NSString *game_data_ask(NSArray<NSString *> *looked, unsigned long long s
     }
 }
 
+/* The Update page's two requests (auto_update.h), each in a cut-off copy of the launcher the game starts. */
+static NSString *update_folder(void) { return [mng_update_data() stringByAppendingPathComponent:@"update"]; }
+static NSString *update_info(NSString *key) { id v = [NSBundle.mainBundle objectForInfoDictionaryKey:key]; return [v isKindOfClass:NSString.class] ? v : nil; }
+static int update_check_run(void) {
+    if (mng_update_held() || !mng_update_data()) return 0;
+    int lock = mng_update_lock(update_folder()); if (lock < 0) return 0;
+    mng_update_check(update_folder(), update_info(@"MNGSourceRepo"), update_info(@"MNGSourceCommit"));
+    close(lock); return 0;
+}
+/* The Update button: check first, so a game is closed only for an update that can go in; then close it (as the window's
+   close does, saves written: the runtime's command file), wait for it, update with a small window saying so, and start
+   the game again. An update that cannot go in says why and how to do it by hand. */
+static void update_say(NSString *text, BOOL problem) {
+    NSAlert *alert = [NSAlert new]; alert.alertStyle = problem ? NSAlertStyleWarning : NSAlertStyleInformational;
+    alert.messageText = problem ? @(TOTK_UI("更新没有成功", "The update did not work")) : @(GAME_NAME);
+    alert.informativeText = text; [alert addButtonWithTitle:@"OK"]; [NSApp activateIgnoringOtherApps:YES]; [alert runModal];
+}
+static NSString *update_by_hand(void) {
+    NSString *repo = update_info(@"MNGSourceRepo") ?: @(TOTK_UI("你的项目文件夹", "your checkout"));
+    return [NSString stringWithFormat:@(TOTK_UI("请自己更新代码再重新编译：在 %@ 里运行 git pull，然后 python3.14 update_runtime.py \"%@\"（打不过就用 build_app.py 重新打包）。",
+                                               "Please update the code and build again yourself: run git pull in %@, then python3.14 update_runtime.py \"%@\" (or build the app again with build_app.py).")),
+            repo, NSBundle.mainBundle.bundlePath];
+}
+/* Each step of the install, in update/update.log after update_runtime.py's output. */
+static void update_note(NSString *folder, NSString *what) {
+    NSString *line = [NSString stringWithFormat:@"[update %@] %@\n", [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle], what];
+    FILE *f = fopen([folder stringByAppendingPathComponent:@"update.log"].fileSystemRepresentation, "a"); if (f) { fputs(line.UTF8String, f); fclose(f); }
+}
+static int update_install_run(pid_t game) {
+    if (mng_update_held() || !mng_update_data()) return 0;
+    NSString *folder = update_folder();
+    int lock = mng_update_lock(folder); if (lock < 0) return 0;
+    NSString *repo = update_info(@"MNGSourceRepo"), *commit = update_info(@"MNGSourceCommit");
+    if (![mng_update_check(folder, repo, commit)[@"state"] isEqual:@"behind"]) { close(lock); return 0; }   /* the page says why */
+    NSMutableDictionary *closing = [[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"status.json"]] options:0 error:nil] mutableCopy];
+    [NSFileManager.defaultManager removeItemAtPath:[folder stringByAppendingPathComponent:@"update.log"] error:nil];   /* this install's log */
+    closing[@"state"] = @"closing"; mng_update_write(folder, closing);
+    update_note(folder, [NSString stringWithFormat:@"closing the game (pid %d) to update to %@", (int)game, closing[@"to"]]);
+    const char *commands = getenv("TOTK_INPUT_FILE");
+    if (game > 0 && commands) {
+        FILE *f = fopen(commands, "a"); if (f) { fputs("close\n", f); fclose(f); }
+        int kq = kqueue(); struct kevent ev; EV_SET(&ev, game, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+        if (kq >= 0 && !kevent(kq, &ev, 1, NULL, 0, NULL)) while (kevent(kq, NULL, 0, &ev, 1, NULL) < 0 && errno == EINTR) {}
+        if (kq >= 0) close(kq);
+    }
+    update_note(folder, @"the game has closed; updating");
+    [NSApplication sharedApplication]; NSApp.activationPolicy = NSApplicationActivationPolicyRegular; [NSApp activateIgnoringOtherApps:YES];
+    __block NSWindow *window = nil; __block NSString *state = nil;
+    void (^installing)(NSString *, NSInteger) = ^(NSString *to, NSInteger total) {
+        window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 96) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+        window.title = @GAME_NAME; window.releasedWhenClosed = NO;
+        NSString *what = [NSString stringWithFormat:@(TOTK_UI("正在更新到 %@（%ld 个新提交），需要几分钟，完成后自动打开游戏",
+                                                              "Updating to %@ (%ld new commits), a few minutes; the game opens when it is done")), to, (long)total];
+        NSTextField *label = [NSTextField wrappingLabelWithString:what]; label.frame = NSMakeRect(20, 42, 380, 40); [window.contentView addSubview:label];
+        NSProgressIndicator *bar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(20, 18, 380, 16)];
+        bar.indeterminate = YES; bar.style = NSProgressIndicatorStyleBar; [window.contentView addSubview:bar]; [bar startAnimation:nil];
+        [window center]; [window makeKeyAndOrderFront:nil];
+    };
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *s = mng_update_install(folder, repo, NSBundle.mainBundle.bundlePath, commit, update_info(@"MNGBuildPython"), update_info(@"MNGWorkFolder"),
+                                         ^(NSString *to, NSInteger total) { dispatch_async(dispatch_get_main_queue(), ^{ installing(to, total); }); });
+        dispatch_async(dispatch_get_main_queue(), ^{ state = s; });
+    });
+    while (!state) {   /* the window drawn and macOS never seeing the launcher hang */
+        for (NSEvent *e; (e = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:[NSDate dateWithTimeIntervalSinceNow:0.1] inMode:NSDefaultRunLoopMode dequeue:YES]);) [NSApp sendEvent:e];
+    }
+    [window close];
+    close(lock);
+    update_note(folder, [@"the update ended: " stringByAppendingString:state]);
+    if (![state isEqualToString:@"updated"]) {
+        NSDictionary *d = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"status.json"]] options:0 error:nil];
+        NSString *why = [d[@"detail"] isKindOfClass:NSString.class] && [d[@"detail"] length] ? d[@"detail"] : @"";
+        update_say([NSString stringWithFormat:@"%@%@%@", why, why.length ? @"\n\n" : @"", update_by_hand()], YES);
+    }
+    NSTask *open = [NSTask new]; open.executableURL = [NSURL fileURLWithPath:@"/usr/bin/open"];   /* -n: this launcher is the app too */
+    open.arguments = @[@"-n", NSBundle.mainBundle.bundlePath]; BOOL opened = [open launchAndReturnError:nil]; [open waitUntilExit];
+    update_note(folder, [NSString stringWithFormat:@"opening the game again: %@", opened && !open.terminationStatus ? @"done" : @"failed"]);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     @autoreleasepool {
+        if (argc > 1 && !strcmp(argv[1], "--update-check")) return update_check_run();   // the Update page (auto_update.h)
+        if (argc > 2 && !strcmp(argv[1], "--update-install")) return update_install_run((pid_t)atoi(argv[2]));
         NSString *root = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"totk"];
         NSString *binary = [root stringByAppendingPathComponent:@"build/totk-native"];
         /* --check (build_app.py, once after packaging): only look that the game is there and exit. The first run of a new
@@ -245,7 +328,6 @@ int main(int argc, char **argv) {
             [[NSRunningApplication runningApplicationWithProcessIdentifier:running] activateWithOptions:NSApplicationActivateAllWindows];
             return 0;
         }
-        mng_update_notice(data);
 #if defined(TOTK_GAME_V112) || defined(TOTK_GAME_V121) || defined(TOTK_GAME_V143)
         NSString *backup = [profile stringByAppendingFormat:@"-before-%s", TOTK_GAME_VERSION];
         NSFileManager *fm = NSFileManager.defaultManager;
@@ -355,6 +437,7 @@ int main(int argc, char **argv) {
             dup2(fileno(lf), STDERR_FILENO);
             fclose(lf);
         }
+        setenv("TOTK_UPDATE_LAUNCHER", NSBundle.mainBundle.executablePath.fileSystemRepresentation, 1);   // the Update page starts it
         char *const arguments[] = {(char *)binary.fileSystemRepresentation, "rewritten/" TOTK_GAME_DIR, "boot", NULL};
         execv(arguments[0], arguments);
         int failed = errno;

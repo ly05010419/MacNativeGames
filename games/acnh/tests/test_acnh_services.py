@@ -35,6 +35,12 @@ int main(int argc, char **argv) {
     uint64_t uid[2]={1,2}; rq.cmd=13; rq.data=(void *)uid; rq.data_size=sizeof uid;
     handler(&session,&rq,&rs);
     if (rs.result || rs.data_size!=1 || rs.data[0]!=0) return 2;
+    uint8_t setting[24]={0}; memcpy(setting+8,uid,sizeof uid);
+    rq.cmd=14; rq.data=setting; rq.data_size=sizeof setting; memset(&rs,0,sizeof rs);
+    handler(&session,&rq,&rs); if (rs.result || rs.data_size) return 7;
+    setting[0]=1; handler(&session,&rq,&rs); if (!rs.result || rs.data_size) return 8;
+    rq.cmd=13; rq.data=(void *)uid; rq.data_size=sizeof uid; memset(&rs,0,sizeof rs);
+    handler(&session,&rq,&rs); if (rs.result || rs.data_size!=1 || rs.data[0]) return 9;
     uid[0]=3; memset(&rs,0,sizeof rs); handler(&session,&rq,&rs);
     if (!rs.result || rs.data_size) return 3;
     if (argc>1) { rq.cmd=99; handler(&session,&rq,&rs); return 4; }

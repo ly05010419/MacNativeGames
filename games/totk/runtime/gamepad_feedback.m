@@ -9,7 +9,8 @@
    The game sends values every few milliseconds from its own threads; those only store the latest one, and a timer on our
    own queue applies it 100 times a second. The player stops after 150 ms of silence, and the value counts as silence once
    the game has sent nothing for 250 ms (paused, frozen, window lost focus), so the controller never keeps buzzing alone.
-   A Switch Pro Controller instead gets the game's HD rumble written to its HID reports (see rumble_tick_hid).
+   A Switch Pro Controller, and a paired set of original Joy-Con, instead get the game's HD rumble written to their HID
+   reports (see rumble_tick_hid; rumble-hid.txt saying off keeps Core Haptics).
    Motion: each GCMotion sample (a DualSense: 250 a second; acceleration in G with gravity, rotation rate in rad/s) goes
    to runtime/motion_fusion.c, which turns it into the Switch's six-axis states. The DualSense was checked lying on the
    desk 2026-10-17: acceleration (0.00, +0.15, -0.95) G, rotation under 0.004 rad/s, 751 samples in 3 s. */
@@ -151,9 +152,16 @@ static BOOL start_player(int side, float intensity, float sharpness, uint64_t no
    round(log2(f / 10) * 32), high band (code - 0x60) * 4 over 9 bits, low band code - 0x40 over 7 bits; amplitude index
    0..100 (2^(i / 32) / 8.7 above 0.23, 2^(i / 16) / 17 above 0.12, about 0.00836 * 2^(i / 4) below), high band i * 2, low
    band 0x40 + i / 2 with the odd bit in 0x80 of the frequency byte. At most one report every 30 ms (SDL: faster can switch
-   the controller off), carrying the strongest amplitude since the last one. TOTK_RUMBLE_HID=0 keeps Core Haptics. */
+   the controller off), carrying the strongest amplitude since the last one. TOTK_RUMBLE_HID=0 keeps Core Haptics.
+   A paired set of original Joy-Con (057e:2006 left, 057e:2007 right) takes the same reports, one HID
+   device per Joy-Con: the game's left side goes to the left Joy-Con in the first half of the rumble bytes, its right side
+   to the right Joy-Con in the second half, the other half neutral, as SDL writes a single Joy-Con. With only one of them
+   present it gets the stronger of the two sides. rumble-hid.txt next to controls.txt saying off (or TOTK_RUMBLE_HID=0)
+   keeps Core Haptics for them too. */
 enum { RUMBLE_HID_MS = 30 };
-static IOHIDDeviceRef rumbleHid;    /* rumbleQueue: retained while the HID path is on */
+static IOHIDDeviceRef rumbleHid;    /* rumbleQueue: retained while the HID path is on (Pro Controller, or the right Joy-Con) */
+static IOHIDDeviceRef rumbleHidLeft;   /* rumbleQueue: the left Joy-Con of a paired set, or NULL */
+static BOOL rumbleHidJoyCon;        /* rumbleQueue: the devices are Joy-Con, one side each */
 static float hidHeld[2][2];         /* rumbleQueue: strongest low / high amplitude since the last report */
 static uint64_t hidSentAt;
 static int hidQuietSent;
@@ -186,15 +194,28 @@ static void rumble_tick_hid(uint64_t now) {   /* rumbleQueue, every 10 ms */
         if (amp_code(hidHeld[side][0]) || amp_code(hidHeld[side][1])) playedNs[side] += RUMBLE_TICK_MS * 1000000ull;
     }
     if (now - hidSentAt < RUMBLE_HID_MS * 1000000ull) return;
+    float freq[2][2] = {{v[0][1], v[0][3]}, {v[1][1], v[1][3]}};
+    if (rumbleHidJoyCon && !(rumbleHid && rumbleHidLeft)) {   /* one Joy-Con only: it plays the stronger side, band by band */
+        int keep = rumbleHidLeft ? 0 : 1, other = 1 - keep;
+        for (int b = 0; b < 2; b++)
+            if (hidHeld[other][b] > hidHeld[keep][b]) { hidHeld[keep][b] = hidHeld[other][b]; freq[keep][b] = freq[other][b]; }
+        hidHeld[other][0] = hidHeld[other][1] = 0;
+    }
     uint8_t body[8]; BOOL quiet = YES;
     for (int side = 0; side < 2; side++) {
-        hd_rumble(body + 4 * side, hidHeld[side][0], v[side][1], hidHeld[side][1], v[side][3]);
+        hd_rumble(body + 4 * side, hidHeld[side][0], freq[side][0], hidHeld[side][1], freq[side][1]);
         if (amp_code(hidHeld[side][0]) || amp_code(hidHeld[side][1])) quiet = NO;
         hidHeld[side][0] = hidHeld[side][1] = 0;
     }
     if (quiet && hidQuietSent >= 3) return;   /* neutral a few times, then nothing until the game rumbles again */
     hidQuietSent = quiet ? hidQuietSent + 1 : 0; hidSentAt = now;
-    hid_write(rumbleHid, 0x10, body, sizeof body);
+    if (!rumbleHidJoyCon) { hid_write(rumbleHid, 0x10, body, sizeof body); return; }
+    static const uint8_t neutral[4] = {0x00, 0x01, 0x40, 0x40};
+    uint8_t left[8], right[8];
+    memcpy(left, body, 4); memcpy(left + 4, neutral, 4);
+    memcpy(right, neutral, 4); memcpy(right + 4, body + 4, 4);
+    if (rumbleHidLeft) hid_write(rumbleHidLeft, 0x10, left, sizeof left);
+    if (rumbleHid) hid_write(rumbleHid, 0x10, right, sizeof right);
 }
 /* ---- rumble written straight to a controller's HID device, from a table of profiles ----
    Some controllers macOS files as generic HID pads: GameController gives them no haptics (the log says "has no haptics"),
@@ -329,7 +350,7 @@ static void hid_rumble_detach(GCController *c) {   /* main queue */
         if (m) CFRelease(m);
     });
 }
-static BOOL hid_rumble_active(void) { return rumbleHid || hidRumbleDevice; }   /* a HID path, not Core Haptics */
+static BOOL hid_rumble_active(void) { return rumbleHid || rumbleHidLeft || hidRumbleDevice; }   /* a HID path, not Core Haptics */
 #else
 static void hid_rumble_attach(GCController *c) { (void)c; }
 static void hid_rumble_detach(GCController *c) { (void)c; }
@@ -357,7 +378,7 @@ static void rumble_tick(void) {   /* rumbleQueue, every 10 ms */
         else if (fabsf(intensity - sentIntensity[side]) > 0.01f || fabsf(sharpness - sentSharpness[side]) > 0.02f) send_params(players[side], side, intensity, sharpness);
     }
 #if TARGET_OS_OSX
-    if (rumbleHid) rumble_tick_hid(now);           /* a Switch Pro Controller (PR #920) */
+    if (rumbleHid || rumbleHidLeft) rumble_tick_hid(now);   /* a Switch Pro Controller (PR #920) or paired Joy-Con */
     if (hidRumbleDevice) hid_rumble_tick(now);     /* a HID pad from the profile table (PR #149) */
 #endif
     BOOL busy = playing[0] || playing[1];
@@ -462,7 +483,10 @@ static BOOL hidMotion, hidRumble;    /* main queue: which of them does (motion: 
 static const HidImuProfile *imuProfile;   /* main run loop: the pad hid_imu_start reads (PR #309), else NULL */
 static GCController *hidRumblePad;   /* main queue */
 static dispatch_queue_t hidOut;      /* every output report, in order; the packet counter is its own */
-static uint8_t hidPacket;            /* hidOut */
+static IOHIDDeviceRef hidCountDev[2]; /* hidOut: which device each packet counter belongs to (compared, not retained) */
+static uint8_t hidCount[2];           /* hidOut */
+static IOHIDManagerRef hidLeftManager;   /* main queue: the left Joy-Con of a paired set, for rumble only */
+static IOHIDDeviceRef hidLeft;           /* main queue */
 static uint8_t hidReport[128];   /* room for the DS4's 78-byte report, the largest */
 static BOOL hidJoyConRight; /* local: paired original Joy-Con uses the right IMU */
 static uint64_t hidLast;
@@ -484,7 +508,8 @@ static void hid_write(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n) 
     CFRetain(d);
     dispatch_async(hidOut, ^{
         uint8_t report[49]; memcpy(report, out.b, sizeof report);
-        report[1] = hidPacket++ & 15;
+        int slot = hidCountDev[0] == d ? 0 : hidCountDev[1] == d ? 1 : !hidCountDev[0] ? 0 : 1;
+        hidCountDev[slot] = d; report[1] = hidCount[slot]++ & 15;
         IOReturn r = IOHIDDeviceSetReport(d, kIOHIDReportTypeOutput, id, report, sizeof report);
         static BOOL rumbleFailed;
         if (r != kIOReturnSuccess && (id != 0x10 || !rumbleFailed)) {
@@ -494,15 +519,28 @@ static void hid_write(IOHIDDeviceRef d, uint8_t id, const uint8_t *body, int n) 
         CFRelease(d);
     });
 }
-static void hid_subcommand(uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
+/* A closed device gives up its packet counter (after the reports queued for it), or the next two devices would share one. */
+static void hid_count_forget(IOHIDDeviceRef d) {   /* any queue, hidOut made */
+    dispatch_async(hidOut, ^{ for (int i = 0; i < 2; i++) if (hidCountDev[i] == d) { hidCountDev[i] = NULL; hidCount[i] = 0; } });
+}
+static void hid_subcommand_on(IOHIDDeviceRef d, uint8_t cmd, const uint8_t *arg, int n) {   /* main queue */
     uint8_t body[47] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40, cmd};   /* neutral rumble */
     memcpy(body + 9, arg, n);
-    hid_write(hidDevice, 0x01, body, 9 + n);
+    hid_write(d, 0x01, body, 9 + n);
+}
+static void hid_subcommand(uint8_t cmd, const uint8_t *arg, int n) { hid_subcommand_on(hidDevice, cmd, arg, n); }   /* main queue */
+static void hid_quiet_at_exit(void);
+/* hid_open and hid_close_unused both need the queue, and hid_imu_start opens its device without hid_open. */
+static dispatch_queue_t hid_out_queue(void) {   /* any queue */
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ hidOut = dispatch_queue_create("totk.hid-out", DISPATCH_QUEUE_SERIAL); atexit(hid_quiet_at_exit); });
+    return hidOut;
 }
 static void hid_quiet_at_exit(void) {   /* the controller keeps the last rumble it got: leave it neutral */
-    if (!hidDevice || !hidRumble) return;
+    if (!hidRumble) return;
     uint8_t out[49] = {0x10, 0, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
-    IOHIDDeviceSetReport(hidDevice, kIOHIDReportTypeOutput, 0x10, out, sizeof out);
+    if (hidDevice) IOHIDDeviceSetReport(hidDevice, kIOHIDReportTypeOutput, 0x10, out, sizeof out);
+    if (hidLeft) IOHIDDeviceSetReport(hidLeft, kIOHIDReportTypeOutput, 0x10, out, sizeof out);
 }
 static void hid_calibration(const uint8_t *c, const char *which) {
     /* Origins are rest offsets: a few dozen steps on a Nintendo controller. An 8BitDo reports -2048, -2048, 2048 (acceleration)
@@ -524,6 +562,12 @@ static void hid_calibration(const uint8_t *c, const char *which) {
 }
 static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
     (void)ctx; (void)sender; (void)type;
+    /* Byte 2's high nibble is the battery: 8 full, 6 medium, 4 low, 2 critical, 0 empty, +1 while charging. A paired
+       Joy-Con set: the right one's here, the left one's in hid_left_report. Five steps: 0, 25, 50, 75 or 100 %. */
+    if (result == kIOReturnSuccess && len >= 3 && (id == 0x30 || id == 0x21)) {
+        int level = p[2] >> 5;
+        runtime_gamepad_hid_battery(0, level > 4 ? 100 : level * 25);
+    }
     if (result != kIOReturnSuccess || len < 49 || !hidMotion) return;
     if (id == 0x21 && (p[13] & 0x80) && p[14] == 0x10) {   /* an SPI read's reply: address at 15, size at 19, data at 20 */
         uint32_t at = p[15] | p[16] << 8 | p[17] << 16 | (uint32_t)p[18] << 24;
@@ -567,9 +611,8 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
 }
 /* product: 0x2009 a Switch Pro Controller (motion or rumble), 0x2007 the right Joy-Con of a paired set (motion, PR #889) */
 static IOReturn hid_open(int product) {   /* main queue */
+    hid_out_queue();
     if (hidDevice) return kIOReturnSuccess;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ hidOut = dispatch_queue_create("totk.hid-out", DISPATCH_QUEUE_SERIAL); atexit(hid_quiet_at_exit); });
     hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     IOHIDManagerSetDeviceMatching(hidManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @(product)});
     NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidManager);
@@ -587,14 +630,16 @@ static void hid_close_now(void) {   /* main queue */
     IOHIDDeviceRegisterInputReportWithTimeStampCallback(hidDevice, hidReport, sizeof hidReport, NULL, NULL);   /* hid_imu_start's (PR #309) */
     IOHIDDeviceUnscheduleFromRunLoop(hidDevice, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
     IOHIDDeviceClose(hidDevice, kIOHIDOptionsTypeNone);
-    CFRelease(hidDevice); hidDevice = NULL;
+    hid_count_forget(hidDevice); CFRelease(hidDevice); hidDevice = NULL;
     CFRelease(hidManager); hidManager = NULL; imuProfile = NULL;
+    runtime_gamepad_hid_battery(0, -1);
 }
 /* Close the device once nothing uses it, but only after the reports already queued have been written: the neutral rumble
    goes rumbleQueue, then hidOut, and a device closed before it would keep its last rumble. */
 static void hid_close_unused(void) {   /* main queue */
     if (!hidDevice || hidMotion || hidRumble) return;
-    dispatch_async(rumbleQueue ?: hidOut, ^{ dispatch_async(hidOut, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_close_now(); }); }); });
+    dispatch_queue_t out = hid_out_queue();   /* not hidOut: a pad opened by hid_imu_start never made it, and a nil queue crashed here */
+    dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_close_now(); }); }); });
 }
 static void hid_motion_start(void) {   /* main queue */
     if (!motionPad || hidMotion) return;
@@ -611,12 +656,13 @@ static void hid_motion_start(void) {   /* main queue */
     motionPad.motion.valueChangedHandler = nil;   /* sensors stay active: GameController keeps the IMU reporting */
     runtime_motion_deadzone_default(1.2); runtime_motion_live(1);
     fprintf(stderr, "[gyro] %s: reading the six-axis sensor from its HID reports (right Joy-Con for a paired set)\n", name);
-    /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back */
+    /* IMU on, then the calibrations; spaced out, as the controller drops subcommands sent back to back. The IMU-on waits
+       250 ms too: HD rumble's vibration-on subcommand (hid_rumble_start) goes to the same device just before this. */
     static const uint8_t imuOn[1] = {0x01}, factory[5] = {0x20, 0x60, 0, 0, 24}, user[5] = {0x26, 0x80, 0, 0, 26};
-    hid_subcommand(0x40, imuOn, sizeof imuOn);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, factory, sizeof factory); });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, user, sizeof user); });
-    if (hidJoyConRight) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ const uint8_t mode = 0x30; if (hidMotion) hid_subcommand(0x03, &mode, 1); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x40, imuOn, sizeof imuOn); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, factory, sizeof factory); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 750 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ if (hidMotion) hid_subcommand(0x10, user, sizeof user); });
+    if (hidJoyConRight) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1000 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ const uint8_t mode = 0x30; if (hidMotion) hid_subcommand(0x03, &mode, 1); });
 }
 static void hid_motion_stop(void) {   /* main queue */
     if (!hidMotion) return;
@@ -624,16 +670,72 @@ static void hid_motion_stop(void) {   /* main queue */
     runtime_gamepad_switch_right(NULL, -1, -1);
     hidMotion = NO; hid_close_unused(); runtime_motion_deadzone_default(0);
 }
+/* The left Joy-Con of a paired set (057e:2006): opened for rumble; of its input only the battery is read (GameController
+   keeps its buttons and stick). */
+static uint8_t hidLeftReport[64];
+static void hid_left_report(void *ctx, IOReturn result, void *sender, IOHIDReportType type, uint32_t id, uint8_t *p, CFIndex len) {   /* main run loop */
+    (void)ctx; (void)sender; (void)type;
+    if (result != kIOReturnSuccess || len < 3 || (id != 0x30 && id != 0x21)) return;
+    int level = p[2] >> 5;   /* as in hid_report */
+    runtime_gamepad_hid_battery(1, level > 4 ? 100 : level * 25);
+}
+static IOReturn hid_left_open(void) {   /* main queue */
+    hid_out_queue();
+    if (hidLeft) return kIOReturnSuccess;
+    hidLeftManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    IOHIDManagerSetDeviceMatching(hidLeftManager, (__bridge CFDictionaryRef)@{@kIOHIDVendorIDKey: @0x057e, @kIOHIDProductIDKey: @0x2006});
+    NSSet *devices = (__bridge_transfer NSSet *)IOHIDManagerCopyDevices(hidLeftManager);
+    IOHIDDeviceRef d = (__bridge IOHIDDeviceRef)devices.anyObject;
+    IOReturn r = d ? IOHIDDeviceOpen(d, kIOHIDOptionsTypeNone) : kIOReturnNotFound;
+    if (r != kIOReturnSuccess) { CFRelease(hidLeftManager); hidLeftManager = NULL; return r; }
+    hidLeft = (IOHIDDeviceRef)CFRetain(d);
+    IOHIDDeviceScheduleWithRunLoop(hidLeft, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    IOHIDDeviceRegisterInputReportCallback(hidLeft, hidLeftReport, sizeof hidLeftReport, hid_left_report, NULL);
+    return kIOReturnSuccess;
+}
+static void hid_left_close_now(void) {   /* main queue */
+    if (!hidLeft || hidRumble) return;
+    IOHIDDeviceRegisterInputReportCallback(hidLeft, hidLeftReport, sizeof hidLeftReport, NULL, NULL);
+    IOHIDDeviceUnscheduleFromRunLoop(hidLeft, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    runtime_gamepad_hid_battery(1, -1);
+    IOHIDDeviceClose(hidLeft, kIOHIDOptionsTypeNone);
+    hid_count_forget(hidLeft); CFRelease(hidLeft); hidLeft = NULL;
+    CFRelease(hidLeftManager); hidLeftManager = NULL;
+}
+/* HID rumble for a Switch controller unless rumble-hid.txt says off (TOTK_RUMBLE_HID=0 / 1 wins over the file). */
+static BOOL rumble_hid_wanted(void) {
+    const char *e = getenv("TOTK_RUMBLE_HID");
+    if (e && *e) return strcmp(e, "0") != 0;
+    char word[16] = {0};
+    if (!runtime_setting_word("rumble-hid.txt", word, sizeof word)) return YES;
+    int on = feedback_word_on(word);
+    if (on == FEEDBACK_BAD) fprintf(stderr, "[rumble] rumble-hid.txt: not on or off; on\n");
+    return on != 0;
+}
 static BOOL hid_rumble_start(GCController *c) {   /* main queue, rumbleQueue made */
     const char *name = (c.vendorName ?: @"controller").UTF8String;
-    IOReturn r = hid_open(0x2009);
-    if (r != kIOReturnSuccess) { fprintf(stderr, "[rumble] %s: no Switch Pro HID device could be opened (0x%x): Core Haptics kept\n", name, r); return NO; }
+    BOOL joyCon = [c.productCategory containsString:@"Joy-Con"];
+    if (hidDevice && !hidMotion && !hidRumble) hid_close_now();   /* a device still closing (hid_close_unused) may be another pad's */
+    IOReturn r = hid_open(joyCon ? 0x2007 : 0x2009);
+    IOReturn rl = joyCon ? hid_left_open() : kIOReturnNotFound;
+    BOOL right = r == kIOReturnSuccess, left = joyCon && rl == kIOReturnSuccess;
+    if (!right && !left) {
+        fprintf(stderr, "[rumble] %s: no %s HID device could be opened (0x%x): Core Haptics kept\n", name, joyCon ? "Joy-Con" : "Switch Pro", r);
+        return NO;
+    }
     static const uint8_t on[1] = {0x01};
-    hid_subcommand(0x48, on, sizeof on);
+    if (right) hid_subcommand_on(hidDevice, 0x48, on, sizeof on);
+    if (left) hid_subcommand_on(hidLeft, 0x48, on, sizeof on);
     hidRumble = YES; hidRumblePad = c;
-    IOHIDDeviceRef d = (IOHIDDeviceRef)CFRetain(hidDevice);
-    dispatch_async(rumbleQueue, ^{ if (rumbleHid) CFRelease(rumbleHid); rumbleHid = d; hidSentAt = 0; hidQuietSent = 0; memset(hidHeld, 0, sizeof hidHeld); });
-    fprintf(stderr, "[rumble] %s: HD rumble written to its HID reports\n", name);
+    IOHIDDeviceRef d = right ? (IOHIDDeviceRef)CFRetain(hidDevice) : NULL, l = left ? (IOHIDDeviceRef)CFRetain(hidLeft) : NULL;
+    dispatch_async(rumbleQueue, ^{
+        if (rumbleHid) CFRelease(rumbleHid);
+        if (rumbleHidLeft) CFRelease(rumbleHidLeft);
+        rumbleHid = d; rumbleHidLeft = l; rumbleHidJoyCon = joyCon;
+        hidSentAt = 0; hidQuietSent = 0; memset(hidHeld, 0, sizeof hidHeld);
+    });
+    if (joyCon) fprintf(stderr, "[rumble] %s: HD rumble written to the Joy-Con HID reports (left %s, right %s)\n", name, left ? "yes" : "no", right ? "yes" : "no");
+    else fprintf(stderr, "[rumble] %s: HD rumble written to its HID reports\n", name);
     return YES;
 }
 static void hid_rumble_stop(void) {   /* main queue */
@@ -642,8 +744,14 @@ static void hid_rumble_stop(void) {   /* main queue */
     dispatch_async(rumbleQueue, ^{   /* after the timer's last report: leave the controller neutral */
         static const uint8_t neutral[8] = {0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
         if (rumbleHid) { hid_write(rumbleHid, 0x10, neutral, sizeof neutral); CFRelease(rumbleHid); } rumbleHid = NULL;
+        if (rumbleHidLeft) { hid_write(rumbleHidLeft, 0x10, neutral, sizeof neutral); CFRelease(rumbleHidLeft); } rumbleHidLeft = NULL;
+        rumbleHidJoyCon = NO;
     });
     hid_close_unused();
+    if (hidLeft) {   /* closed once the neutral report above has been written, as hid_close_unused does */
+        dispatch_queue_t out = hid_out_queue();
+        dispatch_async(rumbleQueue ?: out, ^{ dispatch_async(out, ^{ dispatch_async(dispatch_get_main_queue(), ^{ hid_left_close_now(); }); }); });
+    }
 }
 #else
 static void hid_motion_start(void) {
@@ -930,8 +1038,8 @@ void runtime_feedback_attach(GCController *c) {   /* main queue */
         BOOL tookHid = NO;
 #if TARGET_OS_OSX
         hid_rumble_stop();
-        const char *viaHid = getenv("TOTK_RUMBLE_HID");
-        tookHid = [c.productCategory isEqualToString:@"Switch Pro Controller"] && !(viaHid && !strcmp(viaHid, "0")) && hid_rumble_start(c);
+        BOOL switchPad = [c.productCategory isEqualToString:@"Switch Pro Controller"] || [c.productCategory containsString:@"Joy-Con"];
+        tookHid = switchPad && rumble_hid_wanted() && hid_rumble_start(c);
         if (tookHid)
             dispatch_async(rumbleQueue, ^{ for (int s = 0; s < 2; s++) { if (players[s]) [players[s] stopAtTime:CHHapticTimeImmediate error:nil]; forget_side(s); } rumblePad = nil; });
 #endif

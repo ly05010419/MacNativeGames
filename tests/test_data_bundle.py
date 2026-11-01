@@ -80,6 +80,10 @@ class DataBundle(unittest.TestCase):
         self.assertEqual(link.read_bytes(), b'romfs image')
         build_app.sign_app(app, self.logs)
         self.assertTrue(build_app.app_seal_valid(app))   # the app's own seal, which records the data bundle's signature
+        # macOS keeps the player's privacy grants by the bundle ID, so they survive a new build or update
+        shown = subprocess.run(['codesign', '-d', '-r-', app], capture_output=True, text=True).stdout
+        self.assertIn('designated => identifier "test.data.app"', shown)
+        self.assertNotIn('cdhash', shown)
 
 
 if __name__ == '__main__':

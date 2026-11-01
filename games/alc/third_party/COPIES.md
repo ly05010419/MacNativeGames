@@ -50,3 +50,7 @@ Copied from `games/by3/` (same commit 6b0c377). Changes since the copy:
   module table.
 - Game identity: title ID `01007300020FA000`, version 1.0.1, `game_version.h` rewritten; env prefixes
   `BY3_*` → `ALC_*`; log and profile folders `alc` / `ALC`.
+
+- `scripts/extract_shared_fonts.py`: from `games/by3/scripts/` (it is the helper `scripts/extract_app_icon.py` imports
+  for the icon's Slice / romfs helpers; the alc copy of the icon script had been taken without it, so `make app
+  GAME=... KEYS=...` failed at the icon step). Same file as by3's, unmodified.

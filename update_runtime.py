@@ -117,8 +117,8 @@ def make_seed(tree, work, game, version, logs, env):
 
 def replace_seed(tree, tmp, version, game):
     """The new seed and its libraries in the app being assembled (tmp), in place of the old ones (moved out of it and
-    deleted in the background: 128,000 files), and the seed's aliases with the game data."""
-    new_res, new_data = tmp / 'Contents/Resources/totk', tmp / f'Contents/Resources/totk/build/game-data/{version}'
+    deleted in the background: 128,000 files)."""
+    new_res = tmp / 'Contents/Resources/totk'
     for rel in ('build/shader-seed', 'build/shader-libs'):
         old = new_res / rel
         if old.exists():
@@ -128,10 +128,6 @@ def replace_seed(tree, tmp, version, game):
             old.rename(aside)
             build_app.remove_in_background(aside)
     build_app.place_seed(tree, new_res, version, game=game)
-    aliases = tree / f'build/shader-seed/{version}.aliases.tsv'
-    (new_data / 'shader-seed.aliases.tsv').unlink(missing_ok=True)
-    if aliases.is_file():
-        clone(aliases, new_data / 'shader-seed.aliases.tsv')
 
 
 def config(path):
@@ -243,11 +239,11 @@ def probe_runtime(tmp, version, logs):
         raise BuildError(f'the new runtime does not load the app\'s game files ({last}; {log}); the app was not changed')
 
 
-def record_commit(tmp):
-    """The commits this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
-    the HUD, which would otherwise keep showing the commit of the app's first build, and MNGSourceRevision
-    (build_app.source_revision) for app/update_check.h, which would otherwise keep offering the update the app already
-    has, because the update notice compares GitHub main against the app's first build only."""
+def record_commit(tmp, work):
+    """The commit this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
+    the HUD, which would otherwise keep showing the commit of the app's first build; and where the Update page's update
+    finds the checkout, the work folder and the Python (build_app.record_update_source), so an app made before those were
+    recorded updates itself from then on."""
     path = tmp / 'Contents/Info.plist'
     info = plistlib.loads(path.read_bytes())
     commit = build_app.source_commit()
@@ -255,11 +251,7 @@ def record_commit(tmp):
         info['MNGSourceCommit'] = commit
     else:
         info.pop('MNGSourceCommit', None)
-    revision = build_app.source_revision()
-    if revision:
-        info['MNGSourceRevision'] = revision
-    else:
-        info.pop('MNGSourceRevision', None)
+    build_app.record_update_source(info, work)
     path.write_bytes(plistlib.dumps(info))
 
 
@@ -297,21 +289,6 @@ def game_data(tree, res, version, logs, env):
                          f'data folder cannot be made once (pass --work <the work folder of that build>, or do a full '
                          f'rebuild with build_app.py); make said: {str(e).splitlines()[0]}') from None
     return tree / f'build/game-data/{version}'
-
-
-def seed_aliases(tree, res, version, new_data):
-    """The seed's aliases the warm-up lists are renamed with (build_app.place_runtime): the app's copy, or the work folder's
-    when its seed is the app's (an older app has no copy). False when not known: the app's lists are then kept."""
-    if (res / f'build/game-data/{version}/shader-seed.aliases.tsv').is_file():
-        return True
-    seed = tree / f'build/shader-seed/{version}'
-    if not ((seed / 'seed-manifest.json').is_file() and (res / 'build/shader-seed/seed-manifest.json').is_file()
-            and sha256(seed / 'seed-manifest.json') == sha256(res / 'build/shader-seed/seed-manifest.json')):
-        return False
-    aliases = seed.with_name(seed.name + '.aliases.tsv')
-    if aliases.is_file():
-        clone(aliases, new_data / 'shader-seed.aliases.tsv')
-    return True
 
 
 def main(argv):
@@ -371,11 +348,11 @@ def main(argv):
                 clone(data / name, new_data / name)
         if args.seed:
             replace_seed(tree, tmp, version, game)
-        lists = True if args.seed else seed_aliases(tree, res, version, new_data)
+        lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
-            say('   the startup shader seed of the app is not the work folder\'s, so the app keeps its warm-up lists')
+            say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
-        record_commit(tmp)
+        record_commit(tmp, work)
         probe_runtime(tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
         build_app.sign_app(tmp, logs)

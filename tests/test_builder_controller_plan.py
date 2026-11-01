@@ -4,12 +4,11 @@ import unittest
 from unittest.mock import patch
 
 from builder_fake_process import drain
-from tools.builder import background, updates
+from tools.builder import background
 from tools.builder.background import Background
 from tools.builder.jobs import InlineJobs
 from test_builder_controller import Base
-from tools.builder.session import (BackgroundChanged, ChecksDone, ChecksInvalidated, Finished, ProcessError,
-                                   UpdateApplied, UpdateStatusReady)
+from tools.builder.session import BackgroundChanged, ChecksDone, ChecksInvalidated, Finished, ProcessError
 
 
 class Idle(Base):
@@ -85,42 +84,6 @@ class StuckLoad(Base):                                                          
         ctl.tick()
         self.assertEqual(ctl.selection(), chosen)
         self.assertEqual(ctl.planned_command()[0], '/opt/py')    # still ready: the late load invalidated nothing
-
-
-class Updates(Base):                                                            # S4.1
-    STATUS = updates.UpdateStatus(updates.UpdateState.AVAILABLE, 'main', 'origin/main', 2, ('b two', 'a one'))
-    RESULT = updates.UpdateResult(True, 'aaa', 'bbb')
-
-    def test_the_check_runs_off_the_worker(self):
-        load_jobs = InlineJobs()
-        self.ctl.load_jobs = load_jobs
-        with patch.object(updates, 'check_updates', return_value=self.STATUS):
-            self.ctl.check_updates()
-            self.assertEqual((self.jobs.pending(), load_jobs.pending()), (0, 1))
-            load_jobs.run_next()
-            self.ctl.tick()
-        self.assertEqual(self.events(), [UpdateStatusReady(self.STATUS)])
-
-    def test_the_update_runs_on_the_worker_and_blocks_a_build_meanwhile(self):
-        self.ready()
-        with patch.object(updates, 'apply_update', return_value=self.RESULT):
-            self.ctl.apply_update()
-            self.assertFalse(self.ctl.idle)
-            self.assertRaises(RuntimeError, self.ctl.start_build)
-            self.jobs.run_next()
-            self.ctl.tick()
-        self.assertEqual((self.events(), self.ctl.idle), ([UpdateApplied(self.RESULT)], True))
-
-    def test_no_update_while_a_build_runs(self):
-        self.started()
-        self.assertRaises(RuntimeError, self.ctl.apply_update)
-
-    def test_an_error_is_reported(self):
-        with patch.object(updates, 'apply_update', side_effect=OSError('disk')):
-            self.ctl.apply_update()
-            self.jobs.run_next()
-            self.ctl.tick()
-        self.assertEqual(self.events(), [ProcessError('update', "OSError('disk')")])
 
 
 class Backgrounds(Base):                                                        # S4.3

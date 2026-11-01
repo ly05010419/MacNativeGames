@@ -1,6 +1,8 @@
 // pctl free communication offline policy (hle_misc.c, from PR #38): the hooks are looked up by their mangled names in the real swforce registrations, so a missing or misspelled
 // takeover fails; no guest module, IPC session or system applet exists in this test
 #include "../hle_misc.c"
+void dm_applet_enter(const char *name) { (void)name; }   // hle_oe.c: the shop and error stand-ins hold the game out of focus
+void dm_applet_leave(void) {}
 #include <mach-o/getsect.h>
 
 static int unexpected, checks, fails;

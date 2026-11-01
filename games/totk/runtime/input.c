@@ -55,6 +55,10 @@ void runtime_keymap_reset(void){
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
    save is a copy, its scripted measurement is void, and its script must not close the game under the user
    (2026-10-15: the user played 12 minutes in a test window and the script closed it at its time limit). */
+/* TOTK_IGNORE_USER_INPUT=1 (unattended test runs): the window's keys and mouse buttons and the controllers do not reach
+   the game, so typing elsewhere while a test window pops up neither plays it nor stops TOTK_AUTOLOAD (2026-10-31: two
+   survey runs sat at the title after a stray key cancelled the auto-load). Scripted input still drives it. */
+static int ignore_user(void){static int v=-1;if(v<0){const char *e=getenv("TOTK_IGNORE_USER_INPUT");v=e&&atoi(e);if(v)fprintf(stderr,"[input] TOTK_IGNORE_USER_INPUT: keyboard, mouse and controllers ignored (scripted input only)\n");}return v;}
 static void user_input(const char *what){
  runtime_survey_cancel_user();
  runtime_autoload_user_input();
@@ -66,29 +70,21 @@ static void user_input(const char *what){
 /* Keys from the window are the user's (their layout); scripted and auto-load presses use the synthetic entry (the fixed
    layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
    not toggle it. Keys 2-7 are no shortcuts any more (user 2026-10-25: the panel replaces them). */
-enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY, KEY_HDR = 28, KEY_FRAME_LOCK = 25 };
-static void runtime_input_shortcut(unsigned code,int press){
- if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
-#if TARGET_OS_OSX
- if(press&&code==KEY_HDR)runtime_front_hdr_toggle();
- if(press&&code==KEY_FRAME_LOCK){extern int nvn_fps_lock(void);extern void nvn_fps_lock_set(int fps);extern void dm_gfx_set_flag(const char *,int);
-  int old=nvn_fps_lock(),next=old==0?30:old==30?40:old==40?60:0;nvn_fps_lock_set(next);if(next)dm_gfx_set_flag("mfx_interp",0);}
-#endif
-}
-
+enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;held_buttons_locked();pthread_mutex_unlock(&inputLock);
- runtime_input_shortcut(code,press);}
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}
 void runtime_input_key(unsigned code,int down){
- if(code>=128)return;if(down)user_input("keyboard");
+ if(code>=128||ignore_user())return;if(down)user_input("keyboard");
  pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
- runtime_input_shortcut(code,press);
+ if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
 }
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
- if(button<0||button>=KEYMAP_MOUSE_BUTTONS)return;if(down)user_input("mouse");
+ if(button<0||button>=KEYMAP_MOUSE_BUTTONS||ignore_user())return;if(down)user_input("mouse");
  pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
 }
-void runtime_input_clear(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;held_buttons_locked();pthread_mutex_unlock(&inputLock);runtime_gamepad_clear();}
+void runtime_input_clear_window(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;held_buttons_locked();pthread_mutex_unlock(&inputLock);}
+void runtime_input_clear(void){runtime_input_clear_window();runtime_gamepad_clear();}
 static void initialize(void){pthread_mutex_lock(&inputLock);enabled=true;pthread_mutex_unlock(&inputLock);fprintf(stderr,"[totk] native keyboard controller initialized\n");}
 /* Docked: one full-key controller as player 1 (id 0, style bit 0). Handheld (TOTK_OPERATION_MODE=handheld, the iPhone):
    the same input is the handheld controller (id 0x20, style bit 1, joy-cons attached) and player 1 is not connected;
@@ -110,7 +106,7 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  state.attributes=1;for(unsigned i=0;i<128;i++)if(keys[i])state.buttons|=button(i);state.buttons|=heldOut.buttons|pending;pending=0;
  state.lx=32767*((int)keys[2]-(int)keys[0]);state.ly=32767*((int)keys[13]-(int)keys[1]);state.rx=32767*((int)keys[124]-(int)keys[123]);state.ry=32767*((int)keys[126]-(int)keys[125]);
  if(heldOut.lx)state.lx=heldOut.lx;if(heldOut.ly)state.ly=heldOut.ly;if(heldOut.rx)state.rx=heldOut.rx;if(heldOut.ry)state.ry=heldOut.ry;
- RuntimeGamepadState pad;runtime_gamepad_read(&pad);state.buttons|=pad.buttons;
+ RuntimeGamepadState pad;runtime_gamepad_read(&pad);if(ignore_user())pad=(RuntimeGamepadState){0};state.buttons|=pad.buttons;
  if(pad.buttons&~padSeen||abs(pad.lx)>16384||abs(pad.ly)>16384||abs(pad.rx)>16384||abs(pad.ry)>16384)user_input("controller");padSeen=pad.buttons;
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
@@ -279,6 +275,22 @@ static void *input_file(void *arg) {
             char *end; double ms = strtod(line + 10, &end); if (end == line + 10 || ms < 0 || ms > 100) runtime_fail("framestep takes milliseconds (0 = real time)");
             runtime_frame_step_pin(ms);
 #if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE   /* high-frame-rate diagnostics (game_patches_v143.c) */
+        } else if (!strncmp(line, "lodscale ", 9)) {   /* "lodscale <K>": model detail distance x K (the settings panel's effects page, game_patches_v143.c) */
+            extern void runtime_lod_scale_set(double k);
+            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.1 && k <= 1e6)) runtime_fail("lodscale takes 0.1 to 1000000 (1000000: always the finest)");
+            runtime_lod_scale_set(k);
+        } else if (!strncmp(line, "farscale ", 9)) {   /* "farscale <K>": render distance (camera far plane) x K, as the effects page */
+            extern void runtime_far_scale_set(double k);
+            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.001 && k <= 100)) runtime_fail("farscale takes 0.001 to 100");
+            runtime_far_scale_set(k);
+        } else if (!strncmp(line, "shadowscale ", 12)) {   /* "shadowscale <K>": the sun's shadow maps x K per side, as the effects page */
+            extern void runtime_shadow_scale_set(double k);
+            char *end; double k = strtod(line + 12, &end); if (end == line + 12 || !(k >= 0.25 && k <= 8)) runtime_fail("shadowscale takes 0.25 to 8");
+            runtime_shadow_scale_set(k);
+        } else if (!strncmp(line, "fovscale ", 9)) {   /* "fovscale <K>": the game camera's field of view x K, as the effects page */
+            extern void runtime_fov_scale_set(double k);
+            char *end; double k = strtod(line + 9, &end); if (end == line + 9 || !(k >= 0.5 && k <= 2)) runtime_fail("fovscale takes 0.5 to 2");
+            runtime_fov_scale_set(k);
         } else if (!strncmp(line, "frmwatch ", 9) || !strncmp(line, "frmwatchx ", 10)) {   /* "frmwatch[x] <seconds> [hex offset]": who reads a time value */
             extern void runtime_diag_frm_watch(double secs, unsigned off, int in_x);
             int in_x = line[8] == 'x'; double secs; unsigned off = 0x10;

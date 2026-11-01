@@ -40,7 +40,7 @@ from pathlib import Path
 
 TOTK = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOTK / 'scripts'))
-from shader_list import KEY, NAME, ShaderList, canonical, warm_row  # noqa: E402
+from shader_list import KEY, NAME, ShaderList, answers_suffix, canonical, listed_answers, warm_row  # noqa: E402
 from prepare_shader_seed import builtin_serves  # noqa: E402
 
 # Per game: the list, the issue form's label, the start of the launcher's automatic submissions' title (GAME_CONTRIB_TITLE)
@@ -284,15 +284,24 @@ def merge_issue(issue, lists, keys, seeds, token, drop_unknown):
         shared = lists[game]
         builtin = {r for r in g_rows if any(builtin_serves(s, *r) for s in seeds.get(game, []))}
         new = (g_rows - builtin) - shared.variants
-        shared.variants |= g_rows - builtin
-        new_pipes = [row for row in g_pipes if row not in shared.warm]
+        for key, deps in g_rows - builtin:
+            shared.add_variant(key, deps)
+        refused = []
+        if game in SEEDED:   # the list keeps the bind state of every variant its pipelines name (shader_list.py A rows)
+            for _, deps in builtin:
+                answers = listed_answers(deps)
+                shared.answers[answers_suffix(answers)] = answers
+            refused = [row for row in g_pipes if not shared.knows(row)]
+        new_pipes = [row for row in g_pipes if row not in shared.warm and row not in refused]
         for row in new_pipes:
             shared.add_warm(row, 'm')
         per_game[game] = (len(g_rows) + len(g_pipes), len(new) + len(new_pipes))
         if game in OTHER:   # later issues find this game's shaders by their keys (an older one titled plain "Shader list:")
             keys[game] |= list_keys(shared)
         parts.append(f'{game} {len(g_rows)} rows ({len(new)} new, {len(builtin)} default dropped), '
-                     f'{len(g_pipes)} pipeline rows ({len(new_pipes)} new)')
+                     f'{len(g_pipes)} pipeline rows ({len(new_pipes)} new'
+                     + (f', {len(refused)} naming bind states the file does not give: an older game version wrote it' if refused else '')
+                     + ')')
     unknown = len(unknown_rows) + len(unknown_pipes)
     line = (f"#{issue['number']} {issue['author']['login']} ({titled}): {len(urls)} file(s)" + (', pasted rows' if pasted else '')
             + '; ' + ('; '.join(parts) or 'nothing')

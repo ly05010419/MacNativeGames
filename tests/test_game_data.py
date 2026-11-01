@@ -244,7 +244,7 @@ class UpdateRuntime(unittest.TestCase):
 
     def test_replace_seed(self):
         app, res, _ = self.app()
-        for rel in ('build/shader-seed/old.metal', 'build/shader-libs/old.metallib', 'build/game-data/v143/shader-seed.aliases.tsv'):
+        for rel in ('build/shader-seed/old.metal', 'build/shader-libs/old.metallib'):
             (res / rel).parent.mkdir(parents=True, exist_ok=True)
             (res / rel).write_text('old')
         tree = self.root / 'tree'
@@ -263,7 +263,6 @@ class UpdateRuntime(unittest.TestCase):
         self.assertEqual([p.name for p in (res / 'build/shader-libs').iterdir()], [f'{hashlib.sha256(b"new").hexdigest()}.metallib'])
         self.assertEqual([p.name for p in removed], ['Game.app.shader-seed.old', 'Game.app.shader-libs.old'])
         self.assertTrue(all(p.parent == app.parent for p in removed), 'moved out of the app, not deleted inside it')
-        self.assertFalse((res / 'build/game-data/v143/shader-seed.aliases.tsv').exists(), 'the old seed\'s aliases go with it')
 
     def test_rewriter_of_the_repository(self):
         _, res, data = self.app()   # modules that are not the pinned rewrites (as a --mod build's): judged by rewriter.txt
@@ -309,18 +308,18 @@ class UpdateRuntime(unittest.TestCase):
     def test_record_commit(self):
         app, _, _ = self.app()
         import plistlib
-        with patch.object(build_app, 'source_commit', return_value='abc1234'), \
-             patch.object(build_app, 'source_revision', return_value='a' * 40):
-            update_runtime.record_commit(app)
+        work = self.root / 'TOTK_build'
+        with patch.object(build_app, 'source_commit', return_value='abc1234'):
+            update_runtime.record_commit(app, work)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertEqual((info['MNGSourceCommit'], info['CFBundleExecutable']), ('abc1234', 'TOTK'))
-        self.assertEqual(info['MNGSourceRevision'], 'a' * 40)
-        with patch.object(build_app, 'source_commit', return_value=''), \
-             patch.object(build_app, 'source_revision', return_value=''):   # not a git checkout: no stale commit, no stale update base
-            update_runtime.record_commit(app)
+        # what the Update page's update (app/auto_update.h) runs: this checkout, the work folder, this Python
+        self.assertEqual((info['MNGSourceRepo'], info['MNGWorkFolder'], info['MNGBuildPython']),
+                         (str(build_app.REPO), str(work.resolve()), sys.executable))
+        with patch.object(build_app, 'source_commit', return_value=''):   # not a git checkout: no stale commit
+            update_runtime.record_commit(app, work)
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         self.assertNotIn('MNGSourceCommit', info)
-        self.assertNotIn('MNGSourceRevision', info)
 
     def test_restore_replaced_app(self):
         app = self.root / 'Game.app'
@@ -337,21 +336,6 @@ class UpdateRuntime(unittest.TestCase):
         self.assertFalse(replaced.exists())
         self.assertEqual(failed.parent, app.parent)
 
-    def test_seed_aliases(self):
-        _, res, data = self.app()
-        tree = self.root / 'tree'
-        seed = tree / 'build/shader-seed/v143'
-        seed.mkdir(parents=True)
-        (seed / 'seed-manifest.json').write_text('{"seed": 1}')
-        (tree / 'build/shader-seed/v143.aliases.tsv').write_text('a\tb\n')
-        (res / 'build/shader-seed').mkdir(parents=True)
-        (res / 'build/shader-seed/seed-manifest.json').write_text('{"seed": 2}')
-        new_data = self.root / 'new-data'
-        self.assertFalse(update_runtime.seed_aliases(tree, res, 'v143', new_data), 'another seed: the lists are kept')
-        (res / 'build/shader-seed/seed-manifest.json').write_text('{"seed": 1}')
-        self.assertTrue(update_runtime.seed_aliases(tree, res, 'v143', new_data))
-        self.assertEqual((new_data / 'shader-seed.aliases.tsv').read_text(), 'a\tb\n')
-
     def test_place_runtime_replaces_only_the_runtime(self):
         app, res, _ = self.app()
         tree = self.root / 'tree'
@@ -362,12 +346,17 @@ class UpdateRuntime(unittest.TestCase):
         before = {p: p.read_bytes() for p in res.rglob('*') if p.is_file()}
         with patch.object(build_app, 'run') as run:
             build_app.place_runtime(tree, app, 'v143', self.root / 'logs', lists=False)
-        run.assert_not_called()   # no aliases: nothing renamed
+        run.assert_not_called()   # lists=False: the shared list is not resolved
         self.assertEqual((res / 'build/totk-native').read_bytes(), b'new build/totk-native-v143')
         self.assertEqual((app / 'Contents/MacOS/TOTK').read_bytes(), b'new build/app-launcher')
         self.assertFalse((res / 'build/pso_title.tsv').exists(), 'lists=False keeps the app\'s lists')
         for path, content in before.items():
             self.assertEqual(path.read_bytes(), content, f'{path} is a game file')
+        with patch.object(build_app, 'run') as run:   # lists: this version's rows resolved through the app's seed
+            build_app.place_runtime(tree, app, 'v143', self.root / 'logs')
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[2:5], ['resolve', res / 'build/shader-seed', tree / 'assets/shader_list.tsv'])
+        self.assertEqual(cmd[5:], [res / 'build/pso_manifest.tsv', res / 'build/pso_title.tsv'])
 
 
 if __name__ == '__main__':

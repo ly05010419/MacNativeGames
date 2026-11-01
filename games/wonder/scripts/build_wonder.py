@@ -318,15 +318,6 @@ def build_spirv_cross(tree, logs):
         logs / 'spirv-cross' / 'link.log')
 
 
-def source_revision():
-    """The full hash of the commit this checkout is on, or '' outside a git checkout (build_app.py source_revision)."""
-    try:
-        revision = subprocess.check_output(['git', '-C', str(GAME_DIR), 'rev-parse', 'HEAD'], text=True).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return ''
-    return revision if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision) else ''
-
-
 def step_binary(tree, game, keys, logs):
     say('4. app: the game binary and the launcher')
     run(['make', f'-j{os.cpu_count() or 4}', f'VERSION={VERSION}', 'runtime'], logs / 'runtime.log', cwd=tree)
@@ -466,9 +457,6 @@ def step_app(tree, out, logs):
                 CFBundleVersion=str(EXPECTED['version'] + 1), LSMinimumSystemVersion='26.0', NSHighResolutionCapable=True,
                 LSApplicationCategoryType='public.app-category.action-games', LSSupportsGameMode=True,
                 GCSupportsControllerUserInteraction=True)
-    revision = source_revision()   # app/update_check.h: the update notice compares it with GitHub main (after PR #1211)
-    if revision:
-        info['MNGSourceRevision'] = revision
     icon = tree / 'build/AppIcon.icns'
     if icon.exists():
         clone(icon, tmp / 'Contents/Resources/AppIcon.icns')

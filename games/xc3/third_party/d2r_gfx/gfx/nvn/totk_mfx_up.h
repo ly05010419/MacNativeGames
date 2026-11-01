@@ -21,6 +21,9 @@ void mfxup_set(int on);    // runtime: "flag mfx_upscale 0|1"
    and usage must suit MetalFX; out_w / out_h are dst's size). mode: an MTLFXSpatialScalerColorProcessingMode. Returns the
    texture written, or nil when this configuration cannot be built or is still being built in the background (the caller
    keeps its own path for this frame). */
+/* The window output stage: in_w x in_h from src's top-left corner, copied to its own texture first when smaller than src. */
+id<MTLTexture> mfxup_encode_region(int ctx, id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger in_w, NSUInteger in_h,
+                                   NSUInteger ow, NSUInteger oh, int mode);
 id<MTLTexture> mfxup_encode_ex(int ctx, id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger in_w, NSUInteger in_h,
                                id<MTLTexture> dst, NSUInteger out_w, NSUInteger out_h, int mode);
 /* Whether the scaler for this configuration is ready (1); otherwise it is being built on a background queue (about 70 ms) and

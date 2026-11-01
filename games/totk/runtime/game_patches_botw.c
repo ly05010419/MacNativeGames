@@ -11,6 +11,7 @@
 #include "game_patches.h"
 #include "game_version.h"
 #include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
+#include "botw_shadow_res.h"   /* 1.9.0's sun shadow map at 2048 (TOTK_SHADOW_RES, shadows.txt) */
 #include <TargetConditionals.h>
 uint32_t runtime_thread_current_handle(void);
 static void botw_aspect_install(Module *m);   /* the aspect ratio, end of the file */
@@ -585,11 +586,44 @@ static void patch_phone_render(Module *m) {
     put_word(m, PHONE_RENDER + 4, 0xf2e88e08u, "handheld render size");   /* movk x8, #0x4470, lsl #48: 960.0 */
     fprintf(stderr, "[botw] handheld render size 960x540, the game's own upscale to the 1280x720 canvas (phone)\n");
 }
+#ifdef GAME_BOTW190
+/* The sun shadow map at 2048 per cascade (botw_shadow_res.h): TOTK_SHADOW_RES=2048, or 2048 in shadows.txt (the settings
+   panel's row), read once before the guest starts; Mac only (the phone's memory is tighter and it was not tried there),
+   off by default. A value that is neither leaves the game's sizes and says so; a site that is not as shipped stops the
+   game. */
+static struct shadow_res_state g_shadow;
+static void patch_shadow_res(Module *m) {
+    if (ios_code()) return;
+    char word[32]; const char *env = getenv("TOTK_SHADOW_RES");
+    int have = runtime_setting_word("shadows.txt", word, sizeof word);
+    g_shadow = shadow_res_start(env, have ? word : NULL);
+    if (g_shadow.bad && g_shadow.from == SHADOW_FROM_ENV) fprintf(stderr, "[botw] TOTK_SHADOW_RES=%s: not 0 or 2048; shadows as shipped\n", env);
+    if (g_shadow.bad && g_shadow.from == SHADOW_FROM_FILE) fprintf(stderr, "[botw] shadows.txt: not off or 2048; shadows as shipped\n");
+    if (!g_shadow.applied) { fprintf(stderr, "[botw] sun shadow map as shipped (480/720/720/896 per level; TOTK_SHADOW_RES=2048 or the settings panel for 2048)\n"); return; }
+    uint32_t found = 0;
+    int bad = shadow_res_apply(m->base, g_shadow.applied, &found);
+    if (bad) {
+        fprintf(stderr, "[botw] sun shadow size main+%#x: found %08x expected %08x\n", shadow_res_site[bad - 1].off, found, shadow_res_site[bad - 1].original);
+        runtime_fail("the 2048 sun shadow map requires the " TOTK_GAME_VERSION " cascade size instructions");
+    }
+    fprintf(stderr, "[botw] sun shadow map 2048 per cascade (shipped 480/720/720/896; from %s)\n", g_shadow.from == SHADOW_FROM_ENV ? "TOTK_SHADOW_RES" : "shadows.txt");
+}
+int runtime_shadow_res_available(void) { return !ios_code(); }   /* the settings panel: where patch_shadow_res acts */
+int runtime_shadow_res_locked(void) { return getenv("TOTK_SHADOW_RES") != NULL; }
+int runtime_shadow_res_saved(void) { return g_shadow.saved; }
+void runtime_shadow_res_save(int size) {   /* the settings panel: the next launch's choice; this run keeps its own */
+    shadow_res_save(&g_shadow, size);
+    runtime_setting_save("shadows.txt", g_shadow.saved ? "2048" : "off", "sun shadow size");
+}
+#endif
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
     if (!patch_output_res(m)) patch_render_1080(m);
     patch_phone_render(m);
+#ifdef GAME_BOTW190
+    patch_shadow_res(m);
+#endif
     botw_aspect_install(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");

@@ -66,6 +66,7 @@ void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_
  });
 }
 void runtime_warm_done(void){}
+void runtime_warm_title(void){}   /* the start-up screen already goes with the first frame here */
 /* The "温控" of the present lines (hle_nvn.c): the system's thermal state, 0 nominal, 1 fair, 2 serious, 3 critical; the default
    (-1) was never replaced on iOS, so a phone slowing down as it warmed could not be told from other causes (2026-10-23). */
 int dm_thermal_now(void){return (int)NSProcessInfo.processInfo.thermalState;}

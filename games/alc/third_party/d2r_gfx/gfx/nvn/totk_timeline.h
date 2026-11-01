@@ -18,6 +18,12 @@ enum {
     TL_FINISH_IN, TL_FINISH_OUT,    /* nvnQueueFinish */
     TL_FENCE,                       /* fence value of commit a: b */
     TL_RS_JOIN,                     /* the replay thread waited a ns for the encode stage (b = join count) */
+    TL_PASS_BEGIN, TL_PASS_END,     /* a render pass opened / ended on the replay thread: a = pass serial, b = draws in it (end) */
+    TL_GW_IN, TL_GW_OUT,            /* a guest thread blocks in the runtime (threads.c block): in a = kind << 56 | key / address, b = guest lr; out a = kind, b = result */
+    TL_GWAKE,                       /* this thread wakes a blocked guest thread: a = its host thread id, b = wait kind */
+    TL_CW_IN, TL_CW_OUT,            /* a guest thread waits for a virtual core (threads.c core_take) */
+    TL_WB_IN, TL_WB_OUT,            /* GPU renderings written back to memory (nvn_mtl.m wb_write_list): in a = entries; out a = entries, b = 1 a read-back blit was among them */
+    TL_WB_STEP,                     /* inside it: a = 1 the renderings' fences passed (b = fence), 2 the uploads finished, 3 a texture read back, all levels and layers (b = serial) */
 };
 
 int totk_tl_on(void);                                   /* the window is open (cheap after the first call) */

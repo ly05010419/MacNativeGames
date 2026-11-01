@@ -5,6 +5,9 @@
 // build/shader-service/totk_xlate --service when it is there (tools/totk_xlate/Service.cs, NativeAOT: no Python, no .NET
 // runtime; 2026-10-17), else scripts/shader_service.py with the .NET translator. Same requests, replies and cache files.
 #import <Foundation/Foundation.h>
+#include <os/lock.h>
+#include <stdatomic.h>
+#include <unistd.h>
 #include "totk_ui_lang.h"
 #include "dm_wait_stats.h"
 #include <TargetConditionals.h>
@@ -46,6 +49,21 @@ static NSString *g_root, *g_dir;
    shader's .variants lists of both places are joined. nil on the Mac, where the seed is cloned into the cache. */
 static NSString *g_seed_dir;
 static NSSet<NSString *> *g_seed_names;
+/* Seed files found broken (an empty or entry-less MSL, 2026-10-30: a translation cut short on 10-26 left a 0-byte
+   5e0447ea... in the packaging cache, and the warm-up ended the game on it): read from the cache instead, where the
+   translation made again goes. Also every seed name the cache already has a file for (made again in an earlier run). */
+static os_unfair_lock g_seed_broken_lock = OS_UNFAIR_LOCK_INIT; static NSMutableSet<NSString *> *g_seed_broken; static _Atomic int g_seed_broken_n;
+static int seed_broken(NSString *name) {
+    if (!atomic_load_explicit(&g_seed_broken_n, memory_order_acquire)) return 0;
+    os_unfair_lock_lock(&g_seed_broken_lock); int b = [g_seed_broken containsObject:name]; os_unfair_lock_unlock(&g_seed_broken_lock);
+    return b;
+}
+static void seed_mark_broken(NSString *name) {
+    os_unfair_lock_lock(&g_seed_broken_lock);
+    if (!g_seed_broken) g_seed_broken = [NSMutableSet set];
+    [g_seed_broken addObject:name]; atomic_store_explicit(&g_seed_broken_n, (int)g_seed_broken.count, memory_order_release);
+    os_unfair_lock_unlock(&g_seed_broken_lock);
+}
 static BOOL g_seed_all_default;   // seed-manifest.json all_default: every shader has its default variant (contrib_wanted)
 static uint64_t g_translated;
 /* The bottom-left box (nvn_mtl.m shader_overlay_prepare): variants new to the cache this run, when the last one came,
@@ -82,7 +100,13 @@ NSString *totk_rt_dir(void) {
             totk_seed_progress = seed_progress;
             NSDictionary *seed = totk_seed_import(source, g_dir, &error);
             totk_seed_progress = NULL;
-            if ([seed[@"overlay"] isKindOfClass:NSArray.class]) { g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]]; }
+            if ([seed[@"overlay"] isKindOfClass:NSArray.class]) {
+                g_seed_dir = source; g_seed_names = [NSSet setWithArray:seed[@"overlay"]];
+                for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:g_dir error:nil] ?: @[])   // made again before: the cache's
+                    if ([name hasSuffix:@"_b.metal"] && [g_seed_names containsObject:name]) {
+                        seed_mark_broken(name); seed_mark_broken([[name substringToIndex:name.length - 6] stringByAppendingString:@".json"]);
+                    }
+            }
             if ([seed[@"available"] boolValue]) {
                 NSData *md = [NSData dataWithContentsOfFile:[source stringByAppendingPathComponent:@"seed-manifest.json"]];
                 NSDictionary *m = md ? [NSJSONSerialization JSONObjectWithData:md options:0 error:nil] : nil;
@@ -215,7 +239,7 @@ static NSString *json_string(id obj) {
 }
 NSString *totk_rt_file(NSString *name) {
     NSString *dir = totk_rt_dir();
-    return g_seed_dir && [g_seed_names containsObject:name] ? [g_seed_dir stringByAppendingPathComponent:name]
+    return g_seed_dir && [g_seed_names containsObject:name] && !seed_broken(name) ? [g_seed_dir stringByAppendingPathComponent:name]
                                                              : [dir stringByAppendingPathComponent:name];
 }
 NSArray<NSString *> *totk_rt_list(void) {
@@ -307,8 +331,11 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
         NSString *msl = checked ? nil :
             [NSString stringWithContentsOfFile:totk_rt_file([found stringByAppendingString:@"_b.metal"])
                                              encoding:NSUTF8StringEncoding error:nil];
-        if (!checked && (!msl || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
-            [vs removeObjectAtIndex:i];  /* regenerate missing or previously un-compilable Metal variant */
+        /* missing, empty (a translation cut short: 0 bytes, 2026-10-30) or previously un-compilable: translated again */
+        if (!checked && (!msl || msl.length < 64 || [msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) {
+            [vs removeObjectAtIndex:i];
+            if (msl && msl.length < 64) { LOG("[shader] 【红】%s 的 Metal 源是空的（翻译当时没写完）：重新翻译", found.UTF8String);
+                seed_mark_broken([found stringByAppendingString:@"_b.metal"]); seed_mark_broken([found stringByAppendingString:@"_b.json"]); }
             return nil;
         }
         [g_msl_checked addObject:found];
@@ -362,13 +389,17 @@ static BOOL contrib_wanted(NSString *shader, NSString *variant) {
     if (!g_seed_all_default) return YES;
     NSString *builtin = default_variant(shader);
     if ([variant isEqualToString:builtin]) return NO;
-    for (NSDictionary *v in variants_of(shader)) if ([v[@"variant"] isEqual:builtin]) return YES;
+    // by the default suffix: a shader another one's translations serve (prepare_shader_seed.py translation_input) names that one's
+    NSString *suffix = [builtin substringFromIndex:shader.length];
+    for (NSDictionary *v in variants_of(shader)) if ([v[@"variant"] isKindOfClass:NSString.class] && [v[@"variant"] hasSuffix:suffix]) return YES;
     return NO;
 }
 /* nvn_mtl.m pso_contribute: the name a pipeline row gives "<variant>_b" so that another player's build has that variant.
    A variant the seed makes from the code alone keeps its name (the default bind state; the depth-bound one of a shadow-map
    shader, named after its depth slots only); any other is named as a build names a list row with its deps
-   (totk_contrib_listed_name), which the row the same variant added to the contribution file makes. */
+   (totk_contrib_listed_name). Every name but the default one also writes the V row of the deps it stands for, so the
+   shared list keeps the bind state behind it (shader_list.py A rows; 2026-10-30: rows naming variants whose bind states
+   the list had dropped could not be built, 6,855 of the Tears of the Kingdom list's). */
 NSString *totk_rt_portable_variant(NSString *name) {
     if (name.length < 66 || ![name hasSuffix:@"_b"]) return name;
     NSString *variant = [name substringToIndex:name.length - 2], *shader = [variant substringToIndex:64];
@@ -376,13 +407,14 @@ NSString *totk_rt_portable_variant(NSString *name) {
     pthread_mutex_lock(&g_rt_lock);
     NSDictionary *deps = nil;
     for (NSDictionary *v in variants_of(shader)) if ([v[@"variant"] isEqual:variant]) { deps = v[@"deps"]; break; }
-    pthread_mutex_unlock(&g_rt_lock);
-    if (![deps isKindOfClass:NSDictionary.class]) return name;
+    if (![deps isKindOfClass:NSDictionary.class]) { pthread_mutex_unlock(&g_rt_lock); return name; }
     NSMutableDictionary *depth = [NSMutableDictionary dictionary];
     NSDictionary *tex = [deps[@"tex"] isKindOfClass:NSDictionary.class] ? deps[@"tex"] : @{};
     for (NSString *slot in tex) if ([tex[slot] isEqual:@"*_depth"]) depth[slot] = @"*_depth";
-    if (depth.count && [variant isEqualToString:totk_contrib_listed_name(shader, @{@"tex": depth})]) return name;
-    return [totk_contrib_listed_name(shader, deps) stringByAppendingString:@"_b"];
+    NSDictionary *named = depth.count && [variant isEqualToString:totk_contrib_listed_name(shader, @{@"tex": depth})] ? @{@"tex": depth} : deps;
+    if (totk_contrib_path()) totk_contrib_add(shader, named);   // the bind state behind the name (under the lock its writers hold)
+    pthread_mutex_unlock(&g_rt_lock);
+    return named == deps ? [totk_contrib_listed_name(shader, deps) stringByAppendingString:@"_b"] : name;
 }
 int totk_rt_contrib_on(void) { return totk_contrib_path() != nil; }
 void totk_rt_contrib_line(NSString *line) {   // totk_contrib_add_line under the lock its other writers hold
@@ -581,6 +613,24 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     return rq[@"variant"];
 }
 
+/* A variant nvn_mtl.m shader_load could not use (its library has no entry function, or its argument block is not the
+   reflection's): forgotten from the index, its files in the cache removed and the seed's not read again, so the next draw
+   that needs it translates it again. Before 2026-10-30 the game ended there ("参数块布局异常"; user: "坏了 就重新翻译 不能奔溃"). */
+void totk_rt_variant_broken(NSString *key) {
+    NSString *variant = [key hasSuffix:@"_b"] ? [key substringToIndex:key.length - 2] : key;
+    NSRange dash = [variant rangeOfString:@"-"]; if (dash.location == NSNotFound) return;
+    NSString *shader = [variant substringToIndex:dash.location];
+    for (NSString *end in @[@"_b.metal", @"_b.json", @"_b.metallib"]) {
+        NSString *name = [variant stringByAppendingString:end];
+        seed_mark_broken(name);
+        unlink([totk_rt_dir() stringByAppendingPathComponent:name].fileSystemRepresentation);
+    }
+    pthread_mutex_lock(&g_rt_lock);
+    NSMutableArray *vs = variants_of(shader);
+    for (NSUInteger i = vs.count; i-- > 0;) if ([vs[i] isKindOfClass:NSDictionary.class] && [vs[i][@"variant"] isEqual:variant]) [vs removeObjectAtIndex:i];
+    [g_msl_checked removeObject:variant];
+    pthread_mutex_unlock(&g_rt_lock);
+}
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
     pthread_mutex_lock(&g_rt_lock);

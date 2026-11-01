@@ -358,6 +358,9 @@ static void *input_file(void *arg) {
             runtime_front_text_test(line[2] == 'e' && line[3] == 'n' ? "enter" : "esc", NULL);
         } else if (sscanf(line, "hletrace %u %n", &code, &used) == 1 && used && !line[used] && code <= 2) {
             runtime_hle_trace_set((int)code);   /* 1 count host calls, 2 also log the first call of each, 0 stop and print the counts */
+        } else if (sscanf(line, "fps %u %n", &code, &used) == 1 && used && !line[used] && (code == 30 || code == 60)) {
+            /* Same persisted next-launch choice as the panel; no live code/data mutation. */
+            if (!runtime_frame_rate_choose((int)code)) fprintf(stderr,"[acnh-fps] requested mode unavailable or locked\n");
         } else if (!strncmp(line, "framestep ", 10)) {   /* "framestep <ms>": pin the real-time frame step, 0 = back to real time */
             char *end; double ms = strtod(line + 10, &end); if (end == line + 10 || ms < 0 || ms > 100) runtime_fail("framestep takes milliseconds (0 = real time)");
             runtime_frame_step_pin(ms);

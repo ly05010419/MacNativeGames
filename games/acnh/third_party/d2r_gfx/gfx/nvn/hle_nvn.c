@@ -2585,6 +2585,7 @@ static void sleep_until_ns(uint64_t dl);
 static uint64_t present_period(const win_t *o);
 static unsigned present_ticks(const win_t *o);
 extern void runtime_frame_step_update(uint64_t now_ns) __attribute__((weak_import));
+extern unsigned runtime_present_interval(unsigned interval) __attribute__((weak_import));
 extern void movie_host_tick(void) __attribute__((weak_import));   /* TOTK runtime/movie_host.c: pre-rendered cutscenes at their own frame rate */
 __attribute__((weak)) void dm_main_yield_stats(uint64_t *n, uint64_t *ns) { *n = 0; *ns = 0; }   // 宿主 hle_thread.c 提供真值；图形单测里为 0 | The host's hle_thread.c provides the ground truth; 0 in graphics unit tests
 __attribute__((weak)) uint32_t dm_guest_work_qos(unsigned *count) { if (count) *count = 0; return QOS_CLASS_UNSPECIFIED; }
@@ -2946,7 +2947,9 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     int m = mfx_enabled();
     if (m == MFX_HALF) return 2;
     if (m == MFX_30) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
-    return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
+    unsigned interval = o->interval <= 0 ? 1u : (unsigned)o->interval;
+    if (runtime_present_interval) interval = runtime_present_interval(interval);
+    return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) ? 1u : interval;
 }
 static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
@@ -2969,7 +2972,9 @@ void dm_nvn_probe_present_interval(void) {
     for (int interval = -1; interval <= 3; interval++) {
         win_t w = {.interval = interval}; g_hz = hz; g_display_mode = display; g_uncapped = uncapped;
         atomic_store(&g_uncapped_interval, neg && atoi(neg) == 11 ? 0 : on);
-        unsigned expected = display || (uncapped && on && !dm_detclock_enabled()) || interval <= 0 ? 1u : (unsigned)interval;
+        unsigned base_interval = interval <= 0 ? 1u : (unsigned)interval;
+        if (runtime_present_interval) base_interval = runtime_present_interval(base_interval);
+        unsigned expected = display || (uncapped && on && !dm_detclock_enabled()) ? 1u : base_interval;
         if (present_ticks(&w) != expected || present_period(&w) != (uint64_t)expected * 1000000000ull / hz)
             die("present interval probe: effective pacing differs from expected");
         checked++;

@@ -1,6 +1,6 @@
 # Xenoblade Chronicles 3: facts per version
 
-Only numbers, names, sizes and hashes measured on the owner's dump. Never game content. Mark each fact with how it was measured.
+Only numbers, names, sizes and hashes measured on the player's own dump. Never game content. Mark each fact with how it was measured.
 
 ## Titles
 
@@ -78,7 +78,7 @@ Measured 2026-10-28: `DM_RULESET=native DM_PRIVATE_GATES=0`, no cuts and no obse
 - NVN names loaded / implemented: see [nvn-coverage.md](nvn-coverage.md).
 
 ## 2.2.1 (v720896)
-Measured 2026-10-29 from the owner's update NSP (`Patch`, version 720896 = 0xB0000; the display version 2.2.1 is read from its `control.nacp`, not the file name).
+Measured 2026-10-29 from the player's update NSP (`Patch`, version 720896 = 0xB0000; the display version 2.2.1 is read from its `control.nacp`, not the file name).
 
 | Entry | Size |
 |---|---|
@@ -91,3 +91,15 @@ Measured 2026-10-29 from the owner's update NSP (`Patch`, version 720896 = 0xB00
 - **Rewrite:** `main` has 5,065 sites (1.0.0: 4,944); `structck` OK, `equiv --min-eff 8` 0 divergent sites, 300 of 300 mutations caught.
 - **RomFS:** BKTR merge with the base: 15,194,654,528 bytes, 250 files (4 more than 1.0.0), SHA-256 `5c2491c6…10eb6`; 576,084,880 bytes come from the update. All six IVFC levels verified (927,409 level-6 blocks).
 - **New SDK call:** `nn::oe::GetDisplayVersion` at start (see `services.md`).
+
+## Add-on content (Expansion Pass)
+Measured 2026-10-29 from the player's own NSPs (`scripts/extract_aoc.py --measure`). Each NSP holds a meta NCA and one data NCA; the add-on index is the title minus `010074F013263000`.
+
+| Index | Title | Data NCA | RomFS | Files |
+|---|---|---|---|---|
+| 1 | `010074F013263001` (v0) | `d1ed81f1…`, 41,811,968 bytes | 41,641,984 bytes | 2 (`bf3_dlc01.arh` / `.ard`) |
+| 2 | `010074F013263002` (v65536) | `96c25737…`, 211,271,680 | 210,749,168 | 6 |
+| 3 | `010074F013263003` (v65536) | `4ecf19cc…`, 189,874,176 | 189,402,144 | 6 |
+| 4 | `010074F013263004` (v65536, Future Redeemed) | `4ff0ef8a…`, 4,282,007,552 | 4,273,556,608 | 80 |
+
+The game mounts them as `aoc1`–`aoc4` at start (2.2.1).

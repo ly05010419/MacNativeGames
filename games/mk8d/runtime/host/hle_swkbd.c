@@ -98,6 +98,7 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
 
 HLE_FORCE("_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE", "software keyboard applet → host native input box (DM_KBD gives the text directly)",
           Result, h_swkbd_Show, void *out, const void *arg) {
+    DM_APPLET("software keyboard");
     return swkbd_show(out, arg, front_text_input);
 }
 

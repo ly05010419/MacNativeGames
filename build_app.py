@@ -46,7 +46,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, glob, hashlib, json, os, platform, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, glob, hashlib, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -894,7 +894,30 @@ static FILE *mng_open_base(const char *path) {
     return source/'hactool'
 
 
-def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None):
+def remove_4k_overlay(tree, version):
+    """The overlays for a 3840x2160 canvas (with or without a scene size) left by an earlier build are removed before each
+    build: without native 4K the runtime then keeps 2560x1440 as its largest output size (its swapchain and heaps;
+    runtime/game_patches_v143.c), with it the build makes the current set again."""
+    for folder in (tree / f'extracted/{version}/romfs-patches-out').glob('3840x2160*'):
+        if folder.is_dir():
+            shutil.rmtree(folder)
+
+
+NATIVE_4K_MEMORY = 16 << 30   # a Mac with this much memory or more builds native 4K by default (user 2026-10-30)
+
+
+def native_4k_default(memory=None):
+    """Native 4K unless asked otherwise: on a Mac with 16 GB of memory or more (the build runs on the Mac that plays).
+    A native 4K app reserves its heaps for a 3840x2160 scene: about 1.4 GiB more than a 2K one, whatever is shown."""
+    if memory is None:
+        try:
+            memory = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return False
+    return memory >= NATIVE_4K_MEMORY - (256 << 20)   # 16 GB Macs report exactly 16 GiB; a little slack
+
+
+def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None, native_4k=False):
     expected = VERSIONS[version]
     folder = tree/f'extracted/{version}/romfs'
     index = folder/'index.json'
@@ -923,6 +946,12 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None
     if version == 'v143':   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches_v143.c)
         steps += [('make_output_res_overlay.py', [canvas, '--scene', scene])
                   for canvas in ('1920x1080', *OUTPUT_SIZES) for scene in ('1920x1080', *OUTPUT_SIZES)]
+    remove_4k_overlay(tree, version)   # an earlier build's 4K overlays go; native 4K makes the current ones
+    if native_4k:   # the runtime takes 3840x2160 as its largest output size (the settings panel gains native 4K)
+        steps.append(('make_output_res_overlay.py', ['3840x2160']))   # TOTK_RENDER_RES=0: the game's own scene size
+        # 3840x2160: the scene at the canvas size (runtime/game_patches_v143.c); 1920x1080 / 2560x1440: TOTK_RENDER_RES
+        steps += [('make_output_res_overlay.py', ['3840x2160', '--scene', scene])
+                  for scene in ('1920x1080', '2560x1440', '3840x2160')]
     for i, (script, arguments) in enumerate(steps):
         if heapdef and script == 'make_output_res_overlay.py':   # every variant of the file keeps the mod's heap sizes
             arguments = [*arguments, '--heapdef', heapdef]
@@ -967,6 +996,13 @@ def step_shaders(tree, logs, *, version='v0'):
          '--version', version, '--modules', tree/f'rewritten/{version}'], logs/'prepare-shader-seed.log', cwd=tree)
 
 
+def xcodes_on_volumes(volumes):
+    """Xcode*.app at the top of each volume or one folder down. Symlinks are skipped: 'Macintosh HD' links to /, where
+    one folder down is /home, an automount whose open can block forever."""
+    disks = [v for v in sorted(volumes.iterdir()) if not v.is_symlink()] if volumes.is_dir() else []
+    return [p for pattern in ('Xcode*.app', '*/Xcode*.app') for v in disks for p in sorted(v.glob(pattern))]
+
+
 def developer_dirs():
     """Developer folders that may hold the Metal toolchain: DEVELOPER_DIR, the one xcode-select points at, Xcode*.app in
     /Applications, then any Xcode Spotlight knows (one kept outside /Applications, for example next to the game)."""
@@ -978,8 +1014,7 @@ def developer_dirs():
     found += [str(p / 'Contents/Developer') for p in sorted(Path('/Applications').glob('Xcode*.app'))]
     found += [str(p / 'Contents/Developer') for p in sorted(Path.home().glob('Applications/Xcode*.app'))]
     # An Xcode kept on another volume, at its top or one folder down (Spotlight may not index it)
-    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/Xcode*.app'))]
-    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/*/Xcode*.app'))]
+    found += [str(p / 'Contents/Developer') for p in xcodes_on_volumes(Path('/Volumes'))]
     try:
         spotlight = subprocess.check_output(['mdfind', "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"], text=True,
                                             stderr=subprocess.DEVNULL)
@@ -1219,33 +1254,35 @@ def game_data_files(version):
 def place_game_data(tree, res, version):
     """build/game-data/<version>: what the runtime reads from the player's files at start instead of having it compiled in
     (module tables, RomFS / add-on content / font sizes and hashes; games/totk/runtime/game_data.h), at the same place in
-    the app. With it the seed's aliases, which place_runtime needs again when update_runtime.py exports a newer list."""
+    the app."""
     data, dst = tree / f'build/game-data/{version}', res / f'build/game-data/{version}'
     missing = [name for name in game_data_files(version) if not (data / name).is_file()]
     if missing:
         raise BuildError(f'{data}: {", ".join(missing)} missing (games/totk/Makefile game-data-{version})')
     for name in game_data_files(version):
         clone(data / name, dst / name)
-    aliases = tree / f'build/shader-seed/{version}.aliases.tsv'   # listed variants the seed carries under another name
-    if aliases.is_file():
-        clone(aliases, dst / 'shader-seed.aliases.tsv')
+
+
+def resolve_lists(tree, res, game, logs):
+    """The warm-up lists of the app (build/pso_manifest.tsv, pso_title.tsv): the shared shader list's rows of this game
+    version, each variant named as the app's seed serves its bind state (shader_list.py resolve)."""
+    shared = tree.parent / 'botw/assets/shader_list.tsv' if game == 'botw' else tree / 'assets/shader_list.tsv'
+    run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'resolve', res/'build/shader-seed', shared,
+         res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
 def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     """The parts of the app made from this repository alone, which update_runtime.py replaces in an installed app: the
     game binary, the launcher, the shader tools and the warm-up lists exported from the shared shader list. Everything
     else in the app comes from the player's game files (place_game_data, the rewritten modules, the RomFS, the seed).
-    lists=False keeps the app's warm-up lists (update_runtime.py, when the seed's aliases are not known)."""
+    lists=False keeps the app's warm-up lists (update_runtime.py, when the app's seed predates its shader-keys.json);
+    else resolve_lists makes them anew."""
     res = app / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res / 'build/totk-native')
     clone(tree / 'build/spirv-cross/spirv-cross', res / 'build/spirv-cross/spirv-cross')
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
-    for name in ('pso_manifest.tsv', 'pso_title.tsv') if lists else ():   # from the shared shader list (games/totk/Makefile)
-        clone(tree / 'build' / name, res / 'build' / name)
-    aliases = res / f'build/game-data/{version}/shader-seed.aliases.tsv'
-    if lists and aliases.is_file():
-        run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'rename', aliases, res/'build/pso_manifest.tsv',
-             res/'build/pso_title.tsv'], logs/'shader-list-rename.log', cwd=tree)
+    if lists:
+        resolve_lists(tree, res, game, logs)
     clone(tree / 'build/app-launcher', app / f'Contents/MacOS/{APPS[game][2]}')
 
 
@@ -1372,7 +1409,13 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
 def sign_app(app, logs):
     # Seal the bundle, including Info.plist and game resources. Copied helper
     # executables keep their existing signatures and byte identity. Checked once by install_app.
-    run(['codesign', '--force', '--sign', '-', app], logs / 'sign-app.log')
+    # The designated requirement is the bundle ID alone, not the ad-hoc default (this build's code hash): macOS keeps what
+    # the player allowed the app (Privacy & Security: a removable volume or Documents, where the Update page's
+    # checkout may be, app/auto_update.h) by that requirement, so a grant survives the next build or update instead of
+    # being asked again (user 2026-10-31).
+    bundle_id = plistlib.loads((Path(app) / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
+    requirement = [f'-r=designated => identifier "{bundle_id}"'] if bundle_id else []
+    run(['codesign', '--force', '--sign', '-', *requirement, app], logs / 'sign-app.log')
 
 
 def remove_in_background(path):
@@ -1452,22 +1495,19 @@ def wait_until_closed(out, prefix=''):
         time.sleep(2)
 
 
+def record_update_source(info, work):
+    """Where the Update page's update (games/totk/app/auto_update.h) finds what made it: this checkout (git pull), the
+    work folder (update_runtime.py --work) and the Python that runs update_runtime.py. update_runtime.py writes them again."""
+    info['MNGSourceRepo'] = str(REPO)
+    info['MNGWorkFolder'] = str(Path(work).resolve())
+    info['MNGBuildPython'] = sys.executable
+
+
 def source_commit():
     """The short hash of the commit this checkout is on (user 2026-10-25: the HUD shows it, to tell which commit an app
     was built from; uncommitted changes are not shown), or '' outside a git checkout."""
     result = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=7', 'HEAD'], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ''
-
-
-def source_revision():
-    """The full hash of the commit this checkout is on (Info.plist MNGSourceRevision: app/update_check.h compares it
-    against GitHub main to offer updates), or '' outside a git checkout. Identifies the source baseline, not the
-    Nintendo game version; local patches may also be present."""
-    try:
-        revision = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return ''  # Source archives without Git metadata simply do not check for updates.
-    return revision if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision) else ''
 
 
 def write_main_build_id(nso, target):
@@ -1528,9 +1568,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
-    revision = source_revision()
-    if revision:
-        info['MNGSourceRevision'] = revision
+    record_update_source(info, tree.parent)
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
@@ -2049,6 +2087,10 @@ def parse_args(argv):
                          'the build leaves the folder alone and prints the two commands that fill it by hand')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
+    ap.add_argument('--native-4k', action=argparse.BooleanOptionalAction, default=None,
+                    help='Mac, 1.4.3: the settings panel also offers native 4K (a 3840x2160 canvas, UI and scene); the game then '
+                         'reserves its swapchain and texture heaps for 4K (about 1.4 GiB more memory, whatever is shown). '
+                         'On by default on a Mac with 16 GB of memory or more; --no-native-4k turns it off')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available; Breath of the Wild 1.9.0 too)')
     fonts.add_argument('--shared-fonts', type=Path, help='previously extracted shared-font directory containing the six verified .bfttf files')
@@ -2216,13 +2258,21 @@ def main(argv):
             f'<folder>.backup-<date>-<time>, not deleted. Without the flag the build leaves the folder alone.')
     if update:
         version, update = identify_update(tree, update, keys, logs)
+    if args.native_4k and (args.platform != 'macos' or version != 'v143'):
+        raise BuildError('--native-4k needs the 1.4.3 update and a Mac build (the other versions and iPhone / iPad have no 4K output)')
+    native_4k = args.native_4k
+    if native_4k is None:
+        native_4k = args.platform == 'macos' and version == 'v143' and native_4k_default()
+    if version == 'v143' and args.platform == 'macos':
+        say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
+            ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
     step_code(tree, game, keys, env, logs, mod=None if update else code_mod)
     if update:
         step_code(tree, update, keys, env, logs, version=version,
                   mod=code_mod)   # a mod is for the updated main, not for 1.0.0
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts, mod=None if update else mod)
     if update:
-        step_update_data(tree, game, update, keys, logs, version=version, mod=mod)
+        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k)
     if mod:
         check_mod_overlays(tree, mod, version)
     step_shaders(tree, logs, version=version)

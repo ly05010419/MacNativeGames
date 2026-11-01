@@ -221,12 +221,9 @@ def main():
     # list there, and the runtime reads both (nvn_mtl.m warm_start). Before 2026-10-22 they stayed in the build logs.
     lists=tree/'build/ios-seed-lists';shutil.rmtree(lists,ignore_errors=True);lists.mkdir(parents=True)
     shader_list=tree.parent/'botw/assets/shader_list.tsv' if botw else tree/'assets/shader_list.tsv'   # the work folder's copy of games/botw
-    run([sys.executable,tree/'scripts/shader_list.py','export',shader_list,lists/'pso_list.tsv',
+    # This version's rows, each variant named as the device seed serves its bind state (shader_list.py resolve).
+    run([sys.executable,tree/'scripts/shader_list.py','resolve',seed_src,shader_list,lists/'pso_list.tsv',
          lists/'pso_title.tsv'],tree,logs/'shader-list.log',env)
-    aliases=seed_src.with_name(seed_src.name+'.aliases.tsv')   # listed variants the seed carries under another name
-    if aliases.is_file():
-        run([sys.executable,tree/'scripts/shader_list.py','rename',aliases,lists/'pso_title.tsv',
-             lists/'pso_list.tsv'],tree,logs/'shader-list-rename.log',env)
     # The device's pipeline archive, compiled here (2026-10-29): the Mac game binary makes every pipeline of the lists from
     # the device seed's metallibs (pipeline-archive mode), device_pipelines.py compiles them for the device GPU with metal-tt
     # into the seed (pipelines-<arch>-*). The first start then takes them from there instead of filling its own archive:

@@ -181,7 +181,7 @@ int main(void) {
        union of in-order command buffers, and one real sample of this machine (cores split into P and E, GPU known). */
     sysload_info li = {4, 6, {55, 56, 55, 53}, {43, 29, 20, 12, 9, 7}, 99, 70, 47, "x"};
     sysload_text(line, sizeof line, &li);
-    CHECK(!strcmp(line, "GPU 99% (70%)  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%"), "load line \"%s\"", line);
+    CHECK(!strcmp(line, "GPU 70%  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%"), "load line \"%s\"", line);   /* the game's share only */
     li.gpu_sys = -1; li.gpu_game = -1; li.thread_max = -1; sysload_text(line, sizeof line, &li);
     CHECK(!strcmp(line, "GPU --  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%"), "load line without GPU numbers \"%s\"", line);
     for (const char *c = "PEGUT%()"; *c; c++) CHECK(fps_overlay_has_glyph(*c), "no glyph for '%c' (load line)", *c);

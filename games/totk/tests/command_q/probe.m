@@ -10,8 +10,12 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_clear_window(void){}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_gamepad_focus(int on){(void)on;}
+int runtime_gamepad_background_enabled(void){return 0;}
+void runtime_gamepad_background_set(int on){(void)on;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_settings_enable(int on){(void)on;}
@@ -47,6 +51,7 @@ int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_battery_percent(void){return -1;}
+int runtime_gamepad_battery_left_percent(void){return -1;}
 #endif
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_mouse_enabled(void){return 0;}
@@ -97,6 +102,7 @@ void taa_set(int on){(void)on;}
 int mfx_requested(void){return 0;}
 int fps_overlay_hud_mode(void){return 1;}
 void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
+void dm_gfx_aniso_start(int n){(void)n;} int dm_gfx_aniso_locked(void){return 0;} int dm_gfx_aniso(void){return 0;} void dm_gfx_aniso_set(int n){(void)n;}   /* the display page's anisotropy row (nvn_mtl.m) */
 int runtime_output_modes(void){return 0;}
 int runtime_output_mode(void){return 0;}
 int runtime_output_mode_set(int mode){(void)mode;return 0;}

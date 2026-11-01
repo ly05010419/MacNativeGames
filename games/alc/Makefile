@@ -77,6 +77,19 @@ boot: runtime
 	@mkdir -p "$(dir $(ALC_LOG))"
 	cd "$(WORK)" && TOTK_FREE_CORES=1 TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_MIDCLEAR=1 ./build/alc-native rewritten/v101 boot 2> "$(abspath $(ALC_LOG))"; echo "exit $$?; log: $(ALC_LOG)"
 
+# The shader seed the app carries (the TotK tree's mechanism, TOTK_SHADER_SEED_DIR): the translations this machine's
+# cache holds, copied into the bundle's Resources/shader-seed. A first run then translates nothing for what the seed
+# already has; new shaders still land in the work folder's cache. Re-run after playing to refresh it.
+.PHONY: shader-seed
+SEED_CACHE ?= $(OUT)/shader-cache
+shader-seed:
+	@{ ls -d "$(SEED_CACHE)"/*/ 2>/dev/null | head -1; } | while read d; do \
+	  n=$$(find "$$d" -name '*.metal' | wc -l | tr -d ' '); \
+	  echo "shader seed: $$n translations from $$d"; \
+	  rm -rf "$(OUT)/shader-seed"; mkdir -p "$(OUT)/shader-seed"; \
+	  cp "$$d"/*.metal "$$d"/*.json "$(OUT)/shader-seed"/ 2>/dev/null || true; \
+	done; [ -d "$(OUT)/shader-seed" ] || { echo "no shader cache yet (play once first)"; exit 1; }
+
 # The player's mods, made into checked tables: exefs patches (mods/1.0.1/<name>/exefs/*.pchtxt) -> <work>/patches,
 # RomFS mods (mods/<name>/romfs/...) -> their manifest.tsv (sizes and SHA-256 of the replacements and the originals).
 .PHONY: patches mods app
@@ -96,8 +109,27 @@ $(OUT)/launcher: app/launcher.m Makefile
 $(OUT)/AppIcon.icns:
 	@if [ -n "$(GAME)" ] && [ -n "$(KEYS)" ]; then cd scripts && "$(PY)" extract_app_icon.py "$(GAME)" --keys "$(KEYS)" --title 01007300020fa000 --output "$(abspath $@)"; \
 	 else echo "no GAME= / KEYS=: the app gets no icon"; fi
+# SELF_CONTAINED=1 (the default): the bundle carries the runtime as well — the rewritten modules, the merged RomFS,
+# the shared fonts, the patch tables and the shader tools live in Contents/Resources/work, so the app runs from anywhere
+# (another Mac, a copy, a USB disk) without this repository. The copies use APFS clonefile where the volume allows it
+# (instant, no extra space until a file changes). SELF_CONTAINED=0 keeps the old thin app that points at $(WORK).
+SELF_CONTAINED ?= 1
 app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	rm -rf "$(APP)" && mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
+	@if [ -d "$(OUT)/shader-seed" ]; then rm -rf "$(APP)/Contents/Resources/shader-seed"; cp -R "$(OUT)/shader-seed" "$(APP)/Contents/Resources/shader-seed"; \
+	   echo "shader seed: $$(find "$(APP)/Contents/Resources/shader-seed" -name '*.metal' | wc -l | tr -d ' ') translations carried"; \
+	 else echo "no $(OUT)/shader-seed (run make shader-seed after playing to ship one)"; fi
+	@if [ "$(SELF_CONTAINED)" = "1" ]; then \
+	   W="$(APP)/Contents/Resources/work"; mkdir -p "$$W/rewritten" "$$W/extracted/v101" "$$W/extracted/firmware" "$$W/patches" "$$W/build"; \
+	   echo "self-contained: copying the runtime into the bundle (clonefile where possible)"; \
+	   cp -Rc "$(WORK)/rewritten/v101" "$$W/rewritten/" 2>/dev/null || cp -R "$(WORK)/rewritten/v101" "$$W/rewritten/"; \
+	   cp -Rc "$(WORK)/extracted/v101/romfs" "$$W/extracted/v101/" 2>/dev/null || cp -R "$(WORK)/extracted/v101/romfs" "$$W/extracted/v101/"; \
+	   cp -Rc "$(WORK)/extracted/firmware/shared-fonts" "$$W/extracted/firmware/" 2>/dev/null || cp -R "$(WORK)/extracted/firmware/shared-fonts" "$$W/extracted/firmware/"; \
+	   cp -R "$(WORK)/patches" "$$W/"; \
+	   mkdir -p "$$W/build"; cp "$(OUT)/alc-native" "$$W/build/"; \
+	   cp -Rc "$(OUT)/shader-service" "$(OUT)/spirv-cross" "$$W/build/" 2>/dev/null || cp -R "$(OUT)/shader-service" "$(OUT)/spirv-cross" "$$W/build/"; \
+	   du -sh "$$W" | sed 's/^/self-contained work folder: /'; \
+	 fi
 	cp "$(OUT)/launcher" "$(APP)/Contents/MacOS/Astral Chain"
 	[ -f "$(OUT)/AppIcon.icns" ] && cp "$(OUT)/AppIcon.icns" "$(APP)/Contents/Resources/" || true
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \

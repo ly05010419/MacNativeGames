@@ -70,8 +70,14 @@ def verified_cnmt(stream, record: dict, header: bytes, keys: dict,
     title, version = struct.unpack_from("<QI", data)
     if title != int(record["title_id"], 16) or data[12] != expected_type:
         raise ValueError("CNMT identity does not match the selected metadata")
-    return {"cnmt_version_raw": version,
-            "cnmt_content_type": "patch" if expected_type == 0x81 else "application"}
+    result = {"cnmt_version_raw": version,
+              "cnmt_content_type": {0x80: "application", 0x81: "patch", 0x82: "add_on_content"}[expected_type]}
+    if expected_type == 0x82:
+        extended_size = struct.unpack_from("<H", data, 14)[0]
+        if extended_size < 16 or len(data) < 0x20 + extended_size:
+            raise ValueError("Truncated add-on content extended header")
+        result["application_id"] = f'{struct.unpack_from("<Q", data, 0x20)[0]:016X}'
+    return result
 
 
 def select_program(source: Path, key_file: Path, title_id: str | None = None) -> dict:

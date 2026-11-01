@@ -45,7 +45,7 @@ class Base(unittest.TestCase):
         self.assertEqual(len(self.callback_errors), self.expected_errors, f'Tk callback errors: {self.callback_errors}')
 
     def teardown_window(self, root, ctl, made):
-        ctl.busy = ctl.update_pending = ctl.background_pending = ctl.background_forced = ctl.start.pending = False
+        ctl.busy = ctl.background_pending = ctl.background_forced = ctl.start.pending = False
         ctl.mods.pending = ctl.controls.pending = False
         if made:
             made[0].close()

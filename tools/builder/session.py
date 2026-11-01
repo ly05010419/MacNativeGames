@@ -104,16 +104,6 @@ class CancelStuck:
 
 
 @dataclass(frozen=True)
-class UpdateStatusReady:
-    status: object          # tools.builder.updates.UpdateStatus (S4.1)
-
-
-@dataclass(frozen=True)
-class UpdateApplied:
-    result: object          # tools.builder.updates.UpdateResult (S4.1)
-
-
-@dataclass(frozen=True)
 class BackgroundChanged:
     background: object      # tools.builder.background.Background (S4.3)
 

@@ -136,7 +136,7 @@ class Zone(Base):
         self.assertEqual((self.panel.focus.get(), self.callback_errors), ('right', []))
 
     def test_the_controls_live_in_details(self):
-        self.assertIs(self.panel.frame.master, self.view.updates.details)
+        self.assertIs(self.panel.frame.master, self.view.details.details)
 
     def test_the_dialog_offers_what_the_model_takes(self):
         self.assertEqual(IMAGE_TYPES, background.SUFFIXES)

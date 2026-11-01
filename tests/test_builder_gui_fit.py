@@ -26,7 +26,7 @@ class Fit(Base):
 
     def open_folds(self):
         self.view.files.toggle_advanced()
-        self.view.updates.toggle_details()
+        self.view.details.toggle_details()
 
     def fits(self, footer):
         """R1: the footer and every frame up to the form get the height they ask for; its bottom is inside the form."""
