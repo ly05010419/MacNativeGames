@@ -382,6 +382,10 @@ int vr_quest_zoom(void);
 void vr_set_quest_zoom(int x);
 int vr_eye_spring_ms(void);
 void vr_set_eye_spring_ms(int ms);
+int vr_afr(void);
+void vr_set_afr(int on);
+int vr_ipd_pct(void);
+void vr_set_ipd_pct(int pct);
 int vr_6dof(void);
 void vr_set_6dof(int on);
 int vr_snap_ms(void);
@@ -432,6 +436,9 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=2;r.sliderMax=10;[rows addObject:r];}
  /* The head's position (6DoF) and snap turning ("按建议 都做", 2026-10-30, after BotW BetterVR and UEVR). */
  [rows addObject:settings_row(settings_text("头部位置（6DoF：探身、下蹲）","Head position (6DoF: lean, crouch)"),nil,nil,^int{return vr_6dof();},^(int v){vr_set_6dof(v);})];
+ [rows addObject:settings_row(settings_text("立体（左右眼轮流渲染）","Stereo (the eyes rendered in turn)"),nil,nil,^int{return vr_afr();},^(int v){vr_set_afr(v);})];
+ {TOTKSettingRow *r=settings_row(settings_text("立体 · 两眼间距（%）","Stereo · eye distance (%)"),nil,nil,^int{return vr_ipd_pct();},^(int v){vr_set_ipd_pct(v);});
+  r.sliderMin=30;r.sliderMax=200;[rows addObject:r];}
  [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];
  [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
   @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];

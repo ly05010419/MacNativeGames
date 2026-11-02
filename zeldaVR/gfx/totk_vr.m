@@ -67,6 +67,10 @@ int vr_frame_pos(float p[3]) { (void)p; return 0; }
 int vr_frame_ring(void) { return -1; }
 void vr_frame_match_desc(char *out, size_t n) { if (n) out[0] = 0; }
 void vr_stats(char *out, size_t n) { if (n) out[0] = 0; }
+int vr_afr(void) { return 0; }
+void vr_set_afr(int on) { (void)on; }
+int vr_ipd_pct(void) { return 100; }
+void vr_set_ipd_pct(int pct) { (void)pct; }
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -75,7 +79,7 @@ void vr_stats(char *out, size_t n) { if (n) out[0] = 0; }
 #include "totk_vr_link.h"
 #include "../../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"   /* the graphics layer (zeldaVR sits beside it in games/totk) */
 
-enum { SRC_SLOTS = 3, IMAGES = 3, SWAPCHAIN_ID = 1 };
+enum { SRC_SLOTS = 5, IMAGES = 3, SWAPCHAIN_ID = 1 };   // SRC_SLOTS: B1 keeps each eye's newest picture besides the one being written
 
 static struct {
     id<MTLDevice> dev; id<MTLResidencySet> rs; int failed;
@@ -94,7 +98,10 @@ static struct {
     _Atomic uint32_t frame_seq; _Atomic uint64_t seq_matched, seq_matched_rot, seq_missed;   // the replayed frame's head-rotation seq
     _Atomic uint32_t ticket_seq[64];   // ... carried by its present ticket to the present thread
     _Atomic uint64_t copies, frames, no_image, no_pose, gpu_errors, encoder_waits;
-} g = { .mu = PTHREAD_MUTEX_INITIALIZER };
+    // B1 stereo (alternating eyes): the eye each picture was rendered for (0 left, 1 right, -1 not known), by its ticket
+    int src_eye[SRC_SLOTS]; _Atomic int frame_eye, ticket_eye[64];   // frame_eye / ticket_eye: eye + 1, 0 not known
+    _Atomic uint64_t afr_pairs, afr_mono;   // headset frames drawn with both eyes' own pictures / with one picture
+} g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 
 int vr_enabled(void) {
     static int on = -1;
@@ -203,6 +210,19 @@ static void vr_option_set(const char *name, int value) {
 static float g_hl_pos[3], g_hl_pos_ref[3]; static int g_hl_pos_have;
 /* The settings panel in the headset: off by default (user 2026-10-30: "先 关闭 设置在 vr里的效果"); option panel=1 shows it. */
 int vr_panel_in_headset(void) { return vr_option("panel", 0) != 0; }
+/* Stereo by alternating eyes (B1, user 2026-11-02: "开始 b1"): the VR page's "立体（左右眼轮流渲染）" (option afr, off by
+   default): the camera hook renders the game's frames for the left and the right eye in turn (vr_camera.h eye_half), and
+   each eye is shown its own newest picture, so both eyes see what the game really drew from where they are; each eye
+   is refreshed at half the game's frame rate, and moving puts the eyes a frame apart (the user on the Quest: stereo,
+   but sickening on the move), so it is off by default. The depth-reprojected stereo tried before it (A: weak, edges
+   broken) was removed (user 2026-11-02: "删除 a 方案 只保留 b1，默认不开"). */
+int vr_afr(void) { return vr_option("afr", 0); }
+/* B1's eye distance in percent of the headset's IPD (user 2026-11-02: "先加两眼间距调小（例如 30%–100%）我试一试"):
+   less stereo, and nearer things (Link's own bow and shield in first person) part less between the eyes; then "能改成
+   30-200吗？": above 100 the world looks smaller and deeper. Option ipd_pct, 30..200, 100 by default. */
+int vr_ipd_pct(void) { int v = vr_option("ipd_pct", 100); return v < 30 ? 30 : v > 200 ? 200 : v; }
+void vr_set_ipd_pct(int pct) { pct = pct < 30 ? 30 : pct > 200 ? 200 : pct; vr_option_set("ipd_pct", pct); VLOG("stereo by alternating eyes: the eyes %d%% of the headset's distance apart", pct); }
+void vr_set_afr(int on) { vr_option_set("afr", on != 0); VLOG("stereo by alternating eyes: %s", on ? "on (the game renders each eye in turn)" : "off (one camera for both eyes)"); }
 int vr_6dof(void) { return vr_option("6dof", 0); }   // off by default (user 2026-10-30: "默认 头部位置 关")
 void vr_set_6dof(int on) { vr_option_set("6dof", on != 0); VLOG("the head's position: %s", on ? "moves the camera (6DoF)" : "not used"); }
 /* Snap turning (comfort, as BetterVR / UEVR; "按建议 都做", 2026-10-30): the game's camera has no "turn by 30 degrees", so a
@@ -630,7 +650,9 @@ int vr_wants_camera(void) { return g_vr_headlook && __atomic_load_n(&g_vr_headlo
    the body it draws against (nvn_mtl.m vr_head_eye_note): both of the same frame, so the gap between them is where the
    body really is, not how far it moved since (user 2026-10-31: in a Zonai device the body drifted off the camera). */
 static float g_frame_pos[3]; static int g_frame_pos_have, g_frame_idx;   // the replay thread's (g_frame_idx: its ring entry)
-static void frame_pos_take(int i) { memcpy(g_frame_pos, g_vr_headlook->ring[i].pos, sizeof g_frame_pos); g_frame_idx = i; g_frame_pos_have = g_frame_pos[0] || g_frame_pos[1] || g_frame_pos[2]; }
+static void frame_pos_take(int i) { memcpy(g_frame_pos, g_vr_headlook->ring[i].pos, sizeof g_frame_pos); g_frame_idx = i; g_frame_pos_have = g_frame_pos[0] || g_frame_pos[1] || g_frame_pos[2];
+    /* B1: the entry's index is the hook's call count & 15, and odd calls render the left eye (vr_camera.h eye_half) */
+    atomic_store(&g.frame_eye, g_vr_headlook->eye_half > 0 ? ((i & 1) ? 1 : 2) : 0); }
 int vr_frame_pos(float p[3]) { if (!g_frame_pos_have) return 0; memcpy(p, g_frame_pos, sizeof g_frame_pos); return 1; }
 int vr_frame_ring(void) { return g_frame_pos_have ? g_frame_idx : -1; }   /* the replay thread: this frame's ring entry (-1 without one) */
 /* The vertical field of view each G-buffer camera had (camera block float 70, radians), lowest and highest since the last
@@ -701,8 +723,9 @@ void vr_note_camera(const float *cam) {
 }
 
 void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's present (after that frame's replay)
-    if (g_vr_headlook) atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0));
+    if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
 }
+
 
 // ---- picture copies (present thread) ----
 static id<MTLTexture> src_tex(NSUInteger w, NSUInteger h, MTLPixelFormat f) {
@@ -716,6 +739,10 @@ static int latest_slot(void) {   // under g.mu
     int b = -1; for (int i = 0; i < SRC_SLOTS; i++) if (g.seq[i] && !g.writing[i] && (b < 0 || g.seq[i] > g.seq[b])) b = i;
     return b;
 }
+static int latest_slot_eye(int eye) {   // under g.mu: B1, the newest picture rendered for that eye
+    int b = -1; for (int i = 0; i < SRC_SLOTS; i++) if (g.seq[i] && !g.writing[i] && g.src_eye[i] == eye && (b < 0 || g.seq[i] > g.seq[b])) b = i;
+    return b;
+}
 static void start_thread(id<MTLDevice> dev);
 
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) {
@@ -726,9 +753,10 @@ int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int cro
     if (crop && crop[2] > 0 && crop[3] > 0 && (NSUInteger)crop[0] + (NSUInteger)crop[2] <= src.width && (NSUInteger)crop[1] + (NSUInteger)crop[3] <= src.height) {
         x = (NSUInteger)crop[0]; y = (NSUInteger)crop[1]; w = (NSUInteger)crop[2]; h = (NSUInteger)crop[3]; }
     pthread_mutex_lock(&g.mu);
-    int latest = latest_slot(), s = -1;
-    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && !g.writing[i] && !g.readers[i]) s = i;
-    if (s >= 0) { g.writing[s] = 1; g.seq[s] = 0; g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0; }   // 0: not matched, placed by the newest pose
+    int latest = latest_slot(), l0 = latest_slot_eye(0), l1 = latest_slot_eye(1), s = -1;   // each eye's newest stays (B1)
+    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && !g.writing[i] && !g.readers[i]) s = i;
+    if (s >= 0) { g.writing[s] = 1; g.seq[s] = 0; g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
+                  g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }   // B1: the eye it was rendered for, -1 not known
     pthread_mutex_unlock(&g.mu);
     if (s < 0) return -1;
     id<MTLTexture> t = g.src[s];
@@ -977,7 +1005,22 @@ static void zoom_fov(const float fov[4], float z, float out[4]) {
     const float L = tanf(fov[0]), R = tanf(fov[1]), U = tanf(fov[2]), D = tanf(fov[3]), cx = (L + R) / 2, cy = (U + D) / 2;
     out[0] = atanf(cx + (L - cx) / z); out[1] = atanf(cx + (R - cx) / z); out[2] = atanf(cy + (U - cy) / z); out[3] = atanf(cy + (D - cy) / z);
 }
-static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> pic, id<MTLTexture> hud) {
+/* An eye's picture placed (VR thread; stage 2): the head pose it was rendered with, and with B1 (alternating eyes) moved
+   to the eye it was rendered for (the hook moved the camera there by half the IPD, vr_camera.h eye_half), so the
+   picture sits exactly where that eye saw it from. Sets g.center / right / up, which the HUD and the panel follow. */
+static void place_picture(id<MTLTexture> pic, uint32_t used, int pic_eye, float half) {
+    if (!pic || !used || !g_vr_headlook) return;
+    vr_pose p = g.hl_pose[used % 64];
+    if (pic_eye >= 0 && half > 0) { const float ex[3] = { pic_eye ? half : -half, 0, 0 }; float o[3]; qrot(p.q, ex, o); for (int k = 0; k < 3; k++) p.p[k] += o[k]; }
+    headlook_place(&p, (double)pic.width / pic.height);
+}
+/* One eye's picture: the flat plane placed by place_picture (VR thread). */
+static void draw_picture(id<MTLRenderCommandEncoder> e, const quad_u *u, id<MTLTexture> pic) {
+    [e setRenderPipelineState:g.ps]; [e setVertexBytes:u length:sizeof *u atIndex:0];
+    [e setFragmentTexture:pic atIndex:0]; [e setFragmentSamplerState:g.smp atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+}
+static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> __strong *pics, const uint32_t useds[2], const int peye[2], float half, id<MTLTexture> hud) {
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1); rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -988,13 +1031,13 @@ static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, cons
         const float off[3] = { (eye ? 0.5f : -0.5f) * v->ipd, 0, 0 }; float o[3], p[3], f[4]; qrot(pose->q, off, o);
         for (int k = 0; k < 3; k++) p[k] = pose->p[k] + o[k];
         zoom_fov(v->fov[eye], z, f);
+        if (!pics[eye]) continue;
+        place_picture(pics[eye], useds[eye], peye[eye], half);
         quad_u u; eye_matrix(pose->q, p, f, u.m);
         memcpy(u.c, g.center, 12); memcpy(u.r, g.right, 12); memcpy(u.u, g.up, 12); u.c[3] = u.r[3] = u.u[3] = 0;
         u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
         [e setViewport:(MTLViewport){ eye * g_mac_w, 0, g_mac_w, g_mac_h, 0, 1 }];
-        [e setVertexBytes:&u length:sizeof u atIndex:0];
-        [e setFragmentTexture:pic atIndex:0];
-        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        draw_picture(e, &u, pics[eye]);
         if (hud && hud_quad(&u)) {
             [e setVertexBytes:&u length:sizeof u atIndex:0];
             [e setFragmentTexture:hud atIndex:0];
@@ -1021,10 +1064,22 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     int im = -1; for (int i = 0; i < IMAGES && im < 0; i++) if (!g.img_frame[i]) im = i;
     if (im < 0) { atomic_fetch_add(&g.no_image, 1); return 0; }
 
-    pthread_mutex_lock(&g.mu); int s = latest_slot(); if (s >= 0) g.readers[s]++; id<MTLTexture> pic = s >= 0 ? g.src[s] : nil;
-    uint32_t used = s >= 0 ? g.src_used[s] : 0; pthread_mutex_unlock(&g.mu);
-    if (pic && used && g_vr_headlook) headlook_place(&g.hl_pose[used % 64], (double)pic.width / pic.height);   // stage 2
-    if (pic) pic = sample_view(pic);
+    /* B1: the hook renders the eyes in turn while afr is on and head look runs; each eye gets its own newest picture */
+    const int afr = g_vr_headlook && vr_afr() && v->ipd > 0.03f && v->ipd < 0.09f;
+    const float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%)
+    if (g_vr_headlook) { uint32_t hb; memcpy(&hb, &half, 4); __atomic_store_n((uint32_t *)(void *)&g_vr_headlook->eye_half, hb, __ATOMIC_RELAXED); }   // read by the hook on the game's thread
+    int se[2]; id<MTLTexture> pics[2]; uint32_t useds[2]; int peye[2];
+    pthread_mutex_lock(&g.mu);
+    const int s = latest_slot();
+    for (int k = 0; k < 2; k++) {
+        int t = afr ? latest_slot_eye(k) : -1; if (t < 0) t = s;
+        se[k] = t; if (t >= 0) g.readers[t]++;
+        pics[k] = t >= 0 ? g.src[t] : nil; useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = t >= 0 ? g.src_eye[t] : -1;
+    }
+    pthread_mutex_unlock(&g.mu);
+    id<MTLTexture> pic = pics[0]; uint32_t used = useds[0];
+    if (pics[0] && pics[1]) atomic_fetch_add(afr && peye[0] == 0 && peye[1] == 1 ? &g.afr_pairs : &g.afr_mono, 1);
+    for (int k = 0; k < 2; k++) if (pics[k]) pics[k] = sample_view(pics[k]);
 
     id<MTLTexture> hud = hud_update();
     int pw = 0, ph = 0; id<MTLTexture> panel = panel_update(&pw, &ph);
@@ -1041,16 +1096,14 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         x->rect[0] = eye * g.eye_w; x->rect[1] = 0; x->rect[2] = g.eye_w; x->rect[3] = g.eye_h;
         x->pose = *head; for (int k = 0; k < 3; k++) x->pose.p[k] = head->p[k] + o[k];
         memcpy(x->fov, v->fov[eye], sizeof x->fov);
-        if (!pic || now_ns() < atomic_load(&g_blank_until)) continue;   // a snap turn: the headset dark while the camera turns
+        if (!pics[eye] || now_ns() < atomic_load(&g_blank_until)) continue;   // a snap turn: the headset dark while the camera turns
+        place_picture(pics[eye], useds[eye], peye[eye], half);   // stage 2 (B1: at the eye it was rendered for)
         quad_u u;
         eye_matrix(x->pose.q, x->pose.p, x->fov, u.m);
         memcpy(u.c, g.center, 12); memcpy(u.r, g.right, 12); memcpy(u.u, g.up, 12); u.c[3] = u.r[3] = u.u[3] = 0;
         u.uvs[0] = u.uvs[1] = 1; u.uvs[2] = u.uvs[3] = 0;
         [e setViewport:(MTLViewport){ eye * g.eye_w, 0, g.eye_w, g.eye_h, 0, 1 }];
-        [e setRenderPipelineState:g.ps];
-        [e setVertexBytes:&u length:sizeof u atIndex:0];
-        [e setFragmentTexture:pic atIndex:0]; [e setFragmentSamplerState:g.smp atIndex:0];
-        [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        draw_picture(e, &u, pics[eye]);
         if (hud && hud_quad(&u)) {
             [e setVertexBytes:&u length:sizeof u atIndex:0];
             [e setFragmentTexture:hud atIndex:0];
@@ -1070,9 +1123,9 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     }
     [e endEncoding];
     const int mi = pic && now_ns() >= atomic_load(&g_blank_until) && mac_view_wanted() ? mac_image() : -1;
-    if (mi >= 0) mac_view_encode(cb, g_mac_img[mi], used && g_vr_headlook ? &g.hl_pose[used % 64] : head, v, pic, hud);
+    if (mi >= 0) mac_view_encode(cb, g_mac_img[mi], used && g_vr_headlook ? &g.hl_pose[used % 64] : head, v, pics, useds, peye, half, hud);
     [cb commit]; [cb waitUntilCompleted];
-    pthread_mutex_lock(&g.mu); if (s >= 0) g.readers[s]--; pthread_mutex_unlock(&g.mu);
+    pthread_mutex_lock(&g.mu); for (int k = 0; k < 2; k++) if (se[k] >= 0) g.readers[se[k]]--; pthread_mutex_unlock(&g.mu);
     if (cb.error) { atomic_fetch_add(&g.gpu_errors, 1); VLOG("【红】headset frame GPU error: %s", cb.error.localizedDescription.UTF8String); return 0; }
     g.img_frame[im] = frame;
     if (vr_link_frame_ready(frame, 0, head->ts, 2, vs)) { g.img_frame[im] = 0; return 0; }
@@ -1315,6 +1368,8 @@ void vr_stats(char *out, size_t n) {
         const unsigned long long p = atomic_load(&g.copies);
         if (c0 || p0) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; camera hook calls %u for %llu game pictures", c - c0, p - p0); }
         c0 = c; p0 = p; }
+    { const unsigned long long ap = atomic_exchange(&g.afr_pairs, 0), am = atomic_exchange(&g.afr_mono, 0);   // B1
+      if (ap || am) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; alternating eyes %s: %llu headset frames with each eye's own picture, %llu with one", vr_afr() ? "on" : "off", ap, am); } }
     { const int sd = atomic_exchange(&g_spring_dev_mm, 0);
       if (sd) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the head's spring (%d ms) kept the camera at most %.1f cm off the head bone's eyes", vr_eye_spring_ms(), sd / 10.0); } }
     { static uint32_t v0; const uint32_t v = g_vr_headlook ? __atomic_load_n(&g_vr_headlook->vs_changes, __ATOMIC_RELAXED) : 0;   // the main view set (game_patches_v143.c vr_view0_hook)

@@ -32,7 +32,10 @@ typedef struct {
     float fp_blend;   /* 1112: how far the camera is at the eyes, 0..1 (user 2026-11-01: "p键 切换 第一 第三人称的时候 要 平滑 过度
                          0.6秒"): the hook takes the third-person camera's translation plus this share of the way to the eyes'
                          (both have the same rotation); the VR thread eases it over 0.6 s at a switch, 1 while first person */
-    uint32_t pad2;
+    float eye_half;   /* 1116: stereo by alternating eyes (B1, user 2026-11-02: "开始 b1"): half the headset's IPD in metres;
+                         each camera update moves the eye along the final camera's right axis, the left eye on odd calls
+                         and the right one on even calls (t0 -= -e / +e), so a ring entry's index parity names its eye;
+                         0: one eye, as before */
     float fp_up[4];   /* 1120: (0, eye height, 0, 0) */
     float fp_fwd;     /* 1136 */
     float cam_back;   /* 1140: third person: the camera this many metres further back along its view (user 2026-10-26:

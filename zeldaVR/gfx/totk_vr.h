@@ -33,4 +33,10 @@ void vr_resolution(int *w, int *h);
 int vr_set_resolution(int w, int h);
 int vr_frame_pos(float p[3]);   /* the replay thread: the position this frame's first-person camera was put at (0 without one) */
 void vr_frame_match_desc(char *out, size_t n);   /* diagnostic: this frame's camera block against the hook ring, then reset */
-int vr_frame_ring(void);         /* the replay thread: the ring entry (vr_cam_state.ring) of this frame's camera, -1 without one */
+int vr_frame_ring(void);
+/* Stereo by alternating eyes (the VR page's "立体（左右眼轮流渲染）", option afr, off by default; flag vr_afr): the game
+   renders its frames for the left and the right eye in turn and each eye sees its own newest picture. */
+int vr_afr(void);
+void vr_set_afr(int on);
+int vr_ipd_pct(void);            /* its eye distance, percent of the headset's IPD (30..200; flag vr_ipd_pct) */
+void vr_set_ipd_pct(int pct);

@@ -86,6 +86,10 @@ void vr_set_motion(int on) { (void)on; }
 void vr_panel_image(const void *p, int w, int h, int s) { (void)p; (void)w; (void)h; (void)s; }
 int vr_panel_in_headset(void) { return 0; }
 void vr_set_6dof(int on) { (void)on; }
+int vr_afr(void) { return 0; }
+void vr_set_afr(int on) { (void)on; }
+int vr_ipd_pct(void) { return 100; }
+void vr_set_ipd_pct(int pct) { (void)pct; }
 int vr_snap_ms(void) { return 0; }
 void vr_set_snap_ms(int ms) { (void)ms; }
 void vr_set_mirror_mode(int on) { (void)on; }

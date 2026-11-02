@@ -72,7 +72,7 @@ void vr_mirror_crop(double o[4]){o[0]=o[1]=0;o[2]=o[3]=1;}
 double vr_mirror_aspect(void){return 2;}
 int vr_quest_view(void){return 0;}void vr_set_quest_view(int on){(void)on;}int vr_quest_zoom(void){return 2;}void vr_set_quest_zoom(int x){(void)x;}
 int vr_motion(void){return 0;}void vr_set_motion(int on){(void)on;}
-int vr_6dof(void){return 0;}void vr_set_6dof(int on){(void)on;}int vr_eye_spring_ms(void){return 0;}void vr_set_eye_spring_ms(int ms){(void)ms;}int vr_snap_ms(void){return 0;}void vr_set_snap_ms(int ms){(void)ms;}
+int vr_6dof(void){return 0;}void vr_set_6dof(int on){(void)on;}int vr_eye_spring_ms(void){return 0;}void vr_set_eye_spring_ms(int ms){(void)ms;}int vr_afr(void){return 0;}void vr_set_afr(int on){(void)on;}int vr_ipd_pct(void){return 100;}void vr_set_ipd_pct(int p){(void)p;}int vr_snap_ms(void){return 0;}void vr_set_snap_ms(int ms){(void)ms;}
 int runtime_camera_distance_available(void){return 0;}int runtime_camera_distance_cm(void){return 0;}void runtime_camera_distance_set(int cm){(void)cm;}
 int vr_hide_head_mode(void){return -1;}void vr_set_hide_head_mode(int m){(void)m;}
 #ifndef FRONTEND_REAL_GAMEPAD

@@ -995,7 +995,7 @@ void runtime_diag_xpoke(unsigned off,float value){
 __attribute__((weak)) vr_cam_state *g_vr_headlook;
 #if !TARGET_OS_IPHONE
 vr_cam_state g_vr_cam __attribute__((aligned(16)));
-_Static_assert(offsetof(vr_cam_state,cam)==8&&offsetof(vr_cam_state,h)==16&&offsetof(vr_cam_state,used)==64&&offsetof(vr_cam_state,fp_lag)==68&&offsetof(vr_cam_state,ret)==72&&offsetof(vr_cam_state,ring)==80&&sizeof g_vr_cam.ring[0]==64&&offsetof(vr_cam_state,fp_pos)==1104&&offsetof(vr_cam_state,fp_blend)==1112&&offsetof(vr_cam_state,fp_up)==1120&&offsetof(vr_cam_state,fp_fwd)==1136&&offsetof(vr_cam_state,cam_back)==1140&&offsetof(vr_cam_state,level)==1144&&offsetof(vr_cam_state,calls)==1148&&offsetof(vr_cam_state,off)==1152&&offsetof(vr_cam_state,game_right)==1168&&offsetof(vr_cam_state,callee)==1184&&offsetof(vr_cam_state,main_vs)==1192&&offsetof(vr_cam_state,v0n)==1200&&offsetof(vr_cam_state,v0ring)==1216&&sizeof g_vr_cam.v0ring[0]==64,"vr_cam_hook offsets");
+_Static_assert(offsetof(vr_cam_state,cam)==8&&offsetof(vr_cam_state,h)==16&&offsetof(vr_cam_state,used)==64&&offsetof(vr_cam_state,fp_lag)==68&&offsetof(vr_cam_state,ret)==72&&offsetof(vr_cam_state,ring)==80&&sizeof g_vr_cam.ring[0]==64&&offsetof(vr_cam_state,fp_pos)==1104&&offsetof(vr_cam_state,fp_blend)==1112&&offsetof(vr_cam_state,eye_half)==1116&&offsetof(vr_cam_state,fp_up)==1120&&offsetof(vr_cam_state,fp_fwd)==1136&&offsetof(vr_cam_state,cam_back)==1140&&offsetof(vr_cam_state,level)==1144&&offsetof(vr_cam_state,calls)==1148&&offsetof(vr_cam_state,off)==1152&&offsetof(vr_cam_state,game_right)==1168&&offsetof(vr_cam_state,callee)==1184&&offsetof(vr_cam_state,main_vs)==1192&&offsetof(vr_cam_state,v0n)==1200&&offsetof(vr_cam_state,v0ring)==1216&&sizeof g_vr_cam.v0ring[0]==64,"vr_cam_hook offsets");
 __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  adrp x16, _g_vr_cam@PAGE\n  add x16, x16, _g_vr_cam@PAGEOFF\n"
         "  sub sp, sp, #224\n  mrs x17, nzcv\n  str x17, [sp, #112]\n"
@@ -1058,7 +1058,11 @@ __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  mov s10, v2.s[3]\n  fsub s8, s8, s10\n  fmadd s8, s8, s12, s10\n  mov v2.s[3], v8.s[0]\n  stur q2, [x20, #24]\n"
         "  fmul v8.4s, v3.4s, v7.4s\n  faddp v8.4s, v8.4s, v8.4s\n  faddp s8, v8.2s\n  fneg s8, s8\n"
         "  mov s10, v3.s[3]\n  fsub s8, s8, s10\n  fmadd s8, s8, s12, s10\n  mov v3.s[3], v8.s[0]\n  stur q3, [x20, #40]\n"
-        "2:\n  ldr w17, [x16, #1148]\n  and x17, x17, #15\n  add x17, x16, x17, lsl #6\n"   /* its ring entry (by calls: one per camera update; by seq a still head kept rewriting one entry): the final rows, seq */
+        /* B1 stereo (eye_half, 1116): the eye along the final right axis, left on odd calls, right on even: t0 -= +-e */
+        "2:\n  ldr s9, [x16, #1116]\n  fcmp s9, #0.0\n  b.eq 5f\n"
+        "  ldr w17, [x16, #1148]\n  tst w17, #1\n  b.eq 6f\n  fneg s9, s9\n6:\n"
+        "  ldur q1, [x20, #8]\n  mov s10, v1.s[3]\n  fsub s10, s10, s9\n  mov v1.s[3], v10.s[0]\n  stur q1, [x20, #8]\n"
+        "5:\n  ldr w17, [x16, #1148]\n  and x17, x17, #15\n  add x17, x16, x17, lsl #6\n"   /* its ring entry (by calls: one per camera update; by seq a still head kept rewriting one entry): the final rows, seq */
         "  ldur q1, [x20, #8]\n  str q1, [x17, #80]\n  ldur q1, [x20, #24]\n  str q1, [x17, #96]\n"
         "  ldur q1, [x20, #40]\n  str q1, [x17, #112]\n  str s0, [x17, #128]\n"
         "  stur d11, [x17, #132]\n  mov v12.s[0], v11.s[2]\n  stur s12, [x17, #140]\n"   /* and the position this frame's camera was put at */
