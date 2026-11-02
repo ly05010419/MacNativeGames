@@ -18,15 +18,18 @@
 #include "mouse_look.h"       // mouse mode: movement as the right stick and the gyro
 
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
-static RuntimeGamepadState gamepadState;
-static uint64_t pressedEdges;
+enum { GAMEPAD_PLAYERS = 2 };
+static GCController *playerControllers[GAMEPAD_PLAYERS]; /* main thread; stable until disconnect */
+static int hidPlayer = -1;
+static RuntimeGamepadState gamepadState[GAMEPAD_PLAYERS];
+static uint64_t pressedEdges[GAMEPAD_PLAYERS];
 static BOOL started;
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
 static uint8_t controllerModes[CONTROLLER_BUTTONS];
-static uint64_t physicalPrev;
-static uint64_t tapUntil[CONTROLLER_BUTTONS];   /* ns, for tap */
-static int toggleOn[CONTROLLER_BUTTONS];        /* for toggle */
-static int toggleMoved[CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
+static uint64_t physicalPrevious[GAMEPAD_PLAYERS];
+static uint64_t playerTapUntil[GAMEPAD_PLAYERS][CONTROLLER_BUTTONS];   /* ns, for tap */
+static int playerToggleOn[GAMEPAD_PLAYERS][CONTROLLER_BUTTONS];        /* for toggle */
+static int playerToggleMoved[GAMEPAD_PLAYERS][CONTROLLER_BUTTONS];     /* the stick moved since the toggle went on */
 static void refresh_gamepads(void);
 
 /* The player's button layout (controller_map.h): TOTK_CONTROLS names the file (the launcher: <data>/controls.txt and
@@ -416,68 +419,87 @@ void runtime_mouse_release(void) {   /* main thread: the window let the pointer 
 }
 
 static void refresh_gamepads(void) {
-    RuntimeGamepadState next = {0};
-    uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
-    for (GCController *controller in GCController.controllers) {
+    /* The HID fallback occupies a free slot, never merges into another controller. */
+    if (!hidPad.present) hidPlayer = -1;
+    if (hidPad.present && hidPlayer < 0)
+        for (int p = 0; p < GAMEPAD_PLAYERS; p++) if (!playerControllers[p]) { hidPlayer = p; break; }
+    for (int player = 0; player < GAMEPAD_PLAYERS; player++) {
+        uint64_t *tapUntil = playerTapUntil[player];
+        int *toggleOn = playerToggleOn[player], *toggleMoved = playerToggleMoved[player];
+        RuntimeGamepadState next = {0};
+        uint64_t physical = player == 0 ? (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST : 0;
+        GCController *controller = playerControllers[player];
         GCExtendedGamepad *pad = controller.extendedGamepad;
-        if (!pad) continue;
-        next.connected = 1;
-        physical |= gamepad_buttons(pad, face_by_position(controller));
-        next.lx = stronger_axis(next.lx, stick_axis(pad.leftThumbstick.xAxis.value, stickReach[2], stickReach[3]));
-        next.ly = stronger_axis(next.ly, stick_axis(pad.leftThumbstick.yAxis.value, stickReach[1], stickReach[0]));
-        next.rx = stronger_axis(next.rx, stick_axis(pad.rightThumbstick.xAxis.value, stickReach[6], stickReach[7]));
-        next.ry = stronger_axis(next.ry, stick_axis(pad.rightThumbstick.yAxis.value, stickReach[5], stickReach[4]));
-    }
-    if (hidPad.present) {
-        next.connected = 1;
-        physical |= hidPad.buttons;
-        next.lx = stronger_axis(next.lx, hidPad.lx);
-        next.ly = stronger_axis(next.ly, hidPad.ly);
-        next.rx = stronger_axis(next.rx, hidPad.rx);
-        next.ry = stronger_axis(next.ry, hidPad.ry);
-    }
-    /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
-       (X and L3 both running), and a mapped edge would be lost while the other one is held. */
-    uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0;
-    int moving = next.lx || next.ly;
-    physicalPrev = physical;
-    for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
-        uint64_t bit = 1ULL << i;
-        int kind = controller_mode_kind(controllerModes[i]);
-        if (kind == CONTROLLER_TAP && (edges & bit)) {
-            tapUntil[i] = now + 400000000ULL;
-            /* Release the pulse even if the controller sends no further event. */
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
+        if (pad) {
+            next.connected = 1;
+            physical |= gamepad_buttons(pad, face_by_position(controller));
+            next.lx = stick_axis(pad.leftThumbstick.xAxis.value, stickReach[2], stickReach[3]);
+            next.ly = stick_axis(pad.leftThumbstick.yAxis.value, stickReach[1], stickReach[0]);
+            next.rx = stick_axis(pad.rightThumbstick.xAxis.value, stickReach[6], stickReach[7]);
+            next.ry = stick_axis(pad.rightThumbstick.yAxis.value, stickReach[5], stickReach[4]);
         }
-        if (kind == CONTROLLER_TOGGLE) {
-            if (edges & bit) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
-            if (toggleOn[i] && moving) toggleMoved[i] = 1;
-            /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
-               waits for the first move, and attacking while running does not stop it. */
-            if (toggleOn[i] && ((toggleMoved[i] && !moving) || !next.connected)) toggleOn[i] = 0;
+        if (hidPad.present && hidPlayer == player) {
+            next.connected = 1;
+            physical |= hidPad.buttons;
+            next.lx = hidPad.lx; next.ly = hidPad.ly;
+            next.rx = hidPad.rx; next.ry = hidPad.ry;
         }
-        if (kind == CONTROLLER_AIM && (physical & bit)) {
-            /* Aim: the Switch button is held while drawing, released while the fire button is down (the shot), and its
-               fire button does nothing else meanwhile. */
-            uint64_t fire = 1ULL << controller_mode_fire(controllerModes[i]);
-            suppressed |= fire;
-            if (!(physical & fire)) synthetic |= controllerMap[i];
+        /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
+           (X and L3 both running), and a mapped edge would be lost while the other one is held. */
+        uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrevious[player], synthetic = 0, suppressed = 0;
+        int moving = next.lx || next.ly;
+        physicalPrevious[player] = physical;
+        for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
+            uint64_t bit = 1ULL << i;
+            int kind = controller_mode_kind(controllerModes[i]);
+            if (kind == CONTROLLER_TAP && (edges & bit)) {
+                tapUntil[i] = now + 400000000ULL;
+                /* Release the pulse even if the controller sends no further event. */
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(400 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
+            }
+            if (kind == CONTROLLER_TOGGLE) {
+                if (edges & bit) { toggleOn[i] = !toggleOn[i]; toggleMoved[i] = moving; }
+                if (toggleOn[i] && moving) toggleMoved[i] = 1;
+                /* A toggle ends when the stick returns to center after moving, or the controller goes away; clicking at rest
+                   waits for the first move, and attacking while running does not stop it. */
+                if (toggleOn[i] && ((toggleMoved[i] && !moving) || !next.connected)) toggleOn[i] = 0;
+            }
+            if (kind == CONTROLLER_AIM && (physical & bit)) {
+                /* Aim: the Switch button is held while drawing, released while the fire button is down (the shot), and its
+                   fire button does nothing else meanwhile. */
+                uint64_t fire = 1ULL << controller_mode_fire(controllerModes[i]);
+                suppressed |= fire;
+                if (!(physical & fire)) synthetic |= controllerMap[i];
+            }
+            int active = kind == CONTROLLER_TAP ? now < tapUntil[i] : kind == CONTROLLER_TOGGLE ? toggleOn[i] : 0;
+            if (active) synthetic |= controllerMap[i];
         }
-        int active = kind == CONTROLLER_TAP ? now < tapUntil[i] : kind == CONTROLLER_TOGGLE ? toggleOn[i] : 0;
-        if (active) synthetic |= controllerMap[i];
+        uint64_t held = physical & ~suppressed;
+        for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
+        next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
+        pthread_mutex_lock(&gamepadLock);
+        pressedEdges[player] |= next.buttons & ~gamepadState[player].buttons;
+        if (!next.connected && gamepadState[player].connected) {
+            pressedEdges[player] = 0;
+            memset(tapUntil, 0, sizeof playerTapUntil[player]);
+            next.buttons = 0;
+        }
+        gamepadState[player] = next;
+        pthread_mutex_unlock(&gamepadLock);
     }
-    uint64_t held = physical & ~suppressed;
-    for (int i = 0; i < CONTROLLER_BUTTONS; i++) if (controllerModes[i] != CONTROLLER_HOLD) held &= ~(1ULL << i);
-    next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
-    pthread_mutex_lock(&gamepadLock);
-    pressedEdges |= next.buttons & ~gamepadState.buttons;
-    gamepadState = next;
-    pthread_mutex_unlock(&gamepadLock);
 }
 
 static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
+    int slot = -1;
+    for (int p = 0; p < GAMEPAD_PLAYERS; p++) if (playerControllers[p] == controller) return;
+    for (int p = 0; p < GAMEPAD_PLAYERS; p++)
+        if (!playerControllers[p] && hidPlayer != p) { slot = p; break; }
+    if (slot < 0) return;
+    playerControllers[slot] = controller;
+    controller.playerIndex = (GCControllerPlayerIndex)slot;
+    fprintf(stderr, "[odyssey-input] controller assigned to player %d\n", slot + 1);
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
         (void)changed; (void)element;
         refresh_gamepads();
@@ -485,7 +507,20 @@ static void attach_gamepad(GCController *controller) {
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
-    runtime_feedback_attach(controller);
+    if (slot == 0) runtime_feedback_attach(controller);
+    refresh_gamepads();
+}
+
+static void detach_gamepad(GCController *controller) {
+    controller.extendedGamepad.valueChangedHandler = nil;
+    for (int p = 0; p < GAMEPAD_PLAYERS; p++) if (playerControllers[p] == controller) {
+        playerControllers[p] = nil;
+        physicalPrevious[p] = 0;
+        memset(playerTapUntil[p], 0, sizeof playerTapUntil[p]);
+        memset(playerToggleOn[p], 0, sizeof playerToggleOn[p]);
+        memset(playerToggleMoved[p], 0, sizeof playerToggleMoved[p]);
+    }
+    runtime_feedback_detach(controller);
     refresh_gamepads();
 }
 
@@ -531,8 +566,7 @@ void runtime_gamepad_start(void) {
                        GCController *controller = notification.object;
                        fprintf(stderr, "[totk-input] native gamepad disconnected: %s\n",
                                (controller.vendorName ?: @"unknown").UTF8String);
-                       runtime_feedback_detach(controller);
-                       refresh_gamepads();
+                       detach_gamepad(controller);
                    }];
     for (GCController *controller in GCController.controllers) attach_gamepad(controller);
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
@@ -541,13 +575,16 @@ void runtime_gamepad_start(void) {
 
 void runtime_gamepad_clear(void) {
     runtime_feedback_quiet();
-    physicalPrev = 0;
-    memset(tapUntil, 0, sizeof tapUntil);
-    memset(toggleOn, 0, sizeof toggleOn);
-    memset(toggleMoved, 0, sizeof toggleMoved);
+    memset(physicalPrevious, 0, sizeof physicalPrevious);
+    memset(playerTapUntil, 0, sizeof playerTapUntil);
+    memset(playerToggleOn, 0, sizeof playerToggleOn);
+    memset(playerToggleMoved, 0, sizeof playerToggleMoved);
     pthread_mutex_lock(&gamepadLock);
-    gamepadState = (RuntimeGamepadState){0};
-    pressedEdges = 0;
+    for (int p = 0; p < GAMEPAD_PLAYERS; p++) {
+        int connected = gamepadState[p].connected;
+        gamepadState[p] = (RuntimeGamepadState){.connected = connected};
+    }
+    memset(pressedEdges, 0, sizeof pressedEdges);
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
@@ -558,19 +595,32 @@ void runtime_gamepad_clear(void) {
 static RuntimeGamepadState touchState;
 void runtime_touch_pad_set(const RuntimeGamepadState *s) {
     pthread_mutex_lock(&gamepadLock);
-    pressedEdges |= s->buttons & ~touchState.buttons;
+    pressedEdges[0] |= s->buttons & ~touchState.buttons;
     touchState = *s;
     pthread_mutex_unlock(&gamepadLock);
 }
 
-void runtime_gamepad_read(RuntimeGamepadState *out) {
+int runtime_gamepad_connected(unsigned player) {
     pthread_mutex_lock(&gamepadLock);
-    *out = gamepadState;
-    out->buttons |= touchState.buttons | pressedEdges;
-    out->lx = stronger_axis(out->lx, touchState.lx); out->ly = stronger_axis(out->ly, touchState.ly);
-    out->rx = stronger_axis(out->rx, touchState.rx); out->ry = stronger_axis(out->ry, touchState.ry);
-    out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
-    if (touchState.connected) out->connected = 1;
-    pressedEdges = 0;
+    int connected = player < GAMEPAD_PLAYERS && gamepadState[player].connected;
+    pthread_mutex_unlock(&gamepadLock);
+    return connected;
+}
+
+void runtime_gamepad_read_player(unsigned player, RuntimeGamepadState *out) {
+    if (player >= GAMEPAD_PLAYERS) { *out = (RuntimeGamepadState){0}; return; }
+    pthread_mutex_lock(&gamepadLock);
+    *out = gamepadState[player];
+    out->buttons |= pressedEdges[player];
+    if (player == 0) {
+        out->buttons |= touchState.buttons;
+        out->lx = stronger_axis(out->lx, touchState.lx); out->ly = stronger_axis(out->ly, touchState.ly);
+        out->rx = stronger_axis(out->rx, touchState.rx); out->ry = stronger_axis(out->ry, touchState.ry);
+        out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
+        if (touchState.connected) out->connected = 1;
+    }
+    pressedEdges[player] = 0;
     pthread_mutex_unlock(&gamepadLock);
 }
+
+void runtime_gamepad_read(RuntimeGamepadState *out) { runtime_gamepad_read_player(0, out); }

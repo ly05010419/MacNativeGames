@@ -28,6 +28,10 @@ class OdysseyInput(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertEqual(json.loads(run.stdout.strip().splitlines()[-1])["status"], "pass")
 
+    def test_two_player(self):
+        self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-Wl,-dead_strip",
+                        str(GAME / "tests/two_player/probe.m"), *OBJC], False)
+
     def test_layout(self):
         self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME / "runtime"),
                         str(GAME / "tests/gamepad_layout/probe.c")], False)
