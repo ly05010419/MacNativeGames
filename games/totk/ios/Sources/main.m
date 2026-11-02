@@ -15,6 +15,7 @@
 #include "settings_map.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "touch_pad.h"
+#import "save_backup.h"
 #import "start_screen.h"
 
 int totk_host_main(int argc, char **argv);
@@ -136,25 +137,29 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
 }
 - (void)boot {
     BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
-    if (g_seed_pack) {   // shaders installed as a pack: unpack once, on screen, then start (not on the main thread: a long launch is killed)
-        static const char *stage_zh = "正在准备着色器（更新后只做一次）", *stage_en = "Preparing the shaders (once after an update)";
-        const char *stage = zh ? stage_zh : stage_en;
-        runtime_boot_progress(stage, 0, 0);
-        NSString *pack = g_seed_pack, *to = g_seed_unpack_to; g_seed_pack = nil;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
-            NSString *why = seed_unpack(pack, to, ^(uint64_t done, uint64_t total) { runtime_boot_progress(stage, done, total); });
-            fprintf(stderr, "[totk] shader pack: %s in %.1f s\n", why ? why.UTF8String : "ready", CFAbsoluteTimeGetCurrent() - t0);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (why) { runtime_boot_status(zh ? "着色器准备失败" : "Could not prepare the shaders", (zh
-                               ? [NSString stringWithFormat:@"%@。请在 Mac 上用 ios/tools/install_device.py 重新安装。", why]
-                               : [NSString stringWithFormat:@"%@. Install again from the Mac with ios/tools/install_device.py.", why]).UTF8String); return; }
-                [self startGame];
+    /* Backup is off by default; once the player turns it on, the folder is picked here once (before the game thread
+       starts, so a restore cannot race the game's own save loading) and remembered as a security-scoped bookmark. */
+    [TOTKSaveBackup prepareFrom:self completion:^{
+        if (g_seed_pack) {   // shaders installed as a pack: unpack once, on screen, then start (not on the main thread: a long launch is killed)
+            static const char *stage_zh = "正在准备着色器（更新后只做一次）", *stage_en = "Preparing the shaders (once after an update)";
+            const char *stage = zh ? stage_zh : stage_en;
+            runtime_boot_progress(stage, 0, 0);
+            NSString *pack = g_seed_pack, *to = g_seed_unpack_to; g_seed_pack = nil;
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
+                NSString *why = seed_unpack(pack, to, ^(uint64_t done, uint64_t total) { runtime_boot_progress(stage, done, total); });
+                fprintf(stderr, "[totk] shader pack: %s in %.1f s\n", why ? why.UTF8String : "ready", CFAbsoluteTimeGetCurrent() - t0);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (why) { runtime_boot_status(zh ? "着色器准备失败" : "Could not prepare the shaders", (zh
+                                   ? [NSString stringWithFormat:@"%@。请在 Mac 上用 ios/tools/install_device.py 重新安装。", why]
+                                   : [NSString stringWithFormat:@"%@. Install again from the Mac with ios/tools/install_device.py.", why]).UTF8String); return; }
+                    [self startGame];
+                });
             });
-        });
-        return;
-    }
-    [self startGame];
+            return;
+        }
+        [self startGame];
+    }];
 }
 - (void)startGame {
     /* Playback category (PR #97): plays with the ring / silent switch off and routes to the speaker. Without an active
