@@ -4531,7 +4531,8 @@ void ts_after(void);
 // On TBDR every attachment is written back to memory in full when the pass ends; Switch (Maxwell immediate-mode rendering) has no such cost. If an attachment is cleared in full before being read, the write-back is redundant (DontCare).
 // For the decision see mtl_sub_index / sdx_decide; only what can be proven within the same submission is accepted, and anything still undecided at the end of the submission is always written back.
 typedef struct { uint64_t ser, bytes; uint32_t lv, sl; int idx; uint8_t depth, state, ridx, drawn, why, load, wrote, wwhy; const char *wkey; int wslot; } sd_att;   // depth：0 颜色 1 深度 2 模板（深度模板合一的贴图两部分分开判）   // state 0 未定 1 需要 2 多余；idx：颜色附件序号，深度为 -1 | depth: 0 color 1 depth 2 stencil (the two parts of a combined depth-stencil texture are decided separately)   // state 0 undecided 1 needed 2 redundant; idx: color attachment index, -1 for depth
-static sd_att g_sd[9]; static int g_nsd;
+enum { SD_ATT_MAX = 8 + 2 };   // Eight colors plus separate depth and stencil entries
+static sd_att g_sd[SD_ATT_MAX]; static int g_nsd;
 static unsigned g_sd_plain;   // TOTK: g_sd entries (bit i) written in this encoder by a draw that samples none of its attachments (att_unstored_read)
 static int g_udc_ab = -1, g_udc_ab_on;
 // 本通道没写的附件（只做深度 / 模板测试、颜色写掩码为 0 等）写回改 DontCare：内容本就在内存里，免一次整块写回。
@@ -10092,7 +10093,7 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
 // Different levels / layers of the same texture are decided separately (a downsample chain writes level k and reads level k−1); a sampler binding counts as a read of the whole texture (conservative)
 static const uint8_t *g_exec_cur;   // 回放中当前这条操作（含） | The op currently being replayed (inclusive)
 static void sd_need(sd_att *t, int why) { if (!t->state) { t->state = 1; t->why = (uint8_t)why; } }   // why：1 绘制作贴图读 2 作附件先画后清 3 拷贝 4 清贴图 5 扫到末尾未定 6 无起点 / 索引不可用 | why: 1 a draw reads it as a texture 2 as an attachment, drawn before cleared 3 copy 4 texture clear 5 scanned to the end undecided 6 no start point / index unavailable
-static int sdx_decide(uint8_t st[9]);   // 写回前瞻判定（索引见 mtl_sub_index） | Store lookahead decision (for the index see mtl_sub_index)
+static int sdx_decide(uint8_t st[SD_ATT_MAX]);   // 写回前瞻判定（索引见 mtl_sub_index） | Store lookahead decision (for the index see mtl_sub_index)
 // ---------- TOTK: layered passes (see g_lay) ----------
 static int lay_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_LAYER_MERGE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_LAYER_MERGE=0：分层通道合并关闭"); } return v && !tbdr_on(); }
 // One colour target, no depth, a view selecting one layer: *layer = that layer.
@@ -10170,7 +10171,7 @@ static void sd_finish(void) {
         for (int i = 0; i < g_nsd; i++) { sd_att *t = &g_sd[i];
             enc_r_store(g_enc, t->depth, MTLStoreActionStore, (NSUInteger)t->idx); }
         g_nsd = 0; return; }
-    uint8_t nst[9];
+    uint8_t nst[SD_ATT_MAX];
     if (sdx_decide(nst)) { for (int i = 0; i < g_nsd; i++) if (nst[i] == 2) g_sd[i].state = 2; else sd_need(&g_sd[i], nst[i] >> 2); }
     else for (int i = 0; i < g_nsd; i++) sd_need(&g_sd[i], 6);   // 列表外结束的通道 / 索引不可用：一律写回 | Pass ended outside the list / index unavailable: always write back
     for (int i = 0; i < g_nsd; i++) {
@@ -10808,12 +10809,12 @@ static void ar_learn(NvProg *pr) {
     for (int st = 0; st < 6; st++) pr->ar_sh[st] = (__bridge void *)pr->sh[st];
 }
 static int draw_att_reads(NvProg *pr, uint64_t out[ATT_READS_MAX]) {
-    uint64_t cand[18]; int nc = 0, n = 0;
+    uint64_t cand[8 + 1 + SD_ATT_MAX]; int nc = 0, n = 0;
     if (R.has_rt) { for (int k = 0; k < R.rt.n && k < 8; k++) if (R.rt.color[k]) cand[nc++] = R.rt.color[k]->serial;
                     if (R.rt.depth) cand[nc++] = R.rt.depth->serial; }
     if (g_enc) for (int i = 0; i < g_nsd; i++) cand[nc++] = g_sd[i].ser;
     if (!pr || !nc) return 0;
-    /* TOTK: a one-word filter of the candidate serials in front of the list search (has_ser over up to 18 candidates for
+    /* TOTK: a one-word filter of the candidate serials in front of the list search (has_ser over up to 19 candidates for
        every sampled slot was ~2.5% of the replay; nearly every sampled texture is no attachment). A clear bit means the
        serial is not a candidate; a set bit runs the search. */
     uint64_t cbits = 0; for (int i = 0; i < nc; i++) cbits |= ATT_SER_BIT(cand[i]);
@@ -11004,7 +11005,7 @@ static void sdx_seq(const uint8_t *p) {   // mtl_exec 每条操作：序号与�
     if (g_exec_seq >= g_sdx_nop || g_sdx_op[g_exec_seq] != p) { RED_ONCE(40, "写回前瞻索引与回放顺序不符（序号 %u / %u），本次提交余下通道一律写回", g_exec_seq, g_sdx_nop); g_sdx_ok = 0; return; }
     g_exec_seq++;
 }
-static int sdx_decide(uint8_t st[9]) {   // st[i]：2 多余；否则 why << 2（需要的原因，同 sd_need）。返回 0 = 索引不可用 | st[i]: 2 redundant; otherwise why << 2 (the reason it is needed, same as sd_need). Returns 0 = index unavailable
+static int sdx_decide(uint8_t st[SD_ATT_MAX]) {   // st[i]：2 多余；否则 why << 2（需要的原因，同 sd_need）。返回 0 = 索引不可用 | st[i]: 2 redundant; otherwise why << 2 (the reason it is needed, same as sd_need). Returns 0 = index unavailable
     if (!g_sdx_ok || !g_exec_cur || !g_exec_seq || g_sdx_op[g_exec_seq - 1] != g_exec_cur) return 0;
     uint32_t P = g_exec_seq - 1;
     for (int i = 0; i < g_nsd; i++) { const sd_att *t = &g_sd[i]; st[i] = 5 << 2;
