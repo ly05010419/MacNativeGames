@@ -20,6 +20,10 @@ void settings_test_output_size(unsigned w, unsigned h);
 void settings_test_output_4k(int on);
 void settings_test_aspect_init(double view);
 void settings_test_aspect_frame(void);
+#ifdef GAME_BOTW190
+void settings_test_fov_refused(int refused); void settings_test_fov_init(void); uint32_t settings_test_fov_word(void);
+static uint32_t float_bits(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
+#endif
 
 void dm_gfx_set_flag(const char *name, int value) {
     if (!strcmp(name, "mfx_interp")) mfx_set(value);
@@ -92,9 +96,10 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
 static int sharedSaves;   /* saves of a setting both games share (runtime_shared_setting_save) */
 void runtime_shared_setting_save(const char *name, const char *word, const char *what) { sharedSaves++; runtime_setting_save(name, word, what); }
 int runtime_shared_setting_word(const char *name, char *word, size_t size) { return runtime_setting_word(name, word, size); }
-static char removedName[64];
+static char removedName[64], removedAll[512];   /* the last file removed, and every one since removedAll was cleared */
 void runtime_setting_remove(const char *name) {
     snprintf(removedName, sizeof removedName, "%s", name);
+    strlcat(removedAll, name, sizeof removedAll); strlcat(removedAll, " ", sizeof removedAll);
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); unlink(path);
 }
@@ -668,11 +673,35 @@ int main(int argc, const char **argv) { @autoreleasepool {
     press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Shadow resolution").enabled);
     /* "Reset to defaults" sets it back to the game's own and removes shadows.txt. */
     pick(@"Shadow resolution", @"2048 per cascade"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
-    [settingsPanel.effectsButtons[0] performClick:nil]; tick();
-    assert(!runtime_shadow_res_saved() && !strcmp(removedName, "shadows.txt"));
+    removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
+    assert(!runtime_shadow_res_saved() && strstr(removedAll, "shadows.txt "));
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
+    /* The field of view (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c; the stub itself:
+       tests/test_botw_fov.c): 1x, as the game has it; each choice acts at once and is saved in graphics-fov.txt (x100). */
+    settings_test_fov_init(); assert(!settings_test_fov_word());
+    shows(@"Field of view (FOV)", @"1x (as the game has it)");
+    assert(menu(@"Field of view (FOV)").numberOfItems == 6 && [[menu(@"Field of view (FOV)") itemTitleAtIndex:5] isEqual:@"1.5×"]);   /* 1x up */
+    pick(@"Field of view (FOV)", @"1.2×"); assert(runtime_fov_scale() == 1.2 && !strcmp(savedName, "graphics-fov.txt") && !strcmp(savedWord, "120"));
+    assert(settings_test_fov_word() == float_bits(1.2f));   /* the word the stub reads, at once */
+    runtime_fov_scale_set(0); runtime_fov_scale_set(-1); runtime_fov_scale_set(NAN); runtime_fov_scale_set(3);
+    assert(runtime_fov_scale() == 1.2 && settings_test_fov_word() == float_bits(1.2f));   /* outside 0.5..2: never taken */
+    press(18); setenv("TOTK_FOV_SCALE", "1.3", 1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"1.2×");
+    press(18); unsetenv("TOTK_FOV_SCALE"); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    press(18); setenv("TOTK_EXPORT_IOS", "/nonexistent", 1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version");
+    press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    press(18); settings_test_fov_refused(1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version");   /* the camera code was not as shipped: nothing patched */
+    press(18); settings_test_fov_refused(0); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    /* "Reset to defaults" sets it back to 1x and removes graphics-fov.txt. */
+    pick(@"Field of view (FOV)", @"1.3×"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
+    removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
+    assert(runtime_fov_scale() == 1 && settings_test_fov_word() == float_bits(1.0f) && strstr(removedAll, "graphics-fov.txt "));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
 #  else
     shows(@"Shadow resolution", @"Not in this version"); assert(!menu(@"Shadow resolution").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version"); assert(!menu(@"Field of view (FOV)").enabled);
 #  endif
     shows(@"Render distance", @"Not in this version"); assert(!menu(@"Render distance").enabled);
     shows(@"Effect switches", @"Not in this version"); shows(@"Sharpening", @"Not in this version");

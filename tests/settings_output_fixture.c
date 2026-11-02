@@ -70,6 +70,14 @@ void settings_test_aspect_init(double view) {
     runtime_aspect_view(view * 1080, 1080);
 }
 
+#ifdef GAME_BOTW190
+/* The field of view's row as it is when patch_fov found the camera code not as shipped (it never runs here). */
+void settings_test_fov_refused(int refused) { g_fov_refused = refused; }
+/* The factor's word as the stub reads it, on a synthetic data-page slot (patch_fov never runs here). */
+static _Atomic uint32_t testFovFactor;
+void settings_test_fov_init(void) { g_fov_factor = &testFovFactor; }
+uint32_t settings_test_fov_word(void) { return atomic_load(&testFovFactor); }
+#endif
 void settings_test_aspect_frame(void) {
 #ifdef GAME_BOTW
     if (!g_uw_main) return;
