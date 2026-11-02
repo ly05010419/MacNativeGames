@@ -320,33 +320,50 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     }
     return nil;
 }
+#include "nvn_ctl.h"
 static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil; }
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
 static NSMutableDictionary *variant_request(NSString *shader, int stage, const uint8_t *control, const uint8_t *code,
                                             NSDictionary *answers, NSArray *local, NSData **code_out) {
-    uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
-    if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
+    /* NVN2 (Switch 2, nvn_ctl.h): Ampere code with no header, the instructions control +0x38 long (SPH included), the c1
+       segment between +0x40 and +0x44; translated with the translator's Ampere frontend (arch sm86, docs/ns2-port.md). */
+    int nvn2 = nvn2_ctl(control);
+    uint32_t c1o, c1t; memcpy(&c1o, control + (nvn2 ? 0x40 : 0x700), 4); memcpy(&c1t, control + (nvn2 ? 0x44 : 0x704), 4);
+    uint32_t ninst = c1t; if (nvn2) memcpy(&ninst, control + 0x38, 4);
+    if (!c1t || c1t > 16u << 20 || c1o > c1t || ninst > c1o || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
-    size_t skip = stage == 5 ? 0 : 0x30;
-    NSData *bytes = [NSData dataWithBytes:code + skip length:c1t - skip];
+    size_t skip = stage == 5 || nvn2 ? 0 : 0x30, end = nvn2 ? ninst : c1t;
+    NSData *bytes = [NSData dataWithBytes:code + skip length:end - skip];
     if (code_out) *code_out = bytes;
     else if (![bytes writeToFile:code_path atomically:YES]) die("write shader code %s", code_path.UTF8String);
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (nvn2) {
+        rq[@"arch"] = @"sm86";
+        /* Compute lays out its driver constants in c[0] per shader: its push-constant words (+0xa9), its uniform buffer,
+           storage buffer and texture entry counts (+0xb1..+0xb3) and its c[0] size (+0xba); the translator maps them
+           (InstEmitAmpere.cs AMapC0). Shared memory at +0x64. From seedds/nxnative dmsh_build.py job_for (MIT). */
+        if (stage == 5) {
+            uint16_t c0; memcpy(&c0, control + 0xba, 2);
+            rq[@"nvn2_cs"] = @[@(control[0xb1]), @(control[0xb2]), @(control[0xb3]), @(c0), @(control[0xa9] * 4)];
+            uint32_t shared; memcpy(&shared, control + 0x64, 4);
+            if (shared) rq[@"shared"] = @((shared + 15) / 16 * 16);
+        }
+    }
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     /* A fragment shader's early fragment tests: control byte +0x718 of the 0x880-byte sections (the NVN driver reads it as
        a fragment flag and the Switch tests depth before the shader). Breath of the Wild's shorter sections (the size word
        at +0x20 between 0x7cc and 0x880, as for the key) are not read. Same rule as prepare_shader_seed.py. */
     { uint32_t size; memcpy(&size, control + 0x20, 4);
-      if (stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
-    if (no_translator()) rq[@"code_hex"] = hex(code + skip, c1t - skip);
+      if (!nvn2 && stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
+    if (no_translator()) rq[@"code_hex"] = hex(code + skip, end - skip);
     return rq;
 }
 /* Whether a new variant goes into the contribution file (totk_shader_contrib.h). With a seed that translated every shader

@@ -219,7 +219,10 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     inventory = []
-    for name in ['rtld', 'main', 'sdk', 'subsdk0']:
+    # The modules a title ships, in ExeFS order (TotK: rtld, main, subsdk0, sdk; a Switch 2 game such as Donkey Kong Bananza
+    # ships rtld, main and sdk only). From games/wonder's copy of this script.
+    names = [n for n in ['rtld', 'main', *(f'subsdk{i}' for i in range(10)), 'sdk'] if (args.exefs / n).is_file()]
+    for name in names:
         result = prepare(args.exefs / name, args.output / (name + '.elf'))
         (args.output / (name + '-inventory.json')).write_text(json.dumps(result, indent=2) + '\n')
         summary = {k: result[k] for k in ['module', 'build_id', 'needed', 'segment_hashes_verified']}

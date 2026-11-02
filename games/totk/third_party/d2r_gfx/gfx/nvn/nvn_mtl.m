@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include "nvn_mtl.h"
 #include "nvn_obj.h"
+#include "nvn_ctl.h"   // NVN / NVN2 control sections
 #include "nvn_quad_strip.h"
 #include "nvn_impl.h"   // NVN_BLOCKING: release the guest core only while a write-back waits
 #include "../tex/nvn_fmt_mtl.h"
@@ -5995,9 +5996,9 @@ static int async_shaders(void) {
    global memory, surfaces included (word 0 bit 16, DoesGlobalStore) or streams out (bits 28-31). Checked 2026-10-21 on
    all 20,129 graphics variants of the 1.4.3 seed: every one whose MSL stores through a storage buffer, writes a texture or
    uses an atomic has the bit (one more has it without storing). Compute is always treated as storing. */
-static int sph_keeps_memory(const uint8_t *code, int st) {
+static int sph_keeps_memory(const uint8_t *control, const uint8_t *code, int st) {
     if (st != 0 && st != 1) return 1;
-    uint32_t w0; memcpy(&w0, code + 0x30, 4);
+    uint32_t w0 = ctl_sph_word0(control, code);
     return (w0 >> 16 & 1) || (w0 >> 28 & 0xf);
 }
 static NvShader *shader_get(NSString *pc, int stage) {
@@ -6025,7 +6026,7 @@ static NSArray *rt_local(const uint8_t *control, int st);
    archives and in its agl packages; 0x7d1 and 0x848 in Breath of the Wild, whose game keeps each section in its own
    allocation, so the bytes after it are not the shader's and differ from the archive's), never more than 0x880.
    scripts/prepare_shader_seed.py control_key_len computes the same offline. */
-static inline uint32_t ctl_key_len(const uint8_t *control) { uint32_t n; memcpy(&n, control + 0x20, 4); return n >= 0x7cc && n < 0x880 ? n : 0x880; }
+/* (nvn_ctl.h ctl_key_update; NVN2 sections hash their first 0x48 bytes.) */
 static int draw_state_may_skip(void);
 static uint64_t async_fresh(void);
 static void async_why(const NvProg *pr, uint64_t fresh_before);
@@ -6041,7 +6042,7 @@ static int g_prog_prefetch;   // prog_get called by shader_predict_rest: every s
 static void shader_predict_maybe(void);
 // The shader key: SHA-256 of the control section and the code, in hex (prog_get; prediction of unseen programs).
 static void shader_key_of(const uint8_t *control, const void *code, uint32_t length, char key[65]) {
-    uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);CC_SHA256_Update(&ctx,control,ctl_key_len(control));
+    uint8_t md[32];CC_SHA256_CTX ctx;CC_SHA256_Init(&ctx);ctl_key_update(&ctx,control);
     CC_SHA256_Update(&ctx,code,length);CC_SHA256_Final(md,&ctx);
     for(unsigned j=0;j<32;j++)snprintf(key+2*j,3,"%02x",md[j]);
 }
@@ -6062,20 +6063,27 @@ static void *prog_get_p(const prog_t *cp) {   // 只在提交线程调用 | Call
     if (g_prog_for_draw) shader_predict_maybe();   // a program met for the first time: the rest of the submission may bring more
     NvProg *o = [NvProg new];
     for (unsigned i = 0; i < p->nstage; i++) {   // a stage that stores or streams out keeps every draw of the program
-        uint32_t nvn_stage = 0; if (!p->sd[i].control || !p->sd[i].data) MDIE("null TOTK shader binary");
-        memcpy(&nvn_stage, (const uint8_t *)p->sd[i].control + 0x714, 4);
-        o->keeps |= sph_keeps_memory((const uint8_t *)(uintptr_t)p->sd[i].data, (int)nvn_stage);
+        if (!p->sd[i].control || !p->sd[i].data) MDIE("null TOTK shader binary");
+        const uint8_t *ctl0 = p->sd[i].control, *code0 = (const uint8_t *)(uintptr_t)p->sd[i].data;
+        o->keeps |= sph_keeps_memory(ctl0, code0, ctl_stage(ctl0, code0));
     }
     int defer = async_shaders() && (g_prog_prefetch || (!o->keeps && (!g_prog_for_draw || draw_state_may_skip()))); o->miss_gen = totk_rt_ready_gen();
     for (unsigned i = 0; i < p->nstage; i++) {
         const uint8_t *control=p->sd[i].control;uint32_t length=0,nvn_stage=0;
         if (!control || !p->sd[i].data) MDIE("null TOTK shader binary");
-        memcpy(&length,control+0x704,4);memcpy(&nvn_stage,control+0x714,4);
+        length=ctl_code_len(control);nvn_stage=(uint32_t)ctl_stage(control,(const uint8_t *)(uintptr_t)p->sd[i].data);
         if (!length || length>16*1024*1024) MDIE("invalid TOTK shader code length %u",length);
         // Host NVN GPU addresses are CPU addresses (MemoryPoolGetBufferAddress).
         char key[65];shader_key_of(control,(const void *)(uintptr_t)p->sd[i].data,length,key);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
-        int st=(int)nvn_stage;if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
+        int st=(int)nvn_stage;
+#ifdef GAME_NS2
+        /* A Switch 2 game's geometry / tessellation stages have no translation chain yet (Donkey Kong Bananza: 7 geometry
+           shaders, drawn as mesh geometry by seedds/nxnative; docs/ns2-port.md phase 5): the program's draws are skipped
+           and named once, instead of stopping the game. Open. */
+        if(st!=0&&st!=1&&st!=5){static NSMutableSet *told;if(!told)told=[NSMutableSet set];if(![told containsObject:@(key)]){[told addObject:@(key)];MLOG("[shader] [RED] %s: NVN stage %d has no translation chain yet; its draws are skipped",key,st);}o->missing|=1<<(st&7);continue;}
+#endif
+        if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
         if (getenv("TOTK_CTL_DUMP")) {   // diagnostic: the control section the game hands NVN, per shader (offline shader discovery is checked against it)
             static FILE *df; if (!df) df = fopen(getenv("TOTK_CTL_DUMP"), "a");
             if (df) { uint8_t cm[32]; char ch[65]; const uint8_t *cd = (const uint8_t *)(uintptr_t)p->sd[i].data; size_t skip = st == 5 ? 0 : 0x30;
@@ -7028,7 +7036,7 @@ static int prog_prediction_unseen(const prog_t *p, NvShader **vs, NvShader **fs)
             for (unsigned i = 0; i < p->nstage && p->nstage <= 6; i++) {   // as prog_get
                 const uint8_t *control = p->sd[i].control; const void *code = (const void *)(uintptr_t)p->sd[i].data; uint32_t length = 0, st = 0;
                 if (!control || !code) { [a removeAllObjects]; break; }
-                memcpy(&length, control + 0x704, 4); memcpy(&st, control + 0x714, 4);
+                length = ctl_code_len(control); st = (uint32_t)ctl_stage(control, code);
                 if (!length || length > 16 * 1024 * 1024 || st > 1 || have[st]) { [a removeAllObjects]; break; }
                 char key[65]; shader_key_of(control, code, length, key); have[st] = 1;
                 [a addObject:@[@(key), @(st)]];
@@ -7069,7 +7077,7 @@ static int pred_guess_wanted(int v, uint32_t dfull, uint32_t sfull, __unsafe_unr
    larger size (8x8x1 twice, 9x5x1). New sizes are logged once. */
 static NSArray *rt_local(const uint8_t *control, int st) {
     if (st != 5) return nil;
-    uint32_t l[3]; memcpy(l, control + 0x748, 12);
+    uint32_t l[3]; memcpy(l, control + (nvn2_ctl(control) ? 0x58 : 0x748), 12);   // nvn_ctl.h
     if (!l[0] || !l[1] || !l[2] || l[0] > 1024 || l[1] > 1024 || l[2] > 64 || (uint64_t)l[0] * l[1] * l[2] > 1024)
         MDIE("TOTK compute shader: implausible thread group size %u x %u x %u at control+0x748", l[0], l[1], l[2]);
     { static uint32_t seen[64][3]; static int ns; int k = 0; for (; k < ns; k++) if (!memcmp(seen[k], l, 12)) break;
@@ -8505,10 +8513,10 @@ void mtl_prog_prefetch(const prog_t *p) {
     for (unsigned i = 0; i < p->nstage && i < 6; i++) {
         const uint8_t *control = p->sd[i].control; uint32_t length = 0, st = 0;
         if (!control || !p->sd[i].data) continue;
-        memcpy(&length, control + 0x704, 4); memcpy(&st, control + 0x714, 4);
+        length = ctl_code_len(control); st = (uint32_t)ctl_stage(control, (const uint8_t *)(uintptr_t)p->sd[i].data);
         if (!length || length > 16 * 1024 * 1024 || (st != 0 && st != 1 && st != 5)) continue;
         /* the same key prog_get computes: control section, then the code */
-        uint8_t md[32]; CC_SHA256_CTX ctx; CC_SHA256_Init(&ctx); CC_SHA256_Update(&ctx, control, ctl_key_len(control));
+        uint8_t md[32]; CC_SHA256_CTX ctx; CC_SHA256_Init(&ctx); ctl_key_update(&ctx, control);
         CC_SHA256_Update(&ctx, (const void *)(uintptr_t)p->sd[i].data, length); CC_SHA256_Final(md, &ctx);
         char key[65]; for (unsigned j = 0; j < 32; j++) snprintf(key + 2 * j, 3, "%02x", md[j]);
         NSString *shader = @(key);

@@ -76,17 +76,20 @@ build/game-data/$(1)/runtime-tables.bin: scripts/prepare_runtime.py $(2) rewritt
 	"$$(PY)" scripts/prepare_runtime.py --version $(1)
 build/game-data/$(1)/rewriter.txt: build/game-data/$(1)/runtime-tables.bin
 	@test -f $$@ || "$$(PY)" scripts/prepare_runtime.py --version $(1)
+build/game-data/$(1)/process.txt: build/game-data/$(1)/runtime-tables.bin
+	@test -f $$@ || "$$(PY)" scripts/prepare_runtime.py --version $(1)
 build/game-data/$(1)/romfs-config.txt: scripts/prepare_romfs_backend.py extracted/$(1)/romfs/index.json
 	"$$(PY)" scripts/prepare_romfs_backend.py --version $(1)
 build/game-data/$(1)/shared-fonts.txt: scripts/prepare_shared_fonts.py extracted/firmware/shared-fonts/manifest.json
 	"$$(PY)" scripts/prepare_shared_fonts.py --version $(1)
-game-data-$(1): build/game-data/$(1)/runtime-tables.bin build/game-data/$(1)/rewriter.txt build/game-data/$(1)/romfs-config.txt build/game-data/$(1)/shared-fonts.txt
+game-data-$(1): build/game-data/$(1)/runtime-tables.bin build/game-data/$(1)/rewriter.txt build/game-data/$(1)/process.txt build/game-data/$(1)/romfs-config.txt build/game-data/$(1)/shared-fonts.txt
 endef
 $(eval $(call GAME_DATA,v0,analysis/phase12-validation.json))
 $(eval $(call GAME_DATA,v121,analysis/v121-port/phase12-validation.json))
 $(eval $(call GAME_DATA,v143,analysis/v143-port/phase12-validation.json))
 $(eval $(call GAME_DATA,botw160,analysis/botw160-port/phase12-validation.json))
 $(eval $(call GAME_DATA,botw190,analysis/botw190-port/phase12-validation.json))
+$(eval $(call GAME_DATA,dkb,analysis/dkb-port/phase12-validation.json))
 
 .PHONY: runtime binary probe-loader boot
 
@@ -471,6 +474,19 @@ build/totk-native-botw190: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(
 runtime-botw190 binary-botw190: SHADER_LIST ?= ../botw/assets/shader_list.tsv
 binary-botw190: build/totk-native-botw190 build/pso_manifest.tsv build/pso_title.tsv
 runtime-botw190: binary-botw190 game-data-botw190
+# ---- Switch 2: Donkey Kong Bananza v458752 (docs/ns2-port.md) ----
+# The same runtime and graphics layer compiled with GAME_DKB / GAME_NS2 (graphics objects in build/gfx-dkb, so the TOTK and
+# BotW binaries keep exactly their code); game_patches_ns2.c replaces game_patches.c. Its modules are main and sdk only.
+GFX_OBJECTS_DKB := $(addprefix build/gfx-dkb/,$(addsuffix .o,$(GFX_SRC)))
+build/gfx-dkb/%.o: % $(GFX_HEADERS) Makefile
+	@mkdir -p "$(dir $@)"
+	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -DGAME_DKB=1 -DGAME_NS2=1 -c "$<" -o "$@"
+.PHONY: runtime-dkb binary-dkb
+build/totk-native-dkb: $(wildcard runtime/*.[ch] runtime/*.m runtime/*.S) $(GFX_OBJECTS_DKB) Makefile
+	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_DKB=1 -DGAME_NS2=1 -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include runtime/loader.c runtime/game_data.c runtime/game_patches_ns2.c runtime/ns2_host.c runtime/ns2_codec.c runtime/offline_host.c runtime/world_survey.c runtime/game_slot.c runtime/services.c runtime/romfs.c runtime/threads.c runtime/gate.S runtime/hle_stack.S runtime/hle_stack.c runtime/thread_enter.S runtime/gfx_bridge.c runtime/frontend.m runtime/account.c runtime/input.c runtime/hid_feedback.c runtime/motion_fusion.c runtime/autoload.c runtime/gamepad.m runtime/gamepad_feedback.m runtime/gfx_probe.c runtime/vpool_probe.m runtime/gpu_path_probe.m runtime/memory_probe.c runtime/shared_font.c runtime/ipc.c runtime/audio_renderer.c runtime/audio_mixer.c runtime/audio_reverb.c runtime/audio_effects.c runtime/fs_host.c runtime/opus_codec.c runtime/movie_host.c runtime/time_host.c runtime/applet_host.c runtime/swkbd_host.c $(GFX_OBJECTS_DKB) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -framework IOSurface -o "$@"
+runtime-dkb binary-dkb: SHADER_LIST ?= ../dkb/assets/shader_list.tsv
+binary-dkb: build/totk-native-dkb build/pso_manifest.tsv build/pso_title.tsv
+runtime-dkb: binary-dkb game-data-dkb
 # Production Opus-wrapper regression checks; no game assets or audio device needed.
 OPUS_TEST_WORK ?= /tmp/totk-native-opus-codec
 OPUS_PREFIX ?= /opt/homebrew/opt/opus

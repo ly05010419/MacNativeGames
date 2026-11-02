@@ -32,7 +32,7 @@ def gate(command, output, environment):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190'), default='v0')
+    parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb'), default='v0')
     parser.add_argument('--collect-existing', action='store_true')
     parser.add_argument('--jobs', type=int, default=2)
     args = parser.parse_args()
@@ -49,8 +49,10 @@ def main():
     environment = os.environ.copy()
     environment.setdefault('LLVM_BIN', '/opt/homebrew/opt/llvm/bin')
     environment['DM_VCACHE'] = str(analysis / 'llvm-cache')
-    inputs = [ROOT / f'extracted/{version}/exefs/{module}' for module in ['main', 'sdk', 'subsdk0']]
-    binaries = [outputs / f'{module}.patched.bin' for module in ['main', 'sdk', 'subsdk0']]
+    # The rewritten modules this title ships: main, sdk and its subsdk modules (TotK: subsdk0; Switch 2 games: none)
+    names = ['main', 'sdk', *(f'subsdk{i}' for i in range(10) if (outputs / f'subsdk{i}.patched.bin').is_file())]
+    inputs = [ROOT / f'extracted/{version}/exefs/{module}' for module in names]
+    binaries = [outputs / f'{module}.patched.bin' for module in names]
     fingerprints = {str(path.relative_to(ROOT)): digest(path) for path in inputs + binaries}
     extraction_manifest = ROOT / f'extracted/{version}/extraction-manifest.json'
     extracted = {entry['name']: entry['sha256'] for entry in json.loads(extraction_manifest.read_text())['files']}
@@ -58,7 +60,7 @@ def main():
         if fingerprints[str(path.relative_to(ROOT))] != extracted[path.name]:
             raise RuntimeError(f'Module differs from verified ExeFS extraction: {path.name}')
     modules = {}
-    for module in ['main', 'sdk', 'subsdk0']:
+    for module in names:
         nso = ROOT / f'extracted/{version}/exefs/{module}'
         structure = analysis / f'{module}-structure-v3.log'
         equivalence = analysis / f'{module}-equivalence-v3.log'
@@ -68,7 +70,7 @@ def main():
                   '--jobs', str(args.jobs), '--min-eff', '2', '--max-extra', '16',
                   '--mutate', '300' if module == 'main' else '150',
                   '--tsv', str(analysis / f'{module}-equivalence-v3.tsv')], equivalence, environment)
-        structural = re.search(rf'^STRUCT {module} OK 改写点=(\d+)', structure.read_text(), re.M)
+        structural = re.search(rf'^STRUCT {module} OK (?:自旋等待=\S+ )?改写点=(\d+)', structure.read_text(), re.M)   # structck prints its spin-wait count first
         semantic = re.search(rf'^EQUIV {module} OK 站点=(\d+) 试验=(\d+) 有效试验=(\d+) 双异常=(\d+).*变异=(\d+).*抓到=(\d+) 漏抓=0', equivalence.read_text(), re.M)
         if not structural or not semantic:
             raise RuntimeError(f'Missing successful structure/equivalence gate for {module}')
@@ -98,7 +100,7 @@ def main():
                 or any(case['status'] != 'pass' or case['threads'] != 8 for case in atomic['cases'])
                 or atomic['source_sha256'] != digest(ROOT / 'scripts/native_exclusive_probe.c')):
             raise RuntimeError('Native 1.4.3 atomic-window checks did not pass')
-    elif (atomic['status'] != 'pass' or (not atomic['windows'] and version not in ('botw160', 'botw190'))
+    elif (atomic['status'] != 'pass' or (not atomic['windows'] and version not in ('botw160', 'botw190', 'dkb'))
           or atomic['wrong_exit_negative_controls_detected'] != len(atomic['windows'])):
         raise RuntimeError('Atomic-window regression tests did not pass')
     if native['status'] != 'pass' or native['completed_calls'] != 20000 or native['errors'] != 0:

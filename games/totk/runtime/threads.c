@@ -195,7 +195,14 @@ static int64_t block_inner(thr_t *t, int kind, int64_t ns);
 // run guest code; a core is given up only where Horizon would switch threads (waits, sleep, yield, exit, blocking
 // host services) and handed to the best waiting thread (lowest priority value, then first come). A thread that a
 // higher-priority waiter wants to preempt gives its core up at its next SVC. TOTK_FREE_CORES=1 disables this.
+/* The application's cores: three on the Switch, six on the Switch 2 (Donkey Kong Bananza puts threads on core 5 by
+   number). services.c GetInfo 0 (CoreMask) answers the same set. */
+#ifdef GAME_NS2
+#define NCORE 6
+#else
 #define NCORE 3
+#endif
+#define ALL_CORES ((1ull << NCORE) - 1)   /* 7 on the Switch, 0x3f on the Switch 2 */
 static thr_t *g_core_owner[NCORE];
 static thr_t *g_core_wait;
 static uint64_t g_core_wait_all_ns, g_core_wait_all_n;   // all guest threads' waits in core_take (holding G; dm_core_wait_stats)
@@ -728,7 +735,7 @@ uint32_t svc_thread_main_init(void) {
 #ifdef GAME_BOTW
     t->started = 1; t->prio = 44; t->core = PROCESS_IDEAL_CORE; t->mask = 1u << PROCESS_IDEAL_CORE; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
 #else
-    t->started = 1; t->prio = 44; t->core = 0; t->mask = 7; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
+    t->started = 1; t->prio = 44; t->core = 0; t->mask = ALL_CORES; t->pt = pthread_self(); t->mport = pthread_mach_thread_np(t->pt);
 #endif
     t->cur_core = -1;
     pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; t->all = g_all; g_all = t; core_take(t); pthread_mutex_unlock(&G);
@@ -924,7 +931,7 @@ int svc_thread(int num, uint64_t *regs) {
           if (c < 0 || c > 2) { free(t); regs[0] = R_BAD_CORE; return 1; }   // Horizon: only -2 is adjusted, other negatives are invalid here
           t->prio = (int)regs[4]; t->core = c; t->mask = 1ull << c; }
 #else
-        t->prio = (int)regs[4]; t->core = (int)regs[5]; t->mask = t->core >= 0 ? 1ull << t->core : 7;
+        t->prio = (int)regs[4]; t->core = (int)regs[5]; t->mask = t->core >= 0 ? 1ull << t->core : ALL_CORES;
 #endif
         t->born_ns = now_ns(); t->born_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
         pthread_mutex_lock(&G); t->handle = h_new(O_THREAD, t); t->id = g_next_id++; t->all = g_all; g_all = t; pthread_mutex_unlock(&G);

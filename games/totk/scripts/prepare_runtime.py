@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190'), default='v0')
+parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb'), default='v0')
 version = parser.parse_args().version
 OUT = ROOT / f'build/game-data/{version}'
 OUT.mkdir(parents=True, exist_ok=True)
@@ -29,7 +29,9 @@ if version == 'botw190':   # Breath of the Wild 1.9.0 (docs/botw-v1.9.0-port.md)
 if version == 'v143':
     assert report['module_file_sha256']['extracted/v143/exefs/main'] == 'e84a90d551fed0824b4b74933b9c6d043c458521363a7cea58b2faca1822dc9e', 'Unsupported 1.4.3 main image'
 modules = []
-for name in ['main', 'subsdk0', 'sdk']:
+# main first (the loader patches modules[0]), then the subsdk modules this title ships, sdk last (games/wonder's rule)
+names = ['main', *(f'subsdk{i}' for i in range(10) if (ROOT / f'rewritten/{version}/subsdk{i}.patched.bin').is_file()), 'sdk']
+for name in names:
     path = ROOT / f'rewritten/{version}/{name}.patched.bin'
     image = path.read_bytes()
     digest = hashlib.sha256(image).hexdigest()
@@ -88,12 +90,24 @@ for name in ['main', 'subsdk0', 'sdk']:
     gates.sort(key=lambda g: g['ret'])   # loader.c runtime_dispatch looks a return address up by binary search
     assert len({g['ret'] for g in gates}) == len(gates), 'duplicate gate return address'
     # Match each compiler's actual DT_INIT state load before decoding it.
-    flag_reg, load_offset = (19, 20) if version in ('v143', 'botw160', 'botw190') else (20, 24)
-    a, w = struct.unpack_from('<I', image, tags[12]+16)[0], struct.unpack_from('<I', image, tags[12]+load_offset)[0]
-    assert a & 0x9f00001f == 0x90000000 | flag_reg and w & 0xffc003ff == 0xb9400008 | (flag_reg << 5)
+    # DT_INIT's prologue loads its state word: adrp xR, then within three instructions ldr w8, [xR, #imm]. Where depends on
+    # the compiler (TotK 1.0.0 / 1.2.1: x20 at +16 / +24; 1.4.3 and BotW: x19 at +16 / +20; Switch 2 modules start with
+    # pacibsp: x19 at +20 / +24), so the first such pair in the prologue's first 16 instructions is taken.
+    found = None
+    for k in range(16):
+        at = tags[12] + 4 * k
+        a = struct.unpack_from('<I', image, at)[0]
+        if a & 0x9f000000 != 0x90000000: continue
+        reg = a & 31
+        for j in range(1, 4):
+            w = struct.unpack_from('<I', image, at + 4 * j)[0]
+            if w & 0xffc003ff == 0xb9400008 | (reg << 5): found = (at, a, w); break
+        if found: break
+    assert found, f'{name}: DT_INIT state load not found'
+    at, a, w = found
     imm = ((a >> 29) & 3) | (((a >> 5) & 0x7ffff) << 2)
     imm = (imm ^ (1 << 20)) - (1 << 20)
-    ctor_flag = ((tags[12]+16) & ~4095) + (imm << 12) + ((w >> 10) & 0xfff)*4
+    ctor_flag = (at & ~4095) + (imm << 12) + ((w >> 10) & 0xfff)*4
     assert layout['DATA_OFF'] <= ctor_flag < layout['KEY_PAGE_OFF']
     modules.append(dict(name=name, sha256=digest, size=len(image), ctor_flag=ctor_flag, layout=layout, tags=tags,
                         symbols=symbols, relocs=relocs, gates=gates))
@@ -150,6 +164,11 @@ tables.with_suffix('.partial').replace(tables)
 # whose rewriter is not the repository's, since a runtime can rely on gates and fixes a newer rewriter puts in the code.
 rewriter = (ROOT / f'rewritten/{version}/build_src.sha256').read_text().split()[0]
 assert len(rewriter) == 64 and all(c in '0123456789abcdef' for c in rewriter), 'build_src.sha256'
+# The process's declarations from its NPDM (META header, +0x14 the system resource size): GetInfo 16 on a Switch 2 game
+# (runtime/services.c SYSTEM_RESOURCE_BUDGET).
+npdm = (ROOT / f'extracted/{version}/exefs/main.npdm').read_bytes()
+assert npdm[:4] == b'META', 'main.npdm'
+(OUT / 'process.txt').write_text(f'# From main.npdm\nSYSTEM_RESOURCE_SIZE {struct.unpack_from("<I", npdm, 0x14)[0]}\n')
 (OUT / 'rewriter.txt').write_text(f'# SHA-256 of the patch_nso.py that rewrote rewritten/{version}\nREWRITER_SHA256 {rewriter}\n')
 # Details are evidence, not additional source code.
 (ROOT / ('analysis/runtime-layout.json' if version == 'v0' else f'analysis/{version}-port/runtime-layout.json')).write_text(json.dumps(modules, indent=2) + '\n')

@@ -102,9 +102,18 @@ void *nvn_slot_fn(const char *name) {
 }
 void *runtime_hle_wrap(void *fn);   // runtime/hle_stack.c: run on the calling guest thread's host stack
 void *runtime_hle_wrap_named(void *fn, const char *name);   // the same, with the NVN name for diagnostics (hletrace)
+/* names.txt holds the Switch 1 NVN names first (523, up to nvnDeviceSetCheckpointMaxCallStacksDepth), then the Switch 2's
+   NVN2 names and the later SDKs' (from seedds/nxnative's table, MIT). A Switch 1 game is answered from the first part only,
+   as before: a name it looks up and does not get stays NULL for it, as its driver would have it. */
+#ifdef GAME_NS2
+#define NVN_LOOKUP_N NVN_NFUNC
+#else
+#define NVN_LOOKUP_N 523
+#endif
+_Static_assert(NVN_LOOKUP_N <= NVN_NFUNC, "names.txt");
 static void *nvn_lookup(const char *name) {
     nvn_init_slots();
-    for (unsigned i = 0; i < NVN_NFUNC; i++)
+    for (unsigned i = 0; i < NVN_LOOKUP_N; i++)
         if (!strcmp(nvn_names[i], name)) return nvn_thunk[i];
     unsigned long sz = 0;
     const nvn_impl *ex = (const nvn_impl *)getsectiondata(&_mh_execute_header, "__DATA", "totknvnx", &sz);
@@ -155,6 +164,10 @@ void mtl_wb_fence_done(void);   // TOTK: small render targets read from the CPU 
 static const int g_devinfo[] = {
 #if defined(GAME_BOTW) && !defined(GAME_BOTW190)   // 1.9.0 (SDK 20.5) takes the values below, as TOTK
     [0x00] = 53, [0x01] = 311,  // Breath of the Wild 1.6.0 main+0xe55304 requires major 53, minor >= 311 (botw.md).
+#elif defined(GAME_NS2)
+    // NVN2 (Switch 2): Donkey Kong Bananza requires major 231, minor >= 30 and creates no graphics system otherwise (a null
+    // read in its frame loop); found by seedds/nxnative (8dd0c98a, MIT).
+    [0x00] = 231, [0x01] = 30,
 #else
     [0x00] = 55, [0x01] = 15,   // Experimental ABI target: TOTK main+e9d614 requires major 55, minor >= 15. Unsupported functions stop.
 #endif
@@ -572,6 +585,34 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
 }
+
+#ifdef GAME_NS2
+/* NVN2 (Switch 2) entry points Donkey Kong Bananza calls before its first frame; from seedds/nxnative 8dd0c98a (MIT).
+   Programs come from a builder: SetDefaults, SetDevice, SetShaders(count, NVNshaderData[]), then
+   nvnProgramInitializeFromBuilder. The stages are 16-byte {data, control} pairs as in NVN, so initializing from the builder is
+   nvnProgramInitialize + nvnProgramSetShaders. The builder keeps the caller's array, which the game keeps until it
+   initializes the program (its stack frame), as other NVN builders keep their pointers. */
+typedef struct { NVNdevice *dev; const NVNshaderData *sd; int n; } ns2_prog_builder_t;
+NVN_NOPROTO(nvnProgramBuilderSetDefaults, void, void *b) { memset(b, 0, sizeof(ns2_prog_builder_t)); }
+NVN_NOPROTO(nvnProgramBuilderSetDevice, void, void *b, NVNdevice *d) { ((ns2_prog_builder_t *)b)->dev = d; }
+NVN_NOPROTO(nvnProgramBuilderSetShaders, void, void *b, int n, const NVNshaderData *sd) { ((ns2_prog_builder_t *)b)->n = n; ((ns2_prog_builder_t *)b)->sd = sd; }
+NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const void *b) {
+    const ns2_prog_builder_t *o = (const ns2_prog_builder_t *)b;
+    return h_nvnProgramInitialize(p, o->dev) && (!o->n || h_nvnProgramSetShaders(p, o->n, o->sd));
+}
+/* A queue NVN2 ties to a primary queue (Bananza's second queue): the host runs every queue's submits in order on its one
+   Metal queue, so the tie needs no work. */
+NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *primary) { (void)b; (void)primary; }
+/* NVN2 command buffer modes set on every command buffer Bananza begins: they tune how the GPU's front end runs the commands
+   (compute overlapping the next work, geometry processing, recording), not what they produce. The host records and
+   replays every command in order on Metal, so none changes its result. Open: what the values select on the console. */
+NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int mode) {
+    (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetRecordingMode %d: the host records every command buffer alike", mode); }
+NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int mode) {
+    (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetGeometryProcessingMode %d: no effect on Metal", mode); }
+NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) {
+    (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetComputeOverlapMode %d: the host runs compute in submission order", mode); }
+#endif
 
 // TOTK: NVNshaderDataExt = {data, control, reserved}, 0x18 bytes (runtime dump of main's call; reserved observed 0).
 typedef struct { NVNbufferAddress data; const void *control; uint64_t reserved; } totk_shader_data_ext;

@@ -161,9 +161,18 @@ static uint32_t seven_axis_init(void *work,unsigned long size){(void)work;(void)
 static uint32_t seven_axis_ok(void){return 0;}
 static void seven_axis_reset(void){}
 static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0;}
+static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
+#endif
+#if defined(GAME_BOTW) || defined(GAME_NS2)
 static void zero_drift_mode(const void *handle,const int *mode){(void)handle;(void)mode;}
 static void joy_dual(const uint32_t *id){(void)id;}
-static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
+#endif
+#ifdef GAME_NS2
+/* SDK 20 (Donkey Kong Bananza): single / merged Joy-Con assignment and the touch screen. The host's pads are whole
+   controllers and have no touch screen, so the assignment changes nothing; the touch screen reports no touches. */
+static void joy_single(const uint32_t *id, int type) { (void)id; (void)type; }
+static uint32_t joy_merge(const uint32_t *a, const uint32_t *b) { (void)a; (void)b; return 0; }
+static void touch_init(void) {}
 #endif
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -181,9 +190,15 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid23StartSevenSixAxisSensorEv",seven_axis_ok},{"_ZN2nn3hid22StopSevenSixAxisSensorEv",seven_axis_ok},
  {"_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv",seven_axis_reset},
  {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
- {"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
- {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
  {"_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE",show_controller_support_v1}
+#endif
+#if defined(GAME_BOTW) || defined(GAME_NS2)
+ ,{"_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE",zero_drift_mode},
+ {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual}
+#endif
+#ifdef GAME_NS2
+ ,{"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE",joy_single},{"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",joy_merge},
+ {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init}
 #endif
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;

@@ -28,6 +28,8 @@
 #define R_APPEND_REQUIRED 0x2f5e02u
 #ifdef GAME_BOTW
 #define TOTK_APPLICATION_ID 0x01007ef00011e000ULL   /* Breath of the Wild: its own save data is the one that exists */
+#elif defined(GAME_DKB)
+#define TOTK_APPLICATION_ID 0x040074a01bf12000ULL   /* Donkey Kong Bananza */
 #else
 #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
 #endif
@@ -142,6 +144,20 @@ static unsigned mount_save_ro(const char *name, uint64_t application, const uint
     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
     return mount_add(name, M_SAVE, save_root);
 }
+/* The application's own save for a user, and EnsureSaveData on it (games/wonder's copy; Donkey Kong Bananza ensures its save at
+   start): the local user's save storage always exists (ready() creates it); nobody else has one here. */
+/* nn::fs::IsMounted: the host's mount table and the RomFS mount (Donkey Kong Bananza checks its mounts; from seedds/nxnative
+   hle_fs.c, MIT). bool in w0. */
+static unsigned is_mounted(const char *name) {
+    if (!name || !*name || strlen(name) >= 32) return 0;
+    char probe[40]; snprintf(probe, sizeof probe, "%s:", name);
+    if (runtime_romfs_owns(probe)) return 1;
+    pthread_mutex_lock(&lock); unsigned found = 0;
+    for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) found = 1;
+    pthread_mutex_unlock(&lock); return found;
+}
+static unsigned char own_save_exists(const uint64_t *uid) { return save_exists(TOTK_APPLICATION_ID, uid); }
+static unsigned ensure_save(const uint64_t *uid) { return own_save_exists(uid) ? 0 : R_TARGET_NOT_FOUND; }
 static unsigned mount_temp(const char *name) { ready(); char p[1100]; snprintf(p, sizeof p, "%s/temp", profile); return mount_add(name, M_TEMP, p); }
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 static unsigned create_cache(int index, int64_t size, int64_t journal) {
@@ -356,6 +372,8 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs9IsMountedEPKc", is_mounted},
+        {"_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", own_save_exists}, {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
 #ifdef GAME_BOTW
         {"_ZN2nn2fs14CommitSaveDataEPKc", commit},   /* SDK 7 (Breath of the Wild 1.6.0) */

@@ -178,11 +178,18 @@ static uint32_t list_users(int *count,Uid *out,int max){initialize();if(!count||
 /* SDK 20.5 (1.9.0) takes the users the system opened at launch instead: the one preselected user. */
 static uint32_t pop_open_users(int *count,UserHandle *out,int max){if(!count||(max>0&&!out))return 0x7c67;*count=0;if(max>0){open_preselected(&out[0]);*count=1;}return 0;}
 #endif
+/* The last opened user: the local user (Donkey Kong Bananza; Super Mario Odyssey in seedds/nxnative hle_account.c, MIT). No
+   Nintendo Account is linked and no network service account exists on the host: those fail, and the game takes its offline
+   path. */
+static uint32_t last_opened(Uid *out){if(!out)return 0x7c67;initialize();lock_acquire();*out=local;lock_release();return 0;}
+static uint32_t no_nintendo_account(void){return 0x7c67;}
 void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
- {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
+ {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE",last_opened},
+ {"_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm",no_nintendo_account},
+ {"_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE",no_nintendo_account},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
 #ifdef GAME_BOTW
  ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_users}
  ,{"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users}
