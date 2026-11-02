@@ -605,7 +605,7 @@ static TOTKSettingRow *settings_botw_shadow_row(void) {
 #endif
 }
 /* The field of view (Breath of the Wild 1.9.0, botw_fov.h): as 1.4.3's row, in hundredths of the game's own, at once; from
-   1x up only (user 2026-11-02: 1x to 1.5x is the useful range). A file or TOTK_FOV_SCALE value outside it is still shown. */
+   1x up only (1x to 1.5x is the useful range, PR #1575). A file or TOTK_FOV_SCALE value outside it is still shown. */
 static TOTKSettingRow *settings_botw_fov_row(void) {
  NSString *t=settings_text("视野（FOV）","Field of view (FOV)");
 #ifndef GAME_BOTW190
