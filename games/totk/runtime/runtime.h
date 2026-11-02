@@ -102,7 +102,10 @@ int runtime_render_res(unsigned *w, unsigned *h);   /* TOTK_RENDER_RES above 160
    Native 4K (1.4.3, an app built with native 4K: build_app.py's default on a Mac with 16 GB or more): a 3840x2160
    canvas and scene (game_patches_v143.c runtime_output_res).
    runtime_output_modes: a bit (1 << mode) for each this game and start offer; 0 when the resolution cannot change. */
-enum { OUTPUT_MODE_OFF, OUTPUT_MODE_METALFX, OUTPUT_MODE_NATIVE, OUTPUT_MODE_NATIVE_METALFX, OUTPUT_MODE_720P, OUTPUT_MODE_NATIVE_4K, OUTPUT_MODE_NATIVE_5K };
+/* OUTPUT_MODE_NATIVE_4K_METALFX (4K + MetalFX to the headset) and OUTPUT_MODE_NATIVE_6K: VR only (zeldaVR,
+   game_patches_v143.c vr_big_mode); after NATIVE_5K, whose number players' graphics-output.txt keeps. */
+enum { OUTPUT_MODE_OFF, OUTPUT_MODE_METALFX, OUTPUT_MODE_NATIVE, OUTPUT_MODE_NATIVE_METALFX, OUTPUT_MODE_720P, OUTPUT_MODE_NATIVE_4K, OUTPUT_MODE_NATIVE_5K, OUTPUT_MODE_NATIVE_4K_METALFX, OUTPUT_MODE_NATIVE_6K };
+enum { OUTPUT_MODE_LAST = OUTPUT_MODE_NATIVE_6K };
 int runtime_output_modes(void);
 int runtime_output_mode(void);
 int runtime_output_mode_set(int mode);                  /* returns 0 where that mode is not offered */
@@ -155,6 +158,7 @@ void runtime_gamepad_focus(int on);             /* Mac window focus, independent
 void runtime_gamepad_switch_left(void *controller, int x, int y);
 void runtime_gamepad_switch_right(void *controller, int x, int y);
 void runtime_gamepad_read(RuntimeGamepadState *out);
+extern int (*runtime_vr_pad)(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);   /* zeldaVR: set by gfx/nvn/totk_vr.m while VR runs (the Quest 3 controllers) */
 /* Mac software keyboard: exclusive controller capture; UI reads physical positions (controller_map.h),
    independent of gameplay remaps. Main-thread only. Closing waits for release before gameplay resumes. */
 void runtime_gamepad_text_capture(int on);

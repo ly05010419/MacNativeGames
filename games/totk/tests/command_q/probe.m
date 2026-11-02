@@ -62,6 +62,19 @@ int runtime_gamepad_battery_left_percent(void){return -1;}
 #ifndef FRONTEND_REAL_GAMEPAD
 int runtime_mouse_enabled(void){return 0;}
 #endif
+int vr_enabled(void){return 0;}int vr_streamer_managed(void){return 0;}void vr_resolution(int *w,int *h){*w=*h=0;}int vr_set_resolution(int w,int h){(void)w;(void)h;return 0;}
+int vr_first_person(void){return 0;}void vr_set_first_person(int on){(void)on;}
+int vr_offset_cm(int a){(void)a;return 0;}void vr_set_offset_cm(int a,int cm){(void)a;(void)cm;}
+int vr_mirror_mode(void){return 0;}void vr_set_mirror_mode(int on){(void)on;}void *vr_mirror_copy(void){return 0;}
+void vr_panel_image(const void *p,int w,int h,int s){(void)p;(void)w;(void)h;(void)s;}
+int vr_panel_in_headset(void){return 0;}
+void vr_mirror_crop(double o[4]){o[0]=o[1]=0;o[2]=o[3]=1;}
+double vr_mirror_aspect(void){return 2;}
+int vr_quest_view(void){return 0;}void vr_set_quest_view(int on){(void)on;}int vr_quest_zoom(void){return 2;}void vr_set_quest_zoom(int x){(void)x;}
+int vr_motion(void){return 0;}void vr_set_motion(int on){(void)on;}
+int vr_6dof(void){return 0;}void vr_set_6dof(int on){(void)on;}int vr_eye_spring_ms(void){return 0;}void vr_set_eye_spring_ms(int ms){(void)ms;}int vr_snap_ms(void){return 0;}void vr_set_snap_ms(int ms){(void)ms;}
+int runtime_camera_distance_available(void){return 0;}int runtime_camera_distance_cm(void){return 0;}void runtime_camera_distance_set(int cm){(void)cm;}
+int vr_hide_head_mode(void){return -1;}void vr_set_hide_head_mode(int m){(void)m;}
 #ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_set_hook(void (*hook)(void)){(void)hook;}
 #endif

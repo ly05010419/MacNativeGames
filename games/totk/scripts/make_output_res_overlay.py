@@ -61,9 +61,9 @@ if args.output_root == root / 'extracted/v0/romfs-patches-out': args.output_root
 w, h = (int(v) for v in args.size.lower().split('x'))
 sw, sh = (int(v) for v in args.scene.lower().split('x')) if args.scene else (0, 0)
 scene_dir = f'-scene-{sw}x{sh}' if sw * sh > SCENE_W * SCENE_H else ''
-assert 640 <= w <= 7680 and 360 <= h <= 4320, 'size out of range'
+assert 640 <= w <= 8192 and 360 <= h <= 8192, 'size out of range'   # VR's headset-shaped canvases go up to 4576x4080 (build_app.py VR_BIG_SIZES)
 assert not args.scene or version in ('v143', 'v121'), '--scene: 1.4.3 and 1.2.1 render their scene at TOTK_RENDER_RES'
-assert not args.scene or (64 <= sw <= 5120 and 64 <= sh <= 4096), 'scene size out of range (TOTK_RENDER_RES: width 64..5120, height 64..4096)'
+assert not args.scene or (64 <= sw <= 8192 and 64 <= sh <= 8192), 'scene size out of range (TOTK_RENDER_RES: 64..8192 each way)'
 manifest = json.loads((root / f'extracted/{version}/romfs/index.json').read_text())
 assert manifest['status'] == 'pass'
 files = {f['path']: f for f in manifest['files']}

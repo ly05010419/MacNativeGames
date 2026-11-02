@@ -34,6 +34,7 @@ static int settingsShortcutDown, settingsShortcutPending;
    soon as it is all down; from there the game gets no controller input until everything is released. A picked button
    drives nothing in the game. (Until 2026-10-29: L2 + R2 + L3 held for a second, user 2026-10-27.) */
 #define SETTINGS_CHORD ((1ull << 4) | (1ull << 5))
+extern void (*runtime_vr_recenter)(void);
 static _Atomic int settingsButton = -1;   /* physical button (controller_map.h), -1 the chord */
 static uint64_t settings_trigger(void) { int b = atomic_load(&settingsButton); return b >= 0 ? 1ull << b : SETTINGS_CHORD; }
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
@@ -841,7 +842,19 @@ static void refresh_gamepads(void) {
     next.buttons |= controller_map_apply(controllerMap, held) | synthetic;
     pthread_mutex_lock(&gamepadLock);
     int chord = settingsShortcutEnabled && (physical & trigger) == trigger;
-    if (chord && !settingsShortcutDown) {
+    void (*recenter)(void) = __atomic_load_n(&runtime_vr_recenter, __ATOMIC_ACQUIRE);
+    if (recenter) {
+        /* zeldaVR, VR running (user 2026-10-30: "同时 按下 l3 r3 就自动 “对准正前方”"): the chord tapped recentres the headset
+           (straight ahead and the 6DoF origin); held 0.8 s it opens the settings. The game gets nothing from the press either way. */
+        static uint64_t chordAt; static int chordLong;
+        if (chord && !settingsShortcutDown) {
+            chordAt = now; chordLong = 0;
+            if (!textCapture) textCapture = 2;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(850 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{ refresh_gamepads(); });
+        }
+        if (chord && !chordLong && now - chordAt >= 800000000ULL) { chordLong = 1; settingsShortcutPending = 1; }
+        if (!chord && settingsShortcutDown && !chordLong) recenter();
+    } else if (chord && !settingsShortcutDown) {
         settingsShortcutPending = 1;
         if (!textCapture) textCapture = 2;   /* from here the game no longer gets the controller, until it is released */
     }
@@ -1087,9 +1100,20 @@ static RuntimeGamepadState text_state_locked(void) {
     }
     return state;
 }
+void (*runtime_vr_recenter)(void);   /* zeldaVR: set by gfx/nvn/totk_vr.m while VR runs: the L3 + R3 tap recentres */
+int (*runtime_vr_pad)(int plain, uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);   /* zeldaVR: the VR thread's controllers */
+static void vr_pad_merge(RuntimeGamepadState *out, int plain) {   /* zeldaVR: the Quest 3 controllers (gfx/nvn/totk_vr.m vr_gamepad, set while VR runs) */
+    uint64_t vb; int32_t vlx, vly, vrx, vry;
+    int (*pad)(int, uint64_t *, int32_t *, int32_t *, int32_t *, int32_t *) = __atomic_load_n(&runtime_vr_pad, __ATOMIC_ACQUIRE);
+    if (!pad || !pad(plain, &vb, &vlx, &vly, &vrx, &vry)) return;
+    out->buttons |= vb; out->connected = 1;
+    out->lx = stronger_axis(out->lx, vlx); out->ly = stronger_axis(out->ly, vly);
+    out->rx = stronger_axis(out->rx, vrx); out->ry = stronger_axis(out->ry, vry);
+}
 void runtime_gamepad_text_read(RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
     *out = text_state_locked(); out->buttons |= textEdges; textEdges = 0;
+    vr_pad_merge(out, 1);   /* the settings panel and the text keyboard: the Quest buttons by name */
     pthread_mutex_unlock(&gamepadLock);
 }
 void runtime_gamepad_read(RuntimeGamepadState *out) {
@@ -1106,6 +1130,7 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
     out->rx = stronger_axis(out->rx, touchState.rx); out->ry = stronger_axis(out->ry, touchState.ry);
     out->rx = stronger_axis(out->rx, mouseRX); out->ry = stronger_axis(out->ry, mouseRY);
     if (touchState.connected) out->connected = 1;
+    vr_pad_merge(out, 0);   /* zeldaVR: the Quest 3 controllers, merged like the touch screen */
     pressedEdges = 0;
     if (textCapture) {
         RuntimeGamepadState held = text_state_locked();

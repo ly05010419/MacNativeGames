@@ -202,6 +202,9 @@ static int prefill_blocks(void) {   // read once before the device starts (audio
     }
     return blocks;
 }
+/* VR (zeldaVR): the headset's audio taps the mix here, on the CoreAudio thread (lock-free on its side); it may silence
+   the Mac's output while the headset plays it. Set by third_party/d2r_gfx/gfx/nvn/totk_vr.m. */
+void (*runtime_audio_tap)(float *out, unsigned frames, int rate);
 /* Silent from the start until the shader warm-up is over (nvn_mtl.m warm_start releases it on every way out): the game
    runs before its first draw loads the shader map and during the warm-up that holds its first frame, and its producer,
    paced by the wall clock, fills the ring with the title's ambience, heard alone behind the start-up screen (iPhone,
@@ -249,6 +252,8 @@ static OSStatus pull(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTi
     atomic_fetch_add(&m->callback_nonzero,nonzero);
     if (n < frames) { memset(out + (size_t)ch * n, 0, (size_t)(frames - n) * (size_t)ch * sizeof(float));atomic_fetch_add(&m->underruns,1);atomic_fetch_add(&m->missing_frames,frames-n);m->ready=0; }
     atomic_store_explicit(&m->rd, rd + n, memory_order_release);
+    void (*tap)(float *, unsigned, int) = runtime_audio_tap;
+    if (tap) tap(out, frames, m->rate);
     return noErr;
 }
 static void output_open(Mixer *m, int rate) {

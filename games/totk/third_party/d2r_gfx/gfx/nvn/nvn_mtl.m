@@ -28,6 +28,8 @@
 #include "totk_mfx.h"
 #include "totk_mfx_up.h"
 #include "totk_taa.h"
+#include "../../../../zeldaVR/runtime/vr_camera.h"   // zeldaVR diagnostics read the first-person state
+#include "../../../../zeldaVR/gfx/totk_vr.h"
 #include "totk_sysload.h"
 #include "totk_state_report.h"   // TOTK_STATE_REPORTING: the game's states for Apple's performance tools (macOS 27)
 /* TOTK_MFX_UPSCALE: for the one compose draw that samples the smaller scene, the scene texture and its MetalFX upscale
@@ -2658,6 +2660,48 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "state_reporting")) { totk_sr_set(v); return; }   // TOTK_STATE_REPORTING while playing (A/B in one session)
     if (!strcmp(name, "mfx_mv_dyn")) { mfx_set_mv_dyn(v); return; }
     if (!strcmp(name, "link_pause")) { void mtl_link_pause(int on); mtl_link_pause(v); MLOG("[flag] link_pause = %d (the display link stops calling back, as when the system stalls it)", v != 0); return; }   // tests the display-link rescue
+    if (!strcmp(name, "vr_res")) {   // VR settings without the panel (tests): 0 1344x1408, 1 1680x1760, 2 1920x2048, 3 2048x2208
+        static const int sz[4][2] = { { 1344, 1408 }, { 1680, 1760 }, { 1920, 2048 }, { 2048, 2208 } };
+        if (v >= 0 && v < 4 && vr_set_resolution(sz[v][0], sz[v][1])) MLOG("[flag] vr_res: %dx%d per eye", sz[v][0], sz[v][1]);
+        else MLOG("[flag] vr_res %d: not available (TOTK_VR_STREAMER not set, or 0..3)", v);
+        return; }
+    if (!strcmp(name, "vr_findhead")) {   // diagnostic: bone matrices near the player's head (1: scan, 2: after crouching)
+        extern void runtime_vr_find_head(int stage) __attribute__((weak_import));
+        if (runtime_vr_find_head) runtime_vr_find_head(v); return; }
+    if (!strcmp(name, "cam_dist")) {   // third-person camera distance in cm (zeldaVR; the settings panel's row)
+        extern void runtime_camera_distance_set(int cm) __attribute__((weak_import));
+        if (runtime_camera_distance_set) runtime_camera_distance_set(v); else MLOG("[flag] cam_dist: no camera hook in this version");
+        return; }
+    if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
+    if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
+    if (!strcmp(name, "vr_pitch")) { vr_set_pitch_lock(v); return; }   // 1: up / down only from the headset
+    if (!strcmp(name, "vr_eyebone")) { vr_set_eye_bone(v); return; }   // first person: 1 the eyes on the head bone, 0 the fixed height
+    if (!strcmp(name, "vr_lean")) { vr_set_lean_cm(v); return; }       // first person: looking down moves the eyes forward, cm
+    if (!strcmp(name, "vr_deadband")) { vr_set_deadband(v); return; }   // tenths of a degree (0 off)
+    if (!strcmp(name, "vr_recenter")) { vr_recenter(); MLOG("[flag] vr_recenter: straight ahead is where the head looks now"); return; }
+    if (!strcmp(name, "vr_collapse")) { extern long g_vr_collapse; g_vr_collapse = v > 0; MLOG("[flag] vr_collapse: %s", v > 0 ? "the head bone scaled to nothing" : "off (the head's meshes hidden)"); return; }
+    if (!strcmp(name, "vr_headbone_set")) { extern long g_vr_head_bone; g_vr_head_bone = v; MLOG("[flag] vr_headbone_set: the head bone is %d of the head mesh's palette", v); return; }
+    if (!strcmp(name, "vr_collapse_j")) { extern long g_vr_collapse_j_cm; g_vr_collapse_j_cm = v; MLOG("[flag] vr_collapse_j: the head joint %d cm up", v); return; }
+    if (!strcmp(name, "vr_armkeep_lo") || !strcmp(name, "vr_armkeep_hi")) {   // the body's bones kept (bits 0-31 / 32-63), the rest scaled to the neck; both 0: off
+        extern uint64_t g_vr_armkeep; extern int g_vr_armkeep_set; const int hi = !strcmp(name, "vr_armkeep_hi"); const uint64_t m = 0xffffffffull << (hi ? 32 : 0);
+        g_vr_armkeep = (g_vr_armkeep & ~m) | ((uint64_t)(uint32_t)v << (hi ? 32 : 0)); g_vr_armkeep_set = 1;
+        MLOG("[flag] vr_armkeep: the body's bones kept %#llx", (unsigned long long)g_vr_armkeep); return; }
+    if (!strncmp(name, "vr_shoulder_", 12) && name[12] >= 'x' && name[12] <= 'z' && !name[13]) {   // the left shoulder joint in the bind pose, mm (the right mirrored)
+        extern long g_vr_shoulder_mm[3]; g_vr_shoulder_mm[name[12] - 'x'] = v;
+        MLOG("[flag] vr_shoulder: %ld %ld %ld mm", g_vr_shoulder_mm[0], g_vr_shoulder_mm[1], g_vr_shoulder_mm[2]); return; }
+    if (!strcmp(name, "vr_eye_spring")) { extern void vr_set_eye_spring_ms(int ms); vr_set_eye_spring_ms((int)v); return; }
+    if (!strcmp(name, "vr_body_tris")) { extern int g_vr_body_tris; g_vr_body_tris = v != 0; MLOG("[flag] vr_body_tris: %s", v ? "the body's arm and hand triangles, its bones as they are" : "the bones left out put at a point"); return; }
+    if (!strcmp(name, "vr_body_sides")) { extern int g_vr_body_sides; g_vr_body_sides = v != 0; MLOG("[flag] vr_body_sides: %s", v ? "each arm drawn on its own" : "one draw"); return; }
+    if (!strcmp(name, "vr_camtake")) { extern int g_vr_camtake; g_vr_camtake = v != 0; MLOG("[flag] vr_camtake: %s", v ? "VR takes the frame's camera from its G-buffer pass" : "VR takes no camera (diagnostic)"); return; }
+    if (!strcmp(name, "vr_neck")) { extern long g_vr_neck; g_vr_neck = v != 0; MLOG("[flag] vr_neck: the head's skin (back of the head, the neck) %s", v ? "drawn while the rest of the head is hidden" : "hidden with the rest"); return; }
+    if (!strcmp(name, "vr_hidehead")) { extern void vr_set_hide_head_mode(int); vr_set_hide_head_mode(v); return; }   // 1 hide, 0 draw, -1 auto (first person)
+    if (!strcmp(name, "vr_skip_lo")) { extern long g_vr_skip_lo; g_vr_skip_lo = v; return; }
+    if (!strcmp(name, "vr_skip_hi")) { extern long g_vr_skip_lo, g_vr_skip_hi; g_vr_skip_hi = v; MLOG("[flag] vr_skip: G-buffer draws %ld..%d left out", g_vr_skip_lo, v - 1); return; }
+    if (!strcmp(name, "vr_hidemesh")) { extern long g_vr_hidemesh; g_vr_hidemesh = v; MLOG("[flag] vr_hidemesh: the player's meshes %#x are not drawn in the G-buffer pass", v); return; }
+    if (!strcmp(name, "vr_meshlog")) { extern _Atomic long g_vr_meshlog; atomic_store(&g_vr_meshlog, v); MLOG("[flag] vr_meshlog: the player's meshes of the next %d frames", v); return; }
+    if (!strcmp(name, "vr_headbone")) { extern _Atomic long g_vr_headbone_log; atomic_store(&g_vr_headbone_log, v); MLOG("[flag] vr_headbone: the head mesh's bones of the next %d frames", v); return; }
+    if (!strcmp(name, "vr_palscan")) { extern _Atomic long g_vr_palscan; atomic_store(&g_vr_palscan, v); MLOG("[flag] vr_palscan: skinning palettes of the next %d frames", v); return; }
+    if (!strcmp(name, "vr_camscan")) { extern _Atomic long g_vr_camscan; atomic_store(&g_vr_camscan, v); MLOG("[flag] vr_camscan: camera blocks of the next %d frames", v); return; }
     if (!strcmp(name, "draw_log")) { extern _Atomic long g_draw_log; atomic_store(&g_draw_log, v); MLOG("[flag] draw_log: every draw and dispatch of the next %d frames", v); return; }
     if (!strcmp(name, "uw_log")) { extern _Atomic long g_uw_log; atomic_store(&g_uw_log, v); MLOG("[flag] uw_log: canvas draws of the next %d frames", v); return; }   // key 4 UI squeeze diagnostic
     if (!strcmp(name, "mfx_output")) { mfxup_output_set(v < 0 ? !mfxup_output_enabled() : v); return; }   // TOTK_MFX_OUTPUT at run time (the window output stage)
@@ -4880,6 +4924,12 @@ static void canvas_learn(MTL4RenderPassDescriptor *pd) {
             g_mfx.last_c0 = t0->serial;
     }
 }
+static int g_vr_cam_taken;   // VR head look: this frame's camera was asked for (reset at the game's present)
+/* TOTK_VR_FRAMELOG=1 (diagnostic, user 2026-11-01: the Zonai device menu, "人物消失" only with the camera hook): one line per
+   frame at the present: the G-buffer-like passes (3+ colour targets and a 32-bit depth of the same size) in order, the
+   one whose camera VR took (and that camera's vertical view), the player's body drawn in colour passes */
+int g_vr_camtake = 1;   // "flag vr_camtake 0" (diagnostic): VR takes no camera from the G-buffer pass
+int g_vr_framelog = -1; static char g_fl_passes[256]; static int g_fl_npass, g_fl_cam_pass = -1, g_fl_body, g_fl_body_any, g_fl_allpass, g_fl_t1; static float g_fl_cam_fov = -1;
 static void mfx_pass_setup(MTL4RenderPassDescriptor *pd) {
     canvas_learn(pd);
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
@@ -5149,8 +5199,22 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
     ser_gate();
+    if (g_vr_framelog < 0) { const char *e = getenv("TOTK_VR_FRAMELOG"); g_vr_framelog = e && !strcmp(e, "1"); }
+    if (g_vr_framelog) { g_fl_allpass++; if (R.rt.n == 1) g_fl_t1++; }
+    if (g_vr_framelog) {   // diagnostic: this frame's G-buffer-like passes
+        id<MTLTexture> c0 = R.rt.n > 0 && R.rt.color[0] ? pd.colorAttachments[0].texture : nil, dt = pd.depthAttachment.texture; int nc = 0;
+        for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
+        if (c0 && dt && nc >= 3) { size_t k = strlen(g_fl_passes); if (k < sizeof g_fl_passes - 24) snprintf(g_fl_passes + k, sizeof g_fl_passes - k, " %d:%lux%lu/%d", g_fl_npass, (unsigned long)c0.width, (unsigned long)c0.height, nc); g_fl_npass++; }
+    }
     if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // TOTK_TAA: the G-buffer pass found; its first draw gives the camera
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
+    else if (!g_vr_cam_taken && vr_wants_camera() && g_vr_camtake) {   // VR head look: this frame's camera, from the G-buffer pass's first draw (as MetalFX finds it)
+        const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL; id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil, dt = pd.depthAttachment.texture;
+        if (dt && c0 && dt.pixelFormat == MTLPixelFormatDepth32Float && dt.width == c0.width && dt.height == c0.height && dt.width >= 320) {
+            int nc = 0; for (int i = 0; i < R.rt.n && i < 8; i++) nc += pd.colorAttachments[i].texture != nil;
+            if (nc >= 3) { g_vr_cam_taken = 1; g_mfx.want_cam = 1; g_fl_cam_pass = g_fl_npass - 1; }
+        }
+    }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
     g_enc = enc_r_begin(pd);
     args_dirty_all();
@@ -9253,6 +9317,208 @@ static int ui_mat_on(void) { return g_ui_moff != 0 || g_ui_xs != 1; }
 static __strong id<MTLTexture> g_flash_hdr_source;   // diagnostic: tone-map input (may be reused later in the frame)
 static __strong id<MTLTexture> g_flash_tonemap_target; // diagnostic: tone-map output, before FXAA
 static int ui_mat_ok(void) { const p_bind_buf *u = &S.ubo[0][0]; void *mb; uint64_t mo; return u->addr && u->size >= 64 && u->size <= 4096 && !pend_hits(u->addr, u->size) && mtl_addr(u->addr, u->size, &mb, &mo); }
+/* zeldaVR: the head bone scaled to nothing (user 2026-10-30: "头骨缩到 0 能关闭洞吗", "按建议 都做"; VRChat's head chop): hiding
+   the head's meshes leaves the neck open where the body's mesh meets them. Instead the player's meshes are drawn with the
+   head bone's skinning matrix replaced by one that puts every vertex at the head joint (rotation 0, translation M * j,
+   j the joint in the bind pose): vertices on the head alone shrink to that point, the neck's seam (partly on the neck
+   bone) stays, so the neck ends closed. Colour passes only: the shadow keeps the head. The head bone: g_vr_head_bone,
+   an index into the head mesh's palette (97 bones in 1.4.3; "flag vr_headbone" lists them); in other palettes the bone
+   nearest the head bone's last matrix (hair, hats). "flag vr_collapse <index> / -1", TOTK_VR_COLLAPSE=<index>;
+   the joint TOTK_VR_COLLAPSE_J=<metres up> (default 1.49, the standing head bone's height, vr开发.md 十三). */
+long g_vr_head_bone = -2;        // the head bone's index in the head mesh's palette (70 in 1.4.3: the eyes follow it, user 2026-10-30)
+long g_vr_collapse = -1;         // the collapse itself, off by default (user 2026-10-30: "头 还是用 原来的方案吧": the head's meshes hidden)
+long g_vr_collapse_j_cm = -1;
+static int g_vr_collapse_draw;   // set per draw (vr_head_eye_note's caller), read by encode_args
+static float g_vr_head_m[12]; static int g_vr_head_m_have, g_vr_head_n;   // the head bone's matrix at the head mesh's last draw, its palette's size
+static int vr_head_bone(void) {
+    if (g_vr_head_bone == -2) { const char *e = getenv("TOTK_VR_HEADBONE"); g_vr_head_bone = e ? atol(e) : 70; }   // 70: stands at the eyes, moves forward and down crouching (trial27)
+    return (int)g_vr_head_bone;
+}
+static int vr_collapse_on(void) {
+    if (g_vr_collapse < 0) { const char *e = getenv("TOTK_VR_COLLAPSE"); g_vr_collapse = e && atoi(e) > 0; }
+    return g_vr_collapse > 0 && vr_head_bone() >= 0;
+}
+/* zeldaVR: only the arms and hands of the body (user 2026-11-01: "隐藏 全部身体 除了 手和手臂"): they are one mesh with the
+   torso (1bc332d8a7f21d3d, 17214 indices, 64 bones; arms-1), so per bone: in the body's palette the bones not kept get
+   a matrix that puts their vertices at the neck (rotation 0, the root's translation + 1.40 m up), behind the camera; a
+   vertex shared with an arm bone is drawn toward the neck. g_vr_armkeep: the bones kept, by number (bit q: bone q).
+   Default (arms-3..5 from behind, then armsonly-5 on the Quest): the left shoulder, arm and hand 3-23, the right arm
+   30-35 (sleeves, cuffs); 0-2 the upper back, 24-29 and 36-63 the back, the hips, the skirt, the shoulder pads and a
+   collar piece. The right hand (glove) is a mesh of its own (aa22fc58ee645c4b, 30 bones) and stays; the left hand is in
+   the body's mesh (8-23). Whenever the head is hidden
+   (first person). TOTK_VR_ARMKEEP=<hex mask> (0: the whole body), "flag vr_armkeep_lo / vr_armkeep_hi". */
+#define VR_ARMKEEP_DEFAULT 0xfc0fffff8ull   /* armsonly-5 on the Quest: 3 (the top of the left sleeve: left out, it hooked at the shoulder) and 8-23 (the left hand: missing) kept; 28-29 left out (the right shoulder pad, stretched across the view, armsonly-2) */
+uint64_t g_vr_armkeep; int g_vr_armkeep_set;
+static uint64_t vr_armkeep(void) {
+    if (!g_vr_armkeep_set) { g_vr_armkeep_set = 1; const char *e = getenv("TOTK_VR_ARMKEEP"); g_vr_armkeep = e ? strtoull(e, NULL, 16) : VR_ARMKEEP_DEFAULT; }
+    return g_vr_armkeep;
+}
+/* Each arm drawn on its own (user 2026-11-01, third person first: "自己 在 第三人称视角里 测试"): a vertex at a shoulder's
+   seam is shared by an arm bone and bones left out, and any one point for those bones stretched it there (a sheet from
+   each shoulder to the neck, armsonly-2). So the body is drawn twice (g_vr_body_side 1: the left arm, 2: the right),
+   each time with every other bone put at that arm's shoulder: the seam closes into its own shoulder. The shoulder: the
+   upper arm's skinning matrix times the shoulder joint in the bind pose (g_vr_shoulder_mm, the left one; the right
+   mirrored in x), "flag vr_shoulder_x / _y / _z <mm>". The upper arms: bone 5 (left) and 30 (right) (arms-3). */
+int g_vr_body_sides = 1;   // the arms drawn one at a time ("flag vr_body_sides 0": one draw)
+int g_vr_body_side;   // 0: one draw (the bones left out at one point above the head), 1 / 2: the left / right arm's draw
+long g_vr_shoulder_mm[3] = {170, 1300, 0};   // arms-6..8: 1350 left a spike on the left arm, -170 (the other side) long ones; 1250-1300 and z +-50 clean
+int vr_head_eye(float off[3], uint64_t max_age_ns);
+static void vr_body_collapse(float *b, int n) {
+    uint64_t keep = vr_armkeep();
+    float t[3];
+    if (g_vr_body_side) {
+        const int left = g_vr_body_side == 1, a = left ? 5 : 30;
+        keep &= left ? 0xffffull : ~0xffffull;   // the left arm's bones are below 16, the right arm's above
+        const float j[3] = {(left ? 1 : -1) * g_vr_shoulder_mm[0] / 1000.0f, g_vr_shoulder_mm[1] / 1000.0f, g_vr_shoulder_mm[2] / 1000.0f};
+        const float *m = b + a * 12;
+        for (int i = 0; i < 3; i++) t[i] = m[i * 4] * j[0] + m[i * 4 + 1] * j[1] + m[i * 4 + 2] * j[2] + m[i * 4 + 3];
+    } else {   // 0.4 m above his eyes (relative to the root, vr_head_eye; bone 0 is the root)
+        float h[3] = {0, 1.55f, 0}; if (!vr_head_eye(h, 3000000000ull)) { h[0] = 0; h[1] = 1.55f; h[2] = 0; }
+        t[0] = b[3] + h[0]; t[1] = b[7] + h[1] + 0.40f; t[2] = b[11] + h[2];
+    }
+    for (int q = 0; q < n && q < 64; q++) {
+        if (keep >> q & 1) continue;
+        float *m = b + q * 12;
+        for (int i = 0; i < 3; i++) { m[i * 4] = m[i * 4 + 1] = m[i * 4 + 2] = 0; m[i * 4 + 3] = t[i]; }
+    }
+}
+/* The body's arms and hands by its own triangles (user 2026-11-01: "左手 好像是 小拇指 拉一个很长的 皮肤", "根本修复"; the
+   right hand, a mesh of its own drawn as the game draws it, was fine): putting the bones left out at a point stretched
+   every vertex that hangs partly on one of them (the left little finger, the shoulders' seams). Instead the body is
+   drawn with its own bones, as the game draws it, from an index list of only its triangles whose three vertices hang
+   mostly (their largest weight) on a kept bone (vr_armkeep): read once per mesh from its vertex buffer (the bone
+   indices: a 4-wide integer attribute whose values are all below the palette's bone count; the weights: a 4-wide
+   normalised one summing to 1) and its index buffer. "flag vr_body_tris 0": the bones put at a point, as before. */
+int g_vr_body_tris = 1;
+typedef struct { uint64_t ibuf, vb0, keep; int32_t count, itype, n; __strong id<MTLBuffer> buf; int failed; } body_tris_t;
+static body_tris_t g_body_tris[4]; static int g_body_tris_at;
+/* An NVN vertex format (the vfmt table): components, element type and size, normalised. 0x01-0x30: four groups of twelve
+   by component count (UCharN CharN UChar Char Half UShortN ShortN UShort Short Float UInt Int); 0x51-0x68 (*_I2F): six
+   by count (UChar Char UShort Short UInt Int). kind: 0 unsigned, 1 signed, 2 float. */
+typedef struct { int n, size, kind, norm; } vfmt_desc;
+static int vfmt_describe(int f, vfmt_desc *d) {
+    static const vfmt_desc g12[12] = { {0,1,0,1}, {0,1,1,1}, {0,1,0,0}, {0,1,1,0}, {0,2,2,0}, {0,2,0,1}, {0,2,1,1}, {0,2,0,0}, {0,2,1,0}, {0,4,2,0}, {0,4,0,0}, {0,4,1,0} };
+    static const vfmt_desc g6[6] = { {0,1,0,0}, {0,1,1,0}, {0,2,0,0}, {0,2,1,0}, {0,4,0,0}, {0,4,1,0} };
+    if (f >= 0x01 && f <= 0x30) { *d = g12[(f - 1) % 12]; d->n = (f - 1) / 12 + 1; return 1; }
+    if (f >= 0x51 && f <= 0x68) { *d = g6[(f - 0x51) % 6]; d->n = (f - 0x51) / 6 + 1; return 1; }
+    return 0;
+}
+static double va_get(const uint8_t *p, const vfmt_desc *d, int c) {   // component c as a number (normalised ones 0..1)
+    const uint8_t *q = p + c * d->size; double v;
+    if (d->kind == 2) { if (d->size == 4) { float f; memcpy(&f, q, 4); v = f; } else { __fp16 h; memcpy(&h, q, 2); v = h; } return v; }
+    if (d->size == 1) v = d->kind ? (double)(int8_t)q[0] : q[0];
+    else if (d->size == 2) { uint16_t u; memcpy(&u, q, 2); v = d->kind ? (double)(int16_t)u : u; }
+    else { uint32_t u; memcpy(&u, q, 4); v = d->kind ? (double)(int32_t)u : u; }
+    if (d->norm) v /= d->size == 1 ? 255.0 : 65535.0;
+    return v;
+}
+static const uint8_t *vattr_base(int a, uint64_t nverts, uint32_t *stride) {
+    const int st = S.attr[a].stream; if (st < 0 || st >= 16 || !S.vbuf[st].address) return NULL;
+    *stride = S.stream[st].stride; if (!*stride) return NULL;
+    vfmt_desc d; if (!vfmt_describe(S.attr[a].fmt, &d) || !nverts) return NULL;
+    void *mb; uint64_t mo; const uint64_t len = (uint64_t)S.attr[a].offset + (nverts - 1) * *stride + (uint64_t)(d.n * d.size);   // up to the last vertex's element
+    if ((S.vbuf[st].size && len > S.vbuf[st].size) || !mtl_addr(S.vbuf[st].address, len, &mb, &mo)) return NULL;   // a size of 0: unknown, the pool decides
+    return (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo + S.attr[a].offset;
+}
+static body_tris_t *g_body_tris_cur;   // this draw's (body_tris_prepare), drawn by body_tris_draw
+static body_tris_t *body_tris_prepare(const p_draw_idx *di, int pbones) {   // NULL: not usable (the bones put at a point instead)
+    if (!g_vr_body_tris || !di || di->prim != 4 || di->itype < 1 || di->itype > 2 || di->count < 3) return NULL;
+    const uint64_t keep = vr_armkeep(); body_tris_t *bt = NULL;
+    for (int i = 0; i < 4; i++) if (g_body_tris[i].ibuf == di->ibuf && g_body_tris[i].count == di->count && g_body_tris[i].vb0 == S.vbuf[0].address && g_body_tris[i].keep == keep) bt = &g_body_tris[i];
+    if (!bt) {
+        bt = &g_body_tris[g_body_tris_at]; g_body_tris_at = (g_body_tris_at + 1) & 3;
+        bt->buf = nil; bt->n = 0; bt->failed = 1; bt->ibuf = di->ibuf; bt->count = di->count; bt->itype = di->itype; bt->vb0 = S.vbuf[0].address; bt->keep = keep;
+        const int isz = di->itype == 1 ? 2 : 4; void *mb; uint64_t mo;
+        if (!mtl_addr(di->ibuf, (uint64_t)di->count * isz, &mb, &mo)) { MLOG("[vr] body triangles: the index buffer is not in a pool"); return NULL; }
+        const uint8_t *ix = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents] + mo;
+        uint64_t nv = 0; for (int i = 0; i < di->count; i++) { const uint64_t v = (isz == 2 ? ((const uint16_t *)(const void *)ix)[i] : ((const uint32_t *)(const void *)ix)[i]) + (int64_t)di->base_vertex + 1; if (v > nv) nv = v; }
+        /* the bone index and weight attributes, by their values: indices an integer attribute (2-4 wide) whose values are all
+           below the palette's bone count and not all 0; weights a normalised or float one as wide, its components summing to 1
+           (the last one implied when they sum below 1) */
+        int ai[4], aw[4], ni = 0, nw = 0; vfmt_desc di_[4], dw_[4];
+        char desc[1600]; int dl = 0;
+        for (int a = 0; a < S.nattr && a < 16; a++) {
+            vfmt_desc d; uint32_t stride; const uint8_t *p;
+            if (!vfmt_describe(S.attr[a].fmt, &d) || !(p = vattr_base(a, nv, &stride))) { const int st = S.attr[a].stream;
+                dl += snprintf(desc + dl, sizeof desc - dl, " a%d fmt %#x (unread: off %d stream %d stride %u vb %#llx/%llu)", a, S.attr[a].fmt, S.attr[a].offset, st,
+                               st >= 0 && st < 16 ? S.stream[st].stride : 0, st >= 0 && st < 16 ? (unsigned long long)S.vbuf[st].address : 0ull, st >= 0 && st < 16 ? (unsigned long long)S.vbuf[st].size : 0ull); continue; }
+            dl += snprintf(desc + dl, sizeof desc - dl, " a%d fmt %#x %dx%d%s%s v0", a, S.attr[a].fmt, d.n, d.size, d.kind == 2 ? "f" : d.kind ? "i" : "u", d.norm ? "n" : "");
+            for (int c = 0; c < d.n && dl < (int)sizeof desc - 20; c++) dl += snprintf(desc + dl, sizeof desc - dl, "%s%.3g", c ? "," : "=", va_get(p, &d, c));
+            if (d.kind != 2 && !d.norm && d.n >= 2 && ni < 4) {
+                int ok = 1, any = 0; for (uint64_t v = 0; v < nv && ok; v++) for (int c = 0; c < d.n; c++) { const double x = va_get(p + v * stride, &d, c); ok &= x >= 0 && x < pbones; any |= x != 0; }
+                if (ok && any) { ai[ni] = a; di_[ni] = d; ni++; }
+            } else if ((d.norm || d.kind == 2) && d.n >= 2 && nw < 4) {
+                uint64_t good = 0; for (uint64_t v = 0; v < nv; v++) { double sum = 0; for (int c = 0; c < d.n; c++) sum += va_get(p + v * stride, &d, c); good += sum > 0.97 && sum < 1.03; }   // all of them summing to 1 (texture coordinates and normals do not)
+                if (good * 100 >= nv * 98) { aw[nw] = a; dw_[nw] = d; nw++; }
+            }
+        }
+        MLOG("[vr] body triangles: %d attributes, %llu vertices:%s", S.nattr, (unsigned long long)nv, desc);
+        if (!ni || nw < ni) { MLOG("[vr] body triangles: no bone index / weight attributes found (%d index, %d weight): the bones put at a point instead", ni, nw); return NULL; }
+        uint8_t *dom = malloc(nv); if (!dom) return NULL;
+        uint32_t si[4], sw[4]; const uint8_t *pi[4], *pw[4];
+        for (int k = 0; k < ni; k++) { pi[k] = vattr_base(ai[k], nv, &si[k]); pw[k] = vattr_base(aw[k], nv, &sw[k]); }
+        for (uint64_t v = 0; v < nv; v++) {
+            double best = -1, rest = 1; int bone = 0;
+            for (int k = 0; k < ni; k++) { const int n = di_[k].n < dw_[k].n ? di_[k].n : dw_[k].n;
+                for (int c = 0; c < n; c++) { const double wv = va_get(pw[k] + v * sw[k], &dw_[k], c); rest -= wv; if (wv > best) { best = wv; bone = (int)va_get(pi[k] + v * si[k], &di_[k], c); } }
+                if (di_[k].n > dw_[k].n && rest > best) { best = rest; bone = (int)va_get(pi[k] + v * si[k], &di_[k], dw_[k].n); } }   // the implied last weight
+            dom[v] = (uint8_t)bone;
+        }
+        bt->buf = [g_dev newBufferWithLength:(NSUInteger)di->count * isz options:MTLResourceStorageModeShared]; res_add(bt->buf);
+        uint8_t *out = bt->buf.contents; int n = 0;
+        for (int t = 0; t + 2 < di->count; t += 3) {
+            int ok = 1; for (int j = 0; j < 3 && ok; j++) { const uint64_t v = (isz == 2 ? ((const uint16_t *)(const void *)ix)[t + j] : ((const uint32_t *)(const void *)ix)[t + j]) + (int64_t)di->base_vertex; ok = v < nv && dom[v] < 64 && (keep >> dom[v] & 1); }
+            if (ok) { memcpy(out + (size_t)n * isz, ix + (size_t)t * isz, 3 * (size_t)isz); n += 3; }
+        }
+        free(dom); bt->n = n; bt->failed = 0;
+        MLOG("[vr] body triangles: %d of its %d triangles hang on the kept bones (mask %#llx; bone indices in attribute %d%s, weights in %d)",
+             n / 3, di->count / 3, (unsigned long long)keep, ai[0], ni > 1 ? " and more" : "", aw[0]);
+    }
+    return bt->failed ? NULL : bt;
+}
+static void body_tris_draw(id en, MTLPrimitiveType mp, const p_draw_idx *di, const body_tris_t *bt) {
+    if (bt->n) enc_r_draw_indexed(en, mp, bt->n, bt->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, bt->buf.gpuAddress, bt->buf.length,
+                                  di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
+}
+static uint64_t vr_palette_patch(const uint8_t *src, uint64_t size) {   // 0: nothing to change
+    if (!src || size < 48 || size > 48 * 256) return 0;
+    if (g_vr_collapse_draw == 3) return 0;   // the body by its own triangles (body_tris_draw): its bones as they are
+    if (g_vr_collapse_draw == 2) {   // the body: its arms and hands only
+        if (size != 64 * 48) return 0;
+        static float bb[64 * 12]; memcpy(bb, src, size); vr_body_collapse(bb, 64);
+        enum { RING = 4 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu; static size_t at;
+        if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
+        size_t sz = ((size_t)size + 255) & ~(size_t)255; if (at + sz > RING) at = 0;
+        memcpy((uint8_t *)ring.contents + at, bb, size); uint64_t gpu = ring_gpu + at; at += sz;
+        return gpu;
+    }
+    if (!g_vr_head_m_have) return 0;
+    if (g_vr_collapse_j_cm < 0) { const char *e = getenv("TOTK_VR_COLLAPSE_J"); g_vr_collapse_j_cm = e ? (long)(atof(e) * 100 + 0.5) : 149; }
+    const int n = (int)(size / 48); static float b[48 * 256 / 4]; memcpy(b, src, size);
+    /* The head mesh's own palette (and those of its size: the face, the eyes, the mouth share it): the bone by number. Others
+       (the hair, hats): the bone whose rotation matches the head bone's last one and whose translation is within 0.3 m of it
+       (the palette may be a frame newer: running moves it ~0.1 m; another bone's skinning translation is metres off). */
+    int k = -1;
+    if (n == g_vr_head_n && g_vr_head_bone < n) k = (int)g_vr_head_bone;
+    else {
+        float best = 1e9f;
+        for (int q = 0; q < n; q++) {
+            const float *f = b + q * 12; float dr = 0, dt = 0;
+            for (int i = 0; i < 3; i++) { for (int c = 0; c < 3; c++) { float x = f[i * 4 + c] - g_vr_head_m[i * 4 + c]; dr += x * x; } float t = f[i * 4 + 3] - g_vr_head_m[i * 4 + 3]; dt += t * t; }
+            if (dr < 0.02f * 0.02f * 9 && dt < 0.3f * 0.3f && dr + dt < best) { best = dr + dt; k = q; }
+        }
+    }
+    if (k < 0) return 0;
+    float *m = b + k * 12; const float j = g_vr_collapse_j_cm / 100.0f;
+    for (int i = 0; i < 3; i++) { float t = m[i * 4 + 1] * j + m[i * 4 + 3]; m[i * 4] = m[i * 4 + 1] = m[i * 4 + 2] = 0; m[i * 4 + 3] = t; }
+    enum { RING = 4 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu; static size_t at;
+    if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
+    size_t sz = ((size_t)size + 255) & ~(size_t)255; if (at + sz > RING) at = 0;
+    memcpy((uint8_t *)ring.contents + at, b, size);
+    uint64_t gpu = ring_gpu + at; at += sz;
+    static int said; if (!said) { said = 1; MLOG("[vr] the head bone scaled to nothing (bone %ld of the head mesh, joint %.2f m): the neck closed", g_vr_head_bone, j); }
+    return gpu;
+}
 static uint64_t ui_mat_patch(const p_bind_buf *u, void *mb, uint64_t mo) {
     enum { RING = 4 << 20 }; static __strong id<MTLBuffer> ring; static uint64_t ring_gpu, la, ls, lp, lg; static size_t at; static double lo;
     if (!ring) { ring = [g_dev newBufferWithLength:RING options:MTLResourceStorageModeShared]; res_add(ring); ring_gpu = ring.gpuAddress; }
@@ -9426,6 +9692,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         registry_unlock();
     }
     int reuse = !ab_noreuse && !passdump() && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 &&
+        !(g_vr_collapse_draw && nvn_stage == 0) &&   // zeldaVR: a palette changed for this draw (vr_palette_patch) is bound anew each time
         (epoch_mode ? epoch_hit : !g_args_dirty[nvn_stage]);
     int verify_epoch = reuse && epoch_mode && atomic_load_explicit(&g_arg_epoch_check, memory_order_relaxed);
     if (reuse) {
@@ -9473,7 +9740,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             cbc_ent *ce = NULL; cbc_ctx cx; int ce_hit = 0;   // TOTK_CBUF_CACHE
-            if (cbc && u && u->addr && !(nvn_stage == 0 && reg == 0 && ui_mat_on())) {
+            if (cbc && u && u->addr && !(nvn_stage == 0 && reg == 0 && ui_mat_on()) && !(g_vr_collapse_draw && nvn_stage == 0 && reg == 2)) {
                 cbc_ctx_now(&cx); ce = &g_cbc[cbc_slot(u->addr, u->size)];
                 ce_hit = ce->addr == u->addr && ce->size == u->size && !memcmp(&ce->cx, &cx, sizeof cx);
                 if (ce_hit) { g_cbc_hits++; if (cbc < 2) { slots[aid] = ce->gpu; continue; } } else g_cbc_misses++;
@@ -9485,6 +9752,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && ui_mat_on()) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
+            if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
+                static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
+                uint64_t pg = vr_palette_patch(pal, u->size); if (pg) gpu = pg; }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -11845,6 +12115,11 @@ static void mfx_take_camera(void) {
         pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);   // the bytes this draw sees: memory plus pending inline updates
         mfx_note_camera(cam, 84);
         if (taa_active()) taa_note_camera(cam, 84);
+        vr_note_camera(cam);   // VR head look: which head pose this frame was rendered with
+        g_fl_cam_fov = cam[70] * 180 / (float)M_PI;   // diagnostic (TOTK_VR_FRAMELOG): the vertical view, degrees
+        { extern float g_vr_cam_pos[3]; extern uint64_t g_vr_cam_pass, g_vr_cam_frame; g_vr_cam_pass = g_stat_pass; g_vr_cam_frame = atomic_load(&g_cur_frame);   // the body gap diagnostic: this frame's camera position, -R^T t of its view matrix (3x4 rows)
+          for (int j = 0; j < 3; j++) g_vr_cam_pos[j] = -(cam[j] * cam[3] + cam[4 + j] * cam[7] + cam[8 + j] * cam[11]);
+          extern float g_vr_cam_row2[3]; g_vr_cam_row2[0] = cam[8]; g_vr_cam_row2[1] = cam[9]; g_vr_cam_row2[2] = cam[10]; }
         /* TOTK_MFX_CAMLOG=<first>-<last frame>: every captured camera (diagnostic) */
         static long c0 = -2, c1; if (c0 == -2) { const char *e = getenv("TOTK_MFX_CAMLOG"); c0 = e ? atol(e) : -1; c1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : c0; }
         long f = (long)atomic_load(&g_cur_frame);
@@ -11852,6 +12127,596 @@ static void mfx_take_camera(void) {
             f, g_stat_pass, (unsigned long long)u->addr, cam[72], cam[73], cam[56], cam[70], atan2(cam[2], cam[0]) * 180 / M_PI, cam[47], cam[51], cam[55], cam[12], cam[13], cam[14], cam[15]);
     } else { static int said; if (said++ < 5) MLOG("[mfx] G-buffer pass %llu: vertex uniform 1 is %#llx / %llu bytes, not the 2368-byte camera block (frame %llu)", g_stat_pass,
                                                  (unsigned long long)u->addr, (unsigned long long)u->size, (unsigned long long)atomic_load(&g_cur_frame)); }
+}
+_Atomic long g_vr_camscan;   // diagnostic "flag vr_camscan <frames>"
+_Atomic long g_vr_palscan;   // diagnostic "flag vr_palscan <frames>": draws whose buffers hold a skinning palette
+/* VR first person (hiding the player's head): log each draw's bound vertex-stage buffers that hold a skinning palette
+   (4x4 column-major bone matrices, model space: bone 0 at the origin, bone 1 0.2-1.2 m up), with the bones after the
+   shared chain (root .. chest, 7 bones): their height range and spread. Which buffer carries the palette, and how the
+   head's meshes can be told apart from the others. */
+/* layout 0: 4x4 columns (translation 12..14, last row 0 0 0 1), 64 bytes; layout 1: 3x4 rows (translation 3, 7, 11), 48 bytes.
+   The translation is near the origin (model space) or within 3 m of g_pal_ref (world space: the player's position). */
+static float g_pal_ref[3]; static int g_pal_ref_ok;
+static int pal_near(float x, float y, float z) {
+    if (fabsf(x) < 10 && fabsf(y) < 10 && fabsf(z) < 10) return 1;   // model space, or relative to the camera
+    return g_pal_ref_ok && fabsf(x - g_pal_ref[0]) < 3 && fabsf(y - g_pal_ref[1]) < 3 && fabsf(z - g_pal_ref[2]) < 3;
+}
+static int pal_bone_ok(const float *f, int layout) {
+    if (layout == 0) {
+        if (!(f[3] == 0 && f[7] == 0 && f[11] == 0 && fabsf(f[15] - 1) < 1e-4f)) return 0;
+        for (int c = 0; c < 3; c++) { float l = f[c * 4] * f[c * 4] + f[c * 4 + 1] * f[c * 4 + 1] + f[c * 4 + 2] * f[c * 4 + 2]; if (!(l > 0.64f && l < 1.44f)) return 0; }
+        return pal_near(f[12], f[13], f[14]);
+    }
+    /* 3x4 rows: a rotation (rows of unit length, at right angles; a bone can scale a little) */
+    for (int r = 0; r < 3; r++) { float l = f[r * 4] * f[r * 4] + f[r * 4 + 1] * f[r * 4 + 1] + f[r * 4 + 2] * f[r * 4 + 2]; if (!(l > 0.8f && l < 1.25f)) return 0; }
+    for (int r = 0; r < 3; r++) { const float *x = f + r * 4, *y = f + ((r + 1) % 3) * 4; if (fabsf(x[0] * y[0] + x[1] * y[1] + x[2] * y[2]) > 0.1f) return 0; }
+    return pal_near(f[3], f[7], f[11]);
+}
+static void pal_t(const float *m, int layout, int b, float t[3]) {
+    const float *f = m + b * (layout ? 12 : 16);
+    if (layout) { t[0] = f[3]; t[1] = f[7]; t[2] = f[11]; } else { t[0] = f[12]; t[1] = f[13]; t[2] = f[14]; }
+}
+/* A matrix whose translation is within 0.3 m of the player's position (the feet): the draw's model-to-world matrix when the draw is the player's. */
+static int pal_owner(char *out, size_t on) {
+    if (!g_pal_ref_ok) return 0;
+    static float m[16384];
+    for (int stage = 0; stage < 6; stage++) for (int kind = 0; kind < 2; kind++) for (int sl = 0; sl < 16; sl++) {
+        const p_bind_buf *u = kind ? &S.ssbo[stage][sl] : &S.ubo[stage][sl];
+        if (!u->addr || u->size < 48) continue;
+        size_t n = u->size < sizeof m ? u->size : sizeof m; pend_materialize(u->addr, (uint8_t *)m, n, 0);
+        for (size_t o = 0; o + 12 <= n / 4; o += 4) {
+            const float *f = m + o;   // 3x4 rows: translation 3, 7, 11
+            if (fabsf(f[3] - g_pal_ref[0]) < 0.3f && fabsf(f[7] - g_pal_ref[1]) < 0.3f && fabsf(f[11] - g_pal_ref[2]) < 0.3f) {
+                float l = f[0] * f[0] + f[1] * f[1] + f[2] * f[2]; if (!(l > 0.25f && l < 4)) continue;
+                snprintf(out, on, "owner %s %d %d +%zu (%.2f %.2f %.2f)", kind ? "ssbo" : "ubo", stage, sl, o * 4, f[3] - g_pal_ref[0], f[7] - g_pal_ref[1], f[11] - g_pal_ref[2]);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+static void vr_palscan(const char *vs) {
+    if (atomic_load(&g_vr_palscan) <= 0) return;
+    static int lines; if (lines > 600) return;
+    { extern uintptr_t runtime_player_pos_address(void) __attribute__((weak_import));
+      uintptr_t a = runtime_player_pos_address ? runtime_player_pos_address() : 0; if (a) { memcpy(g_pal_ref, (const void *)a, 12); g_pal_ref_ok = 1; } }
+    static float *buf; enum { PAL_MAX = 8 << 20 }; if (!buf && !(buf = malloc(PAL_MAX))) return;
+    /* uniform and storage buffers of every stage (kind 0 / 1), and the vertex buffers (kind 2, stage 0); each bound range once */
+    for (int stage = 0; stage < 6; stage++) for (int kind = 0; kind < 3; kind++) for (int sl = 0; sl < 16; sl++) {
+        if (kind == 2 && stage) continue;
+        p_bind_buf vb = {0}; if (kind == 2) { vb.addr = S.vbuf[sl].address; vb.size = S.vbuf[sl].size; }
+        const p_bind_buf *u = kind == 2 ? &vb : kind ? &S.ssbo[stage][sl] : &S.ubo[stage][sl];
+        if (!u->addr || u->size < 64 * 3) continue;
+        { static uint64_t rs[8192][2]; static int nr; int dup = 0;
+          for (int i = 0; i < nr && !dup; i++) dup = rs[i][0] == u->addr && rs[i][1] == u->size;
+          if (dup) continue; if (nr < 8192) { rs[nr][0] = u->addr; rs[nr][1] = u->size; nr++; } }
+        size_t n = u->size < PAL_MAX ? u->size : PAL_MAX;
+        pend_materialize(u->addr, (uint8_t *)buf, n, 0);
+        /* the palette may start anywhere in the bound range (a header before it): every 16-byte offset */
+        for (size_t off = 0; off + 64 * 3 <= n; off += 16) for (int layout = 0; layout < 2; layout++) {
+            const float *m = buf + off / 4; const size_t left = n - off;
+            const int st = layout ? 12 : 16;
+            if (layout == 0 ? !(m[3] == 0 && m[7] == 0 && m[11] == 0 && m[15] == 1.0f) : !(fabsf(m[0]) <= 1.2f && fabsf(m[3]) < 1e4f)) continue;
+            int bones = 0; while ((size_t)(bones + 1) * st * 4 <= left && pal_bone_ok(m + bones * st, layout)) bones++;
+            float t0[3], t1[3]; if (bones < 6) continue; pal_t(m, layout, 0, t0); pal_t(m, layout, 1, t1);
+            /* a skeleton: the bones' positions differ (instance data repeats one); seen once per address and offset */
+            int distinct = 0; for (int b = 1; b < bones; b++) { float t[3], q[3]; pal_t(m, layout, b, t); pal_t(m, layout, b - 1, q);
+                distinct += fabsf(t[0]-q[0]) + fabsf(t[1]-q[1]) + fabsf(t[2]-q[2]) > 0.01f; }
+            if (distinct * 2 < bones) { off += (size_t)bones * st * 4 - 16; break; }
+            { static uint64_t seen[512]; static int ns; uint64_t key = (u->addr + off) ^ ((uint64_t)layout << 63); int dup = 0;
+              for (int i = 0; i < ns; i++) dup |= seen[i] == key;
+              if (dup) { off += (size_t)bones * st * 4 - 16; break; }
+              if (ns < 512) seen[ns++] = key; }
+            float lo = 1e9f, hi = -1e9f; for (int b = 0; b < bones; b++) { float t[3]; pal_t(m, layout, b, t); lo = fminf(lo, t[1]); hi = fmaxf(hi, t[1]); }
+            char own[128] = "no owner"; pal_owner(own, sizeof own);
+            MLOG("[vr] palscan F%llu pass %llu targets %d depth %s vs %.16s stage %d %s %d %#llx +%zu size %llu %s: %d bones, b0 %.2f %.2f %.2f, b1 y %.2f, y %.2f..%.2f, %s",
+                 (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, R.rt.n, R.rt.depth ? "yes" : "no", vs, stage, kind == 2 ? "vbuf" : kind ? "ssbo" : "ubo", sl,
+                 (unsigned long long)u->addr, off, (unsigned long long)u->size, layout ? "3x4" : "4x4", bones, t0[0], t0[1], t0[2], t1[1], lo, hi, own);
+            lines++; off += (size_t)bones * st * 4 - 16; break;
+        }
+    }
+}
+/* VR, hiding the player's head (zeldaVR): the player's skinned meshes in the G-buffer pass. Vertex uniform block 2 holds a
+   skinned draw's palette (3x4 rows, 48 bytes a bone); its translations are relative to a 10 m grid cell, so the player's
+   meshes are the palettes whose first bone sits within 0.5 m of the player's position modulo 10 m (found with vr_palscan).
+   Returns the mesh's number among the player's meshes of this frame's G-buffer pass, or -1. */
+long g_vr_hidemesh; _Atomic long g_vr_meshlog;
+long g_vr_skip_lo, g_vr_skip_hi;   // diagnostic "flag vr_skip_lo / vr_skip_hi": G-buffer draws lo..hi-1 of each frame are left out
+/* diagnostic (vr_meshlog): a draw that is not a skinned mesh of the player, with a vertex uniform block holding a rotation
+   whose translation is within 2.5 m of the player (modulo 10 m): rigid pieces on the player (earrings, eyebrows?) */
+static void vr_rigid_log(const char *vs, uint32_t count, const float p[3]) {
+    static int lines; if (lines > 300) return;
+    static float b[1024];
+    for (int sl = 0; sl < 16; sl++) {
+        const p_bind_buf *u = &S.ubo[0][sl]; if (!u->addr || u->size < 48) continue;
+        size_t n = u->size < sizeof b ? u->size : sizeof b; pend_materialize(u->addr, (uint8_t *)b, n, 0);
+        for (size_t o = 0; o + 12 <= n / 4; o += 4) {
+            const float *f = b + o; float r[3] = {f[3] - p[0], f[7] - p[1], f[11] - p[2]}; int ok = 1;
+            for (int i = 0; i < 3 && ok; i++) { r[i] -= 10 * roundf(r[i] / 10); ok = fabsf(r[i]) < 2.5f; }
+            for (int i = 0; i < 3 && ok; i++) { float l = f[i * 4] * f[i * 4] + f[i * 4 + 1] * f[i * 4 + 1] + f[i * 4 + 2] * f[i * 4 + 2]; ok = l > 0.8f && l < 1.25f; }
+            if (!ok) continue;
+            MLOG("[vr] rigid F%llu pass %llu vs %.16s count %u ubo %d +%zu size %llu at %.2f %.2f %.2f", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, vs, count,
+                 sl, o * 4, (unsigned long long)u->size, r[0], r[1], r[2]);
+            lines++; return;
+        }
+    }
+}
+/* diagnostic TOTK_VR_MESHDUMP=<vertex shader key prefix> (with vr_meshlog): that shader's draws in the G-buffer pass, every
+   vertex-stage uniform / storage block with its first floats */
+static void vr_mesh_dump(NvShader *v, uint32_t count) {
+    static const char *pre; static int lines; if (!pre) { pre = getenv("TOTK_VR_MESHDUMP"); if (!pre) pre = ""; }
+    if (!*pre || strncmp(v->key, pre, strlen(pre)) || lines > 200) return;
+    for (int i = 0; i < v->rf.nb; i++) {
+        const nvn_rbind *b = &v->rf.b[i]; if (b->reg >= 16 || (b->kind != NVN_RB_CBUF && b->kind != NVN_RB_SBUFP)) continue;
+        const p_bind_buf *u = b->kind == NVN_RB_CBUF ? &S.ubo[0][b->reg] : &S.ssbo[0][b->reg];
+        float f[16] = {0}; if (u->addr) pend_materialize(u->addr, (uint8_t *)f, u->size < 64 ? u->size : 64, 0);
+        MLOG("[vr] meshdump F%llu vs %.16s count %u %s %d %#llx size %llu: %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f",
+             (unsigned long long)atomic_load(&g_cur_frame), v->key, count, b->kind == NVN_RB_CBUF ? "ubo" : "ssbo", b->reg, (unsigned long long)u->addr, (unsigned long long)u->size,
+             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
+        lines++;
+    }
+}
+static char g_vr_why[160];   // vr_player_mesh's reason for -1 (diagnostic, TOTK_VR_WHYLOG)
+static int vr_player_mesh_tol(NvShader *v, uint32_t count, float xz, float y0, float y1);
+static int vr_player_mesh(NvShader *v, uint32_t count) { return vr_player_mesh_tol(v, count, 0.4f, -0.3f, 1.5f); }
+/* Where the player's body is drawn in the frame being replayed (user 2026-11-01, "修": riding a Zonai device the body is
+   drawn up to 3 m from the position read now, so his head's meshes were not taken as his and were drawn in first person):
+   in first person the position this frame's camera was put at (vr_frame_pos, no lag) plus the body's gap from it
+   (vr_body_carry, the root bone of the same kind of frame); else, as before, the position read now. */
+int vr_body_carry(float off[3], uint64_t max_age_ns);
+static void vr_player_ref(float p[3], const float now[3]) {
+    float c[3];
+    if (!vr_frame_pos(p)) { memcpy(p, now, 3 * sizeof *p); return; }
+    if (vr_body_carry(c, 500000000ull)) for (int j = 0; j < 3; j++) p[j] += c[j];
+}
+_Atomic int g_vr_head_hid, g_vr_head_missed, g_vr_head_shown;   // g_vr_head_shown: in colour passes   // first person's head meshes left out / not taken as the player's (totk_vr.m vr_stats)
+/* xz, y0..y1: how far from the player's position (modulo 10 m) the block's translation may be. Without a first-person
+   frame position, the position is read when the draw is replayed, a few frames after the game recorded it: running, the
+   meshes are up to 0.64 m behind (play2) */
+static int vr_player_mesh_tol(NvShader *v, uint32_t count, float xz, float y0, float y1) {
+    g_vr_why[0] = 0;
+    if (!(R.rt.n >= 1) || !v) { snprintf(g_vr_why, sizeof g_vr_why, "targets %d", R.rt.n); return -1; }   // passes with colour targets: the G-buffer (6 targets) and later ones; not the shadows
+    const char *vs = v->key;
+    if (atomic_load(&g_vr_meshlog) > 0) vr_mesh_dump(v, count);
+    extern uintptr_t runtime_player_pos_address(void) __attribute__((weak_import));
+    uintptr_t pa = runtime_player_pos_address ? runtime_player_pos_address() : 0; if (!pa) return -1;
+    float read[3], p[3]; memcpy(read, (const void *)pa, 12); vr_player_ref(p, read);
+    /* the uniform blocks the vertex shader reads (not the 2368-byte camera block): one starting with a rotation (3x4 rows)
+       whose translation, modulo 10 m, is within 0.4 m of the player across and -0.3 to 1.5 m up (slot 2 = a skinning palette,
+       slot 4 = a piece's matrix: the eyes, mouth, eyebrows) */
+    const p_bind_buf *u = NULL; float r[3] = {0};
+    for (int i = 0; i < v->rf.nb && !u; i++) {
+        const nvn_rbind *bd = &v->rf.b[i]; if (bd->kind != NVN_RB_CBUF || bd->reg >= 16) continue;
+        const p_bind_buf *c = &S.ubo[0][bd->reg]; if (!c->addr || c->size < 48 || c->size == 2368) continue;
+        float f[12]; pend_materialize(c->addr, (uint8_t *)f, 48, 0);
+        float t[3] = {f[3] - p[0], f[7] - p[1], f[11] - p[2]}; int ok = 1;
+        for (int j = 0; j < 3; j++) t[j] -= 10 * roundf(t[j] / 10);
+        { size_t n = strlen(g_vr_why); if (n < sizeof g_vr_why - 48) snprintf(g_vr_why + n, sizeof g_vr_why - n, " u%d %.2f %.2f %.2f r%.2f", bd->reg, t[0], t[1], t[2],
+                                                                                 f[0] * f[0] + f[1] * f[1] + f[2] * f[2]); }
+        ok = fabsf(t[0]) <= xz && fabsf(t[2]) <= xz && t[1] >= y0 && t[1] <= y1;
+        if (ok && atomic_load(&g_vr_meshlog) > 0) {   // on the player but maybe not a plain rotation (scaled bones): the row lengths
+            float l[3]; for (int j = 0; j < 3; j++) l[j] = sqrtf(f[j * 4] * f[j * 4] + f[j * 4 + 1] * f[j * 4 + 1] + f[j * 4 + 2] * f[j * 4 + 2]);
+            if (!(l[0] > 0.9f && l[0] < 1.12f && l[1] > 0.9f && l[1] < 1.12f && l[2] > 0.9f && l[2] < 1.12f))
+                MLOG("[vr] mesh-scaled F%llu pass %llu targets %d vs %.16s ubo %d size %llu count %u at %.2f %.2f %.2f rows %.3f %.3f %.3f", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
+                     R.rt.n, v->key, bd->reg, (unsigned long long)c->size, count, t[0], t[1], t[2], l[0], l[1], l[2]);
+        }
+        for (int j = 0; j < 3 && ok; j++) { float l = f[j * 4] * f[j * 4] + f[j * 4 + 1] * f[j * 4 + 1] + f[j * 4 + 2] * f[j * 4 + 2]; ok = l > 0.8f && l < 1.25f; }
+        for (int j = 0; j < 3 && ok; j++) { const float *x = f + j * 4, *y = f + ((j + 1) % 3) * 4; ok = fabsf(x[0] * y[0] + x[1] * y[1] + x[2] * y[2]) < 0.1f; }
+        if (ok) { u = c; memcpy(r, t, sizeof r); }
+    }
+    if (!u && atomic_load(&g_vr_meshlog) > 0 && R.rt.n == 6) {   // diagnostic: skinned draws (reading block 2) not taken: their first bone, and a later bone on the player
+        int r2 = 0; for (int i = 0; i < v->rf.nb && !r2; i++) r2 = v->rf.b[i].kind == NVN_RB_CBUF && v->rf.b[i].reg == 2;
+        const p_bind_buf *c = &S.ubo[0][2];
+        if (r2 && c->addr && c->size >= 48 && c->size <= 48 * 256) {
+            static float b[48 * 256 / 4]; pend_materialize(c->addr, (uint8_t *)b, c->size, 0); int on = -1; float t[3] = {0};
+            for (int k = 0; k < (int)(c->size / 48) && on < 0; k++) {
+                const float *f = b + k * 12; t[0] = f[3] - p[0]; t[1] = f[7] - p[1]; t[2] = f[11] - p[2];
+                for (int j = 0; j < 3; j++) t[j] -= 10 * roundf(t[j] / 10);
+                if (fabsf(t[0]) <= 0.6f && fabsf(t[2]) <= 0.6f && t[1] >= -0.3f && t[1] <= 2.0f) on = k;
+            }
+            MLOG("[vr] mesh-skin F%llu pass %llu vs %.16s count %u size %llu b0 %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f | %.3f %.3f %.3f %.3f; bone %d on the player at %.2f %.2f %.2f",
+                 (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, v->key, count, (unsigned long long)c->size, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], on, t[0], t[1], t[2]);
+        }
+    }
+    if (!u && atomic_load(&g_vr_meshlog) > 0 && R.rt.n == 6) {   // diagnostic: column-major matrices (translation at 9..11 or 12..14) on the player
+        for (int i = 0; i < v->rf.nb; i++) {
+            const nvn_rbind *bd = &v->rf.b[i]; if (bd->reg >= 16 || (bd->kind != NVN_RB_CBUF && bd->kind != NVN_RB_SBUFP)) continue;
+            const p_bind_buf *c = bd->kind == NVN_RB_CBUF ? &S.ubo[0][bd->reg] : &S.ssbo[0][bd->reg]; if (!c->addr || c->size < 64 || c->size == 2368) continue;
+            float f[16]; pend_materialize(c->addr, (uint8_t *)f, 64, 0);
+            for (int lay = 0; lay < 2; lay++) {
+                const float *tt = f + (lay ? 12 : 9); float t[3] = {tt[0] - p[0], tt[1] - p[1], tt[2] - p[2]};
+                for (int j = 0; j < 3; j++) t[j] -= 10 * roundf(t[j] / 10);
+                if (!(fabsf(t[0]) <= 0.6f && fabsf(t[2]) <= 0.6f && t[1] >= -0.3f && t[1] <= 2.0f) || (tt[0] == 0 && tt[1] == 0 && tt[2] == 0)) continue;
+                MLOG("[vr] mesh-col F%llu pass %llu vs %.16s count %u %s %d size %llu %s at %.2f %.2f %.2f col0 %.3f %.3f %.3f", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
+                     v->key, count, bd->kind == NVN_RB_CBUF ? "ubo" : "ssbo", bd->reg, (unsigned long long)c->size, lay ? "4x4" : "4x3", t[0], t[1], t[2], f[0], f[1], f[2]);
+            }
+        }
+    }
+    if (!u) return -1;
+    static uint64_t fr = ~0ull; static int k; uint64_t now = atomic_load(&g_cur_frame); if (now != fr) { fr = now; k = 0; }
+    int idx = k++;
+    if (atomic_load(&g_vr_meshlog) > 0) MLOG("[vr] mesh F%llu #%d pass %llu targets %d vs %.16s ubo %d bones %llu count %u at %.2f %.2f %.2f", (unsigned long long)now, idx, g_stat_pass, R.rt.n, vs,
+                                              (int)(u - S.ubo[0]), (unsigned long long)u->size / 48, count, r[0], r[1], r[2]);
+    return idx;
+}
+/* The head's meshes were a list of vertex shaders and index counts (the default look, tools/meshhide.sh, vr开发.md 十三);
+   an ability's glow draws them with other shaders, so they are told by their palette now (vr_head_mesh). The list's
+   "face pieces" (3b651384977acc50, block 4) were the shield and the arrows (arms-1). */
+/* Hide the head: -1 auto (while VR's first person places the camera: g_vr_hidehead_fp, totk_vr.m), 1 always, 0 never.
+   TOTK_VR_HIDEHEAD, "flag vr_hidehead", the settings panel (vr_set_hide_head_mode). */
+long g_vr_hidehead = -2; _Atomic int g_vr_hidehead_fp;
+/* The choice is kept in TOTK_HEAD_SETTINGS (the launcher: <data>/head.txt; one number); TOTK_VR_HIDEHEAD overrides it. */
+int vr_hide_head_mode(void) {
+    if (g_vr_hidehead == -2) {
+        const char *e = getenv("TOTK_VR_HIDEHEAD"), *p = getenv("TOTK_HEAD_SETTINGS"); int m = -1;
+        if (e) m = atoi(e);
+        else if (p) { FILE *f = fopen(p, "r"); if (f) { if (fscanf(f, "%d", &m) != 1) m = -1; fclose(f); } }
+        g_vr_hidehead = m > 0 ? 1 : m == 0 ? 0 : -1;
+    }
+    return (int)g_vr_hidehead;
+}
+void vr_set_hide_head_mode(int m) {
+    g_vr_hidehead = m > 0 ? 1 : m == 0 ? 0 : -1;
+    const char *p = getenv("TOTK_HEAD_SETTINGS"); FILE *f = p ? fopen(p, "w") : NULL; if (f) { fprintf(f, "%ld\n", g_vr_hidehead); fclose(f); }
+    MLOG("[vr] the player's head: %s", m > 0 ? "hidden" : m == 0 ? "drawn" : "hidden in first person");
+}
+static int vr_hidehead_on(void) { int m = vr_hide_head_mode(); return m > 0 || (m < 0 && atomic_load_explicit(&g_vr_hidehead_fp, memory_order_relaxed)); }
+/* Keep the head's skin (1482: back of the head, ears, the neck) while hiding the rest (user 2026-10-29 on the Quest: "现在 脖子
+   是个洞 能不能 封上？": the body's mesh is open where the head's joins it). "flag vr_neck 1 / 0", TOTK_VR_NECK=1 to keep it (off by default since 2026-10-30). */
+long g_vr_neck = -1;
+/* By the palette, not the shader (user 2026-11-01: "使用技能的时候 比如 呼唤 飞行器的时候 头出来了": with an ability's glow
+   every mesh of his is drawn with other shaders, twice, flicker-2 "flag vr_meshlog"): the size of the skinning palette
+   (block 2) the draw reads tells the part: 97 bones the head, face, mouth, eyes, eyebrows and earrings, 50 the hair and
+   its tie, 64 the body, 14 the trousers and boots (arms-1, flicker-2); whose it is, vr_player_head_mesh. */
+static int vr_palette_bones(NvShader *v) {   // bones in the skinning palette this draw reads (0: none)
+    if (!v) return 0;
+    int r2 = 0; for (int i = 0; i < v->rf.nb && !r2; i++) r2 = v->rf.b[i].kind == NVN_RB_CBUF && v->rf.b[i].reg == 2;
+    const p_bind_buf *c = &S.ubo[0][2];
+    return r2 && c->addr && c->size >= 48 && c->size % 48 == 0 ? (int)(c->size / 48) : 0;
+}
+static int vr_head_mesh(NvShader *v, uint32_t count) {
+    (void)count; if (!v) return 0;
+    if (g_vr_neck < 0) { const char *e = getenv("TOTK_VR_NECK"); g_vr_neck = e && !strcmp(e, "1"); }   // off: it kept the back of the head in view and did not close the hole (trial25, trial28)
+    if (g_vr_neck && count == 1482) return 0;
+    const int n = vr_palette_bones(v);
+    return n == 97 || n == 50;
+}
+/* First person: the eyes follow the head (zeldaVR, user 2026-10-29 "眼睛跟着头骨"; gliding, falling, climbing put a camera
+   fixed 1.55 m above the feet inside his body, vr开发.md 十三). The head mesh's skinning palette (vertex uniform block 2,
+   3x4 rows per bone, translations relative to a 10 m grid) gives where a point of the head is: M_head * p, p the eye point
+   in the bind pose (model space). Taken relative to the palette's root bone (bone 0, at the model's origin: M_0 * 0 = its
+   translation), it is free of the grid and of the replay's lag (the palette is a few frames behind the game, the hook adds
+   this offset to the player's position of its own frame). The bone and the bind point: TOTK_VR_HEADBONE (default the
+   palette's last bone), TOTK_VR_EYE_BIND=x,y,z (default 0,1.55,0.08); "flag vr_headbone <frames>" logs every bone. */
+_Atomic int g_vr_eye_track;        // totk_vr.m first_person_update: first person places the camera
+_Atomic long g_vr_headbone_log;    // diagnostic
+static struct { _Atomic uint32_t seq; float off[3]; uint64_t at; } g_vr_eye;
+/* Where the drawn body is against the position the frame's camera was put at (zeldaVR, user 2026-10-31: "vr摄像头 没有和
+   眼睛的位置绑定": riding a Zonai device the game draws him meters from the position the hook reads, so the camera stayed
+   behind while his body flew on): the palette's root (bone 0, the model's origin) minus the hook's position of the same
+   frame (vr_frame_pos), modulo the 10 m grid. Walking it is about 0; the VR thread adds it to the camera in full. */
+static struct { _Atomic uint32_t seq; float off[3]; uint64_t at; int lag; float lr[3]; } g_vr_carry;   // lag, lr: vr_body_lag
+int vr_body_carry(float off[3], uint64_t max_age_ns) {   // VR thread: 1 with a gap newer than max_age_ns
+    for (int tries = 0; tries < 16; tries++) {
+        uint32_t a = atomic_load_explicit(&g_vr_carry.seq, memory_order_acquire); if (a & 1) continue;
+        float o[3]; memcpy(o, g_vr_carry.off, sizeof o); uint64_t at = g_vr_carry.at;
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&g_vr_carry.seq, memory_order_relaxed) != a) continue;
+        if (!at || bp_now() - at > max_age_ns) return 0;
+        memcpy(off, o, sizeof o); return 1;
+    }
+    return 0;
+}
+/* The drawn body against the position of an earlier camera update (user 2026-11-01: "任何时候 不能出现 头 身体 分离": a gap
+   measured frames ago and added to the position read now was off by up to 0.7 m whenever he sped up): the drawn body is
+   the player's position *lag* updates back (the hook's ring), give or take lr; the hook puts the camera there
+   (vr_cam_state.fp_lag), so the camera and the body drawn are of the same update, accelerating or not. */
+int vr_body_lag(int *lag, float lr[3], uint64_t max_age_ns) {   // VR thread: 1 with a measure newer than max_age_ns
+    for (int tries = 0; tries < 16; tries++) {
+        uint32_t a = atomic_load_explicit(&g_vr_carry.seq, memory_order_acquire); if (a & 1) continue;
+        float o[3]; memcpy(o, g_vr_carry.lr, sizeof o); uint64_t at = g_vr_carry.at; int l = g_vr_carry.lag;
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&g_vr_carry.seq, memory_order_relaxed) != a) continue;
+        if (!at || bp_now() - at > max_age_ns) return 0;
+        memcpy(lr, o, sizeof o); *lag = l; return 1;
+    }
+    return 0;
+}
+uint64_t vr_head_eye_age_ms(void) { uint64_t at = g_vr_eye.at; return at ? (bp_now() - at) / 1000000ull : ~0ull; }   // diagnostic
+int vr_head_eye(float off[3], uint64_t max_age_ns) {   // VR thread: 1 with an offset newer than max_age_ns
+    /* A read that meets the replay writing (several times a frame) keeps the last good one: before, it counted as "no
+       eyes" for that frame and the camera dropped to the fixed height and back (trial36: a dozen switches). */
+    static float last[3]; static uint64_t last_at;
+    for (int tries = 0; tries < 16; tries++) {
+        uint32_t a = atomic_load_explicit(&g_vr_eye.seq, memory_order_acquire); if (a & 1) continue;
+        float o[3]; memcpy(o, g_vr_eye.off, sizeof o); uint64_t at = g_vr_eye.at;
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&g_vr_eye.seq, memory_order_relaxed) != a) continue;
+        if (at) { memcpy(last, o, sizeof last); last_at = at; }
+        break;
+    }
+    if (!last_at || bp_now() - last_at > max_age_ns) return 0;
+    memcpy(off, last, sizeof last); return 1;
+}
+static int g_vr_body_k = -1, g_vr_body_n, g_vr_body_last_have; static float g_vr_body_last[3];   // the body's palette: the head bone, its size, its last place
+static float g_vr_link_head[12]; static uint64_t g_vr_link_head_at;   // his head bone's skinning matrix in the body's palette, last drawn (vr_player_head_mesh)
+/* zeldaVR diagnostic (user 2026-10-31: in a Zonai device turning, "身体就跑了 头分离了"): per frame the drawn body's root
+   (the colour pass's palette, bone 0) against the player's position read now (a few frames after the frame was made, so
+   speed times that lag is in it), and against the same frame's camera (its view matrix: -R^T t; no lag), both modulo
+   10 m, largest across in metres since the last VR statistics line (totk_vr.m vr_stats). In first person the camera
+   sits 0.15 m ahead of the eyes. Walking the read position lags up to 0.64 m (play2). */
+float g_vr_cam_pos[3], g_vr_cam_row2[3]; uint64_t g_vr_cam_pass, g_vr_cam_frame; _Atomic int g_vr_gap_read_cm, g_vr_gap_cam_cm;
+static void vr_body_gap_note(const float *b, const float *pl) {
+    float r[3] = {b[3] - pl[0], b[7] - pl[1], b[11] - pl[2]}, c[3] = {b[3] - g_vr_cam_pos[0], b[7] - g_vr_cam_pos[1], b[11] - g_vr_cam_pos[2]};
+    for (int j = 0; j < 3; j++) { r[j] -= 10 * roundf(r[j] / 10); c[j] -= 10 * roundf(c[j] / 10); }
+    const int same = g_vr_cam_frame == atomic_load(&g_cur_frame);   // the camera of this frame's G-buffer pass
+    int dr = (int)lroundf(100 * hypotf(r[0], r[2])), dc = same ? (int)lroundf(100 * hypotf(c[0], c[2])) : 0, v;
+    static int dbg = -1; if (dbg < 0) dbg = getenv("TOTK_VR_RINGLOG") != NULL;   // the per-frame lines: diagnostic only
+    if (dbg && same && hypotf(r[0], r[2]) > 0.25f) { static uint64_t lf2; uint64_t f = atomic_load(&g_cur_frame); if (f >= lf2 + 20) { lf2 = f;   // moving: the signed gaps
+        extern float g_vr_cam_row2[3];
+        float fp[3] = {0, 0, 0}, bf[3] = {0, 0, 0}, cy[3] = {0, 0, 0};   // the frame's position (the hook's), the body against it, the carry now
+        const int hf = vr_frame_pos(fp), hc = vr_body_carry(cy, 500000000ull);
+        int lg = -1; float lr[3] = {0, 0, 0}; if (!vr_body_lag(&lg, lr, 500000000ull)) lg = -1;
+        if (hf) for (int j = 0; j < 3; j++) { bf[j] = b[3 + 4 * j] - fp[j]; bf[j] -= 10 * roundf(bf[j] / 10); }
+        MLOG("[vr] body gap moving F%llu: body - position read %+.2f %+.2f %+.2f, body - camera %+.2f %+.2f %+.2f; camera back axis %+.2f %+.2f %+.2f, fp_up %+.2f %+.2f %+.2f fwd %.2f; "
+             "body - frame position %s%+.2f %+.2f %+.2f, carry %s%+.2f %+.2f %+.2f, read - frame position %+.2f %+.2f %+.2f; lag %d off %+.2f %+.2f %+.2f",
+             (unsigned long long)f, r[0], r[1], r[2], c[0], c[1], c[2], g_vr_cam_row2[0], g_vr_cam_row2[1], g_vr_cam_row2[2],
+             g_vr_headlook ? g_vr_headlook->fp_up[0] : 0, g_vr_headlook ? g_vr_headlook->fp_up[1] : 0, g_vr_headlook ? g_vr_headlook->fp_up[2] : 0, g_vr_headlook ? g_vr_headlook->fp_fwd : 0,
+             hf ? "" : "(none) ", bf[0], bf[1], bf[2], hc ? "" : "(stale) ", cy[0], cy[1], cy[2], hf ? pl[0] - fp[0] : 0, hf ? pl[1] - fp[1] : 0, hf ? pl[2] - fp[2] : 0, lg, lr[0], lr[1], lr[2]); } }
+    if (dbg) { static uint64_t lf; uint64_t f = atomic_load(&g_cur_frame); if (f >= lf + 300) { lf = f;
+        MLOG("[vr] body gap F%llu: body root %.2f %.2f %.2f, position read %.2f %.2f %.2f, camera %.2f %.2f %.2f", (unsigned long long)f,
+             b[3], b[7], b[11], pl[0], pl[1], pl[2], g_vr_cam_pos[0], g_vr_cam_pos[1], g_vr_cam_pos[2]); } }
+    for (v = atomic_load(&g_vr_gap_read_cm); dr > v && !atomic_compare_exchange_weak(&g_vr_gap_read_cm, &v, dr); ) ;
+    for (v = atomic_load(&g_vr_gap_cam_cm); dc > v && !atomic_compare_exchange_weak(&g_vr_gap_cam_cm, &v, dc); ) ;
+}
+/* Is this head mesh the player's (user 2026-11-01: "靠近 其他 npc 他们的头发就没了 只能隐藏 link的 其他不要动": the hair's
+   shader is the Hylians' too, and a 2 m window took their hair for his)? First person, where his body is drawn this frame is
+   known (the frame's position + the body's gap, vr_player_ref): a block (a palette's root, or a piece's matrix) within
+   0.3 m of his root or 0.4 m of his eyes (vr_head_eye, relative to the root) is his. Without the frame's position (third
+   person, "hide" always) the position read now, with the lag running: 0.8 m. */
+static float g_vr_head_id_dr = 1e30f, g_vr_head_id_dt = 1e30f; static int g_vr_head_id_q = -1;   // diagnostic: the nearest bone to his head bone
+_Atomic int g_vr_head_by_buffer;   // diagnostic: his head / hair palettes taken because their buffer was found his before
+static float g_vr_head_id_eh[3], g_vr_head_id_eq[3], g_vr_head_id_e0[3];   // diagnostic (head shown): the eye point on his head bone, on the nearest bone, on bone 0
+_Atomic int g_vr_head_by_bone;   // diagnostic: head meshes taken by his head bone (the rest by distance)
+static float g_vr_head_miss_dr = 1e30f;   // diagnostic: the nearest block of a head mesh not taken (squared metres)
+/* Diagnostic ("linkscan", game_patches_v143.c): the palette buffers taken as his (the body by its draw, the head and hair
+   by his head bone), so the game's own pointers from his actor to them can be found (the root identity, user 2026-11-01:
+   "根本 修复！"). */
+static struct { _Atomic uint64_t addr; _Atomic int bones; } g_link_pal[16];
+static void link_pal_note(uint64_t addr, int bones) {
+    for (int i = 0; i < 16; i++) { uint64_t a = atomic_load(&g_link_pal[i].addr); if (a == addr) return; }
+    for (int i = 0; i < 16; i++) { uint64_t z = 0; if (atomic_compare_exchange_strong(&g_link_pal[i].addr, &z, addr)) { atomic_store(&g_link_pal[i].bones, bones); return; } }
+}
+int vr_link_palettes(uint64_t *addr, int *bones, int max) {
+    int n = 0; for (int i = 0; i < 16 && n < max; i++) { const uint64_t a = atomic_load(&g_link_pal[i].addr); if (a) { addr[n] = a; bones[n] = atomic_load(&g_link_pal[i].bones); n++; } }
+    return n;
+}
+static int vr_player_head_mesh(NvShader *v) {
+    g_vr_head_miss_dr = 1e30f;
+    if (!(R.rt.n >= 1) || !v) return 0;   // colour passes only: the head still casts its shadow
+    extern uintptr_t runtime_player_pos_address(void) __attribute__((weak_import));
+    uintptr_t pa = runtime_player_pos_address ? runtime_player_pos_address() : 0; if (!pa) return 0;
+    /* By identity, not distance (user 2026-11-01: "你 确定 这是 最好的方案吗？" on widening 0.3 m to 0.6 m): his head, face
+       and hair hang on his head, so in the same frame their bones put the eye point (bind pose) where his head bone in
+       the body's palette (drawn every frame, the shadow pass before the colour passes) puts it, within 15 cm. Another
+       Hylian's head is never inside his. Without a body seen in the
+       last 0.3 s (no shadow pass, a cut scene), the distance below. */
+    const int pn = vr_palette_bones(v);
+    /* A palette already found to be his this frame or the last (by his head bone below) is his for every mesh that reads
+       it: the hair tie reads the hair's palette, which in an ability's glow pass has no head bone of his (ability-5) */
+    /* The buffer is his (user 2026-11-01: crouching and standing showed his hair for ~5 frames each time: while the head
+       turns that fast the hair's bones put the eye point 0.2-0.45 m off his head bone's). A palette buffer belongs to one
+       model: his hair's two buffers kept their addresses for a whole run (F4900-F20108). Once his head bone found a buffer
+       his, it stays his until it contradicts that: its bones put the eye point over 1 m from his head (the buffer went
+       to another model). Not by age. */
+    static struct { uint64_t addr, frame; } mine[16]; static int mine_at;
+    const uint64_t paddr = S.ubo[0][2].addr, fnow = atomic_load(&g_cur_frame);
+    int mine_i = -1;
+    if (pn == 97 || pn == 50) for (int i = 0; i < 16; i++) if (mine[i].addr == paddr) { mine_i = i; break; }
+    if (mine_i >= 0 && !(g_vr_link_head_at && bp_now() - g_vr_link_head_at < 300000000ull)) {   // no head bone to check against: his
+        atomic_fetch_add_explicit(&g_vr_head_by_buffer, 1, memory_order_relaxed); return 1; }
+    if ((pn == 97 || pn == 50) && g_vr_link_head_at && bp_now() - g_vr_link_head_at < 300000000ull) {
+        static float pal[50 * 12 > 97 * 12 ? 50 * 12 : 97 * 12]; pend_materialize(S.ubo[0][2].addr, (uint8_t *)pal, (size_t)pn * 48, 0);
+        /* where the eyes would be on each bone (the bind-pose eye point through its matrix) against where they are on his
+           head bone: the head's own bones put them on the same spot, the hair's (which swing with an ability's glow,
+           ability-5: no bone of the hair's palette is his head bone) within a few cm of it; within 15 cm nobody's but his */
+        static const float pb[3] = {0, 1.55f, 0.08f};
+        float eh[3]; for (int i = 0; i < 3; i++) eh[i] = g_vr_link_head[i * 4] * pb[0] + g_vr_link_head[i * 4 + 1] * pb[1] + g_vr_link_head[i * 4 + 2] * pb[2] + g_vr_link_head[i * 4 + 3];
+        g_vr_head_id_dr = 0; g_vr_head_id_dt = 1e30f; memcpy(g_vr_head_id_eh, eh, sizeof eh);
+        for (int q = 0; q < pn; q++) {
+            const float *m = pal + q * 12; float d2 = 0;
+            for (int i = 0; i < 3; i++) { float e = m[i * 4] * pb[0] + m[i * 4 + 1] * pb[1] + m[i * 4 + 2] * pb[2] + m[i * 4 + 3] - eh[i]; e -= 10 * roundf(e / 10); d2 += e * e; }
+            if (d2 < 0.15f * 0.15f) {
+                atomic_fetch_add_explicit(&g_vr_head_by_bone, 1, memory_order_relaxed); link_pal_note(paddr, pn);
+                if (mine_i < 0) { mine[mine_at].addr = paddr; mine[mine_at].frame = fnow; mine_at = (mine_at + 1) & 15; } else mine[mine_i].frame = fnow;
+                return 1;
+            }
+            if (sqrtf(d2) < g_vr_head_id_dt) { g_vr_head_id_dt = sqrtf(d2); g_vr_head_id_q = q;
+                for (int i = 0; i < 3; i++) g_vr_head_id_eq[i] = m[i * 4] * pb[0] + m[i * 4 + 1] * pb[1] + m[i * 4 + 2] * pb[2] + m[i * 4 + 3]; }
+            if (q == 0) for (int i = 0; i < 3; i++) g_vr_head_id_e0[i] = m[i * 4] * pb[0] + m[i * 4 + 1] * pb[1] + m[i * 4 + 2] * pb[2] + m[i * 4 + 3];
+        }
+        if (mine_i >= 0) {   // a buffer found his before: his unless no bone is within 1 m of his head (another model's now)
+            if (g_vr_head_id_dt < 1.0f) { atomic_fetch_add_explicit(&g_vr_head_by_buffer, 1, memory_order_relaxed); return 1; }
+            mine[mine_i].addr = 0;
+        }
+        /* not on his head bone: the distance below still (the body's "head bone" was learnt as the one nearest the head
+           mesh's bone 70; a palette without that very bone falls through) */
+    }
+    float read[3], ref[3]; memcpy(read, (const void *)pa, 12); vr_player_ref(ref, read);
+    float fp[3]; const int exact = vr_frame_pos(fp);
+    float h[3] = {0, 1.55f, 0.08f}; if (!vr_head_eye(h, 3000000000ull)) { h[0] = 0; h[1] = 1.55f; h[2] = 0; }
+    const float near_root = exact ? 0.3f : 0.8f, near_head = exact ? 0.4f : 0.8f;
+    for (int i = 0; i < v->rf.nb; i++) {
+        const nvn_rbind *bd = &v->rf.b[i]; if (bd->kind != NVN_RB_CBUF || bd->reg >= 16) continue;
+        const p_bind_buf *c = &S.ubo[0][bd->reg]; if (!c->addr || c->size < 48 || c->size == 2368) continue;   // not the camera block
+        float f[12]; pend_materialize(c->addr, (uint8_t *)f, 48, 0);
+        int ok = 1;
+        for (int j = 0; j < 3 && ok; j++) { float l = f[j * 4] * f[j * 4] + f[j * 4 + 1] * f[j * 4 + 1] + f[j * 4 + 2] * f[j * 4 + 2]; ok = l > 0.8f && l < 1.25f; }
+        if (!ok) continue;   // not a rotation: not a placement
+        float t[3], dr = 0, dh = 0;
+        for (int j = 0; j < 3; j++) { t[j] = f[j * 4 + 3] - ref[j]; t[j] -= 10 * roundf(t[j] / 10); dr += t[j] * t[j]; dh += (t[j] - h[j]) * (t[j] - h[j]); }
+        if (dr < near_root * near_root || dh < near_head * near_head) return 1;
+        if (dr < g_vr_head_miss_dr) g_vr_head_miss_dr = dr;
+    }
+    return 0;
+}
+static void vr_head_eye_note(NvShader *v, uint32_t count) {
+    /* the head mesh (skin, ears), in any pass: in first person the camera sits in the head and the colour passes leave it
+       out (culled), the shadow pass still draws it (user 2026-10-30: crouching left the eyes where they were) */
+    /* the eyes' mesh (b30b8a31bb31ff9f, 144 indices, two of them; user 2026-10-30: "改成眼睛"), or the head's skin (1482):
+       both use the head's 97-bone palette; the eye point is on the head bone (70), the eyeballs turning do not move it */
+    /* The body (1bc332d8a7f21d3d, 17214 indices) is drawn every frame in first person, the head's meshes only now and then
+       (the camera is inside them; user 2026-10-30: crouching moved the camera "很久才突然变低"): its 64-bone palette holds
+       the head bone too; its number there is learnt from a frame that drew the head (the same matrix), then the body alone
+       places the eyes. */
+    /* Looking up or ahead the body is out of view and not drawn either (trial37: 3 s gaps); the shadow pass draws it every
+       frame, with another vertex shader. So once the body's palette is known (its size and the head bone in it), any draw
+       with a palette of that size whose root is at the player and whose head bone is near its last place is taken as his. */
+    if (!v) return;
+    /* by the index count and the palette's size, not the shader (an ability's glow draws him with others, flicker-2) */
+    const int pbones = vr_palette_bones(v);
+    int body = count == 17214 && pbones == 64;
+    if (body && R.rt.n >= 1) g_fl_body++;   // diagnostic (TOTK_VR_FRAMELOG): his body in a colour pass
+    if (body) g_fl_body_any++;
+    const int head = (count == 144 || count == 1482) && pbones == 97;
+    const p_bind_buf *c = &S.ubo[0][2];
+    const int other = !body && !head && g_vr_body_k >= 0 && c->addr && c->size == (uint64_t)g_vr_body_n * 48;   // a shadow pass draw of the body?
+    if (!body && !head && !other) return;
+    if (other) { int r2 = 0; for (int i = 0; i < v->rf.nb && !r2; i++) r2 = v->rf.b[i].kind == NVN_RB_CBUF && v->rf.b[i].reg == 2; if (!r2) return; body = 1; }
+    if (body && !other && c->addr && c->size >= 48 && R.rt.n >= 1) {   // diagnostic: the drawn body against the position read and the camera
+        extern uintptr_t runtime_player_pos_address(void) __attribute__((weak_import));
+        uintptr_t pa = runtime_player_pos_address ? runtime_player_pos_address() : 0;
+        if (pa) { float root[12], pl[3]; pend_materialize(c->addr, (uint8_t *)root, sizeof root, 0); memcpy(pl, (const void *)pa, 12); vr_body_gap_note(root, pl); } }
+    const int track = atomic_load_explicit(&g_vr_eye_track, memory_order_relaxed); const long lg = atomic_load(&g_vr_headbone_log);
+    if (!track && lg <= 0 && !vr_collapse_on()) return;
+    if (!c->addr || c->size < 96 || c->size > 48 * 256) return;   // the head's palette: 97 bones (1.4.3)
+    extern uintptr_t runtime_player_pos_address(void) __attribute__((weak_import));
+    uintptr_t pa = runtime_player_pos_address ? runtime_player_pos_address() : 0; if (!pa) return;
+    float pl[3]; const int framed = vr_frame_pos(pl);   // the position this frame's camera was put at; else the one now
+    if (!framed) memcpy(pl, (const void *)pa, 12);
+    static float b[48 * 256 / 4]; pend_materialize(c->addr, (uint8_t *)b, c->size, 0);
+    const int n = (int)(c->size / 48);
+    float r0[3] = {b[3] - pl[0], b[7] - pl[1], b[11] - pl[2]};   // the player's, not someone else's: the root near him
+    for (int j = 0; j < 3; j++) r0[j] -= 10 * roundf(r0[j] / 10);
+    /* within 4.5 m (the grid's half, less a margin): riding, the body is drawn up to about 3 m from the position read */
+    if (!(fabsf(r0[0]) <= 4.5f && fabsf(r0[2]) <= 4.5f && r0[1] >= -4.5f && r0[1] <= 4.5f)) return;
+    /* the body against the camera's position, frame for frame; the shadow pass's copy (other: drawn every frame, also
+       looking up, when the colour passes leave the body out) only near the last gap: it may be another body's */
+    int near_last = 0;
+    if (other && g_vr_carry.at && bp_now() - g_vr_carry.at < 500000000ull) { float dd = 0; for (int j = 0; j < 3; j++) { float x = r0[j] - g_vr_carry.off[j]; dd += x * x; } near_last = dd < 0.75f * 0.75f; }
+    if (framed && (!other || near_last)) {
+        /* how many camera updates back the body is drawn (vr_body_lag): the earlier ring entry nearest the drawn root, up to
+           6 back; the last choice kept unless another is 5 cm nearer (a lag between two updates does not flip each frame) */
+        static int lag_kept; int lag = 0; float lr[3]; memcpy(lr, r0, sizeof lr);
+        const int idx = vr_frame_ring();
+        if (idx >= 0 && g_vr_headlook) {
+            float dist[7]; float rr[7][3]; int best = -1;
+            for (int L = 0; L <= 6; L++) {
+                const float *q = g_vr_headlook->ring[(idx - L) & 15].pos; dist[L] = 1e30f;
+                if (!(q[0] || q[1] || q[2])) continue;
+                for (int j = 0; j < 3; j++) { rr[L][j] = b[3 + 4 * j] - q[j]; rr[L][j] -= 10 * roundf(rr[L][j] / 10); }
+                dist[L] = sqrtf(rr[L][0] * rr[L][0] + rr[L][1] * rr[L][1] + rr[L][2] * rr[L][2]);
+                if (best < 0 || dist[L] < dist[best]) best = L;
+            }
+            if (best >= 0) {
+                lag = lag_kept >= 0 && lag_kept <= 6 && dist[lag_kept] < 1e29f && dist[lag_kept] < dist[best] + 0.05f ? lag_kept : best;
+                lag_kept = lag; memcpy(lr, rr[lag], sizeof lr);
+            }
+        }
+        atomic_fetch_add_explicit(&g_vr_carry.seq, 1, memory_order_acq_rel);
+        memcpy(g_vr_carry.off, r0, sizeof r0); memcpy(g_vr_carry.lr, lr, sizeof lr); g_vr_carry.lag = lag; g_vr_carry.at = bp_now();
+        atomic_fetch_add_explicit(&g_vr_carry.seq, 1, memory_order_release);
+    }
+    static int binds = 0; static float pb[3] = {0, 1.55f, 0.08f};
+    if (!binds) { binds = 1; const char *e = getenv("TOTK_VR_EYE_BIND"); if (e) sscanf(e, "%f,%f,%f", &pb[0], &pb[1], &pb[2]); }
+    const int bone = vr_head_bone(); int k = !body && bone >= 0 && bone < n ? bone : -1;
+    if (body) {   // the head bone in the body's palette: learnt once (the head's last matrix, a frame or so old: rotation within 0.02, 0.3 m)
+        int body_k = g_vr_body_k;
+        if (!other && g_vr_body_n != n) { body_k = -1; g_vr_body_n = n; }
+        if (body_k < 0 && g_vr_head_m_have) {
+            float best = 1e9f;
+            for (int q = 0; q < n; q++) {
+                const float *f = b + q * 12; float dr = 0, dt = 0;
+                for (int i = 0; i < 3; i++) { for (int c2 = 0; c2 < 3; c2++) { float x = f[i * 4 + c2] - g_vr_head_m[i * 4 + c2]; dr += x * x; } float t = f[i * 4 + 3] - g_vr_head_m[i * 4 + 3]; dt += t * t; }
+                if (dr < 0.02f * 0.02f * 9 && dt < 0.3f * 0.3f && dr + dt < best) { best = dr + dt; body_k = q; }
+            }
+            if (body_k >= 0) MLOG("[vr] the head bone is %d of the body's %d bones: the eyes follow the body's every frame", body_k, n);
+        }
+        g_vr_body_k = body_k; k = body_k;
+        if (k >= 0 && k < n) {   // near its last place (not someone else's 64-bone body next to him)
+            const float *hb = b + k * 12, t[3] = {hb[3], hb[7], hb[11]};
+            if (g_vr_body_last_have && other) { float dd = 0; for (int i = 0; i < 3; i++) { float x = t[i] - g_vr_body_last[i]; dd += x * x; } if (dd > 0.5f * 0.5f) return; }
+            memcpy(g_vr_body_last, t, sizeof t); g_vr_body_last_have = 1;
+            memcpy(g_vr_link_head, hb, sizeof g_vr_link_head); g_vr_link_head_at = bp_now(); link_pal_note(S.ubo[0][2].addr, n);
+        }
+    }
+    if (k < 0) return;   // no head bone set (or not found in the body yet): nothing to follow
+    if (!body && bone >= 0 && bone < n) { memcpy(g_vr_head_m, b + bone * 12, sizeof g_vr_head_m); g_vr_head_n = n; g_vr_head_m_have = 1; }   // the collapse finds it in the other palettes
+    const float *m = b + k * 12, *t0 = b;
+    float off[3]; for (int i = 0; i < 3; i++) off[i] = m[i * 4] * pb[0] + m[i * 4 + 1] * pb[1] + m[i * 4 + 2] * pb[2] + m[i * 4 + 3] - t0[i * 4 + 3];
+    if (lg > 0) {
+        static uint64_t fr = ~0ull; uint64_t now = atomic_load(&g_cur_frame);
+        if (now != fr) {
+            fr = now; atomic_fetch_sub(&g_vr_headbone_log, 1);
+            for (int q = 0; q < n; q++) {
+                const float *f = b + q * 12; float d[3], e[3];
+                for (int i = 0; i < 3; i++) { d[i] = f[i * 4 + 3] - t0[i * 4 + 3]; e[i] = f[i * 4] * pb[0] + f[i * 4 + 1] * pb[1] + f[i * 4 + 2] * pb[2] + f[i * 4 + 3] - t0[i * 4 + 3]; }
+                MLOG("[vr] headbone F%llu bone %d/%d t-t0 %.3f %.3f %.3f eye %.3f %.3f %.3f rows %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f%s", (unsigned long long)now, q, n,
+                     d[0], d[1], d[2], e[0], e[1], e[2], f[0], f[1], f[2], f[4], f[5], f[6], f[8], f[9], f[10], q == k ? " <- the eyes" : "");
+            }
+        }
+    }
+    /* One source (user 2026-11-01: "为什么 头的位置有三个来源？？？"; the screen flickered with the camera on the head): the
+       head's meshes (their 97-bone palette, bone 70), the body's colour draw and its shadow copy (its 64-bone palette, the
+       bone nearest 70, not quite the same point) wrote the eyes in turn, a few cm apart; smoothing hid it until it was
+       taken out. Only the body's palette now (drawn every frame, the shadow pass too); the head's meshes only teach it
+       which bone is the head (g_vr_head_m). TOTK_VR_EYE_ANYSRC=1: as before. */
+    static int anysrc = -1; if (anysrc < 0) { const char *e = getenv("TOTK_VR_EYE_ANYSRC"); anysrc = e && !strcmp(e, "1"); }
+    if (!body && !anysrc) return;
+    atomic_fetch_add_explicit(&g_vr_eye.seq, 1, memory_order_acq_rel);
+    memcpy(g_vr_eye.off, off, sizeof off); g_vr_eye.at = bp_now();
+    atomic_fetch_add_explicit(&g_vr_eye.seq, 1, memory_order_release);
+}
+void vr_palscan_cs(const char *cs) { static char k[80]; snprintf(k, sizeof k, "CS %.13s", cs); vr_palscan(k); }
+void (*g_vr_find_camera)(const float *view);   // set by the 1.4.3 game patches (VR camera search)
+/* TOTK_VR_CAMSCAN=<first>-<last frame> or "flag vr_camscan <frames>" (diagnostic for VR stage 2, off by default): every pass that binds a uniform
+   block of the camera block's size (MFX_CAM_SIZE), any stage and slot, one line per pass / stage / slot / address, with
+   the block's camera position, field of view and yaw: which passes read the camera, and whether it is one block. */
+static void vr_camscan(void) {
+    static long f0 = -2, f1; if (f0 == -2) { const char *e = getenv("TOTK_VR_CAMSCAN"); f0 = e ? atol(e) : -1; f1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : f0; }
+    long f = (long)atomic_load(&g_cur_frame);
+    if (atomic_load(&g_vr_camscan) <= 0 && (f0 < 0 || f < f0 || f > f1)) return;
+    static uint64_t seen[64]; static int nseen; static uint64_t seen_pass = ~0ull;
+    if (seen_pass != g_stat_pass) { seen_pass = g_stat_pass; nseen = 0; }
+    for (int st = 0; st < 6; st++) for (int sl = 0; sl < 16; sl++) {
+        const p_bind_buf *u = &S.ubo[st][sl];
+        if (!u->addr || u->size != MFX_CAM_SIZE) continue;
+        uint64_t key = u->addr ^ ((uint64_t)st << 56) ^ ((uint64_t)sl << 60);
+        int dup = 0; for (int i = 0; i < nseen; i++) dup |= seen[i] == key;
+        if (dup || nseen >= 64) continue;
+        seen[nseen++] = key;
+        float cam[MFX_CAM_SIZE / 4]; pend_materialize(u->addr, (uint8_t *)cam, sizeof cam, 0);
+        /* TOTK_VR_CAMSCAN_DUMP=<folder>: each distinct block address once per frame, raw, for the layout analysis */
+        static const char *dump = (const char *)-1; if (dump == (const char *)-1) dump = getenv("TOTK_VR_CAMSCAN_DUMP");
+        if (dump) { char path[1024]; snprintf(path, sizeof path, "%s/F%ld-%llx.bin", dump, f, (unsigned long long)u->addr);
+                    if (access(path, F_OK)) { FILE *o = fopen(path, "wb"); if (o) { fwrite(cam, 1, sizeof cam, o); fclose(o); } } }
+        /* TOTK_VR_CAMWATCH=1: a write watchpoint (runtime/gfx_bridge.c) on the first main-camera block found (perspective,
+           wider than tall: not the 90-degree square cube faces nor the orthographic shadow cascades): who writes the view
+           matrix. The block's address changes from run to run, so it is taken here. */
+        if (cam[70] > 0.2f && cam[70] < 1.5f && cam[62] > 1.2f) {   // a main-camera block: publish it for TOTK_VR_UBLOG (hle_nvn.c)
+            extern uint64_t g_vr_cam_blocks[8]; int known = 0, free_i = -1;
+            for (int i = 0; i < 8; i++) { known |= g_vr_cam_blocks[i] == u->addr; if (!g_vr_cam_blocks[i] && free_i < 0) free_i = i; }
+            if (!known && free_i >= 0) g_vr_cam_blocks[free_i] = u->addr;
+        }
+        /* TOTK_VR_FINDCAM=1: hand the main camera's view matrix to the game patches' search (game_patches_v143.c) once */
+        { extern void (*g_vr_find_camera)(const float *); static int asked;
+          if (!asked && g_vr_find_camera && getenv("TOTK_VR_FINDCAM") && cam[70] > 0.2f && cam[70] < 1.5f && cam[62] > 1.2f) { asked = 1; g_vr_find_camera(cam); } }
+        static int watched; if (!watched && getenv("TOTK_VR_CAMWATCH") && cam[70] > 0.2f && cam[70] < 1.5f && cam[62] > 1.2f) {
+            extern void runtime_watch_set(uintptr_t addr, size_t len); watched = 1; runtime_watch_set((uintptr_t)u->addr, 48); }
+        MLOG("[vr] camscan F%ld pass %llu stage %d slot %d block %#llx targets %d depth %s pos %.2f %.2f %.2f fov %.4f yaw %.2f near %g",
+             f, g_stat_pass, st, sl, (unsigned long long)u->addr, R.rt.n, R.rt.depth ? "yes" : "no", cam[47], cam[51], cam[55], cam[70],
+             atan2(cam[2], cam[0]) * 180 / M_PI, cam[56]);
+    }
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di);
 /* Diagnostic DM_NVN_NANDRAW=<first>-<last frame> (log DM_NVN_NANDRAW_LOG, default analysis/nandraw.tsv): after every
@@ -12801,6 +13666,8 @@ frz_plain:;
         }
         if (r != g_mfx.role) { g_mfx.role = r; g_pso_dirty = 1; }
     }
+    vr_camscan();
+    vr_palscan(pr && pr->sh[0] ? pr->sh[0]->key : "-");
     if (g_mfx.want_cam) mfx_take_camera();
     if (defer_q_draw) { en_keep = en; defer_replay(); }
     if (skip_d) { g_stat_ds_omit++; if (mode == 3) g_stat_s_only++; else if (mode == 4) g_stat_d_only++; }
@@ -12820,6 +13687,57 @@ frz_plain:;
     /* TOTK diagnostic TOTK_GPU_SKIP_VC=<n>: skip every draw whose vertex count is n and whose colour mask is 0 (isolates a single depth-only draw). */
     { static long skip_vc = -2; if (skip_vc == -2) { const char *e = getenv("TOTK_GPU_SKIP_VC"); skip_vc = e ? atol(e) : -1; }
       if (skip_vc >= 0 && S.chmask.mask == 0 && (long)(dw ? dw->count : di->count) == skip_vc) { static int said; if (said++ < 3) MLOG("TOTK_GPU_SKIP_VC: skipped a %ld-vertex depth-only draw (pass %llu)", skip_vc, g_stat_pass); return; } }
+    if (R.rt.n == 6 && R.rt.depth && (g_vr_skip_hi > g_vr_skip_lo || atomic_load(&g_vr_meshlog) > 0)) {   // diagnostic: G-buffer draws by number (bisecting for a mesh)
+        static uint64_t fr = ~0ull; static long k; uint64_t now = atomic_load(&g_cur_frame); if (now != fr) { fr = now; k = 0; }
+        long i = k++;
+        if (i >= g_vr_skip_lo && i < g_vr_skip_hi) {
+            if (g_vr_skip_hi - g_vr_skip_lo <= 64 && atomic_load(&g_vr_meshlog) > 0)
+                MLOG("[vr] gdraw F%llu #%ld vs %.16s count %u", (unsigned long long)now, i, pr->sh[0] ? pr->sh[0]->key : "-", dw ? dw->count : di->count);
+            return;
+        }
+    }
+    vr_head_eye_note(pr->sh[0], dw ? dw->count : di->count);   // zeldaVR: first person's eyes follow the head
+    g_vr_collapse_draw = 0;   // zeldaVR: the head bone scaled to nothing on the player's colour-pass draws reading a palette (block 2)
+    if (vr_collapse_on() && vr_hidehead_on() && R.rt.n >= 1 && pr->sh[0]) {
+        int r2 = 0; for (int i = 0; i < pr->sh[0]->rf.nb && !r2; i++) r2 = pr->sh[0]->rf.b[i].kind == NVN_RB_CBUF && pr->sh[0]->rf.b[i].reg == 2;
+        if (r2 && vr_player_mesh_tol(pr->sh[0], dw ? dw->count : di->count, 2.0f, -1.0f, 2.5f) >= 0) g_vr_collapse_draw = 1;
+    }
+    if (!g_vr_collapse_draw && vr_armkeep() && vr_hidehead_on() && R.rt.n >= 1 && pr->sh[0]) {   // zeldaVR: the body's arms and hands only (vr_body_collapse)
+        int r2 = 0; for (int i = 0; i < pr->sh[0]->rf.nb && !r2; i++) r2 = pr->sh[0]->rf.b[i].kind == NVN_RB_CBUF && pr->sh[0]->rf.b[i].reg == 2;
+        if (r2 && S.ubo[0][2].size == 64 * 48 && vr_player_head_mesh(pr->sh[0])) { g_body_tris_cur = body_tris_prepare(di, 64); g_vr_collapse_draw = g_body_tris_cur ? 3 : 2; }   // 3: its own triangles (body_tris_draw)
+    }
+    { const int hide = vr_hidehead_on() && !vr_collapse_on();   // zeldaVR: the player's head (hidden, unless collapsed: g_vr_collapse_draw) (vr_head_mesh: which meshes; vr_player_mesh: the player's, not someone else's)
+      if (g_vr_hidemesh || hide || atomic_load(&g_vr_meshlog) > 0) {
+        const uint32_t cnt = dw ? dw->count : di->count;
+        if (hide && !g_vr_hidemesh && !atomic_load(&g_vr_meshlog)) {
+            /* only the arms and hands (vr_body_collapse): the trousers and boots are a mesh of their own (a 14-bone palette; arms-1) */
+            if (vr_armkeep() && vr_palette_bones(pr->sh[0]) == 14 && vr_player_head_mesh(pr->sh[0])) return;
+            if (vr_head_mesh(pr->sh[0], cnt)) {
+                if (vr_player_head_mesh(pr->sh[0])) { atomic_fetch_add_explicit(&g_vr_head_hid, 1, memory_order_relaxed); return; }   // his head only, not another Hylian's
+                atomic_fetch_add_explicit(&g_vr_head_missed, 1, memory_order_relaxed);
+                if (R.rt.n >= 1) {   // diagnostic: a head mesh drawn in a colour pass, not hidden (the shadow pass draws it on purpose)
+                    atomic_fetch_add_explicit(&g_vr_head_shown, 1, memory_order_relaxed);
+                    static uint64_t lf; uint64_t f = atomic_load(&g_cur_frame);
+                    /* every one (at most 600 lines; 2026-11-01 crouching and standing showed a hair piece with every bone 0.31 m
+                       off his head bone): where the eye point is on his head bone, on this mesh's nearest bone and bone 0, the camera */
+                    static int shown_lines; (void)lf;
+                    if (shown_lines++ < 600) { float fp[3]; extern float g_vr_cam_pos[3]; MLOG("[vr] head shown F%llu pass %llu targets %d vs %.16s count %u bones %d palette %#llx: nearest block %.2f m from his root%s; nearest to his head bone: bone %d, eye point %.3f m off (head bone %.0f ms old); eyes on his head bone %.2f %.2f %.2f, on bone %d %.2f %.2f %.2f, on bone 0 %.2f %.2f %.2f; camera %.2f %.2f %.2f",
+                        (unsigned long long)f, g_stat_pass, R.rt.n, pr->sh[0]->key, cnt, vr_palette_bones(pr->sh[0]), (unsigned long long)S.ubo[0][2].addr, g_vr_head_miss_dr < 1e29f ? sqrtf(g_vr_head_miss_dr) : -1.0f, vr_frame_pos(fp) ? "" : " (no frame position)",
+                        g_vr_head_id_q, g_vr_head_id_dt, g_vr_link_head_at ? (bp_now() - g_vr_link_head_at) / 1e6 : -1.0,
+                        g_vr_head_id_eh[0], g_vr_head_id_eh[1], g_vr_head_id_eh[2], g_vr_head_id_q, g_vr_head_id_eq[0], g_vr_head_id_eq[1], g_vr_head_id_eq[2],
+                        g_vr_head_id_e0[0], g_vr_head_id_e0[1], g_vr_head_id_e0[2], g_vr_cam_pos[0], g_vr_cam_pos[1], g_vr_cam_pos[2]);}
+                }
+                static int why = -1; if (why < 0) why = getenv("TOTK_VR_WHYLOG") != NULL;   // diagnostic: a head mesh not taken as the player's
+                static int lines; if (why && lines++ < 2000) MLOG("[vr] head-miss F%llu pass %llu targets %d depth %s replay %d vs %.16s count %u:%s", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
+                                                    R.rt.n, R.rt.depth ? "yes" : "no", g_defer_replaying, pr->sh[0]->key, cnt, g_vr_why);
+            }
+        }
+        else {
+            int m = vr_player_mesh(pr->sh[0], cnt);
+            if (m >= 0 && m < 63 && (g_vr_hidemesh >> m & 1)) return;
+            if (hide && vr_head_mesh(pr->sh[0], cnt) && vr_player_head_mesh(pr->sh[0])) return;
+        }
+      } }
     /* TOTK diagnostic TOTK_GPU_NODEPTH_FROM=<frame>: from that frame on, no depth test / write for any draw. */
     { static long nodepth_from = -2; static id<MTLDepthStencilState> nodss; if (nodepth_from == -2) { const char *e = getenv("TOTK_GPU_NODEPTH_FROM"); nodepth_from = e ? atol(e) : -1; }
       if (nodepth_from >= 0 && (long)atomic_load(&g_cur_frame) >= nodepth_from) { if (!nodss) { MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new]; dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = NO; nodss = [g_dev newDepthStencilStateWithDescriptor:dd]; } cur_ds = nodss; } }
@@ -12961,6 +13879,7 @@ frz_plain:;
     vbuf_log(pr->sh[0], pr->sh[1], dw, di);
     if (g_lay.active) enc_r_vbuf(en, LAY_BUF_INDEX, lay_gpu(g_lay_probe_neg == 1 ? 0 : g_lay.cur - g_lay.base));   // TOTK: this draw's layer within the layered pass
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
+    if (pr->sh[0] && g_vr_collapse_draw) pr->sh[0]->ab_pass = 0;   // zeldaVR: its argument buffer holds a changed palette: not for the next draw
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
     // 参数绑定在登记表锁内捕获实际资源；资格判断到绑定期间有版本变化，则在任何GPU draw前切开重试。
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
@@ -13131,6 +14050,17 @@ frz_plain:;
             return;
         }
         use_rec("buf", di->ibuf, (uint64_t)di->count * (di->itype == 1 ? 2 : 4), 0, NULL);
+        extern int g_vr_body_sides;
+        if (g_vr_collapse_draw == 3 && g_body_tris_cur) body_tris_draw(en, mp, di, g_body_tris_cur);   // zeldaVR: the body by its own arm and hand triangles
+        else if (g_vr_collapse_draw == 2 && g_vr_body_sides && pr->sh[0]) {   // zeldaVR: the body's arms, each on its own (vr_body_collapse)
+            for (int side = 1; side <= 2; side++) {
+                g_vr_body_side = side; encode_args(en, pr->sh[0], 0, 1);
+                if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
+                        di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
+            }
+            g_vr_body_side = 0;
+            pr->sh[0]->ab_pass = 0;   // its argument buffer holds the right arm's palette: not to be reused by the next draw
+        } else
         if (di->count) enc_r_draw_indexed(en, mp, di->count, di->itype == 1 ? MTLIndexTypeUInt16 : MTLIndexTypeUInt32, gpu, ((__bridge id<MTLBuffer>)mb).length - mo,
                 di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
     }
@@ -13261,6 +14191,7 @@ static void dispatch(const p_dispatch *dp) {
         if (cs->key[0]) pso_user_record("C\t%s\n", cs->key);
         hm_put_id(&g_cps, &k, ps);
     }
+    { extern void vr_palscan_cs(const char *); vr_palscan_cs(cs->key); }   // diagnostic "flag vr_palscan": dispatches too
     if (g_nupd) upd_guard_stage(cs, 5);   // TOTK: renamed uniform updates touched by this dispatch's storage / texture buffers
     if (cs->builtin) {   // 内嵌计算核：n = uniform 缓冲 0，src = 存储缓冲 0，dst = 存储缓冲 1 | Built-in compute kernel: n = uniform buffer 0, src = storage buffer 0, dst = storage buffer 1
         const p_bind_buf *u = &S.ubo[5][0], *a0 = &S.ssbo[5][0], *a1 = &S.ssbo[5][1];
@@ -14677,6 +15608,26 @@ static id<MTLTexture> output_upscale(id<MTL4CommandBuffer> cb, id<MTLTexture> sr
     atomic_store(&g_outup_wh, ow | ((uint64_t)oh << 32)); atomic_store(&g_outup_last, atomic_load(&g_cur_frame));
     return out;
 }
+/* zeldaVR (user 2026-10-31: "为什么 quest不能 获得 “2K + MetalFX“之后的效果？"): in the MetalFX picture modes the headset's eyes
+   sample the picture MetalFX made twice as large (1616x1440 -> 3232x2880), not the game's own picture stretched by the eye
+   pass, as the Mac window shows MetalFX's. A context of its own (MFXUP_VR), so the window's scaler is not swapped each
+   frame. Sharper edges only: the spatial upscaler adds no samples, so it does not touch flicker. Until the scaler is
+   built (about 70 ms on a background queue) and when off, the game's picture as before. *crop then names the whole
+   upscaled picture. */
+static id<MTLTexture> vr_picture(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int **crop) {
+    static int full[4]; const int *c = *crop;
+    if (!vr_enabled() || !src || !mfxup_enabled() || !mfxup_output_enabled()) return src;
+    NSUInteger cw = c && (c[2] || c[3]) ? (NSUInteger)c[2] : src.width, ch = c && (c[2] || c[3]) ? (NSUInteger)c[3] : src.height;
+    if (c && (c[0] || c[1])) return src;   // MetalFX reads the top-left region
+    NSUInteger ow = cw * 2, oh = ch * 2;
+    if (ow > 8192 || oh > 8192) return src;
+    id<MTLTexture> up = mfxup_encode_ex(MFXUP_VR, cb, src, cw, ch, nil, ow, oh, MFXUP_PERCEPTUAL);
+    if (!up) return src;
+    mfxup_queue_residency();
+    { static int once; if (!once++) MLOG("[vr] the headset takes the MetalFX picture: %lux%lu -> %lux%lu", (unsigned long)cw, (unsigned long)ch, (unsigned long)ow, (unsigned long)oh); }
+    full[0] = full[1] = 0; full[2] = (int)ow; full[3] = (int)oh; *crop = full;
+    return up;
+}
 static int dcmp_out(const void *x, const void *y) { double a = *(const double *)x, b = *(const double *)y; return a < b ? -1 : a > b; }
 static void outup_note_gpu(int slot) {   // the present command buffer of this slot completed: the upscale's GPU time
     if (!g_outup_heap || g_outup_hz <= 0) return;
@@ -15235,6 +16186,11 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     id<MTL4CommandBuffer> cb = g_present_cb[alloc_i];
     [cb beginCommandBufferWithAllocator:g_present_alloc4[alloc_i]];
     if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
+    /* TOTK_VR_CONTROL (stage 1, totk_vr.m): a copy of this game frame's picture for the headset, in the same command buffer;
+       published from the feedback handler below. */
+    const int *vr_crop = crop; id<MTLTexture> vr_src = interp < 0 ? vr_picture(cb, src, &vr_crop) : nil;   // the MetalFX picture modes: MetalFX's, twice as large
+    int vr_slot = interp < 0 ? vr_source_encode(cb, vr_src, vr_crop, ticket) : -1;
+    if (vr_slot >= 0) { static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; } }
     id<MTLBuffer> grab_buf = nil; size_t grab_w = dr.texture.width, grab_h = dr.texture.height;
     if (grab) {
         grab_buf = grab_w && grab_h ? [g_dev newBufferWithLength:grab_w * grab_h * 4 options:MTLResourceStorageModeShared] : nil;
@@ -15296,6 +16252,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
             res_remove(buf); }]; }
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
         if (f.error) MLOG("【红】上屏命令缓冲错误：%s", f.error.description.UTF8String);
+        vr_source_done(vr_slot, !f.error);
         if (probe && !f.error) {
             const unsigned char *s = g_present_probe_src[alloc_i].contents, *d = g_present_probe_dst[alloc_i].contents;
             unsigned long long sv = 0, dv = 0, srgb[3] = {0}, drgb[3] = {0}; int sb = 0, db = 0, sm = 0, dm = 0;
@@ -15642,6 +16599,15 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     taa_frame_end();   // TOTK_TAA: next frame's jitter, this frame's depth and camera forgotten (also while off: key 5)
+    if (g_vr_framelog > 0) {
+        static uint64_t d0; static uint32_t c0; char fm[600]; const uint32_t c = g_vr_headlook ? __atomic_load_n(&g_vr_headlook->calls, __ATOMIC_RELAXED) : 0;
+        MLOG("[vr] frame F%llu: draws %llu, passes %d (1 target: %d); camera hook calls %u; G-buffer-like passes%s; VR camera from pass %d (view %.1f degrees); his body drawn %d times in colour passes, %d in any; block camera %.2f %.2f %.2f fwd %.3f %.3f %.3f (frame %llu); %s",
+             (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_stat_draw - d0), g_fl_allpass, g_fl_t1, c - c0, g_fl_npass ? g_fl_passes : " none", g_fl_cam_pass, g_fl_cam_fov, g_fl_body, g_fl_body_any,
+             g_vr_cam_pos[0], g_vr_cam_pos[1], g_vr_cam_pos[2], g_vr_cam_row2[0], g_vr_cam_row2[1], g_vr_cam_row2[2], (unsigned long long)g_vr_cam_frame, (vr_frame_match_desc(fm, sizeof fm), fm));
+        d0 = g_stat_draw; c0 = c;
+        g_fl_passes[0] = 0; g_fl_npass = 0; g_fl_cam_pass = -1; g_fl_cam_fov = -1; g_fl_body = 0; g_fl_body_any = 0; g_fl_allpass = 0; g_fl_t1 = 0;
+    }
+    if (g_vr_cam_taken && !mfx_enabled()) { g_vr_cam_taken = 0; g_mfx.want_cam = 0; }
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
@@ -15649,6 +16615,9 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     g_uw_ui = 0;
     if (atomic_load(&g_uw_log) > 0) atomic_fetch_sub(&g_uw_log, 1);
     if (atomic_load(&g_draw_log) > 0) atomic_fetch_sub(&g_draw_log, 1);
+    if (atomic_load(&g_vr_camscan) > 0) atomic_fetch_sub(&g_vr_camscan, 1);
+    if (atomic_load(&g_vr_palscan) > 0) atomic_fetch_sub(&g_vr_palscan, 1);
+    if (atomic_load(&g_vr_meshlog) > 0) atomic_fetch_sub(&g_vr_meshlog, 1);
     if (discard) return 0;   // 票号 0 = 没有待完成的上屏，取交换链贴图处不等 | Ticket number 0 = no pending present; the swapchain texture acquire does not wait
     if (t) { xv_check(t->serial, 0, 0, "出图"); if (g_xv_npresent < 128) g_xv_present[g_xv_npresent++] = t->serial; }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
@@ -15689,6 +16658,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // 当帧状态随票号入队，不在出图线程晚读可变window | The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
+    vr_present_queued(tk);   // VR head look: this frame's head pose goes with its ticket (the present thread copies it later)
     if (ring >= 0) g_pring_tk[ring] = tk;
     pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);

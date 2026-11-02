@@ -80,6 +80,7 @@ static int vibration_side(const uint32_t *h) {
     static _Atomic int warned; note_once(&warned, "vibration call with a handle this controller does not have; ignored", *h);
     return -1;
 }
+void (*runtime_vr_haptic)(int side, float amp, float freq);   /* zeldaVR: the Quest controllers' vibration (gfx/nvn/totk_vr.m), set while VR runs */
 static void play(int side, const VibrationValue *v) {
     if (!v) runtime_fail("vibration value pointer");
     if (side < 0) return;
@@ -90,6 +91,8 @@ static void play(int side, const VibrationValue *v) {
                                                                          side ? "right" : "left", c.amp_low, c.freq_low, c.amp_high, c.freq_high);
     if (atomic_load(&rumble_muted)) c.amp_low = c.amp_high = 0;
     runtime_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
+    { void (*vh)(int, float, float) = __atomic_load_n(&runtime_vr_haptic, __ATOMIC_ACQUIRE);
+      if (vh) vh(side, fmaxf(c.amp_low, c.amp_high), c.amp_high > c.amp_low ? c.freq_high : c.freq_low); }
 #if TARGET_OS_IOS
     runtime_phone_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
 #endif

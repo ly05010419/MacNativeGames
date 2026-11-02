@@ -334,7 +334,7 @@ def prepare_work(work, py, logs):
     tree.mkdir(parents=True, exist_ok=True)
     # Match both directories AND symlinks to directories. A trailing slash
     # allows rsync -a to copy a tooling symlink from a development checkout.
-    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data')]
+    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR')]
     # Files are compared by content and a changed file gets the time of this copy, not its own: make decides by times, and
     # a checkout older than the objects of the last build (another branch built in this folder after it was checked out)
     # would otherwise keep the stale objects. 2026-10-25: nvn_mtl.m.o of one branch linked with nvn_refl.m.o of another
@@ -342,6 +342,9 @@ def prepare_work(work, py, logs):
     # their times, so nothing is rebuilt needlessly.
     sync = ['rsync', '-rlpD', '--checksum', *excludes]
     run([*sync, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
+    # zeldaVR's modules (games/totk/zeldaVR links to them in the repository): into the tree, where the Makefile and the
+    # iOS project take them; VR stays off unless TOTK_VR_CONTROL is set
+    run([*sync, f'{REPO / "zeldaVR"}/', f'{tree / "zeldaVR"}/'], logs / 'sources-zeldavr.log')
     # games/botw: its scripts find the shared ones at ../totk/scripts (work/botw next to work/totk)
     run([*sync, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
     tooling = tree / 'tooling'
@@ -676,6 +679,7 @@ OVERLAY_RECORD = 'overlay.json'
 # for the largest one present and starts at 1080p. Not 4K yet: its heaps need one memory pool above the graphics layer's
 # 1 GiB zero-copy limit (games/totk/runtime/game_patches_v143.c, 2026-10-25: the game stopped at the start).
 OUTPUT_SIZES = ('2560x1440',)
+VR_BIG_SIZES = ('3056x2720', '4576x4080')   # zeldaVR (--vr): VR native 4K / 4K + MetalFX / native 6K (runtime/game_patches_v143.c vr_big_mode)
 
 
 def overlay_record(path):
@@ -899,7 +903,7 @@ def remove_large_output_overlays(tree, version):
     build: without either option the runtime keeps 2560x1440 as its largest output size (its swapchain and heaps;
     runtime/game_patches_v143.c), with the options the build makes the current set again."""
     for folder in (tree / f'extracted/{version}/romfs-patches-out').glob('*'):
-        if not folder.name.startswith(('3840x2160', '5120x2880')):
+        if not folder.name.startswith(('3840x2160', '5120x2880', *VR_BIG_SIZES)):   # VR's: only a --vr build makes them
             continue
         if folder.is_dir():
             shutil.rmtree(folder)
@@ -932,7 +936,7 @@ def native_5k_roomy(memory=None):
     return memory >= NATIVE_5K_MEMORY - (256 << 20)
 
 
-def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None, native_4k=False, native_5k=False):
+def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None, native_4k=False, native_5k=False, vr=False):
     expected = VERSIONS[version]
     folder = tree/f'extracted/{version}/romfs'
     index = folder/'index.json'
@@ -971,6 +975,8 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None
         steps.append(('make_output_res_overlay.py', ['5120x2880']))
         steps += [('make_output_res_overlay.py', ['5120x2880', '--scene', scene])
                   for scene in ('1920x1080', '2560x1440', '3840x2160', '5120x2880')]
+    if vr:   # zeldaVR (--vr): the headset-shaped canvases of VR native 4K / 4K + MetalFX / native 6K
+        steps += [('make_output_res_overlay.py', [size, '--scene', size]) for size in VR_BIG_SIZES]
     for i, (script, arguments) in enumerate(steps):
         if heapdef and script == 'make_output_res_overlay.py':   # every variant of the file keeps the mod's heap sizes
             arguments = [*arguments, '--heapdef', heapdef]
@@ -2115,6 +2121,8 @@ def parse_args(argv):
     ap.add_argument('--native-5k', action='store_true',
                     help='Mac, 1.4.3: opt in to native 5120x2880 canvas, UI and scene; includes the 4K modes and '
                          'reserves about 2.7 GiB more guest memory than a standard app at every start')
+    ap.add_argument('--vr', action='store_true',
+                    help='Mac, 1.4.3 with native 4K: also the headset-shaped canvases of the VR picture modes (zeldaVR/install_vr.sh passes it)')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available; Breath of the Wild 1.9.0 too)')
     fonts.add_argument('--shared-fonts', type=Path, help='previously extracted shared-font directory containing the six verified .bfttf files')
@@ -2295,6 +2303,8 @@ def main(argv):
         raise BuildError('--native-4k needs 1.2.1 or the 1.4.3 update and a Mac build (the other versions and iPhone / iPad have no 4K output)')
     if args.native_5k and (args.platform != 'macos' or version != 'v143'):
         raise BuildError('--native-5k needs the 1.4.3 update and a Mac build')
+    if args.vr and (args.platform != 'macos' or version != 'v143' or args.native_4k is False):
+        raise BuildError('--vr needs the 1.4.3 update, a Mac build and native 4K')
     if args.native_5k and args.native_4k is False:
         raise BuildError('--native-5k includes native 4K; omit --no-native-4k')
     native_4k = True if args.native_5k else args.native_4k
@@ -2313,7 +2323,7 @@ def main(argv):
                   mod=code_mod)   # a mod is for the updated main, not for 1.0.0
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts, mod=None if update else mod)
     if update:
-        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k, native_5k=args.native_5k)
+        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k, native_5k=args.native_5k, vr=args.vr)
     if mod:
         check_mod_overlays(tree, mod, version)
     step_shaders(tree, logs, version=version)

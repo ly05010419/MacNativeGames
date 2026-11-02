@@ -37,8 +37,8 @@ typedef struct {
     uint64_t done, refused, waited, tick, switches;   // switches: the current scaler changed to another cached one
     struct { id obj; id<MTLTexture> tex; uint64_t at; } old[MFXUP_OLD]; int nold;
 } ctx_t;
-static ctx_t g_c[MFXUP_NCTX] = {{.cur = -1}, {.cur = -1}, {.cur = -1}};
-static const char *g_name[MFXUP_NCTX] = {"scene", "docked", "output"};
+static ctx_t g_c[MFXUP_NCTX] = {{.cur = -1}, {.cur = -1}, {.cur = -1}, {.cur = -1}};
+static const char *g_name[MFXUP_NCTX] = {"scene", "docked", "output", "vr"};
 static id<MTLDevice> g_dev;
 static id<MTL4Compiler> g_comp;
 static id<MTLResidencySet> g_rs;

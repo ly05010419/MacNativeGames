@@ -133,7 +133,7 @@ static void settings_window_for(int mode) {
  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
  unsigned w=1920,h=1080;
  if(mode==OUTPUT_MODE_METALFX){w=2560;h=1440;}
- else if(mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K){w=3840;h=2160;}
+ else if(mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K){w=3840;h=2160;}
  else if(mode==OUTPUT_MODE_NATIVE_5K){w=5120;h=2880;}
  else if(mode==OUTPUT_MODE_720P){w=1280;h=720;}
  else if(mode==OUTPUT_MODE_NATIVE&&!runtime_output_native(mode,&w,&h)){w=1920;h=1080;}
@@ -232,7 +232,7 @@ static void settings_restore_begin(void) {
  settings_effects_restore();
  const char *output=getenv("TOTK_OUTPUT_RES");
  if((!output||!*output||!strcmp(output,"auto"))&&!getenv("TOTK_MFX_OUTPUT")&&!getenv("TOTK_MFX_UPSCALE")&&
-    settings_read_int("graphics-output.txt",&v)&&v<=OUTPUT_MODE_NATIVE_5K)settingsPendingOutput=v;
+    settings_read_int("graphics-output.txt",&v)&&v<=OUTPUT_MODE_LAST)settingsPendingOutput=v;
  if(!getenv("TOTK_ASPECT")&&runtime_setting_word("graphics-aspect.txt",word,sizeof word)){
   char *end;float ratio=strtof(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
@@ -263,8 +263,10 @@ static void settings_restore_start(void) {
 }
 
 /* The pages, in tab order. A page added here is counted in perPage (the panel height), given its tab, and its rows a
-   SETTINGS_PAGE_* below. */
-enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGES };
+   SETTINGS_PAGE_* below. VR (zeldaVR) is last and only there while VR is on (settings_pages). */
+enum { SETTINGS_PAGE_DISPLAY, SETTINGS_PAGE_INPUT, SETTINGS_PAGE_USERS, SETTINGS_PAGE_EFFECTS, SETTINGS_PAGE_BINDINGS, SETTINGS_PAGE_UPDATE, SETTINGS_PAGE_VR, SETTINGS_PAGES };
+int vr_enabled(void);   /* zeldaVR/gfx/totk_vr.m: a headset link was asked for (TOTK_VR_CONTROL) */
+static int settings_pages(void){return vr_enabled()?SETTINGS_PAGES:SETTINGS_PAGE_VR;}
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
 static void settings_pointer_used(void);
@@ -276,7 +278,7 @@ static void settings_pointer_used(void);
 @property(copy) void (^set)(int value);
 @property(copy) NSString *(^firstTitle)(void);   /* a first choice whose text changes (auto: the controller it sees) */
 @property int sliderMin, sliderMax;              /* a slider when sliderMax > sliderMin */
-@property NSInteger page;                        /* SETTINGS_PAGE_DISPLAY, _INPUT or _EFFECTS */
+@property NSInteger page;                        /* SETTINGS_PAGE_DISPLAY, _INPUT, _EFFECTS or _VR */
 @property(strong) NSControl *control;
 @property(strong) NSTextField *valueLabel;       /* a slider's value */
 -(BOOL)slider;
@@ -357,6 +359,93 @@ static NSString *settings_pad_auto_text(void) {
  int detected=-1;runtime_gamepad_type(&detected);
  if(detected>GAMEPAD_TYPE_AUTO&&detected<GAMEPAD_TYPE_COUNT)return [NSString stringWithFormat:@(TOTK_UI("自动（%s）","Auto (%s)")),names[detected]];
  return settings_text("自动（未接手柄）","Auto (no controller)");
+}
+
+/* VR settings (zeldaVR; user 2026-10-26: "放在一个新设置 叫 vr设置里 可以选这几种分辨率"), shown while VR is on
+   (TOTK_VR_CONTROL): the per-eye size the streamer sends to the headset. Picking one restarts the streamer the game
+   runs (TOTK_VR_STREAMER) and the headset reconnects in a few seconds. Measured on a Quest 3: 1344x1408 and 1680x1760
+   hold 72 Hz (about 81 ms); 1920x2048 is sharper at about 60 Hz and 120 ms; 2048x2208 (user 2026-10-26: "增加 2048×2208")
+   the sharpest, its H.264 encode takes about 41 ms a frame (vr开发.md). */
+int vr_enabled(void);
+int vr_streamer_managed(void);
+void vr_resolution(int *w, int *h);
+int vr_set_resolution(int w, int h);
+int vr_first_person(void);
+void vr_set_first_person(int on);
+int vr_offset_cm(int axis);
+void vr_set_offset_cm(int axis, int cm);
+int vr_mirror_mode(void);
+void vr_set_mirror_mode(int on);
+int vr_quest_view(void);
+void vr_set_quest_view(int on);
+int vr_quest_zoom(void);
+void vr_set_quest_zoom(int x);
+int vr_eye_spring_ms(void);
+void vr_set_eye_spring_ms(int ms);
+int vr_6dof(void);
+void vr_set_6dof(int on);
+int vr_snap_ms(void);
+void vr_set_snap_ms(int ms);
+int vr_motion(void);
+void vr_set_motion(int on);
+/* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
+   1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
+   no hook: the row is left out (weak symbols). */
+int runtime_camera_distance_available(void) __attribute__((weak_import));
+int runtime_camera_distance_cm(void) __attribute__((weak_import));
+void runtime_camera_distance_set(int cm) __attribute__((weak_import));
+/* Link's head (zeldaVR, user 2026-10-26: "第一人称 我希望 去掉头", "先做到 第三人称里 头是去掉 或者隐藏 这样方便调试"): the
+   graphics layer leaves the head's meshes out of the picture, not out of the shadows (nvn_mtl.m vr_head_mesh). Auto:
+   while VR's first person puts the camera in his head. */
+int vr_hide_head_mode(void) __attribute__((weak_import));
+void vr_set_hide_head_mode(int m) __attribute__((weak_import));
+static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+ if(vr_hide_head_mode&&vr_set_hide_head_mode)
+  [rows addObject:settings_row(settings_text("林克的头","Link's head"),
+   @[settings_text("自动（第一人称时隐藏）","Auto (hidden in first person)"),settings_text("隐藏","Hidden"),settings_text("显示","Shown")],@[@-1,@1,@0],
+   ^int{return vr_hide_head_mode();},^(int v){vr_set_hide_head_mode(v);})];
+ if(!runtime_camera_distance_available||!runtime_camera_distance_available())return;
+ [rows addObject:settings_row(settings_text("摄像机距离（第三人称）","Camera distance (third person)"),
+  @[settings_text("默认","Default"),settings_text("近 1 米","1 m closer"),settings_text("近 2 米","2 m closer"),settings_text("近 3 米","3 m closer"),
+    settings_text("近 4 米","4 m closer"),settings_text("近 5 米","5 m closer")],   /* user 2026-10-26: "改成 近1m 近2m 近3m 近4m 近5m" */
+  @[@0,@-100,@-200,@-300,@-400,@-500],^int{return runtime_camera_distance_cm();},^(int v){runtime_camera_distance_set(v);})];
+}
+static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+ if(!vr_enabled())return;
+ [rows addObject:settings_row(settings_text("VR 设置 · 视角","VR · view"),@[settings_text("第一人称","First person"),settings_text("第三人称","Third person")],@[@1,@0],
+  ^int{return vr_first_person();},^(int v){vr_set_first_person(v);})];
+ /* the camera's spring on the head, ms (user 2026-11-02: "用 弹性 解决" the shaking; 0: bound rigidly) */
+ {TOTKSettingRow *r=settings_row(settings_text("第一人称镜头弹性（毫秒，0 = 绑死）","First person camera spring (ms, 0 = rigid)"),nil,nil,^int{return vr_eye_spring_ms();},^(int v){vr_set_eye_spring_ms(v);});
+  r.sliderMin=0;r.sliderMax=300;[rows addObject:r];}
+ /* The camera's position (user 2026-10-29: "可以改变 摄像头 上下前后左右 位置 ，方便我 实时调整"): -100..100 cm each, from where
+    the game's camera faces, applied while dragging (totk_vr.m vr_set_offset_cm, kept in vr-offset.txt). */
+ NSArray<NSString *> *axes=@[settings_text("摄像头 上下（厘米）","Camera up / down (cm)"),settings_text("摄像头 前后（厘米）","Camera forward / back (cm)"),
+  settings_text("摄像头 左右（厘米）","Camera right / left (cm)")];
+ for(int a=0;a<3;a++){TOTKSettingRow *r=settings_row(axes[(NSUInteger)a],nil,nil,^int{return vr_offset_cm(a);},^(int v){vr_set_offset_cm(a,v);});
+  r.sliderMin=-100;r.sliderMax=100;[rows addObject:r];}
+ /* What the Mac window shows (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes as the headset gets them, or the game's picture. */
+ /* "显示 Quest 画面" (user 2026-10-30: "桌面显示 和 quest里面 一样的画面 设置里加一个 按钮 叫 显示quest画面"): the Mac window shows
+    both eyes; on, each inside its lens opening as in the headset; off, uncovered ("就是 不遮挡状态"). */
+ [rows addObject:settings_row(settings_text("显示 Quest 画面","Show the Quest view"),nil,nil,^int{return vr_quest_view();},^(int v){vr_set_quest_view(v);})];
+ /* ... each eye's middle 2..10 times larger then (user 2026-10-30: "设置里可以调 2倍 到 10 倍") */
+ {TOTKSettingRow *r=settings_row(settings_text("Quest 画面放大（倍）","Quest view zoom (x)"),nil,nil,^int{return vr_quest_zoom();},^(int v){vr_set_quest_zoom(v);});
+  r.sliderMin=2;r.sliderMax=10;[rows addObject:r];}
+ /* The head's position (6DoF) and snap turning ("按建议 都做", 2026-10-30, after BotW BetterVR and UEVR). */
+ [rows addObject:settings_row(settings_text("头部位置（6DoF：探身、下蹲）","Head position (6DoF: lean, crouch)"),nil,nil,^int{return vr_6dof();},^(int v){vr_set_6dof(v);})];
+ [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];
+ [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
+  @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];
+ static const int sizes[][2]={{1344,1408},{1680,1760},{1920,2048},{2048,2208}};
+ NSArray<NSString *> *names=@[settings_text("1344×1408（流畅，72 帧）","1344×1408 (smooth, 72 Hz)"),
+  settings_text("1680×1760（推荐，72 帧）","1680×1760 (recommended, 72 Hz)"),
+  settings_text("1920×2048（更清楚，约 60 帧）","1920×2048 (sharper, about 60 Hz)"),
+  settings_text("2048×2208（最清楚，约 54 帧）","2048×2208 (sharpest, about 54 Hz)")];
+ NSString *title=settings_text("VR 设置 · 分辨率（每眼）","VR · resolution (per eye)");
+ if(!vr_streamer_managed()){int w=0,h=0;vr_resolution(&w,&h);
+  [rows addObject:settings_fixed(title,w>0?[NSString stringWithFormat:@"%d×%d",w,h]:settings_text("未连接","not connected"))];return;}
+ [rows addObject:settings_row(title,names,@[@0,@1,@2,@3],^int{int w=0,h=0;vr_resolution(&w,&h);
+   for(int i=0;i<4;i++)if(sizes[i][0]==w&&sizes[i][1]==h)return i;return -1;},
+  ^(int v){if(v>=0&&v<4)vr_set_resolution(sizes[v][0],sizes[v][1]);})];
 }
 
 /* Ambient occlusion: off, or the shadow pre-pass's AO with strength and radius both scaled (1.5x is the PR's tested
@@ -530,13 +619,16 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);settings_save_frame();})];
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
- static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K};
+ static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K,
+  OUTPUT_MODE_NATIVE_4K_METALFX,OUTPUT_MODE_NATIVE_6K};   /* the last two: VR only (game_patches_v143.c vr_big_mode) */
  for(unsigned i=0;i<sizeof order/sizeof *order;i++){
   int m=order[i];if(!(modes&1<<m))continue;unsigned nw=0,nh=0;runtime_output_native(m,&nw,&nh);
   [res addObject:m==OUTPUT_MODE_720P?@"720p":m==OUTPUT_MODE_OFF?@"1080p":m==OUTPUT_MODE_METALFX?settings_text("1080p + MetalFX 放大","1080p + MetalFX upscaling"):
    m==OUTPUT_MODE_NATIVE_METALFX?settings_text("2K + MetalFX 放大（4K 屏）","2K + MetalFX upscaling (4K screens)"):
    m==OUTPUT_MODE_NATIVE_5K?settings_text("原生 5K（5120×2880）","Native 5K (5120×2880)"):
    m==OUTPUT_MODE_NATIVE_4K?settings_text("原生 4K（3840×2160）","Native 4K (3840×2160)"):
+   m==OUTPUT_MODE_NATIVE_4K_METALFX?settings_text("4K + MetalFX 8K","4K + MetalFX 8K"):
+   m==OUTPUT_MODE_NATIVE_6K?settings_text("原生 6K（约 20 帧）","Native 6K (about 20 fps)"):
    nw==2560&&nh==1440?settings_text("2K（2560×1440）","2K (2560×1440)"):
    [NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
   [resModes addObject:@(m)];}
@@ -598,6 +690,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_aniso_row()];
  [rows addObjectsFromArray:settings_effect_rows()];
  for(NSUInteger i=0;i<rows.count;i++)rows[i].page=i<display?SETTINGS_PAGE_DISPLAY:i<input?SETTINGS_PAGE_INPUT:i<users?SETTINGS_PAGE_USERS:SETTINGS_PAGE_EFFECTS;
+ if(vr_enabled()){   /* zeldaVR, its own page: the game's render resolution again (the display page's setting), camera, VR settings */
+  NSUInteger vr=rows.count;
+  if(res.count>=2)[rows addObject:settings_row(settings_text("游戏渲染分辨率","Game render resolution"),res,resModes,
+   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+  settings_camera_rows(rows);
+  settings_vr_rows(rows);
+  for(NSUInteger i=vr;i<rows.count;i++)rows[i].page=SETTINGS_PAGE_VR;
+ }
  return rows;
 }
 
@@ -779,7 +879,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSArray<TOTKSettingRow *> *rows=settings_rows();
  /* The tallest page decides the panel's height (the key bindings page has its own drawing). */
  NSUInteger perPage[SETTINGS_PAGES]={0};for(TOTKSettingRow *r in rows)perPage[r.page]++;
- NSUInteger most=0;for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
+ NSUInteger most=perPage[SETTINGS_PAGE_VR];for(NSUInteger i=0;i<SETTINGS_PAGE_BINDINGS;i++)most=MAX(most,perPage[i]);
  /* The rows close up (down to 24 pt, 2 pt apart: a 26 pt menu then meets the next one's edge) when the panel would not fit the window (21:9 or 32:9 on a laptop
     screen), so its title, close button, tabs and first rows stay in view. */
  CGFloat n=most,rowH=SETTINGS_ROW_H,gap=SETTINGS_GAP,room=window?window.contentView.bounds.size.height-8:CGFLOAT_MAX;
@@ -798,11 +898,13 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  title.textColor=NSColor.whiteColor;title.frame=NSMakeRect(18,h-38,300,24);[self addSubview:title];
  NSButton *close=[NSButton buttonWithTitle:@"✕" target:self action:@selector(close:)];close.bordered=NO;close.refusesFirstResponder=YES;
  close.font=[NSFont systemFontOfSize:15 weight:NSFontWeightBold];close.contentTintColor=NSColor.whiteColor;close.frame=NSMakeRect(W-40,h-40,28,28);[self addSubview:close];
- NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update")]
+ NSArray<NSString *> *tabNames=@[settings_text("画面","Display"),settings_text("输入","Input"),settings_text("用户","User"),settings_text("画面效果","Effects"),settings_text("按键设置","Key bindings"),settings_text("更新","Update")];
+ if(vr_enabled())tabNames=[tabNames arrayByAddingObject:@"VR"];
+ NSSegmentedControl *tabs=[NSSegmentedControl segmentedControlWithLabels:tabNames
   trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
- for(NSInteger p=0;p<SETTINGS_PAGE_BINDINGS;p++){
+ NSView *(^rowPage)(NSInteger)=^NSView *(NSInteger p){   /* the pages of rows: display, input, effects and (zeldaVR) VR */
   NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];NSUInteger k=0;
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
@@ -821,11 +923,13 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
     pop.enabled=r.set!=nil;r.control=pop;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
   }
-  [self addSubview:page];[pages addObject:page];
- }
+  [self addSubview:page];return page;
+ };
+ for(NSInteger p=0;p<SETTINGS_PAGE_BINDINGS;p++)[pages addObject:rowPage(p)];
  NSRect bindingsFrame=NSMakeRect(0,SETTINGS_BOTTOM,W,body);
  NSView *bindings=drawings?[self drawingsPageWithFrame:bindingsFrame]:[self bindingsPageWithFrame:bindingsFrame];[self addSubview:bindings];[pages addObject:bindings];
  NSView *update=[self updatePageWithFrame:bindingsFrame];[self addSubview:update];[pages addObject:update];
+ if(vr_enabled())[pages addObject:rowPage(SETTINGS_PAGE_VR)];
  self.pages=pages;
  /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, user 2026-10-25); the reset buttons on the right
     of the key bindings page. */
@@ -914,7 +1018,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(void)tabChanged:(NSSegmentedControl *)tabs{[self selectPage:tabs.selectedSegment];}
 -(void)selectPage:(NSInteger)page{
  [self endCapture];
- page=page<0?0:page>=SETTINGS_PAGES?SETTINGS_PAGES-1:page;
+ page=page<0?0:page>=settings_pages()?settings_pages()-1:page;
  /* the drawings need the panel made at their size: it is made again on the next turn of the run loop (not under this
     method's feet), on that page */
  if(settings_drawings_for(page)!=self.drawings){g_settings_page=page;dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
@@ -1280,8 +1384,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   g_settings_controller_active=YES;[self controllerHighlight];
   self.previousDirection=direction;self.repeatAt=now+0.4;return;
  }
- if(edges&(1ull<<6)){[self selectPage:(self.page+SETTINGS_PAGES-1)%SETTINGS_PAGES];return;}   /* L1 / R1: the tabs */
- if(edges&(1ull<<7)){[self selectPage:(self.page+1)%SETTINGS_PAGES];return;}
+ if(edges&(1ull<<6)){[self selectPage:(self.page+settings_pages()-1)%settings_pages()];return;}   /* L1 / R1: the tabs */
+ if(edges&(1ull<<7)){[self selectPage:(self.page+1)%settings_pages()];return;}
  if(edges&cancel){settings_show(0);return;}
  if(direction&&(direction!=self.previousDirection||now>=self.repeatAt)){
   if(direction<=2)[self controllerMove:direction==1?-1:1];else [self controllerChange:direction==3?-1:1 select:NO];
@@ -1319,10 +1423,31 @@ static void settings_rebuild(void) {
  if(!window||!settingsOpen)return;
  settings_panel_replace();[settingsPanel center];[settingsPanel refresh];
 }
+/* The panel in the headset (zeldaVR, "按建议 都做", 2026-10-30: hold the left X on a Quest controller to open it, the
+   Quest buttons then work it by name): while it is open with VR on, its layers are drawn into a bitmap ten times a
+   second (twice the size, for the headset's pixels) and handed to the VR thread (gfx/nvn/totk_vr.m vr_panel_image),
+   which shows it in the middle of the view; NULL when it closes. */
+void vr_panel_image(const void *bgra, int w, int h, int stride);
+int vr_panel_in_headset(void);   /* off by default (user 2026-10-30: "先 关闭 设置在 vr里的效果") */
+static NSTimer *settingsVRTimer;
+static void settings_vr_capture(void) {
+ if(!settingsOpen||!settingsPanel||settingsPanel.hidden||!vr_panel_in_headset()){vr_panel_image(NULL,0,0,0);return;}
+ const CGFloat k=2;NSSize z=settingsPanel.bounds.size;int w=(int)(z.width*k),h=(int)(z.height*k);if(w<=0||h<=0)return;
+ static uint8_t *buf;static size_t cap;size_t need=(size_t)w*h*4;
+ if(need>cap){uint8_t *nb=realloc(buf,need);if(!nb)return;buf=nb;cap=need;}
+ CGColorSpaceRef cs=CGColorSpaceCreateDeviceRGB();
+ CGContextRef ctx=CGBitmapContextCreate(buf,(size_t)w,(size_t)h,8,(size_t)w*4,cs,kCGImageAlphaPremultipliedFirst|kCGBitmapByteOrder32Little);   /* BGRA in memory */
+ CGColorSpaceRelease(cs);if(!ctx)return;
+ CGContextClearRect(ctx,CGRectMake(0,0,w,h));CGContextScaleCTM(ctx,k,k);[settingsPanel.layer renderInContext:ctx];CGContextRelease(ctx);
+ vr_panel_image(buf,w,h,w*4);
+}
 static void settings_show(int open) {   /* main thread */
  open=!!open;
  if(!window||open==settingsOpen||(open&&textEntryOpen))return;
  /* Made again at every opening: what the game offers (aspect ratio, resolution) is known only once its code is in. */
+ /* With VR running, the first opening shows the VR page (user 2026-10-30: "启动vr的时候 打开设置 默认打开vr tab"); later ones
+    the page left last. */
+ {static int vrPageShown;if(open&&!vrPageShown&&vr_enabled()){vrPageShown=1;g_settings_page=SETTINGS_PAGE_VR;}}
  if(open){g_settings_controller_active=NO;settings_panel_replace();}else [settingsPanel endCapture];
  settingsOpen=open;
  runtime_gamepad_text_capture(open);
@@ -1330,6 +1455,9 @@ static void settings_show(int open) {   /* main thread */
  else{[window makeFirstResponder:window.contentView];
   if(window.isKeyWindow&&(window.styleMask&NSWindowStyleMaskFullScreen))[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];}
  settingsPanel.hidden=!open;
+ [settingsVRTimer invalidate];settingsVRTimer=nil;
+ if(open&&vr_enabled()&&vr_panel_in_headset())settingsVRTimer=[NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t){(void)t;settings_vr_capture();}];
+ settings_vr_capture();   /* the first picture now, or the headset's copy gone */
  front_mouse_update();
  fprintf(stderr,"[totk] settings panel %s\n",open?"open":"closed");
  if(totk_sr_settings)totk_sr_settings(open);   /* TOTK_STATE_REPORTING: the game gets no input while it is open */

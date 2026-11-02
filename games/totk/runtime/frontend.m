@@ -1,6 +1,8 @@
 /* Native macOS window and VI service adapter. No guest frame is synthesized. */
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
+#import <QuartzCore/CAShapeLayer.h>
 #import <Metal/Metal.h>
 #import <CoreVideo/CoreVideo.h>
 #include <stdatomic.h>
@@ -414,6 +416,91 @@ static NSString *hud_settings_hint(void) {
  if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
 }
 @end
+/* zeldaVR: the headset's picture on the Mac window (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes side by side,
+   the newest image the VR thread handed to the streamer (gfx/nvn/totk_vr.m vr_mirror_copy, an IOSurface, +1), as this
+   view's layer contents over the game's picture, 60 times a second; hidden while there is none (VR off, not connected,
+   or the VR page's "Mac 屏幕" set to the game's picture). Clicks go through. */
+void *vr_mirror_copy(void) __attribute__((weak_import));
+void vr_mirror_crop(double out[4]);   /* gfx/nvn/totk_vr.m: the part of the image to show (x, y, w, h; 0..1) */
+double vr_mirror_aspect(void);   /* gfx/nvn/totk_vr.m: the whole image's width / height */
+int vr_quest_view(void);   /* gfx/nvn/totk_vr.m: each eye inside its lens opening ("显示 Quest 画面") */
+@interface TOTKVRMirror:NSView
+@property(strong) NSTimer *timer;
+@property void *shown;
+@property(strong) CALayer *picture;       /* the eyes, aspect-fit in the view (with "显示 Quest 画面": the left eye) */
+@property(strong) CALayer *picture2;      /* with "显示 Quest 画面": the right eye */
+@property(strong) CAShapeLayer *lens,*lens2;   /* each eye's lens opening (user 2026-10-30: "mac上 显示 比quest 多的 画面") */
+@property int lensOn;
+@end
+@implementation TOTKVRMirror
+-(instancetype)initWithFrame:(NSRect)frame{
+ if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=NSColor.blackColor.CGColor;self.hidden=YES;
+  self.picture=[CALayer layer];self.picture.contentsGravity=kCAGravityResize;[self.layer addSublayer:self.picture];
+  self.lens=[CAShapeLayer layer];self.picture.mask=self.lens;
+  self.picture2=[CALayer layer];self.picture2.contentsGravity=kCAGravityResize;self.picture2.hidden=YES;[self.layer addSublayer:self.picture2];
+  self.lens2=[CAShapeLayer layer];self.picture2.mask=self.lens2;
+  if(vr_mirror_copy){__weak TOTKVRMirror *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *t){(void)t;[weak tick];}];}}
+ return self;
+}
+/* "显示 Quest 画面": the VR thread's own image for the window (gfx/nvn/totk_vr.m mac_view_encode): each eye's middle
+   enlarged there (user 2026-10-30: "把 现在的 图像 中间的 地方 放大2倍显示", "设置里可以调 2倍 到 10 倍"; close to the
+   Quest's own screen, whose lens predistortion enlarges the middle: a plain zoom, not the lens's curve), drawn from the
+   game's picture at the pose it was rendered with; here each half goes in its own lens opening (k_quest_lens). */
+/* Each eye's opening as the Quest 3 shows it (user 2026-11-01: "quest 遮罩 用这种 真实的效果 不是两个圆"): the outline of
+   the area its own screen shows, from 59 of its screencaps (adb exec-out screencap, both eyes 4128x2208; pixels lit in
+   60% of them, each eye's outermost lit pixel at 96 angles round its centre; tools/quest_lens_outline.py, 2026-11-01). Unit
+   coordinates of the eye's half, y from the top. Before: an ellipse per eye. */
+static const float k_quest_lens[2][192]={   /* x, y per point */{
+  0.999,0.51,0.9999,0.5396,0.9987,0.5694,0.9992,0.5999,0.9994,0.6312,0.999,0.6634,0.9998,0.6975,0.9996,0.7331,0.9998,0.7713,0.9998,0.8125,0.9915,0.8514,0.9593,0.8737,
+  0.926,0.8937,0.8944,0.9139,0.8606,0.9304,0.8272,0.9461,0.7941,0.9611,0.7594,0.9722,0.7258,0.9845,0.6909,0.9929,0.6557,0.9991,0.62,1,0.5844,0.9994,0.5499,1,
+  0.5155,1,0.4812,0.9989,0.4465,0.9994,0.4113,0.9995,0.3753,0.9991,0.3376,0.9998,0.2985,0.9996,0.2664,0.982,0.2388,0.9579,0.2123,0.934,0.188,0.9088,0.1647,0.8838,
+  0.1434,0.8577,0.1228,0.8319,0.1042,0.805,0.086,0.7782,0.0682,0.7513,0.054,0.7227,0.0401,0.694,0.0282,0.6646,0.0166,0.6349,0.0089,0.6041,0.0034,0.573,0.002,0.5414,
+  0.0009,0.51,0.0001,0.4784,0.0015,0.4467,0.0013,0.4144,0.0016,0.3813,0.0006,0.3466,0.0006,0.3106,0.0087,0.2764,0.0362,0.2513,0.0634,0.2276,0.0888,0.2039,0.114,0.1809,
+  0.1406,0.1596,0.1672,0.1388,0.1963,0.1212,0.2242,0.1025,0.2533,0.0856,0.2836,0.0705,0.3148,0.0572,0.3457,0.0425,0.3783,0.0314,0.4109,0.0187,0.445,0.0097,0.4798,0.0011,
+  0.5155,0.0018,0.5512,0.0011,0.5872,0.0007,0.6238,0.0009,0.6612,0.0016,0.7002,0.0013,0.7406,0.0019,0.7723,0.0233,0.7999,0.0494,0.8262,0.0754,0.85,0.1025,0.8727,0.1293,
+  0.893,0.1571,0.9111,0.1857,0.9299,0.2128,0.9449,0.2418,0.9611,0.2695,0.9752,0.2981,0.9873,0.3273,0.999,0.3565,0.9994,0.3888,0.9992,0.42,0.9987,0.4505,0.9999,0.4803},
+{
+  0.9981,0.5095,0.9989,0.5411,0.9994,0.573,0.992,0.604,0.9843,0.6349,0.9744,0.6652,0.9607,0.6942,0.9467,0.723,0.9308,0.7509,0.913,0.7777,0.8964,0.8056,0.8777,0.8326,
+  0.8556,0.8573,0.8343,0.8834,0.8109,0.9083,0.7866,0.9335,0.7602,0.9574,0.7326,0.9815,0.7005,0.9991,0.6614,0.9993,0.6237,0.9986,0.5877,0.999,0.5524,0.9989,0.5178,0.9984,
+  0.4835,0.9995,0.4492,0.9984,0.4146,0.9989,0.3793,0.999,0.3433,0.9986,0.3075,0.9941,0.274,0.9823,0.2396,0.9718,0.2058,0.959,0.1728,0.9441,0.1383,0.9299,0.1058,0.912,
+  0.073,0.8932,0.0412,0.8721,0.009,0.8498,0.0024,0.81,0.0026,0.769,0.0029,0.731,0.0027,0.6956,0.0036,0.6617,0.0034,0.6297,0.0036,0.5987,0.0022,0.5687,0.003,0.5389,
+  0.002,0.5095,0.003,0.48,0.0022,0.4503,0.0036,0.4203,0.0034,0.3892,0.0054,0.3578,0.0117,0.3268,0.0255,0.2984,0.0396,0.2699,0.0557,0.2423,0.0707,0.2134,0.0879,0.1852,
+  0.1073,0.1579,0.1289,0.1315,0.1502,0.1034,0.1728,0.0749,0.2,0.0505,0.2276,0.0244,0.2591,0.0031,0.2988,0.0008,0.3378,0.0011,0.3752,0.0004,0.4118,0.0003,0.4478,0.0006,
+  0.4835,0.0013,0.5192,0.0006,0.554,0.0093,0.5881,0.0182,0.6212,0.0291,0.6533,0.042,0.6849,0.0551,0.7154,0.07,0.7447,0.0867,0.7748,0.102,0.8038,0.1193,0.8317,0.1383,
+  0.8583,0.1591,0.885,0.1804,0.9118,0.2023,0.9388,0.2251,0.9644,0.25,0.9903,0.2759,0.9984,0.3102,1,0.3456,1,0.3798,1,0.4132,1,0.4458,0.9989,0.4779}};
+static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole rectangle */
+ CGMutablePathRef p=CGPathCreateMutable();
+ if(eye<0||eye>1){CGPathAddRect(p,NULL,CGRectMake(0,0,z.width,z.height));return p;}
+ for(int i=0;i<96;i++){const CGFloat x=k_quest_lens[eye][2*i]*z.width,y=(1-k_quest_lens[eye][2*i+1])*z.height;   /* the layer's y is up */
+  if(i)CGPathAddLineToPoint(p,NULL,x,y);else CGPathMoveToPoint(p,NULL,x,y);}
+ CGPathCloseSubpath(p);return p;
+}
+-(void)tick{
+ void *s=vr_mirror_copy();
+ if(!s){if(!self.hidden){self.hidden=YES;self.picture.contents=nil;self.picture2.contents=nil;self.shown=NULL;}return;}
+ self.hidden=NO;
+ [CATransaction begin];[CATransaction setDisableActions:YES];
+ double c[4];vr_mirror_crop(c);   /* both eyes, or the left eye's middle at 16:9 */
+ const int lens=c[2]>=0.99&&vr_quest_view();
+ if(s!=self.shown){self.picture.contents=(__bridge id)s;self.picture2.contents=lens?(__bridge id)s:nil;self.shown=s;}
+ /* the picture aspect-fit; with "显示 Quest 画面" each eye in its own layer, inside the opening its lens shows (k_quest_lens), black outside */
+ double iw=c[2],ih=c[3],ar=ih>0?iw/ih*vr_mirror_aspect():16.0/9;NSSize b=self.bounds.size;double w=b.width,h=w/ar;if(h>b.height){h=b.height;w=h*ar;}
+ CGRect fit=CGRectMake(floor((b.width-w)/2),floor((b.height-h)/2),w,h);
+ CGRect crop=lens?CGRectMake(0,0,0.5,1):CGRectMake(c[0],c[1],c[2],c[3]),crop2=CGRectMake(0.5,0,0.5,1);   /* the eyes, unit coordinates */
+ if(!CGRectEqualToRect(self.picture.contentsRect,crop))self.picture.contentsRect=crop;
+ if(lens&&!CGRectEqualToRect(self.picture2.contentsRect,crop2))self.picture2.contentsRect=crop2;
+ CGRect left=lens?CGRectMake(fit.origin.x,fit.origin.y,floor(w/2),h):fit,right=CGRectMake(fit.origin.x+floor(w/2),fit.origin.y,w-floor(w/2),h);
+ if(!CGRectEqualToRect(self.picture.frame,left)||lens!=self.lensOn){
+  if(lens!=self.lensOn)self.picture2.contents=lens?(__bridge id)s:nil;
+  self.lensOn=lens;self.picture.frame=left;self.picture2.frame=right;self.picture2.hidden=!lens;
+  CGPathRef p=mirror_path(left.size,lens?0:-1);self.lens.path=p;CGPathRelease(p);
+  p=mirror_path(right.size,1);self.lens2.path=p;CGPathRelease(p);
+ }
+ [CATransaction commit];
+ CFRelease(s);
+}
+-(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
+@end
 #include "settings_panel.h"
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
@@ -651,6 +738,8 @@ void runtime_front_run(void(*callback)(void)){
   front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
+  {TOTKVRMirror *mirror=[[TOTKVRMirror alloc] initWithFrame:window.contentView.bounds];mirror.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;   /* zeldaVR */
+   [window.contentView addSubview:mirror positioned:NSWindowBelow relativeTo:bootOverlay];}
   TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
   [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];hudBox=box;
   /* The settings panel's FPS graph switch, one for both games (user 2026-10-29: "改成两个游戏共用 默认打开"): fps-graph.txt

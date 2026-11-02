@@ -68,6 +68,28 @@ void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
+int vr_enabled(void) { return 0; }   /* VR settings rows (zeldaVR): VR off in the probe */
+int vr_streamer_managed(void) { return 0; }
+void vr_resolution(int *w, int *h) { *w = *h = 0; }
+int vr_set_resolution(int w, int h) { (void)w; (void)h; return 0; }
+int vr_first_person(void) { return 0; }
+void vr_set_first_person(int on) { (void)on; }
+int vr_offset_cm(int axis) { (void)axis; return 0; }
+int vr_mirror_mode(void) { return 0; }
+int vr_quest_view(void) { return 0; }
+void vr_set_quest_view(int on) { (void)on; }
+int vr_quest_zoom(void) { return 2; }
+void vr_set_quest_zoom(int x) { (void)x; }
+int vr_6dof(void) { return 0; }
+int vr_motion(void) { return 0; }
+void vr_set_motion(int on) { (void)on; }
+void vr_panel_image(const void *p, int w, int h, int s) { (void)p; (void)w; (void)h; (void)s; }
+int vr_panel_in_headset(void) { return 0; }
+void vr_set_6dof(int on) { (void)on; }
+int vr_snap_ms(void) { return 0; }
+void vr_set_snap_ms(int ms) { (void)ms; }
+void vr_set_mirror_mode(int on) { (void)on; }
+void vr_set_offset_cm(int axis, int cm) { (void)axis; (void)cm; }
 void runtime_mouse_set_hook(void (*hook)(void)) { (void)hook; }
 void runtime_mouse_move(double dx, double dy) { (void)dx; (void)dy; }
 void runtime_mouse_button(int button, int down) { (void)button; (void)down; }
@@ -365,7 +387,7 @@ static void update_probe(void) {
     window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     settings_show(1); assert(settingsOpen);
-    assert(settingsPanel.tabs.segmentCount == SETTINGS_PAGES && SETTINGS_PAGE_UPDATE == SETTINGS_PAGES - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
+    assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE == settings_pages() - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
     for (TOTKSettingRow *r in settingsPanel.allRows) assert(r.page != SETTINGS_PAGE_UPDATE);
     assert(!spawned[0]);   /* nothing is asked before the page opens */
 
