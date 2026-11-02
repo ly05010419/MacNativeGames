@@ -1,7 +1,8 @@
 # Recorded shaders and pipelines finish before gameplay
 
 Package Odyssey's shared pipeline recipes beside the executable and rename their shader references through the seed
-alias map. Complete known warm-up before the first frame, with ODYSSEY_WARM_BEFORE_PLAY=0 retaining the title-only wait.
+alias map. Complete the warm-up lists (title and recorded pipelines) before the first frame; the rest of the translation
+cache warms behind (ODYSSEY_WARM_BEFORE_PLAY=all waits for it too, =0 keeps the title-only wait).
 Draw-skipping translation becomes opt-in (TOTK_SHADER_ASYNC=1), matching the newer TOTK/BOTW default. This moves known
 compilation to loading; new unrecorded states can still stall. No claim is made that an intermittent flicker is fixed.
 

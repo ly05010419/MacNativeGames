@@ -5181,6 +5181,7 @@ static int g_warm_started;
 static uint64_t g_warm_t0;
 static _Atomic int g_warm_running;   // 后台预热还没跑完（进局读取画面据此多等一会儿，见 mtl_warm_wait） | Background warm-up has not finished yet (the loading screen on entering a run waits a little longer based on this, see mtl_warm_wait)
 static _Atomic int g_warm_priority_done;
+static _Atomic int g_warm_lists_done;   // every warm-up list (the title's and the recorded pipelines) worked through; the translation cache's remaining libraries may still be warming
 static _Atomic uint64_t g_warm_library_ns,g_warm_library_count,g_warm_pipeline_ns,g_warm_pipeline_count;
 static uint64_t g_warm_rps, g_warm_cps, g_warm_skip_fz;
 static uint64_t g_warm_claim_shaders, g_warm_claim_rps, g_warm_claim_cps;
@@ -7270,6 +7271,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
             if (path_index++ == 0) atomic_store(&g_warm_priority_done, 1);
         }
         atomic_store(&g_warm_priority_done, 1);
+        atomic_store(&g_warm_lists_done, 1);
         // The native port translates variants as they are discovered. Warm every variant already
         // present in this translation-chain cache before the first playable scene is released.
         NSString *rt = totk_rt_dir();
@@ -7323,6 +7325,7 @@ static void warm_worker(NSArray<NSString *> *paths, NSArray<NSString *> *files,
              (unsigned long long)atomic_load(&g_warm_library_count),atomic_load(&g_warm_library_ns)/1e6,
              (unsigned long long)atomic_load(&g_warm_pipeline_count),atomic_load(&g_warm_pipeline_ns)/1e6);
     }
+    atomic_store(&g_warm_lists_done, 1);
     atomic_store(&g_warm_running, 0);
     if (runtime_warm_done) runtime_warm_done();
 }
@@ -7493,15 +7496,20 @@ static void warm_start(void) {
     // the menu, then mtl_warm_wait at save-load waits before entering play.
     uint64_t wait_start = bp_now();
     /* Odyssey can start its opening movie directly from the title. Unlike TOTK's save-load transition, that path
-       offers no later loading screen at which to wait. Finish the recorded pipelines and libraries before handing
-       the first frame back to the game, so their compilation cannot interrupt the movie or starve its audio stream.
-       ODYSSEY_WARM_BEFORE_PLAY=0 keeps the old title-only wait for comparisons. */
+       offers no later loading screen at which to wait. Finish the warm-up lists (the title's and the recorded
+       pipelines, with the libraries they need) before handing the first frame back to the game, so their compilation
+       cannot interrupt the movie or starve its audio stream. The rest of the translation cache (every variant ever
+       translated, 30,000 and more libraries) warms behind: waiting for it too took about 10 minutes on a Mac whose
+       Metal cache was cold (after PR #1562). ODYSSEY_WARM_BEFORE_PLAY=all waits for everything, =0 for the title's
+       list only (the wait before PR #1562), for comparisons. */
     const char *warm_before = getenv("ODYSSEY_WARM_BEFORE_PLAY");
-    int wait_all = !(warm_before && !strcmp(warm_before, "0"));
-    while (wait_all ? atomic_load(&g_warm_running) : !atomic_load(&g_warm_priority_done)) usleep(2000);
+    int wait_mode = warm_before && !strcmp(warm_before, "0") ? 0 : warm_before && !strcmp(warm_before, "all") ? 2 : 1;
+    while (wait_mode == 2 ? atomic_load(&g_warm_running) : wait_mode == 1 ? !atomic_load(&g_warm_lists_done) : !atomic_load(&g_warm_priority_done))
+        usleep(2000);
     int ms = (int)((bp_now() - wait_start) / 1000000ull) + 1;
     warm_claim();
-    MLOG("[odyssey-warm] %s ready before play; waited %d ms", wait_all ? "recorded pipelines and shader libraries" : "title list", ms);
+    MLOG("[odyssey-warm] %s ready before play; waited %d ms",
+         wait_mode == 2 ? "every warm-up list and the translation cache" : wait_mode == 1 ? "the warm-up lists (title and recorded pipelines)" : "title list", ms);
     MLOG("启动关键管线已就绪：等待 %d ms，可用着色器 %lu / 渲染管线 %llu / 计算管线 %llu；其余后台继续预热",
          ms, (unsigned long)g_shcache.count, g_warm_claim_rps, g_warm_claim_cps);
 }

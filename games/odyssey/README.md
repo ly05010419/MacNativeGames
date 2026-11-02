@@ -129,8 +129,9 @@ translated into Metal libraries ahead of time; then run the build command again 
 
 The app now includes Odyssey's shared render-pipeline recipes as well as its shader libraries. Startup finishes
 warming these and the pipelines recorded by earlier sessions before the first frame, so the opening scene does not
-compete with that compilation. A longer loading screen is expected. `ODYSSEY_WARM_BEFORE_PLAY=0` restores the earlier
-title-only wait for comparison. Draw-skipping shader translation is off by default, as in the newer TOTK/BOTW host;
+compete with that compilation. A longer loading screen is expected. The rest of the translation cache (every variant
+ever translated) keeps warming behind the game; `ODYSSEY_WARM_BEFORE_PLAY=all` waits for it too (about 10 minutes when
+the Mac's Metal cache is cold), `ODYSSEY_WARM_BEFORE_PLAY=0` restores the earlier title-only wait for comparison. Draw-skipping shader translation is off by default, as in the newer TOTK/BOTW host;
 `TOTK_SHADER_ASYNC=1` opts back in. New pipelines absent from every warm-up list can still cause first-use pauses.
 
 ## Playing
