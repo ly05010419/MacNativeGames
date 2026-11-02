@@ -14,6 +14,7 @@
 #include "game_version.h"
 #include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
 #include "botw_shadow_res.h"   /* 1.9.0's sun shadow map at 2048 (TOTK_SHADOW_RES, shadows.txt) */
+#include "botw_fov.h"   /* 1.9.0's field of view (TOTK_FOV_SCALE, graphics-fov.txt) */
 #include <TargetConditionals.h>
 uint32_t runtime_thread_current_handle(void);
 static void botw_aspect_install(Module *m);   /* the aspect ratio, end of the file */
@@ -713,6 +714,52 @@ void runtime_shadow_res_save(int size) {   /* the settings panel: the next launc
     runtime_setting_save("shadows.txt", g_shadow.saved ? "2048" : "off", "sun shadow size");
 }
 #endif
+#ifdef GAME_BOTW190
+/* The field of view (botw_fov.h): TOTK_FOV_SCALE=<K> first, else graphics-fov.txt (x100, the settings panel's row), read
+   before the guest starts; the row changes it at once. Mac only. A value that is neither keeps 1x and says so; code that
+   is not as shipped leaves the game's code and field of view, and the row unavailable, without stopping the game. */
+static _Atomic uint32_t *g_fov_factor;
+static const float *g_fov_game;
+static double g_fov_k = 1;
+static int g_fov_refused;
+static void patch_fov(Module *m) {
+    if (ios_code()) return;
+    const char *env = getenv("TOTK_FOV_SCALE"); char word[32];
+    if (env && *env) {
+        double k = fov_parse_env(env);
+        if (k) g_fov_k = k; else fprintf(stderr, "[botw] TOTK_FOV_SCALE=%s: not 0.5 to 2; the game's field of view\n", env);
+    } else if (runtime_setting_word("graphics-fov.txt", word, sizeof word)) {
+        int v = fov_parse_file(word);
+        if (v > 0) g_fov_k = v / 100.0; else fprintf(stderr, "[botw] graphics-fov.txt: not 50 to 200; the game's field of view\n");
+    }
+    uint64_t data = (m->file_size + 0x3fff) & ~0x3fffULL; uint32_t found = 0;
+    int bad = data + 0x4000 == m->size ? fov_apply(m->base, (uintptr_t)m->base, m->text_end, data, m->size, g_fov_k, &found) : -1;
+    if (bad > 0) fprintf(stderr, "[botw] field of view main+%#x: found %08x expected %08x\n", fov_guard[bad - 1].off, found, fov_guard[bad - 1].original);
+    if (bad) {
+        g_fov_refused = 1;
+        fprintf(stderr, "[botw] field of view as shipped: the camera code or its room is not as expected (the row unavailable)\n");
+        return;
+    }
+    g_fov_factor = (_Atomic uint32_t *)(void *)(m->base + data + FOV_FACTOR_SLOT);
+    g_fov_game = (const float *)(void *)(m->base + data + FOV_GAME_SLOT);
+    fprintf(stderr, "[botw] field of view x%g (the main camera's vertical FOV at main+%#x), stub +%#llx\n", g_fov_k, FOV_SITE,
+            (unsigned long long)fov_stub_at(m->text_end));
+}
+int runtime_fov_available(void) { return !ios_code() && !g_fov_refused; }   /* the settings panel: where patch_fov acts */
+int runtime_fov_scale_locked(void) { const char *e = getenv("TOTK_FOV_SCALE"); return e && *e; }
+double runtime_fov_scale(void) { return g_fov_k; }
+void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the camera update reads the factor every frame) */
+    uint32_t bits;
+    if (!fov_factor_bits(k, &bits)) { fprintf(stderr, "[botw] fovscale: x%g is not 0.5 to 2; x%g kept\n", k, g_fov_k); return; }
+    g_fov_k = k;
+    if (g_fov_factor) atomic_store(g_fov_factor, bits);
+    float now = g_fov_game ? *(const volatile float *)g_fov_game : 0, f; memcpy(&f, &bits, 4);
+    /* The game's FOV as the stub last kept it (before the factor), and what the stub then hands setFovy: computed from
+       those two, not read back from the game. */
+    fprintf(stderr, "[botw] fovscale: field of view x%g (the game's vertical FOV now %.1f degrees; %.1f with it, computed)\n", k,
+            now * 57.29578f, fov_result(now, f) * 57.29578f);
+}
+#endif
 void runtime_game_patches(Module *m) {
     fprintf(stderr, "[botw] %s game-code patches\n", TOTK_GAME_VERSION);
     runtime_survey_init(m);   /* TOTK_SURVEY=1: survey pos / move (world_survey.c) */
@@ -720,6 +767,9 @@ void runtime_game_patches(Module *m) {
     patch_phone_render(m);
 #ifdef GAME_BOTW190
     patch_shadow_res(m);
+#endif
+#ifdef GAME_BOTW190
+    patch_fov(m);
 #endif
     botw_aspect_install(m);
     if (realtime_enabled()) patch_realtime(m);
