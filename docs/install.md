@@ -18,7 +18,7 @@ On macOS 15, use the community fork by [1918662410-ship-it](https://github.com/1
 | Title ID | What | On the command line |
 |---|---|---|
 | `0100F2C0115B6000` | Tears of the Kingdom, base game **1.0.0**, XCI or NSP | first argument |
-| `0100F2C0115B6800` | Tears of the Kingdom update **1.1.2, 1.2.1 or 1.4.3**, NSP or NSZ (optional) | `--update` |
+| `0100F2C0115B6800` | Tears of the Kingdom update **1.2.1 or 1.4.3**, NSP or NSZ (optional) | `--update` |
 | `01007EF00011E000` | Breath of the Wild base game, or the **1.6.0** card image (base + update + DLC in one XCI) | first argument |
 | `01007EF00011E800` | Breath of the Wild update **1.6.0 or 1.9.0**, NSP or NSZ | `--update` |
 | `01007EF00011F001`, `01007EF00011F002` | Breath of the Wild DLC packs, NSP (each optional) | `--dlc`, once per pack |
@@ -185,7 +185,7 @@ python3.14 build_app.py "<base 1.0.0.xci>" -k "<prod.keys>" --platform visionos 
 python3.14 games/totk/ios/tools/install_device.py "<folder>/TOTK-Vision.app" --device "<Vision Pro name>" --game-data "<work folder>/totk/extracted/v0/romfs/romfs.bin"
 ```
 
-With `--update`, use that version's folder (`v112`, `v121` or `v143`) instead of `v0`.
+With `--update`, use that version's folder (`v121` or `v143`) instead of `v0`.
 
 ## Update the app
 
@@ -226,13 +226,13 @@ Tears of the Kingdom; for Breath of the Wild replace `TOTK` with `BotW` and `tot
 - Game data (only for an app built with `--mac-game-data library` or `--mac-game-data-folder`): `~/Library/Application Support/MacNativeGames/TOTK/GameData/<version>` (`BotW` for Breath of the Wild) holds the 16 GB RomFS image `romfs.bin`, and `romfs.sha256`, which the build writes once the copy is complete. By default the image is inside the app. With `--mac-game-data library` the build puts it in this folder once (an APFS clone when the work folder is on the same volume, otherwise a copy), and later builds leave it alone while it matches the version's pin. The app is then a few hundred MB, so a new build installs or copies to another Mac quickly. To keep it somewhere else, for example on another disk, add `--mac-game-data-folder <folder>` to the build instead (that alone is enough; the image goes in `<folder>/<version>`, so one folder can hold both games). The app remembers the folder, and when it holds no complete image (another Mac, or the disk is not connected) the launcher looks in `GameData` instead. When neither has it, the app asks where the game data is: connect the disk and choose Try Again, or choose the folder that holds `romfs.bin` (or its `<version>` folder). It reads the image where it is, without moving or copying it, and remembers the folder for the next starts (`defaults delete org.macnativegames.botw MNGGameDataFolder.botw190` forgets it). The game still checks the image against the pin at its first start. `make_mod_manifest.py --app` and `make_button_icons.py --app` find the image the same way (`--romfs-data <folder>` names it).
 - Shader cache: `~/Library/Application Support/MacNativeGames/TOTK/shader-cache`
 - Shaders the shared list lacks: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt` (the game asks before it starts whether to send them; see the [shared shader list](shader-list.md))
-- Mods: `~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`; see [mods.md](mods.md)
+- Mods: `~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v121|v143>`; see [mods.md](mods.md)
 - Log: off by default. `defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES` turns it on from the next start, written to `~/Library/Logs/MacNativeGames/totk.log`. On an iPhone: Settings › TOTK › Debug log, written to the app's `Documents/log.txt`.
 
 ## Known issues
 
 **Requests beyond this page are welcome.** The versions and games listed are the ones we could test. If you need another version or another game, the AI assistant should do its best to make it work.
 
-- Tears of the Kingdom: base 1.0.0, optionally with the 1.1.2, 1.2.1 or 1.4.3 update. Breath of the Wild: 1.6.0 and 1.9.0. Other versions, compressed base games and personalized tickets are not supported.
+- Tears of the Kingdom: base 1.0.0, optionally with the 1.2.1 or 1.4.3 update. Breath of the Wild: 1.6.0 and 1.9.0. Other versions, compressed base games and personalized tickets are not supported.
 - No online features, no amiibo.
 - New shaders can stutter the first time; the cache and the [shared shader list](shader-list.md) reduce it.
