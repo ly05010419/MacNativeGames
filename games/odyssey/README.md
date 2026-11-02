@@ -10,7 +10,7 @@ download, and keys from your own Switch. We do not help anyone obtain keys or ga
 
 What changed and how each change was measured: [CHANGELOG.md](CHANGELOG.md).
 
-## Status (26 October 2026)
+## Status (31 October 2026)
 
 Tested on a MacBook Pro, Apple M3, 8 GB, macOS 26.6 (1.3.0, 23 October), and on a MacBook Pro, Apple M1 Max, 64 GB,
 macOS 27.0.1 (1.4.1 from a base NSP and the update NSP, 26 October).
@@ -22,7 +22,7 @@ macOS 27.0.1 (1.4.1 from a base NSP and the update NSP, 26 October).
 | Saves | autosave and reload; the app keeps the saves from before each of the last five sessions |
 | Sound and movies | game audio, without a tick where the music's stream buffers join; H.264 tutorial and story movies |
 | Performance | locked 60 fps in Bonneton on the M3 (frame time p95 about 17.5 ms); 60 fps in the Wooded Kingdom with the 3D scene at 2560x1440 on the M1 Max |
-| Picture | key 3: the 3D scene at the shipped 1600x900, with MetalFX to the window, 1920x1080 or 2560x1440; key 4: 16:9, fitted to the window or 21:9; key 5: MetalFX edge smoothing |
+| Picture and settings | **1** opens the Display / Input / Key bindings panel: FPS graph, saved HUD, render/output size, picture filters, aspect ratio, sensitivity and remapping |
 | Latency | full screen by default: about 30 ms from game frame to screen (63 ms windowed) |
 
 | Not done or not verified | Details |
@@ -36,18 +36,31 @@ macOS 27.0.1 (1.4.1 from a base NSP and the update NSP, 26 October).
 Exact measurements and logs are in the development log below, in [CHANGELOG.md](CHANGELOG.md) and in the project's
 test evidence.
 
+## In-game settings
+
+Press **1** to open or close settings; **Esc** closes it. On a controller, press **L3 + R3** together; the bindings
+page can assign another panel button. The game receives no input while settings are open. L1/R1 change tabs and the
+stick or D-pad selects controls. The three pages include the later TOTK/BOTW panel revisions:
+
+- **Display:** full/FPS-only/off HUD, a separate 30-second FPS graph, playtime, controller battery, render and scaled
+  output resolutions, anti-aliasing, CAS sharpening, upscalers, texture filtering, aspect ratio and MetalFX edge smoothing.
+- **Input:** controller type, mouse mode and sensitivity, rumble and strength, gyro.
+- **Key bindings:** keyboard/mouse and controller diagrams, a list for smaller windows, two key assignments per action,
+  binding capture, a custom controller settings button and separate resets.
+
+Choices are saved beside `controls.txt` in **Odyssey Data** and restored at launch. The graph can stay visible with the
+text HUD off. Picture filters apply during ordinary 60 fps play as well as interpolation. Render choices are limited
+to the verified canvas allocated by that build; output resolution scales independently. Keys 2–7 no longer change
+settings.
+
 ## Optional frame interpolation
 
-Key **2** toggles a request for **60 real + 60 generated pictures** on a 120 Hz
-window screen and supported Metal 4 GPU. It is off by default. Odyssey's game
-logic stays at 60 Hz; other screen rates suspend generation. Motion comes from
-camera reprojection, so moving characters can still show artifacts. See
-[frame interpolation](docs/frame-interpolation.md) for inputs, limits and checks.
-
-The modes copied from Tears of the Kingdom are gone: key 2 now toggles instead
-of cycling, and `TOTK_MFX=interp30`, `interpmax` and numeric values all request
-60+60. 30+30 no longer exists, so on 60, 100 or 144 Hz screens nothing is
-generated.
+In **1 → Display → Frame interpolation**, select **60+60 (120 Hz)** to request 60 real + 60 generated pictures on a
+120 Hz window screen and supported Metal 4 GPU. It is off by default and the choice is saved. Odyssey's game logic
+stays at 60 Hz; other screen rates suspend generation. Motion comes from camera reprojection, so moving characters
+can still show artifacts. See [frame interpolation](docs/frame-interpolation.md) for inputs, limits and checks.
+`TOTK_MFX=interp` remains a launch override. The 30/40/50 fps and unlimited modes from Zelda are not offered for
+Odyssey because its game logic advances once per frame.
 
 ## What you need
 
@@ -85,7 +98,7 @@ The script runs eight steps (nine with `--update`) and stops with a clear messag
 
 0. with `--update`: join the base and update NSPs into `<work>/input/odyssey.nsp` (every entry copied unchanged);
 1. check the input (title, version, integrity; it prints no keys or game data);
-2. extract the program modules and merge the base game with the update; scale the game's graphics table for key 3's
+2. extract the program modules and merge the base game with the update; scale the game's graphics table for the panel's
    bigger render size into a RomFS overlay (`--render-res`, default 2560x1440; `1600x900` leaves the game as shipped);
 3. extract the system fonts;
 4. rewrite the ARM64 modules ahead of time;
@@ -147,26 +160,26 @@ order: resolution back to 1600 × 900, sharpening off, FSR 1 instead of MetalFX.
 
 ### Keys
 
-The keys are the same as in Tears of the Kingdom. The settings window's picture choices (anti-aliasing, sharpening,
-upscaler, texture filtering, resolution) are not on keys: change them in the window before the game; the top-right
-overlay (key 1) lists them with the GPU load and the GPU time of the picture work.
+Press **1** for settings and **Esc** to close the panel. In the panel, the Display page edits picture controls live;
+the Input page edits mouse/controller behavior; the Key bindings page edits and resets the layout. Keys 2–7 are
+available for bindings and no longer change graphics. Default gameplay keys retain Odyssey's existing layout:
 
-| Key | What it does |
+| Input | Action |
 |---|---|
-| 1 | overlays (FPS, shaders, load and this list) on or off |
-| 2 | frame interpolation 60+60 on a 120 Hz screen, on or off (above) |
-| 3 | picture: the 3D scene at the shipped 1600x900, 1600x900 with MetalFX to the window, native 1920x1080, native 2560x1440 (the game starts as shipped; window and HUD stay at 2560x1440). Built with `--render-res 1600x900`: MetalFX to the window on or off |
-| 4 | aspect ratio: 16:9, fitted to the window, 21:9 (`TOTK_ASPECT=<w>:<h>` sets the wide step); the HUD stays 16:9 |
-| 5 | edge smoothing (MetalFX temporal anti-aliasing), off by default (`TOTK_TAA=1` starts it on) |
-| 6 | controller type: auto, Xbox, PlayStation, Switch (how the face buttons map to the Switch's A, B, X, Y; kept for the next start) |
-| 7 | mouse mode: the mouse turns the camera and its buttons act as controller buttons; Command-Tab frees the pointer |
+| W / A / S / D | Move |
+| J | Jump / confirm (A) |
+| K / Space | Jump / cancel (B) |
+| I / U | Throw cap (X / Y) |
+| Shift / Option | Crouch / ground pound (ZR / ZL) |
+| Arrow keys | Camera |
+| Return | Game menu (+) |
+| Tab / Esc | Map (−), while settings are closed |
+| L3 + R3 | Open settings (a controller button can replace this chord) |
 
-Anti-aliasing, sharpening and the upscaler act while 60+60 is on (key 2); with it off the picture is the default (MetalFX,
-no filter). A resolution picked in the window uses key 3's render size patch (`runtime/game_patches.c`: framework,
-canvas, console viewport, and the render target pool and memory heap grown with it) with the game's own quality table
-rewritten for that size (`scripts/make_resolution_overlay.py`, run from your dump at packaging); the game starts at it and
-key 3 still steps down to 1600x900. SMAA uses the area and search tables from [iryoku/smaa](https://github.com/iryoku/smaa)
-(MIT, `third_party/smaa`).
+Anti-aliasing, sharpening and the upscaler work during ordinary 60 fps play as well as 60+60. Render resolution
+changes the live scene cap within the maximum canvas allocated at launch, retaining the checked render-pool,
+memory-heap and root-arena patches. Output resolution scales independently. SMAA's area and search tables remain
+from [iryoku/smaa](https://github.com/iryoku/smaa) (MIT, `third_party/smaa`).
 
 Measured on an M-series Mac with 8 GB (Seaside Kingdom, output 3024x1700; GPU time of the picture work per presented
 frame): MetalFX 1.81 ms, FSR 1 1.68 ms, Lanczos 1.89 ms, bilinear 0.26 ms; FXAA +0.03 ms, SMAA +0.18 ms, CAS +0.4 ms;

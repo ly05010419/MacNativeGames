@@ -1,4 +1,5 @@
 #include "game_patches.h"
+#include "../third_party/d2r_gfx/gfx/nvn/odyssey_graphics.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
 #include <stdatomic.h>
@@ -182,7 +183,28 @@ static void patch_scene_pick(Module *m) {
        after PR #910) starts at that size instead */
     const char *start = getenv("ODYSSEY_SCENE_START");
     if (start && !strcmp(start, "max")) { g_scene_mode = scene_states() - 1; atomic_store(&g_scene_cap, 0); }
-    else atomic_store(&g_scene_cap, 1600u | 900u << 16);
+    else {
+        static const unsigned sizes[][2] = {{1600,900},{1920,1080},{2240,1260},{2560,1440}};
+        int choice = dm_gfx_opt_get(GX_RES);
+        atomic_store(&g_scene_cap, 1600u | 900u << 16);
+        if (choice >= 0 && choice < 4) runtime_scene_resolution_set(sizes[choice][0], sizes[choice][1]);
+    }
+}
+int runtime_scene_resolution_max(unsigned *w, unsigned *h) {
+    *w = g_render_w ? g_render_w : 1600; *h = g_render_h ? g_render_h : 900;
+    return 1;
+}
+int runtime_scene_resolution(unsigned *w, unsigned *h) {
+    uint32_t cap = atomic_load(&g_scene_cap);
+    if (!cap) return runtime_scene_resolution_max(w, h);
+    *w = cap & 0xffff; *h = cap >> 16; return 1;
+}
+int runtime_scene_resolution_set(unsigned w, unsigned h) {
+    unsigned max_w, max_h; runtime_scene_resolution_max(&max_w, &max_h);
+    if (w < 1600 || h < 900 || w > max_w || h > max_h || w * 9 != h * 16) return 0;
+    atomic_store(&g_scene_cap, w | h << 16);
+    fprintf(stderr, "[odyssey] settings: scene resolution cap %ux%u (canvas %ux%u)\n", w,h,max_w,max_h);
+    return 1;
 }
 /* Present thread: one line when the picked scene size changes (the first 40 changes, then every 500th), so a test log says
    which size the game draws after key 3. */

@@ -26,6 +26,7 @@ void odyssey_aspect_install(const Module *m) { (void)m; }
 void odyssey_aspect_present(void) {}
 void *runtime_hle_wrap_named(void *p, const char *s) { (void)s; return p; }
 int mfxup_enabled(void) { return 0; }
+int dm_gfx_opt_get(int option) { (void)option; return 0; }
 void dm_gfx_set_flag(const char *s, int v) { (void)s; (void)v; }
 static const unsigned offsets[] = {0x624b4c, 0x624b7c, 0x4e321c, 0x4bf714};
 static const uint32_t original[] = {0x52a15400, 0x52a0c808, 0x52b86000, 0x52b81808};

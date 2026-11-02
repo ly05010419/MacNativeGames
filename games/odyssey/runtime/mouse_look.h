@@ -11,6 +11,11 @@
    motion_fusion.c's frame): mouse right turns it clockwise seen from above (-z), mouse up tilts its top edge up (+x);
    per tick, sensitivity / 1000 * 2.5 revolutions a second per point, at most 2 revolutions a second. The gravity it
    reports follows the pitch (stopped at 80 degrees), so the sensor fusion keeps the aim where the mouse put it.
+   Pointing (mouse_look_point; Tears of the Kingdom's ability wheel, which opens while L is held and picks the ability the
+   right stick points at): the stick starts at the center and stays where the mouse puts it instead of settling back, its
+   length cut to 1 so a turn of the mouse turns it at once, and the mouse turns neither the camera nor the gyro; when it
+   ends the stick is centered again, so the camera does not turn on its own after the wheel closes. Without it the
+   pick followed the decaying stick back to the center as soon as the mouse stopped.
    Plain C, no clock and no lock: the caller ticks it (gamepad.m, one timer while mouse mode is on) and serializes the
    calls; tests/mouse_look/probe.c covers it. */
 #pragma once
@@ -25,7 +30,7 @@ enum { MOUSE_LOOK_TICK_NS = 10000000 };
 #define MOUSE_LOOK_MAX_PITCH (80 * M_PI / 180)
 
 typedef struct { int sensitivity, invert_y, counterweight, decay, min_decay; } MouseLookSettings;
-typedef struct { double x, y; double pitch_move, yaw_move; double pitch; } MouseLook;   /* stick in units of its range */
+typedef struct { double x, y; double pitch_move, yaw_move; double pitch; int pointing; } MouseLook;   /* stick in units of its range */
 
 /* From the environment's text (NULL or out of range: the default). sensitivity 1-100 (50), invert_y 0/1 (0),
    counterweight / decay / min_decay 0-100 (20, 18, 6). */
@@ -44,10 +49,21 @@ static inline MouseLookSettings mouse_look_settings(const char *sensitivity, con
 
 static inline void mouse_look_reset(MouseLook *m) { *m = (MouseLook){0}; }
 
+/* Pointing on or off (the stick centered either way). */
+static inline void mouse_look_point(MouseLook *m, int on) {
+    if (!on == !m->pointing) return;
+    m->pointing = on; m->x = m->y = 0; m->pitch_move = m->yaw_move = 0;
+}
+
 static inline void mouse_look_move(MouseLook *m, double dx, double dy, const MouseLookSettings *s) {
     if (!isfinite(dx) || !isfinite(dy)) return;
     const double kx = s->sensitivity / 1000.0, ky = s->invert_y ? -kx : kx;
     m->x += dx * kx; m->y += dy * ky;
+    if (m->pointing) {
+        const double length = hypot(m->x, m->y);
+        if (length > 1) { m->x /= length; m->y /= length; }
+        return;
+    }
     m->yaw_move -= dx * kx; m->pitch_move -= dy * ky;
     const double length = hypot(m->x, m->y), least = s->counterweight / 100.0;
     if (length > 0 && length < least) { m->x *= least / length; m->y *= least / length; }
@@ -61,6 +77,11 @@ static inline void mouse_look_tick(MouseLook *m, const MouseLookSettings *s, int
     double ox = m->x, oy = -m->y, shown = hypot(ox, oy);
     if (shown > 1) { ox /= shown; oy /= shown; }
     *rx = (int32_t)lround(ox * 32767); *ry = (int32_t)lround(oy * 32767);
+    if (m->pointing) {   /* held where the mouse put it; no turn */
+        gyro[0] = gyro[1] = gyro[2] = 0;
+        acc[0] = 0; acc[1] = -sin(m->pitch); acc[2] = -cos(m->pitch);
+        return;
+    }
     const double c = length < 1 ? length : 1, decay = 1 - c * c * s->decay / 100.0, most = 1 - s->min_decay / 100.0;
     const double keep = decay < most ? decay : most;
     m->x *= keep > 0 ? keep : 0; m->y *= keep > 0 ? keep : 0;
