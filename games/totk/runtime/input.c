@@ -327,6 +327,36 @@ static void *input_file(void *arg) {
             extern void runtime_diag_cam_src(double secs);
             double secs = atof(line + 7); if (!(secs > 0 && secs <= 120)) runtime_fail("camsrc takes 1 to 120 seconds");
             runtime_diag_cam_src(secs);
+        } else if (!strncmp(line, "watchw ", 7) || !strncmp(line, "watchr ", 7)) {   /* "watchw|watchr <hex address> <seconds>": who writes / reads those 4 bytes (VR stereo RE) */
+            extern void runtime_diag_watch_write(uint64_t addr, int secs, int load);
+            char *e; uint64_t a = strtoull(line + 7, &e, 16); runtime_diag_watch_write(a, (int)strtol(e, NULL, 10), line[5] == 'r');
+        } else if (!strncmp(line, "bpregs ", 7)) {   /* "bpregs <hex main offset>": registers at the first hit (VR stereo RE) */
+            extern void runtime_diag_bp_regs(uint64_t off);
+            runtime_diag_bp_regs(strtoull(line + 7, NULL, 16));
+        } else if (!strncmp(line, "b2 ", 3)) {   /* "b2 <0|1|2|3> [mask]": zeldaVR stereo B2, the second render run per game update (game_patches_v143.c) */
+            extern void runtime_vr_b2(int on);
+            extern void runtime_vr_b2_mask(unsigned m);
+            char *e; long mode = strtol(line + 3, &e, 10); if (*e == ' ') runtime_vr_b2_mask((unsigned)strtoul(e, NULL, 0));
+            runtime_vr_b2((int)mode);
+        } else if (!strncmp(line, "dumpmain ", 9)) {   /* "dumpmain <file>": main's loaded image, relocated (VR stereo RE) */
+            extern void runtime_diag_dump_main(const char *path);
+            char path[1024]; snprintf(path, sizeof path, "%s", line + 9); path[strcspn(path, "\r\n")] = 0;
+            runtime_diag_dump_main(path);
+        } else if (!strncmp(line, "peek", 4) && (line[4] == ' ' || (line[4] == 'm' && line[5] == ' '))) {   /* "peek <hex addr> [n]" / "peekm <hex main offset> [n]" */
+            extern void runtime_diag_peek(uint64_t a, int n, int rel);
+            const int rel = line[4] == 'm'; char *e; uint64_t a = strtoull(line + (rel ? 6 : 5), &e, 16);
+            runtime_diag_peek(a, (int)strtol(e, NULL, 10), rel);
+        } else if (!strncmp(line, "calctree", 8)) {   /* "calctree": the method tree the frame's calc walks (VR stereo) */
+            extern void runtime_diag_calc_tree(void);
+            runtime_diag_calc_tree();
+        } else if (!strncmp(line, "jobdump", 7)) {   /* "jobdump": the jobs of the frame's render job lists (VR stereo) */
+            extern void runtime_diag_job_dump(void);
+            runtime_diag_job_dump();
+        } else if (!strncmp(line, "frametrace ", 11)) {   /* "frametrace <seconds> <hex offset>...": threads and call chains per frame (VR) */
+            extern void runtime_diag_frame_trace(double secs, const char *offs);
+            char *rest; double secs = strtod(line + 11, &rest); if (!(secs > 0 && secs <= 30)) runtime_fail("frametrace takes 1 to 30 seconds and up to 4 hex offsets in main");
+            while (*rest == ' ') rest++;
+            runtime_diag_frame_trace(secs, rest);
         } else if (!strncmp(line, "camwatch ", 9)) {   /* "camwatch <seconds>": who writes the main camera's matrix (VR) */
             extern void runtime_diag_cam_watch(double secs, int src);   /* "camwatch <seconds> src": camsrc's copy source instead */
             double secs = atof(line + 9); if (!(secs > 0 && secs <= 120)) runtime_fail("camwatch takes 1 to 120 seconds [src]");
