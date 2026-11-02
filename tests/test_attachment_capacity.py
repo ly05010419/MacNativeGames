@@ -1,6 +1,6 @@
-"""CPU attachment-boundary checks using production source; no Metal device or game data."""
+"""CPU attachment-boundary checks using production source; no Metal device or game data. UBSan's array bounds check,
+not AddressSanitizer: ASan's start hangs on macOS 26 (InitializeShadowMemory walking the dyld shared cache, 2026-11-02)."""
 from pathlib import Path
-import os
 import re
 import subprocess
 import sys
@@ -50,13 +50,11 @@ class AttachmentCapacity(unittest.TestCase):
             build = subprocess.run([
                 "xcrun", "--sdk", "macosx", "clang", "-std=gnu11", "-O1", "-g", "-fobjc-arc",
                 "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", "-Wno-unused-variable",
-                "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                "-fsanitize=bounds,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer",
                 "-I" + str(NVN), str(path), "-framework", "Foundation", "-o", str(binary),
             ], capture_output=True, text=True, timeout=60)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-            env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0:halt_on_error=1",
-                       UBSAN_OPTIONS="halt_on_error=0" if expected_error else "halt_on_error=1")
-            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30, env=env)
+            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
             if expected_error:
                 self.assertNotEqual(run.returncode, 0, "old capacity unexpectedly passed")
                 self.assertIn(expected_error, run.stderr, run.stdout + run.stderr)
@@ -70,9 +68,9 @@ class AttachmentCapacity(unittest.TestCase):
     def test_old_capacities_fail_independently(self):
         source = (NVN / "nvn_mtl.m").read_text()
         for old, new, error in (
-            ("g_sd[SD_ATT_MAX]", "g_sd[9]", "global-buffer-overflow"),
-            ("uint8_t nst[SD_ATT_MAX];", "uint8_t nst[9];", "stack-buffer-overflow"),
-            ("cand[8 + 1 + SD_ATT_MAX]", "cand[18]", "stack-buffer-overflow"),
+            ("g_sd[SD_ATT_MAX]", "g_sd[9]", "index 9 out of bounds for type 'sd_att[9]'"),
+            ("uint8_t nst[SD_ATT_MAX];", "uint8_t nst[9];", "index 9 out of bounds for type 'uint8_t[9]'"),
+            ("cand[8 + 1 + SD_ATT_MAX]", "cand[18]", "index 18 out of bounds for type 'uint64_t[18]'"),
         ):
             with self.subTest(capacity=new):
                 self.assertEqual(source.count(old), 1)
