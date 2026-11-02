@@ -588,20 +588,30 @@ static class ShaderService
         while ((line = Console.In.ReadLine()) != null)
         {
             if (line.Trim().Length == 0) continue;
-            string reply;
-            try
-            {
-                Handle(JsonNode.Parse(line).AsObject());
-                reply = "{\"ok\": true}";
-            }
-            catch (Exception e)   // reported to the host, which stops with the message
-            {
-                string kind = e is RuntimeError ? "RuntimeError" : e.GetType().Name;
-                reply = PyJson(new JsonObject { ["ok"] = false, ["error"] = Cut($"{kind}: {e.Message}", 500) }, -1, true);
-            }
-            stdout.Write(reply + "\n");
+            stdout.Write(HandleLine(line) + "\n");
             stdout.Flush();
         }
         return 0;
+    }
+
+    // The library form (LibExports.cs: the iPhone / iPad app, which cannot start a process): the service's settings, then
+    // one request line at a time, with the reply the service would write. SPIRV-Cross is the linked-in one.
+    public static void Configure(string outDirectory, string chainName, int debug)
+    {
+        outDir = outDirectory; chain = chainName; debugMode = debug; spirvCross ??= "(linked in)";
+        Directory.CreateDirectory(outDir);
+    }
+    public static string HandleLine(string line)
+    {
+        try
+        {
+            Handle(JsonNode.Parse(line).AsObject());
+            return "{\"ok\": true}";
+        }
+        catch (Exception e)   // reported to the host, which stops with the message
+        {
+            string kind = e is RuntimeError ? "RuntimeError" : e.GetType().Name;
+            return PyJson(new JsonObject { ["ok"] = false, ["error"] = Cut($"{kind}: {e.Message}", 500) }, -1, true);
+        }
     }
 }

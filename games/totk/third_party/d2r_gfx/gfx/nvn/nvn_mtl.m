@@ -5970,13 +5970,20 @@ static NvShader *plib_take(NSString *pc, int wait) {
    skipped draw stays missing until its pipeline is ready (behind a queue of predicted pipelines that took long: the
    Great Sky Island water's magenta lasted much longer with it on). */
 static int async_shaders(void) {
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && !defined(TOTK_DEVICE_XLATE)
     return 0;   // no translator on the device: missing variants are skipped anyway
 #else
     static int on = -1;
     if (on < 0) {
         const char *e = getenv("TOTK_ASYNC_SHADERS");
+#if TARGET_OS_IPHONE
+        /* The device with the linked translator (totk_shader_rt.m DEVICE_XLATE): on unless TOTK_ASYNC_SHADERS=0. A variant
+           its startup shaders lack is translated in the background and its draws skipped meanwhile (a few frames), as
+           its new pipelines already are (async_draws); translating on the submit thread would stop the frame. */
+        on = !(e && !strcmp(e, "0")) && totk_rt_can_translate() && !tbdr_on();
+#else
         on = e && !strcmp(e, "1") && totk_rt_can_translate() && !tbdr_on();
+#endif
         if (on) totk_rt_set_ready_hook(async_ready);
         MLOG("[async-shaders] %s", on ? "on: new shaders and pipelines are prepared in the background" : "off");
     }

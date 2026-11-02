@@ -999,6 +999,36 @@ def build_spirv_cross(tree, logs):
         logs / 'spirv-cross' / 'link.log', quiet=False)
 
 
+def build_device_translator(tree, logs):
+    """The iPhone / iPad app's shader translator (totk_shader_rt.m DEVICE_XLATE): the Mac's totk_xlate service as a
+    NativeAOT static library from this repository (prebuilt/ios-arm64/libtotk_xlate.a, made by
+    tools/totk_xlate/publish_ios_lib.sh, checked against its .sha256) and SPIRV-Cross for the device from the pinned
+    sources (the program's sources without main.cpp, and spirv_cross_inproc.cpp, which includes it). build_ipa.py links
+    both from build/ios-xlate when they are there; the app then translates a variant its startup shaders lack in the
+    background instead of skipping its draws until the Mac fills it in."""
+    lib = tree / 'prebuilt/ios-arm64/libtotk_xlate.a'
+    want = (lib.parent / 'libtotk_xlate.a.sha256').read_text().strip()
+    if not lib.is_file() or sha256(lib) != want:
+        raise BuildError(f'{lib}: not the translator library this repository ships (its SHA-256 differs from '
+                         f'libtotk_xlate.a.sha256); check it out again, or rebuild it with games/totk/tools/totk_xlate/publish_ios_lib.sh')
+    src, out = tree / 'tooling/spirv-cross', tree / 'build/ios-xlate'
+    objs = out / 'obj'
+    objs.mkdir(parents=True, exist_ok=True)
+    flags = [*SPIRV_CROSS_FLAGS, '-target', 'arm64-apple-ios26.0']
+    jobs = [(src / n, objs / (n + '.o'), []) for n in SPIRV_CROSS_SOURCES if n != 'main.cpp']
+    jobs.append((tree / 'tools/totk_xlate/spirv_cross_inproc.cpp', objs / 'spirv_cross_inproc.o', ['-I', src]))
+
+    def compile_one(job):
+        source, obj, extra = job
+        run(['xcrun', '--sdk', 'iphoneos', 'clang++', *flags, *extra, '-c', source, '-o', obj],
+            logs / 'ios-spirv-cross' / (obj.name + '.log'), quiet=False)
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+        list(pool.map(compile_one, jobs))
+    (out / 'libtotk_spirv_cross.a').unlink(missing_ok=True)
+    run(['xcrun', 'ar', 'rcs', out / 'libtotk_spirv_cross.a', *[obj for _, obj, _ in jobs]], logs / 'ios-spirv-cross' / 'ar.log', quiet=False)
+    clone(lib, out / 'libtotk_xlate.a')
+
+
 def check_translator(tree):
     """The shader translation service: a native program in this repository (no .NET needed to build or to play)."""
     translator = tree / 'prebuilt/macos-arm64/totk_xlate'
@@ -2248,6 +2278,7 @@ def main(argv):
         step_binary(tree, game, keys, {**env, 'SHADER_LIST': '../botw/assets/shader_list.tsv'}, logs, version=version, title='01007ef00011e000')
         say(f'4/4 app: assembling {out}')
         if device_app:   # the same IPA tooling as Tears of the Kingdom (ios/tools/build_ipa.py --version botw160 / botw190)
+            build_device_translator(tree, logs)
             run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
                  '--logs', logs, '--app-name', APPS['botw'][2], '--bundle-id', APPS['botw'][1],
                  *(['--image-outside'] if args.ios_game_data == 'documents' else []),
@@ -2332,6 +2363,8 @@ def main(argv):
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
     if device_app:
+        if args.platform == 'ios':   # visionOS keeps the startup shaders only
+            build_device_translator(tree, logs)
         run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
              '--logs', logs, '--app-name', IOS_APP_NAME, '--bundle-id', BUNDLE_ID, '--platform', args.platform,
              *(['--image-outside'] if args.ios_game_data == 'documents' else []),
