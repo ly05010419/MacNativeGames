@@ -190,11 +190,20 @@ static int front_modifier_down(NSEvent *e){
 -(BOOL)acceptsFirstResponder{return YES;}
 /* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
    menu) do anything; releases still go through so nothing stays held. */
--(void)keyDown:(NSEvent *)e{if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+-(void)keyDown:(NSEvent *)e{
+ /* AppKit normally handles menu equivalents first. If a Command event reaches
+    this view, offer it to the menu rather than turning its key into gameplay. */
+ if(e.modifierFlags&NSEventModifierFlagCommand){[NSApp.mainMenu performKeyEquivalent:e];return;}
+ if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);
+}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 /* Shift, Control and Option, left and right apart, are keys of the layout (keyboard_map.h); they come as flag changes.
    While the settings panel or text entry is open only their releases go through. */
--(void)flagsChanged:(NSEvent *)e{int down=front_modifier_down(e);if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);}
+-(void)flagsChanged:(NSEvent *)e{
+ /* Command takes over from window input; do not leave movement or modifiers held. */
+ if(e.modifierFlags&NSEventModifierFlagCommand){runtime_input_clear_window();return;}
+ int down=front_modifier_down(e);if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);
+}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
