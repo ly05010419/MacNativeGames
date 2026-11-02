@@ -44,3 +44,9 @@ were imported. AoC 1.3.0's four timing sites assert the original instructions;
 its KIDS scheduler and scene/battle use independently measured intervals. The
 scene counter uses native CNTFRQ_EL0, independently checked against Mach time
 (the M5 exposes different native-counter and mach_absolute_time ABI rates).
+
+The 2026-10-30 follow-up exposes the existing `nx_extract` NSP/XCI reader through
+`scripts/build_aoc.py`, with offline LibHac restore and the existing exact-input
+pins. No extractor source or upstream dependency version changes are made.
+The packaged launcher uses `MacNativeGames/AoC` for writable state and migrates
+its previous profile atomically when the destination does not yet exist.
