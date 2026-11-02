@@ -124,7 +124,7 @@ class UpdateRuntime(unittest.TestCase):
 
     def test_identity_refuses_other_apps(self):
         app, res, _ = self.app()
-        (res / 'rewritten/v112').mkdir()
+        (res / 'rewritten/v121').mkdir()
         with self.assertRaisesRegex(build_app.BuildError, 'not an app build_app.py made'):
             update_runtime.app_identity(app)
         ios = self.root / 'TOTK.app'

@@ -94,7 +94,7 @@ def run(original, patched, header, start, failure, seed, use_patch):
 # Breath of the Wild 1.6.0's main has none (scanned 2026-10-19): its exclusive windows keep their status register off x18.
 # 1.9.0 has none either (2026-10-19): its four w18-status STXRs (one in main, three in sdk) are compare-and-swap loops whose
 # CBNZ retries inside the window.
-WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v112': [0x74CB68, 0x80B3A0], 'v121': [0x7FF694], 'botw160': [], 'botw190': []}
+WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v121': [0x7FF694], 'botw160': [], 'botw190': []}
 
 
 def x18_exit_windows(image, nso):

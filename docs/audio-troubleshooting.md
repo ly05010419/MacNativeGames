@@ -56,8 +56,7 @@ shader code and save formats are unchanged.
    same opening-audio bytes and still reject traversal. `probe-audio` checks
    constructed mixer/decoder state without opening an audio device; it does not
    prove that in-game streaming or the selected speaker/headphones are audible.
-   For a 1.1.2 app, use `rewritten/v112` instead. The added resource integration
-   checks have been exercised locally on 1.0.0, not on 1.1.2.
+   The added resource integration checks have been exercised locally on 1.0.0.
 
 5. Play the opening scene and confirm both dialogue and background music through
    the intended output device. This listening check confirmed the 1.0.0 fix on
@@ -159,7 +158,7 @@ RomFS 解析器只去掉一个根目录斜杠，随后又将剩余斜杠判为�
 验证分三层：27 个无需游戏数据的解析器用例；`probe-fs` 对真实开场音频进行
 单/双/三斜杠路径读取比对；最后实际播放开场，确认对白和配乐。音频混音自检
 单独通过并不代表真实游戏流式播放正常。已实测 1.0.0 开场，不将结果外推为
-所有场景、1.1.2 或其他游戏均已验证。
+所有场景或其他游戏均已验证。
 
 如果仍然无声，先确认 macOS 输出设备与系统提示音，再检查日志中的
 CoreAudio/解码错误及音频电平。着色器首次编译造成的卡顿属于另一类问题。

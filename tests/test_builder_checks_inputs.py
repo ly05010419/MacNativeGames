@@ -135,7 +135,7 @@ class CachedFontsAndChoice(Base):
 class RepositoryCheck(Base):
     def test_real_repository_for_both_games(self):
         game = write_xci(self.tmp / 'g.xci')
-        self.assertEqual(Repository().run(self.ctx(BuildPaths(game, self.keys))).detail, '1.0.0, 1.1.2, 1.2.1, 1.4.3')
+        self.assertEqual(Repository().run(self.ctx(BuildPaths(game, self.keys))).detail, '1.0.0, 1.2.1, 1.4.3')
         self.assertEqual(Repository().run(self.ctx(BuildPaths(game, self.keys), BOTW)).detail, '1.6.0, 1.9.0')
 
     def fake_repo(self, build_app=True):

@@ -21,7 +21,7 @@
 | 标题 ID | 是什么 | 命令里放在 |
 |---|---|---|
 | `0100F2C0115B6000` | 王国之泪本体 **1.0.0**，XCI 或 NSP | 第一个参数 |
-| `0100F2C0115B6800` | 王国之泪更新 **1.1.2、1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
+| `0100F2C0115B6800` | 王国之泪更新 **1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
 | `01007EF00011E000` | 旷野之息本体，或 **1.6.0** 卡带镜像（本体、更新、DLC 在同一个 XCI 里） | 第一个参数 |
 | `01007EF00011E800` | 旷野之息更新 **1.6.0 或 1.9.0**，NSP 或 NSZ | `--update` |
 | `01007EF00011F001`、`01007EF00011F002` | 旷野之息的两个 DLC 包，NSP（都可选） | `--dlc`，每个包一次 |
@@ -191,7 +191,7 @@ python3.14 build_app.py "<本体 1.0.0.xci>" -k "<prod.keys>" --platform visiono
 python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" --device "<Vision Pro 名称>" --game-data "<工作目录>/totk/extracted/v0/romfs/romfs.bin"
 ```
 
-加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v112`、`v121` 或 `v143`）。
+加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v121` 或 `v143`）。
 
 ## 更新 App
 
@@ -248,7 +248,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 - 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`
 - 着色器缓存：`~/Library/Application Support/MacNativeGames/TOTK/shader-cache`
 - 公共清单里还没有的着色器：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`。游戏启动前会问要不要发送，见[公共着色器清单](shader-list.md)。
-- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`，见 [mods.md](mods.md)。
+- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v121|v143>`，见 [mods.md](mods.md)。
 - 日志：默认关闭。
   - Mac：`defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES`，下次启动起写到 `~/Library/Logs/MacNativeGames/totk.log`。
   - iPhone：在“设置 › TOTK › 記錄日誌”打开，写到 App 的 `Documents/log.txt`。
@@ -257,6 +257,6 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 
 **超出本页范围的需求也欢迎提。** 这里列出的版本和游戏，只是我们有条件测过的。需要别的版本或别的游戏时，AI 助理应该尽力把它做出来。
 
-- 王国之泪：本体 1.0.0，可加 1.1.2、1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
+- 王国之泪：本体 1.0.0，可加 1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
 - 没有联网功能，没有 amiibo。
 - 第一次遇到新着色器时可能卡顿；本机缓存和[公共着色器清单](shader-list.md)会减少卡顿。

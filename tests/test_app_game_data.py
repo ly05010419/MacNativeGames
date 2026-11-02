@@ -190,7 +190,7 @@ class InstallApp(unittest.TestCase):
 
     def test_later_bundle_verification_failure_restores_earlier_bundle(self):
         originals = []
-        for name in ('GameData-v112.bundle', 'GameData-v143.bundle'):
+        for name in ('GameData-v121.bundle', 'GameData-v143.bundle'):
             for app in (self.out, self.new):
                 path = data_bundle(app, name=name)/IMAGE
                 originals.append((path, identity(path)))

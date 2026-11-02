@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class VersionSpec:
-    key: str        # build_app.py's VERSIONS key, also the player's mods folder name (v0, v112, ...)
+    key: str        # build_app.py's VERSIONS key, also the player's mods folder name (v0, v121, ...)
     display: str    # the manifest's display_version
     manifest: str   # file name in the game's assets folder
 
@@ -36,7 +36,6 @@ TOTK = GameSpec(
     assets_dir='games/totk/assets',
     versions=(
         VersionSpec('v0', '1.0.0', 'expected-v1.0.0.json'),
-        VersionSpec('v112', '1.1.2', 'expected-v1.1.2.json'),
         VersionSpec('v121', '1.2.1', 'expected-v1.2.1.json'),
         VersionSpec('v143', '1.4.3', 'expected-v1.4.3.json'),
     ),

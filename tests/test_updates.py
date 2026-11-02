@@ -94,8 +94,8 @@ class Updates(unittest.TestCase):
         tree = self.root/'tree'; tree.mkdir()
         (tree/'scripts').symlink_to(SCRIPTS, target_is_directory=True)
         fake_venv(tree)
-        with patch.dict(build_app.UPDATED, {'exefs_sha256': {'main': build_app.UPDATED['exefs_sha256']['main']}}), self.assertRaisesRegex(build_app.BuildError, 'ExeFS main'):
-            build_app.step_code(tree, self.update, self.keys, os.environ, self.root/'logs', version='v112')
+        with patch.dict(build_app.UPDATED121, {'exefs_sha256': {'main': build_app.UPDATED121['exefs_sha256']['main']}}), self.assertRaisesRegex(build_app.BuildError, 'ExeFS main'):
+            build_app.step_code(tree, self.update, self.keys, os.environ, self.root/'logs', version='v121')
         self.assertFalse((tree/'rewritten').exists())
 
     def test_botw190_update_is_extracted_by_the_botw_script_and_checked_against_its_pins(self):
@@ -265,7 +265,7 @@ class Updates(unittest.TestCase):
         def fake_lists(tree, res, game, logs):   # shader_list.py resolve, tested in test_shader_list
             for name in ('pso_manifest.tsv', 'pso_title.tsv'):
                 (res/'build'/name).write_text('# resolved\n')
-        for version, display in (('v112', '1.1.2'), ('v121', '1.2.1'), ('v143', '1.4.3')):
+        for version, display in (('v121', '1.2.1'), ('v143', '1.4.3')):
             with self.subTest(version=version):
                 tree=self.root/version;out=self.root/f'{version}.app'
                 files=[f'build/totk-native-{version}','build/pso_manifest.tsv','build/pso_title.tsv','build/spirv-cross/spirv-cross',
@@ -323,7 +323,7 @@ class Updates(unittest.TestCase):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
-        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v112',chain='totk-native-v8-unverified',shaders=1,files={'x':'0'*64})))
+        (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v121',chain='totk-native-v8-unverified',shaders=1,files={'x':'0'*64})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'synthetic payload')
         with patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'sign_app') as signing:
