@@ -43,6 +43,11 @@ void dm_gfx_ssao_set(int pct) { if (fakeSsaoLive) fakeSsaoSet = pct; }
 #else
 #define TOTK_V143 0
 #endif
+#ifdef GAME_BOTW190   /* PR #1602: Breath of the Wild 1.9.0's effects page has 1.4.3's rows; of the switches only AO acts */
+#define BOTW_V190 1
+#else
+#define BOTW_V190 0
+#endif
 static const char *const fakeFxIds[2] = {"ao", "bloom"}, *const fakeFxNames[2][2] = {{"环境光遮蔽", "Ambient occlusion"}, {"泛光", "Bloom"}};
 static int fakeFxOn[2] = {1, 1};
 static int fakeAnisoStart = -1, fakeFxaa = 1, fakeSharpen;
@@ -58,7 +63,7 @@ int dm_gfx_sharpen(void) { return fakeSharpen; }
 int dm_gfx_fx_count(void) { return 2; }
 const char *dm_gfx_fx_id(int i) { return fakeFxIds[i]; }
 const char *dm_gfx_fx_name(int i, int english) { return fakeFxNames[i][english != 0]; }
-int dm_gfx_fx_available(int i) { (void)i; return 1; }
+int dm_gfx_fx_available(int i) { return !BOTW_V190 || i == 0; }   /* as totk_fx.h: on 1.9.0 only AO */
 int dm_gfx_fx_on(int i) { return fakeFxOn[i]; }
 void dm_gfx_fx_set(int i, int on) { fakeFxOn[i] = on != 0; }
 /* runtime/gamepad.m's controller type and mouse mode without GameController: a DualSense is connected. */
@@ -511,12 +516,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 27 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 27 + TOTK_V143 + BOTW_V190);   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
-                                                                 (1.4.3), or eight greyed rows (Breath of the Wild
-                                                                 1.9.0's shadow resolution live) */
+                                                                 (1.4.3, and Breath of the Wild 1.9.0 with its shadow
+                                                                 resolution and AO live), or eight greyed rows */
 
     /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
        the rows below read the mode. */
@@ -698,9 +703,16 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Shadow resolution", @"Not in this version");
     press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Shadow resolution").enabled);
     /* "Reset to defaults" sets it back to the game's own and removes shadows.txt. */
+    /* The effect switches (PR #1602): ambient occlusion acts at once and is saved as on 1.4.3; the others greyed. */
+    shows(@"Bloom", @"Not in this version"); assert(!menu(@"Bloom").enabled);
+    assert(switched(@"Ambient occlusion")); flip(@"Ambient occlusion", NO);
+    assert(!fakeFxOn[0] && !strcmp(savedName, "graphics-effects.txt") && !strcmp(savedWord, "ao"));
+    shows(@"FXAA anti-aliasing", @"Not in this version"); shows(@"Depth of field", @"Not in this version");
+    shows(@"Model detail distance (LOD)", @"Not in this version");
+    /* "Reset to defaults" sets both back to the game's own and removes shadows.txt and graphics-effects.txt. */
     pick(@"Shadow resolution", @"2048 per cascade"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
-    assert(!runtime_shadow_res_saved() && strstr(removedAll, "shadows.txt "));
+    assert(!runtime_shadow_res_saved() && fakeFxOn[0] && strstr(removedAll, "shadows.txt ") && strstr(removedAll, "graphics-effects.txt "));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
     /* The field of view (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c; the stub itself:
        tests/test_botw_fov.c): 1x, as the game has it; each choice acts at once and is saved in graphics-fov.txt (x100). */
@@ -730,7 +742,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Field of view (FOV)", @"Not in this version"); assert(!menu(@"Field of view (FOV)").enabled);
 #  endif
     shows(@"Render distance", @"Not in this version"); assert(!menu(@"Render distance").enabled);
-    shows(@"Effect switches", @"Not in this version"); shows(@"Sharpening", @"Not in this version");
+#  ifndef GAME_BOTW190
+    shows(@"Effect switches", @"Not in this version");
+#  endif
+    shows(@"Sharpening", @"Not in this version");
 #endif
     /* Anisotropic filtering (effects page, every version): in force at once. */
     shows(@"Anisotropic filtering", @"Off (as the game has it)");

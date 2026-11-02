@@ -40,7 +40,7 @@ static int ssao_param(int i) {   // the environment value goes in only while the
                  int was = -1; if (!atomic_compare_exchange_strong(&g_ssao_v[i], &was, v)) v = was; }
     return v;
 }
-static _Atomic int g_ssao_off;   // the effect switches (totk_fx.h, TOTK) as w: bit 0 no ambient occlusion, bit 1 no shadows
+static _Atomic int g_ssao_off;   // the effect switches (totk_fx.h) as w: bit 0 no ambient occlusion, bit 1 no shadows (TOTK)
 static void ssao_values(float p[4]) { p[0] = ssao_param(0) / 100.0f; p[1] = ssao_param(1) / 100.0f; p[2] = (float)ssao_param(2); p[3] = (float)atomic_load(&g_ssao_off); }
 #define SSAO_MARK "// totk-ssao\n"   // first line of a patched source and of every variant made from it (variant_library)
 
@@ -84,7 +84,8 @@ static int ssao_flag(const char *name, int v) {
 void dm_gfx_ssao_start(int pct) { atomic_store(&g_ssao_saved, pct > 0 ? pct : 0); }
 int dm_gfx_ssao_locked(void) { return getenv("TOTK_SSAO") || getenv("TOTK_SSAO_STRENGTH") || getenv("TOTK_SSAO_RADIUS"); }
 int dm_gfx_ssao_live(void) { return ssao_on(); }
-/* The effect switches (totk_fx.h, TOTK): the AO (bit 0) or the sun's shadows (bit 1) off in every patched shader at once. */
+/* The effect switches (totk_fx.h): the AO (bit 0; TOTK and BotW 1.9.0) or the sun's shadows (bit 1; TOTK 1.4.3) off in
+   every patched shader at once. */
 static void ssao_set_off_bit(int bit, int off) {
     if (off) atomic_fetch_or(&g_ssao_off, bit); else atomic_fetch_and(&g_ssao_off, ~bit);
     if (ssao_on()) ssao_write_all();
@@ -173,7 +174,8 @@ static const char k_ssao_helper_botw[] =
     "// ---- TOTK_SSAO (BotW AO in shadow pre-pass 0eeb23f2b287a638, written to .z): live parameters in this shader's c1[3] ----\n"
     "// p = c1[3]: x strength (multiplier on the occlusion term, 0 -> 1, at most 8), y radius scale (tap distances, 0 -> 1,\n"
     "// else 0.25 .. 4), z extra rotated copies of the stock inner/outer pair set (1..3; 0 -> none), each thresholded and\n"
-    "// clamped on its own and averaged with the stock set afterwards (so the mean darkness stays and the noise drops), w reserved.\n"
+    "// clamped on its own and averaged with the stock set afterwards (so the mean darkness stays and the noise drops), w the\n"
+    "// effect switch (bit 0 no AO: nothing occluded, whatever x, y, z say; totk_fx.h).\n"
     "// p == 0 returns the stock value untouched. The pair maths repeats the stock code operation for operation, so any p with\n"
     "// x in {0,1}, y in {0,1}, z == 0 also gives the stock value bit for bit (same 4 tap depths, same order of operations).\n"
     "static inline float totk_ssao_tap(texture2d<float> t, sampler s, float2 uv)\n"
@@ -206,6 +208,7 @@ static const char k_ssao_helper_botw[] =
     "                                   float c, float t0m, float t0p, float t1m, float t1p)\n"
     "{\n"
     "    p = select(p, float4(0.0), isnan(p));\n"
+    "    if (fmod(p.w, 2.0) >= 0.5) return 1.0;                   // the effect switch: nothing occluded\n"
     "    if (all(p == float4(0.0))) return stock;\n"
     "    const float w0 = 0.2545439898967742919921875;            // stock inner-pair weight (literal)\n"
     "    const float w1 = q2.y;                                     // stock outer-pair weight c1[2].y\n"
