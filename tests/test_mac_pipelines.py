@@ -28,7 +28,7 @@ class MacPipelineFiles(unittest.TestCase):
         (self.made / 'cc.metalarchive').write_bytes(b'no keys: a file still being written')
         (self.seed / 'pipelines-applegpu_old-zz.metalarchive').write_bytes(b'last build')
         (self.seed / 'pipelines-applegpu_old.tsv').write_text('old\tzz\n')
-        n = build_app.mac_pipeline_files(self.made, self.seed, 'applegpu_g16s', 'totk-native-v8-unverified')
+        n = build_app.mac_pipeline_files(self.made, self.seed, 'applegpu_g16s', 'totk-native-v9-unverified')
         self.assertEqual(n, 3)
         self.assertEqual(sorted(p.name for p in self.seed.iterdir()),
                          ['pipelines-applegpu_g16s-aa.metalarchive', 'pipelines-applegpu_g16s-bb.metalarchive',
@@ -36,7 +36,7 @@ class MacPipelineFiles(unittest.TestCase):
         self.assertEqual((self.seed / 'pipelines-applegpu_g16s-aa.metalarchive').read_bytes(), b'archive a')
         self.assertEqual((self.seed / 'pipelines-applegpu_g16s.tsv').read_text(), 'key1\taa\nkey2\taa\nkey3\tbb\n')
         stamp = json.loads((self.seed / 'pipelines-applegpu_g16s.json').read_text())
-        self.assertEqual(stamp, {'schema': build_app.PAR_SCHEMA, 'chain': 'totk-native-v8-unverified', 'arch': 'applegpu_g16s',
+        self.assertEqual(stamp, {'schema': build_app.PAR_SCHEMA, 'chain': 'totk-native-v9-unverified', 'arch': 'applegpu_g16s',
                                  'pipelines': 3})
 
     def test_nothing_made_leaves_no_index(self):

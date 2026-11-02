@@ -1,5 +1,5 @@
 # TOTK shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.
-# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v8-unverified.
+# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.
 V	000119547ff1c0794d6bce5cd8eb2b5725bc4ded63cfab6d46af52988f21f46e	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"9":"3d"}}
 V	000cadcb81d33a7ce7663eca9bf06f1777f43ae399dcd46653a0bdae673349d2	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d"}}
 V	000cb5aa4551ef000ebd5c2ccbf86370969b8d00df14d598b5d2819a63554a41	{"attr":{"0":"float","1":"float","10":"float","2":"float","3":"float","4":"float","5":"float","6":"float","8":"float","9":"float"},"fout":{},"img":{},"tex":{"20":"2d","8":"2d"}}

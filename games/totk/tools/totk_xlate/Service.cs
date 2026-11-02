@@ -367,7 +367,25 @@ static class ShaderService
     // SPIRV-Cross's own program, compiled into this one (spirv_cross_inproc.cpp, linked by publish_native.sh): the same MSL
     // without a process per shader. TOTK_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
     [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl")]
-    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, out IntPtr msl, out IntPtr err);
+    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, uint mslVersion, out IntPtr msl, out IntPtr err);
+
+    // Image atomics run on the Metal texture itself (MSL 3.1 texture atomics; from seedds/nxnative f8642c48, MIT): below 3.1
+    // SPIRV-Cross emulates them through a raw pointer beside the texture, which a deswizzled block-linear copy does not share, a 3D
+    // image does not compile, and an atomic on a read-write texture made it throw (Donkey Kong Bananza 841c54a878c402f9, 4933fe058307fe7f).
+    // Only a module with an image texel pointer (OpImageTexelPointer, the operand of every image atomic) is written at 3.1: every other
+    // shader keeps its MSL 2.3 source byte for byte.
+    static uint MslVersion(byte[] spv)
+    {
+        if (spv.Length < 20 || BitConverter.ToUInt32(spv, 0) != 0x07230203) return 20300;
+        for (int i = 20; i + 4 <= spv.Length;)
+        {
+            uint w = BitConverter.ToUInt32(spv, i); int n = (int)(w >> 16);
+            if ((w & 0xffff) == 60) return 30100;   // OpImageTexelPointer
+            if (n == 0) break;
+            i += 4 * n;
+        }
+        return 20300;
+    }
     [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_free")]
     static extern void SpirvCrossFree(IntPtr p);
     static readonly bool spirvCrossProcess = Environment.GetEnvironmentVariable("TOTK_XLATE_SPIRV_CROSS") == "process";
@@ -378,7 +396,7 @@ static class ShaderService
         {
             byte[] bytes = File.ReadAllBytes(spv);
             int rc; IntPtr mslText, errText;
-            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), out mslText, out errText);
+            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), MslVersion(bytes), out mslText, out errText);
             try
             {
                 if (rc != 0) throw new RuntimeError(what + Cut((Marshal.PtrToStringUTF8(errText) ?? "").Trim(), 300));
@@ -390,7 +408,8 @@ static class ShaderService
             return;
         }
         var psi = new ProcessStartInfo(spirvCross) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (string a in Xc) psi.ArgumentList.Add(a);
+        uint version = MslVersion(File.ReadAllBytes(spv));
+        foreach (string a in Xc) psi.ArgumentList.Add(a == "20300" ? version.ToString(CultureInfo.InvariantCulture) : a);
         psi.ArgumentList.Add(spv); psi.ArgumentList.Add("--output"); psi.ArgumentList.Add(msl);
         using Process p = Process.Start(psi) ?? throw new RuntimeError(what + "could not start " + spirvCross);
         var err = p.StandardError.ReadToEndAsync(); var outp = p.StandardOutput.ReadToEndAsync();
@@ -421,6 +440,9 @@ static class ShaderService
         if (Truthy(Get(rq, "local"))) job["local"] = rq["local"].DeepClone();
         job["depth_minus_w"] = Truthy(Get(rq, "depth_minus_w"));   // nvnDeviceSetDepthMode(NEAR_IS_MINUS_W): clip z converted to Metal's 0..w
         job["early_fragment_tests"] = Truthy(Get(rq, "early_fragment_tests"));   // fragment shaders: NVN control +0x718 (Program.cs QueryGraphicsState)
+        if (Get(rq, "arch") is JsonValue arch) job["arch"] = arch.DeepClone();   // "sm86": Ampere code (NVN2, Switch 2); absent: Maxwell
+        if (Get(rq, "nvn2_cs") is JsonArray cs) job["nvn2_cs"] = cs.DeepClone();   // an NVN2 compute shader's c[0] layout (Program.cs)
+        if (Get(rq, "shared") is JsonValue sh) job["shared"] = sh.DeepClone();   // compute shared memory bytes when the request knows them (Program.cs)
         Translate(job);
         JsonObject res = ReadRes(variant);
         string spv = Path.Combine(outDir, variant + ".spv"), msl = Path.Combine(outDir, variant + "_b.metal");

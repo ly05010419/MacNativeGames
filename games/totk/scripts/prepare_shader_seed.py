@@ -30,7 +30,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from shader_list import ShaderList   # noqa: E402
 
-CHAIN = 'totk-native-v8-unverified'
+CHAIN = 'totk-native-v9-unverified'
 MIN_SHADERS = 8000
 ZSTD = b'\x28\xb5\x2f\xfd'
 YAZ0 = b'Yaz0'

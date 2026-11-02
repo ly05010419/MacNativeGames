@@ -119,6 +119,11 @@ static class SwshXlate
         // 作业 reduced = true：放宽精度——翻译器只给强制精确的运算打 NoContraction（缺省全部打：保持 Maxwell 分开舍入的逐位结果，代价是 MSL 里大量禁优化的 spvFMul 等）
         // Job reduced = true: relaxed precision - the translator marks NoContraction only on operations that must be exact (the default marks all: keeps the bit-exact results of Maxwell's separate rounding, at the cost of many optimization-disabled spvFMul etc. in the MSL)
         public bool QueryHostReducedPrecision() => _job["reduced"] is JsonNode n && (bool)n;
+        // Switch 2 (NVN2, Ampere code; from seedds/nxnative d3995ca4 / a7bd05f4, MIT): an Ampere jump table ends at the end of the c1 data the
+        // host knows at the latest; a compute shader's own driver constant layout in c[0] (uniform buffer entries, storage buffer entries,
+        // texture handles, its size, the push constant bytes) comes with the job as nvn2_cs, read from its control section.
+        public int QueryConstantBuffer1Size() => _c1.Length;
+        public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
     }
 
 
@@ -132,6 +137,9 @@ static class SwshXlate
                 // 作业 debug = false：关 DebugMode（DebugMode 会跳过 AST 优化器，产物满是临时变量；不改语义）
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                // Image atomics as Metal texture atomics (guarded per coordinate, 3D images and compare-and-swap admitted; Service.cs MslVersion)
+                flags |= TranslationFlags.MetalImageAtomics;
+                if ((string)job["arch"] == "sm86") flags |= TranslationFlags.Ampere;   // NVN2 (Switch 2): a 0x80-byte SPH and 128-bit instructions
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 ShaderProgram p = ctx.Translate();
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"),
