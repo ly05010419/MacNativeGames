@@ -71,7 +71,8 @@
      sharpening           off / 25% / 50% / 75% / 100%       dm_gfx_sharpen_set: FSR 1 RCAS on the 3D picture;
                                                              graphics-sharpen.txt (percent)
      one switch per effect                                   dm_gfx_fx_set (gfx/nvn/totk_fx.h): its passes left out while
-                                                             off; graphics-effects.txt lists the ones that are off
+                                                             off; graphics-effects.txt lists the ones that are off;
+                                                             Breath of the Wild 1.9.0: ambient occlusion (botw_effects.h)
    User (runtime/users.h, docs/users.md; the save area is named after the user's id, so another user
    plays on their own saves; a running game keeps its user)
      user this run        fixed (greyed)                     runtime_users_active: the user this run opened with
@@ -214,6 +215,8 @@ static void settings_effects_restore(void) {
  if(runtime_setting_word("graphics-dof.txt",word,sizeof word)&&!strncmp(word,"off",3))runtime_dof_set(0);
  if(!runtime_far_scale_locked()&&settings_read_number("graphics-far.txt",0.1,1000,&d))runtime_far_scale_set(d/100);
 }
+#elif defined(GAME_BOTW190)
+static void settings_effects_restore(void);   /* botw_effects.h */
 #else
 static void settings_effects_restore(void) {}
 #endif
@@ -539,11 +542,15 @@ static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
 }
 #else
 static TOTKSettingRow *settings_botw_shadow_row(void);   /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
+#ifdef GAME_BOTW190
+#include "botw_effects.h"   /* Breath of the Wild 1.9.0's page: the effect switches its shaders allow (E25) */
+#else
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versions: the page says so */
  NSString *none=settings_text("这个版本没有","Not in this version");
  return @[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_fixed(settings_text("视野（FOV）","Field of view (FOV)"),none),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
           settings_fixed(settings_text("效果开关","Effect switches"),none)];
 }
+#endif
 #endif
 /* Anisotropic filtering: off (the game's 1x) to 16x for the material textures, in force at once (dm_gfx_aniso_set makes
    the game's samplers again with the new level). */
@@ -574,6 +581,7 @@ static void settings_effects_reset(void) {
 #endif
 #ifdef GAME_BOTW190
  if(runtime_shadow_res_available()&&!runtime_shadow_res_locked()){runtime_shadow_res_save(0);runtime_setting_remove("shadows.txt");}
+ settings_botw_effects_reset();
 #endif
  fprintf(stderr,"[totk] settings: the effects page back to the defaults\n");
 }
