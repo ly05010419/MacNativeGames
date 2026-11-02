@@ -316,6 +316,25 @@ Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
 
+Button icons that follow your controls (1.9.0, an Xbox or PlayStation controller): the builder's Controls tab
+("Update the game's button icons"), or by hand after you change the layout, makes a mod in which each prompt shows the
+button that drives that input, read from `controls.txt` (the A prompt shows B while the right face button does A):
+
+```bash
+python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw190" \
+  --app "/path/to/Breath of the Wild.app"
+```
+
+It draws nothing: the icon font already holds every button, so each input's code point is pointed at the icon of its
+button (LB RB LT RT show as L R ZL ZR, Menu and View as + and -). The action guide beside an object ("A Open") becomes
+the Xbox diamond, A at the bottom, B right, X left, Y top, with the button that does the action lit in its place (an
+action of A, B, X or Y moved to a button outside the diamond, such as LB, keeps the Switch's diamond there; its prompt in
+the text still names LB).
+PlayStation controllers get the Xbox letters, and a Nintendo controller (`controller-type.txt` saying `switch`) keeps the
+game's own icons, which already name its buttons. The mod replaces the seven `Font/Font_*.sbfarc` and
+`Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
+needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
+
 ### Notes
 
 - Do not edit `manifest.tsv` by hand; regenerate it.
@@ -668,6 +687,21 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`。
+
+跟随你的按键设置的按钮图标（1.9.0，Xbox 或 PlayStation 手柄）：在 builder 的 Controls 页点“Update the game's button
+icons”，或者改完布局后手动运行，生成一个 mod，让每个提示显示实际执行该输入的按钮（读取 `controls.txt`；右侧面键执行 A
+时，A 的提示显示 B）：
+
+```bash
+python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw190" \
+  --app "/path/to/Breath of the Wild.app"
+```
+
+它不画任何东西：图标字体里已经有每个按钮，所以只是把每个输入的码位指向对应按钮的图标（LB RB LT RT 显示为 L R ZL ZR，Menu
+和 View 显示为 + 和 -）。物体旁的操作提示（“A 打开”）变成 Xbox 的菱形：A 在下、B 在右、X 在左、Y 在上，执行该操作的按钮在
+它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。PlayStation 手柄显示 Xbox 字母；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
+就对应手柄上的按钮。mod 替换七个 `Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
+布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
 
 ### 注意
 

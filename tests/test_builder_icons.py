@@ -1,8 +1,11 @@
 """E6 S6.3: the prompt icons that follow the player's layout. icons_plan (which button each glyph names, B4),
 icons_env (the pinned pip, the venv made aside and checked, B2-B3; processes faked, no network), icons_mod (the seeded
-size table, B1; building with a faked generator; installing in place with the reserved id, kept last, B5)."""
+size table, B1; building with a faked generator; installing in place with the reserved id, kept last, B5), and Breath
+of the Wild's code points shown in each other's place (icons_plan.botw_glyphs, make_botw_button_icons.py)."""
+import json
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -44,6 +47,41 @@ class Plan(unittest.TestCase):
         p = drawn(icons_plan.plan(moved))
         self.assertEqual((p[0xE064], p[0xE049][0]), (['labels', ['LB', '↓']], 'labels'))
         self.assertNotIn(0xE050, p)                                     # stick movements stay
+
+
+class BotwPlan(unittest.TestCase):
+    """Breath of the Wild: each input's code point shows the icon of the button that drives it, from the font's own."""
+
+    def test_by_position_the_face_letters_swap_and_the_rest_stays(self):
+        self.assertEqual(icons_plan.botw_glyphs(inputs()), {0xE040: 0xE041, 0xE041: 0xE040, 0xE042: 0xE043,
+                                                             0xE043: 0xE042})
+        self.assertEqual(icons_plan.botw_glyphs(cf.xbox_letters(inputs())), {})
+        self.assertEqual(icons_plan.botw_glyphs(inputs(b'south = a\neast = b\n')), {0xE042: 0xE043, 0xE043: 0xE042})
+
+    def test_shoulders_menu_none_and_stick_presses_use_the_nearest_icon(self):
+        letters = cf.xbox_letters(inputs())
+        self.assertEqual(icons_plan.botw_glyphs(cf.swap(letters, 'x', 'l1')), {0xE042: 0xE044, 0xE044: 0xE042})
+        self.assertEqual(icons_plan.botw_glyphs(cf.swap(letters, 'zr', 'menu'))[0xE047], 0xE04B)
+        self.assertEqual(icons_plan.botw_glyphs(cf.swap(letters, 'lstick', 'r3')), {0xE053: 0xE054, 0xE054: 0xE053})
+        self.assertEqual(icons_plan.botw_glyphs(inputs(b'north = none\n'))[0xE042], 0xE070)   # no button: a cross
+
+    def test_the_d_pad_icons_follow_real_arms_or_stay(self):
+        letters = cf.xbox_letters(inputs())
+        turned = cf.swap(cf.swap(letters, 'up', 'left'), 'down', 'right')
+        self.assertEqual(icons_plan.botw_glyphs(turned), {0xE05C: 0xE05E, 0xE05E: 0xE05C, 0xE05D: 0xE05F,
+                                                          0xE05F: 0xE05D, 0xE060: 0xE061, 0xE061: 0xE060})
+        moved = icons_plan.botw_glyphs(cf.swap(letters, 'up', 'l1'))
+        self.assertEqual((moved[0xE05C], moved[0xE044]), (0xE044, 0xE05C))
+        self.assertFalse({0xE060, 0xE049} & set(moved))                 # no icon for LB and down side by side
+        crossed = icons_plan.botw_glyphs(cf.swap(letters, 'up', 'right'))   # up+down on the right and down arms
+        self.assertEqual((crossed[0xE060], crossed[0xE061]), (0xE049, 0xE049))   # no such icon: all four arms
+
+    def test_the_action_guide_lights_the_place_of_the_driving_button(self):
+        self.assertEqual(icons_plan.botw_diamond(inputs()), {'a': 'right', 'b': 'bottom', 'x': 'top', 'y': 'left'})
+        self.assertEqual(icons_plan.botw_diamond(inputs(b'south = a\neast = b\n')),
+                         {'a': 'bottom', 'b': 'right', 'x': 'top', 'y': 'left'})
+        self.assertEqual(icons_plan.botw_diamond(cf.swap(inputs(), 'x', 'l1')),
+                         {'a': 'right', 'b': 'bottom', 'y': 'left'})       # X on LB: its part keeps the Switch drawing
 
 
 class Env(unittest.TestCase):
@@ -179,6 +217,34 @@ class Mod(LibraryBase):
             self.assertRaises(icons_mod.BuildError, icons_mod.build, REPO, self.app, 'v143', self.library,
                               inputs(), self.tmp / 'Builder')
         self.assertFalse((self.library.root / '.icons-build').exists())
+
+    def test_botw_runs_its_own_script_with_the_glyphs_and_no_table(self):
+        seen = {}
+
+        def run(argv, cancel, timeout_s, env=None):
+            argv = [str(a) for a in argv]
+            romfs = Path(argv[3])
+            plan = json.loads(Path(argv[argv.index('--plan') + 1]).read_text())
+            seen['argv'], seen['glyphs'], seen['diamond'] = argv, plan['glyphs'], plan['diamond']
+            seen['seeded'] = (romfs / 'System').exists()
+            (romfs / 'Font').mkdir()
+            (romfs / 'Font/Font_EU.sbfarc').write_bytes(b'remapped')
+            (romfs / 'manifest.tsv').write_text('script')
+            return 0, b'', ''
+        mod_library.set_enabled(self.library, self.font_mod('A', b'table a'), True)
+        with patch.object(icons_mod.cancellable, 'run', side_effect=run):
+            work, table = icons_mod.build(REPO, self.app, 'botw190', self.library, inputs(), self.tmp / 'Builder')
+            self.assertEqual((seen['argv'][:3], seen['argv'][4:8], seen['argv'][-1]),
+                             ([sys.executable, '-I', str(icons_mod.BOTW_SCRIPT)], ['--app', str(self.app), '--version',
+                                                                                  'botw190'], '--write-all'))
+            self.assertEqual((seen['glyphs'], seen['seeded'], table), ([[0xE040, 0xE041], [0xE041, 0xE040],
+                                                                       [0xE042, 0xE043], [0xE043, 0xE042]], False, None))
+            self.assertEqual(seen['diamond'], {'a': 'right', 'b': 'bottom', 'x': 'top', 'y': 'left'})
+            self.assertEqual([p.name for p in (work / 'romfs').rglob('*') if p.is_file()], ['Font_EU.sbfarc'])
+            work, _ = icons_mod.build(REPO, self.app, 'botw190', self.library, cf.xbox_letters(inputs()),
+                                      self.tmp / 'Builder')     # nothing to move: the game's icons, still a valid mod
+        self.assertEqual((seen['glyphs'], [p.name for p in (work / 'romfs/Font').iterdir()]), ([], ['Font_EU.sbfarc']))
+        self.assertEqual(icons_mod.font_mods(self.library, 'botw190'), [])     # a .bfarc.zs is not Breath of the Wild's
 
 
 if __name__ == '__main__':
