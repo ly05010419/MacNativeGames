@@ -890,7 +890,9 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
    BindVertexAttribState 1+n words, BindVertexStreamState 16+n words, BindVertexBuffer 6 words each (address + limit). */
 static void hw_fix(cmd_t *o, size_t bytes) { o->hw_used += bytes; o->hw_used -= o->last_rec; o->last_rec = bytes; }
 static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLOG"); v = e ? atoi(e) : 0; } return v; }
+extern void runtime_frametrace_event(int kind) __attribute__((weak_import));   // "frametrace" diagnostic (Mac runtime)
 NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
+    if (runtime_frametrace_event) runtime_frametrace_event(10);
     cmd_t *o = CB(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
@@ -1103,6 +1105,7 @@ static void cbk_compact(void) {
     free(ob); g_cbk_used = live; g_cbk_empty = 0; g_cbk_compactions++;
 }
 NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
+    if (runtime_frametrace_event) runtime_frametrace_event(11);
     cmd_t *o = CB(c);
     size_t hw_before = o->hw_used; uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_END, 8); o->hw_used -= 8;
     o->recording = 0;
@@ -2295,6 +2298,7 @@ static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
 
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     NVN_BLOCKING();
+    if (runtime_frametrace_event) runtime_frametrace_event(8);
 #ifdef GAME_BOTW
     NVNcommandHandle mapped[64]; NVNcommandHandle *heap = n > 64 ? malloc(sizeof *heap * (size_t)n) : NULL;
     NVNcommandHandle *hv = heap ? heap : mapped; if (n > 64 && !heap) die("submit handle table");
@@ -3035,6 +3039,7 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     NVN_BLOCKING();
     (void)q; win_t *o = (win_t *)w; o->presents++;
+    if (runtime_frametrace_event) runtime_frametrace_event(9);
     totk_tl_frame(o->presents); totk_tl(TL_PRES_IN, (uint64_t)idx, 0);
     if (runtime_frame_step_update) runtime_frame_step_update(now_ns());
     if (movie_host_tick) movie_host_tick();

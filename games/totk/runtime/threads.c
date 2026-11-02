@@ -1245,6 +1245,7 @@ void runtime_event_signal(uint32_t hw) {
 #include "mach_vm_compat.h"
 #include <unistd.h>
 __attribute__((weak)) void runtime_describe_address(uint64_t a, char *out, size_t n) { snprintf(out, n, "%#llx", (unsigned long long)a); }   // loader.c names modules
+__attribute__((weak)) void runtime_frametrace_event(int kind) { (void)kind; }   // hle_nvn.c; the 1.4.3 Mac runtime's "frametrace" diagnostic defines it (game_patches_v143.c)
 __attribute__((weak)) uint64_t runtime_account_lock_owner(void) { return 0; }   // account.c is not linked into the thread probe
 __attribute__((weak)) void runtime_hle_describe(unsigned i, char *out, size_t n) { snprintf(out, n, "wrapper %u", i); }   // hle_stack.c names it
 static void dump_chain(uint64_t lr, uint64_t fp) {

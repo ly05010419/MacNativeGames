@@ -622,9 +622,13 @@ static void watch_all(int on){
     for(unsigned i=0;i<n;i++){if(list[i]!=self){thread_suspend(list[i]);watch_set(list[i],on);thread_resume(list[i]);}mach_port_deallocate(mach_task_self(),list[i]);}
     vm_deallocate(mach_task_self(),(vm_address_t)list,n*sizeof *list);mach_port_deallocate(mach_task_self(),self);
 }
+static int ft_trap(ucontext_t *u,unsigned ec);   /* "frametrace" (below) */
+static int br_trap(ucontext_t *u,unsigned ec);   /* "bpregs" (below) */
 int runtime_diag_watch_trap(void *context){
     ucontext_t *u=context;uint64_t pc=u->uc_mcontext->__ss.__pc,lr=u->uc_mcontext->__ss.__lr;
     unsigned ec=(unsigned)(u->uc_mcontext->__es.__esr>>26);
+    if(ft_trap(u,ec))return 1;
+    if(br_trap(u,ec))return 1;
     if(bp_addr&&(ec==0x30||ec==0x31)&&pc==bp_addr){   /* the VR camera search's breakpoint */
         atomic_store(&bp_x1,u->uc_mcontext->__ss.__x[bp_reg]);atomic_fetch_add(&bp_n,1);
         if(bp_collect){const uint64_t v=u->uc_mcontext->__ss.__x[bp_reg];   /* "camsrc": every distinct value, counted */
@@ -835,6 +839,241 @@ static void *vr_camsrc_run(void *arg){
 void runtime_diag_cam_src(double secs){
     if(bp_addr){fprintf(stderr,"[vr] camsrc: a breakpoint is already set\n");return;}
     double *a=malloc(sizeof *a);*a=secs;pthread_t t;pthread_create(&t,NULL,vr_camsrc_run,a);pthread_detach(t);
+}
+/* "frametrace <seconds> <hex offset> [<hex offset>...]" (diagnostic, stereo B2 survey 2026-11-02: where one game update
+   ends and its drawing starts, so that the scene can be drawn twice per update): hardware breakpoints (BVR 1-4) on up to
+   four main instructions in every thread, re-armed every 10 ms; each hit records its site, thread, time and up to 20
+   return addresses up the frame chain. The game's submits, presents and command-buffer recordings (hle_nvn.c,
+   runtime_frametrace_event) go into the same log. At the end: each distinct (site, thread, call chain) with its count,
+   then the first 600 events in time
+   order (which thread computes the camera, prepares the views, submits, presents, and in what order within a frame). */
+enum{FT_SITES=4,FT_MAX=16384,FT_DEPTH=20};
+static uint64_t ft_site[FT_SITES];static int ft_nsite;static _Atomic int ft_on;static _Atomic uint32_t ft_n;
+static struct{uint64_t t,tid,ret[FT_DEPTH];uint8_t site,depth;} ft_ev[FT_MAX];
+static void ft_record(int site,const uint64_t *ret,int depth){
+    if(!atomic_load_explicit(&ft_on,memory_order_relaxed))return;
+    const uint32_t i=atomic_fetch_add(&ft_n,1);if(i>=FT_MAX)return;
+    uint64_t tid=0;pthread_threadid_np(NULL,&tid);
+    ft_ev[i].t=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);ft_ev[i].tid=tid;ft_ev[i].site=(uint8_t)site;ft_ev[i].depth=(uint8_t)depth;
+    for(int d=0;d<depth;d++)ft_ev[i].ret[d]=ret[d];
+}
+/* 8 submit, 9 present, 10/11 begin/end recording (hle_nvn.c). Submits and recording starts also get the guest's call
+   chain: the host frames lead through the HLE stack switch's frame record (hle_stack.S) to the guest caller; frames are
+   read with mach_vm_read_overwrite since the walk crosses from the host stack to the guest's. */
+void runtime_frametrace_event(int kind){
+    if(!atomic_load_explicit(&ft_on,memory_order_relaxed))return;
+    uint64_t ret[FT_DEPTH];int depth=0;
+    if(kind==8||kind==10){const uint64_t mlo=(uintptr_t)diag_main->base,mhi=mlo+diag_main->size;uint64_t fp=(uintptr_t)__builtin_frame_address(0);int guest=0;
+        for(int k=0;k<64&&depth<FT_DEPTH&&fp&&!(fp&15);k++){uint64_t fr[2];mach_vm_size_t got=0;
+            if(mach_vm_read_overwrite(mach_task_self(),fp,16,(mach_vm_address_t)(uintptr_t)fr,&got)!=KERN_SUCCESS||got!=16)break;
+            if(!guest&&fr[1]>=mlo&&fr[1]<mhi)guest=1;
+            if(guest)ret[depth++]=fr[1];
+            fp=fr[0];}}
+    ft_record(kind,ret,depth);
+}
+static void ft_set(thread_act_t t,int slot,int on){   /* slot -1: all sites */
+    arm_debug_state64_t d;mach_msg_type_number_t c=ARM_DEBUG_STATE64_COUNT;
+    if(thread_get_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,&c)!=KERN_SUCCESS)return;
+    for(int k=0;k<ft_nsite;k++)if(slot<0||slot==k){d.__bvr[k+1]=on?(ft_site[k]&~3ULL):0;d.__bcr[k+1]=on?((0xfULL<<5)|(2u<<1)|1u):0;}
+    thread_set_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,ARM_DEBUG_STATE64_COUNT);
+}
+static void ft_all(int on){
+    thread_act_array_t list;mach_msg_type_number_t n;thread_act_t self=mach_thread_self();
+    if(task_threads(mach_task_self(),&list,&n)!=KERN_SUCCESS)return;
+    for(unsigned i=0;i<n;i++){if(list[i]!=self){thread_suspend(list[i]);ft_set(list[i],-1,on);thread_resume(list[i]);}mach_port_deallocate(mach_task_self(),list[i]);}
+    vm_deallocate(mach_task_self(),(vm_address_t)list,n*sizeof *list);mach_port_deallocate(mach_task_self(),self);
+}
+static int ft_trap(ucontext_t *u,unsigned ec){   /* from runtime_diag_watch_trap: 1 when the breakpoint was one of ours */
+    if(!ft_nsite||(ec!=0x30&&ec!=0x31))return 0;   /* by address, not ft_on: a thread can hit a site while the end clears them */
+    const uint64_t pc=u->uc_mcontext->__ss.__pc;int k=0;while(k<ft_nsite&&ft_site[k]!=pc)k++;
+    if(k==ft_nsite)return 0;
+    uint64_t ret[FT_DEPTH];int depth=0;ret[depth++]=u->uc_mcontext->__ss.__lr;
+    const uint64_t sp=u->uc_mcontext->__ss.__sp;uint64_t fp=u->uc_mcontext->__ss.__fp;
+    while(depth<FT_DEPTH&&fp&&!(fp&15)&&fp>=sp&&fp<sp+(1u<<20)){uint64_t fr[2];memcpy(fr,(const void *)(uintptr_t)fp,16);
+        ret[depth++]=fr[1];if(fr[0]<=fp)break;fp=fr[0];}   /* callers' frames sit higher on the stack */
+    ft_record(k,ret,depth);
+    thread_act_t self=mach_thread_self();ft_set(self,k,0);mach_port_deallocate(mach_task_self(),self);return 1;
+}
+static int ft_cmp(const void *a,const void *b){const uint64_t x=*(const uint64_t *)a,y=*(const uint64_t *)b;return x<y?-1:x>y;}
+static void *ft_run(void *arg){
+    const double secs=*(double *)arg;free(arg);const uint64_t base=(uintptr_t)diag_main->base;
+    atomic_store(&ft_n,0);atomic_store(&ft_on,1);
+    fprintf(stderr,"[vr] frametrace: %d breakpoints for %.0f s:",ft_nsite,secs);for(int k=0;k<ft_nsite;k++)fprintf(stderr," %d=main+%#llx",k,(unsigned long long)(ft_site[k]-base));fprintf(stderr," 8=submit 9=present 10=begin recording 11=end recording\n");
+    for(double t=0;t<secs;t+=0.01){ft_all(1);usleep(10000);}
+    ft_all(0);atomic_store(&ft_on,0);usleep(20000);   /* the sites stay known until the end (ft_trap) */
+    uint32_t n=atomic_load(&ft_n);if(n>FT_MAX)n=FT_MAX;
+    static uint64_t order[FT_MAX];   /* time order: (time - first) << 14 | index */
+    uint64_t t0=~0ULL;for(uint32_t i=0;i<n;i++)if(ft_ev[i].t<t0)t0=ft_ev[i].t;
+    for(uint32_t i=0;i<n;i++)order[i]=((ft_ev[i].t-t0)/1000)<<14|i;qsort(order,n,8,ft_cmp);
+    uint64_t tids[32];int nt=0;   /* threads, numbered in order of first event */
+    #define FT_TNUM(x) ({int _j=0;while(_j<nt&&tids[_j]!=(x))_j++;if(_j==nt&&nt<32)tids[nt++]=(x);_j;})
+    for(uint32_t j=0;j<n;j++)(void)FT_TNUM(ft_ev[order[j]&16383].tid);
+    /* distinct chains */
+    static uint8_t done[FT_MAX];memset(done,0,n);
+    for(uint32_t j=0;j<n;j++){const uint32_t i=order[j]&16383;if(done[i])continue;unsigned cnt=0;
+        for(uint32_t q=j;q<n;q++){const uint32_t m=order[q]&16383;if(done[m]||ft_ev[m].site!=ft_ev[i].site||ft_ev[m].tid!=ft_ev[i].tid||ft_ev[m].depth!=ft_ev[i].depth||memcmp(ft_ev[m].ret,ft_ev[i].ret,8*ft_ev[i].depth))continue;done[m]=1;cnt++;}
+        char line[2400];size_t u=(size_t)snprintf(line,sizeof line,"[vr] frametrace chain site %d thread T%d x%u:",ft_ev[i].site,FT_TNUM(ft_ev[i].tid),cnt);
+        for(int d=0;d<ft_ev[i].depth&&u<sizeof line;d++){char s[96];vr_desc(ft_ev[i].ret[d],s,sizeof s);u+=(size_t)snprintf(line+u,sizeof line-u," < %s",s);}
+        fprintf(stderr,"%s\n",line);}
+    for(uint32_t j=0;j<n&&j<600;j++){const uint32_t i=order[j]&16383;
+        fprintf(stderr,"[vr] frametrace %8.3f ms T%d site %d\n",(ft_ev[i].t-t0)/1e6,FT_TNUM(ft_ev[i].tid),ft_ev[i].site);}
+    #undef FT_TNUM
+    fprintf(stderr,"[vr] frametrace done: %u events, %d threads\n",n,nt);ft_nsite=0;return NULL;
+}
+void runtime_diag_frame_trace(double secs,const char *offs){
+    if(ft_nsite||atomic_load(&ft_on)){fprintf(stderr,"[vr] frametrace: already running\n");return;}
+    int n=0;for(const char *p=offs;*p&&n<FT_SITES;){char *e;unsigned long long o=strtoull(p,&e,16);if(e==p)break;
+        if(o>=diag_main->size){fprintf(stderr,"[vr] frametrace: main+%#llx is outside main\n",o);return;}ft_site[n++]=(uintptr_t)diag_main->base+o;p=e;while(*p==' ')p++;}
+    if(!n){fprintf(stderr,"[vr] frametrace: no addresses\n");return;}
+    ft_nsite=n;double *a=malloc(sizeof *a);*a=secs;pthread_t t;pthread_create(&t,NULL,ft_run,a);pthread_detach(t);
+}
+/* "jobdump" (diagnostic, stereo B2 2026-11-02): the frame's calc runs its render work as job lists on one queue: at
+   main+0x3e5abc (bl main+0x3e60b0: queue [x19+0x4b8], x1 [x19+0x4c0], x2 the list [x19+0x4d8]) a breakpoint takes x19;
+   then the lists at x19+0x4c8, +0x4d0, +0x4d8 (count at +8, array at +0x10 of pointers to entries: tag, job) are printed: per job its
+   first 12 words (main addresses as main+off, pointers to text as the text), its vtable's first 6 entries. Read with
+   mach_vm_read_overwrite: nothing is assumed about the objects. */
+static int jd_read(uint64_t a,void *b,size_t n){mach_vm_size_t got=0;return a&&mach_vm_read_overwrite(mach_task_self(),a,n,(mach_vm_address_t)(uintptr_t)b,&got)==KERN_SUCCESS&&got==n;}
+static void jd_word(uint64_t v,char *o,size_t n){
+    const uint64_t lo=(uintptr_t)diag_main->base,hi=lo+diag_main->size;
+    if(v>=lo&&v<hi){snprintf(o,n,"main+%#llx",(unsigned long long)(v-lo));return;}
+    char s[33]={0};int k=0;
+    if(v>0x100000000ULL&&v<0x0001000000000000ULL&&jd_read(v,s,32))while(k<32&&s[k]>=0x20&&s[k]<0x7f)k++;
+    if(k>=4&&(k==32||!s[k])){s[k]=0;snprintf(o,n,"\"%s\"",s);return;}
+    snprintf(o,n,"%#llx",(unsigned long long)v);
+}
+static void *jd_run(void *arg){
+    (void)arg;bp_reg=19;bp_addr=(uintptr_t)diag_main->base+0x3e5abc;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
+    for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
+    bp_all(0);const uint64_t x19=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
+    if(!x19){fprintf(stderr,"[vr] jobdump: the breakpoint at main+0x3e5abc was not hit in 3 s\n");return NULL;}
+    uint64_t f[8];if(jd_read(x19+0x4b8,f,0x28))fprintf(stderr,"[vr] jobdump: x19 %#llx, queue %#llx, +0x4c0 %#llx\n",(unsigned long long)x19,(unsigned long long)f[0],(unsigned long long)f[1]);
+    for(unsigned off=0x4c8;off<=0x4d8;off+=8){
+        uint64_t list=0;int32_t cnt=0;uint64_t arr=0;
+        if(!jd_read(x19+off,&list,8)||!jd_read(list+8,&cnt,4)||!jd_read(list+0x10,&arr,8)){fprintf(stderr,"[vr] jobdump list +%#x: unreadable\n",off);continue;}
+        fprintf(stderr,"[vr] jobdump list +%#x @%#llx: %d jobs\n",off,(unsigned long long)list,cnt);
+        for(int i=0;i<cnt&&i<256;i++){
+            /* the array holds pointers to 24-byte entries: a tag (priority, group, index), the job object, -1 */
+            uint64_t ent=0,e2[2],job=0,w[12],vt[6];
+            if(!jd_read(arr+8*(uint64_t)i,&ent,8)||!jd_read(ent,e2,16)||!(job=e2[1])||!jd_read(job,w,sizeof w)){fprintf(stderr,"[vr] jobdump  %d: unreadable\n",i);continue;}
+            char line[1600];size_t u=(size_t)snprintf(line,sizeof line,"[vr] jobdump  +%#x %d tag %#llx job %#llx:",off,i,(unsigned long long)e2[0],(unsigned long long)job);
+            for(int k=0;k<12&&u<sizeof line;k++){char d[64];jd_word(w[k],d,sizeof d);u+=(size_t)snprintf(line+u,sizeof line-u," %s",d);}
+            if(jd_read(w[0],vt,sizeof vt)){u+=(size_t)snprintf(line+u,sizeof line-u," | vt");for(int k=0;k<6&&u<sizeof line;k++){char d[64];jd_word(vt[k],d,sizeof d);u+=(size_t)snprintf(line+u,sizeof line-u," %s",d);}}
+            fprintf(stderr,"%s\n",line);
+        }
+    }
+    fprintf(stderr,"[vr] jobdump done\n");return NULL;
+}
+/* "calctree" (diagnostic, stereo B2): the method tree the frame's calc walks (procCalc main+0x2dad80 calls callRec
+   main+0x8384 on its root at main+0x2dadd8, x0). Walked as callRec does: flags byte +0x7c (bit 0/1: skip the node's
+   method / its children), the delegate at +0x50 (vtable, object +0x58, method +0x60, adjustment +0x68: odd = virtual,
+   the method is then a vtable offset), children: link = [node+0x28], child = [link+0x20], next link = [child+0x30].
+   Each node: depth, flags, the method (main+off, or the object's vtable entry for a virtual one), the object's first
+   words (names show as text). */
+static int ct_n;
+static void ct_visit(uint64_t node,int depth){
+    if(ct_n++>600||depth>24)return;
+    uint8_t fl=0;uint64_t d[4]={0},ow[6]={0};jd_read(node+0x7c,&fl,1);jd_read(node+0x50,d,32);
+    uint64_t fn=d[2];const uint64_t adj=d[3],obj=d[1]+(uint64_t)((int64_t)adj>>1);
+    if((adj&1)&&obj){uint64_t vt=0;if(jd_read(obj,&vt,8))jd_read(vt+fn,&fn,8);}
+    jd_read(obj,ow,sizeof ow);
+    char line[1200];size_t u=(size_t)snprintf(line,sizeof line,"[vr] calctree %*s%#llx fl %x",depth*2,"",(unsigned long long)node,fl);
+    char s[64];jd_word(d[0],s,sizeof s);u+=(size_t)snprintf(line+u,sizeof line-u," dvt %s",s);
+    jd_word(fn,s,sizeof s);u+=(size_t)snprintf(line+u,sizeof line-u," fn %s%s obj %#llx:",s,(adj&1)?" (virtual)":"",(unsigned long long)obj);
+    for(int k=0;k<6&&u<sizeof line;k++){jd_word(ow[k],s,sizeof s);u+=(size_t)snprintf(line+u,sizeof line-u," %s",s);}
+    fprintf(stderr,"%s\n",line);
+    uint64_t link=0;jd_read(node+0x28,&link,8);
+    for(int i=0;link&&i<200;i++){uint64_t child=0;if(!jd_read(link+0x20,&child,8)||!child)break;ct_visit(child,depth+1);if(!jd_read(child+0x30,&link,8))break;}
+}
+static void *ct_run(void *arg){
+    (void)arg;bp_reg=0;bp_addr=(uintptr_t)diag_main->base+0x2dadd8;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
+    for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
+    bp_all(0);const uint64_t root=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
+    if(!root){fprintf(stderr,"[vr] calctree: the breakpoint at main+0x2dadd8 was not hit in 3 s\n");return NULL;}
+    ct_n=0;ct_visit(root,0);fprintf(stderr,"[vr] calctree done: %d nodes\n",ct_n);return NULL;
+}
+void runtime_diag_calc_tree(void){
+    if(bp_addr){fprintf(stderr,"[vr] calctree: a breakpoint is already set\n");return;}
+    pthread_t t;pthread_create(&t,NULL,ct_run,NULL);pthread_detach(t);
+}
+/* "dumpmain <file>" (diagnostic, stereo B2): main's whole loaded image as it is now (relocated: GOT slots and vtables hold
+   real addresses), with its base in a ".base" file beside it, for static analysis outside the game. Kept outside the
+   repository (the user's own game code). "peek <hex address> [n]" / "peekm <hex main offset> [n]": n (default 8, at
+   most 64) words from memory, main addresses as main+off, text as text. */
+void runtime_diag_dump_main(const char *path){
+    FILE *f=fopen(path,"wb");if(!f){fprintf(stderr,"[vr] dumpmain: cannot write %s\n",path);return;}
+    static uint8_t buf[1<<20];size_t done=0;const uint64_t base=(uintptr_t)diag_main->base;
+    while(done<diag_main->size){size_t n=diag_main->size-done<sizeof buf?diag_main->size-done:sizeof buf;
+        if(!jd_read(base+done,buf,n))memset(buf,0,n);fwrite(buf,1,n,f);done+=n;}
+    fclose(f);char p2[1100];snprintf(p2,sizeof p2,"%s.base",path);f=fopen(p2,"w");if(f){fprintf(f,"%#llx %#llx\n",(unsigned long long)base,(unsigned long long)diag_main->size);fclose(f);}
+    fprintf(stderr,"[vr] dumpmain: %zu bytes from %#llx to %s\n",done,(unsigned long long)base,path);
+}
+void runtime_diag_peek(uint64_t a,int n,int rel){
+    if(rel)a+=(uintptr_t)diag_main->base;if(n<1)n=8;if(n>64)n=64;
+    for(int i=0;i<n;i+=4){char line[600];size_t u=(size_t)snprintf(line,sizeof line,"[vr] peek %#llx:",(unsigned long long)(a+8*(uint64_t)i));
+        for(int k=i;k<n&&k<i+4;k++){uint64_t v=0;char d[64];if(!jd_read(a+8*(uint64_t)k,&v,8)){u+=(size_t)snprintf(line+u,sizeof line-u," ??");continue;}jd_word(v,d,sizeof d);u+=(size_t)snprintf(line+u,sizeof line-u," %s",d);}
+        fprintf(stderr,"%s\n",line);}
+}
+/* "watchw <hex address> <seconds>" (diagnostic, stereo B2): a store watchpoint on the 4 bytes at the address for that
+   long, every writer printed (vr_watch_phase: pc, return addresses, registers). "bpregs <hex main offset>": a one-shot
+   breakpoint (BVR 5) in every thread; the first hit prints x0-x28, sp, the return address and 3 callers. */
+/* "watchr <hex address> <seconds>": the same for loads. */
+static void *ww_run(void *arg){uint64_t *a=arg;const uint64_t addr=a[0];vr_watch_secs=(double)a[1];const int load=(int)a[2];free(a);
+    if(load)watch_store=0;else watch_store=1;
+    for(unsigned i=0;i<WATCH_SLOTS;i++){atomic_store(&watch_hits[i].pc,0);atomic_store(&watch_hits[i].n,0);}
+    if(load){watch_addr=addr;fprintf(stderr,"[vr] findcam stage 9: load watchpoint on %#llx for %.0f s\n",(unsigned long long)addr,vr_watch_secs);
+        for(double t=0;t<vr_watch_secs;t+=0.01){watch_all(1);usleep(10000);}
+        watch_all(0);unsigned total=0;
+        for(unsigned i=0;i<WATCH_SLOTS;i++){uint64_t pc=atomic_load(&watch_hits[i].pc);if(!pc)continue;uint32_t n=atomic_load(&watch_hits[i].n);total+=n;
+            char d0[96],d1[96],d2[96],d3[96];vr_desc(pc,d0,96);vr_desc(atomic_load(&watch_hits[i].lr),d1,96);vr_desc(atomic_load(&watch_hits[i].up[0]),d2,96);vr_desc(atomic_load(&watch_hits[i].up[1]),d3,96);
+            fprintf(stderr,"[vr] findcam stage 9 read x%u pc %s lr %s < %s < %s  x1 %#llx x0 %#llx x19 %#llx x20 %#llx x21 %#llx x22 %#llx x8 %#llx\n",n,d0,d1,d2,d3,(unsigned long long)atomic_load(&watch_hits[i].x1),
+                (unsigned long long)atomic_load(&watch_hits[i].xr[0]),(unsigned long long)atomic_load(&watch_hits[i].xr[1]),(unsigned long long)atomic_load(&watch_hits[i].xr[2]),
+                (unsigned long long)atomic_load(&watch_hits[i].xr[3]),(unsigned long long)atomic_load(&watch_hits[i].xr[4]),(unsigned long long)atomic_load(&watch_hits[i].xr[5]));}
+        fprintf(stderr,"[vr] findcam stage 9 done: %u reads\n",total);watch_addr=0;watch_store=0;}
+    else vr_watch_phase(addr,9);
+    vr_watch_secs=15;return NULL;}
+void runtime_diag_watch_write(uint64_t addr,int secs,int load){
+    if(watch_addr){fprintf(stderr,"[vr] watchw: a watch is already running\n");return;}
+    uint64_t *a=malloc(24);a[0]=addr;a[1]=(uint64_t)(secs<1?1:secs>60?60:secs);a[2]=(uint64_t)load;pthread_t t;pthread_create(&t,NULL,ww_run,a);pthread_detach(t);
+}
+static uint64_t br_addr;static _Atomic int br_hit;static uint64_t br_x[34];
+static void br_set(thread_act_t t,int on){
+    arm_debug_state64_t d;mach_msg_type_number_t c=ARM_DEBUG_STATE64_COUNT;
+    if(thread_get_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,&c)!=KERN_SUCCESS)return;
+    d.__bvr[5]=on?(br_addr&~3ULL):0;d.__bcr[5]=on?((0xfULL<<5)|(2u<<1)|1u):0;
+    thread_set_state(t,ARM_DEBUG_STATE64,(thread_state_t)&d,ARM_DEBUG_STATE64_COUNT);
+}
+static void br_all(int on){
+    thread_act_array_t list;mach_msg_type_number_t n;thread_act_t self=mach_thread_self();
+    if(task_threads(mach_task_self(),&list,&n)!=KERN_SUCCESS)return;
+    for(unsigned i=0;i<n;i++){if(list[i]!=self){thread_suspend(list[i]);br_set(list[i],on);thread_resume(list[i]);}mach_port_deallocate(mach_task_self(),list[i]);}
+    vm_deallocate(mach_task_self(),(vm_address_t)list,n*sizeof *list);mach_port_deallocate(mach_task_self(),self);
+}
+static int br_trap(ucontext_t *u,unsigned ec){
+    if(!br_addr||(ec!=0x30&&ec!=0x31)||u->uc_mcontext->__ss.__pc!=br_addr)return 0;
+    int z=0;if(atomic_compare_exchange_strong(&br_hit,&z,1)){for(int i=0;i<29;i++)br_x[i]=u->uc_mcontext->__ss.__x[i];
+        br_x[29]=u->uc_mcontext->__ss.__fp;br_x[30]=u->uc_mcontext->__ss.__lr;br_x[31]=u->uc_mcontext->__ss.__sp;
+        uint64_t fp=br_x[29];for(int d=0;d<2;d++){uint64_t fr[2]={0,0};if(!fp||(fp&15)||!jd_read(fp,fr,16))break;br_x[32+d]=fr[1];fp=fr[0];}
+        atomic_store(&br_hit,2);}
+    thread_act_t self=mach_thread_self();br_set(self,0);mach_port_deallocate(mach_task_self(),self);return 1;
+}
+static void *br_run(void *arg){
+    (void)arg;atomic_store(&br_hit,0);
+    for(int t=0;t<500&&atomic_load(&br_hit)!=2;t++){br_all(1);usleep(10000);}
+    br_all(0);usleep(20000);const uint64_t a=br_addr;br_addr=0;
+    if(atomic_load(&br_hit)!=2){fprintf(stderr,"[vr] bpregs main+%#llx: not hit in 5 s\n",(unsigned long long)(a-(uintptr_t)diag_main->base));return NULL;}
+    char line[1600];size_t u=(size_t)snprintf(line,sizeof line,"[vr] bpregs main+%#llx:",(unsigned long long)(a-(uintptr_t)diag_main->base));
+    static const char *nm[34]={"x0","x1","x2","x3","x4","x5","x6","x7","x8","x9","x10","x11","x12","x13","x14","x15","x16","x17","x18","x19","x20","x21","x22","x23","x24","x25","x26","x27","x28","fp","lr","sp","up1","up2"};
+    for(int i=0;i<34&&u<sizeof line;i++){if(i>=9&&i<19)continue;char d[64];jd_word(br_x[i],d,sizeof d);u+=(size_t)snprintf(line+u,sizeof line-u," %s=%s",nm[i],d);}
+    fprintf(stderr,"%s\n",line);return NULL;
+}
+void runtime_diag_bp_regs(uint64_t off){
+    if(br_addr){fprintf(stderr,"[vr] bpregs: already armed\n");return;}
+    if(off>=diag_main->size){fprintf(stderr,"[vr] bpregs: outside main\n");return;}
+    br_addr=(uintptr_t)diag_main->base+off;pthread_t t;pthread_create(&t,NULL,br_run,NULL);pthread_detach(t);
+}
+void runtime_diag_job_dump(void){
+    if(bp_addr){fprintf(stderr,"[vr] jobdump: a breakpoint is already set\n");return;}
+    pthread_t t;pthread_create(&t,NULL,jd_run,NULL);pthread_detach(t);
 }
 /* "linkscan" (diagnostic, user 2026-11-01 "根本 修复！": his meshes by the game's own data, not by where their bones are):
    from his actor (world_survey.c, the scene's "Player"), a breadth-first walk over the pointers in each object (0x1000
@@ -1119,6 +1358,161 @@ static void camera_distance_load(void){
     if(f){if(fscanf(f,"%d",&cm)!=1||cm<-500||cm>1000)cm=0;fclose(f);}
     if(cm){camera_distance_apply(cm/100.0f);fprintf(stderr,"[totk] camera distance (third person): %+d cm (kept in %s)\n",cm,p);}
 }
+/* Stereo B2, step 1 (2026-11-02, user: "开始 最好的办法": both eyes of one game update): the frame's last calc stage
+   (main+0x3e55e0 sets the job list [x19+0x4d8] and tail-calls the queue runner main+0x3e5dfc at main+0x3e5adc) runs the
+   game's 35 render jobs (vtable entry 2 = main+0x2887b80, each with a mask of the render work it does: views, culling,
+   command recording) together with logic jobs (actors, physics, events, sound) in one dependency graph. The tail call
+   goes to vr_b2_hook instead, which runs the stage as before and then, with "b2 1", runs a second list through the
+   game's own queue: main+0x3e60b0 (queue [x19+0x4b8], [x19+0x4c0], list) then the runner, as the stage does. The second
+   list holds only the render jobs and the dependencies among them (the second eye's picture, once the camera changes
+   between the runs: later steps). Called directly, outside the queue, the view job waited forever for the sub-jobs it
+   hands to the queue's workers (b2a, 2026-11-02). Off (the default) the hook only calls the runner and returns.
+   Before the second list every view's per-frame start runs again (main+0x3dbf28 (view, [render system+0x9a4] != 0, 1)
+   for each view of the view manager [main+0x3acda18] (+0x10 count, +0x18 views), as the render system's per-frame start
+   main+0x3db120 does): it clears the view's work counters and masks (+0x3ba8...) and prepares it. Without it the view
+   job found its work items all taken and waited forever at its barrier (b2b). The whole per-frame start is not run:
+   it also empties the frame's model lists, which only the logic jobs fill (b2c: the second picture was sky only).
+   Work in progress (2026-11-02), off by default, Mac VR only. Modes ("b2 <mode> [mask]"):
+   1 each view's per-frame start before the second list: no hang, but the view's model requests (+0x3350..+0x3380, filled
+     by the logic jobs after the render system's per-frame start) are emptied: sky only (b2d, 99 draws a frame);
+   2 only the view's job counters, no per-frame start: hangs at the view barrier (b2f; the start does more that the jobs
+     need);
+   3 the per-frame start with the fields chosen by the mask saved before it and put back after it: bit 0 +0x3350..+0x3380,
+     bit 1 +0x3398..+0x33a8, bit 2 +0x33e0..+0x3420, bit 3 each render step's +0x5d0 word and +0x2914 half-word. Mask 1
+     (b2g): the second picture has the scene (1021 draws a frame, G-buffer 566 + 191 against 691 + 598) but almost no
+     shadows (44 draws against about 1300): the shadow casters' requests are kept elsewhere (next step). Mask 9 untested.
+   The second run uses the same camera so far; the eye's camera, the first eye's constants and both eyes' submission
+   are later steps.
+   g_vr_b2: +0 the runner, +8 the list setter, +16 the mode (0 off), +20 the mask, +24 second runs done, +32 the stage
+   object (x19), +40 the second list, +48 the view's per-frame start, +56 the render system, +64 the view manager's slot,
+   +72 the saved fields (27 words), then the render steps' saved words and half-words. */
+typedef struct { uint64_t run, setlist; uint32_t on, mask, runs, pad2; uint64_t stage, list, begin, begin_obj, vmgr; uint64_t save[27]; uint32_t step_flags[32]; uint16_t step_bits[32]; } vr_b2_state;
+vr_b2_state g_vr_b2 __attribute__((aligned(16)));
+__asm__(".text\n.p2align 4\n.globl _vr_b2_hook\n_vr_b2_hook:\n"
+        "  stp x29, x30, [sp, #-64]!\n  mov x29, sp\n  stp x19, x20, [sp, #16]\n  stp x21, x22, [sp, #32]\n  str x23, [sp, #48]\n"
+        "  adrp x19, _g_vr_b2@PAGE\n  add x19, x19, _g_vr_b2@PAGEOFF\n"
+        "  ldr x16, [x19]\n  blr x16\n"                       /* the stage, as the tail call did */
+        "  ldr w8, [x19, #16]\n  cbz w8, 9f\n"
+        "  ldr x9, [x19, #56]\n  ldr w10, [x9, #0x9a4]\n  cmp w10, #0\n  cset w20, ne\n"
+        "  ldr x9, [x19, #64]\n  ldr x21, [x9]\n  cbz x21, 3f\n  ldrsw x22, [x21, #0x10]\n  ldr x23, [x21, #0x18]\n"
+        "2:\n  cbz x22, 3f\n  ldr x0, [x23], #8\n"
+        "  ldr w8, [x19, #16]\n  cmp w8, #2\n  b.eq 4f\n"
+        "  cmp w8, #3\n  b.ne 8f\n"   /* "b2 3 <mask>": keep the view's lists at +0x3350..+0x3428 the per-frame start would clear */
+        "  mov x10, #0x3350\n  add x10, x0, x10\n  add x11, x19, #72\n  mov w12, #27\n"
+        "10:\n  ldr x13, [x10], #8\n  str x13, [x11], #8\n  subs w12, w12, #1\n  b.ne 10b\n"
+        /* the render steps (+0x130 of them at +0x138, 0x2920 bytes each): their +0x5d0 word and +0x2914 half-word */
+        "  ldr w12, [x0, #0x130]\n  cmp w12, #32\n  mov w13, #32\n  csel w12, w12, w13, ls\n  ldr x10, [x0, #0x138]\n"
+        "  add x11, x19, #72+27*8\n  add x15, x19, #72+27*8+32*4\n  mov x16, #0x2914\n"
+        "16:\n  cbz w12, 17f\n  ldr w13, [x10, #0x5d0]\n  str w13, [x11], #4\n  ldrh w13, [x10, x16]\n  strh w13, [x15], #2\n"
+        "  mov x13, #0x2920\n  add x10, x10, x13\n  sub w12, w12, #1\n  b 16b\n"
+        "17:\n  str x0, [sp, #56]\n"
+        "  mov w1, w20\n  mov w2, #1\n  ldr x16, [x19, #48]\n  blr x16\n"
+        "  ldr x0, [sp, #56]\n  ldr w14, [x19, #20]\n"
+        "  tbz w14, #3, 18f\n"
+        "  ldr w12, [x0, #0x130]\n  cmp w12, #32\n  mov w13, #32\n  csel w12, w12, w13, ls\n  ldr x10, [x0, #0x138]\n"
+        "  add x11, x19, #72+27*8\n  add x15, x19, #72+27*8+32*4\n  mov x16, #0x2914\n"
+        "19:\n  cbz w12, 18f\n  ldr w13, [x11], #4\n  str w13, [x10, #0x5d0]\n  ldrh w13, [x15], #2\n  strh w13, [x10, x16]\n"
+        "  mov x13, #0x2920\n  add x10, x10, x13\n  sub w12, w12, #1\n  b 19b\n"
+        "18:\n"
+        "  tbz w14, #0, 11f\n  mov x10, #0x3350\n  add x10, x0, x10\n  add x11, x19, #72\n  mov w12, #6\n"
+        "12:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 12b\n"
+        "11:\n  tbz w14, #1, 13f\n  mov x10, #0x3398\n  add x10, x0, x10\n  add x11, x19, #72+0x48\n  mov w12, #3\n"
+        "14:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 14b\n"
+        "13:\n  tbz w14, #2, 5f\n  mov x10, #0x33e0\n  add x10, x0, x10\n  add x11, x19, #72+0x90\n  mov w12, #9\n"
+        "15:\n  ldr x13, [x11], #8\n  str x13, [x10], #8\n  subs w12, w12, #1\n  b.ne 15b\n"
+        "  b 5f\n"
+        "8:\n  mov w1, w20\n  mov w2, #1\n  ldr x16, [x19, #48]\n  blr x16\n"   /* "b2 1": each view's per-frame start */
+        "  b 5f\n"
+        /* "b2 2": only the view's job state: the record batches (+0x3b78, +0x3b80), the pairs at +0x3ba0 (+0x3b98 of them),
+           the work counters +0x3ba8..+0x3bd4, and the flags the per-frame start sets (+0x3340 |= 0x1001, &= ~0x400;
+           +0x3a80 &= ~2). The lists the logic jobs fill after the per-frame start stay. */
+        "4:\n  str wzr, [x0, #0x3b78]\n  str wzr, [x0, #0x3b80]\n"
+        "  ldr w8, [x0, #0x3b98]\n  ldr x9, [x0, #0x3ba0]\n"
+        "6:\n  cbz w8, 7f\n  str xzr, [x9], #8\n  sub w8, w8, #1\n  b 6b\n"
+        "7:\n  mov x10, #0x3ba8\n  add x10, x0, x10\n  stp xzr, xzr, [x10]\n  stp xzr, xzr, [x10, #16]\n  stp xzr, xzr, [x10, #32]\n  str wzr, [x10, #44]\n"
+        "  ldr w8, [x0, #0x3340]\n  and w8, w8, #0xfffffbff\n  orr w8, w8, #0x1\n  orr w8, w8, #0x1000\n  str w8, [x0, #0x3340]\n"
+        "  ldr w8, [x0, #0x3a80]\n  and w8, w8, #0xfffffffd\n  str w8, [x0, #0x3a80]\n"
+        "5:\n  sub x22, x22, #1\n  b 2b\n"
+        "3:\n"
+        "  ldr x9, [x19, #32]\n  ldr x0, [x9, #0x4b8]\n  ldr x1, [x9, #0x4c0]\n  ldr x2, [x19, #40]\n"
+        "  ldr x16, [x19, #8]\n  blr x16\n"                   /* main+0x3e60b0: the render-only list onto the queue */
+        "  ldr x9, [x19, #32]\n  ldr x0, [x9, #0x4b8]\n  ldr x16, [x19]\n  blr x16\n"   /* and run it */
+        "  ldr w8, [x19, #24]\n  add w8, w8, #1\n  str w8, [x19, #24]\n"
+        "9:\n  ldr x23, [sp, #48]\n  ldp x21, x22, [sp, #32]\n  ldp x19, x20, [sp, #16]\n  ldp x29, x30, [sp], #64\n  ret\n");
+extern void vr_b2_hook(void);
+_Static_assert(offsetof(vr_b2_state,on)==16&&offsetof(vr_b2_state,runs)==24&&offsetof(vr_b2_state,stage)==32&&offsetof(vr_b2_state,list)==40&&offsetof(vr_b2_state,begin)==48&&offsetof(vr_b2_state,begin_obj)==56&&offsetof(vr_b2_state,vmgr)==64&&offsetof(vr_b2_state,mask)==20&&offsetof(vr_b2_state,save)==72&&offsetof(vr_b2_state,step_flags)==72+27*8&&offsetof(vr_b2_state,step_bits)==72+27*8+32*4,"vr_b2_hook offsets");
+static uint64_t vr_b2_job_fn;   /* the render jobs' run function (main+0x2887b80) */
+static void vr_b2_install(Module *m){
+    const uint64_t site=0x3e5adc,runner=0x3e5dfc,setlist=0x3e60b0,job_fn=0x2887b80,data=(m->file_size+0x3fff)&~0x3fffULL,v0=((data-64)&~15ULL)-32;
+    uint32_t got;memcpy(&got,m->base+site,4);
+    const uint32_t want=0x14000000u|((uint32_t)((int64_t)(runner-site)>>2)&0x3ffffff);
+    if(got!=want){fprintf(stderr,"[vr] stereo B2: main+%#llx is %08x, not 1.4.3's tail call (%08x); off\n",(unsigned long long)site,got,want);return;}
+    if(v0<m->patch_off){fprintf(stderr,"[vr] stereo B2: no room in main's patch area tail; off\n");return;}
+    for(unsigned i=0;i<16;i++)if(m->base[v0+i]){fprintf(stderr,"[vr] stereo B2: patch area tail at +%#llx in use; off\n",(unsigned long long)v0);return;}
+    uint32_t c[4]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0};uint64_t hook=(uint64_t)(uintptr_t)vr_b2_hook;memcpy(&c[2],&hook,8);
+    const uint32_t b=aspect_b(site,v0);if(!b){fprintf(stderr,"[vr] stereo B2: branch out of range; off\n");return;}
+    memset(&g_vr_b2,0,sizeof g_vr_b2);g_vr_b2.run=(uint64_t)(uintptr_t)(m->base+runner);g_vr_b2.setlist=(uint64_t)(uintptr_t)(m->base+setlist);
+    vr_b2_job_fn=(uint64_t)(uintptr_t)(m->base+job_fn);g_vr_b2.begin=(uint64_t)(uintptr_t)(m->base+0x3dbf28);g_vr_b2.vmgr=(uint64_t)(uintptr_t)(m->base+0x3acda18);
+    memcpy(m->base+v0,c,sizeof c);memcpy(m->base+site,&b,4);
+    fprintf(stderr,"[vr] stereo B2: last calc stage through the hook at main+%#llx (veneer +%#llx); second render run off (\"b2 1\")\n",(unsigned long long)site,(unsigned long long)v0);
+}
+/* The object of the calc-tree node (from node, as calctree walks it) whose method is fn; 0 when none. */
+static uint64_t vr_b2_node_obj(uint64_t node,uint64_t fn,int depth){
+    if(depth>24)return 0;
+    uint64_t d[4]={0};jd_read(node+0x50,d,32);uint64_t f=d[2];const uint64_t obj=d[1]+(uint64_t)((int64_t)d[3]>>1);
+    if((d[3]&1)&&obj){uint64_t vt=0;if(jd_read(obj,&vt,8))jd_read(vt+f,&f,8);}
+    if(f==fn&&obj)return obj;
+    uint64_t link=0;jd_read(node+0x28,&link,8);
+    for(int i=0;link&&i<200;i++){uint64_t child=0;if(!jd_read(link+0x20,&child,8)||!child)break;
+        const uint64_t r=vr_b2_node_obj(child,fn,depth+1);if(r)return r;if(!jd_read(child+0x30,&link,8))break;}
+    return 0;
+}
+/* "b2 <0|1|2|3> [mask]": the second render run (modes above). The first "b2" that turns it on builds the render-only list: a breakpoint at main+0x3e5abc gives the
+   stage object x19; its list [x19+0x4d8] (+8 entry count, +0x10 pointers to entries {.., +8 the job}, +0x30 dependency
+   count, +0x38 pointers to dependencies {u16 before, u16 after}: indices in the list) gives every entry whose job's
+   vtable entry 2 is main+0x2887b80, and every dependency between two of them, renumbered. The list object's other
+   fields are copied. The memory is the runtime's own and lives for the session. */
+static void *vr_b2_find(void *arg){
+    const int on=(int)(intptr_t)arg;
+    if(on&&!g_vr_b2.list){
+        bp_reg=19;bp_addr=(uintptr_t)diag_main->base+0x3e5abc;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
+        for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
+        bp_all(0);const uint64_t x19=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
+        uint64_t L=0;uint8_t head[0x48];
+        if(!x19||!jd_read(x19+0x4d8,&L,8)||!jd_read(L,head,sizeof head)){fprintf(stderr,"[vr] b2: the job list was not found\n");return NULL;}
+        int32_t cnt,ecnt;uint64_t arr,earr;memcpy(&cnt,head+8,4);memcpy(&arr,head+0x10,8);memcpy(&ecnt,head+0x30,4);memcpy(&earr,head+0x38,8);
+        if(cnt<=0||cnt>256||ecnt<0||ecnt>4096){fprintf(stderr,"[vr] b2: list sizes %d / %d out of range\n",cnt,ecnt);return NULL;}
+        int map[256];uint64_t *na=calloc((size_t)cnt,8);uint32_t n=0;
+        for(int i=0;i<cnt;i++){uint64_t ent=0,job=0,vt=0,fn=0;map[i]=-1;
+            if(jd_read(arr+8*(uint64_t)i,&ent,8)&&jd_read(ent+8,&job,8)&&jd_read(job,&vt,8)&&jd_read(vt+16,&fn,8)&&fn==vr_b2_job_fn){map[i]=(int)n;na[n++]=ent;}}
+        uint64_t *ne=calloc((size_t)ecnt+1,8);uint16_t *edges=calloc((size_t)ecnt+1,4);uint32_t m=0,dropped=0;
+        for(int i=0;i<ecnt;i++){uint64_t e=0;uint16_t ab[2];if(!jd_read(earr+8*(uint64_t)i,&e,8)||!jd_read(e,ab,4))continue;
+            if(ab[0]>=cnt||ab[1]>=cnt||map[ab[0]]<0||map[ab[1]]<0){dropped++;continue;}
+            edges[2*m]=(uint16_t)map[ab[0]];edges[2*m+1]=(uint16_t)map[ab[1]];ne[m]=(uint64_t)(uintptr_t)&edges[2*m];m++;}
+        uint8_t *nl=calloc(1,sizeof head);memcpy(nl,head,sizeof head);
+        int32_t n32=(int32_t)n,m32=(int32_t)m;uint64_t pa=(uint64_t)(uintptr_t)na,pe=(uint64_t)(uintptr_t)ne;
+        memcpy(nl+8,&n32,4);memcpy(nl+0x10,&pa,8);memcpy(nl+0x30,&m32,4);memcpy(nl+0x38,&pe,8);
+        /* the render system's per-frame start: the calc-tree node whose method is main+0x3db120 (calctree's walk) */
+        bp_reg=0;bp_addr=(uintptr_t)diag_main->base+0x2dadd8;atomic_store(&bp_x1,0);atomic_store(&bp_n,0);
+        for(int t=0;t<300&&!atomic_load(&bp_n);t++){bp_all(1);usleep(10000);}
+        bp_all(0);const uint64_t root=atomic_load(&bp_x1);bp_addr=0;bp_reg=1;
+        const uint64_t bobj=root?vr_b2_node_obj(root,(uintptr_t)diag_main->base+0x3db120,0):0;
+        if(!bobj){fprintf(stderr,"[vr] b2: the render system's per-frame start was not found in the calc tree\n");return NULL;}
+        g_vr_b2.begin_obj=bobj;
+        g_vr_b2.stage=x19;__atomic_store_n(&g_vr_b2.list,(uint64_t)(uintptr_t)nl,__ATOMIC_RELEASE);
+        fprintf(stderr,"[vr] b2: render-only list: %u of %d jobs, %u of %d dependencies (%u to other jobs dropped); per-frame start on %#llx\n",n,cnt,m,ecnt,dropped,(unsigned long long)bobj);
+        if(!n)return NULL;
+    }
+    __atomic_store_n(&g_vr_b2.on,(uint32_t)on,__ATOMIC_RELEASE);
+    fprintf(stderr,"[vr] b2: second render run %s (%u done so far)\n",!on?"off":on==2?"on, views' job state only":"on, views' per-frame start",g_vr_b2.runs);
+    return NULL;
+}
+void runtime_vr_b2_mask(unsigned m){g_vr_b2.mask=m;fprintf(stderr,"[vr] b2: lists kept over the views' per-frame start: mask %#x\n",m);}
+void runtime_vr_b2(int on){
+    if(!g_vr_b2.run){fprintf(stderr,"[vr] b2: not installed\n");return;}
+    if(bp_addr){fprintf(stderr,"[vr] b2: a breakpoint is in use\n");return;}
+    pthread_t t;pthread_create(&t,NULL,vr_b2_find,(void *)(intptr_t)on);pthread_detach(t);
+}
 static void vr_headlook_install(Module *m){
     /* zeldaVR: also without VR, for the third-person camera distance (runtime_camera_distance_set) */
     const char *hl=getenv("TOTK_VR_HEADLOOK");
@@ -1180,6 +1574,7 @@ void runtime_game_patches(Module *m) {
        Mac address and the iPad stopped at the first camera update ("Invalid Page", 2026-11-03, every 1.4.3 iOS build
        since zeldaVR came in, d1509b4b). */
     if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);
+    if (!getenv("TOTK_EXPORT_IOS") && vr_active()) vr_b2_install(m);   /* zeldaVR stereo B2 (step 1: the second render run, "b2 1") */
 #endif
     patch_bench_cam(m);
     patch_lod_distance(m);
