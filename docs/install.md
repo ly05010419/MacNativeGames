@@ -170,7 +170,7 @@ python3.14 games/totk/ios/tools/install_device.py "<folder>/Tears of the Kingdom
 
 **3. First start:** about 15 s to check the game data, then about 3 minutes of shader import before the title (iPhone 14). Later starts take about 8 s.
 
-On the phone the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. Breath of the Wild 1.6.0 builds and installs the same way.
+An iPhone starts handheld: the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. An iPad starts docked at 1080p: the scene at 1600×900 as on the Switch, upscaled to 1920×1080 (the start screen and Settings › Full HD switch between them; Breath of the Wild also offers 1080p HD, the scene at 1920×1080). Breath of the Wild 1.6.0 builds and installs the same way.
 
 Two limits:
 - A phone cannot translate shaders while you play: objects whose shader variant the app does not carry are skipped, so a few things can be missing in places no player has reported yet.
