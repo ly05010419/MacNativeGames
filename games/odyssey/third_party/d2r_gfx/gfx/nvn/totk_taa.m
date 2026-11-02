@@ -70,6 +70,10 @@ void taa_toggle(void) {
     atomic_store(&g_on, on);
     TLOG("key 5: temporal anti-aliasing %s", on ? "on" : "off");
 }
+void taa_set(int on) {
+    atomic_store(&g_on, on != 0);
+    TLOG("settings: temporal anti-aliasing %s", on ? "on" : "off");
+}
 int taa_active(void) { return g.active; }
 int taa_ready(void) { return g.active && !g.failed && g.frame >= g.retry_at && g.depth && g.cam_ok; }
 static double halton(unsigned i, unsigned b) { double f = 1, r = 0; while (i) { f /= b; r += f * (i % b); i /= b; } return r; }

@@ -64,7 +64,9 @@ int dm_gfx_fx_count(void) { return FX_N; }
 const char *dm_gfx_fx_id(int i) { return i >= 0 && i < FX_N ? k_fx[i].id : ""; }
 const char *dm_gfx_fx_name(int i, int english) { return i >= 0 && i < FX_N ? (english ? k_fx[i].en : k_fx[i].zh) : ""; }
 int dm_gfx_fx_available(int i) {
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW190)
+    return i == FX_AO && ssao_on();   // the keys are TOTK's; AO is the AO patch's own switch (0eeb23f2's c1[3].w)
+#elif defined(GAME_BOTW)
     (void)i; return 0;   // the keys are TOTK's
 #else
     return i >= 0 && i < FX_N && ((i != FX_AO && i != FX_SHADOW) || ssao_on());

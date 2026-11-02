@@ -56,6 +56,28 @@ def seed_data():
         minutes.write_text("20\n")
 
 
+def package_warm_lists(macos: Path, game: Path):
+    """Ship Odyssey's pipeline recipes alongside the libraries, resolving seed variant aliases."""
+    tool = GAME / "third_party/totk-scripts/shader_list.py"
+    manifest = BUILD / "build/pso_manifest.tsv"
+    shared_title = BUILD / "build/pso_shared_title.tsv"
+    subprocess.run([sys.executable, str(tool), "export", str(GAME / "assets/shader_list.tsv"),
+                    str(manifest), str(shared_title)], check=True)
+    title = BUILD / "build/pso_title.tsv"
+    if not title.is_file():
+        title = shared_title
+    # The seed deduplicates variants with identical dependencies. Recorded pipeline keys must name the surviving
+    # variants, as in build_app.py place_runtime, or the warm-up silently skips otherwise available pipelines.
+    aliases = BUILD / "build/shader-seed.aliases.tsv"
+    if aliases.is_file():
+        subprocess.run([sys.executable, str(tool), "rename", str(aliases), str(manifest), str(title)], check=True)
+    clone(manifest, game / "build/pso_manifest.tsv")
+    os.symlink("../Resources/game/build/pso_manifest.tsv", macos / "pso_manifest.tsv")
+    if any(line and not line.startswith("#") for line in title.read_text().splitlines()):
+        clone(title, game / "build/pso_title.tsv")
+        os.symlink("../Resources/game/build/pso_title.tsv", macos / "pso_title.tsv")
+
+
 def main():
     native = BUILD / "build/odyssey-native"
     for need in (native, ICON, BUILD / "build/shader-service/totk_xlate", BUILD / "build/spirv-cross/spirv-cross",
@@ -83,16 +105,6 @@ def main():
             clone(item, game / "romfs-patches" / item.relative_to(BUILD / "extracted/local/romfs-patches"))
     for font in sorted((BUILD / "extracted/firmware/shared-fonts").glob("*.bfttf")):
         clone(font, game / "fonts" / font.name)
-    # The settings window's render sizes (odyssey_gfx.h): the game's quality table for each, made from this dump's RomFS
-    # (scripts/make_resolution_overlay.py); the launcher passes the chosen one as TOTK_ROMFS_PATCHES with TOTK_RENDER_RES.
-    for size in ("1920x1080", "2240x1260", "2560x1440"):
-        out = BUILD / "romfs-res" / size
-        if not (out / "manifest.tsv").is_file():
-            subprocess.run([sys.executable, str(GAME / "scripts/make_resolution_overlay.py"), size, "--work", str(BUILD), "--output", str(out)],
-                           check=True, stdout=subprocess.DEVNULL)
-        for item in sorted(out.rglob("*")):
-            if item.is_file():
-                clone(item, game / "romfs-res" / size / item.relative_to(out))
     slot = BUILD / "analysis/game-slot"
     if slot.is_dir():
         (game / "slot-dir.txt").write_text(str(slot) + "\n")
@@ -111,12 +123,11 @@ def main():
     seed = BUILD / "build/shader-seed"
     if (seed / "seed-manifest.json").is_file():
         subprocess.run(["cp", "-cR", str(seed), str(game / "build/shader-seed")], check=True)
+    # Export Odyssey's shared pipeline recipes, as the TOTK/BOTW packager does. The shader seed carries libraries,
+    # not render pipelines: without these rows the first scene compiled hundreds of pipelines on the submit thread.
     # Pipelines the title screen needs (Applier session, recorded 22 October): the first frame waits only for this list
     # (nvn_mtl.m warm_start reads it beside the shader map, i.e. the executable path, Contents/MacOS).
-    title = BUILD / "build/pso_title.tsv"
-    if title.is_file():
-        clone(title, game / "build/pso_title.tsv")
-        os.symlink("../Resources/game/build/pso_title.tsv", macos / "pso_title.tsv")
+    package_warm_lists(macos, game)
     # The launcher and its settings window (shown before the game; the game's icon, the graphics and play settings).
     subprocess.run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror", "-fobjc-arc", "-o", str(macos / "Odyssey"),
                     str(GAME / "scripts/odyssey_app_launcher.c"), str(GAME / "scripts/odyssey_launcher_ui.m"),
@@ -126,6 +137,12 @@ def main():
     version = ICON.with_name("game-version.txt")   # extract_app_icon.py: the update's version, for the window title
     if version.is_file():
         shutil.copyfile(version, resources / "game-version.txt")
+    revision = subprocess.run(["git", "-C", str(GAME), "rev-parse", "--short=10", "HEAD"],
+                              capture_output=True, text=True)
+    if revision.returncode == 0:
+        dirty = subprocess.run(["git", "-C", str(GAME), "status", "--porcelain", "--", "."],
+                               capture_output=True, text=True)
+        (resources / "source-commit.txt").write_text(revision.stdout.strip() + ("+local" if dirty.stdout else "") + "\n")
     info = {
         "CFBundleDevelopmentRegion": "en", "CFBundleDisplayName": "Odyssey", "CFBundleName": "Odyssey",
         "CFBundleExecutable": "Odyssey", "CFBundleIconFile": "OdysseyIcon",
