@@ -267,6 +267,14 @@ static void apply_display_settings(void) {
     NSString *fps = [d stringForKey:@"TOTK_PHONE_FPS"] ?: @"60";
     totk_frame_env fe;
     if (totk_preset_frame_env_build(fps.UTF8String, &fe)) apply_frame_env(&fe, 1);
+    /* iOS CADisplayLink frame pacing: disable TOTK_SYNC_LAG (which causes 1-frame relaxed fence jitter and 22 ms spikes on iOS) */
+    setenv("TOTK_SYNC_LAG", "0", 1);
+    /* On iPad docked play, enable MetalFX spatial output upscaling to the native retina display */
+    if ([d boolForKey:@"TOTK_DOCKED"] && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        setenv("TOTK_IOS_DRAWABLE_H", "0", 0);
+        setenv("TOTK_MFX_OUTPUT", "1", 0);
+        setenv("TOTK_MFX_UPSCALE", "1", 0);
+    }
 }
 #endif
 
