@@ -28,7 +28,7 @@ int main(int argc,char **argv){@autoreleasepool{
  [NSApplication sharedApplication];controller_map_default(controllerMap,controllerModes);
  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1000,760) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
  window.releasedWhenClosed=NO;window.contentView=[[TOTKInputView alloc] initWithFrame:window.contentView.bounds];
- /* L3 + R3 pressed together opens the panel at once (user 2026-10-29), not one of them alone; from there the game gets
+ /* L3 + R3 pressed together opens the panel at once (games/totk, user 2026-10-29), not one of them alone; from there the game gets
     nothing until both are released; once per press. A button picked in the key bindings replaces the chord, opens the
     panel by itself, never reaches the game, and is saved in controller-settings.txt (-1: the chord, the file removed). */
  hidPad=(HIDPadState){.present=1};runtime_gamepad_settings_enable(1);RuntimeGamepadState out;

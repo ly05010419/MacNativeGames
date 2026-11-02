@@ -4,7 +4,7 @@
 
 /* TOTK: frames per second, the game's output resolution and, in brackets, its internal (3D scene) resolution in its
    top-right corner, one line ("FPS 60  1920x1080 (1600x900)"; the top-left holds the hearts). The internal resolution was
-   left out at first (user, 2026-10-16) and asked for on 2026-10-23. The game image itself (frame screenshots, texture dumps) never contains it. TOTK_FPS_OVERLAY=0 hides it. */
+   left out at first (games/totk, user, 2026-10-16) and asked for on 2026-10-23. The game image itself (frame screenshots, texture dumps) never contains it. TOTK_FPS_OVERLAY=0 hides it. */
 enum { FPS_OVERLAY_TEX_W = 768, FPS_OVERLAY_TEX_H = 64, FPS_OVERLAY_MAX_SCALE = 5 };
 
 /* fps / screen size < 0 / 0: not known yet ("--"). mfx: MetalFX upscaled the picture in the last frames. gen > 0: MetalFX

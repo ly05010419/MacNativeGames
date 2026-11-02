@@ -28,10 +28,10 @@ static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait fo
 static BOOL started;
 static _Atomic int settingsShortcutEnabled;
 static int settingsShortcutDown, settingsShortcutPending;
-/* The controller's way to the settings panel (user 2026-10-29): L3 and R3 pressed together by default, or one button the
+/* The controller's way to the settings panel (games/totk, user 2026-10-29): L3 and R3 pressed together by default, or one button the
    player picks in the key bindings (the touchpad, say), kept in controller-settings.txt. It opens or closes the panel as
    soon as it is all down; from there the game gets no controller input until everything is released. A picked button
-   drives nothing in the game. (Until 2026-10-29: L2 + R2 + L3 held for a second, user 2026-10-27.) */
+   drives nothing in the game. (Until 2026-10-29: L2 + R2 + L3 held for a second, games/totk, user 2026-10-27.) */
 #define SETTINGS_CHORD ((1ull << 4) | (1ull << 5))
 static _Atomic int settingsButton = -1;   /* physical button (controller_map.h), -1 the chord */
 static uint64_t settings_trigger(void) { int b = atomic_load(&settingsButton); return b >= 0 ? 1ull << b : SETTINGS_CHORD; }
@@ -859,7 +859,6 @@ void runtime_gamepad_text_capture(int on) {
     memset(toggleMoved, 0, sizeof toggleMoved);
     refresh_gamepads();
 }
-int runtime_gamepad_game_input(void) { return !atomic_load(&textCapture); }   /* the bow thread (gamepad_feedback.m) */
 /* Keep the Switch HID fallback's expiry identical for the UI and the game. gamepadLock held. */
 static RuntimeGamepadState text_state_locked(void) {
     RuntimeGamepadState state = textPad;

@@ -83,8 +83,7 @@ void dm_gfx_opt_set(int w, int v) {
     if (w == GX_FRAME) mfx_set(v ? MFX_HALF : MFX_OFF);
     if (w == GX_TEX) atomic_store(&g_samp_flush, 1);
     gx_save();
-    fprintf(stderr, "[dm] [nvn-mtl] [gfx] %s: %s%s%s\n", gx_title[w], gx_label[w][v],
-            "", "");
+    fprintf(stderr, "[dm] [nvn-mtl] [gfx] %s: %s\n", gx_title[w], gx_label[w][v]);
 }
 int dm_gfx_opt_cycle(int w) { dm_gfx_opt_set(w, -1); return w >= 0 && w < GX_N ? gx_get(w) : -1; }
 int dm_gfx_opt_get(int w) { return w >= 0 && w < GX_N ? gx_get(w) : -1; }

@@ -64,7 +64,7 @@ static void user_input(const char *what){
 }
 /* Keys from the window are the user's (their layout); scripted and auto-load presses use the synthetic entry (the fixed
    layout above). Key 1 (Mac key code 18) opens and closes the settings panel (frontend.m) from either; held-key repeats do
-   not toggle it. Keys 2-7 are no shortcuts any more (user 2026-10-25: the panel replaces them). */
+   not toggle it. Keys 2-7 are no shortcuts any more (games/totk, user 2026-10-25: the panel replaces them). */
 enum { KEY_SETTINGS = KEYMAP_SETTINGS_KEY };
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;held_buttons_locked();pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();}

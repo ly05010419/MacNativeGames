@@ -171,7 +171,10 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  for(unsigned i=0;i<4;i++)if(sceneSizes[i][0]<=maxW&&sceneSizes[i][1]<=maxH){
   [scenes addObject:[NSString stringWithFormat:@"%u × %u",sceneSizes[i][0],sceneSizes[i][1]]];[sceneValues addObject:@(i)];
  }
- [rows addObject:settings_row(settings_text("渲染分辨率","Render resolution"),scenes,sceneValues,^int{
+ /* Only the sizes this app's canvas holds (build_odyssey.py --render-res, default 2560x1440); a smaller canvas is named */
+ NSString *sceneTitle=maxW>=2560?settings_text("渲染分辨率","Render resolution"):
+  [NSString stringWithFormat:@"%@ (%@ %u × %u)",settings_text("渲染分辨率","Render resolution"),settings_text("这个包最大","this app: up to"),maxW,maxH];
+ [rows addObject:settings_row(sceneTitle,scenes,sceneValues,^int{
   unsigned w,h;runtime_scene_resolution(&w,&h);for(int i=0;i<4;i++)if(sceneSizes[i][0]==w&&sceneSizes[i][1]==h)return i;return 0;
  },^(int v){dm_gfx_opt_set(GX_RES,v);})];
  [rows addObject:settings_row(settings_text("抗锯齿","Anti-aliasing"),@[@"Off",@"FXAA",@"SMAA"],@[@0,@1,@2],
@@ -215,7 +218,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
 /* The game actions in the order the page lists them; action -1 starts a section. */
 typedef struct { int action; const char *zh, *en, *tag; } SettingsAction;
 /* The key bindings' row for the settings panel itself: key 1 on the keyboard (fixed), on a controller L3 + R3 together or
-   the button picked (gamepad.m runtime_gamepad_settings_button, user 2026-10-29). */
+   the button picked (gamepad.m runtime_gamepad_settings_button, games/totk, user 2026-10-29). */
 enum { SETTINGS_BIND_PANEL = 100 };
 static const SettingsAction *settings_actions(int *count) {
  static const SettingsAction list[]={
@@ -354,7 +357,7 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 -(void)rightMouseDown:(NSEvent *)e{(void)e;if(self.enabled)[self.panel clearBinding:self];}
 @end
 
-/* Where the player dragged the panel (user 2026-10-25: it can be moved), as the fraction of the free room left and below
+/* Where the player dragged the panel (games/totk, user 2026-10-25: it can be moved), as the fraction of the free room left and below
    it, so a new opening and a resized window keep the spot; -1 = centred. The page shown last opens again. */
 static NSPoint g_settings_at = {-1, -1};
 static NSInteger g_settings_page = SETTINGS_PAGE_DISPLAY;
@@ -429,7 +432,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSRect bindingsFrame=NSMakeRect(0,SETTINGS_BOTTOM,W,body);
  NSView *bindings=drawings?[self drawingsPageWithFrame:bindingsFrame]:[self bindingsPageWithFrame:bindingsFrame];[self addSubview:bindings];[pages addObject:bindings];
  self.pages=pages;
- /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, user 2026-10-25); the reset buttons on the right
+ /* The bottom line: the version on the left (PR #1210; the overlay keeps it too, games/totk, user 2026-10-25); the reset buttons on the right
     of the key bindings page. */
  NSTextField *version=[NSTextField labelWithString:settings_version_text()];version.font=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightRegular];
  version.textColor=[NSColor colorWithCalibratedWhite:0.6 alpha:1];version.lineBreakMode=NSLineBreakByTruncatingTail;version.frame=NSMakeRect(18,9,230,16);[self addSubview:version];self.versionLabel=version;
@@ -441,7 +444,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  for(NSButton *b in @[resetPad,resetKeys,toggle]){b.controlSize=NSControlSizeSmall;b.font=[NSFont systemFontOfSize:11];b.refusesFirstResponder=YES;[b sizeToFit];
   b.frame=NSMakeRect(0,5,b.frame.size.width,24);b.wantsLayer=YES;[self addSubview:b];}
  self.resetButtons=@[resetKeys,resetPad];self.listToggle=toggle;
- /* The display page's bottom right (user 2026-10-25, kept on the first page only): contribute the shaders and pipelines the
+ /* The display page's bottom right (games/totk, user 2026-10-25, kept on the first page only): contribute the shaders and pipelines the
     shared list lacks, and star the project. */
  NSButton *contrib=[NSButton buttonWithTitle:settings_text("贡献着色器和管线","Contribute shaders and pipelines") target:self action:@selector(contribute:)];
  NSButton *star=[NSButton buttonWithTitle:settings_text("⭐ 给作者点赞","⭐ Star the project") target:self action:@selector(star:)];

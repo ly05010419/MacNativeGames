@@ -298,7 +298,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION]);
     press(18); setenv("TOTK_SOURCE_COMMIT", "abc1234", 1); press(18); assert(settingsOpen);
     assert([settingsPanel.versionLabel.stringValue isEqualToString:@"Ver. " TOTK_GAME_VERSION " · build abc1234"]);
-    /* The overlay keeps its build line too (user 2026-10-25; after PR #1210). */
+    /* The overlay keeps its build line too (games/totk, user 2026-10-25; after PR #1210). */
     if (hudBox) { [(TOTKHudBox *)hudBox refresh]; assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"abc1234"]); }
     NSRect lastBand = [settingsPanel.rows.lastObject.control.superview convertRect:settingsPanel.rows.lastObject.control.superview.bounds toView:settingsPanel];
     NSRect version = settingsPanel.versionLabel.frame;
@@ -322,7 +322,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     fakePadType = GAMEPAD_TYPE_PLAYSTATION; [settingsPanel refreshBindings];
     assert(titled(box(KEYMAP_A, 2), @"○") && [settingsPanel.padHeader.stringValue isEqualToString:@"Controller (PlayStation)"]);
     fakePadType = GAMEPAD_TYPE_AUTO;
-    /* The settings panel's own row (user 2026-10-29): key 1 fixed; on a controller L3 + R3, or the button picked (the
+    /* The settings panel's own row (games/totk, user 2026-10-29): key 1 fixed; on a controller L3 + R3, or the button picked (the
        touchpad here), cleared back to L3 + R3 by a right-click and by the controller reset; a button a game action takes
        back leaves the panel on L3 + R3. */
     [settingsPanel refreshBindings];

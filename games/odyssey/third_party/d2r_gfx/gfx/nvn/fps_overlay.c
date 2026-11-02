@@ -208,7 +208,7 @@ int hud_snapshot(int line, char *out, size_t n, int *highlight) {
 
 int shader_overlay_enabled(void) {
     static int on = -1;
-    /* On by default on the iPhone too since it shows the render pipelines (user 2026-10-22: only the FPS was there when the
+    /* On by default on the iPhone too since it shows the render pipelines (games/totk, user 2026-10-22: only the FPS was there when the
        game was opened from the home screen); it was off there because the phone translates no shaders. */
     const int def = 1;
     if (on < 0) { const char *e = getenv("TOTK_SHADER_OVERLAY"); on = e ? strcmp(e, "0") != 0 : def; }
@@ -227,7 +227,7 @@ void shader_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total, uin
     snprintf(out, n, TOTK_UI("新着色器 %llu / 总计 %s", "New shaders %llu / total %s"), (unsigned long long)(fresh > 99999 ? 99999 : fresh), t);
 #endif
 }
-/* The render pipeline line under the shaders (user 2026-10-22: "fps和着色器下面 现在显示渲染管线 信息，新/总计"): pipelines
+/* The render pipeline line under the shaders (games/totk, user 2026-10-22: "fps和着色器下面 现在显示渲染管线 信息，新/总计"): pipelines
    this run built that this profile had never built (new to its warm list), and every render pipeline ready this run
    (warm-up and play). */
 void pso_overlay_text(char *out, size_t n, uint64_t fresh, int64_t total) {

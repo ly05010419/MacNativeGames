@@ -144,7 +144,6 @@ void runtime_gamepad_read(RuntimeGamepadState *out);
    independent of gameplay remaps. Main-thread only. Closing waits for release before gameplay resumes. */
 void runtime_gamepad_text_capture(int on);
 void runtime_gamepad_text_read(RuntimeGamepadState *out);
-int runtime_gamepad_game_input(void);   /* any thread: 1 while the game gets the controllers (no capture, nor its release wait) */
 /* macOS opts in; the controller's settings button (L3 + R3 together, or the one picked in the key bindings) is latched
    independently of guest polling. */
 void runtime_gamepad_settings_enable(int enabled);
@@ -198,9 +197,8 @@ float runtime_rumble_gain(void);
 void runtime_rumble_gain_set(float gain);
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads);
 void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);   /* side 0 left, 1 right */
-/* The settings panel's DualSense bow trigger switch (runtime/gamepad_feedback.m, main queue): available for Breath of the Wild
-   1.9.0 and Tears of the Kingdom 1.4.3; locked when TOTK_DUALSENSE_TRIGGERS or an agent's test session decides; the choice
-   in force; choosing saves dualsense-triggers.txt and turns the connected DualSense's triggers on or off at once. */
+/* games/totk's DualSense bow trigger switch: Odyssey has no bow, so never available (runtime/gamepad_feedback.m's stubs);
+   frontend.m still calls runtime_triggers_release when the game ends. */
 int runtime_triggers_available(void);
 int runtime_triggers_locked(void);
 int runtime_triggers_choice(void);

@@ -201,7 +201,11 @@ int runtime_scene_resolution(unsigned *w, unsigned *h) {
 }
 int runtime_scene_resolution_set(unsigned w, unsigned h) {
     unsigned max_w, max_h; runtime_scene_resolution_max(&max_w, &max_h);
-    if (w < 1600 || h < 900 || w > max_w || h > max_h || w * 9 != h * 16) return 0;
+    if (w < 1600 || h < 900 || w > max_w || h > max_h || w * 9 != h * 16) {   /* said, not silent: the size stays as it was */
+        fprintf(stderr, "[odyssey] settings: scene resolution %ux%u refused (canvas %ux%u%s)\n", w, h, max_w, max_h,
+                w > max_w || h > max_h ? "; build_odyssey.py --render-res makes a bigger one" : "; 16:9 from 1600x900 up");
+        return 0;
+    }
     atomic_store(&g_scene_cap, w | h << 16);
     fprintf(stderr, "[odyssey] settings: scene resolution cap %ux%u (canvas %ux%u)\n", w,h,max_w,max_h);
     return 1;

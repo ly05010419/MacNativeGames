@@ -79,8 +79,24 @@ static void set_graphics(NSString *k, NSString *v) { if (!g_gfx[k]) [g_gfx_order
 
     CGFloat y = 510;
     [self header:@"Graphics" in:v y:y]; y -= 34;
-    [self row:@"Resolution (render size)" key:@"resolution" titles:@[@"1600 × 900 (the game's own)", @"1920 × 1080", @"2240 × 1260", @"2560 × 1440"]
-       tokens:@[@"1600x900", @"1920x1080", @"2240x1260", @"2560x1440"] current:g_gfx[@"resolution"] in:v y:y]; y -= 32;
+    /* The render sizes this app's canvas holds (the scene is capped inside it while the game runs, runtime/game_patches.c):
+       render-res.txt of build_odyssey.py --render-res (default 2560x1440), 1600x900 without it. A bigger size is not
+       offered, so none is refused later without a word; the pop-up says how to build a bigger canvas. */
+    unsigned canvasW = 1600, canvasH = 900;
+    NSString *canvas = [NSString stringWithContentsOfFile:[NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"game/romfs-patches/render-res.txt"]
+                                                 encoding:NSUTF8StringEncoding error:nil];
+    if (canvas && sscanf(canvas.UTF8String, "%ux%u", &canvasW, &canvasH) != 2) { canvasW = 1600; canvasH = 900; }
+    NSArray<NSString *> *resTitles = @[@"1600 × 900 (the game's own)", @"1920 × 1080", @"2240 × 1260", @"2560 × 1440"];
+    NSArray<NSString *> *resTokens = @[@"1600x900", @"1920x1080", @"2240x1260", @"2560x1440"];
+    NSMutableArray<NSString *> *fitTitles = [NSMutableArray array], *fitTokens = [NSMutableArray array];
+    for (NSUInteger i = 0; i < resTokens.count; i++) {
+        unsigned w = 0, h = 0; sscanf(resTokens[i].UTF8String, "%ux%u", &w, &h);
+        if (w <= canvasW && h <= canvasH) { [fitTitles addObject:resTitles[i]]; [fitTokens addObject:resTokens[i]]; }
+    }
+    NSPopUpButton *res = [self row:@"Resolution (render size)" key:@"resolution" titles:fitTitles tokens:fitTokens
+                           current:g_gfx[@"resolution"] in:v y:y]; y -= 32;
+    if (canvasW < 2560) res.toolTip = [NSString stringWithFormat:@"This app was built for up to %u × %u; build it again with "
+                                       "build_odyssey.py --render-res 2560x1440 for the bigger sizes.", canvasW, canvasH];
     [self row:@"Anti-aliasing" key:@"aa" titles:@[@"Off", @"FXAA", @"SMAA"] tokens:@[@"off", @"fxaa", @"smaa"] current:g_gfx[@"aa"] in:v y:y]; y -= 32;
     [self row:@"Upscaler" key:@"upscaler" titles:@[@"MetalFX", @"FSR 1", @"Lanczos", @"Bilinear"] tokens:@[@"metalfx", @"fsr1", @"lanczos", @"bilinear"]
        current:g_gfx[@"upscaler"] in:v y:y]; y -= 32;
