@@ -37,16 +37,14 @@ static const Glyph FONT[] = {
     {' ', {0, 0, 0, 0, 0, 0, 0}},
 };
 
-/* Key 1 cycles all -> minimal (FPS only) -> off -> all. */
+/* The settings panel's overlay choice (key 1 opens it, runtime/frontend.m): all, minimal (FPS only) or off. */
 static _Atomic int g_hud_mode = HUD_MODE_ALL;
 int fps_overlay_hud_mode(void) { return atomic_load_explicit(&g_hud_mode, memory_order_relaxed); }
 int fps_overlay_hints_enabled(void) { return fps_overlay_hud_mode() != HUD_MODE_OFF; }
 int fps_overlay_full_hud(void) { return fps_overlay_hud_mode() == HUD_MODE_ALL; }
-int fps_overlay_toggle_hints(void) {
-    int mode = atomic_load_explicit(&g_hud_mode, memory_order_relaxed), next;
-    do next = mode == HUD_MODE_ALL ? HUD_MODE_MINIMAL : mode == HUD_MODE_MINIMAL ? HUD_MODE_OFF : HUD_MODE_ALL;
-    while (!atomic_compare_exchange_weak_explicit(&g_hud_mode, &mode, next, memory_order_relaxed, memory_order_relaxed));
-    return next;
+void fps_overlay_set_hud_mode(int mode) {
+    if (mode == HUD_MODE_OFF || mode == HUD_MODE_ALL || mode == HUD_MODE_MINIMAL)
+        atomic_store_explicit(&g_hud_mode, mode, memory_order_relaxed);
 }
 
 int fps_overlay_enabled(void) {
@@ -163,7 +161,7 @@ void fps_overlay_text(const fps_overlay_info *info, char *text, size_t n) {
     if (info->gen > 0 && info->fps >= 0) snprintf(gen, sizeof gen, "+%d", info->gen > 999 ? 999 : info->gen);   // interpolated frames a second (key 2)
     // MetalFX did the upscale in the last frames (key 3 selects the manual MetalFX mode); 2K: true 2K output.
     // The whole line in the system font, so switching MetalFX does not switch the font.
-    snprintf(text, n, "FPS %s%s  %s%s%s%s", fps, gen, ss, sc, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big ? "  2K" : "");
+    snprintf(text, n, "FPS %s%s  %s%s%s%s", fps, gen, ss, sc, info->mfx ? TOTK_UI("  MetalFX已开启", "  MetalFX on") : "", info->big == 3 ? "  5K" : info->big == 2 ? "  4K" : info->big ? "  2K" : "");
 }
 
 void fps_overlay_raster(const fps_overlay_info *info, int scale, uint8_t *out, int *box_w, int *box_h) {

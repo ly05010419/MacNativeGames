@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "game": "Animal Crossing: New Horizons",
+  "title_id": "01006F8002326000",
+  "package_kind": "update",
+  "cnmt_version_raw": 2097152,
+  "display_version": "3.0.1",
+  "support_level": "bringup",
+  "exefs_sha256": {
+    "main": "569ed2c059c2c2aedc52c85e0e59c3c37fdfb78c3400a7d33e7a0ac1c0aa21aa",
+    "main.npdm": "1263e048909ce6056d5302fa0bb8653ba38bcf9cf3c633340b339bd183faed4e",
+    "rtld": "ff7ca6f5d242a79d31aa9d271c177169aa2a19e8a70ec2dac27102585b663c71",
+    "sdk": "ba21e47098e046eb1a74c6498a10bb996566e41abfce796f2dff1aa59c8aef21",
+    "subsdk0": "3cdbe2b9d49dc072ea8e0d84b490210472237d6749e7aab8b80fd735e551710b"
+  },
+  "modules": [
+    {
+      "build_id": "283033deea3fc0b60104a4790098b9ccdb62d006000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "rtld"
+    },
+    {
+      "build_id": "8f2cb7a9774959c89189c994fe4cc98800000000000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "main"
+    },
+    {
+      "build_id": "a226048605d3597f90cb1067d141cd36647b90cd000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "sdk"
+    },
+    {
+      "build_id": "6c6ceace7be94107a8bd440bc2d6070469bc90ce000000000000000000000000",
+      "segment_hashes_verified": true,
+      "name": "subsdk0"
+    }
+  ],
+  "control_nacp_sha256": "7ab1072c04afe92cbffe4ea64030a06f2d899bc7a96f038d93dc336063645934",
+  "rewritten_sha256": {
+    "main": "4b0dcac89e0ccfcefea6fe344c09876da66beb9c9acc0810cbab6d433183f0a1",
+    "sdk": "f4860dc99274ef092eaedd3a9c0be157f02bba978825945b1911c043243da63a",
+    "subsdk0": "c0135ade43b26b2ef32b4ae5909d40751fcfde1bcf664d74e90a6e7cd90cee5c"
+  },
+  "romfs_size": 10422885704,
+  "romfs_sha256": "c26be2547bf2a856dd1f5d4b86b136fc0defa040e8ccc3904218ca67e42c0371",
+  "romfs_file_count": 103396,
+  "scope": "Input hash chains, NSO segments, generic instruction rewrite and static loader preflight verified; runtime and gameplay under bring-up."
+}

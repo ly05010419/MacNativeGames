@@ -26,7 +26,7 @@
 
 enum {
     KB_TYPE = 0x00, KB_OK_TEXT = 0x04, KB_DISABLED = 0x1c, KB_HEADER = 0x24, KB_SUB = 0xa6, KB_GUIDE = 0x1a8,
-    KB_MAX_LEN = 0x3ac, KB_MIN_LEN = 0x3b0, KB_PASSWORD = 0x3b4, KB_UTF8 = 0x3bd, KB_INIT_OFF = 0x3c0, KB_INIT_LEN = 0x3c4,
+    KB_MAX_LEN = 0x3ac, KB_MIN_LEN = 0x3b0, KB_MASKED = 0x3b4 /* hidden-text entry */, KB_UTF8 = 0x3bd, KB_INIT_OFF = 0x3c0, KB_INIT_LEN = 0x3c4,
     ARG_WORK = 0x4d0, ARG_WORK_SIZE = 0x4d8, ARG_SIZE = 0x500,
     KB_TYPE_NUMPAD = 1, KB_LIMIT = 500, SWKBD_CANCELED = 0x29f,
 };
@@ -111,7 +111,7 @@ static int negative(void) { const char *e = getenv("TOTK_PROBE_NEGATIVE"); retur
 static unsigned show_keyboard(void *out_string, const void *arg_ptr) {
     const uint8_t *arg = arg_ptr; uint64_t *str = out_string;
     if (!arg || !str) runtime_fail("software keyboard: null argument");
-    uint32_t type = rd32(arg + KB_TYPE), disabled = rd32(arg + KB_DISABLED), password = rd32(arg + KB_PASSWORD);
+    uint32_t type = rd32(arg + KB_TYPE), disabled = rd32(arg + KB_DISABLED), masked = rd32(arg + KB_MASKED);
     int32_t max_len = (int32_t)rd32(arg + KB_MAX_LEN), min_len = (int32_t)rd32(arg + KB_MIN_LEN);
     int utf8 = arg[KB_UTF8] != 0;
     if (max_len <= 0 || max_len > KB_LIMIT || negative() == 22) max_len = KB_LIMIT;   /* 22: probe's negative control */
@@ -137,7 +137,7 @@ static unsigned show_keyboard(void *out_string, const void *arg_ptr) {
         snprintf(text, sizeof text, "%s", strcmp(forced, "<initial>") ? forced : initial);
     } else {
 #if TARGET_OS_OSX
-        RuntimeTextRequest req = { prompt, initial, max_len, min_len, password != 0, type == KB_TYPE_NUMPAD, disabled };
+        RuntimeTextRequest req = { prompt, initial, max_len, min_len, masked != 0, type == KB_TYPE_NUMPAD, disabled };
         int away = runtime_core_away();   /* the other guest threads keep running while the player types */
         confirmed = runtime_front_text_input(&req, text, sizeof text);
         runtime_core_back(&away);
@@ -160,7 +160,7 @@ static unsigned show_keyboard(void *out_string, const void *arg_ptr) {
         }
     }
     char shown[sizeof text]; utf16_to_utf8(u, n, shown, sizeof shown);
-    if (password) snprintf(shown, sizeof shown, "(password, %zu characters, not logged)", n);
+    if (masked) snprintf(shown, sizeof shown, "(password, %zu characters, not logged)", n);
     fprintf(stderr, "[totk] keyboard: \"%s\" (type %u, %d-%d characters, disabled keys %#x, %s out)%s -> %s%s%s\n", prompt, type, min_len,
             max_len, disabled, utf8 ? "UTF-8" : "UTF-16", forced ? " [TOTK_SWKBD_ANSWER]" : "", confirmed ? "\"" : "cancelled",
             confirmed ? shown : "", confirmed ? "\"" : "");

@@ -56,11 +56,14 @@ static void voice_reset(ServerVoice *v) {
     v->index = 0; v->offset = 0; v->fraction = 0; v->played = 0; v->consumed = 0; v->loops_done = 0;
     memset(&v->adpcm, 0, sizeof v->adpcm); v->adpcm.buffer = -1;
     memset(v->biquad_state, 0, sizeof v->biquad_state);
+    v->ramp_ready = 0; v->was_started = 0; memset(v->last, 0, sizeof v->last);   /* a new voice starts at its volume, with no depop */
 }
 static void update_voice(AudioRenderer *r, const AudrenVoiceIn *in) {
     need(in->id < (uint32_t)r->param.voice_count, "voice id out of range");
     ServerVoice *v = &r->voices[in->id];
+    int tail = (in->is_new || !in->in_use) && audio_mixer_voice_release(r, v);   /* v->in still holds the old mix: a voice stopped in this request fades out instead of being cut */
     if (in->is_new || !in->in_use) voice_reset(v);
+    if (tail) v->fade_in = 1;   /* until the next frame, a new voice in this slot ramps up over the old tail, so the two do not add to a step (kept through later resets) */
     for (int i = 0; i < 2; i++) if (!in->biquads[i].enable)
         memset(v->biquad_state[i], 0, sizeof v->biquad_state[i]);
     v->in = *in;
@@ -89,7 +92,7 @@ static void skip_empty(AudioRenderer *r, ServerVoice *v) {
         if (b->loop && b->loop_count < 0) break;   /* an endless empty loop starves the voice, as on the DSP */
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
         if (r) r->empty_played++;
-        if (b->end_of_stream) { v->played = 0; break; }
+        if (b->end_of_stream) v->played = 0;   /* the DSP only restarts the played count and goes on with the next buffer */
     }
 }
 static int stop_release(void) {
@@ -244,7 +247,10 @@ static void advance_voice(AudioRenderer *r, ServerVoice *v, double out_seconds) 
         if (v->offset < length) break;
         if (b->loop && (b->loop_count < 0 || v->loops_done < b->loop_count)) { v->loops_done++; v->offset = b->loop_start > b->start && b->loop_start < b->end ? (uint64_t)(b->loop_start - b->start) : 0; continue; }
         v->valid[v->index] = 0; v->consumed++; v->offset = 0; v->loops_done = 0; v->index = (v->index + 1) & 3;
-        if (b->end_of_stream) { v->played = 0; break; }
+        /* End of stream restarts the played count and the frame goes on with the next queued buffer (yuzu
+           DecodeFromWaveBuffers / Ryujinx DataSourceHelper). Stopping the frame there cut Super Mario Odyssey's
+           music, whose ADPCM stream marks every 14,336-sample buffer as an end: 64 silent samples every 0.3 s. */
+        if (b->end_of_stream) v->played = 0;
         skip_empty(r, v);
     }
 }
@@ -387,12 +393,85 @@ static int probe_rev15(void){
     free(input);audio_mixer_close(r);free(r->voices);free(r->pools);free(r->mixes);free(r->sinks);free(r->effects);free(r->channels);free(r);
     return checked;
 }
+/* Volume ramps and depop (audio_mixer.c voice_ramp_mix): a loud constant voice whose volume drops from 1 to 0.25 between
+   two frames, then stops. Neither may step the output: each sample stays within the ramp's per-sample change of the one
+   before, and after the stop the output decays from the last sample instead of jumping to 0. TOTK_AUDIO_RAMP=0 must fail. */
+static int probe_ramp(void) {
+    AudrenParameter p = {48000, 240, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, REV(11)};
+    AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
+    r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
+    r->sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 2, .inputs = {0, 1}};
+    static int16_t dc[480]; for (int i = 0; i < 480; i++) dc[i] = 26214;   /* 0.8 of full scale */
+    AudrenVoiceIn v = {.id = 0, .is_new = 1, .in_use = 1, .play_state = PLAY_STARTED, .sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1,
+                       .pitch = 1, .volume = 1, .mix_id = 0, .splitter_id = 0xffffffffu, .channel_ids = {0}};
+    v.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)dc, .size = sizeof dc, .end = 480, .loop = 1, .loop_count = -1};
+    r->channels[0].mix[0] = r->channels[0].mix[1] = 1; update_voice(r, &v);
+    const double frame = 240.0 / 48000; float lr[480], prev = 0; int checked = 0;
+    for (int f = 0; f < 6; f++) {
+        if (f == 2) { v.is_new = 0; v.wave_buffers[0].sent = 1; v.volume = 0.25f; update_voice(r, &v); }   /* the music ducks under a menu */
+        if (f == 4) { v.play_state = PLAY_STOPPED; update_voice(r, &v); }                                   /* and stops */
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, &r->voices[0], frame); audio_mixer_read(r, lr, 240);
+        for (int k = 0; k < 240; k++) {
+            float d = fabsf(lr[2 * k] - prev);
+            if (f > 0 && d > 0.04f) { fprintf(stderr, "ramp frame %d sample %d: %f after %f (step %f)\n", f, k, lr[2 * k], prev, d); runtime_fail("audio probe: volume step or stop is not smoothed"); }
+            prev = lr[2 * k]; checked++;
+        }
+        if (f == 1 && !near(lr[478], 0.8f)) runtime_fail("audio probe: steady volume before the ramp");
+        if (f == 3 && !near(lr[478], 0.2f)) runtime_fail("audio probe: volume after the ramp");
+    }
+    if (fabsf(prev) > 1e-3f) runtime_fail("audio probe: depop does not decay to silence");
+    audio_mixer_close(r); free(r->voices); free(r->pools); free(r->mixes); free(r->sinks); free(r->effects); free(r->channels); free(r);
+    return checked + 3;
+}
+/* Edge cases of the depop on a loud constant voice (0.8): the voice is stopped and then released, or reused by a new voice (stopped, or started at once, at the same level or silent), before the next frame, or its
+   channel is muted for a frame and the voice is then paused. Each must fade from the last sample (no step above 0.04), and a muted
+   voice that pauses must add nothing (its last added sample was 0). TOTK_AUDIO_RAMP=0 must fail. */
+enum { EDGE_RELEASE, EDGE_REUSE, EDGE_MUTE_PAUSE, EDGE_REUSE_STARTED, EDGE_REUSE_SILENT, EDGE_REUSE_TWICE };
+static int probe_ramp_edge(int kind) {
+    AudrenParameter p = {48000, 240, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, REV(11)};
+    AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
+    r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
+    r->sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 2, .inputs = {0, 1}};
+    static int16_t dc[480]; for (int i = 0; i < 480; i++) dc[i] = 26214;
+    AudrenVoiceIn v = {.id = 0, .is_new = 1, .in_use = 1, .play_state = PLAY_STARTED, .sample_format = FMT_PCM16, .sample_rate = 48000, .channel_count = 1,
+                       .pitch = 1, .volume = 1, .mix_id = 0, .splitter_id = 0xffffffffu, .channel_ids = {0}};
+    v.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)dc, .size = sizeof dc, .end = 480, .loop = 1, .loop_count = -1};
+    r->channels[0].mix[0] = r->channels[0].mix[1] = 1; update_voice(r, &v);
+    const double frame = 240.0 / 48000; float lr[480], prev = 0; int checked = 0;
+    for (int f = 0; f < 6; f++) {
+        if (f == 2) {
+            v.is_new = 0; v.wave_buffers[0].sent = 1;
+            if (kind == EDGE_RELEASE) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.in_use = 0; update_voice(r, &v); }   /* stop, then free it before the next render */
+            if (kind == EDGE_REUSE) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; update_voice(r, &v); }   /* and the id goes to a new, stopped voice */
+            if (kind == EDGE_REUSE_STARTED) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; update_voice(r, &v); }   /* and a new voice at the same level starts at once */
+            if (kind == EDGE_REUSE_SILENT) { v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; v.volume = 0; update_voice(r, &v); }   /* and a silent new voice starts at once */
+            if (kind == EDGE_REUSE_TWICE) {   /* a replacement starts, is freed and the slot is reused again, all before one frame */
+                v.play_state = PLAY_STOPPED; update_voice(r, &v); v.is_new = 1; v.wave_buffers[0].sent = 0; v.play_state = PLAY_STARTED; update_voice(r, &v);
+                v.in_use = 0; update_voice(r, &v); v.in_use = 1; update_voice(r, &v);
+            }
+            if (kind == EDGE_MUTE_PAUSE) r->channels[0].mix[0] = r->channels[0].mix[1] = 0;   /* the channel is muted: its volume ramps from 1 to 0 */
+        }
+        if (f == 4 && kind == EDGE_MUTE_PAUSE) { v.play_state = PLAY_PAUSED; update_voice(r, &v); }
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, &r->voices[0], frame); audio_mixer_read(r, lr, 240);
+        for (int k = 0; k < 240; k++) {
+            float d = fabsf(lr[2 * k] - prev);
+            if (f > 0 && d > 0.04f) { fprintf(stderr, "ramp edge %d frame %d sample %d: %f after %f (step %f)\n", kind, f, k, lr[2 * k], prev, d); runtime_fail("audio probe: volume step or stop is not smoothed"); }
+            if (kind == EDGE_MUTE_PAUSE && f >= 3 && fabsf(lr[2 * k]) > 1e-6f) { fprintf(stderr, "ramp edge %d frame %d sample %d: %f from a muted voice\n", kind, f, k, lr[2 * k]); runtime_fail("audio probe: a muted voice that pauses must stay silent"); }
+            prev = lr[2 * k]; checked++;
+        }
+    }
+    if (fabsf(prev - (kind == EDGE_REUSE_STARTED || kind == EDGE_REUSE_TWICE ? 0.8f : 0.0f)) > 1e-3f) runtime_fail("audio probe: depop does not decay to silence, or the new voice is not at its level");
+    audio_mixer_close(r); free(r->voices); free(r->pools); free(r->mixes); free(r->sinks); free(r->effects); free(r->channels); free(r);
+    return checked + 1;
+}
 void runtime_audio_probe(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1);
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);
     int checked = probe_rev15();
+    checked += probe_ramp();
+    for (int kind = EDGE_RELEASE; kind <= EDGE_REUSE_TWICE; kind++) checked += probe_ramp_edge(kind);
     /* final mix 0: buffers 0-1; submix 1: buffers 2-3 -> mix 0 with a swap matrix at volume 0.5 */
     r->mixes[0] = (AudrenMixIn){.volume = 1, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 0, .dest_mix_id = 0x7fffffff, .dest_splitter_id = 0xffffffffu};
     r->mixes[1] = (AudrenMixIn){.volume = 0.5f, .sample_rate = 48000, .buffer_count = 2, .in_use = 1, .mix_id = 1, .dest_mix_id = 0, .dest_splitter_id = 0xffffffffu};
@@ -593,6 +672,25 @@ void runtime_audio_probe(void) {
         }
         checked += 3;
         x.flush_wave_buffer_count = 0; x.in_use = 0; update_voice(r, &x);
+        /* 8. End of stream with another buffer queued: the voice goes on into it within the same frame, with the played
+           count restarted (Super Mario Odyssey's music marks every stream buffer as an end; stopping the frame there
+           left 64 silent samples every 0.3 s). */
+        x.in_use = 1; x.is_new = 1; x.wave_buffer_index = 0;
+        x.wave_buffers[0] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)a7, .size = sizeof a7, .end = 100, .end_of_stream = 1};
+        x.wave_buffers[1] = (AudrenWaveBuffer){.address = (uint64_t)(uintptr_t)b7, .size = sizeof b7, .end = 480, .end_of_stream = 1};
+        x.wave_buffers[2] = (AudrenWaveBuffer){.sent = 1}; x.wave_buffers[3] = (AudrenWaveBuffer){.sent = 1};
+        update_voice(r, &x); audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != 140 || sv7->played != 140) {
+            fprintf(stderr, "end of stream: consumed %u index %u offset %llu played %llu, want 1 1 140 140\n", sv7->consumed, sv7->index, (unsigned long long)sv7->offset, (unsigned long long)sv7->played);
+            runtime_fail("audio probe: end of stream stopped the frame");
+        }
+        checked += 4;
+        x.is_new = 0; x.wave_buffers[0].sent = x.wave_buffers[1].sent = 1; update_voice(r, &x);
+        audio_voices_prepare(r); audio_mixer_render(r, frame); advance_voice(r, sv7, frame);
+        if (sv7->consumed != 1 || sv7->index != 1 || sv7->offset != 380 || sv7->played != 380)
+            runtime_fail("audio probe: voice did not go on after an end-of-stream boundary");
+        checked += 4;
+        x.in_use = 0; update_voice(r, &x);
     }
     printf("{\"status\":\"pass\",\"probe\":\"probe-audio\",\"checked\":%d,\"scope\":\"REV15 wire parsing, native float voice/splitter biquads and consecutive request state; PCM16 channel mix, pitch interpolation, DSP-ADPCM decode, splitter to submix to final mix, device sink, stereo cascaded biquads, ordered submix reverb, auxiliary ring exchange, output limiter, bypass, frame continuity and reset\"}\n", checked);
 }

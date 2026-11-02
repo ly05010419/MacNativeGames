@@ -10,29 +10,158 @@ int runtime_fs_save_busy(void){return mode==2||(mode==1&&runtime_now_ns()<200000
 _Noreturn void runtime_fail(const char *message){fprintf(stderr,"FAIL: %s\n",message);exit(1);}
 void runtime_input_key(unsigned code,int down){(void)code;(void)down;}
 void runtime_input_clear(void){}
+void runtime_input_clear_window(void){}
+#ifndef FRONTEND_REAL_GAMEPAD
 void runtime_gamepad_start(void){}
+void runtime_gamepad_focus(int on){(void)on;}
+int runtime_gamepad_background_enabled(void){return 0;}
+void runtime_gamepad_background_set(int on){(void)on;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_gamepad_settings_enable(int on){(void)on;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_gamepad_settings_requested(void){return 0;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_gamepad_settings_button(void){return -1;}
+void runtime_gamepad_settings_button_set(int physical){(void)physical;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+static int textCaptureFixture;
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_gamepad_text_capture(int on){textCaptureFixture=on;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_gamepad_text_read(RuntimeGamepadState *out){*out=(RuntimeGamepadState){0};}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z;return 0;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_shared_setting_word(const char *n,char *s,size_t z){(void)n;(void)s;(void)z;return 0;}
+void runtime_shared_setting_save(const char *n,const char *s,const char *w){(void)n;(void)s;(void)w;}
+#endif
+/* runtime/account.c's local users (the panel's User page): the empty store of a fresh profile. */
+int runtime_users_get(RuntimeUser *out,int max){(void)out;(void)max;return 0;}
+int runtime_users_active(RuntimeUser *out){if(out)*out=(RuntimeUser){0};return 0;}
+int runtime_users_next(RuntimeUser *out){if(out)*out=(RuntimeUser){0};return 0;}
+int runtime_users_add(const char *name){(void)name;return -1;}
+int runtime_users_choose(int index){(void)index;return -1;}
+#ifndef FRONTEND_REAL_GAMEPAD
 int runtime_gamepad_type(int *detected){if(detected)*detected=-1;return 0;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_gamepad_battery_percent(void){return -1;}
+int runtime_gamepad_battery_left_percent(void){return -1;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
 int runtime_mouse_enabled(void){return 0;}
+#endif
+int vr_enabled(void){return 0;}int vr_streamer_managed(void){return 0;}void vr_resolution(int *w,int *h){*w=*h=0;}int vr_set_resolution(int w,int h){(void)w;(void)h;return 0;}
+int vr_first_person(void){return 0;}void vr_set_first_person(int on){(void)on;}
+int vr_offset_cm(int a){(void)a;return 0;}void vr_set_offset_cm(int a,int cm){(void)a;(void)cm;}
+int vr_mirror_mode(void){return 0;}void vr_set_mirror_mode(int on){(void)on;}void *vr_mirror_copy(void){return 0;}
+void vr_panel_image(const void *p,int w,int h,int s){(void)p;(void)w;(void)h;(void)s;}
+int vr_panel_in_headset(void){return 0;}
+void vr_mirror_crop(double o[4]){o[0]=o[1]=0;o[2]=o[3]=1;}
+double vr_mirror_aspect(void){return 2;}
+int vr_quest_view(void){return 0;}void vr_set_quest_view(int on){(void)on;}int vr_quest_zoom(void){return 2;}void vr_set_quest_zoom(int x){(void)x;}
+int vr_motion(void){return 0;}void vr_set_motion(int on){(void)on;}
+int vr_6dof(void){return 0;}void vr_set_6dof(int on){(void)on;}int vr_eye_spring_ms(void){return 0;}void vr_set_eye_spring_ms(int ms){(void)ms;}int vr_afr(void){return 0;}void vr_set_afr(int on){(void)on;}int vr_ipd_pct(void){return 100;}void vr_set_ipd_pct(int p){(void)p;}int vr_snap_ms(void){return 0;}void vr_set_snap_ms(int ms){(void)ms;}
+int runtime_camera_distance_available(void){return 0;}int runtime_camera_distance_cm(void){return 0;}void runtime_camera_distance_set(int cm){(void)cm;}
+int vr_hide_head_mode(void){return -1;}void vr_set_hide_head_mode(int m){(void)m;}
+#ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_set_hook(void (*hook)(void)){(void)hook;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_move(double dx,double dy){(void)dx;(void)dy;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_button(int button,int down){(void)button;(void)down;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
 void runtime_mouse_release(void){}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_setting_remove(const char *n){(void)n;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_controller_map_get(uint16_t *map,uint8_t *modes){controller_map_default(map,modes);}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_controller_map_set(const uint16_t *map,const uint8_t *modes){(void)map;(void)modes;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+void runtime_controller_map_reset(void){}
+#endif
+/* runtime/input.c's keyboard and mouse layout (the settings panel's key bindings). */
+static KeyMap probeKeyMap;static int probeKeyMapSet;
+void runtime_keymap_get(KeyMap *out){if(!probeKeyMapSet){keymap_default(&probeKeyMap);probeKeyMapSet=1;}*out=probeKeyMap;}
+void runtime_keymap_set(const KeyMap *map){probeKeyMap=*map;probeKeyMapSet=1;}
+void runtime_keymap_reset(void){keymap_default(&probeKeyMap);probeKeyMapSet=1;}
+void runtime_input_mouse(int button,int down){(void)button;(void)down;}
 void runtime_oe_push_message(uint32_t message){(void)message;}
 void hle_bind_system_event(void *event,int autoclear){(void)event;(void)autoclear;}
 void hle_signal_system_event(void *event){(void)event;}
 uint64_t dm_nvn_frame_count(void){return 0;}
-int fps_overlay_toggle_hints(void){return 0;}
+void fps_overlay_set_hud_mode(int mode){(void)mode;}
 int hud_compact(void){return 0;}
 int hud_snapshot(int line,char *out,size_t n,int *highlight){(void)line;(void)out;(void)n;(void)highlight;return 0;}
 int fps_overlay_full_hud(void){return 1;}
 int dm_gfx_fps_now(int *generated){if(generated)*generated=0;return -1;}
-int mfx_enabled(void){return 0;}
-int mfxup_output_enabled(void){return 0;}
-uint64_t runtime_output_size_current(void){return 1920|(uint64_t)1080<<32;}
 void runtime_aspect_view(double w,double h){(void)w;(void)h;}
-int runtime_aspect_step(void){return -1;}
-float runtime_aspect_now(void){return 0;}
 int taa_enabled(void){return 0;}
+/* The settings panel (runtime/settings_panel.h) is not opened here. */
+void taa_set(int on){(void)on;}
+int mfx_requested(void){return 0;}
+int fps_overlay_hud_mode(void){return 1;}
+void dm_gfx_set_flag(const char *name,int value){(void)name;(void)value;}
+void dm_gfx_aniso_start(int n){(void)n;} int dm_gfx_aniso_locked(void){return 0;} int dm_gfx_aniso(void){return 0;} void dm_gfx_aniso_set(int n){(void)n;}   /* the display page's anisotropy row (nvn_mtl.m) */
+int runtime_output_modes(void){return 0;}
+int runtime_output_mode(void){return 0;}
+int runtime_output_mode_set(int mode){(void)mode;return 0;}
+int runtime_aspect_set_ratio(float r){(void)r;return 0;}
+float runtime_aspect_ratio(void){return 0;}
+float runtime_aspect_start(void){return 0;}
+int runtime_output_native(int mode,unsigned *w,unsigned *h){(void)mode;(void)w;(void)h;return 0;}
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_gamepad_type_set(int type){return type;}
+#endif
+#ifndef FRONTEND_REAL_GAMEPAD
+int runtime_mouse_set(int on){return on;}
+int runtime_mouse_sensitivity(void){return 50;}
+int runtime_mouse_sensitivity_locked(void){return 0;}
+void runtime_mouse_sensitivity_set(int sensitivity){(void)sensitivity;}
+#endif
+static int fixtureFrameLimit;
+void nvn_fps_lock_set(int fps){fixtureFrameLimit=fps;}
+/* TOTK_STATE_REPORTING (gfx/nvn/totk_state_report.m): frontend.m declares them weak, the linker still wants them. */
+void totk_sr_start(const char *game,const char *version){(void)game;(void)version;}
+void totk_sr_picture(int key,int visible){(void)key;(void)visible;}
+void totk_sr_window(int key,int visible){(void)key;(void)visible;}
+void totk_sr_view(int w,int h,int hz,int fullscreen){(void)w;(void)h;(void)hz;(void)fullscreen;}
+void totk_sr_settings(int open){(void)open;}
+void totk_sr_closing(void){fprintf(stderr,"[probe] state report: closing\n");}
+int nvn_fps_lock(void){return fixtureFrameLimit;}
+/* The controller rows of the settings panel (PR #477, #523): the panel is not opened here. */
+int runtime_feedback_locked(int gyro){(void)gyro;return 0;}
+int runtime_feedback_present(int gyro){(void)gyro;return 0;}
+int runtime_feedback_choice(int gyro){(void)gyro;return 0;}
+void runtime_feedback_choose(int gyro,int on){(void)gyro;(void)on;}
+int runtime_rumble_gain_locked(void){return 0;}
+float runtime_rumble_gain(void){return 1;}
+void runtime_rumble_gain_set(float gain){(void)gain;}
+int runtime_triggers_available(void){return 0;}
+int runtime_triggers_locked(void){return 0;}
+int runtime_triggers_choice(void){return 0;}
+void runtime_triggers_choose(int on){(void)on;}
+void runtime_triggers_release(void){fprintf(stderr,"[probe] triggers released\n");}   /* the window's close lets the DualSense go */
+int fps_overlay_value(void){return 0;}   /* the HUD's FPS graph (PR #940) */
 
 static NSEvent *key(NSEventModifierFlags flags){
  return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0
@@ -55,6 +184,22 @@ int main(int argc,char **argv){
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(10,10,200,25)];
    [window.contentView addSubview:field];[window makeFirstResponder:field];
    if(![window.firstResponder isKindOfClass:NSTextView.class])runtime_fail("text field has no editor");
+  }
+  if(mode==3){
+   NSMenu *app=NSApp.mainMenu.itemArray[0].submenu;
+   NSMenuItem *settings=app.itemArray[0];
+   if(![settings.keyEquivalent isEqualToString:@","]||settings.action!=@selector(openSettings:))runtime_fail("native settings menu missing");
+   [NSApp sendAction:settings.action to:settings.target from:settings];
+   if(!settingsOpen)runtime_fail("native settings action did not open panel");
+   settings_show(0);
+   NSMenu *view=NSApp.mainMenu.itemArray[1].submenu;
+   if(view.itemArray[0].action!=@selector(toggleFullscreen:) || (view.itemArray[0].keyEquivalentModifierMask!=(NSEventModifierFlagControl|NSEventModifierFlagCommand) && view.itemArray[0].keyEquivalentModifierMask!=NSEventModifierFlagFunction))runtime_fail("native full screen action missing");
+   NSMenu *rates=view.itemArray[1].submenu;
+   for(int i=0;i<2;i++)for(NSMenuItem *item in rates.itemArray)if(item.tag==(i?120:60)){
+    [NSApp sendAction:item.action to:item.target from:item];
+    if(nvn_fps_lock()!=(i?120:60))runtime_fail("native frame limit did not apply");
+   }
+   puts("PASS: native Settings, Full Screen and live 60-to-120 menu actions");return 0;
   }
   if([NSApp.mainMenu performKeyEquivalent:key(0)])runtime_fail("plain Q triggered Quit");
   if([NSApp.mainMenu performKeyEquivalent:key(NSEventModifierFlagControl)])runtime_fail("Control-Q triggered Quit");

@@ -96,6 +96,10 @@ static void ring_output(void){
     for(int n=0;n<3;n++)pull(m,NULL,NULL,0,512,&io);check(atomic_load(&m->underruns)==1&&atomic_load(&m->missing_frames)==128,"real underrun recorded");for(int k=768;k<1024;k++)near(out[k],0,"underrun padding");
     output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);check(atomic_load(&m->underruns)==1,"rebuffer does not inflate underruns");
     for(int n=0;n<7;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);near(out[0],.25f,"rebuffer recovery");atomic_store(&m->playing,0);pull(m,NULL,NULL,0,512,&io);check(atomic_load(&m->rd)==atomic_load(&m->wr)&&atomic_load(&m->underruns)==1,"stop flush without underrun");
+    /* runtime_audio_hold: while the first frame waits for the warm-up, the output is silent and what the game writes is dropped */
+    atomic_store(&m->playing,1);m->ready=0;runtime_audio_hold(1);for(int n=0;n<8;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);
+    for(int k=0;k<1024;k++)near(out[k],0,"hold silence");check(atomic_load(&m->rd)==atomic_load(&m->wr),"hold drops the backlog");
+    runtime_audio_hold(0);for(int n=0;n<8;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);near(out[0],.25f,"sound after the hold");
     AudioRenderer r={.mixer=m};audio_mixer_set_running(&r,1);for(int n=0;n<8;n++)output_push(m,samples,240);audio_mixer_set_running(&r,0);audio_mixer_set_running(&r,1);
     for(int k=0;k<480;k++)samples[k]=.5f;for(int n=0;n<8;n++)output_push(m,samples,240);pull(m,NULL,NULL,0,512,&io);near(out[0],.5f,"rapid stop/start drops stale queued audio");check(atomic_load(&m->underruns)==1,"resume keeps underrun accounting");
     atomic_store(&m->rd,0);atomic_store(&m->wr,RING_FRAMES);uint64_t before=atomic_load(&m->wr);output_push(m,samples,240);check(atomic_load(&m->wr)==before&&atomic_load(&m->overruns)==1,"full ring drops atomically");free(m);
@@ -130,4 +134,4 @@ static void diagnostic_capture(void){
     for(int k=0;k<64;k++){int source=k<16?k+16:k<48?k-16:k-48;near(got[k],samples[source],"capture worker samples");}
     r=renderer(16);check(!((Mixer *)r.mixer)->capture_worker,"existing capture never overwritten");destroy(&r);unlink(path);unsetenv("TOTK_AUDIO_CAPTURE");
 }
-int main(int argc,char **argv){setenv("TOTK_AUDIO_OFF","1",1);unsetenv("TOTK_AUDIO_CAPTURE");if(argc!=2)return 2;vectors(argv[1]);simple_effects();reverb_early_modes();ring_output();diagnostic_capture();printf("{\"status\":\"pass\",\"checks\":%lu,\"scope\":\"production effect graph, routing, capture/circular buffers, output prefill/recovery/stop, async recording\"}\n",checks);return 0;}
+int main(int argc,char **argv){setenv("TOTK_AUDIO_OFF","1",1);check(atomic_load(&g_audio_hold)==1,"silent until the warm-up");runtime_audio_hold(0);unsetenv("TOTK_AUDIO_CAPTURE");if(argc!=2)return 2;vectors(argv[1]);simple_effects();reverb_early_modes();ring_output();diagnostic_capture();printf("{\"status\":\"pass\",\"checks\":%lu,\"scope\":\"production effect graph, routing, capture/circular buffers, output prefill/recovery/stop, async recording\"}\n",checks);return 0;}

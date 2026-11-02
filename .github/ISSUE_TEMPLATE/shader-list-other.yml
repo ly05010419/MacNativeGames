@@ -1,0 +1,47 @@
+name: Shader list contribution (other games) / 提交着色器清单（其他游戏）
+description: For a game other than Tears of the Kingdom and Breath of the Wild. Its shaders go to that game's own list. 王国之泪和旷野之息以外的游戏用这个，着色器收进那个游戏自己的清单。
+title: "Shader list (game name): "
+labels: ["shader-list-other"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you! The file holds shader keys and bind states only: no game data, saves or personal information. Every game keeps its own list, `games/<game>/assets/shader_list.tsv` ([docs/shader-list.md](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md)), so please name the game. When the game's reminder opened this page, the game is filled in already.
+
+        谢谢！这个文件只有着色器的标识和绑定状态，不含游戏内容、存档或个人信息。每个游戏有自己的清单 `games/<游戏>/assets/shader_list.tsv`（[docs/shader-list.md](https://github.com/ly05010419/MacNativeGames/blob/main/docs/shader-list.md)），所以请写上是哪个游戏。从游戏的提醒打开这个页面时，游戏已经填好了。
+  - type: input
+    id: game
+    attributes:
+      label: Game / 游戏
+      description: "One of: Super Mario Odyssey, Super Smash Bros. Ultimate, Super Mario Bros. Wonder, Mario vs. Donkey Kong / 其中之一：超级马力欧 奥德赛、任天堂明星大乱斗 特别版、超级马力欧兄弟 惊奇、马力欧 vs. 大金刚"
+      placeholder: Super Mario Bros. Wonder
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Game version / 游戏版本
+      placeholder: 1.2.1
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device / 设备
+      options: ["Mac", "iPhone", "iPad"]
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: shader-list-contribution.txt
+      description: |
+        Drag the game's contribution file here (`shader-list-contribution-<game>.txt` in the project's `shader-list-contribution` folder, or `shader-list-contribution.txt` in the game's data folder; the reminder shows it in Finder).
+        把这个游戏的贡献文件拖到这里（项目的 `shader-list-contribution` 文件夹里的 `shader-list-contribution-<游戏>.txt`，或游戏数据文件夹里的 `shader-list-contribution.txt`；提醒会在访达里显示它）。
+      placeholder: Drop the file here / 把文件拖到这里
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Where you played (optional) / 玩了哪些地方（可选）

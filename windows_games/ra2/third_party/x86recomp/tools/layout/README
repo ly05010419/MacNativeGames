@@ -1,0 +1,22 @@
+ddraw_layout: pins the guest DirectDraw/D3D7 structs in
+src/runtime/hle/ddraw_types.h to the real 32-bit SDK layout.
+
+fields.inc lists every struct/field of ddraw_types.h (regenerate it with
+the small Python snippet in the git history if the structs change, or edit
+by hand: S(T) for sizes, F(T, our_field, sdk_field) for offsets).
+
+Regenerate the checks (dev-time; uses mingw-w64 headers and wine):
+
+  i686-w64-mingw32-gcc -O0 -o /tmp/ddraw_layout.exe ddraw_layout.c
+  wine /tmp/ddraw_layout.exe > ../../src/runtime/hle/ddraw_layout_check.inc
+
+The output is a list of static_asserts compiled into the runtime, so any
+mismatch is a build error.
+
+d3d9_layout.c / d3d9_fields.inc do the same for d3d9_types.h:
+
+  i686-w64-mingw32-gcc -O0 -o /tmp/d3d9_layout.exe d3d9_layout.c
+  wine /tmp/d3d9_layout.exe > ../../src/runtime/hle/d3d9_layout_check.inc
+
+(d3d9_fields.inc lists every struct/field of d3d9_types.h; LARGE_INTEGER
+DriverVersion is split into DriverVersionLowPart/HighPart.)

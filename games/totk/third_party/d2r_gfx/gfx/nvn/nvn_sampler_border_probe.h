@@ -63,8 +63,8 @@ int mtl_probe_sampler_border(void) {
                         if(f!=border_filtered(rp)||(f&&(rp->ws!=bp->ws||rp->wt!=bp->wt||rp->wr!=bp->wr||rp->magf!=bp->magf||rp->minf!=bp->minf||rp->aniso!=bp->aniso||rp->lod_min!=bp->lod_min||rp->lod_max!=bp->lod_max)))MDIE("border probe recipe %s lost filter state",key.UTF8String);
                         if(f)checked++;}
                     for(int i=0;i<b.n;i++)if(r.a[i]!=b.a[i]||r.x[i]!=b.x[i]||memcmp(r.c[i],b.c[i],sizeof r.c[i]))MDIE("border probe recipe %s read back differently",key.UTF8String);
-                    id<MTLFunction> from_draw=stage?fs_fn_border(sh[1],0,NULL):vs_fn_for(sh[0],sh[1],0,1,NULL);
-                    id<MTLFunction> from_recipe=stage?fs_fn_border_with(sh[1],0,key,r,NULL):vs_fn_variant(sh[0],sh[1],0,key,r,NULL);
+                    id<MTLFunction> from_draw=stage?fs_fn_border(sh[1],0,NULL):vs_fn_for(sh[0],sh[1],0,1,NULL,NULL);
+                    id<MTLFunction> from_recipe=stage?fs_fn_border_with(sh[1],0,key,r,NULL):vs_fn_variant(sh[0],sh[1],0,key,r,NULL,NULL);
                     if(!from_draw||from_draw!=from_recipe)MDIE("border probe recipe %s names another variant",key.UTF8String);
                     checked+=2;
                 }

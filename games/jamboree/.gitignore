@@ -1,0 +1,30 @@
+# Local inputs and build products; keep work/output outside the checkout.
+*.keys
+*.tik
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.nro
+*.nso
+*.patched.bin
+*.metallib
+*.air
+*.app/
+*_build/
+.venv/
+__pycache__/
+.DS_Store
+runtime/host/gen/
+runtime/host/dmhost
+runtime/host/*.dSYM/
+runtime/games/*/c1_full.tsv
+runtime/games/*/cb_extent.tsv
+runtime/gfx/tests/t_*[!.cmh]
+runtime/tools/nx_extract/obj/
+runtime/tools/nx_extract/bin/
+
+# Local offline dependencies and translator debug artifacts are not contribution inputs.
+*.nupkg
+*.pdb

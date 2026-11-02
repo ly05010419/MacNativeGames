@@ -13,7 +13,21 @@
    faster rotation, so the rate never jumps at its edge. Default 0, except 1.2 while a controller's motion comes from its
    HID reports (runtime_motion_deadzone_default, gamepad_feedback.m): an 8BitDo Pro Controller lying on the desk read
    0.83 deg/s on average (bias 0.05, 0.73, 0.38 deg/s after its factory calibration), at most 1.07 deg/s, in 616 samples,
-   enough for the aim to creep; a DualSense through GameController needs none. */
+   enough for the aim to creep; a DualSense through GameController needs none.
+   Mouse mode (Mac, key 7: runtime/gamepad.m, runtime/mouse_look.h): the mouse takes the sensor over. Its samples come in
+   this frame already (runtime_motion_feed_mouse: no TOTK_GYRO_AXES remap, no dead zone), the controller's are dropped
+   meanwhile, and with mouse mode off the controller has it back (from a fresh start). The mouse's rate has no bias, so
+   there is no gravity pull (2026-10-28): its ticks come late now and then and its own pitch (10 ms a tick) parts a
+   little from the one integrated here, which the pull then crept the aim up or down for seconds after the mouse stopped.
+   The gravity reported is the integrated orientation's down instead, so the game sees the two agree.
+   States on the console's 5 ms clock (2026-10-22, from the Breath of the Wild branch, 2026-10-19): the console's sensor
+   hands the game a state every 5 ms; a Mac controller's samples come in bursts (the 8BitDo Pro Controller: three samples
+   per HID report, 33 reports a second; GameController: 33 samples a second; the mouse: one per 10 ms tick). Breath of
+   the Wild marks a game frame without new states as one without motion, so at 60 FPS and above about half its frames
+   turned nothing and its motion aim came out much smaller than in TOTK (right at 30 FPS). So the states are produced
+   every 5 ms of real time, with the latest sample's rate held in between, up to the moment the game reads them (and up
+   to each new sample, before it takes over); at most 50 ms past the last sample, and no integration across a longer gap.
+   TOTK_GYRO_CLOCK=0: produced only as samples arrive (still in 5 ms steps). */
 #include "runtime.h"
 #include <math.h>
 #include <pthread.h>
@@ -32,6 +46,7 @@ static int from[3] = {0, 1, 2};
 static double sign[3] = {1, 1, 1}, det = 1;
 static double deadzone = -1;   /* rad/s; -1 until read from TOTK_GYRO_DEADZONE */
 static double deadzone_default;   /* deg/s, when TOTK_GYRO_DEADZONE is unset */
+static int mouse_owns, controller_live, phone_live;
 
 /* TOTK_GYRO_AXES: reference axis i = sign * controller axis from[i]. 0 if unset, -1 if malformed. */
 int runtime_motion_axes(const char *spec) {
@@ -71,7 +86,7 @@ static void align_to(const double acc[3]) {
 }
 static void integrate(const double gyro[3], const double acc[3], double dt) {
     double w[3] = {gyro[0], gyro[1], gyro[2]}, n = norm3(acc);
-    if (fabs(n - 1) < 0.15) {   /* not being accelerated: turn the estimated down toward the measured one */
+    if (!mouse_owns && fabs(n - 1) < 0.15) {   /* not being accelerated: turn the estimated down toward the measured one */
         const double kp = 0.5;
         double measured[3] = {acc[0] / n, acc[1] / n, acc[2] / n}, estimated[3] = {-R[2][0], -R[2][1], -R[2][2]}, e[3];
         cross3(measured, estimated, e);
@@ -92,6 +107,30 @@ static void integrate(const double gyro[3], const double acc[3], double dt) {
     }
     memcpy(R, out, sizeof R); orthonormalize();
 }
+static double cur_acc[3] = {0, 0, -1}, cur_gyro[3];   /* the latest sample, held until the next one */
+static uint64_t emit_ns;   /* the time of the newest state */
+static int motion_clock(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_GYRO_CLOCK"); on = !(e && !strcmp(e, "0")); }
+    return on;
+}
+static void push_state(double step) {
+    RuntimeMotionState *s = &ring[produced % MOTION_RING];
+    *s = (RuntimeMotionState){.sampling = produced + 1, .delta_ns = (uint64_t)(step * 1e9)};
+    for (int i = 0; i < 3; i++) {
+        double rps = cur_gyro[i] / (2 * M_PI); angle[i] += rps * step;
+        s->acc[i] = (float)(mouse_owns ? -R[2][i] : cur_acc[i]); s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
+        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
+    }
+    produced++;
+}
+static void produce_until(uint64_t t) {   /* lock held: 5 ms states at the held rate, up to t */
+    const uint64_t step = 5000000ull;
+    if (!emit_ns || restart) return;
+    if (last_ns && t > last_ns + 50000000ull) t = last_ns + 50000000ull;
+    if (t > emit_ns + 100000000ull) emit_ns = t - step;   /* a gap (sensors were off, the app was in the background) */
+    for (int n = 0; emit_ns + step <= t && n < 64; n++) { integrate(cur_gyro, cur_acc, step / 1e9); push_state(step / 1e9); emit_ns += step; }
+}
+static void feed_locked(const double acc[3], const double gyro[3], uint64_t now);
 void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint64_t now) {
     double acc[3], gyro[3];
     pthread_mutex_lock(&lock);
@@ -104,34 +143,38 @@ void runtime_motion_feed(const double raw_acc[3], const double raw_gyro[3], uint
     }
     double rate = norm3(gyro), keep = rate > deadzone ? (rate - deadzone) / rate : 0;
     for (int i = 0; i < 3; i++) gyro[i] *= keep;
-    double dt = last_ns && now > last_ns ? (now - last_ns) / 1e9 : 0.004;
-    if (dt > 0.05) dt = 0.004;   /* a gap (sensors were off, the app was in the background): no integration across it */
+    if (mouse_owns) { pthread_mutex_unlock(&lock); return; }
+    feed_locked(acc, gyro, now);
+    pthread_mutex_unlock(&lock);
+}
+/* One sample in the reference controller frame (lock held). */
+static void feed_locked(const double acc[3], const double gyro[3], uint64_t now) {
+    produce_until(now);   /* the time up to this sample at the rate held so far */
+    memcpy(cur_acc, acc, sizeof cur_acc); memcpy(cur_gyro, gyro, sizeof cur_gyro);
     last_ns = now; live = 1;
-    if (restart) { align_to(acc); memset(angle, 0, sizeof angle); restart = 0; }
-    else integrate(gyro, acc, dt);
-    RuntimeMotionState *s = &ring[produced % MOTION_RING];
-    *s = (RuntimeMotionState){.sampling = produced + 1, .delta_ns = (uint64_t)(dt * 1e9)};
-    for (int i = 0; i < 3; i++) {
-        double rps = gyro[i] / (2 * M_PI); angle[i] += rps * dt;
-        s->acc[i] = (float)acc[i]; s->gyro[i] = (float)rps; s->angle[i] = (float)angle[i];
-        for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
-    }
-    produced++;
+    if (restart) { align_to(acc); memset(angle, 0, sizeof angle); restart = 0; emit_ns = now; push_state(0.005); }
     if (!log_at) log_at = now;
-    if (now - log_at >= 30000000000ull) {
+    if (now - log_at >= 30000000000ull && produced) {
+        const RuntimeMotionState *s = &ring[(produced - 1) % MOTION_RING];
         uint64_t values, reads; runtime_hid_feedback_stats(&values, &reads);
-        fprintf(stderr, "[gyro] last 30 s: %llu samples (%.0f a second), the game read the states %llu times; now acc (%+.2f %+.2f %+.2f) G, gyro (%+.3f %+.3f %+.3f) rev/s\n",
+        fprintf(stderr, "[gyro] last 30 s: %llu states (%.0f a second), the game read the states %llu times; now acc (%+.2f %+.2f %+.2f) G, gyro (%+.3f %+.3f %+.3f) rev/s\n",
                 (unsigned long long)(produced - logged), (produced - logged) / ((now - log_at) / 1e9), (unsigned long long)(reads - reads_logged),
                 s->acc[0], s->acc[1], s->acc[2], s->gyro[0], s->gyro[1], s->gyro[2]);
         logged = produced; reads_logged = reads; log_at = now;
     }
+}
+void runtime_motion_feed_mouse(const double acc[3], const double gyro[3], uint64_t now) {
+    pthread_mutex_lock(&lock);
+    if (mouse_owns) feed_locked(acc, gyro, now);
     pthread_mutex_unlock(&lock);
 }
 int runtime_motion_read(RuntimeMotionState *out, int max) {
     if (max <= 0) return 0;
     int n = 0;
     pthread_mutex_lock(&lock);
-    if (live && runtime_now_ns() - last_ns < 200000000ull) {   /* no sample for 200 ms: no motion */
+    uint64_t now = runtime_now_ns();
+    if (live && now - last_ns < 200000000ull) {   /* no sample for 200 ms: no motion */
+        if (motion_clock()) produce_until(now);
         uint64_t have = produced < MOTION_RING ? produced : MOTION_RING;
         n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
         for (int i = 0; i < n; i++) out[i] = ring[(produced - 1 - (uint64_t)i) % MOTION_RING];
@@ -142,4 +185,19 @@ int runtime_motion_read(RuntimeMotionState *out, int max) {
 void runtime_motion_start(void) { pthread_mutex_lock(&lock); restart = 1; pthread_mutex_unlock(&lock); }
 /* The dead zone in deg/s when TOTK_GYRO_DEADZONE is unset: the HID reader sets 1.2, a GameController controller 0. */
 void runtime_motion_deadzone_default(double deg) { pthread_mutex_lock(&lock); deadzone_default = deg; deadzone = -1; pthread_mutex_unlock(&lock); }
-void runtime_motion_live(int on) { pthread_mutex_lock(&lock); live = on; if (on) restart = 1; pthread_mutex_unlock(&lock); }
+void runtime_motion_live(int on) {
+    pthread_mutex_lock(&lock); controller_live = on; live = controller_live || phone_live || mouse_owns;
+    if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
+}
+/* The iPhone's own sensor is a second source: it feeds the same ring, and only one source is live at a time (phone_motion
+   starts only when no controller is attached). Stopping it drops its samples at once so the game cannot read the phone's
+   last states through a controller that just took over. */
+void runtime_motion_phone(int on) {
+    pthread_mutex_lock(&lock); phone_live = on; live = controller_live || phone_live || mouse_owns;
+    if (on && !mouse_owns) restart = 1; else if (!live) last_ns = 0;
+    pthread_mutex_unlock(&lock);
+}
+void runtime_motion_mouse(int on) {
+    pthread_mutex_lock(&lock); mouse_owns = on; live = mouse_owns || controller_live || phone_live;
+    restart = 1; last_ns = 0; pthread_mutex_unlock(&lock);
+}

@@ -109,7 +109,9 @@ static void service_spawn(FILE **svc_in, FILE **svc_out) {
        workers' pipe ends, so after the game exited each kept another's stdin open, never read EOF and lived on (35
        orphaned translators by 22 October 08:20, all holding Metal's shader cache open). */
     posix_spawn_file_actions_addinherit_np(&fa, 2);
-    posix_spawnattr_t sa; posix_spawnattr_init(&sa); posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT);
+    posix_spawnattr_t sa; posix_spawnattr_init(&sa); sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&sa, &none);
+    // From games/totk: a service started from a GCD thread would inherit its blocked SIGCHLD and wait for spirv-cross for ever
+    posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
     // TOTK_SHADER_XLATE=<totk_xlate.dll> runs a trial translator build (e.g. build/totk_xlate-opt) without replacing the
     // shared one (through shader_service.py); TOTK_SHADER_DEBUGMODE=0|1 reaches either service through the environment.
@@ -213,7 +215,9 @@ static int no_translator(void) {
 }
 /* Odyssey (2026-10-22): TOTK_SHADER_ASYNC=1 translates a variant that is not in the cache on background services instead
    of the submit thread, which otherwise stops presenting for ~0.3 s per new variant (a scene load needed 100+). Default on
-   for Odyssey builds. Only a caller that may skip its draw (may_defer: nvn_mtl.m draw_may_skip) gets nil while the job
+   until the pipeline warm lists were packaged. Off by default now, as in TOTK commit 22a4aae: skipping draws can leave
+   incomplete pictures or flashes. TOTK_SHADER_ASYNC=1 opts back in. Only a caller that may skip its draw
+   (may_defer: nvn_mtl.m draw_may_skip) gets nil while the job
    runs; it looks again whenever totk_rt_completed() has moved. A caller whose result outlives the frame takes a queued job
    back and translates it in place, or waits for a running one (upstream bfdd085; without this a cold cache left Cap
    Kingdom black: a cube map drawn once at load was skipped and never redrawn). TOTK_SHADER_WORKERS services (default 4).
@@ -223,11 +227,7 @@ static int rt_async(void) {
     return 0;
 #else
     static int v = -1;
-#ifdef GAME_ODYSSEY   /* default on: without it the post-intro load stops presenting (22 October); TOTK_SHADER_ASYNC=0 for the old path */
-    if (v < 0) { const char *e = getenv("TOTK_SHADER_ASYNC"); v = !e || atoi(e) > 0; }
-#else
     if (v < 0) { const char *e = getenv("TOTK_SHADER_ASYNC"); v = e && atoi(e) > 0; }
-#endif
     return v;
 #endif
 }

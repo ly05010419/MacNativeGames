@@ -102,10 +102,10 @@ class ExtractDlc(Fixture):
 
 
 class DlcArguments(Fixture):
-    """build_app --dlc: for Breath of the Wild 1.9.0 only; the files are checked before any long step."""
+    """build_app --dlc: for Breath of the Wild with a separate 1.6.0 or 1.9.0 update; the files are checked before any long step."""
 
-    def run_main(self, base, update=None, dlcs=(), game='botw'):
-        return run_main(self, self.path, base, update, dlcs, game=game, stop='step_data_botw')
+    def run_main(self, base, update=None, dlcs=(), game='botw', version='botw190'):
+        return run_main(self, self.path, base, update, dlcs, game=game, stop='step_data_botw', version=version)
 
     def botw(self):
         return package(self.path, 'botw.nsp', BOTW_BASE), package(self.path, 'botw-u.nsp', BOTW_UPDATE)
@@ -119,6 +119,15 @@ class DlcArguments(Fixture):
         data = started['step_data_botw']
         self.assertEqual(data.call_args.kwargs['dlc'], [one.resolve(), two.resolve()])
         self.assertEqual(data.call_args.kwargs['version'], 'botw190')
+
+    def test_1_6_0_update_takes_dlc_too(self):
+        base, update = self.botw()
+        one, two = package(self.path, 'dlc1.nsp', DLC1), package(self.path, 'dlc2.nsp', DLC2)
+        error, started = self.run_main(base, update, [one, two], version='botw160')
+        self.assertIsInstance(error, Stop)
+        data = started['step_data_botw']
+        self.assertEqual(data.call_args.kwargs['dlc'], [one.resolve(), two.resolve()])
+        self.assertEqual(data.call_args.kwargs['version'], 'botw160')
 
     def test_no_dlc_is_an_empty_list(self):
         base, update = self.botw()
@@ -218,9 +227,9 @@ class StepDlcBotw(Fixture):
     def test_a_pack_not_given_this_time_is_removed(self):
         self.step(DLC1, DLC2)
         self.assertEqual(sorted(p.name for p in self.aoc.iterdir()), ['1', '2'])
-        config = self.tree / 'build/botw190/aoc_config.h'
+        config = self.tree / 'build/game-data/botw190/aoc-config.txt'
         config.parent.mkdir(parents=True)
-        config.write_text('#define AOC_PRESENT_MASK 3\n')
+        config.write_text('AOC_PRESENT_MASK 3\n')
         self.step(DLC1)
         self.assertEqual([p.name for p in self.aoc.iterdir()], ['1'])
         self.assertEqual(len(self.calls), 2, 'pack 1 was reused')
@@ -261,7 +270,8 @@ class StepDlcBotw(Fixture):
 
 
 class StepDataRoutes(unittest.TestCase):
-    """step_data_botw: 1.9.0 takes its add-on content from --dlc; the 1.6.0 card image still extracts both packs from itself."""
+    """step_data_botw: a separate 1.6.0 or 1.9.0 update takes its add-on content from --dlc; the 1.6.0 card image still extracts
+    both packs from itself."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -304,6 +314,13 @@ class StepDataRoutes(unittest.TestCase):
     def test_1_9_0_without_dlc_still_clears_old_packs(self):
         step_dlc, _ = self.data('botw190', update=self.root / 'update.nsp')
         self.assertEqual(step_dlc.call_args.args[2], ())
+
+    def test_1_6_0_update_hands_the_given_packs_to_step_dlc(self):
+        dlc = [self.root / 'dlc1.nsp', self.root / 'dlc2.nsp']
+        step_dlc, commands = self.data('botw160', update=self.root / 'update.nsp', dlc=dlc)
+        self.assertEqual(step_dlc.call_args.args[2], dlc)
+        self.assertEqual(step_dlc.call_args.args[6], self.tree / 'extracted/botw160/aoc')
+        self.assertEqual(commands, [])   # the card's extract_aoc_romfs.py does not run
 
     def test_card_image_extracts_its_own_packs(self):
         step_dlc, commands = self.data('botw160')

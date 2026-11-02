@@ -46,6 +46,13 @@ def bnsh_botw():
     return b
 
 
+def twin(row):
+    """A shader differing from row's only in a control byte no translation reads (+0x7d0, as 3,416 of TOTK 1.4.3's)."""
+    _, stage, control, code = row
+    control = bytearray(control); control[0x7d0] ^= 1
+    return seed.digest(bytes(control)+code), stage, bytes(control), code
+
+
 class ShaderInventory(unittest.TestCase):
     def test_the_key_hashes_the_control_sections_own_size_as_the_runtime_does(self):
         self.assertEqual(seed.control_key_len(bytes(0x880)), 0x880)              # no size word: the NVN 55 section
@@ -247,8 +254,28 @@ class ShaderKeyScope(unittest.TestCase):
                 self.assertEqual(json.loads((output/'shader-keys.json').read_text())['keys'], scope['keys'])
                 self.assertEqual(inventory.call_count, 1)
 
-    def prepare_with_service(self, root, output, listed=(), translator_text='', fail=(), inventory_calls=None, compare=()):
-        """prepare() with a synthetic service; returns (manifest, the variants it was asked to translate)."""
+    def test_shaders_differing_only_in_control_bytes_no_translation_reads_share_one_translation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            rows = list(seed.bnsh_shaders(bnsh()))
+            first, second = sorted([rows[1][0], twin(rows[1])[0]])
+            cube = self.deps(tex={'1': 'cube'})
+            manifest, asked, _ = self.prepare_with_service(root, root/'seed', [(second, cube)], twins=(1,))
+            answers = {**seed.ANSWERS, 'tex': {'1': 'cube'}}
+            self.assertEqual(sorted(asked), sorted([rows[0][0]+'-'+seed.SUFFIX, first+'-'+seed.SUFFIX, rows[2][0]+'-'+seed.SUFFIX,
+                                                    first+'-'+seed.suffix(answers)]))   # the twin's listed state too, as the first's
+            out = root/'seed'
+            self.assertEqual((out/(second+'.variants')).read_text(), (out/(first+'.variants')).read_text())
+            self.assertFalse(any(p.name.startswith(second+'-') for p in out.iterdir()))
+            self.assertEqual((manifest['served_by_another'], manifest['startup_shaders'], manifest['shaders']), (1, 3, 4))
+            self.assertIn(second+'.variants', manifest['files'])
+            self.assertFalse((root/'seed.aliases.tsv').exists())   # rows naming the twin's own variants: shader_list.py resolve
+            self.assertTrue(seed.builtin_serves(out, second, {}))   # the shared list's prune reads its default the same way
+
+    def prepare_with_service(self, root, output, listed=(), translator_text='', fail=(), inventory_calls=None, compare=(),
+                             twins=()):
+        """prepare() with a synthetic service; returns (manifest, the variants it was asked to translate). twins: indices of
+        shaders that get a twin (startup too) differing only in a control byte no translation reads."""
         asked = []
 
         class Service:
@@ -284,8 +311,9 @@ class ShaderKeyScope(unittest.TestCase):
         translator.write_text(translator_text); cross.write_text('')
         shared.write_text(''.join(f'V\t{key}\t{deps}\n' for key, deps in listed))
         rows = list(seed.bnsh_shaders(bnsh()))
+        rows += [twin(rows[i]) for i in twins]
         shaders = {key: (stage, control, code, 'Shader/test') for key, stage, control, code in rows}
-        startup = {rows[0][0], rows[1][0]}
+        startup = {rows[0][0], rows[1][0]} | {row[0] for row in rows[3:]}
         with mock.patch.object(seed, 'MIN_SHADERS', 1), mock.patch.dict(seed.GAMES['totk'], min_shaders=1), \
                 mock.patch.object(seed, 'inventory', return_value=({}, dict(shaders), set(startup), [])) as inventory, \
                 mock.patch.object(seed, 'located', return_value={}), \
@@ -327,7 +355,7 @@ class ShaderKeyScope(unittest.TestCase):
             self.assertEqual(self.tree(root/'seed'), self.tree(fresh/'seed'))
             self.assertEqual(manifest['files'], full['files'])
 
-    def test_a_listed_state_another_variant_serves_is_not_translated_but_named_in_the_aliases(self):
+    def test_a_listed_state_another_variant_serves_is_not_translated(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             rows = list(seed.bnsh_shaders(bnsh()))
@@ -337,8 +365,7 @@ class ShaderKeyScope(unittest.TestCase):
             served = rows[0][0]+'-'+seed.suffix({**seed.ANSWERS, 'tex': {'5': '3d'}})
             self.assertNotIn(served, asked)
             self.assertIn(rows[0][0]+'-'+seed.suffix({**seed.ANSWERS, 'tex': {'1': 'cube'}}), asked)
-            aliases = (root/'seed.aliases.tsv').read_text().splitlines()
-            self.assertEqual(aliases, [served+'\t'+rows[0][0]+'-'+seed.SUFFIX])
+            self.assertFalse((root/'seed.aliases.tsv').exists())   # shader_list.py resolve names such rows by their bind state
             self.assertEqual(manifest['shaders'], 4)
 
     def test_a_shader_sampling_shadow_maps_gets_its_depth_bound_variant_without_a_listed_row(self):
@@ -360,14 +387,15 @@ class ShaderKeyScope(unittest.TestCase):
             _, again, _ = self.prepare_with_service(root, root/'seed', listed, compare={shadow})
             self.assertEqual(again, [])
 
-    def test_deps_match_reads_wildcard_texture_kinds_and_unbound_vertex_inputs_as_the_runtime_does(self):
+    def test_deps_match_reads_wildcard_texture_kinds_and_ignores_vertex_input_types_as_the_runtime_does(self):
         deps = {'tex': {'1': '*', '2': '*_depth', '3': '2d'}, 'attr': {'0': 'uint'}, 'fout': {}, 'img': {}}
         self.assertTrue(seed.deps_match(deps, {'tex': {'1': 'cube', '2': '2darray_depth'}, 'attr': {'0': 'uint'}}))
         self.assertTrue(seed.deps_match(deps, {'tex': {'2': '2d_depth'}}))              # unbound slot 1 and input 0
         self.assertFalse(seed.deps_match(deps, {'tex': {'1': '2d_depth', '2': '2d_depth'}}))
         self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d'}}))
         self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d_depth', '3': '3d'}}))   # a queried kind still counts
-        self.assertFalse(seed.deps_match(deps, {'tex': {'2': '2d_depth'}, 'attr': {'0': 'float'}}))
+        # the pipeline redeclares an input with its bound format's type (nvn_mtl.m vs_vin): any variant serves it
+        self.assertTrue(seed.deps_match(deps, {'tex': {'2': '2d_depth'}, 'attr': {'0': 'float'}}))
         self.assertEqual(seed.answers_for({'tex': {'1': '*', '2': '*_depth', '3': 'cube'}})['tex'],
                          {'1': '2d', '2': '2d_depth', '3': 'cube'})
 
@@ -401,8 +429,9 @@ class ShaderKeyScope(unittest.TestCase):
             (root/f'{key}-{seed.SUFFIX}_b.json').write_text(json.dumps({'compare_slots': [3]}))
             self.assertTrue(seed.builtin_serves(root, key, '{"tex":{"3":"2darray"},"attr":{"6":"uint"}}'))
             self.assertTrue(seed.builtin_serves(root, key, {'tex': {'3': '2d_depth'}}))      # the depth-bound one
-            self.assertFalse(seed.builtin_serves(root, key, {'attr': {'6': 'float'}}))      # a float input: its own variant
-            self.assertFalse(seed.builtin_serves(root, key, {'fout': {'0': 'uint'}}))      # served by a listed variant only
+            self.assertTrue(seed.builtin_serves(root, key, {'attr': {'6': 'float'}}))       # a float input: the pipeline retypes it
+            self.assertTrue(seed.builtin_serves(root, key, {'fout': {'0': 'uint'}}))       # an integer target: the pipeline retypes the output
+            self.assertEqual(len(seed.builtin_variants(root, key)), 2)                     # the listed variant the seed also made is not built in
             self.assertFalse(seed.builtin_serves(root, other, {}))                          # not a shader of this seed
             lst = root/'list.tsv'
             lst.write_text(f'V\t{key}\t{{"attr":{{"6":"uint"}},"fout":{{}},"img":{{}},"tex":{{"3":"2d"}}}}\n'
@@ -412,8 +441,7 @@ class ShaderKeyScope(unittest.TestCase):
                                   capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, done.stderr)
             kept = [l for l in lst.read_text().splitlines() if l.startswith('V')]
-            self.assertEqual(kept, [f'V\t{key}\t{{"attr":{{"6":"float"}},"fout":{{}},"img":{{}},"tex":{{}}}}',
-                                    f'V\t{other}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}'])
+            self.assertEqual(kept, [f'V\t{other}\t{{"attr":{{}},"fout":{{}},"img":{{}},"tex":{{}}}}'])   # input types: served too
 
     def test_a_new_translator_empties_the_translation_cache(self):
         with tempfile.TemporaryDirectory() as folder:

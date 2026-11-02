@@ -1,0 +1,13 @@
+# Echoes of Wisdom: work folder (or a link to it), player mods (they hold game data) and game data by format, wherever it lands in this folder
+EoW_build
+/mods/
+/extracted/
+/rewritten/
+/analysis/
+/build/
+/user-data/
+romfs.bin
+*.nsp
+*.nca
+*.keys
+__pycache__/

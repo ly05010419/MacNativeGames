@@ -9,17 +9,17 @@ enum { FPS_OVERLAY_TEX_W = 768, FPS_OVERLAY_TEX_H = 64, FPS_OVERLAY_MAX_SCALE = 
 
 /* fps / screen size < 0 / 0: not known yet ("--"). mfx: MetalFX upscaled the picture in the last frames. gen > 0: MetalFX
    frame interpolation shows that many generated frames a second besides the game's fps frames -> "FPS 50+50" (key 2).
-   big: the game itself outputs more than 1920x1080 (true 2K) -> " 2K" at the end. */
+   big: the game itself outputs more than 1920x1080 (true 2K) -> " 2K" at the end; 2: native 4K; 3: native 5K. */
 typedef struct { int fps, screen_w, screen_h, mfx, gen, big, scene_w, scene_h; } fps_overlay_info;   // screen: the output; scene: 0 = not known
 
 int fps_overlay_enabled(void);
 /* Shared user toggle for every in-picture HUD layer: FPS, shader collection and load telemetry. */
-/* Key 1: HUD_MODE_ALL (FPS, shader collection, load and the shortcut reminder) -> HUD_MODE_MINIMAL (FPS only) -> HUD_MODE_OFF. */
+/* The settings panel (key 1): HUD_MODE_ALL (FPS, shader collection, load), HUD_MODE_MINIMAL (FPS only) or HUD_MODE_OFF. */
 enum { HUD_MODE_OFF = 0, HUD_MODE_ALL = 1, HUD_MODE_MINIMAL = 2 };
 int fps_overlay_hud_mode(void);
 int fps_overlay_hints_enabled(void);   /* the FPS readout shows (all or minimal) */
 int fps_overlay_full_hud(void);        /* everything shows (all) */
-int fps_overlay_toggle_hints(void);   /* atomically steps to the next mode and returns it (HUD_MODE_OFF = nothing shows) */
+void fps_overlay_set_hud_mode(int mode);   /* HUD_MODE_*; other values are ignored */
 /* Pixel scale (1..FPS_OVERLAY_MAX_SCALE) for a game picture view_h pixels tall: one text line is about 3% of its height. */
 int fps_overlay_scale(double view_h);
 /* The line in a 5x7 pixel font on a dark box, as BGRA8 pixels in out (FPS_OVERLAY_TEX_W x FPS_OVERLAY_TEX_H,

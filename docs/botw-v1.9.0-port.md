@@ -25,7 +25,7 @@ python3.14 build_app.py ~/Games/botw-base.nsp -k ~/keys/prod.keys --update ~/Gam
 `build_app.py` picks the game by the title IDs in the file, never by its name. A card image builds 1.6.0. A base NSP
 needs `--update`: with the 1.9.0 update it builds 1.9.0, with the 1.6.0 update 1.6.0 (by the update's verified ExeFS
 hashes). A package on the wrong option stops the build and names the option it belongs on. `--dlc` with a 1.6.0 card
-image or with TOTK also stops the build. A 1.9.0 build takes its DLC packs from `--dlc` only. Both BOTW versions use
+image or with TOTK also stops the build. A build with a separate update (1.9.0 or 1.6.0) takes its DLC packs from `--dlc` only. Both BOTW versions use
 the work folder `BotW_build`, the app `Breath of the Wild.app` and the data folder
 `~/Library/Application Support/MacNativeGames/BotW`.
 
@@ -112,6 +112,13 @@ Two changes act on both BOTW versions:
   staged texture from its stage. Larger textures keep the read-back blit. With staging, Kakariko holds 59.5 FPS at the
   60 FPS cap. A timer in a test build measured the stage copies at 107 us per game frame (103-113 us, 14 copies and
   4.7 new buffers a frame). That is 1.3 % of a 120 FPS frame.
+- Grass masks (after f1043e5): the game flushes its 512x512 grass density mask right after rendering it and reads it on
+  the CPU to choose the grass cells 50-130 m away. The flush write-back waited about 3.7 ms a frame for that rendering.
+  A target the flush has had to wait for 120 times (1 MiB at most) now lands in memory when its submission completes,
+  and the flush no longer waits: the CPU reads the last completed mask, as on hardware, where the game does not wait for
+  it either. This also learns the 64x64 light-probe cube maps. Great Plateau at the 120 FPS ceiling: 114-120 FPS and p99
+  11.7-15.6 ms before, 119.6-120 FPS and p99 10.6-11.0 ms after. `TOTK_BOTW_LATE_WB=0` restores the waiting write-back.
+  `probe-gpu-writeback` covers the landing, neighbour and own CPU writes on the shared edge pages, and a short pool.
 - 120 Hz displays: the uncapped mode stays off on a display of 120 Hz or more (`UNCAPPED_HZ`). The BOTW rule that
   ignores the game's present interval 2 acted only in that mode, so BOTW ran at 60 FPS on a 120 Hz display. The
   display-following path now ignores interval 2 in the same cases: real time, `DM_PRESENT_HZ` unset, `TOTK_UNCAPPED`,
@@ -120,6 +127,10 @@ Two changes act on both BOTW versions:
   - Replaced after the merge (user 2026-10-22): the uncapped mode applies on any display, so this rule is gone. Its
     clock's ceiling went to 240, then back to 120 by default the same day (user; `TOTK_UNCAPPED_HZ` still allows up to 240). The real-time frame step lost its 1/120 s floor (TOTK and BOTW), which made a game
     above 120 fps run fast; the Unicorn checks of both versions pass at 144, 165, 240 and 360 fps.
+  - The display link that shows the uncapped frames keeps a display rate above 120 Hz too, up to 240 (`link_range` in
+    `nvn_mtl.m`; TOTK and BOTW). It turned such a rate into 60, so a 144 / 160 Hz display ticked at a divisor of its
+    refresh: on a 160 Hz display about 53 frames a second reached the screen, 18.75 / 25 ms apart, while the game ran
+    at 105-120 fps. Only an unknown rate (below 30) still falls back to 60.
 
 Write-back staging A/B on `29bc388`, with upstream's #140 and #143 in the build: Kakariko, uncapped, docked 1920x1080
 render, warm shader cache v6, still view from 115 s for 20 s, then a 15 s walk. The "off" build used the TOTK hooks.
@@ -300,12 +311,15 @@ Every file under `games/totk` that this port changes (`git diff --stat ab4c9d2 H
 
 | File | What changed | Guard |
 |---|---|---|
-| `Makefile` | new rules `runtime-botw190`, `build/totk-native-botw190`, `build/gfx-botw190/*.o` and `build/botw190/*.h` | additive; no TOTK rule changed |
+| `Makefile` | new rules `runtime-botw190`, `build/totk-native-botw190`, `build/gfx-botw190/*.o`, `build/botw190/*.h` and `probe-audio-botw190` | additive; no TOTK rule changed |
 | `runtime/account.c` | `nn::account::PopOpenUsers` gives the one local user | `#ifdef GAME_BOTW` |
 | `runtime/aoc_romfs.c` | default DLC folder `extracted/<TOTK_GAME_DIR>/aoc` instead of the fixed `extracted/botw160/aoc` | the file is inside `#ifdef GAME_BOTW` |
-| `runtime/audio_mixer.h` | two fields keep the voice-drop parameter | `#ifdef GAME_BOTW` |
-| `runtime/audio_renderer.c` | `IAudioRenderer` commands 12 and 13 (Set/GetVoiceDropParameter) | `#ifdef GAME_BOTW` |
+| `runtime/audio_mixer.h` | two fields keep the voice-drop parameter; four more keep the ramp state (`prev_volume`, `ramp_ready`, `was_started`, `last`) | `#ifdef GAME_BOTW` |
+| `runtime/audio_mixer.c` | volume ramps and depop (`voice_ramp_mix`, `voice_depop_prepare`, `mix_depop`, `audio_mixer_voice_release`) | `#ifdef GAME_BOTW` |
+| `runtime/audio_ramp.h` | new header with the ramp arithmetic | included only under `GAME_BOTW` |
+| `runtime/audio_renderer.c` | `IAudioRenderer` commands 12 and 13 (Set/GetVoiceDropParameter); the ramp state is reset with the voice, after the tail of a stopped voice is queued; `probe_ramp` and `probe_ramp_edge` in the audio probe | `#ifdef GAME_BOTW` |
 | `runtime/game_patches_botw.c` | The 1.9.0 real-time, UI-step, physics-substep, held-count, docked 1080p, movie-hold and ultrawide-camera sites. The 1.6.0 sites are unchanged. A `runtime_render_res` stub answers 0 for the shared `romfs.c` of `466330d`. Without it, no BOTW binary links | `#ifdef GAME_BOTW160` / `#else`. Only BOTW binaries compile this file |
+| `third_party/d2r_gfx/gfx/nvn/fps_overlay.c` | the FPS box names the mode ("screen" or "1440p") in place of "2K"; `clang -E -P` without the BOTW defines is byte-identical to the file before | `#ifdef GAME_BOTW190` |
 | `runtime/game_version.h` | the 1.9.0 version block | `#elif defined(GAME_BOTW190)`, before the TOTK blocks |
 | `runtime/loader.c` | the five-argument `nn::init::Start` of SDK 20.5; `module_finis` is compiled for 1.9.0 too | `#ifdef GAME_BOTW160` / `#elif defined(GAME_BOTW)`; `#ifndef GAME_BOTW` became `#ifndef GAME_BOTW160` |
 | `runtime/shared_font.c` | `nn::pl::IsRunningOnOunce` answers no | `#ifdef GAME_BOTW` |
@@ -338,10 +352,30 @@ them, 4 versions). The Python scripts keep the TOTK defaults, and the Makefile o
 ## Long run and the sinking legs
 
 Sinking legs: Link stands idle after a load of the 08:29 Great Plateau autosave, and his legs sink into the stone
-path by the ruin wall. One re-test on this branch showed the same. With the write-back off (`flag writeback 0`), the
-legs sank the same, so the write-back is not the cause. On an earlier build, one move or attack cleared it on the same
-spot. A new save at the same spot (System > Save, slot 1) gives the same: five seconds after its load, the legs sink
-mid-thigh. The cause is unknown.
+path by the ruin wall. A new save at the same spot (System > Save, slot 1) gives the same: five seconds after its load,
+the legs sink mid-thigh. With the write-back off (`flag writeback 0`) the legs sank the same, which fits the cause
+below: nothing is copied back then.
+
+Cause (2026-10-22): the game renders a 1x1 target on the GPU and reads the result on the CPU with no invalidate over its
+memory, as the idle foot placement and the water material loader do. The port copied GPU renderings to memory only at an
+invalidate, so the CPU read stale bytes: legs that sink, and water whose colour block stayed zero (the Bottomless Bog
+rendered clear and milky). One local fix on the old base 7305d4e (`bedb076`) wrote such 1x1 renderings back at each
+present: legs straight at 60, 75 and 90 s, bog dark and opaque; the same build with `TOTK_WB_EAGER=1x1` also kept the
+legs straight, without it they sank.
+
+Test on origin/main `daf270e` (M1 Pro, macOS 27, scratch apps built from the worktrees, copied saves, the same inputs;
+legs: save slot 5 of the 08:29 autosave, no input after the load; bog: save slot 2, camera turned left and down; frames
+at 38 to 90 s after the start):
+
+| Build | Legs | Bog |
+|---|---|---|
+| origin/main | sunk to the knees at 42 s; a bokoblin that stays hidden in the other runs attacks; Game Over at 60 s | no water: the ground shows through (milky, clear) |
+| origin/main with pull request #239 (tiny GPU targets copied to memory when their submission completes) | straight at 42, 60 and 90 s, bokoblin hidden, about 59 fps | dark and opaque water |
+
+So the cause above holds on current main. #239 cures the clear bog water; the straight legs in this row were not repeated:
+on #239's head (merged as `eda6340`) Link sank 3 of 3 times (2026-10-24). Pull request #511 (open) fixes the legs. This
+branch carries no fix of its own. Not tested: our own write-back fix on current main (it did not run there; it passed on
+the old base only), and #239 on 1.6.0.
 
 Leak fix: the first 25-minute run (Shrine route, `f3ad878` merged) stopped at 1509 s at the 5000 MB GPU budget. Its
 485,380 write-back stage buffers (2.9 GB) were never freed, because the game thread has no autorelease pool. `5ab49a2`
@@ -353,9 +387,176 @@ the forest and no Game Over. GPU allocation: 1138 MB at frame 300, 1823 MB at ab
 the warm-up this is about 4 MB/min, against 10 MB/min before the fix. Resident memory: 2686 to 2900 MB. A first
 moving try on the field route is void, because Link died before 245 s and the run stayed on Game Over.
 
+## Native 2K and screen size (2026-10-22 and 2026-10-23)
+
+Docked play on 1.9.0 can render at a 16:9 size above 1920x1080. The game's own canvas and its 3D scene take that size,
+so it is not an upscale. In a 2560x1440 Kakariko frame, the 25 full-size render passes (G-buffer and lighting, about
+1,070 draws) are 2560x1440 and the 31 half-size passes are 1280x720. The settings panel's Resolution row (key 1) switches the size in play, with upstream's
+design for 1.6.0 (`e60b0a2`, then `4fe0f8c` for the panel): the game makes its swapchain and heaps once at start, for the largest size of the
+session, and the docked branch of its display-mode routine takes the current size from the data page after `main`.
+The panel's Resolution row names the native size (2560x1440, or the screen size under `screen`).
+
+| `TOTK_OUTPUT_RES` | Swapchain and heaps | Start | Resolution row choices |
+|---|---|---|---|
+| unset or `auto` | 2560x1440 | 1920x1080 | 1080p, 1080p + MetalFX, native (2560x1440), 2K + MetalFX |
+| `1440p` | 2560x1440 | 2560x1440 | the same |
+| `screen` | the largest 16:9 size of the main display's native mode, at most 3456x1944 | that size | 1080p, 1080p + MetalFX, native (the screen size), 2K + MetalFX |
+| `0` or `1080p` | the game's own 1920x1080 | 1920x1080 | 1080p, 1080p + MetalFX |
+| another 16:9 size above 1920x1080, up to 3456x1944, with a width that is a multiple of 128 | that size, fixed, for tests (`2944x1656`) | that size | 1080p, 1080p + MetalFX |
+
+"2K + MetalFX" is the 2560x1440 canvas that MetalFX scales to the window (on a screen bigger than 2K: clean edges at 51
+FPS in the bog, against 50 for native 2K and 42-44 for the screen size, 2026-10-24). With `screen`, plain native 2K is not
+a choice. 1.9.0 offers no 720p choice (1.6.0 does; it is not tested on 1.9.0). A start above 1080p turns off MetalFX 2K
+(`TOTK_MFX_OUTPUT` / `TOTK_MFX_UPSCALE`), so the panel starts at native.
+
+Any other value stops the game with a message. The game has no resolution setting of its own: handheld is 1280x720, and
+this mode only makes the docked canvas and heaps bigger.
+
+- `screen`: 3456x2234 (this Mac) gives 3456x1944, 3024x1964 gives 2944x1656, 2560x1664 gives 2560x1440, and
+  5120x2880 gives 3456x1944. The rule reads the native mode, not the largest mode: this Mac's scaled modes go up to
+  4112x2658. The log names the result, for example `[botw] native size from the screen: main display 3456x2234
+  (native mode) -> 3456x1944`.
+- The width is a multiple of 128 (both sides multiples of 8), the sizes that were tested. 3456x1944 is the top
+  size: its memory heap of 3888 MiB stays under the host's 4 GiB heap cap (`services.c` `HEAP_CAP`).
+
+Heaps: upstream's note on 1.6.0 (`game_patches_botw.c`) says that above 1080p "PlacementMgr fails after a 320 MB render
+budget". On 1.9.0 that is the 328 MiB "PlacementMgr動的" heap (main+0x153da3c). It fails because its parent,
+"OpenWorldStage", takes what is left of RootHeap, and RootHeap has a fixed 3088 MiB in nnMain. With the canvas alone,
+the title runs at 2560x1440 and the save load crashes. The bigger display heap gives the 30 MiB swapchain pool its
+storage. The bigger GPU heap ends the crash (a texture-slot allocation returned null). The bigger memory heap and
+RootHeap give the PlacementMgr heap its room.
+
+`patch_output_res` (`game_patches_botw.c`, the 1.9.0 half of the output-size block shared with 1.6.0) checks 30 original
+words (the 10 canvas and heap sites, and the docked branch `main+0x12660bc..0x1266108`), then writes them. A canvas or
+heap word is the original instruction with a new 16-bit immediate, for the largest size. Six words of the docked branch
+load from the data page instead: `adrp x8` / `ldr x8, [x8, #16]` for the {screen, render} floats at 0x12660bc / 0x12660c8,
+`adrp x8` / `ldr x8, [x8, #24]` for {width, height} at 0x12660d0 / 0x12660d4 (stored at `[sp]` for the system task's TV
+size, `main+0x106dc70`, which only reads it), and `ldr w4, [sp, #4]` / `ldr w3, [sp]` for the viewport at 0x12660f0 /
+0x1266104. The panel's Resolution row writes the page and the canvas static, then asks the game to apply the current mode again: the request
+byte +0x11bd of the graphics object (`*(main+0x1e43df0)`) takes the current mode +0x11be, as the game does itself at
+`main+0x1265b6c` (1.6.0: +0x123d / +0x123e). Only the docked modes 0 and 2 take it. Two readers use the canvas static
+in play (`main+0xdf199c`, `main+0xe20ce4`), so the static follows the size after the start, as on 1.6.0.
+The FPS box (`fps_overlay.c`, `GAME_BOTW190` only) names the mode in place of upstream's "2K" tag, after the output
+size: for example "FPS 49  3456x1944  screen" or "… 2560x1440  1440p". Another 16:9 size shows only as the output size.
+
+| What | Sites in `main` | Shipped | 2560x1440 | 3456x1944 |
+|---|---|---|---|---|
+| Docked canvas (static at main+0x1e43dc0), three guarded inits | 0xc61ee8/ef4, 0xc61f1c/f28, 0x12618b8/8c4 | 1920x1080 | 2560x1440 | 3456x1944 |
+| Display mode (main+0x1266074), docked: screen and render width, TV size, viewport | 0x12660bc, 0x12660c8, 0x12660d0/d4, 0x12660f0, 0x1266104 | 1920.0, 1600.0, 1920x1080 | from the data page (the current size) | from the data page |
+| "GraphicsSystem" heap (holds the swapchain pool) | 0xc61b14 | 48 MiB | 80 MiB | 112 MiB |
+| GPU heap of the graphics system | 0x1261704 | 115 MiB | 192 MiB | 352 MiB |
+| Memory heap (nninitStartup) | 0x71c | 3120 MiB | 3632 MiB | 3888 MiB |
+| RootHeap (nnMain) | 0xc617c0 | 3088 MiB | 3600 MiB | 3856 MiB |
+
+- Sizes between the two columns scale the heaps by pixel count, each rounded up: 2944x1656 gets 96 MiB, 256 MiB and
+  +640 MiB. Sizes below 2560x1440 keep the 2560x1440 heaps. These GPU heap sizes passed. A smaller one may
+  work too: it was not tested.
+- The application pool grows by the same amount as the memory heap (`runtime_output_res_extra_bytes`, log
+  `application pool ...: +512 MiB`). Untouched heap pages are not resident.
+- `runtime/romfs.c` already skips TOTK's HeapDef overlay step for BOTW (upstream `c00d640`), which would read the
+  same extra size and look for a TOTK overlay. The 1.9.0 code fills upstream's hooks: `patch_output_res`,
+  `runtime_output_res`, `runtime_output_size_current` and `runtime_output_res_extra_bytes`.
+- A one-off word test (UBSan, not committed) gives the words of the tested runs at all 16 sites for 2560x1440 and 3456x1944. The size rule
+  and the parser give the expected results (11 rejects). The 2944x1656 words disassemble to the intended values.
+
+Live switch test record (2026-10-23, key 3; upstream's settings panel `4fe0f8c` of 2026-10-25 calls the same `output_switch`; its Resolution row on 1.9.0 is in the panel record below): the same Mac and display, this change on upstream `ad2b6f0`, a cloned app,
+the game slot, a copied Bottomless Bog profile, a 3456x1944 window. Every run exited with code 0, and no log line shows a
+heap or runtime failure.
+
+- `TOTK_OUTPUT_RES=screen`, title screen and save list, 480 s: 12 key-3 presses through every step (3456x1944 → off →
+  MetalFX 2K → native 2K → 3456x1944, then two fast cycles 10 s apart). Window captures show the title and the save list
+  full-window at 1920x1080, 2560x1440 ("1440p") and 3456x1944 ("screen"), with the shortcut text naming each step.
+- `TOTK_OUTPUT_RES=screen`, gameplay soak, 720 s: the save loaded, then key 3 every 30 s from 180 s (13 size switches,
+  5 MetalFX steps), with the map and the pause menu opened at three sizes. At 280 s, after a full cycle, the line reads
+  "FPS 47 3456x1944 (3456x1944) screen" with the HUD and minimap in place. Memory follows the size and does not
+  grow with switches: GPU allocation 2.76, 3.24, 2.86, 3.11 and 2.99 GB at frames 7800, 13500, 17700, 25200 and 34800; footprint
+  3.5 GB before the first switch, then 4.1 GB from 435 s to the end of the run across 8 more switches. That is about
+  0.6 GB above the fixed-size 3456x1944 soak (3.4-3.5 GB, a Kakariko route), likely the host keeping textures of the other sizes.
+- `TOTK_OUTPUT_RES` unset (auto), gameplay, 360 s: a 2560x1440 swapchain, starting at 1920x1080; 6 key-3 presses
+  (native 2K, off, MetalFX 2K, twice). At 200 s the line reads "FPS 59 2560x1440 (2560x1440) 1440p" in play.
+
+Panel record (2026-10-25, merge `a4de3da` with upstream `4fe0f8c`; `TOTK_OUTPUT_RES=screen`, Bottomless Bog copy, the owner clicked the settings panel's Resolution row, 475 s, window closed normally): 13 picture changes, every one logged right: 1080p (1920x1080) once, 1080p + MetalFX once, Native (3456x1944) 6 times and 2K + MetalFX (2560x1440, MetalFX to the window) 5 times. No failure line (`runtime_fail`, watchdog, null read, heap). The run did not record pictures or memory. Scripted clicks cannot drive the panel's pop-up menus.
+
+Test record: Apple M1 Pro, 16 GB, macOS 27.0, built-in 3456x2234 120 Hz display. Build: this change on `ee28c55`
+(main with the 1.9.0 follow-up fixes of #304); the same change on main `a988b5e` was built and played once more. The 2560x1440 and 3456x1944 runs came before the screen-size rule, which writes the same
+words for those two sizes. Each run used the shared game slot, a cloned app, a copied profile, `TOTK_AUDIO_OFF=1` and a
+route save. A run counts only with the game window visible.
+
+Soaks, Kakariko: a walk with a right turn every 20 s for 600 s, frames from 110 s to 710 s, memory every 5 s. All
+three exited with code 0, with no present stall.
+
+| 10-minute soak | FPS | p50 / p95 / p99 ms | Frames > 100 ms | GPU ms | Memory from about 150 s (MiB) |
+|---|---|---|---|---|---|
+| 1920x1080 | 66.3 | 14.6 / 20.8 / 27.9 | 11 | 10.4 | 3087-3229 |
+| 2560x1440 | 54.8 | 17.7 / 24.0 / 30.1 | 13 | 13.4 | 3153-3218 |
+| 3456x1944 | 48.8 | 20.2 / 28.2 / 32.8 | 12 | 16.3 | 3375-3538 |
+
+- Memory shows no upward trend: 1920x1080 rose about 100 MiB over 9 minutes, 2560x1440 about 30 MiB.
+- In each soak the walk ends against Kakariko buildings for its second half, so it covers few places.
+
+Route runs (exit code 0 unless stated):
+
+- Shrine of Resurrection, 2560x1440: still view 72.3 fps (p95 20.2 ms), walk 75.0 fps (p95 18.5 ms), GPU 9.5 ms,
+  footprint 3193 MiB.
+- Hyrule Castle exit, 2560x1440: footprint 3341 MiB.
+- Central Hyrule field and Korok Forest, 2560x1440: the first runs stopped on the shared render-stream watchdog ("the
+  encode stage did not drain in 2 s", exit 134), the field run during the save load and the Korok run at a menu. The Mac
+  had 4.1 of 5 GB swap in use, with other sessions running. The retries passed (footprint 2866 and 3002 MiB), as did
+  both routes at 1920x1080. These runs do not show whether 2560x1440 causes the stop.
+- Kakariko with an empty shader cache, 2560x1440: footprint 3338 MiB. A dialogue box is sharp and in place.
+- Kakariko menus, 2560x1440: the pause menu (Adventure Log and two more tabs), the map and key 3 on and off. Menu and
+  map text are sharp and in place, and key 3 causes no break in the canvas.
+- Kakariko, 3456x1944: still view 42.2 fps (p95 32.7 ms), walk 39.5 fps (p95 33.3 ms), GPU 16.8-17.6 ms, peak
+  footprint 3430 MiB. The dialogue box and the HUD are sharp and in place. The test script's time limit ended a first
+  run at 137 s: the limit started 120 s before the game (game-slot history).
+- Kakariko, `TOTK_OUTPUT_RES=2944x1656`: still view 50.6 fps (p95 26.2 ms), walk 54.3 fps, GPU 14-15 ms, footprint
+  3313 MiB.
+- Kakariko, `TOTK_OUTPUT_RES=screen`: the log resolves 3456x1944 from the display, and the shots are 3456x1944 in game.
+  The window was covered 4 times, so its FPS is not used.
+- A first 2560x1440 soak stalled at about 330 s while its window was covered most of the run (the present's
+  covered-window path). With the window visible, the soak passed.
+
+Not tested: native full screen at 120 Hz (the runs used a window), the DLC areas (no route save), the first death
+screen, displays other than the built-in panel (`screen` ran on this panel only, and 2944x1656 as a given size), sizes
+above 3456x1944, a long run with a covered window at 1920x1080, and the iPhone and iPad (Mac only). Handheld mode
+keeps its 1280x720 canvas (main+0x1e43dd0, unchanged). Key 4 (21:9) does not widen the 3D view at 2560x1440 or at
+1920x1080 on this build: the game writes 16:9 back into the camera's aspect field every frame. That is a separate open
+item.
+
+## Audio: volume ramps and depop (2026-10-22)
+
+The mixer applied a new voice volume or channel mix volume as a step at the 5 ms frame edge, and a stopped or paused
+voice dropped to zero at once. BOTW ducks the music when the pause menu or the map opens, and each step on a loud sample
+is a click. The Switch DSP ramps the voice volume and each channel's mix volume from the last frame's value and decays a
+stopped voice's last samples (Ryujinx.Audio `CommandGenerator.GenerateVoice`: `VolumeRamp`, `MixRamp`,
+`DepopPrepare`, `DepopForMixBuffers`, 0.962189 per sample at 48 kHz). `audio_mixer.c` does the same under `GAME_BOTW`;
+`TOTK_AUDIO_RAMP=0` gives the old mixer for a comparison.
+
+- `tests/test_audio_ramp.c` (CI, no game data) runs `audio_ramp.h`: a duck from 1 to 0.25, a mix volume that falls to 0
+  and a stopped voice's decay may not step a sample by more than 0.04. With `-DAUDIO_RAMP_STEP` it fails (steps 0.6,
+  0.4 and 0.5).
+- `make probe-audio-botw190` (needs game data): a 0.8 voice ducks and stops, no sample steps more than 0.04. Run on the
+  packaged binary of this branch (origin/main `daf270e`): it passes, and with `TOTK_AUDIO_RAMP=0` it fails with "volume
+  step or stop is not smoothed".
+- The same probe has three edge cases of the depop: a voice that is stopped and then released, or reused by a new voice,
+  before the next frame still fades from its last sample, and a voice whose channel was muted for a frame adds nothing
+  when it is paused afterwards (its last added sample is 0). Run on a build of origin/main `a988b5e` with this
+  branch's runtime: without the fix the release and reuse cases step 0.8 and the mute-then-pause case adds 0.0032; with
+  it the probe passes (and fails with `TOTK_AUDIO_RAMP=0`). A voice freed while it is still started is cut. When a new voice starts at once in the place of a stopped one, the old tail still fades and the new voice ramps up from 0 over its first frame, so the two do not add to a clipped step (0.8 plus 0.77 would clip to 1.0) and a silent new voice does not cut the tail to 0.
+- Game A/B on the old base `bedb076` (Kakariko save, 7 pause-menu and map cycles, the same inputs, 30 s capture): 4
+  clicks (steps 0.15-0.20, about 12 times the local step) with the old mixer, 0 with the fix, 0 underruns in both.
+- Game run on origin/main `daf270e` (bog save, 290 s, menu and map cycles from 100 s, 30 s capture): 0 clicks with the fix
+  and 0 without, the largest step 0.133 in both captures, 0 underruns, exit 0, about 60 fps. This scene did not repeat the
+  clicks of the old base, so it proves no gain; it shows no harm.
+- BOTW 1.6.0 (2026-10-24, M1 Pro, macOS 27, base v0 + 1.6.0 update, Great Plateau save, docked): the ramps act, and 5
+  pause-menu and map cycles gave 0 clicks with the ramps and 0 with `TOTK_AUDIO_RAMP=0`: no harm, no gain shown.
+- Not tested: a listening test by the owner (pause menu, map, shrine, fast travel) and splitter voices (BOTW opens none).
+- A run that ends in Game Over has no world sound (digital zero): the first runs of this check, started from the legs
+  save on a build without the legs cure, were silent for that reason.
+
 ## Not tested and known issues
 
-- Sinking legs after a save loads: deferred, cause unknown (see "Long run and the sinking legs").
+- Sinking legs after a save loads, and the clear Bottomless Bog: the clear water is cured by #239 (merged), the legs are not (pull request #511, open; see "Long run and the sinking legs").
 - GPU allocation grows about 4 MB/min after warm-up (1916 MB after 27 minutes): deferred. At that rate, the 5 GB
   budget is about 13 hours away.
 - Key 2 with no UI: fixed by `75cadf2`, with light proof (4 to 5 frames lost per HUD hide, against 408 before). A long
@@ -364,14 +565,14 @@ moving try on the field route is void, because Link died before 245 s and the ru
   1.6.0"). Rolling objects, drops, hearts and the minimap were not checked. The held d-pad in the pause menu and the
   sprint landmark were checked in Unicorn only.
 - Rumble and motion aiming with a real controller: not tested, because no controller was connected.
-- A cold start with an empty shader cache: not tested. Every route run had a warm cache.
+- A cold start with an empty shader cache: tested only at 2560x1440 (Kakariko, exit 0); the other route runs had a warm cache.
 - A card image as the game file with a 1.9.0 `--update`: not tested. The build takes the DLC packs from `--dlc` only.
-- BOTW 1.6.0 and the iPhone and iPad builds: not built. The write-back staging and the 120 Hz rule also act on 1.6.0.
-- Keys 4 and 5 do nothing on 1.6.0. No 1.6.0 game files were at hand for a test.
+- The iPhone and iPad builds: not built. The write-back staging and the 120 Hz rule also act on 1.6.0, which was built
+  and run on 2026-10-24 (see the audio section).
+- Keys 4 and 5 do nothing on 1.6.0.
 - TOTK: not played on this branch. The evidence is the 68 of 68 preprocessed identity.
 - Upstream's `[dead-keep]` set grows linearly (30k to 397k entries in 25 minutes, from `e0ad452`): not changed here,
   because it is upstream's shared code, and a change to it changes TOTK.
-- Key 3 native 2K: above 1080p the game fails to make its heaps. It needs a memory patch of its own, and upstream's
-  1.6.0 port has none either.
+- Key 3's native sizes ("Native 2K and screen size") work in docked mode only; handheld keeps its 1280x720 canvas.
 - Upstream's survey tool (`TOTK_SURVEY`, `f4b3a95`) knows the 1.6.0 player chains only. On 1.9.0 it stops with a
   message.

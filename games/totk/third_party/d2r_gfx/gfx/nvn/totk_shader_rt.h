@@ -23,12 +23,14 @@ NSArray<NSString *> *totk_rt_known_variants(NSString *shader);
 // moves. Without may_defer a running background job of the same shader is waited for.
 // may_defer 2: urgent, a draw further on cannot go without it: run now on the urgent services (a queued job of the shader too).
 NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, const uint8_t *code, NSDictionary *answers, NSArray *local, int may_defer);
+void totk_rt_submit_stats(uint64_t *wait_n, uint64_t *wait_ns, uint64_t *sync_n, uint64_t *sync_ns);   // submit-thread translation waits / on-the-spot translations (frame TSV)
 void totk_rt_urgent_stats(uint64_t *n, uint64_t *ns);   // urgent jobs done and their time from queued to recorded
 void totk_rt_service_prestart(void);   // start the submit thread's translator service in the background (Mac)
 // Called on the background worker after a translation, before the variant is recorded: compile its Metal library there.
 void totk_rt_set_ready_hook(void (*hook)(NSString *variant, int stage));
 // The variant totk_rt_variant would return when the cache index already names one; nil otherwise (never translates).
 NSString *totk_rt_variant_cached(NSString *shader, NSDictionary *answers);
+void totk_rt_variant_broken(NSString *key);   // shader_load found it unusable: translated again at its next use
 NSString *totk_rt_portable_variant(NSString *name);   // "<variant>_b" as another player's build names it (pipeline contributions)
 int totk_rt_contrib_on(void);                       // a contribution file is kept (TOTK_SHADER_CONTRIB set, seed on)
 void totk_rt_contrib_line(NSString *line);           // one row into the contribution file (totk_shader_contrib.h)
@@ -38,6 +40,7 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows);   // 
 /* Variants new to the translation cache this run, the variants in the cache (-1 until counted in the background) and
    the CLOCK_UPTIME_RAW time of the last new one (0: none yet). Any pointer may be NULL. */
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
+uint64_t totk_rt_new_variants(void);   // shader variants translated this run (no cache scan, unlike totk_rt_counts)
 // Distinct shader variants this run needed and the cache did not have (the iPhone, which translates nothing).
 uint64_t totk_rt_missed(void);
 uint64_t totk_rt_ready_gen(void);   // moves each time a background translation has been recorded

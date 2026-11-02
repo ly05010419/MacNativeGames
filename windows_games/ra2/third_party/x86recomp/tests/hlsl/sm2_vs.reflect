@@ -1,0 +1,7 @@
+constants:
+  mvp                              c0 x4  class 2 type 3  4x4 [1]
+  materialColor                    c4 x1  class 1 type 3  1x4 [1]
+inputs: 0=POSITION0 1=TEXCOORD0
+varyings: COLOR0@16 TEXCOORD0@0
+samplers:
+color outputs 0, depth 0, point size 0, float registers 5

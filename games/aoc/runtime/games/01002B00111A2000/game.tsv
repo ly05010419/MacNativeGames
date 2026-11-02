@@ -1,0 +1,61 @@
+# Hyrule Warriors: Age of Calamity (Koei Tecmo's KTGL engine on NVN, SDK 9.6.0), update v327680 = 1.3.0.
+# Started from the NSP script's provisional profile; values marked "Mario's" are not measured for this game yet.
+# RomFS: Koei Tecmo RDB archives (asset/*.rdb index + asset/*.rdb.bin* data, asset/data/*.file), a run of IDRK entries with zlib in chunks.
+# The shaders are GLSLC compiler outputs: 118 in main and the rest in KTGL's G2S containers inside the RDB data files (shader_split.py idrk_shaders).
+
+# ---- Identity ----
+title_id	01002B00111A2000
+program_id	01002B00111A2000
+
+# ---- App ----
+name	Hyrule Warriors: Age of Calamity
+ipa	HyruleWarriorsAgeOfCalamity.ipa
+app_category	public.app-category.action-games
+# camera on the right stick
+pad_layout	full
+
+# ---- Versions ----
+build	v327680	1.3.0	main=c3cf52bf2b05d7310884971b50bcccb8	subsdk0=3ab92c3444d4ece2f52417b5d8ee86eb	sdk=95832210b36121e88b4f9b7b66239dad
+package	v327680
+shader_versions	v327680
+
+# ---- Files ----
+# subsdk0 is Nintendo's movie library (NintendoSDK_movie, as in Metroid Dread)
+modules	main subsdk0 sdk
+romfs_marker	asset/MaterialEditor.rdb.bin
+zip_store	.bin:.bin1:.bin2:.bin3:.file:.rdb:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource (META +0x14 = 0): the game uses SetHeapSize. Link's Awakening's partition until measured
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# The game sizes its heap as total − used memory (nninitStartup, main+0x8ad318), and SetHeapSize must then fit beside the code: the three modules take 66.6 MB (68 MB rounded), more than the
+# 64 MB the host reports by default. SetHeapSize(pool − 64 MB) failed with ResultLimitReached, AllocateMemoryBlock returned 0x1003, the game's malloc was never set up, the 866 MB
+# graphics heap allocation failed (main+0x8aeb4c) and nnMain returned at once. 72 MB = the image plus stacks: the heap is 0xc8c00000 (3212 MB) and the game's fifteen sub-heaps (3098 MB) fit
+mem_used	0x4800000
+sys_resource	0
+
+# ---- Textures ----
+# Movie frames (VP9, NV12 to a buffer): the game copies each frame into a 1280x720 R8 and a 640x360 RG8 texture in a CPU-visible pool and publishes them with
+# nvnMemoryPoolFlushMappedRange; without the upload the intro movie stayed black under its "+ Skip" prompt
+tex_flush_upload	on
+
+# ---- Presentation ----
+# Original simulation is 30 fps. The version-gated stubs coordinate the KIDS
+# clock, battle float-fps and event/device rate. Settings / DM_FPS_TARGET select
+# 30 or 60; zero keeps the original mode. Dynamic stepping uses elapsed
+# post-wait task ticks, with a 100 ms ceiling across loads or focus changes.
+fps_target	0
+# AoC's updates are independent of presentation. Do not use the inherited
+# adaptive whole-60-Hz-vsync controller to choose its simulation step.
+fps_hold	off
+# KTGL binds whole mesh pools (up to ~590,000 vertices) and its soldiers' Half2 / Short2 attributes feed integer shader inputs, which the replay converts on the CPU:
+# over the bound ranges that was millions of vertices a frame in battle (26 fps at any target on the Mac); only over the vertices each draw reads. Shadow vertex inputs
+# (nvn_mtl.m vin_on) now take those attributes on the GPU; this still serves the draws that keep the CPU conversion (transform feedback, DM_NVN_VCONV_CPU=1)
+vconv_range	on
+
+# ---- Shader split ----
+shader_groups	/asset/system.rdb=system /asset/MaterialEditor.rdb=material /asset/FieldEditor4.rdb=field /asset/CharacterEditor.rdb=character /asset/EventMaker3.rdb=event /asset/ScreenLayout.rdb=layout /asset/RRPreview.rdb=preview /asset/KIDSSystemResource.rdb=kids
+shader_note	Hyrule Warriors: Age of Calamity shaders

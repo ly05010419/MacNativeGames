@@ -1,0 +1,22 @@
+{
+  "title_id": "0100965017338000",
+  "version": "2.3.0",
+  "package": "v458752",
+  "modules": {
+    "main": {
+      "size": 15935522,
+      "sha256": "c84556140322105b8c705feef3dbf5bde2ccb8556fb96687e2c6fe4837db82fb",
+      "build_id": "d70ce1726c979e45ed4200e9c2b23b2a"
+    },
+    "subsdk0": {
+      "size": 3410237,
+      "sha256": "883f024319e9be93bac9d2b63e4efcca955519759d2886415fb32547b87b8dca",
+      "build_id": "ff2b1a8f14147dc58034940e78a104ef"
+    },
+    "sdk": {
+      "size": 5891547,
+      "sha256": "0695afffb7b9dc748b7fdf649b82e333a3913d68a66161956f28e6d3479b74a2",
+      "build_id": "fcd139127b9c99988c2613230db18e26"
+    }
+  }
+}

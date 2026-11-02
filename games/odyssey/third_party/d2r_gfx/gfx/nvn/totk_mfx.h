@@ -2,13 +2,10 @@
 #pragma once
 #import <Metal/Metal.h>
 
-/* Frame interpolation modes (user, 2026-10-16 night: key 2 cycles off -> 30+30 -> 50+50 -> uncapped -> off):
-   MFX_30   the game renders 30 frames a second, MetalFX makes the frame between ("30+30");
-   MFX_HALF the game renders every second display refresh ("50+50" on a 100 Hz display, 30+30 at 60 Hz);
-   MFX_MAX  the game is not paced (uncapped) and every frame gets one in between; the screen still shows one picture per
-            refresh, so above half the refresh rate some game frames are replaced by interpolated ones.
-   TOTK_MFX=interp30 | interp | interpmax starts in that mode; flag mfx_interp <0..3> sets it, -1 (key 2) cycles. A change
-   takes effect at the next game frame boundary (mfx_latch at the present), so a frame is never half on. */
+/* Odyssey supports off / 60+60 only, at a nominal 120 Hz window-screen rate.
+   Key 2 toggles the request; nonzero legacy modes map to the same 60+60 request.
+   The request survives unsupported screen rates, while generation is suspended.
+   mfx_latch applies the effective mode at a game-frame boundary. */
 #include "totk_mfx_mode.h"
 const char *mfx_mode_name(int mode);
 void mfx_set(int mode);  // mode < 0 cycles the requested mode

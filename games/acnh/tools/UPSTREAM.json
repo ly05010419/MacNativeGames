@@ -1,0 +1,44 @@
+{
+  "repository": "https://github.com/Tyraelone/MacNativeGames",
+  "commit": "2f00936366640ce6a7aa84536a66a96a4747f927",
+  "license": "MIT",
+  "adaptations": "Local imports and repository path; identity.py retains only container/CNMT identity helpers. Rewriter uses this checkout's existing d2r implementation with private gates disabled. runtime_preflight.py permits repeatable DT_NEEDED entries; the ordered dependency names remain in the module inventory.",
+  "files": {
+    "tools/extract_exefs.py": {
+      "source": "game_tools/extract_exefs.py",
+      "source_sha256": "7fb7892391459c6cf1893f1d9a84d40e0551c7b8c8ecc681d61133d7faa2a5ef"
+    },
+    "tools/extract_romfs.py": {
+      "source": "game_tools/extract_romfs.py",
+      "source_sha256": "62f84798a75193677f780d368fd29eb5e9b074fd88135fd39fad33156e08abf4"
+    },
+    "tools/extract_update_romfs.py": {
+      "source": "game_tools/extract_update_romfs.py",
+      "source_sha256": "d5ee23e34ca0e0b11127cf1a6947fd69c9410ea9138479b6d3a0f505e53d5f78"
+    },
+    "tools/prepare_modules.py": {
+      "source": "game_tools/prepare_modules.py",
+      "source_sha256": "fc7407cb86ac5302997d46ebfe1cd7e2b45d1b81c6666125447ed82c8dc7d8ad"
+    },
+    "tools/map_dependencies.py": {
+      "source": "game_tools/map_dependencies.py",
+      "source_sha256": "83062b9918d409247d0cd45c582b9e9a843cb07a34b629752e85f2522719cbc8"
+    },
+    "tools/rewrite_modules.py": {
+      "source": "game_tools/rewrite_modules.py",
+      "source_sha256": "a15bab1b732616eb03f517a96adba4918e4a887489d4c5900c7c4a9bf5ab672a"
+    },
+    "tools/runtime_preflight.py": {
+      "source": "game_tools/runtime_preflight.py",
+      "source_sha256": "083c1f43f894ec4b65b18e5751d36e9a14a5ab2754c3ca19899aa6b241125a2c"
+    },
+    "tools/common.py": {
+      "source": "packaging_common.py",
+      "source_sha256": "aadf9d86d6220d86abf9931ce3618d746a7df76dfbfec76b3b92c964c5736e70"
+    },
+    "tools/identity.py": {
+      "source": "inspect_game.py (verified_cnmt and select_program only)",
+      "source_sha256": "a0facd173a5be6c7d138a72cf02c041881c11ab0756cac2202ba8d5b699f8581"
+    }
+  }
+}

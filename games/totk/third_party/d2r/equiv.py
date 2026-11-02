@@ -71,6 +71,7 @@ for l in open(f'{DIR}/{MOD}.sites.tsv'):
     elif f[1] == 'C': winend[a] = int(f[2], 16); callinfo[a] = winend[a] - 4; sites.append(a)
     elif f[1] == 'J': brinfo[a] = (int(f[2], 16), int(f[3]))
     elif f[1] in ('svc', 'cntpct', 'cntvct'): ngate += 1      # 宿主门：语义由宿主定，只做结构核对 | Host gate: semantics are defined by the host, only a structural check is done
+    elif f[1] == 'S': ngate += 1      # 自旋等待（patch_nso.py「Spin waits」）：副本与门块由 structck ⑫ 逐字核对 | Spin wait: its copy and gate block are checked word by word by structck ⑫
     else: sites.append(a)
 atomic_groups = nsoimg.exclusive_groups(orig, [(lo, hi) for lo, hi in winend.items() if lo not in callinfo])
 

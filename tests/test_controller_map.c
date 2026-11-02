@@ -63,20 +63,51 @@ int main(void) {
     expect(mode_of("l2 = zr aim\n", 8, &line) == -1 && line == 1, "aim without a fire button");
     expect(mode_of("l2 = zr aim l2\n", 8, &line) == -1 && line == 1, "aim fired by itself");
     expect(mode_of("l2 = zr aim r2 extra\n", 8, &line) == -1 && line == 1, "aim with an extra word");
-    /* Mouse buttons (runtime/gamepad.m, key 7 on the Mac) are physical buttons 17-21. Default: left attacks (Y), right
-       draws the bow (ZR, released by a left click: the shot), middle targets (ZL), the side buttons drive nothing. */
+    /* Mouse buttons (runtime/gamepad.m, mouse mode on the Mac) are physical buttons 17-21. They drive nothing here by
+       default: the keyboard and mouse layout (keyboard_map.h) has them; a mouse line still drives its Switch button. */
     enum { ML = 17, MR = 18, MM = 19, M4 = 20, M5 = 21 };
     expect(CONTROLLER_BUTTONS == 22 && !strcmp(controller_physical_names[ML], "mouse_left") && !strcmp(controller_physical_names[MR], "mouse_right") &&
            !strcmp(controller_physical_names[MM], "mouse_middle") && !strcmp(controller_physical_names[M4], "mouse4") && !strcmp(controller_physical_names[M5], "mouse5"),
            "mouse button names");
-    expect(press("", 1ULL << ML, &line) == Y && !line, "left click attacks (Y)");
-    expect(press("", 1ULL << MR, &line) == ZR && mode_of("", MR, &line) == (CONTROLLER_AIM | ML << 3), "right button draws the bow, fired by the left");
-    expect(press("", 1ULL << MM, &line) == (1 << 8), "middle button targets (ZL)");
-    expect(press("", 1ULL << M4 | 1ULL << M5, &line) == 0, "side buttons drive nothing by default");
+    expect(press("", 1ULL << ML | 1ULL << MR | 1ULL << MM | 1ULL << M4 | 1ULL << M5, &line) == 0 && mode_of("", MR, &line) == CONTROLLER_HOLD,
+           "mouse buttons drive nothing by default");
     expect(press("mouse_right = zl\nmouse4 = minus\n", 1ULL << MR | 1ULL << M4, &line) == ((1 << 8) | (1 << 11)) && !line, "mouse buttons remapped");
-    expect(mode_of("mouse_right = zl\n", MR, &line) == CONTROLLER_HOLD, "a mouse line without a mode holds");
+    expect(mode_of("mouse_right = zr aim mouse_left\n", MR, &line) == (CONTROLLER_AIM | ML << 3), "the earlier default as a line");
     expect(mode_of("mouse_middle = zr aim mouse5\n", MM, &line) == (CONTROLLER_AIM | M5 << 3), "a side button as a fire button");
     expect(mode_of("mouse_left = y tap\n", ML, &line) == CONTROLLER_TAP, "modes work on mouse buttons");
+
+    /* The writer (the settings panel's key bindings): only what differs from the default, read back the same. */
+    {
+        uint16_t map[CONTROLLER_BUTTONS], back[CONTROLLER_BUTTONS], def[CONTROLLER_BUTTONS];
+        uint8_t modes[CONTROLLER_BUTTONS], backModes[CONTROLLER_BUTTONS], defModes[CONTROLLER_BUTTONS];
+        char text[4096]; const char *error = NULL;
+        controller_map_default(map, modes); controller_map_default(def, defModes);
+        int n = controller_map_format(map, modes, text, sizeof text);
+        expect(n > 0 && !strchr(strchr(strchr(text, '\n') + 1, '\n') + 1, '='), "the default writes no lines");
+        map[6] = 1u << 2; map[2] = 0; map[16] = 1u << 11; map[8] = 1u << 9; modes[8] = (uint8_t)(CONTROLLER_AIM | 9 << 3);
+        map[0] = 1u << 1; modes[0] = CONTROLLER_TAP; map[MR] = 1u << 9; modes[MR] = (uint8_t)(CONTROLLER_AIM | ML << 3);
+        n = controller_map_format(map, modes, text, sizeof text);
+        controller_map_default(back, backModes);
+        expect(n > 0 && controller_map_parse(text, back, backModes, &error) == 0, "the written file parses");
+        expect(!memcmp(map, back, sizeof map) && !memcmp(modes, backModes, sizeof modes), "and reads back the same layout");
+        expect(strstr(text, "l1 = x\n") && strstr(text, "west = none\n") && strstr(text, "touchpad = minus\n") && strstr(text, "l2 = zr aim r2\n") &&
+               strstr(text, "south = b tap\n") && strstr(text, "mouse_right = zr aim mouse_left\n"), "line forms");
+        expect(controller_map_format(map, modes, text, 40) == -1, "too small a buffer: -1");
+        expect(controller_map_target(0) == -1 && controller_map_target(1u << 9) == 9, "map entry targets");
+        (void)def; (void)defModes;
+    }
+    /* The drawing's assignment: one button now drives one action, held; the others keep theirs. */
+    {
+        uint16_t map[CONTROLLER_BUTTONS]; uint8_t modes[CONTROLLER_BUTTONS]; controller_map_default(map, modes);
+        modes[3] = CONTROLLER_TAP;
+        controller_map_assign(map, modes, 3, 9);
+        expect(map[3] == 1u << 9 && modes[3] == CONTROLLER_HOLD && map[9] == 1u << 9 && map[1] == 1u << 0, "north to ZR, held; R2 keeps ZR, east keeps A");
+        controller_map_assign(map, modes, 6, -1); expect(map[6] == 0, "none");
+        controller_map_assign(map, modes, 16, 11); expect(map[16] == 1u << 11, "the touchpad");
+        uint16_t before[CONTROLLER_BUTTONS]; memcpy(before, map, sizeof map);
+        controller_map_assign(map, modes, 22, 0); controller_map_assign(map, modes, 0, 16); controller_map_assign(map, modes, 0, -2);
+        expect(!memcmp(before, map, sizeof map), "out of range: unchanged");
+    }
     if (failures) return 1;
     printf("PASS: controller layout cases\n");
     return 0;

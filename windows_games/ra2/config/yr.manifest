@@ -1,0 +1,16 @@
+# Yuri's Revenge (gamemd.exe 1.001, timestamp 0x3BDF544E): lifter manifest.
+# Addresses differ from Red Alert 2's GAME.EXE; nothing of config/game.manifest
+# applies. Entries are added with the evidence for each, as there.
+
+# The battlefield's frame limiter (called once a frame by the main loop
+# 0x55D360; Red Alert 2's 0x540960 with its globals moved): src/yr/hooks.cpp
+# shows frames from there at an even rate.
+replace 0055E160 FrameLimiter
+# The sidebar's layout (thiscall, one bool; Red Alert 2's 0x67B910 with a
+# left-hand sidebar too): src/yr/hooks.cpp lays it out for a shorter screen
+# when it is shown larger (--sidebar-scale).
+replace 006A5130 SidebarLayout
+# The tactical view's per-frame update (thiscall, through its vtable; Red
+# Alert 2's 0x6A2DD0): src/yr/hooks.cpp moves the view by the on-screen
+# stick first.
+replace 006D2540 TacticalUpdate

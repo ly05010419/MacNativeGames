@@ -1,5 +1,5 @@
 # Only for the developer probes and diagnostics (make probe-*), not for building the app.
 -r requirements.txt
 unicorn==2.1.4
-Pillow==12.3.0
-brotli==1.2.0
+Pillow==13.0.0
+brotli==1.2.1

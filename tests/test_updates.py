@@ -52,6 +52,12 @@ def fake_data_bundle(tree, version, _logs, **_names):
     return bundle
 
 
+def game_data(tree, version):
+    """The game data folder step_app copies into the app (build_app.place_game_data)."""
+    for name in build_app.game_data_files(version):
+        p=tree/f'build/game-data/{version}'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
+
+
 class Updates(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -256,6 +262,9 @@ class Updates(unittest.TestCase):
         self.assertEqual((out/'romfs.bin').read_bytes(), romfs())
 
     def test_bundle_contains_only_selected_game_version(self):
+        def fake_lists(tree, res, game, logs):   # shader_list.py resolve, tested in test_shader_list
+            for name in ('pso_manifest.tsv', 'pso_title.tsv'):
+                (res/'build'/name).write_text('# resolved\n')
         for version, display in (('v112', '1.1.2'), ('v121', '1.2.1'), ('v143', '1.4.3')):
             with self.subTest(version=version):
                 tree=self.root/version;out=self.root/f'{version}.app'
@@ -264,17 +273,20 @@ class Updates(unittest.TestCase):
                        f'extracted/{version}/romfs/runtime-index.bin',
                        f'build/shader-seed/{version}/seed-manifest.json',
                        f'build/shader-seed/{version}/pso_manifest.tsv']+[f'rewritten/{version}/{n}.patched.bin' for n in ('main','sdk','subsdk0')]
+                files+=[f'build/game-data/{version}/{n}' for n in build_app.GAME_DATA]
                 for rel in files:
                     p=tree/rel;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'test')
                 import hashlib
                 (tree/f'build/shader-seed/{version}/seed-manifest.json').write_text(json.dumps(dict(
                     version=version, chain='totk-native-v8-unverified', shaders=8000,
                     files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
-                with patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing:
+                with patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing, \
+                     patch.object(build_app, 'resolve_lists', side_effect=fake_lists):
                     build_app.step_app(tree,out,self.root/'logs',version=version)
                 signing.assert_called_once_with(out.with_name(out.name+'.partial'),self.root/'logs')
                 info=plistlib.loads((out/'Contents/Info.plist').read_bytes())
                 self.assertEqual(info['CFBundleShortVersionString'],display)
+                self.assertNotIn('MNGSourceRevision', info)   # no update notice to compare it with GitHub
                 self.assertIn('zh-Hans',info['CFBundleLocalizations']);self.assertIn('zh-Hant',info['CFBundleLocalizations'])
                 self.assertEqual('pt-BR' in info['CFBundleLocalizations'],version=='v143')
                 res=out/'Contents/Resources/totk'
@@ -284,12 +296,16 @@ class Updates(unittest.TestCase):
                 self.assertTrue((res/'build/shader-seed/seed-manifest.json').exists())
                 self.assertTrue((res/'build/pso_title.tsv').exists())   # the list the first frame waits for
                 self.assertEqual([p.name for p in (res/'rewritten').iterdir()], [version])
+                self.assertEqual(sorted(p.name for p in (res/'build/game-data').iterdir()), [version])   # runtime/game_data.h
+                for name in build_app.GAME_DATA:
+                    self.assertTrue((res/f'build/game-data/{version}'/name).is_file())
 
     def test_failed_bundle_seal_preserves_previous_app(self):
         tree=self.root/'tree';out=self.root/'existing.app';out.mkdir()
         (out/'keep.txt').write_text('previous working app')
         (tree/'build/shader-seed/v143').mkdir(parents=True)
         import hashlib
+        game_data(tree,'v143')
         (tree/'build/shader-seed/v143/pso_manifest.tsv').write_bytes(b'test')
         (tree/'build/shader-seed/v143/seed-manifest.json').write_text(json.dumps(dict(
             version='v143',chain='totk-native-v8-unverified',shaders=8000,
@@ -298,7 +314,7 @@ class Updates(unittest.TestCase):
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_bytes(b'synthetic payload')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone), \
-             patch.object(build_app,'sign_app',side_effect=build_app.BuildError('seal rejected')):
+             patch.object(build_app,'sign_app',side_effect=build_app.BuildError('seal rejected')),patch.object(build_app,'resolve_lists'):
             with self.assertRaisesRegex(build_app.BuildError,'seal rejected'):
                 build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual((out/'keep.txt').read_text(),'previous working app')
@@ -323,16 +339,20 @@ class Updates(unittest.TestCase):
         old=out/'Contents/Resources/totk/build/totk-native';old.parent.mkdir(parents=True);old.write_bytes(b'old running app')
         seed=tree/'build/shader-seed/v143';seed.mkdir(parents=True)
         (seed/'pso_manifest.tsv').write_bytes(b'test')
+        game_data(tree,'v143')
         (seed/'seed-manifest.json').write_text(json.dumps(dict(version='v143',chain='totk-native-v8-unverified',shaders=8000,
             files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
         def fake_clone(_source, target):
             target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(b'new app')
         checks=[]
-        def processes(*_args,**_kwargs):
+        def processes(args,*_args,**_kwargs):
+            if args[0]=='git':   # build_app.source_commit: the commit the app records (MNGSourceCommit)
+                return SimpleNamespace(returncode=0,stdout='abc1234\n')
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
-        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'app_seal_valid',return_value=True), \
+        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
+             patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
             build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual(len(checks),2);pause.assert_called_once_with(2)

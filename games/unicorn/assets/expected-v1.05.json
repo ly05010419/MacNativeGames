@@ -1,0 +1,32 @@
+{
+  "title_id": "010054B01AD92000",
+  "display_version": "1.05",
+  "exefs_sha256": {
+    "main": "532c206d15f80003f2d0a93c1d20ec9ba381cefda2cc7e75db9cc415380dc40e",
+    "main.npdm": "71cd4b35fbd205786360c9816abe7a88ef593c1886176bad5e66241f9968c38b",
+    "rtld": "70d47e8ffa857b93ba69fcec3eee294b0bc5c32065a18c455c8eaf74a336acbd",
+    "sdk": "52523b917913f595773b5bccb6517769d5017d8434bb7b397abe1732e525c09d"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "edad980cb30faa5438cab73fb20c292ff5eaf7ec4f6488e57d8aaf307f12c201",
+    "sdk.patched.bin": "bf516a55fcf8d043bc305162880015b011796c28144cc305211c25779777f891"
+  },
+  "romfs": {
+    "sha256": "cf7d63c10ebbf6898316926cd47346ad39e7e708f0da5ade1deb4a51fae9b2bc",
+    "size": 3591689668
+  },
+  "aoc": {
+    "1": {
+      "title_id": "010054B01AD93001",
+      "sha256": "37aa2d655c14fa6f9b251c334891e342c916a4cb7e160ccdfca8021783571411",
+      "size": 652,
+      "package_sha256": "9f689e415ad27966cc4fd61d80cc50d1f97b73ce91cc2985b43e6e3ee7f76775"
+    },
+    "2": {
+      "title_id": "010054B01AD93002",
+      "sha256": "37aa2d655c14fa6f9b251c334891e342c916a4cb7e160ccdfca8021783571411",
+      "size": 652,
+      "package_sha256": "30339da157c12c425f2bb06a25cf15f31dc2452819d3403f9619a5b116da07f5"
+    }
+  }
+}

@@ -203,6 +203,48 @@ class MetalCompilerTests(unittest.TestCase):
         self.assertEqual((metal, version, env['DEVELOPER_DIR']),
                          ('/toolchain/metal', 'Apple metal version 32023', '/Volumes/x/Xcode.app/Contents/Developer'))
 
+    def test_native_5k_is_explicit_and_old_large_overlays_are_removed(self):
+        self.assertFalse(build_app.parse_args(['game.nsp', '-k', 'keys']).native_5k)
+        self.assertTrue(build_app.parse_args(['game.nsp', '-k', 'keys', '--native-5k']).native_5k)
+        with tempfile.TemporaryDirectory() as t:
+            tree = Path(t)
+            build_app.remove_large_output_overlays(tree, 'v143')
+            folder = tree / 'extracted/v143/romfs-patches-out'
+            for name in ('2560x1440', '3840x2160', '5120x2880', '5120x2880-scene-5120x2880'):
+                (folder / name).mkdir(parents=True)
+            build_app.remove_large_output_overlays(tree, 'v143')
+            self.assertEqual(sorted(p.name for p in folder.iterdir()), ['2560x1440'])
+
+    def test_native_5k_rejects_breath_of_the_wild_before_building_it(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            game, keys = root / 'game.nsp', root / 'keys'
+            game.touch(); keys.touch()
+            with mock.patch.object(build_app, 'input_kind', return_value='nsp'), \
+                 mock.patch.object(build_app, 'fonts_valid', return_value=True), \
+                 mock.patch.object(build_app, 'prerequisites', return_value=Path('/python')), \
+                 mock.patch.object(build_app, 'prepare_work', return_value=root/'tree'), \
+                 mock.patch.object(build_app, 'identify_game', return_value='botw'):
+                with self.assertRaisesRegex(build_app.BuildError, '--native-5k is only available'):
+                    build_app.main([str(game), '-k', str(keys), '--work', str(root/'work'), '--native-5k'])
+
+    def test_native_4k_is_built_by_default_on_a_mac_with_16_gb_or_more(self):
+        self.assertTrue(build_app.native_4k_default(16 << 30))   # what a 16 GB Mac reports
+        self.assertTrue(build_app.native_4k_default(36 << 30))
+        self.assertFalse(build_app.native_4k_default(8 << 30))
+        self.assertTrue(build_app.native_5k_roomy(32 << 30) and build_app.native_5k_roomy(64 << 30))   # --native-5k warns below
+        self.assertFalse(build_app.native_5k_roomy(16 << 30) or build_app.native_5k_roomy(24 << 30))
+
+    def test_volume_search_finds_xcodes_and_does_not_follow_symlinks(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            for app in ('Volumes/Disk/Xcode.app', 'Volumes/Disk/Dev/Xcode-beta.app', 'root/home/Xcode.app'):
+                (root/app).mkdir(parents=True)
+            (root/'Volumes/Macintosh HD').symlink_to(root/'root')
+            self.assertEqual(build_app.xcodes_on_volumes(root/'Volumes'),
+                             [root/'Volumes/Disk/Xcode.app', root/'Volumes/Disk/Dev/Xcode-beta.app'])
+            self.assertEqual(build_app.xcodes_on_volumes(root/'no such folder'), [])
+
     def test_no_toolchain_anywhere_is_none(self):
         with mock.patch.object(build_app, 'developer_dirs', return_value=['/Library/Developer/CommandLineTools']), \
              mock.patch.object(build_app.subprocess, 'run', side_effect=self.fake_run('nowhere')):

@@ -1,0 +1,37 @@
+{
+    "_comment": "Verified Octopath Traveler 0 1.0.5 code (from the update), rewrite bytes and the RomFS merged from the base card image and the 1.0.5 update. Hashes only; no game data. Made by scripts/extract_code.py, scripts/merge_romfs.py and third_party/d2r/patch_nso.py (DM_RULESET=native DM_PRIVATE_GATES=0).",
+    "title_id": "01005270232F2000",
+    "update_title_id": "01005270232F2800",
+    "version": 327680,
+    "display_version": "1.0.5",
+    "main_build_id": "9FE60A212CFF9B9A3656AB63D4F882E500000000",
+    "base_program_nca": {
+        "name": "baf459281765efb2276a19308e3e4505.nca",
+        "nca_offset": 385975808,
+        "size": 3196518400
+    },
+    "update_program_nca": {
+        "name": "8c5d95af8ad2a1851c7af503b928d3fc.nca",
+        "nca_offset": 351512,
+        "size": 2478458368
+    },
+    "exefs_sha256": {
+        "main": "8b640e8be676d9f3a8bbb4ed3f27f005257f721adc7fabba0ff88a8eedc5f949",
+        "main.npdm": "c97e0d74beaef9ffb4ea1ee80b7c59bec532643d885c7b1b486240a921300a26",
+        "rtld": "b520125269a67e04b5aaa502594626339ad1bab7d143f79f7fc7490510a26306",
+        "sdk": "4ee8ae88927dc2744050af0dee629f956430374a5864bdba8d704a3f8d29ecf3",
+        "subsdk0": "cdcee27b02bb9d4422c8929ae6ae731027795763c7aa4df8e00892fb2777fb7d"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "57514757ae82796ff21702a67f3ce1f246904839e29f28ac6e94c35ddc7c8239",
+        "sdk.patched.bin": "e27a308b6d97e8a9f95ea590ef1105538b50b5d994d7209ceeda9c09ad9c38ac",
+        "subsdk0.patched.bin": "cd1c09591a9d4ddf13c0651dc9d56b8f3b1e63c84ca2a8175466ee17d6ccb3b7"
+    },
+    "romfs": {
+        "size": 4160565096,
+        "sha256": "b369c2f471eabb2f36a75c24dcbe47c7b953a43bdef6307c81f3b6d283f65de8",
+        "files": 370,
+        "bytes_from_base": 1756557936,
+        "bytes_from_update": 2412199160
+    }
+}

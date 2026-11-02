@@ -30,7 +30,6 @@ def main():
     commands = TEST / "commands.txt"
     commands.write_text("")
     env = os.environ.copy()
-    env.setdefault("TOTK_SHADER_ASYNC", "1")
     env.update(TOTK_GPU_ALLOW_SUBMIT="1", TOTK_GPU_WIDEN="1", TOTK_GPU_BLOCKRT="1",
                TOTK_INPUT_FILE=str(commands), TOTK_PROFILE_DIR=str(TEST / "profile"),
                TOTK_SLOT_OWNER="probe", TOTK_SLOT_PURPOSE="bounded resume into Cap Kingdom")

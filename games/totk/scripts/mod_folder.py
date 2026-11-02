@@ -32,8 +32,10 @@ import time
 
 def mods_folder(version):
     """<data>/mods/<version>: where the launcher points the game for a player's RomFS mods (runtime/romfs.c,
-    TOTK_ROMFS_MODS)."""
-    return Path.home() / 'Library/Application Support/MacNativeGames' / 'TOTK' / 'mods' / version
+    TOTK_ROMFS_MODS). <data> is the game's own folder (app/launcher.m, GAME_FOLDER): BotW for Breath of the Wild's
+    versions, TOTK for the others."""
+    game = 'BotW' if version.startswith('botw') else 'TOTK'
+    return Path.home() / 'Library/Application Support/MacNativeGames' / game / 'mods' / version
 
 
 class InstallError(RuntimeError):

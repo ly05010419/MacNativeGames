@@ -59,8 +59,8 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define SYSTEM_RESOURCE_BUDGET (32ULL<<20)
 #define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
 #define APP_POOL app_pool()
-static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the true-2K texture heaps (TOTK_OUTPUT_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
+static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+runtime_render_pool_extra()+0x1fffff)&~0x1fffffULL;
+ v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
 /* TOTK: application memory pool reported to the game (default: retail 3.2 GiB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
@@ -191,6 +191,7 @@ static uint64_t alias_map(int unmap,uint64_t addr,uint64_t size){
  pthread_mutex_unlock(&memory_lock);return 0;
 }
 uint64_t runtime_heap_base(void){return (uintptr_t)heap;}
+void runtime_heap_range(uint8_t **base,size_t *size){*base=heap;*size=heap_size;}   /* key 4: the camera projection search (odyssey_aspect.c) */
 /* Guest memory the game has committed (heap size + mapped alias pages), for memory reports (iOS app monitor). */
 void runtime_guest_committed(uint64_t *heap_bytes,uint64_t *alias_mapped){*heap_bytes=heap_size;*alias_mapped=alias_bytes;}
 /* Physical memory behind the guest regions (stack+heap and alias): resident pages, of which dirty, and pages the system

@@ -13,3 +13,29 @@ to another game never changes this one. These were copied on 2026-10-23 from the
 
 `prepare_odyssey_shader_seed.py` points the copied seed tool at `games/odyssey/assets/shader_list.tsv` (none yet), not at
 the Tears of the Kingdom list.
+
+## Added on 2026-10-26 (keys 3 to 7, update 1.4.1)
+
+Compared against `a8807a1` (2026-10-26). These parts were first played in a Super Mario Odyssey port outside this
+repository that `games/ssbu` was copied from as well, so the closest copy in the repository is `games/ssbu`'s.
+
+| File | Same as | Changed here |
+|---|---|---|
+| `d2r_gfx/gfx/nvn/totk_taa.m`, `totk_taa.h` | `games/ssbu/third_party/d2r_gfx/gfx/nvn` (a copy of `games/totk`'s) | the camera cut is `odyssey_mfx_cut` (centimetres), the camera comes from `odyssey_mfx.h` |
+| `../runtime/aspect_math.h`, `../runtime/mouse_look.h` | `games/ssbu/runtime` | nothing |
+| `../runtime/gamepad_layout.h`, `../runtime/motion_fusion.c` (keys 6 and 7) | `games/ssbu/runtime` | nothing |
+| `../runtime/gamepad.m` (keys 6 and 7) | `games/ssbu/runtime/gamepad.m` | Odyssey's stick reach (`controller_reach_parse`) kept, on the HID path too |
+| `../scripts/make_render_res_overlay.py` | `games/ssbu/scripts` | Odyssey's work folder layout (`extracted/local`) |
+| `../tests/gamepad_layout/`, `gamepad_type/`, `mouse/`, `mouse_look/` | `games/ssbu/tests` | nothing |
+| `by3-scripts/merge_romfs.py` | (above) | the layout of 1.4.1's AES-CTR-Ex table |
+
+`../runtime/odyssey_aspect.c` is Odyssey's own (key 4); it reads the camera projections the way `games/totk`'s
+`game_patches_botw.c` describes them, without using that file.
+
+## Added on 2026-11-01 (settings)
+
+The frontend, panel, binding diagrams, keyboard mapping, playtime and controller input/feedback follow games/totk
+at 4227378, including d3389b0 and the prior graph, persistence and controller revisions. FPS/sysload follow 0fd9358
+(95422a7, d8b16b1 and 95e04c0). Odyssey's stick calibration, keyboard defaults and input ABI are retained. Zelda-specific
+bow/Ultrahand key transforms and ability-wheel mouse pointing are omitted. Output-resolution scaling uses the standalone
+local BOTW helper, copied here; the build/runtime never reads another game's folder.

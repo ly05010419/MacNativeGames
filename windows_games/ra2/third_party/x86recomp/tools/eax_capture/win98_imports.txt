@@ -1,0 +1,85 @@
+# Functions eaxcap.exe may import: each exported by name by Windows 98 SE's
+# own system DLLs (kernel32, user32, winmm, DirectX 6.1's dsound) or by the
+# msvcrt.dll it ships (6.0). Add a function only after checking that.
+#
+# dll           function
+
+kernel32.dll    CloseHandle
+kernel32.dll    CreateDirectoryA
+kernel32.dll    CreateFileA
+kernel32.dll    ExitProcess
+kernel32.dll    GetCommandLineA
+kernel32.dll    GetLastError
+kernel32.dll    GetModuleFileNameA
+kernel32.dll    GetModuleHandleA
+kernel32.dll    GetProcAddress
+kernel32.dll    GetStdHandle
+kernel32.dll    GetTickCount
+kernel32.dll    GetVersionExA
+kernel32.dll    IsBadStringPtrA
+kernel32.dll    LoadLibraryA
+kernel32.dll    FreeLibrary
+kernel32.dll    ReadFile
+kernel32.dll    SetFilePointer
+kernel32.dll    Sleep
+kernel32.dll    WriteFile
+kernel32.dll    QueryPerformanceCounter
+kernel32.dll    QueryPerformanceFrequency
+
+user32.dll      CreateWindowExA
+user32.dll      DefWindowProcA
+user32.dll      DestroyWindow
+user32.dll      DispatchMessageA
+user32.dll      GetForegroundWindow
+user32.dll      LoadCursorA
+user32.dll      PeekMessageA
+user32.dll      RegisterClassA
+user32.dll      SetForegroundWindow
+user32.dll      SetWindowTextA
+user32.dll      ShowWindow
+user32.dll      TranslateMessage
+user32.dll      UpdateWindow
+
+winmm.dll       timeBeginPeriod
+winmm.dll       timeEndPeriod
+winmm.dll       timeGetTime
+winmm.dll       waveInAddBuffer
+winmm.dll       waveInClose
+winmm.dll       waveInGetDevCapsA
+winmm.dll       waveInGetErrorTextA
+winmm.dll       waveInGetID
+winmm.dll       waveInGetNumDevs
+winmm.dll       waveInOpen
+winmm.dll       waveInPrepareHeader
+winmm.dll       waveInReset
+winmm.dll       waveInStart
+winmm.dll       waveInStop
+winmm.dll       waveInUnprepareHeader
+
+dsound.dll      DirectSoundEnumerateA
+
+# mingw-w64's static math (libmingwex) references the last two.
+msvcrt.dll      __setusermatherr
+msvcrt.dll      _errno
+msvcrt.dll      _vsnprintf
+msvcrt.dll      atoi
+msvcrt.dll      calloc
+msvcrt.dll      free
+msvcrt.dll      labs
+msvcrt.dll      log10
+msvcrt.dll      malloc
+msvcrt.dll      memcmp
+msvcrt.dll      memcpy
+msvcrt.dll      memmove
+msvcrt.dll      memset
+msvcrt.dll      realloc
+msvcrt.dll      sprintf
+msvcrt.dll      strcat
+msvcrt.dll      strchr
+msvcrt.dll      strcmp
+msvcrt.dll      strcpy
+msvcrt.dll      strlen
+msvcrt.dll      strncmp
+msvcrt.dll      strncpy
+msvcrt.dll      strrchr
+msvcrt.dll      strstr

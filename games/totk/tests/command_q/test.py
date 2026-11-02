@@ -19,6 +19,13 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
                                     capture_output=True, text=True, timeout=5)
             assert result.returncode == 0, result.stderr
             assert expected in result.stderr, result.stderr
+            assert "[probe] state report: closing" in result.stderr, result.stderr   # reported before _exit
+            assert "[probe] triggers released" in result.stderr, result.stderr   # the triggers too: _exit skips atexit
             if mode:
                 assert "quitting when the save is done" in result.stderr, result.stderr
             print(f"PASS: save mode {mode}, text entry {text_entry}")
+
+    menus = subprocess.run([str(binary), "3", "0"], capture_output=True, text=True, timeout=15)
+    assert menus.returncode == 0, menus.stdout + menus.stderr
+    assert "live 60-to-120" in menus.stdout
+    print(menus.stdout.strip())

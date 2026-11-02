@@ -1,0 +1,36 @@
+# Local inputs and build products; keep the work folder and the app outside the checkout.
+*.keys
+*.tik
+*.nsp
+*.nsz
+*.xci
+*.xcz
+*.nca
+*.nro
+*.nso
+*.patched.bin
+*.metallib
+*.air
+*.mtl4a
+*.app/
+*_build/
+.venv/
+__pycache__/
+.DS_Store
+# Build outputs the copied runtime writes next to its sources (nxnative's dm/.gitignore)
+runtime/host/gen/
+runtime/host/dmhost
+runtime/host/dmhost_*
+runtime/host/*.dSYM/
+runtime/gfx/tests/gen/
+runtime/tools/nx_extract/obj/
+runtime/tools/nx_extract/bin/
+runtime/games/*/c1_full.tsv
+runtime/games/*/cb_extent.tsv
+runtime/games/*/shader_map.tsv
+runtime/games/*/shader_facts.tsv
+runtime/games/*/shader_pairs.tsv
+runtime/games/*/pso_pairs.tsv
+# Local offline dependencies and translator debug artifacts are not contribution inputs.
+*.nupkg
+*.pdb

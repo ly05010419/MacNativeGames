@@ -58,7 +58,7 @@ static int busy_protect(size_t pg) {
     uint8_t st = PG_PROT;
     if (!r || !atomic_compare_exchange_strong(&r->state[0], &st, PG_BUSY)) { printf("dirty race probe: page not protected\n"); return 1; }
     mprotect(page, pg, PROT_READ | PROT_WRITE);   /* what unprotect_page does before it stores the generation */
-    uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[0], g); atomic_store(&r->latest, g);
+    uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[0], g); atomic_store(&r->blk[0], g); atomic_store(&r->latest, g);
     g_c_state = &r->state[0];
     pthread_t tc; pthread_create(&tc, NULL, thread_c, NULL);
     uint64_t stamp = nvn_dirty_now();   /* the uploader's stamp, then its protect */
@@ -85,6 +85,36 @@ static void stamp_order(size_t pg) {
     page[0] = 2;   /* after the copy: no fault, the page is writable */
     EXPECT("#90: stamp before protect: the writes are seen", 1, nvn_dirty_since(page, 16, before));
     EXPECT("#90: stamp after protect (old order): the writes are missed", 0, nvn_dirty_since(page, 16, after));
+}
+
+/* TOTK_DIRTY_FAST: a 300-page pool with writes on three pages (two in one 64-page block, one alone in another); every
+   window answers the same with the per-block maxima as with the page walk, and a range lookup through the per-thread
+   page table finds the range the list scan finds, also after the range's slot was reused for another pool. */
+static void block_summary(size_t pg) {
+    enum { NP = 300 };
+    uint8_t *m = mmap(NULL, NP * pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (m == MAP_FAILED) { perror("mmap"); g_fail++; return; }
+    nvn_dirty_add_range(m, NP * pg);
+    uint64_t s = nvn_dirty_now(); nvn_dirty_protect(m, NP * pg);
+    m[5 * pg] = 1; m[70 * pg + 3] = 1; m[100 * pg] = 1; uint64_t mid = nvn_dirty_now(); m[250 * pg] = 1;
+    static const int win[][2] = {{0, 5}, {0, 6}, {6, 70}, {6, 71}, {71, 100}, {64, 128}, {101, 250}, {101, 251}, {128, 192}, {251, 300}, {0, 300}, {192, 250}};
+    int same = 0, n = 0, fast_dirty = 0;
+    for (size_t k = 0; k < sizeof win / sizeof win[0]; k++) for (int st = 0; st < 2; st++) {
+        uint64_t stamp = st ? mid : s; const void *a = m + (size_t)win[k][0] * pg; size_t len = (size_t)(win[k][1] - win[k][0]) * pg;
+        g_dirty_fast = 1; int f = nvn_dirty_since(a, len, stamp); g_dirty_fast = 0; int w = nvn_dirty_since(a, len, stamp); g_dirty_fast = 1;
+        same += f == w; n++; fast_dirty += f;
+    }
+    EXPECT("TOTK_DIRTY_FAST: block maxima answer as the page walk (24 windows)", n, same);
+    EXPECT("TOTK_DIRTY_FAST: ... of which dirty", 7, fast_dirty);
+    uint64_t skips0 = atomic_load(&g_blk_skips); (void)nvn_dirty_since(m + 128 * pg, 64 * pg, s);
+    EXPECT("TOTK_DIRTY_FAST: an untouched block is skipped", 1, atomic_load(&g_blk_skips) - skips0);
+    range_t *r1 = find((uintptr_t)m + 7 * pg);
+    nvn_dirty_remove_range(m); nvn_dirty_add_range(m + 150 * pg, 10 * pg);   // the slot goes to a pool over other pages
+    g_dirty_fast = 0; range_t *scan_a = find((uintptr_t)m + 7 * pg), *scan_b = find((uintptr_t)m + 155 * pg); g_dirty_fast = 1;
+    EXPECT("TOTK_DIRTY_FAST: page table after the slot was reused: no stale range", (long long)(uintptr_t)scan_a, (long long)(uintptr_t)find((uintptr_t)m + 7 * pg));
+    EXPECT("TOTK_DIRTY_FAST: page table finds the new pool's range", (long long)(uintptr_t)scan_b, (long long)(uintptr_t)find((uintptr_t)m + 155 * pg));
+    EXPECT("TOTK_DIRTY_FAST: the first lookup found the pool", 1, r1 != NULL);
+    nvn_dirty_remove_range(m + 150 * pg);
 }
 
 #if defined(GAME_BOTW)
@@ -164,6 +194,7 @@ int main(void) {
     EXPECT("an untouched one in between is clean", 0, nvn_dirty_since(many + (size_t)(MANY / 2) * pg, 16, s2));
     if (busy_protect(pg)) return 2;
     stamp_order(pg);
+    block_summary(pg);
 #if defined(GAME_BOTW)
     overlap(pg);
 #endif

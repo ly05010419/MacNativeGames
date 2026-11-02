@@ -1,4 +1,5 @@
 """Work-folder isolation, including source/cache directory symlinks."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -51,6 +52,29 @@ class WorkDirectoryTests(unittest.TestCase):
             self.assertFalse((tree/'extracted').is_symlink())
             self.assertFalse((tree/'tooling').is_symlink())
             self.assertEqual((external/'spirv-cross/keep.txt').read_text(),'shared dependency must survive')
+
+    @unittest.skipUnless(shutil.which('rsync'),'rsync needed for real source-copy check')
+    def test_changed_source_older_than_the_last_build_is_rebuilt(self):
+        # 2026-10-25: a branch checked out before the last build in this folder kept that build's object for a changed file
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            source, external, work=self.fixture(root)
+            def run(command,*_args,**_kwargs):
+                if str(command[0])=='rsync':
+                    subprocess.run([str(x) for x in command],check=True,capture_output=True)
+            with mock.patch.object(build_app,'GAME',source), \
+                 mock.patch.object(build_app,'run',side_effect=run), \
+                 mock.patch.object(build_app,'git_fetch'):
+                (source/'a.c').write_text('branch one'); (source/'same.c').write_text('unchanged')
+                tree=build_app.prepare_work(work,Path('/usr/bin/python3'),work/'logs')
+                obj=tree/'a.c.o'; obj.write_text('object'); same_before=(tree/'same.c').stat().st_mtime
+                (source/'a.c').write_text('branch two')
+                old=obj.stat().st_mtime-100
+                for name in ('a.c','same.c'): os.utime(source/name,(old,old))   # the other branch's checkout is older than the object
+                build_app.prepare_work(work,Path('/usr/bin/python3'),work/'logs')
+            self.assertEqual((tree/'a.c').read_text(),'branch two')
+            self.assertGreaterEqual((tree/'a.c').stat().st_mtime,obj.stat().st_mtime)   # make sees the source as newer than its object
+            self.assertEqual((tree/'same.c').stat().st_mtime,same_before)               # an unchanged file keeps its time (no needless rebuild)
 
     def test_git_fetch_can_replace_a_dangling_cache_link(self):
         with tempfile.TemporaryDirectory() as folder:

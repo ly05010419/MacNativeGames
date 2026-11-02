@@ -1,0 +1,14 @@
+constants:
+  worldViewProj                    c0 x4  class 3 type 3  4x4 [1]
+  bones                            c4 x12  class 3 type 3  4x3 [4]
+  rowMat                           c16 x3  class 2 type 3  3x4 [1]
+  lightDir                         c19 x1  class 1 type 3  1x4 [1]
+  lightColors                      c21 x3  class 1 type 3  1x3 [3]
+  useFog                           b0 x1  class 0 type 1  1x1 [1]
+  lightCount                       i0 x1  class 0 type 2  1x1 [1]
+  fogScale                         c24 x1  class 0 type 3  1x1 [1]
+  heightMap                        s0 x1  class 4 type 12  1x1 [1]
+inputs: 0=POSITION0 1=NORMAL0 2=BLENDWEIGHT0 3=BLENDINDICES0 4=TEXCOORD0 5=COLOR0
+varyings: COLOR0@16 TEXCOORD0@0 TEXCOORD1@1 FOG0@18
+samplers: s0(type 12)
+color outputs 0, depth 0, point size 1, float registers 25

@@ -12,15 +12,22 @@ them). Nothing of the game ships with the project: every font comes from the pla
 same in 1.0.0 and 1.2.1 (same SHA-256), so one mod folder per version is enough.
 
 Styles:
-  keyboard  the keys the Mac keyboard plays (app/launcher.m): A B X Y = J K I U, L R = Q E, ZL ZR = Option Shift,
-            + - = Enter Tab, left stick = W A S D, right stick = arrow keys, stick presses = Z C, d-pad = T F G H.
+  keyboard  the default keyboard and mouse layout (runtime/keyboard_map.h, the settings panel's key bindings): A B X Y =
+            E Shift Space and the left mouse button, L R = F R, ZL ZR = Q and the right mouse button, + - = Esc Tab,
+            left stick = W A S D, right stick = arrow keys, stick presses = Ctrl V, d-pad = 2 3 4 5 (left up right down).
+            A layout changed in the settings panel is not drawn: the icons show the default.
+  azerty    the same keys with the letters a French (AZERTY) keyboard prints on them: the keyboard plays physical
+            positions, so ZL = A, left stick = Z Q S D. The launcher can serve it only while
+            no controller is connected (mods/<version>-keyboard, app/launcher.m).
   xbox      the buttons in the place a controller presses them (controllers follow the Switch's physical layout):
             A B X Y = B A Y X, L R = LB RB, ZL ZR = LT RT, + - = Menu and View, the d-pad as a cross.
   playstation  DualSense / DualShock symbols by position like xbox: A B X Y = Circle Cross Triangle Square,
             L R = L1 R1, ZL ZR = L2 R2, + - = Options and Create, the d-pad as a cross.
   playstation-label  the same, but A B X Y = Cross Circle Square Triangle, for TOTK_FACE_BUTTONS=label or a
             controls.txt with south = a, east = b, west = x, north = y.
-Prompts drawn as fixed images (some tutorial animations) keep the Switch icons: they are not glyphs of this font.
+The button guide in play is not drawn with this font but from eight textures of the common layout archive (A B X Y, L,
+ZL and two left-stick keys); they are redrawn from the same icons (HUD_TEXTURES). Other prompts drawn as fixed images
+(some tutorial animations) keep the Switch icons.
 
 Format notes (checked on 1.0.0 and 1.2.1): a .bfotf is an OpenType (CFF) font with an 8-byte header, XOR-ed with a
 32-bit key; the first word XOR 0x18029a7f gives the key and the second word, XOR the key, holds the big-endian size.
@@ -48,9 +55,11 @@ try:
     import compression.zstd as zstd
 except ImportError:
     sys.exit('needs Python 3.14 (compression.zstd): run it with python3.14')
-from make_mod_manifest import VERSIONS, read_index, write_manifest
+import make_mod_manifest
+from make_mod_manifest import VERSIONS, app_image_dir, merge_build_patches, read_index, write_manifest
 
 try:
+    from fontTools.pens.basePen import BasePen
     from fontTools.pens.boundsPen import BoundsPen
     from fontTools.pens.recordingPen import RecordingPen
     from fontTools.pens.reverseContourPen import ReverseContourPen
@@ -230,37 +239,52 @@ def key(glyphs, pen, x0, y0, x1, y1, label, radius=None, cap=None):
         glyphs.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap or h * 0.56, w * 0.78)
 
 
-def keyboard_style(g):
+def keyboard_style(g, layout=None):
+    def k(label):   # the letter another layout prints on the same physical key
+        return label.translate(layout) if layout and len(label) == 1 else label
     def single(label, advance=640):
-        return advance, lambda pen: key(g, pen, 40, Y0, advance - 40, Y1, label)
+        return advance, lambda pen: key(g, pen, 40, Y0, advance - 40, Y1, k(label))
     def wide(label, advance):
         return advance, lambda pen: key(g, pen, 40, Y0 + 40, advance - 40, Y1 - 40, label, radius=110, cap=230)
     def pair(a, b, advance=960):
         def draw(pen):
             w = (advance - 80 - 50) / 2
-            key(g, pen, 40, Y0 + 60, 40 + w, Y1 - 60, a); key(g, pen, 40 + w + 50, Y0 + 60, advance - 40, Y1 - 60, b)
+            key(g, pen, 40, Y0 + 60, 40 + w, Y1 - 60, k(a)); key(g, pen, 40 + w + 50, Y0 + 60, advance - 40, Y1 - 60, k(b))
         return advance, draw
     def cluster(top, left, mid, right, advance=960):
         def draw(pen):
             gap = 24; w = (advance - 80 - 2 * gap) / 3; h = (Y1 + 40 - (Y0 - 40) - gap) / 2
             bottom = Y0 - 40; upper = bottom + h + gap; xs = [40, 40 + w + gap, 40 + 2 * (w + gap)]
             for label, (x, y) in ((top, (xs[1], upper)), (left, (xs[0], bottom)), (mid, (xs[1], bottom)), (right, (xs[2], bottom))):
-                key(g, pen, x, y, x + w, y + h, label, radius=w * 0.18, cap=h * 0.6)
+                key(g, pen, x, y, x + w, y + h, k(label), radius=w * 0.18, cap=h * 0.6)
         return advance, draw
     return {
-        0xE040: single('J'), 0xE041: single('K'), 0xE042: single('I'), 0xE043: single('U'),
-        0xE044: single('Q', 720), 0xE045: single('E', 720), 0xE046: wide('Opt', 900), 0xE047: wide('Shift', 1080),
-        0xE049: cluster('T', 'F', 'G', 'H', 900), 0xE04B: wide('Enter', 1080), 0xE04C: wide('Tab', 820),
+        0xE040: single('E'), 0xE041: wide('Shift', 1080), 0xE042: wide('Space', 1080), 0xE043: wide('LMB', 900),
+        0xE044: single('F', 720), 0xE045: single('R', 720), 0xE046: single('Q', 720), 0xE047: wide('RMB', 900),
+        0xE049: cluster('3', '2', '5', '4', 900), 0xE04B: wide('Esc', 820), 0xE04C: wide('Tab', 820),
         # left stick: W A S D
         0xE050: single('S'), 0xE052: single('W'), 0xE054: pair('A', 'D'), 0xE058: single('D'), 0xE05A: single('A'),
-        0xE05C: pair('W', 'S'), 0xE05E: cluster('W', 'A', 'S', 'D'), 0xE056: single('Z'),
+        0xE05C: pair('W', 'S'), 0xE05E: cluster('W', 'A', 'S', 'D'), 0xE056: wide('Ctrl', 900),
         # right stick: arrow keys
         0xE051: single('↓'), 0xE053: single('↑'), 0xE055: pair('←', '→'), 0xE059: single('→'), 0xE05B: single('←'),
-        0xE05D: pair('↑', '↓'), 0xE05F: cluster('↑', '←', '↓', '→'), 0xE068: cluster('↑', '←', '↓', '→'), 0xE057: single('C'),
-        # d-pad: T F G H
-        0xE060: single('T'), 0xE061: single('G'), 0xE062: single('F'), 0xE063: single('H'),
-        0xE064: pair('T', 'G', 900), 0xE065: pair('F', 'H', 900),
+        0xE05D: pair('↑', '↓'), 0xE05F: cluster('↑', '←', '↓', '→'), 0xE068: cluster('↑', '←', '↓', '→'), 0xE057: single('V'),
+        # d-pad: 2 3 4 5 (left, up, right, down)
+        0xE060: single('3'), 0xE061: single('5'), 0xE062: single('2'), 0xE063: single('4'),
+        0xE064: pair('3', '5', 900), 0xE065: pair('2', '4', 900),
     }
+
+
+def stick(g, label, up=False, advance=640):
+    """The left stick as a controller's own label in a circle (L3 on a DualSense, LS on an Xbox pad); up: with an arrow up,
+    the button guide's "push it forward" (Nt_KeyTexLSt_00, U+E052). The Xbox and PlayStation styles need these too: the
+    HUD redraw takes every texture of HUD_TEXTURES from the style."""
+    def draw(pen):
+        cx = advance / 2; circle(pen, cx, CY, R)
+        if up:
+            g.hole(pen, label, cx, CY - R * 0.25, R * 0.55, R * 1.1); arrow_hole(pen, '↑', cx, CY + R * 0.5, R * 0.6)
+        else:
+            g.hole(pen, label, cx, CY, R * 0.95, R * 1.3)
+    return advance, draw
 
 
 def xbox_style(g):
@@ -308,6 +332,7 @@ def xbox_style(g):
         0xE04B: menu(), 0xE04C: view(),
         0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
         0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
+        0xE052: stick(g, 'LS', up=True), 0xE05E: stick(g, 'LS'),
     }
 
 
@@ -368,14 +393,108 @@ def playstation_style(g, by_label=False):
         0xE040: face(a), 0xE041: face(b), 0xE042: face(x), 0xE043: face(y),
         0xE044: bumper('L1'), 0xE045: bumper('R1'), 0xE046: trigger('L2'), 0xE047: trigger('R2'),
         0xE04B: options(), 0xE04C: create(),
+        0xE052: stick(g, 'L3', up=True), 0xE05E: stick(g, 'L3'),
     }
     for cp in (0xE049, 0xE060, 0xE061, 0xE062, 0xE063, 0xE064, 0xE065):   # the d-pad is drawn as for Xbox
         icons[cp] = dpad_style[cp]
     return icons
 
 
-STYLES = {'keyboard': keyboard_style, 'xbox': xbox_style, 'playstation': playstation_style,
+AZERTY = str.maketrans('QWAZ', 'AZQW')   # US key position -> the letter an AZERTY keyboard prints there
+
+STYLES = {'keyboard': keyboard_style, 'azerty': lambda g: keyboard_style(g, AZERTY), 'xbox': xbox_style, 'playstation': playstation_style,
           'playstation-label': lambda g: playstation_style(g, by_label=True)}
+
+
+# ---- the HUD's button guide: images, not glyphs ----
+# The button guide in play (bottom right) draws its keys from textures of the common layout archive, not from the font:
+# Square R8_UNORM masks (white key, black letter; 72x72 up to 1.2.1, 108x108 in 1.4.3), block-linear, one mip, in timg/__Combined.bntx. Each is redrawn from the
+# style's icon for the same Switch button, fitted into the same square, and written back in place: the BNTX keeps its size.
+LAYOUT_PREFIX, BNTX = 'UI/LayoutArchive/Common.', 'timg/__Combined.bntx'
+HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00': 0xE042, 'Nt_KeyTexY_00': 0xE043,
+                'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046,
+                'Nt_KeyTexLSt_00': 0xE052,   # the left stick with an arrow up: push it forward
+                'Nt_KeyTexLSt_01': 0xE05E}   # the left stick
+R8_UNORM, HUD_MARGIN, SUPERSAMPLE = 0x201, 4, 4
+
+
+def gob_offset(x, y, width_gobs, block_height):
+    """Byte offset of (x, y) in a Tegra block-linear surface of 1 byte per pixel (GOBs of 64 bytes x 8 rows)."""
+    return ((y // (8 * block_height)) * 512 * block_height * width_gobs + (x // 64) * 512 * block_height
+            + ((y % (8 * block_height)) // 8) * 512 + ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64
+            + ((x % 32) // 16) * 32 + (y % 2) * 16 + (x % 16))
+
+
+class PolygonPen(BasePen):
+    """Outlines flattened to closed polygons."""
+    def __init__(self):
+        super().__init__(None); self.polygons = []
+
+    def _moveTo(self, pt):
+        self.polygons.append([pt])
+
+    def _lineTo(self, pt):
+        self.polygons[-1].append(pt)
+
+    def _curveToOne(self, pt1, pt2, pt3):
+        p0 = self.polygons[-1][-1]
+        for i in range(1, 17):
+            t = i / 16; u = 1 - t
+            self.polygons[-1].append(tuple(u ** 3 * p0[k] + 3 * u * u * t * pt1[k] + 3 * u * t * t * pt2[k] + t ** 3 * pt3[k] for k in (0, 1)))
+
+    def _qCurveToOne(self, pt1, pt2):
+        p0 = self.polygons[-1][-1]
+        for i in range(1, 17):
+            t = i / 16; u = 1 - t
+            self.polygons[-1].append(tuple(u * u * p0[k] + 2 * u * t * pt1[k] + t * t * pt2[k] for k in (0, 1)))
+
+
+def rasterize(draw, size):
+    """A size x size coverage mask (0..255, rows top down) of `draw`'s outline, fitted into the square, nonzero winding."""
+    rec = RecordingPen(); draw(rec)
+    box = BoundsPen(None); rec.replay(box); x0, y0, x1, y1 = box.bounds
+    inner = size - 2 * HUD_MARGIN; scale = inner / max(x1 - x0, y1 - y0)
+    ox = HUD_MARGIN + (inner - (x1 - x0) * scale) / 2 - x0 * scale
+    oy = HUD_MARGIN + (inner - (y1 - y0) * scale) / 2 - y0 * scale
+    flat = PolygonPen(); rec.replay(TransformPen(flat, (scale, 0, 0, -scale, ox, size - oy)))   # font y up -> rows down
+    edges = [(a, b) for poly in flat.polygons for a, b in zip(poly, poly[1:] + poly[:1]) if a[1] != b[1]]
+    n = size * SUPERSAMPLE; cover = [0] * (size * size)
+    for row in range(n):
+        y = (row + 0.5) / SUPERSAMPLE
+        crossings = sorted((a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]), 1 if b[1] > a[1] else -1)
+                           for a, b in edges if min(a[1], b[1]) <= y < max(a[1], b[1]))
+        winding, start = 0, None
+        for x, d in crossings:
+            if winding == 0:
+                start = x
+            winding += d
+            if winding == 0:
+                for col in range(max(0, round(start * SUPERSAMPLE)), min(n, round(x * SUPERSAMPLE))):
+                    cover[(row // SUPERSAMPLE) * size + col // SUPERSAMPLE] += 1
+    return bytes(min(255, c * 255 // (SUPERSAMPLE * SUPERSAMPLE)) for c in cover)
+
+
+def redraw_hud(bntx, icons):
+    """The BNTX with every texture of HUD_TEXTURES redrawn from `icons` (code point -> (advance, draw)), same size."""
+    out, done, pos = bytearray(bntx), [], 0
+    while (i := bntx.find(b'BRTI', pos)) >= 0:
+        pos = i + 4
+        name_at = struct.unpack_from('<Q', bntx, i + 0x60)[0]; length = struct.unpack_from('<H', bntx, name_at)[0]
+        name = bntx[name_at + 2:name_at + 2 + length].decode().split('^')[0]
+        if name not in HUD_TEXTURES:
+            continue
+        mips, fmt, (w, h), layout = (struct.unpack_from('<H', bntx, i + 0x16)[0], struct.unpack_from('<I', bntx, i + 0x1C)[0],
+                                     struct.unpack_from('<II', bntx, i + 0x24), struct.unpack_from('<I', bntx, i + 0x34)[0])
+        assert fmt == R8_UNORM and w == h and mips == 1, f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'   # 72x72 to 1.2.1, 108x108 in 1.4.3
+        data = struct.unpack_from('<Q', bntx, struct.unpack_from('<Q', bntx, i + 0x70)[0])[0]
+        mask = rasterize(icons[HUD_TEXTURES[name]][1], w)
+        for y in range(h):
+            for x in range(w):
+                out[data + gob_offset(x, y, (w + 63) // 64, 1 << (layout & 7))] = mask[y * w + x]
+        done.append(name)
+    missing = set(HUD_TEXTURES) - set(done)
+    assert not missing, f'not in the layout archive: {", ".join(sorted(missing))}'
+    return bytes(out)
 
 
 def redraw(otf, text_fonts, style):
@@ -395,12 +514,22 @@ def redraw(otf, text_fonts, style):
     return out.getvalue(), len(icons)
 
 
+def write_mod_manifest(mod, romfs, index):
+    """Merge the mod's Common archive with the build's own patch of it (make_romfs_patches.py patches the same archive),
+    then write the manifest: (merged paths, Manifest). The merged file's line names the build's file as the original, so
+    the game loads it in place of the build's overlay; without the merge both replace one file and the game stops at start."""
+    merged = merge_build_patches(mod, romfs, index)
+    return merged, write_manifest(mod, romfs, merged=merged)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('mod', type=Path, help='the mod folder to write into (other files in it are kept and listed too)')
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--app', type=Path, help='the built Tears of the Kingdom.app')
     source.add_argument('--romfs', type=Path, help='a folder holding romfs.bin and runtime-index.bin')
+    parser.add_argument('--romfs-data', type=Path, help='the folder holding romfs.bin when it is not beside the index (an app '
+                        'built with --mac-game-data library: <data>/GameData/<version>; with --app that folder is the default)')
     parser.add_argument('--version', choices=VERSIONS, help='the game version (default: the mod folder name)')
     parser.add_argument('--style', choices=sorted(STYLES), default='keyboard')
     parser.add_argument('--replace', action='store_true', help='overwrite a font archive already in the mod folder')
@@ -411,17 +540,27 @@ def main():
         if not version:
             parser.error('name the game version with --version (or name the mod folder v0, v112, v121 or v143)')
         romfs = args.app / f'Contents/Resources/totk/extracted/{version}/romfs'
-    for need in ('romfs.bin', 'runtime-index.bin'):
-        if not (romfs / need).is_file():
-            parser.error(f'{romfs / need} not found')
+    image_dir = args.romfs_data or romfs
+    if args.app and not args.romfs_data and not (romfs / 'romfs.bin').exists():   # built with --mac-game-data library
+        image_dir = app_image_dir(args.app, version)
+    make_mod_manifest.IMAGE_DIR = image_dir   # write_manifest reads the originals from the image too
+    for need in (image_dir / 'romfs.bin', romfs / 'runtime-index.bin'):
+        if not need.is_file():
+            parser.error(f'{need} not found')
 
     index = read_index(romfs / 'runtime-index.bin')
     archives = [ARCHIVE] + sorted(p for p in index if p.startswith('Font/') and p.endswith('.bfarc.zs') and p != ARCHIVE)
-    existing = [str(args.mod / p) for p in archives if (args.mod / p).exists()]
+    layout_path = next((p for p in index if p.startswith(LAYOUT_PREFIX) and p.endswith('.blarc.zs')), None)
+    if not layout_path:
+        parser.error(f'{romfs} holds no {LAYOUT_PREFIX}*.blarc.zs (the in-game button guide): is this Tears of the Kingdom\'s RomFS?')
+    restbl = next((p for p in index if p.startswith('System/Resource/ResourceSizeTable.') and p.endswith('.rsizetable.zs')), None)
+    if not restbl:
+        parser.error(f'{romfs} holds no System/Resource/ResourceSizeTable.*.rsizetable.zs: is this Tears of the Kingdom\'s RomFS?')
+    existing = [str(args.mod / p) for p in archives + [layout_path] if (args.mod / p).exists()]
     if existing and not args.replace:
         parser.error(f'{", ".join(existing)} already exist(s) (another mod\'s font archive, or an earlier run): '
                      'pass --replace to overwrite')
-    with (romfs / 'romfs.bin').open('rb') as image:
+    with (image_dir / 'romfs.bin').open('rb') as image:
         def read(path):
             offset, size = index[path]; image.seek(offset); data = image.read(size); assert len(data) == size; return data
         dictionaries = {}
@@ -429,8 +568,9 @@ def main():
         for lo, hi in sarc_members(pack).values():
             d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
         raws = {path: read(path) for path in archives}
-        restbl = next(p for p in index if p.startswith('System/Resource/ResourceSizeTable.') and p.endswith('.rsizetable.zs'))
         restbl_raw = read(restbl)
+        layout = layout_path
+        layout_raw = read(layout)
 
     text_fonts, redrawn, growth = None, {}, {}
     for path in archives:
@@ -456,13 +596,28 @@ def main():
         target = args.mod / path; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
         print(f'{target}: {count} icons redrawn ({args.style}), {len(data)} bytes')
 
+    info = zstd.get_frame_info(layout_raw); dictionary = dictionaries[info.dictionary_id]
+    archive = zstd.decompress(layout_raw, zstd_dict=dictionary); members = sarc_members(archive)
+    new_archive = repack(archive, BNTX, redraw_hud(archive[slice(*members[BNTX])], STYLES[args.style](Glyphs(text_fonts))))
+    assert len(new_archive) == len(archive)
+    data = zstd.compress(new_archive, level=19, zstd_dict=dictionary)
+    assert zstd.decompress(data, zstd_dict=dictionary) == new_archive
+    growth[layout] = 0
+    target = args.mod / layout; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data)
+    print(f'{target}: {len(HUD_TEXTURES)} button guide textures redrawn ({args.style}), {len(data)} bytes')
+
     target = args.mod / restbl
     original = zstd.decompress(restbl_raw)
     table = zstd.decompress(target.read_bytes()) if target.exists() else original
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(zstd.compress(grow_restbl(table, original, growth), level=19))
     print(f'{target}: ' + ', '.join(f'{p} {g:+d}' for p, g in growth.items()))
-    found = write_manifest(args.mod, romfs)
+    try:
+        merged, found = write_mod_manifest(args.mod, romfs, index)
+    except ValueError as error:
+        sys.exit(f'manifest not written: {error}')
+    for name in merged:
+        print(f'{args.mod / name}: merged with the build\'s own patch of it')
     if found.misspelt:
         sys.exit('manifest not written: ' + ', '.join(f'{a} (the RomFS has {b})' for a, b in found.misspelt))
     print(f'{args.mod / "manifest.tsv"}: {len(found.lines)} files '

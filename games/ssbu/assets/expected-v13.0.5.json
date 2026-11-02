@@ -1,0 +1,36 @@
+{
+  "_comment": "Verified Super Smash Bros. Ultimate 13.0.5 code (from the update) and the RomFS merged from the base 1.0.0 (NSP) and the update. Hashes only; no game data. Made by scripts/extract_code.py, scripts/merge_romfs.py and third_party/d2r/patch_nso.py (DM_RULESET=native DM_PRIVATE_GATES=0). rtld, sdk and subsdk0 are the 13.0.2 modules unchanged; the NRRs from cross2_130001 to cross2_130004 list the same 98 NRO modules.",
+  "title_id": "01006A800016E000",
+  "update_title_id": "01006A800016E800",
+  "display_version": "13.0.5",
+  "main_build_id": "21450C647B8C5940ED5B68218EA128FD3C5D597D",
+  "base_program_nca": {
+    "name": "d0aff042856a7770809d5df105278344.nca",
+    "nca_offset": 35264,
+    "size": 14531444736
+  },
+  "update_program_nca": {
+    "name": "dfc47090cb897dfdf572162f4c9503e1.nca",
+    "nca_offset": 528,
+    "size": 3891677696
+  },
+  "exefs_sha256": {
+    "main": "eb79e639e47d9a0c79bcfe2ec50fc807afa9601800226627b58bd6a1a83dc52d",
+    "main.npdm": "b5a2e0c5958a86c9fd9e4bd38d0356be4858b4ad007804b9d3bbecc3ef810fb9",
+    "rtld": "bc52eeaae18053433a64caeeed0c12b63fd29fbde635346d732203ec41f585f0",
+    "sdk": "8d20111b4f1dd9a301901ed9c2a0f31ce5678076f7b233bfb8bdbafe52f955f1",
+    "subsdk0": "2ac9587ec0d20a2bda42d7a8f04574f18af3e047d9864a599070d57666b1811e"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "461fe583365e2c2ccbd2d788c89556397a65ee5bf20bc2575d312e3ef75b8899",
+    "sdk.patched.bin": "ce4c8b6251c249e99bc97bab56a65f8901fefb944b3da12e0b045be4c0163924",
+    "subsdk0.patched.bin": "6a88f7246f05ddb1a67cf0f2a82ec988cc0b18db3384a98ed7f643c23261ab57"
+  },
+  "romfs": {
+    "size": 17600939696,
+    "sha256": "33b7554849ed876f8c2b05ad4f2de9b41e77573cfea663f695f55e9589c893bb",
+    "files": 15,
+    "bytes_from_base": 13797717152,
+    "bytes_from_update": 3837743632
+  }
+}

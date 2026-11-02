@@ -1,0 +1,5 @@
+# What the Ori scripts need (Python 3.14).
+cryptography==50.0.2   # decrypting the card image and the update (NCA / XCI / NSP)
+lz4==4.4.5             # the code modules (NSO segments)
+capstone==5.0.9        # the code rewriter's disassembler
+unicorn==2.1.4         # make verify-rewrites only: the rewriter's equivalence check

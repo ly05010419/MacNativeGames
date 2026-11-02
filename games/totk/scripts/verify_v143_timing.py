@@ -4,7 +4,8 @@ import hashlib,json,os,struct,subprocess,sys
 from pathlib import Path
 from unicorn import Uc,UC_ARCH_ARM64,UC_MODE_ARM
 from unicorn.arm64_const import (UC_ARM64_REG_PC,UC_ARM64_REG_SP,UC_ARM64_REG_X0,
- UC_ARM64_REG_X8,UC_ARM64_REG_X9,UC_ARM64_REG_X19,UC_ARM64_REG_X22,
+ UC_ARM64_REG_X8,UC_ARM64_REG_X9,UC_ARM64_REG_X19,UC_ARM64_REG_X20,UC_ARM64_REG_X22,
+ UC_ARM64_REG_W8,UC_ARM64_REG_W9,UC_ARM64_REG_W10,
  UC_ARM64_REG_S0,UC_ARM64_REG_S1,UC_ARM64_REG_S2,UC_ARM64_REG_S3,
  UC_ARM64_REG_S8,UC_ARM64_REG_S9,UC_ARM64_REG_S10,UC_ARM64_REG_LR,
  UC_ARM64_REG_NZCV,UC_ARM64_REG_X25)
@@ -17,11 +18,26 @@ def main():
  layout=json.loads((out/'runtime-layout.json').read_text())[0]['layout']
  subprocess.run(['xcrun','clang','-std=c11','-O1','-Wall','-Wextra','-Werror','-Iruntime','scripts/v143_timing_fixture.c','runtime/game_patches_v143.c','-o','build/v143-timing-fixture'],check=True)
  target=out/'main-timing-fixture.bin'
- fixture_env=os.environ|{'TOTK_REALTIME':'1','TOTK_FPS60':'1','TOTK_OUTPUT_RES':'0','TOTK_ASPECT':'0','TOTK_CLOTH_REALTIME':'1','TOTK_HIGHFPS_FIX':'1'}
- run=subprocess.run(['build/v143-timing-fixture',str(source),str(target),str(layout['TEXT_END'])],capture_output=True,text=True,check=True,env=fixture_env)
+ # The render-resolution patch is on by default on the Mac (e8edbcd: the scene at the canvas size); the fixture runs it as
+ # shipped, so a TOTK_RENDER_RES left in the caller's environment is dropped.
+ fixture_env={k:v for k,v in os.environ.items() if k!='TOTK_RENDER_RES'}|{'TOTK_REALTIME':'1','TOTK_FPS60':'1','TOTK_OUTPUT_RES':'0','TOTK_ASPECT':'0','TOTK_CLOTH_REALTIME':'1','TOTK_HIGHFPS_FIX':'1'}
+ # Real-time frame step (runtime_frame_step_update): steady 120, 144, 160 and 240 fps, and short and long presents
+ # alternating (around the 120 cap, and above it), must give game time = real time. A 1/120 s floor per interval made
+ # 144 fps run 1.2x and 240 fps 2x fast, and alternating 1/240 + 1/80 s 1.33x fast. A hitch is cut at 1/15 s per
+ # interval (as in 1.0-1.2.1): a 200 ms present among 120 fps ones, and steady 10 fps, count 1/15 s each.
+ patterns=[(1/120,),(1/144,),(1/160,),(1/240,),(1/240,1/80),(.004,.0127),(1/288,1/96),(.003,.0045,.006),(1/240,1/240,1/60),
+           (1/120,)*15+(.2,),(.1,)]
+ run=subprocess.run(['build/v143-timing-fixture',str(source),str(target),str(layout['TEXT_END'])]+[','.join(str(round(x*1e9)) for x in p) for p in patterns],capture_output=True,text=True,check=True,env=fixture_env)
  (out/'timing-fixture.log').write_text(run.stdout+run.stderr);samples=json.loads(run.stdout)
  for name,seconds in [('pin',0.01),('sample',0.025)]:
   assert all(abs(x-y)<1e-6 for x,y in zip(samples[name],[seconds*30,seconds,seconds*60]))
+ realtime_cases=[]
+ assert len(samples['realtime'])==len(patterns)
+ for pattern,(real,game) in zip(patterns,samples['realtime']):
+  # The 5-sample average lags by at most a few presents at the start and the end of the run.
+  capped=[min(x,1/15) for x in pattern];expect=real*sum(capped)/sum(pattern)
+  assert abs(game-expect)<=3*max(capped),('game time is not real time (hitches cut at 1/15 s)',pattern,real,game,expect)
+  realtime_cases.append(dict(intervals_ms=[round(x*1e3,4) for x in pattern],real=real,game=game,ratio=game/real))
  # Same placement as game_patches_v143.c: the producer veneer (4 words) sits in
  # the zero padding after the text segment, so iOS can embed it in the signed RX
  # segment. It must end before read-only data starts, which is stricter than the
@@ -31,8 +47,12 @@ def main():
  assert raw[stub:stub+16]==bytes(16),'frame-step veneer padding not empty in the rewritten image'
  changes=[o for o in range(0,len(raw),4) if raw[o:o+4]!=patched[o:o+4]]
  allowed={0x2db204,0x2db208,0x2db22c,0x2db360,0x2db36c,0x2db340,0x2db34c,0x3e5658,0x2daa54,0x2daa58,0x2daa6c,0x2daa70,0x2daa74,0x2daa78,
-          0x246eac,0x345904,0x24944c,0x28bc98,0x628c74,0xb43460,0x1ff04f4,0x253fbb0,0x562a64}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}
+          0x246eac,0x345904,0x24944c,0x28bc98,0x628c74,0xb43460,0x1ff04f4,0x253fbb0,0x562a64,
+          0x585e48,0x585e50,0x585e54,0x585e60,
+          0x0a7ac4,0x0a7ac8,0x0a7acc,0x0a7ad0,0x95dd24,0x95dd28,0x6155e4,0x615660}|{stub+4*i for i in range(4)}|{stub+48+4*i for i in range(32)}|{stub+176+4*i for i in range(19)}|{stub+256+4*i for i in range(5)}|{stub+928+4*i for i in range(20)}
+ # 0x585e48..0x585e60: patch_render_res, the scene size read from the data page (on by default since e8edbcd)
  assert set(changes)==allowed,[hex(o) for o in sorted(set(changes)^allowed)]
+ assert stub+928+20*4<=layout['RO_OFF'],'fade veneers overlap read-only data'
  def bits(value):return struct.unpack('<I',struct.pack('<f',value))[0]
  def execute(seconds,apply,half=False,call=0x3e5720,nominal_fps=60):
   mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
@@ -147,6 +167,53 @@ def main():
    bounce_cases.append(dict(hz=hz,scale=scale,compared=got))
  assert bounce_check(120,1,False)>100,'negative control: the original check fires at 120 FPS with time running normally'
  assert abs(bounce_check(30,.25,False)-bounce_check(30,.25))<1e-3,'at 30 Hz the patched check must equal the original'
- report=dict(status='pass',version='v143',scope='production ARM64 timing and secondary cloth/hair clock veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
- (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),changed_original_words=len(changes))))
+ # LOD and pre-actor fade counters (#466, #556, #538):
+ # At high FPS (ratio < 1/2.1 ≈ 0.476), trunc(2.1 * ratio) becomes zero, freezing opacity.
+ # The veneer clamps the per-frame increment to max(trunc(2.1 * ratio), 1).
+ def fade_check_site1(hz, initial=5, apply=True):
+  mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
+  mu.mem_map(0x10000000,0x10000);mu.reg_write(UC_ARM64_REG_X9,0x10000000)
+  mu.mem_write(0x10000000+0x9e,bytes([initial]))
+  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S1,bits(ratio))
+  mu.reg_write(UC_ARM64_REG_X8,0x2d02000)
+  mu.emu_start(0x0a7abc,0x0a7ad4,count=30)
+  assert mu.reg_read(UC_ARM64_REG_PC)==0x0a7ad4,'fade site 1 veneer did not return to 0x0a7ad4'
+  return mu.mem_read(0x10000000+0x9e,1)[0]-initial
+
+ def fade_check_site2(hz, initial=5, apply=True):
+  mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
+  mu.mem_map(0x10000000,0x10000);mu.reg_write(UC_ARM64_REG_X20,0x10000000)
+  mu.mem_write(0x10000000+0x9e,bytes([initial]));mu.reg_write(UC_ARM64_REG_W9,initial)
+  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio))
+  mu.reg_write(UC_ARM64_REG_X8,0x2d02000)
+  mu.emu_start(0x95dd1c,0x95dd30,count=30)
+  assert mu.reg_read(UC_ARM64_REG_PC)==0x95dd30,'fade site 2 veneer did not return to 0x95dd30'
+  return mu.mem_read(0x10000000+0x9e,1)[0]-initial
+
+ def fade_check_site3(hz, apply=True):
+  mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
+  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
+  mu.emu_start(0x6155e0,0x6155e8,count=20)
+  assert mu.reg_read(UC_ARM64_REG_PC)==0x6155e8,'fade site 3 veneer did not return to 0x6155e8'
+  return mu.reg_read(UC_ARM64_REG_W10)
+
+ def fade_check_site4(hz, apply=True):
+  mu=Uc(UC_ARCH_ARM64,UC_MODE_ARM);mu.mem_map(0,len(patched));mu.mem_write(0,patched if apply else raw)
+  ratio=30/hz;mu.reg_write(UC_ARM64_REG_S8,bits(ratio));mu.reg_write(UC_ARM64_REG_S0,bits(2.1))
+  mu.emu_start(0x61565c,0x615664,count=20)
+  assert mu.reg_read(UC_ARM64_REG_PC)==0x615664,'fade site 4 veneer did not return to 0x615664'
+  return mu.reg_read(UC_ARM64_REG_W10)
+
+ fade_cases=[]
+ for hz in (30,60,90,100,120,144,240,360):
+  want=max(int(2.1*30/hz),1)
+  r1,r2,r3,r4=fade_check_site1(hz),fade_check_site2(hz),fade_check_site3(hz),fade_check_site4(hz)
+  assert r1==want and r2==want and r3==want and r4==want,(hz,want,r1,r2,r3,r4)
+  fade_cases.append(dict(hz=hz,increment=want))
+ assert fade_check_site1(120,apply=False)==0,'negative control: unpatched site 1 stalls at 120 FPS'
+ assert fade_check_site2(120,apply=False)==0,'negative control: unpatched site 2 stalls at 120 FPS'
+ assert fade_check_site3(120,apply=False)==0,'negative control: unpatched site 3 stalls at 120 FPS'
+ assert fade_check_site4(120,apply=False)==0,'negative control: unpatched site 4 stalls at 120 FPS'
+ report=dict(status='pass',version='v143',scope='production ARM64 timing, secondary cloth/hair clock and LOD/actor fade veneers; original clock arithmetic, half-step selector, slow motion, zero factor, both inline/delegated actor paths, ordinary clock and ABI preservation',cases=cases,realtime_cases=realtime_cases,negative_control=negative,cloth_cases=cloth_cases,cloth_negative_control=cloth_negative,cloth_instruction_guard_negative_controls=4,bounce_cases=bounce_cases,fade_cases=fade_cases,veneer_offset=hex(stub),changed_original_words=len(changes),sources={p:hashlib.sha256((ROOT/p).read_bytes()).hexdigest() for p in ('runtime/game_patches_v143.c','scripts/v143_timing_fixture.c','scripts/verify_v143_timing.py')})
+ (out/'realtime-validation.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(dict(status='pass',cases=len(cases),realtime_ratios=[round(c['ratio'],6) for c in realtime_cases],cloth_cases=len(cloth_cases),cloth_negative_control=cloth_negative,bounce_cases=len(bounce_cases),fade_cases=len(fade_cases),changed_original_words=len(changes))))
 if __name__=='__main__':main()

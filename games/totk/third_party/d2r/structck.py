@@ -76,10 +76,11 @@ def sysk(t):
     return None
 
 # ---- sites.tsv ----
-sites = {}; wins = []; jumps = 0; calls = {}
+sites = {}; wins = []; jumps = 0; calls = {}; spins = {}
 for l in open(f'{out_dir}/{mod}.sites.tsv'):
     f = l.split(); a = int(f[0], 16)
     if f[1] == 'J': jumps += 1; continue
+    if f[1] == 'S': spins[a] = [int(x, 16) for x in f[2:]]; continue   # spin wait (patch_nso.py "Spin waits"): head, back-edges; checked in ⑫
     if f[1] == 'W': wins.append((a, int(f[2], 16))); sites[a] = 'W'
     elif f[1] == 'C':
         end = int(f[2], 16)
@@ -193,7 +194,8 @@ for blk in range(0, TE & ~3, 4096):                    # 先整块比，块不�
     if orig[blk:e] != pat[blk:e]: diff |= {o for o in range(blk, e, 4) if W(orig, o) != W(pat, o)}
 heads = set(sites)
 cutw = {o & ~3 for o in cutb if o < TE}
-_exp = (heads | set(calls.values()) | obs_heads | par_words) - cutw; _got = diff - cutw
+spin_bes = {b for bes in spins.values() for b in bes}
+_exp = (heads | set(calls.values()) | obs_heads | par_words | spin_bes) - cutw; _got = diff - cutw
 if _got != _exp: bad(f'text 改动与改写点不一致：多改 {len(_got - _exp)} 漏改 {len(_exp - _got)} 例 {[hex(x) for x in sorted(_got ^ _exp)[:5]]}')
 def btarget(o):
     w = W(pat, o)
@@ -201,7 +203,7 @@ def btarget(o):
     imm = w & 0x3FFFFFF
     if imm & 0x2000000: imm -= 0x4000000
     return o + 4 * imm
-nb = [a for a in heads | obs_heads if not (btarget(a) is not None and PO <= btarget(a) < len(pat))]
+nb = [a for a in heads | obs_heads | spin_bes if not (btarget(a) is not None and PO <= btarget(a) < len(pat))]
 if nb: bad(f'改写点头不是跳进补丁区的 B：{len(nb)} 例 {[hex(x) for x in nb[:5]]}')
 
 # ③ 独立分母
@@ -361,6 +363,76 @@ for n, (roff, form) in _hreg.items():
         bad(f'分支门 svc #{n:#x} {roff:#x}：块不符模板'); continue
     if gates.get(ks[0] + 12) != ('svc', n, roff): bad(f'分支门 svc #{n:#x} gates.tsv 行不符：{gates.get(ks[0] + 12)}')
     seen.add(ks[0] + 12); nbranch += 1
+# ⑫ 自旋等待（patch_nso.py「Spin waits」，只在登记的构建号）：原回跳换成 B 进补丁区（条件回跳经两字跳板：重编的条件分支进副本头 ; b 回跳+4），
+#    副本每字 = 原循环区里某条指令、或重编的直接分支 / adrp（目标在原函数内或本副本块内），不含 svc / x18 / 系统寄存器；门块 = 模板，ldp 后 b 回副本头；
+#    gates.tsv 有 (spin, 0, 头)；回跳不与改写点 / 窗口 / 剪口 / 观测门 / 参数门重叠
+# ⑫ Spin waits (patch_nso.py "Spin waits", registered builds only): each original back-edge became a B into the patch area (a conditional back-edge
+#    through a two-word trampoline: the re-encoded conditional branch to the copy's head ; b back-edge+4); every word of the copy is an instruction of the
+#    original loop region, or a re-encoded direct branch / adrp (its target inside the original function or inside this copy's block), never svc / x18 /
+#    a system register; the gate block matches the template and its ldp is followed by b to the copy's head; gates.tsv has (spin, 0, head); back-edges
+#    overlap no rewrite site / window / cut / observation gate / parameter gate
+_BR = lambda w: w & 0xFC000000 == 0x14000000 or w & 0xFF000010 == 0x54000000 or w & 0x7E000000 in (0x34000000, 0x36000000)
+def _brtarget(w, o):
+    if w & 0xFC000000 == 0x14000000: return o + 4 * (((w & 0x3FFFFFF) ^ 0x2000000) - 0x2000000)
+    if w & 0xFF000010 == 0x54000000 or w & 0x7E000000 == 0x34000000: return o + 4 * ((((w >> 5) & 0x7FFFF) ^ 0x40000) - 0x40000)
+    if w & 0x7E000000 == 0x36000000: return o + 4 * ((((w >> 5) & 0x3FFF) ^ 0x2000) - 0x2000)
+    return None
+spin_gates = {r: oa for r, (k, arg, oa) in gates.items() if k == 'spin'}
+_sbusy = _busy | obs_heads | par_words
+nspin = 0
+for T, bes in sorted(spins.items()):
+    fs, fe = next(((a, b) for a, b in zip(sorted(_starts), sorted(_starts)[1:] + [TE]) if a <= T < b), (T, T))
+    if not bes or any(not (T <= b < fe) for b in bes): bad(f'自旋等待 {T:#x}：回跳不在头之后的同一函数里'); continue
+    rets = [r for r, oa in spin_gates.items() if oa == T]
+    if len(rets) != 1: bad(f'自旋等待 {T:#x}：gates.tsv spin 行 {len(rets)} 条（应 1）'); continue
+    r = rets[0]; ks = keyseq(r - 28)
+    if W(pat, r - 32) != 0xA9BF7BFD or not ks or ks[1] != KEY.get('KGATE') or ks[0] != r - 12 or W(pat, r - 12) & 0xFFC00000 != 0xF9400000 \
+            or W(pat, r - 8) != LDR_X29_SP or W(pat, r - 4) != 0xD63F03C0 or W(pat, r) != 0xA8C17BFD or btarget(r + 4) is None:
+        bad(f'自旋等待 {T:#x}：门块不符键页模板'); continue
+    copy0 = btarget(r + 4); gate0 = r - 32
+    if not (PO <= copy0 < gate0): bad(f'自旋等待 {T:#x}：门块后的 b 不进本副本头'); continue
+    ok = True
+    for b in bes:
+        ob = W(orig, b)
+        if set(range(b, b + 4)) & _sbusy: bad(f'自旋等待 {T:#x}：回跳 {b:#x} 与别的改写重叠'); ok = False; break
+        if not _BR(ob) or _brtarget(ob, b) != T: bad(f'自旋等待 {T:#x}：原 {b:#x} 不是回到头的直接分支'); ok = False; break
+        t = btarget(b)
+        if ob & 0xFC000000 == 0x14000000:
+            if t != copy0: bad(f'自旋等待 {T:#x}：回跳 {b:#x} 不进副本头'); ok = False; break
+        elif t is None or not (PO <= t < len(pat)) or _brtarget(W(pat, t), t) != copy0 or (W(pat, t) ^ ob) & 0xFF00001F if ob & 0xFF000010 == 0x54000000 else False:
+            bad(f'自旋等待 {T:#x}：条件回跳 {b:#x} 的跳板不符'); ok = False; break
+        elif W(pat, t + 4) != B(t + 4, b + 4): bad(f'自旋等待 {T:#x}：跳板 {t:#x} 第二字不是 b {b + 4:#x}'); ok = False; break
+    if not ok: continue
+    hi = max(bes) + 28   # acq / rel / tst sequences may run past the last back-edge
+    def _nextmatch(pos, pred):
+        for a_ in range(pos, hi, 4):
+            if pred(W(orig, a_)): return a_
+        return None
+    pos, prev_adrp = T, None
+    for o in range(copy0, gate0, 4):
+        w = W(pat, o)
+        if w & 0xFC000000 == 0x14000000:   # b: an inserted fall-through or exit, or a copied b; only its target is checked
+            t = _brtarget(w, o)
+            if not (fs <= t < fe or copy0 <= t < r + 8 + 4 * 64): bad(f'自旋等待 {T:#x}：副本 {o:#x} 的 b 目标 {t:#x} 出了原函数与副本块'); ok = False; break
+            prev_adrp = None; continue
+        if _BR(w):   # a conditional branch: the next original one of the same kind, condition and register (only the offset differs)
+            m = 0xFFF8001F if w & 0x7E000000 == 0x36000000 else 0xFF00001F
+            a_ = _nextmatch(pos, lambda ow: _BR(ow) and ow & 0xFC000000 != 0x14000000 and (ow ^ w) & m == 0)
+            t = _brtarget(w, o)
+            if a_ is None or not (fs <= t < fe or copy0 <= t < r + 8 + 4 * 64): bad(f'自旋等待 {T:#x}：副本 {o:#x} 的条件分支对不上原循环'); ok = False; break
+            pos = a_ + 4; prev_adrp = None; continue
+        ins = next(_md.disasm(struct.pack('<I', w), o), None)
+        if ins is not None and ins.mnemonic == 'adrp':   # rebuilt adr / adrp: the next original one into the same register
+            a_ = _nextmatch(pos, lambda ow: ow & 0x1F000000 == 0x10000000 and ow & 31 == w & 31)
+            if a_ is None: bad(f'自旋等待 {T:#x}：副本 {o:#x} 的 adrp 对不上原循环'); ok = False; break
+            pos = a_ + 4; prev_adrp = (w & 31, W(orig, a_)); continue
+        if ins is not None and ins.mnemonic == 'add' and prev_adrp and prev_adrp[1] & 0x80000000 == 0 and (w & 31) == prev_adrp[0]:   # adr rebuilt as adrp + add
+            prev_adrp = None; continue
+        a_ = _nextmatch(pos, lambda ow: ow == w)
+        if a_ is None or (ins is not None and (ins.mnemonic in ('svc', 'mrs', 'msr') or RX18.search(ins.op_str or ''))):
+            bad(f'自旋等待 {T:#x}：副本 {o:#x} 的字 {w:08x} 不按顺序对上原循环'); ok = False; break
+        pos = a_ + 4; prev_adrp = None
+    if ok: seen.add(r); nspin += 1
 if set(gates) != seen: bad(f'gates.tsv 有多余行 {len(set(gates) - seen)}')
 
 # ⑥ 线程槽
@@ -381,7 +453,7 @@ expected = {}
 for kind in sites.values():
     key = {'x18': 'K18', 'W': 'K18', 'C': 'K18', 'tpidr_r': 'KTLS', 'tpidr_w': 'KTLS', 'tpidrro_r': 'KTLR'}.get(kind)
     if key: expected[key] = expected.get(key, 0) + 1
-expected['KGATE'] = len(gsites) + len(obs) + nbranch
+expected['KGATE'] = len(gsites) + len(obs) + nbranch + len(spins)   # one gate block per spin wait (⑫)
 for _, _, _, key in params: expected[key] = expected.get(key, 0) + 1
 if any(nk.get(k, 0) != v for k, v in expected.items()) or any(k not in expected and v for k, v in nk.items()):
     bad(f'键页槽访问计数不符：期望 {expected} 实际 {nk}')
@@ -577,8 +649,12 @@ def _exits(start):
             o += 4
     return ex
 nexit = 0; _cutoff = {c[0] for c in cuts}; _cutex = []
+_spin_of = {b: T for T, bes in spins.items() for b in bes}
 for a in sorted(_heads):
-    if a in _wend:
+    if a in _spin_of:   # a spin wait's back-edge (⑫): its copy leaves to addresses of the loop region and to their original branch targets
+        T = _spin_of[a]; seg = range(T, max(spins[T]) + 28, 4)   # acq / rel / tst sequences may run past the last back-edge
+        legal = set(range(T, max(spins[T]) + 32, 4))
+    elif a in _wend:
         group = atomic_groups.get(a, [(a, _wend[a])])
         seg = [o for lo, hi in group for o in range(lo, hi, 4)]
         legal = {calls[a]} if a in calls else {hi for lo, hi in group}
@@ -596,7 +672,7 @@ print(f'EXITS {mod} 跳板头={len(_heads)} 出口={nexit} 已登记剪口改控
 cnt = {}
 if _hostcall: print(f'剪口引入宿主调用门 {len(_hostcall)} 个：' + ', '.join(f"{a:#x}=svc#{n:#x}" for a, n in _hostcall.items()))
 for k in sites.values(): cnt[k] = cnt.get(k, 0) + 1
-print(f'STRUCT {mod} {"OK" if not fails else "FAIL"} 改写点={len(sites)} {cnt} 跳转表={jumps} 窗口内x18引用={nwin_ref} '
+print(f'STRUCT {mod} {"OK" if not fails else "FAIL"} 自旋等待={nspin}/{len(spins)} 改写点={len(sites)} {cnt} 跳转表={jumps} 窗口内x18引用={nwin_ref} '
       f'已登记剪口={len(cuts)}(代码{ncut_code}/数据{ncut_data}) 观测门={len(obs)} 参数门={len(params)} '
       f'独立分母={len(ind)} text改动字={len(diff)} 门={len(gsites)} 槽访问={nk} 失败项={len(fails)}')
 sys.exit(1 if fails else 0)

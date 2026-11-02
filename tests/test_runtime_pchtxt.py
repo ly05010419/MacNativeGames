@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import build_app
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_ID = bytes(range(0x10, 0x24))       # 20 bytes at 0x40 of the extracted main
@@ -40,11 +41,12 @@ class RuntimePchtxt(unittest.TestCase):
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def run_patch(self, text):
-        patch = self.dir / 'mod.pchtxt'
+    def run_patch(self, text, folder=None):
+        folder = folder or self.dir
+        patch = folder / 'mod.pchtxt'
         patch.write_text(text)
         env = dict(os.environ, TOTK_PCHTXT=str(patch))
-        run = subprocess.run([str(self.probe)], cwd=self.dir, env=env, capture_output=True, text=True, timeout=30)
+        run = subprocess.run([str(self.probe)], cwd=folder, env=env, capture_output=True, text=True, timeout=30)
         return run.returncode, run.stdout.strip()
 
     def test_disabled_section_is_not_applied(self):
@@ -76,6 +78,40 @@ class RuntimePchtxt(unittest.TestCase):
         code, out = self.run_patch('@nsobid-' + '00' * 20 + '\n@flag offset_shift 0x100\n@enabled\n40 aa\n@stop\n')
         self.assertEqual(code, 3, out)
         self.assertIn('another build of main', out)
+
+    def test_packaged_app_reads_main_build_id(self):
+        app = self.dir / 'app'
+        build_id = app / 'extracted/v0/exefs/main.build-id'
+        build_id.parent.mkdir(parents=True)
+        build_id.write_text(BUILD_ID.hex().upper() + '\n')
+        code, out = self.run_patch(HEADER + '@enabled\n40 aabbccdd\n@stop\n', app)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.splitlines()[-1].startswith('aabbccdd'), out)
+
+        build_id.write_text('not a build id\n')
+        code, out = self.run_patch(HEADER + '@enabled\n40 aabbccdd\n@stop\n', app)
+        self.assertEqual(code, 3, out)
+        self.assertIn('main.build-id', out)
+
+
+class MainBuildIdFile(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+
+    def test_the_build_writes_mains_build_id(self):
+        main = self.dir / 'tree/extracted/v121/exefs/main'
+        main.parent.mkdir(parents=True)
+        main.write_bytes(b'NSO0' + bytes(0x3c) + BUILD_ID + bytes(0x100))
+        target = self.dir / 'app/extracted/v121/exefs/main.build-id'
+        build_app.write_main_build_id(main, target)
+        self.assertEqual(target.read_text(), BUILD_ID.hex().upper() + '\n')
+
+    def test_nothing_is_written_without_an_extracted_main(self):
+        target = self.dir / 'app/extracted/v121/exefs/main.build-id'
+        build_app.write_main_build_id(self.dir / 'tree/extracted/v121/exefs/main', target)
+        self.assertFalse(target.exists())
 
 
 if __name__ == '__main__':
