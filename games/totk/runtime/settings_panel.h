@@ -102,6 +102,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "contrib_submit.h"   /* gh_path, contrib_submit (shared with app/launcher.m) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
+#include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
@@ -394,10 +395,7 @@ int vr_motion(void);
 void vr_set_motion(int on);
 /* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
    1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
-   no hook: the row is left out (weak symbols). */
-int runtime_camera_distance_available(void) __attribute__((weak_import));
-int runtime_camera_distance_cm(void) __attribute__((weak_import));
-void runtime_camera_distance_set(int cm) __attribute__((weak_import));
+   no hook: the row is left out (runtime_camera_distance_available, ../zeldaVR/runtime/vr_camera.h). */
 /* Link's head (zeldaVR, user 2026-10-26: "第一人称 我希望 去掉头", "先做到 第三人称里 头是去掉 或者隐藏 这样方便调试"): the
    graphics layer leaves the head's meshes out of the picture, not out of the shadows (nvn_mtl.m vr_head_mesh). Auto:
    while VR's first person puts the camera in his head. */
@@ -408,7 +406,7 @@ static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   [rows addObject:settings_row(settings_text("林克的头","Link's head"),
    @[settings_text("自动（第一人称时隐藏）","Auto (hidden in first person)"),settings_text("隐藏","Hidden"),settings_text("显示","Shown")],@[@-1,@1,@0],
    ^int{return vr_hide_head_mode();},^(int v){vr_set_hide_head_mode(v);})];
- if(!runtime_camera_distance_available||!runtime_camera_distance_available())return;
+ if(!runtime_camera_distance_available())return;
  [rows addObject:settings_row(settings_text("摄像机距离（第三人称）","Camera distance (third person)"),
   @[settings_text("默认","Default"),settings_text("近 1 米","1 m closer"),settings_text("近 2 米","2 m closer"),settings_text("近 3 米","3 m closer"),
     settings_text("近 4 米","4 m closer"),settings_text("近 5 米","5 m closer")],   /* user 2026-10-26: "改成 近1m 近2m 近3m 近4m 近5m" */

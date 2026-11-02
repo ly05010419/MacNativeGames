@@ -2666,11 +2666,9 @@ void dm_gfx_set_flag(const char *name, int v) {
         else MLOG("[flag] vr_res %d: not available (TOTK_VR_STREAMER not set, or 0..3)", v);
         return; }
     if (!strcmp(name, "vr_findhead")) {   // diagnostic: bone matrices near the player's head (1: scan, 2: after crouching)
-        extern void runtime_vr_find_head(int stage) __attribute__((weak_import));
-        if (runtime_vr_find_head) runtime_vr_find_head(v); return; }
+        runtime_vr_find_head(v); return; }
     if (!strcmp(name, "cam_dist")) {   // third-person camera distance in cm (zeldaVR; the settings panel's row)
-        extern void runtime_camera_distance_set(int cm) __attribute__((weak_import));
-        if (runtime_camera_distance_set) runtime_camera_distance_set(v); else MLOG("[flag] cam_dist: no camera hook in this version");
+        runtime_camera_distance_set(v);   // other versions: the default says there is no camera hook (zeldaVR/gfx/vr_defaults.c)
         return; }
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm

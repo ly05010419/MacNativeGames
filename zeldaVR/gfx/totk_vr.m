@@ -610,13 +610,12 @@ static void headlook_update(const vr_pose *head, int recenter) {
    2026-10-31: flying a Zonai device the picture stretched: the game widens its camera at speed, narrows it to aim, and
    with a factor on the game's own angle the picture then held more, or less, than the headset's angle it was placed at).
    TOTK_VR_GAME_FOV: the game's vertical field of view when the Vert+ stubs are not there (50 degrees). */
-extern int runtime_aspect_vr(float a, float k) __attribute__((weak_import));
 static float game_vfov(void) {
     static float vfov = 0; if (!vfov) { const char *e = getenv("TOTK_VR_GAME_FOV"); vfov = e ? (float)atof(e) : 50; if (vfov < 10 || vfov > 150) vfov = 50; }
     return vfov;
 }
 static void headlook_fov(const vr_views *v) {
-    if (g.fov_on || !g_vr_headlook || !runtime_aspect_vr) return;
+    if (g.fov_on || !g_vr_headlook) return;
     float w = 0, h = 0;
     for (int e = 0; e < 2; e++) {
         w = fmaxf(w, fmaxf(fabsf(tanf(v->fov[e][0])), fabsf(tanf(v->fov[e][1]))));
