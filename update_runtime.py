@@ -423,7 +423,6 @@ def main(argv):
     tmp = app.with_name(app.name + '.partial')
     if tmp.exists():
         build_app.remove_tree(tmp)
-    import plistlib
     bundle_id = plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') or APPS[game][1]
     shaders = None if args.seed else build_app.app_shader_bundle(app, version)
     if shaders:   # its shader data stays where it is: read through a link now, moved into the new app at the end
