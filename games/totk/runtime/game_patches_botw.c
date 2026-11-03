@@ -16,6 +16,7 @@
 #include "botw_shadow_res.h"   /* 1.9.0's sun shadow map at 2048 (TOTK_SHADOW_RES, shadows.txt) */
 #include "botw_fov.h"   /* 1.9.0's field of view (TOTK_FOV_SCALE, graphics-fov.txt) */
 #include <TargetConditionals.h>
+#include <mach/mach.h>   /* vm_read_overwrite: TOTK_CDPOINT_TRACE reads guest pointers it cannot vouch for */
 uint32_t runtime_thread_current_handle(void);
 static void botw_aspect_install(Module *m);   /* the aspect ratio, end of the file */
 static int patch_output_res(Module *m);   /* native output size, after runtime_output_res */
@@ -188,6 +189,11 @@ static uint32_t adrp_reg(unsigned rd, uint64_t site, uint64_t target) {
     uint32_t imm = (uint32_t)pages & 0x1fffff;
     return 0x90000000u | ((imm & 3u) << 29) | ((imm >> 2) << 5) | (rd & 31u);
 }
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
+    int64_t delta = (int64_t)target - (int64_t)site;
+    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
+    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+}
 #ifdef GAME_BOTW160
 /* Pad repeat and hold counts by real time (TOTK_PAD_REPEAT=0: as shipped; botw.md). sead::ControllerBase::
    updateDerivativeParams_ (main+0x126e3b0) counts the frames each button has been held (+0x30 + 4 i) and raises its
@@ -310,11 +316,6 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
    the audio frame values computed from the clamped number just before it are unchanged. x9 and s0 are free there (a call follows):
      main+0x1c5a014  str s0, [x8, #0x84]  -> b <veneer>
      veneer          adrp x9, <page> / ldr s0, [x9] / str s0, [x8, #0x84] / b main+0x1c5a018 */
-static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
-    int64_t delta = (int64_t)target - (int64_t)site;
-    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
-    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
-}
 static void patch_slink_rate(Module *m, uint64_t page) {
     const char *e = getenv("TOTK_SLINK_REALTIME");
     if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] sound-link timers at least one 30 fps frame per frame, as shipped (TOTK_SLINK_REALTIME=0)\n"); return; }
@@ -342,6 +343,55 @@ static void patch_slink_rate(Module *m, uint64_t page) {
     put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "sound-link veneer");
     put_word(m, SITE, branch_to(SITE, stub), "sound-link rate");
     fprintf(stderr, "[botw] sound-link timers follow the measured frame ratio (veneer +%#llx; TOTK_SLINK_REALTIME=0: as shipped)\n",
+            (unsigned long long)stub);
+}
+/* Blends start with one 30 fps frame (#1266; TOTK_BLEND_FIRST_STEP=0: as shipped). The camera's blend timer
+   (main+0xdddfd0, on a mode's +408: step = 1 / (frames x scale), progress += step x the VFR's ratio, t = (1 - cos(pi x
+   progress)) / 2) is stepped with a ratio that is never under 1 on the Switch, so a blend's first frame is at least
+   1 / length of the way: a one-frame blend is a cut. The real-time step gives ratios of 0.2-0.3, and the first frame of
+   such a cut showed a camera between the two shots that the game never shows. The cutscene after Vah Medoh's main
+   control unit cuts to a long shot whose near distance (1000 m) is set at once while fov and position blend; its first
+   frame at t 0.107 (fov 0.79 instead of 0.081) made the near-plane collision sphere (main+0xdd6440) 800 m wide, a Havok
+   collector took 131,072 terrain points, the 16 MB array did not fit HavokMainHeap (45 MiB) and the game wrote through
+   null (measured 2026-11-03). Now the first step of a blend (progress still 0) takes max(ratio, 1), so its first frame is
+   the Switch's first frame; later steps follow the measured ratio. s1 is reloaded by the next original instruction and
+   s8 holds 1.0 (main+0xdddfec):
+     main+0xdde044  ldr s0, [x8]  -> b <veneer>
+     veneer         ldr s0, [x8] / ldr s1, [x19, #20] / fcmp s1, #0.0 / b.ne +8 / fmax s0, s0, s8 / b main+0xdde048 */
+static void patch_blend_first_step(Module *m, uint64_t stub) {
+    const char *e = getenv("TOTK_BLEND_FIRST_STEP");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] camera blends start with the measured ratio, as shipped (TOTK_BLEND_FIRST_STEP=0)\n"); return; }
+    enum { SITE = 0xdde044, BACK = 0xdde048 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0xdddfe4u, 0x2d410400u},   /* ldp s0, s1, [x0, #8]   (length, scale) */
+        {0xdddfecu, 0x1e2e1008u},   /* fmov s8, #1.0 */
+        {0xdddffcu, 0xbd001009u},   /* str s9, [x0, #16]      (step) */
+        {SITE, 0xbd400100u},        /* ldr s0, [x8]           (the VFR's ratio) */
+        {BACK, 0xbd401661u},        /* ldr s1, [x19, #20]     (progress) */
+        {0xdde04cu, 0x1e282020u},   /* fcmp s1, s8 */
+        {0xdde050u, 0x1e200920u},   /* fmul s0, s9, s0 */
+        {0xdde090u, 0xbd001661u},   /* str s1, [x19, #20] */
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] camera blend main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("blends starting with one 30 fps frame require the 1.6.0 camera blend timer");
+        }
+    }
+    const uint32_t veneer[] = {
+        0xbd400100u,   /* ldr s0, [x8]          */
+        0xbd401661u,   /* ldr s1, [x19, #20]    */
+        0x1e202028u,   /* fcmp s1, #0.0         */
+        0x54000041u,   /* b.ne +8               */
+        0x1e284800u,   /* fmax s0, s0, s8       */
+        branch_to(stub + 20, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("camera blend veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("camera blend veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "camera blend veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "camera blend first step");
+    fprintf(stderr, "[botw] camera blends start with one 30 fps frame, then follow the measured ratio (veneer +%#llx; TOTK_BLEND_FIRST_STEP=0: as shipped)\n",
             (unsigned long long)stub);
 }
 static void patch_realtime(Module *m) {
@@ -384,6 +434,7 @@ static void patch_realtime(Module *m) {
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
     patch_slink_rate(m, page);
+    patch_blend_first_step(m, ((m->text_end + 15) & ~15ULL) + 16);   /* after the sound-link veneer (4 words) */
 }
 #else
 /* Breath of the Wild 1.9.0: the same real-time step at the 1.9.0 sites (found by disassembly; MacNativeGames
@@ -433,6 +484,50 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
     fprintf(stderr, "[botw] pad repeat and hold counts by real time: held buttons count the VFR ratio per frame (%zu instructions, "
                     "%zu verified; TOTK_PAD_REPEAT=0: one per frame, as shipped)\n", sizeof put / sizeof *put, sizeof check / sizeof *check);
 }
+/* Blends start with one 30 fps frame, as in 1.6.0 above (#1266; TOTK_BLEND_FIRST_STEP=0: as shipped). 1.9.0's camera
+   blend timer is main+0xc33668 (found by its cosine ease, (1 - cos(pi x progress)) / 2 at +24, the same as 1.6.0's
+   main+0xdde0bc): a length of 0 steps by 1, otherwise step = 1 / length (main+0xc33724), the VFR's ratio comes back in
+   s0 from main+0xc3372c and main+0xc33730 multiplies them; main+0xc33694 adds that to the progress at +20. x19 holds
+   the timer (main+0xc33680) and s8 1.0 (main+0xc3367c, callee-saved across the call):
+     main+0xc33730  fmul s1, s9, s0  -> b <veneer>
+     veneer         ldr s1, [x19, #20] / fcmp s1, #0.0 / b.ne +8 / fmax s0, s0, s8 / fmul s1, s9, s0 / b main+0xc33734 */
+static void patch_blend_first_step(Module *m, uint64_t stub) {
+    const char *e = getenv("TOTK_BLEND_FIRST_STEP");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] camera blends start with the measured ratio, as shipped (TOTK_BLEND_FIRST_STEP=0)\n"); return; }
+    enum { SITE = 0xc33730, BACK = 0xc33734 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0xc33678u, 0x2d410400u},   /* ldp s0, s1, [x0, #8]   (length, scale) */
+        {0xc3367cu, 0x1e2e1008u},   /* fmov s8, #1.0 */
+        {0xc33680u, 0xaa0003f3u},   /* mov x19, x0 */
+        {0xc33694u, 0xbd401660u},   /* ldr s0, [x19, #20]     (progress) */
+        {0xc33698u, 0xbd001261u},   /* str s1, [x19, #16] */
+        {0xc336a4u, 0x1e202821u},   /* fadd s1, s1, s0 */
+        {0xc33724u, 0x1e201829u},   /* fdiv s9, s1, s0        (step) */
+        {SITE, 0x1e200921u},        /* fmul s1, s9, s0        (step x the VFR's ratio) */
+        {BACK, 0x17ffffd8u},        /* b main+0xc33694 */
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] camera blend main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("blends starting with one 30 fps frame require the 1.9.0 camera blend timer");
+        }
+    }
+    const uint32_t veneer[] = {
+        0xbd401661u,   /* ldr s1, [x19, #20]    */
+        0x1e202028u,   /* fcmp s1, #0.0         */
+        0x54000041u,   /* b.ne +8               */
+        0x1e284800u,   /* fmax s0, s0, s8       */
+        0x1e200921u,   /* fmul s1, s9, s0       */
+        branch_to(stub + 20, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("camera blend veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("camera blend veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "camera blend veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "camera blend first step");
+    fprintf(stderr, "[botw] camera blends start with one 30 fps frame, then follow the measured ratio (veneer +%#llx; TOTK_BLEND_FIRST_STEP=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
@@ -469,6 +564,7 @@ static void patch_realtime(Module *m) {
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
+    patch_blend_first_step(m, ((m->text_end + 15) & ~15ULL) + 80);   /* after the FOV stub (+32, 11 words) */
 }
 #endif
 /* Diagnostics (TOTK_JQ_CHECK=1): random crashes look like one job run twice (two threads in the same skinning job, a list
@@ -782,6 +878,9 @@ void runtime_game_patches(Module *m) {
           if (!w) fprintf(stderr, "[botw] exclusive loads with acquire: set at build time (iOS), none left\n"); else
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
+#ifdef GAME_BOTW160
+    { void cdpoint_arm(Module *m); cdpoint_arm(m); }   /* TOTK_CDPOINT_TRACE (below, with the other brk diagnostics) */
+#endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
@@ -819,9 +918,278 @@ static int botw_pad_hook(ucontext_t *u) {
     u->uc_mcontext->__ss.__pc += 4; return 1;
 }
 #endif
+#ifdef GAME_BOTW160
+/* TOTK_CDPOINT_TRACE=1 (diagnostics, #1266): Breath of the Wild 1.6.0 crashed after Vah Medoh's main control unit with a
+   write to 0x800000 in main+0x20156e8, Havok's hkpAllCdPointCollector::addCdPoint (a 64-byte hkpRootCdPoint: contact point,
+   then each body's root collidable through the +0x18 parent chain; its class's other entry main+0x2015620 empties the two
+   arrays): a query had collected 131,072 points, growing the array to 16 MB failed and the null base was written to. A
+   brk takes the grow path's `add x1, x20, #0x10` (main+0x2015714, reached only when the array is full); from 8,192 points
+   on (TOTK_CDPOINT_TRACE=<points> sets another start), each growth is logged with the point being added (NaN or huge coordinates: a degenerate query), the collector and
+   the guest call chain (which query, made by which game code). */
+enum { CDP_SITE = 0x2015714 };
+static const uint32_t CDP_WORD = 0x91004281u;   /* add x1, x20, #0x10 */
+/* The query of the crash (11-03, second repro): the game's virtual at main+0x1904580 builds a collidable on its stack
+   (shape [[[this+8]+0x78]+0x20], transform from this+0x18.. and this+0x30..) and calls main+0x207a368 with the
+   hkpLinearCastInput the caller made from this+0x24.. ({to, w 0}, then two 1.19e-7 tolerances): hkpWorld::linearCast. The
+   crash's sphere had a radius of 816 m reaching from its centre to a point 313 m under the ground. The entry's first
+   instruction (sub sp, sp, #0x110) takes the brk; each cast whose path or shape is over 50 m is logged. */
+enum { CDP_CAST_SITE = 0x1904580 };
+static const uint32_t CDP_CAST_WORD = 0xd10443ffu;   /* sub sp, sp, #0x110 */
+static int g_cdp_cast_on; static _Atomic uint64_t g_cdp_casts; static _Atomic int g_cdp_cast_logged;
+/* Third repro (11-03): the cast's path was 0 m and the sphere's own radius 825 m (0.24 m normally). main+0xdd6440..0xdd649c
+   computes that radius: d * f(fov / 2) * sqrt(1 + aspect^2) + a constant, from the camera's +0x964 (fov), +0x96c (aspect)
+   and +0x970 (near distance). The brk takes `fmov s1, #0.5` (main+0xdd6448, s0 holds +0x964 there); each change of the
+   three is logged, and the camera object in full once its fov is over 2 (radians). */
+enum { CDP_CAM_SITE = 0xdd6448 };
+static const uint32_t CDP_CAM_WORD = 0x1e2c1001u;   /* fmov s1, #0.5 */
+static int g_cdp_cam_on; static _Atomic uint64_t g_cdp_cams; static _Atomic int g_cdp_cam_logged, g_cdp_cam_dumps; static float g_cdp_cam_last[4];
+/* Ryujinx (original 1.6.0, same save, 11-03) plays the next cutscene (Vah Medoh perching over Rito Village) without a crash:
+   its camera's near distance of 1000 m is the game's own. So the 16 MB the collector asks for is what differs. Its
+   hkContainerHeapAllocator::bufRealloc (main+0x1ec8728) takes the thread's hkMemoryRouter from TLS and calls its heap
+   (router+88)->bufRealloc; the brk takes `ldr x0, [x0, #88]` (main+0x1ec8754) and logs that heap for requests of 4 MB on. */
+enum { CDP_HEAP_SITE = 0x1ec8754 };
+static const uint32_t CDP_HEAP_WORD = 0xf9402c00u;   /* ldr x0, [x0, #88] */
+static int g_cdp_heap_on; static _Atomic int g_cdp_heap_logged;
+/* 11-03 evening (mscan watch up the copies, cutscene triggered by hand): the cutscene camera's fov, its +0x28 and its
+   position come from a camera mode's blend, main+0xd51f4c..0xd51fbc: value = from (mode +388 / +392) + (target - from)
+   * t, t = [mode + 432]; near and far are set to the cutscene's own values directly. The brk takes `ldr s2, [x19, #432]`
+   (main+0xd51f78) and, while t < 1, logs t, from, target and the mode object as floats (which field is the elapsed time,
+   which the length). */
+enum { CDP_BLEND_SITE = 0xd51f78 };
+static const uint32_t CDP_BLEND_WORD = 0xbd41b262u;   /* ldr s2, [x19, #432] */
+static int g_cdp_blend_on; static _Atomic int g_cdp_blend_logged;
+static uint8_t *g_cdp_main; static int g_cdp_on; static uint32_t g_cdp_min = 8192; static _Atomic uint64_t g_cdp_grows, g_cdp_logged;   /* g_cdp_min: TOTK_CDPOINT_TRACE=<points> (tests: a low one) */
+void cdpoint_arm(Module *m) {
+    const char *e = getenv("TOTK_CDPOINT_TRACE");
+    if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
+    uint32_t w; memcpy(&w, m->base + CDP_SITE, 4);
+    if (w != CDP_WORD) { fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: not armed\n", CDP_SITE, w, CDP_WORD); return; }
+    uint32_t b = 0xd4200000u | (0x7b0u << 5); memcpy(m->base + CDP_SITE, &b, 4);
+    g_cdp_main = m->base; g_cdp_on = 1; { const long v = atol(e); if (v > 1) g_cdp_min = (uint32_t)v; }
+    memcpy(&w, m->base + CDP_CAM_SITE, 4);
+    if (w == CDP_CAM_WORD) { memcpy(m->base + CDP_CAM_SITE, &b, 4); g_cdp_cam_on = 1; }
+    else fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: the camera sphere is not traced\n", CDP_CAM_SITE, w, CDP_CAM_WORD);
+    memcpy(&w, m->base + CDP_BLEND_SITE, 4);
+    if (w == CDP_BLEND_WORD) { memcpy(m->base + CDP_BLEND_SITE, &b, 4); g_cdp_blend_on = 1; }
+    else fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: the camera blend is not traced\n", CDP_BLEND_SITE, w, CDP_BLEND_WORD);
+    memcpy(&w, m->base + CDP_HEAP_SITE, 4);
+    if (w == CDP_HEAP_WORD) { memcpy(m->base + CDP_HEAP_SITE, &b, 4); g_cdp_heap_on = 1; }
+    else fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: the container heap is not traced\n", CDP_HEAP_SITE, w, CDP_HEAP_WORD);
+    memcpy(&w, m->base + CDP_CAST_SITE, 4);
+    if (w == CDP_CAST_WORD) { memcpy(m->base + CDP_CAST_SITE, &b, 4); g_cdp_cast_on = 1; }
+    else fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: the cast entry is not traced\n", CDP_CAST_SITE, w, CDP_CAST_WORD);
+    fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: Havok all-points collector growths from %u points are logged (main+%#x)\n", g_cdp_min, CDP_SITE);
+}
+/* The detail dump (11-03, after the first repro: one query, two bodies, points spread over 500 m at -250..-480 m): raw
+   bytes, no layout assumed beyond Havok's documented hkpCdPoint {contact 0x20, unwelded normal 0x10, cdBodyA +0x30,
+   cdBodyB +0x38} and hkpCdBody {shape +0, shape key +8, motion +0x10, parent +0x18}. Reads go through vm_read_overwrite,
+   so a wrong guess about a pointer prints "unreadable" instead of faulting in the signal handler. */
+static int cdp_read(uint64_t a, void *out, size_t n) {
+    if (a < 0x10000 || a > UINT64_MAX - n) return 0;
+    vm_size_t got = 0;
+    return vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n;
+}
+static uint64_t cdp_u64(uint64_t a) { uint64_t v = 0; return cdp_read(a, &v, 8) ? v : 0; }
+static void cdp_where(char *s, size_t n, uint64_t v) {   /* main+off for code / data of main, the value otherwise */
+    const uint64_t base = (uintptr_t)g_cdp_main;
+    snprintf(s, n, v >= base && v < base + 0x4000000 ? "main+%#llx" : "%#llx", (unsigned long long)(v >= base && v < base + 0x4000000 ? v - base : v));
+}
+static void cdp_hex(const char *tag, uint64_t a, size_t n) {   /* n bytes as 64-bit words, 8 per line */
+    uint64_t w[64]; if (n > sizeof w) n = sizeof w;
+    if (!cdp_read(a, w, n)) { fprintf(stderr, "[cdpoint-raw] %s %#llx unreadable\n", tag, (unsigned long long)a); return; }
+    for (size_t i = 0; i < n / 8; i += 8) {
+        char line[256]; size_t k = 0;
+        for (size_t j = i; j < i + 8 && j < n / 8; j++) k += (size_t)snprintf(line + k, sizeof line - k, " %016llx", (unsigned long long)w[j]);
+        fprintf(stderr, "[cdpoint-raw] %s %#llx+%#zx:%s\n", tag, (unsigned long long)a, i * 8, line);
+    }
+}
+static void cdp_strings(const char *tag, uint64_t a, size_t n) {   /* each word of the object that points at text (a name) */
+    uint64_t w[64]; if (n > sizeof w) n = sizeof w;
+    if (!cdp_read(a, w, n)) return;
+    for (size_t i = 0; i < n / 8; i++) {
+        char t[49] = {0}; if (!cdp_read(w[i] & ~1ull, t, 48)) continue;   /* hkStringPtr keeps a flag in bit 0 */
+        size_t len = 0; while (len < 48 && t[len] >= 0x20 && t[len] < 0x7f) len++;
+        if (len >= 4 && (len == 48 || !t[len])) fprintf(stderr, "[cdpoint-raw] %s %#llx+%#zx -> \"%.48s\"\n", tag, (unsigned long long)a, i * 8, t);
+    }
+}
+static void cdp_body(const char *which, uint64_t body) {
+    uint64_t b = body, root = 0; char s[40];
+    for (int d = 0; d < 8 && b; d++) {
+        const uint64_t shape = cdp_u64(b), motion = cdp_u64(b + 0x10), parent = cdp_u64(b + 0x18);
+        uint32_t key = 0; cdp_read(b + 8, &key, 4); cdp_where(s, sizeof s, cdp_u64(shape));
+        fprintf(stderr, "[cdpoint-body] %s depth %d cdBody %#llx shape %#llx (vtable %s) key %#x motion %#llx parent %#llx\n",
+                which, d, (unsigned long long)b, (unsigned long long)shape, s, key, (unsigned long long)motion, (unsigned long long)parent);
+        char tag[48]; snprintf(tag, sizeof tag, "%s.d%d.shape", which, d); cdp_hex(tag, shape, 0x80);
+        float m[16]; if (cdp_read(motion, m, sizeof m))
+            fprintf(stderr, "[cdpoint-body] %s depth %d motion: %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g\n", which, d,
+                    m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13], m[14], m[15]);
+        root = b; b = parent;
+    }
+    char tag[48]; snprintf(tag, sizeof tag, "%s.root", which); cdp_hex(tag, root, 0x80);
+    int8_t off = 0; if (!cdp_read(root + 0x20, &off, 1)) return;
+    const uint64_t owner = root + (uint64_t)(int64_t)off; cdp_where(s, sizeof s, cdp_u64(owner));
+    fprintf(stderr, "[cdpoint-body] %s root %#llx owner offset %d -> owner %#llx (vtable %s)\n", which, (unsigned long long)root, off, (unsigned long long)owner, s);
+    snprintf(tag, sizeof tag, "%s.owner", which); cdp_hex(tag, owner, 0x200); cdp_strings(tag, owner, 0x200);
+    const uint64_t user = cdp_u64(owner + 0x18); snprintf(tag, sizeof tag, "%s.owner.user", which); cdp_hex(tag, user, 0x100); cdp_strings(tag, user, 0x200);
+}
+static _Atomic uint64_t g_cdp_detail_col; static _Atomic int g_cdp_details;
+static void cdp_detail(uint64_t col, uint32_t cap, uint64_t pt) {   /* a collector's first logged growth and its 64k one, 6 dumps at most */
+    if (atomic_exchange(&g_cdp_detail_col, col) == col && cap < 65536) return;
+    if (atomic_fetch_add(&g_cdp_details, 1) >= 6) return;
+    fprintf(stderr, "[cdpoint-body] detail: collector %#llx at %u points\n", (unsigned long long)col, cap);
+    cdp_hex("collector", col, 0x40); cdp_hex("cdPoint", pt, 0x40);
+    cdp_body("A", cdp_u64(pt + 0x30)); cdp_body("B", cdp_u64(pt + 0x38));
+}
+static void cdp_chain(char *chain, size_t size, uint64_t lr, uint64_t fp) {
+    const uint64_t base = (uintptr_t)g_cdp_main; size_t n = 0; char s[40];
+    cdp_where(s, sizeof s, lr); n += (size_t)snprintf(chain + n, size - n, " lr %s", s);
+    for (int d = 0; d < 14 && fp && !(fp & 15) && n < size - 24; d++) {
+        const uint64_t next = cdp_u64(fp), ret = cdp_u64(fp + 8); (void)base;
+        cdp_where(s, sizeof s, ret); n += (size_t)snprintf(chain + n, size - n, " < %s", s);
+        if (next <= fp) break;
+        fp = next;
+    }
+}
+static int botw_cdp_cast_hook(ucontext_t *u) {
+    uint64_t *x = u->uc_mcontext->__ss.__x;
+    u->uc_mcontext->__ss.__sp -= 0x110; u->uc_mcontext->__ss.__pc += 4;   /* the instruction the brk took */
+    const uint64_t calls = atomic_fetch_add(&g_cdp_casts, 1), self = x[0], input = x[1];
+    float from[3] = {0}, rot[4] = {0}, to[4] = {0}, tol[2] = {0}, radius = 0; uint8_t type = 0xff;
+    cdp_read(self + 0x18, from, sizeof from); cdp_read(self + 0x30, rot, sizeof rot); cdp_read(input, to, sizeof to); cdp_read(input + 16, tol, sizeof tol);
+    const uint64_t shape = cdp_u64(cdp_u64(cdp_u64(self + 8) + 0x78) + 0x20);
+    cdp_read(shape + 0x10, &type, 1); cdp_read(shape + 0x18, &radius, 4);
+    const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2], path = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (!calls) fprintf(stderr, "[cdpoint-cast] first cast (the trace works): from %g %g %g to %g %g %g, shape type %u radius %g\n", from[0], from[1], from[2], to[0], to[1], to[2], type, radius);
+    if (!(path > 50 || radius > 50 || path != path) || atomic_fetch_add(&g_cdp_cast_logged, 1) >= 40) return 1;
+    char chain[600], vt[40]; cdp_chain(chain, sizeof chain, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp); cdp_where(vt, sizeof vt, cdp_u64(self));
+    fprintf(stderr, "[cdpoint-cast] thread %#x cast %llu: this %#llx (vtable %s) from %g %g %g to %g %g %g (w %g) path %g m, rotation %g %g %g %g, tolerances %g %g, shape %#llx type %u radius %g;%s\n",
+            runtime_thread_current_handle(), (unsigned long long)calls, (unsigned long long)self, vt, from[0], from[1], from[2], to[0], to[1], to[2], to[3], path,
+            rot[0], rot[1], rot[2], rot[3], tol[0], tol[1], (unsigned long long)shape, type, radius, chain);
+    cdp_hex("cast.this", self, 0x80); cdp_strings("cast.this", self, 0x80);
+    const uint64_t owner = cdp_u64(self + 8); cdp_hex("cast.this[8]", owner, 0x100); cdp_strings("cast.this[8]", owner, 0x100);
+    cdp_hex("cast.shape", shape, 0x40);
+    return 1;
+}
+static int botw_cdp_cam_hook(ucontext_t *u) {
+    const uint64_t cam = u->uc_mcontext->__ss.__x[19];
+    __uint128_t one_half = 0; const float h = 0.5f; memcpy(&one_half, &h, 4);
+    u->uc_mcontext->__ns.__v[1] = one_half; u->uc_mcontext->__ss.__pc += 4;   /* the instruction the brk took */
+    const uint64_t calls = atomic_fetch_add(&g_cdp_cams, 1);
+    float f[4] = {0}; if (!cdp_read(cam + 0x964, f, sizeof f)) return 1;   /* fov, +0x968, aspect, near */
+    /* From the first frame whose near distance is 100 m or more (a cutscene's long shot): the camera's three 0x38-byte
+       view sets (+0x8d0, +0x908, +0x940: position, look-at, up, fov, +0x28, aspect, near, far) for 30 frames, to see
+       which set the current one comes from and how far (fixed step against real-time step). */
+    static _Atomic int sets_left = -1;
+    if (f[3] >= 100.0f && atomic_load(&sets_left) < 0) atomic_store(&sets_left, 30);
+    if (atomic_load(&sets_left) > 0) {
+        atomic_fetch_sub(&sets_left, 1);
+        for (int k = 0; k < 3; k++) {
+            float v[14]; if (!cdp_read(cam + 0x8d0 + 0x38 * (uint64_t)k, v, sizeof v)) continue;
+            fprintf(stderr, "[cdpoint-set] call %llu camera %#llx +%#x: pos %g %g %g at %g %g %g up %g %g %g fov %g +0x28 %g aspect %g near %g far %g\n",
+                    (unsigned long long)calls, (unsigned long long)cam, 0x8d0 + 0x38 * k, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
+        }
+        cdp_hex("cam+0x800", cam + 0x800, 0x200);
+    }
+    int changed = 0; for (int i = 0; i < 4; i++) if (fabsf(f[i] - g_cdp_cam_last[i]) > 0.001f * fmaxf(1.0f, fabsf(f[i])) || f[i] != f[i]) changed = 1;
+    const int odd = !(f[0] < 2.0f) || !(f[3] < 50.0f);
+    if (!changed && !odd) return 1;
+    memcpy(g_cdp_cam_last, f, sizeof f);
+    if (atomic_fetch_add(&g_cdp_cam_logged, 1) >= 400) return 1;
+    char vt[40]; cdp_where(vt, sizeof vt, cdp_u64(cam));
+    fprintf(stderr, "[cdpoint-cam] thread %#x call %llu camera %#llx (vtable %s): fov %g, +0x968 %g, aspect %g, near %g\n",
+            runtime_thread_current_handle(), (unsigned long long)calls, (unsigned long long)cam, vt, f[0], f[1], f[2], f[3]);
+    if (!odd || atomic_fetch_add(&g_cdp_cam_dumps, 1) >= 3) return 1;
+    char chain[600]; cdp_chain(chain, sizeof chain, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp);
+    fprintf(stderr, "[cdpoint-cam] odd camera values;%s\n", chain);
+    cdp_hex("cam", cam, 0x200); cdp_strings("cam", cam, 0x200);
+    cdp_hex("cam+0x900", cam + 0x900, 0x100);
+    return 1;
+}
+static int botw_cdp_heap_hook(ucontext_t *u) {
+    uint64_t *x = u->uc_mcontext->__ss.__x; const uint64_t router = x[0];
+    x[0] = cdp_u64(router + 88); u->uc_mcontext->__ss.__pc += 4;   /* the instruction the brk took */
+    int32_t want = 0; cdp_read(x[19], &want, 4);   /* x19 = &new size, w20 = old size */
+    static _Atomic int first_mid;
+    const int mid = want >= (8 << 10) && want < (4 << 20) && !atomic_exchange(&first_mid, 1);   /* the structure once, before any trouble */
+    if ((want < (4 << 20) && !mid) || atomic_fetch_add(&g_cdp_heap_logged, 1) >= 12) return 1;
+    const uint64_t heap = x[0]; char vt[40]; cdp_where(vt, sizeof vt, cdp_u64(heap));
+    char chain[600]; cdp_chain(chain, sizeof chain, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp);
+    fprintf(stderr, "[cdpoint-heap] thread %#x realloc %#llx: %u -> %d bytes; router %#llx heap %#llx (vtable %s);%s\n", runtime_thread_current_handle(),
+            (unsigned long long)x[21], (unsigned)x[20], want, (unsigned long long)router, (unsigned long long)heap, vt, chain);
+    cdp_hex("router", router, 0x80);
+    cdp_hex("heap", heap, 0x100); cdp_strings("heap", heap, 0x100);
+    /* The thread heap's +8 is its parent (a free-list allocator: <= 640 bytes from its lists, larger ones from the
+       object at its +0x40, main+0x1ee1260). That one and two levels of what it points at, with their classes. */
+    const uint64_t parent = cdp_u64(heap + 8), large = cdp_u64(parent + 0x40);
+    cdp_where(vt, sizeof vt, cdp_u64(parent)); fprintf(stderr, "[cdpoint-heap] parent %#llx (vtable %s)\n", (unsigned long long)parent, vt);
+    cdp_hex("parent", parent, 0x200);
+    cdp_where(vt, sizeof vt, cdp_u64(large)); fprintf(stderr, "[cdpoint-heap] large %#llx (vtable %s)\n", (unsigned long long)large, vt);
+    cdp_hex("large", large, 0x200); cdp_strings("large", large, 0x200);
+    for (int i = 1; i < 64; i++) {
+        const uint64_t p = cdp_u64(large + 8 * (uint64_t)i); if (p < 0x100000000ull || (p & 7) || p == large) continue;
+        char tag[40]; snprintf(tag, sizeof tag, "large+%#x", i * 8); cdp_where(vt, sizeof vt, cdp_u64(p));
+        fprintf(stderr, "[cdpoint-heap] %s -> %#llx (vtable %s)\n", tag, (unsigned long long)p, vt);
+        cdp_hex(tag, p, 0x100); cdp_strings(tag, p, 0x100);
+    }
+    return 1;
+}
+static int botw_cdp_blend_hook(ucontext_t *u) {
+    uint64_t *x = u->uc_mcontext->__ss.__x; const uint64_t mode = x[19];
+    float t = 0; cdp_read(mode + 432, &t, 4);
+    __uint128_t v = 0; memcpy(&v, &t, 4); u->uc_mcontext->__ns.__v[2] = v; u->uc_mcontext->__ss.__pc += 4;   /* the instruction the brk took */
+    if (t >= 0.999f || atomic_fetch_add(&g_cdp_blend_logged, 1) >= 80) return 1;
+    float from = 0, target = 0; memcpy(&from, &u->uc_mcontext->__ns.__v[0], 4);   /* s0: [mode+388]; s1: target - from */
+    memcpy(&target, &u->uc_mcontext->__ns.__v[1], 4); target += from;
+    char vt[40], chain[600]; cdp_where(vt, sizeof vt, cdp_u64(mode)); cdp_chain(chain, sizeof chain, u->uc_mcontext->__ss.__lr, u->uc_mcontext->__ss.__fp);
+    fprintf(stderr, "[cdpoint-blend] thread %#x mode %#llx (vtable %s): t %g, fov from %g to %g -> %g;%s\n", runtime_thread_current_handle(),
+            (unsigned long long)mode, vt, t, from, target, from + (target - from) * t, chain);
+    float f[144]; if (!cdp_read(mode, f, sizeof f)) return 1;
+    for (int i = 0; i < 144; i += 12) {
+        char line[400]; size_t n = 0;
+        for (int j = i; j < i + 12; j++) n += (size_t)snprintf(line + n, sizeof line - n, " %g", f[j]);
+        fprintf(stderr, "[cdpoint-blend] mode+%#x:%s\n", i * 4, line);
+    }
+    return 1;
+}
+static void cdp_heap(void) {   /* the allocator _reserveMore uses ([main+0x2c81458]); its name if it keeps one */
+    const uint64_t a = cdp_u64((uintptr_t)g_cdp_main + 0x2c81458); char vt[40]; cdp_where(vt, sizeof vt, cdp_u64(a));
+    fprintf(stderr, "[cdpoint-heap] allocator %#llx (vtable %s)\n", (unsigned long long)a, vt);
+    cdp_hex("heap", a, 0x100); cdp_strings("heap", a, 0x100);
+    for (int i = 1; i <= 4; i++) { const uint64_t p = cdp_u64(a + 8 * (uint64_t)i); char tag[24]; snprintf(tag, sizeof tag, "heap[%d]", i); cdp_hex(tag, p, 0x80); cdp_strings(tag, p, 0x100); }
+}
+static int botw_cdp_hook(ucontext_t *u) {
+    uint64_t *x = u->uc_mcontext->__ss.__x, col = x[20], pt = x[19];
+    x[1] = col + 0x10;   /* the instruction the brk took */
+    u->uc_mcontext->__ss.__pc += 4;
+    const uint64_t grows = atomic_fetch_add(&g_cdp_grows, 1);
+    const uint32_t count = U32(col + 0x18), cap = U32(col + 0x1c) & 0x3fffffffu;
+    if (!grows) fprintf(stderr, "[cdpoint] first growth (the trace works): collector %#llx, %u points\n", (unsigned long long)col, cap);
+    if (cap < g_cdp_min || atomic_fetch_add(&g_cdp_logged, 1) >= 200) return 1;
+    const float *f = (const float *)(uintptr_t)pt;   /* hkContactPoint: position xyzw, separating normal xyzw */
+    char chain[400]; size_t n = 0; uint64_t fp = u->uc_mcontext->__ss.__fp; const uint64_t base = (uintptr_t)g_cdp_main;
+    n += (size_t)snprintf(chain + n, sizeof chain - n, " lr main+%#llx", (unsigned long long)(u->uc_mcontext->__ss.__lr - base));
+    for (int d = 0; d < 12 && fp && !(fp & 15) && n < sizeof chain - 24; d++) {
+        const uint64_t next = U64(fp), ret = U64(fp + 8);
+        n += (size_t)snprintf(chain + n, sizeof chain - n, ret >= base && ret < base + 0x4000000 ? " < main+%#llx" : " < %#llx", (unsigned long long)(ret >= base && ret < base + 0x4000000 ? ret - base : ret));
+        if (next <= fp) break;
+        fp = next;
+    }
+    fprintf(stderr, "[cdpoint] thread %#x collector %#llx: %u points, growing from %u (growth %llu); point %g %g %g %g normal %g %g %g dist %g; bodies %#llx %#llx;%s\n",
+            runtime_thread_current_handle(), (unsigned long long)col, count, cap, (unsigned long long)atomic_load(&g_cdp_grows),
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], (unsigned long long)U64(pt + 0x30), (unsigned long long)U64(pt + 0x38), chain);
+    cdp_detail(col, cap, pt);
+    if (cap >= 65536) cdp_heap();
+    return 1;
+}
+#endif
 int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was one of ours, handled */
 #ifdef GAME_BOTW160
     if (g_pad_log_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_pad_main + PAD_LOOP) return botw_pad_hook(context);
+    if (g_cdp_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_SITE) return botw_cdp_hook(context);
+    if (g_cdp_cast_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_CAST_SITE) return botw_cdp_cast_hook(context);
+    if (g_cdp_heap_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_HEAP_SITE) return botw_cdp_heap_hook(context);
+    if (g_cdp_blend_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_BLEND_SITE) return botw_cdp_blend_hook(context);
+    if (g_cdp_cam_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_CAM_SITE) return botw_cdp_cam_hook(context);
 #endif
     if (!g_jq_on) return 0;
     ucontext_t *u = context; uint64_t pc = u->uc_mcontext->__ss.__pc, *x = u->uc_mcontext->__ss.__x;
