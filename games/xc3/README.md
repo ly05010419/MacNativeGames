@@ -9,32 +9,33 @@ This folder started as a copy of `games/ot0` (Octopath Traveler 0), itself a cop
 
 You must own the game: use your own NSP and the `prod.keys` and system fonts dumped from your own Switch. Nothing from the game is in this repository. `XC3_build/` (the work folder) and `mods/` are ignored by git.
 
-## Status (29 October 2026)
+## Status (3 November 2026)
 
-Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
+Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1. The port targets the Mac only; iPhone and iPad are not a goal.
 
 | Stage | State |
 |---|---|
 | Code and data | done: 1.0.0 code and RomFS extracted from the base NSP and verified (ExeFS hashes, all six RomFS IVFC levels) |
 | Rewrite | done: sdk, subsdk0 and main rewritten and verified (`structck.py`, and `equiv.py --min-eff 8` with 0 divergent sites) |
 | Boot | done: SDK startup, every constructor (main 805, subsdk0 45, sdk 112), `nnMain`, the game's threads, window and Metal device |
-| Graphics | mostly done: transform feedback and geometry shaders (point, line and triangle input) are emulated, GPU BC7 encoding, several texture pools, vertex-shader skinning |
+| Graphics | done for what has been played: transform feedback, geometry shaders (point, line and triangle input), logic operations on integer targets, GPU BC7 encoding, several texture pools, vertex-shader skinning; the gaps below remain |
 | Menus and new game | done: difficulty selection, both prologue movies (WebM through `runtime/movie_host.c`), the opening cutscene |
 | Battles | done: the first battle, with characters, and later ones played by hand |
 | Sound | done: Wwise through the audio renderer; checked by ear |
 | Save and load | done: saved in Everblight Plain, quit, started again and loaded at the same place |
-| Frame rate | 30 fps, as on the Switch; the GPU takes about 6–7 ms per frame in Everblight Plain |
+| Frame rate | 30 fps, as on the Switch; the GPU takes about 6–7 ms per frame in Everblight Plain, the process about half of one CPU core |
 | App | done: `make app` builds a self-contained `Xenoblade Chronicles 3.app` (settings window, then the game); it runs with the work folder renamed |
 | 2.2.1 | builds from the base NSP plus the 2.2.1 update; played on the Mac from a 1.0.0 save (29 October 2026); the DLC menu's "Purchase" returns at once (no eShop) |
+| Long play | the base game (2.2.1, the app) for 2.5 hours on 2 November 2026 with no glitches, seen in play |
+| Add-ons | the four Expansion Pass volumes mount; volumes 1–3 played; Future Redeemed played after its flat-polygon fix (3 November 2026). Neither the main story nor Future Redeemed has been played to the end |
 
 ## Known gaps
 
 - Geometry shaders with line or triangle input are emulated since 2026-11-03; `TOTK_GS_TRIANGLES=0` skips them as before, should a character or effect go missing.
-- Logic op OR on integer render targets is not emulated.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
 - Under the game's second sampler pool, a combined handle with sampler 0 is read as a separate texture handle.
-- Rare, brief screen tearing or thin black lines while playing.
-- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K).
+- Rare, brief screen tearing or thin black lines while playing (seen in October; not in the 2.5-hour session on 2 November).
+- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K); not seen since the ordering-barrier fix of 3 November.
 - Without `make shader-prepare`, a shader seen for the first time is translated and compiled when it is first used, and on the first run a loading screen can wait for that, once for up to about a minute. With it, the app carries every shader of the game and its add-ons; only a few, with a bind state the default translation does not cover, are translated in play.
 
 ## What the game uses
