@@ -30,11 +30,12 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 Switch 2 games run on the same Tears of the Kingdom runtime: their Ampere (NVN2) shaders go through the same translator,
 and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-port.md)).
 
-- **Donkey Kong Bananza** plays on the Mac from a development build: the mines with their terrain, characters and the HUD,
-  at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run
-  as compute kernels.
-- **Pokémon Pokopia** boots, runs its frame loop and shows its loading screen; it stops at its first full scene (open).
-- Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
+| Game | Version | Platform | Status |
+|---|---|---|---|
+| Donkey Kong Bananza | update 458752 | Mac | Plays from a development build: the mines with their terrain, characters and the HUD, at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run as compute kernels. |
+| Pokémon Pokopia | 2.0.1 | Mac | Boots, runs its frame loop and shows its loading screen; stops at its first full scene (open). |
+
+Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
 ### Games
 
@@ -186,10 +187,12 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampere（NVN2）着色器走同一个翻译器，SDK 20 的系统服务由同一个宿主
 应答（[docs/ns2-port.md](docs/ns2-port.md)）。
 
-- **大金刚 Bananza** 用开发构建可以在 Mac 上玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形
-  靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。
-- **宝可梦 Pokopia** 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。
-- 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+| 游戏 | 版本 | 平台 | 状态 |
+|---|---|---|---|
+| 大金刚 Bananza | 更新 458752 | Mac | 用开发构建可以玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。 |
+| 宝可梦 Pokopia | 2.0.1 | Mac | 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。 |
+
+还没有：用打包脚本打成 App、iPhone / iPad、DLC。
 
 ### 游戏列表
 
