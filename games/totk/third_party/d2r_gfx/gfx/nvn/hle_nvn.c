@@ -2440,10 +2440,15 @@ _Atomic int dm_submit_busy;   // TOTK diagnostic: submissions being replayed (ru
 //    job of that image's last present, then for its present ticket as before. The replay frame number travels in the job.
 //  - Operations that destroy or read Metal state (pool / texture / program finalize, ReadTexels / WriteTexels, QueueFinish,
 //    suspend) wait until the queue is empty first (x_drain), so they never overtake a queued replay that still uses them.
-// TOTK_ASYNC_REPLAY=0 runs everything on the calling thread as before. Default on since 2026-10-21: the NX Optimizer
-// benchmark (bench_run.py) kept its average and raised the 1% / 0.1% lows from 35 / 27 to 38-39 / 30-31 fps, and the
-// 94-frame picture comparison with citron showed no difference from the synchronous replay. On the Mac only: the iPhone
-// and iPad keep the synchronous replay unless TOTK_ASYNC_REPLAY=1 (not measured there).
+// Off by default for every game on every platform since 2026-11-03 (TOTK_ASYNC_REPLAY=1 turns it on). It was on for the
+// Mac's non-Breath-of-the-Wild games from 2026-10-21 on one contributor's benchmark (1% / 0.1% lows 35 / 27 -> 38-39 /
+// 30-31 fps; runs, spread and cache state not given, never reproduced). Measured again 2026-11-03, Tears of the Kingdom
+// 1.4.3, the Lookout Landing walk and flights to Kakariko and Hateno, 1920x1080, one warm cache, off / on alternating,
+// three runs each: frame p50 off 12.15 / 11.88 / 11.84 ms, on 12.27 / 12.12 / 12.48; p95 off 13.96 / 13.98 / 14.12, on
+// 14.23 / 17.01 / 14.32; frames over 50 ms without new pipelines off 4 / 20 / 16, on 12 / 16 / 13. The replay takes
+// ~6 ms a frame and the GPU ~9.5 ms, so the overlap has at most ~2.5 ms to win, and none showed. Synchronous replay is
+// one thread fewer and simpler to debug (the user's choice). Breath of the Wild: off since 2026-10-27 (1.6.0 Hebra 9.30 /
+// 9.08 ms with it against 9.09 / 8.96 without).
 enum { XJ_SUBMIT = 1, XJ_PRESENT, XJ_TEXREL };
 typedef struct { int kind, n; uint64_t *h; void *ucap; win_t *win; int idx; double period; int crop[4]; uint64_t frame, sub; tex_t tex; } xjob;   // tex: copy of a finalized texture (XJ_TEXREL); ucap: uniforms captured at the submit call
 #define XQ 64
@@ -2456,7 +2461,7 @@ static win_t *g_xp_win; static uint64_t g_xp_job[4];   // job number of each swa
 static _Atomic uint64_t g_x_drains, g_x_drain_ns;
 static int async_replay(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("TOTK_ASYNC_REPLAY"); v = e ? atoi(e) > 0 : TARGET_OS_OSX && !TOTK_BOTW_BUILD;   /* Breath of the Wild: off, 2026-10-27 1.6.0 Hebra 9.30 / 9.08 ms against 9.09 / 8.96 without it, no gain; =1 turns it on */ if (v) LOG("[nvn] 翻译线程：提交与出图排队交给独立线程回放（TOTK_ASYNC_REPLAY=0 关）"); }
+    if (v < 0) { const char *e = getenv("TOTK_ASYNC_REPLAY"); v = e && atoi(e) > 0;   /* off by default (2026-11-03 measurements above); =1 turns it on */ if (v) LOG("[nvn] 翻译线程：提交与出图排队交给独立线程回放（TOTK_ASYNC_REPLAY=1 开着；默认关）"); }
     return v;
 }
 static void submit_exec(int n, const uint64_t *h, void *ucap);
