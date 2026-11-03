@@ -216,3 +216,21 @@ Next for speed: mesh shaders (below).
 - To compare later: Metal object + mesh shaders, vertex, geometry and rasterization in one pipeline with no intermediate
   buffer (in theory faster). Neither Ryujinx nor SPIRV-Cross generates mesh shaders, so it needs a translation backend of
   its own. Measure once the compute route is correct (Bananza's floors, Pokopia).
+
+**To do: speed (paused 2026-11-03).** Bananza holds the game's 60 fps in the test scene (GPU about 11 ms, submit thread
+about 6.9 ms); what was measured and planned:
+- The primitive map on the GPU. Geometry costs the submit thread about 3.7 ms a frame: prepare 1.6 ms (reading the
+  indices and making the primitive map 1.4 ms of it), the runs' walk and encoding about 1.9 ms, the rasters 0.2 ms.
+  Bananza's terrain draws are triangle lists of 16-bit indices without restarts, lowest index 0, and the position stream's
+  bound size is exactly their vertex count (816 bytes / 24 = 34 vertices, hi 33). So for a list without restarts the capture
+  can take every vertex the vertex buffers hold and a GPU kernel can write record = index + base vertex from the index
+  buffer itself (this also reads indices that GPU work of the same submission wrote). Written, built, not run or measured:
+  the work folder's `patches/gpu-map-wip.patch` (applies to 4d9280f4 / 0201ee16; new file nvn_geometry_map.inc).
+- The runs' encoding (about 1.9 ms a frame on the submit thread).
+- Stutter: the slowest frame of each test run is 244-366 ms. Check that these are shader translations / library builds, then
+  prepare Bananza's shaders offline as Pokopia's (scripts/ns2_shader_corpus.py reads Koei Tecmo's containers only; nxnative
+  has split Bananza's).
+- A repeatable scene: the work folder's run1/series.sh and quick.sh now restore run1/save-bench (the save of the scene
+  above) before each run. Compare GPU time and submit time, not frame time, while the game holds 60 fps.
+- Where the GPU time goes, per pass (games/totk/scripts/metal_perf_report.py, merged from main), before choosing the next
+  GPU change; then mesh shaders (above).

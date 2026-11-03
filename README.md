@@ -48,6 +48,8 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Astral Chain | 1.0.1 | Mac | Community port, work in progress; the first frame is presented and the title flow runs | [`games/alc`](games/alc/README.md) |
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, work in progress | [`games/xc3`](games/xc3/README.md) |
 | Pokémon Violet | 4.0.0 | Mac | Community port, work in progress | [`games/pokesv`](games/pokesv/README.md) |
+| Donkey Kong Bananza (Switch 2) | update 458752 | Mac | Experimental: plays from a development build (no app packaging yet) | [`games/totk`](docs/ns2-port.md) (shared runtime) |
+| Pokémon Pokopia (Switch 2) | 2.0.1 | Mac | Experimental, work in progress: first picture; stops at the first full scene | [`games/totk`](docs/ns2-port.md) (shared runtime) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
@@ -185,6 +187,8 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 | 异界锁链 | 1.0.1 | Mac | 社区移植，开发中；能出第一帧，标题流程能走 | [`games/alc`](games/alc/README.md) |
 | 异度神剑3 | 1.0.0、2.2.1 | Mac | 社区移植，开发中 | [`games/xc3`](games/xc3/README.md) |
 | 宝可梦 紫 | 4.0.0 | Mac | 社区移植，开发中 | [`games/pokesv`](games/pokesv/README.md) |
+| 大金刚 Bananza（Switch 2） | 更新 458752 | Mac | 实验性：用开发构建可以玩（还不能打包成 App） | [`games/totk`](docs/ns2-port.md)（共用运行时） |
+| 宝可梦 Pokopia（Switch 2） | 2.0.1 | Mac | 实验性，开发中：出了第一幅画面；到第一个完整场景时停住 | [`games/totk`](docs/ns2-port.md)（共用运行时） |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
