@@ -9,9 +9,9 @@ static uint64_t now = 1000000000;
 uint64_t runtime_now_ns(void) { return now; }
 static int handheld, quiet, motionReads, motionStarts, rumbles;
 int runtime_handheld_mode(void) { return handheld; }
-static GCController *feedbackPad;
-void runtime_feedback_attach(GCController *c) { feedbackPad = c; }
-void runtime_feedback_detach(GCController *c) { if (feedbackPad == c) feedbackPad = nil; }
+static GCController *lastFeedbackCandidate;
+void runtime_feedback_attach(GCController *c) { lastFeedbackCandidate = c; }
+void runtime_feedback_detach(GCController *c) { if (lastFeedbackCandidate == c) lastFeedbackCandidate = nil; }
 void runtime_feedback_quiet(void) { quiet++; }
 void runtime_autoload_user_input(void) {}
 void runtime_survey_cancel_user(void) {}
@@ -127,7 +127,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     }
     ControllerSupportResult result;
     ControllerSupportArgs arg = {.min = 2, .max = 2};
-    assert(feedbackPad == two);  /* single-player offers each attached pad to the feedback backend */
+    assert(lastFeedbackCandidate == two);  /* later pads may still supply a missing capability */
     assert(style(&ids[0]) && !style(&ids[1]));
     [two.extendedGamepad.leftThumbstick setValueForXAxis:-1 yAxis:0];
     refresh_gamepads();
@@ -139,7 +139,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(result.players == 1 && !style(&ids[1]));    /* an optional range on startup */
     arg.min = 2;
     assert(show_controller_support(&result, &arg) == 0);
-    drain_main_queue(); assert(feedbackPad == one);
+    drain_main_queue(); assert(lastFeedbackCandidate == one);
     assert(result.players == 2 && result.selected == 0 && style(&ids[1]));
     assert(read_pad(0).lx == 0 && read_pad(0).ly == 32767);
     assert(read_pad(1).lx == -32767 && read_pad(1).ly == 0);
@@ -220,7 +220,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     arg.singleMode = 1; /* single mode overrides the player-count range */
     show_controller_support(&result, &arg);
     assert(result.players == 1 && !style(&ids[1]) && read_pad(0).lx == -32767);
-    drain_main_queue(); assert(feedbackPad == one); /* one was reconnected most recently */
+    drain_main_queue(); assert(lastFeedbackCandidate == one); /* one was reconnected most recently */
     arg.singleMode = 0; arg.min = arg.max = 1;
     show_controller_support_arg(&arg);
     assert(!style(&ids[1]));

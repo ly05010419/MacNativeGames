@@ -38,6 +38,7 @@
 enum { MOTION_RING = 64 };
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static RuntimeMotionState ring[MOTION_RING];
+static int buffered;   /* states still readable; sampling numbers stay monotonic across a handoff */
 static uint64_t produced, last_ns, logged, log_at, reads_logged;
 static double R[3][3];          /* controller -> reference; row i = reference axis i in controller coordinates */
 static double angle[3];
@@ -122,6 +123,7 @@ static void push_state(double step) {
         for (int j = 0; j < 3; j++) s->dir[i * 3 + j] = (float)R[j][i];   /* direction i = controller axis i in the reference frame */
     }
     produced++;
+    if (buffered < MOTION_RING) buffered++;
 }
 static void produce_until(uint64_t t) {   /* lock held: 5 ms states at the held rate, up to t */
     const uint64_t step = 5000000ull;
@@ -175,8 +177,7 @@ int runtime_motion_read(RuntimeMotionState *out, int max) {
     uint64_t now = runtime_now_ns();
     if (live && now - last_ns < 200000000ull) {   /* no sample for 200 ms: no motion */
         if (motion_clock()) produce_until(now);
-        uint64_t have = produced < MOTION_RING ? produced : MOTION_RING;
-        n = (int)(have < (uint64_t)max ? have : (uint64_t)max);
+        n = buffered < max ? buffered : max;
         for (int i = 0; i < n; i++) out[i] = ring[(produced - 1 - (uint64_t)i) % MOTION_RING];
     }
     pthread_mutex_unlock(&lock);
@@ -187,6 +188,7 @@ void runtime_motion_start(void) { pthread_mutex_lock(&lock); restart = 1; pthrea
 void runtime_motion_deadzone_default(double deg) { pthread_mutex_lock(&lock); deadzone_default = deg; deadzone = -1; pthread_mutex_unlock(&lock); }
 void runtime_motion_live(int on) {
     pthread_mutex_lock(&lock); controller_live = on; live = controller_live || phone_live || mouse_owns;
+    if (!live) { buffered = 0; last_ns = 0; }
     if (on && !mouse_owns) restart = 1; pthread_mutex_unlock(&lock);
 }
 /* The iPhone's own sensor is a second source: it feeds the same ring, and only one source is live at a time (phone_motion

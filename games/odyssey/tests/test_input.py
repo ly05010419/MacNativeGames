@@ -48,6 +48,17 @@ class OdysseyInput(unittest.TestCase):
     def test_guest_disconnect_clears_only_the_target(self):
         self.run_npad_probe("--disconnect")
 
+    def run_feedback_probe(self, *args):
+        self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-Wl,-dead_strip",
+                        "-Wl,-undefined,dynamic_lookup", str(GAME / "tests/feedback_routing/probe.m"),
+                        str(GAME / "runtime/motion_fusion.c"), *OBJC, "-framework", "CoreHaptics"], False, *args)
+
+    def test_later_controller_does_not_take_rumble(self):
+        self.run_feedback_probe()
+
+    def test_first_capable_controller_keeps_motion(self):
+        self.run_feedback_probe("--motion")
+
     def test_mouse_look(self):
         self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME / "runtime"),
                         str(GAME / "tests/mouse_look/probe.c")], False)

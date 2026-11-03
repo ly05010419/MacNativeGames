@@ -21,13 +21,19 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 Either controller moves Mario in One Player. Choosing Two Players assigns the first controller to Mario and the
 second to Cappy, with independent sticks, buttons and remapped actions. Switching back to One Player now handles
-the game's Joy-Con pairing request and restores shared control of Mario. Rumble and motion use Mario's controller
-in Two Players and follow the original connection order in One Player.
+the game's Joy-Con pairing request and restores shared control of Mario. One Player assigns rumble and motion
+independently to the first connected controller that supports each. If the first pad has rumble but no gyro,
+the second can provide motion while the first keeps rumble. Connecting another pad leaves each assignment in
+place. When its owner disconnects, the next capable pad takes over. In Two Players both use Mario's controller.
 
 When the game disconnects a controller, the runtime releases held inputs and unread presses for that player.
 The other player's input and settings shortcut remain available. In One Player the whole shared input is cleared.
 Tested on macOS in Odyssey 1.4.1's Snow Kingdom with a DualSense and a DUALSHOCK 4, including three returns to
 One Player and Bluetooth disconnects. A separate probe exercised game-requested disconnects with both pads connected.
+With both physical controllers connected, two short test pulses went to the DualSense alone. After the probe
+removed it from its input list, the DUALSHOCK 4 took over the next pulse. The game's six-axis interface also
+received DualSense samples with both pads present, then fresh DUALSHOCK 4 samples after the same handoff.
+With a simulated pad without a gyro connected first, the physical DUALSHOCK 4 supplied motion.
 
 ### 2026-11-01: Complete in-game settings and FPS history
 
