@@ -760,8 +760,8 @@ void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the cam
             now * 57.29578f, fov_result(now, f) * 57.29578f);
 }
 #endif
-#ifdef GAME_BOTW190
-/* Font raster size, 1.9.0 (the owner, 2026-10-23: "patch the font size up by canvas height / 720"). The Chinese and Korean
+#ifdef GAME_BOTW
+/* Font raster size, 1.9.0 and 1.6.0 (the owner, 2026-10-23: "patch the font size up by canvas height / 720"). The Chinese and Korean
    languages (region languages 13, 14, 15 and 17; the others use bitmap fonts, Font/Font_%s.bfarc) draw their text with
    nn::font scalable fonts, rasterized into a 2048x4096 glyph cache at the font size: 16-17 px menu glyphs, made for the
    1280x720 layout, so a 1944-pixel canvas magnified them 2.7x and the edges were soft. Three changes make the raster k =
@@ -785,7 +785,12 @@ void runtime_fov_scale_set(double k) {   /* the settings panel: at once (the cam
       room.
    The sizes are for the largest canvas of the session (the swapchain size). Key 3 does not make the fonts again: a
    smaller canvas draws the bigger glyphs scaled down. TOTK_FONT_RES=0 keeps all three as shipped.
-   Not done: 1.6.0 and TOTK (no game files at hand to find and test their font tables; TOTK may not have the issue). */
+   1.6.0 has the same code, compiled differently (the site addresses below, from the data and the code of both mains):
+   the font setup is one function (main+0x18439fc lets languages 13, 14 and 15 through; 17 does not exist), adrp / add
+   pairs at main+0x1844174 pick its three tables (main+0x2bfcec0, f00, f40) and its loop reads the rows inline; the
+   reference table is main+0x2bfe430 (read at main+0x1a35774), and the TextScaleOn block is main+0x1366720.
+   Not done: TOTK (it may not have the issue). */
+#ifdef GAME_BOTW190
 static const struct { uint32_t off, original; } g_font_rel[] = {   /* the table of each language, relative to 0x1727e10 */
     {0x1727e10u, 0x006247a0u}, {0x1727e14u, 0x006247e0u}, {0x1727e18u, 0x00624820u}, {0x1727e1cu, 0x006247a0u},
     {0x1727e20u, 0x00624860u},
@@ -807,6 +812,29 @@ enum { FONT_SCALE = 0xf67c04, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_T
 static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont / ... / scvtf s0, w0 / ... */
     0xaa1303e0u, 0x97c32807u, 0xf9400008u, 0xf9401108u, 0xd63f0100u, 0x1e220000u, 0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,
 };
+#else
+static const struct { uint32_t off, original; } g_font_rel[] = {   /* the language gate and the table picks (code words, not tables) */
+    {0x18439fcu, 0x510036a8u},   /* sub w8, w21, #13 */
+    {0x1844174u, 0x90009dc8u}, {0x1844178u, 0x913d0108u}, {0x184417cu, 0x90009dc9u}, {0x1844180u, 0x913c0129u},
+    {0x1844184u, 0x90009dcau}, {0x1844188u, 0x913b014au},   /* adrp / add: 0x2bfcf40, 0x2bfcf00, 0x2bfcec0 */
+};
+static const struct { uint32_t off, original; } g_font_row[] = {   /* {size at +8, face at +0xc} of the 4 rows per table */
+    {0x2bfcec8u, 80}, {0x2bfceccu, 0}, {0x2bfced8u, 18}, {0x2bfcedcu, 1}, {0x2bfcee8u, 20}, {0x2bfceecu, 2}, {0x2bfcef8u, 30}, {0x2bfcefcu, 3},
+    {0x2bfcf08u, 80}, {0x2bfcf0cu, 0}, {0x2bfcf18u, 18}, {0x2bfcf1cu, 1}, {0x2bfcf28u, 20}, {0x2bfcf2cu, 2}, {0x2bfcf38u, 30}, {0x2bfcf3cu, 3},
+    {0x2bfcf48u, 80}, {0x2bfcf4cu, 0}, {0x2bfcf58u, 18}, {0x2bfcf5cu, 1}, {0x2bfcf68u, 20}, {0x2bfcf6cu, 2}, {0x2bfcf78u, 30}, {0x2bfcf7cu, 3},
+};
+static const struct { uint32_t off, original; } g_font_ref[] = {   /* {width, height} of Normal_00, NormalS_00, Caption_00, Special_00 */
+    {0x2bfe438u, 31}, {0x2bfe43cu, 39}, {0x2bfe448u, 24}, {0x2bfe44cu, 30}, {0x2bfe458u, 19}, {0x2bfe45cu, 22}, {0x2bfe468u, 92}, {0x2bfe46cu, 110},
+};
+static const struct { uint32_t off, original, word; } g_font_scvtf[] = {   /* main+0x1a35774 reads the reference sizes as floats */
+    {0x1a35790u, 0x5e21d821u, 0xd503201fu},   /* scvtf s1, s1 -> nop */
+    {0x1a35798u, 0x5e21d841u, 0x1e204041u},   /* scvtf s1, s2 -> fmov s1, s2 */
+};
+enum { FONT_SCALE = 0x1366720, FONT_SCALE_WORDS = 10, FONT_TABLE = 0x1000, FONT_TABLE_N = 3072 };
+static const uint32_t font_scale_shipped[FONT_SCALE_WORDS] = {   /* mov x0, x19 / bl TextBox::GetFont (main+0x1d51cc0) / ... */
+    0xaa1303e0u, 0x9427ad67u, 0xf9400008u, 0xf9401108u, 0xd63f0100u, 0x1e220000u, 0xb9400688u, 0x8b080288u, 0xbd400501u, 0x1e200820u,
+};
+#endif
 static void patch_font_size(Module *m) {
     if (ios_code()) return;   /* the phone: the handheld 720p canvas, the shipped size */
     const char *e = getenv("TOTK_FONT_RES");
@@ -851,7 +879,7 @@ static void patch_font_size(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size) runtime_fail("the font raster size: no data page after the main module");
     float *table = (float *)(void *)(m->base + data_off + FONT_TABLE);
-    /* the new sizes, one per font (the four tables hold the same rows): Special 80, Caption 18, NormalS 20, Normal 30 */
+    /* the new sizes, one per font (the tables hold the same rows): Special 80, Caption 18, NormalS 20, Normal 30 */
     static const uint32_t fs[4] = {80, 18, 20, 30}, bitmap[] = {14, 19, 24, 31, 50, 92};
     uint32_t big[4];
     for (int i = 0; i < 4; i++) {
@@ -886,8 +914,8 @@ static void patch_font_size(Module *m) {
     };
     put_words(m, FONT_SCALE, scale, FONT_SCALE_WORDS, "font TextScaleOn width");
     fprintf(stderr, "[botw] font raster size x%.2f for the %u-pixel canvas: 18 -> %u, 20 -> %u, 30 -> %u, 80 -> %u; text sizes kept "
-            "(main+0x13ebfc4 reference table, main+0xf67c04 TextScaleOn) (TOTK_FONT_RES=0 keeps 720p)\n",
-            h / 720.0, h, big[1], big[2], big[3], big[0]);
+            "(reference table, main+%#x TextScaleOn) (TOTK_FONT_RES=0 keeps 720p)\n",
+            h / 720.0, h, big[1], big[2], big[3], big[0], FONT_SCALE);
 }
 #endif
 void runtime_game_patches(Module *m) {
@@ -901,9 +929,7 @@ void runtime_game_patches(Module *m) {
 #ifdef GAME_BOTW190
     patch_fov(m);
 #endif
-#ifdef GAME_BOTW190
     patch_font_size(m);
-#endif
     botw_aspect_install(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
