@@ -48,7 +48,7 @@ def counters(t, frames, generated=0, merged=0, upscaled=0):
             'scene': '1920x1080', 'sampledAt': T % t}
 
 
-IDENT = {'game': 'totk', 'gameVersion': '1.4.3', 'shaderChain': 'totk-native-v8-unverified', 'sourceCommit': 'abc1234',
+IDENT = {'game': 'totk', 'gameVersion': '1.4.3', 'shaderChain': 'totk-native-v9-unverified', 'sourceCommit': 'abc1234',
          'runtimeUUID': UUID, 'settings': 'TOTK_UNCAPPED_HZ=120', 'hostModel': 'Mac17,9', 'hostChip': 'Apple M5 Pro',
          'hostOS': 'Version 27.2 (Build 26B118)'}
 FI = '1920x1080 | FI 50+50 | held 50 | window@120Hz'

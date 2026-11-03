@@ -25,6 +25,20 @@ Issues and pull requests that contain or ask for game files, keys or firmware wi
 
 How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script builds a Mac app or an unsigned iPhone/iPad IPA. The game's own ARM64 code runs directly on Apple chips (rewritten where the operating system requires it), the Switch system services are answered by a small host, and the game's NVN graphics are rebuilt on Metal. The iOS build requires iOS/iPadOS 26 and iPhone 14 or newer; Tears of the Kingdom 1.4.3 has been played on an iPhone 14 and an iPad, Breath of the Wild 1.6.0 on an iPhone 14 (on the iPad it reaches the title), see [iPhone and iPad](docs/install.md#iphone-and-ipad). Details are in [How it works](docs/how-it-works.md).
 
+### Switch 2 games (experimental)
+
+Switch 2 games run on the same Tears of the Kingdom runtime: their Ampere (NVN2) shaders go through the same translator,
+and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-port.md)).
+
+| Game | Version | Platform | Status |
+|---|---|---|---|
+| Donkey Kong Bananza | update 458752 | Mac | Playable, early; not fully tested |
+| Pokémon Pokopia | 2.0.1 | Mac | Boots, early; stops at its first full scene (open). |
+
+Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
+
+### Switch 1 games
+
 | Game | Version | Platform | Status | Folder |
 |---|---|---|---|---|
 | The Legend of Zelda: Tears of the Kingdom | 1.0.0, 1.2.1, 1.4.3 | Mac (up to native 4K on 1.2.1 and 1.4.3; 5K by default on 32 GB-plus Macs with 1.4.3), iPhone, iPad; Apple Vision Pro (windowed, early) | Supported | [`games/totk`](docs/install.md) ([Vision Pro](docs/install.md#apple-vision-pro)) |
@@ -98,6 +112,9 @@ The [shared shader list](docs/shader-list.md) now holds **14,794 shader variants
 
 ## What's new
 
+- **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
+  Pokémon Pokopia boots but does not reach its first scene yet. No app packaging yet ([Switch 2 games](#switch-2-games-experimental),
+  [docs/ns2-port.md](docs/ns2-port.md)).
 - **2026-11-02: Tears of the Kingdom 1.1.2 is no longer supported.** The supported versions are 1.0.0, 1.2.1 and 1.4.3
   (1.4.3 is the most tested). The builder now refuses a 1.1.2 update: build again with the 1.2.1 or 1.4.3 update and
   the same `-o` ([another game version](docs/install.md)). Your saves stay where they are (`TOTK/profile`); before the
@@ -125,8 +142,9 @@ Measuring by game state with the Metal performance tools of macOS 27 (`TOTK_STAT
 ## Acknowledgements
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this way of running Switch games natively (for Diablo II: Resurrected): the NSO rewriter, the Horizon host and the NVN-on-Metal layer here started as its generic parts.
-- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the one-script packaging and NSP common-ticket import follow its approach, and code of it is adapted here: the SignalToAddress, SystemEvent and signal-wake rules in `games/totk/runtime/threads.c` (via PR #159) and the spin-wait search in `games/totk/third_party/d2r/patch_nso.py`.
-- **Ryujinx** (MIT): its shader translator (`vendor/ryujinx`) turns the game's Maxwell shaders into SPIR-V, and its system-service code is a reference. With this project's patches and service it is compiled ahead of time (.NET NativeAOT, which builds in .NET's runtime libraries, MIT) into `games/totk/prebuilt/macos-arm64/totk_xlate`; `games/totk/tools/totk_xlate/publish_native.sh` rebuilds it (needs the .NET 10 SDK, only for developers). The audio effects (delay, reverb, compressor) and the mixer in `games/totk/runtime` are ported from Ryujinx.Audio.
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the NSP common-ticket import follows its approach; the Switch 2 support also follows it and carries code of it (Ampere shaders, geometry shaders, SDK 20 services).
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)** (MIT) and **[pokopia-native](https://github.com/xFractals/pokopia-native)** (MIT): references for Pokémon Pokopia.
+- **Ryujinx** (MIT): the shader translator (`vendor/ryujinx`, built ahead into `games/totk/prebuilt/macos-arm64/totk_xlate`) and a reference for the system services; the sound effects and the mixer in `games/totk/runtime` are ported from Ryujinx.Audio.
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)** (Apache-2.0) turns SPIR-V into Metal Shading Language; it is fetched at a pinned commit and compiled with clang during the build.
 - **[hactool](https://github.com/SciresM/hactool)** (ISC, with its bundled mbedTLS, Apache-2.0): merges the base game and its update at build time; fetched at a pinned commit.
 - **deko3d** (zlib): texture layout sizes. **[bcdec](https://github.com/iOrange/bcdec)** (MIT or public domain): BC texture decoding. **libopus** and **libvpx** (BSD) from Homebrew: audio and the pre-rendered movies.
@@ -161,6 +179,20 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 **这是一个技术探索项目，主要做可行性实验和分析。** Switch 是 ARM 系统（NVIDIA Tegra X1 里的 ARM64 处理器），苹果芯片同样是 ARM64，所以我们想测试：技术上能不能把它的游戏移植到苹果芯片上。它起源于一个问题：Switch 游戏所用的 NVN 图形接口，能不能在苹果的 Metal 上忠实地重建出来？游戏自己的 ARM64 代码，能不能不经模拟器、直接在苹果芯片上运行？《王国之泪》和《旷野之息》对图形接口的要求很高，所以用它们来检验。仓库记录的是这一路的实验、测量和结论；它研究的是技术，不是分发游戏。**本项目不鼓励盗版：**请只使用你自己的游戏数据，也就是从你自己购买的游戏和你自己的 Switch 导出的数据，不要使用从网上下载或从他人处得到的游戏文件、密钥或固件。
 
 做法：准备好游戏文件（XCI 或 NSP）和你的 `prod.keys`，一个脚本即可构建 Mac App 或未签名的 iPhone / iPad IPA。游戏自己的 ARM64 代码直接运行在苹果芯片上（按操作系统要求改写），Switch 的系统服务由一个小宿主应答，游戏的 NVN 图形在 Metal 上重建。iOS 构建需要 iOS / iPadOS 26，最低支持 iPhone 14；王国之泪 1.4.3 已在 iPhone 14 和 iPad 上实际游玩，旷野之息 1.6.0 已在 iPhone 14 上游玩（iPad 上能进标题），见 [iPhone 和 iPad](docs/install.zh-CN.md#iphone-和-ipad)。详细见[工作原理](docs/how-it-works.md)。
+
+### Switch 2 游戏（实验性）
+
+Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampere（NVN2）着色器走同一个翻译器，SDK 20 的系统服务由同一个宿主
+应答（[docs/ns2-port.md](docs/ns2-port.md)）。
+
+| 游戏 | 版本 | 平台 | 状态 |
+|---|---|---|---|
+| 大金刚 Bananza | 更新 458752 | Mac | 初步可玩，早期，未完整测试 |
+| 宝可梦 Pokopia | 2.0.1 | Mac | 能启动，早期；到第一个完整场景时停住（待解决）。 |
+
+还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+
+### Switch 1 游戏
 
 | 游戏 | 版本 | 平台 | 状态 | 目录 |
 |---|---|---|---|---|
@@ -232,6 +264,8 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 ## 更新说明
 
+- **2026-11-03：第一批 Switch 2 游戏，实验性。** 大金刚 Bananza 用开发构建可以在 Mac 上玩；宝可梦 Pokopia 能启动，还到不了第一个
+  场景。暂时不能打包成 App（[docs/ns2-port.md](docs/ns2-port.md)）。
 - **2026-11-02：王国之泪不再支持 1.1.2。** 支持的版本是 1.0.0、1.2.1 和 1.4.3（1.4.3 测试得最多）。现在打包时会拒绝
   1.1.2 的更新包：请换成 1.2.1 或 1.4.3 的更新包，用同一个 `-o` 重新打包（[换游戏版本](docs/install.zh-CN.md)）。存档还在原处
   （`TOTK/profile`）；新版本第一次启动前，App 会先在旁边备份一份，1.2.1 直接读 1.1.2 的存档，1.4.3 会自动迁移。放在
@@ -257,8 +291,9 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 ## 致谢
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）为《暗黑破坏神 II：狱火重生》开发了这套原生运行 Switch 游戏的方法：这里的 NSO 改写器、Horizon 宿主和 Metal 上的 NVN 层都从它的通用部分起步。
-- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：“用户自己的游戏文件 + 一个脚本出包”和 NSP 通用票据读取的做法借鉴自它；也移植了它的代码：`games/totk/runtime/threads.c` 里 SignalToAddress、SystemEvent 和按对象唤醒的规则（经 PR #159），以及 `games/totk/third_party/d2r/patch_nso.py` 的自旋等待查找。
-- **Ryujinx**（MIT）：它的着色器翻译器（`vendor/ryujinx`）把游戏的 Maxwell 着色器转成 SPIR-V，它的系统服务代码也是参考。加上本项目的补丁和着色器服务，用 .NET NativeAOT 预先编成原生程序 `games/totk/prebuilt/macos-arm64/totk_xlate`（其中编入了 .NET 的运行库，MIT）；改了翻译器用 `games/totk/tools/totk_xlate/publish_native.sh` 重编（要 .NET 10 SDK，只有开发者需要）。`games/totk/runtime` 里的音效（延迟、混响、压缩器）和混音器移植自 Ryujinx.Audio。
+- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：NSP 通用票据读取的做法借鉴自它；Switch 2 支持也参照并移植了它的代码（Ampere 着色器、几何着色器、SDK 20 服务）。
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)**（MIT）、**[pokopia-native](https://github.com/xFractals/pokopia-native)**（MIT）：宝可梦 Pokopia 的参考。
+- **Ryujinx**（MIT）：着色器翻译器（`vendor/ryujinx`，预编成 `games/totk/prebuilt/macos-arm64/totk_xlate`）和系统服务的参考；`games/totk/runtime` 里的音效和混音器移植自 Ryujinx.Audio。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**（Apache-2.0）把 SPIR-V 转成 Metal 着色语言；打包时按固定提交取得，用 clang 编。
 - **[hactool](https://github.com/SciresM/hactool)**（ISC，自带的 mbedTLS 是 Apache-2.0）：打包时合并本体和更新包；按固定提交取得。
 - **deko3d**（zlib）：贴图布局尺寸。**[bcdec](https://github.com/iOrange/bcdec)**（MIT 或公有领域）：BC 贴图解码。**libopus**、**libvpx**（BSD，来自 Homebrew）：音频和预渲染影片。

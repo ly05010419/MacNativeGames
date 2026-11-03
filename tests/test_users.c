@@ -16,6 +16,9 @@ _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "runtime_fail
 
 void runtime_account_uid(uint64_t out[2]);      /* runtime/fs_host.h: the user this run opened with */
 void *runtime_account_override(const char *name);   /* runtime/runtime.h: the nn::account entries by mangled name */
+/* The system events account.c signals for its SDK 20 async calls (runtime/threads.c in the game build); not exercised here */
+void hle_bind_system_event(void *event, int autoclear) { (void)event; (void)autoclear; }
+void hle_signal_system_event(void *event) { (void)event; }
 
 static char dir[256];
 

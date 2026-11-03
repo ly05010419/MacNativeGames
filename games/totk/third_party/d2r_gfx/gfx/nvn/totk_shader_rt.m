@@ -342,33 +342,50 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     }
     return nil;
 }
-static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil; }
+#include "nvn_ctl.h"
+static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 5 ? @"cs" : nil; }   // gs: run as compute (nvn_geometry_rt.inc)
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
 static NSMutableDictionary *variant_request(NSString *shader, int stage, const uint8_t *control, const uint8_t *code,
                                             NSDictionary *answers, NSArray *local, NSData **code_out) {
-    uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
-    if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
+    /* NVN2 (Switch 2, nvn_ctl.h): Ampere code with no header, the instructions control +0x38 long (SPH included), the c1
+       segment between +0x40 and +0x44; translated with the translator's Ampere frontend (arch sm86, docs/ns2-port.md). */
+    int nvn2 = nvn2_ctl(control);
+    uint32_t c1o, c1t; memcpy(&c1o, control + (nvn2 ? 0x40 : 0x700), 4); memcpy(&c1t, control + (nvn2 ? 0x44 : 0x704), 4);
+    uint32_t ninst = c1t; if (nvn2) memcpy(&ninst, control + 0x38, 4);
+    if (!c1t || c1t > 16u << 20 || c1o > c1t || (nvn2 && ninst > c1o) || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
-    size_t skip = stage == 5 ? 0 : 0x30;
-    NSData *bytes = [NSData dataWithBytes:code + skip length:c1t - skip];
+    size_t skip = stage == 5 || nvn2 ? 0 : 0x30, end = nvn2 ? ninst : c1t;
+    NSData *bytes = [NSData dataWithBytes:code + skip length:end - skip];
     if (code_out) *code_out = bytes;
     else if (![bytes writeToFile:code_path atomically:YES]) die("write shader code %s", code_path.UTF8String);
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
+    if (nvn2) {
+        rq[@"arch"] = @"sm86";
+        /* Compute lays out its driver constants in c[0] per shader: its push-constant words (+0xa9), its uniform buffer,
+           storage buffer and texture entry counts (+0xb1..+0xb3) and its c[0] size (+0xba); the translator maps them
+           (InstEmitAmpere.cs AMapC0). Shared memory at +0x64. From seedds/nxnative dmsh_build.py job_for (MIT). */
+        if (stage == 5) {
+            uint16_t c0; memcpy(&c0, control + 0xba, 2);
+            rq[@"nvn2_cs"] = @[@(control[0xb1]), @(control[0xb2]), @(control[0xb3]), @(c0), @(control[0xa9] * 4)];
+            uint32_t shared; memcpy(&shared, control + 0x64, 4);
+            if (shared) rq[@"shared"] = @((shared + 15) / 16 * 16);
+        }
+    }
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     /* A fragment shader's early fragment tests: control byte +0x718 of the 0x880-byte sections (the NVN driver reads it as
        a fragment flag and the Switch tests depth before the shader). Breath of the Wild's shorter sections (the size word
        at +0x20 between 0x7cc and 0x880, as for the key) are not read. Same rule as prepare_shader_seed.py. */
     { uint32_t size; memcpy(&size, control + 0x20, 4);
-      if (stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
-    if (no_translator()) rq[@"code_hex"] = hex(code + skip, c1t - skip);
+      if (!nvn2 && stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
+    if (no_translator()) rq[@"code_hex"] = hex(code + skip, end - skip);
     return rq;
 }
 /* Whether a new variant goes into the contribution file (totk_shader_contrib.h). With a seed that translated every shader
@@ -439,7 +456,19 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
     LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",
         [rq[@"stage"] UTF8String], variant.UTF8String, (unsigned long)missed.count);
 }
-/* One request through a translator service; the reflection of the new variant. */
+/* A translation the service refuses (an instruction the translator does not know yet) ends Tears of the Kingdom and
+   Breath of the Wild, whose every shader translates. A Switch 2 game (GAME_NS2), whose Ampere coverage is still growing,
+   and a seed (seed-shaders) name the shader in red instead: no variant is returned, so its draws are skipped
+   (nvn_mtl.m prog_get), and it is not asked for again in this run. */
+#ifdef GAME_NS2
+static int g_rt_fail_soft = 1;
+#else
+static int g_rt_fail_soft;
+#endif
+static NSMutableSet<NSString *> *g_rt_failed;   // shaders whose translation failed (g_rt_lock)
+void totk_rt_fail_soft(void) { g_rt_fail_soft = 1; }
+static void rt_failed(NSString *shader) { if (!g_rt_failed) g_rt_failed = [NSMutableSet set]; [g_rt_failed addObject:shader]; }   // g_rt_lock held
+/* One request through a translator service; the reflection of the new variant (nil: refused, with g_rt_fail_soft). */
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
     service_start(svc);
@@ -455,6 +484,7 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
         LOG("[survey-shader] frame %llu translation FAILED %s %s after %.2f ms: %s",
             (unsigned long long)dm_nvn_frame_count(), stage, variant.UTF8String,
             (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, [[reply[@"error"] description] UTF8String]);
+        if (g_rt_fail_soft) { LOG("[shader] [RED] %s (%s) translation failed: its draws are skipped: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]); return nil; }
         die("shader %s (%s) translation failed: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]);
     }
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
@@ -529,9 +559,10 @@ static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint6
     if (![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     NSDictionary *refl = translate(svc, rq, started);
-    if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
+    if (refl && g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
     pthread_mutex_lock(&g_rt_lock);
-    variant_record(shader, rq, refl, existed, started, queued);
+    if (refl) variant_record(shader, rq, refl, existed, started, queued);
+    else rt_failed(shader);
     if (g_rt_pending[shader] == job) [g_rt_pending removeObjectForKey:shader];
     atomic_fetch_add(&g_rt_gen, 1);
     pthread_cond_broadcast(&g_rt_done);
@@ -581,6 +612,8 @@ static void urgent_translate(NSString *shader, NSMutableArray *job) {
         atomic_fetch_add(&g_rt_urgent_n, 1); atomic_fetch_add(&g_rt_urgent_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - queued);
     } });
 }
+/* Translation jobs queued or running (seed-shaders waits for none to be left). */
+int totk_rt_pending(void) { pthread_mutex_lock(&g_rt_lock); int n = (int)g_rt_pending.count; pthread_mutex_unlock(&g_rt_lock); return n; }
 void totk_rt_urgent_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_rt_urgent_n); *ns = atomic_load(&g_rt_urgent_ns); }
 
 /* What the submit thread spends on translation itself (may_defer 0): waiting for a job already running
@@ -608,7 +641,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         if ([job[0] intValue] == RT_JOB_QUEUED) urgent_translate(shader, job);
         pthread_mutex_unlock(&g_rt_lock); return nil;
     }
-    if (found || g_rt_pending[shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
+    if (found || g_rt_pending[shader] || [g_rt_failed containsObject:shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
     NSData *code_bytes = nil;   // written by the job when it is not translated here
     NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local, may_defer && !no_translator() ? &code_bytes : NULL);
     if (no_translator()) { record_miss(shader, rq, answers); pthread_mutex_unlock(&g_rt_lock); return nil; }
@@ -616,7 +649,9 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     if (may_defer == 2) { urgent_translate(shader, rt_job_new(shader, stage, rq, existed, code_bytes)); pthread_mutex_unlock(&g_rt_lock); return nil; }
     if (may_defer) { bg_translate(shader, stage, rq, existed, code_bytes); pthread_mutex_unlock(&g_rt_lock); return nil; }
     uint64_t s0 = dm_wait_stats_enabled() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
-    variant_record(shader, rq, translate(&g_svc, rq, started), existed, started, 0);
+    NSDictionary *refl = translate(&g_svc, rq, started);
+    if (!refl) { rt_failed(shader); pthread_mutex_unlock(&g_rt_lock); return nil; }
+    variant_record(shader, rq, refl, existed, started, 0);
     if (s0) { atomic_fetch_add(&g_rt_sync_n, 1); atomic_fetch_add(&g_rt_sync_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - s0); }
     pthread_mutex_unlock(&g_rt_lock);
     return rq[@"variant"];

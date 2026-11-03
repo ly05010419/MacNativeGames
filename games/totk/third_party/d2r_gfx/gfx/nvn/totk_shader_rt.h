@@ -40,6 +40,8 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows);   // 
 /* Variants new to the translation cache this run, the variants in the cache (-1 until counted in the background) and
    the CLOCK_UPTIME_RAW time of the last new one (0: none yet). Any pointer may be NULL. */
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
+int totk_rt_pending(void);   // translation jobs queued or running
+void totk_rt_fail_soft(void);   // a refused translation skips its draws instead of ending the run (seed-shaders)
 uint64_t totk_rt_new_variants(void);   // shader variants translated this run (no cache scan, unlike totk_rt_counts)
 // Distinct shader variants this run needed and the cache did not have (the iPhone, which translates nothing).
 uint64_t totk_rt_missed(void);

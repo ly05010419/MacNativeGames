@@ -36,6 +36,38 @@
 #define GAME_ADDR_0xe995c4 0xc617e8   /* return address of nnMain's only call to nn::oe::SetFocusHandlingMode */
 #define GAME_ADDR_0x2aa4fa0 0x15a01a0 /* nn::swkbd::ShowKeyboard: main's PLT stub */
 #define GAME_ADDR_0x453f648 0x1d78198 /* nn::swkbd::ShowKeyboard: main's GOT slot */
+#elif defined(GAME_DKB)
+/* Donkey Kong Bananza (040074A01BF12000), update v458752 (SDK 20.5.19 for the Switch 2, NVN2), docs/ns2-port.md: a Switch 2
+   game (GAME_NS2) on this host. runtime/game_patches_ns2.c replaces game_patches.c; TOTK's crash fixups and survey are
+   compiled out (GAME_TOTK unset). The addresses below are used only by TOTK diagnostics and probes: outside main, so they
+   never match a PC. */
+#ifndef GAME_NS2
+#define GAME_NS2 1
+#endif
+#define GAME_TITLE_ID 0x040074a01bf12000ULL
+#define TOTK_GAME_VERSION "v458752"
+#define GAME_NAME "Donkey Kong Bananza"
+#define GAME_FOLDER "Bananza"   /* ~/Library/Application Support/MacNativeGames/<GAME_FOLDER> */
+#define GAME_LOG "bananza"      /* ~/Library/Logs/MacNativeGames/<GAME_LOG>.log */
+#define TOTK_GAME_DIR "dkb"
+#define GAME_ADDR_0xe995c4 0xffffffffu
+#define GAME_ADDR_0x2aa4fa0 0xffffffffu
+#define GAME_ADDR_0x453f648 0xffffffffu
+#elif defined(GAME_POKOPIA)
+/* Pokemon Pokopia (0400A3A01EE4C000) 2.0.1, update v655360 (SDK 20.5 for the Switch 2, NVN2; modules main, subsdk0, sdk):
+   the second Switch 2 game (GAME_NS2) on this host, docs/ns2-port.md. As Donkey Kong Bananza's block. */
+#ifndef GAME_NS2
+#define GAME_NS2 1
+#endif
+#define GAME_TITLE_ID 0x0400a3a01ee4c000ULL
+#define TOTK_GAME_VERSION "2.0.1"
+#define GAME_NAME "Pokemon Pokopia"
+#define GAME_FOLDER "Pokopia"
+#define GAME_LOG "pokopia"
+#define TOTK_GAME_DIR "pkp"
+#define GAME_ADDR_0xe995c4 0xffffffffu
+#define GAME_ADDR_0x2aa4fa0 0xffffffffu
+#define GAME_ADDR_0x453f648 0xffffffffu
 #elif defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"
@@ -133,6 +165,10 @@
 #define GAME_ADDR_0x8f6cbc 0x8f6cbc
 #define GAME_ADDR_0xce3fec 0xce3fec
 #define GAME_OUTPUT_CALL_WORD 0x94000082u
+#endif
+/* Tears of the Kingdom itself (any version): its patch sites, crash fixups and survey. */
+#if !defined(GAME_BOTW) && !defined(GAME_NS2)
+#define GAME_TOTK 1
 #endif
 #ifndef GAME_NAME
 #define GAME_NAME "Tears of the Kingdom"   /* window title and menu (game_version.h is per binary) */

@@ -822,7 +822,10 @@ void runtime_front_run(void(*callback)(void)){
 #else
   if(totk_sr_start)totk_sr_start("totk",TOTK_GAME_VERSION);
 #endif
-  [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  [NSApplication sharedApplication];
+  /* TOTK_WINDOW_FLOAT=1: an accessory app (no Dock icon), the only kind whose window macOS shows over another app's full
+     screen Space; a regular app's floating window stays covered there (2026-11-03, the user working full screen). */
+  {const char *e=getenv("TOTK_WINDOW_FLOAT");[NSApp setActivationPolicy:e&&!strcmp(e,"1")?NSApplicationActivationPolicyAccessory:NSApplicationActivationPolicyRegular];}
   front_install_bundle_icon();
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
@@ -833,13 +836,17 @@ void runtime_front_run(void(*callback)(void)){
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
+  /* TOTK_WINDOW_FLOAT=1 (test scripts only): the window floats above the user's other windows, in the screen's top-right
+     corner, so their work does not cover it: macOS stops the display link of a covered window and the game's presents stop
+     with it (a test's frames and pictures then say nothing). */
+  {const char *e=getenv("TOTK_WINDOW_FLOAT");if(e&&!strcmp(e,"1")){window.level=NSFloatingWindowLevel;window.collectionBehavior|=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary;}}   /* also over another app in full screen */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME "  Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
   front_hdr_init();
   front_install_menu();
-  window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
+  if(window.level!=NSFloatingWindowLevel)window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;   /* a floating test window is an auxiliary one */
   window.tabbingMode=NSWindowTabbingModeDisallowed;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
@@ -876,7 +883,9 @@ void runtime_front_run(void(*callback)(void)){
      in the folder above the game's ("on" / "off"), on when there is none. */
   {char word[16];fpsGraphEnabled=1;if(runtime_shared_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!!strncmp(word,"off",3);}
   TOTKFpsGraph *graph=[[TOTKFpsGraph alloc] initWithFrame:NSZeroRect];[box addSubview:graph];fpsGraphBox=graph;[graph setEnabled:fpsGraphEnabled];[box refresh];
-  [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
+  [window makeFirstResponder:window.contentView];[window center];
+  if(window.level==NSFloatingWindowLevel){NSRect f=window.frame;[window setFrameOrigin:NSMakePoint(NSMaxX(vis)-f.size.width,NSMaxY(vis)-f.size.height)];}   /* TOTK_WINDOW_FLOAT: top-right corner */
+  front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   front_sr_view();
   [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */

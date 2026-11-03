@@ -550,11 +550,13 @@ def _writes(ins):
     _, ww = ins.regs_access()
     return {'x29' if ins.reg_name(r) == 'fp' else 'x30' if ins.reg_name(r) == 'lr' else re.sub(r'^[wx]', 'x', ins.reg_name(r))
             for r in ww if ins.reg_name(r) not in ('sp', 'pc')}
-def _mem_sp(ins, load):
+def _mem_sp(ins, load, entry_sp=()):
+    """The displacement of an sp-based save (load=False) or restore (load=True). entry_sp: registers holding the block's entry sp
+    (patch_nso.py site_sp copies it before the original instruction writes sp, and restores from it)."""
     if (load and not ins.mnemonic.startswith('ld')) or (not load and not ins.mnemonic.startswith('st')):
         return None
     for op in ins.operands:
-        if op.type == capstone.arm64_const.ARM64_OP_MEM and ins.reg_name(op.mem.base) == 'sp':
+        if op.type == capstone.arm64_const.ARM64_OP_MEM and (ins.reg_name(op.mem.base) == 'sp' or (load and ins.reg_name(op.mem.base) in entry_sp)):
             if op.mem.disp < 0: return op.mem.disp
             if load and ins.mnemonic == 'ldp' and op.mem.disp == 0: return -16
     return None
@@ -582,14 +584,18 @@ for a, allowed in static_entries:
             allowed.update(('x0', 'x1'))
     saved = {}
     restored = {}
+    entry_sp, sp_moved = set(), False   # registers holding the entry sp (site_sp: mov T, sp before the original instruction)
     for i, ins in enumerate(block):
+        if not sp_moved and ins.mnemonic in ('mov', 'add') and len(ins.operands) >= 2 and ins.reg_name(ins.operands[1].reg) == 'sp' and ins.op_str.count(',') == (1 if ins.mnemonic == 'mov' else 2) and (ins.mnemonic == 'mov' or ins.op_str.endswith('#0')):
+            entry_sp.add(ins.reg_name(ins.operands[0].reg))
+        if re.match(r'(sp|wsp),', ins.op_str) and ins.mnemonic not in ('stp', 'ldp', 'str', 'ldr'): sp_moved = True
         d = _mem_sp(ins, False)
         if d is not None:
             regs = [op.reg for op in ins.operands[:2] if op.type == capstone.arm64_const.ARM64_OP_REG]
             for reg in regs:
                 name = ins.reg_name(reg); name = 'x29' if name == 'fp' else 'x30' if name == 'lr' else re.sub(r'^[wx]', 'x', name)
                 saved.setdefault(name, []).append((d, i))
-        d = _mem_sp(ins, True)
+        d = _mem_sp(ins, True, entry_sp)
         if d is not None:
             regs = [op.reg for op in ins.operands[:2] if op.type == capstone.arm64_const.ARM64_OP_REG]
             for reg in regs:
@@ -597,7 +603,7 @@ for a, allowed in static_entries:
                 restored.setdefault(name, []).append((d, i))
     writes = set().union(*(_writes(ins) for ins in block)) if block else set()
     for reg in sorted(writes - allowed):
-        wi = [i for i, ins in enumerate(block) if reg in _writes(ins) and not (i > 0 and _mem_sp(ins, True) is not None)]
+        wi = [i for i, ins in enumerate(block) if reg in _writes(ins) and not (i > 0 and _mem_sp(ins, True, entry_sp) is not None)]
         dead = any(ins.mnemonic in ('br', 'blr') and ins.operands and ins.reg_name(ins.operands[0].reg) in (reg, reg[1:]) for ins in block)
         ok = dead or any(sd == rd and si < min(wi, default=10**9) and ri > max(wi, default=-1)
                  for sd, si in saved.get(reg, []) for rd, ri in restored.get(reg, []))

@@ -11,9 +11,18 @@
 #include "nvn_deswizzle.h"
 #include <string.h>
 
+#ifdef GAME_NS2
+// The Switch 2 orders a GOB's 16-byte pieces x5 y2 x4 y1 y0 where the Tegra X1 has x5 y2 y1 x4 y0: offset bits 5 and 6
+// exchanged; GOB size, block heights and level offsets unchanged. Found by seedds/nxnative (fdb3710d, MIT) on Donkey Kong
+// Bananza's BNTX textures decoded in every order (docs/reference/nvn-objects.md there, "The Switch 2's order inside a GOB").
+static uint32_t gob_off(uint32_t x, uint32_t y) {
+    return (x % 64 / 32) * 256 + (y % 8 / 4) * 128 + (x % 32 / 16) * 64 + (y % 4 / 2) * 32 + (y % 2) * 16 + x % 16;
+}
+#else
 static uint32_t gob_off(uint32_t x, uint32_t y) {
     return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
 }
+#endif
 
 uint64_t nvn_bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
     uint32_t bh = 1u << th, bd = 1u << td;

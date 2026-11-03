@@ -10,6 +10,8 @@
 #include <stdatomic.h>
 #include <ctype.h>
 #include "game_language.h"
+#include "game_data.h"
+#include "game_version.h"
 #include <string.h>
 #include <sys/mman.h>
 #include "output_memory.h"   /* HEAP_CAP / LOW_SIZE from the application pool */
@@ -65,9 +67,19 @@ static unsigned char alias_pages[ALIAS_SIZE_MAX/4096];
 static unsigned char alias_stale[ALIAS_SIZE_MAX/4096];
 static uint64_t alias_bytes;
 static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
+#ifdef GAME_NS2
+/* GetInfo 16: the system resource size the NPDM declares (process.txt, scripts/prepare_runtime.py), as Horizon answers it.
+   Donkey Kong Bananza declares 0: virtual address memory is off and the game sets a heap. A non-zero answer sends the
+   Switch 2 SDK's VammManager into mapping its memory up front (GetInfo 33) - found by seedds/nxnative (8dd0c98a, MIT).
+   TOTK and BotW keep the 32 MiB they were brought up with (open: whether their NPDMs declare the same). */
+#define SYSTEM_RESOURCE_BUDGET runtime_game_number("process.txt","SYSTEM_RESOURCE_SIZE")
+#else
 #define SYSTEM_RESOURCE_BUDGET (32ULL<<20)
+#endif
 #ifdef GAME_BOTW
 #define GAME_PROGRAM_ID 0x01007ef00011e000ULL   /* GetInfo 18 (ProgramId): Breath of the Wild */
+#elif defined(GAME_NS2)
+#define GAME_PROGRAM_ID GAME_TITLE_ID   /* a Switch 2 game (game_version.h) */
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
@@ -78,8 +90,22 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
    with it. iOS grows no pool: its cap stays the retail one. */
 #define HEAP_CAP output_heap_capacity(dram_8gb()?7ULL<<30:4ULL<<30, APP_POOL)
 #define APP_POOL app_pool()
+#ifdef GAME_NS2
+#define APP_CORE_MASK 0x3f   /* GetInfo 0: the Switch 2's six application cores (threads.c NCORE) */
+#else
+#define APP_CORE_MASK 7
+#endif
+#ifdef GAME_NS2
+/* The Switch 2 leaves a game 9-10 GiB of its 12 GiB (seedds/nxnative's Bananza profile: 9; xFractals/pokopia-native's Pokopia
+   profile: 10, which is taken; neither measured on the console): with a
+   Switch 1 pool (3.2 GiB) Bananza's heaps did not fit (AudioSystemHeap creation returned null). Address space only until
+   the game maps it. */
+#define APP_POOL_DEFAULT 0x280000000ULL
+#else
+#define APP_POOL_DEFAULT (dram_8gb()?0x1b3400000ULL:0xcd500000ULL)
+#endif
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("TOTK_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
- v=e?strtoull(e,NULL,0):(dram_8gb()?0x1b3400000ULL:0xcd500000ULL)+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
+ v=e?strtoull(e,NULL,0):APP_POOL_DEFAULT+extra;if(!e&&extra)fprintf(stderr,"[totk] application pool %#llx: +%llu MiB for the bigger texture heaps (TOTK_OUTPUT_RES, TOTK_RENDER_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}
 /* TOTK: application memory pool reported to the game (default: retail 3.2 GiB, or 6.8 GiB as in an emulator's 8 GB DRAM mode with TOTK_DRAM_8GB; TOTK_OUTPUT_RES adds what its HeapDef overlay gives the texture heaps) */
 #define ALIAS_START ((uintptr_t)alias_space)
 #define STACK_START ((uintptr_t)low_space+STACK_OFF)
@@ -283,6 +309,10 @@ static int handheld_mode(void) {static int v=-1;if(v<0){const char *e=getenv("TO
 int runtime_handheld_mode(void){return handheld_mode();}   /* runtime/input.c: the pad is the handheld controller then */
 static int operation_mode(void) {return handheld_mode()?0:1;}
 static int performance_mode(void) {return handheld_mode()?0:1;}
+/* nn::oe::GetDisplayVersion: control.nacp's DisplayVersion (char[16]) through IApplicationFunctions, which the host does not
+   serve, so the SDK read a null proxy (Donkey Kong Bananza at its start; from games/xc3's copy of this file). The build's
+   version (game_version.h); a dump folder has no control data to read the real one from. */
+static void display_version(char *out) {if(!out)runtime_fail("display version output pointer");memset(out,0,16);snprintf(out,16,"%s",TOTK_GAME_VERSION);}
 static int focus_policy;
 static void focus_mode(int mode) {if(mode<0||mode>3)runtime_fail("unknown focus handling mode");focus_policy=mode;runtime_startup_checkpoint((uintptr_t)__builtin_return_address(0));fprintf(stderr,"[totk] focus policy stored: %d (window lifecycle pending)\n",focus_policy);}
 static int focus_state(void) {return runtime_front_focus();}
@@ -351,6 +381,7 @@ void *runtime_observer(const char *name) {
 void *runtime_override(const char *name) {
  static const struct {const char *name;void *fn;} entries[]={
   {"_ZN2nn2oe18GetDesiredLanguageEv",desired_language},
+  {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE",display_version},
   {"_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi",performance_config},
   {"_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE",cpu_boost},{"_ZN2nn2oe16GetOperationModeEv",operation_mode},{"_ZN2nn2oe18GetPerformanceModeEv",performance_mode},
   {"_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE",focus_mode},{"_ZN2nn2oe20GetCurrentFocusStateEv",focus_state},
@@ -360,6 +391,13 @@ void *runtime_override(const char *name) {
   {"_ZN2nn3err26InitializeContextWriterApiEv",host_error_init},{"_ZN2nn2fs24InitializeForApplicationEv",host_fs_init},
   {"_ZN2nn4pctl10InitializeEv",host_pctl_init},{"_ZN2nn4diag34InitializeApplicationAbortObserverEv",host_abort_init}};
  for(size_t i=0;i<sizeof(entries)/sizeof(entries[0]);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;
+ #ifdef GAME_NS2
+ void *ns2=runtime_ns2_override(name);if(ns2)return ns2;
+ void *codec2=runtime_ns2_codec_override(name);if(codec2)return codec2;
+ void *aout=runtime_ns2_audio_out_override(name);if(aout)return aout;
+ void *opusms=runtime_ns2_opus_ms_override(name);if(opusms)return opusms;
+ void *offline=runtime_offline_override(name);if(offline)return offline;
+ #endif
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);
 }
 void runtime_core_checkpoint(void);
@@ -386,7 +424,7 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
  case 0x29: {
   uint64_t value=0;unsigned id=(unsigned)r[1];
   switch(id) {
-  case 0:value=7;break;case 1:value=0x0ffffffff0000000ULL;break;
+  case 0:value=APP_CORE_MASK;break;case 1:value=0x0ffffffff0000000ULL;break;
   case 2:value=ALIAS_START;break;case 3:value=ALIAS_SIZE;break;
   case 4:value=(uintptr_t)heap;break;case 5:value=HEAP_CAP;break;
   case 6:case 21:value=APP_POOL;break;case 7:case 22:value=runtime_image_bytes()+heap_size+alias_bytes;
@@ -401,6 +439,15 @@ uint64_t runtime_svc(unsigned num,uint64_t *r,const char *module,uint64_t offset
   /* AliasRegionExtraSize (18.0.0+): our alias reservation contains no
    * kernel-owned extension outside the range reported by ids 2 and 3. */
   case 28:value=0;break;
+  /* Horizon's other types (Atmosphere kern_svc_info.cpp) answer 0 here: no thread tick count (25), no SVC permission bits
+     (26), no I/O region (27). Switch 2 SDKs ask two more (from seedds/nxnative 8dd0c98a and c4b0618c, MIT): 33 is the
+     kernel's page size, which nn::ro::ProtectRelro takes as the alignment of the RELRO bounds (value - 1 as a mask, 0
+     aborts); 29-32 are the remote region (nnosInitialize builds nn::os::detail::RemoteRegionManager over [29, 29 + 30),
+     GetRemoteMemoryUsage returns 31 and 32), whose only user is the GPU driver's boot through nv::InitializeGraphics,
+     which the host replaces: no remote region, no remote memory. */
+  case 25:case 26:case 27:value=0;break;
+  case 29:case 30:case 31:case 32:value=0;break;
+  case 33:value=0x1000;break;
   default:fprintf(stderr,"unknown GetInfo id %u\n",id);runtime_fail("GetInfo id not implemented");
   }
   r[0]=0;r[1]=value;return 0;
