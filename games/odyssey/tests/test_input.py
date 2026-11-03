@@ -38,6 +38,10 @@ class OdysseyInput(unittest.TestCase):
         self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         str(GAME / "tests/gamepad_type/probe.m"), *OBJC], True)
 
+    def test_two_player(self):
+        self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-Wl,-dead_strip", "-Wl,-undefined,dynamic_lookup",
+                        str(GAME / "tests/two_player/probe.m"), *OBJC], False)
+
     def test_mouse_look(self):
         self.run_probe(["xcrun", "clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I" + str(GAME / "runtime"),
                         str(GAME / "tests/mouse_look/probe.c")], False)
