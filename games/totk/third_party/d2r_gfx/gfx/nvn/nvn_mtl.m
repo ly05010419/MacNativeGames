@@ -2711,7 +2711,7 @@ static int pkg_final_cache_on(void) {
     if (v < 0) { const char *e = getenv("TOTK_PKG_FINAL_CACHE"); v = !(e && !atoi(e)); atomic_store(&g_pkg_final_cache, v); }
     return v;
 }
-@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; BOTW_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
+@interface NvPkg : NSObject { @public id<MTLTexture> tex; uint64_t stamp, seen, hash, owned_gen; int tracked, owned, hashed, vol, lost, keep_full; reup_key key; uint64_t chash, csub, used; uintptr_t lo, hi; uint8_t *edge; uint32_t eh, et; int edge_want; BOTW_PKG_FIELDS } @end   // lo / hi (TOTK): the texture's memory (pkg_orphan_report)   // tracked (TOTK): result of the last nvn_dirty_tracked   // hash：DM_NVN_DIRTYCHECK 时上传内容的全量哈希 | hash: full hash of the uploaded content under DM_NVN_DIRTYCHECK
 /* TOTK: a mirrored texture the GPU starts rendering into is told directly (g_smu held), so tex_mtl no longer asks the owned
    set again every time any other serial joins it (a locked lookup per CPU-pool texture per new render target). */
 static void pkg_owned_locked(uint64_t k) {
@@ -3226,6 +3226,7 @@ static int tex_mirrored(const tex_t *t);
 static id<MTLComputePipelineState> bctc_pso(void);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);
 static int g_mip_nodrop;   // set while re-uploading a copy at full size and in the decompressed format (the GPU renders into it)
+static int g_mip_keep;     // set while re-uploading a copy at full size only (a shader reads it by integer texel coordinates: NvPkg keep_full)
 static int tex_tc(const tex_t *t) {
     static int on = -1; if (on < 0) { const char *e = getenv("TOTK_BC_TRANSCODE"); on = no_bc() && (!e || atoi(e)); if (on) MLOG("无 BC：素材里的 BC2/BC3/BC7 转成 ASTC 4x4、BC4/BC5 转成 EAC（TOTK_BC_TRANSCODE=0 改回解压）"); }
     uint32_t g = t->d.target; void *mb; uint64_t mo;
@@ -3992,7 +3993,7 @@ static unsigned mip_drop_of(const tex_t *t) {
     static int on = -1; static unsigned minside;
     if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : TARGET_OS_IPHONE; minside = m ? (unsigned)atoi(m) : 512;
         if (on) MLOG("大贴图副本少传最高一级 mip：开（两边都 ≥%u 的 2D / 数组 / 立方体贴图；TOTK_MIP_DROP=0 关）", minside); }
-    if (!on || g_mip_nodrop) return 0;
+    if (!on || g_mip_nodrop || g_mip_keep) return 0;
     uint32_t g = t->d.target;
     if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
     return 1;
@@ -4217,7 +4218,8 @@ static void *tex_mtl_p(const tex_t *ct) {
         if (pk && pk->owned && pk->tex && !reduced) return (__bridge void *)pk->tex; BOTW_PKG_RENDER_ALIAS(pk, t)
         if (pk) {   // 已上传：自上次检查后有过客体写才查覆盖页 | Already uploaded: check the covered pages only if there has been a guest write since the last check
             uint64_t now = nvn_dirty_now(), h = 0; int clean;
-            if (!pk->tex || (pk->owned && reduced)) {   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
+            const int lv_reduced = pk->tex && pk->tex.mipmapLevelCount < (t->d.levels ? t->d.levels : 1u);
+            if (!pk->tex || (pk->owned && reduced) || (pk->keep_full && lv_reduced)) {   // keep_full: read by integer texel coordinates (tex_keep_full)   // TOTK: the copy was evicted, or the GPU renders into a reduced copy (needs full size); the copy was evicted under memory pressure (pkg_evict_sweep): upload it again from the pool bytes
                 clean = 0; g_pkg_restored++;
                 if (pk->hashed) { pk->csub = g_sub_serial; if (!pkg_hash_guarded(t, &h)) h = 0; }   // a fault: the upload below refuses too
             } else
@@ -4249,7 +4251,7 @@ static void *tex_mtl_p(const tex_t *ct) {
                 if (clean) return (__bridge void *)pk->tex;
             }
             TILELOG(t, "re-upload from the pool bytes");
-            uint64_t st; BOTW_PKG_WB_TAKE() reup_key nk; g_mip_nodrop = pk->owned; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
+            uint64_t st; BOTW_PKG_WB_TAKE() reup_key nk; g_mip_nodrop = pk->owned; g_mip_keep = pk->keep_full; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0; g_mip_keep = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; BOTW_PKG_WB_SET(pk) g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
             else { free(pk->edge); pk->edge = NULL; }   // TOTK (#90): the bytes kept belong to the upload that failed
             return (__bridge void *)pk->tex;
@@ -5898,6 +5900,18 @@ static void refl_mark_stores(NvShader *o, NSArray *bs, NSString *src) {
         if (msl_stores_through(src, d[@"msl_name"])) b->rw = 1;
     }
 }
+/* Texture slots the shader reads by integer texel coordinates (MSL `<name>.read(`): a copy one mip level smaller (the
+   iPhone's mip drop, mip_drop_of) does not hold those texels, so such a texture is kept at full size once bound to one
+   (tex_keep_full). #337: the Depths' Gloom mask read this way from a 1000x800 data texture drew false Gloom in stair
+   steps around Link. From the shader's own code, not from a guess at which formats are data. */
+static void refl_mark_fetches(NvShader *o, NSArray *bs, NSString *src) {
+    if (![bs isKindOfClass:[NSArray class]] || (int)bs.count != o->rf.nb) return;   // nvn_refl_from_json keeps the json order 1:1
+    for (int i = 0; i < o->rf.nb; i++) {
+        nvn_rbind *b = &o->rf.b[i]; if (b->kind != NVN_RB_TEX) continue;
+        NSDictionary *d = bs[(NSUInteger)i]; NSString *name = [d isKindOfClass:[NSDictionary class]] ? d[@"msl_name"] : nil;
+        if ([name isKindOfClass:[NSString class]] && name.length && [src rangeOfString:[name stringByAppendingString:@".read("]].location != NSNotFound) b->fetch = 1;
+    }
+}
 static int drv_scan(NvShader *o, NSString *src) {   // src: the full MSL (iOS does not keep it in o->src)
     const char *s = src.UTF8String; if (!s) return 0;
     int nunfill = 0;
@@ -5977,7 +5991,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
     if (stage == 1 && o->rf.has_c1 && ssao_on()) full = ssao_patch(o, full, j[@"entry"]);   // TOTK_SSAO (totk_ssao.h): the scans below then see the patched source
     o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
-    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
+    if (full) { o->src_path = rt_src; drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); refl_mark_fetches(o, j[@"bindings"], full); }   // TOTK: scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     /* TOTK (2026-10-17): the MSL is read again from its file when a variant needs it (sh_src), on the Mac too -- keeping
        every source cost 255 MB of strings (7,691 of them) in a long session (analysis/long18 heap). TOTK_KEEP_MSL=1 keeps
        them in memory (the Mac's behaviour before). */
@@ -6713,6 +6727,24 @@ static inline __attribute__((always_inline)) uint64_t tex_fast_rid(int tid, void
     }
     void *t=tex_fast(tid);if(out)*out=t;
     return t?((__bridge id<MTLTexture>)t).gpuResourceID._impl:0;
+}
+/* A texture bound to a slot its shader reads by integer texel coordinates (refl_mark_fetches) whose Metal copy left out
+   the top mip level (mip_drop_of, the iPhone): kept at full size from now on (NvPkg keep_full) and uploaded again at once
+   (tex_mtl_p, as for a copy the GPU starts rendering into), so this very draw reads the right texels. Returns whether it
+   did; the caller takes the texture again. Registry lock held (the draw's bindings). */
+static uint64_t g_mip_kept;
+static int tex_keep_full(int tid) {
+    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
+    tex_t *t = &g_treg[tid].t;
+    if (!t->serial || !tex_mirrored(t)) return 0;
+    __unsafe_unretained NvPkg *pk = (__bridge id)serial_ptr(t->serial);
+    if (!pk || pk->keep_full || !pk->tex || pk->tex.mipmapLevelCount >= (t->d.levels ? t->d.levels : 1u)) return 0;
+    pk->keep_full = 1;
+    tex_mtl_p(t);   // the reduced copy goes, a full-size one comes (its serial steps, so the texture's views are made again)
+    if (g_mip_kept++ < 8 || g_mip_kept % 200 == 0)
+        MLOG("少传最高一级 mip 的贴图被按整数坐标读：改为全尺寸（ser=%llu %ux%u 格式 %#x %u 级；累计 %llu 张）",
+             (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)g_mip_kept);
+    return 1;
 }
 static MTLSamplerAddressMode wrapm(int w) {
     switch (w) { case 0: case 7: return MTLSamplerAddressModeClampToEdge; case 1: return MTLSamplerAddressModeRepeat;
@@ -10091,6 +10123,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                     tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL, tid < g_ntreg ? (unsigned long long)g_treg[tid].t.L.size : 0ull, tid < g_ntreg ? g_treg[tid].t.d.flags : 0u,
                     tid < g_ntreg ? g_treg[tid].t.d.levels : 0u, (__bridge void *)t, (__bridge void *)t.parentTexture);
             }
+            if (t && b->fetch && tex_keep_full(tid)) { tv = NULL; trid = tex_fast_rid(tid, &tv); t = (__bridge id<MTLTexture>)tv; }   // full size for integer reads
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             else if ((b->dtt == MTLTextureType2DArray && treg_view_type(tid, t) == MTLTextureType2D) || (b->dtt == MTLTextureType2D && treg_view_type(tid, t) == MTLTextureType2DArray)) {
                 /* TOTK: the shader indexes a 2D texture as a 2D array (the UI glyph atlas: NVN clamps the layer to 0) or the reverse;
