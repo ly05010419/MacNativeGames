@@ -4,8 +4,9 @@
 The graphics layer imports <game>/build/shader-seed at start (gfx/nvn/totk_shader_seed.h): every file is checked against
 seed-manifest.json's SHA-256, then cloned into the player's cache, so a fresh app does not translate shaders while
 playing (Future Redeemed's opening asked for about 10,000 at once). TotK prepares its seed from the RomFS shader packages
-(games/totk/scripts/prepare_shader_seed.py); Xenoblade Chronicles 3 keeps its shaders in its own archive, so this seed is
-made from the variants this game already met in play on this Mac. The output contains game-derived data and belongs in
+(games/totk/scripts/prepare_shader_seed.py); Xenoblade Chronicles 3 keeps its shaders in its own archives, which
+translate_shaders.py reads to translate every shader ahead of play (make shader-prepare); its folder is merged here with
+the variants this game already met in play on this Mac (the first cache given wins for a variant name). The output contains game-derived data and belongs in
 the work folder or the local app, never in the repository.
 
 Taken: <key>.variants (the variant index: merged from every cache, rows kept only when their files are present),
