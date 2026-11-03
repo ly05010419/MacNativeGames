@@ -16020,7 +16020,7 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
-    [en setRenderPipelineState:hdr_on() && src.pixelFormat==MTLPixelFormatRGBA16Float ? g_blit_hdr_pso : g_blit_pso]; [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy (it decodes SDR input) [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
     uv[8]=1;uv[9]=1;
@@ -16085,7 +16085,7 @@ static int present_encode_m4(id<MTL4CommandBuffer> cb, id<MTLTexture> src, id<MT
 #endif
     [args setAddress:g_present_uv[uv_i].gpuAddress atIndex:0];
     [en setArgumentTable:args atStages:MTLRenderStageFragment];
-    [en setViewport:vp]; [en setRenderPipelineState:hdr_on() && pic.pixelFormat==MTLPixelFormatRGBA16Float ? g_blit_hdr_pso : g_blit_pso];
+    [en setViewport:vp]; [en setRenderPipelineState:g_blit_hdr_pso && (pic.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // as present_encode
     [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     MTLViewport ovp; float fuv[8];
     [en setRenderPipelineState:g_blit_pso];
@@ -16509,9 +16509,10 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if(totk_hdr_available() && front_hdr_present_mode){
         MTLPixelFormat want=hdrFrame?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
         if(layer.pixelFormat!=want){mtl_finish_gpu();front_hdr_present_mode(hdrFrame);}
-        /* DisplayLink may have acquired its drawable before the mode switch. Drop
-         * this tick: nextDrawable is forbidden while its display link is active. */
-        if(supplied && supplied.texture.pixelFormat!=want){[g_q4 waitForDrawable:supplied];[g_q4 signalDrawable:supplied];return 0;}
+        /* The display link may hand a drawable of the format before the switch. It is drawn into as it is (present_pipeline
+           and present_encode go by the drawable's format), never dropped: dropping every such tick stopped the picture for
+           7 s at the switch on and 30 s at the switch off (2,800 ticks; 2026-11-03, after PR #1129), since a drawable not
+           drawn to was handed out again. */
     }
 #else
     (void)hdrFrame;
@@ -16520,7 +16521,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
 #if TARGET_OS_OSX
     if (!layer.displaySyncEnabled) layer.displaySyncEnabled = YES;   // 窗口模式按显示器垂直同步，防撕裂 | Windowed mode follows the display's vsync to prevent tearing
 #endif
-    present_pipeline(layer.pixelFormat,hdrFrame);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable
+    present_pipeline(supplied ? supplied.texture.pixelFormat : layer.pixelFormat,hdrFrame);   // 和原路径一样，首帧编管线在取drawable之前 | Same as the original path: the first frame compiles the pipeline before taking the drawable; a supplied drawable's own format (it may lag an HDR switch)
     window_shot_tick(g_present_n);
     /* TOTK: whole-window shots (wshot, TOTK_WINDOW_SHOT) copy the drawable itself after the present has drawn into it: what
        the screen shows, MetalFX output upscale and boxes included (grab_present re-renders only for TOTK_PRESENT_SKIP). */

@@ -109,7 +109,7 @@ static void front_hdr_apply(int enabled){
  atomic_store(&hdrEnabled,!!enabled);
  runtime_setting_save("hdr.txt",enabled?"on":"off","HDR / EDR");
  front_hdr_update();
- fprintf(stderr,"[hdr] EDR %s (key 8); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
+ fprintf(stderr,"[hdr] EDR %s (settings panel); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
 }
 void runtime_front_hdr_set(int enabled){if(NSThread.isMainThread)front_hdr_apply(enabled);else dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(enabled);});}
 void runtime_front_hdr_toggle(void){dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(!front_hdr_enabled());});}
