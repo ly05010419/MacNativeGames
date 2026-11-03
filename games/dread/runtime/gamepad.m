@@ -173,7 +173,7 @@ void runtime_gamepad_clear(void) {
     pthread_mutex_unlock(&gamepadLock);
 }
 
-/* On-screen touch controls (iPhone, ios/app/Sources/touch_controls.m) feed a second state merged with the physical
+/* On-screen touch controls (iPhone / iPad, ios/Sources/touch_controls.m) feed a second state merged with the physical
    controllers: buttons are OR-ed (a tap shorter than one game frame is latched like a controller press), each stick
    axis takes the stronger value. */
 static RuntimeGamepadState touchState;

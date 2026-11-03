@@ -33,7 +33,7 @@
 #include <arm_neon.h>
 #include <stdatomic.h>
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include "mach_vm_compat.h"   /* <mach/mach_vm.h> is an #error in the iOS SDK */
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
