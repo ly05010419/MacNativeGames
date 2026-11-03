@@ -1,0 +1,225 @@
+// Geometry stages run as compute (NVN2; Metal has no geometry stage). A draw whose program has a geometry stage becomes:
+//   1. capture: the program's vertex shader runs once per vertex of the draw's index range through the same vertex fetch as an
+//      ordinary draw (its translation's extra entry main0_gs, rasterization off) and writes a 144-word record per vertex
+//      (position 0..3, point size 4, clip distances 5..12, layer 13, viewport 14, attribute a component c at 16 + 4a + c);
+//   2. the geometry shader, translated with Ryujinx's Translate(asCompute) for the draw's input topology, runs as a kernel per
+//      (primitive, instance, invocation), reading the records through the primitive map (trb_data) and writing its output vertices
+//      (geometry_vb_output) and a strip index block per invocation (geometry_ib_output, 0xFFFFFFFF = restart); its own storage
+//      buffer and memory writes happen there;
+//   3. raster: the reader vertex shader (the translator's pass-through of the output vertices) and the program's fragment shader
+//      draw those indices as the output topology's strips, with every other piece of state as the draw has it (draw_inner).
+// Steps 1 and 2 cannot run inside a render pass. The first geometry draw of a run looks ahead (as seedds/nxnative's
+// nvn_geometry.inc geo_run_walk does) for the geometry draws that follow it before anything their captures or kernels could
+// depend on: a change of render targets, a dispatch, a copy, an inline uniform update, or an ordinary draw that writes memory.
+// All their captures go into one render encoder and all their kernels into one compute encoder, ahead of the render pass, each
+// with the state the replay will have at its draw (a copy of S taken on the walk); each draw then only rasterizes, inside the
+// pass. Bananza's terrain: some 300 geometry draws a frame, which split into three encoders each took the frame to 160 ms.
+// The translator side (geometry requests, capture entry, reflection "geometry") is games/totk/tools/totk_xlate Geometry.cs /
+// GeometryService.cs and patch 0007; the scheme and its ABI follow seedds/nxnative (dmsh_geometry.py, nvn_geometry.inc; MIT).
+// Not yet: indirect geometry draws, transform feedback, splitting a draw whose scratch exceeds the bound (reported in red).
+#include "nvn_geometry.h"
+
+typedef struct {
+    const void *op;   // the draw's record payload (p_draw / p_draw_idx), as the replay hands it to draw()
+    NvShader *vsc, *gs, *reader; id<MTLRenderPipelineState> cap;
+    uint64_t g_in, g_out, g_ib, g_map, g_info, g_cap, ib_n, np, slots;
+    uint32_t first, span, instances, first_instance, inv;
+    void *state;   // the replay state S at this draw (geo_run walk), for its capture and kernel
+} geo_job;
+enum { GEO_RUN = 64 };
+static geo_job g_geo_run[GEO_RUN]; static int g_geo_nrun;
+static struct { NvProg *pr; uint64_t ib; size_t ib_len; } g_geo_ras;   // while a geometry draw rasterizes its output through draw_inner
+static uint64_t g_geo_draws, g_geo_prims, g_geo_big, g_geo_runs, g_geo_hoisted;
+static NSMutableDictionary<NSData *, id<MTLRenderPipelineState>> *g_geo_cap_pso;
+
+/* Scratch for one geometry draw: from the submission's arena when it fits a slice of it, else a buffer of its own kept until the
+   GPU is done with it (defer_obj_release) */
+static uint64_t geo_scratch(size_t n, uint8_t **cpu) {
+    if (n <= (3u << 20)) { __unsafe_unretained id<MTLBuffer> b = nil; uint64_t gpu = 0; arena_alloc_u(n, &b, cpu, &gpu); return gpu; }
+    id<MTLBuffer> b = [g_dev newBufferWithLength:n options:MTLResourceStorageModeShared];
+    if (!b) return 0;
+    res_add(b); res_commit(); defer_obj_release(b); g_geo_big++;
+    *cpu = (uint8_t *)b.contents; return b.gpuAddress;
+}
+// NVN primitive (nvn_geometry.h nvn_geo_topology input) of the geometry output: 1 points, 6 line strip, 7 triangle strip
+static int geo_out_prim(int output) { return output == 1 ? 0 : output == 6 ? 3 : output == 7 ? 5 : -1; }
+
+/* The capture pipeline: the draw's vertex descriptor and vertex function variant as pso_desc builds them, with the capture
+   entry, no fragment function, no attachments and rasterization off. Cached by the pipeline key and the vertex variant. */
+static id<MTLRenderPipelineState> geo_capture_pso(NvShader *vs) {
+    pso_key k; uint32_t cf[8] = {0}; pso_key_fill(&k, vs, nil, cf, 0, 0, 1, 0);
+    NSMutableData *key = [NSMutableData dataWithBytes:&k length:sizeof k]; const void *p = (__bridge const void *)vs; [key appendBytes:&p length:sizeof p];
+    if (!g_geo_cap_pso) g_geo_cap_pso = [NSMutableDictionary dictionary];
+    id<MTLRenderPipelineState> ps = g_geo_cap_pso[key]; if (ps) return ps;
+    MTLRenderPipelineDescriptor *d = pso_desc(&k, vs, nil, nil, 0);
+    d.vertexFunction = vs->geo_fn; d.fragmentFunction = nil; d.rasterizationEnabled = NO;
+    for (int i = 0; i < 8; i++) d.colorAttachments[i].pixelFormat = MTLPixelFormatInvalid;
+    d.depthAttachmentPixelFormat = MTLPixelFormatInvalid; d.stencilAttachmentPixelFormat = MTLPixelFormatInvalid; d.rasterSampleCount = 1;
+    NSError *e = nil; ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
+    if (!ps) { MLOG("【红】几何抓取管线失败 %s：%s", vs->key, e.localizedDescription.UTF8String); return nil; }
+    g_geo_cap_pso[key] = ps; return ps;
+}
+
+/* The variant of one stage for these answers plus the geometry fields, under its own index name (shader key + suffix), since
+   the index matches variants by their texture / vertex dependencies only and would hand the plain variant back */
+static NSString *geo_variant_name(NvProg *pr, int st, NSDictionary *extra, NSString *suffix) {
+    NSMutableDictionary *a = [rt_answers(st) mutableCopy]; [a addEntriesFromDictionary:extra];
+    return totk_rt_variant([pr->key[st] stringByAppendingString:suffix], st, pr->ctl[st], pr->code[st], a, nil, 0);
+}
+
+/* Everything one geometry draw needs, with the replay state as it is now: its shaders, its scratch (capture records, output
+   vertices, index blocks, primitive map, vb_info, the capture's record description). 0: nothing to draw or not drawable here. */
+static int geo_prep(NvProg *pr, const p_draw *dw, const p_draw_idx *di, geo_job *j) {
+    int prim = dw ? dw->prim : di->prim, topology = nvn_geo_topology(prim), width = nvn_geo_width(topology);
+    int count = dw ? dw->count : di->count, instances = dw ? dw->instances : di->instances;
+    uint32_t first_instance = (uint32_t)(dw ? dw->base_instance : di->base_instance);
+    if (count <= 0 || instances < 0) return 0;
+    if (!instances) instances = 1;
+    if (!width) { RED_ONCE(160, "geometry draw with NVN primitive %d: no assembly for it (skipped)", prim); return 0; }
+    if (di && di->ind) { RED_ONCE(161, "indirect geometry draw: not implemented yet (skipped)"); return 0; }
+    if (!pr->sh[0] || !pr->key[0] || !pr->key[2]) { RED_ONCE(162, "geometry draw without a vertex stage (skipped)"); return 0; }
+    if (pr->key[3] || pr->key[4]) { RED_ONCE(163, "geometry draw with tessellation: not implemented (skipped)"); return 0; }
+    NSString *vc = geo_variant_name(pr, 0, @{@"geometry_capture": @YES}, @"-geocap");
+    NSString *gv = geo_variant_name(pr, 2, @{@"geometry_topology": @(topology)}, [NSString stringWithFormat:@"-geo%d", topology]);
+    NvShader *vsc = vc ? shader_get([vc stringByAppendingString:@"_b"], 0) : nil, *gs = gv ? shader_get([gv stringByAppendingString:@"_b"], 2) : nil;
+    NvShader *reader = gv ? shader_get([gv stringByAppendingString:@"_r"], 0) : nil;
+    if (!vsc || !vsc->geo_fn || !gs || !gs->geo_input_vertices || !reader) { RED_ONCE(164, "geometry draw: capture %p / kernel %p / reader %p missing (skipped)", (__bridge void *)vsc, (__bridge void *)gs, (__bridge void *)reader); return 0; }
+    if (gs->geo_input_vertices != width) { RED_ONCE(165, "geometry kernel %s reads %d vertices a primitive, the draw gives %d (skipped)", gs->key, gs->geo_input_vertices, width); return 0; }
+    if (!gs->geo_pso) { NSError *e = nil; gs->geo_pso = [g_dev newComputePipelineStateWithFunction:gs->fn error:&e];
+        if (!gs->geo_pso) { MLOG("【红】几何计算管线 %s：%s", gs->key, e.localizedDescription.UTF8String); return 0; } }
+    id<MTLRenderPipelineState> cap = geo_capture_pso(vsc); if (!cap) return 0;
+
+    // The draw's vertex numbers (indices as the CPU sees them now; the index range sets the capture's vertices) and its primitives.
+    // Primitive restart as the rest of the replay draws it: Metal restarts at the all-ones index (totk_nvn_ext.c
+    // nvnCommandBufferSetPrimitiveRestart names any other index in red).
+    if (di && (di->itype < 0 || di->itype > 2)) { RED_ONCE(166, "geometry draw index type %d", di->itype); return 0; }
+    int restart = di != NULL, isz = di ? 1 << di->itype : 0;
+    uint32_t restart_index = isz == 1 ? UINT8_MAX : isz == 2 ? UINT16_MAX : UINT32_MAX;
+    uint32_t *order = malloc((size_t)count * 4); if (!order) MDIE("geometry index memory");
+    if (di) { void *mb; uint64_t mo; if (!mtl_addr(di->ibuf, (uint64_t)count * isz, &mb, &mo)) { free(order); RED_ONCE(167, "geometry draw index buffer outside its pool"); return 0; }
+        if (pend_hits(di->ibuf, (uint64_t)count * isz)) RED_ONCE(168, "geometry draw indices written by GPU work of this submission: read as the CPU sees them");
+        const uint8_t *src = (const uint8_t *)(uintptr_t)di->ibuf;
+        for (int i = 0; i < count; i++) { uint32_t v = 0; memcpy(&v, src + (size_t)i * isz, isz); order[i] = v; } }
+    else for (int i = 0; i < count; i++) order[i] = (uint32_t)i;
+    uint32_t lo = UINT32_MAX, hi = 0;
+    for (int i = 0; i < count; i++) { if (restart && order[i] == restart_index) continue; lo = MIN(lo, order[i]); hi = MAX(hi, order[i]); }
+    if (lo > hi) { free(order); return 0; }
+    size_t words = nvn_geo_assemble(prim, order, count, restart, restart_index, NULL, 0);
+    uint64_t np = words == SIZE_MAX ? 0 : words / width, span = (uint64_t)hi - lo + 1;
+    int64_t first = di ? (int64_t)lo + di->base_vertex : (int64_t)(dw->first) + lo;
+    if (!np || first < 0 || first > UINT32_MAX) { free(order); return 0; }
+    uint64_t inv = (uint64_t)gs->geo_invocations, slots = np * (uint64_t)instances * inv;
+    uint64_t in_n = span * instances * GEO_CAPTURE_WORDS * 4, out_n = MAX(slots * gs->geo_vertices * gs->geo_stride * 4, 16ull),
+             ib_n = MAX(slots * gs->geo_index_stride * 4, 16ull), map_n = words * 4, total = in_n + out_n + ib_n + map_n + 1056 + sizeof(nvn_geo_capture) + 6 * 256;
+    if (total > (512ull << 20) || slots > UINT32_MAX) { free(order); RED_ONCE(169, "geometry draw needs %llu MiB of scratch: above the bound, not drawn (open: split it)", (unsigned long long)(total >> 20)); return 0; }
+    uint8_t *cpu; uint64_t gpu = geo_scratch((size_t)total, &cpu);
+    if (!gpu) { free(order); RED_ONCE(170, "geometry scratch of %llu MiB not allocated", (unsigned long long)(total >> 20)); return 0; }
+    size_t used = 0; uint8_t *p_map, *p_info, *p_cap, *unused;
+    #define GEO_ALLOC(N, G, P) do { used = (used + 255) & ~(size_t)255; (G) = gpu + used; (P) = cpu + used; used += (size_t)(N); } while (0)
+    GEO_ALLOC(in_n, j->g_in, unused); GEO_ALLOC(out_n, j->g_out, unused); GEO_ALLOC(ib_n, j->g_ib, unused); GEO_ALLOC(map_n, j->g_map, p_map);
+    GEO_ALLOC(1056, j->g_info, p_info); GEO_ALLOC(sizeof(nvn_geo_capture), j->g_cap, p_cap);
+    #undef GEO_ALLOC
+    (void)unused;
+    if (used > total) MDIE("geometry scratch accounting");
+    nvn_geo_assemble(prim, order, count, restart, restart_index, (uint32_t *)p_map, words);
+    for (size_t i = 0; i < words; i++) ((uint32_t *)p_map)[i] -= lo;   // record numbers within an instance
+    free(order);
+    memset(p_info, 0, 1056);   // Ryujinx VertexInfoBuffer: vertex_counts {records an instance, instances}, geometry_counts {primitives, first primitive}
+    uint32_t vi[8] = {(uint32_t)span, (uint32_t)instances, 0, 0, (uint32_t)np, 0, 0, 0}; memcpy(p_info, vi, sizeof vi);
+    nvn_geo_capture ci = {j->g_in, 0, {(uint32_t)first, (uint32_t)span, first_instance, (uint32_t)instances}, GEO_CAPTURE_WORDS, {0}};
+    for (int k = 0; k < GEO_CAPTURE_WORDS; k++) ci.slot[k] = (int16_t)k;
+    memcpy(p_cap, &ci, sizeof ci);
+    j->vsc = vsc; j->gs = gs; j->reader = reader; j->cap = cap; j->ib_n = ib_n; j->np = np; j->slots = slots;
+    j->first = (uint32_t)first; j->span = (uint32_t)span; j->instances = (uint32_t)instances; j->first_instance = first_instance; j->inv = (uint32_t)inv;
+    return 1;
+}
+static void geo_capture_one(id<MTL4RenderCommandEncoder> re, const geo_job *j) {
+    enc_r_pso(re, j->cap); bind_vertex_streams(re, j->vsc);
+    args_dirty_all(); encode_args(re, j->vsc, 0, 1); enc_r_vbuf(re, 13, j->g_cap);
+    enc_r_draw_instanced(re, MTLPrimitiveTypePoint, j->first, j->span, j->instances, j->first_instance);
+}
+static void geo_kernel_one(id<MTL4ComputeCommandEncoder> ce, const geo_job *j) {
+    g_geo_bind[0] = j->g_in; g_geo_bind[1] = j->g_out; g_geo_bind[2] = j->g_ib; g_geo_bind[3] = j->g_info; g_geo_bind[4] = j->g_map;
+    args_dirty_all(); encode_args(ce, j->gs, 2, 0); enc_c_pso(ce, j->gs->geo_pso);
+    enc_c_dispatch(ce, MTLSizeMake((NSUInteger)((j->np + 31) / 32), j->instances, j->inv), MTLSizeMake(32, 1, 1));
+    memset(g_geo_bind, 0, sizeof g_geo_bind);
+}
+// Whether an ordinary draw of this program may write memory (its stages store): the look-ahead stops before it
+static int geo_draw_writes(const prog_t *p) {
+    NvProg *pr = p && p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+    return !pr || pr->keeps;
+}
+/* The first geometry draw of a run (j0 prepared from the current state) and those found after it: captures and kernels, between
+   render passes, each with its own state. Returns how many jobs the run has (g_geo_run). */
+static int geo_run(geo_job *j0) {
+    typeof(S) *s0 = malloc(sizeof S); if (!s0) MDIE("geometry run state"); memcpy(s0, &S, sizeof S);
+    typeof(R) r0 = R; int pso_dirty = g_pso_dirty, dss_dirty = g_dss_dirty;
+    g_geo_run[0] = *j0; g_geo_run[0].state = NULL; int n = 1;
+    if (g_exec_next) {   // the walk, as shader_predict_rest's: state ops change S, the run stops at what a capture or kernel could depend on
+        fz_cursor cur = {.p = g_exec_next};
+        for (int guard = 0; guard < 4096 && n < GEO_RUN; guard++) {
+            const uint8_t *q; op_hdr h; const void *a;
+            if (!fz_next(&cur, &q, &h, &a)) break;
+            if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) {
+                const prog_t *p = S.prog; if (!p) continue;
+                NvProg *pr = p->serial ? (__bridge NvProg *)serial_ptr(p->serial) : nil;
+                if (!pr) { g_prog_prefetch = 1; pr = prog_get(p); g_prog_prefetch = 0; }
+                if (!pr) break;
+                if (!pr->geo) { if (geo_draw_writes(p)) break; continue; }   // an ordinary draw: it runs later, in the pass; one that stores ends the run
+                geo_job j = {0};
+                if (!geo_prep(pr, h.op == OP_DRAW ? a : NULL, h.op == OP_DRAW_IDX ? a : NULL, &j)) continue;   // drawn alone when the replay reaches it
+                j.op = a; j.state = malloc(sizeof S); if (!j.state) MDIE("geometry run state"); memcpy(j.state, &S, sizeof S);
+                g_geo_run[n++] = j;
+                continue;
+            }
+            if (h.op == OP_SET_RT || h.op == OP_DISPATCH || h.op == OP_UPDATE_UB || h.op == OP_COPY_B2B || h.op == OP_COPY_B2T || h.op == OP_COPY_T2B ||
+                h.op == OP_COPY_T2T || h.op == OP_CLEAR_TEX || h.op == OP_SIGNAL_EVENT || h.op == OP_REPORT_COUNTER || h.op == OP_FENCE_SYNC) break;
+            if (h.op == OP_CLEAR_COLOR || h.op == OP_CLEAR_DS || h.op == OP_RENDER_COND) continue;
+            state_op(h.op, a);
+        }
+    }
+    MTL4RenderPassDescriptor *rd = [MTL4RenderPassDescriptor new]; rd.renderTargetWidth = rd.renderTargetHeight = 1; rd.defaultRasterSampleCount = 1;
+    id<MTL4RenderCommandEncoder> re = enc_r_begin(rd);
+    for (int i = 0; i < n; i++) { memcpy(&S, g_geo_run[i].state ? g_geo_run[i].state : s0, sizeof S); geo_capture_one(re, &g_geo_run[i]); }
+    enc_r_end(re);
+    id<MTL4ComputeCommandEncoder> ce = enc_c_begin(NULL);
+    for (int i = 0; i < n; i++) { memcpy(&S, g_geo_run[i].state ? g_geo_run[i].state : s0, sizeof S); geo_kernel_one(ce, &g_geo_run[i]); }
+    enc_c_end(ce);
+    for (int i = 1; i < n; i++) { free(g_geo_run[i].state); g_geo_run[i].state = NULL; }
+    memcpy(&S, s0, sizeof S); free(s0); R = r0;
+    args_dirty_all(); g_enc_pso = nil; g_pso_dirty = pso_dirty | 1; g_dss_dirty = dss_dirty | 1;
+    g_geo_runs++; g_geo_hoisted += (uint64_t)(n - 1);
+    return n;
+}
+// Rasterize a prepared geometry draw's output with the reader and the program's fragment shader, inside the current pass
+static void geo_raster(NvProg *pr, const geo_job *j) {
+    NvShader *fs = pr->sh[1], *gs = j->gs;
+    int oprim = geo_out_prim(gs->geo_output);
+    if (!gs->geo_vertices || !gs->geo_index_stride || oprim < 0 || !fs) return;   // a kernel that only writes memory
+    if (gs->geo_output == 1) RED_ONCE(171, "geometry kernel %s emits points: restart indices are drawn as points (open)", gs->key);
+    if (!pr->geo_ras || pr->geo_ras_reader != (__bridge void *)j->reader || pr->geo_ras->sh[1] != fs) {
+        NvProg *r = [NvProg new]; r->sh[0] = j->reader; r->sh[1] = fs; r->ctl[1] = pr->ctl[1]; r->code[1] = pr->code[1]; r->key[1] = pr->key[1];
+        r->sig[1] = pr->sig[1]; r->alt[1] = pr->alt[1]; r->keeps = pr->keeps; pr->geo_ras = r; pr->geo_ras_reader = (__bridge void *)j->reader; }
+    p_draw_idx od = {0}; od.prim = oprim; od.count = (int32_t)(j->slots * gs->geo_index_stride); od.itype = 2; od.instances = 1;
+    g_geo_ras.pr = pr->geo_ras; g_geo_ras.ib = j->g_ib; g_geo_ras.ib_len = (size_t)j->ib_n;
+    g_geo_bind[1] = j->g_out;   // the reader's vb_input: this draw's output vertices
+    draw_inner(NULL, &od);
+    memset(&g_geo_ras, 0, sizeof g_geo_ras); memset(g_geo_bind, 0, sizeof g_geo_bind); g_pso_dirty = 1;
+}
+static void geo_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+    const void *op = dw ? (const void *)dw : (const void *)di;
+    for (int i = 1; i < g_geo_nrun; i++) if (g_geo_run[i].op == op) {   // its capture and kernel ran with the run's first draw
+        geo_job j = g_geo_run[i]; g_geo_run[i].op = NULL;
+        g_geo_draws++; g_geo_prims += j.np * j.instances;
+        geo_raster(pr, &j); return;
+    }
+    g_geo_nrun = 0;
+    geo_job j0 = {0};
+    if (!geo_prep(pr, dw, di, &j0)) return;
+    rp_flush(); rp_end();
+    g_geo_nrun = geo_run(&j0);
+    g_geo_draws++; g_geo_prims += j0.np * j0.instances;
+    if (g_geo_runs == 1 || g_geo_runs % 2000 == 0) MLOG("[geometry] %llu draws run as compute in %llu runs (%llu ahead of their draw; %llu primitives, %llu with scratch of their own); first: vertex %.16s kernel %.16s, %llu primitives, %d output vertices",
+        (unsigned long long)g_geo_draws, (unsigned long long)g_geo_runs, (unsigned long long)g_geo_hoisted, (unsigned long long)g_geo_prims, (unsigned long long)g_geo_big, pr->sh[0]->key, j0.gs->key, (unsigned long long)j0.np, j0.gs->geo_vertices);
+    geo_raster(pr, &g_geo_run[0]);
+}
