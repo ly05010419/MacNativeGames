@@ -134,6 +134,13 @@ int main(void) { @autoreleasepool {
 
     [two.extendedGamepad.leftThumbstick setValueForXAxis:0 yAxis:0]; refresh_gamepads();
     [two.extendedGamepad.leftThumbstick setValueForXAxis:-1 yAxis:0]; refresh_gamepads();
+    /* On 2P -> 1P Odyssey tries to pair two single Joy-Cons before opening controller support.
+       Full-key pads cannot be paired. Both must remain independent until the applet selects 1P. */
+    uint32_t (*mergeJoy)(const uint32_t *, const uint32_t *) =
+        runtime_input_override("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_");
+    assert(mergeJoy && mergeJoy(&ids[0], &ids[1]) == 0x4b2cau);
+    assert(style(&ids[1]) && !read_pad(0).lx && read_pad(1).lx == -32767);
+    supported_styles(7);
     arg.singleMode = 1; /* single mode overrides the player-count range */
     show_controller_support(&result, &arg);
     assert(result.players == 1 && !style(&ids[1]) && read_pad(0).lx == -32767);

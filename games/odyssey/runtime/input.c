@@ -99,13 +99,14 @@ static uint32_t pad_style(void){return runtime_handheld_mode()?2u:1u;}
 static int pad_player(uint32_t id){if(id==pad_id())return 0;if(id==1&&!runtime_handheld_mode())return 1;return -1;}
 static bool pad_active(int p){return p>=0&&(allowed&~disconnected&(1u<<p))&&(p==0||runtime_gamepad_second_connected());}
 static void reconnect_pads(void){   /* inputLock held: discard presses accumulated while logically disconnected */
- for(int p=0;p<players;p++)if(disconnected&(1u<<p))clear_input_locked(players==1?-1:p);
- disconnected=0;
+ for(int p=0;p<players;p++)if(disconnected&allowed&(1u<<p))clear_input_locked(players==1?-1:p);
+ disconnected&=~allowed;
 }
 static void supported_ids(const uint32_t *ids,uint64_t n){if(n>10||(!ids&&n))runtime_fail("invalid controller ids");
  if(getenv("TOTK_INPUT_LOG")){char b[128];size_t o=0;for(uint64_t i=0;i<n&&o<100;i++)o+=(size_t)snprintf(b+o,sizeof b-o," %#x",ids[i]);b[o]=0;fprintf(stderr,"[totk-input] game supports controller ids:%s\n",b);}
- pthread_mutex_lock(&inputLock);allowed=0;reconnect_pads();
+ pthread_mutex_lock(&inputLock);allowed=0;
  for(uint64_t i=0;i<n;i++){int p=pad_player(ids[i]);if(p>=0)allowed|=1u<<p;}
+ reconnect_pads();
  if(players==2&&!(allowed&2))players=runtime_gamepad_set_players(1);
  pthread_mutex_unlock(&inputLock);}
 static void supported_styles(uint32_t value){pthread_mutex_lock(&inputLock);styles=value;pthread_mutex_unlock(&inputLock);}
@@ -204,6 +205,13 @@ static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0
 static void initialize_debug_pad(void){fprintf(stderr,"[odyssey] debug pad unavailable; normal controller remains active\n");}
 static void debug_pad_state(void *out){if(!out)runtime_fail("debug pad state output");memset(out,0,0x20);}
 static void joy_dual(const uint32_t *id){if(!id)runtime_fail("joy-dual controller id");}
+/* Odyssey tries to pair IDs 0 and 1 on its way back to single-player. The host exposes FullKey
+   controllers, never a left/right Joy-Con pair. The SDK accepts HID result 601 for this case. */
+static uint32_t merge_single_joy(const uint32_t *first,const uint32_t *second){
+ if(!first||!second)runtime_fail("Joy-Con merge id");
+ if(getenv("TOTK_INPUT_LOG"))fprintf(stderr,"[odyssey-input] Joy-Con merge %#x/%#x: full-key pads stay separate\n",*first,*second);
+ return (601u<<9)|202u;
+}
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -231,7 +239,8 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
  {"_ZN2nn3hid18InitializeDebugPadEv",initialize_debug_pad},
  {"_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE",debug_pad_state},
- {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual}};
+ {"_ZN2nn3hid28SetNpadJoyAssignmentModeDualERKj",joy_dual},
+ {"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",merge_single_joy}};
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
 
