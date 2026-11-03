@@ -32,7 +32,7 @@ and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-por
 
 | Game | Version | Platform | Status |
 |---|---|---|---|
-| Donkey Kong Bananza | update 458752 | Mac | Plays from a development build: the mines with their terrain, characters and the HUD, at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run as compute kernels. |
+| Donkey Kong Bananza | update 458752 | Mac | Playable, early; not fully tested |
 | Pokémon Pokopia | 2.0.1 | Mac | Boots, runs its frame loop and shows its loading screen; stops at its first full scene (open). |
 
 Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
@@ -187,7 +187,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 
 | 游戏 | 版本 | 平台 | 状态 |
 |---|---|---|---|
-| 大金刚 Bananza | 更新 458752 | Mac | 用开发构建可以玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。 |
+| 大金刚 Bananza | 更新 458752 | Mac | 初步可玩，早期，未完整测试 |
 | 宝可梦 Pokopia | 2.0.1 | Mac | 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。 |
 
 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
