@@ -670,7 +670,7 @@ static void front_install_menu(void){
  front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 /* execv can make Launch Services show the nested runtime as a generic Unix executable.
-   Recover the enclosing app's own icon, including launches from the diagnostic command line. */
+   Recover the enclosing app's system icon, including launches from the diagnostic command line. */
 static void front_install_bundle_icon(void) {
  NSString *path=NSProcessInfo.processInfo.arguments.firstObject;
  if(!path.length)return;
@@ -678,12 +678,12 @@ static void front_install_bundle_icon(void) {
  path=path.stringByResolvingSymlinksInPath;
  while(path.length>1){
   if([path.pathExtension.lowercaseString isEqualToString:@"app"]){
-   NSBundle *bundle=[NSBundle bundleWithPath:path];
-   NSString *name=[bundle objectForInfoDictionaryKey:@"CFBundleIconFile"];
-   if(![name isKindOfClass:NSString.class]||!name.length)return;
-   if(!name.pathExtension.length)name=[name stringByAppendingPathExtension:@"icns"];
-   NSImage *icon=[[NSImage alloc] initWithContentsOfFile:[bundle.resourcePath stringByAppendingPathComponent:name]];
-   if(icon)NSApp.applicationIconImage=icon;   /* the app's own AppIcon.icns, as the build made it (scripts/extract_app_icon.py) */
+   /* 原始 icns 不含系统应用的圆角；使用 Finder 同样的图标，保留 macOS 的外观处理。 */
+   NSImage *icon=[[NSWorkspace.sharedWorkspace iconForFile:path] copy];
+   if(icon){
+    icon.size=NSMakeSize(512,512);   /* NSWorkspace 默认是 32 点；让 Dock 放大时也能获取高分辨率图标。 */
+    NSApp.applicationIconImage=icon;
+   }
    return;
   }
   path=path.stringByDeletingLastPathComponent;
