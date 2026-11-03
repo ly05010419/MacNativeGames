@@ -7,7 +7,7 @@
                                   keep the candidates whose value did that since the step before (the first step
                                   compares with the snapshot and then frees it); f32 keeps only finite values under 1e6
      mscan show [n]               the candidates and their values now (n, default 40)
-     mscan watch <hex address> <seconds> [rw]
+     mscan watch <hex address> <seconds> [rw]   (runs on its own thread; the hits are written when the time is up)
                                   a hardware watchpoint on those 4 bytes in the guest threads: every instruction that
                                   writes there (rw: also reads), with its count, return address, callers (frame-pointer
                                   chain), integer and float registers (offsets from main). After a hit a breakpoint on the
@@ -284,6 +284,14 @@ static void scan_report(void) {
     }
     scan_out("done: %u hits at %u instructions", total, sites);
 }
+static void scan_report(void);
+static void *scan_watch_run(void *arg) {   /* re-arms the watch on every guest thread (new ones too) until the time is up */
+    const double secs = *(const double *)arg; const uint64_t addr = atomic_load(&scan_watch_addr);
+    for (double t = 0; t < secs; t += 0.01) { scan_watch_all(addr); usleep(10000); }
+    scan_watch_all(0); atomic_store(&scan_watch_addr, 0); usleep(20000);
+    scan_report();
+    return NULL;
+}
 static void scan_watch(uint64_t addr, double secs, int rw) {
     if (addr & 3) { scan_out("watch: the address must be a multiple of 4"); return; }
     uint32_t probe; if (!scan_read(addr, &probe, 4)) { scan_out("watch: %#llx is not mapped", (unsigned long long)addr); return; }
@@ -294,10 +302,13 @@ static void scan_watch(uint64_t addr, double secs, int rw) {
     }
     for (unsigned i = 0; i < SCAN_SLOTS; i++) { atomic_store(&scan_hits[i].pc, 0); atomic_store(&scan_hits[i].n, 0); atomic_store(&scan_hits[i].filled, 0); }
     scan_watch_rw = rw; atomic_store(&scan_stepping, 1); atomic_store(&scan_watch_addr, addr);
-    scan_out("watch: %#llx for %.0f s (%s)", (unsigned long long)addr, secs, rw ? "reads and writes" : "writes");
-    for (double t = 0; t < secs; t += 0.01) { scan_watch_all(addr); usleep(10000); }
-    scan_watch_all(0); atomic_store(&scan_watch_addr, 0); usleep(20000);
-    scan_report();
+    scan_out("watch: %#llx for %.0f s (%s); the command channel stays open, the hits follow at the end", (unsigned long long)addr, secs, rw ? "reads and writes" : "writes");
+    /* The watch runs on its own thread (2026-11-03, #1266): it lasts seconds to minutes, and the keys a script sends to
+       drive the game to the watched moment come through this same command channel. */
+    static double watch_secs; watch_secs = secs;
+    pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &at, scan_watch_run, &watch_secs)) { scan_out("watch: no thread"); atomic_store(&scan_watch_addr, 0); }
+    pthread_attr_destroy(&at);
 }
 static void scan_base(void) {
     static const char *names[] = {"rtld", "main", "subsdk0", "subsdk1", "sdk"};
