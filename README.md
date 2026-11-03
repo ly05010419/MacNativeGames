@@ -112,6 +112,7 @@ The [shared shader list](docs/shader-list.md) now holds **14,794 shader variants
 
 ## What's new
 
+- **2026-11-03: optional SMAA and FXAA Quality for Tears of the Kingdom 1.4.3 on Mac.** Choose the method and its quality separately on the Effects page; the game's original FXAA remains the default ([controls](docs/controls.md)).
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
   Pokémon Pokopia boots but does not reach its first scene yet. No app packaging yet ([Switch 2 games](#switch-2-games-experimental),
   [docs/ns2-port.md](docs/ns2-port.md)).
