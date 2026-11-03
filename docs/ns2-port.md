@@ -163,7 +163,35 @@ Added for it (general where possible, each with its reason in the code):
   hangs resets the whole GPU: run such bisections only with the user's agreement.
 - Also: a compute pipeline whose kernel does not take its declared thread group is built again for it (nvn_mtl.m cs_new;
   none of Pokopia's needed it).
-- Open: Pokopia's offline corpus misses some shaders the game draws (85446a67 was translated at run time).
+- Open: Pokopia's offline corpus misses some shaders the game draws. 85446a67 was translated at run time, and no 32-byte window
+  of its instructions (but the common tail) is in the modules, LINKDATA or any IDRK entry, decompressed: it is not stored
+  as it is drawn (made or changed at load, or in a container not read yet).
+
+**Pokopia, night 2026-11-03: the language screen flickers black (about 10 frames in 12); investigation open.**
+- The chain behind it is the auto-exposure: compute 8699f064 clears a 64-bin histogram (storage buffer, 0x100 bytes),
+  2118ab53 counts the scene's (texture ser 8190, read over 1728x972) log-luminance into it (threadgroup bins, then one
+  global atomic add per bin: MATCH.ALL fails, so every lane adds its own bin), d0c17f1f reads the histogram back as a
+  BUFFER texture (64x1, format 0xb, the same memory) and writes a 2x1 image, b2d97f59 copies it into 2x1 ser 5510, and
+  2c74cdd9 writes 8 bytes the CPU reads. Uniforms of 2118ab53 c2[2] = (1/32, 0.5, 1728, 972): bins cover 2^-16..2^16.
+- Fixed on the way (translator, Program.cs TexSlot): combined texture handles (nvnCommandBufferBindTexture, c[2] + 0x20,
+  32 slots with the separate table's numbers) had no slot, so the runtime's per-slot target answer was never read and a
+  fetch through one was typed as the instruction says. d0c17f1f's histogram fetch became a texture1d read of a texture
+  buffer (undefined on Metal); now it is a texture_buffer read. 154 of Pokopia's run-cache variants named a combined
+  handle without a type (moved to run2/cache-pre-combined and translated again). It did not end the flicker (1 of 12).
+  Not yet compared over a Tears of the Kingdom cache: only fetches that ask the slot's type change (TLD / TLDS buffer
+  test, TXQ, bindless), on combined handles.
+- Measured with the bind trace (below): the histogram buffer reads all zero on the CPU in every frame from 3900 on, and
+  2c74cdd9's result is [0, 1e6] (float 0 and 1,000,000). So 2118ab53 counts nothing: no texel of ser 8190 has a luminance
+  above 0 in the clamp's window (or the reads miss). Next: dump ser 8190 and check its content and its writer (texdump of
+  frame 4011 is in ns2-work/totk/run2/td_a), then why its luminance is 0 (pre-exposure from the previous exposure would
+  close a loop: exposure 0 -> black scene -> empty histogram).
+- Ruled out (A/B, 12 screenshots a second apart): present timing, TOTK_GPU_BLOCKRT, writeback, render stream, async
+  replay, CPU deswizzle, window texture uploads, sync lag; ResourceAlias visibility on the barriers between dispatches
+  (2 of 12).
+- Diagnostics in the working tree (not committed): TOTK_BIND_TRACE=<key prefixes> (TOTK_BIND_TRACE_FROM=<frame>,
+  TOTK_BIND_TRACE_N=<count>): per encode, the textures / images / typed buffers (id, serial, memory, size, target, format,
+  first floats), the storage buffers (up to 64 words) and the uniform buffers (12 floats) a shader reads;
+  TOTK_QUEUE_TRACE, TOTK_T2T_LOG, TOTK_REUP_LOG, TOTK_INV_LOG; zero-copy linear 2D textures (tex_linear_alias).
 
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:

@@ -37,6 +37,11 @@ using System.Text.Json.Nodes;
 static class SwshXlate
 {
     const int TexBase = 0x168, SampBase = 0x568;   // NVN 分离贴图 / 采样器句柄在 c[2] 的字节基址（每槽 8 字节；dm/gfx/tools/maxwell_refs.py 全量实测） | byte base of NVN separate texture / sampler handles in c[2] (8 bytes per slot; full measurement in dm/gfx/tools/maxwell_refs.py)
+    // Combined handles (nvnCommandBufferBindTexture) are at c[2] + 0x20, 32 slots of 8 bytes, with the same slot numbers as the
+    // separate table (nvn_mtl.m driver bank, Service.cs CombinedBase). Pokopia's auto-exposure kernel d0c17f1f fetches its
+    // histogram through a combined handle bound to a buffer texture; without this its slot was -1, the "buffer" answer was
+    // never read, the fetch became a texture1d read of a texture buffer (undefined on Metal, mostly 0) and the frame black.
+    const int CombinedBase = 0x20, CombinedSlots = 32;
 
     sealed class Accessor : IGpuAccessor
     {
@@ -70,7 +75,10 @@ static class SwshXlate
         {
             (int off0, _, _) = TextureHandle.UnpackOffsets(handle);
             int bytes = off0 * 4;
-            return (cbufSlot < 0 || (cbufSlot & 0xffff) == 2) && bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0 ? (bytes - TexBase) / 8 : -1;
+            if (cbufSlot >= 0 && (cbufSlot & 0xffff) != 2) return -1;
+            if (bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0) return (bytes - TexBase) / 8;
+            if (bytes >= CombinedBase && bytes < CombinedBase + 8 * CombinedSlots && (bytes - CombinedBase) % 8 == 0) return (bytes - CombinedBase) / 8;
+            return -1;
         }
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
