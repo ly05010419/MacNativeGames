@@ -5,6 +5,9 @@ writes or reads it, so before the UI and before key 2's scene copy; 0 % encodes 
 Read, not run: the builds and the game run are in the story."""
 from pathlib import Path
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 TOTK = Path(__file__).resolve().parents[1] / 'games/totk'
@@ -56,10 +59,22 @@ class Passes(unittest.TestCase):
         up = branch(FIN, 'static int botw_fin_upscale(', '\n}\n')
         self.assertIn('if (strncmp(fs->key, BOTW_MFXUP_KEY, 65)) return 0;', up)
         self.assertLess(up.index('if (replaced || !off) return 0;'), up.index('rp_end();'))   # MetalFX's or FXAA on: never ours
-        for need in ('!(S.color.blend_en & 1)', '(S.chmask.mask & 0x7) == 0x7', 'scissor_full(R.rt.color[0], cv, hv)',
+        for need in ('!(S.color.blend_en & 1)', 'bfin_mask_rgb_only(S.chmask.mask)', 'scissor_full(R.rt.color[0], cv, hv)',
                      'R.rt.n == 1'):
             self.assertIn(need, up)
         self.assertIn('R.clear_c[0] = 0;', up)                          # a pending clear is done by the pass
+
+    def test_only_a_draw_writing_rgb_and_not_alpha_is_replaced(self):
+        # Our pass writes RGB only: a game draw that also writes alpha (0xf) must keep the game's own. Compiled and run.
+        fn = re.search(r'^static inline int bfin_mask_rgb_only\(uint32_t mask\) \{.*\}$', FIN, re.M)[0]
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d, True)
+        cases = {0x7: 1, 0xf: 0, 0x3: 0, 0x0: 0, 0xe: 0, 0x17: 1, 0xf7: 1, 0x8f: 0}   # bits 4+ are other targets
+        src = Path(d, 'mask.c')
+        src.write_text('#include <stdint.h>\n#include <stdio.h>\n' + fn + '\nint main(void){' +
+                       ''.join(f'printf("%d\\n",bfin_mask_rgb_only({m}u));' for m in cases) + 'return 0;}\n')
+        subprocess.run(['xcrun', 'clang', '-Wall', '-Werror', str(src), '-o', str(Path(d, 'mask'))], check=True)
+        out = subprocess.run([str(Path(d, 'mask'))], capture_output=True, text=True, check=True).stdout.split()
+        self.assertEqual([int(v) for v in out], list(cases.values()))
 
     def test_rgb_only_and_texel_for_texel_at_one_to_one(self):
         self.assertIn('writeMask = MTLColorWriteMaskRed | MTLColorWriteMaskGreen | MTLColorWriteMaskBlue;', FIN)

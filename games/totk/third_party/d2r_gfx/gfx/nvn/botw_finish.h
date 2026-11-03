@@ -6,8 +6,8 @@
 // sizes the picture is the canvas's size and the game's FXAA runs. So, unlike TOTK's, both act around that one draw:
 // - FXAA off: the draw is not encoded; our pass draws its source into the canvas instead, texel for texel when the sizes
 //   are equal, bilinear when they differ, RGB only (the alpha stays, as the game's mask leaves it; a clear still pending
-//   for the canvas is done by the pass). Only a plain full-canvas draw is taken (one colour target, no blending, the
-//   game's mask, the whole viewport and scissor); anything else keeps the game's own and is logged once.
+//   for the canvas is done by the pass). Only a plain full-canvas draw is taken (one colour target, no blending, RGB
+//   written and alpha not, the whole viewport and scissor); anything else keeps the game's own and is logged once.
 // - Sharpening: FSR 1's RCAS (totk_finish.h fin_pass) at 25 to 100 % on the canvas, once per frame, after the scene is
 //   in it (the draw above, ours, or MetalFX) and before the next draw that writes or reads the canvas: the first UI draw,
 //   or in a frame without UI the copy to the screen. So the UI is not sharpened, and key 2's scene copy, taken at that
@@ -21,6 +21,9 @@ static struct {
     uint64_t off_n, sharp_n, declined;
 } g_bfin;
 
+/* The game's draw writes RGB and not alpha (mask 0x7, the first target's four bits): our pass writes RGB only, so only
+   such a draw is replaced; one that also writes alpha (0xf) keeps the game's own. */
+static inline int bfin_mask_rgb_only(uint32_t mask) { return (mask & 0xf) == 0x7; }
 /* The FXAA-off pass into format f: texel for texel (scale 0) or bilinear (scale 1), RGB written only. */
 static id<MTLRenderPipelineState> bfin_ps(MTLPixelFormat f, int scale) {
     for (int i = 0; i < 4; i++) if (g_bfin.ps[i] && g_bfin.ps_fmt[i] == f && g_bfin.ps_scale[i] == scale) return g_bfin.ps[i];
@@ -80,7 +83,7 @@ static int botw_fin_upscale(__unsafe_unretained NvShader *fs, int replaced) {
     if (replaced || !off) return 0;
     int tid = (int)(S.tex[1][0] & 0xfffff);
     id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast(tid) : nil;
-    int ok = src && src.textureType == MTLTextureType2D && src != dst && !(S.color.blend_en & 1) && (S.chmask.mask & 0x7) == 0x7 &&
+    int ok = src && src.textureType == MTLTextureType2D && src != dst && !(S.color.blend_en & 1) && bfin_mask_rgb_only(S.chmask.mask) &&
              !(hv && ((cv->set_levels && cv->base_level) || (cv->set_layers && cv->min_layer))) &&
              !(S.has_vp && !(S.vp[0][0] == 0 && S.vp[0][1] == 0 && S.vp[0][2] == (float)dst.width && S.vp[0][3] == (float)dst.height)) &&
              scissor_full(R.rt.color[0], cv, hv);
