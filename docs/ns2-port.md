@@ -160,3 +160,12 @@ the graphics scale and streamplay memory (back to the values Bananza was played 
 Missing floors in later areas: those draws use a vertex / geometry / fragment program, and the geometry stage has no
 translation chain yet, so they are skipped (`TOTK_SKIP_LOG=1` names them). Next: geometry stages as compute (Ryujinx
 `Translate(asCompute)`, as seedds/nxnative's nvn_geometry.inc does).
+
+**To do / to compare (geometry stages).**
+- Now: geometry stages as compute (Ryujinx `Translate(asCompute)`: the vertex stage as a compute kernel writing its
+  outputs to a buffer, the geometry stage as a compute kernel per primitive reading them, then the geometry output drawn
+  with a pass-through vertex shader and the program's fragment shader). General, Ryujinx's own Metal backend's route,
+  seedds/nxnative runs it; costs an extra dispatch or two and a buffer round trip per such draw.
+- To compare later: Metal object + mesh shaders, vertex, geometry and rasterization in one pipeline with no intermediate
+  buffer (in theory faster). Neither Ryujinx nor SPIRV-Cross generates mesh shaders, so it needs a translation backend of
+  its own. Measure once the compute route is correct (Bananza's floors, Pokopia).
