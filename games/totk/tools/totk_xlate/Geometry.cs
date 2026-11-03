@@ -30,7 +30,7 @@ static class ShaderGeometry
         ["vertex_output"] = 0, ["geometry_vb_output"] = 1, ["geometry_ib_output"] = 2, ["vb_info"] = 3, ["trb_data"] = 4, ["vb_input"] = 1,
     };
 
-    sealed class GeometryError : Exception { public GeometryError(string message) : base(message) { } }
+    internal sealed class GeometryError : Exception { public GeometryError(string message) : base(message) { } }
 
     /// Output bounds in the translator's fixed-input compute ABI, from the SPH (words 2..4 of the code, the 0x50-byte SPH v3
     /// layout that NVN2's 0x80-byte SPH v4 starts with). A passthrough shader (SPH word 0 bit 24) takes the input primitive's

@@ -46,6 +46,7 @@ static _Atomic uint64_t g_taa_last;     // game frame of the last edge smoothing
 #include "nvn_depth_clear.h"
 #include "nvn_fbread.h"
 #include "nvn_refl.h"
+#include "nvn_geometry.h"   // geometry stages as compute: the capture record (GEO_CAPTURE_WORDS) the shader loader reads, the assembly nvn_geometry_rt.inc uses
 #include "nvn_texture_plan.h"
 #include "fps_overlay.h"
 #include "nvn_cover.h"
@@ -5338,7 +5339,7 @@ static void shmap_load(void) {
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
        words per invocation, words per output vertex, input vertices per primitive) and its compute pipeline */
-    id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
+    id<MTLFunction> geo_fn; int geo_vertices, geo_invocations, geo_output, geo_index_stride, geo_stride, geo_input_vertices; id<MTLComputePipelineState> geo_pso; NSString *geo_lean; int geo_words; int16_t *geo_slot;   /* geo_lean: a full kernel's lean variant (nvn_geometry_rt.inc); geo_words / geo_slot: a lean kernel's capture record (words, each capture word's slot or -1) */ id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned (TOTK): driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok (TOTK): vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth (TOTK): the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off; int ssao_slot, fx;   /* ssao_slot: TOTK_SSAO parameter float4 in c1 (0 = not patched; totk_ssao.h); fx: the effect switch it belongs to (totk_fx.h) */
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     uint8_t guard_idx[NVN_REFL_MAXB], guard_count, guard_plan_ready;   // TOTK: the bindings upd_guard_stage looks at (storage / typed buffers), from the reflection once
     // 上次编好的参数缓冲
@@ -5369,7 +5370,7 @@ static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
     void *ar_sh[6]; uint8_t ar_n, ar_st[32], ar_reg[32], ar_img[32];   // ar_*: draw_att_reads' sampled texture / image slots of sh[] (valid while sh[] is the same; ar_n 255 = more than 32, scan the bindings)
     int missing, miss_has[2]; uint64_t miss_sig[2]; int exp_skip;
     int keeps; uint64_t miss_gen;
-    int geo; NvProg *geo_ras; void *geo_ras_reader; NSMutableDictionary<NSNumber *, NSArray *> *geo_cache; } @end   // geo_cache: {capture variant, kernel, reader} by bind signature and input topology (nvn_geometry_rt.inc geo_prep)   // geo: a geometry stage (ctl / code / key [2] set) run as compute; geo_ras: the reader + fragment program its output is drawn with (for the reader geo_ras_reader)   // TOTK (iOS, Mac async shaders): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip); keeps: a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped; miss_gen: totk_rt_ready_gen() when a stage was last found missing
+    int geo; NvProg *geo_ras, *geo_lean_ras; void *geo_ras_reader; NSMutableDictionary<NSNumber *, NSArray *> *geo_cache; } @end   // geo_lean_ras: the vertex + fragment of a lean geometry draw; geo_cache: {capture variant, kernel, reader, lean kernel or NSNull} by bind signature and input topology (nvn_geometry_rt.inc geo_prep)   // geo: a geometry stage (ctl / code / key [2] set) run as compute; geo_ras: the reader + fragment program its output is drawn with (for the reader geo_ras_reader)   // TOTK (iOS, Mac async shaders): missing = stages whose variant is not translated yet; miss_sig: signature whose variant is missing (prog_fit); exp_skip: TOTK_EXP_SKIP_FS decision (0 unknown, 1 keep, 2 skip); keeps: a stage stores to memory or streams out (sph_keeps_memory), its draws are never skipped; miss_gen: totk_rt_ready_gen() when a stage was last found missing
 @implementation NvProg @end
 /* TOTK_EXP_SKIP_FS=<fragment key prefix>[,<prefix>...] (measurement only, 2026-10-16): drop every draw whose fragment shader key
    starts with one of the prefixes. A render pass whose draws are all dropped is never opened, so the GPU time saved is the
@@ -5836,7 +5837,17 @@ static NvShader *shader_load(NSString *pc, int stage) {
         NSDictionary *g = j[@"geometry"];
         if ([g isKindOfClass:NSDictionary.class]) { o->geo_vertices = [g[@"vertices"] intValue]; o->geo_invocations = [g[@"invocations"] intValue]; o->geo_output = [g[@"output"] intValue];
             o->geo_index_stride = [g[@"index_stride"] intValue]; o->geo_stride = [g[@"stride"] intValue]; o->geo_input_vertices = [g[@"input_vertices"] intValue];
-            if (o->geo_invocations < 1 || o->geo_input_vertices < 1 || o->geo_input_vertices > 6 || o->geo_stride < 0 || o->geo_index_stride < 0 || o->geo_vertices < 0) { MLOG("【红】几何着色器 %s 的输出布局不对", pc.UTF8String); return nil; } }
+            if (o->geo_invocations < 1 || o->geo_input_vertices < 1 || o->geo_input_vertices > 6 || o->geo_stride < 0 || o->geo_index_stride < 0 || o->geo_vertices < 0) { MLOG("【红】几何着色器 %s 的输出布局不对", pc.UTF8String); return nil; }
+            if ([g[@"lean"] isKindOfClass:NSString.class]) o->geo_lean = g[@"lean"];
+            NSArray *reads = g[@"capture_reads"];
+            if ([reads isKindOfClass:NSArray.class]) {   // a lean kernel: the capture words it reads, in its record's order
+                if (reads.count > GEO_CAPTURE_WORDS) { MLOG("[RED] lean geometry kernel %s reads %lu capture words", pc.UTF8String, (unsigned long)reads.count); return nil; }
+                o->geo_slot = malloc(GEO_CAPTURE_WORDS * sizeof *o->geo_slot); if (!o->geo_slot) MDIE("lean geometry slots");
+                for (int k = 0; k < GEO_CAPTURE_WORDS; k++) o->geo_slot[k] = -1;
+                for (NSUInteger i = 0; i < reads.count; i++) { int k = [reads[i] intValue];
+                    if (k < 0 || k >= GEO_CAPTURE_WORDS) { MLOG("[RED] lean geometry kernel %s reads capture word %d", pc.UTF8String, k); return nil; }
+                    o->geo_slot[k] = (int16_t)i; }
+                o->geo_words = (int)reads.count; } }
         NSString *ce = j[@"entry_geometry_capture"];
         if ([ce isKindOfClass:NSString.class] && !(o->geo_fn = [lib newFunctionWithName:ce])) { MLOG("【红】顶点着色器 %s 没有抓取入口 %s", pc.UTF8String, ce.UTF8String); return nil; } }
     NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
@@ -14244,7 +14255,8 @@ frz_plain:;
         void *mb; uint64_t mo;
         uint64_t gpu;
         if (g_geo_ras.pr) {   // a geometry draw's output indices (geo_draw scratch), 32-bit
-            if (di->count) enc_r_draw_indexed(en, mp, di->count, MTLIndexTypeUInt32, g_geo_ras.ib, g_geo_ras.ib_len, 1, 0, 0);
+            if (g_geo_ras.args) enc_r_draw_indexed_indirect(en, mp, MTLIndexTypeUInt32, g_geo_ras.ib, g_geo_ras.ib_len, g_geo_ras.args);   // a packed lean draw: the GPU's count
+            else if (di->count) enc_r_draw_indexed(en, mp, di->count, MTLIndexTypeUInt32, g_geo_ras.ib, g_geo_ras.ib_len, di->instances ? di->instances : 1, di->base_vertex, di->base_instance);
             return; }
         if (!mtl_gpu_addr(di->ibuf, 1, &mb, &mo, &gpu)) { RED_ONCE(22, "索引缓冲不在内存池里"); return; }
         if (di->ind) {   /* nvnCommandBufferDrawElementsIndirect: the GPU reads the count and the rest from the record (hle_nvn.c) */

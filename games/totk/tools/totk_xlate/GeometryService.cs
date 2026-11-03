@@ -50,7 +50,8 @@ static partial class ShaderService
         JsonObject tex = GetObj(rq, "tex"), img = GetObj(rq, "img");
         HashSet<long> depthSlots = DepthSlots(tex);
         var compareSlots = CompareSlots(src);
-        src = ShaderGeometry.CaptureInput(ShaderGeometry.TopologyPointer(PostProcess(src, depthSlots)));
+        string plain = ShaderGeometry.TopologyPointer(PostProcess(src, depthSlots));
+        src = ShaderGeometry.CaptureInput(plain);
         File.WriteAllText(msl, src);
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");
         if (!entry.Success || entry.Groups[1].Value != "kernel") throw new RuntimeError("geometry: the translation is not a compute kernel");
@@ -74,6 +75,25 @@ static partial class ShaderService
             ["geometry"] = layout,
         };
         WriteReader(readerSpv, readerMsl, variant, (int)layout["output"], depthMinusW);
+        // Passthrough input without adjacency, one invocation: the lean kernel the host draws with the game's own vertex shader
+        // (GeometryLean.cs). Named in the full kernel's layout ("lean"); a shape it does not handle stays a note.
+        if ((bool)layout["passthrough"] && (topology == 0 || topology == 1 || topology == 3) && (int)layout["invocations"] == 1)
+        {
+            try
+            {
+                (string lean, int[] reads) = ShaderGeometryLean.Lean(plain, (int)res["geometry_stride"]);
+                File.WriteAllText(Path.Combine(outDir, variant + "_l.metal"), lean);
+                var leanLayout = (JsonObject)layout.DeepClone();
+                leanLayout["stride"] = 1; leanLayout["lean"] = true;
+                leanLayout["capture_reads"] = new JsonArray(reads.Select(k => (JsonNode)k).ToArray());
+                var leanRefl = (JsonObject)refl.DeepClone();
+                leanRefl["key"] = variant + "_l"; leanRefl["geometry"] = leanLayout;
+                leanRefl["drv_reads"] = DrvReads(lean, "gs"); leanRefl["bindings"] = Reflect("gs", lean, res);
+                WriteReflection(variant + "_l", leanRefl);
+                layout["lean"] = variant + "_l";
+            }
+            catch (ShaderGeometry.GeometryError e) { ((JsonArray)refl["notes"]).Add((JsonNode)JsonValue.Create(e.Message)); }
+        }
         WriteReflection(variant + "_b", refl);   // last: the host takes a variant once its _b.json is there
     }
 

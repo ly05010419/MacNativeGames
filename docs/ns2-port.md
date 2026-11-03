@@ -187,8 +187,26 @@ Frame-rate overlay: its resolution is the canvas the game presents, 2880x1620 fo
 BotW's compose shaders (`scene_size_note`), so Bananza shows none: open. On a 3440x1440 display a 2880x1620 window
 (`TOTK_WINDOW_SIZE`) is cut to 2455x1377 by macOS.
 
-Next for speed: fewer barriers between the kernels, nxnative's lean kernel for pass-through geometry shaders, then mesh
-shaders (below).
+**Lean kernels for pass-through geometry shaders (2026-11-03 night).** As nxnative (dmsh_geometry.lean, geo_pack.metal
+geo_lean_tri): the translator also writes `<variant>_l` for a pass-through shader with point, line or triangle input and one
+invocation (tools/totk_xlate/GeometryLean.cs, named in the full kernel's layout as "lean"). It stores only each output
+vertex's viewport mask and reads only the capture words it decides with (5d537f76: words 0, 1, 3, 16, 17, 18 of 144).
+The host (`nvn_geometry_rt.inc`) captures those words, runs the lean kernel, turns each kept triangle into its original
+vertex numbers (dropped ones collapse), and draws the game's own vertex and fragment shaders through them: no 134-word
+output vertex, no reader. Taken for triangle input, one instance, and a vertex shader without memory writes;
+`TOTK_GEO_LEAN=0` keeps the full kernel. Same build, same scene (the save had moved on, so this is not the scene above):
+full kernel GPU 14.9 ms, frame 18.0 ms; lean GPU 12.0 ms, frame 16.5 ms (about 60 fps); the pictures match.
+
+Then (same night): the run's kernels have no barriers between them (its jobs share no written memory, geo_run_conflict;
+the barrier after every dispatch had been taken for the garbage triangles, whose cause was the argument block), and the
+lean draws' host kernels run in phases with one barrier between phases (`nvn_geometry_lean.inc` geo_lean_phases). Same
+scene: GPU 12.0 -> 11.0 ms; the frame stays at about 16.4 ms, the game's 60 fps. Point and line input take the lean path
+too, packed: geo_lean_cull turns dropped vertices into restarts, nxnative's pack kernels (count, scan, write) compact the
+strips into a list in primitive order with the count in indirect arguments, geo_lean_index maps them to vertex numbers,
+and the draw is indexed indirect. Bananza has no point or line geometry draws; `TOTK_GEO_LEAN_PACK=1` sends its triangle
+draws through the packed path as a test: same picture, GPU 11.3 ms.
+
+Next for speed: mesh shaders (below).
 
 **To do / to compare (geometry stages).**
 - Done (above): geometry stages as compute (Ryujinx `Translate(asCompute)`: the vertex stage as a compute kernel writing its
