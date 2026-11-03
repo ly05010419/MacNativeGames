@@ -393,7 +393,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs	2026-11-02 23:37:56
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,449 @@
 +using Ryujinx.Graphics.Shader.Instructions;
 +using Ryujinx.Graphics.Shader.Translation;
 +using System;
@@ -664,6 +664,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +                    case 0x988:
 +                    case 0x98c:
 +                    case 0x38c:
++                    case 0xf8c:
 +                        context.SetUsedFeature(FeatureFlags.SharedMemory);
 +                        break;
 +                    case 0x986:
@@ -2714,7 +2715,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	2026-11-02 23:38:24
-@@ -0,0 +1,842 @@
+@@ -0,0 +1,913 @@
 +using Ryujinx.Graphics.Shader.Decoders;
 +using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 +using Ryujinx.Graphics.Shader.Translation;
@@ -2766,6 +2767,9 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
 +            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
 +            x(0x38c, InstName.Atoms, AAtoms, N);
++            x(0xf8c, InstName.Atoms, AAtomsPopcInc, N, writesRd: false);
++            x(0x301, InstName.Bfe, ABrev, N);
++            x(0x883, InstName.P2r, AUp2ur, N, uniform: true);
 +        }
 +
 +        // ---- attributes ----
@@ -3032,6 +3036,11 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +        public static void AAtoms(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
++            if (x.Bits(78, 80) != 0)
++            {
++                throw AFail(context, "ATOMS with an index stride");
++            }
++
 +            Operand addr = context.IAdd(Register(x.Ra, RegisterType.Gpr), Const((int)x.SignedField(40, 64)));
 +            Operand offset = context.ShiftRightU32(addr, Const(2));
 +            Operand id = Const(context.ResourceManager.SharedMemoryId);
@@ -3040,12 +3049,75 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            ASet(context, x, res);
 +        }
 +
++        // ATOMS.POPC.INC [Ra << (stride + 1)], no result (0xf8c): every active lane adds one to the shared word, so per lane an
++        // atomic add of 1. Stride 78..80 scales the index; only the form with no offset, RZ destination and the control word
++        // 0x0d00003f (bits 78..80 aside) is known (Eden-NS2 ampere lowering's notes; Pokemon Pokopia's compute shader 2118ab534fac88c6)
++        public static void AAtomsPopcInc(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Rd != RegisterConsts.RegisterZeroIndex || x.Bits(32, 64) != 0 || (x.Bits(64, 96) & ~0xc000) != 0x0d00003f)
++            {
++                throw AFail(context, "ATOMS.POPC.INC form");
++            }
++
++            int stride = x.Bits(78, 80);
++            Operand addr = AGpr(x.Ra);
++
++            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
++            {
++                addr = context.ShiftLeft(addr, Const(stride + 1));
++            }
++
++            Operand id = Const(context.ResourceManager.SharedMemoryId);
++
++            EmitAtomicOp(context, StorageKind.SharedMemory, AtomOp.Add, AtomSize.U32, id, context.ShiftRightU32(addr, Const(2)), Const(1));
++        }
++
++        // BREV Rd, Rb (0x301, the register form): Rb's bits reversed (Pokemon Pokopia's compute shader 6e8db04c25a53d8c)
++        public static void ABrev(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(64, 96) != 0 || x.Bits(40, 64) != 0)
++            {
++                throw AFail(context, "BREV form");
++            }
++
++            ASet(context, x, context.BitfieldReverse(AGpr(x.Rb)));
++        }
++
++        // UP2UR URd, UPR, URZ, 0x1 (0x883): URd = UP0 as its bit 0; the only form known (mask 1, no merge source)
++        public static void AUp2ur(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            int rd = x.Bits(16, 22);
++
++            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || x.Bits(32, 64) != 1 || x.Bits(64, 96) != 0x08000000)
++            {
++                throw AFail(context, "UP2UR form");
++            }
++
++            if (rd != RegisterConsts.UniformZeroIndex)
++            {
++                context.Copy(Register(rd, RegisterType.Uniform), context.ConditionalSelect(APredReg(0, true), Const(1), Const(0)));
++            }
++        }
++
 +        // ---- local and shared memory ----
 +
-+        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91)
-+        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo)
++        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91). A shared
++        // access scales Ra by its index stride (78..80: .X4, .X8, .X16, Ra shifted left by stride + 1; Eden-NS2 ampere lowering's
++        // notes): Pokemon Pokopia's FFT compute shaders index their shared arrays by thread with .X8 and all read the wrong words
++        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool shared = false)
 +        {
 +            Operand addr = Register(x.Ra, RegisterType.Gpr);
++            int stride = shared ? x.Bits(78, 80) : 0;
++
++            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
++            {
++                addr = context.ShiftLeft(addr, Const(stride + 1));
++            }
 +
 +            if (x.Bit(91) && x.Bits(urLo, urLo + 6) != RegisterConsts.UniformZeroIndex)
 +            {
@@ -3061,7 +3133,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            AmpereOp x = new(context.CurrOp);
 +            StorageKind kind = x.Opcode == AmpereOpcodes.Ldl ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 +
-+            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32), x.Rd, (int)x.SignedField(40, 64));
++            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32, kind == StorageKind.SharedMemory), x.Rd, (int)x.SignedField(40, 64));
 +        }
 +
 +        // STL / STS [Ra + UR + offset], Rb: UR at 64
@@ -3070,7 +3142,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            AmpereOp x = new(context.CurrOp);
 +            StorageKind kind = x.Opcode is 0x387 or 0x987 ? StorageKind.LocalMemory : StorageKind.SharedMemory;
 +
-+            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64), x.Rb, (int)x.SignedField(40, 64));
++            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64, kind == StorageKind.SharedMemory), x.Rb, (int)x.SignedField(40, 64));
 +        }
 +
 +        // ---- surfaces ----

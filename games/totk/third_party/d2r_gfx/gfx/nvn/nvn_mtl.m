@@ -14304,6 +14304,25 @@ static void dispatch(const p_dispatch *dp) {
     if (cpr->missing) { static uint64_t n; if (!n++) MLOG("[shader-miss] 计算着色器还没翻译：跳过这个派发（以后同类不再提示）"); return; }
     NvShader *cs = cpr->sh[5];
     if (!cs) { RED_ONCE(28, "派发的程序没有计算着色器（或未映射）"); return; }
+    /* TOTK_SKIP_CS=all | <key prefix>[,<key prefix>...] (diagnostic): those compute dispatches are not run (bisecting a
+       GPU hang to its shader); TOTK_SKIP_CS_LOG=1 names each compute shader once as it is first dispatched. */
+    { static char list[16][17]; static int nl = -1, all, logk; static NSMutableSet *seen;
+      if (nl < 0) { nl = 0; const char *e = getenv("TOTK_SKIP_CS"); logk = getenv("TOTK_SKIP_CS_LOG") != NULL;
+          if (e && !strcmp(e, "all")) all = 1;
+          else for (const char *q = e; q && *q && nl < 16; ) { size_t n = strcspn(q, ","); snprintf(list[nl++], sizeof list[0], "%.*s", (int)(n < 16 ? n : 16), q); q += n; if (*q) q++; } }
+      if (logk) { if (!seen) seen = [NSMutableSet set]; NSString *k = @(cs->key); if (![seen containsObject:k]) { [seen addObject:k]; MLOG("[cs-first] frame %llu %.16s", (unsigned long long)atomic_load(&g_cur_frame), cs->key); } }
+      if (all) return;
+      for (int i = 0; i < nl; i++) if (list[i][0] && !strncmp(cs->key, list[i], strlen(list[i]))) return; }
+    /* TOTK_CS_UBO_LOG=<key prefix> (diagnostic): the first dispatches of that compute shader name each uniform buffer it
+       reads (slot, address, size) and its first 8 words as the CPU sees them when the dispatch is encoded. */
+    { static const char *want; static int read, left = 6;
+      if (!read) { read = 1; want = getenv("TOTK_CS_UBO_LOG"); }
+      if (want && left > 0 && !strncmp(cs->key, want, strlen(want))) { left--;
+        for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i]; if (b->kind != NVN_RB_CBUF || b->reg >= 16) continue;
+            const p_bind_buf *u = &S.ubo[5][b->reg]; uint32_t w[8] = {0};
+            if (u->addr && u->size >= 32) memcpy(w, (const void *)(uintptr_t)u->addr, 32);
+            MLOG("[cs-ubo] %.16s grid %u x %u x %u slot %d addr %#llx size %#llx: %08x %08x %08x %08x %08x %08x %08x %08x", cs->key,
+                 dp->x, dp->y, dp->z, b->reg, (unsigned long long)u->addr, (unsigned long long)u->size, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]); } } }
     { uint64_t skip = atomic_load(&g_diag_skip_cs);   // diagnostic "flag skipcs_<key> 1"
       if (skip && !g_defer_replaying) { char prefix[17]; snprintf(prefix, sizeof prefix, "%016llx", (unsigned long long)skip); if (!strncmp(cs->key, prefix, 16)) return; }
       if (!g_defer_replaying && fx_drop(cs, 5, nil)) return; }   // an effect switched off (totk_fx.h)

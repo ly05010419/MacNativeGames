@@ -137,3 +137,16 @@ Added for it (general where possible, each with its reason in the code):
   fragment programs make a combined program (not yet checked in a run).
 - Open: the frame loop sometimes stops at a varying frame (20 / 466 / 517); test windows float (`TOTK_WINDOW_FLOAT=1`, an
   accessory app, also over full-screen Spaces).
+
+**Pokopia, afternoon 2026-11-03: first picture (the Ditto loading icon); a GPU hang at the first full scene is open.**
+- Separable programs now combine (the log names them); `nvnTexturePoolRegisterImage` registers images in the texture
+  table (compute images had named nothing: a GPU address fault, then a hang).
+- Virtual cores move an owner to an idle core it may run on when a waiter can only use the owner's core (Horizon's
+  migration of suggested threads): Pokopia's 0x1009 (core 1 only) starved behind 0x1023 with cores 2-5 idle, and the
+  frame loop stopped at a varying frame. With it 13,000 frames in 4 minutes.
+- Translator: BREV, ATOMS.POPC.INC (0xf8c), UP2UR (0x883) and the shared-memory index stride of LDS / STS / ATOMS
+  (78..80, Ra shifted by stride + 1: the FFT compute shaders indexed shared memory wrongly). The seed translates 2,384 of
+  2,385 (one bindless LDC left). Caches translated before this need translating again (the cache key does not change).
+- Open: at the first full scene (frame ~640: 95 draws, 20 dispatches) the GPU hangs (kIOGPUCommandBufferCallbackErrorHang)
+  and macOS ignores the process's later submissions (black). Not an indirect draw; the FFT and 70ab27e1 compute shaders
+  are bounded. Diagnostics added: TOTK_SKIP_CS=all|<prefixes>, TOTK_SKIP_CS_LOG=1, TOTK_CS_UBO_LOG=<prefix>.

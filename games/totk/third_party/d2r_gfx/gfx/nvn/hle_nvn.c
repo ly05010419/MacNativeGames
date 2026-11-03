@@ -349,6 +349,13 @@ NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const
                 vv ? "yes" : "no", vv && vv->set_format ? vv->format : 0, vv && vv->set_levels ? vv->base_level : -1, vv && vv->set_levels ? vv->nlevels : 0); } }
     totk_life_reg(id, (const tex_t *)t);
     mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
+/* An image descriptor: NVN keeps texture and image descriptors in one texture pool under one id space (nvnDeviceGetImageHandle
+   is the id here), so the image is registered in the same table a texture is, and BindImage(s) finds it by that id.
+   Unimplemented until Pokemon Pokopia registered its compute shaders' images with it: their handles named nothing and the
+   GPU faulted on an address (kIOGPUCommandBufferCallbackErrorPageFault), then hung. */
+NVN(nvnTexturePoolRegisterImage, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { (void)tp;
+    totk_life_reg(id, (const tex_t *)t);
+    mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
 
 NVN(nvnSamplerPoolInitialize, NVNboolean, NVNsamplerPool *sp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
     *(dpool_t *)sp = (dpool_t){(const pool_t *)p, off, n}; OLOG("SamplerPool n=%d", n); return 1;
