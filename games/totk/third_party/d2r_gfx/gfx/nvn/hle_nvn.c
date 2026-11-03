@@ -2425,7 +2425,7 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
 #ifndef GAME_BOTW
     for (int i = 0; i < n && !b2; i++) { const copy_prefix *cp = copy_of((NVNcommandHandle)h[i]); b2 = cp->magic == COPY_MAGIC && cp->eyes; }
 #endif
-    void *b2_left = NULL; extern int g_b2_order; const int b2_rfirst = b2 && g_b2_order;
+    void *b2_left = NULL; extern int mtl_b2_right_first(void); const int b2_rfirst = b2 && mtl_b2_right_first();   // functions, not nvn_mtl.m data: probes that link this file alone resolve no data of it at load
     if (b2) {
         { static int said; if (!said++) LOG("[vr] stereo B2: the first stereo submission (%llu marks so far): replayed for the left eye, then the right", (unsigned long long)b2_mk); }
         /* the left eye's uniforms: the submission's own capture (the submit call's, or one taken now when the replay runs
@@ -2433,7 +2433,7 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
            the second run writes the same blocks): nothing of the left pass reads live memory the game may be rebuilding */
         extern void *runtime_b2_left_cap(void); extern void *mtl_ucap_overlay(const void *base, const void *over); extern void mtl_ucap_free(void *c); extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
         void *over = runtime_b2_left_cap(), *own = ucap ? NULL : mtl_sub_capture_ubos((const uint64_t *)h, n);
-        extern int g_b2_ucap; b2_left = mtl_ucap_overlay(ucap ? ucap : own, g_b2_ucap ? NULL : over);
+        extern int mtl_b2_submit_uniforms_only(void); b2_left = mtl_ucap_overlay(ucap ? ucap : own, mtl_b2_submit_uniforms_only() ? NULL : over);
         mtl_ucap_free(over); mtl_ucap_free(own);
     }
     for (int pass = 0; pass < (b2 ? 2 : 1); pass++) {

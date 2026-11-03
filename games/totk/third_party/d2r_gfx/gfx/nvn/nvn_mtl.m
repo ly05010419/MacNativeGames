@@ -1157,11 +1157,13 @@ static uint64_t g_b2_nopic, g_b2_pics;   // stereo B2: left passes that drew no 
 static id<MTLTexture> g_b2_scene[3]; static uint64_t g_b2_scene_pass[3];   // stereo B2: per eye, the colour target of the last pass inside its own marks
 static int g_b2_scene_shot, g_b2_scene_right; static void b2_scene_shot(int eye);
 static _Atomic int g_b2_passlog;   // diagnostic: the eye passes' passes into the game's presented textures, while a b2shot is pending
-static _Atomic int g_b2_shot; int g_b2_rep = 1, g_b2_ucap;   // "flag b2rep 0" (diagnostic): the left pass leaves out counter reports / resets; "flag b2ucap 1" (diagnostic): its uniforms are the submit call's only
+static _Atomic int g_b2_shot; static int g_b2_rep = 1, g_b2_ucap;
+int mtl_b2_submit_uniforms_only(void) { return g_b2_ucap; }   // hle_nvn.c submit_exec   // "flag b2rep 0" (diagnostic): the left pass leaves out counter reports / resets; "flag b2ucap 1" (diagnostic): its uniforms are the submit call's only
    // stereo B2 diagnostic ("flag b2shot <n>"): the next n left pictures saved beside the VR control file
 static void shot(id<MTLTexture> src, const char *path, int screen, const int crop[4]);
 static void mtl_finish_gpu(void);
-int g_b2_order;   // diagnostic ("flag b2order 1"): the right eye's pass first, then the left one
+static int g_b2_order;   // diagnostic ("flag b2order 1"): the right eye's pass first, then the left one
+int mtl_b2_right_first(void) { return g_b2_order; }   // hle_nvn.c submit_exec
 void mtl_eye_done(int left, int last);
 void mtl_eye_pass(int e) {
     const int second = e & 4; e &= 3;   // second: the other eye's pass was committed just before
