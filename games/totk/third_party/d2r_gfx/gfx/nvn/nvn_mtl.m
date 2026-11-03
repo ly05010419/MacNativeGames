@@ -6082,7 +6082,16 @@ static void *prog_get_p(const prog_t *cp) {   // 只在提交线程调用 | Call
         /* A Switch 2 game's geometry / tessellation stages have no translation chain yet (Donkey Kong Bananza: 7 geometry
            shaders, drawn as mesh geometry by seedds/nxnative; docs/ns2-port.md phase 5): the program's draws are skipped
            and named once, instead of stopping the game. Open. */
-        if(st!=0&&st!=1&&st!=5){static NSMutableSet *told;if(!told)told=[NSMutableSet set];if(![told containsObject:@(key)]){[told addObject:@(key)];MLOG("[shader] [RED] %s: NVN stage %d has no translation chain yet; its draws are skipped",key,st);}o->missing|=1<<(st&7);continue;}
+        if(st!=0&&st!=1&&st!=5){static NSMutableSet *told;if(!told)told=[NSMutableSet set];if(![told containsObject:@(key)]){[told addObject:@(key)];MLOG("[shader] [RED] %s: NVN stage %d has no translation chain yet; its draws are skipped",key,st);
+            /* TOTK_GS_DUMP=<folder> (tools): every stage of such a program, its control section (0xe0 bytes for NVN2) and code
+               area as <key>.ctl / <key>.code, and <program>.stages listing them, as test input for the geometry translation */
+            const char *gd=getenv("TOTK_GS_DUMP"); if(gd){ for(unsigned j=0;j<p->nstage;j++){ const uint8_t *cj=p->sd[j].control,*dj=(const uint8_t *)(uintptr_t)p->sd[j].data; if(!cj||!dj) continue;
+                char kj[65]; uint32_t lj=ctl_code_len(cj); shader_key_of(cj,dj,lj,kj);
+                [[NSData dataWithBytes:cj length:nvn2_ctl(cj)?0xe0:0x880] writeToFile:[NSString stringWithFormat:@"%s/%s.ctl",gd,kj] atomically:YES];
+                [[NSData dataWithBytes:dj length:lj] writeToFile:[NSString stringWithFormat:@"%s/%s.code",gd,kj] atomically:YES];
+                NSString *line=[NSString stringWithFormat:@"%d\t%s\n",ctl_stage(cj,dj),kj]; NSString *lp=[NSString stringWithFormat:@"%s/%s.stages",gd,key];
+                NSString *old_=[NSString stringWithContentsOfFile:lp encoding:NSUTF8StringEncoding error:nil]?:@""; [[old_ stringByAppendingString:line] writeToFile:lp atomically:YES encoding:NSUTF8StringEncoding error:nil]; } }}
+            o->missing|=1<<(st&7);continue;}
 #endif
         if(st!=0&&st!=1&&st!=5)MDIE("TOTK shader %s: unsupported NVN stage %u",key,nvn_stage);
         if (getenv("TOTK_CTL_DUMP")) {   // diagnostic: the control section the game hands NVN, per shader (offline shader discovery is checked against it)
@@ -9329,6 +9338,56 @@ static id<MTLSamplerState> dummy_samp(void) {
 static uint64_t dummy_samp_rid(void) { static uint64_t rid; if (!rid) rid = dummy_samp().gpuResourceID._impl; return rid; }
 static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { const char *e = getenv("TOTK_DUMMY_KB"); NSUInteger kb = e ? (NSUInteger)atol(e) : 65536; b = [g_dev newBufferWithLength:kb << 10 options:MTLResourceStorageModeShared]; res_add(b); } return b; }   // TOTK_DUMMY_KB bisect knob (default 64 MiB of zeros)   // TOTK: 64 MiB of zeros (pages untouched until read): a shader indexing an unresolved storage buffer reads 0, as Ryujinx's robust zero-size binding does, instead of memory past a 64 KiB buffer
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
+/* Global memory reached through an address the shader loaded from memory (NVN2; reflection kinds GMEM / GMEML; the translator's
+   GlobalToStorage.TryGenerateRawStorageOp in patch 0006, after seedds/nxnative, MIT). The shader binary-searches this table for
+   the pool holding the address and goes through a pointer moved by that pool's delta (its Metal GPU address minus its guest
+   address); an address in no pool is dropped. Layout: 4096 entries of 32 bytes {start, end (exclusive), delta, 0}, sorted by
+   start, entry 0 empty (0, 0), unused entries starting at ~0; pools as disjoint ranges (a pool overlapping an earlier one keeps
+   only its part past that one's end: every pool wraps the guest's own pages, so any pool holding an address gives its GPU
+   address). Every pool goes into the residency set, since the shader may reach any of them. Rebuilt when the pools change
+   (g_pool_gen); the replaced table is released once the GPU is done with it. */
+#define GMEM_MAP_ENTRIES 4096
+#define GMEM_MAP_ENTRY 32
+static id<MTLBuffer> g_gmem_buf; static uint64_t g_gmem_gen;
+static uint64_t gmem_map_gpu(void) {
+    uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
+    if (g_gmem_buf && g_gmem_gen == gen) return g_gmem_buf.gpuAddress;
+    id<MTLBuffer> b = [g_dev newBufferWithLength:GMEM_MAP_ENTRIES * GMEM_MAP_ENTRY options:MTLResourceStorageModeShared];
+    if (!b) MDIE("raw global memory: pool table buffer");
+    uint8_t *t = (uint8_t *)b.contents; memset(t, 0, b.length);
+    for (int k = 1; k < GMEM_MAP_ENTRIES; k++) memset(t + (size_t)k * GMEM_MAP_ENTRY, 0xff, 8);
+    int n = 1, over = 0; uint64_t end = 0;
+    pthread_mutex_lock(&g_mu);
+    gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
+    for (int k = 0; k < g_pools.n; k++) {   // g_pools is sorted by start (nvn_pool_index.h)
+        pidx_ent *p = &g_pools.e[k];
+        pool_res(p);
+        uint64_t lo = MAX((uint64_t)p->lo, end), hi = p->hi;
+        if (lo >= hi) continue;
+        if (n == GMEM_MAP_ENTRIES) { over++; continue; }
+        uint64_t e[3] = {lo, hi, p->gpu - (uint64_t)p->base}; memcpy(t + (size_t)n++ * GMEM_MAP_ENTRY, e, sizeof e); end = hi;
+    }
+    pthread_mutex_unlock(&g_mu);
+    if (over) RED_ONCE(141, "raw global memory: %d more memory pools than the %d entries of the pool table; addresses in them are not reached", over, GMEM_MAP_ENTRIES - 1);
+    res_add(b); res_commit();
+    if (g_gmem_buf) defer_obj_release(g_gmem_buf);
+    g_gmem_buf = b; g_gmem_gen = gen;
+    { static int said; if (said++ < 4) MLOG("raw global memory: pool table of %d ranges (pool generation %llu), rebuilt whenever a pool comes or goes", n - 1, (unsigned long long)gen); }
+    return b.gpuAddress;
+}
+/* The write log those stores fill (patch 0006 GmemLog*: word 0 = a page found no free slot, then an open-addressing set of
+   1 << 10 guest pages). Each draw or dispatch gets its own, cleared. The host does not read it: a shader with the log may
+   store anywhere, so the encoder drops every uniform snapshot of this submission from it on (usnap_drop over all memory),
+   as it does for the range of an ordinary writable storage buffer; the stores themselves land in the guest's pages (zero-copy
+   pools), and the encoders' device-scope barriers order them before later passes. */
+#define GML_BYTES (((1u << 10) + 1u) * 4u)
+static uint64_t gml_take(void) {
+    __unsafe_unretained id<MTLBuffer> b = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
+    arena_alloc_u(GML_BYTES, &b, &cpu, &gpu);
+    memset(cpu, 0, GML_BYTES);
+    usnap_drop(0, UINT64_MAX);
+    return gpu;
+}
 // useResource 在同一编码器内对同一（资源, 用法, 阶段）是幂等的：记下本渲染编码器已声明过的，重复的跳过（计算编码器每次派发新建，不去重）
 // useResource is idempotent for the same (resource, usage, stage) within one encoder: remember what this render encoder has already declared and skip repeats (a compute encoder is created anew for each dispatch, no dedup)
 /* A mip-chain pass: it renders level n of a texture while its shader samples level n - 1 through a view covering the whole
@@ -10005,6 +10064,10 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             __unsafe_unretained id<MTLBuffer> cb = sh->c1buf ? sh->c1buf : zero_bank();   // TOTK: held by sh / zero_bank's static (strong: a retain + release per draw)   // c1 长 0（全库 600 份）而着色器仍声明：读 0 | c1 has length 0 (600 of them in the whole library) yet the shader still declares it: reads 0
             slots[aid] = (sh->c1buf ? sh->c1_gpu : zero_bank_gpu()) + (sh->c1buf ? sh->c1off : 0);
             USE(cb, MTLResourceUsageRead);
+        } else if (b->kind == NVN_RB_GMEM) {   // the memory pool table for addresses the shader loaded from memory (gmem_map_gpu)
+            slots[aid] = gmem_map_gpu();
+        } else if (b->kind == NVN_RB_GMEML) {   // its write log (gml_take)
+            slots[aid] = gml_take();
         } else if (b->kind == NVN_RB_SUPPORT) {   // support_buffer：缩放 1.0、BGRA 互换 0、视口变换未关闭（视口字段不读） | support_buffer: scale 1.0, BGRA swap 0, viewport transform not disabled (viewport fields are not read)
             slots[aid] = support_gpu();
             USE(support_buf(), MTLResourceUsageRead);
