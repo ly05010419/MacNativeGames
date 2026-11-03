@@ -1,12 +1,14 @@
-/* Keeps the game's save data in a folder the player picks in iCloud Drive (or anywhere in Files), so it outlives the
-   app: deleting the app deletes Documents, not that folder. The folder is reached through a security-scoped bookmark
+/* Keeps the game's save data in a folder the player picks (for example in the Files app), so it outlives the app:
+   deleting the app deletes Documents, not that folder. The folder is reached through a security-scoped bookmark
    stored in NSUserDefaults; a fresh install has no bookmark, so the app asks once (before the game thread starts, so a
-   restore cannot race the game's own save loading). "Later" is remembered; the Settings pane has a switch to choose the
-   folder again. Every copy is best-effort: a failure only logs, never blocks play.
+   restore cannot race the game's own save loading). "Later" is remembered; Settings › Save backup has a switch to choose
+   the folder again. Every copy is best-effort: a failure only logs, never blocks play.
 
-   Off unless the player turns the Settings switch on (TOTK_BACKUP=1): until then nothing is shown and nothing is
-   copied. With it on and no folder stored, the folder picker appears once; the folder inside it is named after the
-   game, so a shared iCloud Drive folder stays readable. */
+   Off unless the player turns the Settings switch on (TOTK_BACKUP, default off): until then nothing is shown and
+   nothing is copied. With it on and no folder stored, the folder picker appears once; the folder inside it is named
+   after the game, so a folder that holds other files stays readable. The save sync (runtime/cloud_save.m) keeps
+   <picked>/Saves, this backup keeps <picked>/<game name>/{save,game-slot}: choosing one folder for both never has the
+   two features write the same file. */
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <stdio.h>
@@ -17,12 +19,13 @@
 #include "save_backup.h"
 #include "totk_ui_lang.h"
 
+static NSString *const kBackupEnabled = @"TOTK_BACKUP";   // the Settings switch: off until the player turns it on
 static NSString *const kBookmark = @"TOTK_BACKUP_BOOKMARK";
 static NSString *const kDeclined = @"TOTK_BACKUP_DECLINED";   // "Later" was chosen: do not ask again on every launch
 static NSString *const kReconfigure = @"TOTK_BACKUP_RECONFIGURE";   // a Settings switch: forget the folder and ask again
 static NSString *const kImportRequest = @"TOTK_SAVE_IMPORT";   // a Settings switch: pick a save folder on the next launch
 static NSString *const kBeforeImport = @"save-before-import";   // the folder the import replaces, kept for one mistake
-/* The folder this game keeps inside the picked one: the game's own name, so a shared iCloud Drive folder reads clearly. */
+/* The folder this game keeps inside the picked one: the game's own name, so a folder that holds other files reads clearly. */
 static NSString *game_folder(void) {
     NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"];
     return name.length ? name : @"TOTK";
@@ -63,9 +66,11 @@ static const char *const kDirectoryEnvs[] = {"TOTK_PROFILE_DIR", "TOTK_GAME_SLOT
 }
 
 + (BOOL)enabled {
-    /* Off by default: the picker must only appear after the player asked for backup in Settings. */
+    /* The player's switch is the source (default off, so the picker only appears after the player asked for backup in
+       Settings); an explicit launch variable (devicectl -TOTK_BACKUP 0/1) still wins. */
     const char *value = getenv("TOTK_BACKUP");
-    return value && strcmp(value, "0") != 0;
+    if (value) return strcmp(value, "0") != 0;
+    return [NSUserDefaults.standardUserDefaults boolForKey:kBackupEnabled];
 }
 
 + (void)prepareFrom:(UIViewController *)host completion:(void (^)(void))ready {
@@ -438,7 +443,7 @@ static const char *const kDirectoryEnvs[] = {"TOTK_PROFILE_DIR", "TOTK_GAME_SLOT
 }
 
 /* A reinstall has empty Documents folders: copy the backup back before the game starts. Never overwrites anything.
-   Off the main thread: a file iCloud has not downloaded yet can take a while, and launch must not watch-dog. */
+   Off the main thread: a file the file provider has not downloaded yet can take a while, and launch must not watch-dog. */
 - (void)restoreIfFreshWithCompletion:(void (^)(void))completion {
     if (!root) { completion(); return; }
     dispatch_async(queue, ^{

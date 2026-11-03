@@ -164,6 +164,50 @@
 			<key>Type</key>
 			<string>PSGroupSpecifier</string>
 			<key>Title</key>
+			<string>存檔備份 · Save backup</string>
+			<key>FooterText</key>
+			<string>把存檔（save 與 game-slot）複製到你選的資料夾，例如「檔案」App 裡自建或共用的資料夾；刪掉 App 之後存檔還在，重裝後選同一個資料夾即可還原。與 Mac ↔ iPhone / iPad 的存檔同步分開：同步用同一個資料夾下的 Saves，這裡用遊戲名稱的子資料夾，兩者不會寫到同一批檔案。重新啟動遊戲後生效 · copies save and game-slot into a folder you pick (for example one in the Files app); they survive deleting the app, and a reinstall restores them from the same folder. Separate from the Mac ↔ iPhone / iPad save sync: that keeps a Saves folder, this keeps a folder named after the game, so the two never write the same files. Takes effect after relaunching the game</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_BACKUP</string>
+			<key>Title</key>
+			<string>自動備份存檔 · Automatic save backup</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>打開後下一次啟動會請你選一次資料夾 · on: the next launch asks for the folder once</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_BACKUP_RECONFIGURE</string>
+			<key>Title</key>
+			<string>重新選擇備份資料夾 · Choose the backup folder again</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>下一次啟動重新選一次；選「以後再說」則暫停備份 · the next launch asks again; "Later" pauses the backup</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSToggleSwitchSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_SAVE_IMPORT</string>
+			<key>Title</key>
+			<string>下次啟動匯入存檔 · Import a save on the next launch</string>
+			<key>DefaultValue</key>
+			<false/>
+			<key>FooterText</key>
+			<string>下一次啟動先請你選存檔資料夾，確認後匯入；目前的存檔會先保留在 App 的 Documents/save-before-import · the next launch asks for a save folder and copies it in after you confirm; the current save is first kept in the app's Documents/save-before-import</string>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSGroupSpecifier</string>
+			<key>Title</key>
 			<string>除錯 · Debug</string>
 			<key>FooterText</key>
 			<string>開啟後把日誌寫進 App 的 Documents/log.txt（在 Mac 上讀取），會稍微影響效能；關閉時不記錄任何日誌。重新啟動遊戲後生效 · writes Documents/log.txt for reading on a Mac (slightly slower); off records nothing. Takes effect after relaunching the game</string>
