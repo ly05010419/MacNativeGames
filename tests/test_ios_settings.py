@@ -80,7 +80,7 @@ class IOSSettings(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, f'TOTK_PHONE_FPS={value}: {run.stdout}{run.stderr}')
         # The key -> layer table is the one main.m filters by; a row that moves layers without the table following it
         # would be handed over (or dropped) by the wrong layer.
-        for key, layer in {'TOTK_DOCKED': 'preset', 'TOTK_BOTW_SCENE': 'preset', 'TOTK_PHONE_FPS': 'preset',
+        for key, layer in {'TOTK_DOCKED': 'preset', 'TOTK_BOTW_SCENE': 'preset', 'TOTK_DOCKED_SCENE': 'preset', 'TOTK_PHONE_FPS': 'preset',
                            'TOTK_IOS_PICTURE_MODE': 'custom', 'TOTK_RENDER_RES': 'custom',
                            'TOTK_FPS_CAP': 'custom', 'TOTK_FPS_OVERLAY': 'always',
                            'TOTK_ASPECT': 'always'}.items():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the hair / cloth clock veneers of 1.0.0, 1.1.2 and 1.2.1 (runtime/game_patches.c patch_cloth_clock) by running
+"""Check the hair / cloth clock veneers of 1.0.0 and 1.2.1 (runtime/game_patches.c patch_cloth_clock) by running
 them in Unicorn on the image the production C patches produce (scripts/v143_timing_fixture.c, built against
 game_patches.c for each version).
 
@@ -9,7 +9,7 @@ and x29. The call veneer scales s2 / s3 by the measured ratio and enters the sha
 address. The unpatched image must give factor / 30 (4x at 120 FPS). Needs the work tree's rewritten/<version> images
 and the unicorn module.
 
-usage: verify_cloth_clock.py [v0 v112 v121]
+usage: verify_cloth_clock.py [v0 v121]
 """
 import os
 import struct
@@ -26,8 +26,6 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = {
     'v0': (None, 0x2aa6a10, [(0x7b5988, 0x7b598c, 0, 8, -0x40, True), (0x7b6b28, 0x7b6b2c, 0, 8, -0x40, True),
                              (0x7f5ec4, 0x7f5ed0, 1, 0, 0x114, False)], 0x7b6358, 0x82c224),
-    'v112': ('TOTK_GAME_V112', 0x2b17b30, [(0x9d1e64, 0x9d1e74, 0, 8, 0x104, False), (0x9d2d34, 0x9d2d2c, 0, 8, 0x104, False),
-                                           (0x9e7648, 0x9e764c, 1, 0, 0x134, False)], 0x9d2774, 0x88a998),
     'v121': ('TOTK_GAME_V121', 0x2b19a50, [(0x82192c, 0x821928, 0, 8, 0x124, False), (0x822a64, 0x822a40, 0, 8, 0x124, False),
                                            (0x83182c, 0x831830, 1, 0, 0x134, False)], 0x8222f0, 0x89822c),
 }

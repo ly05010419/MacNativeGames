@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Build an unsigned, sideloadable iPhone/iPad IPA from a prepared work tree: Tears of the Kingdom (v0, v112, v121, v143)
+"""Build an unsigned, sideloadable iPhone/iPad IPA from a prepared work tree: Tears of the Kingdom (v0, v121, v143)
 or Breath of the Wild (botw160, botw190; the runtime and graphics layer built with GAME_BOTW, game_patches_botw.c, its own
 shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
 from compile_seed import METAL_FLAGS
-from device_pipelines import connected_gpus, seed_check
+from device_pipelines import SCHEMA, connected_gpus, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -117,7 +117,7 @@ def seed_reusable(seed, source_hash, source_files, sdk):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tree',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
-    p.add_argument('--version',choices=['v0','v112','v121','v143','botw160','botw190'],required=True);p.add_argument('--logs',type=Path,required=True)
+    p.add_argument('--version',choices=['v0','v121','v143','botw160','botw190'],required=True);p.add_argument('--logs',type=Path,required=True)
     p.add_argument('--platform',choices=['ios','visionos'],default='ios')
     p.add_argument('--device-gpu',action='append',default=[],metavar='ARCH',help='compile the pipeline archive here for this device GPU (applegpu_g14p: iPhone 14); auto (default): the iPhones / iPads on the cable; none')
     p.add_argument('--image-outside',action='store_true',help='leave romfs.bin out: the device keeps it in Documents/GameData');p.add_argument('--app-name',default='Tears of the Kingdom');p.add_argument('--bundle-id',default='org.macnativegames.totk')
@@ -277,7 +277,11 @@ def main():
     # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
     # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds.
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
-    want=hashlib.sha256((seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()+(lists/'pso_title.tsv').read_bytes()).hexdigest()
+    # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
+    # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
+    # stamp held only the shaders and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
+    want=hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode()+(seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()
+                        +(lists/'pso_title.tsv').read_bytes()+host.read_bytes()).hexdigest()
     # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
     # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
     tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)

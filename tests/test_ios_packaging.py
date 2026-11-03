@@ -100,7 +100,9 @@ class FullHD(unittest.TestCase):
         # The switch is the pane's preset layer (main.m's apply_settings): it hands its own drawable and scene over
         # through settings_map.c's table, which is where the docked values live.
         self.assertIn('totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv)', main)
-        for line in ('setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0)', 'setenv("TOTK_RENDER_RES", prenv.scene, 0)'):
+        for line in ('setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0)',
+                     # docked: the pane's TOTK_DOCKED_SCENE row picks 1600x900 or 1920x1080 (settings_map.c totk_docked_scene)
+                     'if (prenv.scene)', 'setenv("TOTK_RENDER_RES", totk_docked_scene([d stringForKey:@"TOTK_DOCKED_SCENE"].UTF8String), 0);'):
             self.assertIn(line, main)
         preset = re.search(r'int totk_preset_env_build\(int docked.*?\n}', (ios/'Sources/settings_map.c').read_text(), re.S)
         self.assertIsNotNone(preset)
@@ -153,10 +155,40 @@ class FullHD(unittest.TestCase):
         main = (TOOLS.parent/'Sources/main.m').read_text()
         self.assertIn('setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);', main)
         screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
-        self.assertIn('settingsPaneHas:@"TOTK_BOTW_SCENE"', screen)
-        self.assertIn('forKey:@"TOTK_BOTW_SCENE"', screen)
+        self.assertIn('settingsPaneHas:@"TOTK_BOTW_SCENE"] ? @"TOTK_BOTW_SCENE"', screen)
+        self.assertIn('forKey:_sceneKey]', screen)
         totk = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
-        self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has no such row')
+        self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
+        self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
+
+    def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
+        """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
+        must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""
+        src = (TOOLS.parents[1]/'runtime/game_patches_v143.c').read_text()
+        self.assertIn('if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);', src)
+        self.assertEqual(src.count('vr_headlook_install(m);'), 1)
+
+    def test_mac_pipelines_are_made_again_for_another_runtime(self):
+        """The cached Mac pipelines (build/ios-pipelines) are this runtime's descriptions: their stamp holds the runtime
+        binary as well as the shaders and lists (2026-11-03: narrowed vertex formats were never seen otherwise)."""
+        ipa = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("+host.read_bytes()).hexdigest()", ipa)
+        self.assertLess(ipa.index("host=tree/"), ipa.index("+host.read_bytes()).hexdigest()"))
+
+    def test_totk_pane_has_the_docked_scene_after_full_hd(self):
+        """Tears of the Kingdom has the same three pictures (user 2026-11-03: "王国也一样"): its own TOTK_DOCKED_SCENE row
+        right after the Full HD switch, handed over as TOTK_RENDER_RES, and the start screen's original / HD."""
+        import plistlib
+        specs = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
+        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
+        row = specs[at+1]
+        self.assertEqual(row['Key'], 'TOTK_DOCKED_SCENE')
+        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
+        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
+        self.assertEqual(row['TOTKApp'], 'totk')
+        self.assertTrue(row['TOTKPhone'])
+        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+        self.assertIn('[self settingsPaneHas:@"TOTK_DOCKED_SCENE"] ? @"TOTK_DOCKED_SCENE"', screen)
 
     def test_botw_pane_drops_totk_only_rows(self):
         import plistlib

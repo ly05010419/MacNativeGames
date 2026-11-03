@@ -257,6 +257,18 @@ static class ShaderService
             "\nconstexpr sampler totk_nearest(filter::nearest, mip_filter::none, address::clamp_to_edge);" + s.Substring(at + ns.Length);
     }
 
+    // min / max / clamp with Maxwell's result for a NaN operand. SPIRV-Cross writes the translator's FMin / FMax / FClamp as
+    // fast::min / max / clamp, and an explicit fast:: call compiles to air.fast_fmin / fast_fmax / fast_clamp in every Metal
+    // math mode, MTLMathModeSafe included: a NaN operand's result is then whatever the GPU gives. Maxwell's FMNMX returns the
+    // other operand, as precise:: (IEEE fmin / fmax) does. Apple GPUs differ here: on an A20 Pro, max(0, NaN) from a light
+    // direction left at zero turned half of a model white (seedds/nxnative 56704a0); the M5 happens to agree with Maxwell.
+    // Every fast:: call of the three is written as precise::. Integer min / max are plain calls and are left alone.
+    // Taken from iceorange-dev/manosaba-ios a095262 (MIT), written anew. Changes the MSL: needs a new chain name and a
+    // rebuilt totk_xlate (prebuilt/macos-arm64/README.md).
+    static readonly Regex FastMinMax = new(@"\bfast::(min|max|clamp)\s*\(");
+
+    static string PreciseMinMax(string src) => FastMinMax.Replace(src, "precise::${1}(");
+
     /// True when the MSL stores or does atomics through storage binding `name` (same rule as nvn_mtl.m msl_stores_through).
     static bool MslStoresThrough(string msl, string name)
     {
@@ -448,6 +460,7 @@ static class ShaderService
         if (depthSlots.Count > 0)
             src = RewriteDepthTextures(src, depthSlots);
         src = MatchSwitchDepthSampling(src);
+        src = PreciseMinMax(src);   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
         if (depthSlots.Count > 0 || src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");

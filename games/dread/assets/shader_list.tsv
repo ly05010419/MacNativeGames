@@ -1,0 +1,37 @@
+# Metroid Dread shader list v1 (games/dread/scripts/shader_list.py; games/dread/README.md). Bind states beyond the defaults.
+# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v4-unverified.
+V	00e453d026d2fc05a91fa338ab41104a2d01923940497a873d45cfe325796a7c	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	024d83528f550fbea5ecbfc8e99a68ac1ee478e6c501420b284af61b25f5948b	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","2":"2d","3":"2d","8":"2d_depth"}}
+V	0459b351d841fc2b65b7332ac15e63f5ed729db7f7f479749e7f1c51ef6bb16c	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","7":"2d"}}
+V	0bb91b311d5d5eda78d0676c1cbae46b936485b0f8432af9e786aeeb9ca4075c	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","2":"2d","3":"2d","8":"2d_depth"}}
+V	1001e21246f626fee742e550a5274acd944f1224fe1f96958050449e760a42af	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","2":"cube"}}
+V	2f800d95bf716ac0f4cfa29e839d0ff8f1f768733e29ba9b90438d8ebe973eb8	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"2d","4":"2d","7":"2d"}}
+V	353f48d7ac006fc2cd2f1e6f75697f1ba75a8516efdcc2e5d782c1a38f5911fa	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","7":"2d"}}
+V	364e8b47058223f6b11e0abaa4aeba7f5e1da725ea00e4073456bb521314312e	{"attr":{},"fout":{"0":"float","1":"float"},"img":{},"tex":{"12":"cube","13":"cube","7":"2d"}}
+V	3da87a93a8f9b236613e241d87a6d6bb97ab7993c6a97a5540cc2a7184c6d566	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	49689cfb9bce7463ee2db7e1f7aa31b9a754903df394536ed1ee4521556c00a3	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","12":"cube","13":"cube","7":"2d"}}
+V	50eab34d17a496d7e743ceecad76f9f330f1bc0b1d70b7005d943e920fd980d3	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"12":"cube","13":"cube","7":"2d"}}
+V	5693abdc10b396e05a78da9cec58696aa1b9e8bac37d55cf94b41aad8361308e	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"cube","7":"2d"}}
+V	56dd42fb2f849dc36db3d7aaa448032fac1cdbfcfa6f9f6399ed2afdb0fe3ee8	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"2d","4":"2d","5":"2d","6":"2d","7":"2d"}}
+V	5f063a7c5b7a4737a94c9eafa1c262c52eaab3c6dda646e1077596dd67a86258	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","2":"2d","3":"2d","5":"2d","8":"2d_depth"}}
+V	6374ff927aa191e314c5ffdfa91835cf998d83fc350b6754ab588da5dbd4c130	{"attr":{},"fout":{"0":"float","1":"float"},"img":{},"tex":{"12":"cube","13":"cube","7":"2d"}}
+V	63f83fb1afaa14fcd4defa9bf69b6cf495865a6e0cc37865c86ddc79fa64027f	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"2d","7":"2d"}}
+V	70b2843f4e977fdb4325e9487ce72a160e8c170bc3c9994923ed24ca3db5ac23	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","2":"cube"}}
+V	73692e62e8226b02961d5d80fe3f135e7bb93d8f6ad052c97d9d8c2458f5953c	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	822cb9fd05ab0907576506f7b42e26c05e06dea25040ba54c87e8cb4b8f1b8b4	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"cube","7":"2d","8":"2d","9":"2d"}}
+V	844468d6136513349b2b46754c32b057ed10a00645c280ccd45804fa3f447e7a	{"attr":{},"fout":{"0":"float","1":"float"},"img":{},"tex":{"0":"2d","12":"cube","13":"cube","7":"2d"}}
+V	87d03e98e5709fa53776cb291115e25cda48ff0944972e8e15eb8b8ec8266b3d	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"2d","2":"2d","3":"2d","8":"2d_depth"}}
+V	a410763a3a798eee86ed87463471ca113fe0fad3688732cef18d3de2316ab0a1	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	a6a4e82f2cdf33b2990b46f14f2d2acd0ac0869e5d622000d451175caa43d491	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	b98f6dae553d5ff5a6c82940d9533983d84e25d396a2863d089cfed111aa0940	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	c63326013ebf35e9e3e65d493cdd6577a219d92cfa0529042097b00174886475	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	c96e863a8b9c583a5599033e0e09954b14bdfaffbc9aae507d280d9a1b9abae0	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	cb55db1eff5516f25fb1d1190073378768c0895aadbc27e67dc9c841254c179f	{"attr":{},"fout":{"0":"float"},"img":{},"tex":{"0":"2d","1":"cube"}}
+V	ccbf5de61419aed0ebe8b29138467f69b27592ebbb6507bba4779da79a620559	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	cdcf84461201462f07a00c7dcba3feb42dd1b6dfb33a8e975f8b4c50acb7e443	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	d8c7761f49b123d9e04e98862f9f8b42628f72ac3b71bfd921ec1576d29bb01b	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"2d","4":"2d","5":"2d","6":"2d","7":"2d"}}
+V	d9b49de3db5b572b58890a3ceaed7a26096c4cbbaa94b4da1bb2708abaa230b4	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","12":"cube","13":"cube","2":"2d","7":"2d"}}
+V	dfdf8fbb1c8c18b16b796802c0dfd55fbbe6bf959c208415f4e1a8456a0fd232	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","7":"2d"}}
+V	f203f913e66532efade54791c08e7c4a212b34c0b6d9616b81cae03c92a369f3	{"attr":{},"fout":{"0":"float","1":"float"},"img":{},"tex":{"0":"2d","1":"cube"}}
+V	f3b6b038640f55190a821bd0dc9c9e554ef54e179c90ed0dcdd08327fb0994bb	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","7":"2d"}}
+V	fb3d68e98aa0ff81daed67982e714961b2944d53b225d33b2e78b0f7d6c88126	{"attr":{},"fout":{"0":"float","1":"float","2":"float","3":"float","4":"float"},"img":{},"tex":{"0":"2d","1":"2d","12":"cube","13":"cube","2":"2d","3":"2d","7":"2d"}}

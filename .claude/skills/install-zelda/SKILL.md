@@ -59,7 +59,7 @@ The title ID is usually in the file name in brackets. The build decides by the f
 | `01007EF00011F001`, `01007EF00011F002` | Breath of the Wild DLC packs (each optional) | `--dlc`, once per pack |
 
 What is supported:
-- **Tears of the Kingdom:** base **1.0.0** as an uncompressed XCI or NSP, plus optionally one update **1.1.2, 1.2.1 or 1.4.3** as NSP or NSZ (no intermediate updates needed). Prefer **1.4.3**: it is the most tested and the only version tested on iPhone / iPad. A card image that also holds its update is fine; the version still comes from `--update`.
+- **Tears of the Kingdom:** base **1.0.0** as an uncompressed XCI or NSP, plus optionally one update **1.2.1 or 1.4.3** as NSP or NSZ (no intermediate updates needed). Prefer **1.4.3**: it is the most tested and the only version tested on iPhone / iPad. A card image that also holds its update is fine; the version still comes from `--update`.
 - **Breath of the Wild:** the **1.6.0 card image** (base + update + DLC in one XCI), or a base NSP with the **1.6.0 or 1.9.0** update NSP and optional DLC NSPs.
 - A compressed base game (NSZ / XCZ) is not accepted: decompress it with the player's own `nsz -D` first.
 

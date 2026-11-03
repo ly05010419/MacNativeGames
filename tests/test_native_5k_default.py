@@ -76,7 +76,7 @@ class BuildDefaults(unittest.TestCase):
                 data, app = self.build_options(gib, flags)
                 self.assertEqual((data['native_4k'], data['native_5k']), (expected_4k, expected_5k))
                 self.assertIs(app['native_5k'], preference)
-        for version in ('v112', 'v121'):
+        for version in ('v121',):
             data, _ = self.build_options(64, version=version)
             self.assertFalse(data['native_5k'])
         data, app = self.build_options(64, platform='ios')

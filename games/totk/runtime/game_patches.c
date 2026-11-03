@@ -134,10 +134,6 @@ typedef struct { uint64_t fmul, store; unsigned r, f; int off; int pair; } Cloth
 static const ClothInline cloth_inline[3] = {{0x82192c, 0x821928, 0, 8, 0x124, 0}, {0x822a64, 0x822a40, 0, 8, 0x124, 0},
                                             {0x83182c, 0x831830, 1, 0, 0x134, 0}};
 static const uint64_t cloth_call = 0x8222f0, cloth_update = 0x89822c;
-#elif defined(TOTK_GAME_V112)
-static const ClothInline cloth_inline[3] = {{0x9d1e64, 0x9d1e74, 0, 8, 0x104, 0}, {0x9d2d34, 0x9d2d2c, 0, 8, 0x104, 0},
-                                            {0x9e7648, 0x9e764c, 1, 0, 0x134, 0}};
-static const uint64_t cloth_call = 0x9d2774, cloth_update = 0x88a998;
 #else
 static const ClothInline cloth_inline[3] = {{0x7b5988, 0x7b598c, 0, 8, -0x40, 1}, {0x7b6b28, 0x7b6b2c, 0, 8, -0x40, 1},
                                             {0x7f5ec4, 0x7f5ed0, 1, 0, 0x114, 0}};
@@ -275,8 +271,8 @@ __attribute__((unused)) static int overlay_present(unsigned w, unsigned h, int s
     return access(path, R_OK) == 0;
 }
 /* The scene follows the canvas (after PR #1467) only where it was made for: 1.2.1 on the Mac, TOTK_RENDER_RES unset,
-   and an app that carries the scene overlays (build_app.py makes them for 1.2.1 and 1.4.3). 1.0.0 and 1.1.2 share this
-   file but get none, and an app from before (only update_runtime.py since) has none: both keep the game's own 1600x900
+   and an app that carries the scene overlays (build_app.py makes them for 1.2.1 and 1.4.3). 1.0.0 shares this
+   file but gets none, and an app from before (only update_runtime.py since) has none: both keep the game's own 1600x900
    scene and the plain overlays, as before, instead of stopping at a missing overlay (runtime/romfs.c). */
 static int scene_follows_canvas(void) {
 #if TARGET_OS_OSX && defined(TOTK_GAME_V121)
@@ -788,17 +784,14 @@ static void patch_bench_cam(Module *m) {
    texture past 2 GiB then got a negative offset: storage and source 4 GiB below the pool, in the stack region or other
    memory (refused uploads, garbage textures, a SIGBUS in ReadTexels, one in the packaged-data copy). It was the only pool
    over 2 GiB (the next is 252 MiB). Both now widen the offset unsigned, which covers a pool of up to 4 GiB.
-   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words); 1.1.2 is not mapped yet (no image
-   here) and stays as shipped; 1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
+   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words);
+   1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
 static void patch_pool_offset(Module *m) {
 #if defined(TOTK_GAME_V121)
     static const uint64_t sites[] = {0xad43f0, 0xad440c};
-#elif defined(TOTK_GAME_V112)
-    static const uint64_t *const sites = NULL;   /* not mapped */
 #else
     static const uint64_t sites[] = {0xa7d320, 0xa7d33c};
 #endif
-#if !defined(TOTK_GAME_V112)
     const char *e = getenv("TOTK_POOL_OFFSET_PATCH");   /* the Mac only: an iPhone / iPad build ships the code already patched */
     if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[totk] %s texture pool offsets: as shipped (TOTK_POOL_OFFSET_PATCH=0)\n", TOTK_GAME_VERSION); return; }
     const struct { uint64_t site; uint32_t original, replacement; const char *what; } words[] = {
@@ -815,10 +808,6 @@ static void patch_pool_offset(Module *m) {
     for (unsigned i = 0; i < 2; i++) put_word(m, words[i].site, words[i].replacement, "texture pool offset");
     fprintf(stderr, "[totk] %s texture pool offsets: widened unsigned at main+%#llx and main+%#llx\n", TOTK_GAME_VERSION,
             (unsigned long long)words[0].site, (unsigned long long)words[1].site);
-#else
-    (void)m; (void)sites;
-    fprintf(stderr, "[totk] %s texture pool offsets: as shipped (the loader's sites are not mapped for this version)\n", TOTK_GAME_VERSION);
-#endif
 }
 
 void runtime_game_patches(Module *m) {

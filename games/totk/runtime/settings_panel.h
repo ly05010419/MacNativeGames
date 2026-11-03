@@ -69,10 +69,13 @@
                                                              size x K where the game works it out); off = the effect
                                                              switch "shadow" (totk_ssao.h); graphics-shadow.txt (x100)
      FXAA anti-aliasing   switch                             dm_gfx_fxaa_set (gfx/nvn/totk_finish.h); graphics-fxaa.txt
+                                                             (Breath of the Wild 1.9.0: gfx/nvn/botw_finish.h; greyed while
+                                                             MetalFX replaces its FXAA / upscale draw)
      depth of field       switch                             runtime_dof_set (game_patches_v143.c: no DOF request stored
                                                              while off; events still complete); graphics-dof.txt
      sharpening           off / 25% / 50% / 75% / 100%       dm_gfx_sharpen_set: FSR 1 RCAS on the 3D picture;
-                                                             graphics-sharpen.txt (percent)
+                                                             graphics-sharpen.txt (percent); Breath of the Wild 1.9.0: on
+                                                             the canvas before the UI (gfx/nvn/botw_finish.h)
      one switch per effect                                   dm_gfx_fx_set (gfx/nvn/totk_fx.h): its passes left out while
                                                              off; graphics-effects.txt lists the ones that are off;
                                                              Breath of the Wild 1.9.0: ambient occlusion (botw_effects.h)
@@ -190,16 +193,17 @@ static void settings_ssao_restore(void) {
  settingsSsao=(int)pct;dm_gfx_ssao_start(settingsSsao);
 #endif
 }
+/* A number from a setting file, within lo..hi (1.4.3's graphics rows; Breath of the Wild 1.9.0's sharpening, PR #1637). */
+static inline int settings_read_number(const char *name, double lo, double hi, double *value) {
+ char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
+ double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
+ if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
+}
 /* The effects page: graphics-effects.txt holds the ids of the effects that are off, one word each ("none" when all are
    on); graphics-lod.txt the model detail distance x100, graphics-far.txt the render distance in percent (0.1 to 100). */
 #ifdef TOTK_GAME_V143
 /* "Always the finest": a factor no distance in the map reaches, so a model keeps the level it has up close. */
 #define SETTINGS_LOD_MAX 1e6
-static int settings_read_number(const char *name, double lo, double hi, double *value) {
- char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
- double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
- if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
-}
 static void settings_effects_save(void) {
  char line[512]="";size_t n=0;
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))n+=(size_t)snprintf(line+n,sizeof line-n,"%s%s",n?" ":"",dm_gfx_fx_id(i));

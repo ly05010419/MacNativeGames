@@ -25,7 +25,7 @@ import argparse, concurrent.futures, ctypes, errno, hashlib, json, os, shutil, s
 from pathlib import Path
 from compile_seed import METAL_FLAGS
 
-SCHEMA = 5   # totk_pipeline_archive.h PAR_SCHEMA
+SCHEMA = 6   # totk_pipeline_archive.h PAR_SCHEMA
 
 # The GPU of the iPhones and iPads Metal 4 runs on (A14 / M1 and later), by productType (devicectl). Only used to choose
 # what to compile; the runtime checks the architecture itself (MTLDevice.architecture), so a wrong entry costs the
