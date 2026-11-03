@@ -181,8 +181,102 @@ static int assume_focus(void){static int v=-1;if(v<0){const char *e=getenv("TOTK
 /* Keep the guest active when the macOS window loses key status. Window keys and mouse input are cleared
    in windowDidResignKey so they cannot stick; physical controllers follow their saved background-input choice. */
 int runtime_front_focus(void){return 1;}
+__attribute__((weak)) int runtime_threads_is_paused(void) { return 0; }
+__attribute__((weak)) int runtime_threads_pause(uint64_t timeout_ns) { (void)timeout_ns; return 0; }
+__attribute__((weak)) void runtime_threads_resume(void) {}
+__attribute__((weak)) void runtime_guest_time_pause(void) {}
+__attribute__((weak)) void runtime_guest_time_resume(void) {}
+__attribute__((weak)) uint64_t runtime_guest_time_ns(void) { return runtime_now_ns(); }
+__attribute__((weak)) void runtime_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high) { (void)side; (void)amp_low; (void)freq_low; (void)amp_high; (void)freq_high; }
+__attribute__((weak)) void dm_gfx_shot_at(long frames, const char *path) { (void)frames; (void)path; }
+
+typedef NS_OPTIONS(NSUInteger, TOTKPauseReason) {
+    TOTKPauseReasonNone       = 0,
+    TOTKPauseReasonManual     = 1 << 0,
+    TOTKPauseReasonSettings   = 1 << 1,
+    TOTKPauseReasonBackground = 1 << 2,
+};
+static TOTKPauseReason g_pauseReasons = TOTKPauseReasonNone;
+static dispatch_queue_t g_pauseQueue;
+static NSMenuItem *pauseMenuItem = nil;
+static void front_pause_queue_ensure(void) __attribute__((unused));
+static void front_pause_queue_ensure(void) {
+    if (!g_pauseQueue) g_pauseQueue = dispatch_queue_create("org.macnativegames.pause", DISPATCH_QUEUE_SERIAL);
+}
+static void front_pause_update_ui(void) {
+    if (!pauseMenuItem) return;
+    if (g_pauseReasons != TOTKPauseReasonNone) {
+        pauseMenuItem.title = @(TOTK_UI("继续", "Resume"));
+    } else {
+        pauseMenuItem.title = @(TOTK_UI("暂停", "Pause"));
+    }
+}
+static void front_pause_execute_pause(void) {
+    if (runtime_threads_pause) runtime_threads_pause(1500000000ull);
+    if (runtime_guest_time_pause) runtime_guest_time_pause();
+    runtime_rumble_set(0, 0, 0, 0, 0);
+    runtime_rumble_set(1, 0, 0, 0, 0);
+    runtime_triggers_release();
+    runtime_mouse_release();
+    runtime_input_clear();
+}
+static void front_pause_execute_resume(void) {
+    if (runtime_guest_time_resume) runtime_guest_time_resume();
+    if (runtime_threads_resume) runtime_threads_resume();
+}
+static void front_pause_request(TOTKPauseReason reason) {
+    front_pause_queue_ensure();
+    dispatch_async(g_pauseQueue, ^{
+        TOTKPauseReason old = g_pauseReasons;
+        g_pauseReasons |= reason;
+        if (old == TOTKPauseReasonNone && g_pauseReasons != TOTKPauseReasonNone) {
+            front_pause_execute_pause();
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            front_pause_update_ui();
+        });
+    });
+}
+static void front_pause_release(TOTKPauseReason reason) {
+    front_pause_queue_ensure();
+    dispatch_async(g_pauseQueue, ^{
+        TOTKPauseReason old = g_pauseReasons;
+        g_pauseReasons &= ~reason;
+        if (old != TOTKPauseReasonNone && g_pauseReasons == TOTKPauseReasonNone) {
+            front_pause_execute_resume();
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            front_pause_update_ui();
+        });
+    });
+}
+static void front_pause_toggle_manual(void) {
+    if (g_pauseReasons & TOTKPauseReasonManual) {
+        front_pause_release(TOTKPauseReasonManual);
+    } else {
+        front_pause_request(TOTKPauseReasonManual);
+    }
+}
+static int g_pauseInBackground = -1;
+int runtime_pause_in_background_enabled(void) {
+    if (g_pauseInBackground < 0) {
+        char word[16];
+        if (runtime_setting_word("pause-in-background.txt", word, sizeof word)) {
+            g_pauseInBackground = (!strcmp(word, "on") || !strcmp(word, "1"));
+        } else {
+            g_pauseInBackground = 0;
+        }
+    }
+    return g_pauseInBackground;
+}
+void runtime_pause_in_background_set(int on) {
+    g_pauseInBackground = !!on;
+    runtime_setting_save("pause-in-background.txt", on ? "on" : "off", "pause when in background");
+}
+
 static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,const CVTimeStamp *output,CVOptionFlags flags,CVOptionFlags *out,void *ctx){
  (void)link;(void)now;(void)output;(void)flags;(void)out;(void)ctx;
+ if (runtime_threads_is_paused && runtime_threads_is_paused()) return kCVReturnSuccess;
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
 /* 1 / 0: the modifier key e (a flag change) is down / up; -1: not one the layout takes (Command, Caps Lock, fn). Each side
@@ -611,8 +705,19 @@ void runtime_front_resize_aspect(double ratio){
 @interface TOTKWindowDelegate:NSObject<NSWindowDelegate>
 @end
 @implementation TOTKWindowDelegate
--(void)windowDidBecomeKey:(NSNotification *)n{(void)n;front_playtime_tick(NO);atomic_store(&focused,1);runtime_gamepad_focus(1);if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();}
--(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_gamepad_focus(0);runtime_input_clear_window();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
+-(void)windowDidBecomeKey:(NSNotification *)n{
+ front_playtime_tick(NO);atomic_store(&focused,1);runtime_gamepad_focus(1);
+ if(window.styleMask&NSWindowStyleMaskFullScreen)[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:YES];
+ runtime_oe_push_message(15);front_mouse_update();fprintf(stderr,"[totk] window gained focus\n");front_sr_window();
+ if(runtime_pause_in_background_enabled())front_pause_release(TOTKPauseReasonBackground);
+}
+-(void)windowDidResignKey:(NSNotification *)n{
+ front_playtime_tick(YES);atomic_store(&focused,0);
+ [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
+ front_mouse_update();runtime_gamepad_focus(0);runtime_input_clear_window();runtime_oe_push_message(15);
+ fprintf(stderr,"[totk] window lost focus\n");front_sr_window();
+ if(runtime_pause_in_background_enabled())front_pause_request(TOTKPauseReasonBackground);
+}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
 -(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);
@@ -648,6 +753,11 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 -(void)openSettings:(id)sender;
 -(void)toggleFullscreen:(id)sender;
 -(void)chooseFrameLimit:(NSMenuItem *)sender;
+-(void)togglePause:(id)sender;
+-(void)toggleDockedMode:(id)sender;
+-(void)toggleVsync:(id)sender;
+-(void)captureFrame:(id)sender;
+-(void)closeActiveWindow:(id)sender;
 @end
 @implementation TOTKMenuActions
 -(void)openSettings:(id)sender{(void)sender;settings_show(1);}
@@ -658,9 +768,35 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
  if(fps)dm_gfx_set_flag("mfx_interp",MFX_OFF);
  settings_save_frame();settings_refresh_all();
 }
+-(void)togglePause:(id)sender{(void)sender;front_pause_toggle_manual();}
+-(void)toggleDockedMode:(id)sender{
+ (void)sender;
+ int cur=runtime_output_mode();
+ runtime_output_mode_set(cur==OUTPUT_MODE_720P?OUTPUT_MODE_OFF:OUTPUT_MODE_720P);
+}
+-(void)toggleVsync:(id)sender{(void)sender;}
+-(void)captureFrame:(id)sender{
+ (void)sender;
+ NSString *desktop=[NSSearchPathForDirectoriesInDomains(NSDesktopDirectory,NSUserDomainMask,YES) firstObject];
+ NSString *file=[desktop stringByAppendingPathComponent:[NSString stringWithFormat:@"%@_%ld.png",@GAME_NAME,(long)time(NULL)]];
+ if(dm_gfx_shot_at)dm_gfx_shot_at(1,file.UTF8String);
+}
+-(void)closeActiveWindow:(id)sender{
+ (void)sender;
+ if(settingsOpen)settings_show(0);
+ else if(window)[window performClose:nil];
+}
 -(void)displayRate:(id)sender{(void)sender;}
 -(BOOL)validateMenuItem:(NSMenuItem *)item{
  if(item.action==@selector(toggleFullscreen:))item.title=@((window.styleMask&NSWindowStyleMaskFullScreen)?TOTK_UI("退出全屏","Exit Full Screen"):TOTK_UI("进入全屏","Enter Full Screen"));
+ if(item.action==@selector(togglePause:)){
+  item.title=(g_pauseReasons!=TOTKPauseReasonNone)?@(TOTK_UI("继续","Resume")):@(TOTK_UI("暂停","Pause"));
+  return window!=nil;
+ }
+ if(item.action==@selector(toggleDockedMode:)){
+  item.state=(runtime_output_mode()!=OUTPUT_MODE_720P)?NSControlStateValueOn:NSControlStateValueOff;
+  return window!=nil;
+ }
  if(item.action==@selector(chooseFrameLimit:)){item.state=nvn_fps_lock()==item.tag?NSControlStateValueOn:NSControlStateValueOff;if(getenv("TOTK_MFX"))return NO;}
  /* the screen the window is on now (another display, a changed refresh rate): read when the menu opens */
  if(item.action==@selector(displayRate:)){item.title=[NSString stringWithFormat:@(TOTK_UI("显示器刷新率：%ld Hz","Display refresh: %ld Hz")),(long)(window.screen?:NSScreen.mainScreen).maximumFramesPerSecond];return NO;}
@@ -670,6 +806,7 @@ void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(),
 static TOTKMenuActions *menuActions;
 /* Use the window-close path, not terminate:, so Command-Q also waits for active saves. */
 static void front_install_menu(void){
+ front_pause_queue_ensure();
  menuActions=[TOTKMenuActions new];
  NSMenu *menu=[NSMenu new],*appMenu=[[NSMenu alloc] initWithTitle:@GAME_NAME];
  NSMenuItem *appItem=[[NSMenuItem alloc] initWithTitle:@GAME_NAME action:nil keyEquivalent:@""];
@@ -677,15 +814,22 @@ static void front_install_menu(void){
  NSMenuItem *settings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("设置…","Settings…")) action:@selector(openSettings:) keyEquivalent:@","];
  settings.keyEquivalentModifierMask=NSEventModifierFlagCommand;settings.target=menuActions;[appMenu addItem:settings];
  [appMenu addItem:NSMenuItem.separatorItem];
+ [appMenu addItem:[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("隐藏 " GAME_NAME,"Hide " GAME_NAME)) action:@selector(hide:) keyEquivalent:@"h"]];
+ NSMenuItem *hideOthers=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("隐藏其他","Hide Others")) action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
+ hideOthers.keyEquivalentModifierMask=NSEventModifierFlagOption|NSEventModifierFlagCommand;[appMenu addItem:hideOthers];
+ [appMenu addItem:[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("显示全部","Show All")) action:@selector(unhideAllApplications:) keyEquivalent:@""]];
+ [appMenu addItem:NSMenuItem.separatorItem];
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;[appMenu addItem:quit];
+
+ // View menu (at index 1)
  NSMenu *view=[[NSMenu alloc] initWithTitle:@(TOTK_UI("显示","View"))];
  NSMenuItem *viewItem=[[NSMenuItem alloc] initWithTitle:view.title action:nil keyEquivalent:@""];viewItem.submenu=view;[menu addItem:viewItem];
  NSMenuItem *full=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("进入全屏","Enter Full Screen")) action:@selector(toggleFullscreen:) keyEquivalent:@"f"];
  full.keyEquivalentModifierMask=NSEventModifierFlagControl|NSEventModifierFlagCommand;full.target=menuActions;[view addItem:full];
  NSMenu *rates=[[NSMenu alloc] initWithTitle:@(TOTK_UI("渲染帧率上限","Render Frame Limit"))];
  NSMenuItem *ratesItem=[[NSMenuItem alloc] initWithTitle:rates.title action:nil keyEquivalent:@""];ratesItem.submenu=rates;[view addItem:ratesItem];
- for(unsigned i=0;i<TOTK_FPS_LIMIT_COUNT;i++){   /* the panel's frame lock choices (totk_fps_limit.h), named as there */
+ for(unsigned i=0;i<TOTK_FPS_LIMIT_COUNT;i++){
   int fps=totk_fps_limits[i];
   NSString *title=fps?[NSString stringWithFormat:@(TOTK_UI("%d 帧","%d fps")),fps]:@(TOTK_UI("关","Off"));
   NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:title action:@selector(chooseFrameLimit:) keyEquivalent:@""];
@@ -693,6 +837,31 @@ static void front_install_menu(void){
  }
  NSMenuItem *screen=[[NSMenuItem alloc] initWithTitle:@"" action:@selector(displayRate:) keyEquivalent:@""];
  screen.target=menuActions;[view addItem:screen];
+
+ // Emulation menu (matches Astris)
+ NSMenu *emuMenu=[[NSMenu alloc] initWithTitle:@(TOTK_UI("游戏","Emulation"))];
+ NSMenuItem *emuItem=[[NSMenuItem alloc] initWithTitle:emuMenu.title action:nil keyEquivalent:@""];emuItem.submenu=emuMenu;[menu addItem:emuItem];
+ pauseMenuItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("暂停","Pause")) action:@selector(togglePause:) keyEquivalent:@"p"];
+ pauseMenuItem.keyEquivalentModifierMask=NSEventModifierFlagCommand;pauseMenuItem.target=menuActions;[emuMenu addItem:pauseMenuItem];
+ NSMenuItem *stopItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("停止","Stop")) action:@selector(performClose:) keyEquivalent:@"."];
+ stopItem.keyEquivalentModifierMask=NSEventModifierFlagCommand;stopItem.target=window;[emuMenu addItem:stopItem];
+ [emuMenu addItem:NSMenuItem.separatorItem];
+ NSMenuItem *dockedItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("底座模式","Docked Mode")) action:@selector(toggleDockedMode:) keyEquivalent:@"d"];
+ dockedItem.keyEquivalentModifierMask=NSEventModifierFlagShift|NSEventModifierFlagCommand;dockedItem.target=menuActions;[emuMenu addItem:dockedItem];
+ NSMenuItem *vsyncItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("垂直同步","V-Sync")) action:@selector(toggleVsync:) keyEquivalent:@"v"];
+ vsyncItem.keyEquivalentModifierMask=NSEventModifierFlagOption|NSEventModifierFlagCommand;vsyncItem.target=menuActions;vsyncItem.state=NSControlStateValueOn;[emuMenu addItem:vsyncItem];
+ [emuMenu addItem:NSMenuItem.separatorItem];
+ NSMenuItem *captureItem=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("截取画面","Capture Frame")) action:@selector(captureFrame:) keyEquivalent:@"s"];
+ captureItem.keyEquivalentModifierMask=NSEventModifierFlagOption|NSEventModifierFlagCommand;captureItem.target=menuActions;[emuMenu addItem:captureItem];
+
+ // Window menu
+ NSMenu *windowMenu=[[NSMenu alloc] initWithTitle:@(TOTK_UI("窗口","Window"))];
+ NSMenuItem *windowMenuItem=[[NSMenuItem alloc] initWithTitle:windowMenu.title action:nil keyEquivalent:@""];windowMenuItem.submenu=windowMenu;[menu addItem:windowMenuItem];
+ [windowMenu addItem:[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("最小化","Minimize")) action:@selector(performMiniaturize:) keyEquivalent:@"m"]];
+ [windowMenu addItem:[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("缩放","Zoom")) action:@selector(performZoom:) keyEquivalent:@""]];
+ NSMenuItem *closeWin=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("关闭窗口","Close Window")) action:@selector(closeActiveWindow:) keyEquivalent:@"w"];
+ closeWin.keyEquivalentModifierMask=NSEventModifierFlagCommand;closeWin.target=menuActions;[windowMenu addItem:closeWin];
+
  front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 /* execv can make Launch Services show the nested runtime as a generic Unix executable.
@@ -734,7 +903,8 @@ void runtime_front_run(void(*callback)(void)){
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
-  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+  window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable|NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];
+  window.titlebarAppearsTransparent=YES;window.titleVisibility=NSWindowTitleHidden;
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");

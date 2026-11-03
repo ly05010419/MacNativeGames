@@ -30,9 +30,9 @@ static int initialized;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static void make_source(void) { arc4random_buf(source_id, sizeof source_id); }
 
+uint64_t runtime_guest_time_ns(void);
 static int64_t steady_seconds(void) {
-    mach_timebase_info_data_t tb; mach_timebase_info(&tb);
-    return (int64_t)((__uint128_t)mach_continuous_time() * tb.numer / tb.denom / 1000000000u);
+    return (int64_t)(runtime_guest_time_ns() / 1000000000u);
 }
 static SteadyClockTimePoint steady_now(void) { pthread_once(&once, make_source); SteadyClockTimePoint p = {steady_seconds(), {0}}; memcpy(p.source, source_id, 16); return p; }
 static int64_t posix_now(void) {

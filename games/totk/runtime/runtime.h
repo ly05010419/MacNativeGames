@@ -239,6 +239,15 @@ void runtime_motion_phone(int on);  /* the iPhone's own sensor feeds the six-axi
 void runtime_motion_mouse(int on);  /* mouse mode (key 7) takes the sensor over (1) / gives it back to the controller (0) */
 void runtime_motion_feed_mouse(const double acc_g[3], const double gyro_rad_s[3], uint64_t now_ns);   /* already in the reference frame */
 void runtime_feedback_quiet(void);   /* focus lost: stop rumbling */
+/* Guest execution pause barrier & time (threads.c, loader.c) */
+int runtime_threads_pause(uint64_t timeout_ns);
+void runtime_threads_resume(void);
+int runtime_threads_is_paused(void);
+uint64_t runtime_guest_time_ns(void);
+void runtime_guest_time_pause(void);
+void runtime_guest_time_resume(void);
+int runtime_pause_in_background_enabled(void);
+void runtime_pause_in_background_set(int on);
 #ifdef __OBJC__
 @class GCController;
 void runtime_feedback_attach(GCController *controller);

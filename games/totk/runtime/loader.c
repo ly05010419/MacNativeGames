@@ -4,6 +4,7 @@
 #include <TargetConditionals.h>
 #include <dlfcn.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -351,6 +352,41 @@ static void thread_cleanup(void) {
  ThreadEnvironment *e=pthread_getspecific(environment_key);pthread_setspecific(environment_key,NULL);
  for(unsigned i=0;i<4;i++)pthread_setspecific(runtime_keys[i],NULL);environment_destroy(e);
 }
+static _Atomic uint64_t g_guest_pause_accum_ns = 0;
+static _Atomic uint64_t g_guest_pause_start_ns = 0;
+static _Atomic int g_guest_clock_paused = 0;
+
+uint64_t runtime_guest_time_ns(void) {
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ uint64_t now = (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+ if (atomic_load(&g_guest_clock_paused)) {
+  uint64_t start = atomic_load(&g_guest_pause_start_ns);
+  uint64_t accum = atomic_load(&g_guest_pause_accum_ns);
+  return start > accum ? start - accum : 0;
+ }
+ uint64_t accum = atomic_load(&g_guest_pause_accum_ns);
+ return now > accum ? now - accum : 0;
+}
+
+void runtime_guest_time_pause(void) {
+ if (atomic_load(&g_guest_clock_paused)) return;
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ uint64_t now = (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+ atomic_store(&g_guest_pause_start_ns, now);
+ atomic_store(&g_guest_clock_paused, 1);
+}
+
+void runtime_guest_time_resume(void) {
+ if (!atomic_load(&g_guest_clock_paused)) return;
+ mach_timebase_info_data_t tb; mach_timebase_info(&tb);
+ uint64_t now = (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);
+ uint64_t start = atomic_load(&g_guest_pause_start_ns);
+ if (now > start) {
+  atomic_fetch_add(&g_guest_pause_accum_ns, now - start);
+ }
+ atomic_store(&g_guest_clock_paused, 0);
+}
+
 uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&tb);return (uint64_t)((__uint128_t)mach_absolute_time()*tb.numer/tb.denom);}
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
  for(unsigned i=0;i<NM;i++) {
@@ -360,7 +396,7 @@ void runtime_dispatch(uint64_t ret,uint64_t *regs) {
   if(lo==modules[i].ngate||b+modules[i].gates[lo].ret!=ret)continue;
   const Gate *g=&modules[i].gates[lo];
   if(g->timer==2){runtime_spin_wait(i,g->original);return;}   // spin wait (patch_nso.py "Spin waits"): no register changes
-  if(g->timer){mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
+  if(g->timer){__uint128_t ns=(__uint128_t)runtime_guest_time_ns();
    need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)(ns*12/625);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
   __atomic_fetch_add(&svc_calls,1,__ATOMIC_RELAXED);runtime_svc(g->arg,regs,modules[i].name,g->original);return;
  }
