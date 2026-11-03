@@ -1474,7 +1474,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs	2026-11-02 23:37:55
-@@ -0,0 +1,1237 @@
+@@ -0,0 +1,1248 @@
 +using System;
 +using Ryujinx.Graphics.Shader.Decoders;
 +using Ryujinx.Graphics.Shader.IntermediateRepresentation;
@@ -1899,7 +1899,8 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            bool bIn32 = x.Form is 1 or 4 or 5 or 6;
 +            ASrc slot32 = bIn32 ? b : c;
 +            ASrc slot64 = bIn32 ? c : b;
-+            slot32 = slot32.WithMods(x.Bit(63), x.Bit(62));
++            // An immediate has no modifiers: bits 62 and 63 are its own, and they would flip the sign of a negative constant (seedds/nxnative 03d92a9f, MIT)
++            slot32 = slot32.Kind == AKind.Imm ? slot32 : slot32.WithMods(x.Bit(63), x.Bit(62));
 +            slot64 = slot64.WithMods(x.Bit(84), x.Bit(83));
 +
 +            Operand[] ha = AHalfLanes(context, a, x.Bits(74, 76));
@@ -1907,6 +1908,16 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            Operand[] h64 = AHalfLanes(context, slot64, x.Bits(81, 83));
 +
 +            return bIn32 ? (ha, h32, h64) : (ha, h64, h32);
++        }
++
++        // The sources of a two-source half-pair operation, as ASecond: the second is B in forms 1, 4, 5, 6 and C in forms 2, 3, 7, where B would be the
++        // unused register field at 64 (seedds/nxnative 03d92a9f, MIT). Pokemon Pokopia's bilateral blur steps its loop with HADD2 Rd, Rd, imm: reading
++        // that field instead stepped by the bits of whatever R0 held, the loop never ended and the GPU hung (macOS then reset it for every app).
++        private static (Operand[] A, Operand[] B) AHalfSecond(EmitterContext context, AmpereOp x)
++        {
++            (Operand[] a, Operand[] b, Operand[] c) = AHalfSrcs(context, x);
++
++            return (a, x.Form is 1 or 4 or 5 or 6 ? b : c);
 +        }
 +
 +        // The result: two halves packed, or with .F32 (78) the low lane as one float. HFMA2 / HMUL2 (sm_86): .RELU (79) clamps at zero; .BF16_V2 (85)
@@ -1938,7 +1949,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +        public static void AHadd2(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
-+            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
++            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 +
 +            AHalfResult(context, x, context.FPAdd(a[0], b[0]), context.FPAdd(a[1], b[1]));
 +        }
@@ -1946,7 +1957,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +        public static void AHmul2(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
-+            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
++            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 +
 +            AHalfResult(context, x, context.FPMultiply(a[0], b[0]), context.FPMultiply(a[1], b[1]));
 +        }
@@ -3962,7 +3973,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +        public static void AHsetp2(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
-+            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
++            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 +
 +            Operand lo = GetFPComparison(context, (FComp)x.Bits(76, 80), a[0], b[0]);
 +            Operand hi = GetFPComparison(context, (FComp)x.Bits(76, 80), a[1], b[1]);
@@ -3984,7 +3995,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +        public static void AHset2(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
-+            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
++            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 +            Operand p = APred(context, x, 87, 90);
 +            BoolOp bop = (BoolOp)x.Bits(69, 71);
 +            Operand res = Const(0);
@@ -4009,7 +4020,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +                throw AFail(context, "HMNMX2 .F32 / .NAN / .XORSIGN / .BF16");
 +            }
 +
-+            (Operand[] a, Operand[] b, _) = AHalfSrcs(context, x);
++            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
 +            Operand p = APred(context, x, 87, 90);
 +            Operand[] r = new Operand[2];
 +

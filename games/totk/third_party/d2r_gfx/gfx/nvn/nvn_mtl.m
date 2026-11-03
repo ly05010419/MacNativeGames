@@ -8216,10 +8216,8 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     if (ps) par_add(g_dev, key, d);
     return ps;
 }
-static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
-    if (!cs || !cs->fn) return nil;
+static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescriptor *d, NSError **e) {
     NSString *key = cs_archive_key(cs);
-    MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn;
     id<MTLComputePipelineState> ps = nil;
     id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
     if (a) {
@@ -8227,10 +8225,31 @@ static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
         ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
         par_pre_note(ps != nil);
         if (ps) { par_count(1); return ps; }
+        d.binaryArchives = nil;
     }
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
     if (ps) par_add(g_dev, key, d);
+    return ps;
+}
+/* A compute pipeline that takes the shader's own thread group size. Metal compiles a kernel for some number of threads a group
+   (maxTotalThreadsPerThreadgroup, lower when it needs many registers), and a dispatch with more threads a group is invalid.
+   Such a kernel is built again with the group size in its descriptor, so the compiler fits it to that many threads (spilling
+   registers if it must). Only then: a descriptor that names the size is another pipeline to the binary archives, which hold
+   the kernels as built without it. (Checked while looking for Pokemon Pokopia's GPU hang, 2026-11-03: its 32 x 32 kernel
+   70ab27e1 fits as built; the hang was a translator bug, patch 0006 AHalfSecond.) */
+static id<MTLComputePipelineState> cs_new(NvShader *cs, NSError **e) {
+    if (!cs || !cs->fn) return nil;
+    MTLComputePipelineDescriptor *d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn;
+    id<MTLComputePipelineState> ps = cs_new_(cs, d, e);
+    NSUInteger group = (NSUInteger)cs->rf.tg[0] * cs->rf.tg[1] * cs->rf.tg[2];
+    if (!ps || group <= ps.maxTotalThreadsPerThreadgroup) return ps;
+    NSUInteger had = ps.maxTotalThreadsPerThreadgroup;
+    d = [MTLComputePipelineDescriptor new]; d.computeFunction = cs->fn; d.maxTotalThreadsPerThreadgroup = group;
+    ps = cs_new_(cs, d, e);
+    MLOG("[shader] compute shader %s: %lu threads a group, %lu as first built; built again for the group: %lu", cs->key, (unsigned long)group,
+         (unsigned long)had, ps ? (unsigned long)ps.maxTotalThreadsPerThreadgroup : 0ul);
+    if (ps && group > ps.maxTotalThreadsPerThreadgroup) { MLOG("[RED] compute shader %s cannot run %lu threads a group (%lu): its dispatches are skipped", cs->key, (unsigned long)group, (unsigned long)ps.maxTotalThreadsPerThreadgroup); return nil; }
     return ps;
 }
 static char pfmt_class(MTLPixelFormat f) {   // 'u' / 's' pure unsigned / signed integer colour format, 'f' any other, 0 none
@@ -14084,7 +14103,22 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
       if (nsk < 0) { nsk = 0; for (const char *q = getenv("DM_NVN_SKIP_FS"); q && *q && nsk < 16; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) { size_t n = strcspn(q, ","); if (n > 16) n = 16; memcpy(sk[nsk], q, n); sk[nsk++][n] = 0; }
                      if (nsk) MLOG("DM_NVN_SKIP_FS：丢弃 %d 个片元着色器的绘制（诊断，画面不对）", nsk); }
       if (g_ub_n > 0 && pr->sh[1] && !g_defer_replaying && ub_skip(pr->sh[1]->key)) return;   // 同进程交替测量：本相丢这一类 | In-process alternating measurement: this phase drops this class
-      if (nsk && pr->sh[1] && !g_defer_replaying) for (int i = 0; i < nsk; i++) if (!strncmp(pr->sh[1]->key, sk[i], strlen(sk[i]))) return; }
+      if (nsk && pr->sh[1] && !g_defer_replaying) for (int i = 0; i < nsk; i++) if (!strncmp(pr->sh[1]->key, sk[i], strlen(sk[i]))) {
+          /* TOTK_FS_UBO_DUMP=<folder> (diagnostic, with DM_NVN_SKIP_FS): the uniform buffers a skipped draw's fragment shader
+             would have read, as the CPU sees them at the draw, the first 4 draws of each shader: <folder>/<key>_<n>_c<slot>.bin.
+             Finds a shader that loops on a uniform value without letting it hang the GPU (Pokemon Pokopia, 2026-11-03). */
+          static const char *dump; static int dread; static NSMutableDictionary<NSString *, NSNumber *> *dn;
+          if (!dread) { dread = 1; dump = getenv("TOTK_FS_UBO_DUMP"); if (dump) dn = [NSMutableDictionary dictionary]; }
+          NvShader *fs = pr->sh[1]; NSString *fk = [@(fs->key) substringToIndex:MIN((NSUInteger)16, strlen(fs->key))]; int n = [dn[fk] intValue];
+          if (dump && n < 4) { dn[fk] = @(n + 1);
+              for (int b = 0; b < fs->rf.nb; b++) { const nvn_rbind *rb = &fs->rf.b[b]; if (rb->kind != NVN_RB_CBUF || rb->reg >= 16) continue;
+                  const p_bind_buf *u = &S.ubo[1][rb->reg]; void *mb; uint64_t mo; size_t len = (size_t)MIN(u->size, (uint64_t)65536);
+                  int ok = u->addr && len && mtl_addr(u->addr, len, &mb, &mo);
+                  MLOG("[fs-ubo] %s draw %d slot %d addr %#llx size %#llx%s", fk.UTF8String, n, rb->reg, (unsigned long long)u->addr, (unsigned long long)u->size, ok ? "" : " (not in a pool: not dumped)");
+                  if (!ok) continue;
+                  char path[1024]; snprintf(path, sizeof path, "%s/%s_%d_c%d.bin", dump, fk.UTF8String, n, rb->reg);
+                  FILE *f = fopen(path, "wb"); if (f) { fwrite((const void *)(uintptr_t)u->addr, 1, len, f); fclose(f); } else MLOG("[RED] TOTK_FS_UBO_DUMP: cannot write %s", path); } }
+          return; } }
     // 同类诊断 DM_NVN_SKIP_SMALL=<宽>：丢掉目标宽度（按所挂的级）≤ 该值的全部绘制——量「极小通道整批丢掉」在并行流水下值多少（每通道固定开销）
     // Similar diagnostic DM_NVN_SKIP_SMALL=<width>: drop all draws whose target width (by the attached level) is <= this value -- measures how much "dropping tiny render passes in bulk" is worth under the parallel pipeline (fixed per-pass overhead)
     { static int small = -1; if (small < 0) { const char *e = getenv("DM_NVN_SKIP_SMALL"); small = e ? atoi(e) : 0; if (small) MLOG("DM_NVN_SKIP_SMALL：丢弃目标宽度 ≤ %d 的绘制（诊断，画面不对）", small); }

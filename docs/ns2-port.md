@@ -151,6 +151,20 @@ Added for it (general where possible, each with its reason in the code):
   and macOS ignores the process's later submissions (black). Not an indirect draw; the FFT and 70ab27e1 compute shaders
   are bounded. Diagnostics added: TOTK_SKIP_CS=all|<prefixes>, TOTK_SKIP_CS_LOG=1, TOTK_CS_UBO_LOG=<prefix>.
 
+**Pokopia, evening 2026-11-03: the GPU hang is fixed; the game reaches its language selection.**
+- Cause: a translator bug. A two-source half-pair operation (HADD2, HMUL2, HSET2, HSETP2, HMNMX2) in forms 2, 3 and 7 takes
+  its second source from the 32-bit slot (here an immediate); patch 0006 took the unused register field at 64 instead (R0).
+  Fragment shader 85446a67 (a bilateral blur) steps its loop with `HADD2 R6, R6, 2.0, 2.0`: the step became the bits of
+  whatever R0 held, the loop never ended, the GPU hung, and macOS reset the GPU for every app (other apps' renderers failed
+  too). Fixed as seedds/nxnative 03d92a9f (MIT) does: `AHalfSecond`, and an immediate's bits 62 / 63 are not modifiers.
+  It changed 260 of Pokopia's 2,384 translations; Bananza's are Ampere too (its cache needs translating again).
+- Found without hanging the GPU again: `DM_NVN_SKIP_FS=<prefixes>` (up to 16) halves the fragment shaders whose draws are
+  skipped; `TOTK_FS_UBO_DUMP=<folder>` (new) writes the uniform buffers a skipped draw would have read. A hang test that
+  hangs resets the whole GPU: run such bisections only with the user's agreement.
+- Also: a compute pipeline whose kernel does not take its declared thread group is built again for it (nvn_mtl.m cs_new;
+  none of Pokopia's needed it).
+- Open: Pokopia's offline corpus misses some shaders the game draws (85446a67 was translated at run time).
+
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:
 Bananza's own nodes derived from VibrationNode had no vtable and it called garbage from VibrationNode::Update about 20 s
