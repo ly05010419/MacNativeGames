@@ -161,6 +161,13 @@ class FullHD(unittest.TestCase):
         self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
         self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
 
+    def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
+        """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
+        must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""
+        src = (TOOLS.parents[1]/'runtime/game_patches_v143.c').read_text()
+        self.assertIn('if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);', src)
+        self.assertEqual(src.count('vr_headlook_install(m);'), 1)
+
     def test_mac_pipelines_are_made_again_for_another_runtime(self):
         """The cached Mac pipelines (build/ios-pipelines) are this runtime's descriptions: their stamp holds the runtime
         binary as well as the shaders and lists (2026-11-03: narrowed vertex formats were never seen otherwise)."""

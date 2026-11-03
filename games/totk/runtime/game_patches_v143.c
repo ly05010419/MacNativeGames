@@ -1175,7 +1175,11 @@ void runtime_game_patches(Module *m) {
                      ((m->text_end + 15) & ~15ULL) + 320,   /* Vert+ stubs (2 x 304 bytes): after the bounce veneer at +256, before the rewriter's code at +1024 */
                      (m->file_size + 0x3fff) & ~0x3fffULL); }
 #if !TARGET_OS_IPHONE
-    vr_headlook_install(m);
+    /* Not into the iOS export either (TOTK_EXPORT_IOS runs these patches on the Mac and embeds the code they leave): the
+       hook branches into this Mac runtime, which the iPhone / iPad app does not have, so the exported game jumped to a
+       Mac address and the iPad stopped at the first camera update ("Invalid Page", 2026-11-03, every 1.4.3 iOS build
+       since zeldaVR came in, d1509b4b). */
+    if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);
 #endif
     patch_bench_cam(m);
     patch_lod_distance(m);
