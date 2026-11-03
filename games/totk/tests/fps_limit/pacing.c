@@ -4,6 +4,8 @@
 #include <assert.h>
 extern int test_game_hold;
 static int test_mode, test_detclock;
+/* hle_nvn.c reads the stereo B2 flags nvn_mtl.m defines; data is bound at load, so the probe defines them too. */
+int g_b2_order, g_b2_ucap;
 int mfx_enabled(void) { return test_mode; }
 int dm_detclock_enabled(void) { return test_detclock; }
 int main(void) {
