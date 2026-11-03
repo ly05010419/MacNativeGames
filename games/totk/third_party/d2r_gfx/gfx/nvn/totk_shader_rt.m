@@ -332,7 +332,7 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     int nvn2 = nvn2_ctl(control);
     uint32_t c1o, c1t; memcpy(&c1o, control + (nvn2 ? 0x40 : 0x700), 4); memcpy(&c1t, control + (nvn2 ? 0x44 : 0x704), 4);
     uint32_t ninst = c1t; if (nvn2) memcpy(&ninst, control + 0x38, 4);
-    if (!c1t || c1t > 16u << 20 || c1o > c1t || ninst > c1o || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
+    if (!c1t || c1t > 16u << 20 || c1o > c1t || (nvn2 && ninst > c1o) || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];

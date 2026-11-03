@@ -66,6 +66,11 @@ Checks:
   program (48 loops in main's MSL, 0 here), and all 48 compile. The MSL changes under the same variant names, so the chain is
   `totk-native-v9-unverified` now. BotW shares the translator and the chain; its shaders are Maxwell as TotK's.
 
+**Update 2026-11-03 night:** a 10-minute play session (walking, punching, jumping) ran 49,662 frames (about 83 fps) with no
+crash; the cave and tunnel render clean after the mip-chain fix. TotK 1.4.3 alive and rendering at 155 s (Link in the cave).
+Open besides the list below: a scaled texture-to-texture copy (2304x1296 -> 360x202, likely a menu background or thumbnail)
+is not implemented (red line, skipped).
+
 **Phases 2-4 and part of 5, 2026-11-03: Donkey Kong Bananza plays on the Mac** (M-series Mac, macOS 26.5, five-minute
 scripted sessions): the mode menu, the opening text, the mining tunnel with Donkey Kong, rocks, rails and the HUD (gold
 counter rising), the guide movie looping in its panel, about 50 fps; no crash in 300 s. TotK 1.4.3 boots and renders with
