@@ -25,6 +25,19 @@ Issues and pull requests that contain or ask for game files, keys or firmware wi
 
 How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script builds a Mac app or an unsigned iPhone/iPad IPA. The game's own ARM64 code runs directly on Apple chips (rewritten where the operating system requires it), the Switch system services are answered by a small host, and the game's NVN graphics are rebuilt on Metal. The iOS build requires iOS/iPadOS 26 and iPhone 14 or newer; Tears of the Kingdom 1.4.3 has been played on an iPhone 14 and an iPad, Breath of the Wild 1.6.0 on an iPhone 14 (on the iPad it reaches the title), see [iPhone and iPad](docs/install.md#iphone-and-ipad). Details are in [How it works](docs/how-it-works.md).
 
+### Switch 2 games (experimental)
+
+Switch 2 games run on the same Tears of the Kingdom runtime: their Ampere (NVN2) shaders go through the same translator,
+and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-port.md)).
+
+- **Donkey Kong Bananza** plays on the Mac from a development build: the mines with their terrain, characters and the HUD,
+  at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run
+  as compute kernels.
+- **Pokémon Pokopia** boots, runs its frame loop and shows its loading screen; it stops at its first full scene (open).
+- Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
+
+### Games
+
 | Game | Version | Platform | Status | Folder |
 |---|---|---|---|---|
 | The Legend of Zelda: Tears of the Kingdom | 1.0.0, 1.2.1, 1.4.3 | Mac (up to native 4K on 1.2.1 and 1.4.3; 5K by default on 32 GB-plus Macs with 1.4.3), iPhone, iPad; Apple Vision Pro (windowed, early) | Supported | [`games/totk`](docs/install.md) ([Vision Pro](docs/install.md#apple-vision-pro)) |
@@ -62,17 +75,6 @@ Community ports keep their own runtime, graphics layer and scripts in their fold
 
 One script builds and installs it, the headset side included: [`zeldaVR/install.md`](zeldaVR/install.md) (code in
 [`zeldaVR`](zeldaVR)). VR stays off in the normal app.
-
-### Switch 2 games (experimental)
-
-Switch 2 games run on the same Tears of the Kingdom runtime: their Ampere (NVN2) shaders go through the same translator,
-and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-port.md)).
-
-- **Donkey Kong Bananza** plays on the Mac from a development build: the mines with their terrain, characters and the HUD,
-  at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run
-  as compute kernels.
-- **Pokémon Pokopia** boots, runs its frame loop and shows its loading screen; it stops at its first full scene (open).
-- Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
 ### Windows games
 
@@ -179,6 +181,18 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 做法：准备好游戏文件（XCI 或 NSP）和你的 `prod.keys`，一个脚本即可构建 Mac App 或未签名的 iPhone / iPad IPA。游戏自己的 ARM64 代码直接运行在苹果芯片上（按操作系统要求改写），Switch 的系统服务由一个小宿主应答，游戏的 NVN 图形在 Metal 上重建。iOS 构建需要 iOS / iPadOS 26，最低支持 iPhone 14；王国之泪 1.4.3 已在 iPhone 14 和 iPad 上实际游玩，旷野之息 1.6.0 已在 iPhone 14 上游玩（iPad 上能进标题），见 [iPhone 和 iPad](docs/install.zh-CN.md#iphone-和-ipad)。详细见[工作原理](docs/how-it-works.md)。
 
+### Switch 2 游戏（实验性）
+
+Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampere（NVN2）着色器走同一个翻译器，SDK 20 的系统服务由同一个宿主
+应答（[docs/ns2-port.md](docs/ns2-port.md)）。
+
+- **大金刚 Bananza** 用开发构建可以在 Mac 上玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形
+  靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。
+- **宝可梦 Pokopia** 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。
+- 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+
+### 游戏列表
+
 | 游戏 | 版本 | 平台 | 状态 | 目录 |
 |---|---|---|---|---|
 | 塞尔达传说 王国之泪 | 1.0.0、1.2.1、1.4.3 | Mac（1.2.1 和 1.4.3 最高原生 4K，1.4.3 在 32 GB 及以上内存的 Mac 默认带 5K）、iPhone、iPad；Apple Vision Pro（窗口内游玩，早期） | 正式支持 | [`games/totk`](docs/install.zh-CN.md)（[Vision Pro](docs/install.zh-CN.md#apple-vision-pro)） |
@@ -214,16 +228,6 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 > M4 上每眼 1680×1760 约 72 帧。Quest 3 手柄和体感手势已经做进去，还没在头显里实测。
 
 一个脚本完成打包和安装，包括头显上的准备：[`zeldaVR/install.md`](zeldaVR/install.md)（代码在 [`zeldaVR`](zeldaVR)）。普通 App 里 VR 不会打开。
-
-### Switch 2 游戏（实验性）
-
-Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampere（NVN2）着色器走同一个翻译器，SDK 20 的系统服务由同一个宿主
-应答（[docs/ns2-port.md](docs/ns2-port.md)）。
-
-- **大金刚 Bananza** 用开发构建可以在 Mac 上玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形
-  靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。
-- **宝可梦 Pokopia** 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。
-- 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
 
 ### Windows 游戏
 
