@@ -6737,6 +6737,11 @@ static const prog_t *prog_combined(const prog_t *const gst[5]) {
     static int said; if (said++ < 4) MLOG("[nvn] separable programs: a draw's stages come from %s; combined program of %u stages", gst[0] == gst[1] ? "one program" : "several programs", c->nstage);
     return c;
 }
+static int prog_has_compute(const prog_t *p) {
+    if (!p) return 0;
+    for (unsigned i = 0; i < p->nstage && i < 6; i++) if (p->sd[i].control && p->sd[i].data && ctl_stage(p->sd[i].control, (const uint8_t *)(uintptr_t)p->sd[i].data) == 5) return 1;
+    return 0;
+}
 static void bind_program_stages(const p_bind_program *bp) {
     const prog_t *np = bp->prog;
     int mask = bp->stages ? bp->stages & NVN_SHADER_STAGE_ALL_GRAPHICS_BITS : NVN_SHADER_STAGE_ALL_GRAPHICS_BITS;
@@ -10364,7 +10369,7 @@ static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
         case OP_BIND_PROGRAM: { const p_bind_program *bp = a; const prog_t *np = bp->prog;
-            if (bp->stages & NVN_SHADER_STAGE_COMPUTE_BIT) S.cprog = np;
+            if ((bp->stages & NVN_SHADER_STAGE_COMPUTE_BIT) && prog_has_compute(np)) S.cprog = np;   // a graphics program bound with every stage bit (Bananza: 0xff) is not a compute one
             if (bind_graphics(bp)) bind_program_stages(bp);
             break; }
         case OP_BIND_STATE: {
@@ -13583,7 +13588,16 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     g_prog_for_draw = 1; __unsafe_unretained NvProg *pr = prog_get(S.prog); g_prog_for_draw = 0;
     if (pr && pr->missing && async_shaders()) { shader_predict_maybe(); prog_resolve(pr, draw_may_skip(pr)); }
-    if (pr && pr->missing) { draw_skipped(); return; }   // TOTK (iOS): a stage is not translated yet; Mac (async shaders): still in the background
+    if (pr && pr->missing) {
+        /* TOTK_SKIP_LOG=1 (diagnostic): each program whose draws are skipped for a missing stage, once, with its stages */
+        static int on = -1; static NSMutableSet *seen; if (on < 0) on = getenv("TOTK_SKIP_LOG") != NULL;
+        if (on) { if (!seen) seen = [NSMutableSet set]; NSValue *k = [NSValue valueWithPointer:S.prog];
+            if (![seen containsObject:k] && seen.count < 40) { [seen addObject:k];
+                MLOG("[skip] frame %llu program %p (serial %llu, %u stages) missing %#x: vs %s ps %s gs %s | bound vs=%p ps=%p gs=%p", (unsigned long long)atomic_load(&g_cur_frame),
+                     (const void *)S.prog, (unsigned long long)S.prog->serial, S.prog->nstage, pr->missing,
+                     pr->key[0] ? [pr->key[0] substringToIndex:16].UTF8String : "-", pr->key[1] ? [pr->key[1] substringToIndex:16].UTF8String : "-",
+                     pr->key[2] ? [pr->key[2] substringToIndex:16].UTF8String : "-", (const void *)S.gst[0], (const void *)S.gst[1], (const void *)S.gst[2]); } }
+        draw_skipped(); return; }   // TOTK (iOS): a stage is not translated yet; Mac (async shaders): still in the background
     if (g_nupd) upd_guard_draw(pr, di);   // TOTK: before any encoder or texture preparation of this draw
     { int fit = pr ? prog_fit(pr) : 0; if (fit < 0) { draw_skipped(); return; } if (fit) g_pso_dirty = 1; }
     if (skv_on()) { g_skv_draws++; if (skv_check((__bridge const void *)pr, dw, di)) return; }   // measurement experiment: skip draws invisible in the last frames

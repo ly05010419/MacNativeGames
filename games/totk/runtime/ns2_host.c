@@ -62,7 +62,7 @@ static int jcms_states(void *out, int n, const uint32_t *h) { (void)out; (void)n
 /* ---------- streamplay: GameShare / GameChat streaming (stpl:u) ----------
    Bananza initializes it at boot. The host streams to nobody: the library is ready, no session is open and no guest is
    connected, so every guest query has nothing to report. Opening a session is a player action and stays unhooked. */
-static uint32_t stpl_mem_size(int type, int mode, int n) { (void)type; (void)mode; (void)n; return 0; }   /* PokeDinner's stpl:u command 300 offline: no work memory */
+static uint32_t stpl_mem_size(int type, int mode, int n) { (void)type; (void)mode; (void)n; return 0x1000; }   /* PokeDinner answers 0 (stpl:u command 300); the page Bananza was played with stays (Pokopia runs with either) */
 static Result stpl_init(int type, int mode, void *work, size_t size) { (void)type; (void)mode; (void)work; (void)size; return RES_OK; }
 static void stpl_fini(void) {}
 static uint8_t stpl_event[0x80] __attribute__((aligned(16)));   /* the connection state event: bound, never signaled */
@@ -81,11 +81,11 @@ static void stpl_vib_info(uint64_t *info, const void *h) { (void)h; *info = 0; }
 static uint32_t stpl_jcms_handle(const void *id, const void *type) { (void)id; (void)type; return 0; }
 
 /* ---------- oe: the graphics scale (through am's IGraphicsScalingParametersFunctions, a session the host never opened) ----------
-   The SDK maps the parameter's first word 10 / 20 / 30 to scale 0 / 1 / 2; Bananza keeps it as a draw-size tier. The
-   emulator Pokemon Pokopia was brought up on (PokeDinner, an Eden fork) answers 10 in either mode, and
-   kirakira-dev/ouncenative (MIT) returns its scale 0 for Pokopia: 0, fixed, so no change of tier is ever notified. What
-   the console reports in each mode is not measured (open). */
-static int oe_graphics_scale(void) { return 0; }
+   The SDK maps the parameter's first word 10 / 20 / 30 to scale 0 / 1 / 2; Bananza keeps it as a draw-size tier. Which tier
+   the console reports in which mode is not measured (open, as in nxnative): 0 handheld, 1 docked, following the mode.
+   PokeDinner (an Eden fork) answers 10 (scale 0) in either mode and kirakira-dev/ouncenative returns 0 for Pokopia; the
+   mode rule Bananza was played with stays until the console's answer is known (Pokopia runs with either). */
+static int oe_graphics_scale(void) { return !runtime_handheld_mode(); }
 static void oe_graphics_scale_notify(unsigned on) { (void)on; }
 
 /* ---------- nv::InitCheck ----------
@@ -213,17 +213,9 @@ void *runtime_ns2_override(const char *name) {
         {"_ZN2nn3hid32SetNmouseButtonConfigJoyLeftJcmsERKNS0_29NmouseButtonConfigJoyLeftJcmsE", no_op},
         {"_ZN2nn3hid33SetNmouseButtonConfigJoyRightJcmsERKNS0_30NmouseButtonConfigJoyRightJcmsE", no_op},
         {"_ZN2nn3hid12GetJcmsStateEPNS0_9JcmsStateERKNS0_10JcmsHandleE", jcms_state},
-        {"_ZN2nn3hid13VibrationNode6UpdateEv", no_op}, {"_ZN2nn3hid13VibrationNode15SetModulationToEPKS1_RKNS0_19VibrationModulationE", no_op},
-        {"_ZN2nn3hid23VibrationNodeConnectionC1Ev", no_op}, {"_ZN2nn3hid23VibrationNodeConnectionD1Ev", no_op},
-        {"_ZN2nn3hid23VibrationNodeConnection7ConnectEPNS0_13VibrationNodeES3_", ok_result}, {"_ZN2nn3hid23VibrationNodeConnection10DisconnectEv", no_op},
-        {"_ZN2nn3hid15VibrationPlayerC1Ev", no_op}, {"_ZN2nn3hid15VibrationPlayerD1Ev", no_op}, {"_ZN2nn3hid15VibrationPlayer4LoadEPKvm", ok_result},
-        {"_ZN2nn3hid15VibrationPlayer4PlayEv", no_op}, {"_ZN2nn3hid15VibrationPlayer4StopEv", no_op}, {"_ZN2nn3hid15VibrationPlayer7SetLoopEb", no_op},
-        {"_ZN2nn3hid15VibrationPlayer15SetLoopIntervalEi", no_op}, {"_ZN2nn3hid15VibrationPlayer18SetCurrentPositionEi", no_op},
-        {"_ZN2nn3hid15VibrationTargetC1Ev", no_op}, {"_ZN2nn3hid15VibrationTargetD1Ev", no_op},
-        {"_ZN2nn3hid15VibrationTarget24GetVibrationDeviceHandleEv", zero_word},
-        {"_ZN2nn3hid15VibrationTarget24SetVibrationDeviceHandleERKNS0_21VibrationDeviceHandleE", no_op},
-        {"_ZN2nn3hid18VibrationConverterC1Ei", no_op}, {"_ZN2nn3hid18VibrationConverterD1Ev", no_op},
-        {"_ZN2nn3hid18VibrationConverter12ProcessChunkEPNS0_14VibrationValueEPKsi", zero_word},
+        /* No nn::hid vibration graph classes (VibrationNode, VibrationTarget, VibrationPlayer, ...): the SDK's own code runs.
+           Stubbing them (2026-11-03, for Pokopia) emptied their constructors, so a game class derived from VibrationNode
+           had no vtable and Donkey Kong Bananza called garbage from VibrationNode::Update about 20 s in (main+0x2ee06c). */
         {"_ZN2nn4bcat10InitializeEv", bcat_init}, {"_ZN2nn4bcat25MountDeliveryCacheStorageEv", bcat_mount},
         {"_ZN2nn4bcat27UnmountDeliveryCacheStorageEv", bcat_unmount},
         {"_ZN2nn2ec33InitializeForShopServiceAccessorsEPvm", ec_init}, {"_ZN2nn2ec31FinalizeForShopServiceAccessorsEv", ec_fin},

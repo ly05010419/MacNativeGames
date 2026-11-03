@@ -2427,10 +2427,10 @@ static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
    the recordings a submit carries (as resolve_deferred finds deferred binds) and the sync is fenced with that submit: with
    the translation thread, the submission's token (fenced | 4, as nvnQueueFenceSync); without it, the Metal fence the submit
    ended with. The commands after it in the same submission are included: a later signal, never an early one.
-   Recording the fence does not touch the sync: until the submit takes it, the sync keeps the fence it had (as on the
-   console, where the submission gives it its new threshold; kirakira-dev/ouncenative's replay, MIT, does the same).
-   Clearing it at the record made Pokemon Pokopia's engine poll a sync of a command buffer it had not submitted yet with
-   SyncWait(0) forever (main thread in a 0.1 ms sleep loop, the frame loop stopped at frame ~517). */
+   Recording the fence clears the sync: it signals for this fence, not an older one (as Bananza was played with).
+   kirakira-dev/ouncenative leaves the sync as it was until the submit; that was tried on 2026-11-03 for Pokemon Pokopia,
+   whose frame loop seemed to wait on such a sync forever, but that stop was the virtual-core starvation fixed in
+   threads.c core_migrate (its submitting thread got no core). Which the console does is not measured (open). */
 static void fence_syncs(const uint8_t *p, int depth, uint64_t fence, int tok) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
@@ -2444,7 +2444,7 @@ static void fence_syncs(const uint8_t *p, int depth, uint64_t fence, int tok) {
 }
 static _Atomic int g_fence_sync_used;
 NVN(nvnCommandBufferFenceSync, void, NVNcommandBuffer *c, NVNsync *s, NVNsyncCondition cond, int flags) {
-    (void)cond; (void)flags;
+    (void)cond; (void)flags; ((sync_t *)s)->fenced = 0;
     REC(c, OP_FENCE_SYNC, p_fence_sync)->sync = s; atomic_store(&g_fence_sync_used, 1);
     if (sync_chain_left(0)) { char w[96]; snprintf(w, sizeof w, "CommandBufferFenceSync cb=%p sync=%p", (void *)c, (void *)s); guest_chain(w); }
 }

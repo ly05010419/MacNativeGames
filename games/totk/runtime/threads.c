@@ -268,6 +268,8 @@ static void core_wait_complete(thr_t *t, uint64_t granted_ns) {
    cores 1-2) with cores 2-5 free, and the frame loop stopped (2026-11-03, at a different frame each run). Holding G. */
 static uint64_t g_core_migrations;
 static int core_migrate(thr_t *w) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_CORE_MIGRATE"); on = !(e && !strcmp(e, "0")); }
+    if (!on) return 0;
     for (int c = 0; c < NCORE; c++) {
         thr_t *o = g_core_owner[c];
         if (!o || o == w || !core_allowed(w, c)) continue;

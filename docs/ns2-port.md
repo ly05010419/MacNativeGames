@@ -150,3 +150,13 @@ Added for it (general where possible, each with its reason in the code):
 - Open: at the first full scene (frame ~640: 95 draws, 20 dispatches) the GPU hangs (kIOGPUCommandBufferCallbackErrorHang)
   and macOS ignores the process's later submissions (black). Not an indirect draw; the FFT and 70ab27e1 compute shaders
   are bounded. Diagnostics added: TOTK_SKIP_CS=all|<prefixes>, TOTK_SKIP_CS_LOG=1, TOTK_CS_UBO_LOG=<prefix>.
+
+**Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
+(VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:
+Bananza's own nodes derived from VibrationNode had no vtable and it called garbage from VibrationNode::Update about 20 s
+in (main+0x2ee06c, signal 10). The SDK's own classes run again; Bananza runs 23,000 frames. Bisected away on the way:
+the graphics scale and streamplay memory (back to the values Bananza was played with), core migration
+(`TOTK_CORE_MIGRATE=0` turns it off), the fence-sync record rule (back to clearing at the record).
+Missing floors in later areas: those draws use a vertex / geometry / fragment program, and the geometry stage has no
+translation chain yet, so they are skipped (`TOTK_SKIP_LOG=1` names them). Next: geometry stages as compute (Ryujinx
+`Translate(asCompute)`, as seedds/nxnative's nvn_geometry.inc does).
