@@ -1,7 +1,10 @@
 # The shader translator, ready-made
 
 `psv_xlate` is byte-identical to `games/xc3/prebuilt/macos-arm64/totk_xlate` (same SHA-256): copied with the port, not rebuilt.
-The notes below are that build's history.
+Its source, `games/pokesv/tools/psv_xlate`, is kept byte-identical to `games/xc3/tools/totk_xlate` (only `publish_native.sh`
+differs, writing here), so the binary is the one made from the sources here; that is why the translator keeps the earlier
+port's names (`totk_xlate.csproj`, `TOTK_SHADER_DEBUGMODE`, which `psv_shader_rt.m` sets from `PSV_SHADER_DEBUGMODE`).
+The notes below are that build's history (paths now under games/pokesv).
 
 `psv_xlate` is the program the game starts to translate its shaders (`psv_xlate --service`): the Ryujinx shader
 translator (`vendor/ryujinx`, MIT) with this game's patches (`games/pokesv/tools/psv_xlate/patches`, 0001–0009; 0008

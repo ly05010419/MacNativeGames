@@ -19,7 +19,7 @@ mkdir -p "$WORK/ryujinx-src" "$WORK/xlate"
 cp -R "$REPO/vendor/ryujinx/." "$WORK/ryujinx-src/"
 find "$WORK/ryujinx-src/src" -maxdepth 2 \( -name obj -o -name bin \) -type d -exec rm -rf {} +
 for p in "$HERE"/patches/*.patch; do patch -s -d "$WORK/ryujinx-src" -p1 --forward < "$p"; done
-cp "$HERE"/*.cs "$HERE"/psv_xlate.csproj "$WORK/xlate/"
+cp "$HERE"/*.cs "$HERE"/totk_xlate.csproj "$WORK/xlate/"
 # SPIRV-Cross: the commit, sources and flags build_app.py builds the spirv-cross program from
 PIN=$(sed -n "s/^SPIRV_CROSS = ('\([^']*\)', '\([0-9a-f]*\)')$/\1 \2/p" "$REPO/build_app.py")
 URL=${PIN% *}; COMMIT=${PIN#* }
@@ -36,11 +36,11 @@ mkdir -p "$WORK/spvc"
 for f in "${SOURCES[@]}"; do xcrun clang++ "${FLAGS[@]}" -c "$SRC/$f" -o "$WORK/spvc/${f%.cpp}.o" & done
 xcrun clang++ "${FLAGS[@]}" -I"$SRC" -c "$HERE/spirv_cross_inproc.cpp" -o "$WORK/spvc/spirv_cross_inproc.o" &   # includes main.cpp
 wait
-xcrun ar rcs "$WORK/libpsv_spirv_cross.a" "$WORK"/spvc/*.o
-"$DOTNET" publish "$WORK/xlate/psv_xlate.csproj" -c Release -r osx-arm64 -p:PublishAot=true -p:InvariantGlobalization=true \
-  -p:RyuSrc="$WORK/ryujinx-src" -p:PsvSpirvCrossLib="$WORK/libpsv_spirv_cross.a" -o "$WORK/out"
+xcrun ar rcs "$WORK/libtotk_spirv_cross.a" "$WORK"/spvc/*.o
+"$DOTNET" publish "$WORK/xlate/totk_xlate.csproj" -c Release -r osx-arm64 -p:PublishAot=true -p:InvariantGlobalization=true \
+  -p:RyuSrc="$WORK/ryujinx-src" -p:TotkSpirvCrossLib="$WORK/libtotk_spirv_cross.a" -o "$WORK/out"
 OUT=$REPO/games/pokesv/prebuilt/macos-arm64
 mkdir -p "$OUT"
-cp "$WORK/out/psv_xlate" "$OUT/psv_xlate"
+cp "$WORK/out/totk_xlate" "$OUT/psv_xlate"   # the earlier port's program, under this game's name
 shasum -a 256 "$OUT/psv_xlate" | awk '{print $1}' > "$OUT/psv_xlate.sha256"
 echo "built $OUT/psv_xlate (sha256 $(cat "$OUT/psv_xlate.sha256"))"

@@ -24,9 +24,10 @@ VERSION_DEFINE := -DPSV_GAME_$(shell echo $(VERSION) | tr a-z A-Z)
 VENV := $(WORK)/venv
 PY ?= $(if $(wildcard $(VENV)/bin/python),$(abspath $(VENV)/bin/python),python3.14)
 NATIVE_OPT ?= -O2
-# Deliberately 27.0: the Homebrew opus and libvpx are built for the macOS they were installed on, and only 27 is tested.
+# 26.0, the repository's minimum (Metal 4). The Homebrew opus and libvpx are built for the macOS they were installed on,
+# so on macOS 26 they are 26's; only 27 has been tested (after PR #1655).
 # The app's Info.plist takes the same value.
-MACOS_MIN ?= 27.0
+MACOS_MIN ?= 26.0
 # Homebrew's prefix, asked once (not every Mac has it in /opt/homebrew). structck.py needs llvm@23's llvm-objdump.
 BREW := $(or $(shell brew --prefix 2>/dev/null),/opt/homebrew)
 OPUS ?= $(BREW)/opt/opus

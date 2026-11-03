@@ -1,4 +1,4 @@
-// the earlier port adaptation (2026-10-12): adds a --serve mode (one job per stdin line) and records which texture/image
+// TOTK adaptation (2026-10-12): adds a --serve mode (one job per stdin line) and records which texture/image
 // slots the translator queried, so the host can key runtime translations by the answers actually used.
 // Based on D2R Mobile dm/gfx/tools/dmsh_xlate/Program.cs (MIT, see LICENSE).
 // Switch 原版着色器（Maxwell 机器码）→ SPIR-V（Ryujinx.Graphics.Shader 翻译器），供 B 路线离线出 metallib。
@@ -111,12 +111,12 @@ static class SwshXlate
             Array32<AttributeType> attr = default; Array8<AttributeType> fout = default;
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
-            // (2026-10-13): the game calls nvnDeviceSetDepthMode(NEAR_IS_MINUS_W) (GL clip range -w..w); a frame-800 uniform dump
+            // TOTK (2026-10-13): the game calls nvnDeviceSetDepthMode(NEAR_IS_MINUS_W) (GL clip range -w..w); a frame-800 uniform dump
             // showed the UI projection producing clip z = -1, which Metal (0..w) clips entirely, so no draw ever produced a fragment.
             // The job says "depth_minus_w": true for that mode and the translator then emits z = z * 0.5 + w * 0.5 (Metal has no
             // depth clip control, see QueryHostSupportsDepthClipControl below).
             bool depthMinusW = _job["depth_minus_w"] is JsonValue dm && (dm.TryGetValue<bool>(out bool db) ? db : dm.TryGetValue<int>(out int di) && di != 0);
-            // (2026-10-22): "early_fragment_tests" is the fragment shader's NVN control byte +0x718, which the Switch driver
+            // TOTK (2026-10-22): "early_fragment_tests" is the fragment shader's NVN control byte +0x718, which the Switch driver
             // turns into the 3D engine's early-Z-force state (Ryujinx's EarlyZForce). The translator then declares
             // EarlyFragmentTests, and the MSL [[early_fragment_tests]]. Without it Metal tests depth after a fragment shader
             // that stores to memory (the material shaders' per-tile flag), and that late depth differed by an ulp from the
@@ -231,7 +231,7 @@ static class SwshXlate
     static int Disasm(string codePath, string stage)
     {
         // reads the translator's private decoder state by reflection, which a NativeAOT build does not keep
-        if (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported) { Console.Error.WriteLine("--disasm needs the JIT build: tooling/dotnet/dotnet build/psv_xlate/psv_xlate.dll --disasm ..."); return 2; }
+        if (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported) { Console.Error.WriteLine("--disasm needs the JIT build: tooling/dotnet/dotnet build/totk_xlate/totk_xlate.dll --disasm ..."); return 2; }
         byte[] code = File.ReadAllBytes(codePath);
         var job = new JsonObject { ["key"] = "disasm", ["stage"] = stage, ["c1"] = "", ["debug"] = true, ["reduced"] = true };
         var acc = new Accessor(code, job);

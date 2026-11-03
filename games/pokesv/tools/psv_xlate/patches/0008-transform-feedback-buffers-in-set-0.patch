@@ -5,7 +5,7 @@
          public int GetTfeBufferStorageBufferBinding(int bufferIndex)
          {
 -            return _tfeBufferSbBaseBinding + bufferIndex;
-+            // the emulated transform feedback buffers live in set 0 next to the shader's own resources, whose bindings the
++            // TOTK: the emulated transform feedback buffers live in set 0 next to the shader's own resources, whose bindings the
 +            // host accessor numbers from 1 upwards; 1000 + index keeps them apart (the MSL ids follow the bindings).
 +            return 1000 + bufferIndex;
          }
@@ -18,7 +18,7 @@
                  {
                      int binding = resourceManager.Reservations.GetTfeBufferStorageBufferBinding(i);
 -                    BufferDefinition tfeDataBuffer = new(BufferLayout.Std430, 1, binding, $"tfe_data{i}", tfeDataStruct);
-+                    BufferDefinition tfeDataBuffer = new(BufferLayout.Std430, 0, binding, $"tfe_data{i}", tfeDataStruct);   // set 0, the only set the NVN-on-Metal layer binds
++                    BufferDefinition tfeDataBuffer = new(BufferLayout.Std430, 0, binding, $"tfe_data{i}", tfeDataStruct);   // TOTK: set 0, the only set the NVN-on-Metal layer binds
                      resourceManager.Properties.AddOrUpdateStorageBuffer(tfeDataBuffer);
                  }
              }

@@ -1,9 +1,9 @@
-// (2026-10-17): the runtime shader translation service as one native program: psv_xlate --service.
+// TOTK (2026-10-17): the runtime shader translation service as one native program: totk_xlate --service.
 // Same request / reply lines and the same cache files as scripts/shader_service.py, which it replaces when
-// build/shader-service/psv_xlate exists (psv_shader_rt.m); the translation runs in this process instead of a second
-// "dotnet psv_xlate.dll --serve" process, and published with NativeAOT (make shader-service) it needs neither Python nor
+// build/shader-service/totk_xlate exists (totk_shader_rt.m); the translation runs in this process instead of a second
+// "dotnet totk_xlate.dll --serve" process, and published with NativeAOT (make shader-service) it needs neither Python nor
 // a .NET runtime. This is a line-by-line port of shader_service.py: keep the two in step, and check a change with
-// scripts/diag/retranslate_cache.py --service build/shader-service/psv_xlate --compare <cache> (every MSL byte for byte,
+// scripts/diag/retranslate_cache.py --service build/shader-service/totk_xlate --compare <cache> (every MSL byte for byte,
 // every reflection file as JSON).
 // Request: {"variant", "stage": "vs|ps|cs", "code": path, "c1": hex, "tex": {slot: type}, "img": {slot: {type, fmt}},
 //           "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint}, "local": [x, y, z], "depth_minus_w": bool}
@@ -25,7 +25,7 @@ static class ShaderService
     sealed class RuntimeError : Exception { public RuntimeError(string message) : base(message) { } }
 
     const int TexBase = 0x168, SampBase = 0x568, ImgBase = 0x120;
-    // the earlier port (NVN 55): combined texture handles bound with nvnCommandBufferBindTexture live at c2+0x20, 32 slots of 8 bytes
+    // TOTK (NVN 55): combined texture handles bound with nvnCommandBufferBindTexture live at c2+0x20, 32 slots of 8 bytes
     // (measured over 300 pixel and 400 vertex shaders of the game); separate textures stay at 0x168, samplers at 0x568.
     const int CombinedBase = 0x20, CombinedSlots = 32;
     static readonly string[] Xc = { "--msl", "--msl-version", "20300", "--msl-argument-buffers", "--msl-texture-buffer-native", "--msl-pad-fragment-output" };
@@ -204,9 +204,9 @@ static class ShaderService
             // textureGatherOffsets on a depth texture (Xenoblade Chronicles 3): spirv-cross's spvGatherConstOffsets helper calls
             // t.gather(s, coord, offset, component), which depth2d lacks; overloads for depth2d, picked over the generic
             // template, gather without the component (only depth exists), as the generic helper does per offset
-            if (src.Contains("spvGatherConstOffsets(") && !src.Contains("psv_depth_gather_offsets"))
+            if (src.Contains("spvGatherConstOffsets(") && !src.Contains("totk_depth_gather_offsets"))
             {
-                const string over = "// psv_depth_gather_offsets: spvGatherConstOffsets for depth2d (no component argument)\n" +
+                const string over = "// totk_depth_gather_offsets: spvGatherConstOffsets for depth2d (no component argument)\n" +
                     "template<typename Toff> inline float4 spvGatherConstOffsets(const device depth2d<float>& t, sampler s, Toff coffsets, component c, float2 coord) { float4 r[4]; for (uint i = 0; i < 4; i++) r[i] = t.gather(s, coord, coffsets[i]); return float4(r[0].w, r[1].w, r[2].w, r[3].w); }\n" +
                     "template<typename Toff> inline float4 spvGatherConstOffsets(const constant depth2d<float>& t, sampler s, Toff coffsets, component c, float2 coord) { float4 r[4]; for (uint i = 0; i < 4; i++) r[i] = t.gather(s, coord, coffsets[i]); return float4(r[0].w, r[1].w, r[2].w, r[3].w); }\n" +
                     "template<typename Toff> inline float4 spvGatherConstOffsets(const thread depth2d<float>& t, sampler s, Toff coffsets, component c, float2 coord) { float4 r[4]; for (uint i = 0; i < 4; i++) r[i] = t.gather(s, coord, coffsets[i]); return float4(r[0].w, r[1].w, r[2].w, r[3].w); }\n\n";
@@ -235,15 +235,15 @@ static class ShaderService
                 if (!m.Success) break;
                 int start = m.Groups[1].Index, c = CloseParen(src, m.Index + m.Length);
                 if (c < 0) throw new RuntimeError($"unbalanced call on depth texture {name}");
-                src = src.Substring(0, start) + "psv_depth_fetch(" + src.Substring(start, c - start) + ")" + src.Substring(c);
-                pos = c + "psv_depth_fetch()".Length;
+                src = src.Substring(0, start) + "totk_depth_fetch(" + src.Substring(start, c - start) + ")" + src.Substring(c);
+                pos = c + "totk_depth_fetch()".Length;
             }
         }
         if (names.Count > 0)
         {
             const string ns = "using namespace metal;";
             int at = src.IndexOf(ns, StringComparison.Ordinal);
-            if (at >= 0) src = src.Substring(0, at) + ns + "\nstatic inline float4 psv_depth_fetch(float d) { return float4(d, 0.0, 0.0, 1.0); }" + src.Substring(at + ns.Length);
+            if (at >= 0) src = src.Substring(0, at) + ns + "\nstatic inline float4 totk_depth_fetch(float d) { return float4(d, 0.0, 0.0, 1.0); }" + src.Substring(at + ns.Length);
         }
         return src;
     }
@@ -254,23 +254,23 @@ static class ShaderService
     //    the texture's precision before comparing, Metal compares the full float, so a lit surface fails its own compare by
     //    a fraction of a 16-bit step. The reference is rounded to 1/65535 like the depth write. The 2D depth copies are D32F
     //    and never compare-sampled.
-    //  - Non-compare reads of a depth texture (psv_depth_fetch above): the game binds a trilinear sampler, and on the Switch
+    //  - Non-compare reads of a depth texture (totk_depth_fetch above): the game binds a trilinear sampler, and on the Switch
     //    the read lands on one texel; Metal blends neighbouring depths, which puts reconstructed positions in mid-air at
     //    object edges. These reads are point-sampled.
     static readonly Regex D16Compare = new(@"(\.sample_compare\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, [^,]+\.xy, uint\(rint\([^)]+\)\), )([^,]+)(, level)");
-    static readonly Regex DepthFetchSample = new(@"psv_depth_fetch\((spvDescriptorSet0\.[A-Za-z0-9_]+)\.sample\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, ");
+    static readonly Regex DepthFetchSample = new(@"totk_depth_fetch\((spvDescriptorSet0\.[A-Za-z0-9_]+)\.sample\(spvDescriptorSet0\.[A-Za-z0-9_]+Smplr, ");
 
     static string MatchSwitchDepthSampling(string src)
     {
-        string s = D16Compare.Replace(src, "${1}psv_d16ref(${2})${3}");
-        s = DepthFetchSample.Replace(s, "psv_depth_fetch(${1}.sample(psv_nearest, ");
+        string s = D16Compare.Replace(src, "${1}totk_d16ref(${2})${3}");
+        s = DepthFetchSample.Replace(s, "totk_depth_fetch(${1}.sample(totk_nearest, ");
         if (s == src) return src;
         const string ns = "using namespace metal;";
         int at = s.IndexOf(ns, StringComparison.Ordinal);
         if (at < 0) throw new RuntimeError("depth sampling rewrite: no 'using namespace metal;'");
         return s.Substring(0, at) + ns +
-            "\nstatic inline float psv_d16ref(float r) { return floor(fast::clamp(r, 0.0f, 1.0f) * 65535.0f + 0.5f) * (1.0f / 65535.0f); }" +
-            "\nconstexpr sampler psv_nearest(filter::nearest, mip_filter::none, address::clamp_to_edge);" + s.Substring(at + ns.Length);
+            "\nstatic inline float totk_d16ref(float r) { return floor(fast::clamp(r, 0.0f, 1.0f) * 65535.0f + 0.5f) * (1.0f / 65535.0f); }" +
+            "\nconstexpr sampler totk_nearest(filter::nearest, mip_filter::none, address::clamp_to_edge);" + s.Substring(at + ns.Length);
     }
 
     /// True when the MSL stores or does atomics through storage binding `name` (same rule as nvn_mtl.m msl_stores_through).
@@ -378,12 +378,12 @@ static class ShaderService
     }
 
     // SPIRV-Cross's own program, compiled into this one (spirv_cross_inproc.cpp, linked by publish_native.sh): the same MSL
-    // without a process per shader. PSV_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
-    [DllImport("psv_spirv_cross", EntryPoint = "psv_spirv_cross_msl")]
+    // without a process per shader. TOTK_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
+    [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl")]
     static extern unsafe int SpirvCrossMsl(uint* words, nuint count, out IntPtr msl, out IntPtr err);
-    [DllImport("psv_spirv_cross", EntryPoint = "psv_spirv_cross_free")]
+    [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_free")]
     static extern void SpirvCrossFree(IntPtr p);
-    static readonly bool spirvCrossProcess = Environment.GetEnvironmentVariable("PSV_XLATE_SPIRV_CROSS") == "process";
+    static readonly bool spirvCrossProcess = Environment.GetEnvironmentVariable("TOTK_XLATE_SPIRV_CROSS") == "process";
 
     static unsafe void SpirvCross(string spv, string msl, string what)
     {
@@ -425,7 +425,7 @@ static class ShaderService
         string variant = (string)rq["variant"], stage = (string)rq["stage"];
         if (stage != "vs" && stage != "ps" && stage != "cs" && stage != "vsc" && stage != "gsc" && stage != "vpt") throw new RuntimeError($"stage {stage} not supported by the translation chain");
         if (stage == "cs" && !Truthy(Get(rq, "local"))) throw new RuntimeError("compute shader without thread group size");
-        // DebugMode (AST optimizer off) since 2026-10-13: --debug-mode / PSV_SHADER_DEBUGMODE, as in shader_service.py
+        // DebugMode (AST optimizer off) since 2026-10-13: --debug-mode / TOTK_SHADER_DEBUGMODE, as in shader_service.py
         var job = new JsonObject
         {
             ["key"] = variant, ["stage"] = stage, ["code"] = (string)rq["code"], ["c1"] = GetStr(rq, "c1", ""), ["debug"] = debugMode != 0, ["reduced"] = true,
@@ -591,10 +591,10 @@ static class ShaderService
         sb.Append('"');
     }
 
-    // psv_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]
+    // totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]
     public static int Run(string[] args)
     {
-        string dm = Environment.GetEnvironmentVariable("PSV_SHADER_DEBUGMODE");
+        string dm = Environment.GetEnvironmentVariable("TOTK_SHADER_DEBUGMODE");
         debugMode = string.IsNullOrEmpty(dm) ? 1 : (int)ParseInt(dm.Trim());
         for (int i = 1; i < args.Length; i++)
         {
@@ -605,12 +605,12 @@ static class ShaderService
                 case "--out": outDir = v; i++; break;
                 case "--chain": chain = v; i++; break;
                 case "--debug-mode": debugMode = (int)ParseInt(v); i++; break;
-                default: Console.Error.WriteLine($"psv_xlate --service: unknown argument {args[i]}"); return 2;
+                default: Console.Error.WriteLine($"totk_xlate --service: unknown argument {args[i]}"); return 2;
             }
         }
         if (spirvCross == null || outDir == null || chain == null)
         {
-            Console.Error.WriteLine("usage: psv_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]");
+            Console.Error.WriteLine("usage: totk_xlate --service --spirv-cross <path> --out <dir> --chain <name> [--debug-mode 0|1]");
             return 2;
         }
         Directory.CreateDirectory(outDir);

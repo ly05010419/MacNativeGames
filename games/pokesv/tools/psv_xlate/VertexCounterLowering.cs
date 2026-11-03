@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 
-// the earlier port / 1.4.3 visibility counter: each invocation passing its input test
+// TOTK 1.1.2 / 1.4.3 visibility counter: each invocation passing its input test
 // participates in a ballot; the highest active lane adds popcount(ballot) to s1[0].
 // The atomic's return value is unused and no other invocation observes it here.
 // Singleton groups therefore preserve the final modulo-2^32 sum exactly. Metal's

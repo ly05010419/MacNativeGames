@@ -5,7 +5,7 @@
                          bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
  
 -                        if (propVar.Defs.Count == 1 && isWorthPropagating)
-+                        // SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
++                        // TOTK: SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
 +                        // into temporaries); folding an expression into a call argument breaks GenerateCall.
 +                        bool usedByCall = propVar.Uses.Any(u => u is AstOperation op && op.Inst == Instruction.Call);
 +

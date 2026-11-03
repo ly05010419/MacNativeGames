@@ -5,7 +5,7 @@
          public const int MaxVertexBufferTextures = 32;
  
 -        private const int TextureSetIndex = 2; // TODO: Get from GPU accessor.
-+        private const int TextureSetIndex = 0; // set 0, the only set the NVN-on-Metal layer binds (was 2)
++        private const int TextureSetIndex = 0; // TOTK: set 0, the only set the NVN-on-Metal layer binds (was 2)
  
          public int VertexInfoConstantBufferBinding { get; }
          public int VertexOutputStorageBufferBinding { get; }
@@ -14,7 +14,7 @@
              {
                  // One constant buffer reserved for vertex related state.
 -                VertexInfoConstantBufferBinding = ReservedConstantBuffers++;
-+                VertexInfoConstantBufferBinding = 1100; ReservedConstantBuffers++;   // fixed bindings in set 0, apart from the host accessor's (from 1)
++                VertexInfoConstantBufferBinding = 1100; ReservedConstantBuffers++;   // TOTK: fixed bindings in set 0, apart from the host accessor's (from 1)
  
                  // One storage buffer for the output vertex data.
 -                VertexOutputStorageBufferBinding = ReservedStorageBuffers++;
@@ -45,7 +45,7 @@
  
                  int vertexOutputSbBinding = resourceManager.Reservations.VertexOutputStorageBufferBinding;
 -                BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 1, vertexOutputSbBinding, "vertex_output", vertexOutputStruct);
-+                BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexOutputSbBinding, "vertex_output", vertexOutputStruct);   // set 0
++                BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexOutputSbBinding, "vertex_output", vertexOutputStruct);   // TOTK: set 0
                  resourceManager.Properties.AddOrUpdateStorageBuffer(vertexOutputBuffer);
  
                  if (Stage == ShaderStage.Vertex)
@@ -54,7 +54,7 @@
  
                      int geometryVbOutputSbBinding = resourceManager.Reservations.GeometryVertexOutputStorageBufferBinding;
 -                    BufferDefinition geometryVbOutputBuffer = new(BufferLayout.Std430, 1, geometryVbOutputSbBinding, "geometry_vb_output", vertexOutputStruct);
-+                    BufferDefinition geometryVbOutputBuffer = new(BufferLayout.Std430, 0, geometryVbOutputSbBinding, "geometry_vb_output", vertexOutputStruct);   // set 0
++                    BufferDefinition geometryVbOutputBuffer = new(BufferLayout.Std430, 0, geometryVbOutputSbBinding, "geometry_vb_output", vertexOutputStruct);   // TOTK: set 0
                      resourceManager.Properties.AddOrUpdateStorageBuffer(geometryVbOutputBuffer);
  
                      StructureType geometryIbOutputStruct = new(new StructureField[]
@@ -63,7 +63,7 @@
  
                      int geometryIbOutputSbBinding = resourceManager.Reservations.GeometryIndexOutputStorageBufferBinding;
 -                    BufferDefinition geometryIbOutputBuffer = new(BufferLayout.Std430, 1, geometryIbOutputSbBinding, "geometry_ib_output", geometryIbOutputStruct);
-+                    BufferDefinition geometryIbOutputBuffer = new(BufferLayout.Std430, 0, geometryIbOutputSbBinding, "geometry_ib_output", geometryIbOutputStruct);   // set 0
++                    BufferDefinition geometryIbOutputBuffer = new(BufferLayout.Std430, 0, geometryIbOutputSbBinding, "geometry_ib_output", geometryIbOutputStruct);   // TOTK: set 0
                      resourceManager.Properties.AddOrUpdateStorageBuffer(geometryIbOutputBuffer);
                  }
  
@@ -72,7 +72,7 @@
  
              int vertexDataSbBinding = reservations.VertexOutputStorageBufferBinding;
 -            BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 1, vertexDataSbBinding, "vb_input", vertexInputStruct);
-+            BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexDataSbBinding, "vb_input", vertexInputStruct);   // set 0
++            BufferDefinition vertexOutputBuffer = new(BufferLayout.Std430, 0, vertexDataSbBinding, "vb_input", vertexInputStruct);   // TOTK: set 0
              resourceManager.Properties.AddOrUpdateStorageBuffer(vertexOutputBuffer);
  
              EmitterContext context = new EmitterContext();

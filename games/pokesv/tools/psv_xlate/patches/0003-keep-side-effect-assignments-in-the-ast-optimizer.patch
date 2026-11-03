@@ -5,14 +5,14 @@
                      if (node is AstAssignment assignment && assignment.Destination is AstOperand propVar)
                      {
 -                        bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
-+                        // (2026-10-16): an atomic / call / image atomic whose result is unused (Maxwell RED, ATOM with
++                        // TOTK (2026-10-16): an atomic / call / image atomic whose result is unused (Maxwell RED, ATOM with
 +                        // an RZ destination) stays a statement in place: propagating it would move the side effect to its
 +                        // use, and removing the assignment removed the operation itself (the reduction kernel c7830fac
 +                        // lost its atomicMin on 2026-10-13; every translation ran in DebugMode since, to avoid this).
 +                        bool sideEffects = HasSideEffects(assignment.Source);
 +                        bool isWorthPropagating = !sideEffects && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
  
-                         // SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
+                         // TOTK: SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
                          // into temporaries); folding an expression into a call argument breaks GenerateCall.
 @@ -33,7 +38,7 @@
                              PropagateExpression(propVar, assignment.Source);

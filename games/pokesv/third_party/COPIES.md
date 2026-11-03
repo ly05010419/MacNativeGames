@@ -17,7 +17,7 @@ In every file:
 | `third_party/d2r/` | `games/xc3/third_party/d2r/` | none |
 | `third_party/d2r_gfx/` | `games/xc3/third_party/d2r_gfx/` | names (`PSV_*` diagnostic variables). `hle_nvn.c`, `nvn_obj.h`: queue priority, builder and device getters. `psv_nvn_ext.c`: multisample coverage state. `nvn_mtl.m`: shader functions with function constants specialised (`shader_fn`); vertex shaders that write the layer themselves (topology class, point size kept in a local); `c0+0x640` documented as 0 on purpose; scaled colour and depth copies (`copy_t2t_scaled`); passes into whole 3D textures cover every depth plane; zero-copy pool buffers over tracked pages spanning two pools. `nvn_dirty.c`: `nvn_dirty_tracked_span`. |
 | `prebuilt/macos-arm64/` | `games/xc3/prebuilt/macos-arm64/` | the same binary as `totk_xlate` there, renamed `psv_xlate` (checked against `psv_xlate.sha256`, same hash) |
-| `tools/psv_xlate/` | `games/xc3/tools/totk_xlate/` | `publish_native.sh` writes to this folder's `prebuilt/` |
+| `tools/psv_xlate/` | `games/xc3/tools/totk_xlate/` | none: byte-identical, so the prebuilt binary matches its source (the earlier port's names kept); `publish_native.sh` writes `prebuilt/macos-arm64/psv_xlate` |
 | `scripts/` | `games/xc3/scripts/` | names, this title's ID. `versions.py`: 4.0.0 (base plus update). |
 | `app/launcher.m` | `games/xc3/app/launcher.m` | names |
 | `Makefile`, `requirements.txt`, `.gitignore` | the same files in `games/xc3` | names, paths and the game version (`v400`) |
@@ -40,7 +40,7 @@ In every file:
 
 ## Renamed on 31 October 2026
 
-Every name from the sources now carries this game's prefix, with no change in behaviour: `TOTK_*` environment variables are `PSV_*`, log tags `[totk…]` are `[psv…]`, `totk_*` / `Totk*` / `TOTK*` identifiers and files are `psv_*` / `Psv*` / `PSV*`, `tools/totk_xlate` is `tools/psv_xlate`, the RomFS index magic is `PSVRFS01`. The dead `GAME_BOTW` branches are removed (`unifdef -UGAME_BOTW`). **One name is kept on purpose:** the shader cache identity `DMSH_CHAIN` (`totk-native-v4-unverified`, `dmsh_chain.h`) is stored in every cached shader; a new text would retranslate all of them.
+Every name from the sources now carries this game's prefix, with no change in behaviour: `TOTK_*` environment variables are `PSV_*`, log tags `[totk…]` are `[psv…]`, `totk_*` / `Totk*` / `TOTK*` identifiers and files are `psv_*` / `Psv*` / `PSV*`, `tools/totk_xlate` is `tools/psv_xlate` (its contents keep the old names, see the table), the RomFS index magic is `PSVRFS01`. The dead `GAME_BOTW` branches are removed (`unifdef -UGAME_BOTW`). **One name is kept on purpose:** the shader cache identity `DMSH_CHAIN` (`totk-native-v4-unverified`, `dmsh_chain.h`) is stored in every cached shader; a new text would retranslate all of them.
 
 ## Updating
 

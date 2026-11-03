@@ -106,7 +106,7 @@ static void service_start(void) {
     posix_spawn_file_actions_adddup2(&fa, to[0], 0); posix_spawn_file_actions_adddup2(&fa, from[1], 1);
     posix_spawn_file_actions_addclose(&fa, to[1]); posix_spawn_file_actions_addclose(&fa, from[0]);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
-    // PSV_SHADER_XLATE=<psv_xlate.dll> runs a trial translator build (e.g. build/psv_xlate-opt) without replacing the
+    // PSV_SHADER_XLATE=<totk_xlate.dll> runs a trial translator build (e.g. build/psv_xlate-opt) without replacing the
     // shared one (through shader_service.py); PSV_SHADER_DEBUGMODE=0|1 reaches either service through the environment.
     // PSV_SHADER_SERVICE=python | native picks the service (default: native when build/shader-service/psv_xlate is there).
     const char *xe = getenv("PSV_SHADER_XLATE"), *want = getenv("PSV_SHADER_SERVICE"), *dm = getenv("PSV_SHADER_DEBUGMODE");
@@ -114,6 +114,9 @@ static void service_start(void) {
     int have_native = access(native.fileSystemRepresentation, X_OK) == 0;
     int use_native = have_native && !(xe && *xe) && !(want && !strcmp(want, "python"));
     if (want && !strcmp(want, "native") && !use_native) die("PSV_SHADER_SERVICE=native but %s is not there (make shader-service)", native.UTF8String);
+    /* The translator's source is the earlier port's, byte for byte (tools/psv_xlate, so it matches the prebuilt binary):
+       it reads TOTK_SHADER_DEBUGMODE, so this game's switch is handed on under that name. */
+    if (dm) setenv("TOTK_SHADER_DEBUGMODE", dm, 1);
     pid_t pid;
     if (use_native) {
         const char *argv[] = {native.UTF8String, "--service", "--spirv-cross", sc.UTF8String, "--out", psv_rt_dir().UTF8String,
@@ -122,7 +125,7 @@ static void service_start(void) {
         if (dm) LOG("[shader] native translator, DebugMode %s", dm);
     } else {
         NSString *script = [r stringByAppendingString:@"/scripts/shader_service.py"], *dotnet = [r stringByAppendingString:@"/tooling/dotnet/dotnet"];
-        NSString *xlate = xe && *xe ? @(xe) : [r stringByAppendingString:@"/build/psv_xlate/psv_xlate.dll"];
+        NSString *xlate = xe && *xe ? @(xe) : [r stringByAppendingString:@"/build/psv_xlate/totk_xlate.dll"];
         const char *argv[] = {"python3", "-I", script.UTF8String, "--dotnet", dotnet.UTF8String, "--xlate", xlate.UTF8String,
                               "--spirv-cross", sc.UTF8String, "--out", psv_rt_dir().UTF8String, "--chain", DMSH_CHAIN, NULL};
         if (posix_spawnp(&pid, "python3", &fa, NULL, (char *const *)argv, environ)) die("start shader service");

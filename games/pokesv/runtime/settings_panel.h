@@ -51,10 +51,10 @@ static void settings_save(void) {
 /* Before the game starts: the frame lock and MetalFX. The overlay waits for its box (settings_restore_overlay). */
 static int settingsSavedOverlay=-1;
 static void settings_restore(void) {
- if(!nvn_fps_lock())nvn_fps_lock_set(60);   /* the tested rate when nothing is saved */
+ if(!nvn_fps_lock())nvn_fps_lock_set(30);   /* the game's own rate when nothing is saved: at 60 the scripts' fixed step runs twice as fast (README) (after PR #1655) */
  char path[1024],name[32];int v;settings_path(path,sizeof path);FILE *f=fopen(path,"r");if(!f)return;
  while(fscanf(f,"%31s %d",name,&v)==2){
-  if(!strcmp(name,"frame-lock"))nvn_fps_lock_set(psv_fps_limit_valid(v)?v:60);   /* off, 40 and 72 are no longer offered: 60 */
+  if(!strcmp(name,"frame-lock"))nvn_fps_lock_set(psv_fps_limit_valid(v)?v:30);   /* off, 40 and 72 are no longer offered: 30, the default */
   else if(!strcmp(name,"metalfx")&&(v==0||v==1)&&!settings_mfx_fixed())settings_mfx_set(v);
   else if(!strcmp(name,"interp")&&(v==0||v==1)&&!settings_interp_fixed())settings_interp_set(v);
   else if(!strcmp(name,"overlay")&&(v==0||v==1))settingsSavedOverlay=v;
