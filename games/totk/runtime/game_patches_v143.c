@@ -1120,6 +1120,9 @@ static void camera_distance_load(void){
     if(cm){camera_distance_apply(cm/100.0f);fprintf(stderr,"[totk] camera distance (third person): %+d cm (kept in %s)\n",cm,p);}
 }
 static void vr_headlook_install(Module *m){
+    /* The Mac also exports patched code for iOS. These veneers contain Mac
+       function addresses, which cannot be executed by the device. */
+    if(getenv("TOTK_EXPORT_IOS"))return;
     /* zeldaVR: also without VR, for the third-person camera distance (runtime_camera_distance_set) */
     const char *hl=getenv("TOTK_VR_HEADLOOK");
     if(hl&&!strcmp(hl,"0"))return;
