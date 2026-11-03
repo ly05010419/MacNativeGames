@@ -48,6 +48,8 @@ static SwitchLeftFallback rawLeft, rawRight;
 static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
 static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
 static void refresh_gamepads(void);
+static void gamepad_options_gesture(GCExtendedGamepad *pad);
+static void gamepad_gestures_changed(void);
 #if TARGET_OS_OSX
 static _Atomic int gamepadBackground, gamepadFocused = 1;
 #endif
@@ -235,6 +237,7 @@ void runtime_controller_map_get(uint16_t *map, uint8_t *modes) {
 static void controller_map_changed(void) {
     physicalPrev = 0;
     memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn); memset(toggleMoved, 0, sizeof toggleMoved);
+    gamepad_gestures_changed();
     refresh_gamepads();
 }
 void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes) {
@@ -268,6 +271,23 @@ static void save_controller_type(int type) { setting_write("controller-type.txt"
 
 static int face_by_position(GCController *controller) {
     return gamepad_type_face_by_position(atomic_load(&controllerType), controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+}
+
+/* Apple's Options recognizer waits to distinguish a short press from a screenshot long press before forwarding input
+   (GCControllerElement.h). Physical "view" is Options/Create on DualSense and maps to Switch Minus by default: that
+   wait delays every Purah Pad page although keyboard Minus is immediate. Request direct input while the button drives
+   a game action or the settings panel; leave its system gestures available when the player unmaps it. */
+static void gamepad_options_gesture(GCExtendedGamepad *pad) {
+    GCControllerButtonInput *button = pad.buttonOptions;
+    if (!button) return;
+    int used = controllerMap[11] != 0 || atomic_load(&settingsButton) == 11;
+    GCSystemGestureState wanted = used ? GCSystemGestureStateDisabled : GCSystemGestureStateEnabled;
+    if (button.preferredSystemGestureState == wanted) return;
+    button.preferredSystemGestureState = wanted;
+    fprintf(stderr, "[totk-input] Options/View: %s\n", used ? "requested direct input for the game/panel" : "system gestures available (unmapped)");
+}
+static void gamepad_gestures_changed(void) {
+    for (GCController *controller in GCController.controllers) gamepad_options_gesture(controller.extendedGamepad);
 }
 
 /* The physical buttons held, bit i = controller_physical_names[i]; the face buttons by where they sit
@@ -675,6 +695,7 @@ void runtime_gamepad_settings_button_set(int physical) {
     if (physical < 0) runtime_setting_remove("controller-settings.txt");
     else setting_write("controller-settings.txt", controller_physical_names[physical], "settings panel button");
     fprintf(stderr, "[totk-input] settings panel button: %s\n", physical < 0 ? "L3 + R3" : controller_physical_names[physical]);
+    gamepad_gestures_changed();
     refresh_gamepads();
 }
 
@@ -878,6 +899,7 @@ static void refresh_gamepads(void) {
 static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
+    gamepad_options_gesture(pad);
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
         (void)changed; (void)element;
         refresh_gamepads();
