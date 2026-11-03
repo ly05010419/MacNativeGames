@@ -71,7 +71,7 @@ static _Atomic uint64_t g_adds_total;
 static _Atomic int g_live, g_live_peak;   // 在册的池数与峰值（内存读数行用） | number of registered pools and peak (for the memory readout line)
 void nvn_dirty_stat(int *live, int *peak, int *cap) { *live = atomic_load(&g_live); *peak = atomic_load(&g_live_peak); *cap = MAX_RANGE; }
 static _Atomic int g_overflow_logged;
-static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // 建池 / 销池（客体线程，可能并发）互斥选槽；缺页处理路径不碰它 | Pool creation / destruction (guest threads, possibly concurrent) pick slots under a mutex; the page-fault handling path does not touch it
+static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // 建池 / 销池（客体线程，可能并发）互斥选槽；缺页处理路径不碰它 | Pool creation / destruction (guest threads, possibly concurrent) pick slots under a mutex, and TOTK's protect holds it from its lookup to its last mprotect; the page-fault handling path does not touch it
 static _Atomic uint64_t g_mp_calls, g_mp_pages, g_mp_ticks;   // 本模块的 mprotect：调用次数、覆盖页数、耗时（mach 时基，缺页路径里也安全） | This module's mprotect: call count, pages covered, time spent (mach timebase, safe in the page-fault path too)
 static void mp(uintptr_t a, size_t len, int prot) {
     uint64_t t = mach_absolute_time(); mprotect((void *)a, len, prot);
@@ -276,7 +276,14 @@ int nvn_dirty_tracked(const void *addr, size_t len) {
 // 设只读：先把页标成 BUSY，mprotect 落地后才标 PROT（次序与不变式见文件头的状态说明）
 // Set read-only: mark the page BUSY first, and mark it PROT only after mprotect has landed (for the order and the invariant see the state notes at the top of the file)
 void nvn_dirty_protect(const void *addr, size_t len) {
-    if (!len || !nvn_dirty_tracked(addr, len)) return;
+    /* g_slot_mu from the lookup to the last mprotect (nxnative af616f54, PR #686 there): pool retirement and creation
+       hold it too, so a range cannot be retired (its protected pages made writable, the range marked dead) or its slot
+       reused between the lookup and the page states below. Without it a retirement finishing in that window left the
+       retired storage read-only with no live range to release it (a host read() into it failed with EFAULT; a game
+       write faulted with no owner). The page-fault and host pre-write paths still take no lock, so a BUSY page they
+       hold finishes while this waits (busy_wait). */
+    pthread_mutex_lock(&g_slot_mu);
+    if (!len || !nvn_dirty_tracked(addr, len)) { pthread_mutex_unlock(&g_slot_mu); return; }
     range_t *r = find((uintptr_t)addr);
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     // 连续置成 PROT 的页合成一次 mprotect（逐页调用在首传大贴图时一帧上千次；选角页启动帧 5：4888 次）。
@@ -294,6 +301,7 @@ void nvn_dirty_protect(const void *addr, size_t len) {
         if (!took && open) { mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ); for (uintptr_t k = run; k < i; k++) atomic_store(&r->state[k], PG_PROT); open = 0; }
         if (!took && st == PG_BUSY && busy_wait(r, i)) i--;   // this page again
     }
+    pthread_mutex_unlock(&g_slot_mu);
 }
 #endif
 uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
