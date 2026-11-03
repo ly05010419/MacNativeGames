@@ -614,6 +614,7 @@ static void urgent_translate(NSString *shader, NSMutableArray *job) {
 }
 /* Translation jobs queued or running (seed-shaders waits for none to be left). */
 int totk_rt_pending(void) { pthread_mutex_lock(&g_rt_lock); int n = (int)g_rt_pending.count; pthread_mutex_unlock(&g_rt_lock); return n; }
+int totk_rt_pending_of(NSString *shader) { pthread_mutex_lock(&g_rt_lock); int n = g_rt_pending[shader] != nil; pthread_mutex_unlock(&g_rt_lock); return n; }
 void totk_rt_urgent_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_rt_urgent_n); *ns = atomic_load(&g_rt_urgent_ns); }
 
 /* What the submit thread spends on translation itself (may_defer 0): waiting for a job already running

@@ -6267,6 +6267,7 @@ static void prog_stage_set(NvProg *o, int st, NSString *variant) {   // a transl
     o->sh[st]=sh; o->sig[st]=stage_sig(st); o->alt[st]=[NSMutableDictionary dictionaryWithObject:sh forKey:@(o->sig[st])];
 }
 static int g_prog_prefetch;   // prog_get called by shader_predict_rest: every stage is translated in the background
+static int prog_timing_on(void); static void prog_timing(const char *what, const prog_t *p, unsigned i, int st, const char *key);   // TOTK_PROG_TIMING (below)
 static void shader_predict_maybe(void);
 // The shader key: SHA-256 of the control section and the code, in hex (prog_get; prediction of unseen programs).
 static void shader_key_of(const uint8_t *control, const void *code, uint32_t length, char key[65]) {
@@ -6305,6 +6306,7 @@ static void *prog_get_p(const prog_t *cp) {   // 只在提交线程调用 | Call
         char key[65];shader_key_of(control,(const void *)(uintptr_t)p->sd[i].data,length,key);
         // TOTK: stage from control+0x714 (0 vertex, 1 fragment, 5 compute); translation answered from the bound state.
         int st=(int)nvn_stage;
+        if (prog_timing_on()) prog_timing("draw", p, i, st, key);
 #ifdef GAME_NS2
         /* A Switch 2 game's geometry / tessellation stages have no translation chain yet (Donkey Kong Bananza: 7 geometry
            shaders, drawn as mesh geometry by seedds/nxnative; docs/ns2-port.md phase 5): the program's draws are skipped
@@ -8937,16 +8939,37 @@ static void warm_enqueue(WarmItem *item) {
    the frames that stalled for a new library (65 of them, 181 libraries, 29 s in a 21-minute run) were all variants
    already in the cache, compiled from their MSL at the draw. Variants not in the cache, and pipelines, are still made
    at the draw as before. Nothing is translated here and no draw is skipped. */
-static int prefetch_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_SHADER_PREFETCH"); on = e && !strcmp(e, "1"); } return on; }
-static _Atomic uint64_t g_pf_progs, g_pf_queued, g_pf_built, g_pf_ns, g_pf_last;
+/* TOTK_SHADER_PREFETCH=2: also the shaders the translation cache does not hold yet, translated in the background first
+   (totk_rt_variant may_defer 1: the code is copied at once) and then compiled the same way. A Switch 2 game makes many of
+   its shaders while it runs (Pokemon Pokopia: none of the 99 its first four minutes in the world translated in play is in
+   its files, so build_app.py cannot prepare them): their code is final when the game sets them (all 260 stages drawn in a
+   run had the key they had at SetShaders), 150 ms to 20 s before their first draw (TOTK_PROG_TIMING, 2026-11-04). */
+static int prefetch_mode(void) { static int on = -1; if (on < 0) { const char *e = getenv("TOTK_SHADER_PREFETCH"); on = e ? atoi(e) : 0; } return on; }
+static int prefetch_on(void) { return prefetch_mode() > 0; }
+static _Atomic uint64_t g_pf_progs, g_pf_queued, g_pf_built, g_pf_ns, g_pf_last, g_pf_translate;
+/* TOTK_PROG_TIMING=1 (diagnostic): each stage's shader key when the game sets a program's shaders and when a draw first
+   takes the program (prog_get), with the time, to see whether the code is final at SetShaders and how long before its
+   first draw it is (Pokemon Pokopia's shaders made at run time, 2026-11-04). "[progt] set|draw <ms> <program> <serial>
+   <stage> <key>" */
+static int prog_timing_on(void) { static int on = -1; if (on < 0) on = getenv("TOTK_PROG_TIMING") != NULL; return on; }
+static void prog_timing(const char *what, const prog_t *p, unsigned i, int st, const char *key) {
+    MLOG("[progt] %s %.1f %p %llu %d %.64s", what, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6, (const void *)p, (unsigned long long)p->serial, st, key);
+}
 void mtl_prog_prefetch(const prog_t *p) {
+    if (prog_timing_on() && p) for (unsigned i = 0; i < p->nstage && i < 6; i++) {
+        const uint8_t *control = p->sd[i].control; const void *code = (const void *)(uintptr_t)p->sd[i].data;
+        if (!control || !code) continue;
+        uint32_t length = ctl_code_len(control); if (!length || length > 16 * 1024 * 1024) continue;
+        char key[65]; shader_key_of(control, code, length, key); prog_timing("set", p, i, ctl_stage(control, code), key);
+    }
     if (!prefetch_on() || !p || !p->nstage) return;
     static NSMutableSet<NSString *> *seen; static dispatch_queue_t q; static dispatch_semaphore_t slots; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
     static dispatch_once_t once; dispatch_once(&once, ^{
         seen = [NSMutableSet set];
         q = dispatch_queue_create("totk.shader-prefetch", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0));
         slots = dispatch_semaphore_create(4);   // the system compiler service runs requests side by side; 4 leaves cores to the game
-        MLOG("[prefetch] 着色器预编已开（TOTK_SHADER_PREFETCH=1）：游戏设着色器时，后台编翻译缓存里已有的变体，最多 4 个同时编");
+        MLOG("[prefetch] 着色器预编已开（TOTK_SHADER_PREFETCH=%d）：游戏设着色器时，后台编翻译缓存里已有的变体%s，最多 4 个同时编", prefetch_mode(),
+             prefetch_mode() > 1 ? "，缓存里没有的先在后台翻译" : "");
     });
     atomic_fetch_add(&g_pf_progs, 1);
     for (unsigned i = 0; i < p->nstage && i < 6; i++) {
@@ -8962,7 +8985,14 @@ void mtl_prog_prefetch(const prog_t *p) {
         os_unfair_lock_lock(&lk); BOOL fresh = ![seen containsObject:shader]; if (fresh) [seen addObject:shader]; os_unfair_lock_unlock(&lk);
         if (!fresh) continue;
         int stage = (int)st;
+        if (prefetch_mode() > 1 && !totk_rt_known_variants(shader).count) {   // not translated yet: queue it now (the code is copied there)
+            NSDictionary *none = @{@"tex": @{}, @"img": @{}, @"attr": @{}, @"fout": @{}};
+            totk_rt_variant(shader, stage, control, (const uint8_t *)(uintptr_t)p->sd[i].data, none, rt_local(control, stage), 1);
+            atomic_fetch_add(&g_pf_translate, 1);
+        }
         dispatch_async(q, ^{ @autoreleasepool {
+            if (prefetch_mode() > 1)   // a translation queued above: its library once it is done (background; at most 60 s)
+                for (int w = 0; w < 3000 && !totk_rt_known_variants(shader).count && totk_rt_pending_of(shader); w++) usleep(20000);
             for (NSString *v in totk_rt_known_variants(shader)) {
                 NSString *pc = [v stringByAppendingString:@"_b"];
                 if (warm_failed(pc)) continue;
@@ -8976,8 +9006,8 @@ void mtl_prog_prefetch(const prog_t *p) {
             }
             uint64_t now = bp_now(), last = atomic_load(&g_pf_last);
             if (now - last > 5000000000ull && atomic_compare_exchange_strong(&g_pf_last, &last, now))
-                MLOG("[prefetch] 累计：程序 %llu 个，排队编着色器 %llu 个，编好 %llu 个，后台共 %.0f ms",
-                     (unsigned long long)g_pf_progs, (unsigned long long)g_pf_queued, (unsigned long long)g_pf_built, g_pf_ns / 1e6);
+                MLOG("[prefetch] 累计：程序 %llu 个，排队翻译 %llu 个，排队编着色器 %llu 个，编好 %llu 个，后台共 %.0f ms",
+                     (unsigned long long)g_pf_progs, (unsigned long long)g_pf_translate, (unsigned long long)g_pf_queued, (unsigned long long)g_pf_built, g_pf_ns / 1e6);
         } });
     }
 }

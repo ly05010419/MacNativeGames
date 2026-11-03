@@ -250,6 +250,14 @@ Added for it (general where possible, each with its reason in the code):
   (xFractals/pokopia-native: 154 on 2.0.1, about 20 on the title screen; it records them and rebuilds). They are
   translated on first use and cached by the player; open: start their translation when the game finishes writing them
   instead of at the first draw. 337 warm rows of the list name such shaders and are left out of the app's lists.
+- Translating them early (2026-11-04, measured, off by default): TOTK_PROG_TIMING=1 logs each stage's key at
+  nvnProgramSetShaders and at the program's first draw. All 260 stages drawn in a 4-minute run had the key they had at
+  SetShaders (the code is final there), 150 ms to 20 s before their first draw; but the game sets 8,179 programs (8,026
+  shaders) in that time and draws 260. TOTK_SHADER_PREFETCH=2 translates every shader set without a cached
+  translation in the background and compiles its library: built in play 90 -> 21 pipelines, 107 -> 27 libraries, frames
+  over 100 ms 14.2 -> 10.9 s, but 6,207 translations and 2,456 libraries (about 930 s of thread time) at the first start,
+  and a 5.1 s stop of the game's own threads at the start (the CPU taken). Next: the same on two background threads of
+  low priority.
 - Found on the way: a signed program written over in place (cp onto a file that had run) is killed at launch (SIGKILL,
   Code Signature Invalid): the seed tool replaces the translation service with a new file. GAME_NS2 reads
   build/game-data/<v>/process.txt, now in the app's game data.
