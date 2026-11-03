@@ -79,6 +79,8 @@ How it is built and run (outside the repository; game files stay with the dump):
   TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1`). build_app.py does not know the game yet.
 
 Found on the way (general fixes, each in the code with its reason):
+- a mip-chain pass sampled the level it renders (Metal fetches it at weight 0; undefined data, 0 x NaN): the environment
+  cube's NaN spread as bright blotches with black specks; the draw now samples the levels below (nvn_mtl.m mip_feedback_view);
 - the equivalence checker modelled an ARMv8.0 CPU (no LSE atomics, LDAPR) and counted alignment exceptions as differences;
 - released recording copies were freed while the translation thread still had them queued (a game may add control memory
   again right after a submit; TotK never did): freed once every earlier submission is replayed;
@@ -87,7 +89,6 @@ Found on the way (general fixes, each in the code with its reason):
 - NVN_EXTRA implementations were hidden behind the table's stubs once the NVN2 names were added.
 
 Open:
-- bright yellow-white blotches over the scene (likely the environment cube's mip-chain NaN nxnative found);
 - geometry stage (7 shaders, mesh geometry in nxnative): their draws are skipped;
 - storage through pointers loaded from memory is bound to an empty buffer (nxnative's memory pool table not ported):
   the terrain's indirect draw records are not reset by gsys's vertex shader;

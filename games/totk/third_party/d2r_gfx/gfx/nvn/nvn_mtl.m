@@ -9277,6 +9277,42 @@ static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { const c
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
 // useResource 在同一编码器内对同一（资源, 用法, 阶段）是幂等的：记下本渲染编码器已声明过的，重复的跳过（计算编码器每次派发新建，不去重）
 // useResource is idempotent for the same (resource, usage, stage) within one encoder: remember what this render encoder has already declared and skip repeats (a compute encoder is created anew for each dispatch, no dedup)
+/* A mip-chain pass: it renders level n of a texture while its shader samples level n - 1 through a view covering the whole
+   chain (explicit level, linear mip filter). NVIDIA's GPU reads level n - 1 only; Metal may also fetch level n, at weight 0
+   but fetched, and an attached level read through a texture holds no defined data on Apple's GPUs: 0 x NaN is NaN.
+   Donkey Kong Bananza's environment cube got NaN texels that spread through reflections and bloom (bright blotches with
+   black specks). So when the sampled texture is an attachment of the open pass and its view's levels include the attached
+   level and start below it, the draw samples a view of the levels below the attached one (same base, so the shader's
+   level numbers keep their meaning). A pass rendering the view's base level, and layered views, are left as they are.
+   From seedds/nxnative's fb_prepare (MIT; docs/reference/rendering.md there, "Mip-chain pass sampling the level it renders"). */
+static void rt_sub(const p_set_rt *r, int k, uint64_t *ser, int *lv, int *sl);
+static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial) {
+    id<MTLTexture> root = t.parentTexture ? t.parentTexture : t;
+    NSUInteger base = t.parentTexture ? t.parentRelativeLevel : 0, n = t.mipmapLevelCount;
+    if (n < 2) return nil;
+    for (int k = 0; k < R.rt.n && k < 8; k++) {
+        if (!R.rt.color[k]) continue;
+        uint64_t ser = 0; int lv = 0, sl = 0; rt_sub(&R.rt, k, &ser, &lv, &sl);
+        if (ser != serial || lv <= (int)base || (NSUInteger)lv >= base + n) continue;
+        MTLTextureType ty = t.textureType;
+        NSUInteger slices = ty == MTLTextureTypeCube ? 6 : ty == MTLTextureTypeCubeArray ? t.arrayLength * 6 : t.arrayLength;
+        if (ty == MTLTextureType3D) slices = 1;
+        NSUInteger first = t.parentTexture ? t.parentRelativeSlice : 0;
+        static NSMutableDictionary *cache; if (!cache) cache = [NSMutableDictionary dictionary];
+        NSString *key = [NSString stringWithFormat:@"%p/%lu/%lu/%lu/%lu/%lu/%lu", (__bridge void *)root, (unsigned long)base, (unsigned long)(lv - base),
+                         (unsigned long)ty, (unsigned long)t.pixelFormat, (unsigned long)first, (unsigned long)slices];
+        id<MTLTexture> v = cache[key];
+        if (!v) {
+            if (cache.count > 512) [cache removeAllObjects];
+            v = [root newTextureViewWithPixelFormat:t.pixelFormat textureType:ty levels:NSMakeRange(base, (NSUInteger)lv - base) slices:NSMakeRange(first, slices)];
+            if (!v) { RED_ONCE(100, "mip-chain feedback view failed (levels %lu+%d)", (unsigned long)base, lv - (int)base); return nil; }
+            res_add(v); cache[key] = v;
+            static int once; if (!once++) MLOG("[totk] a mip-chain pass samples the texture it renders level %d of: the draw reads levels %lu..%d only", lv, (unsigned long)base, lv - 1);
+        }
+        return v;
+    }
+    return nil;
+}
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen, g_args_serial_seen, g_args_snapshot_seen;
 static uint64_t g_args_epoch[6] = {1, 1, 1, 1, 1, 1};
@@ -9843,6 +9879,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                    Metal needs a matching texture type in the argument buffer, so bind a cached 1-slice view of the right type. */
                 id<MTLTexture> av = tex_type_view(t, (MTLTextureType)b->dtt);
                 if (av) { t = av; trid = av.gpuResourceID._impl; } }
+            if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial); if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
             if (g_mfxup_out && (__bridge void *)sh == (__bridge void *)g_mfxup_sh && t == g_mfxup_src) { t = g_mfxup_out; trid = t.gpuResourceID._impl; }   // TOTK_MFX_UPSCALE
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
