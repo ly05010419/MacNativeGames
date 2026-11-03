@@ -60,7 +60,7 @@
 			<key>Title</key>
 			<string>畫面 · Display</string>
 			<key>FooterText</key>
-			<string>開啟：遊戲的底座設定，輸出 1920×1080、內部 1600×900（和 Switch 底座一樣），iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · on: the game's docked settings, 1920×1080 output, 1600×900 inside (as the Switch docked), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game</string>
+			<string>開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · on: the game's docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch docked; HD: 1920×1080, sharper and heavier), the iPad's default. Off: handheld 1280×720 (960×540 inside), the iPhone's default. Takes effect after relaunching the game</string>
 		</dict>
 		<dict>
 			<key>Type</key>
@@ -75,6 +75,30 @@
 			<false/>
 			<key>DefaultValuePad</key>
 			<true/>
+		</dict>
+		<dict>
+			<key>Type</key>
+			<string>PSMultiValueSpecifier</string>
+			<key>Key</key>
+			<string>TOTK_DOCKED_SCENE</string>
+			<key>TOTKPhone</key>
+			<true/>
+			<key>TOTKApp</key>
+			<string>totk</string>
+			<key>Title</key>
+			<string>底座畫面 · Docked scene</string>
+			<key>Titles</key>
+			<array>
+				<string>原始 1600×900 · Original 1600×900</string>
+				<string>高清 1920×1080 · HD 1920×1080</string>
+			</array>
+			<key>Values</key>
+			<array>
+				<string>1600x900</string>
+				<string>1920x1080</string>
+			</array>
+			<key>DefaultValue</key>
+			<string>1600x900</string>
 		</dict>
 		<dict>
 			<key>Type</key>

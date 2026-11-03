@@ -256,11 +256,12 @@ static void apply_display_settings(void) {
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
     if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);
-    if (prenv.scene) setenv("TOTK_RENDER_RES", prenv.scene, 0);
+    if (prenv.scene)   // docked Tears of the Kingdom: the Switch's 1600x900 or HD 1920x1080 (the pane's TOTK_DOCKED_SCENE row)
+        setenv("TOTK_RENDER_RES", totk_docked_scene([d stringForKey:@"TOTK_DOCKED_SCENE"].UTF8String), 0);
     setenv("TOTK_MFX_OUTPUT", prenv.output_upscale, 0);
     apply_operation_mode(prenv.operation);
     /* Breath of the Wild's docked scene (its pane's TOTK_BOTW_SCENE row; the start screen's 1080p original / HD), set
-       again here as the frame rate is, so the start screen's pick counts. Tears of the Kingdom's pane has no such row. */
+       again here as the frame rate is, so the start screen's pick counts. Tears of the Kingdom's is TOTK_DOCKED_SCENE, above. */
     NSString *scene = [d stringForKey:@"TOTK_BOTW_SCENE"];
     if (scene) setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);
     // Frame rate: Settings.bundle › TOTK_PHONE_FPS, or the 60 / 30 button of the touch controls, which saves it here too.
