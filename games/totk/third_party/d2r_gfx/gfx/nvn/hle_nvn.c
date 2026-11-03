@@ -337,11 +337,30 @@ NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *b,ptrdiff_t off,size_t siz
 // ---------- 描述符池 ----------
 // ---------- Descriptor pools ----------
 NVN(nvnTexturePoolInitialize, NVNboolean, NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
-    *(dpool_t *)tp = (dpool_t){(const pool_t *)p, off, n}; OLOG("TexturePool n=%d", n); mtl_set_tex_pool_n(n); return 1;
+    *(dpool_t *)tp = (dpool_t){(const pool_t *)p, off, n}; OLOG("TexturePool n=%d", n);
+    if (getenv("TOTK_BIND_TRACE")) LOG("[pool] TexturePoolInitialize %p memory pool %p +%#llx descriptors %d", (void *)tp, (void *)p, (unsigned long long)off, n);   // diagnostic
+    return 1;
+}
+/* Texture IDs are kept in one table for every texture pool; on hardware each pool has its own (an ID indexes the bound
+   pool). That equals hardware as long as one pool holds the registrations (Pokemon Pokopia makes three and registers in
+   one): a red line when a second pool gets one, the sign that the table has to become per pool.
+   TOTK_BIND_TRACE (diagnostic): per texture pool, registrations and the highest id, every 2,000 registrations. */
+static void pool_reg_note(const void *tp, int id, int image) {
+    static const void *_Atomic first;
+    const void *f = atomic_load(&first);
+    if (!f && atomic_compare_exchange_strong(&first, &f, tp)) f = tp;
+    if (f != tp) { static _Atomic int said; if (!atomic_exchange(&said, 1)) LOG("【红】贴图登记来自第二个贴图池 %p（第一个 %p，%s id %d）：两个池的编号共用一张表，会互相覆盖", tp, f, image ? "image" : "texture", id); }
+    static int on = -1; if (on < 0) on = getenv("TOTK_BIND_TRACE") != NULL;
+    if (!on) return;
+    static const void *pools[8]; static long cnt[8]; static int maxid[8], np;
+    int k = 0; while (k < np && pools[k] != tp) k++;
+    if (k == np) { if (np == 8) return; pools[np++] = tp; }
+    cnt[k]++; if (id > maxid[k]) maxid[k] = id;
+    if (cnt[k] % 2000 == 1) LOG("[pool] texture pool %p: %ld registrations (%s id %d), highest id %d", tp, cnt[k], image ? "image" : "texture", id, maxid[k]);
 }
 NVN(nvnTexturePoolFinalize, void, NVNtexturePool *tp) { (void)tp; }
 extern uint64_t g_frame_pub;
-NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { (void)tp;
+NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { pool_reg_note(tp, id, 0);
     { static long want = -2; if (want == -2) { const char *e = getenv("DM_NVN_REGLOG"); want = e ? atol(e) : -1; }   // TOTK diagnostic: DM_NVN_REGLOG=<id> logs every registration of that texture id
         static long rf0 = -2, rf1; if (rf0 == -2) { const char *e = getenv("DM_NVN_REGLOG_FRAMES"); rf0 = e ? atol(e) : -1; rf1 = e && strchr(e, '-') ? atol(strchr(e, '-') + 1) : rf0; }   // DM_NVN_REGLOG_FRAMES=a-b: log every registration in those frames
         if ((want >= 0 && id == want) || (rf0 >= 0 && (long)g_frame_pub >= rf0 && (long)g_frame_pub <= rf1)) { const tex_t *x = (const tex_t *)t; const view_t *vv = (const view_t *)v;
@@ -353,12 +372,16 @@ NVN(nvnTexturePoolRegisterTexture, void, const NVNtexturePool *tp, int id, const
    is the id here), so the image is registered in the same table a texture is, and BindImage(s) finds it by that id.
    Unimplemented until Pokemon Pokopia registered its compute shaders' images with it: their handles named nothing and the
    GPU faulted on an address (kIOGPUCommandBufferCallbackErrorPageFault), then hung. */
-NVN(nvnTexturePoolRegisterImage, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { (void)tp;
+NVN(nvnTexturePoolRegisterImage, void, const NVNtexturePool *tp, int id, const NVNtexture *t, const NVNtextureView *v) { pool_reg_note(tp, id, 1);
+    { static int on = -1, left = 40; if (on < 0) on = getenv("TOTK_BIND_TRACE") != NULL;   // with the bind trace: each image registration (id -> serial)
+      if (on && left > 0) { left--; LOG("[bind] RegisterImage id %d ser %llu %ux%u fmt %#x mem %p", id, (unsigned long long)((const tex_t *)t)->serial, ((const tex_t *)t)->d.width, ((const tex_t *)t)->d.height, ((const tex_t *)t)->d.format, (void *)((const tex_t *)t)->mem); } }
     totk_life_reg(id, (const tex_t *)t);
     mtl_reg_tex(id, (const tex_t *)t, (const view_t *)v); }
 
 NVN(nvnSamplerPoolInitialize, NVNboolean, NVNsamplerPool *sp, const NVNmemoryPool *p, ptrdiff_t off, int n) {
-    *(dpool_t *)sp = (dpool_t){(const pool_t *)p, off, n}; OLOG("SamplerPool n=%d", n); return 1;
+    *(dpool_t *)sp = (dpool_t){(const pool_t *)p, off, n}; OLOG("SamplerPool n=%d", n);
+    if (getenv("TOTK_BIND_TRACE")) LOG("[pool] SamplerPoolInitialize %p memory pool %p +%#llx descriptors %d", (void *)sp, (void *)p, (unsigned long long)off, n);   // diagnostic
+    return 1;
 }
 NVN(nvnSamplerPoolFinalize, void, NVNsamplerPool *sp) { (void)sp; }
 NVN(nvnSamplerPoolRegisterSampler, void, const NVNsamplerPool *sp, int id, const NVNsampler *s) { (void)sp; mtl_reg_samp(id, &((const samp_t *)s)->p); }
@@ -672,6 +695,13 @@ NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
    to find the game code that makes frame N+1 wait for frame N on the GPU (see the 2026-10-15 timeline). */
 static void guest_chain(const char *what);
 static uint64_t g_frame;   // tentative; defined with the frame bookkeeping below
+/* TOTK_QUEUE_TRACE=<first frame>:<frames> (diagnostic): each queue submit, fence, wait, window acquire and present of those
+   frames, in call order with its queue, to see how a game orders work across its queues (Pokemon Pokopia, 2026-11-03) */
+static void qtrace(const char *what, const void *q, long a, long b) {
+    static long f0 = -1, nf; if (f0 < 0) { const char *e = getenv("TOTK_QUEUE_TRACE"); f0 = e ? atol(e) : 0; nf = e && strchr(e, ':') ? atol(strchr(e, ':') + 1) : (e ? 3 : 0); }
+    if (!nf || (long)g_frame < f0 || (long)g_frame >= f0 + nf) return;
+    LOG("[qtrace] F%llu %s q=%p %ld %ld", (unsigned long long)g_frame, what, q, a, b);
+}
 static uint64_t g_game_sys;
 extern _Atomic int runtime_survey_pending;
 extern void runtime_survey_tick(uint64_t frame);
@@ -708,7 +738,7 @@ static int sync_chain_left(int k) {
     if (lim == -2) { const char *e = getenv("TOTK_SYNC_CHAIN"); lim = e ? atoi(e) : 0; from = e && strchr(e, ':') ? strtoull(strchr(e, ':') + 1, NULL, 10) : 0; }
     return lim > 0 && g_frame >= from && atomic_fetch_add(&used[k], 1) < lim;
 }
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; int tok; uint64_t v = fence_now(&tok); ((sync_t *)s)->fenced = tok ? 5 : 1; ((sync_t *)s)->fence = v;
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { qtrace("fence", q, (long)(uintptr_t)s, 0); (void)c; (void)f; int tok; uint64_t v = fence_now(&tok); ((sync_t *)s)->fenced = tok ? 5 : 1; ((sync_t *)s)->fence = v;
     if (sync_chain_left(0)) { char w[96]; snprintf(w, sizeof w, "FenceSync sync=%p fence=%llu cond=%d flags=%d", (void *)s, (unsigned long long)v, (int)c, f); guest_chain(w); } }
 // 没围栏过的同步对象按真机行为等到超时；已围栏的只在 GPU 真正完成到该栅栏值后放行
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
@@ -2244,7 +2274,10 @@ NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, in
     *REC(c, OP_DISPATCH, p_dispatch) = (p_dispatch){x, y, z, (uint64_t)__builtin_return_address(0)};
 }
 NVN(nvnCommandBufferBarrier, void, NVNcommandBuffer *c, int bits) { *(int32_t *)rec(c, OP_BARRIER, 8) = bits; }
-NVN(nvnCommandBufferSetTexturePool, void, NVNcommandBuffer *c, const NVNtexturePool *p) { REC(c, OP_SET_TEX_POOL, p_set_pool)->pool = (const dpool_t *)p; }
+NVN(nvnCommandBufferSetTexturePool, void, NVNcommandBuffer *c, const NVNtexturePool *p) {
+    { static int on = -1, left = 20; static const void *last; if (on < 0) on = getenv("TOTK_BIND_TRACE") != NULL;   // diagnostic: changes of the bound texture pool
+      if (on && p != last && left > 0) { left--; last = p; LOG("[pool] F%llu SetTexturePool %p (%d descriptors)", (unsigned long long)g_frame, (const void *)p, p ? ((const dpool_t *)p)->n : 0); } }
+    REC(c, OP_SET_TEX_POOL, p_set_pool)->pool = (const dpool_t *)p; }
 NVN(nvnCommandBufferSetSamplerPool, void, NVNcommandBuffer *c, const NVNsamplerPool *p) { REC(c, OP_SET_SAMP_POOL, p_set_pool)->pool = (const dpool_t *)p; }
 
 NVN(nvnCommandBufferCopyBufferToTexture, void, NVNcommandBuffer *c, NVNbufferAddress src, const NVNtexture *t, const NVNtextureView *v,
@@ -2508,9 +2541,12 @@ NVN(nvnCommandBufferFenceSync, void, NVNcommandBuffer *c, NVNsync *s, NVNsyncCon
 }
 /* A GPU-side wait on a sync: the host runs every queue's submissions in order on one Metal queue, so what the sync fences is
    always done before what follows (seedds/nxnative does the same). */
-NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; (void)s; return 1; }
+/* Recorded into a command buffer and replayed in order on the single Metal queue (as nvnCommandBufferWaitEvent): nothing to do
+   at the record but the queue trace */
+NVN(nvnCommandBufferWaitSync, void, NVNcommandBuffer *c, const NVNsync *s) { qtrace("cb-wait", c, (long)(uintptr_t)s, 0); }
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { qtrace("queue-wait", q, (long)(uintptr_t)s, 0); return 1; }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
-    NVN_BLOCKING();
+    NVN_BLOCKING(); qtrace("submit", q, n, 0);
     if (runtime_frametrace_event) runtime_frametrace_event(8);
 #ifdef GAME_BOTW
     NVNcommandHandle mapped[64]; NVNcommandHandle *heap = n > 64 ? malloc(sizeof *heap * (size_t)n) : NULL;
@@ -2625,7 +2661,6 @@ static void nvn_nop(void) {}
 // so a real call stops at the unimplemented stub. WaitSync/WaitEvent rely on in-order replay on the single Metal queue.
 static const char *const g_nops[] = {
     "nvnCommandBufferSetPatchSize",
-    "nvnCommandBufferWaitSync",
     "nvnCommandBufferSetShaderScratchMemory",
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
@@ -2838,7 +2873,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     if (s) { static int old_sync = -1; if (old_sync < 0) { const char *e = getenv("TOTK_ACQ_SYNC"); old_sync = e && !strcmp(e, "old"); }
              int tok = 0; uint64_t v = old_sync ? fence_now(&tok) : 0;
              ((sync_t *)s)->fenced = tok ? 7 : 3; ((sync_t *)s)->fence = v; }
-    totk_tl(TL_ACQ_OUT, (uint64_t)*idx, 0);
+    totk_tl(TL_ACQ_OUT, (uint64_t)*idx, 0); qtrace("acquire", w, *idx, (long)(uintptr_t)s);
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
 #ifdef GAME_BOTW
@@ -3289,7 +3324,7 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
 }
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     NVN_BLOCKING();
-    (void)q; win_t *o = (win_t *)w; o->presents++;
+    qtrace("present", q, idx, 0); win_t *o = (win_t *)w; o->presents++;
     if (runtime_frametrace_event) runtime_frametrace_event(9);
     totk_tl_frame(o->presents); totk_tl(TL_PRES_IN, (uint64_t)idx, 0);
     if (runtime_frame_step_update) runtime_frame_step_update(now_ns());
@@ -3327,6 +3362,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         uint64_t no = x_push(&j);
         if (idx >= 0 && idx < 4) { g_xp_win = o; g_xp_job[idx] = no; }
     } else present_exec(o, idx, present_period(o) / 1e9, o->crop, 0);
+    { static int fin = -1; if (fin < 0) { fin = getenv("TOTK_PRESENT_FINISH") != NULL; if (fin) LOG("[nvn] TOTK_PRESENT_FINISH: each present waits until its frame has run on the GPU (diagnostic)"); }
+      if (fin) { if (async_replay() && idx >= 0 && idx < 4) x_wait_job(g_xp_job[idx]); void mtl_finish(void); mtl_finish(); } }
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
     uint64_t f = g_frame, ps, dr; mtl_stats(&ps, &dr);
     trow(f, "@present_guest_ticks", o->interval);

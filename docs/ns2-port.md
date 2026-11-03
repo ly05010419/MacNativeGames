@@ -167,7 +167,7 @@ Added for it (general where possible, each with its reason in the code):
   of its instructions (but the common tail) is in the modules, LINKDATA or any IDRK entry, decompressed: it is not stored
   as it is drawn (made or changed at load, or in a container not read yet).
 
-**Pokopia, night 2026-11-03: the language screen flickers black (about 10 frames in 12); investigation open.**
+**Pokopia, night 2026-11-03: the language screen flickers black (about 10 frames in 12); fixed (see the next entry).**
 - The chain behind it is the auto-exposure: compute 8699f064 clears a 64-bin histogram (storage buffer, 0x100 bytes),
   2118ab53 counts the scene's (texture ser 8190, read over 1728x972) log-luminance into it (threadgroup bins, then one
   global atomic add per bin: MATCH.ALL fails, so every lane adds its own bin), d0c17f1f reads the histogram back as a
@@ -188,10 +188,28 @@ Added for it (general where possible, each with its reason in the code):
 - Ruled out (A/B, 12 screenshots a second apart): present timing, TOTK_GPU_BLOCKRT, writeback, render stream, async
   replay, CPU deswizzle, window texture uploads, sync lag; ResourceAlias visibility on the barriers between dispatches
   (2 of 12).
-- Diagnostics in the working tree (not committed): TOTK_BIND_TRACE=<key prefixes> (TOTK_BIND_TRACE_FROM=<frame>,
+- Diagnostics (default off): TOTK_BIND_TRACE=<key prefixes> ("," = every shader; TOTK_BIND_TRACE_FROM=<frame>,
   TOTK_BIND_TRACE_N=<count>): per encode, the textures / images / typed buffers (id, serial, memory, size, target, format,
-  first floats), the storage buffers (up to 64 words) and the uniform buffers (12 floats) a shader reads;
-  TOTK_QUEUE_TRACE, TOTK_T2T_LOG, TOTK_REUP_LOG, TOTK_INV_LOG; zero-copy linear 2D textures (tex_linear_alias).
+  first floats), the storage buffers (up to 64 words) and the uniform buffers (12 floats) a shader reads; with it also
+  [pool] lines (texture / sampler pool initialisation, bound pool changes, registrations and highest ID per pool).
+  TOTK_QUEUE_TRACE, TOTK_T2T_LOG, TOTK_REUP_LOG, TOTK_INV_LOG, TOTK_PRESENT_FINISH, TOTK_DESWZ_CPU. A zero-copy linear
+  texture tried on the way (2x1 exposure textures read from their pool) did not change anything and is not kept: those
+  textures are written by the CPU.
+
+**Pokopia, night 2026-11-03: the black frames fixed: a texture ID is checked against the bound texture pool.**
+- The exposure chain was a lead, not the cause: the final picture is the background layer (ser 5431) copied into the
+  window texture with the interface drawn over it, and in a black frame every render target was 0, the interface too.
+  Screen captures of the window (not only the game's own shots) showed the same 9 black of 12.
+- Pokopia makes three texture pools (33,024, 16,640 and 4,352 descriptors) and three sampler pools, registers its
+  textures in the first, about 143 new IDs a frame, wrapping from 32,992 to 256 every ~229 frames. The ID bound check
+  (an ID past the pool reads 0, as on hardware) took the capacity of the pool initialised last (4,352) and the replay
+  ignored nvnCommandBufferSetTexturePool: every texture from ID 4,352 on read as an empty slot. Only the ~30 frames after
+  each wrap had a picture. The log had said so all along ("池外贴图号 4352（池容量 4352）").
+- Now the replay keeps the bound pool's descriptor count in the draw state (OP_SET_TEX_POOL -> S.tex_pool_n) and the
+  check uses it. Texture IDs stay in one table for all pools, equal to hardware while one pool holds the registrations;
+  a red line marks the first registration in a second pool (the sign the table has to become per pool). Pokopia: 12 of
+  12 frames with a picture, past the language screen into its opening scene and the first area; Tears of the Kingdom
+  1.4.3 boots to its title (155 s) as before.
 
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:

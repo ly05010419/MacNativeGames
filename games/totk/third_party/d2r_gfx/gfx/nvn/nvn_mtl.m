@@ -702,6 +702,7 @@ void mtl_init(void) {
     g_ev = [g_dev newSharedEvent];
     g_keep = [NSMutableArray array];
     g_nvn_deswz_gpu = nvn_deswz_gpu_init(g_dev) == 0;
+    if (getenv("TOTK_DESWZ_CPU")) { g_nvn_deswz_gpu = 0; MLOG("TOTK_DESWZ_CPU: swizzled textures are laid out on the CPU (diagnostic)"); }
     dm_res_report_register(mtl_res_counts);
     if (!g_nvn_deswz_gpu) MLOG("【红】显卡解排布初始化失败，预排布贴图回退 CPU");
     MLOG("Metal 设备 %s", g_dev.name.UTF8String);
@@ -3038,6 +3039,10 @@ void mtl_wb_eager(void) {
     wb_write_list(list, nl, 1);
 }
 void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
+    { static long from = -1; static int left = 12; if (from < 0) { const char *e = getenv("TOTK_INV_LOG"); from = e ? atol(e) : 0; if (e && !from) from = 1; }
+      if (from > 0 && (long)atomic_load(&g_cur_frame) >= from && left > 0) { left--;
+          MLOG("[inv] f%llu call pool %p mem %p range +%#llx %#llx, write-back %s, %u renderings tracked", (unsigned long long)atomic_load(&g_cur_frame), (const void *)p, p ? (void *)p->mem : NULL,
+               (unsigned long long)off, (unsigned long long)n, atomic_load(&g_wb_on) ? "on" : "off", g_wb.n); } }
     if (!p || !p->mem || !atomic_load(&g_wb_on)) return;
     pthread_mutex_lock(&g_smu);
     if (!g_wb.n) { pthread_mutex_unlock(&g_smu); return; }
@@ -3049,6 +3054,10 @@ void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
         uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts entries: rescan
     }
     pthread_mutex_unlock(&g_smu);
+    { static long from = -1; static int left = 30; if (from < 0) { const char *e = getenv("TOTK_INV_LOG"); from = e ? atol(e) : 0; if (e && !from) from = 1; }   // TOTK_INV_LOG=<from frame> (diagnostic)
+      if (from > 0 && (long)atomic_load(&g_cur_frame) >= from && left > 0) { left--; char sers[256] = ""; size_t o = 0;
+          for (int i = 0; i < nl && o < 220; i++) o += snprintf(sers + o, sizeof sers - o, " %llu", (unsigned long long)list[i]->t.serial);
+          MLOG("[inv] f%llu range %p+%#llx: %d renderings written back:%s", (unsigned long long)atomic_load(&g_cur_frame), (void *)a, (unsigned long long)n, nl, sers); } }
     wb_write_list(list, nl, 0);
 }
 /* A memory pool is finalized: pending renderings into its bytes are dropped. The game has given the range back to its
@@ -4256,6 +4265,11 @@ static void *tex_mtl_p(const tex_t *ct) {
                 if (clean) return (__bridge void *)pk->tex;
             }
             TILELOG(t, "re-upload from the pool bytes");
+            { static long on = -1; static uint64_t seen[64]; static uint32_t cnt[64]; static int ns;   // TOTK_REUP_LOG=<from frame> (diagnostic): which textures the pool's changes re-upload
+              if (on < 0) { const char *e = getenv("TOTK_REUP_LOG"); on = e ? atol(e) : 0; if (e && !on) on = 1; }
+              if (on > 0 && (long)atomic_load(&g_cur_frame) >= on) { int k = 0; while (k < ns && seen[k] != t->serial) k++; if (k == ns && ns < 64) { seen[ns] = t->serial; cnt[ns++] = 0; }
+                  if (k < 64 && (cnt[k]++ % 100) == 0) MLOG("[reup] f%llu ser=%llu %ux%u fmt=%#x lv%u mem=%p size=%#llx owned=%d hashed=%d (%u times)", (unsigned long long)atomic_load(&g_cur_frame),
+                      (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (void *)t->mem, (unsigned long long)t->L.size, pk->owned, pk->hashed, cnt[k]); } }
             uint64_t st; BOTW_PKG_WB_TAKE() reup_key nk; g_mip_nodrop = pk->owned; g_mip_keep = pk->keep_full; id<MTLTexture> nt = pkg_upload(t, &st, &nk, pk); g_mip_nodrop = 0; g_mip_keep = 0;   // 池内容变了（流式素材写进同一存储）：换新贴图，在途绘制仍读旧的 | Pool content changed (streamed assets written into the same storage): switch to a new texture; in-flight draws still read the old one
             if (nt) { id<MTLTexture> old = pk->tex; pk->tex = nt; reup_retire(old, &pk->key); pk->key = nk; if (pk->hashed) pk->chash = h; ser_bump(t->serial); pk->stamp = st; pk->seen = st; BOTW_PKG_WB_SET(pk) g_pkg_reuploads++; if (dirtycheck()) pk->hash = full_hash(t->mem, t->L.size); BOTW_REUP_TRACKED(pk, t) }
             else { free(pk->edge); pk->edge = NULL; }   // TOTK (#90): the bytes kept belong to the upload that failed
@@ -6632,8 +6646,13 @@ static MTLTextureType ttype(int target, int fallback) {
 // 贴图池容量 15256），从不登记该号。按 D3D / 空槽语义读出 0（与未绑同一套全零哑贴图），不报红；池内未登记的号仍报红
 // Out-of-pool texture ID = empty slot: the game itself uses GetSeparateTextureHandle(0xFFFFF) to get a handle and bind it to unused slots (measured call site main+0x1746820,
 // texture pool capacity 15256) and never registers that ID. Read 0 per D3D / empty-slot semantics (the same all-zero dummy textures as unbound), no failure; unregistered IDs inside the pool are still reported a failure
-static int g_tpool_n; static uint64_t g_stat_tex_oob;
-void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
+/* A texture ID indexes the texture pool the command buffer has bound (nvnCommandBufferSetTexturePool), as on hardware: an ID
+   past that pool's descriptors names nothing and reads 0. The capacity is the bound pool's, taken at replay with the draw
+   state (S.tex_pool_n). It was the last pool initialised: Pokemon Pokopia makes three (33,024, 16,640 and 4,352
+   descriptors), registers its textures in the first up to ID 32,992 and inits the 4,352 one last, so every texture from
+   ID 4,352 on read as an empty slot and most frames were black (2026-11-03). */
+static uint64_t g_stat_tex_oob;
+static int bound_tex_pool_n(void);   // after S
 /* DM_NVN_LIFELOG (see totk_lifelog.h): the texture the replay resolves for a followed texture-pool id, once per frame and id. */
 static void life_use(int tid, const tex_t *t, const char *how) {
     static uint64_t frame = ~0ull; static int seen[64]; static int nseen;
@@ -6652,7 +6671,7 @@ static uint8_t treg_kind(const tex_t *t) { return tex_mirrored(t) ? (pkg_hashed(
    retain + autorelease (an autorelease-pool entry) on the texture slow path. */
 #define tex_by_id(tid) ((__bridge id<MTLTexture>)tex_by_id_p(tid))
 static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
-    if (g_tpool_n && tid >= g_tpool_n) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（池容量 %d）按空槽处理：读出 0", tid, g_tpool_n); return NULL; }
+    { int pn = bound_tex_pool_n(); if (pn && tid >= pn) { if (!g_stat_tex_oob++) MLOG("池外贴图号 %d（绑定的池容量 %d）按空槽处理：读出 0", tid, pn); return NULL; } }
     if (tid < 0 || tid >= g_ntreg || !g_treg[tid].ok) { RED_ONCE(10, "贴图号 %d 未登记", tid); return NULL; }
     treg_t *rp = &g_treg[tid];
     rp->used = g_sub_serial;   // TOTK: the fast path below never reaches tex_mtl; pkg_evict_sweep reads this
@@ -6957,7 +6976,9 @@ static struct {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard; uint8_t push[2][NVN_PUSH_SIZE];
     float blend_color[4]; int64_t copy_stride;
+    int tex_pool_n;   // descriptors of the bound texture pool (OP_SET_TEX_POOL); 0 before one is bound: no bound check
 } S;
+static int bound_tex_pool_n(void) { return S.tex_pool_n; }
 static void args_program_changed(void);
 /* Separable programs: a draw's stages may come from several programs, each bound for its own stages (Pokemon Pokopia
    binds a vertex-only and a fragment-only program). When they are not all one program, the draw's program is a combined
@@ -10181,7 +10202,42 @@ static inline void cbc_ctx_now(cbc_ctx *c) {
 }
 static int ab_same_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_AB_SAME"); v = !(e && !atoi(e)); if (!v) MLOG("TOTK_AB_SAME=0: every rebuilt argument block gets a new copy"); } return v; }
 static inline unsigned cbc_slot(uint64_t addr, uint64_t size) { uint64_t h = (addr >> 4) ^ (addr >> 17) ^ (size * UINT64_C(0x9e3779b97f4a7c15)); return (unsigned)(h ^ (h >> 29)) & (CBC_N - 1); }
+/* TOTK_BIND_TRACE=<key prefix>[,<key prefix>...] (diagnostic): the first 24 encodes of those shaders name the texture
+   and image slots they read, as texture id -> serial and the Metal texture object (Pokemon Pokopia's exposure, 2026-11-03) */
+static void bind_trace(NvShader *sh, int nvn_stage) {
+    static char pre[8][17]; static int np = -1, left = 24;
+    if (np < 0) { const char *ne = getenv("TOTK_BIND_TRACE_N"); if (ne) left = atoi(ne); np = 0; for (const char *q = getenv("TOTK_BIND_TRACE"); q && *q && np < 8; ) { size_t n = strcspn(q, ","); snprintf(pre[np++], 17, "%.*s", (int)(n < 16 ? n : 16), q); q += n; if (*q) q++; } }
+    static long from = -1; if (from < 0) { const char *e = getenv("TOTK_BIND_TRACE_FROM"); from = e ? atol(e) : 0; }   // from that frame on
+    if (!np || left <= 0 || (long)atomic_load(&g_cur_frame) < from) return;
+    int hit = 0; for (int i = 0; i < np; i++) if (!strncmp(sh->key, pre[i], strlen(pre[i]))) hit = 1;
+    if (!hit) return;
+    left--;
+    char line[2000]; int o = snprintf(line, sizeof line, "[bind] f%llu st%d %.16s", (unsigned long long)atomic_load(&g_cur_frame), nvn_stage, sh->key);
+    for (int i = 0; i < sh->rf.nb && o < 1100; i++) { const nvn_rbind *b = &sh->rf.b[i];
+        if (b->kind == NVN_RB_SBUFP && b->reg < 16) { const p_bind_buf *u = &S.ssbo[nvn_stage][b->reg];
+            o += snprintf(line + o, sizeof line - o, " sbuf%d=%#llx+%#llx%s", b->reg, (unsigned long long)u->addr, (unsigned long long)u->size, b->rw ? "(rw)" : "");
+            void *mb; uint64_t mo; if (u->addr && u->size >= 8 && mtl_addr(u->addr, 8, &mb, &mo)) { const uint32_t *w = (const uint32_t *)((char *)((__bridge id<MTLBuffer>)mb).contents + mo); int nw = u->size >= 256 ? 64 : (int)(u->size / 4);
+                o += snprintf(line + o, sizeof line - o, "["); for (int k = 0; k < nw; k++) o += snprintf(line + o, sizeof line - o, k ? " %x" : "%x", w[k]); o += snprintf(line + o, sizeof line - o, "]"); }
+            continue; }
+        if (b->kind == NVN_RB_CBUF && b->reg < 16) { const p_bind_buf *u = &S.ubo[nvn_stage][b->reg]; void *mb; uint64_t mo;
+            o += snprintf(line + o, sizeof line - o, " c%d=%#llx+%#llx", b->reg, (unsigned long long)u->addr, (unsigned long long)u->size);
+            if (u->addr && u->size >= 48 && mtl_addr(u->addr, 48, &mb, &mo)) { const float *f = (const float *)((char *)((__bridge id<MTLBuffer>)mb).contents + mo);
+                o += snprintf(line + o, sizeof line - o, "[%g %g %g %g | %g %g %g %g | %g %g %g %g]", f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11]); }
+            continue; }
+        if (b->kind != NVN_RB_TEX && b->kind != NVN_RB_IMG && b->kind != NVN_RB_TBUF) continue;
+        uint64_t h = b->kind == NVN_RB_IMG ? (b->reg < 32 ? S.img[nvn_stage][b->reg] : 0) : (b->reg < 128 ? S.tex[nvn_stage][b->reg] : 0);
+        int tid = (int)(h & 0xfffff); void *tv = NULL; if (tid) (void)tex_fast_rid(tid, &tv);
+        o += snprintf(line + o, sizeof line - o, " %s%d=id%d/ser%llu/mem%p/%ux%u", b->kind == NVN_RB_IMG ? "img" : b->kind == NVN_RB_TBUF ? "tbuf" : "tex", b->reg, tid,
+                      tid && tid < g_ntreg ? (unsigned long long)g_treg[tid].t.serial : 0ull, tid && tid < g_ntreg ? (void *)g_treg[tid].t.mem : NULL,
+                      tid && tid < g_ntreg ? g_treg[tid].t.d.width : 0u, tid && tid < g_ntreg ? g_treg[tid].t.d.height : 0u);
+        if (tid && tid < g_ntreg) o += snprintf(line + o, sizeof line - o, "/target%u/flags%#x/fmt%#x/linear%d/stride%u", g_treg[tid].t.d.target, g_treg[tid].t.d.flags, g_treg[tid].t.d.format,
+                                                nvn_tex_is_linear(&g_treg[tid].t.d), nvn_tex_is_linear(&g_treg[tid].t.d) ? nvn_tex_linear_stride(&g_treg[tid].t.d) : 0u);
+        if (tid && tid < g_ntreg && g_treg[tid].t.mem && g_treg[tid].t.L.size >= 16) { float f[4]; memcpy(f, g_treg[tid].t.mem, 16); o += snprintf(line + o, sizeof line - o, "[%g %g %g %g]", f[0], f[1], f[2], f[3]); } }
+    if (nvn_stage == 1 && R.has_rt && R.rt.color[0]) o += snprintf(line + o, sizeof line - o, " rt0=ser%llu/mem%p/%ux%u", (unsigned long long)R.rt.color[0]->serial, (void *)R.rt.color[0]->mem, R.rt.color[0]->d.width, R.rt.color[0]->d.height);
+    MLOG("%s", line);
+}
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
+    bind_trace(sh, nvn_stage);
     if(nvn_stage==1 && sh->hdr_fn && atomic_load(&g_hdr_frame_enabled)) {   /* the HDR twin's uniform, only with HDR on (PR #1129) */
         /* Immutable arena bytes survive queued rendering; never overwrite an in-flight mode. */
         id<MTLBuffer> b=nil;size_t off=arena_alloc(sizeof(TotkHDRUniform),&b);
@@ -14183,6 +14239,8 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (S.color.logic_op != NVN_LOGIC_OP_COPY || (S.color.alpha_func && S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS))
         RED_ONCE(70, "TOTK: logic op %u / alpha test %u not implemented on Metal (drawn without it)", S.color.logic_op, S.color.alpha_func);
     if (S.render_disabled || S.raster_discard) { g_draw_skip[S.render_disabled ? 3 : 4]++; return; }   // TOTK: SetRenderEnable(false) / SetRasterizerDiscard(true)
+    if (R.has_rt && R.rt.n > 0 && R.rt.color[0]) { extern uint32_t g_rt_draws[64]; extern uint64_t g_rt_draw_ser[64]; unsigned k = (unsigned)(R.rt.color[0]->serial & 63);
+        if (g_rt_draw_ser[k] != R.rt.color[0]->serial) { g_rt_draw_ser[k] = R.rt.color[0]->serial; g_rt_draws[k] = 0; } g_rt_draws[k]++; }   // the shot log's draw count
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK) { g_draw_skip[5]++; return; }
     if (exp_skip_fs(pr)) return;   // TOTK_EXP_SKIP_FS (measurement only)
     // 续用的通道可能是少挂深度 / 模板开的（开法 2 / 3 / 4）：这次绘制要的平面没挂，就在它之前切开（重开时按新前瞻挂）
@@ -14873,6 +14931,9 @@ static void dispatch(const p_dispatch *dp) {
 // GPU：贴图 → 缓冲（行距取 SetCopyRowStride，0 = 紧排）
 // GPU: texture -> buffer (row stride taken from SetCopyRowStride, 0 = tightly packed)
 static void copy_t2b(const p_copy_b2t *c) {
+    { static long on = -1; static int left = 24; if (on < 0) { const char *e = getenv("TOTK_T2T_LOG"); on = e ? atol(e) : 0; if (e && !on) on = 1; }   // with TOTK_T2T_LOG: buffer <-> texture copies too
+      if (on > 0 && (long)atomic_load(&g_cur_frame) >= on && left > 0 && c->tex) { left--;
+          MLOG("[%s] f%llu tex ser=%llu %ux%u fmt=%#x mem=%p buf=%#llx", "t2b", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->tex->serial, c->tex->d.width, c->tex->d.height, c->tex->d.format, (void *)c->tex->mem, (unsigned long long)c->src); } }
     if (c->tex) xv_check(c->tex->serial, c->has_view && c->view.set_levels ? c->view.base_level : 0, c->has_view && c->view.set_layers ? c->view.min_layer : 0, "贴图读缓冲");
     if (atomic_load(&g_draw_log) > 0 && c->tex)
         MLOG("[uw] F%llu pass %llu copy t2b ser %llu %ux%u fmt %#x region %d,%d %dx%d -> %#llx", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, (unsigned long long)c->tex->serial,
@@ -15075,6 +15136,9 @@ void mtl_write_texels(const tex_t *t, unsigned level, unsigned layer0, const NVN
     if (!nogpu() && cb.status != MTLCommandBufferStatusCompleted) die("WriteTexels: GPU upload failed");
 }
 static void copy_b2t(const p_copy_b2t *c) {
+    { static long on = -1; static int left = 24; if (on < 0) { const char *e = getenv("TOTK_T2T_LOG"); on = e ? atol(e) : 0; if (e && !on) on = 1; }   // with TOTK_T2T_LOG: buffer <-> texture copies too
+      if (on > 0 && (long)atomic_load(&g_cur_frame) >= on && left > 0 && c->tex) { left--;
+          MLOG("[%s] f%llu tex ser=%llu %ux%u fmt=%#x mem=%p buf=%#llx", "b2t", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->tex->serial, c->tex->d.width, c->tex->d.height, c->tex->d.format, (void *)c->tex->mem, (unsigned long long)c->src); } }
     if (c->tex) zskip_del(c->tex->serial);
     id<MTLTexture> t = tex_mtl(c->tex);
     PD("C ser=%llu", c->tex->serial);
@@ -15155,6 +15219,12 @@ static int copy_t2t_astc(id<MTLTexture> s, id<MTLTexture> d, unsigned sl, unsign
 // GPU：贴图 → 贴图（原先误列为空操作，选角页每帧 3 次）。等尺寸、不镜像、同格式 → 逐层 blit；其余语义（缩放带过滤、镜像、换格式）blit 表达不了，报红待实现
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
 static void copy_t2t(const p_copy_t2t *c) {
+    { static long on = -1; static int left = 24; if (on < 0) { const char *e = getenv("TOTK_T2T_LOG"); on = e ? atol(e) : 0; if (e && !on) on = 1; }   // TOTK_T2T_LOG=<from frame> (diagnostic): 24 texture copies from that frame, their ends
+      if (on > 0 && (long)atomic_load(&g_cur_frame) >= on && left > 0 && c->src && c->dst) { left--;
+          MLOG("[t2t] f%llu src ser=%llu %ux%u fmt=%#x mem=%p -> dst ser=%llu %ux%u fmt=%#x mem=%p region %d,%d %dx%d -> %d,%d %dx%d flags %#x",
+               (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)c->src->serial, c->src->d.width, c->src->d.height, c->src->d.format, (void *)c->src->mem,
+               (unsigned long long)c->dst->serial, c->dst->d.width, c->dst->d.height, c->dst->d.format, (void *)c->dst->mem,
+               c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, c->flags); } }
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "贴图拷贝源");
     rp_flush();   // 挂起的纯清除通道先落地（零源候选在通道结束时才进集合）；下面 blit() 本来也会结束通道 | Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
     if (c->dst) zskip_del(c->dst->serial);
@@ -15580,7 +15650,8 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_T2T: copy_t2t(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
             case OP_DISPATCH: dispatch(a); break;
-            case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
+            case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; S.tex_pool_n = tp ? tp->n : 0; break; }
+            case OP_BARRIER: case OP_SET_SAMP_POOL: break;
             default: break;
         }
         p += h.size;
@@ -15711,6 +15782,7 @@ void dm_gfx_shot_at(long k, const char *path) {
 /* TOTK: frame-keyed screenshots taken at the game's present call (nvnQueuePresentTexture), independent of the display
    link / drawable pacing (an asleep or locked display stalls presents; the game keeps running). DM_NVN_SHOT_FRAME=1 with
    DM_NVN_SHOT=frame,...:path. */
+uint32_t g_rt_draws[64]; uint64_t g_rt_draw_ser[64];   // draws into a colour target 0 since its last present (by serial; the [shot] line)
 void mtl_shot_at_present(const tex_t *t) {
     static long shots[16]; static int nshot = -1; static const char *shot_path; static char done[16]; static int by_frame;
     if (nshot < 0) {
@@ -15721,10 +15793,12 @@ void mtl_shot_at_present(const tex_t *t) {
     pthread_mutex_lock(&g_shotq_mu);   // dm_gfx_shot_at requests (game-frame keyed, see there)
     for (int i = 0; i < g_nshotq;) if ((uint64_t)cur >= g_shotq[i].frame) {
         id<MTLTexture> src = tex_mtl(t);
-        if (src) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, NULL); MLOG("[shot] F%ld %s", cur, g_shotq[i].path); } else MLOG("【红】截图：出图纹理不可用，丢弃 %s", g_shotq[i].path);
+        if (src) { mtl_finish_gpu(); shot(src, g_shotq[i].path, 1, NULL); unsigned k = (unsigned)(t->serial & 63);
+            MLOG("[shot] F%ld %s ser=%llu draws since its last present %u", cur, g_shotq[i].path, (unsigned long long)t->serial, g_rt_draw_ser[k] == t->serial ? g_rt_draws[k] : 0u); } else MLOG("【红】截图：出图纹理不可用，丢弃 %s", g_shotq[i].path);
         g_shotq[i] = g_shotq[--g_nshotq];
     } else i++;
     BOTW_ASHOT_POLL(t, cur) pthread_mutex_unlock(&g_shotq_mu);
+    { unsigned k = (unsigned)(t->serial & 63); if (g_rt_draw_ser[k] == t->serial) g_rt_draws[k] = 0; }   // counted again until its next present
     if (!nshot) return;
     for (int i = 0; i < nshot; i++) if (!done[i] && cur >= shots[i]) {
         done[i] = 1; id<MTLTexture> src = tex_mtl(t); if (!src) { MLOG("【红】截图：出图纹理不可用"); continue; }
