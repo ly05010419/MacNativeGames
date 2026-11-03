@@ -10,6 +10,8 @@ int vr_enabled(void);
    picture (crop: x, y, w, h inside src, or NULL / zero size for all of it) for the headset. Returns the copy's slot, to
    pass to vr_source_done from the command buffer's feedback handler, or -1. */
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket);
+int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye);   /* stereo B2: the left pass's picture */
+void vr_b2_present_eye(int eye);   /* stereo B2: the next present's picture is that eye's */
 void vr_source_done(int slot, int ok);
 id<MTLResidencySet> vr_residency(void);   // our copies of the picture; the queue adds it once
 void vr_recenter(void);

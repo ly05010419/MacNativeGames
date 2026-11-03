@@ -1048,8 +1048,11 @@ typedef struct { uint64_t lo, hi, fence; } gw_t;
 static gw_t *g_gw; static int g_ngw, g_capgw;
 static uint64_t g_usnap_skip_gpu;
 static int g_usnap_drop_off;   // probe-gpu-ubo-snapshot negative control only
+uint64_t g_b2gw_page; _Atomic int g_b2gw_n;   // stereo B2 diagnostic ("flag b2gw <page>"): GPU writes into that page, with the eye pass and region
+static void b2gw_note(uint64_t a, uint64_t n, const void *ra);   // below, with the replay's state
 static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) within this submission
     if (!n) return;
+    if (g_b2gw_page && a < ((g_b2gw_page + 1) << 12) && a + n > (g_b2gw_page << 12)) b2gw_note(a, n, __builtin_return_address(0));
     if (usnap_on()) {
         int dup = 0;   // the same buffer bound for many dispatches in a row: log it once
         for (int j = g_ngw - 1; j >= 0 && j >= g_ngw - 8; j--) if (g_gw[j].lo == a && g_gw[j].hi == a + n && g_gw[j].fence == g_fence + 1) { dup = 1; break; }
@@ -1138,7 +1141,62 @@ static uint64_t g_sub_serial;   // 第几次提交（并行预编「每次提交
 static void pt_apply_request(void);
 static int g_sub_chunks; static uint64_t g_chunk_mark, g_stat_draw; static void chunk_cfg(void);   // mid-submission commits, defined before mtl_sub_commit
 static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t hi);   // renamed uniform updates, defined with mtl_sub_update
+/* zeldaVR stereo B2 (game_patches_v143.c, hle_nvn.c): a stereo frame's submission holds both eyes' recordings between OP_EYE
+   marks and is replayed once per eye (hle_nvn.c submit_exec): g_eye_pass 1 the left eye, 2 the right, 0 an ordinary
+   replay (what the right eye's marks hold is replayed, as before stereo). The left pass's picture (the presented texture
+   its last pass wrote, g_b2_swap) goes to the headset from mtl_sub_commit, tagged left; the right one at the present. */
+int g_eye_pass; static uint32_t g_eye_region = 3; static id<MTLTexture> g_b2_swap; static int g_b2_crop[4], g_b2_crop_have, g_b2_capture = -1, g_b2_retake;
+static uint64_t g_b2_draws[2][2];   // stereo B2: [pass][0 inside that eye's marks, 1 outside any]
+/* Stereo B2: the left and the right pass are one submission of the game's. The GPU writes and pending updates the left pass
+   leaves (its fence, g_eye_skip_fence, during the right pass) are not an earlier submission's for the right pass: its
+   uniform copies (usnap_take) and their pending-write overlay (pend_overlay_x) pass them over, as a single replay would
+   not have seen them; later submissions treat them as any other. Without this every range the left pass writes on the GPU
+   was read live by the right pass, where the game was already writing the next frame (b2ag: the ground missing). */
+static uint64_t g_eye_skip_fence;
+static uint64_t g_b2_nopic, g_b2_pics;   // stereo B2: left passes that drew no presented texture / that did
+static id<MTLTexture> g_b2_scene[3]; static uint64_t g_b2_scene_pass[3];   // stereo B2: per eye, the colour target of the last pass inside its own marks
+static int g_b2_scene_shot, g_b2_scene_right; static void b2_scene_shot(int eye);
+static _Atomic int g_b2_passlog;   // diagnostic: the eye passes' passes into the game's presented textures, while a b2shot is pending
+static _Atomic int g_b2_shot; int g_b2_rep = 1, g_b2_ucap;   // "flag b2rep 0" (diagnostic): the left pass leaves out counter reports / resets; "flag b2ucap 1" (diagnostic): its uniforms are the submit call's only
+   // stereo B2 diagnostic ("flag b2shot <n>"): the next n left pictures saved beside the VR control file
+static void shot(id<MTLTexture> src, const char *path, int screen, const int crop[4]);
+static void mtl_finish_gpu(void);
+int g_b2_order;   // diagnostic ("flag b2order 1"): the right eye's pass first, then the left one
+void mtl_eye_done(int left, int last);
+void mtl_eye_pass(int e) {
+    const int second = e & 4; e &= 3;   // second: the other eye's pass was committed just before
+    if (!e && g_b2_scene_right) { g_b2_scene_right = 0; b2_scene_shot(2); }   // diagnostic: the right eye's, after its pass
+    if (!e && (g_b2_draws[0][0] | g_b2_draws[0][1] | g_b2_draws[1][0] | g_b2_draws[1][1])) {   // the stereo submission's replays done
+        static int n; if (n++ < 12 || !(n % 600)) MLOG("[vr] stereo B2: the left replay drew %llu inside left marks and %llu shared; the right %llu inside right marks and %llu shared (left pictures %llu, left passes without one %llu)",
+            (unsigned long long)g_b2_draws[0][0], (unsigned long long)g_b2_draws[0][1], (unsigned long long)g_b2_draws[1][0], (unsigned long long)g_b2_draws[1][1],
+            (unsigned long long)g_b2_pics, (unsigned long long)g_b2_nopic);
+        memset(g_b2_draws, 0, sizeof g_b2_draws); }
+    if (e) g_b2_swap = nil;   // this pass's own picture or none (never an older one)
+    if (e) g_b2_scene[e] = nil;
+    g_eye_skip_fence = second ? g_fence : 0;   // the other pass was committed just before (mtl_sub_commit: ++g_fence)
+    g_eye_pass = e; g_eye_region = 3; if (e) g_b2_retake = 1; }   // each eye's replay takes its own G-buffer camera (its head pose)
+static void b2_scene_shot(int eye) {   // diagnostic: the eye's own last pass target (b2shot)
+    id<MTLTexture> t = g_b2_scene[eye]; const char *cf = getenv("TOTK_VR_CONTROL"); char path[1100]; const char *sl = cf ? strrchr(cf, '/') : NULL;
+    snprintf(path, sizeof path, "%.*s/scene-%s-%d.png", sl ? (int)(sl - cf) : 1, sl ? cf : ".", eye == 1 ? "left" : "right", g_b2_scene_shot);
+    if (!t) { MLOG("[vr] b2shot: no pass inside the %s eye's marks", eye == 1 ? "left" : "right"); return; }
+    mtl_finish_gpu(); shot(t, path, 0, NULL);
+    MLOG("[vr] b2shot: the %s eye's last own pass %llu target %lux%lu format %lu -> %s", eye == 1 ? "left" : "right", (unsigned long long)g_b2_scene_pass[eye], (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.pixelFormat, path);
+}
+void mtl_eye_done(int left, int last) {   // after an eye pass's commit (hle_nvn.c submit_exec); last: the submission's second pass
+    static int k, active;
+    if (!active && atomic_load(&g_b2_shot) > 0) { active = 1; k++; }
+    if (active) {   // diagnostic: each eye's picture (the presented texture its pass drew), as it is after that pass
+        if (last) { active = 0; atomic_fetch_sub(&g_b2_shot, 1); }
+        const char *cf = getenv("TOTK_VR_CONTROL"); char path[1100];
+        const char *sl = cf ? strrchr(cf, '/') : NULL; snprintf(path, sizeof path, "%.*s/%s-%d%s.png", sl ? (int)(sl - cf) : 1, sl ? cf : ".", left ? "left" : "right", k, last ? "-second" : "-first");
+        g_b2_scene_shot = k; if (left) b2_scene_shot(1);   // and the left eye's own last pass (its HDR scene)
+        if (g_b2_swap) { mtl_finish_gpu(); shot(g_b2_swap, path, 1, g_b2_crop_have ? g_b2_crop : NULL); MLOG("[vr] b2shot: the eye's picture (%lux%lu, format %lu) -> %s; this pass drew %llu inside its marks and %llu shared, its last own pass %llu", (unsigned long)g_b2_swap.width, (unsigned long)g_b2_swap.height, (unsigned long)g_b2_swap.pixelFormat, path,
+            (unsigned long long)g_b2_draws[left ? 0 : 1][0], (unsigned long long)g_b2_draws[left ? 0 : 1][1], (unsigned long long)g_b2_scene_pass[left ? 1 : 2]); }
+        else MLOG("[vr] b2shot: this eye pass drew no presented texture"); }
+}
+void mtl_eye_capture(int eye) { g_b2_capture = eye; }
 void mtl_sub_begin(void) {
+    g_eye_region = 3;   // stereo B2: a submission starts outside eye marks
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
        thread has no pool of its own that drains (frontend.m's lasts the whole game), so what defer_drain, defer_reset,
@@ -1569,6 +1627,29 @@ void *mtl_sub_capture_ubos(const uint64_t *h, int n) {
     return c;
 }
 static void ucap_free(usnap_cap *c) { if (c) { free(c->r); free(c->off); ucap_bytes_put(c->bytes, c->cap); free(c); } }
+void mtl_ucap_free(void *c) { ucap_free((usnap_cap *)c); }   // zeldaVR stereo B2: a first-run capture the left replay did not take
+/* zeldaVR stereo B2: the left eye's uniforms. base: the whole submission's bindings as of the submit call (both eyes'
+   recordings are inlined in it); over: the first run's bindings captured between the runs. The result has base's ranges
+   and bytes, with over's bytes wherever over covers them: what the second run rewrote reads as the first run left it, the
+   rest as the right eye sees it (nothing reads live memory that the game may already be rebuilding). Neither is consumed. */
+void *mtl_ucap_overlay(const void *basev, const void *overv) {
+    const usnap_cap *base = basev, *over = overv;
+    if (!base) return NULL;
+    usnap_cap *c = calloc(1, sizeof *c); if (!c) MDIE("uniform capture");
+    c->done = base->done; c->n = base->n; c->ns = 0;
+    size_t total = base->n ? base->off[base->n - 1] + (size_t)(base->r[base->n - 1].hi - base->r[base->n - 1].lo) : 0;
+    c->r = malloc(sizeof *c->r * (size_t)(c->n ? c->n : 1)); c->off = malloc(sizeof *c->off * (size_t)(c->n ? c->n : 1));
+    if (!c->r || !c->off) MDIE("uniform capture");
+    if (c->n) { memcpy(c->r, base->r, sizeof *c->r * (size_t)c->n); memcpy(c->off, base->off, sizeof *c->off * (size_t)c->n); }
+    c->bytes = ucap_bytes_get(total ? total : 1, &c->cap);
+    if (total) memcpy(c->bytes, base->bytes, total);
+    if (over) for (int i = 0, j = 0; i < c->n && j < over->n;) {   // both sorted and disjoint: walk them together
+        const uint64_t lo = c->r[i].lo > over->r[j].lo ? c->r[i].lo : over->r[j].lo, hi = c->r[i].hi < over->r[j].hi ? c->r[i].hi : over->r[j].hi;
+        if (lo < hi) memcpy(c->bytes + c->off[i] + (lo - c->r[i].lo), over->bytes + over->off[j] + (lo - over->r[j].lo), (size_t)(hi - lo));
+        if (c->r[i].hi <= over->r[j].hi) i++; else j++;
+    }
+    return c;
+}
 /* The bytes of [a, a+n) as captured: memory at the capture where a captured range covers them (they are memory now
    elsewhere: no binding of this submission reads there). */
 static void ucap_read(const usnap_cap *c, uint64_t a, uint8_t *out, size_t n) {
@@ -1646,9 +1727,15 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     uint64_t tq0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t done = cap && !g_ucap_probe_now ? cap->done : __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
     int ng = 0; uint64_t gw_maxlen = 0;   // GPU writes not finished at the capture, sorted by start
-    for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) { g_gw[ng++] = g_gw[i]; if (g_gw[i].hi - g_gw[i].lo > gw_maxlen) gw_maxlen = g_gw[i].hi - g_gw[i].lo; }
-    g_ngw = ng;
+    static gw_t *eyegw; static int eyegw_cap; int neye = 0;   // stereo B2: the left pass's, kept for later submissions but not looked at here
+    for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) {
+        if (g_eye_skip_fence && g_gw[i].fence == g_eye_skip_fence) {
+            if (neye == eyegw_cap) { eyegw_cap = eyegw_cap ? eyegw_cap * 2 : 1024; eyegw = realloc(eyegw, (size_t)eyegw_cap * sizeof *eyegw); if (!eyegw) MDIE("GPU write ranges"); }
+            eyegw[neye++] = g_gw[i]; continue; }
+        g_gw[ng++] = g_gw[i]; if (g_gw[i].hi - g_gw[i].lo > gw_maxlen) gw_maxlen = g_gw[i].hi - g_gw[i].lo; }
     if (ng > 1) qsort(g_gw, (size_t)ng, sizeof *g_gw, gw_cmp);
+    if (neye) memcpy(g_gw + ng, eyegw, (size_t)neye * sizeof *g_gw);   // fits: they came out of g_gw
+    g_ngw = ng + neye;
     g_usr.n = 0;
     if (cap) {   // the bindings as captured (merged, inside pools); the merge below works on them as on fresh ones
         if (cap->n > g_usr.cap) { g_usr.cap = cap->n + 256; g_usr.r = realloc(g_usr.r, g_usr.cap * sizeof *g_usr.r); if (!g_usr.r) MDIE("uniform copy ranges"); }
@@ -1879,6 +1966,7 @@ static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wa
     for (int i = 0; i < npend; i++) {
         uint64_t lo = g_pend_lo[i], hi = g_pend_hi[i];
         if (hi <= a || lo >= a + n || g_pend_fence[i] <= done) continue;   // completed writes are already in memory (which may hold newer CPU writes)
+        if (g_eye_skip_fence && g_pend_fence[i] == g_eye_skip_fence) continue;   // stereo B2: the left pass's, not before the right pass (mtl_eye_pass)
         uint64_t s0 = lo > a ? lo : a, e0 = hi < a + n ? hi : a + n;
         if (g_pend_kind[i] == 0) memcpy(out + (s0 - a), (const uint8_t *)g_pend_src[i] + (s0 - lo), e0 - s0);
         else if (depth < 2) pend_materialize_x((uint64_t)(uintptr_t)g_pend_src[i] + (s0 - lo), out + (s0 - a), e0 - s0, depth + 1, wait);
@@ -2307,6 +2395,18 @@ uint64_t mtl_sub_commit(void) {
     res_commit();
     if (totk_tl_on()) { uint64_t tlid = totk_tl_commit_id(); totk_tl(TL_COMMIT, tlid, 1); totk_tl(TL_FENCE, tlid, fence);
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
+    if (g_b2_capture >= 0) {   // stereo B2: the left pass's picture for the headset (the presented texture as drawn, no MetalFX)
+        const int eye = g_b2_capture; g_b2_capture = -1;
+        if (g_b2_swap) g_b2_pics++; else g_b2_nopic++;
+        if (g_b2_swap) {
+            const int slot = vr_source_encode_eye(g_cb, g_b2_swap, g_b2_crop_have ? g_b2_crop : NULL, eye);
+            if (slot >= 0) {   // published when this command buffer completes, as the present's copy is
+                static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
+                [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { vr_source_done(slot, !f.error); }];
+                static uint64_t n; if (!n++) MLOG("[vr] stereo B2: the first left-eye picture went to the headset (%lux%lu)", (unsigned long)g_b2_swap.width, (unsigned long)g_b2_swap.height);
+            } else { static uint64_t m; if (!m++) MLOG("[vr] stereo B2: no free picture slot for a left-eye picture (later ones are counted in the VR line)"); }
+        }
+    }
     [g_cb endCommandBuffer];
     q4_commit(g_cb, o);
     if (nogpu()) g_ev.signaledValue = fence; else [g_q4 signalEvent:g_ev value:fence];
@@ -2709,6 +2809,12 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "draw_log")) { extern _Atomic long g_draw_log; atomic_store(&g_draw_log, v); MLOG("[flag] draw_log: every draw and dispatch of the next %d frames", v); return; }
     if (!strcmp(name, "uw_log")) { extern _Atomic long g_uw_log; atomic_store(&g_uw_log, v); MLOG("[flag] uw_log: canvas draws of the next %d frames", v); return; }   // key 4 UI squeeze diagnostic
     if (!strcmp(name, "mfx_output")) { mfxup_output_set(v < 0 ? !mfxup_output_enabled() : v); return; }   // TOTK_MFX_OUTPUT at run time (the window output stage)
+    if (!strcmp(name, "b2order")) { g_b2_order = v; MLOG("[flag] b2order: %s", v ? "the right eye's pass first (diagnostic)" : "the left eye's pass first"); return; }
+    if (!strcmp(name, "b2rep")) { g_b2_rep = v != 0; MLOG("[flag] b2rep: the left pass %s counter reports and resets", v ? "replays" : "leaves out (diagnostic)"); return; }
+    if (!strcmp(name, "b2ucap")) { g_b2_ucap = v; MLOG("[flag] b2ucap: the left pass's uniforms %s", v ? "as of the submit call only (diagnostic)" : "with the first run's bytes over them"); return; }
+    if (!strcmp(name, "b2shot")) { atomic_store(&g_b2_shot, v); atomic_store(&g_b2_passlog, v ? 2 : 0); MLOG("[flag] b2shot: the next %d left pictures saved", v); return; }
+    if (!strcmp(name, "b2gw")) { extern uint64_t g_b2gw_page; extern _Atomic int g_b2gw_n; g_b2gw_page = (uint64_t)(uint32_t)v; atomic_store(&g_b2gw_n, 0);   // stereo B2 diagnostic: GPU writes into page v (address / 4096)
+        MLOG("[flag] b2gw: GPU writes into %#llx..+0x1000 are logged (40 at most)", (unsigned long long)g_b2gw_page << 12); return; }
     if (!strcmp(name, "pass_gpu")) {
         if (v < 0 || v > 120) { MLOG("[flag] pass_gpu requires 0..120 frames"); return; }
         atomic_store_explicit(&g_pt_request, v, memory_order_relaxed);
@@ -4917,6 +5023,23 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
    target with the presented texture's aspect ratio before a pass into a presented texture: 1920x1080 docked, 1280x720 in
    handheld mode, where the final pass scales it to the 1920x1080 swapchain), notes the G-buffer depth (three or more
    colour targets and a D32F depth of their size) and, once the scene is copied, adds the UI attachment to canvas passes. */
+/* Stereo B2: the presented textures (serials, at each present) and the last pass this replay drew into one of them, whatever
+   the picture mode (canvas_learn runs only with TOTK_MFX or the ultrawide UI squeeze). */
+static uint64_t g_b2_presented[4]; static int g_b2_npresented;
+static void b2_note_present(const tex_t *t) {
+    for (int i = 0; i < g_b2_npresented; i++) if (g_b2_presented[i] == t->serial) return;
+    g_b2_presented[g_b2_npresented < 4 ? g_b2_npresented++ : (int)(t->serial % 4)] = t->serial;
+}
+static void b2_note_pass(MTL4RenderPassDescriptor *pd) {
+    if (!g_eye_pass || R.rt.n < 1 || !R.rt.color[0]) return;
+    if (g_eye_region == (uint32_t)g_eye_pass && pd.colorAttachments[0].texture) { g_b2_scene[g_eye_pass] = pd.colorAttachments[0].texture; g_b2_scene_pass[g_eye_pass] = g_stat_pass; }
+    for (int i = 0; i < g_b2_npresented; i++) if (g_b2_presented[i] == R.rt.color[0]->serial) {
+        g_b2_swap = pd.colorAttachments[0].texture;
+        if (atomic_load(&g_b2_passlog) > 0) MLOG("[vr] b2pass: eye %d pass %llu region %u into presented texture serial %llu (%lux%lu, load %lu, %d colour targets), mtl %p",
+            g_eye_pass, (unsigned long long)g_stat_pass, g_eye_region, (unsigned long long)R.rt.color[0]->serial, (unsigned long)g_b2_swap.width, (unsigned long)g_b2_swap.height,
+            (unsigned long)pd.colorAttachments[0].loadAction, R.rt.n, (__bridge void *)g_b2_swap);
+        return; }
+}
 static void canvas_learn(MTL4RenderPassDescriptor *pd) {
     const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL;
     id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil;
@@ -5215,6 +5338,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         if (c0 && dt && nc >= 3) { size_t k = strlen(g_fl_passes); if (k < sizeof g_fl_passes - 24) snprintf(g_fl_passes + k, sizeof g_fl_passes - k, " %d:%lux%lu/%d", g_fl_npass, (unsigned long)c0.width, (unsigned long)c0.height, nc); g_fl_npass++; }
     }
     if (taa_pass(pd) == 2) g_mfx.want_cam = 1;   // TOTK_TAA: the G-buffer pass found; its first draw gives the camera
+    if (g_b2_retake) { g_vr_cam_taken = 0; g_b2_retake = 0; }   // stereo B2: a new eye pass asks for the camera again
     if (mfx_enabled()) mfx_pass_setup(pd);   // TOTK: MetalFX scene / UI attachments, G-buffer depth
     else if (!g_vr_cam_taken && vr_wants_camera() && g_vr_camtake) {   // VR head look: this frame's camera, from the G-buffer pass's first draw (as MetalFX finds it)
         const tex_t *t0 = R.rt.n > 0 ? R.rt.color[0] : NULL; id<MTLTexture> c0 = t0 ? pd.colorAttachments[0].texture : nil, dt = pd.depthAttachment.texture;
@@ -5224,6 +5348,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         }
     }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
+    b2_note_pass(pd);   // stereo B2: the left pass's picture
     g_enc = enc_r_begin(pd);
     args_dirty_all();
     g_stat_pass++;
@@ -10148,6 +10273,13 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
 //   Needed: at a draw / dispatch it is bound to a texture or image slot of any stage (including ones already bound when the scan starts); used as copy source / copy destination / texture-clear target; drawn before cleared after becoming an attachment again (load)
 // Different levels / layers of the same texture are decided separately (a downsample chain writes level k and reads level k−1); a sampler binding counts as a read of the whole texture (conservative)
 static const uint8_t *g_exec_cur;   // 回放中当前这条操作（含） | The op currently being replayed (inclusive)
+static void b2gw_note(uint64_t a, uint64_t n, const void *ra) {
+    if (atomic_fetch_add(&g_b2gw_n, 1) >= 40) return;
+    op_hdr oh = {0}; if (g_exec_cur) memcpy(&oh, g_exec_cur, sizeof oh);
+    char d[96] = ""; { extern void runtime_describe_address(uint64_t, char *, size_t); runtime_describe_address((uint64_t)(uintptr_t)ra, d, sizeof d); }
+    MLOG("[vr] b2gw: GPU write %#llx+%#llx, eye pass %d region %u, op %u at %p, pass %llu, frame %llu, from %s", (unsigned long long)a, (unsigned long long)n, g_eye_pass, g_eye_region,
+         (unsigned)oh.op, (const void *)g_exec_cur, (unsigned long long)g_stat_pass, (unsigned long long)atomic_load(&g_cur_frame), d);
+}
 static void sd_need(sd_att *t, int why) { if (!t->state) { t->state = 1; t->why = (uint8_t)why; } }   // why：1 绘制作贴图读 2 作附件先画后清 3 拷贝 4 清贴图 5 扫到末尾未定 6 无起点 / 索引不可用 | why: 1 a draw reads it as a texture 2 as an attachment, drawn before cleared 3 copy 4 texture clear 5 scanned to the end undecided 6 no start point / index unavailable
 static int sdx_decide(uint8_t st[SD_ATT_MAX]);   // 写回前瞻判定（索引见 mtl_sub_index） | Store lookahead decision (for the index see mtl_sub_index)
 // ---------- TOTK: layered passes (see g_lay) ----------
@@ -12173,6 +12305,8 @@ static void mfx_take_camera(void) {
         mfx_note_camera(cam, 84);
         if (taa_active()) taa_note_camera(cam, 84);
         vr_note_camera(cam);   // VR head look: which head pose this frame was rendered with
+        if (g_eye_pass) { static int n; if (n < 40) { n++; float e[3]; for (int j = 0; j < 3; j++) e[j] = -(cam[j] * cam[3] + cam[4 + j] * cam[7] + cam[8 + j] * cam[11]);   // stereo B2: each eye pass's camera
+            MLOG("[vr] stereo B2: %s eye's G-buffer camera at %.4f %.4f %.4f (view t.x %.4f), block at %#llx", g_eye_pass == 1 ? "the left" : "the right", e[0], e[1], e[2], cam[3], (unsigned long long)u->addr); } }
         g_fl_cam_fov = cam[70] * 180 / (float)M_PI;   // diagnostic (TOTK_VR_FRAMELOG): the vertical view, degrees
         { extern float g_vr_cam_pos[3]; extern uint64_t g_vr_cam_pass, g_vr_cam_frame; g_vr_cam_pass = g_stat_pass; g_vr_cam_frame = atomic_load(&g_cur_frame);   // the body gap diagnostic: this frame's camera position, -R^T t of its view matrix (3x4 rows)
           for (int j = 0; j < 3; j++) g_vr_cam_pos[j] = -(cam[j] * cam[3] + cam[4 + j] * cam[7] + cam[8 + j] * cam[11]);
@@ -14905,6 +15039,14 @@ void mtl_exec(const uint8_t *p) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_) MDIE("corrupt command record at %p: op %u size %u (call depth %d)", (const void *)p, (unsigned)h.op, (unsigned)h.size, g_ret_n);
+        /* stereo B2: the eye marks; ops for the other eye are skipped. Counter reports and resets are replayed in both
+           passes: later commands of the same pass read what they write (b2be: without them the left eye lost the
+           GPU-driven ground; the right pass, last, leaves its values in memory as a single replay would). Event signals,
+           the CPU's synchronisation with the frame, stay with the right pass: the CPU must not see the frame done early. */
+        if (h.op == OP_EYE) { p_eye e; memcpy(&e, p + 8, sizeof e); g_eye_region = e.mask; p += h.size; continue; }
+        if (g_eye_region != 3 && !(g_eye_region & (g_eye_pass ? (uint32_t)g_eye_pass : 2u))) { p += h.size; continue; }
+        if (g_eye_pass && (h.op == OP_DRAW || h.op == OP_DRAW_IDX)) g_b2_draws[g_eye_pass - 1][g_eye_region == 3 ? 1 : 0]++;   // stereo B2: draws per pass, own marks / shared
+        if (g_eye_pass == 1 && (h.op == OP_SIGNAL_EVENT || (!g_b2_rep && (h.op == OP_REPORT_COUNTER || h.op == OP_RESET_COUNTER)))) { p += h.size; continue; }
         g_exec_cur = p;   // 写回前瞻的扫描起点：结束通道的那条操作（含） | Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
         sdx_seq(p);
@@ -15178,6 +15320,13 @@ static void shot_body(id<MTLTexture> src, const char *path, int screen, const in
         if (!present_encode(cb, src, out, crop, 0)) return;
         cb_commit(cb); cb_wait(cb);
         read = out;
+    }
+    if (read.pixelFormat == MTLPixelFormatRG11B10Float || read.pixelFormat == MTLPixelFormatRGBA16Float) {   // HDR targets (stereo B2's scene shots): drawn into BGRA8 as they are (no tone mapping)
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:read.width height:read.height mipmapped:NO];
+        d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> out = [g_dev newTextureWithDescriptor:d]; id<MTLCommandBuffer> cb = out ? q_cb() : nil;
+        if (!out || !present_encode(cb, read, out, NULL, 0)) { MLOG("【红】截图：HDR 目标转换失败"); return; }
+        cb_commit(cb); cb_wait(cb); read = out;
     }
     if (read.pixelFormat != MTLPixelFormatRGBA8Unorm && read.pixelFormat != MTLPixelFormatRGBA8Unorm_sRGB &&
         read.pixelFormat != MTLPixelFormatBGRA8Unorm && read.pixelFormat != MTLPixelFormatBGRA8Unorm_sRGB) { MLOG("【红】截图不支持格式 %lu", (unsigned long)read.pixelFormat); return; }
@@ -16245,6 +16394,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
     if (!present_encode_m4(cb, src, dr.texture, interp >= 0 ? NULL : crop, alloc_i)) { [cb endCommandBuffer]; [g_q4 signalDrawable:dr]; if (grab) grab(NULL); return 0; }   // the interpolated frame has the canvas size: no swapchain crop
     /* TOTK_VR_CONTROL (stage 1, totk_vr.m): a copy of this game frame's picture for the headset, in the same command buffer;
        published from the feedback handler below. */
+    if (crop && interp < 0) { memcpy(g_b2_crop, crop, sizeof g_b2_crop); g_b2_crop_have = 1; }   // stereo B2: the left picture takes the same region
     const int *vr_crop = crop; id<MTLTexture> vr_src = interp < 0 ? vr_picture(cb, src, &vr_crop) : nil;   // the MetalFX picture modes: MetalFX's, twice as large
     int vr_slot = interp < 0 ? vr_source_encode(cb, vr_src, vr_crop, ticket) : -1;
     if (vr_slot >= 0) { static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; } }
@@ -16668,6 +16818,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     int discard = atomic_load(&g_present_discard), islot = mfx_enabled() && t ? mfx_present_frame(t, period, discard) : -1;
     if (mfx_latch() && !mfx_enabled()) { g_mfx.scene_done = g_mfx.ui_cleared = g_mfx.depth_done = g_mfx.want_cam = 0; BOTW_MFX_FRAME_RESET() }   // key 2 / flag mfx_interp: the next frame is fully on or off
     if (t && !mfx_enabled() && uw_ratio()) uw_note_present(t);   // key 4: the canvas search (TOTK_MFX does it in mfx_present_frame)
+    if (t) b2_note_present(t);   // stereo B2: which textures the game presents
+    if (t && atomic_load(&g_b2_passlog) > 0) { MLOG("[vr] b2pass: present serial %llu, mtl %p", (unsigned long long)t->serial, (__bridge void *)tex_mtl(t)); atomic_fetch_sub(&g_b2_passlog, 1); }
     mtl_wb_eager();
     g_uw_ui = 0;
     if (atomic_load(&g_uw_log) > 0) atomic_fetch_sub(&g_uw_log, 1);
