@@ -13,7 +13,11 @@ until the Mac filled the variant in (`ios/tools/fill_shaders.py`).
   NativeAOT runtime pack 10.0.12). Not JIT: everything is native code made here and signed with the app.
 - SPIRV-Cross is not in it: `build_app.py` (`build_device_translator`) compiles it for the device from the pinned
   sources when it makes an iPhone / iPad app, and `ios/tools/build_ipa.py` links both. visionOS apps do without.
-- `libtotk_xlate.a.sha256` is its SHA-256; `build_app.py` refuses to package a different file.
+- `libtotk_xlate_bootstrap.o` is the runtime pack's `libbootstrapperdll.o`, unchanged: its static initializer starts
+  the .NET runtime, and no symbol refers to it, so inside the archive the linker would leave it out (2026-11-03: the
+  first call on an iPhone then stopped in `ThreadStore::AttachCurrentThread`); `build_ipa.py` links it as a file.
+- `libtotk_xlate.a.sha256` and `libtotk_xlate_bootstrap.o.sha256` are their SHA-256; `build_app.py` refuses to
+  package different files.
 - NativeAOT builds are not byte-for-byte reproducible, so what is checked is that it translates the same. The library
   form, built from these sources, translated the 551 variants of a Breath of the Wild 1.9.0 runtime cache to the same
   2,204 files (MSL, SPIR-V, reflection) as the shipped `totk_xlate`, byte for byte, both linked into a Mac program

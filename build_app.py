@@ -1006,11 +1006,12 @@ def build_device_translator(tree, logs):
     sources (the program's sources without main.cpp, and spirv_cross_inproc.cpp, which includes it). build_ipa.py links
     both from build/ios-xlate when they are there; the app then translates a variant its startup shaders lack in the
     background instead of skipping its draws until the Mac fills it in."""
-    lib = tree / 'prebuilt/ios-arm64/libtotk_xlate.a'
-    want = (lib.parent / 'libtotk_xlate.a.sha256').read_text().strip()
-    if not lib.is_file() or sha256(lib) != want:
-        raise BuildError(f'{lib}: not the translator library this repository ships (its SHA-256 differs from '
-                         f'libtotk_xlate.a.sha256); check it out again, or rebuild it with games/totk/tools/totk_xlate/publish_ios_lib.sh')
+    prebuilt = [tree / 'prebuilt/ios-arm64' / name for name in ('libtotk_xlate.a', 'libtotk_xlate_bootstrap.o')]
+    for lib in prebuilt:
+        want = (lib.parent / (lib.name + '.sha256')).read_text().strip()
+        if not lib.is_file() or sha256(lib) != want:
+            raise BuildError(f'{lib}: not the file this repository ships (its SHA-256 differs from {lib.name}.sha256); '
+                             f'check it out again, or rebuild both with games/totk/tools/totk_xlate/publish_ios_lib.sh')
     src, out = tree / 'tooling/spirv-cross', tree / 'build/ios-xlate'
     objs = out / 'obj'
     objs.mkdir(parents=True, exist_ok=True)
@@ -1026,7 +1027,8 @@ def build_device_translator(tree, logs):
         list(pool.map(compile_one, jobs))
     (out / 'libtotk_spirv_cross.a').unlink(missing_ok=True)
     run(['xcrun', 'ar', 'rcs', out / 'libtotk_spirv_cross.a', *[obj for _, obj, _ in jobs]], logs / 'ios-spirv-cross' / 'ar.log', quiet=False)
-    clone(lib, out / 'libtotk_xlate.a')
+    for lib in prebuilt:
+        clone(lib, out / lib.name)
 
 
 def check_translator(tree):

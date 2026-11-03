@@ -15,9 +15,18 @@ LIB = TOTK / 'prebuilt/ios-arm64/libtotk_xlate.a'
 
 
 class DeviceTranslator(unittest.TestCase):
-    def test_prebuilt_library_is_the_recorded_one(self):
-        want = (LIB.parent / 'libtotk_xlate.a.sha256').read_text().strip()
-        self.assertEqual(hashlib.sha256(LIB.read_bytes()).hexdigest(), want)
+    def test_prebuilt_files_are_the_recorded_ones(self):
+        for f in (LIB, LIB.with_name('libtotk_xlate_bootstrap.o')):
+            want = (f.parent / (f.name + '.sha256')).read_text().strip()
+            self.assertEqual(hashlib.sha256(f.read_bytes()).hexdigest(), want, f.name)
+
+    def test_the_runtime_start_up_object_is_linked_as_a_file(self):
+        """From inside the archive nothing pulls it in, and without its initializer the first call has no runtime."""
+        script = (XLATE / 'publish_ios_lib.sh').read_text()
+        self.assertNotIn('libbootstrapperdll.o libRuntime', script)
+        self.assertIn('cp "$PACK/libbootstrapperdll.o" "$OUT/libtotk_xlate_bootstrap.o"', script)
+        ipa = (TOTK / 'ios/tools/build_ipa.py').read_text()
+        self.assertIn("' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a", ipa)
 
     def test_library_exports_and_project_switch(self):
         exports = (XLATE / 'LibExports.cs').read_text()
@@ -57,6 +66,7 @@ class DeviceTranslator(unittest.TestCase):
         self.assertIn("device_xlate=not vision and all((xlate/lib).is_file() for lib in xlate_libs)", ipa)
         self.assertIn("OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1", ipa)
         self.assertRegex(ipa, r"libtotk_xlate\.a Gen/deps/lib/libtotk_spirv_cross\.a -lc\+\+ -lz -licucore")
+        self.assertIn("xlate_libs=('libtotk_xlate_bootstrap.o','libtotk_xlate.a','libtotk_spirv_cross.a')", ipa)
 
 
 if __name__ == '__main__':

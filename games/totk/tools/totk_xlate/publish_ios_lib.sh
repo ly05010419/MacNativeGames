@@ -7,7 +7,12 @@
 # translator the Mac uses (totk_shader_rt.m), instead of skipping its draws until the Mac fills it in.
 # Not JIT: NativeAOT is native code made here; iOS only runs code signed with the app.
 # Needs the .NET 10 SDK and network access the first time (NuGet: the NativeAOT runtime pack for ios-arm64).
-# usage: games/totk/tools/totk_xlate/publish_ios_lib.sh [dotnet]   -> games/totk/prebuilt/ios-arm64/libtotk_xlate.a (+ .sha256)
+# The runtime's start-up object (libbootstrapperdll.o, whose static initializer starts the .NET runtime) stays a file of
+# its own: no symbol refers to it, so from inside an archive the linker would leave it out and the first call would find
+# no runtime (2026-11-03: the iPhone stopped in ThreadStore::AttachCurrentThread); force-loading the archive instead
+# fails on the runtime libraries' shared minipal objects. build_ipa.py links the object itself.
+# usage: games/totk/tools/totk_xlate/publish_ios_lib.sh [dotnet]
+#   -> games/totk/prebuilt/ios-arm64/libtotk_xlate.a and libtotk_xlate_bootstrap.o (+ their .sha256)
 set -e
 HERE=${0:A:h}
 REPO=${HERE:h:h:h:h}
@@ -27,11 +32,12 @@ export NUGET_PACKAGES=${NUGET_PACKAGES:-$WORK/nuget}
 PACK=$(ls -d "$NUGET_PACKAGES"/microsoft.netcore.app.runtime.nativeaot.ios-arm64/*/runtimes/ios-arm64/native | tail -1)
 # The runtime parts a NativeLib=Static library needs at the app's link (no ServerGC, event pipe or standalone GC; zlib
 # is the system's -lz on iOS).
-RUNTIME=(libbootstrapperdll.o libRuntime.WorkstationGC.a libeventpipe-disabled.a libstandalonegc-disabled.a libaotminipal.a
+RUNTIME=(libRuntime.WorkstationGC.a libeventpipe-disabled.a libstandalonegc-disabled.a libaotminipal.a
          libSystem.Native.a libSystem.Globalization.Native.a libSystem.IO.Compression.Native.a
          libSystem.Security.Cryptography.Native.Apple.a libbrotlienc.a libbrotlidec.a libbrotlicommon.a libstdc++compat.a)
 OUT=$REPO/games/totk/prebuilt/ios-arm64
 mkdir -p "$OUT"
 xcrun libtool -static -no_warning_for_no_symbols -o "$OUT/libtotk_xlate.a" "$WORK/out/totk_xlate.a" "${RUNTIME[@]/#/$PACK/}"
-shasum -a 256 "$OUT/libtotk_xlate.a" | awk '{print $1}' > "$OUT/libtotk_xlate.a.sha256"
+cp "$PACK/libbootstrapperdll.o" "$OUT/libtotk_xlate_bootstrap.o"
+for f in libtotk_xlate.a libtotk_xlate_bootstrap.o; do shasum -a 256 "$OUT/$f" | awk '{print $1}' > "$OUT/$f.sha256"; done
 echo "built $OUT/libtotk_xlate.a ($(du -h "$OUT/libtotk_xlate.a" | cut -f1), sha256 $(cat "$OUT/libtotk_xlate.a.sha256")) with $(basename ${PACK:h:h:h})"

@@ -180,7 +180,7 @@ def main():
     # SPIRV-Cross for the device; totk_shader_rt.m DEVICE_XLATE): a variant the startup shaders lack is translated in the
     # background on the device. Without them (visionOS, or this script run on a tree build_app.py did not prepare) the
     # app skips such draws and records the request for fill_shaders.py, as before.
-    xlate=tree/'build/ios-xlate'; xlate_libs=('libtotk_xlate.a','libtotk_spirv_cross.a')
+    xlate=tree/'build/ios-xlate'; xlate_libs=('libtotk_xlate_bootstrap.o','libtotk_xlate.a','libtotk_spirv_cross.a')
     device_xlate=not vision and all((xlate/lib).is_file() for lib in xlate_libs)
     for lib in xlate_libs:
         if device_xlate: clone(xlate/lib,gen/'deps/lib'/lib)
@@ -211,7 +211,8 @@ def main():
     env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
     xcconfig=gen/'totk.xcconfig'
     frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','AVFAudio','Security'])
-    xlate_link=' Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
+    # the start-up object as a file of its own (publish_ios_lib.sh: inside the archive nothing would pull it in)
+    xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a{xlate_link} {flags}\n'
                         + ('OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1\n' if device_xlate else ''))
     run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
