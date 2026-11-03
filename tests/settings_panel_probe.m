@@ -68,6 +68,8 @@ void dm_gfx_fxaa_set(int on) { fakeFxaa = on; }
 int dm_gfx_fxaa_on(void) { return fakeFxaa; }
 void dm_gfx_sharpen_set(int pct) { fakeSharpen = pct; }
 int dm_gfx_sharpen(void) { return fakeSharpen; }
+static int fakeFxaaReplaced;   /* Breath of the Wild 1.9.0: MetalFX replaces the FXAA / upscale draw (gfx/nvn/botw_finish.h) */
+int dm_gfx_botw_fxaa_replaced(void) { return fakeFxaaReplaced; }
 int dm_gfx_fx_count(void) { return 2; }
 const char *dm_gfx_fx_id(int i) { return fakeFxIds[i]; }
 const char *dm_gfx_fx_name(int i, int english) { return fakeFxNames[i][english != 0]; }
@@ -715,12 +717,21 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Bloom", @"Not in this version"); assert(!menu(@"Bloom").enabled);
     assert(switched(@"Ambient occlusion")); flip(@"Ambient occlusion", NO);
     assert(!fakeFxOn[0] && !strcmp(savedName, "graphics-effects.txt") && !strcmp(savedWord, "ao"));
-    shows(@"FXAA anti-aliasing", @"Not in this version"); shows(@"Depth of field", @"Not in this version");
-    shows(@"Model detail distance (LOD)", @"Not in this version");
-    /* "Reset to defaults" sets both back to the game's own and removes shadows.txt and graphics-effects.txt. */
+    shows(@"Depth of field", @"Not in this version"); shows(@"Model detail distance (LOD)", @"Not in this version");
+    /* FXAA and sharpening (gfx/nvn/botw_finish.h): 1.4.3's rows and files; while MetalFX replaces the FXAA / upscale draw
+       the FXAA row says so (rows are made at each opening). */
+    assert(switched(@"FXAA anti-aliasing")); flip(@"FXAA anti-aliasing", NO);
+    assert(!fakeFxaa && !strcmp(savedName, "graphics-fxaa.txt") && !strcmp(savedWord, "off"));
+    pick(@"Sharpening", @"75%"); assert(fakeSharpen == 75 && !strcmp(savedName, "graphics-sharpen.txt") && !strcmp(savedWord, "75"));
+    press(18); fakeFxaaReplaced = 1; press(18); assert(settingsOpen && !menu(@"FXAA anti-aliasing").enabled);
+    shows(@"FXAA anti-aliasing", @"MetalFX replaces it"); assert(menu(@"Sharpening").enabled);
+    press(18); fakeFxaaReplaced = 0; press(18); assert(settingsOpen && switched(@"FXAA anti-aliasing") == NO);
+    /* "Reset to defaults" sets them back to the game's own and removes shadows.txt, graphics-effects.txt,
+       graphics-fxaa.txt and graphics-sharpen.txt. */
     pick(@"Shadow resolution", @"2048 per cascade"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
     assert(!runtime_shadow_res_saved() && fakeFxOn[0] && strstr(removedAll, "shadows.txt ") && strstr(removedAll, "graphics-effects.txt "));
+    assert(fakeFxaa && !fakeSharpen && strstr(removedAll, "graphics-fxaa.txt ") && strstr(removedAll, "graphics-sharpen.txt "));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
     /* The field of view (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c; the stub itself:
        tests/test_botw_fov.c): 1x, as the game has it; each choice acts at once and is saved in graphics-fov.txt (x100). */
@@ -752,8 +763,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Render distance", @"Not in this version"); assert(!menu(@"Render distance").enabled);
 #  ifndef GAME_BOTW190
     shows(@"Effect switches", @"Not in this version");
-#  endif
     shows(@"Sharpening", @"Not in this version");
+#  endif
 #endif
     /* Anisotropic filtering (effects page, every version): in force at once. */
     shows(@"Anisotropic filtering", @"Off (as the game has it)");

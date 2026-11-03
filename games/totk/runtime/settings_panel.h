@@ -69,10 +69,13 @@
                                                              size x K where the game works it out); off = the effect
                                                              switch "shadow" (totk_ssao.h); graphics-shadow.txt (x100)
      FXAA anti-aliasing   switch                             dm_gfx_fxaa_set (gfx/nvn/totk_finish.h); graphics-fxaa.txt
+                                                             (Breath of the Wild 1.9.0: gfx/nvn/botw_finish.h; greyed while
+                                                             MetalFX replaces its FXAA / upscale draw)
      depth of field       switch                             runtime_dof_set (game_patches_v143.c: no DOF request stored
                                                              while off; events still complete); graphics-dof.txt
      sharpening           off / 25% / 50% / 75% / 100%       dm_gfx_sharpen_set: FSR 1 RCAS on the 3D picture;
-                                                             graphics-sharpen.txt (percent)
+                                                             graphics-sharpen.txt (percent); Breath of the Wild 1.9.0: on
+                                                             the canvas before the UI (gfx/nvn/botw_finish.h)
      one switch per effect                                   dm_gfx_fx_set (gfx/nvn/totk_fx.h): its passes left out while
                                                              off; graphics-effects.txt lists the ones that are off;
                                                              Breath of the Wild 1.9.0: ambient occlusion (botw_effects.h)
