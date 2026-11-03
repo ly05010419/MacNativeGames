@@ -71,7 +71,7 @@ static result execute(chain *c, const tex_t *a, const tex_t *b, const tex_t *out
     emit(c,OP_END,NULL,0); state_reset(); memset(&R,0,sizeof R); vis_clear(); g_vis_on=g_vis_counting=0;
     mtl_sub_begin(); mtl_exec(c->p);
     const tex_t *t[4]={a,b,out,e}; id<MTLBuffer> buf[4];
-    for(int k=0;k<4;k++) { buf[k]=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    for(int k=0;k<4;k++) { buf[k]=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; if(!buf[k]) exit(1);
         [blit() copyFromTexture:tex_mtl(t[k]) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,8,1)
           toBuffer:buf[k] destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256]; }
     uint64_t f=mtl_sub_commit(); EXPECT("production submit completed",1,mtl_wait(f,5000000000ull)); EXPECT("no error in commit feedback",0,mtl_last_commit_error());
@@ -170,7 +170,7 @@ static result range_case(int array,int reordered) {
     slice_rt(&c,&a,array?0:1,array?1:0); stencil(&c,0,8,1,255,255,0); blending(&c,0); draw_prog(&c,1,0);
     if(!reordered) sample_block(&c,&b,array?6:5,tid);
     result r=execute(&c,&a,&b,&out,&e,NULL);
-    NSUInteger w=array?8:4; id<MTLBuffer> buf=[g_dev newBufferWithLength:w*w*4 options:MTLResourceStorageModeShared];
+    NSUInteger w=array?8:4; id<MTLBuffer> buf=[g_dev newBufferWithLength:w*w*4 options:MTLResourceStorageModeShared]; if(!buf) exit(1);
     id<MTLCommandBuffer> cb=[g_q commandBuffer]; id<MTLBlitCommandEncoder> bl=[cb blitCommandEncoder];
     [bl copyFromTexture:tex_mtl(&a) sourceSlice:array?1:0 sourceLevel:array?0:1 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(w,w,1)
       toBuffer:buf destinationOffset:0 destinationBytesPerRow:w*4 destinationBytesPerImage:w*w*4]; [bl endEncoding]; [cb commit]; [cb waitUntilCompleted];
@@ -240,7 +240,7 @@ static void inherited_target_case(void) {
     rt(&c,&b,0,NULL); draw_prog(&c,1,0); emit(&c,OP_END,NULL,0);
     mtl_sub_begin(); mtl_exec(c.p);
     EXPECT("inherited target: one segment cut at the target change after cut_draws() draws",1,mtl_cut_count()-cuts);
-    id<MTLBuffer> out=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> out=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; if(!out) exit(1);
     [blit() copyFromTexture:tex_mtl(&a) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,8,1)
       toBuffer:out destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256];
     EXPECT("inherited target: the segmented submission completed",1,mtl_wait(mtl_sub_commit(),5000000000ull));

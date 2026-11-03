@@ -115,6 +115,17 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         public static bool HasUniformGuard(int opcode) => TryGet(opcode, out Entry e) && e.UniformGuard;
 
+        // Whether the instruction reads a constant buffer word with its bank in bits 54..59: LDC, ULDC, or an ALU operation in form 3 or 5 (a uniform one has neither)
+        public static bool ReadsConstantBank(AmpereOp x)
+        {
+            if (x.Opcode is AmpereOpcodes.Ldc or 0xab9 or 0xabb)
+            {
+                return true;
+            }
+
+            return !_exact.ContainsKey(x.Opcode) && _alu.TryGetValue(x.Opcode & 0x1ff, out Entry e) && !e.UniformGuard && x.Form is 3 or 5;
+        }
+
         public static bool WritesRd(int opcode) => !TryGet(opcode, out Entry e) || e.WritesRd;
     }
 

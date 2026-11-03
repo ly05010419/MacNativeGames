@@ -11,19 +11,23 @@ static inline UIEdgeInsets dm_game_safe_insets(CGRect bounds, UIEdgeInsets inset
     return duo && bounds.size.height > bounds.size.width ? UIEdgeInsetsMake(insets.top, 0, 0, 0) : insets;
 }
 
-static inline CGRect dm_aspect_fit(CGRect b) {
+// The picture's width / height before the game's first present (front.h front_picture_shape gives the real one: a taller shape under DM_SCREEN_ASPECT, 1920x1344)
+#define DM_PICTURE_16_9 (16.0 / 9.0)
+
+// The largest centered rectangle of the picture's shape (aspect = width / height) in b
+static inline CGRect dm_aspect_fit(CGRect b, CGFloat aspect) {
     CGFloat w = b.size.width, h = b.size.height;
-    if (w <= 0 || h <= 0) return CGRectZero;
-    if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
+    if (w <= 0 || h <= 0 || aspect <= 0) return CGRectZero;
+    if (w / h > aspect) w = h * aspect; else h = w / aspect;
     return CGRectMake(floor(CGRectGetMidX(b) - w / 2), floor(CGRectGetMidY(b) - h / 2), w, h);
 }
 
-// Picture "Fill" (DM_PICTURE_FIT=fill, a launcher and in-game menu setting): the smallest centered 16:9 rectangle that covers b. The game still renders 16:9,
-// so what lies outside b is cropped, never stretched. Not rounded, so it covers b exactly.
-static inline CGRect dm_aspect_fill(CGRect b) {
+// Picture "Fill" (DM_PICTURE_FIT=fill, a launcher and in-game menu setting): the smallest centered rectangle of the picture's shape that covers b. The game's picture keeps
+// its shape, so what lies outside b is cropped, never stretched. Not rounded, so it covers b exactly.
+static inline CGRect dm_aspect_fill(CGRect b, CGFloat aspect) {
     CGFloat w = b.size.width, h = b.size.height;
-    if (w <= 0 || h <= 0) return CGRectZero;
-    if (w / h > 16.0 / 9.0) h = w * 9.0 / 16.0; else w = h * 16.0 / 9.0;
+    if (w <= 0 || h <= 0 || aspect <= 0) return CGRectZero;
+    if (w / h > aspect) h = w / aspect; else w = h * aspect;
     return CGRectMake(CGRectGetMidX(b) - w / 2, CGRectGetMidY(b) - h / 2, w, h);
 }
 
@@ -41,8 +45,8 @@ static inline CGRect dm_horizontal_division(CGRect b, CGRect division) {
     return CGRectMake(x, y, right - x, bottom - y);
 }
 
-static inline DmLayout dm_layout(CGRect b, UIEdgeInsets insets, BOOL partiallyOpen, CGRect division) {
-    DmLayout l = { dm_aspect_fit(b), b, NO, NO };
+static inline DmLayout dm_layout(CGRect b, UIEdgeInsets insets, BOOL partiallyOpen, CGRect division, CGFloat aspect) {
+    DmLayout l = { dm_aspect_fit(b, aspect), b, NO, NO };
     if (CGRectIsEmpty(b)) return l;
     division = dm_horizontal_division(b, division);
     BOOL portrait = b.size.height > b.size.width;
@@ -54,7 +58,7 @@ static inline DmLayout dm_layout(CGRect b, UIEdgeInsets insets, BOOL partiallyOp
     CGRect lower = CGRectMake(CGRectGetMinX(b), CGRectGetMaxY(division), b.size.width,
                              CGRectGetMaxY(b) - CGRectGetMaxY(division));
     if (upper.size.height <= 0 || CGRectGetMaxY(safe) <= CGRectGetMinY(lower)) return l;
-    l.game = dm_aspect_fit(upper); l.controls = lower; l.separated = YES;
+    l.game = dm_aspect_fit(upper, aspect); l.controls = lower; l.separated = YES;
     return l;
 }
 
@@ -63,8 +67,8 @@ static inline DmLayout dm_layout_pad_only(CGRect b) { return (DmLayout){ CGRectZ
 
 // Fill covers the full view only in the overlay layout (landscape). A portrait or tabletop split keeps the picture fitted in its
 // area above the controls, where cropping a small picture would cost more than the bars.
-static inline DmLayout dm_layout_picture(DmLayout l, CGRect b, BOOL fill) {
-    if (fill && !l.separated && !CGRectIsEmpty(b)) l.game = dm_aspect_fill(b);
+static inline DmLayout dm_layout_picture(DmLayout l, CGRect b, BOOL fill, CGFloat aspect) {
+    if (fill && !l.separated && !CGRectIsEmpty(b)) l.game = dm_aspect_fill(b, aspect);
     return l;
 }
 

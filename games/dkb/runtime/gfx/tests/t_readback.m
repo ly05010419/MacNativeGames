@@ -151,8 +151,8 @@ static void sample2(int tid, float out[8]) {
     [e endEncoding]; [c commit]; [c waitUntilCompleted]; memcpy(out, b.contents, 32);
 }
 static void packed_copies(int format, int tid) {
-    int b565 = format == NVN_FORMAT_RGB565, a1 = format == NVN_FORMAT_RGB5A1;
-    uint16_t red = a1 ? 0x801f : 0x001f, blue = b565 ? 0xf800 : 0x7c00, guest[2] = {red, blue};
+    int b565 = format == NVN_FORMAT_RGB565, a1 = format == NVN_FORMAT_RGB5A1, rgba4 = format == NVN_FORMAT_RGBA4;
+    uint16_t red = rgba4 ? 0x800f : a1 ? 0x801f : 0x001f, blue = rgba4 ? 0x0f00 : b565 ? 0xf800 : 0x7c00, guest[2] = {red, blue};   // RGBA4: red with alpha 8/15, so that no word reads the same reversed
     void *mem = NULL; if (posix_memalign(&mem, getpagesize(), 262144)) abort(); memset(mem, 0, 262144);
     pool_t pool = {.magic=MAGIC('P','O','O','L'), .mem=mem, .size=262144}; mtl_pool_add(mem, 262144); nvn_dirty_add_range(mem, 262144);
     NVNtextureBuilder tb; NVNtexture copied, cleared; h_nvnTextureBuilderSetDefaults(&tb); h_nvnTextureBuilderSetWidth(&tb, 2);
@@ -172,7 +172,7 @@ static void packed_copies(int format, int tid) {
     NVNcopyRegion region = {0, 0, 0, 2, 1, 1};
     h_nvnCommandBufferCopyBufferToTexture(&cmd, (NVNbufferAddress)src, &copied, NULL, &region, 0);
     h_nvnCommandBufferCopyTextureToBuffer(&cmd, &copied, NULL, &region, (NVNbufferAddress)out, 0);
-    float rgba[] = {1, 0, 0, 1}; h_nvnCommandBufferClearTexture(&cmd, &cleared, NULL, &region, rgba, 15);
+    float rgba[] = {1, 0, 0, rgba4 ? 8/15.f : 1}; h_nvnCommandBufferClearTexture(&cmd, &cleared, NULL, &region, rgba, 15);
     h_nvnCommandBufferCopyTextureToBuffer(&cmd, &cleared, NULL, &region, (NVNbufferAddress)out2, 0);
     NVNcopyRegion second = {1, 0, 0, 1, 1, 1}; h_nvnCommandBufferClearTexture(&cmd, &upclr, NULL, &second, rgba, 15);
     h_nvnCommandBufferCopyTextureToTexture(&cmd, &cleared, NULL, &region, &upcopy, NULL, &region, 0);
@@ -181,12 +181,12 @@ static void packed_copies(int format, int tid) {
     NVNcommandHandle h = h_nvnCommandBufferEndRecording(&cmd);
     state_reset(); memset(&R, 0, sizeof R); mtl_sub_begin(); mtl_exec((const uint8_t *)h); mtl_sub_commit();
     int wait = h_nvnSyncWait(&sync, 5000000000ull); EXPECT("packed copies fence wait", 1, wait == 0 || wait == 1);
-    char n[160]; const char *f = b565 ? "RGB565" : a1 ? "RGB5A1" : "RGB5";
+    char n[160]; const char *f = rgba4 ? "RGBA4" : b565 ? "RGB565" : a1 ? "RGB5A1" : "RGB5";
     mtl_reg_tex(tid, TX(&copied), NULL); float s[8]; sample2(tid, s);
     snprintf(n, sizeof n, "%s buffer -> plain texture, sampled red then blue", f); EXPECT(n, 1, s[0] > .99f && s[2] < .01f && s[4] < .01f && s[6] > .99f);
     uint16_t got[2]; memcpy(got, out, 4); snprintf(n, sizeof n, "%s plain texture -> buffer, the guest's bits", f); EXPECT(n, 1, got[0] == red && got[1] == blue);
     memset(got, 0xEE, 4); h_nvnTextureReadTexels(&copied, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s plain texture ReadTexels, the guest's bits", f); EXPECT(n, 1, got[0] == red && got[1] == blue);
-    uint16_t used = b565 || a1 ? 0xffff : 0x7fff;   // RGB5's top bit is unused (Metal's BGR5A1 stores alpha 1 there)
+    uint16_t used = b565 || a1 || rgba4 ? 0xffff : 0x7fff;   // RGB5's top bit is unused (Metal's BGR5A1 stores alpha 1 there)
     memcpy(got, out2, 4); snprintf(n, sizeof n, "%s cleared to red -> buffer, guest red", f); EXPECT(n, 1, (got[0] & used) == red && (got[1] & used) == red);
     memset(got, 0xEE, 4); h_nvnTextureReadTexels(&cleared, NULL, &region, (uint8_t *)got); snprintf(n, sizeof n, "%s cleared to red, ReadTexels guest red", f); EXPECT(n, 1, (got[0] & used) == red && (got[1] & used) == red);
     mtl_reg_tex(tid + 10, TX(&up), NULL); sample2(tid + 10, s);
@@ -443,7 +443,7 @@ int main(void) { @autoreleasepool {
     h_nvnTextureFinalize(&pk); h_nvnTextureFinalize(&tex); nvn_dirty_remove_range(mem); mtl_pool_del(mem); free(mem);
     sparse_reads(&region, expected);
     stale_pools();
-    packed_copies(NVN_FORMAT_RGB565, 500); packed_copies(NVN_FORMAT_RGB5A1, 501); packed_copies(NVN_FORMAT_RGB5, 502);
+    packed_copies(NVN_FORMAT_RGB565, 500); packed_copies(NVN_FORMAT_RGB5A1, 501); packed_copies(NVN_FORMAT_RGB5, 502); packed_copies(NVN_FORMAT_RGBA4, 503);
     mirror_completion();
     readback_pool();
     printf("READBACK cases=%d failed=%d\n", cases, failed); return failed != 0;

@@ -236,7 +236,7 @@ static int watch_decode(ucontext_t *uc, uint32_t in, uint64_t *ea, unsigned *len
 }
 static int watch_fault(void *addr, int is_write, void *ucv) {
     uint64_t a = (uint64_t)addr;
-    if (!is_write || a < g_wpg || a >= g_wpg + g_wpsz) return 0;
+    if (!is_write || !g_wat || a < g_wpg || a >= g_wpg + g_wpsz) return 0;
     ucontext_t *uc = ucv; uint64_t pc = uc->uc_mcontext->__ss.__pc, ea = 0, wbv = 0; unsigned len = 0; int wb = -1; uint8_t data[64];
     if (g_walias && watch_decode(uc, *(uint32_t *)pc, &ea, &len, data, &wb, &wbv)) {
         int hit = ea < g_wat + g_wlen && ea + len > g_wat; uint64_t old = hit ? watch_val() : 0;
@@ -279,10 +279,16 @@ static int watch_fault(void *addr, int is_write, void *ucv) {
     mprotect((void *)g_wpg, g_wpsz, PROT_READ | PROT_WRITE); atomic_store(&g_warmed, 0);
     return 1;
 }
+static uint64_t g_wrel; static int g_wheap;   // heap+<offset>: the address is that far past the guest heap's base, resolved once the game opens its heap
 static void *watch_arm(void *p) {
     (void)p;
     for (;;) {
-        if (!atomic_load(&g_warmed)) {
+        if (g_wheap && !g_wat) {
+            uint64_t hb = 0; dm_guest_heap_range(&hb, NULL); if (!hb) { usleep(1000); continue; }
+            g_wpg = (hb + g_wrel) & ~(g_wpsz - 1); g_wat = hb + g_wrel;
+            LOG("write watch on heap %#llx + %#llx = %#llx", (unsigned long long)hb, (unsigned long long)g_wrel, (unsigned long long)g_wat);
+        }
+        if (g_wat && !atomic_load(&g_warmed)) {
             mach_vm_address_t ra = g_wpg; mach_vm_size_t rs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj;
             if (!mach_vm_region(mach_task_self(), &ra, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &obj) && ra <= g_wpg && (bi.protection & VM_PROT_WRITE)) {
                 if (!g_walias) {   // a second, writable mapping of the same page, for the handler's stores
@@ -300,7 +306,7 @@ static void *watch_arm(void *p) {
 // the bytes and, on each change, prints old → new and dumps every guest thread with its backtrace (svc_thread_dump, the first 8 changes): the writer is still inside the code that wrote.
 // Tears of the Kingdom's memory-shortage flag (a word its frame check compares with 1 and clears) lies on such a page. A suffix =<value> (hex) snapshots and dumps only the changes to that value,
 // for a word that changes thousands of times before the bad store (Mario vs. Donkey Kong: a heap block's list link, rewritten by every allocation beside it, until 0x3f landed in it)
-static uint64_t g_poll, g_plen, g_pval; static int g_pwant;
+static uint64_t g_poll, g_plen, g_pval; static int g_pwant, g_pheap;
 // All threads but this one stopped at once, then their pc, lr and 8 frame-pointer frames read and printed after they run again: the writer is caught a few microseconds after its store
 static void poll_snap(void) {
     enum { MT = 256, NF = 8 }; static uint64_t fr[MT][NF + 2]; static thread_act_t keep[MT];
@@ -330,6 +336,7 @@ static void poll_snap(void) {
 static void *poll_run(void *p) {
     (void)p; void svc_thread_dump(void); extern uint64_t g_t0_ns; uint64_t now_ns(void); vm_size_t got;
     uint64_t old = 0;   // read through the kernel: the address is not readable until the game maps it (the heap before SetHeapSize)
+    if (g_pheap) { uint64_t hb = 0; while (dm_guest_heap_range(&hb, NULL), !hb) usleep(1000); g_poll += hb; }   // heap+<offset>
     while (vm_read_overwrite(mach_task_self(), g_poll, g_plen, (vm_address_t)&old, &got) || got != g_plen) usleep(1000);
     LOG("POLL %#llx + %llu armed, value %#llx", (unsigned long long)g_poll, (unsigned long long)g_plen, (unsigned long long)old);
     for (int n = 0;;) {
@@ -345,18 +352,21 @@ static void *poll_run(void *p) {
 }
 static void watch_install(void) {
     { const char *e = getenv("DM_PROBE_POLL");
-      if (e) { char *end; g_poll = strtoull(e, &end, 16); g_plen = *end == '+' ? strtoull(end + 1, &end, 16) : 4;
+      if (e) { char *end; g_pheap = !strncmp(e, "heap+", 5); if (g_pheap) e += 5; g_poll = strtoull(e, &end, 16); g_plen = *end == '+' ? strtoull(end + 1, &end, 16) : 4;
                if (*end == '=') { g_pwant = 1; g_pval = strtoull(end + 1, 0, 16); }
-               if (!g_poll || !g_plen || g_plen > 8) die("DM_PROBE_POLL format: <address>[+<length up to 8>][=<value>] (hex)");
+               if ((!g_poll && !g_pheap) || !g_plen || g_plen > 8) die("DM_PROBE_POLL format: <address>[+<length up to 8>][=<value>] (hex)");
                pthread_t t; pthread_create(&t, NULL, poll_run, NULL); pthread_detach(t); } }
     const char *e = getenv("DM_PROBE_WATCH"); if (!e) return;
-    char *end; g_wat = strtoull(e, &end, 16); g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
-    if (!g_wat || !g_wlen) die("DM_PROBE_WATCH format: <address>[+<length>] (hex)");
-    g_wpsz = (uint64_t)getpagesize(); g_wpg = g_wat & ~(g_wpsz - 1);
-    if (g_wat + g_wlen > g_wpg + g_wpsz) die("DM_PROBE_WATCH: the watched bytes must lie in one host page");
+    char *end; g_wheap = !strncmp(e, "heap+", 5);
+    uint64_t at = strtoull(e + (g_wheap ? 5 : 0), &end, 16); g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
+    if ((!at && !g_wheap) || !g_wlen) die("DM_PROBE_WATCH format: [heap+]<address>[+<length>] (hex)");
+    g_wpsz = (uint64_t)getpagesize();
+    if ((at & (g_wpsz - 1)) + g_wlen > g_wpsz) die("DM_PROBE_WATCH: the watched bytes must lie in one host page");
+    if (g_wheap) { g_wrel = at; g_wpg = 0; } else { g_wat = at; g_wpg = g_wat & ~(g_wpsz - 1); }
     dm_fault_hook_register(watch_fault);
     pthread_t t; pthread_create(&t, NULL, watch_arm, NULL); pthread_detach(t);
-    LOG("write watch on %#llx + %#llx (host page %#llx)", (unsigned long long)g_wat, (unsigned long long)g_wlen, (unsigned long long)g_wpg);
+    if (g_wheap) LOG("write watch on heap + %#llx + %#llx (resolved once the game opens its heap)", (unsigned long long)g_wrel, (unsigned long long)g_wlen);
+    else LOG("write watch on %#llx + %#llx (host page %#llx)", (unsigned long long)g_wat, (unsigned long long)g_wlen, (unsigned long long)g_wpg);
 }
 
 #endif

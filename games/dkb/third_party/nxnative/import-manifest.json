@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/seedds/nxnative",
-  "commit": "abd5ac2cce8e164f455188e4984281d14161d4cb",
-  "checkout_head": "f18526cb8315d5a16859eb9d9c7439081fc042f7",
+  "commit": "50363b14ef9b19d0e8ade35d78812bdc8e7f8b96",
+  "checkout_head": "b5a3b7d7a5a971f5512dc8381a668c7ab4e721d0",
   "imported": "2026-11-03",
   "files": [
     {
@@ -67,13 +67,13 @@
     {
       "source": "dm/games/README.md",
       "destination": "runtime/games/README.md",
-      "sha256": "8ba9e6ef16922f0aa970849622535fb4ccecb52759bb0b7229d6470e3fe79185",
+      "sha256": "5ea383dc96dbe6e6816706ddcfd60fc516fc92a5ac216c2c55779a9dc555799c",
       "changed_here": false
     },
     {
       "source": "dm/games/game.py",
       "destination": "runtime/games/game.py",
-      "sha256": "ec58491aa296f7daffe4c187f0a4a4e9359a3fe201bacd8bb00a71a103109102",
+      "sha256": "56ec6aa516c680e77e5aa261c643e549750992600557190d98c700844b313d00",
       "changed_here": false
     },
     {
@@ -91,7 +91,7 @@
     {
       "source": "dm/games/settings.tsv",
       "destination": "runtime/games/settings.tsv",
-      "sha256": "cdf64ca3fb2a7c6ada2d99d799d6f212a02627c3f087c10a6315e9df21f2a35f",
+      "sha256": "2a4a6dd7359a9452b592167e8208159a3516e69e846021b232513912f14295c1",
       "changed_here": false
     },
     {
@@ -115,7 +115,7 @@
     {
       "source": "dm/gfx/hle_vi.c",
       "destination": "runtime/gfx/hle_vi.c",
-      "sha256": "fb6e6e68dbd675ecf6915dd6ccb4ac92c43d1898c631d71be973fd2cfe6b6a92",
+      "sha256": "ce961ddb3d84b9cf403c27394b70fee3f4097dd3e48c2cc790163b8448a9f2c4",
       "changed_here": false
     },
     {
@@ -229,7 +229,7 @@
     {
       "source": "dm/gfx/msl/rb_swap.metal",
       "destination": "runtime/gfx/msl/rb_swap.metal",
-      "sha256": "6cadfd328b428fe554b0f457d401f0e7caeb7b121cab6c83caac60b3b41f695e",
+      "sha256": "8c53c56bc56fb167cab878165b7762ca806c83b3d56107c6e414c9f0d55c38ca",
       "changed_here": false
     },
     {
@@ -253,13 +253,13 @@
     {
       "source": "dm/gfx/nvn/dmsh_chain.h",
       "destination": "runtime/gfx/nvn/dmsh_chain.h",
-      "sha256": "b242a9e9c372fd755c9d48b5ab18e3f01c965bdc1c66958b80837c7bd9951fda",
+      "sha256": "e89d39a794856564ad8ce541be62b6539c1bcccf9ad6c86f9c31046a97c41e28",
       "changed_here": false
     },
     {
       "source": "dm/gfx/nvn/hle_nvn.c",
       "destination": "runtime/gfx/nvn/hle_nvn.c",
-      "sha256": "309b54a45eb9c7431752cbaca8827428baba3464c8eef97f8b600c43a961aef2",
+      "sha256": "9c1a5c5302d0cd471d4cb6fff24b5ef833f4110bd08eec12525faec2064c4472",
       "changed_here": false
     },
     {
@@ -337,13 +337,13 @@
     {
       "source": "dm/gfx/nvn/nvn_dirty.c",
       "destination": "runtime/gfx/nvn/nvn_dirty.c",
-      "sha256": "30b460147a0468066f53aab09336a41e643821e3b611bc49b2307fc661d9ad97",
+      "sha256": "dd9aa203fe1e240335de475e8bc48e510ed977da11cdc56669de6187e7b0c177",
       "changed_here": false
     },
     {
       "source": "dm/gfx/nvn/nvn_dirty.h",
       "destination": "runtime/gfx/nvn/nvn_dirty.h",
-      "sha256": "dd5747c850a5d87eb1a912436b193fedd9d70b6b1871c60df48f1509956ceeb5",
+      "sha256": "4463a1af8e27fdf3b87f0ff38babe567d4909a05756adaebc1e7414e34ebaa2b",
       "changed_here": false
     },
     {
@@ -367,7 +367,7 @@
     {
       "source": "dm/gfx/nvn/nvn_fstep.h",
       "destination": "runtime/gfx/nvn/nvn_fstep.h",
-      "sha256": "9645633c8f604ad4864286685060d1346623cf513b61f13dbc96f633128b0a44",
+      "sha256": "5a5d18c8520e2aae4e6907e5c4a9c0365bae0872a38d0426dfe4fbe6dc7a1aff",
       "changed_here": false
     },
     {
@@ -397,7 +397,7 @@
     {
       "source": "dm/gfx/nvn/nvn_mtl.m",
       "destination": "runtime/gfx/nvn/nvn_mtl.m",
-      "sha256": "9bdaf45a029e27a2284d04c0da44fa651c182bde33256b2c670044b269e9c735",
+      "sha256": "5eb7676a1b59e301e95452d20116e0f96fae5348ddbc3aa9f45d3112a0fdca8d",
       "changed_here": false
     },
     {
@@ -445,13 +445,13 @@
     {
       "source": "dm/gfx/nvn/nvn_refl.h",
       "destination": "runtime/gfx/nvn/nvn_refl.h",
-      "sha256": "12c574c6eb2ece7d3beb47801fb96a6f766f15706c1588048d52635c74f06891",
+      "sha256": "ab5c85bee3079d3d93ac2b048bd8ab3b3b3a5221b4e108ad6601af344066862b",
       "changed_here": false
     },
     {
       "source": "dm/gfx/nvn/nvn_refl.m",
       "destination": "runtime/gfx/nvn/nvn_refl.m",
-      "sha256": "d51bbd4bba03d179a3aa645126878c80fdd930df78264ad833d2e528d87f4c9d",
+      "sha256": "3975cd99455889907057db0ecad6f91e15d1272875ba2438ee06fe8e7443ec2d",
       "changed_here": false
     },
     {
@@ -499,7 +499,7 @@
     {
       "source": "dm/gfx/tests/Makefile",
       "destination": "runtime/gfx/tests/Makefile",
-      "sha256": "72f6f2ed77838c0caccbf5b1fcf0511ae14699e365b92e36def77936ae9ade8d",
+      "sha256": "65d64c67248d0fcf925e22559a34ef047865ec294397607eb59f89acdb7cdee2",
       "changed_here": false
     },
     {
@@ -643,13 +643,13 @@
     {
       "source": "dm/gfx/tests/t_dlss_mfx.m",
       "destination": "runtime/gfx/tests/t_dlss_mfx.m",
-      "sha256": "f2754ef14b1adc9e0bada31a1507f4210cd31fc581126c78fed510f287d2044b",
+      "sha256": "2f88b6ec62599f4885d5e794022be6e3461f9d029a6215847b54a2cc87acd6fc",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tests/t_feedback.m",
       "destination": "runtime/gfx/tests/t_feedback.m",
-      "sha256": "4b0ad89421df748dfed68fb9c1598427d3ba1d4594bd3ce20f666539cf7ce335",
+      "sha256": "d8211875f3a6248451bea3571c41201934af53c19a9ecb127e643b3665b98772",
       "changed_here": false
     },
     {
@@ -661,7 +661,7 @@
     {
       "source": "dm/gfx/tests/t_fstep.c",
       "destination": "runtime/gfx/tests/t_fstep.c",
-      "sha256": "32a68b66d4c925aae97cec05b7fd8c8637adbbbc9e1dba53eef124ed0abe0abd",
+      "sha256": "c1025d3e773a48ab4471bd52a39406bb66447ce94ea16912cf2ddeb7304003f7",
       "changed_here": false
     },
     {
@@ -943,19 +943,19 @@
     {
       "source": "dm/gfx/tests/t_readback.m",
       "destination": "runtime/gfx/tests/t_readback.m",
-      "sha256": "93e19bc8f20c2e2efa6b4299a26ca2e03aa67061e431797a10de702891c382cd",
+      "sha256": "ed62d04349654e12191db709c44c106cc91e58eabdc4535a8b14c34311b39386",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tests/t_refl.m",
       "destination": "runtime/gfx/tests/t_refl.m",
-      "sha256": "40391bf3bbb8bf2b3714e5fcf0986bda8d8a23dd218a13b4277db338f09ed981",
+      "sha256": "bb9af31dc5d07aa58cad821c1c925749075a2a7c63af8dfbda11a262631fe878",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tests/t_reorder_chain.m",
       "destination": "runtime/gfx/tests/t_reorder_chain.m",
-      "sha256": "63ce4c14e294e1df3e7d10f00d5d88e638ab993cb0474252157d2f5fe67c46f2",
+      "sha256": "65b54a7cf380b46f8f0f3358952c4498d10a53b537d8772d1d39e972e70077a3",
       "changed_here": false
     },
     {
@@ -1087,7 +1087,7 @@
     {
       "source": "dm/gfx/tests/t_upscaler_mfx.m",
       "destination": "runtime/gfx/tests/t_upscaler_mfx.m",
-      "sha256": "741fffe8b4f544e3c212d40d75406f0afe490a3e5ef422a8a25e7625cad8e395",
+      "sha256": "8010ec22887952a09bb327aeb92f8b9aa1fd4b1c08c2ffe140f15ea529bfc0b4",
       "changed_here": false
     },
     {
@@ -1105,7 +1105,7 @@
     {
       "source": "dm/gfx/tests/t_view_swizzle.m",
       "destination": "runtime/gfx/tests/t_view_swizzle.m",
-      "sha256": "b758674ce847eba99fe398c7697601c179b29ca3aa7be22cd2be5ecab7929a1c",
+      "sha256": "7beacc5f580e389f9a7c9664f78ac7233bef05f7146a13ba634ddc224a244bac",
       "changed_here": false
     },
     {
@@ -1147,7 +1147,7 @@
     {
       "source": "dm/gfx/tests/test_dmsh_ampere_mem.py",
       "destination": "runtime/gfx/tests/test_dmsh_ampere_mem.py",
-      "sha256": "28aea0b70b9023e8c96708d94cc917e27b58a6a0449b84fc321758181e283231",
+      "sha256": "61badd7b75cd3614777f6c2db618d03171b58ff72e6b5f8de531b845158a5f99",
       "changed_here": false
     },
     {
@@ -1345,7 +1345,7 @@
     {
       "source": "dm/gfx/tests/test_unity_known_trees.py",
       "destination": "runtime/gfx/tests/test_unity_known_trees.py",
-      "sha256": "afd271fa90f6c0acd0f47e6bb29093fc093c097b933c450a85d551399c578cb3",
+      "sha256": "3fd7c38247b2b32fc7b46a0e5d63e517e61a53f4b2373770f5306793f2bf6112",
       "changed_here": false
     },
     {
@@ -1393,7 +1393,7 @@
     {
       "source": "dm/gfx/tex/nvn_fmt_mtl.c",
       "destination": "runtime/gfx/tex/nvn_fmt_mtl.c",
-      "sha256": "24f4c74bc782e2ace3a8abd317cb2eb9e2a9eb0ea42ffa9e01868868fe76201d",
+      "sha256": "baaabc947de247d43e27faa02b34d4dcfcacfeb4135a387bbaf4c39cb82e3cc0",
       "changed_here": false
     },
     {
@@ -1477,7 +1477,7 @@
     {
       "source": "dm/gfx/tools/dmsh_chain.lock",
       "destination": "runtime/gfx/tools/dmsh_chain.lock",
-      "sha256": "430cc708c8fe6f9cd6dfa358f09061a8cdda69132041914489fbf0fc6f8a55b3",
+      "sha256": "33d7a956ca85d0bb72b22668ecc31e11e8618c78be1d75335054fcb3afae5d0e",
       "changed_here": false
     },
     {
@@ -1591,19 +1591,19 @@
     {
       "source": "dm/gfx/tools/dmsh_xlate_bin/Ryujinx.Common.dll",
       "destination": "runtime/gfx/tools/dmsh_xlate_bin/Ryujinx.Common.dll",
-      "sha256": "60da8659400f29b1337eb91fc0ff95b1df152b576fc108e4979ec4896a025afe",
+      "sha256": "8f11dca30794569f1e3c2affa507bebaef5c460b96f35b5c19145438d4e1e1f4",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tools/dmsh_xlate_bin/Ryujinx.Graphics.Shader.dll",
       "destination": "runtime/gfx/tools/dmsh_xlate_bin/Ryujinx.Graphics.Shader.dll",
-      "sha256": "a8e7dcb103fc873ce25048e5a576a2eaeeb9d8d810ba8772e74ed29d4af820c7",
+      "sha256": "dac7b4a058bae279b5e99c94ea2f568b3b5c6e0931460e0f93ca6592ab3691a8",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tools/dmsh_xlate_bin/Spv.Generator.dll",
       "destination": "runtime/gfx/tools/dmsh_xlate_bin/Spv.Generator.dll",
-      "sha256": "749cefd9f0a0294575976f3c96bfb9a5a4b8a7c3819f057b7c5ecb25c3830399",
+      "sha256": "5cfa195c161cf54fe794d461c4b6a9c175b97c9e82b8ee1a52774b5e8e6e4bae",
       "changed_here": false
     },
     {
@@ -1681,13 +1681,13 @@
     {
       "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll",
       "destination": "runtime/gfx/tools/dmsh_xlate_bin/dmsh_xlate.dll",
-      "sha256": "5bfe86ab782fe9b063cf2c2ec9242b3b8ff4f0b0333fdff74b6fe57bb86db83d",
+      "sha256": "0b54fdc15dc2813b021708bf5c1090d86b3fcd7344ac4474974aeb33f4cbb958",
       "changed_here": false
     },
     {
       "source": "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate.pdb",
       "destination": "runtime/gfx/tools/dmsh_xlate_bin/dmsh_xlate.pdb",
-      "sha256": "7b7fe56711a99f49e1c7d350d70fcd0a1808a690c1bafd0fd25f1be19b7150e4",
+      "sha256": "2003e934e613d8377acbd5d82b621d20f6e863f74b848853880ccf4632f76ee1",
       "changed_here": false
     },
     {
@@ -2005,7 +2005,7 @@
     {
       "source": "dm/gfx/tools/shader_split.py",
       "destination": "runtime/gfx/tools/shader_split.py",
-      "sha256": "b9117c28a6b572eddb7caf73ed383b03830514b3666f2c4324fd7703bae531c3",
+      "sha256": "318065406b5324fcb8c2d02d969445130e047230ede8a88bcfbd2a563180b51b",
       "changed_here": false
     },
     {
@@ -2095,7 +2095,7 @@
     {
       "source": "dm/gfx/tools/unityfs.py",
       "destination": "runtime/gfx/tools/unityfs.py",
-      "sha256": "2bce00ee1e8f3523635148d609a26b1c47e6a3a4d7fbb3e0535809f51e0897eb",
+      "sha256": "7f13b6243094a04ceb1ddcfe9d96f5f45d551160bdc79b77c3c508675db3a7d7",
       "changed_here": false
     },
     {
@@ -2155,13 +2155,13 @@
     {
       "source": "dm/host/front.h",
       "destination": "runtime/host/front.h",
-      "sha256": "18eaee6b79f711bae320fbae6d2efee1a0f3ffc9876de99c7d2ab563789f2f31",
+      "sha256": "74a2a1ab55e7cba9bf69b2bd0abd6108f3cdc3714c62d87db2d5dd9b0d0785a6",
       "changed_here": false
     },
     {
       "source": "dm/host/front_mac.m",
       "destination": "runtime/host/front_mac.m",
-      "sha256": "019c874db0c0bfaf0de6c69ce5fcbe500f5966351ab36da3b1074d7a3277b232",
+      "sha256": "5db3eeb818ec4d972cd9864f3a654f9ac8b371ee187d103d4ebbdd19ca56d34b",
       "changed_here": false
     },
     {
@@ -2191,7 +2191,7 @@
     {
       "source": "dm/host/hle_account.c",
       "destination": "runtime/host/hle_account.c",
-      "sha256": "2072ba5f1cffdaf0df9871419c7c2a93ad306c8c5c44eb8d12aad32ce2083500",
+      "sha256": "5ff865e39c4b7adde9ea33d2dd9fffa38b208f4a620403468f84ec16ad64d253",
       "changed_here": false
     },
     {
@@ -2287,7 +2287,7 @@
     {
       "source": "dm/host/hle_hid.c",
       "destination": "runtime/host/hle_hid.c",
-      "sha256": "d5eaf9ce53b915d48a1924d41c6b986ab404622dda0969b12d22c88d5a411639",
+      "sha256": "66c9ac74127a4669ea989a6c6e705a67523c0bc0f5c245a6d4933ca5cb04bf33",
       "changed_here": false
     },
     {
@@ -2305,13 +2305,13 @@
     {
       "source": "dm/host/hle_misc.c",
       "destination": "runtime/host/hle_misc.c",
-      "sha256": "be29a7af690382144f6384a90fcdd6bbb76aa38a5263a352d88e5ceb72f6c8ef",
+      "sha256": "2dcd8e7ff1926012beb26550549e8d6bbfbe89899b17a08f8debdf2156a73074",
       "changed_here": false
     },
     {
       "source": "dm/host/hle_movie.c",
       "destination": "runtime/host/hle_movie.c",
-      "sha256": "dae12e44152bce87b36d0363e5f024632250258127227925ee1d7bffef32af04",
+      "sha256": "7d1a6eacb2c6121fe4aa3d9b5ce13e3e4362bc8235f0790e490be263bceec007",
       "changed_here": false
     },
     {
@@ -2365,7 +2365,7 @@
     {
       "source": "dm/host/hle_offline.c",
       "destination": "runtime/host/hle_offline.c",
-      "sha256": "819967560b2364608282413f7c117cc234a83a5ccbbfcc89f39458c72723633c",
+      "sha256": "100d20c35ec9421e7de8574d6e701779afadfa59a69084c5f5e9be2d66dbb3a3",
       "changed_here": false
     },
     {
@@ -2467,7 +2467,7 @@
     {
       "source": "dm/host/loader.c",
       "destination": "runtime/host/loader.c",
-      "sha256": "38b375fde0b54b5bd9f62d5e5531b2825432e973b1ac31878e9bbe3e66e25728",
+      "sha256": "c42483f363b039a23de4841d77f69052c745ade1738fba1cbf3bc0ab8d5bdd98",
       "changed_here": false
     },
     {
@@ -2533,7 +2533,7 @@
     {
       "source": "dm/host/probe.c",
       "destination": "runtime/host/probe.c",
-      "sha256": "771af51dd4ac9a8ffc12e701376f0085ee86a05ca2dac5882ccc69559fa8efd1",
+      "sha256": "89191a71ef275680c13de053db8fb54e833380dafef92adfc7bacb763522635c",
       "changed_here": false
     },
     {
@@ -2569,7 +2569,7 @@
     {
       "source": "dm/host/tests/Makefile",
       "destination": "runtime/host/tests/Makefile",
-      "sha256": "d3cf458e8317c2a4b2f9f2e57b574198d25737ccbf2c4be5862db6431cfc16e2",
+      "sha256": "3091fdbd8bd12538c83df9ea20e432338c7f8aa68ffde3732133079397b635b0",
       "changed_here": false
     },
     {
@@ -2593,7 +2593,7 @@
     {
       "source": "dm/host/tests/t_audio.c",
       "destination": "runtime/host/tests/t_audio.c",
-      "sha256": "9995972597de2b8fff5336d4b0ddbd7737e1b1056e9b44e7a997964a4b7d2be0",
+      "sha256": "d83f57e91f2b48a250fd67ace748726690d27c6cd70792431dd44d9d5448d953",
       "changed_here": false
     },
     {
@@ -2731,7 +2731,7 @@
     {
       "source": "dm/host/tests/t_home_quit_mac.m",
       "destination": "runtime/host/tests/t_home_quit_mac.m",
-      "sha256": "5acca9fc68f6367c794bd46e500478af1a1404883a1afe5551496e727d9fee37",
+      "sha256": "e255796fa5668d676b7a2edf7ee6e3ad1804e47cbf9638b537af01ee079812ce",
       "changed_here": false
     },
     {
@@ -2773,7 +2773,7 @@
     {
       "source": "dm/host/tests/t_movie_vpx.c",
       "destination": "runtime/host/tests/t_movie_vpx.c",
-      "sha256": "a0ef106d36e11c422cc38d0168ccb240ad27de9c3c7528bf8fe8dd37f6df8229",
+      "sha256": "2235eba603ccbb7b4e293c294497448ccaae664f9f7a2ade96a357175136f464",
       "changed_here": false
     },
     {
@@ -2881,7 +2881,7 @@
     {
       "source": "dm/host/tests/t_system_event.c",
       "destination": "runtime/host/tests/t_system_event.c",
-      "sha256": "21a625fea9044c9ecd37b90a9399bb10d3193c007c4aeff12cce90d2a475d11f",
+      "sha256": "dd204e1edecaeb019f4a3e696d75d9859953876312cf88738dd5e2796944a0b9",
       "changed_here": false
     },
     {
@@ -2965,7 +2965,7 @@
     {
       "source": "dm/ios/Sources/DmGamepad.m",
       "destination": "runtime/ios/Sources/DmGamepad.m",
-      "sha256": "ff142032a82fe278e60b5b05e952aee14717aa540150f9aba616b86289030748",
+      "sha256": "a17867fef70b8435a3a4f73ee345a3ed07b3bb55705104764a127a071357e9fe",
       "changed_here": false
     },
     {
@@ -2983,13 +2983,13 @@
     {
       "source": "dm/ios/Sources/DmLayout.h",
       "destination": "runtime/ios/Sources/DmLayout.h",
-      "sha256": "d770f56a523f5ff72662b565486230c0fa019dbc36751834dea53b822b6c23bf",
+      "sha256": "a1d54b0edc0a3115835f94550a23adfe2b86d507047b86ce947d205cb0f5b65e",
       "changed_here": false
     },
     {
       "source": "dm/ios/Sources/GameMenu.swift",
       "destination": "runtime/ios/Sources/GameMenu.swift",
-      "sha256": "ce7c683c8e15d7d624d81151719838ce7dc4e2e1387d3beaf3ed60c4efbbe8c2",
+      "sha256": "08d61be587478a99fb77b55a8e283234f80e0ba6fb42bb2f8ef18fb55669bbc4",
       "changed_here": false
     },
     {
@@ -3019,7 +3019,7 @@
     {
       "source": "dm/ios/Sources/front_ios.m",
       "destination": "runtime/ios/Sources/front_ios.m",
-      "sha256": "2a778275cd9febae5a6e177eccda3bf1d5f2b3a0bd4dae861ca52a53f5fcd34a",
+      "sha256": "13ded0902a9173ac2be68e314fdf1f0ddef9734fde4b357ff344cf5ce71d42c1",
       "changed_here": false
     },
     {
@@ -3079,7 +3079,7 @@
     {
       "source": "dm/ios/tests/duo/Tests/DuoHarnessTests.m",
       "destination": "runtime/ios/tests/duo/Tests/DuoHarnessTests.m",
-      "sha256": "1beb900b846dcf2db779a11dca0c27ef488c386931dd404d3f48fd0b0f38a030",
+      "sha256": "e93e837277e40f90f022d05f0d11c22c2a906e30b5f17df6d7284d1772d5bff8",
       "changed_here": false
     },
     {
@@ -3235,7 +3235,7 @@
     {
       "source": "dm/mac/pack_app.py",
       "destination": "runtime/mac/pack_app.py",
-      "sha256": "696352e03085b48acc6e73fdcca788dd10b65116d791d93d62fb27acde26af69",
+      "sha256": "20a55c96c0a3ecb1afb48bc6d14f022b70e01f6ec6d88371f8bd82c07c187bcb",
       "changed_here": false
     },
     {
@@ -7015,13 +7015,13 @@
     {
       "source": "dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs",
       "destination": "runtime/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs",
-      "sha256": "9c5bb5069fb7a64426104fe47d8a5c341858673b3bf0efcfe413c6c11a51fecf",
+      "sha256": "178320a38e47f01a9fa60a31b969be08f97a088de3161afe448df5595afab61b",
       "changed_here": false
     },
     {
       "source": "dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs",
       "destination": "runtime/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs",
-      "sha256": "9c028379e530ecdf8ba8c79fb0c11a702a73b2c5975dadb63ef1d5ed46e93b1d",
+      "sha256": "5b4002c28ee798a487772bf4f614c8379498cdd7afc030d245bcb797628b73ed",
       "changed_here": false
     },
     {
@@ -7123,7 +7123,7 @@
     {
       "source": "dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs",
       "destination": "runtime/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs",
-      "sha256": "5ad31e57c329960145e4d9681f1dbc15fcc4b3096382e436eb8f9831324301f2",
+      "sha256": "e4670b9072a6efd5fbbbcdf2b4959c597ebe489df0d2a654bb4fd5b4857d342c",
       "changed_here": false
     },
     {
@@ -8101,7 +8101,7 @@
     {
       "source": "dm/tools/docs_patches.py",
       "destination": "runtime/tools/docs_patches.py",
-      "sha256": "cb5259db703bf7ddaeb774db29d1008c0b9a9003b66a06eb2382ed33f0fa3254",
+      "sha256": "2fe05fdff5683977238a1b07b420efe04716e9b29afe0826af7bd2cd3a224e56",
       "changed_here": false
     },
     {
@@ -8401,7 +8401,7 @@
     {
       "source": "dm/tools/lint_c_baseline.tsv",
       "destination": "runtime/tools/lint_c_baseline.tsv",
-      "sha256": "0f7a5e23617934481d44c0fb6d91b8ac5254146423ebea8e4626baa40be249e6",
+      "sha256": "80c70733209c444f9e7b139605f0425cd3f64358ba46a33f9218f82b53e43a99",
       "changed_here": false
     },
     {
@@ -8767,7 +8767,7 @@
     {
       "source": "dm/tools/tests/test_nsp_incremental.py",
       "destination": "runtime/tools/tests/test_nsp_incremental.py",
-      "sha256": "cbdc28505370902a0fea1e852602358598549c756fbe91a19edd6a12501a8132",
+      "sha256": "82bef67fa2be6d2c2b589b02a0cf81e0316fda2541981b4ccc86737fc4147671",
       "changed_here": false
     },
     {
@@ -8779,7 +8779,7 @@
     {
       "source": "dm/tools/tests/test_nsp_mac_app.py",
       "destination": "runtime/tools/tests/test_nsp_mac_app.py",
-      "sha256": "ff38174a067a130c760da561744dcb4ced33e4b41f2e6551b417948e74d21d13",
+      "sha256": "0391c820c78cfa2065a43e3d047e3830f5406b4c43b67ba7564702410d9b6512",
       "changed_here": false
     },
     {
@@ -9011,6 +9011,12 @@
       "changed_here": false
     },
     {
+      "source": "dm/tools/tests/test_unity_legacy_layout.py",
+      "destination": "runtime/tools/tests/test_unity_legacy_layout.py",
+      "sha256": "7a52e077eedb2ab25074c0e897e3a4fcf850dad2f7d3752026849aa0102856f8",
+      "changed_here": false
+    },
+    {
       "source": "dm/tools/tests/test_unity_text_glslc.py",
       "destination": "runtime/tools/tests/test_unity_text_glslc.py",
       "sha256": "5dea65eae946cb5f88d11bae3ae72006df096e5fab198124cf7317e52a49da8e",
@@ -9067,7 +9073,7 @@
     {
       "source": "scripts/build_ipa_from_nsp.py",
       "destination": "third_party/nxnative/scripts/build_ipa_from_nsp.py",
-      "sha256": "cd2558eef995fa81324fd0909e5152ff4e321a84983453d773fe4461c2adc55a",
+      "sha256": "97085d7ade9efa01a232a83950c53e5092c1a54f5e7ce11f7549cf88e0ac55ca",
       "changed_here": false
     },
     {

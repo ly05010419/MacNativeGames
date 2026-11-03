@@ -1,6 +1,7 @@
 // A game's upscaler drawn by MetalFX (DM_UPSCALER=metalfx; nvn_mtl.m up_mfx_encode): one of the game's upscaler shaders reading a 960x540 texture and writing a
 // 1920x1080 image is replaced by the spatial scaler, which fills the whole image with the texture's colour; equal sizes, another shader, and DM_UPSCALER unset
-// (the last run) leave the dispatch to the shader. Built for Donkey Kong Bananza's profile (GAME=040074A01BF12000), whose shader map has 7629d857a0a93833 in agl_ndsr.pck
+// (the last run) leave the dispatch to the shader. Runs under any profile: the named shader is the profile's first upscaler (DM_GAME_UPSCALER_KEYS), and a profile with
+// none swaps no shader; the MetalFX draw itself (up_mfx_encode) does not look at the key
 #include "../nvn/nvn_mtl.m"
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -21,6 +22,7 @@ static void fill(id<MTLTexture> t, MTLClearColor c) {
 }
 static int matches(id<MTLTexture> t, const float inside[4], MTLRegion region, const float outside[4]) {   // allow HDR scaler rounding on each channel
     NSUInteger n = t.width * t.height; id<MTLBuffer> b = [g_dev newBufferWithLength:n * 8 options:MTLResourceStorageModeShared];
+    if (!b) { fprintf(stderr, "readback buffer did not allocate\n"); return 0; }
     id<MTLCommandBuffer> cb = q_cb(); id<MTLBlitCommandEncoder> e = [cb blitCommandEncoder];
     [e copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(t.width, t.height, 1) toBuffer:b destinationOffset:0 destinationBytesPerRow:t.width * 8 destinationBytesPerImage:n * 8];
     [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
@@ -44,14 +46,15 @@ static NvShader *upscaler(const char *key) {
 }
 int main(void) { @autoreleasepool {
     mtl_init();
-    int on = getenv("DM_UPSCALER") && !strcmp(getenv("DM_UPSCALER"), "metalfx");
+    const char *up = getenv("DM_UPSCALER"); int on = up && !strcmp(up, "metalfx");
     tex_t in = texture(77, 960, 540, NVN_FORMAT_RGBA16F), out = texture(78, 1920, 1080, NVN_FORMAT_RGBA16F), same = texture(79, 960, 540, NVN_FORMAT_RGBA16F);
     out.d.flags |= NVN_TEXTURE_FLAGS_IMAGE; same.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
     mtl_reg_tex(701, &in, NULL); mtl_reg_image(702, &out, NULL); mtl_reg_image(703, &same, NULL);
     const float colour[4] = {0.5f, 0.25f, 0.75f, 1.0f}, black[4] = {0, 0, 0, 1};
     fill(tex_mtl(&in), MTLClearColorMake(colour[0], colour[1], colour[2], colour[3])); fill(tex_mtl(&out), MTLClearColorMake(0, 0, 0, 1));
-    NvShader *named = upscaler("7629d857a0a93833_b"), *other = upscaler("0123456789abcdef_b");
-    CHECK(up_mfx_wanted(named) == on, "a shader the profile names is swapped exactly when DM_UPSCALER=metalfx");
+    char key[24] = "7629d857a0a93833_b"; if (DM_GAME_UPSCALER_N) snprintf(key, sizeof key, "%.16s_b", DM_GAME_UPSCALER_KEYS);   // the profile's first upscaler, else Bananza's (not named here)
+    NvShader *named = upscaler(key), *other = upscaler("0123456789abcdef_b");
+    CHECK(up_mfx_wanted(named) == (on && DM_GAME_UPSCALER_N), "a shader the profile names is swapped exactly when DM_UPSCALER=metalfx (none in a profile without upscalers)");
     CHECK(!up_mfx_wanted(other), "a shader the profile does not name is never swapped");
     memset(&S, 0, sizeof S); S.tex[5][0] = 701; S.img[5][1] = 702;
     { const uint32_t rects[8] = {0, 0, 959, 539, 0, 0, 1919, 1079}; memcpy(S.push[1], rects, sizeof rects); }   // c[24]: input and output rectangles (origin, inclusive last texel)

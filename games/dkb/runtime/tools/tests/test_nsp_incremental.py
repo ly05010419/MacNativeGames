@@ -29,6 +29,22 @@ def control(path, disp):   # control.nacp with the display version at 0x3060
     path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(bytes(0x3060) + disp.encode().ljust(0x10, b'\0') + bytes(0xa0))
 
 
+class ProvisionalVersionSelection(unittest.TestCase):
+    def test_stale_base_profile_never_silently_ignores_update(self):
+        with self.assertRaisesRegex(nsp.BuildError, "profile-out.*Refusing to silently"):
+            nsp.provisional_version({"v0": None, "v983040": None}, {"v0": {}}, "", Path("cached-profile"))
+
+    def test_explicit_base_selection_is_preserved(self):
+        self.assertEqual(nsp.provisional_version({"v0": None, "v983040": None}, {"v0": {}}, "v0", Path("cached-profile")), "v0")
+
+    def test_selected_update_must_be_available(self):
+        with self.assertRaisesRegex(nsp.BuildError, "not in the input folder"):
+            nsp.provisional_version({"v0": None}, {"v0": {}, "v983040": {}}, "v983040", Path("cached-profile"))
+
+    def test_current_profile_uses_numeric_newest_input(self):
+        self.assertEqual(nsp.provisional_version({"v0": None, "v9": None, "v10": None}, {"v0": {}, "v9": {}, "v10": {}}, "", Path("cached-profile")), "v10")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()).resolve(); self.addCleanup(shutil.rmtree, self.tmp)
@@ -73,6 +89,24 @@ class DeriveProfile(Base):
         self.assert_kept()
         self.assertEqual(game.Game(self.pdir).builds()['v65536']['main'], BID2)
         self.assertEqual(self.derive(), '1.1.0'); self.assert_kept()   # still kept on a third run
+
+    def test_a_module_the_version_does_not_ship_is_left_out(self):   # Mario Kart World 1.0.0 has no subsdk1, which the 1.8.0 profile loads
+        (self.src / 'game.tsv').write_text((self.src / 'game.tsv').read_text().replace('modules\tmain\n', 'modules\tmain subsdk1 sdk\n'))
+        nso(self.ex / 'ExeFS/sdk', BID)
+        self.derive(mods=('main', 'subsdk1', 'sdk'))
+        g = game.Game(self.pdir)
+        self.assertEqual(g.words('modules'), ['main', 'sdk'])
+        self.assertIn('# this version ships no subsdk1', (self.pdir / 'game.tsv').read_text())
+        self.assertNotIn('subsdk1', g.builds()['v65536'])
+        nso(self.ex / 'ExeFS/subsdk1', BID2); self.derive(mods=('main', 'subsdk1', 'sdk'))   # a version that ships it keeps the profile's list
+        self.assertEqual(game.Game(self.pdir).words('modules'), ['main', 'subsdk1', 'sdk'])
+
+    def test_the_same_profile_in_another_checkout_keeps_later_stages(self):
+        self.derive(); self.later_stages()
+        other = self.tmp / 'checkout2' / 'games' / f'{TID:016X}'; shutil.copytree(self.src, other)   # the repository cloned again, or a front end's own copy of it
+        nsp.derive_profile(game.Game(other), self.pdir, 'v65536', self.ex, ['main'])
+        self.assert_kept()
+        self.assertNotIn(str(self.tmp), (self.pdir / 'game.tsv').read_text())
 
     def test_changed_inputs_derive_again(self):
         changes = {
@@ -808,6 +842,68 @@ class MacApp(Base):
                 if i: nsp.PROG.end.assert_called_with('Game.app, reused (inputs unchanged)')
                 else: nsp.PROG.set.assert_called_with(step='launcher and host (clones of the game files)')
         self.assertEqual(len(packs), 2)   # pack_app owns the reuse decision and sidecar key
+
+
+class GlslcCapture(Base):
+    def test_the_capture_boot_presses_a(self):   # Crash Team Racing Nitro-Fueled compiles its run-time programs only after its title screen has had a button press
+        g = game.Game(self.src); ex = self.tmp / 'extract/v0'; (ex / 'RomFS').mkdir(parents=True); logs = self.tmp / 'logs'; logs.mkdir()
+        out = bytearray(0x48); out[:4] = b'\x91\x68\x86\x19'; out[0x44:0x48] = (0x48).to_bytes(4, 'little')   # a whole GLSLC output: its magic and its own length
+        seen = {}
+        def boot(host, patched, henv, rd, log, secs, done):
+            seen.update(henv); cap = Path(henv['DM_GLSLC_CAPTURE']); cap.mkdir(parents=True); (cap / '0123456789abcdef.glslc').write_bytes(out); return None
+        with mock.patch.object(nsp, 'build_mac_host'), mock.patch.object(nsp, 'boot_mac', side_effect=boot), mock.patch.object(nsp, 'PROG'):
+            nsp.capture_glslc(REPO, {'v0': ex}, 'v0', self.tmp / 'patched', self.tmp / 'work', {}, logs, g)
+        self.assertEqual(seen['DM_KEYS'], nsp.GLSLC_KEYS)
+        self.assertTrue(nsp.GLSLC_KEYS.startswith('5:A'))   # the first press comes well within the run (GLSLC_SECS)
+        self.assertEqual(sorted(p.name for p in (ex / 'glslc_capture').iterdir()), ['0123456789abcdef.glslc'])
+
+
+class GlslcCacheCoverage(Base):
+    KEY = '0123456789abcdef'
+
+    def capture(self, rc=None, observed=True, required=False, partial=False, capture_error=False):
+        work, logs = self.tmp / 'work', self.tmp / 'logs'; logs.mkdir(exist_ok=True)
+        def boot(host, patched, env, rd, log, secs, done):
+            shmap = Path(env['DM_NVN_SHMAP'])
+            if required:
+                self.assertEqual(shmap, self.src / 'shader_map.tsv')
+            else:
+                self.assertEqual(shmap.read_text(), '# GLSLC capture: observe submitted shaders\n')
+            if partial:
+                cap = Path(env['DM_GLSLC_CAPTURE'])
+                cap.mkdir()
+                (cap / 'aaaaaaaaaaaaaaaa.glslc').write_bytes(b'partial output')
+            text = f'[dm] [nvn-mtl] [RED] shader {self.KEY} is not in the shader map\n' if observed else ''
+            if capture_error:
+                text += '[dm] [RED] glslc: unknown output header\n'
+            log.write_text(text)
+            return rc
+        with mock.patch.object(nsp, 'build_mac_host', return_value=work / 'dmhost'), mock.patch.object(nsp, 'boot_mac', side_effect=boot):
+            return nsp.capture_glslc(REPO, {'v65536': self.ex}, 'v65536', work / 'patched', work, {}, logs, game.Game(self.src))
+
+    def test_surviving_boot_defers_to_offline_coverage(self):
+        observed = self.capture()
+        self.assertEqual(observed, {self.KEY})
+        (self.src / 'shader_map.tsv').write_text(f'pkg.bin\t0\tvertex\t{self.KEY}\t/cache#GLSLC@0x80\n')
+        nsp.check_glslc_coverage(observed, game.Game(self.src))
+
+    def test_empty_capture_still_fails_without_boot_evidence(self):
+        for rc in (139, 0):
+            with self.subTest(rc=rc), self.assertRaisesRegex(nsp.BuildError, 'captured only 0'):
+                self.capture(rc=rc)
+        for kwargs in ({'observed': False}, {'partial': True}, {'capture_error': True}):
+            with self.subTest(**kwargs), self.assertRaisesRegex(nsp.BuildError, 'captured only 0'):
+                self.capture(**kwargs)
+
+    def test_registered_capture_requirements_are_not_relaxed(self):
+        (self.src / 'shader_map.tsv').write_text(f'pkg.bin\t0\tvertex\t{self.KEY}\t/glslc_capture/aaaaaaaaaaaaaaaa.glslc#GLSLC@0x0\n')
+        with self.assertRaisesRegex(nsp.BuildError, 'profile needs 1'):
+            self.capture(required=True)
+
+    def test_missing_offline_key_and_no_observations_fail(self):
+        for observed, msg in (({self.KEY}, 'observed shaders absent'), (set(), 'no submitted shader keys')):
+            with self.subTest(observed=observed), self.assertRaisesRegex(nsp.BuildError, msg):
+                nsp.check_glslc_coverage(observed, game.Game(self.src))
 
 
 if __name__ == '__main__': unittest.main()

@@ -8,7 +8,8 @@
 # plus AppIcon.icns from the game's icon (sips, iconutil) and the Info.plist keys the launcher reads (DMTitleID, DMRomfsMarker, DMLanguage).
 # The large folders are APFS clones (cp -c) when the app is on the same APFS volume as the build, so they take no space; plain copies otherwise.
 # Signing: the inner host first, then the bundle (codesign --force --sign <identity>; '-' = ad-hoc), without the hardened runtime: the host maps the game's code executable, which the hardened
-# runtime refuses without entitlements, and so the app cannot be notarized.
+# runtime refuses without entitlements, and so the app cannot be notarized. The bundle is stripped of its "._name" files first: on exFAT (an external drive for the build or the app) every
+# file's extended attributes live in such a file beside it, and codesign reads each one as a code object that is not signed, which fails the whole bundle.
 # Usage: pack_app.py <out.app> --host <dmhost> --patched <dir> --romfs <image or dir> --msl <dir> --tables <profile dir> --font <dir> --title-id <id> --name <name> [options]
 #   Reuses <out.app> while <out.app>.key matches; otherwise writes <out.app>.partial and swaps it in at the end. Prints "step: ..." and "app: <path>[, reused (inputs unchanged)]".
 import argparse, ctypes, hashlib, json, os, plistlib, re, shutil, stat, subprocess, sys, tempfile
@@ -25,9 +26,14 @@ TABLES = ('shader_map.tsv', 'pso_manifest.tsv', 'c1_full.tsv', 'cb_extent.tsv', 
 PSO_FILES = ('*.mtl4a', 'prebuilt.tsv', 'rest_pairs.tsv', 'archive.tsv')   # what the app takes of pso_offline.py's output folder
 EXE = 'nxnative'   # the launcher's file name (Contents/MacOS/nxnative)
 ICON_SIZES = (16, 32, 128, 256, 512)
+DETRITUS = ('.DS_Store',)   # Finder leftovers beside the AppleDouble "._name" files, see detritus() and strip_detritus()
 
 
 def step(msg): print(f'step: {msg}', flush=True)
+
+
+def detritus(name):   # a volume without native extended attributes (exFAT, an external drive) keeps each file's attributes in a "._name" file beside it: not an input, and not something the bundle may carry
+    return name.startswith('._') or name in DETRITUS
 
 
 def run(cmd):
@@ -58,8 +64,8 @@ def tree_bytes(d):
     return sum((Path(r) / f).stat().st_size for r, _, fs in os.walk(d) for f in fs)
 
 
-def copy(srcs, dst, clone):   # cp -R of each source to dst (a new path for one folder, an existing folder for files); -c clones (batched under ARG_MAX)
-    cmd = ['/bin/cp', '-R'] + (['-c'] if clone else [])
+def copy(srcs, dst, clone):   # cp -R of each source to dst (a new path for one folder, an existing folder for files); -c clones, -X keeps a copy's extended attributes out of the app (cp rejects -c -X together)
+    cmd = ['/bin/cp', '-R'] + (['-c'] if clone else ['-X'])
     pointer = ctypes.sizeof(ctypes.c_void_p)
     def arg_bytes(p): return len(os.fsencode(p)) + 1 + pointer
     # exec's limit includes encoded strings, NULs and argv/envp pointers. Reserve 2 KiB for alignment and platform overhead (as POSIX xargs does).
@@ -134,13 +140,25 @@ def source_commit():   # DMCommit: the checkout that packed the app (scripts/bug
     return head + ('+dirty' if dirty else '') if head else None
 
 
+def strip_detritus(app):   # the "._name" files a copy from or onto an exFAT volume leaves in the bundle: codesign reads each one as a code object and refuses the bundle ("code object is not signed at all")
+    for parent, _, files in os.walk(app):
+        for n in files:
+            if detritus(n):
+                try: (Path(parent) / n).unlink()
+                except OSError: pass   # a ._ file the volume maps to the attributes of the file it belongs to: gone with them
+
+
 def sign(app, identity, codesign):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
+    strip_detritus(app)   # before codesign reads the bundle, so that a build folder or an output folder on exFAT is not a signing failure
     host = app / 'Contents/MacOS/dmhost'
     for target in (host, app):
         try: run([codesign, '--force', '--sign', identity, target])
         except SystemExit as e:
-            if 'detritus' not in str(e): raise
-            run(['xattr', '-cr', app]); run([codesign, '--force', '--sign', identity, target])   # Finder information or resource forks on copied files: codesign refuses them
+            if not any(s in str(e) for s in ('detritus', '._', 'not signed at all')): raise
+            subprocess.run(['xattr', '-cr', str(app)], capture_output=True)   # Finder information or resource forks on copied files: codesign refuses them
+            strip_detritus(app)
+            run([codesign, '--force', '--sign', identity, target])
+    strip_detritus(app)   # codesign sets an attribute on what it signs, which is a "._name" file again on exFAT: the signature still verifies without it, and a later --force would refuse it
 
 
 def digest(path):
@@ -170,19 +188,19 @@ def selected_inputs(a):
         p = getattr(a, name)
         if p and not (rfs.Path(p).is_dir() if name == 'romfs' else Path(p).is_dir()): raise SystemExit(f'no {name} directory at {p}')
     if a.marker and not (rfs.Path(a.romfs) / a.marker).exists(): raise SystemExit(f'no RomFS at {a.romfs} (missing {a.marker})')
-    mods = sorted({p for pat in MODULE_FILES for p in Path(a.patched).glob(pat)})
+    mods = sorted({p for pat in MODULE_FILES for p in Path(a.patched).glob(pat) if not detritus(p.name)})
     if not any(p.name.endswith('.patched.bin') for p in mods): raise SystemExit(f'no rewritten module in {a.patched}')
     for p in mods:
         if p.name.endswith('.patched.bin') and not p.with_name(p.name.removesuffix('.patched.bin') + '.fixups.tsv').is_file():
             raise SystemExit(f'no rewriter fixups for {p}')
-    msls = sorted(p for pat in MSL_FILES for p in Path(a.msl).glob(pat) if p.is_file() and p.name != '_b_build.json')
+    msls = sorted(p for pat in MSL_FILES for p in Path(a.msl).glob(pat) if p.is_file() and p.name != '_b_build.json' and not detritus(p.name))
     if not any(p.suffix == '.metallib' for p in msls): raise SystemExit(f'no shader libraries at {a.msl}')
-    pso = sorted({p for pat in PSO_FILES for p in Path(a.pso).glob(pat)}) if a.pso else []
+    pso = sorted({p for pat in PSO_FILES for p in Path(a.pso).glob(pat) if not detritus(p.name)}) if a.pso else []
     if a.pso and (not any(p.suffix == '.mtl4a' for p in pso) or not (Path(a.pso) / 'prebuilt.tsv').is_file()):
         raise SystemExit(f'no pipeline archive with its prebuilt.tsv in {a.pso}')
     tables = [Path(a.tables) / n for n in TABLES if (Path(a.tables) / n).is_file()]
     pairs = Path(a.pso_pairs) if a.pso_pairs and not any(p.name == 'pso_pairs.tsv' for p in tables) else None
-    fonts = sorted(Path(a.font).glob('*.ttf'))
+    fonts = sorted(p for p in Path(a.font).glob('*.ttf') if not detritus(p.name))
     files = [Path(a.host)] + mods + msls + pso + tables + fonts + ([pairs] if pairs else [])
     files += [Path(p) for p in (a.env_file, a.settings, a.icon) if p]
     for p in files:
@@ -250,7 +268,7 @@ def pack(a):
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
     step(f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
     build_launcher(mac / EXE, minos, clang, swiftc, sdk)
-    shutil.copy2(a.host, mac / 'dmhost')
+    shutil.copy(a.host, mac / 'dmhost')   # data and mode, not the build's extended attributes (copy2 would carry them into the app)
     copy(mods, dm, clone['mods'])
     if tables: copy(tables, dm, False)
     if pairs: shutil.copyfile(pairs, dm / 'pso_pairs.tsv')   # the split's copy, for a profile without the table

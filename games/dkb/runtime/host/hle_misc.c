@@ -43,6 +43,22 @@ HLE_FORCE_BIG("_ZN2nn3aoc16ListAddOnContentEPiii", "add-on content list: the own
 // The event object is created on demand by the nn::os side table (not signaled), the game waiting on it only times out / gets not-signaled
 HLE_FORCE("_ZN2nn3aoc31GetAddOnContentListChangedEventEPNS_2os11SystemEventE", "add-on content change event, out of scope; bound to a kernel event, never signalled (the game polls it with TryWait and aborts if it is uninitialized)", void, h_aoc_GetEv, void *ev) { hle_bind_system_event(ev, 0); }
 HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListEv", "shop applet, out of scope; cut: no-op", void, h_ec_ShowShop, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut)"); }
+// Super Kirby Clash waits on the purchased-item notification after account selection. The guest SDK's initializer
+// uses an AOC service session which the offline host does not open. There are no purchases to enqueue: give every
+// watcher the same borrowed, unsignalled SystemEvent for the life of the process, including after reinitialization.
+static _Alignas(16) uint8_t purchase_event[0x80];
+static pthread_once_t purchase_event_once = PTHREAD_ONCE_INIT;
+static void bind_purchase_event(void) { hle_bind_system_event(purchase_event, 0); }
+HLE_FORCE("_ZN2nn2ec24InitializePurchasedEventEv", "offline purchased-item queue is empty", void, h_ec_InitPurchased, void) {}
+HLE_FORCE("_ZN2nn2ec27InitializeAllPurchasedEventEv", "offline purchased-item queue is empty for every application", void, h_ec_InitAllPurchased, void) {}
+HLE_FORCE("_ZN2nn2ec27InitializeAllPurchasedEventERKNS_13ApplicationIdE", "offline purchased-item queue is empty for this application", void, h_ec_InitAppPurchased, const void *app) { (void)app; }
+HLE_FORCE("_ZN2nn2ec22FinalizePurchasedEventEv", "offline purchased-item queue has no service session to close", void, h_ec_FinalizePurchased, void) {}
+HLE_FORCE("_ZN2nn2ec17GetPurchasedEventEv", "borrow the offline queue's unsignalled event", void *, h_ec_GetPurchased, void) {
+    pthread_once(&purchase_event_once, bind_purchase_event);
+    return purchase_event;
+}
+HLE_FORCE("_ZN2nn2ec20PopPurchasedItemInfoEPNS0_17PurchasedItemInfoE", "no offline purchases to pop", unsigned, h_ec_PopPurchased, void *out) { (void)out; return 0; }
+HLE_FORCE("_ZN2nn2ec20PopPurchasedItemInfoEPNS0_27PurchasedItemInfoForPrivateE", "no private offline purchases to pop", unsigned, h_ec_PopPurchasedPrivate, void *out) { (void)out; return 0; }
 // The other shop entry points (Engage's title menu item "DLC" calls ShowShopAddOnContentList(ApplicationId, UserHandle)): the original starts the shop applet through applet::CreateLibraryApplet,
 // the host has no applet proxy (oe initialization is a no-op), and the SDK reads through the null proxy and crashes (sdk+0x38660). All return void: as if the player closed the shop at once, the game goes back to its menu.
 HLE_FORCE("_ZN2nn2ec24ShowShopAddOnContentListENS_13ApplicationIdE", "shop applet, out of scope; cut: no-op", void, h_ec_AocList1, void) { DM_APPLET("shop"); LOG("ec::ShowShopAddOnContentList (cut): the host has no shop"); }

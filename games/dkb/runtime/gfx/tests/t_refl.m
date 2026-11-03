@@ -46,6 +46,9 @@ int main(void) { @autoreleasepool {
         check("fetch calls: pixel-position has no interpolated output", 0xff, r.fc_locn[2]);
         check("fetch calls: x scale c[6].x", 6 << 2, r.fc_scale[2][0]);
         check("fetch calls: y scale c[6].y", 6 << 2 | 1, r.fc_scale[2][1]);
+        NSDictionary *far = @{@"route": @"B", @"stage": @"ps", @"bindings": @[], @"fetch": @{@"calls": @[@{@"fc": @0, @"tex_reg": @6, @"frag_pos": @[@[@6, @989, @0], @[@6, @989, @1]]}]}};
+        check("fetch calls: a vector past c[x][63] converts (Mario Kart World's c6[989])", 0, nvn_refl_from_json(far, &r, err, sizeof err));
+        check("fetch calls: slot 6, vector 989, x", 6 << 16 | 989 << 2, r.fc_scale[0][0]);
         NSDictionary *bad = @{@"route": @"B", @"stage": @"ps", @"bindings": @[], @"fetch": @{@"calls": @[@{@"fc": @0, @"tex_reg": @3, @"frag_pos": @[@[@16, @6, @0], @[@0, @6, @1]]}]}};
         check("fetch calls: a uniform slot out of range is refused", 1, nvn_refl_from_json(bad, &r, err, sizeof err) != 0);
     }

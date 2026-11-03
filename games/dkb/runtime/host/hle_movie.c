@@ -118,17 +118,24 @@ static struct {
 static _Atomic uint64_t g_movie_pic_ns;   // when a video decoder last handed out a picture (0 = stopped since)
 int dm_movie_playing(void) { uint64_t t = atomic_load_explicit(&g_movie_pic_ns, memory_order_relaxed); return t && now_ns() - t < MD_PLAYING_NS; }
 static void *msym(const char *n) { void *p = guest_sym(n); if (!p) die("movie: missing SDK symbol %s", n); return p; }
+// SDK 1.3.1 exports mutable Buffer getters. Both overloads take the same this pointer.
+static void *buffer_getter(const char *const_name, const char *mutable_name) {
+    void *p = guest_sym(const_name);
+    if (!p) p = guest_sym(mutable_name);
+    if (!p) die("movie: missing SDK symbol %s or %s", const_name, mutable_name);
+    return p;
+}
 static void md_syms(void) {
     if (G.signal) return;
     G.set_data = msym("_ZN5movie6Buffer18SetDataAndCapacityEPvm");
     G.set_range = msym("_ZN5movie6Buffer8SetRangeEii");
-    G.data = msym("_ZNK5movie6Buffer4DataEv");
-    G.cap = msym("_ZNK5movie6Buffer8CapacityEv");
+    G.data = buffer_getter("_ZNK5movie6Buffer4DataEv", "_ZN5movie6Buffer4DataEv");
+    G.cap = buffer_getter("_ZNK5movie6Buffer8CapacityEv", "_ZN5movie6Buffer8CapacityEv");
     G.set_i32 = msym("_ZN5movie9MediaData8SetInt32EPKci");
     G.set_rect = msym("_ZN5movie9MediaData7SetRectEPKciiii");
     G.find_i32 = msym("_ZNK5movie9MediaData9FindInt32EPKcPi");
     G.find_buf = msym("_ZNK5movie9MediaData10FindBufferEPKcPPNS_6BufferE");
-    G.size = msym("_ZNK5movie6Buffer4SizeEv");
+    G.size = buffer_getter("_ZNK5movie6Buffer4SizeEv", "_ZN5movie6Buffer4SizeEv");
     G.signal = msym("_ZN2nn2os11SignalEventEPNS0_9EventTypeE");
 }
 static mdec_t *md_of(void **self) { return self ? (mdec_t *)self[1] : NULL; }

@@ -1,5 +1,5 @@
 // NVNformat (nvn.h 0x01–0x9C) → Metal. The table is written entry by entry in NVN enum order; unlisted formats (including 0 and out of range) return 0.
-// Component remapping: "no alpha" formats such as RGBX / RGB_DXT1 read a as 1; RGB-family 16-bit packed formats swap r/b; all others are identity.
+// Component remapping: "no alpha" formats such as RGBX / RGB_DXT1 read a as 1; RGB-family 16-bit packed formats swap r/b; RGBA4 reverses all four; all others are identity.
 // BC1–7 need GPU BC support (MTLDevice.supportsBCTextureCompression: Apple silicon Macs, A17 Pro and later, M1 iPads); the table does not check it, mtl_init (nvn_mtl.m) and the iOS front end (main.m) refuse a device without it.
 #include "nvn_fmt_mtl.h"
 
@@ -16,7 +16,7 @@ enum {   // MTLPixelFormat
     Depth16Unorm = 250, Depth32Float = 252, Stencil8 = 253, Depth32Float_Stencil8 = 260,
 };
 
-typedef struct { uint16_t mtl; uint8_t kind, noalpha, rb; } ent;   // kind: 1 exact, 2 substitute; noalpha: a reads as 1; rb: swap r/b
+typedef struct { uint16_t mtl; uint8_t kind, noalpha, rb; } ent;   // kind: 1 exact, 2 substitute; noalpha: a reads as 1; rb: 1 swap r/b, 2 reverse all four (RGBA4)
 #define E(m) {m, 1, 0, 0}
 #define X(m) {m, 1, 1, 0}     // exact, no alpha
 #define S(m) {m, 2, 0, 0}     // substitute
@@ -24,6 +24,7 @@ typedef struct { uint16_t mtl; uint8_t kind, noalpha, rb; } ent;   // kind: 1 ex
 #define N {0, 0, 0, 0}        // no counterpart
 #define SR(m) {m, 2, 0, 1}    // substitute, swap r/b
 #define SXR(m) {m, 2, 1, 1}
+#define SV(m) {m, 2, 0, 2}    // substitute, components reversed
 
 static const ent T[0x9D] = {
     [0x01] = E(R8Unorm), E(R8Snorm), E(R8Uint), E(R8Sint),
@@ -47,8 +48,9 @@ static const ent T[0x9D] = {
     [0x35] = S(Depth32Float_Stencil8), E(Depth32Float_Stencil8),
     [0x37] = X(RGBA8Unorm_sRGB), E(RGBA8Unorm_sRGB),
     // 16-bit packed formats: matched by name - the BGR family (0x95–0x98) maps directly to the same-named Metal format, the RGB family uses the same Metal format with r/b swapped.
-    // The actual bit order of NVN vs Metal has not been verified with real data → all marked substitute; verify the bit order when a real texture is first encountered, then upgrade to exact
-    [0x39] = S(ABGR4Unorm), SXR(BGR5A1Unorm), SR(BGR5A1Unorm), SR(B5G6R5Unorm),
+    // RGBA4 has R, G, B, A from bit 0 up, Metal's ABGR4 A, B, G, R: all four reversed. The RGB family and RGBA4 are substitutes, their bits converted where they cross (nvn_mtl.m rb_packed_shift);
+    // the BGR family's bit order has not been verified with real data
+    [0x39] = SV(ABGR4Unorm), SXR(BGR5A1Unorm), SR(BGR5A1Unorm), SR(B5G6R5Unorm),
     [0x3D] = E(RGB10A2Unorm), E(RGB10A2Uint), E(RG11B10Float), E(RGB9E5Float),
     // DXT / RGTC / BPTC = BC1–7; RGB_DXT1 has no alpha
     [0x41] = X(BC1), E(BC1), E(BC2), E(BC3), X(BC1_sRGB), E(BC1_sRGB), E(BC2_sRGB), E(BC3_sRGB),
@@ -79,5 +81,6 @@ int nvn_fmt_to_mtl(int f, uint32_t *mtl, uint8_t swz[4]) {
     else if (f > 0 && f < (int)(sizeof T / sizeof *T)) e = T[f];
     if (mtl) *mtl = e.kind ? e.mtl : 0;
     if (swz) { swz[0] = e.rb ? NVN_SWZ_B : NVN_SWZ_R; swz[1] = NVN_SWZ_G; swz[2] = e.rb ? NVN_SWZ_R : NVN_SWZ_B; swz[3] = e.noalpha ? NVN_SWZ_ONE : NVN_SWZ_A; }
+    if (swz && e.rb == 2) { swz[0] = NVN_SWZ_A; swz[1] = NVN_SWZ_B; swz[2] = NVN_SWZ_G; swz[3] = NVN_SWZ_R; }
     return e.kind;
 }

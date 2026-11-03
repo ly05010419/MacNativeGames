@@ -76,6 +76,20 @@ class BarrierMoves(Translated):
         self.assertEqual(moved, plain)
 
 
+class LdcIndexedBank(Translated):
+    """LDC.64 .IS (address mode 2): the bank is the instruction's plus Ra's upper half, the offset Ra's lower half (Hyrule Warriors: Age of Imprisonment's
+    vertex shader cc679c7b4d3e703c reads its c1 quad corners at (vertex index % 5) * 8 + 0x10000 this way). Here LDC.64.IS R12, c[0][R3] feeds the atomic"""
+    LDC_IS = (0x000e620000008a00, 0x00000000030c7b82)   # the game's control bits, size and mode; Rd R12, Ra R3
+
+    def test_reads_the_bank_chosen_at_run_time(self):
+        msl = self.translate(inst(*self.LDC_IS) + inst(*SUATOM) + inst(*EXIT))
+        self.assertIn('cp_c1)._m0[', msl)   # the shader's own constant segment is one of the banks it may name
+        self.assertRegex(msl, r'>> 16u|>> uint\(16\)|>> 16')   # the bank from Ra's upper half
+        self.assertRegex(msl, r'& 65535\b')                     # the offset from its lower half
+        self.assertRegex(msl, r'== 1;')                          # selected among the banks by its value
+        self.assertNotIn('cp_c0)._m0[', msl)   # never the driver segment at a run-time index, which the host cannot fill (here the instruction's own bank)
+
+
 def mov(rd, value):   # MOV Rd, imm32: values the tests can see in the output
     return inst(0x000fc60000000f00, value << 32 | rd << 16 | 0x7802)
 

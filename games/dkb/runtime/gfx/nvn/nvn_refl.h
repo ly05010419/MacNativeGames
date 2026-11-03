@@ -62,14 +62,14 @@ typedef struct {
     // Merge B step 2 (readable-tile version <key>_bf, dmsh_fetch.py): fragment - nfc redirectable samples (the i-th: texture slot fc_reg, interpolated output fc_locn),
     // bitmap fc_mixed of texture slots with mixed use (these slots must not be redirected to read the tile), nfo outputs (each with color number fo_color); vertex - .xy of interpolated output locn is taken as-is from attribute uv_attr[locn] (-1 = no)
     uint8_t nfc, fc_reg[32], fc_locn[32], nfo, fo_color[4]; uint64_t fc_mixed[4]; int8_t uv_attr[32];   // fc_mixed: a bit per texture slot 0-255 (slots 128+ are separate texture binds, NVN_SEPTEX_SLOT0)
-    // Vertex - .x / .y of interpolated output locn = fma(.x / .y of attribute uv_aff_attr[locn], scale, offset), where scale / offset reference a uniform: (slot << 8) | (vector << 2) | component
-    int8_t uv_aff_attr[32]; uint16_t uv_aff[32][4];   // [sx, ox, sy, oy]
+    // Vertex - .x / .y of interpolated output locn = fma(.x / .y of attribute uv_aff_attr[locn], scale, offset), where scale / offset reference a uniform: (slot << 16) | (vector 0..4095 << 2) | component
+    int8_t uv_aff_attr[32]; uint32_t uv_aff[32][4];   // [sx, ox, sy, oy]
     // Projective samples (dmsh_fetch.py 'proj'): fragment - bit i: the i-th redirectable sample reads at in.m_X.xy / in.m_X.w (X = fc_locn[i]); vertex - bit K: interpolated output K is the
     // clip → screen varying ((x + w) / 2, (w − y) / 2, ·, w) of gl_Position in every entry point (dmsh_fetch.py screen_varyings)
     uint32_t fc_proj, scr_locn;
     // Pixel-position samples (dmsh_fetch.py 'frag_pos'): bit i: the i-th redirectable sample reads at (gl_FragCoord.x * U, gl_FragCoord.y * V), fc_scale[i] = {U, V} as uniform references
-    // (slot << 8) | (vector << 2) | component; its fc_locn is 0xff
-    uint32_t fc_fpos; uint16_t fc_scale[32][2];
+    // (slot << 16) | (vector 0..4095 << 2) | component; its fc_locn is 0xff
+    uint32_t fc_fpos; uint32_t fc_scale[32][2];
     uint8_t *c1;             // c1 constant segment as-is (B): c1_len bytes, malloc'd by nvn_refl_from_json (NULL without one). It was a 4 KB array; Hyrule Warriors: Age of Calamity has 6 KB segments (its soldiers' vertex shaders)
 } nvn_refl;
 

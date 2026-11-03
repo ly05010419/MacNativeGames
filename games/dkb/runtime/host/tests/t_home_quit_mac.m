@@ -42,8 +42,9 @@ static void capture(NSView *overlay, NSSize size, const char *dir, const char *n
     w.contentView = b; overlay.frame = b.bounds; [b addSubview:overlay];
     [b layoutSubtreeIfNeeded]; [b displayIfNeeded];
     NSBitmapImageRep *rep = [b bitmapImageRepForCachingDisplayInRect:b.bounds];
+    if (!rep) { fprintf(stderr, "t_home_quit_mac: no bitmap for %s\n", name); [overlay removeFromSuperview]; return; }
     [b cacheDisplayInRect:b.bounds toBitmapImageRep:rep];
-    NSString *path = [@(dir) stringByAppendingPathComponent:@(name)];
+    NSString *path = [NSString stringWithFormat:@"%s/%s", dir, name];
     [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:path atomically:YES];
     printf("t_home_quit_mac: wrote %s\n", path.UTF8String);
     [overlay removeFromSuperview];
@@ -96,6 +97,7 @@ int main(void) {
         for (int at = 0; at < 2; at++) {   // the dim edge, then the card's middle (the card, a label)
             NSView *hit = [pc hitTest:at ? NSMakePoint(640, 360) : NSMakePoint(10, 10)] ?: pc;
             NSEvent *e = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:NSMakePoint(10, 10) modifierFlags:0 timestamp:0 windowNumber:0 context:nil eventNumber:0 clickCount:1 pressure:1];
+            CHECK(e != nil, "a mouse event is made"); if (!e) break;
             [hit mouseDown:e]; [hit mouseDragged:e]; [hit mouseUp:e];
         }
         CHECK(game->clicks == 0, "a click on the prompt does not reach the game's view");

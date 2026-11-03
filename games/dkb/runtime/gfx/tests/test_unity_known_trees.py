@@ -8,7 +8,7 @@ import unityfs
 
 # The Shader (class 48) and ComputeShader (class 72) hashes of the Unity versions read without a bundle's tree.
 # An entry dropped from KNOWN_TREES stops the split on every stripped player of that version.
-SHADER_HASHES = {'2017.4': '266d53113fa30d2b858f2768f92eaa14', '2018.3': '8db760073e1392061e4a36995f0735af',
+SHADER_HASHES = {'5.5': '4496e93f2179252104401c8dda0a1751', '2017.4': '266d53113fa30d2b858f2768f92eaa14', '2018.3': '8db760073e1392061e4a36995f0735af',
                  '2019.4': 'ed2a06ce7fb8203f6efb5ab5e0ce20d5', '2020.3': 'a30e3dcf6c6d25153d6f64e5e41caf4e',
                  '2021.2': 'd8236c9bd87d85edb203acf352348124', '2022.3': 'ea424a5fc1e48db62144df956f9e1005',
                  '6000.0': '2ec7223dce3af4232b14ae1441bd7999'}

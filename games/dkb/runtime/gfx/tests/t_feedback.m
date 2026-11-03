@@ -329,7 +329,7 @@ static void fpos_case(const char *dir) {
     fs->stage = 1; strcpy(fs->key, "fedcba9876543211_b"); fs->fn = [fl newFunctionWithName:@"main0"];
     fs->rf.nb = 1; fs->rf.b[0] = (nvn_rbind){.kind=NVN_RB_TEX, .reg=0, .aid=0, .dtt=MTLTextureType2D};
     for (NSDictionary *c in facts[@"calls"]) { int i = fs->rf.nfc++; NSArray *f = c[@"frag_pos"]; fs->rf.fc_reg[i] = (uint8_t)[c[@"tex_reg"] intValue]; fs->rf.fc_locn[i] = 0xff;
-        if (f.count == 2) { fs->rf.fc_fpos |= 1u << i; for (int q = 0; q < 2; q++) fs->rf.fc_scale[i][q] = (uint16_t)([f[q][0] intValue] << 8 | [f[q][1] intValue] << 2 | [f[q][2] intValue]); } }
+        if (f.count == 2) { fs->rf.fc_fpos |= 1u << i; for (int q = 0; q < 2; q++) fs->rf.fc_scale[i][q] = (uint32_t)([f[q][0] intValue] << 16 | [f[q][1] intValue] << 2 | [f[q][2] intValue]); } }
     for (NSDictionary *o in facts[@"outputs"]) fs->rf.fo_color[fs->rf.nfo++] = (uint8_t)[o[@"color"] intValue];
     fs->rf.color_known = 1; fs->rf.color_mask = 1;
     CHECK(fs->rf.nfc == 1 && fs->rf.fc_fpos == 1 && fs->rf.fc_scale[0][0] == (6 << 2) && fs->rf.fc_scale[0][1] == (6 << 2 | 1), "the fixture's facts: one sample at the pixel position times c[6].xy");

@@ -133,7 +133,38 @@ static void vorbis_split(void) {
     assert(!md_vorbis_emit(&d, 0, 1024));
     puts("Vorbis movie sound: an output takes the length asked for and leaves the rest");
 }
+// SDK 1 exports these three getters without const. Later SDKs export the const overloads.
+typedef struct { char bytes[16]; size_t used; } test_buffer;
+static void *buffer_data(const void *buf) { return (void *)((const test_buffer *)buf)->bytes; }
+static size_t buffer_size(const void *buf) { return ((const test_buffer *)buf)->used; }
+static size_t buffer_capacity(const void *buf) { return sizeof ((const test_buffer *)buf)->bytes; }
+static void unused_export(void) { abort(); }
+static int exports_const, exports_mutable, mutable_lookups;
+void *guest_sym(const char *name) {
+    static const struct { const char *modern, *early; void *fn; } getters[] = {
+        {"_ZNK5movie6Buffer4DataEv", "_ZN5movie6Buffer4DataEv", buffer_data},
+        {"_ZNK5movie6Buffer8CapacityEv", "_ZN5movie6Buffer8CapacityEv", buffer_capacity},
+        {"_ZNK5movie6Buffer4SizeEv", "_ZN5movie6Buffer4SizeEv", buffer_size},
+    };
+    for (size_t i = 0; i < sizeof getters / sizeof *getters; i++) {
+        if (!strcmp(name, getters[i].modern)) return exports_const ? getters[i].fn : NULL;
+        if (!strcmp(name, getters[i].early)) { mutable_lookups++; return exports_mutable ? getters[i].fn : NULL; }
+    }
+    return unused_export;  // the other required SDK methods exist but this test never calls them
+}
+static void movie_buffer_exports(void) {
+    test_buffer buf = {.bytes = "frame", .used = 5};
+    for (int sdk = 1; sdk <= 3; sdk++) {  // mutable only, const only, both
+        exports_const = sdk & 2; exports_mutable = sdk & 1; mutable_lookups = 0;
+        memset(&G, 0, sizeof G);
+        md_syms();
+        assert(G.data(&buf) == buf.bytes && G.size(&buf) == 5 && G.cap(&buf) == 16);
+        assert(mutable_lookups == (exports_const ? 0 : 3));
+    }
+    memset(&G, 0, sizeof G);
+}
 int main(void) {
+    movie_buffer_exports();
     playing();
     vorbis_flush();
     vorbis_window_change();

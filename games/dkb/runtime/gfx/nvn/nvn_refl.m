@@ -152,8 +152,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             if (l < 0 || l >= 32 || a < 0 || a >= 16) continue;
             NSArray *refs[4] = {e[@"sx"], e[@"ox"], e[@"sy"], e[@"oy"]}; int ok = 1;
             for (int q = 0; q < 4; q++) { NSArray *r = refs[q]; if (![r isKindOfClass:[NSArray class]] || r.count != 3) { ok = 0; break; }
-                int sl = [r[0] intValue], vec = [r[1] intValue], cmp = [r[2] intValue]; if (sl < 0 || sl > 15 || vec < 0 || vec > 63 || cmp < 0 || cmp > 3) { ok = 0; break; }
-                o->uv_aff[l][q] = (uint16_t)(sl << 8 | vec << 2 | cmp); }
+                int sl = [r[0] intValue], vec = [r[1] intValue], cmp = [r[2] intValue]; if (sl < 0 || sl > 15 || vec < 0 || vec > 4095 || cmp < 0 || cmp > 3) { ok = 0; break; }
+                o->uv_aff[l][q] = (uint32_t)(sl << 16 | vec << 2 | cmp); }
             if (ok) o->uv_aff_attr[l] = (int8_t)a; }
         NSDictionary *uv = [ra isKindOfClass:[NSDictionary class]] ? ra[@"uv_from_attr"] : nil;
         if ([uv isKindOfClass:[NSDictionary class]]) for (NSString *k in uv) { int l = k.intValue, a = [uv[k] intValue]; if (l >= 0 && l < 32 && a >= 0 && a < 16) o->uv_attr[l] = (int8_t)a; }
@@ -165,8 +165,8 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
                 if ([fp isKindOfClass:[NSArray class]]) {   // a pixel-position sample: two uniform references, no interpolated output
                     if (fp.count != 2 || i >= 32) FAIL("fetch call %d: frag_pos is not two uniform references", i);
                     for (int q = 0; q < 2; q++) { NSArray *x = fp[q]; int sl = [x isKindOfClass:[NSArray class]] && x.count == 3 ? [x[0] intValue] : -1, vec = sl >= 0 ? [x[1] intValue] : -1, cmp = sl >= 0 ? [x[2] intValue] : -1;
-                        if (sl < 0 || sl > 15 || vec < 0 || vec > 63 || cmp < 0 || cmp > 3) FAIL("fetch call %d: frag_pos uniform reference out of range", i);
-                        o->fc_scale[i][q] = (uint16_t)(sl << 8 | vec << 2 | cmp); }
+                        if (sl < 0 || sl > 15 || vec < 0 || vec > 4095 || cmp < 0 || cmp > 3) FAIL("fetch call %d: frag_pos uniform reference out of range", i);
+                        o->fc_scale[i][q] = (uint32_t)(sl << 16 | vec << 2 | cmp); }
                     o->fc_fpos |= 1u << i; l = 0xff; }
                 else if (l < 0 || l >= 32) l = -1;
                 if (i != o->nfc || i >= 32 || r < 0 || r >= 256 || l < 0) FAIL("fetch call table not contiguous or out of range (entry %d)", i);

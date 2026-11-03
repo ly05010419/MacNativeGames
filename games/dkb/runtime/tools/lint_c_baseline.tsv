@@ -80,7 +80,6 @@ dm/gfx/tests/t_pull_inv.m	bugprone-random-generator-seed	1
 dm/gfx/tests/t_pull_inv.m	clang-analyzer-nullability.NullablePassedToNonnull	1
 dm/gfx/tests/t_queue_origin.m	clang-analyzer-osx.cocoa.RetainCount	1
 dm/gfx/tests/t_readback.m	clang-analyzer-nullability.NullablePassedToNonnull	1
-dm/gfx/tests/t_reorder_chain.m	clang-analyzer-nullability.NullablePassedToNonnull	2
 dm/gfx/tests/t_rt_range.m	clang-analyzer-osx.cocoa.RetainCount	1
 dm/gfx/tests/t_stencil_view.m	bugprone-suspicious-memory-comparison	1
 dm/gfx/tests/t_stencil_view.m	clang-analyzer-nullability.NullablePassedToNonnull	1
@@ -130,7 +129,7 @@ dm/host/tests/t_fs_case.c	clang-analyzer-unix.Stream	1
 dm/host/tests/t_hid.c	bugprone-suspicious-memory-comparison	2
 dm/host/tests/t_hid.c	bugprone-unsafe-functions	1
 dm/host/tests/t_hid.c	clang-analyzer-unix.Errno	1
-dm/host/tests/t_movie_vpx.c	clang-analyzer-core.UndefinedBinaryOperatorResult	2
+dm/host/tests/t_movie_vpx.c	clang-analyzer-core.UndefinedBinaryOperatorResult	1
 dm/host/tests/t_nro.c	bugprone-unsafe-functions	1
 dm/host/tests/t_oe.c	bugprone-signal-handler	1
 dm/host/tests/t_preempt.c	clang-analyzer-nullability.NullableDereferenced	1
