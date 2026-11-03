@@ -13524,7 +13524,8 @@ static void scene_size_note(__unsafe_unretained NvShader *fs) {   // the compose
     if (ow != w || oh != h) MLOG("内部分辨率（合成采样的场景）：%ux%u", w, h);
 }
 #include "totk_finish.h"   // FXAA off and sharpening (the settings panel's effects page)
-#ifdef GAME_BOTW190
+#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE   // Mac only: the iOS settings have no FXAA / sharpening rows (after PR #1637)
+#define BOTW_FINISH 1
 #include "botw_finish.h"   // the same rows on Breath of the Wild 1.9.0, around its FXAA / upscale draw
 #endif
 static int mfxup_draw(NvProg *pr) {
@@ -13534,7 +13535,7 @@ static int mfxup_draw(NvProg *pr) {
     if (!fs) return 0;
     scene_size_note(fs);
     if (fin_draw(fs)) return 1;   // FXAA off: our pass writes its image before the reader (totk_finish.h)
-#ifdef GAME_BOTW190
+#ifdef BOTW_FINISH
     botw_fin_before(fs);   // the canvas sharpened before the first draw after the scene that writes or reads it (botw_finish.h)
 #endif
     /* TOTK_TAA: the compose shader's scene goes through the MetalFX temporal scaler (1:1) first; encode_args binds the
@@ -13561,13 +13562,13 @@ static int mfxup_draw(NvProg *pr) {
         if (tup_dock(fs)) return 1;   // the temporal upscale wrote the canvas instead of this draw
     } else if (g_tup_composed) g_tup_composed = nil;
 #endif
-#ifdef GAME_BOTW190
+#ifdef BOTW_FINISH
     if (!mfxup_enabled()) return botw_fin_upscale(fs, 0);   // FXAA off: our pass instead of the game's FXAA / upscale draw
 #else
     if (!mfxup_enabled()) return 0;
 #endif
     if (mfxup_dock(fs)) {
-#ifdef GAME_BOTW190
+#ifdef BOTW_FINISH
         botw_fin_upscale(fs, 1);   // MetalFX wrote the canvas: the sharpening still follows it
 #endif
         static unsigned n; if (++n % 1800 == 1) { char b[200]; mfxup_stats(MFXUP_DOCKED, b, sizeof b);
@@ -13578,7 +13579,7 @@ static int mfxup_draw(NvProg *pr) {
                  (unsigned long long)g_mfxup_dock_no[3], (unsigned long long)g_mfxup_dock_no[4], (unsigned long long)g_mfxup_dock_no[5]); }
         return 1;
     }
-#ifdef GAME_BOTW190
+#ifdef BOTW_FINISH
     if (botw_fin_upscale(fs, 0)) return 1;   // MetalFX on, but this draw kept (the picture is the canvas's size)
 #endif
     if (strncmp(fs->key, "0ac9a54938974396", 16) || !R.rt.n || !R.rt.color[0]) return 0;

@@ -24,9 +24,9 @@ static void settings_effects_restore(void) {
  if(runtime_setting_word("graphics-effects.txt",line,sizeof line))
   for(char *w=strtok(line," \t\r\n");w;w=strtok(NULL," \t\r\n"))
    for(int i=0;i<dm_gfx_fx_count();i++)if(!strcmp(w,dm_gfx_fx_id(i)))dm_gfx_fx_set(i,0);
- char word[16];int pct;
+ char word[16];double pct;
  if(runtime_setting_word("graphics-fxaa.txt",word,sizeof word)&&!strncmp(word,"off",3))dm_gfx_fxaa_set(0);
- if(settings_read_int("graphics-sharpen.txt",&pct)&&pct<=100)dm_gfx_sharpen_set(pct);
+ if(settings_read_number("graphics-sharpen.txt",0,100,&pct))dm_gfx_sharpen_set((int)pct);   /* as 1.4.3 reads it */
 }
 /* The page's "Reset to defaults": every switch on, FXAA on, no sharpening, and their files removed. */
 static void settings_botw_effects_reset(void) {

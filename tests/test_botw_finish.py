@@ -26,14 +26,16 @@ class Hooks(unittest.TestCase):
     def test_included_after_totk_finish_on_190_only(self):
         self.assertEqual(MTL.count('#include "botw_finish.h"'), 1)
         self.assertIn('#include "totk_finish.h"', MTL[:MTL.index('#include "botw_finish.h"')])
-        self.assertTrue(MTL[:MTL.index('#include "botw_finish.h"')].rstrip().endswith('#ifdef GAME_BOTW190'))
+        guard = MTL[:MTL.index('#include "botw_finish.h"')].rstrip().splitlines()
+        self.assertEqual(guard[-1], '#define BOTW_FINISH 1')   # Mac only: iOS has no FXAA / sharpening rows
+        self.assertTrue(guard[-2].startswith('#if defined(GAME_BOTW190) && !TARGET_OS_IPHONE'))
 
     def test_every_call_is_on_190_only(self):
         for call in ('botw_fin_before(fs);', 'return botw_fin_upscale(fs, 0);', 'botw_fin_upscale(fs, 1);',
                      'if (botw_fin_upscale(fs, 0)) return 1;'):
             self.assertEqual(MTL.count(call), 1, call)
             before = MTL[:MTL.index(call)]
-            self.assertGreater(before.rindex('#ifdef GAME_BOTW190'), before.rindex('#endif'), call)
+            self.assertGreater(before.rindex('#ifdef BOTW_FINISH'), before.rindex('#endif'), call)
 
     def test_the_order_in_mfxup_draw(self):
         draw = branch(MTL, 'static int mfxup_draw(NvProg *pr) {', '\n}\n')
@@ -100,7 +102,7 @@ class Page(unittest.TestCase):
     def test_restore_and_reset(self):
         restore = branch(PAGE, 'static void settings_effects_restore(void) {', '\n}\n')
         self.assertIn('!strncmp(word,"off",3))dm_gfx_fxaa_set(0);', restore)
-        self.assertIn('settings_read_int("graphics-sharpen.txt",&pct)&&pct<=100)dm_gfx_sharpen_set(pct);', restore)
+        self.assertIn('settings_read_number("graphics-sharpen.txt",0,100,&pct))dm_gfx_sharpen_set((int)pct);', restore)
         reset = branch(PAGE, 'static void settings_botw_effects_reset(void) {', '\n}\n')
         self.assertIn('dm_gfx_fxaa_set(1);dm_gfx_sharpen_set(0);', reset)
 
