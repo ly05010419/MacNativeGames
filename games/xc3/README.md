@@ -26,7 +26,7 @@ Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
 | Frame rate | 30 fps, as on the Switch; the GPU takes about 6–7 ms per frame in Everblight Plain, the process about half of one CPU core |
 | App | done: `make app` builds a self-contained `Xenoblade Chronicles 3.app` (settings window, then the game); it runs with the work folder renamed |
 | 2.2.1 | builds from the base NSP plus the 2.2.1 update; played on the Mac from a 1.0.0 save (29 October 2026); the DLC menu's "Purchase" returns at once (no eShop) |
-| Long play | the base game (2.2.1, the app) for 2.5 hours on 2 November 2026 with no glitches, seen in play |
+| Long play | the base game (2.2.1, the app) for 2.5 hours on 2 November 2026 with no glitches, seen in play: the screen tearing, thin black lines and the bright streak from a character seen in October did not come back |
 | Add-ons | the four Expansion Pass volumes mount; volumes 1–3 played; Future Redeemed played after its flat-polygon fix (3 November 2026). Neither the main story nor Future Redeemed has been played to the end |
 
 ## Known gaps
@@ -34,8 +34,6 @@ Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
 - Geometry shaders with line or triangle input are emulated since 2026-11-03; `TOTK_GS_TRIANGLES=0` skips them as before, should a character or effect go missing.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
 - Under the game's second sampler pool, a combined handle with sampler 0 is read as a separate texture handle.
-- Rare, brief screen tearing or thin black lines while playing (seen in October; not in the 2.5-hour session on 2 November).
-- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K); not seen since the ordering-barrier fix of 3 November.
 - Without `make shader-prepare`, a shader seen for the first time is translated and compiled when it is first used, and on the first run a loading screen can wait for that, once for up to about a minute. With it, the app carries every shader of the game and its add-ons; only a few, with a bind state the default translation does not cover, are translated in play.
 
 ## What the game uses
