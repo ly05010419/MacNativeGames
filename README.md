@@ -37,6 +37,8 @@ and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-por
 
 Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
+Donkey Kong Bananza also builds as a Mac app, from a copy of nxnative: [`games/dkb`](games/dkb/README.md).
+
 ### Switch 1 games
 
 | Game | Version | Platform | Status | Folder |
@@ -191,6 +193,8 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 宝可梦 Pokopia | 2.0.1 | Mac | 能启动，早期；到第一个完整场景时停住（待解决）。 |
 
 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+
+大金刚 Bananza 另外可以用 nxnative 的副本打包成 Mac App：[`games/dkb`](games/dkb/README.md)。
 
 ### Switch 1 游戏
 

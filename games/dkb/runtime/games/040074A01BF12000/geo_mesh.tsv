@@ -1,0 +1,4 @@
+# kind: evidence  vertex key <TAB> geometry key: pairs drawn with a lean passthrough geometry shader, each built as one mesh library (dm/gfx/tools/dmsh_mesh.py). Donkey Kong
+# Bananza draws every geometry draw (about 600 a frame in its first level) with this one pair: a non-instanced, non-indirect triangle list without restart, whose vertex shader has
+# a pulling entry (the host's "geometry mesh: ... has no mesh library" line names it, and a count of geo_mesh_fn's conditions found no other pair on the scripted route)
+f9c807930abd1234	5d537f7630ec3671
