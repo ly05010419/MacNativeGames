@@ -63,6 +63,17 @@ Community ports keep their own runtime, graphics layer and scripts in their fold
 One script builds and installs it, the headset side included: [`zeldaVR/install.md`](zeldaVR/install.md) (code in
 [`zeldaVR`](zeldaVR)). VR stays off in the normal app.
 
+### Switch 2 games (experimental)
+
+Switch 2 games run on the same Tears of the Kingdom runtime: their Ampere (NVN2) shaders go through the same translator,
+and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-port.md)).
+
+- **Donkey Kong Bananza** plays on the Mac from a development build: the mines with their terrain, characters and the HUD,
+  at the game's 60 fps in the scene tested. Its terrain draws through geometry shaders, which Metal does not have; they run
+  as compute kernels.
+- **Pokémon Pokopia** boots, runs its frame loop and shows its loading screen; it stops at its first full scene (open).
+- Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
+
 ### Windows games
 
 [`windows_games`](windows_games) holds Windows PC games, one folder each. They are statically recompiled into arm64,
@@ -100,6 +111,9 @@ The [shared shader list](docs/shader-list.md) now holds **14,794 shader variants
 
 ## What's new
 
+- **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
+  Pokémon Pokopia boots but does not reach its first scene yet. No app packaging yet ([Switch 2 games](#switch-2-games-experimental),
+  [docs/ns2-port.md](docs/ns2-port.md)).
 - **2026-11-02: Tears of the Kingdom 1.1.2 is no longer supported.** The supported versions are 1.0.0, 1.2.1 and 1.4.3
   (1.4.3 is the most tested). The builder now refuses a 1.1.2 update: build again with the 1.2.1 or 1.4.3 update and
   the same `-o` ([another game version](docs/install.md)). Your saves stay where they are (`TOTK/profile`); before the
@@ -127,7 +141,8 @@ Measuring by game state with the Metal performance tools of macOS 27 (`TOTK_STAT
 ## Acknowledgements
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this way of running Switch games natively (for Diablo II: Resurrected): the NSO rewriter, the Horizon host and the NVN-on-Metal layer here started as its generic parts.
-- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the one-script packaging and NSP common-ticket import follow its approach, and code of it is adapted here: the SignalToAddress, SystemEvent and signal-wake rules in `games/totk/runtime/threads.c` (via PR #159) and the spin-wait search in `games/totk/third_party/d2r/patch_nso.py`.
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the one-script packaging and NSP common-ticket import follow its approach, and code of it is adapted here: the SignalToAddress, SystemEvent and signal-wake rules in `games/totk/runtime/threads.c` (via PR #159) and the spin-wait search in `games/totk/third_party/d2r/patch_nso.py`. The Switch 2 support follows its Donkey Kong Bananza port and carries code of it: the Ampere shader decoder and emitters and the NVN2 control section (translator patch `0006`), geometry shaders as compute kernels (patch `0007`, `Geometry.cs`, `GeometryLean.cs`, `nvn_geometry.h` and the host kernels in `nvn_geometry_lean.inc`), and SDK 20 host services (`ns2_host.c`, `ns2_audio_out.c`, `ns2_codec.c`), each credited with its commit in the code.
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)** (MIT), a fork of nxnative with Switch 2 support, was the reference for Pokémon Pokopia; **[pokopia-native](https://github.com/xFractals/pokopia-native)** (MIT) documents the layout of Pokopia's shader containers, which `games/totk/scripts/ns2_shader_corpus.py` reads.
 - **Ryujinx** (MIT): its shader translator (`vendor/ryujinx`) turns the game's Maxwell shaders into SPIR-V, and its system-service code is a reference. With this project's patches and service it is compiled ahead of time (.NET NativeAOT, which builds in .NET's runtime libraries, MIT) into `games/totk/prebuilt/macos-arm64/totk_xlate`; `games/totk/tools/totk_xlate/publish_native.sh` rebuilds it (needs the .NET 10 SDK, only for developers). The audio effects (delay, reverb, compressor) and the mixer in `games/totk/runtime` are ported from Ryujinx.Audio.
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)** (Apache-2.0) turns SPIR-V into Metal Shading Language; it is fetched at a pinned commit and compiled with clang during the build.
 - **[hactool](https://github.com/SciresM/hactool)** (ISC, with its bundled mbedTLS, Apache-2.0): merges the base game and its update at build time; fetched at a pinned commit.
@@ -200,6 +215,16 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 一个脚本完成打包和安装，包括头显上的准备：[`zeldaVR/install.md`](zeldaVR/install.md)（代码在 [`zeldaVR`](zeldaVR)）。普通 App 里 VR 不会打开。
 
+### Switch 2 游戏（实验性）
+
+Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampere（NVN2）着色器走同一个翻译器，SDK 20 的系统服务由同一个宿主
+应答（[docs/ns2-port.md](docs/ns2-port.md)）。
+
+- **大金刚 Bananza** 用开发构建可以在 Mac 上玩：矿洞的地形、角色和 HUD 都正常，测试的场景里达到游戏自己的 60 fps。它的地形
+  靠几何着色器绘制，Metal 没有几何着色器，改成计算核执行。
+- **宝可梦 Pokopia** 能启动、跑帧循环、显示加载画面；到第一个完整场景时停住（待解决）。
+- 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+
 ### Windows 游戏
 
 [`windows_games`](windows_games) 放 Windows 电脑游戏，一个游戏一个目录。静态重编译成 arm64，它的运行时调用 Metal。和 Switch
@@ -236,6 +261,8 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 
 ## 更新说明
 
+- **2026-11-03：第一批 Switch 2 游戏，实验性。** 大金刚 Bananza 用开发构建可以在 Mac 上玩；宝可梦 Pokopia 能启动，还到不了第一个
+  场景。暂时不能打包成 App（[docs/ns2-port.md](docs/ns2-port.md)）。
 - **2026-11-02：王国之泪不再支持 1.1.2。** 支持的版本是 1.0.0、1.2.1 和 1.4.3（1.4.3 测试得最多）。现在打包时会拒绝
   1.1.2 的更新包：请换成 1.2.1 或 1.4.3 的更新包，用同一个 `-o` 重新打包（[换游戏版本](docs/install.zh-CN.md)）。存档还在原处
   （`TOTK/profile`）；新版本第一次启动前，App 会先在旁边备份一份，1.2.1 直接读 1.1.2 的存档，1.4.3 会自动迁移。放在
@@ -261,7 +288,8 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 ## 致谢
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）为《暗黑破坏神 II：狱火重生》开发了这套原生运行 Switch 游戏的方法：这里的 NSO 改写器、Horizon 宿主和 Metal 上的 NVN 层都从它的通用部分起步。
-- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：“用户自己的游戏文件 + 一个脚本出包”和 NSP 通用票据读取的做法借鉴自它；也移植了它的代码：`games/totk/runtime/threads.c` 里 SignalToAddress、SystemEvent 和按对象唤醒的规则（经 PR #159），以及 `games/totk/third_party/d2r/patch_nso.py` 的自旋等待查找。
+- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：“用户自己的游戏文件 + 一个脚本出包”和 NSP 通用票据读取的做法借鉴自它；也移植了它的代码：`games/totk/runtime/threads.c` 里 SignalToAddress、SystemEvent 和按对象唤醒的规则（经 PR #159），以及 `games/totk/third_party/d2r/patch_nso.py` 的自旋等待查找。Switch 2 支持参照了它的大金刚 Bananza 移植，并带了它的代码：Ampere 着色器的解码和生成以及 NVN2 控制段（翻译器补丁 `0006`）、几何着色器改成计算核（补丁 `0007`、`Geometry.cs`、`GeometryLean.cs`、`nvn_geometry.h` 和 `nvn_geometry_lean.inc` 里的宿主计算核）、SDK 20 的宿主服务（`ns2_host.c`、`ns2_audio_out.c`、`ns2_codec.c`），代码注释里都注明了对应的提交。
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)**（MIT）是带 Switch 2 支持的 nxnative 分支，宝可梦 Pokopia 参照了它；**[pokopia-native](https://github.com/xFractals/pokopia-native)**（MIT）记录了 Pokopia 着色器容器的格式，`games/totk/scripts/ns2_shader_corpus.py` 照此读取。
 - **Ryujinx**（MIT）：它的着色器翻译器（`vendor/ryujinx`）把游戏的 Maxwell 着色器转成 SPIR-V，它的系统服务代码也是参考。加上本项目的补丁和着色器服务，用 .NET NativeAOT 预先编成原生程序 `games/totk/prebuilt/macos-arm64/totk_xlate`（其中编入了 .NET 的运行库，MIT）；改了翻译器用 `games/totk/tools/totk_xlate/publish_native.sh` 重编（要 .NET 10 SDK，只有开发者需要）。`games/totk/runtime` 里的音效（延迟、混响、压缩器）和混音器移植自 Ryujinx.Audio。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**（Apache-2.0）把 SPIR-V 转成 Metal 着色语言；打包时按固定提交取得，用 clang 编。
 - **[hactool](https://github.com/SciresM/hactool)**（ISC，自带的 mbedTLS 是 Apache-2.0）：打包时合并本体和更新包；按固定提交取得。
