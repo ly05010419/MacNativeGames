@@ -6,6 +6,7 @@ int taa_enabled(void);                         // key 5 state (what the panel sh
 int taa_active(void);                          // the replay's state, latched from it at frame end
 int taa_ready(void);                           // this frame has the depth and camera to anti-alias (cheap check before taa_encode)
 void taa_toggle(void);                         // key 5
+void taa_set(int on);                          // native settings panel; latched at a frame boundary
 /* Per render pass (before its encoder opens): finds this frame's G-buffer pass (D32F depth of the colour size, three or
    more colour attachments) and returns 1 for the passes that draw into its depth, which get this frame's jitter. */
 int taa_pass(MTL4RenderPassDescriptor *pd);

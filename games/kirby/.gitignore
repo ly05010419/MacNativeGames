@@ -1,0 +1,12 @@
+# User-provided game material and local build results must stay out of source control.
+*.xci
+*.nsp
+*.nsz
+*.keys
+*.bfttf
+*.bin
+*_build/
+Kirby_build/
+Kirby Data/
+.venv/
+__pycache__/

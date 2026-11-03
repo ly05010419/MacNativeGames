@@ -176,26 +176,32 @@ static void remap_at(Module *m,uintptr_t to,const void *from,size_t size,boolean
 static void digest_hex(const void *p,size_t n,char hex[65]){unsigned char d[32];CC_SHA256(p,(CC_LONG)n,d);for(unsigned i=0;i<32;i++)snprintf(hex+i*2,3,"%02x",d[i]);}
 static void map_module(Module *m,const char *dir) {
  (void)dir;
- need(!m->patch_lead,"a leading patch area is not supported on iOS yet");
  const IosEmbed *e=NULL;for(unsigned i=0;i<sizeof(ios_embed)/sizeof(*ios_embed);i++)if(!strcmp(ios_embed[i].name,m->name))e=&ios_embed[i];
  need(e!=NULL,"module missing from ios_embed.h");
  char sx0[17],sx1[17],sw[17];snprintf(sx0,sizeof sx0,"__%sx0",m->name);snprintf(sx1,sizeof sx1,"__%sx1",m->name);snprintf(sw,sizeof sw,"__TOTK%sW",m->name);
  unsigned long z0=0,zw=0,z1=0;
  const uint8_t *x0=getsectiondata(&_mh_execute_header,"__TOTKX",sx0,&z0),*w=getsectiondata(&_mh_execute_header,sw,"__img",&zw),*x1=getsectiondata(&_mh_execute_header,"__TOTKX",sx1,&z1);
  need(x0&&w&&x1,"embedded module sections missing");
- need(z0==page_up(m->text_end)&&z0+zw==(uint64_t)m->patch_off&&(uint64_t)m->patch_off+z1==page_up(m->file_size),"embedded module layout");
+ /* A leading patch area (patch_lead > 0): x1 is the patch area [0, patch_lead) of the file, mapped right before the
+    module; w ends with the file (the end of data). .bss and the key page are the reservation's zero fill, as on the Mac,
+    so the 1.8 GB of main's .bss is not in the app. */
+ if(m->patch_lead)need(m->patch_lead%0x4000==0&&m->patch_off==-(int64_t)m->patch_lead&&z1==m->patch_lead&&z0==page_up(m->text_end)&&
+                       z0+zw==page_up(m->file_size-m->patch_lead)&&z0+zw<=m->key_off&&m->image_size==m->key_off+0x4000,"embedded leading patch layout");
+ else need(z0==page_up(m->text_end)&&z0+zw==(uint64_t)m->patch_off&&(uint64_t)m->patch_off+z1==page_up(m->file_size),"embedded module layout");
  need(!((uintptr_t)x0&0x3fff)&&!((uintptr_t)w&0x3fff)&&!((uintptr_t)x1&0x3fff),"embedded sections not 16 KiB aligned");
  char hex[65];
  digest_hex(x0,z0,hex);need(!strcmp(hex,e->x0),"embedded text SHA256 differs from the exported patched text");
  digest_hex(w,zw,hex);need(!strcmp(hex,e->w),"embedded data SHA256 differs from verified rewrite");
  digest_hex(x1,z1,hex);need(!strcmp(hex,e->x1),"embedded patch area SHA256 differs from verified rewrite");
- m->size=page_up(m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
- mach_vm_address_t base=0;need(mach_vm_allocate(mach_task_self(),&base,m->size,VM_FLAGS_ANYWHERE)==KERN_SUCCESS,"reserve module range");
+ m->size=page_up(m->patch_lead?m->image_size:m->file_size)+(!strcmp(m->name,"main")?0x4000:0);
+ mach_vm_address_t reserved=0;need(mach_vm_allocate(mach_task_self(),&reserved,m->patch_lead+m->size,VM_FLAGS_ANYWHERE)==KERN_SUCCESS,"reserve module range");
+ mach_vm_address_t base=reserved+m->patch_lead;
  remap_at(m,base,x0,z0,FALSE,VM_PROT_READ|VM_PROT_EXECUTE);
  remap_at(m,base+z0,w,zw,TRUE,VM_PROT_READ|VM_PROT_WRITE);
  remap_at(m,base+m->patch_off,x1,z1,FALSE,VM_PROT_READ|VM_PROT_EXECUTE);
  m->base=(uint8_t *)(uintptr_t)base;
- need(m->key_off%0x4000==0&&m->key_off+0x4000<=(uint64_t)m->patch_off&&(uint64_t)m->patch_off<m->size,"key and patch layout");
+ need(m->key_off%0x4000==0&&m->key_off+0x4000<=m->size&&(m->patch_lead||(m->key_off+0x4000<=(uint64_t)m->patch_off&&(uint64_t)m->patch_off<m->size)),"key and patch layout");
+ snprintf(patch_names[m-modules],sizeof patch_names[0],"%s.patch",m->name);
  uint64_t *key=(void *)(m->base+m->key_off);
  for(unsigned i=0;i<8;i++)key[i]=runtime_keys[i]*8;
  make_hash(m);
@@ -232,7 +238,7 @@ static void map_module(Module *m,const char *dir) {
 static void export_ios_text(const char *rewritten,const char *out) {
  for(unsigned i=0;i<NM;i++){Module *m=&modules[i];char path[4096];size_t n=page_up(m->text_end);
   need(snprintf(path,sizeof path,"%s/%s.patched.bin",rewritten,m->name)<(int)sizeof path,"image path");
-  FILE *f=fopen(path,"rb");need(f!=NULL,"open patched module");uint8_t *orig=malloc(n);need(orig&&fread(orig,1,n,f)==n,"read original text");fclose(f);
+  FILE *f=fopen(path,"rb");need(f!=NULL&&fseeko(f,(off_t)m->patch_lead,SEEK_SET)==0,"open patched module");uint8_t *orig=malloc(n);   /* a leading patch area comes first in the file */need(orig&&fread(orig,1,n,f)==n,"read original text");fclose(f);
   unsigned diff=0;for(size_t k=0;k<n;k+=4)if(memcmp(orig+k,m->base+k,4))diff++;free(orig);
   need(snprintf(path,sizeof path,"%s/%s.x0.bin",out,m->name)<(int)sizeof path,"export path");
   f=fopen(path,"wb");need(f&&fwrite(m->base,1,n,f)==n&&fclose(f)==0,"write exported text");

@@ -10,6 +10,14 @@ static BOOL probe_spawn(const char *mode, const char *arg) { if (!spawn_ok) retu
 #include "../games/totk/third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 #include <assert.h>
 
+/* The probe's game window: real (AppKit lays it out, draws it and routes the probe's events), never seen (user 2026-11-03:
+   test windows must not show): fully transparent, no shadow, and the mouse goes through it to whatever is below. */
+static NSWindow *probe_window(void) {
+    NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    w.alphaValue = 0; w.hasShadow = NO; w.ignoresMouseEvents = YES;
+    return w;
+}
+
 void mfx_set(int mode);
 int mfx_latch(void);
 void mfxup_set(int on);
@@ -20,6 +28,10 @@ void settings_test_output_size(unsigned w, unsigned h);
 void settings_test_output_4k(int on);
 void settings_test_aspect_init(double view);
 void settings_test_aspect_frame(void);
+#ifdef GAME_BOTW190
+void settings_test_fov_refused(int refused); void settings_test_fov_init(void); uint32_t settings_test_fov_word(void);
+static uint32_t float_bits(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }
+#endif
 
 void dm_gfx_set_flag(const char *name, int value) {
     if (!strcmp(name, "mfx_interp")) mfx_set(value);
@@ -39,6 +51,11 @@ void dm_gfx_ssao_set(int pct) { if (fakeSsaoLive) fakeSsaoSet = pct; }
 #else
 #define TOTK_V143 0
 #endif
+#ifdef GAME_BOTW190   /* PR #1602: Breath of the Wild 1.9.0's effects page has 1.4.3's rows; of the switches only AO acts */
+#define BOTW_V190 1
+#else
+#define BOTW_V190 0
+#endif
 static const char *const fakeFxIds[2] = {"ao", "bloom"}, *const fakeFxNames[2][2] = {{"环境光遮蔽", "Ambient occlusion"}, {"泛光", "Bloom"}};
 static int fakeFxOn[2] = {1, 1};
 static int fakeAnisoStart = -1, fakeFxaa = 1, fakeSharpen;
@@ -51,10 +68,12 @@ void dm_gfx_fxaa_set(int on) { fakeFxaa = on; }
 int dm_gfx_fxaa_on(void) { return fakeFxaa; }
 void dm_gfx_sharpen_set(int pct) { fakeSharpen = pct; }
 int dm_gfx_sharpen(void) { return fakeSharpen; }
+static int fakeFxaaReplaced;   /* Breath of the Wild 1.9.0: MetalFX replaces the FXAA / upscale draw (gfx/nvn/botw_finish.h) */
+int dm_gfx_botw_fxaa_replaced(void) { return fakeFxaaReplaced; }
 int dm_gfx_fx_count(void) { return 2; }
 const char *dm_gfx_fx_id(int i) { return fakeFxIds[i]; }
 const char *dm_gfx_fx_name(int i, int english) { return fakeFxNames[i][english != 0]; }
-int dm_gfx_fx_available(int i) { (void)i; return 1; }
+int dm_gfx_fx_available(int i) { return !BOTW_V190 || i == 0; }   /* as totk_fx.h: on 1.9.0 only AO */
 int dm_gfx_fx_on(int i) { return fakeFxOn[i]; }
 void dm_gfx_fx_set(int i, int on) { fakeFxOn[i] = on != 0; }
 /* runtime/gamepad.m's controller type and mouse mode without GameController: a DualSense is connected. */
@@ -118,9 +137,10 @@ int runtime_setting_word(const char *name, char *word, size_t size) {
 static int sharedSaves;   /* saves of a setting both games share (runtime_shared_setting_save) */
 void runtime_shared_setting_save(const char *name, const char *word, const char *what) { sharedSaves++; runtime_setting_save(name, word, what); }
 int runtime_shared_setting_word(const char *name, char *word, size_t size) { return runtime_setting_word(name, word, size); }
-static char removedName[64];
+static char removedName[64], removedAll[512];   /* the last file removed, and every one since removedAll was cleared */
 void runtime_setting_remove(const char *name) {
     snprintf(removedName, sizeof removedName, "%s", name);
+    strlcat(removedAll, name, sizeof removedAll); strlcat(removedAll, " ", sizeof removedAll);
     const char *dir = getenv("SETTINGS_TEST_DIR"); if (!dir) return;
     char path[4096]; snprintf(path, sizeof path, "%s/%s", dir, name); unlink(path);
 }
@@ -267,7 +287,7 @@ static void persistence_probe(const char *action) {
     const int outputMode = OUTPUT_MODE_NATIVE;
     NSString *outputChoice = @"2K (2560×1440)";
 #endif
-    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (!strcmp(action, "save")) {
         settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settingsPanel = [TOTKSettingsPanel new];
@@ -388,7 +408,7 @@ static void update_probe(void) {
     [NSFileManager.defaultManager removeItemAtPath:[updateDir stringByAppendingPathComponent:@"status.json"] error:nil];
     setenv("TOTK_CONTROLS", [@(dir) stringByAppendingPathComponent:@"controls.txt"].UTF8String, 1);
     settings_test_output_init();
-    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     settings_show(1); assert(settingsOpen);
     assert(settingsPanel.tabs.segmentCount == settings_pages() && SETTINGS_PAGE_UPDATE == settings_pages() - 1 && [[settingsPanel.tabs labelForSegment:SETTINGS_PAGE_UPDATE] isEqualToString:@"Update"]);
@@ -498,7 +518,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settings_test_output_init();
     // In-memory fixture only: do not start the timer or touch a player's profile.
     playtime=[[TOTKPlaytime alloc] initWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString]];
-    window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (hud_compact()) { TOTKHudBox *box = [[TOTKHudBox alloc] initWithFrame:NSZeroRect]; [window.contentView addSubview:box]; hudBox = box; }
 
@@ -506,12 +526,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 27 + TOTK_V143);   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 27 + TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows on 1.4.3 (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
-                                                                 (1.4.3), or eight greyed rows (Breath of the Wild
-                                                                 1.9.0's shadow resolution live) */
+                                                                 (1.4.3, and Breath of the Wild 1.9.0 with its shadow
+                                                                 resolution and AO live), or eight greyed rows */
 
     /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
        the rows below read the mode. */
@@ -693,15 +713,58 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Shadow resolution", @"Not in this version");
     press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Shadow resolution").enabled);
     /* "Reset to defaults" sets it back to the game's own and removes shadows.txt. */
+    /* The effect switches (PR #1602): ambient occlusion acts at once and is saved as on 1.4.3; the others greyed. */
+    shows(@"Bloom", @"Not in this version"); assert(!menu(@"Bloom").enabled);
+    assert(switched(@"Ambient occlusion")); flip(@"Ambient occlusion", NO);
+    assert(!fakeFxOn[0] && !strcmp(savedName, "graphics-effects.txt") && !strcmp(savedWord, "ao"));
+    shows(@"Depth of field", @"Not in this version"); shows(@"Model detail distance (LOD)", @"Not in this version");
+    /* FXAA and sharpening (gfx/nvn/botw_finish.h): 1.4.3's rows and files; while MetalFX replaces the FXAA / upscale draw
+       the FXAA row says so (rows are made at each opening). */
+    assert(switched(@"FXAA anti-aliasing")); flip(@"FXAA anti-aliasing", NO);
+    assert(!fakeFxaa && !strcmp(savedName, "graphics-fxaa.txt") && !strcmp(savedWord, "off"));
+    pick(@"Sharpening", @"75%"); assert(fakeSharpen == 75 && !strcmp(savedName, "graphics-sharpen.txt") && !strcmp(savedWord, "75"));
+    press(18); fakeFxaaReplaced = 1; press(18); assert(settingsOpen && !menu(@"FXAA anti-aliasing").enabled);
+    shows(@"FXAA anti-aliasing", @"MetalFX replaces it"); assert(menu(@"Sharpening").enabled);
+    press(18); fakeFxaaReplaced = 0; press(18); assert(settingsOpen && switched(@"FXAA anti-aliasing") == NO);
+    /* "Reset to defaults" sets them back to the game's own and removes shadows.txt, graphics-effects.txt,
+       graphics-fxaa.txt and graphics-sharpen.txt. */
     pick(@"Shadow resolution", @"2048 per cascade"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
-    [settingsPanel.effectsButtons[0] performClick:nil]; tick();
-    assert(!runtime_shadow_res_saved() && !strcmp(removedName, "shadows.txt"));
+    removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
+    assert(!runtime_shadow_res_saved() && fakeFxOn[0] && strstr(removedAll, "shadows.txt ") && strstr(removedAll, "graphics-effects.txt "));
+    assert(fakeFxaa && !fakeSharpen && strstr(removedAll, "graphics-fxaa.txt ") && strstr(removedAll, "graphics-sharpen.txt "));
+    [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
+    /* The field of view (Breath of the Wild 1.9.0, the production calls of game_patches_botw.c; the stub itself:
+       tests/test_botw_fov.c): 1x, as the game has it; each choice acts at once and is saved in graphics-fov.txt (x100). */
+    settings_test_fov_init(); assert(!settings_test_fov_word());
+    shows(@"Field of view (FOV)", @"1x (as the game has it)");
+    assert(menu(@"Field of view (FOV)").numberOfItems == 6 && [[menu(@"Field of view (FOV)") itemTitleAtIndex:5] isEqual:@"1.5×"]);   /* 1x up */
+    pick(@"Field of view (FOV)", @"1.2×"); assert(runtime_fov_scale() == 1.2 && !strcmp(savedName, "graphics-fov.txt") && !strcmp(savedWord, "120"));
+    assert(settings_test_fov_word() == float_bits(1.2f));   /* the word the stub reads, at once */
+    runtime_fov_scale_set(0); runtime_fov_scale_set(-1); runtime_fov_scale_set(NAN); runtime_fov_scale_set(3);
+    assert(runtime_fov_scale() == 1.2 && settings_test_fov_word() == float_bits(1.2f));   /* outside 0.5..2: never taken */
+    press(18); setenv("TOTK_FOV_SCALE", "1.3", 1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"1.2×");
+    press(18); unsetenv("TOTK_FOV_SCALE"); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    press(18); setenv("TOTK_EXPORT_IOS", "/nonexistent", 1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version");
+    press(18); unsetenv("TOTK_EXPORT_IOS"); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    press(18); settings_test_fov_refused(1); press(18); assert(settingsOpen && !menu(@"Field of view (FOV)").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version");   /* the camera code was not as shipped: nothing patched */
+    press(18); settings_test_fov_refused(0); press(18); assert(settingsOpen && menu(@"Field of view (FOV)").enabled);
+    /* "Reset to defaults" sets it back to 1x and removes graphics-fov.txt. */
+    pick(@"Field of view (FOV)", @"1.3×"); [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
+    removedAll[0] = 0; [settingsPanel.effectsButtons[0] performClick:nil]; tick();
+    assert(runtime_fov_scale() == 1 && settings_test_fov_word() == float_bits(1.0f) && strstr(removedAll, "graphics-fov.txt "));
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
 #  else
     shows(@"Shadow resolution", @"Not in this version"); assert(!menu(@"Shadow resolution").enabled);
+    shows(@"Field of view (FOV)", @"Not in this version"); assert(!menu(@"Field of view (FOV)").enabled);
 #  endif
     shows(@"Render distance", @"Not in this version"); assert(!menu(@"Render distance").enabled);
-    shows(@"Effect switches", @"Not in this version"); shows(@"Sharpening", @"Not in this version");
+#  ifndef GAME_BOTW190
+    shows(@"Effect switches", @"Not in this version");
+    shows(@"Sharpening", @"Not in this version");
+#  endif
 #endif
     /* Anisotropic filtering (effects page, every version): in force at once. */
     shows(@"Anisotropic filtering", @"Off (as the game has it)");

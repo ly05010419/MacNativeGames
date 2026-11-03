@@ -5,7 +5,7 @@ shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
 from compile_seed import METAL_FLAGS
-from device_pipelines import connected_gpus, seed_check
+from device_pipelines import SCHEMA, connected_gpus, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -176,6 +176,16 @@ def main():
     shutil.copytree(deps/'include',gen/'deps/include',dirs_exist_ok=True)
     (gen/'deps/lib').mkdir(parents=True,exist_ok=True)
     for lib in ('libopus.a','libvpx.a'): clone(deps/'lib'/lib,gen/'deps/lib'/lib)
+    # The shader translator in the app (build_app.py build_device_translator: the Mac's totk_xlate as a static library and
+    # SPIRV-Cross for the device; totk_shader_rt.m DEVICE_XLATE): a variant the startup shaders lack is translated in the
+    # background on the device. Without them (visionOS, or this script run on a tree build_app.py did not prepare) the
+    # app skips such draws and records the request for fill_shaders.py, as before.
+    xlate=tree/'build/ios-xlate'; xlate_libs=('libtotk_xlate_bootstrap.o','libtotk_xlate.a','libtotk_spirv_cross.a')
+    device_xlate=not vision and all((xlate/lib).is_file() for lib in xlate_libs)
+    for lib in xlate_libs:
+        if device_xlate: clone(xlate/lib,gen/'deps/lib'/lib)
+        elif (gen/'deps/lib'/lib).exists(): (gen/'deps/lib'/lib).unlink()   # an earlier build's
+    print('shader translator in the app: '+('yes' if device_xlate else 'no (startup shaders and fill_shaders.py only)'))
     seed_src=tree/f'build/shader-seed/{a.version}'; seed=gen/'totk/shader-seed'
     if not (seed_src/'seed-manifest.json').is_file(): raise RuntimeError(f'missing verified shader seed: {seed_src}')
     import hashlib
@@ -201,7 +211,10 @@ def main():
     env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
     xcconfig=gen/'totk.xcconfig'
     frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','AVFAudio','Security'])
-    xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a {flags}\n')
+    # the start-up object as a file of its own (publish_ios_lib.sh: inside the archive nothing would pull it in)
+    xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
+    xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a{xlate_link} {flags}\n'
+                        + ('OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1\n' if device_xlate else ''))
     run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
     derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
         '-destination','generic/platform='+('visionOS' if vision else 'iOS'),'-derivedDataPath',derived,'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY='],
@@ -264,7 +277,11 @@ def main():
     # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
     # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds.
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
-    want=hashlib.sha256((seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()+(lists/'pso_title.tsv').read_bytes()).hexdigest()
+    # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
+    # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
+    # stamp held only the shaders and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
+    want=hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode()+(seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()
+                        +(lists/'pso_title.tsv').read_bytes()+host.read_bytes()).hexdigest()
     # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
     # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
     tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)

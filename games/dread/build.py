@@ -6,7 +6,8 @@ assets/expected-v1.0.0.json, with the work folder reused across runs.
 
 Run it from the top of the repository. --json-progress prints one JSON event per line for a front end, and --inspect only
 identifies the game files. The app it writes runs the game from the work folder (Info.plist DreadWorkFolder): do not move
-or delete that folder. Nothing here reads another game's folder.
+or delete that folder; --platform ios writes an iPhone / iPad app that carries the game. Nothing here reads another game's
+folder.
 """
 import argparse
 import hashlib
@@ -380,6 +381,36 @@ def step_app(py, work, game, keys, out, logs, inputs):
     say(f'4/4 app: {out}')
 
 
+IOS_SPACE_GB = 10   # the app (a clone of the 4.4 GB RomFS while on the same volume), the .ipa, Xcode's build and Opus / libvpx
+
+
+def ios_prerequisites():
+    """What ios/tools/build_ipa.py and build_deps.py need, checked before the long steps instead of at the last one."""
+    sys.path.insert(0, str(HERE / 'ios/tools'))
+    from xcode_dir import developer_dir
+    try:
+        developer_dir()
+    except RuntimeError as e:
+        raise BuildError(f'the iPhone / iPad app needs the full Xcode: {e}', code='toolchain')
+    missing = [tool for tool in ('xcodegen', 'cmake', 'ninja') if not shutil.which(tool)]
+    if missing:
+        raise BuildError(f'the iPhone / iPad app needs {", ".join(missing)}: brew install {" ".join(missing)}', code='toolchain')
+
+
+def step_ios(py, work, out, logs):
+    """The Mac runtime first (export-ios runs it to write the code the app embeds), the shader seed, then the unsigned app.
+    The device cannot translate shaders: the seed holds every shader of the game for its default bind state and the states
+    assets/shader_list.tsv names (scripts/prepare_shader_seed.py, a few seconds; reused while nothing changed), and the
+    app also takes what the Mac translated while playing (build/shader-cache)."""
+    say('4/4 iPhone / iPad app: generating the runtime tables, compiling the Mac runtime, the shader seed, then the app (Xcode)')
+    run(['make', 'prepare', 'mods', 'runtime', f'WORK={work}', f'PY={py}'], logs / 'runtime.log')
+    run([py, HERE / 'scripts/prepare_shader_seed.py', '--romfs', work / f'extracted/{VERSION}/romfs',
+         '--output', work / 'build/shader-seed', '--translator', work / 'build/shader-service/totk_xlate',
+         '--spirv-cross', work / 'build/spirv-cross/spirv-cross', '--version', VERSION], logs / 'shader-seed.log')
+    run([sys.executable, HERE / 'ios/tools/build_ipa.py', '--work', work, '--out', out], logs / 'ios.log')
+    say(f'4/4 iPhone / iPad app: {out}')
+
+
 def parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('game', type=Path, help=f'your {APP_NAME} card image (XCI) or NSP, base game {EXPECTED["display_version"]} ({EXPECTED["title_id"]})')
@@ -387,7 +418,9 @@ def parse_args(argv):
     ap.add_argument('-k', '--keys', type=Path, required=True, help='your prod.keys')
     ap.add_argument('-o', '--out', type=Path, help='the app to write (default: next to the game file)')
     ap.add_argument('--work', type=Path, help='work folder (default: Dread_build next to the game file); the app runs the game from it')
-    ap.add_argument('--platform', choices=('macos', 'ios', 'visionos'), default='macos', help='macos only')
+    ap.add_argument('--platform', choices=('macos', 'ios', 'visionos'), default='macos',
+                    help='macos (default), or ios: an unsigned iPhone / iPad app (.ipa, or .app) with the game\'s shaders '
+                         'translated ahead; install it with games/dread/ios/tools/install_device.py')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='optional: an unpacked firmware NCA directory for the system shared fonts')
     fonts.add_argument('--shared-fonts', type=Path, help='optional: shared fonts extracted before, with their manifest.json')
@@ -417,8 +450,9 @@ def main(argv):
     for path in (game, keys):
         if not path.is_file():
             raise BuildError(f'no such file: {path}', code='input')
-    if args.platform != 'macos':
-        raise BuildError(f'{APP_NAME} has no iPhone / iPad or Vision Pro build: build the Mac app (leave out --platform)', code='platform')
+    if args.platform == 'visionos':
+        raise BuildError(f'{APP_NAME} has no Vision Pro build: build the Mac app, or the iPhone / iPad app with --platform ios', code='platform')
+    ios = args.platform == 'ios'
     if args.dlc:
         raise BuildError(f'{APP_NAME} has no DLC support: leave out --dlc', code='input')
     if args.mod or args.install_mod_romfs:
@@ -431,20 +465,22 @@ def main(argv):
     for folder in (firmware, shared):
         if folder and not folder.is_dir():
             raise BuildError(f'no such folder: {folder}', code='input')
-    out = args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.app'
-    if out.suffix.lower() != '.app':
-        raise BuildError(f'the output must end in .app: {out}', code='input')
+    out = args.out.expanduser().resolve() if args.out else game.parent / f'{APP_NAME}.{"ipa" if ios else "app"}'
+    if out.suffix.lower() not in (('.ipa', '.app') if ios else ('.app',)):
+        raise BuildError(f'the output must end in {".ipa or .app" if ios else ".app"}: {out}', code='input')
     work = args.work.expanduser().resolve() if args.work else game.parent / 'Dread_build'
     kind = check_package(game)
     if args.inspect:
         if EVENTS:
             event('inspect', game=GAME['id'], app_name=APP_NAME, version=VERSION, display_version=EXPECTED['display_version'],
-                  kind=kind, needs_fonts=False, needs_update=False, platforms=['macos'], dlc=False, mod=False,
-                  space_gb={'macos': SPACE_GB}, work=str(work), default_out=str(out))
+                  kind=kind, needs_fonts=False, needs_update=False, platforms=['macos', 'ios'], dlc=False, mod=False,
+                  space_gb={'macos': SPACE_GB, 'ios': SPACE_GB + IOS_SPACE_GB}, work=str(work), default_out=str(out))
         else:
             say(f'{APP_NAME} {EXPECTED["display_version"]} ({kind}); work folder {work}; output {out}')
         return
     prerequisites()
+    if ios:
+        ios_prerequisites()
     t0 = time.time()
     logs = work / 'logs'
     work.mkdir(parents=True, exist_ok=True)
@@ -457,10 +493,15 @@ def main(argv):
     step_code(py, work, game, keys, logs)
     step_data(py, work, keys, (firmware, shared), logs)
     step_shaders(py, work, logs)
-    step_app(py, work, game, keys, out, logs, dict(game=game, firmware=firmware, shared_fonts=shared))
-    say(f'done in {(time.time() - t0) / 60:.0f} min: {out}. It runs the game from {work}: keep that folder where it is.')
+    if ios:
+        step_ios(py, work, out, logs)
+        say(f'done in {(time.time() - t0) / 60:.0f} min: {out}. Sign and install it with games/dread/ios/tools/install_device.py; '
+            'it carries the game, so the work folder is not needed to play.')
+    else:
+        step_app(py, work, game, keys, out, logs, dict(game=game, firmware=firmware, shared_fonts=shared))
+        say(f'done in {(time.time() - t0) / 60:.0f} min: {out}. It runs the game from {work}: keep that folder where it is.')
     if EVENTS:
-        event('done', out=str(out), game=GAME['id'], version=VERSION, platform='macos')
+        event('done', out=str(out), game=GAME['id'], version=VERSION, platform=args.platform)
 
 
 if __name__ == '__main__':

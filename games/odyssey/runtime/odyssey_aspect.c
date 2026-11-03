@@ -185,6 +185,18 @@ static void aspect_apply(void) {
     else fprintf(stderr, "[odyssey] aspect ratio 16:9 (the game's own)\n");
 }
 
+float runtime_aspect_ratio(void) {
+    if (!g_aspect_main) return 0;
+    float r = bits_float(atomic_load(&g_want)); return r > 0 ? r : 16.0f/9;
+}
+float runtime_aspect_start(void) {
+    double r = aspect_parse(getenv("TOTK_ASPECT")); return r > 0 ? (float)r : 0;
+}
+int runtime_aspect_set_ratio(float ratio) {
+    if (!g_aspect_main || !isfinite(ratio) || ratio < 0.5f || ratio > 8) return 0;
+    g_wide = ratio; g_named = 1; atomic_store(&g_step, ASPECT_STEP_WIDE); aspect_apply(); return 1;
+}
+
 /* game_patches.c: the main module, and TOTK_ASPECT. Not on iPhone / iPad (no window to fit, no wide display). */
 void odyssey_aspect_install(const Module *main_module) {
     if (TARGET_OS_IPHONE) return;

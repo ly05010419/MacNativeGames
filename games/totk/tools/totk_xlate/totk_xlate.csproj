@@ -11,6 +11,15 @@
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
   </ItemGroup>
+  <!-- The iPhone / iPad library (publish_ios_lib.sh): the same service as a static library the app links (LibExports.cs);
+       SPIRV-Cross is resolved when the app is linked (build_ipa.py builds it from the pinned sources). -->
+  <PropertyGroup Condition="'$(TotkXlateLib)' == 'true'">
+    <OutputType>Library</OutputType>
+    <NativeLib>Static</NativeLib>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TotkXlateLib)' == 'true'">
+    <DirectPInvoke Include="totk_spirv_cross" />
+  </ItemGroup>
   <!-- SPIRV-Cross linked in (publish_native.sh builds the library; Service.cs SpirvCross calls it) -->
   <ItemGroup Condition="'$(TotkSpirvCrossLib)' != ''">
     <DirectPInvoke Include="totk_spirv_cross" />

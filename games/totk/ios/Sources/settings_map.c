@@ -41,6 +41,12 @@ int totk_frame_env_build(const char *cap, totk_frame_env *out) {
    drawable with the scene at 1600x900. Off is the handheld default of the runtime (no drawable or scene override).
    Breath of the Wild sizes its docked scene through its own patch (game_patches_botw.c patch_render_phone, from the
    pane's TOTK_BOTW_SCENE row), so TOTK_RENDER_RES is left alone there. */
+/* Tears of the Kingdom's docked scene (the pane's TOTK_DOCKED_SCENE row, the start screen's 1080p original / HD, as
+   Breath of the Wild's TOTK_BOTW_SCENE): the Switch's 1600x900, or 1920x1080, the canvas's own size; anything else is
+   the Switch's. main.m hands it over as TOTK_RENDER_RES when the preset is docked. */
+const char *totk_docked_scene(const char *choice) {
+    return choice && !strcmp(choice, "1920x1080") ? "1920x1080" : "1600x900";
+}
 int totk_preset_env_build(int docked, totk_preset_env *out) {
     *out = docked ? (totk_preset_env){"docked", "1080", "1600x900", "0"}
                   : (totk_preset_env){"handheld", NULL, NULL, "0"};
@@ -66,6 +72,7 @@ int totk_preset_frame_env_build(const char *fps, totk_frame_env *out) {
 static const struct { const char *key; totk_key_layer layer; } LAYERS[] = {
     {"TOTK_DOCKED",           TOTK_KEY_PRESET},
     {"TOTK_BOTW_SCENE",       TOTK_KEY_PRESET},
+    {"TOTK_DOCKED_SCENE",     TOTK_KEY_PRESET},
     {"TOTK_PHONE_FPS",        TOTK_KEY_PRESET},
     {"TOTK_IOS_PICTURE_MODE", TOTK_KEY_CUSTOM},
     {"TOTK_RENDER_RES",       TOTK_KEY_CUSTOM},

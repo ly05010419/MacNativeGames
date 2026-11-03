@@ -13,6 +13,8 @@ typedef struct {
 // bit 4 (TOTK) the vertex function emulates a sampler border colour Metal lacks (vs_fn_for, border_key).
 #define PSO_LAYERED 2u
 #define PSO_VBORDER 16u
+// bit 5 (TOTK, PR #1129): HDR / EDR on for this draw; the fragment function is the shader's HDR twin (NvShader hdr_fn).
+#define PSO_HDR 32u
 
 typedef struct {
     uint8_t kind, fbmask;

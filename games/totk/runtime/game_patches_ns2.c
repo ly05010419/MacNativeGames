@@ -29,12 +29,8 @@ int runtime_output_mode(void) { return OUTPUT_MODE_OFF; }
 int runtime_output_mode_set(int mode) { (void)mode; return 0; }
 int runtime_output_native(int mode, unsigned *w, unsigned *h) { (void)mode; (void)w; (void)h; return 0; }
 int runtime_aspect_set_ratio(float r) { (void)r; return 0; }
-/* TOTK's VR and camera-distance hooks (zeldaVR, the settings panel): no sites in a Switch 2 game, so VR and the camera row stay off. */
-int runtime_aspect_vr(float a, float k) { (void)a; (void)k; return 0; }
-int runtime_camera_distance_available(void) { return 0; }
-int runtime_camera_distance_cm(void) { return 0; }
-void runtime_camera_distance_set(int cm) { (void)cm; }
-void runtime_vr_find_head(int stage) { (void)stage; }
+/* TOTK's VR and camera-distance hooks (zeldaVR, the settings panel) are left to their weak defaults (zeldaVR/gfx/vr_defaults.c):
+   no sites in a Switch 2 game, so VR and the camera row stay off. */
 float runtime_aspect_ratio(void) { return 0; }
 float runtime_aspect_start(void) { return 0; }
 

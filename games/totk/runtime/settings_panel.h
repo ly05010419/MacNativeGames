@@ -61,17 +61,24 @@
                                                              first
      field of view        0.8x .. 1.5x                       runtime_fov_scale_set: the game camera's vertical FOV
                                                              (its zooms scale too); graphics-fov.txt (x100)
+     field of view        1x .. 1.5x                         Breath of the Wild 1.9.0: runtime_fov_scale_set
+                                                             (game_patches_botw.c, botw_fov.h: the main camera's vertical
+                                                             FOV x K at its setFovy call, at once; tried in play); graphics-fov.txt, x100
      model detail distance also "always the finest" (graphics-lod.txt "max": the level a model has up close)
      shadow resolution    off / 1x (800) / 2x / 3x / 4x      runtime_shadow_scale_set (game_patches_v143.c: the cascades'
                                                              size x K where the game works it out); off = the effect
                                                              switch "shadow" (totk_ssao.h); graphics-shadow.txt (x100)
      FXAA anti-aliasing   switch                             dm_gfx_fxaa_set (gfx/nvn/totk_finish.h); graphics-fxaa.txt
+                                                             (Breath of the Wild 1.9.0: gfx/nvn/botw_finish.h; greyed while
+                                                             MetalFX replaces its FXAA / upscale draw)
      depth of field       switch                             runtime_dof_set (game_patches_v143.c: no DOF request stored
                                                              while off; events still complete); graphics-dof.txt
      sharpening           off / 25% / 50% / 75% / 100%       dm_gfx_sharpen_set: FSR 1 RCAS on the 3D picture;
-                                                             graphics-sharpen.txt (percent)
+                                                             graphics-sharpen.txt (percent); Breath of the Wild 1.9.0: on
+                                                             the canvas before the UI (gfx/nvn/botw_finish.h)
      one switch per effect                                   dm_gfx_fx_set (gfx/nvn/totk_fx.h): its passes left out while
-                                                             off; graphics-effects.txt lists the ones that are off
+                                                             off; graphics-effects.txt lists the ones that are off;
+                                                             Breath of the Wild 1.9.0: ambient occlusion (botw_effects.h)
    User (runtime/users.h, docs/users.md; the save area is named after the user's id, so another user
    plays on their own saves; a running game keeps its user)
      user this run        fixed (greyed)                     runtime_users_active: the user this run opened with
@@ -102,6 +109,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"   /* the contribution file, TOTK_REPO_URL */
 #include "contrib_submit.h"   /* gh_path, contrib_submit (shared with app/launcher.m) */
 #include "aspect_math.h"     /* aspect_near, ASPECT_GAME */
+#include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
@@ -113,6 +121,7 @@ void dm_gfx_aniso_start(int n); int dm_gfx_aniso_locked(void); int dm_gfx_aniso(
 #ifdef GAME_BOTW190
 int runtime_shadow_res_available(void); int runtime_shadow_res_locked(void); int runtime_shadow_res_saved(void);
 void runtime_shadow_res_save(int size);   /* game_patches_botw.c */
+double runtime_fov_scale(void); void runtime_fov_scale_set(double k); int runtime_fov_scale_locked(void); int runtime_fov_available(void);
 #endif
 void nvn_fps_lock_set(int fps);   /* gfx/nvn/hle_nvn.c: the shared totk_fps_limits choices */
 #ifdef TOTK_GAME_V143   /* the effects page: its shader keys and patch sites are 1.4.3's */
@@ -184,16 +193,17 @@ static void settings_ssao_restore(void) {
  settingsSsao=(int)pct;dm_gfx_ssao_start(settingsSsao);
 #endif
 }
+/* A number from a setting file, within lo..hi (1.4.3's graphics rows; Breath of the Wild 1.9.0's sharpening, PR #1637). */
+static inline int settings_read_number(const char *name, double lo, double hi, double *value) {
+ char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
+ double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
+ if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
+}
 /* The effects page: graphics-effects.txt holds the ids of the effects that are off, one word each ("none" when all are
    on); graphics-lod.txt the model detail distance x100, graphics-far.txt the render distance in percent (0.1 to 100). */
 #ifdef TOTK_GAME_V143
 /* "Always the finest": a factor no distance in the map reaches, so a model keeps the level it has up close. */
 #define SETTINGS_LOD_MAX 1e6
-static int settings_read_number(const char *name, double lo, double hi, double *value) {
- char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
- double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
- if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
-}
 static void settings_effects_save(void) {
  char line[512]="";size_t n=0;
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))n+=(size_t)snprintf(line+n,sizeof line-n,"%s%s",n?" ":"",dm_gfx_fx_id(i));
@@ -214,6 +224,8 @@ static void settings_effects_restore(void) {
  if(runtime_setting_word("graphics-dof.txt",word,sizeof word)&&!strncmp(word,"off",3))runtime_dof_set(0);
  if(!runtime_far_scale_locked()&&settings_read_number("graphics-far.txt",0.1,1000,&d))runtime_far_scale_set(d/100);
 }
+#elif defined(GAME_BOTW190)
+static void settings_effects_restore(void);   /* botw_effects.h */
 #else
 static void settings_effects_restore(void) {}
 #endif
@@ -308,6 +320,7 @@ static void settings_pointer_used(void);
 
 static NSString *settings_text(const char *zh, const char *en) { return @(TOTK_UI(zh, en)); }
 static void settings_user_added(NSString *name);   /* the User page's add: runs after the global panel is made again */
+#define SETTINGS_HDR_ROWS 2   /* the effects page's HDR rows on 1.4.3 when HDR is available (settings_hdr_rows; PR #1129) */
 static TOTKSettingRow *settings_row(NSString *title, NSArray<NSString *> *choices, NSArray<NSNumber *> *values,
                                     int (^get)(void), void (^set)(int)) {
  TOTKSettingRow *r=[TOTKSettingRow new];r.title=title;r.choices=choices;r.values=values;r.get=get;r.set=set;return r;
@@ -394,10 +407,7 @@ int vr_motion(void);
 void vr_set_motion(int on);
 /* Third-person camera distance (zeldaVR, user 2026-10-26: "在第三人称 时候 调整 摄像机距离 ... 在设置里 我可以设置"):
    1.4.3's camera hook (game_patches_v143.c) moves the camera along its view; with VR and without. Other versions have
-   no hook: the row is left out (weak symbols). */
-int runtime_camera_distance_available(void) __attribute__((weak_import));
-int runtime_camera_distance_cm(void) __attribute__((weak_import));
-void runtime_camera_distance_set(int cm) __attribute__((weak_import));
+   no hook: the row is left out (runtime_camera_distance_available, ../zeldaVR/runtime/vr_camera.h). */
 /* Link's head (zeldaVR, user 2026-10-26: "第一人称 我希望 去掉头", "先做到 第三人称里 头是去掉 或者隐藏 这样方便调试"): the
    graphics layer leaves the head's meshes out of the picture, not out of the shadows (nvn_mtl.m vr_head_mesh). Auto:
    while VR's first person puts the camera in his head. */
@@ -408,7 +418,7 @@ static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   [rows addObject:settings_row(settings_text("林克的头","Link's head"),
    @[settings_text("自动（第一人称时隐藏）","Auto (hidden in first person)"),settings_text("隐藏","Hidden"),settings_text("显示","Shown")],@[@-1,@1,@0],
    ^int{return vr_hide_head_mode();},^(int v){vr_set_hide_head_mode(v);})];
- if(!runtime_camera_distance_available||!runtime_camera_distance_available())return;
+ if(!runtime_camera_distance_available())return;
  [rows addObject:settings_row(settings_text("摄像机距离（第三人称）","Camera distance (third person)"),
   @[settings_text("默认","Default"),settings_text("近 1 米","1 m closer"),settings_text("近 2 米","2 m closer"),settings_text("近 3 米","3 m closer"),
     settings_text("近 4 米","4 m closer"),settings_text("近 5 米","5 m closer")],   /* user 2026-10-26: "改成 近1m 近2m 近3m 近4m 近5m" */
@@ -527,6 +537,25 @@ static TOTKSettingRow *settings_shadow_row(void) {
   if(v){runtime_shadow_scale_set(v/100.0);settings_save_int("graphics-shadow.txt",v,"shadow resolution");}
   settings_effects_save();});
 }
+/* HDR / EDR (PR #1129, the RenoDX approach; Mac, 1.4.3): the switch and the game's brightness (its white in SDR-white
+   units). hdr.txt holds on / off; each tone-mapping value its own hdr-<name>.txt (totk_hdr.h lists all thirteen; the
+   others, peak (0: the display's headroom), UI white, exposure, ..., are set in their files; the page has no room). Off leaves every shader, pipeline and texture as without HDR (nvn_mtl.m keeps both compose shaders).
+   Frame interpolation shows SDR MetalFX frames, so turning HDR on turns it off (and picking it turns HDR off). */
+static TOTKSettingRow *settings_hdr_choice(int which,NSString *title,const int *milli,int n,NSString *(^text)(int)){
+ int (^current)(void)=^int{return (int)lroundf(front_hdr_parameter(which)*1000);};
+ NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(int i=0;i<n;i++)[values addObject:@(milli[i])];
+ if(![values containsObject:@(current())])[values addObject:@(current())];   /* a hand-written value is kept */
+ NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
+ return settings_row(title,choices,values,current,^(int v){front_hdr_parameter_save(which,v/1000.0f);});
+}
+static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
+ [rows addObject:settings_row(settings_text("HDR / EDR","HDR / EDR"),nil,nil,^int{return front_hdr_enabled();},^(int v){
+  if(v&&mfx_requested()!=MFX_OFF){dm_gfx_set_flag("mfx_interp",MFX_OFF);settings_save_frame();}
+  runtime_front_hdr_set(v);})];
+ static const int white[]={500,750,1000,1500,2000};
+ [rows addObject:settings_hdr_choice(TOTK_HDR_GAME_WHITE,settings_text("HDR 游戏亮度","HDR game brightness"),white,5,^NSString *(int v){
+  return [NSString stringWithFormat:@"%g×",v/1000.0];})];
+}
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray arrayWithObjects:settings_fov_row(),settings_distance_row(1),settings_distance_row(0),settings_shadow_row(),nil];
  /* FXAA (the game's edge smoothing of the 3D picture) and sharpening (FSR 1 RCAS on the 3D picture, not the UI) */
@@ -542,15 +571,21 @@ static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
   if(!dm_gfx_fx_available(i)){[rows addObject:settings_fixed(t,settings_text("这个版本没有","Not in this version"))];continue;}
   [rows addObject:settings_row(t,nil,nil,^int{return dm_gfx_fx_on(i);},^(int v){dm_gfx_fx_set(i,v);settings_effects_save();})];
  }
+ if(totk_hdr_available())settings_hdr_rows(rows);
  return rows;
 }
 #else
 static TOTKSettingRow *settings_botw_shadow_row(void);   /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
+static TOTKSettingRow *settings_botw_fov_row(void);      /* below: Breath of the Wild 1.9.0's, greyed elsewhere */
+#ifdef GAME_BOTW190
+#include "botw_effects.h"   /* Breath of the Wild 1.9.0's page: the effect switches its shaders allow (PR #1602) */
+#else
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versions: the page says so */
  NSString *none=settings_text("这个版本没有","Not in this version");
- return @[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_fixed(settings_text("视野（FOV）","Field of view (FOV)"),none),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
+ return @[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
           settings_fixed(settings_text("效果开关","Effect switches"),none)];
 }
+#endif
 #endif
 /* Anisotropic filtering: off (the game's 1x) to 16x for the material textures, in force at once (dm_gfx_aniso_set makes
    the game's samplers again with the new level). */
@@ -581,6 +616,8 @@ static void settings_effects_reset(void) {
 #endif
 #ifdef GAME_BOTW190
  if(runtime_shadow_res_available()&&!runtime_shadow_res_locked()){runtime_shadow_res_save(0);runtime_setting_remove("shadows.txt");}
+ if(runtime_fov_available()&&!runtime_fov_scale_locked()){runtime_fov_scale_set(1);runtime_setting_remove("graphics-fov.txt");}
+ settings_botw_effects_reset();
 #endif
  fprintf(stderr,"[totk] settings: the effects page back to the defaults\n");
 }
@@ -598,6 +635,23 @@ static TOTKSettingRow *settings_botw_shadow_row(void) {
  t=[t stringByAppendingString:settings_text("（下次启动生效）"," (from the next launch)")];
  return settings_row(t,@[settings_text("游戏原样","As the game has it"),settings_text("2048（每级）","2048 per cascade")],@[@0,@2048],
   ^int{return runtime_shadow_res_saved();},^(int v){runtime_shadow_res_save(v);});
+#endif
+}
+/* The field of view (Breath of the Wild 1.9.0, botw_fov.h): as 1.4.3's row, in hundredths of the game's own, at once; from
+   1x up only (1x to 1.5x is the useful range, PR #1575). A file or TOTK_FOV_SCALE value outside it is still shown. */
+static TOTKSettingRow *settings_botw_fov_row(void) {
+ NSString *t=settings_text("视野（FOV）","Field of view (FOV)");
+#ifndef GAME_BOTW190
+ return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
+#else
+ if(!runtime_fov_available())return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
+ NSString *(^text)(int)=^NSString *(int v){return v==100?settings_text("1×（游戏原样）","1x (as the game has it)"):[NSString stringWithFormat:@"%g×",v/100.0];};
+ int now=(int)lround(runtime_fov_scale()*100);
+ if(runtime_fov_scale_locked())return settings_fixed(t,text(now));
+ NSMutableArray<NSNumber *> *values=[@[@100,@110,@120,@130,@140,@150] mutableCopy];
+ if(![values containsObject:@(now)])[values addObject:@(now)];
+ NSMutableArray<NSString *> *choices=[NSMutableArray array];for(NSNumber *v in values)[choices addObject:text(v.intValue)];
+ return settings_row(t,choices,values,^int{return (int)lround(runtime_fov_scale()*100);},^(int v){runtime_fov_scale_set(v/100.0);settings_save_int("graphics-fov.txt",v,"field of view");});
 #endif
 }
 #endif
@@ -623,7 +677,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_row(settings_text("补帧（MetalFX）","Frame interpolation (MetalFX)"),
   @[settings_on_off(0),@"30+30",@"40+40",@"50+50",@"60+60",settings_text("不限帧","Unlimited")],
   @[@(MFX_OFF),@(MFX_30),@(MFX_40),@(MFX_50),@(MFX_60),@(MFX_MAX)],
-  ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);settings_save_frame();})];
+  ^int{return mfx_requested();},^(int v){dm_gfx_set_flag("mfx_interp",v);if(v!=MFX_OFF)nvn_fps_lock_set(0);settings_save_frame();
+   if(v!=MFX_OFF&&front_hdr_enabled())runtime_front_hdr_set(0);})];   /* interpolated frames are SDR: HDR goes off (PR #1129) */
  int modes=runtime_output_modes();
  NSMutableArray<NSString *> *res=[NSMutableArray array];NSMutableArray<NSNumber *> *resModes=[NSMutableArray array];
  static const int order[]={OUTPUT_MODE_720P,OUTPUT_MODE_OFF,OUTPUT_MODE_METALFX,OUTPUT_MODE_NATIVE,OUTPUT_MODE_NATIVE_METALFX,OUTPUT_MODE_NATIVE_4K,OUTPUT_MODE_NATIVE_5K,

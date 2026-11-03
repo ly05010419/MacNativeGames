@@ -1,0 +1,58 @@
+{
+    "_comment": "Verified Pokémon Violet 4.0.0 code (from the update NSP), rewrite bytes and the RomFS merged from the base NSP and the 4.0.0 update. Hashes only; no game data. Made by scripts/extract_code.py, scripts/merge_romfs.py and third_party/d2r/patch_nso.py (DM_RULESET=native DM_PRIVATE_GATES=0).",
+    "title_id": "01008F6008C5E000",
+    "update_title_id": "01008F6008C5E800",
+    "version": 786432,
+    "display_version": "4.0.0",
+    "main_build_id": "709BFD66115298640155FCC4979DBA151C7CC79A",
+    "modules": [
+        "main",
+        "subsdk0",
+        "sdk"
+    ],
+    "base_program_nca": {
+        "name": "ad69adeb3d0c5a70c8a4aa59f7a7b6bd.nca",
+        "nca_offset": 400,
+        "size": 6733398016
+    },
+    "update_program_nca": {
+        "name": "d24a763a8882575f1c252dce37021db5.nca",
+        "nca_offset": 1400784,
+        "size": 5234486272
+    },
+    "exefs_sha256": {
+        "main": "f05bd7fedaf6f0ba1481005cb48b1e43067966aa12c28e6932eab9e7bc5750a4",
+        "main.npdm": "1c060aa14b39652d89f5f90d27e7393e0c67ad807fcccb183864f29a5f3d3792",
+        "rtld": "3e9fefe2e12bd1ade68618c73c5cca79d7bc67bb0ec293b2e92a20ffb81c77f6",
+        "sdk": "526b093704bff89fae71ee4c4f58f58ad5baf09df0fef4f5c05dd23ce0138517",
+        "subsdk0": "f68908a29e021f26ea4a63e1be927162a5aa2f02c72d83d69317ea30326104f2"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "a7133356d787a432e8763a9cb5da50c416a8d607b32117697ef575b973f66e92",
+        "sdk.patched.bin": "6f01c6749cd1d8ed4cb93322266422aa1a491747b98b29db8ff1163d2bb42543",
+        "subsdk0.patched.bin": "8b0238a5eec978ee338b35c34ce8aacdb171b96e9adc77732c90a23b2ff97a23"
+    },
+    "romfs": {
+        "size": 9925204188,
+        "sha256": "6258fef05541524698eff21b444dfb7c17b5e2c4af6419a5d6cbcba4a3fa041e",
+        "files": 30,
+        "bytes_from_base": 4754948912,
+        "bytes_from_update": 5189752236
+    },
+    "control": {
+        "_comment": "From control.nacp of the 4.0.0 update NSP: SupportedLanguageFlag and the user account save sizes (UserAccountSaveDataSizeMax is 0, so the save keeps its created size).",
+        "supported_languages": [
+            "AmericanEnglish",
+            "Japanese",
+            "French",
+            "German",
+            "Spanish",
+            "Italian",
+            "Korean",
+            "TraditionalChinese",
+            "SimplifiedChinese"
+        ],
+        "user_save_size": 12582912,
+        "user_save_journal_size": 12582912
+    }
+}

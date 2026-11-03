@@ -13,7 +13,8 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     NSTimer *_poll;
     BOOL _held, _done;       // a controller button or direction held since the last poll
     BOOL _hasPicture;        // the game's Settings pane has Full HD (docked): the picture row is shown
-    BOOL _hasScene;          // and a docked scene row (Breath of the Wild): 1080p comes as original and HD
+    BOOL _hasScene;          // and a docked scene row: 1080p comes as original and HD
+    NSString *_sceneKey;     // that row's key: TOTK_BOTW_SCENE (Breath of the Wild) or TOTK_DOCKED_SCENE (Tears of the Kingdom)
 }
 
 - (instancetype)initWithFrame:(CGRect)frame onStart:(void (^)(void))onStart {
@@ -38,13 +39,15 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     title.text = name; title.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold]; title.textColor = UIColor.whiteColor;
     title.adjustsFontSizeToFitWidth = YES; title.minimumScaleFactor = 0.6;
 
-    /* Breath of the Wild's pane also has the docked scene (TOTK_BOTW_SCENE, build_ipa.py botw_pane): 1080p original is
-       the Switch's 1600x900 scene upscaled to 1920x1080, 1080p HD the scene at 1920x1080. */
-    _hasScene = [self settingsPaneHas:@"TOTK_BOTW_SCENE"];
+    /* The pane's docked scene row (Breath of the Wild: TOTK_BOTW_SCENE, build_ipa.py botw_pane; Tears of the Kingdom:
+       TOTK_DOCKED_SCENE, settings_map.c totk_docked_scene): 1080p original is the Switch's 1600x900 scene upscaled to
+       1920x1080, 1080p HD the scene at 1920x1080. */
+    _sceneKey = [self settingsPaneHas:@"TOTK_BOTW_SCENE"] ? @"TOTK_BOTW_SCENE" : [self settingsPaneHas:@"TOTK_DOCKED_SCENE"] ? @"TOTK_DOCKED_SCENE" : nil;
+    _hasScene = _sceneKey != nil;
     _picture = _hasScene
         ? [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p 原始", @"1080p original"), T(@"1080p 高清", @"1080p HD")]]
         : [[UISegmentedControl alloc] initWithItems:@[T(@"720p（掌机）", @"720p (handheld)"), T(@"1080p（底座）", @"1080p (docked)")]];
-    _picture.selectedSegmentIndex = ![d boolForKey:@"TOTK_DOCKED"] ? 0 : _hasScene && [[d stringForKey:@"TOTK_BOTW_SCENE"] isEqualToString:@"1920x1080"] ? 2 : 1;
+    _picture.selectedSegmentIndex = ![d boolForKey:@"TOTK_DOCKED"] ? 0 : _hasScene && [[d stringForKey:_sceneKey] isEqualToString:@"1920x1080"] ? 2 : 1;
     _fps = [[UISegmentedControl alloc] initWithItems:@[@"30 fps", @"60 fps"]];
     _fps.selectedSegmentIndex = [[d stringForKey:@"TOTK_PHONE_FPS"] isEqualToString:@"30"] ? 0 : 1;
     for (UISegmentedControl *s in @[_picture, _fps]) {
@@ -60,7 +63,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     if (_hasScene)
         note.text = T(@"1080p 原始：输出 1920×1080，画面 1600×900，和 Switch 底座一样。1080p 高清：画面也是 1920×1080，更清晰也更吃性能。设置也可以在“设置”App 里改。",
                       @"1080p original: 1920×1080 output with a 1600×900 scene, as the Switch docked. 1080p HD: the scene at 1920×1080 too, sharper and heavier. The Settings app has these choices too.");
-    else   // Tears of the Kingdom's docked settings keep the scene at 1600x900 (main.m apply_display_settings)
+    else   // a pane without the scene row keeps the docked scene at 1600x900 (main.m apply_display_settings)
         note.text = T(@"1080p：输出 1920×1080，画面 1600×900，和 Switch 底座一样，更清晰也更吃性能。设置也可以在“设置”App 里改。",
                       @"1080p: 1920×1080 output with a 1600×900 scene, as the Switch docked; sharper and heavier. The Settings app has these choices too.");
     note.font = [UIFont systemFontOfSize:13]; note.textColor = [UIColor colorWithWhite:0.6 alpha:1];
@@ -124,7 +127,7 @@ static NSString *T(NSString *z, NSString *e) { return zh() ? z : e; }
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d setBool:_picture.selectedSegmentIndex >= 1 forKey:@"TOTK_DOCKED"];
     if (_hasScene && _picture.selectedSegmentIndex >= 1)   // 720p keeps the docked scene the player chose last
-        [d setObject:_picture.selectedSegmentIndex == 2 ? @"1920x1080" : @"1600x900" forKey:@"TOTK_BOTW_SCENE"];
+        [d setObject:_picture.selectedSegmentIndex == 2 ? @"1920x1080" : @"1600x900" forKey:_sceneKey];
     [d setObject:_fps.selectedSegmentIndex == 0 ? @"30" : @"60" forKey:@"TOTK_PHONE_FPS"];
 }
 

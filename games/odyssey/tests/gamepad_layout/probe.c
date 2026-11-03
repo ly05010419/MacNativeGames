@@ -27,12 +27,8 @@ int main(void) {
     check(!gamepad_face_by_position("DualSense", "DualSense Wireless Controller"), "TOTK_FACE_BUTTONS=label");
     setenv("TOTK_FACE_BUTTONS", "position", 1);
     check(gamepad_face_by_position("Switch Pro Controller", "Pro Controller"), "TOTK_FACE_BUTTONS=position");
-    // key 6: the controller type the player picks (auto, Xbox, PlayStation, Switch), saved as one word
+    // the settings panel's controller type (auto, Xbox, PlayStation, Switch), saved as one word
     unsetenv("TOTK_FACE_BUTTONS");
-    check(gamepad_type_next(GAMEPAD_TYPE_AUTO) == GAMEPAD_TYPE_XBOX && gamepad_type_next(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_PLAYSTATION &&
-          gamepad_type_next(GAMEPAD_TYPE_PLAYSTATION) == GAMEPAD_TYPE_SWITCH && gamepad_type_next(GAMEPAD_TYPE_SWITCH) == GAMEPAD_TYPE_AUTO,
-          "key 6 cycles auto -> Xbox -> PlayStation -> Switch -> auto");
-    check(gamepad_type_next(-1) == GAMEPAD_TYPE_AUTO && gamepad_type_next(99) == GAMEPAD_TYPE_AUTO, "an unknown type cycles to auto");
     for (int t = 0; t < GAMEPAD_TYPE_COUNT; t++) check(gamepad_type_parse(gamepad_type_name(t)) == t, "every type name parses back");
     check(gamepad_type_parse("  switch\n") == GAMEPAD_TYPE_SWITCH && gamepad_type_parse("xbox\r\n") == GAMEPAD_TYPE_XBOX, "the saved word may end in a newline");
     check(gamepad_type_parse("ps5") < 0 && gamepad_type_parse("") < 0 && gamepad_type_parse(NULL) < 0 && gamepad_type_parse("switchx") < 0,

@@ -87,7 +87,7 @@ static NSString *par_file(NSString *name) { return [par_dir() stringByAppendingF
 static NSString *par_keys_file(NSString *name) { return [par_dir() stringByAppendingFormat:@"/%@.keys", name]; }
 // 5 (2026-10-29): border and tile-read pipelines are keyed with their variant (nvn_mtl.m pso_archive_key); files of 4 held
 // some under the plain pipeline's key, which then missed in every session.
-#define PAR_SCHEMA 5
+#define PAR_SCHEMA 6   /* vertex fetches omit trailing lanes proven unused by the MSL */
 static NSDictionary *par_identity(id<MTLDevice> dev) {
     return @{@"schema": @PAR_SCHEMA, @"chain": @DMSH_CHAIN, @"gpu": dev.name ?: @"?",
              @"os": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"?"};
@@ -135,6 +135,14 @@ static NSSet<NSString *> *par_ga_list(int own_only) {   // full paths of the bui
             if ([name hasPrefix:@"gpuarchiver-"]) [s addObject:[d[@"path"] stringByAppendingPathComponent:name]];
     }
     return s;
+}
+/* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
+   (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
+   pipelines in the archive instead of memory (576fdfd1), so the pipelines built this run only grow as play meets them. */
+static int64_t par_total(void) {
+    if (!g_par_on) return -1;
+    pthread_mutex_lock(&g_par_mu); int64_t n = (int64_t)g_par_have.count; pthread_mutex_unlock(&g_par_mu);
+    return n;
 }
 static void par_ga_remove_new(NSSet<NSString *> *before) {
     NSMutableSet<NSString *> *made = [par_ga_list(0) mutableCopy]; [made minusSet:before];
@@ -191,7 +199,10 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     const char *off = getenv("TOTK_PIPELINE_PREBUILT"), *seed = getenv("TOTK_SHADER_SEED_DIR");
     NSString *arch = dev.architecture.name, *dir = seed && *seed ? @(seed) : nil;
 #if !TARGET_OS_IPHONE
-    if (!dir) dir = exe_rel("shader-seed");   // the Mac app's own seed (build_app.py mac_pipelines; the launcher names no seed)
+    if (!dir) {   // the Mac app's own (build_app.py mac_pipelines; the launcher names no seed): build/pipelines since 2026-11-03,
+        dir = exe_rel("pipelines");   // beside the shader data bundle, which they would change on every packaging; before, the seed
+        if (![NSFileManager.defaultManager fileExistsAtPath:dir]) dir = exe_rel("shader-seed");
+    }
 #endif
     if ((off && !strcmp(off, "0")) || !dir.length || !arch.length) return 0;
     NSString *base = [dir stringByAppendingPathComponent:[@"pipelines-" stringByAppendingString:arch]];

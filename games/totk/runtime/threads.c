@@ -1284,6 +1284,14 @@ void runtime_event_signal(uint32_t hw) {
 #include "mach_vm_compat.h"
 #include <unistd.h>
 __attribute__((weak)) void runtime_describe_address(uint64_t a, char *out, size_t n) { snprintf(out, n, "%#llx", (unsigned long long)a); }   // loader.c names modules
+__attribute__((weak)) void runtime_b2_rec(uint32_t draws, uint64_t handle) { (void)draws; (void)handle; }   // hle_nvn.c at each recording's end; the 1.4.3 Mac runtime's stereo B2 counts them (game_patches_v143.c)
+__attribute__((weak)) void runtime_b2_called(int n, const uint64_t *h, uint64_t caller) { (void)n; (void)h; (void)caller; }   // hle_nvn.c CallCommands; the same
+__attribute__((weak)) uint64_t runtime_b2_twin(uint64_t h) { (void)h; return 0; }   // hle_nvn.c CallCommands: no twin outside the 1.4.3 Mac runtime's stereo B2
+__attribute__((weak)) int runtime_b2_stereo(void) { return 0; }   // hle_nvn.c CallCommands / submit_exec: stereo B2 frames only in the 1.4.3 Mac runtime
+__attribute__((weak)) uint64_t runtime_b2_stereo_marks(void) { return 0; }   // the same: how many stereo marks were written so far
+__attribute__((weak)) void *runtime_b2_left_cap(void) { return 0; }   // hle_nvn.c: the first run's uniforms for stereo B2's left replay (the 1.4.3 Mac runtime)
+__attribute__((weak)) int runtime_b2_keep(void) { return 0; }   // hle_nvn.c EndRecording: keep first-run copies for stereo B2 (the 1.4.3 Mac runtime)
+__attribute__((weak)) void runtime_vr_b2_set_eye(float m) { (void)m; }   // totk_vr.m: half the eye distance for stereo B2 (the 1.4.3 Mac runtime)
 __attribute__((weak)) void runtime_frametrace_event(int kind) { (void)kind; }   // hle_nvn.c; the 1.4.3 Mac runtime's "frametrace" diagnostic defines it (game_patches_v143.c)
 __attribute__((weak)) uint64_t runtime_account_lock_owner(void) { return 0; }   // account.c is not linked into the thread probe
 __attribute__((weak)) void runtime_hle_describe(unsigned i, char *out, size_t n) { snprintf(out, n, "wrapper %u", i); }   // hle_stack.c names it

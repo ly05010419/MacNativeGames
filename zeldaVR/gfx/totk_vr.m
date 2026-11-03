@@ -71,6 +71,8 @@ int vr_afr(void) { return 0; }
 void vr_set_afr(int on) { (void)on; }
 int vr_ipd_pct(void) { return 100; }
 void vr_set_ipd_pct(int pct) { (void)pct; }
+int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye) { (void)cb; (void)src; (void)crop; (void)eye; return -1; }
+void vr_b2_present_eye(int eye) { (void)eye; }
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -100,6 +102,7 @@ static struct {
     _Atomic uint64_t copies, frames, no_image, no_pose, gpu_errors, encoder_waits;
     // B1 stereo (alternating eyes): the eye each picture was rendered for (0 left, 1 right, -1 not known), by its ticket
     int src_eye[SRC_SLOTS]; _Atomic int frame_eye, ticket_eye[64];   // frame_eye / ticket_eye: eye + 1, 0 not known
+    _Atomic uint64_t b2_seen_ns;   // stereo B2: when the replay last handed a left-eye picture of a stereo frame (vr_source_encode_eye)
     _Atomic uint64_t afr_pairs, afr_mono;   // headset frames drawn with both eyes' own pictures / with one picture
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 
@@ -610,13 +613,12 @@ static void headlook_update(const vr_pose *head, int recenter) {
    2026-10-31: flying a Zonai device the picture stretched: the game widens its camera at speed, narrows it to aim, and
    with a factor on the game's own angle the picture then held more, or less, than the headset's angle it was placed at).
    TOTK_VR_GAME_FOV: the game's vertical field of view when the Vert+ stubs are not there (50 degrees). */
-extern int runtime_aspect_vr(float a, float k) __attribute__((weak_import));
 static float game_vfov(void) {
     static float vfov = 0; if (!vfov) { const char *e = getenv("TOTK_VR_GAME_FOV"); vfov = e ? (float)atof(e) : 50; if (vfov < 10 || vfov > 150) vfov = 50; }
     return vfov;
 }
 static void headlook_fov(const vr_views *v) {
-    if (g.fov_on || !g_vr_headlook || !runtime_aspect_vr) return;
+    if (g.fov_on || !g_vr_headlook) return;
     float w = 0, h = 0;
     for (int e = 0; e < 2; e++) {
         w = fmaxf(w, fmaxf(fabsf(tanf(v->fov[e][0])), fabsf(tanf(v->fov[e][1]))));
@@ -745,7 +747,17 @@ static int latest_slot_eye(int eye) {   // under g.mu: B1, the newest picture re
 }
 static void start_thread(id<MTLDevice> dev);
 
-int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) {
+static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye);
+int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2); }
+/* Stereo B2: the left eye's picture of a stereo frame, from the replay's left pass (nvn_mtl.m mtl_sub_commit), tagged with
+   its eye; placed by the pose the replay matched last (0: the newest). The right eye's comes at the present, tagged by
+   vr_b2_present_eye. */
+int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye) {
+    atomic_store(&g.b2_seen_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
+    return source_encode(cb, src, crop, 0, eye);
+}
+void vr_b2_present_eye(int eye) { atomic_store(&g.frame_eye, eye + 1); }
+static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye) {   // eye -2: from the ticket
     if (!vr_enabled() || g.failed || !src) return -1;
     if (!g.dev) start_thread(src.device);
     if (!g.dev) return -1;
@@ -755,8 +767,10 @@ int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int cro
     pthread_mutex_lock(&g.mu);
     int latest = latest_slot(), l0 = latest_slot_eye(0), l1 = latest_slot_eye(1), s = -1;   // each eye's newest stays (B1)
     for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && !g.writing[i] && !g.readers[i]) s = i;
-    if (s >= 0) { g.writing[s] = 1; g.seq[s] = 0; g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
-                  g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }   // B1: the eye it was rendered for, -1 not known
+    if (s >= 0) { g.writing[s] = 1; g.seq[s] = 0;
+                  if (eye >= -1) { g.src_used[s] = g_vr_headlook ? atomic_load(&g.frame_seq) : 0; g.src_eye[s] = eye; }   // stereo B2's left picture
+                  else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
+                         g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; } }   // B1 / B2: the eye it was rendered for, -1 not known
     pthread_mutex_unlock(&g.mu);
     if (s < 0) return -1;
     id<MTLTexture> t = g.src[s];
@@ -1065,20 +1079,26 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     if (im < 0) { atomic_fetch_add(&g.no_image, 1); return 0; }
 
     /* B1: the hook renders the eyes in turn while afr is on and head look runs; each eye gets its own newest picture */
-    const int afr = g_vr_headlook && vr_afr() && v->ipd > 0.03f && v->ipd < 0.09f;
+    const int ipd_ok = v->ipd > 0.03f && v->ipd < 0.09f;
+    const int afr = g_vr_headlook && vr_afr() && ipd_ok;
     const float half = afr ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0;   // the eye distance the VR page sets (30..200%)
     if (g_vr_headlook) { uint32_t hb; memcpy(&hb, &half, 4); __atomic_store_n((uint32_t *)(void *)&g_vr_headlook->eye_half, hb, __ATOMIC_RELAXED); }   // read by the hook on the game's thread
+    /* Stereo B2: both eyes of one game update (game_patches_v143.c); its camera moves by half the eye distance per eye, and
+       each eye takes its own picture while stereo frames come (the left one within the last half second) */
+    { extern void runtime_vr_b2_set_eye(float m); runtime_vr_b2_set_eye(ipd_ok ? v->ipd / 2 * vr_ipd_pct() / 100.0f : 0); }
+    const int b2 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - atomic_load(&g.b2_seen_ns) < 500000000ull;
+    const int own = afr || b2;
     int se[2]; id<MTLTexture> pics[2]; uint32_t useds[2]; int peye[2];
     pthread_mutex_lock(&g.mu);
     const int s = latest_slot();
     for (int k = 0; k < 2; k++) {
-        int t = afr ? latest_slot_eye(k) : -1; if (t < 0) t = s;
+        int t = own ? latest_slot_eye(k) : -1; if (t < 0) t = s;
         se[k] = t; if (t >= 0) g.readers[t]++;
         pics[k] = t >= 0 ? g.src[t] : nil; useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = t >= 0 ? g.src_eye[t] : -1;
     }
     pthread_mutex_unlock(&g.mu);
     id<MTLTexture> pic = pics[0]; uint32_t used = useds[0];
-    if (pics[0] && pics[1]) atomic_fetch_add(afr && peye[0] == 0 && peye[1] == 1 ? &g.afr_pairs : &g.afr_mono, 1);
+    if (pics[0] && pics[1]) atomic_fetch_add(own && peye[0] == 0 && peye[1] == 1 ? &g.afr_pairs : &g.afr_mono, 1);
     for (int k = 0; k < 2; k++) if (pics[k]) pics[k] = sample_view(pics[k]);
 
     id<MTLTexture> hud = hud_update();
