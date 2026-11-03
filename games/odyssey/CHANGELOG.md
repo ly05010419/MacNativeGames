@@ -17,6 +17,18 @@ All measurements on 26 October 2026: MacBook Pro, Apple M1 Max, 64 GB, macOS 27.
 
 ## Log
 
+### 2026-11-03: Mario and Cappy on separate controllers
+
+Either controller moves Mario in One Player. Choosing Two Players assigns the first controller to Mario and the
+second to Cappy, with independent sticks, buttons and remapped actions. Switching back to One Player now handles
+the game's Joy-Con pairing request and restores shared control of Mario. Rumble and motion use Mario's controller
+in Two Players and follow the original connection order in One Player.
+
+When the game disconnects a controller, the runtime releases held inputs and unread presses for that player.
+The other player's input and settings shortcut remain available. In One Player the whole shared input is cleared.
+Tested on macOS in Odyssey 1.4.1's Snow Kingdom with a DualSense and a DUALSHOCK 4, including three returns to
+One Player and Bluetooth disconnects. A separate probe exercised game-requested disconnects with both pads connected.
+
 ### 2026-11-01: Complete in-game settings and FPS history
 
 Port the complete three-tab Mac panel and its graph/persistence/controller/remapping revisions to Odyssey. Key 1

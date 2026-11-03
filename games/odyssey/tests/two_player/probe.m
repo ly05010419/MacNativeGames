@@ -9,8 +9,9 @@ static uint64_t now = 1000000000;
 uint64_t runtime_now_ns(void) { return now; }
 static int handheld, quiet, motionReads, motionStarts, rumbles;
 int runtime_handheld_mode(void) { return handheld; }
-void runtime_feedback_attach(GCController *c) { (void)c; }
-void runtime_feedback_detach(GCController *c) { (void)c; }
+static GCController *feedbackPad;
+void runtime_feedback_attach(GCController *c) { feedbackPad = c; }
+void runtime_feedback_detach(GCController *c) { if (feedbackPad == c) feedbackPad = nil; }
 void runtime_feedback_quiet(void) { quiet++; }
 void runtime_autoload_user_input(void) {}
 void runtime_survey_cancel_user(void) {}
@@ -32,6 +33,12 @@ static void assert_host_clear(int player) {
     RuntimeGamepadState pad;
     runtime_gamepad_read_player(player, &pad);
     assert(pad.connected && !pad.buttons && !pad.lx && !pad.ly && !pad.rx && !pad.ry);
+}
+
+/* Controller support runs on the guest thread; feedback ownership changes on the main queue. */
+static void drain_main_queue(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{ CFRunLoopStop(CFRunLoopGetMain()); });
+    CFRunLoopRun();
 }
 
 static void guest_disconnect_test(GCExtendedGamepad *one, GCExtendedGamepad *two) {
@@ -79,6 +86,29 @@ static void guest_disconnect_test(GCExtendedGamepad *one, GCExtendedGamepad *two
     assert_host_clear(0);
     NpadState cappy = read_pad(1);
     assert(cappy.lx == -32767 && (cappy.buttons & 64));  /* held stick and unread L survived */
+
+    assert(!show_controller_support(NULL, &arg));
+    GCController *extra = [GCController controllerWithExtendedGamepad];
+    attach_gamepad(extra);
+    [extra.extendedGamepad.rightThumbstick setValueForXAxis:0 yAxis:-1]; refresh_gamepads();
+    disconnectNpad(&ids[1]);
+    ControllerSupportArgs solo = {.max = 1, .singleMode = 1};
+    assert(!show_controller_support(NULL, &solo));
+    NpadState sharedMario = read_pad(0);
+    assert(!sharedMario.ly && sharedMario.ry == -32767);  /* cleared Cappy stick, third pad still helps Mario */
+    detach_gamepad(extra);
+    assert(!show_controller_support(NULL, &arg));
+    runtime_gamepad_settings_enable(1);
+    RuntimeGamepadState ui; runtime_gamepad_text_read(&ui); /* discard earlier navigation events */
+    [one.leftThumbstickButton setValue:1]; [one.rightThumbstickButton setValue:1];
+    [one.leftShoulder setValue:1]; refresh_gamepads();
+    [one.leftShoulder setValue:0]; refresh_gamepads();
+    disconnectNpad(&ids[1]);
+    assert(runtime_gamepad_settings_requested()); /* P1's pending panel request */
+    runtime_gamepad_text_read(&ui);
+    assert(ui.buttons & 64);                     /* P1's short press between UI polls */
+    refresh_gamepads();
+    assert(!runtime_gamepad_settings_requested()); /* P1 never released the shortcut */
     puts("pass: DisconnectNpad clears shared 1P, P2 alone, and P1 alone");
 }
 
@@ -97,6 +127,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     }
     ControllerSupportResult result;
     ControllerSupportArgs arg = {.min = 2, .max = 2};
+    assert(feedbackPad == two);  /* single-player offers each attached pad to the feedback backend */
     assert(style(&ids[0]) && !style(&ids[1]));
     [two.extendedGamepad.leftThumbstick setValueForXAxis:-1 yAxis:0];
     refresh_gamepads();
@@ -108,6 +139,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     assert(result.players == 1 && !style(&ids[1]));    /* an optional range on startup */
     arg.min = 2;
     assert(show_controller_support(&result, &arg) == 0);
+    drain_main_queue(); assert(feedbackPad == one);
     assert(result.players == 2 && result.selected == 0 && style(&ids[1]));
     assert(read_pad(0).lx == 0 && read_pad(0).ly == 32767);
     assert(read_pad(1).lx == -32767 && read_pad(1).ly == 0);
@@ -188,6 +220,7 @@ int main(int argc, char **argv) { @autoreleasepool {
     arg.singleMode = 1; /* single mode overrides the player-count range */
     show_controller_support(&result, &arg);
     assert(result.players == 1 && !style(&ids[1]) && read_pad(0).lx == -32767);
+    drain_main_queue(); assert(feedbackPad == one); /* one was reconnected most recently */
     arg.singleMode = 0; arg.min = arg.max = 1;
     show_controller_support_arg(&arg);
     assert(!style(&ids[1]));

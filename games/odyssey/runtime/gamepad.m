@@ -22,7 +22,7 @@
 static pthread_mutex_t gamepadLock = PTHREAD_MUTEX_INITIALIZER;
 /* Two physical seats remain stable through hotplug. The shared sample also includes any extra pads,
    for single-player and for the settings panel's physical (unmapped) controls. */
-enum { SHARED_PAD = 2 };
+enum { EXTRA_PADS = 2 };
 typedef struct {
     RuntimeGamepadState native;
     int32_t lx, ly, rx, ry;                 /* Switch HID fallback, while its report is fresh */
@@ -33,11 +33,12 @@ typedef struct {
     uint64_t tapUntil[CONTROLLER_BUTTONS];
     int toggleOn[CONTROLLER_BUTTONS], toggleMoved[CONTROLLER_BUTTONS];
 } PadMapping;
-static PadSample samples[3];                /* gamepadLock */
+static PadSample samples[3], shared;        /* gamepadLock: two seats, extra pads, and their combined physical state */
 static PadMapping mappings[2];              /* gamepadLock */
 static int twoPlayers;                      /* only the guest's controller support applet selects 2P */
 static NSMutableArray<GCController *> *controllers;    /* main queue, in connection order */
-static GCController *seats[2], *feedbackController;
+static GCController *seats[2];
+static NSArray<GCController *> *feedbackControllers;   /* main queue */
 static int hidSeat = -1;
 static uint64_t textEdges;
 static _Atomic int textCapture;       /* gamepadLock: 1 UI owns input, 2 wait for release, 0 game */
@@ -53,7 +54,7 @@ static _Atomic int settingsButton = -1;   /* physical button (controller_map.h),
 static uint64_t settings_trigger(void) { int b = atomic_load(&settingsButton); return b >= 0 ? 1ull << b : SETTINGS_CHORD; }
 static int settings_chord_held(void) {    /* gamepadLock held */
     uint64_t trigger = settings_trigger();
-    if (!twoPlayers) return (samples[SHARED_PAD].native.buttons & trigger) == trigger;
+    if (!twoPlayers) return (shared.native.buttons & trigger) == trigger;
     return (samples[0].native.buttons & trigger) == trigger || (samples[1].native.buttons & trigger) == trigger;
 }
 static uint16_t controllerMap[CONTROLLER_BUTTONS];
@@ -61,6 +62,7 @@ static uint8_t controllerModes[CONTROLLER_BUTTONS];
 static __weak GCController *rawLeftController, *rawRightController;
 static SwitchLeftFallback rawLeft, rawRight;
 static void refresh_gamepads(void);
+static void update_feedback_controllers(void);
 
 static void forget_seat(int seat) {      /* physical disconnect: discard the pad's pulses, keep other input sources */
     if (seat < 0) return;
@@ -356,6 +358,7 @@ static void hid_pad_detach(void) {
     hid_pad_reset();
     fprintf(stderr, "[totk-input] HID gamepad disconnected\n");
     refresh_gamepads();
+    update_feedback_controllers();
 }
 
 static void hid_pad_attach(IOHIDDeviceRef device) {
@@ -597,6 +600,19 @@ static void merge_pad(RuntimeGamepadState *out, const RuntimeGamepadState *pad) 
     out->rx = stronger_axis(out->rx, pad->rx); out->ry = stronger_axis(out->ry, pad->ry);
 }
 
+static void merge_sample(PadSample *out, const PadSample *pad) {
+    merge_pad(&out->native, &pad->native);
+    if (pad->leftAt) { out->leftAt = pad->leftAt; out->lx = pad->lx; out->ly = pad->ly; }
+    if (pad->rightAt) { out->rightAt = pad->rightAt; out->rx = pad->rx; out->ry = pad->ry; }
+}
+
+static PadSample combined_sample(const PadSample pads[3]) {
+    PadSample combined = pads[0];
+    merge_sample(&combined, &pads[1]);
+    merge_sample(&combined, &pads[EXTRA_PADS]);
+    return combined;
+}
+
 static PadSample sample_controller(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     float lx = pad.leftThumbstick.xAxis.value, ly = pad.leftThumbstick.yAxis.value;
@@ -679,7 +695,6 @@ static int free_seat(void) {
 
 static void refresh_gamepads(void) {
     PadSample next[3] = {0};
-    PadSample *shared = &next[SHARED_PAD];
     if (!hidPad.present) hidSeat = -1;
     for (GCController *controller in controllers) {
         int seat = controller == seats[0] ? 0 : controller == seats[1] ? 1 : free_seat();
@@ -689,21 +704,19 @@ static void refresh_gamepads(void) {
                 fprintf(stderr, "[odyssey-input] seat %d: %s\n", seat + 1, (controller.vendorName ?: @"controller").UTF8String);
             seats[seat] = controller;
             next[seat] = pad;
-        }
-        merge_pad(&shared->native, &pad.native);
-        if (pad.leftAt) { shared->leftAt = pad.leftAt; shared->lx = pad.lx; shared->ly = pad.ly; }
-        if (pad.rightAt) { shared->rightAt = pad.rightAt; shared->rx = pad.rx; shared->ry = pad.ry; }
+        } else merge_sample(&next[EXTRA_PADS], &pad);
     }
     if (hidPad.present) {
         if (hidSeat < 0) hidSeat = free_seat();
         RuntimeGamepadState pad = {.connected = 1, .buttons = hidPad.buttons, .lx = hidPad.lx, .ly = hidPad.ly, .rx = hidPad.rx, .ry = hidPad.ry};
-        if (hidSeat >= 0) next[hidSeat].native = pad;
-        merge_pad(&shared->native, &pad);
+        merge_pad(&next[hidSeat >= 0 ? hidSeat : EXTRA_PADS].native, &pad);
     }
     uint64_t mouse = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
-    next[0].native.buttons |= mouse; shared->native.buttons |= mouse;
+    next[0].native.buttons |= mouse;
+    PadSample combined = combined_sample(next);
     pthread_mutex_lock(&gamepadLock);
-    textEdges |= (shared->native.buttons & 0x1ffffu) & ~samples[SHARED_PAD].native.buttons;
+    textEdges |= (combined.native.buttons & 0x1ffffu) & ~shared.native.buttons;
+    shared = combined;
     memcpy(samples, next, sizeof samples);
     int chord = settingsShortcutEnabled && settings_chord_held();
     if (chord && !settingsShortcutDown) {
@@ -711,20 +724,30 @@ static void refresh_gamepads(void) {
         if (!textCapture) textCapture = 2;   /* from here the game no longer gets the controller, until it is released */
     }
     settingsShortcutDown = chord;
-    map_buttons(&mappings[0], &samples[twoPlayers ? 0 : SHARED_PAD]);
+    map_buttons(&mappings[0], twoPlayers ? &samples[0] : &shared);
     if (twoPlayers) map_buttons(&mappings[1], &samples[1]);
     pthread_mutex_unlock(&gamepadLock);
 }
 
-/* The rumble and motion backend owns one device. Keep Mario's seat in 2P. */
-static void update_feedback_controller(void) {
+/* Single-player offers controllers in connection order: a later pad can supply a sensor an
+   earlier one lacks. In 2P only Mario's controller may drive the shared feedback backend. */
+static void update_feedback_controllers(void) {
     pthread_mutex_lock(&gamepadLock);
-    GCController *target = seats[0] ?: (twoPlayers ? nil : controllers.firstObject);
+    int split = twoPlayers;
     pthread_mutex_unlock(&gamepadLock);
-    if (feedbackController == target) return;
-    if (feedbackController) runtime_feedback_detach(feedbackController);
-    feedbackController = target;
-    if (target) runtime_feedback_attach(target);
+    NSArray<GCController *> *targets = controllers;
+    if (split) targets = seats[0] ? @[seats[0]] : @[];
+    if ([targets isEqualToArray:feedbackControllers]) return;
+    BOOL rebind = NO;
+    for (GCController *pad in feedbackControllers) if (![targets containsObject:pad]) {
+        runtime_feedback_detach(pad);
+        rebind = YES;
+    }
+    for (GCController *pad in targets) {
+        if (![feedbackControllers containsObject:pad]) rebind = YES;
+        if (rebind) runtime_feedback_attach(pad);   /* restore later devices in their original order */
+    }
+    feedbackControllers = [targets copy];
 }
 
 static void attach_gamepad(GCController *controller) {
@@ -740,7 +763,7 @@ static void attach_gamepad(GCController *controller) {
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
     refresh_gamepads();
-    update_feedback_controller();
+    update_feedback_controllers();
 }
 
 static void detach_gamepad(GCController *controller) {
@@ -753,7 +776,7 @@ static void detach_gamepad(GCController *controller) {
     if (rawLeftController == controller) { rawLeftController = nil; rawLeft = (SwitchLeftFallback){0}; }
     if (rawRightController == controller) { rawRightController = nil; rawRight = (SwitchLeftFallback){0}; }
     refresh_gamepads();
-    update_feedback_controller();
+    update_feedback_controllers();
 }
 
 /* The settings panel (key 1, frontend.m): auto, Xbox, PlayStation or Switch; the held buttons are read again at once. */
@@ -896,13 +919,14 @@ int runtime_gamepad_set_players(int count) {
     int split = count == 2 && samples[0].native.connected && samples[1].native.connected;
     if (split != twoPlayers) {
         twoPlayers = split;
+        if (!split) shared = combined_sample(samples);   /* omit any input the guest cleared while split */
         memset(mappings, 0, sizeof mappings);
         for (int i = 0; i < 1 + split; i++) {
-            const PadSample *src = &samples[split ? i : SHARED_PAD];
+            const PadSample *src = split ? &samples[i] : &shared;
             mappings[i].physicalPrev = src->native.buttons;   /* held across the change is not a new tap/toggle */
             map_buttons(&mappings[i], src);
         }
-        dispatch_async(dispatch_get_main_queue(), ^{ update_feedback_controller(); });
+        dispatch_async(dispatch_get_main_queue(), ^{ update_feedback_controllers(); });
     }
     pthread_mutex_unlock(&gamepadLock);
     return 1 + split;
@@ -923,10 +947,13 @@ void runtime_gamepad_clear_player(int player) {     /* -1: focus loss or shared 
         mappings[i] = (PadMapping){0};
         samples[i] = (PadSample){.native.connected = samples[i].native.connected};
     }
-    if (player < 0) samples[SHARED_PAD] = (PadSample){.native.connected = samples[SHARED_PAD].native.connected};
-    else samples[SHARED_PAD] = samples[1 - player];
-    textEdges = 0;
-    settingsShortcutDown = settingsShortcutPending = 0;
+    /* A single guest Npad release does not cancel physical input pending in the host settings panel. */
+    if (player < 0) {
+        samples[EXTRA_PADS] = (PadSample){.native.connected = samples[EXTRA_PADS].native.connected};
+        shared = (PadSample){.native.connected = shared.native.connected};
+        textEdges = 0;
+        settingsShortcutDown = settingsShortcutPending = 0;
+    }
     if (player != 1) {
         touchState = (RuntimeGamepadState){0};
         mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
@@ -965,7 +992,7 @@ void runtime_gamepad_text_capture(int on) {
 }
 /* Keep the Switch HID fallback's expiry identical for the UI and the game. gamepadLock held. */
 static RuntimeGamepadState text_state_locked(void) {
-    RuntimeGamepadState state = pad_state(&samples[SHARED_PAD]);
+    RuntimeGamepadState state = pad_state(&shared);
     state.buttons &= 0x1ffffu;
     return state;
 }
@@ -976,7 +1003,7 @@ void runtime_gamepad_text_read(RuntimeGamepadState *out) {
 }
 void runtime_gamepad_read_player(int player, RuntimeGamepadState *out) {
     pthread_mutex_lock(&gamepadLock);
-    *out = pad_state(&samples[twoPlayers ? player : SHARED_PAD]);
+    *out = pad_state(twoPlayers ? &samples[player] : &shared);
     out->buttons = mappings[player].buttons | mappings[player].pressedEdges;
     mappings[player].pressedEdges = 0;
     if (player == 0) {
