@@ -3,6 +3,7 @@
 ## 3 November 2026: outbreaks and Tera raids reset every few seconds
 
 - **Fixed: the game's clock check converted a calendar time through the SDK with the port's own time-zone rule.** The game calls `nn::time::ToPosixTime(int*, PosixTime*, int, const CalendarTime&, const TimeZoneRule&)` about five times a second, after each read of the user clock. The port's `LoadTimeZoneRule` fills a small host record (zone name), so the SDK's version read garbage. The game then took the clock as changed: mass outbreaks dispersed and appeared again every few seconds, Tera raid spots moved, and the sky ran from midday to sunset in about 80 s. `runtime/time_host.c` now answers it from the host time zone: 0 results in a DST gap, 2 in an overlap. Measured from the same save: 90 s without a single outbreak notice, the sky stays at midday. Before, a new notice came every 10 s, at 30 and 60 fps alike.
+- **Local wireless no longer stops the game.** Two minutes into a session Violet opened `ldn:u` (local play) and the port stopped with "IPC service not implemented". As in the Smash port, `nn::ldn::Initialize` now answers that wireless communication is off (2203-0022), so the service is never opened.
 
 ## 3 November 2026: ride jump and animation distance
 

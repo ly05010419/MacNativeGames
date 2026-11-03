@@ -129,6 +129,17 @@ static void pseudo_device_id(uint8_t *out) {
 }
 static uint32_t latest_frame_number(uint64_t *out, const void *layer) { (void)layer; if (!out) runtime_fail("GetLatestFrameNumber output"); *out = mtl_present_count(); return 0; }
 static int32_t list_frame_history(void *out, int32_t count, const void *layer) { (void)out; (void)count; (void)layer; return 0; }
+/* nn::ldn, local wireless (2026-11-03): Violet opened ldn:u from the overworld (the Poké Portal's local play) and the host,
+   which has no ldn:u, stopped the game ("IPC service not implemented"). As in the Smash port, it answers as a Switch whose
+   wireless communication is off, so the SDK client never opens the service: Initialize fails with 2203-0022 (module 203 Ldn,
+   description 22), the state stays None, Finalize has nothing to close, and the state change event never fires. The other
+   calls answer "unavailable" in case the game makes them anyway. */
+#define LDN_WIRELESS_OFF RESULT(203, 22)
+static uint32_t ldn_initialize(void) {
+    static int once; if (!once++) fprintf(stderr, "[psv] local wireless: off (ldn Initialize answered 2203-0022)\n");
+    return LDN_WIRELESS_OFF;
+}
+static void ldn_attach_state_event(void *event) { if (!event) runtime_fail("ldn state change event"); hle_bind_system_event(event, 0); }
 static int32_t ldn_state(void) { return 0; }
 static uint32_t ldn_unavailable(void) { return LDN_UNAVAILABLE; }
 static uint32_t nsd_unavailable(void) { return NSD_UNAVAILABLE; }
@@ -201,6 +212,17 @@ void *runtime_game_override(const char *name) {
         {"_ZN2nn2oe17GetPseudoDeviceIdEPNS_4util4UuidE", pseudo_device_id},
         {"_ZN2nn2vi20GetLatestFrameNumberEPmPKNS0_5LayerE", latest_frame_number},
         {"_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", list_frame_history},
+        {"_ZN2nn3ldn10InitializeEv", ldn_initialize}, {"_ZN2nn3ldn8FinalizeEv", ok},
+        {"_ZN2nn3ldn22AttachStateChangeEventEPNS_2os15SystemEventTypeE", ldn_attach_state_event},
+        {"_ZN2nn3ldn11OpenStationEv", ldn_unavailable},
+        {"_ZN2nn3ldn15OpenAccessPointEv", ldn_unavailable},
+        {"_ZN2nn3ldn4ScanEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_unavailable},
+        {"_ZN2nn3ldn11ScanPrivateEPNS0_11NetworkInfoEPiiRKNS0_10ScanFilterEi", ldn_unavailable},
+        {"_ZN2nn3ldn13CreateNetworkERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_10UserConfigE", ldn_unavailable},
+        {"_ZN2nn3ldn20CreateNetworkPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiPKNS0_12AddressEntryE", ldn_unavailable},
+        {"_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE", ldn_unavailable},
+        {"_ZN2nn3ldn14ConnectPrivateERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_17SecurityParameterERKNS0_10UserConfigEiNS0_13ConnectOptionE", ldn_unavailable},
+        {"_ZN2nn3ldn14GetNetworkInfoEPNS0_11NetworkInfoE", ldn_unavailable},
         {"_ZN2nn3ldn8GetStateEv", ldn_state},
         {"_ZN2nn3ldn14GetIpv4AddressEPNS0_11Ipv4AddressEPNS0_10SubnetMaskE", ldn_unavailable},
         {"_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", nsd_unavailable},
