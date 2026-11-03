@@ -599,13 +599,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     mfxup_output_set(0); mfxup_set(0); shows(@"Resolution", @"1080p");
     BOOL nativeResolution = !!(runtime_output_modes() & (1 << OUTPUT_MODE_NATIVE));
     if (nativeResolution) {
-    assert(menu(@"Resolution").numberOfItems == 5 && [menu(@"Resolution").itemTitles.firstObject isEqualToString:@"720p"]);
-    pick(@"Resolution", @"720p"); assert(runtime_output_mode() == OUTPUT_MODE_720P && runtime_output_size_current() == SIZE(1280, 720));
+    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* Tears of the Kingdom; not Breath of the Wild */
+    assert(menu(@"Resolution").numberOfItems == 5 + mfx720 && [menu(@"Resolution").itemTitles.firstObject isEqualToString:@"720p"]);
+    if (mfx720) {
+    pick(@"Resolution", @"720p + MetalFX upscaling");   /* the 720p canvas, MetalFX scaling it to a 1080p window */
+    assert(runtime_output_mode() == OUTPUT_MODE_720P_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
+    window_is(1080);
+    } else assert(!runtime_output_mode_set(OUTPUT_MODE_720P_METALFX));
+    pick(@"Resolution", @"720p"); assert(runtime_output_mode() == OUTPUT_MODE_720P && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
     window_is(720);
     } else {
         assert(menu(@"Resolution").numberOfItems == 2);
         assert([menu(@"Resolution") indexOfItemWithTitle:@"720p"] < 0);
-        assert(!runtime_output_mode_set(OUTPUT_MODE_720P) && !runtime_output_mode_set(OUTPUT_MODE_NATIVE));
+        assert(!runtime_output_mode_set(OUTPUT_MODE_720P) && !runtime_output_mode_set(OUTPUT_MODE_720P_METALFX) && !runtime_output_mode_set(OUTPUT_MODE_NATIVE));
     }
     pick(@"Resolution", @"1080p + MetalFX upscaling");
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1920, 1080));
