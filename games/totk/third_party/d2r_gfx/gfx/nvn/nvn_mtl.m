@@ -5334,11 +5334,13 @@ static void shmap_load(void) {
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen;
     NvBorderKeyCache *border_cache;   // registry lock
     NvFunctionCache *fragment_cache, *vertex_cache;   // g_bpatch_lock / g_vpatch_lock
+    uint8_t vertex_components[32];   // atomic: 0 unknown, otherwise 1 + highest lane read by the original MSL
 } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
+#include "nvn_vertex_tail.h"
 static NSString *sh_src(NvShader *s) {
     if (!s) return nil;
     if (s->src) return s->src;
@@ -8038,6 +8040,20 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             continue;
         }
         int st = k->attr[a].stream;
+        /* Offline device compilers validate the full fetch before eliminating
+           unused lanes. Preserve the game's stride, narrowing only trailing
+           components the MSL proves unused. Do this here for both the archive
+           builder and live draws, so their Metal descriptors remain identical. */
+        unsigned fmt = k->attr[a].fmt;
+        if (nvn_vertex_tail_format(fmt, k->attr[a].offset, k->stream[st].stride, 0) != fmt) {
+            unsigned cached = loc >= 0 && loc < 32 ? __atomic_load_n(&vs->vertex_components[loc], __ATOMIC_RELAXED) : 5;
+            if (!cached) {
+                cached = 1 + nvn_vertex_components(sh_src(vs).UTF8String, (unsigned)loc);
+                __atomic_store_n(&vs->vertex_components[loc], (uint8_t)cached, __ATOMIC_RELAXED);
+            }
+            unsigned used = cached - 1;
+            vf = vfmt(nvn_vertex_tail_format(fmt, k->attr[a].offset, k->stream[st].stride, used));
+        }
         vd.attributes[loc].format = vf; vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = 16 + st;
         vd.layouts[16 + st].stride = k->stream[st].stride ? k->stream[st].stride : 4;
         vd.layouts[16 + st].stepFunction = k->stream[st].stride == 0 ? MTLVertexStepFunctionConstant : k->stream[st].divisor ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
