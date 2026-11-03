@@ -211,6 +211,23 @@ Added for it (general where possible, each with its reason in the code):
   12 frames with a picture, past the language screen into its opening scene and the first area; Tears of the Kingdom
   1.4.3 boots to its title (155 s) as before.
 
+**Pokopia, late 2026-11-03: the stalls in the world fixed: the control-memory callback is called.**
+- In the world the game stopped for 0.4-0.6 s every 1.5 s, worse the longer it ran. Time Profiler: the replay thread
+  spent the stalls in pin_scan; the log: 100,000 live recording copies (2 GiB) after four minutes, released none.
+- Pokopia gives each command buffer its control memory once (1 MiB, 3 MiB) and adds more only from its memory callback
+  (main+0x1144990, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY). The host never called it: past the memory a
+  recording carried no mark, the game never added memory again, and no copy was ever released.
+- Now a recording that needs control memory beyond what is left calls the game's callback first (ctl_ensure; not for
+  Breath of the Wild, whose handles are not in control memory), and the game adds memory: re-adding releases the copies
+  recorded there (release_copies). Marks are used with the translation thread too: copy_free already keeps a released
+  copy until every submission before it has been replayed; the sweep frees those waiting copies (retired_sweep).
+- Same save, five minutes: 29,000 live copies / 7.8 MiB (was 120,000 / 2.5 GiB), frames over 200 ms 4 (2.2 s; was 103,
+  59.5 s), 14,618 frames (was 11,722). Bananza 3 minutes as before (310 copies released by their marks), Tears of the
+  Kingdom 1.4.3 to its title (2,500 live copies, as before). TOTK_CTL_LOG=1: callbacks, control memory additions.
+- Still open for Pokopia: shaders compiled the first time a scene is entered (seconds, cached after); static
+  block-compressed textures re-uploaded every submission as written (~170 MB a frame, TOTK_REUP_LOG); a second texture
+  pool registering in some scenes (the table per pool); nvnCommandBufferDrawArraysIndirect and SetCopyImageStride.
+
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:
 Bananza's own nodes derived from VibrationNode had no vtable and it called garbage from VibrationNode::Update about 20 s

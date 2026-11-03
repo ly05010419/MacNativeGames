@@ -882,7 +882,12 @@ NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
     memset(c, 0, sizeof(cmd_t)); CB(c)->magic = MAGIC('C', 'M', 'D', 'B'); CB(c)->dev = d; CB(c)->inline_cur = ~0ull; CB(c)->inline_end = 0; return 1;
 }
 NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) { free(CB(c)->seg); CB(c)->seg = CB(c)->cur = CB(c)->end = NULL; CB(c)->magic = 0; }
-NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb; }
+/* TOTK_CTL_LOG (diagnostic): memory callbacks, control memory additions, and the first recording of each command buffer
+   past the control memory it was given (how a game sizes and refills its control memory; Pokemon Pokopia, 2026-11-03) */
+static int ctl_log_left(void) { static int on = -1; static _Atomic int left = 200; if (on < 0) on = getenv("TOTK_CTL_LOG") != NULL; return on && atomic_fetch_sub(&left, 1) > 0; }
+void runtime_describe_address(uint64_t a, char *out, size_t n);
+NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb;
+    if (ctl_log_left()) { char w[96] = ""; runtime_describe_address((uint64_t)(uintptr_t)cb, w, sizeof w); LOG("[ctl] SetMemoryCallback cb=%p fn=%s", (void *)c, w); } }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
 static uint8_t *align8(uint8_t *p) { return (uint8_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7); }
 // 诊断 DM_NVN_CMDSTAT=1：每 300 帧记一行命令录制的用量——每帧录了多少字节 / 多少条、游戏每次给多大一段命令内存、每帧补内存回调几次、宿主补段几次、
@@ -946,6 +951,7 @@ NVN(nvnCommandBufferAddCommandMemory, void, NVNcommandBuffer *c, const NVNmemory
 // The SDK encodes handles in control memory (sdk+0x444530). Reusing that storage retires its copies.
 NVN(nvnCommandBufferAddControlMemory, void, NVNcommandBuffer *c, void *m, size_t n) {
     if (cmdlog_env()) LOG("[cmd] AddControlMemory cb=%p mem=%p size=%#zx", (void *)c, m, n);
+    if (ctl_log_left()) LOG("[ctl] F%llu AddControlMemory cb=%p mem=%p size=%#zx (was %p used %#zx of %#zx)", (unsigned long long)g_frame_pub, (void *)c, m, n, CB(c)->ctl, CB(c)->ctl_used, CB(c)->ctl_size);
 #ifndef GAME_BOTW   /* NVN 53 handles do not live in control memory: Breath of the Wild re-adds a command buffer's control memory and keeps calling handles recorded before (botw.md) */
     release_copies((uintptr_t)m, (uintptr_t)m + n);
 #endif
@@ -1228,11 +1234,14 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
 #define COPY_TOKEN_MAGIC 0x4e454b4f54594d43ull
 extern __thread sigjmp_buf *runtime_fault_guard;   // runtime/loader.c: a guarded read of guest memory survives a fault
 static int async_replay(void);   /* below: TOTK_ASYNC_REPLAY */
-/* With the translation thread (TOTK_ASYNC_REPLAY=1, iPhone default) the game may reuse a submitted command buffer's control
-   memory as soon as the submit call returns, before the queued replay used the copy: marks are not used there yet (a copy
-   last submitted at or after the submission being replayed would have to be kept). */
-static int copy_token_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_COPY_TOKEN"); v = !(e && !strcmp(e, "0")) && !async_replay();
-    if (!v) LOG("[cmd] 录制副本记号：关（%s）：副本只在控制内存被重新加入时释放", e && !strcmp(e, "0") ? "TOTK_COPY_TOKEN=0" : "翻译线程模式还不支持"); } return v; }
+/* With the translation thread (TOTK_ASYNC_REPLAY=1) the game may reuse a submitted command buffer's control memory as soon
+   as the submit call returns, before the queued replay used the copy. Marks are used there too: a copy whose mark is gone
+   is released through copy_free, which keeps its memory until every submission pushed before the release has been
+   replayed (g_retired). They were off in that mode until 2026-11-03, from before copy_free waited for the replay: Pokemon
+   Pokopia (translation thread on, control memory never added again) kept every recording, 100,000 live copies (2 GiB) in
+   four minutes, and the sweep's walk over them (pin_scan) stopped the replay for 0.4-0.6 s every 1.5 s. */
+static int copy_token_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_COPY_TOKEN"); v = !(e && !strcmp(e, "0"));
+    if (!v) LOG("[cmd] 录制副本记号：关（TOTK_COPY_TOKEN=0）：副本只在控制内存被重新加入时释放"); } return v; }
 static void copy_token_write(uintptr_t at, const uint8_t *copy) { uint64_t v[2] = {COPY_TOKEN_MAGIC, (uint64_t)(uintptr_t)copy}; memcpy((void *)at, v, sizeof v); }
 static int copy_token_negative(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_PROBE_NEGATIVE"); v = e && atoi(e) == 22; } return v; }   /* probe negative 22: marks never checked */
 /* Reading a mark (pin_scan): the fault guard is armed only around the 16-byte read; the jump buffer is set once per walked
@@ -1260,6 +1269,25 @@ static void cbk_compact(void) {
     }
     free(ob); g_cbk_used = live; g_cbk_empty = 0; g_cbk_compactions++;
 }
+#ifndef GAME_BOTW
+/* A recording takes 64 bytes of its command buffer's control memory (the handle's descriptor and its mark). When they are
+   not left, NVN's driver calls the command buffer's memory callback (NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY)
+   and the game adds control memory there, often the same memory again (a ring): re-adding it releases the copies recorded
+   in it (release_copies), as the handles there are gone on hardware too. The callback was never called before 2026-11-03:
+   Pokemon Pokopia gives each command buffer its control memory once and refills it only from its callback (main+0x1144990),
+   so its recordings went past the memory after about 1,900 frames, carried no mark, and none was ever released: 100,000
+   live copies (2 GiB) in four minutes and a sweep over them that stopped the replay for half a second every 1.5 s. */
+static uint64_t g_ctl_refills, g_ctl_refill_short;
+static void ctl_ensure(NVNcommandBuffer *c, cmd_t *o) {
+    if (!o->ctl || o->ctl_used + 64 <= o->ctl_size || !o->cb) return;
+    o->cb(c, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY, 64, o->cb_data);   /* game code: it adds control memory (nvnCommandBufferAddControlMemory) */
+    g_ctl_refills++;
+    if (o->ctl_used + 64 > o->ctl_size && !g_ctl_refill_short++)
+        LOG("【红】控制内存回调之后仍然不够（cb=%p，%#zx 已用 / %#zx）：这次录制不写记号，副本只能等控制内存被重新加入时释放", (void *)c, o->ctl_used, o->ctl_size);
+    if (ctl_log_left()) LOG("[ctl] F%llu cb=%p out of control memory: memory callback called (%llu so far), now %p %#zx used of %#zx", (unsigned long long)g_frame_pub, (void *)c,
+                            (unsigned long long)g_ctl_refills, o->ctl, o->ctl_used, o->ctl_size);
+}
+#endif
 NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     if (runtime_frametrace_event) runtime_frametrace_event(11);
     cmd_t *o = CB(c);
@@ -1292,10 +1320,13 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
        finalised textures kept for them after 44 minutes). */
     int token = lo && copy_token_on();
 #else
+    ctl_ensure(c, o);
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
     int token = o->ctl && o->ctl_used + 64 <= o->ctl_size && copy_token_on();   /* only inside the control memory the game gave */
 #endif
+    if (o->ctl && o->ctl_used + 64 > o->ctl_size && o->ctl_used <= o->ctl_size && ctl_log_left())
+        LOG("[ctl] F%llu cb=%p recording past its control memory %p (%#zx used of %#zx), memory callback %s", (unsigned long long)g_frame_pub, (void *)o, o->ctl, o->ctl_used, o->ctl_size, o->cb ? "set" : "none");
     o->ctl_used += 64;
     if (token) copy_token_write(lo, copy);
     pthread_mutex_lock(&g_copy_mu);
@@ -1741,6 +1772,7 @@ static void pin_step(uint64_t now) {
     if (!pin_sweep_on()) return;
     uint64_t t0 = now_ns();
     pthread_mutex_lock(&g_copy_mu); pthread_mutex_lock(&g_pin_mu);
+    retired_sweep();   /* copies released by their marks wait here for the replay (copy_free), not only those of a re-added control memory */
     if (!g_pin_win_end) pin_window_start(now);
     pin_scan((g_pin_scan_cap + PIN_SCAN_SLICES - 1) / PIN_SCAN_SLICES);
     size_t freed = 0, recent = 0; int decided = 0;
