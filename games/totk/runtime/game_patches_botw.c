@@ -189,6 +189,11 @@ static uint32_t adrp_reg(unsigned rd, uint64_t site, uint64_t target) {
     uint32_t imm = (uint32_t)pages & 0x1fffff;
     return 0x90000000u | ((imm & 3u) << 29) | ((imm >> 2) << 5) | (rd & 31u);
 }
+static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
+    int64_t delta = (int64_t)target - (int64_t)site;
+    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
+    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
+}
 #ifdef GAME_BOTW160
 /* Pad repeat and hold counts by real time (TOTK_PAD_REPEAT=0: as shipped; botw.md). sead::ControllerBase::
    updateDerivativeParams_ (main+0x126e3b0) counts the frames each button has been held (+0x30 + 4 i) and raises its
@@ -311,11 +316,6 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
    the audio frame values computed from the clamped number just before it are unchanged. x9 and s0 are free there (a call follows):
      main+0x1c5a014  str s0, [x8, #0x84]  -> b <veneer>
      veneer          adrp x9, <page> / ldr s0, [x9] / str s0, [x8, #0x84] / b main+0x1c5a018 */
-static uint32_t branch_to(uint64_t site, uint64_t target) {   /* b <target>, both offsets in main */
-    int64_t delta = (int64_t)target - (int64_t)site;
-    if ((delta & 3) || delta < -(1 << 27) || delta >= (1 << 27)) runtime_fail("patch branch outside range");
-    return 0x14000000u | ((uint32_t)(delta >> 2) & 0x3ffffffu);
-}
 static void patch_slink_rate(Module *m, uint64_t page) {
     const char *e = getenv("TOTK_SLINK_REALTIME");
     if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] sound-link timers at least one 30 fps frame per frame, as shipped (TOTK_SLINK_REALTIME=0)\n"); return; }
@@ -484,6 +484,50 @@ static void patch_pad_repeat(Module *m, uint64_t page) {
     fprintf(stderr, "[botw] pad repeat and hold counts by real time: held buttons count the VFR ratio per frame (%zu instructions, "
                     "%zu verified; TOTK_PAD_REPEAT=0: one per frame, as shipped)\n", sizeof put / sizeof *put, sizeof check / sizeof *check);
 }
+/* Blends start with one 30 fps frame, as in 1.6.0 above (#1266; TOTK_BLEND_FIRST_STEP=0: as shipped). 1.9.0's camera
+   blend timer is main+0xc33668 (found by its cosine ease, (1 - cos(pi x progress)) / 2 at +24, the same as 1.6.0's
+   main+0xdde0bc): a length of 0 steps by 1, otherwise step = 1 / length (main+0xc33724), the VFR's ratio comes back in
+   s0 from main+0xc3372c and main+0xc33730 multiplies them; main+0xc33694 adds that to the progress at +20. x19 holds
+   the timer (main+0xc33680) and s8 1.0 (main+0xc3367c, callee-saved across the call):
+     main+0xc33730  fmul s1, s9, s0  -> b <veneer>
+     veneer         ldr s1, [x19, #20] / fcmp s1, #0.0 / b.ne +8 / fmax s0, s0, s8 / fmul s1, s9, s0 / b main+0xc33734 */
+static void patch_blend_first_step(Module *m, uint64_t stub) {
+    const char *e = getenv("TOTK_BLEND_FIRST_STEP");
+    if (!ios_code() && e && !strcmp(e, "0")) { fprintf(stderr, "[botw] camera blends start with the measured ratio, as shipped (TOTK_BLEND_FIRST_STEP=0)\n"); return; }
+    enum { SITE = 0xc33730, BACK = 0xc33734 };
+    static const struct { uint32_t off, original; } check[] = {
+        {0xc33678u, 0x2d410400u},   /* ldp s0, s1, [x0, #8]   (length, scale) */
+        {0xc3367cu, 0x1e2e1008u},   /* fmov s8, #1.0 */
+        {0xc33680u, 0xaa0003f3u},   /* mov x19, x0 */
+        {0xc33694u, 0xbd401660u},   /* ldr s0, [x19, #20]     (progress) */
+        {0xc33698u, 0xbd001261u},   /* str s1, [x19, #16] */
+        {0xc336a4u, 0x1e202821u},   /* fadd s1, s1, s0 */
+        {0xc33724u, 0x1e201829u},   /* fdiv s9, s1, s0        (step) */
+        {SITE, 0x1e200921u},        /* fmul s1, s9, s0        (step x the VFR's ratio) */
+        {BACK, 0x17ffffd8u},        /* b main+0xc33694 */
+    };
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof check / sizeof *check; i++) {
+        uint32_t w; memcpy(&w, m->base + check[i].off, 4);
+        if (w != check[i].original) {
+            fprintf(stderr, "[botw] camera blend main+%#x: found %08x expected %08x\n", check[i].off, w, check[i].original);
+            runtime_fail("blends starting with one 30 fps frame require the 1.9.0 camera blend timer");
+        }
+    }
+    const uint32_t veneer[] = {
+        0xbd401661u,   /* ldr s1, [x19, #20]    */
+        0x1e202028u,   /* fcmp s1, #0.0         */
+        0x54000041u,   /* b.ne +8               */
+        0x1e284800u,   /* fmax s0, s0, s8       */
+        0x1e200921u,   /* fmul s1, s9, s0       */
+        branch_to(stub + 20, BACK),
+    };
+    if (stub + sizeof veneer > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("camera blend veneer layout");
+    for (size_t i = 0; !CODE_PATCHED_AT_BUILD && i < sizeof veneer; i++) if (m->base[stub + i]) runtime_fail("camera blend veneer padding not empty");
+    put_words(m, stub, veneer, sizeof veneer / sizeof *veneer, "camera blend veneer");
+    put_word(m, SITE, branch_to(SITE, stub), "camera blend first step");
+    fprintf(stderr, "[botw] camera blends start with one 30 fps frame, then follow the measured ratio (veneer +%#llx; TOTK_BLEND_FIRST_STEP=0: as shipped)\n",
+            (unsigned long long)stub);
+}
 static void patch_realtime(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
@@ -520,6 +564,7 @@ static void patch_realtime(Module *m) {
                     "(%zu instructions, %zu verified); initial 33.33 ms, sampled at each present (TOTK_REALTIME=0: as shipped)\n",
             sizeof put / sizeof *put, sizeof check / sizeof *check);
     patch_pad_repeat(m, page);
+    patch_blend_first_step(m, ((m->text_end + 15) & ~15ULL) + 80);   /* after the FOV stub (+32, 11 words) */
 }
 #endif
 /* Diagnostics (TOTK_JQ_CHECK=1): random crashes look like one job run twice (two threads in the same skinning job, a list
