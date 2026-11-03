@@ -224,14 +224,16 @@ def check_rewriter(data, res, version, want):
                          f'rewrites the modules; the app was not changed')
 
 
-def probe_runtime(tmp, version, logs):
+def probe_runtime(tree, tmp, version, logs):
     """The new runtime against the app's own game files, before anything is replaced: the loader probe (loader.c probe)
     reads the game data, maps the modules and checks their SHA-256, links them and calls across them, with no window, GPU
-    or file written."""
+    or file written. Run from outside the .partial bundle (build_app.run_outside_bundle): started inside it, macOS first
+    checked the whole new bundle, 237 of the probe's 238 s and half of every update (2026-11-03)."""
     res, log = tmp / 'Contents/Resources/totk', logs / 'runtime-probe.log'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('TOTK_', 'DM_'))}
-    r = subprocess.run([res / 'build/totk-native', f'rewritten/{version}', 'probe'], cwd=res, env=env, capture_output=True,
-                       text=True, timeout=600)
+    with build_app.run_outside_bundle(res / 'build/totk-native', res / 'build/runtime-probe', tree / 'build/outside-bundle') as program:
+        r = subprocess.run([program, f'rewritten/{version}', 'probe'], cwd=res, env=env, capture_output=True,
+                           text=True, timeout=600)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(r.stdout + r.stderr)
     if r.returncode or '"status":"pass"' not in r.stdout:
@@ -353,18 +355,21 @@ def main(argv):
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
         record_commit(tmp, work)
-        probe_runtime(tmp, version, logs)
+        probe_runtime(tree, tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
-        build_app.sign_app(tmp, logs)
+        t = time.time(); build_app.sign_app(tmp, logs); say(f'   signed ({time.time() - t:.0f} s)')
         build_app.wait_until_closed(app)
+        t = time.time()
         replaced = []   # the replaced Contents are deleted only once the updated app passes its check
         if build_app.install_app(tmp, app, remove=replaced.append):
             say('   the game data is unchanged; kept the installed copy, so the first start need not verify it again')
     finally:
         if tmp.exists():
             build_app.remove_tree(tmp)
-    run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log')
-    r = subprocess.run([app / f'Contents/MacOS/{APPS[game][2]}', '--check'], capture_output=True, text=True, timeout=1800)
+    say(f'   installed, its seal checked ({time.time() - t:.0f} s)')
+    t = time.time(); run([build_app.LSREGISTER, '-f', app], logs / 'register-app.log'); say(f'   registered with macOS ({time.time() - t:.0f} s)')
+    t = time.time(); r = subprocess.run([app / f'Contents/MacOS/{APPS[game][2]}', '--check'], capture_output=True, text=True, timeout=1800)
+    say(f'   the app\'s own check ({time.time() - t:.0f} s)')
     mine = app.with_name(f'{app.name}.replaced-{os.getpid()}')
     if r.returncode and mine in replaced and mine.is_dir():
         build_app.remove_in_background(restore_replaced(app, mine))

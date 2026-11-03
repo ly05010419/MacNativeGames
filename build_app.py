@@ -1263,6 +1263,29 @@ def copy_tree(src, dst):
             clone(p, dst / p.relative_to(src))
 
 
+class run_outside_bundle:
+    """A program of an app being assembled, run without running anything inside that app: its first program run makes macOS
+    check the whole bundle once (Gatekeeper / XProtect read all 17 GB, 237 s measured 2026-11-03; the check stays with
+    the folder, which is why install_app keeps the installed one), and the app being assembled is a new folder
+    (update_runtime.py's .partial clone, a build's work copy) whose check is thrown away with it. The program is cloned
+    to `outside` (a folder of the work tree, in no bundle) and run through a link at `link` inside the app: it finds its
+    neighbours by the path it was started by (nvn_mtl.m exe_rel: shader-libs, the shader map), while macOS assesses the
+    file the link points to. The link and the clone go once the run is over; nothing of it stays in the app or its seal.
+        with run_outside_bundle(src, link, outside) as program: run([program, ...], ...)"""
+    def __init__(self, src, link, outside):
+        self.src, self.link, self.real = Path(src), Path(link), Path(outside) / Path(link).name   # the same name: the process's
+    def __enter__(self):                                                                          # (game_slot.c pid_is_game)
+        self.real.parent.mkdir(parents=True, exist_ok=True)
+        clone(self.src, self.real)
+        self.link.unlink(missing_ok=True)
+        self.link.symlink_to(self.real)
+        return self.link
+    def __exit__(self, *exc):
+        self.link.unlink(missing_ok=True)
+        self.real.unlink(missing_ok=True)
+        return False
+
+
 def remove_tree(path):
     """Remove a bundle. Finder can put .DS_Store back while it is being deleted, which makes the last rmdir fail."""
     for _ in range(5):
@@ -1713,15 +1736,15 @@ def mac_pipelines(tree, res, version, logs):
         shutil.rmtree(work, ignore_errors=True)   # pipelines of other shaders, lists or binary; a partial run is completed
     work.mkdir(parents=True, exist_ok=True)
     tool = build / 'mac-pipeline-archive'
-    tool.unlink(missing_ok=True)   # left by an interrupted build
+    tool.unlink(missing_ok=True)   # left by an interrupted build (a link since 2026-11-03, a copy before)
     say("4/4 app: making the pipeline archive for this Mac's GPU, so the first start needs no warm-up before the title"
         + (' (kept from the last build)' if kept else ' (a few minutes the first time)'))
     t0 = time.time()
     try:
-        clone(build / 'totk-native', tool)
-        run([tool, f'rewritten/{version}', 'pipeline-archive', *lists], logs / 'mac-pipelines.log', cwd=res,
-            env=dict(os.environ, TOTK_SHADER_CACHE=str(work / 'cache'), TOTK_SHADER_SEED_DIR=str(seed),
-                     TOTK_PIPELINE_ARCHIVE_HOST='1', TOTK_DEBUG_LOG='1'))
+        with run_outside_bundle(build / 'totk-native', tool, tree / 'build/outside-bundle') as program:
+            run([program, f'rewritten/{version}', 'pipeline-archive', *lists], logs / 'mac-pipelines.log', cwd=res,
+                env=dict(os.environ, TOTK_SHADER_CACHE=str(work / 'cache'), TOTK_SHADER_SEED_DIR=str(seed),
+                         TOTK_PIPELINE_ARCHIVE_HOST='1', TOTK_DEBUG_LOG='1'))
     except (BuildError, OSError) as e:
         report = last_json(logs / 'mac-pipelines.log') or {}
         if not report.get('write_failed') or not report.get('render'):

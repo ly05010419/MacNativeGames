@@ -295,15 +295,21 @@ class UpdateRuntime(unittest.TestCase):
         logs = self.root / 'logs'
         binary = res / 'build/totk-native'
         binary.parent.mkdir(parents=True, exist_ok=True)
+        tree = self.root / 'tree'
+        # started by a link in the app's build folder to a clone outside the bundle (build_app.run_outside_bundle)
         binary.write_text('#!/bin/sh\ntest "$1" = rewritten/v143 && test "$2" = probe && test -z "$TOTK_GAME_DATA" && '
+                          f'test "$0" = "{res}/build/runtime-probe" && test -L "$0" && test "$(readlink "$0")" = "{tree}/build/outside-bundle/runtime-probe" && '
                           'echo \'{"status":"pass"}\'\n')
         binary.chmod(0o755)
         with patch.dict('os.environ', {'TOTK_GAME_DATA': '/elsewhere'}):
-            update_runtime.probe_runtime(app, 'v143', logs)   # the app's own game data, not one the environment names
+            update_runtime.probe_runtime(tree, app, 'v143', logs)   # the app's own game data, not one the environment names
+        self.assertFalse((res / 'build/runtime-probe').is_symlink())   # nothing of the run stays in the app
+        self.assertFalse((tree / 'build/outside-bundle/runtime-probe').exists())
         binary.write_text('#!/bin/sh\necho "[totk] FAIL: game tables of another game version" >&2\nexit 1\n')
         with self.assertRaisesRegex(build_app.BuildError, 'does not load .*another game version.*the app was not changed'):
-            update_runtime.probe_runtime(app, 'v143', logs)
+            update_runtime.probe_runtime(tree, app, 'v143', logs)
         self.assertIn('another game version', (logs / 'runtime-probe.log').read_text())
+        self.assertFalse((res / 'build/runtime-probe').is_symlink())
 
     def test_record_commit(self):
         app, _, _ = self.app()
