@@ -68,7 +68,13 @@ static uint8_t g_unimpl_seen[NVN_NFUNC];
 uint64_t nvn_unimpl_c(nvn_slot_t *slot, uint64_t x0, uint64_t x1, uint64_t x2) {
     unsigned i = (unsigned)(slot - nvn_slot);
     if (!g_unimpl_seen[i]++) LOG("【红】NVN 未实现被调用：%s (x0=%#llx x1=%#llx x2=%#llx)", nvn_names[i], x0, x1, x2);
+#ifdef GAME_NS2
+    /* A Switch 2 game in bring-up (docs/ns2-port.md): an unimplemented entry is named once and answers 0, so one run shows
+       every entry the game reaches; what it should have done is missing from the picture. Open, per entry. */
+    return 0;
+#else
     die("unimplemented NVN call %s",nvn_names[i]);
+#endif
 }
 
 #include "nvn_impl.h"
@@ -91,6 +97,13 @@ static void nvn_init_slots(void) {
         if (i == NVN_NFUNC) die("NVN 实现 %s 不在 main 的名字表里", im[k].name);
         nvn_slot[i].fn = im[k].fn; hit++;
     }
+    /* NVN_EXTRA implementations (totk_nvn_ext.c: the *Deferred binds and others outside the Switch 1 table) whose names the
+       table has as well (the NVN2 names appended to names.txt): they fill those slots, else the lookup would find the
+       table's unimplemented stub first (Donkey Kong Bananza: nvnCommandBufferBindTexturesDeferred). */
+    const nvn_impl *ex = (const nvn_impl *)getsectiondata(&_mh_execute_header, "__DATA", "totknvnx", &sz);
+    for (unsigned k = 0; ex && k < sz / sizeof *ex; k++)
+        for (unsigned i = 0; i < NVN_NFUNC; i++)
+            if (!strcmp(nvn_names[i], ex[k].name)) { if (nvn_slot[i].fn == (void *)nvn_unimpl_entry) { nvn_slot[i].fn = ex[k].fn; hit++; } break; }
     g_nsem = hit;
 }
 
@@ -600,6 +613,16 @@ NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const vo
     const ns2_prog_builder_t *o = (const ns2_prog_builder_t *)b;
     return h_nvnProgramInitialize(p, o->dev) && (!o->n || h_nvnProgramSetShaders(p, o->n, o->sd));
 }
+/* Hints and modes with nothing to do on Metal (seedds/nxnative implements them the same way): ZCull's stencil cull criteria
+   (the host does no ZCull; the draws' own stencil test still applies), a queue's priority (one Metal queue), the
+   intermediate shader cache (shaders are translated on the host), colour reduction (a bandwidth optimisation). Per-sample
+   shading: Metal shades per sample only where the shader reads the sample index, so the mode is accepted, not applied. */
+NVN_NOPROTO(nvnCommandBufferSetStencilCullCriteria, void, NVNcommandBuffer *c, int func, int ref) { (void)c; (void)func; (void)ref; }
+NVN_NOPROTO(nvnQueueBuilderSetQueuePriority, void, NVNqueueBuilder *b, int priority) { (void)b; (void)priority; }
+NVN_NOPROTO(nvnDeviceSetIntermediateShaderCache, void, NVNdevice *d, int max) { (void)d; (void)max; }
+NVN_NOPROTO(nvnCommandBufferSetColorReductionEnable, void, NVNcommandBuffer *c, int on) { (void)c; (void)on; }
+NVN_NOPROTO(nvnCommandBufferSetColorReductionThresholds, void, NVNcommandBuffer *c, int fmt, int lo, int hi) { (void)c; (void)fmt; (void)lo; (void)hi; }
+NVN_NOPROTO(nvnProgramSetSampleShading, NVNboolean, NVNprogram *p, int mode) { (void)p; static int once; if (!once++) LOG("[nvn] nvnProgramSetSampleShading mode %d: Metal shades per sample only where the shader reads the sample index", mode); return 1; }
 /* A queue NVN2 ties to a primary queue (Bananza's second queue): the host runs every queue's submits in order on its one
    Metal queue, so the tie needs no work. */
 NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *primary) { (void)b; (void)primary; }
@@ -1071,6 +1094,34 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
 #endif
 }
 
+/* A released copy may still be in a submission the translation thread has not replayed yet: NVN's control memory is the
+   CPU's, read at the submit call, so a game may add it again for its next recording as soon as nvnQueueSubmitCommands
+   returns (Donkey Kong Bananza does; TOTK waits for the GPU first). Its memory is freed once every submission made before
+   the release has been replayed (g_xsub_done); its magic is cleared at once, so a later submit of the handle is still
+   reported. Held under g_copy_mu. */
+static int async_replay(void);
+static uint64_t xsub_pushed(void), xsub_replayed(void);
+typedef struct { copy_prefix *pf; uint64_t after; } retired_copy;
+static retired_copy *g_retired; static size_t g_nretired, g_cretired;
+static void retired_sweep(void) {
+    if (!g_nretired) return;
+    uint64_t done = xsub_replayed(); size_t k = 0;
+    for (size_t i = 0; i < g_nretired; i++) {
+        if (g_retired[i].after <= done) { g_copy_bytes -= malloc_size(g_retired[i].pf); free(g_retired[i].pf); }
+        else g_retired[k++] = g_retired[i];
+    }
+    g_nretired = k;
+}
+static void copy_free(copy_prefix *pf) {
+    uint64_t after = async_replay() ? xsub_pushed() : 0;
+    if (!after || after <= xsub_replayed()) { g_copy_bytes -= malloc_size(pf); free(pf); return; }
+    if (g_nretired == g_cretired) {
+        size_t cap = g_cretired ? g_cretired * 2 : 256; retired_copy *r = realloc(g_retired, cap * sizeof *r);
+        if (!r) die("retired command copies");
+        g_retired = r; g_cretired = cap;
+    }
+    g_retired[g_nretired++] = (retired_copy){pf, after};
+}
 static uint64_t g_copy_drop_readd, g_copy_drop_token, g_copy_mark_faults;   /* why copies were released: their control memory was added again / their mark there is gone (of those: unmapped) */
 static uint64_t g_copy_mark_late;   /* Breath of the Wild: handles called after their mark was found gone (botw_handle_copy; the copy was kept) */
 static void copy_drop(copy_bucket *b, uint32_t i, int by_token) {   /* g_copy_mu held: release copy i of bucket b */
@@ -1079,13 +1130,14 @@ static void copy_drop(copy_bucket *b, uint32_t i, int by_token) {   /* g_copy_mu
     copy_prefix *pf = (copy_prefix *)(c->copy - sizeof(copy_prefix));
     if (cmdlog_env()) LOG("[cmd] free copy=%p%s", (void *)c->copy, by_token ? " (its mark in the control memory is gone)" : "");
     g_freed[g_nfreed++ % FREED_RING] = (typeof(g_freed[0])){(uintptr_t)c->copy, g_submits, c->stale_at, pf->used_at, pf->made_at, c->ctl_lo};
-    pf->magic = 0; g_copy_bytes -= malloc_size(pf); free(pf); b->v[i] = b->v[--b->n]; g_ncopies--;
+    pf->magic = 0; copy_free(pf); b->v[i] = b->v[--b->n]; g_ncopies--;
     if (by_token) g_copy_drop_token++; else g_copy_drop_readd++;
     if (!b->n && !b->empty) { b->empty = 1; g_cbk_empty++; }
 }
 static void release_copies(uintptr_t lo, uintptr_t hi) {
     if (hi <= lo) return;
     pthread_mutex_lock(&g_copy_mu);
+    retired_sweep();
     for (uintptr_t pg = lo >> COPY_PAGE_SHIFT; pg <= (hi - 1) >> COPY_PAGE_SHIFT; pg++) {
         copy_bucket *b = cbk_get(pg, 0); if (!b) continue;
         for (uint32_t i = 0; i < b->n;) {
@@ -2092,6 +2144,24 @@ NVN(nvnCommandBufferDrawElements, void, NVNcommandBuffer *c, NVNdrawPrimitive pr
 NVN(nvnCommandBufferDrawElementsBaseVertex, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib, int bv) {
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, 0, 1, ib}; hw_fix(CB(c), 44);
 }
+/* Indirect: the 20-byte record at ind is NVN's DrawElementsIndirectData {count, instances, first index, base vertex, base
+   instance}, Metal's MTLDrawIndexedPrimitivesIndirectArguments; the GPU reads it when the draw runs, so a record an earlier
+   pass wrote this frame is seen (Donkey Kong Bananza's terrain: seedds/nxnative's game note). nvn_mtl.m draw_inner. */
+NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, NVNbufferAddress ib, NVNbufferAddress ind) {
+    *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, 0, 0, 0, 1, ib, ind}; hw_fix(CB(c), 48);
+}
+#ifdef GAME_NS2
+/* NVN2 push constants: (command buffer, a word seen 0, byte offset, size, data); from seedds/nxnative a7bd05f4 (MIT).
+   Bananza's upscaler pushes (1 / w, 1 / h, w, h) of its target for its graphics passes and two integer rectangles for its
+   compute network. Replayed into the host's block, bound where a shader reads c[24] (nvn_mtl.m encode_args). */
+static void push_const(NVNcommandBuffer *c, int compute, uint64_t w, uint64_t off, uint64_t n, const void *data) {
+    if (w) { static int once; if (!once++) LOG("[RED] push constants with the word before the offset %#llx: its meaning is not known", (unsigned long long)w); }
+    if (off + n > NVN_PUSH_SIZE || !data) { static int k; if (k++ < 8) LOG("[RED] push constants at %#llx + %#llx: beyond the host's %#x-byte block, dropped", (unsigned long long)off, (unsigned long long)n, NVN_PUSH_SIZE); return; }
+    p_push_const *r = RECN(c, OP_PUSH_CONST, p_push_const, data, n); r->compute = (uint16_t)compute; r->offset = (uint16_t)off; r->size = (uint32_t)n; memcpy(r->data, data, n);
+}
+NVN_NOPROTO(nvnCommandBufferPushGraphicsConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 0, w, off, n, data); }
+NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 1, w, off, n, data); }
+#endif
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
     *REC(c, OP_DRAW_IDX, p_draw_idx) = (p_draw_idx){pr, it, n, bv, bi, inst, ib}; hw_fix(CB(c), 44);   /* assumed: same 6-parameter draw macro as the base-vertex form (unverified) */
@@ -2279,6 +2349,8 @@ static void *x_thread(void *unused) {
     }
     return NULL;
 }
+static uint64_t xsub_pushed(void) { pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_in; pthread_mutex_unlock(&g_xq_mu); return v; }
+static uint64_t xsub_replayed(void) { pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_done; pthread_mutex_unlock(&g_xq_mu); return v; }
 static uint64_t x_push(xjob *j) {   // returns the job number (1-based)
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     void x_start(void);

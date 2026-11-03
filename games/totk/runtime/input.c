@@ -173,6 +173,9 @@ static void joy_dual(const uint32_t *id){(void)id;}
 static void joy_single(const uint32_t *id, int type) { (void)id; (void)type; }
 static uint32_t joy_merge(const uint32_t *a, const uint32_t *b) { (void)a; (void)b; return 0; }
 static void touch_init(void) {}
+/* TouchScreenState<1>: sampling number, touch count, then one 0x28-byte TouchState. The SDK reads it from the hid shared
+   memory the host does not map and aborts (Donkey Kong Bananza, sdk GetTouchScreenState<2> from main): no touches. */
+static void touch_state1(uint8_t *out) { static _Atomic int64_t sample; memset(out, 0, 0x10 + 0x28); int64_t n = ++sample; memcpy(out, &n, 8); }
 #endif
 void *runtime_input_override(const char *name){
  void *feedback=runtime_hid_feedback_override(name);if(feedback)return feedback;
@@ -198,7 +201,7 @@ void *runtime_input_override(const char *name){
 #endif
 #ifdef GAME_NS2
  ,{"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE",joy_single},{"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",joy_merge},
- {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init}
+ {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init},{"_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE",touch_state1}
 #endif
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;

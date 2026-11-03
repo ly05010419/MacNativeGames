@@ -55,6 +55,13 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
             else FAIL("B 绑定种类 %s 未实现（%s）", k.UTF8String, [b[@"msl_name"] UTF8String]);
+#ifdef GAME_NS2
+            /* Global memory at an address the shader loaded from memory (Donkey Kong Bananza's gsys vertex shader c9a56f796ea4a4cd
+               resets the terrain's indirect draw records through such pointers): the translator gives it a storage buffer with
+               no NVN slot. seedds/nxnative serves it through a table of memory pools (its chain 3c66991eb439); this host does
+               not yet: it binds the empty buffer (loads read 0, stores are dropped). Open (docs/ns2-port.md). */
+            if (r->kind == NVN_RB_SBUFP && reg < 0) { static int once; if (!once++) NSLog(@"[shader] [RED] %s: storage through a pointer loaded from memory has no NVN slot: bound to the empty buffer (open)", [b[@"msl_name"] UTF8String]); r->reg = 0xffff; o->nb++; continue; }
+#endif
             if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU) && reg < 0)
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;

@@ -65,3 +65,34 @@ Checks:
   `0cd6cc1d`, now built); 48 differ in SPIR-V: the goto-elimination change leaves out a `do { } while (false)` around the
   program (48 loops in main's MSL, 0 here), and all 48 compile. The MSL changes under the same variant names, so the chain is
   `totk-native-v9-unverified` now. BotW shares the translator and the chain; its shaders are Maxwell as TotK's.
+
+**Phases 2-4 and part of 5, 2026-11-03: Donkey Kong Bananza plays on the Mac** (M-series Mac, macOS 26.5, five-minute
+scripted sessions): the mode menu, the opening text, the mining tunnel with Donkey Kong, rocks, rails and the HUD (gold
+counter rising), the guide movie looping in its panel, about 50 fps; no crash in 300 s. TotK 1.4.3 boots and renders with
+the same runtime (100 s, no failure); its tables are byte-identical to before.
+
+How it is built and run (outside the repository; game files stay with the dump):
+- `games/totk/scripts/import_dump.py <dump> --output extracted/dkb` (ExeFS + RomFS image, 77,342 files, 9.2 GB), then
+  `prepare_modules.py`, the rewriter (`DM_RULESET=native DM_PRIVATE_GATES=0 patch_nso.py` for `sdk` and `main`),
+  `verify_rewrites.py --version dkb` (all gates pass), `make game-data-dkb runtime-dkb SHADER_LIST=../dkb/assets/shader_list.tsv`.
+- `build/totk-native-dkb rewritten/dkb boot` with the launcher's GPU settings (`TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_WIDEN=1
+  TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1`). build_app.py does not know the game yet.
+
+Found on the way (general fixes, each in the code with its reason):
+- the equivalence checker modelled an ARMv8.0 CPU (no LSE atomics, LDAPR) and counted alignment exceptions as differences;
+- released recording copies were freed while the translation thread still had them queued (a game may add control memory
+  again right after a submit; TotK never did): freed once every earlier submission is replayed;
+- host replacements with more than 8 integer arguments read host-stack garbage: the stack switch now copies the guest's
+  first 8 stack slots (nn::codec's NV12 readback, 12 arguments; it also brought the 3D scene);
+- NVN_EXTRA implementations were hidden behind the table's stubs once the NVN2 names were added.
+
+Open:
+- bright yellow-white blotches over the scene (likely the environment cube's mip-chain NaN nxnative found);
+- geometry stage (7 shaders, mesh geometry in nxnative): their draws are skipped;
+- storage through pointers loaded from memory is bound to an empty buffer (nxnative's memory pool table not ported):
+  the terrain's indirect draw records are not reset by gsys's vertex shader;
+- unimplemented NVN2 entries answer 0 with a red line (non-fatal in GAME_NS2 builds); 60 entries nxnative implements are
+  missing here (transform feedback, indirect-count draws, ClearBuffer, ReportValue, CommandBufferFenceSync, ...);
+- add-on content is not packed; H.264 / AV1 video not served; Switch 2 device values (nvnDeviceGetInteger) are Switch 1's;
+- build_app.py packaging, an app bundle, iPhone; the BotW and TotK 1.0.0 binaries do not link on main either (VR symbols),
+  unrelated to this branch.
