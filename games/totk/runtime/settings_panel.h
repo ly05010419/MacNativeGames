@@ -193,16 +193,17 @@ static void settings_ssao_restore(void) {
  settingsSsao=(int)pct;dm_gfx_ssao_start(settingsSsao);
 #endif
 }
+/* A number from a setting file, within lo..hi (1.4.3's graphics rows; Breath of the Wild 1.9.0's sharpening, PR #1637). */
+static inline int settings_read_number(const char *name, double lo, double hi, double *value) {
+ char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
+ double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
+ if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
+}
 /* The effects page: graphics-effects.txt holds the ids of the effects that are off, one word each ("none" when all are
    on); graphics-lod.txt the model detail distance x100, graphics-far.txt the render distance in percent (0.1 to 100). */
 #ifdef TOTK_GAME_V143
 /* "Always the finest": a factor no distance in the map reaches, so a model keeps the level it has up close. */
 #define SETTINGS_LOD_MAX 1e6
-static int settings_read_number(const char *name, double lo, double hi, double *value) {
- char word[32],*end;if(!runtime_setting_word(name,word,sizeof word))return 0;
- double d=strtod(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
- if(end==word||*end||!(d>=lo&&d<=hi))return 0;*value=d;return 1;
-}
 static void settings_effects_save(void) {
  char line[512]="";size_t n=0;
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))n+=(size_t)snprintf(line+n,sizeof line-n,"%s%s",n?" ":"",dm_gfx_fx_id(i));
