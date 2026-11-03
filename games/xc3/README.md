@@ -11,6 +11,8 @@ You must own the game: use your own NSP and the `prod.keys` and system fonts dum
 
 ## Status (3 November 2026)
 
+Playable on the Mac with no known issues: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
+
 Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1. The port targets the Mac only; iPhone and iPad are not a goal.
 
 | Stage | State |
@@ -29,7 +31,9 @@ Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
 | Long play | the base game (2.2.1, the app) for 2.5 hours on 2 November 2026 with no glitches, seen in play: the screen tearing, thin black lines and the bright streak from a character seen in October did not come back |
 | Add-ons | the four Expansion Pass volumes mount; volumes 1–3 played; Future Redeemed played after its flat-polygon fix (3 November 2026). Neither the main story nor Future Redeemed has been played to the end |
 
-## Known gaps
+## Notes
+
+None of these shows on screen:
 
 - Geometry shaders with line or triangle input are emulated since 2026-11-03; `TOTK_GS_TRIANGLES=0` skips them as before, should a character or effect go missing.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
@@ -112,4 +116,4 @@ The app writes only to `~/Library/Application Support/MacNativeGames/XC3` (saves
 
 ## Next
 
-- The known gaps above, starting with geometry shaders of other input topologies.
+- The main story and Future Redeemed played to the end, to look for anything later areas need.

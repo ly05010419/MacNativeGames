@@ -2,7 +2,7 @@
 
 ## Status
 
-Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next. The work plan is [docs/PLAN.md](docs/PLAN.md).
+Version 2.2.1 with its four add-ons is playable on the Mac with no known issues: menus, movies, battles, free roam, sound, save and load, played by hand (a 2.5-hour session on 2 November 2026 without glitches). Neither the main story nor Future Redeemed has been played to the end yet. Notes in [README.md](README.md#notes).
 
 ## Where the folder comes from
 
