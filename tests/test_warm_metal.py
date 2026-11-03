@@ -203,9 +203,10 @@ class MetalCompilerTests(unittest.TestCase):
         self.assertEqual((metal, version, env['DEVELOPER_DIR']),
                          ('/toolchain/metal', 'Apple metal version 32023', '/Volumes/x/Xcode.app/Contents/Developer'))
 
-    def test_native_5k_is_explicit_and_old_large_overlays_are_removed(self):
-        self.assertFalse(build_app.parse_args(['game.nsp', '-k', 'keys']).native_5k)
+    def test_native_5k_can_be_automatic_or_explicit_and_old_large_overlays_are_removed(self):
+        self.assertIsNone(build_app.parse_args(['game.nsp', '-k', 'keys']).native_5k)
         self.assertTrue(build_app.parse_args(['game.nsp', '-k', 'keys', '--native-5k']).native_5k)
+        self.assertFalse(build_app.parse_args(['game.nsp', '-k', 'keys', '--no-native-5k']).native_5k)
         with tempfile.TemporaryDirectory() as t:
             tree = Path(t)
             build_app.remove_large_output_overlays(tree, 'v143')

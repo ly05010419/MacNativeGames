@@ -8,8 +8,13 @@ layer), the launcher, the shader tools (SPIRV-Cross, the shader translator) and 
 shader list. Everything else comes from the player's own game files: the rewritten code modules, the RomFS and its overlays,
 the shared fonts, the startup shader seed and the game data folder the runtime reads at start (build/game-data/<version>:
 module tables and hashes, games/totk/runtime/game_data.h). This builds the first part and puts it into the app in place of
-the old one; the second part is not read again or changed, so it needs no game file and no keys, and takes a few minutes
-instead of a full build. The game and its version are those of the app.
+the old one. The other files are kept, except for optional 4K/5K canvas resources described below; it needs no new game
+container or keys and takes a few minutes instead of a full build. The game and its version are those of the app.
+
+Tears of the Kingdom 1.4.3 includes a 5K choice by default on 32 GB-plus Macs when the work folder holds matching,
+verified game files. An explicit --native-5k / --no-native-5k choice is saved in the app; it also honors one recorded by
+build_app.py. With no choice, an existing 5K app keeps its resources on a smaller Mac. A missing cache or modded heap
+overlays keep the installed canvas during an automatic update, with a rebuild message. No saved resolution is changed.
 
 The startup shaders are game files too, but they must be of the runtime's shader translation chain: when a new runtime
 changes the chain, the app is refused unless --seed is given, which makes them again from the work folder's RomFS and
@@ -239,7 +244,7 @@ def probe_runtime(tmp, version, logs):
         raise BuildError(f'the new runtime does not load the app\'s game files ({last}; {log}); the app was not changed')
 
 
-def record_commit(tmp, work):
+def record_commit(tmp, work, *, native_5k=None):
     """The commit this runtime is built from, in the app's Info.plist: MNGSourceCommit (build_app.source_commit) for
     the HUD, which would otherwise keep showing the commit of the app's first build; and where the Update page's update
     finds the checkout, the work folder and the Python (build_app.record_update_source), so an app made before those were
@@ -252,6 +257,10 @@ def record_commit(tmp, work):
     else:
         info.pop('MNGSourceCommit', None)
     build_app.record_update_source(info, work)
+    if native_5k is None:
+        info.pop('MNGNative5K', None)
+    else:
+        info['MNGNative5K'] = native_5k
     path.write_bytes(plistlib.dumps(info))
 
 
@@ -291,6 +300,52 @@ def game_data(tree, res, version, logs, env):
     return tree / f'build/game-data/{version}'
 
 
+def prepare_native_5k(tree, res, data, version, logs, preference):
+    """Prepare a canvas upgrade from the matching cached game files, before touching the installed app.
+    Existing 5K apps keep their capability on smaller Macs. A recorded or requested False takes priority."""
+    if version != 'v143':
+        return 'keep', None
+    overlays = res / 'extracted/v143/romfs-patches-out'
+    present = (overlays / '5120x2880-scene-5120x2880/manifest.tsv').is_file()
+    enabled = preference if preference is not None else present or build_app.native_5k_default()
+    if not enabled:
+        return ('remove' if preference is False else 'keep'), None
+    if present:
+        return 'keep', None
+    try:
+        check_work_files(tree, data, version)   # modules, RomFS size and the verified index must match this app
+        for record in overlays.glob('*/overlay.json'):
+            if json.loads(record.read_text()).get('heapdef'):
+                raise BuildError('the app has modded heap overlays; rebuild with the same --mod and --native-5k')
+    except (BuildError, OSError, ValueError, KeyError) as error:
+        if preference is True:
+            raise BuildError(f'cannot add native 5K from this work folder: {error}; rebuild with build_app.py --native-5k') from error
+        say(f'   native 5K was not added: {error}; kept the installed canvas. Rebuild with build_app.py to add it')
+        return 'keep', None
+    made = logs / 'native-5k-overlays'
+    if made.exists():
+        build_app.remove_tree(made)
+    for i, args in enumerate(build_app.large_output_overlay_args(native_5k=True)):
+        run([tree / '.venv/bin/python', 'scripts/make_output_res_overlay.py', *args,
+             '--version', version, '--output-root', made], logs / f'native-5k-overlay-{i}.log', cwd=tree)
+    say('   native 5K: adding the 4K/5K canvas resources from the verified build cache; saved resolution is kept')
+    return 'add', made
+
+
+def replace_native_5k(res, action, made):
+    """Only the staged app changes; explicit disabling drops 5K while retaining its 4K resources."""
+    overlays = res / 'extracted/v143/romfs-patches-out'
+    if action == 'remove':
+        for folder in overlays.glob('5120x2880*'):
+            build_app.remove_tree(folder)
+    elif action == 'add':
+        for folder in made.iterdir():
+            target = overlays / folder.name
+            if target.exists():
+                build_app.remove_tree(target)
+            build_app.copy_tree(folder, target)
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
@@ -298,9 +353,18 @@ def main(argv):
                                               'app made before the game data folder existed, and --seed, need the one of its build')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
+    ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
+                    help='Mac TOTK 1.4.3: include/omit 5K; without a recorded choice, include it on 32 GB-plus Macs '
+                         'when the matching verified build cache is available. Saved resolution is not changed')
     args = ap.parse_args(argv)
     app = args.app.expanduser().resolve()
     game, version = app_identity(app)
+    if args.native_5k and version != 'v143':
+        raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 on Mac')
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    preference = args.native_5k if args.native_5k is not None else info.get('MNGNative5K')
+    if preference is not None and type(preference) is not bool:
+        raise BuildError('MNGNative5K must be a boolean (or absent for automatic selection)')
     stale = check_seed_chain(app / 'Contents/Resources/totk', runtime_chain(), remake=args.seed)
     work = args.work.expanduser().resolve() if args.work else app.parent / ('BotW_build' if game == 'botw' else 'TOTK_build')
     py = build_app.prerequisites(args)
@@ -315,7 +379,10 @@ def main(argv):
     data = game_data(tree, res, version, logs, env)
     check_game_data(data, res, version)
     check_rewriter(data, res, version, rewriter_sha256())
+    canvas_action, canvas_source = prepare_native_5k(tree, res, data, version, logs, preference)
     stale_overlays = check_overlays(res, version)
+    if canvas_action == 'add':   # this promotion also renews the stock 4K overlays; smaller overlays stay as they were
+        stale_overlays = [name for name in stale_overlays if not name.startswith(('3840x2160', '5120x2880'))]
     if stale_overlays:
         say(f'   the app\'s picture-size RomFS overlays ({", ".join(stale_overlays)}) were made by another '
             f'make_output_res_overlay.py than this repository\'s: the runtime is updated, but only a full rebuild with '
@@ -348,11 +415,12 @@ def main(argv):
                 clone(data / name, new_data / name)
         if args.seed:
             replace_seed(tree, tmp, version, game)
+        replace_native_5k(new_res, canvas_action, canvas_source)
         lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
         build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
-        record_commit(tmp, work)
+        record_commit(tmp, work, native_5k=preference)
         probe_runtime(tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
         build_app.sign_app(tmp, logs)
@@ -380,7 +448,8 @@ def main(argv):
     if args.seed:
         build_app.step_warm_metal(tree, app, logs)
     say(f'done in {time.time() - t0:.0f} s: {app} has the runtime of this repository; '
-        + ('its startup shaders were made again, its other game files are unchanged' if args.seed else 'its game files are unchanged'))
+        + ('its 4K/5K canvas resources were updated; ' if canvas_action != 'keep' else '')
+        + ('its startup shaders were made again, its other game files are unchanged' if args.seed else 'its other game files are unchanged'))
 
 
 if __name__ == '__main__':
