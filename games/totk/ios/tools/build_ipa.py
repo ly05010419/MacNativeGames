@@ -5,7 +5,7 @@ shader list and the add-on content beside the RomFS)."""
 import argparse, json, os, plistlib, shutil, subprocess, sys, time
 from pathlib import Path
 from compile_seed import METAL_FLAGS
-from device_pipelines import connected_gpus, seed_check
+from device_pipelines import SCHEMA, connected_gpus, seed_check
 from xcode_dir import developer_dir
 import settings_strings
 
@@ -279,9 +279,9 @@ def main():
     lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
     # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
     # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
-    # stamp held only the shaders and lists and the last runtime's descriptions were kept).
-    want=hashlib.sha256((seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()+(lists/'pso_title.tsv').read_bytes()
-                        +host.read_bytes()).hexdigest()
+    # stamp held only the shaders and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
+    want=hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode()+(seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()
+                        +(lists/'pso_title.tsv').read_bytes()+host.read_bytes()).hexdigest()
     # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
     # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
     tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)

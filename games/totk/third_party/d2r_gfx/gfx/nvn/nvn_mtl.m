@@ -5466,11 +5466,13 @@ static void shmap_load(void) {
     NSString *src, *src_path; NSDictionary<NSNumber *, NSString *> *io; NSMutableDictionary<NSString *, id<MTLFunction>> *vpatch; id<MTLFunction> mfx_fn[8]; uint8_t mfx_tried[8]; NSMutableDictionary<NSString *, id<MTLFunction>> *bpatch; int border_seen;
     NvBorderKeyCache *border_cache;   // registry lock
     NvFunctionCache *fragment_cache, *vertex_cache;   // g_bpatch_lock / g_vpatch_lock
+    uint8_t vertex_components[32];   // atomic: 0 unknown, otherwise 1 + highest lane read by the original MSL
 } @end   // TOTK: MSL source, user varyings (locn -> type), patched vertex functions   // bflib：可读 tile 版本 <键>_bf（合并 B 第 2 步） | bflib: readable-tile version <key>_bf (merge B step 2)
 @implementation NvShader @end
 /* TOTK: a shader's MSL source is needed only to build derived functions (varying patches, layered vertex, depth-less and
    MetalFX UI fragment variants). The Mac keeps it; iOS keeps only the path and reads it when needed (thousands of sources
    held as strings cost on the order of 100 MB on a device that may use about 4 GB in total). */
+#include "nvn_vertex_tail.h"
 static NSString *sh_src(NvShader *s) {
     if (!s) return nil;
     if (s->src) return s->src;
@@ -7236,13 +7238,32 @@ static const MTLVertexFormat *vfmt_row(MTLVertexFormat f, int *bytes, int *n) { 
     return NULL;   // packed formats (RGB10A2, RG11B10F, ...) are one 4-byte word: not narrowed
 }
 static _Atomic uint64_t g_vfmt_narrowed;   // attributes narrowed to their stride (diagnostic count)
-static MTLVertexFormat vfmt_fit(MTLVertexFormat f, uint32_t offset, uint32_t stride) {
+static _Atomic uint64_t g_vfmt_kept;   // attributes left wide because the shader reads a lane past the stride (diagnostic count)
+/* The components of f that fit in the stride when f reaches past it (1 to n-1), else 0: nothing to narrow (it fits, a
+   constant stream, a packed format, not even one component fits (none seen), or TOTK_VERTEX_FIT=0). */
+static int vfmt_fitting(MTLVertexFormat f, uint32_t offset, uint32_t stride, const MTLVertexFormat **row_out, int *n_out) {
     static int on = -1;   // TOTK_VERTEX_FIT=0: the game's wide formats as before (an A/B of the same build)
     if (on < 0) { const char *e = getenv("TOTK_VERTEX_FIT"); on = !(e && !strcmp(e, "0")); }
     int bytes, n; const MTLVertexFormat *row = on && stride ? vfmt_row(f, &bytes, &n) : NULL;
-    if (!row || offset + (uint32_t)(bytes * n) <= stride) return f;
+    if (!row || offset + (uint32_t)(bytes * n) <= stride) return 0;
     int fit = offset < stride ? (int)((stride - offset) / (uint32_t)bytes) : 0;
-    if (fit < 1) return f;   // not even one component fits: left as the game has it (none seen)
+    if (row_out) *row_out = row;
+    if (n_out) *n_out = n;
+    return fit;
+}
+/* read: the highest lane the vertex shader reads (0 none, 4 when unknown; nvn_vertex_tail.h). Narrowed only when every
+   lane read fits. */
+static MTLVertexFormat vfmt_fit(MTLVertexFormat f, uint32_t offset, uint32_t stride, unsigned read) {
+    const MTLVertexFormat *row = NULL; int n = 0;
+    int fit = vfmt_fitting(f, offset, stride, &row, &n);
+    if (fit < 1) return f;
+    if (read > (unsigned)fit) {   // the shader reads a lane that would go: the game's format, built by the device itself
+        uint64_t kept = atomic_fetch_add(&g_vfmt_kept, 1) + 1;
+        if (kept <= 8 || (kept & (kept - 1)) == 0)   // the first few, then at 16, 32, 64, ...
+            MLOG("[vertex] an attribute past its stream's stride is kept wide: its shader reads lane %u of %d, %d fit (offset %u, stride %u; %llu so far)",
+                 read, n, fit, offset, stride, (unsigned long long)kept);
+        return f;
+    }
     if (atomic_fetch_add(&g_vfmt_narrowed, 1) == 0)
         MLOG("[vertex] an attribute past its stream's stride is narrowed to the components that fit (offset %u, stride %u: %d of %d)",
              offset, stride, fit, n);
@@ -8211,7 +8232,19 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             continue;
         }
         int st = k->attr[a].stream;
-        vd.attributes[loc].format = vfmt_fit(vf, k->attr[a].offset, k->stream[st].stride);   // 0: a constant stream, nothing to fit
+        /* Narrowed to the stride only when the vertex shader's MSL shows the dropped lanes are never read (PR #1635,
+           nvn_vertex_tail.h); otherwise the game's format stays and the device builds that pipeline itself. The lanes read
+           are found once per shader and location, only for an attribute that does not fit. */
+        unsigned keep = 4;
+        if (vfmt_fitting(vf, k->attr[a].offset, k->stream[st].stride, NULL, NULL) > 0) {
+            unsigned cached = loc >= 0 && loc < 32 ? __atomic_load_n(&vs->vertex_components[loc], __ATOMIC_RELAXED) : 5;
+            if (!cached) {
+                cached = 1 + nvn_vertex_components(sh_src(vs).UTF8String, (unsigned)loc);
+                __atomic_store_n(&vs->vertex_components[loc], (uint8_t)cached, __ATOMIC_RELAXED);
+            }
+            keep = cached - 1;
+        }
+        vd.attributes[loc].format = vfmt_fit(vf, k->attr[a].offset, k->stream[st].stride, keep);   // 0: a constant stream, nothing to fit
         vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = 16 + st;
         vd.layouts[16 + st].stride = k->stream[st].stride ? k->stream[st].stride : 4;
         vd.layouts[16 + st].stepFunction = k->stream[st].stride == 0 ? MTLVertexStepFunctionConstant : k->stream[st].divisor ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;

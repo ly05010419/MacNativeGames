@@ -87,7 +87,7 @@ static NSString *par_file(NSString *name) { return [par_dir() stringByAppendingF
 static NSString *par_keys_file(NSString *name) { return [par_dir() stringByAppendingFormat:@"/%@.keys", name]; }
 // 5 (2026-10-29): border and tile-read pipelines are keyed with their variant (nvn_mtl.m pso_archive_key); files of 4 held
 // some under the plain pipeline's key, which then missed in every session.
-#define PAR_SCHEMA 5
+#define PAR_SCHEMA 6   /* vertex fetches omit trailing lanes proven unused by the MSL */
 static NSDictionary *par_identity(id<MTLDevice> dev) {
     return @{@"schema": @PAR_SCHEMA, @"chain": @DMSH_CHAIN, @"gpu": dev.name ?: @"?",
              @"os": NSProcessInfo.processInfo.operatingSystemVersionString ?: @"?"};

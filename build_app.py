@@ -1636,7 +1636,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
         say('4/4 app: the game data is unchanged; kept the installed copy, so the first start need not verify it again')
 
 
-PAR_SCHEMA = 5   # games/totk/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive.h PAR_SCHEMA
+PAR_SCHEMA = 6   # games/totk/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive.h PAR_SCHEMA
 
 
 def mac_pipeline_files(made, seed, arch, chain):
