@@ -6933,7 +6933,7 @@ static void pso_adopt(const pso_key *k, NvShader *vs, NvShader *fs, int border, 
    (apso_claim); until then pso_get returns nil with g_pso_deferred set and the draw is skipped, so a scene seen for the
    first time (a cutscene) shows a new object a few frames late instead of stopping the frame for 20-230 ms per batch of
    pipelines. Draws that cannot be skipped (stores, occlusion counting, cube / array / 3D targets) and merged-pass
-   pipelines still build theirs on the spot. ODYSSEY_ASYNC_PIPELINES=0 turns it off. */
+   pipelines still build theirs on the spot. ODYSSEY_ASYNC_PIPELINES=0 turns it off; off whenever async shaders are. */
 @interface ApsoItem : NSObject { @public pso_key k; NvShader *vs, *fs; int border; id<MTLRenderPipelineState> ps; NSError *e; uint64_t bt; } @end
 @implementation ApsoItem @end
 static nvn_hmap g_apso_wait = {.klen = sizeof(pso_key)};   // submit thread: keys compiling (@YES) or failed (kCFNull)
@@ -6945,8 +6945,11 @@ static uint64_t g_apso_queued, g_apso_adopted;
 #define APSO_QUEUES 4
 static int async_pipelines(void) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("ODYSSEY_ASYNC_PIPELINES"); on = !(e && !strcmp(e, "0"));
-                  MLOG("[async-pipelines] %s", on ? "on: new pipelines of skippable draws are built in the background" : "off (ODYSSEY_ASYNC_PIPELINES=0)"); }
+    /* Only with async shaders (async_shaders(), off by default): skipping a draw is that switch's trade, and the Mac
+       does not leave out draws unless the player turned it on (after PR #503). */
+    if (on < 0) { const char *e = getenv("ODYSSEY_ASYNC_PIPELINES"); on = async_shaders() && !(e && !strcmp(e, "0"));
+                  MLOG("[async-pipelines] %s", on ? "on: new pipelines of skippable draws are built in the background"
+                                                  : "off (async shaders off, or ODYSSEY_ASYNC_PIPELINES=0)"); }
     return on;
 }
 static int pso_pend_state(const pso_key *k) {   // -1 not predicted, 0 compiling, 1 compiled
