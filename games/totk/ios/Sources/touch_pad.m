@@ -98,7 +98,11 @@ static const CGFloat kFpsButtonSize = 34;
    2026-10-19; about 38 points on an iPhone 14, clear of the notch); the stick rings stay inside the safe area. */
 - (CGFloat)columnInset {
     CGFloat full = self.area.size.width * .14;
-    if (self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone) return full;
+    /* On an iPad both columns, and the sticks with them (restingStick), sit one stick radius further out (the user,
+       2026-11-03: "往两边 靠一点 一个半径 距离"; 165 -> 95 points on an 11-inch iPad), keeping the outer button clear
+       of the edge on a smaller one. */
+    if (self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone)
+        return MAX(full - self.stickRadius, self.diamond + kButtonSize / 2 + 12);
     CGFloat side = MAX(self.safeAreaInsets.left, self.safeAreaInsets.right), edgeGap = side + full - (self.diamond + kButtonSize / 2);
     return MAX(full - edgeGap / 2, self.stickRadius + 4);
 }
@@ -109,6 +113,14 @@ static const CGFloat kFpsButtonSize = 34;
     CGFloat side = MAX(self.safeAreaInsets.left, self.safeAreaInsets.right);
     return (side + self.area.size.width * .05 - kButtonSize / 2) / 2;
 }
+/* The top row (ZL L − frame-rate + R ZR): on an iPad the buttons' top edge one button (46 points) below the screen's
+   top edge (the user, 2026-11-03: "最上面 所有按钮 往上", "46点"; their centre 96 -> 69 points on an 11-inch iPad),
+   never above the safe area; on an iPhone 12% down the safe area, as before. */
+- (CGFloat)topRow {
+    CGRect a = self.area;
+    if (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPhone) return CGRectGetMinY(a) + a.size.height * .12;
+    return MAX(CGRectGetMinY(self.bounds) + kButtonSize * 1.5, CGRectGetMinY(a) + kButtonSize / 2);
+}
 - (CGPoint)restingStick:(BOOL)right {
     CGRect a = self.area; CGFloat inset = self.columnInset + self.stickRadius * 1.9;
     return CGPointMake(right ? CGRectGetMaxX(a) - inset : CGRectGetMinX(a) + inset, CGRectGetMinY(a) + a.size.height * .80);
@@ -116,7 +128,7 @@ static const CGFloat kFpsButtonSize = 34;
 
 - (void)buttons:(TouchButton *)b {
     CGRect a = self.area; CGFloat x = CGRectGetMinX(a), y = CGRectGetMinY(a), w = a.size.width, h = a.size.height, d = self.diamond;
-    CGFloat top = y + h * .12, bottom = y + h * .88;
+    CGFloat top = self.topRow, bottom = y + h * .88;
     CGFloat inset = self.columnInset, shift = self.shoulderShift;
     CGPoint face = CGPointMake(x + w - inset, y + h * .42), pad = CGPointMake(x + inset, y + h * .42);
     TouchButton all[kButtonCount] = {
@@ -128,7 +140,7 @@ static const CGFloat kFpsButtonSize = 34;
     for (int i = 0; i < kButtonCount; i++) b[i] = all[i];
 }
 
-- (CGPoint)fpsButton { CGRect a = self.area; return CGPointMake(CGRectGetMidX(a), CGRectGetMinY(a) + a.size.height * .12); }
+- (CGPoint)fpsButton { return CGPointMake(CGRectGetMidX(self.area), self.topRow); }   // in the top row
 - (BOOL)fpsButtonAt:(CGPoint)p { CGPoint f = self.fpsButton; return hypot(p.x - f.x, p.y - f.y) < kFpsButtonSize * .75; }
 - (void)switchFrameRate {
     /* The pane's two layers (settings_map.c): the preset layer saves 30 / 60 in its own row; the custom layer keeps the
