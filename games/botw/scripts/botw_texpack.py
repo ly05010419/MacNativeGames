@@ -13,13 +13,16 @@ reduced by a 2x2 box average. Each mask channel (and the alpha) is then capped a
 frame pieces and dots) and soft pictures (glows and shadows, sharpness below 0.6), which the model would make hard. A pack picture has the layout of its harvest picture (grey; RGB with blue 0 for two channels; RGBA, not premultiplied,
 sRGB colour as stored). <pack folder>/ai-manifest.tsv lists what this tool wrote (key, models, factor, source mtime, processing revision): a picture there is
 rebuilt only when its entry is out of date (or with --force), and a picture that is not listed (written by botw_prompts-style vector tools) is never overwritten.
+By default only the textures of games/botw/assets/texpack_keys.tsv are built, with the scale and model given there, so every player's pack
+holds the same accepted textures; the build lists those the harvest does not have yet. --all builds every harvested texture by the rules above.
 overrides.tsv (in the harvest folder, or --overrides): lines "key<TAB>value", # starts a comment. The value is skip, a model name, 2x or 4x, or
-"model,2x". A model name replaces the mask model for masks and the colour model for colour (the alpha keeps the mask model).
+"model,2x". A model name replaces the mask model for masks and the colour model for colour (the alpha keeps the mask model). An override wins
+over the list.
 Nothing is downloaded: the program and its models (<models folder>/<model>.param and .bin) come from you; see docs/mods.md.
 
 Needs Python 3.14 and no other package.
 usage: botw_texpack.py build --harvest <folder> --out <pack folder> --upscaler <realesrgan-ncnn-vulkan> --models <models folder>
-                             [--overrides <tsv>] [--force] [--only <key,...>] [--dry-run]
+                             [--all] [--overrides <tsv>] [--force] [--only <key,...>] [--dry-run]
 """
 import argparse
 import os
@@ -39,6 +42,7 @@ TINY = 16                    # a picture up to this size on its longest side is 
 SOFT = 0.6                   # a picture whose sharpness (see sharpness()) is below this is skipped: soft glows and shadows, which the model makes hard
 PAD = 4                      # texels of edge copy around the picture while the model runs
 MANIFEST = 'ai-manifest.tsv'
+KEYS = Path(__file__).resolve().parents[1] / 'assets' / 'texpack_keys.tsv'      # the accepted textures (key, value as in overrides.tsv, name)
 RG_METAL = (30, 142)         # RG8Unorm, BC5: the two-channel masks (the other masks are one channel)
 REVISION = '2'               # the processing after the model (2: cap_tones); a manifest row of another revision is rebuilt
 TOOL = {'upscaler': None, 'models': None}        # set by main(); run_upscaler reads it
@@ -338,6 +342,22 @@ def read_overrides(path):
     return found
 
 
+def read_keys(path):
+    """texpack_keys.tsv: {key: (Override, name)}."""
+    found = {}
+    for number, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        cells = line.split('\t')
+        try:
+            if len(cells) != 3 or not cells[0].strip():
+                raise ValueError('expected key<TAB>value<TAB>name')
+            found[cells[0].strip()] = (parse_override(cells[1]), cells[2].strip())
+        except ValueError as error:
+            raise TexpackError(f'{path}:{number}: {error}') from None
+    return found
+
+
 def layout_of(row):
     return 'rgba' if row.cls == 'colour' else 'rg' if row.metal in RG_METAL else 'grey'
 
@@ -367,8 +387,9 @@ def write_manifest(path, entries):
     os.replace(tmp, path)
 
 
-def build(harvest, out, overrides=None, force=False, only=None, dry_run=False, log=print):
-    """Returns the number of pictures that failed. Existing pack files that the manifest does not list are never touched."""
+def build(harvest, out, overrides=None, force=False, only=None, dry_run=False, log=print, keys=KEYS):
+    """Returns the number of pictures that failed. Existing pack files that the manifest does not list are never touched.
+    keys: the list of textures to build (texpack_keys.tsv), or None for every harvested texture by the rules (--all)."""
     harvest, out = Path(harvest), Path(out)
     overrides_path = Path(overrides) if overrides else harvest / 'overrides.tsv'
     if overrides and not overrides_path.is_file():
@@ -376,11 +397,22 @@ def build(harvest, out, overrides=None, force=False, only=None, dry_run=False, l
     table = read_overrides(overrides_path) if overrides_path.is_file() else {}
     rows = read_harvest(harvest / 'harvest.tsv')
     known = {r.key for r in rows}
+    listed = read_keys(keys) if keys is not None else None
+    if listed is not None:
+        missing = sorted(set(listed) - known, key=lambda k: listed[k][1])
+        if missing:
+            log(f'note: {len(missing)} of the {len(listed)} listed textures are not in the harvest yet; show them in the game with the harvest '
+                'on, then build again: ' + ', '.join(f'{listed[k][1]} ({k})' for k in missing))
+        unlisted = sum(r.key not in listed for r in rows)
+        if unlisted:
+            log(f'{unlisted} harvested textures are not in {Path(keys).name}: not built (--all builds them by the rules)')
+        rows = [r for r in rows if r.key in listed]
     if only is not None:
         wanted = set(only)
-        unknown = wanted - known
+        unknown = wanted - {r.key for r in rows}
         if unknown:
-            raise TexpackError('not in harvest.tsv: ' + ', '.join(sorted(unknown)))
+            raise TexpackError(('not in harvest.tsv: ' if listed is None else 'not in both harvest.tsv and the list (--all builds unlisted ones): ')
+                               + ', '.join(sorted(unknown)))
         rows = [r for r in rows if r.key in wanted]
     for key in sorted(set(table) - known):
         log(f'note: overrides.tsv names {key}, which is not in harvest.tsv')
@@ -390,7 +422,7 @@ def build(harvest, out, overrides=None, force=False, only=None, dry_run=False, l
     counts = {'built': 0, 'current': 0, 'skipped': 0, 'failed': 0}
     for row in sorted(rows, key=lambda r: r.key):
         source, target = harvest / f'{row.key}.png', out / f'{row.key}.png'
-        override = table.get(row.key)
+        override = table.get(row.key) or (listed[row.key][0] if listed else None)
         if override and override.skip:
             counts['skipped'] += 1; log(f'{row.key}: skip (overrides)'); continue
         if not source.is_file():
@@ -440,6 +472,7 @@ def main():
     b.add_argument('--out', type=Path, required=True, help='the pack folder (BOTW_TEXPACK_DIR)')
     b.add_argument('--upscaler', type=Path, help='the realesrgan-ncnn-vulkan program')
     b.add_argument('--models', type=Path, help='the folder of the models (<name>.param and <name>.bin)')
+    b.add_argument('--all', action='store_true', help='build every harvested texture by the rules, not only the textures of texpack_keys.tsv')
     b.add_argument('--overrides', type=Path, help='overrides tsv (default: overrides.tsv in the harvest folder)')
     b.add_argument('--force', action='store_true', help='build the pictures again whose manifest entry is current')
     b.add_argument('--only', help='only these keys, comma separated')
@@ -449,7 +482,8 @@ def main():
         parser.error('--upscaler and --models are required (except with --dry-run)')
     TOOL.update(upscaler=args.upscaler, models=args.models)
     try:
-        failed = build(args.harvest, args.out, overrides=args.overrides, force=args.force, only=args.only.split(',') if args.only else None, dry_run=args.dry_run)
+        failed = build(args.harvest, args.out, overrides=args.overrides, force=args.force, only=args.only.split(',') if args.only else None, dry_run=args.dry_run,
+                       keys=None if args.all else KEYS)
     except (TexpackError, OSError) as error:
         sys.exit(f'botw_texpack: {error}')
     sys.exit(1 if failed else 0)

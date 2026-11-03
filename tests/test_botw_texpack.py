@@ -189,13 +189,13 @@ class SkipRuleTest(unittest.TestCase):
             (harvest/'harvest.tsv').write_text(''.join(lines))
             log = []
             with mock.patch.object(tp, 'run_upscaler', fake_upscaler):
-                tp.build(harvest, out, log=log.append)
+                tp.build(harvest, out, log=log.append, keys=None)
                 self.assertEqual(sorted(p.name for p in out.glob('*.png')), ['sharp-20x20-49.png'])
                 self.assertTrue(any('tiny-16x16-49: skip (small' in line for line in log))
                 self.assertTrue(any('soft-20x20-49: skip (soft, sharpness 0.05' in line for line in log))
                 self.assertTrue(any('flat-20x20-49: skip (flat' in line for line in log))
                 (harvest/'overrides.tsv').write_text('tiny-16x16-49\t4x\nsoft-20x20-49\trealesrgan-x4plus-anime\n')
-                tp.build(harvest, out, log=log.append)
+                tp.build(harvest, out, log=log.append, keys=None)
             self.assertTrue((out/'tiny-16x16-49.png').is_file() and (out/'soft-20x20-49.png').is_file())
 
 
@@ -241,6 +241,19 @@ class ChoiceTest(unittest.TestCase):
                 tp.read_overrides(path)
 
 
+class ShippedKeyListTest(unittest.TestCase):
+    def test_the_accepted_list(self):
+        listed = tp.read_keys(tp.KEYS)
+        self.assertEqual(len(listed), 47)
+        for key, (override, name) in listed.items():
+            self.assertRegex(key, r'^[0-9a-f]{16}-\d+x\d+-[0-9a-f]{2}$')
+            self.assertFalse(override.skip, key)
+            self.assertIn(override.factor, (2, 4), key)
+            self.assertTrue(name, key)
+        self.assertEqual(listed['52f31cb352e0985a-48x48-49'][0].model, 'realesrgan-x4plus')      # the gauge segment: the anime model cuts its grey band
+        self.assertEqual(sum(o.model is not None for o, _ in listed.values()), 1)
+
+
 class RunUpscalerTest(unittest.TestCase):
     def test_command_line_and_missing_model(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -281,6 +294,7 @@ class BuildTest(unittest.TestCase):
         self.log = []
 
     def run_build(self, **kw):
+        kw.setdefault('keys', None)      # every harvested texture by the rules (--all); KeyListTest covers the list
         return tp.build(self.harvest, self.out, log=self.log.append, **kw)
 
     def test_full_build(self):
@@ -346,6 +360,22 @@ class BuildTest(unittest.TestCase):
         self.assertFalse((self.out/'dddd-130x3-0a.png').exists())
         with self.assertRaises(tp.TexpackError):
             self.run_build(only=['nope'])
+
+    def test_key_list_decides_what_is_built(self):
+        keys = Path(self.tmp.name, 'keys.tsv')
+        keys.write_text('# c\naaaa-6x5-0a\t2x\tA_00\ncccc-4x4-0c\t4x,other-model\tC_00\neeee-8x8-0a\t4x\tE_00\n')
+        (self.harvest/'overrides.tsv').write_text('aaaa-6x5-0a\t4x\n')      # an override wins over the list
+        self.assertEqual(self.run_build(keys=keys), 0)
+        self.assertEqual(sorted(tp.read_manifest(self.out/tp.MANIFEST)), ['aaaa-6x5-0a', 'cccc-4x4-0c'])
+        self.assertEqual(tp.read_png(self.out/'aaaa-6x5-0a.png').width, 24)
+        self.assertEqual(tp.read_manifest(self.out/tp.MANIFEST)['cccc-4x4-0c'][:2], ('other-model+realesrgan-x4plus-anime', '4'))
+        self.assertTrue(any('1 of the 3 listed textures are not in the harvest yet' in line and 'E_00 (eeee-8x8-0a)' in line for line in self.log))
+        self.assertTrue(any('2 harvested textures are not in keys.tsv' in line for line in self.log))
+        with self.assertRaises(tp.TexpackError):
+            self.run_build(keys=keys, only=['bbbb-5x4-0b'])      # harvested but not listed
+        keys.write_text('aaaa-6x5-0a\t2x\n')
+        with self.assertRaises(tp.TexpackError):
+            self.run_build(keys=keys)
 
     def test_wrong_layout_is_reported(self):
         tp.write_png(self.harvest/'cccc-4x4-0c.png', tp.Image(4, 4, 3, bytes(48)))      # RGB where the tsv says colour

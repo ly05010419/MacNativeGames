@@ -374,6 +374,12 @@ premultiplied, sRGB colour left encoded) for colour.
 
 3. Start the game as usual. The log (`~/Library/Logs/MacNativeGames/botw.log`) shows `[texpack]` lines with the number of pictures in use.
 
+**Same pack for every player.** The tool builds only the 47 textures of `games/botw/assets/texpack_keys.tsv`, with the scale and
+model given there: the HUD and menu art whose upscaled look was checked in game. Title art and logos, world-map tiles, item
+icons, button prompts and controller pictures, glows and shadows are left out on purpose and keep the game's texture. The build
+names the listed textures that your harvest does not have yet; show them in the game with the harvest on (for example the
+temperature gauge in a cold or hot place), then build again. `--all` builds every harvested texture by the rules below instead.
+
 The tool runs each picture through the upscaler at 4x. Masks use `realesrgan-x4plus-anime`, one channel at a time. Colour art
 uses `4x-UltraSharp` for the colour and the mask model for the alpha. A picture of at most 128 texels on its longest side is
 kept at 4x; a larger one is reduced to 2x by a 2x2 average. Each mask channel is then kept at or below the brightest texel
@@ -382,7 +388,7 @@ look the model would change: pictures of at most 16 texels on their longest side
 such as glows and shadows. `--dry-run` shows the plan, `--only <key,...>` limits the keys and
 `--force` builds again what is current. `overrides.tsv` in the harvest folder (or `--overrides <tsv>`) has lines
 `key<TAB>value` (`#` starts a comment), where the value is `skip`, a model name, `2x` or `4x`, or `model,2x`; an override wins
-over the rules above. The tool lists what it wrote in `ai-manifest.tsv` in the pack folder and never overwrites a picture that
+over the list and the rules above. The tool lists what it wrote in `ai-manifest.tsv` in the pack folder and never overwrites a picture that
 this file does not list, so pictures made by another tool (such as drawn prompts) stay. Delete a picture to go back to the
 game's texture for that key.
 
@@ -391,7 +397,7 @@ game's texture for that key.
 | What | Where | License |
 |---|---|---|
 | `realesrgan-ncnn-vulkan` (the program) | `realesrgan-ncnn-vulkan-20220424-macos.zip` from the v0.2.5.0 release of [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0); source [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
-| `realesrgan-x4plus-anime` (the mask model) | the `models` folder of the same zip | BSD-3-Clause ([Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)) |
+| `realesrgan-x4plus-anime` (the mask model) and `realesrgan-x4plus` (the temperature gauge's segment) | the `models` folder of the same zip | BSD-3-Clause ([Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)) |
 | `4x-UltraSharp` (the colour model) | `NCNN/4x-UltraSharp-fp32.param` and `NCNN/4x-UltraSharp-fp32.bin` in [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) on Hugging Face | CC BY-NC-SA 4.0 |
 
 Put the two 4x-UltraSharp files in the same `models` folder as `4x-UltraSharp.param` and `4x-UltraSharp.bin` (the tool
@@ -804,12 +810,17 @@ key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图�
 
 3. 照常启动游戏。日志（`~/Library/Logs/MacNativeGames/botw.log`）里的 `[texpack]` 行会显示在用的图片数量。
 
+**每位玩家得到同样的贴图包。** 工具只制作 `games/botw/assets/texpack_keys.tsv` 里的 47 张贴图，按其中给定的倍数和模型：
+这些是放大效果已在游戏里检查过的界面和菜单图。标题图和标志、世界地图图块、物品图标、按键提示和手柄图、光晕和阴影都特意不做，
+保持游戏原来的贴图。制作时会列出采集里还没有的清单贴图；开着采集在游戏里让它们显示出来（例如在寒冷或炎热的地方显示温度计），
+再制作一次。`--all` 改为按下面的规则制作所有采集到的贴图。
+
 工具把每张图片用放大器放大 4 倍。遮罩用 `realesrgan-x4plus-anime`，一次一个通道；彩色图的颜色用 `4x-UltraSharp`，
 alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更大的用 2x2 平均缩到 2 倍。之后每个遮罩通道不超过游戏原图中周围最亮的像素，
 因为模型会把中灰的线画成白色。工具跳过两类图片，因为模型会改变它们的样子：最长边不超过 16 像素的图片（边框零件和圆点），
 以及发光、阴影这类柔和的图片。`--dry-run` 只显示计划，
 `--only <key,...>` 限定 key，`--force` 重做已是最新的图片。采集文件夹里的 `overrides.tsv`（或 `--overrides <tsv>`）每行
-`key<TAB>值`（`#` 开头为注释），值可以是 `skip`、模型名、`2x` 或 `4x`，或 `模型,2x`；覆盖项优先于上面的规则。工具把写出的图片
+`key<TAB>值`（`#` 开头为注释），值可以是 `skip`、模型名、`2x` 或 `4x`，或 `模型,2x`；覆盖项优先于清单和上面的规则。工具把写出的图片
 记在贴图包文件夹的 `ai-manifest.tsv` 里，绝不覆盖该文件没有列出的图片，所以其他工具（例如画出来的按键提示）做的图片会保留。
 删除某张图片，该 key 就回到游戏自己的贴图。
 
@@ -818,7 +829,7 @@ alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更
 | 内容 | 来源 | 许可 |
 |---|---|---|
 | `realesrgan-ncnn-vulkan`（程序） | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0) v0.2.5.0 发布版里的 `realesrgan-ncnn-vulkan-20220424-macos.zip`；源码在 [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
-| `realesrgan-x4plus-anime`（遮罩模型） | 同一个 zip 的 `models` 文件夹 | BSD-3-Clause（[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)） |
+| `realesrgan-x4plus-anime`（遮罩模型）和 `realesrgan-x4plus`（温度计的色段） | 同一个 zip 的 `models` 文件夹 | BSD-3-Clause（[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)） |
 | `4x-UltraSharp`（彩色模型） | Hugging Face 上 [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) 的 `NCNN/4x-UltraSharp-fp32.param` 和 `NCNN/4x-UltraSharp-fp32.bin` | CC BY-NC-SA 4.0 |
 
 把两个 4x-UltraSharp 文件放进同一个 `models` 文件夹，并改名为 `4x-UltraSharp.param` 和 `4x-UltraSharp.bin`（工具按这两个名字找）。
