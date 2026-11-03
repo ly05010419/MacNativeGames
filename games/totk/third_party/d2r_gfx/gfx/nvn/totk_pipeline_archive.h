@@ -136,6 +136,14 @@ static NSSet<NSString *> *par_ga_list(int own_only) {   // full paths of the bui
     }
     return s;
 }
+/* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
+   (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
+   pipelines in the archive instead of memory (576fdfd1), so the pipelines built this run only grow as play meets them. */
+static int64_t par_total(void) {
+    if (!g_par_on) return -1;
+    pthread_mutex_lock(&g_par_mu); int64_t n = (int64_t)g_par_have.count; pthread_mutex_unlock(&g_par_mu);
+    return n;
+}
 static void par_ga_remove_new(NSSet<NSString *> *before) {
     NSMutableSet<NSString *> *made = [par_ga_list(0) mutableCopy]; [made minusSet:before];
     for (NSString *path in made) {

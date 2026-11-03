@@ -15727,7 +15727,11 @@ static int shader_overlay_prepare(int slot, MTLViewport vp, MTLViewport *ovp, fl
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), newest = last > plast ? last : plast;
     char text[160]; shader_overlay_text(text, 48, fresh, total, pso);
     int hl = newest && now - newest < 3000000000ull, scale = fps_overlay_scale(vp.height);
-    char line[64]; pso_overlay_text(line, sizeof line, atomic_load(&g_collect_new[1]), (int64_t)g_pso.n);
+    /* Total: all the pipelines there are (the archive's, plus this run's new ones, which reach it at the next start), not
+       only those built so far this run; never fewer than those (par_total). */
+    uint64_t pso_new = atomic_load(&g_collect_new[1]); int64_t in_archive = par_total(), pso_all = (int64_t)g_pso.n;
+    if (in_archive >= 0 && in_archive + (int64_t)pso_new > pso_all) pso_all = in_archive + (int64_t)pso_new;
+    char line[64]; pso_overlay_text(line, sizeof line, pso_new, pso_all);
     if (hud_compact()) {
         hud_publish(HUD_SHADER, text, hl);
         hud_publish(HUD_PSO, line, newest == plast && hl);   // yellow while a new render or compute pipeline was just collected
