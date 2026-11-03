@@ -114,7 +114,7 @@ void botw_tp_uploaded(void *pk_, const tex_t *t) {
     if (pk->tp_rep) { defer_obj_release(pk->tp_rep); pk->tp_rep = nil; }   // the serial was bumped by the re-upload: slot views look again
     pk->tp_ser = t->serial; pk->tp_hash = 0; pk->tp_hv = 0;
     if (!(pk->tp_cls = tp_class(t, pk->tex))) return;
-    pk->tp_hash = pkg_hash(t->mem, t->L.size);
+    if (!pkg_hash_guarded(t, &pk->tp_hash)) { pk->tp_cls = 0; return; }   // streaming may have taken the memory since the upload
     if (!g_tp_index) return;
     NSString *key = tp_key(pk, t);
     if (![g_tp_index containsObject:key]) return;
@@ -174,13 +174,13 @@ void *botw_tp_pick(void *rp_, void *base_) {
 static uint8_t *tp_texels(const tex_t *t, int cls) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh), nc = tp_nc(cls);
     uint32_t w = t->d.width, h = t->d.height; size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;
-    uint8_t *raw = malloc(pitch * rows), *out = malloc((size_t)w * h * nc);
-    int bad = !raw || !out || !bpb;
-    if (!bad && nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows; r++) memcpy(raw + r * pitch, t->mem + r * stride, pitch); }
-    else if (!bad) bad = nvn_deswizzle(&t->d, 0, 0, t->mem, raw, pitch) != 0;
+    uint8_t *raw = malloc(pitch * rows), *out = malloc((size_t)w * h * nc), *mem = malloc((size_t)t->L.size);
+    int bad = !raw || !out || !mem || !bpb || !guarded_memcpy(mem, t->mem, (size_t)t->L.size, "[texpack] harvest");   // a guarded copy: streaming may take the memory
+    if (!bad && nvn_tex_is_linear(&t->d)) { size_t stride = nvn_tex_linear_stride(&t->d); for (size_t r = 0; r < rows; r++) memcpy(raw + r * pitch, mem + r * stride, pitch); }
+    else if (!bad) bad = nvn_deswizzle(&t->d, 0, 0, mem, raw, pitch) != 0;
     if (!bad && fmt_compressed(t->d.format)) bad = nvn_bc_decode(t->d.format, raw, pitch, w, h, out, (size_t)w * nc) != 0;
     else if (!bad) { if (bw != 1 || bh != 1 || bpb != nc) bad = 1; else memcpy(out, raw, pitch * rows); }
-    free(raw);
+    free(raw); free(mem);
     if (bad) { free(out); return NULL; }
     return out;
 }

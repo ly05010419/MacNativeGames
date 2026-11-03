@@ -417,6 +417,11 @@ def build(harvest, out, overrides=None, force=False, only=None, dry_run=False, l
     for key in sorted(set(table) - known):
         log(f'note: overrides.tsv names {key}, which is not in harvest.tsv')
     entries = read_manifest(out / MANIFEST)
+    if listed is not None and out.is_dir():
+        stale = sorted(p.stem for p in out.glob('*.png') if p.stem not in listed)
+        if stale:
+            log(f'note: {len(stale)} pictures in {out} are not in {Path(keys).name} and still load in the game; delete them or build into a new folder: '
+                + ', '.join(stale))
     if not dry_run:
         out.mkdir(parents=True, exist_ok=True)
     counts = {'built': 0, 'current': 0, 'skipped': 0, 'failed': 0}

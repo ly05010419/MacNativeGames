@@ -377,6 +377,18 @@ class BuildTest(unittest.TestCase):
         with self.assertRaises(tp.TexpackError):
             self.run_build(keys=keys)
 
+    def test_key_list_names_unlisted_pictures_left_in_the_pack(self):
+        self.run_build(keys=None)      # --all first: every harvested texture
+        keys = Path(self.tmp.name, 'keys.tsv')
+        keys.write_text('aaaa-6x5-0a\t2x\tA_00\n')
+        self.log.clear()
+        self.assertEqual(self.run_build(keys=keys), 0)
+        note = [line for line in self.log if 'not in keys.tsv and still load in the game' in line]
+        self.assertEqual(len(note), 1)
+        self.assertIn('bbbb-5x4-0b', note[0])
+        self.assertNotIn('aaaa-6x5-0a', note[0])
+        self.assertTrue((self.out/'bbbb-5x4-0b.png').is_file())      # named, never deleted
+
     def test_wrong_layout_is_reported(self):
         tp.write_png(self.harvest/'cccc-4x4-0c.png', tp.Image(4, 4, 3, bytes(48)))      # RGB where the tsv says colour
         self.assertEqual(self.run_build(), 1)

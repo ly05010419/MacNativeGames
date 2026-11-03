@@ -379,6 +379,8 @@ model given there: the HUD and menu art whose upscaled look was checked in game.
 icons, button prompts and controller pictures, glows and shadows are left out on purpose and keep the game's texture. The build
 names the listed textures that your harvest does not have yet; show them in the game with the harvest on (for example the
 temperature gauge in a cold or hot place), then build again. `--all` builds every harvested texture by the rules below instead.
+The game loads every picture in the pack folder, so the build names pictures there that the list lacks (for example from an
+earlier `--all` build); delete them or build into a new folder.
 
 The tool runs each picture through the upscaler at 4x. Masks use `realesrgan-x4plus-anime`, one channel at a time. Colour art
 uses `4x-UltraSharp` for the colour and the mask model for the alpha. A picture of at most 128 texels on its longest side is
@@ -814,6 +816,7 @@ key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图�
 这些是放大效果已在游戏里检查过的界面和菜单图。标题图和标志、世界地图图块、物品图标、按键提示和手柄图、光晕和阴影都特意不做，
 保持游戏原来的贴图。制作时会列出采集里还没有的清单贴图；开着采集在游戏里让它们显示出来（例如在寒冷或炎热的地方显示温度计），
 再制作一次。`--all` 改为按下面的规则制作所有采集到的贴图。
+游戏会载入贴图包文件夹里的每一张图，所以制作时会列出文件夹里不在清单中的图（例如之前 `--all` 制作的）；把它们删掉，或者制作到新的文件夹。
 
 工具把每张图片用放大器放大 4 倍。遮罩用 `realesrgan-x4plus-anime`，一次一个通道；彩色图的颜色用 `4x-UltraSharp`，
 alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更大的用 2x2 平均缩到 2 倍。之后每个遮罩通道不超过游戏原图中周围最亮的像素，
