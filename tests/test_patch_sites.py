@@ -66,17 +66,8 @@ class Extraction(unittest.TestCase):
         # code and must not be refused with "the app patches this".
         self.assertNotIn(0xcb4b10, offsets('v0'))
         self.assertNotIn(0x12521cc, offsets('v0'))
-        self.assertNotIn(0xcb4b10, offsets('v112'))
         self.assertIn(0xcb4b10, offsets('v121'))        # ... and its own version still has it
         self.assertIn(0x19b36f0, offsets('v121'))
-
-    def test_v112_sites_follow_game_version_h(self):
-        found = offsets('v112', BUILD_ID_V0)
-        self.assertIn(0x8f66e4, found)                  # 0x8f6c60 in 1.1.2 (the GAME_ADDR table)
-        self.assertIn(0x7f7a38, found)                  # 0x7a83f4 in 1.1.2
-        self.assertIn(0x9d1e64, found)                  # the 1.1.2 cloth table
-        self.assertNotIn(0x82192c, found)
-        self.assertNotIn(0x8f6c60, found)               # that address is 1.0.0's, not 1.1.2's
 
     def test_v121_sites_include_the_ultrawide_and_cloth_sites(self):
         found = offsets('v121', BUILD_ID_V0)

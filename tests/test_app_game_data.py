@@ -57,6 +57,41 @@ class KeepGameData(unittest.TestCase):
                 self.assertTrue(old_image.is_file())
                 build_app.remove_tree(self.old); build_app.remove_tree(self.new)
 
+    def test_the_shader_data_moves_into_a_signature_only_bundle(self):
+        """update_runtime.py: the new app carries only the installed ShaderData bundle's signature (shader_signature_only);
+        installing moves the installed bundle in, with one seal check for both bundles."""
+        data_bundle(self.old)
+        shaders = data_bundle(self.old, name='ShaderData-v143.bundle', seal=b'shaders', data=b'seed')
+        seed = identity(shaders/IMAGE)
+        data_bundle(self.new)
+        (self.new/'Contents/Resources/totk').mkdir(parents=True)
+        build_app.shader_signature_only(self.new, shaders)
+        self.assertFalse((self.new/'Contents/Helpers/ShaderData-v143.bundle/Contents/Resources').exists())
+        checks = []
+        sealed = lambda app: checks.append(1) or sorted(p.name for p in (app/'Contents/Helpers').iterdir()) == ['GameData-v143.bundle', 'ShaderData-v143.bundle']
+        self.assertTrue(build_app.keep_game_data(self.new, self.old, verify=sealed))
+        self.assertEqual(identity(self.new/'Contents/Helpers/ShaderData-v143.bundle'/IMAGE), seed)
+        self.assertEqual(checks, [1])
+
+    def test_a_signature_only_shader_bundle_that_cannot_be_completed_stops_the_install(self):
+        shaders = data_bundle(self.old, name='ShaderData-v143.bundle', seal=b'shaders', data=b'seed')
+        build_app.shader_signature_only(self.new, shaders)
+        (shaders/'Contents/_CodeSignature/CodeResources').write_bytes(b'changed meanwhile')   # no longer the same bundle
+        with self.assertRaisesRegex(build_app.BuildError, 'shader data could not be moved'):
+            build_app.keep_game_data(self.new, self.old, verify=lambda app: True)
+        self.assertTrue((shaders/IMAGE).is_file())
+
+    def test_clone_except_links_the_skipped_folder(self):
+        data_bundle(self.old)
+        shaders = data_bundle(self.old, name='ShaderData-v143.bundle', seal=b'shaders', data=b'seed')
+        (self.old/'Contents/Resources/totk/build').mkdir(parents=True)
+        (self.old/'Contents/Resources/totk/build/shader-seed').symlink_to('../../../Helpers/ShaderData-v143.bundle/Contents/Resources')
+        build_app.clone_app_except(self.old, self.new, shaders)
+        link = self.new/'Contents/Helpers/ShaderData-v143.bundle'
+        self.assertTrue(link.is_symlink() and link.resolve() == shaders.resolve())
+        self.assertTrue((self.new/'Contents/Helpers/GameData-v143.bundle'/IMAGE).is_file() and not (self.new/'Contents/Helpers/GameData-v143.bundle').is_symlink())
+        self.assertEqual((self.new/'Contents/Resources/totk/build/shader-seed/romfs.bin').read_bytes(), b'seed')   # through both links
+
     def test_no_app_to_replace(self):
         data_bundle(self.new)
         self.assertFalse(build_app.keep_game_data(self.new, self.old, verify=lambda app: True))
@@ -188,15 +223,17 @@ class InstallApp(unittest.TestCase):
         self.assertEqual(self.removed, [])
         self.assertTrue(self.install(), 'a restored update can be retried')
 
-    def test_later_bundle_verification_failure_restores_earlier_bundle(self):
+    def test_verification_failure_restores_every_bundle(self):
+        # one check of the seal once every bundle is moved (keep_game_data); its failure puts all of them back
         originals = []
-        for name in ('GameData-v112.bundle', 'GameData-v143.bundle'):
+        for name in ('GameData-v121.bundle', 'GameData-v143.bundle'):
             for app in (self.out, self.new):
                 path = data_bundle(app, name=name)/IMAGE
                 originals.append((path, identity(path)))
-        verify = mock.Mock(side_effect=[True, OSError('second verification failed')])
+        verify = mock.Mock(side_effect=OSError('verification failed'))
         with self.assertRaises(OSError):
             build_app.install_app(self.new, self.out, verify=verify, remove=self.removed.append)
+        self.assertEqual(verify.call_count, 1)
         for path, before in originals:
             self.assertEqual(identity(path), before)
         self.assertEqual(self.removed, [])

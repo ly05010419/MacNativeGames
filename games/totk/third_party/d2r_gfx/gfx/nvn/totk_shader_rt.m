@@ -42,6 +42,16 @@ static pthread_mutex_t g_rt_lock = PTHREAD_MUTEX_INITIALIZER;
 static NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *g_variants;
 static NSMutableSet<NSString *> *g_msl_checked;
 typedef struct { FILE *in, *out; } rt_svc;   // one translator service process
+/* The iPhone / iPad build that links the translator (TOTK_DEVICE_XLATE, build_ipa.py: games/totk/prebuilt/ios-arm64/
+   libtotk_xlate.a, the Mac's totk_xlate service as a NativeAOT static library, LibExports.cs): no process can be started
+   there, so service_start sets the library up once and translate calls it; the rest (background jobs, Metal library,
+   variant index, contributions) is the Mac's. Same translator, same files: what the device translates is what the Mac
+   would have (2026-11-03, after PR #1468). */
+#if TARGET_OS_IPHONE && defined(TOTK_DEVICE_XLATE)
+#define DEVICE_XLATE 1
+int totk_xlate_init(const char *out_dir, const char *chain, int debug_mode);
+int totk_xlate_request(const char *json, char *reply, int size);
+#endif
 static rt_svc g_svc;   // the caller's (the submit thread); background jobs have their own (bg_translate)
 static NSString *g_root, *g_dir;
 /* iOS: the seed inside the signed app is read where it is instead of being copied into the cache (totk_shader_seed.h
@@ -183,6 +193,17 @@ NSSet<NSString *> *totk_rt_shader_scope(void) {
    the game exits and hide its crash from the reader (fgets would wait instead of seeing EOF). */
 static pthread_mutex_t g_svc_start_lock = PTHREAD_MUTEX_INITIALIZER;
 static void service_start(rt_svc *svc) {
+#ifdef DEVICE_XLATE
+    (void)svc;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *dm = getenv("TOTK_SHADER_DEBUGMODE");   // as the service reads it (Service.cs Run), default 1
+        if (totk_xlate_init(totk_rt_dir().fileSystemRepresentation, DMSH_CHAIN, dm && *dm ? atoi(dm) : 1))
+            die("shader translator (linked) could not start");
+        LOG("[shader] runtime translation in the app (linked totk_xlate), cache %s", totk_rt_dir().UTF8String);
+    });
+    return;
+#endif
     if (svc->in) return;
     pthread_mutex_lock(&g_svc_start_lock);
     NSString *r = root_dir();
@@ -270,10 +291,11 @@ static NSMutableArray *variants_of(NSString *shader) {
     g_variants[shader] = v;
     return v;
 }
-/* No translator: the iPhone / iPad, or TOTK_SHADER_NO_TRANSLATE=1 on the Mac (tests: what a device with only the prepared
-   shaders would skip, with the same miss records and skipped draws). */
+/* No translator: an iPhone / iPad build without the linked one (visionOS), or TOTK_SHADER_NO_TRANSLATE=1 (tests: what a
+   device with only the prepared shaders would skip, with the same miss records and skipped draws; on the device, the
+   way it was before the linked translator). */
 static int no_translator(void) {
-#if TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE && !defined(DEVICE_XLATE)
     return 1;
 #else
     static int v = -1;
@@ -421,9 +443,13 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
     service_start(svc);
-    fprintf(svc->in, "%s\n", json_string(rq).UTF8String); fflush(svc->in);
     char line[2048];
+#ifdef DEVICE_XLATE
+    totk_xlate_request(json_string(rq).UTF8String, line, sizeof line);   // the service's reply line, as below
+#else
+    fprintf(svc->in, "%s\n", json_string(rq).UTF8String); fflush(svc->in);
     if (!fgets(line, sizeof line, svc->out)) die("shader service exited while translating %s", variant.UTF8String);
+#endif
     NSDictionary *reply = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:line length:strlen(line)] options:0 error:nil];
     if (![reply[@"ok"] boolValue]) {
         LOG("[survey-shader] frame %llu translation FAILED %s %s after %.2f ms: %s",
@@ -468,7 +494,13 @@ static void variant_record(NSString *shader, NSDictionary *rq, NSDictionary *ref
    its line, so those draws wait in parallel instead of translating and compiling one after another on the submit
    thread behind the background line (entering an area: 157 libraries, 6.3 s on the submit thread, 2026-10-22). */
 #define RT_BG_MAX 8
+#if TARGET_OS_IPHONE
+#define RT_BG_DEFAULT 2       // the device: its startup shaders hold almost everything, and each worker translates in the app's own memory
+#define RT_URGENT_DEFAULT 2
+#else
 #define RT_BG_DEFAULT 4   // 2 left draws waiting to be shown for 13-15 s after flying into an area; 4 halved the skipped draws (2026-10-22)
+#define RT_URGENT_DEFAULT 4
+#endif
 /* Background translator services (each its own translator process and serial queue): TOTK_RT_BG_WORKERS, 1-8. */
 static int rt_bg_workers(void) {
     static int n;
@@ -479,7 +511,7 @@ static int rt_bg_workers(void) {
 /* Urgent translator services: TOTK_RT_URGENT_WORKERS, 1-8. */
 static int rt_urgent_workers(void) {
     static int n;
-    if (!n) { const char *e = getenv("TOTK_RT_URGENT_WORKERS"); n = e ? atoi(e) : 4; n = n < 1 ? 1 : n > RT_URGENT_MAX ? RT_URGENT_MAX : n; }
+    if (!n) { const char *e = getenv("TOTK_RT_URGENT_WORKERS"); n = e ? atoi(e) : RT_URGENT_DEFAULT; n = n < 1 ? 1 : n > RT_URGENT_MAX ? RT_URGENT_MAX : n; }
     return n;
 }
 static _Atomic int g_rt_urgent_busy;   // urgent jobs queued or running: the background line does not start new jobs meanwhile

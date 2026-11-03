@@ -12,10 +12,9 @@ SYNTHETIC = """
 REPO = Path(__file__).resolve().parent
 GAME = REPO / 'games/totk'
 EXPECTED = json.loads((GAME / 'assets/expected-v1.0.0.json').read_text())
-UPDATED = json.loads((GAME / 'assets/expected-v1.1.2.json').read_text())
 UPDATED121 = json.loads((GAME / 'assets/expected-v1.2.1.json').read_text())
 UPDATED143 = json.loads((GAME / 'assets/expected-v1.4.3.json').read_text())
-VERSIONS = {'v0': EXPECTED, 'v112': UPDATED, 'v121': UPDATED121, 'v143': UPDATED143}
+VERSIONS = {'v0': EXPECTED, 'v121': UPDATED121, 'v143': UPDATED143}
 BOTW = REPO / 'games/botw'
 BOTW160 = json.loads((BOTW / 'assets/expected-v1.6.0.json').read_text())
 BOTW190 = json.loads((BOTW / 'assets/expected-v1.9.0.json').read_text())
@@ -34,7 +33,7 @@ def synthetic(old, new):
 class Catalog(unittest.TestCase):
     def test_two_games_with_their_versions_in_order(self):
         self.assertEqual(list(GAMES), ['totk', 'botw'])
-        self.assertEqual([v.display for v in GAMES['totk'].versions], ['1.0.0', '1.1.2', '1.2.1', '1.4.3'])
+        self.assertEqual([v.display for v in GAMES['totk'].versions], ['1.0.0', '1.2.1', '1.4.3'])
         self.assertEqual([v.display for v in GAMES['botw'].versions], ['1.6.0', '1.9.0'])
 
     def test_every_manifest_is_named_after_its_version(self):
@@ -62,8 +61,8 @@ class DriftAgainstBuildApp(unittest.TestCase):
                          "('botw', 'v143', 'games/botw/assets/expected-v1.4.3.json')")
 
     def test_two_keys_swapped(self):
-        self.assertDrift(synthetic("{'v0': EXPECTED, 'v112': UPDATED,", "{'v0': UPDATED, 'v112': EXPECTED,"),
-                         "('totk', 'v0', 'games/totk/assets/expected-v1.1.2.json')")
+        self.assertDrift(synthetic("{'v0': EXPECTED, 'v121': UPDATED121,", "{'v0': UPDATED121, 'v121': EXPECTED,"),
+                         "('totk', 'v0', 'games/totk/assets/expected-v1.2.1.json')")
 
     def test_key_added_upstream_and_missing_from_the_catalog(self):
         source = synthetic("VERSIONS['botw160'] = BOTW160",
@@ -89,7 +88,7 @@ class DriftAgainstBuildApp(unittest.TestCase):
         self.assertDrift(synthetic("'org.macnativegames.botw', 'BotW')", "'org.macnativegames.botw', 'BOTW')"), 'APPS')
 
     def test_source_without_versions_registry_is_a_layout_change(self):
-        source = synthetic("VERSIONS = {'v0': EXPECTED, 'v112': UPDATED, 'v121': UPDATED121, 'v143': UPDATED143}", "") \
+        source = synthetic("VERSIONS = {'v0': EXPECTED, 'v121': UPDATED121, 'v143': UPDATED143}", "") \
             .replace("VERSIONS['botw160'] = BOTW160", "").replace("VERSIONS['botw190'] = BOTW190", "")
         with self.assertRaisesRegex(SourceLayoutChanged, 'VERSIONS'):
             extract(source)

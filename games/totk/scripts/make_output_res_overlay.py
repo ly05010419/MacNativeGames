@@ -51,7 +51,7 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('size', help='<width>x<height>, e.g. 2560x1440')
 parser.add_argument('--output-root', type=Path, default=root / 'extracted/v0/romfs-patches-out')
-parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+parser.add_argument('--version', choices=('v0','v121','v143'), default='v0')
 parser.add_argument('--scene', help='<width>x<height> scene render size (TOTK_RENDER_RES, 1.4.3 / 1.2.1) the heaps must also hold')
 parser.add_argument('--heapdef', type=Path,
                     help='a mod\'s replacement HeapDef(.zs) to build on: its heap sizes are kept, the 2K sizes added')

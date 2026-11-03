@@ -63,7 +63,7 @@ class ReadmeExamples(Base):
         self.assertParsesTo(TOTK, BuildPaths(self.g('totk.nsp'), self.keys, shared_fonts=fonts))
 
     def test_totk_xci_with_update(self):                                         # l. 144-149
-        for update in ('1.1.2.nsp', '1.1.2.nsz', '1.2.1.nsp', '1.4.3.nsz'):
+        for update in ('1.2.1.nsp', '1.2.1.nsz', '1.4.3.nsp', '1.4.3.nsz'):
             with self.subTest(update=update):
                 self.assertParsesTo(TOTK, BuildPaths(self.g('totk.xci'), self.keys, update=self.g(update)))
 

@@ -828,6 +828,7 @@ typedef struct { int n; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
 static vis_buf g_vis_ring[4]; static int g_vis_ring_n, g_vis_ring_i = -1;
+static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].buf == b) return 1; return 0; }
 typedef struct { int k; uint64_t f; uint32_t i, slot; void *buf; } anom_vis_ent;   // per-draw visibility counters of the submission being encoded
 static anom_vis_ent *g_anom_vis; static int g_anom_nvis, g_anom_capvis, g_anom_vis_slot = -1;
 typedef struct { uint32_t idx, slot; void *buf; } skv_item;   // TOTK_EXP_SKIP_INVISIBLE (defined with draw_inner): this submission's per-draw counters
@@ -1163,6 +1164,9 @@ void mtl_sub_begin(void) {
     chunk_cfg(); g_sub_chunks = 0; g_chunk_mark = g_stat_draw;
     if (g_nupd) MDIE("renamed uniform updates left over from the previous submission");
     g_nshadow = 0;
+    // The overflow buffer the previous submission ended in (see g_vis_n >= VIS_SLOTS) is retired before g_vis is reset; otherwise it stays in the
+    // residency set for good. Ring buffers are not retired: the ring reuses them (d2r-mobile 2eb5758).
+    if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis);
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; pend_begin();
     zskip_clear(); g_zskip_count = 0;
     int pick = -1;
@@ -4961,7 +4965,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         g_enc_pso = nil; g_enc_dss = nil;
     }
     if (g_vis_on || perdraw_vis_on()) {
-        if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
+        // Slots used up (one submission has more than VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired
+        // here: the ring keeps and reuses it, and retiring removes it from the residency set, so the GPU would later write non-resident memory.
+        // Only a previous overflow buffer is retired (d2r-mobile 2eb5758).
+        if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
         pd.visibilityResultBuffer = g_vis;
     }
     g_enc_vis = 0; g_enc_has_vis = g_vis_on || perdraw_vis_on();
@@ -6912,8 +6919,79 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // 提交�
     pthread_mutex_unlock(&g_pp_mu);
     return ps;
 }
+/* A new pipeline into the cache and the warm list (submit thread). lmap: a merged-pass pipeline (g_pso_lmap, g_pso_fz). */
+static void pso_adopt(const pso_key *k, NvShader *vs, NvShader *fs, int border, int lmap, id<MTLRenderPipelineState> ps, uint64_t bt, int bg) {
+    pso_key rk = *k; rk.a2c &= ~PSO_VBORDER; if (border) rk.fsfn = NULL;   // the warm-up list records the plain pipeline: a border variant is built from the draw's samplers
+    pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&rk, vs, fs, lmap, lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
+    if (survey_shader_log()) MLOG("[survey-shader] frame %llu render pipeline %s in %.2f ms%s", (unsigned long long)atomic_load(&g_cur_frame), shex, (bp_now() - bt) / 1e6, bg ? " (background, from queued to adopted)" : "");
+    pso_record("R\t%s\n", shex);
+    pso_user_record("R\t%s\n", shex);
+    hm_put_id(&g_pso, k, ps); atomic_store(&g_pipeline_count, g_pso.n);
+}
+/* Async pipelines (from games/totk; with async shaders): a draw that may be skipped (draw_may_skip) does not wait for a
+   new pipeline. It is compiled on a background queue from the same descriptor and adopted by the submit thread
+   (apso_claim); until then pso_get returns nil with g_pso_deferred set and the draw is skipped, so a scene seen for the
+   first time (a cutscene) shows a new object a few frames late instead of stopping the frame for 20-230 ms per batch of
+   pipelines. Draws that cannot be skipped (stores, occlusion counting, cube / array / 3D targets) and merged-pass
+   pipelines still build theirs on the spot. ODYSSEY_ASYNC_PIPELINES=0 turns it off; off whenever async shaders are. */
+@interface ApsoItem : NSObject { @public pso_key k; NvShader *vs, *fs; int border; id<MTLRenderPipelineState> ps; NSError *e; uint64_t bt; } @end
+@implementation ApsoItem @end
+static nvn_hmap g_apso_wait = {.klen = sizeof(pso_key)};   // submit thread: keys compiling (@YES) or failed (kCFNull)
+static NSMutableArray<ApsoItem *> *g_apso_done;
+static os_unfair_lock g_apso_lock = OS_UNFAIR_LOCK_INIT;
+static _Atomic int g_apso_ready;
+static int g_pso_deferred;
+static uint64_t g_apso_queued, g_apso_adopted;
+#define APSO_QUEUES 4
+static int async_pipelines(void) {
+    static int on = -1;
+    /* Only with async shaders (async_shaders(), off by default): skipping a draw is that switch's trade, and the Mac
+       does not leave out draws unless the player turned it on (after PR #503). */
+    if (on < 0) { const char *e = getenv("ODYSSEY_ASYNC_PIPELINES"); on = async_shaders() && !(e && !strcmp(e, "0"));
+                  MLOG("[async-pipelines] %s", on ? "on: new pipelines of skippable draws are built in the background"
+                                                  : "off (async shaders off, or ODYSSEY_ASYNC_PIPELINES=0)"); }
+    return on;
+}
+static int pso_pend_state(const pso_key *k) {   // -1 not predicted, 0 compiling, 1 compiled
+    pthread_mutex_lock(&g_pp_mu);
+    int at = pso_pend_find(k), state = at < 0 ? -1 : g_pp[at].done;
+    pthread_mutex_unlock(&g_pp_mu);
+    return state;
+}
+static void apso_claim(void) {
+    if (!atomic_exchange(&g_apso_ready, 0)) return;
+    os_unfair_lock_lock(&g_apso_lock); NSArray<ApsoItem *> *done = g_apso_done; g_apso_done = nil; os_unfair_lock_unlock(&g_apso_lock);
+    for (ApsoItem *it in done) {
+        if (it->ps) { hm_del_id(&g_apso_wait, &it->k); pso_adopt(&it->k, it->vs, it->fs, it->border, 0, it->ps, it->bt, 1); g_apso_adopted++; continue; }
+        hm_put_id(&g_apso_wait, &it->k, (__bridge id)kCFNull);   // later draws build it synchronously and report the failure as before
+        static int said; if (said++ < 12) MLOG("【红】后台建渲染管线失败：%s（vs %s ps %s）", it->e.localizedDescription.UTF8String, it->vs->key, it->fs ? it->fs->key : "-");
+    }
+    static uint64_t logged; if (g_apso_adopted >= logged + 200) { logged = g_apso_adopted; MLOG("[async-pipelines] %llu queued, %llu adopted so far", (unsigned long long)g_apso_queued, (unsigned long long)g_apso_adopted); }
+}
+static int apso_defer(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> bfn) {
+    if (!async_pipelines()) return 0;
+    id waiting = hm_get_id(&g_apso_wait, k);
+    if (waiting) return waiting != (__bridge id)kCFNull;
+    int pend = pso_pend_state(k);   // predicted by pso_predict_rest: take it once compiled, never wait for it
+    if (pend >= 0) return !pend;
+    ApsoItem *it = [ApsoItem new]; it->k = *k; it->vs = vs; it->fs = fs; it->border = bfn != nil; it->bt = bp_now();
+    MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, bfn, 0); NSString *key = pso_archive_key(k, vs, fs, 0);
+    hm_put_id(&g_apso_wait, k, @YES); g_apso_queued++;
+    // A few serial queues: a new area can bring hundreds of pipelines at once, which should not take every core from the game.
+    static dispatch_queue_t q[APSO_QUEUES]; static unsigned next;
+    if (!q[0]) for (int i = 0; i < APSO_QUEUES; i++) q[i] = dispatch_queue_create("odyssey.pipeline.background", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
+    dispatch_async(q[next++ % APSO_QUEUES], ^{
+        NSError *e = nil; it->ps = pso_new(d, key, &e); it->e = e;
+        os_unfair_lock_lock(&g_apso_lock);
+        if (!g_apso_done) g_apso_done = [NSMutableArray array];
+        [g_apso_done addObject:it];
+        os_unfair_lock_unlock(&g_apso_lock);
+        atomic_store(&g_apso_ready, 1);
+    });
+    return 1;
+}
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRenderPassDescriptor *unused) {
-    (void)unused;
+    (void)unused; g_pso_deferred = 0; apso_claim();
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
     if (!vs) { RED_ONCE(13, "程序没有顶点着色器（或未映射）"); return nil; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
@@ -6925,6 +7003,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     { float bc[8][4]; int ba[8], bn; if (border_key(vs, 0, bc, ba, &bn)) k.a2c |= PSO_VBORDER; }
     __unsafe_unretained id<MTLRenderPipelineState> cached = (__bridge id<MTLRenderPipelineState>)hm_get_ptr(&g_pso, &k);
     if (cached) return cached;
+    if (!g_pso_lmap && draw_may_skip(pr) && apso_defer(&k, vs, fs, bfn)) { g_pso_deferred = 1; return nil; }
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
     ps = g_pso_lmap ? nil : pso_pend_take(&k);
@@ -6937,12 +7016,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRen
     }
     g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
     if (!ps) { static int said; if (said++ < 12) MLOG("【红】建渲染管线失败：%s（vs %s ps %s dfmt %d sfmt %d cfmt0 %d samples %d）", e.localizedDescription.UTF8String, vs->key, fs ? fs->key : "-", (int)k.dfmt, (int)k.sfmt, (int)k.cfmt[0], (int)k.samples); else if (said == 12) MLOG("【红】建渲染管线失败：后续不再逐条打印"); return nil; }
-    pso_key rk = k; rk.a2c &= ~PSO_VBORDER; if (bfn) rk.fsfn = NULL;   // the warm-up list records the plain pipeline: a border variant is built from the draw's samplers
-    pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&rk, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
-    if (survey_shader_log()) MLOG("[survey-shader] frame %llu render pipeline %s in %.2f ms", (unsigned long long)atomic_load(&g_cur_frame), shex, (bp_now() - bt) / 1e6);
-    pso_record("R\t%s\n", shex);
-    pso_user_record("R\t%s\n", shex);
-    hm_put_id(&g_pso, &k, ps); atomic_store(&g_pipeline_count, g_pso.n);
+    pso_adopt(&k, vs, fs, bfn != nil, g_pso_lmap != NULL, ps, bt, 0);
     return ps;
 }
 static NSString *warm_key(const char *s, size_t n) {
@@ -10731,6 +10805,7 @@ frz_plain:;
     if (g_pso_dirty || pr != cur_pr || cur_ps_pass != g_pass.serial || (pr->sh[1] && pr->sh[1]->border_seen) || (pr->sh[0] && pr->sh[0]->border_seen)) { cur_ps = pso_get(pr, nil); cur_pr = pr; cur_ps_pass = g_pass.serial; g_pso_dirty = !cur_ps; }
     if (g_pso_lmap) { g_pso_lmap = NULL; g_pso_fsfn = nil; memset(&g_pso_fz, 0, sizeof g_pso_fz); g_pso_dirty = 1; }   // 下一次绘制重新按自身情况取 | The next draw fetches again according to its own situation
     __unsafe_unretained id<MTLRenderPipelineState> ps = cur_ps;
+    if (!ps && g_pso_deferred) { async_skip_targets(); g_draw_skip[15]++; return; }   // async pipelines: compiling in the background
     if (!ps) { g_draw_skip[9]++; static int failed_n; if (failed_n++ < 3) MLOG("[pipeline-draw] rt-depth=%p serial=%llu fmt=%#x pass-depth=%u dt=%u dw=%u fs-depth=%d", R.rt.depth, (unsigned long long)(R.rt.depth ? R.rt.depth->serial : 0), R.rt.depth ? R.rt.depth->d.format : 0, g_pass.dfmt, S.ds.dt, S.ds.dw, pr->sh[1] ? pr->sh[1]->writes_depth : 0); return; }
     if (ps != g_enc_pso) { enc_r_pso(en, ps); g_enc_pso = ps; }
     static id<MTLDepthStencilState> cur_ds; static uint64_t cur_ds_pass;

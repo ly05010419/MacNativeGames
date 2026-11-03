@@ -749,6 +749,7 @@ typedef struct { int n; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
 typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
 static vis_buf g_vis_ring[4]; static int g_vis_ring_n, g_vis_ring_i = -1;
+static int vis_in_ring(id<MTLBuffer> b) { for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].buf == b) return 1; return 0; }
 typedef struct { int k; uint64_t f; uint32_t i, slot; void *buf; } anom_vis_ent;   // per-draw visibility counters of the submission being encoded
 static anom_vis_ent *g_anom_vis; static int g_anom_nvis, g_anom_capvis, g_anom_vis_slot = -1;
 typedef struct { uint32_t idx, slot; void *buf; } skv_item;   // TOTK_EXP_SKIP_INVISIBLE (defined with draw_inner): this submission's per-draw counters
@@ -1036,6 +1037,9 @@ void mtl_sub_begin(void) {
     chunk_cfg(); g_sub_chunks = 0; g_chunk_mark = g_stat_draw;
     if (g_nupd) MDIE("renamed uniform updates left over from the previous submission");
     g_nshadow = 0;
+    // The overflow buffer the previous submission ended in (see g_vis_n >= VIS_SLOTS) is retired before g_vis is reset; otherwise it stays in the
+    // residency set for good. Ring buffers are not retired: the ring reuses them (d2r-mobile 2eb5758).
+    if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis);
     g_npost = 0; g_vis = nil; g_vis_n = 0; g_vis_cur = -1; pend_begin();
     zskip_clear(); g_zskip_count = 0;
     int pick = -1;
@@ -4597,7 +4601,10 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
         g_enc_pso = nil; g_enc_dss = nil;
     }
     if (g_vis_on || perdraw_vis_on()) {
-        if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
+        // Slots used up (one submission has more than VIS_SLOTS counting passes): continue in a new overflow buffer. A ring buffer must not be retired
+        // here: the ring keeps and reuses it, and retiring removes it from the residency set, so the GPU would later write non-resident memory.
+        // Only a previous overflow buffer is retired (d2r-mobile 2eb5758).
+        if (!g_vis || g_vis_n >= VIS_SLOTS) { if (g_vis && !vis_in_ring(g_vis)) defer_obj_release(g_vis); g_vis = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis); g_vis_n = 0; }
         pd.visibilityResultBuffer = g_vis;
     }
     g_enc_vis = 0; g_enc_has_vis = g_vis_on || perdraw_vis_on();

@@ -77,6 +77,7 @@ static void app_active_changed(int active){
  mtl_app_active(active);runtime_oe_push_message(15);
  fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
 }
+void runtime_shortcut_help_toggle(void){}   /* the keyboard shortcut list is Mac only (frontend.m) */
 void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
 void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
 

@@ -21,7 +21,7 @@
 | 标题 ID | 是什么 | 命令里放在 |
 |---|---|---|
 | `0100F2C0115B6000` | 王国之泪本体 **1.0.0**，XCI 或 NSP | 第一个参数 |
-| `0100F2C0115B6800` | 王国之泪更新 **1.1.2、1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
+| `0100F2C0115B6800` | 王国之泪更新 **1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
 | `01007EF00011E000` | 旷野之息本体，或 **1.6.0** 卡带镜像（本体、更新、DLC 在同一个 XCI 里） | 第一个参数 |
 | `01007EF00011E800` | 旷野之息更新 **1.6.0 或 1.9.0**，NSP 或 NSZ | `--update` |
 | `01007EF00011F001`、`01007EF00011F002` | 旷野之息的两个 DLC 包，NSP（都可选） | `--dlc`，每个包一次 |
@@ -100,7 +100,9 @@ python3.14 build_app.py "<本体 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 �
 
 在 16 GB 及以上内存的 Mac 上，1.4.3、1.2.1 和旷野之息的 App 会带上原生 4K（设置面板里的 3840×2160 分辨率），每次启动多预留内存（王国之泪约 1.4 GiB，旷野之息约 0.5 GiB）。加 `--no-native-4k` 不带；内存更小的 Mac 想带就加 `--native-4k`。
 
-Mac 上的王国之泪 1.4.3 可加 `--native-5k`，带上 5120×2880 的画布、界面和 3D 场景，以及 4K 档位。5K 仅主动开启，每次启动比标准 App 多预留约 2.7 GiB 游戏内存，即使当时选择较低分辨率也一样；虚拟堆随这份预算扩容，物理页按需提交。现有构建默认值不变。这不包含 HDR，也不保证 120 帧。
+Mac 上的王国之泪 1.4.3 在构建机器有 **32 GB 及以上内存**时，默认带上原生 5K（5120×2880 的画布、界面和 3D 场景）以及 4K 档位。16 GB、24 GB 的 Mac 保持默认 4K。`--native-5k` 可在更小内存的机器上开启，`--no-native-5k` 不带；`--no-native-4k` 也会关闭自动 5K。这只增加可选档位，保留上次选择的分辨率，不会自动切换到 5K。带 5K 的 App 每次启动多预留约 2.7 GiB 游戏内存，即使选择较低分辨率也一样；物理页按需提交。不包含 HDR，也不保证 120 帧。
+
+运行程序更新会保留明确选择的 5K 开关。没有明确选择时，32 GB 及以上内存的 Mac 会在工作目录仍有与此 App 匹配的已验证游戏文件时补齐 4K/5K 资源，不需要重新提供游戏容器或密钥。已有 5K 的 App 在较小内存机器上更新时仍保留 5K。缓存缺失或 App 使用了修改过的堆资源时，自动更新保留现有规格，并说明需要重新构建。`update_runtime.py --native-5k` 要求可用的匹配缓存；`--no-native-5k` 移除 5K、保留 4K。两者都不改写已保存的分辨率文件。
 
 **4. 让它跑完。** M 系列 Mac 上从头打包要 **20–40 分钟**，8 GB 内存的 Mac 更久：
 
@@ -191,7 +193,7 @@ python3.14 build_app.py "<本体 1.0.0.xci>" -k "<prod.keys>" --platform visiono
 python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" --device "<Vision Pro 名称>" --game-data "<工作目录>/totk/extracted/v0/romfs/romfs.bin"
 ```
 
-加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v112`、`v121` 或 `v143`）。
+加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v121` 或 `v143`）。
 
 ## 更新 App
 
@@ -248,7 +250,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 - 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`
 - 着色器缓存：`~/Library/Application Support/MacNativeGames/TOTK/shader-cache`
 - 公共清单里还没有的着色器：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`。游戏启动前会问要不要发送，见[公共着色器清单](shader-list.md)。
-- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`，见 [mods.md](mods.md)。
+- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v121|v143>`，见 [mods.md](mods.md)。
 - 日志：默认关闭。
   - Mac：`defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES`，下次启动起写到 `~/Library/Logs/MacNativeGames/totk.log`。
   - iPhone：在“设置 › TOTK › 記錄日誌”打开，写到 App 的 `Documents/log.txt`。
@@ -257,6 +259,6 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 
 **超出本页范围的需求也欢迎提。** 这里列出的版本和游戏，只是我们有条件测过的。需要别的版本或别的游戏时，AI 助理应该尽力把它做出来。
 
-- 王国之泪：本体 1.0.0，可加 1.1.2、1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
+- 王国之泪：本体 1.0.0，可加 1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
 - 没有联网功能，没有 amiibo。
 - 第一次遇到新着色器时可能卡顿；本机缓存和[公共着色器清单](shader-list.md)会减少卡顿。

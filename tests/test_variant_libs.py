@@ -47,10 +47,10 @@ class VariantLibs(unittest.TestCase):
         self.assertEqual(json.loads((libs/'variants-v143.json').read_text()), [self.good])
 
     def test_the_app_takes_the_listed_variant_libraries(self):
-        self.build()
-        res = self.root/'app/Contents/Resources/totk'
-        build_app.place_variant_libs(self.tree, res, 'v143')
-        self.assertTrue((res/f'build/shader-libs/{self.good}.metallib').is_file())
+        self.build()   # what the app's shader data bundle carries (build_app.shader_bundle): the startup shaders' and the variants'
+        startup = hashlib.sha256(b'// startup shader').hexdigest()
+        libs = build_app.shader_libs_of(self.tree, 'v143', {'files': {'a_b.metal': startup}})
+        self.assertEqual([p.name for p in libs], [f'{startup}.metallib', f'{self.good}.metallib'])
 
     def test_no_recorded_variants(self):
         for p in self.variants.iterdir():

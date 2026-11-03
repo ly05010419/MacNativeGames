@@ -33,6 +33,7 @@ int totk_picture_env_build(const char *mode, totk_picture_env *out);
 int totk_frame_env_build(const char *cap, totk_frame_env *out);
 /* docked: the pane's Full HD switch. Always succeeds. */
 int totk_preset_env_build(int docked, totk_preset_env *out);
+const char *totk_docked_scene(const char *choice);   /* TOTK_DOCKED_SCENE -> the docked TOTK_RENDER_RES */
 /* fps is the pane's preset row, "60" (up to the display's rate) or "30" (held). 0 for anything else. */
 int totk_preset_frame_env_build(const char *fps, totk_frame_env *out);
 

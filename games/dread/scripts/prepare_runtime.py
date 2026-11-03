@@ -140,9 +140,10 @@ def runtime_tables(work, out):
     npdm_path = work / f'extracted/{VERSION}/exefs/main.npdm'
     assert sha(npdm_path) == EXPECTED['exefs_sha256']['main.npdm'], 'Unverified main.npdm'
     npdm = npdm_path.read_bytes()
-    assert npdm[:4] == b'META' and npdm[0xd] <= 3, 'main.npdm header'
+    # META: 0x0c process flags, 0x0e main thread priority, 0x0f main thread core
+    assert npdm[:4] == b'META' and npdm[0xe] < 64 and npdm[0xf] <= 3, 'main.npdm header'
     # The main thread's priority and the process's default core (Horizon pins threads created with core -2 to it)
-    lines.append(f'#define NPDM_MAIN_PRIORITY {npdm[0xc]}\n#define NPDM_DEFAULT_CORE {npdm[0xd]}')
+    lines.append(f'#define NPDM_MAIN_PRIORITY {npdm[0xe]}\n#define NPDM_DEFAULT_CORE {npdm[0xf]}')
     (out / 'runtime_tables.h').write_text('\n'.join(lines) + '\n')
     (work / 'analysis').mkdir(exist_ok=True)
     (work / 'analysis/runtime-layout.json').write_text(json.dumps(modules, indent=2) + '\n')

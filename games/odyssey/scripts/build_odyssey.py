@@ -63,7 +63,11 @@ def preflight(args, py):
         if not Path(lib).exists():
             problems.append(f"{lib} is missing (brew install opus libvpx)")
     if not Path(args.developer_dir, "usr/bin/xcodebuild").exists():
-        problems.append(f"Xcode not found at {args.developer_dir} (--developer-dir)")
+        # The one-command build itself only needs clang and the SDK, and the command line
+        # tools have both. Without Xcode's metal compiler precompile_cached_shaders.py fails
+        # and the game compiles those libraries on first use (step 7 already allows that).
+        if not Path(args.developer_dir, "usr/bin/clang").exists():   # the developer dir's own clang, as make uses it
+            problems.append(f"Xcode or the command line tools not found at {args.developer_dir} (--developer-dir)")
     for path in (args.game, args.keys):
         if not path.is_file():
             problems.append(f"{path} not found")

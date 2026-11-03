@@ -11,6 +11,13 @@ except ImportError:
     tk = None
 if tk is not None:
     from tools.builder import gui_confirm
+
+    class HiddenToplevel(tk.Toplevel):
+        """The dialog's window, real (Tk places, draws and binds it) but never seen (user 2026-11-03: test windows must
+        not show): fully transparent from the start, before _place shows it."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.attributes('-alpha', 0.0)
 from tools.builder.strings import text
 
 REPO = Path(__file__).resolve().parents[1]
@@ -19,6 +26,8 @@ REPO = Path(__file__).resolve().parents[1]
 @unittest.skipIf(tk is None, 'this Python has no Tk')
 class Confirm(unittest.TestCase):
     def setUp(self):
+        hidden = patch.object(tk, 'Toplevel', HiddenToplevel)
+        hidden.start(); self.addCleanup(hidden.stop)
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.root.destroy)

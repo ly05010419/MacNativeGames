@@ -21,8 +21,8 @@ The launcher points `TOTK_ROMFS_MODS` at
 ~/Library/Application Support/MacNativeGames/TOTK/mods/<version>
 ```
 
-where `<version>` is the game version the app was built from: `v0` (1.0.0), `v112` (1.1.2), `v121`
-(1.2.1) or `v143` (1.4.3).
+where `<version>` is the game version the app was built from: `v0` (1.0.0), `v121` (1.2.1) or
+`v143` (1.4.3).
 
 When no controller is connected at start and `mods/<version>-keyboard/manifest.tsv` exists, the launcher points
 `TOTK_ROMFS_MODS` at that folder instead, so the prompts show the Mac keyboard's keys while you play on the keyboard:
@@ -433,7 +433,7 @@ These come from how a pack was built, not from its content, and none of them pri
 ~/Library/Application Support/MacNativeGames/TOTK/mods/<version>
 ```
 
-`<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v112`（1.1.2）、`v121`（1.2.1）、
+`<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v121`（1.2.1）、
 `v143`（1.4.3）。
 
 启动时没有连接手柄、且 `mods/<version>-keyboard/manifest.tsv` 存在时，启动器改把 `TOTK_ROMFS_MODS` 指向那个目录，

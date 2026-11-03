@@ -7,16 +7,113 @@
 #import <CoreVideo/CoreVideo.h>
 #include <stdatomic.h>
 #include <math.h>
+#include <pthread.h>
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
 #include "gamepad_layout.h"
 #import "playtime.h"
+#define TOTK_HDR_FRONTEND 1
+#include "../third_party/d2r_gfx/gfx/nvn/totk_hdr.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
 #include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
+static _Atomic float hdrHeadroom=1;
+static _Atomic int hdrEnabled;
+static CGColorSpaceRef hdrSDRColorSpace;
+static int hdrSDRRemembered;
+int front_hdr_supported(void){return totk_hdr_available();}
+int front_hdr_enabled(void){return atomic_load(&hdrEnabled);}
+
+static pthread_mutex_t hdrParameterLock=PTHREAD_MUTEX_INITIALIZER;
+static float hdrParameters[TOTK_HDR_PARAMETER_COUNT];
+static int hdrParametersReady;
+void front_hdr_parameters(float *values){
+ pthread_mutex_lock(&hdrParameterLock);
+ for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++)values[i]=hdrParametersReady?hdrParameters[i]:totk_hdr_parameters[i].initial;
+ pthread_mutex_unlock(&hdrParameterLock);
+}
+__attribute__((unused)) static float front_hdr_parameter(int which){   /* the 1.4.3 effects page (settings_panel.h) */
+ float values[TOTK_HDR_PARAMETER_COUNT];front_hdr_parameters(values);return values[which];
+}
+static NSTimer *hdrSaveTimer;
+static unsigned char hdrParameterDirty[TOTK_HDR_PARAMETER_COUNT];   /* main thread */
+static void front_hdr_parameters_flush(void){
+ [hdrSaveTimer invalidate];hdrSaveTimer=nil;
+ for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++)if(hdrParameterDirty[i]){
+  hdrParameterDirty[i]=0;char word[32];snprintf(word,sizeof word,"%.5g",front_hdr_parameter(i));
+  runtime_setting_save(totk_hdr_parameters[i].file,word,"HDR parameter");
+ }
+}
+__attribute__((unused)) static void front_hdr_parameter_save(int which,float value){
+ const TotkHDRParameter *p=&totk_hdr_parameters[which];
+ if(!isfinite(value))return;
+ value=fminf(fmaxf(value,p->minimum),p->maximum);
+ pthread_mutex_lock(&hdrParameterLock);hdrParameters[which]=value;pthread_mutex_unlock(&hdrParameterLock);
+ hdrParameterDirty[which]=1;[hdrSaveTimer invalidate];
+ hdrSaveTimer=[NSTimer scheduledTimerWithTimeInterval:0.25 repeats:NO block:^(NSTimer *t){(void)t;front_hdr_parameters_flush();}];
+}
+static void front_hdr_parameters_load(void){
+ float values[TOTK_HDR_PARAMETER_COUNT];
+ for(int i=0;i<TOTK_HDR_PARAMETER_COUNT;i++){
+  const TotkHDRParameter *p=&totk_hdr_parameters[i];values[i]=p->initial;
+  char word[64]={0};const char *text=NULL;
+  if(runtime_setting_word(p->file,word,sizeof word))text=word;
+  else if(i==TOTK_HDR_GAME_WHITE)text=getenv("TOTK_HDR_GAME_WHITE");
+  else if(i==TOTK_HDR_UI_WHITE)text=getenv("TOTK_HDR_UI_WHITE");
+  if(text&&*text){char *end=NULL;float v=strtof(text,&end);
+   while(*end==' '||*end=='\t'||*end=='\n'||*end=='\r')end++;
+   if(end!=text&&!*end&&isfinite(v)&&v>=p->minimum&&v<=p->maximum)values[i]=v;
+  }
+ }
+ pthread_mutex_lock(&hdrParameterLock);memcpy(hdrParameters,values,sizeof values);hdrParametersReady=1;pthread_mutex_unlock(&hdrParameterLock);
+}
+
+float front_hdr_headroom(void){return atomic_load_explicit(&hdrHeadroom,memory_order_relaxed);}
+static void front_hdr_update(void){
+ if(!totk_hdr_available())return;
+ NSScreen *screen=window.screen?:NSScreen.mainScreen;
+ float h=front_hdr_enabled() && screen?(float)screen.maximumExtendedDynamicRangeColorComponentValue:1;
+ if(!isfinite(h)||h<1)h=1;
+ float old=atomic_exchange(&hdrHeadroom,h);
+ if(fabsf(old-h)>0.05f)fprintf(stderr,"[hdr] display %s: current headroom %.3f, potential %.3f (SDR white = 1)\n",screen.localizedName.UTF8String,h,(double)screen.maximumPotentialExtendedDynamicRangeColorComponentValue);
+}
+
+/* Startup and control changes run on the main thread. The presenter applies the
+ * surface format between frames, after draining old GPU work. Off is the original
+ * BGRA8 surface and its original default color space. The HDR canvas keeps sRGB
+ * primaries: a P3 label alone would reinterpret, rather than convert, its colors. */
+static void front_hdr_init(void){
+ front_hdr_parameters_load();
+ if(!totk_hdr_available()){atomic_store(&hdrEnabled,0);return;}
+ char word[32]={0};int on=0;
+ const char *e=getenv("TOTK_HDR");
+ if(e && *e)on=!strcmp(e,"1");
+ else if(runtime_setting_word("hdr.txt",word,sizeof word))on=!strcmp(strtok(word," \t\r\n")?:"","on");
+ atomic_store(&hdrEnabled,totk_hdr_available() && on);
+}
+void front_hdr_present_mode(int enabled){
+ if(!metalLayer || !totk_hdr_available())return;
+ if(!hdrSDRRemembered){hdrSDRColorSpace=metalLayer.colorspace;if(hdrSDRColorSpace)CFRetain(hdrSDRColorSpace);hdrSDRRemembered=1;}
+ BOOL on=!!enabled;MTLPixelFormat format=on?MTLPixelFormatRGBA16Float:MTLPixelFormatBGRA8Unorm;
+ if(metalLayer.pixelFormat==format && metalLayer.wantsExtendedDynamicRangeContent==on)return;
+ CGColorSpaceRef cs=on?CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB):NULL;
+ metalLayer.pixelFormat=format;metalLayer.colorspace=on?cs:hdrSDRColorSpace;metalLayer.wantsExtendedDynamicRangeContent=on;
+ if(cs)CGColorSpaceRelease(cs);
+ fprintf(stderr,"[hdr] surface %s: format %lu, color space %s\n",on?"on":"off",(unsigned long)format,metalLayer.colorspace?[(NSString *)CFBridgingRelease(CGColorSpaceCopyName(metalLayer.colorspace)) UTF8String]:"default");
+}
+static void front_hdr_apply(int enabled){
+ if(!totk_hdr_available())return;
+ atomic_store(&hdrEnabled,!!enabled);
+ runtime_setting_save("hdr.txt",enabled?"on":"off","HDR / EDR");
+ front_hdr_update();
+ fprintf(stderr,"[hdr] EDR %s (settings panel); display headroom %.3f\n",enabled?"on":"off",front_hdr_headroom());
+}
+void runtime_front_hdr_set(int enabled){if(NSThread.isMainThread)front_hdr_apply(enabled);else dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(enabled);});}
+void runtime_front_hdr_toggle(void){dispatch_async(dispatch_get_main_queue(),^{front_hdr_apply(!front_hdr_enabled());});}
+
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
@@ -85,6 +182,23 @@ extern void totk_sr_closing(void) __attribute__((weak_import));
 extern void totk_sr_settings(int open) __attribute__((weak_import));
 int runtime_front_window_visible(void);   /* below: 1 seen, 0 covered, -1 not known yet */
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* The display the window is on and its refresh rate (0 before the window exists): the pacing follows that rate
+   (gfx/nvn mtl_display_hz), not the main display's. A BOTW window moved to a 75 Hz monitor while the 120 Hz built-in
+   screen stayed the main display was paced in 120 Hz ticks: 60 FPS became 75 / 37 FPS, 30+30 four 75 Hz refreshes a
+   frame (19 FPS; 2026-10-20, PR #257). The display link follows it too (it drives the guest's vsync events). Set on the
+   main thread at start, when the window changes screen and when a screen's parameters change (a new rate on the same
+   display); the present path reads the rate every frame without asking CoreGraphics. */
+static _Atomic uint32_t windowDisplay;
+static _Atomic int windowDisplayHz;
+int front_display_hz(void){return atomic_load(&windowDisplayHz);}
+static void note_window_screen(void){
+ NSNumber *n=window.screen.deviceDescription[@"NSScreenNumber"];uint32_t d=n?n.unsignedIntValue:CGMainDisplayID();
+ CGDisplayModeRef m=CGDisplayCopyDisplayMode(d);int hz=m?(int)(CGDisplayModeGetRefreshRate(m)+0.5):0;if(m)CGDisplayModeRelease(m);
+ uint32_t was=atomic_exchange(&windowDisplay,d);int wasHz=atomic_exchange(&windowDisplayHz,hz);
+ if(was==d&&wasHz==hz)return;
+ if(displayLink&&was!=d)CVDisplayLinkSetCurrentCGDisplay(displayLink,d);
+ fprintf(stderr,"[totk] window on display %u (%d Hz%s)\n",d,hz,d==CGMainDisplayID()?", the main display":"");
+}
 /* The start-up screen goes once a frame was presented and the warm-up is done, or lets the title come before it ends
    (runtime_warm_title): the player sees the game from here on. */
 static void boot_overlay_hide(void){
@@ -191,11 +305,20 @@ static int front_modifier_down(NSEvent *e){
 -(BOOL)acceptsFirstResponder{return YES;}
 /* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the game's
    menu) do anything; releases still go through so nothing stays held. */
--(void)keyDown:(NSEvent *)e{if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
+-(void)keyDown:(NSEvent *)e{
+ /* AppKit normally handles menu equivalents first. If a Command event reaches
+    this view, offer it to the menu rather than turning its key into gameplay. */
+ if(e.modifierFlags&NSEventModifierFlagCommand){[NSApp.mainMenu performKeyEquivalent:e];return;}
+ if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);
+}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
 /* Shift, Control and Option, left and right apart, are keys of the layout (keyboard_map.h); they come as flag changes.
    While the settings panel or text entry is open only their releases go through. */
--(void)flagsChanged:(NSEvent *)e{int down=front_modifier_down(e);if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);}
+-(void)flagsChanged:(NSEvent *)e{
+ /* Command takes over from window input; do not leave movement or modifiers held. */
+ if(e.modifierFlags&NSEventModifierFlagCommand){runtime_input_clear_window();return;}
+ int down=front_modifier_down(e);if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);
+}
 /* The game has no mouse controls. In native full screen, keep the pointer out of the picture while idle, but show it again
    as soon as it moves; restore it when the window loses focus or leaves full screen. */
 -(void)hideCursorIfIdle:(NSTimer *)timer{
@@ -590,7 +713,7 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidResignKey:(NSNotification *)n{(void)n;front_playtime_tick(YES);atomic_store(&focused,0);[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_mouse_update();runtime_gamepad_focus(0);runtime_input_clear_window();runtime_oe_push_message(15);fprintf(stderr,"[totk] window lost focus\n");front_sr_window();}
 /* The process ends with the window. Save writes go straight to the files (runtime/fs_host.c), so a close in the middle of a
    save waits (up to 15 s, the window already gone) until the game has written and committed it (runtime_fs_save_busy). */
--(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);
+-(void)windowWillClose:(NSNotification *)n{(void)n;front_playtime_tick(YES);front_hdr_parameters_flush();
  if(totk_sr_closing)totk_sr_closing();
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
@@ -604,7 +727,7 @@ void runtime_front_resize_aspect(double ratio){
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
 -(void)windowDidExitFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];front_sr_view();}
--(void)windowDidChangeScreen:(NSNotification *)n{(void)n;front_sr_view();}
+-(void)windowDidChangeScreen:(NSNotification *)n{(void)n;note_window_screen();front_sr_view();front_hdr_update();}
 /* Whether any part of the window can be seen (TOTK, 2026-10-16 night): macOS stops the display link's callbacks for a
    fully covered window, so presents stop and per-picture measurements of that stretch are void; a test session's log
    says when (the user working in other apps covered the test windows of the frame interpolation tests). */
@@ -613,7 +736,7 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
  fprintf(stderr,"[totk] window %s%s (frame %llu)\n",v?"visible":"covered (or on another Space): no presents until it is visible again",when,(unsigned long long)dm_nvn_frame_count());
  front_sr_window();}
 -(void)windowDidChangeOcclusionState:(NSNotification *)n{(void)n;note_occlusion("");}
--(void)windowDidChangeBackingProperties:(NSNotification *)n{(void)n;front_sync_drawable();}
+-(void)windowDidChangeBackingProperties:(NSNotification *)n{(void)n;front_sync_drawable();front_hdr_update();}
 @end
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
@@ -671,7 +794,7 @@ static void front_install_menu(void){
  front_menubar_fps_add(menu);NSApp.mainMenu=menu;
 }
 /* execv can make Launch Services show the nested runtime as a generic Unix executable.
-   Recover the enclosing app's own icon, including launches from the diagnostic command line. */
+   Recover the enclosing app's system icon, including launches from the diagnostic command line. */
 static void front_install_bundle_icon(void) {
  NSString *path=NSProcessInfo.processInfo.arguments.firstObject;
  if(!path.length)return;
@@ -679,12 +802,12 @@ static void front_install_bundle_icon(void) {
  path=path.stringByResolvingSymlinksInPath;
  while(path.length>1){
   if([path.pathExtension.lowercaseString isEqualToString:@"app"]){
-   NSBundle *bundle=[NSBundle bundleWithPath:path];
-   NSString *name=[bundle objectForInfoDictionaryKey:@"CFBundleIconFile"];
-   if(![name isKindOfClass:NSString.class]||!name.length)return;
-   if(!name.pathExtension.length)name=[name stringByAppendingPathExtension:@"icns"];
-   NSImage *icon=[[NSImage alloc] initWithContentsOfFile:[bundle.resourcePath stringByAppendingPathComponent:name]];
-   if(icon)NSApp.applicationIconImage=icon;   /* the app's own AppIcon.icns, as the build made it (scripts/extract_app_icon.py) */
+   /* The raw icns has no rounded app mask; Finder's own icon for the app keeps macOS's presentation. */
+   NSImage *icon=[[NSWorkspace.sharedWorkspace iconForFile:path] copy];
+   if(icon){
+    icon.size=NSMakeSize(512,512);   /* NSWorkspace gives 32 points; 512 lets the Dock pick a high-resolution representation. */
+    NSApp.applicationIconImage=icon;
+   }
    return;
   }
   path=path.stringByDeletingLastPathComponent;
@@ -715,11 +838,18 @@ void runtime_front_run(void(*callback)(void)){
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME "  Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
+  front_hdr_init();
   front_install_menu();
   window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
   window.tabbingMode=NSWindowTabbingModeDisallowed;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
-  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
+  metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
+  if(totk_hdr_available()){
+   front_hdr_present_mode(front_hdr_enabled());front_hdr_update();
+   [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer){(void)timer;front_hdr_update();}];
+   fprintf(stderr,"[hdr] TOTK 1.4.3 scene HDR: EDR %s, FP16 extended linear sRGB, RenoDX-style tone mapping\n",front_hdr_enabled()?"on":"off");
+  }
+  metalLayer.drawableSize=CGSizeMake(ww,wh);runtime_aspect_view(ww,wh);
   metalLayer.framebufferOnly=NO;window.contentView.wantsLayer=YES;window.contentView.layer=metalLayer;
   bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;
   bootOverlay.wantsLayer=YES;bootOverlay.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.035 green:0.075 blue:0.09 alpha:1].CGColor;
@@ -750,11 +880,12 @@ void runtime_front_run(void(*callback)(void)){
   [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   front_sr_view();
-  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;front_sr_view();}];   /* a refresh rate changed on the same screen */
+  [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,3*NSEC_PER_SEC),dispatch_get_main_queue(),^{note_occlusion(" 3 s after opening");});
   atomic_store(&focused,1);
   runtime_gamepad_focus(window.isKeyWindow||assume_focus());   /* a test window never becomes key (TOTK_ASSUME_FOCUS) */
   if(CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)||CVDisplayLinkSetOutputCallback(displayLink,vsync_callback,NULL)||CVDisplayLinkStart(displayLink))runtime_fail("native display link initialization");
+  note_window_screen();
   pthread_t guest;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,8*1024*1024);int err=pthread_create(&guest,&attr,guest_main,(void *)callback);pthread_attr_destroy(&attr);if(err)runtime_fail("native game thread creation");
   [NSApp run];runtime_fail("native event loop returned unexpectedly");
  }
