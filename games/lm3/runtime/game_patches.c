@@ -25,20 +25,7 @@
    TOTK_FPS60=0 leaves the shipping controller untouched. */
 typedef struct { uint64_t offset; uint32_t original, replacement; const char *what; } GamePatch;
 
-static const GamePatch fps60_sites[] = {
-    {GAME_ADDR(0x8f6c60), 0x6b08015f, 0x7100055f, "clamp: cmp w10, #1 (was cmp w10, w8 = minimum)"},
-    {GAME_ADDR(0x8f6c64), 0x1a89b10a, 0x1a9fa52a, "clamp: csinc w10, w9, wzr, ge (desired = max(desired, 1))"},
-    {GAME_ADDR(0x8f6c88), 0xb9401a8a, 0xd503201f, "lower trigger: nop the stored-candidate load (try lower when desired < current)"},
-    {GAME_ADDR(0x8f6d18), 0x6b08015f, 0x7100055f, "raise path: cmp w10, #1"},
-    {GAME_ADDR(0x8f6d28), 0x1a88c1ac, 0x1a9fc5ac, "raise path: csinc w12, w13, wzr, gt (next lower candidate floors at 1)"},
-    {GAME_ADDR(0x8f6d7c), 0xb9400288, 0x52800028, "lower path: mov w8, #1 (minimum interval 1)"},
-    {GAME_ADDR(0x8f6d98), 0x2a0a03f5, 0x1a9fa555, "lower path: csinc w21, w10, wzr, ge (result never below 1)"},
-};
 
-static int fps60_enabled(void) {
-    const char *e = getenv("TOTK_FPS60");
-    return !(e && !strcmp(e, "0"));
-}
 
 /* One atomic 64-bit value holds ratio (low float) and frame seconds (high
    float). The guest reads the two lanes independently; both always remain
@@ -48,10 +35,6 @@ static uint64_t last_present_ns;
 static double frame_samples[5];
 static unsigned frame_sample_count, frame_sample_next;
 
-static int realtime_enabled(void) {
-    const char *e = getenv("TOTK_REALTIME");
-    return !(e && !strcmp(e, "0"));
-}
 
 static uint64_t frame_step_bits(float seconds) {
     float ratio = seconds * 30.0f;
@@ -93,13 +76,6 @@ void runtime_frame_step_update(uint64_t now_ns) {
     atomic_store_explicit(frame_step_data, frame_step_bits((float)(sum / frame_sample_count)), memory_order_release);
 }
 
-static uint32_t adrp_reg(unsigned rd, uint64_t site, uint64_t target) {
-    int64_t pages = (int64_t)(target >> 12) - (int64_t)(site >> 12);
-    if (pages < -(1 << 20) || pages >= (1 << 20)) runtime_fail("real-time frame-step data outside ADRP range");
-    uint32_t imm = (uint32_t)pages & 0x1fffff;
-    return 0x90000000u | ((imm & 3u) << 29) | ((imm >> 2) << 5) | (rd & 31u);
-}
-static uint32_t adrp_x9(uint64_t site, uint64_t target) { return adrp_reg(9, site, target); }
 
 /* iOS cannot write code pages at run time: tools/export (TOTK_EXPORT_IOS, runtime/loader.c) runs these same patches on the
    Mac and the patched text is embedded in the app. On the device the loader only checks that the patched words are there. */
@@ -109,110 +85,9 @@ static uint32_t adrp_x9(uint64_t site, uint64_t target) { return adrp_reg(9, sit
 #define CODE_PATCHED_AT_BUILD 0
 #endif
 
-static void put_word(Module *m, uint64_t off, uint32_t word, const char *what) {
-    if (!CODE_PATCHED_AT_BUILD) { memcpy(m->base + off, &word, 4); return; }
-    uint32_t have;
-    memcpy(&have, m->base + off, 4);
-    if (have != word) {
-        fprintf(stderr, "[totk] %s main+%#llx: embedded %08x, expected patched %08x\n", what, (unsigned long long)off, have, word);
-        runtime_fail("embedded main text was not patched at build time (ios/tools/build_embed.sh)");
-    }
-}
 
-static void patch_realtime(Module *m) {
-    /* The loader reserved a writable page immediately after main's image.
-       No game allocation or rewritten-code veneer can overlap this page. */
-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
-    if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("real-time frame-step page layout");
-    static const struct { uint64_t off; uint32_t original; } sites[] = {
-        {GAME_ADDR(0x7a83f4),0x1e220020}, {GAME_ADDR(0x7a83f8),0x52a84e08}, {GAME_ADDR(0x7a83fc),0x1e270101},
-        {GAME_ADDR(0x7a8400),0x1e2c1002}, {GAME_ADDR(0x7a840c),0x1e211801}, {GAME_ADDR(0x7a8410),0x1e220800},
-        {GAME_ADDR(0x8f68b8),0xbd425e60}, {GAME_ADDR(0x8f68bc),0x1e2c1001},
-        {GAME_ADDR(0x8f68cc),0x5e21d800}, {GAME_ADDR(0x8f68d0),0x1e210800}
-    };
-    for (size_t i = 0; i < sizeof sites / sizeof *sites; i++) {
-        uint32_t word = 0;
-        if (sites[i].off + 4 > m->text_end) runtime_fail("real-time frame-step site outside main text");
-        memcpy(&word, m->base + sites[i].off, 4);
-        if (CODE_PATCHED_AT_BUILD) break;   /* checked against the patched words below */
-        if (word != sites[i].original) {
-            fprintf(stderr,"[totk] real-time frame-step main+%#llx: found %08x expected %08x\n",
-                    (unsigned long long)sites[i].off, word, sites[i].original);
-            runtime_fail("real-time frame-step requires matching game-version original instructions");
-        }
-    }
-    const uint32_t nop = 0xd503201f;
-    uint32_t repl[] = {
-        adrp_x9((uintptr_t)m->base + GAME_ADDR(0x7a83f4), (uintptr_t)m->base + data_off),
-        0xbd400120, /* ldr s0, [x9]       : ratio = dt * 30 */
-        0xbd400521, /* ldr s1, [x9, #4]   : dt in seconds  */
-        nop, nop, nop,
-        adrp_x9((uintptr_t)m->base + GAME_ADDR(0x8f68b8), (uintptr_t)m->base + data_off),
-        0xbd400120, /* global ratio, same shared value */
-        nop, nop
-    };
-    for (size_t i = 0; i < sizeof sites / sizeof *sites; i++)
-        put_word(m, sites[i].off, repl[i], "real-time frame step");
-    frame_step_data = (_Atomic uint64_t *)(void *)(m->base + data_off);
-    atomic_store(frame_step_data, frame_step_bits(1.0f / 60.0f));
-    fprintf(stderr,"[totk] real-time frame step: %zu verified instructions; initial 16.67 ms, sampled at each present\n",
-            sizeof sites / sizeof *sites);
-}
 
-/* Render resolution (TOTK_RENDER_RES=<w>x<h>, e.g. 960x540).
-   main+0xc63064 reads the scene render size {w, h} from the game's parameter tree (main+0xc6325c: handheld 1280x720,
-   docked 1600x900), converts it to floats and stores it in the renderer at +0xcc4 / +0xcc8; every scene render target
-   is sized from there (traced with TOTK_SIZE_CHAIN: the per-frame render-target requests at main+0xa2818c take their
-   size from this view). The community 1008p / 1080p exefs patches change the same place. Here the size comes from the
-   loader's data page after main (the real-time frame-step page, +16): three instructions,
-     main+0xc630bc  scvtf s0, s8              -> adrp x9, <page>
-     main+0xc630c4  str s0, [x19, #0xcc4]     -> ldp s0, s1, [x9, #16]
-     main+0xc630c8  scvtf s1, s9              -> str s0, [x19, #0xcc4]
-   and the store of s1 at main+0xc630d8 stays. The size read from the parameter is then not used. The host writes the
-   page at load, so on the phone (code patched at build) the size is still chosen at run time: TOTK_RENDER_RES, or the
-   game's handheld 1280x720 when unset / 0 (the phone always reports handheld mode). The game's final passes scale the
-   scene to its output (1280x720 handheld). */
-static const GamePatch render_res_sites[3] = {
-    {GAME_ADDR(0xc630bc), 0x5e21d900, 0, "scvtf s0, s8 -> adrp x9, <data page>"},
-    {GAME_ADDR(0xc630c4), 0xbd0cc660, 0x2d420520, "str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]"},
-    {GAME_ADDR(0xc630c8), 0x5e21d921, 0xbd0cc660, "scvtf s1, s9 -> str s0, [x19, #0xcc4]"},
-};
 static _Atomic uint64_t *render_control_page;
-static int render_res(unsigned *w, unsigned *h) {
-    uint64_t request=atomic_load(&render_control_request);
-    if(request){*w=(request>>24)&4095;*h=(request>>36)&4095;return 1;}
-    const char *e = getenv("TOTK_RENDER_RES");
-    if (!e || !*e || !strcmp(e, "0")) return 0;
-    if (sscanf(e, "%ux%u", w, h) != 2 || *w < 64 || *h < 64 || *w > 4096 || *h > 4096) runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
-    return 1;
-}
-static void patch_render_res(Module *m) {
-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
-    unsigned w = 1280, h = 720; int set = render_res(&w, &h);
-    if (!CODE_PATCHED_AT_BUILD && !set) return;   /* Mac: the game's own size unless asked */
-    uint32_t want[3] = {adrp_x9((uintptr_t)m->base + render_res_sites[0].offset, (uintptr_t)m->base + data_off),
-                        render_res_sites[1].replacement, render_res_sites[2].replacement};
-    if (CODE_PATCHED_AT_BUILD) {
-        uint32_t have; memcpy(&have, m->base + render_res_sites[0].offset, 4);
-        if (have == render_res_sites[0].original) { fprintf(stderr, "[totk] render resolution: the game's own (not patched at build)\n"); return; }
-        for (int i = 0; i < 3; i++) put_word(m, render_res_sites[i].offset, want[i], "render resolution");   /* checks */
-    } else {
-        for (int i = 0; i < 3; i++) {
-            uint32_t word; memcpy(&word, m->base + render_res_sites[i].offset, 4);
-            if (word != render_res_sites[i].original) {
-                fprintf(stderr, "[totk] render resolution patch main+%#llx: found %08x, expected %08x (%s)\n",
-                        (unsigned long long)render_res_sites[i].offset, word, render_res_sites[i].original, render_res_sites[i].what);
-                runtime_fail("render resolution patch: main does not match the selected game version");
-            }
-        }
-        for (int i = 0; i < 3; i++) memcpy(m->base + render_res_sites[i].offset, &want[i], 4);
-    }
-    float v[2] = {(float)w, (float)h};
-    memcpy(m->base + data_off + 16, v, sizeof v);
-    render_control_page=(_Atomic uint64_t *)(void *)(m->base+data_off+16);
-    fprintf(stderr, "[totk] render resolution patch: scene render size %ux%u%s (3 instructions at main+0xc630bc, value on the data page)\n",
-            w, h, set ? "" : " (the game's handheld size; TOTK_RENDER_RES not set)");
-}
 
 /* Output resolution ("true 2K", 2026-10-17; key 3 switches it while playing). Two sizes are 1920x1080 in the game:
    1. The swapchain. nnMain writes the framework's display size as a constant before creating the graphics framework
@@ -300,33 +175,6 @@ uint64_t runtime_output_size_current(void) {
     uint8_t *page = atomic_load(&output_page);
     return page ? atomic_load((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE)) : pack_size(1920, 1080);
 }
-static void patch_output_res(Module *m) {
-    unsigned w, h;
-    if (CODE_PATCHED_AT_BUILD || !output_res(&w, &h)) return;
-    uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
-    if (data_off + 0x4000 != m->size || data_off & 0xfff) runtime_fail("output resolution data page layout");
-    const GamePatch sites[5] = {
-        {GAME_ADDR(0xe996ac), 0xd280f008, 0xd2800000u | (w << 5) | 8u, "mov x8, #0x780 (1920) -> mov x8, #w (the swapchain)"},
-        {GAME_ADDR(0xe996b0), 0xf2c08708, 0xf2c00000u | (h << 5) | 8u, "movk x8, #0x438, lsl #32 (1080) -> movk x8, #h, lsl #32"},
-        {GAME_ADDR(0xc630a4), 0xaa1403e0, adrp_reg(21, (uintptr_t)m->base + GAME_ADDR(0xc630a4), (uintptr_t)m->base + data_off), "mov x0, x20 -> adrp x21, <data page>"},
-        {GAME_ADDR(0xc630a8), GAME_OUTPUT_CALL_WORD, 0xf90016b3, "bl main+0xc632b0 (the parameters' output size) -> str x19, [x21, #40] (the renderer)"},
-        {GAME_ADDR(0xc630ac), 0xf9400015, 0xf94012b5, "ldr x21, [x0] -> ldr x21, [x21, #32] (the output size)"},
-    };
-    for (int i = 0; i < 5; i++) {
-        uint32_t word; memcpy(&word, m->base + sites[i].offset, 4);
-        if (word != sites[i].original) {
-            fprintf(stderr, "[totk] output resolution patch main+%#llx: found %08x, expected %08x (%s)\n", (unsigned long long)sites[i].offset, word, sites[i].original, sites[i].what);
-            runtime_fail("output resolution patch: main does not match the selected game version");
-        }
-    }
-    uint8_t *page = m->base + data_off; output_w = w; output_h = h;
-    atomic_store((_Atomic uint64_t *)(void *)(page + DP_OUTPUT_SIZE), output_full_at_start ? pack_size(w, h) : pack_size(1920, 1080));
-    atomic_store((_Atomic uint64_t *)(void *)(page + DP_RENDERER), 0);
-    for (int i = 0; i < 5; i++) memcpy(m->base + sites[i].offset, &sites[i].replacement, 4);
-    atomic_store(&output_page, page);   /* Publish initialized state to the HUD on the main thread. */
-    fprintf(stderr, "[totk] output resolution patch: swapchain %ux%u (main+0xe996ac), the game's output %s from the data page (main+0xc630a4); texture heap and Graphics +%llu KiB (HeapDef overlay)\n",
-            w, h, output_full_at_start ? "at that size" : "1920x1080 for now", (unsigned long long)(runtime_output_res_extra_bytes() >> 10));
-}
 /* Two-state output-size helper retained for internal use: switch between the largest size and 1920x1080. The renderer
    lays out again at the next frame (see patch_output_res). */
 int runtime_output_res_toggle(void) {
@@ -392,30 +240,7 @@ int runtime_output_mode_cycle(void) {
     return 1;
 }
 
-/* Diagnostic (Mac): TOTK_TRAP_AT=<main offset> writes brk #0 there; the crash handler (runtime/loader.c, SIGTRAP) then prints
-   the registers and the call chain at that moment, plus what TOTK_CRASH_MEM / TOTK_CRASH_HEAPFIND / TOTK_CRASH_HEAPWALK ask for,
-   and exits: "stop here and show me the state" without a debugger. */
-static void patch_trap(Module *m) {
-    const char *e = getenv("TOTK_TRAP_AT");
-    if (CODE_PATCHED_AT_BUILD || !e || !*e) return;
-    uint64_t off = strtoull(e, NULL, 0);
-    if (off & 3 || off + 4 > m->text_end) runtime_fail("TOTK_TRAP_AT must be a 4-byte aligned offset in main's text");
-    uint32_t brk = 0xd4200000, was;
-    memcpy(&was, m->base + off, 4);
-    memcpy(m->base + off, &brk, 4);
-    fprintf(stderr, "[totk] TOTK_TRAP_AT: brk at main+%#llx (was %08x); the game stops there with a register dump\n", (unsigned long long)off, was);
-}
 
-static void check_site(const Module *m, const GamePatch *p) {
-    if (p->offset + 4 > m->text_end) runtime_fail("60 FPS patch site outside the main text segment");
-    uint32_t word;
-    memcpy(&word, m->base + p->offset, sizeof word);
-    if (word != p->original) {
-        fprintf(stderr, "[totk] 60 FPS patch main+%#llx: found %08x, expected %08x (%s)\n",
-                (unsigned long long)p->offset, word, p->original, p->what);
-        runtime_fail("60 FPS patch: main does not match the selected game version");
-    }
-}
 
 /* TOTK_PCHTXT=<file>: an emulator ExeFS patch for main in pchtxt form, as community mods ship them (for example
    TOTK-Ultrawide's aspect-ratio patch), for trying them here. Mac only: the phone's code is patched at build. Its
@@ -456,47 +281,7 @@ static void patch_pchtxt(Module *m) {
 }
 
 void runtime_game_patches(Module *m) {
-#ifdef GAME_LM3
-    patch_pchtxt(m);   /* Luigi's Mansion 3 runs unmodified: only the player's own patches, if any */
-    return;
-#endif
-    runtime_survey_init(m);
-    const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
-    if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
-    if (CODE_PATCHED_AT_BUILD) {
-        /* Embedded variant: the code was patched at build time (ios/tools/build_app.sh exports with the real-time frame
-           step and the 60 FPS patch), so the phone is not held at the shipping 30 fps; here we only verify the words. */
-        patch_realtime(m);
-        patch_render_res(m);
-        for (size_t i = 0; i < n; i++) {
-            uint32_t word;
-            memcpy(&word, m->base + fps60_sites[i].offset, sizeof word);
-            if (word != fps60_sites[i].replacement) {
-                fprintf(stderr, "[totk] 60 FPS patch main+%#llx: found %08x, expected the patched %08x (%s)\n",
-                        (unsigned long long)fps60_sites[i].offset, word, fps60_sites[i].replacement, fps60_sites[i].what);
-                runtime_fail("60 FPS patch: embedded main was not exported with TOTK_FPS60 on");
-            }
-        }
-        fprintf(stderr, "[totk] embedded main: real-time frame step and 60 FPS patch (%zu instructions) applied at build time\n", n);
-        return;
-    }
-    patch_pchtxt(m);   /* first: the runtime's own patches check the original words they replace */
-    if (realtime_enabled()) patch_realtime(m);
-    else fprintf(stderr,"[totk] real-time frame step off (TOTK_REALTIME=0)\n");
-    patch_render_res(m);
-    patch_output_res(m);
-    patch_trap(m);
-#if defined(TOTK_GAME_V121)
-    { static const uint64_t sites[] = {0xcb4b10, 0x12521cc, 0x19b36f0, 0x1ecdf68};   /* camera x2, viewport x2 (aspect_patch.h) */
-      aspect_install(m, "1.2.1", sites, 4, (m->text_end + 15) & ~15ULL, (m->file_size + 0x3fff) & ~0x3fffULL); }
-#else
-    if (aspect_requested()) runtime_fail("TOTK_ASPECT: only 1.2.1 and 1.4.3 so far");
-#endif
-    if (!fps60_enabled()) {
-        fprintf(stderr, "[totk] 60 FPS patch off (TOTK_FPS60=0): shipping present interval range 2..3\n");
-        return;
-    }
-    for (size_t i = 0; i < n; i++) check_site(m, &fps60_sites[i]);   /* verify all before writing any */
-    for (size_t i = 0; i < n; i++) memcpy(m->base + fps60_sites[i].offset, &fps60_sites[i].replacement, 4);
-    fprintf(stderr, "[totk] %s 60 FPS patch: %zu instructions (interval range 1..3)\n", TOTK_GAME_VERSION, n);
+    /* Luigi's Mansion 3 runs unmodified: only the player's own patches, if any. (The copied Tears of the Kingdom body after
+       this, 60 FPS and real-time step at that game's addresses, was never reached and is gone, after PR #218.) */
+    patch_pchtxt(m);
 }
