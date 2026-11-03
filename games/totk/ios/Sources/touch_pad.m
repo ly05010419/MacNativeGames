@@ -141,7 +141,10 @@ static const CGFloat kFpsButtonSize = 34;
     CGRect a = self.area; CGFloat x = CGRectGetMinX(a), y = CGRectGetMinY(a), w = a.size.width, h = a.size.height, d = self.diamond;
     CGFloat top = self.topRow, bottom = self.bottomRow;
     CGFloat inset = self.columnInset, shift = self.shoulderShift;
-    CGPoint face = CGPointMake(x + w - inset, y + h * .42), pad = CGPointMake(x + inset, y + h * .42);
+    /* On an iPad the d-pad and A/B/X/Y sit 150 points lower (the user, 2026-11-03: "左边方向键、右边 ABXY ... 往下移 150 点";
+       centre 336 -> 486 on an 11-inch iPad, the lowest button's edge still above the stick ring). */
+    CGFloat mid = y + h * .42 + (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPhone ? 0 : 150);
+    CGPoint face = CGPointMake(x + w - inset, mid), pad = CGPointMake(x + inset, mid);
     TouchButton all[kButtonCount] = {
         {{face.x + d, face.y}, 1, @"A", kButtonSize}, {{face.x, face.y + d}, 2, @"B", kButtonSize}, {{face.x, face.y - d}, 4, @"X", kButtonSize}, {{face.x - d, face.y}, 8, @"Y", kButtonSize},
         {{x + w * .05 - shift, top}, 256, @"ZL", kButtonSize}, {{x + w * .16 - shift, top}, 64, @"L", kButtonSize}, {{x + w * .84 + shift, top}, 128, @"R", kButtonSize}, {{x + w * .95 + shift, top}, 512, @"ZR", kButtonSize},
