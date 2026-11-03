@@ -1,7 +1,8 @@
 /* NVN may bind a four-component format to tightly packed three-component data.
  * Metal's offline compiler rejects the overlapping fetch even when the shader
  * never reads its last component. Narrow only when the MSL proves it unused;
- * the address, offset, stride and every component actually read stay unchanged. */
+ * the address, offset, stride and every component actually read stay unchanged.
+ * The narrowing itself is nvn_mtl.m's vfmt_fit (its table of each type's 1-4 component formats). */
 #ifndef NVN_VERTEX_TAIL_H
 #define NVN_VERTEX_TAIL_H
 #include <ctype.h>
@@ -103,19 +104,5 @@ static inline unsigned nvn_vertex_components(const char *source, unsigned locati
         }
     }
     return used;
-}
-static inline unsigned nvn_vertex_tail_format(unsigned format, unsigned offset, unsigned stride, unsigned used) {
-    static const unsigned sizes[12] = {1,1,1,1,2,2,2,2,2,4,4,4};
-    static const unsigned convert_sizes[6] = {1,1,2,2,4,4};
-    unsigned group, count, size;
-    if (format >= 1 && format <= 0x30) {
-        group = 12; count = (format - 1) / group + 1; size = sizes[(format - 1) % group];
-    } else if (format >= 0x51 && format <= 0x68) {
-        group = 6; count = (format - 0x51) / group + 1; size = convert_sizes[(format - 0x51) % group];
-    } else return format;   /* packed formats cannot lose an individual lane */
-    if (!stride || offset >= stride) return format;
-    unsigned fits = (stride - offset) / size;
-    if (!fits || fits >= count || used > fits) return format;
-    return format - (count - fits) * group;
 }
 #endif
