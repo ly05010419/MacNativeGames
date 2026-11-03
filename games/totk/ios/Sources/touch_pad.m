@@ -121,6 +121,14 @@ static const CGFloat kFpsButtonSize = 34;
     if (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPhone) return CGRectGetMinY(a) + a.size.height * .12;
     return MAX(CGRectGetMinY(self.bounds) + kButtonSize * 1.5, CGRectGetMinY(a) + kButtonSize / 2);
 }
+/* L3 / R3 in the bottom corners: on an iPad 46 points lower (the user, 2026-11-03: "l3 r3 往下 46点"), their bottom
+   edge one button above the screen's bottom edge as the top row's top edge is below its top (centre 704 -> 751 on an
+   11-inch iPad), never below the safe area; on an iPhone 88% down the safe area, as before. */
+- (CGFloat)bottomRow {
+    CGRect a = self.area;
+    if (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPhone) return CGRectGetMinY(a) + a.size.height * .88;
+    return MIN(CGRectGetMaxY(self.bounds) - kButtonSize * 1.5, CGRectGetMaxY(a) - kButtonSize / 2);
+}
 - (CGPoint)restingStick:(BOOL)right {
     CGRect a = self.area; CGFloat inset = self.columnInset + self.stickRadius * 1.9;
     return CGPointMake(right ? CGRectGetMaxX(a) - inset : CGRectGetMinX(a) + inset, CGRectGetMinY(a) + a.size.height * .80);
@@ -128,7 +136,7 @@ static const CGFloat kFpsButtonSize = 34;
 
 - (void)buttons:(TouchButton *)b {
     CGRect a = self.area; CGFloat x = CGRectGetMinX(a), y = CGRectGetMinY(a), w = a.size.width, h = a.size.height, d = self.diamond;
-    CGFloat top = self.topRow, bottom = y + h * .88;
+    CGFloat top = self.topRow, bottom = self.bottomRow;
     CGFloat inset = self.columnInset, shift = self.shoulderShift;
     CGPoint face = CGPointMake(x + w - inset, y + h * .42), pad = CGPointMake(x + inset, y + h * .42);
     TouchButton all[kButtonCount] = {
