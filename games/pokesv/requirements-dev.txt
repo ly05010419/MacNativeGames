@@ -1,0 +1,3 @@
+# Only for make verify (equiv.py runs each rewritten site against the original), not for building the app.
+-r requirements.txt
+unicorn==2.1.4
