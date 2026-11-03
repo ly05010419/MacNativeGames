@@ -22,6 +22,12 @@ static int patch_output_res(Module *m);   /* native output size, after runtime_o
 static void botw_output_tick(void);       /* the size static follows the canvas after the start */
 static void botw_aspect_apply(void);
 
+__attribute__((weak)) int runtime_aspect_vr(float a, float k) { (void)a; (void)k; return 0; }
+__attribute__((weak)) int runtime_camera_distance_available(void) { return 0; }
+__attribute__((weak)) int runtime_camera_distance_cm(void) { return 0; }
+__attribute__((weak)) void runtime_camera_distance_set(int cm) { (void)cm; }
+__attribute__((weak)) void runtime_vr_find_head(int stage) { (void)stage; }
+
 /* iOS cannot write code pages at run time: the iOS export (TOTK_EXPORT_IOS, runtime/loader.c export-ios) runs these
    patches on the Mac, and the patched text and patch area are embedded in the app (ios/tools/gen_embed.py), as for
    Tears of the Kingdom (game_patches.c). On the device the original words are not checked (they are patched already) and

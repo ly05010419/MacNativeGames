@@ -11,16 +11,42 @@
 #pragma once
 
 enum { DIAGRAM_NONE, DIAGRAM_MOVE, DIAGRAM_COMBAT, DIAGRAM_ACTION, DIAGRAM_MENU, DIAGRAM_SYSTEM };
-static NSColor *diagram_color(int kind) {
- switch(kind){
-  case DIAGRAM_MOVE:return [NSColor colorWithCalibratedRed:0.38 green:0.65 blue:1.0 alpha:1];
-  case DIAGRAM_COMBAT:return [NSColor colorWithCalibratedRed:1.0 green:0.62 blue:0.28 alpha:1];
-  case DIAGRAM_ACTION:return [NSColor colorWithCalibratedRed:0.42 green:0.86 blue:0.56 alpha:1];
-  case DIAGRAM_MENU:return [NSColor colorWithCalibratedRed:0.76 green:0.58 blue:1.0 alpha:1];
-  case DIAGRAM_SYSTEM:return [NSColor colorWithCalibratedRed:0.95 green:0.85 blue:0.40 alpha:1];
+
+static inline BOOL diagram_is_dark(NSView *view) {
+ if (@available(macOS 10.14, *)) {
+  NSAppearance *app = view ? view.effectiveAppearance : [NSApp effectiveAppearance];
+  NSAppearanceName match = [app bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+  return [match isEqualToString:NSAppearanceNameDarkAqua];
  }
- return [NSColor colorWithCalibratedWhite:0.62 alpha:1];
+ return YES;
 }
+
+static inline NSColor *diagram_color_for(int kind, BOOL dark) {
+ if (dark) {
+  switch(kind){
+   case DIAGRAM_MOVE:return [NSColor colorWithCalibratedRed:0.38 green:0.65 blue:1.0 alpha:1];
+   case DIAGRAM_COMBAT:return [NSColor colorWithCalibratedRed:1.0 green:0.62 blue:0.28 alpha:1];
+   case DIAGRAM_ACTION:return [NSColor colorWithCalibratedRed:0.42 green:0.86 blue:0.56 alpha:1];
+   case DIAGRAM_MENU:return [NSColor colorWithCalibratedRed:0.76 green:0.58 blue:1.0 alpha:1];
+   case DIAGRAM_SYSTEM:return [NSColor colorWithCalibratedRed:0.95 green:0.85 blue:0.40 alpha:1];
+  }
+  return [NSColor colorWithCalibratedWhite:0.62 alpha:1];
+ } else {
+  switch(kind){
+   case DIAGRAM_MOVE:return [NSColor colorWithCalibratedRed:0.10 green:0.46 blue:0.86 alpha:1];
+   case DIAGRAM_COMBAT:return [NSColor colorWithCalibratedRed:0.86 green:0.42 blue:0.10 alpha:1];
+   case DIAGRAM_ACTION:return [NSColor colorWithCalibratedRed:0.14 green:0.60 blue:0.26 alpha:1];
+   case DIAGRAM_MENU:return [NSColor colorWithCalibratedRed:0.54 green:0.28 blue:0.82 alpha:1];
+   case DIAGRAM_SYSTEM:return [NSColor colorWithCalibratedRed:0.76 green:0.54 blue:0.08 alpha:1];
+  }
+  return [NSColor colorWithCalibratedWhite:0.45 alpha:1];
+ }
+}
+
+static inline NSColor *diagram_color(int kind) {
+ return diagram_color_for(kind, YES);
+}
+
 static int diagram_kind(int action) {
  if(action<0)return DIAGRAM_NONE;
  if(action>=KEYMAP_MOVE_UP)return DIAGRAM_MOVE;
@@ -62,7 +88,7 @@ static NSString *diagram_action_short(int action) {
  }
  return @"";
 }
-/* The action's full name, as the list and the menus write it (settings_actions). */
+/* The action\x27s full name, as the list and the menus write it (settings_actions). */
 static NSString *diagram_action_name(int action) {
  int count;const SettingsAction *all=settings_actions(&count);
  for(int i=0;i<count;i++)if(all[i].action==action)return @(TOTK_UI(all[i].zh,all[i].en));
@@ -75,7 +101,8 @@ static NSString *diagram_missing(int pad) {
  NSMutableArray<NSString *> *names=[NSMutableArray array];
  int count;const SettingsAction *all=settings_actions(&count);
  for(int i=0;i<count;i++){
-  int a=all[i].action;if(a<0||(pad&&a>=KEYMAP_SWITCH_BUTTONS))continue;
+  int a=all[i].action;
+  if(a<0 || a>=KEYMAP_ACTIONS || (pad && a>=KEYMAP_SWITCH_BUTTONS)) continue;
   BOOL used=NO;
   if(pad){for(int p=0;p<CONTROLLER_BUTTONS;p++)used|=controller_map_target(map[p])==a;}
   else used=keys.slot[a][0]!=KEYMAP_NONE||keys.slot[a][1]!=KEYMAP_NONE;
@@ -91,37 +118,61 @@ static void diagram_text(NSString *s, NSRect r, CGFloat size, NSFontWeight weigh
  r.origin.y+=fmax(0,(r.size.height-b.size.height)/2);r.size.height=b.size.height+1;
  [s drawWithRect:r options:NSStringDrawingUsesLineFragmentOrigin attributes:at];
 }
-/* A shape filled and outlined in its action's kind; selected (the one being changed) gets a white outline. */
-static void diagram_shape(NSBezierPath *p, int action, BOOL selected, CGFloat fill) {
- [[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:1] setFill];[p fill];
- if(action>=0){[[diagram_color(diagram_kind(action)) colorWithAlphaComponent:fill] setFill];[p fill];[diagram_color(diagram_kind(action)) setStroke];}
- else [[NSColor colorWithCalibratedWhite:1 alpha:0.5] setStroke];
+/* A shape filled and outlined in its action\x27s kind; selected (the one being changed) gets a bold outline. */
+static void diagram_shape(NSBezierPath *p, int action, BOOL selected, CGFloat fill, BOOL dark) {
+ if(dark){
+  [[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:1] setFill];[p fill];
+ }else{
+  [[NSColor colorWithCalibratedWhite:0 alpha:0.04] setFill];[p fill];
+ }
+ if(action>=0){
+  NSColor *c=diagram_color_for(diagram_kind(action),dark);
+  [[c colorWithAlphaComponent:fill] setFill];[p fill];[c setStroke];
+ }else{
+  if(dark)[[NSColor colorWithCalibratedWhite:1 alpha:0.5] setStroke];
+  else [[NSColor colorWithCalibratedWhite:0 alpha:0.25] setStroke];
+ }
  p.lineWidth=1.3;[p stroke];
- if(selected){[[NSColor whiteColor] setStroke];p.lineWidth=2.6;[p stroke];}
+ if(selected){
+  [(dark?[NSColor whiteColor]:[NSColor blackColor]) setStroke];p.lineWidth=2.6;[p stroke];
+ }
 }
-static void diagram_legend(CGFloat x, CGFloat y) {
+static void diagram_legend(CGFloat x, CGFloat y, BOOL dark) {
  NSString *names[]={settings_text("移动和视角","Moving & camera"),settings_text("战斗","Combat"),settings_text("动作","Actions"),
   settings_text("菜单和十字键","Menus & d-pad"),settings_text("设置面板","Settings panel"),settings_text("未使用","Not used")};
  int kinds[]={DIAGRAM_MOVE,DIAGRAM_COMBAT,DIAGRAM_ACTION,DIAGRAM_MENU,DIAGRAM_SYSTEM,DIAGRAM_NONE};
  NSFont *font=[NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium];
+ NSColor *textCol=dark?[NSColor colorWithCalibratedWhite:0.75 alpha:1]:[NSColor secondaryLabelColor];
  for(int i=0;i<6;i++){
-  NSBezierPath *dot=[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x,y+3,14,10) xRadius:3 yRadius:3];NSColor *c=diagram_color(kinds[i]);
-  if(kinds[i]!=DIAGRAM_NONE){[[c colorWithAlphaComponent:0.25] setFill];[dot fill];[c setStroke];}else [[NSColor colorWithCalibratedWhite:1 alpha:0.3] setStroke];
-  [dot stroke];
+  NSBezierPath *dot=[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x,y+3,14,10) xRadius:3 yRadius:3];
+  NSColor *c=diagram_color_for(kinds[i],dark);
+  if(kinds[i]!=DIAGRAM_NONE){
+   [[c colorWithAlphaComponent:dark?0.25:0.20] setFill];[dot fill];[c setStroke];
+  }else{
+   if(dark){
+    [[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[dot fill];
+    [[NSColor colorWithCalibratedWhite:1 alpha:0.3] setStroke];
+   }else{
+    [[NSColor colorWithCalibratedWhite:0 alpha:0.03] setFill];[dot fill];
+    [[NSColor colorWithCalibratedWhite:0 alpha:0.25] setStroke];
+   }
+  }
+  dot.lineWidth=1.0;[dot stroke];
   CGFloat w=[names[i] sizeWithAttributes:@{NSFontAttributeName:font}].width;
-  diagram_text(names[i],NSMakeRect(x+19,y,w+4,16),10.5,NSFontWeightMedium,[NSColor colorWithCalibratedWhite:0.75 alpha:1],NSTextAlignmentLeft);
+  diagram_text(names[i],NSMakeRect(x+19,y,w+4,16),10.5,NSFontWeightMedium,textCol,NSTextAlignmentLeft);
   x+=19+w+22;
  }
 }
-static void diagram_missing_line(int pad, NSRect r) {
+static void diagram_missing_line(int pad, NSRect r, BOOL dark) {
  NSString *missing=diagram_missing(pad);
- if(missing)diagram_text(missing,r,10.5,NSFontWeightMedium,[NSColor colorWithCalibratedRed:1 green:0.75 blue:0.45 alpha:1],NSTextAlignmentLeft);
+ NSColor *c=dark?[NSColor colorWithCalibratedRed:1 green:0.75 blue:0.45 alpha:1]:[NSColor colorWithCalibratedRed:0.85 green:0.45 blue:0.10 alpha:1];
+ if(missing)diagram_text(missing,r,10.5,NSFontWeightMedium,c,NSTextAlignmentLeft);
 }
 
 /* ---- Keyboard and mouse ---- */
 typedef struct { NSRect rect; int code; const char *label; } DiagramKey;
 enum { DIAGRAM_KEYS_MAX = 96 };
-#define DIAGRAM_U 44.0     /* one key's width */
+#define DIAGRAM_U 44.0     /* one key\x27s width */
 #define DIAGRAM_X0 8.0
 #define DIAGRAM_Y0 30.0
 /* The keys of a US Mac keyboard where they are drawn (rows of key widths; the arrows at half height). */
@@ -131,7 +182,7 @@ static int diagram_keyboard(DiagramKey out[DIAGRAM_KEYS_MAX]) {
   {"F7",98,1.0833},{"F8",100,1.0833},{"F9",101,1.0833},{"F10",109,1.0833},{"F11",103,1.0833},{"F12",111,1.0833}};
  static const K r1[]={{"`",50,1},{"1",18,1},{"2",19,1},{"3",20,1},{"4",21,1},{"5",23,1},{"6",22,1},{"7",26,1},{"8",28,1},{"9",25,1},{"0",29,1},{"-",27,1},{"=",24,1},{"delete",51,1.5}};
  static const K r2[]={{"tab",48,1.5},{"Q",12,1},{"W",13,1},{"E",14,1},{"R",15,1},{"T",17,1},{"Y",16,1},{"U",32,1},{"I",34,1},{"O",31,1},{"P",35,1},{"[",33,1},{"]",30,1},{"\\",42,1}};
- static const K r3[]={{"caps lock",57,1.75},{"A",0,1},{"S",1,1},{"D",2,1},{"F",3,1},{"G",5,1},{"H",4,1},{"J",38,1},{"K",40,1},{"L",37,1},{";",41,1},{"'",39,1},{"return",36,1.75}};
+ static const K r3[]={{"caps lock",57,1.75},{"A",0,1},{"S",1,1},{"D",2,1},{"F",3,1},{"G",5,1},{"H",4,1},{"J",38,1},{"K",40,1},{"L",37,1},{";",41,1},{"\x27",39,1},{"return",36,1.75}};
  static const K r4[]={{"shift",56,2.25},{"Z",6,1},{"X",7,1},{"C",8,1},{"V",9,1},{"B",11,1},{"N",45,1},{"M",46,1},{",",43,1},{".",47,1},{"/",44,1},{"shift",60,2.25}};
  static const K r5[]={{"fn",63,1},{"control",59,1},{"option",58,1},{"command",55,1.25},{"space",49,5},{"command",54,1.25},{"option",61,1}};
  const struct { const K *keys; int n; double h; } rows[]={{fn,13,0.72},{r1,14,1},{r2,14,1},{r3,13,1},{r4,12,1},{r5,7,1}};
@@ -148,7 +199,7 @@ static int diagram_keyboard(DiagramKey out[DIAGRAM_KEYS_MAX]) {
 }
 #define DIAGRAM_HALF_H (0.6*DIAGRAM_U)   /* the arrows are drawn at half height */
 #define DIAGRAM_HALF_NAME_W 13.0
-/* A half-height key's action on one line (without a closing arrow that repeats the key's own: ↑ 视角, not ↑ 视角 ↑), or nil
+/* A half-height key\x27s action on one line (without a closing arrow that repeats the key\x27s own: ↑ 视角, not ↑ 视角 ↑), or nil
    when the key drives nothing; and where it is written. */
 static NSString *diagram_half_action(const KeyMap *m, DiagramKey k) {
  if(k.code==KEYMAP_SETTINGS_KEY)return settings_text("设置","Settings");
@@ -164,7 +215,7 @@ static NSRect diagram_half_action_rect(NSRect r) { return NSMakeRect(r.origin.x+
 enum { DIAGRAM_MOUSE_W = 92, DIAGRAM_MOUSE_H = 150, DIAGRAM_MOUSE_SPLIT = 58 };
 
 @interface TOTKKeyboardDiagram:NSView
-@property int selected;   /* the input whose menu is open (white outline), -1 none */
+@property int selected;   /* the input whose menu is open (bold outline), -1 none */
 @property(copy) void (^pick)(int input, NSRect at);
 -(int)inputAt:(NSPoint)point rect:(NSRect *)rect;
 -(NSRect)rectOfInput:(int)input;
@@ -172,7 +223,8 @@ enum { DIAGRAM_MOUSE_W = 92, DIAGRAM_MOUSE_H = 150, DIAGRAM_MOUSE_SPLIT = 58 };
 @implementation TOTKKeyboardDiagram
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame]))self.selected=-1;return self;}
 -(BOOL)isFlipped{return YES;}
-/* The mouse's parts, where a click selects them: 0 left, 1 right, 2 the wheel, 3 and 4 the side buttons; then the callout lines. */
+-(void)viewDidChangeEffectiveAppearance{[super viewDidChangeEffectiveAppearance];[self setNeedsDisplay:YES];}
+/* The mouse\x27s parts, where a click selects them: 0 left, 1 right, 2 the wheel, 3 and 4 the side buttons; then the callout lines. */
 -(NSRect)mousePart:(int)i{
  CGFloat x=DIAGRAM_MOUSE_X,y=DIAGRAM_Y0,w=DIAGRAM_MOUSE_W;
  switch(i){
@@ -205,14 +257,30 @@ enum { DIAGRAM_MOUSE_W = 92, DIAGRAM_MOUSE_H = 150, DIAGRAM_MOUSE_SPLIT = 58 };
 }
 -(void)drawKey:(DiagramKey)k map:(const KeyMap *)m halfSize:(CGFloat)halfSize{
  int a=keymap_action_of(m,k.code,NULL),settings=k.code==KEYMAP_SETTINGS_KEY,bindable=keymap_bindable(k.code),kind=settings?DIAGRAM_SYSTEM:diagram_kind(a);
- NSRect r=k.rect;NSBezierPath *path=[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r,2,2) xRadius:5 yRadius:5];NSColor *c=diagram_color(kind);
- if(kind!=DIAGRAM_NONE){[[c colorWithAlphaComponent:0.20] setFill];[path fill];[[c colorWithAlphaComponent:0.95] setStroke];path.lineWidth=1.4;}
- else{[[NSColor colorWithCalibratedWhite:1 alpha:bindable?0.30:0.14] setStroke];path.lineWidth=1;}
+ BOOL dark=diagram_is_dark(self);
+ NSRect r=k.rect;NSBezierPath *path=[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(r,2,2) xRadius:5 yRadius:5];
+ NSColor *c=diagram_color_for(kind,dark);
+ if(kind!=DIAGRAM_NONE){
+  [[c colorWithAlphaComponent:dark?0.20:0.14] setFill];[path fill];
+  [[c colorWithAlphaComponent:0.95] setStroke];path.lineWidth=1.4;
+ }else{
+  if(dark){
+   if(bindable){[[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[path fill];}
+   [[NSColor colorWithCalibratedWhite:1 alpha:bindable?0.30:0.14] setStroke];
+  }else{
+   if(bindable){[[NSColor colorWithCalibratedWhite:0 alpha:0.03] setFill];[path fill];}
+   [[NSColor colorWithCalibratedWhite:0 alpha:bindable?0.22:0.10] setStroke];
+  }
+  path.lineWidth=1;
+ }
  [path stroke];
- if(k.code==self.selected){[[NSColor whiteColor] setStroke];path.lineWidth=2.6;[path stroke];}
- NSColor *labelColor=[NSColor colorWithCalibratedWhite:1 alpha:kind!=DIAGRAM_NONE?0.95:bindable?0.55:0.28];
- NSString *name=@(k.label);CGFloat size=9.5;   /* long names in narrow keys (control, command, option) a little smaller */
- while(size>7&&[name sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:size weight:NSFontWeightSemibold]}].width>r.size.width-10)size-=0.5;
+ if(k.code==self.selected){
+  [(dark?[NSColor whiteColor]:[NSColor blackColor]) setStroke];path.lineWidth=2.6;[path stroke];
+ }
+ NSColor *labelColor=dark?[NSColor colorWithCalibratedWhite:1 alpha:kind!=DIAGRAM_NONE?0.95:bindable?0.65:0.35]
+                         :[NSColor colorWithCalibratedWhite:0 alpha:kind!=DIAGRAM_NONE?0.85:bindable?0.65:0.30];
+ NSString *name=@(k.label);CGFloat size=11.0;   /* long names in narrow keys (control, command, option) a little smaller */
+ while(size>8.5&&[name sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:size weight:NSFontWeightSemibold]}].width>r.size.width-8)size-=0.5;
  if(kind==DIAGRAM_NONE){diagram_text(name,NSInsetRect(r,3,3),size,NSFontWeightMedium,labelColor,NSTextAlignmentCenter);return;}
  if(r.size.height<DIAGRAM_HALF_H){   /* the half-height arrows: the key and its action side by side on one line */
   NSRect at=diagram_half_action_rect(r);
@@ -220,57 +288,81 @@ enum { DIAGRAM_MOUSE_W = 92, DIAGRAM_MOUSE_H = 150, DIAGRAM_MOUSE_SPLIT = 58 };
   diagram_text(diagram_half_action(m,k),at,halfSize,NSFontWeightBold,c,NSTextAlignmentCenter);
   return;
  }
- diagram_text(name,NSMakeRect(r.origin.x+5,r.origin.y+3,r.size.width-10,12),size,NSFontWeightSemibold,labelColor,NSTextAlignmentLeft);
- diagram_text(settings?settings_text("设置","Settings"):diagram_action_short(a),NSMakeRect(r.origin.x+3,r.origin.y+14,r.size.width-6,r.size.height-17),
-  8.6,NSFontWeightBold,c,NSTextAlignmentCenter);
+ diagram_text(name,NSMakeRect(r.origin.x+4,r.origin.y+3,r.size.width-8,13),size,NSFontWeightSemibold,labelColor,NSTextAlignmentLeft);
+ diagram_text(settings?settings_text("设置","Settings"):diagram_action_short(a),NSMakeRect(r.origin.x+2,r.origin.y+15,r.size.width-4,r.size.height-17),
+  10.5,NSFontWeightBold,c,NSTextAlignmentCenter);
 }
 -(void)drawRect:(NSRect)dirty{
  (void)dirty;KeyMap m;runtime_keymap_get(&m);
- NSColor *heading=[NSColor colorWithCalibratedWhite:0.85 alpha:1];
+ BOOL dark=diagram_is_dark(self);
+ NSColor *heading=dark?[NSColor colorWithCalibratedWhite:0.85 alpha:1]:[NSColor labelColor];
  NSBezierPath *body=[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(DIAGRAM_X0-6,DIAGRAM_Y0-6,14.5*DIAGRAM_U+12,DIAGRAM_KEYBOARD_H+12) xRadius:12 yRadius:12];
- [[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[body fill];[[NSColor colorWithCalibratedWhite:1 alpha:0.22] setStroke];body.lineWidth=1.2;[body stroke];
+ if(dark){
+  [[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[body fill];
+  [[NSColor colorWithCalibratedWhite:1 alpha:0.22] setStroke];
+ }else{
+  [[NSColor colorWithCalibratedWhite:0 alpha:0.03] setFill];[body fill];
+  [[NSColor colorWithCalibratedWhite:0 alpha:0.15] setStroke];
+ }
+ body.lineWidth=1.2;[body stroke];
  DiagramKey keys[DIAGRAM_KEYS_MAX];int n=diagram_keyboard(keys);
- CGFloat half=8.6;   /* one size for the half-height arrows' actions: the largest at which all of them fit */
+ CGFloat half=9.8;   /* one size for the half-height arrows\x27 actions: the largest at which all of them fit */
  for(int i=0;i<n;i++){NSString *t=keys[i].rect.size.height<DIAGRAM_HALF_H?diagram_half_action(&m,keys[i]):nil;CGFloat w=diagram_half_action_rect(keys[i].rect).size.width;
-  while(t&&half>6.5&&[t sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:half weight:NSFontWeightBold]}].width>w)half-=0.5;}
+  while(t&&half>7.5&&[t sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:half weight:NSFontWeightBold]}].width>w)half-=0.5;}
  for(int i=0;i<n;i++)[self drawKey:keys[i] map:&m halfSize:half];
  diagram_text(settings_text("键盘","Keyboard"),NSMakeRect(DIAGRAM_X0,4,300,18),12,NSFontWeightSemibold,heading,NSTextAlignmentLeft);
  [self drawMouse:&m];
  CGFloat y=DIAGRAM_Y0+DIAGRAM_KEYBOARD_H+20;
- diagram_legend(DIAGRAM_X0,y);
- diagram_missing_line(0,NSMakeRect(DIAGRAM_X0,y+22,self.bounds.size.width-2*DIAGRAM_X0,16));
+ diagram_legend(DIAGRAM_X0,y,dark);
+ diagram_missing_line(0,NSMakeRect(DIAGRAM_X0,y+22,self.bounds.size.width-2*DIAGRAM_X0,16),dark);
 }
 -(void)drawMouse:(const KeyMap *)m{
+ BOOL dark=diagram_is_dark(self);
  CGFloat x=DIAGRAM_MOUSE_X,y=DIAGRAM_Y0,w=DIAGRAM_MOUSE_W,cx=x+w/2;
+ NSColor *heading=dark?[NSColor colorWithCalibratedWhite:0.85 alpha:1]:[NSColor labelColor];
  diagram_text(runtime_mouse_enabled()?settings_text("鼠标","Mouse"):settings_text("鼠标（鼠标操作未开）","Mouse (mouse mode is off)"),
-  NSMakeRect(x,4,260,18),12,NSFontWeightSemibold,[NSColor colorWithCalibratedWhite:0.85 alpha:1],NSTextAlignmentLeft);
+  NSMakeRect(x,4,260,18),12,NSFontWeightSemibold,heading,NSTextAlignmentLeft);
  int act[5];for(int i=0;i<5;i++)act[i]=keymap_action_of(m,KEYMAP_MOUSE_FIRST+i,NULL);
  NSBezierPath *body=[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x,y+4,w,DIAGRAM_MOUSE_H) xRadius:w/2 yRadius:w/2];
+ if(dark){
+  [[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[body fill];
+ }else{
+  [[NSColor colorWithCalibratedWhite:0 alpha:0.03] setFill];[body fill];
+ }
  [NSGraphicsContext saveGraphicsState];[body addClip];
- for(int i=0;i<2;i++)if(act[i]>=0){[[diagram_color(diagram_kind(act[i])) colorWithAlphaComponent:0.22] setFill];NSRectFill(NSMakeRect(i?cx:x,y,w/2,DIAGRAM_MOUSE_SPLIT+4));}
- for(int i=0;i<2;i++)if(self.selected==KEYMAP_MOUSE_FIRST+i){[[NSColor colorWithCalibratedWhite:1 alpha:0.25] setFill];NSRectFill(NSMakeRect(i?cx:x,y,w/2,DIAGRAM_MOUSE_SPLIT+4));}
+ for(int i=0;i<2;i++)if(act[i]>=0){
+  [[diagram_color_for(diagram_kind(act[i]),dark) colorWithAlphaComponent:dark?0.22:0.15] setFill];
+  NSRectFill(NSMakeRect(i?cx:x,y,w/2,DIAGRAM_MOUSE_SPLIT+4));
+ }
+ for(int i=0;i<2;i++)if(self.selected==KEYMAP_MOUSE_FIRST+i){
+  [[NSColor colorWithCalibratedWhite:dark?1:0 alpha:dark?0.25:0.12] setFill];
+  NSRectFill(NSMakeRect(i?cx:x,y,w/2,DIAGRAM_MOUSE_SPLIT+4));
+ }
  [NSGraphicsContext restoreGraphicsState];
- [[NSColor colorWithCalibratedWhite:1 alpha:0.55] setStroke];body.lineWidth=1.4;[body stroke];
+ [[NSColor colorWithCalibratedWhite:dark?1:0 alpha:dark?0.55:0.25] setStroke];body.lineWidth=1.4;[body stroke];
  NSBezierPath *lines=[NSBezierPath bezierPath];
  [lines moveToPoint:NSMakePoint(cx,y+4)];[lines lineToPoint:NSMakePoint(cx,y+4+DIAGRAM_MOUSE_SPLIT)];
  [lines moveToPoint:NSMakePoint(x+1,y+4+DIAGRAM_MOUSE_SPLIT)];
  [lines curveToPoint:NSMakePoint(x+w-1,y+4+DIAGRAM_MOUSE_SPLIT) controlPoint1:NSMakePoint(x+25,y+DIAGRAM_MOUSE_SPLIT+12) controlPoint2:NSMakePoint(x+w-25,y+DIAGRAM_MOUSE_SPLIT+12)];
- lines.lineWidth=1.2;[lines stroke];
- diagram_shape([NSBezierPath bezierPathWithRoundedRect:NSMakeRect(cx-6,y+18,12,26) xRadius:6 yRadius:6],act[2],self.selected==KEYMAP_MOUSE_FIRST+2,0.5);
- for(int i=0;i<2;i++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x-4,y+74+i*24,8,20) xRadius:3 yRadius:3],act[3+i],self.selected==KEYMAP_MOUSE_FIRST+3+i,0.5);
+ lines.lineWidth=1.2;
+ [[NSColor colorWithCalibratedWhite:dark?1:0 alpha:dark?0.55:0.22] setStroke];
+ [lines stroke];
+ diagram_shape([NSBezierPath bezierPathWithRoundedRect:NSMakeRect(cx-6,y+18,12,26) xRadius:6 yRadius:6],act[2],self.selected==KEYMAP_MOUSE_FIRST+2,0.5,dark);
+ for(int i=0;i<2;i++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x-4,y+74+i*24,8,20) xRadius:3 yRadius:3],act[3+i],self.selected==KEYMAP_MOUSE_FIRST+3+i,0.5,dark);
  /* callouts: left click, wheel click, right click, the side buttons, moving the mouse */
  struct { NSPoint at; int part; } call[]={{{x+20,y+30},0},{{cx,y+46},2},{{x+w-20,y+30},1},{{x,y+84},3},{{x,y+108},4},{{cx,y+130},-1}};
  for(int i=0;i<6;i++){
   NSRect row=[self calloutRow:i];int a=call[i].part<0?KEYMAP_CAMERA_UP:act[call[i].part];
-  NSColor *c=a>=0?diagram_color(diagram_kind(a)):[NSColor colorWithCalibratedWhite:0.6 alpha:1];
+  NSColor *c=a>=0?diagram_color_for(diagram_kind(a),dark):(dark?[NSColor colorWithCalibratedWhite:0.6 alpha:1]:[NSColor secondaryLabelColor]);
   NSBezierPath *leader=[NSBezierPath bezierPath];[leader moveToPoint:call[i].at];
   [leader lineToPoint:NSMakePoint(x+w+8,row.origin.y+12)];[leader lineToPoint:NSMakePoint(row.origin.x-4,row.origin.y+12)];
-  [[c colorWithAlphaComponent:0.6] setStroke];leader.lineWidth=1;[leader stroke];
+  [[c colorWithAlphaComponent:dark?0.6:0.5] setStroke];leader.lineWidth=1;[leader stroke];
   [c setFill];[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(call[i].at.x-2.5,call[i].at.y-2.5,5,5)] fill];
   NSString *name=call[i].part<0?settings_text("移动鼠标","Move the mouse"):settings_input_text(KEYMAP_MOUSE_FIRST+call[i].part);
-  diagram_text(name,NSMakeRect(row.origin.x,row.origin.y,row.size.width,12),9.5,NSFontWeightMedium,[NSColor colorWithCalibratedWhite:0.7 alpha:1],NSTextAlignmentLeft);
+  NSColor *nameCol=dark?[NSColor colorWithCalibratedWhite:0.75 alpha:1]:[NSColor secondaryLabelColor];
+  diagram_text(name,NSMakeRect(row.origin.x,row.origin.y,row.size.width,13),10.5,NSFontWeightMedium,nameCol,NSTextAlignmentLeft);
   NSString *what=call[i].part<0?settings_text("视角","Camera"):a>=0?diagram_action_name(a):@"—";
-  diagram_text(what,NSMakeRect(row.origin.x,row.origin.y+12,row.size.width,14),11,NSFontWeightSemibold,c,NSTextAlignmentLeft);
+  diagram_text(what,NSMakeRect(row.origin.x,row.origin.y+13,row.size.width,15),12.0,NSFontWeightBold,c,NSTextAlignmentLeft);
  }
 }
 @end
@@ -317,6 +409,7 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
 @implementation TOTKControllerDiagram
 -(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame]))self.selected=-1;return self;}
 -(BOOL)isFlipped{return YES;}
+-(void)viewDidChangeEffectiveAppearance{[super viewDidChangeEffectiveAppearance];[self setNeedsDisplay:YES];}
 -(NSArray<NSNumber *> *)order{
  DiagramPad d=diagram_pad(self.bounds,settings_pad_family());NSMutableArray<NSNumber *> *o=[NSMutableArray array];
  for(int s=0;s<2;s++)for(int i=0;i<d.count[s];i++)if(d.calls[s][i].physical>=0)[o addObject:@(d.calls[s][i].physical)];
@@ -355,10 +448,11 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
  (void)dirty;int family=settings_pad_family();BOOL ps=family==GAMEPAD_TYPE_PLAYSTATION;
  uint16_t map[CONTROLLER_BUTTONS];uint8_t modes[CONTROLLER_BUTTONS];runtime_controller_map_get(map,modes);
  DiagramPad d=diagram_pad(self.bounds,family);CGFloat cx=d.cx,y0=d.y0;
- NSColor *line=[NSColor colorWithCalibratedWhite:1 alpha:0.55];
+ BOOL dark=diagram_is_dark(self);
+ NSColor *line=dark?[NSColor colorWithCalibratedWhite:1 alpha:0.55]:[NSColor colorWithCalibratedWhite:0 alpha:0.25];
  int sel=self.selected;
 #define TARGET(p) controller_map_target(map[p])
- for(int p=6;p<=9;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:p>=8?12:10 yRadius:p>=8?12:10],TARGET(p),sel==p,0.25);
+ for(int p=6;p<=9;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:p>=8?12:10 yRadius:p>=8?12:10],TARGET(p),sel==p,0.25,dark);
  /* the body: one outline with two grips */
  NSBezierPath *b=[NSBezierPath bezierPath];
  [b moveToPoint:NSMakePoint(cx-120,y0)];[b lineToPoint:NSMakePoint(cx+120,y0)];
@@ -370,42 +464,49 @@ static NSRect diagram_call_row(const DiagramPad *d, int side, int i) {
  [b curveToPoint:NSMakePoint(cx-178,y0+150) controlPoint1:NSMakePoint(cx-140,y0+222) controlPoint2:NSMakePoint(cx-176,y0+205)];
  [b curveToPoint:NSMakePoint(cx-120,y0) controlPoint1:NSMakePoint(cx-180,y0+80) controlPoint2:NSMakePoint(cx-165,y0)];
  [b closePath];
- [[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:1] setFill];[b fill];[[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[b fill];
+ if(dark){
+  [[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:1] setFill];[b fill];[[NSColor colorWithCalibratedWhite:1 alpha:0.03] setFill];[b fill];
+ }else{
+  [[NSColor colorWithCalibratedWhite:0.92 alpha:1] setFill];[b fill];[[NSColor colorWithCalibratedWhite:0 alpha:0.04] setFill];[b fill];
+ }
  [line setStroke];b.lineWidth=1.5;[b stroke];
- if(ps)diagram_shape([NSBezierPath bezierPathWithRoundedRect:d.touchpad xRadius:8 yRadius:8],TARGET(16),sel==16,0.18);
+ if(ps)diagram_shape([NSBezierPath bezierPathWithRoundedRect:d.touchpad xRadius:8 yRadius:8],TARGET(16),sel==16,0.18,dark);
  NSPoint sticks[2]={d.ls,d.rs};
  for(int i=0;i<2;i++){
-  NSBezierPath *ring=[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(sticks[i].x-24,sticks[i].y-24,48,48)];[diagram_color(DIAGRAM_MOVE) setStroke];ring.lineWidth=1.3;[ring stroke];
-  diagram_shape([NSBezierPath bezierPathWithOvalInRect:[self shapeOf:4+i pad:&d]],TARGET(4+i),sel==4+i,0.25);
+  NSBezierPath *ring=[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(sticks[i].x-24,sticks[i].y-24,48,48)];
+  [diagram_color_for(DIAGRAM_MOVE,dark) setStroke];ring.lineWidth=1.3;[ring stroke];
+  diagram_shape([NSBezierPath bezierPathWithOvalInRect:[self shapeOf:4+i pad:&d]],TARGET(4+i),sel==4+i,0.25,dark);
  }
- for(int p=12;p<=15;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:3 yRadius:3],TARGET(p),sel==p,0.3);
- for(int p=0;p<4;p++){NSRect r=[self shapeOf:p pad:&d];diagram_shape([NSBezierPath bezierPathWithOvalInRect:r],TARGET(p),sel==p,0.3);
-  diagram_text(settings_pad_button(p,family),r,10,NSFontWeightBold,NSColor.whiteColor,NSTextAlignmentCenter);}
- for(int p=10;p<=11;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:6 yRadius:6],TARGET(p),sel==p,0.3);
+ for(int p=12;p<=15;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:3 yRadius:3],TARGET(p),sel==p,0.3,dark);
+ for(int p=0;p<4;p++){
+  NSRect r=[self shapeOf:p pad:&d];diagram_shape([NSBezierPath bezierPathWithOvalInRect:r],TARGET(p),sel==p,0.3,dark);
+  diagram_text(settings_pad_button(p,family),r,10,NSFontWeightBold,dark?NSColor.whiteColor:NSColor.labelColor,NSTextAlignmentCenter);
+ }
+ for(int p=10;p<=11;p++)diagram_shape([NSBezierPath bezierPathWithRoundedRect:[self shapeOf:p pad:&d] xRadius:6 yRadius:6],TARGET(p),sel==p,0.3,dark);
  /* callouts */
- NSColor *dim=[NSColor colorWithCalibratedWhite:0.7 alpha:1];
+ NSColor *dim=dark?[NSColor colorWithCalibratedWhite:0.7 alpha:1]:[NSColor secondaryLabelColor];
  for(int s=0;s<2;s++)for(int i=0;i<d.count[s];i++){
   DiagramCall c=d.calls[s][i];NSRect row=diagram_call_row(&d,s,i);int a=c.stick?KEYMAP_MOVE_UP:TARGET(c.physical);
-  BOOL panel=!c.stick&&c.physical>=0&&c.physical==runtime_gamepad_settings_button();   /* the settings panel's button */
-  NSColor *col=panel?diagram_color(DIAGRAM_SYSTEM):a>=0?diagram_color(diagram_kind(a)):[NSColor colorWithCalibratedWhite:0.6 alpha:1];
+  BOOL panel=!c.stick&&c.physical>=0&&c.physical==runtime_gamepad_settings_button();   /* the settings panel\x27s button */
+  NSColor *col=panel?diagram_color_for(DIAGRAM_SYSTEM,dark):a>=0?diagram_color_for(diagram_kind(a),dark):(dark?[NSColor colorWithCalibratedWhite:0.6 alpha:1]:[NSColor secondaryLabelColor]);
   CGFloat edge=s?row.origin.x-8:NSMaxX(row)+8,elbow=s?edge-18:edge+18;
   NSBezierPath *leader=[NSBezierPath bezierPath];[leader moveToPoint:c.at];
   [leader lineToPoint:NSMakePoint(elbow,row.origin.y+13)];[leader lineToPoint:NSMakePoint(edge,row.origin.y+13)];
-  [[col colorWithAlphaComponent:c.physical==sel&&sel>=0?1:0.45] setStroke];leader.lineWidth=c.physical==sel&&sel>=0?2:1;[leader stroke];
+  [[col colorWithAlphaComponent:c.physical==sel&&sel>=0?1:(dark?0.45:0.55)] setStroke];leader.lineWidth=c.physical==sel&&sel>=0?2:1;[leader stroke];
   [col setFill];[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(c.at.x-2.5,c.at.y-2.5,5,5)] fill];
   NSString *button=c.stick?(c.stick==1?settings_text("左摇杆","Left stick"):settings_text("右摇杆","Right stick")):
    c.physical==4||c.physical==5?[settings_pad_button(c.physical,family) stringByAppendingString:settings_text("（按下）"," (press)")]:settings_pad_button(c.physical,family);
   NSString *what=panel?settings_text("设置面板","Settings panel"):c.stick?(c.stick==1?settings_text("移动","Move"):settings_text("视角","Camera")):a>=0?diagram_action_name(a):@"—";
   NSTextAlignment al=s?NSTextAlignmentLeft:NSTextAlignmentRight;
   if(c.physical==sel&&sel>=0){NSBezierPath *hl=[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(row,-4,-1) xRadius:5 yRadius:5];
-   [[NSColor colorWithCalibratedWhite:1 alpha:0.10] setFill];[hl fill];[[NSColor whiteColor] setStroke];hl.lineWidth=1.5;[hl stroke];}
-  diagram_text(button,NSMakeRect(row.origin.x,row.origin.y,row.size.width,12),9.5,NSFontWeightMedium,dim,al);
-  diagram_text(what,NSMakeRect(row.origin.x,row.origin.y+12,row.size.width,14),11,NSFontWeightSemibold,col,al);
+   [[NSColor colorWithCalibratedWhite:dark?1:0 alpha:dark?0.10:0.06] setFill];[hl fill];[(dark?[NSColor whiteColor]:[NSColor blackColor]) setStroke];hl.lineWidth=1.5;[hl stroke];}
+  diagram_text(button,NSMakeRect(row.origin.x,row.origin.y,row.size.width,13),10.5,NSFontWeightMedium,dim,al);
+  diagram_text(what,NSMakeRect(row.origin.x,row.origin.y+13,row.size.width,15),12.0,NSFontWeightBold,col,al);
  }
 #undef TARGET
  static const char *const families[GAMEPAD_TYPE_COUNT]={"","Xbox","PlayStation","Switch"};
  diagram_text([NSString stringWithFormat:@(TOTK_UI("手柄（%s） · 设置面板：%@","Controller (%s) · settings panel: %@")),families[family],settings_panel_pad_text(family)],
   NSMakeRect(cx-150,y0+226,300,16),11,NSFontWeightSemibold,dim,NSTextAlignmentCenter);
- diagram_missing_line(1,NSMakeRect(8,y0+252,self.bounds.size.width-16,16));
+ diagram_missing_line(1,NSMakeRect(8,y0+252,self.bounds.size.width-16,16),dark);
 }
 @end

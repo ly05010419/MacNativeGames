@@ -97,6 +97,10 @@ static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
 static uint64_t g_next_id = 0x51;
 static thr_t *g_wait;          // 全部在等的线程（锁 / 条件 / 地址 / 同步） | All waiting threads (lock / condition / address / synchronization)
+static int g_pause_requested = 0;
+static int g_threads_paused = 0;
+static pthread_cond_t g_pause_cv = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t g_pause_ack_cv = PTHREAD_COND_INITIALIZER;
 
 #ifdef GAME_BOTW
 /* Handles as Horizon encodes them (Atmosphere KHandleTable): the slot in bits 0-14 and, in bits 15-29, a linear id that
@@ -282,7 +286,12 @@ static void core_grant(int c) {   // holding G: give free core c to the best wai
 static void core_put(thr_t *t) {   // holding G
     if (t->cur_core < 0) return;
     if (dm_core_diag_enabled() && t->core_since) t->core_held_ns += now_ns() - t->core_since;   // core_table
-    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL; core_grant(c);
+    int c = t->cur_core; t->cur_core = -1; t->preempt = 0; g_core_owner[c] = NULL;
+    if (g_pause_requested || g_threads_paused) {
+        pthread_cond_broadcast(&g_pause_ack_cv);
+    } else {
+        core_grant(c);
+    }
 }
 #ifdef GAME_BOTW
 /* Asynchronous preemption (Breath of the Wild, botw.md). Horizon switches a core to a better thread the moment that thread
@@ -348,6 +357,7 @@ static void core_unqueue(thr_t *t) {   // holding G: out of the core wait queue,
    Holding G. */
 static int g_wake_queue_on = -1;   /* TOTK_WAKE_QUEUE=0: a woken thread queues only when it reaches core_take (old) */
 static void wake_queue(thr_t *t) {
+    if (g_pause_requested || g_threads_paused) return;
     if (g_wake_queue_on < 0) { const char *e = getenv("TOTK_WAKE_QUEUE"); g_wake_queue_on = !(e && !strcmp(e, "0")); fprintf(stderr, "[threads] woken threads compete for a core at once: %s\n", g_wake_queue_on ? "on" : "off (TOTK_WAKE_QUEUE=0)"); }
     if (!g_wake_queue_on || !cores_enabled() || t->cur_core >= 0 || t->cqueued || !t->started || t->exited) return;
     for (int i = 0; i < NCORE; i++) if (core_allowed(t, i) && !g_core_owner[i]) return;   /* a free core: core_take takes it */
@@ -474,7 +484,8 @@ static int totk_kick(thr_t *t) {   // holding G, t waiting: mark (and signal) th
 static void totk_preempt_signal(int sig, siginfo_t *si, void *context) {
     (void)sig; (void)si;
     thr_t *t = me_or_null();
-    if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) || t->cur_core < 0) return;
+    if (!t || t->cur_core < 0) return;
+    if (!__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_pause_requested, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_threads_paused, __ATOMIC_ACQUIRE)) return;
     uint64_t pc = (uint64_t)((ucontext_t *)context)->uc_mcontext->__ss.__pc;
     uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
     if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) {
@@ -489,13 +500,25 @@ static void totk_preempt_signal(int sig, siginfo_t *si, void *context) {
       if (tlr && tlr[0x100 / 2]) { tlr[0x102 / 2] = 1; __atomic_fetch_add(&g_ap_deferred, 1, __ATOMIC_RELAXED); return; } }
     int saved = errno;
     pthread_mutex_lock(&G);
-    if (t->cur_core >= 0 && totk_should_yield(t)) { core_put(t); core_take(t); g_ap_taken++; }
-    else t->preempt = 0;
+    if (t->cur_core >= 0) {
+        if (g_pause_requested || g_threads_paused) {
+            core_put(t);
+            while (g_pause_requested || g_threads_paused) pthread_cond_wait(&g_pause_cv, &G);
+            core_take(t);
+            g_ap_taken++;
+        } else if (totk_should_yield(t)) {
+            core_put(t); core_take(t); g_ap_taken++;
+        } else {
+            t->preempt = 0;
+        }
+    } else t->preempt = 0;
     pthread_mutex_unlock(&G);
     errno = saved;
 }
 #endif
 static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask is handed over
+    if (!cores_enabled() || t->cur_core >= 0) return;
+    while (g_threads_paused || g_pause_requested) pthread_cond_wait(&g_pause_cv, &G);
     if (!cores_enabled() || t->cur_core >= 0) return;
     if (!(t->mask & ((1u << NCORE) - 1))) die("thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
     int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
@@ -508,6 +531,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     int reported = 0, tlc = tl_on();
     if (tlc) totk_tl(TLK_CW_IN, 0, 0);
     while (t->cur_core < 0) {   // kicked owners are signalled again every millisecond; otherwise look again every 20 ms (starvation, inheritance)
+        if (g_threads_paused || g_pause_requested) { pthread_cond_wait(&g_pause_cv, &G); continue; }
         struct timespec again = {0, core_kick(t) ? 1000000 : 20000000};
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && t->cur_core < 0 && t->cwait_ns && now_ns() - t->cwait_ns >= STARVE_NS) { if (core_diag_on()) core_wait_report(t, t->cwait_ns); reported = 1; }
@@ -519,6 +543,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
     int reported = 0;
     while (t->cur_core < 0) {   // the owners it beats are marked (and, with the asynchronous preemption, signalled again every millisecond)
+        if (g_threads_paused || g_pause_requested) { pthread_cond_wait(&g_pause_cv, &G); continue; }
         int kick = totk_kick(t) && totk_ap_on();
         if (!kick && (reported || !core_diag_on())) { pthread_cond_wait(&t->cv, &G); continue; }
         struct timespec again = {0, kick ? 1000000 : CORE_DIAG_NS};   // TOTK_CORE_DIAG: one look at the owners once a wait gets long
@@ -534,14 +559,25 @@ int runtime_guest_code_pc(uint64_t pc);              // loader.c
 static void preempt_signal(int sig, siginfo_t *si, void *context) {
     (void)sig; (void)si;
     thr_t *t = me_or_null();
-    if (!t || !__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) || t->cur_core < 0) return;
+    if (!t || t->cur_core < 0) return;
+    if (!__atomic_load_n(&t->preempt, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_pause_requested, __ATOMIC_ACQUIRE) && !__atomic_load_n(&g_threads_paused, __ATOMIC_ACQUIRE)) return;
     uint64_t pc = (uint64_t)((ucontext_t *)context)->uc_mcontext->__ss.__pc;
     uintptr_t tp; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(tp));
     if (!runtime_hle_tsd_off || !*(volatile uintptr_t *)(tp + runtime_hle_tsd_off) || !runtime_guest_code_pc(pc)) return;
     int saved = errno;
     pthread_mutex_lock(&G);
-    if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); g_preempt_async++; }
-    else t->preempt = 0;
+    if (t->cur_core >= 0) {
+        if (g_pause_requested || g_threads_paused) {
+            core_put(t);
+            while (g_pause_requested || g_threads_paused) pthread_cond_wait(&g_pause_cv, &G);
+            core_take(t);
+            g_preempt_async++;
+        } else if (core_should_yield(t)) {
+            core_put(t); core_take(t); g_preempt_async++;
+        } else {
+            t->preempt = 0;
+        }
+    } else t->preempt = 0;
     pthread_mutex_unlock(&G);
     errno = saved;
 }
@@ -589,20 +625,29 @@ uint64_t runtime_spin_passes(void) { return atomic_load_explicit(&g_spin_passes,
 // Preemption point at SVC entry: a higher-priority thread waits for this core.
 void runtime_core_checkpoint(void) {
     thr_t *t = me_or_null();
+    if (!t) return;
+    if (__atomic_load_n(&g_pause_requested, __ATOMIC_ACQUIRE) || __atomic_load_n(&g_threads_paused, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_lock(&G);
+        if (t->cur_core >= 0) core_put(t);
+        while (g_pause_requested || g_threads_paused) pthread_cond_wait(&g_pause_cv, &G);
+        core_take(t);
+        pthread_mutex_unlock(&G);
+        return;
+    }
 #ifdef GAME_BOTW
     /* Breath of the Wild (botw.md): the preempt flag is set when a waiter queues up, but a waiter's mask or priority can
        change while it waits; so at every SVC a core owner also looks at the queue itself (core_should_yield: Horizon's
        rule, see core_beats). */
-    if (!t || t->cur_core < 0 || (!t->preempt && !__atomic_load_n(&g_core_wait, __ATOMIC_RELAXED))) return;
+    if (t->cur_core < 0 || (!t->preempt && !__atomic_load_n(&g_core_wait, __ATOMIC_RELAXED))) return;
     pthread_mutex_lock(&G);
     if (t->cur_core >= 0 && core_should_yield(t)) { core_put(t); core_take(t); }
     else t->preempt = 0;
     pthread_mutex_unlock(&G);
     return;
 #else
-    if (t && !t->hle_slot) totk_note_self(t);   // once, at its first SVC (its slots are set by then)
+    if (!t->hle_slot) totk_note_self(t);   // once, at its first SVC (its slots are set by then)
 #endif
-    if (!t || !t->preempt) return;
+    if (!t->preempt) return;
     pthread_mutex_lock(&G); t->preempt = 0; core_put(t); core_take(t); pthread_mutex_unlock(&G);
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
@@ -1356,4 +1401,70 @@ __attribute__((constructor)) static void dump_init(void) {
     if (c) { pthread_t th; pthread_create(&th, NULL, list_check, (void *)(uintptr_t)strtoull(c, NULL, 0)); pthread_detach(th); }
     const char *e = getenv("TOTK_DUMP_AFTER"); if (!e) return;
     pthread_t th; pthread_create(&th, NULL, dump_after, (void *)(uintptr_t)strtoul(e, NULL, 10)); pthread_detach(th);
+}
+
+int runtime_threads_pause(uint64_t timeout_ns) {
+    pthread_mutex_lock(&G);
+    if (g_threads_paused) {
+        pthread_mutex_unlock(&G);
+        return 0;
+    }
+    g_pause_requested = 1;
+#ifndef GAME_BOTW
+    totk_ap_on();
+#else
+    async_preempt_on();
+#endif
+    uint64_t t0 = now_ns();
+    while (1) {
+        int active = 0;
+        for (int i = 0; i < NCORE; i++) {
+            thr_t *o = g_core_owner[i];
+            if (o) {
+                active++;
+                __atomic_store_n(&o->preempt, 1, __ATOMIC_RELEASE);
+                if (o->hle_slot && *o->hle_slot != 0) {
+                    if (o->tlr16 && o->tlr16[0x100 / 2]) {
+                        o->tlr16[0x102 / 2] = 1;
+                    } else {
+                        pthread_kill(o->pt, SIGUSR2);
+                    }
+                }
+            }
+        }
+        if (active == 0) break;
+        if (now_ns() - t0 >= timeout_ns) {
+            fprintf(stderr, "[threads] pause barrier timed out (%d active cores remaining)\n", active);
+            g_pause_requested = 0;
+            pthread_cond_broadcast(&g_pause_cv);
+            for (int i = 0; i < NCORE; i++) if (!g_core_owner[i]) core_grant(i);
+            pthread_mutex_unlock(&G);
+            return -1;
+        }
+        struct timespec step = {0, 2000000}; // 2 ms
+        pthread_cond_timedwait_relative_np(&g_pause_ack_cv, &G, &step);
+    }
+    g_threads_paused = 1;
+    g_pause_requested = 0;
+    pthread_mutex_unlock(&G);
+    return 0;
+}
+
+void runtime_threads_resume(void) {
+    pthread_mutex_lock(&G);
+    if (!g_threads_paused && !g_pause_requested) {
+        pthread_mutex_unlock(&G);
+        return;
+    }
+    g_pause_requested = 0;
+    g_threads_paused = 0;
+    pthread_cond_broadcast(&g_pause_cv);
+    for (int i = 0; i < NCORE; i++) {
+        if (!g_core_owner[i]) core_grant(i);
+    }
+    pthread_mutex_unlock(&G);
+}
+
+int runtime_threads_is_paused(void) {
+    return __atomic_load_n(&g_threads_paused, __ATOMIC_ACQUIRE);
 }
