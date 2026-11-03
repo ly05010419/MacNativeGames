@@ -45,6 +45,7 @@ How it works: bring your game file (XCI or NSP) and your `prod.keys`; one script
 | Mario Kart 8 Deluxe | 4.0.1 | Mac | Community port, early | [`games/mk8d`](games/mk8d/README.md) |
 | Astral Chain | 1.0.1 | Mac | Community port, work in progress; the first frame is presented and the title flow runs | [`games/alc`](games/alc/README.md) |
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, work in progress | [`games/xc3`](games/xc3/README.md) |
+| Pokémon Violet | 4.0.0 | Mac | Community port, work in progress | [`games/pokesv`](games/pokesv/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
 
@@ -170,6 +171,7 @@ Apple、Mac、iPhone、iPad、Apple Vision Pro 和 Metal 是 Apple Inc. 的商�
 | 马力欧卡丁车8 豪华版 | 4.0.1 | Mac | 社区移植，早期 | [`games/mk8d`](games/mk8d/README.md) |
 | 异界锁链 | 1.0.1 | Mac | 社区移植，开发中；能出第一帧，标题流程能走 | [`games/alc`](games/alc/README.md) |
 | 异度神剑3 | 1.0.0、2.2.1 | Mac | 社区移植，开发中 | [`games/xc3`](games/xc3/README.md) |
+| 宝可梦 紫 | 4.0.0 | Mac | 社区移植，开发中 | [`games/pokesv`](games/pokesv/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
