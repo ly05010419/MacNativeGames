@@ -11,3 +11,5 @@ const int32_t runtime_survey_sync[2]={0};
 
 /* New upstream diagnostics stay disabled in this pacing-only probe. */
 _Atomic int g_totk_sr_on;
+/* Renderer-owned stereo diagnostics are not exercised by the pacing probe. */
+int g_b2_order, g_b2_ucap;

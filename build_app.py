@@ -950,7 +950,26 @@ def native_4k_default(memory=None):
     return memory >= NATIVE_4K_MEMORY - (256 << 20)   # 16 GB Macs report exactly 16 GiB; a little slack
 
 
-NATIVE_5K_MEMORY = 32 << 30   # --native-5k reserves about 2.7 GiB more than 4K: below this the build warns (after PR #1515)
+NATIVE_5K_MEMORY = 32 << 30   # default 5K on 32 GB-plus Macs; an explicit --native-5k still works below this
+
+
+def native_5k_default(memory=None):
+    """Include the 5K canvas on 32 GB-plus Macs; unknown memory keeps the smaller build."""
+    if memory is None:
+        try:
+            memory = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return False
+    return memory >= NATIVE_5K_MEMORY - (256 << 20)
+
+
+def native_5k_enabled(platform, version, requested=None, native_4k=None):
+    """The build's capability, not its selected resolution. Explicit choices take priority over memory."""
+    if platform != 'macos' or version != 'v143':
+        return False
+    if requested is not None:
+        return requested
+    return native_4k is not False and native_5k_default()
 
 
 def native_5k_roomy(memory=None):
@@ -961,6 +980,18 @@ def native_5k_roomy(memory=None):
         except (OSError, subprocess.CalledProcessError, ValueError):
             return True   # unknown: no warning
     return memory >= NATIVE_5K_MEMORY - (256 << 20)
+
+
+def large_output_overlay_args(native_4k=False, native_5k=False):
+    """The canvas/scene resource sets shared by a full build and a 5K runtime-update promotion."""
+    steps = []
+    for canvas, scenes, enabled in (
+            ('3840x2160', ('1920x1080', '2560x1440', '3840x2160'), native_4k or native_5k),
+            ('5120x2880', ('1920x1080', '2560x1440', '3840x2160', '5120x2880'), native_5k)):
+        if enabled:
+            steps.append([canvas])
+            steps.extend([canvas, '--scene', scene] for scene in scenes)
+    return steps
 
 
 def step_update_data(tree, game, update, keys, logs, *, version, mod=None, native_4k=False, native_5k=False, vr=False):
@@ -993,15 +1024,7 @@ def step_update_data(tree, game, update, keys, logs, *, version, mod=None, nativ
         steps += [('make_output_res_overlay.py', [canvas, '--scene', scene])
                   for canvas in ('1920x1080', *OUTPUT_SIZES) for scene in ('1920x1080', *OUTPUT_SIZES)]
     remove_large_output_overlays(tree, version)   # remove stale 4K/5K overlays even when a later build disables them
-    if native_4k:   # the runtime takes 3840x2160 as its largest output size (the settings panel gains native 4K)
-        steps.append(('make_output_res_overlay.py', ['3840x2160']))   # TOTK_RENDER_RES=0: the game's own scene size
-        # 3840x2160: the scene at the canvas size (runtime/game_patches*.c); 1920x1080 / 2560x1440: TOTK_RENDER_RES
-        steps += [('make_output_res_overlay.py', ['3840x2160', '--scene', scene])
-                  for scene in ('1920x1080', '2560x1440', '3840x2160')]
-    if native_5k:
-        steps.append(('make_output_res_overlay.py', ['5120x2880']))
-        steps += [('make_output_res_overlay.py', ['5120x2880', '--scene', scene])
-                  for scene in ('1920x1080', '2560x1440', '3840x2160', '5120x2880')]
+    steps += [('make_output_res_overlay.py', args) for args in large_output_overlay_args(native_4k, native_5k)]
     if vr:   # zeldaVR (--vr): the headset-shaped canvases of VR native 4K / 4K + MetalFX / native 6K
         steps += [('make_output_res_overlay.py', [size, '--scene', size]) for size in VR_BIG_SIZES]
     for i, (script, arguments) in enumerate(steps):
@@ -1758,7 +1781,7 @@ def write_main_build_id(nso, target):
     target.write_text(build_id.hex().upper() + '\n')
 
 
-def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None, native_4k=False):
+def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None, native_4k=False, native_5k=None):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
     tmp = out.with_name(out.name + '.partial')
@@ -1807,6 +1830,8 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
     record_update_source(info, tree.parent)
+    if game == 'totk' and version == 'v143' and native_5k is not None:
+        info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
@@ -2332,9 +2357,10 @@ def parse_args(argv):
                     help='Mac, Tears of the Kingdom 1.4.3 / 1.2.1 and Breath of the Wild: the settings panel also offers native 4K (a 3840x2160 canvas, UI and scene); the game then '
                          'reserves its swapchain and texture heaps for 4K (about 1.4 GiB more memory, whatever is shown). '
                          'On by default on a Mac with 16 GB of memory or more; --no-native-4k turns it off')
-    ap.add_argument('--native-5k', action='store_true',
-                    help='Mac, 1.4.3: opt in to native 5120x2880 canvas, UI and scene; includes the 4K modes and '
-                         'reserves about 2.7 GiB more guest memory than a standard app at every start')
+    ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
+                    help='Mac, 1.4.3: include native 5120x2880 canvas, UI and scene, plus the 4K modes; '
+                         'on by default with 32 GB of memory or more. --no-native-5k leaves it out. '
+                         'Reserves about 2.7 GiB more guest memory at every start, whatever resolution is selected')
     ap.add_argument('--vr', action='store_true',
                     help='Mac, 1.4.3 with native 4K: also the headset-shaped canvases of the VR picture modes (zeldaVR/install_vr.sh passes it)')
     fonts = ap.add_mutually_exclusive_group()
@@ -2522,14 +2548,17 @@ def main(argv):
         raise BuildError('--vr needs the 1.4.3 update, a Mac build and native 4K')
     if args.native_5k and args.native_4k is False:
         raise BuildError('--native-5k includes native 4K; omit --no-native-4k')
-    native_4k = True if args.native_5k else args.native_4k
+    native_5k = native_5k_enabled(args.platform, version, args.native_5k, args.native_4k)
+    native_4k = True if native_5k else args.native_4k
     if native_4k is None:
         native_4k = args.platform == 'macos' and version in ('v143', 'v121') and native_4k_default()
     if version in ('v143', 'v121') and args.platform == 'macos':
         say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
             ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
-    if args.native_5k:
-        say('native 5K: on (5120x2880 canvas and scene; opt-in)' + ('' if native_5k_roomy() else
+    if args.platform == 'macos' and version == 'v143':
+        say('native 5K: ' + ('on (5120x2880 canvas and scene)' if native_5k else 'off') +
+            (' (automatic with 32 GB or more; --native-5k / --no-native-5k decide)' if args.native_5k is None and args.native_4k is not False else '') +
+            ('' if not native_5k or native_5k_roomy() else
             '. Note: this Mac has less than 32 GB of memory; a native 5K app reserves about 2.7 GiB more than a 4K one at'
             ' every start, whatever is shown'))
     step_code(tree, game, keys, env, logs, mod=None if update else code_mod)
@@ -2538,7 +2567,7 @@ def main(argv):
                   mod=code_mod)   # a mod is for the updated main, not for 1.0.0
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts, mod=None if update else mod)
     if update:
-        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k, native_5k=args.native_5k, vr=args.vr)
+        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k, native_5k=native_5k, vr=args.vr)
     if mod:
         check_mod_overlays(tree, mod, version)
     step_shaders(tree, logs, version=version)
@@ -2565,7 +2594,8 @@ def main(argv):
             except BuildError as e:
                 say(f'   the Mac reminder for iPhone / iPad shader contributions was not installed: {e}')
     else:
-        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder)
+        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder,
+                 native_5k=False if args.native_4k is False else args.native_5k)
     # Refresh an existing app's version, executable and signing identity before
     # the next Finder launch; the desktop alias keeps pointing to this bundle.
     if args.platform=='macos': run([LSREGISTER, '-f', out], logs / 'register-app.log')
