@@ -161,8 +161,37 @@ Missing floors in later areas: those draws use a vertex / geometry / fragment pr
 translation chain yet, so they are skipped (`TOTK_SKIP_LOG=1` names them). Next: geometry stages as compute (Ryujinx
 `Translate(asCompute)`, as seedds/nxnative's nvn_geometry.inc does).
 
+**Geometry stages as compute: Bananza's floors (2026-11-03 evening).** Done as the to-do below says (host
+`nvn_geometry_rt.inc`, translator patch 0007; scheme and ABI from seedds/nxnative). Bananza has one geometry kernel,
+5d537f76 (the terrain: triangles in, pass-through, 3 vertices out; it also appends through an atomic counter in storage
+buffer s0 and a compare-and-swap table in s1), about 300 such draws a frame. Measured on the Mac, same save, same input:
+- one draw at a time (`TOTK_GEO_RUN=0`, for comparison): correct, about 89 ms a frame;
+- batched (default): correct, about 23-24 ms a frame (GPU about 20 ms, submit and present about 10-11 ms). Runs of
+  58-64 geometry draws; none ended by a memory dependency, a few by an ordinary draw.
+
+The batched path committed in 0cc0f18b drew wrong pictures (big black triangles over the scene; the commit message
+called it correct). Causes, fixed at their source:
+- the reader's input (the geometry output vertices, `g_geo_bind`) is not part of the bind state `S`, so `encode_args`
+  reused the first geometry draw's argument block for the run's later draws in the same pass: their indices read the
+  first draw's vertices. One draw at a time hid it (every geometry draw opened a pass of its own). The stage is now
+  marked dirty around those bindings (`args_dirty_stage`).
+- the look-ahead let ordinary draws and other commands pass. It now follows nxnative's `geo_run_walk`: only state
+  changes between a run's draws (an ordinary draw, a render condition, a barrier, a copy, a dispatch end the run), and a
+  draw joins only when it shares no written memory with the run's earlier jobs (vertex, uniform and storage buffer
+  ranges; any other memory access counts as unknown and ends the run). Kernels are separated by device barriers.
+- a geometry draw with rendering disabled ran its kernel (and its appends); the console skips the whole draw.
+- `RED_ONCE` ids 141 and 160-171 wrote past its 128-entry array; it now has 256 and checks the id at compile time.
+
+Frame-rate overlay: its resolution is the canvas the game presents, 2880x1620 for Bananza (the log line
+`[overlay] resolution shown` names it when it changes). The internal resolution in brackets is found only for TotK's and
+BotW's compose shaders (`scene_size_note`), so Bananza shows none: open. On a 3440x1440 display a 2880x1620 window
+(`TOTK_WINDOW_SIZE`) is cut to 2455x1377 by macOS.
+
+Next for speed: fewer barriers between the kernels, nxnative's lean kernel for pass-through geometry shaders, then mesh
+shaders (below).
+
 **To do / to compare (geometry stages).**
-- Now: geometry stages as compute (Ryujinx `Translate(asCompute)`: the vertex stage as a compute kernel writing its
+- Done (above): geometry stages as compute (Ryujinx `Translate(asCompute)`: the vertex stage as a compute kernel writing its
   outputs to a buffer, the geometry stage as a compute kernel per primitive reading them, then the geometry output drawn
   with a pass-through vertex shader and the program's fragment shader). General, Ryujinx's own Metal backend's route,
   seedds/nxnative runs it; costs an extra dispatch or two and a buffer round trip per such draw.
