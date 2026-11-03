@@ -7649,7 +7649,22 @@ static int border_parse(NSString *key, border_in *b) {
    (pso_desc: fn_retype_outputs on the fragment function it took, whichever patch built it), so any variant serves any
    target format (deps_match). The MSL of a patched function is kept on it (fn_note_src); the base one is sh_src. */
 static const void *const k_fn_src = &k_fn_src, *const k_fn_fout = &k_fn_fout;
-static void fn_note_src(id<MTLFunction> fn, NSString *src) { if (fn && src) objc_setAssociatedObject(fn, k_fn_src, src, OBJC_ASSOCIATION_COPY_NONATOMIC); }
+/* Metal hands out one MTLFunction object for the same compiled function: newFunctionWithName twice on one library, and on
+   two libraries made from the same source, return the same pointer (measured 2026-11-03, macOS 26). Two warm-up threads
+   making the same variant therefore note a source on one shared function. Replacing it released the other thread's
+   string while fn_retype_outputs read it without holding it (BotW 1.6.0 title warm-up: objc_msgSend in fout_retype_key).
+   The first source stays (the function is the same, so its sources are equivalent); reads hold it under the lock. */
+static os_unfair_lock g_fn_src_lock = OS_UNFAIR_LOCK_INIT;
+static void fn_note_src(id<MTLFunction> fn, NSString *src) {
+    if (!fn || !src) return;
+    os_unfair_lock_lock(&g_fn_src_lock);
+    if (!objc_getAssociatedObject(fn, k_fn_src)) objc_setAssociatedObject(fn, k_fn_src, src, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    os_unfair_lock_unlock(&g_fn_src_lock);
+}
+static NSString *fn_src(id<MTLFunction> fn) {
+    os_unfair_lock_lock(&g_fn_src_lock); NSString *src = objc_getAssociatedObject(fn, k_fn_src); os_unfair_lock_unlock(&g_fn_src_lock);
+    return src;
+}
 static id<MTLFunction> fs_fn_border_with(NvShader *fs, int nodepth, NSString *key, border_in b, NSString **cache_key);
 /* The fragment function for the draw's samplers (border_key), nil when none needs the emulation. recipe: its border_key. */
 /* The peer and key are retained: pointer identity cannot alias a destroyed object. Never cache nil (pending).
@@ -8195,7 +8210,7 @@ static NSString *msl_retype_outputs(NSString *msl, NSString *fo, const char *key
     return [src stringByReplacingOccurrencesOfString:@"return out;" withString:[NSString stringWithFormat:@"{ %@return out; }", stores]];
 }
 static id<MTLFunction> fn_retype_outputs(id<MTLFunction> fn, NvShader *fs, const pso_key *k, int merged) {
-    NSString *src = objc_getAssociatedObject(fn, k_fn_src);
+    NSString *src = fn_src(fn);
     if (!src && fs && fn == fs->fn && sh_has_src(fs)) src = sh_src(fs);
     if (!src) return fn;   // a diagnostic function, or a shader without MSL: as before
     NSString *fo = fout_retype_key(src, k, merged); if (!fo) return fn;
