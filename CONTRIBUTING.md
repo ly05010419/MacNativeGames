@@ -9,6 +9,7 @@ Thanks for helping. This page says how the project works and what a pull request
 - Never commit game content: no game program or code, RomFS files, art, text, audio, translated shaders or libraries, keys or saves. The shader list holds shader keys and bind states only.
 - The repository is MIT. Write your own code. Do not copy GPL code or code from other mods (UltraCam, Dynamic FPS, TOTK-Ultrawide and so on); reading them for ideas is fine. Third-party code you bring in keeps its license, and its source and license go into [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - We do not help anyone obtain keys or game files.
+- `git config core.hooksPath .githooks` once per clone turns on a check that stops a commit with keys, game containers or extracted ExeFS / RomFS files.
 
 ## How the port works, and what it must not become
 
@@ -62,6 +63,7 @@ Thanks for helping. This page says how the project works and what a pull request
 - 不提交任何游戏内容：游戏程序或代码、RomFS 文件、美术、文字、音频、翻译出的着色器或库、密钥、存档都不行。着色器清单只记着色器键和绑定状态。
 - 仓库采用 MIT 许可，代码自己写。GPL 代码和其他模组（UltraCam、Dynamic FPS、TOTK-Ultrawide 等）的代码不要拷贝，只参考思路。引入的第三方代码保留原许可，来源和许可写进 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 我们不帮任何人获取密钥或游戏文件。
+- 每个克隆执行一次 `git config core.hooksPath .githooks`，提交里有密钥、游戏容器或解出的 ExeFS / RomFS 文件时会被拦下。
 
 ## 移植的路线，和不能走的路
 

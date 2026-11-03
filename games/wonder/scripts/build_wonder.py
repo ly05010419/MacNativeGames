@@ -324,7 +324,8 @@ def step_binary(tree, game, keys, logs):
     # the launcher is per version (runtime/game_version.h: the version it checks, the folder it starts, the backup of saves)
     defines = ['-DGAME_WONDER=1', *(['-DWONDER_V121=1'] if VERSION == 'wonder121' else [])]
     run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', *defines,
-         'app/launcher.m', '-framework', 'AppKit', '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree)
+         'app/launcher.m', '-framework', 'AppKit',
+         '-framework', 'GameController', '-framework', 'IOKit', '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree)
     icon = tree / 'build/AppIcon.icns'
     if not icon.exists():   # the game's own icon from its control data; optional
         try:
@@ -439,6 +440,8 @@ def step_app(tree, out, logs):
     clone(tree / ('build/wonder-native' if VERSION == 'wonder' else f'build/wonder-native-{VERSION}'), res / 'build/totk-native')
     files = ['build/spirv-cross/spirv-cross', f'extracted/{VERSION}/romfs/runtime-index.bin']   # romfs.bin: data_bundle
     files += [f'rewritten/{VERSION}/{m}.patched.bin' for m in MODULES]
+    # the game data folder the runtime reads at start (runtime/game_data.h: module tables, RomFS and font hashes; make game-data)
+    files += [f'build/game-data/{VERSION}/{name}' for name in ('runtime-tables.bin', 'rewriter.txt', 'romfs-config.txt', 'shared-fonts.txt')]
     for rel in files:
         clone(tree / rel, res / rel)
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it

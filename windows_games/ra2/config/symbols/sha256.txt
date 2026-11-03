@@ -1,0 +1,6 @@
+# The executables these tables were exported from (Ghidra 12.1.4, x86recomp's ExportFunctions / ExportJumpTables):
+# Red Alert 2 1.006 and Yuri's Revenge 1.001 of the Steam release (app 2229850). Function names are left out (FUN_ and
+# the address); the tables hold addresses and flags only. scripts/lift.sh checks the player's files against these.
+game	GAME.EXE	73288c03b58d370be268ca6d156b4e33bfdb2066dc980359467d8852ff3b00df
+yr	gamemd.exe	3e81a61775d2745d1dabe397325ef663cd994ffc194da4e998e3bf5d2d308600
+blowfish	Blowfish.dll	68e4896b1fc0e5828162fbefe1bfb2cc7a1dd4ac34957b5b0194550e36fe7992

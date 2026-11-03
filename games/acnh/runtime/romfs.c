@@ -4,6 +4,7 @@
 #include "romfs_config.h"
 #include "game_version.h"
 #include "fs_host.h"
+#include "dlc.h"
 #include "romfs_path.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
@@ -247,6 +248,7 @@ static const char *rom_path(const char *path) {
 static uint64_t lower(const char *name) {uint64_t lo=0,hi=file_count;while(lo<hi){uint64_t m=lo+(hi-lo)/2;if(strcmp(entry_name(entry(m)),name)<0)lo=m+1;else hi=m;}return lo;}
 static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
  (void)cache;(void)size;runtime_fs_init();if(!name||!path_ok(name)||strlen(name)>=sizeof(mount_name)||strchr(name,'/')||strchr(name,':'))return INVALID;
+ char prefix[40];snprintf(prefix,sizeof prefix,"%s:/",name);if(runtime_dlc_owns(prefix))return 0x402u;
  if(*mount_name&&strcmp(name,mount_name))runtime_fail("second RomFS mount not implemented");strcpy(mount_name,name);return 0;
 }
 static unsigned mount_rom_name(const char *name) {return mount_rom(name,NULL,0);}   /* SDK 13 MountRom without a cache buffer (Bayonetta 3) */
@@ -330,8 +332,11 @@ void runtime_fs_probe(void) {
  /* Audio stream paths include an extra slash after the mount root. Verify
     actual resource lookup and bytes, while still rejecting path traversal. */
  {
-  const char *name="Sound/Resource/Stream/Dm_OP_0001.bwav";
-  char path[256];uint8_t expected[257],actual[257];uint64_t h,n;
+  const char *name=NULL;
+  for(uint64_t i=0;i<file_count;i++){Entry e=entry(i);const char *p=entry_name(e);size_t len=strlen(p);
+   if(e.size>=257&&!strncmp(p,"Sound/Resource/Stream/",22)&&len>=5&&!strcmp(p+len-5,".bwav")){name=p;break;}}
+  need(name!=NULL,"ACNH audio sample missing from verified index");
+  char path[4096];uint8_t expected[257],actual[257];uint64_t h,n;
   snprintf(path,sizeof path,"rom:/%s",name);
   need(!runtime_romfs_open(&h,path,1),"open normal audio path");
   need(!runtime_romfs_read(&n,h,0,expected,sizeof expected)&&n==sizeof expected,"read normal audio path");runtime_romfs_close(h);
@@ -341,7 +346,8 @@ void runtime_fs_probe(void) {
    need(!runtime_romfs_open(&h,path,1),"open normalized audio stream path");
    need(!runtime_romfs_read(&n,h,0,actual,sizeof actual)&&n==sizeof actual&&!memcmp(actual,expected,sizeof actual),"normalized audio stream bytes");runtime_romfs_close(h);
   }
-  need(runtime_romfs_open(&h,"rom://../Sound/Resource/Stream/Dm_OP_0001.bwav",1)!=0,"reject traversal after repeated root separator");
+  need(snprintf(path,sizeof path,"rom://../%s",name)<(int)sizeof path,"audio traversal probe path");
+  need(runtime_romfs_open(&h,path,1)!=0,"reject traversal after repeated root separator");
  }
  for(uint64_t i=0;i<file_count;i+=file_count/64){Entry e=entry(i);char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",entry_name(e))<(int)sizeof(p),"probe path");uint64_t h=0,n=0;int64_t size;need(!runtime_romfs_open(&h,p,1)&&!runtime_romfs_size(&size,h)&&(uint64_t)size==e.size,"probe open/size");need(!runtime_romfs_read(&n,h,0,buffer,sizeof(buffer)),"probe partial read");for(uint64_t j=0;j<n;j++)sum=sum*131+buffer[j];need(!runtime_romfs_read(&n,h,size,buffer,1)&&n==0,"probe EOF");runtime_romfs_close(h);count++;}
  for(size_t k=0;k<noverlay;k++){char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",overlays[k].name)<(int)sizeof(p),"probe overlay path");

@@ -18,7 +18,7 @@ real-time step (about 0.35 of a frame at 85 fps, 0.5 with the 60 FPS patch alone
 freezes it after the first, and the menu never goes away (2026-10-17: 100 % of deaths at the default settings, never
 with TOTK_FPS60=0 TOTK_REALTIME=0). Event14 now ends the branch itself: the 2-byte "next event" index of Event14 goes
 from Event25 to none. Checked with fall deaths at the default settings: the retry reloads the save.
-Only 1.0.0 needs it: 1.1.2, 1.2.1 and 1.4.3 run DmF_SY_GameOver.110.bfevfl.zs instead (their EventFlowFileEntry names
+Only 1.0.0 needs it: 1.2.1 and 1.4.3 run DmF_SY_GameOver.110.bfevfl.zs instead (their EventFlowFileEntry names
 version 110), whose wait (EventWaitUpdate) the pause does not freeze. Their RomFS still holds the 1.0.0 file, so its overlay
 is made and verified there too; 1.2.1 even opens that file when Link dies (the overlay line shows in the log), but runs the
 110 flow: with overlays off (TOTK_ROMFS_PATCHES=0) its retry after a fall death reloads normally (2026-10-19).
@@ -69,7 +69,7 @@ def flvi_keys(data, base):
         pos += size
     return out
 
-COMMON = {'v0': '100', 'v112': '110', 'v121': '110', 'v143': '140'}   # the version in each game's Common archive name
+COMMON = {'v0': '100', 'v121': '110', 'v143': '140'}   # the version in each game's Common archive name
 
 
 def common_archive(version):
@@ -106,7 +106,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, default=root / 'extracted/v0/romfs-patches')
     parser.add_argument('--capture-frame', type=float, default=0.0)
-    parser.add_argument('--version', choices=('v0','v112','v121','v143'), default='v0')
+    parser.add_argument('--version', choices=('v0','v121','v143'), default='v0')
     parser.add_argument('--aspect', type=str.lower, help='<width>x<height> of a canvas wider (scripts/ultrawide_layout.py) or taller (scripts/tall_layout.py, 16:10) than 16:9: also lay the UI out for it; default output romfs-patches-<width>x<height> (-center with --hud center)')
     parser.add_argument('--hud', choices=('corner', 'center'), default='corner', help='with --aspect: the HUD in the screen corners or in the middle 16:9')
     args = parser.parse_args()
@@ -151,7 +151,7 @@ def main():
     # The game over flow: Event14 (EventTriggerPauseMgrRequestPause GameOverPause) ends its branch instead of going on to
     # Event25 (EventWait, Frames 1). BFEVFL events are 0x28 bytes from 0x1f0 (name ref at +0, type at +8, next at +0xa);
     # the original's SHA-256 pins the layout these offsets come from.
-    # v112, v121 and v143 additionally have DmF_SY_GameOver.110 with EventWaitUpdate instead of EventWait.
+    # v121 and v143 additionally have DmF_SY_GameOver.110 with EventWaitUpdate instead of EventWait.
     # Preserve that updated flow; this guarded patch only covers the retained original file.
     FLOW = 'Event/EventFlow/DmF_SY_GameOver.bfevfl.zs'
     FLOW_SHA256 = 'c59975494fb30063b7a339fd66bbde8b456b11c73a5b4332bc070d63ece66b7d'

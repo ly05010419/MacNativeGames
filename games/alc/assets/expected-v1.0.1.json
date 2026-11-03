@@ -1,0 +1,43 @@
+{
+    "_comment": "Verified Astral Chain 1.0.1 code (the card's update Program NCA; the base NCA holds 1.0.0 code the build does not use), the rewritten modules for Apple silicon, and the RomFS merged from the base section and the update's BKTR patch. Runtime validation is recorded in CHANGELOG.md. Measured 2026-10-29 from the user's own dump with this folder's tools.",
+    "title_id": "01007300020FA000",
+    "update_title_id": "01007300020FA800",
+    "version": 65536,
+    "display_version": "1.0.1",
+    "main_build_id": "4B159F0F7A360669738390EE8657B4F000000000000000000000000000000000",
+    "container": "one XCI holding base and update Program NCAs (card image)",
+    "base_program_nca": {
+        "name": "6db3410b509dd5a3b67ae7225e1bd277.nca",
+        "nca_offset": 64000,
+        "size": 10342825984
+    },
+    "update_program_nca": {
+        "name": "31735cd4357fe8fb228ed1eb0374065c.nca",
+        "nca_offset": 10344419328,
+        "size": 195790336
+    },
+    "exefs_sha256": {
+        "main": "dc47cae835866379c597e1c507bf52ee0f865ec4412930dfdf1bbc20b6bb9c3b",
+        "main.npdm": "8edb43e844e23aa63ab9b19461d459db1061ff6cda5cd167c6477369751a513a",
+        "rtld": "52735462296339700ae8c54b3d84f8fd0d96113a313a15a4e0a6973ec63dffb4",
+        "sdk": "d58f76a49d32c1a8192befc8cd6341e45d802eade3a474f7117a842232446d7e"
+    },
+    "romfs_base": {
+        "size": 10309560892,
+        "sha256": "cdfb704316ebb0396bbc78062a55da7527f21092f6205ceb5eaa2bfa0bd13dd8",
+        "files": 8701
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "843f66e33b8e793e7112412693db10e996601744b76b5fa29d9d9cbe34201b35",
+        "main.patcharea.bin": "554e541a90a713b5b786b6d979c3c38e0c397debcf53392206f0c3e33ccea808",
+        "sdk.patched.bin": "957f6c416a06a579786d0272868a93a03f1ef7da690fb62922825f468d2fe278",
+        "sdk.patcharea.bin": "90f2972c401101deb9c64ea4ac9fc6cad612389623900a8abfdedc3aa50c93c4"
+    },
+    "romfs": {
+        "size": 10310254332,
+        "sha256": "20904f305195bff4b4cac18413ce5b844cc0a72596c0b03ae9ad1dda5258ffb6",
+        "files": 8701,
+        "bytes_from_base": 10147756960,
+        "bytes_from_update": 182747996
+    }
+}

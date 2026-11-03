@@ -1,0 +1,12 @@
+[
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01002B00111A2000/game.tsv",
+    "destination": "runtime/games/01002B00111A2000/game.tsv",
+    "sha256": "a8166011e2c8106f289baf6b4e5689fe160565c785cebd4fe4e5f5c7b103ebc6"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01002B00111A2000/patches.py",
+    "destination": "runtime/games/01002B00111A2000/patches.py",
+    "sha256": "4f451b91b93b8c04cd207ff6c18d645a66c04a97e46262fc7b8abe6c57d14560"
+  }
+]

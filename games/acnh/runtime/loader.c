@@ -1,5 +1,6 @@
 /* Native ARM64 module loader. Guest images and generated metadata stay local. */
 #include "runtime.h"
+#include "dlc.h"
 #include "totk_ui_lang.h"
 #include <TargetConditionals.h>
 #include <dlfcn.h>
@@ -376,6 +377,18 @@ static void *probe_thread(void *unused) {
  (void)unused;runtime_thread_init();
  typedef uint64_t (*Fn)(void);Fn fn=(Fn)(void *)(modules[0].base+PROBE_PLT);uint64_t previous=0;
  for(unsigned i=0;i<1000;i++){uint64_t current=fn();need(current>=previous&&current>0,"cross-module clock result");previous=current;}
+#if ACNH_VERSION_RAW == 2097152
+ /* Exercise the actual imported target used after the introductory movie.
+    A missing binding would fall through to the SDK's unavailable pctl IPC. */
+ unsigned checked=0;Module *m=&modules[0];
+ for(unsigned i=0;i<m->nreloc;i++){const Reloc *r=&m->relocs[i];
+  if(r->kind==1026&&!strcmp(m->symbols[r->symbol].name,"_ZN2nn4pctl28IsFreeCommunicationAvailableEv")){
+   uintptr_t entry;memcpy(&entry,m->base+r->where,sizeof entry);
+   need(((unsigned char(*)(void))entry)()==1,"post-movie local parental-control permission");checked++;
+  }}
+ need(checked==1,"post-movie pctl import binding");
+ fprintf(stderr,"[acnh] post-movie pctl import binding verified\n");
+#endif
  thread_cleanup();return NULL;
 }
 static void probe(void) {
@@ -401,14 +414,14 @@ static void module_inits(void) {
  for(unsigned i=0;i<NM;i++){char detail[128];snprintf(detail,sizeof detail,TOTK_UI("运行 %s 游戏模块初始化代码（%u/%u）","Running the %s game module initializers (%u/%u)"),modules[i].name,i+1,(unsigned)NM);runtime_boot_status(TOTK_UI("初始化游戏模块","Initializing game modules"),detail);fprintf(stderr,"[totk] ENTER %s DT_INIT\n",modules[i].name);((void(*)(void))(modules[i].base+modules[i].init))();uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"DT_INIT deferred or skipped constructors");
  fprintf(stderr,"[totk] RETURN %s DT_INIT state=%u init_array_count=%llu\n",modules[i].name,state,(unsigned long long)(modules[i].init_size/8));}
 }
-void runtime_startup_checkpoint(uintptr_t caller) {
+void runtime_startup_checkpoint(uintptr_t caller, const char *boundary) {
  if(!getenv("TOTK_VERIFY_STARTUP"))return;
 
  for(unsigned i=0;i<NM;i++){uint32_t state;memcpy(&state,modules[i].base+modules[i].ctor_flag,4);need(state==2,"constructor checkpoint state");}
- printf("{\"status\":\"pass\",\"phase\":4,\"caller_main_offset\":\"0x%llx\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at focus setup\"}\n",(unsigned long long)(caller-(uintptr_t)modules[0].base));fflush(stdout);_exit(0);
+ printf("{\"status\":\"pass\",\"phase\":4,\"version\":\"%s\",\"caller_main_offset\":\"0x%llx\",\"scope\":\"all DT_INIT constructor loops completed; original nnMain prefix executed; stops at %s\"}\n",TOTK_GAME_VERSION,(unsigned long long)(caller-(uintptr_t)modules[0].base),boundary);fflush(stdout);_exit(0);
 }
 static void boot(void) {
- fprintf(stderr,"[totk] game version %s\n", TOTK_GAME_VERSION);
+ fputs("[acnh] MNG_ACNH_VERSION:" TOTK_GAME_VERSION "\n", stderr);
  runtime_boot_status(TOTK_UI("启动游戏运行环境","Starting the game runtime"),TOTK_UI("连接游戏代码与 macOS 系统服务","Connecting the game code to macOS system services"));
  runtime_thread_init();uint32_t main_handle=svc_thread_main_init();
  void *start5 = runtime_symbol("_ZN2nn4init5StartEmmPFvvES2_S2_");
@@ -441,6 +454,7 @@ int main(int argc,char **argv) {
  need(pthread_key_create(&environment_key,environment_destroy)==0,"thread environment key");
  for(unsigned i=0;i<NM;i++)map_module(&modules[i],argv[1]);
  for(unsigned i=0;i<NM;i++)relocate(&modules[i]);
+ for(unsigned i=0;i<NM;i++)runtime_frame_rate_install(&modules[i]);
  for(unsigned i=0;i<NM;i++)if(!strcmp(modules[i].name,"main"))runtime_game_patches(&modules[i]);
 #if !TARGET_OS_IPHONE
  if(!strcmp(argv[2],"export-ios")){const char *out=getenv("TOTK_EXPORT_IOS");need(out!=NULL,"export-ios needs TOTK_EXPORT_IOS=<dir>");export_ios_text(argv[1],out);return 0;}
@@ -448,6 +462,7 @@ int main(int argc,char **argv) {
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
  if(!strcmp(argv[2],"probe-map")){puts("{\"status\":\"pass\",\"scope\":\"mapped, relocated and sealed; no guest execution\"}");return 0;}
+ if(!strcmp(argv[2],"probe-dlc")){runtime_dlc_probe();return 0;}
  if(!strcmp(argv[2],"probe-startup")){setenv("TOTK_VERIFY_STARTUP","1",1);setenv("ACNH_CPU_ONLY","1",1);boot();return 0;}
  if(!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
 }

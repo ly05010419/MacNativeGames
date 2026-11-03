@@ -51,6 +51,40 @@ int main(void) {
     hid_imu_decode(pr, 1, r, sizeof r, acc, gyro);
     check(near(acc[0], 1, 1e-9) && near(acc[1], 0, 1e-9) && near(acc[2], 0, 1e-9), "raw acceleration y = +1 G is +1 G on x");
 
+    /* DualShock 4 v1 (rotation first): report captured from the pad over Bluetooth (2026-10-29) */
+    const HidImuProfile *d4 = hid_imu_find(0x054c, 0x05c4);
+    check(d4 != NULL, "the DualShock 4 v1 has a profile");
+    if (!d4) return 1;
+    uint8_t d4r[78];
+    static const uint8_t real4[78] = {0x11, 0xc0, 0x00, 0x80, 0x80, 0x80, 0x80, 0x08, 0x00, 0xfc, 0x00, 0x00, 0x48, 0xa1, 0x12,
+                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc3, 0xfe, 0xd4, 0x20, 0xa9, 0x06};
+    check(hid_imu_decode(d4, 0x11, real4, sizeof real4, acc, gyro), "a real DS4 report decodes");
+    /* raw acceleration (-317, 8404, 1705) counts of 8192 = 1 G, raw rotation 0 (held still, face up) */
+    check(near(acc[0], 317 / 8192.0, 1e-9) && near(acc[1], 1705 / 8192.0, 1e-9) && near(acc[2], -8404 / 8192.0, 1e-9), "real DS4 report: acceleration in GCMotion's frame, as gravity");
+    check(near(gyro[0], 0, 1e-12) && near(gyro[1], 0, 1e-12) && near(gyro[2], 0, 1e-12), "and no rotation at rest");
+
+    /* rotation (offset 15/17/19): raw x -> +x, raw y -> +z, raw z -> -y */
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 15, 32767);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(gyro[0], dps_max, 1e-9) && near(gyro[1], 0, 1e-12) && near(gyro[2], 0, 1e-12), "DS4 raw gyro x full scale = +2000 deg/s on x");
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 17, 32767);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(gyro[0], 0, 1e-12) && near(gyro[1], 0, 1e-12) && near(gyro[2], dps_max, 1e-9), "DS4 raw gyro y full scale = +2000 deg/s on z");
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 19, 32767);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(gyro[0], 0, 1e-12) && near(gyro[1], -dps_max, 1e-9) && near(gyro[2], 0, 1e-12), "DS4 raw gyro z full scale = -2000 deg/s on y");
+
+    /* acceleration (offset 21/23/25): raw x -> -x, raw y -> -z, raw z -> +y */
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 21, 8192);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(acc[0], -1, 1e-9) && near(acc[1], 0, 1e-9) && near(acc[2], 0, 1e-9), "DS4 raw accel x = +1 G is -1 G on x");
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 23, 8192);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(acc[0], 0, 1e-9) && near(acc[1], 0, 1e-9) && near(acc[2], -1, 1e-9), "DS4 raw accel y = +1 G is -1 G on z");
+    memset(d4r, 0, sizeof d4r); d4r[0] = 0x11; put16(d4r, 25, 8192);
+    hid_imu_decode(d4, 0x11, d4r, sizeof d4r, acc, gyro);
+    check(near(acc[0], 0, 1e-9) && near(acc[1], 1, 1e-9) && near(acc[2], 0, 1e-9), "DS4 raw accel z = +1 G is +1 G on y");
+
     /* reports that do not carry the sensor */
     acc[0] = acc[1] = acc[2] = gyro[0] = gyro[1] = gyro[2] = 7;
     check(!hid_imu_decode(pr, 2, real, sizeof real, acc, gyro), "another report id is skipped");

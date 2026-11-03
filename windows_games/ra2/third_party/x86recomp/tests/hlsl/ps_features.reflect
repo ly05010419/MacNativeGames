@@ -1,0 +1,14 @@
+constants:
+  diffuse                          s0 x1  class 4 type 12  1x1 [1]
+  envMap                           s1 x1  class 4 type 14  1x1 [1]
+  volume                           s2 x1  class 4 type 13  1x1 [1]
+  untyped                          s3 x1  class 4 type 12  1x1 [1]
+  lightmaps                        s4 x2  class 4 type 12  1x1 [2]
+  tint                             c0 x1  class 1 type 3  1x4 [1]
+  texMat                           c1 x4  class 3 type 3  4x4 [1]
+  alphaTest                        b3 x1  class 0 type 1  1x1 [1]
+  alphaRef                         c5 x1  class 0 type 3  1x1 [1]
+inputs:
+varyings: TEXCOORD0@0 TEXCOORD1@1 TEXCOORD2@2 COLOR0@16 FOG0@18
+samplers: s0(type 12) s1(type 14) s2(type 13) s3(type 12) s4(type 12) s5(type 12)
+color outputs 3, depth 1, point size 0, float registers 6

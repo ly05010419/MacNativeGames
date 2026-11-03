@@ -17,7 +17,7 @@ int main(void) {
   g_hz=g_paced_hz=rates[r];g_uncapped=1;g_display_mode=0;g_uncapped_interval=1;
   test_mode=mode;test_game_hold=0;test_detclock=0;
   nvn_fps_lock_set(limits[i]);
-  int hold=mode==MFX_30?30:mode==MFX_40?40:mode==MFX_50?50:limits[i];
+  int hold=mode==MFX_30?30:mode==MFX_40?40:mode==MFX_50?50:mode==MFX_60?60:limits[i];
   uint64_t expected=1000000000ull/(hold?hold:rates[r]);
   assert(present_period(&w)==expected);
   assert(mfx_own_clock()==(hold&&rates[r]%hold!=0));

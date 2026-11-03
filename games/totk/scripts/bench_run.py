@@ -96,7 +96,6 @@ class Session:
                    TOTK_SHADER_CONTRIB=str(out / 'contrib.txt'), TOTK_SLOT_OWNER='claude', TOTK_SLOT_PURPOSE='benchmark',
                    TOTK_AUTOLOAD='1', TOTK_SURVEY='1', TOTK_BENCH_FRAMES=str(self.frames),
                    TOTK_GPU_ALLOW_SUBMIT='1', TOTK_GPU_WIDEN='1', TOTK_GPU_BLOCKRT='1', TOTK_GPU_MIDCLEAR='1',
-                   TOTK_GPU_BUDGET_MB='5000',
                    # UltraCam's [Resolution] in the citron runs: the scene rendered at 1920x1080, shown at 1920x1080
                    TOTK_RENDER_RES='1920x1080', TOTK_OUTPUT_RES='1920x1080')
         env.update(env_extra)

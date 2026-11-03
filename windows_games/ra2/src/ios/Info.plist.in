@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- iOS app Info.plist (CMake configure_file; MACOSX_BUNDLE_* variables). -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_TW</string>
+  <key>CFBundleExecutable</key>
+  <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+  <key>CFBundleDisplayName</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+  <!-- The icon: Assets.car (scripts/ios/build_app.sh compiles src/ios/AppIcon.png). -->
+  <key>CFBundleIcons</key>
+  <dict>
+    <key>CFBundlePrimaryIcon</key>
+    <dict>
+      <key>CFBundleIconFiles</key>
+      <array><string>AppIcon60x60</string></array>
+      <key>CFBundleIconName</key>
+      <string>AppIcon</string>
+    </dict>
+  </dict>
+  <key>CFBundleIcons~ipad</key>
+  <dict>
+    <key>CFBundlePrimaryIcon</key>
+    <dict>
+      <key>CFBundleIconFiles</key>
+      <array><string>AppIcon60x60</string><string>AppIcon76x76</string></array>
+      <key>CFBundleIconName</key>
+      <string>AppIcon</string>
+    </dict>
+  </dict>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+  <key>CFBundleVersion</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array><string>iPhoneOS</string></array>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>MinimumOSVersion</key>
+  <string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+  <key>UIDeviceFamily</key>
+  <array><integer>1</integer><integer>2</integer></array>
+  <key>UIRequiredDeviceCapabilities</key>
+  <array><string>arm64</string><string>metal</string></array>
+  <!-- The player copies their own game files into Documents (Finder, Files app). -->
+  <key>UIFileSharingEnabled</key>
+  <true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key>
+  <true/>
+  <!-- A pointer (mouse, trackpad) on iPad and iPhone. -->
+  <key>UIApplicationSupportsIndirectInputEvents</key>
+  <true/>
+  <key>UIRequiresFullScreen</key>
+  <true/>
+  <key>UIStatusBarHidden</key>
+  <true/>
+  <key>UIViewControllerBasedStatusBarAppearance</key>
+  <false/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <key>UILaunchScreen</key>
+  <dict/>
+  <!-- Scene life cycle (required from iOS 27): SDL's own scene delegate. -->
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>SDLSceneConfiguration</string>
+          <key>UISceneDelegateClassName</key>
+          <string>SDLUIKitSceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
+</dict>
+</plist>

@@ -56,6 +56,18 @@ class SaveMigration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'new directory'):
             saves.export_save(export, self.profile, self.slot)
 
+    def test_the_users_store_names_the_save_area(self):
+        """A profile with users (runtime/account.c users.txt): the marked user's area, else the first; account.uid only
+        for a profile from before the users."""
+        self.assertEqual(saves.account_folder(self.profile), '%016x%016x' % (0x5678, 0x1234))
+        (self.profile / 'users.txt').write_text('01020304050607081112131415161718\tLocal\n'
+                                                 '*aaaabbbbccccdddd0000000000000001\tZelda\n')
+        self.assertEqual(saves.account_folder(self.profile), 'aaaabbbbccccdddd0000000000000001')
+        (self.profile / 'users.txt').write_text('garbage\n01020304050607081112131415161718\tLocal\n')
+        self.assertEqual(saves.account_folder(self.profile), '01020304050607081112131415161718')
+        (self.profile / 'users.txt').write_text('nothing parses\n')
+        self.assertEqual(saves.account_folder(self.profile), '%016x%016x' % (0x5678, 0x1234))
+
     def test_new_profile_gets_valid_identity(self):
         profile = self.root / 'new/profile'
         report = saves.import_save(self.source, profile, self.slot)

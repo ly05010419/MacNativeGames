@@ -1,0 +1,10 @@
+# Build trees
+out/
+build/
+
+# Logs
+*.log
+
+# Never commit game files or anything derived from them
+*.exe
+*.dll

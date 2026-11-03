@@ -1,0 +1,26 @@
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -118,6 +118,8 @@
+             }
+         }
+ 
++        private const bool ElseIfFlattening = false;
++
+         private static void RemoveEmptyBlocks(AstBlock mainBlock)
+         {
+             Queue<AstBlock> pending = new();
+@@ -163,7 +165,13 @@
+                         parent.Remove(block);
+                     }
+                 }
+-                else if (isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
++                // TOTK (2026-10-16): the else-if flattening (`else { if (c) A else B }` -> `else if (c) A else B`) is
++                // disabled. The SPIR-V backend gives the else-if the same merge block as the if before it, and
++                // SPIRV-Cross then drops the trailing else of the chain: TOTK's fragment shader 1870878a lost three
++                // loops with an atomic max (a feedback write) and a discard (scripts/diag/msl_invariants.py found 12
++                // variants losing atomics and 83 changing discards). The nested form is what DebugMode always produced,
++                // because its comment nodes keep every block non-empty and this branch never ran.
++                else if (ElseIfFlattening && isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
+                 {
+                     AstBlock parentOfParent = parent.Parent;
+ 

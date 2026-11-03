@@ -2161,8 +2161,28 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     totk_tl(TL_SUB_OUT, 0, 0);
     free(heap);
 }
+/* Q89 (Smash, "FATAL 提交重入" on 25.10. after 33 s and on 28.10. after 124 min): Smash submits from two game threads (it
+   makes two NVN queues) and the replay has one open submission (nvn_mtl.m g_cb). The crash report of 28.10. 23:59 shows
+   thread 5 in mtl_sub_commit while thread 11 began the next submission in mtl_sub_begin. Submissions now run one at a
+   time: a thread that finds another one inside waits here (its virtual core is already given back, NVN_BLOCKING), and the
+   wait is counted, the first five and every 1,000th with both threads in the log, so a run shows the path that used to
+   end the game. */
+static pthread_mutex_t g_sub_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_sub_owner;           /* the thread inside, for the log */
+static _Atomic uint64_t g_sub_waits;
+static void submit_lock(void) {
+    uint64_t me = 0; pthread_threadid_np(NULL, &me);
+    if (pthread_mutex_trylock(&g_sub_mu)) {
+        uint64_t other = __atomic_load_n(&g_sub_owner, __ATOMIC_RELAXED), w = atomic_fetch_add(&g_sub_waits, 1) + 1;
+        if (other == me) die("a submission began inside a submission on the same thread %llu (the lock would wait forever)", (unsigned long long)me);
+        if (w <= 5 || w % 1000 == 0) LOG("[nvn] submission lock: thread %llu waited for thread %llu's submission to end (%llu waits so far)", (unsigned long long)me, (unsigned long long)other, (unsigned long long)w);
+        pthread_mutex_lock(&g_sub_mu);
+    }
+    __atomic_store_n(&g_sub_owner, me, __ATOMIC_RELAXED);
+}
 static void submit_exec(int n, const uint64_t *h, void *ucap) {
     gfx_enter();
+    submit_lock();
     totk_tl(TL_REP_BEGIN, 0, 0);
     pin_step(__atomic_load_n(&g_submits, __ATOMIC_RELAXED));   /* TOTK: free texture copies no recording refers to any more */
     if (cmdlog_env()) for (int i = 0; i < n; i++) {
@@ -2189,6 +2209,8 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
     atomic_fetch_add(&g_sub_cpu_ns, dc); atomic_fetch_add(&g_cum_sub_cpu_ns, dc);
     atomic_fetch_add(&g_sub_instr, di); atomic_fetch_add(&g_cum_sub_instr, di);
     totk_tl(TL_REP_END, 0, 0);
+    __atomic_store_n(&g_sub_owner, 0, __ATOMIC_RELAXED);
+    pthread_mutex_unlock(&g_sub_mu);
     gfx_leave();
 }
 

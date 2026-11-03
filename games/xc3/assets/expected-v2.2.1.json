@@ -1,0 +1,58 @@
+{
+    "_comment": "Verified Xenoblade Chronicles 3 2.2.1 code (from the update NSP), rewrite bytes and the RomFS merged from the base NSP and the 2.2.1 update. Hashes only; no game content.",
+    "title_id": "010074F013262000",
+    "update_title_id": "010074F013262800",
+    "version": 720896,
+    "display_version": "2.2.1",
+    "main_build_id": "82D187FE9EF9BE921B8E1B1CDDF7BD287CDB22C1",
+    "modules": [
+        "main",
+        "subsdk0",
+        "sdk"
+    ],
+    "base_program_nca": {
+        "name": "edc8bdc59243b32462735c322cbb451a.nca",
+        "nca_offset": 38848,
+        "size": 14808186880
+    },
+    "update_program_nca": {
+        "name": "fd6baab822ac7180838dfb09783e61b9.nca",
+        "nca_offset": 1146647,
+        "size": 598929920
+    },
+    "exefs_sha256": {
+        "main": "bdc776e01b8e30d24e0d8e940c7cd300aa911cca867186920b2377aadd685b01",
+        "main.npdm": "45a8ecf07093d0b6a60c9ef3c2199bf4398c15bb453017a449a2d7690d433b7f",
+        "rtld": "a977ae6f4952aad94e1c69e6b4ae6a7526824fea5ff01abd7271d81ac737a624",
+        "sdk": "dcf4aba559fd4ef623a0d5b5462deb1a9f4111587b6e78dae24ee2dba0fc5c5a",
+        "subsdk0": "d413db23c0f1cf09d2a71c9ba0e627e1fffec14a3516ffe87c05f661308ae335"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "ace9e8feca3b96574f19d3bfec700b34bb14023f5962e5bea586dd15b904c23d",
+        "sdk.patched.bin": "5068bdb9b58caee33cd79367b54ddac5adbc52061a7f7324a8aacf128bb26c3f",
+        "subsdk0.patched.bin": "57e50f0e8f2f2e1b82e0ddf62d21986f682415ce7dedbb84bc7d03abc98b12c4"
+    },
+    "romfs": {
+        "size": 15194654528,
+        "sha256": "5c2491c6367165afc5a74ff70fde57d2e92f1ca6b731f12232e5553fbeb10eb6",
+        "files": 250,
+        "bytes_from_base": 14648372144,
+        "bytes_from_update": 576084880
+    },
+    "control": {
+        "_comment": "From control.nacp of the 2.2.1 update NSP: SupportedLanguageFlag and the user account save sizes (the save grew from 10 to 20 MiB since 1.0.0).",
+        "supported_languages": [
+            "BritishEnglish",
+            "Japanese",
+            "French",
+            "German",
+            "Spanish",
+            "Italian",
+            "Korean",
+            "TraditionalChinese",
+            "SimplifiedChinese"
+        ],
+        "user_save_size": 20971520,
+        "user_save_journal_size": 10485760
+    }
+}

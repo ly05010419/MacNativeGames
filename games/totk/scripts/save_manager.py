@@ -92,6 +92,20 @@ def exchange_directories(first, second):
 
 
 def account_folder(profile):
+    """The save area of the user the game opens with: the user users.txt marks (runtime/account.c; its first user when
+    none is marked), else a profile from before the users, whose one identity is account.uid."""
+    store = profile / "users.txt"
+    if store.is_file():
+        ids = []
+        for line in store.read_text(encoding="utf-8", errors="replace").splitlines():
+            marked = line.startswith("*")
+            uid = (line[1:] if marked else line).split("\t", 1)[0]
+            if "\t" in line and len(uid) == 32 and all(c in "0123456789abcdef" for c in uid) and int(uid, 16):
+                if marked:
+                    return uid
+                ids.append(uid)
+        if ids:
+            return ids[0]
     raw = (profile / "account.uid").read_bytes()
     if len(raw) != 16 or not any(raw):
         raise ValueError("Invalid account.uid; launch the app once to create a profile")

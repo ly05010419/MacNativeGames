@@ -1,0 +1,33 @@
+# recomp_lift manifest for game (RA2 1.006). Each entry says why.
+# The game's printf-style debug log (cdecl, compiled to a bare ret in the
+# retail build): src/ra2/debuglog.cpp prints it with RA2_DEBUGLOG=1.
+replace 004068F0 DebugLog
+# The text drawing routine (cdecl): src/ra2/debuglog.cpp logs its
+# arguments with RA2_TEXTLOG=1.
+replace 00432350 DrawText
+# The font's glyph-string renderer (thiscall): logged with RA2_TEXTLOG=1.
+replace 00431CC0 RenderGlyphs
+# The second glyph renderer: logged with RA2_TEXTLOG=1.
+replace 004318E0 RenderGlyphs2
+# The audio engine's sample-start routine (thiscall, no arguments; fails
+# with 0x800F0000 when the sample is already playing): logged with
+# RA2_AUDIOLOG=1.
+replace 00402720 SampleStart
+# The audio engine's file-stream start (fastcall-like: ecx the stream,
+# edx the file name, one stack argument): logged with RA2_AUDIOLOG=1.
+replace 00407A90 StreamFile
+# The tactical view's per-frame update (thiscall, through its vtable):
+# src/ra2/scroll.cpp moves the view by the on-screen stick first.
+replace 006A2DD0 TacticalUpdate
+# The sidebar's layout (thiscall): src/ra2/sidebar.cpp lays it out for a
+# shorter screen when it is shown larger (--sidebar-scale).
+replace 0067B910 SidebarLayout
+# The battlefield's frame limiter (called once a frame): src/ra2/
+# frame_pacing.cpp shows frames from there at an even rate.
+replace 00540960 FrameLimiter
+
+# Switch whose index is reloaded from a stack slot after the bounds check
+# (cmp ebx, 0x11; ja 004785B4; mov edx, [esp+0x2C]; jmp [00478684 + edx*4]);
+# every path stores ebx to that slot. Reached in a match (iPhone, 2026-10-27:
+# "indirect branch to unlifted address 00477733 from 0047709D").
+jumptable 0047709D 00478684 18

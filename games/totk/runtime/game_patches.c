@@ -8,6 +8,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdatomic.h>
+#include <unistd.h>
 #include <math.h>
 
 /* 60 FPS.
@@ -133,10 +134,6 @@ typedef struct { uint64_t fmul, store; unsigned r, f; int off; int pair; } Cloth
 static const ClothInline cloth_inline[3] = {{0x82192c, 0x821928, 0, 8, 0x124, 0}, {0x822a64, 0x822a40, 0, 8, 0x124, 0},
                                             {0x83182c, 0x831830, 1, 0, 0x134, 0}};
 static const uint64_t cloth_call = 0x8222f0, cloth_update = 0x89822c;
-#elif defined(TOTK_GAME_V112)
-static const ClothInline cloth_inline[3] = {{0x9d1e64, 0x9d1e74, 0, 8, 0x104, 0}, {0x9d2d34, 0x9d2d2c, 0, 8, 0x104, 0},
-                                            {0x9e7648, 0x9e764c, 1, 0, 0x134, 0}};
-static const uint64_t cloth_call = 0x9d2774, cloth_update = 0x88a998;
 #else
 static const ClothInline cloth_inline[3] = {{0x7b5988, 0x7b598c, 0, 8, -0x40, 1}, {0x7b6b28, 0x7b6b2c, 0, 8, -0x40, 1},
                                             {0x7f5ec4, 0x7f5ed0, 1, 0, 0x114, 0}};
@@ -257,22 +254,66 @@ static void patch_realtime(Module *m) {
    and the store of s1 at main+0xc630d8 stays. The size read from the parameter is then not used. The host writes the
    page at load, so on the phone (code patched at build) the size is still chosen at run time: TOTK_RENDER_RES, or the
    game's handheld 1280x720 when unset / 0 (the phone always reports handheld mode). The game's final passes scale the
-   scene to its output (1280x720 handheld). */
+   scene to its output (1280x720 handheld). On the Mac the size is absolute (the game's own entry is a fixed 1600x900,
+   there is no canvas factor like 1.4.3's), and unset TOTK_RENDER_RES keeps the scene at the canvas size, written again
+   whenever the settings panel changes the canvas (output_size_set). */
 static const GamePatch render_res_sites[3] = {
     {GAME_ADDR(0xc630bc), 0x5e21d900, 0, "scvtf s0, s8 -> adrp x9, <data page>"},
     {GAME_ADDR(0xc630c4), 0xbd0cc660, 0x2d420520, "str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]"},
     {GAME_ADDR(0xc630c8), 0x5e21d921, 0xbd0cc660, "scvtf s1, s9 -> str s0, [x19, #0xcc4]"},
 };
+static int render_canvas;   /* auto: the scene follows the canvas (Mac) */
+/* The HeapDef overlay for this canvas (and scene, scene: "<canvas>-scene-<canvas>") that runtime/romfs.c mounts. */
+__attribute__((unused)) static int overlay_present(unsigned w, unsigned h, int scene) {
+    const char *dir = getenv("TOTK_ROMFS_PATCHES_OUT"); char path[4096];
+    if (scene) snprintf(path, sizeof path, "%s/%ux%u-scene-%ux%u/manifest.tsv", dir ? dir : "extracted/" TOTK_GAME_DIR "/romfs-patches-out", w, h, w, h);
+    else snprintf(path, sizeof path, "%s/%ux%u/manifest.tsv", dir ? dir : "extracted/" TOTK_GAME_DIR "/romfs-patches-out", w, h);
+    return access(path, R_OK) == 0;
+}
+/* The scene follows the canvas (after PR #1467) only where it was made for: 1.2.1 on the Mac, TOTK_RENDER_RES unset,
+   and an app that carries the scene overlays (build_app.py makes them for 1.2.1 and 1.4.3). 1.0.0 shares this
+   file but gets none, and an app from before (only update_runtime.py since) has none: both keep the game's own 1600x900
+   scene and the plain overlays, as before, instead of stopping at a missing overlay (runtime/romfs.c). */
+static int scene_follows_canvas(void) {
+#if TARGET_OS_OSX && defined(TOTK_GAME_V121)
+    static int decided, on;
+    if (!decided) {
+        const char *e = getenv("TOTK_RENDER_RES");
+        on = !getenv("TOTK_EXPORT_IOS") && (!e || !*e) && overlay_present(1920, 1080, 1);
+        if (!on && !getenv("TOTK_EXPORT_IOS") && (!e || !*e))
+            fprintf(stderr, "[totk] scene at the game's own 1600x900: this app has no scene overlays (build it again with build_app.py for the scene at the canvas size)\n");
+        decided = 1;
+    }
+    return on;
+#else
+    return 0;
+#endif
+}
+static uint8_t *render_page;   /* the data page, so the scene size can follow the canvas (output_size_set) */
+static int output_full_at_start = 1;   /* TOTK_OUTPUT_RES explicit: the game starts at the full canvas, else at 1080p */
 static int render_res(unsigned *w, unsigned *h) {
     const char *e = getenv("TOTK_RENDER_RES");
-    if (!e || !*e || !strcmp(e, "0")) return 0;
+    if (e && !strcmp(e, "0")) return 0;
+    if (!e || !*e) {
+        if (!scene_follows_canvas()) return 0;
+        render_canvas = 1;
+        unsigned ow = 1920, oh = 1080;   /* the largest canvas: the scene it must hold, for the heaps */
+        runtime_output_res(&ow, &oh);
+        *w = ow; *h = oh;
+        return 1;
+    }
     if (sscanf(e, "%ux%u", w, h) != 2 || *w < 64 || *h < 64 || *w > 4096 || *h > 4096) runtime_fail("TOTK_RENDER_RES must be <width>x<height>");
     return 1;
 }
 static void patch_render_res(Module *m) {
     uint64_t data_off = (m->file_size + 0x3fff) & ~0x3fffULL;
     unsigned w = 1280, h = 720; int set = render_res(&w, &h);
-    if (!CODE_PATCHED_AT_BUILD && !set) return;   /* Mac: the game's own size unless asked */
+    if (!CODE_PATCHED_AT_BUILD && !set) return;   /* the game's own size unless asked */
+    if (render_canvas) {   /* the scene starts at the canvas the game starts at (1080p unless TOTK_OUTPUT_RES starts full) */
+        unsigned ow = 1920, oh = 1080;
+        if (runtime_output_res(&ow, &oh) && output_full_at_start) { w = ow; h = oh; }
+        else { w = 1920; h = 1080; }
+    }
     uint32_t want[3] = {adrp_x9((uintptr_t)m->base + render_res_sites[0].offset, (uintptr_t)m->base + data_off),
                         render_res_sites[1].replacement, render_res_sites[2].replacement};
     if (CODE_PATCHED_AT_BUILD) {
@@ -292,8 +333,9 @@ static void patch_render_res(Module *m) {
     }
     float v[2] = {(float)w, (float)h};
     memcpy(m->base + data_off + 16, v, sizeof v);
-    fprintf(stderr, "[totk] render resolution patch: scene render size %ux%u%s (3 instructions at main+0xc630bc, value on the data page)\n",
-            w, h, set ? "" : " (the game's handheld size; TOTK_RENDER_RES not set)");
+    render_page = m->base + data_off;   /* output_size_set keeps the scene at the canvas when the panel switches */
+    fprintf(stderr, "[totk] render resolution patch: scene render size %ux%u (3 instructions at main+0xc630bc, value on the data page)%s\n",
+            w, h, render_canvas ? ", follows the canvas" : "");
 }
 
 /* Output resolution ("true 2K", 2026-10-17; key 3 switches it while playing). Two sizes are 1920x1080 in the game:
@@ -318,31 +360,31 @@ static void patch_render_res(Module *m) {
    that bit and posts the "operation mode changed" notification (oe message 30; the mode itself stays docked) so that the
    handler runs; the game lays out its crop, canvas and UI again at the new size. At 1920x1080 the picture fills the
    swapchain's top-left (the crop says so) and the present scales it to the window (MetalFX when the window is bigger: the
-   2K output). The scene keeps its render size either way; its final upscale (MetalFX on the Mac, shader a3a570eb) writes
-   the canvas.
-   TOTK_OUTPUT_RES: auto (the Mac default) = a 2560x1440 swapchain and heaps so that the settings panel can switch at any time, starting at
+   2K output). The scene follows the canvas (patch_render_res: a 1080p canvas renders a 1080p scene, 2K a 2K scene, 4K a
+   4K scene; TOTK_RENDER_RES=0 keeps the game's own 1600x900); its final upscale (MetalFX on the Mac, shader a3a570eb)
+   writes the canvas.
+   TOTK_OUTPUT_RES: auto (the Mac default) = the largest swapchain whose heap overlay the app carries (2K, or 4K when the app carries the
+   4K heap overlay) and heaps so that the settings panel can switch at any time, starting at
    1920x1080 (the user's choice, 2026-10-17: "default 1080p"; needs the HeapDef overlay built by make romfs-patches; without
    it the game's own 1920x1080, no switching); <w>x<h> = that largest size, starting there (TOTK_OUTPUT_RES=2560x1440 starts
    in true 2K); 0 = the game's own 1920x1080, no switching. iOS and the iOS export (TOTK_EXPORT_IOS) keep the game's own size. Decided once;
    every caller sees the same answer. Mac only. */
-static int output_full_at_start = 1;
 static int output_res_auto(unsigned *w, unsigned *h) {
 #if TARGET_OS_OSX
     if (getenv("TOTK_EXPORT_IOS")) return 0;
-    /* The largest canvas whose heap overlay the app carries: 2K. Not 4K: see game_patches_v143.c (its heaps need one memory
-       pool above the graphics layer's 1 GiB zero-copy limit). */
-    const char *dir = getenv("TOTK_ROMFS_PATCHES_OUT"); char path[4096];
-    static const unsigned sizes[][2] = {{2560, 1440}};
+    /* The largest canvas whose heap overlay the app carries, as <canvas>-scene-<canvas>: the scene follows the canvas
+       (patch_render_res), and that overlay is what runtime/romfs.c mounts for it. The plain <canvas> overlays stay for
+       TOTK_RENDER_RES=0. */
+    /* with the scene at the canvas (scene_follows_canvas) the canvas's <canvas>-scene-<canvas> overlay, else its plain one */
+    int scene = scene_follows_canvas();
+    static const unsigned sizes[][2] = {{3840, 2160}, {2560, 1440}};
     for (unsigned i = 0; i < sizeof sizes / sizeof *sizes; i++) {
-        snprintf(path, sizeof path, "%s/%ux%u/manifest.tsv", dir ? dir : "extracted/" TOTK_GAME_DIR "/romfs-patches-out", sizes[i][0], sizes[i][1]);
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fclose(f);
+        if (!overlay_present(sizes[i][0], sizes[i][1], scene)) continue;
         *w = sizes[i][0]; *h = sizes[i][1]; output_full_at_start = 0;
         fprintf(stderr, "[totk] bigger output (TOTK_OUTPUT_RES=auto): a %ux%u swapchain, starts at 1920x1080 (the default); the settings panel switches\n", *w, *h);
         return 1;
     }
-    fprintf(stderr, "[totk] bigger output (TOTK_OUTPUT_RES=auto): off, %s is missing (make romfs-patches)\n", path);
+    fprintf(stderr, "[totk] bigger output (TOTK_OUTPUT_RES=auto): off, no %s overlay for 2560x1440 (make romfs-patches)\n", scene ? "scene" : "output");
     return 0;
 #else
     (void)w; (void)h; return 0;
@@ -367,20 +409,25 @@ static int output_res(unsigned *w, unsigned *h) {
     return on;
 }
 int runtime_output_res(unsigned *w, unsigned *h) { return !CODE_PATCHED_AT_BUILD && output_res(w, h); }
-/* Only 1.4.3 counts a bigger scene in its heaps (runtime_output_res_extra_bytes): no scene overlay here. */
-int runtime_render_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
+/* The scene render size the heaps must hold (the overlay name's -scene-<sw>x<sh>, runtime/romfs.c): on the Mac 1.2.1
+   keeps it at the canvas, like 1.4.3 does (game_patches_v143.c). iOS keeps the game's own heaps. */
+int runtime_render_res(unsigned *w, unsigned *h) { return !getenv("TOTK_EXPORT_IOS") && render_res(w, h); }
 /* The canvas-sized render targets come from agl::utl::DynamicTextureAllocator (initialised once, main+0x8e1a98): a single
    heap of the HeapDef size "DynamicTextureAllocatorMem" (113664 KiB), carved from the "Graphics" heap (201728 KiB, the heap
    of gsys::SystemTask), with no parent to grow from. At 2560x1440 the title runs out of it (the allocator main+0x798934
-   then dereferences the null block, main+0x799390). The HeapDef overlay for the output size (scripts/make_output_res_overlay.py,
-   loaded by runtime/romfs.c) scales DynamicTextureAllocatorMem with the output pixels, rounded up to whole MiB, and grows
-   Graphics by the same amount; the application pool grows by it too (rounded up to 2 MiB), so no other heap shrinks. */
+   then dereferences the null block, main+0x799390). The HeapDef overlay for the output and scene sizes
+   (scripts/make_output_res_overlay.py, loaded by runtime/romfs.c) scales DynamicTextureAllocatorMem with those pixels
+   (the scene with a 1.6 margin, the formula and its measurement from game_patches_v143.c), rounded up to whole MiB, and
+   grows Graphics by the same amount; the application pool grows by it too (rounded up to 2 MiB), so no other heap shrinks. */
 uint64_t runtime_output_res_extra_bytes(void) {
-    unsigned w, h;
-    if (!runtime_output_res(&w, &h)) return 0;
-    double ratio = (double)w * h / (1920.0 * 1080.0);
-    if (ratio <= 1.0) return 0;
-    uint64_t kib = (uint64_t)ceil(113664.0 * ratio / 1024.0) * 1024 - 113664;
+    unsigned w, h, sw, sh;
+    double grow = 0;
+    if (runtime_output_res(&w, &h) && (double)w * h > 1920.0 * 1080.0) grow += (double)w * h / (1920.0 * 1080.0) - 1;
+    int scene = runtime_render_res(&sw, &sh) && (double)sw * sh > 1600.0 * 900.0;
+    if (scene) grow += (double)sw * sh / (1600.0 * 900.0) - 1;
+    if (grow <= 0) return 0;
+    if (scene) grow *= 1.6;   /* the scene targets' margin, measured on 1.4.3 (game_patches_v143.c) */
+    uint64_t kib = (uint64_t)ceil(113664.0 * (1 + grow) / 1024.0) * 1024 - 113664;
     return kib << 10;
 }
 enum { DP_OUTPUT_SIZE = 32, DP_RENDERER = 40 };   /* data page: the output size {w, h} the game reads; the renderer it stores */
@@ -423,6 +470,11 @@ static void output_size_set(uint64_t want) {
     _Atomic uint64_t *size = (_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE);
     if (atomic_load(size) == want) return;
     atomic_store(size, want);
+    if (render_page) {   /* the scene follows the canvas (patch_render_res): the layout re-run reads this page */
+        float v[2] = {(float)(unsigned)want, (float)(unsigned)(want >> 32)};
+        memcpy((void *)render_page + 16, v, sizeof v);
+        fprintf(stderr, "[totk] scene render size %ux%u (the canvas)\n", (unsigned)want, (unsigned)(want >> 32));
+    }
     uint64_t renderer = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_RENDERER));
     const char *before = "";
     if (renderer) {
@@ -434,36 +486,44 @@ static void output_size_set(uint64_t want) {
             renderer ? " from the next layout" : "; the game has not laid out its displays yet, it takes this size when it does", before);
 }
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*): 1080p, 1080p with the MetalFX output scaler, or the game's
-   canvas and UI at the native size (the swapchain's, 2K), the same with the MetalFX output scaler up to the window (a 4K
-   screen), or 720p, a 1280x720 canvas (the scene scales with it). All need a bigger-output start (TOTK_OUTPUT_RES=auto
-   with the HeapDef overlay, or <w>x<h>). */
+   canvas and UI at the native size (up to the swapchain's, 2K), the same with the MetalFX output scaler up to the window (a 4K
+   screen), or 720p, a 1280x720 canvas (the scene scales with it); native 4K is the same idea at 3840x2160 when the app
+   carries the 4K heap overlay. All need a bigger-output start (TOTK_OUTPUT_RES=auto with the HeapDef overlay, or <w>x<h>). */
 int runtime_output_native(int mode, unsigned *w, unsigned *h) {
-    if (!output_page || (mode != OUTPUT_MODE_NATIVE && mode != OUTPUT_MODE_NATIVE_METALFX)) return 0;
-    *w = output_w; *h = output_h; return 1;
+    if (!output_page) return 0;
+    if (mode == OUTPUT_MODE_NATIVE_4K) {
+        if (output_w < 3840 || output_h < 2160) return 0;
+        *w = 3840; *h = 2160; return 1;
+    }
+    if (mode != OUTPUT_MODE_NATIVE && mode != OUTPUT_MODE_NATIVE_METALFX) return 0;
+    *w = output_w >= 3840 ? 2560 : output_w; *h = output_h >= 2160 ? 1440 : output_h; return 1;   /* native stays 2K; 4K is its own mode */
 }
 int runtime_output_modes(void) {
     if (!output_page) return 0;
-    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX;
+    return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | 1 << OUTPUT_MODE_720P | 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX |
+           (output_w >= 3840 && output_h >= 2160 ? 1 << OUTPUT_MODE_NATIVE_4K : 0);
 }
 int runtime_output_mode(void) {
     extern int mfxup_output_enabled(void);
     if (!output_page) return OUTPUT_MODE_OFF;
     uint64_t now = atomic_load((_Atomic uint64_t *)(void *)(output_page + DP_OUTPUT_SIZE));
     if (now == pack_size(1280, 720)) return OUTPUT_MODE_720P;
+    if (now == pack_size(3840, 2160) && !mfxup_output_enabled()) return OUTPUT_MODE_NATIVE_4K;
     if ((unsigned)now > 1920) return mfxup_output_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
     return mfxup_output_enabled() ? OUTPUT_MODE_METALFX : OUTPUT_MODE_OFF;
 }
 int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
-    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_720P || !(runtime_output_modes() & 1 << mode)) return 0;
+    if (!output_page || mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_NATIVE_4K || !(runtime_output_modes() & 1 << mode)) return 0;
     unsigned w = 1920, h = 1080;
     if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; }
-    else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX) runtime_output_native(mode, &w, &h);
+    else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K) runtime_output_native(mode, &w, &h);
     output_size_set(pack_size(w, h));
     int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;
     dm_gfx_set_flag("mfx_output", mfx);
     dm_gfx_set_flag("mfx_upscale", mfx);
-    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
+    fprintf(stderr, "[totk] picture: %s\n", mode == OUTPUT_MODE_720P ? "720p" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" :
+            mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" :
             mode == OUTPUT_MODE_NATIVE ? "native" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
@@ -716,6 +776,40 @@ static void patch_bench_cam(Module *m) {
 }
 #endif
 
+/* Texture storage offsets past 2 GiB (2026-10-29). The texture loader (1.2.1 main+0xad43e8, 1.0.0 main+0xa7d318) places
+   each texture at a 32-bit offset w25 in its texture pool and widens it to 64 bits as a signed number twice: sxtw x2, w25
+   for nvnTextureBuilderSetStorage's offset, and add x1, x8, w25, sxtw for SetPackagedTextureData's source (the pool's CPU
+   address + offset; the same address as the storage, the data is already in place). The shipping pool is far below
+   2 GiB, but the 8 GB mode with a large texture pack (TOTK_DRAM_8GB, the pack's heap table) makes it 3.58 GiB, and every
+   texture past 2 GiB then got a negative offset: storage and source 4 GiB below the pool, in the stack region or other
+   memory (refused uploads, garbage textures, a SIGBUS in ReadTexels, one in the packaged-data copy). It was the only pool
+   over 2 GiB (the next is 252 MiB). Both now widen the offset unsigned, which covers a pool of up to 4 GiB.
+   Sites mapped with scripts/map_version_sites.py --from v121 (1.0.0: the same words);
+   1.4.3 has its own patch source (game_patches_v143.c) and is not covered. TOTK_POOL_OFFSET_PATCH=0 leaves them as shipped too. */
+static void patch_pool_offset(Module *m) {
+#if defined(TOTK_GAME_V121)
+    static const uint64_t sites[] = {0xad43f0, 0xad440c};
+#else
+    static const uint64_t sites[] = {0xa7d320, 0xa7d33c};
+#endif
+    const char *e = getenv("TOTK_POOL_OFFSET_PATCH");   /* the Mac only: an iPhone / iPad build ships the code already patched */
+    if (!CODE_PATCHED_AT_BUILD && e && !strcmp(e, "0")) { fprintf(stderr, "[totk] %s texture pool offsets: as shipped (TOTK_POOL_OFFSET_PATCH=0)\n", TOTK_GAME_VERSION); return; }
+    const struct { uint64_t site; uint32_t original, replacement; const char *what; } words[] = {
+        {sites[0], 0x93407f22, 0x2a1903e2, "sxtw x2, w25 -> mov w2, w25 (SetStorage offset)"},
+        {sites[1], 0x8b39c101, 0x8b394101, "add x1, x8, w25, sxtw -> uxtw (packaged data source)"},
+    };
+    for (unsigned i = 0; !CODE_PATCHED_AT_BUILD && i < 2; i++) {   /* there put_word checks the replacement instead (cloth_site) */
+        uint32_t w; memcpy(&w, m->base + words[i].site, 4);
+        if (w != words[i].original) {
+            fprintf(stderr, "[totk] texture pool offset main+%#llx: found %08x expected %08x (%s)\n", (unsigned long long)words[i].site, w, words[i].original, words[i].what);
+            runtime_fail("texture pool offset: original instruction mismatch");
+        }
+    }
+    for (unsigned i = 0; i < 2; i++) put_word(m, words[i].site, words[i].replacement, "texture pool offset");
+    fprintf(stderr, "[totk] %s texture pool offsets: widened unsigned at main+%#llx and main+%#llx\n", TOTK_GAME_VERSION,
+            (unsigned long long)words[0].site, (unsigned long long)words[1].site);
+}
+
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
     const size_t n = sizeof fps60_sites / sizeof fps60_sites[0];
@@ -747,6 +841,7 @@ void runtime_game_patches(Module *m) {
 #if defined(TOTK_GAME_V121)
     patch_cursor_speed(m);
 #endif
+    patch_pool_offset(m);
     patch_trap(m);
 #if defined(TOTK_GAME_V121)
     { static const uint64_t sites[] = {0xcb4b10, 0x12521cc, 0x19b36f0, 0x1ecdf68};   /* camera x2, viewport x2 (aspect_patch.h) */

@@ -19,7 +19,7 @@
 #define ASPECT_TANF_SLOT 64   /* the game's tanf and atanf (8 bytes each), for the Vert+ stubs */
 #define ASPECT_ATANF_SLOT 72
 #define ASPECT_STUB 32        /* bytes per plain stub */
-#define ASPECT_VSTUB 304      /* bytes per Vert+ stub (74 words, padded) */
+#define ASPECT_VSTUB 304      /* bytes per Vert+ stub (76 words; the next stub, and the fade veneer after both, leave no more) */
 
 enum { ASPECT_BAD = -1 };
 
@@ -124,16 +124,18 @@ static inline const char *aspect_stub(uint32_t ins, uint64_t s, uint64_t site, u
     return NULL;
 }
 
-/* The Vert+ stub (74 words) at offset s for the fovy load ins of a camera site: run it and, while the Vert+ factor k is
-   set, widen s<f> to 2 atanf(k tanf(s<f> / 2)), calling the game's tanf and atanf (data page +64, +72). The game's
-   code runs on as if nothing had happened: x0-x17, x30, q0-q31 and the flags are kept on the stack (672 bytes), and
-   s<f> comes back from its slot there. */
-static inline const char *aspect_vstub(uint32_t ins, uint64_t s, uint64_t site, uint64_t data_off, uint32_t out[74]) {
-    uint32_t adrp1 = aspect_adrp(16, s + 29 * 4, data_off), adrp2 = aspect_adrp(16, s + 37 * 4, data_off), back = aspect_b(s + 73 * 4, site + 4);
+/* The Vert+ stub (76 words) at offset s for the fovy load ins of a camera site: run it and, while the Vert+ factor k is
+   set, widen s<f> to 2 atanf(k tanf(s<f> / 2)), calling the game's tanf and atanf (data page +64, +72). A negative k is
+   the half-angle tangent itself (VR, user 2026-10-31: flying a Zonai device the headset's picture stretched, the game
+   widening its own field of view for speed): s<f> becomes 2 atanf(-k) whatever the game asked for. k waits in s8,
+   which tanf keeps. The game's code runs on as if nothing had happened: x0-x17, x30, q0-q31 and the flags are kept on
+   the stack (672 bytes), and s<f> comes back from its slot there. */
+static inline const char *aspect_vstub(uint32_t ins, uint64_t s, uint64_t site, uint64_t data_off, uint32_t out[76]) {
+    uint32_t adrp1 = aspect_adrp(16, s + 29 * 4, data_off), adrp2 = aspect_adrp(16, s + 42 * 4, data_off), back = aspect_b(s + 75 * 4, site + 4);
     if (!adrp1 || !adrp2) return "aspect patch: data page out of ADRP range";
     if (!back) return "aspect patch: branch out of range";
     const uint32_t QF = 160 + 16 * (ins & 31);   /* s<f>'s slot */
-    uint32_t w[74], n = 0;
+    uint32_t w[76], n = 0;
     w[n++] = ins;                                                            /*  0 the camera's fovy into s<f> */
     w[n++] = 0xd10a83ff;                                                     /*  1 sub sp, sp, #672 */
     for (uint32_t i = 0; i < 18; i += 2) w[n++] = 0xa9000000u | (i << 15) | ((i + 1) << 10) | (31 << 5) | i;   /* stp x<i>, x<i+1>, [sp, #8i] */
@@ -142,27 +144,29 @@ static inline const char *aspect_vstub(uint32_t ins, uint64_t s, uint64_t site, 
     for (uint32_t i = 0; i < 32; i += 2) w[n++] = 0xad000000u | (((160 + 16 * i) / 16) << 15) | ((i + 1) << 10) | (31 << 5) | i;   /* stp q<i>, q<i+1> */
     w[n++] = adrp1;                                                          /* 29 adrp x16, <data page> */
     w[n++] = 0xb9400000u | ((ASPECT_VERT_SLOT / 4) << 10) | (16 << 5) | 17;  /* 30 ldr w17, [x16, #k] */
-    w[n++] = 0x34000000u | ((45 - 31) << 5) | 17;                            /* 31 cbz w17, 45: no Vert+ */
-    w[n++] = 0xbd400000u | ((QF / 4) << 10) | (31 << 5) | 0;                 /* 32 ldr s0, [sp, #s<f>] */
-    w[n++] = 0x1e2c1001;                                                     /* 33 fmov s1, #0.5 */
-    w[n++] = 0x1e210800;                                                     /* 34 fmul s0, s0, s1 */
-    w[n++] = 0xf9400000u | ((ASPECT_TANF_SLOT / 8) << 10) | (16 << 5) | 16;  /* 35 ldr x16, [x16, #tanf] */
-    w[n++] = 0xd63f0200;                                                     /* 36 blr x16 */
-    w[n++] = adrp2;                                                          /* 37 adrp x16, <data page> */
-    w[n++] = 0xb9400000u | ((ASPECT_VERT_SLOT / 4) << 10) | (16 << 5) | 17;  /* 38 ldr w17, [x16, #k] */
-    w[n++] = 0x1e270221;                                                     /* 39 fmov s1, w17 */
-    w[n++] = 0x1e210800;                                                     /* 40 fmul s0, s0, s1 */
-    w[n++] = 0xf9400000u | ((ASPECT_ATANF_SLOT / 8) << 10) | (16 << 5) | 16; /* 41 ldr x16, [x16, #atanf] */
-    w[n++] = 0xd63f0200;                                                     /* 42 blr x16 */
-    w[n++] = 0x1e202800;                                                     /* 43 fadd s0, s0, s0 */
-    w[n++] = 0xbd000000u | ((QF / 4) << 10) | (31 << 5) | 0;                 /* 44 str s0, [sp, #s<f>]: the wider fovy */
-    for (uint32_t i = 0; i < 32; i += 2) w[n++] = 0xad400000u | (((160 + 16 * i) / 16) << 15) | ((i + 1) << 10) | (31 << 5) | i;   /* 45 ldp q<i>, q<i+1> */
-    w[n++] = 0xa9400000u | (18u << 15) | (16 << 10) | (31 << 5) | 30;        /* 61 ldp x30, x16, [sp, #144] */
-    w[n++] = 0xd51b4210;                                                     /* 62 msr nzcv, x16 */
+    w[n++] = 0x34000000u | ((47 - 31) << 5) | 17;                            /* 31 cbz w17, 47: no Vert+ */
+    w[n++] = 0x1e270228;                                                     /* 32 fmov s8, w17: k (tanf keeps d8) */
+    w[n++] = 0x36000000u | (31u << 19) | ((36 - 33) << 5) | 17;              /* 33 tbz w17, #31, 36: k > 0, a factor */
+    w[n++] = 0x1e214100;                                                     /* 34 fneg s0, s8: the tangent itself */
+    w[n++] = 0x14000000u | (43 - 35);                                        /* 35 b 43 (x16 still the data page) */
+    w[n++] = 0xbd400000u | ((QF / 4) << 10) | (31 << 5) | 0;                 /* 36 ldr s0, [sp, #s<f>] */
+    w[n++] = 0x1e2c1001;                                                     /* 37 fmov s1, #0.5 */
+    w[n++] = 0x1e210800;                                                     /* 38 fmul s0, s0, s1 */
+    w[n++] = 0xf9400000u | ((ASPECT_TANF_SLOT / 8) << 10) | (16 << 5) | 16;  /* 39 ldr x16, [x16, #tanf] */
+    w[n++] = 0xd63f0200;                                                     /* 40 blr x16 */
+    w[n++] = 0x1e280800;                                                     /* 41 fmul s0, s0, s8 */
+    w[n++] = adrp2;                                                          /* 42 adrp x16, <data page> */
+    w[n++] = 0xf9400000u | ((ASPECT_ATANF_SLOT / 8) << 10) | (16 << 5) | 16; /* 43 ldr x16, [x16, #atanf] */
+    w[n++] = 0xd63f0200;                                                     /* 44 blr x16 */
+    w[n++] = 0x1e202800;                                                     /* 45 fadd s0, s0, s0 */
+    w[n++] = 0xbd000000u | ((QF / 4) << 10) | (31 << 5) | 0;                 /* 46 str s0, [sp, #s<f>]: the wider fovy */
+    for (uint32_t i = 0; i < 32; i += 2) w[n++] = 0xad400000u | (((160 + 16 * i) / 16) << 15) | ((i + 1) << 10) | (31 << 5) | i;   /* 47 ldp q<i>, q<i+1> */
+    w[n++] = 0xa9400000u | (18u << 15) | (16 << 10) | (31 << 5) | 30;        /* 63 ldp x30, x16, [sp, #144] */
+    w[n++] = 0xd51b4210;                                                     /* 64 msr nzcv, x16 */
     for (uint32_t i = 0; i < 18; i += 2) w[n++] = 0xa9400000u | (i << 15) | ((i + 1) << 10) | (31 << 5) | i;   /* ldp x<i>, x<i+1> */
-    w[n++] = 0x910a83ff;                                                     /* 72 add sp, sp, #672 */
-    w[n++] = back;                                                           /* 73 b <after the load> */
-    if (n != 74) return "aspect patch: Vert+ stub size";
+    w[n++] = 0x910a83ff;                                                     /* 74 add sp, sp, #672 */
+    w[n++] = back;                                                           /* 75 b <after the load> */
+    if (n != 76) return "aspect patch: Vert+ stub size";
     memcpy(out, w, sizeof w);
     return NULL;
 }

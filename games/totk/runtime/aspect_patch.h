@@ -80,6 +80,19 @@ void runtime_aspect_view(double w, double h) {
     if (atomic_load(&g_aspect_step) == ASPECT_STEP_FIT) aspect_apply();
 }
 
+/* VR (third_party/d2r_gfx/gfx/nvn/totk_vr.m, stage 2): the game renders the headset's field of view. Puts ratio a and
+   Vert+ factor k (the camera's half-angle tangent times k; a negative k is the tangent itself) on the data page directly, past the panel's steps; a = 0
+   gives the panel's choice back. Needs the Vert+ stubs, which VR turns on (game_patches_v143.c). 0 without them. */
+int runtime_aspect_vr(float a, float k) {
+    if (!g_aspect_slot || !g_aspect_vert) return 0;
+    if (!(a > 0)) { aspect_apply(); return 1; }
+    atomic_store(g_aspect_slot, aspect_float_bits(a));
+    atomic_store(g_aspect_vert, aspect_float_bits(k));
+    if (k < 0) fprintf(stderr, "[totk] aspect for VR: ratio %.4f, vertical view fixed (half-angle tangent %.4f)\n", a, -k);
+    else fprintf(stderr, "[totk] aspect for VR: ratio %.4f, vertical view widened %.3fx\n", a, k);
+    return 1;
+}
+
 /* The settings panel: a ratio (0.5..8; within 1% of 16:9 the game's own). Returns 0 where it is not available (iPhone /
    iPad, other game versions) or the ratio is out of range. */
 int runtime_aspect_set_ratio(float r) {
@@ -158,7 +171,7 @@ static inline void aspect_install(Module *m, const char *version, const uint64_t
             if (j < 0) fprintf(stderr, "[totk] aspect patch: camera site +%#llx is not the expected setFovy, no Vert+ there\n", (unsigned long long)sites[i]);
             else {
                 uint64_t fs = sites[i] - 64 + 4 * (uint64_t)j, vs = vert_off + ASPECT_VSTUB * i;
-                uint32_t vcode[74], vjump = aspect_b(fs, vs);
+                uint32_t vcode[76], vjump = aspect_b(fs, vs);
                 const char *verr = aspect_vstub(before[j], vs, fs, data_off, vcode);
                 if (verr || !vjump) runtime_fail(verr ? verr : "aspect patch: branch out of range");
                 memcpy(m->base + vs, vcode, sizeof vcode);

@@ -12,10 +12,12 @@ them). Nothing of the game ships with the project: every font comes from the pla
 same in 1.0.0 and 1.2.1 (same SHA-256), so one mod folder per version is enough.
 
 Styles:
-  keyboard  the keys the Mac keyboard plays (app/launcher.m): A B X Y = J K I U, L R = Q E, ZL ZR = Option Shift,
-            + - = Enter Tab, left stick = W A S D, right stick = arrow keys, stick presses = Z C, d-pad = T F G H.
+  keyboard  the default keyboard and mouse layout (runtime/keyboard_map.h, the settings panel's key bindings): A B X Y =
+            E Shift Space and the left mouse button, L R = F R, ZL ZR = Q and the right mouse button, + - = Esc Tab,
+            left stick = W A S D, right stick = arrow keys, stick presses = Ctrl V, d-pad = 2 3 4 5 (left up right down).
+            A layout changed in the settings panel is not drawn: the icons show the default.
   azerty    the same keys with the letters a French (AZERTY) keyboard prints on them: the keyboard plays physical
-            positions, so L R = A E, left stick = Z Q S D, stick presses = W C. The launcher can serve it only while
+            positions, so ZL = A, left stick = Z Q S D. The launcher can serve it only while
             no controller is connected (mods/<version>-keyboard, app/launcher.m).
   xbox      the buttons in the place a controller presses them (controllers follow the Switch's physical layout):
             A B X Y = B A Y X, L R = LB RB, ZL ZR = LT RT, + - = Menu and View, the d-pad as a cross.
@@ -257,19 +259,32 @@ def keyboard_style(g, layout=None):
                 key(g, pen, x, y, x + w, y + h, k(label), radius=w * 0.18, cap=h * 0.6)
         return advance, draw
     return {
-        0xE040: single('J'), 0xE041: single('K'), 0xE042: single('I'), 0xE043: single('U'),
-        0xE044: single('Q', 720), 0xE045: single('E', 720), 0xE046: wide('Opt', 900), 0xE047: wide('Shift', 1080),
-        0xE049: cluster('T', 'F', 'G', 'H', 900), 0xE04B: wide('Enter', 1080), 0xE04C: wide('Tab', 820),
+        0xE040: single('E'), 0xE041: wide('Shift', 1080), 0xE042: wide('Space', 1080), 0xE043: wide('LMB', 900),
+        0xE044: single('F', 720), 0xE045: single('R', 720), 0xE046: single('Q', 720), 0xE047: wide('RMB', 900),
+        0xE049: cluster('3', '2', '5', '4', 900), 0xE04B: wide('Esc', 820), 0xE04C: wide('Tab', 820),
         # left stick: W A S D
         0xE050: single('S'), 0xE052: single('W'), 0xE054: pair('A', 'D'), 0xE058: single('D'), 0xE05A: single('A'),
-        0xE05C: pair('W', 'S'), 0xE05E: cluster('W', 'A', 'S', 'D'), 0xE056: single('Z'),
+        0xE05C: pair('W', 'S'), 0xE05E: cluster('W', 'A', 'S', 'D'), 0xE056: wide('Ctrl', 900),
         # right stick: arrow keys
         0xE051: single('↓'), 0xE053: single('↑'), 0xE055: pair('←', '→'), 0xE059: single('→'), 0xE05B: single('←'),
-        0xE05D: pair('↑', '↓'), 0xE05F: cluster('↑', '←', '↓', '→'), 0xE068: cluster('↑', '←', '↓', '→'), 0xE057: single('C'),
-        # d-pad: T F G H
-        0xE060: single('T'), 0xE061: single('G'), 0xE062: single('F'), 0xE063: single('H'),
-        0xE064: pair('T', 'G', 900), 0xE065: pair('F', 'H', 900),
+        0xE05D: pair('↑', '↓'), 0xE05F: cluster('↑', '←', '↓', '→'), 0xE068: cluster('↑', '←', '↓', '→'), 0xE057: single('V'),
+        # d-pad: 2 3 4 5 (left, up, right, down)
+        0xE060: single('3'), 0xE061: single('5'), 0xE062: single('2'), 0xE063: single('4'),
+        0xE064: pair('3', '5', 900), 0xE065: pair('2', '4', 900),
     }
+
+
+def stick(g, label, up=False, advance=640):
+    """The left stick as a controller's own label in a circle (L3 on a DualSense, LS on an Xbox pad); up: with an arrow up,
+    the button guide's "push it forward" (Nt_KeyTexLSt_00, U+E052). The Xbox and PlayStation styles need these too: the
+    HUD redraw takes every texture of HUD_TEXTURES from the style."""
+    def draw(pen):
+        cx = advance / 2; circle(pen, cx, CY, R)
+        if up:
+            g.hole(pen, label, cx, CY - R * 0.25, R * 0.55, R * 1.1); arrow_hole(pen, '↑', cx, CY + R * 0.5, R * 0.6)
+        else:
+            g.hole(pen, label, cx, CY, R * 0.95, R * 1.3)
+    return advance, draw
 
 
 def xbox_style(g):
@@ -317,6 +332,7 @@ def xbox_style(g):
         0xE04B: menu(), 0xE04C: view(),
         0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
         0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
+        0xE052: stick(g, 'LS', up=True), 0xE05E: stick(g, 'LS'),
     }
 
 
@@ -377,6 +393,7 @@ def playstation_style(g, by_label=False):
         0xE040: face(a), 0xE041: face(b), 0xE042: face(x), 0xE043: face(y),
         0xE044: bumper('L1'), 0xE045: bumper('R1'), 0xE046: trigger('L2'), 0xE047: trigger('R2'),
         0xE04B: options(), 0xE04C: create(),
+        0xE052: stick(g, 'L3', up=True), 0xE05E: stick(g, 'L3'),
     }
     for cp in (0xE049, 0xE060, 0xE061, 0xE062, 0xE063, 0xE064, 0xE065):   # the d-pad is drawn as for Xbox
         icons[cp] = dpad_style[cp]
@@ -521,7 +538,7 @@ def main():
     romfs = args.romfs
     if args.app:
         if not version:
-            parser.error('name the game version with --version (or name the mod folder v0, v112, v121 or v143)')
+            parser.error('name the game version with --version (or name the mod folder v0, v121 or v143)')
         romfs = args.app / f'Contents/Resources/totk/extracted/{version}/romfs'
     image_dir = args.romfs_data or romfs
     if args.app and not args.romfs_data and not (romfs / 'romfs.bin').exists():   # built with --mac-game-data library

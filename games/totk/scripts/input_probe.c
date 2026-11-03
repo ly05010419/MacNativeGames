@@ -21,6 +21,8 @@ void runtime_settings_toggle(void){settings_toggles++;}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}   // no rumble.txt / gyro.txt: the environment decides
 static char saved_name[32],saved_word[16];static int saves;   // the settings panel's saves (runtime_feedback_choose)
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)what;snprintf(saved_name,sizeof saved_name,"%s",name);snprintf(saved_word,sizeof saved_word,"%s",word);saves++;}
+void runtime_setting_remove(const char *name){(void)name;}
+int runtime_mouse_enabled(void){return 0;}
 void dm_gfx_set_flag(const char *name,int v){(void)name;(void)v;runtime_fail("unexpected runtime flag in unit probe");}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}
 void dm_gfx_anomdump(void){runtime_fail("unexpected anomaly dump in unit probe");}
@@ -161,27 +163,58 @@ static void feedback_checks(void){
  need(runtime_motion_axes("x,y,z")==1,"axis spec");
  runtime_motion_live(0);runtime_motion_mouse(1);{const double acc[3]={0,0,-1},g[3]={0,0,0};probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);}
  probe_now+=1000000;need(!sstates(&n,buf.s,1,&six)&&buf.s[0].attr==1,"mouse mode without a controller: motion");
+ /* The mouse's ticks come late now and then, so its own pitch (runtime/mouse_look.h: 10 ms a tick) and the one integrated
+    here part a little; a gravity pull would then creep the aim up or down for seconds after the mouse stops. With the
+    mouse there is no bias to pull out: once it stops, the direction holds, and the gravity reported is its own. */
+ runtime_motion_mouse(1);
+ {double acc[3]={0,0,-1},g[3]={M_PI/2,0,0},p=0;
+  for(int i=0;i<30;i++){p+=0.01*M_PI/2;acc[1]=-sin(p);acc[2]=-cos(p);probe_now+=12000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  g[0]=0;probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  float held[9];memcpy(held,buf.s[0].dir,sizeof held);
+  for(int i=0;i<300;i++){probe_now+=10000000;runtime_motion_feed_mouse(acc,g,probe_now);if(i%2)sstates(&n,buf.s,1,&six);}
+  probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].dir,held[0],held[1],held[2],1e-4)&&near3(buf.s[0].dir+3,held[3],held[4],held[5],1e-4)&&near3(buf.s[0].dir+6,held[6],held[7],held[8],1e-4),
+       "mouse stopped after late ticks: the direction holds for 3 s (no gravity pull)");
+  need(near3(buf.s[0].acc,-buf.s[0].dir[2],-buf.s[0].dir[5],-buf.s[0].dir[8],1e-4),"mouse mode: the gravity reported is the direction's down");}
  runtime_motion_mouse(0);need(!sstates(&n,buf.s,16,&six)&&n==1&&buf.s[0].attr==0,"mouse mode off, no controller: no motion");
+ /* Gyro bias at rest (motion_fusion.c): a controller lying still that reads +10.28 +5.81 -0.70 deg/s. The still seconds
+    before (gravity pull) learned zero, so each still second moves the bias 30 % of the way: after 10 s it is within 3 %. */
+ {const double b[3]={10.28*M_PI/180,5.81*M_PI/180,-0.70*M_PI/180};
+  runtime_motion_live(1);sstart(&six);feed(2500,0,0,-1,b[0],b[1],b[2]);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].gyro,0,0,0,0.002),"a still controller's gyro bias is learned and taken off");
+  feed(250,0,0,-1,b[0],b[1],b[2]+M_PI/2);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near(buf.s[0].gyro[2],0.25,0.002)&&near(buf.s[0].gyro[0],0,0.002)&&near(buf.s[0].gyro[1],0,0.002),"a turn of 90 degrees a second on top of the bias: 0.25 rev/s, the bias not learned from it");
+  /* Another controller (every source change sets its dead zone): the old one's bias is dropped, not taken off its samples. */
+  runtime_motion_deadzone_default(0);feed(50,0,0,-1,0,0,0);probe_now+=1000000;sstates(&n,buf.s,1,&six);
+  need(near3(buf.s[0].gyro,0,0,0,0.002),"another controller: the learned bias starts over");
+  runtime_motion_live(0);}
  probe_clock_fixed=0;
 }
 int main(void){
  void(*init)(void)=runtime_input_override("_ZN2nn3hid14InitializeNpadEv");
  int(*read)(State *,int,const uint32_t *)=runtime_input_override("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj");
  uint32_t id=0;struct{State state;unsigned char guard[32];} out;memset(&out,0xa5,sizeof(out));init();
- runtime_input_key(38,1);runtime_input_key(38,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
+ /* Window keys go through the player's layout (runtime/keyboard_map.h; the default here): E confirms (A). */
+ runtime_input_key(14,1);runtime_input_key(14,0);need(read(&out.state,1,&id)==1&&out.state.buttons==1&&out.state.attr==1,"short tap latched");
  need(read(&out.state,1,&id)==1&&out.state.buttons==0,"released input clears after sample");
  runtime_input_key(13,1);runtime_input_key(2,1);runtime_input_key(123,1);read(&out.state,1,&id);need(out.state.lx==32767&&out.state.ly==32767&&out.state.rx==-32767,"native key axes");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"focus clear");
+ runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly&&!out.state.rx,"full input reset");
  fake_pad.buttons=1;fake_pad.connected=1;read(&out.state,1,&id);need(out.state.buttons==1,"held controller A reaches the game");
- runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"focus clear also releases a held controller button");
- const unsigned dpad[]={3,17,4,5};
+ runtime_input_key(13,1);runtime_input_key(123,1);runtime_input_mouse(0,1);
+ fake_pad.lx=12345;fake_pad.ry=-23456;
+ runtime_input_clear_window();read(&out.state,1,&id);
+ need(out.state.buttons==1&&out.state.lx==12345&&!out.state.ly&&!out.state.rx&&out.state.ry==-23456,"focus loss releases keyboard/mouse while preserving held controller buttons and sticks");
+ read(&out.state,1,&id);need(out.state.buttons==1&&out.state.lx==12345&&out.state.ry==-23456,"background controller remains held without a new input event");
+ fake_pad.buttons=0;fake_pad.lx=fake_pad.ry=0;read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ry,"controller release while unfocused clears the game input");
+ fake_pad.buttons=1;runtime_input_clear();read(&out.state,1,&id);need(!out.state.buttons,"full input reset still releases a held controller button");
+ const unsigned dpad[]={19,20,21,23};   /* 2 3 4 5: d-pad left, up, right, down */
  for(unsigned i=0;i<4;i++){
   runtime_input_key(dpad[i],1);read(&out.state,1,&id);
   need(out.state.buttons==(1ULL<<(12+i))&&!out.state.lx&&!out.state.ly&&!out.state.rx&&!out.state.ry,"D-pad independent of analog sticks");
   runtime_input_key(dpad[i],0);read(&out.state,1,&id);need(!out.state.buttons,"D-pad release");
  }
  /* Key 1 (Mac key code 18) opens / closes the settings panel (frontend.m): once per press; held-key repeats and the
-    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more and no game buttons either. */
+    release do nothing more; no game button. Keys 2-7 (19-23, 26) are no shortcuts any more; 6 and 7 drive nothing. */
  runtime_input_key(18,1);need(settings_toggles==1,"key 1 toggles the settings panel");
  runtime_input_key(18,1);need(settings_toggles==1,"a held key (auto-repeat) does not act again");
  read(&out.state,1,&id);need(!out.state.buttons&&!out.state.lx&&!out.state.ly,"key 1 is no controller input");
@@ -190,7 +223,7 @@ int main(void){
  static const unsigned former[]={19,20,21,22,23,26};
  for(unsigned k=0;k<sizeof former/sizeof former[0];k++){
   runtime_input_key(former[k],1);read(&out.state,1,&id);
-  need(settings_toggles==2&&!out.state.buttons&&!out.state.lx&&!out.state.ly,"keys 2-7 do nothing");
+  need(settings_toggles==2&&((former[k]!=22&&former[k]!=26)||!out.state.buttons)&&!out.state.lx&&!out.state.ly,"keys 2-7 are no shortcuts");
   runtime_input_key(former[k],0);
  }
  id=1;read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"unattached controller");
@@ -204,8 +237,8 @@ int main(void){
  const uint32_t both[]={0,0x20};styles(3);ids(both,2);
  uint32_t hid=0x20;id=0;need(style(&hid)==2&&style(&id)==0,"handheld mode: handheld controller only");
  void(*disc)(const uint32_t *)=runtime_input_override("_ZN2nn3hid14DisconnectNpadERKj");disc(&id);need(style(&hid)==2,"handheld mode: disconnecting player 1 keeps the handheld controller");
- runtime_input_key(38,1);runtime_input_key(38,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
+ runtime_input_key(14,1);runtime_input_key(14,0);need(hread(&out.state,1,&hid)==1&&out.state.buttons==1&&out.state.attr==1,"handheld short tap latched");
  read(&out.state,1,&id);need(!out.state.attr&&!out.state.buttons,"handheld mode: player 1 not attached");
  feedback_checks();
- puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, focus clear of keyboard and controller, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
+ puts("{\"status\":\"pass\",\"scope\":\"input service state ABI, rumble and six-axis hid answers (on by default, off with =0 and in agent test sessions, left/right handles, batches, mute flags, newest-first states, orientation in the controller frame, gravity pull, axis remap), short tap latch, keyboard axes, four D-pad directions, window focus clear preserves the controller; full input reset clears all devices, key 1 settings panel (once per press), keys 2-7 inert, mouse mode owning the gyro, unattached controller, handheld mode controller; no game control flow\"}");
 }

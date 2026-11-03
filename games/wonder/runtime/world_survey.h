@@ -9,3 +9,5 @@ void runtime_survey_init(Module *main_module);
 int runtime_survey_command(const char *line);
 void runtime_survey_tick(uint64_t frame);
 void runtime_survey_cancel_user(void);
+/* Set by the 1.4.3 patches in survey sessions: the benchmark camera block (world_survey.c). */
+extern uint8_t *runtime_bench_cam;

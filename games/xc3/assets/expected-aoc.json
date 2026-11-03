@@ -1,0 +1,53 @@
+{
+    "_comment": "Verified Xenoblade Chronicles 3 add-on content (Expansion Pass waves 1-4) from the player's own NSPs: each add-on's data NCA and its RomFS. Hashes only; no game content. scripts/extract_aoc.py checks these; the runtime lists and mounts the extracted add-ons for 2.2.1.",
+    "addons": {
+        "1": {
+            "title": "010074F013263001",
+            "data_nca": {
+                "name": "d1ed81f182566298ecab660f19c14ef1.nca",
+                "size": 41811968
+            },
+            "romfs": {
+                "size": 41641984,
+                "sha256": "86ce53f13e94b0d4ab1a49d542c984646d259998e77c6ac43fe385c3d219cdb9",
+                "files": 2
+            }
+        },
+        "2": {
+            "title": "010074F013263002",
+            "data_nca": {
+                "name": "96c257378cd589557529cff2fb4b8682.nca",
+                "size": 211271680
+            },
+            "romfs": {
+                "size": 210749168,
+                "sha256": "ec219985af574dc8bef2d1ba3bd7ed9474d0a9dfa351c0e114f6142235b9a7cb",
+                "files": 6
+            }
+        },
+        "3": {
+            "title": "010074F013263003",
+            "data_nca": {
+                "name": "4ecf19cc198ac3f4dfbcc3018a8dbee4.nca",
+                "size": 189874176
+            },
+            "romfs": {
+                "size": 189402144,
+                "sha256": "2f217fe7e01d72ca656cbb91a7c7b7c08a9dd94626dd22f0c7b69bb96b86841e",
+                "files": 6
+            }
+        },
+        "4": {
+            "title": "010074F013263004",
+            "data_nca": {
+                "name": "4ff0ef8a079bfa2dc7592ead46831248.nca",
+                "size": 4282007552
+            },
+            "romfs": {
+                "size": 4273556608,
+                "sha256": "6606367cbe8542f1fd85ac787fae16b3ab0c9f9ae09e8e8150d7d5c5d6ae73b3",
+                "files": 80
+            }
+        }
+    }
+}

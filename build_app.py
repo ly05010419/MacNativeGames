@@ -8,9 +8,10 @@ Supported: TOTK base 1.0.0 (0100F2C0115B6000), XCI or NSP; optional --update wit
 Also Breath of the Wild (01007EF00011E000, games/botw), in two forms: 1.6.0 as one card image holding the base game, the update
 and the add-on content, which needs --shared-fonts (the six .bfttf files a Tears of the Kingdom build extracted into its work
 folder, extracted/firmware/shared-fonts); or 1.9.0 as a base NSP with --update <the 1.9.0 update NSP> and fonts from --firmware
-or --shared-fonts as for a Tears of the Kingdom NSP. With a separate update (1.9.0, or the 1.6.0 update NSP) the add-on content
+or --shared-fonts as for a Tears of the Kingdom NSP. A card image may also hold the 1.9.0 update (PR #682): the version is
+then told by its verified ExeFS hashes. With a separate update (1.9.0, or the 1.6.0 update NSP) the add-on content
 (DLC) comes from --dlc <pack.nsp>, repeated for the two packs (01007EF00011F001, 01007EF00011F002), each one optional and
-checked against its pin. Its startup shaders come from its game data and its own shared shader list
+checked against its pin; a card image brings its own. Its startup shaders come from its game data and its own shared shader list
 (games/botw/assets/shader_list.tsv). The game is recognised by the title IDs in the file, never by the file name.
 NSPs need common tickets (unless rights-free) and a separate shared-font source. iOS builds are unsigned IPAs for sideloading and require Xcode 26+, xcodegen, CMake, and network access to build device libraries.
 Nothing from the game is in this repository; everything is made from your files on your Mac. Key values are never printed.
@@ -46,7 +47,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, glob, hashlib, json, os, platform, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, glob, hashlib, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -54,14 +55,13 @@ GAME = REPO / 'games/totk'
 sys.path.insert(0, str(GAME/'scripts'))
 import mod_folder                  # noqa: E402  the player's RomFS mod folder: replaced only when --install-mod-romfs is given
 EXPECTED = json.loads((GAME / 'assets/expected-v1.0.0.json').read_text())
-UPDATED = json.loads((GAME / 'assets/expected-v1.1.2.json').read_text())
 UPDATED121 = json.loads((GAME / 'assets/expected-v1.2.1.json').read_text())
 UPDATED143 = json.loads((GAME / 'assets/expected-v1.4.3.json').read_text())
-VERSIONS = {'v0': EXPECTED, 'v112': UPDATED, 'v121': UPDATED121, 'v143': UPDATED143}
-UPDATES = ('v112', 'v121', 'v143')
+VERSIONS = {'v0': EXPECTED, 'v121': UPDATED121, 'v143': UPDATED143}   # 1.1.2 (v112) removed 2026-11-02
+UPDATES = ('v121', 'v143')
 # Breath of the Wild (games/botw; botw.md in the Tears of the Kingdom project): 1.6.0 as one card image with the base game, the
-# update and the add-on content; 1.9.0 as a base NSP plus the 1.9.0 update NSP. The game is chosen by the title IDs of the NCAs
-# in the game file, never by its name.
+# update and the add-on content; 1.9.0 as a base NSP plus the 1.9.0 update NSP, or a card image holding that update. The game is
+# chosen by the title IDs of the NCAs in the game file, never by its name.
 BOTW = REPO / 'games/botw'
 BOTW160 = json.loads((BOTW / 'assets/expected-v1.6.0.json').read_text())
 BOTW190 = json.loads((BOTW / 'assets/expected-v1.9.0.json').read_text())
@@ -334,7 +334,7 @@ def prepare_work(work, py, logs):
     tree.mkdir(parents=True, exist_ok=True)
     # Match both directories AND symlinks to directories. A trailing slash
     # allows rsync -a to copy a tooling symlink from a development checkout.
-    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data')]
+    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR')]
     # Files are compared by content and a changed file gets the time of this copy, not its own: make decides by times, and
     # a checkout older than the objects of the last build (another branch built in this folder after it was checked out)
     # would otherwise keep the stale objects. 2026-10-25: nvn_mtl.m.o of one branch linked with nvn_refl.m.o of another
@@ -342,6 +342,9 @@ def prepare_work(work, py, logs):
     # their times, so nothing is rebuilt needlessly.
     sync = ['rsync', '-rlpD', '--checksum', *excludes]
     run([*sync, f'{GAME}/', f'{tree}/'], logs / 'sources.log')
+    # zeldaVR's modules (games/totk/zeldaVR links to them in the repository): into the tree, where the Makefile and the
+    # iOS project take them; VR stays off unless TOTK_VR_CONTROL is set
+    run([*sync, f'{REPO / "zeldaVR"}/', f'{tree / "zeldaVR"}/'], logs / 'sources-zeldavr.log')
     # games/botw: its scripts find the shared ones at ../totk/scripts (work/botw next to work/totk)
     run([*sync, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
     tooling = tree / 'tooling'
@@ -429,7 +432,7 @@ def identify_update(tree, game, keys, logs):
     version = next((version for version in UPDATES
                     if exefs_matches(staging / 'exefs', VERSIONS[version]['exefs_sha256'], VERSIONS[version]['title_id'])), None)
     if version is None:
-        raise BuildError('unsupported update module hashes; expected 1.1.2, 1.2.1 or 1.4.3 (the file name is not used to choose a version)')
+        raise BuildError('unsupported update module hashes; expected 1.2.1 or 1.4.3 (the file name is not used to choose a version)')
     target = tree / f'extracted/{version}'
     target.mkdir(parents=True, exist_ok=True)
     if (target / 'exefs').exists(): shutil.rmtree(target / 'exefs')
@@ -463,6 +466,33 @@ def identify_botw_update(tree, update, keys, logs):
     (staging / 'extraction-manifest.json').replace(target / 'extraction-manifest.json')
     staging.rmdir()
     say(f'update identified by verified ExeFS hashes: Breath of the Wild {VERSIONS[version]["display_version"]}')
+    return version
+
+
+def identify_botw_card(tree, game, keys, logs):
+    """Breath of the Wild 1.6.0 or 1.9.0 from a combined card image, by the verified ExeFS hashes of its update Program NCA
+    (the one with a BKTR section; never by the file name)."""
+    for version in ('botw160', 'botw190'):
+        exefs = tree / f'extracted/{version}/exefs'
+        if source_matches(exefs.parent / 'extraction-manifest.json', game) and exefs_matches(
+                exefs, VERSIONS[version]['exefs_sha256'], VERSIONS[version]['title_id']):
+            return version
+    staging = tree / 'extracted/update-detection-botw'
+    if staging.exists(): shutil.rmtree(staging)
+    run([tree / '.venv/bin/python', tree.parent / 'botw/scripts/extract_exefs.py', game, '--keys', keys,
+         '--output', staging / 'exefs'], logs / 'identify-card-botw.log', cwd=tree)
+    version = next((version for version in ('botw160', 'botw190')
+                    if exefs_matches(staging / 'exefs', VERSIONS[version]['exefs_sha256'], VERSIONS[version]['title_id'])), None)
+    if version is None:
+        shutil.rmtree(staging)
+        raise BuildError('unsupported Breath of the Wild card module hashes; expected 1.6.0 or 1.9.0 (the file name is not used to choose a version)')
+    target = tree / f'extracted/{version}'   # the verified ExeFS is kept, as identify_update does: step_code_botw reuses it
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / 'exefs').exists(): shutil.rmtree(target / 'exefs')
+    (staging / 'exefs').rename(target / 'exefs')
+    (staging / 'extraction-manifest.json').replace(target / 'extraction-manifest.json')
+    staging.rmdir()
+    say(f'card image identified by verified ExeFS hashes: Breath of the Wild {VERSIONS[version]["display_version"]}')
     return version
 
 
@@ -676,6 +706,7 @@ OVERLAY_RECORD = 'overlay.json'
 # for the largest one present and starts at 1080p. Not 4K yet: its heaps need one memory pool above the graphics layer's
 # 1 GiB zero-copy limit (games/totk/runtime/game_patches_v143.c, 2026-10-25: the game stopped at the start).
 OUTPUT_SIZES = ('2560x1440',)
+VR_BIG_SIZES = ('3056x2720', '4576x4080')   # zeldaVR (--vr): VR native 4K / 4K + MetalFX / native 6K (runtime/game_patches_v143.c vr_big_mode)
 
 
 def overlay_record(path):
@@ -894,7 +925,76 @@ static FILE *mng_open_base(const char *path) {
     return source/'hactool'
 
 
-def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None):
+def remove_large_output_overlays(tree, version):
+    """The 4K and 5K canvas overlays (with or without a scene size) left by an earlier build are removed before each
+    build: without either option the runtime keeps 2560x1440 as its largest output size (its swapchain and heaps;
+    runtime/game_patches_v143.c), with the options the build makes the current set again."""
+    for folder in (tree / f'extracted/{version}/romfs-patches-out').glob('*'):
+        if not folder.name.startswith(('3840x2160', '5120x2880', *VR_BIG_SIZES)):   # VR's: only a --vr build makes them
+            continue
+        if folder.is_dir():
+            shutil.rmtree(folder)
+
+
+NATIVE_4K_MEMORY = 16 << 30   # a Mac with this much memory or more builds native 4K by default (user 2026-10-30)
+
+
+def native_4k_default(memory=None):
+    """Native 4K unless asked otherwise: on a Mac with 16 GB of memory or more (the build runs on the Mac that plays).
+    A native 4K app reserves its heaps for a 3840x2160 scene: about 1.4 GiB more than a 2K one, whatever is shown."""
+    if memory is None:
+        try:
+            memory = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return False
+    return memory >= NATIVE_4K_MEMORY - (256 << 20)   # 16 GB Macs report exactly 16 GiB; a little slack
+
+
+NATIVE_5K_MEMORY = 32 << 30   # default 5K on 32 GB-plus Macs; an explicit --native-5k still works below this
+
+
+def native_5k_default(memory=None):
+    """Include the 5K canvas on 32 GB-plus Macs; unknown memory keeps the smaller build."""
+    if memory is None:
+        try:
+            memory = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return False
+    return memory >= NATIVE_5K_MEMORY - (256 << 20)
+
+
+def native_5k_enabled(platform, version, requested=None, native_4k=None):
+    """The build's capability, not its selected resolution. Explicit choices take priority over memory."""
+    if platform != 'macos' or version != 'v143':
+        return False
+    if requested is not None:
+        return requested
+    return native_4k is not False and native_5k_default()
+
+
+def native_5k_roomy(memory=None):
+    """Whether this Mac has the memory native 5K is meant for (a 5120x2880 canvas and scene, opt-in)."""
+    if memory is None:
+        try:
+            memory = int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'], text=True).strip())
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return True   # unknown: no warning
+    return memory >= NATIVE_5K_MEMORY - (256 << 20)
+
+
+def large_output_overlay_args(native_4k=False, native_5k=False):
+    """The canvas/scene resource sets shared by a full build and a 5K runtime-update promotion."""
+    steps = []
+    for canvas, scenes, enabled in (
+            ('3840x2160', ('1920x1080', '2560x1440', '3840x2160'), native_4k or native_5k),
+            ('5120x2880', ('1920x1080', '2560x1440', '3840x2160', '5120x2880'), native_5k)):
+        if enabled:
+            steps.append([canvas])
+            steps.extend([canvas, '--scene', scene] for scene in scenes)
+    return steps
+
+
+def step_update_data(tree, game, update, keys, logs, *, version, mod=None, native_4k=False, native_5k=False, vr=False):
     expected = VERSIONS[version]
     folder = tree/f'extracted/{version}/romfs'
     index = folder/'index.json'
@@ -920,9 +1020,13 @@ def step_update_data(tree, game, update, keys, logs, *, version='v112', mod=None
     if heapdef:
         say(f'2/4 update: the overlays are built on the mod\'s heap sizes ({heapdef})')
     steps = [('make_romfs_patches.py', [])] + [('make_output_res_overlay.py', [size]) for size in OUTPUT_SIZES]
-    if version == 'v143':   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches_v143.c)
+    if version in ('v143', 'v121'):   # a TOTK_RENDER_RES scene above 1600x900 grows the same heaps (runtime/game_patches*.c)
         steps += [('make_output_res_overlay.py', [canvas, '--scene', scene])
                   for canvas in ('1920x1080', *OUTPUT_SIZES) for scene in ('1920x1080', *OUTPUT_SIZES)]
+    remove_large_output_overlays(tree, version)   # remove stale 4K/5K overlays even when a later build disables them
+    steps += [('make_output_res_overlay.py', args) for args in large_output_overlay_args(native_4k, native_5k)]
+    if vr:   # zeldaVR (--vr): the headset-shaped canvases of VR native 4K / 4K + MetalFX / native 6K
+        steps += [('make_output_res_overlay.py', [size, '--scene', size]) for size in VR_BIG_SIZES]
     for i, (script, arguments) in enumerate(steps):
         if heapdef and script == 'make_output_res_overlay.py':   # every variant of the file keeps the mod's heap sizes
             arguments = [*arguments, '--heapdef', heapdef]
@@ -943,6 +1047,38 @@ def build_spirv_cross(tree, logs):
         list(pool.map(compile_one, SPIRV_CROSS_SOURCES))
     run(['xcrun', 'clang++', '-arch', 'arm64', *[objs / (n + '.o') for n in SPIRV_CROSS_SOURCES], '-o', out / 'spirv-cross'],
         logs / 'spirv-cross' / 'link.log', quiet=False)
+
+
+def build_device_translator(tree, logs):
+    """The iPhone / iPad app's shader translator (totk_shader_rt.m DEVICE_XLATE): the Mac's totk_xlate service as a
+    NativeAOT static library from this repository (prebuilt/ios-arm64/libtotk_xlate.a, made by
+    tools/totk_xlate/publish_ios_lib.sh, checked against its .sha256) and SPIRV-Cross for the device from the pinned
+    sources (the program's sources without main.cpp, and spirv_cross_inproc.cpp, which includes it). build_ipa.py links
+    both from build/ios-xlate when they are there; the app then translates a variant its startup shaders lack in the
+    background instead of skipping its draws until the Mac fills it in."""
+    prebuilt = [tree / 'prebuilt/ios-arm64' / name for name in ('libtotk_xlate.a', 'libtotk_xlate_bootstrap.o')]
+    for lib in prebuilt:
+        want = (lib.parent / (lib.name + '.sha256')).read_text().strip()
+        if not lib.is_file() or sha256(lib) != want:
+            raise BuildError(f'{lib}: not the file this repository ships (its SHA-256 differs from {lib.name}.sha256); '
+                             f'check it out again, or rebuild both with games/totk/tools/totk_xlate/publish_ios_lib.sh')
+    src, out = tree / 'tooling/spirv-cross', tree / 'build/ios-xlate'
+    objs = out / 'obj'
+    objs.mkdir(parents=True, exist_ok=True)
+    flags = [*SPIRV_CROSS_FLAGS, '-target', 'arm64-apple-ios26.0']
+    jobs = [(src / n, objs / (n + '.o'), []) for n in SPIRV_CROSS_SOURCES if n != 'main.cpp']
+    jobs.append((tree / 'tools/totk_xlate/spirv_cross_inproc.cpp', objs / 'spirv_cross_inproc.o', ['-I', src]))
+
+    def compile_one(job):
+        source, obj, extra = job
+        run(['xcrun', '--sdk', 'iphoneos', 'clang++', *flags, *extra, '-c', source, '-o', obj],
+            logs / 'ios-spirv-cross' / (obj.name + '.log'), quiet=False)
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+        list(pool.map(compile_one, jobs))
+    (out / 'libtotk_spirv_cross.a').unlink(missing_ok=True)
+    run(['xcrun', 'ar', 'rcs', out / 'libtotk_spirv_cross.a', *[obj for _, obj, _ in jobs]], logs / 'ios-spirv-cross' / 'ar.log', quiet=False)
+    for lib in prebuilt:
+        clone(lib, out / lib.name)
 
 
 def check_translator(tree):
@@ -967,6 +1103,13 @@ def step_shaders(tree, logs, *, version='v0'):
          '--version', version, '--modules', tree/f'rewritten/{version}'], logs/'prepare-shader-seed.log', cwd=tree)
 
 
+def xcodes_on_volumes(volumes):
+    """Xcode*.app at the top of each volume or one folder down. Symlinks are skipped: 'Macintosh HD' links to /, where
+    one folder down is /home, an automount whose open can block forever."""
+    disks = [v for v in sorted(volumes.iterdir()) if not v.is_symlink()] if volumes.is_dir() else []
+    return [p for pattern in ('Xcode*.app', '*/Xcode*.app') for v in disks for p in sorted(v.glob(pattern))]
+
+
 def developer_dirs():
     """Developer folders that may hold the Metal toolchain: DEVELOPER_DIR, the one xcode-select points at, Xcode*.app in
     /Applications, then any Xcode Spotlight knows (one kept outside /Applications, for example next to the game)."""
@@ -978,8 +1121,7 @@ def developer_dirs():
     found += [str(p / 'Contents/Developer') for p in sorted(Path('/Applications').glob('Xcode*.app'))]
     found += [str(p / 'Contents/Developer') for p in sorted(Path.home().glob('Applications/Xcode*.app'))]
     # An Xcode kept on another volume, at its top or one folder down (Spotlight may not index it)
-    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/Xcode*.app'))]
-    found += [str(p / 'Contents/Developer') for p in sorted(Path('/Volumes').glob('*/*/Xcode*.app'))]
+    found += [str(p / 'Contents/Developer') for p in xcodes_on_volumes(Path('/Volumes'))]
     try:
         spotlight = subprocess.check_output(['mdfind', "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'"], text=True,
                                             stderr=subprocess.DEVNULL)
@@ -1023,15 +1165,6 @@ def variant_sources(game):
     folder = variant_folder(game)
     found = sorted(folder.glob('*.metal')) if folder.is_dir() else []
     return [p for p in found if len(p.stem) == 64 and sha256(p) == p.stem]
-
-
-def place_variant_libs(tree, res, version):
-    """The compiled variants step_shader_libs listed, in the app's shader-libs beside the startup shaders'."""
-    listed = tree/f'build/shader-libs/variants-{version}.json'
-    for digest in json.loads(listed.read_text()) if listed.is_file() else []:
-        lib = tree/f'build/shader-libs/{digest}.metallib'
-        if len(digest) == 64 and all(c in '0123456789abcdef' for c in digest) and lib.is_file():
-            clone(lib, res/'build/shader-libs'/lib.name)
 
 
 def step_shader_libs(tree, logs, *, version='v0'):
@@ -1144,6 +1277,29 @@ def copy_tree(src, dst):
             clone(p, dst / p.relative_to(src))
 
 
+class run_outside_bundle:
+    """A program of an app being assembled, run without running anything inside that app: its first program run makes macOS
+    check the whole bundle once (Gatekeeper / XProtect read all 17 GB, 237 s measured 2026-11-03; the check stays with
+    the folder, which is why install_app keeps the installed one), and the app being assembled is a new folder
+    (update_runtime.py's .partial clone, a build's work copy) whose check is thrown away with it. The program is cloned
+    to `outside` (a folder of the work tree, in no bundle) and run through a link at `link` inside the app: it finds its
+    neighbours by the path it was started by (nvn_mtl.m exe_rel: shader-libs, the shader map), while macOS assesses the
+    file the link points to. The link and the clone go once the run is over; nothing of it stays in the app or its seal.
+        with run_outside_bundle(src, link, outside) as program: run([program, ...], ...)"""
+    def __init__(self, src, link, outside):
+        self.src, self.link, self.real = Path(src), Path(link), Path(outside) / Path(link).name   # the same name: the process's
+    def __enter__(self):                                                                          # (game_slot.c pid_is_game)
+        self.real.parent.mkdir(parents=True, exist_ok=True)
+        clone(self.src, self.real)
+        self.link.unlink(missing_ok=True)
+        self.link.symlink_to(self.real)
+        return self.link
+    def __exit__(self, *exc):
+        self.link.unlink(missing_ok=True)
+        self.real.unlink(missing_ok=True)
+        return False
+
+
 def remove_tree(path):
     """Remove a bundle. Finder can put .DS_Store back while it is being deleted, which makes the last rmdir fail."""
     for _ in range(5):
@@ -1219,33 +1375,35 @@ def game_data_files(version):
 def place_game_data(tree, res, version):
     """build/game-data/<version>: what the runtime reads from the player's files at start instead of having it compiled in
     (module tables, RomFS / add-on content / font sizes and hashes; games/totk/runtime/game_data.h), at the same place in
-    the app. With it the seed's aliases, which place_runtime needs again when update_runtime.py exports a newer list."""
+    the app."""
     data, dst = tree / f'build/game-data/{version}', res / f'build/game-data/{version}'
     missing = [name for name in game_data_files(version) if not (data / name).is_file()]
     if missing:
         raise BuildError(f'{data}: {", ".join(missing)} missing (games/totk/Makefile game-data-{version})')
     for name in game_data_files(version):
         clone(data / name, dst / name)
-    aliases = tree / f'build/shader-seed/{version}.aliases.tsv'   # listed variants the seed carries under another name
-    if aliases.is_file():
-        clone(aliases, dst / 'shader-seed.aliases.tsv')
+
+
+def resolve_lists(tree, res, game, logs):
+    """The warm-up lists of the app (build/pso_manifest.tsv, pso_title.tsv): the shared shader list's rows of this game
+    version, each variant named as the app's seed serves its bind state (shader_list.py resolve)."""
+    shared = tree.parent / 'botw/assets/shader_list.tsv' if game == 'botw' else tree / 'assets/shader_list.tsv'
+    run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'resolve', res/'build/shader-seed', shared,
+         res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
 def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     """The parts of the app made from this repository alone, which update_runtime.py replaces in an installed app: the
     game binary, the launcher, the shader tools and the warm-up lists exported from the shared shader list. Everything
     else in the app comes from the player's game files (place_game_data, the rewritten modules, the RomFS, the seed).
-    lists=False keeps the app's warm-up lists (update_runtime.py, when the seed's aliases are not known)."""
+    lists=False keeps the app's warm-up lists (update_runtime.py, when the app's seed predates its shader-keys.json);
+    else resolve_lists makes them anew."""
     res = app / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res / 'build/totk-native')
     clone(tree / 'build/spirv-cross/spirv-cross', res / 'build/spirv-cross/spirv-cross')
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
-    for name in ('pso_manifest.tsv', 'pso_title.tsv') if lists else ():   # from the shared shader list (games/totk/Makefile)
-        clone(tree / 'build' / name, res / 'build' / name)
-    aliases = res / f'build/game-data/{version}/shader-seed.aliases.tsv'
-    if lists and aliases.is_file():
-        run([tree/'.venv/bin/python', 'scripts/shader_list.py', 'rename', aliases, res/'build/pso_manifest.tsv',
-             res/'build/pso_title.tsv'], logs/'shader-list-rename.log', cwd=tree)
+    if lists:
+        resolve_lists(tree, res, game, logs)
     clone(tree / 'build/app-launcher', app / f'Contents/MacOS/{APPS[game][2]}')
 
 
@@ -1343,13 +1501,16 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         with _AppMoves() as moves:
             return keep_game_data(new, old, verify=verify, _moves=moves)
     image = 'Contents/Resources/romfs.bin'
-    kept = False
-    for bundle in sorted((new / 'Contents/Helpers').glob('GameData-*.bundle')):
+    swapped, start = [], len(_moves.done)
+    helpers = new / 'Contents/Helpers'
+    for bundle in sorted([*helpers.glob('GameData-*.bundle'), *helpers.glob('ShaderData-*.bundle')]):
+        # ShaderData (shader_bundle) the same way: 117,000 files moved instead of cloned, sealed and deleted (2026-11-03);
+        # in update_runtime.py's new app it is only its signature (Info.plist, _CodeSignature), what the app's seal records
         before = old / 'Contents/Helpers' / bundle.name
         if not all((before / rel).is_file() and (before / rel).read_bytes() == (bundle / rel).read_bytes()
                    for rel in ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')):
             continue
-        if not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size:
+        if bundle.name.startswith('GameData-') and (not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size):
             continue
         fresh = new.with_name(f'{new.name}.{bundle.name}.fresh')   # outside the app: anything extra in it fails the seal
         if fresh.exists():
@@ -1361,18 +1522,27 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         except OSError:
             _moves.restore(checkpoint)
             continue
-        if not verify(new):
-            _moves.restore(checkpoint)
-            continue
-        _moves.discard.append(fresh)
-        kept = True
-    return kept
+        swapped.append((bundle, fresh))
+    if swapped and not verify(new):   # one check of the seal for every bundle moved (16 s each)
+        _moves.restore(start)
+        swapped = []
+    _moves.discard.extend(fresh for _, fresh in swapped)
+    for bundle in helpers.glob('ShaderData-*.bundle'):   # update_runtime.py's signature-only bundle must have been replaced
+        if not (bundle / 'Contents/Resources').is_dir():
+            raise BuildError(f'{bundle.name}: the installed app\'s shader data could not be moved into the new app; the installed app is unchanged')
+    return any(bundle.name.startswith('GameData-') for bundle, _ in swapped)
 
 
 def sign_app(app, logs):
     # Seal the bundle, including Info.plist and game resources. Copied helper
     # executables keep their existing signatures and byte identity. Checked once by install_app.
-    run(['codesign', '--force', '--sign', '-', app], logs / 'sign-app.log')
+    # The designated requirement is the bundle ID alone, not the ad-hoc default (this build's code hash): macOS keeps what
+    # the player allowed the app (Privacy & Security: a removable volume or Documents, where the Update page's
+    # checkout may be, app/auto_update.h) by that requirement, so a grant survives the next build or update instead of
+    # being asked again (user 2026-10-31).
+    bundle_id = plistlib.loads((Path(app) / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier')
+    requirement = [f'-r=designated => identifier "{bundle_id}"'] if bundle_id else []
+    run(['codesign', '--force', '--sign', '-', *requirement, app], logs / 'sign-app.log')
 
 
 def remove_in_background(path):
@@ -1414,9 +1584,8 @@ def install_app(new, out, *, verify=None, remove=None):
     return kept
 
 
-def place_seed(tree, res, version, *, game='totk'):
-    """The startup shader seed, checked (version, translation chain, size, every file's SHA-256), with the libraries
-    step_shader_libs compiled for it and for the recorded variants. Also update_runtime.py --seed."""
+def check_seed(tree, version, *, game='totk'):
+    """The prepared startup shader seed (version, translation chain, size, every file's SHA-256); its manifest."""
     seed = tree/f'build/shader-seed/{version}'
     if not (seed/'seed-manifest.json').is_file():
         raise BuildError('startup shader seed was not prepared; refusing an app without first-launch warm-up data')
@@ -1429,12 +1598,145 @@ def place_seed(tree, res, version, *, game='totk'):
             raise ValueError('version, translation chain or file hash differs')
     except (ValueError, KeyError, OSError, TypeError) as error:
         raise BuildError(f'invalid prepared startup shader seed: {error}') from None
-    copy_tree(seed, res/'build/shader-seed')
-    for src in sorted(seed.glob('*.metal')):   # each named in the manifest, its hash just checked
+    return report
+
+
+def shader_libs_of(tree, version, report):
+    """The compiled libraries the app carries: the startup shaders' (step_shader_libs, named in the seed's manifest) and
+    the recorded variants' (variants-<version>.json)."""
+    libs = []
+    for src in sorted((tree/f'build/shader-seed/{version}').glob('*.metal')):   # each named in the manifest, its hash checked
         lib = tree/f'build/shader-libs/{report["files"][src.name]}.metallib'
         if lib.is_file():
-            clone(lib, res/'build/shader-libs'/lib.name)
-    place_variant_libs(tree, res, version)
+            libs.append(lib)
+    listed = tree/f'build/shader-libs/variants-{version}.json'
+    for digest in json.loads(listed.read_text()) if listed.is_file() else []:
+        lib = tree/f'build/shader-libs/{digest}.metallib'
+        if len(digest) == 64 and all(c in '0123456789abcdef' for c in digest) and lib.is_file() and lib not in libs:
+            libs.append(lib)
+    return libs
+
+
+SHADER_DATA = ('shader-seed', 'shader-libs')   # build/<name> in the app: links into its ShaderData-<version>.bundle
+
+
+def shader_bundle(tree, version, logs, *, game='totk', bundle_id=BUNDLE_ID):
+    """The startup shader seed (about 85,000 files) and the compiled libraries (about 29,000) as a bundle of their own,
+    signed once and kept in the work folder (build/shader-bundles), like the game data (data_bundle): the app carries it
+    in Contents/Helpers and its seal records only the bundle's signature. Inside the app the 117,000 files were cloned,
+    sealed (54 s), and deleted again on every packaging (2026-11-03); update_runtime.py now moves the installed app's
+    bundle into the new app instead (keep_game_data). The game reads them through links at their usual places
+    (build/shader-seed, build/shader-libs; place_shader_bundle), and still reads the seed in place: the bundle is inside a
+    sealed app (totk_shader_seed.h totk_seed_sealed). The Mac's pipeline files, which every new game binary makes again,
+    are not in it (build/pipelines, mac_pipelines). Made again when a file of the seed or the list of libraries changed."""
+    report = check_seed(tree, version, game=game)
+    seed, libs = tree/f'build/shader-seed/{version}', shader_libs_of(tree, version, report)
+    bundle = tree/f'build/shader-bundles/ShaderData-{version}.bundle'
+    stamp = bundle.with_name(bundle.name + '.json')
+    files = sorted(p for p in seed.iterdir() if p.is_file())
+    want = dict(format=1, seed=hashlib.sha256(''.join(f'{p.name} {p.stat().st_size} {p.stat().st_mtime_ns}\n' for p in files).encode()).hexdigest(),
+                libs=hashlib.sha256(''.join(f'{p.name}\n' for p in libs).encode()).hexdigest())
+    try:
+        if (bundle / 'Contents/_CodeSignature/CodeResources').is_file() and json.loads(stamp.read_text()) == want:
+            return bundle
+    except (OSError, ValueError):
+        pass
+    stamp.unlink(missing_ok=True)
+    seal_shader_bundle(bundle, seed, libs, version, logs, bundle_id)
+    stamp.write_text(json.dumps(want))
+    return bundle
+
+
+def seal_shader_bundle(bundle, seed, libs, version, logs, bundle_id):
+    """A ShaderData bundle at `bundle` from the seed folder and the library files, signed and checked. The Mac's pipeline
+    files an older app kept in its seed (pipelines-*) stay out: build/pipelines holds them now."""
+    say('4/4 app: signing the startup shaders once (about a minute; later builds and updates reuse them)')
+    tmp = bundle.with_name(bundle.name + '.partial')
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    res = tmp / 'Contents/Resources'
+    copy_tree(seed, res / 'shader-seed')
+    for old in (res / 'shader-seed').glob('pipelines-*'):
+        old.unlink()
+    (res / 'shader-libs').mkdir(parents=True, exist_ok=True)
+    for lib in libs:
+        clone(lib, res / 'shader-libs' / lib.name)
+    import plistlib
+    (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier=f'{bundle_id}.shaders.{version}', CFBundleName='Startup shaders', CFBundlePackageType='BNDL',
+        CFBundleShortVersionString=VERSIONS[version]['display_version'], CFBundleVersion='1')))
+    run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-shaders-{version}.log')
+    run(['codesign', '--verify', '--strict', tmp], logs / f'verify-shaders-{version}.log')
+    if bundle.exists():
+        shutil.rmtree(bundle)
+    tmp.rename(bundle)
+    return bundle
+
+
+def app_shader_bundle(app, version):
+    """The app's ShaderData bundle (shader_bundle), or None for an app made before it (seed and libraries in build/)."""
+    bundle = Path(app) / f'Contents/Helpers/ShaderData-{version}.bundle'
+    return bundle if (bundle / 'Contents/Resources/shader-seed').is_dir() and not bundle.is_symlink() else None
+
+
+def clone_app_except(src, dst, skip):
+    """src cloned to dst as copy_tree does, but for `skip` (a folder inside src), which becomes a link to src's: what
+    update_runtime.py assembles beside the installed app, with the installed shader data read through the link (the
+    probe, the pipeline tool) instead of 117,000 files cloned (31 s) and deleted again."""
+    dst.mkdir(parents=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child == skip:
+            target.symlink_to(child.resolve())
+        elif child.is_symlink():
+            target.symlink_to(os.readlink(child))
+        elif child.is_dir() and skip.is_relative_to(child):
+            clone_app_except(child, target, skip)
+        elif child.is_dir():
+            copy_tree(child, target)
+        else:
+            clone(child, target)
+
+
+def shader_signature_only(app, installed):
+    """In place of the link clone_app_except left, the installed ShaderData bundle's signature alone (Info.plist and
+    _CodeSignature): the app's seal records only that (2026-11-03: a seal made so verifies once the whole bundle is moved
+    in), and install_app moves the installed bundle in (keep_game_data), which refuses an app it could not complete."""
+    bundle = Path(app) / 'Contents/Helpers' / installed.name
+    if bundle.is_symlink():
+        bundle.unlink()
+    (bundle / 'Contents').mkdir(parents=True)
+    clone(installed / 'Contents/Info.plist', bundle / 'Contents/Info.plist')
+    copy_tree(installed / 'Contents/_CodeSignature', bundle / 'Contents/_CodeSignature')
+
+
+def link_shader_data(app, res, name):
+    """build/shader-seed and build/shader-libs: links to the app's ShaderData bundle (relative: the app moves)."""
+    target = app / 'Contents/Helpers' / name / 'Contents/Resources'
+    for rel in SHADER_DATA:
+        link = res / 'build' / rel
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.is_file():
+            link.unlink()
+        elif link.is_dir():   # an older app's own folder (update_runtime.py migrate_shader_data): out of the app, deleted later
+            aside = app.with_name(f'{app.name}.{rel}.old')
+            if aside.exists():
+                remove_tree(aside)
+            link.rename(aside)
+            remove_in_background(aside)
+        link.symlink_to(os.path.relpath(target / rel, link.parent))
+
+
+def place_shader_bundle(bundle, app, res):
+    """The signed shader data in the app (Contents/Helpers), and the links the game reads it by."""
+    copy_tree(bundle, app / 'Contents/Helpers' / bundle.name)
+    link_shader_data(app, res, bundle.name)
+
+
+def place_seed(tree, app, res, version, logs, *, game='totk', bundle_id=BUNDLE_ID):
+    """The startup shader seed, checked, with the libraries step_shader_libs compiled for it and for the recorded variants,
+    as the app's shader data bundle (shader_bundle). Also update_runtime.py --seed."""
+    place_shader_bundle(shader_bundle(tree, version, logs, game=game, bundle_id=bundle_id), app, res)
 
 
 def wait_until_closed(out, prefix=''):
@@ -1450,6 +1752,14 @@ def wait_until_closed(out, prefix=''):
             say(f'{prefix}replacement is ready; waiting for the running game to close before updating it')
             notified = time.monotonic()
         time.sleep(2)
+
+
+def record_update_source(info, work):
+    """Where the Update page's update (games/totk/app/auto_update.h) finds what made it: this checkout (git pull), the
+    work folder (update_runtime.py --work) and the Python that runs update_runtime.py. update_runtime.py writes them again."""
+    info['MNGSourceRepo'] = str(REPO)
+    info['MNGWorkFolder'] = str(Path(work).resolve())
+    info['MNGBuildPython'] = sys.executable
 
 
 def source_commit():
@@ -1471,7 +1781,7 @@ def write_main_build_id(nso, target):
     target.write_text(build_id.hex().upper() + '\n')
 
 
-def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None):
+def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', game_data_folder=None, native_4k=False, native_5k=None):
     expected = VERSIONS[version]
     app_name, bundle_id, executable = APPS[game]
     tmp = out.with_name(out.name + '.partial')
@@ -1490,10 +1800,13 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     for rel in (f'extracted/{version}/romfs-patches', f'extracted/{version}/romfs-patches-out', 'extracted/firmware/shared-fonts'):
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)
-    place_seed(tree, res, version, game=game)
+    if game == 'botw' and native_4k:   # Breath of the Wild's heaps are patched in the code: the runtime sizes them for 4K
+        (res / f'extracted/{version}/native-4k').write_text('3840x2160\n')   # game_patches_botw.c native_4k_app
+    place_seed(tree, tmp, res, version, logs, game=game, bundle_id=bundle_id)
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
     place_runtime(tree, tmp, version, logs, game=game)
+    mac_pipelines(tree, res, version, logs)   # before the seal: the files go into the app (build/pipelines)
     if game_data == 'library':
         folder = library_game_data(game, version, game_data_folder)
         say(f'4/4 app: the game data goes to {folder}, not into the app (put there once; later builds reuse it)')
@@ -1516,13 +1829,9 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     commit = source_commit()
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
-    # Identify the source baseline, not the Nintendo game version; local patches may also be present.
-    try:
-        revision = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip()
-        if len(revision) == 40 and all(c in '0123456789abcdef' for c in revision):
-            info['MNGSourceRevision'] = revision
-    except (OSError, subprocess.CalledProcessError):
-        pass  # Source archives without Git metadata simply do not check for updates.
+    record_update_source(info, tree.parent)
+    if game == 'totk' and version == 'v143' and native_5k is not None:
+        info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     (tmp / 'Contents/PkgInfo').write_bytes(b'APPL????')
@@ -1530,6 +1839,98 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     wait_until_closed(out, '4/4 app: ')
     if install_app(tmp, out):
         say('4/4 app: the game data is unchanged; kept the installed copy, so the first start need not verify it again')
+
+
+PAR_SCHEMA = 6   # games/totk/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive.h PAR_SCHEMA
+
+
+def mac_pipeline_files(made, seed, arch, chain):
+    """The pipeline-archive mode's files (<name>.metalarchive + <name>.keys) into the app's build/pipelines (`seed`; the
+    app's seed until 2026-11-03, now in the shader data bundle, which they would change on every build) as the runtime
+    reads them (totk_pipeline_archive.h par_load_prebuilt): pipelines-<arch>-<name>.metalarchive, pipelines-<arch>.tsv
+    ("<key>\\t<name>") and pipelines-<arch>.json (schema, chain, arch). The last build's files go first. Returns how many
+    pipelines."""
+    seed.mkdir(parents=True, exist_ok=True)
+    for old in seed.glob('pipelines-*'):
+        old.unlink()
+    index = []
+    for archive in sorted(made.glob('*.metalarchive')):
+        keys = archive.with_suffix('.keys')
+        if not keys.is_file():
+            continue
+        clone(archive, seed / f'pipelines-{arch}-{archive.stem}.metalarchive')
+        index += [f'{key}\t{archive.stem}' for key in keys.read_text().split('\n') if key]
+    if not index:
+        return 0
+    (seed / f'pipelines-{arch}.tsv').write_text('\n'.join(index) + '\n')
+    (seed / f'pipelines-{arch}.json').write_text(json.dumps({'schema': PAR_SCHEMA, 'chain': chain, 'arch': arch,
+                                                             'pipelines': len(index)}, indent=1) + '\n')
+    return len(index)
+
+
+def mac_pipelines(tree, res, version, logs):
+    """The Mac's pipeline archive, made while packaging (user 2026-10-29: "mac的 管线 预热 和iPhone 一样 放在打包阶段做 不在app里做了"):
+    the game binary's pipeline-archive mode (TOTK_PIPELINE_ARCHIVE_HOST=1) makes every pipeline of the warm-up lists from
+    the libraries the game itself loads (the app's shader-libs) on this Mac's GPU, so the first start takes them from the
+    app instead of filling its archive before the title (par_load_prebuilt). They are kept in build/mac-pipelines/<version>
+    and made again only when the lists, the seed or the game binary changed. The tool runs from the app's build folder
+    (where the game finds shader-libs and the seed) under its own name: the game lock takes any totk-native* process for
+    a game (runtime/game_slot.c pid_is_game). On another Mac's GPU the files are not used and that Mac fills its own, as
+    before; nothing here can make the build fail."""
+    build = res / 'build'
+    seed = build / 'shader-seed'
+    lists = [p for p in (build / 'pso_title.tsv', build / 'pso_manifest.tsv', seed / 'pso_manifest.tsv') if p.is_file()]
+    manifest = seed / 'seed-manifest.json'
+    if not lists or not manifest.is_file():
+        say('4/4 app: no warm-up lists or no seed, so the first start fills the pipeline archive itself')
+        return
+    work = tree / f'build/mac-pipelines/{version}'
+    want = hashlib.sha256(b''.join(p.read_bytes() for p in [manifest, *lists, build / 'totk-native'])).hexdigest()
+    stamp = work / 'inputs.txt'
+    was = stamp.read_text().split() if stamp.is_file() else []
+    kept = was == [want]
+    if was[:1] != [want]:
+        shutil.rmtree(work, ignore_errors=True)   # pipelines of other shaders, lists or binary; a partial run is completed
+    work.mkdir(parents=True, exist_ok=True)
+    tool = build / 'mac-pipeline-archive'
+    tool.unlink(missing_ok=True)   # left by an interrupted build (a link since 2026-11-03, a copy before)
+    say("4/4 app: making the pipeline archive for this Mac's GPU, so the first start needs no warm-up before the title"
+        + (' (kept from the last build)' if kept else ' (a few minutes the first time)'))
+    t0 = time.time()
+    try:
+        with run_outside_bundle(build / 'totk-native', tool, tree / 'build/outside-bundle') as program:
+            run([program, f'rewritten/{version}', 'pipeline-archive', *lists], logs / 'mac-pipelines.log', cwd=res,
+                env=dict(os.environ, TOTK_SHADER_CACHE=str(work / 'cache'), TOTK_SHADER_SEED_DIR=str(seed),
+                         TOTK_PIPELINE_ARCHIVE_HOST='1', TOTK_DEBUG_LOG='1'))
+    except (BuildError, OSError) as e:
+        report = last_json(logs / 'mac-pipelines.log') or {}
+        if not report.get('write_failed') or not report.get('render'):
+            say(f'   not done, the first start fills it instead: {str(e).splitlines()[0]}')
+            return
+        # Some files could not be written (another program removed Metal's work folder, 2026-10-29: 21 of 3,400): the
+        # rest go in, the first start makes the missing ones, the next build retries them (the stamp says partial).
+        say(f"   {report['write_failed']} archive files not written, the first start makes those pipelines")
+        stamp.write_text(want + ' partial\n')
+    else:
+        stamp.write_text(want + '\n')
+        report = last_json(logs / 'mac-pipelines.log') or {}
+    finally:
+        tool.unlink(missing_ok=True)
+    arch, chain = report.get('arch'), json.loads(manifest.read_text()).get('chain')
+    if not arch or not chain:
+        say(f'   no GPU architecture or chain in the report, the first start fills it instead (see {logs / "mac-pipelines.log"})')
+        return
+    n = mac_pipeline_files(work / 'cache/pipelines', build / 'pipelines', arch, chain)
+    say(f"   {n:,} pipelines for {arch} in {time.time() - t0:.0f} s ({report.get('failed', 0)} failed); "
+        "another Mac's GPU fills its own on the first start")
+
+
+def say_device_pipelines(logs):
+    """What build_ipa.py did about the device's pipeline archive (its "pipelines:" lines), for the player."""
+    log = logs / 'build-ipa.log'
+    for line in log.read_text(errors='replace').splitlines() if log.is_file() else []:
+        if line.startswith('pipelines: '):
+            say('   ' + line)
 
 
 def last_json(log):
@@ -1917,7 +2318,7 @@ def mac_game_data(args, device_app):
 
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, or a base NSP with its separate 1.6.0 or 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
+    ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, or a base NSP with its separate 1.6.0 or 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0 (Breath of the Wild: the 1.6.0 card image, or the base NSP with --update)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app (Breath of the Wild: the 1.9.0 update NSP, not for a card image)')
@@ -1926,6 +2327,10 @@ def parse_args(argv):
     ap.add_argument('--ios-game-data', choices=('app', 'documents'), default='app',
                     help='iOS: carry the 17 GB RomFS image in the IPA (default), or leave it out for the app\'s Documents/GameData '
                          '(ios/tools/install_device.py --game-data copies it there once; later builds install in minutes)')
+    ap.add_argument('--device-gpu', action='append', metavar='ARCH',
+                    help='iOS: compile the pipeline archive on this Mac for this GPU (applegpu_g14p for an iPhone 14; repeat for '
+                         'more; none: no archive). Default: the GPUs of the iPhones / iPads on the cable. The first start then '
+                         'needs no fill before the title (about 10 minutes on an iPhone 14); the app is about 430 MB larger per GPU')
     ap.add_argument('--mac-game-data', choices=('app', 'library'), default='app',
                     help='Mac: carry the 16 GB RomFS image in the app (default), or keep it in ~/Library/Application Support/'
                          'MacNativeGames/<TOTK|BotW>/GameData/<version>, put there once (the app is then a few hundred MB, '
@@ -1948,6 +2353,16 @@ def parse_args(argv):
                          'the build leaves the folder alone and prints the two commands that fill it by hand')
     ap.add_argument('--shader-cache', type=Path, help=argparse.SUPPRESS)   # removed: the seed comes from the game data and the shared list
     ap.add_argument('--no-shader-reminder', action='store_true', help='iOS: do not install the Mac agent that asks, while an iPhone / iPad with the game is connected, to send the shaders the shared list lacks')
+    ap.add_argument('--native-4k', action=argparse.BooleanOptionalAction, default=None,
+                    help='Mac, Tears of the Kingdom 1.4.3 / 1.2.1 and Breath of the Wild: the settings panel also offers native 4K (a 3840x2160 canvas, UI and scene); the game then '
+                         'reserves its swapchain and texture heaps for 4K (about 1.4 GiB more memory, whatever is shown). '
+                         'On by default on a Mac with 16 GB of memory or more; --no-native-4k turns it off')
+    ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
+                    help='Mac, 1.4.3: include native 5120x2880 canvas, UI and scene, plus the 4K modes; '
+                         'on by default with 32 GB of memory or more. --no-native-5k leaves it out. '
+                         'Reserves about 2.7 GiB more guest memory at every start, whatever resolution is selected')
+    ap.add_argument('--vr', action='store_true',
+                    help='Mac, 1.4.3 with native 4K: also the headset-shaped canvases of the VR picture modes (zeldaVR/install_vr.sh passes it)')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available; Breath of the Wild 1.9.0 too)')
     fonts.add_argument('--shared-fonts', type=Path, help='previously extracted shared-font directory containing the six verified .bfttf files')
@@ -2015,6 +2430,8 @@ def main(argv):
     # The game decides the platforms, the work folder and the disk space needed, so it is identified before those checks.
     tree = prepare_work(work, py, logs)
     which = identify_game(tree, game, keys, logs)
+    if args.native_5k and which != 'totk':
+        raise BuildError('--native-5k is only available for Tears of the Kingdom 1.4.3 on Mac')
     if kind == 'nsp' and which != 'botw' and not fonts_given:   # only Breath of the Wild's fonts passed the check above
         raise no_fonts
     if dlcs and which != 'botw':
@@ -2038,13 +2455,13 @@ def main(argv):
             check_package(update, 'botw', 'update')
         elif kind != 'xci':
             raise BuildError('Breath of the Wild from a base NSP needs the 1.9.0 update (or the 1.6.0 update): pass it with '
-                             '--update <update.nsp> (a card image already holds its 1.6.0 update)')
+                             '--update <update.nsp> (a card image already holds its update)')
         check_dlc(dlcs, BOTW190)   # the files first; the packs are the same for both versions
         if update:   # the base game (NSP or XCI) with the separate 1.6.0 or 1.9.0 update
             update = prepare_update_container(tree, update, keys, logs)
             version = identify_botw_update(tree, update, keys, logs)
-        else:   # a combined card image: base, 1.6.0 update and add-on content
-            version = 'botw160'
+        else:   # a combined card image: base, its 1.6.0 or 1.9.0 update and add-on content (PR #682)
+            version = identify_botw_card(tree, game, keys, logs)
         if dlcs and not update:
             raise BuildError('a Breath of the Wild card image holds its own add-on content, so leave out --dlc (or pass the base NSP '
                              'as the game file with --update <update.nsp>)')
@@ -2056,22 +2473,33 @@ def main(argv):
             say('--shader-cache is no longer needed: the startup shaders come from the game data and the shared shader list (games/botw/assets/shader_list.tsv)')
         botw = work / 'botw'
         say(f'Breath of the Wild {expected["display_version"]}; work folder {work}')
+        if args.native_4k and args.platform != 'macos':
+            raise BuildError('--native-4k is for a Mac build (iPhone / iPad have no 4K output)')
+        native_4k = args.native_4k if args.native_4k is not None else args.platform == 'macos' and native_4k_default()
+        if args.platform == 'macos':   # as Tears of the Kingdom (user 2026-11-01): the heaps are sized for 4K at every start
+            say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
+                ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs, version=version)
-        step_shader_libs(tree, logs, version=version)
+        if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own (6 of a 21-minute iPhone build, 2026-10-28)
+            step_shader_libs(tree, logs, version=version)
         # The work folder's copy of games/botw (prepare_work), relative: make splits a path with spaces into several targets
         step_binary(tree, game, keys, {**env, 'SHADER_LIST': '../botw/assets/shader_list.tsv'}, logs, version=version, title='01007ef00011e000')
         say(f'4/4 app: assembling {out}')
         if device_app:   # the same IPA tooling as Tears of the Kingdom (ios/tools/build_ipa.py --version botw160 / botw190)
+            build_device_translator(tree, logs)
             run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
                  '--logs', logs, '--app-name', APPS['botw'][2], '--bundle-id', APPS['botw'][1],
-                 *(['--image-outside'] if args.ios_game_data == 'documents' else [])], logs / 'build-ipa.log', cwd=tree, env=env)
+                 *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+                 *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs / 'build-ipa.log', cwd=tree, env=env)
+            say_device_pipelines(logs)
             say(f'done in {(time.time() - t0) / 60:.0f} min: {out}')
             say('Install it with games/totk/ios/tools/install_device.py' + (f' --game-data {tree}/extracted/{version}/romfs/romfs.bin'
                 if args.ios_game_data == 'documents' else '') + '; saves and the shader cache stay in the app\'s Documents.')
             return
-        step_app(tree, out, logs, version=version, game='botw', game_data=args.mac_game_data, game_data_folder=game_data_folder)
+        step_app(tree, out, logs, version=version, game='botw', game_data=args.mac_game_data, game_data_folder=game_data_folder,
+                 native_4k=native_4k)
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
         t1 = time.time()
@@ -2112,23 +2540,49 @@ def main(argv):
             f'<folder>.backup-<date>-<time>, not deleted. Without the flag the build leaves the folder alone.')
     if update:
         version, update = identify_update(tree, update, keys, logs)
+    if args.native_4k and (args.platform != 'macos' or version not in ('v143', 'v121')):
+        raise BuildError('--native-4k needs 1.2.1 or the 1.4.3 update and a Mac build (the other versions and iPhone / iPad have no 4K output)')
+    if args.native_5k and (args.platform != 'macos' or version != 'v143'):
+        raise BuildError('--native-5k needs the 1.4.3 update and a Mac build')
+    if args.vr and (args.platform != 'macos' or version != 'v143' or args.native_4k is False):
+        raise BuildError('--vr needs the 1.4.3 update, a Mac build and native 4K')
+    if args.native_5k and args.native_4k is False:
+        raise BuildError('--native-5k includes native 4K; omit --no-native-4k')
+    native_5k = native_5k_enabled(args.platform, version, args.native_5k, args.native_4k)
+    native_4k = True if native_5k else args.native_4k
+    if native_4k is None:
+        native_4k = args.platform == 'macos' and version in ('v143', 'v121') and native_4k_default()
+    if version in ('v143', 'v121') and args.platform == 'macos':
+        say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
+            ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
+    if args.platform == 'macos' and version == 'v143':
+        say('native 5K: ' + ('on (5120x2880 canvas and scene)' if native_5k else 'off') +
+            (' (automatic with 32 GB or more; --native-5k / --no-native-5k decide)' if args.native_5k is None and args.native_4k is not False else '') +
+            ('' if not native_5k or native_5k_roomy() else
+            '. Note: this Mac has less than 32 GB of memory; a native 5K app reserves about 2.7 GiB more than a 4K one at'
+            ' every start, whatever is shown'))
     step_code(tree, game, keys, env, logs, mod=None if update else code_mod)
     if update:
         step_code(tree, update, keys, env, logs, version=version,
                   mod=code_mod)   # a mod is for the updated main, not for 1.0.0
     step_data(tree, game, keys, logs, firmware=firmware, shared_fonts=shared_fonts, mod=None if update else mod)
     if update:
-        step_update_data(tree, game, update, keys, logs, version=version, mod=mod)
+        step_update_data(tree, game, update, keys, logs, version=version, mod=mod, native_4k=native_4k, native_5k=native_5k, vr=args.vr)
     if mod:
         check_mod_overlays(tree, mod, version)
     step_shaders(tree, logs, version=version)
-    step_shader_libs(tree, logs, version=version)
+    if not device_app:   # the Mac app's metallibs; build_ipa.py compiles the device's own
+        step_shader_libs(tree, logs, version=version)
     step_binary(tree, game, keys, env, logs, version=version)
     say(f'4/4 app: assembling {out}')
     if device_app:
+        if args.platform == 'ios':   # visionOS keeps the startup shaders only
+            build_device_translator(tree, logs)
         run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', version,
              '--logs', logs, '--app-name', IOS_APP_NAME, '--bundle-id', BUNDLE_ID, '--platform', args.platform,
-             *(['--image-outside'] if args.ios_game_data == 'documents' else [])], logs/'build-ipa.log', cwd=tree, env=env)
+             *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+             *[x for g in args.device_gpu or [] for x in ('--device-gpu', g)]], logs/'build-ipa.log', cwd=tree, env=env)
+        say_device_pipelines(logs)
         if not args.no_shader_reminder:
             # The iOS app never asks during play; while the device is connected, this Mac asks to send the shaders the
             # shared list lacks (ios/tools/shader_contrib_watch.py). Not essential: a failure only says so.
@@ -2140,7 +2594,8 @@ def main(argv):
             except BuildError as e:
                 say(f'   the Mac reminder for iPhone / iPad shader contributions was not installed: {e}')
     else:
-        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder)
+        step_app(tree, out, logs, version=version, game_data=args.mac_game_data, game_data_folder=game_data_folder,
+                 native_5k=False if args.native_4k is False else args.native_5k)
     # Refresh an existing app's version, executable and signing identity before
     # the next Finder launch; the desktop alias keeps pointing to this bundle.
     if args.platform=='macos': run([LSREGISTER, '-f', out], logs / 'register-app.log')

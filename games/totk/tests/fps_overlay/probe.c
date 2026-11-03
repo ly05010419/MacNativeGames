@@ -99,6 +99,12 @@ int main(void) {
     fps_overlay_raster(&(fps_overlay_info){999, 99999, 99999, 1, 5000, 1, 99999, 99999}, FPS_OVERLAY_MAX_SCALE, px, &w, &h);   /* longest line: fits, or drops a scale */
     CHECK(w > 0 && w <= FPS_OVERLAY_TEX_W && h <= FPS_OVERLAY_TEX_H, "longest FPS line %dx%d outside the texture", w, h);
 
+    { char fl[96];
+      fps_overlay_text(&(fps_overlay_info){60, 3840, 2160, 0, 0, 2, 0, 0}, fl, sizeof fl);
+      CHECK(!strcmp(fl, "FPS 60  3840x2160  4K"), "native 4K label: %s", fl);
+      fps_overlay_text(&(fps_overlay_info){55, 5120, 2880, 0, 0, 3, 0, 0}, fl, sizeof fl);
+      CHECK(!strcmp(fl, "FPS 55  5120x2880  5K"), "native 5K label: %s", fl); }
+
     const int values[] = {-1, 0, 7, 30, 60, 120, 999, 5000};
     const int sizes[][2] = {{0, 0}, {1920, 1080}, {3440, 1440}, {99999, 99999}};
     for (size_t i = 0; i < sizeof values / sizeof values[0]; i++)
@@ -181,7 +187,7 @@ int main(void) {
        union of in-order command buffers, and one real sample of this machine (cores split into P and E, GPU known). */
     sysload_info li = {4, 6, {55, 56, 55, 53}, {43, 29, 20, 12, 9, 7}, 99, 70, 47, "x"};
     sysload_text(line, sizeof line, &li);
-    CHECK(!strcmp(line, "GPU 99% (70%)  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%"), "load line \"%s\"", line);
+    CHECK(!strcmp(line, "GPU 70%  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%  T 47%"), "load line \"%s\"", line);   /* the game's share only */
     li.gpu_sys = -1; li.gpu_game = -1; li.thread_max = -1; sysload_text(line, sizeof line, &li);
     CHECK(!strcmp(line, "GPU --  P 55% 56% 55% 53%  E 43% 29% 20% 12%  9%  7%"), "load line without GPU numbers \"%s\"", line);
     for (const char *c = "PEGUT%()"; *c; c++) CHECK(fps_overlay_has_glyph(*c), "no glyph for '%c' (load line)", *c);

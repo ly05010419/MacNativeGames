@@ -3,7 +3,7 @@ import argparse,re,struct
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 def options():
-    p=argparse.ArgumentParser();p.add_argument('--version',choices=('v0','v112','v121'),default='v0');return p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--version',choices=('v0','v121'),default='v0');return p.parse_args()
 def offsets(version):
     if version=='v0':return lambda value:value
     source=(ROOT/'runtime/game_version.h').read_text().split(f'defined(TOTK_GAME_{version.upper()})',1)[1].split('\n#el',1)[0]

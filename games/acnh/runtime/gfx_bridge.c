@@ -79,7 +79,10 @@ struct Allocator g_nv_alloc,g_nv_devtools_alloc;
 static void graphics_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_alloc=(struct Allocator){a,f,r,u};}
 static void graphics_dev_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_devtools_alloc=(struct Allocator){a,f,r,u};}
 static void graphics_initialize(void *mem,unsigned long size){
- if(getenv("ACNH_CPU_ONLY"))runtime_fail("CPU-only diagnostic reached graphics initialization boundary");
+ if(getenv("ACNH_CPU_ONLY")){
+  runtime_startup_checkpoint((uintptr_t)__builtin_return_address(0), "graphics initialization");
+  runtime_fail("CPU-only diagnostic reached graphics initialization boundary");
+ }
  if(!mem||!size)runtime_fail("invalid graphics work memory");g_t0_ns=runtime_now_ns();mtl_init();fprintf(stderr,"[totk] native Metal graphics context initialized\n");
 }
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry init_entry={"_ZN2nv18InitializeGraphicsEPvm",graphics_initialize,"native Metal context"};

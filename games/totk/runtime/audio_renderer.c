@@ -482,6 +482,7 @@ static int probe_ramp_edge(int kind) {
 #endif
 void runtime_audio_probe(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1);
+    setenv("TOTK_AUDIO_CHANNELS", "2", 1);
     const int neg = getenv("TOTK_PROBE_NEGATIVE") != NULL;
     AudrenParameter p = {48000, 240, 8, 1, 4, 1, 2, 0, 0, 0, 0, 0, 1, 2, 0, REV(11)};
     AudioRenderer *r = renderer_new(&p); audio_mixer_open(r);

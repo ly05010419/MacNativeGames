@@ -18,7 +18,7 @@ On macOS 15, use the community fork by [1918662410-ship-it](https://github.com/1
 | Title ID | What | On the command line |
 |---|---|---|
 | `0100F2C0115B6000` | Tears of the Kingdom, base game **1.0.0**, XCI or NSP | first argument |
-| `0100F2C0115B6800` | Tears of the Kingdom update **1.1.2, 1.2.1 or 1.4.3**, NSP or NSZ (optional) | `--update` |
+| `0100F2C0115B6800` | Tears of the Kingdom update **1.2.1 or 1.4.3**, NSP or NSZ (optional) | `--update` |
 | `01007EF00011E000` | Breath of the Wild base game, or the **1.6.0** card image (base + update + DLC in one XCI) | first argument |
 | `01007EF00011E800` | Breath of the Wild update **1.6.0 or 1.9.0**, NSP or NSZ | `--update` |
 | `01007EF00011F001`, `01007EF00011F002` | Breath of the Wild DLC packs, NSP (each optional) | `--dlc`, once per pack |
@@ -44,6 +44,32 @@ A Tears of the Kingdom XCI carries the fonts itself.
 
 The work folder is created next to the game file (`TOTK_build`, or `BotW_build` for Breath of the Wild). Keep it and the app on the **same APFS volume**: the 17 GB of game data is then cloned, not copied. If your game files are on an exFAT/FAT disk or a full one, pass `--work <folder>` and `-o <app>` on an APFS disk with room.
 
+## Build with a window
+
+Rather not type the command? With the tools of step 1 below installed, double-click **Build Game.command** in this folder (or run `python3.14 -m tools.builder`). A window opens: choose the game, then your game file, update, `prod.keys` and, when the game needs them, a firmware or shared-fonts folder (the work folder and the output app are under **Advanced**). **Check files** checks this Mac and your files and shows each problem, with the exact command that fixes it when there is one. **Build app** then runs `build_app.py` with those paths, and shows its four stages, the elapsed time and the log. When it is done, **Open app** and **Show in Finder** are one click away. Nothing is copied: the window saves the paths you chose, and the game, version, app and commit of the last successful build, in `~/Library/Application Support/MacNativeGames/Builder/settings.json`. Each run's output is also saved as `~/Library/Logs/MacNativeGames/builder-<game>-<date>-<time>.log`.
+
+**Cancel** sends the build and everything it started an interrupt (SIGINT), then SIGKILL if it is still running 10 seconds later. The window then says how the build ended and whether that matches the signal it sent; it never claims more. Build again with the same work folder to go on: what was already done is reused. Closing the window or quitting it during a build asks first, cancels, and closes once the build has stopped; closing the Terminal window that opens with it cancels the build the same way, so keep it open while it builds.
+
+**Your own picture:** the builder ships no image. Under **Details**, **Choose picture...** puts a picture of yours (PNG, JPEG, HEIC, GIF or TIFF) beside the form; **Left**, **Center** and **Right** pick the part it shows, and **Remove** takes it away. A copy is kept in `~/Library/Application Support/MacNativeGames/Builder/`, so the original can move.
+
+**Settings tab:** for an app built from Tears of the Kingdom 1.4.3 or Breath of the Wild 1.9.0, the game starts with its automatic settings unless you choose otherwise here: picture at start (MetalFX 2K, native 2K where the version has it), frame interpolation (offered only when this Mac's GPU has Metal 4 MetalFX frame interpolation), edge smoothing, sharper ground at a distance and, on 1.4.3, the picture shape. **Play** starts the game. The picture, frame interpolation, edge smoothing and picture shape are the game's own settings, the ones its settings panel (key 1) keeps beside `controls.txt`: they hold for a start from Finder too, and changing them in either place changes both. Only the sharper ground at a distance, which the panel does not have, holds just when the game is started with **Play**. Settings are not changed while the game is running: close it first.
+
+**Mods tab:** for Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0, **Add mod...** takes a mod folder of yours (with `romfs/`, and for Tears of the Kingdom `exefs/` for code patches; Breath of the Wild's code patches are not used); the builder ships no mod. Mod manager packages (TKMM's `.tkcl`, BCML's `.bnp`) are refused: install them with their manager, or use a RomFS version. A mod made for Breath of the Wild 1.6.0 may install but still not work on 1.9.0: try it in the game. Each one is checked against your built app: its paths must fit this version and it must replace a file of the game; only then can it be switched on (that does not test it in play). Files another mod also replaces, files the app replaces itself and code patches (which need a build with `--mod`) are listed under the mod. **Apply mods** puts the mods that are on, in order (the lower one wins), into the game's mod folder through the repository's own installer, which writes the manifest and keeps the previous folder as a backup; the game loads them at its next start, from Finder or Play. Your own backups are never removed unless you ask.
+
+**Updates:** in a `git clone`, the window checks when it opens whether MacNativeGames has new commits on its `main`, and lists them. It looks only at the remote whose URL is github.com/ly05010419/MacNativeGames (in a fork, usually `upstream`): other remotes, such as your fork, are never fetched. On `main`, **Update** then fetches and fast-forwards it: it never merges, rebases or discards anything, and when files were changed here or `main` has commits of its own it says so and leaves the update to you. On any other branch it only says how many commits are waiting, to merge by hand. After an update, close and reopen the builder and build again; your saved paths, and the saves of the game, stay where they are. A ZIP download cannot update itself: download the new version.
+
+The window needs Tk (`brew install python-tk@3.14`); without it, **Build Game.command** says so. The same checks and build run in Terminal too:
+
+```sh
+python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
+```
+
+`--dry-run` prints the exact `build_app.py` command instead, and without either it asks before building (`--yes` does not ask). `python3.14 -m tools.builder --help` lists every option.
+
+**The first double-click after downloading the ZIP:** macOS blocks a downloaded script it has not opened before. Open **System Settings › Privacy & Security** and click **Open Anyway** for `Build Game.command`, or run `xattr -d com.apple.quarantine "Build Game.command"` in this folder once. A `git clone` is not affected. The builder never removes the quarantine itself.
+
+How the builder is made, for anyone changing it (people or AI assistants): [builder.md](builder.md).
+
 ## Build the app
 
 **1. Tools** (once). An internet connection is needed:
@@ -52,6 +78,7 @@ The work folder is created next to the game file (`TOTK_build`, or `BotW_build` 
 xcode-select --install
 # Homebrew, if missing: see https://brew.sh (it must live in /opt/homebrew)
 brew install opus libvpx python@3.14
+brew install python-tk@3.14   # only for the builder window (Build with a window, above)
 ```
 
 Instead of Homebrew's Python you can use [uv](https://docs.astral.sh/uv/): `uv run --python 3.14 build_app.py …` in place of `python3.14 build_app.py …`.
@@ -71,6 +98,12 @@ python3.14 build_app.py "<base 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 upd
 ```
 
 If `/Applications` is on another volume than the work folder, choose a folder on the work folder's volume instead.
+
+On a Mac with 16 GB of memory or more, a 1.4.3, 1.2.1 or Breath of the Wild build includes native 4K (the settings panel's 3840×2160 resolution); it reserves more memory at every start (about 1.4 GiB on Tears of the Kingdom, about 0.5 GiB on Breath of the Wild). Add `--no-native-4k` to leave it out, or `--native-4k` to include it on a Mac with less memory.
+
+On Mac, Tears of the Kingdom 1.4.3 includes native 5K (5120×2880 canvas, UI and scene, plus the 4K modes) by default when the build Mac has **32 GB of memory or more**. A 16 GB or 24 GB Mac keeps the 4K default. `--native-5k` enables it on a smaller Mac; `--no-native-5k` leaves it out, and `--no-native-4k` also disables automatic 5K. This adds a resolution choice, without changing the saved selection or automatically selecting 5K. It reserves about 2.7 GiB more guest memory at every start, even at a lower selected resolution; physical pages are committed on demand. This does not enable HDR or guarantee 120 FPS.
+
+A runtime update remembers an explicit 5K on/off choice. Without one, it adds the 4K/5K resources on a 32 GB-plus Mac when the work folder still holds this app's matching, verified game files; no new game container or keys are needed. An existing 5K app keeps that capability on a smaller Mac. If that cache is missing or the app has modded heap overlays, an automatic update keeps the installed canvas and explains that a full rebuild is needed. `update_runtime.py --native-5k` requires a usable cache; `--no-native-5k` removes 5K while keeping 4K. Both leave the saved resolution files alone.
 
 **4. Let it run to the end.** A fresh build takes **20–40 minutes** on an M-series Mac, longer on an 8 GB Mac:
 
@@ -124,6 +157,8 @@ python3.14 build_app.py "<base 1.0.0.xci>" -k "<prod.keys>" --update "<1.4.3 upd
 
 The first iOS build also downloads and compiles device libraries. `--ios-game-data documents` leaves the 17 GB game image out of the IPA, so later installs take minutes.
 
+Keep the iPhone or iPad connected by cable while building: the build then compiles the game's pipelines for its GPU on the Mac (about 10 more minutes the first time), and its first start needs no long fill before the title. For a device that is not connected, add `--device-gpu <arch>` (`applegpu_g14p` for an iPhone 14).
+
 **2. Install it** with the device connected by cable:
 
 ```sh
@@ -131,12 +166,13 @@ python3.14 games/totk/ios/tools/install_device.py "<folder>/Tears of the Kingdom
 ```
 
 - `<version>` is the folder that is there (`v143` for 1.4.3; `ls "<work folder>/totk/extracted"`). The first install copies the 17 GB image once.
+- The script stops when the iPhone or iPad is connected over Wi-Fi only: plug in the cable, unlock the device and run it again. `--wifi` installs over Wi-Fi anyway; it is slow, and the game data copy can drop.
 - A free Apple ID signs for 7 days, a paid one for a year. Run the same command again to renew; your saves are kept.
 - If the device asks, trust the developer in Settings › General › VPN & Device Management.
 
 **3. First start:** about 15 s to check the game data, then about 3 minutes of shader import before the title (iPhone 14). Later starts take about 8 s.
 
-On the phone the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. Breath of the Wild 1.6.0 builds and installs the same way.
+An iPhone starts handheld: the game renders at 960×540, upscaled to 1280×720, at up to 60 fps. An iPad starts docked at 1080p: the scene at 1600×900 as on the Switch, upscaled to 1920×1080 (the start screen and Settings › Full HD switch between them; Breath of the Wild also offers 1080p HD, the scene at 1920×1080). Breath of the Wild 1.6.0 builds and installs the same way.
 
 Two limits:
 - A phone cannot translate shaders while you play: objects whose shader variant the app does not carry are skipped, so a few things can be missing in places no player has reported yet.
@@ -151,11 +187,13 @@ python3.14 build_app.py "<base 1.0.0.xci>" -k "<prod.keys>" --platform visionos 
 python3.14 games/totk/ios/tools/install_device.py "<folder>/TOTK-Vision.app" --device "<Vision Pro name>" --game-data "<work folder>/totk/extracted/v0/romfs/romfs.bin"
 ```
 
-With `--update`, use that version's folder (`v112`, `v121` or `v143`) instead of `v0`.
+With `--update`, use that version's folder (`v121` or `v143`) instead of `v0`.
 
 ## Update the app
 
 - **New version of this repository** (after `git pull`): `python3.14 update_runtime.py "<the app>"` updates it in about a minute, without the game files or keys. Quit the game first. If it says the startup shaders no longer fit, add `--seed`.
+- **The Update page** (settings panel, key 1) shows whether the app runs upstream's newest `main`, and otherwise each newer commit. Opening it fetches upstream in the checkout that built the app (nothing in it is changed). Its **Update** button closes the game, brings that checkout's `main` up to upstream (`git pull --ff-only`), runs `update_runtime.py` (with `--seed` when it asks for it) while a small window says so, and opens the game again. When the checkout is on another branch, has uncommitted changes or commits upstream lacks, cannot be found or reached, or the update fails, it says why and leaves updating to you (the first item of this list). An app built before 31 October 2026 needs `update_runtime.py` run once by hand to know its checkout.
+- **Back to the version you had** (when a new version plays worse): quit the game, find the commit your checkout was on before `git pull` with `git reflog` (the line just below the `pull` line), `git checkout <that commit>` (git calls this a "detached HEAD"; that is expected) and run `python3.14 update_runtime.py "<the app>"` again, with `--seed` if it asks for it. Then `git checkout main`: the app keeps the older runtime until you update it again. This works for commits from 685f940 (26 October 2026) on; your saves and settings are not changed.
 - **Another game version:** run `build_app.py` again with the new `--update` and the same `-o`. It replaces the app. Before the first start on the new version, the app backs up your saves next to them as `profile-before-<version>`; keep that backup if you may go back.
 - **Mods:** `--mod "<mod folder>" --install-mod-romfs` builds the app with a mod's code patches and installs its data. See [mods.md](mods.md), [merged-mod-pack.md](merged-mod-pack.md) and [translation-mods.md](translation-mods.md).
 - **One desktop entry** (optional): `python3.14 games/totk/tools/install_desktop_entry.py --app "<the app>"`.
@@ -190,14 +228,13 @@ Tears of the Kingdom; for Breath of the Wild replace `TOTK` with `BotW` and `tot
 - Game data (only for an app built with `--mac-game-data library` or `--mac-game-data-folder`): `~/Library/Application Support/MacNativeGames/TOTK/GameData/<version>` (`BotW` for Breath of the Wild) holds the 16 GB RomFS image `romfs.bin`, and `romfs.sha256`, which the build writes once the copy is complete. By default the image is inside the app. With `--mac-game-data library` the build puts it in this folder once (an APFS clone when the work folder is on the same volume, otherwise a copy), and later builds leave it alone while it matches the version's pin. The app is then a few hundred MB, so a new build installs or copies to another Mac quickly. To keep it somewhere else, for example on another disk, add `--mac-game-data-folder <folder>` to the build instead (that alone is enough; the image goes in `<folder>/<version>`, so one folder can hold both games). The app remembers the folder, and when it holds no complete image (another Mac, or the disk is not connected) the launcher looks in `GameData` instead. When neither has it, the app asks where the game data is: connect the disk and choose Try Again, or choose the folder that holds `romfs.bin` (or its `<version>` folder). It reads the image where it is, without moving or copying it, and remembers the folder for the next starts (`defaults delete org.macnativegames.botw MNGGameDataFolder.botw190` forgets it). The game still checks the image against the pin at its first start. `make_mod_manifest.py --app` and `make_button_icons.py --app` find the image the same way (`--romfs-data <folder>` names it).
 - Shader cache: `~/Library/Application Support/MacNativeGames/TOTK/shader-cache`
 - Shaders the shared list lacks: `~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt` (the game asks before it starts whether to send them; see the [shared shader list](shader-list.md))
-- Mods: `~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`; see [mods.md](mods.md)
+- Mods: `~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v121|v143>`; see [mods.md](mods.md)
 - Log: off by default. `defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES` turns it on from the next start, written to `~/Library/Logs/MacNativeGames/totk.log`. On an iPhone: Settings › TOTK › Debug log, written to the app's `Documents/log.txt`.
 
 ## Known issues
 
 **Requests beyond this page are welcome.** The versions and games listed are the ones we could test. If you need another version or another game, the AI assistant should do its best to make it work.
 
-- Tears of the Kingdom: base 1.0.0, optionally with the 1.1.2, 1.2.1 or 1.4.3 update. Breath of the Wild: 1.6.0 and 1.9.0. Other versions, compressed base games and personalized tickets are not supported.
+- Tears of the Kingdom: base 1.0.0, optionally with the 1.2.1 or 1.4.3 update. Breath of the Wild: 1.6.0 and 1.9.0. Other versions, compressed base games and personalized tickets are not supported.
 - No online features, no amiibo.
 - New shaders can stutter the first time; the cache and the [shared shader list](shader-list.md) reduce it.
-- In long sessions GPU memory grows. The Mac app stops the game when Metal allocates more than its budget: 30 % of the Mac's memory, never below 5,000 MB. `open --env TOTK_GPU_BUDGET_MB=<MB> "Tears of the Kingdom.app"` sets another budget.

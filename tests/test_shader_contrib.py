@@ -39,6 +39,13 @@ class ContributionFileTests(unittest.TestCase):
             self.assertEqual(noseed.returncode, 0, noseed.stderr)
             self.assertEqual(json.loads(noseed.stdout)['status'], 'pass')
             self.assertFalse(contrib.exists(), 'a run without the seed writes no contribution file')
+            game = subprocess.run([str(probe), str(contrib), 'game'], capture_output=True, text=True)   # the iPhone / iPad app's tag
+            self.assertEqual(game.returncode, 0, game.stderr)
+            self.assertEqual(json.loads(game.stdout)['status'], 'pass')
+            self.assertEqual(watch.contribution_game(contrib.read_text()), 'TOTK 1.4.3')
+            prune = subprocess.run([str(probe), str(contrib), 'prune'], capture_output=True, text=True)   # served and sent rows leave
+            self.assertEqual(prune.returncode, 0, prune.stderr)
+            self.assertEqual(json.loads(prune.stdout)['status'], 'pass')
 
 
 if __name__ == '__main__':
@@ -69,6 +76,11 @@ class IssueCollectionTests(unittest.TestCase):
         self.assertEqual(attachment_urls(body), [link])
         self.assertIn('### Device / 设备\n\niPad\n', body)
         self.assertNotIn('udid', body.lower())
+        self.assertIn('### Game version / 游戏版本\n\nSent automatically / 自动提交\n', body)   # an app from before the tag
+        tagged = watch.issue_body('iPhone', link, 'TOTK 1.4.3')   # the device's file names its game and version (2026-10-29)
+        self.assertIn('### Game version / 游戏版本\n\n1.4.3\n\n### Device / 设备\n\niPhone\n', tagged)
+        self.assertEqual(watch.contribution_game('# x\n# Game: TOTK 1.2.1\nV\ta\t{}\n# Game: TOTK 1.4.3\n'), 'TOTK 1.4.3')
+        self.assertIsNone(watch.contribution_game('# Game: TOTK\n# Game: TOTK 1.4.3 and more\nV\ta\t{}\n'))
 
     def test_only_shader_rows_are_taken(self):
         text = '\n'.join([
@@ -185,6 +197,19 @@ class OtherGamesTests(unittest.TestCase):
         self.assertIsNone(per_game)
         self.assertIn('neither game has', line)
 
+    def test_a_pipeline_naming_a_bind_state_the_file_does_not_give_is_not_merged(self):
+        keys = {g: set() for g in collect_shader_issues.GAMES}; keys['totk'] = {self.KEY_A}
+        deps = '{"tex":{"0":"cube"}}'
+        named = f'{self.KEY_A}-{suffix(answers_for(json.loads(deps)))}_b'
+        def key(vs, fs):
+            return (vs.encode().ljust(80, b'\0') + fs.encode().ljust(80, b'\0') + b'\x07' * 40).hex()
+        body = (f'```\nV\t{self.KEY_A}\t{deps}\nR\t{key(named, named)}\n'
+                f'R\t{key(self.KEY_A + "-" + "9" * 12 + "_b", named)}\n```')   # an older game wrote no V row for this one
+        lists, line, per_game = self.merge(self.issue('Shader list: 3 rows', body), keys)
+        self.assertEqual(len(lists['totk'].warm), 1)
+        self.assertIn('1 naming bind states the file does not give', line)
+        self.assertIn(named[65:77], lists['totk'].answers)
+
     def test_another_game_s_reply_names_its_own_list(self):
         reply = reply_text({'wonder': (40, 12)}, 'wonder')
         self.assertIn("12 of them new to Super Mario Bros. Wonder's own shader list (`games/wonder/assets/shader_list.tsv`)", reply)
@@ -250,6 +275,30 @@ class MacReminderForDevicesTests(unittest.TestCase):
             fresh = d / 'new.txt'
             self.assertEqual(watch.merge_rows(phone, fresh), 3)
             self.assertTrue(fresh.read_text().startswith('# '))
+
+    def test_rows_sent_or_served_are_not_merged_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); phone, mine = d / 'phone.txt', d / 'shader-list-contribution.txt'
+            done = d / '.shader-list-contribution.txt.done'   # totk_shader_contrib.h totk_contrib_side(path, "done")
+            mine.write_text('# Mac\nR\tab\n')
+            done.write_text('R\tcd\n')
+            phone.write_text('# phone\nR\tcd\nT\tef\t1:0;\nV\t' + 'a' * 64 + '\t{}\n')
+            self.assertEqual(watch.merge_rows(phone, mine), 3)      # ab, the T row and the V row; cd was sent
+            self.assertNotIn('R\tcd', mine.read_text())
+
+    def test_a_sent_file_keeps_only_what_came_after(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d); mine = d / 'shader-list-contribution.txt'
+            done, state = d / '.shader-list-contribution.txt.done', d / '.shader-list-contribution.txt.reminded'
+            mine.write_text('# Mac\n# Game: TOTK 1.4.3\nR\tab\nR\tcd\nT\tef\t1:0;\n')
+            state.write_text('3\n')
+            self.assertEqual(watch.retire(mine, {'R\tab', 'T\tef\t1:0;'}), 2)
+            self.assertEqual(mine.read_text(), '# Mac\n# Game: TOTK 1.4.3\nR\tcd\n')
+            self.assertEqual(set(done.read_text().splitlines()), {'R\tab', 'T\tef\t1:0;'})
+            self.assertEqual(state.read_text(), '1\n')                # the reminder counts from the row left
+            state.write_text('never\n')
+            watch.retire(mine, {'R\tcd'})
+            self.assertEqual(state.read_text(), 'never\n')
 
     def test_agent_runs_check_every_ten_minutes_with_the_xcode(self):
         plist = watch.agent_plist('/usr/bin/python3', Path('/x/shader_contrib_watch.py'), '/X/Xcode.app/Contents/Developer')

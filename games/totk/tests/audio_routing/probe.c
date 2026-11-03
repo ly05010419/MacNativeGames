@@ -111,11 +111,57 @@ static int eos_samples(void) {
     return failed;
 }
 
+static int run_case_51(void) {
+    setenv("TOTK_AUDIO_CHANNELS", "6", 1);
+    int16_t pcm[16];
+    for (int k = 0; k < 16; ++k) pcm[k] = (int16_t)((k - 8) * 512);
+    AudioRenderer r = {.param = {.sample_rate = 48000, .sample_count = 16, .mix_buffer_count = 8,
+        .voice_count = 1, .sink_count = 1, .submix_count = 1, .splitter_count = 0, .splitter_destination_count = 0},
+        .revision = 0x3f564552u};
+    r.voices = calloc(1, sizeof *r.voices); r.channels = calloc(6, sizeof *r.channels);
+    r.effects = calloc(1, sizeof *r.effects); r.mixes = calloc(1, sizeof *r.mixes);
+    r.sinks = calloc(1, sizeof *r.sinks);
+    r.mixes[0] = (AudrenMixIn){.volume = 1, .buffer_count = 6, .in_use = 1, .dest_mix_id = -1, .dest_splitter_id = SPLITTER_UNUSED};
+    r.sinks[0] = (AudrenSinkIn){.type = SINK_DEVICE, .in_use = 1, .input_count = 6, .inputs = {0, 1, 2, 3, 4, 5}};
+    *r.voices = (ServerVoice){.in = {.in_use = 1, .sample_rate = 48000, .sample_format = FMT_PCM16,
+        .channel_count = 1, .pitch = 1, .volume = 1, .mix_id = 0,
+        .splitter_id = SPLITTER_UNUSED}, .state = SV_STARTED, .valid = {1}};
+    r.voices[0].buffers[0] = (AudrenWaveBuffer){.address = (uintptr_t)pcm, .size = sizeof pcm, .end = 16};
+    /* Route discrete channels: Center (2) at 0.5, LFE (3) at 0.25, Surround Left (4) at 0.75 */
+    r.channels[0].mix[2] = 0.5f;
+    r.channels[0].mix[3] = 0.25f;
+    r.channels[0].mix[4] = 0.75f;
+    audio_mixer_open(&r);
+    audio_mixer_render(&r, 16.0 / 48000);
+    float output[16 * 6];
+    if (audio_mixer_read(&r, output, 16) != 16) runtime_fail("no 5.1 output frames");
+    int failed = 0;
+    for (int k = 0; k < 16; ++k) {
+        float base = pcm[k] / 32768.f;
+        float want_c = base * 0.5f;
+        float want_lfe = base * 0.25f;
+        float want_sl = base * 0.75f;
+        if (fabsf(output[k * 6 + 0] - 0.0f) > 1e-6f || fabsf(output[k * 6 + 1] - 0.0f) > 1e-6f ||
+            fabsf(output[k * 6 + 2] - want_c) > 1e-6f || fabsf(output[k * 6 + 3] - want_lfe) > 1e-6f ||
+            fabsf(output[k * 6 + 4] - want_sl) > 1e-6f || fabsf(output[k * 6 + 5] - 0.0f) > 1e-6f) {
+            if (!failed) fprintf(stderr, "5.1 route frame %d: got C=%.7f LFE=%.7f SL=%.7f, want %.7f %.7f %.7f\n",
+                                 k, output[k * 6 + 2], output[k * 6 + 3], output[k * 6 + 4], want_c, want_lfe, want_sl);
+            failed = 1;
+        }
+    }
+    audio_mixer_close(&r);
+    free(r.voices); free(r.channels); free(r.effects); free(r.mixes); free(r.sinks);
+    unsetenv("TOTK_AUDIO_CHANNELS");
+    return failed;
+}
+
 int main(void) {
     setenv("TOTK_AUDIO_OFF", "1", 1); unsetenv("TOTK_AUDIO_CAPTURE");
     int failed = eos_samples();
     for (int i = 0; i < 4; ++i) failed += run_case(i);
+    failed += run_case_51();
     if (failed) return 1;
     puts("4 audio routing graphs / 64 stereo frames (128 channel samples) passed");
+    puts("1 5.1 surround routing graph / 16 surround frames (96 channel samples) passed");
     return 0;
 }

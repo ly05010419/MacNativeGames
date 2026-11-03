@@ -227,16 +227,23 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
 static int cmdlog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CMD_LOG") != NULL; return on; }
 static int chainlog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_CHAIN_LOG") != NULL; return on; }   // once: EndRecording runs per command buffer
 static int poollog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK_POOL_LOG") != NULL; return on; }
-#ifdef GAME_BOTW
 static void guest_chain(const char *what);
-#endif
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
-    if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    /* #1367 (TOTK 1.2.1): the game now and then initialises a memory pool of zero bytes (the crashing one was
+       GPU-visible). mtl_pool_add then asked Metal for a zero-copy buffer of length 0, which always comes back nil,
+       and the game aborted after 8 retries. A pool without bytes holds no address the GPU can use: the pool object
+       stays valid as is (Map, GetBufferAddress, buffers), it only gets no zero-copy buffer and no dirty range, for
+       there is nothing in it to track. */
+    if (o->mem && o->size && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    else if (o->mem && !o->size) {   /* with the game code that asked: whether the game means an empty pool or a size of ours came back 0 */
+        static _Atomic unsigned said;
+        if (atomic_fetch_add(&said, 1) < 4) { LOG("MemoryPoolInitialize 池 %p 没有字节（size=0，flags=%#x）：不建零拷贝缓冲，也不进脏页跟踪", (void *)o->mem, o->flags); guest_chain("empty memory pool"); }
+    }
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -248,7 +255,10 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
-    if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
+    /* The same condition nvnMemoryPoolInitialize registered the pool under: an empty pool (size 0) was given no
+       buffer and no dirty range, so its teardown is a no-op — a removal by address could otherwise hit a live
+       neighbour's range when the game's allocator handed the empty pool an address next to one (#1367). */
+    if (o->mem && o->size && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
     totk_vpool_fini(o); o->magic = 0;
 }
 /* A mirrored render target has private Metal storage. Reconcile GPU writes at mapped-range cache maintenance too:
@@ -786,6 +796,7 @@ static void cs_dump(void) {   // 每帧调一次（出图处） | Called once pe
     int on = g_cs.on; memset(&g_cs, 0, sizeof g_cs); g_cs.on = on; g_cs.frame0 = f; pthread_mutex_unlock(&g_cs_mu);
 }
 static __thread uint32_t t_rec_hist[OP_COUNT_]; static __thread uint32_t t_rec_n;
+static __thread uint64_t t_rec_eyes, t_rec_tdraws;   // TOTK stereo B2: eye marks / draws the recording inlined from the handles it called (inline_recording)
 static void put_hdr(uint8_t *p, uint32_t op, uint32_t size) { op_hdr h = {op, size}; memcpy(p, &h, sizeof h); if (op) { cs_op(op, size); if (op < OP_COUNT_) t_rec_hist[op]++; } }
 // TOTK: records are written into a growable host buffer per command buffer, never into game command memory.
 // Games hand the same command memory to several command buffers recording concurrently (budgeted for real NVN
@@ -880,7 +891,9 @@ static uint8_t *cmd_alloc(cmd_t *o, uint32_t size) {
    BindVertexAttribState 1+n words, BindVertexStreamState 16+n words, BindVertexBuffer 6 words each (address + limit). */
 static void hw_fix(cmd_t *o, size_t bytes) { o->hw_used += bytes; o->hw_used -= o->last_rec; o->last_rec = bytes; }
 static int reclog_limit(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_RECLOG"); v = e ? atoi(e) : 0; } return v; }
+extern void runtime_frametrace_event(int kind) __attribute__((weak_import));   // "frametrace" diagnostic (Mac runtime)
 NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
+    if (runtime_frametrace_event) runtime_frametrace_event(10);
     cmd_t *o = CB(c);
     if (o->recording) LOG("【红】BeginRecording 重入");
     o->recording = 1; o->cur = o->seg;   /* the previous recording was copied at EndRecording */
@@ -889,7 +902,7 @@ NVN(nvnCommandBufferBeginRecording, void, NVNcommandBuffer *c) {
 #endif
     o->rec_start = o->cmd_used;
     uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_BEGIN, 8); o->hw_used -= 8;   /* BEGIN/END records have no hardware equivalent */
-    o->hw_start = o->hw_used; memset(t_rec_hist, 0, sizeof t_rec_hist);
+    o->hw_start = o->hw_used; memset(t_rec_hist, 0, sizeof t_rec_hist); t_rec_eyes = 0; t_rec_tdraws = 0;
 }
 // TOTK: an NVN command handle lives in the command buffer's control memory; games reuse command memory
 // for later recordings while still calling earlier handles (observed: temporary command buffers sharing one
@@ -927,7 +940,17 @@ static pthread_mutex_t g_copy_mu = PTHREAD_MUTEX_INITIALIZER;
 #ifdef GAME_BOTW
 typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
 #else
-typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; } copy_prefix;
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; uint64_t keep_until, rec_cb, eyes, tdraws; } copy_prefix;   // keep_until, rec_cb (the command buffer that recorded it), eyes (OP_EYE marks in the body): zeldaVR stereo B2 (below)
+#endif
+/* zeldaVR stereo B2 (game_patches_v143.c): the first run's recordings are inlined into the frame's final assembly after the
+   second run (the left eye's twins), but command buffers both runs use add their control memory again in the second run,
+   which releases the first run's copies. A copy made in the first run while stereo is on is kept until two submits on
+   (keep_until): release_copies and the mark sweep pass it over until then; the sweep releases it afterwards, its mark gone. */
+static int copy_kept(const cmd_copy *c);
+#ifdef GAME_BOTW
+#define COPY_KEEP_INIT(c) ((void)(c))
+#else
+#define COPY_KEEP_INIT(c) ((c)->keep_until = 0, (c)->rec_cb = 0, (c)->eyes = 0, (c)->tdraws = 0)
 #endif
 static _Atomic uint64_t g_copy_bytes;   /* live recording-copy bytes (logged with the copy count) */
 static copy_prefix *copy_of(NVNcommandHandle h) { copy_prefix *c = (copy_prefix *)(uintptr_t)h - 1; return c; }
@@ -956,7 +979,7 @@ static uint8_t *flatten_recording(const uint8_t *p) {
     size_t len = (size_t)(q - p), n = sizeof(copy_prefix) + len;
     uint8_t *out = malloc(n); if (!out) die("command copy allocation");
     memcpy(out + sizeof(copy_prefix), p, len);
-    copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits;
+    copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c);
 #ifdef GAME_BOTW
     c->used = 0;
 #endif
@@ -990,7 +1013,7 @@ static uint8_t *flatten_recording_ops(const uint8_t *p) {
         memcpy(out + n, p, h.size); n += h.size;
         if (h.op == OP_END) {
             uint8_t *trimmed = realloc(out, n); if (trimmed) out = trimmed;
-            copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits;
+            copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c);
 #ifdef GAME_BOTW
             c->used = 0;
 #endif
@@ -1019,6 +1042,7 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
 }
 
 static uint64_t g_copy_drop_readd, g_copy_drop_token, g_copy_mark_faults;   /* why copies were released: their control memory was added again / their mark there is gone (of those: unmapped) */
+static uint64_t g_copy_mark_late;   /* Breath of the Wild: handles called after their mark was found gone (botw_handle_copy; the copy was kept) */
 static void copy_drop(copy_bucket *b, uint32_t i, int by_token) {   /* g_copy_mu held: release copy i of bucket b */
     cmd_copy *c = &b->v[i];
     c->stale_at = g_submits + 1;
@@ -1028,6 +1052,13 @@ static void copy_drop(copy_bucket *b, uint32_t i, int by_token) {   /* g_copy_mu
     pf->magic = 0; g_copy_bytes -= malloc_size(pf); free(pf); b->v[i] = b->v[--b->n]; g_ncopies--;
     if (by_token) g_copy_drop_token++; else g_copy_drop_readd++;
     if (!b->n && !b->empty) { b->empty = 1; g_cbk_empty++; }
+}
+static int copy_kept(const cmd_copy *c) {
+#ifdef GAME_BOTW
+    (void)c; return 0;
+#else
+    return ((const copy_prefix *)(c->copy - sizeof(copy_prefix)))->keep_until > g_submits;
+#endif
 }
 static void release_copies(uintptr_t lo, uintptr_t hi) {
     if (hi <= lo) return;
@@ -1043,6 +1074,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
                in the same frame (boot37 / boot38). Once used, a recycled chunk retires it. */
             if (!((const copy_prefix *)(c->copy - sizeof(copy_prefix)))->used) { i++; continue; }
 #endif
+            if (copy_kept(c)) { i++; continue; }   /* stereo B2: a left-eye twin still to be inlined */
             copy_drop(b, i, 0);
         }
     }
@@ -1092,13 +1124,19 @@ static void cbk_compact(void) {
     free(ob); g_cbk_used = live; g_cbk_empty = 0; g_cbk_compactions++;
 }
 NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
+    if (runtime_frametrace_event) runtime_frametrace_event(11);
     cmd_t *o = CB(c);
     size_t hw_before = o->hw_used; uint8_t *p = cmd_alloc(o, 8); put_hdr(p, OP_END, 8); o->hw_used -= 8;
     o->recording = 0;
     if (reclog_limit() && (int)t_rec_n < reclog_limit()) { char line[1024]; size_t n = 0; t_rec_n++;
         for (unsigned i = 1; i < OP_COUNT_ && n < sizeof line - 24; i++) if (t_rec_hist[i]) n += snprintf(line + n, sizeof line - n, " op%u×%u", i, t_rec_hist[i]);
         LOG("[rec] #%u cb=%p ours=%zu hw=%zu%s", t_rec_n, (void *)c, o->cmd_used - o->rec_start - 16, hw_before - o->hw_start, line); }
+    const uint32_t rec_draws = t_rec_hist[OP_DRAW] + t_rec_hist[OP_DRAW_IDX];
     uint8_t *copy = flatten_recording(o->seg);
+    { extern void runtime_b2_rec(uint32_t draws, uint64_t handle); runtime_b2_rec(rec_draws, (uint64_t)(uintptr_t)copy); }
+#ifndef GAME_BOTW
+    { extern int runtime_b2_keep(void); copy_prefix *cp = (copy_prefix *)(uintptr_t)copy - 1; cp->keep_until = runtime_b2_keep() ? g_submits + 2 : 0; cp->rec_cb = (uint64_t)(uintptr_t)c; cp->eyes = t_rec_eyes + t_rec_hist[OP_EYE]; cp->tdraws = t_rec_tdraws + rec_draws; }   // stereo B2: a first-run copy stays for its twin's use; which command buffer made it (b2_top_note)
+#endif   // zeldaVR stereo B2: draws per render run, and which run a handle is (game_patches_v143.c; empty elsewhere)
     if (call_stats_on()) call_stats_end(c, copy);
     /* Finalizing the recorder does not retire its handle; only reusing the backing control region does. */
 #ifdef GAME_BOTW
@@ -1110,7 +1148,12 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
        2026-10-19 runs with either rule died calling a handle whose memory had been added again (boot33, boot35-40). */
     uintptr_t lo = o->ctl && o->ctl_used + 64 <= o->ctl_size ? (uintptr_t)o->ctl + o->ctl_used : 0;
     uintptr_t hi = lo ? lo + 1 : 0;
-    int token = 0;
+    /* The mark goes at the position too (copy_token_write), as the original driver writes its descriptor there: once the
+       game reuses that control memory for something else or gives it back to its heap, the handle is gone on hardware as
+       well, and the sweep releases the copy after a grace window (botw_mark_gone_keep). Without it every position the
+       game stopped recording at kept its copy for the whole session (#1117, 1.9.0: 352,000 live copies and 256,000
+       finalised textures kept for them after 44 minutes). */
+    int token = lo && copy_token_on();
 #else
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
@@ -1127,9 +1170,9 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
       if (b->n == b->cap) { b->cap = b->cap ? b->cap * 2 : 8; b->v = realloc(b->v, b->cap * sizeof *b->v); if (!b->v) die("command copy table"); }
       b->v[b->n++] = (cmd_copy){lo, hi, copy, 0, (uint32_t)token}; g_ncopies++; }
     { static uint64_t made; if (++made % 20000 == 0)
-        LOG("[cmd] recording copies: %llu made, %zu live, %.1f MiB, submit %llu; released %llu at a re-added control memory, %llu whose mark there was gone (%llu unmapped); index %zu buckets (%zu empty) of %zu, compacted %llu times",
+        LOG("[cmd] recording copies: %llu made, %zu live, %.1f MiB, submit %llu; released %llu at a re-added control memory, %llu whose mark there was gone (%llu unmapped, %llu called after it was gone and kept); index %zu buckets (%zu empty) of %zu, compacted %llu times",
             (unsigned long long)made, g_ncopies, g_copy_bytes / 1048576.0, (unsigned long long)g_submits, (unsigned long long)g_copy_drop_readd, (unsigned long long)g_copy_drop_token, (unsigned long long)g_copy_mark_faults,
-            g_cbk_used, g_cbk_empty, g_cbk_cap, (unsigned long long)g_cbk_compactions); }
+            (unsigned long long)g_copy_mark_late, g_cbk_used, g_cbk_empty, g_cbk_cap, (unsigned long long)g_cbk_compactions); }
     pthread_mutex_unlock(&g_copy_mu);
     if (cmdlog_env()) LOG("[cmd] EndRecording cb=%p recorded=%p copy=%p ctl=%p", (void *)c, (void *)o->seg, (void *)copy, o->ctl);
     if (totk_life_on() && totk_life_cb_take(c)) { totk_life_log("end cb=%p handle=%p", (void *)c, (void *)copy); totk_life_handle_add((uint64_t)(uintptr_t)copy); }
@@ -1146,7 +1189,15 @@ static NVNcommandHandle botw_handle_copy(NVNcommandHandle h) {
     uint8_t *copy = NULL;
     pthread_mutex_lock(&g_copy_mu);
     copy_bucket *b = cbk_get((uintptr_t)h >> COPY_PAGE_SHIFT, 0);
-    if (b) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == (uintptr_t)h) { copy = b->v[i].copy; break; }
+    if (b) for (uint32_t i = 0; i < b->n; i++) if (b->v[i].ctl_lo == (uintptr_t)h) {
+        cmd_copy *c = &b->v[i]; copy = c->copy;
+        if (c->stale_at) {   /* called after the sweep found its mark gone: the mark rule is wrong for this position; keep it for good */
+            static uint64_t n; if (n++ < 16) LOG("【红】[cmd] handle %#llx was called %llu submits after its control-memory mark was found gone: its copy stays (no more reclaiming at this position)",
+                                              (unsigned long long)(uintptr_t)h, (unsigned long long)(g_submits - c->stale_at));
+            g_copy_mark_late++; c->stale_at = 0; c->token = 0;
+        }
+        break;
+    }
     pthread_mutex_unlock(&g_copy_mu);
     return copy ? (NVNcommandHandle)(uintptr_t)copy : h;
 }
@@ -1217,6 +1268,9 @@ static void inline_recording(NVNcommandBuffer *c, NVNcommandHandle hd) {
        remain deferred; source handle retirement cannot affect the caller.
        CMDSTAT retains the record-by-record path and its exact counters. */
     const copy_prefix *meta = copy_of(hd);
+#ifndef GAME_BOTW
+    t_rec_eyes += meta->eyes; t_rec_tdraws += meta->tdraws;   // stereo B2: the caller's body now holds the callee's eye marks and draws too
+#endif
     if (inline_bulk_on() && !cs_on() && meta->body_bytes && meta->last_size) {
         cmd_t *o = CB(c);
         uint8_t *dst = cmd_alloc(o, meta->body_bytes);
@@ -1244,13 +1298,43 @@ NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcom
     for (int i = 0; i < n; i++) inline_recording(c, h[i]);
 #endif
 }
+static void *rec(NVNcommandBuffer *c, uint32_t op, size_t payload);   /* below: a record in the command buffer (stereo B2's OP_EYE marks) */
+#ifndef GAME_BOTW
+/* zeldaVR stereo B2: the command buffers whose recordings the game submits to the queue itself (its frame's primary
+   command buffers, the final assembly among them), noted at each submit. Only their calls are paired with the first run
+   (CallCommands): a call nested in another recording (a render job's summary calling its segments, possibly a recording
+   kept from an earlier frame) is inlined as it is, so eye marks never nest (the left eye's twin itself holds none). */
+static _Atomic uint64_t g_b2_top[8];
+static void b2_top_note(NVNcommandHandle h) {
+    const copy_prefix *cp = copy_of(h); if (cp->magic != COPY_MAGIC || !cp->rec_cb) return;
+    for (int i = 0; i < 8; i++) { uint64_t v = atomic_load_explicit(&g_b2_top[i], memory_order_relaxed); if (v == cp->rec_cb) return;
+        if (!v) { uint64_t z = 0; if (atomic_compare_exchange_strong(&g_b2_top[i], &z, cp->rec_cb)) { LOG("[vr] stereo B2: command buffer %#llx submits its recordings itself (a frame's primary command buffer)", (unsigned long long)cp->rec_cb); return; } if (z == cp->rec_cb) return; } }
+}
+uint64_t hle_copy_tdraws(uint64_t h) { const copy_prefix *cp = copy_of((NVNcommandHandle)h); return h && cp->magic == COPY_MAGIC ? cp->tdraws : 0; }   // stereo B2 diagnostic: draws in a recording, inlined ones included
+static int b2_top(const NVNcommandBuffer *c) {
+    for (int i = 0; i < 8; i++) { uint64_t v = atomic_load_explicit(&g_b2_top[i], memory_order_relaxed); if (!v) return 0; if (v == (uint64_t)(uintptr_t)c) return 1; }
+    return 0;
+}
+#endif
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
     if (cmdlog_env()) for (int i = 0; i < n; i++) LOG("[cmd] CallCommands cb=%p handle=%#llx", (void *)c, (unsigned long long)h[i]);
     life_call(c, n, h, "call");
 #ifdef GAME_BOTW
     for (int i = 0; i < n; i++) inline_recording(c, botw_handle_copy(h[i]));
 #else
-    for (int i = 0; i < n; i++) inline_recording(c, h[i]);
+    { extern void runtime_b2_called(int n, const uint64_t *h, uint64_t caller); runtime_b2_called(n, (const uint64_t *)h, (uint64_t)(uintptr_t)c); }   // zeldaVR stereo B2: which run's recordings the frame calls
+    /* zeldaVR stereo B2 (game_patches_v143.c; nothing elsewhere): a second-run (right eye) recording the frame's final
+       assembly calls is inlined with its first-run (left eye) twin behind it, each between OP_EYE marks, so the replay can
+       draw each eye's frame from the same submission; or (a check) the twin alone in its place. */
+    { extern uint64_t runtime_b2_twin(uint64_t h); extern int runtime_b2_stereo(void);
+      for (int i = 0; i < n; i++) {
+          const uint64_t t = b2_top(c) ? runtime_b2_twin((uint64_t)h[i]) : 0;
+          if (t && runtime_b2_stereo()) {
+              ((p_eye *)rec(c, OP_EYE, sizeof(p_eye)))->mask = 2; inline_recording(c, h[i]);
+              ((p_eye *)rec(c, OP_EYE, sizeof(p_eye)))->mask = 1; inline_recording(c, (NVNcommandHandle)t);
+              ((p_eye *)rec(c, OP_EYE, sizeof(p_eye)))->mask = 3;
+          } else inline_recording(c, t ? (NVNcommandHandle)t : h[i]);
+      } }
 #endif
 }
 NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
@@ -1272,14 +1356,32 @@ NVN(nvnCommandBufferReportCounter, void, NVNcommandBuffer *c, NVNcounterType t, 
     if (cmdlog_on()) LOG("[cmd] F%llu ReportCounter type=%d addr=%#llx", (unsigned long long)g_frame_pub, (int)t, (unsigned long long)a);
     uint8_t *p = cmd_alloc(CB(c), 24); put_hdr(p, OP_REPORT_COUNTER, 24); uint64_t tt = t; memcpy(p + 8, &tt, 8); memcpy(p + 16, &a, 8);
 }
+static void vr_ublog(const char *kind, uint64_t dst, size_t n, uint64_t src, const void *data);
 NVN(nvnCommandBufferCopyBufferToBuffer, void, NVNcommandBuffer *c, NVNbufferAddress src, NVNbufferAddress dst, size_t n, int flags) {
+    vr_ublog("copy", dst, n, src, NULL);
     (void)flags;
     uint8_t *p = cmd_alloc(CB(c), 32); put_hdr(p, OP_COPY_B2B, 32); uint64_t nn = n;
     memcpy(p + 8, &src, 8); memcpy(p + 16, &dst, 8); memcpy(p + 24, &nn, 8);
 }
 // uniform 更新：数据在录制时拷进命令内存（NVN 语义：录制后调用方可改原数据），提交时写进缓冲
 // uniform update: the data is copied into command memory at record time (NVN semantics: the caller may modify the original data after recording) and written into the buffer at submit
+/* TOTK_VR_UBLOG=1 (diagnostic for VR stage 2, off by default): GPU-side writes into the main camera blocks (addresses
+   published by the replay's camera scan, nvn_mtl.m vr_camscan: g_vr_cam_blocks): uniform updates and buffer-to-buffer
+   copies whose destination overlaps one, with the game's call chain and the source, at most 40 lines. The CPU never
+   stores into the block itself (a write watchpoint on it stays silent while its content changes every frame). */
+uint64_t g_vr_cam_blocks[8];   // written by the replay thread, read here: a stale read only misses a line
+static void vr_ublog(const char *kind, uint64_t dst, size_t n, uint64_t src, const void *data) {
+    static int on = -1, lines; if (on < 0) on = getenv("TOTK_VR_UBLOG") != NULL;
+    if (!on || lines >= 40) return;
+    int hit = -1; for (int i = 0; i < 8 && hit < 0; i++) { uint64_t b = g_vr_cam_blocks[i]; if (b && dst < b + 2368 && dst + n > b) hit = i; }
+    if (hit < 0) return;
+    char what[256]; snprintf(what, sizeof what, "[vr] camera write F%llu %s dst %#llx (block %#llx %+lld) n %zu src %#llx data %p",
+                             (unsigned long long)g_frame_pub, kind, (unsigned long long)dst, (unsigned long long)g_vr_cam_blocks[hit],
+                             (long long)(dst - g_vr_cam_blocks[hit]), n, (unsigned long long)src, data);
+    guest_chain(what); lines++;
+}
 NVN(nvnCommandBufferUpdateUniformBuffer, void, NVNcommandBuffer *c, NVNbufferAddress buf, size_t bufsz, ptrdiff_t off, size_t n, const void *data) {
+    vr_ublog("update", buf + off, n, 0, data);
     (void)bufsz;
     uint32_t sz = (uint32_t)(24 + n);
     uint8_t *p = cmd_alloc(CB(c), sz); put_hdr(p, OP_UPDATE_UB, (sz + 7) & ~7u);
@@ -1388,6 +1490,14 @@ static void pin_window_start(uint64_t now) {   /* g_copy_mu held */
     cbk_compact();
     g_pin_win_end = now + PIN_SWEEP_SUBMITS; g_pin_scan_pos = 0; g_pin_scan_cap = g_cbk_cap; g_pin_scan_done = 0; g_pin_scan_ok = 1; g_pin_scanned = 0;
 }
+#ifdef GAME_BOTW
+/* Breath of the Wild: a copy whose mark is gone is released only after PIN_SWEEP_SUBMITS more submits; a call in between
+   (botw_handle_copy) clears stale_at and keeps it. 1 = keep it for now. */
+static int botw_mark_gone_keep(cmd_copy *c) {
+    if (!c->stale_at) { c->stale_at = g_submits ? g_submits : 1; return 1; }
+    return g_submits < c->stale_at + PIN_SWEEP_SUBMITS;
+}
+#endif
 static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     if (g_pin_scan_done) return;
     if (g_cbk_cap != g_pin_scan_cap) { g_pin_scan_ok = 0; g_pin_scan_done = 1; return; }
@@ -1399,7 +1509,12 @@ static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     for (; k < end; k++, i = 0) {
         copy_bucket *b = &g_cbk[k]; if (!b->used) continue;
         while (i < b->n) {
-            if (b->v[i].token && !copy_token_intact(&b->v[i])) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
+            if (b->v[i].token && !copy_token_intact(&b->v[i])
+#ifdef GAME_BOTW
+                && !botw_mark_gone_keep(&b->v[i])
+#endif
+                && !copy_kept(&b->v[i])
+               ) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
             pin_mark_ops(b->v[i].copy); g_pin_scanned++; i++;
         }
     }
@@ -2241,6 +2356,7 @@ static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
 
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     NVN_BLOCKING();
+    if (runtime_frametrace_event) runtime_frametrace_event(8);
 #ifdef GAME_BOTW
     NVNcommandHandle mapped[64]; NVNcommandHandle *heap = n > 64 ? malloc(sizeof *heap * (size_t)n) : NULL;
     NVNcommandHandle *hv = heap ? heap : mapped; if (n > 64 && !heap) die("submit handle table");
@@ -2249,6 +2365,9 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
 #endif
     totk_tl(TL_SUB_IN, (uint64_t)n, 0);
     { uint64_t now = __atomic_add_fetch(&g_submits, 1, __ATOMIC_RELAXED); for (int i = 0; i < n; i++) copy_touch(h[i], now); }
+#ifndef GAME_BOTW
+    { extern int runtime_b2_stereo(void); if (runtime_b2_stereo()) for (int i = 0; i < n; i++) b2_top_note(h[i]); }   // zeldaVR stereo B2: the frame's primary command buffers
+#endif
     if (totk_life_on()) { int k = 0; for (int i = 0; i < n; i++) k += totk_life_handle_has(h[i]); totk_life_log("submit n=%d followed=%d", n, k); }
     ((queue_t *)q)->submits++;
     /* TOTK: what the console reads at the submit call is read here, on the game thread, before the submission may be handed
@@ -2294,12 +2413,42 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
     /* TOTK diagnostic (TOTK_WATCH_ADDR): submissions in progress, and their start / end times, to line up guest writes with replay */
     atomic_fetch_add(&dm_submit_busy, 1);
     { static int wl = -1; if (wl < 0) wl = getenv("TOTK_WATCH_ADDR") != NULL; if (wl) LOG("[sub] F%llu start t_us=%llu", (unsigned long long)g_frame_pub, (unsigned long long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000)); }
-    mtl_sub_begin();
-    mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, ucap);   // TOTK: uniforms as of the submit call (ucap: bytes captured there)
-    mtl_sub_index((const uint64_t *)h, n);
-    for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
-    mtl_exec_rest(NULL, 0);
-    mtl_sub_commit();
+    /* zeldaVR stereo B2 (game_patches_v143.c; never elsewhere): a submission whose frame carries both eyes' recordings
+       (stereo marks written since the last one) is replayed for the left eye first, its picture handed to the headset
+       and its CPU-visible effects left out (nvn_mtl.m), then as always for the right eye, whose picture the present
+       hands over. */
+    extern uint64_t runtime_b2_stereo_marks(void); extern void mtl_eye_pass(int e); extern void mtl_eye_capture(int eye); extern void mtl_eye_done(int left, int last); extern void vr_b2_present_eye(int eye);
+    /* stereo by content: a submission is replayed per eye when one of its recordings holds eye marks (the frame's final
+       assembly with both eyes' recordings), never because marks were written somewhere meanwhile (b2ao: the previous
+       frame's submission, without marks, was taken for a stereo one every other frame and took the left capture) */
+    int b2 = 0; const uint64_t b2_mk = runtime_b2_stereo_marks();
+#ifndef GAME_BOTW
+    for (int i = 0; i < n && !b2; i++) { const copy_prefix *cp = copy_of((NVNcommandHandle)h[i]); b2 = cp->magic == COPY_MAGIC && cp->eyes; }
+#endif
+    void *b2_left = NULL; extern int mtl_b2_right_first(void); const int b2_rfirst = b2 && mtl_b2_right_first();   // functions, not nvn_mtl.m data: probes that link this file alone resolve no data of it at load
+    if (b2) {
+        { static int said; if (!said++) LOG("[vr] stereo B2: the first stereo submission (%llu marks so far): replayed for the left eye, then the right", (unsigned long long)b2_mk); }
+        /* the left eye's uniforms: the submission's own capture (the submit call's, or one taken now when the replay runs
+           inside the submit call) with the first run's bytes over them (captured between the runs, game_patches_v143.c;
+           the second run writes the same blocks): nothing of the left pass reads live memory the game may be rebuilding */
+        extern void *runtime_b2_left_cap(void); extern void *mtl_ucap_overlay(const void *base, const void *over); extern void mtl_ucap_free(void *c); extern void *mtl_sub_capture_ubos(const uint64_t *h, int n);
+        void *over = runtime_b2_left_cap(), *own = ucap ? NULL : mtl_sub_capture_ubos((const uint64_t *)h, n);
+        extern int mtl_b2_submit_uniforms_only(void); b2_left = mtl_ucap_overlay(ucap ? ucap : own, mtl_b2_submit_uniforms_only() ? NULL : over);
+        mtl_ucap_free(over); mtl_ucap_free(own);
+    }
+    for (int pass = 0; pass < (b2 ? 2 : 1); pass++) {
+        const int left = b2 && (pass == 0) != b2_rfirst;   // stereo: the left eye's pass (first unless b2order)
+        if (b2) mtl_eye_pass((left ? 1 : 2) | (pass ? 4 : 0));
+        mtl_sub_begin();
+        mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, left ? b2_left : ucap);   // TOTK: uniforms as of the submit call (ucap: bytes captured there)
+        mtl_sub_index((const uint64_t *)h, n);
+        for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
+        mtl_exec_rest(NULL, 0);
+        if (left) mtl_eye_capture(0);
+        mtl_sub_commit();
+        if (b2) mtl_eye_done(left, pass == 1);
+    }
+    if (b2) { mtl_eye_pass(0); vr_b2_present_eye(1); }
     atomic_fetch_sub(&dm_submit_busy, 1);
     { static int wl = -1; if (wl < 0) wl = getenv("TOTK_WATCH_ADDR") != NULL; if (wl) LOG("[sub] F%llu end t_us=%llu", (unsigned long long)g_frame_pub, (unsigned long long)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000)); }
     uint64_t dw = now_ns() - t0;
@@ -2458,8 +2607,8 @@ void nvn_fps_lock_set(int fps) {
     if (atomic_exchange(&g_fps_lock, fps) != fps) { if (fps) LOG("[nvn] 锁帧：%d 帧", fps); else LOG("[nvn] 锁帧：关"); }
 }
 int nvn_fps_lock(void) { return atomic_load(&g_fps_lock); }
-/* The rate the game is held at now (0: not held): 30 for a movie or the phone's hold, then 30 / 40 / 50 for interpolation
-   30+30 / 40+40 / 50+50, else the frame lock. */
+/* The rate the game is held at now (0: not held): 30 for a movie or the phone's hold, then 30 / 40 / 50 / 60 for interpolation
+   30+30 / 40+40 / 50+50 / 60+60, else the frame lock. */
 static int game_hold_fps(void) {
     if (runtime_game_fps_limit() == 30 || phone_holds_30()) return 30;
     int m = mfx_hold_fps(mfx_enabled());
@@ -2804,16 +2953,18 @@ static void sleep_until_ns(uint64_t dl) {   // 单调时钟上的绝对时刻 | 
 // DM_PRESENT_HZ=0 (uncapped frame rate) serves only as an explicit performance profiling switch: some of the game's UI logic counts frames (with the same save, uncapped gives
 // 4181 SaveIndicatorPanel entries and capped at 60 fps gives 0, which matches the ground truth), so uncapped is a semantically wrong way to run and must not be used as a criterion / cross-check / default. Unit tests set it directly with nvn_present_config
 static int g_hz = -1, g_display_mode;
+static int g_cfg_scr = -1;   // the display rate present_cfg chose for (-1: set by nvn_present_config, kept)
 /* TOTK_UNCAPPED (Mac and iPhone, default on; =0 off): like vsync off in other games. The game no longer waits for the display: it is
    paced by our own clock at UNCAPPED_HZ, and the display link shows the newest finished frame at every refresh (older ones
-   are merged away, as when the game runs ahead). The Mac's ceiling is 240 by default (user 2026-10-22: 240 back to 120;
-   2026-10-28: 144, then 240, "改成 240");
+   are merged away, as when the game runs ahead). The Mac's ceiling is 144 by default (user 2026-10-22: 240 back to 120;
+   2026-10-28: 240, then 144, "上限改成 144", after #1192: TOTK 1.0.0 crashed on its title screen within two minutes
+   with the 240 ceiling, not with the uncapped clock off);
    TOTK_UNCAPPED_HZ goes up to 240: the real-time frame step (game_patches*.c) follows the measured frame time at any
    rate, so the game keeps its speed above 120 fps and on displays above 120 Hz. No ceiling at all (no present period) halved Breath of the Wild 1.9.0 on the same save, 81-93 ->
    42-47 fps, also with a time-constraint declaration from the measured frame time; the cause is not known yet. */
 #define UNCAPPED_HZ 240           /* the highest TOTK_UNCAPPED_HZ takes */
-#define UNCAPPED_DEFAULT_HZ 240   /* the Mac's ceiling without TOTK_UNCAPPED_HZ */
-/* TOTK_UNCAPPED_HZ: the uncapped clock's ceiling, 30..240 (default 240 on the Mac), or "display" for the display's refresh
+#define UNCAPPED_DEFAULT_HZ 144   /* the Mac's ceiling without TOTK_UNCAPPED_HZ */
+/* TOTK_UNCAPPED_HZ: the uncapped clock's ceiling, 30..240 (default 144 on the Mac), or "display" for the display's refresh
    rate: the iPhone / iPad default (user 2026-10-17: at most 60 on the iPhone 14's 60 Hz screen, where frames above it are
    never shown and only heat the phone; since 2026-10-23 the phone holds 30, phone_holds_30). The game still does not wait for the display, so a scene slower than the ceiling
    is not held to 60 / 30 steps. */
@@ -2825,12 +2976,14 @@ static int uncapped_cap(int scr) {
     int v = !e ? UNCAPPED_DEFAULT_HZ : !strcmp(e, "display") ? (scr > 0 ? scr : 60) : atoi(e);
     return v < 30 ? 30 : v > UNCAPPED_HZ ? UNCAPPED_HZ : v;
 }
-void nvn_present_config(int hz, int display_mode) { g_hz = g_paced_hz = hz; g_display_mode = display_mode; }
+void nvn_present_config(int hz, int display_mode) { g_hz = g_paced_hz = hz; g_display_mode = display_mode; g_cfg_scr = -1; }
 static void present_cfg(const win_t *o) {
-    if (g_hz >= 0) return;
+    /* again when the window moved to a display with another refresh rate (mtl_display_hz follows the window) */
+    if (g_hz >= 0 && (g_cfg_scr < 0 || mtl_display_hz() == g_cfg_scr)) return;
+    if (g_hz >= 0) LOG("[nvn] 显示器刷新率变了（%d -> %d Hz）：重新设出图节拍 | the window's display changed refresh rate: pacing set again", g_cfg_scr, mtl_display_hz());
     // 有窗口仍缺省 display 间隔模式；无窗口缺省 game 模式。环境变量可覆盖固定 60 Hz。
     // With a window the default is still display interval mode; without a window the default is game mode. Environment variables can override the fixed 60 Hz.
-    int scr = mtl_display_hz();
+    int scr = mtl_display_hz(); g_cfg_scr = scr;
     const char *e = getenv("DM_PRESENT_HZ"), *rt = getenv("TOTK_REALTIME");
     int realtime = !(rt && !strcmp(rt, "0"));
     g_hz = g_paced_hz = e ? atoi(e) : (realtime && scr > 0 ? scr : 60);
@@ -2868,7 +3021,7 @@ static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
     { static int was = -1; if (was >= 0 && m != was)
         LOG("[nvn] 出图节拍切换：%s%s", mfx_hold_fps(m) ? (mfx_own_clock() ? "补帧：游戏按自己的时钟每秒 " : "补帧：跟随显示器，游戏每秒 ") : "",
-                                    mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : "50 帧（50+50）") :
+                                    mfx_hold_fps(m) ? (m == MFX_30 ? "30 帧（30+30）" : m == MFX_40 ? "40 帧（40+40）" : m == MFX_60 ? "60 帧（60+60）" : "50 帧（50+50）") :
                                     m == MFX_MAX ? (g_uncapped ? "补帧 不限帧：不限帧率，每帧补一帧" : "补帧 不限帧：按游戏的出图间隔，每帧补一帧") :
                                     g_uncapped ? "补帧关：不限帧率" : "补帧关：按游戏的出图间隔"); was = m; }
     { int hold = game_hold_fps(); if (hold) return 1000000000ull / (uint64_t)hold; }   /* exactly the held rate, by display ticks or by our own clock */
@@ -2940,6 +3093,9 @@ void dm_nvn_probe_present_interval(void) {
         nvn_fps_lock_set(60);
         if (present_period(&w) != 1000000000ull / 60 || present_ticks(&w) != ticks60[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 60 != 0))
             die("present interval probe: the 60 fps lock must pace exactly 60 fps");
+        nvn_fps_lock_set(120);
+        if (present_period(&w) != 1000000000ull / 120 || mfx_own_clock() != (rates[r] % 120 != 0))
+            die("present interval probe: switching 60 to 120 must immediately use 1/120 seconds");
         nvn_fps_lock_set(30);
         if (present_period(&w) != 1000000000ull / 30 || present_ticks(&w) != ticks30[r] || uncapped_now() || mfx_own_clock() != (rates[r] % 30 != 0))
             die("present interval probe: the 30 fps lock must pace as the 30 fps hold");
@@ -2977,6 +3133,7 @@ static void present_exec(win_t *o, int idx, double period, const int crop[4], ui
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     NVN_BLOCKING();
     (void)q; win_t *o = (win_t *)w; o->presents++;
+    if (runtime_frametrace_event) runtime_frametrace_event(9);
     totk_tl_frame(o->presents); totk_tl(TL_PRES_IN, (uint64_t)idx, 0);
     if (runtime_frame_step_update) runtime_frame_step_update(now_ns());
     if (movie_host_tick) movie_host_tick();

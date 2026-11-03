@@ -20,9 +20,13 @@
 #include <math.h>
 #include <stdint.h>
 
-typedef struct { uint16_t vendor, product; uint8_t reportId, length, offset; double countsPerG, countsPerDegS; } HidImuProfile;
+/* layout: 0 = acceleration first (8BitDo), 1 = rotation first (DualShock 4) */
+typedef struct { uint16_t vendor, product; uint8_t reportId, length, offset, layout; double countsPerG, countsPerDegS; } HidImuProfile;
 
-static const HidImuProfile hid_imu_profiles[] = { {0x2dc8, 0x6012, 0x01, 34, 15, 4096.0, 32767.0 / 2000.0} };
+static const HidImuProfile hid_imu_profiles[] = {
+    {0x2dc8, 0x6012, 0x01, 34, 15, 0, 4096.0, 32767.0 / 2000.0},
+    {0x054c, 0x05c4, 0x11, 78, 15, 1, 8192.0, 32767.0 / 2000.0},
+};
 enum { HID_IMU_PROFILES = sizeof hid_imu_profiles / sizeof *hid_imu_profiles };
 
 static inline const HidImuProfile *hid_imu_find(int vendor, int product) {
@@ -38,12 +42,15 @@ static inline int hid_imu_decode(const HidImuProfile *pr, uint32_t id, const uin
     if (id != pr->reportId || len < pr->length) return 0;
     const uint8_t *s = p + pr->offset;
     double raw[6];
-    for (int i = 0; i < 6; i++) {
-        double v = (int16_t)(s[2 * i] | s[2 * i + 1] << 8);
-        raw[i] = i < 3 ? v / pr->countsPerG : v / pr->countsPerDegS * (M_PI / 180);
+    for (int i = 0; i < 6; i++)
+        raw[i] = (int16_t)(s[2 * i] | s[2 * i + 1] << 8);
+    if (pr->layout) {   /* DualShock 4: rotation first, axes permuted against GCMotion's frame */
+        acc[0] = -raw[3] / pr->countsPerG; acc[1] = raw[5] / pr->countsPerG; acc[2] = -raw[4] / pr->countsPerG;
+        gyro[0] = raw[0] / pr->countsPerDegS * (M_PI / 180); gyro[1] = -raw[2] / pr->countsPerDegS * (M_PI / 180); gyro[2] = raw[1] / pr->countsPerDegS * (M_PI / 180);
+    } else {   /* acceleration first: 8BitDo Ultimate 2 */
+        acc[0] = raw[1] / pr->countsPerG; acc[1] = -raw[0] / pr->countsPerG; acc[2] = -raw[2] / pr->countsPerG;
+        gyro[0] = -raw[4] / pr->countsPerDegS * (M_PI / 180); gyro[1] = raw[3] / pr->countsPerDegS * (M_PI / 180); gyro[2] = raw[5] / pr->countsPerDegS * (M_PI / 180);
     }
-    acc[0] = raw[1]; acc[1] = -raw[0]; acc[2] = -raw[2];
-    gyro[0] = -raw[4]; gyro[1] = raw[3]; gyro[2] = raw[5];
     return 1;
 }
 

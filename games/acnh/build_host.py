@@ -14,9 +14,17 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
-from games.acnh.prepare import check_exefs, profile, require
+from games.acnh.prepare import check_exefs, prepared_profile, require
 from games.acnh.tools.common import clone_file, outside_repository, verified_file
 from games.acnh.tools.runtime_preflight import prepare as preflight
+from games.acnh.tools.prepare_fps import prepare_fps
+from games.acnh.tools.prepare_dlc import config_header as dlc_config_header
+
+
+def write_changed(path, data):
+    payload = data.encode() if isinstance(data, str) else data
+    if not path.is_file() or path.read_bytes() != payload:
+        path.write_bytes(payload)
 
 
 def constructor_flag(image, module):
@@ -87,16 +95,27 @@ def emit_tables(target, output, data):
             plt, slot = clock_plt(image, module)
     rows += ["static Module modules[] = {", *initializers, "};",
              f"#define PROBE_PLT {plt}ULL", f"#define PROBE_SLOT {slot}ULL"]
-    (output / "runtime_tables.h").write_text("\n".join(rows) + "\n")
+    write_changed(output / "runtime_tables.h", "\n".join(rows) + "\n")
 
 
-def prepare_host(prepared, work, fonts):
+def prepare_host(prepared, work, fonts, fps_mod=None, dlc=None, forget=()):
+    """fps_mod/dlc default to the inputs the work folder remembers; names in forget ("fps", "dlc") drop them."""
     prepared = outside_repository(prepared, ROOT)
     work = outside_repository(work, ROOT)
     fonts = outside_repository(fonts, ROOT)
-    require(not work.exists(), "Host work directory exists; use make for subsequent source rebuilds")
     target = prepared / "update"
-    expected = profile(458752)
+    expected = prepared_profile(prepared)
+    if work.exists():
+        info_path = work / "host-info.json"
+        require(info_path.is_file(), "Existing host work has no identity record")
+        info = json.loads(info_path.read_text())
+        require(info.get("prepared") == str(prepared) and
+                info.get("display_version") == expected["display_version"],
+                "Existing host work belongs to another prepared game/version")
+        if fps_mod is None and "fps" not in forget and info.get("fps_mod"):
+            fps_mod = Path(info["fps_mod"])
+        if dlc is None and "dlc" not in forget and info.get("dlc"):
+            dlc = Path(info["dlc"])
     check_exefs(json.loads((target / "extraction-manifest.json").read_text()), expected)
     index = json.loads((target / "romfs/index.json").read_text())
     verified_file(target / "romfs/romfs.bin", expected["romfs_sha256"])
@@ -104,10 +123,11 @@ def prepare_host(prepared, work, fonts):
     # The runtime starts build/shader-service/totk_xlate (totk_shader_rt.m): the pinned prebuilt translator.
     translator = HERE / "prebuilt/macos-arm64/totk_xlate"
     verified_file(translator, (HERE / "prebuilt/macos-arm64/totk_xlate.sha256").read_text().split()[0])
-    work.mkdir(parents=True)
-    (work / "build").mkdir()
-    (work / "rewritten").mkdir()
-    (work / "logs").mkdir()
+    work.mkdir(parents=True, exist_ok=True)
+    for folder in ("build", "rewritten", "logs"):
+        (work / folder).mkdir(exist_ok=True)
+    write_changed(work / "build/version-config.h",
+        f'#define ACNH_VERSION_RAW {expected["cnmt_version_raw"]}\n')
     clone_file(translator, work / "build/shader-service/totk_xlate")
     with tempfile.TemporaryDirectory(dir=work) as temporary:
         preflight(target / "exefs", target / "extraction-manifest.json", target / "rewritten", Path(temporary) / "runtime")
@@ -119,8 +139,8 @@ def prepare_host(prepared, work, fonts):
         entries.extend(struct.pack("<QQII", row["offset"], row["size"], len(strings), len(name)))
         strings.extend(name)
     binary_index = struct.pack("<8sQQ", b"TOTKRFS1", len(index["files"]), 24 + len(entries)) + entries + strings
-    (target / "romfs/runtime-index.bin").write_bytes(binary_index)
-    (work / "build/romfs_config.h").write_text(
+    write_changed(target / "romfs/runtime-index.bin", binary_index)
+    write_changed(work / "build/romfs_config.h",
         f'#define ROMFS_IMAGE_SIZE {expected["romfs_size"]}ULL\n#define ROMFS_IMAGE_SHA256 "{expected["romfs_sha256"]}"\n'
         f'#define ROMFS_INDEX_SHA256 "{hashlib.sha256(binary_index).hexdigest()}"\n')
     font_manifest = json.loads((fonts / "manifest.json").read_text())
@@ -130,10 +150,25 @@ def prepare_host(prepared, work, fonts):
         path = fonts / f'{font["type"]}-{font["name"]}.bfttf'
         verified_file(path, font["sha256"])
         rows.append("{" + f'{json.dumps(str(path))},{font["bfttf_bytes"]}ULL,{font["font_bytes"]}ULL,"{font["sha256"]}"' + "}")
-    (work / "build/shared_fonts_config.h").write_text("#define SHARED_FONT_COUNT 6\n#define SHARED_FONT_ROWS " + ",".join(rows) + "\n")
+    write_changed(work / "build/shared_fonts_config.h", "#define SHARED_FONT_COUNT 6\n#define SHARED_FONT_ROWS " + ",".join(rows) + "\n")
     info = {"title_id": expected["title_id"], "display_version": expected["display_version"],
             "prepared": str(prepared), "work": str(work), "shared_fonts": str(fonts),
             "scope": "Diagnostic host build; execution is a separate validation step"}
+    if fps_mod is not None:
+        prepare_fps(prepared, work, fps_mod)
+        info["fps_mod"] = str(fps_mod.expanduser().resolve())
+        info["fps_manifest_sha256"] = hashlib.sha256((work / "build/fps60/manifest.json").read_bytes()).hexdigest()
+    else:
+        write_changed(work / "build/fps_config.h", "#define ACNH_FPS_ENABLED 0\n")
+    if dlc is not None:
+        require(expected["cnmt_version_raw"] == 2097152, "DLC support is currently scoped to 3.0.1")
+        dlc = outside_repository(dlc, ROOT)
+        header, digest = dlc_config_header(dlc)
+        write_changed(work / "build/dlc_config.h", header)
+        info["dlc"] = str(dlc)
+        info["dlc_manifest_sha256"] = digest
+    else:
+        write_changed(work / "build/dlc_config.h", '#define ACNH_DLC_COUNT 0\n#define ACNH_DLC_MARKER "MNG_ACNH_DLC:none"\n')
     (work / "host-info.json").write_text(json.dumps(info, indent=2) + "\n")
 
 
@@ -142,11 +177,18 @@ def main():
     for flag in ("prepared", "work", "shared-fonts"):
         parser.add_argument(f"--{flag}", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=3)
+    parser.add_argument("--fps-mod", type=Path, help="Optional pinned tmouh/acnh-60fps source folder; enables experimental 3.0.1 60 FPS")
+    parser.add_argument("--dlc", type=Path, help="Optional directory from tools/prepare_dlc.py; remembered for rebuilds")
+    parser.add_argument("--no-fps-mod", action="store_true", help="Forget the remembered --fps-mod input (original 30 FPS only)")
+    parser.add_argument("--no-dlc", action="store_true", help="Forget the remembered --dlc input (zero DLCs)")
     args = parser.parse_args()
+    if args.no_fps_mod and args.fps_mod or args.no_dlc and args.dlc:
+        parser.error("an input and its --no-* option are mutually exclusive")
+    forget = {name for name, drop in (("fps", args.no_fps_mod), ("dlc", args.no_dlc)) if drop}
     try:
         require(args.jobs > 0, "jobs must be positive")
         work = args.work.expanduser().resolve()
-        prepare_host(args.prepared, work, args.shared_fonts)
+        prepare_host(args.prepared, work, args.shared_fonts, args.fps_mod, args.dlc, forget)
         with (work / "logs/build.log").open("w") as log:
             result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={work}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
         require(result.returncode == 0, f"Host compilation failed; see {work / 'logs/build.log'}")

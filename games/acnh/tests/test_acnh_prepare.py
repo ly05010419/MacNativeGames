@@ -31,6 +31,31 @@ class PrepareTests(unittest.TestCase):
         acnh.check_exefs(self.manifest, self.expected)
         acnh.check_modules(self.modules, self.expected)
 
+    def test_supported_update_selection_rejects_unrecognized_versions(self):
+        expected = acnh.profile(2097152)
+        self.assertEqual(expected["display_version"], "3.0.1")
+        self.assertEqual(expected["package_kind"], "update")
+        for version in (None, "2097152", 2031616, -1):
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "Unsupported ACNH"):
+                acnh.profile(version)
+
+    def test_pinned_base_npdm_variant_never_allows_changed_code(self):
+        expected = acnh.profile(0)
+        rows = [{"name": name, "sha256": digest} for name, digest in expected["exefs_sha256"].items()]
+        next(r for r in rows if r["name"] == "main.npdm")["sha256"] = expected["npdm_sha256_alternates"][0]
+        manifest = {"title_id": acnh.TITLE_ID, "files": rows}
+        acnh.check_exefs(manifest, expected)
+        next(r for r in rows if r["name"] == "main")["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "Unknown ExeFS"):
+            acnh.check_exefs(manifest, expected)
+
+    def test_failed_preparation_cannot_select_a_host_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "preparation.json").write_text(json.dumps({"status": "failed"}))
+            with self.assertRaisesRegex(ValueError, "did not finish"):
+                acnh.prepared_profile(root)
+
     def test_rejects_other_title_version_and_base_in_update_slot(self):
         for key, value in (("title_id", "01004D300C5AE000"), ("cnmt_version_raw", 0),
                            ("cnmt_version_raw", None), ("package_kind", "base")):
@@ -70,6 +95,16 @@ class PrepareTests(unittest.TestCase):
             link.symlink_to(ROOT, target_is_directory=True)
             with self.assertRaises(ValueError):
                 acnh.outside_repository(link / "generated", ROOT)
+
+    def test_owner_build_layout_and_shared_fonts_are_allowed(self):
+        for relative in ("build/acnh-3.0.1/work/inspection/update/exefs",
+                         "game-assets/shared/fonts"):
+            target = ROOT / relative
+            self.assertEqual(acnh.outside_repository(target, ROOT), target.resolve())
+        for relative in ("build/acnh-3.0.1/runtime", "build/totk-1.4.3/work",
+                         "game-assets/shared/keys", "games/acnh/work"):
+            with self.subTest(path=relative), self.assertRaises(ValueError):
+                acnh.outside_repository(ROOT / relative, ROOT)
 
     def test_existing_work_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as temporary:

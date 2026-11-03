@@ -21,6 +21,14 @@ static inline uint64_t nvn_hm_hash(const void *k, uint32_t len) {
 static inline void nvn_hm_init(nvn_hmap *m, uint32_t klen) { memset(m, 0, sizeof *m); m->klen = klen; }
 static inline void *nvn_hm_get(const nvn_hmap *m, const void *k) {
     if (!m->n) return NULL;
+    if (m->klen == 8) {   // TOTK: 8-byte keys (serials, pointers) compared as one word, not through memcmp (same probe sequence, same answer)
+        uint64_t kk; memcpy(&kk, k, 8);
+        for (uint32_t i = (uint32_t)nvn_hm_hash(k, 8) & (m->cap - 1);; i = (i + 1) & (m->cap - 1)) {
+            if (!m->vals[i]) return NULL;
+            uint64_t ki; memcpy(&ki, m->keys + (size_t)i * 8, 8);
+            if (ki == kk) return m->vals[i];
+        }
+    }
     for (uint32_t i = (uint32_t)nvn_hm_hash(k, m->klen) & (m->cap - 1);; i = (i + 1) & (m->cap - 1)) {
         if (!m->vals[i]) return NULL;
         if (!memcmp(m->keys + (size_t)i * m->klen, k, m->klen)) return m->vals[i];

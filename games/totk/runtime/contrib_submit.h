@@ -38,7 +38,8 @@ static inline NSString *gh_path(void) {
 
 /* "Submit automatically": a secret gist with the file, then an issue in the shader-list form's layout linking its raw
    file (scripts/collect_shader_issues.py finds it by its title; GitHub drops labels set by people without write access).
-   The issue's link, or nil. */
+   Once the issue is made, the rows it sent leave the file for its done file (totk_contrib_retire), so the next issue
+   carries only what came after and the reminder counts from there. The issue's link, or nil. */
 static inline NSString *contrib_submit(NSString *gh, NSString *path, NSUInteger rows) {
     NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     if (!text) return nil;
@@ -54,5 +55,9 @@ static inline NSString *contrib_submit(NSString *gh, NSString *path, NSUInteger 
     NSString *title = [NSString stringWithFormat:@GAME_CONTRIB_TITLE " %lu shaders from Mac (%@ %s)", (unsigned long)rows, @GAME_FOLDER, TOTK_GAME_VERSION];
     NSString *issue = run_tool(gh, @[@"issue", @"create", @"--repo", @TOTK_CONTRIB_REPO, @"--title", title, @"--body", body], nil, &status);
     NSRange r = status == 0 && issue ? [issue rangeOfString:@"https://github\\.com/\\S+/issues/[0-9]+" options:NSRegularExpressionSearch] : NSMakeRange(NSNotFound, 0);
-    return r.location == NSNotFound ? nil : [issue substringWithRange:r];
+    if (r.location == NSNotFound) return nil;
+    NSMutableSet *sent = [NSMutableSet set];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) if (totk_contrib_is_row(line)) [sent addObject:line];
+    totk_contrib_retire(path, sent);
+    return [issue substringWithRange:r];
 }

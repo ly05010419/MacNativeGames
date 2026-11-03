@@ -75,7 +75,8 @@ python3.14 scripts/build_ssbu.py --game "<your card image>.xci" --update "<your 
 ## Play
 
 Keys as in Tears of the Kingdom: WASD the left stick, arrow keys the right stick, J is A, K or Space is B, I is X, U is Y,
-Q / E are L / R, Return is +. Game controllers recognized by macOS work as a Pro Controller. The **Picture** menu sets
+Q / E are L / R, Return is +. Game controllers recognized by macOS work as a Pro Controller; so do pads macOS leaves to
+the game (a PowerA controller for Switch 2, other HID gamepads), read over HID. The **Picture** menu sets
 1080p or 2K for the next start (Smash makes its render images once, at start).
 
 | Key | What it does in Smash |

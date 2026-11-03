@@ -156,7 +156,9 @@ NVN(nvnDeviceGetProcAddress, PFNNVNGENERICFUNCPTRPROC, const NVNdevice *d, const
 // 设备属性：Tegra X1 实测值（nnheaders nvn_DeviceConstantsNX.h，在 SMO 上逐项调 nvnDeviceGetInteger 得到）
 // Device properties: values measured on Tegra X1 (nnheaders nvn_DeviceConstantsNX.h, obtained by calling nvnDeviceGetInteger item by item on SMO)
 static const int g_devinfo[] = {
-#if defined(GAME_ACNH)
+#if defined(GAME_ACNH) && ACNH_VERSION_RAW == 2097152
+    [0x00] = 55, [0x01] = 15,   // 3.0.1 main+0x37b6eec checks major 55, minor >= 15. Unsupported calls still stop.
+#elif defined(GAME_ACNH)
     [0x00] = 53, [0x01] = 312,  // ACNH 1.2.1 main+0x1a845e4 requires minor >= 312 (0x138).
 #elif defined(GAME_BOTW) || defined(GAME_ODYSSEY) || defined(GAME_KIRBY)
     [0x00] = 53, [0x01] = 311,  // Odyssey 1.3.0 main+0x9414c4 checks 53; +0x9414d0 requires minor >= 311.
@@ -2583,6 +2585,7 @@ static void sleep_until_ns(uint64_t dl);
 static uint64_t present_period(const win_t *o);
 static unsigned present_ticks(const win_t *o);
 extern void runtime_frame_step_update(uint64_t now_ns) __attribute__((weak_import));
+extern unsigned runtime_present_interval(unsigned interval) __attribute__((weak_import));
 extern void movie_host_tick(void) __attribute__((weak_import));   /* TOTK runtime/movie_host.c: pre-rendered cutscenes at their own frame rate */
 __attribute__((weak)) void dm_main_yield_stats(uint64_t *n, uint64_t *ns) { *n = 0; *ns = 0; }   // 宿主 hle_thread.c 提供真值；图形单测里为 0 | The host's hle_thread.c provides the ground truth; 0 in graphics unit tests
 __attribute__((weak)) uint32_t dm_guest_work_qos(unsigned *count) { if (count) *count = 0; return QOS_CLASS_UNSPECIFIED; }
@@ -2944,7 +2947,9 @@ static unsigned present_ticks(const win_t *o) {   /* display ticks per game fram
     int m = mfx_enabled();
     if (m == MFX_HALF) return 2;
     if (m == MFX_30) { int hz = g_paced_hz > 0 ? g_paced_hz : 60; return (unsigned)(hz >= 45 ? (hz + 15) / 30 : 1); }
-    return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) || o->interval <= 0 ? 1u : (unsigned)o->interval;
+    unsigned interval = o->interval <= 0 ? 1u : (unsigned)o->interval;
+    if (runtime_present_interval) interval = runtime_present_interval(interval);
+    return g_display_mode || (uncapped_now() && !dm_detclock_enabled() && uncapped_interval_on()) ? 1u : interval;
 }
 static uint64_t present_period(const win_t *o) {
     unsigned itv = present_ticks(o); int m = mfx_enabled(), hz = g_uncapped && !uncapped_now() ? g_paced_hz : g_hz;
@@ -2967,7 +2972,9 @@ void dm_nvn_probe_present_interval(void) {
     for (int interval = -1; interval <= 3; interval++) {
         win_t w = {.interval = interval}; g_hz = hz; g_display_mode = display; g_uncapped = uncapped;
         atomic_store(&g_uncapped_interval, neg && atoi(neg) == 11 ? 0 : on);
-        unsigned expected = display || (uncapped && on && !dm_detclock_enabled()) || interval <= 0 ? 1u : (unsigned)interval;
+        unsigned base_interval = interval <= 0 ? 1u : (unsigned)interval;
+        if (runtime_present_interval) base_interval = runtime_present_interval(base_interval);
+        unsigned expected = display || (uncapped && on && !dm_detclock_enabled()) ? 1u : base_interval;
         if (present_ticks(&w) != expected || present_period(&w) != (uint64_t)expected * 1000000000ull / hz)
             die("present interval probe: effective pacing differs from expected");
         checked++;

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Stops a commit that would put Switch keys, game containers or extracted ExeFS/RomFS files into git.
+
+Turn it on once per clone: git config core.hooksPath .githooks
+It checks what is staged, whichever tool made the commit, including files added with git add -f.
+"""
+import re
+import subprocess
+import sys
+
+GAME_EXT = re.compile(r"\.(keys|nsp|nsz|xci|xcz|nca|ncz|nso|nro|tik)$", re.I)
+GAME_DIR = re.compile(r"(^|/)(romfs|exefs)(/|$)", re.I)
+# A mod's code patches sit in its exefs/ folder by convention (games/alc/mods/1.0.1/60fps/exefs/*.pchtxt); they are
+# patch descriptions written by hand, not files out of the game.
+PATCH_TEXT = re.compile(r"\.(pchtxt|md)$", re.I)
+
+
+def is_game_file(path):
+    return bool(GAME_EXT.search(path) or (GAME_DIR.search(path) and not PATCH_TEXT.search(path)))
+
+
+def staged_paths():
+    out = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"],
+                         capture_output=True, check=True).stdout
+    return [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
+
+
+def main():
+    bad = sorted(p for p in staged_paths() if is_game_file(p))
+    if not bad:
+        return 0
+    print("Commit stopped: game content and keys never go into this repository.", file=sys.stderr)
+    for path in bad:
+        print(f"  {path}", file=sys.stderr)
+    print("Unstage them with: git restore --staged <path>", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

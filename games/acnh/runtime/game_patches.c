@@ -1,4 +1,5 @@
 #include "game_patches.h"
+#include "game_version.h"
 #include "world_survey.h"
 #include <stdio.h>
 
@@ -9,9 +10,11 @@ void acnh_draw_hook_install(Module *m);
 void acnh_ui_patch_install(Module *m);
 void runtime_game_patches(Module *m) {
     runtime_survey_init(m);
+#if ACNH_VERSION_RAW == 458752
     acnh_ctx_lock_install(m);
     acnh_draw_hook_install(m);
     acnh_ui_patch_install(m);
+#endif
     fprintf(stderr,"[acnh] verified main mapped at %p\n", (void *)m->base);
 }
 void runtime_frame_step_pin(double ms) { (void)ms; }

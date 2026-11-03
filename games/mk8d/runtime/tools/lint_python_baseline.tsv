@@ -1,0 +1,248 @@
+# tool	file	rule	count	message   (dm/tools/lint_python.py; shrink with --update, never edit by hand to add)
+pyright	dm/games/profile_guess.py	reportArgumentType	1	Argument of type "set[Unknown]" cannot be assigned to parameter "nro_imports" of type "frozenset[Unknown]" in function "shader_sources" "set[Unknown]" is not assignable to "frozenset[Unknown]"
+pyright	dm/gfx/tools/c1_guard.py	reportOptionalMemberAccess	1	"startswith" is not a known attribute of "None"
+pyright	dm/gfx/tools/c1_guard.py	reportOptionalOperand	1	Operator "+" not supported for "None"
+pyright	dm/gfx/tools/c1_guard.py	reportOptionalOperand	1	Operator "-" not supported for "None"
+pyright	dm/gfx/tools/c1_guard.py	reportOptionalOperand	2	Operator ">=" not supported for "None"
+pyright	dm/gfx/tools/cb_extent.py	reportArgumentType	1	Argument of type "Unknown | None" cannot be assigned to parameter "arg2" of type "SupportsRichComparisonT@max" in function "max" Type "Unknown | None" is not assignable to type "SupportsRichComparison" Type "Unknown | None" is not assignable to type "SupportsRichComparison" Type "None" is not assignable to type "SupportsRichComparison" "None" is incompatible with protocol "SupportsDunderLT[Any]" "__lt__" is not present "None" is incompatible with protocol "SupportsDunderGT[Any]" "__gt__" is not present
+pyright	dm/gfx/tools/cb_extent.py	reportArgumentType	1	Argument of type "Unknown | None" cannot be assigned to parameter "arg2" of type "SupportsRichComparisonT@max" in function "max" Type "Unknown | None" is not assignable to type "int" "None" is not assignable to "int"
+pyright	dm/gfx/tools/cb_extent.py	reportOptionalOperand	1	Operator "<" not supported for "None"
+pyright	dm/gfx/tools/dmsh_build.py	reportArgumentType	1	Argument of type "str | None" cannot be assigned to parameter "file" of type "FileDescriptorOrPath" in function "open" Type "str | None" is not assignable to type "FileDescriptorOrPath" Type "None" is not assignable to type "FileDescriptorOrPath" "None" is not assignable to "int" "None" is not assignable to "str" "None" is not assignable to "bytes" "None" is incompatible with protocol "PathLike[str]" "__fspath__" is not present "None" is incompatible with protocol "PathLike[bytes]" ...
+pyright	dm/gfx/tools/dmsh_build.py	reportArgumentType	3	Argument of type "str | None" cannot be assigned to parameter "a" of type "BytesPath" in function "join" Type "str | None" is not assignable to type "BytesPath" Type "str" is not assignable to type "BytesPath" "str" is not assignable to "bytes" "str" is incompatible with protocol "PathLike[bytes]" "__fspath__" is not present
+pyright	dm/gfx/tools/dmsh_build.py	reportAttributeAccessIssue	1	Cannot access attribute "items" for class "str" Attribute "items" is unknown
+pyright	dm/gfx/tools/dmsh_build.py	reportCallIssue	1	No overloads for "open" match the provided arguments
+pyright	dm/gfx/tools/dmsh_build.py	reportCallIssue	3	No overloads for "join" match the provided arguments
+pyright	dm/gfx/tools/dmsh_build.py	reportGeneralTypeIssues	2	"None" is not iterable "__iter__" method not defined
+pyright	dm/gfx/tools/dmsh_build.py	reportOperatorIssue	1	Operator "+" not supported for types "Literal[128]" and "int | None" Operator "+" not supported for types "Literal[128]" and "None" when expected type is "int | Unknown"
+pyright	dm/gfx/tools/dmsh_build.py	reportOptionalMemberAccess	3	"group" is not a known attribute of "None"
+pyright	dm/gfx/tools/dmsh_build.py	reportOptionalSubscript	13	Object of type "None" is not subscriptable
+pyright	dm/gfx/tools/gl_shaders.py	reportArgumentType	1	Argument of type "list[str]" cannot be assigned to parameter "iterable" of type "Iterable[LiteralString]" in function "join" "list[str]" is not assignable to "Iterable[LiteralString]" Type parameter "_T_co@Iterable" is covariant, but "str" is not a subtype of "LiteralString" "str" is not assignable to "LiteralString"
+pyright	dm/gfx/tools/gl_shaders.py	reportCallIssue	1	No overloads for "join" match the provided arguments
+pyright	dm/gfx/tools/shader_split.py	reportArgumentType	1	Argument of type "Literal['m_Name']" cannot be assigned to parameter "s" of type "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" "Literal['m_Name']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/gfx/tools/shader_split.py	reportArgumentType	1	Argument of type "Literal['m_ParsedForm']" cannot be assigned to parameter "s" of type "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" "Literal['m_ParsedForm']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/gfx/tools/shader_split.py	reportArgumentType	1	Argument of type "Literal['variants']" cannot be assigned to parameter "s" of type "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" "Literal['variants']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/gfx/tools/shader_split.py	reportArgumentType	1	Argument of type "bytes | None" cannot be assigned to parameter "buffer" of type "ReadableBuffer" in function "unpack_from" Type "bytes | None" is not assignable to type "ReadableBuffer" "None" is incompatible with protocol "Buffer" "__buffer__" is not present
+pyright	dm/gfx/tools/shader_split.py	reportArgumentType	2	Argument of type "Unknown | int | None" cannot be assigned to parameter "offset" of type "int" in function "unpack_from" Type "Unknown | int | None" is not assignable to type "int" "None" is not assignable to "int"
+pyright	dm/gfx/tools/shader_split.py	reportAssignmentType	1	Expression with type "tuple[Any, Any] | Any" cannot be assigned to target tuple Type "tuple[Any, Any]" is incompatible with target tuple Tuple size mismatch; expected 4 but received 2
+pyright	dm/gfx/tools/shader_split.py	reportAttributeAccessIssue	1	Cannot access attribute "get" for class "list[Any]" Attribute "get" is unknown
+pyright	dm/gfx/tools/shader_split.py	reportCallIssue	3	No overloads for "__getitem__" match the provided arguments
+pyright	dm/gfx/tools/shader_split.py	reportGeneralTypeIssues	2	"None" is not iterable "__iter__" method not defined
+pyright	dm/gfx/tools/shader_split.py	reportMissingImports	1	Import "backports" could not be resolved
+pyright	dm/gfx/tools/shader_split.py	reportOperatorIssue	1	Operator "<=" not supported for types "int" and "Any | tuple[Any, ...]" Operator "<=" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/shader_split.py	reportOptionalIterable	5	Object of type "None" cannot be used as iterable value
+pyright	dm/gfx/tools/shader_split.py	reportOptionalMemberAccess	1	"flush" is not a known attribute of "None"
+pyright	dm/gfx/tools/shader_split.py	reportOptionalMemberAccess	2	"read" is not a known attribute of "None"
+pyright	dm/gfx/tools/shader_split.py	reportOptionalMemberAccess	2	"write" is not a known attribute of "None"
+pyright	dm/gfx/tools/shader_split.py	reportOptionalSubscript	1	Object of type "None" is not subscriptable
+pyright	dm/gfx/tools/shader_split.py	reportSelfClsParameterName	5	Instance methods should take a "self" parameter
+pyright	dm/gfx/tools/smash_arc.py	reportMissingImports	1	Import "backports" could not be resolved
+pyright	dm/gfx/tools/uepak.py	reportArgumentType	9	Argument of type "tuple[Any, Any, *tuple[Any, ...]] | Any" cannot be assigned to parameter "stop" of type "SupportsIndex" in function "__new__" Type "tuple[Any, Any, *tuple[Any, ...]] | Any" is not assignable to type "SupportsIndex" "tuple[Any, Any, *tuple[Any, ...]]" is incompatible with protocol "SupportsIndex" "__index__" is not present
+pyright	dm/gfx/tools/uepak.py	reportAssignmentType	4	Expression with type "tuple[Any, Any] | Any" cannot be assigned to target tuple Type "tuple[Any, Any]" is incompatible with target tuple Tuple size mismatch; expected 4 but received 2
+pyright	dm/gfx/tools/uepak.py	reportGeneralTypeIssues	1	Index 0 is out of range for type tuple[()]
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "*" not supported for types "list[None]" and "tuple[Any, Any, *tuple[Any, ...]] | Any" Operator "*" not supported for types "list[None]" and "tuple[Any, Any, *tuple[Any, ...]]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "+" not supported for types "Unknown | tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[53]" Operator "+" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[53]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "+" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[15]" Operator "+" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[15]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "+=" not supported for types "Unknown | Any | int" and "Unknown | Any | tuple[Any, Any, *tuple[Any, ...]]" Operator "+" not supported for types "int" and "tuple[Any, Any, *tuple[Any, ...]]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "-=" not supported for types "Unknown | tuple[Any, Any, *tuple[Any, ...]] | Any" and "Unknown | tuple[Any, Any, *tuple[Any, ...]] | Any" Operator "-" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "tuple[Any, Any, *tuple[Any, ...]]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator "<" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[0]" Operator "<" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[0]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[22]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[22]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[23]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[23]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[29]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[29]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[30]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[30]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[31]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[31]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	1	Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[6]" Operator ">>" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[6]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	2	Operator "&" not supported for types "tuple[Any, Any, *tuple[Any, ...]] | Any" and "Literal[63]" Operator "&" not supported for types "tuple[Any, Any, *tuple[Any, ...]]" and "Literal[63]"
+pyright	dm/gfx/tools/uepak.py	reportOperatorIssue	2	Operator "+=" not supported for types "int | Unknown" and "tuple[Any, ...] | Any" Operator "+" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/uepak.py	reportOptionalMemberAccess	1	"close" is not a known attribute of "None"
+pyright	dm/gfx/tools/uepak.py	reportOptionalMemberAccess	1	"flush" is not a known attribute of "None"
+pyright	dm/gfx/tools/uepak.py	reportOptionalMemberAccess	2	"read" is not a known attribute of "None"
+pyright	dm/gfx/tools/uepak.py	reportOptionalMemberAccess	2	"write" is not a known attribute of "None"
+pyright	dm/gfx/tools/unityfs.py	reportArgumentType	4	Argument of type "Any | tuple[Any, ...]" cannot be assigned to parameter "stop" of type "SupportsIndex" in function "__new__" Type "Any | tuple[Any, ...]" is not assignable to type "SupportsIndex" "tuple[Any, ...]" is incompatible with protocol "SupportsIndex" "__index__" is not present
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator "+" not supported for types "int | Any" and "Any | tuple[Any, ...]" Operator "+" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator "+=" not supported for types "int | Any" and "Any | tuple[Any, ...]" Operator "+" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator "<" not supported for types "Any | tuple[Any, ...]" and "Literal[202012090]" Operator "<" not supported for types "tuple[Any, ...]" and "Literal[202012090]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator "<=" not supported for types "Any | tuple[Any, ...]" and "int" Operator "<=" not supported for types "tuple[Any, ...]" and "int"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator "<=" not supported for types "Literal[201806140]" and "Any | tuple[Any, ...]" Operator "<=" not supported for types "Literal[201806140]" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	1	Operator ">=" not supported for types "Any | tuple[Any, ...]" and "Literal[201608170]" Operator ">=" not supported for types "tuple[Any, ...]" and "Literal[201608170]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	2	Operator "+" not supported for types "int" and "Any | tuple[Any, ...]" Operator "+" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	2	Operator "+=" not supported for types "int" and "Any | tuple[Any, ...]" Operator "+" not supported for types "int" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportOperatorIssue	2	Operator "<=" not supported for types "Literal[0]" and "Any | tuple[Any, ...]" Operator "<=" not supported for types "Literal[0]" and "tuple[Any, ...]"
+pyright	dm/gfx/tools/unityfs.py	reportSelfClsParameterName	4	Instance methods should take a "self" parameter
+pyright	dm/gfx/tools/vk_shaders.py	reportArgumentType	1	Argument of type "list[str]" cannot be assigned to parameter "iterable" of type "Iterable[LiteralString]" in function "join" "list[str]" is not assignable to "Iterable[LiteralString]" Type parameter "_T_co@Iterable" is covariant, but "str" is not a subtype of "LiteralString" "str" is not assignable to "LiteralString"
+pyright	dm/gfx/tools/vk_shaders.py	reportCallIssue	1	No overloads for "join" match the provided arguments
+pyright	dm/gfx/tools/vk_shaders.py	reportOptionalMemberAccess	2	"group" is not a known attribute of "None"
+pyright	dm/gfx/tools/vk_shaders.py	reportOptionalMemberAccess	2	"start" is not a known attribute of "None"
+pyright	dm/ios/tools/pack_ipa.py	reportCallIssue	1	Expected 4 positional arguments
+pyright	dm/ios/tools/xcode_projects.py	reportArgumentType	1	Argument of type "Element[str] | None" cannot be assigned to parameter "parent" of type "Element[Any]" in function "SubElement" Type "Element[str] | None" is not assignable to type "Element[Any]" "None" is not assignable to "Element[Any]"
+pyright	dm/ios/tools/xcode_projects.py	reportOptionalMemberAccess	1	"findall" is not a known attribute of "None"
+pyright	dm/tools/check_thread_cuts.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/check_thread_cuts.py	reportMissingImports	1	Import "unicorn" could not be resolved
+pyright	dm/tools/check_thread_cuts.py	reportMissingImports	1	Import "unicorn.arm64_const" could not be resolved
+pyright	dm/tools/check_thread_cuts.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/check_thread_cuts.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/docs_symptoms.py	reportOptionalMemberAccess	1	"group" is not a known attribute of "None"
+pyright	dm/tools/gpuprof.py	reportArgumentType	1	Argument of type "Unknown | None" cannot be assigned to parameter "value" of type "int" in function "__setitem__" Type "Unknown | None" is not assignable to type "int" "None" is not assignable to "int"
+pyright	dm/tools/gpuprof.py	reportOptionalMemberAccess	1	"split" is not a known attribute of "None"
+pyright	dm/tools/make_ext_font.py	reportOptionalSubscript	1	Object of type "None" is not subscriptable
+pyright	dm/tools/nro_collect.py	reportMissingImports	1	Import "backports" could not be resolved
+pyright	dm/tools/nro_collect.py	reportOptionalIterable	1	Object of type "None" cannot be used as iterable value
+pyright	dm/tools/nso_fnmap.py	reportMissingImports	1	Import "numpy" could not be resolved
+pyright	dm/tools/nvn_slots_got.py	reportOperatorIssue	1	Operator "+=" not supported for types "int | None" and "int" Operator "+" not supported for types "None" and "int"
+pyright	dm/tools/nvn_slots_got.py	reportOptionalOperand	2	Operator "+" not supported for "None"
+pyright	dm/tools/patch_nso.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/patch_nso.py	reportArgumentType	1	Argument of type "set[Unknown] | list[Unknown]" cannot be assigned to parameter "a" of type "SupportsLenAndGetItem[SupportsRichComparisonT@bisect_right]" in function "bisect_right" Type "set[Unknown] | list[Unknown]" is not assignable to type "SupportsLenAndGetItem[Unknown]" "set[Unknown]" is incompatible with protocol "SupportsLenAndGetItem[Unknown]" "__getitem__" is not present
+pyright	dm/tools/patch_nso.py	reportArgumentType	1	Argument of type "tuple[Any, ...] | None" cannot be assigned to parameter "iterable" of type "Iterable[SupportsRichComparisonT@max]" in function "max" Type "tuple[Any, ...] | None" is not assignable to type "Iterable[Any]" "None" is incompatible with protocol "Iterable[Any]" "__iter__" is not present
+pyright	dm/tools/patch_nso.py	reportArgumentType	4	Argument of type "str | None" cannot be assigned to parameter "string" of type "str" in function "fullmatch" Type "str | None" is not assignable to type "str" "None" is not assignable to "str"
+pyright	dm/tools/patch_nso.py	reportCallIssue	4	No overloads for "fullmatch" match the provided arguments
+pyright	dm/tools/patch_nso.py	reportIndexIssue	3	"__getitem__" method not defined on type "set[Unknown]"
+pyright	dm/tools/patch_nso.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/patch_nso.py	reportOptionalMemberAccess	1	"groups" is not a known attribute of "None"
+pyright	dm/tools/patch_nso.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/patch_nso.py	reportOptionalMemberAccess	1	"op_str" is not a known attribute of "None"
+pyright	dm/tools/patch_nso.py	reportOptionalMemberAccess	1	"replace" is not a known attribute of "None"
+pyright	dm/tools/patch_nso.py	reportOptionalOperand	2	Operator "+" not supported for "None"
+pyright	dm/tools/patch_nso.py	reportOptionalSubscript	3	Object of type "None" is not subscriptable
+pyright	dm/tools/patch_nso.py	reportWildcardImportFromLibrary	1	Wildcard import from a library not allowed
+pyright	dm/tools/sdis.py	reportWildcardImportFromLibrary	1	Wildcard import from a library not allowed
+pyright	dm/tools/tests/test_astral_fps.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_astral_fps.py	reportMissingImports	2	Import "unicorn" could not be resolved
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARCH_ARM64" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_LR" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_S1" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_S10" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_S8" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_SP" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_X19" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_ARM64_REG_X24" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"UC_MODE_ARM" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"Uc" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_NZCV" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_W21" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_X0" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_X1" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_X16" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_X17" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_ARM64_REG_X2" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	2	"UC_HOOK_CODE" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	3	"UC_ARM64_REG_S0" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	4	"UC_ARM64_REG_X8" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	6	"UC_ARM64_REG_PC" is not a known attribute of "None"
+pyright	dm/tools/tests/test_astral_fps.py	reportOptionalMemberAccess	6	"UC_ARM64_REG_W8" is not a known attribute of "None"
+pyright	dm/tools/tests/test_bench.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_bench.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_bench.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_gpuprof.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_gpuprof.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_gpuprof.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_image_atomic_bounds.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_image_atomic_bounds.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_image_atomic_bounds.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_image_atomic_bounds.py	reportOptionalSubscript	1	Object of type "None" is not subscriptable
+pyright	dm/tools/tests/test_launcher_settings.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_launcher_settings.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_launcher_settings.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nro_graphics.py	reportArgumentType	2	Argument of type "set[str]" cannot be assigned to parameter "nro_imports" of type "frozenset[Unknown]" in function "shader_sources" "set[str]" is not assignable to "frozenset[Unknown]"
+pyright	dm/tools/tests/test_nro_pack.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nro_pack.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nro_pack.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nso_match.py	reportIndexIssue	3	"__setitem__" method not defined on type "str"
+pyright	dm/tools/tests/test_nsp_alias.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_alias.py	reportAttributeAccessIssue	1	Cannot assign to attribute "nacp" for class "ModuleType" Attribute "nacp" is unknown
+pyright	dm/tools/tests/test_nsp_alias.py	reportAttributeAccessIssue	1	Cannot assign to attribute "pg" for class "ModuleType" Attribute "pg" is unknown
+pyright	dm/tools/tests/test_nsp_alias.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_alias.py	reportOptionalMemberAccess	1	"id" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_alias.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_chain.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_chain.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_chain.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportArgumentType	1	Argument of type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" cannot be assigned to parameter "create" of type "bool" in function "object" Type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" is not assignable to type "bool" "CalledProcessError" is not assignable to "bool"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportArgumentType	1	Argument of type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" cannot be assigned to parameter "new_callable" of type "None" in function "object" Type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" is not assignable to type "None" "CalledProcessError" is not assignable to "None"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportArgumentType	1	Argument of type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" cannot be assigned to parameter "unsafe" of type "bool" in function "object" Type "OSError | TimeoutExpired | CalledProcessError | CompletedProcess[str]" is not assignable to type "bool" "CalledProcessError" is not assignable to "bool"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportCallIssue	1	No overloads for "object" match the provided arguments
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_dotnet.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_incremental.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_incremental.py	reportArgumentType	1	Argument of type "int | str | tuple[str, str]" cannot be assigned to parameter "ver" of type "str" in function "derive" Type "int | str | tuple[str, str]" is not assignable to type "str" "int" is not assignable to "str"
+pyright	dm/tools/tests/test_nsp_incremental.py	reportAttributeAccessIssue	1	Cannot assign to attribute "nacp" for class "ModuleType" Attribute "nacp" is unknown
+pyright	dm/tools/tests/test_nsp_incremental.py	reportAttributeAccessIssue	1	Cannot assign to attribute "pg" for class "ModuleType" Attribute "pg" is unknown
+pyright	dm/tools/tests/test_nsp_incremental.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_incremental.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_mac.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_mac.py	reportOperatorIssue	1	Operator "in" not supported for types "Literal['IOSOUT']" and "Unknown | None" Operator "in" not supported for types "Literal['IOSOUT']" and "None"
+pyright	dm/tools/tests/test_nsp_mac.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_mac.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_mac.py	reportOptionalSubscript	1	Object of type "None" is not subscriptable
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportArgumentType	1	Argument of type "Unknown | None" cannot be assigned to parameter "obj" of type "Sized" in function "len" Type "Unknown | None" is not assignable to type "Sized" "None" is incompatible with protocol "Sized" "__len__" is not present
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportArgumentType	1	Argument of type "str | None" cannot be assigned to parameter "src" of type "StrPath" in function "copy2" Type "str | None" is not assignable to type "StrPath" Type "None" is not assignable to type "StrPath" "None" is not assignable to "str" "None" is incompatible with protocol "PathLike[str]" "__fspath__" is not present
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportArgumentType	2	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportCallIssue	1	No overloads for "copy2" match the provided arguments
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportOptionalMemberAccess	2	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportOptionalMemberAccess	2	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_mac_app.py	reportOptionalSubscript	4	Object of type "None" is not subscriptable
+pyright	dm/tools/tests/test_nsp_nsz.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_nsz.py	reportArgumentType	2	Argument of type "Unknown | None" cannot be assigned to parameter "args" of type "StrPath" in function "__init__" Type "Unknown | None" is not assignable to type "StrPath" Type "None" is not assignable to type "StrPath" "None" is not assignable to "str" "None" is incompatible with protocol "PathLike[str]" "__fspath__" is not present
+pyright	dm/tools/tests/test_nsp_nsz.py	reportArgumentType	2	Argument of type "Unknown | None" cannot be assigned to parameter "args" of type "StrPath" in function "__new__" Type "Unknown | None" is not assignable to type "StrPath" Type "None" is not assignable to type "StrPath" "None" is not assignable to "str" "None" is incompatible with protocol "PathLike[str]" "__fspath__" is not present
+pyright	dm/tools/tests/test_nsp_nsz.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_nsz.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_progress.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_nsp_progress.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_nsp_progress.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	1	Argument of type "Literal['CUTS', 'OBS', 'FRAME_STEP']" cannot be assigned to parameter "key" of type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" Type "Literal['CUTS', 'OBS', 'FRAME_STEP']" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" Type "Literal['CUTS']" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" "Literal['CUTS']" is incompatible with protocol "SupportsIndex" "__index__" is not present "Literal['CUTS']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	1	Argument of type "Literal['CUTS']" cannot be assigned to parameter "key" of type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" Type "Literal['CUTS']" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" "Literal['CUTS']" is incompatible with protocol "SupportsIndex" "__index__" is not present "Literal['CUTS']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	1	Argument of type "tuple[Literal['CUTS', 'OBS', 'FRAME_STEP'], LiteralString]" cannot be assigned to parameter "key" of type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" Type "tuple[Literal['CUTS', 'OBS', 'FRAME_STEP'], LiteralString]" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" "tuple[Literal['CUTS', 'OBS', 'FRAME_STEP'], LiteralString]" is incompatible with protocol "SupportsIndex" "__index__" is not present "tuple[Literal['CUTS', 'OBS', 'FRAME_STEP'], LiteralString]" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	3	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	3	Argument of type "str" cannot be assigned to parameter "key" of type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" Type "str" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" "str" is incompatible with protocol "SupportsIndex" "__index__" is not present "str" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/tools/tests/test_patches.py	reportArgumentType	5	Argument of type "Literal['MATCH_CUTS']" cannot be assigned to parameter "key" of type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" in function "__getitem__" Type "Literal['MATCH_CUTS']" is not assignable to type "SupportsIndex | slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]" "Literal['MATCH_CUTS']" is incompatible with protocol "SupportsIndex" "__index__" is not present "Literal['MATCH_CUTS']" is not assignable to "slice[SupportsIndex | None, SupportsIndex | None, SupportsIndex | None]"
+pyright	dm/tools/tests/test_patches.py	reportIndexIssue	8	Object of type "Module("glob")" is not subscriptable
+pyright	dm/tools/tests/test_patches.py	reportIndexIssue	8	Object of type "Module("importlib")" is not subscriptable
+pyright	dm/tools/tests/test_patches.py	reportIndexIssue	8	Object of type "Module("os")" is not subscriptable
+pyright	dm/tools/tests/test_patches.py	reportOptionalMemberAccess	3	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_patches.py	reportOptionalMemberAccess	3	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_pso_offline.py	reportArgumentType	1	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_pso_offline.py	reportOptionalMemberAccess	1	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_pso_offline.py	reportOptionalMemberAccess	1	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_shader_regressions.py	reportArgumentType	2	Argument of type "ModuleSpec | None" cannot be assigned to parameter "spec" of type "ModuleSpec" in function "module_from_spec" Type "ModuleSpec | None" is not assignable to type "ModuleSpec" "None" is not assignable to "ModuleSpec"
+pyright	dm/tools/tests/test_shader_regressions.py	reportOptionalMemberAccess	2	"exec_module" is not a known attribute of "None"
+pyright	dm/tools/tests/test_shader_regressions.py	reportOptionalMemberAccess	2	"loader" is not a known attribute of "None"
+pyright	dm/tools/tests/test_spin_waits.py	reportArgumentType	1	Argument of type "list[FunctionDef | ClassDef | Assign]" cannot be assigned to parameter "body" of type "list[stmt]" in function "__init__" "list[FunctionDef | ClassDef | Assign]" is not assignable to "list[stmt]" Type parameter "_T@list" is invariant, but "FunctionDef | ClassDef | Assign" is not the same as "stmt" Consider switching from "list" to "Sequence" which is covariant
+pyright	dm/tools/tests/test_tail_call.py	reportCallIssue	3	Object of type "ModuleType" is not callable Attribute "__call__" is unknown
+pyright	scripts/bench.py	reportArgumentType	1	Argument of type "Unknown | None" cannot be assigned to parameter "number" of type "_SupportsRound2[_T@round]" in function "round" Type "Unknown | None" is not assignable to type "_SupportsRound2[_T@round]" "None" is incompatible with protocol "_SupportsRound2[_T@round]" "__round__" is not present
+pyright	scripts/bench.py	reportArgumentType	1	Argument of type "float" cannot be assigned to parameter "value" of type "int" in function "__setitem__" "float" is not assignable to "int"
+pyright	scripts/bench.py	reportCallIssue	1	No overloads for "round" match the provided arguments
+pyright	scripts/bench.py	reportOptionalMemberAccess	1	"group" is not a known attribute of "None"
+pyright	scripts/build_ipa_from_nsp.py	reportArgumentType	1	Argument of type "str | ((n: Unknown) -> (Unknown | None))" cannot be assigned to parameter "func" of type "(_T1@__new__) -> _S@map" in function "__new__" Type "str | ((n: Unknown) -> (Unknown | None))" is not assignable to type "(Unknown) -> _S@map" Type "str" is not assignable to type "(Unknown) -> _S@map"
+pyright	scripts/build_ipa_from_nsp.py	reportArgumentType	1	Argument of type "str | ((n: Unknown) -> (Unknown | None))" cannot be assigned to parameter "func" of type "(_T1@__new__) -> _S@map" in function "__new__" Type "str | ((n: Unknown) -> (Unknown | None))" is not assignable to type "(_T1@__new__) -> _S@map" Type "str" is not assignable to type "(_T1@__new__) -> _S@map"
+pyright	scripts/build_ipa_from_nsp.py	reportCallIssue	1	Argument expression after ** must be a mapping with a "str" key type
+pyright	scripts/build_ipa_from_nsp.py	reportCallIssue	1	No overloads for "__init__" match the provided arguments Argument types: (Unknown, str, str, str, str, **dict[str | ((n: Unknown) -> (Unknown | None)), str])
+pyright	scripts/build_ipa_from_nsp.py	reportOptionalIterable	1	Object of type "None" cannot be used as iterable value
+pyright	scripts/build_ipa_from_nsp.py	reportOptionalMemberAccess	1	"close" is not a known attribute of "None"
+pyright	scripts/build_ipa_from_nsp.py	reportOptionalOperand	1	Operator "-" not supported for "None"
+ruff	dm/gfx/tools/dmsh_build.py	F841	1	Local variable `sb_cb` is assigned to but never used
+ruff	dm/gfx/tools/pso_offline.py	F401	1	`shutil` imported but unused
+ruff	dm/gfx/tools/shader_split.py	B006	1	Do not use mutable data structures for argument defaults
+ruff	dm/gfx/tools/shader_split.py	B023	1	Function definition does not bind loop variable `c`
+ruff	dm/gfx/tools/shader_split.py	B023	1	Function definition does not bind loop variable `order`
+ruff	dm/gfx/tools/shader_split.py	B023	1	Function definition does not bind loop variable `tab`
+ruff	dm/gfx/tools/shader_split.py	B023	3	Function definition does not bind loop variable `r`
+ruff	dm/gfx/tools/shader_split.py	B023	3	Function definition does not bind loop variable `sec`
+ruff	dm/gfx/tools/shader_split.py	B023	3	Function definition does not bind loop variable `secs`
+ruff	dm/gfx/tools/shader_split.py	F841	1	Local variable `pre` is assigned to but never used
+ruff	dm/gfx/tools/unityfs.py	B023	2	Function definition does not bind loop variable `buf`
+ruff	dm/tools/patch_nso.py	B023	1	Function definition does not bind loop variable `at`
+ruff	dm/tools/patch_nso.py	B023	2	Function definition does not bind loop variable `n`
+ruff	dm/tools/patch_nso.py	PIE808	1	Unnecessary `start` argument in `range`
+ruff	dm/tools/sdis.py	F841	1	Local variable `lo` is assigned to but never used
+ruff	dm/tools/tests/test_gpuprof.py	F401	1	`os` imported but unused
+ruff	dm/tools/tests/test_gpuprof.py	F401	1	`sys` imported but unused
+ruff	dm/tools/tests/test_image_atomic_bounds.py	B023	1	Function definition does not bind loop variable `dependencies`
+ruff	dm/tools/tests/test_nsp_incremental.py	B023	1	Function definition does not bind loop variable `build`
+ruff	dm/tools/tests/test_nsp_incremental.py	B023	1	Function definition does not bind loop variable `own`
+ruff	dm/tools/tests/test_nsp_incremental.py	B023	1	Function definition does not bind loop variable `roots`
+ruff	dm/tools/tests/test_nsp_incremental.py	B023	1	Function definition does not bind loop variable `sh`
+ruff	dm/tools/tests/test_nsp_nsz.py	F401	1	`sys` imported but unused
+ruff	dm/tools/tests/test_spin_waits.py	F401	1	`sys` imported but unused
+ruff	scripts/bench.py	B023	1	Function definition does not bind loop variable `ok`
+ruff	scripts/build_ipa_from_nsp.py	B020	1	Loop control variable `note` overrides iterable it iterates

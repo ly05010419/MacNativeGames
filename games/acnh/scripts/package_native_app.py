@@ -2,7 +2,7 @@
 """Package Animal Crossing: New Horizons into a self-contained macOS application bundle.
 
 The bundle carries the native runtime, shader tools, rewritten modules, RomFS,
-shared fonts, precompiled Metal shader libraries, and launcher.
+shared fonts, precompiled Metal shader libraries, the shader seed (when prepared), and launcher.
 """
 import argparse
 import hashlib
@@ -18,9 +18,12 @@ import time
 
 HERE = Path(__file__).resolve().parent
 GAME = HERE.parent
-EXPECTED_PATH = GAME / "assets/expected-v458752.json"
 REPO_ROOT = GAME.parents[1]
 WORKSPACE_ROOT = GAME.parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+from games.acnh.prepare import prepared_profile
+from games.acnh.tools.prepare_dlc import verify_assets as verify_dlc_assets
+from games.acnh.tools.prepare_fps import verify_assets
 # The shader translator is carried in this folder (prebuilt/macos-arm64/README.md) and pinned by its .sha256.
 TRANSLATOR = GAME / "prebuilt/macos-arm64/totk_xlate"
 TRANSLATOR_SHA256 = GAME / "prebuilt/macos-arm64/totk_xlate.sha256"
@@ -96,7 +99,10 @@ def find_default_paths():
 
 
 def verify_inputs(work: Path, prepared: Path, fonts: Path):
-    expected = json.loads(EXPECTED_PATH.read_text())
+    expected = prepared_profile(prepared)
+    host = json.loads((work / "host-info.json").read_text())
+    if host.get("display_version") != expected["display_version"] or host.get("prepared") != str(prepared.resolve()):
+        raise ValueError("Host and prepared input versions/paths differ")
     verified = {}
 
     # 1. Native host executable
@@ -106,6 +112,42 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
     runtime_id = identity(runtime)
     verified["build/acnh-native"] = runtime_id
     runtime_bytes = runtime.read_bytes()
+    marker = ("MNG_ACNH_VERSION:" + expected["display_version"]).encode()
+    if marker not in runtime_bytes:
+        raise ValueError("Runtime was built for another ACNH version")
+    dlc_digest = host.get("dlc_manifest_sha256")
+    dlc_marker = ("MNG_ACNH_DLC:" + (dlc_digest or "none")).encode() + b"\0"
+    if dlc_marker not in runtime_bytes:
+        raise ValueError("Runtime DLC configuration differs from host inputs; rebuild the host")
+    if dlc_digest:
+        if expected["cnmt_version_raw"] != 2097152:
+            raise ValueError("DLC assets require ACNH 3.0.1")
+        dlc_dir = Path(host["dlc"])
+        manifest, _ = verify_dlc_assets(dlc_dir)
+        manifest_id = identity(dlc_dir / "manifest.json")
+        if manifest_id["sha256"] != dlc_digest:
+            raise ValueError("DLC manifest changed since the host build")
+        verified["dlc/manifest.json"] = manifest_id
+        for row in manifest["entries"]:
+            name = f'{row["title_id"]}.romfs'
+            verified[f"dlc/{name}"] = {"size": row["romfs_size"], "sha256": row["romfs_sha256"]}
+    fps_sha = host.get("fps_manifest_sha256")
+    if fps_sha:
+        fps_dir = work / "build/fps60"
+        manifest = verify_assets(fps_dir)
+        if (expected["cnmt_version_raw"] != 2097152
+                or manifest["original_main_sha256"] != expected["exefs_sha256"]["main"]
+                or manifest["rewritten_main_sha256"] != expected["rewritten_sha256"]["main"]
+                or manifest["original_romfs_sha256"] != expected["romfs_sha256"]):
+            raise ValueError("FPS assets belong to another game/version")
+        fps_id = identity(fps_dir / "manifest.json")
+        if fps_id["sha256"] != fps_sha or ("MNG_ACNH_FPS_ASSETS:" + fps_sha).encode() not in runtime_bytes:
+            raise ValueError("Runtime and FPS asset identities differ")
+        verified["fps60/manifest.json"] = fps_id
+        for name, row in manifest["files"].items():
+            verified["fps60/" + name] = row
+    elif b"MNG_ACNH_FPS_ASSETS:" in runtime_bytes:
+        raise ValueError("FPS runtime needs its matching asset bundle")
 
     # 2. Shader translation tools
     verified["prebuilt/macos-arm64/totk_xlate"] = pinned_translator()
@@ -119,11 +161,11 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
 
     # 3. Rewritten modules
     rewritten_dir = work / "rewritten"
-    module_shas = {
-        "main": "de7432ab3b66e6092d9094a4cab7f54742d38f0e7919c9e188ff946cdb32cce6",
-        "subsdk0": "f41ac9d833b6202a0ad59b00cb507091e943f3f415f132698e1a708c72400d49",
-        "sdk": "0980217589923a8b8f13bb95744111f1d73c50a1bca08ed9a141ec3f66d48d7a",
-    }
+    module_shas = expected.get("rewritten_sha256")
+    if module_shas is None:
+        reference = json.loads((GAME / "assets" / f'preparation-v{expected["cnmt_version_raw"]}.json').read_text())
+        module_shas = {name: row["patched_sha256"] for name, row in reference["rewrite"]["modules"].items()
+                       if name != "rtld"}
     for name, sha in module_shas.items():
         module_path = rewritten_dir / f"{name}.patched.bin"
         if not module_path.is_file():
@@ -165,6 +207,24 @@ def verify_inputs(work: Path, prepared: Path, fonts: Path):
                 count += 1
         verified["shader_libs_count"] = count
 
+    # 7. The shader seed (tools/prepare_shader_seed.py), when prepared: the game's own shaders, translated, for the
+    # runtime to import and warm before play. It must come from this RomFS and this runtime's translation chain, and every
+    # file must be the one its manifest names (the runtime checks them again at its first start).
+    seed = work / "build/shader-seed"
+    if (seed / "seed-manifest.json").is_file():
+        manifest = json.loads((seed / "seed-manifest.json").read_text())
+        chain = re.search(r'#define DMSH_CHAIN "([^"]+)"', (GAME / "third_party/d2r_gfx/gfx/nvn/dmsh_chain.h").read_text()).group(1)
+        romfs_sha256 = json.loads((prepared / "update/romfs/index.json").read_text())["romfs_sha256"]
+        if manifest.get("chain") != chain or manifest.get("source_romfs_sha256") != romfs_sha256 or not manifest.get("files"):
+            raise ValueError(f"Shader seed {seed} was prepared for other inputs; prepare it again")
+        for name, digest in manifest["files"].items():
+            if "/" in name or identity(seed / name)["sha256"] != digest:
+                raise ValueError(f"Shader seed file {name} does not match its manifest")
+        verified["shader_seed"] = {"shaders": manifest["shaders"], "files": len(manifest["files"]),
+                                   "manifest_sha256": identity(seed / "seed-manifest.json")["sha256"]}
+    else:
+        print(f"No shader seed in {seed}: the game translates shaders while playing (tools/prepare_shader_seed.py)")
+
     return expected, verified, rows
 
 
@@ -195,13 +255,13 @@ def seed_data(data_dir: Path, user_data_src: Path = None, cache_src: Path = None
 def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = None):
     if output.suffix != ".app":
         raise ValueError("--output must end with .app")
+    expected, verified, font_info = verify_inputs(work, prepared, fonts)
     if output.exists():
         print(f"Removing existing output bundle: {output}")
         shutil.rmtree(output)
     if not output.parent.is_dir():
         output.parent.mkdir(parents=True, exist_ok=True)
 
-    expected, verified, font_info = verify_inputs(work, prepared, fonts)
     output.mkdir()
 
     try:
@@ -222,6 +282,9 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
 
         # 2. Bundle game runtime and tools
         clone(work / "build/acnh-native", game / "build/acnh-native")
+        for name in verified:
+            if name.startswith("fps60/"):
+                clone(work / "build" / name, game / name)
         clone(TRANSLATOR, game / "build/shader-service/totk_xlate")   # where totk_shader_rt.m looks for it
         if "build/spirv-cross/spirv-cross" in verified:
             clone(work / "build/spirv-cross/spirv-cross", game / "build/spirv-cross/spirv-cross")
@@ -237,6 +300,11 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
         # 4. Bundle RomFS
         clone(prepared / "update/romfs/romfs.bin", game / "romfs/romfs.bin")
         clone(prepared / "update/romfs/runtime-index.bin", game / "romfs/runtime-index.bin")
+        if "dlc/manifest.json" in verified:
+            dlc_dir = Path(json.loads((work / "host-info.json").read_text())["dlc"])
+            for name in verified:
+                if name.startswith("dlc/"):
+                    clone(dlc_dir / Path(name).name, game / name)
 
         # 5. Bundle shared fonts
         for font_name in font_info:
@@ -257,9 +325,21 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
                 clone(compiler_txt, target_libs / "compiler.txt")
             os.symlink("../Resources/game/build/shader-libs", macos / "shader-libs")
 
+        # 6b. Bundle the shader seed: imported from Resources/game/build/shader-seed (totk_shader_rt.m root_dir), its
+        # warm-up list read from Contents/MacOS/shader-seed (nvn_mtl.m warm_start, beside shader-map.tsv).
+        if "shader_seed" in verified:
+            seed = work / "build/shader-seed"
+            (game / "build").mkdir(parents=True, exist_ok=True)
+            subprocess.run(["/bin/cp", "-cR", str(seed), str(game / "build/shader-seed")], check=True)   # one APFS clone of the folder
+            os.symlink("../Resources/game/build/shader-seed", macos / "shader-seed")
+            print(f"Bundled the shader seed: {verified['shader_seed']['shaders']} shaders, {verified['shader_seed']['files']} files")
+
         # 7. Bundle licenses
         notices = resources / "Licenses"
         notices.mkdir(parents=True, exist_ok=True)
+        if "fps60/manifest.json" in verified:
+            clone(work / "build/fps60/LICENSE", notices / "ACNH-SpeedFix-CC-BY-NC-4.0.txt")
+            clone(work / "build/fps60/NOTICE", notices / "ACNH-SpeedFix-NOTICE.txt")
         for path in sorted((GAME / "third_party").rglob("*")):
             if path.is_file() and (path.name.lower().startswith("license") or "license" in path.name.lower()):
                 dest = notices / path.relative_to(GAME / "third_party")
@@ -285,25 +365,36 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
             "CFBundleInfoDictionaryVersion": "6.0",
             "CFBundleName": "Animal Crossing",
             "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": "1.2.1",
+            "CFBundleShortVersionString": expected["display_version"],
             "CFBundleVersion": "1",
             "LSApplicationCategoryType": "public.app-category.games",
-            "LSMinimumSystemVersion": "26.0",
+            "LSMinimumSystemVersion": os.environ.get("MACOSX_DEPLOYMENT_TARGET", "26.0"),
             "NSHighResolutionCapable": True,
         }
+        # The source revision, when the project is a Git checkout (a downloaded archive packages without it).
+        commit = subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+                                capture_output=True, text=True, check=False)
+        if commit.returncode == 0:
+            dirty = subprocess.run(["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", "games/acnh"],
+                                   capture_output=True, text=True, check=False).stdout.strip()
+            info["MNGSourceCommit"] = commit.stdout.strip()
+            info["MNGSourceRevision"] = commit.stdout.strip() + ("-dirty" if dirty else "")
         with (contents / "Info.plist").open("wb") as f:
             plistlib.dump(info, f)
 
         # 10. Write build receipt
         receipt = {
             "game": "Animal Crossing: New Horizons",
-            "version": "1.2.1",
+            "version": expected["display_version"],
+            "support_level": expected.get("support_level", "verified"),
             "title_id": expected.get("title_id", "01006F8002326000"),
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "inputs": verified,
             "packager": identity(Path(__file__)),
             "launcher_source": identity(launcher_src),
         }
+        if "dlc/manifest.json" in verified:
+            receipt["dlc"] = json.loads((game / "dlc/manifest.json").read_text())["entries"]
         (resources / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
         # 11. Codesign the bundle
@@ -315,10 +406,19 @@ def package(work: Path, prepared: Path, fonts: Path, output: Path, icon: Path = 
 
         # 13. Seed application data directory next to the app
         app_data_dir = output.parent / "Animal Crossing Data"
-        user_data_local = WORKSPACE_ROOT / "user-data"
+        # Newer versions start with an isolated profile. Save migration requires
+        # its own compatibility check; never seed 3.x from an unrelated old save.
+        user_data_local = WORKSPACE_ROOT / "user-data" if expected["cnmt_version_raw"] == 458752 else None
         cache_local = work / "build/shader-cache/rt-totk-native-v4-unverified"
         seed_data(app_data_dir, user_data_local, cache_local)
 
+        # Finder and the Dock keep the icon they cached for this path (reported in play, PR #1305: the app showed the old, blank
+        # icon in Finder while the running app's was right): a new modification date and Launch Services registration
+        # make them read the new bundle's.
+        os.utime(output)
+        lsregister = Path("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+        if lsregister.is_file():
+            subprocess.run([str(lsregister), "-f", str(output)], check=False)
         print(f"Successfully packaged and verified: {output}")
 
     except BaseException:
@@ -349,8 +449,8 @@ def main():
 
     try:
         if args.verify_only:
-            verify_inputs(work, prepared, fonts)
-            print("All required inputs match verified Animal Crossing: New Horizons 1.2.1.")
+            expected, _, _ = verify_inputs(work, prepared, fonts)
+            print(f'All required inputs match Animal Crossing: New Horizons {expected["display_version"]}.')
         else:
             package(work, prepared, fonts, output, icon)
     except (OSError, ValueError, subprocess.CalledProcessError) as err:

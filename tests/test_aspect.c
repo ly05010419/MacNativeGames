@@ -135,7 +135,7 @@ static void sites(void) {
     CHECK(aspect_fovy_at(f2, 23) == 3, "camera setup fovy load: %d", aspect_fovy_at(f2, 23));
     CHECK(aspect_fovy_at(f1, 23) == -1 && aspect_fovy_at(f3, 8) == -1 && aspect_fovy_at(f3, 0) == -1,
           "no fovy load for another register or a viewport site");
-    uint32_t w[74];
+    uint32_t w[76];
     CHECK(aspect_stub(cam1[4], 0x1000, 0x1000 + (1 << 28), 0x4000, w) != NULL, "branch out of range refused");
     CHECK(aspect_vstub(f1[2], 0x1000, 0x2000, 0x1000 + (1ULL << 33), w) != NULL, "data page out of range refused");
 }
@@ -173,7 +173,7 @@ static void run(void) {
     if (mem == MAP_FAILED) { printf("skip: no MAP_JIT memory\n"); return; }
     const uint32_t ins = 0xbd400020;   /* ldr s0, [x1] */
     const uint64_t site = 0x100, plain = 0x1000, vert = 0x1100, data = 0x4000;
-    uint32_t s[74] = {0};
+    uint32_t s[76] = {0};
     pthread_jit_write_protect_np(0);
     memset(mem, 0, 0x8000);
     const char *e1 = aspect_vstub(ins, vert, site, data, s);
@@ -189,8 +189,8 @@ static void run(void) {
     CHECK(!e1 && !e2 && j1[0] && j2[0], "stubs built");
     float *slot = (float *)(void *)(mem + data + ASPECT_DATA_SLOT), *kslot = (float *)(void *)(mem + data + ASPECT_VERT_SLOT);
     const float game = 16.0f / 9, fovy = 0.8f;
-    for (int c = 0; c < 3; c++) {
-        float ratio = c ? 1.6f : 0, k = c == 2 ? aspect_vert_factor(1.6f) : 0;
+    for (int c = 0; c < 4; c++) {   /* c 3: VR, a negative k is the half-angle tangent itself */
+        float ratio = c == 3 ? 1.12f : c ? 1.6f : 0, k = c == 3 ? -0.9f : c == 2 ? aspect_vert_factor(1.6f) : 0;
         pthread_jit_write_protect_np(0); *slot = ratio; *kslot = k; pthread_jit_write_protect_np(1);
         uint64_t o[13];
         call(mem + site + 16, &game, o);   /* the aspect site */
@@ -198,9 +198,14 @@ static void run(void) {
         CHECK(fl(o[11]) == (ratio ? ratio : game), "case %d: ratio %f", c, fl(o[11]));
         call(mem + site, &fovy, o);        /* the fovy load */
         kept(o, "Vert+ stub");
-        float want = k ? 2 * atanf(k * tanf(fovy / 2)) : fovy;
+        float want = k < 0 ? 2 * atanf(-k) : k ? 2 * atanf(k * tanf(fovy / 2)) : fovy;
         CHECK(near(fl(o[11]), want), "case %d: fovy %f want %f", c, fl(o[11]), want);
-        if (k) {   /* the 16:9 horizontal view kept: ratio * tan(fovy' / 2) equals 16/9 * tan(fovy / 2) */
+        if (k < 0) {   /* whatever the game asks for: a wider camera (a Zonai device at speed) gives the same view */
+            const float wide = 1.3f;
+            call(mem + site, &wide, o);
+            kept(o, "Vert+ stub, fixed view");
+            CHECK(near(fl(o[11]), want), "VR: fovy %f for the game's %f, want %f", fl(o[11]), wide, want);
+        } else if (k) {   /* the 16:9 horizontal view kept: ratio * tan(fovy' / 2) equals 16/9 * tan(fovy / 2) */
             CHECK(near(1.6 * tan(fl(o[11]) / 2), game * tan(fovy / 2)), "Vert+ keeps the horizontal view");
             printf("16:10 Vert+: vertical view %.1f -> %.1f degrees\n", fovy * 180 / M_PI, fl(o[11]) * 180 / M_PI);
         }

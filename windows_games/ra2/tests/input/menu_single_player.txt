@@ -1,0 +1,3 @@
+# Main menu: hover then click Single Player (sidebar button 2, screen 747..910 x 283..321).
+14 goto 828 302
+17 click

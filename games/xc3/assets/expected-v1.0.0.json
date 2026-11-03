@@ -1,0 +1,50 @@
+{
+    "_comment": "Verified Xenoblade Chronicles 3 1.0.0 code and RomFS (base NSP, no update). Hashes only; no game data. Made by scripts/extract_code.py, scripts/merge_romfs.py and third_party/d2r/patch_nso.py (DM_RULESET=native DM_PRIVATE_GATES=0).",
+    "title_id": "010074F013262000",
+    "version": 0,
+    "display_version": "1.0.0",
+    "main_build_id": "60887A25B66529910275A1066003A00217914F5E",
+    "modules": [
+        "main",
+        "subsdk0",
+        "sdk"
+    ],
+    "base_program_nca": {
+        "name": "edc8bdc59243b32462735c322cbb451a.nca",
+        "nca_offset": 38848,
+        "size": 14808186880
+    },
+    "exefs_sha256": {
+        "main": "5c5784a2c42e6317d8ee816561e521a0475485d10e54b3584e686cf00b5b60c5",
+        "main.npdm": "22e766a352190128f22ae03389bfdb1a9b8399befac6ebf5a55403c13d3412a0",
+        "rtld": "a977ae6f4952aad94e1c69e6b4ae6a7526824fea5ff01abd7271d81ac737a624",
+        "sdk": "dcf4aba559fd4ef623a0d5b5462deb1a9f4111587b6e78dae24ee2dba0fc5c5a",
+        "subsdk0": "d413db23c0f1cf09d2a71c9ba0e627e1fffec14a3516ffe87c05f661308ae335"
+    },
+    "rewritten_sha256": {
+        "main.patched.bin": "479013e6696a9001d6f343d3d597fd65cfb7fdfb5537f9c5cff2c4b04b5df1f0",
+        "sdk.patched.bin": "5068bdb9b58caee33cd79367b54ddac5adbc52061a7f7324a8aacf128bb26c3f",
+        "subsdk0.patched.bin": "57e50f0e8f2f2e1b82e0ddf62d21986f682415ce7dedbb84bc7d03abc98b12c4"
+    },
+    "romfs": {
+        "size": 14758271292,
+        "sha256": "d96ca0578185c4cad5f09cb042a93ec8253d1d14a2a5d3f4418108370d45091a",
+        "files": 246
+    },
+    "control": {
+        "_comment": "From control.nacp of the base NSP: SupportedLanguageFlag and the user account save sizes (UserAccountSaveDataSizeMax is 0, so the save keeps its created size).",
+        "supported_languages": [
+            "BritishEnglish",
+            "Japanese",
+            "French",
+            "German",
+            "Spanish",
+            "Italian",
+            "Korean",
+            "TraditionalChinese",
+            "SimplifiedChinese"
+        ],
+        "user_save_size": 10485760,
+        "user_save_journal_size": 10485760
+    }
+}

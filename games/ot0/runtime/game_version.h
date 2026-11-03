@@ -10,6 +10,10 @@
 #define TOTK_GAME_VERSION "1.0.4"
 #define TOTK_GAME_DIR "v104"
 #define GAME_MAX_TICK_RATE 0x25f8940
+#elif defined(OT0_GAME_V105)
+#define TOTK_GAME_VERSION "1.0.5"
+#define TOTK_GAME_DIR "v105"
+#define GAME_MAX_TICK_RATE 0x25f8940
 #else
-#error "build with -DOT0_GAME_V103 or -DOT0_GAME_V104 (the Makefile's VERSION)"
+#error "build with -DOT0_GAME_V103, -DOT0_GAME_V104 or -DOT0_GAME_V105 (the Makefile's VERSION)"
 #endif

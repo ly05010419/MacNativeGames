@@ -1,0 +1,31 @@
+# Game data is NEVER committed. Players supply their own copy.
+/game
+*.7z
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.mix
+*.MIX
+*.tlb
+
+# Generated recompiler output (from the player's own binaries)
+/generated
+
+# Third-party tool checkouts and builds
+/tools
+build/
+out/
+.cache/
+
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.claude/settings.local.json
+
+# The player's own replacement videos (game content, never committed)
+/*.webm
+
+# Project notes for Claude sessions: kept local, not committed
+/CLAUDE.md

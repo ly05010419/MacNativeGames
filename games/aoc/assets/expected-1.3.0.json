@@ -1,0 +1,142 @@
+{
+  "title_id": "01002B00111A2000",
+  "version": "1.3.0",
+  "version_code": 327680,
+  "identity_basis": "pinned NSO build IDs, NPDM and extracted-file SHA-256",
+  "container_integrity": "unavailable: original containers not supplied",
+  "base_update_composition": "not independently verifiable from extracted files",
+  "modules": {
+    "main": {
+      "size": 17901336,
+      "sha256": "84fbac8bb4734cdbeb3362a87479e484915682791688a2e8b2258b8229541022",
+      "build_id": "c3cf52bf2b05d7310884971b50bcccb8974577bc000000000000000000000000",
+      "segments": [
+        {
+          "name": "text",
+          "address": 0,
+          "size": 28651856,
+          "sha256": "9edb6d68df02cd74a6012bf1d42a961dc57f4fde7a092f9743311aa3673ed8ee",
+          "header_hash_verified": true
+        },
+        {
+          "name": "rodata",
+          "address": 28655616,
+          "size": 11427504,
+          "sha256": "29708a5d7854540011a4295ac0d2d831fc1dc2a90ea69857418859c3cddab21f",
+          "header_hash_verified": true
+        },
+        {
+          "name": "data",
+          "address": 40083456,
+          "size": 1298896,
+          "sha256": "69c66a51af0e672e886e35ae9feada3d120653d3f331fa72cf176d34d122a396",
+          "header_hash_verified": true
+        }
+      ],
+      "mapped_size": 45805568
+    },
+    "rtld": {
+      "size": 6790,
+      "sha256": "b09545d23efe76925191e9ded2c5ca81179f07fc823162c2b367a63b82d8d9fc",
+      "build_id": "51b657503637c8a8d6729ce7d8ddaa6a163c356a000000000000000000000000",
+      "segments": [
+        {
+          "name": "text",
+          "address": 0,
+          "size": 5728,
+          "sha256": "d87463d3fec1e568a80b86ed835e29a078e781644fd8a6802228e773aedd6820",
+          "header_hash_verified": true
+        },
+        {
+          "name": "rodata",
+          "address": 8192,
+          "size": 3208,
+          "sha256": "855576038523312ace63c93e405edfa24e2458fbbe99893dbe17e3af44c894a5",
+          "header_hash_verified": true
+        },
+        {
+          "name": "data",
+          "address": 12288,
+          "size": 640,
+          "sha256": "201374e7b85fe5b94d5546eca4a00262e3901130fda80f32aad3c56008b01411",
+          "header_hash_verified": true
+        }
+      ],
+      "mapped_size": 16384
+    },
+    "sdk": {
+      "size": 5368143,
+      "sha256": "71a49827250b6bc2883ac44e5d42f4d20110a95d930c2387311c7ff415eb4534",
+      "build_id": "95832210b36121e88b4f9b7b66239dade9c82a67000000000000000000000000",
+      "segments": [
+        {
+          "name": "text",
+          "address": 0,
+          "size": 5519040,
+          "sha256": "594bd2c91cbb87fb3109d47d299899bc2a382a6cb2e9f67b71c2cb3688e03f9f",
+          "header_hash_verified": true
+        },
+        {
+          "name": "rodata",
+          "address": 5521408,
+          "size": 6642000,
+          "sha256": "2266d05c84f2142f9f5724af51a0d046737e3a083f5bde4ba4e2608d8b134ce8",
+          "header_hash_verified": true
+        },
+        {
+          "name": "data",
+          "address": 12165120,
+          "size": 397408,
+          "sha256": "fd5f8f1ee12f1d9a84884218930934126a1a209feee9553ea441b41400e1aeba",
+          "header_hash_verified": true
+        }
+      ],
+      "mapped_size": 13254656
+    },
+    "subsdk0": {
+      "size": 3522072,
+      "sha256": "b515e170ed8799af63e0f2e1a58b344ec8c78605976a2148374d13e6ced93d30",
+      "build_id": "3ab92c3444d4ece2f52417b5d8ee86eb115212a3000000000000000000000000",
+      "segments": [
+        {
+          "name": "text",
+          "address": 0,
+          "size": 3582656,
+          "sha256": "fd6cb244ab1840dd6bec2032d61ab24c1b130532eb2e969e3b87522af24fe8e3",
+          "header_hash_verified": true
+        },
+        {
+          "name": "rodata",
+          "address": 3584000,
+          "size": 2447056,
+          "sha256": "261dc2010babbfd46b58ad33883c0c5ba66d5779f42739eb9b39413bb7223d29",
+          "header_hash_verified": true
+        },
+        {
+          "name": "data",
+          "address": 6033408,
+          "size": 198344,
+          "sha256": "a71b7eb7fdbaa71206f489b19a34cba95df20297ab17278d89aad3d234800596",
+          "header_hash_verified": true
+        }
+      ],
+      "mapped_size": 7393280
+    }
+  },
+  "npdm": {
+    "size": 1572,
+    "sha256": "6ffc47950fde1f67e4024e621a01f8f7e062f233ccd2b892844424f95e7a7063",
+    "program_id": "01002B00111A2000",
+    "sys_resource": 0,
+    "main_thread_priority": 44,
+    "main_thread_core": 0,
+    "main_thread_stack": 1048576,
+    "signature_verification": "not performed"
+  },
+  "romfs": {
+    "form": "directory",
+    "files": 1101,
+    "bytes": 11719163910,
+    "sha256": "99a66f924dfd38da7c10bebf2afb25d9a5607a867e8c6ff66bdb2b64774b4cf3"
+  }
+}

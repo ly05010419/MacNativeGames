@@ -1,0 +1,108 @@
+diff --git a/main.c b/main.c
+index 07f53cb..4fcee7e 100644
+--- a/main.c
++++ b/main.c
+@@ -1,3 +1,4 @@
++#define _DARWIN_C_SOURCE 1
+ #include <getopt.h>
+ #include <errno.h>
+ #include <stdio.h>
+@@ -113,6 +114,46 @@ static void usage(void) {
+     exit(EXIT_FAILURE);
+ }
+ 
++
++typedef struct { FILE *file; off_t start, size, position; } mng_base_range;
++static int mng_base_read(void *cookie, char *buffer, int count) {
++    mng_base_range *range = cookie;
++    off_t left = range->size - range->position;
++    if (left < count) count = (int)left;
++    if (!count) return 0;
++    if (fseeko(range->file, range->start + range->position, SEEK_SET)) return -1;
++    int got = (int)fread(buffer, 1, count, range->file);
++    if (!got && ferror(range->file)) return -1;
++    range->position += got;
++    return got;
++}
++static fpos_t mng_base_seek(void *cookie, fpos_t offset, int whence) {
++    mng_base_range *range = cookie;
++    off_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? range->position : whence == SEEK_END ? range->size : -1;
++    if (base < 0 || offset < -base || offset > range->size - base) return (fpos_t)-1;
++    return (fpos_t)(range->position = base + offset);
++}
++static int mng_base_close(void *cookie) {
++    mng_base_range *range = cookie;
++    int result = fclose(range->file); free(range); return result;
++}
++static FILE *mng_open_base(const char *path) {
++    const char *start = getenv("MNG_BASE_RANGE_OFFSET"), *size = getenv("MNG_BASE_RANGE_SIZE");
++    if (!start && !size) return fopen(path, "rb");
++    if (!start || !size) return NULL;
++    char *end1, *end2;
++    unsigned long long a = strtoull(start, &end1, 10), n = strtoull(size, &end2, 10);
++    if (!*start || !*size || *end1 || *end2 || a > INT64_MAX || !n || n > INT64_MAX - a) return NULL;
++    mng_base_range *range = calloc(1, sizeof(*range));
++    if (!range) return NULL;
++    range->file = fopen(path, "rb"); range->start = (off_t)a; range->size = (off_t)n;
++    if (!range->file) { free(range); return NULL; }
++    if (fseeko(range->file, 0, SEEK_END) || ftello(range->file) < (off_t)(a + n)) { mng_base_close(range); return NULL; }
++    FILE *view = funopen(range, mng_base_read, NULL, mng_base_seek, mng_base_close);
++    if (!view) mng_base_close(range);
++    return view;
++}
++
+ int main(int argc, char **argv) {
+     hactool_ctx_t tool_ctx;
+     hactool_ctx_t base_ctx; /* Context for base NCA, if used. */
+@@ -294,7 +335,7 @@ int main(int argc, char **argv) {
+                     usage();
+                     return EXIT_FAILURE;
+                 }
+-                if ((nca_ctx.tool_ctx->base_file = fopen(optarg, "rb")) == NULL) {
++                if ((nca_ctx.tool_ctx->base_file = mng_open_base(optarg)) == NULL) {
+                     fprintf(stderr, "unable to open %s: %s\n", optarg, strerror(errno));
+                     return EXIT_FAILURE;
+                 }
+@@ -305,7 +346,7 @@ int main(int argc, char **argv) {
+                     usage();
+                     return EXIT_FAILURE;
+                 }
+-                if ((nca_ctx.tool_ctx->base_file = fopen(optarg, "rb")) == NULL) {
++                if ((nca_ctx.tool_ctx->base_file = mng_open_base(optarg)) == NULL) {
+                     fprintf(stderr, "unable to open %s: %s\n", optarg, strerror(errno));
+                     return EXIT_FAILURE;
+                 }
+@@ -472,7 +513,7 @@ int main(int argc, char **argv) {
+     }
+ 
+     /* Try to load titlekeys. */
+-    FILE *titlekeyfile = open_key_file("title");
++    FILE *titlekeyfile = getenv("MNG_TITLE_KEYS") ? fopen(getenv("MNG_TITLE_KEYS"), "rb") : open_key_file("title");
+     if (titlekeyfile != NULL) {
+         extkeys_parse_titlekeys(&tool_ctx.settings, titlekeyfile);
+     }
+diff --git a/nca.c b/nca.c
+index 8a84366..2fe877f 100644
+--- a/nca.c
++++ b/nca.c
+@@ -1149,7 +1149,8 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
+     /* Validate magics. */
+     if (sb->relocation_header.magic == MAGIC_BKTR && sb->subsection_header.magic == MAGIC_BKTR) {
+         if (sb->relocation_header.offset + sb->relocation_header.size != sb->subsection_header.offset ||
+-            sb->subsection_header.offset + sb->subsection_header.size != ctx->size) {
++            sb->subsection_header.offset + sb->subsection_header.size > ctx->size ||
++            (ctx->size - (sb->subsection_header.offset + sb->subsection_header.size)) % 0x200 != 0) {
+             fprintf(stderr, "Invalid BKTR layout!\n");
+             exit(EXIT_FAILURE);
+         }
+@@ -1180,7 +1181,9 @@ void nca_process_bktr_section(nca_section_ctx_t *ctx) {
+         ctx->bktr_ctx.relocation_block = relocs;
+         ctx->bktr_ctx.subsection_block = subs;
+ 
+-        if (ctx->bktr_ctx.subsection_block->total_size != sb->subsection_header.offset) {
++        if (ctx->bktr_ctx.subsection_block->total_size != sb->subsection_header.offset &&
++            (sb->relocation_header.size > sb->subsection_header.offset ||
++             ctx->bktr_ctx.subsection_block->total_size != sb->subsection_header.offset - sb->relocation_header.size)) {
+             free(relocs);
+             free(subs);
+             ctx->bktr_ctx.relocation_block = NULL;

@@ -9,15 +9,22 @@
 #include "runtime.h"
 #include "game_version.h"
 #include "totk_ui_lang.h"
+#include "gamepad_layout.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_mfx_mode.h"
-int mfxup_output_enabled(void);
+#include "../third_party/d2r_gfx/gfx/nvn/fps_overlay.h"
 static NSWindow *window;
 uint64_t dm_nvn_frame_count(void);   /* gfx/nvn/hle_nvn.c: game frames presented so far */
 static CAMetalLayer *metalLayer;
 static NSView *bootOverlay;
 static NSTextField *bootStage,*bootDetail;
 static NSProgressIndicator *bootProgress;
-static NSView *shortcutHelp;
+static NSView *hudBox;   /* the FPS / shader / load box (TOTKHudBox), hidden with TOTK_HUD=corners */
+static NSView *fpsGraphBox;
+static int fpsGraphEnabled;
+/* The settings panel (key 1, settings_panel.h) and the text entry bar: while one is open the game gets no keyboard or
+   mouse input. */
+static int settingsOpen,textEntryOpen;
+static void settings_show(int open);
 static uint64_t bootStartNS;
 static _Atomic uint64_t presentedFrames;
 static _Atomic int warmPending;
@@ -109,15 +116,40 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
   next=next&&t<next+3*period?next+period:t+period;}
  pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);return kCVReturnSuccess;
 }
+/* 1 / 0: the modifier key e (a flag change) is down / up; -1: not one the layout takes (Command, Caps Lock, fn). Each side
+   has its own device bit; a flag change without them (a synthesized event) goes by the shared flag. */
+static int front_modifier_down(NSEvent *e){
+ NSEventModifierFlags f=e.modifierFlags,shared;unsigned long side,pair;
+ switch(e.keyCode){
+  case 56:shared=NSEventModifierFlagShift;side=0x2;pair=0x6;break;case 60:shared=NSEventModifierFlagShift;side=0x4;pair=0x6;break;
+  case 59:shared=NSEventModifierFlagControl;side=0x1;pair=0x2001;break;case 62:shared=NSEventModifierFlagControl;side=0x2000;pair=0x2001;break;
+  case 58:shared=NSEventModifierFlagOption;side=0x20;pair=0x60;break;case 61:shared=NSEventModifierFlagOption;side=0x40;pair=0x60;break;
+  default:return -1;}
+ if(!(f&shared))return 0;
+ return f&pair?!!(f&side):1;
+}
 @interface TOTKInputView:NSView
 @end
 @implementation TOTKInputView
 -(BOOL)acceptsFirstResponder{return YES;}
--(void)keyDown:(NSEvent *)e{[NSCursor setHiddenUntilMouseMoves:YES];runtime_input_key(e.keyCode,1);}
+/* While the settings panel is open only key 1 (it closes the panel, runtime/input.c) and Esc (closes it here, not the
+   game's B) do anything; releases still go through so nothing stays held. */
+-(void)keyDown:(NSEvent *)e{[NSCursor setHiddenUntilMouseMoves:YES];if(textEntryOpen)return;if(settingsOpen&&e.keyCode!=18){if(e.keyCode==53)settings_show(0);return;}runtime_input_key(e.keyCode,1);}
 -(void)keyUp:(NSEvent *)e{runtime_input_key(e.keyCode,0);}
--(void)flagsChanged:(NSEvent *)e{if(e.keyCode==56)runtime_input_key(56,!!(e.modifierFlags&NSEventModifierFlagShift));if(e.keyCode==58)runtime_input_key(58,!!(e.modifierFlags&NSEventModifierFlagOption));}
+/* Shift, Control and Option, left and right apart, are keys of the layout (keyboard_map.h); they come as flag changes.
+   While the settings panel or text entry is open only their releases go through. */
+-(void)flagsChanged:(NSEvent *)e{int down=front_modifier_down(e);if(down>=0&&(!(settingsOpen||textEntryOpen)||!down))runtime_input_key(e.keyCode,down);}
+/* The mouse's buttons over the game picture are inputs of the layout (keyboard_map.h: the left talks, the right picks up,
+   the wheel click the tool ring, the side buttons the d-pad); the pointer stays free (Animal Crossing has nothing to aim). */
+-(void)mouseDown:(NSEvent *)e{(void)e;if(!settingsOpen&&!textEntryOpen)runtime_input_mouse(0,1);}
+-(void)mouseUp:(NSEvent *)e{(void)e;runtime_input_mouse(0,0);}
+-(void)rightMouseDown:(NSEvent *)e{(void)e;if(!settingsOpen&&!textEntryOpen)runtime_input_mouse(1,1);}   /* no context menu */
+-(void)rightMouseUp:(NSEvent *)e{(void)e;runtime_input_mouse(1,0);}
+-(void)otherMouseDown:(NSEvent *)e{if(!settingsOpen&&!textEntryOpen)runtime_input_mouse((int)e.buttonNumber,1);}   /* 2 middle, 3 and 4 the side buttons */
+-(void)otherMouseUp:(NSEvent *)e{runtime_input_mouse((int)e.buttonNumber,0);}
 @end
-@interface TOTKShortcutHelp:NSView
+enum { FPS_GRAPH_SAMPLES = 61, FPS_GRAPH_WIDTH = 220, FPS_GRAPH_HEIGHT = 90 };
+@interface TOTKHudBox:NSView
 @property(strong) NSTextField *label;
 @property(strong) NSTimer *timer;
 @property NSSize textSize;
@@ -125,50 +157,154 @@ static CVReturn vsync_callback(CVDisplayLinkRef link,const CVTimeStamp *now,cons
 -(void)refresh;
 @end
 /* Compact HUD (default): one small box in the window's top-right corner with the FPS, shader and load lines (published by
-   gfx/nvn/fps_overlay.c, refreshed twice a second) above the shortcuts. TOTK_HUD=corners: the lines stay in the picture's
-   corners and this is the larger centred shortcut box. */
-@implementation TOTKShortcutHelp
-static NSString *shortcut_text(void){
- const char *interp;
- switch(mfx_enabled()){
-  case MFX_30:interp="30+30";break;
-  case MFX_HALF:interp=TOTK_UI("刷新率一半","half refresh rate");break;
-  case MFX_MAX:interp=TOTK_UI("不限帧","unlimited");break;
-  default:interp=TOTK_UI("关闭","off");break;
- }
- /* Keys 3 (picture modes) and 4 (21:9) are not listed: for Odyssey runtime_output_mode_cycle and runtime_aspect_toggle
-    are stubs (runtime/game_patches.c), so those keys do nothing. */
- return [NSString stringWithFormat:@(TOTK_UI("快捷键说明\n1  提示：全部 → 只显示 FPS → 隐藏\n2  补帧：当前 %@（按键切换）","Shortcuts\n1  Overlays: all → FPS only → off\n2  Interpolation: %@ (current; press to cycle)")),[NSString stringWithUTF8String:interp]];
-}
--(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){int compact=hud_compact();self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:compact?0.72:0.86].CGColor;self.layer.cornerRadius=compact?7:14;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:compact?0.14:0.2].CGColor;
- self.label=[NSTextField labelWithString:shortcut_text()];self.label.font=[NSFont systemFontOfSize:17 weight:NSFontWeightMedium];self.label.textColor=NSColor.whiteColor;self.label.alignment=NSTextAlignmentCenter;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByWordWrapping;self.label.frame=NSInsetRect(self.bounds,20,18);self.label.autoresizingMask=NSViewWidthSizable|NSViewHeightSizable;[self addSubview:self.label];
- if(compact){self.label.alignment=NSTextAlignmentLeft;self.label.lineBreakMode=NSLineBreakByClipping;}
- [self refresh];__weak TOTKShortcutHelp *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}return self;}
+   gfx/nvn/fps_overlay.c, refreshed twice a second) and, when the settings panel turns it on, the FPS graph; the panel's
+   overlay row picks all, FPS only or none. TOTK_HUD=corners: the lines stay in the picture's corners and there is no box
+   (as games/totk; the key reminder this box had is gone with keys 2-4, reported in play, PR #1305). */
+@implementation TOTKHudBox
+-(instancetype)initWithFrame:(NSRect)frame{if((self=[super initWithFrame:frame])){self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0.04 alpha:0.72].CGColor;self.layer.cornerRadius=7;self.layer.borderWidth=1;self.layer.borderColor=[NSColor colorWithCalibratedWhite:1 alpha:0.14].CGColor;
+ self.label=[NSTextField labelWithString:@""];self.label.alignment=NSTextAlignmentLeft;self.label.maximumNumberOfLines=0;self.label.lineBreakMode=NSLineBreakByClipping;[self addSubview:self.label];
+ [self refresh];if(hud_compact()){__weak TOTKHudBox *weak=self;self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak refresh];}];}}return self;}
 -(void)refresh{
- if(!hud_compact()){self.label.stringValue=shortcut_text();return;}
- NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium],*small=[NSFont systemFontOfSize:10];
- NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
- NSMutableAttributedString *a=[NSMutableAttributedString new];
- int full=fps_overlay_full_hud();   // key 1 minimal: the FPS line (line 0) only; the others keep their last text, so skip them
- for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
-  [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
- if(!full){if(a.length)[a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the single FPS line
-  else [a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];}
- else if(a.length){NSMutableParagraphStyle *gap=[NSMutableParagraphStyle new];gap.paragraphSpacingBefore=4;
-  [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1],NSParagraphStyleAttributeName:gap}]];}
- else [a appendAttributedString:[[NSAttributedString alloc] initWithString:shortcut_text() attributes:@{NSFontAttributeName:small,NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.75 alpha:1]}]];
- if([a isEqualToAttributedString:self.label.attributedStringValue])return;
- self.label.attributedStringValue=a;NSSize z=[self.label sizeThatFits:NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX)];self.textSize=NSMakeSize(ceil(z.width),ceil(z.height));[self position];}
+ BOOL showText=hud_compact()&&fps_overlay_hud_mode()!=HUD_MODE_OFF;
+ self.hidden=!showText&&!fpsGraphEnabled;self.label.hidden=!showText;
+ if(showText){
+  NSFont *mono=[NSFont monospacedSystemFontOfSize:10.5 weight:NSFontWeightMedium];
+  NSColor *green=[NSColor colorWithCalibratedRed:80/255.0 green:1 blue:120/255.0 alpha:1],*yellow=[NSColor colorWithCalibratedRed:1 green:230/255.0 blue:40/255.0 alpha:1];
+  NSMutableAttributedString *a=[NSMutableAttributedString new];
+  int full=fps_overlay_full_hud();   // FPS only: the FPS line (line 0); the others keep their last text, so skip them
+  for(int i=0;i<4;i++){char t[128];int hl=0;if((!full&&i!=0)||!hud_snapshot(i,t,sizeof t,&hl))continue;   // FPS, shaders, render pipelines, load
+   [a appendAttributedString:[[NSAttributedString alloc] initWithString:[([NSString stringWithUTF8String:t] ?: @"") stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:hl?yellow:green}]];}
+  if(!a.length)[a appendAttributedString:[[NSAttributedString alloc] initWithString:@"FPS --\n" attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+  int bpct=full?runtime_gamepad_battery_percent():-1;
+  if(bpct>=0)[a appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@(TOTK_UI("手柄电量 %d%%\n","Controller %d%%\n")),bpct]
+   attributes:@{NSFontAttributeName:mono,NSForegroundColorAttributeName:green}]];
+  [a deleteCharactersInRange:NSMakeRange(a.length-1,1)];   // no empty line under the last one
+  BOOL changed=![a isEqualToAttributedString:self.label.attributedStringValue];
+  if(changed)self.label.attributedStringValue=a;
+  if(changed||self.textSize.height==0){
+   NSSize z=[self.label sizeThatFits:NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX)];
+   self.textSize=NSMakeSize(ceil(z.width),ceil(z.height));
+  }
+ }else self.textSize=NSZeroSize;
+ [self position];}
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 -(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self position];}
 -(void)layout{[super layout];[self position];}
--(void)position{if(!self.superview)return;NSRect f,in;
- if(hud_compact()){CGFloat w=self.textSize.width+16,h=self.textSize.height+10,m=10;f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);in=NSMakeRect(8,5,self.textSize.width,self.textSize.height);}
- else{CGFloat w=MIN(560,MAX(280,self.superview.bounds.size.width-40)),h=168;f=NSMakeRect(floor((self.superview.bounds.size.width-w)/2),floor((self.superview.bounds.size.height-h)/2),w,h);in=NSInsetRect(NSMakeRect(0,0,w,h),20,18);}
- if(!NSEqualRects(self.frame,f))self.frame=f;self.label.frame=in;}
+-(void)position{if(!self.superview)return;
+ CGFloat graphH=fpsGraphEnabled?FPS_GRAPH_HEIGHT:0,graphW=fpsGraphEnabled?FPS_GRAPH_WIDTH:0;
+ CGFloat contentW=fmax(self.textSize.width,graphW);
+ CGFloat w=contentW+16,h=self.textSize.height+graphH+10,m=10;
+ NSRect f=NSMakeRect(floor(self.superview.bounds.size.width-w-m),floor(self.superview.bounds.size.height-h-m),w,h);
+ if(!NSEqualRects(self.frame,f))self.frame=f;
+ self.label.frame=NSMakeRect(8,graphH+5,self.textSize.width,self.textSize.height);
+ if(fpsGraphEnabled)fpsGraphBox.frame=NSMakeRect(8,5,contentW,FPS_GRAPH_HEIGHT);}
 @end
-void runtime_shortcut_help_toggle(void){int mode=fps_overlay_toggle_hints();dispatch_async(dispatch_get_main_queue(), ^{   // key 1: all -> minimal (FPS only) -> off
- shortcutHelp.hidden=mode==0||(mode==2&&!hud_compact());[(TOTKShortcutHelp *)shortcutHelp refresh];});}   // mode 0 off, 2 minimal (fps_overlay.h HUD_MODE_*)
+@interface TOTKFpsGraph:NSView {
+ int _samples[FPS_GRAPH_SAMPLES];
+ NSUInteger _sampleCount;
+}
+@property(strong) NSTimer *timer;
+-(void)setEnabled:(BOOL)enabled;
+-(void)sample;
+@end
+@implementation TOTKFpsGraph
+-(instancetype)initWithFrame:(NSRect)frame {
+ if((self=[super initWithFrame:frame]))self.hidden=YES;
+ return self;
+}
+-(void)setEnabled:(BOOL)enabled {
+ self.hidden=!enabled;
+ [self.timer invalidate];
+ self.timer=nil;
+ _sampleCount=0;
+ if(!enabled)return;
+
+ [self sample];
+ __weak TOTKFpsGraph *weak=self;
+ self.timer=[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t){(void)t;[weak sample];}];
+}
+-(void)sample {
+ int fps=fps_overlay_value();
+ if(_sampleCount<FPS_GRAPH_SAMPLES)_samples[_sampleCount++]=fps;
+ else {
+  for(NSUInteger i=1;i<FPS_GRAPH_SAMPLES;i++)_samples[i-1]=_samples[i];
+  _samples[FPS_GRAPH_SAMPLES-1]=fps;
+ }
+ [self setNeedsDisplay:YES];
+}
+-(void)drawRect:(NSRect)dirtyRect {
+ (void)dirtyRect;
+ int minFPS=-1,maxFPS=-1;
+ for(NSUInteger i=0;i<_sampleCount;i++) {
+  int fps=_samples[i];
+  if(fps<0)continue;
+  if(minFPS<0||fps<minFPS)minFPS=fps;
+  if(fps>maxFPS)maxFPS=fps;
+ }
+
+ int currentFPS=_sampleCount?_samples[_sampleCount-1]:-1;
+ NSString *currentText=currentFPS<0?@"--":[NSString stringWithFormat:@"%d",currentFPS];
+ NSString *stats=maxFPS<0?@"min --   max --   cur --":
+  [NSString stringWithFormat:@"min %d   max %d   cur %@",minFPS,maxFPS,currentText];
+ NSDictionary *statsStyle=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:9 weight:NSFontWeightMedium],
+  NSForegroundColorAttributeName:[NSColor colorWithCalibratedWhite:0.88 alpha:1]};
+ [stats drawAtPoint:NSMakePoint(8,58) withAttributes:statsStyle];
+ if(maxFPS<0)return;
+
+ NSRect plot=NSMakeRect(40,12,self.bounds.size.width-50,36);
+ double axisLow=0,axisHigh=fmax(30,ceil(maxFPS*1.10/30)*30);
+ double axisMid=(axisLow+axisHigh)/2;
+
+ NSColor *axisColor=[NSColor colorWithCalibratedWhite:0.75 alpha:0.65];
+ NSColor *gridColor=[NSColor colorWithCalibratedWhite:0.75 alpha:0.18];
+ NSBezierPath *grid=[NSBezierPath bezierPath];
+ CGFloat midY=NSMinY(plot)+(axisMid-axisLow)/(axisHigh-axisLow)*plot.size.height;
+ [grid moveToPoint:NSMakePoint(NSMinX(plot),midY)];
+ [grid lineToPoint:NSMakePoint(NSMaxX(plot),midY)];
+ [gridColor setStroke];
+ grid.lineWidth=0.5;
+ [grid stroke];
+
+ NSBezierPath *axis=[NSBezierPath bezierPath];
+ [axis moveToPoint:NSMakePoint(35,NSMinY(plot))];
+ [axis lineToPoint:NSMakePoint(35,NSMaxY(plot))];
+ NSDictionary *axisStyle=@{NSFontAttributeName:[NSFont monospacedSystemFontOfSize:8 weight:NSFontWeightRegular],
+  NSForegroundColorAttributeName:axisColor};
+ double axisLabels[]={axisLow,axisMid,axisHigh};
+ for(int i=0;i<3;i++) {
+  CGFloat y=NSMinY(plot)+(axisLabels[i]-axisLow)/(axisHigh-axisLow)*plot.size.height;
+  [axis moveToPoint:NSMakePoint(35,y)];
+  [axis lineToPoint:NSMakePoint(39,y)];
+  [[NSString stringWithFormat:@"%.0f",axisLabels[i]] drawAtPoint:NSMakePoint(8,y-5) withAttributes:axisStyle];
+ }
+ [axisColor setStroke];
+ axis.lineWidth=0.75;
+ [axis stroke];
+
+ NSBezierPath *line=[NSBezierPath bezierPath];
+ NSPoint last=NSZeroPoint;
+ NSUInteger points=0;
+ for(NSUInteger i=0;i<_sampleCount;i++) {
+  int fps=_samples[i];
+  if(fps<0)continue;
+  double xFraction=(double)i/(FPS_GRAPH_SAMPLES-1);
+  double yFraction=fmax(0,fmin(1,(fps-axisLow)/(axisHigh-axisLow)));
+  NSPoint point=NSMakePoint(NSMinX(plot)+xFraction*plot.size.width,
+                            NSMinY(plot)+yFraction*plot.size.height);
+  if(points)[line lineToPoint:point];else[line moveToPoint:point];
+  last=point;
+  points++;
+ }
+
+ NSColor *totk_colour=[NSColor colorWithCalibratedRed:0.541 green:0.969 blue:0.588 alpha:1];
+ [totk_colour setStroke];
+ [totk_colour setFill];
+ line.lineWidth=1.5;
+ [line stroke];
+ if(points==1)[[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(last.x-1,last.y-1,2,2)] fill];
+}
+@end
+#include "settings_panel.h"
 /* The drawable follows the window's pixel size; the present pass scales the game picture (1920x1080 docked) into it and
    keeps 16:9 (black bars on other shapes), so a larger window or full screen shows the game at its own resolution instead
    of a fixed small drawable that the compositor stretches. */
@@ -300,12 +436,15 @@ void runtime_front_run(void(*callback)(void)){
   bootProgress.minValue=0;bootProgress.maxValue=100;bootProgress.indeterminate=YES;bootProgress.autoresizingMask=NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
   [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];
   [window.contentView addSubview:bootOverlay];[bootProgress startAnimation:nil];
-  shortcutHelp=[[TOTKShortcutHelp alloc] initWithFrame:NSZeroRect];shortcutHelp.autoresizingMask=hud_compact()?NSViewMinXMargin|NSViewMinYMargin:NSViewMinXMargin|NSViewMaxXMargin|NSViewMinYMargin|NSViewMaxYMargin;
-  /* Keep discovery/warm-up visible; the help appears after the opaque boot
-     overlay is hidden. Key 1 still controls its requested visibility. */
-  [window.contentView addSubview:shortcutHelp positioned:NSWindowBelow relativeTo:bootOverlay];
-  [(TOTKShortcutHelp *)shortcutHelp position];
-  /* The FPS, shader and load lines: in the corner panel above (compact HUD), or with TOTK_HUD=corners drawn into the game picture's corners by the present encoder (gfx/nvn/fps_overlay.c). */
+  settings_restore_start();
+  settings_controller_start();
+  /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
+     corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
+  TOTKHudBox *box=[[TOTKHudBox alloc] initWithFrame:NSZeroRect];box.autoresizingMask=NSViewMinXMargin|NSViewMinYMargin;
+  [window.contentView addSubview:box positioned:NSWindowBelow relativeTo:bootOverlay];hudBox=box;
+  /* The settings panel's FPS graph switch, kept in fps-graph.txt next to controls.txt ("on" / "off", default off). */
+  {char word[16];if(runtime_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!strncmp(word,"on",2);}
+  TOTKFpsGraph *graph=[[TOTKFpsGraph alloc] initWithFrame:NSZeroRect];[box addSubview:graph];fpsGraphBox=graph;[graph setEnabled:fpsGraphEnabled];[box refresh];
   [window makeFirstResponder:window.contentView];
   {NSRect f=window.frame;f.origin.x=NSMidX(vis)-f.size.width/2;f.origin.y=NSMidY(vis)-f.size.height/2;[window setFrame:f display:NO];}   /* centred on the chosen screen */
   front_sync_drawable();
@@ -394,9 +533,11 @@ int runtime_front_text_input(const RuntimeTextRequest *req,char *out,size_t out_
   NSTextField *field=secure?[[NSSecureTextField alloc] initWithFrame:NSMakeRect(18,16,w-36,34)]:[[NSTextField alloc] initWithFrame:NSMakeRect(18,16,w-36,34)];
   field.font=[NSFont systemFontOfSize:20];field.stringValue=initial;field.delegate=bar;field.bezelStyle=NSTextFieldRoundedBezel;bar.field=field;
   __weak TOTKTextBar *weakBar=bar;
-  bar.done=^(NSString *text){result=[text copy];[weakBar removeFromSuperview];[window makeFirstResponder:window.contentView];dispatch_semaphore_signal(sem);};
+  bar.done=^(NSString *text){result=[text copy];[weakBar removeFromSuperview];runtime_gamepad_text_capture(0);
+   [window makeFirstResponder:window.contentView];textEntryOpen=0;dispatch_semaphore_signal(sem);};
   [bar addSubview:label];[bar addSubview:hint];[bar addSubview:field];[cv addSubview:bar];openBar=bar;
-  runtime_input_clear();
+  if(settingsOpen)settings_show(0);
+  runtime_input_clear();runtime_gamepad_text_capture(1);textEntryOpen=1;
   if(window.miniaturized)[window deminiaturize:nil];
   if(!assume_focus()){[NSApp activateIgnoringOtherApps:YES];[window makeKeyAndOrderFront:nil];}   /* test windows never take the keyboard */
   [window makeFirstResponder:field];

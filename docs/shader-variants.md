@@ -55,13 +55,24 @@ shader at load.
 
 Tears of the Kingdom's seed now translates every shader the build finds for the default bind state (28,771 in 1.4.3,
 up from the 12,472 of the startup packages), and for a shader with compare slots also the variant with all of them
-bound to depth textures. A shared-list row is translated only when no variant already made serves its bind state; a
-row served by another variant goes into `<seed>.aliases.tsv`, and the packaging renames the warm-up rows through it
-(`shader_list.py rename`), since rows recorded on a player's Mac name the variant translated there.
+bound to depth textures. A shared-list row is translated only when no variant already made serves its bind state. The
+packaging names each warm-up row's variants as the seed serves their bind states (`shader_list.py resolve`, through the
+bind states the list keeps in its `A` rows), since rows recorded on a player's Mac name the variant by the bind state
+it was made for.
 
 Offline check (2026-10-22): of 2,681 variants the game translated on this Mac, the new translator gives identical MSL
 for every one with the same answers, and 2,641 (98.5 %) are served by the default or the depth-bound variant with
 identical MSL.
+
+Shaders a translation cannot tell apart are translated once (2026-10-30). The key hashes the whole control section, but
+a translation reads only the stage, the code, where its constants start, a compute shader's group size and the early
+fragment tests flag (`prepare_shader_seed.py translation_input`; `totk_shader_rt.m variant_request` reads the same).
+3,416 of 1.4.3's 28,771 shaders differ from another only in control bytes nothing reads, nearly all at +0x7d0..+0x7df
+(3,266 effects, 79 agl, 55 `.bfsha`, 16 layout); in the Ryujinx seed all 3,348 of them with a default variant had MSL
+and reflection byte-identical to that shader's. The seed translates the first by key; each other one gets a `.variants`
+index naming the first one's variants, through which packaging names warm-up rows recorded with its own variant names
+(`shader_list.py resolve`). The runtime loads a variant by the name its row gives, so these shaders share one
+translation, one Metal library and their pipelines.
 
 Colour outputs work the same way (2026-10-26): on the Switch the fragment shader writes untyped registers and the
 colour unit takes their bits as integers for a pure integer render target and as floats otherwise; Metal refuses a

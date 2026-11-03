@@ -84,9 +84,10 @@ class ShaderPack(unittest.TestCase):
 
 
 class FullHD(unittest.TestCase):
-    """Settings › Full HD (docked): off by default, for both games. Tears of the Kingdom renders its scene at 1600x900
-    (1.4.3 renders 960x540 on the phone otherwise); Breath of the Wild's docked branch renders 1920x1080 and its
-    Settings pane says so (build_ipa.py)."""
+    """Settings › Full HD (docked): off by default on an iPhone, on by default on an iPad (DefaultValuePad, user
+    2026-11-01), for both games. Tears of the Kingdom renders its scene at 1600x900 (1.4.3 renders 960x540 on the phone
+    otherwise); Breath of the Wild's pane adds its docked scene row (build_ipa.py botw_pane): the Switch's 1600x900 by
+    default, or HD 1920x1080."""
     def test_switch_off_by_default_and_docked(self):
         import plistlib, re
         ios = TOOLS.parent
@@ -94,19 +95,131 @@ class FullHD(unittest.TestCase):
         switch = [s for s in specs if s.get('Key') == 'TOTK_DOCKED']
         self.assertEqual(len(switch), 1)
         self.assertIs(switch[0]['DefaultValue'], False)
+        self.assertIs(switch[0]['DefaultValuePad'], True)
         main = (ios/'Sources/main.m').read_text()
-        block = re.search(r'if \(\[NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DOCKED"\]\) \{(.*?)\n    \} else', main, re.S)
-        self.assertTrue(block, 'the docked branch')
-        for line in ('"TOTK_OPERATION_MODE","docked"', '"TOTK_IOS_DRAWABLE_H","1080"'):
-            self.assertIn(line, block.group(1))
-        totk = re.search(r'#else\n(.*?)#endif', block.group(1), re.S)
-        self.assertTrue(totk and '"TOTK_RENDER_RES","1600x900"' in totk.group(1), 'Tears of the Kingdom keeps the 1600x900 scene')
-        self.assertNotIn('#ifndef GAME_BOTW', main[main.index('TOTK_DOCKED') - 300:main.index('TOTK_DOCKED')])
+        # The switch is the pane's preset layer (main.m's apply_settings): it hands its own drawable and scene over
+        # through settings_map.c's table, which is where the docked values live.
+        self.assertIn('totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv)', main)
+        for line in ('setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0)',
+                     # docked: the pane's TOTK_DOCKED_SCENE row picks 1600x900 or 1920x1080 (settings_map.c totk_docked_scene)
+                     'if (prenv.scene)', 'setenv("TOTK_RENDER_RES", totk_docked_scene([d stringForKey:@"TOTK_DOCKED_SCENE"].UTF8String), 0);'):
+            self.assertIn(line, main)
+        preset = re.search(r'int totk_preset_env_build\(int docked.*?\n}', (ios/'Sources/settings_map.c').read_text(), re.S)
+        self.assertIsNotNone(preset)
+        table = preset.group(0) if preset else ''
+        for value in ('"docked"', '"1080"', '"1600x900"'):
+            self.assertIn(value, table)
+        # The presets' picture is handed over once, when the game starts (apply_display_settings, after the start
+        # screen's pick), and not while the custom layer is on (after PR #433).
+        body = re.search(r'static void apply_display_settings\(void\) \{.*?\n}', main, re.S).group(0)
+        self.assertIn('if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;', body)
+        self.assertIn('if (prenv.drawable) setenv("TOTK_IOS_DRAWABLE_H", prenv.drawable, 0);', body)
+        self.assertEqual(main.count('totk_preset_env_build('), 1, 'the presets\' picture goes in one place')
+        # Both games have the switch (Breath of the Wild's docked scene is its own row, TOTK_BOTW_SCENE), so no
+        # game-specific exception is left in the helper. The only other operation-mode site is visionOS's default.
+        self.assertNotIn('#ifndef GAME_BOTW', main)
+        vision = 'setenv("TOTK_OPERATION_MODE","docked",1);'
+        self.assertIn(vision, main)
+        self.assertEqual(main.replace(vision, '').count('setenv("TOTK_OPERATION_MODE",'), 1,
+                         'the other operation-mode site is the helper')
         build = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("'      - path: Gen/Settings.bundle'", build)
         self.assertIn("s.get('Key')=='TOTK_DOCKED'", build)
         self.assertIn("specs[at-1]['FooterText']", build)
         self.assertNotIn('del specs[at-1:at+1]', build)
-        self.assertIn("'      - path: Gen/Settings.bundle'", build)
+
+    def test_seed_fingerprint_names_the_gpu(self):
+        # The pipelines' index (.tsv) is the same for every GPU: the fingerprint that decides whether the app's seed is
+        # copied again must take the pipelines-<arch>-* files themselves, or an iPhone build keeps an iPad's pipelines.
+        build = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("for p in sorted(seed.glob('pipelines-*')): fp.update(p.name.encode()", build)
+
+    def test_ipad_default_is_stored_and_used(self):
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        self.assertIn('item[@"DefaultValuePad"] && UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad', main)
+        self.assertIn('for (NSString *key in pad) if (!stored[key]) [d setObject:pad[key] forKey:key];', main)
+
+    def test_botw_pane_has_the_docked_scene_after_full_hd(self):
+        import plistlib
+        root = build_ipa.botw_pane(plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes()))
+        specs = root['PreferenceSpecifiers']
+        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
+        row = specs[at+1]
+        self.assertEqual(row['Key'], 'TOTK_BOTW_SCENE')
+        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
+        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
+        self.assertTrue(row['TOTKPhone'])
+        # the runtime reads the same values, and the start screen's pick reaches it at game start
+        botw = (TOOLS.parents[1]/'runtime/game_patches_botw.c').read_text()
+        self.assertIn('getenv("TOTK_BOTW_SCENE"); return e && !strcmp(e, "1920x1080")', botw)
+        main = (TOOLS.parent/'Sources/main.m').read_text()
+        self.assertIn('setenv("TOTK_BOTW_SCENE", scene.UTF8String, 1);', main)
+        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+        self.assertIn('settingsPaneHas:@"TOTK_BOTW_SCENE"] ? @"TOTK_BOTW_SCENE"', screen)
+        self.assertIn('forKey:_sceneKey]', screen)
+        totk = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
+        self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
+        self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
+
+    def test_ios_export_leaves_the_mac_only_vr_hook_out(self):
+        """The iOS export runs the 1.4.3 patches on the Mac; the VR head-look hook branches into the Mac runtime, so it
+        must not be installed there (2026-11-03: the iPad jumped to a Mac address, "Invalid Page")."""
+        src = (TOOLS.parents[1]/'runtime/game_patches_v143.c').read_text()
+        self.assertIn('if (!getenv("TOTK_EXPORT_IOS")) vr_headlook_install(m);', src)
+        self.assertEqual(src.count('vr_headlook_install(m);'), 1)
+
+    def test_mac_pipelines_are_made_again_for_another_runtime(self):
+        """The cached Mac pipelines (build/ios-pipelines) are this runtime's descriptions: their stamp holds the runtime
+        binary as well as the shaders and lists (2026-11-03: narrowed vertex formats were never seen otherwise)."""
+        ipa = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("+host.read_bytes()).hexdigest()", ipa)
+        self.assertLess(ipa.index("host=tree/"), ipa.index("+host.read_bytes()).hexdigest()"))
+
+    def test_totk_pane_has_the_docked_scene_after_full_hd(self):
+        """Tears of the Kingdom has the same three pictures (user 2026-11-03: "王国也一样"): its own TOTK_DOCKED_SCENE row
+        right after the Full HD switch, handed over as TOTK_RENDER_RES, and the start screen's original / HD."""
+        import plistlib
+        specs = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())['PreferenceSpecifiers']
+        at = next(i for i, s in enumerate(specs) if s.get('Key') == 'TOTK_DOCKED')
+        row = specs[at+1]
+        self.assertEqual(row['Key'], 'TOTK_DOCKED_SCENE')
+        self.assertEqual(row['Values'], ['1600x900', '1920x1080'])
+        self.assertEqual(row['DefaultValue'], '1600x900', 'the Switch\'s own docked scene by default')
+        self.assertEqual(row['TOTKApp'], 'totk')
+        self.assertTrue(row['TOTKPhone'])
+        screen = (TOOLS.parent/'Sources/start_screen.m').read_text()
+        self.assertIn('[self settingsPaneHas:@"TOTK_DOCKED_SCENE"] ? @"TOTK_DOCKED_SCENE"', screen)
+
+    def test_botw_pane_drops_totk_only_rows(self):
+        import plistlib
+        root = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
+        # The TOTKApp mark on each row is the only list of what Breath of the Wild must not show; if the marks were
+        # dropped, the filtered pane would keep every row and the assertions below would pass vacuously.
+        marked = {s['Key'] for s in root['PreferenceSpecifiers'] if s.get('TOTKApp') == 'totk'}
+        self.assertTrue(marked, 'no row is marked TOTKApp=totk')
+        build_ipa.settings_without_totk(root)
+        specs = root['PreferenceSpecifiers']
+        keys = {s['Key'] for s in specs if 'Key' in s}
+        for key in marked:
+            self.assertNotIn(key, keys)
+        for key in ('TOTK_LANG', 'TOTK_PHONE_FPS', 'TOTK_FPS_OVERLAY', 'TOTK_SHADER_OVERLAY', 'TOTK_DEBUG_LOG'):
+            self.assertIn(key, keys)
+        # A group whose rows were all removed must not stay behind as an empty header.
+        for i, spec in enumerate(specs):
+            if spec.get('Type') == 'PSGroupSpecifier':
+                self.assertLess(i + 1, len(specs), spec.get('Title'))
+                self.assertNotEqual(specs[i+1].get('Type'), 'PSGroupSpecifier', spec.get('Title'))
+
+    def test_export_scene_is_a_pane_value(self):
+        # build_ipa.py embeds one scene size so the patch exists in the exported code; the pane's row must offer it, or
+        # the embedded patch and the panel disagree about what the device may select.
+        import plistlib, re
+        build = (TOOLS/'build_ipa.py').read_text()
+        match = re.search(r"TOTK_RENDER_RES='(\d+x\d+)'", build)
+        self.assertIsNotNone(match, 'the export scene size is missing')
+        values = plistlib.loads((TOOLS.parent/'Settings.bundle/Root.plist').read_bytes())
+        scene = [s for s in values['PreferenceSpecifiers'] if s.get('Key') == 'TOTK_RENDER_RES'][0]
+        self.assertIn(match.group(1) if match else '', scene['Values'])
 
 
 

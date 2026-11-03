@@ -5,8 +5,8 @@
      TOTK_RUMBLE    the controller has its two vibration devices (left, right); what the game plays goes to the Mac
                     controller's haptics (runtime/gamepad_feedback.m);
      TOTK_GYRO      the controller has its six-axis sensor; the game gets the Mac controller's motion.
-   Both are on by default (env_on below); =0 turns one off, and the game then does not get that device, exactly as before
-   (no handles for it, its code below is not called).
+   Both are on by default (setting_on below); =0 turns one off, as does rumble.txt / gyro.txt saying off, and the game then
+   does not get that device, exactly as before (no handles for it, its code below is not called).
    While the game runs, "flag rumble 0|1" / "flag gyro 0|1" mute and unmute them (muted motion = a controller lying still).
    The handles are the SDK's own: nn::hid::utility computes them without the hid service (byte 0 = style index, 3 full-key,
    4 handheld; byte 1 = controller id; byte 2 = device index: vibration 0 left / 1 right, six-axis 2). Everything under
@@ -15,6 +15,8 @@
    Layouts: VibrationValue {amplitude low, frequency low, amplitude high, frequency high} (0..1 and Hz; neutral 0/160/0/320,
    sdk+0x4a2df8); VibrationDeviceInfo {type, position} (8 bytes, sdk+0x49da78); SixAxisSensorState 0x60 bytes. */
 #include "runtime.h"
+#include <TargetConditionals.h>
+#include "feedback_settings.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -23,21 +25,45 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if TARGET_OS_IOS
+/* ios/Sources/phone_haptics.m: the game's vibration on the iPhone's own Taptic Engine while the touch controls are used. */
+void runtime_phone_rumble_set(unsigned side, float amp_low, float freq_low, float amp_high, float freq_high);
+#endif
 typedef struct { float amp_low, freq_low, amp_high, freq_high; } VibrationValue;
 typedef struct { uint32_t type, position; } VibrationDeviceInfo;       /* type 1 = linear resonant actuator; position 1 left, 2 right */
 typedef struct { int64_t delta_ns, sampling; float acc[3], gyro[3], angle[3], dir[9]; uint32_t attributes, reserved; } SixAxisState;
 _Static_assert(sizeof(VibrationValue) == 16 && sizeof(VibrationDeviceInfo) == 8 && sizeof(SixAxisState) == 0x60, "hid ABI");
 enum { STYLE_FULL_KEY = 3, STYLE_HANDHELD = 4, SIX_AXIS_CONNECTED = 1 };
 
-/* On unless =0 (2026-10-17: default on, the user's request). An agent's test session (TOTK_SLOT_OWNER claude / codex) leaves
-   them off unless set, so a test does not rumble the user's controller and tests stay as measured before. */
-static bool env_on(const char *name) {
-    const char *e = getenv(name); if (e) return strcmp(e, "0") != 0;
-    const char *o = getenv("TOTK_SLOT_OWNER");
-    return !(o && (!strcmp(o, "claude") || !strcmp(o, "codex")));
+/* On unless =0 (2026-10-17: default on, the user's request), or, without the variable, unless rumble.txt / gyro.txt next to
+   controls.txt says off (runtime/feedback_settings.h). An agent's test session (TOTK_SLOT_OWNER claude / codex) leaves
+   them off unless set, so a test does not rumble the user's controller and tests stay as measured before. The files are
+   read once, the first time it is asked, so a run keeps one answer even if a file changes while the game plays; the
+   environment is read on every call, as before. */
+static char rumbleText[16], gyroText[16];
+static bool rumbleFile, gyroFile;
+static void read_files(void) {
+    rumbleFile = runtime_setting_word("rumble.txt", rumbleText, sizeof rumbleText);
+    gyroFile = runtime_setting_word("gyro.txt", gyroText, sizeof gyroText);
 }
-int runtime_rumble_enabled(void) { return env_on("TOTK_RUMBLE"); }
-int runtime_gyro_enabled(void) { return env_on("TOTK_GYRO"); }
+static pthread_once_t filesRead = PTHREAD_ONCE_INIT;
+static bool setting_on(const char *env, const char *file, const char *text, _Atomic int *logged) {
+    int from, on = feedback_switch(getenv(env), getenv("TOTK_SLOT_OWNER"), text, &from);
+    if (!atomic_exchange(logged, 1)) {
+        if (from == FEEDBACK_FROM_BAD_FILE) fprintf(stderr, "[hid] %s: not on or off; on\n", file);
+        else if (from == FEEDBACK_FROM_FILE && !on) fprintf(stderr, "[hid] %s: off\n", file);
+    }
+    return on;
+}
+static _Atomic int rumbleLogged, gyroLogged;
+int runtime_rumble_enabled(void) {
+    pthread_once(&filesRead, read_files);
+    return setting_on("TOTK_RUMBLE", "rumble.txt", rumbleFile ? rumbleText : NULL, &rumbleLogged);
+}
+int runtime_gyro_enabled(void) {
+    pthread_once(&filesRead, read_files);
+    return setting_on("TOTK_GYRO", "gyro.txt", gyroFile ? gyroText : NULL, &gyroLogged);
+}
 static _Atomic int rumble_muted, gyro_muted;
 static pthread_mutex_t lastLock = PTHREAD_MUTEX_INITIALIZER;
 static VibrationValue last[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   /* lastLock */
@@ -64,6 +90,9 @@ static void play(int side, const VibrationValue *v) {
                                                                          side ? "right" : "left", c.amp_low, c.freq_low, c.amp_high, c.freq_high);
     if (atomic_load(&rumble_muted)) c.amp_low = c.amp_high = 0;
     runtime_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
+#if TARGET_OS_IOS
+    runtime_phone_rumble_set((unsigned)side, c.amp_low, c.freq_low, c.amp_high, c.freq_high);
+#endif
 }
 static uint32_t vib_init(const uint32_t *h) {
     int side = vibration_side(h); static _Atomic int once;
@@ -136,8 +165,31 @@ int runtime_hid_feedback_flag(const char *name, int v) {
     int on = muted == &rumble_muted ? runtime_rumble_enabled() : runtime_gyro_enabled();
     atomic_store(muted, !v);
     if (!v && muted == &rumble_muted) { runtime_rumble_set(0, 0, 160, 0, 320); runtime_rumble_set(1, 0, 160, 0, 320); }
-    fprintf(stderr, "[hid] %s %s%s\n", name, v ? "on" : "muted", on ? "" : " (no effect: the game has no such device in this run; start it with TOTK_RUMBLE=1 / TOTK_GYRO=1)");
+    fprintf(stderr, "[hid] %s %s%s\n", name, v ? "on" : "muted", on ? "" : " (no effect: the game has no such device in this run; start it with TOTK_RUMBLE=1 / TOTK_GYRO=1, or without rumble.txt / gyro.txt saying off)");
     return 1;
+}
+/* The settings panel (key 1, runtime/settings_panel.h). The variable or an agent's test session decides first, as above; the
+   row then shows that value, greyed out. Otherwise the switch shows the choice in force: until the player picks, whether
+   the game has the device and it is not muted. A pick is saved in rumble.txt / gyro.txt for the next launch and, when the
+   game has the device in this run, mutes or unmutes it at once, as "flag rumble|gyro 0|1" does. A device the run started
+   without comes at the next launch: the game asked for its devices at the start. */
+static _Atomic int rumbleChoice = -1, gyroChoice = -1;   /* -1: no pick in this run */
+int runtime_feedback_locked(int gyro) {
+    const char *o = getenv("TOTK_SLOT_OWNER");
+    return getenv(gyro ? "TOTK_GYRO" : "TOTK_RUMBLE") || (o && (!strcmp(o, "claude") || !strcmp(o, "codex")));
+}
+int runtime_feedback_present(int gyro) { return gyro ? runtime_gyro_enabled() : runtime_rumble_enabled(); }
+int runtime_feedback_choice(int gyro) {
+    int c = atomic_load(gyro ? &gyroChoice : &rumbleChoice);
+    return c >= 0 ? c : runtime_feedback_present(gyro) && !atomic_load(gyro ? &gyro_muted : &rumble_muted);
+}
+void runtime_feedback_choose(int gyro, int on) {
+    if (runtime_feedback_locked(gyro)) return;
+    on = !!on;
+    atomic_store(gyro ? &gyroChoice : &rumbleChoice, on);
+    runtime_setting_save(gyro ? "gyro.txt" : "rumble.txt", on ? "on" : "off", gyro ? "gyro setting" : "rumble setting");
+    if (runtime_feedback_present(gyro)) runtime_hid_feedback_flag(gyro ? "gyro" : "rumble", on);
+    else fprintf(stderr, "[hid] %s %s from the next launch (saved)\n", gyro ? "gyro" : "rumble", on ? "on" : "off");
 }
 void runtime_hid_feedback_stats(uint64_t *values, uint64_t *motion_reads) { *values = atomic_load(&values_in); *motion_reads = atomic_load(&reads); }
 

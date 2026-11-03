@@ -22,6 +22,7 @@ The list holds identifiers only, never game data. Each build makes the shaders f
 | Row | Fields | Meaning |
 |---|---|---|
 | `V` | shader key, deps | A shader and the bind state it was translated for. |
+| `A` | suffix, answers | A bind state warm rows name: a variant is `<shader key>-<suffix>_b`, the suffix the first 12 hex digits of the SHA-256 of the answers it was translated for. The list keeps one for every bind state its warm rows name but the default one, also after `prune` drops the `V` row that brought it. |
 | `L` | shader key, source, control offset, code offset, length | Where a shader that is not a BNSH file sits in the player's game files. |
 | `S` | `<variant>_b`, stage, flags | A shader library the warm-up loads. |
 | `C` | `<variant>_b`, flags | A compute pipeline the warm-up builds. |
@@ -29,6 +30,10 @@ The list holds identifiers only, never game data. Each build makes the shaders f
 | `B` | pipeline key, vertex border, fragment border, flags | That render pipeline with the sampler border colours Metal lacks, emulated in its shaders (`-` for a stage without). The warm-up builds the patched shaders and the pipeline. |
 | `T` | pipeline key, tile reads, flags | That render pipeline with the fragment variant that reads the draw's own colour attachments from the tile, `<argument id>:<attachment>;` per read (`nvn_mtl.m warm_tileread`). Before 2026-10-26 only `pso_user.tsv` had these, so every new install built them in play (all 58 a 5-minute route built in the world with the list). |
 
+- **Pipeline key:** the runtime's 544-byte `pso_skey` (`nvn_pso_skey.h`). The Tears of the Kingdom and Breath of the
+  Wild lists keep it packed: `<vertex variant>:<fragment variant>:<the other 384 bytes in hex>`, each run of four or
+  more zero bytes written `z<count in hex>.`. This is about a quarter of the hex size. Contribution files and the
+  exported warm-up lists use plain hex; `shader_list.py` reads both.
 - **Shader key:** the SHA-256 of the shader's NVN control section and code, computed the same way as the runtime.
 - **Deps:** the translator's `deps` as compact, sorted JSON. They record the texture, image, attribute and fragment
   output types the shader depends on.
@@ -47,8 +52,17 @@ shader and deps can carry different names on different machines.
 `V` rows are sorted. Warm rows keep the order they were recorded in. Keys of every game version may be present; a
 build uses only those found in the selected game files.
 
-The build exports the warm rows to `build/pso_title.tsv` (rows marked `t`) and `build/pso_manifest.tsv` (rows marked
-`m`), which the runtime reads. Edit the list, never those files.
+Packaging writes the app's `build/pso_title.tsv` (rows marked `t`) and `build/pso_manifest.tsv` (the other rows marked
+`m`), which the runtime reads, with `shader_list.py resolve <seed> <list> <pso_manifest.tsv> <pso_title.tsv>`: only
+rows of the selected game version's shaders (its seed's `shader-keys.json`), each variant named as that seed serves its
+bind state (the seed's `.variants` index, picked as the runtime picks one), and no row the seed cannot build. Edit the
+list, never those files. Merging refuses a warm row naming a bind state that neither the list nor the merged file
+keeps (the game writes the `V` row behind every name in a pipeline row it contributes, `totk_shader_rt.m
+totk_rt_portable_variant`). Until 2026-10-30 the list had no `A` rows: the 4,561 Tears of the Kingdom rows naming bind
+states nothing recorded (none of them could be built: 45,673 of 73,336 exported rows failed the Mac pipeline archive's
+fill, mostly other versions' shaders and names from before vertex input and colour output types stopped making
+variants) were dropped once, and the bind states of the rest recovered from the list's history and the translation
+caches on the maintainer's Mac.
 
 ## Warm-up scope
 
@@ -84,8 +98,22 @@ iPad never asks during play: while it is connected to the Mac that built its app
 is `shader-list-contribution-botw.txt`). One file for the Mac and every device, since the list does not tell platforms
 apart; the folder opens in Finder with each reminder, which comes every 100 new rows in that file. "Remind me next time" waits for the next 100;
 "Don't remind me again" stops the reminders for good (the file is still kept). "Send" opens the [shader list contribution](https://github.com/ly05010419/MacNativeGames/issues/new?template=shader-list.yml)
-issue form; drag the file into it. Later reminders come at 200, 300 and so on, so sending the whole file each time
-is fine: rows the list already has are skipped. The game never uploads anything by itself.
+issue form; drag the file into it. The game never uploads anything by itself.
+
+The file holds only what still has to be sent (2026-11-01; before, every issue carried the whole file, and of one
+day's 158 issues 83% of the Tears of the Kingdom shader rows and 99% of the pipeline rows were already in the list):
+
+- **Rows the app serves leave it.** Before the Mac launcher counts the file for its reminder, and before an iPhone or
+  iPad starts the game, rows the app's own seed and warm lists already serve move out (`totk_contrib_prune`): a `V`
+  row whose bind state a seed variant serves (picked as the runtime picks one), an `R` / `B` / `T` row the warm lists
+  hold. They were written by an older app, or another player's file brought them into the list since. A shader of
+  another game version, and a pipeline the build names otherwise (0.6%), stay. This runs once per app build.
+- **Rows sent automatically leave it.** After "Submit automatically" (the launcher, the settings panel or
+  `shader_contrib_watch.py`) has made the issue, the rows it sent move out too, so the next issue carries only what came
+  after and the reminder counts from there.
+- Both go to a hidden `.shader-list-contribution.txt.done` beside the file. The game and `shader_contrib_watch.py` treat
+  its rows as ones they have, so neither writes them again. A file dragged into the issue form by hand is not known to
+  be sent; it leaves the file when the next build's list has it.
 
 ## Breath of the Wild
 

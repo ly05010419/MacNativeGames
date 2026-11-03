@@ -7,10 +7,12 @@
 #include "autoload.h"
 #include "runtime.h"
 #include "fs_host.h"
+#include "dlc.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +38,7 @@ enum { OPEN_READ = 1, OPEN_WRITE = 2, OPEN_APPEND = 4 };
 #define NDIRS 256
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
-typedef struct { int fd, mode, save; } File;   /* save: on a save-data mount (counts for runtime_fs_save_busy) */
+typedef struct { int fd, mode, save, dlc; uint64_t base, size; } File;   /* DLC files are bounded read-only image slices. */
 /* A RomFS directory is a snapshot of its children taken at open (rom != NULL; dir stays NULL). */
 struct RomEntry; typedef struct { DIR *dir; char path[1024]; int mode; struct RomEntry *rom; int64_t nrom, pos; } Dir;
 static Mount mounts[16];
@@ -86,7 +88,9 @@ static void ready(void) { pthread_once(&once, init); }
 /* ---------- mounts and paths ---------- */
 static unsigned mount_add(const char *name, int kind, const char *root) {
     if (!name || !*name || strlen(name) >= 32 || strchr(name, ':') || strchr(name, '/')) return R_INVALID_ARGUMENT;
+    char prefix[40]; snprintf(prefix, sizeof prefix, "%s:/", name);
     pthread_mutex_lock(&lock);
+    if (runtime_dlc_owns(prefix) || runtime_romfs_owns(prefix)) { pthread_mutex_unlock(&lock); return R_ALREADY_EXISTS; }
     int slot = -1;
     for (int i = 0; i < 16; i++) { if (mounts[i].kind && !strcmp(mounts[i].name, name)) { pthread_mutex_unlock(&lock); return R_ALREADY_EXISTS; } if (!mounts[i].kind && slot < 0) slot = i; }
     if (slot < 0) runtime_fail("fs mount table full");
@@ -171,6 +175,7 @@ static unsigned read_cache_list(int *count, CacheStorageInfo *out, uint64_t h, i
 }
 static void close_cache_list(uint64_t h) { free((void *)(uintptr_t)h); }
 static void unmount(const char *name) {
+    if (runtime_dlc_unmount(name)) return;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; pthread_mutex_unlock(&lock); return; }
     pthread_mutex_unlock(&lock);
@@ -203,15 +208,21 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
     if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
-    char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
-    struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+    int dlc = runtime_dlc_owns(path), fd, kind = M_FREE; uint64_t base = 0, size = 0;
+    char p[1100]; unsigned r;
+    if (dlc) {
+        r = runtime_dlc_open(&fd, &base, &size, path, mode); if (r) return r;
+    } else {
+        r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
+        struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
+        fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
+        if (fd < 0) return errno_result();
+    }
     int save_writer = kind == M_SAVE && (mode & OPEN_WRITE);
-    int fd = open(p, (mode & OPEN_WRITE ? (mode & OPEN_READ ? O_RDWR : O_WRONLY) : O_RDONLY) | O_NOFOLLOW);
-    if (fd < 0) return errno_result();
     runtime_autoload_save_file_opened(path);   /* TOTK_AUTOLOAD: a slot's caption.sav starts the presses, its progress.sav ends them */
     pthread_mutex_lock(&lock);
     for (int i = 0; i < NFILES; i++) if (files[i].fd <= 0) {
-        files[i] = (File){fd, mode, save_writer}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
+        files[i] = (File){fd, mode, save_writer, dlc, base, size}; *out = FILE_BASE + (uint64_t)i; pthread_mutex_unlock(&lock);
         if (save_writer) { atomic_fetch_add(&save_writers, 1); save_touched(); }
         return 0;
     }
@@ -219,11 +230,18 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
 }
 static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
     if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size);
-    int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
+    int fd, mode; File *file;
+    if (!out || offset < 0 || (!buffer && size) || !(file = file_of(h, &fd, &mode))) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
+    uint64_t base = 0;
+    if (file->dlc) {
+        if ((uint64_t)offset > file->size) return R_INVALID_ARGUMENT;
+        if (size > file->size - (uint64_t)offset) size = file->size - (uint64_t)offset;
+        base = file->base;
+    }
     dm_guest_write_prepare(buffer, (size_t)size);
     uint64_t done = 0;
-    while (done < size) { ssize_t n = pread(fd, (uint8_t *)buffer + done, (size_t)(size - done), offset + (off_t)done); if (n < 0) runtime_fail("host save read failure"); if (!n) break; done += (uint64_t)n; }
+    while (done < size) { ssize_t n = pread(fd, (uint8_t *)buffer + done, (size_t)(size - done), (off_t)(base + (uint64_t)offset + done)); if (n < 0) runtime_fail("host file read failure"); if (!n) break; done += (uint64_t)n; }
     *out = done; return 0;
 }
 static unsigned read_options(uint64_t *out, uint64_t h, int64_t off, void *buf, uint64_t size, const void *options) { (void)options; return read_file(out, h, off, buf, size); }
@@ -245,8 +263,9 @@ static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint6
 }
 static unsigned file_size(int64_t *out, uint64_t h) {
     if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h);
-    int fd; struct stat st; if (!out || !file_of(h, &fd, NULL) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
-    *out = st.st_size; return 0;
+    int fd; struct stat st; File *file;
+    if (!out || !(file = file_of(h, &fd, NULL)) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
+    *out = file->dlc ? (int64_t)file->size : st.st_size; return 0;
 }
 static unsigned set_file_size(uint64_t h, int64_t size) {
     int fd, mode; if (size < 0 || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
@@ -275,6 +294,7 @@ static unsigned rename_file(const char *from, const char *to) {
 }
 static unsigned entry_type(int *out, const char *path) {
     if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
+    if (runtime_dlc_owns(path)) return runtime_dlc_entry_type(out, path);
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
@@ -294,7 +314,8 @@ static void rom_add(void *ctx, const char *name, int is_dir, int64_t size) {
 }
 static unsigned open_rom_directory(uint64_t *out, const char *path, int mode) {
     if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
-    RomList l = {0}; unsigned r = runtime_romfs_list(path, mode, rom_add, &l);
+    RomList l = {0}; unsigned r = runtime_dlc_owns(path)
+        ? runtime_dlc_directory(path, mode, rom_add, &l) : runtime_romfs_list(path, mode, rom_add, &l);
     if (r) { fprintf(stderr, "[totk] RomFS directory %s: result %#x\n", path, r); free(l.list); return r; }
     fprintf(stderr, "[totk] RomFS directory %s: %lld entries\n", path, (long long)l.n);
     pthread_mutex_lock(&lock);
@@ -306,7 +327,7 @@ static unsigned open_rom_directory(uint64_t *out, const char *path, int mode) {
 }
 static unsigned open_directory(uint64_t *out, const char *path, int mode) {
     if (getenv("TOTK_FS_LOG")) fprintf(stderr, "[totk-fs] OpenDirectory %s mode %d\n", path ? path : "(null)", mode);
-    if (runtime_romfs_owns(path)) return open_rom_directory(out, path, mode);
+    if (runtime_romfs_owns(path) || runtime_dlc_owns(path)) return open_rom_directory(out, path, mode);
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; if (!out || mode < 1 || mode > 3) return R_INVALID_ARGUMENT;
     DIR *d = opendir(p); if (!d) return errno_result();
     pthread_mutex_lock(&lock);
@@ -346,6 +367,13 @@ static int handle_access_log_disabled(const void *p) { (void)p; return 0; }
 
 /* make probe-save: the "save in progress" state the window close waits on, through the fs entry points the game uses
    (a fresh profile in build/probe-save-profile; no game). */
+enum { DEVICE_SAVE_START = 0x6f00000, DEVICE_SAVE_MAX = 0x24000000 };
+static unsigned commit_option(const char *name, const void *option);
+static unsigned device_save_size(int64_t *size, int64_t *journal);
+static unsigned extend_device_save(int64_t size, int64_t journal);
+static unsigned restore_flag(bool *out, const char *mount);
+static unsigned rename_directory(const char *from, const char *to);
+static unsigned directory_entry_count(int64_t *out, uint64_t h);
 void runtime_save_probe(void) {
     const char *dir = "build/probe-save-profile";   /* a fresh profile each run (a failed run leaves it for a look) */
     remove_tree(dir); setenv("TOTK_PROFILE_DIR", dir, 1);
@@ -371,9 +399,29 @@ void runtime_save_probe(void) {
     CHECK(create_file("temp:/t.bin", 4) == 0 && !runtime_fs_save_busy(), "temporary storage does not count");
     CHECK(rename_file("save:/b.sav", "save:/c.sav") == 0 && runtime_fs_save_busy(), "renaming save data");
     CHECK(commit("save") == 0 && !runtime_fs_save_busy() && delete_file("save:/c.sav") == 0 && runtime_fs_save_busy() && commit("save") == 0, "delete and commit");
+    /* Animal Crossing 3.0.1's save calls (2026-10-29): commit with options, the device save size and its extension,
+       the restore flag, renaming a directory, counting a directory's entries. */
+    CHECK(create_file("save:/d.sav", 4) == 0 && commit_option("save", NULL) == 0 && !runtime_fs_save_busy(), "commit with options");
+    int64_t size = 0, journal = 0;
+    CHECK(device_save_size(&size, &journal) == 0 && size == DEVICE_SAVE_START && journal == DEVICE_SAVE_START, "a new device save has the NACP's size");
+    CHECK(extend_device_save(0x10000000, 0x10000000) == 0 && device_save_size(&size, &journal) == 0 && size == 0x10000000 && journal == 0x10000000, "extended and remembered");
+    CHECK(extend_device_save(DEVICE_SAVE_START, DEVICE_SAVE_START) && extend_device_save(DEVICE_SAVE_MAX + 1ll, DEVICE_SAVE_MAX) &&
+          device_save_size(&size, &journal) == 0 && size == 0x10000000, "no shrinking, no growth past the NACP's maximum");
+    bool restored = true; CHECK(restore_flag(&restored, "save") == 0 && !restored, "never restored from a backup");
+    CHECK(create_directory("save:/slot1") == 0 && create_file("save:/slot1/main.dat", 8) == 0 && create_directory("save:/slot2") == 0, "two slots");
+    CHECK(rename_directory("save:/slot1", "save:/slot2") == R_ALREADY_EXISTS, "a rename onto an existing directory is refused");
+    CHECK(rename_directory("save:/slot1", "save:/slot3") == 0 && runtime_fs_save_busy(), "a directory renamed in save data");
+    int type = -1; CHECK(entry_type(&type, "save:/slot3/main.dat") == 0 && type == 1 && entry_type(&type, "save:/slot1") == R_PATH_NOT_FOUND, "its files moved with it");
+    CHECK(rename_directory("save:/missing", "save:/x") == R_PATH_NOT_FOUND, "a missing directory");
+    uint64_t d = 0; int64_t count = -1, read = 0; DirectoryEntry entries[8];
+    CHECK(open_directory(&d, "save:/", 3) == 0 && directory_entry_count(&count, d) == 0, "count the save root");
+    CHECK(read_directory(&read, entries, d, 8) == 0 && read == count && count == 4, "counting does not move the listing (a.sav d.sav slot2 slot3)");
+    close_directory(d);
+    CHECK(open_directory(&d, "save:/", 1) == 0 && directory_entry_count(&count, d) == 0 && count == 2, "directories only");
+    close_directory(d); commit("save");
 #undef CHECK
     remove_tree(dir);
-    printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close\"}\n", checks);
+    printf("{\"status\":\"pass\",\"probe\":\"probe-save\",\"checks\":%u,\"scope\":\"save-in-progress state (runtime_fs_save_busy) through open / write / close / create / rename / delete / commit on a save mount; reads and temporary storage do not count; stale uncommitted changes do not hold a close; commit with options, device save size and extension, restore flag, directory rename and entry count\"}\n", checks);
 }
 
 static unsigned mount_device_save(const char *name) {
@@ -406,6 +454,61 @@ static unsigned commit_multi(const char *const *names, int count) {
     }
     return res;
 }
+/* Commit with options (Animal Crossing 3.0.1): the options only concern the system's journal; the same flush. */
+static unsigned commit_option(const char *name, const void *option) { (void)option; return commit(name); }
+/* The device save's size. Animal Crossing (2.0 and later) reads it and grows it with ExtendDeviceSaveData before it
+   saves more (its NACP: 0x6f00000 bytes and as much journal at the start, up to 0x24000000 each). Host files have no
+   fixed size, so the size the game asked for is only remembered (device-save-size.txt in the profile folder) and
+   reported back; it starts at the NACP's size, as a new save on a console does. */
+static void device_save_size_path(char *out, size_t cap) { ready(); snprintf(out, cap, "%s/device-save-size.txt", profile); }
+static void device_save_size_read(int64_t *size, int64_t *journal) {
+    char p[1100]; device_save_size_path(p, sizeof p); *size = *journal = DEVICE_SAVE_START;
+    FILE *f = fopen(p, "r"); long long a, b;
+    if (f) { if (fscanf(f, "%lld %lld", &a, &b) == 2 && a >= DEVICE_SAVE_START && b >= DEVICE_SAVE_START && a <= DEVICE_SAVE_MAX && b <= DEVICE_SAVE_MAX) { *size = a; *journal = b; } fclose(f); }
+}
+static unsigned device_save_size(int64_t *size, int64_t *journal) {
+    if (!size || !journal) return R_INVALID_ARGUMENT;
+    device_save_size_read(size, journal);
+    static int once; if (!once++) fprintf(stderr, "[totk] device save size %#llx, journal %#llx\n", (long long)*size, (long long)*journal);
+    return 0;
+}
+static unsigned extend_device_save(int64_t size, int64_t journal) {
+    int64_t now, now_journal; device_save_size_read(&now, &now_journal);
+    if (size < now || journal < now_journal || size > DEVICE_SAVE_MAX || journal > DEVICE_SAVE_MAX) {
+        fprintf(stderr, "[totk] device save extension to %#llx / %#llx refused (now %#llx / %#llx, at most %#x)\n",
+                (long long)size, (long long)journal, (long long)now, (long long)now_journal, DEVICE_SAVE_MAX);
+        return R_INVALID_ARGUMENT;
+    }
+    char p[1100], t[1200]; device_save_size_path(p, sizeof p); snprintf(t, sizeof t, "%s.tmp", p);
+    FILE *f = fopen(t, "w"); int ok = f && fprintf(f, "%lld %lld\n", (long long)size, (long long)journal) > 0;
+    if (f && fclose(f)) ok = 0;
+    if (!ok || rename(t, p)) { unlink(t); fprintf(stderr, "[totk] device save size could not be recorded in %s\n", p); return R_INVALID_ARGUMENT; }
+    fprintf(stderr, "[totk] device save extended to %#llx, journal %#llx\n", (long long)size, (long long)journal);
+    return 0;
+}
+/* Saves restored from a backup on a console are flagged; never here. */
+static unsigned restore_flag(bool *out, const char *mount) { (void)mount; if (!out) return R_INVALID_ARGUMENT; *out = false; return 0; }
+static unsigned rename_directory(const char *from, const char *to) {
+    char a[1100], b[1100]; unsigned r = save_change_path(from, a, sizeof a); if (!r) r = host_path(to, b, sizeof b); if (r) return r;
+    struct stat st; if (stat(a, &st) || !S_ISDIR(st.st_mode)) return R_PATH_NOT_FOUND;
+    if (!stat(b, &st)) return R_ALREADY_EXISTS;
+    return rename(a, b) ? errno_result() : 0;
+}
+/* The entries a directory handle lists (its mode: directories, files or both), without moving its read position. */
+static unsigned directory_entry_count(int64_t *out, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) return R_INVALID_ARGUMENT;
+    pthread_mutex_lock(&lock); Dir d = dirs[h - DIR_BASE]; pthread_mutex_unlock(&lock);
+    if (d.rom) { *out = d.nrom; return 0; }
+    if (!d.dir) return R_INVALID_ARGUMENT;
+    DIR *again = opendir(d.path); if (!again) return errno_result();
+    int64_t n = 0; struct dirent *e;
+    while ((e = readdir(again))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || strlen(e->d_name) > 768) continue;
+        char child[2048]; snprintf(child, sizeof child, "%s/%s", d.path, e->d_name); struct stat st; if (stat(child, &st)) continue;
+        if (d.mode & (S_ISDIR(st.st_mode) ? 1 : 2)) n++;
+    }
+    closedir(again); *out = n; return 0;
+}
 static unsigned mount_rom(const char *name, void *cache, size_t cache_size) {
     (void)name; (void)cache; (void)cache_size;
     return 0;
@@ -415,12 +518,19 @@ static unsigned query_mount_rom(size_t *out) {
     return 0;
 }
 static unsigned mount_aoc(const char *name, int index, void *cache, size_t cache_size) {
-    (void)name; (void)index; (void)cache; (void)cache_size;
-    return 0;
+    (void)cache; (void)cache_size;
+    if (!name || strlen(name) >= 32) return R_INVALID_ARGUMENT;
+    char prefix[40]; snprintf(prefix, sizeof prefix, "%s:/", name);
+    if (runtime_romfs_owns(prefix)) return R_ALREADY_EXISTS;
+    pthread_mutex_lock(&lock); int exists = 0;
+    for (unsigned i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(name, mounts[i].name)) exists = 1;
+    unsigned result = exists ? R_ALREADY_EXISTS : runtime_dlc_mount(name, index);
+    pthread_mutex_unlock(&lock); return result;
 }
 static unsigned query_mount_aoc(size_t *out, int index) {
-    (void)index;
-    if (out) *out = 0;
+    if (!out) return R_INVALID_ARGUMENT;
+    if (!runtime_dlc_has(index)) return R_TARGET_NOT_FOUND;
+    *out = 0;
     return 0;
 }
 static unsigned mount_system_data(const char *name, uint64_t data_id, void *cache, size_t cache_size) {
@@ -443,6 +553,12 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs19MountDeviceSaveDataEPKcNS_3ncm13ApplicationIdE", mount_device_save_app},
         {"_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", clean_directory},
         {"_ZN2nn2fs6CommitEPKPKci", commit_multi},
+        {"_ZN2nn2fs6CommitEPKcRKNS0_12CommitOptionE", commit_option},
+        {"_ZN2nn2fs21GetDeviceSaveDataSizeEPlS1_", device_save_size},
+        {"_ZN2nn2fs20ExtendDeviceSaveDataEll", extend_device_save},
+        {"_ZN2nn2fs22GetSaveDataRestoreFlagEPbPKc", restore_flag},
+        {"_ZN2nn2fs15RenameDirectoryEPKcS2_", rename_directory},
+        {"_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", directory_entry_count},
         {"_ZN2nn2fs8MountRomEPKcPvm", mount_rom},
         {"_ZN2nn2fs22QueryMountRomCacheSizeEPm", query_mount_rom},
         {"_ZN2nn2fs17MountAddOnContentEPKciPvm", mount_aoc},

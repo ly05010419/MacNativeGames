@@ -5,6 +5,12 @@
 // Objects are stored in place in the NVN object memory allocated by the game, with size not exceeding the reserved size in nvn.h (FITS static assertion).
 // State objects (Blend / Color / ... 4–0x18 bytes) are small structs the game copies by value; their layout is packed in place with bit-fields.
 #pragma once
+/* 1 in a Breath of the Wild build: defaults measured on Tears of the Kingdom only stay off there (#750). */
+#ifdef GAME_BOTW
+#define TOTK_BOTW_BUILD 1
+#else
+#define TOTK_BOTW_BUILD 0
+#endif
 #include <stdint.h>
 #include <string.h>
 #include "nvn.h"
@@ -151,7 +157,7 @@ static inline int rt_dup_of(const p_set_rt *r, int i) {
 /* "ashot <path>" requests (end of nvn_mtl.m), taken at the game's present call with the screenshot queue lock held */
 void botw_ashot_poll(const void *t, long cur);
 #define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
-/* Uncapped pacing ignores the game's present interval 2 by default (user 2026-10-19: "放开到120帧"; 2026-10-22: 120 by default, up to 240 with TOTK_UNCAPPED_HZ); the
+/* Uncapped pacing ignores the game's present interval 2 by default (user 2026-10-19: "放开到120帧"; 2026-10-22: 120 by default, 2026-10-28: 144, up to 240 with TOTK_UNCAPPED_HZ); the
    real-time frame step keeps the game's speed (botw.md). TOTK_UNCAPPED_INTERVAL=0 keeps the interval where a clock
    divides it (TOTK_UNCAPPED_HZ, or the display rate on a phone). */
 #define UNCAPPED_INTERVAL_FROM_ENV(e) ((e) ? atoi(e) != 0 : 1)
@@ -218,14 +224,23 @@ int botw_uw_scene_picture(void);   /* end of nvn_mtl.m */
    into a shared stage buffer at its end (botw_wb_stage_encode); the invalidate waits only for the fences of the listed
    renderings and swizzles a staged texture from its stage. fence: the submission that rendered it last; stage_fence:
    the submission whose end copied it into stage. */
-#define BOTW_WB_ENT_FIELDS uint64_t fence; void *stage; uint64_t stage_fence;
+#define BOTW_WB_ENT_FIELDS uint64_t fence; void *stage; uint64_t stage_fence; uint64_t late_fence;
 void botw_wb_sub_note(uint64_t serial);
-#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k);
-#define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); }
+#define BOTW_WB_NOTED(e, k) (e)->fence = g_fence + 1; botw_wb_sub_note(k); (e)->late_fence = botw_late_note(&(e)->t, (e)->obj, (e)->stamp, (e)->fence); botw_render_note(&(e)->t, (e)->obj, (e)->stamp);
+#define BOTW_WB_STAGE_FREE(e) if ((e)->stage) { defer_obj_release((__bridge id)(e)->stage); CFRelease((e)->stage); } if (!((e)->late_fence && (e)->late_fence == (e)->fence)) botw_render_gone((e)->t.mem, (e)->obj);
 void botw_wb_stage_encode(void);
 #define BOTW_WB_STAGE() botw_wb_stage_encode();
-#define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; for (int i_ = 0; i_ < (nl); i_++) { if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
-        if ((list)[i_]->stage_fence > need_) need_ = (list)[i_]->stage_fence; } if (need_) mtl_wait(need_, UINT64_MAX); while (atomic_load(&g_up_pending)) usleep(1000); }
+/* Only a read-back blit (an entry not staged after its last rendering, wb_tex_back) needs the uploads finished: it runs
+   on the other queue. A staged entry is swizzled from its stage once its fence has passed, so a list of staged entries
+   does not wait for them: the uploads the replay of the next frame keeps committing sit behind this frame's GPU work, and
+   the 1 ms polls held the game's main thread there for about a quarter of its time (1.6.0, Hebra, 2026-10-27). */
+#define WB_STAGED(e) ((e)->stage && (e)->stage_fence >= (e)->fence)
+#define BOTW_WB_IS_STAGED(e) WB_STAGED(e)   /* TOTK_TIMELINE wb_out: a list with a read-back blit */
+#define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; int blit_ = 0; for (int i_ = 0; i_ < (nl); i_++) { if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
+        if ((list)[i_]->stage_fence > need_) need_ = (list)[i_]->stage_fence; blit_ |= !WB_STAGED((list)[i_]); } if (need_) mtl_wait(need_, UINT64_MAX); \
+        if (totk_tl_on()) totk_tl(TL_WB_STEP, 1, need_); \
+        if (blit_ || !botw_wb_staged_skip_on()) { while (atomic_load(&g_up_pending)) usleep(1000); if (totk_tl_on()) totk_tl(TL_WB_STEP, 2, 0); } }
+int botw_wb_staged_skip_on(void);   /* TOTK_WB_STAGED_NOWAIT=0 waits for the uploads also for staged lists (the old behaviour) */
 int botw_wb_from_stage(void *e);   /* 1 written back from the stage, 0 failed, WB_POOL_GONE, -1 not staged */
 #define BOTW_WB_FROM_STAGE(e, ok, layers) { int s_ = botw_wb_from_stage(e); if (s_ != -1) { (ok) = s_; (layers) = 0; } }
 /* BOTW (nvn_mtl.m, after a re-upload): the range that tracked the texture can be gone by now (a neighbour pool destroyed,
@@ -236,7 +251,35 @@ int botw_wb_from_stage(void *e);   /* 1 written back from the stage, 0 failed, W
 void botw_tiny_note(const void *t, const void *o);
 #define BOTW_TINY_NOTE(t, o) botw_tiny_note((t), (__bridge const void *)(o));
 void botw_tiny_commit(void);
-#define BOTW_TINY_COMMIT() botw_tiny_commit();
+/* Grass masks (end of nvn_mtl.m): a target the flush has waited for in many frames is written into its memory when its
+   submission completes, and the flush no longer waits for it. late_fence: the submission whose end copies it out. */
+uint64_t botw_late_note(const tex_t *t, void *obj, uint64_t stamp, uint64_t fence);
+void botw_late_commit(void);
+int botw_late_filter(void **list, int nl);
+void botw_late_drop(uintptr_t lo, uintptr_t hi);
+void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the memory (botw_gpu_copy_supersedes) */
+#define BOTW_TINY_COMMIT() botw_tiny_commit(); botw_late_commit();
+#define BOTW_LATE_FILTER(list, nl) (nl) = botw_late_filter((void **)(list), (nl));
+#define BOTW_LATE_DROP(lo, hi) botw_late_drop((lo), (hi));
+/* Sinking legs (end of nvn_mtl.m): a write-back puts a GPU rendering into memory that other texture objects sample from
+   copies uploaded earlier; their next use uploads the memory again, as their descriptors would read it on hardware. */
+void botw_wb_landed(const void *mem);
+uint64_t botw_wb_gen(void);
+int botw_wb_newer(const void *mem, uint64_t gen);
+#define BOTW_PKG_FIELDS uint64_t wb_gen;
+#define BOTW_WB_LANDED(t) botw_wb_landed((t)->mem);
+#define BOTW_PKG_WB_SEEN(pk) (pk)->wb_gen = botw_wb_gen();
+#define BOTW_PKG_WB_TAKE() uint64_t wbg_ = botw_wb_gen();
+#define BOTW_PKG_WB_SET(pk) (pk)->wb_gen = wbg_;
+#define BOTW_PKG_WB_STALE(pk, t, clean) if (clean && botw_wb_newer((t)->mem, (pk)->wb_gen)) clean = 0;
+/* ... and while a GPU rendering of the same memory and layout waits for its write-back (the CPU has not written there
+   since), a sampled copy reads that rendering, as its descriptor would on hardware. */
+void botw_render_note(const tex_t *t, void *obj, uint64_t stamp);
+void *botw_render_alias(const tex_t *t, const void *own);   /* the pending rendering's MTLTexture (not retained: its record holds it) or NULL */
+void botw_render_gone(const void *mem, const void *obj);   /* its write-back record was freed */
+extern _Thread_local int botw_bra_attach;   /* tex_mtl for a render target: its own copy, never the alias */
+#define BOTW_ATTACH_TEX_U(t) ((__bridge id<MTLTexture>)({ botw_bra_attach = 1; void *r_ = tex_mtl_p(t); botw_bra_attach = 0; r_; }))
+#define BOTW_PKG_RENDER_ALIAS(pk, t) if (pk && pk->tex && !pk->owned && !botw_bra_attach) { void *a_ = botw_render_alias(t, (__bridge const void *)pk->tex); if (a_) return a_; }
 #else
 #define MFX_CANVAS_FMT_OK(f) pf_is_float(f)
 #define MFX_UI_DRAW(pr) mfx_ui_vs(pr->sh[0]->key)
@@ -267,11 +310,14 @@ void botw_tiny_commit(void);
 int totk_wb_fence_on(void);
 /* TOTK_WB_FENCE=0 waits for all submitted GPU work, as before. Otherwise a write-back waits only for the submissions that
    rendered the listed textures (the game waits for its own sync before invalidating), then for uploads to finish. */
+#define BOTW_WB_IS_STAGED(e) 0
 #define WB_WAIT_GPU(list, nl) { uint64_t need_ = 0; for (int i_ = 0; i_ < (nl); i_++) if ((list)[i_]->fence > need_) need_ = (list)[i_]->fence; \
     if (totk_wb_fence_on()) { if (need_) mtl_wait(need_, UINT64_MAX); while (atomic_load(&g_up_pending)) usleep(1000); } else mtl_finish_gpu(); }
 #define BOTW_WB_FROM_STAGE(e, ok, layers)
 #define BOTW_TINY_NOTE(t, o)
 #define BOTW_TINY_COMMIT()
+#define BOTW_LATE_FILTER(list, nl)
+#define BOTW_LATE_DROP(lo, hi)
 #define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
 #define BOTW_RT_DUP_CLEARS()
 #define BOTW_RT_DUP_SKIP(i)
@@ -279,6 +325,14 @@ int totk_wb_fence_on(void);
 #define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
 #define BOTW_ASHOT_POLL(t, cur)
 #define BOTW_REUP_TRACKED(pk, t)
+#define BOTW_PKG_FIELDS
+#define BOTW_WB_LANDED(t)
+#define BOTW_PKG_WB_SEEN(pk)
+#define BOTW_PKG_WB_TAKE()
+#define BOTW_PKG_WB_SET(pk)
+#define BOTW_PKG_WB_STALE(pk, t, clean)
+#define BOTW_PKG_RENDER_ALIAS(pk, t)
+#define BOTW_ATTACH_TEX_U(t) tex_mtl(t)
 #endif
 /* Key 5 (MetalFX temporal anti-aliasing, totk_taa.m): the compose draw that samples the linear HDR scene at fragment
    texture slot 0 before tone mapping. TOTK: 0ac9a549 (tone mapping and bloom). Breath of the Wild 1.9.0: f7ee6fe1 (two

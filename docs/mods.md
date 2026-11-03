@@ -21,8 +21,8 @@ The launcher points `TOTK_ROMFS_MODS` at
 ~/Library/Application Support/MacNativeGames/TOTK/mods/<version>
 ```
 
-where `<version>` is the game version the app was built from: `v0` (1.0.0), `v112` (1.1.2), `v121`
-(1.2.1) or `v143` (1.4.3).
+where `<version>` is the game version the app was built from: `v0` (1.0.0), `v121` (1.2.1) or
+`v143` (1.4.3).
 
 When no controller is connected at start and `mods/<version>-keyboard/manifest.tsv` exists, the launcher points
 `TOTK_ROMFS_MODS` at that folder instead, so the prompts show the Mac keyboard's keys while you play on the keyboard:
@@ -277,15 +277,14 @@ from them and follow their terms). Played on the Mac with 1.4.3:
    `ゲームグラフィックス` and `草`), and 1.4.3's `ResourceSizeTable.Product.143` with every replaced texture's entry grown
    by as much as the file grew. Then write the manifest with `make_mod_manifest.py` as usual. Run both again whenever
    the folder changes.
-3. Start the game in 8 GB mode, with a larger GPU memory budget:
+3. Start the game in 8 GB mode:
 
    ```sh
-   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does) and lets one
-   memory pool be a zero-copy GPU buffer of up to 4 GiB (the pack's `TextureHeap` pool is about 3.8 GiB; the limit is
-   1 GiB otherwise). The budget's default (30 % of the Mac's memory) is too small for the pack outdoors.
+   `TOTK_DRAM_8GB` reports a 6.8 GiB application pool to the game (as the emulators' 8 GB mode does); the pack's
+   `TextureHeap` pool, about 3.8 GiB, becomes one zero-copy GPU buffer.
 
 Checked on a 24 GB M-series Mac: about 8.7 GB resident in play and the GPU near full load (the GPU is the
 bottleneck). A Mac with less memory than that is not expected to run it.
@@ -316,6 +315,25 @@ Check `grep "mods/botw160 checked" ~/Library/Logs/MacNativeGames/botw.log | tail
 - The game's language follows the app's preferred language, which also picks the language folder a mod must use (`USen` for
   `en-US`). To give only this game another language:
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`.
+
+Button icons that follow your controls (1.9.0, an Xbox or PlayStation controller): the builder's Controls tab
+("Update the game's button icons"), or by hand after you change the layout, makes a mod in which each prompt shows the
+button that drives that input, read from `controls.txt` (the A prompt shows B while the right face button does A):
+
+```bash
+python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw190" \
+  --app "/path/to/Breath of the Wild.app"
+```
+
+It draws nothing: the icon font already holds every button, so each input's code point is pointed at the icon of its
+button (LB RB LT RT show as L R ZL ZR, Menu and View as + and -). The action guide beside an object ("A Open") becomes
+the Xbox diamond, A at the bottom, B right, X left, Y top, with the button that does the action lit in its place (an
+action of A, B, X or Y moved to a button outside the diamond, such as LB, keeps the Switch's diamond there; its prompt in
+the text still names LB).
+PlayStation controllers get the Xbox letters, and a Nintendo controller (`controller-type.txt` saying `switch`) keeps the
+game's own icons, which already name its buttons. The mod replaces the seven `Font/Font_*.sbfarc` and
+`Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
+needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
 
 ### Notes
 
@@ -415,7 +433,7 @@ These come from how a pack was built, not from its content, and none of them pri
 ~/Library/Application Support/MacNativeGames/TOTK/mods/<version>
 ```
 
-`<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v112`（1.1.2）、`v121`（1.2.1）、
+`<version>` 是构建这个 App 时使用的游戏版本：`v0`（1.0.0）、`v121`（1.2.1）、
 `v143`（1.4.3）。
 
 启动时没有连接手柄、且 `mods/<version>-keyboard/manifest.tsv` 存在时，启动器改把 `TOTK_ROMFS_MODS` 指向那个目录，
@@ -635,14 +653,14 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
    它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（HDPacks 的包：`TextureHeap`、`ゲームグラフィックス`、`草`），
    并写出 1.4.3 的 `ResourceSizeTable.Product.143`，每个被替换贴图的条目按文件变大的量加大。然后照常用
    `make_mod_manifest.py` 生成清单。文件夹有变化时两步都要重跑。
-3. 用 8 GB 模式和更大的显存预算启动：
+3. 用 8 GB 模式启动：
 
    ```sh
-   open --env TOTK_DRAM_8GB=1 --env TOTK_GPU_BUDGET_MB=11264 "Tears of the Kingdom.app"
+   open --env TOTK_DRAM_8GB=1 "Tears of the Kingdom.app"
    ```
 
-   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样），并允许单个内存池做成最大 4 GiB 的零拷贝
-   GPU 缓冲（材质包的 `TextureHeap` 池约 3.8 GiB，平时上限 1 GiB）。默认预算（本机内存的 30%）在野外不够用。
+   `TOTK_DRAM_8GB` 向游戏报告 6.8 GiB 的应用内存池（和模拟器的 8 GB 模式一样）；材质包约 3.8 GiB 的 `TextureHeap`
+   池做成一个零拷贝 GPU 缓冲。
 
 在 24 GB 的 Apple 芯片 Mac 上验证：游玩时常驻内存约 8.7 GB，GPU 接近满载（瓶颈在 GPU）。内存更小的 Mac 预计跑不动。
 
@@ -669,6 +687,21 @@ python3 games/totk/scripts/make_mod_manifest.py "$MODDIR" --app "/path/to/Breath
   `Pack/Bootup_<语言>.pack` 变大的翻译 mod）。
 - 游戏语言跟随 App 的首选语言，也由它决定 mod 要放在哪个语言目录（`en-US` 对应 `USen`）。只给这个游戏换语言：
   `defaults write org.macnativegames.botw AppleLanguages -array en-US`。
+
+跟随你的按键设置的按钮图标（1.9.0，Xbox 或 PlayStation 手柄）：在 builder 的 Controls 页点“Update the game's button
+icons”，或者改完布局后手动运行，生成一个 mod，让每个提示显示实际执行该输入的按钮（读取 `controls.txt`；右侧面键执行 A
+时，A 的提示显示 B）：
+
+```bash
+python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application Support/MacNativeGames/BotW/mods/botw190" \
+  --app "/path/to/Breath of the Wild.app"
+```
+
+它不画任何东西：图标字体里已经有每个按钮，所以只是把每个输入的码位指向对应按钮的图标（LB RB LT RT 显示为 L R ZL ZR，Menu
+和 View 显示为 + 和 -）。物体旁的操作提示（“A 打开”）变成 Xbox 的菱形：A 在下、B 在右、X 在左、Y 在上，执行该操作的按钮在
+它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。PlayStation 手柄显示 Xbox 字母；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
+就对应手柄上的按钮。mod 替换七个 `Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
+布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
 
 ### 注意
 

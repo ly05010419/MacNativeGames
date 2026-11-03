@@ -21,13 +21,12 @@
 #define ASPECT_STUB 32        /* bytes per plain stub */
 #define ASPECT_VSTUB 304      /* bytes per Vert+ stub (74 words, padded) */
 
-enum { ASPECT_BAD = -1, ASPECT_DISPLAY = -2 };
+enum { ASPECT_BAD = -1 };
 
-/* TOTK_ASPECT as a ratio: 0 when unset or "0", ASPECT_DISPLAY for "display" (the window's shape), ASPECT_BAD when it is
-   not <w>:<h>, <w>x<h> or a ratio between 0.5 and 8. */
+/* TOTK_ASPECT as a ratio: 0 when unset or "0", ASPECT_BAD when it is not <w>:<h>, <w>x<h> or a ratio between 0.5 and 8
+   ("display", the window's shape, was dropped with fitting the window, user 2026-10-25). */
 static inline double aspect_parse(const char *e) {
     if (!e || !*e || !strcmp(e, "0")) return 0;
-    if (!strcmp(e, "display")) return ASPECT_DISPLAY;
     double a = 0, w, h; char rest;
     if ((sscanf(e, "%lf:%lf%c", &w, &h, &rest) == 2 || sscanf(e, "%lfx%lf%c", &w, &h, &rest) == 2) && w > 0 && h > 0) a = w / h;
     else if (sscanf(e, "%lf%c", &w, &rest) == 1) a = w;
@@ -43,17 +42,9 @@ static inline float aspect_effective(double a) {
     return (float)a;
 }
 
-/* Key 4's steps: 16:9 -> fit to the window / display -> wide -> 16:9. wide is 21:9, or TOTK_ASPECT's ratio when set. */
+/* The steps: the game's 16:9, the screen's shape (the phone), wide (the Mac settings panel's ratio, TOTK_ASPECT's, or 21:9). */
 #define ASPECT_WIDE (21.0 / 9.0)
 enum { ASPECT_STEP_GAME, ASPECT_STEP_FIT, ASPECT_STEP_WIDE };
-
-/* The step after `step` for a window of shape view: fitting is skipped when it would show the same as 16:9 or wide
-   (the window within 1% of either, or no window shape yet). */
-static inline int aspect_next_step(int step, double view, double wide) {
-    if (step == ASPECT_STEP_GAME)
-        return !(view > 0) || aspect_near(view, ASPECT_GAME) || aspect_near(view, wide) ? ASPECT_STEP_WIDE : ASPECT_STEP_FIT;
-    return step == ASPECT_STEP_FIT ? ASPECT_STEP_WIDE : ASPECT_STEP_GAME;
-}
 
 /* The ratio a step wants (0 = the game's own); aspect_effective turns it into the one put in. */
 static inline double aspect_step_ratio(int step, double view, double wide) {

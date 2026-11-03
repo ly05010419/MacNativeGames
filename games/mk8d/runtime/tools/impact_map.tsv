@@ -1,0 +1,120 @@
+# kind: rules  The coarse change → usage map of scripts/regress.py impact (dm/tools/usage.py): which rows of a game's usage manifest (dm/games/<id>/usage.tsv) a change can reach.
+# Columns: file glob[:function regex] <TAB> usage pattern <TAB> why
+#   A rule with a function regex applies to the changed functions it matches (the function around each changed hunk); the file's rules without one apply to the other changed
+#   lines of that file. A rule whose why starts with "fallback" applies only when no other rule of the range matched (a translator binary that changed with its sources).
+#   Usage pattern: <kind>:<name glob> (kind * = any; *:* = every game with a manifest), "-" = no game (tests, docs), "profile" = the game whose profile folder it is.
+#   Host code is also followed through its callers to the NVN entry points and HLE functions that reach it (usage.py host_graph); these rules add what a call graph cannot see
+#   A pattern that every game of an API matches (*:*, api:*, shader:stage:*, svc:*, hle:*, present:*) is broad: the report lists the games it reaches apart from those a
+#   narrower row reaches.
+#   (the replay runs on its own threads, the prepare step at the first submission, the chain offline). test_usage.py checks that every glob matches a file of the repository.
+docs/*	-	documentation
+*.md	-	documentation
+dm/tools/tests/*	-	tool tests
+dm/gfx/tests/*	-	graphics tests
+dm/host/tests/*	-	host tests
+dm/gfx/tex/tests/*	-	CPU texture tests
+dm/sanitizers/*	-	test sanitizer configuration
+dm/ios/tests/*	-	iOS tests
+.github/*	-	CI
+dm/games/*/README.md	-	a game's note
+dm/games/*/smoke.tsv	-	a harness route
+dm/games/*/bench.tsv	-	a benchmark route
+dm/games/*/usage.tsv	-	a usage manifest
+dm/games/*	profile	one game's profile
+scripts/build_ipa_from_nsp.py	*:*	packing: every game's build
+scripts/bench.py	-	the benchmark
+scripts/push_romfs.sh	*:*	RomFS transfer: every game's iOS build
+scripts/regress.py	-	the regression harness
+dm/tools/usage.py	-	the usage manifests
+dm/tools/impact_map.tsv	-	this map
+dm/tools/lint_python_baseline.tsv	-	the lint baseline
+dm/gfx/nvn/*	api:nvn	NVN on Metal: every NVN game
+dm/gfx/nvn/dmsh_chain.h	shader:stage:*	the chain version: every game's NVN shader libraries
+dm/gfx/nvn/nvn_mtl.m:atomic|imga	shader:image_atomic*	image atomics on Metal
+dm/gfx/nvn/nvn_mtl.m:warm_|prepare|prebuild|front_progress	present:pipeline_prepare	the prepare step and the prebuild before the first frame
+dm/gfx/nvn/nvn_mtl.m:pso_arch|arch_|pso_bundle	present:pipeline_archive	the pipeline archive
+dm/gfx/nvn/nvn_mtl.m:^tf_|xfb	shader:transform_feedback	transform feedback
+dm/gfx/nvn/nvn_mtl.m:^geo_|^gs_	shader:stage:gs	geometry shaders
+dm/gfx/nvn/nvn_mtl.m:pull_|hybrid	shader:pulling_vertex_inputs	pulling vertex inputs and the hybrid pipelines
+dm/gfx/nvn/nvn_mtl.m:fb_snap|fetch	shader:readable_tile	readable tiles and feedback snapshots
+dm/gfx/nvn/nvn_mtl.m:tbuf	shader:texture_buffer	texture buffers
+dm/gfx/nvn/nvn_mtl.m:mdi_|mdx_	nvn:nvnCommandBufferMultiDraw*	indirect multi-draws
+dm/gfx/nvn/nvn_mtl.m:present|snap|metalfx|upscale	present:*	the present path
+dm/gfx/tex/*	api:*	texture layouts: every game
+dm/gfx/vk/*	api:vulkan	Vulkan on Metal
+dm/gfx/gl/*	api:gl	OpenGL on Metal
+dm/gfx/tools/dmsh_atomic.py	shader:image_atomic*	image atomics in the MSL
+dm/gfx/tools/dmsh_build.py:vs_tf|tf_layout	shader:transform_feedback	transform feedback capture
+dm/gfx/tools/dmsh_build.py:gs_slice|geometry_finish|vs_layer|_ep_drop	shader:stage:gs	geometry shaders
+dm/gfx/tools/dmsh_build.py:vs_layer|vs_layer_entry	shader:layer_output	layer output
+dm/gfx/tools/dmsh_build.py:fs_uint	shader:integer_outputs	integer fragment outputs
+dm/gfx/tools/dmsh_build.py:int_inputs|vin_finish	shader:integer_vertex_inputs	integer vertex inputs
+dm/gfx/tools/dmsh_build.py:pull_finish	shader:pulling_vertex_inputs	pulling vertex inputs
+dm/gfx/tools/dmsh_build.py:fetch_finish|bf_	shader:readable_tile	readable tiles
+dm/gfx/tools/dmsh_build.py:vs_pad	shader:vs_pad	padded vertex outputs
+dm/gfx/tools/dmsh_build.py:drv_reads|unfillable|DRV_FILL	shader:driver_read_*	driver constant segments
+dm/gfx/tools/dmsh_build.py:spv_single_lane|SG_	shader:simd	subgroup operations
+dm/gfx/tools/dmsh_build.py:vertex_ab	shader:stage:vs	VertexA / VertexB programs
+dm/gfx/tools/dmsh_build.py:reflect|decode_	shader:stage:*	the reflection every shader's bindings come from
+dm/gfx/tools/dmsh_build.py	shader:stage:*	the shader build: every NVN game
+dm/gfx/tools/dmsh_vin.py	shader:integer_vertex_inputs	integer vertex inputs
+dm/gfx/tools/dmsh_pull.*	shader:pulling_vertex_inputs	pulling vertex inputs
+dm/gfx/tools/dmsh_fetch.py	shader:readable_tile	readable tiles
+dm/gfx/tools/dmsh_geometry.py	shader:stage:gs	geometry shaders
+dm/gfx/tools/dmsh_facts.py	shader:stage:*	the translator's answer table
+dm/gfx/tools/dmsh_chain.*	shader:stage:*	the chain version: every NVN game's libraries are rebuilt
+dm/gfx/tools/dmsh_mtlcache.py	shader:stage:*	the Metal compile cache
+dm/gfx/tools/own_compilers.py	shader:stage:*	the tested-compiler build guard
+dm/gfx/tools/dmsh_dryrun.py	shader:stage:*	the standalone shader conversion check
+dm/gfx/tools/spirv_cross_bin/*	api:*	the pinned SPIRV-Cross used by every graphics API
+dm/gfx/tools/dmsh_xlate/*	shader:stage:*	the translator's driver
+dm/gfx/tools/dmsh_xlate_bin/*	shader:stage:*	fallback: the translator binary, when its sources are not in the range
+dm/third_party/ryujinx/*/InstEmitSurface.cs	shader:image_atomic*	surface instructions: image loads, stores and atomics
+dm/third_party/ryujinx/*/InstEmitSurface.cs	shader:texture_write	surface instructions: image loads, stores and atomics
+dm/third_party/ryujinx/*/InstEmitSurface.cs	shader:binding:img	surface instructions: image loads, stores and atomics
+dm/third_party/ryujinx/*/BindlessElimination.cs	shader:note:texture handle*	bindless texture handles
+dm/third_party/ryujinx/*/InstEmitTexture*.cs	shader:binding:tex	texture instructions
+dm/third_party/ryujinx/*/InstEmitMemory.cs	shader:buffer_atomic	global and shared memory, buffer atomics
+dm/third_party/ryujinx/*	shader:stage:*	fallback: any other translator change
+dm/gfx/tools/vk_shaders.py	api:vulkan	Vulkan shaders
+dm/gfx/tools/gl_shaders.py	api:gl	OpenGL shaders
+dm/gfx/tools/pso_offline.py	present:pipeline_prebuild	the offline pipeline archive of the Mac app and the iPhone
+dm/gfx/tools/c1_guard.py	shader:stage:*	the c1 guard table
+dm/gfx/tools/cb_extent.py	shader:stage:*	the uniform read extents
+dm/gfx/tools/shader_split.py	shader:stage:*	the shader tables (after a split)
+dm/gfx/tools/unityfs.py	shader:stage:*	the Unity serialized shader reader (after a split)
+dm/tools/patch_nso.py	*:*	the rewriter: every game's code
+dm/tools/nso_*.py	*:*	the rewriter: every game's code
+dm/tools/sdk_patches.py	*:*	the SDK modules' patches (by build ID)
+dm/tools/romfs_image.py	*:*	RomFS image packing: every game's files
+dm/tools/romfs.py	*:*	RomFS image input: every game's build tools
+dm/tools/nro_collect.py	*:*	NRO discovery from game resources during packing
+dm/tools/nx_extract/*	*:*	NSP extraction: every game's resource inputs
+dm/mac/launcher.c	*:*	Mac app resource discovery and host launch
+dm/mac/pack_app.py	*:*	Mac app packaging: every game's bundled resources
+dm/gfx/tools/cpk.py	shader:stage:*	CRI archive input to shader scanning
+dm/gfx/tools/vbf.py	shader:stage:*	Virtuos archive input to shader scanning
+dm/gfx/tools/dmsh_mesh.py	shader:stage:gs	passthrough geometry composed into a mesh shader
+dm/host/hle_fpslock.c	present:*	build-gated engine frame limits and dynamic resolution
+dm/gfx/tools/mvgl.py	api:gl	MVGL archive input to OpenGL shader scanning
+dm/gfx/tools/smash_arc.py	*:*	Smash archive input to shader and NRO scanning
+dm/gfx/tools/uepak.py	shader:stage:*	Unreal archive input to shader scanning
+dm/host/romfs_image.h	hle:*fs*	RomFS image index validation shared by mounts and iOS startup
+dm/host/romfs_identity.h	*:*	RomFS identity checks at iOS startup for every game's separate deployment
+dm/host/hle_fs.c	hle:*fs*	filesystem mounts, paths and file operations
+dm/host/Makefile	*:*	the shared host build
+dm/host/hle_thread.c	svc:*	threads and synchronization
+dm/host/hle_svc.c	svc:*	SVCs
+dm/host/thread.c	svc:*	threads
+dm/host/main.c	*:*	the host's start
+dm/host/loader.c	*:*	module loading
+dm/host/hle.c	hle:*	the HLE tables
+dm/host/front_mac.m	present:*	the Mac front end
+dm/host/dm_input.h	hle:*hid*	the shared input interface
+dm/host/motion_apple.h	hle:*SixAxisSensor*	controller motion supplied by GameController
+dm/host/motion_fusion.h	hle:*SixAxisSensor*	six-axis motion mapping and orientation
+dm/host/motion_pro.h	hle:*SixAxisSensor*	passive Switch Pro Controller IMU decoder
+dm/host/motion_pro_mac.h	hle:*SixAxisSensor*	Mac Pro Controller raw motion transport and routing
+dm/host/front.h	present:*	the front end
+dm/ios/*	*:*	the iOS app
+dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Translation/Transforms/GeometryToCompute.cs	shader:stage:gs	geometry compute input and output lowering

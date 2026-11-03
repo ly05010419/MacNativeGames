@@ -136,6 +136,14 @@ int runtime_aspect_toggle(void) { return 0; }
 float runtime_aspect_now(void) { return 0; }
 int runtime_aspect_step(void) { return -1; }   /* no aspect setting: the shortcut list leaves it out */
 void runtime_aspect_view(double w, double h) { (void)w; (void)h; }
+/* The settings panel's Resolution and Aspect ratio rows (settings_panel.h): neither is offered, so both rows stay out. */
+int runtime_output_modes(void) { return 0; }
+int runtime_output_mode(void) { return OUTPUT_MODE_OFF; }
+int runtime_output_mode_set(int mode) { (void)mode; return 0; }
+int runtime_output_native(int mode, unsigned *w, unsigned *h) { (void)mode; (void)w; (void)h; return 0; }
+int runtime_aspect_set_ratio(float r) { (void)r; return 0; }
+float runtime_aspect_ratio(void) { return 0; }
+float runtime_aspect_start(void) { return 0; }
 
 /* Exclusive loads with acquire (TOTK_EXCL_ACQUIRE; from upstream 58ac238, found on Breath of the Wild 1.6.0): sead's spin
    locks take the lock with a plain ldxr / stxr and only put a dmb ish before the release, so nothing orders the loads inside

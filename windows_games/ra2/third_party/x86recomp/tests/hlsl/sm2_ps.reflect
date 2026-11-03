@@ -1,0 +1,6 @@
+constants:
+  tex                              s0 x1  class 4 type 12  1x1 [1]
+inputs:
+varyings: COLOR0@16 TEXCOORD0@0
+samplers: s0(type 12)
+color outputs 1, depth 0, point size 0, float registers 0

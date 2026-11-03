@@ -1,0 +1,39 @@
+{
+  "title_id": "01006F8002326000",
+  "add_on_content_base_id": "01006F8002327000",
+  "entries": [
+    {
+      "title_id": "01006F800232712C",
+      "name": "Pocket Camp Special Order Ticket",
+      "index": 300,
+      "version_raw": 0,
+      "source_size": 121040,
+      "source_sha256": "287b759ff060c395989296ecbcf89fec2187aa3d926c4cd24d1fd1f2df89012e",
+      "romfs_size": 780,
+      "romfs_sha256": "c9f1cd4c9ca0e86ccb313dc4782958b05c313f573684f3738035037f4ecb10b3",
+      "file_count": 1
+    },
+    {
+      "title_id": "01006F800232712D",
+      "name": "Nook Inc. Silk Rug",
+      "index": 301,
+      "version_raw": 0,
+      "source_size": 153536,
+      "source_sha256": "246ba7fbda4ff15599e8214336ecaea2344223adc19caf44052a5602d918f8c0",
+      "romfs_size": 780,
+      "romfs_sha256": "4811416a1c21ae8d0a6b7c2031ae02e380b5740f4f0bb4b6adbc374e8fdf630a",
+      "file_count": 1
+    },
+    {
+      "title_id": "01006F80023273E8",
+      "name": "Happy Home Paradise",
+      "index": 1000,
+      "version_raw": 0,
+      "source_size": 624416704,
+      "source_sha256": "5619b62ab13bcd4139fbc4dd5d6edba0d276b5166115f1fbec5dfaabdb76b020",
+      "romfs_size": 623056604,
+      "romfs_sha256": "2468dd45d4e7ad2772fcaeb627591b2213c021d1f30720f56217978e02767edf",
+      "file_count": 1171
+    }
+  ]
+}

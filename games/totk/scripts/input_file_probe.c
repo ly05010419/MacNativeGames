@@ -20,6 +20,8 @@ void runtime_front_text_test(const char *op,const char *text){(void)op;(void)tex
 void runtime_settings_toggle(void){runtime_fail("unexpected settings panel in unit probe");}
 int runtime_setting_word(const char *name,char *word,size_t size){(void)name;(void)word;(void)size;return 0;}
 void runtime_setting_save(const char *name,const char *word,const char *what){(void)name;(void)word;(void)what;}
+void runtime_setting_remove(const char *name){(void)name;}
+int runtime_mouse_enabled(void){return 0;}
 static _Atomic int flag_value, flags_seen;
 void dm_gfx_set_flag(const char *name,int v){if(strcmp(name,"probe"))runtime_fail("unexpected runtime flag in unit probe");atomic_store(&flag_value,v);atomic_fetch_add(&flags_seen,1);}
 void dm_gfx_querylog_next(long n){(void)n;runtime_fail("unexpected query log in unit probe");}

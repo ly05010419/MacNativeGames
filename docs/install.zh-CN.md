@@ -21,7 +21,7 @@
 | 标题 ID | 是什么 | 命令里放在 |
 |---|---|---|
 | `0100F2C0115B6000` | 王国之泪本体 **1.0.0**，XCI 或 NSP | 第一个参数 |
-| `0100F2C0115B6800` | 王国之泪更新 **1.1.2、1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
+| `0100F2C0115B6800` | 王国之泪更新 **1.2.1 或 1.4.3**，NSP 或 NSZ（可选） | `--update` |
 | `01007EF00011E000` | 旷野之息本体，或 **1.6.0** 卡带镜像（本体、更新、DLC 在同一个 XCI 里） | 第一个参数 |
 | `01007EF00011E800` | 旷野之息更新 **1.6.0 或 1.9.0**，NSP 或 NSZ | `--update` |
 | `01007EF00011F001`、`01007EF00011F002` | 旷野之息的两个 DLC 包，NSP（都可选） | `--dlc`，每个包一次 |
@@ -47,6 +47,26 @@
 
 工作目录默认建在游戏文件旁边（`TOTK_build`；旷野之息是 `BotW_build`）。工作目录和 App 放在**同一个 APFS 卷**上：17 GB 的游戏数据是克隆过去的，不额外占空间。游戏文件在 exFAT / FAT 盘或快满的盘上时，用 `--work <文件夹>` 和 `-o <App>` 放到有空间的 APFS 盘上。
 
+## 用窗口打包
+
+不想敲命令的话：装好下面第 1 步的工具（窗口还要 `brew install python-tk@3.14`），在这个文件夹里双击 **Build Game.command**（或运行 `python3.14 -m tools.builder`），会打开一个窗口（界面是英文的，下面按钮名照原样写）：
+
+- **Build**（打包）：选游戏，再选游戏文件、更新、`prod.keys`，游戏需要时再选固件或系统字体文件夹（工作目录和输出的 App 在 **Advanced** 里）。**Check files** 会检查这台 Mac 和你的文件，有问题就列出来，能修的附上修复命令。**Build app** 用这些路径运行 `build_app.py`，显示四个阶段、用时和日志；打完一键 **Open app** 或 **Show in Finder**。**Cancel** 会中断打包，下次用同一个工作目录再打会接着做。窗口只记住你选的路径，不复制文件；日志在 `~/Library/Logs/MacNativeGames/builder-<游戏>-<日期>-<时间>.log`。打包时别关掉跟着打开的终端窗口。
+- **Settings**（设置；王国之泪 1.4.3、旷野之息 1.9.0）：开局画面、补帧（这台 Mac 的显卡支持 Metal 4 MetalFX 补帧时才有）、边缘平滑、远处地面更清晰，1.4.3 还有画面比例。**▶ Play** 启动游戏。画面、补帧、边缘平滑、画面比例就是游戏里设置面板（1 键）存的那份设置，从访达打开也生效，在哪边改都一样；只有“远处地面更清晰”面板里没有，只在用 **▶ Play** 启动时生效。游戏开着时不改设置，先关掉游戏。
+- **Mods**（模组；王国之泪 1.4.3、旷野之息 1.9.0）：**Add mod...** 选你自己的模组文件夹（带 `romfs/`；王国之泪的代码补丁放 `exefs/`），窗口不带任何模组。每个模组都会对照打好的 App 检查，路径对得上这个版本才能打开；**Apply mods** 按顺序（下面的优先）装进游戏的模组文件夹，原来的文件夹留作备份，下次启动游戏生效。TKMM、BCML 的包不收，请用它们自己的管理器装。
+- **Controls**（按键）：在手柄图上改键位，存进 `controls.txt`；王国之泪还能顺带把游戏里的按键图标换成对应的样子。
+- **更新**：用 `git clone` 下载的，窗口打开时会看 MacNativeGames 的 `main` 有没有新提交；在 `main` 上点 **Update** 只做快进，本地改过文件或有自己的提交时不动、告诉你。更新后关掉窗口重新打开，再打包一次。用 ZIP 下载的不能自己更新，请重新下载。
+
+没有 Tk 时 **Build Game.command** 会提示。同样的检查和打包也能在终端里用文字模式跑：
+
+```sh
+python3.14 -m tools.builder --cli --game totk --game-file ~/Games/totk.xci --keys ~/keys/prod.keys --check-only
+```
+
+`--dry-run` 只打印要运行的 `build_app.py` 命令；`python3.14 -m tools.builder --help` 列出全部选项。
+
+**下载 ZIP 后第一次双击**：macOS 会拦下没打开过的下载脚本。在**系统设置 › 隐私与安全性**里对 `Build Game.command` 点**仍要打开**，或在这个文件夹里运行一次 `xattr -d com.apple.quarantine "Build Game.command"`。用 `git clone` 下载的不受影响。
+
 ## 打包 App
 
 **1. 装工具**（只需一次，要联网）：
@@ -55,6 +75,7 @@
 xcode-select --install
 # 没有 Homebrew 的话，按 https://brew.sh 安装（必须装在 /opt/homebrew）
 brew install opus libvpx python@3.14
+brew install python-tk@3.14   # 只有打包窗口需要（见上面“用窗口打包”）
 ```
 
 也可以不用 Homebrew 的 Python，改用 [uv](https://docs.astral.sh/uv/)：把 `python3.14 build_app.py …` 换成 `uv run --python 3.14 build_app.py …`。
@@ -76,6 +97,12 @@ python3.14 build_app.py "<本体 1.0.0.nsp>" -k "<prod.keys>" --update "<1.4.3 �
 ```
 
 `/Applications` 和工作目录不在同一个卷上时，`-o` 改用工作目录所在卷上的文件夹。
+
+在 16 GB 及以上内存的 Mac 上，1.4.3、1.2.1 和旷野之息的 App 会带上原生 4K（设置面板里的 3840×2160 分辨率），每次启动多预留内存（王国之泪约 1.4 GiB，旷野之息约 0.5 GiB）。加 `--no-native-4k` 不带；内存更小的 Mac 想带就加 `--native-4k`。
+
+Mac 上的王国之泪 1.4.3 在构建机器有 **32 GB 及以上内存**时，默认带上原生 5K（5120×2880 的画布、界面和 3D 场景）以及 4K 档位。16 GB、24 GB 的 Mac 保持默认 4K。`--native-5k` 可在更小内存的机器上开启，`--no-native-5k` 不带；`--no-native-4k` 也会关闭自动 5K。这只增加可选档位，保留上次选择的分辨率，不会自动切换到 5K。带 5K 的 App 每次启动多预留约 2.7 GiB 游戏内存，即使选择较低分辨率也一样；物理页按需提交。不包含 HDR，也不保证 120 帧。
+
+运行程序更新会保留明确选择的 5K 开关。没有明确选择时，32 GB 及以上内存的 Mac 会在工作目录仍有与此 App 匹配的已验证游戏文件时补齐 4K/5K 资源，不需要重新提供游戏容器或密钥。已有 5K 的 App 在较小内存机器上更新时仍保留 5K。缓存缺失或 App 使用了修改过的堆资源时，自动更新保留现有规格，并说明需要重新构建。`update_runtime.py --native-5k` 要求可用的匹配缓存；`--no-native-5k` 移除 5K、保留 4K。两者都不改写已保存的分辨率文件。
 
 **4. 让它跑完。** M 系列 Mac 上从头打包要 **20–40 分钟**，8 GB 内存的 Mac 更久：
 
@@ -129,6 +156,7 @@ python3.14 build_app.py "<本体 1.0.0.xci>" -k "<prod.keys>" --update "<1.4.3 �
 
 - 第一次打 iOS 包时，还会下载并编译设备用的库。
 - `--ios-game-data documents` 不把 17 GB 的游戏镜像放进 IPA，以后重装只要几分钟。
+- 打包时用数据线连着 iPhone / iPad：打包会在 Mac 上为它的 GPU 编好游戏的管线（第一次多约 10 分钟），首次启动进标题前就不用长时间填充。设备没连着时加 `--device-gpu <架构>`（iPhone 14 是 `applegpu_g14p`）。
 
 **2. 安装**，设备用线连着 Mac：
 
@@ -137,12 +165,13 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/Tears of the King
 ```
 
 - `<版本>` 填那里实际有的文件夹（1.4.3 是 `v143`；用 `ls "<工作目录>/totk/extracted"` 看）。第一次安装会把 17 GB 的镜像拷过去一次。
+- iPhone / iPad 只连着 Wi‑Fi 时脚本会停下：插上数据线、解锁设备，再跑一次。加 `--wifi` 也能走 Wi‑Fi 装，但很慢，游戏数据可能传到一半断开。
 - 免费 Apple ID 的签名 7 天有效，付费账号一年。到期后再跑同一条命令续签，存档会保留。
 - 设备提示时，到“设置 › 通用 › VPN 与设备管理”里信任开发者。
 
 **3. 第一次启动：** iPhone 14 上先校验游戏数据约 15 秒，再导入着色器约 3 分钟，然后出标题。之后约 8 秒出标题。
 
-手机上内部按 960×540 渲染，放大到 1280×720，最高 60 帧。旷野之息 1.6.0 也按同样的方法打包安装。
+iPhone 默认掌机模式：内部按 960×540 渲染，放大到 1280×720，最高 60 帧。iPad 默认底座 1080p：画面 1600×900，和 Switch 一样，放大到 1920×1080（开始界面和“设置”App 的 Full HD 可以切换；旷野之息还可选 1080p 高清，画面 1920×1080）。旷野之息 1.6.0 也按同样的方法打包安装。
 
 两个限制：
 - 手机不能边玩边翻译着色器。App 里没带的着色器变体会被跳过，所以还没有玩家报告过的地方可能少画一些东西。
@@ -164,13 +193,19 @@ python3.14 build_app.py "<本体 1.0.0.xci>" -k "<prod.keys>" --platform visiono
 python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" --device "<Vision Pro 名称>" --game-data "<工作目录>/totk/extracted/v0/romfs/romfs.bin"
 ```
 
-加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v112`、`v121` 或 `v143`）。
+加了 `--update` 时，把 `v0` 换成对应版本的文件夹（`v121` 或 `v143`）。
 
 ## 更新 App
 
 - **本仓库有新版本**（`git pull` 之后）：
   - 先退出游戏，再运行 `python3.14 update_runtime.py "<App 路径>"`，约一分钟更新完，不需要游戏文件和密钥。
   - 它提示启动着色器不再匹配时，加上 `--seed`。
+- **「更新」页**（设置面板，按 1）显示 App 是不是上游最新的 `main`，不是就列出每个新提交。打开这一页时，会在打包 App 的项目文件夹里拉取上游（不改动其中任何文件）。点**更新**按钮：游戏关闭，项目的 `main` 快进到上游（`git pull --ff-only`），运行 `update_runtime.py`（它要求时加 `--seed`），期间有一个小窗口显示正在更新，完成后重新打开游戏。项目不在 main 分支、有没提交的改动或上游没有的提交、找不到或连不上、或更新失败时，会说明原因，请你自己更新（本列表第一条）。2026 年 10 月 31 日以前打的 App 要先手动运行一次 `update_runtime.py`，之后才知道自己的项目文件夹。
+- **退回更新前的版本**（新版本玩起来有问题时）：
+  - 先退出游戏，用 `git reflog` 找到 `git pull` 之前所在的提交（`pull` 那一行下面的一行）。
+  - 运行 `git checkout <那个提交>`（git 会提示 "detached HEAD"，这是正常的），再运行一次 `python3.14 update_runtime.py "<App 路径>"`；它要求时加上 `--seed`。
+  - 然后运行 `git checkout main`。App 会一直用这个旧的运行时，直到你下次更新。
+  - 只能退回到 685f940（2026-10-26）及以后的提交；存档和设置不会改动。
 - **换游戏版本**：
   - 换上新的 `--update`，用同一个 `-o` 再跑一次 `build_app.py`，会替换掉原来的 App。
   - 新版本第一次启动前，App 会把存档完整备份到旁边的 `profile-before-<版本>`。以后可能要回到旧版本的话，留着这份备份。
@@ -215,7 +250,7 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 - 存档：`~/Library/Application Support/MacNativeGames/TOTK/profile`
 - 着色器缓存：`~/Library/Application Support/MacNativeGames/TOTK/shader-cache`
 - 公共清单里还没有的着色器：`~/Library/Application Support/MacNativeGames/TOTK/shader-list-contribution.txt`。游戏启动前会问要不要发送，见[公共着色器清单](shader-list.md)。
-- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v112|v121|v143>`，见 [mods.md](mods.md)。
+- 模组：`~/Library/Application Support/MacNativeGames/TOTK/mods/<v0|v121|v143>`，见 [mods.md](mods.md)。
 - 日志：默认关闭。
   - Mac：`defaults write org.macnativegames.totk TOTK_DEBUG_LOG -bool YES`，下次启动起写到 `~/Library/Logs/MacNativeGames/totk.log`。
   - iPhone：在“设置 › TOTK › 記錄日誌”打开，写到 App 的 `Documents/log.txt`。
@@ -224,7 +259,6 @@ python3.14 games/totk/ios/tools/install_device.py "<文件夹>/TOTK-Vision.app" 
 
 **超出本页范围的需求也欢迎提。** 这里列出的版本和游戏，只是我们有条件测过的。需要别的版本或别的游戏时，AI 助理应该尽力把它做出来。
 
-- 王国之泪：本体 1.0.0，可加 1.1.2、1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
+- 王国之泪：本体 1.0.0，可加 1.2.1 或 1.4.3 更新。旷野之息：1.6.0 和 1.9.0。其他版本、压缩格式的本体和个性化票据不支持。
 - 没有联网功能，没有 amiibo。
 - 第一次遇到新着色器时可能卡顿；本机缓存和[公共着色器清单](shader-list.md)会减少卡顿。
-- 长时间游玩时，显卡已分配的内存会增长。Metal 分配超过预算时，Mac App 会停止游戏。预算是本机内存的 30%，最低 5,000 MB；`open --env TOTK_GPU_BUDGET_MB=<MB> "Tears of the Kingdom.app"` 可以改成别的预算。

@@ -1,0 +1,509 @@
+diff --git a/streamer/Sources/BasaltCore/AlvrControl.swift b/streamer/Sources/BasaltCore/AlvrControl.swift
+index fa18ab1..ff903a3 100644
+--- a/streamer/Sources/BasaltCore/AlvrControl.swift
++++ b/streamer/Sources/BasaltCore/AlvrControl.swift
+@@ -256,10 +256,10 @@ public final class AlvrSessionHandshakeResult: @unchecked Sendable {
+         return retained
+     }
+ 
+-    public func sendH264DecoderConfig(_ parameterSets: Data) {
++    public func sendDecoderConfig(_ parameterSets: Data, codec: VideoCodec) {
+         guard streamReady, !parameterSets.isEmpty else { return }
+         controlQueue.sync { [socket] in
+-            try? AlvrControlProbe.sendH264DecoderConfig(parameterSets, to: socket)
++            try? AlvrControlProbe.sendDecoderConfig(parameterSets, codec: codec, to: socket)
+         }
+     }
+ 
+@@ -548,11 +548,11 @@ public enum AlvrControlProbe {
+                          deadline: Date().addingTimeInterval(0.4))
+     }
+ 
+-    fileprivate static func sendH264DecoderConfig(_ parameterSets: Data,
+-                                                  to fd: Int32) throws {
++    fileprivate static func sendDecoderConfig(_ parameterSets: Data, codec: VideoCodec,
++                                              to fd: Int32) throws {
+         var payload = Data()
+         appendLittleEndian(UInt32(1), to: &payload) // ServerControlPacket::DecoderConfig
+-        appendLittleEndian(UInt32(0), to: &payload) // CodecType::H264
++        appendLittleEndian(codec.alvrCodecType, to: &payload) // CodecType: H264 0, Hevc 1
+         appendLittleEndian(UInt64(parameterSets.count), to: &payload)
+         payload.append(parameterSets)
+         try writeExactly(framedPayload(payload), to: fd,
+diff --git a/streamer/Sources/BasaltCore/AlvrSession.swift b/streamer/Sources/BasaltCore/AlvrSession.swift
+index 030b518..d842b80 100644
+--- a/streamer/Sources/BasaltCore/AlvrSession.swift
++++ b/streamer/Sources/BasaltCore/AlvrSession.swift
+@@ -58,7 +58,9 @@ public struct AlvrNegotiatedSettings: Equatable, Sendable {
+             throw BasaltError("Per-eye resolution \(requestedWidth)x\(requestedHeight) is outside "
+                               + "the supported \(dimensionRange.lowerBound)-\(dimensionRange.upperBound) range")
+         }
+-        guard requestedWidth <= capabilities.width, requestedHeight <= capabilities.height else {
++        // Local change for MacNativeGames VR (zeldaVR, 2026-10-26): the Quest 3 advertises its recommended render size
++        // (1680x1760), not its panel (2064x2208); PC ALVR streams above it. Allow up to the H.264 side-by-side limit.
++        guard requestedWidth <= max(capabilities.width, 2048), requestedHeight <= max(capabilities.height, 2304) else {
+             throw BasaltError("Requested per-eye resolution \(requestedWidth)x\(requestedHeight) exceeds "
+                               + "the headset maximum \(capabilities.width)x\(capabilities.height)")
+         }
+diff --git a/streamer/Sources/BasaltCore/AlvrVideoStream.swift b/streamer/Sources/BasaltCore/AlvrVideoStream.swift
+index e21eec7..d2d8c49 100644
+--- a/streamer/Sources/BasaltCore/AlvrVideoStream.swift
++++ b/streamer/Sources/BasaltCore/AlvrVideoStream.swift
+@@ -734,14 +734,14 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
+     /// Runtime frames supply the exact Quest tracking timestamp used to
+     /// locate that frame. Desktop frames omit it and retain the original
+     /// behavior of sampling the newest tracking timestamp at send time.
+-    public func send(annexB: Data, isIDR: Bool,
++    public func send(annexB: Data, isIDR: Bool, codec: VideoCodec = .h264,
+                      timestampNanoseconds suppliedTimestamp: UInt64? = nil) {
+         lock.lock()
+         let sender = self.sender
+         let controlSession = self.controlSession
+         lock.unlock()
+-        if isIDR, let parameterSets = H264ParameterSets.extract(from: annexB) {
+-            controlSession?.sendH264DecoderConfig(parameterSets)
++        if isIDR, let parameterSets = H264ParameterSets.extract(from: annexB, codec: codec) {
++            controlSession?.sendDecoderConfig(parameterSets, codec: codec)
+         }
+         guard let sender,
+               let timestamp = suppliedTimestamp ?? sender.timestampForVideoFrame() else { return }
+@@ -758,9 +758,10 @@ public final class AlvrVideoStreamRouter: @unchecked Sendable {
+ }
+ 
+ public enum H264ParameterSets {
+-    /// Extracts SPS (type 7) and PPS (type 8) NAL units, preserving Annex-B
+-    /// start codes for ALVR's MediaCodec initialization buffer.
+-    public static func extract(from annexB: Data) -> Data? {
++    /// Extracts the parameter-set NAL units (H.264 SPS 7 / PPS 8; HEVC VPS 32 /
++    /// SPS 33 / PPS 34), preserving Annex-B start codes for ALVR's MediaCodec
++    /// initialization buffer.
++    public static func extract(from annexB: Data, codec: VideoCodec = .h264) -> Data? {
+         let bytes = [UInt8](annexB)
+         var starts = [(offset: Int, codeLength: Int)]()
+         var index = 0
+@@ -782,8 +783,7 @@ public enum H264ParameterSets {
+             let naluStart = start.offset + start.codeLength
+             let naluEnd = position + 1 < starts.count ? starts[position + 1].offset : bytes.count
+             guard naluStart < naluEnd else { continue }
+-            let type = bytes[naluStart] & 0x1F
+-            guard type == 7 || type == 8 else { continue }
++            guard codec.isParameterSet(nalHeader: bytes[naluStart]) else { continue }
+             result.append(contentsOf: [0, 0, 0, 1])
+             result.append(contentsOf: bytes[naluStart..<naluEnd])
+         }
+diff --git a/streamer/Sources/BasaltCore/Encoder.swift b/streamer/Sources/BasaltCore/Encoder.swift
+index 98c0b64..5c5fe78 100644
+--- a/streamer/Sources/BasaltCore/Encoder.swift
++++ b/streamer/Sources/BasaltCore/Encoder.swift
+@@ -2,7 +2,23 @@ import Foundation
+ import VideoToolbox
+ import CoreMedia
+ 
+-/// Hardware H.264 encoder built on VideoToolbox, configured for low-latency
++/// The video codec sent to the headset. ALVR v20's `CodecType`: H264 = 0, Hevc = 1.
++/// Local change for MacNativeGames VR (zeldaVR, 2026-10-30, user: "换HEVC 测试一下"): HEVC as an option; Apple
++/// silicon encodes it in hardware, and the Quest 3 decodes it in hardware (AV1 has no hardware encoder on the Mac).
++public enum VideoCodec: String, Equatable {
++    case h264, hevc
++    public var alvrCodecType: UInt32 { self == .h264 ? 0 : 1 }
++    public var displayName: String { self == .h264 ? "H.264" : "HEVC" }
++    /// The parameter-set NAL unit types a decoder needs before a keyframe: SPS / PPS (H.264), VPS / SPS / PPS (HEVC).
++    public func isParameterSet(nalHeader byte: UInt8) -> Bool {
++        switch self {
++        case .h264: let type = byte & 0x1F; return type == 7 || type == 8
++        case .hevc: let type = (byte >> 1) & 0x3F; return type == 32 || type == 33 || type == 34
++        }
++    }
++}
++
++/// Hardware H.264 / HEVC encoder built on VideoToolbox, configured for low-latency
+ /// frame-in/frame-out operation (the same mode MoltenVR advertises).
+ ///
+ /// Output is Annex-B byte-stream H.264 (start-code delimited, SPS/PPS
+@@ -24,9 +40,12 @@ public final class H264Encoder {
+ 
+     private static let startCode = Data([0x00, 0x00, 0x00, 0x01])
+ 
+-    public init(width: Int, height: Int, fps: Int, bitrate: Int,
++    public let codec: VideoCodec
++
++    public init(width: Int, height: Int, fps: Int, bitrate: Int, codec: VideoCodec = .h264,
+         output: @escaping Output) throws {
+         self.output = output
++        self.codec = codec
+         averageBitrate = bitrate
+ 
+         // Low-latency rate control disables lookahead and B-frames. Basalt
+@@ -40,7 +59,7 @@ public final class H264Encoder {
+             allocator: nil,
+             width: Int32(width),
+             height: Int32(height),
+-            codecType: kCMVideoCodecType_H264,
++            codecType: codec == .h264 ? kCMVideoCodecType_H264 : kCMVideoCodecType_HEVC,
+             encoderSpecification: spec,
+             imageBufferAttributes: nil,
+             compressedDataAllocator: nil,
+@@ -56,10 +75,15 @@ public final class H264Encoder {
+         // rejects some keys on some OS versions); best-effort configure.
+         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime,
+                              value: kCFBooleanTrue)
+-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
+-                             value: kVTProfileLevel_H264_High_AutoLevel)
+-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_H264EntropyMode,
+-                             value: kVTH264EntropyMode_CABAC)
++        if codec == .h264 {
++            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
++                                 value: kVTProfileLevel_H264_High_AutoLevel)
++            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_H264EntropyMode,
++                                 value: kVTH264EntropyMode_CABAC)
++        } else {
++            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel,
++                                 value: kVTProfileLevel_HEVC_Main_AutoLevel)
++        }
+         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering,
+                              value: kCFBooleanFalse)
+         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxFrameDelayCount,
+@@ -67,8 +91,13 @@ public final class H264Encoder {
+         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                              value: kCFBooleanTrue)
+         Self.configureBitrate(session, bitrate: bitrate)
+-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
+-                             value: NSNumber(value: fps))
++        // Local change for MacNativeGames VR (zeldaVR, 2026-10-26): with low-latency rate control, an expected frame
++        // rate the hardware cannot hold makes VideoToolbox drop every frame silently (kVTEncodeInfo_FrameDropped, no
++        // error): 3840x2048 and larger at 72 Hz on this Mac encoded nothing. Above 3360x1760 the hint is left out.
++        if width * height <= 3360 * 1760 {
++            VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
++                                 value: NSNumber(value: fps))
++        }
+         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
+                              value: NSNumber(value: fps * 2))
+         VTCompressionSessionPrepareToEncodeFrames(session)
+@@ -253,22 +282,25 @@ public final class H264Encoder {
+ 
+         var annexB = Data()
+ 
+-        // Keyframes must be preceded by SPS/PPS so a decoder can join
+-        // mid-stream.
++        // Keyframes must be preceded by the parameter sets (SPS/PPS; HEVC:
++        // VPS/SPS/PPS) so a decoder can join mid-stream.
+         if isKeyframe, let format = CMSampleBufferGetFormatDescription(sampleBuffer) {
++            let get: (Int, UnsafeMutablePointer<UnsafePointer<UInt8>?>?, UnsafeMutablePointer<Int>?,
++                      UnsafeMutablePointer<Int>?) -> OSStatus = { index, pointer, size, count in
++                self.codec == .h264
++                    ? CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
++                        format, parameterSetIndex: index, parameterSetPointerOut: pointer,
++                        parameterSetSizeOut: size, parameterSetCountOut: count, nalUnitHeaderLengthOut: nil)
++                    : CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
++                        format, parameterSetIndex: index, parameterSetPointerOut: pointer,
++                        parameterSetSizeOut: size, parameterSetCountOut: count, nalUnitHeaderLengthOut: nil)
++            }
+             var parameterSetCount = 0
+-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+-                format, parameterSetIndex: 0, parameterSetPointerOut: nil,
+-                parameterSetSizeOut: nil, parameterSetCountOut: &parameterSetCount,
+-                nalUnitHeaderLengthOut: nil)
++            _ = get(0, nil, nil, &parameterSetCount)
+             for index in 0..<parameterSetCount {
+                 var pointer: UnsafePointer<UInt8>?
+                 var size = 0
+-                guard CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+-                        format, parameterSetIndex: index, parameterSetPointerOut: &pointer,
+-                        parameterSetSizeOut: &size, parameterSetCountOut: nil,
+-                        nalUnitHeaderLengthOut: nil) == noErr,
+-                      let pointer else { continue }
++                guard get(index, &pointer, &size, nil) == noErr, let pointer else { continue }
+                 annexB.append(Self.startCode)
+                 annexB.append(pointer, count: size)
+             }
+diff --git a/streamer/Sources/BasaltCore/Options.swift b/streamer/Sources/BasaltCore/Options.swift
+index a089f4c..65366a3 100644
+--- a/streamer/Sources/BasaltCore/Options.swift
++++ b/streamer/Sources/BasaltCore/Options.swift
+@@ -14,6 +14,8 @@ public struct StreamerOptions: Equatable {
+     public var port: UInt16 = 9999
+     public var fps = 72
+     public var megabits = 30
++    /// --codec, or BASALT_CODEC in the environment (the game passes its environment to the streamer it starts).
++    public var codec: VideoCodec = VideoCodec(rawValue: ProcessInfo.processInfo.environment["BASALT_CODEC"]?.lowercased() ?? "") ?? .h264
+     public var perEyeResolution = PerEyeResolution.quality
+     public var latencyPreset = StreamLatencyPreset.low
+     public var bindHost = "127.0.0.1"
+@@ -36,6 +38,8 @@ public struct StreamerOptions: Equatable {
+           --port <n>    TCP port to listen on (default 9999)
+           --fps <n>     capture frame rate, 1–240 (default 72)
+           --mbps <n>    encoder bitrate in Mbit/s, 1–500 (default 30)
++          --codec <h264|hevc>
++                        video codec (default h264, or BASALT_CODEC)
+           --resolution <preset|WIDTHxHEIGHT>
+                         per-eye headset resolution: performance (896x944),
+                         balanced (1152x1216), quality (1344x1408, default),
+@@ -100,6 +104,10 @@ public struct StreamerOptions: Equatable {
+                 guard megabitsRange.contains(options.megabits) else {
+                     throw BasaltError("--mbps must be between \(megabitsRange.lowerBound) and \(megabitsRange.upperBound)")
+                 }
++            case "--codec":
++                let value = try nextValue(for: flag).lowercased()
++                guard let codec = VideoCodec(rawValue: value) else { throw BasaltError("--codec expects h264 or hevc") }
++                options.codec = codec
+             case "--resolution":
+                 options.perEyeResolution = try PerEyeResolution.parse(nextValue(for: flag))
+             case "--latency":
+diff --git a/streamer/Sources/BasaltCore/RuntimeLink.swift b/streamer/Sources/BasaltCore/RuntimeLink.swift
+index f8daa1c..0e49bc4 100644
+--- a/streamer/Sources/BasaltCore/RuntimeLink.swift
++++ b/streamer/Sources/BasaltCore/RuntimeLink.swift
+@@ -57,14 +57,23 @@ public final class RuntimeLink: @unchecked Sendable {
+         case viewConfig = 15
+         case controllerMask = 16
+         case frameConsumed = 17
++        // Local change for MacNativeGames VR (zeldaVR, 2026-10-30, user: "想一个办法 检查 不是截屏"): what the headset
++        // itself reports it showed (daemon -> runtime, once a second): f32 frames shown per second, f32 latency in ms.
++        case headsetStatus = 18
++        // Local change for MacNativeGames VR (zeldaVR, 2026-10-26): a native game hands its own mix over the link
++        // (runtime -> daemon; 48 kHz stereo PCM16, interleaved), no loopback device or output rerouting needed.
++        case gameAudio = 100
+     }
+ 
+     public static let protocolVersion: UInt16 = 9
+     static let tokenLength = 32
+     static let maxMessageLength = 4096
+     /// The runtime's largest per-eye view; it ignores a larger configured size.
+-    public static let maximumViewWidth = 1680
+-    public static let maximumViewHeight = 1760
++    // Local change for MacNativeGames VR (zeldaVR, 2026-10-26): the 1680x1760 cap is BasaltVR's own Windows OpenXR
++    // runtime's swapchain limit; a native client renders any size. The real ceiling is the H.264 encoder: 4096 wide
++    // side by side, so 2048 per eye; 2304 rows.
++    public static let maximumViewWidth = 2048
++    public static let maximumViewHeight = 2304
+     static let maximumRetainedButtonPaths = 64
+ 
+     public struct FrameView {
+@@ -108,6 +117,8 @@ public final class RuntimeLink: @unchecked Sendable {
+     /// frame's source IOSurfaces. The callback is one-shot and connection
+     /// scoped, so late completions after teardown are harmless.
+     public var onFrame: ((_ frame: Frame, _ consumption: FrameConsumption) -> Void)?
++    /// Local change (zeldaVR): one block of the game's own audio, 48 kHz stereo PCM16 interleaved.
++    public var onGameAudio: ((Data) -> Void)?
+     public var onTeardown: (() -> Void)?
+     /// A runtime connection was refused (wrong protocol version or token,
+     /// malformed Hello). Called on the link's queue with a readable reason.
+@@ -289,6 +300,18 @@ public final class RuntimeLink: @unchecked Sendable {
+         }
+     }
+ 
++    /// Local change (zeldaVR): the frames the headset reported shown in the last second and their average latency.
++    public func publishHeadsetStatus(shownPerSecond: Float, latencyMilliseconds: Float) {
++        var payload = Data()
++        for value in [shownPerSecond, latencyMilliseconds] {
++            var bits = value.bitPattern.littleEndian
++            withUnsafeBytes(of: &bits) { payload.append(contentsOf: $0) }
++        }
++        queue.async {
++            if self.helloDone { self.send(type: .headsetStatus, payload: payload) }
++        }
++    }
++
+     public func publishButtons(_ entries: [AlvrButtonEntry]) {
+         let payloads = entries.compactMap { entry in
+             Self.buttonStatePayload(entry).map { (entry.pathID, $0) }
+@@ -640,6 +663,10 @@ public final class RuntimeLink: @unchecked Sendable {
+         case .destroySwapchain: return handleDestroySwapchain(payload)
+         case .frameReady: return handleFrameReady(payload)
+         case .haptic: return handleHaptic(payload)
++        case .gameAudio:
++            guard !payload.isEmpty, payload.count % 4 == 0 else { return false }
++            onGameAudio?(payload)
++            return true
+         case .teardown:
+             dropConnection()
+             return true
+diff --git a/streamer/Sources/BasaltStreamer/App.swift b/streamer/Sources/BasaltStreamer/App.swift
+index 36bcc62..72710fb 100644
+--- a/streamer/Sources/BasaltStreamer/App.swift
++++ b/streamer/Sources/BasaltStreamer/App.swift
+@@ -147,12 +147,13 @@ struct BasaltStreamerApp {
+         }
+         let latencyReporter = PipelineLatencyReporter()
+         let headsetLatencyReporter = HeadsetLatencyReporter()
++        let questWatch = QuestPictureWatch()   // local change (zeldaVR)
+         let calibrationLogGate = CalibrationLogGate()
+         let encoder = try H264Encoder(
+             width: encodedWidth,
+             height: encodedHeight,
+             fps: options.fps,
+-            bitrate: options.megabits * 1_000_000) { annexB, isKeyframe, capturePTS in
++            bitrate: options.megabits * 1_000_000, codec: options.codec) { annexB, isKeyframe, capturePTS in
+                 if !runtimeMode {
+                     latencyReporter.recordEncoded(capturePTS: capturePTS)
+                 }
+@@ -164,10 +165,10 @@ struct BasaltStreamerApp {
+                         return
+                     }
+                     alvrVideo.send(
+-                        annexB: annexB, isIDR: isKeyframe,
++                        annexB: annexB, isIDR: isKeyframe, codec: options.codec,
+                         timestampNanoseconds: runtimeTrackingTimestamp)
+                 } else {
+-                    alvrVideo.send(annexB: annexB, isIDR: isKeyframe)
++                    alvrVideo.send(annexB: annexB, isIDR: isKeyframe, codec: options.codec)
+                 }
+             }
+         encoder.onError = { error in
+@@ -220,6 +221,9 @@ struct BasaltStreamerApp {
+                 print("OpenXR runtime connected (session \(sessionId), \(renderer))")
+                 encoder.forceKeyframe()
+             }
++            link.onGameAudio = { pcm in   // local change (zeldaVR): the game's own mix
++                alvrVideo.sendAudioPCM16(pcm)
++            }
+             link.onTeardown = {
+                 print("OpenXR runtime disconnected")
+             }
+@@ -275,18 +279,19 @@ struct BasaltStreamerApp {
+                 }
+                 let leftRect = rectVector(firstView.rect)
+                 let rightRect = rectVector(lastView.rect)
++                // Local change for MacNativeGames VR (zeldaVR, 2026-10-30, user: "让 VR 线程按编码器跟得上的帧率出画面"):
++                // the frame is given back (consumption) once VideoToolbox has encoded it, not once Metal has read the
++                // swapchains, so a runtime that waits for its images renders at the rate the encoder holds instead of
++                // having frames thrown away above ("encoder busy") unevenly. encode() runs its completion exactly
++                // once, also when it rejects the frame.
+                 let scheduled = runtimeComposer.composeAsync(
+                     left: left, right: right,
+                     leftRect: leftRect, rightRect: rightRect) {
+                     composed in
+-                    // Metal has finished reading the runtime swapchains. Let
+-                    // Beat Saber render its next frame before VideoToolbox
+-                    // finishes with this compositor output.
+-                    consumption.complete()
+-                    guard let composed else { return }
++                    guard let composed else { consumption.complete(); return }
+                     guard encoder.encode(
+                             composed.pixelBuffer, pts: pts,
+-                            completion: { _ = composed }) else {
++                            completion: { _ = composed; consumption.complete() }) else {
+                         droppedFrames.recordDroppedFrame(stage: "encoder busy (runtime)")
+                         return
+                     }
+@@ -324,7 +329,8 @@ struct BasaltStreamerApp {
+                             headsetLatencyReporter: headsetLatencyReporter,
+                             calibrationLogGate: calibrationLogGate,
+                             encoder: encoder,
+-                            streamRecovery: streamRecovery)
++                            streamRecovery: streamRecovery,
++                            questWatch: questWatch)
+                         probeGate.retain(connected.handshake, clientKey: clientKey)
+                         succeeded = true
+                     } catch {
+@@ -353,7 +359,8 @@ struct BasaltStreamerApp {
+                         headsetLatencyReporter: headsetLatencyReporter,
+                         calibrationLogGate: calibrationLogGate,
+                         encoder: encoder,
+-                        streamRecovery: streamRecovery)
++                        streamRecovery: streamRecovery,
++                        questWatch: questWatch)
+                     lastError = nil
+                     break
+                 } catch {
+@@ -368,6 +375,20 @@ struct BasaltStreamerApp {
+                 throw BasaltError("Could not start wired ALVR session: \(lastError.localizedDescription)")
+             }
+         }
++        if options.wired {   // local change (zeldaVR): see QuestPictureWatch
++            Task.detached { [runtimeLink] in
++                while true {
++                    try? await Task.sleep(nanoseconds: 1_000_000_000)
++                    let status = questWatch.take()
++                    runtimeLink?.publishHeadsetStatus(shownPerSecond: Float(status.shown),
++                                                      latencyMilliseconds: Float(status.latency))
++                    if let reason = status.noPicture {
++                        fputs("The Quest shows no picture: \(reason); exiting so the game starts the streamer again\n", stderr)
++                        exit(3)
++                    }
++                }
++            }
++        }
+         if let runtimeLink {
+             try await runtimeLink.start()
+         } else {
+@@ -381,7 +402,7 @@ struct BasaltStreamerApp {
+         BasaltVR streamer — \(runtimeMode ? "M4 tracked OpenXR source" : "M1 capture") + M2/M6 ALVR media
+           \(sourceLine)
+           encoding \(encodedWidth)x\(encodedHeight)\(runtimeMode || stereoComposer != nil ? " side-by-side stereo" : "")
+-          H.264 High \(options.megabits) Mbps, VideoToolbox low-latency mode
++          \(options.codec == .h264 ? "H.264 High" : "HEVC Main") \(options.megabits) Mbps, VideoToolbox low-latency mode
+           listening on tcp://\(options.bindHost):\(server.port ?? options.port)
+         """)
+         if options.bindIsLoopback {
+@@ -446,7 +467,8 @@ struct BasaltStreamerApp {
+         headsetLatencyReporter: HeadsetLatencyReporter,
+         calibrationLogGate: CalibrationLogGate,
+         encoder: H264Encoder,
+-        streamRecovery: StreamRecoveryController
++        streamRecovery: StreamRecoveryController,
++        questWatch: QuestPictureWatch
+     ) async throws -> (handshake: AlvrSessionHandshakeResult, displayName: String) {
+         let handshake = try await AlvrControlProbe.negotiateSession(
+             host: host,
+@@ -511,9 +533,11 @@ struct BasaltStreamerApp {
+         }
+         videoSender.onError = { error in
+             fputs("ALVR stream send error: \(error.localizedDescription)\n", stderr)
++            questWatch.transportFailed(error.localizedDescription)
+         }
+         videoSender.onFrameSent = { report in
+             transportReporter.record(report)
++            questWatch.frameSent()
+         }
+         videoSender.onAudioSent = { report in
+             audioReporter.record(report)
+@@ -536,6 +560,7 @@ struct BasaltStreamerApp {
+         }
+         videoSender.onStatistics = { statistics in
+             headsetLatencyReporter.record(statistics)
++            questWatch.frameShown(latencyMilliseconds: Double(statistics.totalPipelineLatencyNanoseconds) / 1_000_000)
+             if let bitrate = adaptiveBitrate?.recordClientStatistics(statistics) {
+                 applyAdaptiveBitrate(bitrate)
+             }
+@@ -643,6 +668,40 @@ private final class PipelineLatencyReporter: @unchecked Sendable {
+ /// Aggregates ALVR statistics measured on the Quest. Unlike the local metric,
+ /// total pipeline latency starts when headset tracking is sampled and ends at
+ /// the target display vsync, spanning server, network, decode, and compositor.
++/// Local change for MacNativeGames VR (zeldaVR, 2026-10-30, user: "我发现你永远都不检测 quest 有没有画面", "想一个办法
++/// 检查 不是截屏"): the headset sends a statistics packet for every frame it shows, so their count is what the Quest
++/// really displays. Once a second it goes to the game (shown in its HUD and log). While frames are being sent, no
++/// statistics for 3 s, or a failed USB video socket, means the Quest shows nothing: the wired ALVR session does not come
++/// back by itself (two lost sessions on 2026-10-30, "Broken pipe"), so the streamer exits and the game starts it again,
++/// the path a resolution change takes.
++final class QuestPictureWatch: @unchecked Sendable {
++    private let lock = NSLock()
++    private var shown = 0, latencyTotal = 0.0
++    private var lastShown: UInt64 = 0, lastSent: UInt64 = 0, firstSent: UInt64 = 0
++    private var transportError: String?
++    private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
++    func frameShown(latencyMilliseconds: Double) {
++        lock.lock(); shown += 1; latencyTotal += latencyMilliseconds; lastShown = Self.now(); lock.unlock()
++    }
++    func frameSent() {
++        lock.lock(); let t = Self.now(); if firstSent == 0 { firstSent = t }; lastSent = t; lock.unlock()
++    }
++    func transportFailed(_ reason: String) { lock.lock(); if transportError == nil { transportError = reason }; lock.unlock() }
++    /// The last second's count and latency (reset), and why the Quest shows nothing, if it does not.
++    func take() -> (shown: Int, latency: Double, noPicture: String?) {
++        lock.lock(); defer { lock.unlock() }
++        let t = Self.now(), n = shown, latency = n > 0 ? latencyTotal / Double(n) : 0
++        shown = 0; latencyTotal = 0
++        if let transportError { return (n, latency, "the USB video socket failed (\(transportError))") }
++        let sending = lastSent != 0 && t - lastSent < 1_000_000_000
++        let since = max(lastShown, firstSent)
++        if sending, firstSent != 0, t - since > 3_000_000_000 {
++            return (n, latency, "frames are sent but the Quest reported none shown for \((t - since) / 1_000_000_000) s")
++        }
++        return (n, latency, nil)
++    }
++}
++
+ private final class HeadsetLatencyReporter: @unchecked Sendable {
+     private let lock = NSLock()
+     private var sampleCount = 0

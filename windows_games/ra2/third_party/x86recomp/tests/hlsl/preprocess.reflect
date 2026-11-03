@@ -1,0 +1,6 @@
+constants:
+  tint                             c2 x1  class 1 type 3  1x4 [1]
+inputs:
+varyings: COLOR0@16
+samplers:
+color outputs 1, depth 0, point size 0, float registers 3
