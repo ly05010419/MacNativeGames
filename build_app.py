@@ -8,9 +8,10 @@ Supported: TOTK base 1.0.0 (0100F2C0115B6000), XCI or NSP; optional --update wit
 Also Breath of the Wild (01007EF00011E000, games/botw), in two forms: 1.6.0 as one card image holding the base game, the update
 and the add-on content, which needs --shared-fonts (the six .bfttf files a Tears of the Kingdom build extracted into its work
 folder, extracted/firmware/shared-fonts); or 1.9.0 as a base NSP with --update <the 1.9.0 update NSP> and fonts from --firmware
-or --shared-fonts as for a Tears of the Kingdom NSP. With a separate update (1.9.0, or the 1.6.0 update NSP) the add-on content
+or --shared-fonts as for a Tears of the Kingdom NSP. A card image may also hold the 1.9.0 update (PR #682): the version is
+then told by its verified ExeFS hashes. With a separate update (1.9.0, or the 1.6.0 update NSP) the add-on content
 (DLC) comes from --dlc <pack.nsp>, repeated for the two packs (01007EF00011F001, 01007EF00011F002), each one optional and
-checked against its pin. Its startup shaders come from its game data and its own shared shader list
+checked against its pin; a card image brings its own. Its startup shaders come from its game data and its own shared shader list
 (games/botw/assets/shader_list.tsv). The game is recognised by the title IDs in the file, never by the file name.
 NSPs need common tickets (unless rights-free) and a separate shared-font source. iOS builds are unsigned IPAs for sideloading and require Xcode 26+, xcodegen, CMake, and network access to build device libraries.
 Nothing from the game is in this repository; everything is made from your files on your Mac. Key values are never printed.
@@ -59,8 +60,8 @@ UPDATED143 = json.loads((GAME / 'assets/expected-v1.4.3.json').read_text())
 VERSIONS = {'v0': EXPECTED, 'v121': UPDATED121, 'v143': UPDATED143}   # 1.1.2 (v112) removed 2026-11-02
 UPDATES = ('v121', 'v143')
 # Breath of the Wild (games/botw; botw.md in the Tears of the Kingdom project): 1.6.0 as one card image with the base game, the
-# update and the add-on content; 1.9.0 as a base NSP plus the 1.9.0 update NSP. The game is chosen by the title IDs of the NCAs
-# in the game file, never by its name.
+# update and the add-on content; 1.9.0 as a base NSP plus the 1.9.0 update NSP, or a card image holding that update. The game is
+# chosen by the title IDs of the NCAs in the game file, never by its name.
 BOTW = REPO / 'games/botw'
 BOTW160 = json.loads((BOTW / 'assets/expected-v1.6.0.json').read_text())
 BOTW190 = json.loads((BOTW / 'assets/expected-v1.9.0.json').read_text())
@@ -465,6 +466,33 @@ def identify_botw_update(tree, update, keys, logs):
     (staging / 'extraction-manifest.json').replace(target / 'extraction-manifest.json')
     staging.rmdir()
     say(f'update identified by verified ExeFS hashes: Breath of the Wild {VERSIONS[version]["display_version"]}')
+    return version
+
+
+def identify_botw_card(tree, game, keys, logs):
+    """Breath of the Wild 1.6.0 or 1.9.0 from a combined card image, by the verified ExeFS hashes of its update Program NCA
+    (the one with a BKTR section; never by the file name)."""
+    for version in ('botw160', 'botw190'):
+        exefs = tree / f'extracted/{version}/exefs'
+        if source_matches(exefs.parent / 'extraction-manifest.json', game) and exefs_matches(
+                exefs, VERSIONS[version]['exefs_sha256'], VERSIONS[version]['title_id']):
+            return version
+    staging = tree / 'extracted/update-detection-botw'
+    if staging.exists(): shutil.rmtree(staging)
+    run([tree / '.venv/bin/python', tree.parent / 'botw/scripts/extract_exefs.py', game, '--keys', keys,
+         '--output', staging / 'exefs'], logs / 'identify-card-botw.log', cwd=tree)
+    version = next((version for version in ('botw160', 'botw190')
+                    if exefs_matches(staging / 'exefs', VERSIONS[version]['exefs_sha256'], VERSIONS[version]['title_id'])), None)
+    if version is None:
+        shutil.rmtree(staging)
+        raise BuildError('unsupported Breath of the Wild card module hashes; expected 1.6.0 or 1.9.0 (the file name is not used to choose a version)')
+    target = tree / f'extracted/{version}'   # the verified ExeFS is kept, as identify_update does: step_code_botw reuses it
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / 'exefs').exists(): shutil.rmtree(target / 'exefs')
+    (staging / 'exefs').rename(target / 'exefs')
+    (staging / 'extraction-manifest.json').replace(target / 'extraction-manifest.json')
+    staging.rmdir()
+    say(f'card image identified by verified ExeFS hashes: Breath of the Wild {VERSIONS[version]["display_version"]}')
     return version
 
 
@@ -2246,13 +2274,13 @@ def main(argv):
             check_package(update, 'botw', 'update')
         elif kind != 'xci':
             raise BuildError('Breath of the Wild from a base NSP needs the 1.9.0 update (or the 1.6.0 update): pass it with '
-                             '--update <update.nsp> (a card image already holds its 1.6.0 update)')
+                             '--update <update.nsp> (a card image already holds its update)')
         check_dlc(dlcs, BOTW190)   # the files first; the packs are the same for both versions
         if update:   # the base game (NSP or XCI) with the separate 1.6.0 or 1.9.0 update
             update = prepare_update_container(tree, update, keys, logs)
             version = identify_botw_update(tree, update, keys, logs)
-        else:   # a combined card image: base, 1.6.0 update and add-on content
-            version = 'botw160'
+        else:   # a combined card image: base, its 1.6.0 or 1.9.0 update and add-on content (PR #682)
+            version = identify_botw_card(tree, game, keys, logs)
         if dlcs and not update:
             raise BuildError('a Breath of the Wild card image holds its own add-on content, so leave out --dlc (or pass the base NSP '
                              'as the game file with --update <update.nsp>)')
