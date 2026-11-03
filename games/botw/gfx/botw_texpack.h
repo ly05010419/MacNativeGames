@@ -1,5 +1,5 @@
-/* Breath of the Wild 1.9.0: sharp UI art from a high-res texture pack (BOTW_TP_* in nvn_obj.h; included at the end of
-   nvn_mtl.m for GAME_BOTW190 only, so TOTK and 1.6.0 objects stay as they were).
+/* Breath of the Wild 1.9.0 and 1.6.0: sharp UI art from a high-res texture pack (BOTW_TP_* in nvn_obj.h; included at the
+   end of nvn_mtl.m for GAME_BOTW only, so TOTK objects stay as they were).
 
    The UI's small textures (48x48 and 72x72 masks, colour icons) are magnified about 2x at 3456x1944 with linear
    filtering, which blurs their one-texel anti-aliased edges. The pack holds larger copies (AI-upscaled game art, or

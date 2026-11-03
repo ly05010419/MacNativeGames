@@ -275,7 +275,6 @@ void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the m
 void botw_wb_landed(const void *mem);
 uint64_t botw_wb_gen(void);
 int botw_wb_newer(const void *mem, uint64_t gen);
-#ifdef GAME_BOTW190
 /* Sharp UI art (games/botw/gfx/botw_texpack.h, included at the end of nvn_mtl.m): a texture pack's larger copy of a
    UI texture is the sampling base of the texture-pool slots that view it whole (tex_by_id); harvest mode writes the
    UI textures into a folder. g_botw_tp: -1 not yet set up (the first upload does it), 0 off. */
@@ -290,15 +289,6 @@ void botw_tp_harvest(const char *fs_key, const tex_t *t);
 #define BOTW_TP_HARVEST(t, fs, tt) if ((t) && g_botw_tp > 0) botw_tp_harvest((fs), (tt));
 #define BOTW_TP_OWNED(pk) if (g_botw_tp > 0 && (pk)->tp_rep) ser_bump_locked((pk)->tp_ser);
 #define BOTW_TP_FREE() if (tp_rep) res_remove(tp_rep); free(tp_px);
-#else
-#define BOTW_TP_PKG_FIELDS
-#define BOTW_TP_UPLOADED(pk, t)
-#define BOTW_TP_BASE(rp, b)
-#define BOTW_TP_VIEW(rp, r, b)
-#define BOTW_TP_HARVEST(t, fs, tt)
-#define BOTW_TP_OWNED(pk)
-#define BOTW_TP_FREE()
-#endif
 #define BOTW_PKG_FIELDS uint64_t wb_gen; BOTW_TP_PKG_FIELDS
 #define BOTW_WB_LANDED(t) botw_wb_landed((t)->mem);
 #define BOTW_PKG_WB_SEEN(pk) (pk)->wb_gen = botw_wb_gen();

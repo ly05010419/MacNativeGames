@@ -335,10 +335,10 @@ game's own icons, which already name its buttons. The mod replaces the seven `Fo
 `Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
 needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
 
-### Sharp UI texture pack (Breath of the Wild 1.9.0)
+### Sharp UI texture pack (Breath of the Wild 1.9.0 and 1.6.0)
 
 The game draws its UI from small textures (48x48 and 72x72 button and icon masks, colour icons) that the 3456x1944 picture
-magnifies about 2x, so their edges look soft. A Breath of the Wild 1.9.0 app can draw larger copies instead: it looks for
+magnifies about 2x, so their edges look soft. A Breath of the Wild app (1.9.0 or 1.6.0) can draw larger copies instead: it looks for
 `<key>.png` in the pack folder when a texture is uploaded, and uses a picture whose size is a whole multiple (up to 8x, the
 same on both axes) of the texture. The app falls back to the game's own texture for every texture that has no picture. The UI
 shaders use normalised coordinates, so a larger picture draws at the same place and size. Nothing of the game is in the
@@ -349,7 +349,7 @@ project: the pictures come from your own game.
 | `BOTW_TEXPACK_DIR` | The pack folder. Default `~/Library/Application Support/MacNativeGames/BotW/texture-pack`. |
 | `BOTW_TEXPACK=0` | Turns the pack off. |
 | `BOTW_TEXPACK_HARVEST=<dir>` | Harvest mode: writes each UI texture the game draws into `<dir>` as `<key>.png`, with a line in `harvest.tsv`. A texture already there is not written again, so the folder grows over runs. |
-| `BOTW_TEXPACK_HARVEST_FS` | The fragment shaders to harvest, as key prefixes separated by commas. Default `87d90016,e6a88e12`. |
+| `BOTW_TEXPACK_HARVEST_FS` | The fragment shaders to harvest, as key prefixes separated by commas. Default `87d90016,e6a88e12` (the 1.9.0 shaders). The 44 HUD and menu textures have the same keys in 1.6.0, so one pack serves both versions. |
 
 The key is `<hash>-<width>x<height>-<NVN format>`, where the hash covers the texture's bytes as the game stores them.
 Pictures hold the stored channel values: 8-bit grey for one-channel masks, RGB with blue 0 for two-channel masks, RGBA (not
@@ -763,10 +763,10 @@ python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application 
 就对应手柄上的按钮。mod 替换七个 `Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
 布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
 
-### 高清界面贴图包（旷野之息 1.9.0）
+### 高清界面贴图包（旷野之息 1.9.0 和 1.6.0）
 
 游戏的界面用小贴图（48x48 和 72x72 的按键、图标遮罩，以及彩色图标），3456x1944 的画面把它们放大约 2 倍，边缘因此发虚。
-旷野之息 1.9.0 的 App 可以改用更大的副本：贴图上传时，它在贴图包文件夹里找 `<key>.png`，图片尺寸是贴图的整数倍
+旷野之息的 App（1.9.0 或 1.6.0）可以改用更大的副本：贴图上传时，它在贴图包文件夹里找 `<key>.png`，图片尺寸是贴图的整数倍
 （最多 8 倍，两个方向相同）时就使用它。没有图片的贴图仍用游戏自己的贴图。界面着色器使用归一化坐标，所以更大的图片
 画在同一位置、同一大小。项目里不含任何游戏内容：图片来自你自己的游戏。
 
@@ -775,7 +775,7 @@ python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application 
 | `BOTW_TEXPACK_DIR` | 贴图包文件夹。默认 `~/Library/Application Support/MacNativeGames/BotW/texture-pack`。 |
 | `BOTW_TEXPACK=0` | 关闭贴图包。 |
 | `BOTW_TEXPACK_HARVEST=<dir>` | 采集模式：把游戏绘制的每张界面贴图以 `<key>.png` 写入 `<dir>`，并在 `harvest.tsv` 里记一行。已在文件夹里的贴图不会重写，所以文件夹会随多次运行增长。 |
-| `BOTW_TEXPACK_HARVEST_FS` | 要采集的片段着色器，写 key 前缀，用逗号分隔。默认 `87d90016,e6a88e12`。 |
+| `BOTW_TEXPACK_HARVEST_FS` | 要采集的片段着色器，写 key 前缀，用逗号分隔。默认 `87d90016,e6a88e12`（1.9.0 的着色器）。44 张 HUD 和菜单贴图在 1.6.0 里 key 相同，所以一个贴图包两个版本都能用。 |
 
 key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图字节。图片保存的是存储的通道值：单通道遮罩为 8 位灰度，
 双通道遮罩为蓝色为 0 的 RGB，彩色图为 RGBA（不预乘，sRGB 颜色保持编码值）。

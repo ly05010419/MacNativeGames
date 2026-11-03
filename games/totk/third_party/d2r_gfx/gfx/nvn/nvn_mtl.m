@@ -19812,6 +19812,6 @@ void runtime_shader_seed(const char *path) { @autoreleasepool {
          ok, (unsigned long)keys.count, totk_rt_dir().UTF8String, missing.count ? "; without one (translation failed, see above): " : "", [missing componentsJoinedByString:@" "].UTF8String);
     if (ok != keys.count) MLOG("[seed] [RED] %lu shaders could not be translated: their draws translate them again in the game (and fail the same way)", (unsigned long)(keys.count - ok));
 }}
-#ifdef GAME_BOTW190
+#ifdef GAME_BOTW
 #include "../../../../../botw/gfx/botw_texpack.h"   // sharp UI art (BOTW_TP_* in nvn_obj.h)
 #endif
