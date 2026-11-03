@@ -113,8 +113,9 @@ The [shared shader list](docs/shader-list.md) now holds **14,794 shader variants
 ## What's new
 
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
-  Pokémon Pokopia plays its opening into the first area (scripted test). No app packaging yet ([Switch 2 games](#switch-2-games-experimental),
-  [docs/ns2-port.md](docs/ns2-port.md)).
+  Pokémon Pokopia plays its opening into the first area (scripted test). Pokopia 2.0.1 packages as a Mac app from your
+  own dump folder: `python3 build_app.py <dump folder> --shared-fonts <the six .bfttf files a TOTK / BotW build
+  extracted>` (no keys; [Switch 2 games](#switch-2-games-experimental), [docs/ns2-port.md](docs/ns2-port.md)).
 - **2026-11-02: Tears of the Kingdom 1.1.2 is no longer supported.** The supported versions are 1.0.0, 1.2.1 and 1.4.3
   (1.4.3 is the most tested). The builder now refuses a 1.1.2 update: build again with the 1.2.1 or 1.4.3 update and
   the same `-o` ([another game version](docs/install.md)). Your saves stay where they are (`TOTK/profile`); before the
@@ -265,7 +266,8 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 ## 更新说明
 
 - **2026-11-03：第一批 Switch 2 游戏，实验性。** 大金刚 Bananza 用开发构建可以在 Mac 上玩；宝可梦 Pokopia 能玩过开场
-  进到第一个区域（脚本测试）。暂时不能打包成 App（[docs/ns2-port.md](docs/ns2-port.md)）。
+  进到第一个区域（脚本测试）。Pokopia 2.0.1 可以用你自己的转储目录打包成 Mac App：`python3 build_app.py <转储目录>
+  --shared-fonts <王国之泪 / 旷野之息打包时提取的六个 .bfttf 字体>`（不需要 keys；[docs/ns2-port.md](docs/ns2-port.md)）。
 - **2026-11-02：王国之泪不再支持 1.1.2。** 支持的版本是 1.0.0、1.2.1 和 1.4.3（1.4.3 测试得最多）。现在打包时会拒绝
   1.1.2 的更新包：请换成 1.2.1 或 1.4.3 的更新包，用同一个 `-o` 重新打包（[换游戏版本](docs/install.zh-CN.md)）。存档还在原处
   （`TOTK/profile`）；新版本第一次启动前，App 会先在旁边备份一份，1.2.1 直接读 1.1.2 的存档，1.4.3 会自动迁移。放在

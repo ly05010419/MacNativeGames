@@ -81,7 +81,7 @@ How it is built and run (outside the repository; game files stay with the dump):
   `prepare_modules.py`, the rewriter (`DM_RULESET=native DM_PRIVATE_GATES=0 patch_nso.py` for `sdk` and `main`),
   `verify_rewrites.py --version dkb` (all gates pass), `make game-data-dkb runtime-dkb SHADER_LIST=../dkb/assets/shader_list.tsv`.
 - `build/totk-native-dkb rewritten/dkb boot` with the launcher's GPU settings (`TOTK_GPU_ALLOW_SUBMIT=1 TOTK_GPU_WIDEN=1
-  TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1`). build_app.py does not know the game yet.
+  TOTK_GPU_BLOCKRT=1 TOTK_GPU_MIDCLEAR=1`). build_app.py does not know the game yet (Pokopia it does since 2026-11-04).
 
 Found on the way (general fixes, each in the code with its reason):
 - a mip-chain pass sampled the level it renders (Metal fetches it at weight 0; undefined data, 0 x NaN): the environment
@@ -227,6 +227,32 @@ Added for it (general where possible, each with its reason in the code):
 - Still open for Pokopia: shaders compiled the first time a scene is entered (seconds, cached after); static
   block-compressed textures re-uploaded every submission as written (~170 MB a frame, TOTK_REUP_LOG); a second texture
   pool registering in some scenes (the table per pool); nvnCommandBufferDrawArraysIndirect and SetCopyImageStride.
+
+**Pokopia, 2026-11-04: packaged as a Mac app by build_app.py, its shaders prepared at packaging.**
+- `build_app.py <dump folder> --shared-fonts <folder>`: a folder as the game argument is a Switch 2 dump (base/,
+  updates/<version>/ with exefs/ and romfs/); the title ID in its main.npdm picks the game (NS2 table: Pokopia
+  0400A3A01EE4C000, update 655360), no keys. Steps: import_dump.py, the ExeFS / RomFS / rewrite checked against
+  games/pokopia/assets/expected-v2.0.1.json (the verified rewrite), `make runtime-pkp` (launcher with GAME_POKOPIA /
+  GAME_NS2), the shader seed, the startup libraries, the pipeline archive, the app (data folder Pokopia, bundle
+  org.macnativegames.pokopia). The shared fonts are a TOTK / BotW build's (a dump has none). Mac only.
+- Seed (scripts/prepare_ns2_seed.py): the corpus (ns2_shader_corpus.py), then the game binary's `seed-shaders
+  <corpus> <shared list>` translates every shader for the default bind state and for each bind state the list names
+  (totk_contrib_answers, so variants carry the list's names), into a cache kept in the work folder; the seed is that
+  cache's translations in prepare_shader_seed.py's layout (seed-manifest.json, shader-keys.json), so the TOTK app steps
+  take it as they are. Pokopia: 2,384 of 2,385 shaders, 21 s; 1,646 libraries.
+- Shared list games/pokopia/assets/shader_list.tsv (identifiers only): merged from development runs. `shader_list.py
+  merge` now renames a pso_user.tsv's on-the-spot variant names to the names a build gives (through the merged cache's
+  .variants, as the runtime does for contributions): 636 of 640 rows had been refused. The dkb / pokopia lists carry A
+  rows like TOTK's (OUR_RUNTIME).
+- Measured (the in-world save, an empty shader cache, 4 minutes): frames over 100 ms 29 / 16.9 s without the prepared
+  data, 29 / 14.2 s with the app; pipelines built in play 184 -> 90, libraries 190 -> 107; the title waited 3 ms. Every
+  shader translated in play (99) is one the game files do not hold: Pokopia makes some shaders itself while it runs
+  (xFractals/pokopia-native: 154 on 2.0.1, about 20 on the title screen; it records them and rebuilds). They are
+  translated on first use and cached by the player; open: start their translation when the game finishes writing them
+  instead of at the first draw. 337 warm rows of the list name such shaders and are left out of the app's lists.
+- Found on the way: a signed program written over in place (cp onto a file that had run) is killed at launch (SIGKILL,
+  Code Signature Invalid): the seed tool replaces the translation service with a new file. GAME_NS2 reads
+  build/game-data/<v>/process.txt, now in the app's game data.
 
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:

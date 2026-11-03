@@ -19886,13 +19886,34 @@ int mtl_probe_pipeline_archive(void) {
    draw), exactly as a draw's prog_get would ask, so the keys and variant names are the runtime's own; the translations
    land in the translation cache (TOTK_SHADER_CACHE) and the boot prewarm builds their Metal libraries. A shader already
    there is not translated again. Corpus: "NS2SHC01", u32 count, then per shader u32 stage, u32 control length, u32 code
-   length, u16 label length, the label, the control section, the code area. */
-void runtime_shader_seed(const char *path) { @autoreleasepool {
+   length, u16 label length, the label, the control section, the code area.
+   With the game's shared shader list (a second argument, games/<game>/assets/shader_list.tsv), every bind state its V
+   rows name for a shader of the corpus is translated too, with the answers a build gives that row (totk_contrib_answers),
+   so the variant carries the name the list's warm rows use (totk_contrib_listed_name), as prepare_shader_seed.py does for
+   Tears of the Kingdom: the packaged app's pipeline archive (build_app.py mac_pipelines) builds those pipelines. */
+void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool {
     NSData *d = [NSData dataWithContentsOfFile:@(path)];
     if (!d || d.length < 12 || memcmp(d.bytes, "NS2SHC01", 8)) MDIE("seed-shaders: %s is not a shader corpus (scripts/ns2_shader_corpus.py)", path);
     const uint8_t *p = (const uint8_t *)d.bytes + 12, *end = (const uint8_t *)d.bytes + d.length;
     uint32_t n; memcpy(&n, (const uint8_t *)d.bytes + 8, 4);
     NSDictionary *answers = @{@"tex": @{}, @"img": @{}, @"attr": @{}, @"fout": @{}};
+    NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *listed = [NSMutableDictionary dictionary];   // shader key -> the list's bind states for it
+    if (list) {
+        NSString *text = [NSString stringWithContentsOfFile:@(list) encoding:NSUTF8StringEncoding error:nil];
+        if (!text) MDIE("seed-shaders: cannot read the shader list %s", list);
+        for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+            NSArray<NSString *> *f = [line componentsSeparatedByString:@"\t"];
+            if (f.count != 3 || ![f[0] isEqualToString:@"V"] || f[1].length != 64) continue;
+            NSDictionary *deps = [NSJSONSerialization JSONObjectWithData:[f[2] dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+            if (![deps isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *a = totk_contrib_answers(deps);
+            if ([a isEqual:answers]) continue;   // the default bind state: translated for every shader anyway
+            if (!listed[f[1]]) listed[f[1]] = [NSMutableArray array];
+            [listed[f[1]] addObject:a];
+        }
+    }
+    unsigned listed_n = 0;
+    NSMutableArray<NSArray *> *listed_jobs = [NSMutableArray array];   // (key, answers) to check once the queue is empty
     totk_rt_fail_soft();   // a shader the translator cannot do yet is counted below, not the end of the seed
     NSMutableArray<NSString *> *keys = [NSMutableArray array];
     unsigned other_stage = 0, bad = 0; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -19907,6 +19928,7 @@ void runtime_shader_seed(const char *path) { @autoreleasepool {
         char key[65]; shader_key_of(ctl, code, kn, key);
         totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
         [keys addObject:@(key)];
+        for (NSDictionary *a in listed[@(key)]) { totk_rt_variant(@(key), stage, ctl, code, a, rt_local(ctl, stage), 1); [listed_jobs addObject:@[@(key), a]]; listed_n++; }
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);
@@ -19919,4 +19941,6 @@ void runtime_shader_seed(const char *path) { @autoreleasepool {
     MLOG("[seed] done in %.0f s: %u of %lu shaders have a translation for the default bind state in %s%s%s", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9,
          ok, (unsigned long)keys.count, totk_rt_dir().UTF8String, missing.count ? "; without one (translation failed, see above): " : "", [missing componentsJoinedByString:@" "].UTF8String);
     if (ok != keys.count) MLOG("[seed] [RED] %lu shaders could not be translated: their draws translate them again in the game (and fail the same way)", (unsigned long)(keys.count - ok));
+    if (list) { unsigned lok = 0; for (NSArray *j in listed_jobs) if (totk_rt_variant_cached(j[0], j[1])) lok++;
+        MLOG("[seed] the shader list's bind states: %u of %u translated (%lu shaders of the list are in the corpus)", lok, listed_n, (unsigned long)listed.count); }
 }}

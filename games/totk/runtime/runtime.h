@@ -135,7 +135,7 @@ int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..3:
 void *runtime_account_override(const char *name);
 
 void runtime_gfx_probe(int negative);
-void runtime_shader_seed(const char *corpus);   /* nvn_mtl.m: seed-shaders mode */
+void runtime_shader_seed(const char *corpus, const char *list);   /* nvn_mtl.m: seed-shaders mode (list: the shared shader list, or NULL) */
 void runtime_vpool_probe(void);
 
 void runtime_memory_probe(void);
