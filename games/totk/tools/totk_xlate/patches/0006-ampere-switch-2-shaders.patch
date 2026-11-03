@@ -947,7 +947,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs	2026-11-02 23:37:55
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,522 @@
 +using Ryujinx.Graphics.Shader.Decoders;
 +using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 +using Ryujinx.Graphics.Shader.Translation;
@@ -1007,7 +1007,8 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            const InstProps B = InstProps.Bra;
 +
 +            // Control flow. Convergence barriers (BSSY 0x945, BSYNC 0x941, BREAK 0x942), WARPSYNC 0x948, DEPBAR 0x91a and NOP 0x918 only order the warp's
-+            // threads: per thread they do nothing.
++            // threads: per thread they do nothing. ERRBAR 0x9ab and CCTL 0x98f (cache control) end a thread fence after MEMBAR (MEMBAR.SC.GPU, ERRBAR,
++            // CCTL.IVALL): the memory barrier MEMBAR translates to covers them.
 +            X(AmpereOpcodes.Bra, InstName.Bra, InstEmit.ABra, B, writesRd: false);
 +            X(AmpereOpcodes.Brx, InstName.Brx, InstEmit.ABrx, B, writesRd: false);
 +            X(AmpereOpcodes.Brxu, InstName.Brx, InstEmit.ABrx, B, writesRd: false);
@@ -1015,7 +1016,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            X(AmpereOpcodes.Kill, InstName.Kil, InstEmit.AKill, B, writesRd: false);
 +            X(AmpereOpcodes.Ret, InstName.Ret, InstEmit.ARet, B, writesRd: false);
 +            X(AmpereOpcodes.Call, InstName.Cal, InstEmit.ACall, B, writesRd: false);
-+            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948 })
++            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948, 0x9ab, 0x98f })
 +            {
 +                X(op, InstName.Nop, InstEmit.ANop, InstProps.None, writesRd: false);
 +            }
@@ -2687,7 +2688,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs	2026-11-02 23:38:24
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,842 @@
 +using Ryujinx.Graphics.Shader.Decoders;
 +using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 +using Ryujinx.Graphics.Shader.Translation;
@@ -2737,6 +2738,8 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
 +            x(0x593, InstName.Suatom, ASuatom, N);
 +            x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
++            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
++            x(0x38c, InstName.Atoms, AAtoms, N);
 +        }
 +
 +        // ---- attributes ----
@@ -2998,6 +3001,19 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            ASet(context, x, res);
 +        }
 +
++        // ATOMS Rd, [Ra + offset], Rb (0x38c): a shared memory atomic, the byte offset 40..64, type 73..76 and operation 87..91 as ATOMG's. Ryujinx
++        // indexes shared memory in words (Maxwell's ATOMS). Pokemon Pokopia's compute shader 9b2f28c9920548aa adds to a shared counter at 0x7fc with it
++        public static void AAtoms(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            Operand addr = context.IAdd(Register(x.Ra, RegisterType.Gpr), Const((int)x.SignedField(40, 64)));
++            Operand offset = context.ShiftRightU32(addr, Const(2));
++            Operand id = Const(context.ResourceManager.SharedMemoryId);
++            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, offset, Register(x.Rb, RegisterType.Gpr));
++
++            ASet(context, x, res);
++        }
++
 +        // ---- local and shared memory ----
 +
 +        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91)
@@ -3086,6 +3102,22 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            }
 +
 +            context.Barrier();
++        }
++
++        // MEMBAR: orders this thread's memory accesses for the others. Scope 76..78: 0 the workgroup (a group memory barrier), any
++        // wider one a device memory barrier, as Maxwell's MEMBAR.CTA / .GL / .SYS (Pokemon Pokopia's compute shader 9b2f28c9920548aa)
++        public static void AMembar(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(76, 78) == 0)
++            {
++                context.GroupMemoryBarrier();
++            }
++            else
++            {
++                context.MemoryBarrier();
++            }
 +        }
 +
 +        // ---- textures ----

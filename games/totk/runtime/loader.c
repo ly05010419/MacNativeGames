@@ -248,7 +248,7 @@ static void map_module(Module *m,const char *dir) {
  uint64_t *key=(void *)(m->base+m->key_off);
  for(unsigned i=0;i<8;i++)key[i]=runtime_keys[i]*8;
  make_hash(m);
- fprintf(stderr,"[totk] mapped %s size=%zu symbols=%u\n",m->name,m->size,m->nsym);
+ fprintf(stderr,"[totk] mapped %s at %p size=%zu symbols=%u\n",m->name,(void *)m->base,m->size,m->nsym);
 }
 /* TOTK_EXPORT_IOS=<dir>: after the game patches, write each module's text [0, page_up(TEXT_END)) and patch area
    [PATCH_OFF, page_up(file size)) for ios/tools/gen_embed.py (Breath of the Wild's exclusive-acquire patch also changes the

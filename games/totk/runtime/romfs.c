@@ -292,6 +292,10 @@ static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
  if(*mount_name&&strcmp(name,mount_name))runtime_fail("second RomFS mount not implemented");strcpy(mount_name,name);return 0;
 }
 static unsigned cache_size(uint64_t *out) {if(!out)return INVALID;*out=0;return 0;}
+/* SDK 20's forms (Pokemon Pokopia): MountRom without a cache, and with a program index (0: the application's own RomFS). */
+static unsigned mount_rom_nocache(const char *name) {return mount_rom(name,NULL,0);}
+static unsigned mount_rom_index(const char *name,int index,void *cache,uint64_t size) {if(index)runtime_fail("MountRom of another program index not implemented");return mount_rom(name,cache,size);}
+static unsigned cache_size_index(uint64_t *out,int index) {(void)index;return cache_size(out);}
 /* TOTK_FS_LOG=1: log every RomFS open with the time since start (shows how far the game gets without a picture). */
 static void fs_log(const char *what,const char *path){static int on=-1;static uint64_t t0;if(on<0){on=getenv("TOTK_FS_LOG")!=NULL;t0=runtime_now_ns();}if(on)fprintf(stderr,"[totk-fs] %8.3f %s %s\n",(runtime_now_ns()-t0)/1e9,what,path);}
 void runtime_fs_log(const char *what,const char *path){fs_log(what,path);}
@@ -336,7 +340,8 @@ int runtime_romfs_handle(uint64_t h) {return h>0x100000000ULL&&h<0x100000000ULL+
 unsigned runtime_romfs_read_options(uint64_t *out,uint64_t h,int64_t off,void *buf,uint64_t size) {return runtime_romfs_read(out,h,off,buf,size);}
 void *runtime_fs_override(const char *name) {
  static const struct{const char *name;void *fn;} map[]={
- {"_ZN2nn2fs8MountRomEPKcPvm",mount_rom},{"_ZN2nn2fs22QueryMountRomCacheSizeEPm",cache_size}};
+ {"_ZN2nn2fs8MountRomEPKcPvm",mount_rom},{"_ZN2nn2fs22QueryMountRomCacheSizeEPm",cache_size},
+ {"_ZN2nn2fs8MountRomEPKc",mount_rom_nocache},{"_ZN2nn2fs8MountRomEPKciPvm",mount_rom_index},{"_ZN2nn2fs22QueryMountRomCacheSizeEPmi",cache_size_index}};
  for(size_t i=0;i<sizeof(map)/sizeof(map[0]);i++)if(!strcmp(name,map[i].name))return map[i].fn;return runtime_fs_host_override(name);
 }
 void runtime_fs_probe(void) {

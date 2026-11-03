@@ -131,6 +131,14 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  }*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
+#ifdef GAME_NS2
+/* SDK 20's single-state forms (Pokemon Pokopia): the latest state, as the plural forms give it with a count of 1. */
+static void full_state(NpadState *out,const uint32_t *id){pad_states(out,1,id,1);}
+static void handheld_state(NpadState *out,const uint32_t *id){pad_states(out,1,id,2);}
+static void disconnected_state(NpadState *out,const uint32_t *id){disconnected_states(out,1,id);}
+static int get_hold_type(void){return holdType;}
+static void handheld_activation(int mode){if(mode<0||mode>2)runtime_fail("invalid handheld activation mode");}
+#endif
 static void disconnect(const uint32_t *id){if(!id)runtime_fail("disconnect id");input_log("disconnect",*id);if(*id==pad_id()){   /* only the pad in use: in handheld mode TOTK disconnects player 1 */pthread_mutex_lock(&inputLock);allowed=false;pthread_mutex_unlock(&inputLock);runtime_input_clear();}}
 /* Mouse and keyboard devices: the Mac keyboard drives the full-key controller, so the game sees no mouse
    (not connected) and a keyboard with no keys, avoiding duplicated input. Layouts follow the SDK (0x28 / 0x30 bytes). */
@@ -201,6 +209,10 @@ void *runtime_input_override(const char *name){
 #endif
 #ifdef GAME_NS2
  ,{"_ZN2nn3hid30SetNpadJoyAssignmentModeSingleERKjNS0_17NpadJoyDeviceTypeE",joy_single},{"_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_",joy_merge},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadFullKeyStateERKj",full_state},{"_ZN2nn3hid12GetNpadStateEPNS0_17NpadHandheldStateERKj",handheld_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyDualStateERKj",disconnected_state},{"_ZN2nn3hid12GetNpadStateEPNS0_16NpadJoyLeftStateERKj",disconnected_state},
+ {"_ZN2nn3hid12GetNpadStateEPNS0_17NpadJoyRightStateERKj",disconnected_state},{"_ZN2nn3hid18GetNpadJoyHoldTypeEv",get_hold_type},
+ {"_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE",handheld_activation},
  {"_ZN2nn3hid21InitializeTouchScreenEv",touch_init},{"_ZN2nn3hid19GetTouchScreenStateILm1EEEvPNS0_16TouchScreenStateIXT_EEE",touch_state1}
 #endif
  };

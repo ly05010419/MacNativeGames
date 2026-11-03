@@ -78,8 +78,8 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #endif
 #ifdef GAME_BOTW
 #define GAME_PROGRAM_ID 0x01007ef00011e000ULL   /* GetInfo 18 (ProgramId): Breath of the Wild */
-#elif defined(GAME_DKB)
-#define GAME_PROGRAM_ID 0x040074a01bf12000ULL   /* Donkey Kong Bananza */
+#elif defined(GAME_NS2)
+#define GAME_PROGRAM_ID GAME_TITLE_ID   /* a Switch 2 game (game_version.h) */
 #else
 #define GAME_PROGRAM_ID 0x0100f2c0115b6000ULL
 #endif
@@ -96,10 +96,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define APP_CORE_MASK 7
 #endif
 #ifdef GAME_NS2
-/* The Switch 2 leaves a game about 9 GiB of its 12 GiB (seedds/nxnative's Bananza profile, not measured there either): with a
+/* The Switch 2 leaves a game 9-10 GiB of its 12 GiB (seedds/nxnative's Bananza profile: 9; xFractals/pokopia-native's Pokopia
+   profile: 10, which is taken; neither measured on the console): with a
    Switch 1 pool (3.2 GiB) Bananza's heaps did not fit (AudioSystemHeap creation returned null). Address space only until
    the game maps it. */
-#define APP_POOL_DEFAULT 0x240000000ULL
+#define APP_POOL_DEFAULT 0x280000000ULL
 #else
 #define APP_POOL_DEFAULT (dram_8gb()?0x1b3400000ULL:0xcd500000ULL)
 #endif
@@ -393,6 +394,8 @@ void *runtime_override(const char *name) {
  #ifdef GAME_NS2
  void *ns2=runtime_ns2_override(name);if(ns2)return ns2;
  void *codec2=runtime_ns2_codec_override(name);if(codec2)return codec2;
+ void *aout=runtime_ns2_audio_out_override(name);if(aout)return aout;
+ void *opusms=runtime_ns2_opus_ms_override(name);if(opusms)return opusms;
  void *offline=runtime_offline_override(name);if(offline)return offline;
  #endif
  void *input=runtime_input_override(name);if(input)return input;void *font=runtime_font_override(name);if(font)return font;void *codec=runtime_codec_override(name);if(codec)return codec;void *movie=runtime_movie_override(name);if(movie)return movie;void *clock=runtime_time_override(name);if(clock)return clock;void *applet=runtime_applet_override(name);if(applet)return applet;void *swkbd=runtime_swkbd_override(name);if(swkbd)return swkbd;void *account=runtime_account_override(name);if(account)return account;void *fs=runtime_fs_override(name);if(fs)return fs;void *front=runtime_front_override(name);return front?front:runtime_gfx_override(name);

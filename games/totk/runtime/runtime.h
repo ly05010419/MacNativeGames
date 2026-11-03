@@ -151,7 +151,9 @@ void runtime_keymap_reset(void);                   /* the default layout, keyboa
 int runtime_graphics_initialized(void);   /* nv::InitializeGraphics has run on the host (runtime/gfx_bridge.c) */
 void *runtime_ns2_override(const char *name);
 void *runtime_offline_override(const char *name);   /* runtime/offline_host.c: nifm and the console identity of an offline host (GAME_NS2) */
-void *runtime_ns2_codec_override(const char *name);   /* nn::codec video and sync point events (runtime/ns2_codec.c, GAME_NS2) */   /* Switch 2 SDK calls (runtime/ns2_host.c, GAME_NS2 builds only) */
+void *runtime_ns2_codec_override(const char *name);
+void *runtime_ns2_audio_out_override(const char *name);
+void *runtime_ns2_opus_ms_override(const char *name);   /* nn::codec Opus multistream (runtime/ns2_opus_ms.c, GAME_NS2) */   /* nn::audio AudioOut (runtime/ns2_audio_out.c, GAME_NS2) */   /* nn::codec video and sync point events (runtime/ns2_codec.c, GAME_NS2) */   /* Switch 2 SDK calls (runtime/ns2_host.c, GAME_NS2 builds only) */
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;

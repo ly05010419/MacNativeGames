@@ -628,9 +628,13 @@ NVN_NOPROTO(nvnProgramSetSampleShading, NVNboolean, NVNprogram *p, int mode) { (
 NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *primary) { (void)b; (void)primary; }
 /* NVN2 command buffer modes set on every command buffer Bananza begins: they tune how the GPU's front end runs the commands
    (compute overlapping the next work, geometry processing, recording), not what they produce. The host records and
-   replays every command in order on Metal, so none changes its result. Open: what the values select on the console. */
+   replays every command in order on Metal, so none changes its result. Open: what the values select on the console.
+   Recording modes are 0, 1 and 2 (Pokemon Pokopia selects all three; kirakira-dev/ouncenative's NVN2 layer, MIT, accepts
+   only these): another value is a call the host does not understand, said in red once. */
 NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int mode) {
-    (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetRecordingMode %d: the host records every command buffer alike", mode); }
+    (void)c;
+    if (mode < 0 || mode > 2) { static _Atomic int bad; if (!atomic_exchange(&bad, 1)) LOG("【红】nvnCommandBufferSetRecordingMode %d：NVN2 只有 0 / 1 / 2，宿主照常录制 | unknown NVN2 recording mode, recorded as the others", mode); return; }
+    static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetRecordingMode %d: the host records every command buffer alike", mode); }
 NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int mode) {
     (void)c; static _Atomic int once; if (!atomic_exchange(&once, 1)) LOG("[nvn] nvnCommandBufferSetGeometryProcessingMode %d: no effect on Metal", mode); }
 NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) {
@@ -728,7 +732,10 @@ static int sync_lag_on(void) { int v = atomic_load(&g_sync_lag); if (v < 0) { co
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     NVN_BLOCKING();
     const sync_t *o = (const sync_t *)s;
-    if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    if (!o->fenced) {
+        if (sync_chain_left(1)) { char w[96]; snprintf(w, sizeof w, "SyncWait on an unfenced sync=%p timeout=%llu", (const void *)s, (unsigned long long)timeout); guest_chain(w); }
+        return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    }
     int k = (o->fenced & 2) != 0, lg = synclog_env();
     if (lg) { atomic_fetch_add(&g_sw_calls[k], 1); if (o->fence == mtl_last_fence()) atomic_fetch_add(&g_sw_newest[k], 1); }
     int tok = (o->fenced & 4) != 0;
@@ -2409,6 +2416,34 @@ static int fence_wait_to(uint64_t k, uint64_t kg, uint64_t timeout_ns) {
     return mtl_wait(f, timeout_ns > used ? timeout_ns - used : 0);
 }
 
+/* nvnCommandBufferFenceSync: the sync signals once the GPU has run the commands recorded before it. Its record is found in
+   the recordings a submit carries (as resolve_deferred finds deferred binds) and the sync is fenced with that submit: with
+   the translation thread, the submission's token (fenced | 4, as nvnQueueFenceSync); without it, the Metal fence the submit
+   ended with. The commands after it in the same submission are included: a later signal, never an early one.
+   Recording the fence does not touch the sync: until the submit takes it, the sync keeps the fence it had (as on the
+   console, where the submission gives it its new threshold; kirakira-dev/ouncenative's replay, MIT, does the same).
+   Clearing it at the record made Pokemon Pokopia's engine poll a sync of a command buffer it had not submitted yet with
+   SyncWait(0) forever (main thread in a 0.1 ms sleep loop, the frame loop stopped at frame ~517). */
+static void fence_syncs(const uint8_t *p, int depth, uint64_t fence, int tok) {
+    for (;;) {
+        op_hdr h; memcpy(&h, p, sizeof h);
+        if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_) die("corrupt recording at %p while fencing syncs (op %u size %u)", (const void *)p, h.op, h.size);
+        if (h.op == OP_END) return;
+        if (h.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (h.op == OP_CALL) { uint64_t t; memcpy(&t, p + 8, 8); if (depth >= 16) die("fence sync scan: call depth over 16"); fence_syncs((const uint8_t *)(uintptr_t)t, depth + 1, fence, tok); }
+        else if (h.op == OP_FENCE_SYNC) { sync_t *s = ((const p_fence_sync *)(p + 8))->sync; s->fence = fence; s->fenced = tok ? 5 : 1; }
+        p += h.size;
+    }
+}
+static _Atomic int g_fence_sync_used;
+NVN(nvnCommandBufferFenceSync, void, NVNcommandBuffer *c, NVNsync *s, NVNsyncCondition cond, int flags) {
+    (void)cond; (void)flags;
+    REC(c, OP_FENCE_SYNC, p_fence_sync)->sync = s; atomic_store(&g_fence_sync_used, 1);
+    if (sync_chain_left(0)) { char w[96]; snprintf(w, sizeof w, "CommandBufferFenceSync cb=%p sync=%p", (void *)c, (void *)s); guest_chain(w); }
+}
+/* A GPU-side wait on a sync: the host runs every queue's submissions in order on one Metal queue, so what the sync fences is
+   always done before what follows (seedds/nxnative does the same). */
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; (void)s; return 1; }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     NVN_BLOCKING();
     if (runtime_frametrace_event) runtime_frametrace_event(8);
@@ -2434,6 +2469,7 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
         if (((queue_t *)q)->submits % 600 == 0) LOG("[nvn] 延迟绑定 至提交 %llu：提交时读句柄 %llu 次，其中与录制时不同 %llu 次；每次提交读句柄平均 %.3f ms", (unsigned long long)((queue_t *)q)->submits, (unsigned long long)g_def_n, (unsigned long long)g_def_changed, g_def_ns / 1e6 / (double)((queue_t *)q)->submits);
     }
     if (async_replay()) {
+        if (atomic_load(&g_fence_sync_used)) { pthread_mutex_lock(&g_xq_mu); uint64_t next = g_xsub_in + 1; pthread_mutex_unlock(&g_xq_mu); for (int i = 0; i < n; i++) fence_syncs((const uint8_t *)h[i], 0, next, 1); }
         xjob j = {.kind = XJ_SUBMIT, .n = n, .h = malloc(sizeof(uint64_t) * (n > 0 ? n : 1))};
         if (!j.h) die("submit job");
         memcpy(j.h, h, sizeof(uint64_t) * (size_t)n);
@@ -2446,6 +2482,7 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
         return;
     }
     submit_exec(n, (const uint64_t *)h, NULL);
+    if (atomic_load(&g_fence_sync_used)) for (int i = 0; i < n; i++) fence_syncs((const uint8_t *)h[i], 0, mtl_last_fence(), 0);   /* without the translation thread: the fence the submit ended with */
     atomic_store(&g_sub_fence_prev, atomic_load(&g_sub_fence_last)); atomic_store(&g_sub_fence_last, mtl_last_fence());
     totk_tl(TL_SUB_OUT, 0, 0);
 #ifdef GAME_BOTW

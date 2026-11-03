@@ -156,6 +156,8 @@ static uint32_t six_state(SixAxisState *s, const uint32_t *h) { int n; return si
    the hid service. */
 static int six_states_public(SixAxisState *s, int max, const uint32_t *h) { int n = 0; six_states(&n, s, max, h); return n; }
 static int no_six_states(SixAxisState *s, int max, const uint32_t *h) { (void)s; (void)max; (void)h; return 0; }
+static void six_state_public(SixAxisState *s, const uint32_t *h) { int n = 0; if (six_states(&n, s, 1, h) || !n) memset(s, 0, sizeof *s); }
+static void no_six_state(SixAxisState *s, const uint32_t *h) { (void)h; memset(s, 0, sizeof *s); }
 static void no_feedback(const void *h) { (void)h; }
 static void no_vibration(const void *h, const void *v) { (void)h; (void)v; }
 static int no_handles(void *out, int max, const uint32_t *id, uint32_t style) { (void)out; (void)max; (void)id; (void)style; return 0; }
@@ -219,7 +221,8 @@ void *runtime_hid_feedback_override(const char *name) {
         {"_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", (void *)vib_send, (void *)no_vibration, false},
         {"_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", (void *)vib_info, (void *)vib_info, false},
         {"_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", (void *)six_start, (void *)no_feedback, true},
-        {"_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", (void *)six_states_public, (void *)no_six_states, true}};
+        {"_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", (void *)six_states_public, (void *)no_six_states, true},
+        {"_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", (void *)six_state_public, (void *)no_six_state, true}};
     for (unsigned i = 0; i < sizeof sdk20 / sizeof *sdk20; i++)
         if (!strcmp(name, sdk20[i].name)) return (sdk20[i].gyro ? gyro : rumble) ? sdk20[i].on : sdk20[i].off;
     for (unsigned i = 0; i < sizeof entries / sizeof *entries; i++)

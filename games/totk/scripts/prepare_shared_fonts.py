@@ -4,7 +4,7 @@ read at start (runtime/shared_font.c, runtime/game_data.h); the files stay in ex
 import argparse,json
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb'), default='v0')
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb','pkp'), default='v0')
 version=parser.parse_args().version
 folder=root/'extracted/firmware/shared-fonts';manifest=json.loads((folder/'manifest.json').read_text())
 assert manifest['status']=='pass' and [f['type'] for f in manifest['fonts']]==list(range(6))

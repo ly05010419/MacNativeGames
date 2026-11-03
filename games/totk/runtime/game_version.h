@@ -53,6 +53,21 @@
 #define GAME_ADDR_0xe995c4 0xffffffffu
 #define GAME_ADDR_0x2aa4fa0 0xffffffffu
 #define GAME_ADDR_0x453f648 0xffffffffu
+#elif defined(GAME_POKOPIA)
+/* Pokemon Pokopia (0400A3A01EE4C000) 2.0.1, update v655360 (SDK 20.5 for the Switch 2, NVN2; modules main, subsdk0, sdk):
+   the second Switch 2 game (GAME_NS2) on this host, docs/ns2-port.md. As Donkey Kong Bananza's block. */
+#ifndef GAME_NS2
+#define GAME_NS2 1
+#endif
+#define GAME_TITLE_ID 0x0400a3a01ee4c000ULL
+#define TOTK_GAME_VERSION "2.0.1"
+#define GAME_NAME "Pokemon Pokopia"
+#define GAME_FOLDER "Pokopia"
+#define GAME_LOG "pokopia"
+#define TOTK_GAME_DIR "pkp"
+#define GAME_ADDR_0xe995c4 0xffffffffu
+#define GAME_ADDR_0x2aa4fa0 0xffffffffu
+#define GAME_ADDR_0x453f648 0xffffffffu
 #elif defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"

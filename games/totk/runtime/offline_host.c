@@ -3,6 +3,7 @@
    follow). From games/wonder (Super Mario Bros. Wonder imports them); here for the Switch 2 games (GAME_NS2: Donkey Kong
    Bananza initializes nifm at boot). TOTK and BotW import none of them and do not build this file. */
 #include "runtime.h"
+void hle_signal_system_event(void *event);
 #include "game_version.h"
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -88,6 +89,12 @@ static void random_bytes(void *out, uint64_t n) { arc4random_buf(out, (size_t)n)
 /* ---------- play reports: nothing is reported from an offline host ---------- */
 static uint32_t ok_result(void) { return 0; }
 static void nothing(void) { }
+static int socket_ready(void) { return 1; }
+static uint32_t false_flag(void) { return 0; }
+static void friends_event(void *self, void *event) { (void)self; if (event) { hle_bind_system_event(event, 0); hle_signal_system_event(event); } }
+static uint8_t invitation_event[0x80] __attribute__((aligned(16)));   /* friend invitations: bound, never signalled */
+static void *friends_invitation_event(void) { static int bound; if (!bound) { bound = 1; hle_bind_system_event(invitation_event, 0); } return invitation_event; }
+static uint32_t friends_done(void *self, unsigned char *done) { (void)self; if (done) *done = 1; return 0; }
 
 /* ---------- nn::settings ---------- */
 /* The SDK builds the language's code through the settings service; the table is the system's fixed one. */
@@ -112,6 +119,54 @@ void *runtime_offline_override(const char *name) {
         {"_ZN2nn4nifm22GetCurrentProxySettingEPNS0_12ProxySettingE", nifm_unavailable},
         {"_ZN2nn3nsd9ResolveExEPNS0_4FqdnERKS1_", nsd_unavailable}, {"_ZN2nn6socket10InitializeEPvmmi", socket_initialize},
         {"_ZN2nn6socket12GetLastErrorEv", socket_last_error},
+        /* SDK 20's socket forms (Pokemon Pokopia): initialization succeeds, every socket call finds the network down. */
+        {"_ZN2nn6socket10InitializeERKNS0_6ConfigE", socket_initialize}, {"_ZN2nn6socket8FinalizeEv", socket_initialize},
+        {"_ZN2nn6socket12GetLastErrnoEv", socket_last_error},
+        /* More of SDK 20's offline surface (Pokemon Pokopia): sockets stay down; crash reports, play reports and the profanity
+           filter's setup are accepted; SSL, friends, local wireless, data delivery and the network request report the
+           network unavailable, so the game keeps to its offline paths. */
+        {"_ZN2nn6socket13IsInitializedEv", socket_ready}, {"_ZN2nn6socket4ReadEiPvm", socket_down}, {"_ZN2nn6socket5WriteEiPKvm", socket_down},
+        {"_ZN2nn6socket11GetPeerNameEiP8sockaddrPj", socket_down},
+        {"_ZN2nn2oe17EnableCrashReportEv", nothing}, {"_ZN2nn2oe18DisableCrashReportEv", nothing},
+        {"_ZN2nn2oe40SendServerMaintenanceOverlayNotificationENS_4time9PosixTimeES2_", nothing},
+        {"_ZN2nn4nifm20SubmitNetworkRequestEv", nothing}, {"_ZN2nn4nifm22IsNetworkRequestOnHoldEv", false_flag},
+        {"_ZN2nn4nifm26GetCurrentPrimaryIpAddressEPNS_6socket6InAddrE", nifm_unavailable},
+        {"_ZN2nn3ssl7ContextC1Ev", nothing}, {"_ZN2nn3ssl7ContextD1Ev", nothing}, {"_ZN2nn3ssl7Context7DestroyEv", ok_result},
+        {"_ZN2nn3ssl7Context15ImportClientPkiEPmPKcS4_jj", ssl_unavailable}, {"_ZN2nn3ssl7Context15ImportServerPkiEPmPKcjNS0_17CertificateFormatE", ssl_unavailable},
+        {"_ZN2nn3ssl7Context9ImportCrlEPmPKcj", ssl_unavailable}, {"_ZN2nn3ssl8FinalizeEv", ok_result},
+        {"_ZN2nn3ssl14BuiltInManager28GetBuiltInCertificateBufSizeEPjPNS0_15CaCertificateIdEj", ssl_unavailable},
+        {"_ZN2nn3ssl14BuiltInManager22GetBuiltInCertificatesEPPNS0_26BuiltInCertificateInfoBaseEPhjPNS0_15CaCertificateIdEj", ssl_unavailable},
+        {"_ZN2nn7friends12AsyncContextC1Ev", nothing}, {"_ZN2nn7friends12AsyncContextD1Ev", nothing},
+        {"_ZN2nn7friends12AsyncContext14GetSystemEventEPNS_2os11SystemEventE", friends_event}, {"_ZN2nn7friends12AsyncContext7HasDoneEPb", friends_done},
+        {"_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileEPKNS_7account23NetworkServiceAccountIdEi", friends_unavailable},
+        {"_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileERKNS_7account3UidEPKNS5_23NetworkServiceAccountIdEi", friends_unavailable},
+        {"_ZN2nn7friends21StartFriendInvitationERKNS_7account3UidEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", friends_unavailable},
+        {"_ZN2nn7friends28StartSendingFriendInvitationERKNS_7account3UidEPKNS1_23NetworkServiceAccountIdEiRKNS0_35FriendInvitationGameModeDescriptionEPKvm", friends_unavailable},
+        {"_ZN2nn7friends38TryPopFriendInvitationNotificationInfoEPNS_7account3UidEPmPvm", false_flag},
+        {"_ZN2nn7friends7ProfileC1Ev", nothing},
+        {"_ZN2nn7friends36GetFriendInvitationNotificationEventEv", friends_invitation_event},
+        {"_ZN2nn3ldn10DisconnectEv", ldn_unavailable}, {"_ZN2nn3ldn12CloseStationEv", ldn_unavailable}, {"_ZN2nn3ldn16CloseAccessPointEv", ldn_unavailable},
+        {"_ZN2nn3ldn13CreateNetworkERKNS0_13NetworkConfigERKNS0_14SecurityConfigERKNS0_10UserConfigE", ldn_unavailable},
+        {"_ZN2nn3ldn16SetAdvertiseDataEPKvm", ldn_unavailable}, {"_ZN2nn3ldn6RejectENS0_11Ipv4AddressE", ldn_unavailable},
+        {"_ZN2nn3ldn7ConnectERKNS0_11NetworkInfoERKNS0_14SecurityConfigERKNS0_10UserConfigEiNS0_13ConnectOptionE", ldn_unavailable},
+        {"_ZN2nn3ngc15ProfanityFilterC1Ev", nothing}, {"_ZN2nn3ngc15ProfanityFilterD1Ev", nothing}, {"_ZN2nn3ngc15ProfanityFilter8FinalizeEv", ok_result},
+        {"_ZN2nn3ngc15ProfanityFilter10InitializeEPvm", ok_result}, {"_ZN2nn3ngc15ProfanityFilter22SetNormalizationOptionEi", nothing},
+        {"_ZN2nn5prepo10PlayReportC1EPKc", nothing}, {"_ZN2nn5prepo10PlayReportD1Ev", nothing},
+        {"_ZN2nn5prepo10PlayReport3AddEPKcRKNS0_5ArrayE", ok_result}, {"_ZN2nn5prepo10PlayReport3AddEPKcb", ok_result}, {"_ZN2nn5prepo10PlayReport3AddEPKcf", ok_result},
+        {"_ZN2nn5prepo5ArrayC1Ev", nothing}, {"_ZN2nn5prepo5Array9SetBufferEPvm", nothing}, {"_ZN2nn5prepo5Array3AddEf", ok_result}, {"_ZN2nn5prepo5Array3AddEl", ok_result},
+        {"_ZN2nn4bcat17DeliveryCacheFileC1Ev", nothing}, {"_ZN2nn4bcat17DeliveryCacheFileD1Ev", nothing},
+        {"_ZN2nn4bcat17DeliveryCacheFile4OpenEPKc", nifm_unavailable}, {"_ZN2nn4bcat17DeliveryCacheFile4OpenERKNS0_13DirectoryNameERKNS0_8FileNameE", nifm_unavailable},
+        {"_ZN2nn4bcat22DeliveryCacheDirectoryC1Ev", nothing}, {"_ZN2nn4bcat22DeliveryCacheDirectoryD1Ev", nothing},
+        {"_ZN2nn4bcat22DeliveryCacheDirectory4OpenERKNS0_13DirectoryNameE", nifm_unavailable},
+        {"_ZN2nn4bcat21DeliveryCacheProgressC1Ev", nothing}, {"_ZN2nn4bcat21DeliveryCacheProgressD1Ev", nothing},
+        {"_ZN2nn4bcat24RequestSyncDeliveryCacheEPNS0_21DeliveryCacheProgressE", nifm_unavailable},
+        {"_ZN2nn6socket10GetSockOptEiiiPvPj", socket_down}, {"_ZN2nn6socket10SetSockOptEiiiPKvj", socket_down},
+        {"_ZN2nn6socket11GetSockNameEiP8sockaddrPj", socket_down}, {"_ZN2nn6socket4PollEP6pollfdmi", socket_down},
+        {"_ZN2nn6socket4RecvEiPvmi", socket_down}, {"_ZN2nn6socket4SendEiPKvmi", socket_down}, {"_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", socket_down},
+        {"_ZN2nn6socket6AcceptEiP8sockaddrPj", socket_down}, {"_ZN2nn6socket6ListenEii", socket_down},
+        {"_ZN2nn6socket6SelectEiPNS0_5FdSetES2_S2_PNS0_7TimeValE", socket_down}, {"_ZN2nn6socket6SendToEiPKvmiPK8sockaddrj", socket_down},
+        {"_ZN2nn6socket7ConnectEiPK8sockaddrj", socket_down}, {"_ZN2nn6socket8RecvFromEiPvmiP8sockaddrPj", socket_down},
+        {"_ZN2nn6socket8ShutdownEii", socket_down},
         {"_ZN2nn6socket11GetAddrInfoEPKcS2_PKNS0_8AddrInfoEPPS3_", socket_addr_info},
         {"_ZN2nn6socket12FreeAddrInfoEPNS0_8AddrInfoE", socket_free_addr_info}, {"_ZN2nn6socket9InetHtonlEj", socket_htonl},
         {"_ZN2nn6socket9InetHtonsEt", socket_htons},

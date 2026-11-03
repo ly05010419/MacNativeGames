@@ -62,7 +62,7 @@ static int jcms_states(void *out, int n, const uint32_t *h) { (void)out; (void)n
 /* ---------- streamplay: GameShare / GameChat streaming (stpl:u) ----------
    Bananza initializes it at boot. The host streams to nobody: the library is ready, no session is open and no guest is
    connected, so every guest query has nothing to report. Opening a session is a player action and stays unhooked. */
-static uint32_t stpl_mem_size(int type, int mode, int n) { (void)type; (void)mode; (void)n; return 0x1000; }
+static uint32_t stpl_mem_size(int type, int mode, int n) { (void)type; (void)mode; (void)n; return 0; }   /* PokeDinner's stpl:u command 300 offline: no work memory */
 static Result stpl_init(int type, int mode, void *work, size_t size) { (void)type; (void)mode; (void)work; (void)size; return RES_OK; }
 static void stpl_fini(void) {}
 static uint8_t stpl_event[0x80] __attribute__((aligned(16)));   /* the connection state event: bound, never signaled */
@@ -81,9 +81,11 @@ static void stpl_vib_info(uint64_t *info, const void *h) { (void)h; *info = 0; }
 static uint32_t stpl_jcms_handle(const void *id, const void *type) { (void)id; (void)type; return 0; }
 
 /* ---------- oe: the graphics scale (through am's IGraphicsScalingParametersFunctions, a session the host never opened) ----------
-   The SDK maps the parameter's first word 10 / 20 / 30 to scale 0 / 1 / 2; Bananza keeps it as a draw-size tier. Which tier
-   the console reports in which mode is not measured (open, as in nxnative): 0 handheld, 1 docked, following the mode. */
-static int oe_graphics_scale(void) { return !runtime_handheld_mode(); }
+   The SDK maps the parameter's first word 10 / 20 / 30 to scale 0 / 1 / 2; Bananza keeps it as a draw-size tier. The
+   emulator Pokemon Pokopia was brought up on (PokeDinner, an Eden fork) answers 10 in either mode, and
+   kirakira-dev/ouncenative (MIT) returns its scale 0 for Pokopia: 0, fixed, so no change of tier is ever notified. What
+   the console reports in each mode is not measured (open). */
+static int oe_graphics_scale(void) { return 0; }
 static void oe_graphics_scale_notify(unsigned on) { (void)on; }
 
 /* ---------- nv::InitCheck ----------
@@ -121,6 +123,22 @@ static Result to_posix(int *count, int64_t *out, int n, const CalendarTime *ct) 
     if (n > 0 && out) out[0] = (int64_t)v;
     return RES_OK;
 }
+
+/* ---------- More of the Switch 2 SDK (Pokemon Pokopia; from xFractals/pokopia-native's nxnative patch, MIT) ----------
+   The Joy-Con 2 mouse (Nmouse) and its sensor: none on the host. The hid library's vibration classes (players, targets,
+   converters, node connections): inert, as the game's rumble files have no host device yet. GameShare sessions: none.
+   The server environment is production (0). */
+static Result ok_result(void) { return RES_OK; }
+static void no_op(void) {}
+static uint64_t zero_word(void) { return 0; }
+static Result nmouse_states(int *count) { if (count) *count = 0; return RES_OK; }
+static Result zero_out64(uint64_t *out) { if (out) *out = 0; return RES_OK; }
+static Result zero_out32(uint32_t *out) { if (out) *out = 0; return RES_OK; }
+static Result jcms_state(uint8_t *out, const void *h) { (void)h; if (out) memset(out, 0, 32); return RES_OK; }
+static Result album_fail(void) { return 0x1u; }
+static void app_error(const void *arg) { (void)arg; fprintf(stderr, "[ns2] err::ShowApplicationError: the error applet is not shown\n"); }
+static Result stpl_nickname(char *out) { if (out) *out = 0; return RES_OK; }
+static Result stpl_open_session(uint8_t *info, const void *cfg) { (void)cfg; if (info) memset(info, 0, 0x40); return RES_OK; }
 
 void *runtime_ns2_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
@@ -173,6 +191,39 @@ void *runtime_ns2_override(const char *name) {
         {"_ZN2nn2oe23GetCurrentGraphicsScaleEv", oe_graphics_scale},
         {"_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", oe_graphics_scale_notify},
         {"_ZN2nv9InitCheckEv", nv_init_check},
+        {"_ZN2nn2oe24GetServerEnvironmentTypeEv", zero_word},
+        /* Parental controls' free communication (before online play): allowed; the display at exit; the album (screenshots go
+           nowhere); the application error applet (logged). */
+        {"_ZN2nn4pctl25TryBeginFreeCommunicationEb", ok_result}, {"_ZN2nn4pctl20EndFreeCommunicationEv", no_op},
+        {"_ZN2nn2vi8FinalizeEv", no_op}, {"_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE", no_op}, {"_ZN2nn2vi12DestroyLayerEPNS0_5LayerE", no_op},
+        {"_ZN2nn5album10InitializeEv", ok_result}, {"_ZN2nn5album8FinalizeEv", no_op}, {"_ZN2nn5album14SaveScreenshotEPKvmNS0_9ImageSizeENS0_17AlbumReportOptionE", album_fail},
+        {"_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", app_error},
+        {"_ZN2nn10streamplay12CloseSessionEv", ok_result}, {"_ZN2nn10streamplay14StartStreamingEv", ok_result},
+        {"_ZN2nn10streamplay24CreateIndividualDisplaysEi", ok_result}, {"_ZN2nn10streamplay21GetNativeWindowHandleENS0_7GuestIdE", zero_word},
+        {"_ZN2nn10streamplay21WriteGuestAudioStreamENS0_7GuestIdEPKvi", ok_result},
+        {"_ZN2nn10streamplay13GetGuestNsaIdEPNS_7account23NetworkServiceAccountIdENS0_7GuestIdE", zero_out64},
+        {"_ZN2nn10streamplay16GetGuestNicknameEPNS_7account8NicknameENS0_7GuestIdE", stpl_nickname},
+        {"_ZN2nn10streamplay31OpenSessionWithMatchmakeSupportEPNS0_11SessionInfoERKNS0_15MatchmakeConfigE", stpl_open_session},
+        {"_ZN2nn3hid16InitializeNmouseEPvmii", ok_result}, {"_ZN2nn3hid14FinalizeNmouseEv", no_op},
+        {"_ZN2nn3hid16GetNmouseHandlesEPNS0_12NmouseHandleEij", zero_word},
+        {"_ZN2nn3hid21GetMergedNmouseHandleEPNS0_12NmouseHandleE", zero_out64},
+        {"_ZN2nn3hid15GetNmouseStatesEPiPNS0_11NmouseStateEiNS0_12NmouseHandleE", nmouse_states},
+        {"_ZN2nn3hid16GetNmouseTypeSetEPNS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEENS0_12NmouseHandleE", zero_out32},
+        {"_ZN2nn3hid26SetMergedNmouseSourceTypesENS_4util10BitFlagSetILi32ENS0_10NmouseTypeEEE", no_op},
+        {"_ZN2nn3hid32SetNmouseButtonConfigJoyLeftJcmsERKNS0_29NmouseButtonConfigJoyLeftJcmsE", no_op},
+        {"_ZN2nn3hid33SetNmouseButtonConfigJoyRightJcmsERKNS0_30NmouseButtonConfigJoyRightJcmsE", no_op},
+        {"_ZN2nn3hid12GetJcmsStateEPNS0_9JcmsStateERKNS0_10JcmsHandleE", jcms_state},
+        {"_ZN2nn3hid13VibrationNode6UpdateEv", no_op}, {"_ZN2nn3hid13VibrationNode15SetModulationToEPKS1_RKNS0_19VibrationModulationE", no_op},
+        {"_ZN2nn3hid23VibrationNodeConnectionC1Ev", no_op}, {"_ZN2nn3hid23VibrationNodeConnectionD1Ev", no_op},
+        {"_ZN2nn3hid23VibrationNodeConnection7ConnectEPNS0_13VibrationNodeES3_", ok_result}, {"_ZN2nn3hid23VibrationNodeConnection10DisconnectEv", no_op},
+        {"_ZN2nn3hid15VibrationPlayerC1Ev", no_op}, {"_ZN2nn3hid15VibrationPlayerD1Ev", no_op}, {"_ZN2nn3hid15VibrationPlayer4LoadEPKvm", ok_result},
+        {"_ZN2nn3hid15VibrationPlayer4PlayEv", no_op}, {"_ZN2nn3hid15VibrationPlayer4StopEv", no_op}, {"_ZN2nn3hid15VibrationPlayer7SetLoopEb", no_op},
+        {"_ZN2nn3hid15VibrationPlayer15SetLoopIntervalEi", no_op}, {"_ZN2nn3hid15VibrationPlayer18SetCurrentPositionEi", no_op},
+        {"_ZN2nn3hid15VibrationTargetC1Ev", no_op}, {"_ZN2nn3hid15VibrationTargetD1Ev", no_op},
+        {"_ZN2nn3hid15VibrationTarget24GetVibrationDeviceHandleEv", zero_word},
+        {"_ZN2nn3hid15VibrationTarget24SetVibrationDeviceHandleERKNS0_21VibrationDeviceHandleE", no_op},
+        {"_ZN2nn3hid18VibrationConverterC1Ei", no_op}, {"_ZN2nn3hid18VibrationConverterD1Ev", no_op},
+        {"_ZN2nn3hid18VibrationConverter12ProcessChunkEPNS0_14VibrationValueEPKsi", zero_word},
         {"_ZN2nn4bcat10InitializeEv", bcat_init}, {"_ZN2nn4bcat25MountDeliveryCacheStorageEv", bcat_mount},
         {"_ZN2nn4bcat27UnmountDeliveryCacheStorageEv", bcat_unmount},
         {"_ZN2nn2ec33InitializeForShopServiceAccessorsEPvm", ec_init}, {"_ZN2nn2ec31FinalizeForShopServiceAccessorsEv", ec_fin},

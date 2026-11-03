@@ -102,3 +102,22 @@ Open:
 - add-on content is not packed; H.264 / AV1 video not served; Switch 2 device values (nvnDeviceGetInteger) are Switch 1's;
 - build_app.py packaging, an app bundle, iPhone; the BotW and TotK 1.0.0 binaries do not link on main either (VR symbols),
   unrelated to this branch.
+
+**Pokemon Pokopia (`0400A3A01EE4C000`, update 655360 / display 2.0.1), 2026-11-03: boots and runs its frame loop, picture
+black.** Variant `runtime-pkp` / `GAME_POKOPIA` (with `GAME_NS2`), profile folder `pkp`, `games/pokopia/assets`. It passes
+nnMain, the graphics, audio and hid setup and runs past frame 1,200 with no failure; no game picture yet (draws without a
+translated vertex stage are skipped: open). Reference: kirakira-dev/ouncenative (MIT; nxnative fork with NX2 support, Pokopia
+v327680 with offline PokeDinner shaders, GPL patches not taken).
+Added for it (general where possible, each with its reason in the code):
+- rewriter: `mov sp, x18` (alloca) rewritten (`site_sp`), structck accepts a scratch register saved through an `entry_sp`
+  alias;
+- host: AudioOut (AudioQueue), Opus multistream decoders (libopus), fs (allocator, free space, save data size / extend,
+  directory entry counts, uncached rom mounts), time (location, zone rules, network clock tasks), account / nsa / friends /
+  ldn / prepo / bcat / ssl / socket stubs answering offline, hid single-state reads, hold type, handheld activation, the
+  public six-axis state;
+- translator: Ampere MEMBAR (group or device memory barrier), ERRBAR and CCTL (no-ops after it), ATOMS (shared atomics);
+- NVN: fence syncs on command buffers; `CommandBufferFenceSync` no longer clears the sync at the record (the engine polled
+  a sync of a command buffer not submitted yet forever; the frame loop stopped at ~517); stencil views (X32_Stencil8);
+  recording modes 0-2 checked; `oe::GetCurrentGraphicsScale` 0 and streamplay work memory 0 as PokeDinner answers
+  (Bananza not re-checked with these two);
+- test scripts: `TOTK_WINDOW_FLOAT=1` keeps a test window above other windows (a covered window stops presents).
