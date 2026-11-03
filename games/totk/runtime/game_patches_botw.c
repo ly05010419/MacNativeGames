@@ -782,6 +782,9 @@ void runtime_game_patches(Module *m) {
           if (!w) fprintf(stderr, "[botw] exclusive loads with acquire: set at build time (iOS), none left\n"); else
           fprintf(stderr, "[botw] exclusive loads with acquire: %u in the code, %u in the rewriter's patch area (TOTK_EXCL_ACQUIRE=0: as shipped)\n", t, p);
       } else fprintf(stderr, "[botw] exclusive loads as shipped (TOTK_EXCL_ACQUIRE=0)\n"); }
+#ifdef GAME_BOTW160
+    { void cdpoint_arm(Module *m); cdpoint_arm(m); }   /* TOTK_CDPOINT_TRACE (below, with the other brk diagnostics) */
+#endif
     const char *e = getenv("TOTK_JQ_CHECK"); if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
     for (int i = 0; i < JQ_SITES; i++) { uint32_t w; memcpy(&w, m->base + g_jq_site[i].off, 4);
         if (w != g_jq_site[i].word) { fprintf(stderr, "[botw] TOTK_JQ_CHECK: main+%#x is %08x, not %08x (%s): not armed\n", g_jq_site[i].off, w, g_jq_site[i].word, g_jq_site[i].what); return; } }
@@ -819,9 +822,53 @@ static int botw_pad_hook(ucontext_t *u) {
     u->uc_mcontext->__ss.__pc += 4; return 1;
 }
 #endif
+#ifdef GAME_BOTW160
+/* TOTK_CDPOINT_TRACE=1 (diagnostics, #1266): Breath of the Wild 1.6.0 crashed after Vah Medoh's main control unit with a
+   write to 0x800000 in main+0x20156e8, Havok's hkpAllCdPointCollector::addCdPoint (a 64-byte hkpRootCdPoint: contact point,
+   then each body's root collidable through the +0x18 parent chain; its class's other entry main+0x2015620 empties the two
+   arrays): a query had collected 131,072 points, growing the array to 16 MB failed and the null base was written to. A
+   brk takes the grow path's `add x1, x20, #0x10` (main+0x2015714, reached only when the array is full); from 8,192 points
+   on (TOTK_CDPOINT_TRACE=<points> sets another start), each growth is logged with the point being added (NaN or huge coordinates: a degenerate query), the collector and
+   the guest call chain (which query, made by which game code). */
+enum { CDP_SITE = 0x2015714 };
+static const uint32_t CDP_WORD = 0x91004281u;   /* add x1, x20, #0x10 */
+static uint8_t *g_cdp_main; static int g_cdp_on; static uint32_t g_cdp_min = 8192; static _Atomic uint64_t g_cdp_grows, g_cdp_logged;   /* g_cdp_min: TOTK_CDPOINT_TRACE=<points> (tests: a low one) */
+void cdpoint_arm(Module *m) {
+    const char *e = getenv("TOTK_CDPOINT_TRACE");
+    if (!e || !*e || !strcmp(e, "0") || ios_code()) return;
+    uint32_t w; memcpy(&w, m->base + CDP_SITE, 4);
+    if (w != CDP_WORD) { fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: main+%#x is %08x, not %08x: not armed\n", CDP_SITE, w, CDP_WORD); return; }
+    uint32_t b = 0xd4200000u | (0x7b0u << 5); memcpy(m->base + CDP_SITE, &b, 4);
+    g_cdp_main = m->base; g_cdp_on = 1; { const long v = atol(e); if (v > 1) g_cdp_min = (uint32_t)v; }
+    fprintf(stderr, "[botw] TOTK_CDPOINT_TRACE: Havok all-points collector growths from %u points are logged (main+%#x)\n", g_cdp_min, CDP_SITE);
+}
+static int botw_cdp_hook(ucontext_t *u) {
+    uint64_t *x = u->uc_mcontext->__ss.__x, col = x[20], pt = x[19];
+    x[1] = col + 0x10;   /* the instruction the brk took */
+    u->uc_mcontext->__ss.__pc += 4;
+    const uint64_t grows = atomic_fetch_add(&g_cdp_grows, 1);
+    const uint32_t count = U32(col + 0x18), cap = U32(col + 0x1c) & 0x3fffffffu;
+    if (!grows) fprintf(stderr, "[cdpoint] first growth (the trace works): collector %#llx, %u points\n", (unsigned long long)col, cap);
+    if (cap < g_cdp_min || atomic_fetch_add(&g_cdp_logged, 1) >= 200) return 1;
+    const float *f = (const float *)(uintptr_t)pt;   /* hkContactPoint: position xyzw, separating normal xyzw */
+    char chain[400]; size_t n = 0; uint64_t fp = u->uc_mcontext->__ss.__fp; const uint64_t base = (uintptr_t)g_cdp_main;
+    n += (size_t)snprintf(chain + n, sizeof chain - n, " lr main+%#llx", (unsigned long long)(u->uc_mcontext->__ss.__lr - base));
+    for (int d = 0; d < 12 && fp && !(fp & 15) && n < sizeof chain - 24; d++) {
+        const uint64_t next = U64(fp), ret = U64(fp + 8);
+        n += (size_t)snprintf(chain + n, sizeof chain - n, ret >= base && ret < base + 0x4000000 ? " < main+%#llx" : " < %#llx", (unsigned long long)(ret >= base && ret < base + 0x4000000 ? ret - base : ret));
+        if (next <= fp) break;
+        fp = next;
+    }
+    fprintf(stderr, "[cdpoint] thread %#x collector %#llx: %u points, growing from %u (growth %llu); point %g %g %g %g normal %g %g %g dist %g; bodies %#llx %#llx;%s\n",
+            runtime_thread_current_handle(), (unsigned long long)col, count, cap, (unsigned long long)atomic_load(&g_cdp_grows),
+            f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], (unsigned long long)U64(pt + 0x30), (unsigned long long)U64(pt + 0x38), chain);
+    return 1;
+}
+#endif
 int botw_jq_hook(void *context) {   /* SIGTRAP from loader.c crash(): 1 = it was one of ours, handled */
 #ifdef GAME_BOTW160
     if (g_pad_log_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_pad_main + PAD_LOOP) return botw_pad_hook(context);
+    if (g_cdp_on && ((ucontext_t *)context)->uc_mcontext->__ss.__pc == (uintptr_t)g_cdp_main + CDP_SITE) return botw_cdp_hook(context);
 #endif
     if (!g_jq_on) return 0;
     ucontext_t *u = context; uint64_t pc = u->uc_mcontext->__ss.__pc, *x = u->uc_mcontext->__ss.__x;
