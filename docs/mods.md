@@ -386,14 +386,19 @@ over the rules above. The tool lists what it wrote in `ai-manifest.tsv` in the p
 this file does not list, so pictures made by another tool (such as drawn prompts) stay. Delete a picture to go back to the
 game's texture for that key.
 
-**Tools.** The tool downloads nothing; you install these yourself. Both are approved sources:
+**Tools.** The tool downloads nothing, and the repository holds no upscaler or model; you get them yourself:
 
-- `realesrgan-ncnn-vulkan`, the v0.2.5.0 release on GitHub of xinntao/Real-ESRGAN. Its `models` folder has `realesrgan-x4plus-anime`.
-- The 4x-UltraSharp NCNN files by Kim2091, on Hugging Face (`Kim2091/UltraSharp`, folder `NCNN`): `4x-UltraSharp-fp32.param` and
-  `4x-UltraSharp-fp32.bin`. Put them in the same `models` folder as `4x-UltraSharp.param` and `4x-UltraSharp.bin` (the tool looks
-  for these names).
+| What | Where | License |
+|---|---|---|
+| `realesrgan-ncnn-vulkan` (the program) | `realesrgan-ncnn-vulkan-20220424-macos.zip` from the v0.2.5.0 release of [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0); source [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
+| `realesrgan-x4plus-anime` (the mask model) | the `models` folder of the same zip | BSD-3-Clause ([Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)) |
+| `4x-UltraSharp` (the colour model) | `NCNN/4x-UltraSharp-fp32.param` and `NCNN/4x-UltraSharp-fp32.bin` in [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) on Hugging Face | CC BY-NC-SA 4.0 |
 
-The harvest folder and the pack are made from game data. They stay on your Mac and never go into the repository or a pull request.
+Put the two 4x-UltraSharp files in the same `models` folder as `4x-UltraSharp.param` and `4x-UltraSharp.bin` (the tool
+looks for these names). 4x-UltraSharp's license allows no commercial use, so a pack made with it is for your own play.
+
+The repository holds no file made from the game. The harvest folder and the pack are made from your game data: they stay on
+your Mac and never go into the repository or a pull request.
 
 ### Notes
 
@@ -808,13 +813,18 @@ alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更
 记在贴图包文件夹的 `ai-manifest.tsv` 里，绝不覆盖该文件没有列出的图片，所以其他工具（例如画出来的按键提示）做的图片会保留。
 删除某张图片，该 key 就回到游戏自己的贴图。
 
-**工具。** 工具不会下载任何东西，请自己安装。两个来源都已获批准：
+**工具。** 工具不会下载任何东西，仓库里也没有放大程序或模型，请自己获取：
 
-- `realesrgan-ncnn-vulkan`：GitHub 上 xinntao/Real-ESRGAN 的 v0.2.5.0 发布版，其 `models` 文件夹里有 `realesrgan-x4plus-anime`。
-- Kim2091 的 4x-UltraSharp NCNN 文件，在 Hugging Face 上（`Kim2091/UltraSharp` 的 `NCNN` 文件夹）：`4x-UltraSharp-fp32.param` 和
-  `4x-UltraSharp-fp32.bin`。放进同一个 `models` 文件夹，并改名为 `4x-UltraSharp.param` 和 `4x-UltraSharp.bin`（工具按这两个名字找）。
+| 内容 | 来源 | 许可 |
+|---|---|---|
+| `realesrgan-ncnn-vulkan`（程序） | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0) v0.2.5.0 发布版里的 `realesrgan-ncnn-vulkan-20220424-macos.zip`；源码在 [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
+| `realesrgan-x4plus-anime`（遮罩模型） | 同一个 zip 的 `models` 文件夹 | BSD-3-Clause（[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)） |
+| `4x-UltraSharp`（彩色模型） | Hugging Face 上 [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) 的 `NCNN/4x-UltraSharp-fp32.param` 和 `NCNN/4x-UltraSharp-fp32.bin` | CC BY-NC-SA 4.0 |
 
-采集文件夹和贴图包由游戏数据生成，只保留在你的 Mac 上，不放进仓库或拉取请求。
+把两个 4x-UltraSharp 文件放进同一个 `models` 文件夹，并改名为 `4x-UltraSharp.param` 和 `4x-UltraSharp.bin`（工具按这两个名字找）。
+4x-UltraSharp 的许可不允许商业使用，所以用它做的贴图包只供你自己游玩。
+
+仓库里没有任何从游戏生成的文件。采集文件夹和贴图包由你的游戏数据生成，只保留在你的 Mac 上，不放进仓库或拉取请求。
 
 ### 注意
 
