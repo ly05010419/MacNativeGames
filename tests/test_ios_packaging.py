@@ -161,6 +161,13 @@ class FullHD(unittest.TestCase):
         self.assertNotIn('TOTK_BOTW_SCENE', {s.get('Key') for s in totk}, 'Tears of the Kingdom has its own row')
         self.assertNotIn('TOTK_DOCKED_SCENE', {s.get('Key') for s in specs}, 'and Breath of the Wild\'s pane drops it')
 
+    def test_mac_pipelines_are_made_again_for_another_runtime(self):
+        """The cached Mac pipelines (build/ios-pipelines) are this runtime's descriptions: their stamp holds the runtime
+        binary as well as the shaders and lists (2026-11-03: narrowed vertex formats were never seen otherwise)."""
+        ipa = (TOOLS/'build_ipa.py').read_text()
+        self.assertIn("+host.read_bytes()).hexdigest()", ipa)
+        self.assertLess(ipa.index("host=tree/"), ipa.index("+host.read_bytes()).hexdigest()"))
+
     def test_totk_pane_has_the_docked_scene_after_full_hd(self):
         """Tears of the Kingdom has the same three pictures (user 2026-11-03: "王国也一样"): its own TOTK_DOCKED_SCENE row
         right after the Full HD switch, handed over as TOTK_RENDER_RES, and the start screen's original / HD."""
