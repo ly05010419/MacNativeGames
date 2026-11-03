@@ -27,7 +27,62 @@ static NpadState read_pad(uint32_t id) {
     return state;
 }
 
-int main(void) { @autoreleasepool {
+/* Check the host before any reconnect: a disconnected guest Npad reads neutral even with stale host input. */
+static void assert_host_clear(int player) {
+    RuntimeGamepadState pad;
+    runtime_gamepad_read_player(player, &pad);
+    assert(pad.connected && !pad.buttons && !pad.lx && !pad.ly && !pad.rx && !pad.ry);
+}
+
+static void guest_disconnect_test(GCExtendedGamepad *one, GCExtendedGamepad *two) {
+    void (*disconnectNpad)(const uint32_t *) = runtime_input_override("_ZN2nn3hid14DisconnectNpadERKj");
+    assert(disconnectNpad);
+    uint32_t ids[] = {0, 1};
+    ControllerSupportArgs arg = {.min = 2, .max = 2};
+    RuntimeGamepadState touch = {.connected = 1, .buttons = 8, .ry = 16000};
+    [two.leftThumbstick setValueForXAxis:-1 yAxis:1];
+    [one.rightThumbstick setValueForXAxis:1 yAxis:0]; refresh_gamepads();
+    runtime_input_key(38, 1); runtime_input_key_synthetic(36, 1);
+    runtime_touch_pad_set(&touch);
+    NpadState combined = read_pad(0);
+    assert(combined.lx == -32767 && combined.ly == 32767 && combined.rx == 32767 && combined.ry == 16000);
+    assert((combined.buttons & 1033) == 1033);  /* A, +, touch Y */
+    [two.leftShoulder setValue:1]; refresh_gamepads();
+    [two.leftShoulder setValue:0]; refresh_gamepads();  /* an unread short L */
+    int before = quiet;
+    disconnectNpad(&ids[0]);
+    assert(!style(&ids[0]) && !read_pad(0).attributes && !runtime_keyboard_buttons() && quiet == before + 1);
+    assert_host_clear(0);
+    supported_ids(ids, 2);
+    assert(read_pad(0).attributes && !read_pad(0).buttons);
+
+    assert(show_controller_support(NULL, &arg) == 0);
+    [one.leftThumbstick setValueForXAxis:1 yAxis:0]; refresh_gamepads();
+    runtime_input_key(38, 1);
+    [one.rightShoulder setValue:1]; [two.leftShoulder setValue:1]; refresh_gamepads();
+    [one.rightShoulder setValue:0]; [two.leftShoulder setValue:0]; refresh_gamepads();
+    before = quiet;
+    disconnectNpad(&ids[1]);
+    assert(!style(&ids[1]) && !read_pad(1).attributes && quiet == before);
+    assert_host_clear(1);
+    NpadState mario = read_pad(0);
+    assert(mario.lx == 32767 && (mario.buttons & 129) == 129);  /* held key and unread R survived */
+    [two.leftShoulder setValue:1]; refresh_gamepads();
+    [two.leftShoulder setValue:0]; refresh_gamepads();  /* pressed while the guest had P2 disconnected */
+    assert(!show_controller_support(NULL, &arg) && style(&ids[1]) && !read_pad(1).buttons);
+
+    [two.leftShoulder setValue:1]; refresh_gamepads();
+    [two.leftShoulder setValue:0]; refresh_gamepads();
+    before = quiet;
+    disconnectNpad(&ids[0]);
+    assert(!style(&ids[0]) && !read_pad(0).attributes && !runtime_keyboard_buttons() && quiet == before + 1);
+    assert_host_clear(0);
+    NpadState cappy = read_pad(1);
+    assert(cappy.lx == -32767 && (cappy.buttons & 64));  /* held stick and unread L survived */
+    puts("pass: DisconnectNpad clears shared 1P, P2 alone, and P1 alone");
+}
+
+int main(int argc, char **argv) { @autoreleasepool {
     unsetenv("TOTK_CONTROLS");   /* exercise remapping without reading or writing the player's layout */
     controller_map_default(controllerMap, controllerModes);
     GCController *one = [GCController controllerWithExtendedGamepad];
@@ -36,6 +91,10 @@ int main(void) { @autoreleasepool {
     attach_gamepad(two);
     uint32_t ids[] = {0, 1}, handheldID = 0x20;
     initialize(); supported_ids(ids, 2);
+    if (argc == 2 && !strcmp(argv[1], "--disconnect")) {
+        guest_disconnect_test(one.extendedGamepad, two.extendedGamepad);
+        return 0;
+    }
     ControllerSupportResult result;
     ControllerSupportArgs arg = {.min = 2, .max = 2};
     assert(style(&ids[0]) && !style(&ids[1]));
@@ -103,22 +162,7 @@ int main(void) { @autoreleasepool {
     [two.extendedGamepad.rightThumbstickButton setValue:0]; refresh_gamepads();
     read_pad(0); assert(!read_pad(1).buttons);
 
-    /* DisconnectP2 must discard an unread press and leave P1's held key alone. */
-    [two.extendedGamepad.leftShoulder setValue:1]; refresh_gamepads();
-    [two.extendedGamepad.leftShoulder setValue:0]; refresh_gamepads();
-    disconnect(&ids[1]);
-    assert(!style(&ids[1]) && (read_pad(0).buttons & 1));
-    [two.extendedGamepad.leftShoulder setValue:1]; refresh_gamepads();
-    [two.extendedGamepad.leftShoulder setValue:0]; refresh_gamepads();
-    show_controller_support(&result, &arg);
-    assert(result.players == 2 && !(read_pad(1).buttons & 64));
-
     [two.extendedGamepad.leftThumbstick setValueForXAxis:-1 yAxis:0]; refresh_gamepads();
-    disconnect(&ids[0]);
-    assert(!runtime_keyboard_buttons() && !read_pad(0).attributes && read_pad(1).lx == -32767);
-    show_controller_support(&result, &arg);
-    runtime_input_key_synthetic(38, 1);
-
     /* No P2 handle may read, restart or vibrate Mario's single feedback backend. */
     uint32_t p1Handle = 3, p2Handle = 3 | 1u << 8;
     VibrationValue buzz = {.amp_low = 0.5f}; SixAxisState motion;
@@ -144,12 +188,6 @@ int main(void) { @autoreleasepool {
     arg.singleMode = 1; /* single mode overrides the player-count range */
     show_controller_support(&result, &arg);
     assert(result.players == 1 && !style(&ids[1]) && read_pad(0).lx == -32767);
-    int before = quiet;
-    disconnect(&ids[0]);
-    assert(!style(&ids[0]) && !runtime_keyboard_buttons() && quiet > before);
-    supported_ids(ids, 2);
-    assert(!(read_pad(0).buttons & 1) && !read_pad(0).lx);
-
     arg.singleMode = 0; arg.min = arg.max = 1;
     show_controller_support_arg(&arg);
     assert(!style(&ids[1]));
