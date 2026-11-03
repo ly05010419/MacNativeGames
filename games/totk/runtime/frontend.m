@@ -687,10 +687,10 @@ static void front_install_bundle_icon(void) {
  path=path.stringByResolvingSymlinksInPath;
  while(path.length>1){
   if([path.pathExtension.lowercaseString isEqualToString:@"app"]){
-   /* 原始 icns 不含系统应用的圆角；使用 Finder 同样的图标，保留 macOS 的外观处理。 */
+   /* The raw icns has no rounded app mask; Finder's own icon for the app keeps macOS's presentation. */
    NSImage *icon=[[NSWorkspace.sharedWorkspace iconForFile:path] copy];
    if(icon){
-    icon.size=NSMakeSize(512,512);   /* NSWorkspace 默认是 32 点；让 Dock 放大时也能获取高分辨率图标。 */
+    icon.size=NSMakeSize(512,512);   /* NSWorkspace gives 32 points; 512 lets the Dock pick a high-resolution representation. */
     NSApp.applicationIconImage=icon;
    }
    return;
