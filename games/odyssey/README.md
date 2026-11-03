@@ -64,7 +64,9 @@ Odyssey because its game logic advances once per frame.
 
 ## What you need
 
-- An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1).
+- An Apple silicon Mac with macOS 26 or newer, and Xcode with the Metal 4 SDK (tested with Xcode 27.1). The command
+  line tools are enough for the one-command build below; without Xcode's Metal compiler the step that precompiles the
+  Metal libraries fails and the game compiles those the first time a scene shows them, so new scenes stutter once.
 - Super Mario Odyssey with the **1.3.0** or **1.4.1** update that you dumped yourself: a combined XCI or NSP, or the base
   game NSP and the update NSP (`--update`, joined into one NSP first). Other versions are rejected by hash. 1.3.0 and
   1.4.1 have the same executables, and the base game merged with either update gives the same game data byte for byte
