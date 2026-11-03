@@ -131,6 +131,9 @@ static const CGFloat kFpsButtonSize = 34;
 }
 - (CGPoint)restingStick:(BOOL)right {
     CGRect a = self.area; CGFloat inset = self.columnInset + self.stickRadius * 1.9;
+    /* On an iPad the sticks rest another 90 points toward the edge (the user, 2026-11-03: "两个虚拟摇杆 靠近边缘 90点";
+       centre 228 -> 138 points from the edge on an 11-inch iPad), the ring kept on the screen. */
+    if (self.traitCollection.userInterfaceIdiom != UIUserInterfaceIdiomPhone) inset = MAX(inset - 90, self.stickRadius + 12);
     return CGPointMake(right ? CGRectGetMaxX(a) - inset : CGRectGetMinX(a) + inset, CGRectGetMinY(a) + a.size.height * .80);
 }
 
