@@ -434,7 +434,19 @@ static void record_miss(NSString *shader, NSDictionary *rq, NSDictionary *answer
     LOG("[shader-miss] %s %s 不在手机的翻译缓存里：跳过用到它的绘制，请求已存 shader-requests/（第 %lu 个；在 Mac 上 ios/tools/fill_shaders.py 补上后下次启动预热）",
         [rq[@"stage"] UTF8String], variant.UTF8String, (unsigned long)missed.count);
 }
-/* One request through a translator service; the reflection of the new variant. */
+/* A translation the service refuses (an instruction the translator does not know yet) ends Tears of the Kingdom and
+   Breath of the Wild, whose every shader translates. A Switch 2 game (GAME_NS2), whose Ampere coverage is still growing,
+   and a seed (seed-shaders) name the shader in red instead: no variant is returned, so its draws are skipped
+   (nvn_mtl.m prog_get), and it is not asked for again in this run. */
+#ifdef GAME_NS2
+static int g_rt_fail_soft = 1;
+#else
+static int g_rt_fail_soft;
+#endif
+static NSMutableSet<NSString *> *g_rt_failed;   // shaders whose translation failed (g_rt_lock)
+void totk_rt_fail_soft(void) { g_rt_fail_soft = 1; }
+static void rt_failed(NSString *shader) { if (!g_rt_failed) g_rt_failed = [NSMutableSet set]; [g_rt_failed addObject:shader]; }   // g_rt_lock held
+/* One request through a translator service; the reflection of the new variant (nil: refused, with g_rt_fail_soft). */
 static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) {
     NSString *variant = rq[@"variant"]; const char *stage = [rq[@"stage"] UTF8String];
     service_start(svc);
@@ -446,6 +458,7 @@ static NSDictionary *translate(rt_svc *svc, NSDictionary *rq, uint64_t started) 
         LOG("[survey-shader] frame %llu translation FAILED %s %s after %.2f ms: %s",
             (unsigned long long)dm_nvn_frame_count(), stage, variant.UTF8String,
             (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6, [[reply[@"error"] description] UTF8String]);
+        if (g_rt_fail_soft) { LOG("[shader] [RED] %s (%s) translation failed: its draws are skipped: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]); return nil; }
         die("shader %s (%s) translation failed: %s", variant.UTF8String, stage, [[reply[@"error"] description] UTF8String]);
     }
     NSData *jd = [NSData dataWithContentsOfFile:[totk_rt_dir() stringByAppendingFormat:@"/%@_b.json", variant]];
@@ -514,9 +527,10 @@ static void rt_job_run(NSString *shader, NSMutableArray *job, rt_svc *svc, uint6
     if (![code writeToFile:rq[@"code"] atomically:YES]) die("write shader code %s", [rq[@"code"] UTF8String]);
     uint64_t started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     NSDictionary *refl = translate(svc, rq, started);
-    if (g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
+    if (refl && g_rt_ready_hook) g_rt_ready_hook(rq[@"variant"], stage);   // the Metal library too, off the submit thread
     pthread_mutex_lock(&g_rt_lock);
-    variant_record(shader, rq, refl, existed, started, queued);
+    if (refl) variant_record(shader, rq, refl, existed, started, queued);
+    else rt_failed(shader);
     if (g_rt_pending[shader] == job) [g_rt_pending removeObjectForKey:shader];
     atomic_fetch_add(&g_rt_gen, 1);
     pthread_cond_broadcast(&g_rt_done);
@@ -566,6 +580,8 @@ static void urgent_translate(NSString *shader, NSMutableArray *job) {
         atomic_fetch_add(&g_rt_urgent_n, 1); atomic_fetch_add(&g_rt_urgent_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - queued);
     } });
 }
+/* Translation jobs queued or running (seed-shaders waits for none to be left). */
+int totk_rt_pending(void) { pthread_mutex_lock(&g_rt_lock); int n = (int)g_rt_pending.count; pthread_mutex_unlock(&g_rt_lock); return n; }
 void totk_rt_urgent_stats(uint64_t *n, uint64_t *ns) { *n = atomic_load(&g_rt_urgent_n); *ns = atomic_load(&g_rt_urgent_ns); }
 
 /* What the submit thread spends on translation itself (may_defer 0): waiting for a job already running
@@ -593,7 +609,7 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
         if ([job[0] intValue] == RT_JOB_QUEUED) urgent_translate(shader, job);
         pthread_mutex_unlock(&g_rt_lock); return nil;
     }
-    if (found || g_rt_pending[shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
+    if (found || g_rt_pending[shader] || [g_rt_failed containsObject:shader]) { pthread_mutex_unlock(&g_rt_lock); return found; }
     NSData *code_bytes = nil;   // written by the job when it is not translated here
     NSMutableDictionary *rq = variant_request(shader, stage, control, code, answers, local, may_defer && !no_translator() ? &code_bytes : NULL);
     if (no_translator()) { record_miss(shader, rq, answers); pthread_mutex_unlock(&g_rt_lock); return nil; }
@@ -601,7 +617,9 @@ NSString *totk_rt_variant(NSString *shader, int stage, const uint8_t *control, c
     if (may_defer == 2) { urgent_translate(shader, rt_job_new(shader, stage, rq, existed, code_bytes)); pthread_mutex_unlock(&g_rt_lock); return nil; }
     if (may_defer) { bg_translate(shader, stage, rq, existed, code_bytes); pthread_mutex_unlock(&g_rt_lock); return nil; }
     uint64_t s0 = dm_wait_stats_enabled() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0;
-    variant_record(shader, rq, translate(&g_svc, rq, started), existed, started, 0);
+    NSDictionary *refl = translate(&g_svc, rq, started);
+    if (!refl) { rt_failed(shader); pthread_mutex_unlock(&g_rt_lock); return nil; }
+    variant_record(shader, rq, refl, existed, started, 0);
     if (s0) { atomic_fetch_add(&g_rt_sync_n, 1); atomic_fetch_add(&g_rt_sync_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - s0); }
     pthread_mutex_unlock(&g_rt_lock);
     return rq[@"variant"];

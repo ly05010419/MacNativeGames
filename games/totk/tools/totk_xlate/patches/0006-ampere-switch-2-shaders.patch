@@ -1473,7 +1473,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 
 --- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs	1970-01-01 01:00:00
 +++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs	2026-11-02 23:37:55
-@@ -0,0 +1,1211 @@
+@@ -0,0 +1,1237 @@
 +using System;
 +using Ryujinx.Graphics.Shader.Decoders;
 +using Ryujinx.Graphics.Shader.IntermediateRepresentation;
@@ -1708,15 +1708,25 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            ASet(context, x, half ? context.PackHalf2x16(res, ConstF(0f)) : res);
 +        }
 +
-+        // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86)
++        // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a 16-bit source
++        // is one half of the operand, the high one when 60..62 is 1 or 3 (as F2F reads it), widened to 32 bits first (exact),
++        // its abs / neg applied by EmitF2I as for a 32-bit one (Pokemon Pokopia: 169 fragment shaders round F16 to U32)
 +        public static void AF2i(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
 +            ASrc s = AOne(context, x);
++            int srcSize = x.Bits(84, 86);
 +
-+            if (x.Bits(84, 86) != 2)
++            if (srcSize is not 1 and not 2)
 +            {
-+                throw AFail(context, "F2I from a float that is not 32-bit");
++                throw AFail(context, $"F2I from a {8 << srcSize}-bit float");
++            }
++
++            Operand src = AGet(context, s);
++
++            if (srcSize == 1)
++            {
++                src = x.Bits(60, 62) is 1 or 3 ? context.UnpackHalf2x16High(src) : context.UnpackHalf2x16Low(src);
 +            }
 +
 +            int size = x.Bits(75, 77);
@@ -1729,7 +1739,7 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +
 +            IDstFmt dst = (IDstFmt)((signed ? 4 : 0) | System.Math.Max(size, 1));
 +
-+            EmitF2I(context, DstFmt.F32, dst, (RoundMode2)x.Bits(78, 80), AGet(context, s), x.Rd, s.Abs, s.Neg);
++            EmitF2I(context, DstFmt.F32, dst, (RoundMode2)x.Bits(78, 80), src, x.Rd, s.Abs, s.Neg);
 +
 +            if (size == 0 && x.Rd != RegisterConsts.RegisterZeroIndex)
 +            {
@@ -1823,19 +1833,35 @@ and b3f25a09 (texture gather with register offsets as four gathers). Translation
 +            EmitF2F(context, (DstFmt)srcSize, (DstFmt)dstSize, IntegerRound.Pass, src, x.Rd, s.Abs, s.Neg, false);
 +        }
 +
-+        // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one
++        // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one. With MERGE_C (bit 78) the first operand is unused:
++        // b goes to the low half and the high half is Rc's (64..72) low or, with .H1 (bit 72), high half (Mesa NAK sm70_encode.rs
++        // OpF2FP; Pokemon Pokopia's fragment shaders pack with RZ there)
 +        public static void AF2fp(EmitterContext context)
 +        {
 +            AmpereOp x = new(context.CurrOp);
-+
-+            if (x.Bit(78) || x.Bit(72))
-+            {
-+                throw AFail(context, "F2FP.MERGE_C");
-+            }
-+
 +            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
 +
-+            ASet(context, x, context.PackHalf2x16(AFloat(context, b), AFloat(context, a)), AUniform(context));
++            if (!x.Bit(78))
++            {
++                if (x.Bit(72))
++                {
++                    throw AFail(context, "F2FP .H1 without MERGE_C");
++                }
++
++                ASet(context, x, context.PackHalf2x16(AFloat(context, b), AFloat(context, a)), AUniform(context));
++                return;
++            }
++
++            if (AUniform(context))
++            {
++                throw AFail(context, "uniform F2FP.MERGE_C");
++            }
++
++            Operand low = context.BitwiseAnd(context.PackHalf2x16(AFloat(context, b), ConstF(0)), Const(0xffff));
++            Operand c = AGpr(x.Rc);
++            Operand high = x.Bit(72) ? context.BitwiseAnd(c, Const(unchecked((int)0xffff0000u))) : context.ShiftLeft(c, Const(16));
++
++            ASet(context, x, context.BitwiseOr(low, high));
 +        }
 +
 +        // ---- packed halves ----

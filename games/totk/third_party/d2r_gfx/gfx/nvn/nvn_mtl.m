@@ -6694,8 +6694,14 @@ static size_t arena_alloc(size_t n, __strong id<MTLBuffer> *buf) { __unsafe_unre
 
 // ---------- 绘制状态 ----------
 // ---------- Draw state ----------
+/* NVN binds a program's stages by the mask BindProgram is given: a compute program (NVN_SHADER_STAGE_COMPUTE_BIT) leaves
+   the graphics stages bound as they were, and a graphics one the compute stage (Pokemon Pokopia binds its compute programs
+   between draws and draws on without binding its graphics program again: every draw had found the compute program and
+   was skipped, a black picture). S.prog is the program of the graphics stages, S.cprog the compute one (dispatch); a
+   mask of 0 is taken as graphics, as before. */
+static inline int bind_graphics(const p_bind_program *b) { return !b->stages || (b->stages & NVN_SHADER_STAGE_ALL_GRAPHICS_BITS); }
 static struct {
-    const prog_t *prog;
+    const prog_t *prog, *cprog, *gst[5];   // gst: the program bound for each graphics stage (vertex, fragment, geometry, tessellation control / evaluation)
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
     va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
     NVNbufferRange vbuf[16];
@@ -6706,6 +6712,39 @@ static struct {
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard; uint8_t push[2][NVN_PUSH_SIZE];
     float blend_color[4]; int64_t copy_stride;
 } S;
+static void args_program_changed(void);
+/* Separable programs: a draw's stages may come from several programs, each bound for its own stages (Pokemon Pokopia
+   binds a vertex-only and a fragment-only program). When they are not all one program, the draw's program is a combined
+   one holding each stage's shader from the program bound for it; it is made once per combination of programs and their
+   SetShaders generation (serial), so a program given new shaders makes a new one. Combined programs live for the run. */
+static const prog_t *prog_combined(const prog_t *const gst[5]) {
+    static NSMutableDictionary<NSData *, NSValue *> *made;
+    uint64_t k[10]; for (int i = 0; i < 5; i++) { k[2 * i] = (uintptr_t)gst[i]; k[2 * i + 1] = gst[i] ? gst[i]->serial : 0; }
+    NSData *key = [NSData dataWithBytes:k length:sizeof k];
+    if (!made) made = [NSMutableDictionary dictionary];
+    NSValue *have = made[key]; if (have) return have.pointerValue;
+    prog_t *c = calloc(1, sizeof *c); if (!c) MDIE("combined program memory");
+    c->magic = gst[0] ? gst[0]->magic : gst[1] ? gst[1]->magic : 0;
+    for (int st = 0; st < 5; st++) {
+        const prog_t *src = gst[st]; if (!src) continue;
+        for (unsigned i = 0; i < src->nstage && i < 6; i++) {
+            const NVNshaderData *sd = &src->sd[i];
+            if (sd->control && sd->data && ctl_stage(sd->control, (const uint8_t *)(uintptr_t)sd->data) == st && c->nstage < 6) c->sd[c->nstage++] = *sd;
+        }
+    }
+    c->serial = nvn_new_serial();
+    made[key] = [NSValue valueWithPointer:c];
+    static int said; if (said++ < 4) MLOG("[nvn] separable programs: a draw's stages come from %s; combined program of %u stages", gst[0] == gst[1] ? "one program" : "several programs", c->nstage);
+    return c;
+}
+static void bind_program_stages(const p_bind_program *bp) {
+    const prog_t *np = bp->prog;
+    int mask = bp->stages ? bp->stages & NVN_SHADER_STAGE_ALL_GRAPHICS_BITS : NVN_SHADER_STAGE_ALL_GRAPHICS_BITS;
+    for (int i = 0; i < 5; i++) if (mask >> i & 1) S.gst[i] = np;
+    int one = 1; for (int i = 1; i < 5; i++) if (S.gst[i] != S.gst[0]) one = 0;
+    const prog_t *eff = one ? S.gst[0] : prog_combined(S.gst);
+    if (eff != S.prog) { S.prog = eff; g_pso_dirty = 1; args_program_changed(); }
+}
 /* TOTK: stage_sig compared 128 texture handles of the stage with its last copy on every draw (a 1 KiB memcmp, 0.13 ms a
    frame in a shrine). Every write to S.tex now gives that stage a fresh, never reused number, so equal numbers mean equal
    handles also after S is saved and restored. TOTK_TEX_GEN_CHECK=1 compares the handles as well and stops on a difference. */
@@ -8273,7 +8312,11 @@ static NSString *pso_variant(NSString *brec, int fbread) {
 static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     (void)unused; g_pso_deferred = 0; apso_claim();
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
-    if (!vs) { RED_ONCE(13, "程序没有顶点着色器（或未映射）"); return NULL; }
+    if (!vs) { RED_ONCE(13, "程序没有顶点着色器（或未映射）");
+        static int said; if (said++ < 8) MLOG("[pipeline] program without a vertex stage: missing %#x, stages:%s%s%s%s%s%s", pr->missing,
+            pr->key[0] ? [@" vs=" stringByAppendingString:[pr->key[0] substringToIndex:16]].UTF8String : "", pr->key[1] ? [@" ps=" stringByAppendingString:[pr->key[1] substringToIndex:16]].UTF8String : "",
+            pr->key[2] ? " gs" : "", pr->key[3] ? " hs" : "", pr->key[4] ? " ds" : "", pr->key[5] ? [@" cs=" stringByAppendingString:[pr->key[5] substringToIndex:16]].UTF8String : "");
+        return NULL; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_pass.layered) k.a2c |= PSO_LAYERED;   // TOTK: layered pass (see g_lay)
     if (g_mfx.role) k.a2c |= (uint32_t)g_mfx.role << 2;   // TOTK_MFX: scene / UI copy variant (see pso_desc)
@@ -10320,7 +10363,10 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
 static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
-        case OP_BIND_PROGRAM: { const prog_t *np = ((const p_bind_program *)a)->prog; if (np != S.prog) { S.prog = np; g_pso_dirty = 1; args_program_changed(); } break; }
+        case OP_BIND_PROGRAM: { const p_bind_program *bp = a; const prog_t *np = bp->prog;
+            if (bp->stages & NVN_SHADER_STAGE_COMPUTE_BIT) S.cprog = np;
+            if (bind_graphics(bp)) bind_program_stages(bp);
+            break; }
         case OP_BIND_STATE: {
             const p_bind_state *b = a; void *dst = NULL; size_t n = 0;
             blend_st bs;
@@ -11023,7 +11069,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
             case OP_BIND_TEX: case OP_BIND_IMG: { const p_bind_handles *b = a; int base = h.op == OP_BIND_IMG ? 128 : 0, lim = h.op == OP_BIND_IMG ? 32 : 128;
                 if (b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) g_pp_slot[b->stage][base + b->first + k] = h_ser(b->h[k]);
                 break; }
-            case OP_BIND_PROGRAM: g_pp_prog = ((const p_bind_program *)a)->prog; break;
+            case OP_BIND_PROGRAM: if (bind_graphics(a)) g_pp_prog = ((const p_bind_program *)a)->prog; break;
             case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: {
                 if (h.op != OP_DISPATCH) seq_push(&g_drx_seq, &g_drx_n, &g_drx_cap, seq);
                 __unsafe_unretained NvProg *pr = g_pp_prog ? prog_get(g_pp_prog) : nil;
@@ -11427,7 +11473,7 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
             case OP_END: { const uint8_t *nx = defer_cont(&ci); if (!nx) { g_defer.reason = 1; goto fail; } p = nx; continue; }
             case OP_CALL: g_defer.reason = 2; goto fail;
             case OP_JUMP: memcpy(&p, a, 8); continue;
-            case OP_BIND_PROGRAM: pg = ((const p_bind_program *)a)->prog; break;
+            case OP_BIND_PROGRAM: if (bind_graphics(a)) pg = ((const p_bind_program *)a)->prog; break;
             case OP_BIND_TEX: case OP_BIND_IMG: { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128;
                 if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (h.op == OP_BIND_IMG) img[b->stage][b->first + k] = b->h[k]; else tex[b->stage][b->first + k] = b->h[k]; } break; }
             case OP_BIND_STATE: { const p_bind_state *b = a; if (b->kind == 5) memcpy(&ds, b->bytes, sizeof ds); break; }
@@ -11485,7 +11531,7 @@ q_found:
         if (!q_body && h.op == OP_SET_RT && !q_clears) { const p_set_rt *r2 = a; if (!defer_q_superset(r2)) { g_defer.reason = 15; goto fail; } q = r2; qop = p; p += h.size; continue; }
         if (h.op == OP_CLEAR_COLOR || h.op == OP_CLEAR_DS) q_clears = 1;
         if (!q_body && (h.op == OP_END || h.op == OP_SET_RT || h.op == OP_UPDATE_UB || h.op == OP_COPY_B2B || h.op == OP_DISPATCH)) { g_defer.reason = 9; g_defer.reason_op = h.op; goto fail; }
-        if (h.op == OP_BIND_PROGRAM) pg = ((const p_bind_program *)a)->prog; else if (h.op == OP_BIND_TEX || h.op == OP_BIND_IMG) { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128; if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (h.op == OP_BIND_IMG) img[b->stage][b->first + k] = b->h[k]; else tex[b->stage][b->first + k] = b->h[k]; } }
+        if (h.op == OP_BIND_PROGRAM) { if (bind_graphics(a)) pg = ((const p_bind_program *)a)->prog; } else if (h.op == OP_BIND_TEX || h.op == OP_BIND_IMG) { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128; if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (h.op == OP_BIND_IMG) img[b->stage][b->first + k] = b->h[k]; else tex[b->stage][b->first + k] = b->h[k]; } }
         else if (h.op == OP_CLEAR_COLOR) { const p_clear_color *c = a; if (c->index >= 0 && c->index < q->n && q->color[c->index]) for (int i = 0; i < g_defer.p_rt.n; i++) if (g_defer.p_rt.color[i] && sub_eq(q, c->index, &g_defer.p_rt, i)) { g_defer.reason = 10; goto fail; } }
         p += h.size;
     }
@@ -11603,7 +11649,7 @@ static void fuse_try(void) {
             const uint8_t *q; op_hdr hq; const void *aq;
             if (!fz_next(&cur, &q, &hq, &aq)) return;
             if (q == r2op) goto planned;
-            if (hq.op == OP_BIND_PROGRAM) pg = ((const p_bind_program *)aq)->prog;
+            if (hq.op == OP_BIND_PROGRAM && bind_graphics(aq)) pg = ((const p_bind_program *)aq)->prog;
             else if (hq.op == OP_BIND_STATE) { const p_bind_state *b = aq; if (b->kind == 5) memcpy(&ds, b->bytes, sizeof ds); }
             else if (hq.op == OP_BIND_TEX || hq.op == OP_BIND_IMG) { const p_bind_handles *b = aq; int lim = hq.op == OP_BIND_IMG ? 32 : 128;
                 if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (hq.op == OP_BIND_IMG) img[b->stage][b->first + k] = b->h[k]; else tex[b->stage][b->first + k] = b->h[k]; } }
@@ -11615,7 +11661,7 @@ planned:
         const prog_t *pg2 = S.prog; static uint64_t t2[6][128], i2[6][32]; memcpy(t2, S.tex, sizeof t2); memcpy(i2, S.img, sizeof i2);
         cur = (fz_cursor){.p = g_exec_next};
         for (;;) { const uint8_t *q; op_hdr hq; const void *aq; if (!fz_next(&cur, &q, &hq, &aq)) return; if (q == p) break;
-            if (hq.op == OP_BIND_PROGRAM) pg2 = ((const p_bind_program *)aq)->prog;
+            if (hq.op == OP_BIND_PROGRAM && bind_graphics(aq)) pg2 = ((const p_bind_program *)aq)->prog;
             else if (hq.op == OP_BIND_TEX || hq.op == OP_BIND_IMG) { const p_bind_handles *b = aq; int lim = hq.op == OP_BIND_IMG ? 32 : 128;
                 if (b->stage >= 0 && b->stage < 6 && b->first >= 0 && b->first + b->n <= lim) for (int k = 0; k < b->n; k++) { if (hq.op == OP_BIND_IMG) i2[b->stage][b->first + k] = b->h[k]; else t2[b->stage][b->first + k] = b->h[k]; } }
         }
@@ -14249,10 +14295,11 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
 }
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
-    if (!S.prog) { RED_ONCE(27, "派发前没有绑定程序"); return; }
+    const prog_t *cp = S.cprog ? S.cprog : S.prog;   // the compute program (S.cprog); a probe that sets S.prog only, as before
+    if (!cp) { RED_ONCE(27, "派发前没有绑定程序"); return; }
     // As for a draw: a compute program met for the first time, or one still being prepared, starts the urgent scan of the
     // rest of the submission (prog_get, shader_predict_maybe), since a dispatch is often the first thing a submission misses.
-    g_prog_for_draw = 1; __unsafe_unretained NvProg *cpr = prog_get(S.prog); g_prog_for_draw = 0;
+    g_prog_for_draw = 1; __unsafe_unretained NvProg *cpr = prog_get(cp); g_prog_for_draw = 0;
     if (cpr->missing && async_shaders()) { shader_predict_maybe(); prog_resolve(cpr, 0); }   // Mac: a dispatch waits for its urgent job, never skipped
     if (cpr->missing) { static uint64_t n; if (!n++) MLOG("[shader-miss] 计算着色器还没翻译：跳过这个派发（以后同类不再提示）"); return; }
     NvShader *cs = cpr->sh[5];
@@ -19168,3 +19215,45 @@ int mtl_probe_pipeline_archive(void) {
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
     return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3;
 }
+
+/* seed-shaders <corpus> (loader.c; docs/ns2-port.md): every shader a Switch 2 game ships, as
+   scripts/ns2_shader_corpus.py found them in its files, translated before the game runs. Each goes through
+   totk_rt_variant for the default bind state (no textures, images, vertex inputs or colour outputs bound: the translator
+   takes texture kinds from the instructions and vertex input types from their use, so that variant serves almost every
+   draw), exactly as a draw's prog_get would ask, so the keys and variant names are the runtime's own; the translations
+   land in the translation cache (TOTK_SHADER_CACHE) and the boot prewarm builds their Metal libraries. A shader already
+   there is not translated again. Corpus: "NS2SHC01", u32 count, then per shader u32 stage, u32 control length, u32 code
+   length, u16 label length, the label, the control section, the code area. */
+void runtime_shader_seed(const char *path) { @autoreleasepool {
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d || d.length < 12 || memcmp(d.bytes, "NS2SHC01", 8)) MDIE("seed-shaders: %s is not a shader corpus (scripts/ns2_shader_corpus.py)", path);
+    const uint8_t *p = (const uint8_t *)d.bytes + 12, *end = (const uint8_t *)d.bytes + d.length;
+    uint32_t n; memcpy(&n, (const uint8_t *)d.bytes + 8, 4);
+    NSDictionary *answers = @{@"tex": @{}, @"img": @{}, @"attr": @{}, @"fout": @{}};
+    totk_rt_fail_soft();   // a shader the translator cannot do yet is counted below, not the end of the seed
+    NSMutableArray<NSString *> *keys = [NSMutableArray array];
+    unsigned other_stage = 0, bad = 0; uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    for (uint32_t i = 0; i < n; i++) {
+        if (end - p < 14) MDIE("seed-shaders: %s ends inside shader %u of %u", path, i, n);
+        uint32_t st, cn, kn; uint16_t ln; memcpy(&st, p, 4); memcpy(&cn, p + 4, 4); memcpy(&kn, p + 8, 4); memcpy(&ln, p + 12, 2); p += 14;
+        if ((size_t)(end - p) < (size_t)ln + cn + kn) MDIE("seed-shaders: %s ends inside shader %u of %u", path, i, n);
+        const uint8_t *ctl = p + ln, *code = ctl + cn; p = code + kn;
+        if (cn < 0x60 || !nvn2_ctl(ctl) || ctl_code_len(ctl) != kn) { if (bad++ < 4) MLOG("[seed] [RED] shader %u (%.*s): not an NVN2 control section with its code area; left out", i, (int)ln, (const char *)ctl - ln); continue; }
+        int stage = ctl_stage(ctl, code);
+        if (stage != 0 && stage != 1 && stage != 5) { other_stage++; continue; }   // geometry / tessellation: no translation chain yet (prog_get)
+        char key[65]; shader_key_of(ctl, code, kn, key);
+        totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
+        [keys addObject:@(key)];
+    }
+    MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
+         n, path, (unsigned long)keys.count, other_stage, bad);
+    for (int left, said = 0; (left = totk_rt_pending()) > 0; ) {
+        usleep(500000);
+        if (++said % 20 == 0) MLOG("[seed] %d translations left (%.0f s)", left, (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9);
+    }
+    unsigned ok = 0; NSMutableArray *missing = [NSMutableArray array];
+    for (NSString *k in keys) { if (totk_rt_variant_cached(k, answers)) ok++; else if (missing.count < 8) [missing addObject:k]; }
+    MLOG("[seed] done in %.0f s: %u of %lu shaders have a translation for the default bind state in %s%s%s", (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9,
+         ok, (unsigned long)keys.count, totk_rt_dir().UTF8String, missing.count ? "; without one (translation failed, see above): " : "", [missing componentsJoinedByString:@" "].UTF8String);
+    if (ok != keys.count) MLOG("[seed] [RED] %lu shaders could not be translated: their draws translate them again in the game (and fail the same way)", (unsigned long)(keys.count - ok));
+}}

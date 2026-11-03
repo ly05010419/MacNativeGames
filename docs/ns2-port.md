@@ -121,3 +121,19 @@ Added for it (general where possible, each with its reason in the code):
   recording modes 0-2 checked; `oe::GetCurrentGraphicsScale` 0 and streamplay work memory 0 as PokeDinner answers
   (Bananza not re-checked with these two);
 - test scripts: `TOTK_WINDOW_FLOAT=1` keeps a test window above other windows (a covered window stops presents).
+
+**Pokopia, later 2026-11-03: shaders prepared before the game runs; draws reach their programs.**
+- `games/totk/scripts/ns2_shader_corpus.py --romfs extracted/pkp/romfs --modules extracted/pkp/elf/*.elf --out <corpus>`:
+  every GLSLC output (0x00220015) in the modules, LINKDATA and the RDB data files, keyed as the runtime keys shaders:
+  2,385 shaders in 90 s. `build/totk-native-pkp rewritten/pkp seed-shaders <corpus>` (TOTK_SHADER_CACHE, TOTK_RT_BG_WORKERS=8)
+  translates each for the default bind state through totk_rt_variant: 2,379 in 20 s; the other 6 use Ampere 0x301, 0x883,
+  0xf8c and a bindless LDC (open; their draws are skipped). `games/totk/scripts/build_shader_libs.py --cache <cache> --out
+  build/shader-libs` compiles their MSL ahead (build_app.py's flags; the runtime loads them by the MSL's SHA-256): 1,645
+  libraries in 59 s, none failing.
+- Translator: F2FP.MERGE_C and F2I from an F16 half. A refused translation no longer ends a GAME_NS2 run or a seed: its
+  draws are skipped (red line), TotK / BotW still stop.
+- Replay: BindProgram binds the stages its mask names. A compute program no longer replaces the graphics one (Pokopia
+  binds compute programs between draws: every draw had been skipped, a black picture), and separately bound vertex and
+  fragment programs make a combined program (not yet checked in a run).
+- Open: the frame loop sometimes stops at a varying frame (20 / 466 / 517); test windows float (`TOTK_WINDOW_FLOAT=1`, an
+  accessory app, also over full-screen Spaces).

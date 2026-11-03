@@ -699,7 +699,10 @@ void runtime_front_run(void(*callback)(void)){
 #else
   if(totk_sr_start)totk_sr_start("totk",TOTK_GAME_VERSION);
 #endif
-  [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  [NSApplication sharedApplication];
+  /* TOTK_WINDOW_FLOAT=1: an accessory app (no Dock icon), the only kind whose window macOS shows over another app's full
+     screen Space; a regular app's floating window stays covered there (2026-11-03, the user working full screen). */
+  {const char *e=getenv("TOTK_WINDOW_FLOAT");[NSApp setActivationPolicy:e&&!strcmp(e,"1")?NSApplicationActivationPolicyAccessory:NSApplicationActivationPolicyRegular];}
   front_install_bundle_icon();
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
