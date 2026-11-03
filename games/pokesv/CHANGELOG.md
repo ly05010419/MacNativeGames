@@ -1,5 +1,9 @@
 # Changelog
 
+## 3 November 2026: outbreaks and Tera raids reset every few seconds
+
+- **Fixed: the game's clock check converted a calendar time through the SDK with the port's own time-zone rule.** The game calls `nn::time::ToPosixTime(int*, PosixTime*, int, const CalendarTime&, const TimeZoneRule&)` about five times a second, after each read of the user clock. The port's `LoadTimeZoneRule` fills a small host record (zone name), so the SDK's version read garbage. The game then took the clock as changed: mass outbreaks dispersed and appeared again every few seconds, Tera raid spots moved, and the sky ran from midday to sunset in about 80 s. `runtime/time_host.c` now answers it from the host time zone: 0 results in a DST gap, 2 in an overlap. Measured from the same save: 90 s without a single outbreak notice, the sky stays at midday. Before, a new notice came every 10 s, at 30 and 60 fps alike.
+
 ## 3 November 2026: ride jump and animation distance
 
 - **Ride jumps at 60 fps are higher, but still short.** A Lua script sets the ride's speed through the binding at `main+0x19776c0`: 8.51 upward at the jump, then 0.633 less per script step (gravity 19 per second times a 1/30 s step). The script steps in whole 1/30 s of the delta it reads through the binding at `main+0xb926f0`, the site of the fixed step. With the fixed step it steps every 60 fps frame, so the jump curve plays twice as fast: half the height, half the air time. As in the mod, the stored speed's upward part is now scaled by 1.95 in the 60 fps mode (`main+0xcce37c`, `PSV_JUMP_SCALE=0` turns it off). Measured on Miraidon in the plaza with the step pinned: landing after about 0.8 s, 0.7 s without the scale, 1.2 s at 30 fps. By the logged speeds the height now matches 30 fps (2.0 against 2.05 units), the air time does not.

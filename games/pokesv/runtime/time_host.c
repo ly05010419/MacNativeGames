@@ -110,6 +110,25 @@ static unsigned to_calendar_rule(CalendarTime *c, CalendarAdditionalInfo *info, 
     CFRelease(tz);
     return 0;
 }
+/* ToPosixTime with a rule: the local calendar time of the rule's zone as POSIX times, 0 in a DST gap, 2 in an overlap. */
+static unsigned to_posix_rule(int *count, int64_t *out, int n, const CalendarTime *c, const HostZoneRule *rule) {
+    if (!count || !out || n <= 0 || !c || !rule) return R_INVALID;
+    if (memcmp(rule->tag, RULE_TAG, sizeof rule->tag)) runtime_fail("ToPosixTime: time zone rule not loaded by LoadTimeZoneRule");
+    char name[0x25] = {0}; memcpy(name, rule->location, 0x24);
+    CFStringRef s = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
+    CFTimeZoneRef tz = s ? CFTimeZoneCreateWithName(NULL, s, true) : NULL;
+    if (s) CFRelease(s);
+    if (!tz) runtime_fail("ToPosixTime: time zone vanished");
+    int64_t local = to_posix_utc(c), found[2]; int k = 0;
+    for (int d = -1; d <= 1; d += 2) {   /* the zone's offsets half a day either side cover any transition */
+        int64_t t = local - (int64_t)CFTimeZoneGetSecondsFromGMT(tz, (CFAbsoluteTime)(local + d * 43200) - kCFAbsoluteTimeIntervalSince1970);
+        if (t + (int64_t)CFTimeZoneGetSecondsFromGMT(tz, (CFAbsoluteTime)t - kCFAbsoluteTimeIntervalSince1970) == local && !(k && found[0] == t)) found[k++] = t;
+    }
+    CFRelease(tz);
+    if (k == 2 && found[1] < found[0]) { int64_t x = found[0]; found[0] = found[1]; found[1] = x; }
+    *count = k < n ? k : n; for (int i = 0; i < *count; i++) out[i] = found[i];
+    return 0;
+}
 static void snapshot_init(ClockSnapshot *s) { memset(s, 0, sizeof *s); }
 static unsigned snapshot_create(ClockSnapshot *s) {
     if (!s) return R_INVALID;
@@ -144,6 +163,7 @@ void *runtime_time_override(const char *name) {
         {"_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", device_location_name},
         {"_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", load_time_zone_rule},
         {"_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", to_calendar_rule},
+        {"_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE", to_posix_rule},
         {"_ZN2nn4time13ClockSnapshotC1Ev", snapshot_init},
         {"_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", snapshot_create},
         {"_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", span_between},
