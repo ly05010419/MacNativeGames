@@ -424,10 +424,12 @@ static void crash(int num,siginfo_t *info,void *context) {
 #if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE
  if(num==SIGTRAP){extern int runtime_diag_watch_trap(void *);if(runtime_diag_watch_trap(context))return;}   /* #61 frmwatch (diagnostic) */
 #endif
- if(stale_target_reference(num,info,u))return;
+ /* MKW: these two TOTK workarounds read TOTK code sites; GAME_ADDR_0x15ecb0c is 0xffffffff there, and the read faulted
+    inside this handler, which then re-entered itself forever and hid the real fault. */
+ if(GAME_ADDR(0x15ecb0c)!=0xffffffffu&&stale_target_reference(num,info,u))return;
  /* During save load, this optional game object can contain a tagged invalid
     reference. Treat it as absent, as the following cbz path expects (TOTK). */
- if(num==SIGSEGV&&modules[0].base&&
+ if(GAME_ADDR(0x15ecb0c)!=0xffffffffu&&num==SIGSEGV&&modules[0].base&&
     u->uc_mcontext->__ss.__pc==(uintptr_t)modules[0].base+GAME_ADDR(0x15ecb0c)&&
     (uintptr_t)info->si_addr==0xffff0000ffffffffULL&&
     u->uc_mcontext->__ss.__x[8]==0xffff0000ffffffffULL){
@@ -454,6 +456,10 @@ static void crash(int num,siginfo_t *info,void *context) {
  if((num==SIGBUS||num==SIGSEGV)&&runtime_fault_guard){sigjmp_buf *g=runtime_fault_guard;runtime_fault_guard=NULL;siglongjmp(*g,1);}   /* guarded host read of guest memory (uniform snapshot copies) */
  if(runtime_gfx_fault(info->si_addr,(u->uc_mcontext->__es.__esr>>6)&1,context))return;uint64_t pc=u->uc_mcontext->__ss.__pc,fp=u->uc_mcontext->__ss.__fp;
  signal_hex("[totk] signal=",num);signal_hex("fault=",(uintptr_t)info->si_addr);signal_hex("esr=",u->uc_mcontext->__es.__esr);
+#ifdef GAME_MKW
+ {extern void runtime_alias_fault_report(uint64_t);runtime_alias_fault_report((uintptr_t)info->si_addr);
+  extern int nvn_dirty_tracked(const void *,size_t);if(nvn_dirty_tracked(info->si_addr,1)){static const char m[]="[fault] address is in a dirty-tracked pool range\n";write(2,m,sizeof m-1);}}
+#endif
  {mach_vm_address_t ra=(uintptr_t)info->si_addr;mach_vm_size_t rs=0;vm_region_basic_info_data_64_t ri;mach_msg_type_number_t rc=VM_REGION_BASIC_INFO_COUNT_64;mach_port_t ro=0;
   if(mach_vm_region(mach_task_self(),&ra,&rs,VM_REGION_BASIC_INFO_64,(vm_region_info_t)&ri,&rc,&ro)==KERN_SUCCESS){signal_hex("region=",ra);signal_hex("region size=",rs);signal_hex("region prot=",(uint64_t)ri.protection|((uint64_t)ri.max_protection<<8));}}signal_hex("pc=",pc);signal_hex("lr=",u->uc_mcontext->__ss.__lr);signal_hex("fp=",fp);
 #ifdef GAME_BOTW
@@ -612,5 +618,7 @@ int main(int argc,char **argv) {
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
+ if(!strcmp(argv[2],"probe-gpu-mesh")){extern int mtl_probe_mesh(void);int checked=mtl_probe_mesh();printf("{\"status\":\"pass\",\"probe\":\"probe-gpu-mesh\",\"checked\":%d}\n",checked);return 0;}
+ if(!strcmp(argv[2],"probe-gpu-indirect")){extern int mtl_probe_indirect(void);int checked=mtl_probe_indirect();printf("{\"status\":\"pass\",\"probe\":\"probe-gpu-indirect\",\"checked\":%d}\n",checked);return 0;}
  if(!strcmp(argv[2],"probe-gpu-writeback")||!strcmp(argv[2],"probe-gpu-sampler-border")||!strcmp(argv[2],"probe-gpu-pool-retire")||!strcmp(argv[2],"probe-gpu-tex-slots")||!strcmp(argv[2],"probe-gpu-arg-epoch")||!strcmp(argv[2],"probe-gpu-anomaly")||!strcmp(argv[2],"probe-gpu-vertex-streams")||!strcmp(argv[2],"probe-gpu-vin")||!strcmp(argv[2],"probe-gpu-fout")||!strcmp(argv[2],"probe-gpu-pipeline-archive")||!strcmp(argv[2],"probe-gpu-layer-merge")||!strcmp(argv[2],"probe-gpu-cube-merge")||!strcmp(argv[2],"probe-gpu-texture-retire")||!strcmp(argv[2],"probe-gpu-texels-region")||!strcmp(argv[2],"probe-gpu-linear-rt")||!strcmp(argv[2],"probe-gpu-storage-view")||!strcmp(argv[2],"probe-gpu-compressed-alias")||!strcmp(argv[2],"probe-gpu-upload-batch")||!strcmp(argv[2],"probe-gpu-ds-clear")||!strcmp(argv[2],"probe-gpu-ub-rename")||!strcmp(argv[2],"probe-gpu-ubo-snapshot")||!strcmp(argv[2],"probe-gpu-drv-c0")||!strcmp(argv[2],"probe-gpu-dispatch-chain")||!strcmp(argv[2],"probe-gpu-copy-alias")||!strcmp(argv[2],"probe-gpu-srgb-view")||!strcmp(argv[2],"probe-gpu-depth-output"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-memory"))runtime_memory_probe();else if(!strcmp(argv[2],"probe-gfx"))runtime_gfx_probe(0);else if(!strcmp(argv[2],"probe-vpool"))runtime_vpool_probe();else if(!strcmp(argv[2],"probe-gpu-widen")||!strcmp(argv[2],"probe-gpu-blockrt")||!strcmp(argv[2],"probe-gpu-midclear")||!strcmp(argv[2],"probe-gpu-winding")||!strcmp(argv[2],"probe-gpu-tile"))runtime_gpu_path_probe(argv[2]);else if(!strcmp(argv[2],"probe-audio"))runtime_audio_probe();else if(!strcmp(argv[2],"probe-gfx-negative"))runtime_gfx_probe(1);else if(!strcmp(argv[2],"probe"))probe();else if(!strcmp(argv[2],"probe-fs"))runtime_fs_probe();else if(!strcmp(argv[2],"probe-swkbd"))runtime_swkbd_probe();else if(!strcmp(argv[2],"probe-save"))runtime_save_probe();else if(!strcmp(argv[2],"boot")){if(getenv("TOTK_VERIFY_STARTUP")||getenv("TOTK_HEADLESS"))boot();else runtime_front_run(boot);}else runtime_fail("unknown mode");return 0;
 }

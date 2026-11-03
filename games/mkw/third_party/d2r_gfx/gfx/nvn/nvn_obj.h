@@ -28,7 +28,8 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 // game_mem/host/span: TOTK host-owned VM storage for physical/virtual pools (totk_vpool.c); host is NULL for game-backed pools.
-typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; } pool_t; FITS(pool_t, NVNmemoryPool);
+typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; uint32_t address_used, mapped, direct_alias;
+                 uint32_t *page_gen; uint8_t **page_src; uint64_t page_n, map_gen; } pool_t;   // MKW: virtual pools: per 64 KiB page the map generation that last mapped it (0 unmapped), see totk_vpool.c FITS(pool_t, NVNmemoryPool);
 
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
@@ -120,7 +121,7 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_COUNT_
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONSTANTS, OP_INDIRECT, OP_MESH_TASKS, OP_COUNT_
 };
 // 载荷（紧跟 op_hdr）
 // Payload (immediately follows op_hdr)
@@ -361,6 +362,9 @@ typedef struct { int32_t first, n; uint32_t st[16]; } p_bind_vattr;
 typedef struct { int32_t first, n; vs_st st[16]; } p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UBO / SSBO
+/* NVN2 push constants: separately retained graphics and compute blocks, copied at record time. */
+#define MKW_PUSH_SIZE 256
+typedef struct { uint32_t compute, offset, size; uint8_t data[]; } p_push_constants;
 // src: NVN 55 *Deferred binds keep the game's handle array pointer (read at submit into h, see hle_nvn.c resolve_deferred); 0 = immediate
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } p_bind_handles; // 分离贴图 / 采样器句柄 | Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which：0 值掩码 1 写掩码 2 参考值 | which: 0 value mask 1 write mask 2 reference value
@@ -431,3 +435,8 @@ void mtl_prog_prefetch(const prog_t *p);   // TOTK_SHADER_PREFETCH=1: start comp
 // 新序号（> 0，全局递增）
 // New serial (> 0, globally increasing)
 uint64_t nvn_new_serial(void);
+
+/* Indirect arguments remain GPU addresses until replay. */
+typedef struct { int32_t compute, prim, itype, pad; uint64_t ibuf, args, caller, count; int32_t max; uint32_t stride; } p_indirect;
+
+typedef struct { uint32_t first, count; } p_mesh_tasks;

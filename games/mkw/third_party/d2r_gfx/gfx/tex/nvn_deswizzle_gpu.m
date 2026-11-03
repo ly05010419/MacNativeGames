@@ -5,21 +5,30 @@ static id<MTLComputePipelineState> g_nvn_deswz_pipeline, g_nvn_region_pipeline;
 static const char *const k_nvn_deswz_msl =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
-    "struct P { ulong src_off, dst_off, base, pitch; uint row_bytes, rows, slices, th, td; };\n"
+    "struct P { ulong src_off, dst_off, base, pitch; uint row_bytes, rows, slices, th, td, gobs_x; };\n"
     "kernel void deswz(device const uchar *src [[buffer(0)]], device uchar *dst [[buffer(1)]], constant P& p [[buffer(2)]], uint3 id [[thread_position_in_grid]]) {\n"
-    " uint bh = 1u << p.th, bd = 1u << p.td, gobs_x = (p.row_bytes + 63u) >> 6, blocks_y = (p.rows + (8u * bh) - 1u) >> (3u + p.th);\n"
+    " uint bh = 1u << p.th, bd = 1u << p.td, gobs_x = p.gobs_x, blocks_y = (p.rows + (8u * bh) - 1u) >> (3u + p.th);\n"
     " uint tid = id.x & 31u, gob_x = id.x >> 5, gob_y = id.y, z = id.z; uint xseg = ((tid >> 4) << 1) | ((tid >> 1) & 1u), y = (gob_y << 3) | (((tid >> 2) & 3u) << 1) | (tid & 1u), x = (gob_x << 6) | (xseg << 4);\n"
     " if (x >= p.row_bytes || y >= p.rows || z >= p.slices) return;\n"
-    " uint n = min(16u, p.row_bytes - x); ulong block = 512ul * bh * bd; ulong gob_in_block = ((ulong)(z & (bd - 1u)) << p.th) + (gob_y & (bh - 1u)); ulong so = p.src_off + p.base + ((ulong)(z >> p.td) * gobs_x * blocks_y + (gob_y >> p.th) * gobs_x + gob_x) * block + gob_in_block * 512ul + (ulong)tid * 16ul; ulong doff = p.dst_off + ((ulong)z * p.rows + y) * p.pitch + x;\n"
+#if defined(GAME_MKW) && GAME_MKW
+    " uint storage_tid = (tid & ~6u) | ((tid & 2u) << 1) | ((tid & 4u) >> 1);\n"
+#else
+    " uint storage_tid = tid;\n"
+#endif
+    " uint n = min(16u, p.row_bytes - x); ulong block = 512ul * bh * bd; ulong gob_in_block = ((ulong)(z & (bd - 1u)) << p.th) + (gob_y & (bh - 1u)); ulong so = p.src_off + p.base + ((ulong)(z >> p.td) * gobs_x * blocks_y + (gob_y >> p.th) * gobs_x + gob_x) * block + gob_in_block * 512ul + (ulong)storage_tid * 16ul; ulong doff = p.dst_off + ((ulong)z * p.rows + y) * p.pitch + x;\n"
     " if (n == 16u && ((so | doff) & 15ul) == 0ul) *(device uint4 *)(dst + doff) = *(device const uint4 *)(src + so);\n"
     " else for (uint i = 0; i < n; i++) dst[doff + i] = src[so + i];\n"
     "}\n"
-    "struct R { ulong pool_off, linear_off, base, pitch, img; uint row_bytes, rows, slices, th, td, x, y, z, w, h, d, to_linear; };\n"
+    "struct R { ulong pool_off, linear_off, base, pitch, img; uint row_bytes, rows, slices, th, td, gobs_x, x, y, z, w, h, d, to_linear; };\n"
     "inline ulong region_bl(constant R& p, uint x, uint y, uint z) {\n"
-    " ulong bh=1ul<<p.th, bd=1ul<<p.td, gx=((ulong)p.row_bytes+63ul)/64ul, by=((ulong)p.rows+8ul*bh-1ul)/(8ul*bh);\n"
+    " ulong bh=1ul<<p.th, bd=1ul<<p.td, gx=p.gobs_x, by=((ulong)p.rows+8ul*bh-1ul)/(8ul*bh);\n"
     " return ((ulong)(z>>p.td)*gx*by+(ulong)(y>>(3u+p.th))*gx+(x>>6))*512ul*bh*bd\n"
     "      +(((ulong)z&(bd-1ul))*bh+(((ulong)y>>3)&(bh-1ul)))*512ul\n"
+#if defined(GAME_MKW) && GAME_MKW
+    "      +(x%64u/32u)*256ul+(y%8u/4u)*128ul+(x%32u/16u)*64ul+(y%4u/2u)*32ul+(y%2u)*16ul+x%16u;\n"
+#else
     "      +(x%64u/32u)*256ul+(y%8u/2u)*64ul+(x%32u/16u)*32ul+(y%2u)*16ul+x%16u;\n"
+#endif
     "}\n"
     "kernel void texels_region(device uchar *pool [[buffer(0)]], device uchar *linear [[buffer(1)]], constant R& p [[buffer(2)]], uint3 id [[thread_position_in_grid]]) {\n"
     " uint seg=id.x*16u; if(seg>=p.w||id.y>=p.h||id.z>=p.d)return;\n"
@@ -56,8 +65,8 @@ int nvn_deswz_gpu_encode(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> src, ui
     uint64_t base;
     unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb) || dst_pitch < row_bytes) return -1;
-    struct { uint64_t src_off, dst_off, base, pitch; uint32_t row_bytes, rows, slices, th, td; } p = {
-        src_off, dst_off, base, dst_pitch, row_bytes, rows, slices, th, td
+    struct { uint64_t src_off, dst_off, base, pitch; uint32_t row_bytes, rows, slices, th, td, gobs_x; } p = {
+        src_off, dst_off, base, dst_pitch, row_bytes, rows, slices, th, td, nvn_tex_level_gobs(d,level)
     };
     [enc setComputePipelineState:g_nvn_deswz_pipeline];
     [enc setBuffer:src offset:0 atIndex:0];
@@ -78,8 +87,8 @@ int nvn_deswz_gpu_encode_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTa
     uint64_t base;
     unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb) || dst_pitch < row_bytes) return -1;
-    struct { uint64_t src_off, dst_off, base, pitch; uint32_t row_bytes, rows, slices, th, td; } p = {
-        src_off, dst_off, base, dst_pitch, row_bytes, rows, slices, th, td
+    struct { uint64_t src_off, dst_off, base, pitch; uint32_t row_bytes, rows, slices, th, td, gobs_x; } p = {
+        src_off, dst_off, base, dst_pitch, row_bytes, rows, slices, th, td, nvn_tex_level_gobs(d,level)
     };
     memcpy((uint8_t *)params.contents + params_off, &p, sizeof p);
     [enc setArgumentTable:table];
@@ -110,8 +119,8 @@ int nvn_texels_gpu_encode(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> pool, 
     span+=(uint64_t)(depth-1)*img;
     if(linear_off>linear.length||span>linear.length-linear_off)return -1;
     if(pool==linear)return -1; /* overlapping source/destination is not a conversion contract */
-    struct { uint64_t pool_off,linear_off,base,pitch,img;uint32_t row_bytes,rows,slices,th,td,x,y,z,w,h,d,to_linear; } p={
-      pool_off,linear_off,base,pitch,img,row,rows,slices,th,td,x,y,z,w,h,depth,to_linear!=0};
+    struct { uint64_t pool_off,linear_off,base,pitch,img;uint32_t row_bytes,rows,slices,th,td,gobs_x,x,y,z,w,h,d,to_linear; } p={
+      pool_off,linear_off,base,pitch,img,row,rows,slices,th,td,nvn_tex_level_gobs(d,level),x,y,z,w,h,depth,to_linear!=0};
     [enc setComputePipelineState:g_nvn_region_pipeline];
     [enc setBuffer:pool offset:0 atIndex:0];[enc setBuffer:linear offset:0 atIndex:1];
     [enc setBytes:&p length:sizeof p atIndex:2];

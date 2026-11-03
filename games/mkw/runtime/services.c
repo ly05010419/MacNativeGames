@@ -51,7 +51,7 @@ static __attribute__((unused)) int dram_8gb(void){
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
 #ifdef GAME_MKW
-#define LOW_SIZE (12ULL<<30)   /* Mario Kart World: room for its 10 GiB heap cap after the stack */
+#define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* Reserve exactly the stack prefix and 10 GiB heap; large ASLR holes are scarce. */
 #else
 #define LOW_SIZE (dram_8gb()?8ULL<<30:6ULL<<30)   /* 8 GiB: room for the 8 GB mode's 7 GiB heap cap after the stack */
 #endif
@@ -174,7 +174,7 @@ static void memory_init(void) {
     if(g<least+(4ULL<<30))break;
    }
   }
-  if(!low_space)runtime_fail(getenv("TOTK_ALIAS_GIB")?"reserve guest stack, heap and the TOTK_ALIAS_GIB alias region below 2^39":"reserve guest stack, heap and alias regions below 2^39");
+  if(!low_space){reserve_in_gap(UINT64_MAX,1);runtime_fail(getenv("TOTK_ALIAS_GIB")?"reserve guest stack, heap and the TOTK_ALIAS_GIB alias region below 2^39":"reserve guest stack, heap and alias regions below 2^39");}
   if(!alias_space)alias_space=low_space+LOW_SIZE;
  }
 #endif
@@ -250,6 +250,14 @@ static uint64_t alias_map(int unmap,uint64_t addr,uint64_t size){
  pthread_mutex_unlock(&memory_lock);return 0;
 }
 uint64_t runtime_heap_base(void){return (uintptr_t)heap;}
+/* Crash report (signal handler, no locks): state of the alias page behind a faulting address, and the stack moves over it. */
+void runtime_alias_fault_report(uint64_t a){
+ uint64_t start=ALIAS_START;char b[200];
+ if(a<start||a-start>=ALIAS_SIZE){int n=snprintf(b,sizeof b,"[fault] %#llx outside the alias region\n",(unsigned long long)a);write(2,b,(size_t)n);return;}
+ unsigned p=(unsigned)((a-start)/4096),q=p&~3u;
+ int n=snprintf(b,sizeof b,"[fault] alias page %u: mapped %d stale %d; its 16 KiB host page: mapped %d%d%d%d\n",p,alias_pages[p],alias_stale[p],alias_pages[q],alias_pages[q+1],alias_pages[q+2],alias_pages[q+3]);write(2,b,(size_t)n);
+ for(unsigned i=0;i<nstack_maps;i++)if(overlaps(a&~0x3fffULL,0x4000,stack_maps[i].src,stack_maps[i].size)){n=snprintf(b,sizeof b,"[fault] stack move src %#llx+%#llx -> %#llx covers it\n",(unsigned long long)stack_maps[i].src,(unsigned long long)stack_maps[i].size,(unsigned long long)stack_maps[i].dst);write(2,b,(size_t)n);}
+}
 /* Guest memory the game has committed (heap size + mapped alias pages), for memory reports (iOS app monitor). */
 void runtime_guest_committed(uint64_t *heap_bytes,uint64_t *alias_mapped){*heap_bytes=heap_size;*alias_mapped=alias_bytes;}
 /* Physical memory behind the guest regions (stack+heap and alias): resident pages, of which dirty, and pages the system

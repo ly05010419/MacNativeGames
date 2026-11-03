@@ -100,8 +100,14 @@ void runtime_gfx_probe(int negative){
  if(CALL(nvnTextureGetStorageClass,&texture.value)!=CALL(nvnTextureBuilderGetStorageClass,&builder))runtime_fail("texture storage class identity");
  CALL(nvnTextureFinalize,&texture.value);
  for(unsigned i=0;i<64;i++)if(texture.guard[i]!=0xa5)runtime_fail("NVN texture finalize overflow");
- int major=0,minor=0;CALL(nvnDeviceGetInteger,NULL,0,&major);CALL(nvnDeviceGetInteger,NULL,1,&minor);if(major!=55||minor<15)runtime_fail("TOTK NVN ABI target");
+ int major=0,minor=0;CALL(nvnDeviceGetInteger,NULL,0,&major);CALL(nvnDeviceGetInteger,NULL,1,&minor);
+#ifdef GAME_MKW
+ if(major!=231||minor<16)runtime_fail("MKW NVN2 ABI target");
+ extern void dm_nvn_probe_push_constants(void); dm_nvn_probe_push_constants();
+#else
+ if(major!=55||minor<15)runtime_fail("TOTK NVN ABI target");
  if(lookup("TOTK_not_an_nvn_entry"))runtime_fail("unknown NVN lookup should be null");
+#endif
  probe_linear_layout();
  probe_minimal_layout();
  extern void dm_nvn_probe_present_interval(void); dm_nvn_probe_present_interval();

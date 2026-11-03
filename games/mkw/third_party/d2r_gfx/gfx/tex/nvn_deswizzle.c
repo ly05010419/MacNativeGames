@@ -12,7 +12,13 @@
 #include <string.h>
 
 static uint32_t gob_off(uint32_t x, uint32_t y) {
+#if defined(GAME_MKW) && GAME_MKW
+    /* Switch 2 exchanges bits 5 and 6 within every GOB (kartnative,
+       docs/reference/nvn-objects.md, "Switch 2 block-linear GOBs"). */
+    return (x % 64 / 32) * 256 + (y % 8 / 4) * 128 + (x % 32 / 16) * 64 + (y % 4 / 2) * 32 + (y % 2) * 16 + x % 16;
+#else
     return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
+#endif
 }
 
 uint64_t nvn_bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
@@ -69,7 +75,7 @@ static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *b
             uint8_t *row = lin + ((size_t)z * rows + y) * pitch;
             for (uint32_t x = 0; x < row_bytes; x += 16) {             // 16 字节一段：GOB 内 16 字节连续，且整除所有块宽 | 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
                 uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
-                uint8_t *p = bl + nvn_bl_offset(x, y, z, row_bytes, rows, th, td);
+                uint8_t *p = bl + nvn_bl_offset(x, y, z, nvn_tex_level_gobs(d, level) * 64, rows, th, td);
                 if (to_linear) memcpy(row + x, p, n); else memcpy(p, row + x, n);
             }
         }
@@ -81,4 +87,20 @@ int nvn_deswizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const vo
 }
 int nvn_swizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, size_t src_pitch, void *dst) {
     return move(d, level, layer, (uint8_t *)dst, (uint8_t *)src, src_pitch, 0);
+}
+
+/* A gathered sparse mip tail starts inside the texture's storage. Keep all
+   addressing relative to that piece, without forming a pointer before it. */
+int nvn_deswizzle_part(const nvn_texdesc *d, unsigned level, unsigned layer,
+                      const void *src, uint64_t src_off, uint64_t src_len, void *dst, size_t pitch) {
+    uint32_t rb, rows, slices, bpb; uint64_t base; unsigned th, td;
+    if (nvn_deswizzle_geom(d,level,layer,&rb,&rows,&slices,&base,&th,&td,&bpb) || pitch < rb || base < src_off) return -1;
+    uint32_t laid = nvn_tex_level_gobs(d,level) * 64;
+    for (uint32_t z=0; z<slices; z++) for (uint32_t y=0; y<rows; y++) for (uint32_t x=0; x<rb; x+=16) {
+        uint32_t n = rb-x < 16 ? rb-x : 16;
+        uint64_t off = base-src_off+nvn_bl_offset(x,y,z,laid,rows,th,td);
+        if (off > src_len || n > src_len-off) return -1;
+        memcpy((uint8_t *)dst+((size_t)z*rows+y)*pitch+x,(const uint8_t *)src+off,n);
+    }
+    return 0;
 }

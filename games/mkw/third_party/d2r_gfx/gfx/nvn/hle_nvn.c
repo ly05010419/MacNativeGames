@@ -37,6 +37,9 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <mach/mach.h>
+#ifdef GAME_MKW
+#include <CommonCrypto/CommonDigest.h>
+#endif
 #include "mach_vm_compat.h"
 #include <TargetConditionals.h>
 #include <unistd.h>
@@ -112,19 +115,19 @@ static const char *nvn2_stub_names[NVN2_STUBS];
 static _Atomic unsigned char nvn2_stub_seen[NVN2_STUBS];
 static unsigned nvn2_stub_count;
 static pthread_mutex_t nvn2_stub_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t nvn2_stub_hit(unsigned i) {
-    if (!atomic_exchange(&nvn2_stub_seen[i], 1)) fprintf(stderr, "[mkw-nvn2] first call of unimplemented %s: returns 0\n", nvn2_stub_names[i]);
+static uint64_t nvn2_stub_hit(unsigned i, uint64_t x1, uint64_t x2, uint64_t x3) {
+    if (!atomic_exchange(&nvn2_stub_seen[i], 1)) fprintf(stderr, "[mkw-nvn2] first call of unimplemented %s: returns 0 (x1=%#llx x2=%#llx x3=%#llx)\n", nvn2_stub_names[i], (unsigned long long)x1, (unsigned long long)x2, (unsigned long long)x3);
     return 0;
 }
 /* stub n: the digits of n read as octal less 64 (S64(1) .. S64(7), S64(10): 0100 .. 01077) are its index 0 .. 511 */
-#define S1(n) static uint64_t nvn2_stub_##n(void) { return nvn2_stub_hit(0##n - 64); }
+#define S1(n) static uint64_t nvn2_stub_##n(uint64_t x0, uint64_t x1, uint64_t x2, uint64_t x3) { (void)x0; return nvn2_stub_hit(0##n - 64, x1, x2, x3); }
 #define S8(n) S1(n##0) S1(n##1) S1(n##2) S1(n##3) S1(n##4) S1(n##5) S1(n##6) S1(n##7)
 #define S64(n) S8(n##0) S8(n##1) S8(n##2) S8(n##3) S8(n##4) S8(n##5) S8(n##6) S8(n##7)
 S64(1) S64(2) S64(3) S64(4) S64(5) S64(6) S64(7) S64(10)
 #define P1(n) nvn2_stub_##n,
 #define P8(n) P1(n##0) P1(n##1) P1(n##2) P1(n##3) P1(n##4) P1(n##5) P1(n##6) P1(n##7)
 #define P64(n) P8(n##0) P8(n##1) P8(n##2) P8(n##3) P8(n##4) P8(n##5) P8(n##6) P8(n##7)
-static uint64_t (*const nvn2_stubs[NVN2_STUBS])(void) = { P64(1) P64(2) P64(3) P64(4) P64(5) P64(6) P64(7) P64(10) };
+static uint64_t (*const nvn2_stubs[NVN2_STUBS])(uint64_t, uint64_t, uint64_t, uint64_t) = { P64(1) P64(2) P64(3) P64(4) P64(5) P64(6) P64(7) P64(10) };
 static void *nvn2_stub_for(const char *name) {
     pthread_mutex_lock(&nvn2_stub_lock);
     unsigned i;
@@ -298,9 +301,17 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
-    if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
+    if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) {
+        LOG("[pool] initialization failed object=%p storage=%p size=%#llx flags=%#x", (void *)p, (void *)s->mem, (unsigned long long)s->size, s->flags);
+        o->magic = 0; return 0;
+    }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
     if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+#ifdef GAME_MKW
+    /* CPU-written physical pools the GPU reaches only through virtual pools (sparse texture tiles): their writes are
+       tracked so a mapped tile is uploaded again after the CPU writes its page (nvn_mtl.m sparse_sync). */
+    else if (o->mem && (o->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL) && !(o->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) nvn_dirty_add_range(o->mem, o->size);
+#endif
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -327,11 +338,11 @@ NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const voi
 #ifdef GAME_BOTW
  if(v->magic!=MAGIC('P','O','O','L')||(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)||!v->mem){static int n;if(n++<12)LOG("【红】nvnMemoryPoolMap(%p) -> NULL: magic %#x flags %#x mem %p size %#llx",(void *)p,v->magic,v->flags,(void *)v->mem,(unsigned long long)v->size);}
 #endif
- if(v->magic!=MAGIC('P','O','O','L'))return NULL;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
+ if(v->magic!=MAGIC('P','O','O','L'))return NULL;if(!(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS))((pool_t *)v)->address_used=1;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *r) {
     return (NVNboolean)totk_vpool_map((pool_t *)p, n, (const totk_mapping_request *)(const void *)r);
 }
-NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
+NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { ((pool_t *)p)->address_used = 1; return (NVNbufferAddress)((const pool_t *)p)->mem; }
 
 // Buffer objects reference their pool; they do not own the backing allocation.
 typedef struct{NVNdevice *dev;pool_t *pool;int64_t off;uint64_t size;} totk_buffer_builder;
@@ -347,9 +358,9 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b,const NVNbufferBuilder *builde
     backed by the pool (botw.md). Refusing it left the game's NVNbuffer uninitialized; the first GetAddress read garbage. */
  if(v->pool&&v->pool->magic==MAGIC('P','O','O','L')&&v->off>=0&&(uint64_t)v->off<=v->pool->size&&v->size>v->pool->size-(uint64_t)v->off){
   static int n;if(n++<8){LOG("[nvn] buffer of %llu bytes at offset %lld of a %llu-byte pool %p (mem %p, flags %#x): made as asked (the driver does not check)",(unsigned long long)v->size,(long long)v->off,(unsigned long long)v->pool->size,(void *)v->pool,(void *)v->pool->mem,v->pool->flags);guest_chain("oversized buffer");}
-  *(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
+  v->pool->address_used=1;*(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
 #endif
- if(!v->pool||v->pool->magic!=MAGIC('P','O','O','L')||v->off<0||(uint64_t)v->off>v->pool->size||v->size>v->pool->size-(uint64_t)v->off)return 0;*(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
+ if(!v->pool||v->pool->magic!=MAGIC('P','O','O','L')||v->off<0||(uint64_t)v->off>v->pool->size||v->size>v->pool->size-(uint64_t)v->off)return 0;v->pool->address_used=1;*(totk_buffer *)b=(totk_buffer){MAGIC('B','U','F',0),v->pool,v->off,v->size};return 1;}
 NVN(nvnBufferFinalize, void, NVNbuffer *b){memset(b,0,sizeof(totk_buffer));}
 NVN(nvnBufferMap, void *, const NVNbuffer *b){const totk_buffer *v=(const void *)b;
 #ifdef GAME_BOTW
@@ -472,6 +483,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     o->magic = MAGIC('T', 'E', 'X', 0); o->d = s->d; o->pool = s->pool; o->off = s->off;
     o->has_layout = s->has_layout; memcpy(o->layout, s->layout, 8);
     nvn_tex_layout(&o->d, &o->L);
+    if (s->pool) s->pool->address_used = 1;
     o->mem = s->pool && s->pool->mem ? s->pool->mem + s->off : NULL;
     if (s->pkg_data) {
         if (!o->mem) die("packaged texture data without CPU-visible storage");
@@ -678,36 +690,46 @@ static void shader_dump(const void *p, size_t n, const char *what) {
 }
 NVN_EXTRA(nvnProgramBuilderSetDefaults, void, void *b) { memset(b, 0, sizeof(prog_builder2_t)); }
 NVN_EXTRA(nvnProgramBuilderSetDevice, void, void *b, NVNdevice *d) { (void)b; (void)d; }
-/* MKW_SHADER_DIR=<dir>: save each stage's control section and padded code area as <hash>.ctl / <hash>.bin.
+/* MKW_SHADER_DIR=<dir>: save each stage's control section and padded code area as <content-sha256>.ctl / .bin.
    NVN2's code area length is at +0x44 (nxnative dm/gfx/nvn/hle_nvn.c, commit 65501fbb); +0x38 excludes padding and c1 constants.
    Replace old truncated dumps. Both files contain game data and must remain private. */
-static void shader_save(const NVNshaderData *sd) {
-    const char *dir = getenv("MKW_SHADER_DIR");
+static void shader_save_in(const NVNshaderData *sd, const char *dir) {
     if (!dir || !sd->control || !sd->data) return;
     uint8_t ctl[0x400]; mach_vm_size_t got = 0;
     if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)sd->control, sizeof ctl, (mach_vm_address_t)(uintptr_t)ctl, &got) != KERN_SUCCESS)
         { got = 0; if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)sd->control, 0x100, (mach_vm_address_t)(uintptr_t)ctl, &got) != KERN_SUCCESS) return; }
     uint32_t magic, version, size; memcpy(&magic, ctl, 4); memcpy(&version, ctl + 4, 4); memcpy(&size, ctl + 0x44, 4);
     if (magic != 0x98761234u || version != 0xc9 || !size || size > (16u << 20)) return;
-    char bin[1024], control[1024], hex[33]; for (int i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02x", ctl[0x20 + i]);
+    uint8_t *code = malloc(size); if (!code) return;
+    mach_vm_size_t read = 0;
+    if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)sd->data, size, (mach_vm_address_t)(uintptr_t)code, &read) != KERN_SUCCESS || read != size) { free(code); return; }
+    /* Runtime-built controls can have an all-zero embedded ID. Hash real content
+       so task, mesh and fragment captures cannot overwrite one another. */
+    CC_SHA256_CTX ctx; uint8_t digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256_Init(&ctx); CC_SHA256_Update(&ctx, ctl, (CC_LONG)got); CC_SHA256_Update(&ctx, code, size); CC_SHA256_Final(digest, &ctx);
+    char bin[1024], control[1024], hex[65]; for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", digest[i]);
     if (snprintf(bin, sizeof bin, "%s/%s.bin", dir, hex) >= (int)sizeof bin ||
-        snprintf(control, sizeof control, "%s/%s.ctl", dir, hex) >= (int)sizeof control) return;
+        snprintf(control, sizeof control, "%s/%s.ctl", dir, hex) >= (int)sizeof control) { free(code); return; }
     static pthread_mutex_t save_mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&save_mu);
     FILE *f = fopen(bin, "rb"); long oldsize = -1;
     if (f) { if (!fseek(f, 0, SEEK_END)) oldsize = ftell(f); fclose(f); }
     if (oldsize == (long)size && !access(control, F_OK)) goto done;
-    uint8_t *code = malloc(size); if (!code) goto done;
-    mach_vm_size_t read = 0;
-    if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)sd->data, size, (mach_vm_address_t)(uintptr_t)code, &read) != KERN_SUCCESS || read != size) { free(code); goto done; }
-    f = fopen(bin, "wb"); if (!f) { free(code); goto done; }
-    size_t written = fwrite(code, 1, size, f); int failed = fclose(f); free(code);
+    f = fopen(bin, "wb"); if (!f) goto done;
+    size_t written = fwrite(code, 1, size, f); int failed = fclose(f);
     if (written != size || failed) { unlink(bin); goto done; }
     f = fopen(control, "wb"); if (!f) { unlink(bin); goto done; }
     written = fwrite(ctl, 1, (size_t)got, f); failed = fclose(f);
     if (written != (size_t)got || failed) { unlink(control); unlink(bin); }
 done:
+    free(code);
     pthread_mutex_unlock(&save_mu);
+}
+static void shader_save(const NVNshaderData *sd) { shader_save_in(sd, getenv("MKW_SHADER_DIR")); }
+/* Called at the mesh replay boundary so captures describe the actual failing program. */
+void nvn_mkw_save_mesh_program(const prog_t *p) {
+    const char *dir = getenv("MKW_MESH_CAPTURE_DIR");
+    if (p && dir) for (unsigned i = 0; i < p->nstage && i < 6; i++) shader_save_in(&p->sd[i], dir);
 }
 NVN_EXTRA(nvnProgramBuilderSetShaders, void, void *b, int n, const NVNshaderData *sd) {
     prog_builder2_t *o = b; o->n = n; o->sd = sd;
@@ -725,6 +747,13 @@ NVN_EXTRA(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const void
 #endif
 // ---------- 同步 / 事件 ----------
 // ---------- Sync / events ----------
+/* ZCull stencil criteria describe a conservative early-cull hint, independently of the real stencil test.
+   As in nxnative (MIT, 65501fbb), the Metal host leaves this optimization to its driver; depth/stencil
+   testing continues to come from the bound depth/stencil state. */
+/* MKW sdk+0x5e9270 packs function-1, reference and mask into the ZCull hint word. */
+NVN_NOPROTO(nvnCommandBufferSetStencilCullCriteria, void, NVNcommandBuffer *c, int function, int reference, int mask) {
+    (void)c; (void)function; (void)reference; (void)mask;
+}
 NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t *)s = (sync_t){MAGIC('S', 'Y', 'N', 'C'), 0, 0}; return 1; }
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 // 围栏 = 「此前提交到队列的命令全部完成」：记下最近一次提交的栅栏值
@@ -1991,17 +2020,77 @@ NVN(nvnCommandBufferBindVertexBuffers, void, NVNcommandBuffer *c, int first, int
     if (n < 0 || first + n > 16) { LOG("【红】BindVertexBuffers first=%d n=%d", first, n); return; }
     p_bind_vbuf *r = RECN(c, OP_BIND_VBUF, p_bind_vbuf, r, n); r->first = first; r->n = n; memcpy(r->r, rg, sizeof *rg * n); hw_fix(CB(c), 24 * (size_t)n);
 }
+/* NVN2 task/mesh use the unused tessellation slots in this runtime. */
+static int st_host(int st) {
+#ifdef GAME_MKW
+    if (st == 6) return 3;
+    if (st == 7) return 4;
+#endif
+    return st;
+}
 NVN(nvnCommandBufferBindUniformBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
-    *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, i, a, n}; hw_fix(CB(c), 20);   /* CB_SIZE/ADDRESS (4 words) + CB_BIND (1) */
+    *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st_host(st), i, a, n}; hw_fix(CB(c), 20);   /* CB_SIZE/ADDRESS (4 words) + CB_BIND (1) */
 }
 NVN(nvnCommandBufferBindUniformBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
-    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
+    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st_host(st), first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
 }
 NVN(nvnCommandBufferBindStorageBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
-    *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, i, a, n}; hw_fix(CB(c), 20);   /* macro 16 (1 word) + CB_DATA address/size (4) */
+    *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st_host(st), i, a, n}; hw_fix(CB(c), 20);   /* macro 16 (1 word) + CB_DATA address/size (4) */
 }
+#ifdef GAME_MKW
+/* NVN2's graphics and compute push blocks feed shader constant bank 24. ABI and layout: nxnative
+   dm/gfx/nvn/hle_nvn.c, commit 65501fbb (MIT). Record the bytes, not the caller's transient pointer. */
+static void mkw_push_constants(NVNcommandBuffer *c, uint32_t compute, uint64_t word, uint64_t offset, uint64_t size, const void *data) {
+    if (word || offset > MKW_PUSH_SIZE || size > MKW_PUSH_SIZE - offset || (size && !data)) {
+        die("NVN2 push constants: unsupported word %#llx or range %#llx+%#llx", (unsigned long long)word, (unsigned long long)offset, (unsigned long long)size);
+    }
+    if (!size) return;
+    p_push_constants *r = RECN(c, OP_PUSH_CONSTANTS, p_push_constants, data, size);
+    r->compute = compute; r->offset = (uint32_t)offset; r->size = (uint32_t)size; memcpy(r->data, data, (size_t)size);
+}
+/* MKW sdk+0x5e2e80 records both 32-bit arguments. Preserve the request until replay instead of dropping
+   it through the generic NVN2 stub. Stage-buffer and task/mesh output lowering are still required. */
+NVN_EXTRA(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, uint32_t first, uint32_t count) {
+    if (!count) return;
+    *REC(c, OP_MESH_TASKS, p_mesh_tasks) = (p_mesh_tasks){first, count};
+}
+NVN_EXTRA(nvnCommandBufferPushGraphicsConstants, void, NVNcommandBuffer *c, uint64_t word, uint64_t offset, uint64_t size, const void *data) {
+    mkw_push_constants(c, 0, word, offset, size, data);
+}
+NVN_EXTRA(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uint64_t word, uint64_t offset, uint64_t size, const void *data) {
+    mkw_push_constants(c, 1, word, offset, size, data);
+}
+void dm_nvn_probe_push_constants(void) {
+    NVNcommandBuffer cb; uint8_t control[256] = {0}, commands[4096] = {0}; pool_t pool = {.mem = commands};
+    uint8_t input[] = {1, 2, 3, 4}; size_t before = g_ncopies;
+    h_nvnCommandBufferInitialize(&cb, NULL);
+    h_nvnCommandBufferAddControlMemory(&cb, control, sizeof control);
+    h_nvnCommandBufferAddCommandMemory(&cb, (NVNmemoryPool *)&pool, 0, sizeof commands);
+    h_nvnCommandBufferBeginRecording(&cb);
+    mkw_push_constants(&cb, 0, 0, 3, sizeof input, input);
+    mkw_push_constants(&cb, 1, 0, 3, sizeof input, input);
+    x_nvnCommandBufferDrawMeshTasks(&cb, 0, 1);
+    memset(input, 9, sizeof input);
+    NVNcommandHandle handle = h_nvnCommandBufferEndRecording(&cb);
+    const uint8_t *p = (const uint8_t *)(uintptr_t)handle; unsigned found = 0, mesh = 0;
+    extern void mtl_probe_push_constants(const p_push_constants *, const p_push_constants *);
+    const p_push_constants *records[2] = {NULL, NULL};
+    for (;;) { op_hdr h; memcpy(&h, p, sizeof h); if (h.op == OP_END) break;
+        if (h.op == OP_PUSH_CONSTANTS && found < 2) records[found++] = (const p_push_constants *)(p + 8);
+        if (h.op == OP_MESH_TASKS) { const p_mesh_tasks *m = (const p_mesh_tasks *)(p + 8); if (m->first || m->count != 1) die("mesh recording probe: arguments changed"); mesh++; }
+        p += h.size; }
+    if (found != 2 || memcmp(records[0]->data, "\1\2\3\4", 4) || memcmp(records[1]->data, "\1\2\3\4", 4))
+        die("NVN2 push probe: recording did not preserve caller bytes");
+    if (mesh != 1) die("mesh recording probe: first=0 count=1 was dropped");
+    mtl_probe_push_constants(records[0], records[1]);
+    h_nvnCommandBufferAddControlMemory(&cb, control, sizeof control);
+    h_nvnCommandBufferFinalize(&cb);
+    if (g_ncopies != before) die("NVN2 push probe: recording leaked");
+    LOG("[mkw] NVN2 push-constant recording and replay probe passed");
+}
+#endif
 NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
-    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
+    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st_host(st), first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
 }
 /* DM_NVN_LIFELOG (totk_lifelog.h): one bound handle of a followed texture; for a deferred bind the logged id is the
    value at record time, the replay's "use" lines show the one resolved at submit. */
@@ -2026,7 +2115,7 @@ static void life_bind(NVNcommandBuffer *c, int op, int st, int slot, const uint6
 }
 static void bind_handles_rec(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h, int deferred) {
     if (n < 0 || n > 32) { LOG("【红】绑定句柄数 %d", n); return; }
-    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->pad_ = 0;
+    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st_host(st); r->first = first; r->n = n; r->pad_ = 0;
     r->src = deferred ? (uint64_t)(uintptr_t)h : 0; memcpy(r->h, h, 8 * n);
     if (totk_life_on() && (op == OP_BIND_TEX || op == OP_BIND_IMG)) for (int k = 0; k < n; k++) life_bind(c, op, st, first + k, h + k, deferred);
     hw_fix(CB(c), 16 + 4 * (size_t)n);   /* macro 7 + method 0x1a2c + CB_POS and one 32-bit handle word per binding (64-bit handles: callers override with 16 + 8n) */
@@ -2157,6 +2246,18 @@ NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, in
     // 跳板是尾跳（br），这里的返回地址就是游戏里的调用点
     // The thunk is a tail jump (br), so the return address here is the call site in the game
     *REC(c, OP_DISPATCH, p_dispatch) = (p_dispatch){x, y, z, (uint64_t)__builtin_return_address(0)};
+}
+NVN(nvnCommandBufferDispatchComputeIndirect, void, NVNcommandBuffer *c, NVNbufferAddress args) {
+    *REC(c, OP_INDIRECT, p_indirect) = (p_indirect){.compute=1, .args=args, .caller=(uint64_t)__builtin_return_address(0)};
+}
+NVN(nvnCommandBufferDrawElementsIndirect, void, NVNcommandBuffer *c, NVNdrawPrimitive prim, NVNindexType type, NVNbufferAddress indices, NVNbufferAddress args) {
+    *REC(c, OP_INDIRECT, p_indirect) = (p_indirect){.prim=prim, .itype=type, .ibuf=indices, .args=args, .caller=(uint64_t)__builtin_return_address(0)};
+}
+NVN(nvnCommandBufferMultiDrawElementsIndirectCount, void, NVNcommandBuffer *c, NVNdrawPrimitive prim, NVNindexType type, NVNbufferAddress indices, NVNbufferAddress args, NVNbufferAddress count, int max, ptrdiff_t stride) {
+    if (!max) return;
+    if (!stride) stride = 20;
+    if (!count || max < 0 || stride < 20 || (uint64_t)stride > UINT32_MAX || (stride & 3)) die("invalid multi-draw indirect range");
+    *REC(c, OP_INDIRECT, p_indirect) = (p_indirect){.prim=prim, .itype=type, .ibuf=indices, .args=args, .caller=(uint64_t)__builtin_return_address(0), .count=count, .max=max, .stride=(uint32_t)stride};
 }
 NVN(nvnCommandBufferBarrier, void, NVNcommandBuffer *c, int bits) { *(int32_t *)rec(c, OP_BARRIER, 8) = bits; }
 NVN(nvnCommandBufferSetTexturePool, void, NVNcommandBuffer *c, const NVNtexturePool *p) { REC(c, OP_SET_TEX_POOL, p_set_pool)->pool = (const dpool_t *)p; }

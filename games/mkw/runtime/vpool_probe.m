@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <mach/mach.h>
 
 #define PAGE TOTK_VPOOL_PAGE
 #define PAGES 4
@@ -28,6 +29,8 @@ static int map(NVNmemoryPool *v,const NVNmemoryPool *p,int64_t poff,int64_t voff
  return CALL(nvnMemoryPoolMapVirtual,v,1,(const NVNmappingRequest *)(const void *)&r);
 }
 static uint8_t *mem(NVNmemoryPool *p){return ((pool_t *)(void *)p)->mem;}
+static uint64_t wired_mb(void){vm_statistics64_data_t s;mach_msg_type_number_t n=HOST_VM_INFO64_COUNT;
+ host_statistics64(mach_host_self(),HOST_VM_INFO64,(host_info64_t)&s,&n);return (uint64_t)s.wire_count*vm_kernel_page_size>>20;}
 static int all(const uint8_t *p,uint8_t v,size_t n){for(size_t i=0;i<n;i++)if(p[i]!=v)return 0;return 1;}
 
 static void gpu_checks(NVNmemoryPool *v1,NVNmemoryPool *v2){
@@ -83,6 +86,41 @@ void runtime_vpool_probe(void){
  expect(all(mem(&v1),0,PAGE),"unmapped virtual page reads zero");
  expect(all(mem(&v2)+PAGE,0x3a,PAGE),"physical data survives unmap of another alias");
  CALL(nvnMemoryPoolFinalize,&v1);CALL(nvnMemoryPoolFinalize,&v2);CALL(nvnMemoryPoolFinalize,&phys);
+#ifdef GAME_MKW
+ NVNmemoryPool cpu_phys,borrowed,published;
+ pool_init(&cpu_phys,storage,size,0x18c,1);
+ expect(mem(&cpu_phys)==storage,"CPU-only physical storage retained");
+ pool_init(&borrowed,NULL,size,0x2a1,1);
+ expect(map(&borrowed,&cpu_phys,0,0,size),"borrow complete unaligned physical storage");
+ expect(mem(&borrowed)==storage,"borrowed mapping aliases original CPU storage");
+ storage[13]=0x91;expect(mem(&borrowed)[13]==0x91,"physical CPU writes visible through virtual view");
+ void *object=NULL;uint64_t offset=0;
+ expect(mtl_addr((uintptr_t)storage+256,16,&object,&offset),"borrowed view has Metal backing");
+ id<MTLDevice> dev=MTLCreateSystemDefaultDevice();id<MTLCommandQueue> q=[dev newCommandQueue];
+ id<MTLCommandBuffer> cb=[q commandBuffer];id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
+ [blit fillBuffer:(__bridge id<MTLBuffer>)object range:NSMakeRange(offset,16) value:0x7d];[blit endEncoding];[cb commit];[cb waitUntilCompleted];
+ expect(cb.status==MTLCommandBufferStatusCompleted&&all(storage+256,0x7d,16),"GPU writes to borrowed view visible in original CPU storage");
+ expect(!map(&borrowed,NULL,0,0,size),"borrowed view refuses remapping");
+ CALL(nvnMemoryPoolFinalize,&borrowed);
+ pool_init(&published,NULL,size,0x2a1,1);
+ NVNbufferAddress stable=CALL(nvnMemoryPoolGetBufferAddress,&published);
+ expect(!map(&published,&cpu_phys,0,0,size),"published virtual address cannot be replaced");
+ expect(CALL(nvnMemoryPoolGetBufferAddress,&published)==stable,"rejected map keeps published address stable");
+ CALL(nvnMemoryPoolFinalize,&published);CALL(nvnMemoryPoolFinalize,&cpu_phys);
+ /* Residency wires every page of a zero-copy buffer. A resident, mostly unmapped 1 GiB virtual pool must not wire 1 GiB
+    (its holes share one scratch region; totk_vpool.c hole_fill). System-wide wired memory is noisy, hence the margin. */
+ NVNmemoryPool sparse;pool_init(&sparse,NULL,1ull<<30,0x2a1,1);
+ uint64_t wired0=wired_mb();
+ expect(mtl_addr((uintptr_t)mem(&sparse)+(512ull<<20),16,&object,&offset),"sparse virtual pool has Metal backing");
+ cb=[q commandBuffer];blit=[cb blitCommandEncoder];
+ [blit fillBuffer:(__bridge id<MTLBuffer>)object range:NSMakeRange(0,16) value:0];[blit endEncoding];[cb commit];[cb waitUntilCompleted];
+ uint64_t wired1=wired_mb();
+ expect(cb.status==MTLCommandBufferStatusCompleted,"GPU uses the resident sparse virtual pool");
+ expect(wired1<wired0+384,"resident sparse virtual pool does not wire its unmapped pages");
+ expect(all(mem(&sparse)+(768ull<<20),0,PAGE),"unmapped sparse page reads zero");
+ printf("[vpool-probe] 1 GiB sparse virtual pool resident: wired %llu -> %llu MB\n",(unsigned long long)wired0,(unsigned long long)wired1);
+ CALL(nvnMemoryPoolFinalize,&sparse);
+#endif
  free(raw);
- printf("{\"status\":\"pass\",\"checks\":%d,\"request_bytes\":%zu,\"page_bytes\":%llu,\"scope\":\"NVNmappingRequest layout from runtime dump; CPU and Metal GPU aliasing between two virtual pools of one physical pool; unmap; 6 negative controls; no drawing\"}\n",checks,sizeof(totk_mapping_request),(unsigned long long)PAGE);
+ printf("{\"status\":\"pass\",\"checks\":%d,\"request_bytes\":%zu,\"page_bytes\":%llu,\"scope\":\"NVNmappingRequest layout from runtime dump; CPU and Metal GPU aliasing between two virtual pools of one physical pool; unmap; negative controls; MKW unaligned CPU/GPU coherent contiguous backing and address publication guard; resident sparse virtual pool wiring; no drawing\"}\n",checks,sizeof(totk_mapping_request),(unsigned long long)PAGE);
 }

@@ -9,6 +9,7 @@
 #include "dm_wait_stats.h"
 #include <TargetConditionals.h>
 #include "totk_shader_rt.h"
+#include "nvn2_shader.h"
 #include "dmsh_chain.h"
 #include "../../host/hle.h"
 #include <CommonCrypto/CommonDigest.h>
@@ -172,11 +173,19 @@ static void service_start(rt_svc *svc) {
     posix_spawnattr_t sa; posix_spawnattr_init(&sa); sigset_t none; sigemptyset(&none); posix_spawnattr_setsigmask(&sa, &none);
     posix_spawnattr_setflags(&sa, POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK);
     NSString *sc = [r stringByAppendingString:@"/build/spirv-cross/spirv-cross"];
+#ifdef GAME_MKW
+    const char *cross = getenv("MKW_SPIRV_CROSS"); if (cross && *cross) sc = @(cross);
+#endif
     // TOTK_SHADER_XLATE=<totk_xlate.dll> runs a trial translator build (e.g. build/totk_xlate-opt) without replacing the
     // shared one (through shader_service.py); TOTK_SHADER_DEBUGMODE=0|1 reaches either service through the environment.
     // TOTK_SHADER_SERVICE=python | native picks the service (default: native when build/shader-service/totk_xlate is there).
     const char *xe = getenv("TOTK_SHADER_XLATE"), *want = getenv("TOTK_SHADER_SERVICE"), *dm = getenv("TOTK_SHADER_DEBUGMODE");
     NSString *native = [r stringByAppendingString:@"/build/shader-service/totk_xlate"];
+#ifdef GAME_MKW
+    const char *ampere = getenv("MKW_AMPERE_SERVICE");
+    if (!ampere || !*ampere) die("NVN2 shader requests are ready, but an Ampere translation service is not installed (MKW_AMPERE_SERVICE)");
+    native = @(ampere);
+#endif
     int have_native = access(native.fileSystemRepresentation, X_OK) == 0;
     int use_native = have_native && !(xe && *xe) && !(want && !strcmp(want, "python"));
     if (want && !strcmp(want, "native") && !use_native) die("TOTK_SHADER_SERVICE=native but %s is not there (make shader-service)", native.UTF8String);
@@ -316,33 +325,41 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     }
     return nil;
 }
-static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : nil; }
+static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 5 ? @"cs" : stage == 3 ? @"ts" : stage == 4 ? @"ms" : nil; }
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
 static NSMutableDictionary *variant_request(NSString *shader, int stage, const uint8_t *control, const uint8_t *code,
                                             NSDictionary *answers, NSArray *local, NSData **code_out) {
-    uint32_t c1o, c1t; memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4);
-    if (!c1t || c1t > 16u << 20 || c1o > c1t || (stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
+    uint32_t c1o, c1t, inst = 0; int ampere = nvn2_control(control);
+    if (ampere) { if (!nvn2_lengths(control, &inst, &c1o, &c1t)) die("invalid NVN2 shader lengths"); }
+    else { memcpy(&c1o, control + 0x700, 4); memcpy(&c1t, control + 0x704, 4); }
+    if (!c1t || c1t > 16u << 20 || c1o > c1t || (!ampere && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x", shader.UTF8String, c1t, c1o);
     if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
-    size_t skip = stage == 5 ? 0 : 0x30;
-    NSData *bytes = [NSData dataWithBytes:code + skip length:c1t - skip];
+    size_t skip = ampere || stage == 5 ? 0 : 0x30;
+    int mesh = ampere && (control[0x56] == 6 || control[0x56] == 7);
+    NSData *bytes = [NSData dataWithBytes:code + skip length:ampere ? (mesh ? c1t : inst) : c1t - skip];
     if (code_out) *code_out = bytes;
     else if (![bytes writeToFile:code_path atomically:YES]) die("write shader code %s", code_path.UTF8String);
     NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
+    if (ampere) {
+        rq[@"arch"] = @"sm86";
+        if (mesh) rq[@"mesh_control"] = hex(control, 0xc0);
+        if (stage == 5) rq[@"nvn2_cs"] = @[@(control[0xb1]), @(control[0xb2]), @(control[0xb3]), @((unsigned)control[0xba] | (unsigned)control[0xbb] << 8), @(control[0xa9] * 4)];
+    }
     if (local) rq[@"local"] = local;
     rq[@"depth_minus_w"] = totk_depth_near_minus_w() ? @YES : @NO;   // nvnDeviceSetDepthMode: NEAR_IS_MINUS_W needs the GL -> Metal clip-z conversion in every vertex shader
     /* A fragment shader's early fragment tests: control byte +0x718 of the 0x880-byte sections (the NVN driver reads it as
        a fragment flag and the Switch tests depth before the shader). Breath of the Wild's shorter sections (the size word
        at +0x20 between 0x7cc and 0x880, as for the key) are not read. Same rule as prepare_shader_seed.py. */
     { uint32_t size; memcpy(&size, control + 0x20, 4);
-      if (stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
-    if (no_translator()) rq[@"code_hex"] = hex(code + skip, c1t - skip);
+      if (!ampere && stage == 1 && !(size >= 0x7cc && size < 0x880) && (control[0x718] & 1)) rq[@"early_fragment_tests"] = @YES; }
+    if (no_translator()) rq[@"code_hex"] = hex(code + skip, ampere ? inst : c1t - skip);
     return rq;
 }
 /* Whether a new variant goes into the contribution file (totk_shader_contrib.h). With a seed that translated every shader
