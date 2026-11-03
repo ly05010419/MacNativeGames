@@ -7075,6 +7075,47 @@ static NSArray *rt_local(const uint8_t *control, int st) {
       if (k == ns && ns < 64) { memcpy(seen[ns++], l, 12); MLOG("[shader] compute thread group size %u x %u x %u (control+0x748)", l[0], l[1], l[2]); } }
     return @[@(l[0]), @(l[1]), @(l[2])];
 }
+/* A vertex attribute whose format reaches past its stream's stride, narrowed to the components that fit (2026-11-03).
+   Tears of the Kingdom 1.4.3 declares 6-byte streams as RGBA16F (Half4 at offset 0, stride 6: 9,873 pipeline
+   descriptions) and 12- or 6-byte ones as RGBA8 (UChar4Normalized at offset 9 or 3: 536). The Switch, and Metal on the
+   Mac, read the 4th component from the next vertex; every vertex shader of these pipelines reads .xyz only (all 9,816
+   whose MSL the seed holds, checked against the descriptions the device pipeline archive is made from), so Half3 /
+   UChar3Normalized draw the same. The iPhone / iPad offline compiler (metal-tt for applegpu_g15p) rejects the wide
+   format ("attribute offset + size must be <= the stride"), so 38% of an iPad's archive was missing and built at the
+   start instead. The narrower format is the same type's, from this table (the enum does not number a type's 1-4
+   components in a row: the 1-component formats came last). */
+static const MTLVertexFormat *vfmt_row(MTLVertexFormat f, int *bytes, int *n) {   // the type's 1-4 component formats, element size, components
+    static const struct { MTLVertexFormat c[4]; int bytes; } T[] = {
+        {{MTLVertexFormatUCharNormalized, MTLVertexFormatUChar2Normalized, MTLVertexFormatUChar3Normalized, MTLVertexFormatUChar4Normalized}, 1},
+        {{MTLVertexFormatCharNormalized, MTLVertexFormatChar2Normalized, MTLVertexFormatChar3Normalized, MTLVertexFormatChar4Normalized}, 1},
+        {{MTLVertexFormatUChar, MTLVertexFormatUChar2, MTLVertexFormatUChar3, MTLVertexFormatUChar4}, 1},
+        {{MTLVertexFormatChar, MTLVertexFormatChar2, MTLVertexFormatChar3, MTLVertexFormatChar4}, 1},
+        {{MTLVertexFormatUShortNormalized, MTLVertexFormatUShort2Normalized, MTLVertexFormatUShort3Normalized, MTLVertexFormatUShort4Normalized}, 2},
+        {{MTLVertexFormatShortNormalized, MTLVertexFormatShort2Normalized, MTLVertexFormatShort3Normalized, MTLVertexFormatShort4Normalized}, 2},
+        {{MTLVertexFormatUShort, MTLVertexFormatUShort2, MTLVertexFormatUShort3, MTLVertexFormatUShort4}, 2},
+        {{MTLVertexFormatShort, MTLVertexFormatShort2, MTLVertexFormatShort3, MTLVertexFormatShort4}, 2},
+        {{MTLVertexFormatHalf, MTLVertexFormatHalf2, MTLVertexFormatHalf3, MTLVertexFormatHalf4}, 2},
+        {{MTLVertexFormatFloat, MTLVertexFormatFloat2, MTLVertexFormatFloat3, MTLVertexFormatFloat4}, 4},
+        {{MTLVertexFormatUInt, MTLVertexFormatUInt2, MTLVertexFormatUInt3, MTLVertexFormatUInt4}, 4},
+        {{MTLVertexFormatInt, MTLVertexFormatInt2, MTLVertexFormatInt3, MTLVertexFormatInt4}, 4},
+    };
+    for (unsigned t = 0; t < sizeof T / sizeof T[0]; t++)
+        for (int c = 0; c < 4; c++) if (T[t].c[c] == f) { *bytes = T[t].bytes; *n = c + 1; return T[t].c; }
+    return NULL;   // packed formats (RGB10A2, RG11B10F, ...) are one 4-byte word: not narrowed
+}
+static _Atomic uint64_t g_vfmt_narrowed;   // attributes narrowed to their stride (diagnostic count)
+static MTLVertexFormat vfmt_fit(MTLVertexFormat f, uint32_t offset, uint32_t stride) {
+    static int on = -1;   // TOTK_VERTEX_FIT=0: the game's wide formats as before (an A/B of the same build)
+    if (on < 0) { const char *e = getenv("TOTK_VERTEX_FIT"); on = !(e && !strcmp(e, "0")); }
+    int bytes, n; const MTLVertexFormat *row = on && stride ? vfmt_row(f, &bytes, &n) : NULL;
+    if (!row || offset + (uint32_t)(bytes * n) <= stride) return f;
+    int fit = offset < stride ? (int)((stride - offset) / (uint32_t)bytes) : 0;
+    if (fit < 1) return f;   // not even one component fits: left as the game has it (none seen)
+    if (atomic_fetch_add(&g_vfmt_narrowed, 1) == 0)
+        MLOG("[vertex] an attribute past its stream's stride is narrowed to the components that fit (offset %u, stride %u: %d of %d)",
+             offset, stride, fit, n);
+    return row[fit - 1];
+}
 static MTLVertexFormat vfmt(int f) {
     switch (f) {
         case 0x01: return MTLVertexFormatUCharNormalized; case 0x02: return MTLVertexFormatCharNormalized; case 0x03: return MTLVertexFormatUChar; case 0x04: return MTLVertexFormatChar;
@@ -8038,7 +8079,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
             continue;
         }
         int st = k->attr[a].stream;
-        vd.attributes[loc].format = vf; vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = 16 + st;
+        vd.attributes[loc].format = vfmt_fit(vf, k->attr[a].offset, k->stream[st].stride);   // 0: a constant stream, nothing to fit
+        vd.attributes[loc].offset = k->attr[a].offset; vd.attributes[loc].bufferIndex = 16 + st;
         vd.layouts[16 + st].stride = k->stream[st].stride ? k->stream[st].stride : 4;
         vd.layouts[16 + st].stepFunction = k->stream[st].stride == 0 ? MTLVertexStepFunctionConstant : k->stream[st].divisor ? MTLVertexStepFunctionPerInstance : MTLVertexStepFunctionPerVertex;
         vd.layouts[16 + st].stepRate = k->stream[st].stride == 0 ? 0 : k->stream[st].divisor ? k->stream[st].divisor : 1;
