@@ -1,6 +1,7 @@
 """The game data folder the runtime reads at start (games/totk/runtime/game_data.h) and update_runtime.py, which puts a
 new runtime into an app without its game files. Synthetic files only; no game files or keys."""
 import hashlib
+import os
 import json
 import shutil
 import struct
@@ -257,12 +258,20 @@ class UpdateRuntime(unittest.TestCase):
         (tree / 'build/shader-libs').mkdir(parents=True)
         (tree / f'build/shader-libs/{hashlib.sha256(b"new").hexdigest()}.metallib').write_text('lib')
         removed = []
-        with patch.object(build_app, 'remove_in_background', side_effect=removed.append):
-            update_runtime.replace_seed(tree, app, 'v143', 'totk')
+        with patch.object(build_app, 'remove_in_background', side_effect=removed.append), patch.object(build_app, 'say'):
+            update_runtime.replace_seed(tree, app, 'v143', 'totk', self.root / 'logs', 'org.example.totk')
         self.assertEqual(sorted(p.name for p in (res / 'build/shader-seed').iterdir()), ['new_b.metal', 'seed-manifest.json'])
         self.assertEqual([p.name for p in (res / 'build/shader-libs').iterdir()], [f'{hashlib.sha256(b"new").hexdigest()}.metallib'])
         self.assertEqual([p.name for p in removed], ['Game.app.shader-seed.old', 'Game.app.shader-libs.old'])
         self.assertTrue(all(p.parent == app.parent for p in removed), 'moved out of the app, not deleted inside it')
+        # in the app's signed shader data bundle, read through links (build_app.shader_bundle, place_shader_bundle)
+        bundle = app / 'Contents/Helpers/ShaderData-v143.bundle'
+        for rel in ('shader-seed', 'shader-libs'):
+            link = res / 'build' / rel
+            self.assertTrue(link.is_symlink() and not os.path.isabs(os.readlink(link)))
+            self.assertEqual(link.resolve(), (bundle / 'Contents/Resources' / rel).resolve())
+        self.assertEqual(build_app.app_shader_bundle(app, 'v143'), bundle)
+        self.assertEqual(subprocess.run(['codesign', '--verify', '--strict', bundle]).returncode, 0)
 
     def test_rewriter_of_the_repository(self):
         _, res, data = self.app()   # modules that are not the pinned rewrites (as a --mod build's): judged by rewriter.txt
@@ -333,14 +342,30 @@ class UpdateRuntime(unittest.TestCase):
         for folder, label in ((app, 'new'), (replaced, 'old')):
             (folder / 'Contents/MacOS').mkdir(parents=True)
             (folder / 'Contents/MacOS/TOTK').write_text(label)
-        (app / 'Contents/Helpers/GameData-v143.bundle').mkdir(parents=True)   # moved in from the old app (keep_game_data)
-        (app / 'Contents/Helpers/GameData-v143.bundle/romfs.bin').write_text('16 GB')
+        for name in ('GameData-v143.bundle', 'ShaderData-v143.bundle'):   # moved in from the old app (keep_game_data)
+            (app / 'Contents/Helpers' / name).mkdir(parents=True)
+            (app / 'Contents/Helpers' / name / 'data').write_text(name)
+        (replaced / 'Contents/_CodeSignature').mkdir()   # the old app's seal names both bundles
+        (replaced / 'Contents/_CodeSignature/CodeResources').write_text('Helpers/GameData-v143.bundle Helpers/ShaderData-v143.bundle')
         failed = update_runtime.restore_replaced(app, replaced)
         self.assertEqual((app / 'Contents/MacOS/TOTK').read_text(), 'old')
-        self.assertEqual((app / 'Contents/Helpers/GameData-v143.bundle/romfs.bin').read_text(), '16 GB')
+        for name in ('GameData-v143.bundle', 'ShaderData-v143.bundle'):
+            self.assertEqual((app / 'Contents/Helpers' / name / 'data').read_text(), name)
         self.assertEqual((failed / 'Contents/MacOS/TOTK').read_text(), 'new')
         self.assertFalse(replaced.exists())
         self.assertEqual(failed.parent, app.parent)
+
+    def test_restore_replaced_app_made_before_the_shader_bundle(self):
+        app = self.root / 'Game.app'
+        replaced = self.root / 'Game.app.replaced-1'
+        for folder in (app, replaced):
+            (folder / 'Contents/MacOS').mkdir(parents=True)
+        (app / 'Contents/Helpers/ShaderData-v143.bundle').mkdir(parents=True)   # made by the update (migrate_shader_data)
+        (replaced / 'Contents/_CodeSignature').mkdir()
+        (replaced / 'Contents/_CodeSignature/CodeResources').write_text('Helpers/GameData-v143.bundle')
+        failed = update_runtime.restore_replaced(app, replaced)
+        self.assertFalse((app / 'Contents/Helpers/ShaderData-v143.bundle').exists())   # it would break the old seal
+        self.assertTrue((failed / 'Contents/Helpers/ShaderData-v143.bundle').is_dir())
 
     def test_place_runtime_replaces_only_the_runtime(self):
         app, res, _ = self.app()

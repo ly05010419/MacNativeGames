@@ -115,19 +115,31 @@ def make_seed(tree, work, game, version, logs, env):
     build_app.build_warm_tool(tree, logs, env)
 
 
-def replace_seed(tree, tmp, version, game):
-    """The new seed and its libraries in the app being assembled (tmp), in place of the old ones (moved out of it and
-    deleted in the background: 128,000 files)."""
+def replace_seed(tree, tmp, version, game, logs, bundle_id):
+    """The new seed and its libraries in the app being assembled (tmp), as its shader data bundle, in place of the old
+    ones (moved out of it and deleted in the background: 128,000 files)."""
     new_res = tmp / 'Contents/Resources/totk'
-    for rel in ('build/shader-seed', 'build/shader-libs'):
-        old = new_res / rel
-        if old.exists():
+    for old in (new_res / 'build/shader-seed', new_res / 'build/shader-libs', tmp / f'Contents/Helpers/ShaderData-{version}.bundle'):
+        if old.is_symlink():
+            old.unlink()
+        elif old.exists():
             aside = tmp.with_name(f'{tmp.name}.{old.name}.old')
             if aside.exists():
                 build_app.remove_tree(aside)
             old.rename(aside)
             build_app.remove_in_background(aside)
-    build_app.place_seed(tree, new_res, version, game=game)
+    build_app.place_seed(tree, tmp, new_res, version, logs, game=game, bundle_id=bundle_id)
+
+
+def migrate_shader_data(tmp, version, logs, work, bundle_id):
+    """An app made before the shader data bundle (build_app.shader_bundle): its own seed and libraries become one, once
+    (signed in the work folder, about a minute); later updates move it from app to app."""
+    res = tmp / 'Contents/Resources/totk/build'
+    bundle = work / f'build/shader-bundles/migrated/ShaderData-{version}.bundle'
+    build_app.seal_shader_bundle(bundle, res / 'shader-seed', sorted((res / 'shader-libs').glob('*.metallib')), version, logs, bundle_id)
+    (tmp / 'Contents/Helpers').mkdir(parents=True, exist_ok=True)
+    bundle.rename(tmp / 'Contents/Helpers' / bundle.name)   # the seed's pipelines-* stay out: mac_pipelines makes build/pipelines
+    build_app.link_shader_data(tmp, tmp / 'Contents/Resources/totk', bundle.name)
 
 
 def config(path):
@@ -271,8 +283,11 @@ def restore_replaced(app, replaced):
         entry.rename(app / entry.name)
     replaced.rmdir()
     helpers = app / 'Contents/Helpers'
-    for bundle in sorted((failed / 'Contents/Helpers').glob('GameData-*.bundle')):
-        if not (helpers / bundle.name).exists():
+    seal = app / 'Contents/_CodeSignature/CodeResources'
+    sealed = seal.read_bytes() if seal.is_file() else b''
+    for bundle in sorted([*(failed / 'Contents/Helpers').glob('GameData-*.bundle'), *(failed / 'Contents/Helpers').glob('ShaderData-*.bundle')]):
+        # the bundles the restored app's seal names (an app made before the shader data bundle names none of those)
+        if not (helpers / bundle.name).exists() and f'Helpers/{bundle.name}'.encode() in sealed:
             helpers.mkdir(parents=True, exist_ok=True)
             bundle.rename(helpers / bundle.name)
     return failed
@@ -341,7 +356,13 @@ def main(argv):
     tmp = app.with_name(app.name + '.partial')
     if tmp.exists():
         build_app.remove_tree(tmp)
-    build_app.copy_tree(app, tmp)   # one APFS clone of the whole app
+    import plistlib
+    bundle_id = plistlib.loads((app / 'Contents/Info.plist').read_bytes()).get('CFBundleIdentifier') or APPS[game][1]
+    shaders = None if args.seed else build_app.app_shader_bundle(app, version)
+    if shaders:   # its shader data stays where it is: read through a link now, moved into the new app at the end
+        build_app.clone_app_except(app, tmp, shaders)
+    else:
+        build_app.copy_tree(app, tmp)   # one APFS clone of the whole app
     try:
         new_res = tmp / 'Contents/Resources/totk'
         new_data = new_res / f'build/game-data/{version}'
@@ -349,7 +370,9 @@ def main(argv):
             for name in build_app.game_data_files(version):
                 clone(data / name, new_data / name)
         if args.seed:
-            replace_seed(tree, tmp, version, game)
+            replace_seed(tree, tmp, version, game, logs, bundle_id)
+        elif not shaders:
+            migrate_shader_data(tmp, version, logs, work, bundle_id)
         lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
@@ -357,6 +380,8 @@ def main(argv):
         record_commit(tmp, work)
         probe_runtime(tree, tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them
+        if shaders:
+            build_app.shader_signature_only(tmp, shaders)
         t = time.time(); build_app.sign_app(tmp, logs); say(f'   signed ({time.time() - t:.0f} s)')
         build_app.wait_until_closed(app)
         t = time.time()

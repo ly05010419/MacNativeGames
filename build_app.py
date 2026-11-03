@@ -1144,15 +1144,6 @@ def variant_sources(game):
     return [p for p in found if len(p.stem) == 64 and sha256(p) == p.stem]
 
 
-def place_variant_libs(tree, res, version):
-    """The compiled variants step_shader_libs listed, in the app's shader-libs beside the startup shaders'."""
-    listed = tree/f'build/shader-libs/variants-{version}.json'
-    for digest in json.loads(listed.read_text()) if listed.is_file() else []:
-        lib = tree/f'build/shader-libs/{digest}.metallib'
-        if len(digest) == 64 and all(c in '0123456789abcdef' for c in digest) and lib.is_file():
-            clone(lib, res/'build/shader-libs'/lib.name)
-
-
 def step_shader_libs(tree, logs, *, version='v0'):
     """Compile the startup shaders ahead of time. Metal's own cache of shaders compiled at launch does not follow the
     app to a folder whose path has another length (step_warm_metal); these files go inside the app. Each is named by the
@@ -1487,13 +1478,16 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         with _AppMoves() as moves:
             return keep_game_data(new, old, verify=verify, _moves=moves)
     image = 'Contents/Resources/romfs.bin'
-    kept = False
-    for bundle in sorted((new / 'Contents/Helpers').glob('GameData-*.bundle')):
+    swapped, start = [], len(_moves.done)
+    helpers = new / 'Contents/Helpers'
+    for bundle in sorted([*helpers.glob('GameData-*.bundle'), *helpers.glob('ShaderData-*.bundle')]):
+        # ShaderData (shader_bundle) the same way: 117,000 files moved instead of cloned, sealed and deleted (2026-11-03);
+        # in update_runtime.py's new app it is only its signature (Info.plist, _CodeSignature), what the app's seal records
         before = old / 'Contents/Helpers' / bundle.name
         if not all((before / rel).is_file() and (before / rel).read_bytes() == (bundle / rel).read_bytes()
                    for rel in ('Contents/_CodeSignature/CodeResources', 'Contents/Info.plist')):
             continue
-        if not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size:
+        if bundle.name.startswith('GameData-') and (not (before / image).is_file() or (before / image).stat().st_size != (bundle / image).stat().st_size):
             continue
         fresh = new.with_name(f'{new.name}.{bundle.name}.fresh')   # outside the app: anything extra in it fails the seal
         if fresh.exists():
@@ -1505,12 +1499,15 @@ def keep_game_data(new, old, *, verify=app_seal_valid, _moves=None):
         except OSError:
             _moves.restore(checkpoint)
             continue
-        if not verify(new):
-            _moves.restore(checkpoint)
-            continue
-        _moves.discard.append(fresh)
-        kept = True
-    return kept
+        swapped.append((bundle, fresh))
+    if swapped and not verify(new):   # one check of the seal for every bundle moved (16 s each)
+        _moves.restore(start)
+        swapped = []
+    _moves.discard.extend(fresh for _, fresh in swapped)
+    for bundle in helpers.glob('ShaderData-*.bundle'):   # update_runtime.py's signature-only bundle must have been replaced
+        if not (bundle / 'Contents/Resources').is_dir():
+            raise BuildError(f'{bundle.name}: the installed app\'s shader data could not be moved into the new app; the installed app is unchanged')
+    return any(bundle.name.startswith('GameData-') for bundle, _ in swapped)
 
 
 def sign_app(app, logs):
@@ -1564,9 +1561,8 @@ def install_app(new, out, *, verify=None, remove=None):
     return kept
 
 
-def place_seed(tree, res, version, *, game='totk'):
-    """The startup shader seed, checked (version, translation chain, size, every file's SHA-256), with the libraries
-    step_shader_libs compiled for it and for the recorded variants. Also update_runtime.py --seed."""
+def check_seed(tree, version, *, game='totk'):
+    """The prepared startup shader seed (version, translation chain, size, every file's SHA-256); its manifest."""
     seed = tree/f'build/shader-seed/{version}'
     if not (seed/'seed-manifest.json').is_file():
         raise BuildError('startup shader seed was not prepared; refusing an app without first-launch warm-up data')
@@ -1579,12 +1575,145 @@ def place_seed(tree, res, version, *, game='totk'):
             raise ValueError('version, translation chain or file hash differs')
     except (ValueError, KeyError, OSError, TypeError) as error:
         raise BuildError(f'invalid prepared startup shader seed: {error}') from None
-    copy_tree(seed, res/'build/shader-seed')
-    for src in sorted(seed.glob('*.metal')):   # each named in the manifest, its hash just checked
+    return report
+
+
+def shader_libs_of(tree, version, report):
+    """The compiled libraries the app carries: the startup shaders' (step_shader_libs, named in the seed's manifest) and
+    the recorded variants' (variants-<version>.json)."""
+    libs = []
+    for src in sorted((tree/f'build/shader-seed/{version}').glob('*.metal')):   # each named in the manifest, its hash checked
         lib = tree/f'build/shader-libs/{report["files"][src.name]}.metallib'
         if lib.is_file():
-            clone(lib, res/'build/shader-libs'/lib.name)
-    place_variant_libs(tree, res, version)
+            libs.append(lib)
+    listed = tree/f'build/shader-libs/variants-{version}.json'
+    for digest in json.loads(listed.read_text()) if listed.is_file() else []:
+        lib = tree/f'build/shader-libs/{digest}.metallib'
+        if len(digest) == 64 and all(c in '0123456789abcdef' for c in digest) and lib.is_file() and lib not in libs:
+            libs.append(lib)
+    return libs
+
+
+SHADER_DATA = ('shader-seed', 'shader-libs')   # build/<name> in the app: links into its ShaderData-<version>.bundle
+
+
+def shader_bundle(tree, version, logs, *, game='totk', bundle_id=BUNDLE_ID):
+    """The startup shader seed (about 85,000 files) and the compiled libraries (about 29,000) as a bundle of their own,
+    signed once and kept in the work folder (build/shader-bundles), like the game data (data_bundle): the app carries it
+    in Contents/Helpers and its seal records only the bundle's signature. Inside the app the 117,000 files were cloned,
+    sealed (54 s), and deleted again on every packaging (2026-11-03); update_runtime.py now moves the installed app's
+    bundle into the new app instead (keep_game_data). The game reads them through links at their usual places
+    (build/shader-seed, build/shader-libs; place_shader_bundle), and still reads the seed in place: the bundle is inside a
+    sealed app (totk_shader_seed.h totk_seed_sealed). The Mac's pipeline files, which every new game binary makes again,
+    are not in it (build/pipelines, mac_pipelines). Made again when a file of the seed or the list of libraries changed."""
+    report = check_seed(tree, version, game=game)
+    seed, libs = tree/f'build/shader-seed/{version}', shader_libs_of(tree, version, report)
+    bundle = tree/f'build/shader-bundles/ShaderData-{version}.bundle'
+    stamp = bundle.with_name(bundle.name + '.json')
+    files = sorted(p for p in seed.iterdir() if p.is_file())
+    want = dict(format=1, seed=hashlib.sha256(''.join(f'{p.name} {p.stat().st_size} {p.stat().st_mtime_ns}\n' for p in files).encode()).hexdigest(),
+                libs=hashlib.sha256(''.join(f'{p.name}\n' for p in libs).encode()).hexdigest())
+    try:
+        if (bundle / 'Contents/_CodeSignature/CodeResources').is_file() and json.loads(stamp.read_text()) == want:
+            return bundle
+    except (OSError, ValueError):
+        pass
+    stamp.unlink(missing_ok=True)
+    seal_shader_bundle(bundle, seed, libs, version, logs, bundle_id)
+    stamp.write_text(json.dumps(want))
+    return bundle
+
+
+def seal_shader_bundle(bundle, seed, libs, version, logs, bundle_id):
+    """A ShaderData bundle at `bundle` from the seed folder and the library files, signed and checked. The Mac's pipeline
+    files an older app kept in its seed (pipelines-*) stay out: build/pipelines holds them now."""
+    say('4/4 app: signing the startup shaders once (about a minute; later builds and updates reuse them)')
+    tmp = bundle.with_name(bundle.name + '.partial')
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    res = tmp / 'Contents/Resources'
+    copy_tree(seed, res / 'shader-seed')
+    for old in (res / 'shader-seed').glob('pipelines-*'):
+        old.unlink()
+    (res / 'shader-libs').mkdir(parents=True, exist_ok=True)
+    for lib in libs:
+        clone(lib, res / 'shader-libs' / lib.name)
+    import plistlib
+    (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier=f'{bundle_id}.shaders.{version}', CFBundleName='Startup shaders', CFBundlePackageType='BNDL',
+        CFBundleShortVersionString=VERSIONS[version]['display_version'], CFBundleVersion='1')))
+    run(['codesign', '--force', '--sign', '-', tmp], logs / f'sign-shaders-{version}.log')
+    run(['codesign', '--verify', '--strict', tmp], logs / f'verify-shaders-{version}.log')
+    if bundle.exists():
+        shutil.rmtree(bundle)
+    tmp.rename(bundle)
+    return bundle
+
+
+def app_shader_bundle(app, version):
+    """The app's ShaderData bundle (shader_bundle), or None for an app made before it (seed and libraries in build/)."""
+    bundle = Path(app) / f'Contents/Helpers/ShaderData-{version}.bundle'
+    return bundle if (bundle / 'Contents/Resources/shader-seed').is_dir() and not bundle.is_symlink() else None
+
+
+def clone_app_except(src, dst, skip):
+    """src cloned to dst as copy_tree does, but for `skip` (a folder inside src), which becomes a link to src's: what
+    update_runtime.py assembles beside the installed app, with the installed shader data read through the link (the
+    probe, the pipeline tool) instead of 117,000 files cloned (31 s) and deleted again."""
+    dst.mkdir(parents=True)
+    for child in src.iterdir():
+        target = dst / child.name
+        if child == skip:
+            target.symlink_to(child.resolve())
+        elif child.is_symlink():
+            target.symlink_to(os.readlink(child))
+        elif child.is_dir() and skip.is_relative_to(child):
+            clone_app_except(child, target, skip)
+        elif child.is_dir():
+            copy_tree(child, target)
+        else:
+            clone(child, target)
+
+
+def shader_signature_only(app, installed):
+    """In place of the link clone_app_except left, the installed ShaderData bundle's signature alone (Info.plist and
+    _CodeSignature): the app's seal records only that (2026-11-03: a seal made so verifies once the whole bundle is moved
+    in), and install_app moves the installed bundle in (keep_game_data), which refuses an app it could not complete."""
+    bundle = Path(app) / 'Contents/Helpers' / installed.name
+    if bundle.is_symlink():
+        bundle.unlink()
+    (bundle / 'Contents').mkdir(parents=True)
+    clone(installed / 'Contents/Info.plist', bundle / 'Contents/Info.plist')
+    copy_tree(installed / 'Contents/_CodeSignature', bundle / 'Contents/_CodeSignature')
+
+
+def link_shader_data(app, res, name):
+    """build/shader-seed and build/shader-libs: links to the app's ShaderData bundle (relative: the app moves)."""
+    target = app / 'Contents/Helpers' / name / 'Contents/Resources'
+    for rel in SHADER_DATA:
+        link = res / 'build' / rel
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink() or link.is_file():
+            link.unlink()
+        elif link.is_dir():   # an older app's own folder (update_runtime.py migrate_shader_data): out of the app, deleted later
+            aside = app.with_name(f'{app.name}.{rel}.old')
+            if aside.exists():
+                remove_tree(aside)
+            link.rename(aside)
+            remove_in_background(aside)
+        link.symlink_to(os.path.relpath(target / rel, link.parent))
+
+
+def place_shader_bundle(bundle, app, res):
+    """The signed shader data in the app (Contents/Helpers), and the links the game reads it by."""
+    copy_tree(bundle, app / 'Contents/Helpers' / bundle.name)
+    link_shader_data(app, res, bundle.name)
+
+
+def place_seed(tree, app, res, version, logs, *, game='totk', bundle_id=BUNDLE_ID):
+    """The startup shader seed, checked, with the libraries step_shader_libs compiled for it and for the recorded variants,
+    as the app's shader data bundle (shader_bundle). Also update_runtime.py --seed."""
+    place_shader_bundle(shader_bundle(tree, version, logs, game=game, bundle_id=bundle_id), app, res)
 
 
 def wait_until_closed(out, prefix=''):
@@ -1650,11 +1779,11 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
             copy_tree(tree / rel, res / rel)
     if game == 'botw' and native_4k:   # Breath of the Wild's heaps are patched in the code: the runtime sizes them for 4K
         (res / f'extracted/{version}/native-4k').write_text('3840x2160\n')   # game_patches_botw.c native_4k_app
-    place_seed(tree, res, version, game=game)
+    place_seed(tree, tmp, res, version, logs, game=game, bundle_id=bundle_id)
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
     place_runtime(tree, tmp, version, logs, game=game)
-    mac_pipelines(tree, res, version, logs)   # before the seal: the files go into the app's seed
+    mac_pipelines(tree, res, version, logs)   # before the seal: the files go into the app (build/pipelines)
     if game_data == 'library':
         folder = library_game_data(game, version, game_data_folder)
         say(f'4/4 app: the game data goes to {folder}, not into the app (put there once; later builds reuse it)')
@@ -1691,9 +1820,12 @@ PAR_SCHEMA = 6   # games/totk/third_party/d2r_gfx/gfx/nvn/totk_pipeline_archive.
 
 
 def mac_pipeline_files(made, seed, arch, chain):
-    """The pipeline-archive mode's files (<name>.metalarchive + <name>.keys) into the app's seed as the runtime reads them
-    (totk_pipeline_archive.h par_load_prebuilt): pipelines-<arch>-<name>.metalarchive, pipelines-<arch>.tsv ("<key>\\t<name>")
-    and pipelines-<arch>.json (schema, chain, arch). The last build's files go first. Returns how many pipelines."""
+    """The pipeline-archive mode's files (<name>.metalarchive + <name>.keys) into the app's build/pipelines (`seed`; the
+    app's seed until 2026-11-03, now in the shader data bundle, which they would change on every build) as the runtime
+    reads them (totk_pipeline_archive.h par_load_prebuilt): pipelines-<arch>-<name>.metalarchive, pipelines-<arch>.tsv
+    ("<key>\\t<name>") and pipelines-<arch>.json (schema, chain, arch). The last build's files go first. Returns how many
+    pipelines."""
+    seed.mkdir(parents=True, exist_ok=True)
     for old in seed.glob('pipelines-*'):
         old.unlink()
     index = []
@@ -1763,7 +1895,7 @@ def mac_pipelines(tree, res, version, logs):
     if not arch or not chain:
         say(f'   no GPU architecture or chain in the report, the first start fills it instead (see {logs / "mac-pipelines.log"})')
         return
-    n = mac_pipeline_files(work / 'cache/pipelines', seed, arch, chain)
+    n = mac_pipeline_files(work / 'cache/pipelines', build / 'pipelines', arch, chain)
     say(f"   {n:,} pipelines for {arch} in {time.time() - t0:.0f} s ({report.get('failed', 0)} failed); "
         "another Mac's GPU fills its own on the first start")
 

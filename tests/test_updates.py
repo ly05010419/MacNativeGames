@@ -52,6 +52,15 @@ def fake_data_bundle(tree, version, _logs, **_names):
     return bundle
 
 
+def fake_shader_bundle(tree, version, _logs, **_names):
+    """build_app.shader_bundle without codesign: the seed checked as it would be, in an unsigned bundle folder."""
+    build_app.check_seed(tree, version, game=_names.get('game', 'totk'))
+    bundle = tree / f'build/shader-bundles/ShaderData-{version}.bundle'
+    for rel in build_app.SHADER_DATA:
+        (bundle / 'Contents/Resources' / rel).mkdir(parents=True, exist_ok=True)
+    return bundle
+
+
 def game_data(tree, version):
     """The game data folder step_app copies into the app (build_app.place_game_data)."""
     for name in build_app.game_data_files(version):
@@ -351,7 +360,7 @@ class Updates(unittest.TestCase):
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
-        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
+        with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'shader_bundle',side_effect=fake_shader_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
              patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
             build_app.step_app(tree,out,self.root/'logs',version='v143')
