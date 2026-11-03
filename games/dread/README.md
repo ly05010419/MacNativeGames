@@ -3,8 +3,8 @@
 Metroid Dread running natively the way `games/totk` runs Tears of the Kingdom. It is a fork of `games/by3` (itself
 forked from `games/totk`) and keeps its own copies of everything in this folder (`runtime/`, `third_party/d2r`,
 `third_party/d2r_gfx`, `prebuilt/`, `scripts/`), so changes here never affect another game and nothing here reads
-another game's folder. **It is playable**: the title, the save menu, the prologue and the first area run with picture,
-sound, controller and saves. What was done and found: [CHANGELOG.md](CHANGELOG.md).
+another game's folder. **It is playable** on the Mac and on iPhone / iPad: the title, the save menu, the prologue and the
+first area run with picture, sound, controller and saves. What was done and found: [CHANGELOG.md](CHANGELOG.md).
 
 You must own the game: use your own dump and the `prod.keys` dumped from your own Switch. Nothing from the game is in
 this repository; `Dread_build/` (the work folder) and `mods/` are ignored by git.
@@ -22,6 +22,35 @@ python3.14 games/dread/build.py "<game>.xci" -k prod.keys [-o OUT.app]
 writes `Metroid Dread.app` next to it. The app is a small launcher (window or full screen, monitor, window size,
 MetalFX or plain scaling) that runs the game from the work folder: do not move or delete that folder. Saves:
 `~/Library/Application Support/MacNativeGames/Dread/profile`; log: `~/Library/Logs/MacNativeGames/dread.log`.
+
+### iPhone / iPad
+
+```sh
+python3.14 games/dread/build.py "<game>.xci" -k prod.keys --platform ios [-o OUT.ipa|OUT.app]
+python3.14 games/dread/ios/tools/install_device.py "Metroid Dread.ipa" [--device NAME]
+```
+
+The same steps, then an unsigned app (`ios/tools/build_ipa.py`; needs the full Xcode and `brew install xcodegen cmake
+ninja`) that carries the game (about 4.2 GB). `install_device.py` signs it with your Xcode team (a free Apple ID: 7 days)
+and installs it over the cable; the first time, trust your Apple ID on the device (Settings > General > VPN & Device
+Management). Play with a game controller or the on-screen controls (Switch layout; they hide while a controller is
+connected and come back on a touch).
+
+The device cannot translate shaders, so the build prepares them (`scripts/prepare_shader_seed.py`, a few seconds; the app
+carries them in `GameData/shader-seed`). Every shader of the game sits in `system/shd/*.bshdat` (MercurySteam's MSHD
+files: 1,010 unique shaders); each is translated for its default bind state, and for the other states
+`assets/shader_list.tsv` names (cube maps and depth textures the defaults do not serve). The list holds shader keys and
+bind states only; the build reads the shaders from your own RomFS. The app also carries what the Mac translated while
+you played (`Dread_build/build/shader-cache`, with its pipelines). A draw needing a variant neither has is skipped, logged
+as `[shader-miss]` and written to `shader-list-contribution.txt` in the app's Documents. To add the states you met:
+`python3.14 games/dread/scripts/shader_list.py merge games/dread/assets/shader_list.tsv <that file or the Mac's shader
+cache folder>`, then
+`... shader_list.py prune games/dread/assets/shader_list.tsv Dread_build/build/shader-seed` keeps only the rows the
+defaults do not serve. iOS also cannot run code written at run
+time: the rewritten modules are compiled into the app's executable segments (`ios/tools/gen_embed.py`) and the loader
+maps them back, the leading patch area included. Saves, the shader cache and `dread.log` are in the app's Documents
+(the Files app shows them). `--simulator` (`build_ipa.py`) builds for the iOS Simulator but does not compile yet: the
+Simulator SDK has no MetalFX.
 
 ## Inputs
 
@@ -79,4 +108,5 @@ subsdk0 here, every module of the other games) keep the old layout and byte-iden
 ## Next
 
 Longer play beyond the first area; frame rate and audio in the areas; the 2.1.0 update (a second set of hashes and a
-rewrite of its code); iOS. Open findings are listed at the end of [CHANGELOG.md](CHANGELOG.md).
+rewrite of its code); shader libraries compiled on the Mac for iOS (`.metallib`: the device now compiles the seed's MSL
+on first launch; needs Xcode's Metal Toolchain). Open findings are listed at the end of [CHANGELOG.md](CHANGELOG.md).
