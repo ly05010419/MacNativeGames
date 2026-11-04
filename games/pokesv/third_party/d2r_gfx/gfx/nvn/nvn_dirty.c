@@ -75,14 +75,38 @@ static int busy_wait(range_t *r, uintptr_t p) {
 static _Atomic uint16_t g_ix[MAX_RANGE];
 static _Atomic int g_ixn;
 static _Atomic uint64_t g_ixseq;
-static int ix_cmp(const void *x, const void *y) { uintptr_t a = g_r[*(const uint16_t *)x].base, b = g_r[*(const uint16_t *)y].base; return (a > b) - (a < b); }
-static void ix_rebuild(void) {   /* holds g_slot_mu */
-    static uint16_t tmp[MAX_RANGE]; int n = atomic_load(&g_nr), k = 0;
-    for (int i = 0; i < n; i++) if (atomic_load_explicit(&g_r[i].live, memory_order_relaxed)) tmp[k++] = (uint16_t)i;
-    qsort(tmp, (size_t)k, sizeof *tmp, ix_cmp);
+/* Kept sorted by one insert or removal per pool (2026-11-04): a full qsort of the ~4,000 live ranges per pool create or
+   finalize, under g_slot_mu, stalled a ball throw's 240 ms frame while the game freed and made hundreds of pools. */
+static int ix_pos(uintptr_t base) {   /* holds g_slot_mu: first index whose range starts at or above base */
+    int lo = 0, hi = atomic_load_explicit(&g_ixn, memory_order_relaxed);
+    while (lo < hi) { int mid = (lo + hi) / 2; if (g_r[atomic_load_explicit(&g_ix[mid], memory_order_relaxed)].base < base) lo = mid + 1; else hi = mid; }
+    return lo;
+}
+static void ix_check(const char *what) {   /* DM_DIRTY_IXCHECK=1: after each change, the index must hold every live range once, sorted by base */
+    static int on = -1; if (on < 0) on = getenv("DM_DIRTY_IXCHECK") != NULL; if (!on) return;
+    static _Atomic uint64_t checks, bad; int k = atomic_load(&g_ixn), n = atomic_load(&g_nr), live = 0, ok = 1;
+    for (int i = 0; i < n; i++) live += atomic_load(&g_r[i].live) != 0;
+    if (live != k) ok = 0;
+    for (int i = 0; i < k && ok; i++) { uint16_t x = atomic_load(&g_ix[i]); if (!atomic_load(&g_r[x].live) || (i && g_r[atomic_load(&g_ix[i - 1])].base >= g_r[x].base)) ok = 0; }
+    uint64_t c = atomic_fetch_add(&checks, 1) + 1;
+    if (!ok && atomic_fetch_add(&bad, 1) < 5) LOG("【红】脏页跟踪：区间索引不对（%s 之后，索引 %d 个，活的 %d 个）", what, k, live);
+    if (c % 2000 == 0) LOG("[dirty] range index checked %llu times, %llu wrong", (unsigned long long)c, (unsigned long long)atomic_load(&bad));
+}
+static void ix_insert(int slot) {   /* holds g_slot_mu; g_r[slot].base is set */
+    int k = atomic_load_explicit(&g_ixn, memory_order_relaxed), at = ix_pos(g_r[slot].base);
     atomic_fetch_add_explicit(&g_ixseq, 1, memory_order_relaxed); atomic_thread_fence(memory_order_release);
-    for (int i = 0; i < k; i++) atomic_store_explicit(&g_ix[i], tmp[i], memory_order_relaxed);
-    atomic_store_explicit(&g_ixn, k, memory_order_relaxed);
+    for (int i = k; i > at; i--) atomic_store_explicit(&g_ix[i], atomic_load_explicit(&g_ix[i - 1], memory_order_relaxed), memory_order_relaxed);
+    atomic_store_explicit(&g_ix[at], (uint16_t)slot, memory_order_relaxed);
+    atomic_store_explicit(&g_ixn, k + 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_ixseq, 1, memory_order_release);
+}
+static void ix_remove(int slot) {   /* holds g_slot_mu */
+    int k = atomic_load_explicit(&g_ixn, memory_order_relaxed), at = ix_pos(g_r[slot].base);
+    while (at < k && atomic_load_explicit(&g_ix[at], memory_order_relaxed) != slot) at++;   /* ranges never overlap: at most a step */
+    if (at >= k) return;
+    atomic_fetch_add_explicit(&g_ixseq, 1, memory_order_relaxed); atomic_thread_fence(memory_order_release);
+    for (int i = at; i < k - 1; i++) atomic_store_explicit(&g_ix[i], atomic_load_explicit(&g_ix[i + 1], memory_order_relaxed), memory_order_relaxed);
+    atomic_store_explicit(&g_ixn, k - 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_ixseq, 1, memory_order_release);
 }
 /* 1 = answered (*out the range or NULL), 0 = the list was changing: scan instead. */
@@ -260,7 +284,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     r->base = base; r->end = end; r->state = state; r->gen = gen; r->owner = mem; atomic_store(&r->latest, 0);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
-    ix_rebuild();
+    ix_insert(slot); ix_check("add");
     pthread_mutex_unlock(&g_slot_mu);
 }
 // 池销毁：先把仍受保护的页还原成可写（池内存归还游戏后可能另作他用），再标失效
@@ -272,7 +296,7 @@ void nvn_dirty_remove_range(const void *mem) {
        that tracking, so the other pool's textures were never seen as written again (stale textures). */
     range_t *r = NULL; int n = atomic_load(&g_nr);
     for (int i = 0; i < n; i++) if (atomic_load_explicit(&g_r[i].live, memory_order_acquire) && g_r[i].owner == mem) { r = &g_r[i]; break; }
-    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); ix_rebuild(); }
+    if (r) { prep_write((void *)r->base, r->end - r->base); ix_remove((int)(r - g_r)); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); ix_check("remove"); }
     pthread_mutex_unlock(&g_slot_mu);
 }
 /* Diagnostic: why a range is not tracked (DM_REUP_LOG). */
