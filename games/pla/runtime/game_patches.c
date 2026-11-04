@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Bayonetta 3: the player's 1.1.1 exefs patches (60 fps, 900p, LOD, film grain), applied to main after relocation and
+/* Pokémon Legends: Arceus: the player's 1.1.1 exefs patches (60 fps, 900p, LOD, film grain), applied to main after relocation and
    before its text is sealed. scripts/prepare_patches.py turns each .pchtxt into patches/<slug>.tsv ("offset new orig",
    hex), already checked against the original image and the rewrite; here every site is checked again against the loaded
    bytes, and a mismatch stops the start (a wrong version or a rewritten word must never be patched).
@@ -45,26 +45,18 @@ static void apply_file(Module *m, const char *slug) {
     fclose(f);
     fprintf(stderr, "[pla] game patch %s: %u sites\n", slug, applied);
 }
-/* Compatibility patches, always applied (independent of the player's mods): a defect of running the game's code
-   on Apple silicon rather than on the Switch. Each site is checked word for word against the rewritten image. */
+#include "arm64_atomics.h"
+/* Normalize the compiler's exchange sequence across the verified text before sealing it executable. */
 static void apply_compat(Module *m) {
-    /* PLA's clang spilled the old value of a 64-bit atomic exchange to a stack slot in the same 64-byte line as
-       the exchange target (main+0x1e916b8: ldaxr x9,[x8]; str x9,[sp,#0xa0]; stlxr w9,xzr,[x8]; cbnz w9,-4).
-       The Apple silicon exclusive monitor covers 64 bytes and any store to that line clears it, even one by the
-       same thread, so the STXR never succeeds and the field loader spins for ever (the Poké Ball; measured on
-       this Mac: 100000/100000 STXR failures). On the Switch's Cortex-A57 the pattern works. Move the spill after
-       the successful exchange, with w16 (IP0, dead after the call just before) as the status. */
-    static const struct { uint64_t off; uint32_t was[4], now[4]; const char *what; } k[] = {
-        { 0x1e916b8ULL, { 0xc85ffd09, 0xf90053e9, 0xc809fd1f, 0x35ffffa9 },
-                        { 0xc85ffd09, 0xc810fd1f, 0x35ffffd0, 0xf90053e9 },
-          "atomic exchange: stack spill in the 64-byte exclusive granule (Apple silicon) would livelock STLXR" },
-    };
-    for (size_t i = 0; i < sizeof k / sizeof *k; i++) {
-        uint32_t *at = (uint32_t *)(m->base + k[i].off);
-        if (memcmp(at, k[i].was, sizeof k[i].was)) { fprintf(stderr, "[pla] compatibility patch at main+%#llx: original bytes differ\n", (unsigned long long)k[i].off); runtime_fail("compatibility patch does not match this game version"); }
-        memcpy(at, k[i].now, sizeof k[i].now);
-        sys_icache_invalidate(at, sizeof k[i].now);
-        fprintf(stderr, "[pla] compatibility patch at main+%#llx: %s\n", (unsigned long long)k[i].off, k[i].what);
+    size_t words = m->text_end / sizeof(uint32_t);
+    if (m->text_end > m->file_size || (m->text_end & 3)) runtime_fail("invalid module text bounds");
+    uint8_t *targets = calloc(words, 1);
+    if (!targets) runtime_fail("atomic branch-target table allocation failed");
+    size_t count = arm64_lower_exchanges((uint32_t *)m->base, words, targets);
+    free(targets);
+    if (count) {
+        sys_icache_invalidate(m->base, m->text_end);
+        fprintf(stderr, "[pla] lowered %zu compiler exchange loops to LSE atomics\n", count);
     }
 }
 void runtime_game_patches(Module *main_module) {

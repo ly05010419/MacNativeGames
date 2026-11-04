@@ -3347,21 +3347,9 @@ static id<MTLTexture> reup_take(const reup_key *k) {
     if (hit) g_reup_reused++;
     return hit;
 }
-/* TOTK (iPhone): Metal copies of large mipmapped CPU-pool textures leave out the top level: a quarter of the memory. The
-   game samples them with normalised coordinates, so a texture one level smaller is drawn from what was its level 1 (on
-   the 720p handheld screen most of them are minified anyway). Texture-ID views shift their level range (tex_by_id);
-   a copy the GPU starts rendering into is uploaded again at full size (tex_mtl). 2D / 2D-array / cube textures with
-   at least two levels and both sides >= TOTK_MIP_DROP_MIN (512). TOTK_MIP_DROP=0 off, =1 on (default on iOS only). */
 static uint64_t g_mip_dropped;
-static unsigned mip_drop_of(const tex_t *t) {
-    static int on = -1; static unsigned minside;
-    if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : TARGET_OS_IPHONE; minside = m ? (unsigned)atoi(m) : 512;
-        if (on) MLOG("大贴图副本少传最高一级 mip：开（两边都 ≥%u 的 2D / 数组 / 立方体贴图；TOTK_MIP_DROP=0 关）", minside); }
-    if (!on || g_mip_nodrop) return 0;
-    uint32_t g = t->d.target;
-    if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
-    return 1;
-}
+/* Keep original dimensions and every mip on Mac and iOS, regardless of presets or memory pressure. */
+static unsigned mip_drop_of(const tex_t *t) { (void)t; return 0; }
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     MTLTextureDescriptor *d = tex_desc(t, t->has_layout);   // TOTK: default-layout mirrored textures keep render-target usage
     if (!d) return nil;

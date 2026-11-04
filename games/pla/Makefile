@@ -8,10 +8,11 @@
 #   make runtime   # PLA_build/build/pla-native
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)
 
-WORK ?= PLA_build
+WORK ?= $(error Set WORK to an absolute directory outside the source checkout)
 OUT := $(WORK)/build
 PY ?= python3
 NATIVE_OPT ?= -O2
+MACOS_MIN := -mmacosx-version-min=26.0
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -29,18 +30,18 @@ RUNTIME_HEADERS := $(wildcard runtime/*.h)
 GENERATED := $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_config.h
 
 .PHONY: prepare runtime boot clean app dist
-prepare:
+prepare: check-paths
 	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)"
 
 $(GENERATED):
 	@echo "missing $@: run make prepare" && false
 
-$(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
+$(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile | check-paths
 	@mkdir -p "$(dir $@)"
-	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
+	xcrun clang $(MACOS_MIN) $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
 $(OUT)/pla-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+	xcrun clang $(MACOS_MIN) -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -DSCENECAP_HOOKS=$(SCENECAP) \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a \
@@ -66,11 +67,11 @@ SPIRV_CROSS_SOURCES := main.cpp spirv_cfg.cpp spirv_cpp.cpp spirv_cross.cpp spir
   spirv_glsl.cpp spirv_hlsl.cpp spirv_msl.cpp spirv_parser.cpp spirv_reflect.cpp
 .PHONY: shader-tools
 shader-tools: $(OUT)/shader-service/totk_xlate $(OUT)/spirv-cross/spirv-cross
-$(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos-arm64/totk_xlate.sha256
+$(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos-arm64/totk_xlate.sha256 | check-paths
 	@mkdir -p "$(dir $@)"
 	test "$$(shasum -a 256 "$<" | cut -d' ' -f1)" = "$$(cut -d' ' -f1 "prebuilt/macos-arm64/totk_xlate.sha256")"
 	cp "$<" "$@" && chmod +x "$@"
-$(OUT)/spirv-cross/spirv-cross:
+$(OUT)/spirv-cross/spirv-cross: | check-paths
 	@mkdir -p "$(WORK)/src" "$(dir $@)obj"
 	test -d "$(WORK)/src/SPIRV-Cross" || git clone -q https://github.com/KhronosGroup/SPIRV-Cross.git "$(WORK)/src/SPIRV-Cross"
 	git -C "$(WORK)/src/SPIRV-Cross" checkout -q $(SPIRV_CROSS_COMMIT)
@@ -91,7 +92,7 @@ boot: runtime
 # The player's mods, made into checked tables: exefs patches (mods/1.1.1/<name>/exefs/*.pchtxt) -> <work>/patches,
 # RomFS mods (mods/<name>/romfs/...) -> their manifest.tsv (sizes and SHA-256 of the replacements and the originals).
 .PHONY: patches mods app
-patches:
+patches: check-paths
 	"$(PY)" scripts/prepare_patches.py --work "$(WORK)"
 mods:
 	for d in mods/*/romfs; do [ -d "$$d" ] && "$(PY)" scripts/make_mod_manifest.py "$$d" --romfs "$(WORK)/extracted/v1101/romfs"; done; true
@@ -99,30 +100,31 @@ mods:
 # The app: a small launcher bundle (settings window with presets, then the game) that runs the game from the work
 # folder, which it names in Info.plist (PLAWorkFolder): nothing large is copied. Its icon comes from the game's own
 # control data (GAME=<card image> KEYS=<prod.keys>), or the app goes without one.
-APP ?= Pokemon Legends Arceus.app
+APP ?= $(abspath $(WORK)/..)/Pokemon Legends Arceus.app
 GAME ?=
 KEYS ?=
-$(OUT)/launcher: app/launcher.m Makefile
-	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror -fobjc-arc app/launcher.m -framework Cocoa -o "$@"
-$(OUT)/AppIcon.icns:
+$(OUT)/launcher: app/launcher.m Makefile | check-paths
+	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror -fobjc-arc app/launcher.m $(MACOS_MIN) -framework Cocoa -o "$@"
+$(OUT)/AppIcon.icns: | check-paths
 	@if [ -n "$(GAME)" ] && [ -n "$(KEYS)" ]; then cd scripts && "$(PY)" extract_app_icon.py "$(GAME)" --keys "$(KEYS)" --title 01001f5010dfa000 --output "$(abspath $@)"; \
 	 else echo "no GAME= / KEYS=: the app gets no icon"; fi
 # One command for a distributable build: runtime + shader seed + the self-contained app bundle.
 dist: runtime app
 	@echo "dist ready: $(APP) (self-contained; shader seed $(OUT)/pso_manifest.tsv)"
 
-app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
+app: check-new-app runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 	rm -rf "$(APP)" && mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
 	cp "$(OUT)/launcher" "$(APP)/Contents/MacOS/Pokemon Legends Arceus"
 	# Self-contained: the work folder (extracted/, rewritten/, patches/, build output) goes inside the bundle and the
 	# data folder comes from the app (~/Library/Application Support/MacNativeGames/PLA). APFS clones keep it cheap.
 	if [ "$${PLA_DEV:-0}" != "1" ]; then \
 	  rm -rf "$(APP)/Contents/Resources/Work"; mkdir -p "$(APP)/Contents/Resources/Work"; \
-	  cp -cR "$(abspath $(WORK))/." "$(APP)/Contents/Resources/Work/" 2>/dev/null || cp -R "$(abspath $(WORK))/." "$(APP)/Contents/Resources/Work/"; \
+	  for d in extracted rewritten patches build; do \
+	    if [ -d "$(WORK)/$$d" ]; then cp -cR "$(WORK)/$$d" "$(APP)/Contents/Resources/Work/" 2>/dev/null || cp -R "$(WORK)/$$d" "$(APP)/Contents/Resources/Work/"; fi; done; \
 	  rm -rf "$(APP)/Contents/Resources/Work/analysis" "$(APP)/Contents/Resources/Work/venv" \
 	         "$(APP)/Contents/Resources/Work/src" "$(APP)/Contents/Resources/Work/logs" \
 	         "$(APP)/Contents/Resources/Work/audio-dump.pcm" "$(APP)/Contents/Resources/Work/user-data" \
-	         "$(APP)/Contents/Resources/Work/build/obj"; fi   # ship the game, not the developer's analysis, sources, logs, saves*
+	         "$(APP)/Contents/Resources/Work/build/obj" "$(APP)/Contents/Resources/Work/build/logs"; fi   # ship the game, not the developer's analysis, sources, logs, saves*
 	[ -f "$(OUT)/AppIcon.icns" ] && cp "$(OUT)/AppIcon.icns" "$(APP)/Contents/Resources/" || true
 	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
 	  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -147,3 +149,15 @@ app: runtime shader-tools $(OUT)/launcher $(OUT)/AppIcon.icns
 
 clean:
 	rm -rf "$(OUT)/obj" "$(OUT)/pla-native"
+
+.PHONY: check-paths
+check-paths:
+	"$(PY)" scripts/pla_artifact_paths.py "$(WORK)" "$(APP)"
+	@"$(PY)" -c 'from pathlib import Path; w,a=map(lambda s:Path(s).resolve(),__import__("sys").argv[1:]); assert a!=w and w not in a.parents and a not in w.parents, "WORK and APP must be separate directories"' "$(WORK)" "$(APP)"
+
+.PHONY: check-new-app
+check-new-app: check-paths
+	@test ! -e "$(APP)" -a ! -L "$(APP)" || (echo "APP already exists; choose a new output path" >&2; exit 1)
+
+.PHONY: graphics
+graphics: $(GFX_OBJECTS)

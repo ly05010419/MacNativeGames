@@ -17,26 +17,32 @@ One card image (XCI) holding **base and update Program NCAs** — base `01001F50
 
 ## Build and play
 
-From `games/pla`, with a Python environment made from `requirements.txt` in this folder:
+From `games/pla`, with a Python environment made from `requirements.txt` in this folder.
+Use an external work folder and a separate, new app path; all generated files must stay outside every source checkout:
 
 ```sh
-python scripts/extract_exefs.py "<card>.xci" --keys prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --output PLA_build/extracted/v1101/exefs
-python scripts/extract_exefs.py "<card>.xci" --keys prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --output PLA_build/extracted/v1101/exefs-base
-python scripts/extract_romfs.py --keys prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --manifest PLA_build/extracted/v1101/extraction-manifest.json --output PLA_build/extracted/v1101/romfs-base
-python scripts/merge_romfs.py "<card>.xci" --keys prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --base-romfs PLA_build/extracted/v1101/romfs-base/romfs.bin --output PLA_build/extracted/v1101/romfs
-make prepare            # tables, RomFS index, fonts config (system fonts: see CHANGELOG, stage 4)
-make runtime            # PLA_build/build/pla-native
-make boot               # windowed boot; the launcher's three switches are commented in the Makefile
+WORK=/absolute/path/outside/the/checkout/PLA_build
+PY=/absolute/path/to/venv/bin/python
+"$PY" scripts/extract_exefs.py "<card>.xci" --keys /path/to/prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --update --output "$WORK/extracted/v1101/exefs"
+# Extract the base separately, retaining the update manifest above.
+"$PY" scripts/extract_exefs.py "<card>.xci" --keys /path/to/prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --output "$WORK/extracted/base/exefs"
+"$PY" scripts/extract_romfs.py --keys /path/to/prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --manifest "$WORK/extracted/base/extraction-manifest.json" --output "$WORK/extracted/v1101/romfs-base"
+"$PY" scripts/merge_romfs.py "<card>.xci" --keys /path/to/prod.keys --title 01001F5010DFA000 --update-title 01001F5010DFA800 --base-romfs "$WORK/extracted/v1101/romfs-base/romfs.bin" --output "$WORK/extracted/v1101/romfs"
+for m in sdk subsdk0 subsdk1 main; do
+  DM_RULESET=native DM_PRIVATE_GATES=0 "$PY" third_party/d2r/patch_nso.py "$WORK/extracted/v1101/exefs/$m" "$WORK/rewritten/v1101" "$m"
+done
+make prepare WORK="$WORK" PY="$PY"
+make runtime WORK="$WORK" PY="$PY"
+make dist WORK="$WORK" PY="$PY" APP="/path/to/apps/Pokemon Legends Arceus.app"
 ```
 
-(The second `extract_exefs` run without `--update` exists to re-write `extraction-manifest.json` for the base NCA,
-which `extract_romfs.py` cross-checks; it also re-verifies the base ExeFS block hashes.)
+The extraction tools keep the base and update Program NCAs from the supplied card image distinct; preparation checks the pinned update ExeFS and rewritten image hashes. `make dist` requires a new app path and does not replace an existing package. It copies only the prepared game/build folders, excluding developer analysis, build objects, logs and active saves.
 
 `make shader-tools` puts the prebuilt shader translator (`totk_xlate`, SHA-256 checked) and SPIRV-Cross where
 the runtime shader translation looks for it.
 
 Input is keyboard and macOS gamepads (WASD left stick, arrows right stick, J/K/U/I = A/B/X/Y, Q/E = L/R,
-Option/Shift = ZL/ZR, Return = +, Tab/Esc = −, F/T/H/G = d-pad). Saves live in `PLA_build/user-data/save/`.
+Option/Shift = ZL/ZR, Return = +, Tab/Esc = −, F/T/H/G = d-pad). The packaged app saves to `~/Library/Application Support/MacNativeGames/PLA/profile`.
 
 ## Status (4 November 2026)
 
@@ -63,3 +69,5 @@ plays, but only part of the game has been walked through.
 
 Keys in play: key 1 FPS/HUD, key 2 frame interpolation (diagnostic only), key 3 output scaling, key 4 21:9, key 5 the
 experimental 60 fps track.
+
+Integration note (2026-11-04): the fixed-address exchange patch has been replaced by a checked ARM64 instruction lowering: acquire/release exclusive exchange loops with an intervening stack spill become LSE exchanges, preserving the spill and store status. Alternate direct branch entries reject the transformation. A native test runs the lowered sequence 100,000 times with the spill in the same reservation granule. This is a native instruction regression, not a new gameplay run. All textures retain their complete mip chains.

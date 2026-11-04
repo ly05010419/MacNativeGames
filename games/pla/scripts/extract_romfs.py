@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Verify all six IVFC levels, stream a local RomFS image, and index its files."""
 import argparse
+if __package__:
+    from .pla_artifact_paths import outside_source
+else:
+    from pla_artifact_paths import outside_source
 import hashlib
 import json
 import struct
@@ -16,7 +20,7 @@ def main():
     parser.add_argument('--update-title',help='update title ID accepted alongside --title in a card image')
     parser.add_argument('--manifest',type=Path,default=Path('extracted/v0/extraction-manifest.json'))
     parser.add_argument('--output',type=Path,default=Path('extracted/v0/romfs'))
-    args=parser.parse_args(); require(not args.output.exists(),'Output already exists')
+    args=parser.parse_args(); args.output=outside_source(args.output); require(not args.output.exists(),'Output already exists')
     manifest=json.loads(args.manifest.read_text());record=manifest['program'];keys=load_keys(args.keys)
     source=Path(manifest['source']);require(source.stat().st_size==manifest['source_size'],'Source size changed')
     with source.open('rb') as f:

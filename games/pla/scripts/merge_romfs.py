@@ -10,6 +10,7 @@ Adapted from games/pla/scripts/merge_romfs.py (which merges a sparse base): the 
 from the already-verified base RomFS image, and both Program NCAs are selected with extract_exefs.program_nca.
 """
 import argparse
+from pla_artifact_paths import outside_source
 import bisect
 import hashlib
 import json
@@ -208,6 +209,7 @@ def main():
                         help='the verified base RomFS image from extract_romfs.py (its SHA-256 is recorded in the report)')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
+    args.output = outside_source(args.output)
     require(not args.output.exists(), 'Output already exists; choose a new directory')
     keys = load_keys(args.keys)
     base_sha = hashlib.sha256(args.base_romfs.read_bytes()).hexdigest() if args.base_romfs.stat().st_size < (1 << 31) else None

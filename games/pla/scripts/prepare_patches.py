@@ -8,6 +8,7 @@ the runtime (runtime/game_patches.c) checks the original bytes again before writ
 beyond the replacement words they already hold.
 """
 import argparse
+from pla_artifact_paths import outside_source
 import json
 import re
 import sys
@@ -46,9 +47,9 @@ def parse(path, build_id):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mods', type=Path, nargs='?', default=HERE / 'mods/1.1.1', help='folder of <name>/exefs/*.pchtxt')
-    parser.add_argument('--work', type=Path, default=HERE / 'PLA_build')
+    parser.add_argument('--work', type=Path, required=True)
     args = parser.parse_args()
-    work = args.work.resolve()
+    work = outside_source(args.work)
     original = nsoimg.load(work / 'extracted/v1101/exefs/main')
     rewritten = (work / 'rewritten/v1101/main.patched.bin').read_bytes()
     out = work / 'patches'; out.mkdir(exist_ok=True)
