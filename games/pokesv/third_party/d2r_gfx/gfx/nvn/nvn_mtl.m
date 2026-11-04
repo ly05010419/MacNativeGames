@@ -455,8 +455,43 @@ static void udc_selftest(void) {
    The spinner only fills real gaps: it launches a kernel only while none of the game's command buffers is on the GPU
    (g_q4_inflight, counted in q4_commit), one at a time, sized to ~1 ms from its measured GPU time. With the screen locked
    the GPU stopped interleaving the two queues and the old always-two-in-flight 5 ms kernels (about 30 per world frame)
-   held every game frame back to ~115 ms; now a game submission waits at most for one short kernel. */
+   held every game frame back to ~115 ms; now a game submission waits at most for one short kernel.
+   Automatic by default (2026-11-04): the spinner runs only while the game's GPU time nears the frame budget. With the
+   spinner off the GPU clocks down and the same frame takes longer, which costs far less power while it still fits. M3 Pro,
+   grassland, GPU package power on -> off: lock 30 6.1 -> 2.0 W, lock 60 9.8 -> 3.3 W, 1440p at lock 60 12.8 -> 5.6 W, the
+   same frame pacing while walking (GPU time at lock 60 ~7 -> 10-13 ms). Lock 120 leaves no gaps, so it made no difference
+   there. ka_governor turns it on when the GPU p90 of the last frames passes 85% of the lock's frame time (twice in a row) and
+   off when it stays under 50% for 2 s after at least 30 s on. With the spinner the GPU time drops ~1.5x, so a frame that
+   needed it (>85%) stays above 50% and the governor does not flap. Uncapped frames keep it on.
+   PSV_GPU_KEEPALIVE=0 off, =1 always on, unset = automatic. */
 static _Atomic uint64_t g_last_sub_ns;
+static _Atomic uint64_t g_cur_frame;   // tentative declaration, defined further down
+int nvn_fps_lock(void);
+double mtl_gpu_ms(uint64_t f);
+static int g_ka_mode = 2;              // 0 off, 1 always, 2 automatic (PSV_GPU_KEEPALIVE)
+static int g_ka_auto_on;               // the governor's state (keep-alive thread only)
+static int cmp_dbl(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
+/* Keep-alive thread, about every 0.5 s: decide whether the spinner is needed (see above). */
+static void ka_governor(uint64_t now) {
+    static uint64_t next, hold_until; static int hi, lo;
+    if (now < next) return;
+    next = now + 500000000ull;
+    int lock = nvn_fps_lock();
+    if (!lock) { if (!g_ka_auto_on) { g_ka_auto_on = 1; MLOG("GPU 保活：自动开启（不锁帧）"); } hi = lo = 0; return; }
+    double v[40]; int n = 0; uint64_t cur = atomic_load(&g_cur_frame);
+    for (uint64_t f = cur > 43 ? cur - 43 : 0; f + 3 <= cur && n < 40; f++) { double ms = mtl_gpu_ms(f); if (ms > 0) v[n++] = ms; }
+    if (n < 20) return;
+    qsort(v, (size_t)n, sizeof v[0], cmp_dbl);
+    double budget = 1000.0 / lock, p90 = v[n * 9 / 10], r = p90 / budget;
+    if (!g_ka_auto_on) {
+        hi = r > 0.85 ? hi + 1 : 0;
+        if (hi >= 2) { g_ka_auto_on = 1; hi = lo = 0; hold_until = now + 30000000000ull;
+            MLOG("GPU 保活：自动开启（GPU p90 %.2f ms，帧时间 %.2f ms 的 %.0f%%）", p90, budget, r * 100); }
+    } else {
+        lo = (now >= hold_until && r < 0.5) ? lo + 1 : 0;
+        if (lo >= 4) { g_ka_auto_on = 0; hi = lo = 0; MLOG("GPU 保活：自动关闭（GPU p90 %.2f ms，帧时间 %.2f ms 的 %.0f%%）", p90, budget, r * 100); }
+    }
+}
 // Diagnostic timing controls; defaults retain the existing 1 ms keep-alive.
 // The private spin buffer never supplies game data.
 static _Atomic int g_ka_target_us = 1000;
@@ -465,13 +500,15 @@ void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = at
 static void keepalive_start(void) {
     static int started; const char *e = getenv("PSV_GPU_KEEPALIVE");
     if (started || (e && !atoi(e)) || nogpu() || getenv("PSV_HEADLESS")) return; started = 1;   // not in standalone probes
+    g_ka_mode = e ? 1 : 2;
     NSError *err = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
     if (!ps || !q || !buf) { MLOG("【红】PSV_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
     { const char *us = getenv("PSV_GPU_KEEPALIVE_US"); int v = us ? atoi(us) : 0; if (v >= 100 && v <= 1000) atomic_store(&g_ka_target_us, v); }   /* like flag keepalive_us, from the start */
-    MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（PSV_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
+    MLOG("GPU 保活：独立队列上跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频；%s（PSV_GPU_KEEPALIVE=0 关闭，=1 常开）", atomic_load(&g_ka_target_us),
+         g_ka_mode == 1 ? "常开" : "自动：GPU 时间接近帧时间才开");
     g_ka_idle = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
@@ -479,7 +516,9 @@ static void keepalive_start(void) {
             int target_us = atomic_load(&g_ka_target_us);
             if (!target_us) { usleep(2000); continue; }
             uint64_t last = atomic_load(&g_last_sub_ns);
-            if (!last || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
+            uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+            if (!last || now - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
+            if (g_ka_mode == 2) { ka_governor(now); if (!g_ka_auto_on) { usleep(5000); continue; } }
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_wait(g_ka_idle, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC)); continue; }   // the game's own GPU work keeps the clock up
             dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_signal(sem); continue; }

@@ -102,6 +102,12 @@ PSV_build/venv/bin/python PSV_build/test-tools/profsum.py PSV_build/logs/<name>.
 
 Game code shows as `main+0x...` (the log names each module's base). **The .trace holds the shell's environment: delete it after the export.**
 
+### Power
+
+`PSV_build/test-tools/abpow.sh "<name>=<flag lines>" ...` switches live flags in one session and prints per 20 s phase the GPU package power, the game's CPU cores and the frame and GPU times (`WALK=1` walks meanwhile). The power comes from `test-tools/pw` (IOReport, no sudo). It reads GPU energy only: the CPU energy channels read 0 on macOS 27.
+
+- **The GPU keep-alive is automatic** (`nvn_mtl.m` `ka_governor`). It runs only while the game's GPU time passes 85% of the frame time, and it is the largest power cost when it runs. `PSV_GPU_KEEPALIVE=0` off, `=1` always on (the old default).
+
 ## Test runs
 
 These switches make a run need no hands. They are diagnostics and off by default.
