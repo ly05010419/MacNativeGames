@@ -74,6 +74,9 @@ int main(int argc, char **argv) {
     setenv("TOTK_PICTURE_MODE", file, 1); output_w = 2560; output_h = 1440;
     runtime_output_mode_set(OUTPUT_MODE_720P); expect_file("720p");           /* 720p: a 1280x720 canvas */
     assert(restart() == pack_size(1280, 720) && runtime_output_mode() == OUTPUT_MODE_720P);
+    runtime_output_mode_set(OUTPUT_MODE_720P_METALFX); expect_file("720p-metalfx");   /* the 720p canvas, MetalFX to the window */
+    assert(restart() == pack_size(1280, 720) && mfx_on && runtime_output_mode() == OUTPUT_MODE_720P_METALFX);
+    runtime_output_mode_set(OUTPUT_MODE_720P); assert(!mfx_on && runtime_output_mode() == OUTPUT_MODE_720P);
     static uint8_t scene[64]; render_page = scene; render_canvas = 1;        /* the scene follows the canvas */
     runtime_output_mode_set(OUTPUT_MODE_OFF); runtime_output_mode_set(OUTPUT_MODE_720P);
     float v[2]; memcpy(v, scene + 16, sizeof v); assert(v[0] == 1920 && v[1] == 1080);   /* x 1280 / 1920 by the game: 1280x720 */
