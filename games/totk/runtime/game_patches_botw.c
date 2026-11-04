@@ -15,6 +15,7 @@
 #include "aspect_math.h"   /* the aspect ratio: TOTK_ASPECT parsing */
 #include "botw_shadow_res.h"   /* 1.9.0's sun shadow map at 2048 (TOTK_SHADOW_RES, shadows.txt) */
 #include "botw_fov.h"   /* 1.9.0's field of view (TOTK_FOV_SCALE, graphics-fov.txt) */
+#include "botw_heap_patch.h"   /* startup/root heap sizes above 4 GiB */
 #include <TargetConditionals.h>
 #include <mach/mach.h>   /* vm_read_overwrite: TOTK_CDPOINT_TRACE reads guest pointers it cannot vouch for */
 uint32_t runtime_thread_current_handle(void);
@@ -689,12 +690,12 @@ static void patch_render_1080(Module *m) {
 /* Sizes: TOTK_OUTPUT_RES=screen takes the largest 16:9 size of the main display's native mode (not a fixed size: the Mac
    screen's largest resolution at 16:9); 1440p is 2560x1440 and 1080p the game's own size; <w>x<h> takes one 16:9 size directly, fixed (for tests). A size is 16k x 9k with
    k a multiple of 8 (both sides multiples of 8, the sizes that were tested),
-   above 1920x1080 and at most 3840x2160 (native 4K, 2026-11-01): the memory heap is then 4080 MiB, under its
-   instruction's 4095 MiB and inside the host heap cap, which follows the application pool (services.c HEAP_CAP). This Mac's 3456x2234 panel gives 3456x1944; 2560x1664 gives 2560x1440; 3024x1964 gives 2944x1656. The heaps
+   above 1920x1080 and at most 5120x2880 (native 5K). At 4K the memory heap is 4080 MiB;
+   above 4 GiB, guarded 64-bit heap veneers replace the original 32-bit moves. The host heap cap follows the application pool (services.c HEAP_CAP). This Mac's 3456x2234 panel gives 3456x1944; 2560x1664 gives 2560x1440; 3024x1964 gives 2944x1656. The heaps
    go through the two tested sizes (2560x1440: display 80, GPU 192 MiB, memory and root heaps +512 MiB; 3456x1944: 112,
    352, +768, soaked 10 min at Kakariko; 3840x2160: 112, 448, +960, Kakariko 2026-11-01, peak footprint 5298 MiB) and
    stay at the 2K values below 2K. */
-enum { NATIVE_K_MAX = 240 };   /* 3840x2160: native 4K (2026-11-01; 3456x1944 was the largest size the PR tested) */
+enum { NATIVE_K_MAX = 320 };   /* 5120x2880: native 5K; startup/root heaps use 64-bit veneers above 4 GiB */
 static int native_k_from_screen(unsigned w, unsigned h) {   /* 0 = 1920x1080 or less: the shipped canvas */
     unsigned k = w / 16 < h / 9 ? w / 16 : h / 9;
     k &= ~7u;
@@ -1312,7 +1313,13 @@ static uint8_t *g_out_main;
    3840x2160's, the settings panel offers native 4K, and its native 2K stays 2560x1440. An app without it keeps 2K. */
 static int native_4k_app(void) {
     static int v = -1;
-    if (v < 0) v = !ios_code() && access("extracted/" TOTK_GAME_DIR "/native-4k", R_OK) == 0;
+    if (v < 0) v = !ios_code() && (access("extracted/" TOTK_GAME_DIR "/native-4k", R_OK) == 0 ||
+                                  access("extracted/" TOTK_GAME_DIR "/native-5k", R_OK) == 0);
+    return v;
+}
+static int native_5k_app(void) {
+    static int v = -1;
+    if (v < 0) v = !ios_code() && access("extracted/" TOTK_GAME_DIR "/native-5k", R_OK) == 0;
     return v;
 }
 #ifdef GAME_BOTW160
@@ -1321,9 +1328,9 @@ static void output_parse(void) {
     if (ios_code()) { g_out_mode = OUT_OFF; return; }   /* the phone: the game's own size (handheld 720p) */
     const char *e = getenv("TOTK_OUTPUT_RES"); unsigned a, b; char tail;
     if (e && !strcmp(e, "0")) { g_out_mode = OUT_OFF; return; }
-    if (!e || !*e || !strcmp(e, "auto")) { g_out_mode = OUT_AUTO; g_out_w = native_4k_app() ? 3840 : 2560; g_out_h = native_4k_app() ? 2160 : 1440; return; }
-    if (sscanf(e, "%ux%u%c", &a, &b, &tail) != 2 || a < 1280 || b < 720 || a > 7680 || b > 4320)
-        runtime_fail("TOTK_OUTPUT_RES must be auto, 0 or <width>x<height> (1280x720 .. 7680x4320)");
+    if (!e || !*e || !strcmp(e, "auto")) { g_out_mode = OUT_AUTO; g_out_w = native_5k_app() ? 5120 : native_4k_app() ? 3840 : 2560; g_out_h = native_5k_app() ? 2880 : native_4k_app() ? 2160 : 1440; return; }
+    if (sscanf(e, "%ux%u%c", &a, &b, &tail) != 2 || a < 1280 || b < 720 || a > 5120 || b > 2880)
+        runtime_fail("TOTK_OUTPUT_RES must be auto, 0 or <width>x<height> (1280x720 .. 5120x2880)");
     g_out_mode = OUT_FIXED; g_out_w = a; g_out_h = b;
 }
 #else
@@ -1331,7 +1338,7 @@ static int g_out_start_big;   /* 1: the canvas starts at the largest size (1440p
 static void output_parse(void) {
     if (g_out_mode >= 0) return;
     if (ios_code()) { g_out_mode = OUT_OFF; return; }   /* the phone: the game's own size */
-    const char *e = getenv("TOTK_OUTPUT_RES"); int k = native_4k_app() ? 240 : 160;   /* 3840x2160 or 2560x1440 */
+    const char *e = getenv("TOTK_OUTPUT_RES"); int k = native_5k_app() ? 320 : native_4k_app() ? 240 : 160;
     g_out_mode = OUT_AUTO;
     if (e && (!strcmp(e, "0") || !strcasecmp(e, "1080p"))) { g_out_mode = OUT_OFF; return; }
     if (e && !strcasecmp(e, "1440p")) g_out_start_big = 1;
@@ -1341,7 +1348,7 @@ static void output_parse(void) {
         fprintf(stderr, "[botw] native size from the screen: main display %ux%u (native mode) -> %ux%u\n", w, h, 16u * k, 9u * k);
         g_out_start_big = 1;
     } else if (e && *e && strcmp(e, "auto")) {
-        if ((k = native_k_parse(e)) < 0) runtime_fail("TOTK_OUTPUT_RES: Breath of the Wild 1.9.0 takes auto, screen, 1440p, 1080p or 0, or a fixed 16:9 size above 1920x1080 up to 3840x2160 with a width that is a multiple of 128 (2560x1440, 2944x1656, 3456x1944, 3840x2160)");
+        if ((k = native_k_parse(e)) < 0) runtime_fail("TOTK_OUTPUT_RES: Breath of the Wild 1.9.0 takes auto, screen, 1440p, 1080p or 0, or a fixed 16:9 size above 1920x1080 up to 5120x2880 with a width that is a multiple of 128 (2560x1440, 3840x2160, 5120x2880)");
         g_out_mode = OUT_FIXED; g_out_start_big = 1;
     }
     g_out_w = 16u * k; g_out_h = 9u * k;
@@ -1461,13 +1468,17 @@ static int patch_output_res(Module *m) {
     memcpy(m->base + 0x1821670, &branch[0], 4); memcpy(m->base + 0x1821674, &branch[1], 4);
     memcpy(m->base + 0x1821684, &branch[2], 4); memcpy(m->base + 0x1821688, &branch[3], 4);
     unsigned render, gfx, extra; heaps160(w, h, &render, &gfx, &extra);
-    if (3120 + extra > 0xffff >> 4 || 3088 + extra > 0xffff >> 4) runtime_fail("the output size: the memory heap would not fit its instruction");
     const uint32_t heap_render = 0x52a00008u | (render << 4) << 5;           /* mov w8, #<render MiB> (115 MiB shipped) */
     const uint32_t heap_gfx = 0x52a00000u | (gfx << 4) << 5;                 /* mov w0, #<graphics MiB> (48 MiB shipped) */
     const uint32_t heap_size = 0x52a00000u | ((3120 + extra) << 4) << 5;     /* mov w0: SetMemoryHeapSize 3120 MiB + extra */
     const uint32_t heap_root = 0x52a00015u | ((3088 + extra) << 4) << 5;     /* mov w21: the root block 3088 MiB + extra */
     memcpy(m->base + 0x1804c44, &heap_render, 4); memcpy(m->base + 0xe550a0, &heap_gfx, 4);
-    memcpy(m->base + 0xe536dc, &heap_size, 4); memcpy(m->base + 0xe53fa0, &heap_root, 4);
+    if (3120 + extra <= 0xffff >> 4) memcpy(m->base + 0xe536dc, &heap_size, 4);
+    else if (!botw_heap_patch(m->base, m->size, m->text_end, 0xe536dc, 0x52b86000u, 0, 0, (uint64_t)(3120 + extra) << 20))
+        runtime_fail("the output size: cannot install the 64-bit startup heap size");
+    if (3088 + extra <= 0xffff >> 4) memcpy(m->base + 0xe53fa0, &heap_root, 4);
+    else if (!botw_heap_patch(m->base, m->size, m->text_end, 0xe53fa0, 0x52b82015u, 21, 1, (uint64_t)(3088 + extra) << 20))
+        runtime_fail("the output size: cannot install the 64-bit root heap size");
     fprintf(stderr, "[botw] output: a %ux%u swapchain, starting at %s; heaps: render %u MiB, graphics %u MiB, +%u MiB (23 instructions verified)%s\n",
             w, h, g_out_mode == OUT_AUTO ? "1920x1080" : "that size", render, gfx, extra, g_out_mode == OUT_AUTO ? "; the settings panel switches" : "");
     return 1;
@@ -1509,7 +1520,17 @@ static int patch_output_res(Module *m) {   /* 1.9.0: the swapchain and heaps at 
     const uint64_t page = (uintptr_t)m->base + data_off;
     g_out_main = m->base; g_out_page = (_Atomic uint64_t *)(void *)(page + 16);
     output_page(g_out_start_big ? w : 1920, g_out_start_big ? h : 1080);
+    unsigned display, gpu, extra; native_heaps(k, &display, &gpu, &extra);
     for (size_t i = 0; i < sizeof site / sizeof *site; i++) {
+        int kind = site[i].kind;
+        if ((kind == NK_MEMORY_HEAP || kind == NK_ROOT_HEAP) &&
+            (kind == NK_MEMORY_HEAP ? 3120 : 3088) + extra > 4095) {
+            uint64_t bytes = (uint64_t)((kind == NK_MEMORY_HEAP ? 3120 : 3088) + extra) << 20;
+            if (!botw_heap_patch(m->base, m->size, m->text_end, site[i].off, site[i].original,
+                                 site[i].original & 31u, kind == NK_ROOT_HEAP, bytes))
+                runtime_fail("the output size: cannot install the 64-bit startup/root heap size");
+            continue;
+        }
         word = native_word(site[i].original, site[i].kind, k);
         memcpy(m->base + site[i].off, &word, 4);
     }
@@ -1522,10 +1543,9 @@ static int patch_output_res(Module *m) {   /* 1.9.0: the swapchain and heaps at 
         {0x1266104, 0xb94003e3u},                                         /* ldr w3, [sp]: the viewport width */
     };
     for (int i = 0; i < 6; i++) memcpy(m->base + branch[i].off, &branch[i].word, 4);
-    unsigned display, gpu, extra; native_heaps(k, &display, &gpu, &extra);
     unsigned cw = (unsigned)atomic_load(&g_out_cur), ch = (unsigned)(atomic_load(&g_out_cur) >> 32);
     fprintf(stderr, "[botw] output: a %ux%u swapchain, starting at %ux%u; display heap %u MiB, GPU heap %u MiB, memory and root heaps +%u MiB (30 instructions verified)%s\n",
-            w, h, cw, ch, display, gpu, extra, g_out_mode != OUT_AUTO ? "" : native_4k_app() ? "; settings panel picture: off, MetalFX 2K, 720p, native 2K, native 2K + MetalFX, native 4K" :
+            w, h, cw, ch, display, gpu, extra, g_out_mode != OUT_AUTO ? "" : native_5k_app() ? "; settings panel picture: off, MetalFX 2K, 720p, native 2K, native 2K + MetalFX, native 4K, native 5K" : native_4k_app() ? "; settings panel picture: off, MetalFX 2K, 720p, native 2K, native 2K + MetalFX, native 4K" :
             w > 2560 ? "; settings panel picture: off, MetalFX 2K, 720p, native, native 2K + MetalFX" : "; settings panel picture: off, MetalFX 2K, 720p, native, native + MetalFX");
     return 1;
 }
@@ -1568,6 +1588,7 @@ static unsigned output_width_now(void) { return (unsigned)(atomic_load(&g_out_cu
 int runtime_output_native(int mode, unsigned *w, unsigned *h) {
     if (!output_switchable()) return 0;
     int app4k = g_out_w >= 3840 && g_out_h >= 2160 && native_4k_app();
+    if (mode == OUTPUT_MODE_NATIVE_5K) { if (g_out_w < 5120 || g_out_h < 2880 || !native_5k_app()) return 0; *w = 5120; *h = 2880; return 1; }
     if (mode == OUTPUT_MODE_NATIVE_4K) { if (!app4k) return 0; *w = 3840; *h = 2160; return 1; }
     if (mode == OUTPUT_MODE_NATIVE && app4k) { *w = 2560; *h = 1440; return 1; }
     if (mode == OUTPUT_MODE_NATIVE) { *w = g_out_w; *h = g_out_h; return 1; }
@@ -1584,13 +1605,15 @@ int runtime_output_modes(void) {
     unsigned w, h;
     return 1 << OUTPUT_MODE_OFF | 1 << OUTPUT_MODE_METALFX | (output_switchable() ? 1 << OUTPUT_MODE_720P : 0) |
            (runtime_output_native(OUTPUT_MODE_NATIVE, &w, &h) ? 1 << OUTPUT_MODE_NATIVE | 1 << OUTPUT_MODE_NATIVE_METALFX : 0) |
-           (runtime_output_native(OUTPUT_MODE_NATIVE_4K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_4K : 0);
+           (runtime_output_native(OUTPUT_MODE_NATIVE_4K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_4K : 0) |
+           (runtime_output_native(OUTPUT_MODE_NATIVE_5K, &w, &h) ? 1 << OUTPUT_MODE_NATIVE_5K : 0);
 }
 int runtime_output_mode(void) {
     extern int mfxup_enabled(void);
     if (output_switchable()) {
         unsigned w = output_width_now();
         if (w == 1280) return OUTPUT_MODE_720P;
+        if (w == 5120 && native_5k_app() && !mfxup_enabled()) return OUTPUT_MODE_NATIVE_5K;
         if (w >= 3840 && native_4k_app() && !mfxup_enabled()) return OUTPUT_MODE_NATIVE_4K;
         if (w > 1920) return mfxup_enabled() ? OUTPUT_MODE_NATIVE_METALFX : OUTPUT_MODE_NATIVE;
     }
@@ -1598,16 +1621,16 @@ int runtime_output_mode(void) {
 }
 int runtime_output_mode_set(int mode) {
     extern void dm_gfx_set_flag(const char *name, int value);
-    if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_NATIVE_4K || !(runtime_output_modes() & 1 << mode)) return 0;
+    if (mode < OUTPUT_MODE_OFF || mode > OUTPUT_MODE_NATIVE_5K || !(runtime_output_modes() & 1 << mode)) return 0;
     int mfx = mode == OUTPUT_MODE_METALFX || mode == OUTPUT_MODE_NATIVE_METALFX;   /* native + MetalFX: the output stage scales the 2K canvas to the window */
     dm_gfx_set_flag("mfx_output", mfx);
     dm_gfx_set_flag("mfx_upscale", mfx);
     if (output_switchable()) {
         unsigned w = 1920, h = 1080;
-        if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K) runtime_output_native(mode, &w, &h);
+        if (mode == OUTPUT_MODE_720P) { w = 1280; h = 720; } else if (mode == OUTPUT_MODE_NATIVE || mode == OUTPUT_MODE_NATIVE_METALFX || mode == OUTPUT_MODE_NATIVE_4K || mode == OUTPUT_MODE_NATIVE_5K) runtime_output_native(mode, &w, &h);
         if (output_width_now() != w) output_switch(w, h);
     }
-    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" : mode == OUTPUT_MODE_NATIVE ? "native" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
+    fprintf(stderr, "[botw] picture: %s\n", mode == OUTPUT_MODE_NATIVE_5K ? "native 5K" : mode == OUTPUT_MODE_NATIVE_4K ? "native 4K" : mode == OUTPUT_MODE_NATIVE ? "native" : mode == OUTPUT_MODE_NATIVE_METALFX ? "native 2K, MetalFX to the window" : mode == OUTPUT_MODE_720P ? "720p" :
             mode == OUTPUT_MODE_METALFX ? "MetalFX 2K" : "off (1080p)");
     return 1;
 }

@@ -27,12 +27,12 @@ class BuildDefaults(unittest.TestCase):
             with mock.patch.object(build_app.subprocess, 'check_output', side_effect=error):
                 self.assertFalse(build_app.native_5k_default())
 
-    def test_automatic_selection_is_only_mac_143_and_respects_the_4k_opt_out(self):
+    def test_automatic_selection_is_only_supported_mac_games_and_respects_the_4k_opt_out(self):
         with mock.patch.object(build_app, 'native_5k_default', return_value=True):
             for platform in ('macos', 'ios', 'visionos'):
                 for version in ('v0', 'v112', 'v121', 'v143', 'botw160', 'botw190'):
                     self.assertEqual(build_app.native_5k_enabled(platform, version),
-                                     platform == 'macos' and version == 'v143')
+                                     platform == 'macos' and version in ('v143', 'botw160', 'botw190'))
             self.assertFalse(build_app.native_5k_enabled('macos', 'v143', native_4k=False))
             self.assertFalse(build_app.native_5k_enabled('macos', 'v143', requested=False))
         with mock.patch.object(build_app, 'native_5k_default', return_value=False):
@@ -142,7 +142,8 @@ class UpdateDefaults(unittest.TestCase):
 
     def test_smaller_machines_and_other_games_are_unchanged_but_explicit_on_works(self):
         self.assertEqual(self.prepare(memory=24)[0], 'keep')
-        self.assertEqual(self.prepare(version='botw190')[0], 'keep')
+        self.assertEqual(self.prepare(version='v121')[0], 'keep')
+        self.assertEqual(self.prepare(version='botw190')[0], 'add')
         self.assertEqual(self.prepare(memory=16, preference=True)[0], 'add')
 
     def test_existing_5k_is_preserved_on_a_smaller_mac_and_explicit_off_only_removes_5k(self):

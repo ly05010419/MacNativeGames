@@ -989,7 +989,7 @@ def native_5k_default(memory=None):
 
 def native_5k_enabled(platform, version, requested=None, native_4k=None):
     """The build's capability, not its selected resolution. Explicit choices take priority over memory."""
-    if platform != 'macos' or version != 'v143':
+    if platform != 'macos' or version not in ('v143', 'botw160', 'botw190'):
         return False
     if requested is not None:
         return requested
@@ -1828,8 +1828,11 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     for rel in (f'extracted/{version}/romfs-patches', f'extracted/{version}/romfs-patches-out', 'extracted/firmware/shared-fonts'):
         if (tree / rel).is_dir():   # Breath of the Wild has no RomFS overlays
             copy_tree(tree / rel, res / rel)
-    if game == 'botw' and native_4k:   # Breath of the Wild's heaps are patched in the code: the runtime sizes them for 4K
+    botw_5k = game == 'botw' and native_5k_enabled('macos', version, native_5k, native_4k)
+    if game == 'botw' and (native_4k or botw_5k):   # the runtime sizes the code-owned heaps for this capability
         (res / f'extracted/{version}/native-4k').write_text('3840x2160\n')   # game_patches_botw.c native_4k_app
+    if botw_5k:
+        (res / f'extracted/{version}/native-5k').write_text('5120x2880\n')
     place_seed(tree, tmp, res, version, logs, game=game, bundle_id=bundle_id)
     # after the checks above: signing it is slow
     place_game_data(tree, res, version)
@@ -1858,7 +1861,7 @@ def step_app(tree, out, logs, *, version="v0", game='totk', game_data='app', gam
     if commit:
         info['MNGSourceCommit'] = commit   # app/launcher.m -> TOTK_SOURCE_COMMIT: the HUD box shows which commit the app is
     record_update_source(info, tree.parent)
-    if game == 'totk' and version == 'v143' and native_5k is not None:
+    if version in ('v143', 'botw160', 'botw190') and native_5k is not None:
         info['MNGNative5K'] = native_5k   # explicit on/off survives runtime updates; absent means automatic
     import plistlib
     (tmp / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
@@ -2556,9 +2559,9 @@ def parse_args(argv):
                          'reserves its swapchain and texture heaps for 4K (about 1.4 GiB more memory, whatever is shown). '
                          'On by default on a Mac with 16 GB of memory or more; --no-native-4k turns it off')
     ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
-                    help='Mac, 1.4.3: include native 5120x2880 canvas, UI and scene, plus the 4K modes; '
+                    help='Mac, Tears of the Kingdom 1.4.3 and Breath of the Wild 1.6.0 / 1.9.0: include native 5120x2880 canvas, UI and scene, plus the 4K modes; '
                          'on by default with 32 GB of memory or more. --no-native-5k leaves it out. '
-                         'Reserves about 2.7 GiB more guest memory at every start, whatever resolution is selected')
+                         'Reserves the larger game heaps at every start, whatever resolution is selected')
     ap.add_argument('--vr', action='store_true',
                     help='Mac, 1.4.3 with native 4K: also the headset-shaped canvases of the VR picture modes (zeldaVR/install_vr.sh passes it)')
     fonts = ap.add_mutually_exclusive_group()
@@ -2632,8 +2635,8 @@ def main(argv):
     # The game decides the platforms, the work folder and the disk space needed, so it is identified before those checks.
     tree = prepare_work(work, py, logs)
     which = identify_game(tree, game, keys, logs)
-    if args.native_5k and which != 'totk':
-        raise BuildError('--native-5k is only available for Tears of the Kingdom 1.4.3 on Mac')
+    if args.native_5k and which not in ('totk', 'botw'):
+        raise BuildError('--native-5k is only available for Tears of the Kingdom 1.4.3 and Breath of the Wild on Mac')
     if kind == 'nsp' and which != 'botw' and not fonts_given:   # only Breath of the Wild's fonts passed the check above
         raise no_fonts
     if dlcs and which != 'botw':
@@ -2677,10 +2680,16 @@ def main(argv):
         say(f'Breath of the Wild {expected["display_version"]}; work folder {work}')
         if args.native_4k and args.platform != 'macos':
             raise BuildError('--native-4k is for a Mac build (iPhone / iPad have no 4K output)')
-        native_4k = args.native_4k if args.native_4k is not None else args.platform == 'macos' and native_4k_default()
+        if args.native_5k and args.platform != 'macos':
+            raise BuildError('--native-5k needs a Mac build')
+        if args.native_5k and args.native_4k is False:
+            raise BuildError('--native-5k includes native 4K; omit --no-native-4k')
+        native_5k = native_5k_enabled(args.platform, version, args.native_5k, args.native_4k)
+        native_4k = True if native_5k else args.native_4k if args.native_4k is not None else args.platform == 'macos' and native_4k_default()
         if args.platform == 'macos':   # as Tears of the Kingdom (user 2026-11-01): the heaps are sized for 4K at every start
             say('native 4K: ' + ('on' if native_4k else 'off') + ('' if args.native_4k is not None else
                 ' (this Mac has ' + ('16 GB or more' if native_4k else 'less than 16 GB') + ' of memory; --native-4k / --no-native-4k decide)'))
+            say('native 5K: ' + ('on (5120x2880 canvas and scene)' if native_5k else 'off'))
         step_code_botw(tree, botw, update or game, keys, env, logs, version=version)
         step_data_botw(tree, botw, game, keys, logs, version=version, update=update, dlc=dlcs, firmware=firmware, shared_fonts=shared_fonts)
         step_shaders_botw(tree, botw, logs, version=version)
@@ -2701,7 +2710,7 @@ def main(argv):
                 if args.ios_game_data == 'documents' else '') + '; saves and the shader cache stay in the app\'s Documents.')
             return
         step_app(tree, out, logs, version=version, game='botw', game_data=args.mac_game_data, game_data_folder=game_data_folder,
-                 native_4k=native_4k)
+                 native_4k=native_4k, native_5k=native_5k if args.native_5k is not None else (False if args.native_4k is False else None))
         run([LSREGISTER, '-f', out], logs / 'register-app.log')
         say('4/4 app: macOS checks the app once (seconds when this app folder was checked before, a few minutes for a new one)')
         t1 = time.time()
