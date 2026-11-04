@@ -4,6 +4,7 @@
 #include "totk_smaa_config.h"
 #include <string.h>
 #if TARGET_OS_OSX && !defined(GAME_BOTW)
+#include "totk_spatial_aa_options.h"
 #include "../../../smaa/AreaTex.h"
 #include "../../../smaa/SearchTex.h"
 #include "totk_smaa_shader.h"
@@ -23,7 +24,7 @@ static id<MTLRenderPipelineState> smaa_ps(int fn, MTLPixelFormat format) {
     for (int i = 0; i < g_smaa.nps; i++) if (g_smaa.ps[i].fn == fn && g_smaa.ps[i].format == format) return g_smaa.ps[i].state;
     if (g_smaa.failed || g_smaa.nps == 12) return nil;
     NSError *err = nil;
-    if (!g_smaa.lib) g_smaa.lib = [g_dev newLibraryWithSource:@(totk_smaa_msl) options:nil error:&err];
+    if (!g_smaa.lib) g_smaa.lib = [g_dev newLibraryWithSource:@(totk_smaa_msl) options:spatial_aa_compile_options() error:&err];
     if (!g_smaa.lib) { MLOG("[smaa] shader build failed: %s; keeping the scene", err.localizedDescription.UTF8String); g_smaa.failed = 1; return nil; }
     static NSString *const names[] = {@"smaa_edge", @"smaa_weight", @"smaa_blend"};
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];

@@ -1,5 +1,6 @@
 /* Optional full FXAA Quality, before the game's upscale and UI, without temporal inputs. */
 #if TARGET_OS_OSX && !defined(GAME_BOTW)
+#include "totk_spatial_aa_options.h"
 #include "totk_fxaa_shader.h"
 static struct {
     id<MTLLibrary> lib;
@@ -13,7 +14,7 @@ static id<MTLRenderPipelineState> fxq_ps(MTLPixelFormat format) {
     for(int i=0;i<g_fxq.nps;i++)if(g_fxq.ps[i].format==format)return g_fxq.ps[i].state;
     if(g_fxq.failed||g_fxq.nps==8)return nil;
     NSError *err=nil;
-    if(!g_fxq.lib)g_fxq.lib=[g_dev newLibraryWithSource:@(totk_fxaa_quality_msl) options:nil error:&err];
+    if(!g_fxq.lib)g_fxq.lib=[g_dev newLibraryWithSource:@(totk_fxaa_quality_msl) options:spatial_aa_compile_options() error:&err];
     if(!g_fxq.lib){MLOG("[fxaa-quality] shader failed: %s",err.localizedDescription.UTF8String);g_fxq.failed=1;return nil;}
     MTLRenderPipelineDescriptor *d=[MTLRenderPipelineDescriptor new];d.vertexFunction=[g_fxq.lib newFunctionWithName:@"fxq_vs"];
     d.fragmentFunction=[g_fxq.lib newFunctionWithName:@"fxq_fs"];d.colorAttachments[0].pixelFormat=format;
