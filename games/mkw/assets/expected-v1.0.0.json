@@ -1,0 +1,23 @@
+{
+  "_comment": "Hashes of the 1.0.0 game decrypted from a console dump. Its filesystem hash trees were verified; the NCA signature was not. Rewritten hashes describe the existing development rewrite, not a structural verification of it.",
+  "title_id": "0400C3F00006E000",
+  "name": "Mario Kart World",
+  "display_version": "1.0.0",
+  "program_nca": "a395cf413a0b2fd6aa36e8096beb8370.nca",
+  "exefs_sha256": {
+    "main": "b2ec799f9bce7a56398823d13c2a2b05359af6db2e86a7c832d3851287115ed5",
+    "main.npdm": "02c635714928ec3769c38e9a7c83cae23aa3c279530b147b1f29d880281c80ba",
+    "rtld": "0c2eb5843016ecf276c124d10c4202d2586b4936583637373b4c958441b0559e",
+    "sdk": "d4b46928a2ce1759534724952e6960185e7ffaa3bbe8b51b97bfdd7c8a86fb71",
+    "subsdk0": "def68dfb95a1ee7cafd2d28978d999e008180e52cba52a391a33c8fe2a9aa9d9"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "41958e2c68c530c0188400bc908186fcf008b77ca727d570d5f43fc472c29c34",
+    "sdk.patched.bin": "591fa176fbd6eb956dd9abad6c85b67cf87c28105c43fea88f37b850b9eff1ea",
+    "subsdk0.patched.bin": "9ef12eefdc87e11874a5736a61ced84f073fcdbcd8f37365c78b8a2bb1d7fb4b"
+  },
+  "romfs": {
+    "size": 23295502265,
+    "sha256": "8befad16fb191721f853eb6a42da977af1ef8ddbc452c3b87fd46f5dea362a02"
+  }
+}
