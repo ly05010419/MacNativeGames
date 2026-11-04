@@ -110,9 +110,10 @@ background instead of 244-278, and 295-329 were compiled on the submission threa
 The cost is on the submission thread: looking the unseen draws up took 153-157 ms in a run and building the predicted
 pipelines' descriptors 25-27 ms; a scan took 1.5-1.6 ms on average instead of 0.86 ms. More guesses are compiled in
 the background and not taken (the same as for the other guesses). The steady frame did not change (frame p50 6.06 ms,
-GPU p50 2.48-2.70 ms in both builds). With async shaders on (the default on the Mac) a skippable draw never compiles
-on the submission thread, so no scan ran in a run of either build (2.0 s against 2.1 s of creation in long frames,
-longest frame 178 ms against 422 ms); a guess is still taken by `apso_defer` through `pso_pend_state`.
+GPU p50 2.48-2.70 ms in both builds). With async shaders on (the Mac default from 2026-10-21 to 10-23, when these
+runs were made; off by default since, `TOTK_ASYNC_SHADERS=1` turns them on) a skippable draw never compiles on the
+submission thread, so no scan ran in a run of either build (2.0 s against 2.1 s of creation in long frames, longest
+frame 178 ms against 422 ms); a guess is still taken by `apso_defer` through `pso_pend_state`.
 
 Earlier runs of the same route on older bases, before the shared list had 1.4.3 rows: with PR #166 on 43f53b4,
 13.3-14.2 s → 8.7-8.8 s of stall, 9.1-9.7 s → 4.2-4.3 s of pipeline creation, longest frame 3.5-3.8 s → 2.4-2.6 s
