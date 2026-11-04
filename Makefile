@@ -23,4 +23,8 @@ check:
 	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
 	   tests/test_keyboard_map.c -o "$$tmp/test-keyboard-map" && "$$tmp/test-keyboard-map" && \
 	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
+	   tests/test_screenshot.c -o "$$tmp/test-screenshot" && "$$tmp/test-screenshot" && \
+	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
+	   tests/test_screenshot.c -DGAME_BOTW190 -o "$$tmp/test-screenshot-botw" && "$$tmp/test-screenshot-botw" && \
+	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
 	   tests/test_users.c games/totk/runtime/account.c -Igames/totk/runtime -o "$$tmp/test-users" && "$$tmp/test-users"

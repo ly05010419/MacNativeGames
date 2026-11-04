@@ -624,10 +624,29 @@ static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole recta
 }
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 @end
+/* The controller's capture button (gamepad.m): a picture of the game's next frame, saved as a PNG (screenshot.h). Its
+   folder is one of the settings panel's rows, so that header comes after this one; a probe that links this file without
+   the renderer (tests/command_q/probe.m) offers its own picture and write. */
+#if defined(__APPLE__) && TARGET_OS_OSX
+#define TOTK_SCREENSHOT_WINDOW 1
+#endif
+#if defined(TOTK_SCREENSHOT_WINDOW) && !defined(TOTK_SCREENSHOT_PICTURE)
+/* The renderer's next frame: mtl_grab_next_present (third_party/d2r_gfx/gfx/nvn/nvn_mtl.m) has the present thread draw the
+   frame it is about to show and hands the picture over when the GPU is done, so the capture button waits on no thread and
+   the main thread never spins. Weak: a probe links this file without the renderer and answers with no picture. */
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+static void screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE screenshot_picture
+#endif
+#include "screenshot.h"
 #include "settings_panel.h"
 void runtime_front_resize_output(unsigned w,unsigned h) {
  dispatch_async(dispatch_get_main_queue(),^{settings_window_size(w,h,h?(double)w/h:0);});
 }
+#ifndef TOTK_SCREENSHOT_WINDOW
+/* gamepad.m calls the hook; there is nothing to take a picture with here. */
+static void screenshot_request(void) {}
+#endif
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -878,6 +897,7 @@ void runtime_front_run(void(*callback)(void)){
   front_menubar_fps();
   settings_restore_start();
   settings_controller_start();
+  runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: a picture of the game (screenshot.h) */
   front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
