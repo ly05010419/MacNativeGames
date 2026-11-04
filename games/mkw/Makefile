@@ -1,3 +1,7 @@
+# Build in the external staged source copy made by scripts/build_mkw.py.
+ifneq ($(wildcard ../../.git),)
+$(error Use scripts/build_mkw.py --work outside the checkout; direct builds write next to these sources)
+endif
 # Mario Kart World 1.0 native runtime (the Switch 2 game). Self-contained: the Horizon host (runtime/), the rewriter
 # (third_party/d2r), the NVN-on-Metal layer (third_party/d2r_gfx), and the scripts are
 # this folder's own copies, forked from games/wonder (itself forked from games/totk); nothing here reads another game's
@@ -11,7 +15,7 @@ VERSION ?= mkw
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(addprefix build/gfx/,$(addsuffix .o,$(GFX_SRC)))
 GFX_HEADERS := $(wildcard third_party/d2r_gfx/gfx/nvn/*.h third_party/d2r_gfx/gfx/nvn/include/*.h third_party/d2r_gfx/host/*.h)
-GFX_FLAGS := -std=gnu11 -DGAME_MKW=1 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
+GFX_FLAGS := -Ibuild -mmacosx-version-min=26.0 -std=gnu11 -DGAME_MKW=1 -Wno-error -Wno-unused-function -Wno-unused-parameter -fobjc-arc -Ithird_party/d2r_gfx/gfx/nvn/include
 NATIVE_OPT ?= -O2
 PY := .venv/bin/python
 VERSION_FLAGS := $(if $(filter mkw,$(VERSION)),,$(error VERSION must be mkw))
@@ -39,7 +43,7 @@ $(GAME_DATA)/shared-fonts.txt: scripts/prepare_shared_fonts.py extracted/firmwar
 game-data: $(GAME_DATA)/runtime-tables.bin $(GAME_DATA)/rewriter.txt $(GAME_DATA)/romfs-config.txt $(GAME_DATA)/shared-fonts.txt
 
 $(BINARY): $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_MKW=1 $(VERSION_FLAGS) -Iruntime -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
+	xcrun clang -mmacosx-version-min=26.0 -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations -Ithird_party/d2r_gfx/gfx/nvn/include -DGAME_MKW=1 $(VERSION_FLAGS) -Iruntime -Ibuild -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework CoreText -framework UniformTypeIdentifiers -fobjc-arc -framework Cocoa -framework CoreVideo -framework CoreFoundation -framework AudioToolbox -framework GameController -framework CoreHaptics -framework IOKit -o "$@"
 binary: $(BINARY)
 # The shader translation chain from pinned sources (scripts/build_shader_tools.py): SPIRV-Cross, the vendored nxnative
 # SM86 frontend (third_party/nxnative) and tools/ampere_service, at the fixed paths the runtime starts them from.
@@ -52,3 +56,8 @@ boot: runtime
 
 clean:
 	rm -rf build/gfx build/mkw-native
+
+# The executable and shader cache must describe the same verified tool chain.
+$(GFX_OBJECTS) $(BINARY): build/mkw_shader_chain.h
+build/mkw_shader_chain.h: shader-tools
+	@test -f "$@"

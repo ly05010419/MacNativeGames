@@ -3961,71 +3961,12 @@ static id<MTLTexture> reup_take(const reup_key *k) {
     if (hit) g_reup_reused++;
     return hit;
 }
-/* TOTK (iPhone): Metal copies of large mipmapped CPU-pool textures leave out the top level: a quarter of the memory. The
-   game samples them with normalised coordinates, so a texture one level smaller is drawn from what was its level 1 (on
-   the 720p handheld screen most of them are minified anyway). Texture-ID views shift their level range (tex_by_id);
-   a copy the GPU starts rendering into is uploaded again at full size (tex_mtl). 2D / 2D-array / cube textures with
-   at least two levels and both sides >= TOTK_MIP_DROP_MIN (512). Not lower: at 256 the grass disappeared and the ground
-   took wrong colours on an iPhone 14 (2026-10-23): data textures of that size (terrain material / grass maps) are read
-   by integer texel coordinates, which a copy one level smaller does not match. TOTK_MIP_DROP=0 off, =1 on (default on
-   iOS only). */
 static uint64_t g_mip_dropped;
-static unsigned mip_drop_of(const tex_t *t) {
-    static int on = -1; static unsigned minside;
-    if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : TARGET_OS_IPHONE; minside = m ? (unsigned)atoi(m) : 512;
-#ifdef GAME_MKW
-        /* Mario Kart World on a Mac of 16 GB or less: on by default (about 0.75 GB less wired texture memory, kept below the
-           kernel-panic guard's limit with margin; see wired_guard). Larger Macs keep full-resolution textures. */
-        if (!e) { uint64_t ram = 0; size_t len = sizeof ram; sysctlbyname("hw.memsize", &ram, &len, NULL, 0); on = ram && ram <= (16ull << 30); }
-#endif
-        if (on) MLOG("大贴图副本少传最高一级 mip：开（两边都 ≥%u 的 2D / 数组 / 立方体贴图；TOTK_MIP_DROP=0 关）", minside); }
-    if (!on || g_mip_nodrop) return 0;
-    uint32_t g = t->d.target;
-    if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
-    return 1;
-}
-/* MKW: textures of at least 1 GiB are NVN sparse textures (virtual-texture page caches: 8192x8192x68 BC6H / ASTC arrays of
-   5.9 / 1.5 GB in virtual pools with only some pages mapped). Allocating them whole took 9 GB on a 16 GB Mac. Metal sparse
-   textures with no tiles mapped are no answer: sampling an unmapped tile through Metal 4 argument buffers is a GPU page fault
-   (measured), which stops the queue. Default (TOTK_SPARSE_BIG=1): the texture is allocated at the smallest size that keeps its
-   mip count, format, type and layers (8192 -> 2048 for 12 levels), so views and normalized sampling stay valid; its contents
-   are not the game's (tile mappings are not followed yet). =2: unmapped sparse texture (faults). =0: whole allocation. */
+/* Keep original dimensions and every mip on Mac and iOS, regardless of presets or memory pressure. */
+static unsigned mip_drop_of(const tex_t *t) { (void)t; return 0; }
+/* Preserve the guest descriptor. Virtual pools use sparse_tex_new and its actual tile mappings;
+   a normal allocation must never silently shrink a texture or substitute unmapped storage. */
 static id<MTLTexture> tex_new_res(MTLTextureDescriptor *d) {
-#ifdef GAME_MKW
-    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_SPARSE_BIG"); on = e ? atoi(e) : 1; }
-    if (on == 1 && [g_dev heapTextureSizeAndAlignWithDescriptor:d].size >= (1ull << 30) && d.textureType != MTLTextureTypeTextureBuffer) {
-        MTLTextureDescriptor *s = [d copy]; NSUInteger keep = 1;
-        while ((keep << 1) <= MAX(d.width, d.height) && (NSUInteger)(__builtin_ctzll(keep << 1)) < d.mipmapLevelCount) keep <<= 1;   // smallest power of two with all levels
-        NSUInteger div = MAX(d.width, d.height) / MAX(keep, (NSUInteger)1); if (div < 1) div = 1;
-        s.width = MAX(d.width / div, (NSUInteger)1); s.height = MAX(d.height / div, (NSUInteger)1);
-        if (d.textureType == MTLTextureType3D) s.depth = MAX(d.depth / div, (NSUInteger)1);
-        id<MTLTexture> t = [g_dev newTextureWithDescriptor:s];
-        static unsigned n; unsigned k = ++n;
-        if (k <= 16) MLOG("[sparse] texture %lux%lu x%lu levels %lu format %lu (%llu MB) allocated at %lux%lu (%llu MB) (%u so far)",
-                          (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.arrayLength, (unsigned long)d.mipmapLevelCount, (unsigned long)d.pixelFormat,
-                          (unsigned long long)([g_dev heapTextureSizeAndAlignWithDescriptor:d].size >> 20), (unsigned long)s.width, (unsigned long)s.height,
-                          (unsigned long long)([g_dev heapTextureSizeAndAlignWithDescriptor:s].size >> 20), k);
-        if (t) { res_add(t); return t; }
-    }
-    if (on == 2 && d.storageMode == MTLStorageModePrivate && [g_dev heapTextureSizeAndAlignWithDescriptor:d].size >= (1ull << 30)) {
-        static id<MTLHeap> heap; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static unsigned n;
-        pthread_mutex_lock(&mu);
-        if (!heap) {
-            MTLHeapDescriptor *hd = [MTLHeapDescriptor new]; hd.type = MTLHeapTypeSparse; hd.storageMode = MTLStorageModePrivate; hd.size = 16u << 20;
-            heap = [g_dev newHeapWithDescriptor:hd];
-            if (heap) res_add((id<MTLResource>)(id)heap);
-        }
-        id<MTLTexture> t = heap ? [heap newTextureWithDescriptor:d] : nil;
-        unsigned k = ++n; pthread_mutex_unlock(&mu);
-        if (t) {
-            if (k <= 16) MLOG("[sparse] texture %lux%lu x%lu levels %lu format %lu (%llu MB if whole) is sparse, no tiles mapped (%u so far)",
-                              (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.arrayLength, (unsigned long)d.mipmapLevelCount, (unsigned long)d.pixelFormat,
-                              (unsigned long long)([g_dev heapTextureSizeAndAlignWithDescriptor:d].size >> 20), k);
-            return t;
-        }
-        MLOG("【红】[sparse] texture %lux%lu x%lu format %lu: sparse creation failed, allocating whole", (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.arrayLength, (unsigned long)d.pixelFormat);
-    }
-#endif
     id<MTLTexture> t = [g_dev newTextureWithDescriptor:d];
     if (t) res_add(t);
     return t;

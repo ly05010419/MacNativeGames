@@ -25,6 +25,7 @@ it. The app keeps saves, the shader cache and its log in ~/Library/Application S
 ~/Library/Logs/MacNativeGames/mkw.log; the build never touches them.
 """
 import argparse
+from mkw_artifact_paths import outside_source
 import concurrent.futures
 import ctypes
 import glob
@@ -287,7 +288,7 @@ def step_binary(tree, logs, have_fonts):
     for p in SHADER_CHAIN:
         if not os.access(tree / p, os.X_OK):
             raise BuildError(f'{p} was not built (see {logs / "shader-tools.log"})')
-    run(['xcrun', 'clang', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', '-DGAME_MKW=1',
+    run(['xcrun', 'clang', '-mmacosx-version-min=26.0', '-fobjc-arc', '-O2', '-Wall', '-Ithird_party/d2r_gfx/gfx/nvn', '-Iruntime', '-DGAME_MKW=1',
          'app/launcher.m', '-framework', 'AppKit', '-framework', 'GameController', '-framework', 'IOKit',
          '-o', 'build/app-launcher'], logs / 'launcher.log', cwd=tree)
 
@@ -332,7 +333,7 @@ def keep_game_data(new, old):
     """When the installed app carries the same signed game data (same signature, Info.plist and image size), move its
     data bundle into the new app in place of the fresh clone: the image keeps its inode and times, so the runtime's
     RomFS check (keyed by them) still matches and the first start does not hash the image again."""
-    image = 'Contents/Resources/romfs.bin'
+    image = 'Contents/Resources/game.nsp'
     kept = False
     for bundle in sorted((new / 'Contents/Helpers').glob('GameData-*.bundle')):
         before = old / 'Contents/Helpers' / bundle.name
@@ -392,7 +393,7 @@ def step_app(tree, game, out, logs, have_fonts):
         remove_tree(tmp)
     res = tmp / 'Contents/Resources/totk'   # the launcher's game folder (app/launcher.m)
     clone(tree / 'build/mkw-native', res / 'build/totk-native')
-    files = ['build/spirv-cross/spirv-cross', f'extracted/{VERSION}/romfs/runtime-index.bin', f'extracted/{VERSION}/romfs/index.json',
+    files = ['build/shader-tools.json', 'build/spirv-cross/spirv-cross', f'extracted/{VERSION}/romfs/runtime-index.bin', f'extracted/{VERSION}/romfs/index.json',
              'tools/wrap_mesh_stage.py', 'tools/dmsh_meshstage.py', 'tools/prepare_ampere_jobs.py']   # the mesh-stage wrapper and its imports
     files += [f'rewritten/{VERSION}/{m}.patched.bin' for m in MODULES]
     files += [f'build/game-data/{VERSION}/{name}' for name in ('runtime-tables.bin', 'rewriter.txt', 'romfs-config.txt', 'shared-fonts.txt')]
@@ -452,6 +453,7 @@ def main(argv):
     keys = a.keys and a.keys.expanduser().resolve()
     work = a.work.expanduser().resolve() if a.work else game.parent / 'MKW_build'
     out = a.out.expanduser().resolve() if a.out else game.parent / f'{APP_NAME}.app'
+    work, out = outside_source(work), outside_source(out)
     if out.suffix != '.app':
         raise BuildError(f'the output must end in .app: {out}')
     missing = [p for p in HOMEBREW if not (Path('/opt/homebrew/opt') / p / 'lib').is_dir()]
@@ -486,6 +488,6 @@ def main(argv):
 if __name__ == '__main__':
     try:
         main(sys.argv[1:])
-    except BuildError as e:
+    except (BuildError, ValueError) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         sys.exit(1)
