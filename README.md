@@ -65,6 +65,7 @@ Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 | Pokémon Violet | 4.0.0 | Mac | Community port, work in progress | [`games/pokesv`](games/pokesv/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
+- 2026-10-31: [Tomodachi Life: Living the Dream](games/tomodachi) 1.0.0 — experimental native Mac port with native controls and text entry; validation and known limitations are documented in its folder.
 
 ### VR: Tears of the Kingdom on a Meta Quest 3 (6DoF)
 
