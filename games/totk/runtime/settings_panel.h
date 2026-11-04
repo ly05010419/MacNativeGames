@@ -36,6 +36,9 @@
                                                              switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
                                                              out); a device the run started without comes at the next
                                                              launch (its title says so)
+     screenshot folder    the system's folder chooser          the capture button's pictures (runtime/screenshot.h); the
+                                                             choice in screenshot-dir.txt next to controls.txt, and the
+                                                             folder checked as it is picked
    Effects (user 2026-10-30, after UltraCam's render distance and shader switches; the rows from FOV on are Tears of the
    Kingdom 1.4.3's, greyed on other versions; "Reset to defaults" at the bottom right sets every row back to the game's own
    and removes its file, a row the environment decides staying)
@@ -718,20 +721,13 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 @class TOTKSettingsPanel;
 static TOTKSettingsPanel *settingsPanel;
 static void settings_footer_note(NSString *text, BOOL bad);
-/* Where the capture button's pictures go (runtime/screenshot.h). On a desktop, a folder: the row opens the system's own
-   folder chooser (the panel the launcher opens for its game data), not a text field, and the chosen folder is checked
-   before it is kept (screenshot_problem), so a read-only disk or another account's folder is refused here with its reason
-   instead of failing at the next capture. The choice is saved next to controls.txt (runtime_setting_save), not in the
-   working folder. On a phone the pictures go into the photo library, in the album named after this game, which the player
-   cannot point at: the row reads that and has nothing to choose. */
+/* Where the capture button's pictures go (runtime/screenshot.h): a folder. The row opens the system's own folder chooser
+   (the panel the launcher opens for its game data), not a text field, and the chosen folder is checked before it is kept
+   (screenshot_problem), so a read-only disk or another account's folder is refused here with its reason instead of failing
+   at the next capture. The choice is saved next to controls.txt (runtime_setting_save), not in the working folder. An
+   iPhone and an iPad have no panel here: their pictures go into the photo library, in the album named after the game. */
 static void settings_choose_screenshot_folder(void);
 static TOTKSettingRow *settings_screenshot_row(void) {
-#if TARGET_OS_IPHONE
- TOTKSettingRow *r=settings_fixed(settings_text("截图保存","Screenshots"),
-  [NSString stringWithFormat:@(TOTK_UI("「照片」· %s","Photos · %s")),TOTK_SCREENSHOT_ALBUM]);
- (void)settings_choose_screenshot_folder;
- return r;
-#else
  TOTKSettingRow *r=[TOTKSettingRow new];
  char folder[PATH_MAX];screenshot_directory(folder,sizeof folder);
  NSString *shown=@(folder);   /* kept as the object the block captures: an array cannot cross into one */
@@ -740,9 +736,7 @@ static TOTKSettingRow *settings_screenshot_row(void) {
  r.get=^int{char now[PATH_MAX];screenshot_directory(now,sizeof now);return (int)strcmp(now,shown.UTF8String);};
  r.set=^(int v){(void)v;settings_choose_screenshot_folder();};
  return r;
-#endif
 }
-#if !TARGET_OS_IPHONE
 static void settings_choose_screenshot_folder(void) {
  char now[PATH_MAX];screenshot_directory(now,sizeof now);
  NSOpenPanel *panel=[NSOpenPanel openPanel];
@@ -764,7 +758,6 @@ static void settings_choose_screenshot_folder(void) {
  fprintf(stderr,"[totk] settings: screenshot folder %s\n",kept);
  settings_refresh_all();   /* the button shows the folder in force (settings_refresh_all, below) */
 }
-#endif
 
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];

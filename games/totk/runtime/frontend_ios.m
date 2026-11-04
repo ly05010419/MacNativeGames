@@ -178,21 +178,38 @@ extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((wea
 static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
 #define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
 #endif
-#include "game_version.h"   /* GAME_NAME: the picture's name in the photo library */
-#include "screenshot.h"
+#include "screenshot.h"   /* the album is GAME_NAME (game_version.h): the game whose frame it is */
+
+#if TARGET_OS_IOS || TARGET_OS_VISION
+/* Photos' permission, asked once and waited for here -- the screenshot queue, never the main queue: the player sees the
+   system's prompt the first time (NSPhotoLibraryAddUsageDescription, project.yml) and the answer holds. 1 when adding
+   pictures is allowed; a refusal or a restriction keeps the note's existing reason (SHOT_NO_PHOTOS). */
+static int screenshot_photos_allowed(void) {
+    PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+    if (status == PHAuthorizationStatusNotDetermined) {
+        dispatch_semaphore_t asked = dispatch_semaphore_create(0);
+        __block PHAuthorizationStatus answer = status;
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus granted) {
+            answer = granted;
+            dispatch_semaphore_signal(asked);
+        }];
+        dispatch_semaphore_wait(asked, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));   /* the player's answer */
+        status = answer;
+    }
+    return status == PHAuthorizationStatusAuthorized;
+}
+#endif
 
 #if TARGET_OS_IOS || TARGET_OS_VISION
 /* Saves the picture into the photo library, in the game's own album, and says where. Runs on the screenshot queue, never
-   the main queue, so the album lookup and the write do not hold the frame. */
+   the main queue, so Photos' prompt, the album lookup and the write hold nothing the player is looking at. */
 __attribute__((unused)) static int screenshot_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
                            char *album, size_t album_size) {
     (void)path; (void)size;
     *problem = SHOT_OK;
     if (!img) { *why = TOTK_UI("没有画面", "no picture"); return 0; }
     if (CGImageGetWidth(img) > 8192 || CGImageGetHeight(img) > 8192) { *problem = SHOT_TOO_LARGE; *why = screenshot_problem_text(*problem); return 0; }
-    if ([PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly] != PHAuthorizationStatusAuthorized) {
-        *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem); return 0;
-    }
+    if (!screenshot_photos_allowed()) { *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem); return 0; }
     time_t now = time(NULL);
     struct tm local;
     localtime_r(&now, &local);
@@ -201,6 +218,7 @@ __attribute__((unused)) static int screenshot_save(CGImageRef img, const char *g
     name[strlen(name) - 4] = 0;   /* the photo library names its own copies: no extension */
     UIImage *picture = [UIImage imageWithCGImage:img];
     if (!picture) { *why = TOTK_UI("无法编码图片", "picture not encoded"); return 0; }
+    NSString *title = @(TOTK_SCREENSHOT_ALBUM);   /* the running game's own name: the note and the panel's row say it too */
     __block NSError *failure = nil;
     [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
         PHAssetCollection *collection = nil;
@@ -208,10 +226,10 @@ __attribute__((unused)) static int screenshot_save(CGImageRef img, const char *g
                                                                                              subtype:PHAssetCollectionSubtypeAny
                                                                                              options:nil];
         for (PHAssetCollection *candidate in found)
-            if ([candidate.localizedTitle isEqualToString:@(TOTK_SCREENSHOT_ALBUM)]) { collection = candidate; break; }
+            if ([candidate.localizedTitle isEqualToString:title]) { collection = candidate; break; }
         PHAssetCollectionChangeRequest *into = collection
             ? [PHAssetCollectionChangeRequest changeRequestForAssetCollection:collection]
-            : [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:@(TOTK_SCREENSHOT_ALBUM)];
+            : [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:title];
         PHObjectPlaceholder *placeholder = [PHAssetChangeRequest creationRequestForAssetFromImage:picture].placeholderForCreatedAsset;
         if (placeholder) [into addAssets:@[placeholder]];
     } error:&failure];

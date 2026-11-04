@@ -151,8 +151,15 @@ static void problem_checks(void) {
     }
     expect(!strcmp(screenshot_problem_text(SHOT_OK), ""), "and nothing is said when nothing is wrong");
 
-    /* the photo library's album, where a phone's pictures go */
+    /* the photo library's album: the running game's own name, which game_version.h sets per binary -- the Makefile builds
+       this test again for Breath of the Wild, so the other name is covered too */
     expect(strlen(TOTK_SCREENSHOT_ALBUM) > 0 && strlen(TOTK_SCREENSHOT_ALBUM) < 64, "the album has a name the library accepts");
+    expect(!strcmp(TOTK_SCREENSHOT_ALBUM, GAME_NAME), "the album is named after the game whose frame it is");
+#ifdef GAME_BOTW
+    expect(!strcmp(TOTK_SCREENSHOT_ALBUM, "Breath of the Wild"), "Breath of the Wild's own album");
+#else
+    expect(!strcmp(TOTK_SCREENSHOT_ALBUM, "Tears of the Kingdom"), "Tears of the Kingdom's own album");
+#endif
 }
 
 /* The file name: the game, the date and the local time, (2) / (3) ... within one second, a short buffer refused. */
