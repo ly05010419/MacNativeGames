@@ -269,7 +269,8 @@ void (*totk_screenshot_picture)(void (^cb)(CGImageRef img)) __attribute__((weak)
 #define TOTK_SCREENSHOT_SAVE screenshot_save
 #endif
 static uint64_t shotPendingAt;   /* main queue only, ns: a picture is on its way */
-static uint64_t shotRequest;     /* main queue only: which request that is (the give-up below tells them apart) */
+static uint64_t shotRequest;     /* monotonically increasing generation; never reset on completion */
+static uint64_t shotPendingRequest; /* main queue only: the active generation, or zero */
 static dispatch_queue_t shotWrites;
 #if !TOTK_SCREENSHOT_WRITE
 /* A phone's save (frontend_ios.m: the photo library) and a probe's, in place of the folder below. */
@@ -393,6 +394,8 @@ static void screenshot_take(void) {
     if (!shotWrites) shotWrites = dispatch_queue_create("totk.screenshot", DISPATCH_QUEUE_SERIAL);
     dispatch_queue_t writes = shotWrites;
     uint64_t request = ++shotRequest;
+    if (!request) request = ++shotRequest;
+    shotPendingRequest = request;
     shotPendingAt = now;
 #if defined(TOTK_SCREENSHOT_WINDOW)
     char folder[PATH_MAX];
@@ -405,7 +408,8 @@ static void screenshot_take(void) {
     /* A frame that never arrives -- a paused or hidden window presents nothing -- must not leave the button dead for good:
        the request gives up after SHOT_PENDING_MS and says so. A newer request owns the button by then (shotRequest). */
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)SHOT_PENDING_MS * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
-        if (shotRequest != request || !shotPendingAt) return;
+        if (shotPendingRequest != request) return;
+        shotPendingRequest = 0;
         shotPendingAt = 0;
         NSString *text = [NSString stringWithFormat:@(TOTK_UI("游戏画面没有出现，未保存截图（%@）", "the game's picture did not come; nothing saved (%@)")), place];
         fprintf(stderr, "[totk] screenshot: %s\n", text.UTF8String);
@@ -414,8 +418,8 @@ static void screenshot_take(void) {
     screenshot_grab(^(CGImageRef img) {   /* the present thread: the frame, or NULL when it could not be drawn */
         CGImageRef taken = img ? CGImageRetain(img) : NULL;
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (shotRequest != request) { if (taken) CGImageRelease(taken); return; }   /* given up before it came */
-            shotRequest = 0;
+            if (shotPendingRequest != request) { if (taken) CGImageRelease(taken); return; }   /* given up before it came */
+            shotPendingRequest = 0;
             shotPendingAt = 0;
             dispatch_async(writes, ^{
                 char written[PATH_MAX] = {0};
