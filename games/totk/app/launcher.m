@@ -28,7 +28,7 @@
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include "../third_party/d2r_gfx/gfx/nvn/totk_shader_contrib.h"
 #include "../runtime/contrib_submit.h"
-#include "../runtime/auto_update.h"
+#include "auto_update.h"
 
 static void show_error(NSString *detail) {
     NSAlert *alert = [NSAlert new];

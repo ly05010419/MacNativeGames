@@ -10,9 +10,11 @@ static void screenshot_picture(void (^cb)(CGImageRef img));   /* the renderer's 
 
 /* The renderer's next frame, for screenshot.h: this probe has none, so each request is a small image of its own (one per
    press), handed over the way the renderer hands a frame over -- when it has one; the write says it saved the picture. */
-static int screenshotsTaken;
+static int screenshotsTaken, screenshotsSaved, deferPictures;
+static NSMutableArray *deferredPictures;
 static void screenshot_picture(void (^cb)(CGImageRef img)) {
     screenshotsTaken++;
+    if (deferPictures) { if (!deferredPictures) deferredPictures = [NSMutableArray array]; [deferredPictures addObject:[cb copy]]; return; }
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
     CGContextRef context = CGBitmapContextCreate(NULL, 8, 8, 8, 32, space, (uint32_t)kCGImageAlphaPremultipliedLast);
     CGImageRef image = context ? CGBitmapContextCreateImage(context) : NULL;
@@ -24,6 +26,7 @@ static void screenshot_picture(void (^cb)(CGImageRef img)) {
 static int screenshot_picture_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
                            char *album, size_t album_size) {
     (void)img; (void)game; (void)why; (void)problem; (void)album; (void)album_size;
+    screenshotsSaved++;
     snprintf(path, size, "/tmp/probe-%d.png", screenshotsTaken);
     return 1;
 }
@@ -250,6 +253,30 @@ static void probe_command_input(void){
  }
  puts("PASS: Command input isolation, existing menu equivalents, held keys and ordinary modifiers");
 }
+static void screenshot_pump(double seconds) {
+ [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:seconds]];
+ if (shotWrites) dispatch_sync(shotWrites,^{});
+}
+static void probe_screenshot_generations(void) {
+ start=clock_ns(); deferPictures=1;
+ bootOverlay=[[NSView alloc] initWithFrame:window.contentView.bounds];bootOverlay.hidden=YES;
+ screenshot_take(); uint64_t first=shotRequest;
+ void (^old)(CGImageRef)=deferredPictures[0];
+ screenshot_pump(3.1);
+ if(shotPendingRequest)runtime_fail("screenshot timeout did not invalidate its request");
+ old(NULL);screenshot_pump(.05);
+ if(screenshotsSaved)runtime_fail("a late frame was saved after its request expired");
+ screenshot_take();uint64_t second=shotRequest;
+ void (^current)(CGImageRef)=deferredPictures[1];current(NULL);screenshot_pump(.05);
+ if(screenshotsSaved!=1||second<=first)runtime_fail("second screenshot did not complete with a fresh generation");
+ screenshot_take();uint64_t third=shotRequest;
+ if(third<=second)runtime_fail("screenshot generation was reused after completion");
+ current(NULL);screenshot_pump(.05);
+ if(screenshotsSaved!=1||shotPendingRequest!=third)runtime_fail("an old callback stole a newer screenshot");
+ void (^latest)(CGImageRef)=deferredPictures[2];latest(NULL);screenshot_pump(.05);
+ if(screenshotsSaved!=2||shotPendingRequest)runtime_fail("latest screenshot did not finish independently");
+ puts("PASS: screenshot expiry, late callbacks and nonreused generations");
+}
 int main(int argc,char **argv){
  @autoreleasepool{
   if(argc!=3)return 1;
@@ -264,6 +291,7 @@ int main(int argc,char **argv){
   front_install_menu();
   [NSApp finishLaunching];
   if(mode==4){probe_command_input();return 0;}
+  if(mode==5){probe_screenshot_generations();return 0;}
   if(atoi(argv[2])){
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(10,10,200,25)];
    [window.contentView addSubview:field];[window makeFirstResponder:field];

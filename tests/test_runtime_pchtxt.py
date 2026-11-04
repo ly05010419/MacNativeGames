@@ -46,11 +46,12 @@ class PchtxtCases:
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def run_patch(self, text):
-        patch = self.dir / 'mod.pchtxt'
+    def run_patch(self, text, folder=None):
+        folder = folder or self.dir
+        patch = folder / 'mod.pchtxt'
         patch.write_text(text)
         env = dict(os.environ, TOTK_PCHTXT=str(patch))
-        run = subprocess.run([str(self.probe)], cwd=self.dir, env=env, capture_output=True, text=True, timeout=30)
+        run = subprocess.run([str(self.probe)], cwd=folder, env=env, capture_output=True, text=True, timeout=30)
         return run.returncode, run.stdout.strip()
 
     def test_disabled_section_is_not_applied(self):
