@@ -4872,7 +4872,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public int sb_aid1; /* storage bounds argument id + 1 (0 = none), nvn_sb_guard.h */ id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned : driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok : vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth : the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public int sb_aid1; /* storage bounds argument id + 1 (0 = none), nvn_sb_guard.h */ id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, out_flags; uint8_t drv_scanned[3];   /* drv_scanned : driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok : vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; out_flags : SH_OUT_* bits of the MSL (sh_out), 0 = not checked yet; writes_depth : the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
@@ -4900,6 +4900,20 @@ static NSString *sh_src(NvShader *s) {
     return src;
 }
 static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
+/* Which special outputs a shader's MSL declares, found once per shader (shader_load fills it from the bytes it read):
+   every pipeline built for a vertex shader asked twice, and each ask read the file again and rewrote its storage bounds
+   (sh_src), about 13% of the warm-up's CPU (2026-11-04). */
+enum { SH_OUT_KNOWN = 1, SH_OUT_LAYER = 2, SH_OUT_PSIZE = 4 };
+static int sh_out_bytes(const void *p, size_t n) {
+    return SH_OUT_KNOWN | (psv_has_bytes(p, n, "[[render_target_array_index]]", 26) ? SH_OUT_LAYER : 0) | (psv_has_bytes(p, n, "[[point_size]]", 10) ? SH_OUT_PSIZE : 0);
+}
+static int sh_out(NvShader *s) {
+    if (!s) return 0;
+    int f = __atomic_load_n(&s->out_flags, __ATOMIC_RELAXED);
+    if (!f && sh_has_src(s)) { NSString *src = s->src ? s->src : [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil];
+        const char *u = src.UTF8String; f = u ? sh_out_bytes(u, strlen(u)) : SH_OUT_KNOWN; __atomic_store_n(&s->out_flags, f, __ATOMIC_RELAXED); }
+    return f;
+}
 #include "nvn_pso_skey.h"
 @interface NvProg : NSObject { @public NvShader *sh[6];
     // translation inputs and the variant per bound-state signature (prog_fit)
@@ -5228,7 +5242,9 @@ static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // translated variants l
    whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
 static NSString *shader_lib_prebuilt_path(NSData *src) {
     if (getenv("PSV_FAST_MATH") && atoi(getenv("PSV_FAST_MATH"))) return nil;   // built with safe math (psv_precise_opts)
-    static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{ dir = exe_rel("shader-libs"); });
+    static NSString *dir; static dispatch_once_t once;   /* no folder (Pokémon Violet's own build): no hash per shader */
+    dispatch_once(&once, ^{ NSString *d = exe_rel("shader-libs"); BOOL isdir = NO; dir = [NSFileManager.defaultManager fileExistsAtPath:d isDirectory:&isdir] && isdir ? d : nil; });
+    if (!dir) return nil;
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(src.bytes, (CC_LONG)src.length, md);
     char hex[2 * sizeof md + 1]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
     NSString *path = [NSString stringWithFormat:@"%@/%s.metallib", dir, hex];
@@ -5241,21 +5257,22 @@ static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
     return lib;
 }
 #endif
-static NvShader *shader_load(NSString *pc, int stage) {
+/* pre: the .metal's bytes when the caller read them already (the warm-up), so the file is opened once per load */
+static NvShader *shader_load_pre(NSString *pc, int stage, NSData *pre) {
     NSError *e = nil; int sb_aid = -1;
     // runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
     NSString *rt_src = [NSString stringWithFormat:@"%@/%@.metal", psv_rt_dir(), pc];
-    int rt = [NSFileManager.defaultManager fileExistsAtPath:rt_src];
-    if (rt) psv_rt_fix_bindless([NSString stringWithFormat:@"%@/%@", psv_rt_dir(), pc]);
+    int rt = pre || [NSFileManager.defaultManager fileExistsAtPath:rt_src];
+    if (rt) psv_rt_fix_bindless_data([NSString stringWithFormat:@"%@/%@", psv_rt_dir(), pc], pre);
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
-    id<MTLLibrary> lib = nil;
+    id<MTLLibrary> lib = nil; NSData *rt_raw = nil;
     if (rt) {
 #if TARGET_OS_IPHONE
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = [NSString stringWithFormat:@"%@/%@.metallib", psv_rt_dir(), pc];
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
 #endif
-        if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
+        if (!lib) { NSData *raw = pre ? pre : [NSData dataWithContentsOfFile:rt_src options:0 error:&e]; rt_raw = raw;
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) { atomic_fetch_add(&g_rt_prebuilt, 1); sb_aid = -2; }
 #endif
@@ -5282,9 +5299,11 @@ static NvShader *shader_load(NSString *pc, int stage) {
     }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = shader_fn(lib, j[@"entry"]); o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
-    NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
-    o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
+    /* the source read above once more as a string (no second read of the file), and the depth check on its bytes */
+    NSString *full = rt ? (rt_raw ? [[NSString alloc] initWithData:rt_raw encoding:NSUTF8StringEncoding] : [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil]) : nil;
+    o->writes_depth = full && (rt_raw ? psv_has_bytes(rt_raw.bytes, rt_raw.length, "[[depth(", 6) : [full rangeOfString:@"[[depth("].location != NSNotFound);
     int drv_unfilled = full ? 0 : o->rf.drv_json_unfillable;
+    if (rt_raw) o->out_flags = sh_out_bytes(rt_raw.bytes, rt_raw.length);
     if (full) { o->src_path = rt_src; drv_unfilled = drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     if (o->rf.drv_json_unfillable && drv_unfilled) {
         static int fatal = -1; if (fatal < 0) { const char *e = getenv("DM_DRV_UNFILLED_FATAL"); fatal = e && atoi(e); }
@@ -5307,6 +5326,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (o->rf.has_c1) c1_store(o, full);
     return o;
 }
+static NvShader *shader_load(NSString *pc, int stage) { return shader_load_pre(pc, stage, nil); }
 
 static int stage_of(NSString *zh) {
     if ([zh isEqualToString:@"顶点"]) return 0; if ([zh isEqualToString:@"像素"]) return 1; if ([zh isEqualToString:@"计算"]) return 5;
@@ -6427,8 +6447,7 @@ static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int bo
     NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, bc, ba, &bn) : nil;
     /* Pokémon Violet: a vertex shader that writes the layer itself and also a point size; Metal rejects that pair under
        the triangle class the layer output needs, so the point size is kept in a local as for a layered pass. */
-    int own_layer = !layered && sh_has_src(vs) && [sh_src(vs) rangeOfString:@"[[render_target_array_index]]"].location != NSNotFound
-        && [sh_src(vs) rangeOfString:@"[[point_size]]"].location != NSNotFound;
+    int own_layer = !layered && sh_has_src(vs) && (sh_out(vs) & (SH_OUT_LAYER | SH_OUT_PSIZE)) == (SH_OUT_LAYER | SH_OUT_PSIZE);
     if (!sh_has_src(vs) || (!layered && !own_layer && !bkey && (!fs || !sh_has_src(fs)))) return vs->fn;
     os_unfair_lock_lock(&lk);
     NSDictionary *in = fs && sh_has_src(fs) ? msl_varyings(fs) : nil, *out = in ? msl_varyings(vs) : nil;
@@ -6752,7 +6771,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     if (k->a2c & PSO_LAYERED) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;   // required with a layer output; layered passes take triangle draws only (lay_draw_ok)
     /* Pokémon Violet: a game vertex shader that writes the layer itself (gl_Layer, one draw into several array slices)
        needs the topology class as well; such draws are triangles, as in the layered passes above. */
-    else if (vs && sh_has_src(vs) && [sh_src(vs) rangeOfString:@"[[render_target_array_index]]"].location != NSNotFound) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+    else if (vs && sh_has_src(vs) && (sh_out(vs) & SH_OUT_LAYER)) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
     for (int i = 0; i < 8; i++) {
         if (!k->cfmt[i]) continue;
         MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[i];
@@ -6939,16 +6958,17 @@ static NvShader *warm_shader_load(NSString *key, int stage) {
        instead of a red "cannot open" per pipeline that names it (2026-10-16 night: 42 such lines in one session). */
     static NSMutableSet<NSString *> *missing; static dispatch_once_t once; dispatch_once(&once, ^{ missing = [NSMutableSet set]; });
     @synchronized (missing) { if ([missing containsObject:key]) return nil; }
-    NSString *msl = [NSString stringWithContentsOfFile:[psv_rt_dir() stringByAppendingFormat:@"/%@.metal", key]
-                                                encoding:NSUTF8StringEncoding error:nil];
+    /* the two checks below search the file's bytes: NSString searches of every warm-up shader were the largest single
+       cost of the warm-up (2026-11-04, about 13% of its CPU) */
+    NSData *msl = [NSData dataWithContentsOfFile:[psv_rt_dir() stringByAppendingFormat:@"/%@.metal", key] options:NSDataReadingMappedIfSafe error:nil];
     if (!msl && ![NSFileManager.defaultManager fileExistsAtPath:[psv_rt_dir() stringByAppendingFormat:@"/%@.metallib", key]] &&
         ![NSFileManager.defaultManager fileExistsAtPath:[NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, key]]) {
         @synchronized (missing) { if (![missing containsObject:key]) { [missing addObject:key]; g_warm_missing++; } }
         return nil;
     }
-    if (msl && ([msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) return nil;
+    if (msl && (psv_has_bytes(msl.bytes, msl.length, "double ", 3) || psv_has_bytes(msl.bytes, msl.length, "unsupported_GLSLstd450", 12))) return nil;
     uint64_t started = bp_now();
-    NvShader *sh = shader_load(key, stage);
+    NvShader *sh = shader_load_pre(key, stage, msl);
     atomic_fetch_add(&g_warm_library_ns, bp_now() - started);
     atomic_fetch_add(&g_warm_library_count, 1);
     return sh;

@@ -100,7 +100,7 @@ xcrun xctrace export --input PSV_build/logs/<name>.trace --xpath '/trace-toc/run
 PSV_build/venv/bin/python PSV_build/test-tools/profsum.py PSV_build/logs/<name>.xml PSV_build/logs/<name>.log 40 [<thread id>]
 ```
 
-Game code shows as `main+0x...` (the log names each module's base). **The .trace holds the shell's environment: delete it after the export.**
+`PSV_build/test-tools/profstart.sh <name>` records the first 10 s of a start instead (the shader warm-up). Game code shows as `main+0x...` (the log names each module's base). **The .trace holds the shell's environment: delete it after the export.**
 
 ### Power
 
