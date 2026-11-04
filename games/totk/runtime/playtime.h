@@ -1,12 +1,13 @@
 /* Per-profile foreground playtime. AppKit's main thread owns this counter.
    A monotonic clock is supplied by the caller; long timer gaps are not playtime.
-   Atomic checkpoints bound crash loss to 15 seconds. Existing metadata survives. */
+   The session counter is in memory only and starts at zero for each instance.
+   Atomic checkpoints bound total-time crash loss to 15 seconds. Existing metadata survives. */
 #pragma once
 #import <Foundation/Foundation.h>
 #include "../third_party/d2r_gfx/gfx/nvn/include/totk_ui_lang.h"
 #include <math.h>
 @interface TOTKPlaytime : NSObject
-@property double seconds, lastTick, savedSeconds;
+@property double seconds, sessionSeconds, lastTick, savedSeconds;
 @property BOOL active, hasTick, writable;
 @property(copy) NSString *path;
 @property(strong) NSMutableDictionary *record;
@@ -33,7 +34,10 @@
 }
 -(void)tick:(double)now active:(BOOL)active {
  double dt=now-self.lastTick;
- if(self.writable&&self.hasTick&&self.active&&dt>0&&dt<=5)self.seconds+=dt;
+ if(self.hasTick&&self.active&&dt>0&&dt<=5) {
+  self.sessionSeconds+=dt;
+  if(self.writable)self.seconds+=dt;
+ }
  BOOL stopped=self.active&&!active;
  self.lastTick=now;self.hasTick=YES;self.active=active;
  if(stopped||self.seconds-self.savedSeconds>=15)[self save];
@@ -52,8 +56,10 @@
  return ok;
 }
 -(NSString *)text {
- if(!self.writable)return @(TOTK_UI("游玩时间不可用","Playtime unavailable"));
+ unsigned long long session=(unsigned long long)(self.sessionSeconds/60);
+ NSString *sessionText=[NSString stringWithFormat:@(TOTK_UI("本次  %llu 小时 %02llu 分","Session  %llu h %02llu m")),session/60,session%60];
+ if(!self.writable)return [sessionText stringByAppendingString:@(TOTK_UI(" | 总计不可用"," | Total unavailable"))];
  unsigned long long minutes=(unsigned long long)(self.seconds/60);
- return [NSString stringWithFormat:@(TOTK_UI("游玩时间  %llu 小时 %02llu 分","Playtime  %llu h %02llu m")),minutes/60,minutes%60];
+ return [sessionText stringByAppendingFormat:@(TOTK_UI(" | 总计  %llu 小时 %02llu 分"," | Total  %llu h %02llu m")),minutes/60,minutes%60];
 }
 @end

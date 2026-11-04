@@ -88,7 +88,7 @@ Effects (Tears of the Kingdom 1.4.3 where a row names no game; each choice acts 
 
 Update: the version, and either that it is the newest or each newer commit's message (see [install.md](install.md#update-the-app)); when it can be updated for you, an **Update** button that closes the game, updates the app and opens it again; when not, why, and that you update the code and build again yourself.
 
-Playtime is kept per profile in `playtime.json`. It counts foreground time after shader warm-up (including menus), pauses in the background or during sleep, and does not depend on whether the overlay is shown.
+The overlay shows Session (foreground playtime since this launch, reset on restart) and Total on one line, both in hours and minutes. Only the total is kept per profile in `playtime.json`. Both counters count foreground time after shader warm-up (including menus), pause in the background or during sleep, and run independently of whether the overlay is shown.
 
 The overlay, frame lock or interpolation, resolution, aspect ratio and edge smoothing choices are saved beside `controls.txt` and restored on the next launch. A resolution or aspect ratio is restored once that game's patch is ready, if the choice is available. Explicit `TOTK_MFX`, `TOTK_TAA`, `TOTK_ASPECT`, `TOTK_MFX_OUTPUT`, `TOTK_MFX_UPSCALE`, and a non-automatic `TOTK_OUTPUT_RES` take precedence for that launch.
 
