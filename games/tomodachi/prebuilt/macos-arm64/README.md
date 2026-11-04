@@ -19,3 +19,5 @@ checkout. Only the necessary tool prebuilt and its checksum are updated here.
 NuGet/network access is needed on a first build. NativeAOT output can vary with
 build paths, so compare translation results as well as updating the checksum.
 No Tomodachi-wide shader-cache equivalence result is claimed for a rebuild.
+
+Integration rebuild (2026-11-04): rebuilt locally from these sources with .NET SDK 10.0.401. Replayed 974 variants from a retained TOTK cache against the contributor executable: all 3,896 MSL, SPIR-V, reflection and code files were byte-identical, with zero failed requests. This verifies the rebuild against that corpus; Tomodachi-specific shader coverage and gameplay were not tested here. A different known translator (XC3) produced 2,734 differing files on the same corpus, confirming that the comparison detects shader-chain changes.

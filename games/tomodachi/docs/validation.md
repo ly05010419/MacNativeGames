@@ -1,5 +1,7 @@
 # Contribution validation — 2026-10-31
 
+Historical contributor evidence below predates integration. Only Metal 4 / macOS 26+ is now supported; the Metal 3 entry points have been removed.
+
 ## Scope
 
 Parent base: `92ec79bd10c006e1cb7ca32d7ac1d8f66c758a15`. This is a source-only,
@@ -52,12 +54,8 @@ root. All generated outputs and game data must remain outside source.
 ```sh
 python -B -m unittest discover -s tests
 python -B games/tomodachi/tests/run_tests.py
-make -C games/tomodachi WORK=/path/to/host BACKEND=metal3
 make -C games/tomodachi WORK=/path/to/host BACKEND=metal4
-/path/to/host/build/tomodachi-native /path/to/host/rewritten probe
 /path/to/host/build/tomodachi-native-metal4 /path/to/host/rewritten probe
-MTL_DEBUG_LAYER=1 /path/to/host/build/tomodachi-native \
-  /path/to/host/rewritten probe-gpu-depth-feedback
 MTL_DEBUG_LAYER=1 /path/to/host/build/tomodachi-native-metal4 \
   /path/to/host/rewritten probe-gpu-depth-feedback
 ```

@@ -14,8 +14,8 @@ sys.path.insert(0, str(ROOT))
 from games.tomodachi.tools.common import outside_repository
 
 
-def run(work, mode, seconds, app_pool_mib=None, backend="metal3"):
-    if backend not in ("metal3", "metal4"): raise ValueError("Unknown renderer backend")
+def run(work, mode, seconds, app_pool_mib=None, backend="metal4"):
+    if backend != "metal4": raise ValueError("Unknown renderer backend")
     work = outside_repository(work, ROOT)
     if seconds <= 0 or seconds > 600:
         raise ValueError("Diagnostic duration must be between 1 and 600 seconds")
@@ -32,7 +32,8 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal3"):
     environment = {k: v for k, v in os.environ.items() if not k.startswith(("TOTK_", "DM_"))}
     environment.update(TOTK_PROFILE_DIR=str(session / "profile"),
                        TOTK_ROMFS=str(prepared / "romfs"), TOTK_ROMFS_PATCHES="0",
-                       TOTK_GAME_SLOT_DIR=str(session / "slot"), TOTK_SLOT_OWNER="codex",
+                       TOTK_SLOT_OWNER="tomodachi-diagnostic",
+                       TOTK_INPUT_FILE=str(session / "input.txt"),
                        TOTK_ASSUME_FOCUS="1",
                        TOTK_SHADER_CACHE=str(work / "build/shader-cache"))
     if mode == "startup":
@@ -49,7 +50,8 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal3"):
         environment["DM_NVN_SHOT_FRAME"]="1"
         environment["TOTK_MEM_LOG"]="1"
         if app_pool_mib is not None:environment["TOTK_APP_POOL"]=str(app_pool_mib<<20)
-    command = [str(work / "build" / ("tomodachi-native-metal4" if backend == "metal4" else "tomodachi-native")), str(work / "rewritten"),
+    (session / "input.txt").touch()
+    command = [str(work / "build" / ("tomodachi-native-metal4")), str(work / "rewritten"),
                "boot" if mode in ("boot", "startup") else mode]
     timed_out = False
     with (session / "runtime.log").open("w") as log:
@@ -58,12 +60,10 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal3"):
             code = process.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
-            process.terminate()
-            try:
-                code = process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                code = process.wait()
+            with (session / "input.txt").open("a") as commands:
+                commands.write("close\n")
+            # The host finishes pending saves before closing; never terminate a game during a write.
+            code = process.wait()
     result = {"mode": mode, "exit_code": code, "timed_out": timed_out,
               "log": str(session / "runtime.log"), "profile": str(session / "profile"),
               "scope": "Diagnostic only; exit status does not establish playable rendering or save compatibility"}
@@ -74,7 +74,7 @@ def run(work, mode, seconds, app_pool_mib=None, backend="metal3"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("metal3", "metal4"), default="metal3")
+    parser.add_argument("--backend", choices=("metal4",), default="metal4")
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--mode", choices=("probe", "probe-gpu-midclear", "probe-gpu-blockrt", "probe-gpu-widen", "probe-gpu-storage-view", "startup", "boot"), default="probe")
     parser.add_argument("--seconds", type=int, default=60)

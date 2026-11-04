@@ -43,9 +43,9 @@ def package_icon(control, resources):
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(resources / "AppIcon.icns")], check=True)
 
 
-def package(work, output, replace=False, language=None, backend="metal3"):
-    if backend not in ("metal3", "metal4"): raise ValueError("Unknown renderer backend")
-    binary_name = "tomodachi-native-metal4" if backend == "metal4" else "tomodachi-native"
+def package(work, output, replace=False, language=None, backend="metal4"):
+    if backend != "metal4": raise ValueError("Unknown renderer backend")
+    binary_name = "tomodachi-native-metal4"
     work, output = outside_repository(work,ROOT), outside_repository(output,ROOT)
     if output.suffix != ".app":
         raise ValueError("Output must end in .app")
@@ -99,7 +99,7 @@ def _assemble(work, output, info, control, binary_name, language, backend, insta
                     CFBundleIconFile="AppIcon",LSApplicationCategoryType="public.app-category.simulation-games",
                     GCSupportsControllerUserInteraction=True,
                     CFBundlePackageType="APPL",CFBundleShortVersionString="1.0.0",CFBundleVersion="1",
-                    LSMinimumSystemVersion="26.0" if backend == "metal4" else "15.0",
+                    LSMinimumSystemVersion="26.0",
                     MNGRendererBackend=backend,NSHighResolutionCapable=True,LSSupportsGameMode=True,
                     NSBluetoothAlwaysUsageDescription="Connect a wireless game controller.",
                     NSBluetoothPeripheralUsageDescription="Connect a wireless game controller.")
@@ -115,7 +115,7 @@ def _assemble(work, output, info, control, binary_name, language, backend, insta
 
 if __name__ == "__main__":
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("metal3", "metal4"), default="metal3")
+    parser.add_argument("--backend", choices=("metal4",), default="metal4")
     parser.add_argument("--work",required=True,type=Path)
     parser.add_argument("--output",required=True,type=Path)
     parser.add_argument("--language",choices=("ja","en-US","en-GB","fr","fr-CA","de","es","es-419","it","nl","pt","pt-BR","ru","ko","zh-Hans","zh-Hant"))

@@ -164,7 +164,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("prepared", "work", "shared-fonts", "spirv-cross"):
         parser.add_argument(f"--{flag}", type=Path, required=True)
-    parser.add_argument("--backend", choices=("metal3", "metal4"), default="metal3")
+    parser.add_argument("--backend", choices=("metal4",), default="metal4")
     parser.add_argument("--jobs", type=int, default=3)
     args = parser.parse_args()
     try:
@@ -174,7 +174,7 @@ def main():
         with (work / "logs/build.log").open("w") as log:
             result = subprocess.run(["make", f"-j{args.jobs}", f"WORK={work}", f"BACKEND={args.backend}"], cwd=HERE, stdout=log, stderr=subprocess.STDOUT)
         require(result.returncode == 0, f"Host compilation failed; see {work / 'logs/build.log'}")
-        print(work / "build" / ("tomodachi-native-metal4" if args.backend == "metal4" else "tomodachi-native"))
+        print(work / "build" / ("tomodachi-native-metal4"))
     except (OSError, ValueError, KeyError) as error:
         print(f"Tomodachi host build failed: {error}", file=sys.stderr)
         return 2

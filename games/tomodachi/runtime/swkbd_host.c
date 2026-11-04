@@ -136,7 +136,7 @@ static unsigned show_keyboard(void *out_string, const void *arg_ptr) {
         snprintf(text, sizeof text, "%s", strcmp(forced, "<initial>") ? forced : initial);
     } else {
 #if TARGET_OS_OSX
-        RuntimeTextRequest req = { prompt, initial, max_len, min_len, password != 0, type == KB_TYPE_NUMPAD, disabled, NULL, NULL };
+        RuntimeTextRequest req = { .prompt=prompt, .initial=initial, .max_units=max_len, .min_units=min_len, .secure=password != 0, .digits_only=type == KB_TYPE_NUMPAD, .disabled=disabled };
         int away = runtime_core_away();   /* the other guest threads keep running while the player types */
         confirmed = runtime_front_text_input(&req, text, sizeof text);
         runtime_core_back(&away);

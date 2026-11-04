@@ -20,7 +20,7 @@ class PackageTransaction(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
         (self.output/'original').write_text('preserve this package')
         (self.output/'Contents/Resources/language.txt').write_text('ja\n')
-        (self.work/'build/tomodachi-native').write_bytes(b'synthetic host')
+        (self.work/'build/tomodachi-native-metal4').write_bytes(b'synthetic host')
         (self.work/'build/spirv-cross/spirv-cross').write_bytes(b'synthetic tool')
         (self.prepared/'control/romfs.bin').write_bytes(b'synthetic control')
         (self.work/'host-info.json').write_text(json.dumps({'title_id':'010051F0207B2000','prepared':str(self.prepared), 'spirv_cross_sha256':hashlib.sha256(b'synthetic tool').hexdigest()}))

@@ -1,8 +1,8 @@
 # Tomodachi Life: Living the Dream — experimental native Mac port
 
-**Status: experimental / work in progress. Broader gameplay and visual validation remain.**
-The game starts, native menus and text entry work, and an existing island has
-been exercised on an Apple silicon Mac. This is not a claim of complete picture
+**Status: experimental diagnostic host; normal-build gameplay has not been accepted.**
+Integration (2026-11-04) disables the contribution's fixed-address heap growth and physical-pool alignment patches in normal builds. These bypass unresolved host allocation/mapping defects. The retained code is for diagnostic compilation only (`TOMODACHI_DIAGNOSTIC_PATCHES`) and is not a supported way to play. Root fixes and a new gameplay run require the player's verified game data. The earlier contributor results below used those patches and do not validate the current defaults.
+The contributor previously exercised startup, native menus, text entry and an existing island on an Apple silicon Mac with the compatibility patches enabled. This is not a claim of complete picture
 accuracy, full gameplay coverage, or proven save compatibility. Keep a backup of
 your own saves. No iPhone/iPad build is provided or validated.
 
@@ -19,9 +19,7 @@ interpreter, JIT, or emulator backend is used by the port.
   are included in this folder. The icon is extracted locally when packaging.
 - Apple silicon Mac, Xcode command-line tools, **Python 3.14**, and Homebrew
   `opus` and `libvpx`. Metal 4 requires macOS 26+ and an SDK providing Metal 4.
-- Metal 3 remains an explicit compatibility backend. Both backends build,
-  package, and pass the loader probe on the development Mac; macOS 15
-  playability has not been verified on an actual macOS 15 system.
+- Only Metal 4 on macOS 26 or newer is supported.
 - An externally built SPIRV-Cross executable. Use the pinned upstream revision
   `aa217ae` from <https://github.com/KhronosGroup/SPIRV-Cross> (Apache-2.0).
   Build it in a directory outside this source checkout.
@@ -71,8 +69,7 @@ make -C games/tomodachi WORK=/path/to/Tomodachi_build/host BACKEND=metal4
 Use `--replace` to archive an earlier app only after the new package is complete
 and its signature verifies. Keep the external host and prepared game data: the
 app records relative paths to them. Moving the app alone can break those paths.
-To rebuild the optional Metal 3 backend, use `BACKEND=metal3` and package with
-`--backend metal3`. Do not point build output into this or another source
+Do not point build output into this or another source
 worktree. Run `--help` for each script's full input contract.
 
 ## Controls and preferences
@@ -124,8 +121,9 @@ launching the executable to append a native runtime log to that profile.
   bubble disappeared before the instrumented retry, so the cause is unresolved;
   subsequent play without another crash is not a verified fix.
 - Some services are partial implementations; some audio effects remain unsupported.
-  The runtime expands verified Mii/cloth child heaps and aligns physical NVN pool
-  backing for Darwin pages; these guarded compatibility patches need review.
+  The contribution's Mii/cloth heap growth and physical-pool alignment experiments
+  are disabled in normal builds. Their host allocation/mapping causes remain open;
+  startup or island loading may stop until those causes are fixed.
 - No performance improvement is claimed from local work counters or FPS alone.
   Rendering correctness takes priority over speed. This contribution remains
   experimental while the remaining graphics and gameplay validation are completed.

@@ -1,18 +1,13 @@
 # Self-contained Tomodachi runtime; all build output stays outside the checkout.
 WORK ?= /tmp/Tomodachi_build/host
 OUT := $(WORK)/build
-BACKEND ?= metal3
-ifeq ($(BACKEND),metal4)
+BACKEND ?= metal4
+ifneq ($(BACKEND),metal4)
+$(error Only Metal 4 is supported; macOS 26 or newer is required)
+endif
 BACKEND_FLAGS := -mmacosx-version-min=26.0 -DDM_NVN_M3=0
 BINARY := $(OUT)/tomodachi-native-metal4
 GFX_OUT := $(OUT)/metal4/gfx
-else ifeq ($(BACKEND),metal3)
-BACKEND_FLAGS := -mmacosx-version-min=15.0 -DDM_NVN_M3=1
-BINARY := $(OUT)/tomodachi-native
-GFX_OUT := $(OUT)/gfx
-else
-$(error BACKEND must be metal3 or metal4)
-endif
 GFX := third_party/d2r_gfx
 GFX_SRC := $(wildcard $(GFX)/gfx/nvn/*.c $(GFX)/gfx/nvn/*.m $(GFX)/gfx/nvn/*.S $(GFX)/gfx/tex/*.c $(GFX)/gfx/tex/*.m)
 GFX_OBJ := $(patsubst $(GFX)/%,$(GFX_OUT)/%.o,$(GFX_SRC))
@@ -29,6 +24,5 @@ $(BINARY): $(TITLE_RUNTIME) $(wildcard runtime/*.h) $(OUT)/runtime_tables.h $(OU
 	xcrun clang -std=c11 $(FLAGS) -Wno-deprecated-declarations -fobjc-arc $(TITLE_RUNTIME) $(GFX_OBJ) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a $(addprefix -framework ,$(FRAMEWORKS)) -o "$@"
 
 check-toolchain:
-ifeq ($(BACKEND),metal4)
+	@python3 -c 'from pathlib import Path; from tools.common import outside_repository; outside_repository(Path(__import__("sys").argv[1]), Path.cwd().parents[1])' "$(WORK)"
 	@python3 tools/check_metal4_sdk.py
-endif

@@ -20,6 +20,7 @@ def main():
         out = Path(temporary)
         common = ['xcrun', 'clang', '-Iruntime']
         for name, sources, flags in [
+            ('default-patches', ['tests/test_tomodachi_default_patches.c','runtime/game_patches.c'], []),
             ('clock', ['tests/test_tomodachi_clock.c','runtime/time_host.c'], ['-framework','CoreFoundation']),
             ('gesture', ['tests/test_tomodachi_gesture.c','runtime/gesture.c'], []),
             ('inline-keyboard', ['tests/test_tomodachi_inline_keyboard.c','runtime/inline_keyboard.c'], ['-framework','CoreFoundation']),
