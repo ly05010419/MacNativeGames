@@ -292,7 +292,10 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
     ParBatch *b = td[k_par_batch];
     NSError *e = nil; uint64_t t0 = bp_now();
     if (!b) {
-        par_batch_begin();
+        if (!par_batch_begin()) {   // no shared lock: Metal's build folder would be unguarded (totk_pipeline_archive_folders.h)
+            pthread_mutex_lock(&g_par_mu); [g_par_pending removeObject:key]; pthread_mutex_unlock(&g_par_mu);
+            return;
+        }
         b = [ParBatch new]; b->keys = [NSMutableArray array];
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch

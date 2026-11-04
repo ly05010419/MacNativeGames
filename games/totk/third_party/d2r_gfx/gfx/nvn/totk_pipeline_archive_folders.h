@@ -56,9 +56,10 @@ static NSSet<NSString *> *par_ga_list(int own_only) {   // full paths of the bui
    begins, before Metal makes a folder, until its last batch ends. Cleaning takes the exclusive lock without waiting; while
    another process holds the shared one it is refused and nothing is removed: the last batch to end, or the next start,
    removes them. With no batch open in this process, nothing of it needs the shared lock, so the non-atomic upgrade from
-   shared to exclusive (flock releases the old lock first) leaves no live folder unguarded. If the lock file cannot be
-   opened or locked, nothing is removed. The file is never removed or replaced, so every process locks the same file; the
-   system releases a dead process's lock. */
+   shared to exclusive (flock releases the old lock first) leaves no live folder unguarded. Without the shared lock (no own
+   folder, the file cannot be opened or locked) no batch begins: its folder would be unguarded, so the pipeline is not
+   written to the archive (it is compiled as usual; a later start writes it). The file is never removed or replaced, so
+   every process locks the same file; the system releases a dead process's lock. */
 static int g_par_batches;        // batches open in this process (g_par_wmu)
 static int g_par_lock_fd = -1;   // g_par_wmu; kept open
 static NSString *g_par_lock_at;  // its path: the probe's folders first, then the real ones (no batch open in between)
@@ -100,13 +101,18 @@ static void par_ga_cleanup_startup(void) {   // what earlier runs left; skipped 
                     [where componentsJoinedByString:@", "].UTF8String);
     else MLOG("[pipeline-archive] Metal's build folders: %s; %ld left by earlier runs removed at start", [where componentsJoinedByString:@", "].UTF8String, n);
 }
-static void par_batch_begin(void) {   // before the batch's archive makes its build folder
+static int par_batch_begin(void) {   // before the batch's archive makes its build folder; 0: no batch, write nothing
     pthread_mutex_lock(&g_par_wmu);
-    if (g_par_batches++ == 0) {
+    int ok = 1;
+    if (g_par_batches == 0) {   // the process's first open batch takes the shared lock; later ones run under it
         int fd = par_ga_lock_fd();
-        if (fd >= 0 && par_flock(fd, LOCK_SH)) { static _Atomic int said; if (!atomic_fetch_add(&said, 1)) MLOG("[pipeline-archive] cannot lock %s (%s)", g_par_lock_at.UTF8String, strerror(errno)); }
+        ok = fd >= 0 && par_flock(fd, LOCK_SH) == 0;
+        if (!ok) { static _Atomic int said; if (!atomic_fetch_add(&said, 1)) MLOG("[pipeline-archive] no shared lock on %s (%s): pipelines are not written to the archive while it fails",
+                                                                                   g_par_lock_at ? g_par_lock_at.UTF8String : "(no own cache folder: no bundle id)", fd >= 0 ? strerror(errno) : "cannot open"); }
     }
+    if (ok) g_par_batches++;
     pthread_mutex_unlock(&g_par_wmu);
+    return ok;
 }
 static void par_batch_end(void) {   // the batch's archive is released: the folders go once no batch of the app is open
     pthread_mutex_lock(&g_par_wmu);

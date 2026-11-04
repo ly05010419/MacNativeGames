@@ -19798,12 +19798,13 @@ static int par_probe_startup_cleanup(NSString *dir) {
     par_open_dir(g_dev);
     if ([fm fileExistsAtPath:stale] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated])
         MDIE("pipeline archive probe: startup cleanup did not finish or removed unrelated/shared entries");
-    par_batch_begin();
+    if (!par_batch_begin()) MDIE("pipeline archive probe: no batch began (shared lock refused)");
     for (NSString *path in @[live, during]) [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
     dispatch_semaphore_t entered = dispatch_semaphore_create(0), leave = dispatch_semaphore_create(0);
     dispatch_group_t workers = dispatch_group_create();
     dispatch_group_async(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        par_batch_begin(); dispatch_semaphore_signal(entered);
+        if (!par_batch_begin()) MDIE("pipeline archive probe: no overlapping batch began");
+        dispatch_semaphore_signal(entered);
         if (dispatch_semaphore_wait(leave, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) MDIE("pipeline archive probe: batch release timed out");
         par_batch_end();
     });

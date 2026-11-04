@@ -2,7 +2,10 @@
    no GPU, game or player data. Run by tests/test_pipeline_archive_folders.py.
      folders <dir> shared   a folder another program makes in the shared cache during a batch survives the batch's end
      folders <dir> peers    two processes of the app, kept in step through pipes: neither one's startup nor its batch's
-                            end removes the other's live folder, and the last batch to end removes both */
+                            end removes the other's live folder, and the last batch to end removes both
+     folders <dir> nolock   the lock file cannot be opened: no batch begins (so Metal makes no unguarded folder) and
+                            nothing is left held, so a cleanup once the file opens again removes what was left
+     folders <dir> noown    no own cache folder (no bundle id): no batch begins */
 #include <stdio.h>
 #include <stdlib.h>
 #define MLOG(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
@@ -37,7 +40,7 @@ static void hear(int fd, char want) {
 static void shared_case(void) {
     NSString *unrelated = make(g_owned, @"keep-this-entry");
     par_ga_cleanup_startup();
-    par_batch_begin();
+    if (!par_batch_begin()) FAIL("no batch began");
     NSString *mine = make(g_owned, @"gpuarchiver-mine"), *other = make(g_shared, @"gpuarchiver-other");
     par_batch_end();
     if (there(mine)) FAIL("the batch's own folder is left");
@@ -46,10 +49,28 @@ static void shared_case(void) {
     puts("PASS: shared folder made during a batch kept, own folder removed");
 }
 
+static void nolock_case(const char *dir) {
+    NSString *lock = make([@(dir) stringByAppendingPathComponent:@"own"], @"pipeline-archive.lock");   // a folder: open() fails
+    if (par_batch_begin()) FAIL("par_batch_begin said the batch began");
+    if (g_par_batches) FAIL("a batch began without the shared lock (%d open)", g_par_batches);
+    if (![NSFileManager.defaultManager removeItemAtPath:lock error:nil]) FAIL("cannot remove %s", lock.UTF8String);
+    NSString *old = make(g_owned, @"gpuarchiver-old");
+    par_ga_cleanup_startup();
+    if (there(old)) FAIL("once the lock file opens, the cleanup did not run (a batch or lock left over)");
+    puts("PASS: without the lock no batch begins, nothing is left held");
+}
+
+static void noown_case(void) {
+    g_par_probe_ga_dirs = @[@{@"path": g_shared, @"own": @NO}];
+    if (par_batch_begin()) FAIL("par_batch_begin said the batch began");
+    if (g_par_batches) FAIL("a batch began without an own cache folder (%d open)", g_par_batches);
+    puts("PASS: without an own cache folder no batch begins");
+}
+
 static void peer(int in, int out) {   // the second process: its startup, a batch held open, then its end
     hear(in, 's');
     par_ga_cleanup_startup();
-    par_batch_begin();
+    if (!par_batch_begin()) FAIL("no batch began");
     make(g_owned, @"gpuarchiver-peer");
     say(out, 'r');
     hear(in, 'e');
@@ -68,7 +89,7 @@ static void peers_case(const char *self, const char *dir) {
     if (posix_spawn(&pid, self, &fa, NULL, argv, environ)) FAIL("spawn the second process");
     close(to[0]); close(from[1]);
     par_ga_cleanup_startup();
-    par_batch_begin();   // this process's batch is open before the other one starts
+    if (!par_batch_begin()) FAIL("no batch began");   // this process's batch is open before the other one starts
     NSString *mine = make(g_owned, @"gpuarchiver-first"), *its = [g_owned stringByAppendingPathComponent:@"gpuarchiver-peer"];
     say(to[1], 's'); hear(from[0], 'r');
     if (!there(mine)) FAIL("the second process's startup removed the first one's live folder");
@@ -90,6 +111,8 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[2], "peer")) peer(3, 4);
         else if (!strcmp(argv[2], "shared")) shared_case();
         else if (!strcmp(argv[2], "peers")) peers_case(argv[0], argv[1]);
+        else if (!strcmp(argv[2], "nolock")) nolock_case(argv[1]);
+        else if (!strcmp(argv[2], "noown")) noown_case();
         else FAIL("unknown case %s", argv[2]);
     }
     return 0;

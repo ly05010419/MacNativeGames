@@ -44,6 +44,15 @@ class PipelineArchiveFolders(unittest.TestCase):
         self.assertIn('PASS: two processes keep each other', out)
         self.assertIn('own/pipeline-archive.lock', left)   # never removed: both processes must lock the same file
 
+    def test_no_batch_without_the_lock(self):
+        out, left = self.run_case('nolock')
+        self.assertIn('PASS: without the lock no batch begins', out)
+        self.assertNotIn('own/com.apple.gpuarchiver/gpuarchiver-old', left)
+
+    def test_no_batch_without_an_own_folder(self):
+        out, _ = self.run_case('noown')
+        self.assertIn('PASS: without an own cache folder no batch begins', out)
+
     def test_game_binaries_carry_their_bundle_id(self):
         """Without it a bare game binary's build folders land in the shared cache folder, which is never cleaned."""
         make = (GAME / 'Makefile').read_text().split('\n')
