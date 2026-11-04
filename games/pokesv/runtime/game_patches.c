@@ -1,4 +1,5 @@
 #include <math.h>
+#include <TargetConditionals.h>
 #include "game_patches.h"
 #include "game_version.h"
 #include <libkern/OSCacheControl.h>
@@ -178,10 +179,35 @@ static void patch_far_distance(Module *m) {
    writes another size into both defaults (experimental). */
 static unsigned render_w, render_h;
 int runtime_render_size(unsigned *w, unsigned *h) { if (!render_w) return 0; *w = render_w; *h = render_h; return 1; }
+/* The render size: PSV_RENDER_RES=<w>x<h> first, else the settings panel's choice ("render-res <height>" in settings.txt,
+   16:9, read at start: the size is fixed before the game runs). 0 = the game's own 1920x1080. */
+static unsigned render_pref_h;   /* the panel's saved choice (applies at the next start) */
+int runtime_render_res_fixed(void) { const char *e = getenv("PSV_RENDER_RES"); return e && *e; }
+unsigned runtime_render_res_pref(void) { return render_pref_h; }
+void runtime_render_res_pref_set(unsigned h) { render_pref_h = h == 1440 || h == 1800 || h == 2160 ? h : 0; }
+static int render_size(unsigned *w, unsigned *h) {
+    static int decided, on; static unsigned cw, ch;
+    if (!decided) {
+        decided = 1; const char *e = getenv("PSV_RENDER_RES");
+        if (TARGET_OS_IPHONE) return 0;   /* iOS keeps the game's size: its heap cap and memory are fixed (services.c) */
+        if (e && *e) {
+            if (!strcmp(e, "0")) on = 0;
+            else if (sscanf(e, "%ux%u", &cw, &ch) != 2 || cw < 640 || ch < 360 || cw > 7680 || ch > 4320 || (cw | ch) & 7) runtime_fail("PSV_RENDER_RES must be <width>x<height>, multiples of 8, 640x360 .. 7680x4320");
+            else on = cw != 1920 || ch != 1080;
+        } else {
+            const char *dir = getenv("PSV_PROFILE_DIR"); char path[1024], name[32]; int v;
+            snprintf(path, sizeof path, "%s/settings.txt", dir && *dir ? dir : "user-data");
+            FILE *f = fopen(path, "r");
+            if (f) { while (fscanf(f, "%31s %d", name, &v) == 2) if (!strcmp(name, "render-res")) runtime_render_res_pref_set((unsigned)v); fclose(f); }
+            if (render_pref_h) { ch = render_pref_h; cw = ch * 16 / 9; on = 1; }
+        }
+    }
+    if (on) { *w = cw; *h = ch; }
+    return on;
+}
 static void patch_render_res(Module *m) {
-    const char *e = getenv("PSV_RENDER_RES"); unsigned w, h;
-    if (!e || !*e || !strcmp(e, "0")) return;
-    if (sscanf(e, "%ux%u", &w, &h) != 2 || w < 640 || h < 360 || w > 7680 || h > 4320 || (w | h) & 7) runtime_fail("PSV_RENDER_RES must be <width>x<height>, multiples of 8, 640x360 .. 7680x4320");
+    unsigned w, h;
+    if (!render_size(&w, &h)) return;
     static const struct { uint64_t off; uint32_t orig; int is_h; char group; } sites[] = {
         {0x146fe00, 0x5280f008, 0, 'a'}, {0x146fe04, 0x52808709, 1, 'a'},   /* mov w8, #1920 / mov w9, #1080 (settings object) */
         {0x146e7b4, 0x5280f008, 0, 'a'}, {0x146e7b8, 0x52808709, 1, 'a'},   /* the parser's defaults */
@@ -193,12 +219,27 @@ static void patch_render_res(Module *m) {
         {0x14b0020, 0x5280f008, 0, 'f'}, {0x14b0024, 0x5280870a, 1, 'f'},
         {0x16694bc, 0x52a89e08, 2, 'g'}, {0x16694c4, 0x52a890e8, 3, 'g'},   /* mov w8, #1920.0f / #1080.0f: nnMain's framework, main+0xc80894 (x, y, w, h) */
         {0x16696a0, 0x52a89e08, 2, 'g'}, {0x16696a8, 0x52a890e8, 3, 'g'},
+        /* the display manager's size per operation mode, [obj+0x430] {handheld, docked} widths and [obj+0x438] heights
+           (main+0xbd7014): the window crop and, times the display's rectangle, the viewport of the main passes
+           (main+0xdfa800 -> parameters read by main+0xb6d220). Docked follows the render size, handheld two thirds of it. */
+        {0xbd7018, 0xf2c0f008, 0, 'h'}, {0xbd7024, 0xf2c08708, 1, 'h'},   /* movk x8, #1920 / #1080, lsl #32 (docked) */
+        {0xbd7014, 0xd280a008, 4, 'h'}, {0xbd7020, 0xd2805a08, 5, 'h'},   /* mov x8, #1280 / #720 (handheld) */
+        /* fixed half-size (960x540) targets of seven renderers: half the render size */
+        {0xe939c4, 0x5280780a, 8, 'i'}, {0xe939c8, 0x5280438b, 9, 'i'},
+        {0x116f498, 0x5280780a, 8, 'i'}, {0x116f49c, 0x5280438b, 9, 'i'},
+        {0x135d1e8, 0x52807808, 8, 'i'}, {0x135d1f0, 0x52804388, 9, 'i'},
+        {0x1664240, 0x52807808, 8, 'i'}, {0x1664248, 0x52804389, 9, 'i'},
+        {0x17d9e64, 0x52807808, 8, 'i'}, {0x17d9e68, 0x5280438a, 9, 'i'},
+        {0x2635c90, 0x5280780a, 8, 'i'}, {0x2635c94, 0x5280438b, 9, 'i'},
+        {0x2636298, 0x5280780a, 8, 'i'}, {0x263629c, 0x5280438b, 9, 'i'},
     };
-    const char *groups = getenv("PSV_RENDER_SITES"); if (!groups || !*groups) groups = "a";   /* diagnostic: which site groups */
+    const char *groups = getenv("PSV_RENDER_SITES"); if (!groups || !*groups) groups = "abcdefghi";   /* diagnostic: which site groups */
     for (unsigned i = 0; i < sizeof sites / sizeof *sites; i++) { uint32_t have; memcpy(&have, m->base + sites[i].off, 4); if (have != sites[i].orig) runtime_fail("render resolution: instruction differs"); }
     for (unsigned i = 0; i < sizeof sites / sizeof *sites; i++) {
         if (!strchr(groups, sites[i].group)) continue;
         uint32_t v = sites[i].is_h & 1 ? h : w, word;
+        if (sites[i].is_h & 4) v = v * 2 / 3 & ~7u;   /* handheld: two thirds, as 1280x720 is of 1920x1080 */
+        if (sites[i].is_h & 8) v /= 2;   /* a half-size target */
         if (sites[i].is_h & 2) {   /* a float's upper half (movz w, #imm, lsl #16): exact only when its lower half is zero */
             float f = (float)v; uint32_t bits; memcpy(&bits, &f, 4);
             if (bits & 0xffff) runtime_fail("PSV_RENDER_RES: this size is not exact as a 16-bit float immediate");
@@ -207,7 +248,7 @@ static void patch_render_res(Module *m) {
         memcpy(m->base + sites[i].off, &word, 4); sys_icache_invalidate(m->base + sites[i].off, 4);
     }
     render_w = w; render_h = h;
-    fprintf(stderr, "[psv] render resolution: %ux%u instead of 1920x1080 (PSV_RENDER_RES, experimental)\n", w, h);
+    fprintf(stderr, "[psv] render resolution: %ux%u instead of 1920x1080 (%s)\n", w, h, runtime_render_res_fixed() ? "PSV_RENDER_RES" : "settings panel");
 }
 /* The GPU memory pools follow the render size (2026-11-04). The settings parser (main+0x146e724) replaces three pool sizes the
    game data gives with smaller ones: [cfg+0x18] 384 -> 350 MiB (flags 0x22), [cfg+0x20] 320 -> 268 MiB (flags 0xa1,
@@ -220,8 +261,8 @@ static const struct { uint64_t off; uint32_t orig; uint32_t mib; char key; } ren
     {0x146e770, 0x52a21809, 268, 'r'},   /* mov w9, #0x10c00000 */
 };
 static double render_ratio(void) {
-    const char *e = getenv("PSV_RENDER_RES"); unsigned w, h;
-    if (!e || sscanf(e, "%ux%u", &w, &h) != 2 || (double)w * h <= 1920.0 * 1080.0) return 1;
+    unsigned w, h;
+    if (!render_size(&w, &h) || (double)w * h <= 1920.0 * 1080.0) return 1;
     return (double)w * h / (1920.0 * 1080.0);
 }
 static int render_pool_on(char key) { const char *e = getenv("PSV_RENDER_POOLS"); return !e || strchr(e, key); }
@@ -242,7 +283,34 @@ static void patch_render_pools(Module *m) {
         fprintf(stderr, "[psv] render resolution: GPU pool %u MiB -> %u MiB\n", render_pools[i].mib, mib);
     }
 }
+/* Viewport probe (diagnostic, 2026-11-04; PSV_VIEWPORT_PROBE=1). main+0xb53978 gives a pass the size of its target's
+   texture wrapper ([wrapper + 0x68] / + 0x70); with a bigger render size the main passes still get 1920 there. A stub in the
+   free end of the text page keeps the last wrapper whose width is 1920 at data + 0x100, for a write watch ("watch"):
+     main+0xb539fc  ldp x9, x10, [x8, #0x68]  -> b D;  D: ldp x9, x10, [x8, #0x68]; cmp x9, #0x780; b.ne back;
+                    adrp x11, data; str x8, [x11, #0x100]; back: b site + 4      (x11 and the flags are dead there) */
+static void patch_viewport_probe(Module *m) {
+    if (!getenv("PSV_VIEWPORT_PROBE")) return;
+    const uint64_t site = 0xb539fc, d = 0x343ff40;
+    uint64_t data = (m->file_size - m->image_off + 0x3fff) & ~0x3fffULL; uintptr_t mb = (uintptr_t)m->base;
+    uint32_t w; memcpy(&w, m->base + site, 4);
+    if (w != 0xa946a909 || m->text_end > d) runtime_fail("viewport probe: site or text padding differ");
+    for (uint64_t k = d; k < d + 24; k++) if (m->base[k]) runtime_fail("viewport probe: text padding in use");
+    int any = !strcmp(getenv("PSV_VIEWPORT_PROBE"), "any");   /* =any: every pass, to see that the site runs at all */
+    uint32_t sd[6] = {0xa946a909, 0xf11e013f, any ? 0xd503201f : 0x54000061, adrp(11, mb + d + 12, mb + data), 0xf9008168, branch(d + 20, site + 4)};
+    memcpy(m->base + d, sd, sizeof sd); w = branch(site, d); memcpy(m->base + site, &w, 4);
+    sys_icache_invalidate(m->base + d, sizeof sd); sys_icache_invalidate(m->base + site, 4);
+    /* the depth-target branch: main+0xb53ab8 ldp x8, x9, [x21, #0x68] -> b E; E: ldp; cmp x8, #0x780; b.ne back;
+       adrp x10, data; str x21, [x10, #0x108]; back: b site + 4      (x10 and the flags are dead there) */
+    const uint64_t site2 = 0xb53ab8, e2 = 0x343ff60; memcpy(&w, m->base + site2, 4);
+    if (w != 0xa946a6a8) runtime_fail("viewport probe: depth site differs");
+    for (uint64_t k = e2; k < e2 + 24; k++) if (m->base[k]) runtime_fail("viewport probe: text padding in use");
+    uint32_t se[6] = {0xa946a6a8, 0xf11e011f, any ? 0xd503201f : 0x54000061, adrp(10, mb + e2 + 12, mb + data), 0xf9008555, branch(e2 + 20, site2 + 4)};
+    memcpy(m->base + e2, se, sizeof se); w = branch(site2, e2); memcpy(m->base + site2, &w, 4);
+    sys_icache_invalidate(m->base + e2, sizeof se); sys_icache_invalidate(m->base + site2, 4);
+    fprintf(stderr, "[psv] viewport probe: last 1920-wide texture wrapper at %p (data + 0x100)\n", (void *)(m->base + data + 0x100));
+}
 void runtime_game_patches(Module *main_module) {
+    patch_viewport_probe(main_module);
     patch_render_res(main_module);
     patch_render_pools(main_module);
     patch_frame_step(main_module);
