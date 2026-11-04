@@ -1,3 +1,4 @@
+#include <math.h>
 #include "game_patches.h"
 #include "game_version.h"
 #include <libkern/OSCacheControl.h>
@@ -171,7 +172,79 @@ static void patch_far_distance(Module *m) {
     w = 0x72a8f868; memcpy(m->base + site, &w, 4); sys_icache_invalidate(m->base + site, 4);
     fprintf(stderr, "[psv] far distance: limit 100000 instead of 50000 (PSV_FAR_DISTANCE=0 turns it off)\n");
 }
+/* The render resolution (2026-11-04). The engine's settings object (made at main+0x146fde4, the same object whose +0x20 is
+   the frame mode byte) holds the screen size at +0x10 / +0x18, 1920 x 1080; the settings parser's defaults at main+0x146e7b4
+   and the FlatBuffers reader's defaults for absent fields (main+0x1473da8, the size the running game ends up with) write the same. The render targets are that size and its halves (960x540, 480x270, 240x135). PSV_RENDER_RES=<w>x<h>
+   writes another size into both defaults (experimental). */
+static unsigned render_w, render_h;
+int runtime_render_size(unsigned *w, unsigned *h) { if (!render_w) return 0; *w = render_w; *h = render_h; return 1; }
+static void patch_render_res(Module *m) {
+    const char *e = getenv("PSV_RENDER_RES"); unsigned w, h;
+    if (!e || !*e || !strcmp(e, "0")) return;
+    if (sscanf(e, "%ux%u", &w, &h) != 2 || w < 640 || h < 360 || w > 7680 || h > 4320 || (w | h) & 7) runtime_fail("PSV_RENDER_RES must be <width>x<height>, multiples of 8, 640x360 .. 7680x4320");
+    static const struct { uint64_t off; uint32_t orig; int is_h; char group; } sites[] = {
+        {0x146fe00, 0x5280f008, 0, 'a'}, {0x146fe04, 0x52808709, 1, 'a'},   /* mov w8, #1920 / mov w9, #1080 (settings object) */
+        {0x146e7b4, 0x5280f008, 0, 'a'}, {0x146e7b8, 0x52808709, 1, 'a'},   /* the parser's defaults */
+        {0x1473da8, 0x5280f008, 0, 'a'}, {0x1473db0, 0x52808708, 1, 'a'},   /* the FlatBuffers reader's defaults for absent fields */
+        {0x166950c, 0x5280f004, 0, 'b'}, {0x16694fc, 0x52808705, 1, 'b'},   /* nnMain's framework: a {x, y, w, h} entry (main+0xc8037c) */
+        {0x1664100, 0x5280f009, 0, 'c'}, {0x16640f8, 0x5280870a, 1, 'c'},   /* nnMain's framework: a texture description */
+        {0x2635370, 0x5280f00a, 0, 'd'}, {0x2635374, 0x5280870b, 1, 'd'},
+        {0xbc519c, 0x5280f008, 0, 'e'}, {0xbc5194, 0x52808709, 1, 'e'},
+        {0x14b0020, 0x5280f008, 0, 'f'}, {0x14b0024, 0x5280870a, 1, 'f'},
+        {0x16694bc, 0x52a89e08, 2, 'g'}, {0x16694c4, 0x52a890e8, 3, 'g'},   /* mov w8, #1920.0f / #1080.0f: nnMain's framework, main+0xc80894 (x, y, w, h) */
+        {0x16696a0, 0x52a89e08, 2, 'g'}, {0x16696a8, 0x52a890e8, 3, 'g'},
+    };
+    const char *groups = getenv("PSV_RENDER_SITES"); if (!groups || !*groups) groups = "a";   /* diagnostic: which site groups */
+    for (unsigned i = 0; i < sizeof sites / sizeof *sites; i++) { uint32_t have; memcpy(&have, m->base + sites[i].off, 4); if (have != sites[i].orig) runtime_fail("render resolution: instruction differs"); }
+    for (unsigned i = 0; i < sizeof sites / sizeof *sites; i++) {
+        if (!strchr(groups, sites[i].group)) continue;
+        uint32_t v = sites[i].is_h & 1 ? h : w, word;
+        if (sites[i].is_h & 2) {   /* a float's upper half (movz w, #imm, lsl #16): exact only when its lower half is zero */
+            float f = (float)v; uint32_t bits; memcpy(&bits, &f, 4);
+            if (bits & 0xffff) runtime_fail("PSV_RENDER_RES: this size is not exact as a 16-bit float immediate");
+            word = (sites[i].orig & 0xffe0001fu) | (bits >> 16) << 5;
+        } else word = (sites[i].orig & 0xffe0001fu) | v << 5;
+        memcpy(m->base + sites[i].off, &word, 4); sys_icache_invalidate(m->base + sites[i].off, 4);
+    }
+    render_w = w; render_h = h;
+    fprintf(stderr, "[psv] render resolution: %ux%u instead of 1920x1080 (PSV_RENDER_RES, experimental)\n", w, h);
+}
+/* The GPU memory pools follow the render size (2026-11-04). The settings parser (main+0x146e724) replaces three pool sizes the
+   game data gives with smaller ones: [cfg+0x18] 384 -> 350 MiB (flags 0x22), [cfg+0x20] 320 -> 268 MiB (flags 0xa1,
+   compressible: the render targets), [cfg+0x28] 48 -> 50 MiB. They are sized for 1080p: with bigger fixed render targets
+   a 256 KiB block allocation returned null (crash at main+0xc281d0). With PSV_RENDER_RES the first two grow by the pixel
+   ratio (PSV_RENDER_POOLS=<letters>: t the 350 MiB pool, r the 268 MiB pool; default both), and the application pool by
+   the same bytes. */
+static const struct { uint64_t off; uint32_t orig; uint32_t mib; char key; } render_pools[] = {
+    {0x146e738, 0x52a2bc09, 350, 't'},   /* mov w9, #0x15e00000 */
+    {0x146e770, 0x52a21809, 268, 'r'},   /* mov w9, #0x10c00000 */
+};
+static double render_ratio(void) {
+    const char *e = getenv("PSV_RENDER_RES"); unsigned w, h;
+    if (!e || sscanf(e, "%ux%u", &w, &h) != 2 || (double)w * h <= 1920.0 * 1080.0) return 1;
+    return (double)w * h / (1920.0 * 1080.0);
+}
+static int render_pool_on(char key) { const char *e = getenv("PSV_RENDER_POOLS"); return !e || strchr(e, key); }
+static uint32_t render_pool_mib(unsigned i) { return (uint32_t)ceil(render_pools[i].mib * render_ratio() / 2.0) * 2; }   /* whole 2 MiB */
+static uint64_t render_pool_extra(void) {
+    uint64_t extra = 0;
+    for (unsigned i = 0; i < sizeof render_pools / sizeof *render_pools; i++) if (render_pool_on(render_pools[i].key)) extra += (uint64_t)(render_pool_mib(i) - render_pools[i].mib) << 20;
+    return extra;
+}
+static void patch_render_pools(Module *m) {
+    if (render_ratio() <= 1) return;
+    for (unsigned i = 0; i < sizeof render_pools / sizeof *render_pools; i++) {
+        if (!render_pool_on(render_pools[i].key)) continue;
+        uint32_t have; memcpy(&have, m->base + render_pools[i].off, 4); if (have != render_pools[i].orig) runtime_fail("render pools: instruction differs");
+        uint32_t mib = render_pool_mib(i), imm = mib << 4;   /* the immediate counts 64 KiB units (lsl #16) */
+        if (imm > 0xffff) runtime_fail("render pools: size too large");
+        uint32_t word = (have & 0xffe0001fu) | imm << 5; memcpy(m->base + render_pools[i].off, &word, 4); sys_icache_invalidate(m->base + render_pools[i].off, 4);
+        fprintf(stderr, "[psv] render resolution: GPU pool %u MiB -> %u MiB\n", render_pools[i].mib, mib);
+    }
+}
 void runtime_game_patches(Module *main_module) {
+    patch_render_res(main_module);
+    patch_render_pools(main_module);
     patch_frame_step(main_module);
     patch_fixed_step(main_module);
     patch_jump(main_module);
@@ -254,7 +327,9 @@ void runtime_frame_step_update(uint64_t now_ns) {
 
 /* The earlier port's host hooks in the shared graphics layer and the input keys call keep their names and answer "off". */
 int runtime_output_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
-uint64_t runtime_output_res_extra_bytes(void) { return 0; }
+/* The render resolution's GPU pools (patch_render_pools): what they grow by, added to the application pool (services.c). */
+static uint64_t render_pool_extra(void);
+uint64_t runtime_output_res_extra_bytes(void) { return render_pool_extra(); }
 uint64_t runtime_output_size_current(void) { return (uint64_t)1080 << 32 | 1920; }
 int runtime_output_res_toggle(void) { return 0; }
 int runtime_output_mode_cycle(void) { return 0; }

@@ -1385,6 +1385,9 @@ NVN(nvnCommandBufferClearDepthStencil, void, NVNcommandBuffer *c, float depth, u
 }
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
     if (n < 0 || first + n > 16) { LOG("【红】SetViewports first=%d n=%d", first, n); return; }
+    /* PSV_VIEWPORT_CHAIN=<w>x<h> (diagnostic): the game call chain of the first 40 viewports of this size (where the canvas size comes from) */
+    { static int vw = -1, vh, vn; if (vw < 0) { const char *e = getenv("PSV_VIEWPORT_CHAIN"); if (!e || sscanf(e, "%dx%d", &vw, &vh) != 2) vw = 0; }
+      if (vw && n > 0 && (int)v[2] == vw && (int)v[3] == vh && vn++ < 40) guest_chain("viewport"); }
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }

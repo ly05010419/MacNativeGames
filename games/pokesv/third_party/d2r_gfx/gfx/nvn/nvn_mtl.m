@@ -2452,6 +2452,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // PSV_MFX_UPSCALE at run time (manual key 3 picture mode)
     if (!strcmp(name, "mfx_interp")) { mfx_set(v); return; }
+    if (!strcmp(name, "aniso")) { extern void nvn_aniso_set(int); nvn_aniso_set(v); return; }   // the settings panel's anisotropic filtering, for scripted A/B
     if (!strcmp(name, "draw_log")) { extern _Atomic long g_draw_log; atomic_store(&g_draw_log, v); MLOG("[flag] draw_log: every draw and dispatch of the next %d frames", v); return; }
     if (!strcmp(name, "uw_log")) { extern _Atomic long g_uw_log; atomic_store(&g_uw_log, v); MLOG("[flag] uw_log: canvas draws of the next %d frames", v); return; }   // key 4 UI squeeze diagnostic
     if (!strcmp(name, "mfx_output")) { mfxup_output_set(v < 0 ? !mfxup_output_enabled() : v); return; }   // PSV_MFX_OUTPUT at run time (the window output stage)
@@ -5549,6 +5550,26 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     if (samp_border_custom(sp)) atomic_store(&g_border_custom_any, 1);
     registry_unlock();
 }
+/* Forced anisotropic filtering (samp_by_id): PSV_ANISO=<1..16> fixes it, else the settings panel sets it (default 16). A
+   change makes every sampler state again at its next use: the registry generation moves, so cached argument bindings are
+   encoded again. The old states are not released, since submitted GPU work may still sample through them (a few hundred
+   small objects per change). */
+static _Atomic int g_aniso = -1;
+int nvn_aniso_fixed(void) { return getenv("PSV_ANISO") != NULL; }
+int nvn_aniso_get(void) {
+    int v = atomic_load_explicit(&g_aniso, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("PSV_ANISO"); v = e ? atoi(e) : 16; v = v < 1 ? 1 : v > 16 ? 16 : v; atomic_store(&g_aniso, v); }
+    return v;
+}
+void nvn_aniso_set(int v) {
+    v = v < 1 ? 1 : v > 16 ? 16 : v;
+    if (nvn_aniso_fixed() || atomic_exchange(&g_aniso, v) == v) return;
+    registry_lock();
+    for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) { g_sview[i] = NULL; g_srid[i] = 0; }
+    g_reg_gen++;
+    registry_unlock();
+    MLOG("[psv] anisotropic filtering %dx (sampler states made again)", v);
+}
 /* Texture-pool slots whose cached view still holds a texture of a finalized serial (diagnostic for the readout line). */
 static void treg_stale_report(void) {
     unsigned long stale = 0, views = 0; unsigned long long stale_mb = 0;
@@ -5861,6 +5882,12 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     }
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
+    /* Forced anisotropic filtering (PSV_ANISO, default 16; 0 or 1 keeps the game's own value). Violet asks for 1 on every
+       sampler (DM_NVN_SAMPLOG, 2026-11-04: 339 of 339), so ground and paths blur at a grazing angle. Raised only for linear
+       mipmapped samplers without compare or reduction (the material textures): shadow, nearest and min/max samplers keep
+       what the game set. */
+    { int force = nvn_aniso_get();
+      if (force > (int)d.maxAnisotropy && (p.minf == 3 || p.minf == 5) && p.magf && !p.cmp_mode && !p.reduction) d.maxAnisotropy = (NSUInteger)force; }
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);

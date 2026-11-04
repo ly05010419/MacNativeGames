@@ -36,6 +36,7 @@ static void settings_show(int open);
 static void settings_path(char *out, size_t n) {
  const char *dir=getenv("PSV_PROFILE_DIR");snprintf(out,n,"%s/settings.txt",dir&&*dir?dir:"user-data");
 }
+int nvn_aniso_get(void); void nvn_aniso_set(int v); int nvn_aniso_fixed(void);   /* gfx/nvn/nvn_mtl.m */
 static int settings_mfx_fixed(void) { return getenv("PSV_MFX_OUTPUT")||getenv("PSV_MFX_UPSCALE"); }
 static int settings_mfx_on(void) { return mfxup_enabled()&&mfxup_output_enabled(); }
 static void settings_mfx_set(int on) { dm_gfx_set_flag("mfx_upscale",on);dm_gfx_set_flag("mfx_output",on); }
@@ -46,7 +47,7 @@ static void settings_interp_set(int on) { settingsInterp=on!=0;mfx_set(on?SETTIN
 static void settings_save(void) {
  char path[1024];settings_path(path,sizeof path);FILE *f=fopen(path,"w");
  if(!f){fprintf(stderr,"[psv] settings: cannot write %s\n",path);return;}
- fprintf(f,"frame-lock %d\nmetalfx %d\ninterp %d\noverlay %d\n",nvn_fps_lock(),settings_mfx_on(),settings_interp_on(),fps_overlay_hints_enabled());fclose(f);
+ fprintf(f,"frame-lock %d\nmetalfx %d\ninterp %d\noverlay %d\naniso %d\n",nvn_fps_lock(),settings_mfx_on(),settings_interp_on(),fps_overlay_hints_enabled(),nvn_aniso_get());fclose(f);
 }
 /* Before the game starts: the frame lock and MetalFX. The overlay waits for its box (settings_restore_overlay). */
 static int settingsSavedOverlay=-1;
@@ -58,6 +59,7 @@ static void settings_restore(void) {
   else if(!strcmp(name,"metalfx")&&(v==0||v==1)&&!settings_mfx_fixed())settings_mfx_set(v);
   else if(!strcmp(name,"interp")&&(v==0||v==1)&&!settings_interp_fixed())settings_interp_set(v);
   else if(!strcmp(name,"overlay")&&(v==0||v==1))settingsSavedOverlay=v;
+  else if(!strcmp(name,"aniso")&&(v==1||v==4||v==8||v==16))nvn_aniso_set(v);
  }
  fclose(f);fprintf(stderr,"[psv] settings: frame lock %d, MetalFX %d, interpolation %d (%s)\n",nvn_fps_lock(),settings_mfx_on(),settings_interp_on(),path);
 }
@@ -113,6 +115,9 @@ static NSArray<PSVSettingRow *> *settings_rows(void) {
  NSString *fi=settings_text("补帧（60 → 120 帧，60 帧锁帧）","Frame interpolation (60 to 120 fps, with the 60 fps lock)");
  if(settings_interp_fixed())[rows addObject:settings_row(fi,@[mfx_enabled()?settings_text("开（PSV_MFX）","On (PSV_MFX)"):settings_text("关（PSV_MFX）","Off (PSV_MFX)")],@[@0],^int{return 0;},nil)];
  else [rows addObject:settings_row(fi,nil,nil,^int{return settings_interp_on();},^(int v){settings_interp_set(v);})];
+ NSString *af=settings_text("各向异性过滤","Anisotropic filtering");
+ if(nvn_aniso_fixed())[rows addObject:settings_row(af,@[[NSString stringWithFormat:@(PSV_UI("%dx（PSV_ANISO）","%dx (PSV_ANISO)")),nvn_aniso_get()]],@[@0],^int{return 0;},nil)];
+ else [rows addObject:settings_row(af,@[settings_text("关（游戏自身）","Off (the game's own)"),@"4x",@"8x",@"16x"],@[@1,@4,@8,@16],^int{return nvn_aniso_get();},^(int v){nvn_aniso_set(v);})];
  [rows addObject:settings_row(settings_text("性能信息","Overlay"),nil,nil,^int{return fps_overlay_hints_enabled();},
   ^(int v){if(v!=fps_overlay_hints_enabled())runtime_shortcut_help_toggle();})];
  return rows;

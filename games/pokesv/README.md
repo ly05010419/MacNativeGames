@@ -39,7 +39,8 @@ Tested on one Mac: Apple M3 Pro, macOS 27, game version 4.0.0 (base NSP 1.0.0 pl
 ## Known gaps
 
 - Rare crash at a scene change (`CentralHeap::Free` of a misaligned pointer from gflib's scene manager, about one run in eight). Not reproduced under A/B.
-- A hang in the game's job system, about once per 5 to 15 minutes of walking (31 October). Cause open, see the CHANGELOG.
+- A hang in the game's job system, about once per 5 to 15 minutes of walking (31 October). Cause open, see the CHANGELOG. The stall dump in the log now prints the job queues (`job system: context array`): keep the log of a session that hung.
+- The render resolution is the game's 1920x1080. `PSV_RENDER_RES=<w>x<h>` is an unfinished experiment (CHANGELOG, 4 November): the picture stays 1080p in a corner.
 - Stretches of minutes with every tenth frame at about 29 ms in player sessions. Not reproduced in test runs.
 - Only one scissor rectangle per draw is replayed. Conservative rasterisation is drawn normally.
 - One packaged texture is read back on the CPU because its storage is not in a memory pool.
@@ -78,6 +79,7 @@ Key 1 or Esc closes it again. Each pick applies at once and is kept in `settings
 | Frame lock | 30, 60, 90, 120 fps (60 when nothing is saved). **90 and 120 break the game's effects** (they run slow or stop, and the game can hang). The panel says so. |
 | Resolution | 1080p, or 1080p with MetalFX upscaling to the window or full screen. |
 | Frame interpolation | on or off. MetalFX makes one frame between every two game frames: 60 + 60 on a 120 Hz screen, with the 60 fps lock. About 3.3 ms more GPU per frame and about 5 ms more delay. `PSV_MFX=interp` or `0` decides first. |
+| Anisotropic filtering | off (the game's own), 4x, 8x, 16x (16x when nothing is saved). Only the material textures get it: shadow and nearest samplers keep the game's value. `PSV_ANISO=<1..16>` decides first. |
 | Overlay | the FPS and shader box |
 
 **A higher frame lock does not speed the game up.** The game counts every frame as 33.3 ms. The runtime makes its clocks follow the measured frame time (`runtime/game_patches.c`), so walking is right at 30, 60, 90 and 120. At 30 and 60 the clocks step whole 60 Hz ticks, as on the Switch 2. Above 60 they cannot (a step of 0 ticks stops the game), so effects run slow. `PSV_FRAME_STEP=game` keeps the game's own timing for comparison: then 60 runs twice as fast. In the 60 fps mode two systems keep 30 fps steps on purpose. The first is the fixed-step clock of the game's scripts: they step every frame, so rooms are smooth but scripted fixed-step motion runs twice as fast. Ride jumps get a 1.95 upward scale against that, as in the community mod, and are still shorter than at 30 fps (`PSV_FIXED_STEP=0` turns the clock off and rooms then jerk, `PSV_JUMP_SCALE=0` the jump scale). The second is the interface animations, authored in 30 fps frames (`PSV_UI_SCALE=0` turns that off, and menus and the Pokédex then run twice as fast). `PSV_FAR_DISTANCE=0` keeps the game's animation distance limit of 50000 instead of the mod's 100000. 60 fps is the tested rate, but the frame lock starts at 30 (the game's own rate) until the player picks 60, because of the scripts' faster fixed step. The game's canvas stays 1920x1080: a native higher resolution needs patches to its renderer, which this port does not have yet. At 120 the grassland holds 120 fps on an M3 Pro (1 November 2026). **On "Choose a look for yourself" the cursor starts between the faces: push the left stick once before A.**
