@@ -29,7 +29,7 @@ import sys
 import zlib
 
 GLSLC = b'\x91\x68\x86\x19'
-VERSION = 0x00220015
+VERSIONS = (0x00220015, 0x00220615)   # GLSLC output versions (+8); 0x220615: 3 of Pokopia's 213,169 objects
 CTL_MAGIC = b'\x34\x12\x76\x98'
 CTL_SIZE = 0xe0
 IDRK = b'IDRK0000'
@@ -55,24 +55,26 @@ def shader_key(ctl, code):
 
 
 def containers(d, label):
-    """(key, stage, control, code, label) of every GLSLC output in d that passes the checks."""
+    """(key, stage, control, code, label) of every GLSLC output in d that passes the checks. The output's header gives
+    its size (+0x5c) and where its control section starts (+0x60); the control section gives its own size (+0x30) and the
+    code area's length (+0x44, the runtime's ctl_code_len), and the code area follows it. Until 2026-11-04 the control
+    section was found from other header fields and taken as 0xe0 bytes long: that held for 2,204 of the 130,904 shaders in
+    Pokemon Pokopia's RDB data and missed the rest (kirakira-dev/ouncenative nx2_shader_extract.py, MIT, reads the layout
+    this way), so most shaders the game sets were translated in play."""
     out = []
     for m in re.finditer(GLSLC, d):
         h = m.start()
-        if h + 0xe0 > len(d) or struct.unpack_from('<I', d, h + 8)[0] != VERSION:
+        if h + 0x68 > len(d) or struct.unpack_from('<I', d, h + 8)[0] not in VERSIONS:
             continue
-        total, ctl_end, code_len, hdr = (struct.unpack_from('<I', d, h + o)[0] for o in (0x5c, 0x60, 0xa8, 0xdc))
-        c = h + hdr + ctl_end - CTL_SIZE
-        if not (0xe0 <= hdr <= 0x400 and CTL_SIZE <= ctl_end < 0x10000 and 0 < code_len < 0x400000
-                and hdr + ctl_end + code_len <= total <= len(d) - h):
+        total, at = struct.unpack_from('<II', d, h + 0x5c)
+        c = h + at
+        if not (0x60 <= at and at + 0x48 <= total <= len(d) - h) or d[c:c + 4] != CTL_MAGIC or d[c + 4:c + 8] != b'\xc9\0\0\0':
+            continue
+        size, n = struct.unpack_from('<I', d, c + 0x30)[0], struct.unpack_from('<I', d, c + 0x44)[0]
+        if not (0xd8 <= size < 0x10000 and 0 < n < 0x400000 and at + size + n <= total):   # Pokopia's are 0xd8 long (the runtime reads 0xe0: the rest is the code's start, as in the game's memory)
             continue
         ctl = bytes(d[c:c + CTL_SIZE])
-        if ctl[:4] != CTL_MAGIC or ctl[4:8] != b'\xc9\0\0\0':
-            continue
-        n = struct.unpack_from('<I', ctl, 0x44)[0]
-        if not 0 < n <= code_len:
-            continue
-        code = bytes(d[c + CTL_SIZE:c + CTL_SIZE + n])
+        code = bytes(d[c + size:c + size + n])
         st = stage_of(ctl, code)
         if st is None:
             continue
@@ -237,13 +239,18 @@ def main():
     p.add_argument('--modules', type=Path, nargs='+', required=True, help='the game modules as ELF files (extracted/<v>/elf/*.elf)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
+    p.add_argument('--listed', type=Path, help="the game's shared shader list: of the RDB data files' shaders (130,904 in "
+                   "Pokopia, most of them never loaded) only those its V rows name; the modules' and LINKDATA's all")
     a = p.parse_args()
+    listed = None
+    if a.listed:
+        listed = {f[1] for f in (line.split('\t') for line in a.listed.read_text().splitlines()) if len(f) == 3 and f[0] == 'V'}
     src = Source(a.romfs)
     rdbs = sorted(f for f in src.files if f.endswith(('.fdata', '.file')))
     link = ('LI_C0_R.IDX', 'LD_C0_R.BIN') if {'LI_C0_R.IDX', 'LD_C0_R.BIN'} <= src.files.keys() else None
     if not rdbs and not link:
         sys.exit(f'[RED] {a.romfs}: no RDB data files and no LINKDATA: not a Koei Tecmo RomFS this script reads')
-    shaders, per_source, failed = {}, {}, []
+    shaders, per_source, failed, startup = {}, {}, [], set()
     with concurrent.futures.ProcessPoolExecutor(a.jobs) as ex:
         jobs = [ex.submit(scan_module, m) for m in a.modules] + [ex.submit(scan_rdb, a.romfs, f) for f in rdbs]
         if link:
@@ -257,9 +264,16 @@ def main():
             per_source[name] = len(found)
             for key, st, ctl, code, label in found:
                 shaders.setdefault(key, (st, ctl, code, label))
+                if not name.endswith(('.fdata', '.file')):   # a module's or LINKDATA's: always in the corpus
+                    startup.add(key)
             print(f'{name}: {units} entries, {len(found)} shaders', flush=True)
     if failed:
         sys.exit('[RED] ' + '\n'.join(failed))
+    found = len(shaders)
+    if listed is not None:
+        shaders = {k: v for k, v in shaders.items() if k in startup or k in listed}
+        print(f'{found} distinct shaders found; kept {len(shaders)}: {len(startup)} of the modules and LINKDATA and '
+              f'{len(shaders) - len(startup & shaders.keys())} of the RDB data the list names ({len(listed)} listed)')
     by_stage = {}
     for st, *_ in shaders.values():
         by_stage[st] = by_stage.get(st, 0) + 1

@@ -477,6 +477,8 @@ def main(argv):
     elif argv[:1] == ['export'] and len(argv) == 3:
         Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm', source=list_name(argv[1])))
     elif argv[:1] == ['prune'] and len(argv) == 3:
+        if list_game(argv[1]) in ('dkb', 'pokopia'):   # a Switch 2 game's V rows are what its seed translates (prepare_ns2_seed.py)
+            sys.exit(f'{argv[1]}: a Switch 2 game\'s list is not pruned: its V rows name the shaders its seed takes from the game files')
         sys.path.insert(0, str(Path(__file__).resolve().parent))   # also when run with python -I
         from prepare_shader_seed import builtin_serves   # it imports this module
         lst = ShaderList.load(argv[1])

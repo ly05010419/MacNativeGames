@@ -374,14 +374,14 @@ typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UB
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } p_bind_handles; // 分离贴图 / 采样器句柄 | Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which：0 值掩码 1 写掩码 2 参考值 | which: 0 value mask 1 write mask 2 reference value
 typedef struct { float factor, units, clamp; } p_poly_offset;
-typedef struct { int32_t prim, first, count, base_instance, instances; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays)
+typedef struct { int32_t prim, first, count, base_instance, instances, pad_; uint64_t ind; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays); ind: NVN address of the {count, instances, first, base instance} record of an indirect draw (0 = direct)
 typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf, ind; } p_draw_idx;   // ind: NVN address of the {count, instances, first index, base vertex, base instance} record of an indirect draw (0 = direct)
 typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address
 typedef struct { const tex_t *tex; view_t view; uint8_t has_view, is_uint; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; } c; } p_clear_tex;
-typedef struct { int64_t stride; } p_copy_stride;
+typedef struct { int64_t stride; int32_t image, pad_; } p_copy_stride;   // image: SetCopyImageStride (the bytes between 2D slices of a 3D / array copy), else SetCopyRowStride
 typedef struct { float rgba[4]; } p_blend_color;
 
 // Metal 回放层入口（nvn_mtl.m）：把一组命令句柄回放进当前提交

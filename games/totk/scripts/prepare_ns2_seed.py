@@ -5,7 +5,8 @@ seed-manifest.json), so the app's shader steps take it as they are (step_shader_
 mac_pipelines).
 
 A Switch 2 game's shaders are not BNSH files in Shader/ packages: scripts/ns2_shader_corpus.py finds every one the game
-ships (its modules, LINKDATA, RDB data files) and the game binary's seed-shaders mode translates each through the
+ships (its modules, LINKDATA, and of its RDB data files' 130,000 shaders those the shared list names: the ones the game
+was seen to load) and the game binary's seed-shaders mode translates each through the
 runtime itself (totk_rt_variant), so keys and variant names are the runtime's own: the default bind state for every
 shader, and every bind state the game's shared shader list (games/<game>/assets/shader_list.tsv) names, with the answers
 a build gives that row. The translations go into a cache kept in the work folder (build/ns2-seed-cache/<version>), so
@@ -90,11 +91,11 @@ def main():
 
     stamp = corpus.with_suffix('.json')   # the corpus is made again only for other game files
     want = {'romfs_sha256': romfs_sha, 'modules': {e.name: sha256(e) for e in sorted(elf.glob('*.elf'))},
-            'tool': sha256(Path(__file__).resolve().parent / 'ns2_shader_corpus.py')}
+            'tool': sha256(Path(__file__).resolve().parent / 'ns2_shader_corpus.py'), 'list': sha256(a.list)}
     if not corpus.is_file() or not stamp.is_file() or json.loads(stamp.read_text()) != want:
         corpus.parent.mkdir(parents=True, exist_ok=True)
         run([sys.executable, Path(__file__).resolve().parent / 'ns2_shader_corpus.py', '--romfs', romfs,
-             '--modules', *sorted(elf.glob('*.elf')), '--out', corpus], a.logs / f'ns2-corpus-{v}.log')
+             '--modules', *sorted(elf.glob('*.elf')), '--out', corpus, '--listed', a.list], a.logs / f'ns2-corpus-{v}.log')
         stamp.write_text(json.dumps(want))
 
     service = Path('build/shader-service/totk_xlate')   # where the runtime looks for the translator (totk_shader_rt.m)

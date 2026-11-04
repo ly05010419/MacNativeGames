@@ -262,6 +262,37 @@ Added for it (general where possible, each with its reason in the code):
   Code Signature Invalid): the seed tool replaces the translation service with a new file. GAME_NS2 reads
   build/game-data/<v>/process.txt, now in the app's game data.
 
+**Pokopia, night 2026-11-04: all of its shaders found; one ID space per descriptor pool; two more NVN2 calls.**
+- The shader extractor missed 98 % of the game's shaders. scripts/ns2_shader_corpus.py found the control section from
+  other header fields and took it as 0xe0 bytes long; the GLSLC header gives the control section's offset (+0x60) and
+  the control section its own size (+0x30) and the code length (+0x44), as kirakira-dev/ouncenative's
+  nx2_shader_extract.py (MIT) reads them. Pokopia's files hold 131,090 distinct shaders (RDB data 130,904, LINKDATA 26,
+  modules 160), not 2,385; of the 8,026 the game set in a 4-minute run, 7,717 are among them (the earlier note that it
+  makes most of its shaders while it runs was wrong: about 65 drawn ones are in no file).
+- The seed takes the modules' and LINKDATA's shaders and those of the RDB data the shared list names (ns2_shader_corpus.py
+  --listed): all 131,090 would be about 23 GB of translations and libraries, and most are never loaded. The list holds the
+  keys the game was seen to set (8,556 shaders, identifiers only); the runtime adds, to the player's contribution file,
+  each shader the game sets that the seed lacks (totk_rt_note_set, GAME_NS2), so the list grows with play. shader_list.py
+  prune refuses a Switch 2 list (its V rows are what the seed translates).
+- One ID space per descriptor pool (seedds/nxnative's design, MIT): each texture / sampler pool gets a base in the host
+  table at its first initialisation; registrations go to base + ID, the handles a command buffer binds get the base of the
+  pool it last bound, and the replay's bound check takes base + size of the bound pool. Pokopia's second texture pool
+  registered textures over the first one's IDs in some scenes. Games with one pool of each kind keep base 0. Deferred
+  binds of a non-first pool are named in red (not rebased yet; Pokopia uses none).
+- nvnCommandBufferDrawArraysIndirect (the GPU reads {count, instances, first, base instance}) and
+  nvnCommandBufferSetCopyImageStride (the bytes between the 2D images of a 3D / array copy), both recorded as nxnative does.
+- Synchronous replay (the default since eec5983b) needs a replay section: Donkey Kong Bananza submits from two threads, and
+  their replays overlapped ("提交重入") and a memory-pool write-back on one thread used the other's upload batch. Submits,
+  presents and every operation that waited for the translation thread (x_drain: pool / program finalize, Read / Write
+  Texels, QueueFinish, suspend, memory-pool write-back) now hold a recursive lock with synchronous replay, and the thread
+  holding it is the upload batch's owner; with the translation thread the section is x_drain as before.
+- Measured (the in-world save, an empty shader cache, 4 minutes, the packaged app): frames over 100 ms 5.9 s (16.9 s
+  without the prepared data, 14.2 s with the first app), of them while building shaders 3.2 s; pipelines built in play
+  51, libraries 73. Bananza 3 minutes (11,700 frames) and Tears of the Kingdom 1.4.3 in the world (p50 9.6 ms) as before.
+- Open: recording copies still grow slowly in Pokopia (56,000 live, 129 MiB after 6 minutes); DrawArraysIndirect was not
+  called in the runs (no longer red); about 65 drawn shaders are made at run time (TOTK_SHADER_PREFETCH=2, to throttle);
+  the import step of build_app.py's Switch 2 path was not run end to end (the test work folder had the verified import).
+
 **Bananza regression found and fixed (2026-11-03 afternoon).** The vibration graph classes stubbed for Pokopia
 (VibrationNode, VibrationTarget, VibrationPlayer, VibrationNodeConnection, VibrationConverter) emptied their constructors:
 Bananza's own nodes derived from VibrationNode had no vtable and it called garbage from VibrationNode::Update about 20 s

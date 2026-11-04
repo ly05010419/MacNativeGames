@@ -181,6 +181,20 @@ NSSet<NSString *> *totk_rt_observed_shader_keys(void) {
     return totk_shader_observed_keys(observed_keys_state());
 }
 
+/* A shader the game set (nvnProgramSetShaders) that the app's seed does not hold: its key goes into the player's
+   contribution file once as a V row of the default bind state ("V <key> {}"), so the game's shared list names it and the
+   next build translates it ahead (prepare_ns2_seed.py takes the RDB shaders the list names). Pokemon Pokopia sets about
+   8,000 of its 131,000 shaders while it loads; the list started from those one run met (2026-11-04). Nothing without a
+   seed scope (a development run) or without a contribution file. */
+void totk_rt_note_set(NSString *shader) {
+    static NSSet<NSString *> *seeded; static NSMutableSet<NSString *> *noted; static dispatch_once_t once;
+    dispatch_once(&once, ^{ NSArray *k = shader_scope()[@"keys"]; seeded = [k isKindOfClass:NSArray.class] ? [NSSet setWithArray:k] : nil;
+                            noted = [NSMutableSet set]; });
+    if (!seeded || [seeded containsObject:shader]) return;
+    pthread_mutex_lock(&g_rt_lock);   // totk_contrib_add is called under the translation lock
+    if (![noted containsObject:shader]) { [noted addObject:shader]; totk_contrib_add(shader, @{}); }
+    pthread_mutex_unlock(&g_rt_lock);
+}
 NSSet<NSString *> *totk_rt_shader_scope(void) {
     const char *all = getenv("TOTK_WARM_ALL");
     NSDictionary *scope = shader_scope();

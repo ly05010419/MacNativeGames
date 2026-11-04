@@ -143,8 +143,9 @@ Measuring by game state with the Metal performance tools of macOS 27 (`TOTK_STAT
 ## Acknowledgements
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this way of running Switch games natively (for Diablo II: Resurrected): the NSO rewriter, the Horizon host and the NVN-on-Metal layer here started as its generic parts.
-- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the NSP common-ticket import follows its approach; the Switch 2 support also follows it and carries code of it (Ampere shaders, geometry shaders, SDK 20 services).
-- **[ouncenative](https://github.com/kirakira-dev/ouncenative)** (MIT) and **[pokopia-native](https://github.com/xFractals/pokopia-native)** (MIT): references for Pokémon Pokopia.
+- **[nxnative](https://github.com/seedds/nxnative)** (MIT): the NSP common-ticket import follows its approach; the Switch 2 support also follows it and carries code of it (Ampere shaders, geometry shaders, SDK 20 services, one texture / sampler ID space per descriptor pool, the non-indexed indirect draw and the copy image stride).
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)** (MIT): Pokémon Pokopia's shader layout — its GLSLC reader showed where the control section and the code area of each shader sit, which took our shader extraction from 2,385 to all 131,090 of Pokopia's shaders.
+- **[pokopia-native](https://github.com/xFractals/pokopia-native)** (MIT): reference for Pokémon Pokopia (its run-time shaders, the dump layout, the driver-rewritten control bytes).
 - **Ryujinx** (MIT): the shader translator (`vendor/ryujinx`, built ahead into `games/totk/prebuilt/macos-arm64/totk_xlate`) and a reference for the system services; the sound effects and the mixer in `games/totk/runtime` are ported from Ryujinx.Audio.
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)** (Apache-2.0) turns SPIR-V into Metal Shading Language; it is fetched at a pinned commit and compiled with clang during the build.
 - **[hactool](https://github.com/SciresM/hactool)** (ISC, with its bundled mbedTLS, Apache-2.0): merges the base game and its update at build time; fetched at a pinned commit.
@@ -293,8 +294,9 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 ## 致谢
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）为《暗黑破坏神 II：狱火重生》开发了这套原生运行 Switch 游戏的方法：这里的 NSO 改写器、Horizon 宿主和 Metal 上的 NVN 层都从它的通用部分起步。
-- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：NSP 通用票据读取的做法借鉴自它；Switch 2 支持也参照并移植了它的代码（Ampere 着色器、几何着色器、SDK 20 服务）。
-- **[ouncenative](https://github.com/kirakira-dev/ouncenative)**（MIT）、**[pokopia-native](https://github.com/xFractals/pokopia-native)**（MIT）：宝可梦 Pokopia 的参考。
+- **[nxnative](https://github.com/seedds/nxnative)**（MIT）：NSP 通用票据读取的做法借鉴自它；Switch 2 支持也参照并移植了它的代码（Ampere 着色器、几何着色器、SDK 20 服务、每个描述符池一段贴图 / 采样器编号、不带索引的间接绘制、拷贝的层间距）。
+- **[ouncenative](https://github.com/kirakira-dev/ouncenative)**（MIT）：宝可梦 Pokopia 的着色器格式——它的 GLSLC 解析让我们看清了每个着色器的控制段和代码段在哪，着色器提取从 2,385 个变成了全部 131,090 个。
+- **[pokopia-native](https://github.com/xFractals/pokopia-native)**（MIT）：宝可梦 Pokopia 的参考（运行时生成的着色器、转储目录结构、驱动改写的控制段字节）。
 - **Ryujinx**（MIT）：着色器翻译器（`vendor/ryujinx`，预编成 `games/totk/prebuilt/macos-arm64/totk_xlate`）和系统服务的参考；`games/totk/runtime` 里的音效和混音器移植自 Ryujinx.Audio。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**（Apache-2.0）把 SPIR-V 转成 Metal 着色语言；打包时按固定提交取得，用 clang 编。
 - **[hactool](https://github.com/SciresM/hactool)**（ISC，自带的 mbedTLS 是 Apache-2.0）：打包时合并本体和更新包；按固定提交取得。

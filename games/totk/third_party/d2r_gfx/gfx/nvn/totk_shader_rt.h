@@ -14,6 +14,7 @@ NSSet<NSString *> *totk_rt_observed_shader_keys(void);
 // The warm-up scope: this game version's shader keys (the seed's shader-keys.json) plus the observed ones; nil = no valid
 // scope, on iOS, or TOTK_WARM_ALL=1 (warm the whole cache).
 NSSet<NSString *> *totk_rt_shader_scope(void);
+void totk_rt_note_set(NSString *shader);   // a shader the game set that the seed lacks: into the contribution file
 // The variants of a shader already in the translation cache (or the seed), without translating anything; empty when none.
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader);
 // Returns the variant name whose <dir>/<variant>_b.{metal,json} match the answers, translating when needed.

@@ -1108,6 +1108,9 @@ static void up_flush(void);
 // and on mismatch prints the stack and aborts on the spot - so that 'another thread touched the batch' is exposed deterministically on Mac too, not by timing (real iOS device stuck at the main menu: the present thread flushed the submit thread's batch via q_cb).
 static pthread_t g_sub_thread; static _Atomic int g_sub_thread_set;
 static int on_sub_thread(void) { return atomic_load(&g_sub_thread_set) && pthread_equal(pthread_self(), g_sub_thread); }
+/* Synchronous replay: the thread in the replay section (hle_nvn.c replay_enter) is the batch's owner for what it does
+   there (a memory-pool write-back, ReadTexels); a submission sets it again at mtl_sub_begin. */
+void mtl_take_submit_thread(void) { g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1); }
 static void up_owner_check(const char *where) {
     if (!atomic_load(&g_sub_thread_set) || on_sub_thread()) return;
     char name[64] = ""; pthread_getname_np(pthread_self(), name, sizeof name);
@@ -1459,6 +1462,7 @@ static inline void enc_r_vbuf(id<MTL4RenderCommandEncoder> e, NSUInteger i, uint
 static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s, uint64_t gpu, NSUInteger i) { enc_r_address(e, s == MTLRenderStageVertex ? 0 : 1, i, gpu); }
 static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_DRAW,.u={p,v,n}},1); else [e drawPrimitives:p vertexStart:v vertexCount:n]; }
 static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INSTANCED,.u={p,v,n,i,b}},1); else [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b]; }
+static inline void enc_r_draw_indirect(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, uint64_t ind) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDIRECT,.u={p,ind}},1); else [e drawPrimitives:p indirectBuffer:ind]; }
 static inline void enc_r_draw_indexed_indirect(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, MTLIndexType t, uint64_t gpu, NSUInteger len, uint64_t ind) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDEXED_INDIRECT,.u={p,t,gpu,len,ind}},1); else [e drawIndexedPrimitives:p indexType:t indexBuffer:gpu indexBufferLength:len indirectBuffer:ind]; }
 static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_INDEXED,.u={p,n,t,gpu,len,i,(uint64_t)bv,bi}},1); else [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
 static inline void enc_r_store(id<MTL4RenderCommandEncoder> e, int depth, MTLStoreAction action, NSUInteger index) { if (rs_using(e)) rs_put((nvn_encode_packet){.op=RS_STORE,.u={(uint64_t)depth,action,index}},0); else if (depth == 1) [e setDepthStoreAction:action]; else if (depth == 2) [e setStencilStoreAction:action]; else [e setColorStoreAction:action atIndex:index]; }
@@ -3124,7 +3128,10 @@ static void wb_write_list(wb_ent **list, int nl, int force) {
     if (!nl) return;
     int tl = totk_tl_on(), blit = 0;
     if (tl) { totk_tl(TL_WB_IN, (uint64_t)nl, 0); for (int i = 0; i < nl; i++) blit |= !BOTW_WB_IS_STAGED(list[i]); }
+    extern void nvn_replay_enter(void) __attribute__((weak)), nvn_replay_leave(void) __attribute__((weak));   // hle_nvn.c: the replay section (uploads, the batch)
+    if (nvn_replay_enter) nvn_replay_enter();
     @autoreleasepool { wb_write_list_body(list, nl, force); }
+    if (nvn_replay_leave) nvn_replay_leave();
     if (tl) totk_tl(TL_WB_OUT, (uint64_t)nl, (uint64_t)blit);
 }
 /* Cache maintenance can reach these waits without an NVN_BLOCKING entry point. Keeping the guest's virtual core
@@ -6977,8 +6984,8 @@ static struct {
     uint64_t tex_gen[6];   // TOTK: a fresh value of g_tex_gen_seq whenever tex[stage] changes (TEX_CHANGED); saved / restored with S
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; int render_disabled; int raster_discard; uint8_t push[2][NVN_PUSH_SIZE];
-    float blend_color[4]; int64_t copy_stride;
-    int tex_pool_n;   // descriptors of the bound texture pool (OP_SET_TEX_POOL); 0 before one is bound: no bound check
+    float blend_color[4]; int64_t copy_stride, copy_image_stride;   // SetCopyRowStride / SetCopyImageStride (0 = packed)
+    int tex_pool_n;   // end of the bound texture pool's part of the ID table (its base + descriptors; OP_SET_TEX_POOL); 0 before one is bound: no bound check
 } S;
 static int bound_tex_pool_n(void) { return S.tex_pool_n; }
 static void args_program_changed(void);
@@ -8956,11 +8963,18 @@ static void prog_timing(const char *what, const prog_t *p, unsigned i, int st, c
     MLOG("[progt] %s %.1f %p %llu %d %.64s", what, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e6, (const void *)p, (unsigned long long)p->serial, st, key);
 }
 void mtl_prog_prefetch(const prog_t *p) {
-    if (prog_timing_on() && p) for (unsigned i = 0; i < p->nstage && i < 6; i++) {
+#ifdef GAME_NS2
+    const int note = 1;   // the shaders a Switch 2 game sets go to the shared list (totk_rt_note_set)
+#else
+    const int note = 0;
+#endif
+    if ((prog_timing_on() || note) && p) for (unsigned i = 0; i < p->nstage && i < 6; i++) {
         const uint8_t *control = p->sd[i].control; const void *code = (const void *)(uintptr_t)p->sd[i].data;
         if (!control || !code) continue;
         uint32_t length = ctl_code_len(control); if (!length || length > 16 * 1024 * 1024) continue;
-        char key[65]; shader_key_of(control, code, length, key); prog_timing("set", p, i, ctl_stage(control, code), key);
+        char key[65]; shader_key_of(control, code, length, key);
+        if (prog_timing_on()) prog_timing("set", p, i, ctl_stage(control, code), key);
+        if (note) totk_rt_note_set(@(key));
     }
     if (!prefetch_on() || !p || !p->nstage) return;
     static NSMutableSet<NSString *> *seen; static dispatch_queue_t q; static dispatch_semaphore_t slots; static os_unfair_lock lk = OS_UNFAIR_LOCK_INIT;
@@ -10925,7 +10939,7 @@ static int state_op(uint32_t op, const void *a) {
         case OP_VIEWPORTS: { const p_viewports *b = a; for (int i = 0; i < b->n; i++) memcpy(S.vp[b->first + i], b->v[i], 16); S.has_vp = 1; break; }
         case OP_DEPTH_RANGE: { const p_depth_range *b = a; S.dr[0] = b->n; S.dr[1] = b->f; break; }
         case OP_BLEND_COLOR: memcpy(S.blend_color, ((const p_blend_color *)a)->rgba, 16); break;
-        case OP_COPY_STRIDE: S.copy_stride = ((const p_copy_stride *)a)->stride; break;
+        case OP_COPY_STRIDE: { const p_copy_stride *cs = a; if (cs->image) S.copy_image_stride = cs->stride; else S.copy_stride = cs->stride; break; }
         case OP_DEPTH_CLAMP: S.depth_clamp = ((const p_flag *)a)->value; break;
         case OP_RENDER_ENABLE: S.render_disabled = !((const p_flag *)a)->value; break;
         case OP_RENDER_COND: S.render_disabled = !cond_eval(a, (const uint8_t *)a - 8); PD("E cond addr=%#llx mode=%d -> %s", (unsigned long long)((const p_render_cond *)a)->addr, ((const p_render_cond *)a)->mode, S.render_disabled ? "disabled" : "enabled"); break;
@@ -14658,7 +14672,14 @@ frz_plain:;
     if (!att_n) for (int i = 0; i < g_nsd; i++) if (g_sd[i].wrote) g_sd_plain |= 1u << i;   // att_unstored_read: draws of a sampling run do not count
     // 0 个图元的绘制（游戏会发 count=0）不画任何像素，跳过编码；Metal 规定计数必须非零，校验层否则当场中止（营地 / 野外 / 战斗页实测）
     // A draw with 0 primitives (the game does send count=0) draws no pixels, so skip encoding; Metal requires the count to be non-zero, otherwise the validation layer aborts on the spot (measured on the camp / wilderness / combat pages)
-    if (dw && prim == NVN_DRAW_PRIMITIVE_QUAD_STRIP) {
+    if (dw && dw->ind) {   /* nvnCommandBufferDrawArraysIndirect: the GPU reads the count and the rest from the record (hle_nvn.c) */
+        void *ib; uint64_t io, igpu;
+        if (!mtl_gpu_addr(dw->ind, 16, &ib, &io, &igpu)) { RED_ONCE(175, "indirect draw record outside its memory pool"); return; }
+        if (prim == NVN_DRAW_PRIMITIVE_QUADS || prim == NVN_DRAW_PRIMITIVE_QUAD_STRIP || prim == NVN_DRAW_PRIMITIVE_POLYGON) { RED_ONCE(176, "non-indexed indirect draw of quads or polygons: no conversion, skipped"); return; }
+        use_rec("buf", dw->ind, 16, 0, NULL);
+        enc_r_draw_indirect(en, mp, igpu);
+        static int once; if (!once++) MLOG("NVN indirect draw: the GPU reads its record (first at %#llx)", (unsigned long long)dw->ind);
+    } else if (dw && prim == NVN_DRAW_PRIMITIVE_QUAD_STRIP) {
         /* Hero's Path uses quad strips for its route. Pair boundaries and winding must survive the conversion;
            incomplete final pairs draw nothing. Batch long strips over one shared index buffer, preserving vertex IDs. */
         enum { QUAD_STRIP_BATCH = 65536 };
@@ -14988,7 +15009,7 @@ static void copy_t2b(const p_copy_b2t *c) {
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     size_t row = S.copy_stride ? (size_t)S.copy_stride : (size_t)((c->r.width + bw - 1) / bw) * bpb;
-    size_t rows = (c->r.height + bh - 1) / bh, img = row * rows;
+    size_t rows = (c->r.height + bh - 1) / bh, img = S.copy_image_stride ? (size_t)S.copy_image_stride : row * rows;   // SetCopyImageStride, else packed
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     upd_guard(c->src, c->src + img * nz);   // TOTK: renamed uniform updates before a GPU write to the range
@@ -15191,7 +15212,7 @@ static void copy_b2t(const p_copy_b2t *c) {
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     size_t row = S.copy_stride ? (size_t)S.copy_stride : (size_t)((c->r.width + bw - 1) / bw) * bpb;
-    size_t rows = (c->r.height + bh - 1) / bh, img = row * rows;
+    size_t rows = (c->r.height + bh - 1) / bh, img = S.copy_image_stride ? (size_t)S.copy_image_stride : row * rows;   // SetCopyImageStride, else packed
     int is3d = c->tex->d.target == 2, nz = c->r.depth ? c->r.depth : 1;
     void *mb; uint64_t mo;
     upd_guard(c->src, c->src + img * nz);   // TOTK: renamed uniform updates before a GPU read of the range
@@ -15695,7 +15716,8 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_T2T: copy_t2t(a); break;
             case OP_CLEAR_TEX: clear_tex(a); break;
             case OP_DISPATCH: dispatch(a); break;
-            case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; S.tex_pool_n = tp ? tp->n : 0; break; }
+            case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
+                                    S.tex_pool_n = tp ? nvn_tex_pool_base(tp) + tp->n : 0; break; }
             case OP_BARRIER: case OP_SET_SAMP_POOL: break;
             default: break;
         }
