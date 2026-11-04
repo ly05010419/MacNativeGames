@@ -145,7 +145,7 @@ class BotwChecks:
     def test_reserved_table_matches_patch_sites(self):
         sys.path.insert(0, str(ROOT / 'games/totk/scripts'))
         import patch_sites
-        text = patch_sites.compiled_text((ROOT / 'games/totk/runtime/game_patches_botw.c').read_text(),
+        text = patch_sites.compiled_text((ROOT / 'games/totk/runtime/botw_pchtxt_sites.h').read_text(),
                                          patch_sites.BOTW_DEFINED[self.VERSION])
         table = re.search(r'g_pchtxt_reserved\[\] = \{(.*?)\n\};', text, re.S).group(1)
         runtime = {o + i for o, n in ((int(a, 16), int(b, 16)) for a, b in re.findall(r'\{(0x[0-9a-f]+), (0x[0-9a-f]+)\}', table))

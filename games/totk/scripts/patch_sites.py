@@ -49,25 +49,8 @@ PATCHER = {'v0': 'game_patches.c', 'v121': 'game_patches.c', 'v143': 'game_patch
 # setFovy's store (botw_fov.h). The stubs and veneers they branch to sit in the padding after main's text, which
 # mod_exefs.py refuses to edit. runtime/game_patches_botw.c's g_pchtxt_reserved lists the same offsets;
 # tests/test_runtime_pchtxt.py keeps the two equal.
-BOTW_UPSTREAM = {
-    'botw190': [
-        (0xc33678, 0xc, 'camera blend first step: length, 1.0, timer'), (0xc33694, 0x8, 'camera blend first step: progress'),
-        (0xc336a4, 0x4, 'camera blend first step: add'), (0xc33724, 0x4, 'camera blend first step: step'),
-        (0xc33730, 0x8, 'camera blend first step: branch site and return'),
-        (0x71c, 0x4, 'native size'), (0xc617c0, 0x4, 'native size'), (0xc61b14, 0x4, 'native size'), (0xc61ee8, 0x4, 'native size'),
-        (0xc61ef4, 0x4, 'native size'), (0xc61f1c, 0x4, 'native size'), (0xc61f28, 0x4, 'native size'),
-        (0x1261704, 0x4, 'native size'), (0x12618b8, 0x4, 'native size'), (0x12618c4, 0x4, 'native size'),
-        (0x12660d0, 0x8, 'native size'), (0x12660f0, 0x4, 'native size'), (0x1266104, 0x4, 'native size'),
-        (0x12660bc, 0x50, 'native size: the docked branch patch_output_res checks whole, 20 words'),
-        (0x124eef8, 0x10, 'sun shadow size: the four moves'),
-        (0x10edad0, 0x10, 'field of view: the load and its checked neighbours'), (0xeb48ac, 0x4, 'field of view: setFovy store'),
-    ],
-    'botw160': [
-        (0xdddfe4, 0x4, 'camera blend first step: length, scale'), (0xdddfec, 0x4, 'camera blend first step: 1.0'),
-        (0xdddffc, 0x4, 'camera blend first step: step'), (0xdde044, 0x10, 'camera blend first step: branch site and checks'),
-        (0xdde090, 0x4, 'camera blend first step: progress'),
-    ],
-}
+# Kept as an empty compatibility attribute for older diagnostic callers. Sites come from the current source.
+BOTW_UPSTREAM = {'botw190': [], 'botw160': []}
 BOTW_DEFINED = {'botw190': {'GAME_BOTW', 'GAME_BOTW190'}, 'botw160': {'GAME_BOTW', 'GAME_BOTW160'}}
 
 Site = namedtuple('Site', 'label offset size')
@@ -233,8 +216,8 @@ def patcher_sites(version):
     source = PATCHER[version]
     text = (RUNTIME / source).read_text()
     if version in BOTW_DEFINED:
-        return botw_sites(text, source, BOTW_DEFINED[version]) + [Site(f'BOTW_UPSTREAM: {what}', offset, size)
-                                                                   for offset, size, what in BOTW_UPSTREAM[version]]
+        text += '\n' + '\n'.join((RUNTIME / name).read_text() for name in ('botw_shadow_res.h', 'botw_fov.h'))
+        return botw_sites(text, source, BOTW_DEFINED[version])
     foreign = [(start, end) for block, start, end in branch_spans(text) if block not in (version, None)]
     scoped = _blank(text, foreign)
     found = _sites_in_literals(_blank(scoped, [m.span() for m in CLOTH.finditer(text)]), source)
@@ -293,6 +276,11 @@ def botw_sites(text, source, defined):
               for match in BOTW_WORDS.finditer(active)]
     found += [(int(match.group(1), 16), _line_of(active, match.start()), 12) for match in BOTW_PHONE.finditer(active)]
     found += [(int(number, 16), _line_of(active, match.start()), 4) for match in BOTW_SLINK.finditer(active) for number in match.groups()]
+    # Named single sites (diagnostic hooks included), and explicitly checked contiguous instruction blocks.
+    found += [(int(m[1], 16), _line_of(active, m.start()), 4)
+              for m in re.finditer(r'\b(?:[A-Z_]*SITE|BACK)\s*=\s*(0x[0-9a-fA-F]+)', active)]
+    found += [(int(m[2], 16), _line_of(active, m.start()), 4 * int(m[1]))
+              for m in re.finditer(r'for \(unsigned i = 0; i < (\d+); i\+\+\) \{\s*memcpy\(&word, m->base \+ (0x[0-9a-fA-F]+) \+ 4 \* i, 4\)', active)]
     found += [(int(match.group(1), 16), _line_of(active, match.start()), 4 * len(re.findall(r'0x[0-9a-fA-F]+', match.group(2))))
               for match in BOTW_UW.finditer(active)]
     found += [(int(number, 16), _line_of(active, match.start()), 16) for match in BOTW_SIZE_INIT.finditer(active)

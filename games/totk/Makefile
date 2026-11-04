@@ -528,3 +528,8 @@ probe-playtime:
 	@mkdir -p build
 	xcrun clang -Wall -Wextra -Werror -fobjc-arc tests/playtime/probe.m -framework Foundation -o build/playtime-probe
 	build/playtime-probe
+
+# The build and launch-time mod readers share ranges derived from the actual runtime sources.
+runtime/botw_pchtxt_sites.h: scripts/emit_botw_pchtxt_sites.py scripts/patch_sites.py runtime/game_patches_botw.c runtime/game_version.h runtime/botw_shadow_res.h runtime/botw_fov.h
+	"$(PY)" scripts/emit_botw_pchtxt_sites.py --out "$@"
+build/totk-native-botw160 build/totk-native-botw190: runtime/botw_pchtxt_sites.h
