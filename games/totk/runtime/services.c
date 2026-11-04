@@ -49,7 +49,8 @@ static int dram_8gb(void){
 #if TARGET_OS_IPHONE
  return 0;
 #else
- static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e&&*e&&strcmp(e,"0");}return v;
+ static int v=-1;if(v<0){const char *e=getenv("TOTK_DRAM_8GB");v=e?(*e&&strcmp(e,"0")):runtime_texture_pack_active();
+  if(!v&&runtime_texture_pack_active())runtime_fail("texture pack requires the 8 GB layout; remove TOTK_DRAM_8GB=0");}return v;
 #endif
 }
 #if TARGET_OS_IPHONE
