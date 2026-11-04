@@ -3,7 +3,8 @@
    copied on the present thread and saved off the main thread, so the picture is the game picture -- not the boot screen's
    text, the FPS box or the settings panel, none of which the game draws -- and the game never stops for it. Where it goes
    depends on the platform:
-     - iPhone and iPad: the system photo library (Photos), the way a console's Capture button does;
+     - iPhone and iPad: the system photo library (Photos), in the album named after the game, the way a console's Capture
+       button does;
      - a desktop (macOS, Windows, Linux): a folder, the Desktop until the settings panel's folder chooser names another
        one; TOTK_SCREENSHOT_DIR names one for a launch.
    Until the game shows a picture the request saves nothing and the note says so; a frame that never comes (a paused or
@@ -22,6 +23,7 @@
 #include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
+#include "game_version.h"   /* GAME_NAME: the game whose frame it is (game_version.h is per binary) */
 
 /* The panel's texts follow the Mac's language (totk_ui_lang.h), which this header is included after. */
 #ifndef TOTK_UI
@@ -29,8 +31,9 @@
 #endif
 
 /* The album the pictures join in the photo library (a phone), and the file the settings panel keeps its folder in on a
-   desktop, next to controls.txt (read only when the environment names no folder). */
-#define TOTK_SCREENSHOT_ALBUM "Tears of the Kingdom"
+   desktop, next to controls.txt. The album is the running game's own name -- GAME_NAME, "Tears of the Kingdom" or
+   "Breath of the Wild" -- so one definition names it for the library, the note and the panel's row. */
+#define TOTK_SCREENSHOT_ALBUM GAME_NAME
 #define TOTK_SCREENSHOT_SETTING "screenshot-dir.txt"
 static char screenshot_folder_from_env[PATH_MAX];   /* a desktop's TOTK_SCREENSHOT_DIR, while it names one */
 
