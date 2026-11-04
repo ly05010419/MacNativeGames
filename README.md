@@ -34,6 +34,8 @@ and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-por
 |---|---|---|---|
 | Donkey Kong Bananza | update 458752 | Mac | Playable, early; not fully tested |
 | Pokémon Pokopia | 2.0.1 | Mac | Early: plays its opening into the first area (scripted test, not fully played). |
+| Mario Kart World | 1.0.0 | Mac | Community port, experimental; [build instructions](games/mkw/README.md) |
+| Mario Kart World | 1.0.0 | Mac | Community port, experimental; [build instructions](games/mkw/README.md) |
 
 Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
@@ -63,9 +65,10 @@ Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 | Astral Chain | 1.0.1 | Mac | Community port, work in progress; the first frame is presented and the title flow runs | [`games/alc`](games/alc/README.md) |
 | Xenoblade Chronicles 3 | 1.0.0, 2.2.1 | Mac | Community port, work in progress | [`games/xc3`](games/xc3/README.md) |
 | Pokémon Violet | 4.0.0 | Mac | Community port, work in progress | [`games/pokesv`](games/pokesv/README.md) |
+| Xenoblade Chronicles X: Definitive Edition | 1.0.0 | Mac | Community diagnostic host, early field gameplay; external work folder required | [`games/xcx`](games/xcx/README.md) |
+| Tomodachi Life: Living the Dream | 1.0.0 | Mac | Community diagnostic host; gameplay at current defaults not verified | [`games/tomodachi`](games/tomodachi/README.md) |
 
 Community ports keep their own runtime, graphics layer and scripts in their folder and are built with the steps there.
-- 2026-10-31: [Tomodachi Life: Living the Dream](games/tomodachi) 1.0.0 — experimental native Mac port with native controls and text entry; validation and known limitations are documented in its folder.
 
 ### VR: Tears of the Kingdom on a Meta Quest 3 (6DoF)
 
@@ -193,6 +196,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 |---|---|---|---|
 | 大金刚 Bananza | 更新 458752 | Mac | 初步可玩，早期，未完整测试 |
 | 宝可梦 Pokopia | 2.0.1 | Mac | 早期：能玩过开场进到第一个区域（脚本测试，没有完整玩过）。 |
+| 马力欧卡丁车 世界 | 1.0.0 | Mac | 社区移植，实验性；[构建说明](games/mkw/README.md) |
 
 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
 
@@ -221,6 +225,9 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 异界锁链 | 1.0.1 | Mac | 社区移植，开发中；能出第一帧，标题流程能走 | [`games/alc`](games/alc/README.md) |
 | 异度神剑3 | 1.0.0、2.2.1 | Mac | 社区移植，开发中 | [`games/xc3`](games/xc3/README.md) |
 | 宝可梦 紫 | 4.0.0 | Mac | 社区移植，开发中 | [`games/pokesv`](games/pokesv/README.md) |
+| 宝可梦传说 阿尔宙斯 | 1.1.1 | Mac | 社区移植，早期 | [`games/pla`](games/pla/README.md) |
+| 朋友收集 梦想生活 | 1.0.0 | Mac | 社区诊断宿主；当前默认配置未验证可玩 | [`games/tomodachi`](games/tomodachi/README.md) |
+| 异度神剑 X 终极版 | 1.0.0 | Mac | 社区诊断宿主，首区域可探索；需要外部工作目录 | [`games/xcx`](games/xcx/README.md) |
 
 社区移植的游戏各自在自己的目录里带一份运行时、图形层和脚本，按那里的步骤构建。
 
