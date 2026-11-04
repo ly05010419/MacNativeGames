@@ -17,6 +17,8 @@ Where the list comes from (no offset is written down twice in this repository):
   games/totk/runtime/game_patches_botw.c the rows {offset, original word, ...} of Breath of the Wild's check, put and
                                         job-queue tables and its multi-word sequences (the branch that GAME_BOTW190 or
                                         GAME_BOTW160 compiles)
+  BOTW_UPSTREAM (below)                 the sites of upstream's Breath of the Wild patches that this source does not
+                                        carry (listed by hand until it does; a duplicate of a derived site is dropped)
   third_party/d2r/patch_nso.py          CUTS, OBS, PARAMS and SIGNED_TABLES (the signed jump tables) for the
                                         build ID being rewritten
 
@@ -41,6 +43,30 @@ GUARDS = {'v112': 'TOTK_GAME_V112', 'v121': 'TOTK_GAME_V121', 'v143': 'TOTK_GAME
 PATCHER = {'v0': 'game_patches.c', 'v112': 'game_patches.c', 'v121': 'game_patches.c', 'v143': 'game_patches_v143.c',
            'botw190': 'game_patches_botw.c', 'botw160': 'game_patches_botw.c'}
 # What the compiler defines for the Breath of the Wild runtime (game_version.h): the branches of game_patches_botw.c it keeps.
+# Sites that upstream's runtime (821ce8c8) writes or checks in Breath of the Wild's main and that no row, enum or sequence
+# of game_patches_botw.c here yields: the camera blend's first step (both versions), the native-size block's 13 sites
+# (1.9.0), the sun shadow map's four moves (botw_shadow_res.h) and the field of view's load, its checked neighbours and
+# setFovy's store (botw_fov.h). The stubs and veneers they branch to sit in the padding after main's text, which
+# mod_exefs.py refuses to edit. runtime/game_patches_botw.c's g_pchtxt_reserved lists the same offsets;
+# tests/test_runtime_pchtxt.py keeps the two equal.
+BOTW_UPSTREAM = {
+    'botw190': [
+        (0xc33678, 0xc, 'camera blend first step: length, 1.0, timer'), (0xc33694, 0x8, 'camera blend first step: progress'),
+        (0xc336a4, 0x4, 'camera blend first step: add'), (0xc33724, 0x4, 'camera blend first step: step'),
+        (0xc33730, 0x8, 'camera blend first step: branch site and return'),
+        (0x71c, 0x4, 'native size'), (0xc617c0, 0x4, 'native size'), (0xc61b14, 0x4, 'native size'), (0xc61ee8, 0x4, 'native size'),
+        (0xc61ef4, 0x4, 'native size'), (0xc61f1c, 0x4, 'native size'), (0xc61f28, 0x4, 'native size'),
+        (0x1261704, 0x4, 'native size'), (0x12618b8, 0x4, 'native size'), (0x12618c4, 0x4, 'native size'),
+        (0x12660d0, 0x8, 'native size'), (0x12660f0, 0x4, 'native size'), (0x1266104, 0x4, 'native size'),
+        (0x124eef8, 0x10, 'sun shadow size: the four moves'),
+        (0x10edad0, 0x10, 'field of view: the load and its checked neighbours'), (0xeb48ac, 0x4, 'field of view: setFovy store'),
+    ],
+    'botw160': [
+        (0xdddfe4, 0x4, 'camera blend first step: length, scale'), (0xdddfec, 0x4, 'camera blend first step: 1.0'),
+        (0xdddffc, 0x4, 'camera blend first step: step'), (0xdde044, 0x10, 'camera blend first step: branch site and checks'),
+        (0xdde090, 0x4, 'camera blend first step: progress'),
+    ],
+}
 BOTW_DEFINED = {'botw190': {'GAME_BOTW', 'GAME_BOTW190'}, 'botw160': {'GAME_BOTW', 'GAME_BOTW160'}}
 
 Site = namedtuple('Site', 'label offset size')
@@ -206,7 +232,8 @@ def patcher_sites(version):
     source = PATCHER[version]
     text = (RUNTIME / source).read_text()
     if version in BOTW_DEFINED:
-        return botw_sites(text, source, BOTW_DEFINED[version])
+        return botw_sites(text, source, BOTW_DEFINED[version]) + [Site(f'BOTW_UPSTREAM: {what}', offset, size)
+                                                                   for offset, size, what in BOTW_UPSTREAM[version]]
     foreign = [(start, end) for block, start, end in branch_spans(text) if block not in (version, None)]
     scoped = _blank(text, foreign)
     found = _sites_in_literals(_blank(scoped, [m.span() for m in CLOTH.finditer(text)]), source)

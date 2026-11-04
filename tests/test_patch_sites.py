@@ -149,6 +149,27 @@ class Extraction(unittest.TestCase):
             self.assertNotIn(site, found, hex(site))
         self.assertNotIn(0x8f6c60, found)               # TOTK 1.0.0 60 FPS
 
+    def test_upstreams_botw_sites_are_reserved(self):
+        # The sites upstream's runtime (821ce8c8) patches that game_patches_botw.c here does not carry: BOTW_UPSTREAM lists
+        # them whole (first and last byte in, the byte after out), and each version gets its own.
+        expected = {
+            'botw190': {0xc33730: 8, 0xc33678: 12, 0x124eef8: 16, 0x10edad0: 16, 0x10edad8: 4, 0xeb48ac: 4,   # blend, shadow, FOV (the load is 4 of the 16)
+                        0x71c: 4, 0x12660d0: 8, 0xc61f28: 4},                                                   # the native-size block
+            'botw160': {0xdde044: 16, 0xdddfe4: 4, 0xdde090: 4},                                                # the camera blend
+        }
+        for version, sites in expected.items():
+            reserved = patch_sites.sites(version)
+            for offset, size in sites.items():
+                for edit in (offset, offset + size - 1):
+                    self.assertTrue(patch_sites.overlaps([(edit, 1)], reserved), (version, hex(edit)))
+        reserved = patch_sites.sites('botw190')
+        for after in (0x124eef8 + 16, 0xc33738, 0x10edad0 - 1):   # the byte past the shadow moves and the blend, the one before the FOV load
+            self.assertFalse(patch_sites.overlaps([(after, 1)], reserved), hex(after))
+        self.assertFalse(patch_sites.overlaps([(0xdde044 + 16, 1)], patch_sites.sites('botw160')))
+        self.assertFalse(patch_sites.overlaps([(0xdde044, 4)], patch_sites.sites('botw190')))   # 1.6.0's blend is not 1.9.0's
+        self.assertFalse(patch_sites.overlaps([(0xc33730, 4)], patch_sites.sites('botw160')))   # nor the other way
+        self.assertEqual(sorted(patch_sites.BOTW_UPSTREAM), ['botw160', 'botw190'])
+
     def test_botw_sites_skip_the_runtime_copy_of_the_list(self):
         # g_pchtxt_reserved is TOTK_PCHTXT's copy of this list: its rows are not sites, or the parity test checks itself.
         text = 'static const struct { uint32_t off, size; } g_pchtxt_reserved[] = {\n    {0x40, 0x4},\n};\nx = {0x80u, 1};\n'

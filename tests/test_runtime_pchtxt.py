@@ -113,6 +113,15 @@ class BotwChecks:
             self.assertEqual(code, 3, (start, out))
             self.assertIn('touches a site the app patches or checks itself', out)
 
+    def test_upstreams_sites_stop(self):
+        # The camera blend, the 1.9.0 sun shadow moves, field of view and native-size block (upstream's patches, listed in
+        # patch_sites.BOTW_UPSTREAM): a line on the first or the last byte of each stops the start.
+        for first, size in self.UPSTREAM:
+            for at in (first, first + size - 1):
+                code, out = self.run_patch(HEADER + f'@enabled\n{at:X} 00\n@stop\n')
+                self.assertEqual(code, 3, (hex(at), out))
+                self.assertIn('touches a site the app patches or checks itself', out)
+
     def test_next_to_a_reserved_site_is_applied(self):
         code, out = self.run_patch(HEADER + f'@enabled\n{self.RESERVED + 8:X} 00\n{self.RESERVED - 2:X} 0000\n40 aa\n@stop\n')
         self.assertEqual(code, 0, out)
@@ -136,6 +145,7 @@ class RuntimePchtxtBotw190(BotwChecks, PchtxtCases, unittest.TestCase):
     DEFINES = ['-DGAME_BOTW190']
     GAME_DIR = VERSION = 'botw190'
     RESERVED = 0x1d78198
+    UPSTREAM = [(0xc33678, 12), (0xc33730, 8), (0x124eef8, 16), (0x10edad0, 16), (0xeb48ac, 4), (0x71c, 4), (0x12660d0, 8)]
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'the runtime builds on macOS only')
@@ -144,6 +154,7 @@ class RuntimePchtxtBotw160(BotwChecks, PchtxtCases, unittest.TestCase):
     DEFINES = ['-DGAME_BOTW160']
     GAME_DIR = VERSION = 'botw160'
     RESERVED = 0x2c7ef90
+    UPSTREAM = [(0xdddfe4, 4), (0xdde044, 16), (0xdde090, 4)]
 
 
 if __name__ == '__main__':
