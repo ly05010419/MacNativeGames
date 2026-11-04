@@ -9827,37 +9827,59 @@ static uint64_t gml_take(void) {
 }
 // useResource 在同一编码器内对同一（资源, 用法, 阶段）是幂等的：记下本渲染编码器已声明过的，重复的跳过（计算编码器每次派发新建，不去重）
 // useResource is idempotent for the same (resource, usage, stage) within one encoder: remember what this render encoder has already declared and skip repeats (a compute encoder is created anew for each dispatch, no dedup)
-/* A mip-chain pass: it renders level n of a texture while its shader samples level n - 1 through a view covering the whole
-   chain (explicit level, linear mip filter). NVIDIA's GPU reads level n - 1 only; Metal may also fetch level n, at weight 0
-   but fetched, and an attached level read through a texture holds no defined data on Apple's GPUs: 0 x NaN is NaN.
+/* A mip-chain pass: it renders level n of a texture while its shader samples another level of it through a view covering the
+   whole chain. NVIDIA's GPU reads that level only. Reading level n - 1 with a linear mip filter, Metal may also fetch level n,
+   at weight 0 but fetched, and an attached level read through a texture holds no defined data on Apple's GPUs: 0 x NaN is NaN.
    Donkey Kong Bananza's environment cube got NaN texels that spread through reflections and bloom (bright blotches with
    black specks). So when the sampled texture is an attachment of the open pass and its view's levels include the attached
-   level and start below it, the draw samples a view of the levels below the attached one (same base, so the shader's
-   level numbers keep their meaning). A pass rendering the view's base level, and layered views, are left as they are.
-   From seedds/nxnative's fb_prepare (MIT; docs/reference/rendering.md there, "Mip-chain pass sampling the level it renders"). */
+   level, the draw samples a view without it:
+   - A sampler that pins one level gets that level alone, on whichever side of the attached level it lies. An upsample renders
+     level n from level n + 1 this way; in a view ending at level n - 1 Metal clamped the read to level n - 1, a sharper level
+     the chain added up in place of the wide ones (Tears of the Kingdom's glow: fat marks in a tight, blocky halo).
+   - Any other sampler gets the levels below the attached one (same base, so the shader's level numbers keep their meaning).
+     Rendering the view's base level leaves it nothing to read, so that view stays as it is; so do layered views.
+   From seedds/nxnative's fb_prepare and fb_pinned_level (MIT; docs/reference/rendering.md there, "Mip-chain pass sampling the
+   level it renders" and "Upsample pass reading the level above the one it renders"). */
 static void rt_sub(const p_set_rt *r, int k, uint64_t *ser, int *lv, int *sl);
-static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial) {
+// The levels (from, count) a draw samples when it renders level lv of a view of base + n levels, its sampler pinning level pin of the view (-1: none); 0: the view stays as it is
+static int mip_feedback_levels(int base, int n, int lv, int pin, int *from, int *count) {
+    if (lv < base || lv >= base + n) return 0;
+    if (pin >= n) pin = n - 1;   // past the view's levels: its last one, where the sampler's clamp ends
+    if (pin >= 0 && base + pin != lv) { *from = base + pin; *count = 1; return 1; }
+    *from = base; *count = lv - base;
+    return lv > base;
+}
+// The level a draw's sampler pins through texture slot reg (combined handle's sampler sid), from the view's base, or -1. Only a combined handle's sampler (the shader's SAMPT binding of the same
+// slot) is known here: with a mip filter, a minimum and a maximum LOD that are the same whole number pin every fetch to that level, whatever LOD the shader asks for. g_rmu is held (encode_args)
+static int mip_pinned_level(const NvShader *sh, unsigned reg, int sid) {
+    int combined = 0; for (int j = 0; j < sh->rf.nb && !combined; j++) combined = sh->rf.b[j].kind == NVN_RB_SAMPT && sh->rf.b[j].reg == reg;
+    if (!combined || sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid]) return -1;
+    const samp_par *p = &g_sreg[sid];
+    if (p->minf < 2 || p->lod_min != p->lod_max || p->lod_min < 0 || p->lod_min > 15 || p->lod_min != floorf(p->lod_min)) return -1;   // minf 0, 1: no mip filter, the base level
+    return (int)p->lod_min;
+}
+static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial, const NvShader *sh, unsigned reg, int sid) {
     id<MTLTexture> root = t.parentTexture ? t.parentTexture : t;
     NSUInteger base = t.parentTexture ? t.parentRelativeLevel : 0, n = t.mipmapLevelCount;
     if (n < 2) return nil;
     for (int k = 0; k < R.rt.n && k < 8; k++) {
         if (!R.rt.color[k]) continue;
-        uint64_t ser = 0; int lv = 0, sl = 0; rt_sub(&R.rt, k, &ser, &lv, &sl);
-        if (ser != serial || lv <= (int)base || (NSUInteger)lv >= base + n) continue;
+        uint64_t ser = 0; int lv = 0, sl = 0, from, count; rt_sub(&R.rt, k, &ser, &lv, &sl);
+        if (ser != serial || !mip_feedback_levels((int)base, (int)n, lv, mip_pinned_level(sh, reg, sid), &from, &count)) continue;
         MTLTextureType ty = t.textureType;
         NSUInteger slices = ty == MTLTextureTypeCube ? 6 : ty == MTLTextureTypeCubeArray ? t.arrayLength * 6 : t.arrayLength;
         if (ty == MTLTextureType3D) slices = 1;
         NSUInteger first = t.parentTexture ? t.parentRelativeSlice : 0;
         static NSMutableDictionary *cache; if (!cache) cache = [NSMutableDictionary dictionary];
-        NSString *key = [NSString stringWithFormat:@"%p/%lu/%lu/%lu/%lu/%lu/%lu", (__bridge void *)root, (unsigned long)base, (unsigned long)(lv - base),
+        NSString *key = [NSString stringWithFormat:@"%p/%d/%d/%lu/%lu/%lu/%lu", (__bridge void *)root, from, count,
                          (unsigned long)ty, (unsigned long)t.pixelFormat, (unsigned long)first, (unsigned long)slices];
         id<MTLTexture> v = cache[key];
         if (!v) {
             if (cache.count > 512) [cache removeAllObjects];
-            v = [root newTextureViewWithPixelFormat:t.pixelFormat textureType:ty levels:NSMakeRange(base, (NSUInteger)lv - base) slices:NSMakeRange(first, slices)];
-            if (!v) { RED_ONCE(100, "mip-chain feedback view failed (levels %lu+%d)", (unsigned long)base, lv - (int)base); return nil; }
+            v = [root newTextureViewWithPixelFormat:t.pixelFormat textureType:ty levels:NSMakeRange((NSUInteger)from, (NSUInteger)count) slices:NSMakeRange(first, slices)];
+            if (!v) { RED_ONCE(100, "mip-chain feedback view failed (levels %d+%d)", from, count); return nil; }
             res_add(v); cache[key] = v;
-            static int once; if (!once++) MLOG("[totk] a mip-chain pass samples the texture it renders level %d of: the draw reads levels %lu..%d only", lv, (unsigned long)base, lv - 1);
+            static int once; if (!once++) MLOG("[totk] a mip-chain pass samples the texture it renders level %d of: the draw reads levels %d..%d only", lv, from, from + count - 1);
         }
         return v;
     }
@@ -10472,7 +10494,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                    Metal needs a matching texture type in the argument buffer, so bind a cached 1-slice view of the right type. */
                 id<MTLTexture> av = tex_type_view(t, (MTLTextureType)b->dtt);
                 if (av) { t = av; trid = av.gpuResourceID._impl; } }
-            if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial); if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
+            if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial, sh, reg, (int)(S.tex[nvn_stage][reg] >> 20)); if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
             if (g_mfxup_out && (__bridge void *)sh == (__bridge void *)g_mfxup_sh && t == g_mfxup_src) { t = g_mfxup_out; trid = t.gpuResourceID._impl; }   // TOTK_MFX_UPSCALE
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);

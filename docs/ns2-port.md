@@ -90,7 +90,8 @@ How it is built and run (outside the repository; game files stay with the dump):
 
 Found on the way (general fixes, each in the code with its reason):
 - a mip-chain pass sampled the level it renders (Metal fetches it at weight 0; undefined data, 0 x NaN): the environment
-  cube's NaN spread as bright blotches with black specks; the draw now samples the levels below (nvn_mtl.m mip_feedback_view);
+  cube's NaN spread as bright blotches with black specks; the draw now samples the levels below, or the one level its sampler pins, since an upsample reads the level above
+  (nvn_mtl.m mip_feedback_view);
 - the equivalence checker modelled an ARMv8.0 CPU (no LSE atomics, LDAPR) and counted alignment exceptions as differences;
 - released recording copies were freed while the translation thread still had them queued (a game may add control memory
   again right after a submit; TotK never did): freed once every earlier submission is replayed;
