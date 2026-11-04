@@ -26,6 +26,7 @@ static unsigned env_uint(const char *name, unsigned def, unsigned lo, unsigned h
     return (unsigned)v;
 }
 __attribute__((constructor)) static void autoload_configure(void) {
+    if (runtime_app_mode()) return;   // the app starts at the title screen, as on the console (app/launcher.m unsets TOTK_AUTOLOAD)
     const char *e = getenv("TOTK_AUTOLOAD");
     if (!e || !strcmp(e, "0")) return;
     if (strcmp(e, "1")) runtime_fail("TOTK_AUTOLOAD takes 0 or 1");
