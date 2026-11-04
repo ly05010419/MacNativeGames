@@ -625,6 +625,9 @@ static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole recta
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 @end
 #include "settings_panel.h"
+void runtime_front_resize_output(unsigned w,unsigned h) {
+ dispatch_async(dispatch_get_main_queue(),^{settings_window_size(w,h,h?(double)w/h:0);});
+}
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -832,6 +835,9 @@ void runtime_front_run(void(*callback)(void)){
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+  {uint64_t size=runtime_output_size_current();unsigned w=(unsigned)size,h=(unsigned)(size>>32);if(w&&h){ww=w;wh=h;}}
+#endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];

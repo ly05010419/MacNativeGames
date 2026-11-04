@@ -405,10 +405,14 @@ static uint32_t observed_region(uint64_t *out,uint64_t size){
 static uint32_t observed_pages(uint64_t addr,uint64_t size){uint32_t r=((uint32_t(*)(uint64_t,uint64_t))runtime_symbol("_ZN2nn2os19AllocateMemoryPagesEmm"))(addr,size);if(r||trace_alloc())fprintf(stderr,"[totk] AllocateMemoryPages address=%llx size=%llx result=%x\n",(unsigned long long)addr,(unsigned long long)size,r);return r;}
 #ifdef GAME_DKB
 void *runtime_bananza_memcpy(void *,const void *,size_t);
+#elif defined(GAME_POKOPIA)
+void *runtime_pokopia_memcpy(void *,const void *,size_t);
 #endif
 void *runtime_observer(const char *name) {
 #ifdef GAME_DKB
  if(!strcmp(name,"memcpy"))return runtime_bananza_memcpy;
+#elif defined(GAME_POKOPIA)
+ if(!strcmp(name,"memcpy"))return runtime_pokopia_memcpy;
 #endif
  static const struct {const char *name;void *fn;} entries[]={
  {"_ZN2nn2os21AllocateAddressRegionEPmm",observed_region},{"_ZN2nn2os19AllocateMemoryPagesEmm",observed_pages},{"nnosInitialize",observed_os_init},{"nninitInitializeSdkModule",observed_sdk_init},{"nninitStartup",observed_startup},{"nnMain",observed_main}};

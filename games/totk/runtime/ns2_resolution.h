@@ -29,6 +29,21 @@ static inline int ns2_parse_saved_resolution(const char *s,unsigned *w,unsigned 
     return ns2_parse_resolution(word,w,h);
 }
 
+/* Compare rounded pixels before fitting: float 32/9 is slightly above its
+   exact value, but a 3840x1080 canvas still fits the 3840-pixel capacity. */
+static inline int ns2_aspect_size(float ratio,unsigned height,unsigned max_w,unsigned max_h,unsigned *w,unsigned *h) {
+    if(!(ratio>=0.5f&&ratio<=8)||!height||!max_w||!max_h||max_w>16384||max_h>16384)return 0;
+    if(height>max_h)height=max_h;
+    unsigned width=(unsigned)(height*(double)ratio+0.5);
+    if(width>max_w){
+        height=(unsigned)((max_w+0.5)/(double)ratio);
+        width=(unsigned)(height*(double)ratio+0.5);
+        if(width>max_w&&height){height--;width=(unsigned)(height*(double)ratio+0.5);}
+    }
+    if(!width||!height)return 0;
+    *w=width;*h=height;return 1;
+}
+
 /* main+0x5399ec copies 0x108 bytes starting AFTER the 8-byte vtable
    of gsys's 0x110-byte creation argument. Keep its flags and tail intact. */
 typedef struct {

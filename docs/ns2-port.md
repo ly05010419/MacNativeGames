@@ -400,7 +400,7 @@ consecutive frames, then check the visible cropped output as well as the window 
 alone does not prove that the rasterizer produced pixels. Use a save copy and verify the restored original's hashes.
 
 **Bananza custom rendering size (2026-11-04, Mac verified; iOS default 960x540 requested).**
-`TOTK_OUTPUT_RES=1280x720` (or e.g. `960x540`) selects a fixed native render size. The v458752 framebuffer maximum
+`TOTK_OUTPUT_RES=1280x720` (or e.g. `960x540`) selects the initial native render size. The v458752 framebuffer maximum
 getters at `main+0x5bf770/+0x5bf780` read an independent writable parameter page. Their original instructions are
 verified on the Mac and exported into the signed iOS code; the phone only verifies the code and fills the data.
 The verified `main+0x5399ec` copy publishes gsys's creation parameters. It skips the argument's 8-byte vtable:
@@ -427,8 +427,8 @@ profile restored with matching hashes. Evidence: external `codex/bananza-ios-202
 
 **Bananza Mac display settings and 4K verification (2026-11-04).** Mac now defaults to native 1920x1080
 when TOTK_OUTPUT_RES is absent. The Mac settings panel offers 540p, 720p, 1080p, 1440p, 4K and custom dimensions;
-it stores graphics-output-size.txt beside controls.txt, and applies the chosen creation size on the next launch.
-The current run keeps immutable dimensions. An explicit environment value still takes precedence.
+it stores graphics-output-size.txt beside controls.txt. The initial implementation applied changes on the next launch;
+the live native rebuild described below supersedes that behavior. An explicit environment value sets the initial size.
 
 4K needs the complete native memory chain. The graphics creation argument copied at main+0x53a068 has its
 200 MiB primary dynamic render-pool budget at copied payload +0x20; the adjacent +0x28 is a 32 MiB fallback
@@ -466,3 +466,48 @@ two device-translator build routes, updated for NS2's third route, and three syn
 shebang could not name a venv interpreter path containing spaces. The failing cases plus the complete device-translator
 group passed a targeted 9-test recheck with a space-free path for those stdlib-only child fixtures. The complete suite
 was not repeated after this targeted remediation. No game data, saves or raw captures are included in the commit.
+
+**Live NS2 resolution and camera aspect (2026-11-04, Mac checkpoint).** Bananza and Pokopia settings now queue
+native display changes during the current game. The resolution row, custom dimensions and 16:9 / 16:10 / 21:9 /
+32:9 choices share that path and save the resulting dimensions. Windowed content follows the chosen size, scaled
+proportionally to the available screen; fullscreen window bounds stay unchanged. Rounded-pixel capacity checks keep
+32:9 at exactly 3840x1080 instead of losing a row to float rounding. Mac defaults remain 1920x1080.
+
+Bananza's native display object belongs to SystemTask+0xd8. Its display calculation at main+0x30f85c consumes one
+packed request, updates its native mode extents and invalidates the cached mode. The original renderer then rebuilds
+its targets. With the prepared 4K overlay, framebuffer capacity, the dynamic render pool, GSys parent and application
+budget reserve 3840x2160 while rendering at the selected extent. Pokopia snapshots requests before main+0x22d598,
+uses the native size getters, then invalidates the cached mode after the committed canvas changes at +0x22d648.
+Its bounded Resize(width,height,maxWidth,maxHeight) reserves both color and depth capacity. Reserving color alone
+failed when an FSR view retained old 1080p color while depth had shrunk to 720p: native RT-stack Push rejected the
+mismatched extents. Its +0x2964 is stack depth, not a frame index; the fix preserves the native target lifecycle.
+
+Scene-camera aspect is updated before native projection/frustum construction: Bananza's registered projection
+transfer (+0x31f3bc), and Pokopia's active gameplay-camera/render-view transfer (+0x8cd884). These change camera-owned
+source parameters and invoke native cache updates; they do not stretch the final image or rewrite GPU matrices.
+Pokopia also updates the selected standard UI camera's logical canvas before its per-frame snapshot (+0x1f9bcc8).
+The native setter rebuilds the camera and adapter together. Custom UI cameras bypass this standard-camera path.
+
+Real Mac save-copy runs continuously switched 16:9, 21:9, 32:9 and 16:10 and returned to 16:9. Both scene projections
+matched the requested ratios and exposed additional horizontal world view. Pokopia's clean UI run lasted 161 s,
+exited 0 and kept B/X icons at 30x30 pixels in 21:9; their horizontal position moved into a centered safe area.
+Both original profiles matched their pre-run hashes. Earlier live-resolution runs also covered 540p through 4K;
+Pokopia fullscreen bounds remained 3440x1440 across render-size changes. These are short correctness checks, not
+long-session or performance acceptance. Evidence is outside the repository in codex/bananza-live-resolution:
+dkb-camera-7, pkp-camera-6, pkp-live-5 and pkp-ui-final.
+
+**Still open:** Bananza HUD aspect. Its scene is wide, but the last controlled UI comparison measured a heart at
+43x31 pixels in 16:9 versus 56x31 in 21:9. Updating an outer DrawInfo did not resolve the authored root projection.
+The experimental HUD changes are excluded from this checkpoint and retained externally under pending-hud.
+The most recent root-pane run had additional settings changes and is not accepted as a controlled comparison.
+This checkpoint does not claim complete Bananza ultrawide UI support. It also does not add the full Mac settings
+panel to iOS or claim new phone gameplay verification; the installed phone remains the earlier 960x540 build.
+
+Checkpoint validation: both Mac runtimes built; the Bananza app built for generic iOS, and Pokopia's NS2 patch
+translation unit compiled for arm64 iOS. No new phone installation or device gameplay test was performed. The six
+resolution/aspect/memory regressions and 19 settings/iOS-packaging checks passed. Full discovery ran 1454 tests
+in 291 s with seven skips and three errors in synthetic hactool fixtures: their shebang used the venv interpreter's
+space-containing path, so the OS could not launch them. With a separate space-free venv entry using the same installed
+dependencies, all 15 update tests passed in 2.7 s; no product or test-source workaround was applied. Full discovery
+was not repeated after that environment-only recheck. Logs and source/executable hashes are in the external
+commit-validation.json, commit-tests.log, commit-updates-recheck.log and commit-*-build.log files.
