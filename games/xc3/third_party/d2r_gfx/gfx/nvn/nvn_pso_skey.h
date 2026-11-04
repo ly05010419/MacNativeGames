@@ -14,6 +14,7 @@ typedef struct {
 #define PSO_LAYERED 2u
 #define PSO_VBORDER 16u
 #define PSO_NORASTER 32u   // bit 5 (Xenoblade Chronicles 3): transform feedback under rasterizer discard, the vertex stage only
+#define PSO_LOGIC 64u      // bit 6 (Xenoblade Chronicles 3): a logic operation into unsigned integer targets, the fragment function's logic variant (nvn_mtl.m fs_fn_logic)
 
 typedef struct {
     uint8_t kind, fbmask;

@@ -6,6 +6,7 @@
      mscan changed | unchanged | inc | dec
                                   keep the candidates whose value did that since the step before (the first step
                                   compares with the snapshot and then frees it); f32 keeps only finite values under 1e6
+     mscan delta <lo> <hi>        (XC3) keep the candidates whose value changed by lo..hi since the step before
      mscan show [n]               the candidates and their values now (n, default 40)
      mscan watch <hex address> <seconds> [rw]
                                   a hardware watchpoint on those 4 bytes in the guest threads: every instruction that
@@ -100,14 +101,17 @@ static void scan_free_snapshot(void) {
 }
 static void scan_free_candidates(void) { free(scan_addr); free(scan_val); scan_addr = NULL; scan_val = NULL; scan_n = scan_cap = 0; }
 
-enum { KEEP_CHANGED, KEEP_UNCHANGED, KEEP_INC, KEEP_DEC };
+enum { KEEP_CHANGED, KEEP_UNCHANGED, KEEP_INC, KEEP_DEC, KEEP_DELTA };
+static double scan_dlo, scan_dhi;   /* KEEP_DELTA: the change since the step before is in [lo, hi] */
 static int scan_plausible(uint32_t w) { float f; memcpy(&f, &w, 4); return isfinite(f) && fabsf(f) < 1e6f; }
 static int scan_keep(int mode, uint32_t old, uint32_t now) {
     if (!scan_i32 && (!scan_plausible(now) || !scan_plausible(old))) return 0;
     if (mode == KEEP_CHANGED) return now != old;
     if (mode == KEEP_UNCHANGED) return now == old;
-    if (scan_i32) { int32_t a = (int32_t)old, b = (int32_t)now; return mode == KEEP_INC ? b > a : b < a; }
-    float a, b; memcpy(&a, &old, 4); memcpy(&b, &now, 4); return mode == KEEP_INC ? b > a : b < a;
+    if (scan_i32) { int32_t a = (int32_t)old, b = (int32_t)now; if (mode == KEEP_DELTA) return (double)b - a >= scan_dlo && (double)b - a <= scan_dhi; return mode == KEEP_INC ? b > a : b < a; }
+    float a, b; memcpy(&a, &old, 4); memcpy(&b, &now, 4);
+    if (mode == KEEP_DELTA) return (double)b - a >= scan_dlo && (double)b - a <= scan_dhi;
+    return mode == KEEP_INC ? b > a : b < a;
 }
 static int scan_push(uint64_t addr, uint32_t v) {
     if (scan_n == scan_cap) {
@@ -317,6 +321,10 @@ int runtime_mem_scan_command(const char *line) {   /* runtime/input.c: the text 
     } else if (!strcmp(cmd, "changed") || !strcmp(cmd, "unchanged") || !strcmp(cmd, "inc") || !strcmp(cmd, "dec")) {
         if (!scan_have) scan_out("%s: no snapshot (mscan new first)", cmd);
         else scan_filter(cmd[0] == 'c' ? KEEP_CHANGED : cmd[0] == 'u' ? KEEP_UNCHANGED : cmd[0] == 'i' ? KEEP_INC : KEEP_DEC, cmd);
+    } else if (!strcmp(cmd, "delta")) {   /* "delta <lo> <hi>" (XC3): keep the values that changed by lo..hi since the step before */
+        if (!scan_have) scan_out("delta: no snapshot (mscan new first)");
+        else if (sscanf(arg, "%lf %lf", &scan_dlo, &scan_dhi) != 2 || scan_dlo > scan_dhi) scan_out("error: mscan delta <lo> <hi>");
+        else scan_filter(KEEP_DELTA, "delta");
     } else if (!strcmp(cmd, "show")) {
         unsigned n = 40; if (*arg) sscanf(arg, "%u", &n); scan_show(n);
     } else if (!strcmp(cmd, "watch")) {

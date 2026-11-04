@@ -169,6 +169,12 @@ __attribute__((constructor)) static void register_system_services(void) {
        above 1 GiB unless told otherwise (nvn_mtl.m pool_buffer_max). A value the user set wins. */
     setenv("DM_POOL_BUFFER_MAX_MIB", "2048", 0);
     setenv("TOTK_UNCAPPED_INTERVAL", "1", 0);
+    /* CPU load at 30 fps (stage 14, the player's save at Yzana Plains, process CPU over 20 s): the game's main thread waits for
+       its worker jobs by yielding in a loop (main+0x1280d70), and the encode-stage thread spins 200 us between packets, while
+       replay itself takes about 1.5 ms of the 33 ms frame here. Yield back-off (threads.c) and replay on one thread took the
+       process from 90% to 54% with the frames unchanged (33.35 ms, 32.6-34.2). */
+    setenv("TOTK_YIELD_BACKOFF", "on", 0);
+    setenv("TOTK_RENDER_STREAM", "0", 0);
     /* It draws a depth pre-pass, then the colour pass with a LEQUAL test: positions must match bit for bit between the two
        (nvn_mtl.m totk_precise_opts, preserveInvariance). */
     setenv("DM_PRESERVE_INVARIANCE", "1", 0);

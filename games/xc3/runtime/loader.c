@@ -304,7 +304,13 @@ uint64_t runtime_now_ns(void) {mach_timebase_info_data_t tb;mach_timebase_info(&
 void runtime_dispatch(uint64_t ret,uint64_t *regs) {
  for(unsigned i=0;i<NM;i++)for(unsigned j=0;j<modules[i].ngate;j++) {
   const Gate *g=&modules[i].gates[j];if((uintptr_t)modules[i].base+g->ret!=ret)continue;
-  if(g->timer){mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
+  if(g->timer){
+   /* XC3 (game_patches.c frame_wait_apply): a read from the game's spinning frame limiter sleeps first. The SDK's tick read has
+      no frame of its own, so x29 is the caller's frame and [x29+8] its return address into the loop; regs[100] is the guest
+      sp, and the frame must lie just above it. */
+   {extern uintptr_t runtime_frame_wait_ret;uint64_t fp=regs[29],gsp=regs[100];
+    if(runtime_frame_wait_ret&&fp>gsp&&fp-gsp<0x10000&&!(fp&7)&&*(const uint64_t *)(uintptr_t)(fp+8)==runtime_frame_wait_ret){struct timespec ts={0,200000};nanosleep(&ts,NULL);}}
+   mach_timebase_info_data_t tb;mach_timebase_info(&tb);__uint128_t ns=(__uint128_t)mach_absolute_time()*tb.numer/tb.denom;
    need(g->arg<31&&g->arg!=18,"timer target register");regs[g->arg]=(uint64_t)(ns*12/625);__atomic_fetch_add(&timer_calls,1,__ATOMIC_RELAXED);return;}
   __atomic_fetch_add(&svc_calls,1,__ATOMIC_RELAXED);runtime_svc(g->arg,regs,modules[i].name,g->original);return;
  }
