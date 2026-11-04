@@ -309,6 +309,52 @@ static void patch_viewport_probe(Module *m) {
     sys_icache_invalidate(m->base + e2, sizeof se); sys_icache_invalidate(m->base + site2, 4);
     fprintf(stderr, "[psv] viewport probe: last 1920-wide texture wrapper at %p (data + 0x100)\n", (void *)(m->base + data + 0x100));
 }
+/* Draw distance (2026-11-04). The scene's trinity_ModelLodSetting tables (world/scene/parts/field/world_resident/
+   common_resident_*.trscn) give per model category three distances: two LOD switches and the distance at which the model
+   is no longer drawn (measured in the grassland: 30/40/60, 40/80/100, 80/150/250, 100/200/300, 180/280/400, 350/500/1000).
+   main+0x2095a80 copies each category's three floats out of the file; a stub at its first load scales them by data + 0xe8
+   (and keeps the last raw three at data + 0x140 for the log):
+     ldr x8, [x3]  -> b S;  S: adrp x9, data; ldr d0, [x3]; ldr s1, [x3, #8]; str d0, [x9, #0x140]; str s1, [x9, #0x148];
+                               ldr s2, [x9, #0xe8]; fmul v0.2s, v0.2s, v2.s[0]; fmul s1, s1, s2; fmov x8, d0; fmov w9, s1;
+                               b site + 8   (the original also loads w9 = [x3 + 8])
+   v0-v2 are free there (the function takes no float arguments). A mod that edits the same tables (Team Seri's LOD mod) is
+   scaled on top. The tables are read when the world loads, so a change applies at the next start.
+   PSV_DRAW_DIST=<factor> (0.5 .. 4) decides first, else the panel's choice ("draw-dist <percent>" in settings.txt). */
+static _Atomic float *draw_dist;
+static unsigned draw_dist_pref = 100;   /* percent, the panel's saved choice */
+int runtime_draw_dist_fixed(void) { const char *e = getenv("PSV_DRAW_DIST"); return e && *e; }
+unsigned runtime_draw_dist_pref(void) { return draw_dist_pref; }
+void runtime_draw_dist_pref_set(unsigned pct) { draw_dist_pref = pct == 150 || pct == 200 || pct == 300 ? pct : 100; }
+static void patch_draw_dist(Module *m) {
+    const uint64_t site = 0x2095aa0, c = 0x343fe00;
+    uint64_t data = (m->file_size - m->image_off + 0x3fff) & ~0x3fffULL; uintptr_t mb = (uintptr_t)m->base;
+    uint32_t w[2]; memcpy(w, m->base + site, 8);
+    if (w[0] != 0xf9400068 || w[1] != 0xb9400869 || m->text_end > c) runtime_fail("draw distance: site or text padding differ");
+    for (uint64_t k = c; k < c + 44; k++) if (m->base[k]) runtime_fail("draw distance: text padding in use");
+    const char *e = getenv("PSV_DRAW_DIST"); float f;
+    if (e && *e) { f = strtof(e, NULL); if (!(f >= 0.5f && f <= 4.0f)) runtime_fail("PSV_DRAW_DIST must be 0.5 .. 4"); }
+    else {
+        const char *dir = getenv("PSV_PROFILE_DIR"); char path[1024], name[32]; int v;
+        snprintf(path, sizeof path, "%s/settings.txt", dir && *dir ? dir : "user-data");
+        FILE *fp = fopen(path, "r");
+        if (fp) { while (fscanf(fp, "%31s %d", name, &v) == 2) if (!strcmp(name, "draw-dist")) runtime_draw_dist_pref_set((unsigned)v); fclose(fp); }
+        f = draw_dist_pref / 100.0f;
+    }
+    if (f == 1.0f) { fprintf(stderr, "[psv] draw distance: the game's own (PSV_DRAW_DIST or the panel)\n"); return; }
+    draw_dist = (_Atomic float *)(void *)(m->base + data + 0xe8); atomic_store(draw_dist, f);
+    uint32_t st[11] = {adrp(9, mb + c, mb + data), 0xfd400060, 0xbd400861, 0xfd00a120, 0xbd014921, 0xbd40e922, 0x0f829000, 0x1e220821,
+                       0x9e660008, 0x1e260029, branch(c + 40, site + 8)};
+    memcpy(m->base + c, st, sizeof st); uint32_t b = branch(site, c); memcpy(m->base + site, &b, 4);
+    sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
+    fprintf(stderr, "[psv] draw distance: model LOD and draw distances x%.2f\n", f);
+}
+static void draw_dist_log(void) {
+    if (!draw_dist) return; static float last[3]; static int n;
+    _Atomic float *raw = draw_dist + 22;   /* data + 0x140 */
+    float v[3]; for (int k = 0; k < 3; k++) v[k] = atomic_load_explicit(&raw[k], memory_order_relaxed);
+    if (n < 40 && memcmp(v, last, sizeof v)) { memcpy(last, v, sizeof v); n++;
+        fprintf(stderr, "[psv] draw distance: a category %.0f / %.0f / %.0f -> x%.2f\n", v[0], v[1], v[2], atomic_load(draw_dist)); }
+}
 void runtime_game_patches(Module *main_module) {
     patch_viewport_probe(main_module);
     patch_render_res(main_module);
@@ -317,6 +363,7 @@ void runtime_game_patches(Module *main_module) {
     patch_fixed_step(main_module);
     patch_jump(main_module);
     patch_far_distance(main_module);
+    patch_draw_dist(main_module);
     /* PSV_STOP_AT_START=1: the process stops itself before the game's first instruction, so a debugger can attach and set
        watchpoints on startup state (lldb's continue resumes it). */
     if (getenv("PSV_STOP_AT_START")) { fprintf(stderr, "[psv] stopped for a debugger (PSV_STOP_AT_START), pid %d\n", getpid()); raise(SIGSTOP); }
@@ -369,6 +416,7 @@ static uint64_t step_doubles;
 uint64_t runtime_frame_step_doubles(void) { return step_doubles; }   /* gfx/nvn/hle_nvn.c: the slow-frame line */   /* gfx/nvn/hle_nvn.c: a row of the DM_NVN_TSV trace */
 void runtime_frame_step_update(uint64_t now_ns) {
     frame_mode_keep();
+    draw_dist_log();
     if (!frame_table || !now_ns) return;
     if (atomic_load_explicit(&pinned_step_us, memory_order_relaxed)) { last_present_ns = now_ns; return; }
     if (!last_present_ns) { last_present_ns = now_ns; return; }
