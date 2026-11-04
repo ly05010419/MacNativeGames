@@ -78,10 +78,13 @@ APPS = {'totk': ('Tears of the Kingdom', 'org.macnativegames.totk', 'TOTK'), 'bo
 # its launcher is compiled with. The app's executable is the player's data folder name (game_version.h GAME_FOLDER).
 POKOPIA = REPO / 'games/pokopia'
 NS2 = {'0400A3A01EE4C000': dict(version='pkp', folder=POKOPIA, update='655360', expected='expected-v2.0.1.json',
-                                defines=['-DGAME_POKOPIA=1', '-DGAME_NS2=1'])}
+                                depth_mode='zero', defines=['-DGAME_POKOPIA=1', '-DGAME_NS2=1']),
+       '040074A01BF12000': dict(version='dkb', folder=REPO / 'games/dkb', update='458752', expected='expected-v458752.json',
+                                depth_mode='minus-w', defines=['-DGAME_DKB=1', '-DGAME_NS2=1'])}
 for _g in NS2.values():
     VERSIONS[_g['version']] = json.loads((_g['folder'] / 'assets' / _g['expected']).read_text())
 APPS['pkp'] = ('Pokémon Pokopia', 'org.macnativegames.pokopia', 'Pokopia')
+APPS['dkb'] = ('Donkey Kong Bananza', 'org.macnativegames.bananza', 'Bananza')
 
 
 def ns2_game(version):
@@ -2086,7 +2089,8 @@ def step_code_ns2(tree, dump, g, env, logs):
         run([py, 'scripts/prepare_modules.py', exefs, '--output', tree / f'extracted/{v}/elf'], logs / f'prepare_modules-{v}.log', cwd=tree)
     out = tree / f'rewritten/{v}'
     out.mkdir(parents=True, exist_ok=True)
-    for name in ('sdk', 'subsdk0', 'main'):
+    names = sorted(n.removesuffix('.patched.bin') for n in expected['rewritten_sha256'])
+    for name in names:
         image, target = out / f'{name}.patched.bin', expected['rewritten_sha256'][f'{name}.patched.bin']
         if image.exists() and sha256(image) == target:
             continue
@@ -2094,9 +2098,9 @@ def step_code_ns2(tree, dump, g, env, logs):
         run([py, 'third_party/d2r/patch_nso.py', exefs / name, out, name], logs / f'rewrite_{v}_{name}.log', cwd=tree,
             env=dict(env, DM_RULESET='native', DM_PRIVATE_GATES='0'))
         check(f'rewritten {name}', sha256(image), target)
-    digests = {f'{n}.patched.bin': sha256(out / f'{n}.patched.bin') for n in ('main', 'sdk', 'subsdk0')}
+    digests = {f'{n}.patched.bin': sha256(out / f'{n}.patched.bin') for n in names}
     report = dict(format=1, status='pass', rom_version=v, scope=f'hash match with verified {expected["display_version"]} rewrite',
-                  module_file_sha256={**{f'extracted/{v}/exefs/{n}': expected['exefs_sha256'][n] for n in ('main', 'sdk', 'subsdk0')},
+                  module_file_sha256={**{f'extracted/{v}/exefs/{n}': expected['exefs_sha256'][n] for n in names},
                                       **{f'rewritten/{v}/{n}': digests[n] for n in digests}})
     path = tree / f'analysis/{v}-port/phase12-validation.json'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2113,13 +2117,42 @@ def step_shaders_ns2(tree, g, logs):
     check_translator(tree)
     say('3/4 shaders: finding and translating every shader of the game (a minute or two)')
     run([tree / '.venv/bin/python', 'scripts/prepare_ns2_seed.py', '--version', v, '--binary', f'build/totk-native-{v}',
-         '--list', tree.parent / g['folder'].name / 'assets/shader_list.tsv', '--logs', logs], logs / f'prepare-ns2-seed-{v}.log', cwd=tree)
+         '--depth-mode', g['depth_mode'], '--list', tree.parent / g['folder'].name / 'assets/shader_list.tsv', '--logs', logs], logs / f'prepare-ns2-seed-{v}.log', cwd=tree)
+
+
+def record_ns2_device_build(tree, out, g, args):
+    """Bind the new NS2 device path to its inputs, exact build sources, options and exported signed-code sections."""
+    v = g['version']
+    roots = ('runtime', 'ios/Sources', 'ios/tools', 'scripts', 'tools/totk_xlate', 'third_party/d2r',
+             'third_party/d2r_gfx/gfx')
+    suffixes = {'.c', '.h', '.m', '.S', '.inc', '.py', '.cs', '.csproj', '.cpp', '.patch'}
+    sources = [p for root in roots for p in (tree / root).rglob('*') if p.is_file() and p.suffix in suffixes]
+    sources += [tree / 'Makefile', tree / 'ios/project.yml', tree / 'ios/project.generated.yml',
+                tree / 'prebuilt/ios-arm64/libtotk_xlate.a', tree / 'prebuilt/macos-arm64/totk_xlate']
+    seed = tree / f'build/shader-seed/{v}/seed-manifest.json'
+    outputs = [p for p in out.rglob('*') if p.is_file()] if out.is_dir() else [out]
+    outputs += [p for p in (tree / 'ios/Gen/modules').glob('*.bin')]
+    outputs += [tree / 'ios/Gen/ios_embed.h', seed]
+    device_seed = out.with_name(out.stem + '-shader-seed') if args.ios_game_data == 'documents' else tree / 'ios/Gen/totk/shader-seed'
+    outputs += [p for p in device_seed.iterdir() if p.is_file()]
+    record = dict(schema=1, game=v, platform=args.platform, input=VERSIONS[v],
+                  options=dict(ios_game_data=args.ios_game_data, device_gpu=args.device_gpu or ['auto'],
+                               nvn_depth_mode=g['depth_mode']),
+                  build_app_sha256=sha256(Path(__file__)),
+                  source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources)},
+                  output_sha256={str(p): sha256(p) for p in sorted(set(outputs))})
+    icon_spec = g['folder'] / 'assets/app-icon.json'
+    if icon_spec.is_file():
+        record['app_icon'] = dict(source=json.loads(icon_spec.read_text()), source_spec_sha256=sha256(icon_spec),
+                                  icns_sha256=sha256(tree / 'build/AppIcon.icns'))
+    out.with_name(out.stem + '-build-record.json').write_text(json.dumps(record, indent=2) + '\n')
 
 
 def main_ns2(args, dump):
     """A Mac app of a Switch 2 game from its dump folder (no keys: the dump holds the decrypted ExeFS and RomFS)."""
-    if args.platform != 'macos':
-        raise BuildError('Switch 2 games are built for the Mac only so far (docs/ns2-port.md)')
+    if args.platform == 'visionos':
+        raise BuildError('Switch 2 games currently support macOS and iOS')
+    device_app = args.platform == 'ios'
     if args.update or args.dlc or args.mod:
         raise BuildError('a Switch 2 dump folder holds its update itself: leave out --update, --dlc and --mod')
     exefs = ns2_dump_exefs(dump)
@@ -2134,8 +2167,8 @@ def main_ns2(args, dump):
     v = g['version']; app_name, bundle_id, executable = APPS[v]
     out = args.out.expanduser().resolve() if args.out else dump.parent / f'{app_name}.app'
     work = args.work.expanduser().resolve() if args.work else dump.parent / f'{executable}_build'
-    if out.suffix.lower() != '.app':
-        raise BuildError(f'the macOS output must end in .app: {out}')
+    if out.suffix.lower() not in (('.app', '.ipa') if device_app else ('.app',)):
+        raise BuildError(f'the output must end in .app' + (' or .ipa' if device_app else '') + f': {out}')
     shared_fonts = args.shared_fonts.expanduser().resolve() if args.shared_fonts else None
     py = prerequisites(args)
     logs = work / 'logs'
@@ -2151,9 +2184,27 @@ def main_ns2(args, dump):
         copy_shared_fonts(shared_fonts, fonts)
     validate_fonts(fonts)
     step_code_ns2(tree, dump, g, env, logs)
+    if v == 'dkb':
+        for size in ('2560x1440', '3840x2160'):
+            run([py, 'scripts/make_output_res_overlay.py', size, '--version', v],
+                logs / f'output_res_overlay-{v}-{size}.log', cwd=tree, env=env)
+    icon_spec = g['folder'] / 'assets/app-icon.json'
+    if icon_spec.is_file():
+        run([py, 'scripts/extract_app_icon.py', '--source-spec', icon_spec, '--output', 'build/AppIcon.icns'],
+            logs / 'app_icon.log', cwd=tree, env=env)
     say('2/4 data and 4/4 binary: building the game binary, its tables and the launcher')
     step_binary(tree, None, None, {**env, 'SHADER_LIST': f'../{g["folder"].name}/assets/shader_list.tsv'}, logs, version=v)
     step_shaders_ns2(tree, g, logs)
+    if device_app:
+        build_device_translator(tree, logs)
+        run([py, 'ios/tools/build_ipa.py', '--tree', tree, '--out', out, '--version', v,
+             '--logs', logs, '--app-name', executable, '--bundle-id', bundle_id,
+             *(['--image-outside'] if args.ios_game_data == 'documents' else []),
+             *[x for gpu in args.device_gpu or [] for x in ('--device-gpu', gpu)]], logs / 'build-ipa.log', cwd=tree, env=env)
+        say_device_pipelines(logs)
+        record_ns2_device_build(tree, out, g, args)
+        say(f'done in {(time.time() - t0) / 60:.0f} min: {out}; unsigned, install with ios/tools/install_device.py')
+        return
     step_shader_libs(tree, logs, version=v)
     step_app(tree, out, logs, version=v, game=v, game_data=args.mac_game_data or 'app')
     run([LSREGISTER, '-f', out], logs / 'register-app.log')

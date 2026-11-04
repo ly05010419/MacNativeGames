@@ -231,17 +231,16 @@ NVN(nvnDeviceInstallDebugCallback, void, NVNdevice *d, const PFNNVNDEBUGCALLBACK
     dev_t_ *o = (dev_t_ *)d; o->dbg_cb = B(enable) ? (void *)cb : NULL; o->dbg_data = data;
 }
 NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; LOG("[nvn] 窗口原点 %s", m ? "左上（同 D3D / Metal）" : "左下（GL）"); }
-#ifdef GAME_BOTW
 /* NVN's default depth mode is NEAR_IS_MINUS_W (enum value 0, the OpenGL convention): a device the game never calls
    nvnDeviceSetDepthMode on keeps it. TOTK sets it explicitly; Breath of the Wild never does, and its full-screen copy
    to the swapchain has clip z = -1 (the near plane), which the 0..w convention clipped away: the window stayed magenta
    (botw.md). */
 static _Atomic int g_depth_near_minus_w = 1;
-#else
-static _Atomic int g_depth_near_minus_w;
-#endif
+/* Also the offline seed's initial state: seed-shaders never boots the game or calls SetDepthMode. Giving it a different
+   default compiled Bananza's fullscreen vertices without clip-z conversion; Metal clipped every fragment away. */
 int totk_depth_near_minus_w(void) { return atomic_load(&g_depth_near_minus_w); }
-NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; atomic_store(&g_depth_near_minus_w, m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W); LOG("[nvn] 深度模式 %s", m ? "近=0（同 D3D / Metal）" : "近=-w（GL）：顶点着色器翻译时做 z=(z+w)/2 转换"); }
+void totk_depth_set_near_minus_w(int value) { atomic_store(&g_depth_near_minus_w, value != 0); }
+NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; totk_depth_set_near_minus_w(m == NVN_DEPTH_MODE_NEAR_IS_MINUS_W); LOG("[nvn] 深度模式 %s", m ? "近=0（同 D3D / Metal）" : "近=-w（GL）：顶点着色器翻译时做 z=(z+w)/2 转换"); }
 NVN(nvnDeviceFinalizeCommandHandle, void, NVNdevice *d, NVNcommandHandle h) { (void)d; (void)h; }
 
 // ---------- 内存池 ----------

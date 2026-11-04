@@ -72,8 +72,8 @@ targets:
     log = proj/'xcodebuild.log'
     with log.open('w') as f:
         r = subprocess.run(['xcodebuild','-project','TOTKSigning.xcodeproj','-scheme','TOTK','-configuration','Debug',
-                            '-destination',f'id={udid}','-derivedDataPath',str(derived),
-                            '-allowProvisioningUpdates','-allowProvisioningDeviceRegistration','build'],
+                            '-destination',f'generic/platform={project_platform}','-derivedDataPath',str(derived),
+                            '-allowProvisioningUpdates','build'],
                            cwd=proj, stdout=f, stderr=subprocess.STDOUT)
     if r.returncode:
         errors = [l for l in log.read_text(errors='replace').splitlines() if 'error:' in l]
@@ -313,6 +313,8 @@ def main():
         sys.exit('this is a native Vision Pro app: choose a paired Vision Pro with --device')
     prov, signed = profile(team, bundle_id, udid, platform)
     info = plistlib.loads(out(['security','cms','-D','-i',prov]).encode())
+    if udid not in info.get('ProvisionedDevices', []) and not info.get('ProvisionsAllDevices'):
+        sys.exit('this device is not registered in the provisioning profile; register it with your Apple developer team first')
     ents = info['Entitlements']
     if not ents.get(ENTITLEMENT):
         print(f'warning: your team cannot grant {ENTITLEMENT}; iOS may close the game when it runs out of memory')

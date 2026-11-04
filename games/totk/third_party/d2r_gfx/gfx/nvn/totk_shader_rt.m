@@ -96,10 +96,20 @@ NSString *totk_rt_dir(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         const char *e = getenv("TOTK_SHADER_CACHE");
+        NSString *cacheChain = @DMSH_CHAIN;
+        NSData *manifest = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"seed-manifest.json"]];
+        NSDictionary *metadata = manifest ? [NSJSONSerialization JSONObjectWithData:manifest options:0 error:nil] : nil;
+        NSString *context = [metadata isKindOfClass:NSDictionary.class] ? metadata[@"translation_context_sha256"] : nil;
+        if ([context isKindOfClass:NSString.class] && context.length == 64 &&
+            [context rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound)
+            cacheChain = [cacheChain stringByAppendingFormat:@"-%@", context];
+#ifdef GAME_NS2
+        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1"];   // development runs without a seed
+#endif
 #if TARGET_OS_IPHONE
-        g_dir = e ? @(e) : [NSString stringWithFormat:@"shader-cache/rt-%s", DMSH_CHAIN];   // in Documents (the app's working directory)
+        g_dir = e ? @(e) : [NSString stringWithFormat:@"shader-cache/rt-%@", cacheChain];   // in Documents (the app's working directory)
 #else
-        g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%s", DMSH_CHAIN];
+        g_dir = e ? @(e) : [root_dir() stringByAppendingFormat:@"/build/shader-cache/rt-%@", cacheChain];
 #endif
         [NSFileManager.defaultManager createDirectoryAtPath:g_dir withIntermediateDirectories:YES attributes:nil error:nil];
         const char *seedMode = getenv("TOTK_SHADER_SEED");

@@ -11,6 +11,7 @@ void hle_signal_system_event(void *event);
 #include <string.h>
 #include <unistd.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <TargetConditionals.h>
 
 /* Failures in each service's own module; games test them for success only. */
 #define R_NIFM_UNAVAILABLE (110u | (300u << 9))
@@ -24,10 +25,16 @@ void hle_signal_system_event(void *event);
 static void enter_exit_section(void) { }
 static void leave_exit_section(void) { }
 static void display_version(char *out) { memset(out, 0, 16); strncpy(out, TOTK_GAME_VERSION, 15); }
-/* Stable for this Mac and this game, like the console's per-application pseudo device id. */
+/* Stable for this installation and this game, like the console's per-application pseudo device id. */
 static void pseudo_device_id(uint8_t *uuid) {
-    uuid_t host; struct timespec wait = {0, 0}; uint8_t digest[CC_SHA256_DIGEST_LENGTH]; uint64_t title = GAME_TITLE_ID;
+    uuid_t host; uint8_t digest[CC_SHA256_DIGEST_LENGTH]; uint64_t title = GAME_TITLE_ID;
+#if TARGET_OS_IPHONE
+    void runtime_ios_device_uuid(uint8_t out[16]);
+    runtime_ios_device_uuid(host);
+#else
+    struct timespec wait = {0, 0};
     if (gethostuuid(host, &wait)) memset(host, 0, sizeof host);
+#endif
     CC_SHA256_CTX c; CC_SHA256_Init(&c); CC_SHA256_Update(&c, host, sizeof host); CC_SHA256_Update(&c, &title, sizeof title); CC_SHA256_Final(digest, &c);
     memcpy(uuid, digest, 16);
 }

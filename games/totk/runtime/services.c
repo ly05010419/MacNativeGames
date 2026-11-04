@@ -14,6 +14,9 @@
 #include "game_version.h"
 #include <string.h>
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <limits.h>
 #include "output_memory.h"   /* HEAP_CAP / LOW_SIZE from the application pool */
 
 #include <time.h>
@@ -141,6 +144,33 @@ static uint8_t *reserve_in_gap(uint64_t size,int log){
  return reserve_in_gap_from(size,log,LOW_SEARCH_FROM);
 #endif
 }
+/* An iOS process cannot swap anonymous guest pages to disk. NS2's retail heap
+   grows beyond a 6 GB phone's RAM even before its first world draw. A shared
+   file mapping preserves the guest's addresses and bytes while letting Darwin
+   write back and reclaim idle pages. It is scratch memory, never save data.
+   Enabled for Bananza on iOS after CPU/Metal alias/page-in and real-world
+   device checks; other games and the Mac retain anonymous backing. */
+static void heap_file_backing(void) {
+ const char *e=getenv("TOTK_FILE_HEAP");
+#if TARGET_OS_IPHONE && defined(GAME_DKB)
+ if(e&&!atoi(e))return;
+#else
+ if(!e||!atoi(e))return;
+#endif
+ const char *tmp=getenv("TMPDIR");if(!tmp||!*tmp)tmp="/tmp";
+ char path[PATH_MAX];int len=snprintf(path,sizeof path,"%s/totk-heap-XXXXXX",tmp);
+ if(len<0||(size_t)len>=sizeof path)runtime_fail("guest heap backing path");
+ int fd=mkstemp(path);if(fd<0)runtime_fail("create guest heap backing");
+ /* The mapping holds the vnode after close. Unlink now so a crash cannot
+    leave a multi-GB cache behind, and a later launch always starts at zero. */
+ if(unlink(path)||ftruncate(fd,(off_t)HEAP_CAP)){
+  int saved=errno;close(fd);errno=saved;runtime_fail("size guest heap backing");
+ }
+ void *p=mmap(heap,HEAP_CAP,PROT_NONE,MAP_SHARED|MAP_FIXED,fd,0);
+ int saved=errno;close(fd);errno=saved;
+ if(p!=heap)runtime_fail("map guest heap backing");
+ fprintf(stderr,"[totk-mem] guest heap: shared scratch-file backing, %llu MiB address space; bytes retained on page-out, file removed on exit\n",(unsigned long long)(HEAP_CAP>>20));
+}
 static void memory_init(void) {
  if(alias_space)return;
 #if TARGET_OS_IPHONE
@@ -187,7 +217,7 @@ static void memory_init(void) {
   if(!alias_space)alias_space=low_space+LOW_SIZE;
  }
 #endif
- heap=low_space+HEAP_OFF;
+ heap=low_space+HEAP_OFF;heap_file_backing();
  fprintf(stderr,"[totk] guest layout: alias %#llx+%#llx stack %#llx+%#llx heap %#llx (cap %#llx)\n",(unsigned long long)ALIAS_START,ALIAS_SIZE,(unsigned long long)STACK_START,STACK_SIZE,(unsigned long long)(uintptr_t)heap,HEAP_CAP);
 }
 /* Scoped stack moves: independent host backing, copy back on unmap.
@@ -373,7 +403,13 @@ static uint32_t observed_region(uint64_t *out,uint64_t size){
  return r;
 }
 static uint32_t observed_pages(uint64_t addr,uint64_t size){uint32_t r=((uint32_t(*)(uint64_t,uint64_t))runtime_symbol("_ZN2nn2os19AllocateMemoryPagesEmm"))(addr,size);if(r||trace_alloc())fprintf(stderr,"[totk] AllocateMemoryPages address=%llx size=%llx result=%x\n",(unsigned long long)addr,(unsigned long long)size,r);return r;}
+#ifdef GAME_DKB
+void *runtime_bananza_memcpy(void *,const void *,size_t);
+#endif
 void *runtime_observer(const char *name) {
+#ifdef GAME_DKB
+ if(!strcmp(name,"memcpy"))return runtime_bananza_memcpy;
+#endif
  static const struct {const char *name;void *fn;} entries[]={
  {"_ZN2nn2os21AllocateAddressRegionEPmm",observed_region},{"_ZN2nn2os19AllocateMemoryPagesEmm",observed_pages},{"nnosInitialize",observed_os_init},{"nninitInitializeSdkModule",observed_sdk_init},{"nninitStartup",observed_startup},{"nnMain",observed_main}};
  for(size_t i=0;i<sizeof(entries)/sizeof(entries[0]);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;

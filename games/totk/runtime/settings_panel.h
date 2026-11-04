@@ -114,6 +114,9 @@
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
+#ifdef GAME_DKB
+#include "ns2_resolution.h"
+#endif
 
 void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
@@ -330,6 +333,42 @@ static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
  return settings_row(title,@[value],@[@0],^int{return 0;},nil);
 }
 static NSString *settings_on_off(int on) { return on?settings_text("开","On"):settings_text("关","Off"); }
+#ifdef GAME_DKB
+/* Bananza creates its native render targets once. Save the next launch's
+   creation size rather than changing metadata beneath already allocated RTs. */
+static TOTKSettingRow *settings_bananza_resolution_row(void) {
+ NSString *title=settings_text("分辨率（下次启动生效）","Resolution (next launch)");
+ unsigned w=1920,h=1080;char word[32];
+ runtime_output_res(&w,&h);
+ if(getenv("TOTK_OUTPUT_RES"))return settings_fixed(title,[NSString stringWithFormat:@"%u×%u (TOTK_OUTPUT_RES)",w,h]);
+ if(runtime_setting_word("graphics-output-size.txt",word,sizeof word))ns2_parse_saved_resolution(word,&w,&h);
+ NSString *picked=[NSString stringWithFormat:@"%ux%u",w,h];
+ NSMutableArray<NSString *> *sizes=[@[@"960x540",@"1280x720",@"1920x1080",@"2560x1440",@"3840x2160"] mutableCopy];
+ NSMutableArray<NSString *> *names=[@[@"540p (960×540)",@"720p (1280×720)",@"1080p (1920×1080)",@"2K (2560×1440)",@"4K (3840×2160)"] mutableCopy];
+ if(![sizes containsObject:picked]){[sizes addObject:picked];[names addObject:[picked stringByReplacingOccurrencesOfString:@"x" withString:@"×"]];}
+ NSInteger selected=[sizes indexOfObject:picked];
+ NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(NSUInteger i=0;i<sizes.count;i++)[values addObject:@(i)];
+ [names addObject:settings_text("自定义…","Custom…")];[values addObject:@-1];
+ return settings_row(title,names,values,^int{return (int)selected;},^(int value){
+  NSString *size=value>=0&&value<(int)sizes.count?sizes[(NSUInteger)value]:nil;
+  if(value<0){
+   NSAlert *alert=[NSAlert new];alert.messageText=settings_text("自定义渲染分辨率","Custom render resolution");
+   alert.informativeText=settings_text("输入宽x高，例如3840x2160。下次启动生效。","Enter widthxheight, e.g. 3840x2160. Applies next launch.");
+   NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(0,0,240,24)];field.stringValue=picked;alert.accessoryView=field;
+   [alert addButtonWithTitle:settings_text("保存","Save")];[alert addButtonWithTitle:settings_text("取消","Cancel")];
+   if([alert runModal]!=NSAlertFirstButtonReturn){dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
+   size=[field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  }
+  unsigned nw,nh;
+  if(!size||!ns2_parse_resolution(size.UTF8String,&nw,&nh)){
+   NSAlert *error=[NSAlert new];error.messageText=settings_text("分辨率格式无效","Invalid resolution");
+   error.informativeText=settings_text("请输入宽x高，每边1–16384。原设置保留。","Use widthxheight, each 1–16384. The previous choice is kept.");[error runModal];dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;
+  }
+  runtime_setting_save("graphics-output-size.txt",size.UTF8String,"Bananza render resolution");
+  fprintf(stderr,"[totk] Bananza resolution saved for next launch: %ux%u\n",nw,nh);dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});
+ });
+}
+#endif
 
 static NSString *settings_ratio_text(float r) {
  if(fabsf(r*9-16)<0.02f)return @"16:9";
@@ -695,9 +734,14 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    [NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
   [resModes addObject:@(m)];}
  NSString *resolution=settings_text("分辨率","Resolution");
+#ifdef GAME_DKB
+ (void)resolution;
+ [rows addObject:settings_bananza_resolution_row()];
+#else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,
   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+#endif
  NSString *aspect=settings_text("画面比例","Aspect ratio");
  if(!(runtime_aspect_ratio()>0))[rows addObject:settings_fixed(aspect,@"16:9")];
  else{NSMutableArray<NSNumber *> *ratios=[@[@(16.0/9),@(16.0/10),@(21.0/9),@(32.0/9)] mutableCopy];

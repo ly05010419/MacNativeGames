@@ -17,9 +17,23 @@ static CADisplayLink *displayLink;
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
 static void *vsyncEvents[16];
 static unsigned vsyncCount;
+/* iOS has no gethostuuid. Keep the offline console's per-installation identity in app preferences; updating the same
+   bundle preserves it, independently of the selected game account. */
+void runtime_ios_device_uuid(uint8_t out[16]) {
+ static NSUUID *identity; static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+  NSString *saved=[defaults stringForKey:@"MacNativeGamesDeviceUUID"];
+  identity=saved.length?[[NSUUID alloc] initWithUUIDString:saved]:nil;
+  if(!identity){identity=NSUUID.UUID;[defaults setObject:identity.UUIDString forKey:@"MacNativeGamesDeviceUUID"];}
+ });
+ [identity getUUIDBytes:out];
+}
 void hle_bind_system_event(void *,int);
 void hle_signal_system_event(void *);
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* This frontend presents an SDR BGRA8 surface (HDR is available only on the Mac): its white headroom is one. */
+float front_hdr_headroom(void){return 1.0f;}
 void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);

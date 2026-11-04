@@ -4001,23 +4001,30 @@ static id<MTLTexture> reup_take(const reup_key *k) {
     if (hit) g_reup_reused++;
     return hit;
 }
-/* TOTK (iPhone): Metal copies of large mipmapped CPU-pool textures leave out the top level: a quarter of the memory. The
+/* Optional Mac diagnostic: Metal copies of large mipmapped CPU-pool textures leave out the top level: a quarter of the memory. The
    game samples them with normalised coordinates, so a texture one level smaller is drawn from what was its level 1 (on
    the 720p handheld screen most of them are minified anyway). Texture-ID views shift their level range (tex_by_id);
    a copy the GPU starts rendering into is uploaded again at full size (tex_mtl). 2D / 2D-array / cube textures with
    at least two levels and both sides >= TOTK_MIP_DROP_MIN (512). Not lower: at 256 the grass disappeared and the ground
    took wrong colours on an iPhone 14 (2026-10-23): data textures of that size (terrain material / grass maps) are read
-   by integer texel coordinates, which a copy one level smaller does not match. TOTK_MIP_DROP=0 off, =1 on (default on
-   iOS only). */
+   by integer texel coordinates, which a copy one level smaller does not match. TOTK_MIP_DROP=1 opts in on the Mac.
+   iOS always preserves the original dimensions and all mip levels, just like the Mac's default (2026-11-04). In particular,
+   texture-copy commands use the game's original mip indices and texel regions; a smaller sampled copy cannot represent them. */
 static uint64_t g_mip_dropped;
 static unsigned mip_drop_of(const tex_t *t) {
+#if TARGET_OS_IPHONE
+    (void)t;
+    static int noted; if (!noted) { noted = 1; MLOG("[texture] iOS: original texture dimensions and complete mip chains"); }
+    return 0;
+#else
     static int on = -1; static unsigned minside;
-    if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : TARGET_OS_IPHONE; minside = m ? (unsigned)atoi(m) : 512;
+    if (on < 0) { const char *e = getenv("TOTK_MIP_DROP"), *m = getenv("TOTK_MIP_DROP_MIN"); on = e ? atoi(e) != 0 : 0; minside = m ? (unsigned)atoi(m) : 512;
         if (on) MLOG("大贴图副本少传最高一级 mip：开（两边都 ≥%u 的 2D / 数组 / 立方体贴图；TOTK_MIP_DROP=0 关）", minside); }
     if (!on || g_mip_nodrop || g_mip_keep) return 0;
     uint32_t g = t->d.target;
     if (!(g == 1 || g == 4 || g == 7 || g == 8 || g == 9) || t->d.levels < 2 || t->d.width < minside || t->d.height < minside) return 0;
     return 1;
+#endif
 }
 static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key, NvPkg *pk) {
     MTLTextureDescriptor *d = tex_desc(t, t->has_layout);   // TOTK: default-layout mirrored textures keep render-target usage
@@ -9486,6 +9493,12 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
         if (done) dispatch_semaphore_signal(done);   // after the line: the packaging tool's JSON report follows it on its own line
     });
 }
+static void offline_depth_mode(const char *depth) {
+    if (!depth || (strcmp(depth, "minus-w") && strcmp(depth, "zero"))) MDIE("offline shaders: depth mode must be minus-w or zero (the game's observed NVN mode)");
+    extern void totk_depth_set_near_minus_w(int);
+    totk_depth_set_near_minus_w(!strcmp(depth, "minus-w"));
+    MLOG("[seed] explicit NVN depth mode: %s", depth);
+}
 #if !TARGET_OS_IPHONE
 /* Packaging an iPhone / iPad app (ios/tools/build_ipa.py, 2026-10-29): `totk-native <rewritten> pipeline-archive <list>...`
    makes the pipelines of the lists from the device seed's metallibs (TOTK_SHADER_SEED_DIR, read in place;
@@ -9499,6 +9512,10 @@ static void warm_fill_archive(NSArray<NSString *> *paths, dispatch_semaphore_t d
 int mtl_pipeline_archive_tool(int argc, char **argv) {
     if (argc < 1 || !getenv("TOTK_SHADER_CACHE") || !getenv("TOTK_SHADER_SEED_DIR"))
         MDIE("pipeline-archive: TOTK_SHADER_CACHE=<folder> TOTK_SHADER_SEED_DIR=<device seed> totk-native <rewritten> pipeline-archive <list>...");
+    NSData *seedManifest = [NSData dataWithContentsOfFile:[@(getenv("TOTK_SHADER_SEED_DIR")) stringByAppendingPathComponent:@"seed-manifest.json"]];
+    NSDictionary *seedMetadata = seedManifest ? [NSJSONSerialization JSONObjectWithData:seedManifest options:0 error:nil] : nil;
+    if ([seedMetadata isKindOfClass:NSDictionary.class] && seedMetadata[@"nvn_depth_mode"])
+        offline_depth_mode([seedMetadata[@"nvn_depth_mode"] isKindOfClass:NSString.class] ? [seedMetadata[@"nvn_depth_mode"] UTF8String] : NULL);
     const char *host = getenv("TOTK_PIPELINE_ARCHIVE_HOST");
     /* Both on warm_threads() threads (8 on an M4; TOTK_WARM_THREADS=1 for one). The device's libraries went one at a time
        until 2026-11-01: Breath of the Wild 1.6.0's two runs for an iPad took 332 s + 187 s, on 8 threads 62 s + 49 s, with
@@ -15304,6 +15321,10 @@ static void copy_t2t(const p_copy_t2t *c) {
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
     if (!s || !d) return;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
+    { static int on = -1, left = 24; if (on < 0) on = getenv("TOTK_T2T_LOG") != NULL;
+      if (on && left > 0) { left--; MLOG("[t2t-storage] src ser=%llu guest=%ux%u/%u mips Metal=%lux%lu/%lu mips level=%u -> dst ser=%llu guest=%ux%u/%u mips Metal=%lux%lu/%lu mips level=%u",
+          (unsigned long long)c->src->serial,c->src->d.width,c->src->d.height,c->src->d.levels,(unsigned long)s.width,(unsigned long)s.height,(unsigned long)s.mipmapLevelCount,sl,
+          (unsigned long long)c->dst->serial,c->dst->d.width,c->dst->d.height,c->dst->d.levels,(unsigned long)d.width,(unsigned long)d.height,(unsigned long)d.mipmapLevelCount,dl); } }
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
     PD("t src=%llu lv%u sl%u xyz=%d,%d,%d dst=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d", c->src->serial, sl, sz0, c->sr.xoffset, c->sr.yoffset, c->sr.zoffset,
        c->dst->serial, dl, dz0, c->dr.xoffset, c->dr.yoffset, c->dr.zoffset, c->sr.width, c->sr.height, c->sr.depth);
@@ -19944,6 +19965,9 @@ int mtl_probe_pipeline_archive(void) {
    so the variant carries the name the list's warm rows use (totk_contrib_listed_name), as prepare_shader_seed.py does for
    Tears of the Kingdom: the packaged app's pipeline archive (build_app.py mac_pipelines) builds those pipelines. */
 void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool {
+    /* Offline translation does not run the game's device setup. The build passes the mode observed in that setup;
+       NVN's default alone is insufficient for games that explicitly select near=0 (Pokopia). */
+    offline_depth_mode(getenv("TOTK_SEED_DEPTH_MODE"));
     NSData *d = [NSData dataWithContentsOfFile:@(path)];
     if (!d || d.length < 12 || memcmp(d.bytes, "NS2SHC01", 8)) MDIE("seed-shaders: %s is not a shader corpus (scripts/ns2_shader_corpus.py)", path);
     const uint8_t *p = (const uint8_t *)d.bytes + 12, *end = (const uint8_t *)d.bytes + d.length;

@@ -26,6 +26,12 @@ the scene size, and the SHA-256 of the heap table it was built on, or null for t
 tell a current overlay from one a --mod build left behind - the mod's heap sizes must not stay in a later build that
 passes no --mod.
 usage: make_output_res_overlay.py 2560x1440 [--heapdef /path/to/mod/System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs]
+
+Bananza (--version dkb) has its 200 MiB primary render-pool size in its native
+graphics creation argument (game_patches_ns2.c). This script grows only that
+pool's parent GSys heap in Product.Nin_Ounce_NVN2.HeapDef.byml.zs, by the same
+additional bytes as the runtime adds to the pool and the application budget.
+Its native GSys size is 518144 KiB; every other heap field stays byte-identical.
 """
 import argparse, hashlib, json, math, struct
 from pathlib import Path
@@ -51,12 +57,17 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('size', help='<width>x<height>, e.g. 2560x1440')
 parser.add_argument('--output-root', type=Path, default=root / 'extracted/v0/romfs-patches-out')
-parser.add_argument('--version', choices=('v0','v121','v143'), default='v0')
+parser.add_argument('--version', choices=('v0','v121','v143','dkb'), default='v0')
 parser.add_argument('--scene', help='<width>x<height> scene render size (TOTK_RENDER_RES, 1.4.3 / 1.2.1) the heaps must also hold')
 parser.add_argument('--heapdef', type=Path,
                     help='a mod\'s replacement HeapDef(.zs) to build on: its heap sizes are kept, the 2K sizes added')
 args = parser.parse_args()
 version = args.version
+if version == 'dkb':
+    # The primary render pool is an engine creation argument (game_patches_ns2.c).
+    # Its parent GSys heap is data in this table; preserve the other heap budgets.
+    HEAPDEF = 'System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs'
+    DTA_KIB, GRAPHICS_KIB = 204800, 518144
 if args.output_root == root / 'extracted/v0/romfs-patches-out': args.output_root = root / f'extracted/{version}/romfs-patches-out'
 w, h = (int(v) for v in args.size.lower().split('x'))
 sw, sh = (int(v) for v in args.scene.lower().split('x')) if args.scene else (0, 0)
@@ -82,9 +93,10 @@ def sarc_members(data):
 with (root / f'extracted/{version}/romfs/romfs.bin').open('rb') as image:
     def read(path): f = files[path]; image.seek(f['offset']); b = image.read(f['size']); assert len(b) == f['size']; return b
     dictionaries = {}
-    pack = zstd.decompress(read('Pack/ZsDic.pack.zs'))
-    for name, (lo, hi) in sarc_members(pack).items():
-        d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
+    if version != 'dkb':
+        pack = zstd.decompress(read('Pack/ZsDic.pack.zs'))
+        for name, (lo, hi) in sarc_members(pack).items():
+            d = zstd.ZstdDict(pack[lo:hi]); dictionaries[d.dict_id] = d
     romfs_raw = read(HEAPDEF)       # the manifest's original_sha256 column always names the RomFS file
 mod_raw = args.heapdef.read_bytes() if args.heapdef else romfs_raw
 try:
@@ -116,16 +128,24 @@ def field(node, name, want_type):
 def child(node, name): return struct.unpack_from('<I', byml, field(node, name, 0xc1))[0]
 heaps = child(root_node, 'Heaps')
 def size_field(heap): return field(child(heaps, heap), 'Size', 0xd1)
-dta_at, graphics_at = size_field('DynamicTextureAllocatorMem'), size_field('Graphics')
-dta, graphics = (struct.unpack_from('<i', byml, a)[0] for a in (dta_at, graphics_at))
+if version == 'dkb':
+    dta_at, graphics_at = None, size_field('GSys')
+    dta, graphics = DTA_KIB, struct.unpack_from('<i', byml, graphics_at)[0]
+else:
+    dta_at, graphics_at = size_field('DynamicTextureAllocatorMem'), size_field('Graphics')
+    dta, graphics = (struct.unpack_from('<i', byml, a)[0] for a in (dta_at, graphics_at))
 if not args.heapdef:   # the shipped table is the reference; a mod's table may already have changed other heaps
     assert (dta, graphics) == (DTA_KIB, GRAPHICS_KIB), (dta, graphics)
 extra = extra_kib(w, h, sw, sh)
+if version == 'dkb':
+    # Match the runtime's 64 KiB rounding, including non-integral custom sizes.
+    extra = ((DTA_KIB * 1024 * w * h + BASE_W * BASE_H - 1) // (BASE_W * BASE_H) + 65535) // 65536 * 64 - DTA_KIB
 assert extra > 0, 'neither the output nor the scene is bigger than the shipped size: no overlay needed'
-struct.pack_into('<i', byml, dta_at, dta + extra)
+if dta_at is not None: struct.pack_into('<i', byml, dta_at, dta + extra)
 struct.pack_into('<i', byml, graphics_at, graphics + extra)
 diff = [i for i in range(len(base)) if base[i] != byml[i]]
-assert diff and all(dta_at <= i < dta_at + 4 or graphics_at <= i < graphics_at + 4 for i in diff), diff
+changed_fields = [graphics_at] + ([dta_at] if dta_at is not None else [])
+assert diff and all(any(a <= i < a + 4 for a in changed_fields) for i in diff), diff
 data = zstd.compress(bytes(byml), level=19, zstd_dict=dictionary)
 assert zstd.decompress(data, zstd_dict=dictionary) == bytes(byml)
 written = zstd.get_frame_info(data)
@@ -139,7 +159,9 @@ line = '\t'.join([HEAPDEF, str(len(data)), hashlib.sha256(data).hexdigest(), has
     version=version, size=f'{w}x{h}', scene=args.scene or None, extra_kib=extra,
     heapdef=str(args.heapdef) if args.heapdef else None,
     heapdef_sha256=hashlib.sha256(mod_raw).hexdigest() if args.heapdef else None), indent=2) + '\n')
-print(json.dumps(dict(status='pass', output=f'{w}x{h}', path=HEAPDEF, extra_kib=extra,
+report = dict(status='pass', output=f'{w}x{h}', path=HEAPDEF, extra_kib=extra,
                       base=str(args.heapdef) if args.heapdef else 'the RomFS original',
-                      DynamicTextureAllocatorMem_kib=[dta, dta + extra], Graphics_kib=[graphics, graphics + extra],
-                      size=len(data), changed_bytes=len(diff), dir=str(out_dir))))
+                      size=len(data), changed_bytes=len(diff), dir=str(out_dir))
+report.update({'RenderPool_kib': [dta,dta+extra], 'GSys_kib': [graphics,graphics+extra]} if version=='dkb' else
+              {'DynamicTextureAllocatorMem_kib': [dta,dta+extra], 'Graphics_kib': [graphics,graphics+extra]})
+print(json.dumps(report))

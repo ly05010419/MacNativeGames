@@ -1,5 +1,10 @@
 # Switch 2 (NS2) in the Tears of the Kingdom runtime
 
+NS2 dumps containing only ExeFS/RomFS have no Control-NCA icon. A game's `assets/app-icon.json` can identify its official
+image by URL and SHA-256; preparation caches the verified image and generates `build/AppIcon.icns` outside the source
+tree. Both the Mac app and the iOS asset catalog use that icon. Check the packaged `CFBundleIcons`, `Assets.car`, and
+the installed phone's SpringBoard icon image; a successful build alone does not prove that a home-screen icon exists.
+
 Branch `ns2` (started 2026-11-02). Goal: Switch 2 games run on the same runtime as Tears of the Kingdom and Breath of the
 Wild (`games/totk/runtime`, `third_party/d2r_gfx`, the `totk_xlate` translator), not as a separate copy of another
 project. First target: **Donkey Kong Bananza** (title `040074A01BF12000`, update v458752, SDK 20.5.19, NVN2) on the Mac,
@@ -376,3 +381,88 @@ about 6.9 ms); what was measured and planned:
   above) before each run. Compare GPU time and submit time, not frame time, while the game holds 60 fps.
 - Where the GPU time goes, per pass (games/totk/scripts/metal_perf_report.py, merged from main), before choosing the next
   GPU change; then mesh shaders (above).
+
+## Offline shader depth mode
+
+Offline preparation does not execute the game's `nvnDeviceSetDepthMode` call. Its depth mode must therefore be an
+explicit build input: Bananza uses `minus-w`, Pokopia uses `zero`, as observed in their device setup. `build_app.py`
+passes this to `prepare_ns2_seed.py --depth-mode`; direct `seed-shaders` invocations must set `TOTK_SEED_DEPTH_MODE`.
+For `minus-w`, vertex translation converts clip z to `(z+w)/2` for Metal. Applying the wrong convention can clip the
+entire fullscreen copy and leave the swapchain's previous contents on screen even with no missing shaders.
+
+The seed manifest records `nvn_depth_mode` and `translation_context_sha256` (runtime binary, translator and requested
+mode). Both offline translations and the app's writable shader cache use that context; changing it cannot reuse stale
+vertex translations under unchanged shader keys. Offline pipeline generation reads the mode from the same manifest.
+
+Verification uses one real fullscreen vertex shader translated in both modes: only `minus-w` must contain the clip-z
+conversion. On the device, capture the presented swapchain texture, the final draw's actual uniform/vertex data and
+consecutive frames, then check the visible cropped output as well as the window screenshot. A draw submission count
+alone does not prove that the rasterizer produced pixels. Use a save copy and verify the restored original's hashes.
+
+**Bananza custom rendering size (2026-11-04, Mac verified; iOS default 960x540 requested).**
+`TOTK_OUTPUT_RES=1280x720` (or e.g. `960x540`) selects a fixed native render size. The v458752 framebuffer maximum
+getters at `main+0x5bf770/+0x5bf780` read an independent writable parameter page. Their original instructions are
+verified on the Mac and exported into the signed iOS code; the phone only verifies the code and fills the data.
+The verified `main+0x5399ec` copy publishes gsys's creation parameters. It skips the argument's 8-byte vtable:
+its 0x108-byte payload has flags, 24 extents at +4, six output scales at +0xc4 and a 20-byte tail. Only the extents
+and scales change. `ns2_resolution.h` defines and checks that layout; regression checks preserve the flags and tail
+and reject malformed, overflowing and mismatched inputs. No NVN texture-size matching or mip remapping is involved.
+Mac tests from save copies ran 1280x720 and 960x540 for about 70 s each, reached the mining tunnel and captured
+canvas PNGs, crops and main render targets at exactly the requested size. The default-size gsys constant alone
+is overwritten later and is insufficient. The iOS start screen offers 540p, 720p, 1080p and custom width x height;
+Settings has the same engine parameter, default 960x540 (user request). Original texture dimensions and full mip chains stay intact.
+
+The earlier iOS read-load Jetsam was VM page shortage near 4 GiB. A shared scratch-file heap mapping now defaults
+on for Bananza on iOS only (`TOTK_FILE_HEAP=0` for comparison); macOS and other games retain their earlier backing.
+The anonymous address/heap budget stays unchanged. The file is unlinked while mapped, so exit releases its disk space.
+On the iPhone 14, 512 MiB CPU write-back/page-in and Metal physical/virtual alias checks passed, followed by a 263 s
+original-resolution save-copy run that reached the tunnel without termination (peak footprint 1175 MiB; original
+save restored and all hashes matched). Loading and pipeline creation were slow; this is not a claim of sustained
+playable frame rate. The initial combined 720p/default-memory build was not installed because the phone disconnected.
+The requested 960x540 build was subsequently signature-verified and installed over USB; all seven original profile
+files matched their pre-install SHA-256 hashes. The first launch for verification was denied by iOS lock state,
+so this build has not yet been verified in the real iPhone game. The test profile was removed and the original
+profile restored with matching hashes. Evidence: external `codex/bananza-ios-20261104/{crash-after-save,resolution}/`.
+
+
+**Bananza Mac display settings and 4K verification (2026-11-04).** Mac now defaults to native 1920x1080
+when TOTK_OUTPUT_RES is absent. The Mac settings panel offers 540p, 720p, 1080p, 1440p, 4K and custom dimensions;
+it stores graphics-output-size.txt beside controls.txt, and applies the chosen creation size on the next launch.
+The current run keeps immutable dimensions. An explicit environment value still takes precedence.
+
+4K needs the complete native memory chain. The graphics creation argument copied at main+0x53a068 has its
+200 MiB primary dynamic render-pool budget at copied payload +0x20; the adjacent +0x28 is a 32 MiB fallback
+block size, and the fallback heap is null in the real failure. The first attempted fallback-size change did
+not affect the primary pool and was removed. The primary pool is now scaled by requested pixels above 1080p,
+rounded to 64 KiB (4K: 800 MiB). Its parent GSys heap, from
+System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs, starts at 518144 KiB. Grow it by exactly the same delta
+(4K: +614400 KiB), and add that delta to the reported application budget so other heap budgets stay intact.
+Growing the primary pool alone cannot fit it into the original parent heap. The shared output-overlay builder
+supports --version dkb, validates the original values and changes only GSys's Size field. The normal NS2 build
+prepares 2560x1440 and 3840x2160; a custom size above 1080p needs its matching generated overlay.
+
+Final real Mac tests used save copies and no TOTK_OUTPUT_RES override: default 1080p ran about 70 s, and a saved
+4K setting ran about 121 s. Both reached the mining tunnel, captured native canvas PNGs at the requested size,
+and exited normally. The 4K run's later footprint was about 5171 MiB. The setting was also selected in the actual
+Mac menu and its saved file checked. Original texture dimensions, mip chains and effects were retained. These
+are short load/image checks, not long gameplay or frame-rate acceptance. Evidence: external
+codex/bananza-ios-20261104/resolution/mac-display-verification.json and mac-final-display-* directories.
+The desktop command and installed 960x540 iPhone build have not been replaced by these Mac tests.
+
+
+**Desktop entry installed (2026-11-04).** The existing `大金刚 Bananza.command` now starts the verified native
+binary in the external `codex/bananza-ios-20261104/work/totk` tree. The player's original `play/profile` and
+`run1/cache` paths are retained. Settings persist in `Application Support/MacNativeGames/Bananza` (a link to the
+external artifact volume), including `graphics-output-size.txt`; keyboard 1 opens the panel. Default output stays
+1080p until changed. The previous desktop entry is backed up beside `resolution/desktop-entry-record.json`,
+which binds the entry to the exact executable tested and records the unchanged save hashes. Creating the entry
+did not start the player's game. A per-launch command file lets the existing idle watchdog request a normal close.
+The latest shared sources also compile for generic iOS. The installed phone remains the previous 960x540 build;
+its exact-size real-game verification is still blocked by the phone's lock state. Full Mac-settings parity on iOS
+has been requested and remains unimplemented.
+
+Pre-commit validation also ran 1452 repository tests (7 skipped). The first run found one stale assertion counting
+two device-translator build routes, updated for NS2's third route, and three synthetic update-helper scripts whose
+shebang could not name a venv interpreter path containing spaces. The failing cases plus the complete device-translator
+group passed a targeted 9-test recheck with a space-free path for those stdlib-only child fixtures. The complete suite
+was not repeated after this targeted remediation. No game data, saves or raw captures are included in the commit.
