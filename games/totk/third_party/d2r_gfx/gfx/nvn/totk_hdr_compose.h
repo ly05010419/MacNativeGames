@@ -143,8 +143,10 @@ static inline NSString *totk_hdr_compose_source(NSString *source) {
  * their original clamps. */
 static inline NSString *totk_hdr_post_source(NSString *source) {
     NSString *s=totk_hdr_uniform(source);if(!s)return nil;
+    // The v9 translator emits precise::clamp where v8 emitted fast::clamp.
+    NSString *ns = [s containsString:@"precise::clamp(_785, 0.0, 1.0)"] ? @"precise" : @"fast";
     for(NSString *v in @[@"_785",@"_789",@"_793"]) {
-        NSString *old=[NSString stringWithFormat:@"fast::clamp(%@, 0.0, 1.0)",v];
+        NSString *old=[NSString stringWithFormat:@"%@::clamp(%@, 0.0, 1.0)",ns,v];
         if(![s containsString:old])return nil;
         s=[s stringByReplacingOccurrencesOfString:old withString:[NSString stringWithFormat:@"(hdrConfig.display.x > 0.5 ? %@ : %@)",v,old]];
     }

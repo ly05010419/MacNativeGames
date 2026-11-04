@@ -7866,27 +7866,29 @@ static id<MTLFunction> fs_fn_border_with(NvShader *fs, int nodepth, NSString *bk
 /* The fragment function reading the given attachments from the tile (nvn_fbread.h), nil when it cannot be made. Built on
    the submit thread when a draw first needs it, never in the background: the draw has given up the store before it
    (att_fb_take), so it cannot be drawn with the plain function meanwhile. */
-static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n);
-static id<MTLFunction> fs_fn_fbread(NvShader *fs, const int aid[], const int att[], int n) {
+static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr);
+static id<MTLFunction> fs_fn_fbread(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr) {
     if (!fs || !sh_has_src(fs) || n <= 0) return nil;   // a depth-writing shader keeps its depth output: callers draw it only into a pass with a depth plane (att_fb_take)
     /* TOTK: the decals ask for the same variant draw after draw; formatting the key and the dictionary lookup were ~2% of
        the translate thread at Kakariko (2026-10-25). The last four answers per thread (the warm-up asks from its own). */
-    typedef struct { const void *fs; int n, aid[8], att[8]; __unsafe_unretained id<MTLFunction> fn; } fbr_memo;   // fs retained: no reuse of its address; it holds fn in bpatch
+    typedef struct { const void *fs; BOOL hdr; int n, aid[8], att[8]; __unsafe_unretained id<MTLFunction> fn; } fbr_memo;   // fs retained: no reuse of its address; it holds fn in bpatch
     static __thread fbr_memo memo[4]; static __thread unsigned next;   // a few decal shaders alternate draw after draw
     for (int i = 0; i < 4; i++) { fbr_memo *e = &memo[i];
-        if (e->fs == (__bridge const void *)fs && e->n == n && !memcmp(aid, e->aid, sizeof *aid * (size_t)n) && !memcmp(att, e->att, sizeof *att * (size_t)n)) return e->fn; }
-    id<MTLFunction> got = fs_fn_fbread_slow(fs, aid, att, n);
+        if (e->fs == (__bridge const void *)fs && e->hdr == hdr && e->n == n && !memcmp(aid, e->aid, sizeof *aid * (size_t)n) && !memcmp(att, e->att, sizeof *att * (size_t)n)) return e->fn; }
+    id<MTLFunction> got = fs_fn_fbread_slow(fs, aid, att, n, hdr);
     if (got && n <= 8) { fbr_memo *e = &memo[next++ & 3];
         if (e->fs) CFRelease(e->fs);
-        e->fs = (__bridge_retained const void *)fs; e->n = n; memcpy(e->aid, aid, sizeof *aid * (size_t)n); memcpy(e->att, att, sizeof *att * (size_t)n); e->fn = got; }
+        e->fs = (__bridge_retained const void *)fs; e->hdr = hdr; e->n = n; memcpy(e->aid, aid, sizeof *aid * (size_t)n); memcpy(e->att, att, sizeof *att * (size_t)n); e->fn = got; }
     return got;
 }
-static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n) {
-    NSMutableString *key = [NSMutableString stringWithString:@"fbread;"];
+static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr) {
+    NSMutableString *key = [NSMutableString stringWithString:hdr ? @"hdr-fbread;" : @"fbread;"];
     for (int i = 0; i < n; i++) [key appendFormat:@"%d:%d;", aid[i], att[i]];
     os_unfair_lock_lock(&g_bpatch_lock); id fn = fs->bpatch[key]; os_unfair_lock_unlock(&g_bpatch_lock);
     if (fn) return fn == VARIANT_NONE ? nil : fn;
-    NSString *src = nvn_fbread_src(sh_src(fs), fs->fn.name, aid, att, n);
+    // The tile-read function replaces the fragment function for this draw, so derive it from the active tone map.
+    NSString *base = hdr ? fn_src(fs->hdr_fn) : sh_src(fs);
+    NSString *src = nvn_fbread_src(base, fs->fn.name, aid, att, n);
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();   // about 90 ms cold on an M4 Max; Metal's cache keeps it, and the next packaging compiles it into the app (variant_library)
     NSError *err = nil; id<MTLLibrary> lib = src ? variant_library(src, &err) : nil;
     fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
@@ -8759,7 +8761,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     /* A tile-reading pipeline (att_fb_take) was recorded only as its plain R row, so the warm-up never built it and every
        session compiled it in play: about 4,750 pipelines per UltraCam run, frames of 0.3-1 s (2026-10-24). Its T row names
        the variant (aid:att pairs) so the warm-up builds it into the archive (warm_tileread). */
-    if (fbread && g_pso_fbrec[0] && !(k.a2c & PSO_VBORDER)) {
+    if (fbread && !hdr && g_pso_fbrec[0] && !(k.a2c & PSO_VBORDER)) {
         pso_key rk = k; rk.fsfn = NULL; pso_skey tsk; char thex[sizeof tsk * 2 + 1]; pso_skey_from(&rk, vs, fs, 0, NULL, &tsk); pso_skey_hex(&tsk, thex);
         pso_user_record("T\t%s\t%s\n", thex, g_pso_fbrec);
         pso_contribute(&tsk, nil, @(g_pso_fbrec));
@@ -9133,7 +9135,7 @@ static int warm_tileread(NSArray<NSString *> *c, NSMutableDictionary<NSString *,
         if (n == 8) return 0;
         aid[n] = q[0].intValue; att[n] = q[1].intValue; n++;
     }
-    id<MTLFunction> fn = n ? fs_fn_fbread(fs, aid, att, n) : nil;
+    id<MTLFunction> fn = n ? fs_fn_fbread(fs, aid, att, n, NO) : nil;
     if (!fn) return 0;
     pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fn;
     NSError *e = nil; uint64_t ps_started = bp_now();
@@ -11555,7 +11557,8 @@ static id<MTLFunction> att_fb_take(NvProg *pr, uint64_t *rs, int *n) {
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0; else continue;
             if (h && has_ser(took, nt, h_ser(h))) return nil; } }
-    id<MTLFunction> fn = fs_fn_fbread(fs, aid, att, k);
+    BOOL hdr = fs->hdr_fn && atomic_load(&g_hdr_frame_enabled);
+    id<MTLFunction> fn = fs_fn_fbread(fs, aid, att, k, hdr);
     if (fn) { int o = 0; g_pso_fbrec[0] = 0; for (int i = 0; i < k && o < (int)sizeof g_pso_fbrec - 24; i++) o += snprintf(g_pso_fbrec + o, sizeof g_pso_fbrec - o, "%d:%d;", aid[i], att[i]); }
     if (!fn) return nil;
     int m = 0; for (int i = 0; i < *n; i++) if (!has_ser(took, nt, rs[i])) rs[m++] = rs[i];
@@ -16502,7 +16505,9 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy (it decodes SDR input) [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy
+    [en setFragmentTexture:src atIndex:0];
+    [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
     uv[8]=1;uv[9]=1;
