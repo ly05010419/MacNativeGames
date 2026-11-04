@@ -98,44 +98,7 @@ static NSString *par_hash(const void *bytes, size_t n) {
     for (int i = 0; i < 20; i++) [s appendFormat:@"%02x", d[i]];   // 160 bits name a file
     return s;
 }
-/* The folder Metal's archive builder works in (see the top) is com.apple.gpuarchiver under a cache folder, inside a folder
-   named after the bundle id when the program has one (iPhone 14: Library/Caches/<bundle id>/com.apple.gpuarchiver; a bare
-   Mac binary such as build/totk-native-v143: <user cache folder>/com.apple.gpuarchiver; a packaged Mac app:
-   <user cache folder>/<bundle id>/...). The first version took only confstr's user cache folder, which the iPhone app does
-   not get, and removed nothing there (2026-10-21). So every candidate is watched: confstr's folder and the Caches folder,
-   each with and without the bundle id. Folders under the bundle id are this app's own (own: 1); the others are shared with
-   other programs. Removed: the folders that appeared while this program's batches were open (par_batch_begin / _end). */
-static pthread_mutex_t g_par_wmu = PTHREAD_MUTEX_INITIALIZER;
-static _Atomic uint64_t g_par_ga_removed;
-static NSArray<NSDictionary *> *g_par_probe_ga_dirs;   // native archive probe only: isolated owned/shared folders
-static NSArray<NSDictionary *> *par_ga_dirs(void) {   // @{path, own}
-    if (g_par_probe_ga_dirs) return g_par_probe_ga_dirs;
-    static NSArray *dirs; static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        NSMutableArray *bases = [NSMutableArray array];
-        char b[PATH_MAX]; if (confstr(_CS_DARWIN_USER_CACHE_DIR, b, sizeof b)) [bases addObject:@(b)];
-        NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-        if (caches) [bases addObject:caches];
-        NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
-        NSMutableArray *out = [NSMutableArray array]; NSMutableSet *seen = [NSMutableSet set];
-        for (NSString *base in bases) for (int own = bundle.length ? 1 : 0; own >= 0; own--) {
-            NSString *dir = [(own ? [base stringByAppendingPathComponent:bundle] : base) stringByAppendingPathComponent:@"com.apple.gpuarchiver"];
-            dir = dir.stringByResolvingSymlinksInPath.stringByStandardizingPath;
-            if (![seen containsObject:dir]) { [seen addObject:dir]; [out addObject:@{@"path": dir, @"own": @(own)}]; }
-        }
-        dirs = out;
-    });
-    return dirs;
-}
-static NSSet<NSString *> *par_ga_list(int own_only) {   // full paths of the build folders there now
-    NSMutableSet *s = [NSMutableSet set];
-    for (NSDictionary *d in par_ga_dirs()) {
-        if (own_only && ![d[@"own"] boolValue]) continue;
-        for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:d[@"path"] error:nil] ?: @[])
-            if ([name hasPrefix:@"gpuarchiver-"]) [s addObject:[d[@"path"] stringByAppendingPathComponent:name]];
-    }
-    return s;
-}
+#include "totk_pipeline_archive_folders.h"
 /* The overlay's pipeline total (user 2026-11-03: "总计 直接显示 全部就行 不要增长"): every pipeline the archive holds
    (the app's prebuilt ones and this device's own), -1 without an archive. On iOS the warm-up leaves the shared list's
    pipelines in the archive instead of memory (576fdfd1), so the pipelines built this run only grow as play meets them. */
@@ -143,26 +106,6 @@ static int64_t par_total(void) {
     if (!g_par_on) return -1;
     pthread_mutex_lock(&g_par_mu); int64_t n = (int64_t)g_par_have.count; pthread_mutex_unlock(&g_par_mu);
     return n;
-}
-static void par_ga_remove_new(NSSet<NSString *> *before) {
-    NSMutableSet<NSString *> *made = [par_ga_list(0) mutableCopy]; [made minusSet:before];
-    for (NSString *path in made) {
-        NSError *e = nil;
-        if ([NSFileManager.defaultManager removeItemAtPath:path error:&e]) atomic_fetch_add(&g_par_ga_removed, 1);
-        else { static _Atomic int said; if (atomic_fetch_add(&said, 1) < 4) MLOG("【红】管线存档：删不掉 Metal 留下的工作目录 %s（%s）", path.UTF8String, e.localizedDescription.UTF8String); }
-    }
-}
-static int g_par_startup_cleaned;   // g_par_wmu; startup deletion must never run again while batches are open
-static void par_ga_cleanup_startup(void) {
-    pthread_mutex_lock(&g_par_wmu);
-    if (g_par_startup_cleaned) { pthread_mutex_unlock(&g_par_wmu); return; }
-    NSUInteger n = 0;
-    for (NSString *path in par_ga_list(1)) if ([NSFileManager.defaultManager removeItemAtPath:path error:nil]) n++;
-    g_par_startup_cleaned = 1;
-    pthread_mutex_unlock(&g_par_wmu);
-    NSMutableArray *where = [NSMutableArray array];
-    for (NSDictionary *d in par_ga_dirs()) [where addObject:[NSString stringWithFormat:@"%@（%@）", d[@"path"], [d[@"own"] boolValue] ? @"本 App 的" : @"共用"]];
-    MLOG("管线存档：Metal 的工作目录查这些：%s；启动时删掉以前留下的 %lu 个", [where componentsJoinedByString:@"，"].UTF8String, (unsigned long)n);
 }
 /* The keys of the files in the folder (g_par_have, g_par_where); removes what a write cut short left. Returns the files' bytes. */
 static uint64_t par_load_dir(NSUInteger *files) {
@@ -308,18 +251,6 @@ static void par_pre_check(void) {
 @end
 @implementation ParBatch
 @end
-static int g_par_batches;                  // batches open (g_par_wmu)
-static NSSet<NSString *> *g_par_ga_base;   // the build folders there when the first of them began
-static void par_batch_begin(void) {
-    pthread_mutex_lock(&g_par_wmu);
-    if (g_par_batches++ == 0) g_par_ga_base = par_ga_list(0);
-    pthread_mutex_unlock(&g_par_wmu);
-}
-static void par_batch_end(void) {   // the batch's archive is released: its build folder goes once no batch is open
-    pthread_mutex_lock(&g_par_wmu);
-    if (--g_par_batches == 0) { par_ga_remove_new(g_par_ga_base); g_par_ga_base = nil; }
-    pthread_mutex_unlock(&g_par_wmu);
-}
 static NSString *const k_par_batch = @"totk.pipeline-archive.batch";
 static void par_flush_thread(void) {
     NSMutableDictionary *td = NSThread.currentThread.threadDictionary;
@@ -361,7 +292,10 @@ static void par_write(id<MTLDevice> dev, NSString *key, id desc) {
     ParBatch *b = td[k_par_batch];
     NSError *e = nil; uint64_t t0 = bp_now();
     if (!b) {
-        par_batch_begin();
+        if (!par_batch_begin()) {   // no shared lock: Metal's build folder would be unguarded (totk_pipeline_archive_folders.h)
+            pthread_mutex_lock(&g_par_mu); [g_par_pending removeObject:key]; pthread_mutex_unlock(&g_par_mu);
+            return;
+        }
         b = [ParBatch new]; b->keys = [NSMutableArray array];
         b->archive = [dev newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&e];
         td[k_par_batch] = b;   // also without an archive: par_flush_thread ends the batch

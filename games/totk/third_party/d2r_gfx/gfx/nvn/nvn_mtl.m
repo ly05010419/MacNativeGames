@@ -19804,24 +19804,28 @@ int botw_wb_newer(const void *mem, uint64_t gen) {
    formats x 8 write masks) are built on 4 threads and added like the warm-up adds them (par_add, each thread its own
    batch, par_flush_thread), one key twice from two threads; then the folder is read back as a later start reads it,
    with files a cut-short write leaves, and every pipeline must come from its file without compiling
-   (MTLPipelineOptionFailOnBinaryArchiveMiss). The build folders the batches made must be gone. A forced late startup
-   cleanup while two batches overlap must keep their live folder; only the last batch may remove it. */
+   (MTLPipelineOptionFailOnBinaryArchiveMiss). The build folders the batches made must be gone from this binary's own
+   cache folder (its bundle id, runtime/game_info.plist), none made in the shared one. A forced late startup cleanup while
+   two batches overlap must keep their live folder; only the last batch may remove it, and never a shared folder made
+   meanwhile. Two processes: tests/test_pipeline_archive_folders.py. */
 static int par_probe_startup_cleanup(NSString *dir) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *owned = [dir stringByAppendingPathComponent:@"probe-owned"], *shared = [dir stringByAppendingPathComponent:@"probe-shared"];
     NSString *stale = [owned stringByAppendingPathComponent:@"gpuarchiver-stale"], *other = [shared stringByAppendingPathComponent:@"gpuarchiver-shared"];
     NSString *unrelated = [owned stringByAppendingPathComponent:@"keep-this-entry"], *live = [owned stringByAppendingPathComponent:@"gpuarchiver-live"];
+    NSString *during = [shared stringByAppendingPathComponent:@"gpuarchiver-during"];   // another program's, made while a batch is open
     for (NSString *path in @[stale, other, unrelated]) [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
     g_par_probe_ga_dirs = @[@{@"path": owned, @"own": @YES}, @{@"path": shared, @"own": @NO}];
     par_open_dir(g_dev);
     if ([fm fileExistsAtPath:stale] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated])
         MDIE("pipeline archive probe: startup cleanup did not finish or removed unrelated/shared entries");
-    par_batch_begin();
-    [fm createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:nil];
+    if (!par_batch_begin()) MDIE("pipeline archive probe: no batch began (shared lock refused)");
+    for (NSString *path in @[live, during]) [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
     dispatch_semaphore_t entered = dispatch_semaphore_create(0), leave = dispatch_semaphore_create(0);
     dispatch_group_t workers = dispatch_group_create();
     dispatch_group_async(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        par_batch_begin(); dispatch_semaphore_signal(entered);
+        if (!par_batch_begin()) MDIE("pipeline archive probe: no overlapping batch began");
+        dispatch_semaphore_signal(entered);
         if (dispatch_semaphore_wait(leave, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) MDIE("pipeline archive probe: batch release timed out");
         par_batch_end();
     });
@@ -19833,10 +19837,10 @@ static int par_probe_startup_cleanup(NSString *dir) {
     if (![fm fileExistsAtPath:live]) MDIE("pipeline archive probe: first batch removed another batch's live folder");
     dispatch_semaphore_signal(leave);
     if (dispatch_group_wait(workers, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) MDIE("pipeline archive probe: final batch did not finish");
-    if ([fm fileExistsAtPath:live] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated])
+    if ([fm fileExistsAtPath:live] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated] || ![fm fileExistsAtPath:during])
         MDIE("pipeline archive probe: final batch cleanup left its folder or removed unrelated/shared entries");
     g_par_probe_ga_dirs = nil;   // all fixture workers joined; real Metal batches use the normal cache folders
-    return 6;
+    return 7;
 }
 int mtl_probe_pipeline_archive(void) {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingFormat:@"totk-probe-pipeline-archive-%d", getpid()];
@@ -19862,7 +19866,9 @@ int mtl_probe_pipeline_archive(void) {
         d.colorAttachments[0].pixelFormat = fmts[i % 12]; d.colorAttachments[0].writeMask = (MTLColorWriteMask)(15 - i / 12);
         [descs addObject:d]; char k[32]; snprintf(k, sizeof k, "probe-%d", i); [keys addObject:par_hash(k, strlen(k))];
     }
-    NSSet<NSString *> *folders_before = par_ga_list(0);
+    int own_dirs = 0; for (NSDictionary *d in par_ga_dirs()) own_dirs += [d[@"own"] boolValue];
+    if (!own_dirs) MDIE("pipeline archive probe: no bundle id, so no cache folder of its own (runtime/game_info.plist not linked?)");
+    NSSet<NSString *> *folders_before = par_ga_list(0); uint64_t removed_before = atomic_load(&g_par_ga_removed);
     __block _Atomic int built = 0;
     dispatch_apply(4, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) {
         int owip = par_write_in_place; par_write_in_place = 1;
@@ -19879,6 +19885,7 @@ int mtl_probe_pipeline_archive(void) {
     if (g_par_pending.count) MDIE("pipeline archive probe: %lu keys still pending", (unsigned long)g_par_pending.count);
     NSMutableSet *left = [par_ga_list(0) mutableCopy]; [left minusSet:folders_before];
     if (left.count) MDIE("pipeline archive probe: %lu build folders left (%s)", (unsigned long)left.count, [left.anyObject UTF8String]);
+    if (atomic_load(&g_par_ga_removed) == removed_before) MDIE("pipeline archive probe: Metal made no build folder in this binary's own cache folder");
     NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:par_dir() error:nil];
     NSUInteger archives = 0, lists = 0, listed = 0;
     for (NSString *name in names) {
