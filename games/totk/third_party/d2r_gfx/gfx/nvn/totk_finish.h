@@ -8,17 +8,23 @@
 // - Sharpening: FSR 1's RCAS (the same pass as totk_taa.m's up_copy_ps; MIT, games/totk/third_party/licenses/AMD-FidelityFX-
 //   MIT.txt) at 25 to 100 % of its strength, on FXAA's image before the reader (through a scratch image of its size), so
 //   the 3D picture is sharpened and the UI drawn later is not.
-// Both act at once (the settings panel's effects page, graphics-fxaa.txt / graphics-sharpen.txt; "flag fxaa_off <0|1>",
+// - FXAA Quality / SMAA: optional spatial replacements on the pre-FXAA picture. All resources are prepared before
+//   skipping the game's draw; a failed prepare keeps the game's FXAA, a failed encode copies the source picture.
+//   The Effects page selects method and quality independently (totk_aa_config.h), with the game's FXAA as the default.
+// Each method can be sharpened before upscaling and the UI (graphics-sharpen.txt; "flag fxaa_off <0|1>",
 // "flag sharpen_pct <0..100>"). Only a plain full-screen FXAA draw is taken (one colour target, no blending, the whole
 // viewport, same size in and out); anything else keeps the game's own.
-static _Atomic int g_fin_fxaa_off, g_fin_sharpen;   // FXAA off (0/1), sharpening percent (0 = none)
+#include "totk_aa_config.h"
+static _Atomic int g_fin_sharpen;
 static struct {
-    int pending, skipped; uint64_t frame, dst_ser;
+    int pending, skipped, smaa, fxaa_quality; unsigned smaa_slot; uint64_t frame, dst_ser;
     id<MTLTexture> src, dst, scratch;
     id<MTLRenderPipelineState> ps[8]; MTLPixelFormat ps_fmt[8]; int ps_pct[8];
     id<MTL4ArgumentTable> args[3]; int slot;
     uint64_t done, declined;
 } g_fin;
+#include "totk_smaa.h"
+#include "totk_fxaa_quality.h"
 
 /* RCAS at pct % (0: texel for texel) into format f; kept for the run (a handful of formats x levels). */
 static id<MTLRenderPipelineState> fin_ps(MTLPixelFormat f, int pct) {
@@ -80,9 +86,11 @@ static uint64_t fin_frag_tex(__unsafe_unretained NvShader *f) {
 /* Returns 1 when this draw is not to be encoded (FXAA off). */
 static int fin_draw(__unsafe_unretained NvShader *fs) {
     int off = atomic_load_explicit(&g_fin_fxaa_off, memory_order_relaxed), pct = atomic_load_explicit(&g_fin_sharpen, memory_order_relaxed);
+    int smaa = atomic_load_explicit(&g_fin_smaa, memory_order_relaxed);
+    int quality = atomic_load_explicit(&g_fin_fxaa_quality,memory_order_relaxed);
     uint64_t frame = atomic_load(&g_cur_frame);
     if (g_fin.pending && g_fin.frame != frame) { g_fin.pending = 0; g_fin.src = nil; g_fin.dst = nil; }   // no reader came: nothing owed
-    if (!off && !pct && !g_fin.pending) return 0;
+    if (!off && !pct && !smaa && !quality && !g_fin.pending) return 0;
 #ifndef GAME_BOTW
     if (!strncmp(fs->key, "22a61cb1ec732aef", 16)) {
         g_fin.pending = 0; g_fin.src = nil; g_fin.dst = nil;
@@ -95,8 +103,12 @@ static int fin_draw(__unsafe_unretained NvShader *fs) {
                  !(S.has_vp && !(S.vp[0][0] == 0 && S.vp[0][1] == 0 && S.vp[0][2] == (float)dst.width && S.vp[0][3] == (float)dst.height)) &&
                  scissor_full(R.rt.color[0], cv, hv);
         if (!ok) { if (!g_fin.declined++) MLOG("[fxaa] FXAA 绘制不是整屏同尺寸（源 %lux%lu → 目标 %lux%lu）：保留游戏自己的", (unsigned long)src.width, (unsigned long)src.height, (unsigned long)dst.width, (unsigned long)dst.height); return 0; }
-        g_fin.src = src; g_fin.dst = dst; g_fin.dst_ser = R.rt.color[0]->serial; g_fin.frame = frame; g_fin.pending = 1; g_fin.skipped = off;
-        return off;
+        unsigned slot = (unsigned)(frame % 3);
+        g_fin.smaa = smaa && smaa_prepare(src,dst,slot);   // prepare everything before skipping the game's draw
+        g_fin.fxaa_quality = quality && !g_fin.smaa && fxaa_quality_prepare(src,dst,slot);
+        g_fin.smaa_slot = slot;
+        g_fin.src = src; g_fin.dst = dst; g_fin.dst_ser = R.rt.color[0]->serial; g_fin.frame = frame; g_fin.pending = 1; g_fin.skipped = off || g_fin.smaa || g_fin.fxaa_quality;
+        return g_fin.skipped;
     }
 #endif
     if (!g_fin.pending) return 0;
@@ -105,8 +117,10 @@ static int fin_draw(__unsafe_unretained NvShader *fs) {
     rp_end(); blit_close(); rs_sync();
     pt_mark(g_cb, 'F', nil);
     id<MTLTexture> src = g_fin.src, dst = g_fin.dst; g_fin.src = nil; g_fin.dst = nil;
-    if (g_fin.skipped) fin_pass(src, dst, pct);   // FXAA off: the tone-mapped picture into FXAA's image (sharpened when asked)
-    else if (pct) {   // FXAA kept: its image sharpened through a scratch image of its size
+    int smoothed = g_fin.smaa && smaa_encode(g_cb,src,dst,g_fin.smaa_slot);
+    if(!smoothed&&g_fin.fxaa_quality)smoothed=fxaa_quality_encode(g_cb,src,dst,g_fin.smaa_slot);
+    if (g_fin.skipped && !smoothed) fin_pass(src, dst, pct);   // FXAA off, or SMAA failed: a valid picture in either case
+    if (pct && (!g_fin.skipped || smoothed)) {   // FXAA / SMAA kept: its image sharpened through a scratch image of its size
         if (!g_fin.scratch || g_fin.scratch.width != dst.width || g_fin.scratch.height != dst.height || g_fin.scratch.pixelFormat != dst.pixelFormat) {
             if (g_fin.scratch) defer_obj_release(g_fin.scratch);
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:dst.pixelFormat width:dst.width height:dst.height mipmapped:NO];
@@ -124,7 +138,5 @@ static int fin_draw(__unsafe_unretained NvShader *fs) {
 }
 
 /* The settings panel (runtime/settings_panel.h) and the flags. */
-void dm_gfx_fxaa_set(int on) { atomic_store(&g_fin_fxaa_off, !on); MLOG("[fxaa] FXAA %s", on ? "on" : "off"); }
-int dm_gfx_fxaa_on(void) { return !atomic_load(&g_fin_fxaa_off); }
 void dm_gfx_sharpen_set(int pct) { pct = pct < 0 ? 0 : pct > 100 ? 100 : pct; atomic_store(&g_fin_sharpen, pct); MLOG("[fxaa] sharpening %d%%", pct); }
 int dm_gfx_sharpen(void) { return atomic_load(&g_fin_sharpen); }

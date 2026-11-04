@@ -59,6 +59,32 @@ class SettingsPanel(unittest.TestCase):
                 settings.mkdir()
                 env = {k: v for k, v in os.environ.items() if k not in ('TOTK_MFX', 'TOTK_TAA', 'TOTK_ASPECT', 'TOTK_OUTPUT_RES')}
                 env.update(TOTK_UI_LANG='en', SETTINGS_TEST_DIR=str(settings))
+                if version == 'TOTK_GAME_V143':
+                    aa_cases = [
+                        ('defaults', {}, 1, 0, 2),
+                        ('stock-off', {'graphics-fxaa.txt': 'off'}, 0, 0, 2),
+                        ('split-fxaa', {'graphics-fxaa.txt': 'off', 'graphics-aa-method.txt': '1',
+                                        'graphics-fxaa-quality.txt': '1', 'graphics-smaa-quality.txt': '0'}, 1, 1, 0),
+                        ('split-smaa', {'graphics-aa-method.txt': '2',
+                                        'graphics-fxaa-quality.txt': '1', 'graphics-smaa-quality.txt': '3'}, 2, 1, 3),
+                        ('split-off', {'graphics-aa-method.txt': '0',
+                                       'graphics-fxaa-quality.txt': '1', 'graphics-smaa-quality.txt': '3'}, 0, 1, 3),
+                        ('corrupt', {'graphics-aa-method.txt': '9', 'graphics-fxaa-quality.txt': '8',
+                                     'graphics-smaa-quality.txt': '-1'}, 1, 0, 2),
+                        ('corrupt-qualities', {'graphics-aa-method.txt': '2',
+                                              'graphics-fxaa-quality.txt': '99', 'graphics-smaa-quality.txt': 'nan'}, 2, 0, 2),
+                    ]
+                    for name, files, method, fxaa, smaa in aa_cases:
+                        with self.subTest(aa_preferences=name):
+                            prefs = Path(directory) / name
+                            prefs.mkdir()
+                            for filename, value in files.items():
+                                (prefs / filename).write_text(value + '\n')
+                            current = dict(env, SETTINGS_TEST_DIR=str(prefs), SETTINGS_TEST_AA_METHOD=str(method),
+                                           SETTINGS_TEST_FXAA_QUALITY=str(fxaa), SETTINGS_TEST_SMAA_QUALITY=str(smaa))
+                            run = subprocess.run([str(executable), 'aa'], env=current, capture_output=True, text=True, timeout=10)
+                            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                            self.assertIn('pass: AA preferences', run.stdout)
                 run = subprocess.run([str(executable), 'update'], env=env, capture_output=True, text=True, timeout=35)
                 self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
                 self.assertIn('pass: update page', run.stdout)

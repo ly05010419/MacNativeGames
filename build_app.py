@@ -1461,6 +1461,11 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     lists=False keeps the app's warm-up lists (update_runtime.py, when the app's seed predates its shader-keys.json);
     else resolve_lists makes them anew."""
     res = app / 'Contents/Resources/totk'   # the launcher's game folder, for both games (app/launcher.m)
+    # The FXAA reference requires its notice in binary distributions; runtime updates use this same packaging path.
+    for name in ('fxaa', 'smaa'):
+        notice = tree / f'third_party/{name}/LICENSE.txt'
+        if notice.is_file():
+            clone(notice, res / f'licenses/{name}.txt')
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res / 'build/totk-native')
     clone(tree / 'build/spirv-cross/spirv-cross', res / 'build/spirv-cross/spirv-cross')
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
