@@ -6,10 +6,11 @@
 #   make runtime   # XCX_build/build/xcx-native
 #   make boot      # run it from the work folder (cwd: extracted/ and rewritten/ are read relative to it)
 
-WORK ?= XCX_build
+WORK ?= $(error Set WORK to an absolute directory outside the source checkout)
 OUT := $(WORK)/build
 PY ?= python3
 NATIVE_OPT ?= -O2
+MACOS_MIN := -mmacosx-version-min=26.0
 
 GFX_SRC := $(wildcard third_party/d2r_gfx/gfx/nvn/*.c third_party/d2r_gfx/gfx/nvn/*.m third_party/d2r_gfx/gfx/nvn/*.S third_party/d2r_gfx/gfx/tex/*.c third_party/d2r_gfx/gfx/tex/*.m)
 GFX_OBJECTS := $(patsubst %,$(OUT)/obj/%.o,$(GFX_SRC))
@@ -21,18 +22,18 @@ RUNTIME_HEADERS := $(wildcard runtime/*.h)
 GENERATED := $(OUT)/runtime_tables.h $(OUT)/romfs_config.h $(OUT)/shared_fonts_config.h
 
 .PHONY: prepare runtime boot clean
-prepare:
+prepare: check-paths
 	"$(PY)" scripts/prepare_runtime.py --work "$(WORK)"
 
 $(GENERATED):
 	@echo "missing $@: run make prepare" && false
 
-$(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile
+$(OUT)/obj/%.o: % $(GFX_HEADERS) Makefile | check-paths
 	@mkdir -p "$(dir $@)"
-	xcrun clang $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
+	xcrun clang $(MACOS_MIN) $(NATIVE_OPT) -g -Wall -Wextra $(GFX_FLAGS) -c "$<" -o "$@"
 
 $(OUT)/xcx-native: $(RUNTIME_SRC) $(RUNTIME_HEADERS) $(GENERATED) $(GFX_OBJECTS) Makefile
-	xcrun clang -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
+	xcrun clang $(MACOS_MIN) -std=c11 $(NATIVE_OPT) -g -Wall -Wextra -Werror -Wno-deprecated-declarations \
 	  -Ithird_party/d2r_gfx/gfx/nvn/include -I$(OUT) -I/opt/homebrew/opt/opus/include/opus -I/opt/homebrew/opt/libvpx/include \
 	  $(RUNTIME_SRC) $(GFX_OBJECTS) /opt/homebrew/opt/opus/lib/libopus.a /opt/homebrew/opt/libvpx/lib/libvpx.a \
 	  -framework Metal -framework MetalFX -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics \
@@ -49,11 +50,11 @@ SPIRV_CROSS_SOURCES := main.cpp spirv_cfg.cpp spirv_cpp.cpp spirv_cross.cpp spir
   spirv_glsl.cpp spirv_hlsl.cpp spirv_msl.cpp spirv_parser.cpp spirv_reflect.cpp
 .PHONY: shader-tools
 shader-tools: $(OUT)/shader-service/totk_xlate $(OUT)/spirv-cross/spirv-cross
-$(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos-arm64/totk_xlate.sha256
+$(OUT)/shader-service/totk_xlate: prebuilt/macos-arm64/totk_xlate prebuilt/macos-arm64/totk_xlate.sha256 | check-paths
 	@mkdir -p "$(dir $@)"
 	test "$$(shasum -a 256 "$<" | cut -d' ' -f1)" = "$$(cut -d' ' -f1 "prebuilt/macos-arm64/totk_xlate.sha256")"
 	cp "$<" "$@" && chmod +x "$@"
-$(OUT)/spirv-cross/spirv-cross:
+$(OUT)/spirv-cross/spirv-cross: | check-paths
 	@mkdir -p "$(WORK)/src" "$(dir $@)obj"
 	test -d "$(WORK)/src/SPIRV-Cross" || git clone -q https://github.com/KhronosGroup/SPIRV-Cross.git "$(WORK)/src/SPIRV-Cross"
 	git -C "$(WORK)/src/SPIRV-Cross" checkout -q $(SPIRV_CROSS_COMMIT)
@@ -75,3 +76,10 @@ APP_GPU_SUBMIT ?= 0
 .PHONY: app
 app: runtime
 	"$(PY)" scripts/package_app.py --work "$(WORK)" --output "$(APP)" $(if $(filter 1,$(APP_EXTENDED_VA)),--extended-va) $(if $(filter 1,$(APP_GPU_SUBMIT)),--gpu-submit)
+
+.PHONY: check-paths
+check-paths:
+	"$(PY)" scripts/xcx_artifact_paths.py "$(WORK)" "$(APP)"
+
+.PHONY: graphics
+graphics: $(GFX_OBJECTS)

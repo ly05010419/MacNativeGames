@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE / "scripts"))
+from xcx_artifact_paths import outside_source
 sys.path.insert(0, str(HERE / 'third_party/d2r'))   # Xenoblade Chronicles X's own copy of the rewriter
 from relr import decode_relr
 
@@ -195,8 +197,8 @@ def shared_fonts_config(work, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--work', type=Path, default=HERE / 'XCX_build')
-    work = parser.parse_args().work.resolve()
+    parser.add_argument('--work', type=Path, required=True)
+    work = outside_source(parser.parse_args().work)
     out = work / 'build'
     out.mkdir(parents=True, exist_ok=True)
     print(json.dumps(dict(runtime=runtime_tables(work, out), romfs=romfs_config(work, out),

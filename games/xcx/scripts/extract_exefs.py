@@ -5,6 +5,10 @@ Supports NCA3, key-area or common-ticket AES-CTR, and hierarchical SHA-256 PFS0.
 Keys stay in memory. No RomFS extraction, executable launch, or network calls.
 """
 import argparse
+if __package__:
+    from .xcx_artifact_paths import outside_source
+else:
+    from xcx_artifact_paths import outside_source
 import hashlib
 import json
 import struct
@@ -200,6 +204,7 @@ def main(default_title_id=None):
                         type=lambda value: value.upper(), help='expected base title ID')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
+    args.output = outside_source(args.output)
     require(not args.output.exists(), 'Output already exists; choose a new directory')
     keys = load_keys(args.keys)
     with args.game.open('rb') as f:

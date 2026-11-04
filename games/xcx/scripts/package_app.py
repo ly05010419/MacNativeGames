@@ -6,10 +6,13 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xcx_artifact_paths import outside_source
 
 
 def package(work, output, extended_va=False, gpu_submit=False):
-    work, output = work.expanduser().resolve(), output.expanduser().absolute()
+    work, output = outside_source(work), outside_source(output)
     if output.exists() or output.is_symlink():
         raise ValueError("Output exists; choose a new bundle path")
     if not (work / "build/xcx-native").is_file():
@@ -28,7 +31,7 @@ def package(work, output, extended_va=False, gpu_submit=False):
     shutil.copy2(work / "build/xcx-native", binary / "xcx-native")
     info = dict(CFBundleName="Xenoblade Chronicles X Experiment", CFBundlePackageType="APPL",
                 CFBundleExecutable="xcx-launcher", CFBundleIdentifier="private.macnativegames.xcx.experiment",
-                CFBundleShortVersionString="1.0.0", CFBundleVersion="1", NSHighResolutionCapable=True,
+                CFBundleShortVersionString="1.0.0", CFBundleVersion="1", LSMinimumSystemVersion="26.0", NSHighResolutionCapable=True,
                 XCXWorkFolder=str(work), XCXExtendedVA=extended_va, XCXGPUSubmit=gpu_submit)
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
     subprocess.run(["codesign", "--force", "--sign", "-", "--deep", str(output)], check=True)

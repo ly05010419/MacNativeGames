@@ -7,14 +7,14 @@ complete constructors and reach `nnMain`. Identity-checked SDK encoder masks
 preserve bit 39 in IPC pointers; input/rewrite integrity checks remain enabled.
 Local save mounting, Core Audio and Metal presentation are running. Indexed
 QUADS render readable text/menu UI, and the local `prepo:u` session query lets
-new game reach avatar customization. The user confirmed USB Pro Controller
+new game reach avatar customization. The contributor reported USB Pro Controller
 menu operation and audible audio.
 
 The 2026-10-29 renderer correction preserves vertex shader storage writes
 under rasterizer discard and orders producer/consumer draws at NVN barriers.
 The native window now shows intact title characters, a complete avatar and
 both characters in the following forest sequence at 1920x1080, about 30 FPS.
-The user subsequently confirmed visible gameplay, USB Pro Controller input and
+The contributor subsequently reported visible gameplay, USB Pro Controller input and
 audible audio in this copied profile. This is scoped early-field acceptance,
 not whole-game compatibility. The later `ngc:u` path exposes
 an unavailable dictionary backend through its documented DataAccessError;

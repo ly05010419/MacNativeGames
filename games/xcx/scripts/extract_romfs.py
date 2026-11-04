@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Verify all six IVFC levels, stream a local RomFS image, and index its files."""
 import argparse
+if __package__:
+    from .xcx_artifact_paths import outside_source
+else:
+    from xcx_artifact_paths import outside_source
 import hashlib
 import json
 import struct
@@ -20,7 +24,7 @@ def main(default_manifest=None, default_output=None, default_title_id=None):
     parser.add_argument('--source',type=Path,help='DLC NSP with a PublicData NCA; requires --title-id')
     parser.add_argument('--title-id',type=lambda value:value.upper(),help='expected DLC title ID with --source')
     parser.add_argument('--output',type=Path,required=default_output is None,default=default_output)
-    args=parser.parse_args(); require(not args.output.exists(),'Output already exists')
+    args=parser.parse_args(); args.output=outside_source(args.output); require(not args.output.exists(),'Output already exists')
     require(bool(args.source)==bool(args.title_id),'--source and --title-id must be used together')
     require(args.source or args.manifest is not None,'Provide --manifest for base RomFS')
     if args.title_id:
