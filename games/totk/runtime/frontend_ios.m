@@ -166,29 +166,22 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
 /* The controller's capture button (runtime/gamepad.m): the picture goes into the system photo library, as a console's
-   Capture button does -- not into a folder, which the player cannot reach on an iPhone. The frame is the one the renderer is
-   about to show (mtl_grab_next_present copies the drawable on the present thread, the same grab a Mac's wshot uses). */
+   Capture button does -- not into a folder, which the player cannot reach on an iPhone. The frame is the one the renderer
+   is about to show: mtl_grab_next_present asks the present thread for it and hands it over when the GPU is done (the grab a
+   Mac's capture button uses too), so nothing waits for it. */
 #define TOTK_SCREENSHOT_VIEW 1
 #define TOTK_SCREENSHOT_WRITE 0
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS || TARGET_OS_VISION
 #import <Photos/Photos.h>
-extern void mtl_grab_next_present(void (^cb)(CGImageRef img));
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+/* The renderer's next frame, for screenshot.h: weak, so a build without the renderer answers with no picture. */
+static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
 #endif
 #include "game_version.h"   /* GAME_NAME: the picture's name in the photo library */
 #include "screenshot.h"
 
-#if TARGET_OS_IOS
-/* One picture: the renderer's grab hands it over on the present thread, so screenshot_grab's call returns at once. */
-static CGImageRef totk_ios_screenshot_picture(CGImageRef img, BOOL present) {
-    (void)img; (void)present;
-    __block CGImageRef taken = NULL;
-    mtl_grab_next_present(^(CGImageRef frame) { if (!taken) taken = frame ? CGImageRetain(frame) : NULL; });
-    while (!taken && shotPendingAt && runtime_now_ns() - shotPendingAt < 1500ull * 1000000ull) usleep(2000);
-    return taken;   /* released by screenshot_grab once saved */
-}
-#endif
-
-#if TARGET_OS_IOS
+#if TARGET_OS_IOS || TARGET_OS_VISION
 /* Saves the picture into the photo library, in the game's own album, and says where. Runs on the screenshot queue, never
    the main queue, so the album lookup and the write do not hold the frame. */
 __attribute__((unused)) static int screenshot_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
@@ -247,9 +240,6 @@ extern void totk_phone_haptics_start(void);
 #endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
-#if TARGET_OS_IOS
- totk_screenshot_picture=totk_ios_screenshot_picture;   /* the renderer's frame, asked for by the capture button */
-#endif
  runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: the picture into Photos (screenshot.h) */
  runtime_gamepad_start();
 #if TARGET_OS_IOS

@@ -3,23 +3,23 @@
 #define TOTK_SCREENSHOT_WINDOW 1   /* frontend.m's capture button, tested below */
 #define TOTK_SCREENSHOT_WRITE 0    /* no ImageIO in this build: the write below is the probe's own */
 #define TOTK_SCREENSHOT_SAVE screenshot_picture_save
-static CGImageRef screenshot_picture(CGImageRef img, BOOL present);   /* the renderer's frame: this probe's small image */
+static void screenshot_picture(void (^cb)(CGImageRef img));   /* the renderer's frame: this probe's small image */
 #define TOTK_SCREENSHOT_PICTURE screenshot_picture
 #include "../../runtime/frontend.m"
 #include <time.h>
 
 /* The renderer's next frame, for screenshot.h: this probe has none, so each request is a small image of its own (one per
-   press); the write says it saved the game's picture. */
+   press), handed over the way the renderer hands a frame over -- when it has one; the write says it saved the picture. */
 static int screenshotsTaken;
-static CGImageRef screenshot_picture(CGImageRef img, BOOL present) {
-    (void)img; (void)present;
+static void screenshot_picture(void (^cb)(CGImageRef img)) {
     screenshotsTaken++;
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
     CGContextRef context = CGBitmapContextCreate(NULL, 8, 8, 8, 32, space, (uint32_t)kCGImageAlphaPremultipliedLast);
     CGImageRef image = context ? CGBitmapContextCreateImage(context) : NULL;
     if (context) CGContextRelease(context);
     CGColorSpaceRelease(space);
-    return image;
+    cb(image);
+    if (image) CGImageRelease(image);   /* the save kept its own, as with the renderer's */
 }
 static int screenshot_picture_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
                            char *album, size_t album_size) {
