@@ -37,35 +37,61 @@
 #define TOTK_SCREENSHOT_SETTING "screenshot-dir.txt"
 static char screenshot_folder_from_env[PATH_MAX];   /* a desktop's TOTK_SCREENSHOT_DIR, while it names one */
 
+/* ---- The saved folder (a desktop) ----
+   One word next to controls.txt, read and written through the runtime's own helpers (runtime.h's runtime_setting_word,
+   runtime_setting_save and runtime_setting_remove, implemented in gamepad.m), which know the folder from TOTK_CONTROLS: a
+   relative path in the file is from that settings folder, not from whatever folder the process was started in. A probe
+   or a test that links this header without the runtime offers its own; the declarations are weak, so a build that lacks
+   them links too and simply has no saved folder. */
+extern int runtime_setting_word(const char *name, char *word, size_t size) __attribute__((weak));
+extern void runtime_setting_save(const char *name, const char *word, const char *what) __attribute__((weak));
+extern void runtime_setting_remove(const char *name) __attribute__((weak));
+
+/* The saved folder, without the blanks and newline around it: 1 read, 0 none. */
+__attribute__((unused)) static int screenshot_setting(char *out, size_t size) {
+    if (!runtime_setting_word || !runtime_setting_word(TOTK_SCREENSHOT_SETTING, out, size)) return 0;
+    size_t n = strlen(out);
+    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r' || out[n - 1] == ' ' || out[n - 1] == '\t')) out[--n] = 0;
+    size_t skip = 0;
+    while (out[skip] == ' ' || out[skip] == '\t') skip++;
+    if (skip) memmove(out, out + skip, n - skip + 1);
+    return 1;
+}
+
+/* The folder controls.txt lives in (TOTK_CONTROLS), where a relative path in the setting starts: 1 and the folder, 0 when
+   there is none (a run started without the launcher has no settings folder, and no setting file either). */
+__attribute__((unused)) static int screenshot_settings_folder(char *out, size_t size) {
+    const char *controls = getenv("TOTK_CONTROLS");
+    if (!controls || !*controls) return 0;
+    const char *slash = strrchr(controls, '/');
+    if (!slash) { snprintf(out, size, "."); return 1; }   /* controls.txt in the working folder */
+    if (slash == controls) { snprintf(out, size, "/"); return 1; }
+    snprintf(out, size, "%.*s", (int)(slash - controls), controls);
+    return 1;
+}
+
+/* A folder as typed: ~ is the home folder, an absolute path stands as it is, a relative one is from base. out holds
+   PATH_MAX. */
+__attribute__((unused)) static void screenshot_folder_expand(const char *set, const char *base, char *out, size_t size) {
+    const char *home = getenv("HOME");
+    if (set[0] == '~' && (set[1] == '/' || !set[1])) snprintf(out, size, "%s%s", home && *home ? home : "", set + 1);
+    else if (set[0] == '/') snprintf(out, size, "%s", set);
+    else snprintf(out, size, "%s/%s", base && *base ? base : ".", set);
+}
+
 /* ---- The folder in force (a desktop) ----
-   TOTK_SCREENSHOT_DIR first (a leading ~ is the home folder), then the panel's file (a relative path there is from the home
-   folder), then the Desktop. out must hold PATH_MAX; NULL when the setting is too long for it. */
+   TOTK_SCREENSHOT_DIR first (a leading ~ is the home folder), then the saved setting (a relative path there is from the
+   settings folder), then the Desktop. out must hold PATH_MAX. */
 __attribute__((unused)) static const char *screenshot_folder(char *out, size_t size) {
-    char text[PATH_MAX];
+    char text[PATH_MAX], base[PATH_MAX];
     const char *set = getenv("TOTK_SCREENSHOT_DIR");
-    if (set && *set) snprintf(screenshot_folder_from_env, sizeof screenshot_folder_from_env, "%s", set);
-    if (!(set && *set)) {
-        FILE *file = fopen(TOTK_SCREENSHOT_SETTING, "r");
-        if (file) {   /* the folder, without the blanks and newline around it */
-            size_t n = fread(text, 1, sizeof text - 1, file);
-            fclose(file);
-            text[n] = 0;
-            while (n && (text[n - 1] == '\n' || text[n - 1] == '\r' || text[n - 1] == ' ' || text[n - 1] == '\t')) text[--n] = 0;
-            size_t skip = 0;
-            while (text[skip] == ' ' || text[skip] == '\t') skip++;
-            memmove(text, text + skip, n - skip + 1);
-            set = text;
-        }
+    if (set && *set) {   /* this launch's environment: it still decides first */
+        snprintf(screenshot_folder_from_env, sizeof screenshot_folder_from_env, "%s", set);
+        screenshot_folder_expand(set, getenv("HOME"), out, size);
+        return out;
     }
-    if (set && *set) {
-        const char *home = getenv("HOME");
-        if (*set == '~' && (set[1] == '/' || !set[1])) {
-            if (home && *home) { snprintf(out, size, "%s%s", home, set + 1); return out; }
-        } else if (*set == '/') {
-            snprintf(out, size, "%s", set);
-            return out;
-        }
-        snprintf(out, size, "%s/%s", home && *home ? home : ".", set);   /* relative: from the home folder */
+    if (screenshot_setting(text, sizeof text) && text[0]) {
+        screenshot_folder_expand(text, screenshot_settings_folder(base, sizeof base) ? base : getenv("HOME"), out, size);
         return out;
     }
     const char *home = getenv("HOME");
@@ -73,10 +99,9 @@ __attribute__((unused)) static const char *screenshot_folder(char *out, size_t s
     return out;
 }
 
-/* The folder the settings panel shows, or "" when the setting is too long to resolve. */
+/* The folder the settings panel shows. */
 __attribute__((unused)) static const char *screenshot_directory(char *out, size_t size) {
-    if (!screenshot_folder(out, size)) snprintf(out, size, "%s", "");
-    return out;
+    return screenshot_folder(out, size);
 }
 
 /* ---- Why a picture cannot be saved ----
@@ -136,10 +161,10 @@ static int screenshot_problem(const char *folder, const char *name, int *problem
     return 1;
 }
 
-/* 1 with the folder kept, 0 with why not: *problem is the SHOT_* the folder fails (SHOT_OK when only the setting file
-   could not be written), *free_bytes the room on it. The folder is checked with screenshot_problem first, so the chooser
-   refuses a read-only disk or another account's folder while the player is looking at it, not at the next capture. An
-   empty folder forgets the choice, back to the Desktop. */
+/* 1 with the folder kept, 0 with why not: *problem is the SHOT_* the folder fails (SHOT_OK when only the setting could not
+   be saved), *free_bytes the room on it. The folder is checked with screenshot_problem first, so the chooser refuses a
+   read-only disk or another account's folder while the player is looking at it, not at the next capture. An empty folder
+   forgets the choice, back to the Desktop. */
 __attribute__((unused)) static int screenshot_directory_set(const char *typed, const char **why, int *problem, uint64_t *free_bytes) {
     char folder[PATH_MAX] = {0};
     *problem = SHOT_OK;
@@ -154,7 +179,7 @@ __attribute__((unused)) static int screenshot_directory_set(const char *typed, c
         struct stat st;
         if (stat(room, &st) != 0) {
             /* Made when it is missing, its parents too (Finder's New Folder). The chooser makes the folder itself, so this
-               is for a path from the environment or a script. */
+               is for a path from a script. */
             char parent[PATH_MAX];
             snprintf(parent, sizeof parent, "%s", room);
             for (char *slash = strrchr(parent, '/'); slash && slash != parent; slash = strrchr(parent, '/')) {
@@ -172,19 +197,20 @@ __attribute__((unused)) static int screenshot_directory_set(const char *typed, c
         snprintf(folder, sizeof folder, "%s", room);
     }
     if (!folder[0]) {   /* emptied: back to the Desktop */
-        if (unlink(TOTK_SCREENSHOT_SETTING) != 0 && errno != ENOENT) { *why = TOTK_UI("无法删除设置", "setting not removed"); return 0; }
+        if (runtime_setting_remove) runtime_setting_remove(TOTK_SCREENSHOT_SETTING);
+        char back[PATH_MAX];
+        if (screenshot_setting(back, sizeof back) && back[0]) { *why = TOTK_UI("无法删除设置", "setting not removed"); return 0; }
         return 1;
     }
+    if (!runtime_setting_save) { *why = TOTK_UI("无法保存设置", "setting not saved"); return 0; }
+    runtime_setting_save(TOTK_SCREENSHOT_SETTING, folder, "screenshot folder");
+    char back[PATH_MAX];
+    if (!screenshot_setting(back, sizeof back) || strcmp(back, folder)) { *why = TOTK_UI("无法保存设置", "setting not saved"); return 0; }
     /* TOTK_SCREENSHOT_DIR decides before the file, so a launch with one would hide what the player just chose: this
        launch's environment then names the folder the file does, and both reads agree at once. */
     const char *now = getenv("TOTK_SCREENSHOT_DIR");   /* an empty one is no folder, and hides nothing */
     if (now && *now && strcmp(screenshot_folder_from_env, folder)) setenv("TOTK_SCREENSHOT_DIR", folder, 1);
-    FILE *file = fopen(TOTK_SCREENSHOT_SETTING, "w");
-    if (!file) { *why = TOTK_UI("无法保存设置", "setting not saved"); return 0; }
-    int ok = fprintf(file, "%s\n", folder) > 0;
-    if (fclose(file)) ok = 0;
-    if (!ok) { *why = TOTK_UI("无法保存设置", "setting not saved"); unlink(TOTK_SCREENSHOT_SETTING); }
-    return ok;
+    return 1;
 }
 
 /* ---- The name ----
