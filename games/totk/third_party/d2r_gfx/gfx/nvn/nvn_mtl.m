@@ -8212,6 +8212,7 @@ static void nan_trace_bind(id<MTL4RenderCommandEncoder> en) {
    pipeline the archive to take its code from; warming: built by the warm-up (always added to the archive). */
 /* A pipeline is first asked of its own archive file alone (MTLPipelineOptionFailOnBinaryArchiveMiss). Found: done. Not
    found (no file yet): it is compiled as usual and written to its file when the game is idle (totk_pipeline_archive.h).
+   Its file is there but misses it (a host change kept the key): compiled, and written again (par_repair).
    key: pso_archive_key / cs_archive_key; nil = not archived. */
 static _Atomic uint64_t g_par_hits, g_par_misses;
 static NSArray<NSString *> *g_par_fill_lists;   // the first run's pipeline lists for the background fill (warm_fill_archive)
@@ -8259,7 +8260,8 @@ static void par_miss_note(const char *what, NSString *key, MTLRenderPipelineDesc
 }
 static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSString *key, NSError **e) {
     id<MTLRenderPipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
+    NSString *from = nil;   // the file it missed (par_repair)
+    id<MTLBinaryArchive> a = par_archive_named(g_dev, key, &from);
     if (a) {
         d.binaryArchives = @[a];
         ps = [g_dev newRenderPipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
@@ -8269,13 +8271,14 @@ static id<MTLRenderPipelineState> pso_new(MTLRenderPipelineDescriptor *d, NSStri
     } else par_miss_note(atomic_load(&par_filling) ? "fill" : "nofile", key, d);
     if (key && g_par_on) par_count(0);
     ps = [g_dev newRenderPipelineStateWithDescriptor:d error:e];
-    if (ps) par_add(g_dev, key, d);
+    if (ps) { par_repair(key, from); par_add(g_dev, key, d); }
     return ps;
 }
 static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescriptor *d, NSError **e) {
     NSString *key = cs_archive_key(cs);
     id<MTLComputePipelineState> ps = nil;
-    id<MTLBinaryArchive> a = par_archive_for(g_dev, key);
+    NSString *from = nil;   // the file it missed (par_repair)
+    id<MTLBinaryArchive> a = par_archive_named(g_dev, key, &from);
     if (a) {
         d.binaryArchives = @[a];
         ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionFailOnBinaryArchiveMiss reflection:nil error:nil];
@@ -8285,7 +8288,7 @@ static id<MTLComputePipelineState> cs_new_(NvShader *cs, MTLComputePipelineDescr
     }
     if (g_par_on) par_count(0);
     ps = [g_dev newComputePipelineStateWithDescriptor:d options:MTLPipelineOptionNone reflection:nil error:e];
-    if (ps) par_add(g_dev, key, d);
+    if (ps) { par_repair(key, from); par_add(g_dev, key, d); }
     return ps;
 }
 /* A compute pipeline that takes the shader's own thread group size. Metal compiles a kernel for some number of threads a group
@@ -19807,6 +19810,7 @@ int botw_wb_newer(const void *mem, uint64_t gen) {
 #include "nvn_sampler_border_probe.h"
 #include "nvn_texels_region_probe.h"
 #include "nvn_writeback_probe.h"
+#include "nvn_pipeline_archive_repair_probe.h"
 /* probe-gpu-pipeline-archive (2026-10-26): the warm-up's way of writing the pipeline archive. 96 pipelines (12 colour
    formats x 8 write masks) are built on 4 threads and added like the warm-up adds them (par_add, each thread its own
    batch, par_flush_thread), one key twice from two threads; then the folder is read back as a later start reads it,
@@ -19962,8 +19966,9 @@ int mtl_probe_pipeline_archive(void) {
     pthread_mutex_lock(&g_par_mu); par_load_dir(&files); pre = par_load_prebuilt(g_dev); pthread_mutex_unlock(&g_par_mu);
     if (pre || g_par_have.count) MDIE("pipeline archive probe: files stamped for another GPU were taken (%lu)", (unsigned long)pre);
     unsetenv("TOTK_SHADER_SEED_DIR"); atomic_store(&g_par_pre_hit, 0); atomic_store(&g_par_pre_miss, 0);
+    int repair_checks = par_probe_repair() + par_probe_identity_lock();
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3;
+    return cleanup_checks + atomic_load(&built) + from_archive + 2 * N + 3 + repair_checks;
 }
 
 /* seed-shaders <corpus> (loader.c; docs/ns2-port.md): every shader a Switch 2 game ships, as
