@@ -342,6 +342,38 @@ def link(path, target):
     path.symlink_to(target)
 
 
+# Game containers and keys a player keeps in a game folder of the checkout (games/botw/botw.xci, games/totk/prod.keys):
+# the copy into the work folder leaves them out. They are read from where they are given, never from the copy, and a
+# copy of a card image is 16 GB more on the disk and 16 GB more to checksum on every build. The extensions of the
+# commit guard (.githooks), less the code modules.
+GAME_FILE_SUFFIXES = ('.keys', '.nsp', '.nsz', '.xci', '.xcz', '.nca', '.ncz', '.tik')
+WORK_COPY_SKIP = ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR')
+
+
+def game_file_excludes():
+    """rsync patterns for GAME_FILE_SUFFIXES in any folder and any case (rsync matches case-sensitively)."""
+    return [f'--exclude=*.{"".join(f"[{c.lower()}{c.upper()}]" for c in suffix[1:])}' for suffix in GAME_FILE_SUFFIXES]
+
+
+def left_game_files(copy):
+    """Game containers and keys in a work-folder copy, left there by a build before the copy skipped them."""
+    found = []
+    for root, dirs, files in os.walk(copy):
+        if Path(root) == copy:
+            dirs[:] = [d for d in dirs if d not in WORK_COPY_SKIP]   # the build's own output, not copied from the checkout
+        found += [Path(root) / f for f in files if f.lower().endswith(GAME_FILE_SUFFIXES)]
+    return sorted(found)
+
+
+def say_left_game_files(copy):
+    left = left_game_files(copy)
+    if left:
+        size = sum(p.stat().st_size for p in left) / 2**30
+        say(f'note: {copy} holds {len(left)} game file(s), {size:.1f} GB, that an earlier build copied there '
+            f'({", ".join(p.name for p in left[:4])}{", ..." if len(left) > 4 else ""}). The build no longer copies them '
+            'and reads the game files from where you pass them, so these copies can be deleted (unless you pass them from there).')
+
+
 def prepare_work(work, py, logs):
     """work/totk: the game folder of this repository with the generated files inside it (the build scripts write
     extracted/, rewritten/, build/ and analysis/ next to themselves); its tooling/ points at the fetched sources."""
@@ -349,7 +381,7 @@ def prepare_work(work, py, logs):
     tree.mkdir(parents=True, exist_ok=True)
     # Match both directories AND symlinks to directories. A trailing slash
     # allows rsync -a to copy a tooling symlink from a development checkout.
-    excludes = [f'--exclude=/{name}' for name in ('extracted', 'rewritten', 'build', 'analysis', '.venv', 'tooling', 'user-data', 'zeldaVR')]
+    excludes = [f'--exclude=/{name}' for name in WORK_COPY_SKIP] + game_file_excludes()
     # Files are compared by content and a changed file gets the time of this copy, not its own: make decides by times, and
     # a checkout older than the objects of the last build (another branch built in this folder after it was checked out)
     # would otherwise keep the stale objects. 2026-10-25: nvn_mtl.m.o of one branch linked with nvn_refl.m.o of another
@@ -364,6 +396,8 @@ def prepare_work(work, py, logs):
     run([*sync, f'{BOTW}/', f'{work / "botw"}/'], logs / 'sources-botw.log')
     for g in NS2.values():   # the Switch 2 games' expected values and shared lists (games/totk/Makefile: ../pokopia/assets/...)
         run([*sync, f'{g["folder"]}/', f'{work / g["folder"].name}/'], logs / f'sources-{g["folder"].name}.log')
+    for copy in (tree, work / 'botw', *(work / g['folder'].name for g in NS2.values())):
+        say_left_game_files(copy)
     tooling = tree / 'tooling'
     # Migrate a work folder made by the old copier before writing child links:
     # link(tooling/spirv-cross, ...) must not traverse into a shared checkout.
