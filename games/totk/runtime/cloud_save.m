@@ -1,7 +1,7 @@
 /* Save sync through a folder the player chooses: the same save on the Mac and on iPhone / iPad.
 
    The game's save folder (<profile>/save/<uid>, runtime/fs_host.c) stays the working copy. A copy of it lives in the sync
-   folder as <sync>/Saves/current, with current/sync.plist naming its generation, the device that wrote it, when and the
+   folder as <sync>/Users/<uid>/Saves/current, with current/sync.plist naming its generation, the device that wrote it, when and the
    SHA-256 of its files:
    - at start, before the game reads a save (fs_host.c init), the folder's copy replaces the local folder when another
      device saved since this one last synced;
@@ -38,10 +38,10 @@
 #endif
 
 
-static NSString *g_local, *g_state, *g_backups, *g_cloud;   // save folder, <profile>/cloud-sync.plist, backups, <cloud>/Saves
+static NSString *g_local, *g_state, *g_backups, *g_cloud, *g_user;   // save folder, <profile>/cloud-sync.plist, backups, <cloud>/Saves
 static dispatch_queue_t g_queue;
 static void watch_lifecycle(void);   // upload at quit / background (below)
-static int g_push_pending, g_superseded;   // an upload is waiting; another device uploaded since this one synced
+static int g_push_pending, g_superseded, g_identity_conflict;   // an upload is waiting; another device uploaded since this one synced
 static long long g_start_gen;   // the generation the start compared this device's save with (0: the folder had none)
 
 #define LOG(...) fprintf(stderr, "[cloud-save] " __VA_ARGS__)
@@ -124,6 +124,18 @@ static BOOL read_coordinated(NSString *path, void (^read)(NSString *path)) {
 }
 
 static NSDictionary *read_plist(NSString *path) { NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:path]; return [d isKindOfClass:NSDictionary.class] ? d : nil; }
+/* A copied or misconfigured remote folder must not become another account's save. */
+static NSDictionary *read_cloud_meta(NSString *path) {
+    NSDictionary *meta = read_plist(path);
+    if (meta && (!([meta[@"uid"] isKindOfClass:NSString.class] && [meta[@"uid"] isEqualToString:g_user]) ||
+                 ![meta[@"gen"] isKindOfClass:NSNumber.class] || [meta[@"gen"] longLongValue] < 1 ||
+                 ![meta[@"hash"] isKindOfClass:NSString.class] || [meta[@"hash"] length] != 64)) {
+        g_identity_conflict = 1;
+        LOG("remote save belongs to another or unspecified user; left untouched: %s\n", path.UTF8String);
+        return nil;
+    }
+    return meta;
+}
 static void write_state(NSNumber *gen, NSString *hash) {
     [@{@"gen": gen ?: @0, @"hash": hash ?: @""} writeToFile:g_state atomically:YES];
 }
@@ -135,8 +147,8 @@ static void write_superseded(NSDictionary *state, NSNumber *cloudGen) {
 /* Replace the contents of `dst` with those of `src`, through a sibling folder so a failure leaves `dst` as it was. */
 static BOOL replace_folder(NSString *src, NSString *dst) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *tmp = [dst stringByAppendingFormat:@".incoming-%d", getpid()], *old = [dst stringByAppendingFormat:@".old-%d", getpid()];
-    [fm removeItemAtPath:tmp error:nil]; [fm removeItemAtPath:old error:nil];
+    NSString *transaction = NSUUID.UUID.UUIDString;
+    NSString *tmp = [dst stringByAppendingFormat:@".incoming-%@", transaction], *old = [dst stringByAppendingFormat:@".old-%@", transaction];
     NSError *err = nil;
     if (![fm copyItemAtPath:src toPath:tmp error:&err]) { LOG("copy failed: %s\n", err.localizedDescription.UTF8String); [fm removeItemAtPath:tmp error:nil]; return NO; }
     [fm removeItemAtPath:[tmp stringByAppendingPathComponent:@"sync.plist"] error:nil];
@@ -146,30 +158,38 @@ static BOOL replace_folder(NSString *src, NSString *dst) {
     [fm removeItemAtPath:old error:nil];
     return YES;
 }
-static void backup(NSString *src, NSString *what) {
+static BOOL backup(NSString *src, NSString *what) {
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm createDirectoryAtPath:g_backups withIntermediateDirectories:YES attributes:nil error:nil];
     NSDateFormatter *f = [NSDateFormatter new]; f.dateFormat = @"yyyyMMdd-HHmmss";
-    NSString *to = [g_backups stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%@", [f stringFromDate:NSDate.date], what]];
-    if ([fm copyItemAtPath:src toPath:to error:nil]) LOG("kept the %s save in %s\n", what.UTF8String, to.UTF8String);
+    NSString *to = [g_backups stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%@", [f stringFromDate:NSDate.date], [what stringByAppendingFormat:@"-%@", NSUUID.UUID.UUIDString]]];
+    if (![fm copyItemAtPath:src toPath:to error:nil] || ![save_hash(src) isEqualToString:save_hash(to)]) {
+        LOG("backup failed; the local save will not be replaced\n"); return NO;
+    }
+    LOG("kept the %s save in %s\n", what.UTF8String, to.UTF8String);
     NSArray *all = [[fm contentsOfDirectoryAtPath:g_backups error:nil] sortedArrayUsingSelector:@selector(compare:)];
     for (NSUInteger i = 0; i + 10 < all.count; i++) [fm removeItemAtPath:[g_backups stringByAppendingPathComponent:all[i]] error:nil];
+    return YES;
 }
 
 /* Write the local save to the sync folder as the next generation. */
 static void push(void) {
     NSString *cur = [g_cloud stringByAppendingPathComponent:@"current"], *hash = save_hash(g_local);
     NSDictionary *state = read_plist(g_state);
-    __block NSDictionary *meta = read_plist([cur stringByAppendingPathComponent:@"sync.plist"]);
+    __block NSDictionary *meta = read_cloud_meta([cur stringByAppendingPathComponent:@"sync.plist"]);
     if (!hash || !save_files(g_local).count) return;
-    if (g_superseded) return;
+    if (g_superseded || g_identity_conflict) return;
+    if (!meta && [NSFileManager.defaultManager fileExistsAtPath:cur]) {
+        LOG("remote save has no complete metadata; upload waits rather than replacing it\n"); return;
+    }
     if (!meta && state) { LOG("the folder's save is not visible right now; this one waits for the next save\n"); return; }
     if (!state) {
         /* A device that never synced uploads only into a folder that is still empty when it looks again now: a synced folder
            lists a folder that is new to this device some time after the game opens it. A save that has appeared meanwhile is not
            overwritten; the next start takes it, and keeps this device's save in cloud-backups. */
         ensure_downloaded(g_cloud, 10);
-        read_coordinated(cur, ^(NSString *p) { meta = read_plist([p stringByAppendingPathComponent:@"sync.plist"]); });
+        read_coordinated(cur, ^(NSString *p) { meta = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]); });
+        if (g_identity_conflict) return;
         if (meta && [meta[@"gen"] longLongValue] != g_start_gen) {   // the start's own choice (this device's save is newer) goes ahead
             g_superseded = 1; write_superseded(nil, meta[@"gen"]);
             LOG("a save from %s (generation %lld) is in the folder now: this device's saves stay local, and its next start takes that one (keeping this one in cloud-backups)\n",
@@ -189,8 +209,17 @@ static void push(void) {
     __block BOOL ok = NO;
     NSError *cerr = nil;
     [[[NSFileCoordinator alloc] initWithFilePresenter:nil] coordinateWritingItemAtURL:[NSURL fileURLWithPath:cur] options:NSFileCoordinatorWritingForReplacing error:&cerr byAccessor:^(NSURL *u) {
+        /* Recheck under the writer's coordination lock: another device can commit after the earlier read. */
+        NSDictionary *latest = read_cloud_meta([u.path stringByAppendingPathComponent:@"sync.plist"]);
+        if (g_identity_conflict || (latest != nil) != (meta != nil) ||
+            (latest && (![latest[@"gen"] isEqual:meta[@"gen"]] || ![latest[@"hash"] isEqual:meta[@"hash"]]))) {
+            LOG("remote generation changed while preparing upload; this save stays local\n"); return;
+        }
+        if (!latest && [NSFileManager.defaultManager fileExistsAtPath:u.path]) {
+            LOG("remote folder is incomplete; left untouched\n"); return;
+        }
         if (!replace_folder(g_local, u.path)) return;
-        ok = [@{@"gen": @(gen), @"device": NSProcessInfo.processInfo.hostName ?: @"?", @"time": @(NSDate.date.timeIntervalSince1970), @"hash": hash}
+        ok = [@{@"uid": g_user, @"gen": @(gen), @"device": NSProcessInfo.processInfo.hostName ?: @"?", @"time": @(NSDate.date.timeIntervalSince1970), @"hash": hash}
                  writeToFile:[u.path stringByAppendingPathComponent:@"sync.plist"] atomically:YES];
     }];
     if (!ok) { LOG("upload failed%s%s\n", cerr ? ": " : "", cerr ? cerr.localizedDescription.UTF8String : ""); return; }
@@ -211,9 +240,23 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
             LOG("off: the save folder %s is inside the sync folder %s (keep the saves out of it)\n", localReal.UTF8String, rootReal.UTF8String);
             return;
         }
-        g_local = @(save_dir); g_cloud = [root stringByAppendingPathComponent:@"Saves"];
-        g_state = [@(profile_dir) stringByAppendingPathComponent:@"cloud-sync.plist"];
-        g_backups = [@(profile_dir) stringByAppendingPathComponent:@"cloud-backups"];
+        g_user = @(save_dir).lastPathComponent.lowercaseString;
+        NSCharacterSet *hex = [NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"];
+        if (g_user.length != 32 || [g_user rangeOfCharacterFromSet:hex.invertedSet].location != NSNotFound) {
+            LOG("off: save path does not identify a user\n"); return;
+        }
+        g_local = @(save_dir);
+        g_cloud = [[[[root stringByAppendingPathComponent:@"Users"] stringByAppendingPathComponent:g_user]
+                    stringByAppendingPathComponent:@"Saves"] copy];
+        NSString *states = [@(profile_dir) stringByAppendingPathComponent:@"cloud-sync"];
+        NSError *directoryError = nil;
+        if (![NSFileManager.defaultManager createDirectoryAtPath:states withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+            LOG("off: cannot create per-user sync state (%s)\n", directoryError.localizedDescription.UTF8String); return;
+        }
+        g_state = [states stringByAppendingPathComponent:[g_user stringByAppendingString:@".plist"]];
+        g_backups = [[@(profile_dir) stringByAppendingPathComponent:@"cloud-backups"] stringByAppendingPathComponent:g_user];
+        if ([NSFileManager.defaultManager fileExistsAtPath:[root stringByAppendingPathComponent:@"Saves/current"]])
+            LOG("legacy save has no user identity; kept outside this user's sync directory\n");
         g_queue = dispatch_queue_create("totk.cloud-save", DISPATCH_QUEUE_SERIAL);
         watch_lifecycle();
         runtime_boot_status("Save sync", "Syncing saves");
@@ -221,7 +264,8 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         NSDictionary *state = read_plist(g_state);
         ensure_downloaded(g_cloud, 30);
         __block NSDictionary *meta = nil;
-        read_coordinated(cur, ^(NSString *p) { meta = read_plist([p stringByAppendingPathComponent:@"sync.plist"]); });
+        read_coordinated(cur, ^(NSString *p) { meta = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]); });
+        if (g_identity_conflict) return;
         g_start_gen = [meta[@"gen"] longLongValue];
         NSString *local = save_hash(g_local);
         BOOL localSaves = save_files(g_local).count > 0;
@@ -252,9 +296,9 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         if (!ensure_downloaded(cur, 60)) { LOG("the folder's save did not download in time; this device's save is used\n"); return; }
         /* Checked and copied in one coordinated read, so an upload arriving meanwhile cannot slip between the two. */
         read_coordinated(cur, ^(NSString *p) {
-            NSDictionary *m = read_plist([p stringByAppendingPathComponent:@"sync.plist"]);
+            NSDictionary *m = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]);
             if (![m[@"gen"] isEqual:meta[@"gen"]] || ![save_hash(p) isEqualToString:m[@"hash"]]) { LOG("the folder's save is incomplete (still syncing); this device's save is used\n"); return; }
-            if (localSaves) backup(g_local, @"local");
+            if (localSaves && !backup(g_local, @"local")) return;
             if (replace_folder(p, g_local)) { write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
     }
@@ -268,6 +312,7 @@ static void flush(int any) {
     dispatch_sync(g_queue, ^{
         if (!__atomic_exchange_n(&g_push_pending, 0, __ATOMIC_SEQ_CST) && !any) return;
         for (int i = 0; i < 50 && runtime_fs_save_busy(); i++) usleep(100000);   // a save being written: up to 5 s
+        if (runtime_fs_save_busy()) { __atomic_store_n(&g_push_pending, 1, __ATOMIC_SEQ_CST); LOG("save still busy; no incomplete snapshot uploaded\n"); return; }
         @autoreleasepool { push(); }
     });
 }
@@ -299,6 +344,7 @@ static void push_when_quiet(void) {
         if (!__atomic_load_n(&g_push_pending, __ATOMIC_SEQ_CST)) return;   // flushed meanwhile
         if (runtime_fs_save_busy()) { push_when_quiet(); return; }
         __atomic_store_n(&g_push_pending, 0, __ATOMIC_SEQ_CST);
+        if (runtime_fs_save_busy()) { __atomic_store_n(&g_push_pending, 1, __ATOMIC_SEQ_CST); LOG("save still busy; no incomplete snapshot uploaded\n"); return; }
         @autoreleasepool { push(); }
     });
 }
