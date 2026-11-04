@@ -1,6 +1,8 @@
-/* Test the screenshot's folder and file name (games/totk/runtime/screenshot.h): TOTK_SCREENSHOT_DIR, a leading ~, the
-   Desktop without it, the game's name and the local time in the name, and (2), (3) ... when that second is taken. The
-   PNG write and the window's note need AppKit and a picture, so they are not part of this.
+/* Test the screenshot's folder, its saved setting and the file name (games/totk/runtime/screenshot.h): the runtime's
+   setting file next to controls.txt (TOTK_CONTROLS), a relative path in it from that settings folder, TOTK_SCREENSHOT_DIR
+   over it, a leading ~, the Desktop without either, the album named after the running game (GAME_NAME), the game's name and
+   the local time in the file name, and (2), (3) ... when that second is taken. The PNG write and the window's note need
+   AppKit and a picture, so they are not part of this.
    The environment checks run in a child process (screenshot_child): setenv may reuse the storage of the string it
    replaces, which in the parent would be the caller's own saved value. */
 #include "../games/totk/runtime/screenshot.h"
@@ -12,6 +14,45 @@
 static int failures;
 static void expect(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); failures++; } }
 
+/* runtime/gamepad.m's one-word settings, for this test: <TOTK_CONTROLS's folder>/<name>, read and written as the runtime
+   does (whole or not at all), so screenshot.h's folder resolution is exercised where it runs. Weak in screenshot.h, so a
+   build without them links too; this one makes the checks below possible. */
+static int settings_broken;   /* a disk that refuses the write */
+static int settings_path_file(const char *name, char *out, size_t size) {
+    const char *controls = getenv("TOTK_CONTROLS");
+    if (!controls || !*controls) return 0;
+    const char *slash = strrchr(controls, '/');
+    int n = slash ? snprintf(out, size, "%.*s/%s", (int)(slash - controls), controls, name) : snprintf(out, size, "%s", name);
+    return n > 0 && (size_t)n < size;
+}
+int runtime_setting_word(const char *name, char *word, size_t size) {
+    char path[PATH_MAX];
+    if (!settings_path_file(name, path, sizeof path)) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(word, 1, size - 1, f);
+    fclose(f);
+    word[n] = 0;
+    return 1;
+}
+void runtime_setting_save(const char *name, const char *word, const char *what) {
+    (void)what;
+    if (settings_broken) return;
+    char path[PATH_MAX], temp[PATH_MAX + 8];
+    if (!settings_path_file(name, path, sizeof path)) return;
+    snprintf(temp, sizeof temp, "%s.tmp", path);
+    FILE *f = fopen(temp, "w");
+    if (!f) return;
+    int ok = fprintf(f, "%s\n", word) > 0;
+    if (fclose(f)) ok = 0;
+    if (ok) { if (rename(temp, path)) unlink(temp); }
+    else unlink(temp);
+}
+void runtime_setting_remove(const char *name) {
+    char path[PATH_MAX];
+    if (settings_path_file(name, path, sizeof path)) unlink(path);
+}
+
 /* setenv with a copy of the string: setenv keeps no copy, and the caller's string is one literal the call replaces */
 static void set_dir(const char *value) {
     char copy[PATH_MAX];
@@ -20,21 +61,44 @@ static void set_dir(const char *value) {
     snprintf(copy, sizeof copy, "%s", "a later call must not change the setting");
 }
 
+/* The setting file's word, written as the panel writes it (through the runtime's own save) */
+static void set_word(const char *value) { runtime_setting_save(TOTK_SCREENSHOT_SETTING, value, "test"); }
+
+/* What the setting file holds, written as the runtime's setting_save does (a word and a newline); NULL when it does not
+   exist. */
+static int setting_file(char *out, size_t size) {
+    char path[PATH_MAX];
+    if (!settings_path_file(TOTK_SCREENSHOT_SETTING, path, sizeof path)) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(out, 1, size - 1, f);
+    fclose(f);
+    out[n] = 0;
+    while (n && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = 0;
+    return 1;
+}
+
 static void folder_checks(void) {
     char out[PATH_MAX], want[PATH_MAX];
-    /* The setting lives in the working folder: a folder and a home of their own, so the checks never touch the real ones. */
-    char work[] = "/tmp/totk-shot-setting-XXXXXX";
-    expect(mkdtemp(work) != NULL && chdir(work) == 0, "a working folder for the setting");
+    /* A settings folder, a working folder and a home of their own, so the checks never touch the real ones. */
+    char work[] = "/tmp/totk-shot-work-XXXXXX";
+    expect(mkdtemp(work) != NULL && chdir(work) == 0, "a working folder");
+    char settings[] = "/tmp/totk-shot-setting-XXXXXX";
+    expect(mkdtemp(settings) != NULL, "and a folder for the settings");
+    char controls[PATH_MAX];
+    snprintf(controls, sizeof controls, "%s/controls.txt", settings);
+    setenv("TOTK_CONTROLS", controls, 1);   /* the folder the runtime reads and writes the settings in */
     char home[] = "/tmp/totk-shot-home-XXXXXX";
-    expect(mkdtemp(home) != NULL, "and a home folder beside it");
+    expect(mkdtemp(home) != NULL, "a home folder");
     setenv("HOME", home, 1);
     setenv("TOTK_SCREENSHOT_DIR", "", 1);
     const char *why = NULL;
     int problem = SHOT_OK;
-    /* the panel's row: the folder is kept, made when it is missing, and read back */
+    /* the panel's row: the folder is kept in screenshot-dir.txt next to controls.txt, made when it is missing, read back */
     expect(screenshot_directory_set("Shots", &why, &problem, NULL) == 1, "a relative folder kept: made in the home folder");
     snprintf(want, sizeof want, "%s/Shots", home);
     expect(!strcmp(screenshot_directory(out, sizeof out), want), "and read back from there");
+    expect(setting_file(out, sizeof out) && !strcmp(out, want), "saved as it is in screenshot-dir.txt, next to controls.txt");
     expect(screenshot_directory_set("~/Pictures/Game", &why, &problem, NULL) == 1, "~ for the home folder, its folders made too");
     snprintf(want, sizeof want, "%s/Pictures/Game", home);
     expect(!strcmp(screenshot_directory(out, sizeof out), want), "read back expanded");
@@ -43,16 +107,24 @@ static void folder_checks(void) {
     expect(screenshot_directory_set("", &why, &problem, NULL) == 1, "emptied: the Desktop");
     snprintf(want, sizeof want, "%s/Desktop", home);
     expect(!strcmp(screenshot_directory(out, sizeof out), want), "back to the Desktop");
+    expect(!setting_file(out, sizeof out), "and the setting file is gone");
     char file[] = "/tmp/totk-shot-file-XXXXXX";
     int fd = mkstemp(file);
     if (fd >= 0) close(fd);
     expect(screenshot_directory_set(file, &why, &problem, NULL) == 0 && why != NULL, "a file of that name: refused, and why");
 
-    /* the folder in force: the environment first, then the panel's file, then the Desktop; a leading ~ is the home folder */
+    /* a disk that refuses the write is reported, not kept */
+    settings_broken = 1;
+    expect(screenshot_directory_set("/tmp", &why, &problem, NULL) == 0 && why != NULL, "a setting that cannot be saved: refused, and why");
+    settings_broken = 0;
+
+    /* the folder in force: the saved setting, a relative path in it from the settings folder (not the working folder), the
+       environment over both, then the Desktop; a leading ~ is the home folder */
+    expect(screenshot_directory_set("/tmp/totk-shot-elsewhere", &why, &problem, NULL) == 1, "an absolute setting");
+    setenv("TOTK_SCREENSHOT_DIR", "", 1);
+    expect(!strcmp(screenshot_folder(out, sizeof out), "/tmp/totk-shot-elsewhere"), "the setting, with nothing in the environment");
     setenv("TOTK_SCREENSHOT_DIR", "/tmp/shots-from-the-environment", 1);
     expect(!strcmp(screenshot_folder(out, sizeof out), "/tmp/shots-from-the-environment"), "the environment wins");
-    setenv("TOTK_SCREENSHOT_DIR", "/tmp/totk-shot-elsewhere", 1);
-    expect(!strcmp(screenshot_folder(out, sizeof out), "/tmp/totk-shot-elsewhere"), "an absolute setting");
     /* Through the environment: a folder the player picks replaces a launch's TOTK_SCREENSHOT_DIR at once, so the choice
        is not hidden until the next start. */
     setenv("TOTK_SCREENSHOT_DIR", "", 1);
@@ -67,27 +139,35 @@ static void folder_checks(void) {
     expect(!strcmp(screenshot_folder(out, sizeof out), want), "no setting: the Desktop");
     expect(screenshot_directory_set("~", &why, &problem, NULL) == 1, "and the home folder itself is a folder");
     expect(!strcmp(screenshot_directory(out, sizeof out), home), "read back as the home folder");
-    set_dir("/tmp/shots");
-    expect(!strcmp(screenshot_folder(out, sizeof out), "/tmp/shots"), "a folder of its own");
-    set_dir("~/Pictures/Game");
+    /* a relative path in the file is from controls.txt's folder: a script's or an older file's "Shots" lands beside the
+       other settings, not wherever the game was started */
+    setenv("TOTK_SCREENSHOT_DIR", "", 1);
+    set_word("Shots");
+    snprintf(want, sizeof want, "%s/Shots", settings);
+    expect(!strcmp(screenshot_folder(out, sizeof out), want), "a relative path in the file: from the settings folder");
+    set_word("~/Pictures/Game");
     snprintf(want, sizeof want, "%s/Pictures/Game", home);
     expect(!strcmp(screenshot_folder(out, sizeof out), want), "~ is the home folder");
-    set_dir("~");
+    set_word("~");
     expect(!strcmp(screenshot_folder(out, sizeof out), home), "~ alone is the home folder");
-    set_dir("~shots");
-    snprintf(want, sizeof want, "%s/~shots", home);
+    set_word("~shots");
+    snprintf(want, sizeof want, "%s/~shots", settings);
     expect(!strcmp(screenshot_folder(out, sizeof out), want), "~ in front of a name is no home folder");
+    set_word("/tmp/shots");
+    expect(!strcmp(screenshot_folder(out, sizeof out), "/tmp/shots"), "a folder of its own");
+    set_word("");
+    snprintf(want, sizeof want, "%s/Desktop", home);
+    expect(!strcmp(screenshot_folder(out, sizeof out), want), "an empty setting: the Desktop");
+    /* the environment over the file: its own relative path is from the home folder, as it always was */
     set_dir("Shots");
     snprintf(want, sizeof want, "%s/Shots", home);
-    expect(!strcmp(screenshot_folder(out, sizeof out), want), "a relative folder is from the home folder");
+    expect(!strcmp(screenshot_folder(out, sizeof out), want), "a launch's relative TOTK_SCREENSHOT_DIR: from the home folder");
+    /* without the launcher's controls.txt there is no settings folder, and no setting file either */
+    unsetenv("TOTK_CONTROLS");
     setenv("TOTK_SCREENSHOT_DIR", "", 1);
-    expect(screenshot_directory_set("", &why, &problem, NULL) == 1, "emptied again");
     snprintf(want, sizeof want, "%s/Desktop", home);
-    expect(!strcmp(screenshot_folder(out, sizeof out), want), "no setting: the Desktop");
-    set_dir("");
-    expect(!strcmp(screenshot_folder(out, sizeof out), want), "an empty setting: the Desktop too");
+    expect(!strcmp(screenshot_folder(out, sizeof out), want), "no settings folder: the Desktop");
     setenv("HOME", "", 1);
-    set_dir("");
     expect(!strcmp(screenshot_folder(out, sizeof out), "./Desktop"), "no HOME: the Desktop of the working folder");
 }
 
