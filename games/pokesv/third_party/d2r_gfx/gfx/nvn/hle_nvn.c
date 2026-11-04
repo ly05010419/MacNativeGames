@@ -2491,7 +2491,7 @@ static void tsummary(uint64_t frame) {
       static uint64_t pdbl, plink, plink_ns, nudged_ns; uint64_t dbl = runtime_frame_step_doubles ? runtime_frame_step_doubles() : 0;
       uint64_t lt = mtl_link_ticks(), lns = now_ns(); double link_hz = plink_ns && lt > plink && mtl_link_active() ? (double)(lt - plink) * 1e9 / (double)(lns - plink_ns) : 0;
       plink = lt; plink_ns = lns;
-      if (g_slowsum[1].n >= 30) {
+      if (g_slowsum[1].n >= 10) {   /* 10, not 30: a 4 November stretch ran 19 to 29 slow frames per window for 70 s, under the old gate */
           #define SLOWP(k) g_slowsum[k].n, g_slowsum[k].fr / g_slowsum[k].n, g_slowsum[k].acq / g_slowsum[k].n, g_slowsum[k].ncpu ? g_slowsum[k].cpu / g_slowsum[k].ncpu : -1.0, g_slowsum[k].nv / g_slowsum[k].n
           LOG("[nvn] slow frames to %llu: >20 ms %u (mean %.1f ms: acquire %.1f, present-thread CPU %.1f, nvn %.1f); others %u (mean %.1f ms: acquire %.1f, CPU %.1f, nvn %.1f); clock steps of 2+ ticks %llu; display link %.1f Hz of %d",
               (unsigned long long)frame, SLOWP(1), SLOWP(0), (unsigned long long)(dbl - pdbl), link_hz, mtl_display_hz());
