@@ -625,10 +625,18 @@ static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole recta
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 @end
 /* The controller's capture button (gamepad.m): a picture of the game's next frame, saved as a PNG (screenshot.h). Its
-   folder is one of the settings panel's rows, so that header comes second; a probe that links this file without the
-   renderer (tests/command_q/probe.m) offers its own picture and write. */
+   folder is one of the settings panel's rows, so that header comes after this one; a probe that links this file without
+   the renderer (tests/command_q/probe.m) offers its own picture and write. */
 #if defined(__APPLE__) && TARGET_OS_OSX
 #define TOTK_SCREENSHOT_WINDOW 1
+#endif
+#if defined(TOTK_SCREENSHOT_WINDOW) && !defined(TOTK_SCREENSHOT_PICTURE)
+/* The renderer's next frame: mtl_grab_next_present (third_party/d2r_gfx/gfx/nvn/nvn_mtl.m) has the present thread draw the
+   frame it is about to show and hands the picture over when the GPU is done, so the capture button waits on no thread and
+   the main thread never spins. Weak: a probe links this file without the renderer and answers with no picture. */
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+static void screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE screenshot_picture
 #endif
 #include "screenshot.h"
 #include "settings_panel.h"

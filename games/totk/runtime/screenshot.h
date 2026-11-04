@@ -1,17 +1,20 @@
 /* The controller's capture button takes a picture of the game's own frame (a Nintendo controller's square button below the
    D-pad, macOS's Share button, and the joypad gamepad.m's HID fallback reads): the next frame the renderer presents is
-   encoded off screen and saved, so the picture is the game picture -- not the boot screen's text, the FPS box or the
-   settings panel, none of which the game draws. Where it goes depends on the platform:
+   copied on the present thread and saved off the main thread, so the picture is the game picture -- not the boot screen's
+   text, the FPS box or the settings panel, none of which the game draws -- and the game never stops for it. Where it goes
+   depends on the platform:
      - iPhone and iPad: the system photo library (Photos), the way a console's Capture button does;
      - a desktop (macOS, Windows, Linux): a folder, the Desktop until the settings panel's folder chooser names another
        one; TOTK_SCREENSHOT_DIR names one for a launch.
-   Until the game shows a picture the request saves nothing and the note says so. The folder, its checks, the name and the
-   photo library's album name are plain C, so tests/test_screenshot.c covers them without a window.
-   frontend.m includes this after settings_panel.h, so the note sits above the game's own views. */
+   Until the game shows a picture the request saves nothing and the note says so; a frame that never comes (a paused or
+   hidden window presents nothing) gives the button back after SHOT_PENDING_MS, with a note of its own. The folder, its
+   checks, the file name and the album's name are plain C, so tests/test_screenshot.c covers them without a window.
+   frontend.m includes this before settings_panel.h, so the note sits above the game's own views. */
 #pragma once
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,23 +221,26 @@ __attribute__((unused)) static char *screenshot_path(const char *folder, const c
 #endif
 
 enum { SHOT_PENDING_MS = 3000, SHOT_NOTE_MS = 3000 };
-/* The renderer's next frame: the runtime binary answers with one picture (frontend.m, mtl_grab_next_present; on iOS
-   frontend_ios.m), a probe that links this file without the renderer with one of its own (TOTK_SCREENSHOT_PICTURE, defined
-   before this header), or with none, which reads as no picture. Weak, so that a build without the renderer links. */
+/* The renderer's next frame: the runtime binary answers with one picture, handed over by the present thread whenever it
+   has one (frontend.m and frontend_ios.m: mtl_grab_next_present); a probe that links this file without the renderer answers
+   with one of its own (TOTK_SCREENSHOT_PICTURE, defined before this header) or with none, which reads as no picture. Weak,
+   so that a build without the renderer links. */
 #ifndef TOTK_SCREENSHOT_PICTURE
 #define TOTK_SCREENSHOT_PICTURE NULL
 #endif
-CGImageRef (*totk_screenshot_picture)(CGImageRef img, BOOL present) __attribute__((weak)) = TOTK_SCREENSHOT_PICTURE;
+void (*totk_screenshot_picture)(void (^cb)(CGImageRef img)) __attribute__((weak)) = TOTK_SCREENSHOT_PICTURE;
 /* A program without ImageIO (a probe) or with another place to save (the iPhone app's photo library) defines
    TOTK_SCREENSHOT_WRITE 0 and offers its own screenshot_save. */
 #ifndef TOTK_SCREENSHOT_WRITE
 #define TOTK_SCREENSHOT_WRITE 1
 #endif
-/* What saves a picture: the folder below, or the program's own (a phone's photo library, a probe's). */
+/* What saves a picture: the folder below, or the program's own (a phone's photo library, a probe's). Runs on the
+   screenshot queue, never the main queue. */
 #ifndef TOTK_SCREENSHOT_SAVE
 #define TOTK_SCREENSHOT_SAVE screenshot_save
 #endif
-static uint64_t shotPendingAt;   /* ns: a picture is on its way */
+static uint64_t shotPendingAt;   /* main queue only, ns: a picture is on its way */
+static uint64_t shotRequest;     /* main queue only: which request that is (the give-up below tells them apart) */
 static dispatch_queue_t shotWrites;
 #if !TOTK_SCREENSHOT_WRITE
 /* A phone's save (frontend_ios.m: the photo library) and a probe's, in place of the folder below. */
@@ -242,8 +248,10 @@ static int TOTK_SCREENSHOT_SAVE(CGImageRef img, const char *game, char *path, si
                                 char *album, size_t album_size);
 #endif
 
+/* Asks for the renderer's next frame: it answers from the present thread, once the frame is drawn, and not at all when
+   none is drawn (a paused or hidden window). Nothing waits for it. */
 static void screenshot_grab(void (^cb)(CGImageRef img)) {
-    if (totk_screenshot_picture) { CGImageRef img = totk_screenshot_picture(NULL, NO); cb(img); CGImageRelease(img); }
+    if (totk_screenshot_picture) totk_screenshot_picture(cb);
     else cb(NULL);   /* no renderer here: said as no picture, which the note explains */
 }
 
@@ -340,7 +348,8 @@ __attribute__((unused)) static int screenshot_save(CGImageRef img, const char *g
 }
 #endif
 
-/* The request itself, on the main queue. */
+/* The request itself, on the main queue: ask for the next frame and return. The frame is saved on the screenshot queue, so
+   neither the main thread nor the present thread carries the PNG. */
 static void screenshot_take(void) {
     uint64_t now = runtime_now_ns();
     if (shotPendingAt && now - shotPendingAt < (uint64_t)SHOT_PENDING_MS * 1000000ull) {
@@ -353,6 +362,8 @@ static void screenshot_take(void) {
         return;
     }
     if (!shotWrites) shotWrites = dispatch_queue_create("totk.screenshot", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t writes = shotWrites;
+    uint64_t request = ++shotRequest;
     shotPendingAt = now;
 #if defined(TOTK_SCREENSHOT_WINDOW)
     char folder[PATH_MAX];
@@ -362,20 +373,37 @@ static void screenshot_take(void) {
 #else
     NSString *place = @(TOTK_UI("照片", "Photos"));   /* the photo library */
 #endif
-    screenshot_grab(^(CGImageRef img) {
-        char written[PATH_MAX] = {0};
-        char album[NAME_MAX + 1] = {0};
-        const char *why = NULL;
-        int problem = SHOT_OK;
-        int ok = TOTK_SCREENSHOT_SAVE(img, GAME_NAME, written, sizeof written, &why, &problem, album, sizeof album);
-        NSString *text = ok
-            ? (album[0] ? [NSString stringWithFormat:@(TOTK_UI("截图已存入「照片」：%@", "Screenshot saved to Photos: %@")), @(album)]
-                        : [NSString stringWithFormat:@(TOTK_UI("截图已保存：%@", "Screenshot saved: %@")), @(written)])
-            : [NSString stringWithFormat:@(TOTK_UI("未保存截图：%@（%@）", "Screenshot not saved: %@ (%@)")), @(why ?: "?"), place];
+    /* A frame that never arrives -- a paused or hidden window presents nothing -- must not leave the button dead for good:
+       the request gives up after SHOT_PENDING_MS and says so. A newer request owns the button by then (shotRequest). */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)SHOT_PENDING_MS * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        if (shotRequest != request || !shotPendingAt) return;
+        shotPendingAt = 0;
+        NSString *text = [NSString stringWithFormat:@(TOTK_UI("游戏画面没有出现，未保存截图（%@）", "the game's picture did not come; nothing saved (%@)")), place];
+        fprintf(stderr, "[totk] screenshot: %s\n", text.UTF8String);
+        screenshot_note(text, YES);
+    });
+    screenshot_grab(^(CGImageRef img) {   /* the present thread: the frame, or NULL when it could not be drawn */
+        CGImageRef taken = img ? CGImageRetain(img) : NULL;
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (shotRequest != request) { if (taken) CGImageRelease(taken); return; }   /* given up before it came */
+            shotRequest = 0;
             shotPendingAt = 0;
-            fprintf(stderr, "[totk] screenshot: %s\n", text.UTF8String);
-            screenshot_note(text, !ok);
+            dispatch_async(writes, ^{
+                char written[PATH_MAX] = {0};
+                char album[NAME_MAX + 1] = {0};
+                const char *why = NULL;
+                int problem = SHOT_OK;
+                int ok = TOTK_SCREENSHOT_SAVE(taken, GAME_NAME, written, sizeof written, &why, &problem, album, sizeof album);
+                NSString *text = ok
+                    ? (album[0] ? [NSString stringWithFormat:@(TOTK_UI("截图已存入「照片」：%@", "Screenshot saved to Photos: %@")), @(album)]
+                                : [NSString stringWithFormat:@(TOTK_UI("截图已保存：%@", "Screenshot saved: %@")), @(written)])
+                    : [NSString stringWithFormat:@(TOTK_UI("未保存截图：%@（%@）", "Screenshot not saved: %@ (%@)")), @(why ?: "?"), place];
+                if (taken) CGImageRelease(taken);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    fprintf(stderr, "[totk] screenshot: %s\n", text.UTF8String);
+                    screenshot_note(text, !ok);
+                });
+            });
         });
     });
 }
