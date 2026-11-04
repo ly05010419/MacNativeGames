@@ -154,7 +154,8 @@ class Extraction(unittest.TestCase):
         # them whole (first and last byte in, the byte after out), and each version gets its own.
         expected = {
             'botw190': {0xc33730: 8, 0xc33678: 12, 0x124eef8: 16, 0x10edad0: 16, 0x10edad8: 4, 0xeb48ac: 4,   # blend, shadow, FOV (the load is 4 of the 16)
-                        0x71c: 4, 0x12660d0: 8, 0xc61f28: 4},                                                   # the native-size block
+                        0x71c: 4, 0x12660d0: 8, 0xc61f28: 4,                                                          # the native-size block
+                        0x12660d8: 4, 0x126610c - 4: 4},                                                        # its docked branch, checked whole
             'botw160': {0xdde044: 16, 0xdddfe4: 4, 0xdde090: 4},                                                # the camera blend
         }
         for version, sites in expected.items():

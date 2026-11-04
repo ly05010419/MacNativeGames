@@ -58,6 +58,7 @@ BOTW_UPSTREAM = {
         (0xc61ef4, 0x4, 'native size'), (0xc61f1c, 0x4, 'native size'), (0xc61f28, 0x4, 'native size'),
         (0x1261704, 0x4, 'native size'), (0x12618b8, 0x4, 'native size'), (0x12618c4, 0x4, 'native size'),
         (0x12660d0, 0x8, 'native size'), (0x12660f0, 0x4, 'native size'), (0x1266104, 0x4, 'native size'),
+        (0x12660bc, 0x50, 'native size: the docked branch patch_output_res checks whole, 20 words'),
         (0x124eef8, 0x10, 'sun shadow size: the four moves'),
         (0x10edad0, 0x10, 'field of view: the load and its checked neighbours'), (0xeb48ac, 0x4, 'field of view: setFovy store'),
     ],

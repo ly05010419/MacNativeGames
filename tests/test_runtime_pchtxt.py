@@ -145,7 +145,7 @@ class RuntimePchtxtBotw190(BotwChecks, PchtxtCases, unittest.TestCase):
     DEFINES = ['-DGAME_BOTW190']
     GAME_DIR = VERSION = 'botw190'
     RESERVED = 0x1d78198
-    UPSTREAM = [(0xc33678, 12), (0xc33730, 8), (0x124eef8, 16), (0x10edad0, 16), (0xeb48ac, 4), (0x71c, 4), (0x12660d0, 8)]
+    UPSTREAM = [(0xc33678, 12), (0xc33730, 8), (0x124eef8, 16), (0x10edad0, 16), (0xeb48ac, 4), (0x71c, 4), (0x12660d0, 8), (0x12660bc, 0x50)]
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'the runtime builds on macOS only')

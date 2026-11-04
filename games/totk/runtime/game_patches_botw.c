@@ -610,6 +610,8 @@ static const PchtxtSite g_pchtxt_reserved[] = {
     /* the native-size block's sites (native_word, patch_output_res) */
     {0x71c, 0x4}, {0xc617c0, 0x4}, {0xc61b14, 0x4}, {0xc61ee8, 0x4}, {0xc61ef4, 0x4}, {0xc61f1c, 0x4}, {0xc61f28, 0x4},
     {0x1261704, 0x4}, {0x12618b8, 0x4}, {0x12618c4, 0x4}, {0x12660d0, 0x8}, {0x12660f0, 0x4}, {0x1266104, 0x4},
+    /* the docked branch patch_output_res checks whole: 20 words */
+    {0x12660bc, 0x50},
 #endif
 };
 static void patch_pchtxt(Module *m) { pchtxt_apply(m, "botw", g_pchtxt_reserved, sizeof g_pchtxt_reserved / sizeof *g_pchtxt_reserved); }
