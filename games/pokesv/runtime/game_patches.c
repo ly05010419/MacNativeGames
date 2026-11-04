@@ -83,7 +83,11 @@ static void patch_frame_step(Module *m) {
     memcpy(frame_table_orig, want, sizeof want);
     for (int k = 0; k < 5; k++) atomic_store(&frame_table[k], want[k]);
     for (unsigned i = 0; i < sizeof sites / sizeof *sites; i++) {
-        uint32_t w[2] = {adrp(8, (uintptr_t)m->base + sites[i].off, (uintptr_t)m->base + data), 0x91000108};
+        /* PSV_FRAME_SPLIT=<n> (test): clock-advance site n reads a table of exact 1/30 s at data + 0x180 */
+        const char *sp = getenv("PSV_FRAME_SPLIT"); int split = sp && (unsigned)atoi(sp) == i;
+        uint32_t w[2] = {adrp(8, (uintptr_t)m->base + sites[i].off, (uintptr_t)m->base + data), split ? 0x91060108 : 0x91000108};
+        if (split) { _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], 33333334);
+            fprintf(stderr, "[psv] frame step test: clock-advance site %u (main+%#llx) gets exactly 1/30 s\n", i, (unsigned long long)sites[i].off); }
         memcpy(m->base + sites[i].off, w, 8); sys_icache_invalidate(m->base + sites[i].off, 8);
     }
     /* The time-scale readers (60 fps mode, 2026-10-31): they divide the clock by table[index] with the index the object got
@@ -348,6 +352,25 @@ static void patch_draw_dist(Module *m) {
     sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
     fprintf(stderr, "[psv] draw distance: model LOD and draw distances x%.2f\n", f);
 }
+/* The job system's lost wake-up (2026-11-04, the hang once per 5 to 15 minutes). The job system's "done" setter at
+   main+0x2d0010c stores done = 1 (strb, plain) at system + 0x20c and then reads the main thread's worker state with ldar: state 2
+   (awake) means no wake-up. The main thread, back from a wake-up, stores state 0 (stlr), takes its queue lock (ldaxr) and then
+   reads done before it sleeps. ARMv8 lets the plain store become visible after the later ldar, so the setter can read the old
+   state 2 while the main thread reads the old done 0: the main thread sleeps for ever with done = 1 (seen in the hang: system +
+   0x20c = 1, all queues empty, every worker asleep). A dmb ish between the store and the load closes it:
+     main+0x2d00120  strb w9, [x8, #0x20c]  -> b C;  C: strb w9, [x8, #0x20c]; dmb ish; b site + 4
+   PSV_JOB_FENCE=0 leaves the site alone. */
+static void patch_job_fence(Module *m) {
+    const char *e = getenv("PSV_JOB_FENCE"); if (e && !strcmp(e, "0")) return;
+    const uint64_t site = 0x2d00120, c = 0x343fe80;
+    uint32_t w; memcpy(&w, m->base + site, 4);
+    if (w != 0x39083109 || m->text_end > c) runtime_fail("job fence: site or text padding differ");
+    for (uint64_t k = c; k < c + 12; k++) if (m->base[k]) runtime_fail("job fence: text padding in use");
+    uint32_t st[3] = {0x39083109, 0xd5033bbf, branch(c + 8, site + 4)};
+    memcpy(m->base + c, st, sizeof st); w = branch(site, c); memcpy(m->base + site, &w, 4);
+    sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
+    fprintf(stderr, "[psv] job fence: barrier after the job system's done flag (PSV_JOB_FENCE=0 turns it off)\n");
+}
 static void draw_dist_log(void) {
     if (!draw_dist) return; static float last[3]; static int n;
     _Atomic float *raw = draw_dist + 22;   /* data + 0x140 */
@@ -364,6 +387,7 @@ void runtime_game_patches(Module *main_module) {
     patch_jump(main_module);
     patch_far_distance(main_module);
     patch_draw_dist(main_module);
+    patch_job_fence(main_module);
     /* PSV_STOP_AT_START=1: the process stops itself before the game's first instruction, so a debugger can attach and set
        watchpoints on startup state (lldb's continue resumes it). */
     if (getenv("PSV_STOP_AT_START")) { fprintf(stderr, "[psv] stopped for a debugger (PSV_STOP_AT_START), pid %d\n", getpid()); raise(SIGSTOP); }
@@ -380,7 +404,7 @@ static void frame_table_store(double dt) {
 }
 void runtime_frame_step_pin(double ms) {
     uint32_t us = ms > 0 ? (uint32_t)(ms * 1000.0 + 0.5) : 0; atomic_store(&pinned_step_us, us);
-    if (frame_table && us) frame_table_store(us / 1e6);
+    if (frame_table && us) frame_table_store(ms / 1e3);   /* the exact value asked: "framestep 33.333334" gives the game's 33333334 ns */
     fprintf(stderr, "[psv] frame step %s (pin %.3f ms)\n", us ? "pinned" : "real time", us / 1000.0);
 }
 /* The game's own 60 fps mode (2026-10-31): with a frame lock of 40 or more, the step byte and the time-scale index are kept at 0
@@ -397,6 +421,8 @@ static void frame_mode_keep(void) {
         if (now != last) { last = now; fprintf(stderr, "[psv] frame mode (game): step %d, index %d (settings %#lx, rate %#lx)\n", now & 0xff, now >> 8, (unsigned long)cfg, (unsigned long)rate); }
         return;
     }
+    if (fixed_step) { static int last = -1; int st = *(volatile int32_t *)((volatile uint8_t *)fixed_step + 8);   /* data + 0x88: the manager state the stub saw */
+        if (st != last) { last = st; fprintf(stderr, "[psv] fixed step: manager state %d t=%.3f\n", st, runtime_now_ns() / 1e9); } }
     int want = nvn_fps_lock() >= 40 ? 0 : 1; frame_mode60 = !want;
     if (fixed_step) atomic_store_explicit(fixed_step, frame_mode60 ? 33333334 : 0, memory_order_relaxed);
     if (jump_scale) { atomic_store_explicit(&jump_scale[0], frame_mode60 ? 1.95f : 1.0f, memory_order_relaxed); atomic_store_explicit(&jump_scale[1], frame_mode60 ? 20.5f : __builtin_inff(), memory_order_relaxed); }
@@ -432,9 +458,13 @@ void runtime_frame_step_update(uint64_t now_ns) {
        frame and in the world (tried for 120 fps, 2026-10-31). So only up to a 60 fps lock; above it the measured step stays and
        effects there still run slow. PSV_FRAME_QUANT=0: the measured step. */
     static int quant = -1; if (quant < 0) { const char *e = getenv("PSV_FRAME_QUANT"); quant = !(e && !strcmp(e, "0")); }
-    if (quant && frame_mode60 && nvn_fps_lock() <= 60) {   /* never 0 ticks: a step of 0 stopped the game (at its second frame, and in the world) */
+    /* The 30 fps mode too (2026-11-05): a counter on clock 0 (main+0x92dd20) steps in whole 1/30 s. The ball throw's catch camera
+       starts one, and a first frame a hair under 33,333,334 ns gave it no step: for that frame the camera stood about 3.3 km out
+       along the throw, and the world streaming rebuilt everything (the redraw after a throw). Whole ticks, rounded, give exactly
+       2 ticks = 33,333,334 ns at 30 fps. In the 60 fps mode a frame is one tick and the redraw stays (CHANGELOG). */
+    if (quant && nvn_fps_lock() <= 60) {   /* never 0 ticks: a step of 0 stopped the game (at its second frame, and in the world) */
         static double acc; const double tick = 16666667e-9; acc += sum / frame_sample_count;
-        int n = (int)(acc / tick); if (n < 1) n = 1; if (n > 4) n = 4; acc -= n * tick; if (acc < -tick) acc = -tick; if (acc > tick) acc = tick;
+        int n = frame_mode60 ? (int)(acc / tick) : (int)(acc / tick + 0.5); if (n < 1) n = 1; if (n > 4) n = 4; acc -= n * tick; if (acc < -tick) acc = -tick; if (acc > tick) acc = tick;
         for (int k = 0; k < 5; k++) atomic_store_explicit(&frame_table[k], (int64_t)n * 16666667, memory_order_relaxed);
         if (n > 1) step_doubles++;
         if (nvn_trace) { nvn_trace("@step_ticks", n); nvn_trace("@step_dt_ms", dt * 1e3); }

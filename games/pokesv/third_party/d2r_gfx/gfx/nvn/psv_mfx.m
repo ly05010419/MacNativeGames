@@ -188,7 +188,25 @@ void mfx_note_viewproj(const float *cm) {
     g.cam[62] = yl / xl; g.cam[70] = 2 * atan(1 / yl);
     g.cam_ok = near > 0 && g.cam[57] > near && g.cam[62] > 0 && g.cam[70] > 0;
     static int camlog = -1; if (camlog < 0) camlog = getenv("PSV_MFX_CAMLOG") != NULL;   /* diagnostic: the camera position every frame */
-    if (camlog) MLOG("camera position %.4f %.4f %.4f", c[0], c[1], c[2]);
+    if (camlog) MLOG("camera position %.4f %.4f %.4f t=%.3f dir %.3f %.3f %.3f", c[0], c[1], c[2], clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9, f[0], f[1], f[2]); if (camlog) { static int nl; if (nl++ % 600 == 0) MLOG("camera near %.3f far %.1f fov %.3f", g.cam[56], g.cam[57], g.cam[70]); }
+    if (camlog) {   /* a jump of more than 1 km in one frame: ask the input file reader to find those floats in guest memory */
+        static double lc[3]; static int have; double dx = c[0] - lc[0], dy = c[1] - lc[1], dz = c[2] - lc[2];
+        if (have && dx * dx + dy * dy + dz * dz > 1e6) { const char *inf = getenv("PSV_INPUT_FILE"); FILE *fp = inf ? fopen(inf, "a") : NULL;
+            if (fp) { fprintf(fp, "findf %.3f %.3f %.3f 0.05\n", c[0], c[1], c[2]);
+                /* the jump back: the offset between the far frame and this one, as is and a thousandth (a scale applied a frame late) */
+                fprintf(fp, "findf %.3f %.3f %.3f 0.2\n", lc[0] - c[0], lc[1] - c[1], lc[2] - c[2]);
+                fprintf(fp, "findf %.5f %.5f %.5f 0.0005\n", (lc[0] - c[0]) / 1000, (lc[1] - c[1]) / 1000, (lc[2] - c[2]) / 1000);
+                fprintf(fp, "findf %.5f %.5f %.5f 0.0005\n", (c[0] - lc[0]) / 1000, (c[1] - lc[1]) / 1000, (c[2] - lc[2]) / 1000);
+                fclose(fp); }
+            MLOG("camera jumped %.0f units to %.4f %.4f %.4f", sqrt(dx * dx + dy * dy + dz * dz), c[0], c[1], c[2]); }
+        /* still for 60 frames: search once per 20 s for the camera's own copy of its position (the camera object) */
+        static int still; static double lastsearch;
+        still = have && dx * dx + dy * dy + dz * dz < 1e-8 ? still + 1 : 0;
+        double nows = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9;
+        if (still == 60 && nows - lastsearch > 20) { lastsearch = nows; const char *inf = getenv("PSV_INPUT_FILE"); FILE *fp = inf ? fopen(inf, "a") : NULL;
+            if (fp) { fprintf(fp, "findf %.4f %.4f %.4f 0.002\n", c[0], c[1], c[2]); fclose(fp); }
+            MLOG("camera still: searching %.4f %.4f %.4f", c[0], c[1], c[2]); }
+        lc[0] = c[0]; lc[1] = c[1]; lc[2] = c[2]; have = 1; }
 }
 void mfx_note_camera(const float *c, int n) {
     if (n < 84) return;

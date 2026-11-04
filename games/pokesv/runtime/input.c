@@ -48,7 +48,7 @@ static void glitch_mark(void){
  struct timespec ts;clock_gettime(CLOCK_REALTIME,&ts);time_t now=ts.tv_sec;size_t sl=strftime(stamp,sizeof stamp,"%Y%m%d-%H%M%S",localtime(&now));
  snprintf(stamp+sl,sizeof stamp-sl,"-%03ld",ts.tv_nsec/1000000);   // milliseconds: two presses within one second kept only one file
  snprintf(png,sizeof png,"%s/glitch-%s.png",dir,stamp);snprintf(trace,sizeof trace,"%s/glitch-%s.gputrace",dir,stamp);
- fprintf(stderr,"[glitch] key 0: %s t=%.3f\n",png,runtime_now_ns()/1e9);   // t: the clock of the PSV_FS_TIMING read windowsdm_gfx_shot_at(2,png);
+ fprintf(stderr,"[glitch] key 0: %s t=%.3f\n",png,runtime_now_ns()/1e9);   dm_gfx_shot_at(2,png);   // t: the clock of the PSV_FS_TIMING read windows
  {extern void dm_gfx_ishot_next(const char *path);char ip[1000];snprintf(ip,sizeof ip,"%s/glitch-%s-interp.png",dir,stamp);dm_gfx_ishot_next(ip);}
  if(getenv("MTL_CAPTURE_ENABLED"))dm_gfx_gpucapture_next(trace);}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
