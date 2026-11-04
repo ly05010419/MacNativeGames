@@ -1,6 +1,6 @@
 # Contribution validation — 2026-10-31
 
-Historical contributor evidence below predates integration. Only Metal 4 / macOS 26+ is now supported; the Metal 3 entry points have been removed.
+Historical contributor evidence below predates integration. Only Metal 4 / macOS 26+ is now supported; the Metal 3 entry points have been removed. The PR's original instruction-checked physical-pool alignment and Mii/cloth heap patches are enabled by default, restored by explicit selection on 2026-11-04. This is adoption of the contribution's compatibility scheme, not a new root-cause fix or gameplay acceptance.
 
 ## Scope
 

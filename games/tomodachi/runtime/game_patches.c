@@ -6,13 +6,6 @@
 #include <stdlib.h>
 _Atomic int runtime_survey_pending;
 void runtime_game_patches(Module *m) {
- /* Diagnostic experiments inherited from the contribution. Their underlying
-    host allocation/mapping defects have not been diagnosed with local game
-    data. They are deliberately unavailable in normal builds. */
-#ifndef TOMODACHI_DIAGNOSTIC_PATCHES
- (void)m;
- return;
-#else
  /* Only physical pool backing needs Darwin's 16 KiB page alignment.
     Keep ordinary graphics allocations at their original alignment: increasing
     those wastes the title's small child heaps. Branch through verified text
@@ -59,7 +52,6 @@ void runtime_game_patches(Module *m) {
   replacement=0x52a00023;memcpy(m->base+cloth_offsets[i],&replacement,4);
  }
  fprintf(stderr,"[tomodachi] Cloth model 32 KiB child heaps -> 64 KiB\n");
-#endif
 }
 void runtime_frame_step_pin(double ms) { (void)ms; }
 void runtime_frame_step_update(uint64_t ns) { (void)ns; }

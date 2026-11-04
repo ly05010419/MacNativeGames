@@ -20,7 +20,7 @@ def main():
         out = Path(temporary)
         common = ['xcrun', 'clang', '-Iruntime']
         for name, sources, flags in [
-            ('default-patches', ['tests/test_tomodachi_default_patches.c','runtime/game_patches.c'], []),
+            ('compat-patches', ['tests/test_tomodachi_compat_patches.c','runtime/game_patches.c'], []),
             ('clock', ['tests/test_tomodachi_clock.c','runtime/time_host.c'], ['-framework','CoreFoundation']),
             ('gesture', ['tests/test_tomodachi_gesture.c','runtime/gesture.c'], []),
             ('inline-keyboard', ['tests/test_tomodachi_inline_keyboard.c','runtime/inline_keyboard.c'], ['-framework','CoreFoundation']),
@@ -29,6 +29,12 @@ def main():
             binary=out/name
             subprocess.run([*common,*sources,*flags,'-o',str(binary)],cwd=TITLE,check=True)
             run([binary])
+            if name=='compat-patches':
+                run([binary,'disabled'])
+                for scenario in ('wrong-instruction','occupied-padding'):
+                    rejected=subprocess.run([str(binary),scenario],cwd=REPO)
+                    if rejected.returncode!=86:
+                        raise RuntimeError(f'{scenario}: expected guarded rejection, got {rejected.returncode}')
             if name=='settings':
                 run([binary,'invalid'])
                 # Interactive window tests are opt-in on a local desktop.

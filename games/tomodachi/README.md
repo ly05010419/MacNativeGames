@@ -1,10 +1,8 @@
 # Tomodachi Life: Living the Dream — experimental native Mac port
 
-**Status: experimental diagnostic host; normal-build gameplay has not been accepted.**
-Integration (2026-11-04) disables the contribution's fixed-address heap growth and physical-pool alignment patches in normal builds. These bypass unresolved host allocation/mapping defects. The retained code is for diagnostic compilation only (`TOMODACHI_DIAGNOSTIC_PATCHES`) and is not a supported way to play. Root fixes and a new gameplay run require the player's verified game data. The earlier contributor results below used those patches and do not validate the current defaults.
-The contributor previously exercised startup, native menus, text entry and an existing island on an Apple silicon Mac with the compatibility patches enabled. This is not a claim of complete picture
-accuracy, full gameplay coverage, or proven save compatibility. Keep a backup of
-your own saves. No iPhone/iPad build is provided or validated.
+**Status: experimental / work in progress. Broader gameplay and visual validation remain.**
+The contribution's checked physical-pool alignment and Mii/cloth heap compatibility patches are enabled by default, as explicitly selected for this port. They are compatibility workarounds; their underlying causes have not been independently diagnosed here.
+The contributor exercised startup, native menus, text entry and an existing island on an Apple silicon Mac with these patches enabled. This is not a claim of complete picture accuracy, full gameplay coverage, or proven save compatibility. Keep a backup of your own saves. No iPhone/iPad build is provided or validated.
 
 This port runs the player's ARM64 game code directly on Apple silicon. It uses
 ahead-of-time NSO rewriting, a native service host, and NVN on Metal; no CPU
@@ -121,9 +119,12 @@ launching the executable to append a native runtime log to that profile.
   bubble disappeared before the instrumented retry, so the cause is unresolved;
   subsequent play without another crash is not a verified fix.
 - Some services are partial implementations; some audio effects remain unsupported.
-  The contribution's Mii/cloth heap growth and physical-pool alignment experiments
-  are disabled in normal builds. Their host allocation/mapping causes remain open;
-  startup or island loading may stop until those causes are fixed.
+  The PR's instruction-checked compatibility patches align physical NVN pool
+  allocations for Darwin pages and enlarge the Mii/cloth child heaps. They are
+  enabled by default; `TOMODACHI_POOL_ALIGNMENT_PATCH=0` disables pool alignment,
+  and `TOMODACHI_MII_HEAP_PATCH=0` disables both model-heap changes for diagnosis.
+  The causes that made these workarounds necessary have not been independently
+  resolved, and this integration has not been played with real game data.
 - No performance improvement is claimed from local work counters or FPS alone.
   Rendering correctness takes priority over speed. This contribution remains
   experimental while the remaining graphics and gameplay validation are completed.
