@@ -18,6 +18,7 @@ usage: translate_shaders.py --out <work>/build/shader-prepared --translator <tot
 """
 import argparse
 import concurrent.futures
+import fcntl
 import hashlib
 import json
 import os
@@ -93,8 +94,40 @@ def translation_input(stage, control, code):
                           (b'E' if early_fragment_tests(stage, control) else b'')).hexdigest()
 
 
-def done(out, variant):
-    return all((out / f'{variant}_b.{ext}').is_file() and (out / f'{variant}_b.{ext}').stat().st_size for ext in ('metal', 'json'))
+def done(out, variant, expected_chain, stage):
+    try:
+        if not (out / f'{variant}_b.metal').stat().st_size:
+            return False
+        reflection = json.loads((out / f'{variant}_b.json').read_text())
+        return reflection.get('chain') == expected_chain and reflection.get('stage') == stage
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def prepare_output(out, translator, spirv_cross, name_chain):
+    """Keep old game-derived results, but never reuse them with different tools or request code."""
+    def digest(path):
+        h = hashlib.sha256()
+        with Path(path).open('rb') as f:
+            for block in iter(lambda: f.read(1 << 20), b''):
+                h.update(block)
+        return h.hexdigest()
+    identity = dict(schema=1, chain=name_chain,
+                    translator=digest(translator), spirv_cross=digest(spirv_cross),
+                    requests=digest(__file__), containers=digest(Path(__file__).with_name('monolith_shaders.py')))
+    marker = out / 'translation-build.json'
+    try:
+        previous = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        previous = None
+    if out.exists() and any(out.iterdir()) and previous != identity:
+        retired = out.with_name(out.name + '.stale-' + str(time.time_ns()))
+        out.rename(retired)
+        print(f'kept incompatible translations in {retired}', flush=True)
+    out.mkdir(parents=True, exist_ok=True)
+    temporary = out / 'translation-build.json.partial'
+    temporary.write_text(json.dumps(identity, sort_keys=True, indent=2) + '\n')
+    temporary.replace(marker)
 
 
 def main():
@@ -107,8 +140,11 @@ def main():
     ap.add_argument('--workers', type=int, default=min(8, os.cpu_count() or 4))
     a = ap.parse_args()
     out = a.out.resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    output_lock = out.parent.joinpath('.' + out.name + '.translation.lock').open('a')
+    fcntl.flock(output_lock.fileno(), fcntl.LOCK_EX)
     name_chain = chain()
+    prepare_output(out, a.translator, a.spirv_cross, name_chain)
     started = time.monotonic()
     found, damaged = census(a.folders, a.main)
     shaders = {k: v for k, v in found.items() if v[0] in STAGE_NUM}
@@ -118,7 +154,7 @@ def main():
     for key in sorted(shaders):
         same.setdefault(translation_input(*shaders[key]), []).append(key)
     firsts = [keys[0] for keys in same.values()]
-    todo = [k for k in firsts if not done(out, variant_name(k))]
+    todo = [k for k in firsts if not done(out, variant_name(k), name_chain, shaders[k][0])]
     print(f'{len(firsts)} distinct translations, {len(todo)} to translate', flush=True)
     lock = threading.Lock()
     pending = iter(todo)
@@ -154,7 +190,7 @@ def main():
                 code_path.unlink(missing_ok=True)
                 for end in ('.spv', '.res.json'):   # the translator's intermediates: the seed takes only _b.metal / _b.json
                     (out / (variant + end)).unlink(missing_ok=True)
-                ok = reply.get('ok') and done(out, variant)
+                ok = reply.get('ok') and done(out, variant, name_chain, stage)
                 if ok:
                     refl = json.loads((out / f'{variant}_b.json').read_text())
                     if refl.get('chain') != name_chain or refl.get('stage') != stage:
@@ -184,7 +220,7 @@ def main():
     indexes = 0
     for keys in same.values():
         variant = variant_name(keys[0])
-        if not done(out, variant):
+        if not done(out, variant, name_chain, shaders[keys[0]][0]):
             continue
         deps = json.loads((out / f'{variant}_b.json').read_text()).get('deps', {})
         row = json.dumps([dict(deps=deps, variant=variant)], sort_keys=True, separators=(',', ':'))

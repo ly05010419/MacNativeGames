@@ -58,10 +58,22 @@ def main():
         if not cache.is_dir():
             print(f'skipped (no folder): {cache}')
             continue
+        # Select complete pairs from one cache; never combine one cache's MSL with another's reflection.
         for entry in os.scandir(cache):
             m = SHADER.match(entry.name)
             if m:
-                shaders.setdefault(m.group(1), {}).setdefault(m.group(2), Path(entry.path))
+                if m.group(2) != 'json':
+                    continue
+                variant = m.group(1)
+                metal = cache / f'{variant}_b.metal'
+                try:
+                    reflection = json.loads(Path(entry.path).read_text())
+                    valid = (reflection.get('chain') == name_chain and
+                             reflection.get('stage') in ('vs', 'ps', 'cs') and metal.stat().st_size > 0)
+                except (OSError, ValueError, AttributeError):
+                    valid = False
+                if valid:
+                    shaders.setdefault(variant, {'json': Path(entry.path), 'metal': metal})
                 continue
             m = INDEX.match(entry.name)
             if m:

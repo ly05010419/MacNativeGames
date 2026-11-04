@@ -10628,23 +10628,52 @@ static uint16_t vertex_stream_mask(NvShader *vs) {
     }
     return mask;
 }
-/* A vertex buffer the game binds at an address that is not a multiple of 4: Metal reads a vertex stream from the address
-   rounded down, so every attribute came 2 bytes early. Xenoblade Chronicles 3's Future Redeemed binds some of its model streams
-   at addresses 2 mod 4 (38 of 912 vertex bindings in a Vermilion Woods frame, none of 13,384 in the base game at Yzana Plains):
-   the water surfaces and cliffs became giant flat planes across the scene. The stream's bytes are copied into the frame arena,
-   which is aligned, once per submission and address. The copy is taken from the pool's CPU view, as the ghost and capture
-   paths read vertex data; a stream a GPU pass of the same submission writes would need a blit instead (red line once). */
+/* Metal vertex bindings require aligned addresses. Copy the bytes on the GPU timeline before opening this draw's
+   encoder: a previous skinning dispatch may have just written them, so a CPU memcpy cannot supply the current data.
+   Copies are per draw, not cached by address/submission: an intervening GPU write can change the same allocation. */
+static uint64_t g_vertex_aligned[16];
 static uint64_t vbuf_aligned(unsigned stream, void *mb, uint64_t mo, uint64_t gpu) {
-    static struct { uint64_t addr, size, sub, gpu; } cache[16]; static unsigned next;
-    uint64_t addr = S.vbuf[stream].address, size = S.vbuf[stream].size;
-    for (unsigned i = 0; i < 16; i++) if (cache[i].addr == addr && cache[i].size == size && cache[i].sub == g_sub_serial) return cache[i].gpu;
-    const uint8_t *src = (const uint8_t *)[(__bridge id<MTLBuffer>)mb contents];
-    if (!src || !size || mo + size > [(__bridge id<MTLBuffer>)mb length]) { RED_ONCE(86, "vertex buffer at %#llx (not 4-byte aligned) has no CPU view: bound as it is", (unsigned long long)addr); return gpu; }
-    id<MTLBuffer> b; size_t off = arena_alloc((size_t)size, &b);
-    memcpy((uint8_t *)b.contents + off, src + mo, (size_t)size);
-    static uint64_t n; if (!n++) MLOG("vertex buffer at %#llx is not 4-byte aligned: its %llu bytes are copied to an aligned one (first of them)", (unsigned long long)addr, (unsigned long long)size);
-    cache[next % 16] = (typeof(cache[0])){addr, size, g_sub_serial, b.gpuAddress + off}; next++;
-    return b.gpuAddress + off;
+    uint64_t size = S.vbuf[stream].size;
+    id<MTLBuffer> source = (__bridge id<MTLBuffer>)mb;
+    if (!source || !size || size > UINT32_MAX || mo > source.length || size > source.length - mo)
+        MDIE("unaligned vertex stream %u has no complete buffer range", stream);
+    static id<MTLComputePipelineState> ps; static id<MTL4ArgumentTable> at;
+    if (!ps) {
+        NSError *error = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+            "kernel void vertex_copy(device const uchar *s [[buffer(0)]], device uchar *d [[buffer(1)]],"
+            " constant uint2 &n [[buffer(2)]], uint i [[thread_position_in_grid]]) { if(i<n.x)d[i]=s[n.y+i]; }"
+            options:totk_precise_opts() error:&error];
+        id<MTLFunction> fn = [lib newFunctionWithName:@"vertex_copy"];
+        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&error] : nil;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 3;
+        at = [g_dev newArgumentTableWithDescriptor:ad error:&error];
+        if (!ps || !at) MDIE("aligned vertex copy kernel: %s", error.localizedDescription.UTF8String);
+    }
+    id<MTLBuffer> parameters, output;
+    size_t po = arena_alloc(16, &parameters), off = arena_alloc((size_t)size, &output);
+    uint32_t *n = (uint32_t *)((uint8_t *)parameters.contents + po);
+    n[0] = (uint32_t)size; n[1] = (uint32_t)(gpu & 15);
+    rp_end(); blit_close();
+    id<MTL4ComputeCommandEncoder> ce = (id<MTL4ComputeCommandEncoder>)enc_c_begin(NULL);
+    [ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch
+                visibilityOptions:MTL4VisibilityOptionDevice | MTL4VisibilityOptionResourceAlias];
+    [ce setArgumentTable:at];
+    [at setAddress:gpu & ~15ull atIndex:0]; [at setAddress:output.gpuAddress + off atIndex:1];
+    [at setAddress:parameters.gpuAddress + po atIndex:2];
+    enc_c_pso(ce, ps); enc_c_dispatch(ce, MTLSizeMake(((NSUInteger)size + 63) / 64, 1, 1), MTLSizeMake(64, 1, 1));
+    enc_c_end(ce); args_dirty_all();
+    return output.gpuAddress + off;
+}
+static void prepare_vertex_streams(NvShader *vs) {
+    memset(g_vertex_aligned, 0, sizeof g_vertex_aligned);
+    uint16_t mask = vertex_streams_on() ? vertex_stream_mask(vs) : UINT16_MAX;
+    for (unsigned stream = 0; stream < 16; stream++) {
+        if (!(mask & (1u << stream)) || !S.vbuf[stream].address) continue;
+        void *mb; uint64_t mo, gpu;
+        if (mtl_gpu_addr(S.vbuf[stream].address, S.vbuf[stream].size, &mb, &mo, &gpu) && (gpu & 3))
+            g_vertex_aligned[stream] = vbuf_aligned(stream, mb, mo, gpu);
+    }
 }
 static void bind_vertex_streams(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
     uint16_t mask=vertex_streams_on()?vertex_stream_mask(vs):UINT16_MAX;
@@ -10655,7 +10684,7 @@ static void bind_vertex_streams(id<MTL4RenderCommandEncoder> en, NvShader *vs) {
         if(!(mask&(1u<<stream))){omitted++;continue;}
         void *mb;uint64_t mo,gpu;
         if(mtl_gpu_addr(S.vbuf[stream].address,1,&mb,&mo,&gpu)) {
-            if(gpu&3)gpu=vbuf_aligned(stream,mb,mo,gpu);
+            if(gpu&3) { if (!g_vertex_aligned[stream]) MDIE("unaligned vertex stream was not prepared before its render pass"); gpu=g_vertex_aligned[stream]; }
             enc_r_vbuf(en,16+stream,gpu);use_rec("buf",S.vbuf[stream].address,S.vbuf[stream].size,0,NULL);bound++;
         }
     }
@@ -10965,6 +10994,7 @@ frz_plain:;
     if (!g_mfx.scene_done && g_mfx.canvas && R.rt.n > 0 && R.rt.color[0] && R.rt.color[0]->serial == g_mfx.canvas && pr && pr->sh[0] && MFX_UI_DRAW(pr) && mfx_enabled())
         mfx_snapshot_scene();   // TOTK_MFX: first UI draw into the canvas: copy the finished scene first
     if (!g_uw_ui && uw_on_canvas() && pr && pr->sh[0] && mfx_ui_vs(pr->sh[0]->key)) g_uw_ui = 1;   // key 4: the UI begins
+    prepare_vertex_streams(pr->sh[0]);   // may end the old pass; no encoder for this draw exists yet
     id<MTLRenderCommandEncoder> en = rp_begin_ex(mode);
     g_fd_dw = NULL; g_fd_di = NULL;
     if (!en) { g_draw_skip[8]++; PD("S %llu no-encoder has_rt=%d n=%d why=%d mode=%d", g_stat_pass, R.has_rt, R.rt.n, g_rpb_why, mode); return; }
