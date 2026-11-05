@@ -10483,6 +10483,11 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         } else if (b->kind == NVN_RB_IMG) {   // 可写贴图：NVN 图像槽 r（BindImages）↔ D3D u_r | Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            /* Image stores need the writable companion, not its RGB-only sampling swizzle. */
+            if (tid && hdr_shadow_enabled()) {
+                id<MTLTexture> hdr = hdr_shadow_find(tex_by_id(tid));
+                if (hdr) { t = hdr; trid = hdr.gpuResourceID._impl; }
+            }
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // 未绑：D3D 语义写入丢弃——写进专用哑贴图，不污染读出 0 的那套 | Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
@@ -15001,6 +15006,19 @@ static void dispatch(const p_dispatch *dp) {
     if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.16s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (!reuse) enc_c_end(ce);
+    /* Keep guest copies/readbacks coherent with compute writes, as for render-pass stores. */
+    if (hdr_shadow_enabled()) {
+        registry_lock();
+        for (int i = 0; i < cs->rf.nb; i++) {
+            const nvn_rbind *b = &cs->rf.b[i];
+            if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
+            int tid = (int)(S.img[5][b->reg] & 0xfffff);
+            if (!tid) continue;
+            id<MTLTexture> original = tex_by_id(tid), hdr = hdr_shadow_find(original);
+            if (hdr) hdr_shadow_copy(hdr, original.parentTexture ?: original);
+        }
+        registry_unlock();
+    }
     bright_lut(cs);   // 3D 画面加亮：游戏算完调色表之后重写 | 3D picture brightening: rewrite after the game finishes computing the color lookup table
     /* TOTK_EXPO_LOG=<file> (diagnostic): after each dispatch of the exposure kernel (ae725063), copy floats 96..127 of its
        storage buffer 0 (statistics; exposure at 108..111) into a shared ring and write them with the frame number once
@@ -18688,6 +18706,68 @@ int mtl_probe_drv_c0(void) {
     return checked;
 }
 
+/* Image writes must reach HDR companions and their guest-format originals; sampling must still return alpha one. */
+static int probe_hdr_image_dispatch(void) {
+    NSString *msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct Args { texture2d<float, access::write> image [[id(0)]]; };\n"
+        "kernel void main0(constant Args& a [[buffer(0)]], uint2 p [[thread_position_in_grid]])"
+        "{ a.image.write(float4(0.25, 0.5, 0.75, 0.0), p); }\n";
+    NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(msl, &e);
+    if (!lib) MDIE("HDR image dispatch probe kernel: %s", e.localizedDescription.UTF8String);
+    NvShader *cs = [NvShader new]; cs->fn = [lib newFunctionWithName:@"main0"]; cs->stage = 5; cs->src = msl;
+    snprintf(cs->key, sizeof cs->key, "probe-hdr-image-dispatch");
+    cs->rf.nb = 1; cs->rf.b[0].kind = NVN_RB_IMG; cs->rf.b[0].dtt = MTLTextureType2D;
+    cs->rf.tg[0] = cs->rf.tg[1] = cs->rf.tg[2] = 1;
+    cs->ae = [cs->fn newArgumentEncoderWithBufferIndex:0]; cs->arg_len = cs->ae.encodedLength;
+    NvProg *program = [NvProg new]; program->sh[5] = cs;
+    prog_t pg = {0}; pg.serial = 0xfffffd20; serial_put(pg.serial, program);
+    int checked = 0, saved_hdr = atomic_load(&g_hdr_frame_enabled); const prog_t *saved_prog = S.prog;
+    for (int mode = 0; mode < 3; mode++) {
+        /* HDR with a companion, HDR without one, and SDR must all keep real image writes. */
+        atomic_store(&g_hdr_frame_enabled, mode != 2);
+        tex_t t = {0}; t.serial = 0xfffffd30 + mode;
+        t.d.width = t.d.height = 4; t.d.depth = t.d.levels = 1; t.d.target = 1;
+        t.d.format = 0x3f; t.d.flags = NVN_TEXTURE_FLAGS_IMAGE;
+        t.d.swizzle_r = 2; t.d.swizzle_g = 3; t.d.swizzle_b = 4; t.d.swizzle_a = 5;
+        MTLTextureDescriptor *d = tex_desc(&t, 0);
+        id<MTLTexture> base = [g_dev newTextureWithDescriptor:d]; if (!base) MDIE("HDR image dispatch probe texture");
+        res_add(base); serial_put(t.serial, base); mtl_reg_tex(1, &t, NULL);
+        op_hdr end = {OP_END, 8}; mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
+        id<MTLTexture> companion = mode ? nil : hdr_shadow_make(base);
+        if (!mode && !companion) MDIE("HDR image dispatch probe companion missing");
+        S.img[5][0] = 1; p_dispatch dp = {4, 4, 1, 0}; S.prog = &pg; dispatch(&dp);
+        id<MTLBuffer> raw = probe_buf(4096);
+        if (companion) enc_b_copy_texture_buffer(blit(), companion, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(4, 4, 1), raw, 0, 32, 128);
+        registry_lock(); id<MTLTexture> sampled = (__bridge id<MTLTexture>)tex_fast(1); registry_unlock();
+        if (!sampled || (companion && (sampled.parentTexture != companion || sampled.swizzle.alpha != MTLTextureSwizzleOne)))
+            MDIE("HDR image dispatch probe lost RGB-only sampling view");
+        checked++;
+        enc_b_copy_texture_buffer(blit(), base, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(4, 4, 1), raw, 256, 16, 64);
+        mtl_sub_commit(); mtl_finish();
+        if (companion) {
+            const uint16_t *pixels = raw.contents;
+            const uint16_t want[4] = {0x3400, 0x3800, 0x3a00, 0};
+            for (int i = 0; i < 64; i++) {
+                if (pixels[i] != want[i % 4]) MDIE("HDR image dispatch probe raw component %d: %04x != %04x", i, pixels[i], want[i % 4]);
+                checked++;
+            }
+        }
+        /* R11G11B10F: five exponent bits, six/six/five mantissa bits. */
+        const uint32_t want = (13u << 6) | ((14u << 6) << 11) | (((14u << 5) + 16) << 22);
+        const uint32_t *pixels = (const uint32_t *)((const uint8_t *)raw.contents + 256);
+        for (int i = 0; i < 16; i++) {
+            if (pixels[i] != want) MDIE("HDR image dispatch probe mode %d guest pixel %d: %08x != %08x", mode, i, pixels[i], want);
+            checked++;
+        }
+        S.img[5][0] = 0;
+        mtl_reg_tex(1, NULL, NULL); serial_del(t.serial);
+        defer_obj_release(base); defer_obj_release(raw);
+    }
+    atomic_store(&g_hdr_frame_enabled, saved_hdr); S.prog = saved_prog;
+    serial_del(pg.serial);
+    return checked;
+}
+
 /* TOTK probe: back-to-back dispatches through the production dispatch() share one compute encoder and stay ordered. Two
    kernels with the translated shaders' interface alternate 16 times in one submission over 2^20 elements: K1 does
    s0[i] += i + 1, K2 does s1[i] += s0[i], so s1[i] ends at (i + 1) * 16 * 17 / 2 only if every dispatch sees the previous
@@ -18735,6 +18815,7 @@ int mtl_probe_dispatch_chain(void) {
     if (neg == 1) MLOG("dispatch-chain probe: without the barrier the values still came out right (the race did not show this time)");
     for (int k = 0; k < 2; k++) serial_put(pg[k].serial, nil);
     mtl_pool_del(s0); mtl_pool_del(s1); free(s0); free(s1); g_disp_probe_nobar = 0;
+    if (!neg) checked += probe_hdr_image_dispatch();
     return checked;
 }
 

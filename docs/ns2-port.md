@@ -382,6 +382,24 @@ about 6.9 ms); what was measured and planned:
 - Where the GPU time goes, per pass (games/totk/scripts/metal_perf_report.py, merged from main), before choosing the next
   GPU change; then mesh shaders (above).
 
+## HDR image stores
+
+Bananza's final compute upscale can write a scene texture already promoted to an
+FP16 HDR companion. Companions allow shader writes as well as rendering and
+sampling. Image slots bind the writable companion itself, not its RGB-only
+sampling view (whose alpha is forced to one). After dispatch, convert written
+companions back to the guest-format originals so texture copies and readbacks see
+the result. Otherwise the image write is rejected and discarded into a dummy
+texture: the UI remains visible over the purple clear colour even though
+intermediate scene targets contain valid geometry.
+
+`probe-gpu-dispatch-chain` checks RGB writes through the production dispatch,
+the sampling view's alpha-one swizzle, guest-format readback, HDR without a
+companion, and SDR. Removing companion write permission reproduces the missing
+writable-usage warning and incorrect RGB. Mac v458752 was also checked in the mining tunnel from a save
+copy with Metal API validation enabled: the presented scene replaces the purple
+output. This does not constitute a full-game or iOS playthrough.
+
 ## Offline shader depth mode
 
 Offline preparation does not execute the game's `nvnDeviceSetDepthMode` call. Its depth mode must therefore be an

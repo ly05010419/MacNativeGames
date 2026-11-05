@@ -1,5 +1,5 @@
 #pragma once
-/* Host-only FP16 companions for the scene's post-tonemap dataflow. Guest formats,
+/* Host-only FP16 companions for render and compute scene postprocessing. Guest formats,
  * byte sizes and CPU-visible storage stay intact. No generic format promotion.
  * This file is included after the replay, residency and encoder helpers. */
 #define HDR_SHADOW_MAX 24
@@ -101,7 +101,7 @@ static id<MTLTexture> hdr_shadow_make(id<MTLTexture> source) {
         g_hdr_shadow[slot].reads=nil;
         if(g_hdr_shadow[slot].texture)defer_obj_release(g_hdr_shadow[slot].texture);
         MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:base.width height:base.height mipmapped:NO];
-        d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead;
+        d.storageMode=MTLStorageModePrivate;d.usage=MTLTextureUsageRenderTarget|MTLTextureUsageShaderRead|MTLTextureUsageShaderWrite;
         id<MTLTexture> t=[g_dev newTextureWithDescriptor:d];
         if(!t)MDIE("HDR postprocess FP16 allocation failed");
         res_add(t);res_commit();g_hdr_shadow[slot].base=base;g_hdr_shadow[slot].texture=t;
