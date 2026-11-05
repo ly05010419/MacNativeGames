@@ -46,7 +46,7 @@ static uint64_t alias_size(void){if(!alias_len)alias_len=alias_requested();retur
 #if TARGET_OS_IPHONE
 #define LOW_SIZE (HEAP_OFF+HEAP_CAP)   /* iOS: no slack after the heap cap; address space is scarce */
 #else
-#define LOW_SIZE (6ULL<<30)
+#define LOW_SIZE low_size_mac()   /* 6 GiB, or more when a bigger render size grows the application pool (HEAP_CAP) */
 #endif
 #define STACK_OFF 0x10000000ULL
 #define STACK_SIZE 0x10000000ULL
@@ -62,7 +62,16 @@ static unsigned char alias_stale[ALIAS_SIZE_MAX/4096];
 static uint64_t alias_bytes;
 static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
 #define SYSTEM_RESOURCE_BUDGET (32ULL<<20)
+#if TARGET_OS_IPHONE
 #define HEAP_CAP (4ULL<<30)   /* 1.4.3 sets a 2.2 GiB heap during nninitStartup */
+#else
+/* The heap region holds at least the application pool plus 1 GiB: 4 GiB for the retail pool, more when PSV_RENDER_RES grows
+   the GPU pools (3840x2160 adds about 1.8 GiB). Address space only; the low region grows with it. */
+static uint64_t app_pool(void);
+static uint64_t heap_cap_mac(void){if(!runtime_output_res_extra_bytes())return 4ULL<<30;uint64_t want=(app_pool()+(1ULL<<30)+(1ULL<<30)-1)&~((1ULL<<30)-1);return want>(4ULL<<30)?want:4ULL<<30;}
+static uint64_t low_size_mac(void){uint64_t want=HEAP_OFF+heap_cap_mac()+(1ULL<<30);return want>(6ULL<<30)?want:6ULL<<30;}
+#define HEAP_CAP heap_cap_mac()
+#endif
 #define APP_POOL app_pool()
 static uint64_t app_pool(void){static uint64_t v;if(!v){const char *e=getenv("PSV_APP_POOL");uint64_t extra=(runtime_output_res_extra_bytes()+0x1fffff)&~0x1fffffULL;
  v=e?strtoull(e,NULL,0):0xcd500000ULL+extra;if(!e&&extra)fprintf(stderr,"[psv] application pool %#llx: +%llu MiB for the true-2K texture heaps (PSV_OUTPUT_RES)\n",(unsigned long long)v,(unsigned long long)(extra>>20));}return v;}

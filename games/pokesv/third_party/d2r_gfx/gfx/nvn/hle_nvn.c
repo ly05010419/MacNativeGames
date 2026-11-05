@@ -36,6 +36,7 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <TargetConditionals.h>
 #include <unistd.h>
 #if TARGET_OS_OSX
@@ -217,13 +218,79 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
 // logging switches checked on per-call paths (command memory, recording, submits) are read once.
 static int cmdlog_env(void) { static int on = -1; if (on < 0) on = getenv("PSV_CMD_LOG") != NULL; return on; }
 static int poollog_env(void) { static int on = -1; if (on < 0) on = getenv("PSV_POOL_LOG") != NULL; return on; }
+/* PSV_POOL_TRACE=1: the first pool create or free after 300 ms without one logs the game's call chain, and the size of
+   the burst before it. Shows which game code empties and refills the world (ball throw reload, 5 November). */
+extern void runtime_describe_address(uint64_t a, char *out, size_t n) __attribute__((weak_import));
+static uint64_t g_pt_host[2];   /* ns spent in the port's own pool work in the current burst */
+static _Atomic unsigned g_pt_frame[2];   /* pools made / freed since the last frame line */
+static int pool_trace_on(void) { static int on = -1; if (on < 0) on = getenv("PSV_POOL_TRACE") != NULL; return on; }
+/* At 150 pools into a burst: stop every other thread, read its frame-pointer chain, resume, then log the chains that run game
+   code. The thread that asked for a rebuild is still in or near the code that decided it. */
+static void pool_trace_snapshot(const char *why) {
+    static uint64_t lastsnap; uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (now - lastsnap < 5000000000ull) return; lastsnap = now;
+    enum { NT = 96, NF = 48 }; static uint64_t fr[NT][NF]; static int nf[NT]; static uint64_t tid[NT];
+    thread_act_array_t th; mach_msg_type_number_t n = 0; mach_port_t self = mach_thread_self();
+    if (task_threads(mach_task_self(), &th, &n) != KERN_SUCCESS) return;
+    int k = 0;
+    for (mach_msg_type_number_t i = 0; i < n && k < NT; i++) {
+        if (th[i] == self) continue;
+        if (thread_suspend(th[i]) != KERN_SUCCESS) continue;
+        arm_thread_state64_t st; mach_msg_type_number_t c = ARM_THREAD_STATE64_COUNT;
+        if (thread_get_state(th[i], ARM_THREAD_STATE64, (thread_state_t)&st, &c) == KERN_SUCCESS) {
+            int m = 0; fr[k][m++] = arm_thread_state64_get_pc(st); fr[k][m++] = arm_thread_state64_get_lr(st);
+            uint64_t fp = arm_thread_state64_get_fp(st);
+            while (m < NF && fp && !(fp & 15)) { uint64_t f[2]; mach_vm_size_t got = 0;
+                if (mach_vm_read_overwrite(mach_task_self(), fp, 16, (mach_vm_address_t)(uintptr_t)f, &got) != KERN_SUCCESS || got != 16) break;
+                fr[k][m++] = f[1]; if (f[0] <= fp) break; fp = f[0]; }
+            thread_identifier_info_data_t ti; mach_msg_type_number_t tc = THREAD_IDENTIFIER_INFO_COUNT;
+            tid[k] = thread_info(th[i], THREAD_IDENTIFIER_INFO, (thread_info_t)&ti, &tc) == KERN_SUCCESS ? ti.thread_id : 0;
+            nf[k++] = m;
+        }
+        thread_resume(th[i]);
+    }
+    for (mach_msg_type_number_t i = 0; i < n; i++) mach_port_deallocate(mach_task_self(), th[i]);
+    vm_deallocate(mach_task_self(), (vm_address_t)th, n * sizeof *th); mach_port_deallocate(mach_task_self(), self);
+    LOG("[pool-trace] snapshot (%s) of %d threads", why, k);
+    for (int j = 0; j < k; j++) {
+        char line[4000]; int o = snprintf(line, sizeof line, "[pool-trace]   tid %llu:", (unsigned long long)tid[j]); int game = 0;
+        for (int m = 0; m < nf[j] && o < (int)sizeof line - 100; m++) { char w[96];
+            if (runtime_describe_address) runtime_describe_address(fr[j][m], w, sizeof w); else snprintf(w, sizeof w, "%#llx", (unsigned long long)fr[j][m]);
+            if (!strncmp(w, "main+", 5)) game = 1; o += snprintf(line + o, sizeof line - o, " %s", w); }
+        if (game) LOG("%s", line);
+    }
+}
+static void pool_trace(int fin, size_t size) {
+    if (!pool_trace_on()) return;
+    static uint64_t last[2], first[2]; static unsigned n[2]; static size_t bytes[2];
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);   /* the clock of runtime_now_ns: read and key 0 lines line up */
+    if (now - last[fin] > 300000000ull) {
+        if (n[fin]) LOG("[pool-trace] %s burst ended: %u pools, %.1f MB, t=%.3f..%.3f, port %.1f ms", fin ? "free" : "create", n[fin], bytes[fin] / 1e6, first[fin] / 1e9, last[fin] / 1e9, g_pt_host[fin] / 1e6);
+        n[fin] = 0; bytes[fin] = 0; first[fin] = now; g_pt_host[fin] = 0;
+        char line[1400]; int k = snprintf(line, sizeof line, "[pool-trace] %s burst starts t=%.3f:", fin ? "free" : "create", now / 1e9);
+        uint64_t *fp = __builtin_frame_address(0);
+        for (int i = 0; i < 14 && fp && !((uintptr_t)fp & 15) && k < (int)sizeof line - 100; i++) {
+            char w[96]; uint64_t lr = fp[1];
+            if (runtime_describe_address) runtime_describe_address(lr, w, sizeof w); else snprintf(w, sizeof w, "%#llx", (unsigned long long)lr);
+            k += snprintf(line + k, sizeof line - k, " %s", w);
+            if ((uint64_t *)fp[0] <= fp) break; fp = (uint64_t *)fp[0];
+        }
+        LOG("%s", line);
+    }
+    last[fin] = now; n[fin]++; bytes[fin] += size; atomic_fetch_add(&g_pt_frame[fin], 1);
+    if (n[fin] == 150) pool_trace_snapshot(fin ? "free burst" : "create burst");
+}
+static uint64_t pt_now(void) { return pool_trace_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0; }
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
+    pool_trace(0, s->size);
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !psv_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
+    uint64_t pt0 = pt_now();
     if (o->mem && gpu_visible) { mtl_pool_add(o->mem, o->size); nvn_dirty_add_range(o->mem, o->size); }
+    if (pt0) g_pt_host[0] += pt_now() - pt0;
     if (!o->mem) LOG("【红】MemoryPoolInitialize 池没有存储 flags=%#x size=%#llx", o->flags, o->size);
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
     if (poollog_env()) LOG("[pool] %p mem=%p..%p size=%#llx flags=%#x game=%p", (void *)p, (void *)o->mem, (void *)(o->mem + o->size), o->size, o->flags, (void *)o->game_mem);
@@ -231,8 +298,10 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
     pool_t *o = (pool_t *)p;
+    pool_trace(1, o->size); uint64_t pt0 = pt_now();
     if (o->mem && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { x_drain(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); }
     psv_vpool_fini(o); o->magic = 0;
+    if (pt0) g_pt_host[1] += pt_now() - pt0;
 }
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) { (void)p; (void)off; (void)n; }
 NVN(nvnMemoryPoolGetFlags, NVNmemoryPoolFlags, const NVNmemoryPool *p){return (NVNmemoryPoolFlags)((const pool_t *)p)->flags;}
@@ -1385,6 +1454,9 @@ NVN(nvnCommandBufferClearDepthStencil, void, NVNcommandBuffer *c, float depth, u
 }
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
     if (n < 0 || first + n > 16) { LOG("【红】SetViewports first=%d n=%d", first, n); return; }
+    /* PSV_VIEWPORT_CHAIN=<w>x<h> (diagnostic): the game call chain of the first 40 viewports of this size (where the canvas size comes from) */
+    { static int vw = -1, vh, vn; if (vw < 0) { const char *e = getenv("PSV_VIEWPORT_CHAIN"); if (!e || sscanf(e, "%dx%d", &vw, &vh) != 2) vw = 0; }
+      if (vw && n > 0 && (int)v[2] == vw && (int)v[3] == vh && vn++ < 40) guest_chain("viewport"); }
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }
@@ -2488,7 +2560,7 @@ static void tsummary(uint64_t frame) {
       static uint64_t pdbl, plink, plink_ns, nudged_ns; uint64_t dbl = runtime_frame_step_doubles ? runtime_frame_step_doubles() : 0;
       uint64_t lt = mtl_link_ticks(), lns = now_ns(); double link_hz = plink_ns && lt > plink && mtl_link_active() ? (double)(lt - plink) * 1e9 / (double)(lns - plink_ns) : 0;
       plink = lt; plink_ns = lns;
-      if (g_slowsum[1].n >= 30) {
+      if (g_slowsum[1].n >= 10) {   /* 10, not 30: a 4 November stretch ran 19 to 29 slow frames per window for 70 s, under the old gate */
           #define SLOWP(k) g_slowsum[k].n, g_slowsum[k].fr / g_slowsum[k].n, g_slowsum[k].acq / g_slowsum[k].n, g_slowsum[k].ncpu ? g_slowsum[k].cpu / g_slowsum[k].ncpu : -1.0, g_slowsum[k].nv / g_slowsum[k].n
           LOG("[nvn] slow frames to %llu: >20 ms %u (mean %.1f ms: acquire %.1f, present-thread CPU %.1f, nvn %.1f); others %u (mean %.1f ms: acquire %.1f, CPU %.1f, nvn %.1f); clock steps of 2+ ticks %llu; display link %.1f Hz of %d",
               (unsigned long long)frame, SLOWP(1), SLOWP(0), (unsigned long long)(dbl - pdbl), link_hz, mtl_display_hz());
@@ -2878,6 +2950,10 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             lf_rec *r = &g_lf[f % LFN]; r->f = f; r->fr = fr; r->nv = nv; r->ls = g_nvn_loadscreen_up ? g_nvn_loadscreen_up() : 0; r->t_s = (now_ns() - g_t0_ns) / 1e9; r->pso = (unsigned)(pso_ - ppso); r->lib = (unsigned)(lib_ - plib);
             r->make_ms = ((lns - plns) + (pns - ppns)) / 1e6; r->up = (unsigned)(up - pup); r->rup = (unsigned)(rup - prup); r->up_mb = (ub - pub) / 1048576.0; r->up_ms = up_ms;
             plns = lns; ppns = pns; pup = up; prup = rup; pub = ub;
+            static int pt = -1; if (pt < 0) pt = getenv("PSV_POOL_TRACE") != NULL;
+            unsigned pc = pt ? atomic_exchange(&g_pt_frame[0], 0) : 0, pf = pt ? atomic_exchange(&g_pt_frame[1], 0) : 0;
+            if (pt && (r->up || r->rup || pc || pf)) LOG("[pool-trace] frame %llu t=%.3f pools +%u -%u textures %u new + %u again, %.1f MB, draws %llu", (unsigned long long)f,
+                                             clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9, pc, pf, r->up, r->rup, r->up_mb, (unsigned long long)(dr - prev_draw));
         }
         plib = lib_; ppso = pso_;
         trow(f, "@t_s", (now_ns() - g_t0_ns) / 1e9);

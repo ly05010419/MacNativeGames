@@ -455,8 +455,43 @@ static void udc_selftest(void) {
    The spinner only fills real gaps: it launches a kernel only while none of the game's command buffers is on the GPU
    (g_q4_inflight, counted in q4_commit), one at a time, sized to ~1 ms from its measured GPU time. With the screen locked
    the GPU stopped interleaving the two queues and the old always-two-in-flight 5 ms kernels (about 30 per world frame)
-   held every game frame back to ~115 ms; now a game submission waits at most for one short kernel. */
+   held every game frame back to ~115 ms; now a game submission waits at most for one short kernel.
+   Automatic by default (2026-11-04): the spinner runs only while the game's GPU time nears the frame budget. With the
+   spinner off the GPU clocks down and the same frame takes longer, which costs far less power while it still fits. M3 Pro,
+   grassland, GPU package power on -> off: lock 30 6.1 -> 2.0 W, lock 60 9.8 -> 3.3 W, 1440p at lock 60 12.8 -> 5.6 W, the
+   same frame pacing while walking (GPU time at lock 60 ~7 -> 10-13 ms). Lock 120 leaves no gaps, so it made no difference
+   there. ka_governor turns it on when the GPU p90 of the last frames passes 85% of the lock's frame time (twice in a row) and
+   off when it stays under 50% for 2 s after at least 30 s on. With the spinner the GPU time drops ~1.5x, so a frame that
+   needed it (>85%) stays above 50% and the governor does not flap. Uncapped frames keep it on.
+   PSV_GPU_KEEPALIVE=0 off, =1 always on, unset = automatic. */
 static _Atomic uint64_t g_last_sub_ns;
+static _Atomic uint64_t g_cur_frame;   // tentative declaration, defined further down
+int nvn_fps_lock(void);
+double mtl_gpu_ms(uint64_t f);
+static int g_ka_mode = 2;              // 0 off, 1 always, 2 automatic (PSV_GPU_KEEPALIVE)
+static int g_ka_auto_on;               // the governor's state (keep-alive thread only)
+static int cmp_dbl(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return x < y ? -1 : x > y; }
+/* Keep-alive thread, about every 0.5 s: decide whether the spinner is needed (see above). */
+static void ka_governor(uint64_t now) {
+    static uint64_t next, hold_until; static int hi, lo;
+    if (now < next) return;
+    next = now + 500000000ull;
+    int lock = nvn_fps_lock();
+    if (!lock) { if (!g_ka_auto_on) { g_ka_auto_on = 1; MLOG("GPU 保活：自动开启（不锁帧）"); } hi = lo = 0; return; }
+    double v[40]; int n = 0; uint64_t cur = atomic_load(&g_cur_frame);
+    for (uint64_t f = cur > 43 ? cur - 43 : 0; f + 3 <= cur && n < 40; f++) { double ms = mtl_gpu_ms(f); if (ms > 0) v[n++] = ms; }
+    if (n < 20) return;
+    qsort(v, (size_t)n, sizeof v[0], cmp_dbl);
+    double budget = 1000.0 / lock, p90 = v[n * 9 / 10], r = p90 / budget;
+    if (!g_ka_auto_on) {
+        hi = r > 0.85 ? hi + 1 : 0;
+        if (hi >= 2) { g_ka_auto_on = 1; hi = lo = 0; hold_until = now + 30000000000ull;
+            MLOG("GPU 保活：自动开启（GPU p90 %.2f ms，帧时间 %.2f ms 的 %.0f%%）", p90, budget, r * 100); }
+    } else {
+        lo = (now >= hold_until && r < 0.5) ? lo + 1 : 0;
+        if (lo >= 4) { g_ka_auto_on = 0; hi = lo = 0; MLOG("GPU 保活：自动关闭（GPU p90 %.2f ms，帧时间 %.2f ms 的 %.0f%%）", p90, budget, r * 100); }
+    }
+}
 // Diagnostic timing controls; defaults retain the existing 1 ms keep-alive.
 // The private spin buffer never supplies game data.
 static _Atomic int g_ka_target_us = 1000;
@@ -465,13 +500,15 @@ void mtl_keepalive_stats(uint64_t v[3]) { v[0] = atomic_load(&g_ka_n); v[1] = at
 static void keepalive_start(void) {
     static int started; const char *e = getenv("PSV_GPU_KEEPALIVE");
     if (started || (e && !atoi(e)) || nogpu() || getenv("PSV_HEADLESS")) return; started = 1;   // not in standalone probes
+    g_ka_mode = e ? 1 : 2;
     NSError *err = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nkernel void keep(device float *a [[buffer(0)]], constant uint &n [[buffer(1)]], uint i [[thread_position_in_grid]]) { float x = a[i]; for (uint j = 0; j < n; j++) x = fma(x, 1.0000001f, 0.5f); a[i] = x; }\n" options:nil error:&err];
     id<MTLComputePipelineState> ps = lib ? [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"keep"] error:&err] : nil;
     id<MTLCommandQueue> q = [g_dev newCommandQueue]; id<MTLBuffer> buf = [g_dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
     if (!ps || !q || !buf) { MLOG("【红】PSV_GPU_KEEPALIVE：建不出自旋核 %s", err.localizedDescription.UTF8String); return; }
     { const char *us = getenv("PSV_GPU_KEEPALIVE_US"); int v = us ? atoi(us) : 0; if (v >= 100 && v <= 1000) atomic_store(&g_ka_target_us, v); }   /* like flag keepalive_us, from the start */
-    MLOG("GPU 保活：独立队列上持续跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频（PSV_GPU_KEEPALIVE=0 关闭）", atomic_load(&g_ka_target_us));
+    MLOG("GPU 保活：独立队列上跑短自旋核（每个约 %d µs），避免 GPU 在帧间空闲时降频；%s（PSV_GPU_KEEPALIVE=0 关闭，=1 常开）", atomic_load(&g_ka_target_us),
+         g_ka_mode == 1 ? "常开" : "自动：GPU 时间接近帧时间才开");
     g_ka_idle = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         __block uint32_t n = 40000; dispatch_semaphore_t sem = dispatch_semaphore_create(1);   // ~1 ms on the M4 at full clock
@@ -479,7 +516,9 @@ static void keepalive_start(void) {
             int target_us = atomic_load(&g_ka_target_us);
             if (!target_us) { usleep(2000); continue; }
             uint64_t last = atomic_load(&g_last_sub_ns);
-            if (!last || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
+            uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+            if (!last || now - last > 100000000ull) { usleep(10000); continue; }   // the game is not rendering
+            if (g_ka_mode == 2) { ka_governor(now); if (!g_ka_auto_on) { usleep(5000); continue; } }
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_wait(g_ka_idle, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_MSEC)); continue; }   // the game's own GPU work keeps the clock up
             dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
             if (atomic_load(&g_q4_inflight) > 0) { dispatch_semaphore_signal(sem); continue; }
@@ -2452,6 +2491,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // PSV_MFX_UPSCALE at run time (manual key 3 picture mode)
     if (!strcmp(name, "mfx_interp")) { mfx_set(v); return; }
+    if (!strcmp(name, "aniso")) { extern void nvn_aniso_set(int); nvn_aniso_set(v); return; }   // the settings panel's anisotropic filtering, for scripted A/B
     if (!strcmp(name, "draw_log")) { extern _Atomic long g_draw_log; atomic_store(&g_draw_log, v); MLOG("[flag] draw_log: every draw and dispatch of the next %d frames", v); return; }
     if (!strcmp(name, "uw_log")) { extern _Atomic long g_uw_log; atomic_store(&g_uw_log, v); MLOG("[flag] uw_log: canvas draws of the next %d frames", v); return; }   // key 4 UI squeeze diagnostic
     if (!strcmp(name, "mfx_output")) { mfxup_output_set(v < 0 ? !mfxup_output_enabled() : v); return; }   // PSV_MFX_OUTPUT at run time (the window output stage)
@@ -4832,7 +4872,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public int sb_aid1; /* storage bounds argument id + 1 (0 = none), nvn_sb_guard.h */ id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok; uint8_t drv_scanned[3];   /* drv_scanned : driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok : vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; writes_depth : the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public int sb_aid1; /* storage bounds argument id + 1 (0 = none), nvn_sb_guard.h */ id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, writes_depth, lay_ok, out_flags; uint8_t drv_scanned[3];   /* drv_scanned : driver segment c0 / c2 reads found by drv_scan in the MSL but missing from the reflection json */ /* lay_ok : vertex MSL can write the layer (1) or not (-1), 0 = not checked yet; out_flags : SH_OUT_* bits of the MSL (sh_out), 0 = not checked yet; writes_depth : the fragment function has a [[depth(...)]] output, so its pipeline needs a depth attachment */ const char *builtin; uint64_t logged; char key[80]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     uint16_t texture_slots[NVN_REFL_MAXB]; uint8_t texture_count, texture_plan_ready;
     // 上次编好的参数缓冲
     // The argument buffer encoded last time
@@ -4860,6 +4900,20 @@ static NSString *sh_src(NvShader *s) {
     return src;
 }
 static int sh_has_src(NvShader *s) { return s && (s->src || s->src_path); }
+/* Which special outputs a shader's MSL declares, found once per shader (shader_load fills it from the bytes it read):
+   every pipeline built for a vertex shader asked twice, and each ask read the file again and rewrote its storage bounds
+   (sh_src), about 13% of the warm-up's CPU (2026-11-04). */
+enum { SH_OUT_KNOWN = 1, SH_OUT_LAYER = 2, SH_OUT_PSIZE = 4 };
+static int sh_out_bytes(const void *p, size_t n) {
+    return SH_OUT_KNOWN | (psv_has_bytes(p, n, "[[render_target_array_index]]", 26) ? SH_OUT_LAYER : 0) | (psv_has_bytes(p, n, "[[point_size]]", 10) ? SH_OUT_PSIZE : 0);
+}
+static int sh_out(NvShader *s) {
+    if (!s) return 0;
+    int f = __atomic_load_n(&s->out_flags, __ATOMIC_RELAXED);
+    if (!f && sh_has_src(s)) { NSString *src = s->src ? s->src : [NSString stringWithContentsOfFile:s->src_path encoding:NSUTF8StringEncoding error:nil];
+        const char *u = src.UTF8String; f = u ? sh_out_bytes(u, strlen(u)) : SH_OUT_KNOWN; __atomic_store_n(&s->out_flags, f, __ATOMIC_RELAXED); }
+    return f;
+}
 #include "nvn_pso_skey.h"
 @interface NvProg : NSObject { @public NvShader *sh[6];
     // translation inputs and the variant per bound-state signature (prog_fit)
@@ -5188,7 +5242,9 @@ static _Atomic uint64_t g_rt_prebuilt, g_rt_compiled;   // translated variants l
    whose path has another length (measured: a full 4.5-minute warm-up again); these files move with the app. */
 static NSString *shader_lib_prebuilt_path(NSData *src) {
     if (getenv("PSV_FAST_MATH") && atoi(getenv("PSV_FAST_MATH"))) return nil;   // built with safe math (psv_precise_opts)
-    static NSString *dir; static dispatch_once_t once; dispatch_once(&once, ^{ dir = exe_rel("shader-libs"); });
+    static NSString *dir; static dispatch_once_t once;   /* no folder (Pokémon Violet's own build): no hash per shader */
+    dispatch_once(&once, ^{ NSString *d = exe_rel("shader-libs"); BOOL isdir = NO; dir = [NSFileManager.defaultManager fileExistsAtPath:d isDirectory:&isdir] && isdir ? d : nil; });
+    if (!dir) return nil;
     unsigned char md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(src.bytes, (CC_LONG)src.length, md);
     char hex[2 * sizeof md + 1]; for (size_t i = 0; i < sizeof md; i++) snprintf(hex + 2 * i, 3, "%02x", md[i]);
     NSString *path = [NSString stringWithFormat:@"%@/%s.metallib", dir, hex];
@@ -5201,21 +5257,22 @@ static id<MTLLibrary> shader_lib_prebuilt(NSData *src) {
     return lib;
 }
 #endif
-static NvShader *shader_load(NSString *pc, int stage) {
+/* pre: the .metal's bytes when the caller read them already (the warm-up), so the file is opened once per load */
+static NvShader *shader_load_pre(NSString *pc, int stage, NSData *pre) {
     NSError *e = nil; int sb_aid = -1;
     // runtime translations are MSL source compiled here (macOS allows runtime compilation); the OS caches compiled code.
     NSString *rt_src = [NSString stringWithFormat:@"%@/%@.metal", psv_rt_dir(), pc];
-    int rt = [NSFileManager.defaultManager fileExistsAtPath:rt_src];
-    if (rt) psv_rt_fix_bindless([NSString stringWithFormat:@"%@/%@", psv_rt_dir(), pc]);
+    int rt = pre || [NSFileManager.defaultManager fileExistsAtPath:rt_src];
+    if (rt) psv_rt_fix_bindless_data([NSString stringWithFormat:@"%@/%@", psv_rt_dir(), pc], pre);
     NSString *lp = [NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, pc];
-    id<MTLLibrary> lib = nil;
+    id<MTLLibrary> lib = nil; NSData *rt_raw = nil;
     if (rt) {
 #if TARGET_OS_IPHONE
         // iOS: the variant precompiled on the Mac (ios/tools/build_metallibs.sh, same options) if it came in shaders.pack
         NSString *rt_lib = [NSString stringWithFormat:@"%@/%@.metallib", psv_rt_dir(), pc];
         if ([NSFileManager.defaultManager fileExistsAtPath:rt_lib]) { lib = lib_from_file(rt_lib, &e); if (!lib) MLOG("【红】预编译着色器库加载失败 %s：%s（改为现编）", pc.UTF8String, e.localizedDescription.UTF8String); else atomic_fetch_add(&g_rt_prebuilt, 1); }
 #endif
-        if (!lib) { NSData *raw = [NSData dataWithContentsOfFile:rt_src options:0 error:&e];
+        if (!lib) { NSData *raw = pre ? pre : [NSData dataWithContentsOfFile:rt_src options:0 error:&e]; rt_raw = raw;
 #if !TARGET_OS_IPHONE
                     if (raw && (lib = shader_lib_prebuilt(raw))) { atomic_fetch_add(&g_rt_prebuilt, 1); sb_aid = -2; }
 #endif
@@ -5242,9 +5299,11 @@ static NvShader *shader_load(NSString *pc, int stage) {
     }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
     o->fn = shader_fn(lib, j[@"entry"]); o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
-    NSString *full = rt ? [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil] : nil;
-    o->writes_depth = full && [full rangeOfString:@"[[depth("].location != NSNotFound;
+    /* the source read above once more as a string (no second read of the file), and the depth check on its bytes */
+    NSString *full = rt ? (rt_raw ? [[NSString alloc] initWithData:rt_raw encoding:NSUTF8StringEncoding] : [NSString stringWithContentsOfFile:rt_src encoding:NSUTF8StringEncoding error:nil]) : nil;
+    o->writes_depth = full && (rt_raw ? psv_has_bytes(rt_raw.bytes, rt_raw.length, "[[depth(", 6) : [full rangeOfString:@"[[depth("].location != NSNotFound);
     int drv_unfilled = full ? 0 : o->rf.drv_json_unfillable;
+    if (rt_raw) o->out_flags = sh_out_bytes(rt_raw.bytes, rt_raw.length);
     if (full) { o->src_path = rt_src; drv_unfilled = drv_scan(o, full); refl_mark_stores(o, j[@"bindings"], full); }   // scan before iOS drops the source (NPC-culling fix needs it there too); rw from the MSL's stores
     if (o->rf.drv_json_unfillable && drv_unfilled) {
         static int fatal = -1; if (fatal < 0) { const char *e = getenv("DM_DRV_UNFILLED_FATAL"); fatal = e && atoi(e); }
@@ -5267,6 +5326,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     if (o->rf.has_c1) c1_store(o, full);
     return o;
 }
+static NvShader *shader_load(NSString *pc, int stage) { return shader_load_pre(pc, stage, nil); }
 
 static int stage_of(NSString *zh) {
     if ([zh isEqualToString:@"顶点"]) return 0; if ([zh isEqualToString:@"像素"]) return 1; if ([zh isEqualToString:@"计算"]) return 5;
@@ -5548,6 +5608,26 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     g_sreg[id_] = *sp; g_sreg_ok[id_] = 1;
     if (samp_border_custom(sp)) atomic_store(&g_border_custom_any, 1);
     registry_unlock();
+}
+/* Forced anisotropic filtering (samp_by_id): PSV_ANISO=<1..16> fixes it, else the settings panel sets it (default 16). A
+   change makes every sampler state again at its next use: the registry generation moves, so cached argument bindings are
+   encoded again. The old states are not released, since submitted GPU work may still sample through them (a few hundred
+   small objects per change). */
+static _Atomic int g_aniso = -1;
+int nvn_aniso_fixed(void) { return getenv("PSV_ANISO") != NULL; }
+int nvn_aniso_get(void) {
+    int v = atomic_load_explicit(&g_aniso, memory_order_relaxed);
+    if (v < 0) { const char *e = getenv("PSV_ANISO"); v = e ? atoi(e) : 16; v = v < 1 ? 1 : v > 16 ? 16 : v; atomic_store(&g_aniso, v); }
+    return v;
+}
+void nvn_aniso_set(int v) {
+    v = v < 1 ? 1 : v > 16 ? 16 : v;
+    if (nvn_aniso_fixed() || atomic_exchange(&g_aniso, v) == v) return;
+    registry_lock();
+    for (int i = 0; i < g_nsreg; i++) if (g_sview[i]) { g_sview[i] = NULL; g_srid[i] = 0; }
+    g_reg_gen++;
+    registry_unlock();
+    MLOG("[psv] anisotropic filtering %dx (sampler states made again)", v);
 }
 /* Texture-pool slots whose cached view still holds a texture of a finalized serial (diagnostic for the readout line). */
 static void treg_stale_report(void) {
@@ -5861,6 +5941,12 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // 调用方持 g_rmu | Calle
     }
     d.lodMinClamp = p.lod_min < 0 ? 0 : p.lod_min; d.lodMaxClamp = p.lod_max;
     d.maxAnisotropy = p.aniso < 1 ? 1 : p.aniso > 16 ? 16 : (NSUInteger)p.aniso;
+    /* Forced anisotropic filtering (PSV_ANISO, default 16; 0 or 1 keeps the game's own value). Violet asks for 1 on every
+       sampler (DM_NVN_SAMPLOG, 2026-11-04: 339 of 339), so ground and paths blur at a grazing angle. Raised only for linear
+       mipmapped samplers without compare or reduction (the material textures): shadow, nearest and min/max samplers keep
+       what the game set. */
+    { int force = nvn_aniso_get();
+      if (force > (int)d.maxAnisotropy && (p.minf == 3 || p.minf == 5) && p.magf && !p.cmp_mode && !p.reduction) d.maxAnisotropy = (NSUInteger)force; }
     if (p.cmp_mode) d.compareFunction = (MTLCompareFunction)(p.cmp_func - 1);
     d.borderColor = p.border[3] > 0.5f ? (p.border[0] > 0.5f ? MTLSamplerBorderColorOpaqueWhite : MTLSamplerBorderColorOpaqueBlack) : MTLSamplerBorderColorTransparentBlack;
     if (p.reduction > 2) die("sampler reduction filter %u unsupported", p.reduction);
@@ -6361,8 +6447,7 @@ static id<MTLFunction> vs_fn_for(NvShader *vs, NvShader *fs, int layered, int bo
     NSString *bkey = border && sh_has_src(vs) ? border_key(vs, 0, bc, ba, &bn) : nil;
     /* Pokémon Violet: a vertex shader that writes the layer itself and also a point size; Metal rejects that pair under
        the triangle class the layer output needs, so the point size is kept in a local as for a layered pass. */
-    int own_layer = !layered && sh_has_src(vs) && [sh_src(vs) rangeOfString:@"[[render_target_array_index]]"].location != NSNotFound
-        && [sh_src(vs) rangeOfString:@"[[point_size]]"].location != NSNotFound;
+    int own_layer = !layered && sh_has_src(vs) && (sh_out(vs) & (SH_OUT_LAYER | SH_OUT_PSIZE)) == (SH_OUT_LAYER | SH_OUT_PSIZE);
     if (!sh_has_src(vs) || (!layered && !own_layer && !bkey && (!fs || !sh_has_src(fs)))) return vs->fn;
     os_unfair_lock_lock(&lk);
     NSDictionary *in = fs && sh_has_src(fs) ? msl_varyings(fs) : nil, *out = in ? msl_varyings(vs) : nil;
@@ -6686,7 +6771,7 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     if (k->a2c & PSO_LAYERED) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;   // required with a layer output; layered passes take triangle draws only (lay_draw_ok)
     /* Pokémon Violet: a game vertex shader that writes the layer itself (gl_Layer, one draw into several array slices)
        needs the topology class as well; such draws are triangles, as in the layered passes above. */
-    else if (vs && sh_has_src(vs) && [sh_src(vs) rangeOfString:@"[[render_target_array_index]]"].location != NSNotFound) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+    else if (vs && sh_has_src(vs) && (sh_out(vs) & SH_OUT_LAYER)) d.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
     for (int i = 0; i < 8; i++) {
         if (!k->cfmt[i]) continue;
         MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[i];
@@ -6873,16 +6958,17 @@ static NvShader *warm_shader_load(NSString *key, int stage) {
        instead of a red "cannot open" per pipeline that names it (2026-10-16 night: 42 such lines in one session). */
     static NSMutableSet<NSString *> *missing; static dispatch_once_t once; dispatch_once(&once, ^{ missing = [NSMutableSet set]; });
     @synchronized (missing) { if ([missing containsObject:key]) return nil; }
-    NSString *msl = [NSString stringWithContentsOfFile:[psv_rt_dir() stringByAppendingFormat:@"/%@.metal", key]
-                                                encoding:NSUTF8StringEncoding error:nil];
+    /* the two checks below search the file's bytes: NSString searches of every warm-up shader were the largest single
+       cost of the warm-up (2026-11-04, about 13% of its CPU) */
+    NSData *msl = [NSData dataWithContentsOfFile:[psv_rt_dir() stringByAppendingFormat:@"/%@.metal", key] options:NSDataReadingMappedIfSafe error:nil];
     if (!msl && ![NSFileManager.defaultManager fileExistsAtPath:[psv_rt_dir() stringByAppendingFormat:@"/%@.metallib", key]] &&
         ![NSFileManager.defaultManager fileExistsAtPath:[NSString stringWithFormat:@"%@/%@.metallib", g_msl_dir, key]]) {
         @synchronized (missing) { if (![missing containsObject:key]) { [missing addObject:key]; g_warm_missing++; } }
         return nil;
     }
-    if (msl && ([msl containsString:@"double "] || [msl containsString:@"unsupported_GLSLstd450"])) return nil;
+    if (msl && (psv_has_bytes(msl.bytes, msl.length, "double ", 3) || psv_has_bytes(msl.bytes, msl.length, "unsupported_GLSLstd450", 12))) return nil;
     uint64_t started = bp_now();
-    NvShader *sh = shader_load(key, stage);
+    NvShader *sh = shader_load_pre(key, stage, msl);
     atomic_fetch_add(&g_warm_library_ns, bp_now() - started);
     atomic_fetch_add(&g_warm_library_count, 1);
     return sh;
