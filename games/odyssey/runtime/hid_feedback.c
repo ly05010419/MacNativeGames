@@ -75,6 +75,7 @@ static void note_once(_Atomic int *flag, const char *text, uint32_t handle) {
 /* The device a handle names, or -1 (a style this runtime never reports, logged once). */
 static int vibration_side(const uint32_t *h) {
     if (!h) runtime_fail("vibration device handle pointer");
+    if (((*h >> 8) & 0xff) == 1) return -1;   /* no independent host rumble for Cappy */
     unsigned style = *h & 0xff, index = (*h >> 16) & 0xff;
     if ((style == STYLE_FULL_KEY || style == STYLE_HANDHELD) && index < 2) return (int)index;
     static _Atomic int warned; note_once(&warned, "vibration call with a handle this controller does not have; ignored", *h);
@@ -125,7 +126,8 @@ static void six_axis_check(const uint32_t *h) {
 }
 static uint32_t six_start(const uint32_t *h) {
     six_axis_check(h); static _Atomic int once; note_once(&once, "the game started the six-axis sensor", *h);
-    runtime_motion_start(); return 0;
+    if (((*h >> 8) & 0xff) != 1) runtime_motion_start();
+    return 0;
 }
 static uint32_t six_stop(const uint32_t *h) { six_axis_check(h); return 0; }
 /* Newest first, like the hid service's ring. No motion (no controller with sensors, or muted): one state of a controller
@@ -135,7 +137,7 @@ static uint32_t six_states(int *out, SixAxisState *s, int max, const uint32_t *h
     six_axis_check(h); atomic_fetch_add(&reads, 1);
     if (max <= 0) { *out = 0; return 0; }
     RuntimeMotionState m[RUNTIME_MOTION_MAX];
-    int n = atomic_load(&gyro_muted) ? 0 : runtime_motion_read(m, max < RUNTIME_MOTION_MAX ? max : RUNTIME_MOTION_MAX);
+    int n = (((*h >> 8) & 0xff) == 1 || atomic_load(&gyro_muted)) ? 0 : runtime_motion_read(m, max < RUNTIME_MOTION_MAX ? max : RUNTIME_MOTION_MAX);
     if (n <= 0) {
         s[0] = (SixAxisState){.acc = {0, 0, -1}, .dir = {1, 0, 0, 0, 1, 0, 0, 0, 1}};
         *out = 1; return 0;
