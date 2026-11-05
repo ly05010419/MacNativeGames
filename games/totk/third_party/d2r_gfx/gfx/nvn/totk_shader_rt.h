@@ -14,6 +14,7 @@ NSSet<NSString *> *totk_rt_observed_shader_keys(void);
 // The warm-up scope: this game version's shader keys (the seed's shader-keys.json) plus the observed ones; nil = no valid
 // scope, on iOS, or TOTK_WARM_ALL=1 (warm the whole cache).
 NSSet<NSString *> *totk_rt_shader_scope(void);
+void totk_rt_note_set(NSString *shader);   // a shader the game set that the seed lacks: into the contribution file
 // The variants of a shader already in the translation cache (or the seed), without translating anything; empty when none.
 NSArray<NSString *> *totk_rt_known_variants(NSString *shader);
 // Returns the variant name whose <dir>/<variant>_b.{metal,json} match the answers, translating when needed.
@@ -40,6 +41,9 @@ void totk_rt_probe_index(NSString *shader, NSArray<NSDictionary *> *rows);   // 
 /* Variants new to the translation cache this run, the variants in the cache (-1 until counted in the background) and
    the CLOCK_UPTIME_RAW time of the last new one (0: none yet). Any pointer may be NULL. */
 void totk_rt_counts(uint64_t *fresh, int64_t *total, uint64_t *last_new_ns);
+int totk_rt_pending(void);   // translation jobs queued or running
+int totk_rt_pending_of(NSString *shader);   // whether this shader has one (nvn_mtl.m prefetch mode 2 waits for it)
+void totk_rt_fail_soft(void);   // a refused translation skips its draws instead of ending the run (seed-shaders)
 uint64_t totk_rt_new_variants(void);   // shader variants translated this run (no cache scan, unlike totk_rt_counts)
 // Distinct shader variants this run needed and the cache did not have (the iPhone, which translates nothing).
 uint64_t totk_rt_missed(void);

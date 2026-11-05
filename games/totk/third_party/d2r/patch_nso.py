@@ -342,6 +342,20 @@ def site_plain(ins):
     emit(LDP(S, T, 31, save - dlt)); emit(B(here(), ins.address + 4))
     return start
 
+def site_sp(ins):
+    """Destination is sp and a source is x18 (an alloca: sub x18, x11, x9; mov sp, x18 - Pokemon Pokopia's main+0x1a181dc; Engage's
+    mov x18, sp; sub x18, x18, x0; mov sp, x18 in seedds/nxnative, whose site_sp this is, MIT). site_plain saves its scratch relative
+    to the old sp and would restore it relative to the new one: copy the old sp into T first, and after the instruction restore
+    S / T relative to T (without writeback, ldp may use the base register as a destination). x18 is not written, so the slot is
+    not written back."""
+    S, T = pick(regs_in(ins))
+    start = here()
+    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    emit(ADDI(T, 31, 0))             # mov T, sp (in add immediate, 31 is sp)
+    emit(subst(ins, S))
+    emit(LDP(S, T, T, -16)); emit(B(here(), ins.address + 4))
+    return start
+
 def site_cond(ins):
     w = struct.unpack('<I', ins.bytes)[0]
     S, T = pick(regs_in(ins))
@@ -812,6 +826,7 @@ for a in sorted(kinds):
         elif m in ('cbz', 'cbnz', 'tbz', 'tbnz'): st = site_cond(ins); stat('cond')
         elif m in ('adr', 'adrp'): st = site_pcrel(ins); stat('pcrel')
         elif m in ('blr', 'ret', 'b', 'bl') or (m == 'ldr' and '[' not in ins.op_str): raise RuntimeError(f'{a:x} {m} {ins.op_str}')
+        elif re.match(r'(sp|wsp),', ins.op_str): st = site_sp(ins); stat('sp')
         else: st = site_plain(ins); stat('plain')
     elif k == 'tpidr_r': st = site_sysreg_read(ins, 'KTLS'); stat(k)
     elif k == 'tpidrro_r': st = site_sysreg_read(ins, 'KTLR'); stat(k)

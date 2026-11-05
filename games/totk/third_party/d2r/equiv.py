@@ -95,7 +95,9 @@ def plain_block(a):
     return ins[6].address
 mut_sites = []
 if A.mutate:
-    cand = [a for a in sites if a not in winend and a not in brinfo and plain_block(a)]
+    # A prefetch (PRFM / PRFUM) has no effect the trials can see, so a nop in its place is no negative control: it was
+    # drawn once in Donkey Kong Bananza's sdk (prfm pstl2strm, [x18]) and reported as missed.
+    cand = [a for a in sites if a not in winend and a not in brinfo and plain_block(a) and next(md.disasm(orig[a:a + 4], a)).mnemonic not in ('prfm', 'prfum')]
     mut_sites = sorted(random.Random(A.seed).sample(cand, min(A.mutate, len(cand))))
     pat_mut = bytearray(pat)
     def exit_b(a):   # 改写块回 text 的那条 b（块内第一条目标落回 text 的无条件 b） | The b by which a rewrite block returns to text (the first unconditional b in the block whose target lands back in text)
@@ -118,6 +120,11 @@ VR = [getattr(sys.modules['unicorn.arm64_const'], f'UC_ARM64_REG_Q{i}') for i in
 
 def mk(image, arena0):
     u = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
+    # The emulator's newest CPU: Unicorn's default model (Cortex-A72, ARMv8.0) has no LSE atomics (CAS, LDADD, SWP, ...) or
+    # RCpc loads (LDAPR), which Switch 2 code uses (Cortex-A78C, ARMv8.2): the original instruction raised an exception
+    # while its rewrite ran, and 29 of Donkey Kong Bananza's main sites showed as divergent. Switch 1 code (Cortex-A57)
+    # has none of them, so its trials run as before.
+    u.ctl_set_cpu_model(UC_CPU_ARM64_MAX)
     sz = (len(image) + 0xFFFF) & ~0xFFFF
     u.mem_map(IB, sz, UC_PROT_ALL); u.mem_write(IB, bytes(image))
     u.mem_map(ARENA, ARENA_SZ); u.mem_write(ARENA, arena0)
@@ -154,6 +161,17 @@ def state(u, st, patched):
     w = [x for x in st['w'] if not (patched and x[0] in private_slots and x[1] == 8)]
     return g, u.reg_read(UC_ARM64_REG_SP), u.reg_read(UC_ARM64_REG_NZCV), [u.reg_read(r) for r in VR], w, st['fault']
 
+def cpu_exception(u, st, e):
+    """A CPU exception that is not a memory access fault (the hook records those) counts as a fault of the instruction it
+    stopped at, named by its mnemonic: an LSE atomic (CAS, LDADD, ...) on an unaligned address raises an alignment
+    exception, on the original instruction and on its rewrite alike (Donkey Kong Bananza's main: 20 sites with x18). Both
+    sides then fault on the same kind of instruction; any other stop stays a difference."""
+    if st['fault'] is not None or e.errno != UC_ERR_EXCEPTION: return
+    pc = u.reg_read(UC_ARM64_REG_PC)
+    try: name = next(md.disasm(bytes(u.mem_read(pc, 4)), pc)).mnemonic
+    except (UcError, StopIteration): name = '?'
+    st['fault'] = ('exception', name)
+
 def run(u, st, start, patched, init):
     restore(u, st)
     for r, v in zip(GP, init['g']): u.reg_write(r, v)
@@ -181,7 +199,7 @@ def run(u, st, start, patched, init):
                 end['pc'] = addr; uc.emu_stop()
         st['code_hook'] = hk
         try: u.emu_start(start, IB + 0x7FFFFFFF, count=400)
-        except UcError: pass
+        except UcError as e: cpu_exception(u, st, e)
         st['code_hook'] = None
         if end['pc'] is None and st['fault'] is None: end['pc'] = 'NOEXIT'
     elif start - IB in winend:
@@ -191,13 +209,13 @@ def run(u, st, start, patched, init):
             if not any(IB + a <= addr < IB + b for a, b in group): end['pc'] = addr; uc.emu_stop()
         st['code_hook'] = hk2
         try: u.emu_start(start, IB + 0x7FFFFFFF, count=400)
-        except UcError: pass
+        except UcError as e: cpu_exception(u, st, e)
         st['code_hook'] = None
         if end['pc'] is None and st['fault'] is None: end['pc'] = 'NOEXIT'
     else:
         st['code_hook'] = None
         try: u.emu_start(start, IB + 0x7FFFFFFF, count=1)
-        except UcError: pass
+        except UcError as e: cpu_exception(u, st, e)
         end['pc'] = u.reg_read(UC_ARM64_REG_PC) if st['fault'] is None else None
     s = state(u, st, patched)
     return s + (end['pc'],)

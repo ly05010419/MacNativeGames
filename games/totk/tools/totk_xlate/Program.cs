@@ -19,6 +19,10 @@
 //           "tex": { "slot": "2d|2darray|cube|cubearray|3d|buffer|1d|1darray|2dms|2dmsarray", ... }, "img": { "slot": { "type", "fmt" } },
 //           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z] }]
 //   Output: <key>.spv and <key>.res.json (offsets of storage buffer slots in c0, etc.; decoding texture handle → slot number is done in the script that builds the metallib)
+//   Geometry: "stage": "gs" with "geometry_topology" (the draw's InputTopology 0..4) translates the geometry shader as a compute
+//           kernel (Translate(asCompute: true), patch 0007) and also writes <key>.reader.spv, the raster vertex shader that reads
+//           its output vertices; <key>.res.json then has geometry_stride (words per output vertex), geometry_invocations,
+//           geometry_max_output_vertices and geometry_vertices_per_primitive (GeometryService.cs takes them from there).
 using Ryujinx.Common.Memory;
 using Ryujinx.Graphics.Shader;
 using Ryujinx.Graphics.Shader.Translation;
@@ -33,12 +37,25 @@ using System.Text.Json.Nodes;
 static class SwshXlate
 {
     const int TexBase = 0x168, SampBase = 0x568;   // NVN 分离贴图 / 采样器句柄在 c[2] 的字节基址（每槽 8 字节；dm/gfx/tools/maxwell_refs.py 全量实测） | byte base of NVN separate texture / sampler handles in c[2] (8 bytes per slot; full measurement in dm/gfx/tools/maxwell_refs.py)
+    // Combined handles (nvnCommandBufferBindTexture) are at c[2] + 0x20, 32 slots of 8 bytes, with the same slot numbers as the
+    // separate table (nvn_mtl.m driver bank, Service.cs CombinedBase). Pokopia's auto-exposure kernel d0c17f1f fetches its
+    // histogram through a combined handle bound to a buffer texture; without this its slot was -1, the "buffer" answer was
+    // never read, the fetch became a texture1d read of a texture buffer (undefined on Metal, mostly 0) and the frame black.
+    const int CombinedBase = 0x20, CombinedSlots = 32;
 
     sealed class Accessor : IGpuAccessor
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new(); public readonly SortedSet<int> TexQueried = new(), ImgQueried = new();
         readonly byte[] _c1;
-        public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
+        public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); if (Geometry) _binding = 40; }
+        // Geometry as compute (job "geometry_topology", stage "gs"; from seedds/nxnative dm/gfx/tools/dmsh_xlate/Program.cs bb585cd5, MIT):
+        // the translator's own buffers of that lowering take set 0 bindings 0 (support buffer) and 1 (vb_info), the storage
+        // buffers set 1 and the topology remap texture set 2 (Service.cs FlattenSets moves those into set 0), so the game's
+        // resources start at binding 40 there. The input vertices come from the fixed 144-word capture records (patch 0007).
+        bool Geometry => _job["geometry_topology"] != null;
+        public bool QueryGeometryInputFixed() => Geometry;
+        // Metal has no native NV passthrough stage: the kernel writes the passthrough vertices itself
+        public bool QueryHostSupportsGeometryShaderPassthrough() => !Geometry;
         // c1 常数段（着色器包控制段前 0x100 字节）：间接跳转 BRX 的跳转表在这里（LDC c[1]）；不提供时翻译器解不出跳转目标、控制流出错（粒子着色器死循环）
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 读越界 +{offset:X}（c1 长 {_c1.Length}）"); return 0; }
@@ -58,7 +75,10 @@ static class SwshXlate
         {
             (int off0, _, _) = TextureHandle.UnpackOffsets(handle);
             int bytes = off0 * 4;
-            return (cbufSlot < 0 || (cbufSlot & 0xffff) == 2) && bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0 ? (bytes - TexBase) / 8 : -1;
+            if (cbufSlot >= 0 && (cbufSlot & 0xffff) != 2) return -1;
+            if (bytes >= TexBase && bytes < SampBase && (bytes - TexBase) % 8 == 0) return (bytes - TexBase) / 8;
+            if (bytes >= CombinedBase && bytes < CombinedBase + 8 * CombinedSlots && (bytes - CombinedBase) % 8 == 0) return (bytes - CombinedBase) / 8;
+            return -1;
         }
         public SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
         {
@@ -106,7 +126,8 @@ static class SwshXlate
             // that stores to memory (the material shaders' per-tile flag), and that late depth differed by an ulp from the
             // depth prepass's: the G-buffer draws' EQUAL test failed along lines (dotted Great Sky Island lattice).
             bool earlyZ = _job["early_fragment_tests"] is JsonValue ez && (ez.TryGetValue<bool>(out bool eb) ? eb : ez.TryGetValue<int>(out int ei) && ei != 0);
-            return new GpuGraphicsState(earlyZ, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            InputTopology topology = _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles;   // the draw's primitive (geometry only)
+            return new GpuGraphicsState(earlyZ, topology, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 false, false, false, depthMinusW, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* 不做 Y 取反 | no Y flip */, true /* 原点左上 | origin upper-left */, false);
         }
@@ -119,6 +140,11 @@ static class SwshXlate
         // 作业 reduced = true：放宽精度——翻译器只给强制精确的运算打 NoContraction（缺省全部打：保持 Maxwell 分开舍入的逐位结果，代价是 MSL 里大量禁优化的 spvFMul 等）
         // Job reduced = true: relaxed precision - the translator marks NoContraction only on operations that must be exact (the default marks all: keeps the bit-exact results of Maxwell's separate rounding, at the cost of many optimization-disabled spvFMul etc. in the MSL)
         public bool QueryHostReducedPrecision() => _job["reduced"] is JsonNode n && (bool)n;
+        // Switch 2 (NVN2, Ampere code; from seedds/nxnative d3995ca4 / a7bd05f4, MIT): an Ampere jump table ends at the end of the c1 data the
+        // host knows at the latest; a compute shader's own driver constant layout in c[0] (uniform buffer entries, storage buffer entries,
+        // texture handles, its size, the push constant bytes) comes with the job as nvn2_cs, read from its control section.
+        public int QueryConstantBuffer1Size() => _c1.Length;
+        public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
     }
 
 
@@ -132,8 +158,20 @@ static class SwshXlate
                 // 作业 debug = false：关 DebugMode（DebugMode 会跳过 AST 优化器，产物满是临时变量；不改语义）
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                bool geometry = (string)job["stage"] == "gs";   // a geometry shader, translated as a compute kernel (needs "geometry_topology")
+                if (geometry && job["geometry_topology"] is not JsonValue) throw new ArgumentException("geometry shader without geometry_topology");
+                // Image atomics as Metal texture atomics (guarded per coordinate, 3D images and compare-and-swap admitted; Service.cs MslVersion)
+                flags |= TranslationFlags.MetalImageAtomics;
+                if ((string)job["arch"] == "sm86") flags |= TranslationFlags.Ampere;   // NVN2 (Switch 2): a 0x80-byte SPH and 128-bit instructions
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
-                ShaderProgram p = ctx.Translate();
+                ShaderProgram p = geometry ? ctx.Translate(asCompute: true) : ctx.Translate();
+                if (geometry)
+                {
+                    // The raster pass-through vertex shader that reads the kernel's output vertices: from a fresh context, as
+                    // translation changes the decoded program (seedds/nxnative dmsh_xlate, MIT)
+                    var reader = Translator.CreateContext(0, new Accessor(code, job), new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
+                    File.WriteAllBytes(Path.Combine(outDir, key + ".reader.spv"), reader.GenerateVertexPassthroughForCompute().BinaryCode);
+                }
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"),
                     VertexCounterLowering.Apply(code, (string)job["stage"], p.BinaryCode, acc.Notes));
                 var res = new JsonObject
@@ -143,6 +181,14 @@ static class SwshXlate
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                     ["tex_queried"] = new JsonArray(acc.TexQueried.Select(x => (JsonNode)x).ToArray()), ["img_queried"] = new JsonArray(acc.ImgQueried.Select(x => (JsonNode)x).ToArray()),
                 };
+                if (geometry)
+                {
+                    // words per output vertex in geometry_vb_output (and in the reader's vb_input), and the threads per input primitive
+                    res["geometry_stride"] = ctx.GetResourceReservations().OutputSizePerInvocation;
+                    res["geometry_invocations"] = p.Info.ThreadsPerInputPrimitive;
+                    res["geometry_max_output_vertices"] = p.Info.GeometryMaxOutputVertices;
+                    res["geometry_vertices_per_primitive"] = p.Info.GeometryVerticesPerPrimitive;
+                }
                 foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })

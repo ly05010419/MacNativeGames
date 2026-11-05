@@ -46,7 +46,7 @@ typedef struct {
 // TOTK: the game reserves 16 bytes for NVNtextureView on its stack (main+0x823398 SetDefaults at sp+0x30, its own
 // data at sp+0x40), so the view is packed into 16 bytes. swz = NVN view swizzle selectors.
 typedef struct {
-    uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, pad0 : 3;
+    uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, stencil : 1, pad0 : 2;   // stencil: the view samples a depth-stencil texture's stencil plane
     uint8_t base_level, nlevels, target; uint16_t min_layer, nlayers; uint16_t format; uint8_t swz[4]; uint8_t pad1[2];
 } view_t;
 _Static_assert(sizeof(view_t) == 16, "NVNtextureView is 16 bytes in TOTK's NVN");
@@ -120,7 +120,7 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND,
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONST, OP_FENCE_SYNC,
     OP_EYE,   // zeldaVR stereo B2: the ops up to the next OP_EYE are for these eyes (p_eye; the replay of each eye skips the others')
     OP_COUNT_
 };
@@ -129,6 +129,12 @@ typedef struct { uint32_t mask, pad; } p_eye;   // OP_EYE: 1 left, 2 right, 3 bo
 // Payload (immediately follows op_hdr)
 typedef struct { int32_t n; const tex_t *color[8]; view_t cview[8]; uint8_t has_cview[8]; const tex_t *depth; view_t dview; uint8_t has_dview; } p_set_rt;
 typedef struct { int32_t index, mask; float rgba[4]; } p_clear_color;
+/* NVN2 push constants (nvnCommandBufferPushGraphicsConstants / PushComputeConstants): bytes at offset of the graphics or the
+   compute block, which their shaders read as c[24] (NVN_PUSH_BANK; the translator maps NVN2 compute's c0 push region there). */
+#define NVN_PUSH_BANK 24
+#define NVN_PUSH_SIZE 0x100
+typedef struct { uint16_t compute, offset; uint32_t size; uint8_t data[]; } p_push_const;
+typedef struct { void *sync; } p_fence_sync;   // nvnCommandBufferFenceSync: the sync object, fenced at the submit (hle_nvn.c fence_syncs)
 #ifdef GAME_BOTW
 /* The same texture level / layer attached at more than one colour slot: only the first slot is attached (botw.md; the
    finding and fix come from nxnative, MIT, github.com/seedds/nxnative, rt_dup_slot). Breath of the Wild's G-buffer passes
@@ -368,14 +374,14 @@ typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UB
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } p_bind_handles; // 分离贴图 / 采样器句柄 | Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which：0 值掩码 1 写掩码 2 参考值 | which: 0 value mask 1 write mask 2 reference value
 typedef struct { float factor, units, clamp; } p_poly_offset;
-typedef struct { int32_t prim, first, count, base_instance, instances; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays)
-typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf; } p_draw_idx;
+typedef struct { int32_t prim, first, count, base_instance, instances, pad_; uint64_t ind; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays); ind: NVN address of the {count, instances, first, base instance} record of an indirect draw (0 = direct)
+typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf, ind; } p_draw_idx;   // ind: NVN address of the {count, instances, first index, base vertex, base instance} record of an indirect draw (0 = direct)
 typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address
 typedef struct { const tex_t *tex; view_t view; uint8_t has_view, is_uint; NVNcopyRegion r; int32_t mask; union { float f[4]; uint32_t u[4]; } c; } p_clear_tex;
-typedef struct { int64_t stride; } p_copy_stride;
+typedef struct { int64_t stride; int32_t image, pad_; } p_copy_stride;   // image: SetCopyImageStride (the bytes between 2D slices of a 3D / array copy), else SetCopyRowStride
 typedef struct { float rgba[4]; } p_blend_color;
 
 // Metal 回放层入口（nvn_mtl.m）：把一组命令句柄回放进当前提交
@@ -389,7 +395,6 @@ void mtl_present_wait(uint64_t ticket);                    // 等该票号的出
 void mtl_present_flush(void);                              // 等已入队的出图全部处理完 | Wait until all enqueued presents have been processed
 void mtl_present_test_stall(uint64_t ns);                  // 单测：出图线程每次出图前额外停顿 ns | Unit test: extra pause in ns before each present on the present thread
 int mtl_display_hz(void);                                   // 有窗口时屏幕最高刷新率（Hz），无窗口 0 | Maximum refresh rate of the screen (Hz) when there is a window, 0 without a window
-void mtl_set_tex_pool_n(int n);                            // 贴图描述符池容量：池外的贴图号按「空槽」处理（读出 0） | Texture descriptor pool capacity: texture IDs outside the pool are treated as 'empty slots' (read 0)
 // 计时埋点（Mac / iOS 共用）：提交按帧号打标；GPU 时间 = 该帧全部命令缓冲 GPUEnd−GPUStart 之和，全部完成后才可读（否则 −1）
 // Timing instrumentation (shared by Mac / iOS): submissions are tagged with the frame number; GPU time = sum of GPUEnd−GPUStart over all of that frame's command buffers, readable only after all complete (otherwise −1)
 void mtl_set_frame(uint64_t f);

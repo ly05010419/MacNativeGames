@@ -16,7 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(GAME_NS2)   /* no survey: TOTK's offsets */
 /* Breath of the Wild 1.6.0: no frame-end hook (the survey sync object is never found, see runtime_survey_sync), so
    "survey pos" reads and "survey move" writes the player's position from the command thread. The pointer chains from
    main's data segment are the ones Bloom (Swiffy22) found for 1.6.0 (the botw-save-state tool uses them); the code is

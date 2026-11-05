@@ -2,13 +2,20 @@
 
 static id<MTLComputePipelineState> g_nvn_deswz_pipeline, g_nvn_region_pipeline;
 
+/* Which (x segment, row) of its GOB a thread's 16-byte piece is: the Tegra X1 orders a GOB's pieces x5 y2 y1 x4 y0, the
+   Switch 2 x5 y2 x4 y1 y0 (nvn_deswizzle.c gob_off). */
+#ifdef GAME_NS2
+#define GOB_PIECE "uint xseg = ((tid >> 4) << 1) | ((tid >> 2) & 1u), y = (gob_y << 3) | (((tid >> 3) & 1u) << 2) | (((tid >> 1) & 1u) << 1) | (tid & 1u),"
+#else
+#define GOB_PIECE "uint xseg = ((tid >> 4) << 1) | ((tid >> 1) & 1u), y = (gob_y << 3) | (((tid >> 2) & 3u) << 1) | (tid & 1u),"
+#endif
 static const char *const k_nvn_deswz_msl =
     "#include <metal_stdlib>\n"
     "using namespace metal;\n"
     "struct P { ulong src_off, dst_off, base, pitch; uint row_bytes, rows, slices, th, td; };\n"
     "kernel void deswz(device const uchar *src [[buffer(0)]], device uchar *dst [[buffer(1)]], constant P& p [[buffer(2)]], uint3 id [[thread_position_in_grid]]) {\n"
     " uint bh = 1u << p.th, bd = 1u << p.td, gobs_x = (p.row_bytes + 63u) >> 6, blocks_y = (p.rows + (8u * bh) - 1u) >> (3u + p.th);\n"
-    " uint tid = id.x & 31u, gob_x = id.x >> 5, gob_y = id.y, z = id.z; uint xseg = ((tid >> 4) << 1) | ((tid >> 1) & 1u), y = (gob_y << 3) | (((tid >> 2) & 3u) << 1) | (tid & 1u), x = (gob_x << 6) | (xseg << 4);\n"
+    " uint tid = id.x & 31u, gob_x = id.x >> 5, gob_y = id.y, z = id.z; " GOB_PIECE " x = (gob_x << 6) | (xseg << 4);\n"
     " if (x >= p.row_bytes || y >= p.rows || z >= p.slices) return;\n"
     " uint n = min(16u, p.row_bytes - x); ulong block = 512ul * bh * bd; ulong gob_in_block = ((ulong)(z & (bd - 1u)) << p.th) + (gob_y & (bh - 1u)); ulong so = p.src_off + p.base + ((ulong)(z >> p.td) * gobs_x * blocks_y + (gob_y >> p.th) * gobs_x + gob_x) * block + gob_in_block * 512ul + (ulong)tid * 16ul; ulong doff = p.dst_off + ((ulong)z * p.rows + y) * p.pitch + x;\n"
     " if (n == 16u && ((so | doff) & 15ul) == 0ul) *(device uint4 *)(dst + doff) = *(device const uint4 *)(src + so);\n"

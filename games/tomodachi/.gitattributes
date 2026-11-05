@@ -1,0 +1,5 @@
+# Preserve upstream vendor formatting and unified-diff context verbatim.
+third_party/ryujinx/** whitespace=-blank-at-eol,-blank-at-eof
+tools/totk_xlate/patches/** whitespace=-blank-at-eol,-blank-at-eof
+runtime/gate.S whitespace=-blank-at-eof
+third_party/d2r_gfx/gfx/nvn/fps_overlay.c whitespace=-blank-at-eof

@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <mach/mach.h>
 
 #define PAGE TOTK_VPOOL_PAGE
 #define PAGES 4
@@ -29,6 +31,36 @@ static int map(NVNmemoryPool *v,const NVNmemoryPool *p,int64_t poff,int64_t voff
 }
 static uint8_t *mem(NVNmemoryPool *p){return ((pool_t *)(void *)p)->mem;}
 static int all(const uint8_t *p,uint8_t v,size_t n){for(size_t i=0;i<n;i++)if(p[i]!=v)return 0;return 1;}
+static void gpu_checks(NVNmemoryPool *v1,NVNmemoryPool *v2);
+
+/* Exercise the actual SVC heap mapping, not a substitute allocation: CPU
+   write-back/page-in, Metal read/write and physical/virtual aliases. */
+static void file_heap_checks(void){
+ const char *enabled=getenv("TOTK_FILE_HEAP");if(!enabled||!atoi(enabled))return;
+ runtime_thread_init();svc_thread_main_init();
+ const uint64_t bytes=512ULL<<20;uint64_t r[31]={0};r[1]=bytes;
+ runtime_svc(1,r,"file-heap-probe",0);expect(!r[0],"file heap SetHeapSize");
+ uint8_t *p=(void *)(uintptr_t)r[1];
+ task_vm_info_data_t before={0},after={0};mach_msg_type_number_t count=TASK_VM_INFO_COUNT;
+ task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&before,&count);
+ memset(p,0x3a,bytes);
+ expect(!msync(p,bytes,MS_SYNC),"file heap CPU write-back");
+ expect(!madvise(p,bytes,MADV_DONTNEED),"file heap page-out advice");
+ expect(all(p,0x3a,bytes),"file heap full CPU page-in preserves 512 MiB");
+ NVNmemoryPool phys,v1,v2;
+ pool_init(&phys,p,bytes,0x104,1);
+ pool_init(&v1,NULL,4*PAGE,0x2a1,1);pool_init(&v2,NULL,4*PAGE,0x2a1,1);
+ expect(map(&v1,&phys,PAGE,0,3*PAGE),"file heap virtual alias 1");
+ expect(map(&v2,&phys,PAGE,PAGE,2*PAGE),"file heap virtual alias 2");
+ gpu_checks(&v1,&v2);
+ expect(all(p+2*PAGE,0x5c,PAGE),"file heap GPU writes reach original heap");
+ CALL(nvnMemoryPoolFinalize,&v1);CALL(nvnMemoryPoolFinalize,&v2);CALL(nvnMemoryPoolFinalize,&phys);
+ expect(!msync(p,bytes,MS_SYNC)&&!madvise(p,bytes,MADV_DONTNEED),"file heap GPU write-back/page-out");
+ expect(all(p+2*PAGE,0x5c,PAGE),"file heap GPU bytes survive page-in");
+ expect(all(p,0x3a,2*PAGE)&&all(p+3*PAGE,0x3a,bytes-3*PAGE),"file heap GPU leaves all other bytes intact");
+ count=TASK_VM_INFO_COUNT;task_info(mach_task_self(),TASK_VM_INFO,(task_info_t)&after,&count);
+ fprintf(stderr,"[file-heap-probe] 512 MiB CPU+GPU+alias+page-in byte checks passed; footprint before=%llu after=%llu MiB\n",(unsigned long long)(before.phys_footprint>>20),(unsigned long long)(after.phys_footprint>>20));
+}
 
 static void gpu_checks(NVNmemoryPool *v1,NVNmemoryPool *v2){
  id<MTLDevice> dev=MTLCreateSystemDefaultDevice();id<MTLCommandQueue> q=[dev newCommandQueue];
@@ -84,5 +116,6 @@ void runtime_vpool_probe(void){
  expect(all(mem(&v2)+PAGE,0x3a,PAGE),"physical data survives unmap of another alias");
  CALL(nvnMemoryPoolFinalize,&v1);CALL(nvnMemoryPoolFinalize,&v2);CALL(nvnMemoryPoolFinalize,&phys);
  free(raw);
+ file_heap_checks();
  printf("{\"status\":\"pass\",\"checks\":%d,\"request_bytes\":%zu,\"page_bytes\":%llu,\"scope\":\"NVNmappingRequest layout from runtime dump; CPU and Metal GPU aliasing between two virtual pools of one physical pool; unmap; 6 negative controls; no drawing\"}\n",checks,sizeof(totk_mapping_request),(unsigned long long)PAGE);
 }

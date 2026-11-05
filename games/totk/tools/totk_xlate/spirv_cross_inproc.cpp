@@ -42,9 +42,10 @@ struct CliExit : std::runtime_error
 #undef exit
 
 // spirv-cross --msl --msl-version 20300 --msl-argument-buffers --msl-texture-buffer-native --msl-pad-fragment-output
-// (Service.cs Xc) on the SPIR-V words. Returns 0 and the MSL in *out, or 1 and the message the program printed in *err;
+// (Service.cs Xc) on the SPIR-V words, at MSL msl_version (20300, or 30100 for a shader with image atomics, Service.cs MslVersion).
+// Returns 0 and the MSL in *out, or 1 and the message the program printed in *err;
 // free either with totk_spirv_cross_free.
-extern "C" int totk_spirv_cross_msl(const uint32_t *words, size_t count, char **out, char **err)
+extern "C" int totk_spirv_cross_msl(const uint32_t *words, size_t count, uint32_t msl_version, char **out, char **err)
 {
 	*out = nullptr;
 	*err = nullptr;
@@ -52,7 +53,7 @@ extern "C" int totk_spirv_cross_msl(const uint32_t *words, size_t count, char **
 	{
 		CLIArguments args;
 		args.msl = true;
-		args.msl_version = 20300;
+		args.msl_version = msl_version;
 		args.set_msl_version = true;
 		args.msl_argument_buffers = true;
 		args.msl_texture_buffer_native = true;

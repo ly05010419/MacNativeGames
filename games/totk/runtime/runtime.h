@@ -113,6 +113,7 @@ int runtime_output_mode(void);
 int runtime_output_mode_set(int mode);                  /* returns 0 where that mode is not offered */
 int runtime_output_native(int mode, unsigned *w, unsigned *h);   /* the canvas of OUTPUT_MODE_NATIVE / _NATIVE_METALFX / _NATIVE_4K; 0 when not offered */
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
+int runtime_output_size_set(unsigned w,unsigned h);       /* NS2: queue the native game-thread display rebuild */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
 void runtime_warm_title(void);   /* nvn_mtl.m warm_start: the title may be seen now, the rest of the warm-up behind it or done */
@@ -137,6 +138,7 @@ int hud_snapshot(int line, char *out, size_t n, int *highlight);   /* line 0..3:
 void *runtime_account_override(const char *name);
 
 void runtime_gfx_probe(int negative);
+void runtime_shader_seed(const char *corpus, const char *list);   /* nvn_mtl.m: seed-shaders mode (list: the shared shader list, or NULL) */
 void runtime_vpool_probe(void);
 
 void runtime_memory_probe(void);
@@ -151,6 +153,12 @@ struct KeyMap;   /* runtime/keyboard_map.h */
 void runtime_keymap_get(struct KeyMap *out);       /* runtime/input.c: the keyboard and mouse layout in force */
 void runtime_keymap_set(const struct KeyMap *map); /* in force at once, saved in keyboard.txt (the settings panel) */
 void runtime_keymap_reset(void);                   /* the default layout, keyboard.txt removed */
+int runtime_graphics_initialized(void);   /* nv::InitializeGraphics has run on the host (runtime/gfx_bridge.c) */
+void *runtime_ns2_override(const char *name);
+void *runtime_offline_override(const char *name);   /* runtime/offline_host.c: nifm and the console identity of an offline host (GAME_NS2) */
+void *runtime_ns2_codec_override(const char *name);
+void *runtime_ns2_audio_out_override(const char *name);
+void *runtime_ns2_opus_ms_override(const char *name);   /* nn::codec Opus multistream (runtime/ns2_opus_ms.c, GAME_NS2) */   /* nn::audio AudioOut (runtime/ns2_audio_out.c, GAME_NS2) */   /* nn::codec video and sync point events (runtime/ns2_codec.c, GAME_NS2) */   /* Switch 2 SDK calls (runtime/ns2_host.c, GAME_NS2 builds only) */
 int runtime_handheld_mode(void);   /* TOTK_OPERATION_MODE=handheld (runtime/services.c) */
 void *runtime_input_override(const char *name);
 typedef struct { uint64_t buttons; int32_t lx,ly,rx,ry; int connected; } RuntimeGamepadState;
@@ -182,6 +190,7 @@ int runtime_gamepad_battery_percent(void);  /* runtime/gamepad.m, main thread: t
 void runtime_gamepad_hid_battery(int left, int percent);   /* runtime/gamepad.m, any thread: a Switch controller's battery read from its HID reports (left: a paired set's left Joy-Con), -1 none */
 int runtime_gamepad_battery_left_percent(void);  /* runtime/gamepad.m: a paired Joy-Con set's left one, -1 none; the percent above is then the right one */
 int runtime_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: a one-word setting file next to controls.txt; 1 read, 0 none */
+int runtime_texture_pack_active(void);   /* Mac TOTK: explicit TOTK_TEXTURE_PACK=1, frozen before guest memory is reserved */
 void runtime_setting_save(const char *name, const char *word, const char *what);   /* runtime/gamepad.m: saves one; what names it in a failure line */
 int runtime_shared_setting_word(const char *name, char *word, size_t size);   /* runtime/gamepad.m: the same, shared by both games (the folder above controls.txt's) */
 void runtime_shared_setting_save(const char *name, const char *word, const char *what);

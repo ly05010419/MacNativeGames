@@ -54,7 +54,20 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+            else if ([k isEqualToString:@"gmem_map"]) r->kind = NVN_RB_GMEM;
+            else if ([k isEqualToString:@"geometry"]) { r->kind = NVN_RB_GEO; if (reg < 0 || reg > 4) FAIL("geometry helper %s: reg %d", [b[@"msl_name"] UTF8String], reg); }
+            else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
             else FAIL("B 绑定种类 %s 未实现（%s）", k.UTF8String, [b[@"msl_name"] UTF8String]);
+#ifdef GAME_NS2
+            /* Global memory at an address the shader loaded from memory (Donkey Kong Bananza's gsys vertex shader c9a56f796ea4a4cd
+               resets the terrain's indirect draw records through such pointers; until 2026-11-03 bound to the empty buffer, so the
+               stores were dropped and the terrain's floors and walls never drew). */
+            /* The translator reserves two storage buffers for global memory at an address the shader loaded from memory (patch 0006
+               GlobalToStorage.TryGenerateRawStorageOp, under the sentinel constant buffer slot 0xff): the read-only memory pool table
+               and, for shaders that store or do atomics there, the write log. Their reflection names no NVN slot; the read-only one
+               is the table, the writable one the log (caches from before the service named them gmem_map / gmem_log). */
+            if (r->kind == NVN_RB_SBUFP && reg < 0) { r->kind = r->rw ? NVN_RB_GMEML : NVN_RB_GMEM; r->reg = 0; o->nb++; continue; }
+#endif
             if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU) && reg < 0)
                 FAIL("B 绑定 %s 没解出槽号", [b[@"msl_name"] UTF8String]);
             o->nb++;

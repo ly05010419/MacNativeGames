@@ -1,0 +1,30 @@
+{
+  "_comment": "Pokemon Pokopia 2.0.1 (update v655360) from a Switch 2 dump folder: the source ExeFS, the verified rewrite (verify_rewrites.py --version pkp, all sites pass, 2026-11-03) and the RomFS image import_dump.py packs from updates/655360/romfs. Runtime validation is recorded in docs/ns2-port.md.",
+  "title_id": "0400A3A01EE4C000",
+  "version": 655360,
+  "display_version": "2.0.1",
+  "exefs_sha256": {
+    "main": "8a8ce87b4edfce88c6260da5dd80d6cafc03a761eebc842d7a3476e353a8336f",
+    "main.npdm": "de024cc0dcdf3480b1fca447344fce0a35f49aaffe842c25e5fb4c6d359d42b4",
+    "rtld": "166d3b75ec5559cd241cbacf03dbf16c267a2cbfc95c33c41ba02d3a03c5616f",
+    "sdk": "7c12078e9f853f5d77f395155f7308f264fa6e93fadaeba8dca525f4483c09b2",
+    "subsdk0": "2e91ffc8b6f036ffd34fdb3c3dc280dec80956308e34ea866167650842c9f3be"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "9866cfe5c6546173493e70aa483c16458ea1f4a4223790f3b5aa36076e5da726",
+    "sdk.patched.bin": "77daa637643915637f6378c8a79f751c94167a87255661b36358375ab60ec249",
+    "subsdk0.patched.bin": "1109abfdc03b591e18a0c860461d484028ca863738237aae9b8b1c121fdfbc9f"
+  },
+  "romfs": {
+    "size": 7246052973,
+    "sha256": "7d8072d349d335441ca42b7ffbe423de2fd3c4ac4a260639cd39a91f6ee587d0"
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
+    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}

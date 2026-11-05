@@ -3,8 +3,11 @@
 icon_<language>.dat (a 256x256 JPEG); it becomes build/AppIcon.icns (sips and iconutil, both part of macOS).
 usage: extract_app_icon.py <game.xci|game.nsp> --keys <prod.keys> [--title 0100f2c0115b6000] [--output build/AppIcon.icns]"""
 import argparse
+import hashlib
+import json
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
 from extract_exefs import read_at, require, container_entries, common_tickets, nca_inventory
 from extract_romfs import index_romfs
@@ -31,13 +34,54 @@ def control_nca(game, keys, title):
         return controls[0]['nca_offset'], tickets
 
 
+def write_icon(image, output):
+    with tempfile.TemporaryDirectory() as tmp:
+        iconset = Path(tmp) / 'AppIcon.iconset'
+        iconset.mkdir()
+        for size in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                px = size * scale
+                name = f'icon_{size}x{size}{"@2x" if scale == 2 else ""}.png'
+                subprocess.run(['sips', '-s', 'format', 'png', '-z', str(px), str(px), image, '--out', iconset / name],
+                               check=True, capture_output=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', output], check=True)
+
+
+def source_icon(spec, output):
+    """A dump without Control data can use a pinned official image; keep image bytes outside the source tree."""
+    source = json.loads(spec.read_text())
+    image = output.with_suffix('.source.jpg')
+    receipt = output.with_suffix('.source.json')
+    def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+    if not image.is_file() or digest(image) != source['sha256']:
+        with urllib.request.urlopen(source['url'], timeout=30) as response:
+            data = response.read()
+        if hashlib.sha256(data).hexdigest() != source['sha256']:
+            raise ValueError('official app icon hash mismatch')
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(data)
+    old = json.loads(receipt.read_text()) if receipt.is_file() else {}
+    if not output.is_file() or old.get('source_sha256') != source['sha256'] or old.get('icon_sha256') != digest(output):
+        write_icon(image, output)
+    receipt.write_text(json.dumps(dict(source_sha256=source['sha256'], icon_sha256=digest(output),
+                                      source_url=source['url']), indent=2) + '\n')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('game', type=Path)
-    ap.add_argument('--keys', type=Path, required=True)
+    ap.add_argument('game', type=Path, nargs='?')
+    ap.add_argument('--keys', type=Path)
+    ap.add_argument('--source-spec', type=Path, help='pinned official image metadata for a dump without Control data')
     ap.add_argument('--title', default='0100f2c0115b6000')
     ap.add_argument('--output', type=Path, default=Path('build/AppIcon.icns'))
     a = ap.parse_args()
+    if a.source_spec:
+        source_icon(a.source_spec, a.output)
+        print(a.output)
+        return
+    if a.game is None or a.keys is None:
+        ap.error('game and --keys are required unless --source-spec is given')
     keys = load_keys(a.keys)
     with tempfile.TemporaryDirectory() as t:
         t = Path(t)
@@ -49,16 +93,7 @@ def main():
         require(icon is not None, 'no icon in the control data')
         with image.open('rb') as f:
             (t / 'icon.jpg').write_bytes(read_at(f, icon['offset'], icon['size']))
-        iconset = t / 'AppIcon.iconset'
-        iconset.mkdir()
-        for size in (16, 32, 128, 256, 512):
-            for scale in (1, 2):
-                px = size * scale
-                name = f'icon_{size}x{size}{"@2x" if scale == 2 else ""}.png'
-                subprocess.run(['sips', '-s', 'format', 'png', '-z', str(px), str(px), t / 'icon.jpg', '--out', iconset / name],
-                               check=True, capture_output=True)
-        a.output.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(['iconutil', '-c', 'icns', iconset, '-o', a.output], check=True)
+        write_icon(t / 'icon.jpg', a.output)
     print(f'{a.output}')
 
 

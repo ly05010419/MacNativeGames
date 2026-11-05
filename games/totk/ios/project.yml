@@ -18,6 +18,7 @@ targets:
           - frontend.m
           - loader.c
           - game_patches_botw.c
+          - game_patches_ns2.c
       - path: ../third_party/d2r_gfx/gfx/nvn
       - path: ../third_party/d2r_gfx/gfx/tex
       - path: ../zeldaVR/gfx   # zeldaVR: the VR modules (empty on iOS; the build copies zeldaVR into the tree)

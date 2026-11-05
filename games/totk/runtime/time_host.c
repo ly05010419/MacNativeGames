@@ -105,6 +105,29 @@ static int64_t user_difference(const ClockSnapshot *a, const ClockSnapshot *b) {
     return (b->user.offset - a->user.offset) * 1000000000LL;
 }
 
+/* Time zone rules (SDK 20, Pokemon Pokopia): the device's location is the Mac's zone, and conversions with a rule use the
+   Mac's local time as the rule-less ones do (the rule the game loads stays unused). */
+void hle_signal_system_event(void *event);
+static unsigned device_location(char *out) {
+    if (!out) return R_INVALID;
+    char link[256] = {0}; ssize_t n = readlink("/etc/localtime", link, sizeof link - 1);
+    const char *zone = n > 0 && strstr(link, "zoneinfo/") ? strstr(link, "zoneinfo/") + 9 : "UTC";
+    memset(out, 0, 0x24); snprintf(out, 0x24, "%s", zone); return 0;
+}
+static unsigned load_zone_rule(void *rule, const char *location) { (void)rule; (void)location; return 0; }
+static unsigned to_calendar_rule(CalendarTime *c, CalendarAdditionalInfo *info, const int64_t *posix, const void *rule) { (void)rule; return to_calendar(c, info, posix); }
+static unsigned to_posix_rule(int *count, int64_t *out, int n, const CalendarTime *c, const void *rule) {
+    (void)rule; if (!c) return R_INVALID;
+    struct tm tm = {0}; tm.tm_year = c->year - 1900; tm.tm_mon = c->month - 1; tm.tm_mday = c->day; tm.tm_hour = c->hour; tm.tm_min = c->minute; tm.tm_sec = c->second; tm.tm_isdst = -1;
+    time_t v = mktime(&tm); if (count) *count = n > 0; if (n > 0 && out) out[0] = (int64_t)v; return 0;
+}
+static int64_t network_clock_now(void) { return (int64_t)time(NULL); }   /* StandardNetworkSystemClock::now: the Mac's clock, as GetCurrentTime */
+/* AsyncEnsureNetworkClockAvailabilityTask: the network clock is the Mac's, available at once; its finish event is signalled. */
+static uint8_t clock_task_event[0x80] __attribute__((aligned(16)));
+static void clock_task_noop(void *self) { (void)self; }
+static unsigned clock_task_ok(void *self) { (void)self; return 0; }
+static void *clock_task_event_get(void *self) { (void)self; static int bound; if (!bound) { bound = 1; hle_bind_system_event(clock_task_event, 0); hle_signal_system_event(clock_task_event); } return clock_task_event; }
+
 void *runtime_time_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
         {"_ZN2nn4time10InitializeEv", initialize}, {"_ZN2nn4time8FinalizeEv", finalize}, {"_ZN2nn4time13IsInitializedEv", is_initialized},
@@ -117,6 +140,16 @@ void *runtime_time_override(const char *name) {
 #endif
         {"_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeE", to_calendar},
         {"_ZN2nn4time19ToCalendarTimeInUtcERKNS0_9PosixTimeE", to_calendar_utc},
+        {"_ZN2nn4time21GetDeviceLocationNameEPNS0_12LocationNameE", device_location},
+        {"_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", load_zone_rule},
+        {"_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", to_calendar_rule},
+        {"_ZN2nn4time11ToPosixTimeEPiPNS0_9PosixTimeEiRKNS0_12CalendarTimeERKNS0_12TimeZoneRuleE", to_posix_rule},
+        {"_ZN2nn4time26StandardNetworkSystemClock3nowEv", network_clock_now},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskC1Ev", clock_task_noop}, {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTaskD1Ev", clock_task_noop},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask10InitializeENS_2os14EventClearModeE", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9StartTaskEv", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask9GetResultEv", clock_task_ok},
+        {"_ZN2nn4time39AsyncEnsureNetworkClockAvailabilityTask14GetFinishEventEv", clock_task_event_get},
         {"_ZN2nn4time18ToPosixTimeFromUtcERKNS0_12CalendarTimeE", to_posix_utc},
         {"_ZN2nn4time13ClockSnapshotC1Ev", snapshot_init},
         {"_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", snapshot_create},

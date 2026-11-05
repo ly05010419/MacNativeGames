@@ -1,0 +1,42 @@
+{
+  "_comment": "Verified Pokémon Legends: Arceus 1.1.1 code (from the update) and merged RomFS. rewritten_sha256 is filled at stage 1. No community cheat-table build-ID cross-check was available; originality is pinned by the ExeFS block hashes and the six IVFC levels instead.",
+  "title_id": "01001F5010DFA000",
+  "update_title_id": "01001F5010DFA800",
+  "version": 65793,
+  "display_version": "1.1.1",
+  "main_build_id": "AEE8F150DDA1B5A838806E1A5EA6827AD9F3C51E000000000000000000000000",
+  "base_program_nca": {
+    "name": "63d25921438dd94ad9f7b778ad206600.nca",
+    "nca_offset": 64512,
+    "size": 6459375616
+  },
+  "update_program_nca": {
+    "name": "b38cd4c18831237d85312886f3a377b5.nca",
+    "nca_offset": 6460936192,
+    "size": 91726336
+  },
+  "exefs_sha256": {
+    "main": "89fa2d715e13a1c311a47ee02b3cc858ccf72a2086ab9704a08a2ddc1b90f7d9",
+    "main.npdm": "67dba1b1835504bf78c584fb97a6a787528664d6eb407fea0e9bec5b60e26923",
+    "rtld": "bc175ad9865adb48f9cbe9d7993ddb3367d3771bc06642c87d16ccf4f4dc9ff4",
+    "sdk": "85aaf84172367499c02cbb5c317c419b9c768658f5a44de743da40d4c6441a4b",
+    "subsdk0": "773153d0734c8feaacd5a1e6b21bd1ede8c060a142f9d91452897776f31d9827",
+    "subsdk1": "c0a7a238688caf191c7c40badcbeac4d037a95ccaed644ce7fe2e63b5f898a13"
+  },
+  "base_exefs_sha256": {
+    "main": "6f0e5f4a76a0f8b147540296522e02f0d03d591bfa53929d02cacc910ee994a0"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "52fe72f82cb42645296cbffb79b839c890fd0647ddea8033f67b4b8eb616da1f",
+    "sdk.patched.bin": "34a18a79199f662e5e0e2fa8cdd84eea8cdb27a0582ab92ca48cd6395bc0d21d",
+    "subsdk0.patched.bin": "f7d6dd6675e71600ba5560afb43ecc44b7164f7a05cced148520cacd6280d027",
+    "subsdk1.patched.bin": "9bf71dd6f41995b5ff62c9341e41f635aed5efe0f45fc8e088fa13b9c8293efa"
+  },
+  "romfs": {
+    "size": 6421372960,
+    "sha256": "73a7369b2e15bf37142d3f6a131642e49ff54828f8820a8b4a428a268dba5cc6",
+    "files": 19095,
+    "bytes_from_base": 6388383776,
+    "bytes_from_update": 45621248
+  }
+}

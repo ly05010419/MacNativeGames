@@ -1,0 +1,37 @@
+# Mario Kart World (experimental port)
+
+This folder contains an early Apple silicon Mac port of Mario Kart World 1.0.0 (program ID `0400c3f00006e000`). It is a self-contained fork of the Wonder runtime, rewriter and graphics layer. No game content is included; development requires your own game dump and system files.
+
+The native runtime renders the animated 3D title screen, main menu, Free Roam and Grand Prix races, with readable text, textured terrain and character models. Switch 2 texture decoding, sparse mip tails and shared physical tiles are integrated from [kartnative](https://github.com/pahorema/kartnative), pinned in `tools/SOURCE_NOTES.md`. This is an experimental build: not all courses have been validated, frame pacing stutters while new shaders are translated and in some heavy areas, and some ramps and background vehicles still flicker.
+
+## Building the app
+
+```sh
+python3.14 games/mkw/scripts/build_mkw.py --game "MKW.nsp" [--work MKW_build] [--out "Mario Kart World.app"]
+```
+
+This writes `Mario Kart World.app` next to the game file. The game file is an NSP of the 1.0.0 game dumped from your own console and decrypted with your own keys (decrypted NCA headers and sections), the form `scripts/extract_mkw.py` reads; `assets/expected-v1.0.0.json` pins its hashes. Decrypting during the build (from an encrypted dump and `prod.keys`) is not supported yet. The build verifies the code and the 23 GB RomFS where they lie in the NSP, rewrites the three code modules (checked against the pinned hashes), builds the runtime, the shader translation chain and the launcher, and packages the app. The NSP goes into the app as an APFS clone (no extra space; the work folder and the app must be on the game file's volume) inside a data bundle that is signed once. Each step is skipped when its verified output is already there, so a stopped build can be started again. It needs Python 3.14, Xcode command line tools, Homebrew's `opus` and `libvpx`, the .NET 10 SDK (for the shader translator, built once) and network access for that first build. System fonts are optional (`--shared-fonts DIR`, or `--firmware DIR --keys prod.keys`): the game uses its own. Saves, the shader cache and the log go to `~/Library/Application Support/MacNativeGames/MKW` and `~/Library/Logs/MacNativeGames/mkw.log`.
+
+## Memory safety
+
+Mario Kart World needs an Apple silicon Mac with **16 GB of memory or more**; on less, the runtime stops at its first GPU submission with a message.
+
+Earlier full-game runs of this runtime panicked macOS four times inside the GPU driver (IOGPUFamily), each time after the driver ran out of memory wiring the game's resources at about 15 GB of system wired memory on a 16 GB Mac. The game now carries a guard against that, on by default: before every residency commit and command-buffer submission it reads the system's wired memory, adds what the commit is about to make resident, and compares it with a limit of three quarters of the installed memory (12 GB on a 16 GB Mac). Above it, the running GPU work is let complete and retired objects released; if that is not enough, the game stops with a message (exit status 87) instead of handing more memory to the driver. `TOTK_WIRED_LIMIT_MB=<MB>` changes the limit. A run with the limit set to 5,000 MB stopped there as intended, before committing the 2.4 GB main memory pool.
+
+Textures retain their original dimensions and complete mip chains on every Mac. The previous defaults that discarded the top mip or shrank large allocations have been removed. The author's 16 GB memory measurements used the old reduced-texture defaults and do not validate memory use at full quality; that configuration needs a fresh gameplay run. The wired-memory guard remains enabled and may stop a run rather than sacrifice picture quality. The largest single item is the game's own 2.4 GB main memory pool, which the GPU reads directly and which therefore stays resident. With the guard on, the game submits GPU work by default (`TOTK_GPU_NOCOMMIT=1` encodes without submitting, for diagnosis).
+
+## Development
+
+The runtime targets macOS on Apple silicon and uses Xcode command line tools, Homebrew's `opus` and `libvpx`, and the .NET 10 SDK (for the shader translator). `make binary` builds `build/mkw-native` without game data. `make shader-tools` builds the shader translation chain (below). `make runtime` builds both and additionally requires locally prepared MKW images, rewriter validation output, RomFS index and shared-font manifest; `make boot` runs that prepared runtime. These targets are development tools, not a supported end-to-end installation procedure.
+
+The runtime now decodes NVN2 control sections and prepares `arch: sm86` requests, including c1 constants and compute layout metadata. It records graphics/compute push constants separately and exposes them at shader constant bank 24. The shader cache has its own MKW identity. `make shader-tools` (`scripts/build_shader_tools.py`) builds the translation chain from pinned sources: `tools/ampere_service`, the vendored nxnative SM86 frontend (`third_party/nxnative`, MIT, see its README) and SPIRV-Cross at a pinned upstream commit fetched into `build/src`. The .NET programs are published self-contained, so running the game needs no .NET installation. The runtime starts the chain from `build/` with no environment variables, and stops explicitly when it is missing. All 1,932 shaders of a development cache translate byte-identically to the earlier external build. See `tools/ampere_service/README.md`.
+
+The control-layout check can be built with `xcrun clang -Wall -Wextra -Werror tests/nvn2_shader.c -o build/mkw-control-test`; run it without arguments for synthetic cases, or pass pairs of `.ctl` and `.bin` captures to check their lengths and stages.
+
+`scripts/extract_mkw.py` extracts the ExeFS and indexes the RomFS from an NSP whose NCAs are already **decrypted**; it verifies the filesystem hash trees and reads the RomFS in place from the NSP. It does not decrypt an encrypted dump itself or verify the NCA signature. Run `python3 scripts/extract_mkw.py --help` for its arguments. Keep extracted game data and the source NSP private.
+
+For shader investigation, `MKW_SHADER_DUMP=<n>` logs the first `n` shader builder calls; `MKW_SHADER_DIR=<existing-directory>` saves observed control sections and code there. `MKW_NVN2_PROBE=1` logs real-driver function offsets, optionally selecting names with the comma-separated `MKW_NVN2_PROBE_NAMES`. These are diagnostics for a prepared development runtime; their output can contain game data and should remain private.
+
+`tools/prepare_ampere_jobs.py <capture-dir> <output-dir>` prepares private captures for the vendored SM86 frontend. Run `build/dmsh_xlate/dmsh_xlate` with the generated `jobs.json` and an output directory. Captures from the older dumper may be rejected because they omit the c1 constant segment; capture again with the current runtime. These offline jobs do not supply the runtime's resource bindings or make the game playable.
+
+The native image-binding path retains writable identity-swizzle views separately from sampling views. Compute and task/mesh pipelines execute on Metal. The sparse texture GPU fixture (`tests/sparse_tex.m`) passes 36 checks covering mapped/unmapped tiles, mip tails, physical sharing, rewritten pages and GPU-written targets. `tests/switch2_gob.m` checks CPU/GPU conversion against an independent fixed Switch 2 byte-order fixture (2,560 bytes).

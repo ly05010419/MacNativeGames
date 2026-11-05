@@ -64,9 +64,9 @@ import sys
 from pathlib import Path
 
 HEADER = ('# TOTK shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
-          '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v8-unverified.\n')
+          '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.\n')
 HEADERS = {'botw': ('# Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
-                    '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v8-unverified.\n')}
+                    '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.\n')}
 EXPORT = '# Generated from {} by scripts/shader_list.py; edit that list, not this file.\n'
 KEY = re.compile(r'^[0-9a-f]{64}$')
 VARIANT = re.compile(r'^[0-9a-f]{64}-[0-9a-f]{12}_b$')
@@ -202,6 +202,11 @@ def list_name(path):
     return '/'.join(parts[-4:]) if len(parts) >= 4 and parts[-4] == 'games' and parts[-2] == 'assets' else Path(path).name
 
 
+# The games run by this runtime (games/totk): their lists carry A rows and packed pipeline keys. Every other game's own
+# tools read only V and warm rows, as hex.
+OUR_RUNTIME = (None, 'totk', 'botw', 'dkb', 'pokopia')
+
+
 def list_game(path):
     """The game folder a list is kept in (games/<game>/assets/...), or None."""
     parts = Path(path).resolve().parts
@@ -221,6 +226,8 @@ class ShaderList:
         self.path = None
         self.answers = {}       # suffix -> answers (compact JSON): the bind states warm rows name (A rows)
         self.refused = 0        # warm rows merged from a source that named a bind state the list does not know
+        self.listed = {}        # a merged cache's variant names -> the names a build gives them ("<variant>_b"; add_cache)
+        self.renamed = 0        # warm rows whose variants were renamed so (add_rows)
 
     @classmethod
     def load(cls, path):
@@ -258,11 +265,11 @@ class ShaderList:
 
     def save(self, path):
         lines = [f'V\t{key}\t{deps}' for key, deps in sorted(self.variants)]
-        if list_game(path) in (None, 'totk', 'botw'):   # other games' own tools know no A rows
+        if list_game(path) in OUR_RUNTIME:   # other games' own tools know no A rows
             named = {n[:-2].rpartition('-')[2] for row in self.warm for n in row_variants(row) if VARIANT.match(n)}
             lines += [f'A\t{suffix}\t{answers}' for suffix, answers in sorted(self.answers.items()) if suffix in named]
         lines += [f'L\t{k}\t{src}\t{c:x}\t{d:x}\t{n:x}' for k, src, c, d, n in sorted(self.locators)]
-        packed = list_game(path) in (None, 'totk', 'botw')   # other games' own tools read their lists as hex
+        packed = list_game(path) in OUR_RUNTIME   # other games' own tools read their lists as hex
         lines += ['\t'.join((row[0], pack_key(row[1]), *row[2:]) if packed and row[0] in ('R', 'B', 'T') else row) + '\t' + flags
                   for row, flags in self.warm.items()]
         Path(path).write_text(header_for(path) + ''.join(line + '\n' for line in lines))
@@ -294,6 +301,15 @@ class ShaderList:
                 deps = canonical(entry.get('deps')) if isinstance(entry, dict) else None
                 if deps is not None:
                     self.add_variant(index.stem, deps)
+                    # A variant translated on the spot is named after the answers of the Mac that met it, a listed one
+                    # after its deps' answers (totk_contrib_listed_name): a pso_user.tsv names the former, the list keeps
+                    # the latter. The cache's index says which is which, as the runtime does when it writes a
+                    # contribution (totk_shader_rt.m); without it Pokemon Pokopia's own pso_user.tsv lost 640 of its
+                    # rows here (vertex input types in the deps, 2026-11-03).
+                    name = entry.get('variant')
+                    listed = f'{index.stem}-{answers_suffix(listed_answers(deps))}'
+                    if isinstance(name, str) and VARIANT.match(name + '_b') and name != listed:
+                        self.listed[name + '_b'] = listed + '_b'
 
     def add_rows(self, path, flag):
         """A contribution file, a pso_user.tsv / pso_collected.tsv or another copy of a list: its V, A and L rows first,
@@ -323,8 +339,12 @@ class ShaderList:
             if not row:
                 continue
             if not self.knows(row):
-                self.refused += 1
-                continue
+                names = {n: self.listed[n] for n in row_variants(row) if n in self.listed}
+                if names and self.knows(rename_warm(row, names)):
+                    row = rename_warm(row, names); self.renamed += 1
+                else:
+                    self.refused += 1
+                    continue
             listed = fields[len(row)] if len(fields) > len(row) and fields[len(row)] in ('t', 'm', 'tm') else ''
             self.add_warm(row, listed or flag)
 
@@ -438,6 +458,7 @@ def main(argv):
                 lst.add_rows(source, 't' if title else 'm')
         lst.save(args[0])
         refused = f'; {lst.refused} warm rows refused: they name bind states neither the list nor the source keeps' if lst.refused else ''
+        refused += f'; {lst.renamed} warm rows renamed to the variants a build names (a cache\'s index)' if lst.renamed else ''
         print(f'{len(lst.variants) + len(lst.warm) + len(lst.locators) - before} new; {lst.counts()}{refused}')
     elif argv[:1] == ['resolve'] and len(argv) == 5:
         lst = ShaderList.load(argv[2])
@@ -456,6 +477,8 @@ def main(argv):
     elif argv[:1] == ['export'] and len(argv) == 3:
         Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm', source=list_name(argv[1])))
     elif argv[:1] == ['prune'] and len(argv) == 3:
+        if list_game(argv[1]) in ('dkb', 'pokopia'):   # a Switch 2 game's V rows are what its seed translates (prepare_ns2_seed.py)
+            sys.exit(f'{argv[1]}: a Switch 2 game\'s list is not pruned: its V rows name the shaders its seed takes from the game files')
         sys.path.insert(0, str(Path(__file__).resolve().parent))   # also when run with python -I
         from prepare_shader_seed import builtin_serves   # it imports this module
         lst = ShaderList.load(argv[1])

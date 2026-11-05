@@ -115,6 +115,9 @@
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#include "ns2_resolution.h"
+#endif
 
 void dm_gfx_set_flag(const char *name, int value);
 void dm_gfx_ssao_start(int pct); int dm_gfx_ssao_locked(void); int dm_gfx_ssao_live(void); void dm_gfx_ssao_set(int pct);   /* totk_ssao.h */
@@ -139,8 +142,19 @@ int nvn_fps_lock(void);
 
 /* Picking a resolution sizes the window to it at once (user 2026-10-25): 720p 1280x720, 1080p and 720p + MetalFX 1920x1080, MetalFX 2560x1440, native its own size (2K), 2K + MetalFX and native 4K 3840x2160, in the window's points as the first window (frontend.m runtime_front_run), the picture's shape kept
    (the aspect ratio picked) and shrunk to fit the screen's visible area. Full screen stays as it is. */
-static void settings_window_for(int mode) {
+static void settings_window_size(unsigned w,unsigned h,double ratio) {
  if(!window||(window.styleMask&NSWindowStyleMaskFullScreen))return;
+ NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen||!(ratio>0)||!w||!h)return;
+ NSRect visible=screen.visibleFrame,content=[window contentRectForFrameRect:visible];
+ CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio))),cw=round(ch*ratio);
+ NSRect old=window.frame,f=[window frameRectForContentRect:NSMakeRect(0,0,cw,ch)];
+ f.origin=NSMakePoint(NSMidX(old)-f.size.width/2,NSMidY(old)-f.size.height/2);
+ f.origin.x=fmax(NSMinX(visible),fmin(f.origin.x,NSMaxX(visible)-f.size.width));
+ f.origin.y=fmax(NSMinY(visible),fmin(f.origin.y,NSMaxY(visible)-f.size.height));
+ [window setFrame:f display:YES];
+ fprintf(stderr,"[totk] settings: window %.0fx%.0f for render %ux%u\n",cw,ch,w,h);
+}
+static void settings_window_for(int mode) {
  unsigned w=1920,h=1080;
  if(mode==OUTPUT_MODE_METALFX){w=2560;h=1440;}
  else if(mode==OUTPUT_MODE_NATIVE_METALFX||mode==OUTPUT_MODE_NATIVE_4K||mode==OUTPUT_MODE_NATIVE_4K_METALFX||mode==OUTPUT_MODE_NATIVE_6K){w=3840;h=2160;}
@@ -148,15 +162,7 @@ static void settings_window_for(int mode) {
  else if(mode==OUTPUT_MODE_720P){w=1280;h=720;}
  else if(mode==OUTPUT_MODE_NATIVE&&!runtime_output_native(mode,&w,&h)){w=1920;h=1080;}
  double ratio=runtime_aspect_ratio()>0?runtime_aspect_ratio():(double)w/h;
- NSScreen *screen=window.screen?:NSScreen.mainScreen;if(!screen||!(ratio>0))return;
- NSRect visible=screen.visibleFrame,content=[window contentRectForFrameRect:visible];
- CGFloat ch=round(fmin(h,fmin(content.size.height,content.size.width/ratio))),cw=round(ch*ratio);
- NSRect old=window.frame,f=[window frameRectForContentRect:NSMakeRect(0,0,cw,ch)];
- f.origin=NSMakePoint(NSMidX(old)-f.size.width/2,NSMidY(old)-f.size.height/2);
- f.origin.x=fmax(NSMinX(visible),fmin(f.origin.x,NSMaxX(visible)-f.size.width));
- f.origin.y=fmax(NSMinY(visible),fmin(f.origin.y,NSMaxY(visible)-f.size.height));
- [window setFrame:f display:YES];   /* windowDidResize follows the drawable (front_sync_drawable) */
- fprintf(stderr,"[totk] settings: window %.0fx%.0f for the resolution\n",cw,ch);
+ settings_window_size(w,h,ratio);
 }
 
 /* Settings live alongside controls.txt. Restore the graphics switches before the guest starts; output and aspect
@@ -331,6 +337,59 @@ static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
  return settings_row(title,@[value],@[@0],^int{return 0;},nil);
 }
 static NSString *settings_on_off(int on) { return on?settings_text("开","On"):settings_text("关","Off"); }
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+/* The game consumes this request in its native display calculation. */
+static void settings_ns2_save_size(void) {
+ uint64_t s=runtime_output_size_current();unsigned w=(unsigned)s,h=(unsigned)(s>>32);char word[32];
+ snprintf(word,sizeof word,"%ux%u",w,h);runtime_setting_save("graphics-output-size.txt",word,"native render resolution");
+ snprintf(word,sizeof word,"%.8g",h?(double)w/h:16.0/9);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");
+}
+static TOTKSettingRow *settings_ns2_resolution_row(void) {
+ NSString *title=settings_text("分辨率","Resolution");
+ uint64_t current=runtime_output_size_current();unsigned w=(unsigned)current,h=(unsigned)(current>>32);
+ NSString *picked=[NSString stringWithFormat:@"%ux%u",w,h];
+ NSMutableArray<NSString *> *sizes=[NSMutableArray array],*names=[NSMutableArray array];
+ unsigned mw=3840,mh=2160;runtime_output_res(&mw,&mh);
+ const unsigned heights[]={540,720,1080,1440,2160};
+ const char *labels[]={"540p","720p","1080p","2K","4K"};
+ for(unsigned k=0;k<5;k++){
+  unsigned nh=heights[k],nw=h?(unsigned)(((uint64_t)w*nh+h/2)/h):nh*16/9;
+  if(nw>mw){nh=w?(unsigned)((uint64_t)mw*h/w):0;nw=h?(unsigned)(((uint64_t)w*nh+h/2)/h):0;}
+  if(nh>mh){nw=(unsigned)((uint64_t)nw*mh/nh);nh=mh;}
+  if(!nw||!nh)continue;
+  NSString *s=[NSString stringWithFormat:@"%ux%u",nw,nh];if([sizes containsObject:s])continue;
+  [sizes addObject:s];[names addObject:nh==heights[k]?[NSString stringWithFormat:@"%s (%u×%u)",labels[k],nw,nh]:[NSString stringWithFormat:@"%u×%u",nw,nh]];
+ }
+ if(![sizes containsObject:picked]){[sizes addObject:picked];[names addObject:[picked stringByReplacingOccurrencesOfString:@"x" withString:@"×"]];}
+ NSInteger selected=[sizes indexOfObject:picked];
+ NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(NSUInteger i=0;i<sizes.count;i++)[values addObject:@(i)];
+ [names addObject:settings_text("自定义…","Custom…")];[values addObject:@-1];
+ return settings_row(title,names,values,^int{return (int)selected;},^(int value){
+  NSString *size=value>=0&&value<(int)sizes.count?sizes[(NSUInteger)value]:nil;
+  if(value<0){
+   NSAlert *alert=[NSAlert new];alert.messageText=settings_text("自定义渲染分辨率","Custom render resolution");
+   alert.informativeText=settings_text("输入宽x高，例如3840x2160。保存后立即应用。","Enter widthxheight, e.g. 3840x2160. Applies immediately.");
+   NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(0,0,240,24)];field.stringValue=picked;alert.accessoryView=field;
+   [alert addButtonWithTitle:settings_text("保存","Save")];[alert addButtonWithTitle:settings_text("取消","Cancel")];
+   if([alert runModal]!=NSAlertFirstButtonReturn){dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
+   size=[field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  }
+  unsigned nw,nh;
+  if(!size||!ns2_parse_resolution(size.UTF8String,&nw,&nh)){
+   NSAlert *error=[NSAlert new];error.messageText=settings_text("分辨率格式无效","Invalid resolution");
+   error.informativeText=settings_text("请输入宽x高，每边1–16384。原设置保留。","Use widthxheight, each 1–16384. The previous choice is kept.");[error runModal];dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;
+  }
+  if(!runtime_output_size_set(nw,nh)){
+   NSAlert *error=[NSAlert new];error.messageText=settings_text("分辨率超出本次启动容量","Resolution exceeds this run's capacity");
+   unsigned mw=0,mh=0;runtime_output_res(&mw,&mh);
+   error.informativeText=[NSString stringWithFormat:settings_text("本次最高支持 %u×%u。原设置保留。","This run supports up to %u×%u. The previous choice is kept."),mw,mh];
+   [error runModal];dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;
+  }
+  settings_ns2_save_size();
+  dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});
+ });
+}
+#endif
 
 static NSString *settings_ratio_text(float r) {
  if(fabsf(r*9-16)<0.02f)return @"16:9";
@@ -696,20 +755,36 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    [NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
   [resModes addObject:@(m)];}
  NSString *resolution=settings_text("分辨率","Resolution");
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+ (void)resolution;
+ [rows addObject:settings_ns2_resolution_row()];
+#else
  if(res.count<2)[rows addObject:settings_fixed(resolution,@"1080p")];
  else [rows addObject:settings_row(resolution,res,resModes,
   ^int{return runtime_output_mode();},^(int v){settingsPendingOutput=-1;if(runtime_output_mode_set(v)){settings_window_for(v);settings_save_int("graphics-output.txt",v,"resolution");}})];
+#endif
  NSString *aspect=settings_text("画面比例","Aspect ratio");
  if(!(runtime_aspect_ratio()>0))[rows addObject:settings_fixed(aspect,@"16:9")];
  else{NSMutableArray<NSNumber *> *ratios=[@[@(16.0/9),@(16.0/10),@(21.0/9),@(32.0/9)] mutableCopy];
-  float start=runtime_aspect_start();BOOL listed=NO;   /* TOTK_ASPECT's ratio (2.39, 3440x1440 ...) as one more choice */
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+  float start=runtime_aspect_ratio();
+#else
+  float start=runtime_aspect_start();
+#endif
+  BOOL listed=NO;   /* Include the game's custom ratio as one more choice. */
   for(NSNumber *r in ratios)listed|=aspect_near(start,r.doubleValue);
   if(start>0&&!listed)[ratios addObject:@(start)];
   NSMutableArray<NSString *> *choices=[NSMutableArray array];NSMutableArray<NSNumber *> *values=[NSMutableArray array];
   for(NSUInteger i=0;i<ratios.count;i++){[choices addObject:settings_ratio_text(ratios[i].floatValue)];[values addObject:@((int)i)];}
   [rows addObject:settings_row(aspect,choices,values,^int{
     float now=runtime_aspect_ratio();for(NSUInteger i=0;i<ratios.count;i++)if(aspect_near(now,ratios[i].doubleValue))return (int)i;return -1;},
-   ^(int v){float r=ratios[(NSUInteger)v].floatValue;settingsPendingAspect=0;if(runtime_aspect_set_ratio(r)){runtime_front_resize_aspect(r);char word[32];snprintf(word,sizeof word,"%.8g",r);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");}})];}
+   ^(int v){float r=ratios[(NSUInteger)v].floatValue;settingsPendingAspect=0;if(runtime_aspect_set_ratio(r)){
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+    settings_ns2_save_size();dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});
+#else
+    runtime_front_resize_aspect(r);char word[32];snprintf(word,sizeof word,"%.8g",r);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");
+#endif
+   }})];}
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],

@@ -183,7 +183,7 @@ Use `games/totk/scripts/shader_list.py`. It needs only Python 3.
 ```sh
 # Mac: add the shaders your own translation cache holds
 python3 games/totk/scripts/shader_list.py merge games/totk/assets/shader_list.tsv \
-  "$HOME/Library/Application Support/MacNativeGames/TOTK/shader-cache/rt-totk-native-v8-unverified"
+  "$HOME/Library/Application Support/MacNativeGames/TOTK/shader-cache/rt-totk-native-v9-unverified"
 
 # check the result, then commit the list and open a pull request
 python3 games/totk/scripts/shader_list.py stats games/totk/assets/shader_list.tsv

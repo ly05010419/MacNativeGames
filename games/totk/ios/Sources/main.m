@@ -13,6 +13,7 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "touch_pad.h"
 #import "start_screen.h"
@@ -22,6 +23,7 @@ void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *host);
 void runtime_ios_sync_drawable(UIView *host);
 void runtime_ios_sync_safe_area(UIView *host);
 static char *host_argv[3];
+static BOOL outputResolutionFromEnvironment;
 static NSString *g_no_game_data;   // set when there is no RomFS image to play from (didFinishLaunching)
 static NSString *g_seed_pack, *g_seed_unpack_to;   // a pushed shader pack to unpack before the game starts (seed_unpack)
 
@@ -252,6 +254,19 @@ static void apply_frame_env(const totk_frame_env *e, int overwrite) {
    and the start screen does not write its rows, so it is left as it is. The mapping is settings_map.c's. */
 static void apply_display_settings(void) {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+#ifdef GAME_DKB
+    if (!outputResolutionFromEnvironment) {
+        NSString *size=[d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
+        unsigned w,h;
+        if(!ns2_parse_resolution(size.UTF8String,&w,&h)) {
+            size=@"960x540";[d setObject:size forKey:@"TOTK_OUTPUT_RES"];
+            ns2_parse_resolution(size.UTF8String,&w,&h);
+            fprintf(stderr,"[totk] invalid saved resolution; using 960x540\n");
+        }
+        setenv("TOTK_OUTPUT_RES",size.UTF8String,1);
+        char height[16];snprintf(height,sizeof height,"%u",h);setenv("TOTK_IOS_DRAWABLE_H",height,0);
+    }
+#endif
     if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
@@ -436,6 +451,7 @@ static void apply_settings(void) {
     BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv,"0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
     if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); setenv("TOTK_UW_CATALOG","1",0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
+    outputResolutionFromEnvironment=getenv("TOTK_OUTPUT_RES")!=NULL;
     apply_settings();
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     setenv("TOTK_GAME_DATA",[res stringByAppendingPathComponent:@"game-data"].fileSystemRepresentation,1);   // runtime/game_data.h
@@ -553,7 +569,9 @@ static void apply_settings(void) {
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_TOUCH_WITH_KEYBOARD"]) setenv("TOTK_TOUCH_WITH_KEYBOARD", "1", 0);
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
-    host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");
+    const char *probe = getenv("TOTK_IOS_PROBE");
+    if (probe && strncmp(probe, "probe", 5)) { fprintf(stderr,"invalid TOTK_IOS_PROBE\n"); abort(); }
+    host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup(probe ? probe : "boot");
     return YES;   // the window is made when the window scene connects (TOTKSceneDelegate)
 }
 @end

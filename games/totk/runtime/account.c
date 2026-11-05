@@ -3,6 +3,7 @@
    one, as on a console: chosen before the game starts (settings_panel.h's User page, from the next launch), and a
    running game keeps the user it opened with even when another one is chosen afterwards. */
 #include "runtime.h"
+void hle_signal_system_event(void *event);
 #include "users.h"
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -178,11 +179,33 @@ static uint32_t list_users(int *count,Uid *out,int max){initialize();if(!count||
 /* SDK 20.5 (1.9.0) takes the users the system opened at launch instead: the one preselected user. */
 static uint32_t pop_open_users(int *count,UserHandle *out,int max){if(!count||(max>0&&!out))return 0x7c67;*count=0;if(max>0){open_preselected(&out[0]);*count=1;}return 0;}
 #endif
+/* The last opened user: the local user (Donkey Kong Bananza; Super Mario Odyssey in seedds/nxnative hle_account.c, MIT). No
+   Nintendo Account is linked and no network service account exists on the host: those fail, and the game takes its offline
+   path. */
+static uint32_t last_opened(Uid *out){if(!out)return 0x7c67;initialize();lock_acquire();*out=local;lock_release();return 0;}
+static uint32_t no_nintendo_account(void){return 0x7c67;}
+/* The users open since launch: the local user (SDK 20, Pokemon Pokopia). The network service account and its license: none,
+   so the async calls fail at once (their event is signalled) and the game stays offline. */
+static uint32_t list_open_users(int *count,Uid *out,int n){if(!count)return 0x7c67;initialize();lock_acquire();*count=0;if(n>0&&out){out[0]=local;*count=1;}lock_release();return 0;}
+static void async_noop(void *self){(void)self;}
+static uint32_t async_event(void *self,void *event){(void)self;if(!event)return 0x7c67;hle_bind_system_event(event,0);hle_signal_system_event(event);return 0;}
+static uint32_t license_kind(void *self){(void)self;return 0;}
 void *runtime_account_override(const char *name){
  static const struct{const char *name;void *fn;} entries[]={
  {"_ZN2nn7account10InitializeEv",initialize},{"_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE",preselected},
  {"_ZN2nn7account9CloseUserERKNS0_10UserHandleE",close_user},{"_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE",user_id},
- {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
+ {"_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE",existence},{"_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE",last_opened},{"_ZN2nn7account13ListOpenUsersEPiPNS0_3UidEi",list_open_users},
+ {"_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERKNS0_10UserHandleE",no_nintendo_account},
+ {"_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE",no_nintendo_account},
+ {"_ZN2nn7account40ShowLicenseRequirementsForNetworkServiceERKNS0_10UserHandleE",no_nintendo_account},
+ {"_ZN2nn7account44EnsureNetworkServiceAccountIdTokenCacheAsyncEPNS0_12AsyncContextERKNS0_10UserHandleE",no_nintendo_account},
+ {"_ZN2nn7account34LoadNetworkServiceLicenseInfoAsyncEPNS0_37AsyncNetworkServiceLicenseInfoContextERKNS0_10UserHandleE",no_nintendo_account},
+ {"_ZN2nn7account12AsyncContextC1Ev",async_noop},{"_ZN2nn7account12AsyncContextD1Ev",async_noop},{"_ZN2nn7account12AsyncContextD2Ev",async_noop},
+ {"_ZN2nn7account12AsyncContext14GetSystemEventEPNS_2os11SystemEventE",async_event},{"_ZN2nn7account12AsyncContext9GetResultEv",no_nintendo_account},
+ {"_ZN2nn7account37AsyncNetworkServiceLicenseInfoContextC1Ev",async_noop},
+ {"_ZN2nn7account37AsyncNetworkServiceLicenseInfoContext28GetNetworkServiceLicenseKindEv",license_kind},
+ {"_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm",no_nintendo_account},
+ {"_ZN2nn7account36EnsureNetworkServiceAccountAvailableERKNS0_10UserHandleE",no_nintendo_account},{"_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE",nickname}
 #ifdef GAME_BOTW
  ,{"_ZN2nn7account19OpenPreselectedUserEPNS0_10UserHandleE",open_preselected},{"_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi",list_users}
  ,{"_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi",pop_open_users}

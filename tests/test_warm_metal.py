@@ -216,7 +216,7 @@ class MetalCompilerTests(unittest.TestCase):
             build_app.remove_large_output_overlays(tree, 'v143')
             self.assertEqual(sorted(p.name for p in folder.iterdir()), ['2560x1440'])
 
-    def test_native_5k_rejects_breath_of_the_wild_before_building_it(self):
+    def test_native_5k_rejects_unsupported_games_before_building_them(self):
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             game, keys = root / 'game.nsp', root / 'keys'
@@ -225,7 +225,7 @@ class MetalCompilerTests(unittest.TestCase):
                  mock.patch.object(build_app, 'fonts_valid', return_value=True), \
                  mock.patch.object(build_app, 'prerequisites', return_value=Path('/python')), \
                  mock.patch.object(build_app, 'prepare_work', return_value=root/'tree'), \
-                 mock.patch.object(build_app, 'identify_game', return_value='botw'):
+                 mock.patch.object(build_app, 'identify_game', return_value='dkb'):
                 with self.assertRaisesRegex(build_app.BuildError, '--native-5k is only available'):
                     build_app.main([str(game), '-k', str(keys), '--work', str(root/'work'), '--native-5k'])
 
