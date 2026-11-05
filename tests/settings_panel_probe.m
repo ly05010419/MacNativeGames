@@ -93,9 +93,11 @@ void runtime_gamepad_background_set(int on) { fakePadBackground = !!on; }
 int runtime_gamepad_battery_left_percent(void) { return -1; }
 int runtime_mouse_set(int on) { return fakeMouse = !!on; }
 int runtime_mouse_enabled(void) { return fakeMouse; }
-int vr_enabled(void) { return 0; }   /* VR settings rows (zeldaVR): VR off in the probe */
-int vr_streamer_managed(void) { return 0; }
+static int fakeVrEnabled, fakeVrManaged;
+int vr_enabled(void) { return fakeVrEnabled; }
+int vr_streamer_managed(void) { return fakeVrManaged; }
 void vr_resolution(int *w, int *h) { *w = *h = 0; }
+void vr_stream_resolution(int *w,int *h) { *w=2048;*h=2208; }
 int vr_set_resolution(int w, int h) { (void)w; (void)h; return 0; }
 int vr_first_person(void) { return 0; }
 void vr_set_first_person(int on) { (void)on; }
@@ -105,6 +107,8 @@ int vr_quest_view(void) { return 0; }
 void vr_set_quest_view(int on) { (void)on; }
 int vr_quest_zoom(void) { return 2; }
 void vr_set_quest_zoom(int x) { (void)x; }
+int vr_eye_spring_ms(void) { return 300; }
+void vr_set_eye_spring_ms(int ms) { (void)ms; }
 int vr_6dof(void) { return 0; }
 int vr_motion(void) { return 0; }
 void vr_set_motion(int on) { (void)on; }
@@ -537,6 +541,35 @@ static void update_probe(void) {
 }
 
 int main(int argc, const char **argv) { @autoreleasepool {
+    if (argc==2 && !strcmp(argv[1],"vr-rows")) {
+        /* Exercise production row construction without NSApplication, a game,
+           a window, or GPU work. Unsupported settings must not be offered. */
+        setenv("TOTK_UI_LANG","en",1);fakeVrEnabled=fakeVrManaged=1;
+        NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];settings_vr_rows(rows);
+        NSMutableDictionary<NSString *,TOTKSettingRow *> *byTitle=[NSMutableDictionary dictionary];
+        for(TOTKSettingRow *r in rows)byTitle[r.title]=r;
+        assert(byTitle[@"VR · view"] && byTitle[@"Stereo · eye distance (%)"]);
+        assert(byTitle[@"Show the Quest view"] && byTitle[@"Mac preview zoom (x)"]);
+#ifdef GAME_BOTW
+        assert(!byTitle[@"Stereo (the eyes rendered in turn)"]);
+        assert(!byTitle[@"First person camera spring (ms, 0 = rigid)"]);
+#ifdef GAME_BOTW190
+        assert(!byTitle[@"VR · view"].set && [byTitle[@"VR · view"].choices isEqualToArray:@[@"Third person"]]);
+#else
+        assert(([byTitle[@"VR · view"].choices isEqualToArray:@[@"Third person",@"First person"]]));
+#endif
+#else
+        assert(byTitle[@"Stereo (the eyes rendered in turn)"]);
+        assert(byTitle[@"First person camera spring (ms, 0 = rigid)"]);
+#endif
+#ifdef GAME_BOTW160
+        assert(([byTitle[@"Render resolution (per eye, immediate)"].choices isEqualToArray:@[@"0.625×　1280×1380",@"0.75×　1536×1656",@"0.875×　1792×1932",@"1.0×　2048×2208",@"1.25×　2560×2760",@"1.5×　3072×3312",@"1.75×　3584×3864",@"2.0×　4096×4416"]]));
+        assert(byTitle[@"Stream resolution (per eye)"]&&!byTitle[@"Stream resolution (per eye)"].set);
+#else
+        assert(([byTitle[@"VR · resolution (per eye)"].choices isEqualToArray:@[@"1344×1408",@"1680×1760",@"1920×2048",@"2048×2208"]]));
+#endif
+        puts("pass: supported VR settings rows");return 0;
+    }
 #ifdef TOTK_GAME_V143
     if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
 #endif

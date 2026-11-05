@@ -216,7 +216,8 @@ def patcher_sites(version):
     source = PATCHER[version]
     text = (RUNTIME / source).read_text()
     if version in BOTW_DEFINED:
-        text += '\n' + '\n'.join((RUNTIME / name).read_text() for name in ('botw_shadow_res.h', 'botw_fov.h'))
+        text += '\n' + '\n'.join((RUNTIME / name).read_text() for name in
+                                   ('botw_shadow_res.h', 'botw_fov.h', 'botw_stereo.h', 'botw_vr_camera.h', 'botw_vr_projection.h'))
         return botw_sites(text, source, BOTW_DEFINED[version])
     foreign = [(start, end) for block, start, end in branch_spans(text) if block not in (version, None)]
     scoped = _blank(text, foreign)

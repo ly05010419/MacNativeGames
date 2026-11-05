@@ -16,3 +16,5 @@ __attribute__((weak)) void runtime_camera_distance_set(int cm) {
 __attribute__((weak)) void runtime_vr_find_head(int stage) {
     (void)stage; fprintf(stderr, "[dm] [nvn-mtl] [flag] vr_findhead: no camera hook in this version\n");
 }
+
+__attribute__((weak)) int runtime_vr_base_view(float out[12]) { (void)out; return 0; }

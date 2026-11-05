@@ -39,7 +39,7 @@ static int rmsg(int fd, uint16_t *type, uint8_t *p, uint32_t *n) {
     *n = len - 2; return *n ? rd(fd, p, *n) : 0;
 }
 
-typedef struct { int listen_fd, fd; double seconds, yaw_rate; const char *png; int sent_poses; _Atomic int stop; } daemon_t;
+typedef struct { int listen_fd, fd; double seconds, yaw_rate; const char *png, *pose_file; int sent_poses; _Atomic int stop; } daemon_t;
 #define POSE_RING 512
 static struct { uint64_t ts; float q[4]; } g_poses[POSE_RING];
 static int g_npose;
@@ -50,6 +50,11 @@ static void *pose_thread(void *arg) {
     while (!d->stop) {
         uint64_t t = now_ns(); double s = (t - t0) / 1e9, yaw = d->yaw_rate * s * M_PI / 180.0;
         uint8_t p[36]; float q[4] = { 0, (float)sin(yaw / 2), 0, (float)cos(yaw / 2) }, pos[3] = { 0, 1.6f, 0 };
+        if(d->pose_file){FILE *f=fopen(d->pose_file,"r");if(f){
+            float a[7];if(fscanf(f,"%f %f %f %f %f %f %f",a,a+1,a+2,a+3,a+4,a+5,a+6)==7){
+                int valid=1;for(int k=0;k<7;k++)valid&=isfinite(a[k]);
+                if(valid){memcpy(q,a,16);memcpy(pos,a+4,12);}}
+            fclose(f);}}
         memcpy(p, &t, 8); memcpy(p + 8, q, 16); memcpy(p + 24, pos, 12);
         pthread_mutex_lock(&g_pose_mu); g_poses[g_npose % POSE_RING].ts = t; memcpy(g_poses[g_npose % POSE_RING].q, q, 16); g_npose++; pthread_mutex_unlock(&g_pose_mu);
         if (snd(d->fd, 9, p, 36)) break;
@@ -84,6 +89,9 @@ static double centre_mean(IOSurfaceRef s, const int32_t r[4]) {
 }
 
 static int serve(daemon_t *d) {
+    const char *capture_env=getenv("TOTK_VR_TEST_CAPTURE_EVERY");
+    int capture_every=capture_env?atoi(capture_env):1440;
+    if(capture_every<1||capture_every>72000)FAIL("invalid capture interval");
     uint16_t type; uint8_t p[MAX_MSG]; uint32_t n;
     if (rmsg(d->fd, &type, p, &n) || type != 1 || n < 2 + 32 + 8 + 2) FAIL("no hello");
     uint16_t ver; memcpy(&ver, p, 2);
@@ -119,7 +127,7 @@ static int serve(daemon_t *d) {
             mean_sum += centre_mean(surf[img], rect);
             if (!first_ns) first_ns = now_ns();
             frames++;
-            if (d->png && (frames == 30 || frames % 1440 == 0)) { char path[1024]; snprintf(path, sizeof path, "%s-%d.png", d->png, frames); save_png(surf[img], rect, path); }
+            if (d->png && (frames == 30 || frames % capture_every == 0)) { char path[1024]; snprintf(path, sizeof path, "%s-%d.png", d->png, frames); save_png(surf[img], rect, path); }
             /* Like basalt-streamer (RuntimeLink.markFrameConsumed): frames are acknowledged strictly in order, so a
                missing frame number stops every later acknowledgement. */
             if (fr != last_fr + 1) { if (!gaps++) printf("frame number %llu after %llu: the streamer would acknowledge nothing after %llu\n",
@@ -204,7 +212,8 @@ static int selftest(void) {
 int main(int argc, char **argv) {
     if (argc >= 2 && !strcmp(argv[1], "selftest")) return selftest();
     if (argc >= 3 && !strcmp(argv[1], "serve")) {
-        daemon_t d = { .seconds = argc > 3 ? atof(argv[3]) : 60, .png = argc > 4 ? argv[4] : NULL, .yaw_rate = argc > 5 ? atof(argv[5]) : 0 };
+        daemon_t d = { .seconds = argc > 3 ? atof(argv[3]) : 60, .png = argc > 4 ? argv[4] : NULL, .yaw_rate = argc > 5 ? atof(argv[5]) : 0,
+                       .pose_file = argc > 6 ? argv[6] : NULL };
         d.listen_fd = listen_and_write(argv[2]);
         printf("waiting for the game: TOTK_VR_CONTROL=%s\n", argv[2]); fflush(stdout);
         d.fd = accept(d.listen_fd, NULL, NULL); if (d.fd < 0) FAIL("accept");

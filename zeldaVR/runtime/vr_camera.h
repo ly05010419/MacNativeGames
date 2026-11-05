@@ -65,12 +65,15 @@ typedef struct {
 } vr_cam_state;
 
 extern vr_cam_state *g_vr_headlook;   /* defined in totk_vr.m; set by the hook's install, NULL without it (other versions, iOS, VR off) */
+void vr_camera_control_read(vr_cam_state *out); /* Coherent host-side control snapshot; no pose-ring inference. */
 
-/* The hooks only Tears of the Kingdom 1.4.3 on the Mac has (runtime/game_patches_v143.c; runtime_aspect_vr also in the
-   other Tears of the Kingdom versions, runtime/aspect_patch.h). Every other build (Breath of the Wild, iPhone / iPad)
-   links the defaults in zeldaVR/gfx/vr_defaults.c instead: no hook, nothing done, so callers need no check. */
+/* Optional runtime hooks: Tears of the Kingdom 1.4.3 and Breath of the Wild
+   provide camera distance on the Mac; runtime_aspect_vr is shared by the TotK
+   versions. Builds without each feature link its weak default in vr_defaults.c. */
 int runtime_aspect_vr(float a, float k);            /* the game renders ratio a, Vert+ factor k; 0 without the Vert+ stubs */
 int runtime_camera_distance_available(void);        /* 1 while the camera hook is installed */
 int runtime_camera_distance_cm(void);               /* the third-person camera distance (cm, negative is closer) */
 void runtime_camera_distance_set(int cm);
 void runtime_vr_find_head(int stage);               /* diagnostic: bone matrices near the player's head */
+
+int runtime_vr_base_view(float out[12]); /* Exact native source owner; base before our head rotation. */

@@ -181,8 +181,20 @@ void runtime_survey_init(Module *m) {
 }
 int runtime_survey_command(const char *line) { (void)line; return 0; }
 #endif
-void runtime_player_init(Module *m) { (void)m; }   /* VR first person: TOTK only */
-uintptr_t runtime_player_pos_address(void) { return 0; }
+void runtime_player_init(Module *m) {
+#ifdef GAME_BOTW160
+    survey_main=(uintptr_t)m->base; /* Same authoritative Havok/player owner as the existing survey. */
+#else
+    (void)m;
+#endif
+}
+uintptr_t runtime_player_pos_address(void) {
+#ifdef GAME_BOTW160
+    return havok_position();
+#else
+    return 0;
+#endif
+}
 #else
 enum { SCENE_SLOT = GAME_ADDR(0x4663f08), FORCE_MATRIX = GAME_ADDR(0x69a18c), ACTOR_POS = GAME_ACTOR_POS, ACTOR_ROT = GAME_ACTOR_ROT };
 static uintptr_t survey_main;

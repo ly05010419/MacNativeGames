@@ -5,6 +5,7 @@
 #include "autoload.h"
 #include "world_survey.h"
 #include "keyboard_map.h"
+#include "../zeldaVR/gfx/vr_labo.h"
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,13 +164,9 @@ static uint32_t show_controller_support(ControllerSupportResult *out,const void 
 }
 /* Vibration devices and the six-axis sensor: runtime/hid_feedback.c (none unless TOTK_RUMBLE=1 / TOTK_GYRO=1). */
 #ifdef GAME_BOTW
-/* SDK 7 (Breath of the Wild 1.6.0, botw.md). The console's own seven-axis sensor (Labo VR) is absent on a Mac: it starts and
-   stops without states. Gyroscope zero-drift mode and the dual Joy-Con assignment change nothing for the host controller.
+/* SDK 7 (Breath of the Wild 1.6.0, botw.md). Labo's console sensor is backed by Quest tracking in a Mac VR session.
+   Gyroscope zero-drift mode and the dual Joy-Con assignment change nothing for the host controller.
    The one-argument controller applet returns at once, as the two-argument one does (one player). */
-static uint32_t seven_axis_init(void *work,unsigned long size){(void)work;(void)size;fprintf(stderr,"[botw] seven-axis sensor: not present\n");return 0;}
-static uint32_t seven_axis_ok(void){return 0;}
-static void seven_axis_reset(void){}
-static int seven_axis_states(void *out,int count){(void)out;(void)count;return 0;}
 static uint32_t show_controller_support_v1(const void *arg){return show_controller_support(NULL,arg);}
 #endif
 #if defined(GAME_BOTW) || defined(GAME_NS2)
@@ -198,10 +195,10 @@ void *runtime_input_override(const char *name){
  {"_ZN2nn3hid15InitializeMouseEv",initialize_mouse},{"_ZN2nn3hid18InitializeKeyboardEv",initialize_keyboard},
  {"_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi",mouse_states},{"_ZN2nn3hid16GetKeyboardStateEPNS0_13KeyboardStateE",keyboard_state}
 #ifdef GAME_BOTW
- ,{"_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm",seven_axis_init},{"_ZN2nn3hid26FinalizeSevenSixAxisSensorEv",seven_axis_ok},
- {"_ZN2nn3hid23StartSevenSixAxisSensorEv",seven_axis_ok},{"_ZN2nn3hid22StopSevenSixAxisSensorEv",seven_axis_ok},
- {"_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv",seven_axis_reset},
- {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",seven_axis_states},
+ ,{"_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm",vr_labo_sensor_init},{"_ZN2nn3hid26FinalizeSevenSixAxisSensorEv",vr_labo_sensor_finalize},
+ {"_ZN2nn3hid23StartSevenSixAxisSensorEv",vr_labo_sensor_start},{"_ZN2nn3hid22StopSevenSixAxisSensorEv",vr_labo_sensor_stop},
+ {"_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv",vr_labo_sensor_reset},
+ {"_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi",vr_labo_sensor_states},
  {"_ZN2nn3hid21ShowControllerSupportERKNS0_20ControllerSupportArgE",show_controller_support_v1}
 #endif
 #if defined(GAME_BOTW) || defined(GAME_NS2)
@@ -282,6 +279,13 @@ static void *input_file(void *arg) {
             extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
         } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
             extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
+#if defined(GAME_BOTW160)
+        } else if (!strncmp(line,"vr_resolution ",14)) {
+            int w,h,n=0;extern int vr_set_resolution(int w,int h);
+            if(sscanf(line+14,"%dx%d %n",&w,&h,&n)==2&&n&&!line[14+n]) {
+                if(!vr_set_resolution(w,h))fprintf(stderr,"[totk] live VR render resolution rejected: %dx%d\n",w,h);
+            } else fprintf(stderr,"[totk] vr_resolution command needs widthxheight per eye\n");
+#endif
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
         } else if (!strncmp(line,"resolution ",11)) {
             unsigned w,h;int n=0;

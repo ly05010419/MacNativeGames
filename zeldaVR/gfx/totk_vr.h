@@ -27,11 +27,17 @@ void vr_set_offset_cm(int axis, int cm);
 int vr_wants_camera(void);                /* stage 2 head look is on: the replay hands each frame's camera to vr_note_camera */
 void vr_note_camera(const float *cam);    /* the frame's main camera block (view matrix first, 3x4 rows): finds its head pose */
 void vr_present_queued(uint64_t ticket);  /* the game presents that frame: its head pose goes with the present's ticket */                   // put the screen in front of where the head looks now
+/* Native same-frame SBS, captured at the game's lens compositor after the HUD.
+ * Copy both eyes into independent array slices; publish once at GPU completion. */
+int vr_source_encode_stereo(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const float fov[2][4], const float rotation[2][9]);
+int vr_source_encode_stereo_menu(id<MTL4CommandBuffer> cb, id<MTLTexture> src);
+void vr_source_native_frame(void); /* This game's frame has the native lens consumer. */
 void vr_stats(char *out, size_t n);
-/* VR settings (TOTK_VR_STREAMER: the game runs the streamer): the per-eye size streamed, and a new one (restarts the
-   streamer; the VR thread reconnects). */
+/* BotW160: eight render sizes apply at the next game frame; streaming stays 2048x2208
+   per eye. Other adapters retain their existing streaming-size setting. */
 int vr_streamer_managed(void);
 void vr_resolution(int *w, int *h);
+void vr_stream_resolution(int *w,int *h);
 int vr_set_resolution(int w, int h);
 int vr_frame_pos(float p[3]);   /* the replay thread: the position this frame's first-person camera was put at (0 without one) */
 void vr_frame_match_desc(char *out, size_t n);   /* diagnostic: this frame's camera block against the hook ring, then reset */

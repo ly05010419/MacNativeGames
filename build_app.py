@@ -2621,7 +2621,7 @@ def parse_args(argv):
                          'on by default with 32 GB of memory or more. --no-native-5k leaves it out. '
                          'Reserves the larger game heaps at every start, whatever resolution is selected')
     ap.add_argument('--vr', action='store_true',
-                    help='Mac, 1.4.3 with native 4K: also the headset-shaped canvases of the VR picture modes (zeldaVR/install_vr.sh passes it)')
+                    help='Mac VR: Tears of the Kingdom 1.4.3 with native 4K, or our Breath of the Wild stereo renderer (zeldaVR/install_vr.sh passes it)')
     fonts = ap.add_mutually_exclusive_group()
     fonts.add_argument('--firmware', type=Path, help='unpacked firmware NCA directory providing the six expected shared fonts (needed for NSP unless --shared-fonts or valid cached fonts are available; Breath of the Wild 1.9.0 too)')
     fonts.add_argument('--shared-fonts', type=Path, help='previously extracted shared-font directory containing the six verified .bfttf files')
@@ -2700,6 +2700,8 @@ def main(argv):
     if dlcs and which != 'botw':
         raise BuildError(f'{APPS[which][0]} has no DLC support: leave out --dlc')
     if which == 'botw':
+        if args.vr and args.platform != 'macos':
+            raise BuildError('--vr needs a Mac build')
         if args.platform == 'visionos':
             raise BuildError('Breath of the Wild has no native Vision Pro build yet: use --platform macos or ios')
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build

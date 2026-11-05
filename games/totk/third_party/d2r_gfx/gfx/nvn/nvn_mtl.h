@@ -80,3 +80,7 @@ void mtl_ui_ghost(int on, float px, float py, const float grid[4], float cx, flo
 int mtl_ui_ghost_rect(float r[4]);   // 上面认到的那件货的屏幕矩形（归一化）；还没认到返回 0 | Screen rectangle (normalized) of the item recognized above; returns 0 if not recognized yet
 
 int mtl_probe_upload_batch(void);
+
+int mtl_probe_visibility(void); /* Count / clear / resume / reset in one encoder. */
+
+int mtl_probe_vr_ui_layout(void); /* Native UI square-pixel and scissor GPU readback. */

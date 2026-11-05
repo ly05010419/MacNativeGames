@@ -257,6 +257,7 @@ static void settings_effects_restore(void);   /* botw_effects.h */
 static void settings_effects_restore(void) {}
 #endif
 static void settings_restore_begin(void) {
+ extern int vr_enabled(void);
  int v;char word[32];
  if(settings_read_int("graphics-overlay.txt",&v)&&v<=HUD_MODE_MINIMAL)fps_overlay_set_hud_mode(v);
  if(!getenv("TOTK_MFX")&&runtime_setting_word("graphics-frame.txt",word,sizeof word)){
@@ -270,9 +271,17 @@ static void settings_restore_begin(void) {
  if(!dm_gfx_aniso_locked()&&settings_read_int("graphics-aniso.txt",&v)&&v<=16)dm_gfx_aniso_start(v);
  settings_effects_restore();
  const char *output=getenv("TOTK_OUTPUT_RES");
- if((!output||!*output||!strcmp(output,"auto"))&&!getenv("TOTK_MFX_OUTPUT")&&!getenv("TOTK_MFX_UPSCALE")&&
+ if(
+#if defined(GAME_BOTW160)
+    !vr_enabled()&&
+#endif
+    (!output||!*output||!strcmp(output,"auto"))&&!getenv("TOTK_MFX_OUTPUT")&&!getenv("TOTK_MFX_UPSCALE")&&
     settings_read_int("graphics-output.txt",&v)&&v<=OUTPUT_MODE_LAST)settingsPendingOutput=v;
- if(!getenv("TOTK_ASPECT")&&runtime_setting_word("graphics-aspect.txt",word,sizeof word)){
+ if(
+#if defined(GAME_BOTW160)
+    !vr_enabled()&&
+#endif
+    !getenv("TOTK_ASPECT")&&runtime_setting_word("graphics-aspect.txt",word,sizeof word)){
   char *end;float ratio=strtof(word,&end);while(*end==' '||*end=='\n'||*end=='\r'||*end=='\t')end++;
   if(end!=word&&!*end&&isfinite(ratio)&&ratio>=0.5f&&ratio<=8)settingsPendingAspect=ratio;
  }
@@ -465,6 +474,7 @@ static NSString *settings_pad_auto_text(void) {
 int vr_enabled(void);
 int vr_streamer_managed(void);
 void vr_resolution(int *w, int *h);
+void vr_stream_resolution(int *w,int *h);
 int vr_set_resolution(int w, int h);
 int vr_first_person(void);
 void vr_set_first_person(int on);
@@ -497,10 +507,12 @@ void vr_set_motion(int on);
 int vr_hide_head_mode(void) __attribute__((weak_import));
 void vr_set_hide_head_mode(int m) __attribute__((weak_import));
 static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
+#ifndef GAME_BOTW
  if(vr_hide_head_mode&&vr_set_hide_head_mode)
   [rows addObject:settings_row(settings_text("林克的头","Link's head"),
    @[settings_text("自动（第一人称时隐藏）","Auto (hidden in first person)"),settings_text("隐藏","Hidden"),settings_text("显示","Shown")],@[@-1,@1,@0],
    ^int{return vr_hide_head_mode();},^(int v){vr_set_hide_head_mode(v);})];
+#endif
  if(!runtime_camera_distance_available())return;
  [rows addObject:settings_row(settings_text("摄像机距离（第三人称）","Camera distance (third person)"),
   @[settings_text("默认","Default"),settings_text("近 1 米","1 m closer"),settings_text("近 2 米","2 m closer"),settings_text("近 3 米","3 m closer"),
@@ -509,11 +521,20 @@ static void settings_camera_rows(NSMutableArray<TOTKSettingRow *> *rows) {
 }
 static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  if(!vr_enabled())return;
+#ifdef GAME_BOTW190
+ [rows addObject:settings_fixed(settings_text("VR 设置 · 视角","VR · view"),settings_text("第三人称","Third person"))];
+#elif defined(GAME_BOTW)
+ [rows addObject:settings_row(settings_text("VR 设置 · 视角","VR · view"),@[settings_text("第三人称","Third person"),settings_text("第一人称","First person")],@[@0,@1],
+  ^int{return vr_first_person();},^(int v){vr_set_first_person(v);})];
+#else
  [rows addObject:settings_row(settings_text("VR 设置 · 视角","VR · view"),@[settings_text("第一人称","First person"),settings_text("第三人称","Third person")],@[@1,@0],
   ^int{return vr_first_person();},^(int v){vr_set_first_person(v);})];
+#endif
+#ifndef GAME_BOTW
  /* the camera's spring on the head, ms (user 2026-11-02: "用 弹性 解决" the shaking; 0: bound rigidly) */
  {TOTKSettingRow *r=settings_row(settings_text("第一人称镜头弹性（毫秒，0 = 绑死）","First person camera spring (ms, 0 = rigid)"),nil,nil,^int{return vr_eye_spring_ms();},^(int v){vr_set_eye_spring_ms(v);});
   r.sliderMin=0;r.sliderMax=300;[rows addObject:r];}
+#endif
  /* The camera's position (user 2026-10-29: "可以改变 摄像头 上下前后左右 位置 ，方便我 实时调整"): -100..100 cm each, from where
     the game's camera faces, applied while dragging (totk_vr.m vr_set_offset_cm, kept in vr-offset.txt). */
  NSArray<NSString *> *axes=@[settings_text("摄像头 上下（厘米）","Camera up / down (cm)"),settings_text("摄像头 前后（厘米）","Camera forward / back (cm)"),
@@ -525,27 +546,41 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
     both eyes; on, each inside its lens opening as in the headset; off, uncovered ("就是 不遮挡状态"). */
  [rows addObject:settings_row(settings_text("显示 Quest 画面","Show the Quest view"),nil,nil,^int{return vr_quest_view();},^(int v){vr_set_quest_view(v);})];
  /* ... each eye's middle 2..10 times larger then (user 2026-10-30: "设置里可以调 2倍 到 10 倍") */
- {TOTKSettingRow *r=settings_row(settings_text("Quest 画面放大（倍）","Quest view zoom (x)"),nil,nil,^int{return vr_quest_zoom();},^(int v){vr_set_quest_zoom(v);});
+ {TOTKSettingRow *r=settings_row(settings_text("Mac 预览放大（倍）","Mac preview zoom (x)"),nil,nil,^int{return vr_quest_zoom();},^(int v){vr_set_quest_zoom(v);});
   r.sliderMin=2;r.sliderMax=10;[rows addObject:r];}
  /* The head's position (6DoF) and snap turning ("按建议 都做", 2026-10-30, after BotW BetterVR and UEVR). */
  [rows addObject:settings_row(settings_text("头部位置（6DoF：探身、下蹲）","Head position (6DoF: lean, crouch)"),nil,nil,^int{return vr_6dof();},^(int v){vr_set_6dof(v);})];
+#ifndef GAME_BOTW
  [rows addObject:settings_row(settings_text("立体（左右眼轮流渲染）","Stereo (the eyes rendered in turn)"),nil,nil,^int{return vr_afr();},^(int v){vr_set_afr(v);})];
+#endif
  {TOTKSettingRow *r=settings_row(settings_text("立体 · 两眼间距（%）","Stereo · eye distance (%)"),nil,nil,^int{return vr_ipd_pct();},^(int v){vr_set_ipd_pct(v);});
   r.sliderMin=30;r.sliderMax=200;[rows addObject:r];}
  [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];
  [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
   @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];
+#if defined(GAME_BOTW160)
+ static const int sizes[][2]={{1280,1380},{1536,1656},{1792,1932},{2048,2208},{2560,2760},{3072,3312},{3584,3864},{4096,4416}};
+ NSArray<NSString *> *names=@[@"0.625×　1280×1380",@"0.75×　1536×1656",@"0.875×　1792×1932",@"1.0×　2048×2208",@"1.25×　2560×2760",@"1.5×　3072×3312",@"1.75×　3584×3864",@"2.0×　4096×4416"];
+#else
  static const int sizes[][2]={{1344,1408},{1680,1760},{1920,2048},{2048,2208}};
- NSArray<NSString *> *names=@[settings_text("1344×1408（流畅，72 帧）","1344×1408 (smooth, 72 Hz)"),
-  settings_text("1680×1760（推荐，72 帧）","1680×1760 (recommended, 72 Hz)"),
-  settings_text("1920×2048（更清楚，约 60 帧）","1920×2048 (sharper, about 60 Hz)"),
-  settings_text("2048×2208（最清楚，约 54 帧）","2048×2208 (sharpest, about 54 Hz)")];
+ NSArray<NSString *> *names=@[@"1344×1408",
+  @"1680×1760",
+  @"1920×2048",
+  @"2048×2208"];
+#endif
  NSString *title=settings_text("VR 设置 · 分辨率（每眼）","VR · resolution (per eye)");
+#if defined(GAME_BOTW160)
+ title=settings_text("渲染分辨率（每眼，立即生效）","Render resolution (per eye, immediate)");
+ int stream_w=0,stream_h=0;vr_stream_resolution(&stream_w,&stream_h);
+ [rows addObject:settings_fixed(settings_text("串流分辨率（每眼）","Stream resolution (per eye)"),
+   stream_w>0?[NSString stringWithFormat:@"%d×%d",stream_w,stream_h]:settings_text("未连接","not connected"))];
+#endif
  if(!vr_streamer_managed()){int w=0,h=0;vr_resolution(&w,&h);
   [rows addObject:settings_fixed(title,w>0?[NSString stringWithFormat:@"%d×%d",w,h]:settings_text("未连接","not connected"))];return;}
- [rows addObject:settings_row(title,names,@[@0,@1,@2,@3],^int{int w=0,h=0;vr_resolution(&w,&h);
-   for(int i=0;i<4;i++)if(sizes[i][0]==w&&sizes[i][1]==h)return i;return -1;},
-  ^(int v){if(v>=0&&v<4)vr_set_resolution(sizes[v][0],sizes[v][1]);})];
+ NSMutableArray<NSNumber *> *values=[NSMutableArray array];for(NSUInteger i=0;i<names.count;i++)[values addObject:@(i)];
+ [rows addObject:settings_row(title,names,values,^int{int w=0,h=0;vr_resolution(&w,&h);
+   for(NSUInteger i=0;i<names.count;i++)if(sizes[i][0]==w&&sizes[i][1]==h)return (int)i;return -1;},
+  ^(int v){if(v>=0&&(NSUInteger)v<names.count)vr_set_resolution(sizes[v][0],sizes[v][1]);})];
 }
 
 /* Ambient occlusion: off, or the shadow pre-pass's AO with strength and radius both scaled (1.5x is the PR's tested
@@ -826,6 +861,11 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
    [NSString stringWithFormat:@(TOTK_UI("原生 %u×%u","Native %u×%u")),nw,nh]];
   [resModes addObject:@(m)];}
  NSString *resolution=settings_text("分辨率","Resolution");
+ int vr_eye_sizing=0;
+#if defined(GAME_BOTW160)
+ vr_eye_sizing=vr_enabled();
+#endif
+ if(!vr_eye_sizing){
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
  (void)resolution;
  [rows addObject:settings_ns2_resolution_row()];
@@ -856,6 +896,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
     runtime_front_resize_aspect(r);char word[32];snprintf(word,sizeof word,"%.8g",r);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");
 #endif
    }})];}
+ }
  NSUInteger display=rows.count;
  /* Input */
  TOTKSettingRow *pad=settings_row(settings_text("手柄类型","Controller type"),@[settings_pad_auto_text(),@"Xbox",@"PlayStation",@"Switch"],

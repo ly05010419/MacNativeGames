@@ -15,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class HeapPatch(unittest.TestCase):
     @unittest.skipUnless(shutil.which('clang'), 'clang required')
+    def test_render_arena_bounds_and_native_size_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / 'output-heaps'
+            subprocess.run(['clang', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            str(ROOT / 'tests/test_botw_output_heaps.c'), '-lm', '-o', str(exe)], check=True, capture_output=True)
+            result = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            self.assertIn('native allocation argument ok', result.stdout)
+
+    @unittest.skipUnless(shutil.which('clang'), 'clang required')
     def test_64_bit_values_guards_and_distinct_veneers(self):
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / 'heap-patch'

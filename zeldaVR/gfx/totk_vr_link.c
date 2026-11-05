@@ -88,7 +88,11 @@ static void handle(uint16_t type, const uint8_t *p, uint32_t n) {
         }
         break;
     case MSG_VIEW_CONFIG:
-        if (n == 4 + 8 * 4) { memcpy(&g.views.ipd, p, 4); memcpy(g.views.fov, p + 4, 32); g.have_views = 1; }
+        if (n == 4 + 8 * 4) {
+            int changed=!g.have_views||memcmp(&g.views.ipd,p,4)||memcmp(g.views.fov,p+4,32);
+            memcpy(&g.views.ipd,p,4);memcpy(g.views.fov,p+4,32);g.have_views=1;
+            if(changed)fprintf(stderr,"[vr-link] headset calibrated IPD %.6f; eye rays %.6f %.6f %.6f %.6f | %.6f %.6f %.6f %.6f\n",g.views.ipd,g.views.fov[0][0],g.views.fov[0][1],g.views.fov[0][2],g.views.fov[0][3],g.views.fov[1][0],g.views.fov[1][1],g.views.fov[1][2],g.views.fov[1][3]);
+        }
         break;
     case MSG_SWAPCHAIN_ACK:
         if (n == 12) { memcpy(&g.acked_swapchain, p, 8); g.swapchain_acked = 1; }

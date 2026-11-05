@@ -18,7 +18,7 @@ int main(void) {
     const uint32_t original = 0x52b86000;
     const unsigned end = 0x1111, stub = 0x1220;
     for (unsigned reg = 0; reg <= 21; reg += 7) {
-        for (uint64_t mib = 4096; mib <= 6144; mib += 32) {
+        for (uint64_t mib = 4096; mib <= 8192; mib += 32) {
             memset(image, 0, sizeof image);
             memcpy(image + 0x100, &original, 4);
             assert(botw_heap_patch(image, sizeof image, end, 0x100, original, reg, 0, mib << 20));

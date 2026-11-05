@@ -1,6 +1,6 @@
 /* BotW's startup/root heaps are 64-bit arguments, originally loaded with one
    32-bit MOV. Above 4 GiB, use a guarded veneer in unused RX text padding.
-   +0x100 leaves the sound, FOV and first-blend veneers untouched. */
+   Slots 0/1 use +0x100/+0x110, before the Quest projection veneer. */
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -14,7 +14,7 @@ static inline uint32_t botw_heap_branch(uint64_t from, uint64_t to) {
 static inline int botw_heap_patch(uint8_t *main, uint64_t size, uint64_t text_end,
                                   uint32_t site, uint32_t expected, unsigned reg,
                                   unsigned slot, uint64_t bytes) {
-    uint64_t stub = ((text_end + 15) & ~15ULL) + 0x100 + slot * 16;
+    uint64_t stub = ((text_end + 15) & ~15ULL) + 0x100 + slot*16;
     uint64_t rx_end = (text_end + 0xfff) & ~0xfffULL;
     if (reg > 30 || slot > 1 || bytes <= UINT32_MAX || bytes >> 48 || (bytes & 0xffff) ||
         site + 4ULL > text_end || stub + 12 > rx_end || stub + 12 > size) return 0;

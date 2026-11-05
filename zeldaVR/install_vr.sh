@@ -19,7 +19,7 @@ ALVR_URL=https://github.com/alvr-org/ALVR/releases/download/$ALVR_VERSION/alvr_c
 ALVR_SHA256=61979e9b153f237e4f06d838b506b677255bb6561ff3eaa694ad825f7367f91f
 ALVR_PKG=alvr.client.stable
 
-WORK=$HOME/zeldaVR-work; APPSTEP=1; QUEST=1; DESKTOP=1; NAME="塞尔达 VR"; NARGS=0
+WORK=$HOME/zeldaVR-work; APPSTEP=1; QUEST=1; DESKTOP=1; NAME=""; GAME=totk; NARGS=0
 while [ $# -gt 0 ]; do
   case $1 in
     --work) WORK=$2; shift 2;;
@@ -27,12 +27,18 @@ while [ $# -gt 0 ]; do
     --skip-quest) QUEST=0; shift;;
     --no-desktop) DESKTOP=0; shift;;
     --name) NAME=$2; shift 2;;
+    --game) GAME=$2; shift 2;;
     --) shift; NARGS=$#; break;;   # "$@" is now build_app.py's arguments (macOS bash 3.2: no empty arrays under set -u)
     *) echo "unknown option $1 (the game files go after --)" >&2; exit 2;;
   esac
 done
 mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
-APP="$WORK/app/Tears of the Kingdom.app"; BASALT=$WORK/BasaltVR
+case $GAME in
+  totk) APP="$WORK/app/Tears of the Kingdom.app"; DEFAULT_NAME="塞尔达 VR";;
+  botw) APP="$WORK/app/Breath of the Wild.app"; DEFAULT_NAME="旷野之息 VR";;
+  *) echo "--game must be totk or botw" >&2; exit 2;;
+esac
+NAME=${NAME:-$DEFAULT_NAME}; BASALT=$WORK/BasaltVR
 STREAMER=$BASALT/streamer/.build/release/basalt-streamer
 say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }

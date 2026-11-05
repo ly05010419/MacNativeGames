@@ -1,5 +1,25 @@
 # Zelda VR: Tears of the Kingdom on a Meta Quest 3
 
+Breath of the Wild also has an adapter for our VR entry. Choose it with
+`zeldaVR/install_vr.sh --game botw -- <your BotW build arguments>`; its Desktop
+entry is named **旷野之息 VR**. The game must match a supported BotW 1.6.0 or
+1.9.0 build. Generated apps and build folders belong outside this source tree.
+
+The BotW adapter keeps the game's Labo option unavailable. It uses the native
+same-frame stereo renderer independently, passes each eye's projection and the
+headset IPD to our camera/compositor, and captures the canvas before native lens
+distortion. Its VR settings omit alternating-eye rendering; legacy B1/B2 camera
+offsets and the angular dead band do not run in this adapter. Renderer mode is
+fixed to same-frame docked stereo. BotW 1.6.0 has the
+player-position source for first person; 1.9.0 currently keeps third person.
+BotW 1.6.0 has been tested on Mac with a Quest 3: native same-frame capture,
+per-eye Quest FOV, source-pose angular reprojection, world HUD ray alignment,
+and live rendering-size changes with a fixed streaming size. Third person is
+the default; positional 6DoF stays off. Map and inventory menu layout still
+needs correction: successful menu delivery does not establish correct aspect
+or clipping. BotW 1.9.0 has not had the same Quest acceptance checks. The
+alternating-eye features described below apply to TotK.
+
 [English](#english) · [中文](#中文)
 
 ## English
@@ -155,6 +175,8 @@ zeldaVR/install_vr.sh -- "<本体 .xci 或 .nsp>" -k "<prod.keys>" --update "<1.
 | 设置面板 | `1` | 按住左手 X 0.6 秒 |
 
 **设置面板的 VR 页**（按 `1` 打开，最后一个标签）：每眼分辨率、**头部位置（6DoF）**、**立体**和两眼间距、第一人称 / 第三人称、第一人称镜头弹性、第三人称摄像机距离、林克的头、体感操作，以及 Mac 窗口是否按 Quest 镜片的形状显示。那里的“游戏渲染分辨率”就是画面页的同一个设置；VR 另外多了按头显形状的原生 4K、4K + MetalFX 和原生 6K。
+
+旷野之息 1.6.0 的 VR 页使用独立渲染设置：每眼提供 0.625×（1280×1380）、0.75×（1536×1656）、0.875×（1792×1932）、1.0×（2048×2208）、1.25×（2560×2760）、1.5×（3072×3312）、1.75×（3584×3864）、2.0×（4096×4416）。选择后下一游戏帧应用，无需重启。串流固定为每眼 2048×2208，改变渲染档位不重连头显；桌面分辨率和比例设置不覆盖 VR。游戏自己的 Labo 选项始终禁用。
 
 ### 出问题时
 
