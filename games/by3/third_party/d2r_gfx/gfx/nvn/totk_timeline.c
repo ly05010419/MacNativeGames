@@ -57,7 +57,8 @@ static void tl_write(void) {
     uint64_t n = atomic_load(&g_n); if (n > TL_CAP) n = TL_CAP;
     fprintf(f, "# t_ns\tkind\ttid\tframe\ta\tb\n");
     static const char *names[] = {"?", "sub_in", "sub_out", "rep_begin", "rep_end", "commit", "gpu", "wait_in", "wait_out",
-                                  "acq_in", "acq_out", "pres_in", "pres_out", "finish_in", "finish_out", "fence", "rs_join"};
+                                  "acq_in", "acq_out", "pres_in", "pres_out", "finish_in", "finish_out", "fence", "rs_join",
+                                  "pass_begin", "pass_end", "gw_in", "gw_out", "gwake", "cw_in", "cw_out", "wb_in", "wb_out", "wb_step"};
     for (uint64_t i = 0; i < n; i++) {
         const tl_ev *e = &g_ev[i];
         fprintf(f, "%llu\t%s\t%u\t%llu\t%llu\t%llu\n", (unsigned long long)e->t, e->kind < sizeof names / sizeof *names ? names[e->kind] : "?",

@@ -1,5 +1,7 @@
 /* Language of the host's own text on screen (boot screen, warm-up progress, overlays, keyboard prompt): Chinese when the
-   Mac's language is Chinese, English otherwise. TOTK_UI_LANG=zh or en overrides it (read on every call, so tests can
+   first of the user's preferred languages is Chinese, English otherwise. Not the current locale's language: an app with
+   no Chinese localization (the iOS app) gets English there whatever the phone is set to, so the boot screen came out in
+   English under the iOS app's own Chinese text (2026-10-23). TOTK_UI_LANG=zh or en overrides it (read on every call, so tests can
    switch). The game's own language is chosen separately (TOTK_LANG, services.c desired_language). */
 #pragma once
 #include <CoreFoundation/CoreFoundation.h>
@@ -12,11 +14,11 @@ static inline int totk_ui_zh(void) {
     static int system_zh = -1;
     if (system_zh < 0) {
         char language[16] = {0};
-        CFLocaleRef locale = CFLocaleCopyCurrent();
-        CFStringRef value = CFLocaleGetValue(locale, kCFLocaleLanguageCode);
-        if (value) CFStringGetCString(value, language, sizeof language, kCFStringEncodingUTF8);
-        CFRelease(locale);
-        system_zh = !strcmp(language, "zh");
+        CFArrayRef preferred = CFLocaleCopyPreferredLanguages();
+        if (preferred && CFArrayGetCount(preferred) > 0)
+            CFStringGetCString((CFStringRef)CFArrayGetValueAtIndex(preferred, 0), language, sizeof language, kCFStringEncodingUTF8);
+        if (preferred) CFRelease(preferred);
+        system_zh = !strncmp(language, "zh", 2);
     }
     return system_zh;
 }

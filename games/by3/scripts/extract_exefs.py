@@ -166,11 +166,19 @@ def program_nca(records, update=False):
         require(any(hdr[0x400 + i*512 + 4] == 4 for i in range(4)), "Expected a BKTR update, not a base game")
         require(all(r["title_id"] in ("0100F2C0115B6000", "0100F2C0115B6800") for r, _ in records), "Mixed-title update package")
         return record, hdr
-    # Update Program NCAs can retain the base title ID; their Meta NCA carries the update ID.
+    # Update Program NCAs can retain the base title ID; their Meta NCA carries the update ID. A card image can also hold
+    # the update it shipped with (base + update Meta, base + BKTR Program): the base Program is the one without BKTR.
     metadata = [r for r, _ in records if r['content_type'] == 1]
-    require(len(metadata) <= 1 and all(r['title_id'] == '0100F2C0115B6000' for r in metadata),
+    base_meta = [r for r in metadata if r['title_id'] == '0100F2C0115B6000']
+    update_meta = [r for r in metadata if r['title_id'] == '0100F2C0115B6800']
+    require(len(base_meta) <= 1 and len(update_meta) <= 1 and len(base_meta) + len(update_meta) == len(metadata) and
+            (base_meta or not update_meta),
             'Expected base game metadata; updates, DLC and combined packages are unsupported')
     programs = [(r, h) for r, h in records if r['content_type'] == 0]
+    if update_meta:
+        bktr = [(r, h) for r, h in programs if any(h[0x400 + i*512 + 4] == 4 for i in range(4))]
+        require(len(programs) == 2 and len(bktr) == 1, 'Expected one base and one update Program NCA in a card image with its update')
+        programs = [(r, h) for r, h in programs if (r, h) not in bktr]
     require(len(programs) == 1, 'Expected one base Program NCA; updates, DLC and combined packages are unsupported')
     record, hdr = programs[0]
     require(record['title_id'] == '0100F2C0115B6000',

@@ -13,6 +13,8 @@ typedef struct {
 // bit 4 (TOTK) the vertex function emulates a sampler border colour Metal lacks (vs_fn_for, border_key).
 #define PSO_LAYERED 2u
 #define PSO_VBORDER 16u
+// bit 5 (TOTK, PR #1129): HDR / EDR on for this draw; the fragment function is the shader's HDR twin (NvShader hdr_fn).
+#define PSO_HDR 32u
 
 typedef struct {
     uint8_t kind, fbmask;
@@ -22,6 +24,18 @@ typedef struct {
 // Runtime-translated TOTK variant keys are up to 79 bytes (SHA-256 plus answer hash and _b).
 // The old 24-byte fields silently truncated them and made recorded render PSOs impossible to warm.
 typedef struct { char vs[80], fs[80]; uint8_t vs_stage, fs_stage, merged, fz; pso_fz_desc fz_desc; pso_key k; } pso_skey;
+
+/* State a pipeline does not use is cleared, so one pipeline has one key: a target's blend factors when it does not blend,
+   and (outside a merged pass, whose blend / mask index logical targets through lmap) the write mask and blend bit of a
+   colour target the pass does not have. These keep whatever earlier draws left: in a profile's warm list 35% of the
+   render pipelines (8,479 of 24,146) differed only so, each compiled again, and every start met "new" ones in the same
+   scene (2026-10-22). pso_key_fill makes keys so, pso_skey_parse reads recorded ones so. */
+static inline void pso_key_norm(pso_key *k, int merged) {
+    for (int i = 0; i < 8; i++) {
+        if (!merged && !k->cfmt[i]) { k->blend_en &= ~(1u << i); k->chmask &= ~(0xfu << (4 * i)); }
+        if (!(k->blend_en >> i & 1)) memset(&k->blend[i], 0, sizeof k->blend[i]);
+    }
+}
 
 static inline void pso_skey_from(const pso_key *k, NvShader *vs, NvShader *fs, int merged, const pso_fz_desc *fz, pso_skey *out) {
     memset(out, 0, sizeof *out);
@@ -51,5 +65,6 @@ static inline int pso_skey_parse(const char *hex, pso_skey *out) {
         if (a < 0 || b < 0) return -1;
         p[i / 2] = (uint8_t)(a << 4 | b);
     }
+    pso_key_norm(&out->k, out->merged);   // also rows recorded before keys were made so
     return 0;
 }

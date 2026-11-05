@@ -57,3 +57,15 @@ int runtime_output_res_toggle(void) { return 0; }
 int runtime_output_mode_cycle(void) { return 0; }
 int runtime_aspect_toggle(void) { return 0; }
 float runtime_aspect_now(void) { return 0; }
+/* The newer graphics layer and settings panel (from games/totk) ask for these too: Bayonetta 3 has no output-mode,
+   aspect or scene-size patch, so each answers "not available", as the Switch 2 games' patch file does. */
+int runtime_output_modes(void) { return 0; }
+int runtime_output_mode(void) { return OUTPUT_MODE_OFF; }
+int runtime_output_mode_set(int mode) { (void)mode; return 0; }
+int runtime_output_native(int mode, unsigned *w, unsigned *h) { (void)mode; (void)w; (void)h; return 0; }
+void runtime_aspect_view(double w, double h) { (void)w; (void)h; }
+int runtime_aspect_set_ratio(float r) { (void)r; return 0; }
+float runtime_aspect_ratio(void) { return 0; }
+float runtime_aspect_start(void) { return 0; }
+int runtime_render_res(unsigned *w, unsigned *h) { (void)w; (void)h; return 0; }
+uintptr_t runtime_player_pos_address(void) { return 0; }   /* no player-position site in Bayonetta 3 (the settings panel and VR ask) */

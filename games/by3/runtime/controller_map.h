@@ -2,7 +2,10 @@
    and a Nintendo controller: runtime/gamepad_layout.h gamepad_face_positions) drives one Switch Pro Controller button, or
    none. The default is the Switch's own layout by position: east -> A, south -> B, north -> X, west -> Y (issue #10); the
    other buttons i < 16 are FullKey bit i. The touchpad click (DualSense, DualShock 4) is physical button 16 and drives
-   nothing by default.
+   nothing by default. The mouse's buttons (Mac, mouse mode: runtime/gamepad.m) are physical buttons 17-21 and drive
+   nothing here by default: since the settings panel's key bindings (PR #1210) they belong to the keyboard and
+   mouse layout (keyboard_map.h), which attacks with the left, draws the bow with the right (a left click shoots) and
+   locks on with the middle. A mouse line in a layout file still drives its Switch button as before.
    A layout file has one "physical = switch [mode]" line per change; '#' starts a comment; names are case-insensitive;
    "none" leaves a button unused; lines not given keep the default. The optional mode says how long the Switch button is
    held: "hold" (default) while the physical button is down, "tap" for 400 ms after each press (tap again to keep
@@ -11,17 +14,19 @@
    fire button's own line applies only while the aim button is up). A mode byte keeps the kind in its low 3 bits and,
    for aim, the fire button's index in its high 5 bits.
    Pure C: app/launcher.m checks the file before the game starts (an alert names the bad line), runtime/gamepad.m
-   applies it, tests/test_controller_map.c covers the parser. */
+   applies it, the settings panel's key bindings write it (controller_map_format), tests/test_controller_map.c covers the
+   parser and the writer. */
 #ifndef TOTK_CONTROLLER_MAP_H
 #define TOTK_CONTROLLER_MAP_H
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 
-enum { CONTROLLER_BUTTONS = 17, CONTROLLER_SWITCH_BUTTONS = 16 };
+enum { CONTROLLER_BUTTONS = 22, CONTROLLER_SWITCH_BUTTONS = 16, CONTROLLER_MOUSE_FIRST = 17, CONTROLLER_MOUSE_BUTTONS = 5 };
 static const char *const controller_physical_names[CONTROLLER_BUTTONS] = {
     "south", "east", "west", "north", "l3", "r3", "l1", "r1", "l2", "r2", "menu", "view", "left", "up", "right", "down",
-    "touchpad"};
+    "touchpad", "mouse_left", "mouse_right", "mouse_middle", "mouse4", "mouse5"};
 static const char *const controller_switch_names[CONTROLLER_SWITCH_BUTTONS] = {
     "a", "b", "x", "y", "lstick", "rstick", "l", "r", "zl", "zr", "plus", "minus", "left", "up", "right", "down"};
 
@@ -32,6 +37,43 @@ static inline int controller_mode_fire(uint8_t mode) { return mode >> 3; }
 static inline void controller_map_default(uint16_t map[CONTROLLER_BUTTONS], uint8_t modes[CONTROLLER_BUTTONS]) {
     for (int i = 0; i < CONTROLLER_BUTTONS; i++) { map[i] = i < CONTROLLER_SWITCH_BUTTONS ? (uint16_t)(1u << i) : 0; modes[i] = CONTROLLER_HOLD; }
     map[0] = 1u << 1; map[1] = 1u << 0; map[2] = 1u << 3; map[3] = 1u << 2;   /* south B, east A, west Y, north X */
+}
+
+/* The Switch button index a map entry drives, or -1 (none). */
+static inline int controller_map_target(uint16_t entry) {
+    for (int i = 0; i < CONTROLLER_SWITCH_BUTTONS; i++) if (entry >> i & 1) return i;
+    return -1;
+}
+
+/* The key bindings drawing (settings panel): physical button now drives Switch button action (-1: nothing), held while
+   it is down. Other buttons keep theirs, so two buttons may drive one action and an action may have none (the drawing
+   lists those). */
+static inline void controller_map_assign(uint16_t map[CONTROLLER_BUTTONS], uint8_t modes[CONTROLLER_BUTTONS], int physical, int action) {
+    if (physical < 0 || physical >= CONTROLLER_BUTTONS || action < -1 || action >= CONTROLLER_SWITCH_BUTTONS) return;
+    map[physical] = action < 0 ? 0 : (uint16_t)(1u << action); modes[physical] = CONTROLLER_HOLD;
+}
+
+/* A layout file for map and modes that controller_map_parse reads back: one line for every button that differs from the
+   default. The length, or -1 when it does not fit. */
+static inline int controller_map_format(const uint16_t map[CONTROLLER_BUTTONS], const uint8_t modes[CONTROLLER_BUTTONS], char *out, size_t size) {
+    uint16_t def[CONTROLLER_BUTTONS]; uint8_t defModes[CONTROLLER_BUTTONS]; controller_map_default(def, defModes);
+    static const char *const kinds[] = {"", " tap", " toggle", " aim "};
+    int n = snprintf(out, size, "# Controller layout, written by the settings panel (key 1). Delete this file for the default.\n"
+                                "# physical button = Switch button [hold | tap | toggle | aim <fire button>]\n");
+    if (n < 0 || (size_t)n >= size) return -1;
+    size_t used = (size_t)n;
+    for (int i = 0; i < CONTROLLER_BUTTONS; i++) {
+        if (map[i] == def[i] && modes[i] == defModes[i]) continue;
+        int target = controller_map_target(map[i]), kind = target < 0 ? CONTROLLER_HOLD : controller_mode_kind(modes[i]);
+        int fire = controller_mode_fire(modes[i]);
+        if (kind == CONTROLLER_AIM && (fire >= CONTROLLER_BUTTONS || fire == i)) kind = CONTROLLER_HOLD;
+        n = snprintf(out + used, size - used, "%s = %s%s%s\n", controller_physical_names[i],
+                     target < 0 ? "none" : controller_switch_names[target], kind <= CONTROLLER_AIM ? kinds[kind] : "",
+                     kind == CONTROLLER_AIM ? controller_physical_names[fire] : "");
+        if (n < 0 || (size_t)n >= size - used) return -1;
+        used += (size_t)n;
+    }
+    return (int)used;
 }
 
 /* Index of name [s, s + n) in the count names, or -1. */
@@ -65,7 +107,7 @@ static inline int controller_map_parse(const char *text, uint16_t map[CONTROLLER
             for (const char *q = value_end; q < stop; q++) if (*q != ' ' && *q != '\t') { mode = q; break; }
             if (mode) { mode_end = mode; while (mode_end < stop && *mode_end != ' ' && *mode_end != '\t') mode_end++; }
             int physical = controller_name_index(controller_physical_names, CONTROLLER_BUTTONS, p, (size_t)(key_end - p));
-            if (physical < 0) { *error = "unknown controller button (south east west north l1 r1 l2 r2 l3 r3 menu view up down left right touchpad)"; return line; }
+            if (physical < 0) { *error = "unknown controller button (south east west north l1 r1 l2 r2 l3 r3 menu view up down left right touchpad mouse_left mouse_right mouse_middle mouse4 mouse5)"; return line; }
             size_t n = (size_t)(value_end - value);
             int target = n == 4 && !strncasecmp(value, "none", 4) ? CONTROLLER_SWITCH_BUTTONS : controller_name_index(controller_switch_names, CONTROLLER_SWITCH_BUTTONS, value, n);
             if (target < 0) { *error = "unknown Switch button (a b x y l r zl zr plus minus lstick rstick up down left right none)"; return line; }

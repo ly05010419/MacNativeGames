@@ -103,10 +103,10 @@ NVN(nvnTextureViewSetSwizzle, void, NVNtextureView *v, NVNtextureSwizzle r, NVNt
     if ((unsigned)r > 5 || (unsigned)g > 5 || (unsigned)b > 5 || (unsigned)a > 5) die("invalid NVN texture view swizzle");
     VW(v)->set_swizzle = 1; VW(v)->swz[0] = (uint8_t)r; VW(v)->swz[1] = (uint8_t)g; VW(v)->swz[2] = (uint8_t)b; VW(v)->swz[3] = (uint8_t)a;
 }
-// A view may sample the stencil plane of a depth-stencil texture (Bayonetta 3); nvn_mtl.m makes it an X32_Stencil8 view.
+// The depth plane, or the stencil plane (a Metal view in X32_Stencil8 / X24_Stencil8, nvn_mtl.m; Pokemon Pokopia samples it).
 NVN(nvnTextureViewSetDepthStencilMode, void, NVNtextureView *v, NVNtextureDepthStencilMode m) {
-    if (m != NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH && m != NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL) die("invalid NVN depth/stencil mode %d", (int)m);
-    VW(v)->set_stencil = m == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
+    if (m != NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH && m != NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL) die("invalid NVN depth / stencil sampling mode %d", (int)m);
+    VW(v)->stencil = m == NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL;
 }
 NVN(nvnTextureViewGetLevels, NVNboolean, const NVNtextureView *v, int *base, int *n) { *base = CVW(v)->base_level; *n = CVW(v)->nlevels; return CVW(v)->set_levels; }
 NVN(nvnTextureViewGetFormat, NVNboolean, const NVNtextureView *v, NVNformat *f) { *f = (NVNformat)CVW(v)->format; return CVW(v)->set_format; }
@@ -117,11 +117,11 @@ NVN(nvnTextureViewGetSwizzle, NVNboolean, const NVNtextureView *v, NVNtextureSwi
     return o->set_swizzle;
 }
 NVN(nvnTextureViewGetDepthStencilMode, NVNboolean, const NVNtextureView *v, NVNtextureDepthStencilMode *m) {
-    *m = CVW(v)->set_stencil ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH; return CVW(v)->set_stencil;
+    *m = CVW(v)->stencil ? NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL : NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH; return CVW(v)->stencil;
 }
 NVN(nvnTextureViewCompare, NVNboolean, const NVNtextureView *a, const NVNtextureView *b) {
     const view_t *x = CVW(a), *y = CVW(b);
-    if (x->set_levels != y->set_levels || x->set_layers != y->set_layers || x->set_format != y->set_format || x->set_target != y->set_target || x->set_swizzle != y->set_swizzle || x->set_stencil != y->set_stencil) return 0;
+    if (x->set_levels != y->set_levels || x->set_layers != y->set_layers || x->set_format != y->set_format || x->set_target != y->set_target || x->set_swizzle != y->set_swizzle || x->stencil != y->stencil) return 0;
     if (x->set_levels && (x->base_level != y->base_level || x->nlevels != y->nlevels)) return 0;
     if (x->set_layers && (x->min_layer != y->min_layer || x->nlayers != y->nlayers)) return 0;
     if (x->set_format && x->format != y->format) return 0;

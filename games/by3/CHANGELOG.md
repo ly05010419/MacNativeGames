@@ -439,3 +439,53 @@ on this machine.
 - **Softness.** The user's setup (log): 900p internal, MetalFX spatial 1600x900 -> 3840x2160 (x2.4) at 120 Hz full
   screen, pacing fine (p99 about 9 ms). The softness most likely comes from that upscale, and the UI is upscaled with
   the scene. The game has no TAA, so it has no jitter and no velocity buffer for MetalFX temporal.
+
+### 2026-11-04: the engine brought up to games/totk's (two weeks of upstream work)
+
+Upstream made 535 commits to games/totk's graphics layer and runtime after PR #221. Its `nvn_mtl.m` grew from 14k to
+20k lines. games/by3's copy had taken one of them. This step brings games/by3 to games/totk's level on branch
+`by3-engine-sync`, file by file, with a three-way merge:
+- base: games/totk at 947d4c0 (the copy's origin) for the graphics layer and the rewriter, games/by3/runtime at 52edc0a
+  (the runtime fork's origin) for the runtime;
+- ours: games/by3 today; theirs: games/totk today.
+games/totk is untouched.
+
+- **Graphics layer** (`third_party/d2r_gfx`): 65 files merged or taken cleanly, and 26 conflicts in 7 files resolved
+  by hand. Both sides had built some of the same things:
+  - Upstream's versions are kept for stencil views, the per-stage program binding (`gst`, `prog_combined`, plus a
+    compute program of its own), exact command-buffer fences (`OP_FENCE_SYNC`), `RegisterImage`, `QueueWaitSync`,
+    attachment-less passes (already ported to TOTK from PR #62) and the indirect render-stream packets.
+  - BY3's versions are kept for the indirect draws: `MultiDraw*IndirectCount` and the GPU resolve. Upstream only has
+    single indirect draws; `p_draw` / `p_draw_idx` keep upstream's `ind` field, always 0 here.
+  - Also kept from BY3: control-section copies, `ClearBuffer`, indirect dispatch, the frame capture command, the
+    measurement knobs and the HUD's "WxH > WxH".
+  - Upstream's 1 GiB zero-copy pool limit is gone (its hypothesis was disproven), so `DM_POOL_BUFFER_MAX_MIB` no longer
+    does anything.
+  - The layer now calls TotK's VR modules. Copies of `zeldaVR/gfx` are compiled in, and they stay off unless
+    `TOTK_VR_CONTROL` is set. The link needs IOSurface.
+- **Translator:** `prebuilt/macos-arm64/totk_xlate` is upstream's (SHA-256 checked). The translation chain went from
+  `totk-native-v4` to `v9`, so the first start translates every shader again into a new cache folder.
+- **Runtime:** merged the same way. BY3's own files stay as they were: game patches, survey stubs, `game_version.h`,
+  saves, fonts, `input.c`'s table, and the window on the chosen monitor / full screen. The rest is upstream's: kernel
+  sync fixes, the settings panel and menus, rumble / gyro, `MountRom` variants, HDR present, pacing that follows the
+  display.
+  - BY3's patch file answers upstream's new patch hooks with "not available" (output modes, aspect, render size,
+    player position), as the Switch 2 games' patch file does.
+  - New runtime files that serve only Breath of the Wild or Switch 2 games are left out: their patches, add-on content,
+    NS2 codecs and audio, the offline host, the `set` service.
+  - `game_version.h` gains `GAME_NAME`, `GAME_FOLDER` and `GAME_LOG`.
+  - The runtime reads its tables and RomFS sizes from `BY3_build/build/game-data/v120/` (`runtime-tables.bin`,
+    `romfs-config.txt`), which `scripts/prepare_runtime.py` now writes too (`make prepare`).
+- **Rewriter:** `patch_nso.py` and `structck.py` are upstream's. Upstream's `site_sp` (from nxnative) replaces BY3's
+  `site_spset` and also covers `wsp`. A fresh rewrite of all three modules with it is **byte-identical** to the pinned
+  hashes.
+- **Scripts:** `extract_exefs`, `extract_romfs`, `extract_app_icon` and `prepare_modules` come from upstream (BY3's were
+  unchanged copies). `make_mod_manifest.py` keeps BY3's version (#144).
+
+Tried here (test profile):
+- First start: logo, title and main menu; every shader translated into the new cache.
+- Second start: title → chapter select → the New York prologue cutscene, characters drawn, 60 fps (p99 16.7 ms).
+- The deck fight and real play are left for the user's test.
+
+Still open: the stencil view is still answered `_depth` upstream too, so `cd871b70`'s mask is still read wrongly. The
+hand edit was in the old v4 cache and no longer applies.
