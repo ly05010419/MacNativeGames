@@ -149,7 +149,9 @@ class ScrollArea:
         if y < top:
             self.canvas.yview_moveto(y / height)
         elif end > bottom:                              # its bottom into view, but never past its top
-            self.canvas.yview_moveto(min(y, end - (bottom - top)) / height)
+            step = int(self.canvas.cget('yscrollincrement')) or 1   # Tk rounds the view's top down to a step:
+            want = -(-(end - (bottom - top)) // step) * step         # so up to one here (E13: it fell 8 px short)
+            self.canvas.yview_moveto(min(y, want) / height)
 
     def top(self):
         self.canvas.yview_moveto(0)

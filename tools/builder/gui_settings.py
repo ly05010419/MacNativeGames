@@ -1,13 +1,15 @@
-"""The window's Settings tab (S5.1): the start options of the game chosen in the Build tab, for its built app, and
-Play. A view: the controller reads, keeps and starts (controller.start); the options and their choices come with the
-state it sends, so the tab holds no table of its own.
+"""The window's Settings tab (S5.1): the start options of the game chosen in the Build tab, for its built app. A
+view: the controller reads, keeps and starts (controller.start); the options and their choices come with the state it
+sends, so the tab holds no table of its own.
 
 The panel: the game and version on top ("Tears of the Kingdom · 1.4.3") with the app's path shortened below it and a
 Copy button; one note that the settings apply when the game is launched with Play; each setting as a title, a segmented
 selector (the chosen one in the accent) and a short description, 24 px apart; 1.4.3's picture says on its own that it
-also holds from Finder. Play is the primary button of the fixed footer, and when it cannot play the reason stands next
-to it. Interpolation is hidden when the GPU has no Metal 4 MetalFX frame interpolation, and warned while that is unknown
-or still being checked. One click, one command."""
+also holds from Finder. E13 S13.3: Play is the window's Play bar (gui_play), in sight in every tab; this tab's fixed
+footer keeps the whole text of the last Play or error. The state is read and choices are kept through that bar (reads),
+which owns the Settings part's jobs: this tab shows only a state that belongs to the selection chosen now.
+Interpolation is hidden when the GPU has no Metal 4 MetalFX frame interpolation, and warned while that is unknown or
+still being checked. One click, one command."""
 from pathlib import Path
 import tkinter as tk
 
@@ -26,9 +28,9 @@ def short_path(path):
 
 
 class SettingsPanel:
-    def __init__(self, parent, footer, controller, fonts, copy):
-        self.controller, self.fonts, self.copy = controller, fonts, copy
-        self.state, self.vars, self.selectors, self._stale = None, {}, {}, False
+    def __init__(self, parent, footer, controller, fonts, copy, reads):
+        self.controller, self.fonts, self.copy, self.reads = controller, fonts, copy, reads
+        self.state, self.vars, self.selectors = None, {}, {}
         self.frame = tk.Frame(parent)
         self.title = tk.Label(self.frame, text='', anchor='w', font=fonts['section'])
         self.title.pack(anchor='w', pady=(4, 0))
@@ -44,12 +46,7 @@ class SettingsPanel:
         self.notes = muted(tk.Label(self.frame, text='', anchor='w', justify='left', wraplength=WRAP), fonts['small'])
         self.foot = tk.Frame(footer)
         tk.Frame(self.foot, height=1, background=LINE).pack(fill='x', pady=(0, 14))
-        self.play_button = FlatButton(self.foot, text('gui.settings.play'), self.play, kind='primary',
-                                      font=fonts['action'], size=(150, 44), state='disabled')
-        self.play_button.pack(side='right')
-        self.reason = muted(tk.Label(self.foot, text='', anchor='e', justify='right'), fonts['small'])
-        self.reason.pack(side='right', padx=(0, 12))
-        self.status = muted(tk.Label(self.foot, text='', anchor='w', justify='left', wraplength=WRAP - 330))
+        self.status = muted(tk.Label(self.foot, text='', anchor='w', justify='left', wraplength=WRAP))
         self.status.pack(side='left')
 
     def opened(self):
@@ -61,12 +58,12 @@ class SettingsPanel:
             self.path.configure(text='')
             return
         self.controller.start.probe()
-        self._stale = self.controller.start.busy        # a job runs (a Play): read again once it has answered
-        if not self._stale:
-            self.title.configure(text=text('gui.settings.reading'))
-            self.controller.start.state()
+        self.title.configure(text=text('gui.settings.reading'))
+        self.reads.request()                            # now, or once a running job has ended
 
     def on_event(self, event):
+        if not self.reads.on_event(event):              # the bar first: an answer for an earlier selection is not shown
+            return
         if isinstance(event, StartStateReady):
             self.render(event.state)
         elif isinstance(event, GpuProbed) and self.state is not None:
@@ -79,9 +76,6 @@ class SettingsPanel:
             self.status.configure(text='\n'.join(lines), foreground=GOOD if r.ok and not r.held else BAD)
         elif isinstance(event, ProcessError):
             self.status.configure(text=text('gui.settings.error', error=event.error), foreground=BAD)
-        if self._stale and not self.controller.start.busy and self.controller.selection()[0] is not None:
-            self._stale = False
-            self.controller.start.state()
 
     def _clear(self):
         for child in self.rows.winfo_children():
@@ -147,25 +141,8 @@ class SettingsPanel:
         self.vars[option].set(choice)
         for selector in self.selectors.values():
             selector.configure(state='disabled')
-        self.controller.start.choose(option, choice)
-
-    def play(self):
-        if not self._can_play():
-            return
-        self.play_button.configure(state='disabled')
-        self.status.configure(text=text('gui.settings.playing'), foreground=MUTED)
-        self.controller.start.play()
-
-    def _can_play(self):
-        return (self.state is not None and not self.state.reason and self.controller.idle
-                and not self.controller.start.busy)
+        self.reads.choose(option, choice)
 
     def refresh(self, idle):
-        can = idle and self._can_play()
-        self.play_button.configure(state='normal' if can else 'disabled')
-        if can or self.controller.start.busy:
-            self.reason.configure(text='')
-        else:
-            self.reason.configure(text=text('gui.settings.why_not.build' if not idle else 'gui.settings.why_not.app'))
         for selector in self.selectors.values():
             selector.configure(state='disabled' if self.controller.start.busy else 'normal')

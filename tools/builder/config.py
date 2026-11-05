@@ -3,7 +3,7 @@
 Only paths and facts are stored, never key or game contents. load() never raises for anything on disk and keeps every
 key it does not know, so a newer builder's data survives. save() is atomic and never leaves settings.json missing; a
 file load() found broken is kept as a hard-linked backup."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import errno
 import json
 import os
@@ -173,6 +173,24 @@ class SettingsStore:
                 pass
             raise
         self._broken, self._backup = False, None
+
+    def save_storage(self, game, fields):
+        """S2.3 storage tab (moved here from the controller in E17 S17.1): work goes where a build puts it, any other
+        name (shader_cache) is kept as the game's extra key, which to_json/from_json carry verbatim; saved now. The
+        (game, its new entry); a path field other than work raises ValueError."""
+        settings = self.load().settings
+        saved = settings.paths.get(game, SavedPaths())
+        work, extra = saved.work, dict(saved.extra)
+        for key, value in fields.items():
+            if key == 'work':
+                work = str(value) if value else None
+            elif key in PATH_FIELDS:
+                raise ValueError(f'{key} is not a storage path')
+            else:
+                extra[key] = str(value) if value else None
+        entry = replace(saved, work=work, extra=extra)
+        self.save(replace(settings, paths={**settings.paths, game: entry}))
+        return game, entry
 
     def _link_backup(self):
         stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(self.clock.wall()))

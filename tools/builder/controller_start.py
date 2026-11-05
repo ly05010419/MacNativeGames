@@ -5,15 +5,36 @@ and emits events through the BuildController that owns it; the view calls it as 
 One settings job at a time (a second call raises, like the picture's); the probe runs once per window (a later call does
 nothing). Play needs the controller idle (a rebuild replaces the app in place). The game is the one chosen in the Build
 tab, and its app the one that tab's paths name (the saved Output app, or build_app.py's default next to the game
-file)."""
+file). E12: a choice being saved and a Play being started hold the controller (holds: not idle), so closing the window
+asks and waits instead of ending the save with the process; a read and the GPU probe do not. Errors still name
+'settings' (a read or a choice) or 'play', where the window sends them."""
+from functools import partial
 from pathlib import Path
 
-from tools.builder import game_state, start_options
+from tools.builder import controller_textures, game_state, mod_code, start_options
 from tools.builder.build_run import collect
 from tools.builder.checks import BuildPaths
 from tools.builder.games import GAMES
 from tools.builder.paths import effective_paths
 from tools.builder.session import GpuProbed, PlayDone, ProcessError, StartStateReady
+
+
+def _read(spec, app, paths, repo, *choice):
+    """The state (or a choice and the new state), knowing whether the app has the texture pack's heaps (E17)."""
+    heaps = bool(controller_textures.play_env(repo, spec, app, paths.data))
+    return start_options.choose(spec, app, paths, *choice, heaps) if choice else \
+        start_options.read_state(spec, app, paths, heaps)
+
+
+def _native_4k(spec, fields, paths, code_mod):
+    """E17: for a build, once its code-mod folder is composed (a texture pack's heap table rides in it)."""
+    heaps = code_mod is not None and (Path(code_mod) / 'romfs' / mod_code.HEAPDEF).is_file()
+    return start_options.build_native_4k(spec, fields, paths, heaps)
+
+
+def _play(runner, spec, app, paths, gpu, repo):
+    """Play, with the texture pack's 8 GB mode when the app was built with its heaps (S9.2 C6)."""
+    return start_options.play(runner, spec, app, paths, gpu, controller_textures.play_env(repo, spec, app, paths.data))
 
 
 class StartController:
@@ -27,6 +48,11 @@ class StartController:
     @property
     def busy(self):
         return self._job is not None
+
+    @property
+    def holds(self):
+        """A choice is being written or Play is starting the game (E12)."""
+        return self._kind in ('choose', 'play')
 
     def _context(self):
         game, fields = self.owner.selection()
@@ -46,17 +72,21 @@ class StartController:
 
     def state(self):
         spec, app = self._context()
-        self._submit('settings', start_options.read_state, spec, app, self.paths)
+        self._submit('read', _read, spec, app, self.paths, self.owner.repo_root)
 
     def choose(self, option, choice):
         spec, app = self._context()
-        self._submit('settings', start_options.choose, spec, app, self.paths, option, choice)
+        self._submit('choose', _read, spec, app, self.paths, self.owner.repo_root, option, choice)
+
+    def native_4k_for(self, snapshot):
+        """E17 S17.1: native_4k(code_mod) for a build of snapshot: what the Settings tab's picture asks of it."""
+        return partial(_native_4k, GAMES[snapshot[0]], dict(snapshot[1]), self.paths)
 
     def play(self):
         if not self.owner.idle:
             raise RuntimeError('a build is running or being prepared')
         spec, app = self._context()
-        self._submit('play', start_options.play, self.owner.runner, spec, app, self.paths, self.gpu)
+        self._submit('play', _play, self.owner.runner, spec, app, self.paths, self.gpu, self.owner.repo_root)
 
     def probe(self):
         self.owner._open()
@@ -69,7 +99,7 @@ class StartController:
             job, kind, self._job, self._kind = self._job, self._kind, None, None
             value, error = collect(job)
             if error is not None:
-                self.owner._emit(ProcessError(kind, repr(error)))
+                self.owner._emit(ProcessError('play' if kind == 'play' else 'settings', repr(error)))
             else:
                 self.owner._emit(PlayDone(value) if kind == 'play' else StartStateReady(value))
         if self._probe is not None and self._probe.done():
