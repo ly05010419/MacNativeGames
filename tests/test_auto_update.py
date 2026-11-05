@@ -26,11 +26,13 @@ class AutoUpdate(unittest.TestCase):
 
     def test_launcher_updates_only_when_asked(self):
         launcher = (ROOT / 'games/totk/app/launcher.m').read_text(encoding='utf-8')
-        main = launcher[launcher.index('int main(int argc, char **argv) {'):]
+        main = launcher[launcher.index('int runtime_app_launch(int argc, char **argv, char ***boot) {'):]
         self.assertIn('return update_check_run();', main)
         self.assertIn('return update_install_run((pid_t)atoi(argv[2]));', main)
         self.assertNotIn('mng_update_install(', main)   # nothing at launch: only the Update button installs
-        self.assertLess(main.index('setenv("TOTK_UPDATE_LAUNCHER"'), main.index('execv(arguments[0], arguments);'))
+        self.assertLess(main.index('setenv("TOTK_UPDATE_LAUNCHER"'), main.index('*boot = arguments;'))
+        loader = (ROOT / 'games/totk/runtime/loader.c').read_text(encoding='utf-8')
+        self.assertIn('runtime_app_launch(argc,argv,&boot)', loader)
         self.assertNotIn('fork(', (ROOT / 'games/totk/runtime/update_tab.h').read_text(encoding='utf-8'))   # the game's address space is huge
 
 

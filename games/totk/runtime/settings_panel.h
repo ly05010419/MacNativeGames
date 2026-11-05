@@ -37,6 +37,9 @@
                                                              switches first, TOTK_RUMBLE_GAIN the strength (the row greyed
                                                              out); a device the run started without comes at the next
                                                              launch (its title says so)
+     screenshot folder    the system's folder chooser          the capture button's pictures (runtime/screenshot.h); the
+                                                             choice in screenshot-dir.txt next to controls.txt, and the
+                                                             folder checked as it is picked
    Effects (user 2026-10-30, after UltraCam's render distance and shader switches; the rows from FOV on are Tears of the
    Kingdom 1.4.3's, greyed on other versions; "Reset to defaults" at the bottom right sets every row back to the game's own
    and removes its file, a row the environment decides staying)
@@ -69,7 +72,9 @@
      shadow resolution    off / 1x (800) / 2x / 3x / 4x      runtime_shadow_scale_set (game_patches_v143.c: the cascades'
                                                              size x K where the game works it out); off = the effect
                                                              switch "shadow" (totk_ssao.h); graphics-shadow.txt (x100)
-     FXAA anti-aliasing   switch                             dm_gfx_fxaa_set (gfx/nvn/totk_finish.h); graphics-fxaa.txt
+     anti-aliasing       Off / FXAA / SMAA; quality         1.4.3: totk_aa_config.h; graphics-aa-method.txt, graphics-fxaa-quality.txt,
+                                                             graphics-smaa-quality.txt. FXAA Original / Quality; SMAA Low / Medium / High / Ultra
+     FXAA anti-aliasing   switch                             other versions: dm_gfx_fxaa_set; graphics-fxaa.txt
                                                              (Breath of the Wild 1.9.0: gfx/nvn/botw_finish.h; greyed while
                                                              MetalFX replaces its FXAA / upscale draw)
      depth of field       switch                             runtime_dof_set (game_patches_v143.c: no DOF request stored
@@ -137,6 +142,10 @@ double runtime_fov_scale(void); void runtime_fov_scale_set(double k); int runtim
 double runtime_shadow_scale(void); void runtime_shadow_scale_set(double k); int runtime_shadow_scale_locked(void);
 void runtime_dof_set(int on); int runtime_dof_on(void);   /* game_patches_v143.c */
 void dm_gfx_fxaa_set(int on); int dm_gfx_fxaa_on(void); void dm_gfx_sharpen_set(int pct); int dm_gfx_sharpen(void);   /* gfx/nvn/totk_finish.h */
+void dm_gfx_smaa_set(int on); int dm_gfx_smaa_on(void);   /* optional spatial SMAA, before the UI */
+int dm_gfx_smaa_quality(void); void dm_gfx_smaa_quality_set(int q);
+int dm_gfx_aa_method(void); void dm_gfx_aa_method_set(int method);
+int dm_gfx_fxaa_quality(void); void dm_gfx_fxaa_quality_set(int q);
 #endif
 int nvn_fps_lock(void);
 
@@ -216,6 +225,11 @@ static void settings_effects_save(void) {
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))n+=(size_t)snprintf(line+n,sizeof line-n,"%s%s",n?" ":"",dm_gfx_fx_id(i));
  runtime_setting_save("graphics-effects.txt",n?line:"none","effects");
 }
+static void settings_aa_save(void) {
+ settings_save_int("graphics-fxaa-quality.txt",dm_gfx_fxaa_quality(),"FXAA quality");
+ settings_save_int("graphics-smaa-quality.txt",dm_gfx_smaa_quality(),"SMAA quality");
+ settings_save_int("graphics-aa-method.txt",dm_gfx_aa_method(),"anti-aliasing method");
+}
 static void settings_effects_restore(void) {
  char line[512];
  if(runtime_setting_word("graphics-effects.txt",line,sizeof line))
@@ -227,6 +241,12 @@ static void settings_effects_restore(void) {
  if(!runtime_fov_scale_locked()&&settings_read_number("graphics-fov.txt",50,200,&d))runtime_fov_scale_set(d/100);
  if(!runtime_shadow_scale_locked()&&settings_read_number("graphics-shadow.txt",25,800,&d))runtime_shadow_scale_set(d/100);
  if(runtime_setting_word("graphics-fxaa.txt",word,sizeof word)&&!strncmp(word,"off",3))dm_gfx_fxaa_set(0);
+ int method,sq;
+ if(settings_read_int("graphics-aa-method.txt",&method)&&method>=0&&method<=2){
+  if(settings_read_int("graphics-fxaa-quality.txt",&sq)&&sq>=0&&sq<=1)dm_gfx_fxaa_quality_set(sq);
+  if(settings_read_int("graphics-smaa-quality.txt",&sq)&&sq>=0&&sq<=3)dm_gfx_smaa_quality_set(sq);
+  dm_gfx_aa_method_set(method);
+ }
  if(settings_read_number("graphics-sharpen.txt",0,100,&d))dm_gfx_sharpen_set((int)d);
  if(runtime_setting_word("graphics-dof.txt",word,sizeof word)&&!strncmp(word,"off",3))runtime_dof_set(0);
  if(!runtime_far_scale_locked()&&settings_read_number("graphics-far.txt",0.1,1000,&d))runtime_far_scale_set(d/100);
@@ -288,6 +308,9 @@ int vr_enabled(void);   /* zeldaVR/gfx/totk_vr.m: a headset link was asked for (
 static int settings_pages(void){return vr_enabled()?SETTINGS_PAGES:SETTINGS_PAGE_VR;}
 static void settings_refresh_all(void);
 static void settings_rebuild(void);
+#ifdef TOTK_GAME_V143
+static void settings_aa_rebuild(void);   /* the quality row follows the method without losing controller focus */
+#endif
 static void settings_pointer_used(void);
 @interface TOTKSettingRow:NSObject
 @property(copy) NSString *title;
@@ -619,8 +642,14 @@ static void settings_hdr_rows(NSMutableArray<TOTKSettingRow *> *rows){
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray arrayWithObjects:settings_fov_row(),settings_distance_row(1),settings_distance_row(0),settings_shadow_row(),nil];
  /* FXAA (the game's edge smoothing of the 3D picture) and sharpening (FSR 1 RCAS on the 3D picture, not the UI) */
- [rows addObject:settings_row(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),nil,nil,^int{return dm_gfx_fxaa_on();},^(int v){
-  dm_gfx_fxaa_set(v);runtime_setting_save("graphics-fxaa.txt",v?"on":"off","FXAA");})];
+ [rows addObject:settings_row(settings_text("抗锯齿方式","Anti-aliasing method"),@[settings_text("关","Off"),@"FXAA",@"SMAA"],@[@0,@1,@2],
+  ^int{return dm_gfx_aa_method();},^(int v){dm_gfx_aa_method_set(v);settings_aa_save();})];
+ if(dm_gfx_aa_method()==1)
+  [rows addObject:settings_row(settings_text("抗锯齿质量","Anti-aliasing quality"),@[settings_text("原版","Original"),@"Quality"],@[@0,@1],
+   ^int{return dm_gfx_fxaa_quality();},^(int v){dm_gfx_fxaa_quality_set(v);settings_aa_save();})];
+ else if(dm_gfx_aa_method()==2)
+  [rows addObject:settings_row(settings_text("抗锯齿质量","Anti-aliasing quality"),@[@"Low",@"Medium",@"High",@"Ultra"],@[@0,@1,@2,@3],
+   ^int{return dm_gfx_smaa_quality();},^(int v){dm_gfx_smaa_quality_set(v);settings_aa_save();})];
  [rows addObject:settings_row(settings_text("景深","Depth of field"),nil,nil,^int{return runtime_dof_on();},^(int v){
   runtime_dof_set(v);runtime_setting_save("graphics-dof.txt",v?"on":"off","depth of field");})];
  [rows addObject:settings_row(settings_text("锐化","Sharpening"),@[settings_text("关（游戏原样）","Off (as the game has it)"),@"25%",@"50%",@"75%",@"100%"],@[@0,@25,@50,@75,@100],
@@ -669,9 +698,9 @@ static void settings_effects_reset(void) {
  if(!runtime_lod_scale_locked())runtime_lod_scale_set(1);
  if(!runtime_far_scale_locked())runtime_far_scale_set(1);
  if(!runtime_shadow_scale_locked())runtime_shadow_scale_set(1);
- dm_gfx_fxaa_set(1);dm_gfx_sharpen_set(0);runtime_dof_set(1);
+ dm_gfx_fxaa_quality_set(0);dm_gfx_aa_method_set(1);dm_gfx_smaa_quality_set(2);dm_gfx_sharpen_set(0);runtime_dof_set(1);
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))dm_gfx_fx_set(i,1);
- for(const char *const *f=(const char *const[]){"graphics-fov.txt","graphics-lod.txt","graphics-far.txt","graphics-fxaa.txt","graphics-sharpen.txt","graphics-effects.txt","graphics-shadow.txt","graphics-dof.txt",NULL};*f;f++)
+ for(const char *const *f=(const char *const[]){"graphics-fov.txt","graphics-lod.txt","graphics-far.txt","graphics-fxaa.txt","graphics-smaa-quality.txt","graphics-aa-method.txt","graphics-fxaa-quality.txt","graphics-sharpen.txt","graphics-effects.txt","graphics-shadow.txt","graphics-dof.txt",NULL};*f;f++)
   runtime_setting_remove(*f);
 #endif
 #ifdef GAME_BOTW190
@@ -715,6 +744,48 @@ static TOTKSettingRow *settings_botw_fov_row(void) {
 #endif
 }
 #endif
+/* The panel (below) shows a note in its footer for a few seconds; a row's editor reports through these. */
+@class TOTKSettingsPanel;
+static TOTKSettingsPanel *settingsPanel;
+static void settings_footer_note(NSString *text, BOOL bad);
+/* Where the capture button's pictures go (runtime/screenshot.h): a folder. The row opens the system's own folder chooser
+   (the panel the launcher opens for its game data), not a text field, and the chosen folder is checked before it is kept
+   (screenshot_problem), so a read-only disk or another account's folder is refused here with its reason instead of failing
+   at the next capture. The choice is saved next to controls.txt (runtime_setting_save), not in the working folder. An
+   iPhone and an iPad have no panel here: their pictures go into the photo library, in the album named after the game. */
+static void settings_choose_screenshot_folder(void);
+static TOTKSettingRow *settings_screenshot_row(void) {
+ TOTKSettingRow *r=[TOTKSettingRow new];
+ char folder[PATH_MAX];screenshot_directory(folder,sizeof folder);
+ NSString *shown=@(folder);   /* kept as the object the block captures: an array cannot cross into one */
+ r.title=settings_text("截图保存目录","Screenshot folder");
+ r.choices=@[shown];   /* shown by the button, refreshed when the choice changes */
+ r.get=^int{char now[PATH_MAX];screenshot_directory(now,sizeof now);return (int)strcmp(now,shown.UTF8String);};
+ r.set=^(int v){(void)v;settings_choose_screenshot_folder();};
+ return r;
+}
+static void settings_choose_screenshot_folder(void) {
+ char now[PATH_MAX];screenshot_directory(now,sizeof now);
+ NSOpenPanel *panel=[NSOpenPanel openPanel];
+ panel.canChooseFiles=NO;panel.canChooseDirectories=YES;panel.allowsMultipleSelection=NO;
+ panel.canCreateDirectories=YES;   /* New Folder, as Finder */
+ panel.message=[NSString stringWithFormat:@(TOTK_UI("选择截图保存目录。当前：%s","Choose where screenshots are saved. Now: %s")),now];
+ panel.prompt=settings_text("选择","Choose");
+ [panel setDirectoryURL:[NSURL fileURLWithPath:@(now) isDirectory:YES]];
+ if([panel runModal]!=NSModalResponseOK||!panel.URL)return;
+ const char *why=NULL;int problem=SHOT_OK;uint64_t freeBytes=0;
+ NSString *path=panel.URL.path;
+ if(!screenshot_directory_set(path.UTF8String,&why,&problem,&freeBytes)){
+  settings_footer_note([NSString stringWithFormat:@(TOTK_UI("未更改：%@（%@）","Not changed: %@ (%@)")),path,@(why?:"?")],YES);
+  fprintf(stderr,"[totk] settings: screenshot folder %s refused: %s\n",path.UTF8String,why?why:"?");
+  return;
+ }
+ char kept[PATH_MAX];screenshot_directory(kept,sizeof kept);
+ settings_footer_note([NSString stringWithFormat:@(TOTK_UI("截图保存目录：%@","Screenshots: %@")),@(kept)],NO);
+ fprintf(stderr,"[totk] settings: screenshot folder %s\n",kept);
+ settings_refresh_all();   /* the button shows the folder in force (settings_refresh_all, below) */
+}
+
 static NSArray<TOTKSettingRow *> *settings_rows(void) {
  NSMutableArray<TOTKSettingRow *> *rows=[NSMutableArray array];
  /* Display */
@@ -803,6 +874,8 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  [rows addObject:settings_feedback_row(0)];
  [rows addObject:settings_gain_row()];
  [rows addObject:settings_feedback_row(1)];
+ /* The capture button's pictures (runtime/screenshot.h): a folder here, the photo library on a phone. */
+ [rows addObject:settings_screenshot_row()];
  NSUInteger input=rows.count;
  /* User (runtime/users.h, docs/users.md): the user this run opened with, and the one the next launch gets — the save
     area is named after the user's id, so another user plays on their own saves. A running game keeps its user. */
@@ -938,6 +1011,9 @@ static NSString *settings_pad_text(int action, const uint16_t *map, int family) 
 @property(strong) NSMutableArray<NSView *> *controllerTargets;   /* what a controller moves through on the page shown */
 @property NSInteger page;
 @property NSInteger controllerIndex;
+#ifdef TOTK_GAME_V143
+@property int aaMethod;
+#endif
 @property BOOL controllerArmed;
 @property uint64_t previousButtons;
 @property int previousDirection;
@@ -1025,8 +1101,12 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  /* The key bindings drawings need a wider, taller panel (PR #1210); it is made at that size while they are shown. */
  BOOL drawings=settings_drawings_for(g_settings_page);
  CGFloat body=n*(rowH+gap)-gap,h=SETTINGS_TOP+body+SETTINGS_BOTTOM,W=SETTINGS_W;
+ if(!drawings&&h>room){h=room;body=fmax(0,h-SETTINGS_TOP-SETTINGS_BOTTOM);}   /* more controls: scroll rather than grow past the window */
  if(drawings){W=SETTINGS_WIDE_W;h=fmax(h,SETTINGS_WIDE_H);body=h-SETTINGS_TOP-SETTINGS_BOTTOM;}
  if(!(self=[super initWithFrame:NSMakeRect(0,0,W,h)]))return nil;
+#ifdef TOTK_GAME_V143
+ self.aaMethod=dm_gfx_aa_method();
+#endif
  self.drawings=drawings;self.panelW=W;self.bindingButtons=[NSMutableArray array];self.bindingTargets=[NSMutableArray array];
  self.allRows=rows;self.controllerTargets=[NSMutableArray array];self.appearance=[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
  self.wantsLayer=YES;self.layer.backgroundColor=[NSColor colorWithCalibratedRed:0.10 green:0.16 blue:0.20 alpha:0.9].CGColor;
@@ -1043,10 +1123,12 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  tabs.segmentDistribution=NSSegmentDistributionFillEqually;tabs.refusesFirstResponder=YES;tabs.frame=NSMakeRect(14,h-80,W-28,26);[self addSubview:tabs];self.tabs=tabs;
  NSMutableArray<NSView *> *pages=[NSMutableArray array];
  NSView *(^rowPage)(NSInteger)=^NSView *(NSInteger p){   /* the pages of rows: display, input, effects and (zeldaVR) VR */
-  NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];NSUInteger k=0;
+  NSUInteger count=0;for(TOTKSettingRow *r in rows)if(r.page==p)count++;
+  CGFloat docH=fmax(body,count*(rowH+gap)-gap);
+  NSView *page=[[NSView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,docH)];NSUInteger k=0;
   for(TOTKSettingRow *r in rows){
    if(r.page!=p)continue;
-   CGFloat y=body-(k+1)*rowH-k*gap,rw=W-28;k++;
+   CGFloat y=docH-(k+1)*rowH-k*gap,rw=W-28;k++;
    NSView *band=[[NSView alloc] initWithFrame:NSMakeRect(14,y,rw,rowH)];band.wantsLayer=YES;
    band.layer.backgroundColor=[NSColor colorWithCalibratedWhite:0 alpha:0.28].CGColor;band.layer.cornerRadius=6;[page addSubview:band];
    NSTextField *label=[NSTextField labelWithString:r.title];label.font=[NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
@@ -1060,6 +1142,13 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
    else{NSPopUpButton *pop=[[NSPopUpButton alloc] initWithFrame:NSMakeRect(rw-SETTINGS_POP_W-8,floor((rowH-26)/2),SETTINGS_POP_W,26) pullsDown:NO];[pop addItemsWithTitles:r.choices];
     pop.enabled=r.set!=nil;r.control=pop;}
    r.control.refusesFirstResponder=YES;r.control.target=r;r.control.action=@selector(changed:);[band addSubview:r.control];
+  }
+  if(docH>body){
+   NSScrollView *scroll=[[NSScrollView alloc] initWithFrame:NSMakeRect(0,SETTINGS_BOTTOM,W,body)];
+   scroll.hasVerticalScroller=YES;scroll.autohidesScrollers=YES;scroll.scrollerStyle=NSScrollerStyleOverlay;
+   scroll.drawsBackground=NO;scroll.borderType=NSNoBorder;
+   page.frame=NSMakeRect(0,0,W,docH);scroll.documentView=page;
+   [self addSubview:scroll];[scroll.contentView scrollToPoint:NSMakePoint(0,docH-body)];[scroll reflectScrolledClipView:scroll.contentView];return scroll;
   }
   [self addSubview:page];return page;
  };
@@ -1193,6 +1282,8 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  NSArray<NSButton *> *shown=self.page==SETTINGS_PAGE_DISPLAY?self.displayButtons:self.page==SETTINGS_PAGE_USERS?self.userButtons:@[];
  CGFloat w=0;for(NSButton *b in shown)if(!b.hidden)w+=b.frame.size.width+6;return w;
 }
+/* The panel's note about a row: the tab of the page shown. */
+static void settings_footer_note(NSString *text, BOOL bad) { (void)bad; [settingsPanel note:text]; }
 /* The shaders and pipelines this game met that the shared list lacks (totk_shader_contrib.h): sent with gh off the main
    thread, the issue then opened; without gh (or when it fails) the GitHub form opens and Finder shows the file to drag in. */
 -(void)contribute:(NSButton *)button{
@@ -1339,7 +1430,14 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
  else if(place){self.controllerIndex=0;g_settings_controller_active=NO;}
  [self updateTargets];
 }
--(void)refresh{for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_UPDATE)[self refreshUpdateTargets];}
+-(void)refresh{
+#ifdef TOTK_GAME_V143
+ if(self.aaMethod!=dm_gfx_aa_method()){
+  self.aaMethod=dm_gfx_aa_method();dispatch_async(dispatch_get_main_queue(),^{settings_aa_rebuild();});
+ }
+#endif
+ for(TOTKSettingRow *r in self.allRows)[r refresh];[self refreshBindings];if(self.page==SETTINGS_PAGE_UPDATE)[self refreshUpdateTargets];
+}
 -(void)refreshBindings{
  if(self.page!=SETTINGS_PAGE_BINDINGS)return;
  if(self.drawings){[self.keyboardDiagram setNeedsDisplay:YES];[self.padDiagram setNeedsDisplay:YES];return;}
@@ -1466,7 +1564,7 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
   if([self controllerEnabled:self.controllerIndex])break;
  }
  [self controllerHighlight];
- if(self.page==SETTINGS_PAGE_BINDINGS&&self.controllerIndex>=0&&self.controllerIndex<(NSInteger)self.controllerTargets.count){   /* keep the row in view */
+ if(self.controllerIndex>=0&&self.controllerIndex<(NSInteger)self.controllerTargets.count){   /* keep rows in view on every scrolling page */
   NSView *v=self.controllerTargets[(NSUInteger)self.controllerIndex];if(![v isKindOfClass:NSButton.class])[v scrollRectToVisible:NSInsetRect(v.bounds,0,-SETTINGS_SECTION_H)];}
 }
 -(void)controllerChange:(int)step select:(BOOL)select{
@@ -1548,7 +1646,6 @@ enum { SETTINGS_W = 600, SETTINGS_ROW_H = 34, SETTINGS_GAP = 6, SETTINGS_TOP = 9
 -(void)viewDidMoveToSuperview{[super viewDidMoveToSuperview];[self center];}
 @end
 
-static TOTKSettingsPanel *settingsPanel;
 static void settings_refresh_all(void) { [settingsPanel refresh]; }
 /* A mouse click in the panel: the controller's highlight goes until a controller moves again. */
 static void settings_pointer_used(void) { if(!g_settings_controller_active)return;g_settings_controller_active=NO;[settingsPanel controllerHighlight]; }
@@ -1561,6 +1658,32 @@ static void settings_rebuild(void) {
  if(!window||!settingsOpen)return;
  settings_panel_replace();[settingsPanel center];[settingsPanel refresh];
 }
+#ifdef TOTK_GAME_V143
+/* Changing method adds, removes or replaces the quality row. Preserve the selected row, held-controller state and
+   scroll distance from the top; rebuilding must not jump the player back to FOV or repeat a held button. */
+static void settings_aa_rebuild(void) {
+ if(!window||!settingsOpen)return;
+ TOTKSettingsPanel *old=settingsPanel;
+ NSInteger index=old.controllerIndex,footer=index-(NSInteger)old.rows.count;
+ NSString *selected=index>=0&&index<(NSInteger)old.rows.count?old.rows[(NSUInteger)index].title:nil;
+ NSView *page=old.pages[(NSUInteger)old.page];
+ NSScrollView *scroll=[page isKindOfClass:NSScrollView.class]?(NSScrollView *)page:nil;
+ CGFloat top=scroll?NSMaxY(scroll.documentView.bounds)-NSMaxY(scroll.contentView.bounds):0;
+ settings_rebuild();
+ settingsPanel.previousButtons=old.previousButtons;settingsPanel.previousDirection=old.previousDirection;
+ settingsPanel.controllerArmed=old.controllerArmed;settingsPanel.repeatAt=old.repeatAt;
+ if(footer>=0)settingsPanel.controllerIndex=(NSInteger)settingsPanel.rows.count+footer;
+ else{
+  BOOL found=NO;
+  for(NSUInteger i=0;i<settingsPanel.rows.count;i++)if([settingsPanel.rows[i].title isEqualToString:selected]){settingsPanel.controllerIndex=(NSInteger)i;found=YES;break;}
+  if(!found)for(NSUInteger i=0;i<settingsPanel.rows.count;i++)if([settingsPanel.rows[i].title isEqualToString:settings_text("抗锯齿方式","Anti-aliasing method")]){settingsPanel.controllerIndex=(NSInteger)i;break;}
+ }
+ page=settingsPanel.pages[(NSUInteger)settingsPanel.page];scroll=[page isKindOfClass:NSScrollView.class]?(NSScrollView *)page:nil;
+ if(scroll){CGFloat y=fmax(0,NSMaxY(scroll.documentView.bounds)-scroll.contentSize.height-top);
+  [scroll.contentView scrollToPoint:NSMakePoint(0,y)];[scroll reflectScrolledClipView:scroll.contentView];}
+ [settingsPanel controllerHighlight];
+}
+#endif
 /* The panel in the headset (zeldaVR, "按建议 都做", 2026-10-30: hold the left X on a Quest controller to open it, the
    Quest buttons then work it by name): while it is open with VR on, its layers are drawn into a bitmap ten times a
    second (twice the size, for the headset's pixels) and handed to the VR thread (gfx/nvn/totk_vr.m vr_panel_image),

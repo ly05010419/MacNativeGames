@@ -9,40 +9,43 @@ This folder started as a copy of `games/ot0` (Octopath Traveler 0), itself a cop
 
 You must own the game: use your own NSP and the `prod.keys` and system fonts dumped from your own Switch. Nothing from the game is in this repository. `XC3_build/` (the work folder) and `mods/` are ignored by git.
 
-## Status (29 October 2026)
+## Status (3 November 2026)
 
-Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1.
+Playable on the Mac with known shader coverage gaps: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
+
+Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1. The port targets the Mac only; iPhone and iPad are not a goal.
 
 | Stage | State |
 |---|---|
 | Code and data | done: 1.0.0 code and RomFS extracted from the base NSP and verified (ExeFS hashes, all six RomFS IVFC levels) |
 | Rewrite | done: sdk, subsdk0 and main rewritten and verified (`structck.py`, and `equiv.py --min-eff 8` with 0 divergent sites) |
 | Boot | done: SDK startup, every constructor (main 805, subsdk0 45, sdk 112), `nnMain`, the game's threads, window and Metal device |
-| Graphics | mostly done: transform feedback and geometry shaders (point input) are emulated, GPU BC7 encoding, several texture pools, vertex-shader skinning |
+| Graphics | done for what has been played: transform feedback, geometry shaders (point, line and triangle input), logic operations on integer targets, GPU BC7 encoding, several texture pools, vertex-shader skinning; the gaps below remain |
 | Menus and new game | done: difficulty selection, both prologue movies (WebM through `runtime/movie_host.c`), the opening cutscene |
 | Battles | done: the first battle, with characters, and later ones played by hand |
 | Sound | done: Wwise through the audio renderer; checked by ear |
 | Save and load | done: saved in Everblight Plain, quit, started again and loaded at the same place |
-| Frame rate | 30 fps, as on the Switch; the GPU takes about 6–7 ms per frame in Everblight Plain |
+| Frame rate | 30 fps, as on the Switch; the GPU takes about 6–7 ms per frame in Everblight Plain, the process about half of one CPU core |
 | App | done: `make app` builds a self-contained `Xenoblade Chronicles 3.app` (settings window, then the game); it runs with the work folder renamed |
 | 2.2.1 | builds from the base NSP plus the 2.2.1 update; played on the Mac from a 1.0.0 save (29 October 2026); the DLC menu's "Purchase" returns at once (no eShop) |
+| Long play | the base game (2.2.1, the app) for 2.5 hours on 2 November 2026 with no glitches, seen in play: the screen tearing, thin black lines and the bright streak from a character seen in October did not come back |
+| Add-ons | the four Expansion Pass volumes mount; volumes 1–3 played; Future Redeemed played after its flat-polygon fix (3 November 2026). Neither the main story nor Future Redeemed has been played to the end |
 
-## Known gaps
+## Notes
 
-- Geometry shaders are emulated for point input only. A program with triangle-strip input is skipped (logged once).
-- Logic op OR on integer render targets is not emulated.
+None of these shows on screen:
+
+- Geometry shaders with line or triangle input are emulated since 2026-11-03; `TOTK_GS_TRIANGLES=0` skips them as before, should a character or effect go missing.
 - One `DrawTransformFeedback` with nothing captured, near the second prologue movie (logged once).
 - Under the game's second sampler pool, a combined handle with sampler 0 is read as a separate texture handle.
-- Rare, brief screen tearing or thin black lines while playing.
-- Now and then a long, thin bright streak across the scene from a character (seen in play at the original scale, and once in an agent run at 2K).
-- A shader seen for the first time is translated and compiled when it is first used. On the first run (of `make boot` or of the app, which keeps its own cache) a loading screen can wait for that, once for up to about a minute; later runs load the shaders from the cache.
+- Without `make shader-prepare`, a shader seen for the first time is translated and compiled when it is first used, and on the first run a loading screen can wait for that, once for up to about a minute. With it, the app carries every shader of the game and its add-ons; only a few, with a bind state the default translation does not cover, are translated in play.
 
 ## What the game uses
 
 - **NVN:** SDK 12.3.9, the same in 1.0.0 and 2.2.1. The game asks `nvnDeviceGetProcAddress` for entry points 1,050 times at start. The graphics layer's table has 523 NVN names: 432 implemented, 7 intentional no-ops, and the other 84 abort with their name when called. None of those 84 was called in 15-minute runs of either version.
 - **Features Metal lacks, emulated here:**
   - transform feedback;
-  - geometry shaders (point input; one triangle-strip program is skipped);
+  - geometry shaders (point, line and triangle input; a geometry shader that picks the layer draws into every layer of a 3D, array or cube target);
   - BC7 encoding on the GPU;
   - two texture and sampler pools switched every frame;
   - skinning in vertex shaders under rasterizer discard;
@@ -105,7 +108,7 @@ Run this way, saves, the profile and the pseudo device id are written to `XC3_bu
 
 ## The app
 
-`make shader-seed PY=$PY` first (optional) gathers the shaders already translated on this Mac (the work folder's cache and the app's) into `build/shader-seed`; `make app` then bundles them, so a fresh app does not translate them while playing. `make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
+`make shader-prepare shader-seed PY=$PY` first (optional) finds every shader in the game's files, the add-ons in `extracted/aoc` and `main` (about 34,800 in 2.2.1 with all four add-ons), translates each once into `build/shader-prepared` (about a minute on an M5; `scripts/translate_shaders.py`), and gathers them with the shaders already translated on this Mac (the work folder's cache and the app's) into `build/shader-seed` (about 780 MB); `make app` then bundles them, so a fresh app does not translate them while playing. The first start imports them once (about 20 s). `make app VERSION=v100 PY=$PY APP=<path>.app` builds the app: a launcher with a settings window and, in `Contents/Resources/game`, everything the game reads (the runtime, the shader tools, the rewritten modules, the RomFS and the system fonts), cloned from the work folder. On the work folder's APFS volume the clones take no extra space; on another volume they are copies (about 14 GB). Add `GAME=<base>.nsp KEYS=<prod.keys>` to give it the game's own icon, read from your NSP at build time. The app keeps working when the work folder is moved or deleted.
 
 The settings window chooses the monitor, window or full screen, the window size or full-screen resolution, MetalFX or plain upscaling, the frame rate overlay, and whether new shaders are built in the background. There is no frame rate choice: the game holds itself to 30 fps, as on the Switch.
 
@@ -113,4 +116,4 @@ The app writes only to `~/Library/Application Support/MacNativeGames/XC3` (saves
 
 ## Next
 
-- The known gaps above, starting with geometry shaders of other input topologies.
+- The main story and Future Redeemed played to the end, to look for anything later areas need.

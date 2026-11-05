@@ -34,3 +34,8 @@ with tempfile.TemporaryDirectory(prefix="totk-command-q-") as work:
     assert inputs.returncode == 0, inputs.stdout + inputs.stderr
     assert "Command input isolation" in inputs.stdout
     print(inputs.stdout.strip())
+
+    screenshots = subprocess.run([str(binary), "5", "0"], capture_output=True, text=True, timeout=15)
+    assert screenshots.returncode == 0, screenshots.stdout + screenshots.stderr
+    assert "nonreused generations" in screenshots.stdout
+    print(screenshots.stdout.strip())

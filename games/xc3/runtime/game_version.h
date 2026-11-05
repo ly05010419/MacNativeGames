@@ -25,6 +25,10 @@
 #define XC3_RENDER_SCALE_SITES {{0xf5362c, 0xd2a7e00bu, 1},   /* mov  x11, #0x3f000000 (0.5, mode 1) */ \
                                 {0xf53640, 0xf2d5c28bu, 0},   /* movk x11, #0xae14, lsl #32 (low half of 0.53) */ \
                                 {0xf53644, 0xf2e7e0ebu, 1}}   /* movk x11, #0x3f07, lsl #48 (0.53, the other mode) */
+/* Frame wait (stage 14): the game's frame limiter (main+0x124fa34) spins until its frame time has passed, reading the clock
+   through main+0x124f120 -> nn::os::GetSystemTick about 76,000 times a second. {main offset of the return address into the
+   loop after that call, the instruction there}: the host's clock gate sleeps briefly when called from it (loader.c). */
+#define XC3_FRAME_WAIT_SITE {0x124fb44, 0x4ea01c08u}   /* blr x8 (elapsed time) returns here: mov v8.16b, v0.16b */
 #else
 #error "build with -DXC3_GAME_V100 or -DXC3_GAME_V221 (the Makefile's VERSION)"
 #endif

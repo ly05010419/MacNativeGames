@@ -4,8 +4,9 @@
 The graphics layer imports <game>/build/shader-seed at start (gfx/nvn/totk_shader_seed.h): every file is checked against
 seed-manifest.json's SHA-256, then cloned into the player's cache, so a fresh app does not translate shaders while
 playing (Future Redeemed's opening asked for about 10,000 at once). TotK prepares its seed from the RomFS shader packages
-(games/totk/scripts/prepare_shader_seed.py); Xenoblade Chronicles 3 keeps its shaders in its own archive, so this seed is
-made from the variants this game already met in play on this Mac. The output contains game-derived data and belongs in
+(games/totk/scripts/prepare_shader_seed.py); Xenoblade Chronicles 3 keeps its shaders in its own archives, which
+translate_shaders.py reads to translate every shader ahead of play (make shader-prepare); its folder is merged here with
+the variants this game already met in play on this Mac (the first cache given wins for a variant name). The output contains game-derived data and belongs in
 the work folder or the local app, never in the repository.
 
 Taken: <key>.variants (the variant index: merged from every cache, rows kept only when their files are present),
@@ -57,10 +58,22 @@ def main():
         if not cache.is_dir():
             print(f'skipped (no folder): {cache}')
             continue
+        # Select complete pairs from one cache; never combine one cache's MSL with another's reflection.
         for entry in os.scandir(cache):
             m = SHADER.match(entry.name)
             if m:
-                shaders.setdefault(m.group(1), {}).setdefault(m.group(2), Path(entry.path))
+                if m.group(2) != 'json':
+                    continue
+                variant = m.group(1)
+                metal = cache / f'{variant}_b.metal'
+                try:
+                    reflection = json.loads(Path(entry.path).read_text())
+                    valid = (reflection.get('chain') == name_chain and
+                             reflection.get('stage') in ('vs', 'ps', 'cs') and metal.stat().st_size > 0)
+                except (OSError, ValueError, AttributeError):
+                    valid = False
+                if valid:
+                    shaders.setdefault(variant, {'json': Path(entry.path), 'metal': metal})
                 continue
             m = INDEX.match(entry.name)
             if m:

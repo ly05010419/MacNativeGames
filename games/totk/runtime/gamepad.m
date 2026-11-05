@@ -47,7 +47,24 @@ static __weak GCController *rawLeftController, *rawRightController;
 static SwitchLeftFallback rawLeft, rawRight;
 static uint64_t gamepadRawLeftAt, gamepadRawRightAt;
 static int32_t gamepadNativeLx, gamepadNativeLy, gamepadNativeRx, gamepadNativeRy;   /* the sticks as GameController reads them */
+static void (*captureHook)(void);
+static int captureDown, captureSeen;   /* the capture button as the reports say, and as refresh_gamepads last saw it */
 static void refresh_gamepads(void);
+static void gamepad_options_gesture(GCExtendedGamepad *pad);
+static void gamepad_gestures_changed(void);
+
+/* The capture button (the window's screenshot, runtime/screenshot.h): macOS's Share button on a controller GameController
+   reports, or bit 5 of a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The
+   Switch report arrives on the main run loop, and the GameController value from a value-changed handler; both only set a
+   flag, and the refresh that follows calls the hook once per press. A macOS shortcut already bound to the button keeps
+   it (System Settings > Game Center): the button then takes no picture. */
+void runtime_capture_set_hook(void (*hook)(void)) { captureHook = hook; }
+/* A Switch 0x30 report: 1 while its button 5 is down, which arrives every few milliseconds while it is held. */
+void runtime_gamepad_switch_capture(void *controller, int pressed) {
+    if (!controller) captureDown = 0;
+    else if (pressed && !captureDown) { captureDown = 1; refresh_gamepads(); }   /* the refresh calls the hook once */
+    else if (!pressed && captureDown) captureDown = 0;
+}
 #if TARGET_OS_OSX
 static _Atomic int gamepadBackground, gamepadFocused = 1;
 #endif
@@ -235,6 +252,7 @@ void runtime_controller_map_get(uint16_t *map, uint8_t *modes) {
 static void controller_map_changed(void) {
     physicalPrev = 0;
     memset(tapUntil, 0, sizeof tapUntil); memset(toggleOn, 0, sizeof toggleOn); memset(toggleMoved, 0, sizeof toggleMoved);
+    gamepad_gestures_changed();
     refresh_gamepads();
 }
 void runtime_controller_map_set(const uint16_t *map, const uint8_t *modes) {
@@ -268,6 +286,23 @@ static void save_controller_type(int type) { setting_write("controller-type.txt"
 
 static int face_by_position(GCController *controller) {
     return gamepad_type_face_by_position(atomic_load(&controllerType), controller.productCategory.UTF8String, controller.vendorName.UTF8String);
+}
+
+/* Apple's Options recognizer waits to distinguish a short press from a screenshot long press before forwarding input
+   (GCControllerElement.h). Physical "view" is Options/Create on DualSense and maps to Switch Minus by default: that
+   wait delays every Purah Pad page although keyboard Minus is immediate. Request direct input while the button drives
+   a game action or the settings panel; leave its system gestures available when the player unmaps it. */
+static void gamepad_options_gesture(GCExtendedGamepad *pad) {
+    GCControllerButtonInput *button = pad.buttonOptions;
+    if (!button) return;
+    int used = controllerMap[11] != 0 || atomic_load(&settingsButton) == 11;
+    GCSystemGestureState wanted = used ? GCSystemGestureStateDisabled : GCSystemGestureStateEnabled;
+    if (button.preferredSystemGestureState == wanted) return;
+    button.preferredSystemGestureState = wanted;
+    fprintf(stderr, "[totk-input] Options/View: %s\n", used ? "requested direct input for the game/panel" : "system gestures available (unmapped)");
+}
+static void gamepad_gestures_changed(void) {
+    for (GCController *controller in GCController.controllers) gamepad_options_gesture(controller.extendedGamepad);
 }
 
 /* The physical buttons held, bit i = controller_physical_names[i]; the face buttons by where they sit
@@ -675,6 +710,7 @@ void runtime_gamepad_settings_button_set(int physical) {
     if (physical < 0) runtime_setting_remove("controller-settings.txt");
     else setting_write("controller-settings.txt", controller_physical_names[physical], "settings panel button");
     fprintf(stderr, "[totk-input] settings panel button: %s\n", physical < 0 ? "L3 + R3" : controller_physical_names[physical]);
+    gamepad_gestures_changed();
     refresh_gamepads();
 }
 
@@ -768,11 +804,13 @@ static void refresh_gamepads(void) {
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
     int32_t nativeLx = 0, nativeLy = 0, nativeRx = 0, nativeRy = 0;
     uint64_t rawAt = 0, rawRightAt = 0;
+    int capture = captureDown;
     for (GCController *controller in GCController.controllers) {
         GCExtendedGamepad *pad = controller.extendedGamepad;
         if (!pad) continue;
         next.connected = 1;
         physical |= gamepad_buttons(pad, face_by_position(controller));
+        if (!capture && pad.buttons[GCInputButtonShare].isPressed) capture = 1;   /* the capture button (see runtime_capture_set_hook) */
         float lx = pad.leftThumbstick.xAxis.value, ly = pad.leftThumbstick.yAxis.value;
         nativeLx = stronger_axis(nativeLx, stick_axis(lx));
         nativeLy = stronger_axis(nativeLy, stick_axis(ly));
@@ -808,6 +846,8 @@ static void refresh_gamepads(void) {
     }
     /* Modes work on the physical buttons, not on the mapped ones: two physical buttons may share a Switch button
        (X and L3 both running), and a mapped edge would be lost while the other one is held. */
+    if (capture && !captureSeen && captureHook) captureHook();
+    captureSeen = capture;
     uint64_t now = runtime_now_ns(), edges = physical & ~physicalPrev, synthetic = 0, suppressed = 0, trigger = settings_trigger();
     if (atomic_load(&settingsButton) >= 0) suppressed |= trigger;   /* a picked button is the panel's only */
     int moving = next.lx || next.ly;
@@ -878,6 +918,7 @@ static void refresh_gamepads(void) {
 static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
+    gamepad_options_gesture(pad);
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
         (void)changed; (void)element;
         refresh_gamepads();
@@ -885,6 +926,16 @@ static void attach_gamepad(GCController *controller) {
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
             (controller.vendorName ?: @"unknown").UTF8String,
             (controller.productCategory ?: @"unknown").UTF8String, face_by_position(controller) ? "position" : "label");
+    /* The capture button takes this game's picture (runtime_capture_set_hook). macOS keeps a Share button for its own
+       gesture -- a screenshot to the Desktop -- while a system gesture has it; asked off, the button reaches the game.
+       A shortcut the player bound to it in System Settings > Game Center keeps it, and then it takes no picture. */
+    GCControllerButtonInput *capture = pad.buttons[GCInputButtonShare];
+    if (capture) {
+        BOOL reserved = capture.isBoundToSystemGesture;
+        capture.preferredSystemGestureState = GCSystemGestureStateDisabled;
+        fprintf(stderr, "[totk-input] %s: the capture button (%s) saves a screenshot%s\n", (controller.vendorName ?: @"controller").UTF8String,
+                capture.localizedName.UTF8String ?: "share", reserved ? "; macOS had a system gesture on it, asked off" : "");
+    }
     runtime_feedback_attach(controller);
     refresh_gamepads();
 }
@@ -1050,6 +1101,7 @@ void runtime_gamepad_clear(void) {
     gamepadNativeLx = gamepadNativeLy = 0;
     pressedEdges = 0; textEdges = 0; textPad = (RuntimeGamepadState){0};
     settingsShortcutDown = settingsShortcutPending = 0;
+    captureDown = captureSeen = 0;   /* a button held at focus loss must not shoot on the way back */
     mouse_look_reset(&mouseLook); mouseRX = mouseRY = 0;
     pthread_mutex_unlock(&gamepadLock);
 }

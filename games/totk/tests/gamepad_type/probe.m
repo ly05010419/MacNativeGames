@@ -53,6 +53,26 @@ int main(int argc, char **argv) { @autoreleasepool {
     setenv("TOTK_CONTROLS", "/nonexistent-folder-for-probe/controls.txt", 1);
     check(runtime_gamepad_type_set(GAMEPAD_TYPE_XBOX) == GAMEPAD_TYPE_XBOX, "a folder that cannot be written: the type still changes for this run");
 
+    /* A real GameController snapshot needs no hardware. Exercise the OS preference and its scope; snapshots are not
+       in GCController.controllers, so apply the per-controller refresh explicitly after changing the mapping. */
+    controller_map_default(controllerMap, controllerModes);
+    GCController *snapshot = [GCController controllerWithExtendedGamepad];
+    GCExtendedGamepad *pad = snapshot.extendedGamepad;
+    check(pad.buttonOptions != nil, "snapshot has an Options button");
+    GCSystemGestureState menu = pad.buttonMenu.preferredSystemGestureState, home = pad.buttonHome.preferredSystemGestureState;
+    attach_gamepad(snapshot);
+    check(pad.buttonOptions.preferredSystemGestureState == GCSystemGestureStateDisabled, "attach: mapped Options requests immediate input");
+    check(pad.buttonMenu.preferredSystemGestureState == menu && pad.buttonHome.preferredSystemGestureState == home, "Menu and Home gestures unchanged");
+    controllerMap[11] = 0; gamepad_options_gesture(pad);
+    check(pad.buttonOptions.preferredSystemGestureState == GCSystemGestureStateEnabled, "unmapped Options restores system gestures");
+    atomic_store(&settingsButton, 11); gamepad_options_gesture(pad);
+    check(pad.buttonOptions.preferredSystemGestureState == GCSystemGestureStateDisabled, "Options used by the settings panel is immediate too");
+    atomic_store(&settingsButton, -1); gamepad_options_gesture(pad);
+    check(pad.buttonOptions.preferredSystemGestureState == GCSystemGestureStateEnabled, "unmapped from game and panel restores system gestures");
+    controller_map_default(controllerMap, controllerModes); attach_gamepad(snapshot);
+    check(pad.buttonOptions.preferredSystemGestureState == GCSystemGestureStateDisabled, "reattach applies the mapped preference again");
+    gamepad_options_gesture(nil);
+
     printf("{\"status\":\"%s\",\"probe\":\"gamepad-type\",\"checked\":%d,\"failures\":%d}\n", failures ? "fail" : "pass", checked, failures);
     return failures != 0;
 }}

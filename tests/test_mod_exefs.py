@@ -464,6 +464,24 @@ class Case(unittest.TestCase):
         self.assertIn('another build of main', done.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_botw190_takes_the_same_patch_and_reserves_its_own_sites(self):
+        # Breath of the Wild 1.9.0 (docs/mods.md): the build id of the synthetic module is not the game's, so only the
+        # version's own reserved list (game_patches_botw.c) is in play; main+0x40 is no site of it.
+        self.retail()
+        self.patch(pchtxt([(0x40, b'\xaa\xbb\xcc\xdd')]))
+        report = self.apply(version='botw190')
+        self.assertEqual(report['version'], 'botw190')
+        self.assertEqual(report['reserved_sites'], len(patch_sites.sites('botw190', BUILD_ID.hex())))
+        self.assertEqual(image_of(self.output.read_bytes())[0x40:0x44], b'\xaa\xbb\xcc\xdd')
+
+    def test_botw190_refuses_a_site_the_runtime_checks(self):
+        # 0x151d484 is the first word of the real-time frame step (game_patches_botw.c patch_realtime): the synthetic
+        # module is too small to hold it, so the reserved list is asked directly the way apply() asks it.
+        reserved = patch_sites.sites('botw190', BUILD_ID.hex())
+        hits = patch_sites.overlaps([(0x151d484, 4)], reserved)
+        self.assertTrue(hits)
+        self.assertIn('game_patches_botw.c', hits[0][2].label)
+
     def test_the_sites_command_lists_a_version(self):
         done = subprocess.run([sys.executable, str(SCRIPTS/'mod_exefs.py'), 'sites', '--version', 'v121'],
                               capture_output=True, text=True)

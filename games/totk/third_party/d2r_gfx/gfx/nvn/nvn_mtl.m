@@ -5458,6 +5458,8 @@ static NSMutableDictionary<NSString *, NSString *> *g_shmap;
 static NSMutableDictionary<NSString *, NSString *> *g_shassets;
 static NSString *g_shmap_path, *g_msl_dir;
 static NSString *exe_rel(const char *rel) {
+    const char *native = getenv("TOTK_NATIVE_DIR");   // the Mac app: its executable is Contents/MacOS/<name> (app/launcher.m)
+    if (native && *native) return [NSString stringWithFormat:@"%@/%@", @(native), @(rel)];
     char buf[4096]; uint32_t n = sizeof buf;
     if (_NSGetExecutablePath(buf, &n)) return nil;
     char *dir = dirname(buf);
@@ -7866,27 +7868,29 @@ static id<MTLFunction> fs_fn_border_with(NvShader *fs, int nodepth, NSString *bk
 /* The fragment function reading the given attachments from the tile (nvn_fbread.h), nil when it cannot be made. Built on
    the submit thread when a draw first needs it, never in the background: the draw has given up the store before it
    (att_fb_take), so it cannot be drawn with the plain function meanwhile. */
-static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n);
-static id<MTLFunction> fs_fn_fbread(NvShader *fs, const int aid[], const int att[], int n) {
+static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr);
+static id<MTLFunction> fs_fn_fbread(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr) {
     if (!fs || !sh_has_src(fs) || n <= 0) return nil;   // a depth-writing shader keeps its depth output: callers draw it only into a pass with a depth plane (att_fb_take)
     /* TOTK: the decals ask for the same variant draw after draw; formatting the key and the dictionary lookup were ~2% of
        the translate thread at Kakariko (2026-10-25). The last four answers per thread (the warm-up asks from its own). */
-    typedef struct { const void *fs; int n, aid[8], att[8]; __unsafe_unretained id<MTLFunction> fn; } fbr_memo;   // fs retained: no reuse of its address; it holds fn in bpatch
+    typedef struct { const void *fs; BOOL hdr; int n, aid[8], att[8]; __unsafe_unretained id<MTLFunction> fn; } fbr_memo;   // fs retained: no reuse of its address; it holds fn in bpatch
     static __thread fbr_memo memo[4]; static __thread unsigned next;   // a few decal shaders alternate draw after draw
     for (int i = 0; i < 4; i++) { fbr_memo *e = &memo[i];
-        if (e->fs == (__bridge const void *)fs && e->n == n && !memcmp(aid, e->aid, sizeof *aid * (size_t)n) && !memcmp(att, e->att, sizeof *att * (size_t)n)) return e->fn; }
-    id<MTLFunction> got = fs_fn_fbread_slow(fs, aid, att, n);
+        if (e->fs == (__bridge const void *)fs && e->hdr == hdr && e->n == n && !memcmp(aid, e->aid, sizeof *aid * (size_t)n) && !memcmp(att, e->att, sizeof *att * (size_t)n)) return e->fn; }
+    id<MTLFunction> got = fs_fn_fbread_slow(fs, aid, att, n, hdr);
     if (got && n <= 8) { fbr_memo *e = &memo[next++ & 3];
         if (e->fs) CFRelease(e->fs);
-        e->fs = (__bridge_retained const void *)fs; e->n = n; memcpy(e->aid, aid, sizeof *aid * (size_t)n); memcpy(e->att, att, sizeof *att * (size_t)n); e->fn = got; }
+        e->fs = (__bridge_retained const void *)fs; e->hdr = hdr; e->n = n; memcpy(e->aid, aid, sizeof *aid * (size_t)n); memcpy(e->att, att, sizeof *att * (size_t)n); e->fn = got; }
     return got;
 }
-static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n) {
-    NSMutableString *key = [NSMutableString stringWithString:@"fbread;"];
+static id<MTLFunction> fs_fn_fbread_slow(NvShader *fs, const int aid[], const int att[], int n, BOOL hdr) {
+    NSMutableString *key = [NSMutableString stringWithString:hdr ? @"hdr-fbread;" : @"fbread;"];
     for (int i = 0; i < n; i++) [key appendFormat:@"%d:%d;", aid[i], att[i]];
     os_unfair_lock_lock(&g_bpatch_lock); id fn = fs->bpatch[key]; os_unfair_lock_unlock(&g_bpatch_lock);
     if (fn) return fn == VARIANT_NONE ? nil : fn;
-    NSString *src = nvn_fbread_src(sh_src(fs), fs->fn.name, aid, att, n);
+    // The tile-read function replaces the fragment function for this draw, so derive it from the active tone map.
+    NSString *base = hdr ? fn_src(fs->hdr_fn) : sh_src(fs);
+    NSString *src = nvn_fbread_src(base, fs->fn.name, aid, att, n);
     CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();   // about 90 ms cold on an M4 Max; Metal's cache keeps it, and the next packaging compiles it into the app (variant_library)
     NSError *err = nil; id<MTLLibrary> lib = src ? variant_library(src, &err) : nil;
     fn = lib ? [lib newFunctionWithName:fs->fn.name] : nil;
@@ -8759,7 +8763,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
     /* A tile-reading pipeline (att_fb_take) was recorded only as its plain R row, so the warm-up never built it and every
        session compiled it in play: about 4,750 pipelines per UltraCam run, frames of 0.3-1 s (2026-10-24). Its T row names
        the variant (aid:att pairs) so the warm-up builds it into the archive (warm_tileread). */
-    if (fbread && g_pso_fbrec[0] && !(k.a2c & PSO_VBORDER)) {
+    if (fbread && !hdr && g_pso_fbrec[0] && !(k.a2c & PSO_VBORDER)) {
         pso_key rk = k; rk.fsfn = NULL; pso_skey tsk; char thex[sizeof tsk * 2 + 1]; pso_skey_from(&rk, vs, fs, 0, NULL, &tsk); pso_skey_hex(&tsk, thex);
         pso_user_record("T\t%s\t%s\n", thex, g_pso_fbrec);
         pso_contribute(&tsk, nil, @(g_pso_fbrec));
@@ -9133,7 +9137,7 @@ static int warm_tileread(NSArray<NSString *> *c, NSMutableDictionary<NSString *,
         if (n == 8) return 0;
         aid[n] = q[0].intValue; att[n] = q[1].intValue; n++;
     }
-    id<MTLFunction> fn = n ? fs_fn_fbread(fs, aid, att, n) : nil;
+    id<MTLFunction> fn = n ? fs_fn_fbread(fs, aid, att, n, NO) : nil;
     if (!fn) return 0;
     pso_key k = sk.k; k.vs = (__bridge void *)vs; k.fs = (__bridge void *)fs; k.fsfn = (__bridge void *)fn;
     NSError *e = nil; uint64_t ps_started = bp_now();
@@ -11555,7 +11559,8 @@ static id<MTLFunction> att_fb_take(NvProg *pr, uint64_t *rs, int *n) {
         for (int i = 0; i < sh->rf.nb; i++) { const nvn_rbind *b = &sh->rf.b[i]; uint64_t h;
             if (b->kind == NVN_RB_IMG) h = b->reg < 32 ? S.img[sh->stage][b->reg] : 0; else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TBUF) h = b->reg < 128 ? S.tex[sh->stage][b->reg] : 0; else continue;
             if (h && has_ser(took, nt, h_ser(h))) return nil; } }
-    id<MTLFunction> fn = fs_fn_fbread(fs, aid, att, k);
+    BOOL hdr = fs->hdr_fn && atomic_load(&g_hdr_frame_enabled);
+    id<MTLFunction> fn = fs_fn_fbread(fs, aid, att, k, hdr);
     if (fn) { int o = 0; g_pso_fbrec[0] = 0; for (int i = 0; i < k && o < (int)sizeof g_pso_fbrec - 24; i++) o += snprintf(g_pso_fbrec + o, sizeof g_pso_fbrec - o, "%d:%d;", aid[i], att[i]); }
     if (!fn) return nil;
     int m = 0; for (int i = 0; i < *n; i++) if (!has_ser(took, nt, rs[i])) rs[m++] = rs[i];
@@ -16502,7 +16507,9 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp]; es_reset();
     [en setViewport:vp];
-    [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy (it decodes SDR input) [en setFragmentTexture:src atIndex:0]; [en setFragmentSamplerState:g_blit_samp atIndex:0];
+    [en setRenderPipelineState:g_blit_hdr_pso && (src.pixelFormat==MTLPixelFormatRGBA16Float || dst.pixelFormat==MTLPixelFormatRGBA16Float) ? g_blit_hdr_pso : g_blit_pso];   // an FP16 picture or drawable: the HDR copy
+    [en setFragmentTexture:src atIndex:0];
+    [en setFragmentSamplerState:g_blit_samp atIndex:0];
     float uv[12] = {(float)cx / src.width, (float)cy / src.height, (float)cw / src.width, (float)ch / src.height,
                    (cx + 0.5f) / src.width, (cy + 0.5f) / src.height, (cx + cw - 0.5f) / src.width, (cy + ch - 0.5f) / src.height};
     uv[8]=1;uv[9]=1;
@@ -19804,24 +19811,28 @@ int botw_wb_newer(const void *mem, uint64_t gen) {
    formats x 8 write masks) are built on 4 threads and added like the warm-up adds them (par_add, each thread its own
    batch, par_flush_thread), one key twice from two threads; then the folder is read back as a later start reads it,
    with files a cut-short write leaves, and every pipeline must come from its file without compiling
-   (MTLPipelineOptionFailOnBinaryArchiveMiss). The build folders the batches made must be gone. A forced late startup
-   cleanup while two batches overlap must keep their live folder; only the last batch may remove it. */
+   (MTLPipelineOptionFailOnBinaryArchiveMiss). The build folders the batches made must be gone from this binary's own
+   cache folder (its bundle id, runtime/game_info.plist), none made in the shared one. A forced late startup cleanup while
+   two batches overlap must keep their live folder; only the last batch may remove it, and never a shared folder made
+   meanwhile. Two processes: tests/test_pipeline_archive_folders.py. */
 static int par_probe_startup_cleanup(NSString *dir) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *owned = [dir stringByAppendingPathComponent:@"probe-owned"], *shared = [dir stringByAppendingPathComponent:@"probe-shared"];
     NSString *stale = [owned stringByAppendingPathComponent:@"gpuarchiver-stale"], *other = [shared stringByAppendingPathComponent:@"gpuarchiver-shared"];
     NSString *unrelated = [owned stringByAppendingPathComponent:@"keep-this-entry"], *live = [owned stringByAppendingPathComponent:@"gpuarchiver-live"];
+    NSString *during = [shared stringByAppendingPathComponent:@"gpuarchiver-during"];   // another program's, made while a batch is open
     for (NSString *path in @[stale, other, unrelated]) [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
     g_par_probe_ga_dirs = @[@{@"path": owned, @"own": @YES}, @{@"path": shared, @"own": @NO}];
     par_open_dir(g_dev);
     if ([fm fileExistsAtPath:stale] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated])
         MDIE("pipeline archive probe: startup cleanup did not finish or removed unrelated/shared entries");
-    par_batch_begin();
-    [fm createDirectoryAtPath:live withIntermediateDirectories:YES attributes:nil error:nil];
+    if (!par_batch_begin()) MDIE("pipeline archive probe: no batch began (shared lock refused)");
+    for (NSString *path in @[live, during]) [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
     dispatch_semaphore_t entered = dispatch_semaphore_create(0), leave = dispatch_semaphore_create(0);
     dispatch_group_t workers = dispatch_group_create();
     dispatch_group_async(workers, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        par_batch_begin(); dispatch_semaphore_signal(entered);
+        if (!par_batch_begin()) MDIE("pipeline archive probe: no overlapping batch began");
+        dispatch_semaphore_signal(entered);
         if (dispatch_semaphore_wait(leave, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) MDIE("pipeline archive probe: batch release timed out");
         par_batch_end();
     });
@@ -19833,10 +19844,10 @@ static int par_probe_startup_cleanup(NSString *dir) {
     if (![fm fileExistsAtPath:live]) MDIE("pipeline archive probe: first batch removed another batch's live folder");
     dispatch_semaphore_signal(leave);
     if (dispatch_group_wait(workers, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) MDIE("pipeline archive probe: final batch did not finish");
-    if ([fm fileExistsAtPath:live] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated])
+    if ([fm fileExistsAtPath:live] || ![fm fileExistsAtPath:other] || ![fm fileExistsAtPath:unrelated] || ![fm fileExistsAtPath:during])
         MDIE("pipeline archive probe: final batch cleanup left its folder or removed unrelated/shared entries");
     g_par_probe_ga_dirs = nil;   // all fixture workers joined; real Metal batches use the normal cache folders
-    return 6;
+    return 7;
 }
 int mtl_probe_pipeline_archive(void) {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingFormat:@"totk-probe-pipeline-archive-%d", getpid()];
@@ -19862,7 +19873,9 @@ int mtl_probe_pipeline_archive(void) {
         d.colorAttachments[0].pixelFormat = fmts[i % 12]; d.colorAttachments[0].writeMask = (MTLColorWriteMask)(15 - i / 12);
         [descs addObject:d]; char k[32]; snprintf(k, sizeof k, "probe-%d", i); [keys addObject:par_hash(k, strlen(k))];
     }
-    NSSet<NSString *> *folders_before = par_ga_list(0);
+    int own_dirs = 0; for (NSDictionary *d in par_ga_dirs()) own_dirs += [d[@"own"] boolValue];
+    if (!own_dirs) MDIE("pipeline archive probe: no bundle id, so no cache folder of its own (runtime/game_info.plist not linked?)");
+    NSSet<NSString *> *folders_before = par_ga_list(0); uint64_t removed_before = atomic_load(&g_par_ga_removed);
     __block _Atomic int built = 0;
     dispatch_apply(4, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t w) {
         int owip = par_write_in_place; par_write_in_place = 1;
@@ -19879,6 +19892,7 @@ int mtl_probe_pipeline_archive(void) {
     if (g_par_pending.count) MDIE("pipeline archive probe: %lu keys still pending", (unsigned long)g_par_pending.count);
     NSMutableSet *left = [par_ga_list(0) mutableCopy]; [left minusSet:folders_before];
     if (left.count) MDIE("pipeline archive probe: %lu build folders left (%s)", (unsigned long)left.count, [left.anyObject UTF8String]);
+    if (atomic_load(&g_par_ga_removed) == removed_before) MDIE("pipeline archive probe: Metal made no build folder in this binary's own cache folder");
     NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:par_dir() error:nil];
     NSUInteger archives = 0, lists = 0, listed = 0;
     for (NSString *name in names) {

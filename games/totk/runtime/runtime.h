@@ -14,6 +14,15 @@ typedef struct {
 } Module;
 extern pthread_key_t runtime_keys[8];
 _Noreturn void runtime_fail(const char *message);
+int runtime_app_mode(void);   /* loader.c: 1 when this binary is the Mac app's own executable (Contents/MacOS), started as the app */
+int runtime_app_launch(int argc, char **argv, char ***boot);   /* app/launcher.m: the player's folders and settings, then -1 to boot */
+void runtime_input_file_start(void);   /* input.c: the TOTK_INPUT_FILE command channel (at start, or after runtime_app_launch) */
+void runtime_cloud_save_start(const char *save_dir, const char *profile_dir);   /* cloud_save.m: save sync through a folder the player chooses (fs_host.c) */
+void runtime_cloud_save_changed(void);
+void runtime_cloud_save_quit(void);   /* the Mac window closes (frontend.m): uploads what is not uploaded yet */
+/* The Mac's chosen sync folder (TOTK_CLOUD_SAVE_FOLDER) lives in this defaults suite, not the app's own: the app menu
+   (frontend.m) and the launcher (app/launcher.m) may run in processes with different bundle identifiers. */
+#define RUNTIME_SAVE_SYNC_DEFAULTS "org.macnativegames.save-sync"
 void *runtime_symbol(const char *name);
 void *runtime_override(const char *name);
 void runtime_hle_stack_init(uint64_t tsd_offset);
@@ -209,6 +218,11 @@ void runtime_mouse_set_hook(void (*hook)(void));   /* the window (frontend.m): m
 void runtime_mouse_move(double dx, double dy);      /* points, AppKit's deltaX / deltaY (down positive) */
 void runtime_mouse_button(int button, int down);    /* main thread; 0 left, 1 right, 2 middle, 3 and 4 the side buttons */
 void runtime_mouse_release(void);                   /* main thread: buttons up, stick centred */
+/* The controller's capture button (runtime/gamepad.m): the Share button of a controller GameController reports, or bit 5 of
+   a Switch controller's 0x30 HID report (a Pro Controller's square button below the D-pad). The hook is called once per
+   press, on the main queue; the window (frontend.m) sets it to save a picture of the game's next frame (runtime/screenshot.h). */
+void runtime_capture_set_hook(void (*hook)(void));
+void runtime_gamepad_switch_capture(void *controller, int pressed);   /* Switch 0x30 report: 1 while the button is down (any queue) */
 void runtime_touch_pad_set(const RuntimeGamepadState *state);   /* on-screen touch controls (iOS) */
 int runtime_phone_fps(void);                /* d2r_gfx hle_nvn.c, iPhone / iPad: 30 while held at 30 (TOTK_PHONE_FPS), else 60 */
 void runtime_phone_fps_set(int fps);        /* 30 holds 30, anything else up to 60: the touch controls' button, at once */
