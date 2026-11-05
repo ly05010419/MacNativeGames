@@ -3337,22 +3337,20 @@ static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     if (tex_swizzle(t, t->d.format, &sw) && !(d.usage & (MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite))) d.swizzle = sw;
     return d;
 }
-// 就地升级：原贴图没开 PixelFormatView（缺省不开，保住苹果显卡无损压缩）却要建换格式视图时，按原规格 + PixelFormatView 新建、逐 slice × level 拷过去并替换登记。
-// 计数：选角 / 营地 / 野外 / 战斗 4 页 17473 张贴图换格式视图 0 次，所以这里是兜底，不靠预测哪些贴图需要
-// In-place upgrade: when the original texture was not created with PixelFormatView (off by default, to keep Apple GPU lossless compression) but a different-format view is needed, create a new one with the original spec + PixelFormatView, copy over every slice × level, and replace the registration.
-// Count: across the 4 screens character select / camp / wilderness / combat, 17473 textures needed a different-format view 0 times, so this is a fallback and does not rely on predicting which textures need it
-static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPixelFormat view_pf) {
+// 就地补齐后来才需要的换格式视图 / 图像写入用途，逐 slice × level 保留内容并替换登记。
+// Add late format-view / image-write usage, preserving every slice and mip before replacing the registration.
+static id<MTLTexture> tex_upgrade_usage(const tex_t *t, id<MTLTexture> base, MTLTextureUsage usage) {
     if (g_tex_preparing && rp_active()) { g_tex_prepare_split = 1; return base; }
     { stor_key k;   // TOTK: a storage-shared base is recreated for every serial holding it, then this serial re-resolves
-      if (stor_key_lookup(base, &k)) { if (!stor_recreate(&k, base.usage | MTLTextureUsagePixelFormatView)) return base; id<MTLTexture> nb = tex_mtl(t); return nb ? nb : base; } }
+      if (stor_key_lookup(base, &k)) { if (!stor_recreate(&k, base.usage | usage)) return base; id<MTLTexture> nb = tex_mtl(t); return nb ? nb : base; } }
     MTLTextureDescriptor *d = [MTLTextureDescriptor new];
-    d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = base.width; d.height = base.height; d.depth = base.depth;   // 保留原格式，只加换格式视图用途 | Keep the original format, only add the format-view usage
+    d.textureType = base.textureType; d.pixelFormat = base.pixelFormat; d.width = base.width; d.height = base.height; d.depth = base.depth;
     d.swizzle=base.swizzle;
     d.arrayLength = base.arrayLength; d.mipmapLevelCount = base.mipmapLevelCount; d.sampleCount = base.sampleCount;
     d.storageMode = base.storageMode; d.cpuCacheMode = base.cpuCacheMode; d.hazardTrackingMode = base.hazardTrackingMode;
-    d.resourceOptions = base.resourceOptions; d.usage = base.usage | MTLTextureUsagePixelFormatView;
+    d.resourceOptions = base.resourceOptions; d.usage = base.usage | usage;
     id<MTLTexture> upgraded = [g_dev newTextureWithDescriptor:d];
-    if (!upgraded) { RED_ONCE(45, "贴图升级失败 ser=%llu 格式 %lu → %lu", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf); return base; }
+    if (!upgraded) { RED_ONCE(45, "texture usage upgrade failed ser=%llu format %lu usage %#lx", t->serial, (unsigned long)base.pixelFormat, (unsigned long)usage); return base; }
     res_add(upgraded);
     id<MTL4ComputeCommandEncoder> b = blit();
     NSUInteger slices = base.textureType == MTLTextureType3D ? 1 : base.arrayLength * (base.textureType == MTLTextureTypeCube || base.textureType == MTLTextureTypeCubeArray ? 6 : 1);
@@ -3366,7 +3364,7 @@ static id<MTLTexture> tex_upgrade_pfv(const tex_t *t, id<MTLTexture> base, MTLPi
     id holder = serial_get(t->serial);
     if ([holder isKindOfClass:[NvPkg class]]) { id<MTLTexture> old = ((NvPkg *)holder)->tex; ((NvPkg *)holder)->tex = upgraded; memset(&((NvPkg *)holder)->key, 0, sizeof(reup_key)); defer_obj_release(old); ser_bump(t->serial); }   // key 0: the upgraded texture is not recycled
     else serial_put(t->serial, upgraded);
-    MLOG("贴图升级为可换格式视图 ser=%llu 基格式 %lu → 视图格式 %lu（升级次数=%llu）", t->serial, (unsigned long)base.pixelFormat, (unsigned long)view_pf, ++g_pfv_upgrades);
+    MLOG("texture usage upgraded ser=%llu format %lu usage %#lx (upgrades=%llu)", t->serial, (unsigned long)base.pixelFormat, (unsigned long)d.usage, ++g_pfv_upgrades);
     return upgraded;
 }
 static int stor_key_lookup(id o, stor_key *k) {
@@ -5055,7 +5053,7 @@ static id<MTLTexture> attachment_texture(const tex_t *t, const view_t *v, int ha
     MTLPixelFormat bpf = b0.pixelFormat, pf = attachment_format(t, v, has_v, bpf);
     if (pf == bpf) return b0;
     id<MTLTexture> base = b0;
-    if (tex_need_pfv(base.pixelFormat, pf) && !(base.usage & MTLTextureUsagePixelFormatView)) base = tex_upgrade_pfv(t, base, pf);
+    if (tex_need_pfv(base.pixelFormat, pf) && !(base.usage & MTLTextureUsagePixelFormatView)) base = tex_upgrade_usage(t, base, MTLTextureUsagePixelFormatView);
     /* Bounded cache: views retain their base. Evictions remain resident until their last submit finishes. */
     static id<MTLTexture> views[32]; static unsigned next;
     for (unsigned i = 0; i < 32; i++) if (views[i].parentTexture == base && views[i].pixelFormat == pf) return views[i];
@@ -6369,7 +6367,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 // and no live texture was found at its storage yet, so every serial-table step re-checks it (see tex_by_id).
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty;
     uint64_t indexed_serial, used; int view_prev, view_next; uint8_t view_pkg, dead_pending;
-    uint8_t view_tt; void *view_parent; } treg_t;   // used (TOTK): last submission that resolved this id
+    uint8_t view_tt; void *view_parent, *image_view; } treg_t;   // used (TOTK): last submission that resolved this id
 /* TOTK: view_tt / view_parent: textureType and parentTexture of view, read once when it is stored (a Metal texture never
    changes either). view_parent is only compared, never messaged; the view retains its parent while it is stored. */
 static treg_t *g_treg; static int g_ntreg;
@@ -6398,6 +6396,7 @@ static void treg_clear_view_locked(int tid) {
     treg_t *r = &g_treg[tid];
     treg_unlink_locked(tid);
     if (r->view) { defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; }
+    if (r->image_view) { defer_obj_unref((__bridge id)r->image_view); CFRelease(r->image_view); r->image_view = NULL; }
     r->view_id = r->view_rid = r->view_ser = r->view_dirty = 0; r->view_pkg = r->dead_pending = 0; r->view_tt = 0; r->view_parent = NULL;
 }
 // 贴图号 → 序号的无锁副本（回放热路径只要序号：写回前瞻索引、纯清除前提的绑定集合）：贴图号 20 位，固定 1M 项（BSS，只占碰过的页），
@@ -6739,13 +6738,13 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
             pf = base.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? MTLPixelFormatX32_Stencil8 : base.pixelFormat == MTLPixelFormatStencil8 ? MTLPixelFormatStencil8 :
                  (uint32_t)MTLPixelFormatInvalid;
             if (pf == MTLPixelFormatInvalid) { RED_ONCE(101, "stencil view of a texture in Metal format %lu with no stencil plane: depth sampled", (unsigned long)base.pixelFormat); pf = (uint32_t)base.pixelFormat; }
-            else if (pf != base.pixelFormat && !(base.usage & MTLTextureUsagePixelFormatView)) { base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf); if (g_tex_prepare_split) return NULL; sg = g_ser_gen; }
+            else if (pf != base.pixelFormat && !(base.usage & MTLTextureUsagePixelFormatView)) { base = tex_upgrade_usage(&rp->t, base, MTLTextureUsagePixelFormatView); if (g_tex_prepare_split) return NULL; sg = g_ser_gen; }
         }
         { uint32_t upf; int ubpp; if (r.v.set_format && bc1_fmt(r.v.format) && pf_astc4(base.pixelFormat)) pf = (uint32_t)bc1_astc_pf(r.v.format);   // TOTK: BC1 view of a transcoded (ASTC) texture
           else if (r.v.set_format && tc_pf(r.v.format) != MTLPixelFormatInvalid && tc_pf(r.t.d.format) == base.pixelFormat) pf = (uint32_t)tc_pf(r.v.format);   // TOTK: view of a BC2/3/4/5/7 texture stored transcoded (tex_tc)
           else if (r.v.set_format && bc_unpack(r.v.format, &upf, &ubpp)) pf = upf; }   // 无 BC：BC 视图跟底图一样换成解压后的格式 | No BC: a BC view is switched to the decompressed format just like the base texture
         if (r.v.set_format && tex_need_pfv(base.pixelFormat, (MTLPixelFormat)pf) && !(base.usage & MTLTextureUsagePixelFormatView)) {
-            base = tex_upgrade_pfv(&rp->t, base, (MTLPixelFormat)pf);
+            base = tex_upgrade_usage(&rp->t, base, MTLTextureUsagePixelFormatView);
             if (g_tex_prepare_split) return NULL;
             sg = g_ser_gen;
         }
@@ -6773,6 +6772,12 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
           } }
         v = need_swz ? [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns) swizzle:vsw]
                      : [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns)];
+        /* Metal swizzled views are read-only; image slots need the same subresources without sampling swizzles. */
+        if (v && !(v.usage & MTLTextureUsageShaderWrite) && (base.usage & MTLTextureUsageShaderWrite)) {
+            id<MTLTexture> image = [base newTextureViewWithPixelFormat:(MTLPixelFormat)pf textureType:tt levels:NSMakeRange(l0, nl) slices:NSMakeRange(s0, ns)];
+            if (!image) RED_ONCE(46, "writable texture view creation failed id %d", tid);
+            else { rp->image_view = (void *)CFBridgingRetain(image); atomic_fetch_add_explicit(&g_stat_views, 1, memory_order_relaxed); }
+        }
         atomic_fetch_add_explicit(&g_stat_views, 1, memory_order_relaxed);
         if (!v) { RED_ONCE(11, "贴图视图建不出 id %d", tid); v = base; }
     }
@@ -10483,6 +10488,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         } else if (b->kind == NVN_RB_IMG) {   // 可写贴图：NVN 图像槽 r（BindImages）↔ D3D u_r | Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            if (t && g_treg[tid].image_view) { t = (__bridge id<MTLTexture>)g_treg[tid].image_view; trid = t.gpuResourceID._impl; }
             /* Image stores need the writable companion, not its RGB-only sampling swizzle. */
             if (tid && hdr_shadow_enabled()) {
                 id<MTLTexture> hdr = hdr_shadow_find(tex_by_id(tid));
@@ -14987,6 +14993,19 @@ static void dispatch(const p_dispatch *dp) {
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "计算着色器缺线程组大小反射"); return; }
     rp_end();
+    /* A render target may first acquire image usage at dispatch, after its storage was allocated. */
+    registry_lock();
+    for (int i = 0; i < cs->rf.nb; i++) {
+        const nvn_rbind *b = &cs->rf.b[i];
+        if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
+        int tid = (int)(S.img[5][b->reg] & 0xfffff);
+        if (!tid) continue;
+        id<MTLTexture> view = tex_by_id(tid);
+        if (!view || hdr_shadow_find(view) || (view.usage & MTLTextureUsageShaderWrite)) continue;
+        id<MTLTexture> base = tex_mtl(&g_treg[tid].t);
+        if (base && !(base.usage & MTLTextureUsageShaderWrite)) (void)tex_upgrade_usage(&g_treg[tid].t, base, MTLTextureUsageShaderWrite);
+    }
+    registry_unlock();
     int reuse = disp_reuse_on() && !pg_on();
     /* TOTK_DISP_PREARGS (default on): when this dispatch opens the compute encoder after a streamed render pass, disp_enc
        first waits for the encode stage to finish that pass (rs_sync, ~5% of the replay in the world). The dispatch's
@@ -15393,7 +15412,7 @@ static void clear_tex(const p_clear_tex *c) {
     if (c->has_view && c->view.set_format) {   // 视图换格式：清除值按视图格式解释（游戏 5 次全是 ui 版配整数视图），在同格式视图上清 | View with changed format: the clear value is interpreted in the view format (all 5 of the game's calls are the ui version with an integer view), and the clear is done on a view of the same format
         uint32_t vpf = 0; uint8_t swz[4];
         if (!nvn_fmt_to_mtl(c->view.format, &vpf, swz) || !vpf) { RED_ONCE(42, "清贴图视图格式 %#x 无对应", c->view.format); return; }
-        if (tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf) && !(t.usage & MTLTextureUsagePixelFormatView)) t = tex_upgrade_pfv(c->tex, t, (MTLPixelFormat)vpf);
+        if (tex_need_pfv(t.pixelFormat, (MTLPixelFormat)vpf) && !(t.usage & MTLTextureUsagePixelFormatView)) t = tex_upgrade_usage(c->tex, t, MTLTextureUsagePixelFormatView);
         if (t.pixelFormat != (MTLPixelFormat)vpf) {
             id<MTLTexture> v = [t newTextureViewWithPixelFormat:(MTLPixelFormat)vpf];
             if (!v) { RED_ONCE(43, "清贴图建不出视图：格式 %lu → %u", (unsigned long)t.pixelFormat, vpf); return; }
@@ -18709,28 +18728,42 @@ int mtl_probe_drv_c0(void) {
 /* Image writes must reach HDR companions and their guest-format originals; sampling must still return alpha one. */
 static int probe_hdr_image_dispatch(void) {
     NSString *msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
-        "struct Args { texture2d<float, access::write> image [[id(0)]]; };\n"
+        "struct Args { texture2d<float, access::write> image [[id(0)]]; constant float4* colour [[id(1)]]; };\n"
         "kernel void main0(constant Args& a [[buffer(0)]], uint2 p [[thread_position_in_grid]])"
-        "{ a.image.write(float4(0.25, 0.5, 0.75, 0.0), p); }\n";
+        "{ a.image.write(a.colour[0], p); }\n";
     NSError *e = nil; id<MTLLibrary> lib = totk_msl_library(msl, &e);
     if (!lib) MDIE("HDR image dispatch probe kernel: %s", e.localizedDescription.UTF8String);
     NvShader *cs = [NvShader new]; cs->fn = [lib newFunctionWithName:@"main0"]; cs->stage = 5; cs->src = msl;
     snprintf(cs->key, sizeof cs->key, "probe-hdr-image-dispatch");
-    cs->rf.nb = 1; cs->rf.b[0].kind = NVN_RB_IMG; cs->rf.b[0].dtt = MTLTextureType2D;
-    cs->rf.tg[0] = cs->rf.tg[1] = cs->rf.tg[2] = 1;
     cs->ae = [cs->fn newArgumentEncoderWithBufferIndex:0]; cs->arg_len = cs->ae.encodedLength;
     NvProg *program = [NvProg new]; program->sh[5] = cs;
     prog_t pg = {0}; pg.serial = 0xfffffd20; serial_put(pg.serial, program);
     int checked = 0, saved_hdr = atomic_load(&g_hdr_frame_enabled); const prog_t *saved_prog = S.prog;
-    for (int mode = 0; mode < 3; mode++) {
-        /* HDR with a companion, HDR without one, and SDR must all keep real image writes. */
-        atomic_store(&g_hdr_frame_enabled, mode != 2);
+    uint8_t saved_push[NVN_PUSH_SIZE]; memcpy(saved_push, S.push[1], sizeof saved_push);
+    const float colour[4] = {0.25f, 0.5f, 0.75f, 0.0f}; memcpy(S.push[1], colour, sizeof colour);
+    for (int mode = 0; mode < 5; mode++) {
+        /* HDR with/without companions, SDR, and swizzled SDR with late/predeclared image usage. */
+        NSDictionary *push = mode == 4 ? @{@"kind": @"cbuf", @"reg": @24, @"arg_id": @1}
+                                      : @{@"kind": @"drvcb", @"bank": @24, @"arg_id": @1};
+        NSDictionary *reflection = @{@"route": @"B", @"bindings": @[
+            @{@"kind": @"img", @"reg": @0, @"arg_id": @0, @"msl_type": @"texture2d<float, access::write>"}, push]};
+        char err[256];
+        if (nvn_refl_from_json(reflection, &cs->rf, err, sizeof err)) MDIE("Image dispatch probe reflection: %s", err);
+        if (cs->rf.b[1].kind != NVN_RB_CBUF || cs->rf.b[1].reg != NVN_PUSH_BANK) MDIE("Image dispatch probe lost push constant binding");
+        checked++;
+        cs->rf.tg[0] = cs->rf.tg[1] = cs->rf.tg[2] = 1;
+        atomic_store(&g_hdr_frame_enabled, mode < 2);
         tex_t t = {0}; t.serial = 0xfffffd30 + mode;
         t.d.width = t.d.height = 4; t.d.depth = t.d.levels = 1; t.d.target = 1;
-        t.d.format = 0x3f; t.d.flags = NVN_TEXTURE_FLAGS_IMAGE;
+        t.d.format = 0x3f; t.d.flags = mode == 3 ? 0 : NVN_TEXTURE_FLAGS_IMAGE;
         t.d.swizzle_r = 2; t.d.swizzle_g = 3; t.d.swizzle_b = 4; t.d.swizzle_a = 5;
+        if (mode >= 3) t.d.swizzle_a = 1;
         MTLTextureDescriptor *d = tex_desc(&t, 0);
         id<MTLTexture> base = [g_dev newTextureWithDescriptor:d]; if (!base) MDIE("HDR image dispatch probe texture");
+        if (mode == 3) {
+            if (base.usage & MTLTextureUsageShaderWrite) MDIE("Late image usage probe started writable");
+            checked++;
+        }
         res_add(base); serial_put(t.serial, base); mtl_reg_tex(1, &t, NULL);
         op_hdr end = {OP_END, 8}; mtl_sub_begin(); mtl_exec((const uint8_t *)&end);
         id<MTLTexture> companion = mode ? nil : hdr_shadow_make(base);
@@ -18741,7 +18774,14 @@ static int probe_hdr_image_dispatch(void) {
         registry_lock(); id<MTLTexture> sampled = (__bridge id<MTLTexture>)tex_fast(1); registry_unlock();
         if (!sampled || (companion && (sampled.parentTexture != companion || sampled.swizzle.alpha != MTLTextureSwizzleOne)))
             MDIE("HDR image dispatch probe lost RGB-only sampling view");
+        if (mode >= 3 && sampled.swizzle.alpha != MTLTextureSwizzleOne) MDIE("SDR image dispatch probe lost sampling swizzle");
         checked++;
+        id<MTLTexture> current = tex_mtl(&t);
+        if (mode == 3) {
+            if (current == base || !(current.usage & MTLTextureUsageShaderWrite)) MDIE("Late image usage probe did not upgrade storage");
+            checked++;
+        }
+        base = current;
         enc_b_copy_texture_buffer(blit(), base, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(4, 4, 1), raw, 256, 16, 64);
         mtl_sub_commit(); mtl_finish();
         if (companion) {
@@ -18764,6 +18804,7 @@ static int probe_hdr_image_dispatch(void) {
         defer_obj_release(base); defer_obj_release(raw);
     }
     atomic_store(&g_hdr_frame_enabled, saved_hdr); S.prog = saved_prog;
+    memcpy(S.push[1], saved_push, sizeof saved_push); args_dirty_all();
     serial_del(pg.serial);
     return checked;
 }
