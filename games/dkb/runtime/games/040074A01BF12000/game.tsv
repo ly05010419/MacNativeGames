@@ -1,0 +1,46 @@
+# Donkey Kong Bananza (Switch 2, update v458752). In bring-up
+# Nintendo EPD's engine (sead / agl / gsys, Phive), SDK 20.5.19, NVN2 (the Switch 2's NVN: Ampere shaders, DLSS); modules main + sdk.
+# Packed from a dump folder (base/, updates/<version>/, dlc/) with scripts/pack_dump.py. Shaders: Shader/*.Nin_Ounce_NVN2.bfsha.zs (BNSH with Ampere code).
+
+# ---- Identity ----
+title_id	040074A01BF12000
+program_id	040074A01BF12000
+
+# ---- App ----
+name	Donkey Kong Bananza
+ipa	DonkeyKongBananza.ipa
+app_category	public.app-category.action-games
+pad_layout	full
+
+# ---- Versions ----
+build	v458752	v458752	main=e25c90c1c136638885659fd55bf8a03b	sdk=18265daea2105b31f25346adfbbd09b5
+package	v458752
+shader_versions	v458752
+
+# ---- Files ----
+modules	main sdk
+romfs_marker	System/Resource/ResourceSizeTable.Product.rsizetable.zs
+zip_store	.zs:.bwav:.webm:.metallib
+
+# ---- Memory ----
+# The Switch 2 leaves games 9 GB of its 12 GB (not measured here): with the guessed Switch 1 pool (3.2 GB) the game's heaps did not fit (AudioSystemHeap creation returned null, main+0x564b48).
+# 256 MB in front + 256 MB alias region + 256 MB stack region + 9 GB heap region
+mem_reserve	0x270000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0x240000000
+# The NPDM declares no system resource: IsVirtualAddressMemoryEnabled is false, and the game sets a heap (without the key the host answers 32 MB, and the SDK's VammManager
+# asks GetInfo 0x21, which Switch 1 kernels do not have, for the size to map up front)
+sys_resource	0x0
+
+# ---- Shader split (shader_split.py) ----
+shader_groups	/Shader/=shader /Effect/=effect /UI/=layout
+shader_note	Donkey Kong Bananza shaders
+
+# ---- Graphics ----
+# agl's render buffer binding wraps its clears in render conditions (SetRenderEnableConditional(RENDER_IF_NOT_EQUAL) at main+0x12798c before the ClearColor at main+0x1279d4):
+# without the key, a clear-only rebinding of the composite target right after the composite draw wiped it before the upscaler read it, and every gameplay frame came out black
+render_cond	on
+# Dynamic resolution and the present interval read the GPU time between the frame's timestamp reports (about 26 a frame): with one time for the whole submission they read about 0,
+# the game kept 2304x1296 at 46 ms of GPU a frame and fell to interval 3 (15 fps before the odd-interval fix of the display link, 20 after). Each report takes its segment's GPU start / end: in the slow areas it steps down to 1152x648 with its upscaler and holds 30 fps
+gpu_timestamps	segment

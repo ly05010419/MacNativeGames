@@ -1,0 +1,2 @@
+# The fuzz corpus is synthetic inputs, committed whatever their extension (dm/.gitignore ignores *.bin and other game-file names)
+!*

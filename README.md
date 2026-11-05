@@ -39,6 +39,8 @@ and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-por
 
 Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
+Donkey Kong Bananza also builds as a Mac app, from a copy of nxnative: [`games/dkb`](games/dkb/README.md).
+
 ### Switch 1 games
 
 | Game | Version | Platform | Status | Folder |
@@ -200,6 +202,8 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 马力欧卡丁车 世界 | 1.0.0 | Mac | 社区移植，实验性；[构建说明](games/mkw/README.md) |
 
 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
+
+大金刚 Bananza 另外可以用 nxnative 的副本打包成 Mac App：[`games/dkb`](games/dkb/README.md)。
 
 ### Switch 1 游戏
 

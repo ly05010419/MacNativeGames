@@ -1,0 +1,101 @@
+name: DuoHarness
+options:
+  deploymentTarget:
+    iOS: "26.0"
+targets:
+  DuoHarness:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../../Sources/DmHostingController.swift
+      - path: ../../Sources/GameMenu.swift
+      - path: ../../Sources/LauncherSettings.swift
+      - path: ../../Sources/DmGamepad.m
+      - path: ../../Sources/front_ios.m
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: GameController.framework
+      - sdk: SwiftUI.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreText.framework
+      - sdk: QuartzCore.framework
+      - sdk: Metal.framework
+      - sdk: AVFAudio.framework
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: DuoHarness
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "2"
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        LSSupportsGameMode: true
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        CADisableMinimumFrameDurationOnPhone: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: DuoHarnessSceneDelegate
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.nxnative.DuoHarness
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../../host
+          - $(SRCROOT)/../../Sources
+          - $(SRCROOT)/Sources/Fixtures
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/../../Sources/DmIOS-Bridging-Header.h
+        CLANG_ENABLE_OBJC_ARC: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+  DuoHarnessTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: DuoHarness
+      - sdk: GameController.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: org.nxnative.DuoHarnessTests
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../../host
+          - $(SRCROOT)/../../Sources
+          - $(SRCROOT)/Sources/Fixtures
+          - $(SRCROOT)/Sources
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/DuoHarness.app/DuoHarness
+        BUNDLE_LOADER: $(TEST_HOST)
+        CLANG_ENABLE_OBJC_ARC: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+schemes:
+  DuoHarness:
+    build:
+      targets:
+        DuoHarness: all
+        DuoHarnessTests: [test]
+    test:
+      config: Debug
+      targets:
+        - DuoHarnessTests

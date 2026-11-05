@@ -1,0 +1,81 @@
+diff --git a/dm/host/pad_hid.h b/dm/host/pad_hid.h
+index 542b5671..79c5d348 100644
+--- a/dm/host/pad_hid.h
++++ b/dm/host/pad_hid.h
+@@ -61,6 +61,14 @@ static uint64_t pad_hid_buttons(const pad_hid *h) {
+     if (h->has[PH_ACCEL] && h->axis[PH_ACCEL] > 0) m |= DM_BTN_ZR;
+     return m;
+ }
++// Whether the raw HID reader takes a gamepad that GameController may list (pad_hid_mac.h). gc: the device's GameControllerSupportedHIDDevice property as the kernel sets it, 1 Yes,
++// 0 No, -1 not set yet. The kernel's No wins over +[GCController supportsHIDDevice:], which answers YES for a pad named like a Switch Pro Controller that GameController then never
++// lists (a PowerA for Switch 2, "Lic3 Pro Controller", vendor 0: no controller at all before this). Not set (seen for about 0.25 s after a pad connects): asked again PAD_HID_TRIES
++// times, then the class method decides, as for a Yes.
++enum { PAD_HID_TAKE, PAD_HID_ASK_GC, PAD_HID_RETRY };
++#define PAD_HID_TRIES 5   // asked again after 0.25, 0.5, 1, 2 and 4 s
++static int pad_hid_gc_verdict(int gc, int attempt) { return gc == 0 ? PAD_HID_TAKE : gc < 0 && attempt < PAD_HID_TRIES ? PAD_HID_RETRY : PAD_HID_ASK_GC; }
++
+ static void pad_hid_sticks(const pad_hid *h, int32_t s[4]) {   // lx, ly, rx, ry; HID's Y grows downward, the Switch's upward
+     int z = h->has[PH_Z];
+     pad_hid_stick(h->axis[PH_X], -h->axis[PH_Y], &s[0], &s[1]);
+diff --git a/dm/host/pad_hid_mac.h b/dm/host/pad_hid_mac.h
+index b3b3212e..46ca77c1 100644
+--- a/dm/host/pad_hid_mac.h
++++ b/dm/host/pad_hid_mac.h
+@@ -1,7 +1,7 @@
+ // Mac: raw HID gamepads that GameController does not list (pad_hid.h, GitHub issue #637), read on the main run loop alongside front_mac.m's GameController players.
+ // Each device takes a player slot as a GameController controller does; front_mac.m defines the slot side (hidpad_attach / hidpad_detach / hidpad_read).
+ // Skipped, so no controller is read twice: GameController's synthetic devices, and every device GameController says it will list itself (+[GCController supportsHIDDevice:]:
+-// Xbox, PlayStation, Switch and MFi pads of any vendor). DM_HID_PADS=0 turns this off.
++// Xbox, PlayStation, Switch and MFi pads of any vendor) unless the kernel marks it GameControllerSupportedHIDDevice = No (pad_hid_gc_verdict). DM_HID_PADS=0 turns this off.
+ #pragma once
+ #import <IOKit/hid/IOHIDManager.h>
+ #import <GameController/GameController.h>
+@@ -36,11 +36,32 @@ static void hidpad_value(void *ctx, IOReturn result, void *sender, IOHIDValueRef
+     }
+     hidpad_read(d);
+ }
++static void hidpad_offer(IOHIDDeviceRef hid, int attempt);
+ static void hidpad_found(void *ctx, IOReturn result, void *sender, IOHIDDeviceRef hid) {
+     (void)ctx; (void)sender;
+-    if (result != kIOReturnSuccess || IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDGCSyntheticDeviceKey)) == kCFBooleanTrue) return;
++    if (result == kIOReturnSuccess) hidpad_offer(hid, 0);
++}
++// attempt > 0: asked again after the kernel had not yet set GameControllerSupportedHIDDevice (pad_hid_gc_verdict)
++static void hidpad_offer(IOHIDDeviceRef hid, int attempt) {
++    if (IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDGCSyntheticDeviceKey)) == kCFBooleanTrue) return;
+     for (hid_pad *d = g_hidpads; d; d = d->next) if (d->hid == hid) return;
+-    if ([GCController supportsHIDDevice:hid]) return;   // front_mac.m reads it through its GCController (once per device: the call is not cheap)
++    if (attempt) {   // removed while waiting (its removal callback found nothing to remove): not taken
++        NSSet *now = g_hidpad_manager ? CFBridgingRelease(IOHIDManagerCopyDevices(g_hidpad_manager)) : nil;
++        if (![now containsObject:(__bridge id)hid]) return;
++    }
++    CFTypeRef gc = IOHIDDeviceGetProperty(hid, CFSTR("GameControllerSupportedHIDDevice"));
++    int said = !gc ? -1 : CFGetTypeID(gc) == CFBooleanGetTypeID() && !CFBooleanGetValue((CFBooleanRef)gc) ? 0 : 1;
++    switch (pad_hid_gc_verdict(said, attempt)) {
++    case PAD_HID_RETRY: {
++        if (!attempt) { NSString *n = (__bridge NSString *)IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDProductKey)); LOG("controller '%s' (HID): macOS has not yet said whether GameController lists it; asking again", n.UTF8String ?: "?"); }
++        CFRetain(hid);
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (250LL << attempt) * (int64_t)NSEC_PER_MSEC), dispatch_get_main_queue(), ^{ hidpad_offer(hid, attempt + 1); CFRelease(hid); });
++        return;
++    }
++    case PAD_HID_ASK_GC:
++        if ([GCController supportsHIDDevice:hid]) return;   // front_mac.m reads it through its GCController (once per device: the call is not cheap)
++        break;
++    }
+     NSNumber *vendor = (__bridge NSNumber *)IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDVendorIDKey)), *product = (__bridge NSNumber *)IOHIDDeviceGetProperty(hid, CFSTR(kIOHIDProductIDKey));
+     int vid = vendor.intValue, pid = product.intValue;
+     hid_pad *d = calloc(1, sizeof *d); if (!d) { LOG("[RED] HID gamepad: cannot allocate device state"); return; }
+diff --git a/dm/host/tests/t_pad_hid.c b/dm/host/tests/t_pad_hid.c
+index 48341c73..89c7a23f 100644
+--- a/dm/host/tests/t_pad_hid.c
++++ b/dm/host/tests/t_pad_hid.c
+@@ -34,6 +34,9 @@ int main(void) {
+     h.has[PH_Z] = 0; h.has[PH_RX] = 1; h.axis[PH_RX] = -1; pad_hid_sticks(&h, s); CHECK(s[2] == -DM_STICK_MAX && s[3] == 0);   // Rx / Ry without Z
+     h.has[PH_ACCEL] = 1; h.axis[PH_ACCEL] = -1; CHECK(!(pad_hid_buttons(&h) & DM_BTN_ZR));
+     h.axis[PH_ACCEL] = pad_hid_norm(200, 0, 255); CHECK(pad_hid_buttons(&h) & DM_BTN_ZR);
++    CHECK(pad_hid_gc_verdict(0, 0) == PAD_HID_TAKE && pad_hid_gc_verdict(0, PAD_HID_TRIES) == PAD_HID_TAKE);   // the kernel's No: read here, whatever the class method says
++    CHECK(pad_hid_gc_verdict(1, 0) == PAD_HID_ASK_GC);
++    CHECK(pad_hid_gc_verdict(-1, 0) == PAD_HID_RETRY && pad_hid_gc_verdict(-1, PAD_HID_TRIES - 1) == PAD_HID_RETRY && pad_hid_gc_verdict(-1, PAD_HID_TRIES) == PAD_HID_ASK_GC);
+     printf("t_pad_hid: %d checks, %d failed\n", checks, fails);
+     return fails != 0;
+ }
