@@ -1,5 +1,11 @@
 # Changelog
 
+## 5 November 2026: effects at 90 and 120 fps
+
+- **Fixed: attack and catch effects did not show at 90 and 120 fps.** `main+0x20397a4` reads time slot 1's delta, divides it by 1/60 s and truncates: whole 60 Hz ticks, times a speed, for an effect system (`main+0xb85c44`). Above 60 fps a frame is under one tick, so it got 0 ticks and those effects never advanced. It now reads a delta of whole ticks handed out as the game's time adds up: 0, 1, 0, 1 at 120 fps, two ticks in three frames at 90 (`game_patches.c` `patch_tick_reader`, `PSV_TICK_READER=0` off). At 30 and 60 fps it is the frame's own step, as before. Checked at 120 fps: attack effects and the catch animation at normal speed, no redraw after a throw. A start at 60 fps is unchanged.
+- Found as the redraw was: with my effect step off the effects were missing too (an old problem), a full 60 Hz tick on time slot 1 brought them back, then halves of its readers (`PSV_TEST_NS=<ns>` sets the test step for `PSV_FRAME_SPLIT_SLOT` and `PSV_SLOT_READERS`).
+- Still open above 60 fps: the fixed script step gives 1/30 s every frame (4 times too much at 120), and the hang seen at 120 is not retested.
+
 ## 5 November 2026: ball throw redraw fixed at 60 fps
 
 - **Fixed: the world redraw after a ball throw at 60 fps (and above).** The counter the catch camera depends on is the effect animation player at `main+0xb83d1c`: each update it adds delta / (frame of the mode - 1) to the effect's frame (`+0x88`) and evaluates the animation there (`main+0xb84218`). Effect animations are keyed in 1/30 s, and the catch camera's has a cut in it. Evaluated between two keys at the cut, the camera stood about 3.3 km out for one frame. That happened on every second frame at 60 fps (frames in 1/60 s), and at 30 fps whenever a step fell a hair short of a key. Above 30 fps every running effect now steps by whole 1/30 s, handed out as the game's time adds up: 0, 2, 0, 2 frames at 60 fps, 2 every fourth frame at 120 (`game_patches.c` `patch_effect_step`, `PSV_EFFECT_STEP=0` off). Effects keep their speed and move at 30 Hz. Checked at 60 fps: throws without a rebuild, effects and the catch animation normal. At 120 fps no rebuild either, and some effects that ran slow now run right, but the catch animation does not play right yet.

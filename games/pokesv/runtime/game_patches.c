@@ -65,6 +65,8 @@ static uint32_t adrp(unsigned reg, uint64_t pc, uint64_t target) {
     return 0x90000000 | ((imm & 3) << 29) | ((imm >> 2) << 5) | reg;
 }
 static uint32_t branch(uint64_t from, uint64_t to);
+/* PSV_TEST_NS=<ns>: the fixed step the frame step tests give (default 33333334, 1/30 s) */
+static int64_t test_step_ns(void) { const char *e = getenv("PSV_TEST_NS"); return e && *e ? strtoll(e, NULL, 10) : 33333334; }
 static void patch_frame_step(Module *m) {
     /* On by default again (2026-10-30): the GPU address faults first blamed on it also came without it, at one spot in the
        western grassland (5 of 5 runs) and once in 3 runs elsewhere; 3 runs at 60 fps with it, 2 clean. */
@@ -87,14 +89,14 @@ static void patch_frame_step(Module *m) {
         /* PSV_FRAME_SPLIT=<n> (test): clock-advance site n reads a table of exact 1/30 s at data + 0x180 */
         const char *sp = getenv("PSV_FRAME_SPLIT"); int split = sp && (unsigned)atoi(sp) == i;
         uint32_t w[2] = {adrp(8, (uintptr_t)m->base + sites[i].off, (uintptr_t)m->base + data), split ? 0x91060108 : 0x91000108};
-        if (split) { _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], 33333334);
+        if (split) { _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], test_step_ns());
             fprintf(stderr, "[psv] frame step test: clock-advance site %u (main+%#llx) gets exactly 1/30 s\n", i, (unsigned long long)sites[i].off); }
         memcpy(m->base + sites[i].off, w, 8); sys_icache_invalidate(m->base + sites[i].off, 8);
         /* PSV_FRAME_SPLIT_SLOT=<n> (test): at site 0 only time slot n (x1) reads the exact 1/30 s table at data + 0x180 */
         const char *ss_ = getenv("PSV_FRAME_SPLIT_SLOT");
         if (i == 0 && ss_) { unsigned n = (unsigned)atoi(ss_); const uint64_t c = 0x343fea0, site = sites[i].off;
             for (uint64_t k = c; k < c + 24; k++) if (m->base[k]) runtime_fail("frame split slot: text padding in use");
-            _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], 33333334);
+            _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], test_step_ns());
             /* C: adrp x8, data; add x8, x8, #0; cmp x1, #n; b.ne +8; add x8, x8, #0x180; b site + 8 */
             uint32_t st[6] = {adrp(8, (uintptr_t)m->base + c, (uintptr_t)m->base + data), 0x91000108, 0xf100003f | (n << 10), 0x54000041, 0x91060108, branch(c + 20, site + 8)};
             memcpy(m->base + c, st, sizeof st); uint32_t b2[2] = {branch(site, c), 0xd503201f}; memcpy(m->base + site, b2, 8);
@@ -128,7 +130,7 @@ static void patch_frame_step(Module *m) {
        b back). The base is x0 for a float load (free there) and Rt itself for an integer load. */
     const char *rl = getenv("PSV_SLOT_READERS");
     if (rl && *rl) { char buf[512]; snprintf(buf, sizeof buf, "%s", rl); unsigned k = 0;
-        _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int j = 0; j < 5; j++) atomic_store(&t[j], 33333334);
+        _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int j = 0; j < 5; j++) atomic_store(&t[j], test_step_ns());
         for (char *sv = NULL, *tok = strtok_r(buf, ",", &sv); tok && k < 16; tok = strtok_r(NULL, ",", &sv), k++) {
             uint64_t site = strtoull(tok, NULL, 16), c = 0x343fec0 + 16 * k; uint32_t w; memcpy(&w, m->base + site, 4);
             int fp = (w & 0xffc00000) == 0xfd400000, gp = (w & 0xffc00000) == 0xf9400000;
@@ -426,6 +428,32 @@ static void patch_effect_step(Module *m) {
     sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 8);
     fprintf(stderr, "[psv] effect step: effects step in whole 1/30 s above 30 fps (PSV_EFFECT_STEP=0 turns it off)\n");
 }
+/* The tick reader (2026-11-05, effects missing above 60 fps). main+0x20397a4 reads time slot 1's delta, divides it by 1/60 s
+   and truncates (fcvtzs): whole 60 Hz ticks, times a speed, for an effect system (main+0xb85c44). At 90 and 120 fps a frame is
+   under one tick, so it got 0 and attack and catch effects never showed. It now loads data + 0x1c8 instead: whole ticks handed
+   out as the game's time adds up (tick_reader_tick), as a delta of n x 16666667 ns. At 30 and 60 fps that is the frame's own
+   step. PSV_TICK_READER=0 leaves the site alone.
+     main+0x20397a4  ldr x8, [x0, #8]  ->  b C;  C: adrp x8, data; ldr x8, [x8, #0x1c8]; b site + 4 */
+static _Atomic int64_t *tick_reader;
+static void patch_tick_reader(Module *m) {
+    const char *e = getenv("PSV_TICK_READER"); if (e && !strcmp(e, "0")) return;
+    const uint64_t site = 0x20397a4, c = 0x343fe68;
+    uint64_t data = (m->file_size - m->image_off + 0x3fff) & ~0x3fffULL; uintptr_t mb = (uintptr_t)m->base;
+    uint32_t w; memcpy(&w, m->base + site, 4);
+    if (w != 0xf9400408 || m->text_end > c) runtime_fail("tick reader: site or text padding differ");
+    for (uint64_t k = c; k < c + 12; k++) if (m->base[k]) runtime_fail("tick reader: text padding in use");
+    tick_reader = (_Atomic int64_t *)(void *)(m->base + data + 0x1c8); atomic_store(tick_reader, 16666667);
+    uint32_t st[3] = {adrp(8, mb + c, mb + data), 0xf940e508, branch(c + 8, site + 4)};
+    memcpy(m->base + c, st, sizeof st); w = branch(site, c); memcpy(m->base + site, &w, 4);
+    sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
+    fprintf(stderr, "[psv] tick reader: effects get whole 60 Hz ticks above 60 fps (PSV_TICK_READER=0 turns it off)\n");
+}
+/* frames: this game frame's step in 60 Hz ticks (may be a fraction above 60 fps) */
+static void tick_reader_tick(double ticks) {
+    if (!tick_reader) return;
+    static double acc; acc += ticks; int n = (int)(acc + 1e-6); acc -= n; if (acc < 0) acc = 0;
+    atomic_store_explicit(tick_reader, (int64_t)n * 16666667, memory_order_relaxed);
+}
 /* Called after each frame's clock step: frames = the effect frames this game frame adds in the 60 fps mode (its step / 1/60 s). */
 static void effect_step_tick(double frames) {
     if (!effect_step) return;
@@ -452,6 +480,7 @@ void runtime_game_patches(Module *main_module) {
     patch_draw_dist(main_module);
     patch_job_fence(main_module);
     patch_effect_step(main_module);
+    if (frame_table) patch_tick_reader(main_module);   /* only with the frame step: it feeds the ticks */
     /* PSV_STOP_AT_START=1: the process stops itself before the game's first instruction, so a debugger can attach and set
        watchpoints on startup state (lldb's continue resumes it). */
     if (getenv("PSV_STOP_AT_START")) { fprintf(stderr, "[psv] stopped for a debugger (PSV_STOP_AT_START), pid %d\n", getpid()); raise(SIGSTOP); }
@@ -530,10 +559,10 @@ void runtime_frame_step_update(uint64_t now_ns) {
         static double acc; const double tick = 16666667e-9; acc += sum / frame_sample_count;
         int n = frame_mode60 ? (int)(acc / tick) : (int)(acc / tick + 0.5); if (n < 1) n = 1; if (n > 4) n = 4; acc -= n * tick; if (acc < -tick) acc = -tick; if (acc > tick) acc = tick;
         for (int k = 0; k < 5; k++) atomic_store_explicit(&frame_table[k], (int64_t)n * 16666667, memory_order_relaxed);
-        effect_step_tick(n);
+        effect_step_tick(n); tick_reader_tick(n);
         if (n > 1) step_doubles++;
         if (nvn_trace) { nvn_trace("@step_ticks", n); nvn_trace("@step_dt_ms", dt * 1e3); }
-    } else { frame_table_store(sum / frame_sample_count); effect_step_tick(sum / frame_sample_count / 16666667e-9); }
+    } else { frame_table_store(sum / frame_sample_count); effect_step_tick(sum / frame_sample_count / 16666667e-9); tick_reader_tick(sum / frame_sample_count / 16666667e-9); }
 }
 
 /* The earlier port's host hooks in the shared graphics layer and the input keys call keep their names and answer "off". */
