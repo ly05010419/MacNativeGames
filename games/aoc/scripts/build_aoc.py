@@ -10,11 +10,12 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import tempfile
 
 GAME = Path(__file__).resolve().parents[1]
 TITLE = '01002B00111A2000'
 APP_NAME = 'Hyrule Warriors: Age of Calamity'
-PROFILE_NAME = 'Hyrule Warriors Age of Calamity'
+PROFILE_NAME = 'MacNativeGames/AoC'
 LIBHAC_SHA256 = '1431267861db5ff68216315b164f10c0edab4df162cedf5429bf8a143b76de19'
 
 
@@ -74,6 +75,51 @@ def stage(work):
     shutil.copy2(GAME / 'third_party/nxnative/build_ipa_from_nsp.py', target)
     shutil.copy2(GAME / 'scripts/inspect_inputs.py', source / 'scripts/inspect_inputs.py')
     return source
+
+
+def extract_container(source, work, base, update, keys):
+    """Extract into a fresh workspace; publish only the exact supported build."""
+    from inspect_inputs import inspect
+    project = source / 'dm/tools/nx_extract'
+    tools = work / 'build/tools/nx_extract'
+    tools.mkdir(parents=True, exist_ok=True)
+    logs = work / 'logs'
+    logs.mkdir(exist_ok=True)
+    env = environment(work)
+    feed = work / 'dependencies/nuget'
+    # MSBuild's output conditions break on paths with apostrophes. Build to a
+    # simple temporary path and copy the tool into the isolated workspace.
+    with tempfile.TemporaryDirectory(prefix='aoc-nx-extract-') as temporary:
+        commands = [
+            ['dotnet', 'restore', str(project), '--configfile', str(project / 'NuGet.Config'),
+             '--source', str(feed), '-p:NuGetAudit=false', '--force'],
+            ['dotnet', 'build', str(project), '--no-restore', '-c', 'Release', '-o', temporary],
+        ]
+        for name, command in zip(('restore', 'build'), commands):
+            log_path = logs / f'nx_extract_{name}.log'
+            with log_path.open('w') as log:
+                try:
+                    subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+                except subprocess.CalledProcessError as error:
+                    raise ValueError(f'nx_extract {name} failed; see {log_path}') from error
+        if not (Path(temporary) / 'nx_extract').is_file():
+            raise ValueError(f'extractor build produced no executable; see {logs / "nx_extract_build.log"}')
+        shutil.copytree(temporary, tools, dirs_exist_ok=True)
+    destination = work / 'container-input'
+    partial = work / 'container-input.partial'
+    if partial.exists():
+        raise ValueError(f'inspect/remove interrupted extraction: {partial}')
+    # Never reuse an extraction solely because it exists: the caller may have
+    # selected different containers. Retain the last verified input on failure.
+    with (logs / 'nx_extract.log').open('w') as log:
+        subprocess.run([str(tools / 'nx_extract'), str(keys), str(base),
+                        str(update) if update else '-', str(partial)],
+                       env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+    inspect(partial, GAME / 'assets/expected-1.3.0.json')
+    if destination.exists():
+        shutil.rmtree(destination)
+    partial.rename(destination)
+    return destination
 
 
 def verify_originals(build):
@@ -286,7 +332,10 @@ def main():
     import fcntl
     from inspect_inputs import inspect, write_report
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('inputs', type=Path, help='extracted root containing ExeFS/ and RomFS/; no keys needed')
+    parser.add_argument('inputs', type=Path, help='extracted ExeFS/RomFS root, or base .nsp/.xci file')
+    parser.add_argument('--keys', type=Path, help='local prod.keys (container mode only; never bundled)')
+    parser.add_argument('--update', type=Path, help='1.3.0 update .nsp/.xci layered over the base')
+    parser.add_argument('--libhac-package', type=Path, help='local SHA-256-pinned LibHac 0.19.0 .nupkg (container mode only)')
     parser.add_argument('--work-dir', required=True, type=Path)
     parser.add_argument('--output', type=Path, help='new .app output path (required for package/all)')
     parser.add_argument('--phase', choices=('inspect','rewrite','host','shaders','package','all'), default='all')
@@ -295,10 +344,26 @@ def main():
     work = args.work_dir.expanduser().resolve()
     original = args.inputs.expanduser().resolve()
     output = args.output.expanduser().resolve() if args.output else None
+    container = original.is_file() and original.suffix.lower() in ('.nsp', '.xci')
+    update = args.update.expanduser().resolve() if args.update else None
+    keys = args.keys.expanduser().resolve() if args.keys else None
+    if container:
+        if not keys or not keys.is_file() or not args.libhac_package:
+            parser.error('NSP/XCI input requires --keys and --libhac-package')
+        if update and (not update.is_file() or update.suffix.lower() not in ('.nsp', '.xci')):
+            parser.error('--update must name an existing .nsp or .xci file')
+    elif not original.is_dir():
+        parser.error('inputs must be an extracted directory or existing .nsp/.xci file')
+    elif args.keys or args.update or args.libhac_package:
+        parser.error('--keys, --update and --libhac-package apply only to NSP/XCI input')
     checkout = GAME.parents[1]
     for path in (work, output):
         if path and (path == checkout or checkout in path.parents or path == original or original in path.parents or path in original.parents):
             parser.error('work/output must be outside the checkout and original inputs')
+    for protected in (update, keys, args.libhac_package.expanduser().resolve() if args.libhac_package else None):
+        if protected and (work == protected or work in protected.parents or
+                          (output and (output == protected or output in protected.parents))):
+            parser.error('work/output must not contain update, keys or dependency inputs')
     if work in checkout.parents:
         parser.error('work must not contain the checkout')
     if args.phase in ('all','package') and not output:
@@ -309,11 +374,19 @@ def main():
     with (work / 'build.lock').open('a') as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: raise ValueError('another build owns this work directory')
+        source = None
+        if container:
+            prepare_offline_dependencies(work, args.libhac_package)
+            source = stage(work)
+            original = extract_container(source, work, original, update, keys)
         report = inspect(original, GAME / 'assets/expected-1.3.0.json')
+        if container:
+            report['container_integrity'] = 'LibHac ErrorOnInvalid for extracted Code/Data sections; container signatures not verified'
+            report['base_update_composition'] = ('LibHac layered base/update' if update else 'base container only') + '; output matches pinned 1.3.0 files'
         write_report(report, work / 'input-report.json')
-        print(f"Verified {report['romfs']['files']} RomFS files; container integrity unavailable", flush=True)
+        print(f"Verified {report['romfs']['files']} RomFS files; {report['container_integrity']}", flush=True)
         if args.phase == 'inspect': return
-        source = stage(work)
+        source = source or stage(work)
         build = work / 'build'
         destination = build / 'extract/v327680'
         # APFS clones preserve originals and avoid hard links to writable game files.

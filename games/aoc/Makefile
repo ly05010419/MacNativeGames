@@ -4,7 +4,7 @@ help:
 	@$(PYTHON) scripts/build_aoc.py --help
 build:
 	@test -n "$(INPUTS)" -a -n "$(WORK)" -a -n "$(OUTPUT)" || (echo 'Set INPUTS, WORK, OUTPUT; see README.md'; exit 1)
-	$(PYTHON) scripts/build_aoc.py "$(INPUTS)" --work-dir "$(WORK)" --output "$(OUTPUT)" --language "$(or $(LANGUAGE),en-US)"
+	$(PYTHON) scripts/build_aoc.py "$(INPUTS)" --work-dir "$(WORK)" --output "$(OUTPUT)" --language "$(or $(LANGUAGE),en-US)" $(if $(KEYS),--keys "$(KEYS)") $(if $(UPDATE),--update "$(UPDATE)") $(if $(LIBHAC_PACKAGE),--libhac-package "$(LIBHAC_PACKAGE)")
 test:
 	$(PYTHON) -m unittest discover -s tests -v
 	$(PYTHON) -m unittest discover -s runtime/tools/tests -v
