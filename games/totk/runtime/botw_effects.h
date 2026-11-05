@@ -4,7 +4,8 @@
    The effect switches are totk_fx.h's (dm_gfx_fx_*), saved as on 1.4.3: graphics-effects.txt holds the ids of the
    effects that are off, one word each ("none" when all are on). On this game dm_gfx_fx_available opens only the switches
    that act here: ambient occlusion, the AO patch's own switch (totk_ssao.h, c1[3].w bit 0 in the shader 0eeb23f2), while the AO
-   shaders are the patched ones. The sun's shadows have their row (settings_botw_shadow_row), as on 1.4.3.
+   shaders are the patched ones, and the grass blades (their own fragment / vertex shader pair in totk_fx.h). The sun's
+   shadows have their row (settings_botw_shadow_row), as on 1.4.3.
    FXAA and sharpening are 1.4.3's rows and files (graphics-fxaa.txt, graphics-sharpen.txt) acting around this game's
    FXAA / upscale draw (gfx/nvn/botw_finish.h); while MetalFX replaces that draw the FXAA row says so instead. */
 int dm_gfx_fx_count(void); const char *dm_gfx_fx_id(int i); const char *dm_gfx_fx_name(int i, int english);   /* totk_fx.h */
