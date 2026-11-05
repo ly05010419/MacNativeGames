@@ -1,0 +1,285 @@
+/* Native iOS view and VI service adapter: the iPhone counterpart of frontend.m (same exported functions).
+   The app (ios/app/Sources/main.m) owns UIKit: it creates the full-screen Metal view, hands its layer over with
+   runtime_ios_attach_layer, and calls the loader's main on a game thread. No guest frame is synthesized. */
+#import <UIKit/UIKit.h>
+#import <QuartzCore/CAMetalLayer.h>
+#import <Metal/Metal.h>
+#include <stdatomic.h>
+#include "runtime.h"
+#include "totk_ui_lang.h"
+static CAMetalLayer *metalLayer;
+static UIView *bootOverlay;
+static UILabel *bootStage,*bootDetail;
+static UIProgressView *bootProgress;
+static uint64_t bootStartNS;
+static _Atomic uint64_t presentedFrames;
+static CADisplayLink *displayLink;
+static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
+static void *vsyncEvents[16];
+static unsigned vsyncCount;
+/* iOS has no gethostuuid. Keep the offline console's per-installation identity in app preferences; updating the same
+   bundle preserves it, independently of the selected game account. */
+void runtime_ios_device_uuid(uint8_t out[16]) {
+ static NSUUID *identity; static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+  NSString *saved=[defaults stringForKey:@"MacNativeGamesDeviceUUID"];
+  identity=saved.length?[[NSUUID alloc] initWithUUIDString:saved]:nil;
+  if(!identity){identity=NSUUID.UUID;[defaults setObject:identity.UUIDString forKey:@"MacNativeGamesDeviceUUID"];}
+ });
+ [identity getUUIDBytes:out];
+}
+void hle_bind_system_event(void *,int);
+void hle_signal_system_event(void *);
+void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* This frontend presents an SDR BGRA8 surface (HDR is available only on the Mac): its white headroom is one. */
+float front_hdr_headroom(void){return 1.0f;}
+void front_frame_presented(void){
+ if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
+  fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
+  dispatch_async(dispatch_get_main_queue(), ^{bootOverlay.hidden=YES;});
+ }
+}
+void runtime_boot_progress(const char *stage,uint64_t done,uint64_t total){
+ static const char *last;
+ if(stage!=last){fprintf(stderr,"[totk-boot] %.3f %s\n",bootStartNS?(runtime_now_ns()-bootStartNS)/1e9:0,stage?stage:"startup");last=stage;}
+ NSString *s=[NSString stringWithUTF8String:stage?stage:TOTK_UI("正在启动","Starting")];
+ dispatch_async(dispatch_get_main_queue(), ^{
+  if(!bootOverlay||bootOverlay.hidden)return;
+  bootStage.text=s;
+  if(total){bootDetail.text=[NSString stringWithFormat:@"%.1f / %.1f GB",done/1e9,total/1e9];bootProgress.hidden=NO;bootProgress.progress=(float)((double)done/(double)total);}
+  else {bootDetail.text=@(TOTK_UI("正在处理，请稍候","Working, please wait"));bootProgress.hidden=YES;}
+ });
+}
+void runtime_boot_count(const char *stage,uint64_t done,uint64_t total){
+ /* Steps counted in items, not bytes (the shader import: tens of thousands of files, minutes on a phone). */
+ static const char *last;
+ if(stage!=last){fprintf(stderr,"[totk-boot] %.3f %s\n",bootStartNS?(runtime_now_ns()-bootStartNS)/1e9:0,stage?stage:"startup");last=stage;}
+ NSString *s=[NSString stringWithUTF8String:stage?stage:TOTK_UI("正在启动","Starting")];
+ dispatch_async(dispatch_get_main_queue(), ^{
+  if(!bootOverlay||bootOverlay.hidden)return;
+  bootStage.text=s;bootDetail.text=[NSString stringWithFormat:@"%llu / %llu",(unsigned long long)done,(unsigned long long)total];
+  if(total){bootProgress.hidden=NO;bootProgress.progress=(float)((double)done/(double)total);}
+ });
+}
+void runtime_boot_status(const char *stage,const char *detail){
+ if(bootStartNS)fprintf(stderr,"[totk-boot] %.3f %s — %s\n",(runtime_now_ns()-bootStartNS)/1e9,stage?stage:"startup",detail?detail:"");
+ NSString *s=[NSString stringWithUTF8String:stage?stage:TOTK_UI("正在启动","Starting")];
+ NSString *d=[NSString stringWithUTF8String:detail?detail:TOTK_UI("正在处理，请稍候","Working, please wait")];
+ dispatch_async(dispatch_get_main_queue(), ^{if(!bootOverlay||bootOverlay.hidden)return;bootStage.text=s;bootDetail.text=d;bootProgress.hidden=YES;});
+}
+/* Background shader/pipeline warm-up progress (iOS ships with the warm manifest off, but the hooks are shared with the Mac front end). */
+void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total){
+ (void)shaders;(void)shader_total;(void)pipelines;(void)pipeline_total;
+ dispatch_async(dispatch_get_main_queue(), ^{
+  if(!bootOverlay||bootOverlay.hidden)return;
+  double frac=total ? fmin(1.0,(double)done/(double)total) : 1.0;
+  bootStage.text=[NSString stringWithFormat:@(TOTK_UI("预热着色器与管线 %.0f%%","Warming shaders and pipelines %.0f%%")),floor(frac*100.0)];
+  bootDetail.text=[NSString stringWithFormat:@(TOTK_UI("已处理 %llu/%llu 项","%llu/%llu items")),(unsigned long long)done,(unsigned long long)total];
+  bootProgress.hidden=NO;bootProgress.progress=(float)frac;
+ });
+}
+void runtime_warm_done(void){}
+void runtime_warm_title(void){}   /* the start-up screen already goes with the first frame here */
+/* The "温控" of the present lines (hle_nvn.c): the system's thermal state, 0 nominal, 1 fair, 2 serious, 3 critical; the default
+   (-1) was never replaced on iOS, so a phone slowing down as it warmed could not be told from other causes (2026-10-23). */
+int dm_thermal_now(void){return (int)NSProcessInfo.processInfo.thermalState;}
+uint64_t front_game_res(int docked){(void)docked;return (720ULL<<32)|1280;}
+static _Atomic int appActive=1;
+int runtime_front_focus(void){return atomic_load(&appActive);}
+void mtl_app_active(int active);
+void mtl_hud_safe_area(int w,int h,int side,int bottom);   /* gfx/nvn/nvn_mtl.m: the HUD boxes keep out of the safe area */
+void runtime_ios_sync_safe_area(UIView *host);
+/* Not active (background, Control Center, lock): stop GPU submission (iOS rejects background GPU work) and tell the game focus changed, like the Mac window. */
+static void app_active_changed(int active){
+ if(atomic_exchange(&appActive,active)==active)return;
+ if(!active)runtime_input_clear();
+ mtl_app_active(active);runtime_oe_push_message(15);
+ if(active)runtime_feedback_active();
+ fprintf(stderr,"[totk] app %s\n",active?"became active":"resigned active: GPU submission paused");
+}
+void runtime_front_request_close(void){fprintf(stderr,"[totk] close requested; iOS apps are closed by the user\n");}
+void runtime_front_text_test(const char *op,const char *text){(void)text;fprintf(stderr,"[totk] text entry test \"%s\" ignored: iOS has no text entry bar (the keyboard request is cancelled)\n",op?op:"");}
+
+/* The display link's rate, which paces the game (mtl_display_hz): 60 on every iPhone / iPad, also a ProMotion one, whose
+   screen reports 120 (UIScreen.maximumFramesPerSecond with CADisableMinimumFrameDurationOnPhone). */
+#define TOTK_IOS_LINK_HZ 60
+int front_display_link_hz(void){return TOTK_IOS_LINK_HZ;}
+
+@interface TOTKVsync:NSObject
+@end
+@implementation TOTKVsync
+-(void)tick:(CADisplayLink *)l{(void)l;pthread_mutex_lock(&vsyncLock);for(unsigned i=0;i<vsyncCount;i++)hle_signal_system_event(vsyncEvents[i]);pthread_mutex_unlock(&vsyncLock);}
+@end
+static TOTKVsync *vsyncTarget;
+
+/* visionOS windows resize after launch; keep the drawable and camera aspect in step with the view. */
+void runtime_ios_sync_drawable(UIView *host){
+ if(!metalLayer||host.bounds.size.width<1||host.bounds.size.height<1)return;
+#if TARGET_OS_VISION
+ CGFloat s=host.traitCollection.displayScale>0?host.traitCollection.displayScale:2;
+#else
+ CGFloat s=host.window.screen.nativeScale>0?host.window.screen.nativeScale:UIScreen.mainScreen.nativeScale;
+#endif
+ metalLayer.contentsScale=s;
+ /* TOTK_IOS_DRAWABLE_H (default 720; 0 = native pixels): build the drawable this many pixels tall at the view's aspect, so the
+    game picture (1280x720 canvas) lands about 1:1 and the system compositor scales it to the screen instead of our GPU. */
+ double vw=round(host.bounds.size.width*s),vh=round(host.bounds.size.height*s);
+ const char *dh=getenv("TOTK_IOS_DRAWABLE_H");long want=dh?strtol(dh,NULL,10):720;
+ /* the 16:9 picture should get about want rows: a screen narrower than 16:9 (an iPad, about 4:3; 2026-10-17) holds it by
+    width, so there the drawable is want*16/9 columns wide (1281x890 on a 2360x1640 iPad); an iPhone keeps want rows */
+ if(want>0){double h=vw/vh<16.0/9.0?round(want*16.0/9.0*vh/vw):(double)want;if(h<vh){vw=round(vw*h/vh);vh=h;}}
+ if(CGSizeEqualToSize(metalLayer.drawableSize,CGSizeMake(vw,vh)))return;
+ metalLayer.drawableSize=CGSizeMake(vw,vh);
+ fprintf(stderr,"[totk] view drawable %.0fx%.0f (screen scale %.1f, TOTK_IOS_DRAWABLE_H=%ld)\n",vw,vh,s,want);runtime_aspect_view(vw,vh);   /* full screen: the camera takes the drawable's shape (aspect_patch.h) */
+ runtime_ios_sync_safe_area(host);
+}
+/* The safe area (notch, rounded corners, home indicator) in drawable pixels: the HUD's corner boxes keep out of it
+   (nvn_mtl.m). The view's safeAreaInsetsDidChange calls it too: at the first drawable the view is in no window yet and
+   the insets are 0. */
+void runtime_ios_sync_safe_area(UIView *host){
+ CGSize px=metalLayer?metalLayer.drawableSize:CGSizeZero;
+ if(px.width<1||host.bounds.size.width<1)return;
+ UIEdgeInsets in=host.safeAreaInsets;double k=px.width/host.bounds.size.width;   /* points -> drawable pixels */
+ mtl_hud_safe_area((int)px.width,(int)px.height,(int)lround(MAX(in.left,in.right)*k),(int)lround(in.bottom*k));
+}
+
+/* Called on the main thread by the app before the game thread starts. */
+void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
+ bootStartNS=runtime_now_ns();
+ metalLayer=layer;metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;metalLayer.framebufferOnly=NO;
+ runtime_ios_sync_drawable(host);
+ bootOverlay=[[UIView alloc] initWithFrame:host.bounds];bootOverlay.autoresizingMask=UIViewAutoresizingFlexibleWidth|UIViewAutoresizingFlexibleHeight;
+ bootOverlay.backgroundColor=[UIColor colorWithRed:0.035 green:0.075 blue:0.09 alpha:1];
+ CGFloat w=host.bounds.size.width,h=host.bounds.size.height;
+ bootStage=[[UILabel alloc] initWithFrame:CGRectMake(0,h/2-50,w,36)];bootStage.text=@(TOTK_UI("正在启动海拉鲁","Starting Hyrule"));bootStage.textColor=UIColor.whiteColor;
+ bootStage.font=[UIFont systemFontOfSize:24 weight:UIFontWeightSemibold];bootStage.textAlignment=NSTextAlignmentCenter;
+ bootDetail=[[UILabel alloc] initWithFrame:CGRectMake(24,h/2-8,w-48,36)];bootDetail.text=@(TOTK_UI("正在准备游戏环境","Preparing the game environment"));bootDetail.textColor=[UIColor colorWithWhite:0.72 alpha:1];
+ bootDetail.font=[UIFont systemFontOfSize:14];bootDetail.textAlignment=NSTextAlignmentCenter;
+ bootDetail.numberOfLines=2;bootDetail.adjustsFontSizeToFitWidth=YES;bootDetail.minimumScaleFactor=0.6;   /* a message (no game data) fits in two lines */
+ bootProgress=[[UIProgressView alloc] initWithFrame:CGRectMake(w/2-140,h/2+30,280,8)];bootProgress.hidden=YES;
+ [bootOverlay addSubview:bootStage];[bootOverlay addSubview:bootDetail];[bootOverlay addSubview:bootProgress];[host addSubview:bootOverlay];
+ NSNotificationCenter *nc=NSNotificationCenter.defaultCenter;
+ [nc addObserverForName:UIApplicationWillResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(0);}];
+ [nc addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n){(void)n;app_active_changed(1);}];
+ vsyncTarget=[TOTKVsync new];displayLink=[CADisplayLink displayLinkWithTarget:vsyncTarget selector:@selector(tick:)];
+ displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+/* The controller's capture button (runtime/gamepad.m): the picture goes into the system photo library, as a console's
+   Capture button does -- not into a folder, which the player cannot reach on an iPhone. The frame is the one the renderer
+   is about to show: mtl_grab_next_present asks the present thread for it and hands it over when the GPU is done (the grab a
+   Mac's capture button uses too), so nothing waits for it. */
+#define TOTK_SCREENSHOT_VIEW 1
+#define TOTK_SCREENSHOT_WRITE 0
+#if TARGET_OS_IOS || TARGET_OS_VISION
+#import <Photos/Photos.h>
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+/* The renderer's next frame, for screenshot.h: weak, so a build without the renderer answers with no picture. */
+static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
+#endif
+#include "screenshot.h"   /* the album is GAME_NAME (game_version.h): the game whose frame it is */
+
+#if TARGET_OS_IOS || TARGET_OS_VISION
+/* Photos' permission, asked once and waited for here -- the screenshot queue, never the main queue: the player sees the
+   system's prompt the first time (NSPhotoLibraryAddUsageDescription, project.yml) and the answer holds. 1 when adding
+   pictures is allowed; a refusal or a restriction keeps the note's existing reason (SHOT_NO_PHOTOS). */
+static int screenshot_photos_allowed(void) {
+    PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+    if (status == PHAuthorizationStatusNotDetermined) {
+        dispatch_semaphore_t asked = dispatch_semaphore_create(0);
+        __block PHAuthorizationStatus answer = status;
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus granted) {
+            answer = granted;
+            dispatch_semaphore_signal(asked);
+        }];
+        dispatch_semaphore_wait(asked, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));   /* the player's answer */
+        status = answer;
+    }
+    return status == PHAuthorizationStatusAuthorized;
+}
+#endif
+
+#if TARGET_OS_IOS || TARGET_OS_VISION
+/* Saves the picture into the photo library, in the game's own album, and says where. Runs on the screenshot queue, never
+   the main queue, so Photos' prompt, the album lookup and the write hold nothing the player is looking at. */
+__attribute__((unused)) static int screenshot_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
+                           char *album, size_t album_size) {
+    (void)path; (void)size;
+    *problem = SHOT_OK;
+    if (!img) { *why = TOTK_UI("没有画面", "no picture"); return 0; }
+    if (CGImageGetWidth(img) > 8192 || CGImageGetHeight(img) > 8192) { *problem = SHOT_TOO_LARGE; *why = screenshot_problem_text(*problem); return 0; }
+    if (!screenshot_photos_allowed()) { *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem); return 0; }
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+    char name[NAME_MAX + 1];
+    screenshot_name(game, &local, name, sizeof name);
+    name[strlen(name) - 4] = 0;   /* the photo library names its own copies: no extension */
+    UIImage *picture = [UIImage imageWithCGImage:img];
+    if (!picture) { *why = TOTK_UI("无法编码图片", "picture not encoded"); return 0; }
+    NSString *title = @(TOTK_SCREENSHOT_ALBUM);   /* the running game's own name: the note and the panel's row say it too */
+    __block NSError *failure = nil;
+    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+        PHAssetCollection *collection = nil;
+        PHFetchResult<PHAssetCollection *> *found = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum
+                                                                                             subtype:PHAssetCollectionSubtypeAny
+                                                                                             options:nil];
+        for (PHAssetCollection *candidate in found)
+            if ([candidate.localizedTitle isEqualToString:title]) { collection = candidate; break; }
+        PHAssetCollectionChangeRequest *into = collection
+            ? [PHAssetCollectionChangeRequest changeRequestForAssetCollection:collection]
+            : [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:title];
+        PHObjectPlaceholder *placeholder = [PHAssetChangeRequest creationRequestForAssetFromImage:picture].placeholderForCreatedAsset;
+        if (placeholder) [into addAssets:@[placeholder]];
+    } error:&failure];
+    if (failure) {
+        /* The album could not be made or written (the library's own checks differ per version): the picture still goes in. */
+        fprintf(stderr, "[totk] screenshot: the album was refused (%s); saving to the library itself\n", failure.localizedDescription.UTF8String);
+        failure = nil;
+        [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+            (void)[PHAssetChangeRequest creationRequestForAssetFromImage:picture];
+        } error:&failure];
+    }
+    if (failure) {
+        fprintf(stderr, "[totk] screenshot: the photo library refused the picture (%s)\n", failure.localizedDescription.UTF8String);
+        *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem);
+        return 0;
+    }
+    snprintf(album, album_size, "%s", TOTK_SCREENSHOT_ALBUM);
+    return 1;
+}
+#endif
+
+/* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
+#if TARGET_OS_IOS
+extern void totk_phone_motion_start(void);
+extern void totk_phone_haptics_start(void);
+#endif
+void runtime_front_run(void(*callback)(void)){
+ if(!metalLayer)runtime_fail("iOS view not attached before boot");
+ runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: the picture into Photos (screenshot.h) */
+ runtime_gamepad_start();
+#if TARGET_OS_IOS
+ /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */
+ dispatch_async(dispatch_get_main_queue(), ^{ totk_phone_motion_start(); totk_phone_haptics_start(); });
+#endif
+ @autoreleasepool{callback();}
+}
+static int viReady;
+static unsigned displayIdentity,layerIdentity;
+static void vi_initialize(void){if(!metalLayer)runtime_fail("VI requires the native iOS view");viReady=1;fprintf(stderr,"[totk] native VI display initialized\n");}
+static uint32_t vi_open(void **out){if(!viReady||!out)return 0xf601;*out=&displayIdentity;return 0;}
+static uint32_t vi_layer(void **out,void *display){if(!out||display!=&displayIdentity)return 0xf601;*out=&layerIdentity;return 0;}
+static uint32_t vi_window(void **out,void *layer){if(!out||layer!=&layerIdentity)return 0xf601;*out=front_metal_layer();return 0;}
+static uint32_t vi_vsync(void *ev,void *display){
+ if(!ev||display!=&displayIdentity)return 0xf601;hle_bind_system_event(ev,1);
+ pthread_mutex_lock(&vsyncLock);if(vsyncCount>=16)runtime_fail("VI display event limit");vsyncEvents[vsyncCount++]=ev;pthread_mutex_unlock(&vsyncLock);return 0;
+}
+void *runtime_front_override(const char *name){
+ static const struct{const char *name;void *fn;} entries[]={
+ {"_ZN2nn2vi10InitializeEv",vi_initialize},{"_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE",vi_open},
+ {"_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE",vi_layer},{"_ZN2nn2vi15GetNativeWindowEPPvPNS0_5LayerE",vi_window},
+ {"_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE",vi_vsync}};
+ for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
+}

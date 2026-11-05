@@ -1,0 +1,17 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
+@@ -110,6 +110,14 @@
+         public static bool WritesRd(int opcode) => !TryGet(opcode, out Entry e) || e.WritesRd;
+     }
+ 
++    // NativeAOT diagnostics: opcode coverage without invoking an emitter or
++    // requiring reflection/JIT metadata. Operand modes still need translation.
++    public static class AmpereOpcodeCoverage
++    {
++        public static bool IsSupported(int opcode) =>
++            AmpereTable.GetOp(0, (uint)opcode, 0).Name != InstName.Invalid;
++    }
++
+     // An ALU source operand: a register, a uniform register, a 32-bit immediate or a constant buffer word, with the float or integer modifiers it carries.
+     enum AKind
+     {

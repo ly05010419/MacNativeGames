@@ -1,0 +1,21 @@
+{
+  "title_id": "0400486024DEC000",
+  "content_version": 131072,
+  "exefs_sha256": {
+    "main": "7db9ddfda088c22d219ef13496decd7077c68cd67d4b37f53f4ac46a082768f2",
+    "main.npdm": "94c154d83cbaca00d092958cc2b3a0494d7308fe49de8cb33ece7e9e67303ea7",
+    "rtld": "219f25ef4a64a704e86dacfeb25d9e8977045f2145e629268b94baf34d5e0bbe",
+    "sdk": "3ae3cd4cf340d72bdaba9e6f66016a74c1eae13737a5f7299375ed6654b9b1c5",
+    "subsdk0": "0d32c4bdbcfcfa1c4110c37eff18eaf70061a55090b7fedc741a2e37224065ba"
+  },
+  "display_version": "131072",
+  "romfs": {
+    "sha256": "d713a4444462d92e6779bcd6612272d790bb59129a40669d372201161f48a291",
+    "size": 26237710284
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "2573dd00668fad679d7d631655167ba2786a32ec908e9c2c81056ab54fa73570",
+    "sdk.patched.bin": "7f77e8fb46d582a34b313947d7f9b898f26e7b555b06743c88538df519ffb5f8",
+    "subsdk0.patched.bin": "7ce5b0eb7e3894a8354d0eb6157b52cb5a4cc9cbff0b32d252a86ac03d3758d4"
+  }
+}

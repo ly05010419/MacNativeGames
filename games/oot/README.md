@@ -1,0 +1,42 @@
+# Ocarina of Time native port
+
+Work in progress for title `0400486024DEC000`, update `131072`, on Apple silicon and macOS 26. Game ARM64 instructions execute natively after the repository's offline rewrite. The isolated runtime supplies Horizon/NVN services and renders through Metal 4. No CPU emulator is used.
+
+Build through the root entry point, keeping all generated data outside the checkout:
+
+```sh
+python3 build_app.py /path/to/original.nup \
+  --work /external/OcarinaOfTime_build \
+  --out '/external/Ocarina of Time.app' \
+  --shared-fonts /path/to/verified/shared-fonts
+```
+
+A complete extracted dump with `updates/131072/{exefs,romfs}` is also accepted. Import verifies original file hashes; module rewriting is checked against `assets/expected-v131072.json`. The App contains its runtime data and AV1 fallback library, is signed and strictly verified, and has a build record beside it. Game data and generated shaders are never repository assets.
+
+`--mac-game-data library` uses the existing repository resource-library packaging, keeping the verified image outside the App. Desktop launches and diagnostics still use the same App, image and player profile. The default `app` mode carries the image in a signed helper bundle so subsequent runtime updates can reuse its seal.
+
+The native runtime, GPU backend, rewriter and scripts live in this directory. Source provenance and licenses are in [third_party/COPIES.md](third_party/COPIES.md). The shader service can be rebuilt from pinned sources with `tools/build_shader_service.py` using an external workspace.
+
+## Validation status
+
+The original game has reached the first playable scene on this Mac. The forest, Link’s house, character, Chinese text and controls have been observed in the packaged desktop App. The game created a real progress save, and a normal relaunch read that same shared save back into the world. This establishes initial playability, not whole-game compatibility or a 60 fps result.
+
+The opening-to-scene run now passes the previously failing packed conversion, mesh output linkage and surface reduction shaders. A predicated block tail had skipped pending scoreboard commits, turning task counts into stale float bits; the original-independent GPU regression covers 48 cases. The black final image came from a writable image being replaced by a 1×1 dummy: swizzled sampling views were read-only, and shared-storage upgrades could select a different format entry at the same pool address. Image views now follow the exact physical resource, format and subresource range. GPU readbacks and actual argument-buffer tracing verified the final postprocessing chain.
+
+GPU regressions cover 192 packed float-to-integer conversions and 150 driver-header/indirect-dispatch checks. Offline shader translation and Metal compilation help diagnose missing instructions; they do not establish that a real scene renders correctly. Task/mesh rendering and dynamic descriptor pools remain under real-game validation.
+
+`tests/surface_atomic_gpu.py` prepares the surface reduction regression for `probe-gpu-sured`: 864 checked pixels across supported integer operations, byte/pixel addressing, memory scopes and coordinate bounds, plus explicit rejection of unsupported increment/decrement modes.
+
+`tests/test_shader_corpus.py` checks structural identification of NVN2 shader records. `tests/f2ip_gpu.py --help` describes the production-backend GPU conversion regression; its work directory must be outside the checkout.
+
+The native `probe-gpu-mesh` regression checks 768 pixels through the production Metal 4 mesh pipeline and encoder FIFO: existing vertex and primitive outputs, missing float outputs, and missing integer outputs. An optional external `OOT_MESH_PIPELINE_CASES` manifest supplies original task/mesh/fragment sources and reflections for pipeline creation; these game-derived fixtures must remain outside the repository.
+
+At the user's request, opening playback is skipped by default. An exact AV1 first-packet hash identifies `Dm_Title_0005`, which receives its original A/start input only while that stream is active. The Kokiri opening has no skip button: `scripts/make_opening_overlay.py` verifies the original event, dictionary and movie hashes, then generates a one-keyframe WebM without re-encoding and changes its timeline duration from 9255 frames to one frame. Actors, actions, parameters and relocation offsets remain byte-identical. The generator requires `ffmpeg`/`ffprobe` (`brew install ffmpeg`); it verifies a single 1920×1080 AV1 frame, its duration and unchanged packet hash, and records the tool fingerprint in `generation.json`. Original inputs and saves remain intact. `OOT_AUTO_SKIP_OPENING=0` restores original playback for diagnostics. Real-game runs verified title start after 129 delivered pictures and Kokiri end-of-stream after one picture, followed by native scene draws. The following native scene and first progress-save reload have also been verified on macOS.
+
+`OOT_MESH_INPUT_CAPTURE` with `OOT_MESH_INPUT_CAPTURE_FS` captures selected mesh draws' storage inputs on the GPU timeline, before the draw. `DM_NVN_TEXSNAP_FS` selects intermediate pass snapshots by fragment shader prefix instead of changing pass indices. These diagnostics default off and write game-derived data only to an external directory.
+
+Dynamic descriptor pools remain complete and GPU-indexed. Immutable resource-ID tables preserve old submissions when descriptors change. Physical sampling views are owned by shared storage and its exact layout, with retirement at storage replacement or pool destruction. Lazy visibility query buffers avoid waiting for the fixed result ring on submissions with no query. The earlier shared-save run had a steady frame median of about 26.3 ms on this M4, versus about 120.7 ms before this performance work. Its observed 30.79-second window delivered 890 frames (28.91 fps including stalls); the reciprocal of the median is not sustained fps. These sessions do not establish whole-game performance. The 16.67 ms / 60 fps target remains unachieved.
+
+The current shader chain, `oot-native-v10-pool-map-live-inputs`, removes the raw-memory map's 4095-pool limit and preserves source inputs when one result of a multi-result instruction remains live. Independent GPU fixtures fail on the previous translator and pass on the current translator: 14 raw-pool cases and 640 input/output checks for multi-result instructions. Of 468 real shader requests replayed, 393 produced identical MSL and 75 deliberately changed; all changed outputs passed SPIR-V validation and Metal compilation. One restored read-only storage-buffer reflection was explicitly reviewed. Mesh, uniform-buffer snapshot and storage-view regressions also pass. These checks establish the covered shader semantics, not a 60 fps result.
+
+A subsequent 200-second warm-cache run of the same desktop App read the shared progress save, displayed the tree-house world at both screenshot checkpoints and closed normally. Instrumented windows delivered about 26–27 fps including stalls, with frame medians near 33 ms. Debugger, sampling and source-migration activity make this a diagnostic run, not a clean comparative performance benchmark. Long CPU-side stalls and the 60 fps target remain unresolved; mesh-record reuse stays disabled by default.

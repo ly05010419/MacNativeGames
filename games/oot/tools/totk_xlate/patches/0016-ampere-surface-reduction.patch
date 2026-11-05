@@ -1,0 +1,49 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -54,6 +54,7 @@
+             x(0xb9b, InstName.Sust, ASurface, N, writesRd: false);
+             x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
+             x(0x593, InstName.Suatom, ASuatom, N);
++            x(0x59f, InstName.Sured, ASured, N, writesRd: false);
+             x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
+             x(0x992, InstName.Membar, AMembar, N, writesRd: false);
+             x(0x38c, InstName.Atoms, AAtoms, N);
+@@ -554,6 +555,28 @@
+             }
+ 
+             EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
++        }
++
++        // SURED: surface reduction without an old-value result. Descriptor,
++        // coordinates and integer operation use the existing surface ABI. Scope
++        // encoding follows Mesa NAK SM80 set_mem_order; PTX sured defines the
++        // reduction and byte/pixel addressing. No CPU read/modify/write is used.
++        public static void ASured(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            (int handle, int cbufSlot) = ATexHandle(context, x);
++            int size = x.Bits(73, 76), operation = x.Bits(87, 91), order = x.Bits(77, 81);
++            int dimension = x.Bits(61, 64);
++            if (cbufSlot != TextureOperation.DefaultCbufSlot || size > 1 || operation > 7 ||
++                dimension > 5 || (order != 0 && order != 5 && order != 7) ||
++                (operation == 3 || operation == 4))
++                throw AFail(context, "SURED 32-bit integer descriptor/reduction/scope form");
++            if (order == 5) context.GroupMemoryBarrier();
++            if (order == 7) context.MemoryBarrier();
++            EmitSured(context, (SuDim)dimension, Clamp.Ign, (RedOp)operation,
++                (SuatomSize)size, handle, x.Ra, x.Rb, 0, x.Bit(72), isBindless: false);
++            if (order == 5) context.GroupMemoryBarrier();
++            if (order == 7) context.MemoryBarrier();
+         }
+ 
+         // BAR.SYNC: the workgroup barrier
+--- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
+@@ -279,6 +279,7 @@
+                     case 0x9a8:
+                     case 0x3a8:
+                     case 0x3a9:
++                    case 0x59f:
+                     case 0x9a9:
+                     case 0xb9b:
+                     case 0x99b:
