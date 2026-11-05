@@ -383,6 +383,79 @@ game's own icons, which already name its buttons. The mod replaces the seven `Fo
 `Pack/Bootup.pack` (whose `Layout/Common.sblarc` holds the guide); the layouts keep their size, so no size table is
 needed, but another mod that replaces `Pack/Bootup.pack` cannot be used with it.
 
+### Sharp UI texture pack (Breath of the Wild 1.9.0 and 1.6.0)
+
+The game draws its UI from small textures (48x48 and 72x72 button and icon masks, colour icons) that the 3456x1944 picture
+magnifies about 2x, so their edges look soft. A Breath of the Wild app (1.9.0 or 1.6.0) can draw larger copies instead: it looks for
+`<key>.png` in the pack folder when a texture is uploaded, and uses a picture whose size is a whole multiple (up to 8x, the
+same on both axes) of the texture. The app falls back to the game's own texture for every texture that has no picture. The UI
+shaders use normalised coordinates, so a larger picture draws at the same place and size. Nothing of the game is in the
+project: the pictures come from your own game.
+
+| Variable | Meaning |
+|---|---|
+| `BOTW_TEXPACK_DIR` | The pack folder. Default `~/Library/Application Support/MacNativeGames/BotW/texture-pack`. |
+| `BOTW_TEXPACK=0` | Turns the pack off. |
+| `BOTW_TEXPACK_HARVEST=<dir>` | Harvest mode: writes each UI texture the game draws into `<dir>` as `<key>.png`, with a line in `harvest.tsv`. A texture already there is not written again, so the folder grows over runs. |
+| `BOTW_TEXPACK_HARVEST_FS` | The fragment shaders to harvest, as key prefixes separated by commas. Default `87d90016,e6a88e12,e1f8208d` (the 1.9.0 picture shaders and the temperature gauge). The HUD and menu textures have the same keys in 1.6.0, so one pack serves both versions. |
+
+The key is `<hash>-<width>x<height>-<NVN format>`, where the hash covers the texture's bytes as the game stores them.
+Pictures hold the stored channel values: 8-bit grey for one-channel masks, RGB with blue 0 for two-channel masks, RGBA (not
+premultiplied, sRGB colour left encoded) for colour.
+
+**Workflow**
+
+1. Harvest. Start the game with the variable set, and play through the menus, the HUD and the map:
+
+   ```bash
+   open --env BOTW_TEXPACK_HARVEST="$HOME/Library/Application Support/MacNativeGames/BotW/texture-harvest" "/path/to/Breath of the Wild.app"
+   ```
+
+2. Build the pack from the harvest folder with AI upscalers (Python 3.14, no other package):
+
+   ```bash
+   python3.14 games/botw/scripts/botw_texpack.py build \
+     --harvest "$HOME/Library/Application Support/MacNativeGames/BotW/texture-harvest" \
+     --out "$HOME/Library/Application Support/MacNativeGames/BotW/texture-pack" \
+     --upscaler /path/to/realesrgan-ncnn-vulkan --models /path/to/models
+   ```
+
+3. Start the game as usual. The log (`~/Library/Logs/MacNativeGames/botw.log`) shows `[texpack]` lines with the number of pictures in use.
+
+**Same pack for every player.** The tool builds only the 47 textures of `games/botw/assets/texpack_keys.tsv`, with the scale and
+model given there: the HUD and menu art whose upscaled look was checked in game. Title art and logos, world-map tiles, item
+icons, button prompts and controller pictures, glows and shadows are left out on purpose and keep the game's texture. The build
+names the listed textures that your harvest does not have yet; show them in the game with the harvest on (for example the
+temperature gauge in a cold or hot place), then build again. `--all` builds every harvested texture by the rules below instead.
+The game loads every picture in the pack folder, so the build names pictures there that the list lacks (for example from an
+earlier `--all` build); delete them or build into a new folder.
+
+The tool runs each picture through the upscaler at 4x. Masks use `realesrgan-x4plus-anime`, one channel at a time. Colour art
+uses `4x-UltraSharp` for the colour and the mask model for the alpha. A picture of at most 128 texels on its longest side is
+kept at 4x; a larger one is reduced to 2x by a 2x2 average. Each mask channel is then kept at or below the brightest texel
+around it in the game's picture, because the model draws mid-grey lines as white. The tool skips two kinds of picture, whose
+look the model would change: pictures of at most 16 texels on their longest side (frame pieces and dots), and soft pictures
+such as glows and shadows. `--dry-run` shows the plan, `--only <key,...>` limits the keys and
+`--force` builds again what is current. `overrides.tsv` in the harvest folder (or `--overrides <tsv>`) has lines
+`key<TAB>value` (`#` starts a comment), where the value is `skip`, a model name, `2x` or `4x`, or `model,2x`; an override wins
+over the list and the rules above. The tool lists what it wrote in `ai-manifest.tsv` in the pack folder and never overwrites a picture that
+this file does not list, so pictures made by another tool (such as drawn prompts) stay. Delete a picture to go back to the
+game's texture for that key.
+
+**Tools.** The tool downloads nothing, and the repository holds no upscaler or model; you get them yourself:
+
+| What | Where | License |
+|---|---|---|
+| `realesrgan-ncnn-vulkan` (the program) | `realesrgan-ncnn-vulkan-20220424-macos.zip` from the v0.2.5.0 release of [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0); source [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
+| `realesrgan-x4plus-anime` (the mask model) and `realesrgan-x4plus` (the temperature gauge's segment) | the `models` folder of the same zip | BSD-3-Clause ([Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)) |
+| `4x-UltraSharp` (the colour model) | `NCNN/4x-UltraSharp-fp32.param` and `NCNN/4x-UltraSharp-fp32.bin` in [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) on Hugging Face | CC BY-NC-SA 4.0 |
+
+Put the two 4x-UltraSharp files in the same `models` folder as `4x-UltraSharp.param` and `4x-UltraSharp.bin` (the tool
+looks for these names). 4x-UltraSharp's license allows no commercial use, so a pack made with it is for your own play.
+
+The repository holds no file made from the game. The harvest folder and the pack are made from your game data: they stay on
+your Mac and never go into the repository or a pull request.
+
 ### Notes
 
 - Do not edit `manifest.tsv` by hand; regenerate it.
@@ -786,6 +859,70 @@ python3 games/totk/scripts/make_botw_button_icons.py "$HOME/Library/Application 
 它的位置上高亮（A、B、X、Y 的操作若移到菱形之外的按钮，例如 LB，那里保留 Switch 的菱形；文字里的提示仍显示 LB）。PlayStation 手柄显示 Xbox 字母；任天堂手柄（`controller-type.txt` 为 `switch`）保留游戏自己的图标，它们本来
 就对应手柄上的按钮。mod 替换七个 `Font/Font_*.sbfarc` 和 `Pack/Bootup.pack`（其中的 `Layout/Common.sblarc` 存放操作提示）；
 布局大小不变，所以不需要资源大小表，但不能和另一个替换 `Pack/Bootup.pack` 的 mod 一起使用。
+
+### 高清界面贴图包（旷野之息 1.9.0 和 1.6.0）
+
+游戏的界面用小贴图（48x48 和 72x72 的按键、图标遮罩，以及彩色图标），3456x1944 的画面把它们放大约 2 倍，边缘因此发虚。
+旷野之息的 App（1.9.0 或 1.6.0）可以改用更大的副本：贴图上传时，它在贴图包文件夹里找 `<key>.png`，图片尺寸是贴图的整数倍
+（最多 8 倍，两个方向相同）时就使用它。没有图片的贴图仍用游戏自己的贴图。界面着色器使用归一化坐标，所以更大的图片
+画在同一位置、同一大小。项目里不含任何游戏内容：图片来自你自己的游戏。
+
+| 环境变量 | 含义 |
+|---|---|
+| `BOTW_TEXPACK_DIR` | 贴图包文件夹。默认 `~/Library/Application Support/MacNativeGames/BotW/texture-pack`。 |
+| `BOTW_TEXPACK=0` | 关闭贴图包。 |
+| `BOTW_TEXPACK_HARVEST=<dir>` | 采集模式：把游戏绘制的每张界面贴图以 `<key>.png` 写入 `<dir>`，并在 `harvest.tsv` 里记一行。已在文件夹里的贴图不会重写，所以文件夹会随多次运行增长。 |
+| `BOTW_TEXPACK_HARVEST_FS` | 要采集的片段着色器，写 key 前缀，用逗号分隔。默认 `87d90016,e6a88e12,e1f8208d`（1.9.0 的图片着色器和温度计）。HUD 和菜单贴图在 1.6.0 里 key 相同，所以一个贴图包两个版本都能用。 |
+
+key 为 `<哈希>-<宽>x<高>-<NVN 格式>`，哈希覆盖游戏存放的贴图字节。图片保存的是存储的通道值：单通道遮罩为 8 位灰度，
+双通道遮罩为蓝色为 0 的 RGB，彩色图为 RGBA（不预乘，sRGB 颜色保持编码值）。
+
+**流程**
+
+1. 采集。带着变量启动游戏，走一遍菜单、HUD 和地图：
+
+   ```bash
+   open --env BOTW_TEXPACK_HARVEST="$HOME/Library/Application Support/MacNativeGames/BotW/texture-harvest" "/path/to/Breath of the Wild.app"
+   ```
+
+2. 用 AI 放大器把采集文件夹生成贴图包（Python 3.14，不需要其他包）：
+
+   ```bash
+   python3.14 games/botw/scripts/botw_texpack.py build \
+     --harvest "$HOME/Library/Application Support/MacNativeGames/BotW/texture-harvest" \
+     --out "$HOME/Library/Application Support/MacNativeGames/BotW/texture-pack" \
+     --upscaler /path/to/realesrgan-ncnn-vulkan --models /path/to/models
+   ```
+
+3. 照常启动游戏。日志（`~/Library/Logs/MacNativeGames/botw.log`）里的 `[texpack]` 行会显示在用的图片数量。
+
+**每位玩家得到同样的贴图包。** 工具只制作 `games/botw/assets/texpack_keys.tsv` 里的 47 张贴图，按其中给定的倍数和模型：
+这些是放大效果已在游戏里检查过的界面和菜单图。标题图和标志、世界地图图块、物品图标、按键提示和手柄图、光晕和阴影都特意不做，
+保持游戏原来的贴图。制作时会列出采集里还没有的清单贴图；开着采集在游戏里让它们显示出来（例如在寒冷或炎热的地方显示温度计），
+再制作一次。`--all` 改为按下面的规则制作所有采集到的贴图。
+游戏会载入贴图包文件夹里的每一张图，所以制作时会列出文件夹里不在清单中的图（例如之前 `--all` 制作的）；把它们删掉，或者制作到新的文件夹。
+
+工具把每张图片用放大器放大 4 倍。遮罩用 `realesrgan-x4plus-anime`，一次一个通道；彩色图的颜色用 `4x-UltraSharp`，
+alpha 用遮罩模型。最长边不超过 128 像素的图片保持 4 倍；更大的用 2x2 平均缩到 2 倍。之后每个遮罩通道不超过游戏原图中周围最亮的像素，
+因为模型会把中灰的线画成白色。工具跳过两类图片，因为模型会改变它们的样子：最长边不超过 16 像素的图片（边框零件和圆点），
+以及发光、阴影这类柔和的图片。`--dry-run` 只显示计划，
+`--only <key,...>` 限定 key，`--force` 重做已是最新的图片。采集文件夹里的 `overrides.tsv`（或 `--overrides <tsv>`）每行
+`key<TAB>值`（`#` 开头为注释），值可以是 `skip`、模型名、`2x` 或 `4x`，或 `模型,2x`；覆盖项优先于清单和上面的规则。工具把写出的图片
+记在贴图包文件夹的 `ai-manifest.tsv` 里，绝不覆盖该文件没有列出的图片，所以其他工具（例如画出来的按键提示）做的图片会保留。
+删除某张图片，该 key 就回到游戏自己的贴图。
+
+**工具。** 工具不会下载任何东西，仓库里也没有放大程序或模型，请自己获取：
+
+| 内容 | 来源 | 许可 |
+|---|---|---|
+| `realesrgan-ncnn-vulkan`（程序） | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0) v0.2.5.0 发布版里的 `realesrgan-ncnn-vulkan-20220424-macos.zip`；源码在 [xinntao/Real-ESRGAN-ncnn-vulkan](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) | MIT |
+| `realesrgan-x4plus-anime`（遮罩模型）和 `realesrgan-x4plus`（温度计的色段） | 同一个 zip 的 `models` 文件夹 | BSD-3-Clause（[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)） |
+| `4x-UltraSharp`（彩色模型） | Hugging Face 上 [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp) 的 `NCNN/4x-UltraSharp-fp32.param` 和 `NCNN/4x-UltraSharp-fp32.bin` | CC BY-NC-SA 4.0 |
+
+把两个 4x-UltraSharp 文件放进同一个 `models` 文件夹，并改名为 `4x-UltraSharp.param` 和 `4x-UltraSharp.bin`（工具按这两个名字找）。
+4x-UltraSharp 的许可不允许商业使用，所以用它做的贴图包只供你自己游玩。
+
+仓库里没有任何从游戏生成的文件。采集文件夹和贴图包由你的游戏数据生成，只保留在你的 Mac 上，不放进仓库或拉取请求。
 
 ### 注意
 

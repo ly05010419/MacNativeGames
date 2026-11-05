@@ -275,7 +275,21 @@ void botw_late_copy_drop(uintptr_t lo, uintptr_t hi);   /* a GPU copy into the m
 void botw_wb_landed(const void *mem);
 uint64_t botw_wb_gen(void);
 int botw_wb_newer(const void *mem, uint64_t gen);
-#define BOTW_PKG_FIELDS uint64_t wb_gen;
+/* Sharp UI art (games/botw/gfx/botw_texpack.h, included at the end of nvn_mtl.m): a texture pack's larger copy of a
+   UI texture is the sampling base of the texture-pool slots that view it whole (tex_by_id); harvest mode writes the
+   UI textures into a folder. g_botw_tp: -1 not yet set up (the first upload does it), 0 off. */
+extern int g_botw_tp;
+void botw_tp_uploaded(void *pk, const tex_t *t);
+void *botw_tp_pick(void *rp, void *base);
+void botw_tp_harvest(const char *fs_key, const tex_t *t);
+#define BOTW_TP_PKG_FIELDS id tp_rep; uint8_t *tp_px; uint32_t tp_pw, tp_ph; uint64_t tp_ser, tp_hash, tp_gen, tp_pgen, tp_hv; int tp_cls;
+#define BOTW_TP_UPLOADED(pk, t) if (g_botw_tp) botw_tp_uploaded((__bridge void *)(pk), (t));
+#define BOTW_TP_BASE(rp, b) if (g_botw_tp > 0) (b) = (__bridge id<MTLTexture>)botw_tp_pick((rp), (__bridge void *)(b));
+#define BOTW_TP_VIEW(rp, r, b) if (g_botw_tp > 0) { void *tp_ = botw_tp_pick((rp), (__bridge void *)(b)); if (tp_ != (__bridge void *)(b)) { (b) = (__bridge id<MTLTexture>)tp_; (r).v.set_format = 0; } }
+#define BOTW_TP_HARVEST(t, fs, tt) if ((t) && g_botw_tp > 0) botw_tp_harvest((fs), (tt));
+#define BOTW_TP_OWNED(pk) if (g_botw_tp > 0 && (pk)->tp_rep) ser_bump_locked((pk)->tp_ser);
+#define BOTW_TP_FREE() if (tp_rep) res_remove(tp_rep); free(tp_px);
+#define BOTW_PKG_FIELDS uint64_t wb_gen; BOTW_TP_PKG_FIELDS
 #define BOTW_WB_LANDED(t) botw_wb_landed((t)->mem);
 #define BOTW_PKG_WB_SEEN(pk) (pk)->wb_gen = botw_wb_gen();
 #define BOTW_PKG_WB_TAKE() uint64_t wbg_ = botw_wb_gen();
@@ -335,6 +349,12 @@ int totk_wb_fence_on(void);
 #define BOTW_ASHOT_POLL(t, cur)
 #define BOTW_REUP_TRACKED(pk, t)
 #define BOTW_PKG_FIELDS
+#define BOTW_TP_UPLOADED(pk, t)
+#define BOTW_TP_BASE(rp, b)
+#define BOTW_TP_VIEW(rp, r, b)
+#define BOTW_TP_HARVEST(t, fs, tt)
+#define BOTW_TP_OWNED(pk)
+#define BOTW_TP_FREE()
 #define BOTW_WB_LANDED(t)
 #define BOTW_PKG_WB_SEEN(pk)
 #define BOTW_PKG_WB_TAKE()
