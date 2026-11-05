@@ -1,13 +1,15 @@
 // NVN 贴图的存储尺寸 / 对齐 / 各级偏移（Tegra X1 块线性布局）。
 // 基于 deko3d source/dk_image.cpp（zlib 许可，Copyright (C) 2018-2020 fincs），自动块高按 NVN SDK 的整除规则修正：
 //   一个 GOB = 64 字节 × 8 行 = 512 字节；块高（tileH，单位 GOB）按「高度×1.5」挑；各级按块对齐累加。
-// 游戏的预排布贴图（SetPackagedTextureLayout）带 8 字节布局参数：第 0 字节 = 块高 log2（真游戏 16 例对照得出，
-// 其中 4 例与自动算法不同），有它时以它为准。
+// 游戏的预排布贴图（SetPackagedTextureLayout）带 8 字节布局参数：第 0 字节低半字节 = 块高 log2，高半字节 = 块深 log2（3D 用），
+// 有它时以它为准。立方体数组的 depth 已经是层面数（6 的倍数），不是立方体个数。这两条和线性贴图按像素行算尺寸，
+// 都是 digitalhivehub 用原驱动对拍得出的（nxnative PR #11，98fc8a0 / bacf2cb）。
 // Storage size / alignment / per-level offsets of NVN textures (Tegra X1 block-linear layout).
 // Based on deko3d source/dk_image.cpp (zlib license, Copyright (C) 2018-2020 fincs), with NVN SDK integer rounding for automatic tile height:
 //   one GOB = 64 bytes × 8 rows = 512 bytes; the block height (tileH, in GOBs) is picked by 'height×1.5'; levels are accumulated with block alignment.
-// The game's packaged textures (SetPackagedTextureLayout) carry 8 bytes of layout parameters: byte 0 = log2 of the block height (derived by comparing 16 cases from the real game,
-// 4 of which differ from the automatic algorithm); when present it takes precedence.
+// The game's packaged textures (SetPackagedTextureLayout) carry 8 bytes of layout parameters: byte 0's low nibble = log2 of the block height, its high nibble = log2 of the
+// block depth (3D); when present they take precedence. CUBEMAP_ARRAY depth already counts layer-faces (a multiple of 6), not cubes. These two rules and linear sizes in
+// pixel rows were found by digitalhivehub against the original NVN driver run under emulation (nxnative PR #11, 98fc8a0 / bacf2cb).
 #include "nvn_tex.h"
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -57,7 +59,7 @@ static void shape(const nvn_texdesc *d, unsigned *dpl, int *layered, uint32_t *w
         case 2: *dpl = 3; break;                                        // 3D
         case 4: case 6: *dpl = 2; *layered = 1; break;                  // 2D_ARRAY / MS_ARRAY
         case 8: *dpl = 2; *z = 6; *layered = 1; break;                  // CUBEMAP
-        case 9: *dpl = 2; *z = d->depth * 6; *layered = 1; break;       // CUBEMAP_ARRAY
+        case 9: *dpl = 2; *layered = 1; break;                          // CUBEMAP_ARRAY（depth 已是层面数 | depth already counts layer-faces）
         default: *dpl = 2; *z = 1; break;                               // 2D / MS / RECTANGLE
     }
     if (*z == 0) *z = 1;
@@ -122,14 +124,18 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     if (nvn_tex_is_linear(d)) {                                            // Pitch storage: explicit stride, otherwise 32-byte (LINEAR) / 128-byte (LINEAR_RENDER_TARGET) alignment
         o->align = (d->flags & 0x40) ? 128 : 32;
         uint32_t stride = nvn_tex_linear_stride(d);
-        o->layer_size = o->size = (uint64_t)stride * blk(h, t.bh);
+        o->layer_size = o->size = (uint64_t)stride * h;              // 驱动按像素行算，压缩格式也一样 | the driver counts pixel rows, also for block-compressed formats
         return;
     }
     unsigned tileH = 0, tileD = 0;
     /* NVN truncates height*1.5 to whole GOB rows before choosing the power of
        two. Rounding up here changes e.g. 40 BC rows from H2 to H3 even when
        the total allocation size is unchanged, so padding becomes black texels. */
-    if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = d->pkg_block_h ? (unsigned)d->pkg_block_h - 1 : pick_tile((ah + ah / 2) / 8); }
+    if (d->pkg_block_h) {                                             // 预排布第 0 字节：低半字节块高，高半字节块深 | packaged byte 0: low nibble block height, high nibble block depth
+        unsigned pl = (unsigned)(d->pkg_block_h - 1) & 0xFF;
+        if (dpl >= 2) tileH = pl & 0xF;
+        if (dpl == 3) tileD = pl >> 4;
+    } else if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = pick_tile((ah + ah / 2) / 8); }
     else if (dpl == 3) tileD = pick_tile(z + z / 2);
     uint64_t ls = layer_bytes(d, dpl, layered, w, h, z, tileH, tileD, t);
     if ((d->flags & 0x200) && !d->pkg_block_h && minimal_layout_on()) {

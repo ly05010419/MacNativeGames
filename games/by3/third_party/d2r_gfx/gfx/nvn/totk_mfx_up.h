@@ -7,6 +7,7 @@ enum {
     MFXUP_SCENE = 0,    // iOS, handheld: the scene below the canvas size (TOTK_RENDER_RES) before the compose shader samples it
     MFXUP_DOCKED = 1,   // Mac, docked: the game's own upscale of the finished picture into the 1080p canvas, replaced
     MFXUP_OUTPUT = 2,   // Mac, the present: the finished 1080p picture into a bigger window / full screen (2K output), used from the present thread
+    MFXUP_VR = 3,       // zeldaVR, the present: the finished picture twice as large for the headset's eyes (the MetalFX picture modes), present thread
     MFXUP_NCTX
 };
 /* Colour processing modes: the values of MTLFXSpatialScalerColorProcessingMode, without importing MetalFX here. */
@@ -30,3 +31,4 @@ int mfxup_prepare(int ctx, id<MTLTexture> src, id<MTLTexture> dst, NSUInteger ou
 id<MTLTexture> mfxup_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, NSUInteger out_w, NSUInteger out_h);
 id<MTLResidencySet> mfxup_residency(void);   // the contexts' own output textures (nil until one exists); the queue adds it once
 void mfxup_stats(int ctx, char *out, size_t n);
+uint64_t mfxup_switches(int ctx);   // times the current scaler changed to another cached one (logged once per scaler)

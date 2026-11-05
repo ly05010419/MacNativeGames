@@ -2,16 +2,19 @@
 #pragma once
 #import <Metal/Metal.h>
 
-/* Frame interpolation modes (user, 2026-10-16 night: key 2 cycles off -> 30+30 -> 50+50 -> uncapped -> off):
-   MFX_30   the game renders 30 frames a second, MetalFX makes the frame between ("30+30");
-   MFX_HALF the game renders every second display refresh ("50+50" on a 100 Hz display, 30+30 at 60 Hz);
+/* Frame interpolation modes (the settings panel; user 2026-10-25: 30+30, 40+40, 50+50, uncapped):
+   MFX_30 / MFX_40 / MFX_50 / MFX_60  the game renders 30 / 40 / 50 / 60 frames a second, MetalFX makes the frame between ("30+30" ...),
+            each shown half a game period before the game's own (by display ticks, or our own clock where the display's
+            rate is not a multiple: 40 and 30 at 100 Hz);
    MFX_MAX  the game is not paced (uncapped) and every frame gets one in between; the screen still shows one picture per
             refresh, so above half the refresh rate some game frames are replaced by interpolated ones.
-   TOTK_MFX=interp30 | interp | interpmax starts in that mode; flag mfx_interp <0..3> sets it, -1 (key 2) cycles. A change
-   takes effect at the next game frame boundary (mfx_latch at the present), so a frame is never half on. */
+   TOTK_MFX=interp30 | interp40 | interp50 | interp60 | interpmax starts in that mode (interp: 50+50, half of a 100 Hz display, the
+   old "half the refresh rate"); flag mfx_interp <0..5> sets it, -1 cycles. A change takes effect at the next game frame
+   boundary (mfx_latch at the present), so a frame is never half on. */
 #include "totk_mfx_mode.h"
 const char *mfx_mode_name(int mode);
-void mfx_set(int mode);  // mode < 0 cycles the requested mode
+void mfx_set(int mode);
+void mfx_set_mv_dyn(int on);   // flag mfx_mv_dyn (default on): pixels that are not still world get no camera motion  // mode < 0 cycles the requested mode
 int mfx_latch(void);     // at the game's present, after this frame's interpolation: take the requested mode; 1 = it changed
 // Per game frame, from the replay: the scene copy (the canvas copied before the first UI draw, in the canvas format),
 // the UI layer (colour attachment 7 of the later canvas passes), the G-buffer depth and the camera block (84 floats of

@@ -9,9 +9,12 @@
 //  - the UI drawn over it: attachment 7 of the later canvas passes, premultiplied (the game's colour blend, alpha
 //    accumulating coverage);
 //  - the G-buffer depth (D32F, not reversed, infinite far plane) and the camera block.
-// Motion vectors come from the camera only: depth plus this and the previous frame's view-projection. MetalFX refines
-// motion itself (tests/metalfx_interp: zero motion still 36 dB), but what moves with the camera (Link) gets the
-// background's camera motion. Conventions measured by the probe: motion in pixels of the motion texture, pointing to the
+// Motion vectors come from the camera: depth plus this and the previous frame's view-projection. A pixel whose depth does
+// not match the previous frame's there (the previous depth around the reprojected position) is not still world: it gets
+// no motion on screen (mfx_mv_dyn, 2026-10-23). Before, what moves with the camera (Link) got the background's camera
+// motion and was put off his place in every interpolated frame, by the camera's step between two game frames: at 25+25
+// or 30+30 twice the step of 50+50 and 25-30 times a second, so he shook while the world stayed right (Breath of the Wild
+// 1.6.0). Zero motion everywhere shook the whole picture: MetalFX relies on the motion it is given. Conventions measured by the probe: motion in pixels of the motion texture, pointing to the
 // previous position; the UI given apart and premultiplied (the "composited" mode returns a black frame).
 #import <MetalFX/MetalFX.h>
 #import <QuartzCore/QuartzCore.h>
@@ -22,9 +25,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include "totk_mfx.h"
+#include "totk_hdr.h"
+#include <TargetConditionals.h>
 
 #define MLOG(...) do { fprintf(stderr, "[dm] [nvn-mtl] [mfx] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define MDIE(...) do { MLOG("FATAL " __VA_ARGS__); abort(); } while (0)
+
+#if TARGET_OS_VISION
+/* visionOS has no MetalFX frame interpolator. Keep every entry point off, including environment initialization. */
+int mfx_enabled(void) { return 0; }
+const char *mfx_mode_name(int mode) { return mode == MFX_OFF ? "off" : "not available on visionOS"; }
+void mfx_set(int mode) { if (mode) MLOG("frame interpolation is not available on visionOS"); }
+void mfx_set_mv_dyn(int on) { (void)on; }
+int mfx_latch(void) { return 0; }
+id<MTLTexture> mfx_scene_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h, MTLPixelFormat format) { (void)dev; (void)w; (void)h; (void)format; return nil; }
+id<MTLTexture> mfx_ui_target(id<MTLDevice> dev, NSUInteger w, NSUInteger h) { (void)dev; (void)w; (void)h; return nil; }
+void mfx_note_scene(void) {}
+void mfx_note_depth(id<MTLTexture> depth) { (void)depth; }
+void mfx_note_camera(const float *cam, int n) { (void)cam; (void)n; }
+id<MTLResidencySet> mfx_residency(void) { return nil; }
+int mfx_frame_prepare(double frame_s) { (void)frame_s; return -1; }
+NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int slot, id<MTL4CounterHeap> heap, NSUInteger stamp) { (void)cb; (void)slot; (void)heap; (void)stamp; return nil; }
+void mfx_note_gpu(double ms) { (void)ms; }
+void mfx_frame_abort(void) {}
+id<MTLTexture> mfx_output(int slot) { (void)slot; return nil; }
+void mfx_stats(char *out, size_t n) { snprintf(out, n, "not available on visionOS"); }
+void mfx_mv_log(void) {}
+int mfx_dump_due(void) { return 0; }
+void mfx_dump(long frame, id<MTLTexture> prev, id<MTLTexture> cur) { (void)frame; (void)prev; (void)cur; }
+#else
 
 #define MFX_OUT 3
 static struct {
@@ -32,6 +61,7 @@ static struct {
     id<MTL4FXFrameInterpolator> fi;
     NSUInteger in_w, in_h, out_w, out_h; MTLPixelFormat scene_fmt;
     id<MTLTexture> scene[2], ui, mv, out[MFX_OUT], outv[MFX_OUT];
+    id<MTLTexture> pdepth; uint64_t pdepth_frame;   // the previous interpolated frame's depth (copied after its motion), and its g.frames
     id<MTLResidencySet> rs;
     id<MTLComputePipelineState> mv_ps;
     id<MTL4ArgumentTable> mv_args[MFX_OUT];
@@ -52,6 +82,9 @@ static struct {
     double gpu_ms[300]; int ngpu;   // GPU time of the last interpolations (MetalFX part)
     double last_prepare_s, dt;      // time of the previous game frame's prepare; this pair's interval (MetalFX deltaTime)
 } g;
+/* Flag mfx_mv_dyn (default on): pixels that are not still world get no screen motion instead of the camera's. */
+static _Atomic int g_mv_dyn = 1;
+void mfx_set_mv_dyn(int on) { atomic_store(&g_mv_dyn, on != 0); MLOG("[flag] mfx_mv_dyn = %d: %s", on != 0, on ? "moving pixels get no camera motion" : "camera motion everywhere"); }
 
 /* Reconstructing identical MetalFX interpolators repeatedly grows device
  * allocations on the tested Mac, even after the old Objective-C object dies.
@@ -86,20 +119,23 @@ static id<MTL4FXFrameInterpolator> fi_cached(NSUInteger iw, NSUInteger ih) {
 static _Atomic int g_on, g_req;
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
 const char *mfx_mode_name(int m) {
-    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "half the refresh rate (50+50 on a 100 Hz display)", "uncapped (every game frame interpolated)"};
+    static const char *const names[MFX_NMODES] = {"off", "30+30 (the game at 30 fps)", "40+40 (the game at 40 fps)", "50+50 (the game at 50 fps)", "uncapped (every game frame interpolated)", "60+60 (the game at 60 fps)"};
     return m >= 0 && m < MFX_NMODES ? names[m] : "?";
 }
 static void mfx_init(void) {
     const char *e = getenv("TOTK_MFX"); int v;
     if (!e || !*e || !strcmp(e, "0")) v = MFX_OFF;
     else if (!strcmp(e, "interp30")) v = MFX_30;
-    else if (!strcmp(e, "interp")) v = MFX_HALF;
+    else if (!strcmp(e, "interp40")) v = MFX_40;
+    else if (!strcmp(e, "interp50") || !strcmp(e, "interp")) v = MFX_50;
     else if (!strcmp(e, "interpmax")) v = MFX_MAX;
-    else MDIE("TOTK_MFX must be interp30, interp, interpmax or 0, got %s", e);
+    else if (!strcmp(e, "interp60")) v = MFX_60;
+    else MDIE("TOTK_MFX must be interp30, interp40, interp50 (interp), interp60, interpmax or 0, got %s", e);
     atomic_store(&g_req, v); atomic_store(&g_on, v);
     if (v) MLOG("TOTK_MFX=%s: MetalFX frame interpolation, %s", e, mfx_mode_name(v));
 }
-int mfx_enabled(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_enabled(void) { if(totk_hdr_active())return 0; pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_on, memory_order_relaxed); }
+int mfx_requested(void) { pthread_once(&g_once, mfx_init); return atomic_load_explicit(&g_req, memory_order_relaxed); }
 void mfx_set(int m) {
     pthread_once(&g_once, mfx_init);
     if (m >= MFX_NMODES) { MLOG("[flag] mfx_interp takes 0..%d (-1 cycles), got %d", MFX_NMODES - 1, m); return; }
@@ -109,7 +145,7 @@ void mfx_set(int m) {
 }
 int mfx_latch(void) {
     pthread_once(&g_once, mfx_init);
-    int r = atomic_load(&g_req), was = atomic_load(&g_on);
+    int r = totk_hdr_active()?MFX_OFF:atomic_load(&g_req), was = atomic_load(&g_on);
     if (r == was) return 0;
     g.prev_ok = g.hist_ok = 0; g.scene_ok = g.cam_ok = 0; g.depth = nil; g.last_prepare_s = 0;   // the next interpolated pair starts fresh
     atomic_store(&g_on, r);
@@ -175,18 +211,37 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
         if (fi_cache_on() && g_fi_cache_count < MFX_FI_CACHE) g_fi_cache[g_fi_cache_count++] = g.fi;
     }
     drop(&g.mv); g.mv = mk(MTLPixelFormatRG16Float, iw, ih, MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead);
+    drop(&g.pdepth); g.pdepth = mk(MTLPixelFormatDepth32Float, iw, ih, MTLTextureUsageShaderRead); g.pdepth_frame = 0;
     if (!g.mv_ps) {
         static const char *src =
             "#include <metal_stdlib>\nusing namespace metal;\n"
-            "struct P { float4x4 reproj; float2 size; float2 inv_size; float yflip; float pad0, pad1, pad2; };\n"
-            // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture
+            "struct P { float4x4 reproj; float2 size; float2 inv_size; float yflip; float dyn, pad1, pad2; };\n"
+            // view distance from a depth value (not reversed, infinite far plane: z = near / (1 - d)), in units of near
+            "static float vz(float d) { return 1.0 / max(1.0 - d, 1e-7); }\n"
+            // camera motion of each depth pixel: where it was in the previous frame, in pixels of this texture. With dyn, a
+            // pixel whose distance at that place in the previous frame is not what a still point would have had moved
+            // itself: no motion on screen. Still: within the 3x3 range of the previous depth there (1 % margin) where that
+            // depth is continuous (a slope), and within 1 % of one of the nine where it is not (an edge: the range of Link
+            // and the land behind him would take in any distance between them)
             "kernel void mfx_mv(depth2d<float, access::read> d [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],\n"
-            "                   constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
+            "                   depth2d<float, access::read> pd [[texture(2)]], constant P &p [[buffer(0)]], uint2 g [[thread_position_in_grid]]) {\n"
             "  if (g.x >= uint(p.size.x) || g.y >= uint(p.size.y)) return;\n"
             "  float2 uv = (float2(g) + 0.5) * p.inv_size;\n"
-            "  float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, p.yflip * (1.0 - uv.y * 2.0), d.read(g) * 2.0 - 1.0, 1.0);\n"
+            "  float d0 = d.read(g);\n"
+            "  float4 c = p.reproj * float4(uv.x * 2.0 - 1.0, p.yflip * (1.0 - uv.y * 2.0), d0 * 2.0 - 1.0, 1.0);\n"
             "  float2 m = 0.0;\n"
-            "  if (c.w > 1e-7) { float2 n = c.xy / c.w; m = (float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * p.yflip * n.y) - uv) * p.size; }\n"
+            "  if (c.w > 1e-7) {\n"
+            "    float2 n = c.xy / c.w, prev = float2(n.x * 0.5 + 0.5, 0.5 - 0.5 * p.yflip * n.y);\n"
+            "    m = (prev - uv) * p.size;\n"
+            "    int2 q = int2(floor(prev * p.size));\n"
+            "    if (p.dyn > 0.5 && d0 < 1.0 && all(q >= 1) && all(q < int2(p.size) - 1)) {\n"
+            "      float ze = vz(c.z / c.w * 0.5 + 0.5), zmin = 3.4e38, zmax = 0.0; bool near = false;\n"
+            "      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {\n"
+            "        float z = vz(pd.read(uint2(q + int2(x, y)))); zmin = min(zmin, z); zmax = max(zmax, z); near = near || fabs(z - ze) <= ze * 0.01; }\n"
+            "      bool still = zmax <= zmin * 1.05 ? (ze >= zmin * 0.99 && ze <= zmax * 1.01) : near;\n"
+            "      if (!still) m = 0.0;\n"
+            "    }\n"
+            "  }\n"
             "  if (any(isnan(m)) || any(isinf(m))) m = 0.0;\n"
             "  mv.write(float4(m, 0.0, 0.0), g);\n"
             "}\n";
@@ -195,7 +250,7 @@ static void ensure_fi(NSUInteger iw, NSUInteger ih) {
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"mfx_mv"] : nil;
         g.mv_ps = fn ? [g.dev newComputePipelineStateWithFunction:fn error:&e] : nil;
         if (!g.mv_ps) MDIE("motion vector kernel: %s", e.localizedDescription.UTF8String);
-        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 2;
+        MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxBufferBindCount = 1; ad.maxTextureBindCount = 3;
         for (int i = 0; i < MFX_OUT; i++) {
             g.mv_args[i] = [g.dev newArgumentTableWithDescriptor:ad error:&e]; if (!g.mv_args[i]) MDIE("argument table: %s", e.localizedDescription.UTF8String);
             g.mv_par[i] = [g.dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; [g.rs addAllocation:g.mv_par[i]];
@@ -260,6 +315,7 @@ int mfx_frame_prepare(double frame_s) {
     float *par = g.mv_par[s].contents;
     for (int c = 0; c < 4; c++) for (int r = 0; r < 4; r++) par[c * 4 + r] = (float)m[r * 4 + c];   // float4x4 is column-major
     par[16] = (float)depth.width; par[17] = (float)depth.height; par[18] = 1.0f / depth.width; par[19] = 1.0f / depth.height; par[20] = (float)g.yflip;
+    par[21] = atomic_load(&g_mv_dyn) && g.pdepth_frame && g.pdepth_frame == g.frames - 1 ? 1.0f : 0.0f;   // the previous game frame's depth is there
     g.enc_depth = depth;
     return s;
 }
@@ -267,12 +323,17 @@ void mfx_frame_abort(void) { g.enc_depth = nil; g.prev_ok = g.hist_ok = 0; g.ski
 NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int s, id<MTL4CounterHeap> heap, NSUInteger stamp) {
     id<MTLTexture> depth = g.enc_depth; g.enc_depth = nil; g.last_depth = depth; g.last_slot = s;
     [g.mv_args[s] setTexture:depth.gpuResourceID atIndex:0]; [g.mv_args[s] setTexture:g.mv.gpuResourceID atIndex:1]; [g.mv_args[s] setAddress:g.mv_par[s].gpuAddress atIndex:0];
+    [g.mv_args[s] setTexture:g.pdepth.gpuResourceID atIndex:2];
     id<MTL4ComputeCommandEncoder> e = [cb computeCommandEncoder];
-    [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];   // the game's frame is done
+    [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch | MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];   // the game's frame is done
     [e setComputePipelineState:g.mv_ps]; [e setArgumentTable:g.mv_args[s]];
     [e dispatchThreads:MTLSizeMake(depth.width, depth.height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
     [e updateFence:g.fence afterEncoderStages:MTLStageDispatch];
+    // this frame's depth for the next one's still-world test, once the motion has read the previous one
+    [e barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];
+    [e copyFromTexture:depth toTexture:g.pdepth];
     [e endEncoding];
+    g.pdepth_frame = g.frames;
     if (heap) [cb writeTimestampIntoHeap:heap atIndex:stamp];   // after the motion vectors (which waited for the frame)
     id<MTL4FXFrameInterpolator> fi = g.fi;
     fi.colorTexture = g.scene[g.cur]; fi.prevColorTexture = g.scene[g.cur ^ 1]; fi.depthTexture = depth; fi.motionTexture = g.mv;
@@ -286,7 +347,7 @@ NSArray *mfx_frame_encode(id<MTL4CommandBuffer> cb, int s, id<MTL4CounterHeap> h
     // bindings through completion, while the configuration cache retains only
     // the interpolator, not old scene/pool textures between configurations.
     NSArray *resources = @[fi, fi.colorTexture, fi.prevColorTexture, depth,
-                           g.mv, g.ui, g.out[s], g.mv_par[s]];
+                           g.mv, g.ui, g.out[s], g.mv_par[s], g.pdepth];
     fi.colorTexture = nil; fi.prevColorTexture = nil; fi.depthTexture = nil;
     fi.motionTexture = nil; fi.uiTexture = nil; fi.outputTexture = nil;
     if (heap) [cb writeTimestampIntoHeap:heap atIndex:stamp + 1];
@@ -384,3 +445,5 @@ void mfx_stats(char *out, size_t n) {
              (unsigned long long)g.miss[2], (unsigned long long)g.miss[3],
              (unsigned long long)g.skip_first, (unsigned long long)g.skip_cut, (unsigned long long)g.skip_busy);
 }
+
+#endif  // TARGET_OS_VISION
