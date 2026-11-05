@@ -108,7 +108,7 @@ void vr_b2_present_eye(int eye) { (void)eye; }
 enum { SRC_SLOTS = 5, IMAGES = 3, SWAPCHAIN_ID = 1 };   // SRC_SLOTS: B1 keeps each eye's newest picture besides the one being written
 
 static struct {
-    id<MTLDevice> dev; id<MTLResidencySet> rs; int failed;
+    id<MTLDevice> dev; id<MTLResidencySet> rs; _Atomic int failed;
     // picture copies: written by the present thread, read by the VR thread (g.mu)
     pthread_mutex_t mu;
     id<MTLTexture> src[SRC_SLOTS]; uint64_t seq[SRC_SLOTS], next_seq; int writing[SRC_SLOTS], readers[SRC_SLOTS];
@@ -138,7 +138,7 @@ static struct {
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
 
 int vr_enabled(void) {
-    static int on = -1;
+    static _Atomic int on = -1;
     if (on < 0) { const char *e = getenv("TOTK_VR_CONTROL"); on = e && *e; }
     return on;
 }
@@ -850,6 +850,21 @@ static int latest_slot_eye(int eye) {   // under g.mu: B1, the newest picture re
     return b;
 }
 static void start_thread(id<MTLDevice> dev);
+/* Native canvas capture and ordinary presents can arrive on different
+   threads during startup. Publish the entire VR context exactly once. */
+static void vr_source_start(id<MTLDevice> device) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ start_thread(device); });
+}
+/* Metal residency mutations, including commit, form one transaction across
+   every source slot. Slot ownership alone does not protect the shared set. */
+static void vr_residency_replace(id<MTLAllocation> old,id<MTLAllocation> replacement) {
+    static pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    if(old)[g.rs removeAllocation:old];
+    [g.rs addAllocation:replacement];[g.rs commit];
+    pthread_mutex_unlock(&mutex);
+}
 
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect);
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket) { return source_encode(cb, src, crop, ticket, -2, NULL, NULL, 0); }
@@ -870,7 +885,7 @@ void vr_b2_present_eye(int eye){(void)eye;}
 #endif
 static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket, int eye, const float fov[2][4], const float rotation[2][9], float menu_aspect) {   // eye -2: from the ticket
     if (!vr_enabled() || g.failed || !src) return -1;
-    if (!g.dev) start_thread(src.device);
+    vr_source_start(src.device);
     if (!g.dev) return -1;
     NSUInteger x = 0, y = 0, w = src.width, h = src.height;
     if (crop && crop[2] > 0 && crop[3] > 0 && (NSUInteger)crop[0] + (NSUInteger)crop[2] <= src.width && (NSUInteger)crop[1] + (NSUInteger)crop[3] <= src.height) {
@@ -905,10 +920,10 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
     if (s < 0) return -1;
     id<MTLTexture> t = g.src[s];
     if (!t || t.width != w || t.height != h || t.pixelFormat != src.pixelFormat || (t.textureType == MTLTextureType2DArray) != stereo) {
-        if (t) [g.rs removeAllocation:t];
+        id<MTLTexture> old=t;
         t = src_tex(w, h, src.pixelFormat, stereo);
         if (!t) { pthread_mutex_lock(&g.mu); g.writing[s] = 0; pthread_mutex_unlock(&g.mu); return -1; }
-        [g.rs addAllocation:t]; [g.rs commit];
+        vr_residency_replace(old,t);
         g.src[s] = t;   // the old one is not read: readers[s] was 0
         for (int k = 0; k < 2; k++) g.src_views[s][k] = stereo ?
             [t newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0, t.mipmapLevelCount) slices:NSMakeRange(k, 1)] : nil;
