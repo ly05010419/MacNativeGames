@@ -541,6 +541,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   settings_text("摄像头 左右（厘米）","Camera right / left (cm)")];
  for(int a=0;a<3;a++){TOTKSettingRow *r=settings_row(axes[(NSUInteger)a],nil,nil,^int{return vr_offset_cm(a);},^(int v){vr_set_offset_cm(a,v);});
   r.sliderMin=-100;r.sliderMax=100;[rows addObject:r];}
+#ifndef GAME_BOTW
  /* What the Mac window shows (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes as the headset gets them, or the game's picture. */
  /* "显示 Quest 画面" (user 2026-10-30: "桌面显示 和 quest里面 一样的画面 设置里加一个 按钮 叫 显示quest画面"): the Mac window shows
     both eyes; on, each inside its lens opening as in the headset; off, uncovered ("就是 不遮挡状态"). */
@@ -550,7 +551,6 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   r.sliderMin=2;r.sliderMax=10;[rows addObject:r];}
  /* The head's position (6DoF) and snap turning ("按建议 都做", 2026-10-30, after BotW BetterVR and UEVR). */
  [rows addObject:settings_row(settings_text("头部位置（6DoF：探身、下蹲）","Head position (6DoF: lean, crouch)"),nil,nil,^int{return vr_6dof();},^(int v){vr_set_6dof(v);})];
-#ifndef GAME_BOTW
  [rows addObject:settings_row(settings_text("立体（左右眼轮流渲染）","Stereo (the eyes rendered in turn)"),nil,nil,^int{return vr_afr();},^(int v){vr_set_afr(v);})];
 #endif
  {TOTKSettingRow *r=settings_row(settings_text("立体 · 两眼间距（%）","Stereo · eye distance (%)"),nil,nil,^int{return vr_ipd_pct();},^(int v){vr_set_ipd_pct(v);});

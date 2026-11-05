@@ -91,5 +91,20 @@ int main(void){@autoreleasepool{
         float uv=.5f*(1+matrix[0]*.2f-matrix[2]);assert(fabsf(c[0]+(uv-.5f)*x[0]-.2f)<1e-6f);
     }
     assert(frame.projected==3&&memcmp(frame.fov[0],frame.fov[1],sizeof frame.fov[0]));assert(vr_labo_frame_present(&frame,2816));
+    /* Paused world -> menu scratch -> downsample/blur -> background. Metadata
+       belongs to the actual pixels, survives a display, and rejects new grids. */
+    vr_projection_stereo stereo={0},readback;
+    memcpy(stereo.fov[0],left,sizeof left);memcpy(stereo.fov[1],right,sizeof right);
+    for(int e=0;e<2;e++)for(int i=0;i<9;i++)stereo.rotation[e][i]=i%4==0;
+    vr_projection_graph_stereo(l,&stereo);assert(vr_projection_graph_stereo_get(l,&readback));
+    assert(!memcmp(&stereo,&readback,sizeof stereo));
+    vr_projection_graph_copy(post,l);assert(vr_projection_graph_stereo_get(post,&readback));
+    sources[0]=post;vr_projection_graph_inherit(aux,sources,1);assert(vr_projection_graph_stereo_get(aux,&readback));
+    assert(!vr_projection_graph_stereo_get((vr_projection_image){other_pool,100,960,1080},&readback));
+    assert(!vr_projection_graph_stereo_get((vr_projection_image){pool,100,480,540},&readback));
+    vr_projection_graph_stereo(l,NULL);assert(!vr_projection_graph_stereo_get(l,&readback));
+    assert(vr_projection_graph_stereo_get(post,&readback));
+    vr_projection_graph_clear(post);assert(!vr_projection_graph_stereo_get(post,&readback));
+    vr_projection_graph_camera(aux,left);assert(!vr_projection_graph_stereo_get(aux,&readback));
     puts("Pool storage/subresource/image-grid projection ownership passed");
 }return 0;}

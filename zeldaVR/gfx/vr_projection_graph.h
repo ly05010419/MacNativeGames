@@ -8,6 +8,9 @@ typedef struct {
     uint64_t offset;
     uint32_t width,height;
 } vr_projection_image;
+typedef struct { float fov[2][4],rotation[2][9]; } vr_projection_stereo;
+void vr_projection_graph_stereo(vr_projection_image target,const vr_projection_stereo *stereo);
+int vr_projection_graph_stereo_get(vr_projection_image source,vr_projection_stereo *stereo);
 void vr_projection_graph_reset(void);
 void vr_projection_graph_trace(uint64_t frame,uint64_t pass,int enabled);
 void vr_projection_graph_clear(vr_projection_image target);

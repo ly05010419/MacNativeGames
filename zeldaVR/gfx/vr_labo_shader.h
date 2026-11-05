@@ -5,3 +5,5 @@
 #import <Metal/Metal.h>
 #include "vr_labo.h"
 id<MTLFunction> vr_labo_quad_vertex(id<MTLDevice> device, int tone);
+
+id<MTLFunction> vr_native_output_fragment(id<MTLDevice> device);

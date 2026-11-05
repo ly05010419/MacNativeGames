@@ -54,6 +54,7 @@ static void put_words(Module *m, uint64_t off, const uint32_t *words, size_t n, 
 static void put_word(Module *m, uint64_t off, uint32_t word, const char *what) { put_words(m, off, &word, 1, what); }
 #include "botw_vr_camera.h"
 #include "botw_vr_projection.h"
+#include "botw_vr_ui_profile.h"
 #include "botw_stereo.h"
 
 /* Real-time frame step (TOTK_REALTIME=0: as shipped). ksys::VFR (singleton pointer main+0x2d1e170, built at main+0x183eb98)
@@ -1075,6 +1076,7 @@ void runtime_game_patches(Module *m) {
     botw_aspect_install(m);
     botw_vr_camera_install(m);
     botw_vr_projection_install(m);
+    botw_vr_ui_profile_install(m);
     if (realtime_enabled()) patch_realtime(m);
     else fprintf(stderr, "[botw] real-time frame step off (TOTK_REALTIME=0): the game advances by its present interval\n");
     { const char *a = getenv("TOTK_EXCL_ACQUIRE");

@@ -1,4 +1,4 @@
-"""Exercise the native Labo ABI and eye-frame ownership without a game/GPU."""
+"""Exercise the independent native renderer and eye-frame ownership without a game/GPU."""
 from pathlib import Path
 import platform
 import subprocess
@@ -22,7 +22,7 @@ class LaboHost(unittest.TestCase):
             self.assertNotEqual(negative.returncode, 0)
             self.assertIn('HUD binocular ray mismatch', negative.stderr)
 
-    def test_sensor_lifecycle_and_complete_eye_pairs(self):
+    def test_renderer_policy_and_complete_eye_pairs(self):
         with tempfile.TemporaryDirectory(prefix='mng-labo-test-') as folder:
             binary = Path(folder) / 'labo-test'
             subprocess.run(['xcrun', 'clang', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-deprecated-declarations', '-DGAME_BOTW=1',

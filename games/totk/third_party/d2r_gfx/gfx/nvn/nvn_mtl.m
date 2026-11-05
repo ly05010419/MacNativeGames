@@ -935,6 +935,8 @@ static id<MTLBuffer> g_vis; static uint32_t g_vis_n;   // 本次提交的可见�
 static int g_vis_on, g_vis_counting, g_vis_cur = -1; static uint64_t g_vis_cur_pass;
 static int g_vis_skipped;                                // a draw counted since the last reset was skipped (its shader or pipeline not ready)
 _Atomic int g_vr_quest_fov_on=1;
+_Atomic uint64_t g_vr_native_masks_removed,g_vr_native_output_draws,g_vr_native_output_repeats;
+static uint64_t g_native_output_frame,g_native_output_target,g_native_output_source;
 _Atomic unsigned g_vr_quest_trace;
 static _Atomic int g_vr_ui_layout_on=1;
 _Atomic uint64_t g_vr_ui_layout_draws, g_vr_ui_text_draws, g_vr_ui_text_missing;
@@ -2441,6 +2443,7 @@ uint64_t mtl_sub_commit(void) {
     res_commit();
     if (totk_tl_on()) { uint64_t tlid = totk_tl_commit_id(); totk_tl(TL_COMMIT, tlid, 1); totk_tl(TL_FENCE, tlid, fence);
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> fb) { totk_tl_at(TL_GPU, (uint64_t)(fb.GPUStartTime * 1e9), tlid, (uint64_t)(fb.GPUEndTime * 1e9)); }]; }
+    #ifndef GAME_BOTW
     if (g_b2_capture >= 0) {   // stereo B2: the left pass's picture for the headset (the presented texture as drawn, no MetalFX)
         const int eye = g_b2_capture; g_b2_capture = -1;
         if (g_b2_swap) g_b2_pics++; else g_b2_nopic++;
@@ -2453,6 +2456,7 @@ uint64_t mtl_sub_commit(void) {
             } else { static uint64_t m; if (!m++) MLOG("[vr] stereo B2: no free picture slot for a left-eye picture (later ones are counted in the VR line)"); }
         }
     }
+    #endif
     for (NSNumber *entry in g_vr_native_slots) {
         const int slot = entry.intValue;
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) { vr_source_done(slot, !f.error); }];
@@ -8564,7 +8568,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
     }
     d.vertexDescriptor = vd;
     if (k->a2c & PSO_HOST_RECT) {
-        d.vertexFunction = vr_labo_quad_vertex(g_dev, vr_labo_plain_mesh(vs->key));
+        d.vertexFunction = vr_labo_quad_vertex(g_dev, (k->a2c&PSO_HOST_OUTPUT)||vr_labo_plain_mesh(vs->key));
+        if(k->a2c&PSO_HOST_OUTPUT){d.fragmentFunction=vr_native_output_fragment(g_dev);if(!d.fragmentFunction)MDIE("Native plain output fragment unavailable");}
         if (!d.vertexFunction) MDIE("Labo VR vertex function is unavailable");
         d.vertexDescriptor = nil;
     }
@@ -8789,6 +8794,7 @@ static void *pso_get_p(NvProg *pr, MTLRenderPassDescriptor *unused) {
         return NULL; }
     pso_key k; pso_key_fill(&k, vs, fs, g_pass.cfmt, g_pass.dfmt, g_pass.sfmt, g_pass.samples, g_pso_lmap != NULL);
     if (g_host_rect_draw) k.a2c |= PSO_HOST_RECT;
+    if(g_host_rect_draw==3)k.a2c|=PSO_HOST_OUTPUT;
     /* Preserve the guest RGB-only destination alpha while rendering into its
      * host FP16 companion. Normalized factors also form the persistent PSO key,
      * so a cached RGBA blend pipeline cannot reintroduce the old UI tint. */
@@ -11734,7 +11740,57 @@ static void sdx_walk(const uint8_t *p, int depth) {
         p += h.size;
     }
 }
+/* The actual native flat-menu mask and final lens consumer delimit a complete
+   UI composition. Inspect the recorded group before any of its UI draws: a
+   paused world's shortcut overlay has no mask, despite drawing no new scene. */
+static int vr_native_display_program(const prog_t *p) {
+    static nvn_hmap kinds={.klen=8};
+    if(!p||!p->serial)return 0;
+    uintptr_t known=(uintptr_t)nvn_hm_get(&kinds,&p->serial);if(known)return (int)known-1;
+    char keys[2][65]={{0}};
+    for(unsigned i=0;i<p->nstage&&p->nstage<=6;i++){
+        const uint8_t *ctl=p->sd[i].control;const void *code=(const void *)(uintptr_t)p->sd[i].data;
+        if(!ctl||!code)continue;int st=ctl_stage(ctl,code);uint32_t size=ctl_code_len(ctl);
+        if(st>=0&&st<2&&size&&size<=16*1024*1024)shader_key_of(ctl,code,size,keys[st]);
+    }
+    int kind=vr_labo_mask_pair(keys[0],keys[1])?1:vr_labo_lens_pair(keys[0],keys[1])?2:0;
+    nvn_hm_put(&kinds,&p->serial,(void *)(uintptr_t)(kind+1));return kind;
+}
+typedef struct {const prog_t *program;const p_set_rt *rt;uint64_t tex0;int enabled,raster,display;unsigned ops;NSMutableSet<NSNumber *> *flat,*complete;} vr_native_profile_scan;
+static int vr_native_profile_walk(const uint8_t *p,unsigned depth,vr_native_profile_scan *s){
+    if(depth>64)return 0;
+    while(p&&s->ops++<4000000){
+        op_hdr h;memcpy(&h,p,sizeof h);const void *a=p+8;if(h.size<8)return 0;
+        switch(h.op){
+            case OP_END:return 1;
+            case OP_JUMP:memcpy(&p,a,8);continue;
+            case OP_CALL:{const uint8_t *next;memcpy(&next,a,8);if(!vr_native_profile_walk(next,depth+1,s))return 0;break;}
+            case OP_SET_RT:s->rt=a;break;
+            case OP_RENDER_ENABLE:s->enabled=((const p_flag *)a)->value;break;
+            case OP_RASTER_DISCARD:s->raster=((const p_flag *)a)->value;break;
+            case OP_RENDER_COND:return 0; /* GPU-dependent recording is not proof of an executed menu mask. */
+            case OP_BIND_PROGRAM:if(bind_graphics(a)){s->program=((const p_bind_program *)a)->prog;s->display=vr_native_display_program(s->program);}break;
+            case OP_BIND_TEX:{const p_bind_handles *b=a;if(b->stage==1&&b->first==0&&b->n>0)s->tex0=b->h[0];break;}
+            case OP_DRAW:case OP_DRAW_IDX:
+                if(s->enabled&&!s->raster){int kind=s->display;
+                    if(kind==1&&s->rt&&s->rt->n==1&&s->rt->color[0])[s->flat addObject:@(s->rt->color[0]->serial)];
+                    if(kind==2){uint64_t canvas=h_ser(s->tex0);if(canvas)[s->complete addObject:@(canvas)];}
+                }break;
+            default:break;
+        }p+=h.size;
+    }return 0;
+}
+static void vr_native_profile_index(const uint64_t *handles,int n){
+    if(!vr_labo_active())return;
+    vr_native_profile_scan scan={.program=S.prog,.rt=R.has_rt?&R.rt:NULL,.tex0=S.tex[1][0],.enabled=!S.render_disabled,.raster=S.raster_discard,.flat=[NSMutableSet set],.complete=[NSMutableSet set]};
+    scan.display=vr_native_display_program(scan.program);
+    for(int i=0;i<n;i++)if(!vr_native_profile_walk((const uint8_t *)handles[i],0,&scan))return;
+    for(NSNumber *canvas in scan.complete){vr_labo_frame *f=vr_native_eye_frame(canvas.unsignedLongLongValue,1);
+        f->profile_known=1;f->flat_ui=[scan.flat containsObject:canvas];
+    }
+}
 void mtl_sub_index(const uint64_t *h, int n) {   // 提交开始（hle_nvn.c QueueSubmitCommands）：建本次提交的写回前瞻索引 | Start of submit (hle_nvn.c QueueSubmitCommands): build this submit's store lookahead index
+    vr_native_profile_index(h,n);
     g_xv_ntouch = 0; g_sdx_n = g_sdx_nop = 0; g_rtx_n = g_drx_n = 0; g_exec_seq = 0; g_sdx_ok = tbdr_on();
     if (!g_sdx_ok) { g_xv_n = 0; g_xv_block = 1; return; }   // 索引不可用：账本清空、本次提交不新增（没法核下一次触碰） | Index unavailable: clear the ledger and add nothing in this submit (the next touch cannot be verified)
     g_xv_block = 0;
@@ -14265,8 +14321,8 @@ static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsign
        Menu canvases also contain already composed 3D previews; fitting those
        UI quads independently scales the preview twice. Their panel path is
        kept intact until the complete menu composition has its own mapping. */
-    vr_labo_frame *frame=vr_native_eye_frame(canvas->serial,0);
-    if(!frame||frame->invalid||!(frame->projected&(1u<<eye)))return 0;
+    vr_labo_frame *frame=vr_native_eye_frame(canvas->serial,1);
+    if(frame->flat_ui)return 0;
     /* The original UI vertex consumes this native-eye block. Offscreen glyph
        caches use its zero/non-stereo form and must keep their own viewport. */
     const uint8_t *eye_bytes=vr_native_uniform(0,10,32);
@@ -14275,6 +14331,7 @@ static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsign
     if(!isfinite(side[0])||side[1]!=(eye?-1.0f:1.0f))return 0;
     uint64_t current=atomic_load(&g_cur_frame);
     if(frame->ui_camera_frame!=current){frame->ui_camera_frame=current;frame->ui_camera_mask=0;}
+    int background=0,canvas_layer=0;vr_projection_stereo background_pixels={0};
     int text=vr_native_ui_text_vertex(pr->sh[0]->key);
     if(text){
         if(!vr_native_uniform(0,0,128))return 0;
@@ -14285,7 +14342,36 @@ static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsign
     }else{
         const uint8_t *camera=vr_native_uniform(0,0,560);if(!camera)return 0;
         memcpy(p,camera,sizeof p);
+        /* Full-eye restoration, blur and dimming layers already address the
+           canvas pixels. Their source may predate the stereo provenance tag;
+           coverage is established by this draw's real clip-space corners. */
+        if(vr_ui_rays_fullscreen((const float *)camera,side[0])){
+            canvas_layer=1;
+            registry_lock();
+            if(pr->sh[1])for(int i=0;i<pr->sh[1]->rf.nb;i++){
+                const nvn_rbind *b=&pr->sh[1]->rf.b[i];if(b->kind!=NVN_RB_TEX||b->reg>=128)continue;
+                int tid=(int)(S.tex[1][b->reg]&0xfffff);
+                if(tid>0&&tid<g_ntreg&&g_treg[tid].ok&&
+                   vr_projection_graph_stereo_get(vr_native_image(&g_treg[tid].t,&g_treg[tid].v,g_treg[tid].has_v),&background_pixels)){background=1;break;}
+            }registry_unlock();
+        }
     }
+    if(background){
+        if(frame->profile_known&&!frame->invalid){
+            frame->canvas=canvas->serial;frame->retained_world=1;frame->projected=frame->oriented=3;
+            memcpy(frame->fov,background_pixels.fov,sizeof frame->fov);memcpy(frame->rotation,background_pixels.rotation,sizeof frame->rotation);
+            vr_projection_graph_stereo(vr_native_image(canvas,&R.rt.cview[0],R.rt.has_cview[0]),&background_pixels);
+        }return 0;
+    }
+    if(canvas_layer)return 0;
+    if(!frame->eyes&&frame->profile_known&&!frame->retained_world){
+        vr_projection_stereo retained;
+        if(vr_projection_graph_stereo_get(vr_native_image(canvas,&R.rt.cview[0],R.rt.has_cview[0]),&retained)){
+            frame->canvas=canvas->serial;frame->retained_world=1;frame->projected=frame->oriented=3;
+            memcpy(frame->fov,retained.fov,sizeof frame->fov);memcpy(frame->rotation,retained.rotation,sizeof frame->rotation);
+        }
+    }
+    if(frame->invalid||!(frame->projected&(1u<<eye)))return 0;
     if(!(frame->oriented&(1u<<eye))){atomic_fetch_add(&g_vr_ui_ray_missing,1);return 0;}
     /* Pick one real source basis for this actual canvas pair. Each eye maps
        the HUD into its own GPU view; the world's later angular reprojection
@@ -14368,43 +14454,50 @@ static void vr_native_projection_draw(NvProg *pr) {
     if(R.rt.n==1 && R.rt.color[0] && S.has_vp && !S.ds.dt && (S.chmask.mask&15u) &&
        pr->sh[0] && vr_native_ui_vertex(pr->sh[0]->key)) {
         const tex_t *canvas=R.rt.color[0];
-        vr_labo_frame_ui(vr_native_eye_frame(canvas->serial,1),canvas->serial,canvas->d.width,canvas->d.height,S.vp[0]);
+        vr_labo_frame *frame=vr_native_eye_frame(canvas->serial,1);
+        vr_labo_frame_ui(frame,canvas->serial,canvas->d.width,canvas->d.height,S.vp[0]);
+        if(!vr_native_ui_text_vertex(pr->sh[0]->key)){
+            vr_labo_frame declared={0};int eye=vr_labo_frame_eye(&declared,canvas->serial,canvas->d.width,canvas->d.height,S.vp[0]);
+            const uint8_t *camera=vr_native_uniform(0,0,560),*stereo=vr_native_uniform(0,10,32);
+            if(eye>=0&&camera&&stereo){float p[16],side[2];memcpy(p,camera,sizeof p);memcpy(side,stereo,sizeof side);
+                if(side[1]==(eye?-1.0f:1.0f))vr_labo_frame_menu_camera(frame,(unsigned)eye,p);
+            }
+        }
     }
 }
 /* Native Labo's final lens draw reads the completed SBS canvas at fragment
    texture register 0. Capture that actual binding, including both HUD passes,
    before the game applies its radial lookup table and vignette to the window. */
+static id<MTLTexture> vr_native_bound_canvas(uint64_t *serial) {
+    /* tex_fast can rebuild a descriptor view and its serial index. Retain the
+       image and read its owner while holding the same lock as registration
+       and finalization, even when it usually hits an already prepared view. */
+    registry_lock();int tid=(int)(S.tex[1][0]&0xfffff);
+    id<MTLTexture> source=tid>0&&tid<g_ntreg&&g_treg[tid].ok?(__bridge id<MTLTexture>)tex_fast(tid):nil;
+    *serial=source?g_treg[tid].t.serial:0;registry_unlock();return source;
+}
 static void vr_labo_capture(NvProg *pr) {
-    if (!pr || !pr->sh[0] || !pr->sh[1] ||
-        !vr_labo_lens_pair(pr->sh[0]->key, pr->sh[1]->key) || !vr_labo_active()) return;
-    vr_source_native_frame();
-    int tid = (int)(S.tex[1][0] & 0xfffff);
-    registry_lock();
-    id<MTLTexture> source = tid > 0 && tid < g_ntreg && g_treg[tid].ok ? (__bridge id<MTLTexture>)tex_fast(tid) : nil;
-    uint64_t canvas = source ? g_treg[tid].t.serial : 0;
-    registry_unlock();
-    vr_labo_frame *frame=vr_native_eye_frame(canvas,0);
-    if(passdump())MLOG("[vr-capture] F%llu P%llu canvas=%llu source=%lux%lu ledger=%u/%u ui=%u invalid=%d",
+    if(!pr||!pr->sh[0]||!pr->sh[1]||!vr_labo_active()||
+       !vr_labo_lens_pair(pr->sh[0]->key,pr->sh[1]->key))return;
+    uint64_t canvas=0;id<MTLTexture> source=vr_native_bound_canvas(&canvas);
+    vr_labo_frame *frame=vr_native_eye_frame(canvas,0);if(!source||!frame)return;
+    int kind=vr_labo_frame_kind(frame,canvas);if(kind==VR_NATIVE_NONE)return;
+    float fov[2][4],rotation[2][9];memcpy(fov,frame->fov,sizeof fov);memcpy(rotation,frame->rotation,sizeof rotation);
+    int oriented=frame->oriented==3;float aspect=kind==VR_NATIVE_MENU?vr_labo_frame_menu_aspect(frame):0;
+    if(passdump())MLOG("[vr-capture] F%llu P%llu canvas=%llu source=%lux%lu ledger=%u/%u ui=%u invalid=%d, menu-aspect=%.7f profile=%d flat=%d retained-world=%d",
         (unsigned long long)atomic_load(&g_cur_frame),(unsigned long long)g_stat_pass,(unsigned long long)canvas,
-        (unsigned long)source.width,(unsigned long)source.height,frame?frame->eyes:0,frame?frame->projected:0,frame?frame->ui_eyes:0,frame?frame->invalid:0);
-    if(!source||!frame)return;
-    float fov[2][4],rotation[2][9]; memcpy(fov, frame->fov, sizeof fov);
-    int oriented=frame->oriented==3;memcpy(rotation,frame->rotation,sizeof rotation);
-    int kind = vr_labo_frame_kind(frame, canvas);
-    if (kind == VR_NATIVE_NONE) return;
-    vr_labo_frame_present(frame, canvas);
-    rp_end(); blit_close(); rs_sync(); /* Direct Metal encoding must wait for the render-stream worker, as MetalFX does. */
-    if (!g_cb) MDIE("Labo canvas capture outside a graphics submission");
-    int slot = kind == VR_NATIVE_WORLD ? vr_source_encode_stereo(g_cb, source, fov, oriented ? rotation : NULL) : vr_source_encode_stereo_menu(g_cb, source);
-    if(passdump())MLOG("[vr-capture] encode slot=%d",slot);
-    if (slot >= 0) {
-        static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
-        if (!g_vr_native_slots) g_vr_native_slots = [NSMutableArray array];
-        [g_vr_native_slots addObject:@(slot)];
-        if(kind == VR_NATIVE_MENU) { static int first_menu; if(first_menu++<2)MLOG("[vr-menu] captured both UI eyes from canvas %llu before lens mapping",(unsigned long long)canvas); }
-        else { static int first; if (first++<4) MLOG("[vr-labo] completed native stereo canvas %llu (%lux%lu), captured with HUD before lens mapping; actual eye frusta %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f",
-            (unsigned long long)canvas, (unsigned long)source.width, (unsigned long)source.height,
-            fov[0][0], fov[0][1], fov[0][2], fov[0][3], fov[1][0], fov[1][1], fov[1][2], fov[1][3]); }
+        (unsigned long)source.width,(unsigned long)source.height,frame->eyes,frame->projected,frame->ui_eyes,frame->invalid,aspect,frame->profile_known,frame->flat_ui,frame->retained_world);
+    vr_source_native_frame();vr_labo_frame_present(frame,canvas);
+    rp_end();blit_close();rs_sync();
+    if(!g_cb)MDIE("Native canvas capture outside a graphics submission");
+    int slot=kind==VR_NATIVE_WORLD?vr_source_encode_stereo(g_cb,source,fov,oriented?rotation:NULL):vr_source_encode_stereo_menu(g_cb,source,aspect);
+    if(passdump())MLOG("[vr-capture] encode slot=%d; native mask and lens optics removed",slot);
+    if(slot>=0){
+        static int added;if(!added){[g_q4 addResidencySet:vr_residency()];added=1;}
+        if(!g_vr_native_slots)g_vr_native_slots=[NSMutableArray array];[g_vr_native_slots addObject:@(slot)];
+        static unsigned logs[2];unsigned menu=kind==VR_NATIVE_MENU;
+        if(logs[menu]++<4)MLOG("[vr-native] %s canvas %llu, %lux%lu, UI aspect %.7f; single Quest display path",
+            menu?"menu":"world",(unsigned long long)canvas,(unsigned long)source.width,(unsigned long)source.height,aspect);
     }
 }
 /* Allocate a new segment after a report, reset, pass change, or clear. */
@@ -14421,6 +14514,8 @@ static void vis_count_begin(id<MTL4RenderCommandEncoder> en) {
         }
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
+    NSUInteger native_output_width=0,native_output_height=0;
+    uint64_t native_output_source=0;
     if(g_host_rect_draw){g_host_rect_draw=0;g_pso_dirty=1;}
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); g_draw_skip[0]++; return; }
     __unsafe_unretained NvProg *pr = g_geo_ras.pr;   // a geometry draw's output: the reader and the fragment shader (geo_draw)
@@ -14444,7 +14539,20 @@ static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     if (di && di->itype == 0 && di->count && pend_hits(di->ibuf, (uint64_t)di->count)) widen_indices_gpu(di);
     /* Merge/skip checks can resolve sampling views too; prepare before any of those checks. */
     if (!S.render_disabled && !S.raster_discard) { prepare_draw_textures(pr); hdr_prepare_draw(pr); if (mfxup_draw(pr)) return; hdr_capture(pr); }   // docked: MetalFX wrote the canvas instead of this draw
-    if (!S.render_disabled && !S.raster_discard) vr_labo_capture(pr);
+    if(!S.render_disabled&&!S.raster_discard&&pr&&pr->sh[0]&&pr->sh[1]&&vr_labo_active()){
+        if(vr_labo_mask_pair(pr->sh[0]->key,pr->sh[1]->key)){
+            if(R.rt.n==1&&R.rt.color[0]){
+                vr_native_eye_frame(R.rt.color[0]->serial,1)->flat_ui=1;
+                vr_projection_graph_stereo(vr_native_image(R.rt.color[0],&R.rt.cview[0],R.rt.has_cview[0]),NULL);
+            }
+            atomic_fetch_add(&g_vr_native_masks_removed,1);return;
+        }
+        if(vr_labo_lens_pair(pr->sh[0]->key,pr->sh[1]->key)&&R.rt.n==1&&R.rt.color[0]){
+            uint64_t serial=h_ser(S.tex[1][0]);
+            if(g_native_output_frame==atomic_load(&g_cur_frame)&&g_native_output_target==R.rt.color[0]->serial&&g_native_output_source==serial){atomic_fetch_add(&g_vr_native_output_repeats,1);return;}
+        }
+        vr_labo_capture(pr);
+    }
     if (g_ruler_truth == 0) {   // 尺子负对照（DM_NVN_RULER_NEG=<片元键>）：被测模式下丢掉该着色器的绘制，尺子必须报不等价 | Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
         if (ng && pr) for (int st = 0; st < 5; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (sh && sh->stage == 1 && !strncmp(sh->key, neg, strlen(neg))) { static int once; if (!once++) MLOG("DM_NVN_RULER_NEG：被测模式丢弃着色器 %s 的绘制", sh->key); return; } }
@@ -14643,10 +14751,16 @@ frz_plain:;
     if (!en) { g_draw_skip[8]++; return; }
     /* Game-specific identity is in zeldaVR: this is the native Labo lens mesh,
        with its own shader pair and source binding, not a texture-size guess. */
-    const int labo = di && di->count == 48 && di->instances == 1 &&
-        pr->sh[0] && pr->sh[1] && R.rt.n == 1 && R.rt.color[0] && S.has_vp && vr_labo_active() ?
-        vr_labo_shader_pair(pr->sh[0]->key, pr->sh[1]->key) ? 1 :
-        vr_labo_plain_mesh(pr->sh[0]->key) ? 2 : 0 : 0;
+    const int native_output=pr->sh[0]&&pr->sh[1]&&R.rt.n==1&&R.rt.color[0]&&vr_labo_active()&&
+        vr_labo_lens_pair(pr->sh[0]->key,pr->sh[1]->key);
+    const int labo=native_output?3:di&&di->count==48&&di->instances==1&&
+        pr->sh[0]&&pr->sh[1]&&R.rt.n==1&&R.rt.color[0]&&S.has_vp&&vr_labo_active()?
+        vr_labo_shader_pair(pr->sh[0]->key,pr->sh[1]->key)?1:vr_labo_plain_mesh(pr->sh[0]->key)?2:0:0;
+    if(native_output){
+        id<MTLTexture> source=vr_native_bound_canvas(&native_output_source);
+        if(!source||source.width>g_pass.tw||source.height>g_pass.th)MDIE("Native output canvas does not fit its swapchain");
+        native_output_width=source.width;native_output_height=source.height;
+    }
     if (g_host_rect_draw != labo) { g_host_rect_draw = labo; g_pso_dirty = 1; }
     if (g_pass.mfx || g_mfx.role) {   // TOTK_MFX: every draw into the canvas after the scene copy goes to the UI layer too
         int r = 0;
@@ -14843,6 +14957,8 @@ frz_plain:;
     }
     double native_vp[4]={vx+jx,vy+jy,vw,vh};
     vr_native_ui_layout(pr,native_vp,&sc,(unsigned)tw,(unsigned)th);
+    if(native_output){native_vp[0]=native_vp[1]=0;native_vp[2]=native_output_width;native_vp[3]=native_output_height;
+        sc=(MTLScissorRect){0,0,native_output_width,native_output_height};}
     if(!sc.width||!sc.height){g_draw_skip[10]++;return;}
     enc_r_viewport(en,(MTLViewport){native_vp[0],native_vp[1],native_vp[2],native_vp[3],S.has_vp?S.dr[0]:0,S.has_vp?S.dr[1]:1});
     enc_r_scissor(en, sc);
@@ -14979,6 +15095,10 @@ frz_plain:;
             if(vr_projection_graph_rotation(source_image,frame->rotation[eye]))frame->oriented|=1u<<eye;
             registry_unlock();
             if (known) frame->projected |= 1u << eye;
+            if(frame->eyes==3&&frame->projected==3&&frame->oriented==3){
+                vr_projection_stereo written;memcpy(written.fov,frame->fov,sizeof written.fov);memcpy(written.rotation,frame->rotation,sizeof written.rotation);
+                vr_projection_graph_stereo(vr_native_image(R.rt.color[0],&R.rt.cview[0],R.rt.has_cview[0]),&written);
+            }
             static int debug=-1;static unsigned logs;if(debug<0)debug=getenv("TOTK_VR_PROJECTION_LOG")!=NULL;
             if(debug&&logs++<64)MLOG("[vr-projection] FXAA F%llu pass %llu eye %d canvas %llu known %d; rays %.7f %.7f %.7f %.7f",
                 (unsigned long long)atomic_load(&g_cur_frame),(unsigned long long)g_stat_pass,eye,(unsigned long long)R.rt.color[0]->serial,known,
@@ -14987,6 +15107,12 @@ frz_plain:;
         }
         static unsigned logged; if (logged++ < 4) MLOG("[vr-labo] lens-free eye %d, canvas %llu, viewport %.0f %.0f %.0f %.0f", eye,
             (unsigned long long)R.rt.color[0]->serial, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]);
+    } else if(labo==3){
+        g_native_output_frame=atomic_load(&g_cur_frame);
+        g_native_output_target=R.rt.color[0]->serial;g_native_output_source=native_output_source;
+        atomic_fetch_add(&g_vr_native_output_draws,1);
+        if(passdump())MLOG("[vr-native-output] F%llu P%llu plain SBS %lux%lu; no lens LUT; one output draw",
+            (unsigned long long)g_native_output_frame,(unsigned long long)g_stat_pass,(unsigned long)native_output_width,(unsigned long)native_output_height);
     } else if (labo == 2) { /* Tone mapping was already drawn as a full rectangle. */
     } else if (dw && dw->ind) {   /* nvnCommandBufferDrawArraysIndirect: the GPU reads the count and the rest from the record (hle_nvn.c) */
         void *ib; uint64_t io, igpu;
@@ -18629,6 +18755,23 @@ int mtl_probe_texture_retire(void) {
     mtl_sub_commit();mtl_finish();for(unsigned i=0;i<128;i++){if(((uint8_t *)rb.contents)[i]!=expected[i])MDIE("texture retire rebuilt view pixel%u",i);checked++;}
     mtl_sub_begin();mtl_exec((const uint8_t *)&end);mtl_sub_commit();mtl_finish();
     if(replaced_type)MDIE("texture retire: replaced type view retained after GPU completion");checked++;
+#if defined(GAME_BOTW) && TARGET_OS_OSX
+    /* The native display consumer resolves descriptor views too. Race its
+       real accessor with the game thread's registration/finalization path;
+       a cached-view hit must not bypass the registry's ownership contract. */
+    uint64_t saved_texture=S.tex[1][0];S.tex[1][0]=1;
+    dispatch_group_t churn=dispatch_group_create();
+    dispatch_group_async(churn,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        @autoreleasepool {for(unsigned i=0;i<4096;i++){mtl_reg_tex(1,&t,NULL);treg_drop_serial(t.serial);}}
+    });
+    for(unsigned i=0;i<4096;i++){
+        uint64_t owner=0;id<MTLTexture> canvas=vr_native_bound_canvas(&owner);
+        if(!canvas||owner!=t.serial||canvas.width!=W||canvas.height!=H)MDIE("native canvas ownership under descriptor retirement");
+        checked++;
+    }
+    dispatch_group_wait(churn,DISPATCH_TIME_FOREVER);S.tex[1][0]=saved_texture;
+    MLOG("native canvas: 4096 concurrent descriptor resolutions and retirements passed");
+#endif
     mtl_tex_release(&t);
     registry_lock();
     for(unsigned i=1;i<=N*2;i++) { if(g_treg[i].view||g_treg[i].indexed_serial)MDIE("texture retire: finalized serial kept descriptor %u",i);checked++; }

@@ -12,24 +12,10 @@ int vr_labo_active(void);
 void vr_labo_begin(void);
 void vr_labo_end(void);
 
-/* SDK 7 SevenSixAxisSensorState, verified against BotW 1.6.0's reader
- * (main+0xe3c234..0xe3c278) and libnx's hid.h. No SDK implementation is copied. */
-typedef struct {
-    uint64_t timestamp, sampling_number, reserved;
-    float acceleration[3], angular_velocity[3], orientation[4];
-} vr_labo_sensor_state;
-_Static_assert(sizeof(vr_labo_sensor_state) == 0x40, "SevenSixAxisSensorState ABI");
-uint32_t vr_labo_sensor_init(void *work, unsigned long size);
-uint32_t vr_labo_sensor_finalize(void);
-uint32_t vr_labo_sensor_start(void);
-uint32_t vr_labo_sensor_stop(void);
-void vr_labo_sensor_reset(void);
-int vr_labo_sensor_states(void *out, int count);
-void vr_labo_stats(char *out, size_t size);
-
 /* Complete shader-code SHA256, excluding the translator/settings suffix. */
 int vr_labo_shader_pair(const char *vertex, const char *fragment);
 int vr_labo_lens_pair(const char *vertex, const char *fragment);
+int vr_labo_mask_pair(const char *vertex, const char *fragment);
 int vr_labo_plain_mesh(const char *vertex);
 int vr_native_ui_vertex(const char *vertex);
 

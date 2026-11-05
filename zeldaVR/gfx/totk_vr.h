@@ -30,7 +30,7 @@ void vr_present_queued(uint64_t ticket);  /* the game presents that frame: its h
 /* Native same-frame SBS, captured at the game's lens compositor after the HUD.
  * Copy both eyes into independent array slices; publish once at GPU completion. */
 int vr_source_encode_stereo(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const float fov[2][4], const float rotation[2][9]);
-int vr_source_encode_stereo_menu(id<MTL4CommandBuffer> cb, id<MTLTexture> src);
+int vr_source_encode_stereo_menu(id<MTL4CommandBuffer> cb, id<MTLTexture> src, float aspect);
 void vr_source_native_frame(void); /* This game's frame has the native lens consumer. */
 void vr_stats(char *out, size_t n);
 /* BotW160: eight render sizes apply at the next game frame; streaming stays 2048x2208

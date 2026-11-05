@@ -6,6 +6,19 @@
 #include "../runtime/vr_view_math.h"
 
 typedef struct { float clip[16]; float native_shift; } vr_ui_rays;
+/* A world-cache background is already in eye pixel coordinates. Its actual
+   widget must cover all four clip corners before it can bypass HUD mapping. */
+static inline int vr_ui_rays_fullscreen(const float camera[140],float shift){
+    if(!camera||!isfinite(shift))return 0;
+    for(int corner=0;corner<4;corner++){
+        float q[4]={camera[134]+(corner&1?camera[132]:0),camera[135]-(corner&2?camera[133]:0),0,1},v[4]={0,0,0,1},clip[4]={0};
+        for(int i=0;i<3;i++)for(int j=0;j<4;j++)v[i]+=camera[16+4*i+j]*q[j];
+        for(int i=0;i<4;i++)for(int j=0;j<4;j++)clip[i]+=camera[4*i+j]*v[j];
+        if(!(clip[3]>0)||!isfinite(clip[3]))return 0;
+        float x=clip[0]/clip[3]+shift,y=clip[1]/clip[3];
+        if(!isfinite(x)||!isfinite(y)||fabsf(x-(corner&1?1.f:-1.f))>1e-4f||fabsf(y-(corner&2?-1.f:1.f))>1e-4f)return 0;
+    }return 1;
+}
 static inline int vr_ui_rays_make(const float ui[16],const float fov[4],
                                   const float eye[9],const float reference[9],
                                   float shift,vr_ui_rays *out) {

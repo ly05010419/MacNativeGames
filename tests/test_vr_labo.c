@@ -1,4 +1,4 @@
-/* Native Labo sensor ABI/lifecycle and same-frame ownership, without a GPU or
+/* Independent renderer policy and same-frame ownership, without a GPU or
  * game process. Build with -DGAME_BOTW=1 and zeldaVR/gfx/vr_labo.c. */
 #include "../zeldaVR/gfx/vr_labo.h"
 #include "../zeldaVR/gfx/vr_labo_frame.h"
@@ -12,10 +12,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static vr_pose pose;
-static int connected;
-int vr_link_alive(void) { return connected; }
-int vr_link_pose(vr_pose *out) { *out = pose; return pose.ts != 0; }
 /* The real font override table is linked below. Its unrelated font-data paths
    must never be entered by the option permission query. */
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "%s\n", message); abort(); }
@@ -39,40 +35,29 @@ int main(void) {
     unsetenv("TOTK_EXPORT_IOS");
     setenv("TOTK_LABO_VR", "0", 1); assert(vr_labo_enabled());
     setenv("TOTK_LABO_VR", "1", 1); assert(vr_labo_enabled());
-    struct { vr_labo_sensor_state state; uint64_t canary; } out;
-    memset(&out, 0xa5, sizeof out);
-    const uint64_t canary = out.canary;
-    assert(!vr_labo_sensor_states(&out, 1));
-    vr_labo_sensor_init(NULL, 0); vr_labo_sensor_start(); vr_labo_begin();
-    assert(vr_labo_active());
-    assert(!permission(0) && !permission(1));
+    vr_labo_begin();assert(vr_labo_active());
+    assert(!permission(0)&&!permission(1));
     unsigned char (*game_mode)(void)=runtime_font_override("_ZN2nn2pl8IsVrModeEv");
     void (*game_begin)(void)=runtime_font_override("_ZN2nn2pl11BeginVrModeEv");
     void (*game_end)(void)=runtime_font_override("_ZN2nn2pl9EndVrModeEv");
     assert(game_mode&&game_begin&&game_end);game_begin();assert(!game_mode());game_end();
-    assert(vr_labo_active()); /* Game mode calls cannot shut down our own renderer. */
-    assert(!vr_labo_sensor_states(&out, 1)); /* Disconnected: no invented pose. */
-    connected = 1; pose = (vr_pose){ .ts = 1000000000, .q = {0, 0, 0, 1} };
-    assert(!vr_labo_sensor_states(NULL, 1)); assert(!vr_labo_sensor_states(&out, 0));
-    assert(vr_labo_sensor_states(&out, 4) == 1);
-    assert(out.canary == canary && out.state.sampling_number == 1 && out.state.timestamp == 0);
-    assert(out.state.orientation[3] == 1 && !out.state.reserved);
-    assert(!out.state.acceleration[0] && !out.state.angular_velocity[0]);
-    assert(vr_labo_sensor_states(&out, 1) == 1 && out.state.sampling_number == 1);
-    pose.ts += 10000000; pose.q[1] = 0.5f; pose.q[3] = sqrtf(0.75f);
-    assert(vr_labo_sensor_states(&out, 1) == 1);
-    assert(out.state.timestamp == 10000000 && out.state.sampling_number == 2);
-    assert(fabsf(out.state.orientation[1] - 0.5f) < 1e-6f);
-    pose.q[0] = NAN; assert(!vr_labo_sensor_states(&out, 1));
-    pose.q[0] = 0; pose.q[3] = 3; assert(!vr_labo_sensor_states(&out, 1));
-    pose.q[3] = sqrtf(0.75f); pose.ts = 5; /* New connection epoch. */
-    assert(vr_labo_sensor_states(&out, 1) == 1 && out.state.timestamp == 0);
-    vr_labo_sensor_reset();
-    assert(vr_labo_sensor_states(&out, 1) == 1 && out.state.sampling_number == 1);
-    vr_labo_end(); assert(!vr_labo_active() && !vr_labo_sensor_states(&out, 1));
-    vr_labo_begin(); vr_labo_sensor_stop(); assert(!vr_labo_sensor_states(&out, 1));
-    vr_labo_sensor_start(); assert(vr_labo_sensor_states(&out, 1) == 1);
-    vr_labo_sensor_finalize(); assert(!vr_labo_sensor_states(&out, 1));
+    assert(vr_labo_active()); /* Game mode cannot drive our renderer. */
+    vr_labo_end();assert(!vr_labo_active());
+
+    assert(vr_labo_mask_pair("1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13d", "eaa948a4d4c418616c67016b2ae92ad64c55dbf060a320710585da88c29e40be-seed"));
+    assert(!vr_labo_mask_pair("1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13dX", "eaa948a4d4c418616c67016b2ae92ad64c55dbf060a320710585da88c29e40be"));
+    vr_labo_frame menu={0};float menu_p[16]={1.5f,0,0,0,0,2,0,0,0,0,-1,-2,0,0,-1,0};
+    vr_labo_frame_menu_camera(&menu,0,menu_p);assert(!vr_labo_frame_menu_aspect(&menu));
+    vr_labo_frame_menu_camera(&menu,1,menu_p);assert(fabsf(vr_labo_frame_menu_aspect(&menu)-4.f/3)<1e-6f);
+    menu_p[5]=2.5f;vr_labo_frame_menu_camera(&menu,1,menu_p);assert(!vr_labo_frame_menu_aspect(&menu));
+    vr_labo_frame_present(&menu,0);assert(!vr_labo_frame_menu_aspect(&menu));
+    /* Shortcut selection retains a real world canvas while its scene is
+       paused. A full-menu composition has an explicit native flat profile. */
+    vr_labo_frame shortcut={.canvas=42,.projected=3,.oriented=3,.ui_eyes=3,.profile_known=1,.retained_world=1};
+    assert(vr_labo_frame_kind(&shortcut,42)==VR_NATIVE_WORLD);
+    shortcut.flat_ui=1;assert(vr_labo_frame_kind(&shortcut,42)==VR_NATIVE_MENU);
+    shortcut.flat_ui=0;shortcut.eyes=1;assert(vr_labo_frame_kind(&shortcut,42)==VR_NATIVE_NONE);
+    vr_labo_frame_present(&shortcut,42);assert(!shortcut.retained_world&&!shortcut.profile_known);
 
     const float left[4] = {0, 0, 960, 1080}, right[4] = {960, 0, 960, 1080};
     vr_labo_frame frame = {0};

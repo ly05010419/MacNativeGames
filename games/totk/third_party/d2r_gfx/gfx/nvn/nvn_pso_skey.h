@@ -18,6 +18,7 @@ typedef struct {
 /* A host-generated full-viewport vertex function (Labo's lens-free compositor).
  * Separate cache identity from the original vertex-input pipeline. */
 #define PSO_HOST_RECT 64u
+#define PSO_HOST_OUTPUT 128u   /* Plain native SBS output; no Labo lens fragment. */
 
 typedef struct {
     uint8_t kind, fbmask;

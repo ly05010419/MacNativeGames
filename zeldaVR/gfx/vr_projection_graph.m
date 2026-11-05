@@ -6,6 +6,7 @@ typedef struct {float fov[4],rotation[9];int oriented;} projection_view;
 @interface VRProjectionGrid : NSObject
 @property(nonatomic) uint32_t width,height;
 @property(nonatomic) id projection;
+@property(nonatomic) NSData *stereo;
 @end
 @implementation VRProjectionGrid
 @end
@@ -37,7 +38,22 @@ static void assign(vr_projection_image image,id projection){
     if(!grid){grid=[VRProjectionGrid new];parts[@(image.offset)]=grid;}
     if(grid.width==image.width&&grid.height==image.height&&[grid.projection isEqual:projection])return;
     trace("write",image,projection);
+    if(grid.width!=image.width||grid.height!=image.height)grid.stereo=nil;
     grid.width=image.width;grid.height=image.height;grid.projection=projection;
+}
+void vr_projection_graph_stereo(vr_projection_image image,const vr_projection_stereo *stereo){
+    if(!image.allocation||!image.width||!image.height)return;
+    VRProjectionGrid *grid=[pools objectForKey:image.allocation][@(image.offset)];
+    if(!stereo){grid.stereo=nil;return;}
+    if(!grid||grid.width!=image.width||grid.height!=image.height){
+        assign(image,NSNull.null);grid=[pools objectForKey:image.allocation][@(image.offset)];
+    }
+    grid.stereo=[NSData dataWithBytes:stereo length:sizeof *stereo];
+}
+int vr_projection_graph_stereo_get(vr_projection_image image,vr_projection_stereo *stereo){
+    VRProjectionGrid *grid=image.allocation?[pools objectForKey:image.allocation][@(image.offset)]:nil;
+    if(grid.width!=image.width||grid.height!=image.height||grid.stereo.length!=sizeof *stereo)return 0;
+    memcpy(stereo,grid.stereo.bytes,sizeof *stereo);return 1;
 }
 void vr_projection_graph_reset(void){[pools removeAllObjects];}
 void vr_projection_graph_clear(vr_projection_image image){assign(image,nil);}
@@ -48,6 +64,7 @@ void vr_projection_graph_camera_view(vr_projection_image image,const float fov[4
     projection_view p={0};memcpy(p.fov,fov,sizeof p.fov);
     if(view){for(int i=0;i<3;i++)memcpy(p.rotation+3*i,view+4*i,3*sizeof(float));p.oriented=vr_rotation_valid(p.rotation);}
     id old=value(image);
+    VRProjectionGrid *grid=[pools objectForKey:image.allocation][@(image.offset)];grid.stereo=nil;
     if([old isKindOfClass:NSData.class]&&[old length]==sizeof p&&!memcmp([old bytes],&p,sizeof p))return;
     assign(image,[NSData dataWithBytes:&p length:sizeof p]);
 }
@@ -59,7 +76,10 @@ int vr_projection_graph_rotation(vr_projection_image image,float rotation[9]){
     id data=value(image);if(![data isKindOfClass:NSData.class]||[data length]!=sizeof(projection_view))return 0;
     const projection_view *p=[data bytes];if(!p->oriented)return 0;memcpy(rotation,p->rotation,sizeof p->rotation);return 1;
 }
-void vr_projection_graph_copy(vr_projection_image target,vr_projection_image coordinate_source){id p=value(coordinate_source);trace("copy-source",coordinate_source,p);assign(target,p);}
+void vr_projection_graph_copy(vr_projection_image target,vr_projection_image coordinate_source){
+    id p=value(coordinate_source);vr_projection_stereo stereo;int retained=vr_projection_graph_stereo_get(coordinate_source,&stereo);
+    trace("copy-source",coordinate_source,p);assign(target,p);if(retained)vr_projection_graph_stereo(target,&stereo);
+}
 void vr_projection_graph_inherit(vr_projection_image target,const vr_projection_image *sources,size_t count){
     id projection=nil;
     for(size_t i=0;i<count;i++){
@@ -68,4 +88,10 @@ void vr_projection_graph_inherit(vr_projection_image target,const vr_projection_
         projection=next;
     }
     if(projection)assign(target,projection);
+    vr_projection_stereo retained={0},next;int have=0,conflict=0;
+    for(size_t i=0;i<count;i++)if(vr_projection_graph_stereo_get(sources[i],&next)){
+        if(have&&memcmp(&retained,&next,sizeof next)){conflict=1;break;}
+        retained=next;have=1;
+    }
+    if(have)vr_projection_graph_stereo(target,conflict?NULL:&retained);
 }

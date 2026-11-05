@@ -549,8 +549,9 @@ int main(int argc, const char **argv) { @autoreleasepool {
         NSMutableDictionary<NSString *,TOTKSettingRow *> *byTitle=[NSMutableDictionary dictionary];
         for(TOTKSettingRow *r in rows)byTitle[r.title]=r;
         assert(byTitle[@"VR · view"] && byTitle[@"Stereo · eye distance (%)"]);
-        assert(byTitle[@"Show the Quest view"] && byTitle[@"Mac preview zoom (x)"]);
 #ifdef GAME_BOTW
+        assert(!byTitle[@"Show the Quest view"] && !byTitle[@"Mac preview zoom (x)"]);
+        assert(!byTitle[@"Head position (6DoF: lean, crouch)"]);
         assert(!byTitle[@"Stereo (the eyes rendered in turn)"]);
         assert(!byTitle[@"First person camera spring (ms, 0 = rigid)"]);
 #ifdef GAME_BOTW190
@@ -559,6 +560,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert(([byTitle[@"VR · view"].choices isEqualToArray:@[@"Third person",@"First person"]]));
 #endif
 #else
+        assert(byTitle[@"Show the Quest view"] && byTitle[@"Mac preview zoom (x)"]);
+        assert(byTitle[@"Head position (6DoF: lean, crouch)"]);
         assert(byTitle[@"Stereo (the eyes rendered in turn)"]);
         assert(byTitle[@"First person camera spring (ms, 0 = rigid)"]);
 #endif

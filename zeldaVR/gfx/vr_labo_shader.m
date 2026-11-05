@@ -31,3 +31,20 @@ id<MTLFunction> vr_labo_quad_vertex(id<MTLDevice> device, int tone) {
     (void)device; (void)tone; return nil;
 #endif
 }
+
+id<MTLFunction> vr_native_output_fragment(id<MTLDevice> device) {
+#if defined(GAME_BOTW) && TARGET_OS_OSX
+    static id<MTLFunction> function;static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct A { constant float4 *c0 [[id(0)]]; constant float4 *c1 [[id(1)]]; texture2d<float> lut [[id(2)]]; sampler lut_s [[id(3)]]; texture2d<float> image [[id(4)]]; sampler image_s [[id(5)]]; };\n"
+            "struct O { float4 uv [[user(locn0)]]; };\n"
+            "fragment float4 native_output(O in [[stage_in]],constant A &a [[buffer(0)]]) {return float4(a.image.sample(a.image_s,in.uv.xy).rgb,1); }\n";
+        NSError *error=nil;id<MTLLibrary> library=[device newLibraryWithSource:source options:nil error:&error];
+        function=[library newFunctionWithName:@"native_output"];
+        if(!function)fprintf(stderr,"[vr] plain native output function failed: %s\n",error.localizedDescription.UTF8String);
+    });return function;
+#else
+    (void)device;return nil;
+#endif
+}

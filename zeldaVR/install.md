@@ -7,17 +7,26 @@ entry is named **旷野之息 VR**. The game must match a supported BotW 1.6.0 o
 
 The BotW adapter keeps the game's Labo option unavailable. It uses the native
 same-frame stereo renderer independently, passes each eye's projection and the
-headset IPD to our camera/compositor, and captures the canvas before native lens
-distortion. Its VR settings omit alternating-eye rendering; legacy B1/B2 camera
+headset IPD to our camera/compositor, and captures the complete stereo canvas.
+The native comfort mask and lens distortion are removed from the display path;
+the Mac window receives one plain stereo copy. Quest tracking goes directly to
+our camera, without a second connection to the game's console sensor. Native
+UI screen parallax is disabled at its producer, and menus use their actual UI
+camera aspect on the same screen plane as our overlay. Weapon shortcuts retain
+the paused world's stereo projection and source rotation. Full-eye restoration
+and background layers preserve canvas coordinates; HUD widgets alone receive
+the binocular ray transform. Its VR settings omit
+alternating-eye rendering; legacy B1/B2 camera
 offsets and the angular dead band do not run in this adapter. Renderer mode is
 fixed to same-frame docked stereo. BotW 1.6.0 has the
 player-position source for first person; 1.9.0 currently keeps third person.
 BotW 1.6.0 has been tested on Mac with a Quest 3: native same-frame capture,
 per-eye Quest FOV, source-pose angular reprojection, world HUD ray alignment,
 and live rendering-size changes with a fixed streaming size. Third person is
-the default; positional 6DoF stays off. Map and inventory menu layout still
-needs correction: successful menu delivery does not establish correct aspect
-or clipping. BotW 1.9.0 has not had the same Quest acceptance checks. The
+the default; the legacy positional 6DoF and Mac lens-preview/zoom controls are
+unavailable in BotW, including through previously saved options. Map and inventory composition, clipping,
+and menu depth have also been checked on BotW 1.6.0. BotW 1.9.0 has not had the
+same Quest acceptance checks or the native UI producer adaptation. The
 alternating-eye features described below apply to TotK.
 
 [English](#english) · [中文](#中文)

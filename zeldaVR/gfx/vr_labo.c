@@ -1,14 +1,8 @@
 #include "vr_labo.h"
-#include "totk_vr_link.h"
 #include <TargetConditionals.h>
-#include <math.h>
-#include <pthread.h>
-#include <stddef.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-
-_Static_assert(offsetof(vr_labo_sensor_state, orientation) == 0x30, "Labo quaternion ABI");
 
 unsigned char vr_labo_option_permitted(unsigned char show_error) {
     (void)show_error;
@@ -25,73 +19,10 @@ int vr_labo_enabled(void) {
 #endif
 }
 
-static struct {
-    pthread_mutex_t mu;
-    int active, initialized, running;
-    uint64_t origin, last_timestamp, sample, delivered;
-} sensor = { .mu = PTHREAD_MUTEX_INITIALIZER };
-
-int vr_labo_active(void) {
-    pthread_mutex_lock(&sensor.mu);
-    int active = sensor.active && vr_labo_enabled();
-    pthread_mutex_unlock(&sensor.mu);
-    return active;
-}
-void vr_labo_begin(void) {
-    pthread_mutex_lock(&sensor.mu); sensor.active = vr_labo_enabled(); pthread_mutex_unlock(&sensor.mu);
-}
-void vr_labo_end(void) {
-    pthread_mutex_lock(&sensor.mu); sensor.active = 0; pthread_mutex_unlock(&sensor.mu);
-}
-uint32_t vr_labo_sensor_init(void *work, unsigned long size) {
-    (void)work; (void)size; /* The native host needs no Horizon transfer memory. */
-    pthread_mutex_lock(&sensor.mu); sensor.initialized = 1; pthread_mutex_unlock(&sensor.mu);
-    return 0;
-}
-uint32_t vr_labo_sensor_finalize(void) {
-    pthread_mutex_lock(&sensor.mu);
-    sensor.initialized = sensor.running = 0;
-    sensor.origin = sensor.last_timestamp = sensor.sample = 0;
-    pthread_mutex_unlock(&sensor.mu);
-    return 0;
-}
-uint32_t vr_labo_sensor_start(void) {
-    pthread_mutex_lock(&sensor.mu); sensor.running = sensor.initialized && vr_labo_enabled(); pthread_mutex_unlock(&sensor.mu);
-    return 0;
-}
-uint32_t vr_labo_sensor_stop(void) {
-    pthread_mutex_lock(&sensor.mu); sensor.running = 0; pthread_mutex_unlock(&sensor.mu);
-    return 0;
-}
-void vr_labo_sensor_reset(void) {
-    pthread_mutex_lock(&sensor.mu); sensor.origin = sensor.last_timestamp = sensor.sample = 0; pthread_mutex_unlock(&sensor.mu);
-}
-int vr_labo_sensor_states(void *out, int count) {
-    if (!out || count <= 0 || !vr_labo_enabled()) return 0;
-    vr_pose pose;
-    if (!vr_link_alive() || !vr_link_pose(&pose) || !pose.ts) return 0;
-    double norm = 0;
-    for (int i = 0; i < 4; i++) { if (!isfinite(pose.q[i])) return 0; norm += (double)pose.q[i] * pose.q[i]; }
-    if (!(norm > 0.5 && norm < 1.5)) return 0;
-    pthread_mutex_lock(&sensor.mu);
-    if (!sensor.initialized || !sensor.running || !sensor.active) { pthread_mutex_unlock(&sensor.mu); return 0; }
-    /* A reconnect may start a new timestamp epoch; never underflow the elapsed time. */
-    if (!sensor.sample || pose.ts < sensor.last_timestamp) sensor.origin = pose.ts;
-    if (!sensor.sample || pose.ts != sensor.last_timestamp) sensor.sample++;
-    sensor.last_timestamp = pose.ts;
-    vr_labo_sensor_state state = { .timestamp = pose.ts - sensor.origin, .sampling_number = sensor.sample };
-    for (int i = 0; i < 4; i++) state.orientation[i] = (float)(pose.q[i] / sqrt(norm));
-    memcpy(out, &state, sizeof state); /* One real tracked sample, never fabricated history. */
-    sensor.delivered++;
-    pthread_mutex_unlock(&sensor.mu);
-    return 1;
-}
-void vr_labo_stats(char *out, size_t size) {
-    pthread_mutex_lock(&sensor.mu);
-    snprintf(out, size, "sensor initialized %d, running %d, VR active %d, tracked states delivered %llu",
-        sensor.initialized, sensor.running, sensor.active, (unsigned long long)sensor.delivered);
-    pthread_mutex_unlock(&sensor.mu);
-}
+static _Atomic int active;
+int vr_labo_active(void) { return atomic_load(&active)&&vr_labo_enabled(); }
+void vr_labo_begin(void) { atomic_store(&active,vr_labo_enabled()); }
+void vr_labo_end(void) { atomic_store(&active,0); }
 
 int vr_labo_shader_pair(const char *vertex, const char *fragment) {
     static const char vs[] = "5e9f57168d89a543a537832326b844bcba3255df655c10dc9359cb195304e897";
@@ -106,6 +37,15 @@ int vr_labo_lens_pair(const char *vertex, const char *fragment) {
     return vertex && fragment && strlen(vertex) >= 64 && strlen(fragment) >= 64 &&
            !memcmp(vertex, vs, 64) && !memcmp(fragment, fs, 64) &&
            (!vertex[64] || vertex[64] == '-') && (!fragment[64] || fragment[64] == '-');
+}
+/* The native comfort mask is a separate draw before the lens LUT. Its exact
+   shader pair is omitted because Quest supplies its own display optics. */
+int vr_labo_mask_pair(const char *vertex,const char *fragment) {
+    static const char vs[]="1f037afbe71a66f468ae9bb31a29e6198278c99957d7cec2642c69c49cb3c13d";
+    static const char fs[]="eaa948a4d4c418616c67016b2ae92ad64c55dbf060a320710585da88c29e40be";
+    return vertex&&fragment&&strlen(vertex)>=64&&strlen(fragment)>=64&&
+        !memcmp(vertex,vs,64)&&!memcmp(fragment,fs,64)&&
+        (!vertex[64]||vertex[64]=='-')&&(!fragment[64]||fragment[64]=='-');
 }
 /* Original UI vertex programs recorded writing both halves of the native
  * canvas in the inventory and map. Full shader identities, never size alone. */

@@ -10,6 +10,15 @@ static void turn(float yaw,float roll,float r[9]) {
 }
 int main(void) {
     const float ui[16]={1.54545605f,0,0,0,0,2.74747753f,0,0,0,0,-1.0002f,-2.0002f,0,0,-1,0};
+    /* Actual F10794 weapon background: its original UI transform maps all
+       four corners exactly onto the eye, despite the anamorphic pixel grid. */
+    float background[140]={0};memcpy(background,ui,sizeof ui);
+    background[16]=background[21]=background[26]=1;background[27]=-989.0919189453125f;
+    background[132]=1280;background[133]=720;background[134]=-640;background[135]=360;
+    assert(vr_ui_rays_fullscreen(background,0));
+    assert(!vr_ui_rays_fullscreen(background,.14f));
+    background[132]=640;assert(!vr_ui_rays_fullscreen(background,0));
+    background[132]=1280;background[19]=1;assert(!vr_ui_rays_fullscreen(background,0));
     float fov[2][4]={{-.942478f,.698132f,.767945f,-.959931f},{-.698132f,.942478f,.767945f,-.959931f}};
     for(int e=0;e<2;e++)for(int j=0;j<4;j++)fov[e][j]=atanf(tanf(fov[e][j])*1.06f);
     float rotation[2][9],target[9];turn(.021f,.013f,rotation[0]);turn(-.027f,-.019f,rotation[1]);turn(.22f,.11f,target);
