@@ -64,6 +64,7 @@ static uint32_t adrp(unsigned reg, uint64_t pc, uint64_t target) {
     uint32_t imm = (uint32_t)pages & 0x1fffff;
     return 0x90000000 | ((imm & 3) << 29) | ((imm >> 2) << 5) | reg;
 }
+static uint32_t branch(uint64_t from, uint64_t to);
 static void patch_frame_step(Module *m) {
     /* On by default again (2026-10-30): the GPU address faults first blamed on it also came without it, at one spot in the
        western grassland (5 of 5 runs) and once in 3 runs elsewhere; 3 runs at 60 fps with it, 2 clean. */
@@ -89,6 +90,16 @@ static void patch_frame_step(Module *m) {
         if (split) { _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], 33333334);
             fprintf(stderr, "[psv] frame step test: clock-advance site %u (main+%#llx) gets exactly 1/30 s\n", i, (unsigned long long)sites[i].off); }
         memcpy(m->base + sites[i].off, w, 8); sys_icache_invalidate(m->base + sites[i].off, 8);
+        /* PSV_FRAME_SPLIT_SLOT=<n> (test): at site 0 only time slot n (x1) reads the exact 1/30 s table at data + 0x180 */
+        const char *ss_ = getenv("PSV_FRAME_SPLIT_SLOT");
+        if (i == 0 && ss_) { unsigned n = (unsigned)atoi(ss_); const uint64_t c = 0x343fea0, site = sites[i].off;
+            for (uint64_t k = c; k < c + 24; k++) if (m->base[k]) runtime_fail("frame split slot: text padding in use");
+            _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int k = 0; k < 5; k++) atomic_store(&t[k], 33333334);
+            /* C: adrp x8, data; add x8, x8, #0; cmp x1, #n; b.ne +8; add x8, x8, #0x180; b site + 8 */
+            uint32_t st[6] = {adrp(8, (uintptr_t)m->base + c, (uintptr_t)m->base + data), 0x91000108, 0xf100003f | (n << 10), 0x54000041, 0x91060108, branch(c + 20, site + 8)};
+            memcpy(m->base + c, st, sizeof st); uint32_t b2[2] = {branch(site, c), 0xd503201f}; memcpy(m->base + site, b2, 8);
+            sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 8);
+            fprintf(stderr, "[psv] frame step test: clock 0 time slot %u gets exactly 1/30 s\n", n); }
     }
     /* The time-scale readers (60 fps mode, 2026-10-31): they divide the clock by table[index] with the index the object got
        when it was made. Effects made in the 30 fps mode (index 1) ran at half speed and in steps once the 60 fps mode was on
@@ -112,6 +123,22 @@ static void patch_frame_step(Module *m) {
         sys_icache_invalidate(m->base + ss[i].adrp_off, 4); sys_icache_invalidate(m->base + ss[i].ldr_off, 4);
     }
     fprintf(stderr, "[psv] frame step: clocks follow the real frame time (2 guarded sites); time scales divide by the mode's frame (3 guarded sites)\n");
+    /* PSV_SLOT_READERS=<hex>,<hex>,... (test): each listed reader of a time slot's delta (ldr d|x, [x0, #8] right after the slot
+       call) loads exactly 1/30 s from data + 0x180 instead, through a 3-instruction stub (adrp base, data; ldr Rt, [base, #0x180];
+       b back). The base is x0 for a float load (free there) and Rt itself for an integer load. */
+    const char *rl = getenv("PSV_SLOT_READERS");
+    if (rl && *rl) { char buf[512]; snprintf(buf, sizeof buf, "%s", rl); unsigned k = 0;
+        _Atomic int64_t *t = (_Atomic int64_t *)(void *)(m->base + data + 0x180); for (int j = 0; j < 5; j++) atomic_store(&t[j], 33333334);
+        for (char *sv = NULL, *tok = strtok_r(buf, ",", &sv); tok && k < 16; tok = strtok_r(NULL, ",", &sv), k++) {
+            uint64_t site = strtoull(tok, NULL, 16), c = 0x343fec0 + 16 * k; uint32_t w; memcpy(&w, m->base + site, 4);
+            int fp = (w & 0xffc00000) == 0xfd400000, gp = (w & 0xffc00000) == 0xf9400000;
+            if ((!fp && !gp) || ((w >> 5) & 31) != 0 || ((w >> 10) & 0xfff) != 1) runtime_fail("slot readers: not ldr Rt, [x0, #8]");
+            for (uint64_t q = c; q < c + 12; q++) if (m->base[q]) runtime_fail("slot readers: text padding in use");
+            unsigned rt = w & 31, base = fp ? 0 : rt;
+            uint32_t st[3] = {adrp(base, (uintptr_t)m->base + c, (uintptr_t)m->base + data), (w & 0xffc00000) | (0x30u << 10) | (base << 5) | rt, branch(c + 8, site + 4)};
+            memcpy(m->base + c, st, sizeof st); uint32_t b = branch(site, c); memcpy(m->base + site, &b, 4);
+            sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
+            fprintf(stderr, "[psv] slot reader test: main+%#llx reads exactly 1/30 s\n", (unsigned long long)site); } }
 }
 /* The fixed-step clock (2026-11-02, after the community "Dynamic FPS" 4.0.0 mod by Fl4sh9174, which fixes the indoor stutter the
    same way). At main+0xb92784 a system reads clock 2's frame delta and advances in whole 1/30 s steps: in the 60 fps mode it
@@ -371,6 +398,42 @@ static void patch_job_fence(Module *m) {
     sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 4);
     fprintf(stderr, "[psv] job fence: barrier after the job system's done flag (PSV_JOB_FENCE=0 turns it off)\n");
 }
+/* The effect step (2026-11-05, the redraw after a ball throw at 60 fps). The effect animation player at main+0xb83d1c adds
+   delta / (table[index] - 1) to the effect's frame (+0x88) and evaluates the animation there. Effect animations are keyed in
+   1/30 s, and the ball throw's catch camera is one with a cut in it: evaluated between two keys at the cut (every second
+   60 fps frame, or a hair short of a key at 30 fps), the camera stood about 3.3 km out along the throw for one frame, and the
+   world streaming rebuilt everything around it. Measured: a step of 2 frames per 60 fps frame (twice as fast) and 0, 2, 0, 2
+   (normal speed) both end the redraw; a first step of 2, or an exact 1.0 per frame, do not.
+   Above 30 fps every running effect now steps by data + 0x1c4 frames: whole 1/30 s steps (2 frames of the 60 fps mode's
+   1/60 s) handed out as the game's time adds up (effect_step_tick). A paused effect (step 0) stays 0. A negative value keeps
+   the game's own step (the 30 fps mode, where whole ticks already land on the keys). Effects move at 30 Hz in the 60 fps
+   mode, at their normal speed. PSV_EFFECT_STEP=0 leaves the site alone.
+     main+0xb83d8c  ldr s0, [x20, #0x88]; fadd s0, s8, s0  ->  b C; nop
+     C: ldr s0, [x20, #0x88]; adrp x16, data; ldr s16, [x16, #0x1c4]; fcmp s16, #0.0; b.lt keep; fcmp s8, #0.0; b.eq keep;
+        fmov s8, s16; keep: fadd s0, s8, s0; b site + 8 */
+static _Atomic float *effect_step;
+static void patch_effect_step(Module *m) {
+    const char *e = getenv("PSV_EFFECT_STEP"); if (e && !strcmp(e, "0")) return;
+    const uint64_t site = 0xb83d8c, c = 0x343fe40;
+    uint64_t data = (m->file_size - m->image_off + 0x3fff) & ~0x3fffULL; uintptr_t mb = (uintptr_t)m->base;
+    uint32_t w[2]; memcpy(w, m->base + site, 8);
+    if (w[0] != 0xbd408a80 || w[1] != 0x1e202900 || m->text_end > c) runtime_fail("effect step: site or text padding differ");
+    for (uint64_t k = c; k < c + 40; k++) if (m->base[k]) runtime_fail("effect step: text padding in use");
+    effect_step = (_Atomic float *)(void *)(m->base + data + 0x1c4); atomic_store(effect_step, -1.0f);
+    uint32_t st[10] = {0xbd408a80, adrp(16, mb + c + 4, mb + data), 0xbd41c610, 0x1e202208, 0x5400008b, 0x1e202108, 0x54000040,
+                       0x1e204208, 0x1e202900, branch(c + 36, site + 8)};
+    memcpy(m->base + c, st, sizeof st); uint32_t b[2] = {branch(site, c), 0xd503201f}; memcpy(m->base + site, b, 8);
+    sys_icache_invalidate(m->base + c, sizeof st); sys_icache_invalidate(m->base + site, 8);
+    fprintf(stderr, "[psv] effect step: effects step in whole 1/30 s above 30 fps (PSV_EFFECT_STEP=0 turns it off)\n");
+}
+/* Called after each frame's clock step: frames = the effect frames this game frame adds in the 60 fps mode (its step / 1/60 s). */
+static void effect_step_tick(double frames) {
+    if (!effect_step) return;
+    if (!frame_mode60) { atomic_store_explicit(effect_step, -1.0f, memory_order_relaxed); return; }
+    static double acc; acc += frames; double out = 0;
+    while (acc >= 2.0 - 1e-6) { out += 2.0; acc -= 2.0; }
+    atomic_store_explicit(effect_step, (float)out, memory_order_relaxed);
+}
 static void draw_dist_log(void) {
     if (!draw_dist) return; static float last[3]; static int n;
     _Atomic float *raw = draw_dist + 22;   /* data + 0x140 */
@@ -388,6 +451,7 @@ void runtime_game_patches(Module *main_module) {
     patch_far_distance(main_module);
     patch_draw_dist(main_module);
     patch_job_fence(main_module);
+    patch_effect_step(main_module);
     /* PSV_STOP_AT_START=1: the process stops itself before the game's first instruction, so a debugger can attach and set
        watchpoints on startup state (lldb's continue resumes it). */
     if (getenv("PSV_STOP_AT_START")) { fprintf(stderr, "[psv] stopped for a debugger (PSV_STOP_AT_START), pid %d\n", getpid()); raise(SIGSTOP); }
@@ -461,14 +525,15 @@ void runtime_frame_step_update(uint64_t now_ns) {
     /* The 30 fps mode too (2026-11-05): a counter on clock 0 (main+0x92dd20) steps in whole 1/30 s. The ball throw's catch camera
        starts one, and a first frame a hair under 33,333,334 ns gave it no step: for that frame the camera stood about 3.3 km out
        along the throw, and the world streaming rebuilt everything (the redraw after a throw). Whole ticks, rounded, give exactly
-       2 ticks = 33,333,334 ns at 30 fps. In the 60 fps mode a frame is one tick and the redraw stays (CHANGELOG). */
+       2 ticks = 33,333,334 ns at 30 fps. Above 30 fps the effect step (patch_effect_step) keeps effects on whole 1/30 s. */
     if (quant && nvn_fps_lock() <= 60) {   /* never 0 ticks: a step of 0 stopped the game (at its second frame, and in the world) */
         static double acc; const double tick = 16666667e-9; acc += sum / frame_sample_count;
         int n = frame_mode60 ? (int)(acc / tick) : (int)(acc / tick + 0.5); if (n < 1) n = 1; if (n > 4) n = 4; acc -= n * tick; if (acc < -tick) acc = -tick; if (acc > tick) acc = tick;
         for (int k = 0; k < 5; k++) atomic_store_explicit(&frame_table[k], (int64_t)n * 16666667, memory_order_relaxed);
+        effect_step_tick(n);
         if (n > 1) step_doubles++;
         if (nvn_trace) { nvn_trace("@step_ticks", n); nvn_trace("@step_dt_ms", dt * 1e3); }
-    } else frame_table_store(sum / frame_sample_count);
+    } else { frame_table_store(sum / frame_sample_count); effect_step_tick(sum / frame_sample_count / 16666667e-9); }
 }
 
 /* The earlier port's host hooks in the shared graphics layer and the input keys call keep their names and answer "off". */

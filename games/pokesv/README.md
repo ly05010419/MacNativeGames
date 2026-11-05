@@ -40,7 +40,7 @@ Tested on one Mac: Apple M3 Pro, macOS 27, game version 4.0.0 (base NSP 1.0.0 pl
 
 - Rare crash at a scene change (`CentralHeap::Free` of a misaligned pointer from gflib's scene manager, about one run in eight). Not reproduced under A/B.
 - A hang in the game's job system, about once per 5 to 15 minutes of walking. A missing memory barrier in the game is patched (`PSV_JOB_FENCE`, 5 November). A longer soak is still to do: keep the log of a session that hangs.
-- At 60 fps a ball throw makes the world redraw (outline, then textures, then grass): the catch camera's first frame needs a whole 1/30 s of game time. Fixed at 30 fps, see the CHANGELOG (5 November).
+- At 90 and 120 fps the catch animation after a ball throw does not play right. The world redraw after a throw is fixed at every frame lock (CHANGELOG, 5 November).
 - Stretches of minutes with every tenth frame at about 29 ms in player sessions. Not reproduced in test runs.
 - Only one scissor rectangle per draw is replayed. Conservative rasterisation is drawn normally.
 - One packaged texture is read back on the CPU because its storage is not in a memory pool.
