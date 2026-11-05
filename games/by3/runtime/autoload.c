@@ -51,6 +51,18 @@ static void *press_loop(void *arg) {
     return NULL;
 }
 
+#ifdef GAME_BOTW
+/* Breath of the Wild: "save:/N/<name>" (slots 0..7, read at boot); a slot's data is game_data.sav. */
+static int slot_file(const char *path, const char *name) {
+    static const char prefix[] = "save:/";
+    if (!path || strncmp(path, prefix, sizeof prefix - 1)) return 0;
+    const char *p = path + sizeof prefix - 1;
+    if (*p < '0' || *p > '9') return 0;
+    const char *slash = strchr(p, '/');
+    return slash && !strcmp(slash + 1, name);
+}
+#define SLOT_DATA "game_data.sav"
+#else
 /* "save:/slot_NN/<name>" */
 static int slot_file(const char *path, const char *name) {
     static const char prefix[] = "save:/slot_";
@@ -58,10 +70,12 @@ static int slot_file(const char *path, const char *name) {
     const char *slash = strchr(path + sizeof prefix - 1, '/');
     return slash && !strcmp(slash + 1, name);
 }
+#define SLOT_DATA "progress.sav"
+#endif
 void runtime_autoload_save_file_opened(const char *path) {
     int s = atomic_load(&g_state);
     if (s == AL_OFF || s == AL_DONE) return;
-    if (slot_file(path, "progress.sav")) {
+    if (slot_file(path, SLOT_DATA)) {
         char why[200]; snprintf(why, sizeof why, "load started (%s opened): done", path);
         stop(s, why);
     } else if (s == AL_WAIT && slot_file(path, "caption.sav")) {

@@ -2,7 +2,10 @@
 """Bind the native loader to the verified Bayonetta 3 rewrite and RomFS: generated headers stay in the work folder.
 
 Writes <work>/build/runtime_tables.h (modules, symbols, relocations, gates), romfs_config.h and
-extracted/v120/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
+extracted/v120/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h. The runtime merged
+from games/totk on 2026-11-04 reads the tables and the RomFS sizes from the game data folder instead:
+<work>/build/game-data/v120/runtime-tables.bin and romfs-config.txt (runtime/loader.c load_tables, romfs.c), in the
+layouts games/totk/scripts/prepare_runtime.py and prepare_romfs_backend.py write.
 Adapted from games/totk/scripts/prepare_runtime.py, prepare_romfs_backend.py and prepare_shared_fonts.py; every input
 is checked against assets/expected-v1.2.0.json first.
 """
@@ -136,9 +139,50 @@ def runtime_tables(work, out):
     lines.append('};')
     lines.append(f'#define PROBE_PLT {plt[0]}ULL\n#define PROBE_SLOT {slot}ULL')
     (out / 'runtime_tables.h').write_text('\n'.join(lines) + '\n')
+    write_tables_bin(modules, plt[0], slot, game_data(out))
     (work / 'analysis').mkdir(exist_ok=True)
     (work / 'analysis/runtime-layout.json').write_text(json.dumps(modules, indent=2) + '\n')
     return dict(modules=len(modules), relocations=sum(len(m['relocs']) for m in modules), main_plt=hex(plt[0]))
+
+
+def game_data(out):
+    folder = out / f'game-data/{VERSION}'
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def write_tables_bin(modules, probe_plt, slot, folder):
+    """runtime-tables.bin in the layouts of runtime/loader.c load_tables: a 64-byte header, one 208-byte record per module,
+    each module's symbols, relocations and gates (24 bytes each, 8-byte aligned), then the symbol names."""
+    HEADER, RECORD = 64, 208
+    strings, arrays, records = bytearray(), bytearray(), []
+    def place(blob):
+        arrays.extend(bytes(-len(arrays) % 8))
+        arrays.extend(blob)
+        return HEADER + RECORD * len(modules) + len(arrays) - len(blob)
+    for m in modules:
+        names = []
+        for sym in m['symbols']:
+            names.append(len(strings))
+            strings.extend(sym['name'].encode() + b'\0')
+        symbols = b''.join(struct.pack('<QQIBBBx', sym['value'], sym['size'], n, int(sym['defined']), sym['binding'], sym['type'])
+                           for sym, n in zip(m['symbols'], names))
+        relocs = b''.join(struct.pack('<QIIq', r['where'], r['kind'], r['symbol'], r['addend']) for r in m['relocs'])
+        gates = b''.join(struct.pack('<QQII', g['ret'], g['original'], int(g['timer']), g['arg']) for g in m['gates'])
+        l, t = m['layout'], m['tags']
+        records.append(struct.pack('<16s72s13Q4I', m['name'].encode(), m['sha256'].encode(), m['size'], l['TEXT_END'], l['RO_OFF'],
+                                   l['DATA_OFF'], l['PATCH_OFF'] % 2**64, l['KEY_PAGE_OFF'], t.get(12, 0), m['ctor_flag'], t.get(25, 0),
+                                   t.get(27, 0), place(symbols), place(relocs), place(gates), len(m['symbols']), len(m['relocs']),
+                                   len(m['gates']), 0))
+    arrays.extend(bytes(-len(arrays) % 8))
+    strings_offset = HEADER + RECORD * len(modules) + len(arrays)
+    size = strings_offset + len(strings)
+    header = struct.pack('<8s8sIIQQQQQ', b'TOTKTAB1', VERSION.encode(), len(modules), 1, probe_plt, slot, strings_offset,
+                         len(strings), size)
+    assert len(header) == HEADER and all(len(r) == RECORD for r in records)
+    tables = folder / 'runtime-tables.bin'
+    tables.with_suffix('.partial').write_bytes(header + b''.join(records) + arrays + strings)
+    tables.with_suffix('.partial').replace(tables)
 
 
 def romfs_config(work, out):
@@ -153,6 +197,8 @@ def romfs_config(work, out):
         strings.extend(name)
     index = struct.pack('<8sQQ', b'TOTKRFS1', len(manifest['files']), 24 + len(rows)) + rows + strings
     (folder / 'runtime-index.bin').write_bytes(index)
+    (game_data(out) / 'romfs-config.txt').write_text(f'ROMFS_IMAGE_SIZE {manifest["romfs_size"]}\nROMFS_IMAGE_SHA256 {manifest["romfs_sha256"]}\n'
+                                                   f'ROMFS_INDEX_SHA256 {hashlib.sha256(index).hexdigest()}\n')
     (out / 'romfs_config.h').write_text(f'#define ROMFS_IMAGE_SIZE {manifest["romfs_size"]}ULL\n'
                                         f'#define ROMFS_IMAGE_SHA256 "{manifest["romfs_sha256"]}"\n'
                                         f'#define ROMFS_INDEX_SHA256 "{hashlib.sha256(index).hexdigest()}"\n')

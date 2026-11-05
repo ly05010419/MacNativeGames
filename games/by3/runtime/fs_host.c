@@ -7,6 +7,7 @@
 #include "autoload.h"
 #include "runtime.h"
 #include "fs_host.h"
+#include "game_version.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -140,6 +141,47 @@ static unsigned mount_save_ro(const char *name, uint64_t application, const uint
     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
     return mount_add(name, M_SAVE, save_root);
 }
+/* The application's own save for a user, and EnsureSaveData on it (games/wonder's copy; Donkey Kong Bananza ensures its save at
+   start): the local user's save storage always exists (ready() creates it); nobody else has one here. */
+/* nn::fs::IsMounted: the host's mount table and the RomFS mount (Donkey Kong Bananza checks its mounts; from seedds/nxnative
+   hle_fs.c, MIT). bool in w0. */
+static unsigned is_mounted(const char *name) {
+    if (!name || !*name || strlen(name) >= 32) return 0;
+    char probe[40]; snprintf(probe, sizeof probe, "%s:", name);
+    if (runtime_romfs_owns(probe)) return 1;
+    pthread_mutex_lock(&lock); unsigned found = 0;
+    for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) found = 1;
+    pthread_mutex_unlock(&lock); return found;
+}
+/* nn::fs::GetDirectoryEntryCount: the entries ReadDirectory would give, counted on a fresh listing of the same folder. */
+static unsigned directory_entry_count(int64_t *count, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !count) return R_INVALID_ARGUMENT;
+    Dir *d = &dirs[h - DIR_BASE]; if (!d->dir) return R_INVALID_ARGUMENT;
+    DIR *dir = opendir(d->path); if (!dir) return errno_result();
+    int64_t n = 0; struct dirent *e;
+    while ((e = readdir(dir))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || strlen(e->d_name) > 768) continue;
+        char child[2048]; snprintf(child, sizeof child, "%s/%s", d->path, e->d_name); struct stat st; if (stat(child, &st)) continue;
+        if (d->mode & (S_ISDIR(st.st_mode) ? 1 : 2)) n++;
+    }
+    closedir(dir); *count = n; return 0;
+}
+/* Save data sizes (Pokemon Pokopia asks before it writes, and extends when short): the host's save folder has no fixed size,
+   so it reports room to spare and accepts every extension. */
+#define HOST_SAVE_ROOM (1ULL << 30)
+static unsigned free_space(int64_t *out, const char *path) { (void)path; if (!out) return R_INVALID_ARGUMENT; *out = (int64_t)(16ULL << 30); return 0; }
+static unsigned save_data_size(int64_t *size, int64_t *journal, const uint64_t *uid) { (void)uid; if (size) *size = (int64_t)HOST_SAVE_ROOM; if (journal) *journal = (int64_t)HOST_SAVE_ROOM; return 0; }
+static unsigned save_data_size_max(int64_t *size, int64_t *journal) { if (size) *size = (int64_t)(4 * HOST_SAVE_ROOM); if (journal) *journal = (int64_t)(4 * HOST_SAVE_ROOM); return 0; }
+static unsigned extend_save_data(const uint64_t *uid, int64_t size, int64_t journal) { (void)uid; (void)size; (void)journal; return 0; }
+/* The fs library's allocator (SDK 20): the host's file system allocates nothing from it. */
+static void fs_allocator(void *alloc, void *dealloc) { (void)alloc; (void)dealloc; }
+/* A thread's file system context (from games/wonder's copy of this file): kept per thread, never consulted by the host. */
+typedef struct { uint8_t bytes[64]; } FsContext;
+static const FsContext default_context;
+static __thread const FsContext *thread_context;
+static const FsContext *get_fs_context(void) { return thread_context ? thread_context : &default_context; }
+static void set_fs_context(const FsContext *context) { thread_context = context; }
+static unsigned char own_save_exists(const uint64_t *uid) { return save_exists(TOTK_APPLICATION_ID, uid); }
 static unsigned mount_temp(const char *name) { ready(); char p[1100]; snprintf(p, sizeof p, "%s/temp", profile); return mount_add(name, M_TEMP, p); }
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 static unsigned create_cache(int index, int64_t size, int64_t journal) {
@@ -174,7 +216,7 @@ static void unmount(const char *name) {
     pthread_mutex_lock(&lock);
     for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) { mounts[i].kind = M_FREE; pthread_mutex_unlock(&lock); return; }
     pthread_mutex_unlock(&lock);
-    if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
+    BOTW_AOC_UNMOUNT(name) if (!runtime_romfs_owns(name)) runtime_fail("unmount of unknown fs mount");
 }
 /* EnsureSaveData(uid) (Bayonetta 3): the profile's save folder is made when storage starts; only the local account owns one. */
 static unsigned ensure_save(const uint64_t *uid) {
@@ -201,7 +243,7 @@ static File *file_of(uint64_t h, int *fd, int *mode) {
 void runtime_fs_log(const char *what, const char *path);
 static unsigned open_file(uint64_t *out, const char *path, int mode) {
     if (path && !runtime_romfs_owns(path)) runtime_fs_log(mode & 2 ? "write" : "read", path);
-    if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode);
+    if (runtime_romfs_owns(path)) return runtime_romfs_open(out, path, mode); BOTW_AOC_OPEN(out, path, mode)
     if (!out || !(mode & (OPEN_READ | OPEN_WRITE)) || (mode & ~7)) return R_INVALID_ARGUMENT;
     char p[1100]; int kind = M_FREE; unsigned r = host_path_kind(path, p, sizeof p, &kind); if (r) return r;
     struct stat st; if (stat(p, &st)) return R_PATH_NOT_FOUND; if (!S_ISREG(st.st_mode)) return R_PATH_NOT_FOUND;
@@ -218,7 +260,7 @@ static unsigned open_file(uint64_t *out, const char *path, int mode) {
     pthread_mutex_unlock(&lock); runtime_fail("host file handle table full");
 }
 static unsigned read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
-    if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size);
+    if (runtime_romfs_handle(h)) return runtime_romfs_read(out, h, offset, buffer, size); BOTW_AOC_READ(out, h, offset, buffer, size)
     int fd, mode; if (!out || offset < 0 || (!buffer && size) || !file_of(h, &fd, &mode)) return R_INVALID_ARGUMENT;
     if (!(mode & OPEN_READ)) return R_OPEN_MODE;
     dm_guest_write_prepare(buffer, (size_t)size);
@@ -244,7 +286,7 @@ static unsigned write_file(uint64_t h, int64_t offset, const void *buffer, uint6
     return 0;
 }
 static unsigned file_size(int64_t *out, uint64_t h) {
-    if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h);
+    if (runtime_romfs_handle(h)) return runtime_romfs_size(out, h); BOTW_AOC_SIZE(out, h)
     int fd; struct stat st; if (!out || !file_of(h, &fd, NULL) || fstat(fd, &st)) return R_INVALID_ARGUMENT;
     *out = st.st_size; return 0;
 }
@@ -256,7 +298,7 @@ static unsigned set_file_size(uint64_t h, int64_t size) {
 }
 static unsigned flush_file(uint64_t h) { int fd; if (!file_of(h, &fd, NULL)) return R_INVALID_ARGUMENT; fcntl(fd, F_FULLFSYNC); return 0; }
 static void close_file(uint64_t h) {
-    if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; }
+    if (runtime_romfs_handle(h)) { runtime_romfs_close(h); return; } BOTW_AOC_CLOSE(h)
     if (!file_of(h, NULL, NULL)) runtime_fail("close invalid file handle");
     pthread_mutex_lock(&lock); int fd = files[h - FILE_BASE].fd, save = files[h - FILE_BASE].save; files[h - FILE_BASE].fd = 0; pthread_mutex_unlock(&lock);
     close(fd);
@@ -274,7 +316,7 @@ static unsigned rename_file(const char *from, const char *to) {
     return rename(a, b) ? errno_result() : 0;
 }
 static unsigned entry_type(int *out, const char *path) {
-    if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path);
+    if (runtime_romfs_owns(path)) return runtime_romfs_entry_type(out, path); BOTW_AOC_TYPE(out, path)
     char p[1100]; unsigned r = host_path(path, p, sizeof p); if (r) return r; struct stat st;
     if (!out) return R_INVALID_ARGUMENT; if (stat(p, &st)) return R_PATH_NOT_FOUND;
     *out = S_ISDIR(st.st_mode) ? 0 : 1; return 0;
@@ -375,7 +417,7 @@ void runtime_save_probe(void) {
 
 void *runtime_fs_host_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
-        {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size},
+        {"_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", open_file}, {"_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", file_size}, BOTW_AOC_TABLE
         {"_ZN2nn2fs9CloseFileENS0_10FileHandleE", close_file}, {"_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", entry_type},
         {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", read_file}, {"_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvmRKNS0_10ReadOptionE", read_options},
         {"_ZN2nn2fs8ReadFileENS0_10FileHandleElPvm", read_exact},
@@ -389,8 +431,15 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs9IsMountedEPKc", is_mounted},
+        {"_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", directory_entry_count},
+        {"_ZN2nn2fs16GetFreeSpaceSizeEPlPKc", free_space}, {"_ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE", save_data_size},
+        {"_ZN2nn2fs18GetSaveDataSizeMaxEPlS1_", save_data_size_max}, {"_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll", extend_save_data},
+        {"_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE", fs_allocator},
+        {"_ZN2nn2fs25GetCurrentThreadFsContextEv", get_fs_context}, {"_ZN2nn2fs25SetCurrentThreadFsContextEPKNS0_9FsContextE", set_fs_context},
+        {"_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", own_save_exists}, {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
-        {"_ZN2nn2fs14CommitSaveDataEPKc", commit}, {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},   /* Bayonetta 3 */
+        {"_ZN2nn2fs14CommitSaveDataEPKc", commit},   /* Bayonetta 3 (EnsureSaveData is in the table above, BY3's ensure_save) */
         {"_ZN2nn2fs18CreateCacheStorageEill", create_cache}, {"_ZN2nn2fs18DeleteCacheStorageEi", delete_cache},
         {"_ZN2nn2fs17MountCacheStorageEPKci", mount_cache},
         {"_ZN2nn2fs20OpenCacheStorageListEPNS0_22CacheStorageListHandleE", open_cache_list},

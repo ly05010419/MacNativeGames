@@ -78,8 +78,18 @@ struct Allocator{Alloc alloc;Free free;Realloc realloc;void *user;};
 struct Allocator g_nv_alloc,g_nv_devtools_alloc;
 static void graphics_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_alloc=(struct Allocator){a,f,r,u};}
 static void graphics_dev_allocator(Alloc a,Free f,Realloc r,void *u){g_nv_devtools_alloc=(struct Allocator){a,f,r,u};}
+static _Atomic int graphics_ready;
+int runtime_graphics_initialized(void){return atomic_load(&graphics_ready);}
 static void graphics_initialize(void *mem,unsigned long size){
- if(!mem||!size)runtime_fail("invalid graphics work memory");g_t0_ns=runtime_now_ns();mtl_init();fprintf(stderr,"[totk] native Metal graphics context initialized\n");
+#ifdef GAME_NS2
+ /* A Switch 2 game hands no graphics pool here (Donkey Kong Bananza: null, 0): NVN2's memory does not come from this call,
+    and the host's graphics layer allocates its own anyway (seedds/nxnative records whatever it gets). */
+ if((mem==NULL)!=(size==0))runtime_fail("invalid graphics work memory");
+ fprintf(stderr,"[totk] nv::InitializeGraphics: pool %p %.2f MB (the host's graphics layer allocates its own)\n",mem,size/1048576.0);
+#else
+ if(!mem||!size)runtime_fail("invalid graphics work memory");
+#endif
+ g_t0_ns=runtime_now_ns();mtl_init();atomic_store(&graphics_ready,1);fprintf(stderr,"[totk] native Metal graphics context initialized\n");
 }
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry init_entry={"_ZN2nv18InitializeGraphicsEPvm",graphics_initialize,"native Metal context"};
 __attribute__((used,section("__DATA,totkgfx"))) static const GfxEntry alloc_entry={"_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_",graphics_allocator,"game allocator callbacks"};
