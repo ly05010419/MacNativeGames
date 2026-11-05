@@ -16,6 +16,31 @@
 #include <string.h>
 #include <errno.h>
 #include <stdatomic.h>
+#include "feedback_settings.h"
+
+/* Explicit launch-only opt-in, separate from the player's other mods. Legacy texture-pack.txt is intentionally ignored. */
+static int runtime_texture_pack_choice(void) {
+#if TARGET_OS_IPHONE || defined(GAME_BOTW) || defined(GAME_NS2)
+ return 0;
+#else
+ const char *e=getenv("TOTK_TEXTURE_PACK");return e&&!strcmp(e,"1");
+#endif
+}
+static int runtime_texture_pack_path(char *out,size_t size) {
+ const char *e=getenv("TOTK_TEXTURE_PACK_DIR");
+ if(e){if(!*e||strlen(e)>=size)return 0;strcpy(out,e);return 1;}
+ if(!runtime_setting_word("texture-pack-path.txt",out,size))return 0;
+ const char *start;size_t n=feedback_word(out,&start);if(!n||n>=size-1)return 0;
+ memmove(out,start,n);out[n]=0;return out[0]=='/';
+}
+static pthread_once_t texture_pack_once=PTHREAD_ONCE_INIT;
+static int texture_pack_on;
+static char texture_pack_dir[4096];
+static void texture_pack_init(void) {
+ texture_pack_on=runtime_texture_pack_choice();
+ if(texture_pack_on&&!runtime_texture_pack_path(texture_pack_dir,sizeof texture_pack_dir))runtime_fail("texture pack enabled but no installed pack path (texture-pack-path.txt)");
+}
+int runtime_texture_pack_active(void) {pthread_once(&texture_pack_once,texture_pack_init);return texture_pack_on;}
 #define NOT_FOUND 0x202u
 #define UNSUPPORTED 0x6402u
 #define INVALID 0xe402u
@@ -231,6 +256,10 @@ static uint32_t overlay_slot(uint64_t i) {size_t lo=0,hi=noverlay;while(lo<hi){s
    also <TOTK_ROMFS_PATCHES_OUT, default extracted/<version>/romfs-patches-out>/<w>x<h> (the HeapDef sizes,
    scripts/make_output_res_overlay.py); then the player's mods in TOTK_ROMFS_MODS (0 = none). */
 static void overlay_init(void) {
+ int texture=runtime_texture_pack_active();
+ if(texture){char m[4200];snprintf(m,sizeof m,"%s/manifest.tsv",texture_pack_dir);need(!access(m,R_OK),"installed texture pack manifest missing (reconnect its disk or disable the pack)");
+  overlay_load(texture_pack_dir,1,0);
+  fprintf(stderr,"[totk] texture pack enabled: %s (8 GB memory layout)\n",texture_pack_dir);}
  const char *dir=getenv("TOTK_ROMFS_PATCHES");if(!dir||strcmp(dir,"0"))overlay_load(dir?dir:"extracted/" TOTK_GAME_DIR "/romfs-patches",0,0);
  /* A scene bigger than 1600x900 (TOTK_RENDER_RES, 1.4.3) grows the same heaps: its overlay is <w>x<h>-scene-<sw>x<sh>. */
  /* Breath of the Wild has no HeapDef: its heaps are patched in the code (game_patches_botw.c patch_output_res). */
@@ -239,7 +268,8 @@ static void overlay_init(void) {
 #else
  unsigned w=1920,h=1080,sw,sh;if(runtime_output_res_extra_bytes()){
 #endif
-  runtime_output_res(&w,&h);const char *out=getenv("TOTK_ROMFS_PATCHES_OUT");char d[4096],scene[64]="";
+  runtime_output_res(&w,&h);const char *out=getenv("TOTK_ROMFS_PATCHES_OUT");char d[4096],scene[64]="",pack_out[4200];
+  if(texture){snprintf(pack_out,sizeof pack_out,"%s/romfs-patches-out",texture_pack_dir);out=pack_out;}
   if(runtime_render_res(&sw,&sh)&&(double)sw*sh>1600.0*900.0)snprintf(scene,sizeof(scene),"-scene-%ux%u",sw,sh);
   need(snprintf(d,sizeof(d),"%s/%ux%u%s",out?out:"extracted/" TOTK_GAME_DIR "/romfs-patches-out",w,h,scene)<(int)sizeof(d),"RomFS output overlay path");
   /* build_app.py makes the 2560x1440 canvas and, for 1.4.3, the 1920x1080 / 2560x1440 scenes on either canvas; other sizes are one command. */
@@ -247,6 +277,7 @@ static void overlay_init(void) {
   if(access(m,R_OK)){fprintf(stderr,"[totk] RomFS overlay %s missing: make it with\n  .venv/bin/python scripts/make_output_res_overlay.py %ux%u%s%s --version " TOTK_GAME_DIR "%s%s\n",d,w,h,*scene?" --scene ":"",*scene?scene+7:"",out?" --output-root ":"",out?out:"");
    runtime_fail("HeapDef overlay for this output / scene size missing (see the line above)");}
   overlay_load(d,1,0);}
+ else if(texture){char d[4200];snprintf(d,sizeof d,"%s/heap-default",texture_pack_dir);overlay_load(d,1,0);}
  const char *mods=getenv("TOTK_ROMFS_MODS");if(mods&&*mods&&strcmp(mods,"0"))overlay_load(mods,0,1);
  added_init();
  if(noverlay)qsort(overlays,noverlay,sizeof(*overlays),overlay_order);
@@ -292,6 +323,10 @@ static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
  if(*mount_name&&strcmp(name,mount_name))runtime_fail("second RomFS mount not implemented");strcpy(mount_name,name);return 0;
 }
 static unsigned cache_size(uint64_t *out) {if(!out)return INVALID;*out=0;return 0;}
+/* SDK 20's forms (Pokemon Pokopia): MountRom without a cache, and with a program index (0: the application's own RomFS). */
+static unsigned mount_rom_nocache(const char *name) {return mount_rom(name,NULL,0);}
+static unsigned mount_rom_index(const char *name,int index,void *cache,uint64_t size) {if(index)runtime_fail("MountRom of another program index not implemented");return mount_rom(name,cache,size);}
+static unsigned cache_size_index(uint64_t *out,int index) {(void)index;return cache_size(out);}
 /* TOTK_FS_LOG=1: log every RomFS open with the time since start (shows how far the game gets without a picture). */
 static void fs_log(const char *what,const char *path){static int on=-1;static uint64_t t0;if(on<0){on=getenv("TOTK_FS_LOG")!=NULL;t0=runtime_now_ns();}if(on)fprintf(stderr,"[totk-fs] %8.3f %s %s\n",(runtime_now_ns()-t0)/1e9,what,path);}
 void runtime_fs_log(const char *what,const char *path){fs_log(what,path);}
@@ -300,6 +335,7 @@ unsigned runtime_romfs_open(uint64_t *out,const char *path,int mode) {
  if(!out||mode!=1)return UNSUPPORTED;const char *p=rom_path(path);if(!p)return NOT_FOUND;uint64_t i=file_index(p);if(i==UINT64_MAX)return NOT_FOUND;
  uint32_t ov=overlay_slot(i);int fd=-1;
  if(ov){const Overlay *o=&overlays[ov-1];fd=open(o->path,O_RDONLY|O_CLOEXEC);struct stat st;
+  fs_log("overlay",o->path);
   if(fd<0||fstat(fd,&st)!=0||(uint64_t)st.st_size!=o->size||st.st_dev!=o->dev||st.st_ino!=o->ino||st.st_mtimespec.tv_sec!=o->mtime.tv_sec||st.st_mtimespec.tv_nsec!=o->mtime.tv_nsec){
    fprintf(stderr,"[totk] RomFS overlay: %s is missing or changed since the start check\n",o->path);runtime_fail("RomFS overlay file changed while the game ran (restart the game)");}}
  pthread_mutex_lock(&lock);for(unsigned j=1;j<NH;j++)if(!handles[j]){handles[j]=i+1;handle_ovl[j]=ov;handle_fd[j]=fd;*out=0x100000000ULL+j;pthread_mutex_unlock(&lock);return 0;}pthread_mutex_unlock(&lock);runtime_fail("file handle table full");return INVALID;
@@ -336,7 +372,8 @@ int runtime_romfs_handle(uint64_t h) {return h>0x100000000ULL&&h<0x100000000ULL+
 unsigned runtime_romfs_read_options(uint64_t *out,uint64_t h,int64_t off,void *buf,uint64_t size) {return runtime_romfs_read(out,h,off,buf,size);}
 void *runtime_fs_override(const char *name) {
  static const struct{const char *name;void *fn;} map[]={
- {"_ZN2nn2fs8MountRomEPKcPvm",mount_rom},{"_ZN2nn2fs22QueryMountRomCacheSizeEPm",cache_size}};
+ {"_ZN2nn2fs8MountRomEPKcPvm",mount_rom},{"_ZN2nn2fs22QueryMountRomCacheSizeEPm",cache_size},
+ {"_ZN2nn2fs8MountRomEPKc",mount_rom_nocache},{"_ZN2nn2fs8MountRomEPKciPvm",mount_rom_index},{"_ZN2nn2fs22QueryMountRomCacheSizeEPmi",cache_size_index}};
  for(size_t i=0;i<sizeof(map)/sizeof(map[0]);i++)if(!strcmp(name,map[i].name))return map[i].fn;return runtime_fs_host_override(name);
 }
 void runtime_fs_probe(void) {
@@ -357,7 +394,7 @@ void runtime_fs_probe(void) {
   }
   need(runtime_romfs_open(&h,"rom://../Sound/Resource/Stream/Dm_OP_0001.bwav",1)!=0,"reject traversal after repeated root separator");
  }
- for(uint64_t i=0;i<file_count;i+=file_count/64){Entry e=entry(i);char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",entry_name(e))<(int)sizeof(p),"probe path");uint64_t h=0,n=0;int64_t size;need(!runtime_romfs_open(&h,p,1)&&!runtime_romfs_size(&size,h)&&(uint64_t)size==e.size,"probe open/size");need(!runtime_romfs_read(&n,h,0,buffer,sizeof(buffer)),"probe partial read");for(uint64_t j=0;j<n;j++)sum=sum*131+buffer[j];need(!runtime_romfs_read(&n,h,size,buffer,1)&&n==0,"probe EOF");runtime_romfs_close(h);count++;}
+ for(uint64_t i=0;i<file_count;i+=file_count/64){Entry e=entry(i);char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",entry_name(e))<(int)sizeof(p),"probe path");uint64_t h=0,n=0;int64_t size;uint32_t ov=overlay_slot(i);uint64_t expected_size=ov?overlays[ov-1].size:e.size;need(!runtime_romfs_open(&h,p,1)&&!runtime_romfs_size(&size,h)&&(uint64_t)size==expected_size,"probe open/size");need(!runtime_romfs_read(&n,h,0,buffer,sizeof(buffer)),"probe partial read");for(uint64_t j=0;j<n;j++)sum=sum*131+buffer[j];need(!runtime_romfs_read(&n,h,size,buffer,1)&&n==0,"probe EOF");runtime_romfs_close(h);count++;}
  for(size_t k=0;k<noverlay;k++){char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",overlays[k].name)<(int)sizeof(p),"probe overlay path");
   if(overlays[k].index>=file_count){int type=-1;char *slash=strchr(overlays[k].name,'/')?strrchr(p,'/'):NULL;
    if(slash){*slash=0;need(!runtime_romfs_entry_type(&type,p)&&type==0,"probe added file's folder");*slash='/';}

@@ -6,8 +6,9 @@
 .text
 
 /* x16 = host function, x17 = its wrapper index. Called at a guest call site: x0..x8 and v0..v7 carry arguments,
-   x9..x17 are free. No host replacement takes stack-passed arguments (checked against all NVN prototypes and host
-   overrides). While _runtime_hle_trace is set (TOTK_INPUT_FILE "hletrace", diagnostics) every call is first counted by
+   x9..x17 are free. Arguments past the eighth integer one are on the guest stack at the call: the first 8 slots (64 bytes)
+   are copied to the host stack below the frame record, so a replacement with up to 16 integer arguments reads them where
+   the ABI puts them (the Switch 2's nn::codec ReadDecoderOutputImageNv12 has 12; it read host stack garbage before). While _runtime_hle_trace is set (TOTK_INPUT_FILE "hletrace", diagnostics) every call is first counted by
    _runtime_hle_note on the host stack, with the argument registers kept. */
     .globl _runtime_hle_switch
     .p2align 2
@@ -26,7 +27,18 @@ _runtime_hle_switch:
     adrp x13, _runtime_hle_trace@PAGE
     ldr w13, [x13, _runtime_hle_trace@PAGEOFF]
     cbnz w13, 2f
-3:  blr x16
+3:  ldr x12, [sp, #16]          // the guest sp at the call (hle_note_kept may have used x12)
+    sub sp, sp, #64
+    ldp x13, x14, [x12]
+    stp x13, x14, [sp]
+    ldp x13, x14, [x12, #16]
+    stp x13, x14, [sp, #16]
+    ldp x13, x14, [x12, #32]
+    stp x13, x14, [sp, #32]
+    ldp x13, x14, [x12, #48]
+    stp x13, x14, [sp, #48]
+    blr x16
+    add sp, sp, #64
     ldp x12, x11, [sp, #16]
     ldp x29, x30, [sp]
     mov sp, x12

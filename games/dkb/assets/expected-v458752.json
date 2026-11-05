@@ -1,0 +1,20 @@
+{
+  "_comment": "Donkey Kong Bananza update v458752, original dump and verified native rewrite (phase12-validation, 2026-11-03).",
+  "title_id": "040074A01BF12000",
+  "version": 458752,
+  "display_version": "v458752",
+  "exefs_sha256": {
+    "main": "6e8a88c70a17a1f6a005ec53d621d3c8d53dddc3a8c51f21a0caa5f4c329784e",
+    "main.npdm": "58754e03c69b588af569d84cfbd2812b423f86d9e47252b10c27a9ef269e2cea",
+    "rtld": "e1767c8a3a6248397163555c0d7edb022f60b843736e7ea1421a79f33433fb1c",
+    "sdk": "3abe3c58afb318ac6964d2ee418398223de0d7894e3157ad759f248971d39d91"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "2b053fac2c098f059c136347d96a609e47e08c3f88ee1c9b73d5e60e05111997",
+    "sdk.patched.bin": "3613e8cbc184623f48db1f7bbbf36a5278137080503292007f29c1e5ff2c6555"
+  },
+  "romfs": {
+    "size": 9178113376,
+    "sha256": "8982312b7d48ea6b6276a798291d9d4bd46531dc119425ed7d1b4af1df373be4"
+  }
+}

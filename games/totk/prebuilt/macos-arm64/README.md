@@ -21,6 +21,11 @@ no .NET and the app needs no .NET runtime and no Python.
   seed MSL files of a 1.4.3 build, each only by `[[ early_fragment_tests ]]` before the fragment entry, all of them
   fragment shaders with the flag; the reflection files differ only by the chain name. Without the field, 1,380 replayed
   variants of a player cache translate to the same MSL and reflection as the previous build.
+  Geometry shaders as Metal compute kernels (2026-11-03; patch 0007, `Geometry.cs`, `GeometryService.cs`, from
+  seedds/nxnative): new request fields only (`"stage": "gs"` with `geometry_topology`, and `geometry_capture` on a vertex
+  request). Without them, 1,169 requests (150 recorded Tears of the Kingdom requests, 1,019 Donkey Kong Bananza variants
+  of a run cache) give byte-identical MSL, SPIR-V and reflection files and replies to the previous build, with DebugMode
+  on and off.
 
 SPIRV-Cross is compiled into the program (2026-10-23, `games/totk/tools/totk_xlate/spirv_cross_inproc.cpp`): its own
 `main.cpp` at the pinned commit (build_app.py `SPIRV_CROSS`) with the same arguments the service passed to the program,

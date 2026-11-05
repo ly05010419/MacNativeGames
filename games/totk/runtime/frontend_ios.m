@@ -17,9 +17,23 @@ static CADisplayLink *displayLink;
 static pthread_mutex_t vsyncLock=PTHREAD_MUTEX_INITIALIZER;
 static void *vsyncEvents[16];
 static unsigned vsyncCount;
+/* iOS has no gethostuuid. Keep the offline console's per-installation identity in app preferences; updating the same
+   bundle preserves it, independently of the selected game account. */
+void runtime_ios_device_uuid(uint8_t out[16]) {
+ static NSUUID *identity; static dispatch_once_t once;
+ dispatch_once(&once, ^{
+  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+  NSString *saved=[defaults stringForKey:@"MacNativeGamesDeviceUUID"];
+  identity=saved.length?[[NSUUID alloc] initWithUUIDString:saved]:nil;
+  if(!identity){identity=NSUUID.UUID;[defaults setObject:identity.UUIDString forKey:@"MacNativeGamesDeviceUUID"];}
+ });
+ [identity getUUIDBytes:out];
+}
 void hle_bind_system_event(void *,int);
 void hle_signal_system_event(void *);
 void *front_metal_layer(void){return (__bridge void *)metalLayer;}
+/* This frontend presents an SDR BGRA8 surface (HDR is available only on the Mac): its white headroom is one. */
+float front_hdr_headroom(void){return 1.0f;}
 void front_frame_presented(void){
  if(atomic_fetch_add_explicit(&presentedFrames,1,memory_order_relaxed)==0){
   fprintf(stderr,"[totk-boot] %.3f first presented frame\n",(runtime_now_ns()-bootStartNS)/1e9);
@@ -151,6 +165,92 @@ void runtime_ios_attach_layer(CAMetalLayer *layer,UIView *host){
  vsyncTarget=[TOTKVsync new];displayLink=[CADisplayLink displayLinkWithTarget:vsyncTarget selector:@selector(tick:)];
  displayLink.preferredFrameRateRange=CAFrameRateRangeMake(TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ,TOTK_IOS_LINK_HZ);[displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
 }
+/* The controller's capture button (runtime/gamepad.m): the picture goes into the system photo library, as a console's
+   Capture button does -- not into a folder, which the player cannot reach on an iPhone. The frame is the one the renderer
+   is about to show: mtl_grab_next_present asks the present thread for it and hands it over when the GPU is done (the grab a
+   Mac's capture button uses too), so nothing waits for it. */
+#define TOTK_SCREENSHOT_VIEW 1
+#define TOTK_SCREENSHOT_WRITE 0
+#if TARGET_OS_IOS || TARGET_OS_VISION
+#import <Photos/Photos.h>
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+/* The renderer's next frame, for screenshot.h: weak, so a build without the renderer answers with no picture. */
+static void totk_ios_screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE totk_ios_screenshot_picture
+#endif
+#include "screenshot.h"   /* the album is GAME_NAME (game_version.h): the game whose frame it is */
+
+#if TARGET_OS_IOS || TARGET_OS_VISION
+/* Photos' permission, asked once and waited for here -- the screenshot queue, never the main queue: the player sees the
+   system's prompt the first time (NSPhotoLibraryAddUsageDescription, project.yml) and the answer holds. 1 when adding
+   pictures is allowed; a refusal or a restriction keeps the note's existing reason (SHOT_NO_PHOTOS). */
+static int screenshot_photos_allowed(void) {
+    PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+    if (status == PHAuthorizationStatusNotDetermined) {
+        dispatch_semaphore_t asked = dispatch_semaphore_create(0);
+        __block PHAuthorizationStatus answer = status;
+        [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly handler:^(PHAuthorizationStatus granted) {
+            answer = granted;
+            dispatch_semaphore_signal(asked);
+        }];
+        dispatch_semaphore_wait(asked, dispatch_time(DISPATCH_TIME_NOW, 120 * NSEC_PER_SEC));   /* the player's answer */
+        status = answer;
+    }
+    return status == PHAuthorizationStatusAuthorized;
+}
+#endif
+
+#if TARGET_OS_IOS || TARGET_OS_VISION
+/* Saves the picture into the photo library, in the game's own album, and says where. Runs on the screenshot queue, never
+   the main queue, so Photos' prompt, the album lookup and the write hold nothing the player is looking at. */
+__attribute__((unused)) static int screenshot_save(CGImageRef img, const char *game, char *path, size_t size, const char **why, int *problem,
+                           char *album, size_t album_size) {
+    (void)path; (void)size;
+    *problem = SHOT_OK;
+    if (!img) { *why = TOTK_UI("没有画面", "no picture"); return 0; }
+    if (CGImageGetWidth(img) > 8192 || CGImageGetHeight(img) > 8192) { *problem = SHOT_TOO_LARGE; *why = screenshot_problem_text(*problem); return 0; }
+    if (!screenshot_photos_allowed()) { *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem); return 0; }
+    time_t now = time(NULL);
+    struct tm local;
+    localtime_r(&now, &local);
+    char name[NAME_MAX + 1];
+    screenshot_name(game, &local, name, sizeof name);
+    name[strlen(name) - 4] = 0;   /* the photo library names its own copies: no extension */
+    UIImage *picture = [UIImage imageWithCGImage:img];
+    if (!picture) { *why = TOTK_UI("无法编码图片", "picture not encoded"); return 0; }
+    NSString *title = @(TOTK_SCREENSHOT_ALBUM);   /* the running game's own name: the note and the panel's row say it too */
+    __block NSError *failure = nil;
+    [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+        PHAssetCollection *collection = nil;
+        PHFetchResult<PHAssetCollection *> *found = [PHAssetCollection fetchAssetCollectionsWithType:PHAssetCollectionTypeAlbum
+                                                                                             subtype:PHAssetCollectionSubtypeAny
+                                                                                             options:nil];
+        for (PHAssetCollection *candidate in found)
+            if ([candidate.localizedTitle isEqualToString:title]) { collection = candidate; break; }
+        PHAssetCollectionChangeRequest *into = collection
+            ? [PHAssetCollectionChangeRequest changeRequestForAssetCollection:collection]
+            : [PHAssetCollectionChangeRequest creationRequestForAssetCollectionWithTitle:title];
+        PHObjectPlaceholder *placeholder = [PHAssetChangeRequest creationRequestForAssetFromImage:picture].placeholderForCreatedAsset;
+        if (placeholder) [into addAssets:@[placeholder]];
+    } error:&failure];
+    if (failure) {
+        /* The album could not be made or written (the library's own checks differ per version): the picture still goes in. */
+        fprintf(stderr, "[totk] screenshot: the album was refused (%s); saving to the library itself\n", failure.localizedDescription.UTF8String);
+        failure = nil;
+        [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+            (void)[PHAssetChangeRequest creationRequestForAssetFromImage:picture];
+        } error:&failure];
+    }
+    if (failure) {
+        fprintf(stderr, "[totk] screenshot: the photo library refused the picture (%s)\n", failure.localizedDescription.UTF8String);
+        *problem = SHOT_NO_PHOTOS; *why = screenshot_problem_text(*problem);
+        return 0;
+    }
+    snprintf(album, album_size, "%s", TOTK_SCREENSHOT_ALBUM);
+    return 1;
+}
+#endif
+
 /* The app already runs the loader on a game thread with a large stack; the event loop belongs to UIKit. */
 #if TARGET_OS_IOS
 extern void totk_phone_motion_start(void);
@@ -158,6 +258,7 @@ extern void totk_phone_haptics_start(void);
 #endif
 void runtime_front_run(void(*callback)(void)){
  if(!metalLayer)runtime_fail("iOS view not attached before boot");
+ runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: the picture into Photos (screenshot.h) */
  runtime_gamepad_start();
 #if TARGET_OS_IOS
  /* After the controller scan, on the main queue: the phone's sensor is only used when no controller is attached. */

@@ -2,13 +2,117 @@
 
 ## Status
 
-Stages 1–4 are done (skeleton, code and data, rewrite, boot to `nnMain`). Version 1.0.0 is playable on the Mac: menus, the prologue movies, the opening, battles, free roam, sound, save and load (played by hand, 29 October 2026). Graphics have a few known gaps ([README.md](README.md#known-gaps)); the app and the update are next. The work plan is [docs/PLAN.md](docs/PLAN.md).
+Version 2.2.1 with its four add-ons is playable on the Mac with no known issues: menus, movies, battles, free roam, sound, save and load, played by hand (a 2.5-hour session on 2 November 2026 without glitches). Neither the main story nor Future Redeemed has been played to the end yet. Notes in [README.md](README.md#notes).
 
 ## Where the folder comes from
 
 A copy of `games/ot0` at upstream commit `5ab07b7` (2026-10-28); see [third_party/COPIES.md](third_party/COPIES.md).
 
 ## Log
+
+### 2026-11-03: Future Redeemed's flat polygons fixed (unaligned vertex buffers)
+
+In Future Redeemed giant flat planes crossed the scene (the "blue polygons" of its opening, and in Vermilion Woods brown planes over cliffs and water); the base game was fine. The add-on binds some model vertex streams at addresses that are 2 mod 4 (38 of 912 vertex bindings in a Vermilion Woods frame, none of 13,384 in the base game at Yzana Plains). Metal reads a vertex stream from the address rounded down to 4 bytes, so every attribute came 2 bytes early and the positions were garbage.
+- **`nvn_mtl.m` `vbuf_aligned`:** such a stream is copied into the frame arena (aligned) once per submission and bound from there.
+- Found by bisecting the frame's 251 fragment shaders with `DM_NVN_SKIP_FS` (the draw of `1557ef2b…`), then the pass dump's vertex binding (`vb=0x…1e`). New diagnostic: `DM_NVN_MASK_FS=<fragment key>:<target mask>` stops that shader writing those colour targets.
+
+Verified (2.2.1, the player's Future Redeemed save, Vermilion Woods):
+
+| Check | Before | After |
+|---|---|---|
+| Picture | flat planes over the scene, a dark band, a black pit | terrain, trees, characters as expected |
+| Red lines | — | none new |
+
+### 2026-11-03: geometry shaders with line and triangle input on
+
+Line and triangle input of geometry shaders was emulated behind `TOTK_GS_TRIANGLES=1` since 2026-10-30; it is now on, with two fixes, and `TOTK_GS_TRIANGLES=0` skips it.
+- **Point size:** the passthrough vertex function writes the point size for every topology, which Metal refuses with the triangle class these pipelines need; it is built again without that output, and the pipelines that failed before build.
+- **Layered targets:** a triangle program fills two 64×64×64 3D textures slice by slice, its geometry shader picking the layer. That draw's pass now covers every layer (`renderTargetArrayLength`, after seedds/nxnative's layered passes); before, every slice landed in slice 0.
+
+Verified (2.2.1, M5):
+
+| Check | Result |
+|---|---|
+| Pipeline failures with triangle input | 12 → 0 (the player's save) |
+| Layered pass | 64 layers of the 3D targets, at Yzana Plains and in the opening |
+| Red lines | no new ones; the "experimental" skip line is gone |
+| Picture | unchanged at Yzana Plains (characters, grass and water move between runs); Noah's hair present. The 2026-10-30 hair regression in Everblight Plain was not retested there |
+
+### 2026-11-03: logic operations on unsigned integer targets
+
+NVN's `ColorStateSetLogicOp` (the game uses OR, 7) combines the bits a pixel shader writes with those already in an integer target; Metal has none, and every such draw wrote with COPY. Xenoblade Chronicles 2, on the same engine, builds per-pixel light probe lists this way, and COPY gave it hard-edged dark boxes in the indirect lighting. Ported from [seedds/nxnative](https://github.com/seedds/nxnative) (MIT; third_party/COPIES.md).
+- **`nvn_mtl.m`:** a pipeline drawn with an operation other than COPY into an unsigned integer target (`PSO_LOGIC`) takes a variant of the fragment function in which each unsigned integer output reads its attachment (framebuffer fetch) and is combined with it by the operation and the target's channel masks (fragment buffer 27) before each return. `DM_NVN_LOGIC=0` turns it off.
+
+Verified (2.2.1, M5, the opening after the title screen):
+
+| Check | Result |
+|---|---|
+| Fragment shaders that draw with OR | 4 variants built and specialized, no pipeline failure |
+| Red lines | the `logic op 7` line is gone; no new ones |
+| Picture | renders normally; the cutscene's timing differs between runs, so no pixel comparison with COPY |
+
+### 2026-11-03: every shader translated before play
+
+The app can carry every shader of the game and its add-ons instead of only those already met in play, so Future Redeemed's opening (about 10,000 translations on a first run) and areas not yet visited do not wait on the translator.
+- **`scripts/monolith_shaders.py`:** finds the shaders in the game's own files without playing: the ARH1 / ARD archives, their XBC1 streams, HCPS containers in models and map streams, GLSLC outputs in the effect packs (also behind `cmp\0zlib`), the add-ons' `bf3_dlc0N` archives and the standalone SLCT in `main`. The readers are ported from [seedds/nxnative](https://github.com/seedds/nxnative) (MIT; third_party/COPIES.md); keys are the runtime's (`nvn_mtl.m` `shader_key`).
+- **`scripts/translate_shaders.py`, `make shader-prepare`:** translates each vertex, pixel and compute shader once, with the request and the bind state of the runtime's own ahead-of-draw translation (`totk_rt_prefetch`), into `build/shader-prepared`, which `make shader-seed` merges with the caches met in play. Shaders with the same translation input share one translation.
+
+Verified (2.2.1 with add-ons 1–4, M5):
+
+| Check | Result |
+|---|---|
+| Shaders found | 34,815 (10,344 vertex, 24,128 pixel, 330 geometry, 13 compute) |
+| Shaders met in play on this Mac (12,833) found by the census | 12,801; the other 32 are not in these files |
+| Translations | 28,136 distinct in 66 s; one fails as it does in play (vertex `4b98320a…`, SubgroupLtMask) |
+| Same variant translated in play | 8,485 of 8,485 byte-identical (MSL and reflection) |
+| Seed | 31,738 variants, 778 MB (was 12,867, 356 MB); first-start import 21 s (was 7 s) |
+| The player's save, empty cache | 8 translations in play, all geometry-as-compute; picture unchanged |
+
+### 2026-11-03: ordering barriers order skinning after the draws before it
+
+A candidate fix for the rare streak at Taion (a character's mesh stretched across the scene for one frame), ported from [seedds/nxnative](https://github.com/seedds/nxnative) (MIT; third_party/COPIES.md), where Xenoblade Chronicles 2, on the same engine, showed the same picture.
+- **Cause:** the game skins each character with a vertex-only draw that writes bone matrices to a shared buffer, which the character's meshes then read, and puts `ORDER_PRIMITIVES` before the next character's skinning. Replay ignored game barriers, so in one Metal pass the next skinning could overwrite matrices that earlier meshes were still reading. `draw()` already ordered the other way (meshes after their skinning).
+- **Fix (`nvn_mtl.m`):** an ordering barrier in an open pass is remembered (`g_pass_order`); the next vertex-only draw that writes memory gets an in-pass barrier from the vertex stage first, or the pass ends when the barrier orders fragments and an earlier draw read memory after the vertex stage (`order_draw`, `order_note`). `DM_NVN_ORDER=0` turns it off.
+
+Verified (2.2.1, M5, the player's save at Yzana Plains, timeline over 120 frames, full render scale):
+
+| Check | `DM_NVN_ORDER=0` | Default |
+|---|---|---|
+| Frame time p50 / p90 | 33.35 / 33.58 ms | 33.36 / 33.82 ms |
+| Replay p50 / p90 | 4.55 / 4.68 ms | 4.88 / 5.23 ms |
+| Writes ordered in one frame (pass dump) | 0 | 66 in-pass barriers, 4 pass splits |
+
+The picture is unchanged in screenshots and there are no GPU errors. The streak itself was rare and not seen since the plants fix, so whether this removes it can only show in play.
+
+### 2026-11-02: a third of the CPU at 30 fps
+
+Process CPU on the player's save at Yzana Plains went from 159% to 53% (median over 20 s), with the frames unchanged. Three causes, found with `/usr/bin/sample`:
+- **`runtime/game_patches.c`, `loader.c`:** the game's frame limiter (`main+0x124fa34`) spins on the clock for the rest of each frame, about 76,000 reads a second. The clock gate now sleeps 0.2 ms before answering a read made from that loop. The site is checked in `game_version.h` (2.2.1), and `XC3_FRAME_WAIT=0` spins as before.
+- **`runtime/system_services.c`:** `TOTK_YIELD_BACKOFF=on` by default. The game's main thread waits for its worker jobs by yielding in a loop (`main+0x1280d70`); a run of yields longer than 2 ms now sleeps between them (`threads.c`).
+- **`runtime/system_services.c`:** `TOTK_RENDER_STREAM=0` by default. The encode-stage thread spun 200 µs between packets; replay on one thread takes 1.5 ms of the 33 ms frame here.
+
+Verified (2.2.1, M5, the player's save at Yzana Plains):
+
+| Check | Before | After |
+|---|---|---|
+| Process CPU | 159% | 53% |
+| Frame time (timeline, 120 frames) | 33.23 ms | 33.35 ms (32.6–34.2) |
+| Replay per frame | 3.5 ms | 1.5 ms |
+| Frames reached in the same run | 6300 | 6300 |
+| Picture, GPU errors | right, none | right, none |
+
+Each step on its own: frame wait 159 → 90%, yield back-off 90 → 79%, one replay thread 79 → 54%.
+
+### 2026-10-30: replay thread no longer runs regular expressions per draw
+
+`gfx/nvn/nvn_mtl.m` `fs_fn_border` remembered a fragment shader's border-colour variant only when it had made one. A shader whose sampler clamps to a border colour but has no sample call to patch was looked up again at every draw: both regular expressions in `border_src` ran over its whole source each time. The miss is remembered now.
+
+Verified (2.2.1, M5, the player's save at Yzana Plains, timeline over 90 frames):
+
+| Check | Before | After |
+|---|---|---|
+| Replay per frame | 12.8 ms (70% in `NSRegularExpression`, by `sample`) | 3.5 ms |
+| Picture | right | right |
 
 ### 2026-10-30: black, flickering plants fixed
 

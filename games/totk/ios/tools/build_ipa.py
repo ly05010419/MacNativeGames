@@ -53,6 +53,19 @@ def botw_pane(root):
                        'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
     return settings_without_totk(root)
 
+def bananza_pane(root):
+    """Bananza's own engine size; TOTK/BotW's docked presets describe other engines."""
+    root=settings_without_totk(root)
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+    specs[at-1]['FooterText']=('輸入寬x高，例如 1280x720（720p）、960x540 或 1920x1080。'
+        '改變遊戲渲染尺寸，保留原始貼圖和完整 mip。重新啟動遊戲後生效 · '
+        'Enter widthxheight, such as 1280x720 (720p), 960x540 or 1920x1080. '
+        'Changes the game render size; original textures and full mip chains are preserved. Relaunch to apply.')
+    specs[at]={'Type':'PSTextFieldSpecifier','Key':'TOTK_OUTPUT_RES','Title':'渲染分辨率 · Render resolution',
+        'DefaultValue':'960x540','AutocapitalizationType':'None','AutocorrectionType':'No','KeyboardType':'ASCIICapable'}
+    return root
+
 def run(args, cwd, log, env):
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('w') as f:
@@ -93,6 +106,20 @@ def copy_tree(src,dst):
     for p in src.rglob('*'):
         if p.is_file(): clone(p,dst/p.relative_to(src))
 
+def configure_app_icon(tree, gen, project, logs, env, vision=False):
+    # The home screen icon: the game's own, which the build took from its control data for the Mac app
+    # (build/AppIcon.icns, scripts/extract_app_icon.py), as a single-size asset catalog. Without it the app had none.
+    icon=tree/'build/AppIcon.icns'; catalog=gen/'Assets.xcassets'; shutil.rmtree(catalog,ignore_errors=True)
+    if icon.is_file() and not vision:
+        appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True)
+        (catalog/'Contents.json').write_text(json.dumps({'info':{'author':'xcode','version':1}}))
+        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',appicon/'icon-1024.png'],tree,logs/'ios-icon.log',env)
+        (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':'icon-1024.png','idiom':'universal','platform':'ios','size':'1024x1024'}],
+                                                         'info':{'author':'xcode','version':1}}))
+        project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
+        project=project.replace('      CODE_SIGN_STYLE: Manual\n','      CODE_SIGN_STYLE: Manual\n      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n')
+    return project
+
 def project_for_platform(project, platform):
     if platform == 'ios': return project
     if platform != 'visionos': raise ValueError(f'unknown platform {platform}')
@@ -117,7 +144,7 @@ def seed_reusable(seed, source_hash, source_files, sdk):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--tree',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
-    p.add_argument('--version',choices=['v0','v121','v143','botw160','botw190'],required=True);p.add_argument('--logs',type=Path,required=True)
+    p.add_argument('--version',choices=['v0','v121','v143','botw160','botw190','dkb','pkp'],required=True);p.add_argument('--logs',type=Path,required=True)
     p.add_argument('--platform',choices=['ios','visionos'],default='ios')
     p.add_argument('--device-gpu',action='append',default=[],metavar='ARCH',help='compile the pipeline archive here for this device GPU (applegpu_g14p: iPhone 14); auto (default): the iPhones / iPads on the cable; none')
     p.add_argument('--image-outside',action='store_true',help='leave romfs.bin out: the device keeps it in Documents/GameData');p.add_argument('--app-name',default='Tears of the Kingdom');p.add_argument('--bundle-id',default='org.macnativegames.totk')
@@ -131,6 +158,7 @@ def main():
     if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
     gen.mkdir(parents=True,exist_ok=True)
     botw=a.version.startswith('botw')
+    ns2=a.version in ('dkb','pkp')
     # The runtime's tables and hashes from the player's files (runtime/game_data.h) go into the app as files, not into its code.
     game_data=tree/f'build/game-data/{a.version}'
     if not (game_data/'runtime-tables.bin').is_file(): raise RuntimeError(f'missing game data: {game_data} (make game-data-{a.version})')
@@ -142,14 +170,22 @@ def main():
     # it. Without this the embedded code keeps the game's handheld size and the pane's scene row does nothing.
     e=dict(env,TOTK_EXPORT_IOS=str(modules),TOTK_RENDER_RES='1280x720')
     run([host,rewritten,'export-ios'],tree,logs/'export-ios.log',e)
-    flags=subprocess.check_output([sys.executable,ios/'tools/gen_embed.py',rewritten,gen/'embed.S','--text-dir',modules,'main','subsdk0','sdk'],text=True,env=env).strip()
+    names=['main',*(f'subsdk{i}' for i in range(10) if (rewritten/f'subsdk{i}.patched.bin').is_file()),'sdk']
+    flags=subprocess.check_output([sys.executable,ios/'tools/gen_embed.py',rewritten,gen/'embed.S','--text-dir',modules,*names],text=True,env=env).strip()
     # The app's sources use version-specific patch and generated runtime tables.
     project=project_for_platform((ios/'project.yml').read_text(),a.platform)
     # The Settings pane, copied so it can be changed for the game and given its languages (settings_strings.py: one language,
     # the device's, instead of every row in Chinese and English).
     settings=gen/'Settings.bundle'; shutil.rmtree(settings,ignore_errors=True); shutil.copytree(ios/'Settings.bundle',settings)
     project=project.replace('      - Settings.bundle','      - path: Gen/Settings.bundle',1)
-    if botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
+    if ns2:
+        project=project.replace('          - game_patches_ns2.c','          - game_patches.c\n          - game_patches_v143.c')
+        define='GAME_DKB' if a.version=='dkb' else 'GAME_POKOPIA'
+        project=project.replace('-I../build\n',f'-I../build -D{define}=1 -DGAME_NS2=1\n')
+        root=plistlib.loads((settings/'Root.plist').read_bytes())
+        root=bananza_pane(root) if a.version=='dkb' else settings_without_totk(root)
+        (settings/'Root.plist').write_bytes(plistlib.dumps(root))
+    elif botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
         project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
         project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
         root=botw_pane(plistlib.loads((settings/'Root.plist').read_bytes()))
@@ -157,18 +193,8 @@ def main():
     elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
     else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
     settings_strings.localize(settings)   # after the game's own changes to the pane
-    if not botw and a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
-    # The home screen icon: the game's own, which the build took from its control data for the Mac app
-    # (build/AppIcon.icns, scripts/extract_app_icon.py), as a single-size asset catalog. Without it the app had none.
-    icon=tree/'build/AppIcon.icns'; catalog=gen/'Assets.xcassets'; shutil.rmtree(catalog,ignore_errors=True)
-    if icon.is_file() and not vision:
-        appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True)
-        (catalog/'Contents.json').write_text(json.dumps({'info':{'author':'xcode','version':1}}))
-        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',appicon/'icon-1024.png'],tree,logs/'ios-icon.log',env)
-        (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':'icon-1024.png','idiom':'universal','platform':'ios','size':'1024x1024'}],
-                                                         'info':{'author':'xcode','version':1}}))
-        project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
-        project=project.replace('      CODE_SIGN_STYLE: Manual\n','      CODE_SIGN_STYLE: Manual\n      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n')
+    if not botw and not ns2 and a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
+    project=configure_app_icon(tree,gen,project,logs,env,vision)
     (ios/'project.generated.yml').write_text(project)
     # Build device dependencies separately: Homebrew's Mac archives cannot be linked into an iOS application.
     deps=tree/('build/xros-deps' if vision else 'build/ios-deps')
@@ -192,7 +218,7 @@ def main():
     source_manifest_hash=hashlib.sha256((seed_src/'seed-manifest.json').read_bytes()).hexdigest()
     reuse_seed=seed_reusable(seed,source_manifest_hash,json.loads((seed_src/'seed-manifest.json').read_text())['files'],sdk_name)
     if not reuse_seed:
-        if seed.exists(): shutil.rmtree(seed)
+        discard(seed)
         copy_tree(seed_src,seed)
         run([sys.executable,ios/'tools/compile_seed.py',seed,sdk_name],tree,logs/f'{sdk_name}-shaders.log',env)
     seed_manifest=json.loads((seed/'seed-manifest.json').read_text())
@@ -210,7 +236,7 @@ def main():
     # Generate the app project with resolved identity and the embedded-segment linker flags.
     env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
     xcconfig=gen/'totk.xcconfig'
-    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','AVFAudio','Security'])
+    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','Photos','AVFAudio','Security'])
     # the start-up object as a file of its own (publish_ios_lib.sh: inside the archive nothing would pull it in)
     xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
     xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a{xlate_link} {flags}\n'
@@ -242,7 +268,7 @@ def main():
     for src,dst in [(tree/f'extracted/{a.version}/romfs-patches',res/'romfs-patches'),
                     (tree/f'extracted/{a.version}/romfs-patches-out',res/'romfs-patches-out'),
                     (tree/'extracted/firmware/shared-fonts',res/'shared-fonts')]:
-        if src.is_dir() or not botw: copy_tree(src,dst)   # Breath of the Wild has no RomFS overlays
+        if src.is_dir(): copy_tree(src,dst)   # only the overlays and fonts this game actually has
     if botw:   # the add-on content packs the build extracted (games/botw/scripts/extract_aoc_romfs.py), read through TOTK_AOC (main.m)
         aoc=tree/f'extracted/{a.version}/aoc'
         for pack in sorted(aoc.iterdir()) if aoc.is_dir() else []:
@@ -254,7 +280,9 @@ def main():
     # The list's other warm rows (its render pipelines) go in as pso_list.tsv: shader-seed/pso_manifest.tsv is the seed's own
     # list there, and the runtime reads both (nvn_mtl.m warm_start). Before 2026-10-22 they stayed in the build logs.
     lists=tree/'build/ios-seed-lists';shutil.rmtree(lists,ignore_errors=True);lists.mkdir(parents=True)
-    shader_list=tree.parent/'botw/assets/shader_list.tsv' if botw else tree/'assets/shader_list.tsv'   # the work folder's copy of games/botw
+    folder='dkb' if a.version=='dkb' else 'pokopia'
+    shader_list=(tree.parent/folder/'assets/shader_list.tsv' if ns2 else
+                 tree.parent/'botw/assets/shader_list.tsv' if botw else tree/'assets/shader_list.tsv')
     # This version's rows, each variant named as the device seed serves its bind state (shader_list.py resolve).
     run([sys.executable,tree/'scripts/shader_list.py','resolve',seed_src,shader_list,lists/'pso_list.tsv',
          lists/'pso_title.tsv'],tree,logs/'shader-list.log',env)

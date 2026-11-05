@@ -25,6 +25,8 @@ enum {
     RS_DRAW, RS_INSTANCED, RS_INDEXED, RS_STORE,
     RS_BEGIN,   /* u[0] = retained MTL4RenderPassDescriptor, u[1] = vertex table, u[2] = fragment table, u[3] = command buffer, u[4] = barrier at start, u[5] = visibility options */
     RS_END,     /* end the encoder (barrier at end if u[0], visibility options u[1]) */
+    RS_INDEXED_INDIRECT,   /* u[0] primitive, u[1] index type, u[2] index buffer, u[3] its length, u[4] the indirect record */
+    RS_INDIRECT,           /* u[0] primitive, u[1] the indirect record (non-indexed) */
 };
 enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
                                    for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
@@ -55,7 +57,7 @@ static int rs_enabled(void) {
 static inline uint64_t rs_now(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *vt, id<MTL4ArgumentTable> *ft, const nvn_encode_packet *p) {
     const uint64_t *u = p->u; id<MTL4RenderCommandEncoder> e = *enc;
-    if (g_rs_probe_negative && (p->op == RS_DRAW || p->op == RS_INSTANCED || p->op == RS_INDEXED)) return;
+    if (g_rs_probe_negative && (p->op == RS_DRAW || p->op == RS_INSTANCED || p->op == RS_INDEXED || p->op == RS_INDEXED_INDIRECT || p->op == RS_INDIRECT)) return;
     if (p->op != RS_BEGIN && !e) MDIE("render stream packet %llu without an encoder", (unsigned long long)p->op);
     switch (p->op) {
         case RS_BEGIN: {
@@ -92,6 +94,8 @@ static void rs_apply(id<MTL4RenderCommandEncoder> *enc, id<MTL4ArgumentTable> *v
         case RS_ADDRESS: [(u[0] ? *ft : *vt) setAddress:u[2] atIndex:(NSUInteger)u[1]]; break;
         case RS_DRAW: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2]]; break;
         case RS_INSTANCED: [e drawPrimitives:(MTLPrimitiveType)u[0] vertexStart:(NSUInteger)u[1] vertexCount:(NSUInteger)u[2] instanceCount:(NSUInteger)u[3] baseInstance:(NSUInteger)u[4]]; break;
+        case RS_INDEXED_INDIRECT: [e drawIndexedPrimitives:(MTLPrimitiveType)u[0] indexType:(MTLIndexType)u[1] indexBuffer:u[2] indexBufferLength:(NSUInteger)u[3] indirectBuffer:u[4]]; break;
+        case RS_INDIRECT: [e drawPrimitives:(MTLPrimitiveType)u[0] indirectBuffer:u[1]]; break;
         case RS_INDEXED: [e drawIndexedPrimitives:(MTLPrimitiveType)u[0] indexCount:(NSUInteger)u[1] indexType:(MTLIndexType)u[2] indexBuffer:u[3] indexBufferLength:(NSUInteger)u[4] instanceCount:(NSUInteger)u[5] baseVertex:(NSInteger)u[6] baseInstance:(NSUInteger)u[7]]; break;
         case RS_STORE:
             if (u[0] == 1) [e setDepthStoreAction:(MTLStoreAction)u[1]];

@@ -131,7 +131,7 @@ class BotwImport(unittest.TestCase):
     def test_bundle_without_expansion_pass(self):
         tree = self.root / 'tree'
         files = ['build/totk-native-botw160', 'build/pso_manifest.tsv', 'build/pso_title.tsv',
-                 'build/spirv-cross/spirv-cross', 'prebuilt/macos-arm64/totk_xlate', 'build/app-launcher',
+                 'build/spirv-cross/spirv-cross', 'prebuilt/macos-arm64/totk_xlate',
                  'extracted/botw160/romfs/romfs.bin', 'extracted/botw160/romfs/runtime-index.bin',
                  'build/shader-seed/botw160/pso_manifest.tsv']
         files += [f'rewritten/botw160/{n}.patched.bin' for n in ('main', 'sdk', 'subsdk0')]
@@ -141,7 +141,7 @@ class BotwImport(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'test')
         (tree / 'build/shader-seed/botw160/seed-manifest.json').write_text(json.dumps(dict(
-            version='botw160', chain='totk-native-v8-unverified', shaders=2000,
+            version='botw160', chain='totk-native-v9-unverified', shaders=2000,
             files={'pso_manifest.tsv': hashlib.sha256(b'test').hexdigest()})))
         out = self.root / 'BotW.app'
         with patch.object(build_app, 'sign_app'), patch.object(build_app, 'app_seal_valid', return_value=True), \

@@ -11,7 +11,7 @@ module tables and hashes, games/totk/runtime/game_data.h). This builds the first
 the old one. The other files are kept, except for optional 4K/5K canvas resources described below; it needs no new game
 container or keys and takes a few minutes instead of a full build. The game and its version are those of the app.
 
-Tears of the Kingdom 1.4.3 includes a 5K choice by default on 32 GB-plus Macs when the work folder holds matching,
+Tears of the Kingdom 1.4.3 and Breath of the Wild 1.6.0 / 1.9.0 include a 5K choice by default on 32 GB-plus Macs when the work folder holds matching,
 verified game files. An explicit --native-5k / --no-native-5k choice is saved in the app; it also honors one recorded by
 build_app.py. With no choice, an existing 5K app keeps its resources on a smaller Mac. A missing cache or modded heap
 overlays keep the installed canvas during an automatic update, with a rebuild message. No saved resolution is changed.
@@ -320,6 +320,21 @@ def game_data(tree, res, version, logs, env):
 def prepare_native_5k(tree, res, data, version, logs, preference):
     """Prepare a canvas upgrade from the matching cached game files, before touching the installed app.
     Existing 5K apps keep their capability on smaller Macs. A recorded or requested False takes priority."""
+    if version in ('botw160', 'botw190'):
+        folder = res / f'extracted/{version}'
+        present = (folder / 'native-5k').is_file()
+        enabled = preference if preference is not None else present or build_app.native_5k_default()
+        if not enabled:
+            return ('remove' if preference is False else 'keep'), None
+        if present and (folder / 'native-4k').is_file():
+            return 'keep', None
+        # BotW's verified code owns these heaps; no RomFS heap overlays to generate.
+        made = logs / 'native-5k-markers'
+        made.mkdir(parents=True, exist_ok=True)
+        (made / 'native-4k').write_text('3840x2160\n')
+        (made / 'native-5k').write_text('5120x2880\n')
+        say('   native 5K: enabling the code-owned 4K/5K canvases and heaps; saved resolution is kept')
+        return 'add', made
     if version != 'v143':
         return 'keep', None
     overlays = res / 'extracted/v143/romfs-patches-out'
@@ -349,8 +364,16 @@ def prepare_native_5k(tree, res, data, version, logs, preference):
     return 'add', made
 
 
-def replace_native_5k(res, action, made):
+def replace_native_5k(res, action, made, version='v143'):
     """Only the staged app changes; explicit disabling drops 5K while retaining its 4K resources."""
+    if version in ('botw160', 'botw190'):
+        folder = res / f'extracted/{version}'
+        if action == 'remove':
+            (folder / 'native-5k').unlink(missing_ok=True)
+        elif action == 'add':
+            for name in ('native-4k', 'native-5k'):
+                clone(made / name, folder / name)
+        return
     overlays = res / 'extracted/v143/romfs-patches-out'
     if action == 'remove':
         for folder in overlays.glob('5120x2880*'):
@@ -371,13 +394,13 @@ def main(argv):
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
     ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
-                    help='Mac TOTK 1.4.3: include/omit 5K; without a recorded choice, include it on 32 GB-plus Macs '
+                    help='Mac TOTK 1.4.3 / BotW 1.6.0 and 1.9.0: include/omit 5K; without a recorded choice, include it on 32 GB-plus Macs '
                          'when the matching verified build cache is available. Saved resolution is not changed')
     args = ap.parse_args(argv)
     app = args.app.expanduser().resolve()
     game, version = app_identity(app)
-    if args.native_5k and version != 'v143':
-        raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 on Mac')
+    if args.native_5k and version not in ('v143', 'botw160', 'botw190'):
+        raise BuildError('--native-5k needs Tears of the Kingdom 1.4.3 or Breath of the Wild 1.6.0 / 1.9.0 on Mac')
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     preference = args.native_5k if args.native_5k is not None else info.get('MNGNative5K')
     if preference is not None and type(preference) is not bool:
@@ -413,9 +436,8 @@ def main(argv):
         if not stale:
             say('   the app\'s startup shaders are of this runtime\'s translation chain; making them again as asked (--seed)')
         make_seed(tree, work, game, version, logs, env)
-    say('building the runtime from this repository (the game binary, the launcher, the shader tools)')
+    say('building the runtime from this repository (the game binary with its launcher part, the shader tools)')
     run(['make', f'-j{os.cpu_count() or 4}', 'binary' if version == 'v0' else f'binary-{version}'], logs / 'runtime.log', cwd=tree, env=env)
-    build_app.build_launcher(tree, version, logs, env)
     if not (tree / 'build/spirv-cross/spirv-cross').exists():
         build_app.build_spirv_cross(tree, logs)
     build_app.check_translator(tree)
@@ -439,7 +461,7 @@ def main(argv):
             replace_seed(tree, tmp, version, game, logs, bundle_id)
         elif not shaders:
             migrate_shader_data(tmp, version, logs, work, bundle_id)
-        replace_native_5k(new_res, canvas_action, canvas_source)
+        replace_native_5k(new_res, canvas_action, canvas_source, version)
         lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')

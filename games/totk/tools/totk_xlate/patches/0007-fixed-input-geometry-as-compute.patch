@@ -1,0 +1,347 @@
+From seedds/nxnative (MIT), its Ryujinx changes for geometry shaders as Metal compute kernels: bb585cd5 (the fixed
+144-word vertex capture input, IGpuAccessor.QueryGeometryInputFixed / ResourceReservations.FillGeometryInputMap),
+31b5944e and 2c31212f (explicit passthrough vertices with every captured attribute, the output primitive of a
+passthrough shader from its input topology, empty strips not ended, at most MaxOutputVertices emitted, viewport-mask
+culling of a passthrough primitive, a 32x1x1 thread group) and 364e86a1 (draw-wide primitive IDs across split
+dispatches: vb_info.geometry_counts.y is the dispatch's first primitive). Every change is behind
+QueryGeometryInputFixed() or a geometry stage, so vertex, pixel and compute translations are unchanged.
+
+
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -8,6 +8,10 @@
+     /// </summary>
+     public interface IGpuAccessor : ILogger
+     {
++        // Fixed VS capture ABI used by the offline Metal geometry path (seedds/nxnative bb585cd5, MIT): a geometry shader translated
++        // as compute reads its input vertices from 144-word records in the Maxwell attribute map (ResourceReservations.FillGeometryInputMap).
++        bool QueryGeometryInputFixed() => false;
++
+         /// <summary>
+         /// Reads data from the constant buffer 1.
+         /// </summary>
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContext.cs
+@@ -156,6 +156,20 @@
+ 
+                     this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryOutputVertexCountMemoryId, Const(0));
+                     this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryOutputIndexCountMemoryId, Const(0));
++                    if (ResourceManager.Reservations.GeometryInputFixed)
++                    {
++                        this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryPrimitiveOpenMemoryId, Const(0));
++                        for (int i = 0; i < ResourceManager.Reservations.OutputSizePerInvocation; i++)
++                            this.Store(StorageKind.LocalMemory, ResourceManager.LocalVertexDataMemoryId, Const(i), ConstF(0));
++                        void DefaultOne(IoVariable variable, int location, int component)
++                        {
++                            if (ResourceManager.Reservations.TryGetOffset(StorageKind.Output, variable, location, component, out int offset))
++                                this.Store(StorageKind.LocalMemory, ResourceManager.LocalVertexDataMemoryId, Const(offset), ConstF(1));
++                        }
++                        DefaultOne(IoVariable.Position, 0, 3);
++                        DefaultOne(IoVariable.PointSize, 0, 0);
++                        for (int i = 0; i < 32; i++) DefaultOne(IoVariable.UserDefined, i, 3);
++                    }
+                 }
+             }
+         }
+@@ -411,13 +425,26 @@
+                         inputStart = 0;
+                         inputEnd = topology.InputVertexCountNoAdjacency;
+                         inputStep = 1;
++                    }
++
++                    // A primitive whose viewport mask is 0 goes to no viewport: the hardware drops it (NieR:Automata's index-build shaders cull triangles this way)
++                    Operand lblCulled = null;
++
++                    if (TranslatorContext.UsesViewportMask && TranslatorContext.GpuAccessor.QueryHostSupportsViewportMask())
++                    {
++                        lblCulled = Label();
++                        this.BranchIfTrue(lblCulled, this.ICompareEqual(this.Load(StorageKind.Output, IoVariable.ViewportMask, null, Const(0)), Const(0)));
+                     }
+ 
+                     for (int primIndex = inputStart; primIndex < inputEnd; primIndex += inputStep)
+                     {
+                         WritePositionOutput(primIndex);
+ 
+-                        int passthroughAttributes = TranslatorContext.AttributeUsage.PassthroughAttributes;
++                        // Fixed-input stages preserve the complete Maxwell attribute map.
++                        // The reader may consume generic slots above location 15.
++                        int passthroughAttributes = TranslatorContext.GpuAccessor.QueryGeometryInputFixed()
++                            ? ~TranslatorContext.AttributeUsage.UsedOutputAttributes
++                            : TranslatorContext.AttributeUsage.PassthroughAttributes;
+                         while (passthroughAttributes != 0)
+                         {
+                             int index = BitOperations.TrailingZeroCount(passthroughAttributes);
+@@ -429,6 +456,11 @@
+                     }
+ 
+                     this.EndPrimitive();
++
++                    if (lblCulled != null)
++                    {
++                        this.MarkLabel(lblCulled);
++                    }
+                 }
+             }
+             else if (TranslatorContext.Definitions.Stage == ShaderStage.Fragment)
+@@ -565,7 +597,7 @@
+ 
+                     Operand writtenIndices = this.Load(StorageKind.LocalMemory, ResourceManager.LocalGeometryOutputIndexCountMemoryId);
+ 
+-                    int maxIndicesPerPrimitiveInvocation = TranslatorContext.Definitions.GetGeometryOutputIndexBufferStridePerInstance();
++                    int maxIndicesPerPrimitiveInvocation = TranslatorContext.Definitions.GetGeometryOutputIndexBufferStridePerInstance(ResourceManager.Reservations.GeometryInputFixed);
+                     int maxIndicesPerPrimitive = maxIndicesPerPrimitiveInvocation * TranslatorContext.Definitions.ThreadsPerInputPrimitive;
+ 
+                     this.BranchIfTrue(lblExit, this.ICompareGreaterOrEqualUnsigned(writtenIndices, Const(maxIndicesPerPrimitiveInvocation)));
+@@ -575,7 +607,7 @@
+                     Operand primitiveIndex = this.Load(StorageKind.Input, IoVariable.GlobalId, Const(0));
+                     Operand instanceIndex = this.Load(StorageKind.Input, IoVariable.GlobalId, Const(1));
+                     Operand invocationId = this.Load(StorageKind.Input, IoVariable.GlobalId, Const(2));
+-                    Operand vertexCount = this.Load(StorageKind.ConstantBuffer, vertexInfoCbBinding, Const((int)VertexInfoBufferField.VertexCounts), Const(0));
++                    Operand vertexCount = this.Load(StorageKind.ConstantBuffer, vertexInfoCbBinding, Const((int)(ResourceManager.Reservations.GeometryInputFixed ? VertexInfoBufferField.GeometryCounts : VertexInfoBufferField.VertexCounts)), Const(0));
+                     Operand primitiveId = this.IAdd(this.IMultiply(instanceIndex, vertexCount), primitiveIndex);
+                     Operand ibOffset = this.IMultiply(primitiveId, Const(maxIndicesPerPrimitive));
+                     ibOffset = this.IAdd(ibOffset, this.IMultiply(invocationId, Const(maxIndicesPerPrimitiveInvocation)));
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs
+@@ -239,11 +239,31 @@
+ 
+         public static Operand EmitVertex(this EmitterContext context)
+         {
++            if (context.VertexAsCompute && context.ResourceManager.Reservations.GeometryInputFixed)
++            {
++                Operand end = Label();
++                Operand count = context.Load(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryOutputVertexCountMemoryId);
++                context.BranchIfTrue(end, context.ICompareGreaterOrEqualUnsigned(count, Const(context.TranslatorContext.Definitions.MaxOutputVertices)));
++                context.Store(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryPrimitiveOpenMemoryId, Const(1));
++                context.Add(Instruction.EmitVertex);
++                context.MarkLabel(end);
++                return null;
++            }
+             return context.Add(Instruction.EmitVertex);
+         }
+ 
+         public static Operand EndPrimitive(this EmitterContext context)
+         {
++            if (context.VertexAsCompute && context.ResourceManager.Reservations.GeometryInputFixed)
++            {
++                Operand end = Label();
++                Operand open = context.Load(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryPrimitiveOpenMemoryId);
++                context.BranchIfTrue(end, context.ICompareEqual(open, Const(0)));
++                context.Store(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryPrimitiveOpenMemoryId, Const(0));
++                context.Add(Instruction.EndPrimitive);
++                context.MarkLabel(end);
++                return null;
++            }
+             return context.Add(Instruction.EndPrimitive);
+         }
+ 
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -52,6 +52,7 @@
+         public int LocalVertexIndexInstanceRateMemoryId { get; private set; }
+         public int LocalGeometryOutputVertexCountMemoryId { get; private set; }
+         public int LocalGeometryOutputIndexCountMemoryId { get; private set; }
++        public int LocalGeometryPrimitiveOpenMemoryId { get; private set; }
+ 
+         public ShaderProperties Properties { get; }
+ 
+@@ -153,6 +154,8 @@
+ 
+                 LocalGeometryOutputVertexCountMemoryId = AddMemoryDefinition("local_geometry_output_vertex", AggregateType.U32);
+                 LocalGeometryOutputIndexCountMemoryId = AddMemoryDefinition("local_geometry_output_index", AggregateType.U32);
++                if (Reservations.GeometryInputFixed)
++                    LocalGeometryPrimitiveOpenMemoryId = AddMemoryDefinition("local_geometry_primitive_open", AggregateType.U32);
+             }
+         }
+ 
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceReservations.cs
+@@ -24,6 +24,7 @@
+         public int ReservedStorageBuffers { get; }
+         public int ReservedTextures { get; }
+         public int ReservedImages { get; }
++        public bool GeometryInputFixed { get; }
+         public int InputSizePerInvocation { get; }
+         public int OutputSizePerInvocation { get; }
+         public int OutputSizeInBytesPerInvocation => OutputSizePerInvocation * sizeof(uint);
+@@ -81,16 +82,30 @@
+             if (vertexAsCompute)
+             {
+                 _offsets = new();
++                GeometryInputFixed = gpuAccessor.QueryGeometryInputFixed();
+ 
+                 if (vacInput.HasValue)
+                 {
+-                    InputSizePerInvocation = FillIoOffsetMap(gpuAccessor, StorageKind.Input, vacInput.Value);
++                    InputSizePerInvocation = GeometryInputFixed ? FillGeometryInputMap() : FillIoOffsetMap(gpuAccessor, StorageKind.Input, vacInput.Value);
+                 }
+ 
+                 OutputSizePerInvocation = FillIoOffsetMap(gpuAccessor, StorageKind.Output, vacOutput);
+             }
+         }
+ 
++        // Matches dmsh_geometry.py: independent stages meet through the Maxwell attribute map.
++        private int FillGeometryInputMap()
++        {
++            for (int c = 0; c < 4; c++) _offsets.Add(new(StorageKind.Input, IoVariable.Position, 0, c), c);
++            _offsets.Add(new(StorageKind.Input, IoVariable.PointSize), 4);
++            for (int c = 0; c < 8; c++) _offsets.Add(new(StorageKind.Input, IoVariable.ClipDistance, 0, c), 5 + c);
++            _offsets.Add(new(StorageKind.Input, IoVariable.Layer), 13);
++            _offsets.Add(new(StorageKind.Input, IoVariable.ViewportIndex), 14);
++            for (int a = 0; a < 32; a++) for (int c = 0; c < 4; c++)
++                _offsets.Add(new(StorageKind.Input, IoVariable.UserDefined, a, c), 16 + 4 * a + c);
++            return 144;
++        }
++
+         private int FillIoOffsetMap(IGpuAccessor gpuAccessor, StorageKind storageKind, IoUsage vacUsage)
+         {
+             int offset = 0;
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/ShaderDefinitions.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ShaderDefinitions.cs
+@@ -156,7 +156,15 @@
+             _graphicsState = graphicsState;
+             GpPassthrough = gpPassthrough;
+             ThreadsPerInputPrimitive = threadsPerInputPrimitive;
+-            OutputTopology = outputTopology;
++            // Native geometry passthrough inherits the input primitive; its
++            // SPH output declaration is unused. Compute emulation must expose
++            // the same primitive to index compaction and raster replay.
++            OutputTopology = gpPassthrough ? graphicsState.Topology switch
++            {
++                InputTopology.Points => OutputTopology.PointList,
++                InputTopology.Lines or InputTopology.LinesAdjacency => OutputTopology.LineStrip,
++                _ => OutputTopology.TriangleStrip,
++            } : outputTopology;
+             MaxOutputVertices = gpPassthrough ? graphicsState.Topology.InputVertexCountNoAdjacency : maxOutputVertices;
+             ImapTypes = imapTypes;
+             OmapTargets = omapTargets;
+@@ -337,8 +345,12 @@
+             return _graphicsState.AttributeTypes[location].HasFlag(AttributeType.PackedRgb10A2Signed);
+         }
+ 
+-        public int GetGeometryOutputIndexBufferStridePerInstance()
++        public int GetGeometryOutputIndexBufferStridePerInstance(bool fixedInput = false)
+         {
++            // Even a strip with fewer than three vertices can be ended. Empty
++            // ends are ignored by the fixed-input emitter, so at most one
++            // restart per emitted vertex is needed.
++            if (fixedInput) return MaxOutputVertices * 2;
+             return MaxOutputVertices + OutputTopology switch
+             {
+                 OutputTopology.LineStrip => MaxOutputVertices / 2,
+@@ -347,9 +359,9 @@
+             };
+         }
+ 
+-        public int GetGeometryOutputIndexBufferStride()
++        public int GetGeometryOutputIndexBufferStride(bool fixedInput = false)
+         {
+-            return GetGeometryOutputIndexBufferStridePerInstance() * ThreadsPerInputPrimitive;
++            return GetGeometryOutputIndexBufferStridePerInstance(fixedInput) * ThreadsPerInputPrimitive;
+         }
+     }
+ }
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/GeometryToCompute.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/GeometryToCompute.cs
+@@ -142,7 +142,7 @@
+             Operand baseIndexOffset = GenerateBaseOffset(
+                 resourceManager,
+                 node,
+-                definitions.GetGeometryOutputIndexBufferStride(),
++                definitions.GetGeometryOutputIndexBufferStride(resourceManager.Reservations.GeometryInputFixed),
+                 definitions.ThreadsPerInputPrimitive);
+             Operand outputBaseIndex = Local();
+             node.List.AddBefore(node, new Operation(Instruction.Add, outputBaseIndex, new[] { baseIndexOffset, outputPrimIndex }));
+@@ -197,7 +197,7 @@
+             Operand baseIndexOffset = GenerateBaseOffset(
+                 resourceManager,
+                 node,
+-                definitions.GetGeometryOutputIndexBufferStride(),
++                definitions.GetGeometryOutputIndexBufferStride(resourceManager.Reservations.GeometryInputFixed),
+                 definitions.ThreadsPerInputPrimitive);
+             Operand outputBaseIndex = Local();
+             node.List.AddBefore(node, new Operation(Instruction.Add, outputBaseIndex, new[] { baseIndexOffset, outputPrimIndex }));
+@@ -212,7 +212,7 @@
+         private static Operand GenerateBaseOffset(ResourceManager resourceManager, LinkedListNode<INode> node, int stride, int threadsPerInputPrimitive)
+         {
+             Operand primitiveId = Local();
+-            GeneratePrimitiveId(resourceManager, node, primitiveId);
++            GeneratePrimitiveId(resourceManager, node, primitiveId, true);
+ 
+             Operand baseOffset = Local();
+             node.List.AddBefore(node, new Operation(Instruction.Multiply, baseOffset, new[] { primitiveId, Const(stride) }));
+@@ -303,8 +303,20 @@
+             return vertexElemOffset;
+         }
+ 
+-        private static LinkedListNode<INode> GeneratePrimitiveId(ResourceManager resourceManager, LinkedListNode<INode> node, Operand dest)
++        private static LinkedListNode<INode> GeneratePrimitiveId(ResourceManager resourceManager, LinkedListNode<INode> node, Operand dest, bool outputIndex = false)
+         {
++            if (resourceManager.Reservations.GeometryInputFixed && !outputIndex)
++            {
++                // Replay may split one draw into several compute dispatches.
++                // Guest primitive IDs remain draw-wide; topology remapping and
++                // output allocation must keep using the dispatch-local index.
++                Operand localId = Local();
++                node.List.AddBefore(node, new Operation(Instruction.Load, StorageKind.Input, localId, new[] { Const((int)IoVariable.GlobalId), Const(0) }));
++                Operand primitiveBase = Local();
++                node.List.AddBefore(node, new Operation(Instruction.Load, StorageKind.ConstantBuffer, primitiveBase,
++                    new[] { Const(resourceManager.Reservations.VertexInfoConstantBufferBinding), Const((int)VertexInfoBufferField.GeometryCounts), Const(1) }));
++                return node.List.AddBefore(node, new Operation(Instruction.Add, dest, new[] { localId, primitiveBase }));
++            }
+             int vertexInfoCbBinding = resourceManager.Reservations.VertexInfoConstantBufferBinding;
+ 
+             Operand vertexCount = Local();
+@@ -312,7 +324,7 @@
+                 Instruction.Load,
+                 StorageKind.ConstantBuffer,
+                 vertexCount,
+-                new[] { Const(vertexInfoCbBinding), Const((int)VertexInfoBufferField.VertexCounts), Const(0) }));
++                new[] { Const(vertexInfoCbBinding), Const((int)(resourceManager.Reservations.GeometryInputFixed ? VertexInfoBufferField.GeometryCounts : VertexInfoBufferField.VertexCounts)), Const(0) }));
+ 
+             Operand vertexIndex = Local();
+             node.List.AddBefore(node, new Operation(
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -227,6 +227,13 @@
+                 InitializeVertexOutputs(context);
+             }
+ 
++            // An emulated passthrough geometry shader draws its primitive unless it writes a viewport mask of 0 (EmitterContext.PrepareForReturn): until it writes one, all viewports
++            if (stage == ShaderStage.Geometry && context.TranslatorContext.Definitions.GpPassthrough && context.TranslatorContext.UsesViewportMask &&
++                !gpuAccessor.QueryHostSupportsGeometryShaderPassthrough() && gpuAccessor.QueryHostSupportsViewportMask())
++            {
++                context.Store(StorageKind.Output, IoVariable.ViewportMask, null, Const(0), Const(-1));
++            }
++
+             UInt128 usedAttributes = context.TranslatorContext.AttributeUsage.NextInputAttributesComponents;
+             while (usedAttributes != UInt128.Zero)
+             {
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -36,6 +36,7 @@
+ 
+         private bool IsTransformFeedbackEmulated => !GpuAccessor.QueryHostSupportsTransformFeedback() && GpuAccessor.QueryTransformFeedbackEnabled();
+         public bool HasStore => _program.UsedFeatures.HasFlag(FeatureFlags.Store) || (IsTransformFeedbackEmulated && Definitions.LastInVertexPipeline);
++        internal bool UsesViewportMask => _program.UsedFeatures.HasFlag(FeatureFlags.ViewportMask);
+ 
+         public bool LayerOutputWritten { get; private set; }
+         public int LayerOutputAttribute { get; private set; }
+@@ -461,7 +462,7 @@
+         {
+             if (vertexAsCompute)
+             {
+-                return new ShaderDefinitions(ShaderStage.Compute, 32, 32, 1);
++                return new ShaderDefinitions(ShaderStage.Compute, 32, GpuAccessor.QueryGeometryInputFixed() ? 1 : 32, 1);
+             }
+             else
+             {
+

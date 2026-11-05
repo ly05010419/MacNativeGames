@@ -2,6 +2,7 @@
 #import <AVFAudio/AVFAudio.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <GameController/GameController.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <TargetConditionals.h>
 #include <pthread.h>
 #include <signal.h>
@@ -13,6 +14,7 @@
 #include "game_version.h"   // GAME_FOLDER and TOTK_GAME_VERSION of this build (build_ipa.py's -D flags)
 #include "dmsh_chain.h"
 #include "settings_map.h"
+#include "ns2_resolution.h"
 #include "totk_shader_contrib.h"   // totk_contrib_prune
 #import "touch_pad.h"
 #import "start_screen.h"
@@ -22,6 +24,7 @@ void runtime_ios_attach_layer(CAMetalLayer *layer, UIView *host);
 void runtime_ios_sync_drawable(UIView *host);
 void runtime_ios_sync_safe_area(UIView *host);
 static char *host_argv[3];
+static BOOL outputResolutionFromEnvironment;
 static NSString *g_no_game_data;   // set when there is no RomFS image to play from (didFinishLaunching)
 static NSString *g_seed_pack, *g_seed_unpack_to;   // a pushed shader pack to unpack before the game starts (seed_unpack)
 
@@ -76,6 +79,34 @@ static NSString *seed_unpack(NSString *base, NSString *dest, void (^progress)(ui
     return nil;
 }
 static void *run_host(void *unused) { (void)unused; return (void *)(intptr_t)totk_host_main(3, host_argv); }
+/* Save sync (runtime/cloud_save.m): a folder the player chose, e.g. an iCloud Drive folder shared with the Mac or with
+   another Apple ID. Chosen in the system folder picker, opened at start when the Settings app's "Choose folder" switch is
+   on or from the Home Screen icon's menu ("save-sync-folder", project.yml); remembered as a security-scoped bookmark and
+   opened for the app's life before the game starts. Settings › "Stop syncing" forgets it. The saves stay in Documents/save.
+   A start with no folder offers to choose one (offerCloudFolderThen); "Don't ask again" or "Stop syncing" ends that. */
+static NSString *const CloudBookmark = @"TOTK_CLOUD_SAVE_BOOKMARK", *const CloudName = @"TOTK_CLOUD_SAVE_FOLDER_NAME";
+static NSString *const CloudShortcut = @"save-sync-folder";
+static BOOL g_pick_cloud_folder;   // the app was opened from the Home Screen icon's "Save sync folder"
+static void cloud_folder_forget_if_asked(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (![d boolForKey:@"TOTK_CLOUD_SAVE_STOP"]) return;
+    [d removeObjectForKey:CloudBookmark]; [d removeObjectForKey:CloudName]; [d setBool:NO forKey:@"TOTK_CLOUD_SAVE_STOP"];
+    [d setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"];   // and no offer at start
+    fprintf(stderr, "[cloud-save] the sync folder is forgotten (Settings › Stop syncing)\n");
+}
+static void cloud_folder_apply(void) {
+    if (getenv("TOTK_CLOUD_SAVE_DIR") || getenv("TOTK_CLOUD_SAVE_FOLDER")) return;   // devicectl --environment-variables wins
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSData *bookmark = [d dataForKey:CloudBookmark]; if (!bookmark) return;
+    BOOL stale = NO; NSError *err = nil;
+    NSURL *url = [NSURL URLByResolvingBookmarkData:bookmark options:0 relativeToURL:nil bookmarkDataIsStale:&stale error:&err];
+    if (!url || ![url startAccessingSecurityScopedResource]) {   // never stopped: the game reads and writes it until it quits
+        fprintf(stderr, "[cloud-save] the sync folder cannot be opened: %s\n", err ? err.localizedDescription.UTF8String : "no access");
+        return;
+    }
+    if (stale) { NSData *fresh = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:nil]; if (fresh) [d setObject:fresh forKey:CloudBookmark]; }
+    setenv("TOTK_CLOUD_SAVE_FOLDER", url.path.fileSystemRepresentation, 1);
+}
 /* Key 1's settings panel is Mac only (runtime/frontend.m). */
 void runtime_settings_toggle(void) {}
 #if !TARGET_OS_VISION
@@ -91,7 +122,11 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
 - (void)safeAreaInsetsDidChange { [super safeAreaInsetsDidChange]; runtime_ios_sync_safe_area(self); }   // the HUD boxes keep out of the notch
 @end
 
-@interface TOTKGameController : UIViewController @property(nonatomic,strong) TOTKMetalView *gameView; @end
+@interface TOTKGameController : UIViewController <UIDocumentPickerDelegate>
+@property(nonatomic,strong) TOTKMetalView *gameView;
+@property(nonatomic,copy) void (^afterCloudPick)(void);   // the rest of the start, when the picker was opened before it
+- (void)pickCloudFolderThen:(void (^)(void))then;
+@end
 @implementation TOTKGameController
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -118,6 +153,72 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         runtime_boot_status(zh ? "无法开始游戏" : "Cannot start the game", g_no_game_data.UTF8String);
         return;
     }
+    cloud_folder_forget_if_asked();
+    if (g_pick_cloud_folder || [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_CLOUD_SAVE_PICK"]) {
+        __weak TOTKGameController *weakSelf = self;
+        [self pickCloudFolderThen:^{ [weakSelf prepareAndStart]; }];
+        return;
+    }
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (![d dataForKey:CloudBookmark] && ![d boolForKey:@"TOTK_CLOUD_SAVE_ASKED"] && !getenv("TOTK_CLOUD_SAVE_DIR") && !getenv("TOTK_CLOUD_SAVE_FOLDER")) {
+        [self offerCloudFolder];
+        return;
+    }
+    [self prepareAndStart];
+}
+/* No sync folder yet: offer one before the game reads its save, so it syncs from this start. "Not now" asks again at the
+   next start (as does cancelling the picker); "Don't ask again" never (Settings › Choose folder still works). */
+- (void)offerCloudFolder {
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:(zh ? @"要和其他设备同步存档吗？" : @"Sync saves with your other devices?")
+        message:(zh ? @"选择一个每台设备都能看到的文件夹，例如 iCloud 云盘里的文件夹（也可以是和另一个 Apple ID 共享的文件夹）。存档仍保存在这台设备上，只把副本放进这个文件夹。以后也可以在“设置”App 里更改。"
+                    : @"Choose a folder every device can see, such as a folder in iCloud Drive (one shared with another Apple ID works too). Saves stay on this device; a copy goes to the folder. You can change it later in the Settings app.")
+        preferredStyle:UIAlertControllerStyleAlert];
+    __weak TOTKGameController *weakSelf = self;
+    [a addAction:[UIAlertAction actionWithTitle:(zh ? @"选择文件夹…" : @"Choose Folder…") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        (void)x; [weakSelf pickCloudFolderThen:^{ [weakSelf prepareAndStart]; }]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:(zh ? @"以后再说" : @"Not Now") style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) {
+        (void)x; [weakSelf prepareAndStart]; }]];
+    [a addAction:[UIAlertAction actionWithTitle:(zh ? @"不要再问" : @"Don't Ask Again") style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+        (void)x; [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"]; [weakSelf prepareAndStart]; }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+/* The folder picker (cloud_folder_apply above). Before the game starts, `then` continues the start; while it runs (the
+   Home Screen menu of a running game), the new folder is used from the next start. */
+- (void)pickCloudFolderThen:(void (^)(void))then {
+    g_pick_cloud_folder = NO; [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"TOTK_CLOUD_SAVE_PICK"];
+    if (self.presentedViewController) { if (then) then(); return; }
+    self.afterCloudPick = then;
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+    picker.delegate = self; picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    (void)controller;
+    NSURL *url = urls.firstObject; NSData *bookmark = nil;
+    if (url && [url startAccessingSecurityScopedResource]) {
+        bookmark = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:nil];
+        [url stopAccessingSecurityScopedResource];
+    }
+    if (bookmark) {
+        [NSUserDefaults.standardUserDefaults setObject:bookmark forKey:CloudBookmark];
+        [NSUserDefaults.standardUserDefaults setObject:url.lastPathComponent forKey:CloudName];
+        fprintf(stderr, "[cloud-save] sync folder chosen: %s\n", url.path.UTF8String);
+    } else fprintf(stderr, "[cloud-save] the chosen folder gave no access: %s\n", url.path.UTF8String ?: "?");
+    [self finishCloudPick:bookmark ? url.lastPathComponent : nil];
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller { (void)controller; [self finishCloudPick:nil]; }
+- (void)finishCloudPick:(NSString *)chosen {
+    void (^then)(void) = self.afterCloudPick; self.afterCloudPick = nil;
+    if (then) { then(); return; }
+    if (!chosen) return;
+    BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:(zh ? @"存档会同步到“%@”" : @"Saves will sync through “%@”"), chosen]
+                                                               message:(zh ? @"下次打开游戏时生效。" : @"Takes effect the next time the game opens.") preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+- (void)prepareAndStart {
 #if TARGET_OS_VISION
     [self boot];
 #else
@@ -157,6 +258,7 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
     [self startGame];
 }
 - (void)startGame {
+    cloud_folder_apply();   // before the game thread: fs_host.c init reads TOTK_CLOUD_SAVE_FOLDER
     /* Playback category (PR #97): plays with the ring / silent switch off and routes to the speaker. Without an active
        session the game's CoreAudio output stays on a null sink on iOS 27 ("no device sink in use"); activating it in
        didFinishLaunching blocked the main thread before the log file was opened. Interruptions: audio_observe. */
@@ -183,7 +285,8 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
     (void)session; (void)options;
     if (![scene isKindOfClass:UIWindowScene.class]) return;
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    if ([options.shortcutItem.type isEqualToString:CloudShortcut]) g_pick_cloud_folder = YES;   // opened from the Home Screen menu
+    self.window =[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
     self.window.rootViewController = [TOTKGameController new]; [self.window makeKeyAndVisible];
 #if TARGET_OS_VISION
     UIWindowSceneGeometryPreferencesVision *prefs = [[UIWindowSceneGeometryPreferencesVision alloc] initWithSize:CGSizeMake(1280, 720)];
@@ -192,6 +295,13 @@ static void apply_display_settings(void);   // below, next to the pane helpers i
         fprintf(stderr, "[totk] 16:9 window refused: %s\n", error.localizedDescription.UTF8String);
     }];
 #endif
+}
+/* The Home Screen menu while the app is already open. */
+- (void)windowScene:(UIWindowScene *)scene performActionForShortcutItem:(UIApplicationShortcutItem *)item completionHandler:(void (^)(BOOL))done {
+    (void)scene;
+    BOOL ours = [item.type isEqualToString:CloudShortcut];
+    if (ours) [(TOTKGameController *)self.window.rootViewController pickCloudFolderThen:nil];
+    done(ours);
 }
 @end
 
@@ -252,6 +362,19 @@ static void apply_frame_env(const totk_frame_env *e, int overwrite) {
    and the start screen does not write its rows, so it is left as it is. The mapping is settings_map.c's. */
 static void apply_display_settings(void) {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+#ifdef GAME_DKB
+    if (!outputResolutionFromEnvironment) {
+        NSString *size=[d stringForKey:@"TOTK_OUTPUT_RES"] ?: @"960x540";
+        unsigned w,h;
+        if(!ns2_parse_resolution(size.UTF8String,&w,&h)) {
+            size=@"960x540";[d setObject:size forKey:@"TOTK_OUTPUT_RES"];
+            ns2_parse_resolution(size.UTF8String,&w,&h);
+            fprintf(stderr,"[totk] invalid saved resolution; using 960x540\n");
+        }
+        setenv("TOTK_OUTPUT_RES",size.UTF8String,1);
+        char height[16];snprintf(height,sizeof height,"%u",h);setenv("TOTK_IOS_DRAWABLE_H",height,0);
+    }
+#endif
     if ([d boolForKey:@"TOTK_CUSTOM_PICTURE"]) return;
     totk_preset_env prenv;
     totk_preset_env_build([d boolForKey:@"TOTK_DOCKED"], &prenv);
@@ -436,6 +559,7 @@ static void apply_settings(void) {
     BOOL debugLog = debugEnv ? (*debugEnv && strcmp(debugEnv,"0")) : [NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_DEBUG_LOG"];
     if (debugLog) { if (freopen(log.fileSystemRepresentation,"w",stderr)) setvbuf(stderr,NULL,_IOLBF,0); setenv("TOTK_UW_CATALOG","1",0); }
     else { [fm removeItemAtPath:log error:nil]; if (freopen("/dev/null","w",stderr)) setvbuf(stderr,NULL,_IOFBF,1<<16); }
+    outputResolutionFromEnvironment=getenv("TOTK_OUTPUT_RES")!=NULL;
     apply_settings();
     setenv("TOTK_ROMFS",[res stringByAppendingPathComponent:@"romfs"].fileSystemRepresentation,1);
     setenv("TOTK_GAME_DATA",[res stringByAppendingPathComponent:@"game-data"].fileSystemRepresentation,1);   // runtime/game_data.h
@@ -553,7 +677,9 @@ static void apply_settings(void) {
     if ([NSUserDefaults.standardUserDefaults boolForKey:@"TOTK_TOUCH_WITH_KEYBOARD"]) setenv("TOTK_TOUCH_WITH_KEYBOARD", "1", 0);
     unsetenv("TOTK_AUTOLOAD");
     chdir(docs.fileSystemRepresentation);
-    host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup("boot");
+    const char *probe = getenv("TOTK_IOS_PROBE");
+    if (probe && strncmp(probe, "probe", 5)) { fprintf(stderr,"invalid TOTK_IOS_PROBE\n"); abort(); }
+    host_argv[0] = strdup("TOTK"); host_argv[1] = strdup(res.fileSystemRepresentation); host_argv[2] = strdup(probe ? probe : "boot");
     return YES;   // the window is made when the window scene connects (TOTKSceneDelegate)
 }
 @end

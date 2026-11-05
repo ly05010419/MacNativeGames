@@ -88,8 +88,31 @@ static void render_scale_apply(Module *m) {
 #endif
 }
 
+/* Frame wait (stage 14; 2.2.1, site in game_version.h): the game's frame limiter spins on the clock for the rest of each frame
+   (one core busy, about 76,000 clock reads a second). The clock gate (loader.c runtime_dispatch) sleeps 0.2 ms before answering
+   a read made from that loop, so the wait ends at most that much later and the core is free meanwhile. XC3_FRAME_WAIT=0 spins
+   as the game does. */
+uintptr_t runtime_frame_wait_ret;
+static void frame_wait_apply(Module *m) {
+#ifdef XC3_FRAME_WAIT_SITE
+    const char *e = getenv("XC3_FRAME_WAIT");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[xc3] frame wait: spins (XC3_FRAME_WAIT=0)\n"); return; }
+    static const struct { uint64_t off; uint32_t was; } site = XC3_FRAME_WAIT_SITE;
+    uint32_t w; memcpy(&w, m->base + site.off, 4);
+    if (site.off + 4 > m->text_end || w != site.was) {
+        fprintf(stderr, "[xc3] frame wait at main+%#llx: %08x, not %08x\n", (unsigned long long)site.off, w, site.was);
+        runtime_fail("frame wait site does not match this game version");
+    }
+    runtime_frame_wait_ret = (uintptr_t)m->base + site.off;
+    fprintf(stderr, "[xc3] frame wait: sleeps between clock reads\n");
+#else
+    (void)m;
+#endif
+}
+
 void runtime_game_patches(Module *main_module) {
     render_scale_apply(main_module);
+    frame_wait_apply(main_module);
     const char *list = getenv("XC3_PATCHES");
     if (!list || !*list) { fprintf(stderr, "[xc3] game patches: none (XC3_PATCHES)\n"); return; }
     char buf[1024]; snprintf(buf, sizeof buf, "%s", list);

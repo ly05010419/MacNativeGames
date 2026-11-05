@@ -8,6 +8,11 @@
 // Request: {"variant", "stage": "vs|ps|cs", "code": path, "c1": hex, "tex": {slot: type}, "img": {slot: {type, fmt}},
 //           "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint}, "local": [x, y, z], "depth_minus_w": bool}
 // Reply:   {"ok": true} or {"ok": false, "error": "..."}; outputs <out>/<variant>_b.metal and <variant>_b.json.
+// Geometry (Switch 2 / NVN2 first; Geometry.cs, GeometryService.cs): "stage": "gs" with "geometry_topology": the draw's
+// InputTopology (0 points, 1 lines, 2 lines adjacency, 3 triangles, 4 triangles adjacency) gives the geometry shader as a
+// compute kernel (<variant>_b.metal / .json) and its raster reader vertex shader (<variant>_r.metal / .json); a vertex
+// request with "geometry_capture": true adds the capture entry point main0_gs to its MSL. Without these fields every
+// output is the same as before.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -20,7 +25,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-static class ShaderService
+static partial class ShaderService
 {
     sealed class RuntimeError : Exception { public RuntimeError(string message) : base(message) { } }
 
@@ -34,9 +39,13 @@ static class ShaderService
     static readonly Dictionary<string, (long lo, long hi)[]> DrvFillC0 = new()
     {
         ["vs"] = new[] { (0x110L, 0x210L), (0x610L, 0x620L) }, ["ps"] = new[] { (0x510L, 0x610L) }, ["cs"] = new[] { (0x200L, 0x410L) },
+        ["gs"] = new[] { (GsSsboBase, GsSsboBase + 0x100) },   // the geometry stage's storage buffer table
     };
+    // c0 + 0x410 + 0x10 r: the geometry stage's storage buffer r (seedds/nxnative dmsh_abi.h DMSH_C0_SSBO_GS, NieR:Automata;
+    // Donkey Kong Bananza's terrain geometry shader 5d537f7630ec reads its two at 0x410 / 0x420)
+    const long GsSsboBase = 0x410;
     static readonly (long lo, long hi)[] DrvFillC2 = { (0x20, 0x120), (0x168, 0x568), (0x568, 0x968) };
-    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp" };
+    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp" };
     // Depth-format textures sampled through plain texture slots: Metal returns nothing for a depth texture read as texture2d,
     // so the declaration becomes depth2d / depth2d_array / depthcube (same for _ms) and every .sample / .read on it is wrapped
     // so the scalar depth becomes (d, 0, 0, 1) like a depth texture fetch on NVN. .gather already returns float4 on depth.
@@ -286,6 +295,7 @@ static class ShaderService
             var e = new JsonObject { ["msl_name"] = nm, ["msl_type"] = ty, ["arg_id"] = ParseInt(m.Groups[3].Value) };
             Match fm;
             if (nm == "support_buffer") e["kind"] = "support";
+            else if (ShaderGeometry.Helpers.TryGetValue(nm, out int helper)) { e["kind"] = "geometry"; e["reg"] = helper; }   // the geometry lowering's own buffers (Geometry.cs)
             else if ((fm = Regex.Match(nm, @"^[a-z]+_c(\d+)\z")).Success)
             {
                 long n = ParseInt(fm.Groups[1].Value);
@@ -306,7 +316,7 @@ static class ShaderService
             }
             binds.Add(e);
         }
-        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, _ => null };
+        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, "gs" => GsSsboBase, _ => null };
         List<JsonObject> sbSorted = res["sbufs"].AsArray().Select(b => b.AsObject()).OrderBy(b => Long(b["binding"])).ToList();   // stable, as sorted()
         foreach (JsonObject e in binds)
         {
@@ -367,7 +377,25 @@ static class ShaderService
     // SPIRV-Cross's own program, compiled into this one (spirv_cross_inproc.cpp, linked by publish_native.sh): the same MSL
     // without a process per shader. TOTK_XLATE_SPIRV_CROSS=process runs the --spirv-cross program instead, as before.
     [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_msl")]
-    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, out IntPtr msl, out IntPtr err);
+    static extern unsafe int SpirvCrossMsl(uint* words, nuint count, uint mslVersion, out IntPtr msl, out IntPtr err);
+
+    // Image atomics run on the Metal texture itself (MSL 3.1 texture atomics; from seedds/nxnative f8642c48, MIT): below 3.1
+    // SPIRV-Cross emulates them through a raw pointer beside the texture, which a deswizzled block-linear copy does not share, a 3D
+    // image does not compile, and an atomic on a read-write texture made it throw (Donkey Kong Bananza 841c54a878c402f9, 4933fe058307fe7f).
+    // Only a module with an image texel pointer (OpImageTexelPointer, the operand of every image atomic) is written at 3.1: every other
+    // shader keeps its MSL 2.3 source byte for byte.
+    static uint MslVersion(byte[] spv)
+    {
+        if (spv.Length < 20 || BitConverter.ToUInt32(spv, 0) != 0x07230203) return 20300;
+        for (int i = 20; i + 4 <= spv.Length;)
+        {
+            uint w = BitConverter.ToUInt32(spv, i); int n = (int)(w >> 16);
+            if ((w & 0xffff) == 60) return 30100;   // OpImageTexelPointer
+            if (n == 0) break;
+            i += 4 * n;
+        }
+        return 20300;
+    }
     [DllImport("totk_spirv_cross", EntryPoint = "totk_spirv_cross_free")]
     static extern void SpirvCrossFree(IntPtr p);
     static readonly bool spirvCrossProcess = Environment.GetEnvironmentVariable("TOTK_XLATE_SPIRV_CROSS") == "process";
@@ -378,7 +406,7 @@ static class ShaderService
         {
             byte[] bytes = File.ReadAllBytes(spv);
             int rc; IntPtr mslText, errText;
-            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), out mslText, out errText);
+            fixed (byte* b = bytes) rc = SpirvCrossMsl((uint*)b, (nuint)(bytes.Length / 4), MslVersion(bytes), out mslText, out errText);
             try
             {
                 if (rc != 0) throw new RuntimeError(what + Cut((Marshal.PtrToStringUTF8(errText) ?? "").Trim(), 300));
@@ -390,7 +418,8 @@ static class ShaderService
             return;
         }
         var psi = new ProcessStartInfo(spirvCross) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (string a in Xc) psi.ArgumentList.Add(a);
+        uint version = MslVersion(File.ReadAllBytes(spv));
+        foreach (string a in Xc) psi.ArgumentList.Add(a == "20300" ? version.ToString(CultureInfo.InvariantCulture) : a);
         psi.ArgumentList.Add(spv); psi.ArgumentList.Add("--output"); psi.ArgumentList.Add(msl);
         using Process p = Process.Start(psi) ?? throw new RuntimeError(what + "could not start " + spirvCross);
         var err = p.StandardError.ReadToEndAsync(); var outp = p.StandardOutput.ReadToEndAsync();
@@ -407,11 +436,9 @@ static class ShaderService
 
     static JsonObject ReadRes(string variant) => JsonNode.Parse(File.ReadAllText(Path.Combine(outDir, variant + ".res.json"))).AsObject();
 
-    static void Handle(JsonObject rq)
+    // The translator job for a request (shared by the vertex / pixel / compute path and the geometry path)
+    static JsonObject MakeJob(JsonObject rq, string variant, string stage)
     {
-        string variant = (string)rq["variant"], stage = (string)rq["stage"];
-        if (stage != "vs" && stage != "ps" && stage != "cs") throw new RuntimeError($"stage {stage} not supported by the translation chain");
-        if (stage == "cs" && !Truthy(Get(rq, "local"))) throw new RuntimeError("compute shader without thread group size");
         // DebugMode (AST optimizer off) since 2026-10-13: --debug-mode / TOTK_SHADER_DEBUGMODE, as in shader_service.py
         var job = new JsonObject
         {
@@ -421,6 +448,21 @@ static class ShaderService
         if (Truthy(Get(rq, "local"))) job["local"] = rq["local"].DeepClone();
         job["depth_minus_w"] = Truthy(Get(rq, "depth_minus_w"));   // nvnDeviceSetDepthMode(NEAR_IS_MINUS_W): clip z converted to Metal's 0..w
         job["early_fragment_tests"] = Truthy(Get(rq, "early_fragment_tests"));   // fragment shaders: NVN control +0x718 (Program.cs QueryGraphicsState)
+        if (Get(rq, "arch") is JsonValue arch) job["arch"] = arch.DeepClone();   // "sm86": Ampere code (NVN2, Switch 2); absent: Maxwell
+        if (Get(rq, "nvn2_cs") is JsonArray cs) job["nvn2_cs"] = cs.DeepClone();   // an NVN2 compute shader's c[0] layout (Program.cs)
+        if (Get(rq, "shared") is JsonValue sh) job["shared"] = sh.DeepClone();   // compute shared memory bytes when the request knows them (Program.cs)
+        return job;
+    }
+
+    static void Handle(JsonObject rq)
+    {
+        string variant = (string)rq["variant"], stage = (string)rq["stage"];
+        if (stage == "gs") { HandleGeometry(rq); return; }   // GeometryService.cs
+        if (stage != "vs" && stage != "ps" && stage != "cs") throw new RuntimeError($"stage {stage} not supported by the translation chain");
+        bool capture = Truthy(Get(rq, "geometry_capture"));   // a vertex shader that feeds a geometry kernel: main0_gs (GeometryService.cs)
+        if (capture && stage != "vs") throw new RuntimeError("geometry_capture on a non-vertex stage");
+        if (stage == "cs" && !Truthy(Get(rq, "local"))) throw new RuntimeError("compute shader without thread group size");
+        JsonObject job = MakeJob(rq, variant, stage);
         Translate(job);
         JsonObject res = ReadRes(variant);
         string spv = Path.Combine(outDir, variant + ".spv"), msl = Path.Combine(outDir, variant + "_b.metal");
@@ -454,15 +496,13 @@ static class ShaderService
             src = File.ReadAllText(msl);
             if (Fp64.IsMatch(src)) throw new RuntimeError("Ryujinx FP64 fallback still emitted Metal-unsupported double");
         }
-        var depthSlots = new HashSet<long>(tex.Where(kv => kv.Value is JsonValue v && v.GetValueKind() == JsonValueKind.String && v.GetValue<string>().EndsWith("_depth", StringComparison.Ordinal))
-                                            .Select(kv => ParseInt(kv.Key)));
+        HashSet<long> depthSlots = DepthSlots(tex);
         var compareSlots = CompareSlots(src);   // before the depth rewrite: it drops spvDepthCast, not the compare
-        if (depthSlots.Count > 0)
-            src = RewriteDepthTextures(src, depthSlots);
-        src = MatchSwitchDepthSampling(src);
-        src = PreciseMinMax(src);   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
+        src = PostProcess(src, depthSlots);
         if (depthSlots.Count > 0 || src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
+        // the capture entry point after main0 (it reuses main0's structs and helpers); the reflection below reads main0 only
+        JsonObject captureInfo = capture ? AppendCapture(rq, job, variant, src, msl) : null;
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");
         JsonObject dr = DrvReads(src, stage);
         JsonArray unfillable = Unfillable(dr, stage);
@@ -474,18 +514,7 @@ static class ShaderService
         // A texture slot the MSL binds without having queried its kind takes that kind from the sampling instruction, so
         // only whether a depth-format texture sits there changes the MSL: "*" (any colour texture) or "*_depth"
         // (docs/shader-variants.md).
-        var usedSlots = new HashSet<long>(Regex.Matches(src, @"\b(texture\w+|depth\w+)<float>\s+(\w+)\s*\[\[id\(\d+\)\]\]").Select(m => TexSlotOfName(m.Groups[2].Value)));
-        usedSlots.Remove(-1);
-        var deps = new JsonObject { ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject() };
-        IEnumerable<long> Ints(string key) => res.TryGetPropertyValue(key, out JsonNode a) && a is JsonArray arr ? arr.Select(Long) : Enumerable.Empty<long>();
-        var queried = new HashSet<long>(Ints("tex_queried"));
-        foreach (long s in new SortedSet<long>(queried.Concat(usedSlots)))
-        {
-            string slot = s.ToString(CultureInfo.InvariantCulture);
-            deps["tex"][slot] = queried.Contains(s) ? GetOr(tex, slot, "2d") : depthSlots.Contains(s) ? "*_depth" : "*";
-        }
-        foreach (long s in Ints("img_queried"))
-            deps["img"][s.ToString(CultureInfo.InvariantCulture)] = GetOr(img, s.ToString(CultureInfo.InvariantCulture), new JsonObject());
+        JsonObject deps = TextureDeps(src, res, tex, img, depthSlots);
         if (stage == "vs")   // the answered type, or the one inferred from the code (job["attr"] holds both)
             foreach (JsonNode v in vertexInputs) { string loc = Long(v["location"]).ToString(CultureInfo.InvariantCulture); deps["attr"][loc] = GetOr(job["attr"].AsObject(), loc, "float"); }
         if (stage == "ps")
@@ -499,9 +528,47 @@ static class ShaderService
             ["vertex_inputs"] = vertexInputs, ["raster"] = new JsonObject(), ["deps"] = deps, ["softfloat64"] = softfloat64,
             ["compare_slots"] = new JsonArray(compareSlots.Select(s => (JsonNode)s).ToArray()),
         };
-        string tmp = Path.Combine(outDir, variant + "_b.json.tmp");
+        if (captureInfo != null) { refl["entry_geometry_capture"] = "main0_gs"; refl["geometry_capture"] = captureInfo; }
+        WriteReflection(variant + "_b", refl);
+    }
+
+    static void WriteReflection(string name, JsonObject refl)
+    {
+        string tmp = Path.Combine(outDir, name + ".json.tmp");
         File.WriteAllText(tmp, PyJson(refl, 1, false));
-        File.Move(tmp, Path.Combine(outDir, variant + "_b.json"), true);
+        File.Move(tmp, Path.Combine(outDir, name + ".json"), true);
+    }
+
+    // texture slots the request says hold a depth-format texture ("<type>_depth")
+    static HashSet<long> DepthSlots(JsonObject tex) =>
+        new(tex.Where(kv => kv.Value is JsonValue v && v.GetValueKind() == JsonValueKind.String && v.GetValue<string>().EndsWith("_depth", StringComparison.Ordinal))
+               .Select(kv => ParseInt(kv.Key)));
+
+    // the MSL steps after SPIRV-Cross that every stage takes
+    static string PostProcess(string src, HashSet<long> depthSlots)
+    {
+        if (depthSlots.Count > 0)
+            src = RewriteDepthTextures(src, depthSlots);
+        src = MatchSwitchDepthSampling(src);
+        return PreciseMinMax(src);   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
+    }
+
+    // The texture / image answers a translation depends on (deps "tex" and "img"; "attr" / "fout" are left to the caller)
+    static JsonObject TextureDeps(string src, JsonObject res, JsonObject tex, JsonObject img, HashSet<long> depthSlots)
+    {
+        var usedSlots = new HashSet<long>(Regex.Matches(src, @"\b(texture\w+|depth\w+)<float>\s+(\w+)\s*\[\[id\(\d+\)\]\]").Select(m => TexSlotOfName(m.Groups[2].Value)));
+        usedSlots.Remove(-1);
+        var deps = new JsonObject { ["tex"] = new JsonObject(), ["img"] = new JsonObject(), ["attr"] = new JsonObject(), ["fout"] = new JsonObject() };
+        IEnumerable<long> Ints(string key) => res.TryGetPropertyValue(key, out JsonNode a) && a is JsonArray arr ? arr.Select(Long) : Enumerable.Empty<long>();
+        var queried = new HashSet<long>(Ints("tex_queried"));
+        foreach (long s in new SortedSet<long>(queried.Concat(usedSlots)))
+        {
+            string slot = s.ToString(CultureInfo.InvariantCulture);
+            deps["tex"][slot] = queried.Contains(s) ? GetOr(tex, slot, "2d") : depthSlots.Contains(s) ? "*_depth" : "*";
+        }
+        foreach (long s in Ints("img_queried"))
+            deps["img"][s.ToString(CultureInfo.InvariantCulture)] = GetOr(img, s.ToString(CultureInfo.InvariantCulture), new JsonObject());
+        return deps;
     }
 
     // ---- JSON text as Python's json.dump writes it (indent >= 0: indented, < 0: one line; ascii: ensure_ascii) ----

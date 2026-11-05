@@ -580,6 +580,10 @@ static void hid_report(void *ctx, IOReturn result, void *sender, IOHIDReportType
         p[6] | (p[7] & 15) << 8, (p[7] >> 4) | p[8] << 4);
     runtime_gamepad_switch_right((__bridge void *)motionPad,
         p[9] | (p[10] & 15) << 8, (p[10] >> 4) | p[11] << 4);
+    /* Button 5 on its own, the square button below the D-pad (a Pro Controller's capture button): the game's picture, as a
+       DualSense's Share button does through GameController (runtime/gamepad.m runtime_capture_set_hook). Home (bit 4) is
+       left alone: macOS keeps that one for its own screen. */
+    runtime_gamepad_switch_capture((__bridge void *)motionPad, p[4] & 0x20);
     uint64_t now = runtime_now_ns(), step = hidLast && now - hidLast < 50000000ull ? (now - hidLast) / 3 : 5000000ull;
     hidLast = now;
     if (!hidImuLive) {
@@ -668,6 +672,7 @@ static void hid_motion_stop(void) {   /* main queue */
     if (!hidMotion) return;
     runtime_gamepad_switch_left(NULL, -1, -1);
     runtime_gamepad_switch_right(NULL, -1, -1);
+    runtime_gamepad_switch_capture(NULL, 0);
     hidMotion = NO; hid_close_unused(); runtime_motion_deadzone_default(0);
 }
 /* The left Joy-Con of a paired set (057e:2006): opened for rumble; of its input only the battery is read (GameController

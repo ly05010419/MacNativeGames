@@ -58,14 +58,20 @@ void dm_gfx_ssao_set(int pct) { if (fakeSsaoLive) fakeSsaoSet = pct; }
 #endif
 static const char *const fakeFxIds[2] = {"ao", "bloom"}, *const fakeFxNames[2][2] = {{"环境光遮蔽", "Ambient occlusion"}, {"泛光", "Bloom"}};
 static int fakeFxOn[2] = {1, 1};
-static int fakeAnisoStart = -1, fakeFxaa = 1, fakeSharpen;
+static int fakeAnisoStart = -1, fakeSharpen;
+/* Use the actual graphics selection state: the probe must not reimplement method / preset switching. */
+#define MLOG(...) ((void)0)
+#include "../games/totk/third_party/d2r_gfx/gfx/nvn/totk_aa_config.h"
+#undef MLOG
+#define fakeFxaa dm_gfx_fxaa_on()
+#define fakeSmaa dm_gfx_smaa_on()
+#define fakeSmaaQuality dm_gfx_smaa_quality()
+#define fakeFxaaQuality dm_gfx_fxaa_quality()
 void dm_gfx_aniso_start(int n) { fakeAnisoStart = n; }
 int dm_gfx_aniso_locked(void) { return 0; }
 static int fakeAniso;
 int dm_gfx_aniso(void) { return fakeAniso; }
 void dm_gfx_aniso_set(int n) { fakeAniso = n; }
-void dm_gfx_fxaa_set(int on) { fakeFxaa = on; }
-int dm_gfx_fxaa_on(void) { return fakeFxaa; }
 void dm_gfx_sharpen_set(int pct) { fakeSharpen = pct; }
 int dm_gfx_sharpen(void) { return fakeSharpen; }
 static int fakeFxaaReplaced;   /* Breath of the Wild 1.9.0: MetalFX replaces the FXAA / upscale draw (gfx/nvn/botw_finish.h) */
@@ -301,12 +307,23 @@ static void persistence_probe(const char *action) {
     window = probe_window();
     window.contentView = [[TOTKInputView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 720)];
     if (!strcmp(action, "save")) {
-        settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settingsPanel = [TOTKSettingsPanel new];
+        settings_test_output_init(); settings_test_aspect_init(16.0 / 9); settings_show(1);
         pick(@"Overlay", @"FPS + playtime"); pick(@"Frame interpolation", @"40+40");
         pick(@"Resolution", outputChoice); pick(@"Aspect ratio", @"21:9"); flip(@"Edge smoothing", YES);
+#ifdef TOTK_GAME_V143
+        pick(@"Anti-aliasing method",@"FXAA");pick(@"Anti-aliasing quality",@"Quality");
+        pick(@"Anti-aliasing method",@"SMAA");tick();pick(@"Anti-aliasing quality",@"Ultra");
+#endif
         assert(fakeLock == 0 && mfx_requested() == MFX_40); return;
     }
     settings_restore_begin();
+#ifdef TOTK_GAME_V143
+    if(!strcmp(action,"restore")||!strcmp(action,"override")){
+        assert(fakeSmaa&&fakeSmaaQuality==3&&fakeFxaaQuality==1);
+        dm_gfx_aa_method_set(1);assert(atomic_load(&g_fin_fxaa_quality));
+        dm_gfx_aa_method_set(2);assert(fakeSmaaQuality==3&&!atomic_load(&g_fin_fxaa_quality));
+    }
+#endif
     if (!strcmp(action, "corrupt")) {
         assert(settingsPendingOutput == -1 && settingsPendingAspect == 0 && fakeLock == 0 && mfx_requested() == MFX_OFF);
         assert(fps_overlay_hud_mode() == HUD_MODE_ALL && !taa_enabled()); return;
@@ -324,6 +341,22 @@ static void persistence_probe(const char *action) {
     assert(runtime_output_mode() == outputMode && fabsf(runtime_aspect_ratio() - 21.0f / 9) < 0.001f);
 }
 
+/* Original FXAA and split AA preferences through production selection state; no NSApplication, window or GPU. */
+#ifdef TOTK_GAME_V143
+static void aa_preferences_probe(void) {
+    settings_effects_restore();
+    int method=atoi(getenv("SETTINGS_TEST_AA_METHOD"));
+    assert(dm_gfx_aa_method()==method);
+    assert(dm_gfx_fxaa_quality()==atoi(getenv("SETTINGS_TEST_FXAA_QUALITY")));
+    assert(dm_gfx_smaa_quality()==atoi(getenv("SETTINGS_TEST_SMAA_QUALITY")));
+    TOTKSettingRow *quality=nil;
+    for(TOTKSettingRow *r in settings_effect_rows())if([r.title isEqualToString:@"Anti-aliasing quality"])quality=r;
+    if(!method)assert(!quality&&!atomic_load(&g_fin_fxaa_quality));
+    else assert(quality&&quality.choices.count==(method==1?2:4));
+    if(method==2)assert(!atomic_load(&g_fin_fxaa_quality));
+    puts("pass: AA preferences");
+}
+#endif
 /* Only row models and settings functions: no NSApplication, window or GPU. */
 static TOTKSettingRow *frame_row(NSString *title) {
     for (TOTKSettingRow *r in settings_rows()) if ([r.title isEqualToString:title]) return r;
@@ -515,6 +548,9 @@ static void update_probe(void) {
 }
 
 int main(int argc, const char **argv) { @autoreleasepool {
+#ifdef TOTK_GAME_V143
+    if(argc==2&&!strcmp(argv[1],"aa")){aa_preferences_probe();return 0;}
+#endif
     if (argc==2 && !strcmp(argv[1],"frame")) { frame_probe(); return 0; }
     [NSApplication sharedApplication];
     controller_map_default(fakeMap, fakeModes); setenv("TOTK_UI_LANG", "en", 1); unsetenv("TOTK_SOURCE_COMMIT");
@@ -537,12 +573,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows on 1.4.3 (PR #1129) */   /* 18 (auto-attach, anisotropy last on the display page, controller
-                                                                 background input on the input page), the user page's
-                                                                 two, then the effects page: FOV, two distances, shadows,
-                                                                 depth of field, FXAA, sharpening and effect switches
-                                                                 (1.4.3, and Breath of the Wild 1.9.0 with its shadow
-                                                                 resolution and AO live), or eight greyed rows */
+    /* The auto-attach row is present for every version; unsupported versions show a disabled control. */
+    assert(settingsPanel.allRows.count == 29 + 2*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));
 
     /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
        the rows below read the mode. */
@@ -569,12 +601,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
     hud_publish(HUD_FPS, "FPS 60  2560x1440", 0); hud_publish(HUD_SHADER, "New shaders 3 / total 9", 0);
     shows(@"Overlay", @"All (FPS, shaders, load, playtime)");
     pick(@"Overlay", @"FPS + playtime"); assert(fps_overlay_hud_mode() == HUD_MODE_MINIMAL);
-    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nPlaytime  0 h 00 m\nSettings: key 1 · controller L3 + R3"]); }   /* the last line: how to open this panel (a DualSense connected) */
+    if (hudBox) { TOTKHudBox *b = (TOTKHudBox *)hudBox; assert(!b.hidden && [b.label.stringValue isEqualToString:@"FPS 60  2560x1440\nSession  0 h 00 m | Total  0 h 00 m\nSettings: key 1 · controller L3 + R3"]); }   /* the last line: how to open this panel (a DualSense connected) */
     pick(@"Overlay", @"Off"); assert(fps_overlay_hud_mode() == HUD_MODE_OFF && (!hudBox || hudBox.hidden));
     pick(@"Overlay", @"All (FPS, shaders, load, playtime)");
     if (hudBox) assert(!hudBox.hidden && [((TOTKHudBox *)hudBox).label.stringValue containsString:@"New shaders"]);
 
-    if (hudBox) assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Playtime  0 h 00 m"]);
+    if (hudBox) assert([((TOTKHudBox *)hudBox).label.stringValue containsString:@"Session  0 h 00 m | Total  0 h 00 m"]);
 
     /* Frame lock: off -> 30 -> 60 -> off. */
     shows(@"Frame lock", @"Off");
@@ -610,13 +642,19 @@ int main(int argc, const char **argv) { @autoreleasepool {
     mfxup_output_set(0); mfxup_set(0); shows(@"Resolution", @"1080p");
     BOOL nativeResolution = !!(runtime_output_modes() & (1 << OUTPUT_MODE_NATIVE));
     if (nativeResolution) {
-    assert(menu(@"Resolution").numberOfItems == 5 && [menu(@"Resolution").itemTitles.firstObject isEqualToString:@"720p"]);
-    pick(@"Resolution", @"720p"); assert(runtime_output_mode() == OUTPUT_MODE_720P && runtime_output_size_current() == SIZE(1280, 720));
+    BOOL mfx720 = !!(runtime_output_modes() & (1 << OUTPUT_MODE_720P_METALFX));   /* Tears of the Kingdom; not Breath of the Wild */
+    assert(menu(@"Resolution").numberOfItems == 5 + mfx720 && [menu(@"Resolution").itemTitles.firstObject isEqualToString:@"720p"]);
+    if (mfx720) {
+    pick(@"Resolution", @"720p + MetalFX upscaling");   /* the 720p canvas, MetalFX scaling it to a 1080p window */
+    assert(runtime_output_mode() == OUTPUT_MODE_720P_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
+    window_is(1080);
+    } else assert(!runtime_output_mode_set(OUTPUT_MODE_720P_METALFX));
+    pick(@"Resolution", @"720p"); assert(runtime_output_mode() == OUTPUT_MODE_720P && !mfxup_output_enabled() && runtime_output_size_current() == SIZE(1280, 720));
     window_is(720);
     } else {
         assert(menu(@"Resolution").numberOfItems == 2);
         assert([menu(@"Resolution") indexOfItemWithTitle:@"720p"] < 0);
-        assert(!runtime_output_mode_set(OUTPUT_MODE_720P) && !runtime_output_mode_set(OUTPUT_MODE_NATIVE));
+        assert(!runtime_output_mode_set(OUTPUT_MODE_720P) && !runtime_output_mode_set(OUTPUT_MODE_720P_METALFX) && !runtime_output_mode_set(OUTPUT_MODE_NATIVE));
     }
     pick(@"Resolution", @"1080p + MetalFX upscaling");
     assert(runtime_output_mode() == OUTPUT_MODE_METALFX && mfxup_output_enabled() && runtime_output_size_current() == SIZE(1920, 1080));
@@ -687,19 +725,44 @@ int main(int argc, const char **argv) { @autoreleasepool {
     shows(@"Field of view (FOV)", @"1x (as the game has it)");
     pick(@"Field of view (FOV)", @"1.2×"); assert(runtime_fov_scale() == 1.2 && !strcmp(savedName, "graphics-fov.txt") && !strcmp(savedWord, "120"));
     pick(@"Field of view (FOV)", @"1x (as the game has it)");
-    assert(switched(@"FXAA anti-aliasing")); flip(@"FXAA anti-aliasing", NO); assert(!fakeFxaa && !strcmp(savedName, "graphics-fxaa.txt") && !strcmp(savedWord, "off"));
-    flip(@"FXAA anti-aliasing", YES); assert(fakeFxaa && !strcmp(savedWord, "on"));
+    shows(@"Anti-aliasing method",@"FXAA");shows(@"Anti-aliasing quality",@"Original");
+    assert(menu(@"Anti-aliasing method").numberOfItems==3);
+    [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];
+    settingsPanel.controllerIndex=(NSInteger)[settingsPanel.rows indexOfObject:row(@"Anti-aliasing method")];
+    BOOL wasControllerActive=g_settings_controller_active;g_settings_controller_active=YES;[settingsPanel controllerHighlight];
+    pick(@"Anti-aliasing method",@"Off");tick();assert(!fakeFxaa&&!fakeSmaa&&!atomic_load(&g_fin_fxaa_quality));
+    for(TOTKSettingRow *r in settingsPanel.allRows)assert(![r.title isEqualToString:@"Anti-aliasing quality"]);
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex]==row(@"Anti-aliasing method").control.superview);
+    pick(@"Anti-aliasing method",@"SMAA");tick();shows(@"Anti-aliasing quality",@"High");
+    assert(fakeSmaa&&fakeFxaa&&!strcmp(savedName,"graphics-aa-method.txt")&&!strcmp(savedWord,"2"));
+    assert(menu(@"Anti-aliasing quality").numberOfItems==4);
+    pick(@"Anti-aliasing quality",@"Low");assert(fakeSmaaQuality==0);
+    pick(@"Anti-aliasing quality",@"Medium");assert(fakeSmaaQuality==1);
+    pick(@"Anti-aliasing quality",@"Ultra");assert(fakeSmaaQuality==3);
+    pick(@"Anti-aliasing method",@"FXAA");tick();shows(@"Anti-aliasing quality",@"Original");
+    assert(menu(@"Anti-aliasing quality").numberOfItems==2);
+    pick(@"Anti-aliasing quality",@"Quality");assert(fakeFxaaQuality==1&&atomic_load(&g_fin_fxaa_quality));
+    pick(@"Anti-aliasing method",@"SMAA");tick();shows(@"Anti-aliasing quality",@"Ultra");
+    assert(!atomic_load(&g_fin_fxaa_quality));   /* remembered FXAA quality never runs alongside SMAA */
+    pick(@"Anti-aliasing method",@"Off");tick();assert(fakeFxaaQuality==1&&fakeSmaaQuality==3);
+    pick(@"Anti-aliasing method",@"FXAA");tick();shows(@"Anti-aliasing quality",@"Quality");
+    assert(atomic_load(&g_fin_fxaa_quality));
+    pick(@"Anti-aliasing quality",@"Original");assert(!atomic_load(&g_fin_fxaa_quality));
+    for(TOTKSettingRow *r in settingsPanel.allRows)assert(![r.title hasPrefix:@"SMAA edge sensitivity"]&&![r.title hasPrefix:@"SMAA blend amount"]);
+    g_settings_controller_active=wasControllerActive;[settingsPanel controllerHighlight];
     assert(switched(@"Depth of field")); flip(@"Depth of field", NO); assert(!runtime_dof_on() && !strcmp(savedName, "graphics-dof.txt") && !strcmp(savedWord, "off"));
     pick(@"Sharpening", @"50%"); assert(fakeSharpen == 50 && !strcmp(savedName, "graphics-sharpen.txt") && !strcmp(savedWord, "50"));
     pick(@"Sharpening", @"Off (as the game has it)"); assert(!fakeSharpen);
     /* "Reset to defaults" (the effects page's bottom right): every row back to the game's own, the files removed. */
     pick(@"Field of view (FOV)", @"1.3×"); pick(@"Model detail distance (LOD)", @"10×"); pick(@"Render distance", @"5×");
-    flip(@"FXAA anti-aliasing", NO); pick(@"Sharpening", @"75%"); flip(@"Bloom", NO);
+    pick(@"Anti-aliasing method",@"SMAA");tick();pick(@"Anti-aliasing quality",@"High"); pick(@"Sharpening", @"75%"); flip(@"Bloom", NO);
     [settingsPanel selectPage:SETTINGS_PAGE_EFFECTS]; tick();
     NSButton *resetEffects = settingsPanel.effectsButtons[0];
     assert(!resetEffects.hidden && [resetEffects.title isEqualToString:@"Reset to defaults"] && [settingsPanel.controllerTargets containsObject:resetEffects]);
     [resetEffects performClick:nil]; tick();
-    assert(runtime_fov_scale() == 1 && runtime_lod_scale() == 1 && runtime_far_scale() == 1 && fakeFxaa && !fakeSharpen && fakeFxOn[0] && fakeFxOn[1] && !fakeAniso);
+    assert(runtime_fov_scale() == 1 && runtime_lod_scale() == 1 && runtime_far_scale() == 1 && fakeFxaa && !fakeSmaa && !fakeSharpen && fakeFxOn[0] && fakeFxOn[1] && !fakeAniso);
+    assert(strstr(removedAll,"graphics-aa-method.txt "));
+    assert(fakeSmaaQuality==2&&!fakeFxaaQuality);
     assert(!strcmp(removedName, "graphics-dof.txt") && settingsPanel.page == SETTINGS_PAGE_EFFECTS && runtime_dof_on());   /* the last file the reset removes */
     [settingsPanel selectPage:SETTINGS_PAGE_DISPLAY]; tick();
     pick(@"Model detail distance (LOD)", @"1x (as the game has it)"); pick(@"Render distance", @"1x (as the game has it)"); assert(runtime_lod_scale() == 1 && runtime_far_scale() == 1);
@@ -886,6 +949,31 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
     press(18); [window setContentSize:was]; press(18); assert(settingsOpen);
+#ifdef TOTK_GAME_V143
+    /* More effects than fit: both pointer scrolling and controller navigation can reach the top and bottom. */
+    press(18);[window setContentSize:NSMakeSize(1728,360)];press(18);[settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];
+    assert(NSContainsRect(window.contentView.bounds,settingsPanel.frame));
+    NSScrollView *effects=(NSScrollView *)settingsPanel.pages[SETTINGS_PAGE_EFFECTS];
+    assert([effects isKindOfClass:NSScrollView.class]&&effects.documentView.bounds.size.height>effects.contentSize.height);
+    settingsPanel.controllerIndex=0;
+    for(NSUInteger i=1;i<settingsPanel.rows.count;i++)[settingsPanel controllerMove:1];
+    NSView *last=settingsPanel.rows.lastObject.control.superview;
+    assert(NSContainsRect(effects.documentVisibleRect,last.frame));
+    for(NSUInteger i=1;i<settingsPanel.rows.count;i++)[settingsPanel controllerMove:-1];
+    NSView *first=settingsPanel.rows.firstObject.control.superview;
+    assert(NSContainsRect(effects.documentVisibleRect,first.frame));
+    settingsPanel.controllerIndex=(NSInteger)[settingsPanel.rows indexOfObject:row(@"Anti-aliasing method")];
+    [settingsPanel controllerHighlight];
+    uint64_t heldButtons=settingsPanel.previousButtons;BOOL armed=settingsPanel.controllerArmed;
+    pick(@"Anti-aliasing method",@"Off");tick();
+    assert(settingsPanel.controllerTargets[(NSUInteger)settingsPanel.controllerIndex]==row(@"Anti-aliasing method").control.superview);
+    assert(settingsPanel.previousButtons==heldButtons&&settingsPanel.controllerArmed==armed);
+    effects=(NSScrollView *)settingsPanel.pages[SETTINGS_PAGE_EFFECTS];
+    assert(NSContainsRect(effects.documentVisibleRect,row(@"Anti-aliasing method").control.superview.frame));
+    pick(@"Anti-aliasing method",@"SMAA");tick();
+    assert(NSContainsRect(window.contentView.bounds,settingsPanel.frame));
+    press(18);[window setContentSize:was];press(18);
+#endif
 
     /* While it is open the game gets no keys (only key 1 and Esc act); after it closes, keys reach the game again, through
        the player's layout (E confirms: A). */
@@ -914,7 +1002,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(contribute.hidden && starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 9 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);
+    assert(settingsPanel.rows.count == 10 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* auto-attach plus the screenshot folder */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     assert(row(@"Auto-attach last item to arrow").page == SETTINGS_PAGE_INPUT);
 #ifdef TOTK_GAME_V143
@@ -1103,6 +1191,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* Chinese. */
     setenv("TOTK_UI_LANG", "zh", 1); press(18); assert(settingsOpen);
     shows(@"分辨率", @"1080p"); shows(@"手柄类型", @"自动（未接手柄）");
+#ifdef TOTK_GAME_V143
+    shows(@"抗锯齿方式",@"SMAA");shows(@"抗锯齿质量",@"High");
+    pick(@"抗锯齿方式",@"FXAA");tick();shows(@"抗锯齿质量",@"原版");
+#endif
     assert([row(@"本次运行的用户").control isKindOfClass:[NSPopUpButton class]]);
     shows(@"用户（下次启动生效）", @"Local");
     assert([settingsPanel.userButtons[0].title isEqualToString:@"添加用户…"]);

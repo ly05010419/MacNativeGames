@@ -7,6 +7,7 @@
 #include "autoload.h"
 #include "runtime.h"
 #include "fs_host.h"
+#include "game_version.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -28,6 +29,8 @@
 #define R_APPEND_REQUIRED 0x2f5e02u
 #ifdef GAME_BOTW
 #define TOTK_APPLICATION_ID 0x01007ef00011e000ULL   /* Breath of the Wild: its own save data is the one that exists */
+#elif defined(GAME_NS2)
+#define TOTK_APPLICATION_ID GAME_TITLE_ID   /* a Switch 2 game (game_version.h) */
 #else
 #define TOTK_APPLICATION_ID 0x0100f2c0115b6000ULL
 #endif
@@ -71,6 +74,10 @@ static int remove_tree(const char *path) {
     closedir(d);
     return ok | rmdir(path);
 }
+/* cloud_save.m (the game binaries); the probes that link this file alone keep their saves local. */
+__attribute__((weak)) void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) { (void)save_dir; (void)profile_dir; }
+__attribute__((weak)) void runtime_cloud_save_changed(void) {}
+__attribute__((weak)) void runtime_cloud_save_quit(void) {}
 static void init(void) {
     const char *dir = getenv("TOTK_PROFILE_DIR"); if (!dir) dir = "user-data";
     need(snprintf(profile, sizeof profile, "%s", dir) < (int)sizeof profile, "profile path");
@@ -82,6 +89,7 @@ static void init(void) {
     snprintf(p, sizeof p, "%s/temp", profile); remove_tree(p); make_dir(p);
     snprintf(p, sizeof p, "%s/cache", profile); make_dir(p);
     fprintf(stderr, "[totk] host save storage: %s\n", save_root);
+    runtime_cloud_save_start(save_root, profile);   /* the sync folder's copy, when it is newer, before the game reads a save */
 }
 static void ready(void) { pthread_once(&once, init); }
 
@@ -142,6 +150,48 @@ static unsigned mount_save_ro(const char *name, uint64_t application, const uint
     if (!save_exists(application, uid)) return R_TARGET_NOT_FOUND;
     return mount_add(name, M_SAVE, save_root);
 }
+/* The application's own save for a user, and EnsureSaveData on it (games/wonder's copy; Donkey Kong Bananza ensures its save at
+   start): the local user's save storage always exists (ready() creates it); nobody else has one here. */
+/* nn::fs::IsMounted: the host's mount table and the RomFS mount (Donkey Kong Bananza checks its mounts; from seedds/nxnative
+   hle_fs.c, MIT). bool in w0. */
+static unsigned is_mounted(const char *name) {
+    if (!name || !*name || strlen(name) >= 32) return 0;
+    char probe[40]; snprintf(probe, sizeof probe, "%s:", name);
+    if (runtime_romfs_owns(probe)) return 1;
+    pthread_mutex_lock(&lock); unsigned found = 0;
+    for (int i = 0; i < 16; i++) if (mounts[i].kind && !strcmp(mounts[i].name, name)) found = 1;
+    pthread_mutex_unlock(&lock); return found;
+}
+/* nn::fs::GetDirectoryEntryCount: the entries ReadDirectory would give, counted on a fresh listing of the same folder. */
+static unsigned directory_entry_count(int64_t *count, uint64_t h) {
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !count) return R_INVALID_ARGUMENT;
+    Dir *d = &dirs[h - DIR_BASE]; if (!d->dir) return R_INVALID_ARGUMENT;
+    DIR *dir = opendir(d->path); if (!dir) return errno_result();
+    int64_t n = 0; struct dirent *e;
+    while ((e = readdir(dir))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..") || strlen(e->d_name) > 768) continue;
+        char child[2048]; snprintf(child, sizeof child, "%s/%s", d->path, e->d_name); struct stat st; if (stat(child, &st)) continue;
+        if (d->mode & (S_ISDIR(st.st_mode) ? 1 : 2)) n++;
+    }
+    closedir(dir); *count = n; return 0;
+}
+/* Save data sizes (Pokemon Pokopia asks before it writes, and extends when short): the host's save folder has no fixed size,
+   so it reports room to spare and accepts every extension. */
+#define HOST_SAVE_ROOM (1ULL << 30)
+static unsigned free_space(int64_t *out, const char *path) { (void)path; if (!out) return R_INVALID_ARGUMENT; *out = (int64_t)(16ULL << 30); return 0; }
+static unsigned save_data_size(int64_t *size, int64_t *journal, const uint64_t *uid) { (void)uid; if (size) *size = (int64_t)HOST_SAVE_ROOM; if (journal) *journal = (int64_t)HOST_SAVE_ROOM; return 0; }
+static unsigned save_data_size_max(int64_t *size, int64_t *journal) { if (size) *size = (int64_t)(4 * HOST_SAVE_ROOM); if (journal) *journal = (int64_t)(4 * HOST_SAVE_ROOM); return 0; }
+static unsigned extend_save_data(const uint64_t *uid, int64_t size, int64_t journal) { (void)uid; (void)size; (void)journal; return 0; }
+/* The fs library's allocator (SDK 20): the host's file system allocates nothing from it. */
+static void fs_allocator(void *alloc, void *dealloc) { (void)alloc; (void)dealloc; }
+/* A thread's file system context (from games/wonder's copy of this file): kept per thread, never consulted by the host. */
+typedef struct { uint8_t bytes[64]; } FsContext;
+static const FsContext default_context;
+static __thread const FsContext *thread_context;
+static const FsContext *get_fs_context(void) { return thread_context ? thread_context : &default_context; }
+static void set_fs_context(const FsContext *context) { thread_context = context; }
+static unsigned char own_save_exists(const uint64_t *uid) { return save_exists(TOTK_APPLICATION_ID, uid); }
+static unsigned ensure_save(const uint64_t *uid) { return own_save_exists(uid) ? 0 : R_TARGET_NOT_FOUND; }
 static unsigned mount_temp(const char *name) { ready(); char p[1100]; snprintf(p, sizeof p, "%s/temp", profile); return mount_add(name, M_TEMP, p); }
 static void cache_dir(int index, char *out, size_t cap) { snprintf(out, cap, "%s/cache/%d", profile, index); }
 static unsigned create_cache(int index, int64_t size, int64_t journal) {
@@ -185,6 +235,7 @@ static unsigned commit(const char *name) {
     if (!found) return R_PATH_NOT_FOUND;
     for (int i = 0; i < NFILES; i++) { pthread_mutex_lock(&lock); int fd = files[i].fd; pthread_mutex_unlock(&lock); if (fd > 0) fcntl(fd, F_FULLFSYNC); }
     if (save && !(getenv("TOTK_PROBE_NEGATIVE") && atoi(getenv("TOTK_PROBE_NEGATIVE")) == 23)) atomic_store(&save_dirty, 0);   /* 23: probe-save's negative control */
+    if (save) runtime_cloud_save_changed();   /* a complete save: copied to the sync folder shortly */
     return 0;
 }
 
@@ -356,6 +407,13 @@ void *runtime_fs_host_override(const char *name) {
         {"_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE", mount_save},
         {"_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE", mount_save_ro},
         {"_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE", save_exists},
+        {"_ZN2nn2fs9IsMountedEPKc", is_mounted},
+        {"_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", directory_entry_count},
+        {"_ZN2nn2fs16GetFreeSpaceSizeEPlPKc", free_space}, {"_ZN2nn2fs15GetSaveDataSizeEPlS1_RKNS_7account3UidE", save_data_size},
+        {"_ZN2nn2fs18GetSaveDataSizeMaxEPlS1_", save_data_size_max}, {"_ZN2nn2fs14ExtendSaveDataERKNS_7account3UidEll", extend_save_data},
+        {"_ZN2nn2fs12SetAllocatorEPFPvmEPFvS1_mE", fs_allocator},
+        {"_ZN2nn2fs25GetCurrentThreadFsContextEv", get_fs_context}, {"_ZN2nn2fs25SetCurrentThreadFsContextEPKNS0_9FsContextE", set_fs_context},
+        {"_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", own_save_exists}, {"_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE", ensure_save},
         {"_ZN2nn2fs21MountTemporaryStorageEPKc", mount_temp}, {"_ZN2nn2fs7UnmountEPKc", unmount}, {"_ZN2nn2fs6CommitEPKc", commit},
 #ifdef GAME_BOTW
         {"_ZN2nn2fs14CommitSaveDataEPKc", commit},   /* SDK 7 (Breath of the Wild 1.6.0) */

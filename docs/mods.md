@@ -139,6 +139,33 @@ It is read the way `--mod` reads it, and its `@nsobid` must match main's build I
 uses the thread-pointer or counter registers, or uses x18 still needs a build with `--mod`. A line on a site the app
 patches itself stops the start.
 
+**Breath of the Wild 1.9.0 and 1.6.0.** The same `--mod` flag and the same patch formats work for both Breath of the Wild
+builds (give the game files as for any build of that version: the base NSP and `--update`, or the card image for 1.6.0).
+The patch is applied to the verified main of that version, and the `@nsobid-` line must name that main (the 20 bytes at
+0x40 of the extracted `main`). It is refused when it lands on a site the app patches or checks itself in this game: the
+real-time frame step, the pad repeat count (on 1.6.0 the whole 38-instruction pad loop and the 9-instruction pause menu
+countdown), the docked render size, the output size (`TOTK_OUTPUT_RES`, 1.6.0 only), the `TOTK_JQ_CHECK` sites (1.6.0 only) and the sites listed for that version in
+`runtime/game_version.h` (`games/totk/scripts/patch_sites.py` reads them out of `runtime/game_patches_botw.c`, and out of
+`game_version.h` and the runtime files that use those addresses). Three
+things differ from Tears of the Kingdom:
+
+- `--install-mod-romfs` is refused for this game. Copy the mod's RomFS files into
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160` (`botw190` for 1.9.0) and write the manifest as in
+  [Breath of the Wild](#breath-of-the-wild) below; the build prints this when the mod has a `romfs/`.
+- `--platform ios` builds the iPhone / iPad app from the same merged main, but a code mod was not tried on a phone.
+- To try a `.pchtxt` without a build, start the game from the work folder (`<work>/totk`, which holds
+  `extracted/botw190/exefs/main` or `extracted/botw160/exefs/main`) with `TOTK_PCHTXT=<file>` (a development switch, Mac
+  only; the same reading as the build, but the bytes go into the rewritten main the game runs, so a patch on an
+  instruction the rewriter changed behaves differently there). The game stops at start when the file is for another
+  build of main, touches a site the build refuses (the list above), reaches outside main or has a byte that is not two
+  hex digits.
+
+What was tested: 1.9.0 code mods were built and played on a Mac (M1 Pro). On 1.6.0 (M1 Pro, macOS 27, base v0 and the
+1.6.0 update, Great Plateau save, docked; October 24) `mod_exefs.py apply --version botw160` refuses a patch on a site the
+app reserves, and a one-word mod merged with `build_app.py --mod` builds and boots at 58-60 fps. `TOTK_PCHTXT` was not
+tried on 1.6.0, and the unit tests cover its site list and its reader. Nothing was tested on a device: there was no real Switch to compare with, and
+no `--mod` build was made for an iPhone / iPad.
+
 <a id="data"></a>
 ### The mod's RomFS files: `--install-mod-romfs`
 
@@ -259,21 +286,42 @@ rebuilds the overlay from the retail table instead of keeping the mod's heap siz
 ### Large texture packs (8 GB mode)
 
 Some texture packs are made for an emulator's 8 GB DRAM mode and do not fit the 3.2 GiB a retail console gives the game.
-One such pack is the **[Tears of the Kingdom 4K Texture Pack by HDPacks](https://www.hdpacks.com/)** (made by
-HDPacks.com, who offer it as a free download on their site; it is their work and is not part of this repository: get it
-from them and follow their terms). Played on the Mac with 1.4.3:
+For a separate, manually enabled texture overlay, prepare the pack outside the source checkout:
 
-1. Put the pack's `romfs` files (for the HDPacks pack, `4kTextures/RomFS`) into the version's mod folder
+```sh
+python3.14 games/totk/scripts/install_texture_pack.py "/path/to/pack/RomFS" \
+    --app "/path/to/Tears of the Kingdom.app" --version v143 --output "/path/to/installed-textures"
+printf '%s\n' '/path/to/installed-textures' > "$HOME/Library/Application Support/MacNativeGames/TOTK/texture-pack-path.txt"
+```
+
+The pack is **off by default** and has no in-game settings entry. A legacy `texture-pack.txt` is ignored.
+To enable it explicitly for one launch:
+
+```sh
+open --env TOTK_TEXTURE_PACK=1 "/path/to/Tears of the Kingdom.app"
+```
+
+The enabled pack loads its checked texture overlay and selects the 8 GB memory layout. An ordinary launch keeps stock
+textures, size tables and memory layout. The installer fits the size tables to the app's game version and preserves
+all installed canvas-heap increments. Reinstall to a new output folder after changing the pack, game version or canvas
+modes, then update the saved path. `TOTK_TEXTURE_PACK_DIR` overrides the path. A conflicting `TOTK_DRAM_8GB=0`, missing
+files or another mod replacing the same size table stops startup with a log message. This feature is for Mac TOTK.
+
+For the older workflow that merges texture files into the player's other mods:
+
+Texture packs are the work of their respective authors and are not included in this repository. For manual installation
+on the Mac with 1.4.3:
+
+1. Put the pack's `romfs` files (for example, `4kTextures/RomFS`) into the version's mod folder
    (`mods/v143`), together with any other mod you use.
-2. The pack's heap table and resource size tables are made for the version it was built for (the HDPacks pack: up to
-   1.2.1). Fit them to the app's version:
+2. The pack's heap table and resource size tables are made for the version it was built for. Fit them to the app's version:
 
    ```sh
    python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
        --app "Tears of the Kingdom.app"
    ```
 
-   It writes 1.4.3's own `HeapDef` with only the heaps the pack makes bigger raised (for the HDPacks pack: `TextureHeap`,
+   It writes 1.4.3's own `HeapDef` with only the heaps the pack makes bigger raised (for example: `TextureHeap`,
    `ゲームグラフィックス` and `草`), and 1.4.3's `ResourceSizeTable.Product.143` with every replaced texture's entry grown
    by as much as the file grew. Then write the manifest with `make_mod_manifest.py` as usual. Run both again whenever
    the folder changes.
@@ -542,6 +590,21 @@ open --env TOTK_PCHTXT="/path/to/mods.pchtxt" "/path/to/Tears of the Kingdom.app
 改写器看不到这些字节，所以含系统调用、使用线程指针或计数器寄存器、或使用 x18 的补丁仍需在构建时用 `--mod`。补丁行落在 App
 自己修改的位置时启动会停止。
 
+**旷野之息 1.9.0 和 1.6.0。** 同样的 `--mod` 参数和同样的补丁格式适用于旷野之息的两个版本（游戏文件按该版本的常规构建给出：基础 NSP 加 `--update`，1.6.0 也可以给卡带镜像）。
+补丁打在核对过的该版本 main 上，`@nsobid-` 一行必须是这个 main 的（解出的 `main` 偏移 0x40 起的 20 字节）。补丁落在这个游戏里 App 自己打补丁或检查的位置上会被拒绝：
+实时帧步长、手柄重复计数（1.6.0 上是整段 38 条指令的手柄循环和 9 条指令的暂停菜单倒计时）、底座模式渲染分辨率、输出分辨率（`TOTK_OUTPUT_RES`，仅 1.6.0）、`TOTK_JQ_CHECK` 的位置（仅 1.6.0），以及 `runtime/game_version.h` 里该版本一段列出的位置
+（`games/totk/scripts/patch_sites.py` 从 `runtime/game_patches_botw.c` 读出，`game_version.h` 的位置从它和用到这些地址的运行时文件读出）。与王国之泪有三处不同：
+
+- 这个游戏拒绝 `--install-mod-romfs`。把模组的 RomFS 文件复制到
+  `~/Library/Application Support/MacNativeGames/BotW/mods/botw160`（1.9.0 是 `botw190`），再按下面「旷野之息」一节生成清单；模组带 `romfs/` 时构建会提示这一点。
+- `--platform ios` 用同一份合并后的 main 构建 iPhone / iPad 版，但没有在手机上试过代码模组。
+- 想不重新构建就试一个 `.pchtxt`，在工作目录（`<work>/totk`，里面有 `extracted/botw190/exefs/main` 或 `extracted/botw160/exefs/main`）里用 `TOTK_PCHTXT=<文件>` 启动游戏
+  （开发用开关，仅 Mac；读法与构建相同，但字节写进游戏实际运行的改写后 main，
+  所以补丁落在改写器改过的指令上时表现会不同）。文件是给另一个 main 的、改到构建会拒绝的位置（见上面的列表）、超出 main 的范围，或有一个字节不是两位十六进制数时，游戏在启动时停止。
+
+测试范围：1.9.0 的代码模组在 Mac（M1 Pro）上构建并实际玩过。1.6.0（M1 Pro，macOS 27，基础 v0 加 1.6.0 更新，初始台地存档，底座模式；10 月 24 日）：`mod_exefs.py apply --version botw160` 拒绝落在 App 保留位置上的补丁，用 `build_app.py --mod` 合并的单字模组能构建并启动，58-60 帧。`TOTK_PCHTXT` 没有在 1.6.0 上试过，单元测试覆盖它的位置列表和读取器。
+没有在任何设备上测试：没有真机 Switch 可以对比，也没有做过带 `--mod` 的 iPhone / iPad 构建。
+
 <a id="data-zh"></a>
 ### 模组的 RomFS 文件：`--install-mod-romfs`
 
@@ -638,19 +701,40 @@ mod 的 `exefs/` 里可能还有这些文件，构建这样处理：
 
 ### 大型材质包（8 GB 模式）
 
-有些材质包是给模拟器的 8 GB DRAM 模式做的，装不进真机给游戏的 3.2 GiB。例如 **[HDPacks 的王国之泪 4K 材质包](https://www.hdpacks.com/)**
-（HDPacks.com 制作，可在其网站免费下载；这是他们的作品，不在本仓库里：请从他们那里获取并遵守他们的条款）。在 Mac 上配合
-1.4.3 使用：
+需要手动启用独立材质层时，先把材质包安装到源码目录外的文件夹：
 
-1. 把材质包的 `romfs` 文件（HDPacks 的包是 `4kTextures/RomFS`）和你用的其他 mod 一起放进该版本的 mod 文件夹（`mods/v143`）。
-2. 材质包自带的堆表和资源尺寸表是按它对应的版本做的（HDPacks 的包最高到 1.2.1），先改成 App 的版本：
+```sh
+python3.14 games/totk/scripts/install_texture_pack.py "/材质包路径/RomFS" \
+    --app "/游戏路径/Tears of the Kingdom.app" --version v143 --output "/外置盘/已安装材质"
+printf '%s\n' '/外置盘/已安装材质' > "$HOME/Library/Application Support/MacNativeGames/TOTK/texture-pack-path.txt"
+```
+
+材质包**默认关闭，设置中没有入口**，旧的 `texture-pack.txt` 开启记录不再生效。
+仅在需要时显式启用一次：
+
+```sh
+open --env TOTK_TEXTURE_PACK=1 "/游戏路径/Tears of the Kingdom.app"
+```
+
+启用时一起加载经过校验的材质、容量表和 8 GB 内存布局；普通启动保留原版资源与内存布局。
+安装工具按 App 的实际游戏版本生成容量表，并保留各档分辨率的堆增量。更新材质包、游戏版本或画布档位后，
+安装到新目录并修改路径文件。`TOTK_TEXTURE_PACK_DIR` 可覆盖路径；显式关闭 8 GB 布局、文件缺失或其他模组
+替换同一容量表时会停止启动并记录原因。此功能只用于 Mac 的王国之泪。
+
+下面是把材质与其他模组合并的旧用法：
+
+有些材质包是给模拟器的 8 GB DRAM 模式做的，装不进真机给游戏的 3.2 GiB。材质包属于各自作者，不包含在本仓库中。
+在 Mac 上手动配合 1.4.3 使用：
+
+1. 把材质包的 `romfs` 文件（例如 `4kTextures/RomFS`）和你用的其他 mod 一起放进该版本的 mod 文件夹（`mods/v143`）。
+2. 材质包自带的堆表和资源尺寸表是按它对应的版本做的，先改成 App 的版本：
 
    ```sh
    python3.14 games/totk/scripts/texture_pack_tables.py ~/Library/Application\ Support/MacNativeGames/TOTK/mods/v143 \
        --app "Tears of the Kingdom.app"
    ```
 
-   它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（HDPacks 的包：`TextureHeap`、`ゲームグラフィックス`、`草`），
+   它写出 1.4.3 自己的 `HeapDef`，只把材质包加大的堆调大（例如 `TextureHeap`、`ゲームグラフィックス`、`草`），
    并写出 1.4.3 的 `ResourceSizeTable.Product.143`，每个被替换贴图的条目按文件变大的量加大。然后照常用
    `make_mod_manifest.py` 生成清单。文件夹有变化时两步都要重跑。
 3. 用 8 GB 模式启动：

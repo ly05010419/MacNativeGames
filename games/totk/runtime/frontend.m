@@ -625,7 +625,29 @@ static CGPathRef mirror_path(CGSize z,int eye){   /* +1; eye -1: the whole recta
 }
 -(NSView *)hitTest:(NSPoint)p{(void)p;return nil;}
 @end
+/* The controller's capture button (gamepad.m): a picture of the game's next frame, saved as a PNG (screenshot.h). Its
+   folder is one of the settings panel's rows, so that header comes after this one; a probe that links this file without
+   the renderer (tests/command_q/probe.m) offers its own picture and write. */
+#if defined(__APPLE__) && TARGET_OS_OSX
+#define TOTK_SCREENSHOT_WINDOW 1
+#endif
+#if defined(TOTK_SCREENSHOT_WINDOW) && !defined(TOTK_SCREENSHOT_PICTURE)
+/* The renderer's next frame: mtl_grab_next_present (third_party/d2r_gfx/gfx/nvn/nvn_mtl.m) has the present thread draw the
+   frame it is about to show and hands the picture over when the GPU is done, so the capture button waits on no thread and
+   the main thread never spins. Weak: a probe links this file without the renderer and answers with no picture. */
+extern void mtl_grab_next_present(void (^cb)(CGImageRef img)) __attribute__((weak_import));
+static void screenshot_picture(void (^cb)(CGImageRef img)) { if (mtl_grab_next_present) mtl_grab_next_present(cb); else cb(NULL); }
+#define TOTK_SCREENSHOT_PICTURE screenshot_picture
+#endif
+#include "screenshot.h"
 #include "settings_panel.h"
+void runtime_front_resize_output(unsigned w,unsigned h) {
+ dispatch_async(dispatch_get_main_queue(),^{settings_window_size(w,h,h?(double)w/h:0);});
+}
+#ifndef TOTK_SCREENSHOT_WINDOW
+/* gamepad.m calls the hook; there is nothing to take a picture with here. */
+static void screenshot_request(void) {}
+#endif
 /* The live FPS in the menu bar: a menu of the game's own, after its app menu on the left, whose title is the frame rate
    ("60 FPS", "50+50 FPS" while frame interpolation shows generated frames), refreshed twice a second with the value the
    overlay uses. Part of the app's own menu bar, so macOS shows it whenever the game is in front (a status item next to
@@ -718,11 +740,11 @@ void runtime_front_resize_aspect(double ratio){
  [(TOTKInputView *)window.contentView setCursorAutoHideEnabled:NO];
  if(mouseHeld){mouseHeld=NO;CGAssociateMouseAndMouseCursorPosition(true);[NSCursor unhide];}
  runtime_triggers_release();   /* _exit skips atexit; a save can also keep the game running a while without its window */
- if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");_exit(0);}
+ if(!runtime_fs_save_busy()){fprintf(stderr,"[totk] window closed; graceful guest shutdown pending\n");runtime_cloud_save_quit();_exit(0);}
  fprintf(stderr,"[totk] window closed while the game is saving: quitting when the save is done\n");
  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
   uint64_t t0=runtime_now_ns();while(runtime_fs_save_busy()&&runtime_now_ns()-t0<15000000000ull)usleep(20000);
-  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);_exit(0);});
+  fprintf(stderr,"[totk] save %s after %.2f s; quitting\n",runtime_fs_save_busy()?"still in progress (gave up)":"done",(runtime_now_ns()-t0)/1e9);runtime_cloud_save_quit();_exit(0);});
 }
 -(void)windowDidResize:(NSNotification *)n{(void)n;front_sync_drawable();}
 -(void)windowDidEnterFullScreen:(NSNotification *)n{(void)n;[(TOTKInputView *)window.contentView setCursorAutoHideEnabled:window.isKeyWindow];front_sr_view();}
@@ -741,6 +763,41 @@ static void note_occlusion(const char *when){int v=(window.occlusionState&NSWind
 static TOTKWindowDelegate *windowDelegate;
 int runtime_front_window_visible(void){return atomic_load(&windowVisible);}
 void runtime_front_request_close(void){dispatch_async(dispatch_get_main_queue(), ^{[window performClose:nil];});}
+/* Save sync (runtime/cloud_save.m): the folder the saves are copied to, e.g. an iCloud Drive folder shared with the
+   iPhone / iPad or another Apple ID. Stored in RUNTIME_SAVE_SYNC_DEFAULTS (TOTK_CLOUD_SAVE_FOLDER, read by app/launcher.m)
+   and used from the next start: the running game already chose its save. A sheet, so the game keeps drawing. */
+static NSUserDefaults *syncDefaults(void){static NSUserDefaults *d;static dispatch_once_t once;dispatch_once(&once,^{d=[[NSUserDefaults alloc] initWithSuiteName:@RUNTIME_SAVE_SYNC_DEFAULTS];});return d;}
+@interface TOTKCloudMenu:NSObject @property(nonatomic,strong) NSMenuItem *status; @end
+@implementation TOTKCloudMenu
+-(void)refresh{NSString *f=[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+ self.status.title=f.length?[NSString stringWithFormat:@(TOTK_UI("同步文件夹：%@","Sync folder: %@")),[f stringByAbbreviatingWithTildeInPath]]:@(TOTK_UI("未选择同步文件夹","No sync folder chosen"));}
+-(void)note:(NSString *)text{NSAlert *a=[NSAlert new];a.messageText=text;a.informativeText=@(TOTK_UI("下次启动游戏时生效。","Takes effect the next time the game starts."));[a beginSheetModalForWindow:window completionHandler:nil];}
+-(void)choose:(id)sender{(void)sender;
+ NSOpenPanel *p=[NSOpenPanel openPanel];p.canChooseFiles=NO;p.canChooseDirectories=YES;p.canCreateDirectories=YES;p.allowsMultipleSelection=NO;
+ p.message=@(TOTK_UI("选择每台设备都能看到的文件夹（例如 iCloud 云盘里共享的文件夹）。存档仍保存在本机，只把副本放进这里。","Choose a folder every device can see (e.g. a shared folder in iCloud Drive). Saves stay on this Mac; only a copy goes here."));
+ p.prompt=@(TOTK_UI("选择","Choose"));
+ NSString *cur=[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"];
+ NSString *drive=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Mobile Documents/com~apple~CloudDocs"];
+ p.directoryURL=[NSURL fileURLWithPath:cur.length?cur:drive isDirectory:YES];
+ [p beginSheetModalForWindow:window completionHandler:^(NSModalResponse r){
+  if(r!=NSModalResponseOK||!p.URL)return;
+  [syncDefaults() setObject:p.URL.path forKey:@"TOTK_CLOUD_SAVE_FOLDER"];[self refresh];
+  dispatch_async(dispatch_get_main_queue(),^{[self note:[NSString stringWithFormat:@(TOTK_UI("存档会同步到 %@","Saves will sync through %@")),[p.URL.path stringByAbbreviatingWithTildeInPath]]];});
+ }];}
+-(void)stop:(id)sender{(void)sender;[syncDefaults() removeObjectForKey:@"TOTK_CLOUD_SAVE_FOLDER"];[syncDefaults() setBool:YES forKey:@"TOTK_CLOUD_SAVE_ASKED"];[self refresh];   // and no offer at start (app/launcher.m)
+ [self note:@(TOTK_UI("不再使用同步文件夹","The sync folder is no longer used"))];}
+-(BOOL)validateMenuItem:(NSMenuItem *)item{return item.action!=@selector(stop:)||[syncDefaults() stringForKey:@"TOTK_CLOUD_SAVE_FOLDER"].length>0;}
+@end
+static TOTKCloudMenu *cloudMenu;
+static void front_menu_cloud_add(NSMenu *appMenu){   // from front_install_menu
+ cloudMenu=[TOTKCloudMenu new];
+ NSMenu *sub=[[NSMenu alloc] initWithTitle:@(TOTK_UI("存档同步","Save Sync"))];
+ cloudMenu.status=[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];cloudMenu.status.enabled=NO;[sub addItem:cloudMenu.status];
+ NSMenuItem *choose=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("选择同步文件夹…","Choose Sync Folder…")) action:@selector(choose:) keyEquivalent:@""];choose.target=cloudMenu;[sub addItem:choose];
+ NSMenuItem *stop=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("停止同步","Stop Syncing")) action:@selector(stop:) keyEquivalent:@""];stop.target=cloudMenu;[sub addItem:stop];
+ NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:sub.title action:nil keyEquivalent:@""];item.submenu=sub;[appMenu addItem:item];
+ [appMenu addItem:[NSMenuItem separatorItem]];[cloudMenu refresh];
+}
 /* Native app-menu actions must also work while a settings control owns first responder. */
 @interface TOTKMenuActions:NSObject<NSMenuItemValidation>
 -(void)openSettings:(id)sender;
@@ -775,6 +832,7 @@ static void front_install_menu(void){
  NSMenuItem *settings=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("设置…","Settings…")) action:@selector(openSettings:) keyEquivalent:@","];
  settings.keyEquivalentModifierMask=NSEventModifierFlagCommand;settings.target=menuActions;[appMenu addItem:settings];
  [appMenu addItem:NSMenuItem.separatorItem];
+ front_menu_cloud_add(appMenu);
  NSMenuItem *quit=[[NSMenuItem alloc] initWithTitle:@(TOTK_UI("退出 " GAME_NAME,"Quit " GAME_NAME)) action:@selector(performClose:) keyEquivalent:@"q"];
  quit.keyEquivalentModifierMask=NSEventModifierFlagCommand;quit.target=window;[appMenu addItem:quit];
  NSMenu *view=[[NSMenu alloc] initWithTitle:@(TOTK_UI("显示","View"))];
@@ -823,24 +881,34 @@ void runtime_front_run(void(*callback)(void)){
 #else
   if(totk_sr_start)totk_sr_start("totk",TOTK_GAME_VERSION);
 #endif
-  [NSApplication sharedApplication];[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  [NSApplication sharedApplication];
+  /* TOTK_WINDOW_FLOAT=1: an accessory app (no Dock icon), the only kind whose window macOS shows over another app's full
+     screen Space; a regular app's floating window stays covered there (2026-11-03, the user working full screen). */
+  {const char *e=getenv("TOTK_WINDOW_FLOAT");[NSApp setActivationPolicy:e&&!strcmp(e,"1")?NSApplicationActivationPolicyAccessory:NSApplicationActivationPolicyRegular];}
   front_install_bundle_icon();
   runtime_mouse_set_hook(front_mouse_update);
   runtime_gamepad_start();
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
+#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+  {uint64_t size=runtime_output_size_current();unsigned w=(unsigned)size,h=(unsigned)(size>>32);if(w&&h){ww=w;wh=h;}}
+#endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}
   CGFloat k=fmin(1,fmin(vis.size.width/ww,(vis.size.height-28)/wh));ww=floor(ww*k);wh=floor(wh*k);
   window=[[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,ww,wh) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
   window.releasedWhenClosed=NO;   /* a close that waits for a save (windowWillClose) must not free the window the static pointer still holds */
+  /* TOTK_WINDOW_FLOAT=1 (test scripts only): the window floats above the user's other windows, in the screen's top-right
+     corner, so their work does not cover it: macOS stops the display link of a covered window and the game's presents stop
+     with it (a test's frames and pictures then say nothing). */
+  {const char *e=getenv("TOTK_WINDOW_FLOAT");if(e&&!strcmp(e,"1")){window.level=NSFloatingWindowLevel;window.collectionBehavior|=NSWindowCollectionBehaviorCanJoinAllSpaces|NSWindowCollectionBehaviorFullScreenAuxiliary;}}   /* also over another app in full screen */
   /* An agent's test game (TOTK_SLOT_OWNER other than user) says so in its title: it plays a save copy and its script closes it. */
   const char *owner=getenv("TOTK_SLOT_OWNER"),*purpose=getenv("TOTK_SLOT_PURPOSE");
   window.title=owner&&*owner&&strcmp(owner,"user")?[NSString stringWithFormat:@(TOTK_UI("测试局（%s）Ver. %s：%s — 存档副本，进度不会存进你的存档，脚本会自己关闭","Test session (%s) Ver. %s: %s — save copy, progress is not saved to your save, the script closes it")),owner,TOTK_GAME_VERSION,purpose&&*purpose?purpose:TOTK_UI("代理测试","agent test")]:[NSString stringWithFormat:@GAME_NAME "  Mac — Ver. %s",TOTK_GAME_VERSION];
   windowDelegate=[TOTKWindowDelegate new];window.delegate=windowDelegate;
   front_hdr_init();
   front_install_menu();
-  window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;
+  if(window.level!=NSFloatingWindowLevel)window.collectionBehavior|=NSWindowCollectionBehaviorFullScreenPrimary;   /* a floating test window is an auxiliary one */
   window.tabbingMode=NSWindowTabbingModeDisallowed;
   window.contentView=[[TOTKInputView alloc] initWithFrame:NSMakeRect(0,0,ww,wh)];
   metalLayer=[CAMetalLayer layer];metalLayer.device=MTLCreateSystemDefaultDevice();metalLayer.pixelFormat=MTLPixelFormatBGRA8Unorm;
@@ -866,6 +934,7 @@ void runtime_front_run(void(*callback)(void)){
   front_menubar_fps();
   settings_restore_start();
   settings_controller_start();
+  runtime_capture_set_hook(screenshot_request);   /* the controller's capture button: a picture of the game (screenshot.h) */
   front_playtime_start();
   /* The FPS, shader and load lines: in the corner box (compact HUD), or with TOTK_HUD=corners drawn into the game picture's
      corners by the present encoder (gfx/nvn/fps_overlay.c). The box sits under the opaque boot overlay until it is hidden. */
@@ -877,7 +946,9 @@ void runtime_front_run(void(*callback)(void)){
      in the folder above the game's ("on" / "off"), on when there is none. */
   {char word[16];fpsGraphEnabled=1;if(runtime_shared_setting_word("fps-graph.txt",word,sizeof word))fpsGraphEnabled=!!strncmp(word,"off",3);}
   TOTKFpsGraph *graph=[[TOTKFpsGraph alloc] initWithFrame:NSZeroRect];[box addSubview:graph];fpsGraphBox=graph;[graph setEnabled:fpsGraphEnabled];[box refresh];
-  [window makeFirstResponder:window.contentView];[window center];front_sync_drawable();
+  [window makeFirstResponder:window.contentView];[window center];
+  if(window.level==NSFloatingWindowLevel){NSRect f=window.frame;[window setFrameOrigin:NSMakePoint(NSMaxX(vis)-f.size.width,NSMaxY(vis)-f.size.height)];}   /* TOTK_WINDOW_FLOAT: top-right corner */
+  front_sync_drawable();
   if(assume_focus()){[window orderFrontRegardless];}else{[window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];}   /* in front of other apps' windows, keyboard left alone */
   front_sr_view();
   [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){(void)n;note_window_screen();front_sr_view();}];   /* a refresh rate changed on the same screen */

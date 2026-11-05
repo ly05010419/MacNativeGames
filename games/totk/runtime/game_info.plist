@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Linked into every game binary (Makefile GAME_INFO): its bundle id, so Metal's archive builder works in a cache folder
+     of its own (totk_pipeline_archive_folders.h). Not the app's id: the binary is not the app. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>org.macnativegames.totk-native</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+</dict>
+</plist>

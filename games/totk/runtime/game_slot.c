@@ -113,6 +113,7 @@ static int pid_is_game(pid_t pid) {
     char path[PROC_PIDPATHINFO_MAXSIZE];
     if (proc_pidpath(pid, path, sizeof path) <= 0) return 0;
     const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
+    if (b - path >= 16 && !strncmp(b - 16, "/Contents/MacOS/", 16) && (!strcmp(b, "TOTK") || !strcmp(b, "BotW"))) return 1;   /* the Mac app (build_app.py APPS) */
     return !strncmp(b, "totk-native", 11);   /* also renamed copies such as totk-native.base */
 }
 
