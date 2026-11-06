@@ -237,6 +237,9 @@ void runtime_gamepad_background_set(int on) {
 void runtime_gamepad_focus(int on) {
 #if TARGET_OS_OSX
     atomic_store(&gamepadFocused, !!on);
+    uint64_t trace=runtime_input_trace_next();
+    if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu focus=%d background=%d system_background=%d\n",
+        (unsigned long long)trace,(unsigned long long)runtime_now_ns(),!!on,runtime_gamepad_background_enabled(),GCController.shouldMonitorBackgroundEvents);
     if (!on && !runtime_gamepad_background_enabled()) runtime_gamepad_clear();
     else refresh_gamepads();
 #else
@@ -798,7 +801,12 @@ static void awake_note_input(void) {   /* any thread */
 static void refresh_gamepads(void) {
 #if TARGET_OS_OSX
     /* The raw HID fallback must obey the same focus policy as GameController. Do not latch background presses. */
-    if (!atomic_load(&gamepadFocused) && !runtime_gamepad_background_enabled()) return;
+    if (!atomic_load(&gamepadFocused) && !runtime_gamepad_background_enabled()) {
+        uint64_t trace=runtime_input_trace_next();
+        if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu refresh blocked: focused=0 background=0\n",
+            (unsigned long long)trace,(unsigned long long)runtime_now_ns());
+        return;
+    }
 #endif
     RuntimeGamepadState next = {0};
     uint64_t physical = (uint64_t)mouseButtons << CONTROLLER_MOUSE_FIRST;
@@ -905,6 +913,10 @@ static void refresh_gamepads(void) {
     int changed = next.buttons != gamepadState.buttons || next.lx != gamepadState.lx || next.ly != gamepadState.ly ||
                   next.rx != gamepadState.rx || next.ry != gamepadState.ry;
     gamepadState = next;
+    if(changed){uint64_t trace=runtime_input_trace_next();
+        if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu mapped connected=%d physical=%#llx buttons=%#llx axes=%d,%d,%d,%d text_capture=%d\n",
+            (unsigned long long)trace,(unsigned long long)runtime_now_ns(),next.connected,(unsigned long long)physical,
+            (unsigned long long)next.buttons,next.lx,next.ly,next.rx,next.ry,atomic_load(&textCapture));}
     gamepadRawLeftAt = rawAt; gamepadRawRightAt = rawRightAt;
     gamepadNativeLx = nativeLx; gamepadNativeLy = nativeLy; gamepadNativeRx = nativeRx; gamepadNativeRy = nativeRy;
     pthread_mutex_unlock(&gamepadLock);
@@ -919,8 +931,16 @@ static void attach_gamepad(GCController *controller) {
     GCExtendedGamepad *pad = controller.extendedGamepad;
     if (!pad) return;
     gamepad_options_gesture(pad);
+    __weak GCController *source = controller;
     pad.valueChangedHandler = ^(GCExtendedGamepad *changed, GCControllerElement *element) {
-        (void)changed; (void)element;
+        uint64_t trace=runtime_input_trace_next();
+        if(trace){GCController *device=source;
+        fprintf(stderr,"[oot-input-trace] %llu t=%llu callback device=%p vendor=%s element=%s physical=%#llx axes=%g,%g,%g,%g background=%d\n",
+            (unsigned long long)trace,(unsigned long long)runtime_now_ns(),(__bridge void *)device,
+            (device.vendorName?:@"unknown").UTF8String,(element.localizedName?:@"unknown").UTF8String,
+            (unsigned long long)gamepad_buttons(changed,face_by_position(device)),
+            changed.leftThumbstick.xAxis.value,changed.leftThumbstick.yAxis.value,
+            changed.rightThumbstick.xAxis.value,changed.rightThumbstick.yAxis.value,runtime_gamepad_background_enabled());}
         refresh_gamepads();
     };
     fprintf(stderr, "[totk-input] native gamepad connected: %s (%s), face buttons by %s\n",
@@ -1190,5 +1210,9 @@ void runtime_gamepad_read(RuntimeGamepadState *out) {
             textCapture = 0;
         *out = (RuntimeGamepadState){.connected = out->connected};
     }
+    uint64_t trace=runtime_input_trace_next();
+    if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu read connected=%d buttons=%#llx axes=%d,%d,%d,%d text_capture=%d\n",
+        (unsigned long long)trace,(unsigned long long)runtime_now_ns(),out->connected,(unsigned long long)out->buttons,
+        out->lx,out->ly,out->rx,out->ry,atomic_load(&textCapture));
     pthread_mutex_unlock(&gamepadLock);
 }

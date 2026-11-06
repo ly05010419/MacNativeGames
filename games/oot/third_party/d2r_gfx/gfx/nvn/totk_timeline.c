@@ -40,13 +40,16 @@ int totk_tl_on(void) {
     if (s < 0) { tl_init(); s = atomic_load(&g_state); }
     return s == 2;
 }
-void totk_tl_at(int kind, uint64_t t_ns, uint64_t a, uint64_t b) {
+void totk_tl_at_frame(int kind, uint64_t t_ns, uint64_t frame, uint64_t a, uint64_t b) {
     if (!totk_tl_on()) return;
     if (g_gpu_only && kind >= TL_GW_IN && kind <= TL_CW_OUT) return;
     uint64_t i = atomic_fetch_add_explicit(&g_n, 1, memory_order_relaxed);
     if (i >= TL_CAP) return;
     uint64_t tid; pthread_threadid_np(NULL, &tid);
-    g_ev[i] = (tl_ev){t_ns, a, b, (uint32_t)kind, (uint32_t)tid, atomic_load_explicit(&g_frame, memory_order_relaxed)};
+    g_ev[i] = (tl_ev){t_ns, a, b, (uint32_t)kind, (uint32_t)tid, frame};
+}
+void totk_tl_at(int kind, uint64_t t_ns, uint64_t a, uint64_t b) {
+    totk_tl_at_frame(kind, t_ns, atomic_load_explicit(&g_frame, memory_order_relaxed), a, b);
 }
 void totk_tl(int kind, uint64_t a, uint64_t b) {
     if (!totk_tl_on()) return;

@@ -158,6 +158,7 @@ void runtime_input_mouse(int button,int down);    /* runtime/gamepad.m, mouse mo
 void runtime_keyboard_capture(int on);   /* iOS only (runtime/gamepad.m, TARGET_OS_IPHONE): a UIKit text field takes the hardware keyboard; it must not also drive the game */
 void runtime_input_clear(void);
 void runtime_input_clear_window(void);   /* focus loss: release window keys/mouse, keep physical controller input */
+uint64_t runtime_input_trace_next(void); /* defaultoff OOT_INPUT_TRACE / flag input_trace; bounded diagnostic row sequence */
 uint64_t runtime_keyboard_buttons(void);   /* runtime/input.c: the Switch buttons the held keys drive now (no lock) */
 struct KeyMap;   /* runtime/keyboard_map.h */
 void runtime_keymap_get(struct KeyMap *out);       /* runtime/input.c: the keyboard and mouse layout in force */

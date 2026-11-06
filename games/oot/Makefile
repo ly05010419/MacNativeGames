@@ -32,3 +32,10 @@ $(OUT)/gmem-index: tests/gmem_index.c third_party/d2r_gfx/gfx/nvn/nvn_gmem_index
 .PHONY: probe-gmem-index
 probe-gmem-index: $(OUT)/gmem-index
 	"$(OUT)/gmem-index"
+
+$(OUT)/timeline-owner: tests/timeline_owner.c third_party/d2r_gfx/gfx/nvn/totk_timeline.c third_party/d2r_gfx/gfx/nvn/totk_timeline.h
+	@mkdir -p "$(OUT)"
+	xcrun clang -std=gnu11 -O2 -Wall -Wextra -Werror tests/timeline_owner.c third_party/d2r_gfx/gfx/nvn/totk_timeline.c -o "$@"
+.PHONY: probe-timeline-owner
+probe-timeline-owner: $(OUT)/timeline-owner
+	"$(OUT)/timeline-owner" "$(OUT)/timeline-owner.tsv"

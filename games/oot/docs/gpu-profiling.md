@@ -15,8 +15,9 @@ Instruments 的区间拿来报告正常 FPS。
 `[timeline] 写出` 日志；提前退出会丢失尚未写出的窗口。事件容量为 1,048,576，
 达到容量的结果不能当作完整采集。
 
-GPU feedback 行的 `frame` 是回调发生时的当前帧。用 `commit` 的编号和
-`fence` 对应 GPU 区间与等待，不能按回调行的帧号关联。CPU 回放时间包含
+`commit`、`fence` 和 GPU feedback 行记录提交捕获的所属帧，异步回调不再读取
+可能已经前进的全局帧号。旧版本的 GPU 行记录的是回调时当前帧；分析历史数据
+仍须用 `commit` 编号和 `fence` 关联。CPU 回放时间包含
 阻塞，GPU command-buffer 时间包含调度跨度；这些列不能直接相加。
 
 ## 编码器和实际计算派发
@@ -59,10 +60,43 @@ indirect_address start_ticks end_ticks grid_sentinel
 计算管线也有 shader 标签。录制 Metal System Trace 后，至少验证导出的
 `metal-gpu-intervals` 有真实游戏进程数据；仅有 `.trace` 或退出码 0 不够。
 
+每次 Metal 4 提交还标记为 `F<帧> CB<唯一序号> <用途> fence<栅栏> tl<时间线提交号>`。
+包含中途/最终提交、上传、出图、插帧和独立诊断提交；出图用排队项目的帧号。
+同一个 Metal 对象可以被反复提交，裸对象 ID 不能唯一标识一次执行。
+使用 CB 序号连接 CPU 提交与 GPU 事件，使用非零 tl 编号连接自身时间线，
+先检查编号唯一性、覆盖和 GPU/CPU 正负时差。驱动映射表中的 `commit-id`
+不能未经核对便当作原编码器的所属提交；未标注/无法连接的工作保留未知。
+
 同一个编码器的多个标签可能在 Instruments 中合并显示，这不是多次独立
-计时。按完整 command-buffer / encoder ID 关联 CPU 和 GPU，游戏帧身份
-从明确的 `F… s… cs…` 标签取得。Instruments 自身的显示帧号会横跨两帧
+计时。Instruments 自身的显示帧号会横跨两帧
 游戏工作，不能用它代替游戏帧号。未确定身份的工作单独保留。
+
+标准 Metal System Trace 默认 Counter Set 为 None，Shader Timeline 关闭。
+需要硬件瓶颈和着色器采样时，在 Metal Application 选 Performance Limiters、
+开启 Enable Shader Timeline，将模板保存到项目外，再通过 `xctrace --template`
+使用。录制后先导出 TOC，核对 counter/profile 配置及实际行数；
+`gpu-shader-profiler-sample` 为空不能解释成着色器成本为零。硬件计数和 PC 采样
+仍是诊断工作负载，不拿它的帧率当正常 FPS，不把函数名相同的不同变体混为一条。
+
+## 描述符准备原因
+
+设置 `OOT_DESCRIPTOR_PROFILE_FILE=<外部 TSV>`，用 `flag descriptor_profile 1`
+开始、`flag descriptor_profile 0` 结束并刷新。P 行记录池身份、前后世代、
+描述符修订、CPU 脏页/提交/内存世代、全扫原因、检查数、重试和主机耗时；
+S 行记录实际存储对象、布局、持有序号与释放原因；C 行是该窗口计数。
+最多记录 65,536 行，`rows_dropped` 非零时不可宣称完整覆盖。
+全扫原因位：1 替换池，2 描述符日志溢出，4 序号日志溢出，8 池内存生命周期，
+16 遇到全局序号变化。诊断开销不用于正常性能对照。
+
+## 实体手柄输入链路
+
+`OOT_INPUT_TRACE=1` 或运行中 `flag input_trace 1` 启用有界分层日志，
+`flag input_trace 0` 关闭。每次启用最多 16,384 行，默认关闭，不改变输入。
+依次观察 callback（系统事件/设备/物理按键）、focus/blocked（焦点策略）、
+mapped（映射输出）、read（含 UI 捕获状态）、guest（实际 Npad ID、style、
+允许/屏蔽状态、采样号、属性、按键和摇杆）。每行有序号和同一主机时钟。
+自动片头按键不会生成 callback，不能作为实体手柄验收。连接、电量和焦点
+正常也不能证明实体按键已到；没有真实事件时保留未验收状态。
 
 ## 纹理内存和生命周期
 

@@ -60,6 +60,21 @@ void runtime_keymap_reset(void){
    the game, so typing elsewhere while a test window pops up neither plays it nor stops TOTK_AUTOLOAD (2026-10-31: two
    survey runs sat at the title after a stray key cancelled the auto-load). Scripted input still drives it. */
 static int ignore_user(void){static int v=-1;if(v<0){const char *e=getenv("TOTK_IGNORE_USER_INPUT");v=e&&atoi(e);if(v)fprintf(stderr,"[input] TOTK_IGNORE_USER_INPUT: keyboard, mouse and controllers ignored (scripted input only)\n");}return v;}
+/* Observe each boundary separately: device attachment alone does not prove
+   GameController delivered a value or the guest consumed it. No input changes. */
+static _Atomic int inputTrace = -1;
+static _Atomic uint64_t inputTraceSequence;
+uint64_t runtime_input_trace_next(void) {
+ int on=atomic_load_explicit(&inputTrace,memory_order_relaxed);
+ if(on<0){const char *e=getenv("OOT_INPUT_TRACE");on=e&&atoi(e);atomic_store_explicit(&inputTrace,on!=0,memory_order_relaxed);}
+ if(!on)return 0;
+ uint64_t n=atomic_fetch_add_explicit(&inputTraceSequence,1,memory_order_relaxed)+1;
+ return n<=16384?n:0;
+}
+static void input_trace_set(int on) {
+ atomic_store(&inputTrace,0);atomic_store(&inputTraceSequence,0);atomic_store(&inputTrace,on!=0);
+ fprintf(stderr,"[oot-input-trace] enabled=%d row_limit=16384 (diagnostic only)\n",on!=0);
+}
 static void user_input(const char *what){
  runtime_survey_cancel_user();
  runtime_autoload_user_input();
@@ -130,7 +145,8 @@ static int pad_states(NpadState *out,int max,const uint32_t *id,uint32_t want_st
  if(abs(pad.lx)>abs(state.lx))state.lx=pad.lx;if(abs(pad.ly)>abs(state.ly))state.ly=pad.ly;
  if(abs(pad.rx)>abs(state.rx))state.rx=pad.rx;if(abs(pad.ry)>abs(state.ry))state.ry=pad.ry;
  if(runtime_vr_stick_pitch_locked())state.ry=0;   /* zeldaVR: up / down is the headset's (game_patches_v143.c) */
- }if(getenv("TOTK_INPUT_LOG")){static int left=120;static uint64_t previous;if(previous!=state.buttons&&left-->0){previous=state.buttons;fprintf(stderr,"[oot-input] id=%#x style=%#x enabled=%d allowed=%d buttons=%#llx sample=%lld\n",*id,styles,enabled,allowed,(unsigned long long)state.buttons,(long long)state.sampling); }}*out=state;pthread_mutex_unlock(&inputLock);return 1;}
+ }uint64_t trace=runtime_input_trace_next();if(trace)fprintf(stderr,"[oot-input-trace] %llu t=%llu guest id=%#x want=%#x styles=%#x enabled=%d allowed=%d ignored=%d sample=%lld attr=%#x buttons=%#llx axes=%d,%d,%d,%d\n",(unsigned long long)trace,(unsigned long long)runtime_now_ns(),*id,want_style,styles,enabled,allowed,ignore_user(),(long long)state.sampling,state.attributes,(unsigned long long)state.buttons,state.lx,state.ly,state.rx,state.ry);
+ if(getenv("TOTK_INPUT_LOG")){static int left=120;static uint64_t previous;if(previous!=state.buttons&&left-->0){previous=state.buttons;fprintf(stderr,"[oot-input] id=%#x style=%#x enabled=%d allowed=%d buttons=%#llx sample=%lld\n",*id,styles,enabled,allowed,(unsigned long long)state.buttons,(long long)state.sampling); }}*out=state;pthread_mutex_unlock(&inputLock);return 1;}
 static int disconnected_states(NpadState *out,int max,const uint32_t *id){if(id)input_log("joy-con state",*id);if(max<=0)return 0;if(!out)runtime_fail("controller output pointer");pthread_mutex_lock(&inputLock);*out=(NpadState){.sampling=++sample};pthread_mutex_unlock(&inputLock);return 1;}
 static void hold_type(int type){if(type<0||type>1)runtime_fail("invalid joy hold type");holdType=type;(void)holdType;}
 #ifdef GAME_NS2
@@ -293,7 +309,9 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "flag ", 5)) {
             /* "flag <name> <0|1>": switch a graphics behaviour while the game runs (A/B without restarting); rumble / gyro mute and unmute those */
             char name[64]; int v; if (sscanf(line + 5, "%63s %d", name, &v) != 2) runtime_fail("diagnostic flag needs <name> <0|1>");
-            extern void dm_gfx_set_flag(const char *name, int v); if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
+            extern void dm_gfx_set_flag(const char *name, int v);
+            if (!strcmp(name,"input_trace")) input_trace_set(v);
+            else if (!runtime_hid_feedback_flag(name, v)) dm_gfx_set_flag(name, v);
         } else if (!strncmp(line, "texdump ", 8)) {
             extern void dm_gfx_texdump_next(const char *path);
             line[strcspn(line, "\r\n")] = 0; if (!line[8] || !strstr(line + 8, "%d")) runtime_fail("diagnostic texdump path needs %d");
