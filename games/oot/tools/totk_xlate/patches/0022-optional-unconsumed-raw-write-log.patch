@@ -1,0 +1,21 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -905,11 +905,16 @@
+ 
+             if (writes)
+             {
++                // This host preserves conservative raw-write invalidation from
++                // reflection and does not consume per-page GPU logs. Keep the
++                // binding and an immutable diagnostic enable word; the actual
++                // guest write below always executes, with its original ordering.
++                Operand lblLogged = Label();
++                Operand logEnabled = context.Load(StorageKind.StorageBuffer, logBinding, Const(0), Const((1 << GmemLogLog2) + 1));
++                context.BranchIfTrue(lblLogged, context.ICompareEqual(logEnabled, Const(0)));
+                 // A page in a pool is never 0 (the guest's first page is not mapped), so 0 marks an empty slot
+                 Operand page = context.BitwiseOr(context.ShiftLeft(addrHigh, Const(20)), context.ShiftRightU32(addrLow, Const(12)));
+                 Operand hash = context.ShiftRightU32(context.IMultiply(page, Const(unchecked((int)0x9e3779b1))), Const(32 - GmemLogLog2));
+-
+-                Operand lblLogged = Label();
+ 
+                 for (int probe = 0; probe < GmemLogProbes; probe++)
+                 {

@@ -2,7 +2,8 @@
  * API/layout reference: ChiefSZ13/nxnative ee9b7765, MIT. Pipeline creation is
  * synchronous here: every requested draw must execute with its complete stages. */
 static struct { int on; NvShader *ts,*ms,*fs; uint32_t first,count; uint64_t first_gpu,indirect_gpu; } g_mtk;
-static nvn_hmap g_mtk_cache={.klen=sizeof(pso_key)+sizeof(void *)};
+typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
+static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
 #include "nvn_mesh_capture.inc"
 /* Diagnostic only: copy the selected draw's storage inputs on the same GPU
  * timeline, after their producers and before this draw. A CPU memcpy while
@@ -75,16 +76,42 @@ static id<MTLFunction> mtk_mesh_fn(NvShader *ms,NvShader *fs) {
     if(!ms->vpatch[recipe])ms->vpatch[recipe]=function;function=ms->vpatch[recipe];
     os_unfair_lock_unlock(&g_vpatch_lock);return function;
 }
+static int mtk_empty_export_on(void) {
+    int v=atomic_load_explicit(&g_mesh_empty_export,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_MESH_EMPTY_EXPORT");v=e?atoi(e)!=0:0;atomic_store(&g_mesh_empty_export,v);}
+    return v;
+}
+/* The generated wrapper has finished the complete guest body and its final
+   threadgroup barrier before publishing np. No rasterizer consumes vertices
+   when np is zero. Keep every guest memory side effect, and skip only the host
+   wrapper's now-unused vertex exports. Source must match our own MeshStage ABI;
+   arbitrary mesh functions keep the original path. */
+static id<MTLFunction> mtk_empty_export_fn(id<MTLFunction> base,NvShader *ms) {
+    if(!mtk_empty_export_on())return base;
+    static NSMutableDictionary<NSValue *,id<MTLFunction>> *cache;
+    if(!cache)cache=[NSMutableDictionary dictionary];NSValue *key=[NSValue valueWithPointer:(__bridge void *)base];
+    if(cache[key])return cache[key];
+    NSString *source=fn_src(base)?:sh_src(ms);
+    NSRegularExpression *end=[NSRegularExpression regularExpressionWithPattern:@"if\\([a-zA-Z0-9_.]+==0u\\)dm_out\\.set_primitive_count\\(np\\);\\n" options:0 error:nil];
+    if(!source||![source containsString:@"dm_stage_body("]||![source containsString:@"uint np=min("]||
+       ![end numberOfMatchesInString:source options:0 range:NSMakeRange(0,source.length)]){cache[key]=base;return base;}
+    source=[end stringByReplacingMatchesInString:source options:0 range:NSMakeRange(0,source.length) withTemplate:@"$0if(np==0u)return;\n"];
+    NSError *error=nil;id<MTLLibrary> lib=variant_library(source,&error);id<MTLFunction> fn=lib?[lib newFunctionWithName:base.name]:nil;
+    if(!fn)MDIE("mesh empty export %s: %s",ms->key,error.localizedDescription.UTF8String);
+    fn_note_src(fn,source);cache[key]=fn;return fn;
+}
 static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms,*fs=raster->sh[1];
-    struct { pso_key p; void *task; } key; memset(&key,0,sizeof key);
+    mtk_pso_key key; memset(&key,0,sizeof key);
     pso_key_fill(&key.p,ms,fs,g_pass.cfmt,g_pass.dfmt,g_pass.sfmt,g_pass.samples,0);
     memset(key.p.attr,0,sizeof key.p.attr);memset(key.p.stream,0,sizeof key.p.stream);
     key.task=(__bridge void *)(ts?ts->fn:nil);
+    key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
     MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,nil,0);
     MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
-    m.meshFunction=mtk_geo_function(ms,fs,mtk_mesh_fn(ms,fs));m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
+    id<MTLFunction> mesh=mtk_mesh_fn(ms,fs);if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
+    m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}
     m.rasterSampleCount=d.rasterSampleCount;m.alphaToCoverageEnabled=d.alphaToCoverageEnabled;
     for(int i=0;i<8;i++)m.colorAttachments[i]=d.colorAttachments[i];

@@ -55,6 +55,7 @@ static id<MTLFunction> mtk_geo_function(NvShader *ms,NvShader *fs,id<MTLFunction
     source=[source stringByReplacingOccurrencesOfString:@"dm_mesh_t dm_out, " withString:@"dm_mesh_t dm_out, device uint* oot_geo [[buffer(30)]], "];
     NSString *begin=[NSString stringWithFormat:@"$0\nthreadgroup uint oot_record;\nif(dm_lid==0u)oot_record=(oot_geo[0]==%uu&&oot_geo[5]==%uu)?atomic_fetch_add_explicit((device atomic_uint*)&oot_geo[3],1u,memory_order_relaxed):0xffffffffu;\nthreadgroup_barrier(mem_flags::mem_threadgroup);\nuint oot_base=8u+oot_record*%uu;\nif(dm_lid==0u&&oot_record<oot_geo[4]){oot_geo[oot_base]=np;oot_geo[oot_base+1u]=dm_tg;oot_geo[oot_base+2u]=%uu;oot_geo[oot_base+3u]=0u;}\n",nv,stride,stride,words];
     if(payload)begin=[begin stringByAppendingFormat:@"if(oot_record<oot_geo[4])for(uint i=dm_lid;i<%uu;i+=%uu)oot_geo[oot_base+4u+i]=dm_payload.w[i];\n",payload,ms->mesh_threads];
+    begin=[begin stringByAppendingFormat:@"if(dm_lid==0u&&oot_record!=0xffffffffu)atomic_fetch_add_explicit((device atomic_uint*)&oot_geo[8u+oot_geo[4]*%uu+np],1u,memory_order_relaxed);\n",stride];
     source=[np stringByReplacingMatchesInString:source options:0 range:NSMakeRange(0,source.length) withTemplate:begin];
     NSMutableString *vertex=[NSMutableString stringWithString:@"if(oot_record<oot_geo[4]){"];
     for(NSDictionary *field in layout[@"fields"]){unsigned at=[field[@"word_offset"]unsignedIntValue];
@@ -75,7 +76,7 @@ static void mtk_geo_prepare(NvShader *ms,NvShader *fs) {
     id<MTLFunction> base=mtk_mesh_fn(ms,fs),function=mtk_geo_function(ms,fs,base);if(function==base)return;
     NSDictionary *layout=mtk_geo_layout(fn_src(base)?:sh_src(ms));if(!layout)return;
     unsigned nv=[layout[@"vertices"]unsignedIntValue],np=[layout[@"primitives"]unsignedIntValue],words=[layout[@"vertex_words"]unsignedIntValue],stride=[layout[@"record_words"]unsignedIntValue];
-    unsigned capacity=MIN(1024u,((64u<<20)/4-8)/stride);size_t bytes=((size_t)8+capacity*stride)*4;
+    unsigned capacity=MIN(1024u,((64u<<20)/4-8)/stride);size_t bytes=((size_t)8+capacity*stride+np+1)*4;
     id<MTLBuffer> buffer=[g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];if(!buffer)return;
     memset(buffer.contents,0,bytes);uint32_t header[8]={nv,np,words,0,capacity,stride,g_mtk.first,g_mtk.count};memcpy(buffer.contents,header,sizeof header);
     res_add(buffer);g_mtk_geometry=buffer;done[key]=@(frame);
@@ -85,6 +86,7 @@ static void mtk_geo_prepare(NvShader *ms,NvShader *fs) {
     NSMutableDictionary *metadata=[layout mutableCopy];metadata[@"mesh"]=@(ms->key);metadata[@"fragment"]=key;metadata[@"frame"]=@(frame);metadata[@"header_words"]=@8;metadata[@"capacity"]=@(capacity);metadata[@"file"]=[path lastPathComponent];
     [g_commit_blocks addObject:^{const uint32_t *p=buffer.contents;unsigned saved=MIN(p[3],capacity);size_t length=((size_t)8+saved*stride)*4;
         BOOL ok=[[NSData dataWithBytes:p length:length]writeToFile:path atomically:YES];metadata[@"workgroups"]=@(p[3]);metadata[@"saved_workgroups"]=@(saved);
+        NSMutableDictionary *hist=[NSMutableDictionary dictionary];for(unsigned i=0;i<=np;i++)if(p[8+capacity*stride+i])hist[[NSString stringWithFormat:@"%u",i]]=@(p[8+capacity*stride+i]);metadata[@"all_workgroup_primitive_counts"]=hist;
         [[NSJSONSerialization dataWithJSONObject:metadata options:NSJSONWritingPrettyPrinted error:nil]writeToFile:[directory stringByAppendingPathComponent:[stem stringByAppendingString:@".json"]]atomically:YES];
         MLOG("[mesh-output] %s frame %llu: %u measured mesh entries (%u saved), %s",ok?"saved":"FAILED",frame,p[3],saved,path.UTF8String);}];
     defer_obj_release(buffer);

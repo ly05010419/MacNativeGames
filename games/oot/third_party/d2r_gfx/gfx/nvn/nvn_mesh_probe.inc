@@ -97,6 +97,43 @@ static int mesh_indirect_probe(void) {
     nvn_dirty_remove_range(guest);mtl_pool_del(guest);munmap(guest,bytes);defer_obj_release(rb);
     MLOG("mesh indirect GPU conversion/reuse/invalidation: %d checks",checked);return checked;
 }
+/* Empty and nonempty mesh groups have identical required storage writes.
+   Exercise the production variant/PSO selection, pixels and those side effects
+   in A/B/A order. A zero primitive count must not suppress the guest body. */
+static int mesh_empty_export_probe(void) {
+    int checked=0,saved=atomic_load(&g_mesh_empty_export);NSError *error=nil;
+    NSString *src=@"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct dm_vertex_t { float4 position [[position]];\nfloat4 a1 [[user(locn1)]];\n};\n"
+        "using dm_mesh_t=metal::mesh<dm_vertex_t,void,3,1,metal::topology::triangle>;\n"
+        "static inline void dm_stage_body(device uint *p,uint tg){p[tg]=0x12340000u+tg;}\n"
+        "[[mesh]] void main0(dm_mesh_t dm_out,device uint *oot_results [[buffer(28)]],constant uint *dm_first [[buffer(29)]],uint dm_lid [[thread_position_in_threadgroup]],uint dm_tg [[threadgroup_position_in_grid]]){\n"
+        "if(dm_lid==0u)dm_stage_body(oot_results,dm_tg);\nthreadgroup_barrier(mem_flags::mem_threadgroup);\n"
+        "uint np=min(dm_first[0]?(dm_tg&1u):0u,1u);\nif(dm_lid==0u)dm_out.set_primitive_count(np);\n"
+        "for(uint n=dm_lid;n<3u;n+=32u){float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};dm_vertex_t v;v.position=float4(p[n],0.5,1);v.a1=float4(.25,.5,.75,1);dm_out.set_vertex(n,v);}\n"
+        "for(uint n=dm_lid;n<np*3u;n+=32u)dm_out.set_index(n,n);}\n";
+    if(getenv("OOT_MESH_EXPORT_PROBE_NEGATIVE"))src=[src stringByReplacingOccurrencesOfString:@"if(dm_lid==0u)dm_stage_body" withString:@"if(dm_lid==0u&&dm_first[0]&&(dm_tg&1u))dm_stage_body"];
+    id<MTLLibrary> lib=totk_msl_library(src,&error);if(!lib)MDIE("empty mesh fixture: %s",error.localizedDescription.UTF8String);
+    NvShader *ms=[NvShader new];ms->src=src;ms->fn=[lib newFunctionWithName:@"main0"];ms->stage=4;ms->mesh_kind=2;ms->mesh_notask=1;ms->mesh_threads=32;strcpy(ms->key,"probe-empty-mesh");
+    NSString *fsrc=@"#include <metal_stdlib>\nusing namespace metal;\nstruct main0_in\n{\nfloat4 a1 [[user(locn1)]];\n};\nfragment float4 main0(main0_in v [[stage_in]]){return v.a1;}\n";
+    id<MTLLibrary> fl=totk_msl_library(fsrc,&error);if(!fl)MDIE("empty mesh fragment: %s",error.localizedDescription.UTF8String);
+    NvShader *fs=[NvShader new];fs->src=fsrc;fs->fn=[fl newFunctionWithName:@"main0"];fs->stage=1;strcpy(fs->key,"probe-empty-mesh-fragment");
+    NvProg *raster=[NvProg new];raster->sh[1]=fs;
+    MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO];td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget;
+    id<MTLTexture> color=[g_dev newTextureWithDescriptor:td];res_add(color);id<MTLBuffer> rb=probe_buf(1024),side=probe_buf(32*4);
+    for(int mode=0;mode<3;mode++)for(int mixed=0;mixed<2;mixed++) {
+        atomic_store(&g_mesh_empty_export,mode==1);memset(side.contents,0,side.length);
+        g_mtk=(__typeof__(g_mtk)){.on=1,.ms=ms,.fs=fs,.first=mixed,.count=32};
+        id<MTLFunction> variant=mtk_empty_export_fn(ms->fn,ms);
+        if((variant!=ms->fn)!=(mode==1))MDIE("empty mesh probe did not switch production variant");checked++;
+        id<MTLRenderPipelineState> ps=mtk_pso(raster);
+        mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.renderTargetWidth=rp.renderTargetHeight=16;
+        id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,ps);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});enc_r_vbuf(en,28,side.gpuAddress);mtk_encode(en);enc_r_end(en);
+        enc_b_copy_texture_buffer(blit(),color,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,16,1),rb,0,64,1024);mtl_sub_commit();mtl_finish();
+        for(int i=0;i<32;i++){if(((uint32_t *)side.contents)[i]!=(0x12340000u+i))MDIE("empty mesh lost guest side effect group%d",i);checked++;}
+        const int rgba[4]={64,128,191,255};for(int i=0;i<1024;i++){int want=mixed?rgba[i%4]:0;if(abs(((uint8_t *)rb.contents)[i]-want)>1)MDIE("empty mesh mode%d mixed%d pixel byte%d: %u != %d",mode,mixed,i,((uint8_t *)rb.contents)[i],want);checked++;}
+    }
+    g_mtk.on=0;atomic_store(&g_mesh_empty_export,saved);defer_obj_release(color);defer_obj_release(rb);defer_obj_release(side);return checked;
+}
 int mtl_probe_mesh(void) {
     mtl_init();NSError *error=nil;int checked=0;
     checked+=mesh_indirect_probe();
@@ -128,6 +165,7 @@ int mtl_probe_mesh(void) {
         const uint8_t *pixels=readback.contents;for(int p=0;p<256;p++){const uint8_t *v=pixels+4*p;if(abs((int)v[0]-64)>1||v[1]!=0||abs((int)v[2]-191)>1||v[3]!=255)MDIE("mesh probe mode %d pixel %d: %u %u %u %u",mode,p,v[0],v[1],v[2],v[3]);checked++;}
     }
     g_mtk.on=0;defer_obj_release(color);defer_obj_release(readback);
+    checked+=mesh_empty_export_probe();
     // Optional original-program corpus, supplied externally. This exercises the
     // production linkage/pipeline builder without replaying an opening movie.
     const char *manifest=getenv("OOT_MESH_PIPELINE_CASES");

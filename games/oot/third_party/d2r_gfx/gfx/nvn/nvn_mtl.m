@@ -22,6 +22,10 @@
 #include "nvn_quad_strip.h"
 #include "totk_vpool.h"
 static _Atomic int g_mesh_reuse = -1;
+static _Atomic int g_pool_validate_once = -1;
+static _Atomic int g_raw_index = -1;
+static _Atomic int g_raw_write_log = -1;
+static _Atomic int g_mesh_empty_export = -1;
 static _Atomic int g_mesh_reuse_check;
 static _Atomic int g_mesh_trace_frames;
 #include "nvn_impl.h"   // NVN_BLOCKING: release the guest core only while a write-back waits
@@ -2870,6 +2874,10 @@ void dm_gfx_set_flag(const char *name, int v) {
         atomic_store(&g_ka_target_us, v); MLOG("[flag] keepalive_us = %d", v); return;
     }
     if (!strcmp(name,"mesh_reuse")) { if(v<0||v>2)return;atomic_store(&g_mesh_reuse,v); MLOG("[flag] mesh_reuse = %d",v); return; }
+    if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
+    if (!strcmp(name,"raw_index")) { atomic_store(&g_raw_index,v!=0); MLOG("[flag] raw_index = %d",v!=0); return; }
+    if (!strcmp(name,"pool_validate_once")) { atomic_store(&g_pool_validate_once,v!=0); MLOG("[flag] pool_validate_once = %d",v!=0); return; }
+    if (!strcmp(name,"mesh_empty_export")) { atomic_store(&g_mesh_empty_export,v!=0); MLOG("[flag] mesh_empty_export = %d",v!=0); return; }
     if (!strcmp(name,"mesh_reuse_check")) { atomic_store(&g_mesh_reuse_check,v!=0); MLOG("[flag] mesh_reuse_check = %d",v!=0); return; }
     if (!strcmp(name,"mesh_trace")) { if(v>=0&&v<=4)atomic_store(&g_mesh_trace_frames,v); return; }
     if (!strcmp(name, "chunk_first") || !strcmp(name, "chunk_draws")) {
@@ -9907,16 +9915,27 @@ static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy
 static uint64_t g_geo_bind[5];   // GPU addresses of the geometry helper buffers bound while a geometry draw encodes (NVN_RB_GEO reg)
 #define GMEM_MAP_ENTRIES 4096
 #define GMEM_MAP_ENTRY 32
+#include "nvn_gmem_index.h"
 static id<MTLBuffer> g_gmem_buf; static uint64_t g_gmem_gen;
+static int g_gmem_index_mode = -1;
+static int raw_index_on(void) {
+    int v=atomic_load_explicit(&g_raw_index,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_RAW_INDEX");v=e?atoi(e)!=0:1;atomic_store(&g_raw_index,v);}
+    return v;
+}
 static uint64_t gmem_map_gpu(void) {
     uint64_t gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
-    if (g_gmem_buf && g_gmem_gen == gen) return g_gmem_buf.gpuAddress;
+    int indexed=raw_index_on();
+    if (g_gmem_buf && g_gmem_gen == gen && g_gmem_index_mode == indexed) return g_gmem_buf.gpuAddress;
     pthread_mutex_lock(&g_mu);
     gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     size_t capacity=GMEM_MAP_ENTRIES;
     while(capacity<=(size_t)g_pools.n && capacity<(1u<<20))capacity<<=1;
     if(capacity<=(size_t)g_pools.n){pthread_mutex_unlock(&g_mu);MDIE("raw global memory: pool count exceeds representable capacity");}
-    id<MTLBuffer> b = [g_dev newBufferWithLength:capacity * GMEM_MAP_ENTRY options:MTLResourceStorageModeShared];
+    uint64_t max_end=0;
+    for(int k=0;k<g_pools.n;k++)max_end=MAX(max_end,g_pools.e[k].hi);
+    uint32_t buckets=indexed&&g_pools.n?gmem_index_count(g_pools.e[0].lo,max_end):0;
+    id<MTLBuffer> b = [g_dev newBufferWithLength:capacity * GMEM_MAP_ENTRY + (size_t)buckets * 12 options:MTLResourceStorageModeShared];
     if (!b){pthread_mutex_unlock(&g_mu);MDIE("raw global memory: pool table buffer");}
     uint8_t *t = (uint8_t *)b.contents; memset(t, 0, b.length);
     for (size_t k=1;k<capacity;k++) memset(t+k*GMEM_MAP_ENTRY,0xff,8);
@@ -9930,25 +9949,38 @@ static uint64_t gmem_map_gpu(void) {
         uint64_t e[3]={lo,hi,p->gpu-(uint64_t)p->base};
         memcpy(t+(size_t)n++*GMEM_MAP_ENTRY,e,sizeof e);end=hi;
     }
+    gmem_index_build((uint64_t *)t,(uint32_t)n,(uint32_t)capacity,buckets);
     pthread_mutex_unlock(&g_mu);
     res_add(b);res_commit();
     if(g_gmem_buf)defer_obj_release(g_gmem_buf);
-    g_gmem_buf=b;g_gmem_gen=gen;
-    {static size_t last;static unsigned reports;
-        if(last!=capacity || reports++<4)MLOG("raw global memory: %d ranges, capacity %zu, pool generation %llu",n-1,capacity,gen);
-        last=capacity;}
+    g_gmem_buf=b;g_gmem_gen=gen;g_gmem_index_mode=indexed;
+    {static size_t last;static unsigned reports;static int last_mode=-1;
+        if(last!=capacity || last_mode!=indexed || reports++<4)
+            MLOG("raw global memory: %d ranges, capacity %zu, pool generation %llu, index mode %d buckets %u span %#llx..%#llx",
+                 n-1,capacity,gen,indexed,buckets,(unsigned long long)((uint64_t *)t)[4],(unsigned long long)max_end);
+        last=capacity;last_mode=indexed;}
     return b.gpuAddress;
 }
-/* The write log those stores fill (patch 0006 GmemLog*: word 0 = a page found no free slot, then an open-addressing set of
-   1 << 10 guest pages). Each draw or dispatch gets its own, cleared. The host does not read it: a shader with the log may
-   store anywhere, so the encoder drops every uniform snapshot of this submission from it on (usnap_drop over all memory),
-   as it does for the range of an ordinary writable storage buffer; the stores themselves land in the guest's pages (zero-copy
-   pools), and the encoders' device-scope barriers order them before later passes. */
-#define GML_BYTES (((1u << 10) + 1u) * 4u)
+/* The host never consumes the per-page GPU log. Raw writes still carry
+   GMEML reflection for conservative invalidation. Immutable word 1025 enables
+   the original bookkeeping for diagnostics; guest writes and barriers always
+   execute. Words 0..1024 retain their original overflow/page-set semantics. */
+#define GML_CONTROL_WORD ((1u << 10) + 1u)
+#define GML_BYTES ((GML_CONTROL_WORD + 1u) * 4u)
+static int g_gml_probe_on;
+static id<MTLBuffer> g_gml_probe_buffer;
+static size_t g_gml_probe_offset;
+static int raw_write_log_on(void) {
+    int v=atomic_load_explicit(&g_raw_write_log,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_RAW_WRITE_LOG");v=e?atoi(e)!=0:0;atomic_store(&g_raw_write_log,v);}
+    return v;
+}
 static uint64_t gml_take(void) {
     __unsafe_unretained id<MTLBuffer> b = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
     arena_alloc_u(GML_BYTES, &b, &cpu, &gpu);
     memset(cpu, 0, GML_BYTES);
+    ((uint32_t *)cpu)[GML_CONTROL_WORD] = (uint32_t)raw_write_log_on();
+    if(g_gml_probe_on){g_gml_probe_buffer=b;g_gml_probe_offset=(size_t)(cpu-(uint8_t *)b.contents);}
     usnap_drop(0, UINT64_MAX);
     return gpu;
 }
@@ -9992,6 +10024,7 @@ static id<MTLTexture> mip_feedback_view(id<MTLTexture> t, uint64_t serial) {
 }
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen, g_args_serial_seen, g_args_snapshot_seen;
+static int g_args_raw_index_seen = -2, g_args_raw_write_log_seen = -2;
 static uint64_t g_args_epoch[6] = {1, 1, 1, 1, 1, 1};
 static inline void args_dirty_stage(int stage) {
     g_args_dirty[stage] = 1;
@@ -10009,7 +10042,9 @@ static inline void args_sync_dirty(void) {
     // Replaced textures and retired uniform snapshots change argument addresses without a new binding.
     // 纹理替换和统一缓冲快照退休会改变参数地址，即使绑定本身未变。
     if (reg != g_args_reg_seen || dirty != g_args_dirty_seen ||
-        serial != g_args_serial_seen || snapshot != g_args_snapshot_seen) {
+        serial != g_args_serial_seen || snapshot != g_args_snapshot_seen || raw_index_on() != g_args_raw_index_seen || raw_write_log_on() != g_args_raw_write_log_seen) {
+        g_args_raw_write_log_seen = raw_write_log_on();
+        g_args_raw_index_seen = raw_index_on();
         g_args_reg_seen = reg; g_args_dirty_seen = dirty;
         g_args_serial_seen = serial; g_args_snapshot_seen = snapshot;
         args_dirty_all();
@@ -10374,12 +10409,23 @@ static const uint8_t *bound_uniform_bytes(uint64_t gpu, size_t size, id<MTLBuffe
 typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask; int base,n,kind,tt,pf; } oot_pool_snapshot;
 static oot_pool_snapshot g_descriptor_pools[16];static unsigned g_descriptor_pool_next;
 static uint64_t g_descriptor_pool_hits,g_descriptor_pool_misses,g_descriptor_pool_scanned,g_descriptor_pool_splits;
+static uint64_t g_descriptor_pool_reasons[5]; // replacement, journal overflow, pool memory, new submit, CPU dirty
+/* Texture views already use treg_stamp()/tex_check_once(): CPU writes become
+   visible on their next submission. Apply that same boundary to the pool which
+   contains those views. Descriptor registrations, serial replacements and pool
+   lifetime changes still invalidate independently. The strict texture diagnostic
+   keeps its per-write validation. OOT_POOL_VALIDATE_ONCE=0 is the A/B control. */
+static int descriptor_pool_once(void) {
+    int v=atomic_load_explicit(&g_pool_validate_once,memory_order_relaxed);
+    if(v<0){const char *e=getenv("OOT_POOL_VALIDATE_ONCE");v=e?atoi(e)!=0:0;atomic_store(&g_pool_validate_once,v);}
+    return v&&tex_check_once();
+}
 static int descriptor_pool_matches(const oot_pool_snapshot *p,const nvn_rbind *b) {
     int samp=b->kind==NVN_RB_SAMPP,base=samp?S.samp_base:S.tex_base,n=samp?S.samp_pool_n:S.tex_pool_n-base;if(n<1)n=1;
     return p->buffer&&p->base==base&&p->n==n&&p->kind==b->kind&&p->tt==b->dtt&&p->pf==b->dpf;
 }
 static int descriptor_pool_valid(const oot_pool_snapshot *p) {
-    return p->reg==g_reg_gen&&p->ser==g_ser_gen&&p->dirty==nvn_dirty_now()&&p->sub==g_sub_serial&&p->revision==g_descriptor_revision;
+    return p->reg==g_reg_gen&&p->ser==g_ser_gen&&(descriptor_pool_once()||p->dirty==nvn_dirty_now())&&p->sub==g_sub_serial&&p->revision==g_descriptor_revision;
 }
 static int descriptor_pool_ready(const nvn_rbind *b) {
     for(int i=0;i<16;i++)if(descriptor_pool_matches(&g_descriptor_pools[i],b)&&descriptor_pool_valid(&g_descriptor_pools[i]))return 1;
@@ -10404,6 +10450,11 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
     uint64_t *changed=calloc(words,sizeof *changed),*cpu_mask=replace?calloc(words,sizeof *cpu_mask):slot->cpu_mask;
     if(!changed||!cpu_mask)MDIE("descriptor pool validation mask");
     int full=replace||revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&(slot->memory!=memory||ser-slot->ser>=SER_CHG_N));
+    g_descriptor_pool_reasons[0]+=replace;
+    g_descriptor_pool_reasons[1]+=!replace&&(revision-slot->revision>=DESCRIPTOR_CHANGE_N||(!samp&&ser-slot->ser>=SER_CHG_N));
+    g_descriptor_pool_reasons[2]+=!replace&&!samp&&slot->memory!=memory;
+    g_descriptor_pool_reasons[3]+=!replace&&!samp&&slot->sub!=g_sub_serial;
+    g_descriptor_pool_reasons[4]+=!replace&&!samp&&slot->dirty!=dirty;
     if(!full){
         for(uint64_t v=slot->revision+1;v<=revision;v++){
             int change=g_descriptor_changes[v%DESCRIPTOR_CHANGE_N];
@@ -10417,7 +10468,7 @@ static uint64_t descriptor_pool_gpu(const nvn_rbind *binding) {
             int head=(int)(uintptr_t)nvn_hm_get(&g_view_heads,&serial);
             for(;head;head=g_treg[head-1].view_next){int ix=head-1-base;if(ix>=0&&ix<n)changed[(unsigned)ix/64]|=UINT64_C(1)<<((unsigned)ix%64);}
         }
-        if(!samp&&(slot->sub!=g_sub_serial||slot->dirty!=dirty))for(size_t w=0;w<words;w++)changed[w]|=cpu_mask[w];
+        if(!samp&&(slot->sub!=g_sub_serial||(!descriptor_pool_once()&&slot->dirty!=dirty)))for(size_t w=0;w<words;w++)changed[w]|=cpu_mask[w];
     }
     if(full){for(size_t w=0;w<words;w++)changed[w]=UINT64_MAX;if(n%64)changed[words-1]=(UINT64_C(1)<<(n%64))-1;}
     uint64_t dummy;
@@ -10475,7 +10526,7 @@ static void prepare_shader_pools(NvShader *sh) {
         g_tex_prepare_split=0;g_descriptor_pool_splits+=g_enc!=nil;rp_end();
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
-    if(frame>=last+300){last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses);}
+    if(frame>=last+300){last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
 static int arg_epoch_safe(NvShader *sh) {
     if (!sh->ab_epoch_ok) {
@@ -18415,10 +18466,57 @@ int mtl_probe_upload_batch(void) {
     return checked;
 }
 
+/* Read through the production GPU-indexed pool, not the CPU texture cache. CPU
+   writes during a submission preserve its already resolved view; the next
+   submission must sample the new bytes. Both validation modes use the same
+   texture rule. OOT_POOL_PROBE_STALE deliberately binds the preceding table. */
+static int probe_descriptor_pool_epoch(void) {
+    int checked=0,saved=atomic_load(&g_pool_validate_once);
+    int saved_n=S.tex_pool_n,saved_base=S.tex_base;
+    NSError *error=nil;
+    NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\nstruct Pool { uint n; uint pad; texture2d<float, access::read> t[3]; };\nkernel void k(device const Pool &p [[buffer(0)]], device uchar4 *out [[buffer(1)]], uint i [[thread_position_in_grid]]) { out[i]=uchar4(round(p.t[1].read(uint2(i%32,i/32))*255.0f)); }\n";
+    id<MTLLibrary> lib=[g_dev newLibraryWithSource:source options:nil error:&error];
+    id<MTLComputePipelineState> ps=lib?[g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"k"] error:&error]:nil;
+    if(!ps)MDIE("descriptor epoch probe pipeline: %s",error.localizedDescription.UTF8String);
+    for(int mode=0;mode<2;mode++) {
+        atomic_store(&g_pool_validate_once,mode);
+        tex_t t={0};t.serial=0xfffe1000+mode;
+        t.d=(nvn_texdesc){.width=32,.height=32,.depth=1,.levels=1,.target=1,.format=0x25,.flags=0x40,.swizzle_r=2,.swizzle_g=3,.swizzle_b=4,.swizzle_a=5};
+        nvn_tex_layout(&t.d,&t.L);size_t size=(t.L.size+getpagesize()-1)&~((size_t)getpagesize()-1);
+        int once=tex_check_once()||pkg_hashed(&t);
+        void *mem=mmap(NULL,size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);if(mem==MAP_FAILED)MDIE("descriptor epoch mmap");
+        memset(mem,37,size);pool_t pool={.mem=mem,.size=size,.flags=0x24};t.mem=mem;t.pool=&pool;
+        mtl_pool_add(mem,size);nvn_dirty_add_range(mem,size);mtl_reg_tex(1,&t,NULL);
+        NvShader *sh=[NvShader new];sh->rf.nb=1;sh->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEXP,.dtt=MTLTextureType2D};
+        id<MTLBuffer> out=probe_buf(3*4096);id<MTLBuffer> first=nil;uint64_t first_gpu=0;
+        op_hdr end={OP_END,8};
+        for(int step=0;step<3;step++) {
+            if(step!=1){mtl_sub_begin();mtl_exec((const uint8_t *)&end);S.tex_pool_n=2;S.tex_base=0;}
+            if(step==1){nvn_dirty_protect(mem,size);uint64_t before=nvn_dirty_now();dm_guest_write_prepare(mem,size);memset(mem,173,size);if(nvn_dirty_now()==before)MDIE("descriptor epoch fixture did not change dirty generation");checked++;}
+            uint64_t before=g_descriptor_pool_scanned;prepare_shader_pools(sh);
+            registry_lock();uint64_t gpu=descriptor_pool_gpu(&sh->rf.b[0]);registry_unlock();
+            if(step==0){first_gpu=gpu;for(int i=0;i<16;i++)if(descriptor_pool_matches(&g_descriptor_pools[i],&sh->rf.b[0]))first=g_descriptor_pools[i].buffer;}
+            if(step==1&&mode&&tex_check_once()&&g_descriptor_pool_scanned!=before)MDIE("descriptor epoch rechecked unchanged submission");
+            if(step==1&&once&&gpu!=first_gpu)MDIE("descriptor epoch replaced table inside submission");
+            if(step==2&&getenv("OOT_POOL_PROBE_STALE"))gpu=first_gpu;
+            rp_end();if(g_blit){enc_b_end(g_blit);g_blit=nil;}
+            id<MTL4ComputeCommandEncoder> ce=enc_c_begin(NULL);enc_c_pso(ce,ps);enc_c_args(ce,gpu,0);enc_c_args(ce,out.gpuAddress+step*4096,1);
+            [ce dispatchThreads:MTLSizeMake(1024,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];enc_c_end(ce);
+            if(step!=0){mtl_sub_commit();mtl_finish();}
+        }
+        for(int step=0;step<3;step++)for(int i=0;i<4096;i++){
+            uint8_t want=step==2||(!once&&step==1)?173:37,got=((uint8_t *)out.contents)[step*4096+i];
+            if(got!=want)MDIE("descriptor epoch mode%d step%d byte%d: %u != %u",mode,step,i,got,want);checked++;
+        }
+        (void)first;mtl_reg_tex(1,NULL,NULL);mtl_tex_release(&t);mtl_pool_del(mem);nvn_dirty_remove_range(mem);mtl_finish();res_remove(out);munmap(mem,size);
+    }
+    S.tex_pool_n=saved_n;S.tex_base=saved_base;atomic_store(&g_pool_validate_once,saved);return checked;
+}
+
 /* A sampling descriptor gains image/format-view usage while another render pass is open. The
    resolved view must retain every mip/layer written through the original storage descriptor. */
 int mtl_probe_storage_view(void) {
-    mtl_init(); const NSUInteger W=16,H=16;int checked=0;
+    mtl_init(); const NSUInteger W=16,H=16;int checked=probe_descriptor_pool_epoch();
     for(int test=0;test<6;test++) {
         int mode=test%2,kind=test/2,stage=test%2,reg=kind==2?31:127;
         NvProg *pr=[NvProg new];NvShader *sh=[NvShader new];pr->sh[stage]=sh;

@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v10-pool-map-live-inputs"
+#define DMSH_CHAIN "oot-native-v12-optional-write-log"

@@ -1,0 +1,35 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -854,12 +854,30 @@
+             Operand step = Local();
+             Operand search = Label();
+             Operand finished = Label();
++            Operand capacity = MapWord(Const(0), 4);
++            Operand last = Local();
+             context.Copy(index, Const(0));
+-            context.Copy(step, context.ShiftRightU32(MapWord(Const(0), 4), Const(1)));
++            context.Copy(step, context.ShiftRightU32(capacity, Const(1)));
++            context.Copy(last, context.IAdd(capacity, Const(-1)));
++            // Optional exact 4 MiB directory: retain the full search if the
++            // address is outside its span, or the host disabled the directory.
++            Operand bucketLow = context.BitwiseOr(context.ShiftRightU32(addrLow, Const(22)), context.ShiftLeft(addrHigh, Const(10)));
++            Operand bucketHigh = context.ShiftRightU32(addrHigh, Const(22));
++            Operand baseLow = MapWord(Const(0), 6);
++            Operand offset = context.ISubtract(bucketLow, baseLow);
++            Operand borrow = context.ConditionalSelect(context.ICompareLessUnsigned(bucketLow, baseLow), Const(1), Const(0));
++            Operand high = context.ISubtract(context.ISubtract(bucketHigh, MapWord(Const(0), 7)), borrow);
++            Operand useIndex = context.BitwiseAnd(context.ICompareEqual(high, Const(0)), context.ICompareLessUnsigned(offset, MapWord(Const(0), 5)));
++            context.BranchIfFalse(search, useIndex);
++            Operand bucket = context.IAdd(context.IMultiply(capacity, Const(GmemMapEntryWords)), context.IMultiply(offset, Const(3)));
++            context.Copy(index, MapWord(bucket, 0));
++            context.Copy(step, MapWord(bucket, 1));
++            context.Copy(last, MapWord(bucket, 2));
+             context.MarkLabel(search);
+             context.BranchIfTrue(finished, context.ICompareEqual(step, Const(0)));
+             {
+-                Operand candidate = context.IAdd(index, step);
++                Operand next = context.IAdd(index, step);
++                Operand candidate = context.ConditionalSelect(context.ICompareLessUnsigned(next, last), next, last);
+                 Operand entry = context.IMultiply(candidate, Const(GmemMapEntryWords));
+                 Operand startLow = MapWord(entry, 0);
+                 Operand startHigh = MapWord(entry, 1);

@@ -1109,11 +1109,22 @@ int svc_thread(int num, uint64_t *regs) {
         regs[0] = 0; return 1;
     }
 
-    case 0x34: {  // WaitForAddress(x0 地址, w1 类型, w2 值, x3 超时)：0 小于则等、1 小于则减一再等、2 相等则等 | WaitForAddress(x0 address, w1 type, w2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal
+    case 0x34: {  // WaitForAddress: types 0/1 compare signed 32-bit less-than, 2 equal32, SDK22 type 3 equal64 (x2).
         thr_t *t = cur(); uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2];
         pthread_mutex_lock(&G);
-        int64_t r; uint32_t v = ld32(addr);
-        int ok = type == 2 ? (int32_t)v == val : (int32_t)v < val;
+        int64_t r; uint32_t v = 0; int ok;
+#ifdef GAME_NS2
+        /* SDK22 nn::os::WaitForAddress(const long*,long) passes type 3 and the
+           full x2. libc++ atomic_wait uses it when a job is not yet complete.
+           Treating this as signed less-than returns immediately for equal
+           counters, leaving the job worker polling while retaining its core. */
+        if(type==3) {
+            if(addr&7u){pthread_mutex_unlock(&G);regs[0]=0xcc01u;return 1;}
+            ok=__atomic_load_n((uint64_t *)(uintptr_t)addr,__ATOMIC_SEQ_CST)==regs[2];
+        }
+        else
+#endif
+        { v=ld32(addr);ok=type==2?(int32_t)v==val:(int32_t)v<val; }
         if (ok && type == 1) { while (!cas32(addr, &v, v - 1)) if (!((int32_t)v < val)) { ok = 0; break; } }
         if (!ok) r = R_BAD_STATE;
         else { t->waddr = addr; r = block(t, 3, (int64_t)regs[3]); }
