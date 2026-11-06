@@ -14,6 +14,12 @@ GAME=Path(__file__).resolve().parent
 VERSION='oot'
 TITLE='0400486024DEC000'
 
+def build_helpers():
+    root=str(GAME.parents[1])
+    if root not in sys.path:sys.path.insert(0,root)
+    import build_app
+    return build_app
+
 def sha(path):
     h=hashlib.sha256()
     with Path(path).open('rb') as f:
@@ -33,8 +39,72 @@ def clone_file(source, destination):
         shutil.copy2(source,destination)
     return str(destination)
 
+def verify_shader_resources(tree):
+    """Check every prepared variant/library and bind both manifests into the normal build record."""
+    seed=tree/'build/shader-seed/oot';libraries=tree/'build/shader-libs'
+    if not seed.exists():return None   # explicit development packages from before offline preparation
+    metadata=json.loads((seed/'seed-manifest.json').read_text())
+    chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
+    expected=json.loads((GAME/'assets/expected-v131072.json').read_text())
+    if (metadata.get('version')!='oot' or metadata.get('source_romfs_sha256')!=expected['romfs']['sha256'] or
+        metadata.get('translator_sha256')!=sha(GAME/'prebuilt/macos-arm64/totk_xlate') or
+        metadata.get('chain')!=chain or not metadata.get('all_default') or
+        metadata.get('nvn_depth_mode')!='minus-w' or not metadata.get('corpus_shaders') or
+        metadata.get('translated_default')!=metadata['corpus_shaders']):
+        raise ValueError('OOT shader seed is incomplete or belongs to another translation context')
+    libs=json.loads((libraries/'libraries-manifest.json').read_text())
+    if not libs.get('complete'):raise ValueError('OOT Metal libraries are incomplete')
+    shared=build_helpers()
+    known_seed=shared.seed_digests(seed);known_libs=shared.seed_digests(libraries)
+    for name,want in metadata['files'].items():
+        if Path(name).name!=name or shared.seed_sha256(seed,name,known_seed)!=want:raise ValueError('damaged shader seed: '+name)
+        if name.endswith('_b.metal'):
+            if libs['sources'].get(name)!=want:raise ValueError('library source differs from seed: '+name)
+            library=want+'.metallib'
+            if shared.seed_sha256(libraries,library,known_libs)!=libs['files'].get(library):raise ValueError('damaged Metal library: '+library)
+    for library,want in libs['files'].items():
+        if Path(library).name!=library or shared.seed_sha256(libraries,library,known_libs)!=want:
+            raise ValueError('damaged Metal library: '+library)
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_shader_seed import record_verified
+    record_verified(seed,metadata['files']);record_verified(libraries,libs['files'])
+    record=dict(schema=1,chain=chain,nvn_depth_mode=metadata['nvn_depth_mode'],
+                corpus_shaders=metadata['corpus_shaders'],shaders=metadata['shaders'],
+                seed_manifest_sha256=sha(seed/'seed-manifest.json'),
+                libraries_manifest_sha256=sha(libraries/'libraries-manifest.json'),compiler=libs['compiler'])
+    # record_ns2_device_build already hashes every build/game-data/oot file.
+    (tree/'build/game-data/oot/precompiled-shaders.json').write_text(json.dumps(record,indent=2)+'\n')
+    return record
+
+def shader_bundle(tree,record):
+    """Seal the large immutable seed once, using the repository's nested-bundle layout."""
+    shared=build_helpers();bundle=tree/'build/shader-bundles/ShaderData-oot.bundle'
+    stamp=bundle.with_name(bundle.name+'.json')
+    want={k:record[k]for k in ('seed_manifest_sha256','libraries_manifest_sha256')}
+    if (bundle/'Contents/_CodeSignature/CodeResources').is_file() and stamp.exists() and json.loads(stamp.read_text())==want:
+        return bundle
+    temporary=bundle.with_name(bundle.name+'.partial-'+str(os.getpid()))
+    if temporary.exists():raise ValueError('unfinished shader bundle: '+str(temporary))
+    resources=temporary/'Contents/Resources'
+    shared.copy_tree(tree/'build/shader-seed/oot',resources/'shader-seed')
+    libraries=tree/'build/shader-libs';manifest=json.loads((libraries/'libraries-manifest.json').read_text())
+    for name in manifest['files']:clone_file(libraries/name,resources/'shader-libs'/name)
+    clone_file(libraries/'libraries-manifest.json',resources/'shader-libs/libraries-manifest.json')
+    (temporary/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier='org.macnativegames.oot.shaders.oot',CFBundleName='Startup shaders',
+        CFBundlePackageType='BNDL',CFBundleShortVersionString='131072',CFBundleVersion='1')))
+    subprocess.run(['codesign','--force','--sign','-',temporary],check=True)
+    subprocess.run(['codesign','--verify','--strict',temporary],check=True)
+    old=bundle.with_name(bundle.name+'.previous-'+str(time.time_ns()))
+    if bundle.exists():bundle.rename(old)
+    temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
+    return bundle
+
 def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     """Stage a sealed App containing its runtime data, then replace the closed App."""
+    shader_record=verify_shader_resources(tree)
+    prepared=shader_bundle(tree,shader_record) if shader_record else None
     opening_overlay=tree/'extracted/oot/opening-patches'
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
                     '--output',opening_overlay],check=True)
@@ -50,16 +120,16 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     # libraries prepared by the build so a new translation chain does not make
     # the player's first start compile those sources synchronously again.
     libraries=tree/'build/shader-libs'
-    if libraries.is_dir():
+    if prepared:
+        build_helpers().place_shader_bundle(prepared,temporary,data)
+    elif libraries.is_dir():
         shutil.copytree(libraries,data/'build/shader-libs',copy_function=clone_file)
     shutil.copytree(tree/'extracted/oot/romfs',data/'extracted/oot/romfs',copy_function=clone_file,
                     ignore=shutil.ignore_patterns('romfs.bin','.romfs-verified*'))
     shutil.copytree(opening_overlay,data/'extracted/oot/romfs-patches',copy_function=clone_file)
     # Reuse the repository's existing game-data packaging. Its signed helper
     # avoids hashing an unchanged 26 GB image on every native runtime update.
-    root=str(GAME.parents[1])
-    if root not in sys.path:sys.path.insert(0,root)
-    import build_app
+    build_app=build_helpers()
     if game_data_mode=='library':
         game_data_folder=(Path(game_data_folder) if game_data_folder else Path.home()/'Library/Application Support/MacNativeGames/OcarinaOfTime/GameData').expanduser().resolve()
         repo=GAME.parents[1]
@@ -162,9 +232,14 @@ def build(args, source):
     service=tree/'build/shader-service';service.mkdir(parents=True,exist_ok=True)
     binary=GAME/'prebuilt/macos-arm64/totk_xlate'
     if sha(binary)!=(binary.with_suffix('.sha256')).read_text().strip():raise ValueError('shader translator checksum mismatch')
-    shutil.copy2(binary,service/'totk_xlate')
+    temporary_service=service/'totk_xlate.new'
+    shutil.copy2(binary,temporary_service);os.replace(temporary_service,service/'totk_xlate')
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
+    run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
+         '--binary',work/'build/oot-native','--jobs','4','--logs',logs],'prepare-shader-seed')
+    run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
+         '--out',tree/'build/shader-libs','--jobs','4'],'compile-shader-libraries')
     package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)
     chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]

@@ -1,0 +1,62 @@
+# OOT 全量离线着色器
+
+OOT 的标准 Mac 构建从已核对的原始游戏数据提取着色器，经本游戏的运行时翻译，再编成 Metal 库。种子位于外部工作目录的 `oot/build/shader-seed/oot`，库位于 `oot/build/shader-libs`；打包后保存在独立签名的 `Contents/Helpers/ShaderData-oot.bundle`，运行时从 `Contents/Resources/totk/build/shader-seed` 和 `shader-libs` 的相对链接读取。
+
+## 数据来源与数量
+
+[nxnative PR #1299](https://github.com/seedds/nxnative/pull/1299) 的固定参考版本是 `ee9b7765d579c46e45a7297493565e098f3bda33`。它提供提取方法、键和来源清单；我们的 MSL、反射、Metal 库从用户的游戏数据及本地翻译链生成，不直接使用其他运行时的库。
+
+本地更新 131072 的完整集合：
+
+| 阶段 | 数量 |
+| --- | ---: |
+| vertex | 15,851 |
+| pixel | 22,352 |
+| task | 20 |
+| mesh | 500 |
+| compute | 4,122 |
+| 合计 | 42,845 |
+
+42,845 个键全部属于 PR 的 42,851 项。多出的六个短键为 `18be578dfdaaffa0`、`269e3cb1372760f6`、`2bb5cb2b65db33ad`、`68bbe98b3bfd9876`、`7a4936fccf82094e`、`e87e4c611ade7637`。逐项从原文件复现后，六项所谓的 BAHS 条目均位于一个有效控制块的 `+0x38`，属于该块的长度字段。把这些字段误读为条目会拼出伪造的控制/代码配对。提取器按控制块的所有权排除它们，不用数量门槛补齐。
+
+NVN2 BNSH 的 task/mesh 指针位于 program 的 slots 7/8。提取器读取这些槽位并检查范围；离线运行时也必须接收 stage 3/4，不能沿用 NVN1 的 tessellation 排除规则。
+
+## 翻译与构建校验
+
+使用真实游戏记录的 `minus-w` 深度模式。缓存上下文包括运行时、翻译器、翻译链及深度模式；每次准备在自己的上下文目录保留独立翻译器，避免其他打包覆盖共享可执行文件导致 macOS `Code Signature Invalid`。
+
+离线入口的退出码不能单独证明完整：还要从二进制 corpus 重新计数和计算键，检查每个默认变体和已记录绑定变体、反射链及入口，任何缺项都停止发布。Metal 库按 MSL 的 SHA-256 命名，编译器版本与精确数学选项记录在 `libraries-manifest.json`，已有库复用前核对哈希。打包再次核对种子和对应库，并将两个清单的哈希写入 `build/game-data/oot/precompiled-shaders.json`，纳入原有完整构建记录。
+
+着色器资源包按上述两个清单的哈希复用签名，避免更新运行时时重新签名十多万个文件。复用哈希校验结果时，检查设备号、inode、大小、mtime 和 ctime；同大小、恢复 mtime 的内容修改也必须重新核验。`test_shader_package.py` 覆盖该失效路径、不同 RomFS 或翻译器、未完成库集合和真实的嵌套代码签名。
+
+两个真实 compute 着色器（键前缀 `1f78730053fe`、`e172bd7ec218`，来源 `agl_technique_pfx.sharcb`）的结构化 MSL 有 257 层花括号，超过 Apple Metal 编译器默认的 256 层解析限制。只有编译器明确报告这个错误时，构建才以 `-fbracket-depth=1024` 重试，原 MSL 和数学选项保持不变；清单的 `parser_depths` 记录这些库。其他失败仍停止打包，已核验的成功库可供重试复用。
+
+首次运行默认仅准备真实管线清单中的项目，其余预编译库留在磁盘，用到时加载。完整原始着色器集合并不等于完整管线集合；运行时绑定组合、采样器边界等派生变体仍可能产生新管线。
+
+`build_shader_libs.py` 可重复传 `--cache`，同时准备完整原始集合和已有的真实绑定变体；同名变体内容冲突时停止。后续构建保留同一编译器已核验的库，打包也校验并包含这些附加库。不能只按原始默认集合筛掉既有库：2026-11-06 本机 986 份实际运行 MSL 中有 202 个库不属于默认集合，漏带会使已有准备退回现场编译。
+
+## ISBERD 输出负载读取
+
+原始 task `5d3a096025e375a16a5bb4da22b58e9c91ee7fa51b785cd4d90774f119570500` 在代码 `+0xf0` 用 `ISBEWR 0xb8` 写输出负载 `+0x10`，紧接 `+0x100` 用 `ISBERD 0xb8` 读取同一位置。旧翻译器拒绝该读取。
+
+[Mesa 的 ISBE 说明](https://docs.mesa3d.org/drivers/nvk/isbe_layout.html) 区分输入和输出空间；其 NAK `sm70_encode.rs` 的 `OpIsberd` 编码明确将 bit 79 定义为 output，bits 74..77 为数据宽度和区域。补丁 `0024-task-output-payload-read.patch` 将该读取路由到与输出写入相同的 stage memory 区域，保留原有输入读取语义。
+
+`tests/stage_payload_gpu.py` 生成真实指令编码，经生产翻译器生成任务主体；只把外层入口换成可读回的 compute 包装。`stage_payload_gpu.m` 在 Metal 4 队列执行 28 项，独立检查输入/输出区隔离、寄存器与立即数偏移、workgroup 号和完整 32 位数据。`OOT_STAGE_READ_NEGATIVE=1` 故意改错输出期望值，必须失败。该探针验证指令语义，不代替游戏画面验收。
+
+2026-11-06：修复后完整翻译 42,845/42,845，缺项为零。原先成功的 42,844 项全部逐字节对拍：42,844 个 SPIR-V、42,844 个 MSL、85,688 个 JSON（反射及中间结果）和 42,844 个变体索引，变化和缺失均为零。新增语义的 28 项 GPU 读回通过，负对照在首个输出读取用例返回失败。
+
+Apple Metal `32023.883` 将 42,845 份 MSL 去重为 41,217 个库，全部编译通过。首次 41,215 个通过，另外两个按上述解析深度选项补编通过；最终 `failed.log` 为空，清单 `complete=true`。这证明完整语料的翻译和编译覆盖，实际游玩中使用的绑定变体及画面仍需单独验收。
+
+加入本机已记录的 986 份绑定变体后，合计覆盖 43,831 份 MSL、41,419 个不同内容的 Metal 库；额外的 202 个库全部补编通过。原始 corpus 仍为 42,845 个，不能把绑定变体算成新的原始着色器。
+
+最终资源已装入同一个桌面 App，构建记录与 worktree 源码核对无差异。2026-11-06 的最终包可执行文件 SHA-256 为 `be0f836086e25aa3b935ad265fc431797d7749e8db985b5ed1d7ed3f7724f45b`。用户操作 BotW 期间让出游戏槽；结束后在同包、同活动档、全新着色器缓存下完成验收，保持默认预热，未使用关闭预热的开关。
+
+最终冷缓存局：72.47 秒达到世界条件，按右方向键 4 秒转镜头，世界内运行 40 秒后正常 close，exit 0，总计 113.16 秒。全部 42,845 种子原地读取、零复制；首次无管线存档时只建实际清单，不把 42k 库全部载入内存。日志最后一次库计数为预编译 801、现场编译 0；新增的 168 份绑定变体 MSL，其全部源哈希均有现成库。无 GPU、翻译或库加载错误，两张 1920×1080 截图可见人物、草地、树屋、光照和 HUD 完整，镜头位置确实改变；这是短局可见画面检查，不代表全游戏逐像素验证。
+
+同包另有内存会话完成 90 秒世界左右镜头和短对照，均正常退出。执行前系统检查与首次设备 PSO 编译等待单独记录，不算稳态性能。完整原始库及已记录绑定库预编译通过，未来新的绑定组合、合并程序和设备 PSO 仍可能首次生成；此次没有 OOT iOS 真机验收。
+
+## 本机证据
+
+外部目录：`MacNativeGames-artifacts/codex/oot-native-20261105/shader-prewarm-20261106/`。`inventory.json`、`upstream-comparison.json`、`upstream-six-extra-records.json` 保留数量及六项差异的来源；`seed.log` 是修复前完整翻译的失败基线，`verified/` 是修复后的完整准备日志。生成的机器码、MSL 和库不得放入源码仓库。
+
+`preparation-result.json` 汇总全量翻译、GPU 指令读回、库编译、资源签名及 12 项回归；`installed-app.json` 核对实际安装包；`runtime/result.json`、`runtime/game.log`、`runtime/world.png` 和 `runtime/turned.png` 是最终冷缓存实机证据。

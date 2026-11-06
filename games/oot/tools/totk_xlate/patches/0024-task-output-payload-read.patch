@@ -1,0 +1,21 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -135,12 +135,16 @@
+                 // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
+                 int mode = x.Bits(72, 80);
+ 
+-                if (mode != 0x78 && mode != 0x38)
++                if (mode != 0x78 && mode != 0x38 && mode != 0xb8)
+                 {
+                     throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
+                 }
+ 
+-                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
++                // ISBERD bit 79 selects the output ISBE; bits 74..77 select B32/attribute
++                // (Mesa NAK sm70_encode.rs, OpIsberd). OOT's task writes [0x10] with
++                // ISBEWR 0xb8 and immediately reads that same output word with ISBERD 0xb8.
++                int region = mode == 0xb8 ? stage[2] : stage[1];
++                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(region + (int)x.SignedField(40, 64)));
+                 EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
+                 return;
+             }

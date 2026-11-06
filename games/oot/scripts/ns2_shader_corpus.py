@@ -39,7 +39,7 @@ SPH_STAGE = {0: 0, 1: 0, 2: 3, 3: 4, 4: 2, 5: 1}   # SPH shader type -> NVN stag
 
 
 def stage_of(ctl, code):
-    """The NVN stage (0 vertex, 1 fragment, 2 geometry, 3 / 4 tessellation, 5 compute) as the runtime reads it, or None."""
+    """The runtime stage (NVN2: 0 vertex, 1 fragment, 2 geometry, 3 task, 4 mesh, 5 compute), or None."""
     if ctl[0x56] in (5, 6, 7):
         return {5: 5, 6: 3, 7: 4}[ctl[0x56]]
     if len(code) < 4:
@@ -283,6 +283,8 @@ def nintendo_shaders(data, label, depth=0, decode=None):
             if prog + 56 > size:
                 raise ValueError(f'{label}: invalid BNSH program')
             for si in range(9):
+                if prog + 8 + (si + 1) * 8 > size:
+                    break   # optional NVN2 task/mesh slots are outside a shorter NVN1-style record
                 sc = struct.unpack_from('<Q', data, b + prog + 8 + si * 8)[0]
                 if not sc:
                     continue
