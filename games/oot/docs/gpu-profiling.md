@@ -64,6 +64,41 @@ indirect_address start_ticks end_ticks grid_sentinel
 从明确的 `F… s… cs…` 标签取得。Instruments 自身的显示帧号会横跨两帧
 游戏工作，不能用它代替游戏帧号。未确定身份的工作单独保留。
 
+## 纹理内存和生命周期
+
+遇到 GPU `Insufficient Memory` 时，可设置以下默认关闭的诊断，输出放在源码目录外：
+
+- `OOT_STORAGE_MEMORY_FILE=<TSV>`：在已有低频内存报告处输出共享存储的确切布局和持有序号。
+- `OOT_TEXTURE_LIFETIME_FILE=<TSV>`：记录所有 NVN 纹理对象的初始化、再次初始化、Finalize，
+  以及宿主进入释放函数的事件。不启用慢速纹理查找诊断，不依赖每次启动都会变化的存储地址。
+
+存储文件每行 18 列：
+
+```
+frame fence object storage guest_bytes width height depth levels target samples
+metal_format allocated_bytes holders idle_fence detached serials_csv finalized_flags_csv
+```
+
+两个 CSV 按位置对应。`holders` 说明宿主序号表仍持有资源，不独立证明 NVN 对象仍活着。
+分配字节属于这个 Metal 基础纹理；不要按每个序号再加一次。同地址不同布局也不能直接判为垃圾。
+
+生命周期文件每行 17 列：
+
+```
+sequence uptime_ns cpu_frame event object serial storage guest_bytes width height
+depth levels target nvn_format texture_flags pool pool_flags
+```
+
+`pool_flags` 仅在 `initialize` 时读取；异步释放时不解引用可能已经销毁的池对象。
+存储采样与事件来自不同线程，同一 CPU 帧内不能仅按帧号推断先后。
+`host_release` 标记进入释放函数，不能解释为该时刻 GPU 已完成或物理存储已释放。
+低频内存报告会刷新事件文件；异常退出后的末尾不完整行不进入分析。
+
+`DM_NVN_LIFELOG_MEM=<guest address>` 可在已有尺寸生命周期诊断中改为跟踪指定地址的所有布局；
+跨启动复用旧地址前必须重新确认。未匹配到 Initialize / Finalize 的日志不能用于判断目标的生命周期。
+
+性能采集保留真实手柄输入。用户接管后作废测量窗口并取消脚本操作和定时关闭。
+
 ## 本机验证（2026-11-06）
 
 证据根目录为外部 `codex/oot-native-20261105/performance-60fps/`：
