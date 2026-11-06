@@ -1,6 +1,7 @@
 /* Projection lifetime follows pool pixels, not replaceable view descriptors. */
 #import "../zeldaVR/gfx/vr_projection_graph.h"
 #include "../zeldaVR/gfx/vr_projection.h"
+#include "../zeldaVR/gfx/vr_totk_projection.h"
 #include "../zeldaVR/gfx/vr_labo_frame.h"
 #include "../zeldaVR/runtime/vr_view_math.h"
 #include <assert.h>
@@ -11,6 +12,17 @@ int main(void){@autoreleasepool{
     const float left[4]={-.7f,.6f,.8f,-.8f},right[4]={-.6f,.7f,.8f,-.8f};float out[4];
     vr_projection_image l={pool,100,960,1080},r={pool,200,960,1080},post={pool,300,960,1080},aux={pool,400,960,1080};
     vr_projection_graph_camera(l,left);vr_projection_graph_camera(r,right);
+    /* Real F2718 -> F2807 failure: a glyph-cache draw sampled the world,
+       inherited its right-eye rays, and later got HUD mapping only in that
+       eye. A sampled dependency alone does not own the target coordinates. */
+    vr_projection_image glyph={pool,0x88ea00,113,72};
+    int action=vr_totk_projection_color_action(15,0,0,0,0);
+    if(action==VR_PROJECTION_INHERIT)vr_projection_graph_inherit(glyph,&r,1);
+    assert(!vr_projection_graph_get(glyph,out));
+    action=vr_totk_projection_color_action(15,0,0,0,1);
+    if(action==VR_PROJECTION_COPY)vr_projection_graph_copy(glyph,r);
+    assert(vr_projection_graph_get(glyph,out)&&!memcmp(out,right,sizeof out));
+    vr_projection_graph_clear(glyph);
     assert(vr_projection_graph_get(l,out)&&!memcmp(out,left,sizeof out));
     assert(vr_projection_graph_get(r,out)&&!memcmp(out,right,sizeof out));
     /* Real failure states: F1836 P175995 only wrote depth (wm=0), while

@@ -11,7 +11,12 @@ int vr_enabled(void);
    pass to vr_source_done from the command buffer's feedback handler, or -1. */
 int vr_source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], uint64_t ticket);
 int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye);   /* stereo B2: the left pass's picture */
-void vr_b2_present_eye(int eye);   /* stereo B2: the next present's picture is that eye's */
+void vr_b2_present_eye(int eye);
+void vr_b2_pair_begin(void);
+void vr_b2_eye_begin(void);   /* stereo B2: the next present's picture is that eye's */
+/* Replay thread: the projection belongs to the actual image being captured. */
+void vr_source_projection(const float fov[4],const float rotation[9]);
+void vr_packet_trace(int packets);
 void vr_source_done(int slot, int ok);
 id<MTLResidencySet> vr_residency(void);   // our copies of the picture; the queue adds it once
 void vr_recenter(void);

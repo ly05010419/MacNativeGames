@@ -523,7 +523,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  if(!vr_enabled())return;
 #ifdef GAME_BOTW190
  [rows addObject:settings_fixed(settings_text("VR 设置 · 视角","VR · view"),settings_text("第三人称","Third person"))];
-#elif defined(GAME_BOTW)
+#elif defined(GAME_BOTW) || defined(TOTK_GAME_V143)
  [rows addObject:settings_row(settings_text("VR 设置 · 视角","VR · view"),@[settings_text("第三人称","Third person"),settings_text("第一人称","First person")],@[@0,@1],
   ^int{return vr_first_person();},^(int v){vr_set_first_person(v);})];
 #else
@@ -541,7 +541,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   settings_text("摄像头 左右（厘米）","Camera right / left (cm)")];
  for(int a=0;a<3;a++){TOTKSettingRow *r=settings_row(axes[(NSUInteger)a],nil,nil,^int{return vr_offset_cm(a);},^(int v){vr_set_offset_cm(a,v);});
   r.sliderMin=-100;r.sliderMax=100;[rows addObject:r];}
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
  /* What the Mac window shows (user 2026-10-29: "屏幕 显示 类似vr 那种 两个屏幕"): both eyes as the headset gets them, or the game's picture. */
  /* "显示 Quest 画面" (user 2026-10-30: "桌面显示 和 quest里面 一样的画面 设置里加一个 按钮 叫 显示quest画面"): the Mac window shows
     both eyes; on, each inside its lens opening as in the headset; off, uncovered ("就是 不遮挡状态"). */
@@ -558,7 +558,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
  [rows addObject:settings_row(settings_text("体感操作（挥剑、举盾、拉弓、手势）","Motion controls (swing, shield, bow, gestures)"),nil,nil,^int{return vr_motion();},^(int v){vr_set_motion(v);})];
  [rows addObject:settings_row(settings_text("转身方式","Turning"),@[settings_text("平滑","Smooth"),settings_text("分段（小）","Snap (small)"),settings_text("分段（中）","Snap (medium)"),settings_text("分段（大）","Snap (large)")],
   @[@0,@120,@200,@300],^int{return vr_snap_ms();},^(int v){vr_set_snap_ms(v);})];
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
  static const int sizes[][2]={{1280,1380},{1536,1656},{1792,1932},{2048,2208},{2560,2760},{3072,3312},{3584,3864},{4096,4416}};
  NSArray<NSString *> *names=@[@"0.625×　1280×1380",@"0.75×　1536×1656",@"0.875×　1792×1932",@"1.0×　2048×2208",@"1.25×　2560×2760",@"1.5×　3072×3312",@"1.75×　3584×3864",@"2.0×　4096×4416"];
 #else
@@ -569,7 +569,7 @@ static void settings_vr_rows(NSMutableArray<TOTKSettingRow *> *rows) {
   @"2048×2208"];
 #endif
  NSString *title=settings_text("VR 设置 · 分辨率（每眼）","VR · resolution (per eye)");
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
  title=settings_text("渲染分辨率（每眼，立即生效）","Render resolution (per eye, immediate)");
  int stream_w=0,stream_h=0;vr_stream_resolution(&stream_w,&stream_h);
  [rows addObject:settings_fixed(settings_text("串流分辨率（每眼）","Stream resolution (per eye)"),

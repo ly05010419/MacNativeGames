@@ -37,6 +37,8 @@
 #include "../../../../zeldaVR/gfx/vr_projection_graph.h"
 #include "../../../../zeldaVR/gfx/vr_ui_layout.h"
 #include "../../../../zeldaVR/gfx/vr_ui_rays.h"
+#include "../../../../zeldaVR/gfx/vr_totk_projection.h"
+#include "../../../../zeldaVR/gfx/totk_vr_link.h"
 #include "totk_hdr.h"
 #include "totk_hdr_compose.h"
 #include "totk_hdr_present.h"
@@ -1174,6 +1176,11 @@ static int g_nupd, g_nshadow; static inline int upd_guard(uint64_t lo, uint64_t 
    replay (what the right eye's marks hold is replayed, as before stereo). The left pass's picture (the presented texture
    its last pass wrote, g_b2_swap) goes to the headset from mtl_sub_commit, tagged left; the right one at the present. */
 int g_eye_pass; static uint32_t g_eye_region = 3; static id<MTLTexture> g_b2_swap; static int g_b2_crop[4], g_b2_crop_have, g_b2_capture = -1, g_b2_retake;
+static vr_projection_image g_b2_image;
+static void vr_image_projection(vr_projection_image image);
+#ifndef GAME_BOTW
+static float g_totk_ui_reference[9];static int g_totk_ui_reference_valid;
+#endif
 static uint64_t g_b2_draws[2][2];   // stereo B2: [pass][0 inside that eye's marks, 1 outside any]
 /* Stereo B2: the left and the right pass are one submission of the game's. The GPU writes and pending updates the left pass
    leaves (its fence, g_eye_skip_fence, during the right pass) are not an earlier submission's for the right pass: its
@@ -1195,13 +1202,16 @@ int mtl_b2_right_first(void) { return g_b2_order; }   // hle_nvn.c submit_exec
 void mtl_eye_done(int left, int last);
 void mtl_eye_pass(int e) {
     const int second = e & 4; e &= 3;   // second: the other eye's pass was committed just before
+#ifndef GAME_BOTW
+    if(e&&!second)g_totk_ui_reference_valid=0;
+#endif
     if (!e && g_b2_scene_right) { g_b2_scene_right = 0; b2_scene_shot(2); }   // diagnostic: the right eye's, after its pass
     if (!e && (g_b2_draws[0][0] | g_b2_draws[0][1] | g_b2_draws[1][0] | g_b2_draws[1][1])) {   // the stereo submission's replays done
         static int n; if (n++ < 12 || !(n % 600)) MLOG("[vr] stereo B2: the left replay drew %llu inside left marks and %llu shared; the right %llu inside right marks and %llu shared (left pictures %llu, left passes without one %llu)",
             (unsigned long long)g_b2_draws[0][0], (unsigned long long)g_b2_draws[0][1], (unsigned long long)g_b2_draws[1][0], (unsigned long long)g_b2_draws[1][1],
             (unsigned long long)g_b2_pics, (unsigned long long)g_b2_nopic);
         memset(g_b2_draws, 0, sizeof g_b2_draws); }
-    if (e) g_b2_swap = nil;   // this pass's own picture or none (never an older one)
+    if (e) { g_b2_swap = nil;g_b2_image=(vr_projection_image){0}; }   // this pass's own picture or none (never an older one)
     if (e) g_b2_scene[e] = nil;
     g_eye_skip_fence = second ? g_fence : 0;   // the other pass was committed just before (mtl_sub_commit: ++g_fence)
     g_eye_pass = e; g_eye_region = 3; if (e) g_b2_retake = 1; }   // each eye's replay takes its own G-buffer camera (its head pose)
@@ -2448,6 +2458,7 @@ uint64_t mtl_sub_commit(void) {
         const int eye = g_b2_capture; g_b2_capture = -1;
         if (g_b2_swap) g_b2_pics++; else g_b2_nopic++;
         if (g_b2_swap) {
+            vr_image_projection(g_b2_image);
             const int slot = vr_source_encode_eye(g_cb, g_b2_swap, g_b2_crop_have ? g_b2_crop : NULL, eye);
             if (slot >= 0) {   // published when this command buffer completes, as the present's copy is
                 static int added; if (!added) { [g_q4 addResidencySet:vr_residency()]; added = 1; }
@@ -2834,6 +2845,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "vr_fov_trace")) { atomic_fetch_add(&g_vr_quest_trace,1); MLOG("[flag] capture current native projection owners"); return; }
     if (!strcmp(name, "vr_quest_fov")) { atomic_store(&g_vr_quest_fov_on,v!=0); MLOG("[flag] Quest native projection %s",v?"on":"off"); return; }
     if (!strcmp(name, "vr_ui_layout")) { atomic_store(&g_vr_ui_layout_on,v!=0); MLOG("[flag] native UI camera viewport fitting %s",v?"on":"off"); return; }
+    if (!strcmp(name,"vr_packet_log")){vr_packet_trace(v);return;}
     if (!strcmp(name, "vr_fp")) { vr_set_first_person(v); return; }    // first person 1 / third person 0
     if (!strcmp(name, "vr_eye")) { vr_set_eye_cm(v); return; }         // first person: eye height in cm
     if (!strcmp(name, "vr_pitch")) { vr_set_pitch_lock(v); return; }   // 1: up / down only from the headset
@@ -2843,7 +2855,7 @@ void dm_gfx_set_flag(const char *name, int v) {
 #ifndef GAME_BOTW
     if (!strcmp(name, "vr_lean")) { vr_set_lean_cm(v); return; }       // first person: looking down moves the eyes forward, cm
 #endif
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     if (!strcmp(name, "vr_deadband")) { vr_set_deadband(v); return; }   // tenths of a degree (0 off)
     if (!strcmp(name, "vr_afr")) { vr_set_afr(v); return; }            // stereo by alternating eyes: 1 on, 0 one camera
 #endif
@@ -5105,6 +5117,19 @@ static vr_projection_image vr_native_image(const tex_t *t,const view_t *v,int ha
     if(!mtl_addr((uint64_t)(uintptr_t)t->mem+delta,1,&allocation,&offset))return (vr_projection_image){0};
     return (vr_projection_image){(__bridge id)allocation,offset,MAX(t->d.width>>level,1u),MAX(t->d.height>>level,1u)};
 }
+static int vr_projection_tracking(void){return vr_labo_active()||vr_wants_camera();}
+static void vr_image_projection(vr_projection_image image){
+#ifndef GAME_BOTW
+    float fov[4]={0},rotation[9]={0};int have=vr_projection_graph_get(image,fov)&&vr_projection_graph_rotation(image,rotation);
+    vr_source_projection(have?fov:NULL,have?rotation:NULL);
+    if(passdump())MLOG("[vr-image] F%llu P%llu eye=%d pool=%p off=%llx grid=%ux%u mapped=%d rays=%.9g,%.9g,%.9g,%.9g rotation=%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g",
+        (unsigned long long)atomic_load(&g_cur_frame),(unsigned long long)g_stat_pass,g_eye_pass,
+        (__bridge void *)image.allocation,(unsigned long long)image.offset,image.width,image.height,have,
+        fov[0],fov[1],fov[2],fov[3],rotation[0],rotation[1],rotation[2],rotation[3],rotation[4],rotation[5],rotation[6],rotation[7],rotation[8]);
+#else
+    (void)image;
+#endif
+}
 static id<MTLTexture> attachment_texture(const tex_t *t, const view_t *v, int has_v) {
     __unsafe_unretained id<MTLTexture> b0 = BOTW_ATTACH_TEX_U(t); if (!b0) return nil;   // TOTK: held by the serial table (tex_mtl); the common answer takes no retain
     id<MTLTexture> hdr=hdr_shadow_find(b0);
@@ -5151,6 +5176,7 @@ static void b2_note_pass(MTL4RenderPassDescriptor *pd) {
     if (g_eye_region == (uint32_t)g_eye_pass && pd.colorAttachments[0].texture) { g_b2_scene[g_eye_pass] = pd.colorAttachments[0].texture; g_b2_scene_pass[g_eye_pass] = g_stat_pass; }
     for (int i = 0; i < g_b2_npresented; i++) if (g_b2_presented[i] == R.rt.color[0]->serial) {
         g_b2_swap = pd.colorAttachments[0].texture;
+        g_b2_image=vr_native_image(R.rt.color[0],&R.rt.cview[0],R.rt.has_cview[0]);
         if (atomic_load(&g_b2_passlog) > 0) MLOG("[vr] b2pass: eye %d pass %llu region %u into presented texture serial %llu (%lux%lu, load %lu, %d colour targets), mtl %p",
             g_eye_pass, (unsigned long long)g_stat_pass, g_eye_region, (unsigned long long)R.rt.color[0]->serial, (unsigned long)g_b2_swap.width, (unsigned long)g_b2_swap.height,
             (unsigned long)pd.colorAttachments[0].loadAction, R.rt.n, (__bridge void *)g_b2_swap);
@@ -5283,9 +5309,9 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
        was two getters, a claim + release each, ~250 runtime calls in this function. */
     MTLRenderPassColorAttachmentDescriptorArray *cas = pd.colorAttachments;
     MTLRenderPassDepthAttachmentDescriptor *da = pd.depthAttachment; MTLRenderPassStencilAttachmentDescriptor *sa = pd.stencilAttachment;
-    int any = 0; BOTW_RT_DUP_CLEARS()
+    int any = 0; NVN_RT_DUP_CLEARS()
     for (int i = 0; i < R.rt.n; i++) {
-        if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue; BOTW_RT_DUP_SKIP(i)
+        if (!R.rt.color[i] || (clear_only == 1 && !R.clear_c[i])) continue; NVN_RT_DUP_SKIP(i)
         MTLRenderPassColorAttachmentDescriptor *ca = cas[i];
         attach(ca, R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i]);
         { const tex_t *ot = R.rt.color[i]; BOTW_TEX_FOLLOW(ot) int was = gpu_owned(ot->serial); gpu_owned_mark(ot->serial);
@@ -5443,7 +5469,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     }
     g_enc_vis = 0; g_enc_has_vis = g_vis_on || perdraw_vis_on();
     pg_render(pd, (NSUInteger)R.rt.n);
-    if(vr_labo_active())for(int i=0;i<R.rt.n;i++)if(pd.colorAttachments[i].loadAction==MTLLoadActionClear)
+    if(vr_projection_tracking())for(int i=0;i<R.rt.n;i++)if(pd.colorAttachments[i].loadAction==MTLLoadActionClear)
         vr_projection_graph_clear(vr_native_image(R.rt.color[i],&R.rt.cview[i],R.rt.has_cview[i]));
     { void td_note(id pd, NSUInteger nc); td_note(pd, (NSUInteger)R.rt.n);
       void ts_note(id pd, NSUInteger nc); ts_note(pd, (NSUInteger)R.rt.n); }
@@ -10495,6 +10521,12 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 arena_alloc_u((size_t)u->size,&copy,&bytes,&address);memcpy(bytes,actual,(size_t)u->size);
                 float input[16],output[16];memcpy(input,bytes,sizeof input);
                 vr_ui_rays_matrix(&g_vr_ui_ray_map,input,output);memcpy(bytes,output,sizeof output);
+                if(passdump()){
+                    char original[129],transform[129];const uint8_t *a=(const uint8_t *)input,*b=(const uint8_t *)g_vr_ui_ray_map.clip;
+                    for(int j=0;j<64;j++){snprintf(original+2*j,3,"%02x",a[j]);snprintf(transform+2*j,3,"%02x",b[j]);}
+                    PD("H %llu eye=%d cb=%#llx gpu=%#llx shader=%s tex0=%#llx input=%s transform=%s",
+                        g_stat_pass,g_eye_pass,(unsigned long long)u->addr,(unsigned long long)address,sh->key,(unsigned long long)S.tex[1][0],original,transform);
+                }
                 gpu=address;atomic_fetch_add(&g_vr_ui_ray_bindings,1);
             }
             if (bl) {
@@ -11179,7 +11211,7 @@ static void pso_predict_rest(void) {
             R.rt = *r; R.has_rt = 1;
             /* Prediction must not acquire/recreate/upload textures on the active GPU timeline. */
             for (int i = 0; i < r->n && i < 8; i++) { MTLTextureDescriptor *d = r->color[i] ? tex_desc(r->color[i], tex_mirrored(r->color[i])) : nil;
-                if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); samples = (uint32_t)d.sampleCount; } } BOTW_RT_DUP_PREDICT(r, cf)
+                if (d) { cf[i] = (uint32_t)attachment_format(r->color[i], &r->cview[i], r->has_cview[i], d.pixelFormat); samples = (uint32_t)d.sampleCount; } } NVN_RT_DUP_PREDICT(r, cf)
             for (int i = 0; i < 8; i++) if (pf_block_compressed(cf[i])) memset(cf, 0, sizeof cf), r = NULL;   // TOTK: such passes are handled (or reported) when they begin
             if (!r) { cf[0] = 0; df = sf = dfull = sfull = 0; continue; }
             MTLTextureDescriptor *dd = r->depth ? tex_desc(r->depth, tex_mirrored(r->depth)) : nil;
@@ -12819,7 +12851,7 @@ static void clear_quad_core(id<MTL4RenderCommandEncoder> en, const uint32_t cfmt
     enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3);
 }
 static void clear_quad(const p_clear_color *c) {
-    gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / partial-mask / scissored color clear"); BOTW_RT_DUP_CLEAR_TO_FIRST(c)
+    gpu_path_on("TOTK_GPU_MIDCLEAR", "mid-pass / partial-mask / scissored color clear"); NVN_RT_DUP_CLEAR_TO_FIRST(c)
     const tex_t *t = R.rt.color[c->index];
     int f = R.rt.has_cview[c->index] && R.rt.cview[c->index].set_format ? R.rt.cview[c->index].format : t->d.format;
     if (cls_of(f)) MDIE("partial color clear of integer render target format %#x not implemented", f);
@@ -14310,8 +14342,50 @@ static const uint8_t *vr_native_uniform(unsigned stage,unsigned slot,size_t size
     if(renamed)gpu=renamed;else if(snapshot)gpu=snapshot->gpu+u->addr-snapshot->lo;
     return bound_uniform_bytes(gpu,size,(__bridge id<MTLBuffer>)mb);
 }
+#ifndef GAME_BOTW
+static int vr_totk_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc){
+    if(!vr_wants_camera()||!atomic_load(&g_vr_ui_layout_on)||!g_eye_pass||!pr||!pr->sh[0]||
+       !uw_ui_vs(pr->sh[0]->key)||R.rt.n!=1||!R.rt.color[0]||!S.has_vp||S.ds.dt||!(S.chmask.mask&15u))return 0;
+    unsigned bytes=(unsigned)S.ubo[0][0].size;if(bytes!=560&&bytes!=128)return 0;
+    const uint8_t *actual=vr_native_uniform(0,0,bytes);if(!actual)return 0;
+    vr_projection_image image=vr_native_image(R.rt.color[0],&R.rt.cview[0],R.rt.has_cview[0]);
+    float fov[4],rotation[9];if(!vr_projection_graph_get(image,fov)||!vr_projection_graph_rotation(image,rotation))return 0;
+    vr_views headset;if(!vr_link_views(&headset))return 0;unsigned eye=(unsigned)g_eye_pass-1;
+    /* A genuine Quest scene producer owns these exact rays. Inventory's
+       orthographic panes and its independent 30-degree preview never qualify. */
+    for(int j=0;j<4;j++)if(fabsf(tanf(fov[j])-1.06f*tanf(headset.fov[eye][j]))>1e-4f)return 0;
+    double full[4]={S.vp[0][0],S.vp[0][1],S.vp[0][2],S.vp[0][3]};
+    if(bytes==560&&vr_ui_rays_fullscreen((const float *)actual,0)){
+        /* Full-eye restore/blur/dimming remains in image coordinates. */
+        memcpy(vp,full,sizeof full);
+        long x=R.has_sc?MAX(R.sc.x,0):0,y=R.has_sc?MAX(R.sc.y,0):0;
+        long r=R.has_sc?MIN((long)image.width,(long)R.sc.x+R.sc.w):image.width;
+        long b=R.has_sc?MIN((long)image.height,(long)R.sc.y+R.sc.h):image.height;
+        *sc=(MTLScissorRect){(NSUInteger)x,(NSUInteger)y,(NSUInteger)MAX(0,r-x),(NSUInteger)MAX(0,b-y)};return 1;
+    }
+    float w=0,h=0;for(int e=0;e<2;e++){
+        w=fmaxf(w,fmaxf(fabsf(tanf(headset.fov[e][0])),fabsf(tanf(headset.fov[e][1]))));
+        h=fmaxf(h,fmaxf(fabsf(tanf(headset.fov[e][2])),fabsf(tanf(headset.fov[e][3]))));
+    }w*=1.06f;h*=1.06f;
+    float reference[16]={0};reference[0]=1/w;reference[5]=1/h;reference[10]=reference[14]=-1;
+    if(!g_totk_ui_reference_valid){memcpy(g_totk_ui_reference,rotation,sizeof rotation);g_totk_ui_reference_valid=1;}
+    vr_ui_rays map;uint32_t clip[4]={(uint32_t)sc->x,(uint32_t)sc->y,(uint32_t)sc->width,(uint32_t)sc->height},mapped[4];
+    if(!vr_ui_rays_make(reference,fov,rotation,g_totk_ui_reference,0,&map)||
+       !vr_ui_rays_scissor(&map,full,clip,mapped)||!vr_ui_rays_viewport(&map,vp,full)){
+        atomic_fetch_add(&g_vr_ui_ray_missing,1);return 0;
+    }
+    g_vr_ui_ray_map=map;g_vr_ui_ray_draw=1;memcpy(vp,full,sizeof full);
+    *sc=(MTLScissorRect){mapped[0],mapped[1],mapped[2],mapped[3]};atomic_fetch_add(&g_vr_ui_layout_draws,1);
+    if(bytes==128)atomic_fetch_add(&g_vr_ui_text_draws,1);
+    static unsigned logged[2];if(logged[eye]++<4)MLOG("[vr-totk-ui] eye=%u actual orthographic cb=%u; calibrated source rays %.7f %.7f %.7f %.7f, common reference and authored viewport",
+        eye,bytes,fov[0],fov[1],fov[2],fov[3]);return 1;
+}
+#endif
 static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsigned width,unsigned height) {
     (void)width;(void)height;g_vr_ui_ray_draw=0;
+#ifndef GAME_BOTW
+    return vr_totk_ui_layout(pr,vp,sc);
+#endif
     if(!atomic_load(&g_vr_ui_layout_on)||!vr_labo_active()||!pr||!pr->sh[0]||
        !vr_native_ui_vertex(pr->sh[0]->key)||R.rt.n!=1||!R.rt.color[0]||!S.has_vp||S.ds.dt||!(S.chmask.mask&15u))return 0;
     const tex_t *canvas=R.rt.color[0];vr_labo_frame declared={0};
@@ -14388,7 +14462,7 @@ static int vr_native_ui_layout(NvProg *pr,double vp[4],MTLScissorRect *sc,unsign
     atomic_fetch_add(&g_vr_ui_layout_draws,1);return 1;
 }
 static void vr_native_projection_draw(NvProg *pr) {
-    if (!vr_labo_active() || !pr || S.render_disabled || S.raster_discard) return;
+    if (!vr_projection_tracking() || !pr || S.render_disabled || S.raster_discard) return;
     vr_projection_graph_trace(atomic_load(&g_cur_frame),g_stat_pass,passdump()&&getenv("TOTK_VR_PROJECTION_LOG")!=NULL);
     float fov[4],view[12]; int camera = 0;
     /* Only a geometry producer owns the view. Post effects can still bind the
@@ -14424,8 +14498,18 @@ static void vr_native_projection_draw(NvProg *pr) {
       }
     }
     vr_projection_image sources[640],coordinate_source={0};size_t source_count=0;
-    const int image_post=pr->sh[0]&&pr->sh[1]&&
+    int image_post=pr->sh[0]&&pr->sh[1]&&
         (vr_labo_plain_mesh(pr->sh[0]->key)||vr_labo_shader_pair(pr->sh[0]->key,pr->sh[1]->key));
+#ifndef GAME_BOTW
+    /* nn::ui2d widgets use an orthographic camera. A partial UI preview is
+       not the scene camera of its destination. Only a proven full-clip quad
+       can restore the sampled image's coordinates (paused-world menus). */
+    int ui=pr->sh[0]&&uw_ui_vs(pr->sh[0]->key)&&(S.ubo[0][0].size==560||S.ubo[0][0].size==128);
+    if(ui){const uint8_t *bytes=vr_native_uniform(0,0,560);
+        if(!bytes||!vr_ui_rays_fullscreen((const float *)bytes,0))return;
+        image_post=1;
+    }else if(pr->sh[0]&&!camera&&!S.ds.dt)image_post=vr_totk_image_vertex(pr->sh[0]->key);
+#endif
     registry_lock();
     if (!camera) for (int st = 0; st < 5; st++) {
         NvShader *sh = pr->sh[st]; if (!sh) continue;
@@ -14442,16 +14526,32 @@ static void vr_native_projection_draw(NvProg *pr) {
     }
     for (int i = 0; i < R.rt.n; i++) if (R.rt.color[i]) {
         vr_projection_image target=vr_native_image(R.rt.color[i],&R.rt.cview[i],R.rt.has_cview[i]);
-        switch(vr_projection_color_action(S.chmask.mask,i,S.color.blend_en,camera,image_post)){
+        int action=
+#ifdef GAME_BOTW
+            vr_projection_color_action(S.chmask.mask,i,S.color.blend_en,camera,image_post);
+#else
+            vr_totk_projection_color_action(S.chmask.mask,i,S.color.blend_en,camera,image_post);
+#endif
+        switch(action){
             case VR_PROJECTION_CAMERA:vr_projection_graph_camera_view(target,fov,view);break;
             case VR_PROJECTION_COPY:vr_projection_graph_copy(target,coordinate_source);break;
-            case VR_PROJECTION_INHERIT:vr_projection_graph_inherit(target,sources,source_count);break;
+            case VR_PROJECTION_INHERIT:
+#ifdef GAME_BOTW
+                vr_projection_graph_inherit(target,sources,source_count);
+#endif
+                /* TotK: sampling a world image does not establish the
+                   destination's coordinates. F2718 copied that provenance
+                   into 113x72/116x72/160x46 glyph caches through this generic
+                   rule; their later map draws were transformed in one eye.
+                   Only the verified image-coordinate producers above may
+                   propagate a TotK scene grid. Ordinary UI keeps its canvas. */
+                break;
             default:break;
         }
     }
     if(camera&&R.rt.depth&&S.ds.dw)vr_projection_graph_camera_view(vr_native_image(R.rt.depth,&R.rt.dview,R.rt.has_dview),fov,view);
     registry_unlock();
-    if(R.rt.n==1 && R.rt.color[0] && S.has_vp && !S.ds.dt && (S.chmask.mask&15u) &&
+    if(vr_labo_active()&&R.rt.n==1 && R.rt.color[0] && S.has_vp && !S.ds.dt && (S.chmask.mask&15u) &&
        pr->sh[0] && vr_native_ui_vertex(pr->sh[0]->key)) {
         const tex_t *canvas=R.rt.color[0];
         vr_labo_frame *frame=vr_native_eye_frame(canvas->serial,1);
@@ -15776,6 +15876,17 @@ static void copy_t2t(const p_copy_t2t *c) {
     else
         for (int z = 0; z < nz; z++)
             enc_b_copy_texture(b, s, sz0 + c->sr.zoffset + z, sl, MTLOriginMake(c->sr.xoffset, c->sr.yoffset, 0), MTLSizeMake(c->sr.width, c->sr.height, 1), d, dz0 + c->dr.zoffset + z, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0));
+    if(vr_projection_tracking()&&!s3&&!d3){
+        for(int z=0;z<nz;z++){
+            view_t sv=c->sv,dv=c->dv;sv.set_levels=dv.set_levels=sv.set_layers=dv.set_layers=1;
+            sv.base_level=sl;dv.base_level=dl;sv.min_layer=sz0+c->sr.zoffset+z;dv.min_layer=dz0+c->dr.zoffset+z;
+            vr_projection_image source=vr_native_image(c->src,&sv,1),target=vr_native_image(c->dst,&dv,1);
+            if(!c->sr.xoffset&&!c->sr.yoffset&&!c->dr.xoffset&&!c->dr.yoffset&&
+               c->sr.width==(int)source.width&&c->sr.height==(int)source.height&&
+               c->dr.width==(int)target.width&&c->dr.height==(int)target.height)vr_projection_graph_copy(target,source);
+            else vr_projection_graph_clear(target);
+        }
+    }
 }
 
 // GPU：用给定值清贴图区域（原先误列为空操作，初始化调 5 次；Metal 私有贴图初值未定义，游戏依赖清出的初值）。
@@ -15815,6 +15926,10 @@ static void clear_tex(const p_clear_tex *c) {
         return;
     }
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    if(vr_projection_tracking()&&!is3d)for(int z=0;z<nz;z++){
+        view_t v=c->view;v.set_levels=v.set_layers=1;v.base_level=lv;v.min_layer=l0+c->r.zoffset+z;
+        vr_projection_graph_clear(vr_native_image(c->tex,&v,1));
+    }
     for (int z = 0; z < nz; z++) {
         MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
         MTLRenderPassAttachmentDescriptor *a = depth ? rp.depthAttachment : stencil ? rp.stencilAttachment : rp.colorAttachments[0];
@@ -17952,6 +18067,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     pq_item *it = &g_pq[g_pq_in % PQ]; *it = (pq_item){*t, period, atomic_load(&g_cur_frame), {0}, CACurrentMediaTime(), islot, 0, 0, ring};
     if (crop) memcpy(it->crop, crop, sizeof it->crop);   // 当帧状态随票号入队，不在出图线程晚读可变window | The current frame's state is enqueued with the ticket number, rather than reading the mutable window late on the present thread
     uint64_t tk = ++g_pq_in;
+    if(vr_projection_tracking())vr_image_projection(vr_native_image(t,NULL,0));
     vr_present_queued(tk);   // VR head look: this frame's head pose goes with its ticket (the present thread copies it later)
     [g_native_eye_frames removeAllObjects]; /* No incomplete/cross-canvas eye can leak into another game frame. */
     /* View metadata lives as long as the actual texture contents. Attachment

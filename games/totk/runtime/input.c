@@ -284,7 +284,7 @@ static void *input_file(void *arg) {
             extern void dm_gfx_anomdump(void); dm_gfx_anomdump();
         } else if (sscanf(line, "querylog %u %n", &code, &used) == 1 && used && !line[used] && code > 0 && code <= 600) {
             extern void dm_gfx_querylog_next(long n); dm_gfx_querylog_next((long)code);   /* occlusion query results of the next n frames */
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         } else if (!strncmp(line,"vr_resolution ",14)) {
             int w,h,n=0;extern int vr_set_resolution(int w,int h);
             if(sscanf(line+14,"%dx%d %n",&w,&h,&n)==2&&n&&!line[14+n]) {

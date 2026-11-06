@@ -588,6 +588,8 @@ static uint64_t watch_addr;
 static int watch_store;   /* the VR camera search watches stores, frmwatch loads */
 enum{WATCH_SLOTS=512};
 static struct{_Atomic uint64_t pc;_Atomic uint64_t lr;_Atomic uint64_t up[3];_Atomic uint64_t x1;_Atomic uint64_t xr[6];_Atomic uint32_t n;_Atomic uint32_t ph[3];} watch_hits[WATCH_SLOTS];   /* xr: x0 x19 x20 x21 x22 x8; ph: hits by stereo B2 run (b2_in_second_run) */
+extern void vr_stage_hook(void);
+uint64_t g_b2_stage_return;
 static int b2_in_second_run(void);
 static void watch_set(thread_act_t t,int on){
     arm_debug_state64_t d;mach_msg_type_number_t c=ARM_DEBUG_STATE64_COUNT;
@@ -1256,20 +1258,24 @@ void runtime_diag_xpoke(unsigned off,float value){
     fprintf(stderr,"[totk] xpoke X+%#x: %g -> %g\n",off,old,value);
 }
 #endif
-/* VR stage 2 (vr_camera.h): the camera hook. Only on the Mac and only with VR on (TOTK_VR_CONTROL; TOTK_VR_HEADLOOK=0 keeps
-   the stage 1 screen). Two branches in main's text padding (after the Vert+ stubs, before the rewriter's code at +1024):
+/* VR camera control (vr_camera.h), Mac only. TOTK_VR_HEADLOOK=0 disables it.
+   Two veneers live in the checked tail of the rewriter's patch area:
    - main+0x6289a4 (ldr x8,[x19,#0x20], right after the inlined LookAtCamera matrix update stored x20+8..+0x38) goes
      to a veneer that jumps (x16, dead there, as are x17 and the flags: checked to the function's end) to vr_cam_hook;
-   - main+0xbea74 (bl main+0xb33e8, setting view 0 from the camera x9: x2 = x9+8) calls a veneer that records x9 as the
-     main camera and goes on to the callee. */
+   - main+0xb33e8 sets every native view of its actual camera/projection owner;
+     view 0 also publishes its camera identity and matrix to v0ring. */
 /* Defined by the VR compositor (totk_vr.m); weak here so tests that build this file alone still link. */
 __attribute__((weak)) vr_cam_state *g_vr_headlook;
 #if !TARGET_OS_IPHONE
 vr_cam_state g_vr_cam __attribute__((aligned(16)));
+#include "totk_vr_camera_owner.h"
 _Static_assert(offsetof(vr_cam_state,cam)==8&&offsetof(vr_cam_state,h)==16&&offsetof(vr_cam_state,used)==64&&offsetof(vr_cam_state,fp_lag)==68&&offsetof(vr_cam_state,ret)==72&&offsetof(vr_cam_state,ring)==80&&sizeof g_vr_cam.ring[0]==64&&offsetof(vr_cam_state,fp_pos)==1104&&offsetof(vr_cam_state,fp_blend)==1112&&offsetof(vr_cam_state,eye_half)==1116&&offsetof(vr_cam_state,fp_up)==1120&&offsetof(vr_cam_state,fp_fwd)==1136&&offsetof(vr_cam_state,cam_back)==1140&&offsetof(vr_cam_state,level)==1144&&offsetof(vr_cam_state,calls)==1148&&offsetof(vr_cam_state,off)==1152&&offsetof(vr_cam_state,game_right)==1168&&offsetof(vr_cam_state,callee)==1184&&offsetof(vr_cam_state,main_vs)==1192&&offsetof(vr_cam_state,v0n)==1200&&offsetof(vr_cam_state,v0ring)==1216&&sizeof g_vr_cam.v0ring[0]==64,"vr_cam_hook offsets");
 __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  adrp x16, _g_vr_cam@PAGE\n  add x16, x16, _g_vr_cam@PAGEOFF\n"
         "  sub sp, sp, #224\n  mrs x17, nzcv\n  str x17, [sp, #112]\n"
+        /* Diagnostic only: several native controllers can update in one run.
+           Ownership comes from controller -> holder -> camera, not this last pointer. */
+        "  add x17, x16, #3320\n  stlr x20, [x17]\n"
         "  ldr x17, [x16, #8]\n  cmp x17, x20\n  b.ne 1f\n"   /* not the main camera */
         "  ldr w17, [x16]\n  cbz w17, 1f\n"                     /* no head rotation yet */
         "  stp q0, q1, [sp]\n  stp q2, q3, [sp, #32]\n  stp q4, q5, [sp, #64]\n  str q6, [sp, #96]\n"
@@ -1298,6 +1304,10 @@ __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  fmul v8.4s, v1.4s, v9.4s\n  faddp v8.4s, v8.4s, v8.4s\n  faddp s8, v8.2s\n  mov s10, v1.s[3]\n  fsub s10, s10, s8\n  mov v1.s[3], v10.s[0]\n"
         "  fmul v8.4s, v2.4s, v9.4s\n  faddp v8.4s, v8.4s, v8.4s\n  faddp s8, v8.2s\n  mov s10, v2.s[3]\n  fsub s10, s10, s8\n  mov v2.s[3], v10.s[0]\n"
         "  stur q0, [x20, #8]\n  stur q1, [x20, #24]\n  stur q2, [x20, #40]\n"
+        /* Publish the actual orbit/cutscene base before multiplying by H. */
+        "  ldr w17, [x16, #3312]\n  add w17, w17, #1\n  str w17, [x16, #3312]\n  dmb ish\n"
+        "  str q0, [x16, #3264]\n  str q1, [x16, #3280]\n  str q2, [x16, #3296]\n"
+        "  dmb ish\n  add w17, w17, #1\n  str w17, [x16, #3312]\n"
         "  ldr w17, [x16, #4]\n"                                  /* seq before h: a newer h than its seq at worst */
         "  ldp q4, q5, [x16, #16]\n  ldr q6, [x16, #48]\n"
         "  ldr q0, [x20, #8]\n  ldr q1, [x20, #24]\n  ldr q2, [x20, #40]\n"
@@ -1343,20 +1353,33 @@ __asm__(".text\n.p2align 4\n.globl _vr_cam_hook\n_vr_cam_hook:\n"
         "  ldr x8, [x19, #0x20]\n"                               /* the instruction the branch replaced */
         "  ldr x16, [x16, #72]\n  br x16\n");
 extern void vr_cam_hook(void);
-/* View 0's veneer (main+0xbea74: bl main+0xb33e8 with x0 the view set, w1 = 0, x2 = x9 + 8 the camera x9's matrix; x16,
-   x17 and the flags are free at a call; q0 kept, the other argument registers untouched): logs (x0, the matrix) in
-   v0ring for the replay, records x9 as cam when x0 is the main view set (or none is known yet), goes on to the setter. */
+_Static_assert(offsetof(vr_cam_state,base_view)==3264&&offsetof(vr_cam_state,base_sequence)==3312&&offsetof(vr_cam_state,native_writer)==3320,"VR base publication offsets");
+int runtime_vr_base_view(float out[12]) {
+    if(!g_vr_headlook)return 0;
+    for(unsigned attempt=0;attempt<8;attempt++){
+        uint32_t sequence=__atomic_load_n(&g_vr_cam.base_sequence,__ATOMIC_ACQUIRE);
+        if(!sequence||(sequence&1))continue;
+        for(unsigned i=0;i<12;i++){uint32_t bits=__atomic_load_n((uint32_t *)(void *)&g_vr_cam.base_view[i],__ATOMIC_RELAXED);memcpy(out+i,&bits,4);}
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if(sequence==__atomic_load_n(&g_vr_cam.base_sequence,__ATOMIC_ACQUIRE))return 1;
+    }
+    return 0;
+}
+/* The native view-set setter receives x0=view set, w1=index, x2=camera+8,
+   x3=projection and x4=extra. All views of the owned gameplay camera need the
+   same eye projection: patching only the view-0 caller left auxiliary views
+   symmetric (observed in the actual GPU bindings). Only view 0 enters v0ring;
+   other callers are rejected by the real camera/projection owner relationship. */
 __asm__(".text\n.p2align 4\n.globl _vr_view0_hook\n_vr_view0_hook:\n"
+        "  sub x9, x2, #8\n  cbnz w1, 9f\n"
         "  adrp x16, _g_vr_cam@PAGE\n  add x16, x16, _g_vr_cam@PAGEOFF\n"
         "  sub sp, sp, #16\n  str q0, [sp]\n"
         "  ldr w17, [x16, #1200]\n  add w17, w17, #1\n  str w17, [x16, #1200]\n"
         "  and x17, x17, #31\n  add x17, x16, x17, lsl #6\n  add x17, x17, #1216\n"
-        "  str x0, [x17]\n  ldr q0, [x2]\n  str q0, [x17, #16]\n  ldr q0, [x2, #16]\n  str q0, [x17, #32]\n"
+        "  str x0, [x17]\n  str x9, [x17, #8]\n  ldr q0, [x2]\n  str q0, [x17, #16]\n  ldr q0, [x2, #16]\n  str q0, [x17, #32]\n"
         "  ldr q0, [x2, #32]\n  str q0, [x17, #48]\n"
         "  ldr q0, [sp]\n  add sp, sp, #16\n"
-        "  ldr x17, [x16, #1192]\n  cbz x17, 8f\n  cmp x17, x0\n  b.ne 9f\n"   /* another scene's view set: not cam */
-        "8:\n  str x9, [x16, #8]\n"
-        "9:\n  ldr x16, [x16, #1184]\n  br x16\n");
+        "9:\n  mov x5, x9\n  adrp x16, _totk_vr_view_set@PAGE\n  add x16, x16, _totk_vr_view_set@PAGEOFF\n  br x16\n");
 extern void vr_view0_hook(void);
 /* Third-person camera distance (settings panel, also without VR): metres further back (negative: closer), kept in
    TOTK_CAMERA_SETTINGS (the launcher: <data>/camera.txt). Without VR nothing else turns the hook on, so it is switched
@@ -1421,9 +1444,10 @@ static void camera_distance_load(void){
    +72 the saved fields (27 words), then the render steps' saved words and half-words. */
 typedef struct { uint64_t run, setlist; uint32_t on, mask, runs, phase; uint64_t stage, list, begin, begin_obj, vmgr; uint64_t save[27]; uint32_t step_flags[32]; uint16_t step_bits[32]; uint64_t camp; float eh; uint32_t pad3; } vr_b2_state;
 vr_b2_state g_vr_b2 __attribute__((aligned(16)));
+#include "totk_vr_projection.h"
 static uint64_t b2_s1_deleg;   /* render stage 1's view renderer (b2_stage1_run1) */
 static uint64_t b2_slot_obj[8];static int b2_slot_n;   /* the owners of the render stages' summary slots (runtime_b2_twin) */
-enum{B2_MAP=1024};static struct{_Atomic uint64_t h;uint64_t t;uint32_t frame;} b2_map[B2_MAP];static _Atomic uint64_t b2_map_n;   /* second-run summary -> first-run summary of the same stage (b2_after_runs) */
+static _Atomic uint64_t b2_map_n; /* exact renderer/layer pairs transferred to right-copy ownership */
 static int b2_in_second_run(void){const uint32_t p=__atomic_load_n(&g_vr_b2.phase,__ATOMIC_RELAXED);return p==1?1:p==3?2:0;}
 __asm__(".text\n.p2align 4\n.globl _vr_b2_hook\n_vr_b2_hook:\n"
         "  stp x29, x30, [sp, #-64]!\n  mov x29, sp\n  stp x19, x20, [sp, #16]\n  stp x21, x22, [sp, #32]\n  str x23, [sp, #48]\n"
@@ -1504,6 +1528,13 @@ static void vr_b2_install(Module *m){
     const uint32_t b=aspect_b(site,v0);if(!b){fprintf(stderr,"[vr] stereo B2: branch out of range; off\n");return;}
     memset(&g_vr_b2,0,sizeof g_vr_b2);g_vr_b2.run=(uint64_t)(uintptr_t)(m->base+runner);g_vr_b2.setlist=(uint64_t)(uintptr_t)(m->base+setlist);
     vr_b2_job_fn=(uint64_t)(uintptr_t)(m->base+job_fn);g_vr_b2.camp=(uint64_t)(uintptr_t)&g_vr_cam.cam;g_vr_b2.begin=(uint64_t)(uintptr_t)(m->base+0x3dbf28);g_vr_b2.vmgr=(uint64_t)(uintptr_t)(m->base+0x3acda18);
+    uint32_t stage_word;memcpy(&stage_word,m->base+0x97aa4,4);
+    if(stage_word!=0xf9002b00u)runtime_fail("VR summary owner: original instruction mismatch");
+    for(unsigned i=0;i<16;i++)if(m->base[v0-16+i])runtime_fail("VR summary veneer is occupied");
+    uint32_t stage_stub[4]={0x58000050u,0xd61f0200u,0,0};uint64_t stage_hook=(uint64_t)(uintptr_t)vr_stage_hook;
+    memcpy(stage_stub+2,&stage_hook,8);g_b2_stage_return=(uint64_t)(uintptr_t)(m->base+0x97aa8);
+    uint32_t stage_branch=aspect_b(0x97aa4,v0-16);if(!stage_branch)runtime_fail("VR summary veneer out of range");
+    memcpy(m->base+v0-16,stage_stub,sizeof stage_stub);memcpy(m->base+0x97aa4,&stage_branch,4);
     memcpy(m->base+v0,c,sizeof c);memcpy(m->base+site,&b,4);
     fprintf(stderr,"[vr] stereo B2: last calc stage through the hook at main+%#llx (veneer +%#llx); second render run off (\"b2 1\")\n",(unsigned long long)site,(unsigned long long)v0);
 }
@@ -1578,7 +1609,7 @@ static void *vr_b2_find(void *arg){
    Each recording's handle (the runtime's copy of it, hle_nvn.c) is kept with its run and draws (b2_tab, the last 8192),
    and the handles the frame calls (CallCommands: the frame's primary command buffers call the recordings) are counted
    by run: which run's pictures the game's single submission holds. */
-enum{B2_RUN1=4096};static uint64_t b2_run1[B2_RUN1];static _Atomic int b2_run1_n;static void *_Atomic b2_left_cap;
+static void *_Atomic b2_left_cap;
 static _Atomic uint32_t b2_cap_frame;static _Atomic uint64_t b2_cap_taken,b2_cap_mismatch,b2_why[4],b2_slot_hits;static _Atomic uint32_t b2_twin_frame;   /* the left capture's frame against the twins' (runtime_b2_left_cap) */
 /* Called by vr_b2_hook between the runs (the game's thread, the first run complete): the uniforms the first run's
    recordings bind, captured now (mtl_sub_capture_ubos, as the translation thread mode does at the submit call), for the
@@ -1609,14 +1640,7 @@ static void b2_stage1_run1(void){
     static int said;if(said<3){said++;uint64_t ents=0,blk=0;int32_t ne=0;jd_read(step+0x10,&ne,4);jd_read(step+0x18,&ents,8);if(ents)jd_read(ents+0x3e8,&blk,8);
         fprintf(stderr,"[vr] b2: render stage 1 for the first run: view %#llx, render step %d of %d (%#llx, %d cameras, the first one's block %#llx)\n",(unsigned long long)view,k,ns,(unsigned long long)step,ne,(unsigned long long)blk);}
 }
-void b2_between_runs(void){
-    if(g_vr_b2.mask&0x100)b2_stage1_run1();
-    extern void *mtl_sub_capture_ubos(const uint64_t *h,int n);extern void mtl_ucap_free(void *c);
-    int n=atomic_exchange(&b2_run1_n,0);if(n>B2_RUN1)n=B2_RUN1;
-    void *cap=n&&(g_vr_b2.mask&0x80)?mtl_sub_capture_ubos(b2_run1,n):NULL;
-    atomic_store(&b2_cap_frame,__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED));   /* the frame whose first run it holds */
-    void *old=atomic_exchange(&b2_left_cap,cap);if(old)mtl_ucap_free(old);
-}
+void b2_between_runs(void);
 void *runtime_b2_left_cap(void){
     void *c=atomic_exchange(&b2_left_cap,NULL);
     if(c){atomic_fetch_add(&b2_cap_taken,1);if(atomic_load(&b2_cap_frame)!=atomic_load_explicit(&b2_twin_frame,memory_order_relaxed))atomic_fetch_add(&b2_cap_mismatch,1);}
@@ -1625,6 +1649,47 @@ static _Atomic uint64_t b2_draws[3],b2_calls[4],b2_cdraws[4];static _Atomic uint
 enum{B2_TAB=8192};static struct{_Atomic uint64_t h;uint64_t key;uint32_t draws,frame;uint16_t occ;uint8_t phase;uint32_t ra[6];} b2_tab[B2_TAB];   /* ra: the innermost main return addresses (diagnostic) */
 /* A recording's identity: the guest code that recorded it (its 3 innermost return addresses in main, from the host frames
    through the HLE stack switch's frame record) and how many recordings with that key the same run made before it. */
+/* The summary's arguments identify the renderer and render-layer object.
+   Recording order and call stacks vary with worker scheduling. */
+static pthread_mutex_t b2_stage_mu=PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t owner,layer,handle;uint32_t frame;int phase; } b2_stage_records[2048];
+static unsigned b2_stage_next;
+void b2_stage_record(uint64_t handle,uint64_t owner,uint64_t layer) {
+    if(!g_vr_b2.on||!owner||!layer)return;
+    extern uint64_t hle_vr_copy_record(uint64_t);
+    const uint64_t identity=hle_vr_copy_record(handle);unsigned phase=(unsigned)identity;uint32_t frame=(uint32_t)(identity>>32);
+    if(phase>1)return;
+    pthread_mutex_lock(&b2_stage_mu);
+    extern void hle_vr_copy_retain(uint64_t);
+    unsigned at=2048;for(unsigned i=0;i<2048;i++)if(!b2_stage_records[i].handle){at=i;break;}
+    if(at==2048)runtime_fail("VR stage ownership table is full");
+    hle_vr_copy_retain(handle);b2_stage_next++;
+    b2_stage_records[at].owner=owner;b2_stage_records[at].layer=layer;b2_stage_records[at].handle=handle;
+    b2_stage_records[at].frame=frame;b2_stage_records[at].phase=(int)phase;
+    if(b2_stage_next<=32)fprintf(stderr,"[vr] stage identity frame %u eye %d owner %#llx layer %#llx handle %#llx\n",frame,(int)phase,(unsigned long long)owner,(unsigned long long)layer,(unsigned long long)handle);
+    pthread_mutex_unlock(&b2_stage_mu);
+}
+__asm__(".text\n.p2align 4\n.globl _vr_stage_hook\n_vr_stage_hook:\n"
+        "str x0,[x24,#0x50]\nsub sp,sp,#320\nstp x0,x1,[sp]\nstp x2,x3,[sp,#16]\n"
+        "stp x4,x5,[sp,#32]\nstp x6,x7,[sp,#48]\nstp x8,x9,[sp,#64]\nstp x10,x11,[sp,#80]\n"
+        "stp x12,x13,[sp,#96]\nstp x14,x15,[sp,#112]\nstp x18,x30,[sp,#128]\n"
+        "mrs x17,nzcv\nstr x17,[sp,#144]\nstp q0,q1,[sp,#160]\nstp q2,q3,[sp,#192]\nstp q4,q5,[sp,#224]\nstp q6,q7,[sp,#256]\n"
+        "ldr x1,[sp,#400]\nldr x2,[sp,#408]\nbl _b2_stage_record\n"
+        "ldp q0,q1,[sp,#160]\nldp q2,q3,[sp,#192]\nldp q4,q5,[sp,#224]\nldp q6,q7,[sp,#256]\n"
+        "ldr x17,[sp,#144]\nmsr nzcv,x17\nldp x18,x30,[sp,#128]\nldp x14,x15,[sp,#112]\nldp x12,x13,[sp,#96]\n"
+        "ldp x10,x11,[sp,#80]\nldp x8,x9,[sp,#64]\nldp x6,x7,[sp,#48]\nldp x4,x5,[sp,#32]\nldp x2,x3,[sp,#16]\nldp x0,x1,[sp]\nadd sp,sp,#320\n"
+        "adrp x16,_g_b2_stage_return@PAGE\nldr x16,[x16,_g_b2_stage_return@PAGEOFF]\nbr x16\n");
+extern void vr_stage_hook(void);
+void b2_between_runs(void){
+    if(g_vr_b2.mask&0x100)b2_stage1_run1();
+    extern void *mtl_sub_capture_ubos(const uint64_t *,int);extern void mtl_ucap_free(void *);
+    const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);uint64_t handles[2048];int count=0;
+    pthread_mutex_lock(&b2_stage_mu);
+    for(unsigned i=0;i<2048;i++)if(b2_stage_records[i].handle&&b2_stage_records[i].frame==frame&&b2_stage_records[i].phase==0)handles[count++]=b2_stage_records[i].handle;
+    void *capture=count&&(g_vr_b2.mask&0x80)?mtl_sub_capture_ubos(handles,count):NULL;
+    pthread_mutex_unlock(&b2_stage_mu);
+    atomic_store(&b2_cap_frame,frame);void *old=atomic_exchange(&b2_left_cap,capture);if(old)mtl_ucap_free(old);
+}
 static uint64_t b2_rec_key(uint32_t ra[6]){
     const uint64_t mlo=(uintptr_t)diag_main->base,mhi=mlo+diag_main->size;uint64_t fp=(uintptr_t)__builtin_frame_address(0),k=0xcbf29ce484222325ull;int got=0;
     for(int i=0;i<6;i++)ra[i]=0;
@@ -1646,9 +1711,10 @@ void runtime_b2_rec(uint32_t draws,uint64_t handle){
     atomic_fetch_add_explicit(&b2_draws[ph],draws,memory_order_relaxed);
     const unsigned k=(unsigned)((handle>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
     uint32_t ra[6];const uint64_t key=b2_rec_key(ra);const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED)-(ph==2?1u:0u);   /* after the second run the counter has moved on */
+    {extern void hle_vr_copy_tag(uint64_t,uint32_t,unsigned);hle_vr_copy_tag(handle,frame,(unsigned)ph);}
     memcpy(b2_tab[k].ra,ra,sizeof ra);b2_tab[k].draws=draws;b2_tab[k].phase=(uint8_t)ph;b2_tab[k].key=key;b2_tab[k].frame=frame;b2_tab[k].occ=b2_occ_next(key,frame,(uint8_t)ph);
     atomic_store_explicit(&b2_tab[k].h,handle,memory_order_release);
-    if(ph==0&&(g_vr_b2.mask&0x80)){const int i=atomic_fetch_add_explicit(&b2_run1_n,1,memory_order_relaxed);if(i<B2_RUN1)b2_run1[i]=handle;}   /* the first run's recordings (b2_between_runs) */
+
     if(ph==0){const unsigned j=(unsigned)((key^((uint64_t)b2_tab[k].occ*0x9E3779B97F4A7C15ull)^((uint64_t)frame<<32))*0xD6E8FEB86659FD93ull>>51)&(B2_TAB-1);
         b2_lidx[j].key=key;b2_lidx[j].occ=b2_tab[k].occ;b2_lidx[j].frame=frame;atomic_store_explicit(&b2_lidx[j].h,handle,memory_order_release);}
     const uint32_t runs=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);uint32_t last=atomic_load(&b2_printed);
@@ -1659,10 +1725,10 @@ void runtime_b2_rec(uint32_t draws,uint64_t handle){
          uint64_t w[4];for(int i=0;i<4;i++)w[i]=atomic_exchange(&b2_why[i],0);
          fprintf(stderr,"[vr] b2 twins: calls not paired a frame: %.1f not second-run recordings, %.1f of the frame in progress, %.1f too old, %.1f without a twin; left captures of another frame than their twins %llu of %llu\n",
                  (double)w[0]/n,(double)w[1]/n,(double)w[2]/n,(double)w[3]/n,(unsigned long long)atomic_exchange(&b2_cap_mismatch,0),(unsigned long long)atomic_exchange(&b2_cap_taken,0));
-         fprintf(stderr,"[vr] b2 twins: by the stage slots %.1f a frame (%.1f stage pairs mapped a frame)\n",(double)atomic_exchange(&b2_slot_hits,0)/n,(double)atomic_exchange(&b2_map_n,0)/n);}
+         fprintf(stderr,"[vr] b2 twins: by renderer/layer identities %.1f a frame (%.1f stage pairs owned a frame)\n",(double)atomic_exchange(&b2_slot_hits,0)/n,(double)atomic_exchange(&b2_map_n,0)/n);}
         fprintf(stderr,"[vr] b2 draws a frame: first run %.0f, second run %.0f, after it %.0f; calls of first-run recordings %.1f (%.0f draws), second-run %.1f (%.0f), after-run %.1f (%.0f), unknown %.1f (%u frames, mode %u mask %#x)\n",
                 (double)a/n,(double)b/n,(double)f/n,(double)c[0]/n,(double)d[0]/n,(double)c[1]/n,(double)d[1]/n,(double)c[2]/n,(double)d[2]/n,(double)c[3]/n,n,g_vr_b2.on,g_vr_b2.mask);
-        {const uint64_t cam=g_vr_cam.cam;float tx=0;if(cam)memcpy(&tx,(const void *)(uintptr_t)(cam+20),4);fprintf(stderr,"[vr] b2 eyes: half the eye distance %.4f m; the main camera %#llx, its view t.x now %.4f\n",g_vr_b2.eh,(unsigned long long)cam,tx);}}
+        {const uint64_t cam=g_vr_cam.cam,writer=__atomic_load_n(&g_vr_cam.native_writer,__ATOMIC_ACQUIRE);float tx=0;if(cam)memcpy(&tx,(const void *)(uintptr_t)(cam+20),4);fprintf(stderr,"[vr] b2 eyes: half the eye distance %.4f m; the main camera %#llx, native writer %#llx, owner match %d, its view t.x now %.4f\n",g_vr_b2.eh,(unsigned long long)cam,(unsigned long long)writer,runtime_vr_camera_owned(cam,0),tx);}}
 }
 /* "b2calls": the calls of known recordings (first / second run) between the next two presents, in order, by caller
    (the command buffer object, and the run it was in when it called): how the game's frame strings the runs' recordings
@@ -1747,23 +1813,23 @@ uint64_t runtime_b2_stereo_marks(void){return atomic_load_explicit(&b2_marks,mem
    ends (vr_b2_hook) both halves hold this frame's summaries, before the final assembly takes the second run's: each
    second-run summary is mapped to the first-run one of the same stage (b2_map). The call chain of a recording is no
    identity: the same job runs on the calc thread or a worker, inline or not (b2ar: every other frame's summaries unpaired). */
-static int b2_known_run(uint64_t v,int ph,uint32_t frame){const unsigned k=(unsigned)((v>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
-    return v&&atomic_load_explicit(&b2_tab[k].h,memory_order_acquire)==v&&b2_tab[k].phase==ph&&b2_tab[k].frame==frame;}
 void b2_after_runs(void){
-    if(!(g_vr_b2.mask&0xc0))return;
-    const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);static uint64_t vals[512];
-    for(int q=0;q<b2_slot_n;q++){const uint64_t o=b2_slot_obj[q];int32_t n=0;uint16_t st=0;uint64_t arr=0;
-        if(!jd_read(o+0xd0,&n,4)||!jd_read(o+0xea,&st,2)||!jd_read(o+0xd8,&arr,8)||!arr||!st||n<=0||n>512||n!=2*st)continue;
-        for(int32_t i=0;i<n;i++)if(!jd_read(arr+(uint64_t)i*0x98+0x50,&vals[i],8))vals[i]=0;
-        for(int32_t i=0;i<n;i++){const uint64_t r=vals[i],l=vals[(i+st)%n];
-            if(!b2_known_run(r,1,frame)||!b2_known_run(l,0,frame))continue;
-            {extern uint64_t hle_copy_tdraws(uint64_t h);const uint64_t tr=hle_copy_tdraws(r),tl=hle_copy_tdraws(l);   /* diagnostic: a pair whose eyes draw very differently */
-             if((tr>50||tl>50)&&(tl*2<tr||tr*2<tl)){static int shown;if(shown++<30){int fr=-1;for(int32_t z=0;z<n;z++)if(z!=i&&z!=(i+st)%n&&vals[z]&&hle_copy_tdraws(vals[z])*10>=tr*9&&hle_copy_tdraws(vals[z])*10<=tr*11&&b2_known_run(vals[z],0,frame)){fr=z;break;}
-                fprintf(stderr,"[vr] b2 uneven pair: frame %u slot %d (second run, %llu draws) and slot %d (first run, %llu draws); a first-run recording of similar size in slot %d\n",frame,i,(unsigned long long)tr,(i+st)%n,(unsigned long long)tl,fr);}}}
-            const unsigned m=(unsigned)((r>>4)*0x9E3779B97F4A7C15ull>>54)&(B2_MAP-1);unsigned e=m;
-            for(unsigned t=0;t<8;t++){e=(m+t)&(B2_MAP-1);const uint64_t mh=atomic_load_explicit(&b2_map[e].h,memory_order_relaxed);if(!mh||mh==r||b2_map[e].frame+2<frame)break;}
-            atomic_store_explicit(&b2_map[e].h,0,memory_order_relaxed);b2_map[e].t=l;b2_map[e].frame=frame;atomic_store_explicit(&b2_map[e].h,r,memory_order_release);
-            atomic_fetch_add_explicit(&b2_map_n,1,memory_order_relaxed);}}
+    const uint32_t frame=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED);
+    extern void hle_vr_copy_bind(uint64_t,uint64_t);extern void hle_vr_copy_release(uint64_t);
+    pthread_mutex_lock(&b2_stage_mu);
+    for(unsigned i=0;i<2048;i++){
+        __typeof__(b2_stage_records[0]) *right=&b2_stage_records[i];
+        if(!right->handle||right->phase!=1||right->frame!=frame)continue;
+        unsigned left_count=0,right_count=0;uint64_t left=0;
+        for(unsigned j=0;j<2048;j++){
+            __typeof__(b2_stage_records[0]) *candidate=&b2_stage_records[j];
+            if(!candidate->handle||candidate->frame!=frame||candidate->owner!=right->owner||candidate->layer!=right->layer)continue;
+            if(candidate->phase==0){left=candidate->handle;left_count++;}else right_count++;
+        }
+        if(left_count==1&&right_count==1){hle_vr_copy_bind(right->handle,left);atomic_fetch_add(&b2_map_n,1);}
+    }
+    for(unsigned i=0;i<2048;i++)if(b2_stage_records[i].handle&&b2_stage_records[i].frame==frame){hle_vr_copy_release(b2_stage_records[i].handle);b2_stage_records[i].handle=0;}
+    pthread_mutex_unlock(&b2_stage_mu);
 }
 /* By the recording's own frame, not by the run in progress: the final assembly of a frame (asynchronous) sometimes runs
    while the next frame's second run is recording (b2am: every other stereo frame had no twins while calls during the
@@ -1773,33 +1839,12 @@ void b2_after_runs(void){
    recording, [1] of the frame in progress, [2] too old, [3] no twin. */
 uint64_t runtime_b2_twin(uint64_t h){
     if(!g_vr_b2.on||!(g_vr_b2.mask&0xc0))return 0;
-    const unsigned k=(unsigned)((h>>4)*0x9E3779B97F4A7C15ull>>51)&(B2_TAB-1);
-    if(atomic_load_explicit(&b2_tab[k].h,memory_order_acquire)!=h||b2_tab[k].phase!=1){atomic_fetch_add_explicit(&b2_why[0],1,memory_order_relaxed);return 0;}
-    const uint32_t runs=__atomic_load_n(&g_vr_b2.runs,__ATOMIC_RELAXED),frame=b2_tab[k].frame;
-    if(frame>=runs){atomic_fetch_add_explicit(&b2_why[1],1,memory_order_relaxed);return 0;}   /* its frame's second run is not done */
-    if(runs-frame>2){atomic_fetch_add_explicit(&b2_why[2],1,memory_order_relaxed);return 0;}
-    /* by the game's own stage slots, as they stood when the second run ended (b2_after_runs) */
-    {const unsigned m=(unsigned)((h>>4)*0x9E3779B97F4A7C15ull>>54)&(B2_MAP-1);
-     for(unsigned q=0;q<8;q++){const unsigned e=(m+q)&(B2_MAP-1);const uint64_t mh=atomic_load_explicit(&b2_map[e].h,memory_order_acquire);if(!mh)break;
-        if(mh==h&&b2_map[e].frame==frame){const uint64_t t=b2_map[e].t;
-            atomic_fetch_add_explicit(&b2_twin_hits,1,memory_order_relaxed);atomic_fetch_add_explicit(&b2_slot_hits,1,memory_order_relaxed);atomic_store_explicit(&b2_twin_frame,frame,memory_order_relaxed);
-            if(g_vr_b2.mask&0x80)atomic_fetch_add_explicit(&b2_marks,1,memory_order_relaxed);return t;}}}
-    const uint64_t key=b2_tab[k].key;const uint16_t occ=b2_tab[k].occ;
-    const unsigned j=(unsigned)((key^((uint64_t)occ*0x9E3779B97F4A7C15ull)^((uint64_t)frame<<32))*0xD6E8FEB86659FD93ull>>51)&(B2_TAB-1);
-    const uint64_t t=atomic_load_explicit(&b2_lidx[j].h,memory_order_acquire);
-    if(t&&b2_lidx[j].key==key&&b2_lidx[j].occ==occ&&b2_lidx[j].frame==frame){atomic_fetch_add_explicit(&b2_twin_hits,1,memory_order_relaxed);atomic_store_explicit(&b2_twin_frame,frame,memory_order_relaxed);
-        if(g_vr_b2.mask&0x80)atomic_fetch_add_explicit(&b2_marks,1,memory_order_relaxed);return t;}
-    atomic_fetch_add_explicit(&b2_twin_miss,1,memory_order_relaxed);atomic_fetch_add_explicit(&b2_why[3],1,memory_order_relaxed);
-    {static _Atomic int shown;if(atomic_fetch_add(&shown,1)<24){   /* diagnostic: what the first run's index holds for this code */
-        char line[900];size_t u=(size_t)snprintf(line,sizeof line,"[vr] b2 no twin: second-run %#llx key %#llx #%u frame %u (%u draws, runs %u); first-run entries of that key:",(unsigned long long)h,(unsigned long long)key,occ,frame,b2_tab[k].draws,runs);
-        int m=0;for(unsigned i=0;i<8192&&u<sizeof line-40;i++)if(b2_lidx[i].key==key&&atomic_load(&b2_lidx[i].h)){u+=(size_t)snprintf(line+u,sizeof line-u," #%u/f%u",b2_lidx[i].occ,b2_lidx[i].frame);m++;}
-        int r=0;for(unsigned i=0;i<B2_TAB;i++)if(b2_tab[i].key==key&&b2_tab[i].frame==frame&&atomic_load(&b2_tab[i].h))r++;
-        fprintf(stderr,"%s%s; recordings of that key in frame %u (any run): %d\n",line,m?"":" none",frame,r);
-        const uint32_t *a=b2_tab[k].ra;fprintf(stderr,"[vr] b2 no twin:   its code: %#x < %#x < %#x < %#x < %#x < %#x\n",a[0],a[1],a[2],a[3],a[4],a[5]);
-        const uint32_t d=b2_tab[k].draws;int c=0;
-        for(unsigned i=0;i<B2_TAB&&c<3;i++){if(!atomic_load(&b2_tab[i].h)||b2_tab[i].phase||b2_tab[i].frame!=frame||!d||b2_tab[i].draws*10<d*9||b2_tab[i].draws*10>d*11)continue;const uint32_t *b=b2_tab[i].ra;c++;
-            fprintf(stderr,"[vr] b2 no twin:   first-run candidate key %#llx #%u, %u draws: %#x < %#x < %#x < %#x < %#x < %#x\n",(unsigned long long)b2_tab[i].key,b2_tab[i].occ,b2_tab[i].draws,b[0],b[1],b[2],b[3],b[4],b[5]);}}}
-    return 0;
+    extern uint64_t hle_vr_copy_twin(uint64_t);
+    uint64_t twin=hle_vr_copy_twin(h);
+    if(twin){atomic_fetch_add_explicit(&b2_twin_hits,1,memory_order_relaxed);atomic_fetch_add(&b2_slot_hits,1);
+        extern uint64_t hle_vr_copy_record(uint64_t);atomic_store_explicit(&b2_twin_frame,(uint32_t)(hle_vr_copy_record(h)>>32),memory_order_relaxed);
+        if(g_vr_b2.mask&0x80)atomic_fetch_add_explicit(&b2_marks,1,memory_order_relaxed);return twin;}
+    atomic_fetch_add_explicit(&b2_twin_miss,1,memory_order_relaxed);return 0;
 }
 void runtime_b2_called(int n,const uint64_t *h,uint64_t caller){
     if(!g_vr_b2.on)return;
@@ -1836,25 +1881,33 @@ static void vr_headlook_install(Module *m){
        Before: a fixed +256, which main's LOD stubs (+128..+368, the effects page) took over. Main's text padding (+944 / +968
        before 2026-10-29) is taken since main's high-FPS fade fix (+928..+1008, #466). */
     const uint64_t site=0x6289a4,call=0xbea74,callee=0xb33e8,data=(m->file_size+0x3fff)&~0x3fffULL,v1=(data-64)&~15ULL,v2=v1+32;
-    uint32_t got_site,got_call;memcpy(&got_site,m->base+site,4);memcpy(&got_call,m->base+call,4);
+    uint32_t got_site,got_call,got_entry;memcpy(&got_site,m->base+site,4);memcpy(&got_call,m->base+call,4);memcpy(&got_entry,m->base+callee,4);
     uint32_t want_call=0x94000000u|((uint32_t)((int64_t)(callee-call)>>2)&0x3ffffff);
-    if(got_site!=0xf9401268u||got_call!=want_call){fprintf(stderr,"[vr] head look: the camera code is not 1.4.3's (%08x %08x); off\n",got_site,got_call);return;}
+    if(got_site!=0xf9401268u||got_call!=want_call||got_entry!=0xa9bd7bfdu){fprintf(stderr,"[vr] head look: the camera code is not 1.4.3's (%08x %08x %08x); off\n",got_site,got_call,got_entry);return;}
+    if(vr_active()){
+        uint32_t arg,calc;uint64_t type,method;
+        memcpy(&arg,m->base+0xb3438,4);memcpy(&calc,m->base+0x27d5438,4);
+        memcpy(&type,m->base+0x39023e0,8);memcpy(&method,m->base+0x3902438,8);
+        if(arg!=0xaa0303e2||calc!=0xbd409800||type!=(uintptr_t)m->base+0xc9350||method!=(uintptr_t)m->base+0x27d5438)
+            runtime_fail("TotK native source projection owner/ABI does not match 1.4.3");
+        const struct{uint64_t off;uint32_t word;} owners[]={{0x6286d4,0xf9400e68},{0x6286e4,0xf9400514},{0x628c14,0xf9400e68},{0x628c24,0xf9400914}};
+        for(unsigned i=0;i<sizeof owners/sizeof *owners;i++){uint32_t word;memcpy(&word,m->base+owners[i].off,4);if(word!=owners[i].word)runtime_fail("TotK native camera holder relationship does not match 1.4.3");}
+    }
     if(v1<m->patch_off||v2+24>data){fprintf(stderr,"[vr] head look: no room in main's patch area tail; off\n");return;}
     for(unsigned i=0;i<56;i++)if(m->base[v1+i]){fprintf(stderr,"[vr] head look: patch area tail at +%#llx in use; off\n",(unsigned long long)v1);return;}
-    uint32_t c1[4]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0};uint64_t hook=(uint64_t)(uintptr_t)vr_cam_hook;memcpy(&c1[2],&hook,8);
-    uint32_t c2[6]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0,0xd503201fu /* nop */,0xd503201fu};
+    uint32_t c1[4]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0};uint64_t hook=(uint64_t)(uintptr_t)vr_cam_owner_hook;memcpy(&c1[2],&hook,8);
+    uint32_t c2[6]={0x58000050u /* ldr x16, #8 */,0xd61f0200u /* br x16 */,0,0,got_entry,aspect_b(v2+20,callee+4)};
     uint64_t v0h=(uint64_t)(uintptr_t)vr_view0_hook;memcpy(&c2[2],&v0h,8);
-    uint32_t b1=aspect_b(site,v1),b2=aspect_b(call,v2);
-    if(!b1||!b2){fprintf(stderr,"[vr] head look: branch out of range; off\n");return;}
-    b2=(b2&0x03ffffffu)|0x94000000u;   /* keep it a call */
+    uint32_t b1=aspect_b(site,v1),b2=aspect_b(callee,v2);
+    if(!b1||!b2||!c2[5]){fprintf(stderr,"[vr] head look: branch out of range; off\n");return;}
     memset(&g_vr_cam,0,sizeof g_vr_cam);g_vr_cam.ret=(uint64_t)(uintptr_t)(m->base+site+4);
-    g_vr_cam.callee=(uint64_t)(uintptr_t)(m->base+callee);
+    g_vr_cam.callee=(uint64_t)(uintptr_t)(m->base+v2+16); /* original prologue, then original setter+4 */
     memcpy(m->base+v1,c1,sizeof c1);memcpy(m->base+v2,c2,sizeof c2);
-    memcpy(m->base+site,&b1,4);memcpy(m->base+call,&b2,4);
+    memcpy(m->base+site,&b1,4);memcpy(m->base+callee,&b2,4);
     g_vr_headlook=&g_vr_cam;
     runtime_player_init(m);   /* first person: the player's position (world_survey.c) */
     camera_distance_load();
-    fprintf(stderr,"[vr] head look: camera hook at main+%#llx, main camera from main+%#llx, branches +%#llx (TOTK_VR_HEADLOOK=0 turns it off)\n",(unsigned long long)site,(unsigned long long)call,(unsigned long long)v1);
+    fprintf(stderr,"[vr] head look: camera hook at main+%#llx, all native views at main+%#llx, branches +%#llx (TOTK_VR_HEADLOOK=0 turns it off)\n",(unsigned long long)site,(unsigned long long)callee,(unsigned long long)v1);
 }
 #endif
 static void patch_output_res(Module *m);
@@ -1935,7 +1988,11 @@ static uint64_t pack_size(unsigned w,unsigned h){return (uint64_t)h<<32|w;}
    saved picture mode are named by their 16:9 sizes).
    TOTK_VR_CANVAS=0 keeps 16:9; =<ratio> another shape. */
 static float vr_canvas_aspect=-1;
+#if TARGET_OS_IPHONE
+static int vr_active(void){return 0;}
+#endif
 static float vr_canvas_a(void){
+    if(vr_active())return 0; /* VR quality uses exact per-eye dimensions. */
     if(vr_canvas_aspect<0){
         const char *c=getenv("TOTK_VR_CONTROL"),*e=getenv("TOTK_VR_CANVAS");
         float a=c&&*c?(e&&*e?(float)atof(e):1.12f):0;
@@ -2012,6 +2069,8 @@ int runtime_output_res(unsigned *w,unsigned *h){
         if(TARGET_OS_IPHONE||getenv("TOTK_EXPORT_IOS")){
             on=0;
             if(e&&*e&&strcmp(e,"0")&&strcmp(e,"auto"))fprintf(stderr,"[totk] TOTK_OUTPUT_RES=%s ignored: iOS shows 720p only\n",e);
+        }else if(vr_active()){
+            on=1;cw=4096;ch=4416;output_full_at_start=0;
         }else if(e&&!strcmp(e,"0"))on=0;
         else if((!e||!*e||!strcmp(e,"auto"))&&vr_big_start(&cw,&ch)){
             on=1;output_full_at_start=0;   /* zeldaVR: room for every resolution; the start's canvas is the saved one */
@@ -2137,7 +2196,11 @@ static void patch_output_res(Module *m){
     uint8_t *page=m->base+data;output_w=w;output_h=h;
     atomic_store((_Atomic uint64_t *)(void *)(page+32),output_full_at_start?pack_size(w,h):pack_size(1920,1080));
     atomic_store((_Atomic uint64_t *)(void *)(page+40),0);
-    picture_mode_restore(page);
+    if(vr_active()&&!getenv("TOTK_EXPORT_IOS")){
+        extern void vr_resolution(int *,int *);int eye_w=0,eye_h=0;vr_resolution(&eye_w,&eye_h);
+        atomic_store((_Atomic uint64_t *)(void *)(page+32),pack_size((unsigned)eye_w,(unsigned)eye_h));
+        fprintf(stderr,"[vr] TotK starts with exact %dx%d eye targets; fixed stream 2048x2208\n",eye_w,eye_h);
+    }else picture_mode_restore(page);
     if(vr_canvas_a()>0){   /* zeldaVR: the headset's shape at the height picked */
         uint64_t was=atomic_load((_Atomic uint64_t *)(void *)(page+32)),now=vr_shape(was);
         atomic_store((_Atomic uint64_t *)(void *)(page+32),now);
@@ -2275,6 +2338,11 @@ static void output_size_set(uint64_t want){
     if(config){__atomic_fetch_or((uint32_t *)(uintptr_t)(config+8),1u<<21,__ATOMIC_SEQ_CST);runtime_oe_push_message(30);}
     fprintf(stderr,"[totk] 1.4.3 output requested %ux%u (display config %s)\n",(unsigned)want,(unsigned)(want>>32),config?"ready":"not published yet");
 }
+int runtime_vr_render_size_set(unsigned w,unsigned h){
+    if(!vr_active()||getenv("TOTK_EXPORT_IOS")||!atomic_load(&output_page)||w>output_w||h>output_h)return 0;
+    output_size_set(pack_size(w,h));return 1;
+}
+
 /* The settings panel's resolution (runtime.h OUTPUT_MODE_*), kept for the next start (picture_mode_save). Native is
    the swapchain's size (2K); with MetalFX the output stage then scales the 2K canvas up to the window (a 4K screen). */
 int runtime_output_native(int mode,unsigned *w,unsigned *h){
@@ -2287,6 +2355,7 @@ int runtime_output_native(int mode,unsigned *w,unsigned *h){
     *w=output_w;*h=output_h;return 1;
 }
 int runtime_output_modes(void){
+    if(vr_active()&&!getenv("TOTK_EXPORT_IOS"))return 1<<OUTPUT_MODE_NATIVE;
     if(!output_page)return 0;
     return 1<<OUTPUT_MODE_OFF|1<<OUTPUT_MODE_METALFX|1<<OUTPUT_MODE_720P|1<<OUTPUT_MODE_720P_METALFX|1<<OUTPUT_MODE_NATIVE|1<<OUTPUT_MODE_NATIVE_METALFX|
            (output_w>=3840&&output_h>=2160?1<<OUTPUT_MODE_NATIVE_4K:0)|
@@ -2294,6 +2363,7 @@ int runtime_output_modes(void){
            (vr_canvas_a()>0?1<<OUTPUT_MODE_NATIVE_4K|1<<OUTPUT_MODE_NATIVE_4K_METALFX|1<<OUTPUT_MODE_NATIVE_6K:0);
 }
 int runtime_output_mode(void){
+    if(vr_active()&&!getenv("TOTK_EXPORT_IOS"))return OUTPUT_MODE_NATIVE;
     extern int mfxup_output_enabled(void);
     if(!output_page)return OUTPUT_MODE_OFF;
     uint64_t now=std_shape(atomic_load((_Atomic uint64_t *)(void *)(output_page+32)));   /* zeldaVR: by its 16:9 size */

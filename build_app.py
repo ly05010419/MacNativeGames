@@ -760,7 +760,7 @@ OVERLAY_RECORD = 'overlay.json'
 # for the largest one present and starts at 1080p. Not 4K yet: its heaps need one memory pool above the graphics layer's
 # 1 GiB zero-copy limit (games/totk/runtime/game_patches_v143.c, 2026-10-25: the game stopped at the start).
 OUTPUT_SIZES = ('2560x1440',)
-VR_BIG_SIZES = ('3056x2720', '4576x4080')   # zeldaVR (--vr): VR native 4K / 4K + MetalFX / native 6K (runtime/game_patches_v143.c vr_big_mode)
+VR_BIG_SIZES = ('3056x2720', '4576x4080', '4096x4416')   # zeldaVR (--vr): VR native 4K / 4K + MetalFX / native 6K (runtime/game_patches_v143.c vr_big_mode)
 
 
 def overlay_record(path):

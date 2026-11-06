@@ -1085,20 +1085,51 @@ static pthread_mutex_t g_copy_mu = PTHREAD_MUTEX_INITIALIZER;
 #ifdef GAME_BOTW
 typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
 #else
-typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; uint64_t keep_until, rec_cb, eyes, tdraws; } copy_prefix;   // keep_until, rec_cb (the command buffer that recorded it), eyes (OP_EYE marks in the body): zeldaVR stereo B2 (below)
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; uint64_t vr_record, rec_cb, eyes, tdraws; _Atomic uint64_t vr_refs, vr_twin; } copy_prefix;   // vr_record: exact creating frame/phase; right copies own their retained left twin
 #endif
-/* zeldaVR stereo B2 (game_patches_v143.c): the first run's recordings are inlined into the frame's final assembly after the
-   second run (the left eye's twins), but command buffers both runs use add their control memory again in the second run,
-   which releases the first run's copies. A copy made in the first run while stereo is on is kept until two submits on
-   (keep_until): release_copies and the mark sweep pass it over until then; the sweep releases it afterwards, its mark gone. */
+/* B2 retains completed render-stage summaries through uniform capture and
+   pairing. The matching right recording then owns its immutable left twin
+   until the right recording itself is retired. No submit-age lifetime guess. */
 static int copy_kept(const cmd_copy *c);
 #ifdef GAME_BOTW
 #define COPY_KEEP_INIT(c) ((void)(c))
 #else
-#define COPY_KEEP_INIT(c) ((c)->keep_until = 0, (c)->rec_cb = 0, (c)->eyes = 0, (c)->tdraws = 0)
+#define COPY_KEEP_INIT(c) ((c)->vr_record = 0, (c)->rec_cb = 0, (c)->eyes = 0, (c)->tdraws = 0, (c)->vr_refs = 0, (c)->vr_twin = 0)
 #endif
 static _Atomic uint64_t g_copy_bytes;   /* live recording-copy bytes (logged with the copy count) */
 static copy_prefix *copy_of(NVNcommandHandle h) { copy_prefix *c = (copy_prefix *)(uintptr_t)h - 1; return c; }
+#ifndef GAME_BOTW
+/* A B2 stage or a right-eye recording owns this immutable copy. The game's
+   control-memory token can disappear independently of those host consumers. */
+void hle_vr_copy_tag(uint64_t handle,uint32_t frame,unsigned phase){
+    copy_prefix *copy=copy_of((NVNcommandHandle)handle);
+    if(!handle||copy->magic!=COPY_MAGIC)die("VR tagged an invalid recording");
+    copy->vr_record=((uint64_t)frame<<32)|phase;
+}
+uint64_t hle_vr_copy_record(uint64_t handle){
+    copy_prefix *copy=copy_of((NVNcommandHandle)handle);
+    if(!handle||copy->magic!=COPY_MAGIC)die("VR read an invalid recording identity");
+    return copy->vr_record;
+}
+void hle_vr_copy_retain(uint64_t handle){
+    copy_prefix *copy=copy_of((NVNcommandHandle)handle);
+    if(!handle||copy->magic!=COPY_MAGIC)die("VR retained an invalid command copy %#llx",(unsigned long long)handle);
+    atomic_fetch_add_explicit(&copy->vr_refs,1,memory_order_relaxed);
+}
+void hle_vr_copy_release(uint64_t handle){
+    copy_prefix *copy=copy_of((NVNcommandHandle)handle);
+    if(!handle||copy->magic!=COPY_MAGIC||!atomic_fetch_sub_explicit(&copy->vr_refs,1,memory_order_release))die("VR command-copy ownership underflow");
+}
+void hle_vr_copy_bind(uint64_t right,uint64_t left){
+    copy_prefix *copy=copy_of((NVNcommandHandle)right);
+    if(!right||right==left||copy->magic!=COPY_MAGIC||copy->vr_twin)die("VR command-copy twin ownership invalid");
+    hle_vr_copy_retain(left);copy->vr_twin=left;
+}
+uint64_t hle_vr_copy_twin(uint64_t right){
+    copy_prefix *copy=copy_of((NVNcommandHandle)right);
+    return right&&copy->magic==COPY_MAGIC?copy->vr_twin:0;
+}
+#endif
 static uint8_t *flatten_recording_ops(const uint8_t *p);
 /* TOTK_FLATTEN_FAST (default on; =0 the op-by-op copy, =2 both and compare), 2026-10-24: a recording sits contiguous in
    the recorder's one buffer (cmd_reserve reallocs it whole), so the copy is one exact-size allocation and one memcpy after
@@ -1205,6 +1236,9 @@ static void retired_sweep(void) {
     g_nretired = k;
 }
 static void copy_free(copy_prefix *pf) {
+#ifndef GAME_BOTW
+    if(pf->vr_twin){hle_vr_copy_release(pf->vr_twin);pf->vr_twin=0;}
+#endif
     uint64_t after = async_replay() ? xsub_pushed() : 0;
     if (!after || after <= xsub_replayed()) { g_copy_bytes -= malloc_size(pf); free(pf); return; }
     if (g_nretired == g_cretired) {
@@ -1230,7 +1264,7 @@ static int copy_kept(const cmd_copy *c) {
 #ifdef GAME_BOTW
     (void)c; return 0;
 #else
-    return ((const copy_prefix *)(c->copy - sizeof(copy_prefix)))->keep_until > g_submits;
+    return atomic_load_explicit(&((const copy_prefix *)(c->copy-sizeof(copy_prefix)))->vr_refs,memory_order_acquire)!=0;
 #endif
 }
 static void release_copies(uintptr_t lo, uintptr_t hi) {
@@ -1329,10 +1363,10 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
         LOG("[rec] #%u cb=%p ours=%zu hw=%zu%s", t_rec_n, (void *)c, o->cmd_used - o->rec_start - 16, hw_before - o->hw_start, line); }
     const uint32_t rec_draws = t_rec_hist[OP_DRAW] + t_rec_hist[OP_DRAW_IDX];
     uint8_t *copy = flatten_recording(o->seg);
-    { extern void runtime_b2_rec(uint32_t draws, uint64_t handle); runtime_b2_rec(rec_draws, (uint64_t)(uintptr_t)copy); }
 #ifndef GAME_BOTW
-    { extern int runtime_b2_keep(void); copy_prefix *cp = (copy_prefix *)(uintptr_t)copy - 1; cp->keep_until = runtime_b2_keep() ? g_submits + 2 : 0; cp->rec_cb = (uint64_t)(uintptr_t)c; cp->eyes = t_rec_eyes + t_rec_hist[OP_EYE]; cp->tdraws = t_rec_tdraws + rec_draws; }   // stereo B2: a first-run copy stays for its twin's use; which command buffer made it (b2_top_note)
+    { copy_prefix *cp = (copy_prefix *)(uintptr_t)copy - 1; cp->vr_record = 0; cp->rec_cb = (uint64_t)(uintptr_t)c; cp->eyes = t_rec_eyes + t_rec_hist[OP_EYE]; cp->tdraws = t_rec_tdraws + rec_draws; }   // B2: exact recording owner metadata; references are held by actual consumers
 #endif   // zeldaVR stereo B2: draws per render run, and which run a handle is (game_patches_v143.c; empty elsewhere)
+    { extern void runtime_b2_rec(uint32_t draws, uint64_t handle); runtime_b2_rec(rec_draws, (uint64_t)(uintptr_t)copy); }
     if (call_stats_on()) call_stats_end(c, copy);
     /* Finalizing the recorder does not retire its handle; only reusing the backing control region does. */
 #ifdef GAME_BOTW
@@ -1708,11 +1742,10 @@ static void pin_scan(size_t buckets) {   /* g_copy_mu and g_pin_mu held */
     for (; k < end; k++, i = 0) {
         copy_bucket *b = &g_cbk[k]; if (!b->used) continue;
         while (i < b->n) {
-            if (b->v[i].token && !copy_token_intact(&b->v[i])
+            if (!copy_kept(&b->v[i]) && b->v[i].token && !copy_token_intact(&b->v[i])
 #ifdef GAME_BOTW
                 && !botw_mark_gone_keep(&b->v[i])
 #endif
-                && !copy_kept(&b->v[i])
                ) { copy_drop(b, i, 1); continue; }   /* its control memory was reused: the copy goes */
             pin_mark_ops(b->v[i].copy); g_pin_scanned++; i++;
         }
@@ -2734,8 +2767,10 @@ static void submit_exec(int n, const uint64_t *h, void *ucap) {
         extern int mtl_b2_submit_uniforms_only(void); b2_left = mtl_ucap_overlay(ucap ? ucap : own, mtl_b2_submit_uniforms_only() ? NULL : over);
         mtl_ucap_free(over); mtl_ucap_free(own);
     }
+    if(b2){extern void vr_b2_pair_begin(void);vr_b2_pair_begin();}
     for (int pass = 0; pass < (b2 ? 2 : 1); pass++) {
         const int left = b2 && (pass == 0) != b2_rfirst;   // stereo: the left eye's pass (first unless b2order)
+        if(b2){extern void vr_b2_eye_begin(void);vr_b2_eye_begin();}
         if (b2) mtl_eye_pass((left ? 1 : 2) | (pass ? 4 : 0));
         mtl_sub_begin();
         mtl_sub_snapshot_ubos_cap((const uint64_t *)h, n, left ? b2_left : ucap);   // TOTK: uniforms as of the submit call (ucap: bytes captured there)

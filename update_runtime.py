@@ -317,6 +317,25 @@ def game_data(tree, res, version, logs, env):
     return tree / f'build/game-data/{version}'
 
 
+def prepare_vr_render_overlay(tree, res, data, version, logs, env):
+    """Build the exact TotK eye-capacity heap from matching verified RomFS inputs."""
+    if version != 'v143':
+        raise BuildError('--vr updates currently require Tears of the Kingdom 1.4.3')
+    romfs = tree / 'extracted/v143/romfs'
+    try:
+        index = json.loads((romfs / 'index.json').read_text())
+        config_data = config(data / 'romfs-config.txt')
+        valid = (index.get('status') == 'pass' and index.get('romfs_sha256') == config_data['ROMFS_IMAGE_SHA256']
+                 and (romfs / 'romfs.bin').stat().st_size == int(config_data['ROMFS_IMAGE_SIZE']))
+    except (OSError, ValueError, KeyError):
+        valid = False
+    if not valid:
+        raise BuildError('--vr needs the matching verified RomFS index and image in the work folder; use the original build workspace')
+    run([env.get('PY', sys.executable), 'scripts/make_output_res_overlay.py', '4096x4416',
+         '--scene', '4096x4416', '--version', version], logs / 'vr-render-overlay.log', cwd=tree, env=env)
+    return tree / 'extracted/v143/romfs-patches-out/4096x4416-scene-4096x4416'
+
+
 def prepare_native_5k(tree, res, data, version, logs, preference):
     """Prepare a canvas upgrade from the matching cached game files, before touching the installed app.
     Existing 5K apps keep their capability on smaller Macs. A recorded or requested False takes priority."""
@@ -391,6 +410,7 @@ def main(argv):
     ap.add_argument('app', type=Path, help='the app build_app.py made (Tears of the Kingdom.app, Breath of the Wild.app)')
     ap.add_argument('--work', type=Path, help='work folder to build in (default: TOTK_build or BotW_build next to the app); an '
                                               'app made before the game data folder existed, and --seed, need the one of its build')
+    ap.add_argument('--vr', action='store_true', help='prepare TotK 1.4.3 exact VR render targets from its verified build inputs')
     ap.add_argument('--seed', action='store_true', help='also make the startup shaders again from the work folder\'s RomFS and '
                                                         'modules (no game file or keys), as needed when the translation chain changed')
     ap.add_argument('--native-5k', action=argparse.BooleanOptionalAction, default=None,
@@ -420,6 +440,7 @@ def main(argv):
     check_game_data(data, res, version)
     check_rewriter(data, res, version, rewriter_sha256())
     canvas_action, canvas_source = prepare_native_5k(tree, res, data, version, logs, preference)
+    vr_overlay = prepare_vr_render_overlay(tree, res, data, version, logs, env) if args.vr else None
     stale_overlays = check_overlays(res, version)
     if canvas_action == 'add':   # this promotion also renews the stock 4K overlays; smaller overlays stay as they were
         stale_overlays = [name for name in stale_overlays if not name.startswith(('3840x2160', '5120x2880'))]
@@ -462,6 +483,11 @@ def main(argv):
         elif not shaders:
             migrate_shader_data(tmp, version, logs, work, bundle_id)
         replace_native_5k(new_res, canvas_action, canvas_source, version)
+        if vr_overlay:
+            destination = new_res / f'extracted/{version}/romfs-patches-out' / vr_overlay.name
+            if destination.exists():
+                build_app.remove_tree(destination)
+            build_app.copy_tree(vr_overlay, destination)
         lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')

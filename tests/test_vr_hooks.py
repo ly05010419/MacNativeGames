@@ -22,7 +22,7 @@ def hooks():
 class VrHooks(unittest.TestCase):
     def test_header_names_the_hooks(self):
         self.assertEqual(sorted(hooks()), ['runtime_aspect_vr', 'runtime_camera_distance_available', 'runtime_camera_distance_cm',
-                                           'runtime_camera_distance_set', 'runtime_vr_base_view', 'runtime_vr_find_head'])
+                                           'runtime_camera_distance_set', 'runtime_vr_base_view', 'runtime_vr_camera_owned', 'runtime_vr_find_head'])
 
     def test_every_hook_has_a_weak_default(self):
         text = DEFAULTS.read_text()
@@ -45,7 +45,9 @@ class VrHooks(unittest.TestCase):
             if name.startswith('runtime_camera_distance_'):
                 self.assertEqual(sorted(strong[name]), ['botw_vr_camera.h', 'game_patches_v143.c'], name)
             elif name == 'runtime_vr_base_view':
-                self.assertEqual(strong[name], ['botw_vr_camera.h'], name)
+                self.assertEqual(sorted(strong[name]), ['botw_vr_camera.h', 'game_patches_v143.c'], name)
+            elif name == 'runtime_vr_camera_owned':
+                self.assertEqual(strong[name], ['totk_vr_camera_owner.h'], name)
             elif name != 'runtime_aspect_vr':
                 self.assertEqual(strong[name], ['game_patches_v143.c'], name)
 

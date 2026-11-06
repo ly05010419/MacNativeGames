@@ -18,3 +18,4 @@ __attribute__((weak)) void runtime_vr_find_head(int stage) {
 }
 
 __attribute__((weak)) int runtime_vr_base_view(float out[12]) { (void)out; return 0; }
+__attribute__((weak)) int runtime_vr_camera_owned(uint64_t camera,uint64_t projection){(void)camera;(void)projection;return 0;}

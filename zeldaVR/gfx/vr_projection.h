@@ -2,7 +2,19 @@
  * native game-frame metadata and its compositor; no guessed field of view. */
 #pragma once
 #include <math.h>
+#include <float.h>
 #include <stdint.h>
+
+/* A source can use the headset's world path only when its actual ray grid
+   satisfies that eye's native projection contract. A menu preview's valid
+   perspective matrix is not a headset eye. Tolerance is float roundoff. */
+static inline int vr_projection_eye_grid(const float source[4],const float eye[4],float overscan){
+    if(!source||!eye||!isfinite(overscan)||overscan<=0)return 0;
+    for(int i=0;i<4;i++){
+        float want=overscan*tanf(eye[i]),actual=tanf(source[i]);
+        if(!isfinite(want)||!isfinite(actual)||fabsf(actual-want)>16*FLT_EPSILON*fmaxf(1,fabsf(want)))return 0;
+    }return 1;
+}
 
 enum { VR_PROJECTION_NO_WRITE,VR_PROJECTION_CAMERA,VR_PROJECTION_COPY,VR_PROJECTION_INHERIT };
 /* A depth-only draw never writes color provenance. A blended auxiliary draw

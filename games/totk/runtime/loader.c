@@ -645,6 +645,9 @@ int main(int argc,char **argv) {
 #endif
  verify_identity(!strcmp(argv[2],"probe-identity-negative"));
  for(unsigned i=0;i<NM;i++){seal(&modules[i]);check_permissions(&modules[i]);}
+#if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE
+ if(!strcmp(argv[2],"probe-quest-fov")){extern void runtime_totk_projection_probe(void);runtime_totk_projection_probe();return 0;}
+#endif
 #ifdef GAME_BOTW
  if(!strcmp(argv[2],"probe-quest-fov")){extern void runtime_botw_projection_probe(void);runtime_botw_projection_probe();return 0;}
 #if !TARGET_OS_IPHONE

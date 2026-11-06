@@ -135,7 +135,6 @@ typedef struct { int32_t index, mask; float rgba[4]; } p_clear_color;
 #define NVN_PUSH_SIZE 0x100
 typedef struct { uint16_t compute, offset; uint32_t size; uint8_t data[]; } p_push_const;
 typedef struct { void *sync; } p_fence_sync;   // nvnCommandBufferFenceSync: the sync object, fenced at the submit (hle_nvn.c fence_syncs)
-#ifdef GAME_BOTW
 /* The same texture level / layer attached at more than one colour slot: only the first slot is attached (botw.md; the
    finding and fix come from nxnative, MIT, github.com/seedds/nxnative, rt_dup_slot). Breath of the Wild's G-buffer passes
    attach the albedo and another buffer twice each (c1 = c2, c3 = c4) with channel write masks 0 on the second ones. The
@@ -143,26 +142,36 @@ typedef struct { void *sync; } p_fence_sync;   // nvnCommandBufferFenceSync: the
    its own tile memory, stored back whole at the end of the pass, so the copy stored later (loaded, never written)
    overwrote the other's writes in a different order per tile: the albedo kept scattered squares. Returns the earlier slot
    holding the same image, or -1. Slots are compared by serial: records hold copies of the texture objects.
-   The macros below are the call sites in nvn_mtl.m: they sit at the end of existing lines and expand to nothing for TOTK,
-   so TOTK's code and line numbers (res_add_at) stay as they were. */
+   TotK also binds duplicate colour storage (observed 320x180 RGBA8 during startup).
+   Different mip levels and array/cube slices remain distinct attachments. */
+/* Same physical uncompressed storage/layout, even through different live
+   NVN descriptors. This is the identity used by storage-shared Metal images. */
+static inline int rt_storage_same(const tex_t *a,const tex_t *b){
+    if(a->serial&&a->serial==b->serial)return 1;
+    if(!a->mem||a->mem!=b->mem||!a->L.size||a->L.size!=b->L.size)return 0;
+    if(a->d.width!=b->d.width||a->d.height!=b->d.height||a->d.depth!=b->d.depth||a->d.levels!=b->d.levels||a->d.target!=b->d.target||a->d.samples!=b->d.samples)return 0;
+    int aw=1,ah=1,bw=1,bh=1,ab=nvn_fmt_bpb(a->d.format,&aw,&ah),bb=nvn_fmt_bpb(b->d.format,&bw,&bh);
+    return ab>0&&ab==bb&&aw==1&&ah==1&&bw==1&&bh==1;
+}
 static inline int rt_dup_of(const p_set_rt *r, int i) {
     if (!r->color[i]) return -1;
     int lv = r->has_cview[i] && r->cview[i].set_levels ? r->cview[i].base_level : 0, ly = r->has_cview[i] && r->cview[i].set_layers ? r->cview[i].min_layer : 0;
     for (int j = 0; j < i; j++) {
-        if (!r->color[j] || r->color[j]->serial != r->color[i]->serial) continue;
+        if (!r->color[j] || !rt_storage_same(r->color[j],r->color[i])) continue;
         int lj = r->has_cview[j] && r->cview[j].set_levels ? r->cview[j].base_level : 0, yj = r->has_cview[j] && r->cview[j].set_layers ? r->cview[j].min_layer : 0;
         if (lj == lv && yj == ly) return j;
     }
     return -1;
 }
 /* a clear of a slot left unattached goes to the slot holding the same image */
-#define BOTW_RT_DUP_CLEARS() { for (int i_ = 1; i_ < R.rt.n && i_ < 8; i_++) { int j_ = rt_dup_of(&R.rt, i_); \
+#define NVN_RT_DUP_CLEARS() { for (int i_ = 1; i_ < R.rt.n && i_ < 8; i_++) { int j_ = rt_dup_of(&R.rt, i_); \
         if (j_ >= 0 && R.clear_c[i_]) { if (!R.clear_c[j_]) { R.clear_c[j_] = 1; R.cc[j_] = R.cc[i_]; } R.clear_c[i_] = 0; } } }
-#define BOTW_RT_DUP_SKIP(i) if (rt_dup_of(&R.rt, i) >= 0) { static int said_; if (!said_++) MLOG("[botw] colour slot %d holds the same image as an earlier slot (serial %llu): left unattached (rt_dup_of)", i, (unsigned long long)R.rt.color[i]->serial); continue; }
+#define NVN_RT_DUP_SKIP(i) if (rt_dup_of(&R.rt, i) >= 0) { static int said_; if (!said_++) MLOG("[nvn] colour slot %d holds the same image as an earlier slot (serial %llu): left unattached (rt_dup_of)", i, (unsigned long long)R.rt.color[i]->serial); continue; }
 /* prediction: the slot is left unattached when the pass begins */
-#define BOTW_RT_DUP_PREDICT(r, cf) { for (int i_ = 1; i_ < (r)->n && i_ < 8; i_++) if (rt_dup_of(r, i_) >= 0) (cf)[i_] = 0; }
+#define NVN_RT_DUP_PREDICT(r, cf) { for (int i_ = 1; i_ < (r)->n && i_ < 8; i_++) if (rt_dup_of(r, i_) >= 0) (cf)[i_] = 0; }
 /* a clear of a slot left unattached: clear the slot holding the same image */
-#define BOTW_RT_DUP_CLEAR_TO_FIRST(c) p_clear_color botw_to_first_; { int f_ = rt_dup_of(&R.rt, (c)->index); if (f_ >= 0) { botw_to_first_ = *(c); botw_to_first_.index = f_; (c) = &botw_to_first_; } }
+#define NVN_RT_DUP_CLEAR_TO_FIRST(c) p_clear_color nvn_to_first_; { int f_ = rt_dup_of(&R.rt, (c)->index); if (f_ >= 0) { nvn_to_first_ = *(c); nvn_to_first_.index = f_; (c) = &nvn_to_first_; } }
+#ifdef GAME_BOTW
 /* "ashot <path>" requests (end of nvn_mtl.m), taken at the game's present call with the screenshot queue lock held */
 void botw_ashot_poll(const void *t, long cur);
 #define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
@@ -328,10 +337,6 @@ int totk_wb_fence_on(void);
 #define BOTW_LATE_FILTER(list, nl)
 #define BOTW_LATE_DROP(lo, hi)
 #define UNCAPPED_INTERVAL_FROM_ENV(e) e && atoi(e)
-#define BOTW_RT_DUP_CLEARS()
-#define BOTW_RT_DUP_SKIP(i)
-#define BOTW_RT_DUP_PREDICT(r, cf)
-#define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
 #define BOTW_ASHOT_POLL(t, cur)
 #define BOTW_REUP_TRACKED(pk, t)
 #define BOTW_PKG_FIELDS

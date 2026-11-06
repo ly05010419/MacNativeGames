@@ -549,11 +549,15 @@ int main(int argc, const char **argv) { @autoreleasepool {
         NSMutableDictionary<NSString *,TOTKSettingRow *> *byTitle=[NSMutableDictionary dictionary];
         for(TOTKSettingRow *r in rows)byTitle[r.title]=r;
         assert(byTitle[@"VR · view"] && byTitle[@"Stereo · eye distance (%)"]);
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
         assert(!byTitle[@"Show the Quest view"] && !byTitle[@"Mac preview zoom (x)"]);
         assert(!byTitle[@"Head position (6DoF: lean, crouch)"]);
         assert(!byTitle[@"Stereo (the eyes rendered in turn)"]);
+#ifdef GAME_BOTW
         assert(!byTitle[@"First person camera spring (ms, 0 = rigid)"]);
+#else
+        assert(byTitle[@"First person camera spring (ms, 0 = rigid)"]);
+#endif
 #ifdef GAME_BOTW190
         assert(!byTitle[@"VR · view"].set && [byTitle[@"VR · view"].choices isEqualToArray:@[@"Third person"]]);
 #else
@@ -565,7 +569,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         assert(byTitle[@"Stereo (the eyes rendered in turn)"]);
         assert(byTitle[@"First person camera spring (ms, 0 = rigid)"]);
 #endif
-#ifdef GAME_BOTW160
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         assert(([byTitle[@"Render resolution (per eye, immediate)"].choices isEqualToArray:@[@"0.625×　1280×1380",@"0.75×　1536×1656",@"0.875×　1792×1932",@"1.0×　2048×2208",@"1.25×　2560×2760",@"1.5×　3072×3312",@"1.75×　3584×3864",@"2.0×　4096×4416"]]));
         assert(byTitle[@"Stream resolution (per eye)"]&&!byTitle[@"Stream resolution (per eye)"].set);
 #else

@@ -21,6 +21,11 @@ int main(void) {
     background[132]=1280;background[19]=1;assert(!vr_ui_rays_fullscreen(background,0));
     float fov[2][4]={{-.942478f,.698132f,.767945f,-.959931f},{-.698132f,.942478f,.767945f,-.959931f}};
     for(int e=0;e<2;e++)for(int j=0;j<4;j++)fov[e][j]=atanf(tanf(fov[e][j])*1.06f);
+    const float headset[2][4]={{-.942478f,.698132f,.767945f,-.959931f},{-.698132f,.942478f,.767945f,-.959931f}};
+    assert(vr_projection_eye_grid(fov[0],headset[0],1.06f)&&vr_projection_eye_grid(fov[1],headset[1],1.06f));
+    assert(!vr_projection_eye_grid(fov[0],headset[1],1.06f));
+    const float inventory[4]={-.391815603f,.102929696f,.259297699f,-.264297694f};
+    assert(!vr_projection_eye_grid(inventory,headset[0],1.06f)&&!vr_projection_eye_grid(inventory,headset[1],1.06f));
     float rotation[2][9],target[9];turn(.021f,.013f,rotation[0]);turn(-.027f,-.019f,rotation[1]);turn(.22f,.11f,target);
     float baseline_error=0;
     for(int iy=-1;iy<=1;iy++)for(int ix=-1;ix<=1;ix++){
@@ -48,6 +53,33 @@ int main(void) {
         }
         float error=fmaxf(fabsf(rays[0][0]-rays[1][0]),fabsf(rays[0][1]-rays[1][1]));baseline_error=fmaxf(error,baseline_error);
         if(error>2e-5f){fprintf(stderr,"HUD binocular ray mismatch: %.7f\n",error);return 1;}
+    }
+    /* TotK F2169 CB0: orthographic 1920x1080 UI, fitted into a portrait
+       viewport. Unequal eye projections and source rotations must still
+       produce the same final ray, without changing the authored HUD size. */
+    float reference[16]={0};reference[0]=.65f;reference[5]=.70f;reference[10]=reference[14]=-1;
+    double full[4]={0,0,1280,1380},authored[4]={0,300,1280,780};
+    for(int iy=-1;iy<=1;iy++)for(int ix=-1;ix<=1;ix++){
+        float result[2][2];
+        for(int e=0;e<2;e++){
+            vr_ui_rays fitted;assert(vr_ui_rays_make(reference,fov[e],rotation[e],rotation[0],0,&fitted));
+            assert(vr_ui_rays_viewport(&fitted,authored,full));
+            float orthographic[16]={.001041666721f,0,0,0,0,.001851851819f,0,0,0,0,-.006666666828f,-1,0,0,0,1};
+            orthographic[3]=ix*.5f;orthographic[7]=iy*.4f;
+            float patched[16];vr_ui_rays_matrix(&fitted,orthographic,patched);
+            assert(patched[15]>0);
+            float l=tanf(fov[e][0]),r=tanf(fov[e][1]),u=tanf(fov[e][2]),d=tanf(fov[e][3]);
+            float ray[3]={(l+r)*.5f+(r-l)*.5f*patched[3]/patched[15],(u+d)*.5f+(u-d)*.5f*patched[7]/patched[15],-1};
+            float delta[9];for(int i=0;i<3;i++)for(int j=0;j<3;j++)delta[3*i+j]=vr_dot3(target+3*i,rotation[e]+3*j);
+            vr_rotation_apply(delta,ray);for(int j=0;j<2;j++)result[e][j]=ray[j]/-ray[2];
+        }
+        float expected[3]={ix*.5f/reference[0],iy*.4f*(780.f/1380.f)/reference[5],-1},delta[9];
+        for(int i=0;i<3;i++)for(int j=0;j<3;j++)delta[3*i+j]=vr_dot3(target+3*i,rotation[0]+3*j);
+        vr_rotation_apply(delta,expected);
+        for(int j=0;j<2;j++){
+            assert(fabsf(result[0][j]-result[1][j])<2e-5f);
+            assert(fabsf(result[0][j]-expected[j]/-expected[2])<2e-5f);
+        }
     }
     vr_ui_rays map;float invalid[9]={0};assert(!vr_ui_rays_make(ui,fov[0],invalid,rotation[0],.1f,&map));
     printf("HUD asymmetric FOV, native shift, unequal source rotations, clipping and final binocular rays passed (max %.8f)\n",baseline_error);

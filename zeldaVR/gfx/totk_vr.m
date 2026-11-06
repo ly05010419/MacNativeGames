@@ -83,6 +83,8 @@ void vr_resolution(int *w, int *h) { *w = *h = 0; }
 void vr_stream_resolution(int *w,int *h) { *w=*h=0; }
 int vr_set_resolution(int w, int h) { (void)w; (void)h; return 0; }
 void vr_note_camera(const float *cam) { (void)cam; }
+void vr_source_projection(const float fov[4],const float rotation[9]){(void)fov;(void)rotation;}
+void vr_packet_trace(int packets){(void)packets;}
 int vr_frame_pos(float p[3]) { (void)p; return 0; }
 int vr_frame_ring(void) { return -1; }
 void vr_frame_match_desc(char *out, size_t n) { if (n) out[0] = 0; }
@@ -93,6 +95,8 @@ int vr_ipd_pct(void) { return 100; }
 void vr_set_ipd_pct(int pct) { (void)pct; }
 int vr_source_encode_eye(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int crop[4], int eye) { (void)cb; (void)src; (void)crop; (void)eye; return -1; }
 void vr_b2_present_eye(int eye) { (void)eye; }
+void vr_b2_pair_begin(void) {}
+void vr_b2_eye_begin(void) {}
 #else
 #import <IOSurface/IOSurface.h>
 #include <signal.h>
@@ -112,14 +116,16 @@ static struct {
     // picture copies: written by the present thread, read by the VR thread (g.mu)
     pthread_mutex_t mu;
     id<MTLTexture> src[SRC_SLOTS]; uint64_t seq[SRC_SLOTS], next_seq; int writing[SRC_SLOTS], readers[SRC_SLOTS];
+    int src_mapped[SRC_SLOTS];uint64_t src_pair[SRC_SLOTS],capture_pair,ticket_pair[64];
+    uint64_t src_order[SRC_SLOTS],capture_order,ticket_order[64];
+    _Atomic int packet_trace;
+    struct { int valid; float fov[4],rotation[9]; } frame_projection,ticket_projection[64];
     id<MTLTexture> src_views[SRC_SLOTS][2]; int src_stereo[SRC_SLOTS]; float src_fov[SRC_SLOTS][2][4], src_rotation[SRC_SLOTS][2][9]; int src_oriented[SRC_SLOTS]; float src_menu_aspect[SRC_SLOTS];
     // VR thread
     id<MTLCommandQueue> q; id<MTLRenderPipelineState> ps, ps_linear; id<MTLSamplerState> smp;
     IOSurfaceRef surf[IMAGES]; id<MTLTexture> img[IMAGES]; uint64_t img_frame[IMAGES]; int eye_w, eye_h;
     _Atomic int recenter; float center[3], right[3], up[3];
-#ifdef GAME_BOTW
     float menu_center[3], menu_right[3], menu_up[3], menu_picture_aspect;
-#endif
     id<MTLTexture> hud[2]; int hud_i, hud_w, hud_h; uint64_t hud_at, hud_frames, hud_copies;   // VR thread
     // stage 2 (head look): the head pose of each rotation handed to the game, by its seq; each picture's seq
     vr_pose hl_pose[64]; uint32_t src_used[SRC_SLOTS]; float hl_ref[4]; int hl_have_ref;
@@ -136,6 +142,7 @@ static struct {
     _Atomic uint64_t native_fov_calibrated,native_fov_uncalibrated;
     _Atomic int frame_native, ticket_native[64];
 } g = { .mu = PTHREAD_MUTEX_INITIALIZER, .src_eye = { -1, -1, -1, -1, -1 } };
+void vr_packet_trace(int packets){atomic_store(&g.packet_trace,packets>0?packets:0);}
 
 int vr_enabled(void) {
     static _Atomic int on = -1;
@@ -180,9 +187,7 @@ static void place_screen(const vr_pose *head) {
     g.center[0] = head->p[0] + fwd[0] * dist; g.center[1] = head->p[1]; g.center[2] = head->p[2] + fwd[2] * dist;
     g.right[0] = -fwd[2] * width; g.right[1] = 0; g.right[2] = fwd[0] * width;
     g.up[0] = 0; g.up[1] = height; g.up[2] = 0;
-#ifdef GAME_BOTW
     memcpy(g.menu_center,g.center,sizeof g.center);memcpy(g.menu_right,g.right,sizeof g.right);memcpy(g.menu_up,g.up,sizeof g.up);
-#endif
     VLOG("screen %.1f m wide, %.1f m ahead (TOTK_VR_SCREEN=<distance>,<width>)", width, dist);
 }
 
@@ -204,7 +209,7 @@ static _Atomic int g_fp = -1, g_eye_cm = -1;
 int vr_first_person(void) {
     if (atomic_load(&g_fp) < 0) {
         const char *e = getenv("TOTK_VR_FIRST_PERSON");
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
         atomic_store(&g_fp, e && !strcmp(e, "1"));
 #else
         atomic_store(&g_fp, !(e && !strcmp(e, "0")));
@@ -256,7 +261,7 @@ static void vr_option_set(const char *name, int value) {
    own movement): where the head is relative to where it was at the last recenter, in that straight-ahead frame (x right,
    y up, -z forward), turned to the game camera's yaw by offset_update and added to the camera in both views, so leaning
    and crouching move it. The VR page's "头部位置" (option 6dof, off by default since 2026-10-30); flag vr_6dof. */
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static float g_hl_pos[3], g_hl_pos_ref[3]; static int g_hl_pos_have;
 #endif
 /* The settings panel in the headset: off by default (user 2026-10-30: "先 关闭 设置在 vr里的效果"); option panel=1 shows it. */
@@ -268,7 +273,7 @@ int vr_panel_in_headset(void) { return vr_option("panel", 0) != 0; }
    but sickening on the move), so it is off by default. The depth-reprojected stereo tried before it (A: weak, edges
    broken) was removed (user 2026-11-02: "删除 a 方案 只保留 b1，默认不开"). */
 int vr_afr(void) {
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
     return 0; /* Both eyes of the same game frame; never alternate the camera. */
 #else
     return vr_option("afr", 0);
@@ -279,10 +284,12 @@ int vr_afr(void) {
    30-200吗？": above 100 the world looks smaller and deeper. Option ipd_pct, 30..200, 100 by default. */
 int vr_ipd_pct(void) { int v = vr_option("ipd_pct", 100); return v < 30 ? 30 : v > 200 ? 200 : v; }
 void vr_set_ipd_pct(int pct) { pct = pct < 30 ? 30 : pct > 200 ? 200 : pct; vr_option_set("ipd_pct", pct); VLOG("stereo: the eyes %d%% of the headset's distance apart", pct); }
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_afr(int on) { vr_option_set("afr", on != 0); VLOG("stereo by alternating eyes: %s", on ? "on (the game renders each eye in turn)" : "off (one camera for both eyes)"); }
+#elif defined(TOTK_GAME_V143)
+void vr_set_afr(int on) { (void)on; } /* Shared TotK flag API; legacy execution is absent. */
 #endif
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
 int vr_6dof(void) { return 0; }
 void vr_set_6dof(int on) { (void)on; }
 #else
@@ -350,8 +357,17 @@ static uint64_t press(press_state *p, int down, uint64_t now, uint64_t long_ns, 
 }
 static _Atomic int g_link_up;   // (defined with the VR thread below)
 static int latest_slot(void);
+#ifdef TOTK_GAME_V143
+static int totk_picture_sources(int pair[2]);
+#endif
 static int world_camera_running(uint64_t now) {   // the camera hook counts its calls (vr_cam_state.calls)
-#ifdef GAME_BOTW
+#ifdef TOTK_GAME_V143
+    (void)now;
+    pthread_mutex_lock(&g.mu);
+    int pair[2],world=totk_picture_sources(pair)==2;
+    pthread_mutex_unlock(&g.mu);
+    return world;
+#elif defined(GAME_BOTW)
     (void)now;
     pthread_mutex_lock(&g.mu);
     int slot=latest_slot(),world=slot>=0&&g.src_stereo[slot]==VR_NATIVE_WORLD;
@@ -523,7 +539,7 @@ static void offset_update(vr_cam_state *s, float d[3]) {   // world axes from th
     const float h = sqrtf(r[0] * r[0] + r[2] * r[2]), up = atomic_load(&g_off_cm[0]) / 100.0f, fw = atomic_load(&g_off_cm[1]) / 100.0f, rt = atomic_load(&g_off_cm[2]) / 100.0f;
     d[0] = d[1] = d[2] = 0;
     float rt6 = rt, up6 = up, fw6 = fw;
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     if (g_hl_pos_have && vr_6dof()) {   // the head's movement (-z is forward), at most a metre each way
         float q[3]; for (int i = 0; i < 3; i++) q[i] = g_hl_pos[i] == g_hl_pos[i] ? fmaxf(-1, fminf(1, g_hl_pos[i])) : 0;
         rt6 += q[0]; up6 += q[1]; fw6 -= q[2];
@@ -648,7 +664,7 @@ static void first_person_update(void) {   // VR thread, each frame (the lookup o
     atomic_store(&g_vr_hidehead_fp, addr != 0 && b >= 0.5f);
 #endif
 }
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static _Atomic int g_deadband_tenths = -1;
 #endif
 /* Up / down only from the headset (user 2026-10-29: "手柄 只能左右改变摄像头 不能上下， 上下看 只能 头显 自己"): the camera hook
@@ -656,12 +672,20 @@ static _Atomic int g_deadband_tenths = -1;
    down does nothing while the world camera runs (input.c). flag vr_pitch 1 / 0, TOTK_VR_PITCH=0: the game's pitch as before. */
 static _Atomic int g_pitch_lock = -1;
 void vr_set_pitch_lock(int on) { atomic_store(&g_pitch_lock, on != 0); VLOG("looking up / down: %s", on ? "the headset only (the stick turns left / right)" : "the headset and the game's camera"); }
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_deadband(int tenths) { atomic_store(&g_deadband_tenths, tenths < 0 ? 0 : tenths > 100 ? 100 : tenths); VLOG("head-look dead band %.1f degrees", atomic_load(&g_deadband_tenths) / 10.0); }
+#elif defined(TOTK_GAME_V143)
+void vr_set_deadband(int tenths) { (void)tenths; } /* Shared TotK flag API only. */
 #endif
 static void headlook_update(const vr_pose *head, int recenter) {
-#ifndef GAME_BOTW
-    if (atomic_load(&g_deadband_tenths) < 0) { const char *e = getenv("TOTK_VR_DEADBAND"); atomic_store(&g_deadband_tenths, e ? (int)(atof(e) * 10 + 0.5f) : 10); }
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
+    if (atomic_load(&g_deadband_tenths) < 0) { const char *e = getenv("TOTK_VR_DEADBAND"); atomic_store(&g_deadband_tenths, e ? (int)(atof(e) * 10 + 0.5f) :
+#ifdef TOTK_GAME_V143
+    0
+#else
+    10
+#endif
+    ); }
 #endif
     vr_cam_state *s = g_vr_headlook;
     if (!s) return;
@@ -674,7 +698,7 @@ static void headlook_update(const vr_pose *head, int recenter) {
     }
     const float inv[4] = { -g.hl_ref[0], -g.hl_ref[1], -g.hl_ref[2], g.hl_ref[3] };
     float r[4]; qmul(inv, head->q, r);
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     if (!g_hl_pos_have || recenter) { memcpy(g_hl_pos_ref, head->p, sizeof g_hl_pos_ref); g_hl_pos_have = 1; }   // the head's position from here
     { const float d[3] = { head->p[0] - g_hl_pos_ref[0], head->p[1] - g_hl_pos_ref[1], head->p[2] - g_hl_pos_ref[2] }; qrot(inv, d, g_hl_pos); }
 #endif
@@ -683,7 +707,7 @@ static void headlook_update(const vr_pose *head, int recenter) {
        band leave the game's camera where it was; the frames keep the pose they were rendered with, so the headset's
        reprojection still shows the small head motion and the world stays put. Beyond the band the camera follows at
        once. flag vr_deadband <tenths of a degree> (TOTK_VR_DEADBAND, degrees; 1 by default; 0 off). */
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     float band = atomic_load(&g_deadband_tenths) / 10.0f * (float)M_PI / 180;
     if (g.hl_have_sent && !recenter && band > 0) {
         float d = fabsf(r[0] * g.hl_sent[0] + r[1] * g.hl_sent[1] + r[2] * g.hl_sent[2] + r[3] * g.hl_sent[3]);
@@ -719,7 +743,7 @@ static void headlook_fov(const vr_views *v) {
         w = fmaxf(w, fmaxf(fabsf(tanf(v->fov[e][0])), fabsf(tanf(v->fov[e][1]))));
         h = fmaxf(h, fmaxf(fabsf(tanf(v->fov[e][2])), fabsf(tanf(v->fov[e][3]))));
     }
-    w *= 1.05f; h *= 1.05f;
+    w *= 1.06f; h *= 1.06f;
     if (!(w > 0.3f && h > 0.3f && w < 6 && h < 6)) return;
     float a = w / h, k = -h;   // the half-angle tangent itself: the game's own zoom and speed widening do not reach the headset
     if (!runtime_aspect_vr(a, k)) { VLOG("the game's field of view stays its own (no Vert+ stubs)"); g.fov_on = -1; return; }
@@ -750,8 +774,12 @@ int vr_wants_camera(void) { return g_vr_headlook && __atomic_load_n(&g_vr_headlo
    body really is, not how far it moved since (user 2026-10-31: in a Zonai device the body drifted off the camera). */
 static float g_frame_pos[3]; static int g_frame_pos_have, g_frame_idx;   // the replay thread's (g_frame_idx: its ring entry)
 static void frame_pos_take(int i) { memcpy(g_frame_pos, g_vr_headlook->ring[i].pos, sizeof g_frame_pos); g_frame_idx = i; g_frame_pos_have = g_frame_pos[0] || g_frame_pos[1] || g_frame_pos[2];
-    /* B1: the entry's index is the hook's call count & 15, and odd calls render the left eye (vr_camera.h eye_half) */
-    atomic_store(&g.frame_eye, g_vr_headlook->eye_half > 0 ? ((i & 1) ? 1 : 2) : 0); }
+    /* Legacy alternating-eye mode only. TotK's actual B2 capture/present owns
+       the eye identity; a pose-ring match must not override it. */
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
+    atomic_store(&g.frame_eye, g_vr_headlook->eye_half > 0 ? ((i & 1) ? 1 : 2) : 0);
+#endif
+}
 int vr_frame_pos(float p[3]) { if (!g_frame_pos_have) return 0; memcpy(p, g_frame_pos, sizeof g_frame_pos); return 1; }
 int vr_frame_ring(void) { return g_frame_pos_have ? g_frame_idx : -1; }   /* the replay thread: this frame's ring entry (-1 without one) */
 /* The vertical field of view each G-buffer camera had (camera block float 70, radians), lowest and highest since the last
@@ -789,7 +817,7 @@ void vr_note_camera(const float *cam) {
     { uint64_t vs = 0; int keep = 0; const uint64_t cur = __atomic_load_n(&s->main_vs, __ATOMIC_RELAXED);
       for (int i = 0; i < 32; i++) {
           const uint64_t v = __atomic_load_n(&s->v0ring[i].vs, __ATOMIC_RELAXED);
-          if (!v || memcmp(s->v0ring[i].m, cam, 48)) continue;
+          if (!v||!runtime_vr_camera_owned(s->v0ring[i].camera,0)||memcmp(s->v0ring[i].m, cam, 48)) continue;
           if (v == cur) { keep = 1; break; }
           if (!vs) vs = v;
       }
@@ -825,12 +853,48 @@ void vr_note_camera(const float *cam) {
 #endif
 }
 
+void vr_source_projection(const float fov[4],const float rotation[9]){
+#ifdef TOTK_GAME_V143
+    int valid=fov&&rotation&&vr_rotation_valid(rotation);
+    pthread_mutex_lock(&g.mu);g.frame_projection.valid=valid;
+    if(valid){memcpy(g.frame_projection.fov,fov,sizeof g.frame_projection.fov);memcpy(g.frame_projection.rotation,rotation,sizeof g.frame_projection.rotation);}
+    pthread_mutex_unlock(&g.mu);
+#else
+    (void)fov;(void)rotation;
+#endif
+}
+
 void vr_present_queued(uint64_t ticket) {   // the replay thread, at the game's present (after that frame's replay)
+#ifdef TOTK_GAME_V143
+    pthread_mutex_lock(&g.mu);g.ticket_projection[ticket%64]=g.frame_projection;
+    uint64_t pair=atomic_load(&g.frame_eye)?g.capture_pair:0;
+    g.ticket_pair[ticket%64]=pair;g.ticket_order[ticket%64]=pair?pair:++g.capture_order;
+    g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
+    uint64_t camera=g_vr_headlook?__atomic_load_n(&g_vr_headlook->cam,__ATOMIC_RELAXED):0;
+    if(vr_wants_camera()&&runtime_vr_camera_owned(camera,0)&&vr_link_alive()&&runtime_player_pos_address&&runtime_player_pos_address()){
+        static _Atomic int started;int expected=0;
+        if(atomic_compare_exchange_strong(&started,&expected,1)){
+            extern void runtime_vr_b2_mask(unsigned);extern void runtime_vr_b2(int);
+            runtime_vr_b2_mask(0x181);runtime_vr_b2(3);
+        }
+    }
+#endif
     atomic_store(&g.ticket_native[ticket % 64], atomic_exchange(&g.frame_native, 0));
     if (g_vr_headlook) { atomic_store(&g.ticket_seq[ticket % 64], atomic_exchange(&g.frame_seq, 0)); atomic_store(&g.ticket_eye[ticket % 64], atomic_exchange(&g.frame_eye, 0)); }
 }
 void vr_source_native_frame(void) { atomic_store(&g.frame_native, 1); }
 
+
+void vr_b2_pair_begin(void){
+#ifdef TOTK_GAME_V143
+    pthread_mutex_lock(&g.mu);g.capture_pair=++g.capture_order;pthread_mutex_unlock(&g.mu);
+#endif
+}
+void vr_b2_eye_begin(void){
+#ifdef TOTK_GAME_V143
+    pthread_mutex_lock(&g.mu);g.frame_projection.valid=0;pthread_mutex_unlock(&g.mu);
+#endif
+}
 
 // ---- picture copies (present thread) ----
 static id<MTLTexture> src_tex(NSUInteger w, NSUInteger h, MTLPixelFormat f, int stereo) {
@@ -848,6 +912,37 @@ static int latest_slot(void) {   // under g.mu
 static int latest_slot_eye(int eye) {   // under g.mu: B1, the newest picture rendered for that eye
     int b = -1; for (int i = 0; i < SRC_SLOTS; i++) if (g.seq[i] && !g.writing[i] && g.src_eye[i] == eye && (b < 0 || g.seq[i] > g.seq[b])) b = i;
     return b;
+}
+static int latest_pair(int pair[2]){ /* g.mu held */
+    uint64_t newest=0;pair[0]=pair[1]=-1;
+    for(int l=0;l<SRC_SLOTS;l++)if(g.seq[l]&&!g.writing[l]&&g.src_eye[l]==0&&g.src_pair[l]>newest)
+        for(int r=0;r<SRC_SLOTS;r++)if(g.seq[r]&&!g.writing[r]&&g.src_eye[r]==1&&g.src_pair[r]==g.src_pair[l]){
+            newest=g.src_pair[l];pair[0]=l;pair[1]=r;break;
+        }
+    return newest!=0;
+}
+/* One logical picture is either a complete B2 pair or an ordinary present.
+   Projection validity classifies the complete picture; it never makes one
+   completed eye publish itself over the other eye or over an older world.
+   Replay order, rather than GPU callback order, also orders menu transitions. */
+static int latest_picture(int picture[2]){
+    int pair[2],mono=-1;int have=latest_pair(pair);
+    for(int i=0;i<SRC_SLOTS;i++)if(g.seq[i]&&!g.writing[i]&&!g.src_pair[i]&&
+        (mono<0||g.src_order[i]>g.src_order[mono]))mono=i;
+    if(have&&(mono<0||g.src_order[pair[0]]>g.src_order[mono])){
+        picture[0]=pair[0];picture[1]=pair[1];return 2;
+    }
+    picture[0]=picture[1]=mono;return mono>=0;
+}
+/* A flat UI has one authoritative composite: the game's final present.
+   Inventory's 3D preview can finish after the left B2 capture (F2533 had
+   its preview camera only after that capture). Two UI matrices matching
+   does not make those two intermediate pixel images the same picture. */
+static int totk_picture_sources(int picture[2]){
+    int packet=latest_picture(picture);
+    if(packet!=2)return packet;
+    if(g.src_mapped[picture[0]]&&g.src_mapped[picture[1]])return 2;
+    picture[0]=picture[1];return 1;
 }
 static void start_thread(id<MTLDevice> dev);
 /* Native canvas capture and ordinary presents can arrive on different
@@ -905,17 +1000,44 @@ static int source_encode(id<MTL4CommandBuffer> cb, id<MTLTexture> src, const int
         uint64_t n=atomic_fetch_add(calibrated?&g.native_fov_calibrated:&g.native_fov_uncalibrated,1);
         if(n<4)VLOG("[quest-fov] calibrated %d ray ratios %.4f %.4f %.4f %.4f | %.4f %.4f %.4f %.4f",calibrated,ratios[0],ratios[1],ratios[2],ratios[3],ratios[4],ratios[5],ratios[6],ratios[7]);
     }
+#ifdef TOTK_GAME_V143
+    vr_views calibrated_views;int have_calibrated_views=vr_link_views(&calibrated_views);
+#endif
     pthread_mutex_lock(&g.mu);
-    int latest = latest_slot(), l0 = latest_slot_eye(0), l1 = latest_slot_eye(1), s = -1;   // each eye's newest stays (B1)
-    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && !g.writing[i] && !g.readers[i]) s = i;
-    if (s >= 0) { g.src_menu_aspect[s]=kind==VR_NATIVE_MENU&&isfinite(menu_aspect)&&menu_aspect>0?menu_aspect:0; g.writing[s] = 1; g.seq[s] = 0; g.src_stereo[s] = kind; g.src_oriented[s] = kind == VR_NATIVE_WORLD && rotation;
+    int s=-1;
+#ifdef TOTK_GAME_V143
+    int published[2];latest_picture(published);
+    /* Keep the complete published packet. Unpublished copies may be replaced,
+       oldest first; protecting each eye's independent latest image can pin
+       unrelated incomplete packets and starve the next pair's allocation. */
+    for(int i=0;i<SRC_SLOTS;i++)if(i!=published[0]&&i!=published[1]&&!g.writing[i]&&!g.readers[i]&&
+        (s<0||(!g.seq[i]&&g.seq[s])||(!!g.seq[i]==!!g.seq[s]&&g.src_order[i]<g.src_order[s])))s=i;
+#else
+    int latest=latest_slot(),l0=latest_slot_eye(0),l1=latest_slot_eye(1),retained_pair[2];latest_pair(retained_pair);
+    for (int i = 0; i < SRC_SLOTS && s < 0; i++) if (i != latest && i != l0 && i != l1 && i != retained_pair[0] && i != retained_pair[1] && !g.writing[i] && !g.readers[i]) s = i;
+#endif
+    if (s >= 0) {
+        g.src_mapped[s]=0;
+#ifdef TOTK_GAME_V143
+        if(!stereo){
+            __typeof__(g.frame_projection) projection=eye>=-1?g.frame_projection:g.ticket_projection[ticket%64];
+            int projection_eye=eye>=0?eye:atomic_load(&g.ticket_eye[ticket%64])-1;
+            g.src_mapped[s]=projection.valid&&have_calibrated_views&&projection_eye>=0&&projection_eye<2&&
+                vr_projection_eye_grid(projection.fov,calibrated_views.fov[projection_eye],1.06f);
+            if(projection.valid){memcpy(g.src_fov[s][0],projection.fov,sizeof projection.fov);memcpy(g.src_rotation[s][0],projection.rotation,sizeof projection.rotation);}
+        }
+#endif
+        g.src_menu_aspect[s]=kind==VR_NATIVE_MENU&&isfinite(menu_aspect)&&menu_aspect>0?menu_aspect:0; g.writing[s] = 1; g.seq[s] = 0; g.src_stereo[s] = kind; g.src_oriented[s] = kind == VR_NATIVE_WORLD && rotation;
                   if (g.src_oriented[s]) memcpy(g.src_rotation[s], rotation, sizeof g.src_rotation[s]);
                   if (stereo) { g.src_used[s] = 0; g.src_eye[s] = -1;
                       if (kind == VR_NATIVE_WORLD) memcpy(g.src_fov[s], fov, sizeof g.src_fov[s]);
                       else memset(g.src_fov[s], 0, sizeof g.src_fov[s]); }
                   else if (eye >= -1) { g.src_used[s] = g_vr_headlook ? atomic_load(&g.frame_seq) : 0; g.src_eye[s] = eye; }   // stereo B2's left picture
                   else { g.src_used[s] = g_vr_headlook ? atomic_load(&g.ticket_seq[ticket % 64]) : 0;   // 0: not matched, placed by the newest pose
-                         g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; } }   // B1 / B2: the eye it was rendered for, -1 not known
+                         g.src_eye[s] = atomic_exchange(&g.ticket_eye[ticket % 64], 0) - 1; }
+                  g.src_pair[s]=g.src_eye[s]==0?g.capture_pair:g.src_eye[s]==1?g.ticket_pair[ticket%64]:0;
+                  g.src_order[s]=g.src_eye[s]==0?g.capture_pair:g.ticket_order[ticket%64];
+    }   // B1 / B2: the eye it was rendered for, -1 not known
     pthread_mutex_unlock(&g.mu);
     if (s < 0) return -1;
     id<MTLTexture> t = g.src[s];
@@ -1124,7 +1246,7 @@ void vr_set_mirror_mode(int m) {
 double vr_mirror_aspect(void) { return g.eye_w > 0 && g.eye_h > 0 ? 2.0 * g.eye_w / g.eye_h : 2; }   // the whole image: both eyes side by side
 /* "显示 Quest 画面" (user 2026-10-30: on, the Mac shows what the lenses show, each eye in its ellipse; off, "就是 不遮挡状态":
    both eyes uncovered). Option quest_view, off by default. */
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
 int vr_quest_view(void) { return 0; }
 void vr_set_quest_view(int on) { (void)on; }
 int vr_quest_zoom(void) { return 1; }
@@ -1142,7 +1264,7 @@ void vr_set_quest_zoom(int x) { x = x < 2 ? 2 : x > 10 ? 10 : x; vr_option_set("
 int vr_eye_spring_ms(void) { int x = vr_option("eye_spring", 300); return x < 0 ? 0 : x > 400 ? 400 : x; }
 void vr_set_eye_spring_ms(int ms) { ms = ms < 0 ? 0 : ms > 400 ? 400 : ms; vr_option_set("eye_spring", ms); VLOG("first person: the camera's spring on the head %d ms%s", ms, ms ? "" : " (bound rigidly)"); }
 _Atomic int g_spring_dev_mm;   // diagnostic: the most the spring kept the camera off the head bone's eyes since the last statistics line
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 void vr_set_quest_view(int on) { vr_option_set("quest_view", on != 0); if (vr_mirror_mode() != 1) vr_set_mirror_mode(1); VLOG("the Mac window: both eyes %s", on ? "as the lenses show them" : "uncovered"); }
 #endif
 void vr_mirror_crop(double out[4]) {   // the shown part of the image (unit coordinates): all, or the left eye's middle at 16:9
@@ -1162,7 +1284,7 @@ IOSurfaceRef vr_mirror_copy(void) {   // +1 (CFRelease it), or NULL: mirror off 
    headset image, which is placed at the current head pose 72 times a second: the tracking's small noise shook it, and
    the game's picture was resampled twice (into the headset image, then by the window). Three images in turn; the window
    shows the newest. */
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 enum { MAC_IMAGES = 3 };
 static IOSurfaceRef g_mac_surf[MAC_IMAGES]; static id<MTLTexture> g_mac_img[MAC_IMAGES]; static int g_mac_i, g_mac_w, g_mac_h;
 static int mac_view_wanted(void) { return vr_mirror_mode() == 1 && vr_quest_view(); }
@@ -1194,25 +1316,13 @@ static void zoom_fov(const float fov[4], float z, float out[4]) {
    to the eye it was rendered for (the hook moved the camera there by half the IPD, vr_camera.h eye_half), so the
    picture sits exactly where that eye saw it from. Sets g.center / right / up, which the HUD and the panel follow. */
 static void place_picture(id<MTLTexture> pic, uint32_t used, int pic_eye, float half) {
-#ifdef GAME_BOTW
-    (void)pic;(void)used;(void)pic_eye;(void)half;
-    /* Flat menu pictures keep their own screen, separate from world eye rays. */
+    (void)used;(void)pic_eye;(void)half;
     memcpy(g.center,g.menu_center,sizeof g.center);memcpy(g.right,g.menu_right,sizeof g.right);memcpy(g.up,g.menu_up,sizeof g.up);
-    /* Native eye slices encode an authored UI projection, not square-pixel
-       screen geometry. Rectify the completed composition once; its previews
-       and glyph caches keep their original drawing and sampling contracts. */
     if(pic && pic.width && pic.height){
-        float w=sqrtf(g.right[0]*g.right[0]+g.right[1]*g.right[1]+g.right[2]*g.right[2]);
-        float h=sqrtf(g.up[0]*g.up[0]+g.up[1]*g.up[1]+g.up[2]*g.up[2]);
+        float w=sqrtf(vr_dot3(g.right,g.right)),h=sqrtf(vr_dot3(g.up,g.up));
         float aspect=g.menu_picture_aspect>0?g.menu_picture_aspect:(float)pic.width/pic.height;
         if(h>0)for(int i=0;i<3;i++)g.up[i]*=w/(aspect*h);
     }
-#else
-    if (!pic || !used || !g_vr_headlook) return;
-    vr_pose p = g.hl_pose[used % 64];
-    if (pic_eye >= 0 && half > 0) { const float ex[3] = { pic_eye ? half : -half, 0, 0 }; float o[3]; qrot(p.q, ex, o); for (int k = 0; k < 3; k++) p.p[k] += o[k]; }
-    headlook_place(&p, (double)pic.width / pic.height);
-#endif
 }
 /* The source rays carry the GPU view that actually rendered these pixels.
    Rotate those rays into the latest controlled game view before submitting
@@ -1234,7 +1344,7 @@ static void draw_picture(id<MTLRenderCommandEncoder> e, const quad_u *u, id<MTLT
     [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
     if (linear) [e setRenderPipelineState:g.ps]; /* The host HUD and settings panel already contain encoded colours. */
 }
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
 static void mac_view_encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, const vr_pose *pose, const vr_views *v, id<MTLTexture> __strong *pics, const uint32_t useds[2], const int peye[2], float half, id<MTLTexture> hud, const float native_fov[2][4], const float delta[2][9]) {
     MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -1285,6 +1395,12 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
 #ifdef GAME_BOTW
     const float half = 0; /* The native renderer owns eye separation. */
     int own = 0;
+#elif defined(TOTK_GAME_V143)
+    const float half=0;
+    int own=0; /* Chosen from the actual completed packet below. */
+    const int ipd_ok=v->ipd>.03f&&v->ipd<.09f;
+    extern void runtime_vr_b2_set_eye(float m);
+    runtime_vr_b2_set_eye(ipd_ok?v->ipd*.5f*vr_ipd_pct()/100.0f:0);
 #else
     const int ipd_ok = v->ipd > 0.03f && v->ipd < 0.09f;
     const int afr = g_vr_headlook && vr_afr() && ipd_ok;
@@ -1298,21 +1414,44 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
 #endif
     int se[2]; id<MTLTexture> pics[2]; uint32_t useds[2]; int peye[2]; float native_fov[2][4],source_rotation[2][9],delta[2][9]; int oriented=0,reproject=0;
     pthread_mutex_lock(&g.mu);
+    int complete_pair[2]={-1,-1};
+#ifdef TOTK_GAME_V143
+    int mode=totk_picture_sources(complete_pair);const int s=complete_pair[0];own=mode==2;
+#else
     const int s = latest_slot();
+#endif
     const int kind = s >= 0 ? g.src_stereo[s] : VR_NATIVE_NONE;
-    const int stereo = kind != VR_NATIVE_NONE, world = kind == VR_NATIVE_WORLD;
-#ifdef GAME_BOTW
+    const int stereo = kind != VR_NATIVE_NONE; int world = kind == VR_NATIVE_WORLD;
     g.menu_picture_aspect=kind==VR_NATIVE_MENU?g.src_menu_aspect[s]:0;
+#ifdef TOTK_GAME_V143
+    /* TotK's UI squeeze is authored for runtime_aspect_now(), independently
+       of its portrait texture pixel grid. Use that same display aspect. */
+    {extern float runtime_aspect_now(void);float aspect=runtime_aspect_now();g.menu_picture_aspect=aspect>0?aspect:16.0f/9.0f;}
 #endif
     if (world) { memcpy(native_fov, g.src_fov[s], sizeof native_fov); oriented=g.src_oriented[s];
         if(oriented)memcpy(source_rotation,g.src_rotation[s],sizeof source_rotation); }
     if (stereo) own = 1;
     for (int k = 0; k < 2; k++) {
-        int t = stereo ? s : own ? latest_slot_eye(k) : -1; if (t < 0) t = s;
+        int t = stereo ? s : own ? (complete_pair[k]>=0?complete_pair[k]:latest_slot_eye(k)) : -1; if (t < 0) t = s;
         se[k] = t; if (t >= 0) g.readers[t]++;
         pics[k] = t >= 0 ? (stereo ? g.src_views[t][k] : g.src[t]) : nil;
         useds[k] = t >= 0 ? g.src_used[t] : 0; peye[k] = stereo ? k : t >= 0 ? g.src_eye[t] : -1;
     }
+#ifdef TOTK_GAME_V143
+    if(!stereo&&own&&se[0]>=0&&se[1]>=0&&g.src_mapped[se[0]]&&g.src_mapped[se[1]]){
+        world=1;oriented=1;
+        for(int k=0;k<2;k++){memcpy(native_fov[k],g.src_fov[se[k]][0],sizeof native_fov[k]);memcpy(source_rotation[k],g.src_rotation[se[k]][0],sizeof source_rotation[k]);}
+    }
+    {static uint64_t traced;uint64_t order=s>=0?g.src_order[s]:0;
+        if(order!=traced&&atomic_load(&g.packet_trace)>0){
+            traced=order;atomic_fetch_sub(&g.packet_trace,1);
+            VLOG("[packet] order=%llu pair=%llu mode=%s slots=%d/%d mapped=%d/%d source-order=%llu/%llu",
+                (unsigned long long)order,(unsigned long long)(s>=0?g.src_pair[s]:0),world?"world":s>=0&&g.src_pair[s]?"flat-final":"flat",
+                se[0],se[1],se[0]>=0?g.src_mapped[se[0]]:0,se[1]>=0?g.src_mapped[se[1]]:0,
+                (unsigned long long)(se[0]>=0?g.src_order[se[0]]:0),(unsigned long long)(se[1]>=0?g.src_order[se[1]]:0));
+        }
+    }
+#endif
     pthread_mutex_unlock(&g.mu);
     /* The game owns its orbit/cutscene base. The headset owns the latest H.
        Their product is the target game view in the source view's coordinates. */
@@ -1325,7 +1464,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         }else atomic_fetch_add(&g.native_no_owner,1);
     }else if(world)atomic_fetch_add(&g.native_no_rotation,1);
     if(world)atomic_fetch_add(reproject?&g.native_reprojected:&g.native_uncompensated,1);
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     id<MTLTexture> pic = pics[0]; uint32_t used = useds[0];
 #endif
     if (pics[0] && pics[1]) atomic_fetch_add(own && peye[0] == 0 && peye[1] == 1 ? &g.afr_pairs : &g.afr_mono, 1);
@@ -1373,7 +1512,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
         }
     }
     [e endEncoding];
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     const int mi = pic && now_ns() >= atomic_load(&g_blank_until) && mac_view_wanted() ? mac_image() : -1;
     if (mi >= 0) mac_view_encode(cb, g_mac_img[mi], used && g_vr_headlook ? &g.hl_pose[used % 64] : head, v, pics, useds, peye, half, hud, world ? native_fov : NULL, reproject ? delta : NULL);
 #endif
@@ -1383,7 +1522,7 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
     g.img_frame[im] = frame;
     if (vr_link_frame_ready(frame, 0, head->ts, 2, vs)) { g.img_frame[im] = 0; return 0; }
     atomic_fetch_add(&g.frames, 1);
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
     mirror_note(g.surf[im]);
 #else
     mirror_note(mi >= 0 ? g_mac_surf[mi] : g.surf[im]);
@@ -1397,14 +1536,14 @@ static int render_frame(const vr_pose *head, const vr_views *v, uint64_t frame) 
    retain the earlier streaming-size control. TOTK_VR_MBPS sets bitrate. */
 static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
 static pid_t g_streamer;
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
 static int g_res_w=1280,g_res_h=1380,g_res_loaded;
 #else
 static int g_res_w=1680,g_res_h=1760,g_res_loaded;
 #endif
 int vr_streamer_managed(void) { const char *e = getenv("TOTK_VR_STREAMER"); return vr_enabled() && e && *e; }
 static const char *res_settings_path(void) {
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     const char *render=getenv("TOTK_VR_RENDER_SETTINGS");if(render&&*render)return render;
     const char *base=getenv("TOTK_VR_SETTINGS");static char path[2048];
     if(!base||!*base||snprintf(path,sizeof path,"%s.render",base)>=(int)sizeof path)return NULL;
@@ -1418,7 +1557,7 @@ static void res_load(void) {   // under g_st_mu
     g_res_loaded = 1;
     const char *p=res_settings_path();FILE *f=p?fopen(p,"r"):NULL;int w,h;
     if(f){if(fscanf(f,"%dx%d",&w,&h)==2&&
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
        vr_render_size_valid(w,h)
 #else
        w>=256&&h>=256&&w<=2048&&h<=2304&&!((w|h)&1)
@@ -1427,7 +1566,7 @@ static void res_load(void) {   // under g_st_mu
 }
 void vr_resolution(int *w, int *h) {
     pthread_mutex_lock(&g_st_mu); res_load();
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     *w=g_res_w;*h=g_res_h;
 #else
     if (vr_streamer_managed()) { *w = g_res_w; *h = g_res_h; } else vr_link_view_size(w, h);
@@ -1435,7 +1574,7 @@ void vr_resolution(int *w, int *h) {
     pthread_mutex_unlock(&g_st_mu);
 }
 void vr_stream_resolution(int *w,int *h) {
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     if(vr_streamer_managed()){*w=VR_STREAM_EYE_WIDTH;*h=VR_STREAM_EYE_HEIGHT;return;}
     vr_link_view_size(w,h);
 #else
@@ -1454,7 +1593,7 @@ static void streamer_start_locked(void) {
     extern char **environ;
     const char *bin = getenv("TOTK_VR_STREAMER"), *ctl = getenv("TOTK_VR_CONTROL"), *mb = getenv("TOTK_VR_MBPS");
     char res[32], mbps[16], log[1100]; res_load();
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     snprintf(res, sizeof res, "%dx%d", VR_STREAM_EYE_WIDTH, VR_STREAM_EYE_HEIGHT);
 #else
     snprintf(res, sizeof res, "%dx%d", g_res_w, g_res_h);
@@ -1495,21 +1634,21 @@ static void streamer_restart_if_gone(void) {   // the VR thread, while not conne
 }
 int vr_set_resolution(int w, int h) {   // the settings panel (main thread)
     if(!vr_streamer_managed())return 0;
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
     if(!vr_render_size_valid(w,h))return 0;
 #else
     if(w<256||h<256||w>2048||h>2304||(w|h)&1)return 0;
 #endif
     pthread_mutex_lock(&g_st_mu); res_load();
     if (w != g_res_w || h != g_res_h) {
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         extern int runtime_vr_render_size_set(unsigned w,unsigned h);
         if(!runtime_vr_render_size_set((unsigned)w,(unsigned)h)){pthread_mutex_unlock(&g_st_mu);return 0;}
 #endif
         g_res_w = w; g_res_h = h;
         const char *p=res_settings_path();FILE *f=p?fopen(p,"w"):NULL;
         if (f) { fprintf(f, "%dx%d\n", w, h); fclose(f); }
-#if defined(GAME_BOTW160)
+#if defined(GAME_BOTW160) || defined(TOTK_GAME_V143)
         VLOG("VR render resolution %dx%d requested immediately; stream fixed at %dx%d",w,h,VR_STREAM_EYE_WIDTH,VR_STREAM_EYE_HEIGHT);
 #else
         VLOG("VR resolution %dx%d per eye: restarting the streamer", w, h);
@@ -1694,6 +1833,11 @@ void vr_stats(char *out, size_t n) {
     else snprintf(q, sizeof q, "【红】the Quest shows no picture");
     extern _Atomic uint64_t g_vr_native_masks_removed,g_vr_native_output_draws,g_vr_native_output_repeats;
     extern _Atomic uint64_t g_vr_ui_layout_draws,g_vr_ui_text_draws,g_vr_ui_text_missing,g_vr_ui_ray_bindings,g_vr_ui_ray_missing;
+#ifdef TOTK_GAME_V143
+    {size_t k=strlen(q);snprintf(q+k,sizeof q-k,"; TotK GPU-ray frames reprojected %llu, uncompensated %llu (source rotation missing %llu, owner missing %llu, invalid rotation %llu)",
+        (unsigned long long)atomic_load(&g.native_reprojected),(unsigned long long)atomic_load(&g.native_uncompensated),
+        (unsigned long long)atomic_load(&g.native_no_rotation),(unsigned long long)atomic_load(&g.native_no_owner),(unsigned long long)atomic_load(&g.native_bad_rotation));}
+#endif
     if (vr_labo_enabled()) { size_t k = strlen(q); snprintf(q + k, sizeof q - k,
         "; same-frame stereo game frames %llu, menu frames %llu, angular reprojected %llu, uncompensated %llu (source rotation missing %llu, owner missing %llu, invalid rotation %llu), UI aspect-fitted draws %llu, UI text fitted %llu, missing camera %llu, Quest FOV calibrated %llu, uncalibrated %llu, HUD ray bindings %llu, missing %llu", (unsigned long long)atomic_load(&g.native_pairs),
         (unsigned long long)atomic_load(&g.native_menu_pairs), (unsigned long long)atomic_load(&g.native_reprojected),
@@ -1721,7 +1865,7 @@ void vr_stats(char *out, size_t n) {
         c0 = c; p0 = p; }
     { const unsigned long long ap = atomic_exchange(&g.afr_pairs, 0), am = atomic_exchange(&g.afr_mono, 0);   // B1
       if (ap || am) { size_t k = strlen(q);
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(TOTK_GAME_V143)
           snprintf(q + k, sizeof q - k, "; %llu headset frames with a complete eye pair, %llu with a flat picture", ap, am);
 #else
           snprintf(q + k, sizeof q - k, "; alternating eyes %s: %llu headset frames with each eye's own picture, %llu with one", vr_afr() ? "on" : "off", ap, am);
@@ -1732,14 +1876,14 @@ void vr_stats(char *out, size_t n) {
       if (sd) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the head's spring (%d ms) kept the camera at most %.1f cm off the head bone's eyes", vr_eye_spring_ms(), sd / 10.0); } }
     { static uint32_t v0; const uint32_t v = g_vr_headlook ? __atomic_load_n(&g_vr_headlook->vs_changes, __ATOMIC_RELAXED) : 0;   // the main view set (game_patches_v143.c vr_view0_hook)
       if (v != v0) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the main picture's view set changed %u times", v - v0); } v0 = v; }
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     { int lo = atomic_exchange(&g_cam_fov_lo, INT_MAX), hi = atomic_exchange(&g_cam_fov_hi, INT_MIN);
       if (lo <= hi) { size_t k = strlen(q); snprintf(q + k, sizeof q - k, "; the game camera's vertical view %.1f-%.1f degrees (the headset's %.1f)",
                                                      lo / 10.0, hi / 10.0, g.fov_on > 0 ? 2 * atan(g.fov_tanh) * 180 / M_PI : 0.0); } }
 #endif
 #endif
     char tracking[220] = "";
-#ifndef GAME_BOTW
+#if !defined(GAME_BOTW) && !defined(TOTK_GAME_V143)
     snprintf(tracking, sizeof tracking, "; head pose of frames matched %llu (by the rotation alone %llu) / missed %llu, held by the dead band %llu",
              (unsigned long long)atomic_load(&g.seq_matched), (unsigned long long)atomic_load(&g.seq_matched_rot),
              (unsigned long long)atomic_load(&g.seq_missed), (unsigned long long)atomic_load(&g.hl_held));

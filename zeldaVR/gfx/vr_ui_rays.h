@@ -51,6 +51,19 @@ static inline void vr_ui_rays_matrix(const vr_ui_rays *map,const float input[16]
         result[4*i+j]+=map->clip[4*i+k]*input[4*k+j];
     memcpy(output,result,sizeof result);
 }
+/* An orthographic UI camera already produces authored clip coordinates.
+ * Fit its original viewport into the common reference grid before the eye
+ * ray transform, then use the complete eye viewport for rasterization. */
+static inline int vr_ui_rays_viewport(vr_ui_rays *map,const double authored[4],const double eye[4]){
+    if(!map||!authored||!eye||!(eye[2]>0&&eye[3]>0&&authored[2]>0&&authored[3]>0))return 0;
+    float sx=authored[2]/eye[2],sy=authored[3]/eye[3];
+    float tx=2*(authored[0]-eye[0])/eye[2]+sx-1,ty=1-sy-2*(authored[1]-eye[1])/eye[3];
+    if(!isfinite(sx)||!isfinite(sy)||!isfinite(tx)||!isfinite(ty))return 0;
+    for(int i=0;i<4;i++){
+        float x=map->clip[4*i],y=map->clip[4*i+1];
+        map->clip[4*i]=x*sx;map->clip[4*i+1]=y*sy;map->clip[4*i+3]+=x*tx+y*ty;
+    }return 1;
+}
 /* The hardware scissor is axis aligned: bound the transformed native clip
  * rectangle, and intersect it with this eye so it cannot spill into its peer. */
 static inline int vr_ui_rays_scissor(const vr_ui_rays *map,const double vp[4],

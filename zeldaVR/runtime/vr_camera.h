@@ -61,7 +61,12 @@ typedef struct {
     uint32_t v0n;        /* 1200: v0ring entries written (by the veneer) */
     uint32_t vs_changes; /* 1204: times the replay changed main_vs (diagnostic) */
     uint64_t pad3;       /* 1208 */
-    struct { uint64_t vs; uint64_t pad; float m[12]; } v0ring[32];   /* 1216: the last view 0 settings, by v0n & 31 */
+    struct { uint64_t vs; uint64_t camera; float m[12]; } v0ring[32];   /* 1216: the actual view-set input owner and matrix */
+    /* TotK's main camera, after levelling and before head rotation. Published
+       by its actual owner, independently of pose-ring matching. */
+    float base_view[12]; /* 3264 */
+    uint32_t base_sequence; /* 3312: odd while the camera hook writes */
+    uint64_t native_writer; /* 3320: last native writer, diagnostic only; not an owner selector */
 } vr_cam_state;
 
 extern vr_cam_state *g_vr_headlook;   /* defined in totk_vr.m; set by the hook's install, NULL without it (other versions, iOS, VR off) */
@@ -77,3 +82,4 @@ void runtime_camera_distance_set(int cm);
 void runtime_vr_find_head(int stage);               /* diagnostic: bone matrices near the player's head */
 
 int runtime_vr_base_view(float out[12]); /* Exact native source owner; base before our head rotation. */
+int runtime_vr_camera_owned(uint64_t camera,uint64_t projection); /* Real native controller -> holder -> input relation. */
