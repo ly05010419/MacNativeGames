@@ -69,7 +69,7 @@ void runtime_gamepad_switch_capture(void *controller, int pressed) {
 static _Atomic int gamepadBackground, gamepadFocused = 1;
 #endif
 
-/* Called on the main run loop by the already-open Switch HID motion stream. */
+/* Called on the main run loop by the Switch HID callbacks (paired left input also runs without motion). */
 void runtime_gamepad_switch_left(void *source, int x, int y) {
     GCController *controller = (__bridge GCController *)source;
     if (rawLeftController != controller) rawLeft = (SwitchLeftFallback){0};
