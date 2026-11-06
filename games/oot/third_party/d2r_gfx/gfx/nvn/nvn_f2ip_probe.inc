@@ -22,12 +22,14 @@ int mtl_probe_f2ip(void) {
         g_gml_probe_on=fixture[@"raw_log"]!=nil;g_gml_probe_buffer=nil;
         if(fixture[@"raw_log"])atomic_store(&g_raw_write_log,[fixture[@"raw_log"]boolValue]);
         if(fixture[@"raw_index"])atomic_store(&g_raw_index,[fixture[@"raw_index"]boolValue]);
+        if(fixture[@"raw_range_cache"])atomic_store(&g_raw_range_cache,[fixture[@"raw_range_cache"]boolValue]);
         NSString *source=[NSString stringWithContentsOfFile:fixture[@"source"] encoding:NSUTF8StringEncoding error:&error];
         NSData *raw=[NSData dataWithContentsOfFile:fixture[@"reflection"]];
         NSDictionary *reflection=raw?[NSJSONSerialization JSONObjectWithData:raw options:0 error:&error]:nil;
         id<MTLLibrary> library=source?[g_dev newLibraryWithSource:source options:totk_precise_opts() error:&error]:nil;
         if(!library||!reflection)MDIE("F2IP fixture compile: %s",error.localizedDescription.UTF8String);
         NvShader *cs=[NvShader new];cs->fn=[library newFunctionWithName:@"main0"];cs->stage=5;cs->src=source;
+        cs->raw_range_cache_abi=[reflection[@"raw_read_range_cache_abi"] intValue]==1;
         strlcpy(cs->key,[[NSString stringWithFormat:@"probe-f2ip-%d",checked]UTF8String],sizeof cs->key);
         char message[256];if(nvn_refl_from_json(reflection,&cs->rf,message,sizeof message))MDIE("F2IP reflection: %s",message);
         if(cs->rf.has_c1)c1_store(cs,source);
@@ -44,7 +46,13 @@ int mtl_probe_f2ip(void) {
         *(uint32_t *)memory=0xdeadbeef;op_hdr end={OP_END,8};mtl_sub_begin();mtl_exec((const uint8_t *)&end);
         S.prog=S.cprog=&program;S.ssbo[5][0]=(p_bind_buf){5,0,(uint64_t)memory,16384};
         p_dispatch dp={.x=1,.y=1,.z=1};dispatch(&dp);mtl_sub_commit();mtl_finish();
-        if([fixture[@"raw_index"]boolValue] && (!g_gmem_buf || !((uint32_t *)g_gmem_buf.contents)[5]))MDIE("raw index fixture did not exercise the directory");
+        int range_cached=cs->raw_range_cache_abi&&raw_range_cache_on();
+        if([fixture[@"raw_index"]boolValue] && (!g_gmem_buf[range_cached] || !((uint32_t *)g_gmem_buf[range_cached].contents)[5]))MDIE("raw index fixture did not exercise the directory");
+        if(fixture[@"raw_range_cache"]){
+            id<MTLBuffer> map=g_gmem_buf[range_cached];
+            if(!map||((((uint32_t *)map.contents)[4]>>31)!=range_cached))MDIE("raw range cache ABI/header mismatch");
+            checked++;
+        }
         uint32_t actual=*(uint32_t *)memory,expected=[fixture[@"expected"]unsignedIntValue];
         if(actual!=expected)MDIE("F2IP %s: GPU %#x expected %#x",[fixture[@"label"]UTF8String],actual,expected);
         if([fixture[@"raw_store"]boolValue]) {

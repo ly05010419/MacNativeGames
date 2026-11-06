@@ -45,7 +45,9 @@ def main():
     run([args.dotnet,'publish',xlate/'totk_xlate.csproj','-c','Release','-r','osx-arm64','-p:PublishAot=true','-p:InvariantGlobalization=true','-p:RyuSrc='+str(ryu),'-p:TotkSpirvCrossLib='+str(lib),'-o',work/'native'])
     binary=work/'native/totk_xlate';dest=GAME/'prebuilt/macos-arm64/totk_xlate';temporary=dest.with_suffix('.new');shutil.copy2(binary,temporary);os.replace(temporary,dest)
     digest=hashlib.sha256(binary.read_bytes()).hexdigest();dest.with_suffix('.sha256').write_text(digest+'\n')
-    record={'shader_source_sha256':fingerprint,'spirv_cross_commit':SPIRV_CROSS[1],'binary_sha256':digest}
+    service_inputs=sorted(p for p in source.rglob('*') if p.suffix in ('.cs','.csproj','.cpp') and not {'obj','bin'} & set(p.parts))
+    service_fingerprint=hashlib.sha256(b''.join(str(p.relative_to(source)).encode()+p.read_bytes() for p in service_inputs)).hexdigest()
+    record={'shader_source_sha256':fingerprint,'shader_service_source_sha256':service_fingerprint,'spirv_cross_commit':SPIRV_CROSS[1],'binary_sha256':digest}
     (work/'build-record.json').write_text(json.dumps(record,indent=2)+'\n')
     print(dest)
 if __name__=='__main__':main()

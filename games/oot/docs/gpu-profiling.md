@@ -98,6 +98,11 @@ depth levels target nvn_format texture_flags pool pool_flags
 跨启动复用旧地址前必须重新确认。未匹配到 Initialize / Finalize 的日志不能用于判断目标的生命周期。
 
 性能采集保留真实手柄输入。用户接管后作废测量窗口并取消脚本操作和定时关闭。
+`TOTK_IGNORE_USER_INPUT=0`只是不清除输入；`TOTK_ASSUME_FOCUS=1`仍不向macOS申请真实前台焦点，
+后台GameController选项默认关闭时，连接成功也可能收不到按键。需要随时交接的采集使用真实前台启动，
+分别核对新局`window gained focus`、设备连接、`[input] user input (controller)`。
+用户在对话里要求操作也算交接，不能等一个可能被后台策略拦掉的事件才停脚本。
+输入闲置看门狗的activity只跟踪真实输入，不能用不断增长的渲染日志冒充活动。
 
 ### 着色器记录必须验证是否改变原始画面
 
@@ -130,3 +135,24 @@ API 成功和 GPU 完成状态独立于画面一致性。再次采用这类记�
   一致，每张 2048×1152。候选仅省约 0.1 ms，留在外部实验目录，未接入交付。
 
 本轮建立测量和归因，没有新的整机 FPS 提升结论，尚未达到 60fps。
+
+### v13 范围缓存后的记录（2026-11-06）
+
+外部 `performance-90fps/range-critical-path/` 保存新的 Metal System Trace、Time Profiler、
+逐派发与时间线。导出共 97,168 条 GPU 区间，其中游戏 93,485 条；显式标签覆盖
+295 个游戏帧的部分提交，没有歧义的标签连接。该覆盖不包含所有未标记提交，不能
+把已归因区间的并集当成完整帧 GPU 忙时。主网格通道的 Vertex 中位约 2.18ms，
+80 次前置计算约 3.16ms，四次后处理计算约 1.82ms。470 次逐派发、五帧的
+线程组、间接网格哨兵和非负时间检查均通过。Precise 数据仍只作诊断。
+
+提交线程 Time Profiler 样本中，`descriptor_pool_gpu` 的调用链占约 59%；
+这是下一处宿主准备热点，不能直接当作可节省的整帧比例。既有 `pool_validate_once`
+候选的真实同局对照未证明稳定收益，继续默认关闭；不能只凭热点或 GPU 小用例通过
+就开启它。新的正常范围缓存默认配置已在同一 App、活动存档和树屋验证，约 58fps，
+仍未达到稳定实际 90fps。
+
+本次还确认三个 Metal command-buffer 对象分别在 CPU 导出中重复提交 46、55、56 次。
+只按对象 ID 合并全部 GPU 区间，再取最后一次 CPU 提交，会产生约负七秒的错误时差。
+外部 `submission-gap-analysis.json` 因而只是未验收的探索结果；不能拿其中的空档比例
+声称 CPU 导致 GPU 等待。必须使用提交实例身份，或通过明确的编码器标签、提交/栅栏
+连接；同样不能将 callback 时的游戏帧号当作该 GPU 工作所属帧。

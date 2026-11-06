@@ -46,6 +46,12 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     for rel in ('build/game-data/oot','build/shader-service','extracted/oot/exefs',
                 'extracted/firmware/shared-fonts'):
         shutil.copytree(tree/rel,data/rel,copy_function=clone_file)
+    # Runtime libraries are addressed by the exact MSL source hash. Carry any
+    # libraries prepared by the build so a new translation chain does not make
+    # the player's first start compile those sources synchronously again.
+    libraries=tree/'build/shader-libs'
+    if libraries.is_dir():
+        shutil.copytree(libraries,data/'build/shader-libs',copy_function=clone_file)
     shutil.copytree(tree/'extracted/oot/romfs',data/'extracted/oot/romfs',copy_function=clone_file,
                     ignore=shutil.ignore_patterns('romfs.bin','.romfs-verified*'))
     shutil.copytree(opening_overlay,data/'extracted/oot/romfs-patches',copy_function=clone_file)

@@ -540,6 +540,9 @@ static partial class ShaderService
         var refl = new JsonObject
         {
             ["key"] = variant + "_b", ["route"] = "B", ["chain"] = chain, ["stage"] = stage,
+            // Patch 0023 masks the capacity control bit in every raw access.
+            // Old cached shaders without this ABI declaration keep the old table.
+            ["raw_read_range_cache_abi"] = 1,
             ["entry"] = entry.Success ? entry.Groups[2].Value : "main0", ["msl_entry_kind"] = entry.Success ? entry.Groups[1].Value : null,
             ["threadgroup_size"] = GetOr(rq, "local", null), ["c1"] = GetStr(rq, "c1", ""), ["notes"] = res["notes"].DeepClone(),
             ["drv_reads"] = dr, ["drv_unfillable"] = unfillable, ["bindings"] = Reflect(stage, src, res),

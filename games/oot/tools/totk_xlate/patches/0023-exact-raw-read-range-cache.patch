@@ -1,0 +1,113 @@
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
+@@ -1,3 +1,4 @@
++using Ryujinx.Graphics.Shader.Translation;
+ using System;
+ using System.Collections.Generic;
+ 
+@@ -21,6 +22,17 @@
+ 
+         // nxnative: a global memory access traced to no storage buffer goes through a physical storage buffer pointer (GlobalToStorage.TryGenerateRawStorageOp)
+         public bool UsesPhysicalPointers { get; set; }
++
++        // Per-invocation exact raw-read range reuse. Never shared across threads,
++        // draws or dispatches; the bound mapping is immutable for their lifetime.
++        public int RawAddressCacheMemoryId { get; private set; } = -1;
++        public int GetRawAddressCacheMemoryId()
++        {
++            if (RawAddressCacheMemoryId < 0)
++                RawAddressCacheMemoryId = AddLocalMemory(new MemoryDefinition("raw_address_cache", AggregateType.Array | AggregateType.U32, 8));
++            return RawAddressCacheMemoryId;
++        }
++
+ 
+         public ShaderProperties()
+         {
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -305,6 +305,14 @@
+                 }
+ 
+                 funcs[i] = new Function(cfg.Blocks, $"fun{i}", false, inArgumentsCount, outArgumentsCount);
++            }
++
++            if (resourceManager.Properties.RawAddressCacheMemoryId >= 0 && funcs[0].Blocks.Length != 0)
++            {
++                // The private cache validity starts empty for every invocation,
++                // including entry points whose raw loads live in a helper.
++                funcs[0].Blocks[0].Operations.AddFirst(new Operation(Instruction.Store, StorageKind.LocalMemory, null,
++                    OperandHelper.Const(resourceManager.Properties.RawAddressCacheMemoryId), OperandHelper.Const(0), OperandHelper.Const(0)));
+             }
+ 
+             return Generate(
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -849,12 +849,39 @@
+                 return context.Load(StorageKind.StorageBuffer, mapBinding, Const(0), context.IAdd(entry, Const(word)));
+             }
+ 
++            // Header bit 31 enables a per-invocation exact range cache. Low
++            // bits retain the mapping capacity; older headers leave it off.
++            Operand capacityFlags = MapWord(Const(0), 4);
++            Operand deltaLow = Local(), deltaHigh = Local();
++            Operand mapped = Label();
++            int cache = operation.Inst == Instruction.Load && !isSmall
++                ? resourceManager.Properties.GetRawAddressCacheMemoryId() : -1;
++            Operand CacheWord(int word) => context.Load(StorageKind.LocalMemory, cache, Const(word));
++            void CacheStore(int word, Operand value) => context.Store(StorageKind.LocalMemory, cache, Const(word), value);
++            Operand cacheOn = context.ICompareLess(capacityFlags, Const(0));
++            if (cache >= 0)
++            {
++                Operand lookup = Label();
++                context.BranchIfFalse(lookup, cacheOn);
++                context.BranchIfFalse(lookup, context.ICompareNotEqual(CacheWord(0), Const(0)));
++                Operand startLow = CacheWord(2), startHigh = CacheWord(3);
++                Operand cachedEndLow = CacheWord(4), cachedEndHigh = CacheWord(5);
++                Operand afterStart = context.BitwiseOr(context.ICompareLessUnsigned(startHigh, addrHigh),
++                    context.BitwiseAnd(context.ICompareEqual(startHigh, addrHigh), context.ICompareLessOrEqualUnsigned(startLow, addrLow)));
++                Operand beforeEnd = context.BitwiseOr(context.ICompareLessUnsigned(addrHigh, cachedEndHigh),
++                    context.BitwiseAnd(context.ICompareEqual(addrHigh, cachedEndHigh), context.ICompareLessUnsigned(addrLow, cachedEndLow)));
++                context.BranchIfFalse(lookup, context.BitwiseAnd(afterStart, beforeEnd));
++                context.Copy(deltaLow, CacheWord(6)); context.Copy(deltaHigh, CacheWord(7));
++                context.Branch(mapped);
++                context.MarkLabel(lookup);
++            }
++
+             // The last entry whose start is at or below the address (entry 0 starts at 0, so there always is one)
+             Operand index = Local();
+             Operand step = Local();
+             Operand search = Label();
+             Operand finished = Label();
+-            Operand capacity = MapWord(Const(0), 4);
++            Operand capacity = context.BitwiseAnd(capacityFlags, Const(0x7fffffff));
+             Operand last = Local();
+             context.Copy(index, Const(0));
+             context.Copy(step, context.ShiftRightU32(capacity, Const(1)));
+@@ -927,11 +954,25 @@
+                 context.MarkLabel(lblLogged);
+             }
+ 
++            context.Copy(deltaLow, MapWord(found, 4));
++            context.Copy(deltaHigh, MapWord(found, 5));
++            if (cache >= 0)
++            {
++                Operand skipCache = Label();
++                context.BranchIfFalse(skipCache, cacheOn);
++                CacheStore(1, index);
++                CacheStore(2, MapWord(found, 0)); CacheStore(3, MapWord(found, 1));
++                CacheStore(4, endLow); CacheStore(5, endHigh);
++                CacheStore(6, deltaLow); CacheStore(7, deltaHigh);
++                CacheStore(0, Const(1));
++                context.MarkLabel(skipCache);
++            }
++            context.MarkLabel(mapped);
+             // A small integer is read or written in its 32-bit word
+             Operand wordLow = isSmall ? context.BitwiseAnd(addrLow, Const(~3)) : addrLow;
+-            Operand hostLow = context.IAdd(wordLow, MapWord(found, 4));
++            Operand hostLow = context.IAdd(wordLow, deltaLow);
+             Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(hostLow, wordLow), Const(1), Const(0));
+-            Operand hostHigh = context.IAdd(context.IAdd(addrHigh, MapWord(found, 5)), carry);
++            Operand hostHigh = context.IAdd(context.IAdd(addrHigh, deltaHigh), carry);
+ 
+             Operand resultValue = null;
+ 
