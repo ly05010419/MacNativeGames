@@ -130,6 +130,12 @@ void runtime_audio_hold(int on);   /* audio_mixer.c: silent output while the fir
 void runtime_game_slot_acquire(const char *mode);   /* runtime/game_slot.c: one game at a time */
 void *runtime_front_override(const char *name);
 int runtime_front_focus(void);
+int runtime_front_game_input(void);   /* focused Mac game window, with no settings/keyboard capture */
+void runtime_auto_attach_install(Module *m);   /* optional TOTK 1.4.3 Mac arrow repeat */
+int runtime_auto_attach_available(void);
+int runtime_auto_attach_choice(void);
+void runtime_auto_attach_choose(int on);
+uint64_t runtime_auto_attach_input(uint64_t buttons);
 void runtime_front_hdr_toggle(void);   /* Mac key 8: checked TOTK 1.4.3 HDR / EDR only */
 void runtime_settings_toggle(void);   /* key 1 (runtime/input.c): the settings panel opens or closes (frontend.m; nothing on the phone) */
 void fps_overlay_set_hud_mode(int mode);   /* gfx/nvn/fps_overlay.h HUD_MODE_*: the panel's overlay choice */

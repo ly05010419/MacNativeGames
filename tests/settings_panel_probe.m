@@ -217,6 +217,17 @@ int runtime_triggers_locked(void) { return fakeTriggersLocked; }
 int runtime_triggers_choice(void) { return fakeTriggers; }
 void runtime_triggers_choose(int on) { fakeTriggers = !!on; }
 void runtime_triggers_release(void) {}
+static int fakeAutoAttach;
+int runtime_auto_attach_available(void) {
+#ifdef TOTK_GAME_V143
+ return 1;
+#else
+ return 0;
+#endif
+}
+int runtime_auto_attach_choice(void) { return fakeAutoAttach; }
+void runtime_auto_attach_choose(int on) { fakeAutoAttach=!!on; }
+int runtime_gamepad_game_input(void) { return 1; }
 /* A window key is the user's input (runtime/input.c user_input): it stops a survey and an auto-load, neither here. */
 void runtime_survey_cancel_user(void) {}
 void runtime_autoload_user_input(void) {}
@@ -598,12 +609,8 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 2*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
-                                                                 background input on the input page), the user page's
-                                                                 two, then the effects page: FOV, two distances, shadows,
-                                                                 depth of field, FXAA, sharpening and effect switches
-                                                                 (1.4.3, and Breath of the Wild 1.9.0 with its shadow
-                                                                 resolution and AO live), or eight greyed rows */
+    /* The auto-attach row is present for every version; unsupported versions show a disabled control. */
+    assert(settingsPanel.allRows.count == 29 + 2*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));
 
     /* Native 4K modes as game_patches.c serves them for 1.2.1 (the fixture swaps in a 4K swapchain); off again before
        the rows below read the mode. */
@@ -1031,8 +1038,17 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(contribute.hidden && starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 9 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
+    assert(settingsPanel.rows.count == 10 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* auto-attach plus the screenshot folder */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
+    assert(row(@"Auto-attach last item to arrow").page == SETTINGS_PAGE_INPUT);
+#ifdef TOTK_GAME_V143
+    assert(!switched(@"Auto-attach last item to arrow"));
+    flip(@"Auto-attach last item to arrow", YES); assert(fakeAutoAttach);
+    flip(@"Auto-attach last item to arrow", NO); assert(!fakeAutoAttach);
+#else
+    assert(!row(@"Auto-attach last item to arrow").control.enabled);
+#endif
+
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 
     /* Mouse sensitivity: a slider from 1 to 100, at once; greyed out while TOTK_MOUSE_SENSITIVITY decides. */

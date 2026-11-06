@@ -1895,6 +1895,7 @@ void runtime_game_patches(Module *m) {
     patch_fov(m);   /* after aspect_install: Vert+ may hold the same load */
     patch_shadow_res(m);
     patch_dof(m);
+    runtime_auto_attach_install(m);
     const char *enabled = getenv("TOTK_FPS60");
     if (enabled && !strcmp(enabled, "0")) {
         fprintf(stderr, "[totk] 1.4.3 shipping frame controller (TOTK_FPS60=0)\n");
