@@ -14,7 +14,8 @@ int main(int argc,char **argv){
   if(![mode isEqualToString:@"push"])[fm setAttributes:@{NSFileModificationDate:[NSDate dateWithTimeIntervalSince1970:1]} ofItemAtPath:progress error:nil];
   setenv("TOTK_CLOUD_SAVE_DIR",root.fileSystemRepresentation,1);
   runtime_cloud_save_start(local.fileSystemRepresentation,profile.fileSystemRepresentation);
-  if([mode isEqualToString:@"push"] || [mode isEqualToString:@"mismatch"])push();
+  if([mode isEqualToString:@"played"])[@"played here" writeToFile:progress atomically:YES encoding:NSUTF8StringEncoding error:nil];   /* a save in the game */
+  if([mode isEqualToString:@"push"] || [mode isEqualToString:@"mismatch"] || [mode isEqualToString:@"played"])push();
   fflush(NULL);
  }
  return 0;

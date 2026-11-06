@@ -41,6 +41,13 @@
 static NSString *g_local, *g_state, *g_backups, *g_cloud, *g_user;   // save folder, <profile>/cloud-sync.plist, backups, <cloud>/Saves
 static dispatch_queue_t g_queue;
 static void watch_lifecycle(void);   // upload at quit / background (below)
+/* The start could not load the folder's newer save and plays this device's: the save's hash then. Unchanged, it is not
+   uploaded (it is older than the folder's); a save made in the game since goes up (the later save wins, as at a start
+   that sees both). */
+static NSString *g_held_hash;
+/* Tell the player (runtime/frontend.m on the Mac, ios/Sources/main.m on the phone; absent in tests). */
+__attribute__((weak)) void runtime_front_notice(const char *title, const char *detail) { (void)title; (void)detail; }
+static void notice(NSString *title, NSString *detail) { runtime_front_notice(title.UTF8String, detail.UTF8String); }
 static int g_push_pending, g_superseded, g_identity_conflict;   // an upload is waiting; another device uploaded since this one synced
 static long long g_start_gen;   // the generation the start compared this device's save with (0: the folder had none)
 
@@ -179,6 +186,9 @@ static void push(void) {
     __block NSDictionary *meta = read_cloud_meta([cur stringByAppendingPathComponent:@"sync.plist"]);
     if (!hash || !save_files(g_local).count) return;
     if (g_superseded || g_identity_conflict) return;
+    if (g_held_hash && [hash isEqualToString:g_held_hash]) {
+        LOG("this device's save is unchanged since the start and older than the folder's: not uploaded\n"); return;
+    }
     if (!meta && [NSFileManager.defaultManager fileExistsAtPath:cur]) {
         LOG("remote save has no complete metadata; upload waits rather than replacing it\n"); return;
     }
@@ -293,14 +303,28 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         BOOL superseded = state[@"superseded"] && cloudGen >= [state[@"superseded"] longLongValue];
         double cloudTime = [meta[@"time"] doubleValue], localTime = localSaves ? newest_mtime(g_local) : 0;
         if (localChanged && !superseded && localTime > cloudTime) { LOG("both saved; this device's save is newer\n"); push(); return; }
-        if (!ensure_downloaded(cur, 60)) { LOG("the folder's save did not download in time; this device's save is used\n"); return; }
+        /* The folder's save is the one to take. When it cannot be taken now (not downloaded, incomplete, the backup or the
+           copy failed), this device plays its own save but never uploads it this session: an upload would replace the
+           newer save it could not read (2026-11-06: a Mac start that timed out on a phone's upload put its older save
+           over it). Its next start takes the folder's save, keeping this one in cloud-backups. */
+        __block BOOL taken = NO;
+        if (!ensure_downloaded(cur, 60)) LOG("the folder's save did not download in time; this device's save is used\n");
         /* Checked and copied in one coordinated read, so an upload arriving meanwhile cannot slip between the two. */
-        read_coordinated(cur, ^(NSString *p) {
+        else read_coordinated(cur, ^(NSString *p) {
             NSDictionary *m = read_cloud_meta([p stringByAppendingPathComponent:@"sync.plist"]);
             if (![m[@"gen"] isEqual:meta[@"gen"]] || ![save_hash(p) isEqualToString:m[@"hash"]]) { LOG("the folder's save is incomplete (still syncing); this device's save is used\n"); return; }
             if (localSaves && !backup(g_local, @"local")) return;
-            if (replace_folder(p, g_local)) { write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
+            if (replace_folder(p, g_local)) { taken = YES; write_state(m[@"gen"], m[@"hash"]); LOG("loaded the save from %s (generation %lld)\n", [m[@"device"] UTF8String], [m[@"gen"] longLongValue]); }
         });
+        if (!taken && !g_identity_conflict) {
+            g_held_hash = local;
+            LOG("the folder's newer save (generation %lld) is not loaded: this device's save goes up only after a new save in the game\n", cloudGen);
+            BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
+            NSString *from = meta[@"device"] ?: @"?";
+            notice(zh ? @"云端存档没有同步下来" : @"The synced save did not load",
+                   [NSString stringWithFormat:(zh ? @"同步文件夹里有一份更新的存档（来自 %@），但还没下载完，这次没能读取。现在用的是这台设备上的存档。\n\n只要你不在游戏里存档，云端那份就不会被动。想用它，请退出游戏，等 iCloud 下载完再打开。\n\n如果在这里存档，这台设备的存档会传上去替换它；那份会在另一台设备下次打开游戏时备份到它的 cloud-backups。"
+                                                     : @"The sync folder has a newer save (from %@), but it had not finished downloading and could not be read. This device's save is used now.\n\nAs long as you do not save in the game, the folder's save is left alone. To use it, quit and open the game again once iCloud has downloaded it.\n\nIf you save here, this device's save goes up in its place; the other device keeps that one in its cloud-backups at its next start."), from]);
+        }
     }
 }
 
