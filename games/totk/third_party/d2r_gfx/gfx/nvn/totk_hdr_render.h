@@ -44,7 +44,7 @@ static void hdr_prepare_draw(NvProg *pr) {
         const nvn_rbind *b=&fs->rf.b[i];
         if(b->kind!=NVN_RB_TEX || b->reg>=128)continue;
         int tid=(int)(S.tex[1][b->reg]&0xfffff);
-        void *raw=tid>0?(tex_view_valid(tid)?g_treg[tid].view:tex_by_id_p(tid)):NULL;
+        void *raw=tid>0?tex_fast_lk(tid):NULL;
         if(hdr_shadow_find((__bridge id<MTLTexture>)raw)){linked=YES;break;}
     }
     if(!origin && !linked)return;
@@ -60,7 +60,7 @@ static void hdr_capture(NvProg *pr) {
     for(unsigned i=0;i<g_hdr_nswap;i++)if(g_hdr_swap[i].serial==R.rt.color[0]->serial)slot=i;
     pthread_mutex_unlock(&g_hdr_mu);if(slot==8)return;
     int tid=(int)(S.tex[1][0]&0xfffff);
-    id<MTLTexture> src=tid>0?(__bridge id<MTLTexture>)tex_fast(tid):nil;
+    id<MTLTexture> src=tid>0?(__bridge id<MTLTexture>)tex_fast_lk(tid):nil;
     id<MTLTexture> dst=tex_mtl(R.rt.color[0]);
     if(!src || !dst || src.pixelFormat!=MTLPixelFormatRGBA16Float || src.textureType!=MTLTextureType2D ||
        src.width>dst.width || src.height>dst.height || !S.has_vp || S.vp[0][0]!=0 || S.vp[0][1]!=0 ||
