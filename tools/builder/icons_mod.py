@@ -108,7 +108,7 @@ def build(repo, app, version, library, inputs, builder_dir, cancel=None):
             (romfs / name).write_bytes(table)
         plan_file = work / 'plan.json'
         if botw(version):
-            plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs).items()),
+            plan_file.write_text(json.dumps({'glyphs': sorted(icons_plan.botw_glyphs(inputs, version).items()),
                                              'diamond': icons_plan.botw_diamond(inputs)}))
             argv = [sys.executable, '-I', BOTW_SCRIPT, romfs, '--app', app, '--version', version, '--plan', plan_file,
                     '--write-all']
