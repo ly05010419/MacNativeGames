@@ -1810,9 +1810,27 @@ def wait_until_closed(out, prefix=''):
     old_binaries = [b for b in old_binaries if b.is_file()]   # the game runs as the app's executable (Contents/MacOS)
     notified = 0
     while old_binaries:
-        processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
-        running = {p.strip() for p in processes}
-        if not any(str(b.resolve()) in running for b in old_binaries):
+        processes = subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True, text=True, check=True).stdout.splitlines()
+        binaries = {str(b.resolve()) for b in old_binaries}
+        running = False
+        for process in processes:
+            fields = process.strip().split(maxsplit=1)
+            if len(fields) != 2 or fields[1] not in binaries:
+                continue
+            pid, binary = fields
+            args = subprocess.run(['ps', '-ww', '-p', pid, '-o', 'args='], capture_output=True, text=True)
+            if args.returncode == 1 and not args.stdout.strip():
+                continue   # the process exited between the two snapshots
+            args.check_returncode()
+            command = args.stdout.strip()
+            options = command[len(binary) + 1:].split() if command.startswith(binary + ' ') else []
+            # The update window uses the game's executable and waits for this installer.
+            if options == ['--update-check'] or (len(options) == 2 and options[0] == '--update-install'
+                                                and options[1].isdigit() and int(options[1]) > 0):
+                continue
+            running = True
+            break
+        if not running:
             break
         if time.monotonic()-notified >= 60:
             say(f'{prefix}replacement is ready; waiting for the running game to close before updating it')
