@@ -98,3 +98,19 @@ class CloudSave(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn('saved to the sync folder (generation 2)', run.stderr)
             self.assertEqual((current / 'progress.sav').read_text(), 'played here')
+
+    def test_icloud_conflict_copies_do_not_block_a_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cloud, profile = root / 'cloud', root / 'profile'
+            self.run_save(cloud, profile, A, 'push')
+            current = cloud / f'Users/{A}/Saves/current'
+            (current / 'progress 2.sav').write_bytes(b'the other device')   # iCloud keeps a crossed upload's file so
+            other = root / 'other'
+            self.run_save(cloud, other, A, 'pull')
+            self.assertEqual((other / f'save/{A}/progress.sav').read_text(), A)
+            self.assertFalse((other / f'save/{A}/progress 2.sav').exists())
+            self.assertFalse((current / 'progress 2.sav').exists())   # cleaned from the folder too
+            (current / 'progress 2.sav').write_bytes(b'again')
+            self.run_save(cloud, other, A, 'pull')   # in sync now: still cleaned
+            self.assertFalse((current / 'progress 2.sav').exists())
+            self.assertEqual((current / 'progress.sav').read_text(), A)
