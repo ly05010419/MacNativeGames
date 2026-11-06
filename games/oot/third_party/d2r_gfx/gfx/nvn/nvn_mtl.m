@@ -269,8 +269,15 @@ static struct { uint64_t adds, removes, live_bytes; _Atomic uint64_t alive, aliv
 static char g_alloc_track_key;
 static NSMapTable *g_res_site_of;   // resource (weak key) -> NSNumber source line
 static uint64_t g_res_live_bytes;
+/* A texture (or a view of one) placed on a heap is resident through the heap: the heap is the registered allocation
+   (nvn_stor_alias.h), so the texture is neither added nor removed on its own. */
+static int res_on_heap(id r) {
+    if (![r conformsToProtocol:@protocol(MTLTexture)]) return 0;
+    id<MTLTexture> t = r; while (t.parentTexture) t = t.parentTexture;
+    return t.heap != nil;
+}
 static void res_add_at(id<MTLResource> r, int site) {
-    if (!r) return;
+    if (!r || res_on_heap(r)) return;
     if (site < 0 || site >= RES_SITES) site = 0;
     pthread_mutex_lock(&g_res_mu);
     [g_res addAllocation:(id<MTLAllocation>)r];
@@ -289,7 +296,7 @@ static void res_add_at(id<MTLResource> r, int site) {
 }
 #define res_add(r) res_add_at((r), __LINE__)
 static void res_remove_body(id<MTLResource> r) {
-    if (!r) return;
+    if (!r || res_on_heap(r)) return;
     pthread_mutex_lock(&g_res_mu);
     [g_res removeAllocation:(id<MTLAllocation>)r];
     if ([g_res_objects containsObject:r]) {
@@ -383,13 +390,15 @@ static void res_check(id r, const char *what, int reg) {
     int is_tex = [r conformsToProtocol:@protocol(MTLTexture)], is_buf = [r conformsToProtocol:@protocol(MTLBuffer)];
     if (!is_tex && !is_buf) return;   // 采样器等不是分配 | Samplers etc. are not allocations
     id<MTLResource> a = r; int hops = 0;
-    if (is_tex) { id<MTLTexture> t = (id<MTLTexture>)a; while (t.parentTexture) { t = t.parentTexture; hops++; } a = t.buffer ? (id<MTLResource>)t.buffer : (id<MTLResource>)t; }
+    if (is_tex) { id<MTLTexture> t = (id<MTLTexture>)a; while (t.parentTexture) { t = t.parentTexture; hops++; } a = t.buffer ? (id<MTLResource>)t.buffer : t.heap ? (id<MTLResource>)(id)t.heap : (id<MTLResource>)t; }
     pthread_mutex_lock(&g_res_mu); int ok = [g_res_objects containsObject:a]; pthread_mutex_unlock(&g_res_mu);
     if (!ok) { nbad++; id<MTLTexture> t = is_tex ? (id<MTLTexture>)r : nil;
         MLOG("【红】驻留缺失 #%d：%s 槽 %d %s %p（父链 %d 层）分配 %lu B 存储 %lu%s", nbad, what, reg, is_tex ? "贴图" : "缓冲", (__bridge void *)a, hops, (unsigned long)a.allocatedSize, (unsigned long)a.storageMode,
              t ? [NSString stringWithFormat:@" 格式 %lu %lux%lu 类型 %lu 用途 %#lx", (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.textureType, (unsigned long)t.usage].UTF8String : ""); }
 }
+static void stor_alias_collect(void);
 static void res_commit(void) {
+    stor_alias_collect();   // alias heaps whose last texture was freed leave the set in this commit
     gpu_budget_check("提交驻留集");
     pthread_mutex_lock(&g_res_mu);
     if (g_res_dirty) { if (!nogpu()) [g_res commit]; g_res_dirty = 0; }
@@ -2588,6 +2597,7 @@ static int ser_unaffected(uint64_t from, uint64_t to, uint64_t serial) {
     for (uint64_t g = from + 1; g <= to; g++) { uint64_t s = atomic_load_explicit(&g_ser_chg[g % SER_CHG_N], memory_order_relaxed); if (!s || s == serial) return 0; }
     return atomic_load_explicit(&g_ser_gen, memory_order_acquire) - from < SER_CHG_N;   // no slot was overwritten while scanning
 }
+#include "nvn_stor_alias.h"   // OOT: layouts at one pool address share physical pages (placement heap)
 // ---------- TOTK: storage-shared GPU textures ----------
 /* Several live NVNtexture objects can describe the same pool memory with the same layout: the game registers a
    persistent sampling object in the texture pool (e.g. serial 75485, the normals G-buffer) and re-initialises the
@@ -3642,6 +3652,7 @@ static void stor_sweep(uint64_t fence) {
    Keep the actual storage/layout and serial identities for offline overlap
    analysis. Diagnostic file I/O occurs only at the existing low-rate report. */
 static void stor_memory_report(uint64_t frame) {
+    stor_alias_report();
     totk_texture_lifetime_flush();
     static int init; static const char *path;
     if (!init) { init = 1; path = getenv("OOT_STORAGE_MEMORY_FILE"); }
@@ -4464,9 +4475,10 @@ static void *tex_mtl_p(const tex_t *ct) {
     id<MTLTexture> mt = stor_acquire(t, d);   // TOTK: another serial already has a texture at this storage with the same layout
     if (!mt) {
         if (g_tex_prepare_split) return NULL; /* retry preserves the shared GPU content */
-        mt = [g_dev newTextureWithDescriptor:d];
+        mt = stor_alias_texture(t, d);   // OOT: other layouts at this pool address share its pages, as the NVN descriptors do
+        if (!mt) mt = [g_dev newTextureWithDescriptor:d];
         if (!mt) { RED_ONCE(2, "建 MTLTexture 失败 %ux%u 格式 %#x 目标 %d", t->d.width, t->d.height, t->d.format, t->d.target); return NULL; }
-        res_add(mt);
+        res_add(mt);   // no-op for a heap texture: resident through its heap
         stor_publish(t, mt);
     }
     serial_put(t->serial, mt);
@@ -7136,7 +7148,9 @@ static NvArena *arena_new(void) {
     // for-in 循环变量不持有对象：先取强引用再从数组删，否则数组释放后返回的是野指针
     // The for-in loop variable does not retain the object: take a strong reference first and then remove it from the array, otherwise what is returned after the array releases it is a dangling pointer
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
-    for (NvArena *it in g_arenas) if (it->fence && it->fence <= done) {
+    /* Most recently retired first: the working set stays hot and the surplus stays idle, so arena_trim can release it.
+       Taking the oldest rotated every block through use and none ever went idle. */
+    for (NvArena *it in g_arenas.reverseObjectEnumerator) if (it->fence && it->fence <= done) {
         if (it->fence > g_pend_reuse_done) {
             static int audit = -1; if (audit < 0) audit = getenv("TOTK_PEND_ARENA_AUDIT") != NULL;
             if (audit) { uintptr_t lo = (uintptr_t)it->buf.contents, hi = lo + it->used;
@@ -7154,7 +7168,24 @@ static NvArena *arena_new(void) {
 }
 static uint64_t g_arena_epoch; // A cached GPU address is valid only for its submission.
 void arena_begin(void) { g_arena_epoch++; if (!g_arenas) { g_arenas = [NSMutableArray array]; g_sub_arenas = [NSMutableArray array]; } g_cur_arena = nil; }
-void arena_commit(uint64_t fence) { for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; } [g_sub_arenas removeAllObjects]; g_cur_arena = nil; }
+/* OOT (2026-11-06): the free list only grew. Every block made while loading stayed for the whole session (25, 53 and
+   87 blocks = 176, 400 and 672 MB in three runs of the same save, all made between frames 600 and 1200, none after),
+   while play reuses a few. A block that no submission reused for STOR_IDLE_SUBMITS submissions is released once the
+   GPU completed its last use and no pending CPU write can still read it (the reuse condition in arena_new). */
+static uint64_t g_arenas_released, g_arena_bytes_released;
+static void arena_trim(uint64_t fence) {
+    uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
+    for (NSInteger i = (NSInteger)g_arenas.count - 1; i >= 0; i--) {
+        NvArena *it = g_arenas[(NSUInteger)i];
+        if (!it->fence || it->fence > done || it->fence + STOR_IDLE_SUBMITS >= fence) continue;
+        if (it->fence > g_pend_reuse_done) continue;   // stricter than reuse: freed memory must not be read by a pending CPU write
+        size_t bytes = it->buf.length; g_arenas_released++; g_arena_bytes_released += bytes;
+        res_remove(it->buf); [g_arenas removeObjectAtIndex:(NSUInteger)i];
+        static uint64_t logged; if (logged++ < 8 || g_arenas_released % 32 == 0)
+            MLOG("[arena] released an idle %zu MB argument block (%llu so far, %llu MB); %lu blocks kept", bytes >> 20, (unsigned long long)g_arenas_released, (unsigned long long)(g_arena_bytes_released >> 20), (unsigned long)g_arenas.count);
+    }
+}
+void arena_commit(uint64_t fence) { for (NvArena *a in g_sub_arenas) { a->fence = fence; [g_arenas addObject:a]; } [g_sub_arenas removeAllObjects]; g_cur_arena = nil; arena_trim(fence); }
 /* TOTK: the replay's own allocations (argument blocks, uniform copies, update staging) take the arena buffer unretained.
    The out parameter of arena_alloc is __autoreleasing under ARC: every call was a retain + autorelease (an autorelease-pool
    entry) plus the caller's retain / release, about 1.5% of the replay. The buffer is held by its NvArena (g_sub_arenas, then
@@ -19820,6 +19851,8 @@ int mtl_probe_arg_epoch(void) {
 #include "nvn_copy_alias_probe.h"
 
 #include "nvn_pool_retire_probe.h"
+#include "nvn_stor_alias_probe.h"
+#include "nvn_arena_trim_probe.h"
 #include "nvn_cube_group_probe.h"
 #ifdef GAME_BOTW
 /* "ashot <path>" (botw.md, game-speed checks; at the end of the file so TOTK's line numbers stay as they were): the next
