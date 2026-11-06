@@ -275,10 +275,12 @@ static int poollog_env(void) { static int on = -1; if (on < 0) on = getenv("TOTK
 static void guest_chain(const char *what);
 // A GPU address exists only once the driver has given one: by a buffer or pool here, by a texture in totk_nvn_ext.c. Raw global memory can reach only what these name (mtl_pool_addressed)
 static void pool_mark_addressed(const pool_t *o) { static __thread const uint8_t *last; if (o->mem && o->mem != last) { last = o->mem; mtl_pool_addressed(o->mem, o->size); } }
+_Atomic uint32_t g_nvn_pool_life;   // moves when a pool object starts or ends (nvn_mtl.m pool_obj_live)
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     memset(o, 0, sizeof *o);
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
+    atomic_fetch_add_explicit(&g_nvn_pool_life, 1, memory_order_release);
     if ((o->flags & (NVN_MEMORY_POOL_FLAGS_PHYSICAL | NVN_MEMORY_POOL_FLAGS_VIRTUAL)) && !totk_vpool_init(o)) { o->magic = 0; return 0; }
     int gpu_visible = !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS);
     /* #1367 (TOTK 1.2.1): the game now and then initialises a memory pool of zero bytes (the crashing one was
@@ -307,6 +309,7 @@ NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) {
        neighbour's range when the game's allocator handed the empty pool an address next to one (#1367). */
     if (o->mem && o->size && !(o->flags & NVN_MEMORY_POOL_FLAGS_GPU_NO_ACCESS)) { replay_enter(); nvn_dirty_remove_range(o->mem); mtl_pool_del(o->mem); replay_leave(); }
     totk_vpool_fini(o); o->magic = 0;
+    atomic_fetch_add_explicit(&g_nvn_pool_life, 1, memory_order_release);
 }
 /* A mirrored render target has private Metal storage. Reconcile GPU writes at mapped-range cache maintenance too:
    BotW flushes its grass masks before reading their pool bytes. The write-back helper keeps later CPU writes and

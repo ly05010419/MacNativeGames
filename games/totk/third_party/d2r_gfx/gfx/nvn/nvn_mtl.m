@@ -1307,7 +1307,9 @@ void mtl_eye_done(int left, int last) {   // after an eye pass's commit (hle_nvn
         else MLOG("[vr] b2shot: this eye pass drew no presented texture"); }
 }
 void mtl_eye_capture(int eye) { g_b2_capture = eye; }
+static int g_last_end_relaxed, g_game_barrier; static uint64_t g_bar_skip, g_bar_full;
 void mtl_sub_begin(void) {
+    g_last_end_relaxed = 0;   // the first draw pass of a submission keeps the full barrier (barrier_game)
     g_eye_region = 3;   // stereo B2: a submission starts outside eye marks
     g_fc_begin0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     /* The submission's autorelease pool, drained in mtl_sub_commit, opens before anything else: the guest's submit
@@ -1383,7 +1385,12 @@ static int bar_end_on(void) { static int v = -1; if (v < 0) { const char *e = ge
 static int bar_start_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BARRIER_START"); v = !(e && !strcmp(e, "0")); if (!v) fprintf(stderr, "[dm] [nvn-mtl] 【实验】TOTK_BARRIER_START=0：回放编码器开头不设消费者屏障（有数据竞争，只供测量）\n"); } return v; }
 static MTL4VisibilityOptions bar_vis(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BARRIER_VIS"); v = !(e && !strcmp(e, "0")); if (!v) fprintf(stderr, "[dm] [nvn-mtl] 【实验】TOTK_BARRIER_VIS=0：回放编码器开头屏障不带缓存可见性\n"); } return v ? MTL4VisibilityOptionDevice : MTL4VisibilityOptionNone; }
 static MTL4VisibilityOptions blit_vis(void) { return bar_vis() | (g_blit_alias ? MTL4VisibilityOptionResourceAlias : 0); }
+/* TOTK_BARRIER_GAME (default on for Ocarina of Time; after seedds/nxnative barrier_game, MIT): draw passes are ordered by the game's own barriers, as NVN specifies. A draw pass ends with a barrier from its
+   vertex, mesh and fragment stages to the fragment, compute and copy stages of later work, so the next pass's vertex work can overlap this pass's fragments. The next draw pass adds the full consumer barrier when
+   the game called nvnCommandBufferBarrier since the last one, or when anything other than a draw pass ran in between, or at the first pass after a new submission or a present. Only vertex-stage reads of the previous pass's
+   results without a game barrier change order. */
 static inline void m4_end(id e) {
+    g_last_end_relaxed = 0;
     if (e == g_blit && g_blit_alias) {
         [g_blit barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionResourceAlias];
         g_blit_alias = 0;
@@ -1404,9 +1411,21 @@ static int bar_narrow(void) {
 }
 static int bar_start_mode(void) { return bar_start_on() ? (bar_narrow() == 2 ? 2 : 1) : 0; }
 static int bar_end_mode(void) { return bar_end_on() ? (bar_narrow() == 2 ? 2 : 1) : 0; }
-static inline void m4_end_render(id<MTL4RenderCommandEncoder> e) {   // end of a render encoder the replay thread encoded itself
-    int m = bar_end_mode();
-    if (m == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+static int barrier_game(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("TOTK_BARRIER_GAME");
+#ifdef GAME_OOT
+        v = !(e && !strcmp(e, "0"));
+#else
+        v = e && !strcmp(e, "1");
+#endif
+        if (bar_narrow() || !bar_start_on() || !bar_end_on()) v = 0;   // the measurement switches decide alone
+        if (v) MLOG("draw passes are ordered by the game's own barriers (TOTK_BARRIER_GAME=0: each waits for all earlier GPU work)"); }
+    return v;
+}
+static inline void m4_end_render_m(id<MTL4RenderCommandEncoder> e, int m) {   // end of a render encoder the replay thread encoded itself
+    if (m == 3) [e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+    else if (m == 2) [e barrierAfterStages:MTLStageVertex | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageBlit | MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
     else if (m) [e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [e endEncoding];
 }
@@ -1508,18 +1527,29 @@ static int arg_bind_cache_on(void) {
 static inline void es_begin(id e);   // render state cache, defined with the state wrappers below
 /* TOTK: the shared copy / dispatch encoder (g_blit) may still be open after a dispatch: any other encoder on g_cb closes it
    first (a Metal command buffer encodes one encoder at a time). */
-static inline void blit_close(void) { if (g_blit) { m4_end(g_blit); g_blit = nil; } }
+static inline void blit_close(void) { g_last_end_relaxed = 0; if (g_blit) { m4_end(g_blit); g_blit = nil; } }
 #include "nvn_render_stream.h"
-static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { blit_close();
-    if (!g_mesh_active && rs_stream_pass()) { id e = rs_pass_begin(d, g_vt, g_ft, g_cb, bar_start_mode(), (uint64_t)bar_vis()); es_begin(e); return e; }   // TOTK: encode stage (nvn_render_stream.h)
+static inline id<MTL4RenderCommandEncoder> enc_r_open(MTL4RenderPassDescriptor *d, int start) {
+    if (!g_mesh_active && rs_stream_pass()) { id e = rs_pass_begin(d, g_vt, g_ft, g_cb, start, (uint64_t)bar_vis()); es_begin(e); return e; }   // TOTK: encode stage (nvn_render_stream.h)
     rs_sync();   // a pass encoded by A itself (stream off, or a diagnostic frame): B must have finished the previous pass on this command buffer
     pt_mark(g_cb, 'R', d); id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; es_begin(e);
-    { int m = bar_start_mode();
+    { int m = start;
       if (m == 2) { [e barrierAfterQueueStages:MTLStageBlit | MTLStageDispatch beforeStages:MTLStageVertex | MTLStageFragment visibilityOptions:bar_vis()];
                     [e barrierAfterQueueStages:MTLStageVertex | MTLStageFragment beforeStages:MTLStageFragment visibilityOptions:bar_vis()]; }
       else if (m) [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; }
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; return e; }
-static inline void enc_r_end(id e) { if (rs_using(e)) rs_pass_end(e, bar_end_mode(), (uint64_t)MTL4VisibilityOptionDevice); else m4_end_render(e); }
+static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { blit_close(); return enc_r_open(d, bar_start_mode()); }
+static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) {   // the draw passes (rp_begin_ex); see barrier_game
+    int skip = g_last_end_relaxed && !g_blit && !g_game_barrier && barrier_game();
+    g_game_barrier = 0; blit_close(); if (skip) g_bar_skip++; else g_bar_full++;
+    return enc_r_open(d, skip ? 0 : bar_start_mode());
+}
+static inline void enc_r_end(id e) { g_last_end_relaxed = 0; if (rs_using(e)) rs_pass_end(e, bar_end_mode(), (uint64_t)MTL4VisibilityOptionDevice); else m4_end_render_m(e, bar_end_mode()); }
+static inline void enc_r_end_pass(id e) {
+    if (!barrier_game()) { enc_r_end(e); return; }
+    if (rs_using(e)) rs_pass_end(e, 3, (uint64_t)MTL4VisibilityOptionDevice); else m4_end_render_m(e, 3);
+    g_last_end_relaxed = 1;
+}
 static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { if (rs_using(e)) rs_object(RS_PSO, p); else [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { if (rs_using(e)) rs_object(RS_DSS, s); else [e setDepthStencilState:s]; }
 /* TOTK: render state already set on the current encoder. The replay sets viewport, scissor, cull, winding, fill, depth bias,
@@ -3856,7 +3886,7 @@ static void up_flush(void) {
     if (g_up_ce) {
         m4_end(g_up_ce); g_up_ce = nil;
     }
-    id<MTL4ComputeCommandEncoder> b = g_nup_blits || g_nup_decs || g_nup_tcas || g_nup_tcxs ? g_up_ce = [g_up_cb computeCommandEncoder] : nil;
+    id<MTL4ComputeCommandEncoder> b = g_nup_blits || g_nup_decs || g_nup_tcas || g_nup_tcxs ? g_up_ce = [g_up_cb computeCommandEncoder] : nil; g_last_end_relaxed = 0;
     if (b) [b barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     if (b && g_nup_tcas) {   // BC1 -> ASTC (see up_tca): deswizzled BC1 blocks -> ASTC blocks, copied into the textures by the blits below
         [b setArgumentTable:g_up_ct]; [b setComputePipelineState:bc1astc_pso()];
@@ -3935,7 +3965,7 @@ static void up_begin(void) {
     [g_up_alloc4[slot] reset];
     g_up_cb = [g_dev newCommandBuffer];
     [g_up_cb beginCommandBufferWithAllocator:g_up_alloc4[slot]];
-    g_up_ce = [g_up_cb computeCommandEncoder];
+    g_up_ce = [g_up_cb computeCommandEncoder]; g_last_end_relaxed = 0;
     [g_up_ce barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [g_up_ce setArgumentTable:g_up_ct];
     if (!g_up_texs) g_up_texs = [NSMutableArray array];
@@ -5166,7 +5196,7 @@ static void rp_end(void) { if (g_enc) {
     int ranged=g_rt_range_active && !g_rt_range_pending;
 #endif
     if (totk_tl_on()) totk_tl(TL_PASS_END, g_stat_pass, g_stat_draw - g_pass_draw0);
-    sd_finish(); enc_r_end(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
+    sd_finish(); enc_r_end_pass(g_enc); zskip_commit_clears(); g_enc = nil; g_rt_merged = 0; g_lay.active = 0;
     hdr_shadow_store();
     /* Diagnostic: inspect each full-size HDR render target immediately after its
        producer pass, on the same Metal 4 queue and before later passes reuse it. */
@@ -5625,7 +5655,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     }
     else if (uw_ratio()) canvas_learn(pd);   // key 4: the canvas the UI is squeezed in
     b2_note_pass(pd);   // stereo B2: the left pass's picture
-    g_enc = enc_r_begin(pd);
+    g_enc = enc_r_begin_pass(pd);
     args_dirty_all();
     g_stat_pass++;
     g_pass_draw0 = g_stat_draw;
@@ -10704,6 +10734,21 @@ static int pool_target_type(const treg_t *r) {   // the Metal type a registered 
     switch (r->t.d.target) { case 0: return MTLTextureType1D; case 1: case 7: return MTLTextureType2D; case 2: return MTLTextureType3D; case 3: return MTLTextureType1DArray; case 4: return MTLTextureType2DArray;
         case 5: return MTLTextureType2DMultisample; case 6: return MTLTextureType2DMultisampleArray; case 8: return MTLTextureTypeCube; case 9: return MTLTextureTypeCubeArray; default: return -1; }
 }
+/* The game leaves IDs registered after it is done with their textures, so the pool object may be freed and unmapped: its magic is read through the kernel, which answers instead of faulting.
+   That read was per ID per table walk, 27% of the replay thread in Kokiri Forest, and many IDs share a pool. One answer per pool holds for the frame, unless a pool is initialized or finalized (g_nvn_pool_life). TOTK_POOL_LIVE_CACHE=0 asks every time. */
+extern _Atomic uint32_t g_nvn_pool_life;
+static uint64_t g_pool_live_reads, g_pool_live_hits, g_pool_walks, g_pool_walk_ns;
+static int pool_obj_live(const pool_t *pl) {   // caller holds g_rmu
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_POOL_LIVE_CACHE"); on = !(e && !strcmp(e, "0")); }
+    static struct { const pool_t *p; uint64_t frame; uint32_t life; uint8_t live; } c[8192];
+    uint64_t fr = atomic_load(&g_cur_frame); uint32_t life = atomic_load_explicit(&g_nvn_pool_life, memory_order_acquire);
+    unsigned h = (unsigned)(((uintptr_t)pl >> 4) * UINT64_C(0x9E3779B97F4A7C15) >> 51);
+    if (on && c[h].p == pl && c[h].frame == fr && c[h].life == life) { g_pool_live_hits++; return c[h].live; }
+    uint32_t magic = 0; mach_vm_size_t got = 0; g_pool_live_reads++;
+    int live = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)pl, sizeof magic, (mach_vm_address_t)(uintptr_t)&magic, &got) == KERN_SUCCESS && got == sizeof magic && magic == MAGIC('P', 'O', 'O', 'L');
+    c[h].p = pl; c[h].frame = fr; c[h].life = life; c[h].live = (uint8_t)live;
+    return live;
+}
 static uint64_t pool_tex_rid(int id_, int dtt) {   // caller holds g_rmu; 0 = the dummy
     treg_t *r = &g_treg[id_]; if (!r->ok) return 0;
     int have = tex_view_valid(id_);
@@ -10716,8 +10761,7 @@ static uint64_t pool_tex_rid(int id_, int dtt) {   // caller holds g_rmu; 0 = th
         if (!exists && (g_pool_spent + sz > POOL_FRAME_BYTES || g_dev.currentAllocatedSize >= pool_cap_bytes())) { g_pool_left++; return 0; }
         /* The game leaves IDs registered after it is done with their textures. The pool object may be freed and unmapped by now, so its magic is read through the kernel, which answers instead of faulting. */
         const pool_t *pl = r->t.pool;
-        if (pl) { uint32_t magic = 0; mach_vm_size_t got = 0;
-            if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)pl, sizeof magic, (mach_vm_address_t)(uintptr_t)&magic, &got) != KERN_SUCCESS || got != sizeof magic || magic != MAGIC('P', 'O', 'O', 'L')) return 0;
+        if (pl) { if (!pool_obj_live(pl)) return 0;
             if (!pl->host && !pool_holds((uint64_t)(uintptr_t)r->t.mem, sz)) return 0; }
         else if (!pool_holds((uint64_t)(uintptr_t)r->t.mem, sz)) return 0;
         if (!exists) g_pool_spent += sz;
@@ -10728,8 +10772,12 @@ static uint64_t pool_tex_rid(int id_, int dtt) {   // caller holds g_rmu; 0 = th
     if ((have_type == MTLTextureType2D && dtt == MTLTextureType2DArray) || (have_type == MTLTextureType2DArray && dtt == MTLTextureType2D)) { id<MTLTexture> v = tex_type_view(t, (MTLTextureType)dtt); return v ? v.gpuResourceID._impl : 0; }
     return 0;
 }
+static uint64_t g_pool_stat_frame;
 static uint64_t pool_table(int samp, int dtt, int dpf, int base) {   // caller holds g_rmu
-    uint64_t fr = atomic_load(&g_cur_frame); if (fr != g_pool_frame) { g_pool_frame = fr; g_pool_spent = 0; }
+    uint64_t fr = atomic_load(&g_cur_frame); if (fr != g_pool_frame) { g_pool_frame = fr; g_pool_spent = 0;
+        if (fr / 300 != g_pool_stat_frame / 300) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
+            MLOG("[pool] up to frame %llu: %llu table walks, %.1f ms a frame; liveness %llu kernel reads, %llu remembered; draw passes %llu without the full barrier, %llu with it", (unsigned long long)fr, (unsigned long long)g_pool_walks, (double)g_pool_walk_ns * tb.numer / tb.denom / 1e6 / MAX(1, (double)(fr - g_pool_stat_frame)), (unsigned long long)g_pool_live_reads, (unsigned long long)g_pool_live_hits, (unsigned long long)g_bar_skip, (unsigned long long)g_bar_full); g_bar_skip = g_bar_full = 0;
+            g_pool_stat_frame = fr; g_pool_walks = g_pool_walk_ns = g_pool_live_reads = g_pool_live_hits = 0; } }
     int k = -1, fre = -1; for (int i = 0; i < POOL_KEYS; i++) { if (!g_ptab[i].copy) { if (fre < 0) fre = i; } else if (g_ptab[i].samp == samp && g_ptab[i].dtt == dtt && g_ptab[i].dpf == dpf && g_ptab[i].base == base) { k = i; break; } }
     if (k >= 0 && g_ptab[k].sub == g_sub_serial && g_ptab[k].epoch == g_arena_epoch) return g_ptab[k].gpu;
     if (k < 0) { if (fre < 0) { RED_ONCE(160, "more than %d texture pool tables", POOL_KEYS); return 0; } k = fre; g_ptab[k].samp = samp; g_ptab[k].dtt = dtt; g_ptab[k].dpf = dpf; g_ptab[k].base = base; g_ptab[k].n = 0; g_ptab[k].frame = ~0ull; }
@@ -10741,11 +10789,13 @@ static uint64_t pool_table(int samp, int dtt, int dpf, int base) {   // caller h
     else if (!g_ptab[k].copy) g_ptab[k].copy = malloc(8);
     if (g_ptab[k].frame == fr && g_ptab[k].n == n && g_ptab[k].reg == g_pool_reg_gen && g_ptab[k].ser == g_ser_gen) memcpy(e, g_ptab[k].copy, 8 * ((size_t)n + 1));   // nothing changed in this frame: the last table holds
     else {
+        uint64_t walk_t0 = mach_absolute_time(); g_pool_walks++;
         uint64_t dummy = samp ? dummy_samp_rid() : (dummy_tex(dtt, dpf) ? g_dummy_tex_rid[dtt & 7][dpf & 3] : 0); int real = 0; g_pool_left = 0;
         for (int i = 0; i < n; i++) { int id_ = base + i; uint64_t r = 0;
             if (id_ > 0) { if (samp) { if (id_ < g_nsreg && g_sreg_ok[id_] && samp_by_id(id_)) r = g_srid[id_]; } else if (id_ < g_ntreg) r = pool_tex_rid(id_, dtt); }
             e[i] = r ? r : dummy; real += r != 0; }
         e[n] = dummy; memcpy(g_ptab[k].copy, e, 8 * ((size_t)n + 1));
+        g_pool_walk_ns += mach_absolute_time() - walk_t0;
         g_ptab[k].frame = fr; g_ptab[k].n = n; g_ptab[k].reg = g_pool_reg_gen; g_ptab[k].ser = g_ser_gen;
         if (g_pool_builds++ < 24 || g_pool_builds % 2000 == 0) MLOG("[pool] %s table (type %d class %d) base %d: %d IDs, %d real, %llu left for later; %llu MB allocated (%llu tables built)", samp ? "sampler" : "texture", dtt, dpf, base, n, real, (unsigned long long)g_pool_left, (unsigned long long)(g_dev.currentAllocatedSize >> 20), (unsigned long long)g_pool_builds);
         if (base && !samp) RED_ONCE(161, "[pool] the bound texture pool starts at ID %d: a handle these shaders take from c2 is off by that much", base);
@@ -16755,7 +16805,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
                                     S.tex_pool_n = tp ? nvn_tex_pool_base(tp) + tp->n : 0; S.tex_base = tp ? nvn_tex_pool_base(tp) : 0; break; }
             case OP_SET_SAMP_POOL: { const dpool_t *sp = ((const p_set_pool *)a)->pool; extern int nvn_samp_pool_base(const void *pool); S.samp_base = sp ? nvn_samp_pool_base(sp) : 0; break; }
-            case OP_BARRIER: break;
+            case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) g_game_barrier = 1; break; }   // ordered at the next draw pass (barrier_game)
             default: break;
         }
         p += h.size;
@@ -18478,6 +18528,7 @@ static int mfx_present_frame(const tex_t *t, double period, int discard) {
     @autoreleasepool { return mfx_present_frame_body(t, period, discard); }
 }
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
+    g_last_end_relaxed = 0;
     hdr_note_swap(t);
     taa_frame_end();   // TOTK_TAA: next frame's jitter, this frame's depth and camera forgotten (also while off: key 5)
     if (g_vr_framelog > 0) {
