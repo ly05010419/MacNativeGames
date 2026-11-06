@@ -150,7 +150,17 @@ static uint8_t *reserve_in_gap(uint64_t size,int log){
    file mapping preserves the guest's addresses and bytes while letting Darwin
    write back and reclaim idle pages. It is scratch memory, never save data.
    Enabled for Bananza on iOS after CPU/Metal alias/page-in and real-world
-   device checks; other games and the Mac retain anonymous backing. */
+   device checks; other games and the Mac retain anonymous backing.
+   Do not enable file backing for OOT on the Mac: guest memory becomes NVN memory
+   pools, which Metal residency wires (IOGPUSysMemory::wire). For a file-backed
+   page that wire is a page-in through APFS while the system's periodic sync()
+   msyncs the same mapped file. 2026-11-06, with an uncommitted default that backed
+   the heap and MapPhysicalMemory with a file: a game thread sat in
+   IOGPUDevice::group_add_resources -> wireVirtual -> apfs_vnop_pagein waiting for
+   a krwlock held by launchd's sync (apfs_vfsop_sync -> ubc_msync), which waited
+   for the pages being wired. Both uninterruptible: kill -9 and shutdown hung until
+   a forced restart (spindump OcarinaOfTime_2026-11-06-214913.hang, pid 92339,
+   about 51 s after launch). Frame rate was equal with and without it. */
 static void heap_file_backing(void) {
  const char *e=getenv("TOTK_FILE_HEAP");
 #if TARGET_OS_IPHONE && defined(GAME_DKB)
