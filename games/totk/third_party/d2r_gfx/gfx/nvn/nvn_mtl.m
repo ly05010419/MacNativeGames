@@ -819,6 +819,32 @@ static void pool_res(pidx_ent *p) {   // caller holds g_mu
     res_add((__bridge id<MTLBuffer>)p->buf); res_commit();
     p->res = 1; g_pool_res_n++; g_pool_res_bytes += p->hi - p->lo;
 }
+#ifdef GAME_OOT
+/* A shader's pointer is an address the driver gave out, or one worked out from it, and the driver gives addresses out by
+   buffer, pool or texture (mtl_pool_addressed, from seedds/nxnative, MIT). A pool with none holds only textures, which Metal
+   keeps in textures of its own: the raw pool table leaves it out and an upload from it borrows a buffer for the batch
+   (up_temp_src), so nothing wires it. TOTK_POOL_ADDR_ONLY=0 lists and wires every pool again. */
+static struct { uintptr_t lo, hi; } *g_addr; static int g_naddr, g_addr_cap;   // sorted, disjoint. Under g_mu
+static uint64_t g_up_temp_n, g_up_temp_bytes, g_up_temp_refused;
+static int addr_first(uintptr_t lo) { int a = 0, b = g_naddr; while (a < b) { int m = (a + b) / 2; if (g_addr[m].hi <= lo) a = m + 1; else b = m; } return a; }   // the first range that ends after lo
+static int addr_meets(uintptr_t lo, uintptr_t hi) { int i = addr_first(lo); return i < g_naddr && g_addr[i].lo < hi; }
+static int pool_addr_only(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_POOL_ADDR_ONLY"); v = !(e && !strcmp(e, "0")); MLOG("raw pool table: %s", v ? "only pools an address was given out in" : "every pool (TOTK_POOL_ADDR_ONLY=0)"); } return v; }
+void mtl_pool_addressed(const void *mem, uint64_t size) {
+    uintptr_t lo = (uintptr_t)mem, hi = lo + size;
+    pthread_mutex_lock(&g_mu);
+    int i = addr_first(lo);
+    if (i == g_naddr || g_addr[i].lo > lo || g_addr[i].hi < hi) {
+        if (i > 0 && g_addr[i - 1].hi == lo) i--;   // touching on the left
+        int j = i;
+        while (j < g_naddr && g_addr[j].lo <= hi) { lo = MIN(lo, g_addr[j].lo); hi = MAX(hi, g_addr[j].hi); j++; }
+        if (i == j && g_naddr == g_addr_cap) { g_addr_cap = g_addr_cap ? g_addr_cap * 2 : 256; g_addr = realloc(g_addr, (size_t)g_addr_cap * sizeof *g_addr); if (!g_addr) MDIE("the addressed range table"); }
+        if (j != i + 1) memmove(g_addr + i + 1, g_addr + j, (size_t)(g_naddr - j) * sizeof *g_addr);
+        g_naddr += 1 - (j - i); g_addr[i].lo = lo; g_addr[i].hi = hi;
+        atomic_fetch_add_explicit(&g_pool_gen, 1, memory_order_release);   // the table rebuilds before the next draw that uses it
+    }
+    pthread_mutex_unlock(&g_mu);
+}
+#endif
 void mtl_pool_res_stats(uint64_t v[4]) {   // registered pools, their bytes, pools / bytes in the residency set
     pthread_mutex_lock(&g_mu); v[0] = (uint64_t)g_pools.n; v[1] = g_pool_bytes; v[2] = g_pool_res_n; v[3] = g_pool_res_bytes; pthread_mutex_unlock(&g_mu);
 }
@@ -933,6 +959,8 @@ static int mtl_addr_range(uint64_t addr, uint64_t len, uintptr_t *lo, uintptr_t 
     pthread_mutex_unlock(&g_mu);
     return p != NULL;
 }
+// Is this range in a registered pool? Unlike a lookup for the GPU, it wires nothing: a table walk asks it of every texture
+static int pool_holds(uint64_t addr, uint64_t len) { pthread_mutex_lock(&g_mu); int in = pool_query((uintptr_t)addr, len) != NULL; pthread_mutex_unlock(&g_mu); return in; }
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     uint64_t base, gpu;
     if (!pool_lookup(addr, len, buf, &base, &gpu)) return 0;
@@ -3967,6 +3995,30 @@ static id<MTLBuffer> up_alloc(size_t n, size_t *off) {
 // 解排布参数块：64 字节一格，从 64 KB 共享存储块里顺序切；块满换新，旧块按栅栏延迟释放
 // Deswizzle parameter blocks: 64 bytes per cell, cut sequentially from a 64 KB shared-storage block; a full block is replaced by a new one, and the old block is released lazily by fence
 static id<MTLBuffer> g_up_pblock; static size_t g_up_pblock_off;
+#ifdef GAME_OOT
+/* A zero-copy buffer over [addr, addr + len) for the open upload batch, which retires it with its staging, when the pool is not
+   resident and no address was given out in it: a one-time read must not leave that memory wired. nil otherwise (or if Metal
+   refuses it: the caller looks the address up as usual, which wires the pool). */
+static id<MTLBuffer> up_temp_src(uint64_t addr, uint64_t len, uint64_t *off) {
+    if (!len || !pool_addr_only()) return nil;
+    pthread_mutex_lock(&g_mu);
+    pidx_ent *p = pool_query((uintptr_t)addr, len);
+    int in = p && !p->res && !addr_meets(p->lo, p->hi);
+    /* A small pool the game keeps rewriting: a buffer and a residency update per re-upload cost more than keeping it wired */
+    if (in && p->hi - p->lo < (64u << 20) && ++p->borrows > 8) { pool_res(p); in = 0; }
+    pthread_mutex_unlock(&g_mu);
+    if (!in) return nil;
+    uintptr_t pg = (uintptr_t)getpagesize(), a = (uintptr_t)addr & ~(pg - 1), b = ((uintptr_t)addr + len + pg - 1) & ~(pg - 1);
+    id<MTLBuffer> buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil];
+    if (!buf) { void *tok = nvn_dirty_tracked((void *)a, b - a) ? nvn_dirty_gpu_write_begin((void *)a, b - a) : NULL; buf = [g_dev newBufferWithBytesNoCopy:(void *)a length:b - a options:MTLResourceStorageModeShared deallocator:nil]; nvn_dirty_gpu_write_end(tok); }
+    if (!buf) { if (g_up_temp_refused++ < 8) MLOG("【红】upload from %#llx+%#llx: Metal refused its temporary buffer, so its memory pool is wired", (unsigned long long)addr, (unsigned long long)len); return nil; }
+    up_begin();
+    res_add(buf); [g_up_keep addObject:buf]; *off = addr - (uint64_t)a;
+    g_up_temp_n++; g_up_temp_bytes += b - a;
+    if ((g_up_temp_n & (g_up_temp_n - 1)) == 0 && g_up_temp_n >= 256) MLOG("texture uploads from address-less pools: %llu temporary buffers, %llu MB read, %llu refused", (unsigned long long)g_up_temp_n, (unsigned long long)(g_up_temp_bytes >> 20), (unsigned long long)g_up_temp_refused);
+    return buf;
+}
+#endif
 static id<MTLBuffer> up_param_alloc(size_t *off) {
     if (!g_up_pblock || g_up_pblock_off + 64 > g_up_pblock.length) {
         if (g_up_pblock) defer_obj_release(g_up_pblock);
@@ -4211,7 +4263,11 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
     if (tca) g_bp_up_bytes += atotal - total;
     size_t xtotal = 0;   // output of the BC2/3/4/5/7 transcoder
     if (tck) for (unsigned l = drop; l < d.mipmapLevelCount + drop; l++) { uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u); xtotal += (size_t)((w + 3) / 4) * tco * ((h + 3) / 4) * layers; }
-    int use_gpu = (!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d) && mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo);   // TOTK: linear textures take the CPU row copy
+    id<MTLBuffer> upsrc = nil;
+#ifdef GAME_OOT
+    if ((!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d)) { upsrc = up_temp_src((uint64_t)t->mem, t->L.size, &mo); if (upsrc) mb = (__bridge void *)upsrc; }
+#endif
+    int use_gpu = (!unp || gdec) && (!tca || gtca) && g_nvn_deswz_gpu && !nvn_tex_is_linear(&t->d) && (upsrc || mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo));   // TOTK: linear textures take the CPU row copy
     if (g_nvn_deswz_gpu && !use_gpu && !unp) RED_ONCE(40, "预排布贴图存储不在内存池里，回退 CPU");
     if (use_gpu) {
         // GPU 执行时读内存池，比 CPU 上传时刻快照更接近 Switch 真机；脏页戳仍在编码前取，之后写入仍会触发重传。
@@ -4220,6 +4276,9 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         size_t stg_off;
         id<MTLBuffer> stg = up_alloc(gdec ? ctotal : total ? total : 16, &stg_off);
         size_t ast_off = 0, aoff = 0; id<MTLBuffer> ast = gtca ? up_alloc(atotal ? atotal : 16, &ast_off) : tck ? up_alloc(xtotal ? xtotal : 16, &ast_off) : nil;   // a block switch keeps the earlier block alive (g_up_keep)
+#ifdef GAME_OOT
+        if (upsrc) { uint64_t mo2; id<MTLBuffer> u2 = up_temp_src((uint64_t)t->mem, t->L.size, &mo2); if (u2) { upsrc = u2; mb = (__bridge void *)u2; mo = mo2; } else if (!mtl_addr((uint64_t)t->mem, t->L.size, &mb, &mo)) MDIE("texture storage left its memory pool during an upload"); }   // up_alloc may have flushed the batch that held the first one
+#endif
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits, nd0 = g_nup_decs, nt0 = g_nup_tcas, nx0 = g_nup_tcxs;
         for (unsigned l = drop; enc_ok && l < d.mipmapLevelCount + drop; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -10074,6 +10133,9 @@ static uint64_t gmem_map_gpu(void) {
     gen = atomic_load_explicit(&g_pool_gen, memory_order_acquire);
     for (int k = 0; k < g_pools.n; k++) {   // g_pools is sorted by start (nvn_pool_index.h)
         pidx_ent *p = &g_pools.e[k];
+#ifdef GAME_OOT
+        if (pool_addr_only() && !addr_meets(p->lo, p->hi)) continue;
+#endif
         pool_res(p);
         uint64_t lo = MAX((uint64_t)p->lo, end), hi = p->hi;
         if (lo >= hi) continue;
@@ -10082,6 +10144,9 @@ static uint64_t gmem_map_gpu(void) {
     }
     pthread_mutex_unlock(&g_mu);
     if (over) RED_ONCE(141, "raw global memory: %d more memory pools than the %d entries of the pool table; addresses in them are not reached", over, GMEM_MAP_ENTRIES - 1);
+#ifdef GAME_OOT
+    { static int said; if (!said++) { uint64_t in = 0, tot = 0; pthread_mutex_lock(&g_mu); for (int k = 0; k < g_pools.n; k++) { uint64_t sz = g_pools.e[k].hi - g_pools.e[k].lo; tot += sz; if (addr_meets(g_pools.e[k].lo, g_pools.e[k].hi)) in += sz; } int np = g_pools.n; pthread_mutex_unlock(&g_mu); MLOG("raw pool table: %llu MB of %llu MB in %d pools meet an address given out", (unsigned long long)(in >> 20), (unsigned long long)(tot >> 20), np); } }
+#endif
     res_add(b); res_commit();
     if (g_gmem_buf) defer_obj_release(g_gmem_buf);
     g_gmem_buf = b; g_gmem_gen = gen;
@@ -10415,6 +10480,9 @@ static uint64_t ui_mat_patch(const p_bind_buf *u, void *mb, uint64_t mo) {
     return lg;
 }
 /* TOTK_NAN_TRACE: g_nt_watch is the texture the traced shader read in its watched slot (see nt_watch_after_pass). */
+#ifdef GAME_NS2
+static __unsafe_unretained id<MTLBuffer> g_c0_dim_buf; static size_t g_c0_dim_off; static int g_dispatch_ind;   // an indirect dispatch: where encode_args put its driver segment (nil: the shader reads no c0), for the GPU-written counts
+#endif
 static uint32_t g_dispatch_grid[3];   // TOTK: thread-group counts of the dispatch being encoded (driver segment c0 + 0x200)
 /* Driver banks contain binding metadata, not the pointed-to bytes. Reuse their immutable arena
    allocation while those bindings match; the submission epoch prevents arena reuse from returning
@@ -10462,6 +10530,13 @@ static void driver_bank_fill(uint8_t *d, int bank, int stage) {
    g_driver_bank's own copy). As an autoreleasing out parameter each call was a retain + autorelease, plus a retain
    and release in the caller's strong local. */
 static uint64_t driver_bank_gpu(int bank, int stage, __unsafe_unretained id<MTLBuffer> *out) {
+#ifdef GAME_NS2
+    if (g_dispatch_ind && bank == 0 && stage == 5) {   // its counts land in this block on the GPU: one block of its own, which nothing shares
+        __unsafe_unretained id<MTLBuffer> buffer; uint8_t *bcpu; uint64_t bgpu; size_t offset = arena_alloc_u(0xA00, &buffer, &bcpu, &bgpu);
+        driver_bank_fill(bcpu, bank, stage);
+        g_c0_dim_buf = buffer; g_c0_dim_off = offset; g_driver_miss++; *out = buffer; return bgpu;
+    }
+#endif
     // S002 live A/B/A/B found no reliable gain. Keep the original allocation path as
     // the default, without computing or copying a cache key when the experiment is off.
     if (!driver_cache_on()) {
@@ -10643,8 +10718,8 @@ static uint64_t pool_tex_rid(int id_, int dtt) {   // caller holds g_rmu; 0 = th
         const pool_t *pl = r->t.pool;
         if (pl) { uint32_t magic = 0; mach_vm_size_t got = 0;
             if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)pl, sizeof magic, (mach_vm_address_t)(uintptr_t)&magic, &got) != KERN_SUCCESS || got != sizeof magic || magic != MAGIC('P', 'O', 'O', 'L')) return 0;
-            if (!pl->host) { void *mb; uint64_t mo; if (!mtl_addr((uint64_t)(uintptr_t)r->t.mem, sz, &mb, &mo)) return 0; } }
-        else { void *mb; uint64_t mo; if (!mtl_addr((uint64_t)(uintptr_t)r->t.mem, sz, &mb, &mo)) return 0; }
+            if (!pl->host && !pool_holds((uint64_t)(uintptr_t)r->t.mem, sz)) return 0; }
+        else if (!pool_holds((uint64_t)(uintptr_t)r->t.mem, sz)) return 0;
         if (!exists) g_pool_spent += sz;
     }
     void *tv = NULL; uint64_t rid = tex_fast_rid(id_, &tv); __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv; if (!t) return 0;
@@ -15796,10 +15871,18 @@ static id<MTL4ComputeCommandEncoder> disp_enc(void) {
 }
 static void dispatch(const p_dispatch *dp) {
 #ifdef GAME_NS2
-    if (dp->ind) {   /* nvnCommandBufferDispatchComputeIndirect: {x, y, z} */
+    /* nvnCommandBufferDispatchComputeIndirect: {x, y, z}. The GPU usually writes them earlier in the frame, and Metal reads them when the
+       dispatch runs, so the CPU does not wait for them (seedds/nxnative, MIT). Waiting took 74% of the replay in Kokiri Forest, 7 fps.
+       TOTK_DISPATCH_READBACK=1 reads them back first, as before. */
+    static int readback = -1; if (readback < 0) { const char *e = getenv("TOTK_DISPATCH_READBACK"); readback = e && atoi(e); if (readback) MLOG("TOTK_DISPATCH_READBACK=1: indirect dispatches wait for the GPU"); }
+    void *ind_buf = NULL; uint64_t ind_off = 0, ind_gpu = 0;
+    if (dp->ind && readback) {
         uint32_t r[3] = {0, 0, 0}; indirect_read(dp->ind, r, sizeof r);
         if (!r[0] || !r[1] || !r[2] || r[0] > INT32_MAX || r[1] > INT32_MAX || r[2] > INT32_MAX) return;
         p_dispatch direct = {(int32_t)r[0], (int32_t)r[1], (int32_t)r[2], dp->caller, 0}; dispatch(&direct); return; }
+    if (dp->ind && !mtl_gpu_addr(dp->ind, 12, &ind_buf, &ind_off, &ind_gpu)) { RED_ONCE(163, "indirect dispatch skipped: its arguments at %#llx are in no memory pool", (unsigned long long)dp->ind); return; }
+    if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the counts at %#llx)", (unsigned long long)dp->ind); }
+    if (!dp->ind)
 #endif
     /* An empty grid has no invocations. Metal's direct-dispatch API rejects
        zero dimensions (BotW's ordinary loading path submits them), so leave
@@ -15867,6 +15950,9 @@ static void dispatch(const p_dispatch *dp) {
         id<MTLComputeCommandEncoder> ce = pg_compute();
         enc_c_pso(ce, ps);
         enc_c_args(ce, ((__bridge id<MTLBuffer>)ub).gpuAddress + uo, 0); enc_c_args(ce, ((__bridge id<MTLBuffer>)sb).gpuAddress + so, 1); enc_c_args(ce, ((__bridge id<MTLBuffer>)db).gpuAddress + dof, 2);   // 内嵌计算核：冷路径，直接取地址 | Built-in compute kernel: cold path, take the addresses directly
+#ifdef GAME_NS2
+        if (dp->ind) [(id<MTL4ComputeCommandEncoder>)ce dispatchThreadgroupsWithIndirectBuffer:ind_gpu threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; else
+#endif
         enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(32, 1, 1));
         enc_c_end(ce);
         return;
@@ -15884,6 +15970,9 @@ static void dispatch(const p_dispatch *dp) {
     static int prearg = -1; if (prearg < 0) { const char *e = getenv("TOTK_DISP_PREARGS"); prearg = !(e && !atoi(e)); if (!prearg) MLOG("TOTK_DISP_PREARGS=0: compute arguments are resolved after the encoder opens"); }
     int pre = reuse && prearg && !g_blit && g_rs_created;
     g_dispatch_grid[0] = (uint32_t)dp->x; g_dispatch_grid[1] = (uint32_t)dp->y; g_dispatch_grid[2] = (uint32_t)dp->z;
+#ifdef GAME_NS2
+    g_c0_dim_buf = nil; g_dispatch_ind = dp->ind != 0;
+#endif
     if (pre) encode_args(nil, cs, 5, 0);   // binds through g_ct only (enc_c_args ignores the encoder)
     id<MTLComputeCommandEncoder> ce;
     if (reuse) ce = disp_enc();
@@ -15891,6 +15980,16 @@ static void dispatch(const p_dispatch *dp) {
     enc_c_pso(ce, ps);
     if (!pre) encode_args(ce, cs, 5, 0);
     if (atomic_load(&g_draw_log) > 0) MLOG("[uw] F%llu pass %llu dispatch cs %.16s grid %dx%dx%d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, cs->key, dp->x, dp->y, dp->z);
+#ifdef GAME_NS2
+    g_dispatch_ind = 0;
+    if (dp->ind) {   // The shader also reads the counts from c0 + 0x200 and c0 + 4: the GPU-written ones go there first (Metal 4 orders nothing inside an encoder without a barrier)
+        if (g_c0_dim_buf) { id<MTL4ComputeCommandEncoder> e4 = (id<MTL4ComputeCommandEncoder>)ce; id<MTLBuffer> src = (__bridge id<MTLBuffer>)ind_buf;
+            [e4 copyFromBuffer:src sourceOffset:ind_off toBuffer:g_c0_dim_buf destinationOffset:g_c0_dim_off + 0x200 size:12];
+            [e4 copyFromBuffer:src sourceOffset:ind_off toBuffer:g_c0_dim_buf destinationOffset:g_c0_dim_off + 4 size:12];
+            [e4 barrierAfterEncoderStages:MTLStageBlit beforeEncoderStages:MTLStageDispatch visibilityOptions:bar_vis()]; }
+        [(id<MTL4ComputeCommandEncoder>)ce dispatchThreadgroupsWithIndirectBuffer:ind_gpu threadsPerThreadgroup:MTLSizeMake(tg[0], tg[1], tg[2])];
+    } else
+#endif
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (!reuse) enc_c_end(ce);
     bright_lut(cs);   // 3D 画面加亮：游戏算完调色表之后重写 | 3D picture brightening: rewrite after the game finishes computing the color lookup table

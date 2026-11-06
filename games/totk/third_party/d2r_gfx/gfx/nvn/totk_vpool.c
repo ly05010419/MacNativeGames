@@ -125,7 +125,7 @@ int totk_vpool_map(pool_t *v, int count, const totk_mapping_request *r) {
           nvn_dirty_remove_range(v->mem); mtl_pool_del(v->mem);
           if (v->host) mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)(uintptr_t)v->host, v->span);
           v->host = NULL; v->span = 0; v->mem = physical->mem; v->direct_alias = v->mapped = 1;
-          mtl_pool_add(v->mem, v->size); nvn_dirty_add_range(v->mem, v->size);
+          mtl_pool_add(v->mem, v->size); nvn_dirty_add_range(v->mem, v->size); mtl_pool_addressed(v->mem, v->size);
           vmap_note((uintptr_t)v->mem, v->size, (uintptr_t)physical->mem);
           pthread_mutex_unlock(&g_map_mu);
           LOG("[vpool] virtual pool %p (%#llx bytes) is its contiguous physical storage %p (not 16 KiB aligned)", (void *)v, (unsigned long long)v->size, (void *)physical->mem);
@@ -141,6 +141,7 @@ int totk_vpool_map(pool_t *v, int count, const totk_mapping_request *r) {
     for (int i = 0; ok && i < count; i++) ok = apply_request(v, &r[i]);
     mtl_pool_add(v->mem, v->size);
     nvn_dirty_add_range(v->mem, v->size);
+    if (count) mtl_pool_addressed(v->mem, v->size);   // an address may have been given out before it had storage
     pthread_mutex_unlock(&g_map_mu);
     if (!ok) die("vpool: mapping failed after validation; virtual pool %p is inconsistent", (void *)v);
     if (count) v->mapped = 1;
