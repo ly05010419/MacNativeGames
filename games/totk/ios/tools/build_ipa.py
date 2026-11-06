@@ -2,7 +2,7 @@
 """Build an unsigned, sideloadable iPhone/iPad IPA from a prepared work tree: Tears of the Kingdom (v0, v121, v143)
 or Breath of the Wild (botw160, botw190; the runtime and graphics layer built with GAME_BOTW, game_patches_botw.c, its own
 shader list and the add-on content beside the RomFS)."""
-import argparse, json, os, plistlib, shutil, subprocess, sys, time
+import argparse, json, os, plistlib, shutil, struct, subprocess, sys, time, zlib
 from pathlib import Path
 from compile_seed import METAL_FLAGS
 from device_pipelines import SCHEMA, connected_gpus, seed_check
@@ -77,6 +77,12 @@ def run(args, cwd, log, env):
 def clone(src,dst):
     dst.parent.mkdir(parents=True,exist_ok=True)
     if subprocess.run(['cp','-c',str(src),str(dst)],capture_output=True).returncode: shutil.copy2(src,dst)
+
+def clear_png(path,size):
+    """A fully transparent RGBA PNG (a visionOS icon layer), written without an image library."""
+    chunk=lambda kind,data: struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data))
+    rows=b''.join(b'\0'+bytes(size*4) for _ in range(size))
+    path.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',size,size,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(rows,9))+chunk(b'IEND',b''))
 def clone_folder(src,dst):
     """One APFS clone of a whole folder (macOS clonefile), as build_app.py copy_tree: the seed is ~100,000 files, which
     cp -cR clones one by one (minutes per copy, 2026-10-22)."""
@@ -110,12 +116,21 @@ def configure_app_icon(tree, gen, project, logs, env, vision=False):
     # The home screen icon: the game's own, which the build took from its control data for the Mac app
     # (build/AppIcon.icns, scripts/extract_app_icon.py), as a single-size asset catalog. Without it the app had none.
     icon=tree/'build/AppIcon.icns'; catalog=gen/'Assets.xcassets'; shutil.rmtree(catalog,ignore_errors=True)
-    if icon.is_file() and not vision:
-        appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True)
-        (catalog/'Contents.json').write_text(json.dumps({'info':{'author':'xcode','version':1}}))
-        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',appicon/'icon-1024.png'],tree,logs/'ios-icon.log',env)
-        (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':'icon-1024.png','idiom':'universal','platform':'ios','size':'1024x1024'}],
-                                                         'info':{'author':'xcode','version':1}}))
+    if icon.is_file():
+        info={'author':'xcode','version':1}
+        if vision:   # a layered image stack instead of an icon set; actool wants at least two layers, so a clear one in front
+            stack=catalog/'AppIcon.solidimagestack'
+            for layer,name in (('Front','clear-1024.png'),('Back','icon-1024.png')):
+                images=stack/f'{layer}.solidimagestacklayer/Content.imageset'; images.mkdir(parents=True)
+                (images.parent/'Contents.json').write_text(json.dumps({'info':info}))
+                (images/'Contents.json').write_text(json.dumps({'images':[{'filename':name,'idiom':'vision','scale':'2x'}],'info':info}))
+            (stack/'Contents.json').write_text(json.dumps({'info':info,'layers':[{'filename':'Front.solidimagestacklayer'},{'filename':'Back.solidimagestacklayer'}]}))
+            clear_png(stack/'Front.solidimagestacklayer/Content.imageset/clear-1024.png',1024); png=stack/'Back.solidimagestacklayer/Content.imageset/icon-1024.png'
+        else:
+            appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True); png=appicon/'icon-1024.png'
+            (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':png.name,'idiom':'universal','platform':'ios','size':'1024x1024'}],'info':info}))
+        (catalog/'Contents.json').write_text(json.dumps({'info':info}))
+        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',png],tree,logs/'ios-icon.log',env)
         project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
         project=project.replace('      CODE_SIGN_STYLE: Manual\n','      CODE_SIGN_STYLE: Manual\n      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n')
     return project
