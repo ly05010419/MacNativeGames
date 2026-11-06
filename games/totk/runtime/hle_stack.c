@@ -27,7 +27,13 @@ static uint64_t trace_t0;
 static unsigned used;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-void runtime_hle_stack_init(uint64_t tsd_offset) { runtime_hle_tsd_off = tsd_offset; }
+/* TOTK_HLE_TRACE=<1|2|3> starts tracing at boot (diagnostics): 1 and 2 as "hletrace"; 3 logs every wrapped call with its
+   thread (a stack canary failure or a crash then shows the host calls just before it). */
+void runtime_hle_stack_init(uint64_t tsd_offset) {
+    runtime_hle_tsd_off = tsd_offset;
+    const char *e = getenv("TOTK_HLE_TRACE"); int m = e ? atoi(e) : 0;
+    if (m >= 1 && m <= 3) { trace_t0 = runtime_now_ns(); runtime_hle_trace = m; }
+}
 
 /* Same host function -> same wrapper, so pointers the game compares stay consistent. The first name given is kept
    (the import or NVN entry the wrapper was made for; diagnostics only). */
@@ -68,6 +74,8 @@ void runtime_hle_note(uint64_t i) {
     if (i >= HLE_THUNKS) return;
     atomic_fetch_add_explicit(&counts[i], 1, memory_order_relaxed);
     runtime_thread_note_hle((unsigned)i);
+    if (runtime_hle_trace == 3) { char text[256]; name_of((unsigned)i, text, sizeof text);
+        fprintf(stderr, "[hle] %8.3f h=%#x %s\n", (runtime_now_ns() - trace_t0) / 1e9, runtime_thread_current_handle(), text); return; }
     if (runtime_hle_trace != 2 || atomic_exchange_explicit(&seen[i], 1, memory_order_relaxed)) return;
     char text[256]; name_of((unsigned)i, text, sizeof text);
     fprintf(stderr, "[hle] %8.3f h=%#x %s\n", (runtime_now_ns() - trace_t0) / 1e9, runtime_thread_current_handle(), text);

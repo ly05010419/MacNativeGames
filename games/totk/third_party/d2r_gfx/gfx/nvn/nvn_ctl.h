@@ -25,11 +25,17 @@ static inline uint32_t ctl_code_len(const uint8_t *c) { uint32_t n; memcpy(&n, c
 static inline int ctl_stage(const uint8_t *c, const uint8_t *code) {
     if (!nvn2_ctl(c)) { uint32_t st; memcpy(&st, c + 0x714, 4); return st <= 5 ? (int)st : -1; }
     if (c[0x56] == 5) return 5;
+    /* NVN2 task (6) and mesh (7) shaders: held in the tessellation slots 3 / 4, which no Switch 2 game on this host uses (as
+       games/mkw's st_host). ctl_mesh_kind tells them apart from tessellation. */
+    if (c[0x56] == 6) return 3;
+    if (c[0x56] == 7) return 4;
     uint32_t w0; memcpy(&w0, code, 4);
     static const int from_sph[6] = {0, 0, 3, 4, 2, 1};
     unsigned type = (w0 >> 10) & 0xf;
     return (w0 & 0x1f) && type <= 5 ? from_sph[type] : -1;
 }
+// 1 an NVN2 task shader, 2 a mesh shader, 0 any other stage.
+static inline int ctl_mesh_kind(const uint8_t *c) { return nvn2_ctl(c) ? (c[0x56] == 6 ? 1 : c[0x56] == 7 ? 2 : 0) : 0; }
 // The SPH's word 0 (the graphics stages): after the code area's 0x30-byte header in NVN, at its start in NVN2.
 static inline uint32_t ctl_sph_word0(const uint8_t *c, const uint8_t *code) { uint32_t w; memcpy(&w, code + (nvn2_ctl(c) ? 0 : 0x30), 4); return w; }
 // The control section's part of the shader key. NVN: its own size (the word at +0x20: 0x880 in TOTK's archives and agl

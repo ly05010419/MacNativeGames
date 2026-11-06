@@ -1,6 +1,7 @@
 // 着色器反射 json（B：Switch 原版翻译，tools/dmsh_build.py 出）→ 定长 C 数组（nvn_refl.h）
 // Shader reflection json (B: produced by translating the original Switch shaders, output of tools/dmsh_build.py) → fixed-length C arrays (nvn_refl.h)
 #import "nvn_refl.h"
+#include "nvn_obj.h"
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,7 +54,16 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"sbuf_ubo"]) { r->kind = NVN_RB_SBUFU; r->rw = refl_rw(b); r->off = (uint16_t)[b[@"off"] intValue]; }
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
-            else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+            else if ([k isEqualToString:@"drvcb"]) {
+                /* Older caches classified NVN2 c[24] as driver data, binding zeros instead of
+                   the push constants. Normalize those entries to the renderer's push bank too.
+                   Same c[24] semantics as seedds/nxnative's NVN_RB_PUSH (MIT). */
+                int bank = [b[@"bank"] intValue];
+                if (bank == NVN_PUSH_BANK) { r->kind = NVN_RB_CBUF; r->reg = reg = NVN_PUSH_BANK; }
+                else r->kind = bank == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+            }
+            else if ([k isEqualToString:@"tex_pool"]) { r->kind = NVN_RB_TEXP; dummy_kind(b[@"elem"], &r->dtt, &r->dpf); }   // tables indexed by the IDs of a handle read from memory (nvn_mtl.m pool_table)
+            else if ([k isEqualToString:@"samp_pool"]) r->kind = NVN_RB_SAMPP;
             else if ([k isEqualToString:@"gmem_map"]) r->kind = NVN_RB_GMEM;
             else if ([k isEqualToString:@"geometry"]) { r->kind = NVN_RB_GEO; if (reg < 0 || reg > 4) FAIL("geometry helper %s: reg %d", [b[@"msl_name"] UTF8String], reg); }
             else if ([k isEqualToString:@"gmem_log"]) { r->kind = NVN_RB_GMEML; r->rw = 1; }
@@ -75,6 +85,10 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         NSDictionary *dr = j[@"drv_reads"];
         if ([dr isKindOfClass:[NSDictionary class]]) { o->drv_read[0] = dr[@"0"] != nil; o->drv_read[2] = dr[@"2"] != nil; }
         NSArray *uf = j[@"drv_unfillable"];
+#ifdef GAME_NS2
+        /* c0+0x640 in a vertex shader is NVN2's base instance, read from Metal instead (nvn_mtl.m msl_base_instance_fix). */
+        if ([uf isKindOfClass:[NSArray class]] && uf.count == 1 && [uf[0] isEqual:@"c0+0x640"] && [j[@"stage"] isEqual:@"vs"] && !(getenv("TOTK_BASE_INSTANCE_FIX") && !atoi(getenv("TOTK_BASE_INSTANCE_FIX")))) uf = nil;
+#endif
         if ([uf isKindOfClass:[NSArray class]] && uf.count) FAIL("运行时读驱动段的回放层填不了的位置：%s", [[uf componentsJoinedByString:@" "] UTF8String]);
         NSString *c1 = j[@"c1"];
         if (c1.length % 2 || c1.length / 2 > sizeof o->c1) FAIL("c1 长 %lu 字节，超上限或不成对", (unsigned long)c1.length / 2);

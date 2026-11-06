@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <mach/mach_time.h>
 // TOTK: NVN entry points beyond the donor implementation that only report stored object state,
 // attach debugging metadata, or convert timestamps. None of them changes rendering results.
@@ -232,6 +233,29 @@ NVN_EXTRA(nvnCommandBufferSetControlMemoryCallbackEnabled, void, NVNcommandBuffe
 NVN_NOPROTO(nvnCommandBufferSetCommandMemoryCallbackEnabled, void, NVNcommandBuffer *c, NVNboolean e) { (void)c; (void)e; }
 /* Tiled-cache subtile size, ZCull compression and debug checkpoints are hardware tuning / debugging hints. */
 NVN_EXTRA(nvnCommandBufferOverrideSubtileSize, void, NVNcommandBuffer *c) { (void)c; }
+/* SDK 22 / NVN2 231.40 (Ocarina of Time). The compute workload priority orders the console GPU's compute work against
+   graphics; Metal has no such knob, so it is accepted and ignored. The window acquire timeout bounds how long
+   nvnWindowAcquireTexture may block (0 = as before, no limit); the host acquires without blocking the game indefinitely
+   anyway, so the value is only kept per object (builder or window) and read back. */
+NVN_EXTRA(nvnCommandBufferSetComputeWorkloadPriority, void, NVNcommandBuffer *c, int priority) { (void)c; (void)priority; }
+#define ACQ_TIMEOUT_SLOTS 16
+static struct { const void *obj; uint64_t ns; } g_acq_timeout[ACQ_TIMEOUT_SLOTS];
+static pthread_mutex_t g_acq_timeout_lock = PTHREAD_MUTEX_INITIALIZER;
+static void acq_timeout_set(const void *o, uint64_t ns) {
+    pthread_mutex_lock(&g_acq_timeout_lock); int free_i = -1;
+    for (int i = 0; i < ACQ_TIMEOUT_SLOTS; i++) { if (g_acq_timeout[i].obj == o) { g_acq_timeout[i].ns = ns; pthread_mutex_unlock(&g_acq_timeout_lock); return; } if (!g_acq_timeout[i].obj && free_i < 0) free_i = i; }
+    if (free_i >= 0) { g_acq_timeout[free_i].obj = o; g_acq_timeout[free_i].ns = ns; }
+    pthread_mutex_unlock(&g_acq_timeout_lock);
+}
+static uint64_t acq_timeout_get(const void *o) {
+    pthread_mutex_lock(&g_acq_timeout_lock); uint64_t ns = 0;
+    for (int i = 0; i < ACQ_TIMEOUT_SLOTS; i++) if (g_acq_timeout[i].obj == o) { ns = g_acq_timeout[i].ns; break; }
+    pthread_mutex_unlock(&g_acq_timeout_lock); return ns;
+}
+NVN_EXTRA(nvnWindowBuilderSetAcquireTimeout, void, NVNwindowBuilder *b, uint64_t ns) { acq_timeout_set(b, ns); }
+NVN_EXTRA(nvnWindowBuilderGetAcquireTimeout, uint64_t, const NVNwindowBuilder *b) { return acq_timeout_get(b); }
+NVN_EXTRA(nvnWindowSetAcquireTimeout, void, NVNwindow *w, uint64_t ns) { acq_timeout_set(w, ns); }
+NVN_EXTRA(nvnWindowGetAcquireTimeout, uint64_t, const NVNwindow *w) { return acq_timeout_get(w); }
 NVN_EXTRA(nvnCommandBufferSetZCullZF32CompressionEnable, void, NVNcommandBuffer *c, NVNboolean e) { (void)c; (void)e; }
 NVN_EXTRA(nvnDeviceSetAutomaticCheckpointsMask, void, NVNdevice *d, uint32_t m) { (void)d; (void)m; }
 /* NVN default provoking vertex is the last vertex (GL convention); Metal uses the first. Only the default is accepted. */

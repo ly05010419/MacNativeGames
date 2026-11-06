@@ -1,0 +1,132 @@
+From seedds/nxnative (MIT), task/mesh stage memory from b124b24 (PR #983), with the later
+race-free byte-store and zero-count initialization behavior from 1d4b8e82. Uniform immediate
+BREV (the upstream ABrev lowering) is admitted only for stage-memory jobs, as OOT mesh shaders need it.
+ISBERD and stage output use a shared compute-stage array only when QueryAmpereMeshLayout is set.
+Byte stores use the pinned translator's existing SharedStoreSmallIntCas transform and CAS helper;
+mark stage-memory instructions as SharedMemory so that transform runs. Drop RZ primitive-count
+initialization stores because the wrapper zeroes memory before execution (independent Metal lanes
+must not overwrite a later count). Ordinary shaders retain the existing paths and feature flags.
+
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -12,6 +12,10 @@
+         // as compute reads its input vertices from 144-word records in the Maxwell attribute map (ResourceReservations.FillGeometryInputMap).
+         bool QueryGeometryInputFixed() => false;
+ 
++        // seedds/nxnative task/mesh stage-memory ABI (MIT): byte offsets of system word, input payload,
++        // output attributes/payload and primitive bytes. Null keeps all ordinary stages unchanged.
++        int[] QueryAmpereMeshLayout() => null;
++
+         /// <summary>
+         /// Reads data from the constant buffer 1.
+         /// </summary>
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -202,7 +202,7 @@
+ 
+             if (Stage == ShaderStage.Compute)
+             {
+-                bool usesSharedMemory = _program.UsedFeatures.HasFlag(FeatureFlags.SharedMemory);
++                bool usesSharedMemory = _program.UsedFeatures.HasFlag(FeatureFlags.SharedMemory) || GpuAccessor.QueryAmpereMeshLayout() != null;
+ 
+                 resourceManager.SetCurrentSharedMemory(GpuAccessor.QueryComputeSharedMemorySize(), usesSharedMemory);
+             }
+
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -91,7 +91,9 @@
+             const InstProps N = InstProps.None;
+ 
+             alu(0x124, InstName.Out, AOut);
++            x(0x2be, InstName.Flo, AMeshUniformBrev, N, uniform: true);
+             x(0x923, InstName.Isberd, AIsberd, N);
++            x(0x927, InstName.Ast, AStageOut, N, writesRd: false);
+             x(0x34e, InstName.Lepc, ALepc, N);
+             x(0x357, InstName.Nop, ANop, N, writesRd: false);
+             x(0x957, InstName.Nop, ANop, N, writesRd: false);
+@@ -113,14 +115,66 @@
+             }
+         }
+ 
++        // Uniform immediate BREV used by OOT's mesh shaders (seedds/nxnative ABrev, MIT).
++        // Compute shaders use the same form (Ocarina of Time's opening scene).
++        public static void AMeshUniformBrev(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            ASet(context, x, context.BitfieldReverse(AGet(context, AOne(context, x, true, neg: false, abs: false))), true);
++        }
++
+         public static void AIsberd(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereMeshLayout();
++
++            if (stage != null)
++            {
++                // A task or mesh shader's stage input (QueryAmpereMeshLayout). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
++                int mode = x.Bits(72, 80);
++
++                if (mode != 0x78 && mode != 0x38)
++                {
++                    throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
++                }
++
++                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
++                EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
++                return;
++            }
++
++
+             if (x.Rd < RegisterConsts.RegisterZeroIndex)
+             {
+                 context.Copy(Register(x.Rd, RegisterType.Gpr), AGpr(x.Ra));
+             }
++        }
++
++        // Task and mesh shaders' stage output (0x927), [Ra + offset], Rb, mode 72..79: 0xb8 a word of the task's payload; 0xf8 a word of a mesh shader's attributes (each component
++        // 0x80 bytes for 32 vertices or primitives); 0x88 the primitive count byte, 0x80 a primitive index byte. Bytes go through the shared memory's byte store, a compare-and-swap
++        // on the word (SharedStoreSmallIntCas), since neighbouring threads write neighbouring bytes. A mesh workgroup of 32 threads is one warp on the console, all at the same
++        // instruction, so the zero count each thread writes first (Mario Kart World: at its start) cannot pass the count one thread writes later; Metal's threads run in no such step,
++        // and the stage memory starts at zero (dmsh_meshstage.py), so that store is left out
++        public static void AStageOut(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereMeshLayout();
++            int mode = x.Bits(72, 80);
++
++            if (stage == null || (mode != 0xb8 && mode != 0xf8 && mode != 0x88 && mode != 0x80))
++            {
++                throw AFail(context, $"stage output store mode {mode:x2} outside a task or mesh shader");
++            }
++
++            if (mode == 0x88 && x.Rb == RegisterConsts.RegisterZeroIndex)
++            {
++                return;
++            }
++
++            bool word = mode == 0xb8 || mode == 0xf8;
++            Operand addr = context.IAdd(AGpr(x.Ra), Const((word ? stage[2] : stage[3]) + (int)x.SignedField(40, 64)));
++            EmitStore(context, StorageKind.SharedMemory, word ? LsSize2.B32 : LsSize2.U8, addr, x.Rb, 0);
+         }
+ 
+         public static void ALepc(EmitterContext context)
+
+--- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
+@@ -262,6 +262,13 @@
+                     case 0x387:
+                     case 0x987:
+                         context.SetUsedFeature(FeatureFlags.LocalMemory);
++                        break;
++                    case 0x923: // ISBERD: stage input in the shared stage-memory array
++                    case 0x927: // task/mesh stage output; enables SharedStoreSmallIntCas for byte stores
++                        if (gpuAccessor.QueryAmpereMeshLayout() != null)
++                        {
++                            context.SetUsedFeature(FeatureFlags.SharedMemory);
++                        }
+                         break;
+                     case 0x984:
+                     case 0x388:
+

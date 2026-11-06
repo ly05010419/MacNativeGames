@@ -1,0 +1,152 @@
+From nxnative (seedds/nxnative, MIT) 9507c221: guarded Ampere deferred writes (variable-latency results).
+A guarded instruction that ends a block must not jump to the next block over pending commits, and a guarded deferred write
+commits only if its guard held at issue. Without this OoT glyph quads lost attribute y (zero height: invisible text).
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -350,10 +336,12 @@
+         // Scoreboards: a variable-latency instruction (one that sets a write barrier, control bits 110..113; 7 = none) writes its registers when the result
+         // arrives, and the compiler lets later instructions that do not wait on that barrier (wait mask, bits 116..122) read the registers' old values (LDG R2,
+         // [R2.64] then LDG R4, [R2.64 + 4] reads the address twice). Such an instruction's writes go to locals that start as the registers' values; they are
+-        // copied to the registers before the first instruction that waits on the barrier, at DEPBAR, and at the end of the block.
++        // copied to the registers before the first instruction that waits on the barrier, at DEPBAR, and at the end of the block. A guarded one whose guard is false at issue writes nothing, so the copy
++        // keeps what was written meanwhile: Yoshi and the Mysterious Book's local lights take EXP2 R17 under P4 and write R17 themselves under !P4 before the wait, and the stale value's copy (a squared
++        // distance, for the light's falloff) overexposed the scene.
+         private static void EmitOpsAmpere(EmitterContext context, Block block)
+         {
+-            List<(Register Reg, Operand Value)>[] pending = new List<(Register, Operand)>[7];
++            List<(Register Reg, Operand Value, Operand Guard)>[] pending = new List<(Register, Operand, Operand)>[7];
+             int shadows = 0;
+             Stack<int> freeShadows = new();
+ 
+@@ -361,9 +349,22 @@
+             {
+                 if (pending[barrier] != null)
+                 {
+-                    foreach ((Register reg, Operand value) in pending[barrier])
++                    foreach ((Register reg, Operand value, Operand guard) in pending[barrier])
+                     {
+-                        context.Copy(Register(reg), value);
++                        if (guard != null)
++                        {
++                            Operand skip = Label();
++
++                            context.BranchIfFalse(skip, context.ICompareNotEqual(guard, Const(0)));
++                            context.Copy(Register(reg), value);
++                            context.MarkLabel(skip);
++                            freeShadows.Push(guard.GetRegister().Index);
++                        }
++                        else
++                        {
++                            context.Copy(Register(reg), value);
++                        }
++
+                         freeShadows.Push(value.GetRegister().Index);
+                     }
+ 
+@@ -412,12 +413,14 @@
+                 int opStart = context.OperationsCount;
+ 
+                 Operand predSkipLbl = null;
++                Operand guardPred = null;
+ 
+                 if (a.Pred != RegisterConsts.PredicateTrueIndex && a.Opcode != Instructions.AmpereOpcodes.Bra)
+                 {
+                     Operand label;
+ 
+-                    if (opIndex == block.OpCodes.Count - 1 && block.HasNext())
++                    // The next block only when nothing waits for the end of this one's commits
++                    if (opIndex == block.OpCodes.Count - 1 && block.HasNext() && writeBarrier >= 6 && Array.TrueForAll(pending, list => list == null || list.Count == 0))
+                     {
+                         label = context.GetLabel(block.Successors[0].Address);
+                     }
+@@ -431,6 +434,8 @@
+                     RegisterType predType = Instructions.AmpereTable.HasUniformGuard(a.Opcode) ? RegisterType.UniformPredicate : RegisterType.Predicate;
+                     Operand pred = Register(a.Pred, predType);
+ 
++                    guardPred = pred;
++
+                     if (a.PredInv)
+                     {
+                         context.BranchIfTrue(label, pred);
+@@ -452,7 +457,7 @@
+ 
+                 if (writeBarrier < 6 && !op.Props.HasFlag(InstProps.Bra))
+                 {
+-                    DeferAmpereWrites(context, opStart, pending, writeBarrier, ref shadows, freeShadows);
++                    DeferAmpereWrites(context, opStart, pending, writeBarrier, ref shadows, freeShadows, guardPred, a.PredInv);
+                 }
+             }
+ 
+@@ -463,12 +468,14 @@
+         private static void DeferAmpereWrites(
+             EmitterContext context,
+             int opStart,
+-            List<(Register Reg, Operand Value)>[] pendingAll,
++            List<(Register Reg, Operand Value, Operand Guard)>[] pendingAll,
+             int barrier,
+             ref int shadows,
+-            Stack<int> freeShadows)
++            Stack<int> freeShadows,
++            Operand guardPred,
++            bool guardInv)
+         {
+-            List<(Register Reg, Operand Value)> pending = pendingAll[barrier] ??= [];
++            List<(Register Reg, Operand Value, Operand Guard)> pending = pendingAll[barrier] ??= [];
+ 
+             int end = context.OperationsCount;
+             Dictionary<Register, Operand> locals = new();
+@@ -529,23 +536,44 @@
+             {
+                 context.InsertOperation(at++, new Operation(Instruction.Copy, local, Register(reg)));
+ 
+-                // A register written again before its earlier deferred write landed: the later write wins, the earlier shadow is free
+-                foreach (List<(Register Reg, Operand Value)> list in pendingAll)
++                Operand guard = null;
++
++                if (guardPred != null)
+                 {
+-                    if (list == null)
++                    if (freeShadows.Count == 0 && shadows == RegisterConsts.ShadowsCount)
+                     {
+-                        continue;
++                        throw new InvalidOperationException("Ampere: more deferred register writes pending at once than shadow registers");
+                     }
+ 
+-                    foreach ((Register r, Operand v) in list.FindAll(p => p.Reg.Equals(reg)))
++                    // The guard as it is at issue, as a nonzero word (a float's bits, which the conditional select keeps), not 1: a denormal could be flushed
++                    guard = Register(freeShadows.Count != 0 ? freeShadows.Pop() : shadows++, RegisterType.Shadow);
++                    context.InsertOperation(at++, new Operation(Instruction.ConditionalSelect, guard, guardPred, Const(guardInv ? 0 : 0x3f800000), Const(guardInv ? 0x3f800000 : 0)));
++                }
++                else
++                {
++                    // A register written again before its earlier deferred write landed: the later write wins, the earlier shadow is free. A guarded later write may not happen, so the earlier one stays
++                    foreach (List<(Register Reg, Operand Value, Operand Guard)> list in pendingAll)
+                     {
+-                        freeShadows.Push(v.GetRegister().Index);
+-                    }
++                        if (list == null)
++                        {
++                            continue;
++                        }
+ 
+-                    list.RemoveAll(p => p.Reg.Equals(reg));
++                        foreach ((Register r, Operand v, Operand g) in list.FindAll(p => p.Reg.Equals(reg)))
++                        {
++                            freeShadows.Push(v.GetRegister().Index);
++
++                            if (g != null)
++                            {
++                                freeShadows.Push(g.GetRegister().Index);
++                            }
++                        }
++
++                        list.RemoveAll(p => p.Reg.Equals(reg));
++                    }
+                 }
+ 
+-                pending.Add((reg, local));
++                pending.Add((reg, local, guard));
+             }
+         }
+ 
+

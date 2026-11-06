@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'third_party/d2r'))
 from relr import decode_relr
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb','pkp'), default='v0')
+parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb','pkp','oot'), default='v0')
 version = parser.parse_args().version
 OUT = ROOT / f'build/game-data/{version}'
 OUT.mkdir(parents=True, exist_ok=True)

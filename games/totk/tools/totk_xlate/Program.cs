@@ -66,9 +66,9 @@ static class SwshXlate
         public SetBindingPair CreateStorageBufferBinding(int index) => new(0, _binding++);
         public SetBindingPair CreateTextureBinding(int count, bool isBuffer) { int b = _binding; _binding += count; return new(0, b); }
         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
-        public int QuerySamplerArrayLengthFromPool() => 32;
+        public int QuerySamplerArrayLengthFromPool() => (string)_job["arch"] == "sm86" ? 1 << 12 : 32;   // sm86: whole ID ranges, turned into pool pointers by ShaderPools (seedds/nxnative, MIT)
         public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
-        public int QueryTextureArrayLengthFromPool() => 32;
+        public int QueryTextureArrayLengthFromPool() => (string)_job["arch"] == "sm86" ? 1 << 20 : 32;
 
         string Get(string table, int slot) => _job[table] is JsonObject t && t[slot.ToString()] is JsonNode n ? (n is JsonObject o ? (string)o["type"] : (string)n) : null;
         int TexSlot(int handle, int cbufSlot)
@@ -144,6 +144,9 @@ static class SwshXlate
         // host knows at the latest; a compute shader's own driver constant layout in c[0] (uniform buffer entries, storage buffer entries,
         // texture handles, its size, the push constant bytes) comes with the job as nvn2_cs, read from its control section.
         public int QueryConstantBuffer1Size() => _c1.Length;
+        // Patch 0008: task/mesh stages translated as compute keep their stage memory in this shared array.
+        public int[] QueryAmpereStageMemory() => QueryAmpereMeshLayout();
+        public int[] QueryAmpereMeshLayout() => _job["mesh_layout"] is JsonArray mesh ? mesh.Select(v => (int)v).ToArray() : null;
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
     }
 

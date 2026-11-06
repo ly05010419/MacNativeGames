@@ -69,7 +69,7 @@ uint64_t nvn_unimpl_c(nvn_slot_t *slot, uint64_t x0, uint64_t x1, uint64_t x2) {
     unsigned i = (unsigned)(slot - nvn_slot);
     if (!g_unimpl_seen[i]++) LOG("【红】NVN 未实现被调用：%s (x0=%#llx x1=%#llx x2=%#llx)", nvn_names[i], x0, x1, x2);
 #ifdef GAME_NS2
-    /* A Switch 2 game in bring-up (docs/ns2-port.md): an unimplemented entry is named once and answers 0, so one run shows
+    /* A Switch 2 game (docs/ns2-port.md): an unimplemented entry is named once and answers 0, so one run shows
        every entry the game reaches; what it should have done is missing from the picture. Open, per entry. */
     return 0;
 #else
@@ -178,6 +178,10 @@ void mtl_wb_fence_done(void);   // TOTK: small render targets read from the CPU 
 static const int g_devinfo[] = {
 #if defined(GAME_BOTW) && !defined(GAME_BOTW190)   // 1.9.0 (SDK 20.5) takes the values below, as TOTK
     [0x00] = 53, [0x01] = 311,  // Breath of the Wild 1.6.0 main+0xe55304 requires major 53, minor >= 311 (botw.md).
+#elif defined(GAME_OOT)
+    // Ocarina of Time (SDK 22.2.8) requires major 231, minor >= 40 (main+0x346c10c); below it, it never stores its graphics
+    // system pointer (main+0x346c220) and reads it as null at its first frame (main+0x946a20).
+    [0x00] = 231, [0x01] = 40,
 #elif defined(GAME_NS2)
     // NVN2 (Switch 2): Donkey Kong Bananza requires major 231, minor >= 30 and creates no graphics system otherwise (a null
     // read in its frame loop); found by seedds/nxnative (8dd0c98a, MIT).
@@ -198,9 +202,24 @@ static const int g_devinfo[] = {
     [0x55] = 262144, [0x56] = 4096, [0x57] = 1, [0x58] = 4, [0x59] = 2, [0x5A] = 0, [0x5B] = 4096, [0x5C] = 16384,
     [0x5D] = 4096, [0x5E] = 128, [0x5F] = 4096,
 };
+#ifdef GAME_NS2
+/* NVN2 items past the Switch 1 table (0x60-0xA9), the Switch 2 driver's constants as seedds/nxnative dm/gfx/nvn/hle_nvn.c
+   g_devinfo2 has them (MIT; read from the games' own sdk, SDK 21.4.4). Ocarina of Time reads 0x67 (256: the alignment of its
+   copies of shader control sections and code). NS2_DEVINFO_RT: an item NVN2 reads from the GPU at run time (unknown here):
+   0 with a red line. Items below 0x60 keep the table above, as Bananza and Pokopia were run with it. */
+enum { NS2_DEVINFO_RT = -1 };
+static const int g_devinfo_ns2_hi[] = { [0x00] = 65535, [0x01] = 1, [0x02] = NS2_DEVINFO_RT, [0x03] = 256, [0x04] = 16, [0x05] = 65535, [0x06] = 65535, [0x07] = 256, [0x08] = 1, [0x09] = 16, [0x0A] = 16, [0x0B] = 16, [0x0C] = 1, [0x0D] = 1, [0x0E] = 1, [0x0F] = 256, [0x10] = 0, [0x11] = 16, [0x12] = 8, [0x13] = 16, [0x14] = 32, [0x15] = 31, [0x16] = 536870912, [0x17] = 16777216, [0x18] = 16777216, [0x19] = 1073741824, [0x1A] = 32, [0x1B] = 1, [0x1C] = 64, [0x1D] = NS2_DEVINFO_RT, [0x1E] = 1, [0x1F] = 2147483647, [0x20] = 32, [0x21] = 32, [0x22] = 4194303, [0x23] = 512, [0x24] = 256, [0x25] = 32, [0x26] = 16383, [0x27] = NS2_DEVINFO_RT, [0x28] = 8, [0x29] = 0, [0x2A] = 0, [0x2B] = 4, [0x2C] = 256, [0x2D] = 16, [0x2E] = 0, [0x2F] = 1, [0x30] = 31, [0x31] = 0, [0x32] = 64, [0x33] = 1, [0x34] = 58368, [0x35] = 24576, [0x36] = 0, [0x37] = 256, [0x38] = 262144, [0x39] = NS2_DEVINFO_RT, [0x3A] = NS2_DEVINFO_RT, [0x3B] = 0, [0x3C] = 201, [0x3D] = 14, [0x3E] = 201, [0x3F] = 20, [0x40] = 163840, [0x41] = 8, [0x42] = 4, [0x43] = 256, [0x44] = 256, [0x45] = 4, [0x46] = 65536, [0x47] = 201, [0x48] = 5, [0x49] = 1 };
+#endif
 NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out) {
     (void)d;
     unsigned w = (unsigned)what;
+#ifdef GAME_NS2
+    if (w >= 0x60 && w - 0x60 < sizeof g_devinfo_ns2_hi / sizeof *g_devinfo_ns2_hi) {
+        int v = g_devinfo_ns2_hi[w - 0x60];
+        if (v == NS2_DEVINFO_RT) { static uint8_t seen[0x4A]; if (!seen[w - 0x60]++) LOG("【红】nvnDeviceGetInteger %#x: NVN2 reads it from the GPU at run time, unknown here; 0", w); v = 0; }
+        *out = v; OLOG("DeviceGetInteger %#x -> %d", w, *out); return;
+    }
+#endif
     // 0x5F 分离采样器绑定数、0x60/0x61 在 SMO 实测表里没有：0x5F 按采样器池上限给 4096 未核，0x60/0x61 报红给 0
     // 0x5F separate sampler binding count and 0x60/0x61 are not in the table measured on SMO: 0x5F is given 4096 per the sampler pool limit, unverified; 0x60/0x61 report a failure and return 0
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { die("unsupported NVN device property %#x", w); }
@@ -299,11 +318,11 @@ NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const voi
 #ifdef GAME_BOTW
  if(v->magic!=MAGIC('P','O','O','L')||(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)||!v->mem){static int n;if(n++<12)LOG("【红】nvnMemoryPoolMap(%p) -> NULL: magic %#x flags %#x mem %p size %#llx",(void *)p,v->magic,v->flags,(void *)v->mem,(unsigned long long)v->size);}
 #endif
- if(v->magic!=MAGIC('P','O','O','L'))return NULL;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
+ if(v->magic!=MAGIC('P','O','O','L'))return NULL;if(!(v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS))((pool_t *)v)->address_used=1;return (v->flags&NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)?NULL:v->mem;}
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *r) {
     return (NVNboolean)totk_vpool_map((pool_t *)p, n, (const totk_mapping_request *)(const void *)r);
 }
-NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { return (NVNbufferAddress)((const pool_t *)p)->mem; }
+NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { ((pool_t *)p)->address_used = 1; return (NVNbufferAddress)((const pool_t *)p)->mem; }
 
 // Buffer objects reference their pool; they do not own the backing allocation.
 typedef struct{NVNdevice *dev;pool_t *pool;int64_t off;uint64_t size;} totk_buffer_builder;
@@ -311,7 +330,7 @@ typedef struct{uint32_t magic;pool_t *pool;int64_t off;uint64_t size;} totk_buff
 FITS(totk_buffer_builder,NVNbufferBuilder);FITS(totk_buffer,NVNbuffer);
 NVN(nvnBufferBuilderSetDevice, void, NVNbufferBuilder *b,NVNdevice *d){((totk_buffer_builder *)b)->dev=d;}
 NVN(nvnBufferBuilderSetDefaults, void, NVNbufferBuilder *b){NVNdevice *d=((totk_buffer_builder *)b)->dev;memset(b,0,sizeof(totk_buffer_builder));((totk_buffer_builder *)b)->dev=d;}
-NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b,NVNmemoryPool *p,ptrdiff_t off,size_t size){totk_buffer_builder *v=(void *)b;v->pool=(void *)p;v->off=off;v->size=size;}
+NVN(nvnBufferBuilderSetStorage, void, NVNbufferBuilder *b,NVNmemoryPool *p,ptrdiff_t off,size_t size){totk_buffer_builder *v=(void *)b;v->pool=(void *)p;if(p)((pool_t *)p)->address_used=1;v->off=off;v->size=size;}
 NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *b,const NVNbufferBuilder *builder){const totk_buffer_builder *v=(const void *)builder;
 #ifdef GAME_BOTW
  /* Breath of the Wild creates a 256 KiB buffer at the start of a 144 KiB pool and never checks the result: the driver does
@@ -359,6 +378,7 @@ static int dpool_add(struct dpool_base *t, int *nt, int *next, const void *pool,
     int b = t[i].base; pthread_mutex_unlock(&g_dpool_mu); return b;
 }
 static int dpool_base(const struct dpool_base *t, int nt, const void *pool) { for (int i = 0; i < nt; i++) if (t[i].pool == pool) return t[i].base; return 0; }
+int nvn_samp_pool_base(const void *pool) { return dpool_base(g_spb, g_nspb, pool); }
 int nvn_tex_pool_base(const void *pool) { return dpool_base(g_tpb, g_ntpb, pool); }   // nvn_mtl.m: the bound pool's part of the table
 /* The pools each command buffer last bound, as bases (only command buffers that bound a pool other than the first). */
 static struct { const void *cmd; int tb, sb; } g_cbpool[64]; static _Atomic int g_ncbpool;
@@ -449,7 +469,7 @@ NVN(nvnTextureBuilderSetDepthStencilMode, void, NVNtextureBuilder *b,NVNtextureD
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b,NVNtextureSwizzle r,NVNtextureSwizzle g,NVNtextureSwizzle blue,NVNtextureSwizzle a){if((unsigned)r>5||(unsigned)g>5||(unsigned)blue>5||(unsigned)a>5)die("invalid NVN texture swizzle");TB(b)->d.swizzle_r=r;TB(b)->d.swizzle_g=g;TB(b)->d.swizzle_b=blue;TB(b)->d.swizzle_a=a;}
 NVN(nvnTextureBuilderSetSamples, void, NVNtextureBuilder *b, int s) { TB(b)->d.samples = s; }
 NVN(nvnTextureBuilderSetStride, void, NVNtextureBuilder *b, ptrdiff_t s) { TB(b)->d.stride = (uint32_t)s; }
-NVN(nvnTextureBuilderSetStorage, void, NVNtextureBuilder *b, NVNmemoryPool *p, ptrdiff_t off) { TB(b)->pool = (pool_t *)p; TB(b)->off = off; }
+NVN(nvnTextureBuilderSetStorage, void, NVNtextureBuilder *b, NVNmemoryPool *p, ptrdiff_t off) { TB(b)->pool = (pool_t *)p; TB(b)->off = off; if (p) ((pool_t *)p)->address_used = 1; }
 NVN(nvnTextureBuilderSetPackagedTextureLayout, void, NVNtextureBuilder *b, const NVNpackagedTextureLayout *l) {
     TB(b)->has_layout = l != NULL; if (l) memcpy(TB(b)->layout, l->layout, 8);
     TB(b)->d.pkg_block_h = l ? l->layout[0] + 1 : 0;
@@ -2184,17 +2204,25 @@ NVN(nvnCommandBufferBindVertexBuffers, void, NVNcommandBuffer *c, int first, int
     if (n < 0 || first + n > 16) { LOG("【红】BindVertexBuffers first=%d n=%d", first, n); return; }
     p_bind_vbuf *r = RECN(c, OP_BIND_VBUF, p_bind_vbuf, r, n); r->first = first; r->n = n; memcpy(r->r, rg, sizeof *rg * n); hw_fix(CB(c), 24 * (size_t)n);
 }
+/* NVN2 task (6) / mesh (7) stages bind into slots 3 / 4 (nvn_ctl.h ctl_stage). */
+static inline int st_host(int st) {
+#ifdef GAME_NS2
+    if (st == 6) return 3;
+    if (st == 7) return 4;
+#endif
+    return st;
+}
 NVN(nvnCommandBufferBindUniformBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
-    *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, i, a, n}; hw_fix(CB(c), 20);   /* CB_SIZE/ADDRESS (4 words) + CB_BIND (1) */
+    *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st_host(st), i, a, n}; hw_fix(CB(c), 20);   /* CB_SIZE/ADDRESS (4 words) + CB_BIND (1) */
 }
 NVN(nvnCommandBufferBindUniformBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
-    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
+    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st_host(st), first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
 }
 NVN(nvnCommandBufferBindStorageBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
-    *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, i, a, n}; hw_fix(CB(c), 20);   /* macro 16 (1 word) + CB_DATA address/size (4) */
+    *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st_host(st), i, a, n}; hw_fix(CB(c), 20);   /* macro 16 (1 word) + CB_DATA address/size (4) */
 }
 NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
-    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
+    for (int i = 0; i < n; i++) { *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st_host(st), first + i, rg[i].address, rg[i].size}; hw_fix(CB(c), 20); }
 }
 /* DM_NVN_LIFELOG (totk_lifelog.h): one bound handle of a followed texture; for a deferred bind the logged id is the
    value at record time, the replay's "use" lines show the one resolved at submit. */
@@ -2219,7 +2247,7 @@ static void life_bind(NVNcommandBuffer *c, int op, int st, int slot, const uint6
 }
 static void bind_handles_rec(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h, int deferred) {
     if (n < 0 || n > 32) { LOG("【红】绑定句柄数 %d", n); return; }
-    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->pad_ = 0;
+    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st_host(st); r->first = first; r->n = n; r->pad_ = 0;
     r->src = deferred ? (uint64_t)(uintptr_t)h : 0; memcpy(r->h, h, 8 * n);
     if (atomic_load(&g_ncbpool)) {   // a command buffer that bound a pool other than the first: its IDs into that pool's part of the table (texture ID bits 0-19, sampler ID from bit 20)
         int tb = 0, sb = 0, nc = atomic_load(&g_ncbpool);
@@ -2375,6 +2403,18 @@ static void push_const(NVNcommandBuffer *c, int compute, uint64_t w, uint64_t of
 }
 NVN_NOPROTO(nvnCommandBufferPushGraphicsConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 0, w, off, n, data); }
 NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 1, w, off, n, data); }
+/* NVN2: task / mesh draws (Ocarina of Time's title UI from the end of its title movie). Recorded as games/mkw does (first task
+   group, group count; no record for a count of 0); the replay draws them through the task / mesh stages. */
+/* NVN2 calls first met in Ocarina of Time's opening scene (forms from seedds/nxnative hle_nvn.c, MIT). Indirect records are read back when replayed. */
+NVN_EXTRA(nvnCommandBufferDrawMeshTasksIndirect, void, NVNcommandBuffer *c, NVNbufferAddress ind) { *REC(c, OP_MESH_TASKS, p_mesh_tasks) = (p_mesh_tasks){0, 0, ind}; }
+NVN_EXTRA(nvnCommandBufferDispatchComputeIndirect, void, NVNcommandBuffer *c, NVNbufferAddress ind) { *REC(c, OP_DISPATCH, p_dispatch) = (p_dispatch){0, 0, 0, (uint64_t)__builtin_return_address(0), ind}; }
+NVN_EXTRA(nvnCommandBufferBindShadingRateImage, void, NVNcommandBuffer *c, const void *view, const void *tex) { (void)c; (void)view; (void)tex; }   /* variable rate shading: everything shades at full rate */
+NVN_EXTRA(nvnCommandBufferShadingRateImagePalette, void, NVNcommandBuffer *c, int first, int n, const void *entries) { (void)c; (void)first; (void)n; (void)entries; }
+NVN_EXTRA(nvnCommandBufferClearBuffer, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n, uint32_t v) { *REC(c, OP_CLEAR_BUF, p_clear_buf) = (p_clear_buf){a, n, v, 0}; }
+NVN_EXTRA(nvnCommandBufferDrawMeshTasks, void, NVNcommandBuffer *c, uint32_t first, uint32_t count) {
+    if (!count) return;
+    *REC(c, OP_MESH_TASKS, p_mesh_tasks) = (p_mesh_tasks){first, count, 0};
+}
 #endif
 NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPrimitive pr, NVNindexType it, int n, NVNbufferAddress ib,
     int bv, int bi, int inst) {
@@ -2383,7 +2423,7 @@ NVN(nvnCommandBufferDrawElementsInstanced, void, NVNcommandBuffer *c, NVNdrawPri
 NVN(nvnCommandBufferDispatchCompute, void, NVNcommandBuffer *c, int x, int y, int z) {
     // 跳板是尾跳（br），这里的返回地址就是游戏里的调用点
     // The thunk is a tail jump (br), so the return address here is the call site in the game
-    *REC(c, OP_DISPATCH, p_dispatch) = (p_dispatch){x, y, z, (uint64_t)__builtin_return_address(0)};
+    *REC(c, OP_DISPATCH, p_dispatch) = (p_dispatch){x, y, z, (uint64_t)__builtin_return_address(0), 0};
 }
 NVN(nvnCommandBufferBarrier, void, NVNcommandBuffer *c, int bits) { *(int32_t *)rec(c, OP_BARRIER, 8) = bits; }
 NVN(nvnCommandBufferSetTexturePool, void, NVNcommandBuffer *c, const NVNtexturePool *p) {
