@@ -3,21 +3,23 @@
 [Source copies](third_party/COPIES.md) · [Licenses](THIRD_PARTY_NOTICES.md)
 
 This directory contains an isolated Apple silicon target for **Hyrule Warriors:
-Age of Calamity 1.3.0**, title ID `01002B00111A2000`. The original ARM64 modules
+Age of Calamity 1.3.0 and 1.4.1**, title ID `01002B00111A2000`. The original ARM64 modules
 are rewritten ahead of time and execute natively; Horizon services run through
 the host and NVN commands map to Metal. This is an experimental bring-up. Native
 gameplay has been reached with keyboard and DualSense input and audio. Full
 rendering, save/reload and packaged-app acceptance remain in progress; a
 successful build is not a claim that the full game works.
 
-The supported input is an unmodified, already merged **1.3.0 / v327680 extracted
-directory**, containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}` and a `RomFS/`
-directory tree. NSP/XCI files, keys and LibHac are not needed for this mode.
-Other builds and RomFS images are rejected. This path does not claim base/update
+The supported input is an unmodified, already merged **1.3.0 / v327680 or 1.4.1 /
+v458752 extracted directory**, containing `ExeFS/{rtld,main,subsdk0,sdk,main.npdm}`
+and a `RomFS/` directory tree. The version comes from main's build ID. NSP/XCI
+files, keys and LibHac are not needed for this mode. Other builds and RomFS
+images are rejected. This path does not claim base/update
 composition, NCA signature verification or container integrity verification.
 
 The inspected input's NSO hashes/build IDs, segment hashes, NPDM and RomFS tree
-digest are pinned in [expected-1.3.0.json](assets/expected-1.3.0.json). Every
+digest are pinned in [expected-1.3.0.json](assets/expected-1.3.0.json) and
+[expected-1.4.1.json](assets/expected-1.4.1.json). Every
 build verifies the files, uses APFS clones in a separate workspace, and never
 patches the originals. The tree digest is SHA-256 over sorted UTF-8 rows
 `sha256<TAB>size<TAB>relative POSIX path<NEWLINE>`; Finder `.DS_Store` is
@@ -186,6 +188,10 @@ executable-memory allocation, or game binaries, and skip on other architectures.
   above. Later missions, full rendering acceptance and save/reload acceptance
   remain incomplete. The compliance changes are checked with native probes,
   settings tests and a host rebuild; they do not constitute another playthrough.
+- **macOS / Apple M5, game 1.4.1 (v458752):** signed app built with 40,729
+  shaders; the first missions played by hand with audio at 60 fps, and the save
+  carried across launches. Full rendering and whole-game acceptance remain
+  incomplete. The DLC has not been tested on either version.
 - **iOS/iPadOS:** no full app build or device playtest. The copied iOS tools lack
   this target's `runtime/ios/Sources` and `runtime/ios/project.yml`; the public
   AoC builder targets macOS. Shared-source SDK compile checks are separate from

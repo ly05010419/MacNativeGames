@@ -1523,14 +1523,17 @@ def report_profile_status(g, reg, pkg_ver, derived, provisional, artifact='IPA')
 
 def extracted_main(args):
     """Strict AoC Mac path: reuse the pinned stages without container extraction."""
-    from inspect_inputs import inspect
-    if args.platform != 'mac' or args.package != 'v327680' or not args.work_dir:
-        raise BuildError('extracted mode requires --platform mac --package v327680 --work-dir')
+    from inspect_inputs import VERSIONS, inspect, version_of_input
+    tags = {v['tag'] for v in VERSIONS.values()}
+    if args.platform != 'mac' or args.package not in tags or not args.work_dir:
+        raise BuildError(f'extracted mode requires --platform mac --package <{" or ".join(sorted(tags))}> --work-dir')
     if args.allow_damaged or args.provisional or args.survey_only:
         raise BuildError('extracted mode accepts only the pinned unmodified profile')
     repo = find_repo(Path(__file__).resolve())
     game, work = Path(args.extracted).resolve(), Path(args.work_dir).resolve()
-    inspect(game, repo/'assets/expected-1.3.0.json')
+    version = version_of_input(game)
+    if version['tag'] != args.package: raise BuildError(f'{game} holds {version["tag"]}, not {args.package}')
+    inspect(game, repo/'assets'/version['pins'])
     sys.path.insert(0,str(repo/'dm/games')); import game as gamemod
     g = gamemod.load('01002B00111A2000')
     env = dict(os.environ,DM_GAME=g.id,DM_ROOT=str(work),WORK=str(work/'tmp'),DM_METAL_RUNTIME='0')
@@ -1538,9 +1541,9 @@ def extracted_main(args):
     work.mkdir(parents=True,exist_ok=True); (work/'tmp').mkdir(exist_ok=True)
     logs=work/'logs';logs.mkdir(exist_ok=True)
     PROG.mode=progress_mode(args.progress or 'lines');PROG.plan(6)
-    bad=build_mismatch(game,'v327680',g)
+    bad=build_mismatch(game,args.package,g)
     if bad: raise BuildError('unsupported executable build: '+'; '.join(bad))
-    py=sys.executable;patched=work/'patched_v327680'
+    py=sys.executable;patched=work/f'patched_{args.package}'
     if args.phase in ('rewrite','all'): rewrite(py,repo,game/'ExeFS',patched,env,logs,g)
     chain_header(py,repo,env,logs)
     if args.phase in ('host','all'):

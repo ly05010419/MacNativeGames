@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--audio',action='store_true')
     parser.add_argument('--save-from',type=Path,help='copy an existing validation save into this disposable session')
     parser.add_argument('--keys',help='scripted controller actions (DM_KEYS), not a game keys file')
+    parser.add_argument('--package',help='version to run when the work folder holds several, e.g. v458752')
     args=parser.parse_args()
     w=args.work_dir.expanduser().resolve();b=w/'build'
     if w==GAME.parents[1] or GAME.parents[1] in w.parents:
@@ -41,7 +42,10 @@ def main():
         shutil.copytree(args.save_from.expanduser().resolve(),r/'save',dirs_exist_ok=True)
     subprocess.run(['cp','-cR',str(w/f'source/dm/games/{TITLE}'),str(r/'profile')],check=True)
     ctl=r/'control.txt';ctl.touch()
-    e=dict(os.environ,DM_ROOT=str(b),DM_ROMFS=str(b/'extract/v327680/RomFS'),
+    tags=sorted(p.name for p in (b/'extract').iterdir() if (p/'RomFS').is_dir())
+    tag=args.package or (tags[0] if len(tags)==1 else None)
+    if tag not in tags:raise ValueError(f'choose --package, one of: {" ".join(tags)}')
+    e=dict(os.environ,DM_ROOT=str(b),DM_ROMFS=str(b/'extract'/tag/'RomFS'),
            DM_SAVE=str(r/'save'),DM_TEMP=str(r/'temp'),DM_MSL_DIR=str(cache),
            DM_FONT_DIR=str(b/'font'),DM_NVN_SHMAP=str(r/'profile/shader_map.tsv'),
            DM_LANG='en-US',DM_METAL_RUNTIME='0',DM_BOOTPROF='1',DM_CTL=str(ctl),
@@ -60,7 +64,7 @@ def main():
         # Freeze the executable and rewrite outputs for this run. A later build
         # cannot replace the executable currently mapped by the diagnostic.
         shutil.copy2(host,r/'dmhost')
-        subprocess.run(['cp','-cR',str(b/'patched_v327680'),str(r/'patched')],check=True)
+        subprocess.run(['cp','-cR',str(b/f'patched_{tag}'),str(r/'patched')],check=True)
         command=[str(r/'dmhost'),str(r/'patched')]
         record=dict(command=command,environment={k:v for k,v in e.items() if k.startswith('DM_')},
                     host_sha256=hashlib.sha256((r/'dmhost').read_bytes()).hexdigest(),

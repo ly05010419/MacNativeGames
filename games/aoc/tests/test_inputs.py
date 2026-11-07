@@ -1,5 +1,6 @@
 """Extracted-input negative controls, using synthetic data only."""
 import hashlib
+import json
 from pathlib import Path
 import os
 import struct
@@ -29,6 +30,18 @@ class InputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'NSO segment hash mismatch'): inputs.nso(p)
             p.write_bytes(b[:256])
             with self.assertRaisesRegex(ValueError,'truncated NSO segment'): inputs.nso(p)
+
+    def test_version_comes_from_main(self):
+        self.assertEqual(inputs.version_of(inputs.VERSIONS['1.4.1']['main'] + '00'*16)['tag'],'v458752')
+        self.assertEqual(inputs.version_of(inputs.VERSIONS['1.3.0']['main'])['tag'],'v327680')
+        with self.assertRaisesRegex(ValueError,'unsupported executable build'): inputs.version_of('00'*16)
+
+    def test_each_version_has_its_pins(self):
+        for version in inputs.VERSIONS.values():
+            pins=json.loads(inputs.pins_of(version).read_text())
+            self.assertEqual((pins['version'],pins['version_code']),(version['name'],version['code']))
+            self.assertTrue(pins['modules']['main']['build_id'].startswith(version['main']))
+            for name,bid in inputs.COMMON.items(): self.assertTrue(pins['modules'][name]['build_id'].startswith(bid))
 
     def test_npdm_title_memory_and_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:

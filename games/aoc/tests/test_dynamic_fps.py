@@ -100,4 +100,45 @@ class DynamicTimingTests(unittest.TestCase):
     def test_device_interval_and_absent_device(self): self.probe('device')
 
 
+def recorded(layout):
+    """What frame_step asks of the rewriter for one build: originals asserted, words emitted, branches placed."""
+    pc = 0x3100000
+    originals, words, placed = {}, [], {}
+    def emit(word):
+        nonlocal pc
+        words.append(word)
+        pc += 4
+    ctx = SimpleNamespace(here=lambda: pc, emit=emit, state=0x3000000,
+                          site=lambda site, original: originals.update({site: original}),
+                          put=lambda site, encoded, reason: placed.update({site: encoded[0]}))
+    patches.frame_step(ctx, at=layout)
+    return originals, words, placed
+
+
+def store_word(reg, base, offset):
+    return 0xb9000000 | offset // 4 << 10 | base << 5 | reg
+
+
+class BuildLayouts(unittest.TestCase):
+    def test_every_build_has_cuts_and_stubs(self):
+        self.assertEqual(set(patches.CUTS), set(patches.FRAME_STEP))
+        self.assertEqual(len(patches.FRAME_STEP), 2)
+
+    def test_1_4_1_asserts_its_own_sites(self):
+        originals, _, placed = recorded(patches.LAYOUT_141)
+        self.assertEqual(originals, {0x1670124: '68734339', 0x16702d0: 'e83640b9681a00b9e04640bd',
+                                     0x8d9ae0: '4900c0f2', 0x8c3c40: '298d42bd'})
+        self.assertEqual(set(placed), set(originals))
+
+    def test_1_4_1_writes_its_own_frame_rate_block(self):
+        _, words, _ = recorded(patches.LAYOUT_141)
+        for offset in (0x280, 0x284, 0x288):
+            self.assertIn(store_word(8, 17, offset), words)
+        self.assertNotIn(store_word(8, 17, 0x150), words)
+        self.assertIn(0xbd428d29, words)   # the scene's original path keeps this build's load
+
+    def test_1_3_0_is_the_default_layout(self):
+        self.assertEqual(recorded(patches.LAYOUT_130)[0][0x8c3610], '295d41bd')
+
+
 if __name__ == '__main__': unittest.main()

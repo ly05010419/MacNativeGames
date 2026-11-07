@@ -76,10 +76,12 @@ def stage(work):
     return source
 
 
-def verify_originals(build):
-    pins = json.loads((GAME / 'assets/expected-1.3.0.json').read_text())
+def verify_originals(build, version=None):
+    from inspect_inputs import VERSIONS, pins_of
+    version = version or VERSIONS['1.3.0']
+    pins = json.loads(pins_of(version).read_text())
     for name, pin in pins['modules'].items():
-        data = (build / 'extract/v327680/ExeFS' / name).read_bytes()
+        data = (build / 'extract' / version['tag'] / 'ExeFS' / name).read_bytes()
         if len(data) != pin['size'] or hashlib.sha256(data).hexdigest() != pin['sha256']:
             raise ValueError(f'original ExeFS hash mismatch: {name}')
     return pins
@@ -98,16 +100,18 @@ def package_notices(resources):
         shutil.copy2(path, destination)
 
 
-def package(source, build, output, language):
+def package(source, build, output, language, version=None):
     """Package only after the source build succeeds. Never rewrite a patched binary."""
     if output.suffix != '.app':
         raise ValueError('--output must end in .app')
     if output.exists():
         raise ValueError(f'output exists; choose a new path or move it aside: {output}')
-    pins = verify_originals(build)
-    from inspect_inputs import inspect
-    inspect(build / 'extract/v327680', GAME / 'assets/expected-1.3.0.json')
-    rewrite = verify_rewrite(source, build / 'patched_v327680', pins)
+    from inspect_inputs import VERSIONS, inspect, pins_of
+    version = version or VERSIONS['1.3.0']
+    tag = version['tag']
+    pins = verify_originals(build, version)
+    inspect(build / 'extract' / tag, pins_of(version))
+    rewrite = verify_rewrite(source, build / f'patched_{tag}', pins)
     profile = source / f'dm/games/{TITLE}'
     # Prevent packaging a cache from a different chain or profile.
     env = dict(os.environ, DM_GAME=TITLE)
@@ -119,7 +123,7 @@ def package(source, build, output, language):
     if stamp != {'game': TITLE, 'inputs': inputs}:
         raise ValueError('shader library stamp differs from the source profile')
     shader_stats = verify_libraries(libraries, profile / 'shader_map.tsv')
-    required = [build / 'tools/dmhost', build / 'patched_v327680/build_src.sha256',
+    required = [build / 'tools/dmhost', build / f'patched_{tag}/build_src.sha256',
                 build / 'font/nintendo_ext.ttf', profile / 'c1_full.tsv', profile / 'cb_extent.tsv']
     for path in required:
         if not path.is_file():
@@ -136,8 +140,8 @@ def package(source, build, output, language):
     resources.mkdir(parents=True)
     macos.mkdir(parents=True)
     try:
-        for src, name in [(build / 'extract/v327680/RomFS', 'RomFS'),
-                          (build / 'patched_v327680', 'patched'), (build / 'font', 'font'),
+        for src, name in [(build / 'extract' / tag / 'RomFS', 'RomFS'),
+                          (build / f'patched_{tag}', 'patched'), (build / 'font', 'font'),
                           (profile, 'profile')]:
             shutil.copytree(src, resources / name)
         (resources / 'shader-cache').mkdir()
@@ -148,8 +152,8 @@ def package(source, build, output, language):
         with (partial / 'Contents/Info.plist').open('wb') as stream:
             plistlib.dump({'CFBundleExecutable': 'AgeOfCalamity', 'CFBundleIdentifier': 'org.macnativegames.aoc',
                           'CFBundleName': APP_NAME, 'CFBundleDisplayName': APP_NAME,
-                          'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.3.0',
-                          'CFBundleVersion': '327680', 'LSMinimumSystemVersion': '26.0',
+                          'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version['name'],
+                          'CFBundleVersion': str(version['code']), 'LSMinimumSystemVersion': '26.0',
                           'NSHighResolutionCapable': True, 'LSApplicationCategoryType': 'public.app-category.games'}, stream)
         subprocess.run(['clang', '-arch', 'arm64', '-mmacosx-version-min=26.0', '-O2', '-Wall', '-Wextra', '-Werror', str(GAME / 'app/launcher.c'),
                         '-o', str(macos / 'AgeOfCalamity')], check=True)
@@ -160,7 +164,7 @@ def package(source, build, output, language):
         report = {'game': pins, 'chain': chain, 'shader_inputs': inputs, 'language': language,
                   'host_sha256': hashlib.sha256((resources / 'dmhost').read_bytes()).hexdigest(),
                   'compiler': subprocess.check_output(['xcrun','-sdk','macosx','metal','--version'],text=True).strip(),
-                  'rewrite_rules': (build / 'patched_v327680/build_src.sha256').read_text()}
+                  'rewrite_rules': (build / f'patched_{tag}/build_src.sha256').read_text()}
         report['repository_head'] = subprocess.check_output(['git','rev-parse','HEAD'],cwd=GAME,text=True).strip()
         # Identify the actual isolated sources including uncommitted AoC changes.
         report['source_files'] = {p.relative_to(GAME).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
@@ -284,7 +288,7 @@ def environment(work):
 
 def main():
     import fcntl
-    from inspect_inputs import inspect, write_report
+    from inspect_inputs import inspect, pins_of, version_of_input, write_report
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('inputs', type=Path, help='extracted root containing ExeFS/ and RomFS/; no keys needed')
     parser.add_argument('--work-dir', required=True, type=Path)
@@ -309,32 +313,34 @@ def main():
     with (work / 'build.lock').open('a') as lock:
         try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError: raise ValueError('another build owns this work directory')
-        report = inspect(original, GAME / 'assets/expected-1.3.0.json')
+        version = version_of_input(original)
+        tag, pins = version['tag'], pins_of(version)
+        report = inspect(original, pins)
         write_report(report, work / 'input-report.json')
-        print(f"Verified {report['romfs']['files']} RomFS files; container integrity unavailable", flush=True)
+        print(f"Verified {version['name']}: {report['romfs']['files']} RomFS files; container integrity unavailable", flush=True)
         if args.phase == 'inspect': return
         source = stage(work)
         build = work / 'build'
-        destination = build / 'extract/v327680'
+        destination = build / 'extract' / tag
         # APFS clones preserve originals and avoid hard links to writable game files.
         if not destination.exists():
-            partial = destination.with_name('v327680.partial')
+            partial = destination.with_name(f'{tag}.partial')
             if partial.exists(): raise ValueError(f'inspect/remove interrupted input copy: {partial}')
             partial.mkdir(parents=True)
             for name in ('ExeFS','RomFS'):
                 subprocess.run(['cp','-cR',str(original/name),str(partial/name)],check=True)
-            inspect(partial, GAME / 'assets/expected-1.3.0.json')
+            inspect(partial, pins)
             partial.rename(destination)
         else:
-            inspect(destination, GAME / 'assets/expected-1.3.0.json')
+            inspect(destination, pins)
         env = environment(work)
         if args.phase != 'package':
             subprocess.run([sys.executable, str(source/'scripts/build_ipa_from_nsp.py'),
                             '--extracted', str(destination), '--work-dir', str(build),
-                            '--phase', args.phase, '--platform','mac','--package','v327680',
+                            '--phase', args.phase, '--platform','mac','--package',tag,
                             '--language',args.language,'--progress','lines'],env=env,check=True)
         if args.phase in ('all','package'):
-            package(source,build,output,args.language)
+            package(source,build,output,args.language,version)
 
 
 if __name__ == '__main__':
