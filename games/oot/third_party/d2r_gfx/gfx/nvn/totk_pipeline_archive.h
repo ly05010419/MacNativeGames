@@ -150,6 +150,8 @@ static NSUInteger par_load_prebuilt(id<MTLDevice> dev) {
     const char *off = getenv("TOTK_PIPELINE_PREBUILT"), *seed = getenv("TOTK_SHADER_SEED_DIR");
     NSString *arch = dev.architecture.name, *dir = seed && *seed ? @(seed) : nil;
 #if !TARGET_OS_IPHONE
+    NSString *packaged = exe_rel("pipelines");
+    if ([NSFileManager.defaultManager fileExistsAtPath:[packaged stringByAppendingFormat:@"/pipelines-%@.json", arch]]) dir = packaged;
     if (!dir) {   // the Mac app's own (build_app.py mac_pipelines; the launcher names no seed): build/pipelines since 2026-11-03,
         dir = exe_rel("pipelines");   // beside the shader data bundle, which they would change on every packaging; before, the seed
         if (![NSFileManager.defaultManager fileExistsAtPath:dir]) dir = exe_rel("shader-seed");

@@ -1,6 +1,6 @@
 /* Included after the production backend: first-use pixels, not just masks. */
 int mtl_probe_memory_demand(void) {
-    mtl_init();int checked=raw_write_domain_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
+    mtl_init();int checked=raw_write_domain_probe()+upstream_probe(),negative=getenv("OOT_MEMORY_PROBE_NEGATIVE")?atoi(getenv("OOT_MEMORY_PROBE_NEGATIVE")):0;
     size_t page=(size_t)getpagesize();void *raw=NULL;
     if(posix_memalign(&raw,page,page*2))MDIE("memory demand probe allocation");memset(raw,0,page*2);
     int owner_a=0,owner_b=0;mtl_pool_add(raw,page);mtl_pool_add((char *)raw+page,page);

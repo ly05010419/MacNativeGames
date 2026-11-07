@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v16-mesh-wide-loads"
+#define DMSH_CHAIN "oot-native-v17-mesh-invariant"

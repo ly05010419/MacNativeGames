@@ -21,9 +21,12 @@ import sys
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
-from build_app import METAL_FLAGS, metal_compiler   # noqa: E402
+from build_app import METAL_FLAGS as BASE_METAL_FLAGS, metal_compiler   # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'dev'))
 from game_slot import GameSlot
+
+# Match totk_precise_opts: the invariant position attribute requires this option.
+METAL_FLAGS = [*BASE_METAL_FLAGS, "-fpreserve-invariance"]
 
 
 def digest(path):

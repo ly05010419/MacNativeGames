@@ -34,7 +34,7 @@ class PackageTests(unittest.TestCase):
                            chain=chain,all_default=True,nvn_depth_mode='minus-w',corpus_shaders=1,
                            translated_default=1,shaders=1,files={self.source.name:source_hash})
         (self.seed/'seed-manifest.json').write_text(json.dumps(self.metadata))
-        self.library_metadata=dict(schema=1,complete=True,compiler='synthetic fixture',
+        self.library_metadata=dict(schema=1,complete=True,compiler='synthetic fixture -fpreserve-invariance',
                                    sources={self.source.name:source_hash},
                                    files={library.name:package.sha(library),self.recorded_library.name:package.sha(self.recorded_library)})
         (self.libs/'libraries-manifest.json').write_text(json.dumps(self.library_metadata))
@@ -51,6 +51,12 @@ class PackageTests(unittest.TestCase):
         self.library_metadata['complete']=False
         (self.libs/'libraries-manifest.json').write_text(json.dumps(self.library_metadata))
         with self.assertRaisesRegex(ValueError,'incomplete'):
+            package.verify_shader_resources(self.tree)
+
+    def test_compiler_without_invariance_cannot_be_packaged(self):
+        self.library_metadata['compiler']='synthetic fixture'
+        (self.libs/'libraries-manifest.json').write_text(json.dumps(self.library_metadata))
+        with self.assertRaisesRegex(ValueError,'lack position invariance'):
             package.verify_shader_resources(self.tree)
 
     def test_recorded_binding_library_is_also_verified(self):

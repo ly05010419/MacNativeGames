@@ -54,6 +54,7 @@ def verify_shader_resources(tree):
         raise ValueError('OOT shader seed is incomplete or belongs to another translation context')
     libs=json.loads((libraries/'libraries-manifest.json').read_text())
     if not libs.get('complete'):raise ValueError('OOT Metal libraries are incomplete')
+    if '-fpreserve-invariance' not in libs.get('compiler','').split():raise ValueError('OOT Metal libraries lack position invariance')
     shared=build_helpers()
     known_seed=shared.seed_digests(seed);known_libs=shared.seed_digests(libraries)
     for name,want in metadata['files'].items():
@@ -101,9 +102,48 @@ def shader_bundle(tree,record):
     temporary.rename(bundle);stamp.write_text(json.dumps(want)+'\n')
     return bundle
 
+def compute_pipeline_archive(work, tree):
+    """Build every seed compute pipeline, then package only a complete verified archive."""
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_compute_pipelines import compute_rows
+    from dev.game_slot import GameSlot
+    seed=tree/'build/shader-seed/oot'
+    rows=compute_rows(seed)
+    folder=tree/'build/compute-pipelines';folder.mkdir(parents=True,exist_ok=True)
+    plan=folder/'compute.tsv';plan.write_text('\n'.join(rows)+'\n')
+    chain=json.loads((seed/'seed-manifest.json').read_text())['chain']
+    # The runtime's archive metadata also checks GPU, OS and chain before reuse.
+    cache=folder/chain
+    logs=work/'logs';logs.mkdir(exist_ok=True)
+    log=logs/'compute-pipelines.log'
+    env=dict(os.environ,TOTK_NATIVE_DIR=str(tree/'build'),TOTK_SHADER_CACHE=str(cache),
+             TOTK_SHADER_SEED_DIR=str(seed),TOTK_PIPELINE_ARCHIVE_HOST='1',TOTK_DEBUG_LOG='1')
+    print(f'Preparing {len(rows)} compute pipelines before packaging',flush=True)
+    with GameSlot(owner='build',purpose='OOT offline compute pipelines',expect_seconds=1800),log.open('w') as f:
+        subprocess.run([work/'build/oot-native',tree/'rewritten/oot','pipeline-archive',plan],
+                       cwd=tree,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
+    reports=[json.loads(line) for line in log.read_text().splitlines() if line.startswith('{"render":')]
+    if not reports:raise ValueError('compute archive produced no completion report')
+    report=reports[-1]
+    if report['failed'] or report['write_failed'] or report['compute']+report['kept']!=len(rows):
+        raise ValueError('incomplete compute pipeline archive: '+str(report))
+    target=tree/'build/pipelines'
+    count=build_helpers().mac_pipeline_files(cache/'pipelines',target,report['arch'],chain)
+    expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
+    index=target/f"pipelines-{report['arch']}.tsv"
+    actual={line.split('\t')[0]for line in index.read_text().splitlines()} if index.exists() else set()
+    if not expected<=actual:raise ValueError('compute archive index omits planned pipelines')
+    report.update(planned=len(rows),indexed=count,chain=chain,
+                  plan_sha256=sha(plan),runtime_sha256=sha(work/'build/oot-native'),
+                  files={p.name:sha(p)for p in sorted(target.iterdir()) if p.is_file() and p.name!='compute-manifest.json'})
+    (target/'compute-manifest.json').write_text(json.dumps(report,indent=2)+'\n')
+    return target
+
 def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     """Stage a sealed App containing its runtime data, then replace the closed App."""
     shader_record=verify_shader_resources(tree)
+    pipelines=compute_pipeline_archive(work,tree) if shader_record else None
     prepared=shader_bundle(tree,shader_record) if shader_record else None
     opening_overlay=tree/'extracted/oot/opening-patches'
     subprocess.run([sys.executable,GAME/'scripts/make_opening_overlay.py','--romfs',tree/'extracted/oot/romfs',
@@ -113,6 +153,7 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     mac=temporary/'Contents/MacOS';res=temporary/'Contents/Resources';data=res/'totk'
     mac.mkdir(parents=True);data.mkdir(parents=True)
     clone_file(work/'build/oot-native',mac/'OcarinaOfTime')
+    if pipelines:shutil.copytree(pipelines,data/'build/pipelines',copy_function=clone_file)
     for rel in ('build/game-data/oot','build/shader-service','extracted/oot/exefs',
                 'extracted/firmware/shared-fonts'):
         shutil.copytree(tree/rel,data/rel,copy_function=clone_file)

@@ -85,7 +85,7 @@ sealed class MeshStage
         string head=$"struct dm_payload_t {{ uint w[{Math.Max(pay,1)}]; }};\n",sig=string.Join(", ",pars.Concat(extras)),first="constant uint* dm_first [[buffer(29)]]";
         if(kind=="ts")return src+"\n"+head+$"[[object]] void main0({sig}, object_data dm_payload_t& dm_payload [[payload]], mesh_grid_properties dm_grid, {first})\n{{\n{start}    if({lid}==0u){mem}[0]=dm_first[0]+{tg};\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n    {call}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n    for(uint i={lid};i<{pay}u;i+={threads}u)dm_payload.w[i]={mem}[{output}u+i];\n    if({lid}==0u)dm_grid.set_threadgroups_per_grid(uint3(min({mem}[{output+1}],1024u),1u,1u));\n}}\n";
         var vn=vertex.Select(x=>x.n).Distinct().ToList();var pn=primitive.Select(x=>x.n).Distinct().ToList();
-        head+="struct dm_vertex_t { float4 position [[position]];\n"+string.Concat(vn.Where(n=>n>=0).Select(n=>$"float4 a{n} [[user(locn{n})]];\n"))+"};\n";
+        head+="struct dm_vertex_t { float4 position [[position, invariant]];\n"+string.Concat(vn.Where(n=>n>=0).Select(n=>$"float4 a{n} [[user(locn{n})]];\n"))+"};\n";
         if(pn.Count>0)head+="struct dm_prim_t {\n"+string.Concat(pn.Select(n=>$"float4 p{n} [[user(locn{n})]];\n"))+"};\n";
         head+=$"using dm_mesh_t=metal::mesh<dm_vertex_t,{(pn.Count>0?"dm_prim_t":"void")},{maxV},{maxP},metal::topology::triangle>;\n";
         int stride=Math.Max(vertex.Count+primitive.Count,1)*32;
