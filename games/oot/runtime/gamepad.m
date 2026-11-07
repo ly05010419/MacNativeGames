@@ -1076,13 +1076,11 @@ static void detach_keyboard(GCKeyboard *keyboard) {
 }
 #endif
 
-void runtime_gamepad_start(void) {
-    if (started) return;
-    started = YES;
-    load_controller_map();
-    load_controller_type();
-    load_settings_button();
-    load_mouse_mode();
+/* The GameController part of the start-up. Its first call into the framework is an XPC handshake with gamecontrollerd, which
+   never answers while a process that died with a wedged GPU context is stuck exiting (2026-11-07: every new game hung here for
+   30 minutes, the Mac had to be rebooted). So the handshake runs on a background thread, the game starts without controllers,
+   and this runs on the main queue once the service has answered; a red line names the wait after 5 s. */
+static void gamepad_start_gc(void) {
 #if TARGET_OS_OSX
     load_gamepad_background();
 #endif
@@ -1099,7 +1097,6 @@ void runtime_gamepad_start(void) {
                    }];
     for (GCController *controller in GCController.controllers) attach_gamepad(controller);
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
-    hid_pad_start();
 #if TARGET_OS_IPHONE
     [center addObserverForName:GCKeyboardDidConnectNotification object:nil queue:NSOperationQueue.mainQueue
                    usingBlock:^(NSNotification *notification) { attach_keyboard(notification.object); }];
@@ -1107,6 +1104,27 @@ void runtime_gamepad_start(void) {
                    usingBlock:^(NSNotification *notification) { detach_keyboard(notification.object); }];
     attach_keyboard(GCKeyboard.coalescedKeyboard);
 #endif
+}
+
+void runtime_gamepad_start(void) {
+    if (started) return;
+    started = YES;
+    load_controller_map();
+    load_controller_type();
+    load_settings_button();
+    load_mouse_mode();
+    hid_pad_start();
+    dispatch_queue_t bg = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    __block atomic_int answered = 0;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), bg, ^{
+        if (!atomic_load(&answered))
+            fprintf(stderr, "[totk-input] 【红】GameController 服务 5 秒没有回应（gamecontrollerd 卡住？）：游戏先不带手柄运行，服务回应后自动接上\n");
+    });
+    dispatch_async(bg, ^{
+        (void)GCController.controllers;   // the handshake with gamecontrollerd; blocks only this thread when the service is wedged
+        atomic_store(&answered, 1);
+        dispatch_async(dispatch_get_main_queue(), ^{ gamepad_start_gc(); });
+    });
 }
 
 void runtime_gamepad_clear(void) {
