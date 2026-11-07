@@ -234,6 +234,10 @@ def build(args, source):
     if sha(binary)!=(binary.with_suffix('.sha256')).read_text().strip():raise ValueError('shader translator checksum mismatch')
     temporary_service=service/'totk_xlate.new'
     shutil.copy2(binary,temporary_service);os.replace(temporary_service,service/'totk_xlate')
+    proof=GAME/'prebuilt/macos-arm64/oot_write_proof.dylib'
+    if sha(proof)!=proof.with_suffix('.dylib.sha256').read_text().strip():raise ValueError('shader proof analyzer checksum mismatch')
+    shutil.copy2(proof,service/proof.name)
+    shutil.copy2(proof.with_name('SPIRV-Tools.LICENSE'),service/'SPIRV-Tools.LICENSE')
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',

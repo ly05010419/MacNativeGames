@@ -145,6 +145,7 @@ static class SwshXlate
         // texture handles, its size, the push constant bytes) comes with the job as nvn2_cs, read from its control section.
         public int QueryConstantBuffer1Size() => _c1.Length;
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
+        public bool QueryRawReadSpan() => _job["raw_read_span"] is JsonValue value && value.TryGetValue<bool>(out bool enabled) && enabled;
         public bool QueryRawReadSameHighCache() => _job["raw_read_same_high_cache"] is JsonValue value && value.TryGetValue<bool>(out bool enabled) && enabled;
         public int[] QueryAmpereStageMemory() => _job["stage_memory"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
     }
@@ -262,6 +263,7 @@ static class SwshXlate
 
     static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--raw-write-proof") { Console.WriteLine(RawWriteProof.Handle(File.ReadAllText(args[1]))); return 0; }
         if (args.Length == 2 && args[0] == "--check-ampere") return CheckAmpere(args[1]);
         if (args.Length >= 2 && args[0] == "--disasm") return Disasm(args[1], args.Length > 2 ? args[2] : "vs");
         if (args.Length >= 1 && args[0] == "--service") return ShaderService.Run(args);   // the runtime's translation service (Service.cs)

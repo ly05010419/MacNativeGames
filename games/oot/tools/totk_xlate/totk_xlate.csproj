@@ -8,6 +8,7 @@
     <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../third_party/ryujinx</RyuSrc>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="proof/**" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
   </ItemGroup>
@@ -19,6 +20,13 @@
   </PropertyGroup>
   <ItemGroup Condition="'$(TotkXlateLib)' == 'true'">
     <DirectPInvoke Include="totk_spirv_cross" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TotkSpirvToolsWrapper)' != ''">
+    <DirectPInvoke Include="oot_spirv_tools" />
+    <NativeLibrary Include="$(TotkSpirvToolsWrapper)" />
+    <NativeLibrary Include="$(TotkSpirvToolsOpt)" />
+    <NativeLibrary Include="$(TotkSpirvToolsCore)" />
+    <LinkerArg Include="-lc++" />
   </ItemGroup>
   <!-- SPIRV-Cross linked in (publish_native.sh builds the library; Service.cs SpirvCross calls it) -->
   <ItemGroup Condition="'$(TotkSpirvCrossLib)' != ''">

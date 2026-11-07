@@ -1,0 +1,128 @@
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -48,0 +49 @@
++        bool QueryRawReadSpan() { return false; }
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -312,0 +313,2 @@
++            object rawGroup = count > 1 && x.Rd + count <= RegisterConsts.RegisterZeroIndex &&
++                context.TranslatorContext.GpuAccessor.QueryRawReadSpan() ? new object() : null;
+@@ -320 +322,7 @@
+-                context.Copy(Register(x.Rd + index, RegisterType.Gpr), context.Load(storageKind, los[index], his[index]));
++                Operand loaded = context.Load(storageKind, los[index], his[index]);
++                if (rawGroup != null) {
++                    ((Operation)loaded.AsgOp).RawLoadGroup = rawGroup;
++                    ((Operation)loaded.AsgOp).RawLoadWord = index;
++                    ((Operation)loaded.AsgOp).RawLoadWords = count;
++                }
++                context.Copy(Register(x.Rd + index, RegisterType.Gpr), loaded);
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs
+@@ -12,0 +13,6 @@
++        // Provenance of the scalar words of ONE Ampere LDG. Never groups
++        // unrelated loads by proximity; missing words leave scalar semantics.
++        public object RawLoadGroup { get; set; }
++        public int RawLoadWord { get; set; }
++        public int RawLoadWords { get; set; }
++
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -76,0 +77,3 @@
++            public readonly HashSet<int> RawFunctions = new();
++            public readonly Dictionary<(int, int), int> RawSpans = new();
++            public int AddRawSpan(Function function) => _hfm.AddFunction(function);
+@@ -279,0 +283,2 @@
++            if (gpuAccessor.QueryRawReadSpan())
++                foreach (BasicBlock block in blocks) CoalesceRawLoads(gtsContext, resourceManager, block);
+@@ -484 +489,4 @@
+-            Operation callOp = new(Instruction.Call, returnValue, sources);
++            Operation callOp = new(Instruction.Call, returnValue, sources) {
++                RawLoadGroup = operation.RawLoadGroup, RawLoadWord = operation.RawLoadWord,
++                RawLoadWords = operation.RawLoadWords
++            };
+@@ -1087,0 +1096 @@
++            gtsContext.RawFunctions.Add(functionId);
+@@ -1089,0 +1099,83 @@
++        }
++
++        // Fuse a consecutive surviving prefix of ONE LDG, all using the
++        // physical fallback. Never read a deleted component or move a load
++        // across another memory operation or control flow. Direct SSBO loads
++        // and words after a missing component retain their scalar path.
++        private static void CoalesceRawLoads(GtsContext gts, ResourceManager resources, BasicBlock block)
++        {
++            for (var node = block.Operations.First; node != null; node = node.Next)
++            {
++                if (node.Value is not Operation first || first.Inst != Instruction.Call ||
++                    first.RawLoadGroup == null || first.RawLoadWord != 0 ||
++                    first.SourcesCount != 3 || first.DestsCount != 1 ||
++                    !gts.RawFunctions.Contains(first.GetSource(0).Value)) continue;
++                int count = first.RawLoadWords, scalar = first.GetSource(0).Value;
++                if (count != 2 && count != 4) continue;
++                var calls = new List<LinkedListNode<INode>> { node };
++                for (var scan = node.Next; scan != null && calls.Count < count; scan = scan.Next)
++                {
++                    if (scan.Value is not Operation op) break;
++                    if (op.Inst == Instruction.Copy || op.Inst == Instruction.Comment) continue;
++                    if (op.Inst != Instruction.Call || op.RawLoadGroup != first.RawLoadGroup ||
++                        op.RawLoadWord != calls.Count || op.RawLoadWords != count ||
++                        op.DestsCount != 1 || op.SourcesCount != 3 || op.GetSource(0).Value != scalar) break;
++                    calls.Add(scan);
++                }
++                if (calls.Count < 2) continue;
++                count = calls.Count;
++                if (!gts.RawSpans.TryGetValue((scalar, count), out int span))
++                {
++                    span = gts.AddRawSpan(CreateRawSpan(resources, scalar, count));
++                    gts.RawSpans.Add((scalar, count), span);
++                }
++                Operand[] dests = calls.Select(n => n.Value.Dest).ToArray();
++                Operand[] args = [Const(span), first.GetSource(1), first.GetSource(2)];
++                // Keep the first call's node stable for traversal. Copies
++                // between calls only consume values; every address was read
++                // before any destination register was written by ALdg.
++                foreach (var old in calls.Skip(1)) Utils.DeleteNode(old, (Operation)old.Value);
++                first.TurnInto(Instruction.Call, args[0]);
++                first.AppendSources(args.Skip(1).ToArray());
++                first.AppendDests(dests.Skip(1).ToArray());
++            }
++        }
++
++        private static Function CreateRawSpan(ResourceManager resources, int scalar, int count)
++        {
++            EmitterContext c = new();
++            int cache = resources.Properties.GetRawAddressCacheMemoryId();
++            Operand W(int n) => c.Load(StorageKind.LocalMemory, cache, Const(n));
++            Operand lo = Argument(0), hi = Argument(1);
++            Operand Call(Operand l, Operand h) => c.Add(Instruction.Call, Local(), Const(scalar), l, h);
++            Operand first = Call(lo, hi), fallback = Label();
++            c.BranchIfFalse(fallback, c.ICompareNotEqual(W(0), Const(0)));
++            c.BranchIfFalse(fallback, c.ICompareEqual(c.BitwiseAnd(lo, Const(3)), Const(0)));
++            Operand lastLo = c.IAdd(lo, Const(count*4-1));
++            Operand lastHi = c.IAdd(hi, c.ConditionalSelect(c.ICompareLessUnsigned(lastLo, lo), Const(1), Const(0)));
++            c.BranchIfFalse(fallback, c.ICompareGreaterOrEqualUnsigned(lastHi, hi));
++            Operand starts = c.BitwiseOr(c.ICompareLessUnsigned(W(3), hi),
++                c.BitwiseAnd(c.ICompareEqual(W(3), hi), c.ICompareLessOrEqualUnsigned(W(2), lo)));
++            Operand ends = c.BitwiseOr(c.ICompareLessUnsigned(lastHi, W(5)),
++                c.BitwiseAnd(c.ICompareEqual(lastHi, W(5)), c.ICompareLessUnsigned(lastLo, W(4))));
++            c.BranchIfFalse(fallback, c.BitwiseAnd(starts, ends));
++            Operand dl = W(6), dh = W(7);
++            for (int i=1;i<count;i++)
++            {
++                Operand guestLo = c.IAdd(lo, Const(i*4));
++                Operand guestHi = c.IAdd(hi, c.ConditionalSelect(c.ICompareLessUnsigned(guestLo, lo), Const(1), Const(0)));
++                Operand hostLo = c.IAdd(guestLo, dl);
++                Operand hostHi = c.IAdd(c.IAdd(guestHi, dh), c.ConditionalSelect(c.ICompareLessUnsigned(hostLo, guestLo), Const(1), Const(0)));
++                c.Copy(Argument(1+i), c.Load(StorageKind.GlobalMemory, hostLo, hostHi));
++            }
++            c.Return(first);
++            c.MarkLabel(fallback);
++            for (int i=1;i<count;i++)
++            {
++                Operand nextLo = c.IAdd(lo, Const(i*4));
++                Operand nextHi = c.IAdd(hi, c.ConditionalSelect(c.ICompareLessUnsigned(nextLo, lo), Const(1), Const(0)));
++                c.Copy(Argument(1+i), Call(nextLo, nextHi));
++            }
++            c.Return(first);
++            return new Function(ControlFlowGraph.Create(c.GetOperations()).Blocks,
++                $"LoadGlobalRawSpan{count}", true, 2, count-1);

@@ -45,7 +45,11 @@ sealed class MeshStage
             }
             if(maxV<1||maxV>256||maxP<1||maxP>512||!vertex.Any(x=>x.n==-1))throw new Exception("mesh outputs exceed Metal limits or have no position");
             int blocks=(Math.Max(Math.Max(maxV,maxP),1)+31)/32;
-            prim=output+blocks*Math.Max(vertex.Count+primitive.Count,1)*128;shared=prim+Align(4+3*Math.Max(maxP,1),4);
+            // The guest exports complete 32-primitive blocks, even when the
+            // declared bound ends within the final block (for example 126).
+            // Keep the raster bound unchanged; reserve every byte it can write.
+            int indexPrimitives=Align(maxP,32);
+            prim=output+blocks*Math.Max(vertex.Count+primitive.Count,1)*128;shared=prim+Align(4+3*indexPrimitives,4);
         }
         if(shared>32768)throw new Exception("mesh stage memory exceeds Metal threadgroup limit");
         for(int o=0x80;o+15<code.Length;o+=16) {

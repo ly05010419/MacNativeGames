@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>oot_write_proof</AssemblyName>
+    <NativeLib>Shared</NativeLib>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../../third_party/ryujinx</RyuSrc>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../RawWriteProof.cs" />
+    <Compile Include="../RawWriteProofExports.cs" />
+    <Compile Include="../SpirvResultLayout.cs" />
+    <ProjectReference Include="$(RyuSrc)/src/Spv.Generator/Spv.Generator.csproj" />
+  </ItemGroup>
+</Project>

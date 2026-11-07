@@ -307,7 +307,38 @@ NVN(nvnMemoryPoolMap, void *, const NVNmemoryPool *p){const pool_t *v=(const voi
 NVN(nvnMemoryPoolMapVirtual, NVNboolean, NVNmemoryPool *p, int n, const NVNmappingRequest *r) {
     return (NVNboolean)totk_vpool_map((pool_t *)p, n, (const totk_mapping_request *)(const void *)r);
 }
-static void pool_mark_addressed(const pool_t *p) { if(p)mtl_pool_addressed(p,p->mem,p->size); }
+static _Atomic int g_pool_issue_once=-1,g_pool_issue_stats;
+static _Atomic uint64_t g_pool_issue_calls,g_pool_issue_skips,g_pool_issue_marks;
+void nvn_pool_issue_once_set(int enabled) { atomic_store(&g_pool_issue_once,enabled!=0); }
+void nvn_pool_issue_statistics(uint64_t out[3],int enabled) {
+    atomic_store(&g_pool_issue_stats,enabled!=0);
+    out[0]=atomic_load(&g_pool_issue_calls);out[1]=atomic_load(&g_pool_issue_skips);out[2]=atomic_load(&g_pool_issue_marks);
+}
+static void pool_mark_addressed(const pool_t *p) {
+    if(!p)return;
+    int once=atomic_load_explicit(&g_pool_issue_once,memory_order_relaxed);
+    if(once<0){const char*s=getenv("OOT_POOL_ISSUE_ONCE");
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+        once=s?atoi(s)!=0:1;
+#else
+        once=s&&atoi(s);
+#endif
+        atomic_store(&g_pool_issue_once,once);}
+    int stats=atomic_load_explicit(&g_pool_issue_stats,memory_order_relaxed);
+    int aligned=((uintptr_t)p&(_Alignof(_Atomic uint32_t)-1))==0;
+    if(stats)atomic_fetch_add_explicit(&g_pool_issue_calls,1,memory_order_relaxed);
+    // This belongs to the pool object, not an address cache. Initialize clears
+    // the object; Finalize removes this owner's registration before reuse.
+    // Publish only AFTER registration. Concurrent first queries may register
+    // redundantly under the existing mutex; every returning caller is covered.
+    if(once&&aligned&&atomic_load_explicit(&p->address_issued,memory_order_acquire)){
+        if(stats)atomic_fetch_add_explicit(&g_pool_issue_skips,1,memory_order_relaxed);return;
+    }
+    mtl_pool_addressed(p,p->mem,p->size);
+    if(once&&aligned&&p->mem&&p->size&&p->size<=UINTPTR_MAX-(uintptr_t)p->mem)
+        atomic_store_explicit(&((pool_t*)p)->address_issued,1,memory_order_release);
+    if(stats)atomic_fetch_add_explicit(&g_pool_issue_marks,1,memory_order_relaxed);
+}
 NVN(nvnMemoryPoolGetBufferAddress, NVNbufferAddress, const NVNmemoryPool *p) { const pool_t *o=(const void *)p;pool_mark_addressed(o);return (NVNbufferAddress)o->mem; }
 
 // Buffer objects reference their pool; they do not own the backing allocation.
@@ -2810,7 +2841,10 @@ static const char *const g_nops[] = {
     "nvnCommandBufferWaitEvent",
     "nvnWindowFinalize",
 };
-__attribute__((constructor)) static void nvn_nops_register(void) {
+#ifndef NVN_POOL_ISSUE_PROBE
+__attribute__((constructor))
+#endif
+static void nvn_nops_register(void) {
     // 空实现在槽表初始化后覆盖未实现桩；名字写错（不在 main 名字表里）启动即报红中止
     // Empty implementations overwrite the unimplemented stubs after the slot table is initialized; a misspelled name (not in main's name table) reports a failure and aborts at startup
     nvn_init_slots();

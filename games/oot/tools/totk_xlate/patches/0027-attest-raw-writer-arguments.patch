@@ -1,0 +1,5 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -1090 +1090 @@
+-                GetFunctionName(operation, isMultiTarget: true, []) + "Raw",
++                (writes ? "dmsh_raw_write_" : "") + GetFunctionName(operation, isMultiTarget: true, []) + "Raw",

@@ -453,6 +453,7 @@ static partial class ShaderService
         if (Get(rq, "arch") is JsonValue arch) job["arch"] = arch.DeepClone();   // "sm86": Ampere code (NVN2, Switch 2); absent: Maxwell
         if (Get(rq, "nvn2_cs") is JsonArray cs) job["nvn2_cs"] = cs.DeepClone();   // an NVN2 compute shader's c[0] layout (Program.cs)
         if (Get(rq, "shared") is JsonValue sh) job["shared"] = sh.DeepClone();   // compute shared memory bytes when the request knows them (Program.cs)
+        if (Truthy(Get(rq,"raw_read_span"))) job["raw_read_span"]=true;
         if (Truthy(Get(rq,"raw_read_same_high_cache"))) job["raw_read_same_high_cache"]=true;
         return job;
     }
@@ -550,9 +551,15 @@ static partial class ShaderService
             ["vertex_inputs"] = vertexInputs, ["raster"] = new JsonObject(), ["deps"] = deps, ["softfloat64"] = softfloat64,
             ["compare_slots"] = new JsonArray(compareSlots.Select(s => (JsonNode)s).ToArray()),
         };
+        if (Truthy(Get(rq,"raw_read_span"))) refl["raw_read_span_abi"]=1;
         if (Truthy(Get(rq,"raw_read_same_high_cache"))) refl["raw_same_high_cache_abi"]=1;
         if (mesh) { refl["mesh_stage"] = meshInfo.Reflection(); refl["entry"] = "main0"; if (stage == "ms" && !Truthy(Get(rq,"depth_minus_w"))) refl["entry"] = "main0_z"; }
         if (captureInfo != null) { refl["entry_geometry_capture"] = "main0_gs"; refl["geometry_capture"] = captureInfo; }
+        if (stage == "cs")
+        {
+            JsonObject proof = RawWriteCapsule.Create(spv, src, refl);
+            if (proof != null) refl["raw_write_proof"] = proof;
+        }
         WriteReflection(variant + "_b", refl);
     }
 
