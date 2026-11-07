@@ -167,6 +167,11 @@ def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     temporary.rename(out)
     return out
 
+def shader_jobs():
+    """Translation workers and Metal compiles at once: the cores minus two (the runtime's own threads and the Metal
+    compiler service), 8 on this 10-core M4; 4 left most of the machine idle for 9 minutes of translation."""
+    return max(4, min(8, (os.cpu_count() or 4) - 2))
+
 def build(args, source):
     if args.platform!='macos':raise ValueError('Ocarina of Time currently has a macOS build path only')
     if args.update or args.dlc or args.mod:raise ValueError('use the complete original update 131072 in the dump/NUP')
@@ -241,9 +246,9 @@ def build(args, source):
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
-         '--binary',work/'build/oot-native','--jobs','4','--logs',logs],'prepare-shader-seed')
+         '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs],'prepare-shader-seed')
     run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
-         '--out',tree/'build/shader-libs','--jobs','4'],'compile-shader-libraries')
+         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs())],'compile-shader-libraries')
     package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)
     chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]

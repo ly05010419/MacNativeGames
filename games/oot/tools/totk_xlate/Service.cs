@@ -305,6 +305,9 @@ static partial class ShaderService
                 else { e["kind"] = n == 1 ? "c1" : "drvcb"; e["bank"] = n; }
             }
             else if ((fm = Regex.Match(nm, @"^[a-z]+_s(\d+)\z")).Success) { e["kind"] = "sbuf"; e["index"] = ParseInt(fm.Groups[1].Value); }
+            // {stage}_sf<slot>: the float-typed view of storage buffer <slot> for OpAtomicFAddEXT (patch 0029, ResourceManager.TryGetStorageBufferFloatBinding):
+            // the same buffer bound a second time; the runtime treats it as the sbuf of that slot
+            else if ((fm = Regex.Match(nm, @"^[a-z]+_sf(\d+)\z")).Success) { e["kind"] = "sbuf"; e["index"] = ParseInt(fm.Groups[1].Value); e["float_view"] = true; }
             else if (nm.EndsWith("Smplr", StringComparison.Ordinal))
             {
                 var d = DecodeTex(nm.Substring(0, nm.Length - 5)) ?? throw new RuntimeError($"sampler {nm}: no texture handle in the name");
@@ -392,7 +395,7 @@ static partial class ShaderService
         for (int i = 20; i + 4 <= spv.Length;)
         {
             uint w = BitConverter.ToUInt32(spv, i); int n = (int)(w >> 16);
-            if ((w & 0xffff) == 60) return 30100;   // OpImageTexelPointer
+            if ((w & 0xffff) == 60 || (w & 0xffff) == 6035) return 30100;   // OpImageTexelPointer; OpAtomicFAddEXT (atomic_float needs MSL 3.1)
             if (n == 0) break;
             i += 4 * n;
         }

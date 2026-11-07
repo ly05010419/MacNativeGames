@@ -48,6 +48,9 @@ static class SwshXlate
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new(); public readonly SortedSet<int> TexQueried = new(), ImgQueried = new();
         readonly byte[] _c1;
         public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); if (Geometry) _binding = 40; }
+        // 翻译器丢弃一条指令时只打这一行日志（如 "Invalid reduction type"）；记进 notes，种子里能查到哪些着色器少了什么
+        // The translator's own log line when it drops an instruction (e.g. "Invalid reduction type") goes into the notes, so the seed shows which shaders lost what
+        public void Log(string message) => Notes.Add("translator: " + message);
         // Geometry as compute (job "geometry_topology", stage "gs"; from seedds/nxnative dm/gfx/tools/dmsh_xlate/Program.cs bb585cd5, MIT):
         // the translator's own buffers of that lowering take set 0 bindings 0 (support buffer) and 1 (vb_info), the storage
         // buffers set 1 and the topology remap texture set 2 (Service.cs FlattenSets moves those into set 0), so the game's

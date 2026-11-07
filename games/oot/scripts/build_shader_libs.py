@@ -64,11 +64,17 @@ def main():
     known = prior.get('files', {}) if prior.get('compiler') == identity else {}
     parser_depths = dict(prior.get('parser_depths', {})) if known else {}
     todo, source_hashes = {}, {}
-    for src in sources:
-        sha = digest(src)
+    # 42,845 sources and as many libraries are hashed on all cores (one thread took minutes per build).
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        source_digests = list(pool.map(digest, sources))
+        def lib_ok(sha):
+            lib = a.out/f'{sha}.metallib'
+            return lib.is_file() and lib.name in known and digest(lib) == known[lib.name]
+        unique = sorted(set(source_digests))
+        lib_states = dict(zip(unique, pool.map(lib_ok, unique)))
+    for src, sha in zip(sources, source_digests):
         source_hashes[src.name] = sha
-        lib = a.out/f'{sha}.metallib'
-        if not lib.is_file() or lib.name not in known or digest(lib) != known[lib.name]:
+        if not lib_states[sha]:
             todo.setdefault(sha, src)
     print(f'{len(sources)} translated shaders, {len(todo)} to compile with {compiler}', flush=True)
 

@@ -61,9 +61,16 @@ def run(cmd, log, env=None):
         raise SystemExit(f'{Path(str(cmd[0])).name} failed ({r.returncode}); see {log}')
 
 
+def parallel_sha256(paths, jobs=None):
+    """name -> sha256 of every path, hashed on all cores: the seed holds 250,000 files (3 GB); one thread took 8 minutes."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(jobs or min(16, (os.cpu_count() or 4) * 2)) as pool:
+        return dict(zip((p.name for p in paths), pool.map(sha256, paths)))
+
+
 def seed_files(cache):
     """name -> path for the translations of the seed cache: each shader's index and the variants it lists."""
-    files = {}
+    files, checks = {}, []
     for index in sorted(cache.glob('*.variants')):
         if not VARIANTS.match(index.name):
             continue
@@ -80,13 +87,21 @@ def seed_files(cache):
                 raise ValueError(f'seed index refers to another shader: {index}')
             metal, refl = cache / f'{name}_b.metal', cache / f'{name}_b.json'
             if metal.is_file() and metal.stat().st_size and refl.is_file():
-                reflection = json.loads(refl.read_text())
-                if reflection.get('chain') != CHAIN or reflection.get('key') != name + '_b' or not reflection.get('entry'):
-                    raise ValueError(f'invalid seed reflection: {refl}')
+                checks.append((name, refl))
                 files[metal.name], files[refl.name] = metal, refl
                 kept = True
         if kept:
             files[index.name] = index
+    # The reflections are checked on all cores (42,845 JSON files; one thread read them for minutes).
+    def check(item):
+        name, refl = item
+        reflection = json.loads(refl.read_text())
+        if reflection.get('chain') != CHAIN or reflection.get('key') != name + '_b' or not reflection.get('entry'):
+            raise ValueError(f'invalid seed reflection: {refl}')
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(min(16, (os.cpu_count() or 4) * 2)) as pool:
+        for _ in pool.map(check, checks):
+            pass
     return files
 
 
@@ -215,7 +230,7 @@ def main():
                   corpus_shaders=int(done.group(2)), translated_default=int(done.group(1)),
                   listed_variants=int(listed.group(1)) if listed else 0, listed_asked=int(listed.group(2)) if listed else 0,
                   seconds=round(time.time() - t0, 1),
-                  files={p.name: sha256(p) for p in sorted(staging.iterdir())})
+                  files=parallel_sha256(sorted(staging.iterdir())))
     (staging / 'seed-manifest.json').write_text(json.dumps(report, indent=2) + '\n')
     # Publish first; deleting tens of thousands of old files on an external APFS volume takes minutes. The old seed
     # is entirely generated data and no longer read once its replacement is published.

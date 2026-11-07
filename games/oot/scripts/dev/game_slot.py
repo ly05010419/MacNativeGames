@@ -170,6 +170,37 @@ def legacy_games(d, entries=None, user_pid=None, exclude=()):
     return [p for p in all_pids() if p != os.getpid() and p not in known and is_game(p) and pid_start(p)]
 
 
+def pid_stuck_exiting(pid):
+    """True when the process is gone, a zombie, or stuck exiting (ps state E): a game whose GPU context the kernel cannot
+    tear down after a GPU hang stays in E for ever, holding every lock it had (2026-11-06 and 2026-11-07)."""
+    if pid <= 0 or not pid_start(pid):
+        return True
+    try:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "E" in stat or "Z" in stat
+
+
+def rotate_stuck_lock(d, log):
+    """The lock is held by a holder whose processes are all dead or stuck exiting: a flock cannot be taken from them, so the
+    lock FILE is replaced (the kernel keeps their reference on the old inode) and everyone locks the new one from now on.
+    Returns True when the file was replaced."""
+    kv = kv_read(d / "holder")
+    pids = [num(kv, "game_pid"), num(kv, "wrapper_pid")]
+    if not any(pids) or not all(pid_stuck_exiting(pid) for pid in pids if pid):
+        return False
+    stuck = d / f"lock.stuck-{'-'.join(str(pid) for pid in pids if pid)}-{time.time_ns()}"
+    try:
+        os.rename(d / "lock", stuck)
+    except OSError:
+        return False
+    os.close(os.open(d / "lock", os.O_RDWR | os.O_CREAT, 0o644))
+    history(d, "rotate-lock", kv.get("owner", "?"), kv.get("purpose", ""), f"pids={pids} state=dead-or-exiting old={stuck.name}")
+    log(f"[game-slot] 上一个持有者的进程已退出或卡在退出（E 状态），锁文件换新：{stuck.name}")
+    return True
+
+
 def describe_holder(d):
     kv = kv_read(d / "holder")
     since, expect = num(kv, "since"), num(kv, "expect_s")
@@ -234,6 +265,10 @@ class GameSlot:
                     try:
                         fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
+                        if rotate_stuck_lock(d, self.log):   # held by processes that can never release it: lock the new file
+                            os.close(self.fd)
+                            self.fd = os.open(d / "lock", os.O_RDWR | os.O_CREAT, 0o644)
+                            continue
                         reason, key = describe_holder(d), "holder " + kv_read(d / "holder").get("token", "")
                     else:
                         old = [] if ignore_legacy else legacy_games(d, entries, upid)

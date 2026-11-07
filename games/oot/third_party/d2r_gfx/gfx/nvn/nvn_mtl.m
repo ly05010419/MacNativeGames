@@ -2406,12 +2406,48 @@ void mtl_set_frame(uint64_t f) {
 // 旧队列命令缓冲走 gpu_tag_f；Metal 4 主提交在 mtl_sub_commit 的 feedback 里回填（换 Metal 4 时调用点全丢，「计时」行的 GPU 一栏成了空）
 // GPU timing registration: gpu_tag_begin(frame) before commit, gpu_tag_done(frame, GPU start, GPU end) on completion (seconds on the CACurrentMediaTime base).
 // Old-queue command buffers go through gpu_tag_f; the Metal 4 main submission backfills in the feedback of mtl_sub_commit (when switching to Metal 4 all the call sites were lost and the GPU column of the 「计时」(timing) line became empty)
+/* GPU completion watchdog (TOTK_GPU_HANG_S, default 10 s, 0 = off): command buffers are counted at commit and at completion;
+   a thread wakes every second and ends the process when work has been outstanding for that long with no completion. When
+   the GPU firmware is wedged (a translated shader that never ends), Metal reports no error at all: 2026-11-07 the game sat
+   with GPU 0% for five minutes, WindowServer starved and the Mac kernel-panicked through its watchdog. Ending the process
+   lets the kernel tear the GPU context down. Shader compiles stall before commit, never between commit and completion,
+   and no frame's GPU work legitimately takes 10 s, so a hit is a hang. */
+static _Atomic uint64_t g_cbw_committed, g_cbw_completed, g_cbw_last_done_ns, g_cbw_last_commit_ns;
+static void *gpu_watchdog_main(void *arg) {
+    pthread_setname_np("nvn-gpu-watchdog");
+    const uint64_t limit = (uint64_t)(intptr_t)arg * 1000000000ull;
+    for (;;) {
+        sleep(1);
+        uint64_t committed = atomic_load(&g_cbw_committed), completed = atomic_load(&g_cbw_completed);
+        if (committed == completed) continue;
+        uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW), since = atomic_load(&g_cbw_last_done_ns), first = atomic_load(&g_cbw_last_commit_ns);
+        uint64_t ref = since > first ? since : first;   // the newer of: last completion, the commit the outstanding work started with
+        if (ref && now - ref > limit)
+            MDIE("GPU 看门狗：%llu 个命令缓冲提交后 %.0f 秒没有任何完成（GPU 挂起），停止游戏以保护系统；TOTK_GPU_HANG_S 调整或 =0 关闭",
+                 (unsigned long long)(committed - completed), (now - ref) / 1e9);
+    }
+    return NULL;
+}
+static void gpu_watchdog_start(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *e = getenv("TOTK_GPU_HANG_S"); int s = e ? atoi(e) : 10;
+        if (s <= 0) { MLOG("TOTK_GPU_HANG_S=0：GPU 完成看门狗关闭"); return; }
+        pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&t, &a, gpu_watchdog_main, (void *)(intptr_t)s)) MLOG("【红】GPU 完成看门狗线程没起来");
+        pthread_attr_destroy(&a);
+    });
+}
 static void gpu_tag_begin(uint64_t f) {
+    gpu_watchdog_start();
+    if (atomic_load(&g_cbw_committed) == atomic_load(&g_cbw_completed)) atomic_store(&g_cbw_last_commit_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));   // nothing outstanding: this commit starts the wait
+    atomic_fetch_add(&g_cbw_committed, 1);
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) { atomic_store(&g_gpu[k].frame, f); atomic_store(&g_gpu[k].ns, 0); atomic_store(&g_gpu[k].pending, 0); atomic_store(&g_gpu[k].t0, UINT64_MAX); atomic_store(&g_gpu[k].t1, 0); }
     atomic_fetch_add(&g_gpu[k].pending, 1);
 }
 static void gpu_tag_done(uint64_t f, double g0, double g1) {
+    atomic_store(&g_cbw_last_done_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW)); atomic_fetch_add(&g_cbw_completed, 1);
     sysload_note_gpu(g0, g1);   // the load line's game GPU share
     unsigned k = f % GRING;
     if (atomic_load(&g_gpu[k].frame) != f) return;
@@ -2436,6 +2472,21 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
     if (atomic_load(&g_gpu[k].frame) != f || atomic_load(&g_gpu[k].pending)) return 0;
     *t0 = atomic_load(&g_gpu[k].t0); *t1 = atomic_load(&g_gpu[k].t1);
     return *t1 >= *t0 && *t1;
+}
+/* A GPU that stops answering (a shader that never ends, a hang) ends the game: the second command buffer that fails with a
+   timeout / hang error aborts the process, which lets the kernel tear the GPU context down. Left running, the game resubmits
+   the same work every frame, WindowServer starves and the Mac kernel-panics through its watchdog (2026-11-07: a translated
+   float-atomic loop that never terminated took the whole Mac down). An "InnocentVictim" error (our buffer was discarded
+   because another one hung) counts too: with one game on the GPU, the hang is ours. */
+static void gpu_hang_guard(NSError *error) {
+    static _Atomic int hangs;
+    NSString *d = error.description ?: @"";
+    int hang = error.code == MTLCommandBufferErrorTimeout || [d containsString:@"Timeout"] || [d containsString:@"timeout"] ||
+               [d containsString:@"Hang"] || [d containsString:@"hang"] || [d containsString:@"InnocentVictim"];
+    if (!hang) return;
+    int n = atomic_fetch_add(&hangs, 1) + 1;
+    MLOG("【红】GPU 超时 / 挂起（第 %d 次）：%s", n, d.UTF8String);
+    if (n >= 2) MDIE("GPU 连续超时 / 挂起，停止游戏以保护系统（WindowServer 看门狗会让整机重启）：%s", d.UTF8String);
 }
 static void rp_flush(void);
 static const char *cctx_snap(void);   // 这次提交里有什么（出错时打进红行；定义在 mtl_exec 之前） | What is in this submission (printed into the failure line on error; defined before mtl_exec)
@@ -2554,7 +2605,7 @@ uint64_t mtl_sub_commit(void) {
     NSString *cctx = @(cctx_snap());
     [o addFeedbackHandler:^(id<MTL4CommitFeedback> cb) {
         gpu_tag_done(gpu_f, cb.GPUStartTime, cb.GPUEndTime);
-        if (cb.error) { atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
+        if (cb.error) { gpu_hang_guard(cb.error); atomic_store(&g_last_commit_error, 1); static int n, nv; int victim = [cb.error.description containsString:@"InnocentVictim"]; if (victim ? nv++ < 1 : n++ < 8) MLOG("【红】命令缓冲错误详情 fence=%llu：%s | GPU %.3f→%.3f", (unsigned long long)fence, cb.error.description.UTF8String, cb.GPUStartTime, cb.GPUEndTime); if (!victim) MLOG("【红】出错那次提交的现场 fence=%llu：%s", (unsigned long long)fence, cctx.UTF8String); MLOG("【红】命令缓冲执行出错：%s", cb.error.localizedDescription.UTF8String); }
         int nq = 0, nzero = 0;   // TOTK_OCCL_AUTODUMP: occlusion queries of this submission and how many reported 0
         for (int i = 0; i < n; i++) {
             if (ops[i].kind == 1) { if (ops[i].mode == 1) *ops[i].val += ops[i].v; else *ops[i].val = ops[i].v; }
