@@ -9,9 +9,16 @@ its new offset. subsdk0 and sdk are the same builds as 1.3.0; only main differs.
 
 A signed app was built from an extracted 1.4.1 directory with 40,729 shaders and
 played by hand through the first missions, with audio, at 60 fps. The save carried
-across launches. This is a gameplay observation, not whole-game acceptance. 1.3.0
-has not been rebuilt or replayed with this change; tests cover its patch layout.
-The DLC is not covered.
+across launches. This is a gameplay observation, not whole-game acceptance. The DLC
+is not covered.
+
+Signed apps of both versions were then built from this change in a new work folder.
+1.3.0's rewritten main, subsdk0 and sdk are byte-identical to those of the app built
+before it. Each app ran one scripted session of about 235 seconds at a 60 fps target,
+from the save through the map into Road to the Ancient Lab, with a median frame of
+16.6 to 17.0 ms at the end. Both logs carry the same seven `texture type mismatch`
+lines. The 1.3.0 session used a copy of a 1.4.1 save, and 1.3.0 has not been played by
+hand with this change.
 
 Known on 1.4.1 at this point: at a 60 fps target cutscenes run fast, the limitation
 already recorded for 1.3.0, and black squares appear in menus, cutscenes and play.
