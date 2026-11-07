@@ -98,6 +98,42 @@ int mtl_probe_memory_demand(void) {
         for(int c=0;c<4;c++){if(((uint8_t *)out.contents)[c]!=37+MIN(step,2)*50)MDIE("demand pixel step%d byte%d: %u",step,c,((uint8_t *)out.contents)[c]);checked++;}
         for(int i=0;i<3;i++){if(pidx_find(&g_pools,(uintptr_t)mem[i],1)->res)MDIE("texture preparation pinned its full source pool");checked++;}
     }
+    /* Repeated draws use the same storage capture but different uniform
+       indices. Check real GPU pixels, hit counts and submission/size misses. */
+    {
+        *(uint32_t *)handles=1;((uint32_t *)handles)[37]=2;
+        sh->pool_reads=exact_reads;sh->rf.b[1].pool_sources=1;
+        mtl_sub_begin();mtl_exec((const uint8_t *)&end);
+        S.tex_base=0;S.tex_pool_n=4;
+        S.ssbo[5][0]=(p_bind_buf){.addr=(uintptr_t)handles,.size=handle_size};
+        S.ubo[5][0]=(p_bind_buf){.addr=(uintptr_t)uniform,.size=16};
+        g_pool_wait_probe_negative=negative;
+        for(int draw=0;draw<6;draw++){
+            if(draw==5){mtl_sub_begin();mtl_exec((const uint8_t *)&end);S.tex_pool_n=3;S.ssbo[5][0]=(p_bind_buf){.addr=(uintptr_t)handles,.size=handle_size};S.ubo[5][0]=(p_bind_buf){.addr=(uintptr_t)uniform,.size=16};}
+            if(draw==4)S.tex_pool_n=3;
+            uint32_t index=draw<2?37:0;mtl_sub_update(&index,(uintptr_t)uniform,4);
+            if(negative==10&&draw==2){
+                // Deliberately erase the prior uniform value from the key.
+                pool_memo_uniform wrong={2,0,0};sh->pool_memo[1]->uniforms=[NSData dataWithBytes:&wrong length:sizeof wrong];
+            }
+            uint64_t hits=g_pool_demand_memo;
+            prepare_shader_pools(sh);
+            if(negative!=10&&pool_memo_on()&&g_pool_demand_memo!=hits+(draw==1||draw==3))MDIE("memo hit/miss draw%d",draw);checked++;
+            if(!(sh->pool_capture_mask&4))MDIE("memo omitted uniform capture draw%d",draw);checked++;
+            const uint64_t *need=pool_demand_for(sh,&sh->rf.b[1]);
+            if(!need||!(need[0]&(UINT64_C(1)<<(draw<2?2:1))))MDIE("memo omitted required descriptor draw%d",draw);checked++;
+            registry_lock();uint64_t table=descriptor_pool_gpu_need(&sh->rf.b[1],pool_demand_for(sh,&sh->rf.b[1]));registry_unlock();
+            rp_end();blit_close();id<MTL4ComputeCommandEncoder> ce=enc_c_begin(NULL);enc_c_pso(ce,ps);
+            enc_c_args(ce,sh->pool_capture_gpu[0],0);enc_c_args(ce,table,1);
+            enc_c_args(ce,out.gpuAddress+draw*4,2);enc_c_args(ce,sh->pool_capture_gpu[2],3);
+            [ce dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];enc_c_end(ce);
+            if(draw==4||draw==5){mtl_sub_commit();mtl_finish();}
+        }
+        for(int draw=0;draw<6;draw++)for(int c=0;c<4;c++){
+            if(((uint8_t *)out.contents)[draw*4+c]!=(draw<2?87:37))MDIE("memo pixel draw%d byte%d: %u",draw,c,((uint8_t *)out.contents)[draw*4+c]);checked++;
+        }
+        g_pool_wait_probe_negative=0;
+    }
     /* Wait for the actual prior writer, while an unrelated later submission
        remains blocked. Whole-current-chunk waiting cannot pass this check.
        The captured bytes are also consumed by the real GPU descriptor read. */
