@@ -12,9 +12,14 @@ import struct
 
 GAME = Path(__file__).resolve().parents[1]
 TITLE = '01002B00111A2000'
-BUILDS = dict(main='c3cf52bf2b05d7310884971b50bcccb8',
-              subsdk0='3ab92c3444d4ece2f52417b5d8ee86eb',
+# subsdk0 and sdk are the same builds in every supported version; only main moves.
+COMMON = dict(subsdk0='3ab92c3444d4ece2f52417b5d8ee86eb',
               sdk='95832210b36121e88b4f9b7b66239dad')
+VERSIONS = {'1.3.0': dict(name='1.3.0', code=327680, tag='v327680', pins='expected-1.3.0.json',
+                          main='c3cf52bf2b05d7310884971b50bcccb8'),
+            '1.4.1': dict(name='1.4.1', code=458752, tag='v458752', pins='expected-1.4.1.json',
+                          main='e5f275b5d0889899e55de1a164eef060')}
+BUILDS = dict(main=VERSIONS['1.3.0']['main'], **COMMON)
 
 
 def sha256(path):
@@ -87,6 +92,23 @@ def tree_manifest(root):
                 sha256=hashlib.sha256(identity.encode()).hexdigest(), entries=rows)
 
 
+def version_of(build_id):
+    """The supported version whose main has this build ID."""
+    for version in VERSIONS.values():
+        if build_id.startswith(version['main']):
+            return version
+    raise ValueError(f'unsupported executable build: main {build_id}')
+
+
+def version_of_input(root):
+    """The supported version of an extracted root, from its main alone."""
+    return version_of(nso(root.expanduser().resolve()/'ExeFS/main')['build_id'])
+
+
+def pins_of(version):
+    return GAME/'assets'/version['pins']
+
+
 def inspect(root, pins_path=None):
     root = root.expanduser().resolve()
     exefs, romfs = root/'ExeFS', root/'RomFS'
@@ -97,7 +119,8 @@ def inspect(root, pins_path=None):
     if actual != expected or any(p.is_symlink() for p in exefs.iterdir()):
         raise ValueError(f'unsupported ExeFS file set: {sorted(actual)}')
     modules = {name:nso(exefs/name) for name in sorted(set(BUILDS) | {'rtld'})}
-    for name, bid in BUILDS.items():
+    version = version_of(modules['main']['build_id'])
+    for name, bid in COMMON.items():
         if not modules[name]['build_id'].startswith(bid):
             raise ValueError(f'unsupported executable build: {name} {modules[name]["build_id"]}')
     meta = npdm(exefs/'main.npdm')
@@ -113,7 +136,7 @@ def inspect(root, pins_path=None):
         raise ValueError('original RomFS hash mismatch')
     if not (romfs/'asset/MaterialEditor.rdb.bin').is_file():
         raise ValueError('missing KTGL shader resource')
-    return dict(title_id=TITLE, version='1.3.0', version_code=327680,
+    return dict(title_id=TITLE, version=version['name'], version_code=version['code'],
                 identity_basis='pinned NSO build IDs, NPDM and extracted-file SHA-256',
                 container_integrity='unavailable: original containers not supplied',
                 base_update_composition='not independently verifiable from extracted files',

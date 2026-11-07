@@ -165,7 +165,7 @@ class BuildTests(unittest.TestCase):
         profile=game.load(build.TITLE)
         self.assertEqual(profile.get('fps_target'),'0')
         self.assertEqual(profile.get('sys_resource'),'0')
-        self.assertEqual(set(profile.builds()),{'v327680'})
+        self.assertEqual(set(profile.builds()),{'v327680','v458752'})
         self.assertFalse((GAME/'runtime/games/0100965017338000').exists())
 
     def test_profile_rejects_unsupported_120_fps(self):

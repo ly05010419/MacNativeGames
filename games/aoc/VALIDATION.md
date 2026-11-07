@@ -1,5 +1,21 @@
 # Age of Calamity validation — 2026-10-27
 
+## Update 1.4.1 (v458752) — 2026-11-07
+
+The patches were mapped by matching the code that reads each location and checked
+by disassembly: the sound heap cuts sit 0x630 further on, and the four timing stubs
+keep their instructions except the scene site, which reads the frame-rate block at
+its new offset. subsdk0 and sdk are the same builds as 1.3.0; only main differs.
+
+A signed app was built from an extracted 1.4.1 directory with 40,729 shaders and
+played by hand through the first missions, with audio, at 60 fps. The save carried
+across launches. This is a gameplay observation, not whole-game acceptance. 1.3.0
+has not been rebuilt or replayed with this change; tests cover its patch layout.
+The DLC is not covered.
+
+Known on 1.4.1 at this point: at a 60 fps target cutscenes run fast, the limitation
+already recorded for 1.3.0, and black squares appear in menus, cutscenes and play.
+
 ## Keyboard shortcut follow-up — 2026-10-27
 
 The game-window number shortcuts now include 2 (Original 30 → 60 → 120),

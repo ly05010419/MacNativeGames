@@ -117,6 +117,7 @@ The [shared shader list](docs/shader-list.md) now holds **15,070 shader variants
 
 ## What's new
 
+- **2026-11-07: Hyrule Warriors: Age of Calamity builds from update 1.4.1 as well as 1.3.0 on Mac, experimental.** The builder takes the version from the extracted game folder ([`games/aoc`](games/aoc/README.md)).
 - **2026-11-03: optional SMAA and FXAA Quality for Tears of the Kingdom 1.4.3 on Mac.** Choose the method and its quality separately on the Effects page; the game's original FXAA remains the default ([controls](docs/controls.md)).
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
   Pokémon Pokopia plays its opening into the first area (scripted test). Pokopia 2.0.1 packages as a Mac app from your
