@@ -143,6 +143,26 @@ def inspect(root, pins_path=None):
                 modules=modules, npdm=meta, romfs=rom)
 
 
+def inspect_dlc(root, version):
+    """Pinned add-on content: one folder per owned DLC, named by its index, each the extracted RomFS of its data NCA."""
+    if version['name'] != '1.4.1':
+        raise ValueError('add-on content is supported on 1.4.1 only')
+    root = root.expanduser().resolve()
+    names = [p.name for p in root.iterdir() if p.name != '.DS_Store'] if root.is_dir() else []
+    if not names:
+        raise ValueError('expected a folder holding one numbered folder per DLC')
+    pins = json.loads((GAME/'assets/expected-dlc.json').read_text())
+    found = {}
+    for name in sorted(names):
+        if name not in pins:
+            raise ValueError(f'unsupported DLC folder: {name}')
+        tree = tree_manifest(root/name)
+        if any(tree[k] != pins[name][k] for k in ('form','files','bytes','sha256')):
+            raise ValueError(f'DLC hash mismatch: {name}')
+        found[name] = {k:v for k,v in tree.items() if k != 'entries'}
+    return found
+
+
 def write_report(report, destination, public=False):
     report = dict(report)
     if public:

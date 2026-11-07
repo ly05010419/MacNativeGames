@@ -1,0 +1,26 @@
+{
+  "1": {
+    "form": "directory",
+    "files": 1,
+    "bytes": 4,
+    "sha256": "2c134d072815c7d0ce942739d8cb22537c268ae61bf04ad436e32df09fba0e23"
+  },
+  "2": {
+    "form": "directory",
+    "files": 4,
+    "bytes": 91670223,
+    "sha256": "f179193a34a9027f41bde56c1aed77079b5867648263a60b4fb13bc33f005bbb"
+  },
+  "3": {
+    "form": "directory",
+    "files": 15,
+    "bytes": 228195831,
+    "sha256": "c359fe0ac5c5de98c43fc262f434e4b50fbd2f1f3a8d317896aba726d4c70b87"
+  },
+  "4": {
+    "form": "directory",
+    "files": 186,
+    "bytes": 1189580000,
+    "sha256": "3c00342c33b2980be44fdc7665a1fa7c5d122560b4d406ae3587d6e9066fe504"
+  }
+}

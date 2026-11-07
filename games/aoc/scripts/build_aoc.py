@@ -100,7 +100,7 @@ def package_notices(resources):
         shutil.copy2(path, destination)
 
 
-def package(source, build, output, language, version=None):
+def package(source, build, output, language, version=None, dlc=None):
     """Package only after the source build succeeds. Never rewrite a patched binary."""
     if output.suffix != '.app':
         raise ValueError('--output must end in .app')
@@ -144,6 +144,8 @@ def package(source, build, output, language, version=None):
                           (build / f'patched_{tag}', 'patched'), (build / 'font', 'font'),
                           (profile, 'profile')]:
             shutil.copytree(src, resources / name)
+        if dlc:
+            shutil.copytree(dlc[0], resources / 'aoc', ignore=shutil.ignore_patterns('.DS_Store'))
         (resources / 'shader-cache').mkdir()
         shutil.copytree(libraries, resources / 'shader-cache' / libraries.name)
         shutil.copy2(build / 'tools/dmhost', resources / 'dmhost')
@@ -172,6 +174,7 @@ def package(source, build, output, language, version=None):
                                   and '__pycache__' not in p.parts and p.name != '.DS_Store'}
         report['rewrite'] = rewrite
         report['shader_inventory'] = shader_stats
+        report['dlc'] = dlc[1] if dlc else {}
         from inspect_inputs import sha256
         report['outputs'] = {p.relative_to(resources).as_posix():sha256(p)
                              for p in sorted(resources.rglob('*')) if p.is_file()}
@@ -288,20 +291,23 @@ def environment(work):
 
 def main():
     import fcntl
-    from inspect_inputs import inspect, pins_of, version_of_input, write_report
+    from inspect_inputs import inspect, inspect_dlc, pins_of, version_of_input, write_report
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('inputs', type=Path, help='extracted root containing ExeFS/ and RomFS/; no keys needed')
     parser.add_argument('--work-dir', required=True, type=Path)
+    parser.add_argument('--dlc', type=Path, help='1.4.1 only: folder holding one numbered folder per owned DLC, each its extracted RomFS')
     parser.add_argument('--output', type=Path, help='new .app output path (required for package/all)')
     parser.add_argument('--phase', choices=('inspect','rewrite','host','shaders','package','all'), default='all')
     parser.add_argument('--language', default='en-US', choices=('en-US','en-GB','ja','fr','de','es-419','es','it','nl','fr-CA','ru','ko','zh-Hant','zh-Hans','pt-BR'))
     args = parser.parse_args()
     work = args.work_dir.expanduser().resolve()
     original = args.inputs.expanduser().resolve()
+    addons = args.dlc.expanduser().resolve() if args.dlc else None
     output = args.output.expanduser().resolve() if args.output else None
     checkout = GAME.parents[1]
     for path in (work, output):
-        if path and (path == checkout or checkout in path.parents or path == original or original in path.parents or path in original.parents):
+        if path and (path == checkout or checkout in path.parents or any(
+                path == source or source in path.parents or path in source.parents for source in filter(None, (original, addons)))):
             parser.error('work/output must be outside the checkout and original inputs')
     if work in checkout.parents:
         parser.error('work must not contain the checkout')
@@ -318,6 +324,8 @@ def main():
         report = inspect(original, pins)
         write_report(report, work / 'input-report.json')
         print(f"Verified {version['name']}: {report['romfs']['files']} RomFS files; container integrity unavailable", flush=True)
+        dlc = (addons, inspect_dlc(addons, version)) if addons else None
+        if dlc: print(f"Verified DLC: {' '.join(dlc[1])}", flush=True)
         if args.phase == 'inspect': return
         source = stage(work)
         build = work / 'build'
@@ -340,7 +348,7 @@ def main():
                             '--phase', args.phase, '--platform','mac','--package',tag,
                             '--language',args.language,'--progress','lines'],env=env,check=True)
         if args.phase in ('all','package'):
-            package(source,build,output,args.language,version)
+            package(source,build,output,args.language,version,dlc)
 
 
 if __name__ == '__main__':

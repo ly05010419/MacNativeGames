@@ -349,6 +349,17 @@ static size_t romfs_work_size(const char *dir) {
     romfs_tables(dir, &ndir, &dbytes, &nfile, &fbytes, 0);
     return 4 * romfs_buckets(ndir) + dbytes + 4 * romfs_buckets(nfile) + fbytes;
 }
+// A game may reuse one mount name for each index: Age of Calamity mounts "aoc", reads DLCDATA.dat and unmounts, once per index. Unmount is a no-op here, so the name is still in the table:
+// point it at the new index, or every index would read the first one's files
+static int aoc_remount(const char *name, const char *dir) {
+    PATH_LOCK(); pthread_mutex_lock(&g_lock);
+    int found = 0;
+    for (int i = 0; i < g_nmnt && !found; i++)
+        if (!strcmp(g_mnt[i].name, name)) { strlcpy(g_mnt[i].dir, dir, sizeof g_mnt[0].dir); found = 1; }
+    pthread_mutex_unlock(&g_lock);
+    if (found) LOG("fs mount %s: → %s (read-only, same name, new index)", name, dir);
+    return found;
+}
 static int aoc_dir(char *dir, size_t n, int index) {
     const char *base = getenv("DM_AOC_DIR"); struct stat st;
     return base && *base && snprintf(dir, n, "%s/%d", base, index) < (int)n && !stat(dir, &st) && S_ISDIR(st.st_mode);
@@ -364,7 +375,7 @@ HLE_FORCE("_ZN2nn2fs17MountAddOnContentEPKciPvm", "fsp-srv; add-on content → D
         LOG("fs mount add-on content %s: index %d does not exist (DM_AOC_DIR=%s)", name, index, getenv("DM_AOC_DIR") ? getenv("DM_AOC_DIR") : "unset");
         return RES_TARGET_NOT_FOUND;
     }
-    return mount(name, dir, 1);   // mount_ex logs it
+    return aoc_remount(name, dir) ? RES_OK : mount(name, dir, 1);   // mount_ex logs a first mount
 }
 // System data archives are firmware content, which the host does not have. The one a game has needed so far is 0100000000000802, MiiModel (Mario Kart 8 Deluxe mounts it as MiiResource: and
 // builds Mii heads from it at boot, for the title screen's demo race): the host writes a stand-in with every part empty (hle_mii.c dm_mii_standin) into <DM_TEMP>_sysdata/<id> and mounts it

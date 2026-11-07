@@ -41,6 +41,13 @@ python3 -m venv /path/to/aoc-python
   --output "/path/to/Hyrule Warriors Age of Calamity.app"
 ```
 
+Add-on content is optional and 1.4.1 only. Add `--dlc "/path/to/dlc"`, a folder
+holding one numbered folder per owned DLC, each the extracted RomFS of that DLC's
+data NCA. The number is the end of the title ID: `01002B00111A3001` is `1` and
+`01002B00111A3004` is `4`. Each folder must match its digest in
+[expected-dlc.json](assets/expected-dlc.json). The folders go inside the app and the
+game finds them at launch. They hold no shaders, so the shader build does not change.
+
 Work and output must be outside the checkout and original input directory. Use a
 new output path; an existing app is preserved. The builder supports `--phase
 inspect`, `rewrite`, `host`, `shaders`, or `package`; the default `all` runs all

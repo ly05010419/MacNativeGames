@@ -94,6 +94,10 @@ int main(void) {
     setenv("DM_NVN_SHMAP", shmap, 1);
     setenv("DM_FONT_DIR", font, 1);
     setenv("DM_METAL_RUNTIME", "0", 1);
+    char addons[PATH_MAX];
+    struct stat addons_info;
+    join(addons, sizeof addons, game, "aoc");
+    if (!stat(addons, &addons_info) && S_ISDIR(addons_info.st_mode)) setenv("DM_AOC_DIR", addons, 1);
     char language_path[PATH_MAX], language[64] = "en-US";
     join(language_path, sizeof language_path, game, "language.txt");
     FILE *settings = fopen(language_path, "r");

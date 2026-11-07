@@ -65,6 +65,28 @@ class InputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'symlink'): inputs.tree_manifest(root)
             with self.assertRaisesRegex(ValueError,'directory tree'): inputs.tree_manifest(p)
 
+    def test_dlc_is_pinned_and_only_for_141(self):
+        from unittest import mock
+        v141,v130=inputs.VERSIONS['1.4.1'],inputs.VERSIONS['1.3.0']
+        with tempfile.TemporaryDirectory() as tmp:
+            game=Path(tmp)/'game';(game/'assets').mkdir(parents=True)
+            dlc=Path(tmp)/'dlc';(dlc/'2').mkdir(parents=True);(dlc/'2/DLCDATA.dat').write_bytes(b'\2\0\0\0')
+            tree={k:v for k,v in inputs.tree_manifest(dlc/'2').items() if k!='entries'}
+            (game/'assets/expected-dlc.json').write_text(json.dumps({'2':tree}))
+            with mock.patch.object(inputs,'GAME',game):
+                self.assertEqual(inputs.inspect_dlc(dlc,v141),{'2':tree})
+                with self.assertRaisesRegex(ValueError,'1.4.1 only'): inputs.inspect_dlc(dlc,v130)
+                (dlc/'2/DLCDATA.dat').write_bytes(b'\3\0\0\0')
+                with self.assertRaisesRegex(ValueError,'DLC hash mismatch: 2'): inputs.inspect_dlc(dlc,v141)
+                (dlc/'2').rename(dlc/'9')
+                with self.assertRaisesRegex(ValueError,'unsupported DLC folder: 9'): inputs.inspect_dlc(dlc,v141)
+                (dlc/'9/DLCDATA.dat').unlink();(dlc/'9').rmdir()
+                with self.assertRaisesRegex(ValueError,'numbered folder'): inputs.inspect_dlc(dlc,v141)
+
+    def test_dlc_pins_cover_the_four_add_ons(self):
+        pins=json.loads((GAME/'assets/expected-dlc.json').read_text())
+        self.assertEqual(sorted(pins),['1','2','3','4'])
+
     def test_unknown_module_build_rejected_before_romfs_read(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as tmp:
