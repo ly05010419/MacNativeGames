@@ -3006,7 +3006,11 @@ void nvn_set_uncapped_interval(int on) {
 }
 static int uncapped_interval_on(void) {
     int v = atomic_load(&g_uncapped_interval);
-    if (v < 0) { const char *e = getenv("TOTK_UNCAPPED_INTERVAL"); v = UNCAPPED_INTERVAL_FROM_ENV(e); atomic_store(&g_uncapped_interval, v); }
+    if (v < 0) { const char *e = getenv("TOTK_UNCAPPED_INTERVAL"); v = UNCAPPED_INTERVAL_FROM_ENV(e);
+#ifdef GAME_OOT
+        if (!e) v = 1;   /* the frame step sets the game's interval to the vsyncs that passed: honouring it held the next frame that long, and the game stayed near 30 fps */
+#endif
+        atomic_store(&g_uncapped_interval, v); }
     return v;
 }
 static double g_rt_comp_ms;   // 当前声明的实时计算量（ms；0 = 未声明） | Currently declared real-time computation amount (ms; 0 = not declared)
@@ -3349,6 +3353,10 @@ static int uncapped_cap(int scr) {
     const char *e = getenv("TOTK_UNCAPPED_HZ");
 #if TARGET_OS_IPHONE
     if (!e) e = "display";   // at most the screen's rate (60 on an iPhone 14); TOTK_PHONE_FPS=30 holds 30 (phone_holds_30)
+#endif
+#ifdef GAME_OOT
+    /* The console's 60 fps, by our own clock and not the display's ticks: a hold on a 120 Hz display put each frame on the 8.33 ms grid, so one just late took 25 ms (40 fps at a GPU time that gives 50) */
+    if (!e) e = "60";
 #endif
     int v = !e ? UNCAPPED_DEFAULT_HZ : !strcmp(e, "display") ? (scr > 0 ? scr : 60) : atoi(e);
     return v < 30 ? 30 : v > UNCAPPED_HZ ? UNCAPPED_HZ : v;

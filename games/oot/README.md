@@ -6,8 +6,8 @@ Works on a 16 GB Apple silicon Mac: title and menu text, a new game, the opening
 
 Known problems:
 
-- Memory: a loaded save now plays, but this is not settled. Before the fix below it stopped itself (exit 87, `wired_guard_check`) about a minute after loading. Runs of 90 to 150 s after it peaked at 10.5 to 12.1 GB of system wired memory, against the 12.3 GB limit, and no longer session has been tried. Textures are now the growing part (about 3.2 GB in one run), and footprint reaches about 13.7 GB. The raw pool table also overflows by a few entries (4,095 of them: a red line in the log, addresses in those pools are not reached).
-- Frame rate: about 32 fps (31 ms a frame) on the forest view after leaving Link's house, with the GPU the main limit (28-39 ms) and frames of about 55 ms every 9 frames that it does not explain. One earlier run in the house, facing another way with the old pool handling, had 24 ms a frame and 19 ms of GPU: not a controlled comparison, and a GPU cost from the pool changes is not ruled out. Pool tables are still walked whole 3 times a frame (5-14 ms).
+- Memory: a loaded save plays, but this is not settled. Runs of 70 to 100 s peaked at 10.6 to 12.1 GB of system wired memory, against the 12.3 GB limit (`wired_guard_check`, exit 87), and no long session has been tried. The raw pool table also overflows by a few entries (a red line in the log; addresses in those pools are not reached).
+- Frame rate, on one 16 GB Mac, single runs: 60 fps held at the spawn point in Link's house and in the forest view after leaving it, about 50 fps facing the house's door, 40 to 50 fps on the deck outside. The rest of the world has not been measured. GPU 15 to 18 ms in the heavier views. Spikes of 40 to 50 ms with low GPU time remain in some views (CPU side, not explained). Pool tables are still walked whole 3 times a frame (5 ms or so).
 - The picture has a pale haze; the cause is not confirmed.
 - agl's upscaler network is bypassed (a plain copy, `TOTK_NDSR_BYPASS=0` runs it), so the picture is softer than the console's.
 - Draws of shaders that read an image or buffer texture handle from memory are skipped.
@@ -19,6 +19,15 @@ Memory and frame rate, what changed (`nvn_mtl.m`):
 - `DispatchComputeIndirect` no longer stops the CPU to read its counts: Metal reads them when the dispatch runs, and a GPU copy puts them in the driver segment for the shader. The wait was 74% of the replay thread's samples. Forest view: 148 ms to 40-46 ms a frame. `TOTK_DISPATCH_READBACK=1` restores it.
 - The check that a texture's pool object still exists read its magic through the kernel, per ID and per table walk: 27% of the replay thread. `pool_obj_live` remembers the answer per pool until the frame changes or a pool starts or ends (`TOTK_POOL_LIVE_CACHE=0` asks every time). Forest view: 43.5 to 34.8 ms a frame, one run each.
 - Draw passes are ordered by the game's own barriers (`barrier_game`, after seedds/nxnative, MIT), on for this game only: a pass's vertex work may overlap the previous pass's fragments. `TOTK_BARRIER_GAME=0` restores a full barrier for every pass. Forest view: 34.8 to about 30.8 ms (two runs). The picture was spot-checked only.
+- Compute dispatches with no game barrier between them run side by side (after cheemu21/kid-with-sword-remake, MIT; `TOTK_DISPATCH_OVERLAP=0` orders them). About 6.5 to 3.9 ms at the start of a frame.
+- Task and mesh draws stay in the open pass; each used to end it before and after itself. Passes a frame 147 to 98, and the replay thread encodes the passes (`TOTK_MESH_INPASS=0` restores it).
+- A raw memory access remembers the pool table entry it chose last in its invocation (`patches/0011`, after seedds/nxnative 0f510fd5, MIT) instead of searching the table for each word. Mesh draws were about two thirds of the GPU time facing the door: 27.7 to 18.1 ms, with the changes above. A new shader cache name: the first run retranslates, for minutes.
+- The cached views of a texture as another type: swept in slices rather than whole every 64 submissions (frame p95 54-62 to about 21 ms at the spawn point), and dropped with their texture ID's view (they leaked 88 a frame). `TOTK_TYPE_VIEW_SWEEP=all` and `TOTK_TYPE_VIEW_DROP=0` restore the old behaviour.
+- The application pool is 9 GB, as nxnative's profile, instead of the 10 GB other Switch 2 ports here take.
+
+Game speed:
+
+- The game stepped 1/60 s a frame whatever the frame took: slow below 60 fps, fast above it (125 fps at the title). The frame-rate controller at `main+0x3b4f074` now takes the vsyncs that really passed, the remainder carried over (after cheemu21/kid-with-sword-remake, MIT; `TOTK_REALTIME=0` restores it), and the host holds 60 fps by its own clock (`TOTK_UNCAPPED_HZ`), ignoring the game's present interval. A `game speed` line every 30 s gives the ratio to real time: 0.99 to 1.00 in play, about 0.5 briefly during loads, as a frame's step is capped at 4 vsyncs. That is the host's count, not a comparison with the console.
 
 Build and run, from `games/totk`, with the game imported as `extracted/oot`:
 

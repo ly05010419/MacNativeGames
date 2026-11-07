@@ -40,7 +40,11 @@ NVN(nvnDeviceGetCurrentTimestampInNanoseconds, uint64_t, const NVNdevice *d) {
     (void)d; mach_timebase_info_data_t tb; mach_timebase_info(&tb); return (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);   // TOTK: GetSystemTick's base (mach_absolute_time, no sleep), see gpu_ticks
 }
 NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNcounterData *c) {
+#ifdef GAME_OOT
+    (void)d; return (uint64_t)((__uint128_t)c->timestamp * 625 / 384);   // 614.4 MHz ticks (nvn_mtl.m gpu_ticks)
+#else
     (void)d; return c->timestamp / 12 * 625 + c->timestamp % 12 * 625 / 12;
+#endif
 }
 
 // ---------- Memory pools and buffers: unified memory, CPU and GPU views are coherent ----------

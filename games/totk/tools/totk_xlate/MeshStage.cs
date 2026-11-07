@@ -78,13 +78,14 @@ static partial class ShaderService
 
     static string WrapMesh(string msl, JsonObject info) {
         string kind = (string)info["kind"];
-        Match m = Regex.Match(msl, @"kernel\s+void\s+main0\s*\(((?:[^()]|\([^()]*\))*)\)\s*\{\s*threadgroup\s+spvUnsafeArray<uint,\s*(\d+)>\s+(\w+);\r?\n");
+        // the thread variables spirv-cross declares ahead of the stage memory (GlobalToStorage's last raw entry, uint _N = 0u;) stay in the body: one call a thread, as the kernel ran (nxnative dmsh_meshstage.py, MIT)
+        Match m = Regex.Match(msl, @"kernel\s+void\s+main0\s*\(((?:[^()]|\([^()]*\))*)\)\s*\{\s*((?:(?!threadgroup\b)[^\n{};]+;\r?\n\s*)*)threadgroup\s+spvUnsafeArray<uint,\s*(\d+)>\s+(\w+);\r?\n");
         if (!m.Success) throw new RuntimeError(kind + ": no kernel main0 with its threadgroup array");
         List<string> pars = MeshParams(m.Groups[1].Value);
-        string words = m.Groups[2].Value, arr = m.Groups[3].Value;
+        string local = m.Groups[2].Value.Trim(), words = m.Groups[3].Value, arr = m.Groups[4].Value;
         var plain = pars.Select(p => Regex.Replace(p, @"\s*\[\[.*\]\]$", "")).ToList();
         var names = pars.Select(p => Regex.Match(p, @".*?(\w+)\s*(\[\[.*\]\])?$").Groups[1].Value).ToList();
-        string body = $"static inline __attribute__((always_inline)) void dm_stage_body({string.Join(", ", plain.Append($"threadgroup spvUnsafeArray<uint, {words}>& {arr}"))})\n{{\n";
+        string body = $"static inline __attribute__((always_inline)) void dm_stage_body({string.Join(", ", plain.Append($"threadgroup spvUnsafeArray<uint, {words}>& {arr}"))})\n{{\n" + (local.Length > 0 ? "    " + local + "\n" : "");
         string src = msl[..m.Index] + body + msl[(m.Index + m.Length)..];
         string call = $"dm_stage_body({string.Join(", ", names.Append(arr))});";
         int thr = (int)info["threads"], payw = ((int)info["payload"] + 3) / 4;

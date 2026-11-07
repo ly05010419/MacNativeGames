@@ -1308,6 +1308,7 @@ void mtl_eye_done(int left, int last) {   // after an eye pass's commit (hle_nvn
 }
 void mtl_eye_capture(int eye) { g_b2_capture = eye; }
 static int g_last_end_relaxed, g_game_barrier; static uint64_t g_bar_skip, g_bar_full;
+static int g_disp_only, g_disp_gbar;   // disp_enc: only dispatches since the shared encoder's last barrier; a game barrier since the last dispatch
 void mtl_sub_begin(void) {
     g_last_end_relaxed = 0;   // the first draw pass of a submission keeps the full barrier (barrier_game)
     g_eye_region = 3;   // stereo B2: a submission starts outside eye marks
@@ -1528,9 +1529,18 @@ static inline void es_begin(id e);   // render state cache, defined with the sta
 /* TOTK: the shared copy / dispatch encoder (g_blit) may still be open after a dispatch: any other encoder on g_cb closes it
    first (a Metal command buffer encodes one encoder at a time). */
 static inline void blit_close(void) { g_last_end_relaxed = 0; if (g_blit) { m4_end(g_blit); g_blit = nil; } }
+/* TOTK_MESH_INPASS (default on for Ocarina of Time): task / mesh draws stay in the open draw pass. Each used to end the pass before and after itself: 54 of the 77 passes a frame of 1024 wide or more, each loading and storing its colour and depth.
+   A mesh draw is encoded by the replay thread, and one encoder cannot be used by two threads, so with this on no pass goes to the encode stage. */
+static int mesh_inpass_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_MESH_INPASS");
+#ifdef GAME_OOT
+    v = !(e && !atoi(e));
+#else
+    v = e && atoi(e);
+#endif
+    if (v) MLOG("[mesh] task and mesh draws stay in the open pass; the replay thread encodes the passes (TOTK_MESH_INPASS=0: a pass of its own for each)"); } return v; }
 #include "nvn_render_stream.h"
 static inline id<MTL4RenderCommandEncoder> enc_r_open(MTL4RenderPassDescriptor *d, int start) {
-    if (!g_mesh_active && rs_stream_pass()) { id e = rs_pass_begin(d, g_vt, g_ft, g_cb, start, (uint64_t)bar_vis()); es_begin(e); return e; }   // TOTK: encode stage (nvn_render_stream.h)
+    if (!g_mesh_active && !mesh_inpass_on() && rs_stream_pass()) { id e = rs_pass_begin(d, g_vt, g_ft, g_cb, start, (uint64_t)bar_vis()); es_begin(e); return e; }   // TOTK: encode stage (nvn_render_stream.h)
     rs_sync();   // a pass encoded by A itself (stream off, or a diagnostic frame): B must have finished the previous pass on this command buffer
     pt_mark(g_cb, 'R', d); id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; es_begin(e);
     { int m = start;
@@ -1622,7 +1632,7 @@ static uint64_t g_blit_opens, g_blit_splits, g_upd_n, g_upd_split, g_copy_n, g_c
    test read a stale value 1 time in 3). The barrier when the encoder opens only orders it against earlier encoders. On
    Metal 4 the copy encoder is a compute encoder, so both blit and dispatch stages are ordered. TOTK_BLIT_BAR=0: off. */
 static int blit_bar_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_BLIT_BAR"); v = !e || atoi(e); } return v; }
-static id<MTL4ComputeCommandEncoder> blit_kind(int buffer_alias) { blit_note(); if (!g_blit) { g_blit_opens++; g_blit_splits += g_enc != nil; } rp_end();
+static id<MTL4ComputeCommandEncoder> blit_kind(int buffer_alias) { blit_note(); if (!g_blit) { g_blit_opens++; g_blit_splits += g_enc != nil; } rp_end(); g_disp_only = 0;
     if (buffer_alias && !g_copy_probe_no_alias) g_blit_alias = 1; // rp_end may itself open and close a copy encoder
     if (!g_blit) { rs_sync(); ser_gate(); pt_mark(g_cb, 'B', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:blit_vis()]; }
     else if (blit_bar_on()) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:blit_vis()];
@@ -2283,7 +2293,13 @@ void mtl_counter_stats(uint64_t rep[32], uint64_t rst[32]) { memcpy(rep, g_cnt_r
    (main+0x8f6bec). CLOCK_MONOTONIC counts sleep while mach_absolute_time does not: the reported GPU end was later than the
    frame start by the machine's whole sleep time since boot (24 days on the Mac, 20 on the iPhone), so the game sat at
    interval 3 (20 frames) everywhere once the device had slept. */
-static uint64_t gpu_ticks(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); __uint128_t ns = (__uint128_t)mach_absolute_time() * tb.numer / tb.denom; return (uint64_t)(ns * 12 / 625); }
+/* NVN counter timestamps are 614.4 MHz ticks (384 per 625 ns; seedds/nxnative nvn_timestamp.h, MIT): a game that converts them itself reads a span 32 times too short in 19.2 MHz ticks. Ocarina of Time only for now; totk_nvn_ext.c holds the inverse. */
+#ifdef GAME_OOT
+#define GPU_TICKS_NUM 384
+#else
+#define GPU_TICKS_NUM 12
+#endif
+static uint64_t gpu_ticks(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); __uint128_t ns = (__uint128_t)mach_absolute_time() * tb.numer / tb.denom; return (uint64_t)(ns * GPU_TICKS_NUM / 625); }
 
 // ---------- 启动埋点（DM_BOOTPROF=1）：metallib 载入、管线创建（均在提交线程回放中同步发生）、贴图上传、首帧出图 ----------
 // ---------- Boot instrumentation (DM_BOOTPROF=1): metallib loading, pipeline creation (both happen synchronously during replay on the submit thread), texture upload, first-frame present ----------
@@ -6726,10 +6742,11 @@ static void treg_link_locked(int tid) {
     if (head) g_treg[head - 1].view_prev = tid + 1;
     nvn_hm_put(&g_view_heads, &serial, (void *)(uintptr_t)(tid + 1));
 }
+static void type_view_drop_locked(id base);
 static void treg_clear_view_locked(int tid) {
     treg_t *r = &g_treg[tid];
     treg_unlink_locked(tid);
-    if (r->view) { defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; }
+    if (r->view) { type_view_drop_locked((__bridge id)r->view); defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; }
     r->view_id = r->view_rid = r->view_ser = r->view_dirty = 0; r->view_pkg = r->dead_pending = 0; r->view_tt = 0; r->view_parent = NULL;
 }
 // 贴图号 → 序号的无锁副本（回放热路径只要序号：写回前瞻索引、纯清除前提的绑定集合）：贴图号 20 位，固定 1M 项（BSS，只占碰过的页），
@@ -10072,20 +10089,38 @@ static NSMapTable<id, id<MTLTexture>> *g_type_views;
 /* Cached views retain their parent allocation. Evict after that allocation has been removed from
    residency by the completed-fence retirement path; a strong cache must not keep every upload alive.
    Caller cadence is bounded, and deferral also protects views used by the most recent submission. */
+/* The whole map used to be walked at once every 64 submissions, under both locks: about 10 frames apart in Ocarina of Time, one frame in ten took 30-60 ms more, growing with the map.
+   Now a list of the keys is taken once and a slice of it is checked at each submission, so the map is covered about every 256 submissions, a key leaving the list as it is checked. TOTK_TYPE_VIEW_SWEEP=all restores the old walk. */
+static NSMutableArray *g_tv_todo; static unsigned g_tv_slice;
+static void type_views_sweep_one(id key) {   // caller holds both locks
+    id<MTLTexture> view = [g_type_views objectForKey:key], base = view;
+    if (!view) return;   // gone since the list was taken
+    while (base.parentTexture) base = base.parentTexture;
+    id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
+    if ([g_res_objects containsObject:allocation]) return;
+    defer_obj_unref(view); defer_obj_unref(key);
+    [g_type_views removeObjectForKey:key]; g_type_retired_views++;
+}
 static void type_views_sweep_retired(void) {
-    if (g_sub_serial & 63) return;
+    static int all = -1; if (all < 0) { const char *e = getenv("TOTK_TYPE_VIEW_SWEEP"); all = e && !strcmp(e, "all"); }
+    if (all && (g_sub_serial & 63)) return;
+    if (!all && !g_type_views.count) return;
     registry_lock();
     pthread_mutex_lock(&g_res_mu);
-    for (id key in g_type_views.keyEnumerator.allObjects) {
-        id<MTLTexture> view = [g_type_views objectForKey:key], base = view;
-        while (base.parentTexture) base = base.parentTexture;
-        id<MTLResource> allocation = base.buffer ?: (id<MTLResource>)base;
-        if ([g_res_objects containsObject:allocation]) continue;
-        defer_obj_unref(view); defer_obj_unref(key);
-        [g_type_views removeObjectForKey:key]; g_type_retired_views++;
+    if (all) { for (id key in g_type_views.keyEnumerator.allObjects) type_views_sweep_one(key); }
+    else {
+        if (!g_tv_todo.count) { g_tv_todo = [g_type_views.keyEnumerator.allObjects mutableCopy]; g_tv_slice = (unsigned)g_tv_todo.count / 256 + 1; }
+        for (unsigned n = g_tv_slice; n && g_tv_todo.count; n--) { id key = g_tv_todo.lastObject; [g_tv_todo removeLastObject]; type_views_sweep_one(key); }
     }
     pthread_mutex_unlock(&g_res_mu);
     registry_unlock();
+}
+/* An ID's view is going: so does its cached view as another type, which otherwise kept it and its parent for good, 88 new entries a frame in Ocarina of Time. A real texture (no parent) may serve other IDs, and stays. TOTK_TYPE_VIEW_DROP=0 keeps them. */
+static void type_view_drop_locked(id base) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_TYPE_VIEW_DROP"); on = !(e && !atoi(e)); }
+    if (!on || !g_type_views || !((id<MTLTexture>)base).parentTexture) return;
+    id<MTLTexture> v = [g_type_views objectForKey:base]; if (!v) return;
+    defer_obj_unref(v); defer_obj_unref(base); [g_type_views removeObjectForKey:base];
 }
 static id<MTLTexture> tex_type_view(id<MTLTexture> base, MTLTextureType want) {
     if (!g_type_views) g_type_views = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality valueOptions:NSPointerFunctionsStrongMemory];
@@ -15043,7 +15078,7 @@ static void mesh_encode(id<MTL4RenderCommandEncoder> en, NvProg *pr) {
     encode_args((id)en, ms, 4, 0);
     if (g_mesh_ind_args) {
         /* The copies of the game's record ran before this pass: they, and the culling that wrote the record, come first. */
-        [en barrierAfterQueueStages:MTLStageBlit | MTLStageDispatch beforeStages:MTLStageObject | MTLStageMesh visibilityOptions:MTL4VisibilityOptionDevice];
+        if (!mesh_inpass_on()) [en barrierAfterQueueStages:MTLStageBlit | MTLStageDispatch beforeStages:MTLStageObject | MTLStageMesh visibilityOptions:MTL4VisibilityOptionDevice];   // in a pass, the copy encoder's end barrier has done this
         [g_ot setAddress:g_mesh_ind_first atIndex:29]; [g_mt setAddress:g_mesh_ind_first atIndex:29];
         [en drawMeshThreadgroupsWithIndirectBuffer:g_mesh_ind_args threadsPerObjectThreadgroup:MTLSizeMake(ts ? ts->mesh_threads : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(ms->mesh_threads, 1, 1)];
         return; }
@@ -15073,25 +15108,40 @@ static void indirect_read(uint64_t address, void *out, size_t size) {
     memcpy(out, (const uint8_t *)staging.contents + dest, size);
 }
 #endif
+enum { MESH_PRE_MAX = 128 }; static struct { const p_mesh_tasks *op; uint64_t sub, args, first; } g_mesh_pre[MESH_PRE_MAX]; static int g_mesh_pre_n;
 static void mesh_tasks_draw(const p_mesh_tasks *mesh) {
     if (!mesh->ind && !mesh->count) return;
     static int skip = -1; if (skip < 0) { const char *e = getenv("TOTK_MESH_SKIP"); skip = e && atoi(e); if (skip) MLOG("[mesh] TOTK_MESH_SKIP=1: task / mesh draws dropped (diagnostic)"); }
     if (skip || !S.prog) return;
-    rp_end();
+    int inpass = mesh_inpass_on() && !g_defer.active && !g_cg_pending && !g_fz.active && !g_lay.active && !g_hoist_n;   // anything unusual going on in the pass: a pass of its own, as before
+    if (!inpass) rp_end();
     g_mesh_ind_args = g_mesh_ind_first = 0;
-    if (mesh->ind) {   /* the record is {count, first} (nxnative nvn_geometry.inc), often written by the GPU's culling earlier in the frame: the GPU copies it on its own timeline, so the CPU never waits (a readback here took 85 % of the replay: 3 fps) */
-        void *source; uint64_t so;
-        if (!mtl_addr(mesh->ind, 8, &source, &so)) { RED_ONCE(163, "DrawMeshTasksIndirect record at %#llx is in no memory pool: draw skipped", (unsigned long long)mesh->ind); return; }
-        cg_flush(); defer_fallback(); rp_flush(); upd_flush();
-        __strong id<MTLBuffer> ab; size_t ao = arena_alloc(32, &ab); uint32_t *w = (uint32_t *)((uint8_t *)ab.contents + ao); memset(w, 0, 32); w[1] = w[2] = 1;
-        id<MTLBuffer> src = (__bridge id<MTLBuffer>)source;
-        id<MTL4ComputeCommandEncoder> ce = blit_buffer(src, so, ab, ao, 4);
-        enc_b_copy_buffer(ce, src, so, ab, ao, 4); enc_b_copy_buffer(ce, src, so + 4, ab, ao + 16, 4);
-        enc_b_end(g_blit); g_blit = nil;
-        g_mesh_ind_args = ab.gpuAddress + ao; g_mesh_ind_first = ab.gpuAddress + ao + 16; }
+    if (mesh->ind) {   /* the record is {count, first} (nxnative nvn_geometry.inc), often written by the GPU's culling earlier in the frame: the GPU copies it on its own timeline, so the CPU never waits (a readback here took 85 % of the replay).
+        A copy cannot run inside a pass, so the first draw of a run copies the records of the indirect draws after it too, up to anything that could write them, and those draws stay in the pass. */
+        int have = 0;
+        if (inpass) for (int i = 0; i < g_mesh_pre_n; i++) if (g_mesh_pre[i].op == mesh && g_mesh_pre[i].sub == g_sub_serial) { g_mesh_ind_args = g_mesh_pre[i].args; g_mesh_ind_first = g_mesh_pre[i].first; have = 1; break; }
+        if (!have) {
+            const p_mesh_tasks *run[MESH_PRE_MAX]; int nrun = 0; run[nrun++] = mesh;
+            if (inpass && g_exec_cur && (const uint8_t *)mesh == g_exec_cur + sizeof(op_hdr)) { const uint8_t *q = g_exec_cur; op_hdr h; memcpy(&h, q, sizeof h); q += h.size;
+                for (int steps = 0; steps < 4096 && nrun < MESH_PRE_MAX; steps++) { memcpy(&h, q, sizeof h); if (h.size < sizeof h) break;
+                    if (h.op == OP_END || h.op == OP_JUMP || h.op == OP_CALL || h.op == OP_DISPATCH || h.op == OP_COPY_B2B || h.op == OP_COPY_B2T || h.op == OP_COPY_T2B || h.op == OP_COPY_T2T || h.op == OP_CLEAR_BUF || h.op == OP_CLEAR_TEX || h.op == OP_BARRIER || h.op == OP_UPDATE_UB) break;
+                    if (h.op == OP_MESH_TASKS) { const p_mesh_tasks *m = (const p_mesh_tasks *)(q + sizeof h); if (m->ind) run[nrun++] = m; }
+                    q += h.size; } }
+            rp_end(); cg_flush(); defer_fallback(); rp_flush(); upd_flush();
+            g_mesh_pre_n = 0;
+            for (int r = 0; r < nrun; r++) { void *source; uint64_t so;
+                if (!mtl_addr(run[r]->ind, 8, &source, &so)) { if (!r) { RED_ONCE(163, "DrawMeshTasksIndirect record at %#llx is in no memory pool: draw skipped", (unsigned long long)run[r]->ind); return; } continue; }
+                __strong id<MTLBuffer> ab; size_t ao = arena_alloc(32, &ab); uint32_t *w = (uint32_t *)((uint8_t *)ab.contents + ao); memset(w, 0, 32); w[1] = w[2] = 1;
+                id<MTLBuffer> src = (__bridge id<MTLBuffer>)source;
+                id<MTL4ComputeCommandEncoder> ce = blit_buffer(src, so, ab, ao, 4);
+                enc_b_copy_buffer(ce, src, so, ab, ao, 4); enc_b_copy_buffer(ce, src, so + 4, ab, ao + 16, 4);
+                if (!r) { g_mesh_ind_args = ab.gpuAddress + ao; g_mesh_ind_first = ab.gpuAddress + ao + 16; }
+                else { g_mesh_pre[g_mesh_pre_n].op = run[r]; g_mesh_pre[g_mesh_pre_n].sub = g_sub_serial; g_mesh_pre[g_mesh_pre_n].args = ab.gpuAddress + ao; g_mesh_pre[g_mesh_pre_n].first = ab.gpuAddress + ao + 16; g_mesh_pre_n++; } }
+            enc_b_end(g_blit); g_blit = nil; } }
     g_mesh_active = 1; g_mesh_first = mesh->first; g_mesh_count = mesh->ind ? 1 : mesh->count;
     p_draw synthetic = {.prim = 4, .count = 3, .instances = 1}; draw(&synthetic, NULL);
-    rp_end(); g_mesh_active = 0; g_mesh_ind_args = 0; g_pso_dirty = 1; args_dirty_all();
+    if (!inpass) rp_end();
+    g_mesh_active = 0; g_mesh_ind_args = 0; g_pso_dirty = 1; args_dirty_all();
 }
 static void draw_inner(const p_draw *dw, const p_draw_idx *di) {
     NSUInteger native_output_width=0,native_output_height=0;
@@ -15910,11 +15960,22 @@ static void bright_lut(NvShader *cs) {
 static int disp_reuse_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_DISPATCH_REUSE"); v = !(e && !strcmp(e, "0")); if (!v) MLOG("TOTK_DISPATCH_REUSE=0：每次派发单开计算编码器（旧行为）"); } return v; }
 static uint64_t g_disp_n, g_disp_shared;
 static int g_disp_probe_nobar;   // probe-gpu-dispatch-chain negative control: no barrier between the commands of the shared encoder
+/* TOTK_DISPATCH_OVERLAP (default on for Ocarina of Time; after cheemu21/kid-with-sword-remake dispatch_overlap, MIT): two of the game's dispatches with nothing else between them in the shared encoder and no
+   nvnCommandBufferBarrier of the game's between them run side by side, as NVN lets them. A copy, fill or update between them or a game barrier keeps the barrier, and what follows a dispatch other than a dispatch still waits for it. */
+static int dispatch_overlap(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_DISPATCH_OVERLAP");
+#ifdef GAME_OOT
+    v = !(e && !atoi(e));
+#else
+    v = e && atoi(e);
+#endif
+    if (v) MLOG("the game's dispatches with no barrier of its between them run side by side (TOTK_DISPATCH_OVERLAP=0 orders each after the one before)"); } return v; }
 static id<MTL4ComputeCommandEncoder> disp_enc(void) {
     int open = g_blit != nil;
     g_disp_n++; g_disp_shared += open;
+    int beside = open && g_disp_only && !g_disp_gbar && dispatch_overlap();
+    g_disp_only = 1; g_disp_gbar = 0;
     if (!open) { rs_sync(); ser_gate(); pt_mark(g_cb, 'C', nil); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:bar_vis()]; }
-    else if (!g_disp_probe_nobar) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
+    else if (!g_disp_probe_nobar && !beside) [g_blit barrierAfterEncoderStages:MTLStageBlit | MTLStageDispatch beforeEncoderStages:MTLStageBlit | MTLStageDispatch visibilityOptions:bar_vis()];
     [g_blit setArgumentTable:g_ct]; args_dirty_all();
     if (g_disp_n % 20000 == 0) MLOG("[nvn] 计算派发 至 %llu 次：其中 %llu 次（%.0f%%）接在已开的计算编码器里，没有另开编码器", (unsigned long long)g_disp_n, (unsigned long long)g_disp_shared, 100.0 * (double)g_disp_shared / (double)g_disp_n);
     return g_blit;
@@ -16805,7 +16866,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SET_TEX_POOL: { const dpool_t *tp = ((const p_set_pool *)a)->pool; extern int nvn_tex_pool_base(const void *pool);   // hle_nvn.c: IDs past this pool's part of the table read 0
                                     S.tex_pool_n = tp ? nvn_tex_pool_base(tp) + tp->n : 0; S.tex_base = tp ? nvn_tex_pool_base(tp) : 0; break; }
             case OP_SET_SAMP_POOL: { const dpool_t *sp = ((const p_set_pool *)a)->pool; extern int nvn_samp_pool_base(const void *pool); S.samp_base = sp ? nvn_samp_pool_base(sp) : 0; break; }
-            case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) g_game_barrier = 1; break; }   // ordered at the next draw pass (barrier_game)
+            case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) g_game_barrier = g_disp_gbar = 1; break; }   // ordered at the next draw pass (barrier_game) or dispatch (disp_enc)
             default: break;
         }
         p += h.size;
