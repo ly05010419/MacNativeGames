@@ -17,8 +17,12 @@
 #include "bananza_display.h"
 #include "pokopia_display.h"
 
-/* No frame-step patch: these are what the frontend and the frame lock call. */
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+#include "oot_timestep.h"
+#else
+/* Other NS2 titles retain their native time-step policy. */
 void runtime_frame_step_pin(double ms) { (void)ms; }
+#endif
 void runtime_frame_step_update(uint64_t now_ns) { (void)now_ns; }
 
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
@@ -356,6 +360,8 @@ void runtime_game_patches(Module *m) {
     patch_output_parameters(m);
 #elif defined(GAME_POKOPIA)
     patch_pokopia_display(m);
+#elif defined(GAME_OOT) && !TARGET_OS_IPHONE
+    patch_oot_timestep(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {
