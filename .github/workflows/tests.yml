@@ -9,9 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  source:
+    name: Source tests (${{ matrix.group }})
     runs-on: macos-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, settings]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -24,7 +29,21 @@ jobs:
       - name: Install build-tool test dependencies
         run: python -m pip install -r games/totk/requirements.txt
       - name: Run synthetic container, update and native path tests
-        run: python -m unittest discover -s tests -v
+        run: python .github/run_source_tests.py ${{ matrix.group }}
+
+  test:
+    needs: source
+    if: ${{ always() }}
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require all source test groups
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+        run: test "$SOURCE_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       # UBSan only: on macOS 26 an AddressSanitizer build of this test hangs in dyld before main
       # (AsanInitInternal -> StaticSpinMutex::LockSlow), which would hold the job until its timeout.
       - name: Check native path parser with the undefined-behavior sanitizer
