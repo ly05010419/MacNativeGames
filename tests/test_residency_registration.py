@@ -34,6 +34,7 @@ int main(void) { @autoreleasepool {
     desc.initialCapacity = 64;
     NSError *error = nil;
     g_res = [device newResidencySetWithDescriptor:desc error:&error];
+    if (!g_res && !error) return 77; // Hosted virtual Metal devices expose the selector but no residency sets.
     if (!g_res) { fprintf(stderr, "residency set: %s\n", error.description.UTF8String); return 2; }
     @autoreleasepool {
         NSMutableArray *keep = [NSMutableArray new];
