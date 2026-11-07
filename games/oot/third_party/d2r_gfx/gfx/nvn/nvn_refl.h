@@ -23,6 +23,7 @@ typedef struct {
     uint8_t kind, rw;        // rw：存储缓冲 access 为 read_write / write / device | rw: storage buffer access is read_write / write / device
     uint8_t dtt, dpf;        // 贴图槽未绑时的哑贴图：MTLTextureType 数值、像素类 | Dummy texture when the texture slot is unbound: MTLTextureType value, pixel class
     uint16_t reg, aid;       // D3D 寄存器号、参数缓冲内序号 | D3D register number, index within the argument buffer
+    uint64_t pool_sources; // proven read-only storage sources; zero requires full preparation
     uint16_t off;            // SBUFU：uniform 块内的指针字节偏移 | SBUFU: byte offset of the pointer inside the uniform block
     uint8_t fetch;           // TEX：着色器按整数像素坐标读它（MSL `.read(`，nvn_mtl.m refl_mark_fetches） | TEX: the shader reads it by integer texel coordinates (MSL `.read(`)
 } nvn_rbind;

@@ -145,6 +145,7 @@ static class SwshXlate
         // texture handles, its size, the push constant bytes) comes with the job as nvn2_cs, read from its control section.
         public int QueryConstantBuffer1Size() => _c1.Length;
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
+        public bool QueryRawReadSameHighCache() => _job["raw_read_same_high_cache"] is JsonValue value && value.TryGetValue<bool>(out bool enabled) && enabled;
         public int[] QueryAmpereStageMemory() => _job["stage_memory"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
     }
 

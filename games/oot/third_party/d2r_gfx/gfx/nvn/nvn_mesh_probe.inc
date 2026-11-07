@@ -127,6 +127,7 @@ static int mesh_empty_export_probe(void) {
         if((variant!=ms->fn)!=(mode==1))MDIE("empty mesh probe did not switch production variant");checked++;
         id<MTLRenderPipelineState> ps=mtk_pso(raster);
         mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,0);rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.renderTargetWidth=rp.renderTargetHeight=16;
+        if(getenv("OOT_MESH_GPU_FILE"))pt_mark(g_cb,'R',rp);
         id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,ps);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});enc_r_vbuf(en,28,side.gpuAddress);mtk_encode(en);enc_r_end(en);
         enc_b_copy_texture_buffer(blit(),color,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,16,1),rb,0,64,1024);mtl_sub_commit();mtl_finish();
         for(int i=0;i<32;i++){if(((uint32_t *)side.contents)[i]!=(0x12340000u+i))MDIE("empty mesh lost guest side effect group%d",i);checked++;}
@@ -151,15 +152,18 @@ int mtl_probe_mesh(void) {
     td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget;id<MTLTexture> color=[g_dev newTextureWithDescriptor:td];res_add(color);id<MTLBuffer> readback=probe_buf(1024);
     memset(&S.color,0,sizeof S.color);S.chmask.mask=15;S.ms.a2c=0;memset(g_pass.cfmt,0,sizeof g_pass.cfmt);g_pass.cfmt[0]=MTLPixelFormatRGBA8Unorm;g_pass.dfmt=g_pass.sfmt=0;g_pass.samples=1;
     NSMutableArray *keep=[NSMutableArray arrayWithObject:ms];
-    for(int mode=0;mode<3;mode++) {
+    for(int mode=0;mode<4;mode++) {
         NSString *extra=mode==0?@"":mode==1?@"float4 a2 [[user(locn2)]];\n":@"uint4 a2 [[user(locn2),flat]];\n";
         NSString *fsrc=[NSString stringWithFormat:@"#include <metal_stdlib>\nusing namespace metal;\nstruct main0_in\n{\nfloat4 a1 [[user(locn1)]];\n%@float4 p3 [[user(locn3),flat]];\n};\nfragment float4 main0(main0_in in [[stage_in]]) { return float4(in.a1.x,%@,in.p3.x,1); }",extra,mode==0?@"0.0":@"float(in.a2.x)"];
         id<MTLLibrary> fl=totk_msl_library(fsrc,&error);if(!fl)MDIE("mesh probe fragment: %s",error.localizedDescription.UTF8String);
         NvShader *fs=[NvShader new];fs->src=fsrc;fs->stage=1;fs->fn=[fl newFunctionWithName:@"main0"];snprintf(fs->key,sizeof fs->key,"probe-mesh-fragment-%d",mode);[keep addObject:fs];
-        g_mtk=(__typeof__(g_mtk)){.on=1,.ms=ms,.count=1};NvProg *raster=[NvProg new];raster->sh[1]=fs;
+        g_mtk=(__typeof__(g_mtk)){.on=1,.profile_grid=-1,.ms=ms,.count=1};NvProg *raster=[NvProg new];raster->sh[1]=fs;
         id<MTLFunction> linked=mtk_mesh_fn(ms,fs);if(mode==0&&linked!=ms->fn)MDIE("mesh probe replaced an already complete interface");
         id<MTLRenderPipelineState> pipeline=mtk_pso(raster);
         mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.renderTargetWidth=rp.renderTargetHeight=16;
+        if(mode==3){id<MTLBuffer> grid;size_t at=arena_alloc(16,&grid);uint32_t initial[4]={0,1,1,0};memcpy((uint8_t *)grid.contents+at,initial,sizeof initial);*(uint32_t *)readback.contents=1;
+            enc_b_copy_buffer(blit(),readback,0,grid,at,4);blit_close();g_mtk.indirect_gpu=grid.gpuAddress+at;g_mtk.profile_grid=ms_grid_capture(g_mtk.indirect_gpu);}
+        if(getenv("OOT_MESH_GPU_FILE"))pt_mark(g_cb,'R',rp);
         id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,pipeline);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});
         mtk_encode(en);enc_r_end(en);enc_b_copy_texture_buffer(blit(),color,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,16,1),readback,0,64,1024);mtl_sub_commit();mtl_finish();
         const uint8_t *pixels=readback.contents;for(int p=0;p<256;p++){const uint8_t *v=pixels+4*p;if(abs((int)v[0]-64)>1||v[1]!=0||abs((int)v[2]-191)>1||v[3]!=255)MDIE("mesh probe mode %d pixel %d: %u %u %u %u",mode,p,v[0],v[1],v[2],v[3]);checked++;}
