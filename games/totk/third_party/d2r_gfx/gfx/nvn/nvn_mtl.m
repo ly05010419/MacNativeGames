@@ -20697,9 +20697,10 @@ void runtime_shader_seed(const char *path, const char *list) { @autoreleasepool 
         int stage = ctl_stage(ctl, code);
         if (stage != 0 && stage != 1 && stage != 5) { other_stage++; continue; }   // geometry / tessellation: no translation chain yet (prog_get)
         char key[65]; shader_key_of(ctl, code, kn, key);
-        totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), 1);
+        // The background queue holds one job per shader, so finish its listed states in order.
+        totk_rt_variant(@(key), stage, ctl, code, answers, rt_local(ctl, stage), !listed[@(key)].count);
         [keys addObject:@(key)];
-        for (NSDictionary *a in listed[@(key)]) { totk_rt_variant(@(key), stage, ctl, code, a, rt_local(ctl, stage), 1); [listed_jobs addObject:@[@(key), a]]; listed_n++; }
+        for (NSDictionary *a in listed[@(key)]) { totk_rt_variant(@(key), stage, ctl, code, a, rt_local(ctl, stage), 0); [listed_jobs addObject:@[@(key), a]]; listed_n++; }
     }
     MLOG("[seed] %u shaders in %s: %lu queued for translation (already translated ones answer at once), %u of other stages left out (no translation chain), %u unreadable",
          n, path, (unsigned long)keys.count, other_stage, bad);
