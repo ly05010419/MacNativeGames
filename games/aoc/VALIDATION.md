@@ -247,6 +247,44 @@ four additional requested shader keys were missing as it advanced. It is not
 complete title/movie rendering acceptance. The full build and diagnostics
 overlap, so these windows are not benchmarks.
 
+## Black squares — 2026-11-07
+
+Game 1.4.1. `DM_NVN_MAGSCAN` found non-finite pixels first in the scene target
+(RG11B10Float, 1440x810), in the pass opened by full-screen stencil draws of
+`b7925c00a295bfdb` and `f0fdd965f01181da`, which sample the target they draw to. A
+720x405 chain spreads them into large patches in menus and cutscenes. They are read
+as NaN because each affected block's maximum stayed finite; the scan does not tell
+NaN from infinity. The mechanism is the same-pass feedback documented at `fb_prepare`
+in `nvn_mtl.m`.
+
+| Session, all with the original translator | Frames scanned | With non-finite pixels |
+|---|---|---|
+| Copies on, a full mission by hand (31.1 minutes) | 9,360 | 0 |
+| Copies on, scripted | 1,320 | 0 |
+| Copies off (`DM_NVN_FB_SNAP=0`), scripted | 1,320 | 525 (210 of 420 in play) |
+
+The scripted sessions use one host and one save copy, enter the same mission through
+`control.txt` and differ only in that switch. **User-confirmed:** by hand, the squares
+came back without copies and did not appear with them.
+
+GPU time, from `@gpu_ms` in `frames.tsv`, frames 9000 to 12999 of each session, 60 fps
+target, the same scripted route (enemies do not repeat exactly):
+
+| Pair | Mean with / without (ms) | p95 with / without (ms) |
+|---|---|---|
+| 1 | 6.33 / 6.00 | 8.95 / 8.38 |
+| 2 | 6.35 / 5.75 | 9.13 / 8.32 |
+| 3, scan running | 5.53 / 5.38 | 9.57 / 9.30 |
+
+Without the scan, the copies added 0.33 and 0.60 ms to the mean and 0.57 and 0.81 ms at
+p95 (pairs 1 and 2). With the scan running they added 0.15 ms and 0.27 ms (pair 3); the
+scan changes the load, so that pair is not averaged with the others. These are differences
+seen on this route, and repeats of the same setting differ by up to 0.25 ms. All six
+sessions held 59.9 fps in that stretch. One hand-played run without copies had a window
+of 300 presents at 31 fps, cause not identified. There are about three copies per frame.
+The four keys are enough in these runs; removing any of them was not tried, and 1.3.0
+was not tested.
+
 ## Interactive first battle — reached, completeness still under test
 
 `movie-03`: the opening VP9 movie rendered upright with visible colors and game

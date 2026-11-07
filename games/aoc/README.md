@@ -160,6 +160,13 @@ rejects the previous timing ABI.
 A sound-heap compatibility patch moves 4 MiB between subheaps without changing their total;
 its underlying hardware/work-buffer discrepancy remains unresolved.
 
+Black squares in menus, cutscenes and play were NaN pixels in the 1440x810 scene
+target: full-screen stencil effects read that target while drawing into it, which
+is undefined on Metal. The profile's `feedback_snap` keys copy it before those
+draws. Tested on 1.4.1, where the squares went away with the copies. On the
+measured route they added 0.33 and 0.60 ms to a mean GPU frame of about 6 ms, and
+sessions held 59.9 fps with and without them.
+
 ## Tests
 
 ```sh

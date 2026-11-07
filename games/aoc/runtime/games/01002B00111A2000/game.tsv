@@ -42,6 +42,10 @@ sys_resource	0
 # Movie frames (VP9, NV12 to a buffer): the game copies each frame into a 1280x720 R8 and a 640x360 RG8 texture in a CPU-visible pool and publishes them with
 # nvnMemoryPoolFlushMappedRange; without the upload the intro movie stayed black under its "+ Skip" prompt
 tex_flush_upload	on
+# Black squares: KTGL's full-screen stencil effects read the 1440x810 scene target (RG11B10Float) while drawing into it, an
+# undefined read on Metal. NaN appeared in that target, small and sharp in play and spread into dark patches by a 720x405
+# pass in menus and cutscenes. With a snapshot before these draws the scan found none (nvn_mtl.m fb_prepare)
+feedback_snap	b7925c00a295bfdb f0fdd965f01181da 315e5a651f5ca0c2 78cf921ff6b210e0
 
 # ---- Presentation ----
 # Original simulation is 30 fps. The version-gated stubs coordinate the KIDS
