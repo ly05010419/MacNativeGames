@@ -20,7 +20,7 @@ import sys
 
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
-from build_app import METAL_FLAGS, metal_compiler   # noqa: E402
+from build_app import METAL_FLAGS, metal_compiler, metal_flags   # noqa: E402
 
 
 def main():
@@ -52,7 +52,7 @@ def main():
     def compile_one(item):
         digest, src = item
         partial = a.out/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=env)
+        r = subprocess.run([metal, *metal_flags(src), '-o', partial, src], capture_output=True, text=True, env=env)
         if r.returncode:
             partial.unlink(missing_ok=True)
             return f'{src.name}\n{r.stdout}{r.stderr}'
