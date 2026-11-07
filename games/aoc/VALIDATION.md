@@ -292,7 +292,13 @@ in a full mission, cutscenes ran at 30 fps without speeding up and gameplay ran 
 60. In that session's log (31.1 minutes) the present interval goes from 1 to 2 in a
 cutscene and back to 1, and the stretch after it holds 59.2 fps for 6 minutes. Six
 scripted sessions on the final host each left a cutscene and held 59.9 fps in the
-4,000 frames measured after it. The 1.3.0 offset was checked by disassembly only.
+4,000 frames measured after it.
+
+A signed 1.4.1 app built from this change repeated it by script: held from the title,
+the present interval back from 2 to 1 when the cutscene ended, and a median frame of
+16.8 to 16.9 ms after it. 1.3.0, with the offset found by disassembly, did the same in
+one scripted session on the same host, with a median frame of 16.6 to 16.7 ms after
+it. That session used a copy of a 1.4.1 save, and 1.3.0 has not been played by hand.
 
 ## Newly run source and native tests
 
