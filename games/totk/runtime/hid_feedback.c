@@ -120,6 +120,13 @@ static uint32_t vib_info(VibrationDeviceInfo *out, const uint32_t *h) {
 }
 static uint32_t vib_mounted(bool *out, const uint32_t *h) { if (!out) runtime_fail("vibration mounted pointer"); *out = vibration_side(h) >= 0; return 0; }
 static uint32_t vib_permitted(bool *out) { if (!out) runtime_fail("vibration permitted pointer"); *out = true; return 0; }
+#ifdef GAME_NS2
+/* SDK 22 queries otherwise enter the unserved hid service. Use the existing two-device model, including rumble off.
+   Public-call behavior adapted from seedds/nxnative 8feddfee, dm/host/hle_hid.c h_hid_VibMountedOunce (MIT). */
+static bool ounce_mounted(const uint32_t *h) { return h && vibration_side(h) >= 0; }
+static bool ounce_not_mounted(const uint32_t *h) { (void)h; return false; }
+static uint32_t vib_not_mounted(bool *out, const uint32_t *h) { (void)h; if (!out) runtime_fail("vibration mounted pointer"); *out = false; return 0; }
+#endif
 
 static void six_axis_check(const uint32_t *h) {
     if (!h) runtime_fail("six-axis handle pointer");
@@ -222,7 +229,12 @@ void *runtime_hid_feedback_override(const char *name) {
         {"_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", (void *)vib_info, (void *)vib_info, false},
         {"_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", (void *)six_start, (void *)no_feedback, true},
         {"_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", (void *)six_states_public, (void *)no_six_states, true},
-        {"_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", (void *)six_state_public, (void *)no_six_state, true}};
+        {"_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", (void *)six_state_public, (void *)no_six_state, true},
+#ifdef GAME_NS2
+        {"_ZN2nn3hid29IsOunceVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", (void *)ounce_mounted, (void *)ounce_not_mounted, false},
+        {"_ZN2nn3hid6detail29IsOunceVibrationDeviceMountedEPbRKNS0_21VibrationDeviceHandleE", (void *)vib_mounted, (void *)vib_not_mounted, false},
+#endif
+    };
     for (unsigned i = 0; i < sizeof sdk20 / sizeof *sdk20; i++)
         if (!strcmp(name, sdk20[i].name)) return (sdk20[i].gyro ? gyro : rumble) ? sdk20[i].on : sdk20[i].off;
     for (unsigned i = 0; i < sizeof entries / sizeof *entries; i++)
