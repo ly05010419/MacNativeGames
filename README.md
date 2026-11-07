@@ -35,7 +35,7 @@ and their SDK 20 services through the same host ([docs/ns2-port.md](docs/ns2-por
 | Donkey Kong Bananza | update 458752 | Mac | Playable, early; not fully tested |
 | Pokémon Pokopia | 2.0.1 | Mac | Early: plays its opening into the first area (scripted test, not fully played). |
 | Mario Kart World | 1.0.0 | Mac | Community port, experimental; [build instructions](games/mkw/README.md) |
-| Mario Kart World | 1.0.0 | Mac | Community port, experimental; [build instructions](games/mkw/README.md) |
+| The Legend of Zelda: Ocarina of Time | 1.0.0 | Mac | Community port, experimental: the start of the game, Link's house and Kokiri Forest tested; [build instructions](games/oot/README.md) |
 
 Not yet: packaging them as an app with the build script, iPhone / iPad, DLC.
 
@@ -198,6 +198,7 @@ Switch 2 游戏在《王国之泪》同一套运行时上运行：它们的 Ampe
 | 大金刚 Bananza | 更新 458752 | Mac | 初步可玩，早期，未完整测试 |
 | 宝可梦 Pokopia | 2.0.1 | Mac | 早期：能玩过开场进到第一个区域（脚本测试，没有完整玩过）。 |
 | 马力欧卡丁车 世界 | 1.0.0 | Mac | 社区移植，实验性；[构建说明](games/mkw/README.md) |
+| 塞尔达传说 时之笛 | 1.0.0 | Mac | 社区移植，实验性：测试过游戏开头、林克的家和科基里森林；[构建说明](games/oot/README.md) |
 
 还没有：用打包脚本打成 App、iPhone / iPad、DLC。
 

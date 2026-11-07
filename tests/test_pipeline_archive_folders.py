@@ -58,7 +58,7 @@ class PipelineArchiveFolders(unittest.TestCase):
         make = (GAME / 'Makefile').read_text().split('\n')
         self.assertIn('GAME_INFO := -Wl,-sectcreate,__TEXT,__info_plist,runtime/game_info.plist', make)
         rules = [i for i, line in enumerate(make) if re.match(r'build/totk-native(-\w+)?:', line)]
-        self.assertEqual(len(rules), 7)
+        self.assertEqual(len(rules), 8)
         for i in rules:
             self.assertIn('runtime/game_info.plist', make[i].split(':', 1)[1].split(), make[i][:40])
             self.assertIn(' $(GAME_INFO) ', make[i + 1], make[i][:40])

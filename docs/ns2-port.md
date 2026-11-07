@@ -233,6 +233,8 @@ Added for it (general where possible, each with its reason in the code):
   block-compressed textures re-uploaded every submission as written (~170 MB a frame, TOTK_REUP_LOG); a second texture
   pool registering in some scenes (the table per pool); nvnCommandBufferDrawArraysIndirect and SetCopyImageStride.
 
+**Ocarina of Time, 2026-11-07: packaged as a Mac app by build_app.py** (`build_app.py <dump folder>`, base/ alone, no update; games/oot/README.md). Its own translator (games/oot/prebuilt), system fonts optional, its ZBIC modules read with the separate zbic package (GPLv2, installed for this game's build only), its data files' Zstandard dictionaries read by ns2_shader_corpus.py: 42,302 shaders prepared.
+
 **Pokopia, 2026-11-04: packaged as a Mac app by build_app.py, its shaders prepared at packaging.**
 - `build_app.py <dump folder> --shared-fonts <folder>`: a folder as the game argument is a Switch 2 dump (base/,
   updates/<version>/ with exefs/ and romfs/); the title ID in its main.npdm picks the game (NS2 table: Pokopia
@@ -511,3 +513,12 @@ space-containing path, so the OS could not launch them. With a separate space-fr
 dependencies, all 15 update tests passed in 2.7 s; no product or test-source workaround was applied. Full discovery
 was not repeated after that environment-only recheck. Logs and source/executable hashes are in the external
 commit-validation.json, commit-tests.log, commit-updates-recheck.log and commit-*-build.log files.
+
+**The Legend of Zelda: Ocarina of Time (`0400486024DEC000`), 2026-11-06: reaches its first in-engine scene at about 30 fps** (`games/oot/README.md` for status and how to run). General findings, each with its fix in the tree:
+
+- Ampere's deferred writes: a guarded instruction ending a block jumped over the commits still pending, and a guarded deferred write committed even when its guard was false. Glyph quads lost their y and had no height, so all menu text was missing (`patches/0009`).
+- Texture handles read from memory index whole pools. `Pools.cs` turns Ryujinx's arrays into pointers to tables per texture type (`pool_table` in `nvn_mtl.m`), built once a submission from its arena. Textures are made within 48 MB a frame and until Metal has `TOTK_POOL_CAP_MB` allocated.
+- A shader may pack RGB9E5 or RG11B10 itself and store the word: the slot takes an R32Float view of the same memory. Stored as the texture's own format, the whole scene came out black (`a335c1db`, `img_write_view`).
+- `nvnCommandBufferDrawMeshTasksIndirect` runs on the GPU: its record is copied on the GPU's timeline. Read back, it was 85 % of the replay and 3 fps. `DispatchComputeIndirect` no longer reads back either: Metal reads its counts when it runs, and the wait had been 74 % of the replay thread's samples in Kokiri Forest.
+- NVN2 compute reads its workgroup counts at `c0 + 4`; `PlayReport::Send` needs a host answer at the first scene.
+- `wired_guard_check` (from `games/mkw`) stops the game at 3/4 of the installed memory wired. Only pools the driver gave an address in go into the raw pool table (`mtl_pool_addressed`, after seedds/nxnative, MIT), and the texture table walk no longer wires a pool to ask whether a texture is in it (`pool_holds`): resident pools 5.1 to 2.0 GB, and a loaded save plays, though runs of up to 150 s still peaked at 10.5 to 12.1 GB wired.

@@ -4,9 +4,15 @@ read at start (runtime/shared_font.c, runtime/game_data.h); the files stay in ex
 import argparse,json
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb','pkp'), default='v0')
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--version', choices=('v0','v121','v143','botw160','botw190','dkb','pkp','oot'), default='v0')
 version=parser.parse_args().version
-folder=root/'extracted/firmware/shared-fonts';manifest=json.loads((folder/'manifest.json').read_text())
+folder=root/'extracted/firmware/shared-fonts'
+# Ocarina of Time without them (build_app.py: no --shared-fonts): no run of it has asked for one; the list stays empty, and a
+# request the game makes anyway stops the runtime (runtime/shared_font.c: "game data shared-fonts.txt has no FONT0_FILE").
+if version=='oot' and not (folder/'manifest.json').exists():
+    out=root/f'build/game-data/{version}';out.mkdir(parents=True,exist_ok=True);(out/'shared-fonts.txt').write_text('# no system fonts in this build\n')
+    print(json.dumps({'fonts':0}));raise SystemExit
+manifest=json.loads((folder/'manifest.json').read_text())
 assert manifest['status']=='pass' and [f['type'] for f in manifest['fonts']]==list(range(6))
 lines=[]
 for f in manifest['fonts']:

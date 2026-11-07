@@ -18,6 +18,21 @@ def check(ok, message):
         raise ValueError(message)
 
 
+NSO_ZSTD = 1 << 7   # system 22.0.0 on: segments compressed with ZBIC (Nintendo's zstd variant) instead of LZ4
+
+
+def decompress(payload, size, flags, what):
+    """A compressed segment: LZ4, or ZBIC when flag bit 7 is set (The Legend of Zelda: Ocarina of Time's main). ZBIC is
+    read with the zbic package (Kinnay's), imported only for such a module, as seedds/nxnative dm/tools/nso.py does (MIT)."""
+    if not flags & NSO_ZSTD:
+        return lz4.block.decompress(payload, uncompressed_size=size)
+    try:
+        import zbic
+    except ImportError:
+        raise ValueError(f'{what}: ZBIC (zstd) segments need the zbic package (pip install zbic)') from None
+    return zbic.decompress(bytes(payload))
+
+
 def align(value, boundary=4096):
     return (value + boundary - 1) & ~(boundary - 1)
 
@@ -33,7 +48,7 @@ def prepare(source, destination):
         stored = compressed[i] if flags & (1 << i) else size
         check(fileoff + stored <= len(raw) and size <= 256 * 1024 * 1024, 'Invalid NSO segment')
         payload = raw[fileoff:fileoff + stored]
-        data = lz4.block.decompress(payload, uncompressed_size=size) if flags & (1 << i) else payload
+        data = decompress(payload, size, flags, f'{source.name}: {name}') if flags & (1 << i) else payload
         digest = hashlib.sha256(data).digest()
         check(len(data) == size, 'NSO decompression size mismatch')
         if flags & (8 << i):

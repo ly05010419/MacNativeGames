@@ -719,6 +719,19 @@ uint32_t (*dm_thread_tick_fn)(void);   // 取当前游戏拍；diag.c 初始化�
 void crash_thread_init(void);
 void guest_thread_init(void);   // thread.c：每线程 TSD 槽（门、x18、TLS、TLR）唯一设置点 | thread.c: the single place that sets the per-thread TSD slots (gate, x18, TLS, TLR)
 __attribute__((weak)) void runtime_hle_stack_set(uintptr_t top) { (void)top; }   // standalone thread probe: no host-stack switch
+/* SDK 22 (Ocarina of Time): the kernel keeps the current thread's handle in the thread-local region at +0x110, and nn::os's
+   internal critical section stores it as a lock's owner word and compares it in IsLockedByCurrentThread (SDK 16-21 compared
+   the thread object at +0x1f8). Left 0, every unlocked mutex (owner word 0) read as the caller's and the first heap lock
+   aborted in pthread_mutex_lock. The handle, as Horizon writes it (seedds/nxnative dm/host/thread.c guest_thread_set_id,
+   MIT, writes the thread ID; any nonzero per-thread value works for the SDK, the handle is also the lock tag here). */
+static void tlr_set_handle(const thr_t *t) {
+#ifdef GAME_NS2
+    uint8_t *tlr = pthread_getspecific(runtime_keys[2]);
+    if (tlr) __atomic_store_n((uint32_t *)(tlr + 0x110), t->handle, __ATOMIC_RELAXED);
+#else
+    (void)t;
+#endif
+}
 static void *thread_main(void *p) {
     thr_t *t = p;
     pthread_setspecific(g_keythr, t);
@@ -727,7 +740,7 @@ static void *thread_main(void *p) {
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
     t->mport = pthread_mach_thread_np(pthread_self());
 
-    guest_thread_init();
+    guest_thread_init(); tlr_set_handle(t);
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); core_take(t); pthread_mutex_unlock(&G);
     { volatile char marker = 0; runtime_hle_stack_set((uintptr_t)&marker - 1024); }   // host services of this thread run below this frame
     dm_thread_enter(t->entry, t->arg, t->stack_top,t->host_context);   // 不返回：客体须经 ExitThread 退出 | Does not return: the guest must exit through ExitThread
@@ -777,6 +790,7 @@ uint32_t svc_thread_main_init(void) {
     pthread_setspecific(g_keythr, t);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
+    tlr_set_handle(t);
     return t->handle;
 }
 
@@ -1100,11 +1114,15 @@ int svc_thread(int num, uint64_t *regs) {
         regs[0] = 0; return 1;
     }
 
-    case 0x34: {  // WaitForAddress(x0 地址, w1 类型, w2 值, x3 超时)：0 小于则等、1 小于则减一再等、2 相等则等 | WaitForAddress(x0 address, w1 type, w2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal
+    case 0x34: {  // WaitForAddress(x0 地址, w1 类型, w2 值, x3 超时)：0 小于则等、1 小于则减一再等、2 相等则等 | WaitForAddress(x0 address, w1 type, w2/x2 value, x3 timeout): 0 wait if less than, 1 decrement if less than then wait, 2 wait if equal32, 3 wait if equal64
         thr_t *t = cur(); uint64_t addr = regs[0]; int type = (int)regs[1]; int32_t val = (int32_t)regs[2];
         pthread_mutex_lock(&G);
-        int64_t r; uint32_t v = ld32(addr);
-        int ok = type == 2 ? (int32_t)v == val : (int32_t)v < val;
+        /* SDK 22 sdk+0x16cd90 moves x1 to x2, sets w1=3, x3=-1, then calls
+           sdk+0x1a56c8 (svc 0x34; ret): type 3 compares ALL of x2, not w2. */
+        int64_t r; uint32_t v = 0;
+        int ok;
+        if (type == 3) ok = __atomic_load_n((uint64_t *)addr, __ATOMIC_SEQ_CST) == regs[2];
+        else { v = ld32(addr); ok = type == 2 ? (int32_t)v == val : (int32_t)v < val; }
         if (ok && type == 1) { while (!cas32(addr, &v, v - 1)) if (!((int32_t)v < val)) { ok = 0; break; } }
         if (!ok) r = R_BAD_STATE;
         else { t->waddr = addr; r = block(t, 3, (int64_t)regs[3]); }

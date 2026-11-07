@@ -38,7 +38,7 @@ csz = struct.unpack_from('<III', d, 0x60)
 IMG = bytearray(segs[2][1] + segs[2][2] + bss)
 for i, (fo, mo, sz) in enumerate(segs):
     raw = d[fo:fo + csz[i]]
-    if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
+    if flags >> i & 1: raw = __import__("zbic").decompress(bytes(raw)) if flags & 0x80 else lz4.block.decompress(raw, uncompressed_size=sz)   # bit 7: ZBIC (zstd, system 22+; zbic package)
     IMG[mo:mo + sz] = raw
 IMG0 = bytes(IMG)   # the image as decoded, before any rewrite (spin waits keep off every word that changes)
 TEXT_END = segs[0][2]
@@ -787,7 +787,13 @@ if calls:
         tag, value = struct.unpack_from('<qQ', IMG, dyn); dyn += 16
         if tag == 0: break
         tags[tag] = value
-    count = struct.unpack_from('<I', IMG, tags[4] + 4)[0]
+    if 4 in tags: count = struct.unpack_from('<I', IMG, tags[4] + 4)[0]
+    else:
+        # GNU hash only (Ocarina of Time's main, SDK 22): the NSO header's dynsym extent gives the count, as in
+        # prepare_modules.py and prepare_runtime.py
+        _, _, sym_off, sym_size = struct.unpack_from('<IIII', d, 0x90)
+        assert RO_OFF + sym_off == tags[6] and sym_size % 24 == 0, 'cannot establish the dynamic symbol count'
+        count = sym_size // 24
     for where, addend in decode_relr(IMG, tags, DATA_OFF, KEY_PAGE_OFF):
         assert addend not in call_targets, f'RELR pointer enters unprepared call: {where:x}'
     for i in range(count):

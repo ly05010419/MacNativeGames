@@ -36,7 +36,7 @@ typedef struct AudioRenderer {
     AudrenParameter param;
     pthread_mutex_t lock; pthread_t thread; int running;
     uint32_t state, revision, time_limit, event; int logged;
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(GAME_NS2)
     float voice_drop; int voice_drop_set;   /* SetVoiceDropParameter (15.0.0+, Breath of the Wild 1.9.0): kept, never used */
 #endif
     uint64_t behavior_flags, elapsed_frames;

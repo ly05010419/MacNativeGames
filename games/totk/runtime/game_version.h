@@ -68,6 +68,21 @@
 #define GAME_ADDR_0xe995c4 0xffffffffu
 #define GAME_ADDR_0x2aa4fa0 0xffffffffu
 #define GAME_ADDR_0x453f648 0xffffffffu
+#elif defined(GAME_OOT)
+/* The Legend of Zelda: Ocarina of Time (0400486024DEC000), Switch 2, SDK 22.2.8, NVN2 231.40; Nintendo EPD's engine (sead /
+   agl / gsys, Phive); modules main (ZBIC), subsdk0 (movie), sdk. Experimental, docs/ns2-port.md. As Bananza's block. */
+#ifndef GAME_NS2
+#define GAME_NS2 1
+#endif
+#define GAME_TITLE_ID 0x0400486024dec000ULL
+#define TOTK_GAME_VERSION "1.0.0"
+#define GAME_NAME "Ocarina of Time"
+#define GAME_FOLDER "OcarinaOfTime"
+#define GAME_LOG "oot"
+#define TOTK_GAME_DIR "oot"
+#define GAME_ADDR_0xe995c4 0xffffffffu
+#define GAME_ADDR_0x2aa4fa0 0xffffffffu
+#define GAME_ADDR_0x453f648 0xffffffffu
 #elif defined(TOTK_GAME_V143)
 #define TOTK_GAME_VERSION "1.4.3"
 #define TOTK_GAME_DIR "v143"

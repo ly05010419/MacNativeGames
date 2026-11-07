@@ -106,7 +106,7 @@ NSString *totk_rt_dir(void) {
             [context rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound)
             cacheChain = [cacheChain stringByAppendingFormat:@"-%@", context];
 #ifdef GAME_NS2
-        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1"];   // development runs without a seed
+        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v8-seen"];   // development runs without a seed
 #endif
 #if TARGET_OS_IPHONE
         g_dir = e ? @(e) : [NSString stringWithFormat:@"shader-cache/rt-%@", cacheChain];   // in Documents (the app's working directory)
@@ -369,7 +369,9 @@ static NSString *variant_lookup(NSString *shader, NSDictionary *answers) {
     return nil;
 }
 #include "nvn_ctl.h"
-static NSString *stage_name(int stage) { return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 5 ? @"cs" : nil; }   // gs: run as compute (nvn_geometry_rt.inc)
+static NSString *stage_name_ctl(int stage, const uint8_t *control) {   // gs: run as compute (nvn_geometry_rt.inc); NVN2 task / mesh (slots 3 / 4): ts / ms (MeshStage.cs)
+    if ((stage == 3 || stage == 4) && control && ctl_mesh_kind(control) == stage - 2) return stage == 3 ? @"ts" : @"ms";
+    return stage == 0 ? @"vs" : stage == 1 ? @"ps" : stage == 2 ? @"gs" : stage == 5 ? @"cs" : nil; }
 /* The translation request for these answers; the guest code is written to <variant>.code (the translator reads it there).
    code_out: the code is handed back instead, to be written by the job that translates it (rt_job_run): an atomic file
    write on the submit thread took 10-30 ms, 0.42 s of the long frames of a session that met 1,670 new variants. */
@@ -381,20 +383,22 @@ static NSMutableDictionary *variant_request(NSString *shader, int stage, const u
     uint32_t c1o, c1t; memcpy(&c1o, control + (nvn2 ? 0x40 : 0x700), 4); memcpy(&c1t, control + (nvn2 ? 0x44 : 0x704), 4);
     uint32_t ninst = c1t; if (nvn2) memcpy(&ninst, control + 0x38, 4);
     if (!c1t || c1t > 16u << 20 || c1o > c1t || (nvn2 && ninst > c1o) || (!nvn2 && stage != 5 && c1o < 0x30)) die("shader %s: code area %#x / c1 %#x / instructions %#x", shader.UTF8String, c1t, c1o, ninst);
-    if (!stage_name(stage)) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
+    NSString *sname = stage_name_ctl(stage, control); int mesh = sname && ([sname isEqual:@"ts"] || [sname isEqual:@"ms"]);
+    if (!sname) die("shader %s: NVN stage %d has no translation chain (tessellation/geometry)", shader.UTF8String, stage);
     uint8_t md[32]; NSData *ad = [json_string(answers) dataUsingEncoding:NSUTF8StringEncoding]; CC_SHA256(ad.bytes, (CC_LONG)ad.length, md);
     NSString *variant = [NSString stringWithFormat:@"%@-%@", shader, hex(md, 6)];
     NSString *code_path = [totk_rt_dir() stringByAppendingFormat:@"/%@.code", variant];
     // Graphics code drops the 0x30-byte NVN header (the translator wants SPH + instructions); compute keeps it, as in D2R's build.
-    size_t skip = stage == 5 || nvn2 ? 0 : 0x30, end = nvn2 ? ninst : c1t;
+    size_t skip = stage == 5 || nvn2 ? 0 : 0x30, end = mesh ? c1t : nvn2 ? ninst : c1t;   // task / mesh: the whole code area (MeshStage.cs PrepareMesh splits it)
     NSData *bytes = [NSData dataWithBytes:code + skip length:end - skip];
     if (code_out) *code_out = bytes;
     else if (![bytes writeToFile:code_path atomically:YES]) die("write shader code %s", code_path.UTF8String);
-    NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": stage_name(stage), @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
+    NSMutableDictionary *rq = [NSMutableDictionary dictionaryWithDictionary:@{@"variant": variant, @"stage": sname, @"code": code_path, @"c1": hex(code + c1o, c1t - c1o)}];
     [rq addEntriesFromDictionary:answers];
     if (local) rq[@"local"] = local;
     if (nvn2) {
         rq[@"arch"] = @"sm86";
+        if (mesh) rq[@"mesh_control"] = hex(control, 0xc0);   // MeshStage.cs: the first 0xc0 control bytes
         /* Compute lays out its driver constants in c[0] per shader: its push-constant words (+0xa9), its uniform buffer,
            storage buffer and texture entry counts (+0xb1..+0xb3) and its c[0] size (+0xba); the translator maps them
            (InstEmitAmpere.cs AMapC0). Shared memory at +0x64. From seedds/nxnative dmsh_build.py job_for (MIT). */

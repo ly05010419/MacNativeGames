@@ -95,7 +95,7 @@ def run(original, patched, header, start, failure, seed, use_patch):
 # 1.9.0 has none either (2026-10-19): its four w18-status STXRs (one in main, three in sdk) are compare-and-swap loops whose
 # CBNZ retries inside the window.
 # Donkey Kong Bananza and Pokemon Pokopia (Switch 2, docs/ns2-port.md) have none (scanned 2026-11-03).
-WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v121': [0x7FF694], 'botw160': [], 'botw190': [], 'dkb': [], 'pkp': []}
+WINDOWS = {'v0': [0x72AFDC, 0x7AA630], 'v121': [0x7FF694], 'botw160': [], 'botw190': [], 'dkb': [], 'pkp': [], 'oot': []}
 
 
 def x18_exit_windows(image, nso):

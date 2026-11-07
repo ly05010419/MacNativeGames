@@ -1,3 +1,4 @@
+#include <pthread.h>
 #include <mach/mach_time.h>
 // TOTK: NVN entry points beyond the donor implementation that only report stored object state,
 // attach debugging metadata, or convert timestamps. None of them changes rendering results.
@@ -7,6 +8,7 @@
 #include "nvn_tex.h"
 #include <string.h>
 #include <time.h>
+#include "nvn_mtl.h"
 
 // ---------- Debug labels, markers, groups, checkpoints: meaningful only to NVN debugging tools ----------
 NVN(nvnDeviceSetDebugLabel, void, NVNdevice *o, const char *s) { (void)o; (void)s; }
@@ -38,7 +40,11 @@ NVN(nvnDeviceGetCurrentTimestampInNanoseconds, uint64_t, const NVNdevice *d) {
     (void)d; mach_timebase_info_data_t tb; mach_timebase_info(&tb); return (uint64_t)((__uint128_t)mach_absolute_time() * tb.numer / tb.denom);   // TOTK: GetSystemTick's base (mach_absolute_time, no sleep), see gpu_ticks
 }
 NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNcounterData *c) {
+#ifdef GAME_OOT
+    (void)d; return (uint64_t)((__uint128_t)c->timestamp * 625 / 384);   // 614.4 MHz ticks (nvn_mtl.m gpu_ticks)
+#else
     (void)d; return c->timestamp / 12 * 625 + c->timestamp % 12 * 625 / 12;
+#endif
 }
 
 // ---------- Memory pools and buffers: unified memory, CPU and GPU views are coherent ----------
@@ -74,7 +80,7 @@ NVN(nvnTextureGetSamples, int, const NVNtexture *t) { return CTX(t)->d.samples; 
 NVN(nvnTextureGetSwizzle, void, const NVNtexture *t, NVNtextureSwizzle *r, NVNtextureSwizzle *g, NVNtextureSwizzle *b, NVNtextureSwizzle *a) { get_swizzle(&CTX(t)->d, r, g, b, a); }
 NVN(nvnTextureGetDepthStencilMode, NVNtextureDepthStencilMode, const NVNtexture *t) { (void)t; return NVN_TEXTURE_DEPTH_STENCIL_MODE_DEPTH; }
 NVN(nvnTextureGetStride, ptrdiff_t, const NVNtexture *t) { return (ptrdiff_t)CTX(t)->d.stride; }
-NVN(nvnTextureGetTextureAddress, NVNtextureAddress, const NVNtexture *t) { return (NVNtextureAddress)(uintptr_t)CTX(t)->mem; }
+NVN(nvnTextureGetTextureAddress, NVNtextureAddress, const NVNtexture *t) { const tex_t *o = CTX(t); if (o->mem) mtl_pool_addressed(o->mem, o->L.size ? o->L.size : 1); return (NVNtextureAddress)(uintptr_t)o->mem; }
 NVN_NOPROTO(nvnTextureGetMemoryPool, const NVNmemoryPool *, const NVNtexture *t) { return (const NVNmemoryPool *)(const void *)CTX(t)->pool; }
 NVN(nvnTextureGetMemoryOffset, ptrdiff_t, const NVNtexture *t) { return (ptrdiff_t)CTX(t)->off; }
 NVN(nvnTextureGetDebugID, uint64_t, const NVNtexture *t) { return CTX(t)->serial; }
@@ -232,6 +238,29 @@ NVN_EXTRA(nvnCommandBufferSetControlMemoryCallbackEnabled, void, NVNcommandBuffe
 NVN_NOPROTO(nvnCommandBufferSetCommandMemoryCallbackEnabled, void, NVNcommandBuffer *c, NVNboolean e) { (void)c; (void)e; }
 /* Tiled-cache subtile size, ZCull compression and debug checkpoints are hardware tuning / debugging hints. */
 NVN_EXTRA(nvnCommandBufferOverrideSubtileSize, void, NVNcommandBuffer *c) { (void)c; }
+/* SDK 22 / NVN2 231.40 (Ocarina of Time). The compute workload priority orders the console GPU's compute work against
+   graphics; Metal has no such knob, so it is accepted and ignored. The window acquire timeout bounds how long
+   nvnWindowAcquireTexture may block (0 = as before, no limit); the host acquires without blocking the game indefinitely
+   anyway, so the value is only kept per object (builder or window) and read back. */
+NVN_EXTRA(nvnCommandBufferSetComputeWorkloadPriority, void, NVNcommandBuffer *c, int priority) { (void)c; (void)priority; }
+#define ACQ_TIMEOUT_SLOTS 16
+static struct { const void *obj; uint64_t ns; } g_acq_timeout[ACQ_TIMEOUT_SLOTS];
+static pthread_mutex_t g_acq_timeout_lock = PTHREAD_MUTEX_INITIALIZER;
+static void acq_timeout_set(const void *o, uint64_t ns) {
+    pthread_mutex_lock(&g_acq_timeout_lock); int free_i = -1;
+    for (int i = 0; i < ACQ_TIMEOUT_SLOTS; i++) { if (g_acq_timeout[i].obj == o) { g_acq_timeout[i].ns = ns; pthread_mutex_unlock(&g_acq_timeout_lock); return; } if (!g_acq_timeout[i].obj && free_i < 0) free_i = i; }
+    if (free_i >= 0) { g_acq_timeout[free_i].obj = o; g_acq_timeout[free_i].ns = ns; }
+    pthread_mutex_unlock(&g_acq_timeout_lock);
+}
+static uint64_t acq_timeout_get(const void *o) {
+    pthread_mutex_lock(&g_acq_timeout_lock); uint64_t ns = 0;
+    for (int i = 0; i < ACQ_TIMEOUT_SLOTS; i++) if (g_acq_timeout[i].obj == o) { ns = g_acq_timeout[i].ns; break; }
+    pthread_mutex_unlock(&g_acq_timeout_lock); return ns;
+}
+NVN_EXTRA(nvnWindowBuilderSetAcquireTimeout, void, NVNwindowBuilder *b, uint64_t ns) { acq_timeout_set(b, ns); }
+NVN_EXTRA(nvnWindowBuilderGetAcquireTimeout, uint64_t, const NVNwindowBuilder *b) { return acq_timeout_get(b); }
+NVN_EXTRA(nvnWindowSetAcquireTimeout, void, NVNwindow *w, uint64_t ns) { acq_timeout_set(w, ns); }
+NVN_EXTRA(nvnWindowGetAcquireTimeout, uint64_t, const NVNwindow *w) { return acq_timeout_get(w); }
 NVN_EXTRA(nvnCommandBufferSetZCullZF32CompressionEnable, void, NVNcommandBuffer *c, NVNboolean e) { (void)c; (void)e; }
 NVN_EXTRA(nvnDeviceSetAutomaticCheckpointsMask, void, NVNdevice *d, uint32_t m) { (void)d; (void)m; }
 /* NVN default provoking vertex is the last vertex (GL convention); Metal uses the first. Only the default is accepted. */

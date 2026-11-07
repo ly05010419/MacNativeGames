@@ -7,6 +7,9 @@
 // every reflection file as JSON).
 // Request: {"variant", "stage": "vs|ps|cs", "code": path, "c1": hex, "tex": {slot: type}, "img": {slot: {type, fmt}},
 //           "attr": {loc: float|sint|uint}, "fout": {idx: float|sint|uint}, "local": [x, y, z], "depth_minus_w": bool}
+// Task/mesh (MeshStage.cs): "stage": "ts|ms", "arch": "sm86", "code": whole-code-area file path,
+// "mesh_control": first 0xc0 control bytes as hex. The service prepares compute internally, then emits
+// object main0 / mesh main0 and main0_z, with logical-stage mesh_stage reflection (no Python needed).
 // Reply:   {"ok": true} or {"ok": false, "error": "..."}; outputs <out>/<variant>_b.metal and <variant>_b.json.
 // Geometry (Switch 2 / NVN2 first; Geometry.cs, GeometryService.cs): "stage": "gs" with "geometry_topology": the draw's
 // InputTopology (0 points, 1 lines, 2 lines adjacency, 3 triangles, 4 triangles adjacency) gives the geometry shader as a
@@ -38,14 +41,15 @@ static partial class ShaderService
     // stage, compute thread-group counts (0x200) and uniform-buffer table (0x210), vertex point-size limit (0x610); c2 handles.
     static readonly Dictionary<string, (long lo, long hi)[]> DrvFillC0 = new()
     {
-        ["vs"] = new[] { (0x110L, 0x210L), (0x610L, 0x620L) }, ["ps"] = new[] { (0x510L, 0x610L) }, ["cs"] = new[] { (0x200L, 0x410L) },
+        ["vs"] = new[] { (0x110L, 0x210L), (0x610L, 0x620L) }, ["ps"] = new[] { (0x510L, 0x610L) }, ["cs"] = new[] { (0L, 0x10L), (0x200L, 0x410L) },
+        ["ts"] = new[] { (0x670L, 0x770L) }, ["ms"] = new[] { (0x770L, 0x870L) },
         ["gs"] = new[] { (GsSsboBase, GsSsboBase + 0x100) },   // the geometry stage's storage buffer table
     };
     // c0 + 0x410 + 0x10 r: the geometry stage's storage buffer r (seedds/nxnative dmsh_abi.h DMSH_C0_SSBO_GS, NieR:Automata;
     // Donkey Kong Bananza's terrain geometry shader 5d537f7630ec reads its two at 0x410 / 0x420)
     const long GsSsboBase = 0x410;
     static readonly (long lo, long hi)[] DrvFillC2 = { (0x20, 0x120), (0x168, 0x568), (0x568, 0x968) };
-    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp" };
+    static readonly Dictionary<string, string> StagePrefix = new() { ["vs"] = "vp", ["ps"] = "fp", ["cs"] = "cp", ["gs"] = "gp", ["ts"] = "cp", ["ms"] = "cp" };
     // Depth-format textures sampled through plain texture slots: Metal returns nothing for a depth texture read as texture2d,
     // so the declaration becomes depth2d / depth2d_array / depthcube (same for _ms) and every .sample / .read on it is wrapped
     // so the scalar depth becomes (d, 0, 0, 1) like a depth texture fetch on NVN. .gather already returns float4 on depth.
@@ -294,12 +298,20 @@ static partial class ShaderService
             string ty = m.Groups[1].Value.Trim(), nm = m.Groups[2].Value;
             var e = new JsonObject { ["msl_name"] = nm, ["msl_type"] = ty, ["arg_id"] = ParseInt(m.Groups[3].Value) };
             Match fm;
-            if (nm == "support_buffer") e["kind"] = "support";
+            if (ty.StartsWith("constant spvPool_", StringComparison.Ordinal))
+            {
+                string el = Regex.Match(msl, @"struct spvPool_" + nm + @"\s*\{\s*uint n;\s*ulong seen;\s*array<(.+), 1> e;").Groups[1].Value;
+                if (el.Length == 0) throw new RuntimeError(nm + ": a pool whose element type the reflection cannot read");
+                e["kind"] = el == "sampler" ? "samp_pool" : "tex_pool"; e["elem"] = el;
+            }
+            else if (nm == "support_buffer") e["kind"] = "support";
             else if (ShaderGeometry.Helpers.TryGetValue(nm, out int helper)) { e["kind"] = "geometry"; e["reg"] = helper; }   // the geometry lowering's own buffers (Geometry.cs)
             else if ((fm = Regex.Match(nm, @"^[a-z]+_c(\d+)\z")).Success)
             {
                 long n = ParseInt(fm.Groups[1].Value);
-                if (3 <= n && n <= 16) { e["kind"] = "cbuf"; e["reg"] = n - 3; }
+                // NVN2 push constants are emitted as c[24], consumed by OP_PUSH_CONST in the renderer.
+                if (n == 24) { e["kind"] = "cbuf"; e["reg"] = 24; }
+                else if (3 <= n && n <= 16) { e["kind"] = "cbuf"; e["reg"] = n - 3; }
                 else { e["kind"] = n == 1 ? "c1" : "drvcb"; e["bank"] = n; }
             }
             else if ((fm = Regex.Match(nm, @"^[a-z]+_s(\d+)\z")).Success) { e["kind"] = "sbuf"; e["index"] = ParseInt(fm.Groups[1].Value); }
@@ -316,7 +328,7 @@ static partial class ShaderService
             }
             binds.Add(e);
         }
-        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, "gs" => GsSsboBase, _ => null };
+        long? @base = stage switch { "vs" => 0x110, "cs" => 0x310, "ps" => 0x510, "gs" => GsSsboBase, "ts" => 0x670, "ms" => 0x770, _ => null };
         List<JsonObject> sbSorted = res["sbufs"].AsArray().Select(b => b.AsObject()).OrderBy(b => Long(b["binding"])).ToList();   // stable, as sorted()
         foreach (JsonObject e in binds)
         {
@@ -451,12 +463,15 @@ static partial class ShaderService
         if (Get(rq, "arch") is JsonValue arch) job["arch"] = arch.DeepClone();   // "sm86": Ampere code (NVN2, Switch 2); absent: Maxwell
         if (Get(rq, "nvn2_cs") is JsonArray cs) job["nvn2_cs"] = cs.DeepClone();   // an NVN2 compute shader's c[0] layout (Program.cs)
         if (Get(rq, "shared") is JsonValue sh) job["shared"] = sh.DeepClone();   // compute shared memory bytes when the request knows them (Program.cs)
+        if (Get(rq, "mesh_layout") is JsonArray mesh) job["mesh_layout"] = mesh.DeepClone();
         return job;
     }
 
     static void Handle(JsonObject rq)
     {
         string variant = (string)rq["variant"], stage = (string)rq["stage"];
+        JsonObject meshStage = null;
+        if (stage is "ts" or "ms") { rq = PrepareMesh(rq); meshStage = rq["mesh_stage"].AsObject(); stage = "cs"; }
         if (stage == "gs") { HandleGeometry(rq); return; }   // GeometryService.cs
         if (stage != "vs" && stage != "ps" && stage != "cs") throw new RuntimeError($"stage {stage} not supported by the translation chain");
         bool capture = Truthy(Get(rq, "geometry_capture"));   // a vertex shader that feeds a geometry kernel: main0_gs (GeometryService.cs)
@@ -499,8 +514,12 @@ static partial class ShaderService
         HashSet<long> depthSlots = DepthSlots(tex);
         var compareSlots = CompareSlots(src);   // before the depth rewrite: it drops spvDepthCast, not the compare
         src = PostProcess(src, depthSlots);
+        src = ShaderPools.Rewrite(src);
+        // Image and buffer-texture handles read from memory keep Ryujinx's short arrays, which the host does not fill: its draws are skipped, the game goes on.
+        if (Regex.IsMatch(src, @"array<[^\n]+, \d+> \w+_cb0_40000000 \[\[id")) throw new NotSupportedException("image or buffer texture handle read from memory");
         if (depthSlots.Count > 0 || src != File.ReadAllText(msl))
             File.WriteAllText(msl, src);
+        if (meshStage != null) { src = WrapMesh(src, meshStage); File.WriteAllText(msl, src); stage = (string)meshStage["kind"]; }
         // the capture entry point after main0 (it reuses main0's structs and helpers); the reflection below reads main0 only
         JsonObject captureInfo = capture ? AppendCapture(rq, job, variant, src, msl) : null;
         Match entry = Regex.Match(src, @"(vertex|fragment|kernel)\s+\S+\s+(\w+)\s*\(");
@@ -522,12 +541,13 @@ static partial class ShaderService
         var refl = new JsonObject
         {
             ["key"] = variant + "_b", ["route"] = "B", ["chain"] = chain, ["stage"] = stage,
-            ["entry"] = entry.Success ? entry.Groups[2].Value : "main0", ["msl_entry_kind"] = entry.Success ? entry.Groups[1].Value : null,
+            ["entry"] = entry.Success ? entry.Groups[2].Value : "main0", ["msl_entry_kind"] = meshStage != null ? (stage == "ts" ? "object" : "mesh") : entry.Success ? entry.Groups[1].Value : null,
             ["threadgroup_size"] = GetOr(rq, "local", null), ["c1"] = GetStr(rq, "c1", ""), ["notes"] = res["notes"].DeepClone(),
             ["drv_reads"] = dr, ["drv_unfillable"] = unfillable, ["bindings"] = Reflect(stage, src, res),
             ["vertex_inputs"] = vertexInputs, ["raster"] = new JsonObject(), ["deps"] = deps, ["softfloat64"] = softfloat64,
             ["compare_slots"] = new JsonArray(compareSlots.Select(s => (JsonNode)s).ToArray()),
         };
+        if (meshStage != null) refl["mesh_stage"] = meshStage.DeepClone();
         if (captureInfo != null) { refl["entry_geometry_capture"] = "main0_gs"; refl["geometry_capture"] = captureInfo; }
         WriteReflection(variant + "_b", refl);
     }
@@ -550,6 +570,7 @@ static partial class ShaderService
         if (depthSlots.Count > 0)
             src = RewriteDepthTextures(src, depthSlots);
         src = MatchSwitchDepthSampling(src);
+        src = ShaderHmma.Rewrite(src);
         return PreciseMinMax(src);   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
     }
 

@@ -39,7 +39,13 @@ int totk_vpool_init(pool_t *o) {
     if (virt && o->mem) { LOG("【红】vpool: virtual pool given storage %p", (void *)o->mem); return 0; }
     if (phys && !o->mem) { LOG("【红】vpool: physical pool without storage"); return 0; }
     if (phys && !(o->flags & F_CPU_NO_ACCESS)) {
-        if ((uintptr_t)o->mem % host_page()) { LOG("【红】vpool: CPU-visible physical pool %p not %#llx aligned; cannot alias", (void *)o->mem, host_page()); return 0; }
+#ifdef GAME_NS2
+        /* CPU-only physical storage (GPU_NO_ACCESS) the GPU reaches through a virtual pool only (Ocarina of Time: 305 MB, flags
+           0x18c, 4 KiB aligned): kept as the caller's storage, alignment included (a copy would break CPU coherence); a whole
+           contiguous mapping then makes the virtual pool that storage (totk_vpool_map). From games/mkw. */
+        if ((uintptr_t)o->mem % host_page() && (o->flags & F_GPU_NO_ACCESS)) return 1;
+#endif
+        if ((uintptr_t)o->mem % host_page()) { LOG("【红】vpool: CPU-visible physical pool %p (size %#llx, flags %#x) not %#llx aligned; cannot alias", (void *)o->mem, (unsigned long long)o->size, o->flags, host_page()); return 0; }
         return 1;   // aliases the game storage directly
     }
     o->span = round_up(o->size, host_page());
@@ -107,6 +113,26 @@ int totk_vpool_map(pool_t *v, int count, const totk_mapping_request *r) {
     if (!v || v->magic != POOL_MAGIC || !(v->flags & F_VIRTUAL) || !v->mem) { LOG("【红】vpool: MapVirtual target %p is not a virtual pool", (void *)v); return 0; }
     if (count < 0 || (count && !r)) { LOG("【红】vpool: invalid request count %d", count); return 0; }
     for (int i = 0; i < count; i++) if (!check_request(v, &r[i], i)) return 0;
+#ifdef GAME_NS2
+    /* A physical pool that could not be aliased page by page (16 KiB host pages, 4 KiB aligned storage): mapped whole into an
+       unused virtual pool, the virtual pool becomes that storage (games/mkw's direct alias; before any GPU address of the
+       virtual pool was handed out, so nothing holds the old one). Any other mapping of such storage is refused. */
+    { const pool_t *physical = count == 1 ? (const pool_t *)r[0].physical_pool : NULL;
+      int whole = physical && !r[0].virtual_offset && !r[0].physical_offset && r[0].size == v->size && physical->size >= v->size;
+      if (v->direct_alias) { if (whole && physical->mem == v->mem) return 1; LOG("【红】vpool: cannot change a virtual pool that became its physical storage"); return 0; }
+      if (whole && (uintptr_t)physical->mem % host_page() && (physical->flags & F_GPU_NO_ACCESS) && !v->address_used && !v->mapped) {
+          pthread_mutex_lock(&g_map_mu);
+          nvn_dirty_remove_range(v->mem); mtl_pool_del(v->mem);
+          if (v->host) mach_vm_deallocate(mach_task_self(), (mach_vm_address_t)(uintptr_t)v->host, v->span);
+          v->host = NULL; v->span = 0; v->mem = physical->mem; v->direct_alias = v->mapped = 1;
+          mtl_pool_add(v->mem, v->size); nvn_dirty_add_range(v->mem, v->size); mtl_pool_addressed(v->mem, v->size);
+          vmap_note((uintptr_t)v->mem, v->size, (uintptr_t)physical->mem);
+          pthread_mutex_unlock(&g_map_mu);
+          LOG("[vpool] virtual pool %p (%#llx bytes) is its contiguous physical storage %p (not 16 KiB aligned)", (void *)v, (unsigned long long)v->size, (void *)physical->mem);
+          return 1; }
+      for (int i = 0; i < count; i++) if (r[i].physical_pool && (uintptr_t)((const pool_t *)r[i].physical_pool)->mem % host_page()) {
+          LOG("【红】vpool: a physical pool not 16 KiB aligned mapped other than whole into an unused virtual pool (request %d)", i); return 0; } }
+#endif
     pthread_mutex_lock(&g_map_mu);
     // GPU page tables of the old zero-copy buffer and dirty-page protections refer to the replaced pages.
     nvn_dirty_remove_range(v->mem);
@@ -115,7 +141,9 @@ int totk_vpool_map(pool_t *v, int count, const totk_mapping_request *r) {
     for (int i = 0; ok && i < count; i++) ok = apply_request(v, &r[i]);
     mtl_pool_add(v->mem, v->size);
     nvn_dirty_add_range(v->mem, v->size);
+    if (count) mtl_pool_addressed(v->mem, v->size);   // an address may have been given out before it had storage
     pthread_mutex_unlock(&g_map_mu);
     if (!ok) die("vpool: mapping failed after validation; virtual pool %p is inconsistent", (void *)v);
+    if (count) v->mapped = 1;
     return 1;
 }

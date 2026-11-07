@@ -324,8 +324,8 @@ static void renderer_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *r
     case 7: rs->copy[rs->ncopy++] = runtime_event_readable(r->event); return;
     case 8: r->time_limit = IPC_ARG(rq, uint32_t, 0); return;
     case 9: { uint32_t v = r->time_limit ? r->time_limit : 100; IPC_OUT(rs, v); return; }
-#ifdef GAME_BOTW
-    /* Set/GetVoiceDropParameter (15.0.0+, Breath of the Wild 1.9.0): the scale of the voice-drop estimate when rendering
+#if defined(GAME_BOTW) || defined(GAME_NS2)
+    /* Set/GetVoiceDropParameter (15.0.0+, Breath of the Wild 1.9.0; Ocarina of Time): the scale of the voice-drop estimate when rendering
        runs over its time limit. This mixer never drops voices, so the value is only kept and given back (default 1). */
     case 12: r->voice_drop = IPC_ARG(rq, float, 0); r->voice_drop_set = 1; return;
     case 13: { float v = r->voice_drop_set ? r->voice_drop : 1.0f; IPC_OUT(rs, v); return; }

@@ -1,0 +1,2682 @@
+Ampere front end synced from seedds/nxnative main (MIT) 339d9f23: the instruction forms it has since gained (TEX with a
+handle in a register, 0xf60 family; F2IP, F2I / I2F 64; UP2UR, BMSK, ATOMS.CAS, SURED), comparisons honouring .FTZ, a
+dead-code pass that keeps a coordinate of a multi-output read, bindless reads through table handles, LDC .IS.
+Kept from this tree: TensorPass and its emitters (Hmma.cs rewrites them), GlobalToStorage (its newer pool table needs
+host changes), AstOptimizer, Translator. Tensor LDSM passes stride: false: its mode bits share the field.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Glsl/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Glsl/Declarations.cs
+@@ -331,7 +331,7 @@
+                 }
+                 else
+                 {
+-                    context.AppendLine($"{prefix}{typeName} {memory.Name};");
++                    context.AppendLine($"{prefix}{typeName} {memory.Name}{(memory.ZeroInit ? $" = {typeName}(0)" : string.Empty)};");
+                 }
+             }
+         }
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Glsl/Instructions/IoMap.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Glsl/Instructions/IoMap.cs
+@@ -31,6 +31,7 @@
+                 IoVariable.FrontColorDiffuse => ("gl_FrontColor", AggregateType.Vector4 | AggregateType.FP32), // Deprecated.
+                 IoVariable.FrontColorSpecular => ("gl_FrontSecondaryColor", AggregateType.Vector4 | AggregateType.FP32), // Deprecated.
+                 IoVariable.FrontFacing => ("gl_FrontFacing", AggregateType.Bool),
++                IoVariable.HelperInvocation => ("gl_HelperInvocation", AggregateType.Bool),
+                 IoVariable.GlobalId => ("gl_GlobalInvocationID", AggregateType.Vector3 | AggregateType.U32),
+                 IoVariable.InstanceId => ("gl_InstanceID", AggregateType.S32),
+                 IoVariable.InstanceIndex => ("gl_InstanceIndex", AggregateType.S32),
+@@ -41,6 +42,7 @@
+                 IoVariable.PointSize => ("gl_PointSize", AggregateType.FP32),
+                 IoVariable.Position => ("gl_Position", AggregateType.Vector4 | AggregateType.FP32),
+                 IoVariable.PrimitiveId => GetPrimitiveIdVariableName(definitions.Stage, isOutput),
++                IoVariable.SampleId => ("gl_SampleID", AggregateType.S32),
+                 IoVariable.SubgroupEqMask => GetSubgroupMaskVariableName(hostCapabilities.SupportsShaderBallot, "Eq"),
+                 IoVariable.SubgroupGeMask => GetSubgroupMaskVariableName(hostCapabilities.SupportsShaderBallot, "Ge"),
+                 IoVariable.SubgroupGtMask => GetSubgroupMaskVariableName(hostCapabilities.SupportsShaderBallot, "Gt"),
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -60,8 +60,9 @@
+         {
+             foreach ((int id, MemoryDefinition memory) in memories)
+             {
+-                SpvInstruction pointerType = context.TypePointer(storage, context.GetType(memory.Type, memory.ArrayLength));
+-                SpvInstruction variable = context.Variable(pointerType, storage);
++                SpvInstruction type = context.GetType(memory.Type, memory.ArrayLength);
++                SpvInstruction pointerType = context.TypePointer(storage, type);
++                SpvInstruction variable = context.Variable(pointerType, storage, memory.ZeroInit ? context.ConstantNull(type) : null);
+ 
+                 context.AddGlobalVariable(variable);
+ 
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/IoMap.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/IoMap.cs
+@@ -23,6 +23,7 @@
+                 IoVariable.FragmentOutputDepth => (BuiltIn.FragDepth, AggregateType.FP32),
+                 IoVariable.FrontFacing => (BuiltIn.FrontFacing, AggregateType.Bool),
+                 IoVariable.GlobalId => (BuiltIn.GlobalInvocationId, AggregateType.Vector3 | AggregateType.U32),
++                IoVariable.HelperInvocation => (BuiltIn.HelperInvocation, AggregateType.Bool),
+                 IoVariable.InstanceId => (BuiltIn.InstanceId, AggregateType.S32),
+                 IoVariable.InstanceIndex => (BuiltIn.InstanceIndex, AggregateType.S32),
+                 IoVariable.InvocationId => (BuiltIn.InvocationId, AggregateType.S32),
+@@ -32,6 +33,7 @@
+                 IoVariable.PointSize => (BuiltIn.PointSize, AggregateType.FP32),
+                 IoVariable.Position => (BuiltIn.Position, AggregateType.Vector4 | AggregateType.FP32),
+                 IoVariable.PrimitiveId => (BuiltIn.PrimitiveId, AggregateType.S32),
++                IoVariable.SampleId => (BuiltIn.SampleId, AggregateType.S32),
+                 IoVariable.SubgroupEqMask => (BuiltIn.SubgroupEqMask, AggregateType.Vector4 | AggregateType.U32),
+                 IoVariable.SubgroupGeMask => (BuiltIn.SubgroupGeMask, AggregateType.Vector4 | AggregateType.U32),
+                 IoVariable.SubgroupGtMask => (BuiltIn.SubgroupGtMask, AggregateType.Vector4 | AggregateType.U32),
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -82,6 +82,12 @@
+                     context.Info.IoDefinitions.Contains(new IoDefinition(StorageKind.Input, IoVariable.PrimitiveId)))
+                 {
+                     context.AddCapability(Capability.Geometry);
++                }
++
++                // nxnative: the sample index (PIXLD.MYINDEX) is a SampleRateShading input
++                if (context.Info.IoDefinitions.Contains(new IoDefinition(StorageKind.Input, IoVariable.SampleId)))
++                {
++                    context.AddCapability(Capability.SampleRateShading);
+                 }
+ 
+                 if (context.HostCapabilities.SupportsFragmentShaderInterlock)
+--- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
+@@ -263,13 +263,7 @@
+                     case 0x987:
+                         context.SetUsedFeature(FeatureFlags.LocalMemory);
+                         break;
+-                    case 0x923: // ISBERD: stage input in the shared stage-memory array
+-                    case 0x927: // task/mesh stage output; enables SharedStoreSmallIntCas for byte stores
+-                        if (gpuAccessor.QueryAmpereMeshLayout() != null)
+-                        {
+-                            context.SetUsedFeature(FeatureFlags.SharedMemory);
+-                        }
+-                        break;
++                    case 0x927:   // a task or mesh shader's stage memory lies in shared memory (InstEmitAmpereMem.AStageOut)
+                     case 0x984:
+                     case 0x388:
+                     case 0x988:
+@@ -284,6 +278,7 @@
+                     case 0x9a8:
+                     case 0x3a8:
+                     case 0x9a9:
++                    case 0x59f:
+                     case 0xb9b:
+                     case 0x99b:
+                     case 0x99d:
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -8,8 +8,7 @@
+     /// </summary>
+     public interface IGpuAccessor : ILogger
+     {
+-        // Fixed VS capture ABI used by the offline Metal geometry path (seedds/nxnative bb585cd5, MIT): a geometry shader translated
+-        // as compute reads its input vertices from 144-word records in the Maxwell attribute map (ResourceReservations.FillGeometryInputMap).
++        // Fixed VS capture ABI used by the offline Metal geometry path.
+         bool QueryGeometryInputFixed() => false;
+ 
+         // seedds/nxnative task/mesh stage-memory ABI (MIT): byte offsets of system word, input payload,
+@@ -44,6 +43,15 @@
+         }
+ 
+         /// <summary>
++        /// NVN2 (Switch 2) task and mesh shaders, translated as compute: the byte offsets in shared memory of the stage memory the build reads back (dmsh_meshstage.py): the
++        /// workgroup's number, the stage input (a task's payload), the outputs (a payload, or a mesh shader's attributes) and a mesh shader's primitive bytes; null for other shaders.
++        /// </summary>
++        int[] QueryAmpereStageMemory()
++        {
++            return null;
++        }
++
++        /// <summary>
+         /// Gets a span of the specified memory location, containing shader code.
+         /// </summary>
+         /// <param name="address">GPU virtual address of the data</param>
+@@ -444,6 +452,15 @@
+         SamplerType QuerySamplerType(int handle, int cbufSlot = -1)
+         {
+             return SamplerType.Texture2D;
++        }
++
++        /// <summary>
++        /// nxnative: a 1D integer-coordinate fetch (TLD / TLDS 1D) of the bound texture handle was translated as a 2D read at (x &amp; 0x3FFF, x &gt;&gt; 14),
++        /// because the texture type query did not say it is a texture buffer.
++        /// </summary>
++        /// <param name="handle">Texture handle</param>
++        void RecordTexelFetch1D(int handle)
++        {
+         }
+ 
+         /// <summary>
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmit.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmit.cs
+@@ -194,13 +194,6 @@
+             context.TranslatorContext.GpuAccessor.Log("Shader instruction Pexit is not implemented.");
+         }
+ 
+-        public static void Pixld(EmitterContext context)
+-        {
+-            context.GetOp<InstPixld>();
+-
+-            context.TranslatorContext.GpuAccessor.Log("Shader instruction Pixld is not implemented.");
+-        }
+-
+         public static void Plongjmp(EmitterContext context)
+         {
+             context.GetOp<InstPlongjmp>();
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAluHelper.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAluHelper.cs
+@@ -9,6 +9,18 @@
+ {
+     static class InstEmitAluHelper
+     {
++        // A float comparison with .FTZ (FSET and FSETP, Maxwell's FCMP): a denormal operand compares as zero, as on NVIDIA; Apple's GPUs keep fp32 denormals. The compilers set the flag on nearly
++        // every comparison, so an immediate or RZ, the usual second operand, is decided here and adds no code
++        public static Operand FlushDenormal(EmitterContext context, Operand v)
++        {
++            if (v.Type == OperandType.Constant)
++            {
++                return float.IsSubnormal(v.AsFloat()) ? ConstF(0) : v;
++            }
++
++            return context.ConditionalSelect(context.FPCompareLess(context.FPAbsolute(v), ConstF(1.17549435e-38f)), ConstF(0), v);
++        }
++
+         public static long GetIntMin(IDstFmt type)
+         {
+             return type switch
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
+@@ -57,8 +57,7 @@
+             const InstProps B = InstProps.Bra;
+ 
+             // Control flow. Convergence barriers (BSSY 0x945, BSYNC 0x941, BREAK 0x942), WARPSYNC 0x948, DEPBAR 0x91a and NOP 0x918 only order the warp's
+-            // threads: per thread they do nothing. ERRBAR 0x9ab and CCTL 0x98f (cache control) end a thread fence after MEMBAR (MEMBAR.SC.GPU, ERRBAR,
+-            // CCTL.IVALL): the memory barrier MEMBAR translates to covers them.
++            // threads: per thread they do nothing.
+             X(AmpereOpcodes.Bra, InstName.Bra, InstEmit.ABra, B, writesRd: false);
+             X(AmpereOpcodes.Brx, InstName.Brx, InstEmit.ABrx, B, writesRd: false);
+             X(AmpereOpcodes.Brxu, InstName.Brx, InstEmit.ABrx, B, writesRd: false);
+@@ -66,11 +65,20 @@
+             X(AmpereOpcodes.Kill, InstName.Kil, InstEmit.AKill, B, writesRd: false);
+             X(AmpereOpcodes.Ret, InstName.Ret, InstEmit.ARet, B, writesRd: false);
+             X(AmpereOpcodes.Call, InstName.Cal, InstEmit.ACall, B, writesRd: false);
+-            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948, 0x9ab, 0x98f })
++            // ERRBAR 0x9ab, which follows a MEMBAR, only orders error reporting.
++            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948, 0x9ab })
+             {
+                 X(op, InstName.Nop, InstEmit.ANop, InstProps.None, writesRd: false);
+             }
+ 
++            // 0xf55 and 0xf56 move convergence barrier B15 to and from R26 around warp shuffles (BMOV): Hyrule Warriors: Age of Imprisonment's pixel shaders
++            // 02e49c189b769074 and 49241cf469c76830 save it before each block of SHFL and restore it after, 16 times each. With the barriers themselves no-ops,
++            // they are too: no other instruction reads R26 after them, and the general register next to the barrier field (R15) is read live by an FMUL.
++            foreach (int op in new[] { 0xf55, 0xf56 })
++            {
++                X(op, InstName.Nop, InstEmit.ANop, InstProps.None, writesRd: false);
++            }
++
+             InstEmit.RegisterAmpereAlu(Alu, X);
+             InstEmit.RegisterAmpereMemory(X);
+             InstEmit.RegisterAmpereTensor(X);
+@@ -107,6 +115,17 @@
+ 
+         public static bool HasUniformGuard(int opcode) => TryGet(opcode, out Entry e) && e.UniformGuard;
+ 
++        // Whether the instruction reads a constant buffer word with its bank in bits 54..59: LDC, ULDC, or an ALU operation in form 3 or 5 (a uniform one has neither)
++        public static bool ReadsConstantBank(AmpereOp x)
++        {
++            if (x.Opcode is AmpereOpcodes.Ldc or 0xab9 or 0xabb)
++            {
++                return true;
++            }
++
++            return !_exact.ContainsKey(x.Opcode) && _alu.TryGetValue(x.Opcode & 0x1ff, out Entry e) && !e.UniformGuard && x.Form is 3 or 5;
++        }
++
+         public static bool WritesRd(int opcode) => !TryGet(opcode, out Entry e) || e.WritesRd;
+     }
+ 
+@@ -239,10 +258,12 @@
+         }
+ 
+         // NVN2 compute shaders lay out their driver constants in c[0] per shader (the control section counts them, QueryAmpereComputeC0Layout): from 0x10, the push
+-        // constants, then a 0x10-byte entry per uniform buffer slot, then one per storage buffer slot, then an 8-byte handle per texture slot, then per image slot (all
+-        // 205 compute shaders of Donkey Kong Bananza read their c[0] that way). They are mapped to the places the build's reflection and the host know: the push
+-        // constants to c[24] (where the graphics stages read theirs), uniform slot r to c[0] + 0x210 + 0x10 r and storage slot s to c[0] + 0x310 + 0x10 s (NVN's
+-        // compute tables), texture slot t to c[2] + 0x20 + 8 t and image slot i to c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay.
++        // constants, then a 0x10-byte entry per uniform buffer slot, then one per storage buffer slot, then 8-byte handles: per texture slot, separate texture slot,
++        // separate sampler slot and image slot, in that order (all 205 compute shaders of Donkey Kong Bananza read their c[0] that way; Star Fox's 1002069a331ceded has
++        // 32 separate textures and 13 separate samplers before its 5 images, its sampler words at 0x258 and 0x260, its image at 0x288, and those counts make its size, 0x290).
++        // They are mapped to the places the build's reflection and the host know: the push constants to c[24] (where the graphics stages read theirs), uniform slot r to
++        // c[0] + 0x210 + 0x10 r and storage slot s to c[0] + 0x310 + 0x10 s (NVN's compute tables), texture slot t to c[2] + 0x20 + 8 t, separate texture r to
++        // c[2] + 0x168 + 8 r, separate sampler r to c[2] + 0x568 + 8 r and image slot i to c[2] + 0x120 + 8 i (NVN's handle tables). Other offsets stay.
+         private static (int Bank, int Offset) AMapC0(EmitterContext context, int bank, int offset)
+         {
+             int[] layout = bank == 0 ? context.TranslatorContext.GpuAccessor.QueryAmpereComputeC0Layout() : null;
+@@ -256,7 +277,9 @@
+             int ub = 0x10 + push;
+             int sb = ub + 0x10 * ubos;
+             int hb = sb + 0x10 * ssbos;
+-            int ib = hb + 8 * textures;
++            int sepTextures = hb + 8 * textures;
++            int sepSamplers = sepTextures + 8 * (layout.Length > 5 ? layout[5] : 0);
++            int ib = sepSamplers + 8 * (layout.Length > 6 ? layout[6] : 0);
+ 
+             if (offset >= 0x10 && offset < ub)
+             {
+@@ -273,11 +296,21 @@
+                 return (0, 0x310 + (offset - sb));
+             }
+ 
+-            if (offset >= hb && offset < ib)
++            if (offset >= hb && offset < sepTextures)
+             {
+                 return (2, 0x20 + (offset - hb));
+             }
+ 
++            if (offset >= sepTextures && offset < sepSamplers)
++            {
++                return (2, 0x168 + (offset - sepTextures));
++            }
++
++            if (offset >= sepSamplers && offset < ib)
++            {
++                return (2, 0x568 + (offset - sepSamplers));
++            }
++
+             if (offset >= ib && offset < size)
+             {
+                 return (2, 0x120 + (offset - ib));
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -29,10 +29,13 @@
+             alu(0x108, InstName.Mufu, AMufu);
+             alu(0x105, InstName.F2i, AF2i);
+             alu(0x106, InstName.I2f, AI2f);
++            alu(0x111, InstName.F2i, AF2i64);
++            alu(0x112, InstName.I2f, AI2f64);
+             alu(0x045, InstName.I2f, AI2fp);
+             alu(0x107, InstName.F2f, AFrnd);
+             alu(0x104, InstName.F2f, AF2f);
+             alu(0x03e, InstName.F2f, AF2fp);
++            alu(0x043, InstName.F2i, AF2ip);
+             alu(0x030, InstName.Hadd2, AHadd2);
+             alu(0x032, InstName.Hmul2, AHmul2);
+             alu(0x031, InstName.Hfma2, AHfma2);
+@@ -63,13 +66,18 @@
+             alu(0x0bf, InstName.Popc, APopc, uniform: true);
+             alu(0x100, InstName.Flo, AFlo);
+             alu(0x0bd, InstName.Flo, AFlo, uniform: true);
++            alu(0x101, InstName.Flo, ABrev);
++            alu(0x0be, InstName.Flo, ABrev, uniform: true);
+             alu(0x01a, InstName.Bfe, ASgxt);
+             alu(0x09a, InstName.Bfe, ASgxt, uniform: true);
++            alu(0x01b, InstName.Bfe, ABmsk);
+ 
+             x(0x882, InstName.Mov, AUMov, N, uniform: true);
++            x(0x883, InstName.P2r, AUp2ur, N, uniform: true);
+             x(0xc82, InstName.Mov, AUMov, N, uniform: true);
+             x(0x805, InstName.Cs2r, ACs2r, N);
+             x(0x919, InstName.S2r, AS2r, N);
++            x(0x925, InstName.Pixld, APixelCovered, N);
+             x(0x9c3, InstName.S2r, AS2r, N, uniform: true);
+             x(0x3c2, InstName.Mov, AR2ur, N);
+             x(0xab9, InstName.Ldc, AUldc, N, uniform: true);
+@@ -82,6 +90,7 @@
+             x(0x203, InstName.P2r, AP2r, N);
+             x(0x81c, InstName.Psetp, APlop3, N, writesRd: false);
+             x(0x89c, InstName.Psetp, APlop3, N, uniform: true, writesRd: false);
++            x(0x80d, InstName.Isetp, AGuardCull, N, writesRd: false);
+             x(0x806, InstName.Vote, AVote, N);
+             x(0x886, InstName.Vote, AVote, N);
+             x(0x389, InstName.Shfl, AShfl, N);
+@@ -166,13 +175,21 @@
+             ASet(context, x, res);
+         }
+ 
++        // .FTZ (bit 80 of FSET and FSETP, after the comparison's 76..80, Mesa NAK's layout). Without it a sum of weights that NVIDIA flushes to zero passes a "!= 0" guard and its reciprocal
++        // overflows: Mario Kart World's deferred lighting (635061c90d75a8d1) normalises its four depth-weighted half-resolution samples by 1 / sum only where sum != 0, and the NaN came out
++        // of a min(x, 1.0) as a fully lit dot. The arithmetic's own .FTZ stays dropped: Metal has no denormal mode, and a flush on every FADD, FMUL and FFMA would cost far more than it can show
++        private static Operand AFtz(EmitterContext context, AmpereOp x, Operand v)
++        {
++            return x.Bit(80) ? FlushDenormal(context, v) : v;
++        }
++
+         // FSET Rd, a, b: 1.0 where (a cmp b) bop P (87..90) holds, else 0.0
+         public static void AFset(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+             (ASrc a, ASrc b) = ASecond(context, x);
+ 
+-            Operand res = GetFPComparison(context, (FComp)x.Bits(76, 80), AFloat(context, a), AFloat(context, b));
++            Operand res = GetFPComparison(context, (FComp)x.Bits(76, 80), AFtz(context, x, AFloat(context, a)), AFtz(context, x, AFloat(context, b)));
+             res = GetPredLogicalOp(context, (BoolOp)x.Bits(74, 76), res, APred(context, x, 87, 90));
+ 
+             ASet(context, x, context.ConditionalSelect(res, ConstF(1), Const(0)));
+@@ -184,7 +201,7 @@
+             AmpereOp x = new(context.CurrOp);
+             (ASrc a, ASrc b) = ASecond(context, x);
+ 
+-            Operand cmp = GetFPComparison(context, (FComp)x.Bits(76, 80), AFloat(context, a), AFloat(context, b));
++            Operand cmp = GetFPComparison(context, (FComp)x.Bits(76, 80), AFtz(context, x, AFloat(context, a)), AFtz(context, x, AFloat(context, b)));
+             Operand p = APred(context, x, 87, 90);
+             BoolOp bop = (BoolOp)x.Bits(74, 76);
+ 
+@@ -232,27 +249,19 @@
+             ASet(context, x, half ? context.PackHalf2x16(res, ConstF(0f)) : res);
+         }
+ 
+-        // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a 16-bit source
+-        // is one half of the operand, the high one when 60..62 is 1 or 3 (as F2F reads it), widened to 32 bits first (exact),
+-        // its abs / neg applied by EmitF2I as for a 32-bit one (Pokemon Pokopia: 169 fragment shaders round F16 to U32)
++        // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a half source is the half 60..62 selects, as F2F's (Pokemon Pokopia: 1,067 shaders)
+         public static void AF2i(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+             ASrc s = AOne(context, x);
++
+             int srcSize = x.Bits(84, 86);
+ 
+-            if (srcSize is not 1 and not 2)
++            if (srcSize is not (1 or 2))
+             {
+-                throw AFail(context, $"F2I from a {8 << srcSize}-bit float");
++                throw AFail(context, "F2I from a float that is neither 16-bit nor 32-bit");
+             }
+ 
+-            Operand src = AGet(context, s);
+-
+-            if (srcSize == 1)
+-            {
+-                src = x.Bits(60, 62) is 1 or 3 ? context.UnpackHalf2x16High(src) : context.UnpackHalf2x16Low(src);
+-            }
+-
+             int size = x.Bits(75, 77);
+             bool signed = x.Bit(72);
+ 
+@@ -263,6 +272,13 @@
+ 
+             IDstFmt dst = (IDstFmt)((signed ? 4 : 0) | System.Math.Max(size, 1));
+ 
++            Operand src = AGet(context, s);
++
++            if (srcSize == 1)
++            {
++                src = x.Bits(60, 62) is 1 or 3 ? context.UnpackHalf2x16High(src) : context.UnpackHalf2x16Low(src);
++            }
++
+             EmitF2I(context, DstFmt.F32, dst, (RoundMode2)x.Bits(78, 80), src, x.Rd, s.Abs, s.Neg);
+ 
+             if (size == 0 && x.Rd != RegisterConsts.RegisterZeroIndex)
+@@ -295,8 +311,54 @@
+             ISrcFmt src = (ISrcFmt)((x.Bit(74) ? 4 : 0) | srcSize);
+ 
+             EmitI2F(context, src, (DstFmt)dstSize, AGet(context, AOne(context, x, neg: false, abs: false)), (ByteSel)(select * (srcSize == 1 ? 2 : 1)), x.Rd, false, false);
++        }
++
++        // F2I.U64 Rd:Rd+1, b (F32): the layout of F2I. The compiler's 32-bit division takes its reciprocal this way: I2F, RCP, IADD 0x1ffffffe (2^64 and two ulps down), F2I.U64, then the high word
++        // (Fire Emblem Fortune's Weave's Lighting compute shaders). The translator has 32-bit integers, so the two words are taken apart in float: a float's value has at most 24 significant
++        // bits, so the high word and the rest are exact, and the result is exact for every value in range
++        public static void AF2i64(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            ASrc s = AOne(context, x);
++
++            if (x.Bits(84, 86) != 2 || x.Bits(75, 77) != 3 || x.Bit(72) || x.Bits(78, 80) != 3)
++            {
++                throw AFail(context, "F2I to 64 bits other than an unsigned truncation of an F32");
++            }
++
++            Operand f = AFloat(context, s);
++            Operand hi = context.FP32ConvertToU32(context.FPMultiply(f, ConstF(1.0f / 4294967296.0f)));
++            Operand lo = context.FP32ConvertToU32(context.FPSubtract(f, context.FPMultiply(context.IConvertU32ToFP32(hi), ConstF(4294967296.0f))));
++
++            if (x.Rd < RegisterConsts.RegisterZeroIndex)
++            {
++                context.Copy(Register(x.Rd, RegisterType.Gpr), lo);
++            }
++
++            if (x.Rd + 1 < RegisterConsts.RegisterZeroIndex)
++            {
++                context.Copy(Register(x.Rd + 1, RegisterType.Gpr), hi);
++            }
+         }
+ 
++        // I2F.F32 Rd, b:b+1 (source size 3, a 64-bit register pair, low word first): the other half of that division. Signed at 74, as I2F. The two words are converted and added, which can round
++        // twice where the hardware rounds once; the sequence's correction steps take that, and a high word of zero, the case seen, is exact
++        public static void AI2f64(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(84, 86) != 3 || x.Bits(75, 77) != 2 || x.Opcode != 0x312)
++            {
++                throw AFail(context, "I2F from 64 bits other than a register pair to an F32");
++            }
++
++            Operand lo = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
++            Operand hi = x.Rb + 1 >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb + 1, RegisterType.Gpr);
++            Operand fh = x.Bit(74) ? context.IConvertS32ToFP32(hi) : context.IConvertU32ToFP32(hi);
++
++            ASet(context, x, context.FPAdd(context.FPMultiply(fh, ConstF(4294967296.0f)), context.IConvertU32ToFP32(lo)));
++        }
++
+         // I2FP.F32.S32 / .U32: signed at 74
+         public static void AI2fp(EmitterContext context)
+         {
+@@ -357,35 +419,61 @@
+             EmitF2F(context, (DstFmt)srcSize, (DstFmt)dstSize, IntegerRound.Pass, src, x.Rd, s.Abs, s.Neg, false);
+         }
+ 
+-        // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one. With MERGE_C (bit 78) the first operand is unused:
+-        // b goes to the low half and the high half is Rc's (64..72) low or, with .H1 (bit 72), high half (Mesa NAK sm70_encode.rs
+-        // OpF2FP; Pokemon Pokopia's fragment shaders pack with RZ there)
++        // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one.
++        // .MERGE_C (78): a is not read; b to the low half, the low half of c to the high one. The compiler builds a half pair in two steps, high component first: Pokemon Pokopia's 22,886
++        // shaders have F2FP.MERGE_C Rd, RZ, c[3][word + 1], RZ then F2FP.MERGE_C Rd, RZ, c[3][word], Rd, with RZ in a every time (Mesa's NAK documents the same behaviour for OpF2FP)
+         public static void AF2fp(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+-            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
+ 
+-            if (!x.Bit(78))
++            if (x.Bit(72))
+             {
+-                if (x.Bit(72))
+-                {
+-                    throw AFail(context, "F2FP .H1 without MERGE_C");
+-                }
++                throw AFail(context, "F2FP bit 72");
++            }
+ 
+-                ASet(context, x, context.PackHalf2x16(AFloat(context, b), AFloat(context, a)), AUniform(context));
++            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
++
++            if (x.Bit(78))
++            {
++                Operand low = context.PackHalf2x16(AFloat(context, b), ConstF(0f));
++                Operand high = context.ShiftLeft(Register(x.Rc, RegisterType.Gpr), Const(16));
++
++                ASet(context, x, context.BitwiseOr(high, low), AUniform(context));
+                 return;
+             }
+ 
+-            if (AUniform(context))
++            ASet(context, x, context.PackHalf2x16(AFloat(context, b), AFloat(context, a)), AUniform(context));
++        }
++
++        // F2IP.U8 Rd, a, b: a and b to saturated bytes, a in byte 1 and b in byte 0, like F2FP's halves; bits 78..79 the rounding, as F2I's. Ocarina of Time's FoliageShader writes colour with it
++        // (x * 255 for two pairs, then PRMT.5410 into one word), and its foliage mesh shaders take one byte at a time (RZ, x, truncating), then shift it into place. Bits 72..77 other than 4 and a
++        // register in c have not been met
++        public static void AF2ip(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(72, 78) != 4 || x.Rc != RegisterConsts.RegisterZeroIndex)
+             {
+-                throw AFail(context, "uniform F2FP.MERGE_C");
++                throw AFail(context, "F2IP form");
+             }
+ 
+-            Operand low = context.BitwiseAnd(context.PackHalf2x16(AFloat(context, b), ConstF(0)), Const(0xffff));
+-            Operand c = AGpr(x.Rc);
+-            Operand high = x.Bit(72) ? context.BitwiseAnd(c, Const(unchecked((int)0xffff0000u))) : context.ShiftLeft(c, Const(16));
++            (ASrc a, ASrc b) = ASecond(context, x, abs: false);
++            RoundMode2 mode = (RoundMode2)x.Bits(78, 80);
+ 
+-            ASet(context, x, context.BitwiseOr(low, high));
++            Operand Byte(Operand f)
++            {
++                f = mode switch
++                {
++                    RoundMode2.Round => context.FPRound(f, Instruction.FP32),
++                    RoundMode2.Floor => context.FPFloor(f, Instruction.FP32),
++                    RoundMode2.Ceil => context.FPCeiling(f, Instruction.FP32),
++                    _ => context.FPTruncate(f, Instruction.FP32),
++                };
++
++                return context.FP32ConvertToU32(context.FPMinimum(context.FPMaximum(f, ConstF(0f)), ConstF(255f)));
++            }
++
++            ASet(context, x, context.BitwiseOr(context.ShiftLeft(Byte(AFloat(context, a)), Const(8)), Byte(AFloat(context, b))), AUniform(context));
+         }
+ 
+         // ---- packed halves ----
+@@ -422,7 +510,7 @@
+             bool bIn32 = x.Form is 1 or 4 or 5 or 6;
+             ASrc slot32 = bIn32 ? b : c;
+             ASrc slot64 = bIn32 ? c : b;
+-            // An immediate has no modifiers: bits 62 and 63 are its own, and they would flip the sign of a negative constant (seedds/nxnative 03d92a9f, MIT)
++            // An immediate has no modifiers: bits 62 and 63 are its own, and they would flip the sign of a negative constant
+             slot32 = slot32.Kind == AKind.Imm ? slot32 : slot32.WithMods(x.Bit(63), x.Bit(62));
+             slot64 = slot64.WithMods(x.Bit(84), x.Bit(83));
+ 
+@@ -433,9 +521,8 @@
+             return bIn32 ? (ha, h32, h64) : (ha, h64, h32);
+         }
+ 
+-        // The sources of a two-source half-pair operation, as ASecond: the second is B in forms 1, 4, 5, 6 and C in forms 2, 3, 7, where B would be the
+-        // unused register field at 64 (seedds/nxnative 03d92a9f, MIT). Pokemon Pokopia's bilateral blur steps its loop with HADD2 Rd, Rd, imm: reading
+-        // that field instead stepped by the bits of whatever R0 held, the loop never ended and the GPU hung (macOS then reset it for every app).
++        // The sources of a two-source half-pair operation, as ASecond: the second is B in forms 1, 4, 5, 6 and C in forms 2, 3, 7, where B would be the unused register field at 64.
++        // Pokemon Pokopia's bilateral blur steps its loop with HADD2 Rd, Rd, imm: reading that field instead stepped by the bits of whatever R0 held, and hung the GPU
+         private static (Operand[] A, Operand[] B) AHalfSecond(EmitterContext context, AmpereOp x)
+         {
+             (Operand[] a, Operand[] b, Operand[] c) = AHalfSrcs(context, x);
+@@ -489,6 +576,13 @@
+         {
+             AmpereOp x = new(context.CurrOp);
+             (Operand[] a, Operand[] b, Operand[] c) = AHalfSrcs(context, x);
++
++            // .H0_NH1 (86), named high lane first: the high lane reads B's low half, the low lane B's high half negated (a rotation by 90 degrees, what cross products and 2D rotations need).
++            // Pokemon Pokopia's sun shadow mask crosses its two lanes without it (the shadow against the cloud map rather than the cascade fade), which lights cave floors and drops cloud shadows
++            if (x.Bit(86))
++            {
++                b = [context.FPNegate(b[1]), b[0]];
++            }
+ 
+             AHalfResult(context, x, context.FPFusedMultiplyAdd(a[0], b[0], c[0]), context.FPFusedMultiplyAdd(a[1], b[1], c[1]));
+         }
+@@ -579,11 +673,26 @@
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
+-            if (x.Bit(91) || x.Bits(78, 80) != 0)
++            int mode = x.Bits(78, 80);
++
++            if (x.Bit(91) || mode == 1)
+             {
+-                throw AFail(context, "LDC with a bindless bank or an address mode");
++                throw AFail(context, "LDC with a bindless bank or the .IL address mode");
+             }
+ 
++            if (mode != 0)
++            {
++                // .IS / .ISL, as Maxwell's (InstEmitMemory.Ldc): the bank is the instruction's plus Ra's upper half, the offset Ra's lower half plus the instruction's.
++                // Hyrule Warriors: Age of Imprisonment's vertex shader cc679c7b4d3e703c reads c[1][(vertex index % 5) * stride] this way, and its pixel shader
++                // 059a0a910ff87a26 c[1][0x60 + R12 * scale]: the compiler adds 0x10000 to the offset. The bank is chosen at run time among the banks the shader
++                // can reach (ARuntimeBanks); a run-time bank 0 in a compute shader is not remapped (AMapC0).
++                Operand ra = Register(x.Ra, RegisterType.Gpr);
++                Operand slot = context.IAdd(Const(x.Bits(54, 59)), context.ShiftRightU32(ra, Const(16)));
++
++                ALoadConstant(context, x, slot, context.BitwiseAnd(ra, Const(0xffff)), (int)x.SignedField(38, 54), uniform: false, ARuntimeBanks(context, x.Bits(54, 59)));
++                return;
++            }
++
+             if (x.Ra == RegisterConsts.RegisterZeroIndex)
+             {
+                 (int bank, int offset) = AMapC0(context, x.Bits(54, 59), (int)x.SignedField(38, 54));
+@@ -597,6 +706,39 @@
+ 
+         private static void ALoadConstant(EmitterContext context, AmpereOp x, int bank, Operand index, int offset, bool uniform)
+         {
++            ALoadConstant(context, x, Const(bank), index, offset, uniform, null);
++        }
++
++        // The banks a run-time bank of LDC .IS can be: the shader's own constant segment (c1, which every shader has), the instruction's bank and every bank the
++        // shader's other constant reads name. A bank outside them reads 0, as in Ryujinx's Maxwell path for an unbound one. c0 is left out: the host fills the
++        // driver segment only at offsets known when the shader is built, and a shader indexing it at run time is not loaded (dmsh_build.py unfillable), which
++        // took pixel shader 059a0a910ff87a26 (it reads c0 elsewhere) out with its indexed c1 read
++        private static uint ARuntimeBanks(EmitterContext context, int bank)
++        {
++            uint banks = 1u << 1 | 1u << bank;
++
++            foreach (DecodedFunction function in context.Program)
++            {
++                foreach (Block block in function.Blocks)
++                {
++                    foreach (InstOp op in block.OpCodes)
++                    {
++                        AmpereOp y = new(op);
++
++                        if (AmpereTable.ReadsConstantBank(y) && !y.Bit(91))
++                        {
++                            banks |= 1u << AMapC0(context, y.Bits(54, 59), (int)y.SignedField(38, 54)).Bank;
++                        }
++                    }
++                }
++            }
++
++            return banks & ~1u;
++        }
++
++        // slot: a constant bank, or one chosen at run time among banks (EmitLoadConstant)
++        private static void ALoadConstant(EmitterContext context, AmpereOp x, Operand slot, Operand index, int offset, bool uniform, uint? banks)
++        {
+             int size = x.Bits(73, 76);
+ 
+             if (size > 5)
+@@ -611,7 +753,7 @@
+ 
+             for (int k = 0; k < (size == 5 ? 2 : 1) && rd + k < zero; k++)
+             {
+-                Operand value = EmitLoadConstant(context, Const(bank), context.IAdd(wordOffset, Const(k)));
++                Operand value = EmitLoadConstant(context, slot, context.IAdd(wordOffset, Const(k)), banks);
+ 
+                 if (size < 4)
+                 {
+@@ -672,6 +814,25 @@
+             ASetPred(context, x.Bits(84, 87), GetPredLogicalOp(context, bop, context.BitwiseNot(cmp), p), u);
+         }
+ 
++        // 0x80d: what the compiler puts at the end of a vertex shader's position in Kirby Air Riders (all 6,319 of them, no other game's), its meaning inferred from what surrounds it. Before it, FSETP sets P0..P5 where x, y or z lies
++        // beyond +/- w times the two system registers 30 and 31, which no other instruction reads: a guard band test. Then this twice: immediate 0xc4321111 with no predicate result, then immediate 0x80000000
++        // whose result is the guard of an EXIT before the shader writes the position and its other outputs (P0 in 6,177, P1 in 142; no other instruction reads it). So a vertex is dropped early when the GPU knows its
++        // primitive cannot be seen. How it knows is not known, so the host never drops one: the result is false, the vertex writes its outputs, and clipping does the rest, as for a shader without this. Any other form stops the shader.
++        public static void AGuardCull(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            uint imm = (uint)x.Imm32;
++            int pd = x.Bits(81, 84), pd2 = x.Bits(84, 87), ps = x.Bits(87, 90), cmp = x.Bits(76, 79);
++            bool plain = pd2 == RegisterConsts.PredicateTrueIndex && ps == RegisterConsts.PredicateTrueIndex && context.TranslatorContext.Definitions.Stage == ShaderStage.Vertex;
++
++            if (!plain || !(imm == 0xc4321111 && pd == RegisterConsts.PredicateTrueIndex && cmp == 0 || imm == 0x80000000 && cmp == 6))
++            {
++                throw AFail(context, "a 0x80d not of the guard band cull");
++            }
++
++            ASetPred(context, pd, Const(IrConsts.False), false);
++        }
++
+         // IADD3 Rd, Pc0, Pc1, a, b, c: a + b + c. A negated source is its two's complement; with .X (74) its bitwise not, and the carry predicates (87..90,
+         // 77..80) are added. The carries out of the 32-bit sum go to the predicates at 81..84 (the first) and 84..87 (the second).
+         public static void AIadd3(EmitterContext context)
+@@ -748,6 +909,18 @@
+             }
+         }
+ 
++        // IMAD's carry in (.X, bit 74, from the predicate at 87..90), 1 or 0; null without one. As IADD3.X: with it a negated addend is its bitwise not, as the compiler subtracts across words
++        // (Fire Emblem Fortune's Weave's 64-bit division: R6 = RZ * RZ + ~R7 + P0. Dropped, the division gave 2 for 340 / 1)
++        private static Operand AImadCarryIn(EmitterContext context, AmpereOp x, bool u = false)
++        {
++            if (!x.Bit(74) || (x.Bits(87, 90) == RegisterConsts.PredicateTrueIndex && x.Bit(90)))
++            {
++                return null;
++            }
++
++            return context.ConditionalSelect(APred(context, x, 87, 90, u), Const(1), Const(0));
++        }
++
+         // IMAD Rd, a, b, c: the low word of a * b + c (B and C may be negated)
+         public static void AImad(EmitterContext context)
+         {
+@@ -762,11 +935,22 @@
+ 
+             Operand res = context.IMultiply(AGet(context, a), AInt(context, b));
+ 
+-            if (!c.IsZeroReg)
++            if (x.Bit(74) && c.Neg)
+             {
++                res = context.IAdd(res, context.BitwiseNot(AGet(context, c)));
++            }
++            else if (!c.IsZeroReg)
++            {
+                 res = context.IAdd(res, AInt(context, c));
+             }
+ 
++            Operand carryIn = AImadCarryIn(context, x, u);
++
++            if (carryIn != null)
++            {
++                res = context.IAdd(res, carryIn);
++            }
++
+             ASet(context, x, res, u);
+         }
+ 
+@@ -777,9 +961,9 @@
+             bool u = AUniform(context);
+             (ASrc a, ASrc b, ASrc c) = AAluSrcs(context, x, u, abs: false);
+ 
+-            if (x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex || b.Neg || c.Neg)
++            if (b.Neg || c.Neg)
+             {
+-                throw AFail(context, "IMAD.WIDE predicate output or negation");
++                throw AFail(context, "IMAD.WIDE negation");
+             }
+ 
+             Operand srcA = AGet(context, a);
+@@ -788,17 +972,36 @@
+ 
+             Operand lo = context.IMultiply(srcA, srcB);
+             Operand hi = signed ? context.MultiplyHighS32(srcA, srcB) : context.MultiplyHighU32(srcA, srcB);
++            Operand carryOut = Const(0);
++            Operand carryIn = AImadCarryIn(context, x, u);
+ 
+-            if (!c.IsZeroReg)
++            if (!c.IsZeroReg || carryIn != null)
+             {
+                 Operand cLo = AGet(context, c);
+                 Operand sum = context.IAdd(lo, cLo);
+                 Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(sum, lo), Const(1), Const(0));
+ 
+-                hi = context.IAdd(context.IAdd(hi, AGetHigh(context, c)), carry);
++                if (carryIn != null)
++                {
++                    Operand next = context.IAdd(sum, carryIn);
++
++                    carry = context.BitwiseOr(carry, context.ConditionalSelect(context.ICompareLessUnsigned(next, sum), Const(1), Const(0)));
++                    sum = next;
++                }
++
++                Operand hi1 = context.IAdd(hi, AGetHigh(context, c));
++                Operand hi2 = context.IAdd(hi1, carry);
++
++                carryOut = context.BitwiseOr(
++                    context.ConditionalSelect(context.ICompareLessUnsigned(hi1, hi), Const(1), Const(0)),
++                    context.ConditionalSelect(context.ICompareLessUnsigned(hi2, hi1), Const(1), Const(0)));
++                hi = hi2;
+                 lo = sum;
+             }
+ 
++            // The carry out of the 64-bit addition, to the predicate at 81..84: the 64-bit division in Fire Emblem Fortune's Weave's Lighting compute shaders chains it into its next addition
++            ASetPred(context, x.Bits(81, 84), context.ICompareNotEqual(carryOut, Const(0)));
++
+             int rd = ARd(x, u);
+             int zero = u ? RegisterConsts.UniformZeroIndex : RegisterConsts.RegisterZeroIndex;
+ 
+@@ -813,26 +1016,48 @@
+             }
+         }
+ 
+-        // IMAD.HI Rd, a, b, c: the high word of a * b (signed 73), plus c
++        // IMAD.HI Rd, a, b, c: the high word of the 64-bit a * b (signed 73) + the pair {c + 1:c}, as IMAD.WIDE without its low word. Not the high word of a * b plus c alone: the compiler's 64-bit multiply
++        // feeds it IMAD.WIDE's whole result, r9:r8 = r6 * r13 + {r9:r8} then r8 = high(r7 * r11 + {r9:r8}), so the upper word and the low word's carry count
+         public static void AImadHi(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+             (ASrc a, ASrc b, ASrc c) = AAluSrcs(context, x, abs: false);
+ 
+-            if (x.Bits(81, 84) != RegisterConsts.PredicateTrueIndex)
++            if (c.Neg)
+             {
+-                throw AFail(context, "IMAD.HI predicate output");
++                throw AFail(context, "IMAD.HI negation");
+             }
+ 
+             Operand srcA = AGet(context, a);
+             Operand srcB = AInt(context, b);
+             Operand res = x.Bit(73) ? context.MultiplyHighS32(srcA, srcB) : context.MultiplyHighU32(srcA, srcB);
++            Operand carryOut = Const(0);
++            Operand carryIn = AImadCarryIn(context, x);
+ 
+-            if (!c.IsZeroReg)
++            if (!c.IsZeroReg || carryIn != null)
+             {
+-                res = context.IAdd(res, AInt(context, c));
++                Operand lo = context.IMultiply(srcA, srcB);
++                Operand sum = context.IAdd(lo, AGet(context, c));
++                Operand carry = context.ConditionalSelect(context.ICompareLessUnsigned(sum, lo), Const(1), Const(0));
++
++                if (carryIn != null)
++                {
++                    Operand next = context.IAdd(sum, carryIn);
++
++                    carry = context.BitwiseOr(carry, context.ConditionalSelect(context.ICompareLessUnsigned(next, sum), Const(1), Const(0)));
++                    sum = next;
++                }
++
++                Operand hi1 = context.IAdd(res, AGetHigh(context, c));
++                Operand hi2 = context.IAdd(hi1, carry);
++
++                carryOut = context.BitwiseOr(
++                    context.ConditionalSelect(context.ICompareLessUnsigned(hi1, res), Const(1), Const(0)),
++                    context.ConditionalSelect(context.ICompareLessUnsigned(hi2, hi1), Const(1), Const(0)));
++                res = hi2;
+             }
+ 
++            ASetPred(context, x.Bits(81, 84), context.ICompareNotEqual(carryOut, Const(0)));   // the carry out of the 64-bit addition, as IMAD.WIDE's
+             ASet(context, x, res);
+         }
+ 
+@@ -1109,6 +1334,15 @@
+             }
+ 
+             ASet(context, x, res, u);
++        }
++
++        // BREV Rd, b: the bits reversed. The compiler's find-lowest-set-bit is BREV, then FLO.SH, then a compare with -1 (Fire Emblem Fortune's Weave's light loops: 3,057 of them)
++        public static void ABrev(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            bool u = AUniform(context);
++
++            ASet(context, x, context.BitfieldReverse(AGet(context, AOne(context, x, u, neg: false, abs: false))), u);
+         }
+ 
+         // SGXT Rd, a, n: the low n bits of a, sign-extended (73) or zero-extended; .W (75) wraps n, else it is clamped to 32
+@@ -1127,7 +1361,53 @@
+ 
+             ASet(context, x, res, u);
+         }
++
++        // BMSK Rd, a, b: a mask of b bits from bit a (Star Fox's 58046f286de779e1: BMSK R5, R4, R5, then R9 << R4, the two ANDed and handed to an atomic, a bit field written into a word).
++        // The semantics are PTX's bmsk: .W (75, as SGXT's; only the clamping form has been seen) takes both operands modulo 32; else a >= 32 gives 0 and b >= 32 reaches bit 31
++        public static void ABmsk(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            bool u = AUniform(context);
++            (ASrc sa, ASrc sb) = ASecond(context, x, u, neg: false, abs: false);
+ 
++            Operand a = AGet(context, sa), b = AGet(context, sb);
++            Operand a1 = context.BitwiseAnd(a, Const(31)), b1 = context.BitwiseAnd(b, Const(31)), sum = context.IAdd(a1, b1);
++            Operand mask0 = context.ShiftLeft(Const(-1), a1);
++            Operand reachesTop = context.ICompareGreaterOrEqualUnsigned(sum, Const(32));
++
++            if (!x.Bit(75))
++            {
++                Operand aOver = context.ICompareGreaterOrEqualUnsigned(a, Const(32));
++
++                mask0 = context.ConditionalSelect(aOver, Const(0), mask0);
++                reachesTop = context.BitwiseOr(reachesTop, context.BitwiseOr(aOver, context.ICompareGreaterOrEqualUnsigned(b, Const(32))));
++            }
++
++            // the bits above the field: none when it reaches the top, all when it is empty (a1 + b1 < 32 in the shift, so it is defined)
++            Operand above = context.ConditionalSelect(context.ICompareEqual(b1, Const(0)), Const(-1), context.ShiftLeft(Const(-1), context.BitwiseAnd(sum, Const(31))));
++
++            above = context.ConditionalSelect(reachesTop, Const(0), above);
++
++            ASet(context, x, context.BitwiseAnd(mask0, context.BitwiseNot(above)), u);
++        }
++
++        // 0x925 Rd (78..80 = 1, no predicate result): 1 for a covered pixel, 0 for a helper invocation. No table at hand names it (PIXLD.COVERED, perhaps). What it reads comes from the two shaders
++        // that use it, Star Fox's quad efficiency views 46040940ce0fd49b and 826168691af2e211, which add it up over the quad through SHFL and FSWZADD: one takes sum - 1 as the index of a
++        // 4-entry palette, so a shaded pixel's sum is at least 1; the other draws 0.03125 + 0.15625 sum in red. Any other form stays refused
++        public static void APixelCovered(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(78, 81) != 1 || x.Bits(81, 84) != 7 || x.Bits(24, 32) != 0 || x.Bits(32, 48) != 0 || context.TranslatorContext.Definitions.Stage != ShaderStage.Fragment)
++            {
++                throw AFail(context, $"0x925 form {x.Bits(78, 81)} outside a covered pixel's read in a pixel shader");
++            }
++
++            Operand helper = context.Load(StorageKind.Input, IoVariable.HelperInvocation);
++
++            ASet(context, x, context.ConditionalSelect(helper, Const(0), Const(1)), false);
++        }
++
+         // ---- predicates ----
+ 
+         // R2P PR, Ra, mask: predicates from one byte of Ra (76..78), the mask an immediate (0x804) or a register (0x204)
+@@ -1148,6 +1428,30 @@
+             EmitP2r(context, Register(x.Ra, RegisterType.Gpr), Register(x.Rd, RegisterType.Gpr), mask, (ByteSel)x.Bits(76, 78), false);
+         }
+ 
++        // UP2UR URd, URZ, mask: bit k of URd is the uniform predicate UPk where bit k of the mask is set, as P2R does for the general predicates (7 is the always-true UPT).
++        // Pokemon Pokopia's compute shaders use mask 1. Mario Kart World's pixel shaders save one predicate with mask 8 or 0x40 and test the register against URZ later
++        public static void AUp2ur(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || (x.Imm32 & ~0xffu) != 0)
++            {
++                throw AFail(context, "UP2UR with a merge source or a mask past the predicates");
++            }
++
++            Operand res = Const(0);
++
++            for (int k = 0; k < 8; k++)
++            {
++                if ((x.Imm32 >> k & 1) != 0)
++                {
++                    res = context.BitwiseOr(res, context.ConditionalSelect(APredReg(k, uniform: true), Const(1 << k), Const(0)));
++                }
++            }
++
++            ASet(context, x, res, uniform: true);
++        }
++
+         // PLOP3 Pd0, Pd1, a (87..90), b (77..80), c (68..71; uniform with bit 67), lut0 (64..67 | 72..77 << 3), lut1 (16..24)
+         public static void APlop3(EmitterContext context)
+         {
+@@ -1199,7 +1503,8 @@
+             return res;
+         }
+ 
+-        // VOTE / VOTEU Rd, Pd, P: Pd = the vote (72..74: all, any, equal) of P (87..90); Rd (a uniform register for VOTEU) the ballot
++        // VOTE Rd, Pd, P / VOTEU URd, UPd, P: Pd (81..84) = the vote (72..74: all, any, equal) of P (87..90), Rd the ballot; VOTEU writes the uniform register and the
++        // uniform predicate. P and the guard are lane predicates in both.
+         public static void AVote(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+@@ -1210,7 +1515,7 @@
+ 
+             if (vote != null)
+             {
+-                ASetPred(context, x.Bits(81, 84), vote);
++                ASetPred(context, x.Bits(81, 84), vote, toUniform);
+             }
+ 
+             int rd = ARd(x, toUniform);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -23,6 +23,7 @@
+ 
+             x(0x981, InstName.Ldg, ALdg, N);
+             x(0x381, InstName.Ldg, ALdg, N);
++            x(0xf8c, InstName.Atoms, AAtoms, N);
+             x(0x986, InstName.Stg, AStg, N, writesRd: false);
+             x(0x386, InstName.Stg, AStg, N, writesRd: false);
+             x(0x98e, InstName.Red, ARed, N, writesRd: false);
+@@ -34,24 +35,33 @@
+             x(0x987, InstName.Stl, AStLocalShared, N, writesRd: false);
+             x(0x388, InstName.Sts, AStLocalShared, N, writesRd: false);
+             x(0x988, InstName.Sts, AStLocalShared, N, writesRd: false);
++            x(0x38c, InstName.Atoms, AAtoms, N);
++            x(0x38d, InstName.Atoms, AAtomsCas, N);
++            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
++            x(0x9ab, InstName.Membar, AErrbar, N, writesRd: false);
+ 
+             x(0xb60, InstName.Tex, ATex, InstProps.Tex);
++            x(0x361, InstName.Tex, ATex, InstProps.Tex);
++            x(0x364, InstName.Tld4, ATex, InstProps.Tex);
++            x(0x367, InstName.Tld, ATex, InstProps.Tex);
++            x(0xf60, InstName.Tex, ATex, InstProps.Tex);
++            x(0xf63, InstName.Tld4, ATex, InstProps.Tex);
++            x(0xf6c, InstName.Txd, ATex, InstProps.Tex);
++            x(0xf69, InstName.Tmml, ATex, InstProps.Tex);
++            x(0x36a, InstName.Tmml, ATex, InstProps.Tex);
+             x(0xb66, InstName.Tld, ATex, InstProps.Tex);
+             x(0xb63, InstName.Tld4, ATex, InstProps.Tex);
+             x(0xb69, InstName.Tmml, ATex, InstProps.Tex);
+             x(0xb6c, InstName.Txd, ATex, InstProps.Tex);
+             x(0xb6f, InstName.Txq, ATxq, InstProps.Tex);
++            x(0x370, InstName.Txq, ATxq, InstProps.Tex);
+             x(0xb97, InstName.Suld, ASurface, N);
+             x(0xb99, InstName.Suld, ASurface, N);
+             x(0xb9b, InstName.Sust, ASurface, N, writesRd: false);
+             x(0xb9d, InstName.Sust, ASurface, N, writesRd: false);
+             x(0x593, InstName.Suatom, ASuatom, N);
++            x(0x59f, InstName.Sured, ASured, N, writesRd: false);
+             x(0xb1d, InstName.Bar, ABar, N, writesRd: false);
+-            x(0x992, InstName.Membar, AMembar, N, writesRd: false);
+-            x(0x38c, InstName.Atoms, AAtoms, N);
+-            x(0xf8c, InstName.Atoms, AAtomsPopcInc, N, writesRd: false);
+-            x(0x301, InstName.Bfe, ABrev, N);
+-            x(0x883, InstName.P2r, AUp2ur, N, uniform: true);
+         }
+ 
+         // ---- attributes ----
+@@ -91,7 +101,6 @@
+             const InstProps N = InstProps.None;
+ 
+             alu(0x124, InstName.Out, AOut);
+-            x(0x2be, InstName.Flo, AMeshUniformBrev, N, uniform: true);
+             x(0x923, InstName.Isberd, AIsberd, N);
+             x(0x927, InstName.Ast, AStageOut, N, writesRd: false);
+             x(0x34e, InstName.Lepc, ALepc, N);
+@@ -113,38 +122,30 @@
+             {
+                 context.Copy(Register(x.Rd, RegisterType.Gpr), AGpr(x.Ra));
+             }
+-        }
+-
+-        // Uniform immediate BREV used by OOT's mesh shaders (seedds/nxnative ABrev, MIT).
+-        // Compute shaders use the same form (Ocarina of Time's opening scene).
+-        public static void AMeshUniformBrev(EmitterContext context)
+-        {
+-            AmpereOp x = new(context.CurrOp);
+-            ASet(context, x, context.BitfieldReverse(AGet(context, AOne(context, x, true, neg: false, abs: false))), true);
+         }
+ 
+         public static void AIsberd(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
+-            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereMeshLayout();
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereStageMemory();
+ 
+             if (stage != null)
+             {
+-                // A task or mesh shader's stage input (QueryAmpereMeshLayout). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
++                // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset];
++                // 0xb8: a word it wrote itself with 0x927's mode 0xb8 (Ocarina of Time's task shader 5d3a096025e375a1 reads its payload back in a later thread)
+                 int mode = x.Bits(72, 80);
+ 
+-                if (mode != 0x78 && mode != 0x38)
++                if (mode != 0x78 && mode != 0x38 && mode != 0xb8)
+                 {
+                     throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
+                 }
+ 
+-                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
++                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[mode == 0xb8 ? 2 : 1] + (int)x.SignedField(40, 64)));
+                 EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
+                 return;
+             }
+ 
+-
+             if (x.Rd < RegisterConsts.RegisterZeroIndex)
+             {
+                 context.Copy(Register(x.Rd, RegisterType.Gpr), AGpr(x.Ra));
+@@ -159,7 +160,7 @@
+         public static void AStageOut(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+-            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereMeshLayout();
++            int[] stage = context.TranslatorContext.GpuAccessor.QueryAmpereStageMemory();
+             int mode = x.Bits(72, 80);
+ 
+             if (stage == null || (mode != 0xb8 && mode != 0xf8 && mode != 0x88 && mode != 0x80))
+@@ -283,6 +284,16 @@
+                     Operand pr = Register(p, RegisterType.Predicate);
+                     pred = x.Bit(67) ? context.BitwiseNot(pr) : pr;
+                 }
++            }
++
++            // The address is read once, before any result is written, the zeros of a false predicate too: the destination may be the address register (LDG.128 R0, [R0.64]; Unreal Engine 5.4's bounds-checked
++            // reads of its scene data, LDG.P R5, [R5 + UR4], which read at the table's start when R5 was zeroed first: every instance at the first one's transform, and a black scene)
++            (Operand[] los, Operand[] his) = (new Operand[count], new Operand[count]);
++
++            for (int index = 0; index < count; index++)
++            {
++                (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 32, index * 4);
++                (los[index], his[index]) = (context.Copy(lo), context.Copy(hi));
+             }
+ 
+             Operand lblSkip = null;
+@@ -298,16 +309,8 @@
+                 context.BranchIfFalse(lblSkip, pred);
+             }
+ 
+-            // The address is read once, before any result is written (the destination may be the address register: LDG.128 R0, [R0.64])
+-            (Operand[] los, Operand[] his) = (new Operand[count], new Operand[count]);
+-
+             for (int index = 0; index < count; index++)
+             {
+-                (los[index], his[index]) = AGlobalAddress(context, x, 90, 32, index * 4);
+-            }
+-
+-            for (int index = 0; index < count; index++)
+-            {
+                 if (x.Rd + index >= RegisterConsts.RegisterZeroIndex)
+                 {
+                     break;
+@@ -367,94 +370,49 @@
+             ASet(context, x, res);
+         }
+ 
+-        // ATOMS Rd, [Ra + offset], Rb (0x38c): a shared memory atomic, the byte offset 40..64, type 73..76 and operation 87..91 as ATOMG's. Ryujinx
+-        // indexes shared memory in words (Maxwell's ATOMS). Pokemon Pokopia's compute shader 9b2f28c9920548aa adds to a shared counter at 0x7fc with it
+-        public static void AAtoms(EmitterContext context)
++        // MEMBAR: the order of this thread's memory operations
++        public static void AMembar(EmitterContext context)
+         {
+-            AmpereOp x = new(context.CurrOp);
+-            if (x.Bits(78, 80) != 0)
+-            {
+-                throw AFail(context, "ATOMS with an index stride");
+-            }
+-
+-            Operand addr = context.IAdd(Register(x.Ra, RegisterType.Gpr), Const((int)x.SignedField(40, 64)));
+-            Operand offset = context.ShiftRightU32(addr, Const(2));
+-            Operand id = Const(context.ResourceManager.SharedMemoryId);
+-            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, offset, Register(x.Rb, RegisterType.Gpr));
+-
+-            ASet(context, x, res);
++            context.MemoryBarrier();
+         }
+ 
+-        // ATOMS.POPC.INC [Ra << (stride + 1)], no result (0xf8c): every active lane adds one to the shared word, so per lane an
+-        // atomic add of 1. Stride 78..80 scales the index; only the form with no offset, RZ destination and the control word
+-        // 0x0d00003f (bits 78..80 aside) is known (Eden-NS2 ampere lowering's notes; Pokemon Pokopia's compute shader 2118ab534fac88c6)
+-        public static void AAtomsPopcInc(EmitterContext context)
++        // ERRBAR, after a MEMBAR: waits for errors of earlier memory operations to be reported, which here is nothing to do
++        public static void AErrbar(EmitterContext context)
+         {
+-            AmpereOp x = new(context.CurrOp);
+-
+-            if (x.Rd != RegisterConsts.RegisterZeroIndex || x.Bits(32, 64) != 0 || (x.Bits(64, 96) & ~0xc000) != 0x0d00003f)
+-            {
+-                throw AFail(context, "ATOMS.POPC.INC form");
+-            }
+-
+-            int stride = x.Bits(78, 80);
+-            Operand addr = AGpr(x.Ra);
+-
+-            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
+-            {
+-                addr = context.ShiftLeft(addr, Const(stride + 1));
+-            }
+-
+-            Operand id = Const(context.ResourceManager.SharedMemoryId);
+-
+-            EmitAtomicOp(context, StorageKind.SharedMemory, AtomOp.Add, AtomSize.U32, id, context.ShiftRightU32(addr, Const(2)), Const(1));
+         }
+ 
+-        // BREV Rd, Rb (0x301, the register form): Rb's bits reversed (Pokemon Pokopia's compute shader 6e8db04c25a53d8c)
+-        public static void ABrev(EmitterContext context)
++        // ATOMS.CAS Rd, [Ra + offset], Rb (expected), Rc (new value): Rd = 1 when the swap happened, not the old value (Fire Emblem Fortune's Weave's only use is a retry loop for a float add that repeats until Rd == 1).
++        // Only the 32-bit form (operation 3 at 87..91, size 0) occurs
++        public static void AAtomsCas(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
++            Operand ra = x.Ra >= RegisterConsts.RegisterZeroIndex ? Const(0) : AStride(context, x, Register(x.Ra, RegisterType.Gpr));
++            Operand offset = context.ShiftRightU32(context.IAdd(ra, Const((int)x.SignedField(40, 64))), Const(2));
++            Operand expected = context.Copy(x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr));
++            Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
++            Operand old = context.AtomicCompareAndSwap(StorageKind.SharedMemory, Const(context.ResourceManager.SharedMemoryId), offset, expected, value);
+ 
+-            if (x.Bits(64, 96) != 0 || x.Bits(40, 64) != 0)
+-            {
+-                throw AFail(context, "BREV form");
+-            }
+-
+-            ASet(context, x, context.BitfieldReverse(AGpr(x.Rb)));
++            ASet(context, x, context.ConditionalSelect(context.ICompareEqual(old, expected), Const(1), Const(0)));
+         }
+ 
+-        // UP2UR URd, UPR, URZ, 0x1 (0x883): URd = UP0 as its bit 0; the only form known (mask 1, no merge source)
+-        public static void AUp2ur(EmitterContext context)
++        // ---- local and shared memory ----
++
++        // A shared or local address register's stride, bits 78..79: it counts elements of 1, 4, 8 or 16 bytes (Fire Emblem Fortune's Weave has 1 on all its 32-bit and 2 on all its 64-bit accesses with a
++        // register, whose code bounds that register by the element count). The field is a scale, not the access size: Pokemon Pokopia has 3 on 3,312 shared accesses of 4, 8 and 16 bytes
++        private static Operand AStride(EmitterContext context, AmpereOp x, Operand ra)
+         {
+-            AmpereOp x = new(context.CurrOp);
+-            int rd = x.Bits(16, 22);
++            int stride = x.Bits(78, 80);
+ 
+-            if (x.Bits(24, 30) != RegisterConsts.UniformZeroIndex || x.Bits(32, 64) != 1 || x.Bits(64, 96) != 0x08000000)
+-            {
+-                throw AFail(context, "UP2UR form");
+-            }
+-
+-            if (rd != RegisterConsts.UniformZeroIndex)
+-            {
+-                context.Copy(Register(rd, RegisterType.Uniform), context.ConditionalSelect(APredReg(0, true), Const(1), Const(0)));
+-            }
++            return stride == 0 ? ra : context.ShiftLeft(ra, Const(stride + 1));
+         }
+ 
+-        // ---- local and shared memory ----
+-
+-        // The 32-bit address of a local / shared access: Ra plus the uniform register (at urLo in the uniform form, bit 91). A shared
+-        // access scales Ra by its index stride (78..80: .X4, .X8, .X16, Ra shifted left by stride + 1; Eden-NS2 ampere lowering's
+-        // notes): Pokemon Pokopia's FFT compute shaders index their shared arrays by thread with .X8 and all read the wrong words
+-        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool shared = false)
++        // The 32-bit address of a local / shared access: Ra by its stride, plus the uniform register (at urLo in the uniform form, bit 91). LDSM keeps its mode in the stride's bits, so it passes
++        // stride: false: scaled by that mode, Donkey Kong Bananza's upscaler read its transposed matrices (LDSM.MT88) four times too far along and the picture came out as an 8 x 8 lattice of garbage
++        private static Operand ALocalAddress(EmitterContext context, AmpereOp x, int urLo, bool stride = true)
+         {
+-            Operand addr = Register(x.Ra, RegisterType.Gpr);
+-            int stride = shared ? x.Bits(78, 80) : 0;
++            Operand ra = Register(x.Ra, RegisterType.Gpr);
++            Operand addr = x.Ra == RegisterConsts.RegisterZeroIndex ? Const(0) : stride ? AStride(context, x, ra) : ra;
+ 
+-            if (stride != 0 && x.Ra != RegisterConsts.RegisterZeroIndex)
+-            {
+-                addr = context.ShiftLeft(addr, Const(stride + 1));
+-            }
+-
+             if (x.Bit(91) && x.Bits(urLo, urLo + 6) != RegisterConsts.UniformZeroIndex)
+             {
+                 addr = context.IAdd(addr, Register(x.Bits(urLo, urLo + 6), RegisterType.Uniform));
+@@ -469,7 +427,7 @@
+             AmpereOp x = new(context.CurrOp);
+             StorageKind kind = x.Opcode == AmpereOpcodes.Ldl ? StorageKind.LocalMemory : StorageKind.SharedMemory;
+ 
+-            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32, kind == StorageKind.SharedMemory), x.Rd, (int)x.SignedField(40, 64));
++            EmitLoad(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 32), x.Rd, (int)x.SignedField(40, 64));
+         }
+ 
+         // STL / STS [Ra + UR + offset], Rb: UR at 64
+@@ -478,9 +436,38 @@
+             AmpereOp x = new(context.CurrOp);
+             StorageKind kind = x.Opcode is 0x387 or 0x987 ? StorageKind.LocalMemory : StorageKind.SharedMemory;
+ 
+-            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64, kind == StorageKind.SharedMemory), x.Rb, (int)x.SignedField(40, 64));
++            EmitStore(context, kind, (LsSize2)x.Bits(73, 76), ALocalAddress(context, x, 64), x.Rb, (int)x.SignedField(40, 64));
+         }
+ 
++        // ATOMS Rd, [Ra + offset], Rb: an atomic on shared memory, its operation (87..91) and size (73..76) as ATOMG's, its offset in bytes as STS's (Pokemon Pokopia's 51 compute shaders: ADD on
++        // counters at the end of their shared memory, MAX; Splatoon Raiders has 6)
++        public static void AAtoms(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            bool one = x.Opcode == 0xf8c;
++
++            // 0xf8c, ATOMS.POPC.INC: an increment by 1 with no source register, the operation field 10 (the hardware sums the warp's lanes on one address; per lane an add of 1). Its one user is
++            // Pokemon Pokopia's luminance histogram, hist[bin]++ (2118ab534fac88c6): the field for Rb names a register the shader never wrote on three of its four paths. Other encodings stop here
++            if (one ? x.Bits(87, 91) != 10 || !x.Bit(91) || x.Rd != RegisterConsts.RegisterZeroIndex : x.Bit(91))
++            {
++                throw AFail(context, "ATOMS with a uniform register");
++            }
++
++            Operand offset = context.ShiftRightU32(context.IAdd(ALocalAddress(context, x, 64), Const((int)x.SignedField(40, 64))), Const(2));
++            Operand id = Const(context.ResourceManager.SharedMemoryId);
++
++            if (one)
++            {
++                EmitAtomicOp(context, StorageKind.SharedMemory, AtomOp.Add, (AtomSize)x.Bits(73, 76), id, offset, Const(1));
++                return;
++            }
++
++            Operand value = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
++            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, offset, value);
++
++            ASet(context, x, res);
++        }
++
+         // ---- surfaces ----
+ 
+         // SULD Rd, [Ra] (0xb97 formatted with a channel mask at 72..76, 0xb99 binary with a size at 73..76) and SUST [Ra], Rb (0xb9b, 0xb9d): the handle as
+@@ -504,25 +491,38 @@
+             }
+         }
+ 
++        // SURED [Ra], Rb (0x59f): an image reduction through a handle, laid out as SUATOM with no result: the coordinates from Ra, the value in Rb, the handle at 40..59, the dimension
++        // at 61..64, the size at 73..76 and the operation at 87..91 (Eglantine's lowering to Maxwell names the fields). Mario Kart World's compute shader adds 1 at (R4, R5) of a 2D
++        // image; its word 2 is SUATOM's in Donkey Kong Bananza's encoding less the predicate result. Yoshi and the Mysterious Book's compute shaders take other operations in SUATOM's field (MAX, OR, MIN on
++        // 32 bits); a size other than 32 bits (its Nanite shaders' MAX.U64) or another form is refused
++        public static void ASured(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if ((x.Bits(64, 96) & ~(0xf << 23)) != 0x0010e000 || x.Bits(59, 61) != 0)
++            {
++                throw AFail(context, $"SURED form {x.Bits(64, 96):x8}");
++            }
++
++            (int handle, int cbufSlot) = ATexHandle(context, x);
++
++            EmitSured(context, (SuDim)x.Bits(61, 64), 0, (RedOp)x.Bits(87, 91), SuatomSize.U32, handle, x.Ra, x.Rb, 0, false, isBindless: false, cbufSlot: cbufSlot);
++        }
++
+         // SUATOM Rd, [Ra], Rb (0x593): an atomic on an image through a handle, laid out as SUST's (handle 40..59, dimension 61..64) and as ATOMG's (operation
+         // 87..91, size 73..76, Pu 81..83). Donkey Kong Bananza's append compute shaders take a counter with it (SUATOM.ADD.U32 on a 1D image, the old value
+-        // shuffled to the warp) before their SUST. Another handle bank or a predicate result is not met in a game: refused.
++        // shuffled to the warp) before their SUST. The handle may be in the game's own uniform buffer, as a texture's. A predicate result is not met in a game: refused.
+         public static void ASuatom(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+             (int handle, int cbufSlot) = ATexHandle(context, x);
+ 
+-            if (cbufSlot != TextureOperation.DefaultCbufSlot)
+-            {
+-                throw AFail(context, $"SUATOM handle in bank {cbufSlot}");
+-            }
+-
+             if (x.Bits(81, 84) != 7)
+             {
+                 throw AFail(context, "SUATOM with a predicate result");
+             }
+ 
+-            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false);
++            EmitSuatom(context, (SuDim)x.Bits(61, 64), 0, (SuatomOp)x.Bits(87, 91), (SuatomSize)x.Bits(73, 76), handle, x.Ra, x.Rb, 0, x.Rd, false, isBindless: false, compareAndSwap: false, cbufSlot: cbufSlot);
+         }
+ 
+         // BAR.SYNC: the workgroup barrier
+@@ -538,22 +538,6 @@
+             context.Barrier();
+         }
+ 
+-        // MEMBAR: orders this thread's memory accesses for the others. Scope 76..78: 0 the workgroup (a group memory barrier), any
+-        // wider one a device memory barrier, as Maxwell's MEMBAR.CTA / .GL / .SYS (Pokemon Pokopia's compute shader 9b2f28c9920548aa)
+-        public static void AMembar(EmitterContext context)
+-        {
+-            AmpereOp x = new(context.CurrOp);
+-
+-            if (x.Bits(76, 78) == 0)
+-            {
+-                context.GroupMemoryBarrier();
+-            }
+-            else
+-            {
+-                context.MemoryBarrier();
+-            }
+-        }
+-
+         // ---- textures ----
+ 
+         // Texture dimension (61..64) → Maxwell's TexDim
+@@ -667,6 +651,27 @@
+             AmpereOp x = new(context.CurrOp);
+             int opcode = x.Opcode;
+ 
++            // TEX through a handle in a register, not named by its offset: the compiler's form for a handle it read itself, usually from a table at a computed offset. BindlessElimination takes the
++            // handle from there, as for Maxwell's TEX.B. The other fields are 0xb60's. 0xf60, 0xf63 and 0xf6c (TEX, TLD4 and TXD, whose other fields are 0xb60's, 0xb63's and 0xb6c's): a uniform register at
++            // 40..46. 0x361, 0x364 and 0x367 (TEX, TLD4 and TLD, bit 59 set): a register, the first of the second source block,
++            // before the LOD (a census of Fire Emblem Fortune's Weave's 3,327: of the sources that an LDC just wrote, always that place, with and without .SCR). Rc stays the second destination in both
++            Operand boundHandle = null;
++            // 0xf69 and 0x36a are TMML the same way (0xb69's other fields; Kirby Air Riders: 4,776 pixel shaders).
++            bool handleInB = opcode is 0x361 or 0x364 or 0x367 or 0x36a;
++            bool bindless = handleInB || opcode is 0xf60 or 0xf63 or 0xf6c or 0xf69;
++
++            if (opcode is 0xf60 or 0xf63 or 0xf6c or 0xf69)
++            {
++                int ur = x.Bits(40, 46);
++
++                boundHandle = ur == RegisterConsts.UniformZeroIndex ? Const(0) : context.Copy(Register(ur, RegisterType.Uniform));
++            }
++
++            if (bindless)
++            {
++                opcode = opcode is 0xf63 or 0xf6c or 0xf69 ? opcode - 0x400 : opcode is 0x364 or 0x367 or 0x36a ? opcode + 0x7ff : 0xb60;
++            }
++
+             TexDim dim = ATexDim(context, x.Bits(61, 64));
+             SamplerType type = ConvertSamplerType(dim);
+             bool isArray = type.HasFlag(SamplerType.Array);
+@@ -728,17 +733,35 @@
+                     break;
+             }
+ 
+-            (int handle, int cbufSlot) = ATexHandle(context, x);
++            (int handle, int cbufSlot) = bindless ? (0, TextureOperation.DefaultCbufSlot) : ATexHandle(context, x);
+             List<Operand> sources = [];
+             Operand arrayIndex = null;
++            bool is1DTo2D = false;
+ 
++            if (bindless)
++            {
++                flags |= TextureFlags.Bindless;
++            }
++
+             if (opcode == 0xb6c)
+             {
+                 int n0 = coords + (isArray || offset ? 1 : 0);
+                 (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, 2 * coords);
+ 
++                if (bindless)
++                {
++                    sources.Add(boundHandle);
++                }
++
+                 sources.AddRange(a.GetRange(0, coords));
+ 
++                if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)
++                {
++                    sources.Add(ConstF(0));
++                    type = SamplerType.Texture2D | (type & SamplerType.Array);
++                    is1DTo2D = true;
++                }
++
+                 if (isArray)
+                 {
+                     arrayIndex = context.BitwiseAnd(a[coords], Const(0xffff));
+@@ -751,6 +774,12 @@
+ 
+                 sources.AddRange(b);
+ 
++                if (is1DTo2D)
++                {
++                    sources.Add(ConstF(0));
++                    sources.Add(ConstF(0));
++                }
++
+                 if (offset)
+                 {
+                     for (int i = 0; i < coords; i++)
+@@ -758,15 +787,30 @@
+                         sources.Add(context.BitfieldExtractS32(a[coords], Const(16 + i * 4), Const(4)));
+                     }
+ 
++                    if (is1DTo2D)
++                    {
++                        sources.Add(Const(0));
++                    }
++
+                     flags |= TextureFlags.Offset;
+                 }
+             }
+             else
+             {
+                 int n0 = coords + (isArray ? 1 : 0);
+-                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1);
++                (List<Operand> a, List<Operand> b) = ATexBlocks(context, x, n0, n1 + (handleInB ? 1 : 0));
+                 int ia = 0, ib = 0;
+ 
++                if (handleInB)
++                {
++                    boundHandle = b[ib++];
++                }
++
++                if (bindless)
++                {
++                    sources.Add(boundHandle);
++                }
++
+                 if (isArray)
+                 {
+                     arrayIndex = a[ia++];
+@@ -777,6 +821,32 @@
+                     sources.Add(a[ia++]);
+                 }
+ 
++                // nxnative: as on Maxwell (InstEmitTexture.cs), the descriptor decides between a 1D texture and a texture buffer, and with no type answer (no game's NVN2 shaders have one)
++                // a plain fetch reads 2D at (x & 0x3FFF, x >> 14): a 1D texture, one row on the host, reads (x, 0) as before, and the host binds a texture buffer as rows of 16384 texels over
++                // the same memory (nvn_mtl.m tbuf_as_2d). Every other 1D form cannot be a texture buffer and reads row 0. Pokemon Pokopia's KTGL light lists read 0 before this, as a dummy
++                if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)
++                {
++                    bool plainFetch = opcode == 0xb66 && !isArray && lod == 1 && !offset && !ms;
++
++                    if (!plainFetch || context.TranslatorContext.GpuAccessor.QuerySamplerType(handle) != SamplerType.TextureBuffer)
++                    {
++                        if (plainFetch)
++                        {
++                            Operand fetchX = sources[^1];
++                            sources[^1] = context.BitwiseAnd(fetchX, Const(0x3FFF));
++                            sources.Add(context.ShiftRightU32(fetchX, Const(14)));
++                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
++                        }
++                        else
++                        {
++                            sources.Add(opcode == 0xb66 ? Const(0) : ConstF(0));
++                        }
++
++                        type = SamplerType.Texture2D | (type & SamplerType.Array);
++                        is1DTo2D = true;
++                    }
++                }
++
+                 if (isArray)
+                 {
+                     sources.Add(arrayIndex);
+@@ -814,6 +884,11 @@
+                         sources.Add(context.BitfieldExtractS32(off0, Const(i * 4), Const(4)));
+                     }
+ 
++                    if (is1DTo2D)
++                    {
++                        sources.Add(Const(0));
++                    }
++
+                     flags |= TextureFlags.Offset;
+                 }
+                 else if (offset)
+@@ -867,11 +942,11 @@
+ 
+             if (opcode == 0xb69)
+             {
+-                ATmml(context, type, flags, handle, cbufSlot, mask, results, sources.ToArray());
++                ATmml(context, type, flags, handle, cbufSlot, mask, results, sources.ToArray(), bindless);
+             }
+             else
+             {
+-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
++                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
+                     Instruction.TextureSample,
+                     type,
+                     TextureFormat.Unknown,
+@@ -886,9 +961,9 @@
+         }
+ 
+         // TMML: the LOD a sample would use, x and y in 8.8 fixed point (as Maxwell's)
+-        private static void ATmml(EmitterContext context, SamplerType type, TextureFlags flags, int handle, int cbufSlot, int mask, Operand[] results, Operand[] sources)
++        private static void ATmml(EmitterContext context, SamplerType type, TextureFlags flags, int handle, int cbufSlot, int mask, Operand[] results, Operand[] sources, bool bindless)
+         {
+-            SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(Instruction.Lod, type, TextureFormat.Unknown, flags, cbufSlot, handle);
++            SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(Instruction.Lod, type, TextureFormat.Unknown, flags, cbufSlot, handle);
+             int r = 0;
+ 
+             for (int comp = 0; comp < 4; comp++)
+@@ -915,8 +990,12 @@
+             AmpereOp x = new(context.CurrOp);
+             int query = x.Bits(62, 64);
+             int mask = x.Bits(72, 76);
+-            (int handle, int cbufSlot) = ATexHandle(context, x);
+-            SamplerType type = context.TranslatorContext.GpuAccessor.QuerySamplerType(handle);
++            // 0x370 is to 0xb6f as 0x361 to 0xb60: the handle in a register, Ra, with the LOD after it (Fire Emblem Fortune's Weave's lighting: MOV R1c, R64; MOV R1d, RZ; TXQ R1d, R1c). The shape
++            // has no field here and the size query does not depend on it, so 2D, as Maxwell's bindless TXQ
++            bool bindless = x.Opcode == 0x370;
++            (int handle, int cbufSlot) = bindless ? (0, TextureOperation.DefaultCbufSlot) : ATexHandle(context, x);
++            SamplerType type = bindless ? SamplerType.Texture2D : context.TranslatorContext.GpuAccessor.QuerySamplerType(handle);
++            TextureFlags flags = bindless ? TextureFlags.Bindless : TextureFlags.None;
+ 
+             int count = BitOperations.PopCount((uint)mask);
+             Operand[] results = new Operand[count];
+@@ -926,11 +1005,13 @@
+                 results[i] = Local();
+             }
+ 
+-            Operand[] sources = [x.Ra >= RegisterConsts.RegisterZeroIndex ? Const(0) : context.Copy(Register(x.Ra, RegisterType.Gpr))];
++            Operand Src(int reg) => reg >= RegisterConsts.RegisterZeroIndex ? Const(0) : context.Copy(Register(reg, RegisterType.Gpr));
+ 
++            Operand[] sources = bindless ? [Src(x.Ra), Src(x.Ra + 1)] : [Src(x.Ra)];
++
+             if (query == 0)
+             {
+-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
++                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
+                     Instruction.TextureQuerySize, type, TextureFormat.Unknown, TextureFlags.None, cbufSlot, handle);
+                 int r = 0;
+ 
+@@ -938,13 +1019,13 @@
+                 {
+                     if ((mask & (1 << comp)) != 0)
+                     {
+-                        context.Copy(results[r++], context.TextureQuerySize(type, TextureFlags.None, setAndBinding, comp, sources));
++                        context.Copy(results[r++], context.TextureQuerySize(type, flags, setAndBinding, comp, sources));
+                     }
+                 }
+             }
+             else if (query == 1)
+             {
+-                SetBindingPair setAndBinding = context.ResourceManager.GetTextureOrImageBinding(
++                SetBindingPair setAndBinding = bindless ? default : context.ResourceManager.GetTextureOrImageBinding(
+                     Instruction.TextureQuerySamples, type, TextureFormat.Unknown, TextureFlags.None, cbufSlot, handle);
+                 int r = 0;
+ 
+@@ -952,7 +1033,7 @@
+                 {
+                     if ((mask & (1 << comp)) != 0)
+                     {
+-                        context.Copy(results[r++], comp == 2 ? context.TextureQuerySamples(type, TextureFlags.None, setAndBinding, sources) : Const(0));
++                        context.Copy(results[r++], comp == 2 ? context.TextureQuerySamples(type, flags, setAndBinding, sources) : Const(0));
+                     }
+                 }
+             }
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs
+@@ -254,7 +254,7 @@
+                 throw AFail(context, $"LDSM mode {mode} count {count}");
+             }
+ 
+-            Operand addr = context.IAdd(ALocalAddress(context, x, 32), Const((int)x.SignedField(40, 64)));
++            Operand addr = context.IAdd(ALocalAddress(context, x, 32, stride: false), Const((int)x.SignedField(40, 64)));
+             Operand lane = ALaneId(context);
+             Operand g = context.ShiftRightU32(lane, Const(2));
+             Operand t = context.BitwiseAnd(lane, Const(3));
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitFloatComparison.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitFloatComparison.cs
+@@ -168,7 +168,7 @@
+             Operand srcB = GetSrcReg(context, op.SrcB);
+             Operand srcC = GetSrcReg(context, op.SrcC);
+ 
+-            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest);
++            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest, op.Ftz);
+         }
+ 
+         public static void FcmpI(EmitterContext context)
+@@ -179,7 +179,7 @@
+             Operand srcB = GetSrcImm(context, Imm20ToFloat(op.Imm20));
+             Operand srcC = GetSrcReg(context, op.SrcC);
+ 
+-            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest);
++            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest, op.Ftz);
+         }
+ 
+         public static void FcmpC(EmitterContext context)
+@@ -190,7 +190,7 @@
+             Operand srcB = GetSrcCbuf(context, op.CbufSlot, op.CbufOffset);
+             Operand srcC = GetSrcReg(context, op.SrcC);
+ 
+-            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest);
++            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest, op.Ftz);
+         }
+ 
+         public static void FcmpRc(EmitterContext context)
+@@ -201,7 +201,7 @@
+             Operand srcB = GetSrcReg(context, op.SrcC);
+             Operand srcC = GetSrcCbuf(context, op.CbufSlot, op.CbufOffset);
+ 
+-            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest);
++            EmitFcmp(context, op.FComp, srcA, srcB, srcC, op.Dest, op.Ftz);
+         }
+ 
+         public static void FsetR(EmitterContext context)
+@@ -211,7 +211,7 @@
+             Operand srcA = GetSrcReg(context, op.SrcA);
+             Operand srcB = GetSrcReg(context, op.SrcB);
+ 
+-            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC);
++            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC, ftz: op.Ftz);
+         }
+ 
+         public static void FsetC(EmitterContext context)
+@@ -221,7 +221,7 @@
+             Operand srcA = GetSrcReg(context, op.SrcA);
+             Operand srcB = GetSrcCbuf(context, op.CbufSlot, op.CbufOffset);
+ 
+-            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC);
++            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC, ftz: op.Ftz);
+         }
+ 
+         public static void FsetI(EmitterContext context)
+@@ -231,7 +231,7 @@
+             Operand srcA = GetSrcReg(context, op.SrcA);
+             Operand srcB = GetSrcImm(context, Imm20ToFloat(op.Imm20));
+ 
+-            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC);
++            EmitFset(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.Dest, op.AbsA, op.AbsB, op.NegA, op.NegB, op.BVal, op.WriteCC, ftz: op.Ftz);
+         }
+ 
+         public static void FsetpR(EmitterContext context)
+@@ -255,7 +255,8 @@
+                 op.AbsB,
+                 op.NegA,
+                 op.NegB,
+-                op.WriteCC);
++                op.WriteCC,
++                ftz: op.Ftz);
+         }
+ 
+         public static void FsetpI(EmitterContext context)
+@@ -279,7 +280,8 @@
+                 op.AbsB,
+                 op.NegA,
+                 op.NegB,
+-                op.WriteCC);
++                op.WriteCC,
++                ftz: op.Ftz);
+         }
+ 
+         public static void FsetpC(EmitterContext context)
+@@ -303,7 +305,8 @@
+                 op.AbsB,
+                 op.NegA,
+                 op.NegB,
+-                op.WriteCC);
++                op.WriteCC,
++                ftz: op.Ftz);
+         }
+ 
+         public static void Hset2R(EmitterContext context)
+@@ -366,9 +369,9 @@
+             EmitHsetp2(context, op.FComp, op.Bop, srcA, srcB, op.SrcPred, op.SrcPredInv, op.DestPred, op.DestPredInv, op.HAnd);
+         }
+ 
+-        private static void EmitFcmp(EmitterContext context, FComp cmpOp, Operand srcA, Operand srcB, Operand srcC, int rd)
++        private static void EmitFcmp(EmitterContext context, FComp cmpOp, Operand srcA, Operand srcB, Operand srcC, int rd, bool ftz)
+         {
+-            Operand cmpRes = GetFPComparison(context, cmpOp, srcC, ConstF(0));
++            Operand cmpRes = GetFPComparison(context, cmpOp, ftz ? FlushDenormal(context, srcC) : srcC, ConstF(0));
+ 
+             Operand res = context.ConditionalSelect(cmpRes, srcA, srcB);
+ 
+@@ -390,13 +393,20 @@
+             bool negateB,
+             bool boolFloat,
+             bool writeCC,
+-            bool isFP64 = false)
++            bool isFP64 = false,
++            bool ftz = false)
+         {
+             Instruction fpType = isFP64 ? Instruction.FP64 : Instruction.FP32;
+ 
+             srcA = context.FPAbsNeg(srcA, absoluteA, negateA, fpType);
+             srcB = context.FPAbsNeg(srcB, absoluteB, negateB, fpType);
+ 
++            if (ftz)
++            {
++                srcA = FlushDenormal(context, srcA);
++                srcB = FlushDenormal(context, srcB);
++            }
++
+             Operand res = GetFPComparison(context, cmpOp, srcA, srcB, fpType);
+             Operand pred = GetPredicate(context, srcPred, srcPredInv);
+ 
+@@ -435,13 +445,20 @@
+             bool negateA,
+             bool negateB,
+             bool writeCC,
+-            bool isFP64 = false)
++            bool isFP64 = false,
++            bool ftz = false)
+         {
+             Instruction fpType = isFP64 ? Instruction.FP64 : Instruction.FP32;
+ 
+             srcA = context.FPAbsNeg(srcA, absoluteA, negateA, fpType);
+             srcB = context.FPAbsNeg(srcB, absoluteB, negateB, fpType);
+ 
++            if (ftz)
++            {
++                srcA = FlushDenormal(context, srcA);
++                srcB = FlushDenormal(context, srcB);
++            }
++
+             Operand p0Res = GetFPComparison(context, cmpOp, srcA, srcB, fpType);
+             Operand p1Res = context.BitwiseNot(p0Res);
+             Operand pred = GetPredicate(context, srcPred, srcPredInv);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -166,7 +166,8 @@
+             EmitStore(context, StorageKind.SharedMemory, op.LsSize, GetSrcReg(context, op.SrcA), op.Dest, Imm24ToSInt(op.Imm24));
+         }
+ 
+-        private static Operand EmitLoadConstant(EmitterContext context, Operand slot, Operand offset)
++        // banks: the banks a run-time slot can be, when the caller knows them (Ampere's LDC .IS, ARuntimeBanks); else the accessor's bound banks
++        private static Operand EmitLoadConstant(EmitterContext context, Operand slot, Operand offset, uint? banks = null)
+         {
+             Operand vecIndex = context.ShiftRightU32(offset, Const(2));
+             Operand elemIndex = context.BitwiseAnd(offset, Const(3));
+@@ -180,7 +181,7 @@
+             {
+                 Operand value = Const(0);
+ 
+-                uint cbUseMask = context.TranslatorContext.GpuAccessor.QueryConstantBufferUse();
++                uint cbUseMask = banks ?? context.TranslatorContext.GpuAccessor.QueryConstantBufferUse();
+ 
+                 while (cbUseMask != 0)
+                 {
+@@ -197,6 +198,23 @@
+ 
+                 return value;
+             }
++        }
++
++        // nxnative: a float atomic add (RED.F32.FTZ.RN and ATOM's float form), as a compare-and-swap loop on the word: neither SPIR-V as the chain uses it nor Metal's texture atomics have one. It was
++        // dropped with a log line, so agl's scene analysis summed nothing: Ocarina of Time's probe_analyze reads the probes' luminance into a buffer the CPU turns into exposure, and at 0 the game took
++        // its full correction, several times too bright. Returns the value before the add
++        private static Operand EmitAtomicAddF32(EmitterContext context, StorageKind storageKind, Operand e0, Operand e1, Operand value)
++        {
++            Operand lblRetry = Label();
++            context.MarkLabel(lblRetry);
++
++            Operand expected = context.Load(storageKind, e0, e1);
++            Operand sum = context.FPAdd(expected, value);
++            Operand found = context.AtomicCompareAndSwap(storageKind, e0, e1, expected, sum);
++
++            context.BranchIfTrue(lblRetry, context.ICompareNotEqual(found, expected));
++
++            return found;
+         }
+ 
+         private static Operand EmitAtomicOp(
+@@ -217,6 +235,10 @@
+                     {
+                         res = context.AtomicAdd(storageKind, e0, e1, value);
+                     }
++                    else if (type == AtomSize.F32FtzRn)
++                    {
++                        res = EmitAtomicAddF32(context, storageKind, e0, e1, value);
++                    }
+                     else
+                     {
+                         context.TranslatorContext.GpuAccessor.Log($"Invalid reduction type: {type}.");
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs
+@@ -67,6 +67,23 @@
+             EmitR2p(context, value, mask, op.ByteSel, op.Ccpr);
+         }
+ 
++        public static void Pixld(EmitterContext context)
++        {
++            InstPixld op = context.GetOp<InstPixld>();
++
++            // nxnative: PIXLD.MYINDEX is the index of the sample the fragment runs for. GLSLC reads it (RZ, offset 0) for gl_SampleID and to index the driver's sample position
++            // table (c0 + 0x620, 438 pixel shaders of Metroid Prime Remastered's MaterialArchive.arc); a fragment function that reads it runs once per sample, in Metal too
++            // ([[sample_id]]). Upstream wrote nothing, so the register read as 0: sample 0. The other modes (coverage, sample offsets) and an address operand are not implemented.
++            if (op.PixMode == PixMode.MyIndex && op.SrcA == RegisterConsts.RegisterZeroIndex && op.Imm8 == 0 &&
++                op.DestPred == RegisterConsts.PredicateTrueIndex && context.TranslatorContext.Definitions.Stage == ShaderStage.Fragment)
++            {
++                context.Copy(GetDest(op.Dest), context.Load(StorageKind.Input, IoVariable.SampleId));
++                return;
++            }
++
++            context.TranslatorContext.GpuAccessor.Log($"Shader instruction Pixld ({op.PixMode}) is not implemented.");
++        }
++
+         public static void S2r(EmitterContext context)
+         {
+             InstS2r op = context.GetOp<InstS2r>();
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
+@@ -181,6 +181,13 @@
+             InstSust op = context.GetOp<InstSust>();
+ 
+             EmitSust(context, op.CacheOp, op.Dim, 0, op.TidB, op.Rgba, op.SrcA, op.Dest, 0, useComponents: true, false, isBindless: false);
++        }
++
++        // An atomic on an image whose handle the game keeps in its own uniform buffer (Unreal Engine 5.4 on the Switch 2: every image is in c[3]): no descriptor to ask at build time, so the instruction's
++        // size says, as Metal's atomics take only R32Uint and R32Sint
++        private static TextureFormat UniformHandleAtomicFormat(SuatomSize size)
++        {
++            return size is SuatomSize.S32 or SuatomSize.Sd32 ? TextureFormat.R32Sint : TextureFormat.R32Uint;
+         }
+ 
+         private static void EmitSuatom(
+@@ -197,7 +204,8 @@
+             bool byteAddress,
+             bool isBindless,
+             bool compareAndSwap,
+-            bool hasPredicateResult = false)
++            bool hasPredicateResult = false,
++            int cbufSlot = TextureOperation.DefaultCbufSlot)
+         {
+             // Preserve source width before descriptor-sized formats are resolved.
+             // Other backends retain their existing surface-instruction handling.
+@@ -276,7 +284,7 @@
+ 
+             // TODO: FP and 64-bit formats.
+             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
+-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics))
++                ? (isBindless ? TextureFormat.Unknown : (cbufSlot != TextureOperation.DefaultCbufSlot ? UniformHandleAtomicFormat(size) : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics)))
+                 : GetTextureFormat(size);
+ 
+             if (compareAndSwap)
+@@ -312,7 +320,7 @@
+                 type,
+                 format,
+                 flags,
+-                TextureOperation.DefaultCbufSlot,
++                cbufSlot,
+                 imm);
+ 
+             Operand res = context.ImageAtomic(type, format, flags, setAndBinding, sources);
+@@ -501,7 +509,8 @@
+             int srcB,
+             int srcC,
+             bool byteAddress,
+-            bool isBindless)
++            bool isBindless,
++            int cbufSlot = TextureOperation.DefaultCbufSlot)
+         {
+             // Preserve source width before descriptor-sized formats are resolved.
+             // Other backends retain their existing surface-instruction handling.
+@@ -578,7 +587,7 @@
+ 
+             // TODO: FP and 64-bit formats.
+             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
+-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics))
++                ? (isBindless ? TextureFormat.Unknown : (cbufSlot != TextureOperation.DefaultCbufSlot ? UniformHandleAtomicFormat(size) : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, strict: metalAtomics)))
+                 : GetTextureFormat(size);
+ 
+             sourcesList.Add(Rb());
+@@ -602,7 +611,7 @@
+                 type,
+                 format,
+                 flags,
+-                TextureOperation.DefaultCbufSlot,
++                cbufSlot,
+                 imm);
+ 
+             context.ImageAtomic(type, format, flags, setAndBinding, sources);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitTexture.cs
+@@ -210,6 +210,7 @@
+             }
+ 
+             bool hasLod = lodMode > Lod.Lz;
++            bool wrap1D = false;
+ 
+             if (type == SamplerType.Texture1D && (flags & ~TextureFlags.Bindless) == TextureFlags.IntCoords && !(
+                 hasLod ||
+@@ -225,6 +226,11 @@
+                 {
+                     type = SamplerType.TextureBuffer;
+                 }
++                else
++                {
++                    // nxnative: the descriptor decides between a 1D texture and a texture buffer, so the 2D read below wraps x into rows of 16384 texels (see the TLDS Texture1DLodZero case)
++                    wrap1D = Sample1DAs2D;
++                }
+             }
+ 
+             int coordsCount = type.Dimensions;
+@@ -238,7 +244,17 @@
+ 
+             if (Sample1DAs2D && (type & SamplerType.Mask) == SamplerType.Texture1D)
+             {
+-                sourcesList.Add(ConstF(0));
++                if (wrap1D)
++                {
++                    Operand x = sourcesList[^1];
++                    sourcesList[^1] = context.BitwiseAnd(x, Const(0x3FFF));
++                    sourcesList.Add(context.ShiftRightU32(x, Const(14)));
++                    context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(imm);
++                }
++                else
++                {
++                    sourcesList.Add(ConstF(0));
++                }
+ 
+                 type = SamplerType.Texture2D | (type & SamplerType.Array);
+                 is1DTo2D = true;
+@@ -496,7 +512,13 @@
+                         {
+                             if (Sample1DAs2D)
+                             {
+-                                sourcesList.Add(ConstF(0));
++                                // nxnative: Maxwell fetches a 1D texture and a texture buffer with the same instruction, and the descriptor decides. With no type answer the read is
++                                // 2D at (x & 0x3FFF, x >> 14): a 1D texture (a one-row 2D texture at most 16384 wide on the host) reads (x, 0) as before, and the host binds a texture
++                                // buffer in such a slot as a linear 2D texture of 16384-texel rows over the same memory (nvn_mtl.m tbuf_as_2d)
++                                Operand x = sourcesList[^1];
++                                sourcesList[^1] = context.BitwiseAnd(x, Const(0x3FFF));
++                                sourcesList.Add(context.ShiftRightU32(x, Const(14)));
++                                context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(tldsOp.TidB);
+ 
+                                 type &= ~SamplerType.Mask;
+                                 type |= SamplerType.Texture2D;
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+@@ -128,6 +128,8 @@
+         // nxnative: Ampere HMMA.16816 with an f16 accumulator, lowered to a call by TensorPass, and a barrier for the lanes of one subgroup
+         MatrixMultiplyAdd,
+         SubgroupBarrier,
++        // nxnative: Ampere LDSM in a compute shader (InstEmitAmpereTensor.ALdsm), lowered to its per-lane emulation by TensorPass once the HMMAs it feeds are known
++        MatrixLoad,
+ 
+         Count,
+ 
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/IoVariable.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/IoVariable.cs
+@@ -28,6 +28,7 @@
+         PointSize,
+         Position,
+         PrimitiveId,
++        SampleId,
+         SubgroupEqMask,
+         SubgroupGeMask,
+         SubgroupGtMask,
+@@ -45,5 +46,6 @@
+         VertexIndex,
+         ViewportIndex,
+         ViewportMask,
++        HelperInvocation,   // nxnative: at the end, so the others keep their numbers
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/MemoryDefinition.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/MemoryDefinition.cs
+@@ -8,11 +8,15 @@
+         public AggregateType Type { get; }
+         public int ArrayLength { get; }
+ 
+-        public MemoryDefinition(string name, AggregateType type, int arrayLength = 1)
++        // nxnative: the memory starts at zero in each invocation (a SPIR-V null initializer), for state a shader reads before it writes (GlobalToStorage.TryGenerateRawStorageOp's last entry)
++        public bool ZeroInit { get; }
++
++        public MemoryDefinition(string name, AggregateType type, int arrayLength = 1, bool zeroInit = false)
+         {
+             Name = name;
+             Type = type;
+             ArrayLength = arrayLength;
++            ZeroInit = zeroInit;
+         }
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessElimination.cs
+@@ -8,7 +8,13 @@
+ {
+     class BindlessElimination
+     {
+-        public static void RunPass(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor)
++        private const int NvnTextureBufferIndex = 2;   // nxnative: as BindlessToArray, see TryTableHandle
++        private const int NvnSlotArrayLength = 32;      // nxnative: the arrays of GenerateBindlessAccess that are not indexed in the pools
++        private const int NvnSeparateSamplerBase = 0x568;   // nxnative: c[2]'s separate sampler table (dmsh_abi.h DMSH_C2_SAMP), 128 slots of 8 bytes; a word there is a sampler handle, never a texture's
++        private const int NvnSeparateSamplerEnd = NvnSeparateSamplerBase + 8 * 128;
++
++        // nxnative: deferSeveral leaves the reads whose handle merges several constant buffer handles to a second sweep (see TryTableHandle)
++        public static void RunPass(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor, bool deferSeveral = false)
+         {
+             // We can turn a bindless into regular access by recognizing the pattern
+             // produced by the compiler for separate texture and sampler.
+@@ -32,7 +38,19 @@
+                     continue;
+                 }
+ 
+-                bool converted = TryConvertBindless(block, resourceManager, gpuAccessor, texOp);
++                if (TryConvertBindless(block, resourceManager, gpuAccessor, texOp))
++                {
++                    continue;
++                }
++
++                TableHandle table = TryTableHandle(block, resourceManager, gpuAccessor, texOp, node, deferSeveral);
++
++                if (table == TableHandle.Deferred)
++                {
++                    continue;
++                }
++
++                bool converted = table == TableHandle.Set && TryConvertBindless(block, resourceManager, gpuAccessor, texOp);
+                 if (!converted && texOp.Inst == Instruction.ImageAtomic && texOp.Flags.HasFlag(TextureFlags.AtomicMetal))
+                 {
+                     throw new NotSupportedException("Metal image atomics require a statically resolved image handle.");
+@@ -50,6 +68,11 @@
+ 
+                     gpuAccessor.Log($"Failed to find handle source for bindless access of type \"{typeName}\".");
+ 
++                    if (Environment.GetEnvironmentVariable("DMSH_BINDLESS_TRACE") != null)   // nxnative: what the handle is made of, for a diagnosis (dmsh_xlate on one job)
++                    {
++                        Console.Error.WriteLine($"bindless {typeName} handle: {Describe(texOp.GetSource(0), 0)}");
++                    }
++
+                     for (int destIndex = 0; destIndex < texOp.DestsCount; destIndex++)
+                     {
+                         block.Operations.AddBefore(node, new Operation(Instruction.Copy, texOp.GetDest(destIndex), OperandHelper.Const(0)));
+@@ -60,6 +83,264 @@
+             }
+         }
+ 
++        // nxnative: NVN keeps every texture and image handle in c[2]. When a handle reaches the instruction through phis whose other inputs are not made of c[2]
++        // words (undefined, or another value the compiler kept in the same register on a path where the predicated read does not run: float arithmetic, texture
++        // results, uniform words), the read can only name a texture those c[2] words give. Unreal's Niagara vertex factories read particle attributes this way, under a
++        // predicate (float or half data): GenerateBindlessAccess refuses such a phi, so the read was removed and its result 0 (58,122 reads, 3,197 of FINAL
++        // FANTASY RESONANCE's shaders), and its fire and smoke meshes collapsed to a point. Only those phis come here: one GenerateBindlessAccess takes keeps its
++        // path. One such handle takes the phi's place. Several (the float and the half buffer reaching one read) give one read each, before this one, and the result is the
++        // read whose handle equals the phi's value at run time (the host fills c[2] with the bound handles, or with distinct slot indices for dynamic handle arrays);
++        // when none does, the path that got there does not use the result, and the last one is taken. The caller converts this operation as usual.
++        // Every use of a handle shares one binding, typed by the instructions that read it, so a candidate that other reads use as a texture of another shape (a 2D array
++        // where this read is 2D: two of Unreal's global pixel shaders in FINAL FANTASY RESONANCE) would make the read invalid and is left out. Those reads are converted in a
++        // second sweep (deferSeveral), once every other read has registered its texture.
++        // A game's own uniform buffer holds other data than handles, so a word of it alone is no handle here, but a texture word ORed with a sampler word of its bank or a constant sampler is one: Unreal
++        // Engine 5.4 on the Switch 2 keeps its handles in c[3] and builds them under a guard (R = c[3][a]; R |= c[3][b]) for a read under a guard Utils.FindLastOperation cannot tie to it: !UP0
++        // and !P0 with UP0 the vote of P0, P4 and P5 with P5 = P4 && !P1, and P6 and a branch over !P6. The phi then also takes the handle's first word and what the register held before.
++        // With the OR unguarded the phi lies on its source, not on the handle
++        private enum TableHandle { None, Set, Deferred }
++
++        private static TableHandle TryTableHandle(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor, TextureOperation texOp, LinkedListNode<INode> node, bool deferSeveral)
++        {
++            Operand handle = texOp.GetSource(0);
++
++            if (handle.AsgOp is not PhiNode and not Operation { Inst: Instruction.BitwiseOr } || IsBindlessHandleAllowed(handle))
++            {
++                return TableHandle.None;   // GenerateBindlessAccess takes it, as before (a choice among c[2] words: the dynamic handle arrays of tex_dyn_slots)
++            }
++
++            List<(Operand Texture, Operand Sampler)> found = new();
++
++            foreach (Operand leaf in PhiLeaves(handle))
++            {
++                if (IsTableWord(leaf))
++                {
++                    AddCandidate(found, leaf, null);
++                }
++                else if (!texOp.Inst.IsImage() && leaf.AsgOp is Operation orOp && orOp.Inst == Instruction.BitwiseOr)
++                {
++                    foreach (Operand texture in PhiLeaves(orOp.GetSource(0)))
++                    {
++                        foreach (Operand sampler in PhiLeaves(orOp.GetSource(1)))
++                        {
++                            (Operand t, Operand sm) = IsSamplerWord(texture) && !IsSamplerWord(sampler) ? (sampler, texture) : (texture, sampler);   // either order, as TryConvertBindless
++
++                            if (t.Type == OperandType.ConstantBuffer && !IsSamplerWord(t) && (IsSameBankWord(sm, t) || (sm.Type == OperandType.Constant && (sm.Value & 0xfffff) == 0)))
++                            {
++                                AddCandidate(found, t, sm);
++                            }
++                        }
++                    }
++                }
++                else if (leaf.AsgOp is Operation load && load.Inst == Instruction.Load)
++                {
++                    return TableHandle.None;   // a handle loaded from memory or an input is a real bindless access (GenerateBindlessAccess)
++                }
++            }
++
++            // A word alone that an ORed candidate also takes is that handle on its way (R = word; R |= other word), not a handle of its own
++            found = found.FindAll(candidate => candidate.Sampler != null || !found.Exists(other => other.Sampler != null && (other.Texture.Value == candidate.Texture.Value || other.Sampler.Value == candidate.Texture.Value && other.Sampler.Type == OperandType.ConstantBuffer)));
++
++            if (found.Count > 1)
++            {
++                if (texOp.Inst.IsImageStore())
++                {
++                    return TableHandle.None;   // one operation per candidate would store into every candidate
++                }
++
++                if (deferSeveral)
++                {
++                    return TableHandle.Deferred;
++                }
++
++                found = found.FindAll(candidate => resourceManager.GetTextureTypes(candidate.Texture.GetCbufSlot(), candidate.Texture.GetCbufOffset(), texOp.Inst.IsImage())
++                    .TrueForAll(type => SameShape(type, texOp.Type)));
++            }
++
++            if (found.Count == 0)
++            {
++                return TableHandle.None;
++            }
++
++            int last = found.Count - 1;
++            Operand[] matches = new Operand[last];
++            Operand[][] results = new Operand[last][];
++
++            for (int index = 0; index < last; index++)
++            {
++                Operand candidate = CandidateHandle(block, node, found[index]);
++                Operand[] sources = new Operand[texOp.SourcesCount];
++                results[index] = new Operand[texOp.DestsCount];
++
++                for (int srcIndex = 0; srcIndex < sources.Length; srcIndex++)
++                {
++                    sources[srcIndex] = srcIndex == 0 ? candidate : texOp.GetSource(srcIndex);
++                }
++
++                for (int destIndex = 0; destIndex < results[index].Length; destIndex++)
++                {
++                    results[index][destIndex] = OperandHelper.Local();
++                }
++
++                TextureOperation read = new(texOp.Inst, texOp.Type, texOp.Format, texOp.Flags, texOp.Set, texOp.Binding, texOp.Index, results[index], sources);
++                LinkedListNode<INode> readNode = block.Operations.AddBefore(node, read);
++
++                if (!TryConvertBindless(block, resourceManager, gpuAccessor, read))
++                {
++                    for (int destIndex = 0; destIndex < results[index].Length; destIndex++)
++                    {
++                        block.Operations.AddBefore(readNode, new Operation(Instruction.Copy, results[index][destIndex], OperandHelper.Const(0)));
++                    }
++
++                    Utils.DeleteNode(readNode, read);
++                }
++
++                matches[index] = OperandHelper.Local();
++                block.Operations.AddBefore(node, new Operation(Instruction.CompareEqual, matches[index], handle, candidate));
++            }
++
++            texOp.SetSource(0, CandidateHandle(block, node, found[last]));
++
++            LinkedListNode<INode> after = node;
++
++            for (int destIndex = 0; destIndex < texOp.DestsCount && last > 0; destIndex++)
++            {
++                Operand dest = texOp.GetDest(destIndex);
++                Operand value = OperandHelper.Local();
++                texOp.SetDest(destIndex, value);
++
++                for (int index = last - 1; index >= 0; index--)
++                {
++                    Operand selected = index == 0 ? dest : OperandHelper.Local();
++                    after = block.Operations.AddAfter(after, new Operation(Instruction.ConditionalSelect, selected, matches[index], results[index][destIndex], value));
++                    value = selected;
++                }
++            }
++
++            gpuAccessor.Log(found.Count == 1
++                ? "Bindless handle taken from the one constant buffer handle among its phi inputs."
++                : $"Bindless handle chosen at run time among {found.Count} constant buffer handles of its phi inputs.");
++
++            return TableHandle.Set;
++        }
++
++        // Whether a texture of the given type can be read as this instruction's (a 1D texture and a texture buffer are told apart only by the descriptor)
++        private static bool SameShape(SamplerType type, SamplerType opType)
++        {
++            const SamplerType Shape = SamplerType.Mask | SamplerType.Array | SamplerType.Multisample;
++
++            static SamplerType Of(SamplerType t)
++            {
++                t &= Shape;
++
++                return t == SamplerType.TextureBuffer ? SamplerType.Texture1D : t;
++            }
++
++            return Of(type) == Of(opType);
++        }
++
++        private static Operand CandidateHandle(BasicBlock block, LinkedListNode<INode> node, (Operand Texture, Operand Sampler) candidate)
++        {
++            if (candidate.Sampler == null)
++            {
++                return candidate.Texture;
++            }
++
++            Operand combined = OperandHelper.Local();
++            block.Operations.AddBefore(node, new Operation(Instruction.BitwiseOr, combined, candidate.Texture, candidate.Sampler));
++
++            return combined;
++        }
++
++        private static bool IsTableWord(Operand operand)   // a c[2] word that can name a texture (not one of the separate sampler table: a sampler word alone, on a path the read does not take, is no candidate)
++        {
++            return operand.Type == OperandType.ConstantBuffer && operand.GetCbufSlot() == NvnTextureBufferIndex && !IsSamplerWord(operand);
++        }
++
++        private static bool IsSamplerWord(Operand operand)
++        {
++            if (operand.Type != OperandType.ConstantBuffer || operand.GetCbufSlot() != NvnTextureBufferIndex) return false;
++            int offset = operand.GetCbufOffset() * 4;
++            return offset >= NvnSeparateSamplerBase && offset < NvnSeparateSamplerEnd;
++        }
++
++        private static bool IsSameBankWord(Operand operand, Operand word)
++        {
++            return operand.Type == OperandType.ConstantBuffer && operand.GetCbufSlot() == word.GetCbufSlot();
++        }
++
++        private static void AddCandidate(List<(Operand Texture, Operand Sampler)> found, Operand texture, Operand sampler)
++        {
++            foreach ((Operand t, Operand s) in found)
++            {
++                if (t.Value == texture.Value && (s == null ? sampler == null : sampler != null && s.Type == sampler.Type && s.Value == sampler.Value))
++                {
++                    return;
++                }
++            }
++
++            found.Add((texture, sampler));
++        }
++
++        // nxnative: an operand as text for DMSH_BINDLESS_TRACE: constant buffer words, constants, and operations with their sources, four levels deep
++        private static string Describe(Operand o, int depth)
++        {
++            if (o == null) return "null";
++            switch (o.Type)
++            {
++                case OperandType.ConstantBuffer: return $"c[{o.GetCbufSlot()}][0x{o.GetCbufOffset() * 4:x}]";
++                case OperandType.Constant: return $"0x{o.Value:x}";
++                case OperandType.Undefined: return "undefined";
++                case OperandType.Register: return $"r{o.Value}";
++            }
++            if (depth > 4) return "...";
++            if (o.AsgOp is PhiNode phi)
++            {
++                List<string> parts = new();
++                for (int i = 0; i < phi.SourcesCount; i++) parts.Add(Describe(phi.GetSource(i), depth + 1));
++                return "phi(" + string.Join(", ", parts) + ")";
++            }
++            if (o.AsgOp is Operation op)
++            {
++                List<string> parts = new();
++                for (int i = 0; i < op.SourcesCount; i++) parts.Add(Describe(op.GetSource(i), depth + 1));
++                string kind = op.StorageKind != StorageKind.None ? "." + op.StorageKind : "";
++                return $"{op.Inst}{kind}(" + string.Join(", ", parts) + ")";
++            }
++            return o.Type.ToString();
++        }
++
++        // The values a phi can take, through the phis it merges (each visited once).
++        private static List<Operand> PhiLeaves(Operand operand)
++        {
++            List<Operand> leaves = new();
++            HashSet<PhiNode> visited = new();
++            Stack<Operand> pending = new();
++            pending.Push(operand);
++
++            while (pending.Count > 0)
++            {
++                Operand current = pending.Pop();
++
++                if (current.AsgOp is PhiNode phi)
++                {
++                    if (visited.Add(phi))
++                    {
++                        for (int index = 0; index < phi.SourcesCount; index++)
++                        {
++                            pending.Push(phi.GetSource(index));
++                        }
++                    }
++                }
++                else
++                {
++                    leaves.Add(current);
++                }
++            }
++
++            return leaves;
++        }
++
+         private static bool GenerateBindlessAccess(
+             BasicBlock block,
+             ResourceManager resourceManager,
+@@ -76,20 +357,8 @@
+ 
+             Operand bindlessHandle = texOp.GetSource(0);
+ 
+-            if (bindlessHandle.AsgOp is PhiNode phi)
++            if (!IsBindlessHandleAllowed(bindlessHandle))
+             {
+-                for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
+-                {
+-                    Operand phiSource = phi.GetSource(srcIndex);
+-
+-                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
+-                    {
+-                        return false;
+-                    }
+-                }
+-            }
+-            else if (!IsBindlessAccessAllowed(bindlessHandle))
+-            {
+                 return false;
+             }
+ 
+@@ -100,8 +369,12 @@
+             block.Operations.AddBefore(node, new Operation(Instruction.BitwiseAnd, textureHandle, bindlessHandle, OperandHelper.Const(0xfffff)));
+             block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, samplerHandle, bindlessHandle, OperandHelper.Const(20)));
+ 
+-            int texturePoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool());
++            // nxnative: a sampled texture other than a buffer texture is indexed in the game's whole texture and sampler pools (the replay binds them by ID: dmsh_build.py pool_arrays,
++            // nvn_mtl.m pool_gpu), so its arrays take the pool lengths. Buffer textures and images keep arrays of NvnSlotArrayLength, which the replay binds slot by slot (tex_dyn_slots)
++            bool pooled = !texOp.Inst.IsImage() && (texOp.Type & SamplerType.Mask) != SamplerType.TextureBuffer;
+ 
++            int texturePoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool()) : NvnSlotArrayLength;
++
+             block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, textureIndex, textureHandle, OperandHelper.Const(texturePoolLength - 1)));
+ 
+             texOp.SetSource(0, textureIndex);
+@@ -122,7 +395,7 @@
+             {
+                 Operand samplerIndex = OperandHelper.Local();
+ 
+-                int samplerPoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool());
++                int samplerPoolLength = pooled ? Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool()) : NvnSlotArrayLength;
+ 
+                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, samplerIndex, samplerHandle, OperandHelper.Const(samplerPoolLength - 1)));
+ 
+@@ -147,6 +420,26 @@
+             return true;
+         }
+ 
++        private static bool IsBindlessHandleAllowed(Operand bindlessHandle)
++        {
++            if (bindlessHandle.AsgOp is PhiNode phi)
++            {
++                for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
++                {
++                    Operand phiSource = phi.GetSource(srcIndex);
++
++                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
++                    {
++                        return false;
++                    }
++                }
++
++                return true;
++            }
++
++            return IsBindlessAccessAllowed(bindlessHandle);
++        }
++
+         private static bool IsBindlessAccessAllowed(Operand bindlessHandle)
+         {
+             if (bindlessHandle.Type == OperandType.ConstantBuffer)
+@@ -232,6 +525,13 @@
+                     (src0, src1) = (src1, src0);
+                 }
+ 
++                // nxnative: the compiler ORs the two words in either order (Star Fox: the sampler word first in 62 pixel shaders, which named the sampler's word as the texture,
++                // a binding with no slot). A word in c[2]'s separate sampler table is the sampler, the other the texture
++                if (IsSamplerWord(src0) && !IsSamplerWord(src1))
++                {
++                    (src0, src1) = (src1, src0);
++                }
++
+                 TextureHandleType handleType = TextureHandleType.SeparateSamplerHandle;
+ 
+                 // Try to match the following patterns:
+@@ -366,19 +666,51 @@
+             {
+                 // If we have a phi, let's check if all inputs are effectively the same value.
+                 // If so, we can "see through" the phi and pick any of the inputs (since they are all the same).
++                // nxnative: the inputs are gathered through the phis they come from, as a loop makes (a handle kept in a loop variable
++                // reaches the phi from the loop's own phi). Upstream compared the phi's direct inputs only and gave up on such handles.
+ 
+-                Operand firstSrc = phi.GetSource(0);
++                Operand firstSrc = null;
++                HashSet<PhiNode> visited = new();
++                Stack<PhiNode> pending = new();
++                pending.Push(phi);
+ 
+-                for (int index = 1; index < phi.SourcesCount; index++)
++                while (pending.Count > 0)
+                 {
+-                    if (!IsSameOperand(firstSrc, phi.GetSource(index)))
+-                    {
+-                        outOperation = null;
++                    PhiNode current = pending.Pop();
+ 
+-                        return false;
++                    if (!visited.Add(current))
++                    {
++                        continue;
+                     }
++
++                    for (int index = 0; index < current.SourcesCount; index++)
++                    {
++                        Operand src = current.GetSource(index);
++
++                        if (src.AsgOp is PhiNode srcPhi)
++                        {
++                            pending.Push(srcPhi);
++                        }
++                        else if (firstSrc == null)
++                        {
++                            firstSrc = src;
++                        }
++                        else if (!IsSameOperand(firstSrc, src))
++                        {
++                            outOperation = null;
++
++                            return false;
++                        }
++                    }
+                 }
+ 
++                if (firstSrc == null)
++                {
++                    outOperation = null;
++
++                    return false;
++                }
++
+                 asgOp = firstSrc.AsgOp;
+             }
+ 
+@@ -396,14 +728,20 @@
+ 
+         private static bool IsSameOperand(Operand x, Operand y)
+         {
++            if (x == y)
++            {
++                return true;
++            }
++
+             if (x.Type == y.Type && x.Type == OperandType.LocalVariable)
+             {
++                // nxnative: the second source may also be the same constant (a constant sampler ORed into a texture handle).
+                 return x.AsgOp is Operation xOp &&
+                     y.AsgOp is Operation yOp &&
+                     xOp.Inst == Instruction.BitwiseOr &&
+                     yOp.Inst == Instruction.BitwiseOr &&
+                     AreBothEqualConstantBuffers(xOp.GetSource(0), yOp.GetSource(0)) &&
+-                    AreBothEqualConstantBuffers(xOp.GetSource(1), yOp.GetSource(1));
++                    (AreBothEqualConstantBuffers(xOp.GetSource(1), yOp.GetSource(1)) || AreBothEqualConstants(xOp.GetSource(1), yOp.GetSource(1)));
+             }
+ 
+             return false;
+@@ -414,6 +752,11 @@
+             return x.Type == y.Type && x.Value == y.Value && x.Type == OperandType.ConstantBuffer;
+         }
+ 
++        private static bool AreBothEqualConstants(Operand x, Operand y)
++        {
++            return x.Type == y.Type && x.Value == y.Value && x.Type == OperandType.Constant;
++        }
++
+         private static Operand GetSourceForMaskedHandle(Operation asgOp, uint mask)
+         {
+             // Assume it was already checked that the operation is bitwise AND.
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessToArray.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/BindlessToArray.cs
+@@ -12,6 +12,7 @@
+ 
+         // 1 and 0 elements are not considered arrays anymore.
+         public const int MinimumArrayLength = 2;
++        private const int NvnSlotArrayLength = 32;      // nxnative: as BindlessElimination's
+ 
+         public static void RunPassOgl(BasicBlock block, ResourceManager resourceManager)
+         {
+@@ -205,6 +206,30 @@
+ 
+                 int length = Math.Max(MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromBuffer(src0CbufSlot));
+ 
++                // nxnative: the replay binds images and buffer textures element by element, so these stay short; the game's sampled textures take a table the host builds (dmsh_build.py pool_arrays)
++                if (src0CbufSlot != NvnTextureBufferIndex && (texOp.Inst.IsImage() || (texOp.Type & SamplerType.Mask) == SamplerType.TextureBuffer))
++                {
++                    length = Math.Min(length, NvnSlotArrayLength);
++                }
++
++                // nxnative: handles at a computed index past a constant base, the base beyond the array's length: every read would clamp to its last element, which is no handle. Fire Emblem Fortune's
++                // Weave's character shaders read their cube maps as c[14][8 i + 0x340] (LDC after a shift of 3). The array starts at the base instead (the host fills element k from base + 8k), so
++                // the index is that of the handle within the table. A base inside the array keeps the array at 0, as before
++                if (!hasSecondaryHandle && TryArrayBase(ldcVecIndex, out Operand tableIndex, out int baseOffset) && baseOffset / 8 >= length)
++                {
++                    TurnIntoArray(resourceManager, texOp, cbufSlot, baseOffset / 4, length);
++
++                    Operand element = Local();
++                    Operand elementMin = Local();
++
++                    block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, element, tableIndex, Const(3)));
++                    block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, elementMin, element, Const(length - 1)));
++
++                    texOp.SetSource(0, elementMin);
++
++                    continue;
++                }
++
+                 TurnIntoArray(resourceManager, texOp, cbufSlot, handleIndex, length);
+ 
+                 Operand vecIndex = Local();
+@@ -218,7 +243,48 @@
+                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, indexMin, index, Const(length - 1)));
+ 
+                 texOp.SetSource(0, indexMin);
++            }
++        }
++
++        // nxnative: the vector index of a constant buffer load whose address is (index + a constant byte offset) >> 2 >> 2: that index and offset
++        private static bool TryArrayBase(Operand vecIndex, out Operand index, out int byteOffset)
++        {
++            index = null;
++            byteOffset = 0;
++
++            static bool ShiftBy2(Operand o, out Operand source)
++            {
++                source = null;
++
++                if (o.AsgOp is Operation op && op.Inst == Instruction.ShiftRightU32 && op.GetSource(1).Type == OperandType.Constant && op.GetSource(1).Value == 2)
++                {
++                    source = op.GetSource(0);
++
++                    return true;
++                }
++
++                return false;
+             }
++
++            if (!ShiftBy2(vecIndex, out Operand word))
++            {
++                return false;
++            }
++
++            if (word.AsgOp is Operation plus0 && plus0.Inst == Instruction.Add && plus0.GetSource(1).Type == OperandType.Constant && plus0.GetSource(1).Value == 0)
++            {
++                word = plus0.GetSource(0);
++            }
++
++            if (!ShiftBy2(word, out Operand address) || address.AsgOp is not Operation add || add.Inst != Instruction.Add || add.GetSource(1).Type != OperandType.Constant)
++            {
++                return false;
++            }
++
++            index = add.GetSource(0);
++            byteOffset = add.GetSource(1).Value;
++
++            return byteOffset > 0 && (byteOffset & 7) == 0;
+         }
+ 
+         private static void TurnIntoArray(ResourceManager resourceManager, TextureOperation texOp, int cbufSlot, int handleIndex, int length)
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+@@ -34,7 +34,7 @@
+                     BindlessToArray.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
+                 }
+ 
+-                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
++                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor, deferSeveral: true);
+ 
+                 // FragmentCoord only exists on fragment shaders, so we don't need to check other stages.
+                 if (context.Stage == ShaderStage.Fragment)
+@@ -47,6 +47,12 @@
+                 {
+                     DoubleToFloat.RunPass(context.Hfm, context.Blocks[blkIndex]);
+                 }
++            }
++
++            // nxnative: the reads whose handle merges several c[2] handles, once every other read has registered its texture (BindlessElimination.TryTableHandle)
++            for (int blkIndex = 0; blkIndex < context.Blocks.Length; blkIndex++)
++            {
++                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
+             }
+ 
+             // Run optimizations one last time to remove any code that is now optimizable after above passes.
+@@ -385,12 +391,12 @@
+                     {
+                         Debug.Assert(src.AsgOp != null);
+ 
+-                        // TOTK (2026-10-16, from Ryujinx_Optime 01a1e37f): only follow into a producer that will itself be
+-                        // removed. An operation with side effects (a call, an atomic) stays in the block even when its
+-                        // result is unused, so its sources are still live: stripping their use lists here made the next
+-                        // DCE pass delete the whole chain feeding a global-memory atomic turned into a helper call, which
+-                        // then read an uninitialised value (TOTK's sun-visibility kernel; our c7830fac lost its atomicMin).
+-                        if (!HasSideEffects(src.AsgOp))
++                        // nxnative (from MacNativeGames' translator patch 0002, after Ryujinx_Optime 01a1e37f): follow only into a producer that will be removed
++                        // itself. One with side effects (an atomic, a call) stays in the block when its result is unused, so its sources are still live; dropping
++                        // their uses here let the next dead-code pass delete the chain that feeds it, and the atomic then read undefined values.
++                        // The same holds for a producer with another destination still in use: an image read whose .x is dead but whose .y is not stays, and following it
++                        // lost its coordinate (Ocarina of Time's wind solver read a garbage y, and its velocity field oscillated, which made the grass flicker at 10 Hz).
++                        if (!HasSideEffects(src.AsgOp) && DestHasNoUses(src.AsgOp))
+                         {
+                             nodes.Enqueue(src.AsgOp);
+                         }
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Utils.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Utils.cs
+@@ -169,8 +169,10 @@
+ 
+                 // If all sources but one are undefined, we can assume that the one
+                 // that is not undefined is the right one.
++                // nxnative: of this phi alone, not of a phi that merges it with something else: phi(phi(undefined, texture word), texture word | sampler word), a handle built under a
++                // guard in a register with no earlier value, gave the texture word alone, with no sampler. The other sources' phis are seen through instead
+ 
+-                if (undefCount == phiNode.SourcesCount - 1)
++                if (recurse && undefCount == phiNode.SourcesCount - 1)
+                 {
+                     for (int i = phiNode.SourcesCount - 1; i >= 0; i--)
+                     {
+@@ -178,7 +180,7 @@
+ 
+                         if (phiSource.Type != OperandType.Undefined)
+                         {
+-                            return phiSource;
++                            return FindLastOperation(phiSource, block);
+                         }
+                     }
+                 }
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -157,6 +157,12 @@
+                 if (Reservations.GeometryInputFixed)
+                     LocalGeometryPrimitiveOpenMemoryId = AddMemoryDefinition("local_geometry_primitive_open", AggregateType.U32);
+             }
++        }
++
++        // nxnative: the pool table entry a raw global memory helper chose last in this invocation (GlobalToStorage.TryGenerateRawStorageOp), one word for each helper, zero at the start
++        public int AddRawLastEntryMemory()
++        {
++            return Properties.AddLocalMemory(new MemoryDefinition($"gmem_last_{Properties.LocalMemories.Count}", AggregateType.U32, 1, zeroInit: true));
+         }
+ 
+         private int AddMemoryDefinition(string name, AggregateType type, int arrayLength = 1)
+@@ -412,6 +418,26 @@
+             }
+ 
+             return new SetBindingPair(setIndex, binding);
++        }
++
++        // nxnative: the types other instructions gave the texture whose handle word is at the given offset of constant buffer cbufSlot (whatever sampler it was paired with),
++        // for BindlessElimination.TryTableHandle; arrays of handles are left out
++        public List<SamplerType> GetTextureTypes(int cbufSlot, int textureOffset, bool isImage)
++        {
++            List<SamplerType> types = new();
++
++            foreach ((TextureInfo info, TextureMeta meta) in isImage ? _usedImages : _usedTextures)
++            {
++                (int offset, _, _) = TextureHandle.UnpackOffsets(info.Handle);
++                (int slot, _) = TextureHandle.UnpackSlots(info.CbufSlot, cbufSlot);
++
++                if (info.ArrayLength == 1 && meta.AccurateType && slot == cbufSlot && offset == textureOffset)
++                {
++                    types.Add(meta.Type);
++                }
++            }
++
++            return types;
+         }
+ 
+         private static TextureMeta MergeTextureMeta(TextureMeta meta, TextureMeta existingMeta)

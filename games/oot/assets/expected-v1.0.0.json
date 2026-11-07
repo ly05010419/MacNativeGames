@@ -1,0 +1,30 @@
+{
+  "_comment": "The Legend of Zelda: Ocarina of Time (no update) from a Switch 2 dump folder: the source ExeFS, the verified rewrite (verify_rewrites.py --version oot, 2026-11-05) and the RomFS image import_dump.py packs from base/romfs. Runtime validation is recorded in games/oot/README.md.",
+  "title_id": "0400486024DEC000",
+  "version": 0,
+  "display_version": "1.0.0",
+  "exefs_sha256": {
+    "main": "7db9ddfda088c22d219ef13496decd7077c68cd67d4b37f53f4ac46a082768f2",
+    "main.npdm": "94c154d83cbaca00d092958cc2b3a0494d7308fe49de8cb33ece7e9e67303ea7",
+    "rtld": "219f25ef4a64a704e86dacfeb25d9e8977045f2145e629268b94baf34d5e0bbe",
+    "sdk": "3ae3cd4cf340d72bdaba9e6f66016a74c1eae13737a5f7299375ed6654b9b1c5",
+    "subsdk0": "0d32c4bdbcfcfa1c4110c37eff18eaf70061a55090b7fedc741a2e37224065ba"
+  },
+  "rewritten_sha256": {
+    "main.patched.bin": "2573dd00668fad679d7d631655167ba2786a32ec908e9c2c81056ab54fa73570",
+    "sdk.patched.bin": "7f77e8fb46d582a34b313947d7f9b898f26e7b555b06743c88538df519ffb5f8",
+    "subsdk0.patched.bin": "7ce5b0eb7e3894a8354d0eb6157b52cb5a4cc9cbff0b32d252a86ac03d3758d4"
+  },
+  "romfs": {
+    "size": 26237712396,
+    "sha256": "ce2f34fe896c7230d4f98a393cd30570a469507fcf4482026549485c04994671"
+  },
+  "shared_fonts_sha256": {
+    "standard": "823913c9d80807979381e327846466f561f31ba1842cea8f7fedc5ad7d45d2ad",
+    "chinese-simplified": "7e95d45f43c6f35ee0c7bd8ea446675d8ab0390e18fd2844abcac11d2bff7389",
+    "chinese-simplified-extension": "0f90d45b741e9da7700c416eb2b51996b458c3e4fb3c3291740b758c298e7a25",
+    "chinese-traditional": "9d59b74e59a2dc92296d6bebad7cce791ba94688bd436304aaae174a58bd7457",
+    "korean": "5a4e694782ead5ddcbc0a226aab24362e2d641ca33bac7bdf8cda36ff157c9e8",
+    "nintendo-extension": "f9f62e025c9bbe0e9ae25a54ba5011202b1e3a3f3c33b2d876c40aff6174af68"
+  }
+}

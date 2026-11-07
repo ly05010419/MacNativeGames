@@ -104,7 +104,11 @@ static uint8_t user_exception_context[0x1000] __attribute__((aligned(0x1000)));
    profile: 10, which is taken; neither measured on the console): with a
    Switch 1 pool (3.2 GiB) Bananza's heaps did not fit (AudioSystemHeap creation returned null). Address space only until
    the game maps it. */
+#ifdef GAME_OOT
+#define APP_POOL_DEFAULT 0x240000000ULL   /* 9 GiB, as nxnative's profile: a map past it fails and the SDK gives back the pages it keeps (crashes entering later areas without it, reported there; not reached here) */
+#else
 #define APP_POOL_DEFAULT 0x280000000ULL
+#endif
 #else
 #define APP_POOL_DEFAULT (dram_8gb()?0x1b3400000ULL:0xcd500000ULL)
 #endif

@@ -80,11 +80,16 @@ POKOPIA = REPO / 'games/pokopia'
 NS2 = {'0400A3A01EE4C000': dict(version='pkp', folder=POKOPIA, update='655360', expected='expected-v2.0.1.json',
                                 depth_mode='zero', defines=['-DGAME_POKOPIA=1', '-DGAME_NS2=1']),
        '040074A01BF12000': dict(version='dkb', folder=REPO / 'games/dkb', update='458752', expected='expected-v458752.json',
-                                depth_mode='minus-w', defines=['-DGAME_DKB=1', '-DGAME_NS2=1'])}
+                                depth_mode='minus-w', defines=['-DGAME_DKB=1', '-DGAME_NS2=1']),
+       # No update (update=None: base/ alone), the Mac only, and its own shader translator (games/oot/prebuilt: see step_game_translator).
+       '0400486024DEC000': dict(version='oot', folder=REPO / 'games/oot', update=None, expected='expected-v1.0.0.json',
+                                depth_mode='minus-w', defines=['-DGAME_OOT=1', '-DGAME_NS2=1'], own_translator=True, mac_only=True, fonts_optional=True,
+                                pip=['zbic==1.0.1.post1'])}   # its modules are ZBIC: a separate GPLv2 package, installed for this game's build only, not part of this repository
 for _g in NS2.values():
     VERSIONS[_g['version']] = json.loads((_g['folder'] / 'assets' / _g['expected']).read_text())
 APPS['pkp'] = ('Pokémon Pokopia', 'org.macnativegames.pokopia', 'Pokopia')
 APPS['dkb'] = ('Donkey Kong Bananza', 'org.macnativegames.bananza', 'Bananza')
+APPS['oot'] = ('Ocarina of Time', 'org.macnativegames.ocarina', 'OcarinaOfTime')
 
 
 def ns2_game(version):
@@ -2119,7 +2124,7 @@ def step_code_ns2(tree, dump, g, env, logs):
                 all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in expected['exefs_sha256'].items()))
     if not imported():
         say(f'1/4 code: importing the dump (its code and the {expected["romfs"]["size"] / 2**30:.1f} GB of game data; a few minutes)')
-        run([py, 'scripts/import_dump.py', dump, '--output', tree / f'extracted/{v}', '--update', g['update']],
+        run([py, 'scripts/import_dump.py', dump, '--output', tree / f'extracted/{v}', *(['--update', g['update']] if g['update'] else [])],
             logs / f'import_dump-{v}.log', cwd=tree)
     for n, h in expected['exefs_sha256'].items():
         if not (exefs / n).is_file():
@@ -2147,6 +2152,16 @@ def step_code_ns2(tree, dump, g, env, logs):
     path = tree / f'analysis/{v}-port/phase12-validation.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2) + '\n')
+
+
+def step_game_translator(tree, g):
+    """A game with its own shader translator (games/<name>/prebuilt/macos-arm64, publish_native.sh with that output): into
+    the work folder's prebuilt/, where every later step and the app take it. The shared one is left as it is for the other games."""
+    if g.get('own_translator'):
+        source, target = g['folder'] / 'prebuilt/macos-arm64', tree / 'prebuilt/macos-arm64'
+        for name in ('totk_xlate', 'totk_xlate.sha256'):
+            (target / name).unlink(missing_ok=True)
+            shutil.copy2(source / name, target / name)
 
 
 def step_shaders_ns2(tree, g, logs):
@@ -2203,7 +2218,9 @@ def main_ns2(args, dump):
     if not g:
         raise BuildError(f'{dump}: not a supported Switch 2 dump (title {title or "unknown"} in {exefs}); supported: '
                          + ', '.join(f'{APPS[x["version"]][0]} ({t}, update {x["update"]})' for t, x in NS2.items()))
-    if not (dump / 'updates' / g['update'] / 'exefs').is_dir():
+    if device_app and g.get('mac_only'):
+        raise BuildError(f'{APPS[g["version"]][0]} is built for the Mac only so far')
+    if g['update'] and not (dump / 'updates' / g['update'] / 'exefs').is_dir():
         raise BuildError(f'{dump}: needs updates/{g["update"]} ({VERSIONS[g["version"]]["display_version"]}); this dump has '
                          + ', '.join(p.name for p in sorted((dump / 'updates').glob('*'))) if (dump / 'updates').is_dir() else 'no updates/')
     v = g['version']; app_name, bundle_id, executable = APPS[v]
@@ -2217,14 +2234,20 @@ def main_ns2(args, dump):
     env = dict(os.environ, PATH=os.pathsep.join(TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
     t0 = time.time()
     tree = prepare_work(work, py, logs)
+    step_game_translator(tree, g)
+    if g.get('pip'):
+        run([tree / '.venv/bin/python', '-m', 'pip', 'install', '-q', *g['pip']], logs / 'pip-game.log')
     say(f'{app_name} {VERSIONS[v]["display_version"]} from {dump}; work folder {work}')
     fonts = tree / 'extracted/firmware/shared-fonts'
-    if not fonts_valid(fonts):
+    if not fonts_valid(fonts) and (shared_fonts or not g.get('fonts_optional')):
         if not shared_fonts:
             raise BuildError('a Switch 2 dump holds no system shared fonts: pass --shared-fonts <a folder of the six .bfttf files '
                              'a Tears of the Kingdom or Breath of the Wild build extracted (TOTK_build/totk/extracted/firmware/shared-fonts)>')
         copy_shared_fonts(shared_fonts, fonts)
-    validate_fonts(fonts)
+    if fonts.exists():
+        validate_fonts(fonts)
+    else:   # scripts/prepare_shared_fonts.py writes an empty list; a request the game makes anyway stops the runtime (runtime/shared_font.c)
+        say('no system fonts given (--shared-fonts): the game uses its own')
     step_code_ns2(tree, dump, g, env, logs)
     if v == 'dkb':
         for size in ('2560x1440', '3840x2160'):
@@ -2579,7 +2602,7 @@ def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild: a combined 1.6.0 card image, or a base NSP with its separate 1.6.0 or 1.9.0 update NSP and optional add-on content NSPs (--dlc).',
                                  epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0 (Breath of the Wild: the 1.6.0 card image, or the base NSP with --update); '
-                    'or a Switch 2 dump folder (base/, updates/<version>/ with exefs/ and romfs/: Pokemon Pokopia 2.0.1)')
+                    'or a Switch 2 dump folder (base/, updates/<version>/ with exefs/ and romfs/: Pokemon Pokopia 2.0.1, Ocarina of Time)')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app (Breath of the Wild: the 1.9.0 update NSP, not for a card image)')
     ap.add_argument('--dlc', type=Path, action='append', metavar='DLC.nsp', help='Breath of the Wild with a separate 1.6.0 or 1.9.0 --update: an add-on content (DLC) NSP; repeat for the second pack (01007EF00011F001, 01007EF00011F002); each is optional, and a pack left out is not in the app; such a build takes its packs from --dlc only, also when the game file is a card image')
     ap.add_argument('--platform', choices=('macos','ios','visionos'), default='macos', help='build a macOS app (default), unsigned iPhone/iPad IPA, or native Vision Pro IPA')

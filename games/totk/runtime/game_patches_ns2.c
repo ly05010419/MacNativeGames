@@ -17,9 +17,72 @@
 #include "bananza_display.h"
 #include "pokopia_display.h"
 
+#ifdef GAME_OOT
+/* Ocarina of Time's game time: each frame main+0x6e6cc4 takes the step as 60 / fps (fps = the frame-rate controller's, whole divisors of 60), in units of 1/60 s, adds it
+   to a running count and hands it to the game's time object (main+0x3b4e300), which derives seconds and its other values from it. As shipped, a frame is 1/60 s below 60 fps too: slow.
+   Here the step is the measured frame time, averaged over 5 frames as on Tears of the Kingdom (game_patches.c), so game time adds up to real time at any frame rate and in even steps
+   (patch_oot_frame_step). The controller stays as shipped: only this reads its fps for time. TOTK_GAME_SPEED scales it (default 1, 0.25-2); TOTK_REALTIME=0: as shipped. */
+static _Atomic uint32_t oot_step_bits;   /* a float: seconds of game time for this frame */
+static uint64_t oot_last_ns, oot_report_ns, oot_frames;
+static double oot_game_s, oot_scale = 1, oot_samples[5];
+static unsigned oot_sample_count, oot_sample_next;
+void runtime_frame_step_pin(double ms) { (void)ms; }
+void runtime_frame_step_update(uint64_t now_ns) {
+    if (!now_ns) return;
+    if (!oot_last_ns) { oot_last_ns = oot_report_ns = now_ns; return; }
+    double dt = (double)(now_ns - oot_last_ns) * 1e-9;
+    oot_last_ns = now_ns;
+    oot_frames++;
+    if (dt > 0.25 || dt < 0.001) oot_sample_count = oot_sample_next = 0;   /* a load: no jump; the last step stands */
+    else {
+        if (dt > 1.0 / 15.0) dt = 1.0 / 15.0;
+        oot_samples[oot_sample_next++ % 5] = dt;
+        if (oot_sample_count < 5) oot_sample_count++;
+        double sum = 0;
+        for (unsigned i = 0; i < oot_sample_count; i++) sum += oot_samples[i];
+        float step = (float)(sum / oot_sample_count * oot_scale);
+        uint32_t bits; memcpy(&bits, &step, 4);
+        atomic_store_explicit(&oot_step_bits, bits, memory_order_release);
+    }
+    { uint32_t bits = atomic_load_explicit(&oot_step_bits, memory_order_relaxed); float step; memcpy(&step, &bits, 4); oot_game_s += step; }
+    if (now_ns - oot_report_ns >= 30000000000ull) {
+        double real = (double)(now_ns - oot_report_ns) / 1e9;
+        fprintf(stderr, "[totk] game speed: %.3f of real time (%.2f s of game time in %.2f s, %.1f fps)\n", oot_game_s / real, oot_game_s, real, oot_frames / real);
+        oot_report_ns = now_ns; oot_game_s = 0; oot_frames = 0;
+    }
+}
+static void patch_oot_frame_step(Module *m) {
+    const char *e = getenv("TOTK_REALTIME");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[totk] game time follows frames, as shipped (TOTK_REALTIME=0)\n"); return; }
+    const char *sp = getenv("TOTK_GAME_SPEED");
+    if (sp) { double v = atof(sp); if (v < 0.25 || v > 2) runtime_fail("TOTK_GAME_SPEED takes 0.25 to 2"); oot_scale = v; }
+    enum { SITE = 0x6e6cc4 };
+    uint32_t word; memcpy(&word, m->base + SITE, 4);
+    if (word != 0x1e201828u) runtime_fail("Ocarina of Time frame step: the game's step differs from the verified build");
+    { float first = (float)(oot_scale / 60.0); uint32_t bits; memcpy(&bits, &first, 4); atomic_store(&oot_step_bits, bits); }
+    const uint64_t stub = (m->text_end + 15) & ~15ULL, a = (uint64_t)(uintptr_t)&oot_step_bits;
+    const uint32_t code[] = {
+        0xd2800010u | (uint32_t)((a & 0xffff) << 5),            /* movz x16, address */
+        0xf2a00010u | (uint32_t)(((a >> 16) & 0xffff) << 5),
+        0xf2c00010u | (uint32_t)(((a >> 32) & 0xffff) << 5),
+        0xf2e00010u | (uint32_t)(((a >> 48) & 0xffff) << 5),
+        0xbd400200u,   /* ldr s0, [x16]      the step in seconds (s0 was the fps) */
+        0x1e200828u,   /* fmul s8, s1, s0    s1 = the game's 60 (30 in its other mode), in place of fdiv s8, s1, s0 */
+        0x14000000u | (((uint32_t)(((int64_t)SITE + 4 - (int64_t)(stub + 24)) >> 2)) & 0x3ffffffu),   /* back */
+    };
+    if (stub + sizeof code > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("Ocarina of Time frame step: no room after the code");
+    for (size_t i = 0; i < sizeof code; i++) if (m->base[stub + i]) runtime_fail("Ocarina of Time frame step: padding not empty");
+    memcpy(m->base + stub, code, sizeof code);
+    uint32_t jump = 0x14000000u | (((uint32_t)(((int64_t)stub - (int64_t)SITE) >> 2)) & 0x3ffffffu);
+    memcpy(m->base + SITE, &jump, 4);
+    __builtin___clear_cache((char *)m->base + SITE, (char *)m->base + stub + sizeof code);
+    fprintf(stderr, "[totk] game time follows real time: the step at main+%#x is the measured frame time, speed %.2f (TOTK_GAME_SPEED; TOTK_REALTIME=0: as shipped)\n", (unsigned)SITE, oot_scale);
+}
+#else
 /* No frame-step patch: these are what the frontend and the frame lock call. */
 void runtime_frame_step_pin(double ms) { (void)ms; }
 void runtime_frame_step_update(uint64_t now_ns) { (void)now_ns; }
+#endif
 
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
 static pthread_once_t output_once=PTHREAD_ONCE_INIT;
@@ -356,6 +419,8 @@ void runtime_game_patches(Module *m) {
     patch_output_parameters(m);
 #elif defined(GAME_POKOPIA)
     patch_pokopia_display(m);
+#elif defined(GAME_OOT)
+    patch_oot_frame_step(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {

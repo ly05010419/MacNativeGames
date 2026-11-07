@@ -222,7 +222,21 @@ def scan_module(path):
     return str(path), 1, nintendo_shaders(Path(path).read_bytes(), Path(path).stem)
 
 
-def nintendo_shaders(data, label, depth=0):
+_dictionaries = None
+
+
+def game_dictionaries(src):
+    """The game's Zstandard dictionaries by ID (Pack/ZsDic.pack.zs, as Tears of the Kingdom; Ocarina of Time's data files
+    use them), empty for a game without that file."""
+    from prepare_shader_seed import sarc
+    import compression.zstd as zstd
+    if 'Pack/ZsDic.pack.zs' not in src.files:
+        return {}
+    dictionaries = (zstd.ZstdDict(raw) for raw in sarc(zstd.decompress(src.open('Pack/ZsDic.pack.zs')[:])).values())
+    return {d.dict_id: d for d in dictionaries}
+
+
+def nintendo_shaders(data, label, depth=0, dictionaries=None):
     """Nintendo's NVN2 resources. Layouts: seedds/nxnative shader_split.py (MIT), BNSH, BAHS, NDSR and sead primitives.
     Bounds are checked before a record is accepted; keys are the host's full SHA-256, not nxnative's short names."""
     from prepare_shader_seed import sarc
@@ -230,10 +244,13 @@ def nintendo_shaders(data, label, depth=0):
     if depth > 12:
         raise ValueError(f'{label}: archives nested too deeply')
     if data[:4] == b'\x28\xb5\x2f\xfd':
-        data = zstd.decompress(data)
+        dict_id = zstd.get_frame_info(data).dictionary_id
+        if dict_id and dict_id not in (dictionaries or {}):
+            raise ValueError(f'{label}: needs Zstandard dictionary {dict_id}, which the game does not hold')
+        data = zstd.decompress(data, zstd_dict=dictionaries[dict_id]) if dict_id else zstd.decompress(data)
     if data[:4] == b'SARC':
         return [s for name, member in sarc(data).items()
-                for s in nintendo_shaders(member, f'{label}/{name}', depth + 1)]
+                for s in nintendo_shaders(member, f'{label}/{name}', depth + 1, dictionaries)]
     out = containers(data, label)
     def add(c, nc, k, nk, where):
         if not (0 <= c <= len(data) - max(nc, 0x58) and 0 <= k <= len(data) - nk and 0 < nk < 0x400000):
@@ -304,7 +321,11 @@ def nintendo_shaders(data, label, depth=0):
 
 
 def scan_nintendo(root, path):
-    return path, 1, nintendo_shaders(Source(root).open(path)[:], path)
+    global _dictionaries
+    src = Source(root)
+    if _dictionaries is None:   # once per worker process
+        _dictionaries = game_dictionaries(src)
+    return path, 1, nintendo_shaders(src.open(path)[:], path, dictionaries=_dictionaries)
 
 
 def write_corpus(path, shaders):
@@ -333,7 +354,7 @@ def main():
     src = Source(a.romfs)
     rdbs = sorted(f for f in src.files if f.endswith(('.fdata', '.file')))
     link = ('LI_C0_R.IDX', 'LD_C0_R.BIN') if {'LI_C0_R.IDX', 'LD_C0_R.BIN'} <= src.files.keys() else None
-    nintendo = sorted(f for f in src.files if f.startswith(('Shader/', 'Lib/', 'Effect/', 'Layout/'))
+    nintendo = sorted(f for f in src.files if f.startswith(('Shader/', 'Lib/', 'Effect/', 'Layout/', 'Layout2Shader/'))
                       and f.endswith(('.zs', '.bnsh', '_nvn2_shader.bin')))
     if not rdbs and not link and not nintendo:
         sys.exit(f'[RED] {a.romfs}: no RDB data files and no LINKDATA: not a Koei Tecmo RomFS this script reads')

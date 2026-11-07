@@ -42,7 +42,7 @@ def load(path):
     img = bytearray(segs[2][1] + segs[2][2] + bss)
     for i, (fo, mo, sz) in enumerate(segs):
         raw = d[fo:fo + csz[i]]
-        if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
+        if flags >> i & 1: raw = __import__("zbic").decompress(bytes(raw)) if flags & 0x80 else lz4.block.decompress(raw, uncompressed_size=sz)   # bit 7: ZBIC (zstd, system 22+; zbic package)
         img[mo:mo + sz] = raw
     return bytes(img)
 

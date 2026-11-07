@@ -8,7 +8,9 @@
 # SPIRV-Cross (build_app.py SPIRV_CROSS: the pinned commit, its sources and flags) is compiled in as well
 # (spirv_cross_inproc.cpp: its own main.cpp's compile_iteration), so the service needs no process per shader. The
 # sources are fetched at that commit; SPIRV_CROSS_SRC=<checkout at that commit> uses a local one instead.
-# usage: games/totk/tools/totk_xlate/publish_native.sh [dotnet]   -> games/totk/prebuilt/macos-arm64/totk_xlate (+ .sha256)
+# usage: games/totk/tools/totk_xlate/publish_native.sh [dotnet] [absolute-output-dir]
+# Default output: games/totk/prebuilt/macos-arm64. For a local build use games/totk/build/shader-service
+# as an absolute path; its original binary is preserved and replacement uses a new file.
 set -e
 HERE=${0:A:h}
 REPO=${HERE:h:h:h:h}
@@ -39,8 +41,12 @@ wait
 xcrun ar rcs "$WORK/libtotk_spirv_cross.a" "$WORK"/spvc/*.o
 "$DOTNET" publish "$WORK/xlate/totk_xlate.csproj" -c Release -r osx-arm64 -p:PublishAot=true -p:InvariantGlobalization=true \
   -p:RyuSrc="$WORK/ryujinx-src" -p:TotkSpirvCrossLib="$WORK/libtotk_spirv_cross.a" -o "$WORK/out"
-OUT=$REPO/games/totk/prebuilt/macos-arm64
+OUT=${2:-$REPO/games/totk/prebuilt/macos-arm64}
 mkdir -p "$OUT"
+if [[ $OUT == "$REPO/games/totk/build/shader-service" && -f "$OUT/totk_xlate" && ! -e "$OUT/totk_xlate.prebuilt-orig" ]]; then
+  cp "$OUT/totk_xlate" "$OUT/totk_xlate.prebuilt-orig"
+fi
+rm -f "$OUT/totk_xlate"
 cp "$WORK/out/totk_xlate" "$OUT/totk_xlate"
 shasum -a 256 "$OUT/totk_xlate" | awk '{print $1}' > "$OUT/totk_xlate.sha256"
 echo "built $OUT/totk_xlate (sha256 $(cat "$OUT/totk_xlate.sha256"))"
