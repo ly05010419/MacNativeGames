@@ -342,6 +342,7 @@ static uint64_t gpu_budget_bytes(void) {
     return b;
 }
 static void defer_drain(void);
+static void stor_diag_report(void);
 static void gpu_budget_check(const char *where) {
     uint64_t budget = gpu_budget_bytes(); if (!budget) return;
     uint64_t cur = (uint64_t)g_dev.currentAllocatedSize; if (cur <= budget) return;
@@ -370,6 +371,7 @@ static void gpu_budget_check(const char *where) {
         return;
     }
     res_site_report(16);
+    stor_diag_report();
     MDIE("%s：显卡已分配 %llu MB 超过预算 %llu MB（等在途提交完成、放掉退役对象 %.1f ms 前是 %llu MB）；四次内核崩溃都发生在驻留内存约 15 GB 时，拒绝继续提交（TOTK_GPU_BUDGET_MB 调整）",
          where, (unsigned long long)(cur >> 20), (unsigned long long)(budget >> 20), waited_ms, (unsigned long long)(first >> 20));
 }
@@ -3602,6 +3604,32 @@ static void stor_drop_range(uintptr_t lo, uintptr_t hi) {
     stor_collect_drop(^int(const stor_ent *e) { return e->k.mem >= lo && e->k.mem < hi; }, &g_stor_dropped);
     stor_det_sweep(^int(const stor_ent *e) { return e->k.mem >= lo && e->k.mem < hi; }, &g_stor_dropped);
 }
+/* Storage diagnostic accounting (g_smu held). */
+typedef struct {
+    unsigned long long n, bytes, held, idle, idle_bytes, dead_only, dead_bytes, holders, dead_holders;
+} stor_diag;
+static void stor_diag_add(stor_diag *s, const stor_ent *e) {
+    id<MTLTexture> t = (__bridge id<MTLTexture>)e->tex;
+    unsigned long long bytes = t.allocatedSize, dead = 0;
+    for (int i = 0; i < e->nser; i++) dead += totk_serial_has(&g_dead_serial, e->ser[i]) != 0;
+    s->n++; s->bytes += bytes; s->holders += e->nser; s->dead_holders += dead;
+    if (e->nser) {
+        s->held++;
+        if (dead == (unsigned)e->nser) { s->dead_only++; s->dead_bytes += bytes; }
+    } else { s->idle++; s->idle_bytes += bytes; }
+}
+static void stor_diag_report(void) {
+    const char *on = getenv("TOTK_STORAGE_REPORT"); if (!on || !atoi(on)) return;
+    // A budget failure can occur inside resource work: never wait for another registry lock here.
+    if (pthread_mutex_trylock(&g_smu)) { MLOG("[storage-live] skipped: storage registry busy"); return; }
+    stor_diag s = {0};
+    for (uint32_t i = 0; i < g_by_storage.cap; i++) if (g_by_storage.vals[i]) stor_diag_add(&s, g_by_storage.vals[i]);
+    for (int i = 0; i < g_stor_ndet; i++) stor_diag_add(&s, g_stor_det[i]);
+    int detached = g_stor_ndet;
+    pthread_mutex_unlock(&g_smu);
+    MLOG("[storage-live] bases=%llu bytes=%llu held=%llu idle=%llu idle-bytes=%llu dead-only=%llu dead-bytes=%llu holders=%llu dead-holders=%llu detached=%d",
+         s.n, s.bytes, s.held, s.idle, s.idle_bytes, s.dead_only, s.dead_bytes, s.holders, s.dead_holders, detached);
+}
 // 预排布贴图上传：先设只读、再取戳、再读池内存解排布进暂存缓冲，blit 进新的 private 贴图。
 // 批量：一次回放提交内的上传共用一个上传命令缓冲（计算编码器解排布 + 统一 blit），在回放命令缓冲提交前冲刷；
 // 同一队列按提交顺序执行 ⇒ 首次采样前必已上传完。提交之外的上传当场冲刷。暂存区按 32 MB 私有块切分，命令缓冲持有到完成。
@@ -4447,6 +4475,7 @@ void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
     MLOG("[pkg-final-cache] enabled=%d kept=%llu", pkg_final_cache_on(), (unsigned long long)atomic_load(&g_pkg_final_kept));
     MLOG("贴图类型缓存已回收退役视图 %llu 个", (unsigned long long)g_type_retired_views);
     res_site_report(8);
+    stor_diag_report();
 }
 void mtl_pkg_stats(uint64_t *uploads, uint64_t *reuploads) { *uploads = g_pkg_uploads; *reuploads = g_pkg_reuploads; }
 uint64_t mtl_pkg_miss(void) { return g_pkg_miss; }
