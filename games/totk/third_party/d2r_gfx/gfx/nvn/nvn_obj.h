@@ -28,7 +28,7 @@ typedef struct { uint32_t magic; NVNdevice *dev; uint64_t submits; } queue_t;   
 
 typedef struct { NVNdevice *dev; void *mem; uint64_t size; uint32_t flags; } pool_builder_t;  FITS(pool_builder_t, NVNmemoryPoolBuilder);
 // game_mem/host/span: TOTK host-owned VM storage for physical/virtual pools (totk_vpool.c); host is NULL for game-backed pools.
-typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; } pool_t; FITS(pool_t, NVNmemoryPool);
+typedef struct { uint32_t magic, flags; uint8_t *mem; uint64_t size; uint8_t *game_mem, *host; uint64_t span; uint32_t address_used, mapped, direct_alias; } pool_t;   /* address_used / mapped / direct_alias: totk_vpool.c (NS2: a virtual pool that becomes its contiguous physical backing) */ FITS(pool_t, NVNmemoryPool);
 
 typedef struct { const pool_t *pool; int64_t off; int32_t n; } dpool_t;                       // 贴图 / 采样器描述符池 | Texture / sampler descriptor pool
 FITS(dpool_t, NVNtexturePool); FITS(dpool_t, NVNsamplerPool);
@@ -120,8 +120,9 @@ enum {
     OP_BIND_PROGRAM, OP_BIND_STATE, OP_BIND_VATTR, OP_BIND_VSTREAM, OP_BIND_VBUF,
     OP_BIND_UBO, OP_BIND_SSBO, OP_BIND_TEX, OP_BIND_SAMP,
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
-    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONST, OP_FENCE_SYNC,
+    OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONST, OP_FENCE_SYNC, OP_MESH_TASKS,
     OP_EYE,   // zeldaVR stereo B2: the ops up to the next OP_EYE are for these eyes (p_eye; the replay of each eye skips the others')
+    OP_CLEAR_BUF,   // NVN2 nvnCommandBufferClearBuffer (p_clear_buf)
     OP_COUNT_
 };
 typedef struct { uint32_t mask, pad; } p_eye;   // OP_EYE: 1 left, 2 right, 3 both (what every recording is outside such marks)
@@ -134,6 +135,7 @@ typedef struct { int32_t index, mask; float rgba[4]; } p_clear_color;
 #define NVN_PUSH_BANK 24
 #define NVN_PUSH_SIZE 0x100
 typedef struct { uint16_t compute, offset; uint32_t size; uint8_t data[]; } p_push_const;
+typedef struct { uint32_t first, count; uint64_t ind; } p_mesh_tasks;   /* NVN2 nvnCommandBufferDrawMeshTasks (first task group, group count) */
 typedef struct { void *sync; } p_fence_sync;   // nvnCommandBufferFenceSync: the sync object, fenced at the submit (hle_nvn.c fence_syncs)
 /* The same texture level / layer attached at more than one colour slot: only the first slot is attached (botw.md; the
    finding and fix come from nxnative, MIT, github.com/seedds/nxnative, rt_dup_slot). Breath of the Wild's G-buffer passes
@@ -381,7 +383,8 @@ typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // wh
 typedef struct { float factor, units, clamp; } p_poly_offset;
 typedef struct { int32_t prim, first, count, base_instance, instances, pad_; uint64_t ind; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays); ind: NVN address of the {count, instances, first, base instance} record of an indirect draw (0 = direct)
 typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf, ind; } p_draw_idx;   // ind: NVN address of the {count, instances, first index, base vertex, base instance} record of an indirect draw (0 = direct)
-typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
+typedef struct { uint64_t addr, size; uint32_t value, pad; } p_clear_buf;
+typedef struct { int32_t x, y, z; uint64_t caller; uint64_t ind; } p_dispatch;   // caller：游戏调用点返回地址（定位派发者） | caller: return address of the game call site (to locate the dispatcher)
 typedef struct { const dpool_t *pool; } p_set_pool;
 typedef struct { uint64_t src; const tex_t *tex; view_t view; uint8_t has_view; NVNcopyRegion r; int32_t flags; } p_copy_b2t;
 typedef struct { const tex_t *src, *dst; view_t sv, dv; uint8_t has_sv, has_dv; NVNcopyRegion sr, dr; int32_t flags; } p_copy_t2t;   // T2B 复用：src 存目标缓冲地址 | Reused for T2B: src stores the destination buffer address

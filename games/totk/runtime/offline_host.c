@@ -10,6 +10,11 @@ void hle_signal_system_event(void *event);
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef GAME_NS2
+#include <errno.h>
+#include <limits.h>
+#include <time.h>
+#endif
 #include <CommonCrypto/CommonDigest.h>
 #include <TargetConditionals.h>
 
@@ -75,13 +80,191 @@ static uint32_t ngc_check(uint32_t *masks, uint32_t count, const void **words, u
 
 static uint32_t nsd_unavailable(void) { return R_NSD_UNAVAILABLE; }
 
-/* ---------- nn::socket: the library starts, but there is no network, so every socket call fails with ENETDOWN ---------- */
+/* ---------- nn::socket: no network; GAME_NS2 also supports local event counter fds ---------- */
 #define SOCKET_ENETDOWN 50   /* Horizon uses the BSD errno values */
 #define SOCKET_EAI_FAIL 4
 static _Thread_local int socket_errno;
 static uint32_t socket_initialize(void) { return 0; }
 static int socket_down(void) { socket_errno = SOCKET_ENETDOWN; return -1; }
 static int socket_last_error(void) { return socket_errno; }
+#ifdef GAME_NS2
+/* SDK 22 ABI: EventFdFlags semaphore=1, cloexec=2 (no exec here), nonblock=4;
+   F_GETFL=3, F_SETFL=4, O_NONBLOCK=0x800. pollfd has an eight-byte stride.
+   This SDK uses libc EAGAIN=11, not the older BSD errno 35. */
+enum { LOCAL_FD_BASE = 0x4000, LOCAL_FD_COUNT = 64, SOCKET_EBADF = 9,
+       SOCKET_EINVAL = 22, SOCKET_EMFILE = 24, SOCKET_EAGAIN = 11,
+       SOCKET_NONBLOCK = 0x800, SOCKET_POLLIN = 1, SOCKET_POLLOUT = 4, SOCKET_POLLNVAL = 0x20 };
+typedef struct { int fd; int16_t events, revents; } SocketPollFd;
+_Static_assert(sizeof(SocketPollFd) == 8, "guest pollfd ABI");
+typedef struct { int fd, flags, semaphore; uint64_t counter; } LocalEventFd;
+static LocalEventFd local_event_fds[LOCAL_FD_COUNT];
+static int local_next_fd = LOCAL_FD_BASE;
+static pthread_mutex_t local_fd_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t local_fd_changed = PTHREAD_COND_INITIALIZER;
+static uint64_t local_fd_version;
+static void local_fd_notify(void) { ++local_fd_version; pthread_cond_broadcast(&local_fd_changed); }
+static int socket_set_errno(int error) {
+    socket_errno = error;
+#ifdef GAME_OOT
+    /* gRPC reads libc errno directly. Keep the existing offline BSD error 50
+       in GetLastErrno, translating it for SDK 22 libc (ENETDOWN=100).
+       The original accessor uses the calling guest's rewritten TLS. */
+    int *(*guest_errno)(void) = runtime_symbol("__errno_location");
+    if (guest_errno) *guest_errno() = error == SOCKET_ENETDOWN ? 100 : error;
+#endif
+    return 0;
+}
+static int socket_error(int error) { socket_set_errno(error); return -1; }
+static LocalEventFd *local_fd_find(int fd) {
+    for (unsigned i = 0; i < LOCAL_FD_COUNT; ++i)
+        if (local_event_fds[i].fd == fd && fd >= LOCAL_FD_BASE) return &local_event_fds[i];
+    return NULL;
+}
+static int local_fd_error(int fd) {
+    return socket_error(fd >= LOCAL_FD_BASE && fd < local_next_fd ? SOCKET_EBADF : SOCKET_ENETDOWN);
+}
+/* Give up the virtual core without a host lock held; the version check closes
+   the notification race during that handoff. Recheck the predicate on return. */
+static int local_fd_wait(const struct timespec *deadline) {
+    uint64_t version = local_fd_version;
+    pthread_mutex_unlock(&local_fd_lock);
+    int away = runtime_core_away();
+    pthread_mutex_lock(&local_fd_lock);
+    int result = 0;
+    if (deadline) {
+        struct timespec remaining;
+        clock_gettime(CLOCK_MONOTONIC, &remaining);
+        remaining.tv_sec = deadline->tv_sec - remaining.tv_sec;
+        remaining.tv_nsec = deadline->tv_nsec - remaining.tv_nsec;
+        if (remaining.tv_nsec < 0) { --remaining.tv_sec; remaining.tv_nsec += 1000000000; }
+        if (remaining.tv_sec < 0) result = ETIMEDOUT;
+        else if (version == local_fd_version)
+            result = pthread_cond_timedwait_relative_np(&local_fd_changed, &local_fd_lock, &remaining);
+    } else if (version == local_fd_version) result = pthread_cond_wait(&local_fd_changed, &local_fd_lock);
+    pthread_mutex_unlock(&local_fd_lock);
+    runtime_core_back(&away);
+    pthread_mutex_lock(&local_fd_lock);
+    return result;
+}
+static int socket_event_fd(uint64_t initial, int flags) {
+    if ((flags & ~7) || initial == UINT64_MAX) return socket_error(SOCKET_EINVAL);
+    pthread_mutex_lock(&local_fd_lock);
+    int fd = -1;
+    for (unsigned i = 0; i < LOCAL_FD_COUNT && local_next_fd < INT_MAX; ++i) {
+        if (local_event_fds[i].fd) continue;
+        fd = local_next_fd++;
+        local_event_fds[i] = (LocalEventFd){fd, flags & 4 ? SOCKET_NONBLOCK : 0, flags & 1, initial};
+        break;
+    }
+    pthread_mutex_unlock(&local_fd_lock);
+    if (fd < 0) return socket_error(SOCKET_EMFILE);
+    fprintf(stderr, "[totk] offline EventFd: fd=%d initial=%llu flags=%#x (local only)\n",
+            fd, (unsigned long long)initial, flags);
+    return fd;
+}
+static int socket_event_read(int fd, uint64_t *out) {
+    if (!out) return socket_error(SOCKET_EINVAL);
+    pthread_mutex_lock(&local_fd_lock);
+    int result;
+    for (;;) {
+        LocalEventFd *event = local_fd_find(fd);
+        if (!event) { result = local_fd_error(fd); break; }
+        if (event->counter) {
+            *out = event->semaphore ? 1 : event->counter;
+            event->counter -= *out;
+            local_fd_notify();
+            result = 0; break;
+        }
+        if (event->flags & SOCKET_NONBLOCK) { result = socket_error(SOCKET_EAGAIN); break; }
+        local_fd_wait(NULL);
+    }
+    pthread_mutex_unlock(&local_fd_lock);
+    return result;
+}
+static int socket_event_write(int fd, uint64_t value) {
+    if (value == UINT64_MAX) return socket_error(SOCKET_EINVAL);
+    pthread_mutex_lock(&local_fd_lock);
+    int result;
+    for (;;) {
+        LocalEventFd *event = local_fd_find(fd);
+        if (!event) { result = local_fd_error(fd); break; }
+        if (value <= UINT64_MAX - 1 - event->counter) {
+            event->counter += value;
+            local_fd_notify();
+            result = 0; break;
+        }
+        if (event->flags & SOCKET_NONBLOCK) { result = socket_error(SOCKET_EAGAIN); break; }
+        local_fd_wait(NULL);
+    }
+    pthread_mutex_unlock(&local_fd_lock);
+    return result;
+}
+static int socket_close(int fd) {
+    pthread_mutex_lock(&local_fd_lock);
+    LocalEventFd *event = local_fd_find(fd);
+    int result = event ? 0 : local_fd_error(fd);
+    if (event) { memset(event, 0, sizeof *event); local_fd_notify(); }
+    pthread_mutex_unlock(&local_fd_lock);
+    return result;
+}
+/* Fixed x2 argument matches guest AAPCS64 varargs; Darwin varargs use the stack. */
+static int socket_fcntl(int fd, int command, int flags) {
+    pthread_mutex_lock(&local_fd_lock);
+    LocalEventFd *event = local_fd_find(fd);
+    int result;
+    if (!event) result = local_fd_error(fd);
+    else if (command == 3) result = event->flags;
+    else if (command == 4) {
+        event->flags = flags & SOCKET_NONBLOCK; result = 0;
+        local_fd_notify();
+    } else result = socket_error(SOCKET_EINVAL);
+    pthread_mutex_unlock(&local_fd_lock);
+    return result;
+}
+static int socket_poll(SocketPollFd *fds, uint64_t count, int timeout) {
+    if ((!fds && count) || count > 0x1fffffff) return socket_error(SOCKET_EINVAL);
+    struct timespec deadline;
+    if (timeout > 0) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += timeout / 1000;
+        deadline.tv_nsec += (long)(timeout % 1000) * 1000000;
+        if (deadline.tv_nsec >= 1000000000) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000; }
+    }
+    pthread_mutex_lock(&local_fd_lock);
+    int result, expired = 0;
+    for (;;) {
+        result = 0;
+        for (uint64_t i = 0; i < count; ++i) {
+            fds[i].revents = 0;
+            if (fds[i].fd < 0) continue;
+            LocalEventFd *event = local_fd_find(fds[i].fd);
+            if (!event) {
+                if (fds[i].fd < LOCAL_FD_BASE || fds[i].fd >= local_next_fd) {
+                    result = socket_error(SOCKET_ENETDOWN); break;
+                }
+                fds[i].revents = SOCKET_POLLNVAL;
+            } else {
+                if (event->counter) fds[i].revents |= fds[i].events & SOCKET_POLLIN;
+                if (event->counter < UINT64_MAX - 1) fds[i].revents |= fds[i].events & SOCKET_POLLOUT;
+            }
+            if (fds[i].revents) ++result;
+        }
+        if (result || !timeout || expired) break;
+        int error = local_fd_wait(timeout > 0 ? &deadline : NULL);
+        if (error == ETIMEDOUT) expired = 1;
+        else if (error) { result = socket_error(SOCKET_EINVAL); break; }
+    }
+    pthread_mutex_unlock(&local_fd_lock);
+    return result;
+}
+static int socket_network_down(void) { return socket_error(SOCKET_ENETDOWN); }
+static int socket_option_down(int fd, int level, int option, const void *value, uint32_t size) {
+    (void)value;
+    fprintf(stderr, "[totk] offline SetSockOpt: fd=%d level=%#x option=%#x size=%u refused\n",
+            fd, level, option, size);
+    return socket_network_down();
+}
+#endif
 static int socket_addr_info(const char *node, const char *service, const void *hints, void **out) {
     (void)node; (void)service; (void)hints; if (out) *out = NULL; return SOCKET_EAI_FAIL;
 }
@@ -112,8 +295,53 @@ static unsigned char language_is(const int *language, const char *code) {
     return !strncmp(codes[*language], code, 8);
 }
 
+#ifdef GAME_NS2
+/* SDK 22's PlayReport::Send (Ocarina of Time saves one as the first scene starts) returns an AsyncContext through x8, holding a pointer to the service's object. Null is what the SDK's own
+   default context has: it completes at once with success. Naked because x8 is a hidden result pointer no C return type can name; nothing is sent (seedds/nxnative hle_offline.c, MIT). */
+__attribute__((naked)) static void prepo_send(void) { __asm__("str xzr, [x8]\n    ret"); }
+#endif
 void *runtime_offline_override(const char *name) {
     static const struct { const char *name; void *fn; } map[] = {
+#ifdef GAME_NS2
+        {"_ZN2nn5prepo10PlayReport4SendERKNS_7account3UidE", prepo_send},
+        /* The gRPC wakeup probe needs no socket options: only local event fds. */
+        {"_ZN2nn6socket7EventFdEmNS0_12EventFdFlagsE", socket_event_fd},
+        {"nnsocketEventFd", socket_event_fd},
+        {"_ZN2nn6socket11EventFdReadEiPm", socket_event_read},
+        {"nnsocketEventFdRead", socket_event_read},
+        {"_ZN2nn6socket12EventFdWriteEim", socket_event_write},
+        {"nnsocketEventFdWrite", socket_event_write},
+        {"_ZN2nn6socket5CloseEi", socket_close},
+        {"nnsocketClose", socket_close},
+        {"_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", socket_fcntl},
+        {"_ZN2nn6socket5FcntlEiiz", socket_fcntl},
+        {"nnsocketFcntl", socket_fcntl},
+        {"_ZN2nn6socket4PollEP6pollfdmi", socket_poll},
+        {"_ZN2nn6socket4PollEPNS0_6PollFdEmi", socket_poll},
+        {"nnsocketPoll", socket_poll},
+        {"nnsocketGetLastErrno", socket_last_error},
+        {"nnsocketSetLastErrno", socket_set_errno},
+        {"_ZN2nn6socket12SetLastErrnoEi", socket_set_errno},
+        {"nnsocketSocket", socket_network_down},
+        {"nnsocketConnect", socket_network_down},
+        {"nnsocketBind", socket_network_down},
+        {"nnsocketListen", socket_network_down},
+        {"nnsocketAccept", socket_network_down},
+        {"nnsocketShutdown", socket_network_down},
+        {"nnsocketSend", socket_network_down},
+        {"nnsocketRecv", socket_network_down},
+        {"nnsocketSendMsg", socket_network_down},
+        {"nnsocketRecvMsg", socket_network_down},
+        {"nnsocketSetSockOpt", socket_option_down},
+        {"_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", socket_option_down},
+        {"_ZN2nn6socket10SetSockOptEiiiPKvj", socket_option_down},
+        {"nnsocketGetSockOpt", socket_network_down},
+        {"nnsocketGetSockName", socket_network_down},
+        {"nnsocketGetPeerName", socket_network_down},
+        {"nnsocketGetAddrInfo", socket_addr_info}, {"nnsocketFreeAddrInfo", socket_free_addr_info},
+        {"nnsocketInetHtonl", socket_htonl}, {"nnsocketInetNtohl", socket_htonl},
+        {"nnsocketInetHtons", socket_htons}, {"nnsocketInetNtohs", socket_htons},
+#endif
         {"_ZN2nn2oe31EnterExitRequestHandlingSectionEv", enter_exit_section},
         {"_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", leave_exit_section},
         {"_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", display_version},

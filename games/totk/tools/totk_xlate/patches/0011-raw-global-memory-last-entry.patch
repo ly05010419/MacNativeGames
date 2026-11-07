@@ -1,0 +1,76 @@
+From nxnative (seedds/nxnative, MIT) 0f510fd5: a raw global memory helper remembers the pool table entry it chose last in this invocation, so a shader reading a structure word after word does not search the table for each word. Ocarina of Time's foliage mesh shaders have about 500 such reads.
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -848,8 +848,35 @@
+             Operand MapWord(Operand entry, int word)
+             {
+                 return context.Load(StorageKind.StorageBuffer, mapBinding, Const(0), context.IAdd(entry, Const(word)));
++            }
++
++            Operand AtOrBelow(Operand high, Operand low)   // the address is at or above {low, high}
++            {
++                return context.BitwiseOr(
++                    context.ICompareLessUnsigned(high, addrHigh),
++                    context.BitwiseAnd(context.ICompareEqual(high, addrHigh), context.ICompareLessOrEqualUnsigned(low, addrLow)));
++            }
++
++            Operand Below(Operand high, Operand low)   // the address is below {low, high}
++            {
++                return context.BitwiseOr(
++                    context.ICompareLessUnsigned(addrHigh, high),
++                    context.BitwiseAnd(context.ICompareEqual(addrHigh, high), context.ICompareLessUnsigned(addrLow, low)));
+             }
+ 
++            Operand selected = Local();
++            Operand lblChosen = Label();
++
++            // nxnative 0f510fd5 (MIT): the entry this helper chose last in this invocation, if it holds the address: a shader reads a structure word after word from one pool, so all but the first
++            // access of a run choose the entry the first one chose (Ocarina of Time's foliage mesh shader 73dc0b90c4082e43 has 506 such reads). The table's ranges are disjoint and the host binds one
++            // table for a whole draw or dispatch, so the search below would choose the same entry. The word starts at 0, the empty entry
++            int lastBinding = resourceManager.AddRawLastEntryMemory();
++            Operand last = context.Load(StorageKind.LocalMemory, lastBinding);
++            Operand lastEntry = context.IMultiply(last, Const(GmemMapEntryWords));
++            Operand lastHolds = context.BitwiseAnd(AtOrBelow(MapWord(lastEntry, 1), MapWord(lastEntry, 0)), Below(MapWord(lastEntry, 3), MapWord(lastEntry, 2)));
++            context.Copy(selected, last);
++            context.BranchIfTrue(lblChosen, lastHolds);
++
+             // The last entry whose start is at or below the address (entry 0 starts at 0, so there always is one)
+             Operand index = Const(0);
+ 
+@@ -857,27 +884,19 @@
+             {
+                 Operand candidate = context.IAdd(index, Const(step));
+                 Operand entry = context.IMultiply(candidate, Const(GmemMapEntryWords));
+-                Operand startLow = MapWord(entry, 0);
+-                Operand startHigh = MapWord(entry, 1);
+-
+-                Operand atOrBelow = context.BitwiseOr(
+-                    context.ICompareLessUnsigned(startHigh, addrHigh),
+-                    context.BitwiseAnd(context.ICompareEqual(startHigh, addrHigh), context.ICompareLessOrEqualUnsigned(startLow, addrLow)));
+-
+-                index = context.ConditionalSelect(atOrBelow, candidate, index);
++                index = context.ConditionalSelect(AtOrBelow(MapWord(entry, 1), MapWord(entry, 0)), candidate, index);
+             }
+ 
+-            Operand found = context.IMultiply(index, Const(GmemMapEntryWords));
+-            Operand endLow = MapWord(found, 2);
+-            Operand endHigh = MapWord(found, 3);
+-
+-            Operand inPool = context.BitwiseOr(
+-                context.ICompareLessUnsigned(addrHigh, endHigh),
+-                context.BitwiseAnd(context.ICompareEqual(addrHigh, endHigh), context.ICompareLessUnsigned(addrLow, endLow)));
+-
++            context.Copy(selected, index);
++            context.Store(StorageKind.LocalMemory, lastBinding, selected);
++            Operand found = context.IMultiply(selected, Const(GmemMapEntryWords));
+             Operand lblSkip = Label();
+-            context.BranchIfFalse(lblSkip, inPool);
++            context.BranchIfFalse(lblSkip, Below(MapWord(found, 3), MapWord(found, 2)));   // an address in no pool: the entry below it ends below it
+ 
++            // The last entry's range held it, or the search's entry does
++            context.MarkLabel(lblChosen);
++            found = context.IMultiply(selected, Const(GmemMapEntryWords));
++
+             if (writes)
+             {
+                 // A page in a pool is never 0 (the guest's first page is not mapped), so 0 marks an empty slot

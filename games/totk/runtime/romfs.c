@@ -70,6 +70,14 @@ static ssize_t src_pread(int fd,void *buf,size_t n,off_t off) {
 }
 static const uint8_t *image_map;
 static char mount_name[32];
+/* Other names the game mounts the same RomFS under (Ocarina of Time mounts it twice): paths through them read the same image. */
+enum { ROM_ALIASES = 4 };
+static char mount_alias[ROM_ALIASES][32];
+static const char *mount_of(const char *path) {   /* the mount name a path starts with ("<name>:"), or NULL */
+ if(!path)return NULL;size_t n=strlen(mount_name);if(n&&!strncmp(path,mount_name,n)&&path[n]==':')return mount_name;
+ for(int i=0;i<ROM_ALIASES;i++){n=strlen(mount_alias[i]);if(n&&!strncmp(path,mount_alias[i],n)&&path[n]==':')return mount_alias[i];}
+ return NULL;
+}
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t read_calls,read_bytes,read_ns,read_prepare_ns,read_report_ns;
 static uint64_t handles[NH]; /* file index + 1; 0 is free */
@@ -85,7 +93,7 @@ static uint64_t handles[NH]; /* file index + 1; 0 is free */
    file there stops the game instead of serving bytes nobody checked. scripts/make_mod_manifest.py writes a mod's manifest.
    A line whose original SHA-256 is "-" adds a file the RomFS lacks (issue #48: The Second Quest adds 874): it is numbered
    after the RomFS's own files (file_count + k, k in path order, added[]), opens and reads like a replacement, and its
-   folders exist for runtime_romfs_entry_type. The RomFS has no directory listing here, so nothing else needs to know. */
+   folders exist for runtime_romfs_entry_type. runtime_romfs_list lists them with the RomFS's own files. */
 typedef struct { uint64_t index,size; char *path; dev_t dev; ino_t ino; struct timespec mtime; char *name; char sha[65]; } Overlay;
 static Overlay *overlays; /* sorted by RomFS index after overlay_init */
 static size_t noverlay,overlay_cap;
@@ -315,12 +323,15 @@ void runtime_fs_init(void) {
 }
 static int path_ok(const char *p) {return romfs_path_valid_relative(p);}
 static const char *rom_path(const char *path) {
- return romfs_path_relative(mount_name,path);
+ const char *m=mount_of(path);return romfs_path_relative(m?m:mount_name,path);
 }
 static uint64_t lower(const char *name) {uint64_t lo=0,hi=file_count;while(lo<hi){uint64_t m=lo+(hi-lo)/2;if(strcmp(entry_name(entry(m)),name)<0)lo=m+1;else hi=m;}return lo;}
 static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
  (void)cache;(void)size;runtime_fs_init();if(!name||!path_ok(name)||strlen(name)>=sizeof(mount_name)||strchr(name,'/')||strchr(name,':'))return INVALID;
- if(*mount_name&&strcmp(name,mount_name))runtime_fail("second RomFS mount not implemented");strcpy(mount_name,name);return 0;
+ if(!*mount_name||!strcmp(name,mount_name)){strcpy(mount_name,name);return 0;}
+ for(int i=0;i<ROM_ALIASES;i++)if(!strcmp(mount_alias[i],name))return 0;
+ for(int i=0;i<ROM_ALIASES;i++)if(!*mount_alias[i]){strcpy(mount_alias[i],name);fprintf(stderr,"[totk] RomFS also mounted as \"%s\" (the same image as \"%s\")\n",name,mount_name);return 0;}
+ runtime_fail("too many RomFS mount names");
 }
 static unsigned cache_size(uint64_t *out) {if(!out)return INVALID;*out=0;return 0;}
 /* SDK 20's forms (Pokemon Pokopia): MountRom without a cache, and with a program index (0: the application's own RomFS). */
@@ -363,11 +374,43 @@ unsigned runtime_romfs_read(uint64_t *out,uint64_t h,int64_t offset,void *buffer
 }
 unsigned runtime_romfs_size(int64_t *out,uint64_t h) {Entry e;if(!out||!handle_entry(h,&e))return INVALID;int fd;uint64_t base,size;handle_source(h,&e,&fd,&base,&size);*out=(int64_t)size;return 0;}
 void runtime_romfs_close(uint64_t h) {Entry e;if(!handle_entry(h,&e))runtime_fail("close invalid file handle");uint64_t j=h-0x100000000ULL;pthread_mutex_lock(&lock);int fd=handle_ovl[j]?handle_fd[j]:-1;handles[j]=0;handle_ovl[j]=0;handle_fd[j]=-1;pthread_mutex_unlock(&lock);if(fd>=0)close(fd);}
+/* Directory listing (OpenDirectory on the RomFS; Ocarina of Time lists Foliage/ folders): from games/mkw/runtime/romfs.c. */
+static void list_source(const char *prefix,size_t n,int mode,const char *(*name_at)(uint64_t),uint64_t (*size_at)(uint64_t),uint64_t from,uint64_t to,
+                        void (*add)(void *,const char *,int,int64_t),void *ctx,char *last_dir) {
+ for(uint64_t i=from;i<to;i++){const char *full=name_at(i);if(strncmp(full,prefix,n))break;const char *rest=full+n,*slash=strchr(rest,'/');
+  if(!slash){if(mode&2)add(ctx,rest,0,(int64_t)size_at(i));continue;}
+  size_t k=(size_t)(slash-rest);if(k>=768)continue;if(!strncmp(last_dir,rest,k)&&!last_dir[k])continue;
+  memcpy(last_dir,rest,k);last_dir[k]=0;if(mode&1)add(ctx,last_dir,1,0);}
+}
+static const char *list_index_name(uint64_t i){return entry_name(entry(i));}
+static uint64_t list_index_size(uint64_t i){return entry(i).size;}
+static const char *added_name(uint64_t k){return added[k];}
+static uint64_t added_size(uint64_t k){char full[4200];snprintf(full,sizeof full,"%s:/%s",mount_name,added[k]);uint64_t h;int64_t size=0;if(runtime_romfs_open(&h,full,1))return 0;runtime_romfs_size(&size,h);runtime_romfs_close(h);return (uint64_t)size;}
+unsigned runtime_romfs_list(const char *path,int mode,void (*add)(void *ctx,const char *name,int is_dir,int64_t size),void *ctx) {
+ /* A folder may be named with trailing slashes, and the mount root ("Contents:/") is the empty path; files keep the strict check. */
+ char trimmed[4096];if(!path||snprintf(trimmed,sizeof trimmed,"%s",path)>=(int)sizeof trimmed)return INVALID;
+ const char *mn=mount_of(trimmed);if(!mn)mn=mount_name;
+ size_t tl=strlen(trimmed),ml=strlen(mn);while(tl>ml+2&&trimmed[tl-1]=='/')trimmed[--tl]=0;
+ int root=!strncmp(trimmed,mn,ml)&&trimmed[ml]==':'&&(!trimmed[ml+1]||(trimmed[ml+1]=='/'&&!trimmed[ml+2]));
+ const char *p=root?"":rom_path(trimmed);if(!p)return NOT_FOUND;char prefix[4096];
+ if(snprintf(prefix,sizeof prefix,"%s%s",p,*p&&p[strlen(p)-1]!='/'?"/":"")>=(int)sizeof prefix)return INVALID;
+ size_t n=strlen(prefix);if(n&&!folder_exists(prefix))return NOT_FOUND;
+ char last[768]="";list_source(prefix,n,mode,list_index_name,list_index_size,n?lower(prefix):0,file_count,add,ctx,last);
+ size_t lo=0,hi=nadded;while(lo<hi){size_t m=lo+(hi-lo)/2;if(strcmp(added[m],prefix)<0)lo=m+1;else hi=m;}
+ last[0]=0;list_source(prefix,n,mode,added_name,added_size,lo,nadded,add,ctx,last);
+ return 0;
+}
 unsigned runtime_romfs_entry_type(int *out,const char *path) {
  if(!out)return INVALID;const char *p=rom_path(path);if(!p)return NOT_FOUND;if(file_index(p)!=UINT64_MAX){*out=1;return 0;}
  char dir[4096];if(snprintf(dir,sizeof(dir),"%s/",p)>=(int)sizeof(dir))return INVALID;if(folder_exists(dir)){*out=0;return 0;}return NOT_FOUND;
 }
-int runtime_romfs_owns(const char *path) {size_t n=strlen(mount_name);return n&&path&&!strncmp(path,mount_name,n)&&path[n]==':';}
+int runtime_romfs_owns(const char *path) {return mount_of(path)!=NULL;}
+/* nn::fs::Unmount of a RomFS name: an extra name goes away; the first stays mounted (the image is read for the whole run). */
+int runtime_romfs_unmount(const char *name) {
+ if(!name||!*name)return 0;if(!strcmp(name,mount_name))return 1;
+ for(int i=0;i<ROM_ALIASES;i++)if(!strcmp(mount_alias[i],name)){mount_alias[i][0]=0;return 1;}
+ return 0;
+}
 int runtime_romfs_handle(uint64_t h) {return h>0x100000000ULL&&h<0x100000000ULL+NH;}
 unsigned runtime_romfs_read_options(uint64_t *out,uint64_t h,int64_t off,void *buf,uint64_t size) {return runtime_romfs_read(out,h,off,buf,size);}
 void *runtime_fs_override(const char *name) {

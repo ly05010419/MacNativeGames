@@ -186,6 +186,11 @@ void runtime_trace_guest(uint64_t fp,uint64_t lr) {
   if(mach_vm_read_overwrite(mach_task_self(),fp,16,(uintptr_t)f,&got)!=KERN_SUCCESS||got!=16)break;
   lr=f[1];if(f[0]<=fp||f[0]-fp>(64u<<20))break;fp=f[0];
  }
+ /* TOTK_TRACE_SCAN=1 (diagnostics): where the frame chain ends early (abort reached from code that keeps no frame record, a
+    damaged chain), the 8 KiB of stack above the last frame, every word that points into a module, as possible callers. */
+ if(getenv("TOTK_TRACE_SCAN")&&fp&&!(fp%8))for(uint64_t a=fp;a<fp+0x2000;a+=8){uint64_t w;mach_vm_size_t got=0;
+  if(mach_vm_read_overwrite(mach_task_self(),a,8,(uintptr_t)&w,&got)!=KERN_SUCCESS||got!=8)break;
+  for(unsigned i=0;i<NM;i++)if(w>=(uintptr_t)modules[i].base&&w<(uintptr_t)modules[i].base+modules[i].size)fprintf(stderr,"[totk] stack +%#llx %s+0x%llx\n",(unsigned long long)(a-fp),modules[i].name,(unsigned long long)(w-(uintptr_t)modules[i].base));}
 }
 static void *required(const char *name) { void *p=runtime_symbol(name);if(!p){fprintf(stderr,"missing %s\n",name);runtime_fail("required symbol");}return p; }
 #if TARGET_OS_IPHONE

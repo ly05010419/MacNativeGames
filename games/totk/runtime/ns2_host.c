@@ -4,6 +4,7 @@
    dm/gfx/hle_vi.c) and its nv::InitCheck (dm/gfx/hle_nv.c), all found on Donkey Kong Bananza. They are matched by the
    game's imports (runtime_override, services.c), like every other host function here. */
 #include "runtime.h"
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,6 +50,143 @@ static void audio_set_volume(const char *name, float v) { (void)name; atomic_sto
 static float audio_volume(const char *name) { (void)name; return atomic_load(&device_volume); }
 /* 0, or 0x499 when the notification is already acquired; bound, never signaled (the output never changes). */
 static Result audio_notification(void *ev) { static atomic_int acquired; if (atomic_exchange(&acquired, 1)) return 0x499; hle_bind_system_event(ev, 0); return RES_OK; }
+/* SDK 22's name for it (Ocarina of Time): the same answer, its own acquisition (IAudioDevice command 17 otherwise). */
+static Result audio_output_notification(void *ev) { static atomic_int acquired; if (atomic_exchange(&acquired, 1)) return 0x499; hle_bind_system_event(ev, 0); return RES_OK; }
+
+/* ---------- audio: SDK 21 streams (Ocarina of Time imports them; without these the SDK opens auddmg:u itself) ----------
+   Frame accounting and interleaved formats follow seedds/nxnative dm/host/hle_audio.c, MIT.
+   Each write is an AudioQueue buffer; only its completion returns room and signals the guest event.
+   States: 0 not open, 1 stopped, 2 started. Input streams still report no microphone. */
+#include <AudioToolbox/AudioToolbox.h>
+enum { OSTREAM_MAX = 16 };
+typedef struct {
+    const void *key; void *event; AudioQueueRef queue;
+    AudioStreamBasicDescription format; int cap, queued, state;
+} OutStream;
+static OutStream ostreams[OSTREAM_MAX];
+/* API calls serialize lifecycle changes; callbacks only take the count lock. Never hold the count lock
+   across AudioQueue calls: synchronous disposal waits for callbacks before a slot can be reused. */
+static pthread_mutex_t ostream_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ostream_count_lock = PTHREAD_MUTEX_INITIALIZER;
+void hle_signal_system_event(void *event);
+static OutStream *os_find(const void *g) { for (int i = 0; i < OSTREAM_MAX; i++) if (ostreams[i].key == g) return &ostreams[i]; return NULL; }
+static void os_played(void *user, AudioQueueRef q, AudioQueueBufferRef b) {
+    OutStream *o = user; int frames = (int)(uintptr_t)b->mUserData;
+    AudioQueueFreeBuffer(q, b);
+    pthread_mutex_lock(&ostream_count_lock); o->queued -= frames; pthread_mutex_unlock(&ostream_count_lock);
+    if (o->event) hle_signal_system_event(o->event);
+}
+static OSStatus os_new_queue(OutStream *o) {
+    return AudioQueueNewOutput(&o->format, os_played, o, NULL, kCFRunLoopCommonModes, 0, &o->queue);
+}
+static void os_default_device(char *name) { memset(name, 0, DEVNAME); strlcpy(name, "AudioVirtualOutput", DEVNAME); }
+/* sdk+0x224cd4..0x224cf0 copies name[0x100], reply+0x218 latency (u64) to +0x100,
+   reply+0x108 channels (u32) to +0x108. The 0x228-byte IPC reply is NOT the public struct. */
+static Result os_properties(uint8_t *props, const char *name) {
+    if (!props || !name || strncmp(name, "AudioVirtualOutput", DEVNAME)) return 0x13201u;
+    uint64_t latency = 10000000; uint32_t channels = 2;
+    memset(props, 0, 0x100); strlcpy((char *)props, "AudioVirtualOutput", 0x100);
+    memcpy(props + 0x100, &latency, 8); memcpy(props + 0x108, &channels, 4);
+    return RES_OK;
+}
+static Result os_open_common(void *g, void *ev, const int32_t *fmt, int frames) {
+    if (!g || !fmt || frames <= 0 || (fmt[0] != 2 && fmt[0] != 5) ||
+        (fmt[1] != 1 && fmt[1] != 2 && fmt[1] != 6) || fmt[2] < 0) return 0x13201u;
+    pthread_mutex_lock(&ostream_lock);
+    OutStream *o = os_find(g);
+    if (o) { pthread_mutex_unlock(&ostream_lock); return 0x13201u; }
+    o = os_find(NULL);
+    if (!o) { pthread_mutex_unlock(&ostream_lock); return 0x13201u; }
+    unsigned bytes = fmt[0] == 5 ? 4 : 2;
+    *o = (OutStream){.key = g, .event = ev, .cap = frames, .state = 1,
+        .format = {.mSampleRate = fmt[2] ? fmt[2] : 48000, .mFormatID = kAudioFormatLinearPCM,
+            .mFormatFlags = kLinearPCMFormatFlagIsPacked | (fmt[0] == 5 ? kLinearPCMFormatFlagIsFloat : kLinearPCMFormatFlagIsSignedInteger),
+            .mBytesPerPacket = bytes * fmt[1], .mFramesPerPacket = 1, .mBytesPerFrame = bytes * fmt[1],
+            .mChannelsPerFrame = fmt[1], .mBitsPerChannel = bytes * 8}};
+    OSStatus st = os_new_queue(o);
+    if (st) { fprintf(stderr, "[ns2] audio OutputStream [RED] AudioQueueNewOutput failed (%d)\n", (int)st); *o = (OutStream){0}; }
+    else {
+        if (ev) hle_bind_system_event(ev, 0);
+        fprintf(stderr, "[ns2] audio OutputStream open: format %d, %d channels, %d Hz, %d frames (AudioQueue)\n", fmt[0], fmt[1], fmt[2] ? fmt[2] : 48000, frames);
+    }
+    pthread_mutex_unlock(&ostream_lock); return st ? 0x13201u : RES_OK;
+}
+static Result os_open(void *g, void *ev, void *buf, uint64_t size, const char *dev, const int32_t *fmt, int frames, int threshold, uint32_t flags) {
+    (void)buf; (void)size; (void)dev; (void)threshold; (void)flags; return os_open_common(g, ev, fmt, frames); }
+static Result os_open_no_flags(void *g, void *ev, void *buf, uint64_t size, const char *dev, const int32_t *fmt, int frames, int threshold) {
+    (void)buf; (void)size; (void)dev; (void)threshold; return os_open_common(g, ev, fmt, frames); }
+static Result os_start(void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    OSStatus st = o && o->queue ? AudioQueueStart(o->queue, NULL) : -1;
+    if (!st) o->state = 2;
+    pthread_mutex_unlock(&ostream_lock); return st ? 0x13201u : RES_OK;
+}
+static void os_stop(void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    if (o) { if (o->queue) AudioQueuePause(o->queue); o->state = 1; }
+    pthread_mutex_unlock(&ostream_lock);
+}
+static void os_purge(void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    if (o) {
+        /* Dispose frees pending buffers too, including those never submitted to the device while stopped.
+           It waits for callbacks; recreating avoids counting any pre-purge callback against new frames. */
+        if (o->queue) AudioQueueDispose(o->queue, true);
+        o->queue = NULL;
+        pthread_mutex_lock(&ostream_count_lock); o->queued = 0; pthread_mutex_unlock(&ostream_count_lock);
+        OSStatus st = os_new_queue(o);
+        if (!st && o->state == 2) st = AudioQueueStart(o->queue, NULL);
+        if (st) { o->state = 1; fprintf(stderr, "[ns2] audio OutputStream [RED] purge/restart failed (%d)\n", (int)st); }
+        if (o->event) hle_signal_system_event(o->event);
+    }
+    pthread_mutex_unlock(&ostream_lock);
+}
+static void os_close(void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    if (o) { if (o->queue) AudioQueueDispose(o->queue, true); *o = (OutStream){0}; }
+    pthread_mutex_unlock(&ostream_lock);
+}
+static int os_state(const void *g) { pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g); int s = o ? o->state : 0; pthread_mutex_unlock(&ostream_lock); return s; }
+static int os_free(const void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    pthread_mutex_lock(&ostream_count_lock); int n = o && o->queue ? o->cap - o->queued : 0; pthread_mutex_unlock(&ostream_count_lock);
+    pthread_mutex_unlock(&ostream_lock); return n;
+}
+static int os_filled(const void *g) {
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g);
+    pthread_mutex_lock(&ostream_count_lock); int n = o ? o->queued : 0; pthread_mutex_unlock(&ostream_count_lock);
+    pthread_mutex_unlock(&ostream_lock); return n;
+}
+static int os_write(void *g, const void *data, int frames) {
+    if (!data || frames <= 0) return 0;
+    pthread_mutex_lock(&ostream_lock); OutStream *o = os_find(g); int n = 0;
+    if (o && o->queue) {
+        pthread_mutex_lock(&ostream_count_lock); int room = o->cap - o->queued; pthread_mutex_unlock(&ostream_count_lock);
+        n = frames < room ? frames : room;
+        uint64_t bytes = (uint64_t)n * o->format.mBytesPerFrame;
+        AudioQueueBufferRef b = NULL; OSStatus st = 0;
+        if (n > 0 && bytes <= UINT32_MAX && !(st = AudioQueueAllocateBuffer(o->queue, (UInt32)bytes, &b))) {
+            memcpy(b->mAudioData, data, (size_t)bytes); b->mAudioDataByteSize = (UInt32)bytes; b->mUserData = (void *)(uintptr_t)n;
+            pthread_mutex_lock(&ostream_count_lock); o->queued += n; pthread_mutex_unlock(&ostream_count_lock);
+            st = AudioQueueEnqueueBuffer(o->queue, b, 0, NULL);
+            if (st) {
+                pthread_mutex_lock(&ostream_count_lock); o->queued -= n; pthread_mutex_unlock(&ostream_count_lock);
+                AudioQueueFreeBuffer(o->queue, b); n = 0;
+            }
+        } else n = 0;
+        if (st) fprintf(stderr, "[ns2] audio OutputStream [RED] write failed (%d)\n", (int)st);
+    }
+    pthread_mutex_unlock(&ostream_lock); return n;
+}
+/* Statistics are returned by value through x8, 24 bytes (nxnative: a larger result overwrote Star Fox's stack canary). */
+typedef struct { int64_t a, b, c; } StreamStats;
+static StreamStats os_stats(void *g, unsigned reset) { (void)g; (void)reset; return (StreamStats){0}; }
+static int is_list(void *names, int n) { (void)names; (void)n; return 0; }
+static Result is_open(void *g, void *buf, uint64_t size, const char *dev, const void *fmt, int frames) { (void)g; (void)buf; (void)size; (void)dev; (void)fmt; (void)frames; return 0x1u | (153u << 9); }
+static void is_noop(void *g) { (void)g; }
+static Result is_start(void *g) { (void)g; return 0x1u | (153u << 9); }
+static int is_zero(const void *g) { (void)g; return 0; }
+static int is_read(void *g, void *buf, int frames) { (void)g; (void)buf; (void)frames; return 0; }
 
 /* ---------- hid: the Joy-Con 2 mouse sensor (JCMS) ----------
    InitializeJcms opens the hid service itself. A handle is the npad id in byte 0 and the JcmsType in byte 1 (the SDK's
@@ -160,6 +298,30 @@ void *runtime_ns2_override(const char *name) {
         {"_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", audio_set_volume},
         {"_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE", audio_volume},
         {"_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE", audio_notification},
+        {"_ZN2nn5audio36AcquireAudioOutputDeviceNotificationEPNS_2os11SystemEventE", audio_output_notification},
+        {"_ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE", os_default_device},
+        {"_ZN2nn5audio32GetVirtualOutputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE", os_properties},
+        {"_ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE", os_open},
+        {"_ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii", os_open_no_flags},
+        {"_ZN2nn5audio17StartOutputStreamEPNS0_16OutputStreamTypeE", os_start},
+        {"_ZN2nn5audio16StopOutputStreamEPNS0_16OutputStreamTypeE", os_stop},
+        {"_ZN2nn5audio17PurgeOutputStreamEPNS0_16OutputStreamTypeE", os_purge},
+        {"_ZN2nn5audio17CloseOutputStreamEPNS0_16OutputStreamTypeE", os_close},
+        {"_ZN2nn5audio20GetOutputStreamStateEPKNS0_16OutputStreamTypeE", os_state},
+        {"_ZN2nn5audio29GetOutputStreamFreeFrameCountEPKNS0_16OutputStreamTypeE", os_free},
+        {"_ZN2nn5audio31GetOutputStreamFilledFrameCountEPKNS0_16OutputStreamTypeE", os_filled},
+        {"_ZN2nn5audio17WriteOutputStreamEPNS0_16OutputStreamTypeEPKvi", os_write},
+        {"_ZN2nn5audio25GetOutputStreamStatisticsEPNS0_16OutputStreamTypeEb", os_stats},
+        {"_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", is_list},
+        {"_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi", is_open},
+        {"_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", is_noop},
+        {"_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE", is_start},
+        {"_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", is_noop},
+        {"_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", is_noop},
+        {"_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE", is_zero},
+        {"_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE", is_zero},
+        {"_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi", is_read},
+        {"_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb", os_stats},
         {"_ZN2nn3hid14InitializeJcmsEPvm", jcms_init},
         {"_ZN2nn3hid12FinalizeJcmsEv", jcms_fini},
         {"_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", jcms_handle},

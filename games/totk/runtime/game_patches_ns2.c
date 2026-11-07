@@ -17,9 +17,61 @@
 #include "bananza_display.h"
 #include "pokopia_display.h"
 
+#ifdef GAME_OOT
+/* Ocarina of Time's game time steps by its frame-rate controller's interval, 1/60 s a frame at interval 1, and nothing here changed it: below 60 fps the game ran slow, above it fast (patch_oot_frame_step).
+   The controller takes its interval from a word the host sets at each present to the whole vsyncs that passed, the remainder carried over, so game time adds up to real time at any frame rate. */
+static _Atomic uint32_t oot_step;
+static uint64_t oot_last_ns, oot_report_ns, oot_steps, oot_frames;
+static double oot_debt;
+void runtime_frame_step_pin(double ms) { (void)ms; }
+void runtime_frame_step_update(uint64_t now_ns) {
+    if (!oot_last_ns) { oot_last_ns = oot_report_ns = now_ns; return; }
+    oot_debt += (double)(now_ns - oot_last_ns) * 60e-9; oot_last_ns = now_ns;
+    int k = (int)(oot_debt + 0.5);
+    if (k < 1) k = 1;
+    if (k > 4) { k = 4; oot_debt = 4; }   /* a hitch: the game does not jump further than it would on the console's slowest step */
+    oot_debt -= k; oot_steps += (uint64_t)k; oot_frames++;
+    atomic_store_explicit(&oot_step, (uint32_t)k, memory_order_release);
+    if (now_ns - oot_report_ns >= 30000000000ull) {
+        double real = (double)(now_ns - oot_report_ns) / 1e9;
+        fprintf(stderr, "[totk] game speed: %.3f of real time (%.2f s of game time in %.2f s, %.1f fps)\n", oot_steps / 60.0 / real, oot_steps / 60.0, real, oot_frames / real);
+        oot_report_ns = now_ns; oot_steps = oot_frames = 0;
+    }
+}
+static void patch_oot_frame_step(Module *m) {
+    const char *e = getenv("TOTK_REALTIME");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[totk] game time follows frames, as shipped (TOTK_REALTIME=0)\n"); return; }
+    enum { SITE = 0x3b4f074 };
+    uint32_t word; memcpy(&word, m->base + SITE, 4);
+    if (word != 0xaa1403e0u) runtime_fail("Ocarina of Time frame step: the controller differs from the verified build");
+    const uint64_t stub = (m->text_end + 15) & ~15ULL, a = (uint64_t)(uintptr_t)&oot_step;
+    const uint32_t code[] = {
+        0xd2800010u | (uint32_t)((a & 0xffff) << 5),            /* movz x16, address */
+        0xf2a00010u | (uint32_t)(((a >> 16) & 0xffff) << 5),
+        0xf2c00010u | (uint32_t)(((a >> 32) & 0xffff) << 5),
+        0xf2e00010u | (uint32_t)(((a >> 48) & 0xffff) << 5),
+        0xb9400211u,   /* ldr w17, [x16]        the host's step in vsyncs */
+        0x340000b1u,   /* cbz w17, orig         not decided yet */
+        0xb9004a91u,   /* str w17, [x20, #0x48] the controller's interval */
+        0x52800789u,   /* mov w9, #60 */
+        0x1ad10929u,   /* udiv w9, w9, w17 */
+        0xb9005a89u,   /* str w9, [x20, #0x58]  its fps, which setFrameRate takes */
+        0xaa1403e0u,   /* orig: mov x0, x20 */
+        0x14000000u | (((uint32_t)(((int64_t)SITE + 4 - (int64_t)(stub + 44)) >> 2)) & 0x3ffffffu),   /* back */
+    };
+    if (stub + sizeof code > ((m->text_end + 0xfff) & ~0xfffULL)) runtime_fail("Ocarina of Time frame step: no room after the code");
+    for (size_t i = 0; i < sizeof code; i++) if (m->base[stub + i]) runtime_fail("Ocarina of Time frame step: padding not empty");
+    memcpy(m->base + stub, code, sizeof code);
+    uint32_t jump = 0x14000000u | (((uint32_t)(((int64_t)stub - (int64_t)SITE) >> 2)) & 0x3ffffffu);
+    memcpy(m->base + SITE, &jump, 4);
+    __builtin___clear_cache((char *)m->base + SITE, (char *)m->base + stub + sizeof code);
+    fprintf(stderr, "[totk] game time follows real time: the frame-rate controller at main+%#x takes the vsyncs that passed (after kid-with-sword-remake, MIT; TOTK_REALTIME=0: as shipped)\n", (unsigned)SITE);
+}
+#else
 /* No frame-step patch: these are what the frontend and the frame lock call. */
 void runtime_frame_step_pin(double ms) { (void)ms; }
 void runtime_frame_step_update(uint64_t now_ns) { (void)now_ns; }
+#endif
 
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
 static pthread_once_t output_once=PTHREAD_ONCE_INIT;
@@ -356,6 +408,8 @@ void runtime_game_patches(Module *m) {
     patch_output_parameters(m);
 #elif defined(GAME_POKOPIA)
     patch_pokopia_display(m);
+#elif defined(GAME_OOT)
+    patch_oot_frame_step(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {

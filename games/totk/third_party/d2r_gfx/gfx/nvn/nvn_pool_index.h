@@ -9,7 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct { uintptr_t lo, hi, base; void *buf; uint64_t gpu; const void *key; int res; } pidx_ent;   // res: buffer is in the residency set (nvn_mtl.m pool_res)
+typedef struct { uintptr_t lo, hi, base; void *buf; uint64_t gpu; const void *key; int res;     int borrows;   /* uploads that borrowed a temporary buffer over this pool (up_temp_src) */
+} pidx_ent;   // res: buffer is in the residency set (nvn_mtl.m pool_res)
 typedef struct { pidx_ent *e; uintptr_t *maxhi; int n, cap; } pidx;   // maxhi[i] = largest hi among e[0..i]
 
 static inline void pidx_fix_maxhi(pidx *x, int from) {
