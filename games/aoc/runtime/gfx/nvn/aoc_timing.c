@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 extern uint8_t *dm_fps_state __attribute__((weak));
-static _Atomic int target_fps, dynamic_step = 1;
+static _Atomic int target_fps, dynamic_step = 1, held;   // held: a cutscene is playing (hle_aoc_scene.c); the state page goes to the original timing, the target stays what was chosen
 static uint8_t *state(void) { return &dm_fps_state ? dm_fps_state : NULL; }
 int aoc_timing_valid(int t) { return t == 0 || t == 30 || t == 60; }
 static int safe_target(int t) {
@@ -21,17 +21,24 @@ int aoc_timing_dynamic(void) { return atomic_load(&dynamic_step); }
 static void put_float(uint8_t *p, float f) {
     uint32_t bits; memcpy(&bits, &f, 4); __atomic_store_n((uint32_t *)p, bits, __ATOMIC_RELEASE);
 }
+static void publish(int target, int dynamic) {
+    uint8_t *p = state();
+    if (!p) return;
+    if (atomic_load(&held) && target > 30) target = 0;
+    __atomic_store_n((uint32_t *)(p + AOC_DYNAMIC), !!dynamic, __ATOMIC_RELAXED);
+    __atomic_store_n((uint64_t *)(p+AOC_SCENE_TICKS),0,__ATOMIC_RELAXED);
+    __atomic_store_n((uint32_t *)(p+AOC_SCENE_ACTIVE),0,__ATOMIC_RELAXED);
+    put_float(p, (float)target);
+}
 void aoc_timing_set(int target, int dynamic) {
     target = safe_target(target);
     if (!aoc_timing_valid(target)) return;
-    uint8_t *p = state();
-    if (p) {
-        __atomic_store_n((uint32_t *)(p + AOC_DYNAMIC), !!dynamic, __ATOMIC_RELAXED);
-        __atomic_store_n((uint64_t *)(p+AOC_SCENE_TICKS),0,__ATOMIC_RELAXED);
-        __atomic_store_n((uint32_t *)(p+AOC_SCENE_ACTIVE),0,__ATOMIC_RELAXED);
-        put_float(p, (float)target);
-    }
+    publish(target, dynamic);
     atomic_store(&dynamic_step, !!dynamic); atomic_store(&target_fps, target);
+}
+void aoc_timing_hold(int on) {
+    atomic_store(&held, !!on);
+    publish(aoc_timing_target(), aoc_timing_dynamic());
 }
 void aoc_timing_apply(int profile_target) {
     int t = safe_target(profile_target);

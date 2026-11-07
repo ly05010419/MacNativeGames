@@ -284,6 +284,16 @@ without full-build uniform proof tables. They establish bring-up/input progress,
 not final picture completeness or performance. Final save/reload must verify
 game progress after a game-initiated commit, not merely an initialized save file.
 
+## Cutscene timing at 60 fps — 2026-11-07
+
+Game 1.4.1, 60 fps target. Memory captures compared 6 in play against 4 in a
+cutscene and found the mark in `runtime/host/hle_aoc_scene.c`. **User-confirmed:**
+in a full mission, cutscenes ran at 30 fps without speeding up and gameplay ran at
+60. In that session's log (31.1 minutes) the present interval goes from 1 to 2 in a
+cutscene and back to 1, and the stretch after it holds 59.2 fps for 6 minutes. Six
+scripted sessions on the final host each left a cutscene and held 59.9 fps in the
+4,000 frames measured after it. The 1.3.0 offset was checked by disassembly only.
+
 ## Newly run source and native tests
 
 | Check | Exact result | Scope |
