@@ -27,4 +27,6 @@ check:
 	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
 	   tests/test_screenshot.c -DGAME_BOTW190 -o "$$tmp/test-screenshot-botw" && "$$tmp/test-screenshot-botw" && \
 	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
-	   tests/test_users.c games/totk/runtime/account.c -Igames/totk/runtime -o "$$tmp/test-users" && "$$tmp/test-users"
+	   tests/test_users.c games/totk/runtime/account.c -Igames/totk/runtime -o "$$tmp/test-users" && "$$tmp/test-users" && \
+	 $(CC) -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-sanitize-recover=all \
+	   tests/test_save_sync.c games/totk/app/save_sync.c -Igames/totk/app -o "$$tmp/test-save-sync" && "$$tmp/test-save-sync"
