@@ -1,0 +1,37 @@
+# Game profile of The Legend of Zelda: Link's Awakening (Switch, base game v0 + update 1.1.0 = v131072). In bring-up
+# Format: see dm/games/README.md
+# Grezzo's engine on NintendoWare (G3d / Ui2d / Vfx / Atk / Font), SDK 8.2.0, NVN; modules main + subsdk0 (GLSLC, the runtime shader compiler) + subsdk1 (NintendoSDK_movie) + sdk.
+# RomFS: bfres models and maps (region_common/map, region_common/actor), shaders in region_common/shader/*.bfsha (BNSH; the *_uber.bfsha are compiled at run time through GLSLC),
+# particle effects in region_common/effect/*.ptcl, layouts in */ui/*.arc (SARC)
+
+# ---- Identity ----
+title_id	01006BB00C6F0000
+program_id	01006BB00C6F0000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	The Legend of Zelda: Link's Awakening
+ipa	ZeldaLinksAwakening.ipa
+app_category	public.app-category.adventure-games
+
+# ---- Versions ----
+# only the merged 1.1.0 copy is extracted; the base game's own build IDs are added when needed
+build	v131072	1.1.0	main=909e904af78ac1b8deefe97ab2ccdb51	subsdk0=c8a3cc0b1d1858330a881c0c2fc87940	subsdk1=8df876f80ce4ceee62360b31405c452f	sdk=3ae34e689d7a35f13cbf42bfd672af8b
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	region_common/shader/postprocess.bfsha
+zip_store	.bfres:.bfstm:.bfsar:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource (META +0x14 = 0): the game uses SetHeapSize. Starts from 13 Sentinels' partition (4 GB block = 256 MB in front + 256 MB alias region + 256 MB stack region + 3.25 GB heap region) until measured
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- Shader split (shader_split.py) ----
+shader_groups	/region_common/shader/=shader /region_common/effect/=effect /ui/=layout
+shader_note	Link's Awakening shaders

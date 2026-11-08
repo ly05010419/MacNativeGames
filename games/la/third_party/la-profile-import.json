@@ -1,0 +1,22 @@
+[
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01006BB00C6F0000/game.tsv",
+    "destination": "runtime/games/01006BB00C6F0000/game.tsv",
+    "sha256": "40b2aee1264e369f105d5be6315462695fefa9c3f20f2cc66f745c24fb82c5e0"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01006BB00C6F0000/patches.py",
+    "destination": "runtime/games/01006BB00C6F0000/patches.py",
+    "sha256": "b3c9c91040e6ba35521537718d7982c73bf86e4b1ab4e7628472e219791b035b"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01006BB00C6F0000/shader_facts_manual.tsv",
+    "destination": "runtime/games/01006BB00C6F0000/shader_facts_manual.tsv",
+    "sha256": "d2ae1d036934e489924e88b459b8c72a680c9026a9e49140bca14619b3e3ab46"
+  },
+  {
+    "source": "https://raw.githubusercontent.com/seedds/nxnative/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/games/01006BB00C6F0000/bf_want.tsv",
+    "destination": "runtime/games/01006BB00C6F0000/bf_want.tsv",
+    "sha256": "8e91845e3b2e8793a97b7a0e7c33c58ad92761e7d2ed7ffe60f8fb0e196649cf"
+  }
+]

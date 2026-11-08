@@ -117,6 +117,7 @@ The [shared shader list](docs/shader-list.md) now holds **15,070 shader variants
 
 ## What's new
 
+- **2026-11-08: The Legend of Zelda: Link's Awakening 1.1.0 on Mac, experimental.** Built from your own files; played by hand around Mabe Village ([games/la](games/la/README.md)).
 - **2026-11-03: optional SMAA and FXAA Quality for Tears of the Kingdom 1.4.3 on Mac.** Choose the method and its quality separately on the Effects page; the game's original FXAA remains the default ([controls](docs/controls.md)).
 - **2026-11-03: the first Switch 2 games, experimental.** Donkey Kong Bananza plays on the Mac from a development build;
   Pokémon Pokopia plays its opening into the first area (scripted test). Pokopia 2.0.1 packages as a Mac app from your
