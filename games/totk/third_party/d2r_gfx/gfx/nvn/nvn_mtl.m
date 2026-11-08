@@ -3041,6 +3041,17 @@ static int wb_target_lock(const tex_t *t) {
              (unsigned long long)t->serial, t->d.width, t->d.height, (void *)t->mem, (unsigned long long)t->L.size, (unsigned long long)gone);
     return 0;
 }
+/* The GPU's bytes landing in memory are not a CPU write (with dm_guest_write_prepare the page this texture shares with a
+   neighbour counted as written, and the neighbour's own write-back was skipped as "CPU wrote since"). Called with g_mu
+   held (wb_target_lock): Breath of the Wild's completion-time write-back (late_land) takes g_mu before it marks its pages
+   busy, so this side must too. Marking the pages busy first and then waiting for g_mu deadlocked against it when two
+   small targets shared a page: late_land waited out the dirty tracker's 2 s BUSY_WAIT_MS on each shared page while it
+   held g_mu, and the game's thread waited for g_mu (frames of exactly 2 / 4 / 6 / 8 s, #1343, #1818). */
+static void *wb_pages_begin(const tex_t *t) {
+    void *tok = nvn_dirty_tracked(t->mem, t->L.size) ? nvn_dirty_gpu_write_begin(t->mem, t->L.size) : NULL;
+    if (!tok) dm_guest_write_prepare(t->mem, t->L.size);
+    return tok;
+}
 /* Every level and layer of a texture is read back with one command buffer and one wait: one blit per level and layer
    waited for the GPU each time, 24 round trips (about 3.7 ms on the game's thread) for the 64x64 cubemap with four
    levels that Breath of the Wild reads back every 10 frames (1.6.0, Kakariko, 2026-10-28). */
@@ -3070,12 +3081,14 @@ static int wb_tex_back(const tex_t *t, id<MTLTexture> mt, unsigned layers) {   /
     enc_b_end(b); cb_commit(cb); cb_wait(cb);
     if (totk_tl_on()) totk_tl(TL_WB_STEP, 3, t->serial);
     if (!wb_target_lock(t)) return WB_POOL_GONE;
+    void *tok = wb_pages_begin(t);
     const uint8_t *src = (const uint8_t *)buf.contents; int bad = 0; off = 0;
     for (unsigned l = 0; l < t->d.levels && !bad; l++) for (unsigned y = 0; y < layers && !bad; y++) {
         uint32_t lw = MAX(t->d.width >> l, 1u), lh = MAX(t->d.height >> l, 1u);
         size_t lp = (size_t)((lw + bw - 1) / bw) * bpb, lr = (lh + bh - 1) / bh;
         bad = nvn_swizzle(&t->d, l, y, src + off, lp, t->mem); off += lp * lr;
     }
+    nvn_dirty_gpu_write_end(tok);
     pthread_mutex_unlock(&g_mu);
     if (bad) return 0;
     g_wb_bytes += total;
@@ -3242,13 +3255,9 @@ static void wb_write_list_body(wb_ent **list, int nl, int force) {
             wb_ent_free(e); continue;
         }
         if (!mt || bc_unpack(t->d.format, &upf, &ubpp) || t->d.target == 2 || t->d.samples > 1) { if (++g_wb_skip_fmt <= 8) MLOG("【红】GPU 写回内存：不支持的贴图 ser=%llu 格式 %#x 目标 %d", (unsigned long long)t->serial, t->d.format, t->d.target); wb_ent_free(e); continue; }
-        /* the GPU's bytes landing in memory: not a CPU write (with dm_guest_write_prepare the page this texture shares
-           with a neighbour counted as written, and the neighbour's own write-back was skipped as "CPU wrote since") */
-        void *tok = nvn_dirty_tracked(t->mem, t->L.size) ? nvn_dirty_gpu_write_begin(t->mem, t->L.size) : NULL;
-        if (!tok) dm_guest_write_prepare(t->mem, t->L.size);
+        /* the pages are marked busy inside, with g_mu held (wb_pages_begin) */
         unsigned layers = t->L.layers ? t->L.layers : 1; int ok = 1; BOTW_WB_FROM_STAGE(e, ok, layers)
         if (ok == 1 && layers) ok = wb_tex_back(t, mt, layers);   // layers 0: written back from the stage
-        nvn_dirty_gpu_write_end(tok);
         if (ok == WB_POOL_GONE) { wb_ent_free(e); continue; }   // counted and logged by wb_target_lock
         if (ok) { BOTW_WB_LANDED(t) uint64_t d = ++g_wb_done; if (d <= 8 || d % 500 == 0) MLOG("[writeback] ser=%llu %ux%u nvnfmt=%#x lv%u：GPU 渲染结果写回内存（累计 %llu 张 / %llu MB，CPU 已改写而跳过 %llu 张）", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)d, (unsigned long long)(g_wb_bytes >> 20), (unsigned long long)g_wb_skip_cpu); }
         else MLOG("【红】GPU 写回内存失败 ser=%llu 格式 %#x", (unsigned long long)t->serial, t->d.format);
@@ -20410,10 +20419,12 @@ int botw_wb_from_stage(void *ev) {
     size_t off = 0;
     unsigned layers = t->L.layers ? t->L.layers : 1; int ok = 1;
     if (!wb_target_lock(t)) return WB_POOL_GONE;
+    void *tok = wb_pages_begin(t);
     for (unsigned l = 0; l < t->d.levels && ok; l++) for (unsigned y = 0; y < layers && ok; y++) {
         size_t lp; size_t n = wb_level_size(t, l, &lp, NULL, NULL);
         ok = !nvn_swizzle(&t->d, l, y, src + off, lp, t->mem); off += n; g_wb_bytes += n;
     }
+    nvn_dirty_gpu_write_end(tok);
     pthread_mutex_unlock(&g_mu);
     if (++g_wb_from_stage == 1 || g_wb_from_stage % 5000 == 0) MLOG("[writeback] %llu written back from the submission's own copy (%llu copies staged)", (unsigned long long)g_wb_from_stage, (unsigned long long)g_wb_staged);
     return ok;
