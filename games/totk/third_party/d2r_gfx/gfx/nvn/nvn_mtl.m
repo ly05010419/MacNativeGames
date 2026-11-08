@@ -15091,6 +15091,19 @@ static uint64_t g_mesh_ind_args, g_mesh_ind_first;   // indirect form: GPU addre
 extern int totk_depth_near_minus_w(void);
 typedef struct { pso_key raster; const void *task; uint32_t zero_depth, pad; } mesh_pso_key;
 static nvn_hmap g_mesh_psos = {.klen = sizeof(mesh_pso_key)};
+/* A depth-only pass has no colour attachment: its fragment stage cannot affect the result, but Metal still validates the
+   fragment's inputs against the mesh outputs. OoT's shadow/prepass meshes are position-only, so the colour-pass fragment
+   (which reads user(locn5)) must not take part, or the whole mesh pipeline is rejected every frame. */
+static id<MTLFunction> mesh_depth_fn(void) {
+    static id<MTLFunction> fn;
+    if (!fn) {
+        NSError *e = nil;
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\nfragment void dm_mesh_depth_only() {}\n" options:nil error:&e];
+        if (lib) fn = [lib newFunctionWithName:@"dm_mesh_depth_only"];
+        if (!fn) MLOG("[mesh] [RED] depth-only fragment: %s", e.localizedDescription.UTF8String);
+    }
+    return fn;
+}
 static id<MTLRenderPipelineState> mesh_pso(NvProg *pr) {
     NvShader *ts = pr->sh[3], *ms = pr->sh[4], *fs = pr->sh[1];
     if (!ms || ms->mesh_kind != 2 || !ms->fn) { RED_ONCE(90, "mesh draw without a translated mesh shader"); return nil; }
@@ -15104,7 +15117,8 @@ static id<MTLRenderPipelineState> mesh_pso(NvProg *pr) {
     MTLRenderPipelineDescriptor *r = pso_desc(&key.raster, ms, fs, nil, 0);
     MTLMeshRenderPipelineDescriptor *m = [MTLMeshRenderPipelineDescriptor new];
     m.meshFunction = key.zero_depth && ms->mesh_zero ? ms->mesh_zero : ms->fn;
-    m.fragmentFunction = r.fragmentFunction; m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
+    int color = 0; for (int i = 0; i < 8; i++) if (key.raster.cfmt[i]) color = 1;
+    m.fragmentFunction = color ? r.fragmentFunction : mesh_depth_fn(); m.maxTotalThreadsPerMeshThreadgroup = ms->mesh_threads;
     if (ts) { m.objectFunction = ts->fn; m.payloadMemoryLength = (ts->mesh_payload + 15u) & ~15u; m.maxTotalThreadsPerObjectThreadgroup = ts->mesh_threads; m.maxTotalThreadgroupsPerMeshGrid = 1024; }
     m.rasterSampleCount = r.rasterSampleCount; m.alphaToCoverageEnabled = r.alphaToCoverageEnabled;
     for (int i = 0; i < 8; i++) m.colorAttachments[i] = r.colorAttachments[i];
