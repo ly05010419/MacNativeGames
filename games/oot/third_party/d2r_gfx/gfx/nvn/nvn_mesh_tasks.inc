@@ -97,7 +97,10 @@ static id<MTLFunction> mtk_empty_export_fn(id<MTLFunction> base,NvShader *ms) {
     NSRegularExpression *end=[NSRegularExpression regularExpressionWithPattern:@"if\\([a-zA-Z0-9_.]+==0u\\)dm_out\\.set_primitive_count\\(np\\);\\n" options:0 error:nil];
     if(!source||![source containsString:@"dm_stage_body("]||![source containsString:@"uint np=min("]||
        ![end numberOfMatchesInString:source options:0 range:NSMakeRange(0,source.length)]){cache[key]=base;return base;}
-    source=[end stringByReplacingMatchesInString:source options:0 range:NSMakeRange(0,source.length) withTemplate:@"$0if(np==0u)return;\n"];
+    NSString *lid=nil;{NSRegularExpression *rel=[NSRegularExpression regularExpressionWithPattern:@"dm_release_slot\\(dm_scratch,dm_slot_tg,(\\w+)\\);" options:0 error:nil];
+        NSTextCheckingResult *r=[rel firstMatchInString:source options:0 range:NSMakeRange(0,source.length)];if(r)lid=[source substringWithRange:[r rangeAtIndex:1]];}
+    NSString *tpl=lid?[NSString stringWithFormat:@"$0if(np==0u){dm_release_slot(dm_scratch,dm_slot_tg,%@);return;}\n",lid]:@"$0if(np==0u)return;\n";   // device stage memory: give the slot back before leaving
+    source=[end stringByReplacingMatchesInString:source options:0 range:NSMakeRange(0,source.length) withTemplate:tpl];
     NSError *error=nil;id<MTLLibrary> lib=variant_library(source,&error);id<MTLFunction> fn=lib?[lib newFunctionWithName:base.name]:nil;
     if(!fn)MDIE("mesh empty export %s: %s",ms->key,error.localizedDescription.UTF8String);
     fn_note_src(fn,source);cache[key]=fn;return fn;
@@ -127,6 +130,29 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     if(!ps)MDIE("task/mesh pipeline %s / %s: %s",ts?ts->key:"-",ms->key,error.localizedDescription.UTF8String);
     hm_put_id(&g_mtk_cache,&key,ps);MLOG("[mesh] compiled task %s mesh %s fragment %s",ts?ts->key:"-",ms->key,fs?fs->key:"-");return ps;
 }
+/* Device stage memory for mesh shaders (translator MeshStage.cs, 2026-11-08; the constants are the same there): header
+   word 0 a counter, 1 the slot mask, 2 the slot stride in words; one in-use flag a slot from word 4; the slots from word
+   8192, 4096 words (16 KiB) each. A threadgroup takes a free slot (counter, then an exchange on the flag) and releases it
+   after its exports, so a slot is never reused while its threadgroup runs; more live threadgroups than slots only wait.
+   Why: as threadgroup memory the 11-16 KiB stage area let a core hold two or three mesh threadgroups (about 5 %
+   occupancy, Instruments 2026-11-06); the village's four heaviest mesh shaders moved to a device scratch by hand took the
+   GPU frame from 22.2 to 20.0 ms (measurement 2026-11-08). OOT_MESH_SCRATCH_SLOTS overrides the slot count (power of two). */
+enum { MTK_SCRATCH_BUFFER=28, MTK_SCRATCH_FLAGS=4, MTK_SCRATCH_SLOTS=8192, MTK_SCRATCH_SLOT_WORDS=4096 };
+static id<MTLBuffer> g_mtk_scratch;
+static uint64_t mtk_scratch_gpu(void) {
+    if(!g_mtk_scratch){
+        unsigned slots=TARGET_OS_IPHONE?1024:4096;{const char *e=getenv("OOT_MESH_SCRATCH_SLOTS");if(e&&atoi(e)>0)slots=(unsigned)atoi(e);}
+        if(slots&(slots-1))MDIE("mesh stage scratch: %u slots is not a power of two",slots);
+        if(MTK_SCRATCH_FLAGS+slots>MTK_SCRATCH_SLOTS)MDIE("mesh stage scratch: %u slot flags do not fit before the slots",slots);
+        size_t bytes=((size_t)MTK_SCRATCH_SLOTS+(size_t)slots*MTK_SCRATCH_SLOT_WORDS)*4;
+        g_mtk_scratch=[g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+        if(!g_mtk_scratch)MDIE("mesh stage scratch: %zu bytes",bytes);
+        uint32_t *h=g_mtk_scratch.contents;memset(h,0,(size_t)MTK_SCRATCH_SLOTS*4);h[1]=slots-1;h[2]=MTK_SCRATCH_SLOT_WORDS;
+        g_mtk_scratch.label=@"OOT mesh stage memory";res_add(g_mtk_scratch);
+        MLOG("[mesh] device stage memory: %u slots of %u KiB (%zu MiB)",slots,MTK_SCRATCH_SLOT_WORDS*4/1024,bytes>>20);
+    }
+    return g_mtk_scratch.gpuAddress;
+}
 static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms;
     if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_MESH_TABLES,.u={!!ts}},0);
@@ -136,6 +162,7 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     if(ts){g_args_dirty[3]=1;encode_args((id<MTLCommandEncoder>)en,ts,3,0);
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={29,first}},0);else[g_ot setAddress:first atIndex:29];}
     g_args_dirty[4]=1;encode_args((id<MTLCommandEncoder>)en,ms,4,1);enc_r_vbuf(en,29,first);
+    enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
     int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
     if(g_mtk.indirect_gpu){
@@ -158,6 +185,8 @@ static void mesh_tasks_draw(const p_draw *dw) {
     prepare_shader_images(ts,3);prepare_shader_images(ms,4);
     NvProg *raster=pr->geo_lean_ras;
     if(!raster||raster->sh[1]!=pr->sh[1]||raster->sh[0]){raster=[NvProg new];raster->sh[1]=pr->sh[1];pr->geo_lean_ras=raster;}
+    { extern _Atomic uint32_t g_skip_ms; uint32_t sk=atomic_load_explicit(&g_skip_ms,memory_order_relaxed);   // diagnostic "flag skip_ms": leave out this mesh shader's draws
+      if(sk){char h[8];memcpy(h,ms->key,7);h[7]=0;if((uint32_t)strtoul(h,NULL,16)==sk)return;} }
     g_mtk.on=1;g_mtk.ts=ts;g_mtk.ms=ms;g_mtk.fs=pr->sh[1];g_mtk.first=(uint32_t)dw->first;g_mtk.count=(uint32_t)dw->count;
     g_mtk.first_gpu=g_mtk.indirect_gpu=0;
     g_mtk.profile_grid=-1;
