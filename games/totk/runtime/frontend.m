@@ -890,7 +890,7 @@ void runtime_front_run(void(*callback)(void)){
   /* Default window: the docked output size, 1920x1080, scaled down (16:9 kept) when the screen's visible area is smaller. */
   /* TOTK_WINDOW_SIZE=<w>x<h> (test scripts only, e.g. the 2K output test; the desktop launcher never sets it): another starting size. */
   NSRect vis=NSScreen.mainScreen?NSScreen.mainScreen.visibleFrame:NSMakeRect(0,0,1920,1080+28);CGFloat ww=1920,wh=1080;
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
   {uint64_t size=runtime_output_size_current();unsigned w=(unsigned)size,h=(unsigned)(size>>32);if(w&&h){ww=w;wh=h;}}
 #endif
   {const char *e=getenv("TOTK_WINDOW_SIZE");int w=0,h=0;if(e&&sscanf(e,"%dx%d",&w,&h)==2&&w>=320&&h>=180&&w<=8192&&h<=8192){ww=w;wh=h;}}

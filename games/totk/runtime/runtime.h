@@ -123,6 +123,7 @@ int runtime_output_mode_set(int mode);                  /* returns 0 where that 
 int runtime_output_native(int mode, unsigned *w, unsigned *h);   /* the canvas of OUTPUT_MODE_NATIVE / _NATIVE_METALFX / _NATIVE_4K; 0 when not offered */
 uint64_t runtime_output_size_current(void);              /* configured canvas: width in low 32 bits, height in high 32 bits */
 int runtime_output_size_set(unsigned w,unsigned h);       /* NS2: queue the native game-thread display rebuild */
+int runtime_output_size_valid(unsigned w,unsigned h);     /* NS2: 1 when runtime_output_size_set takes this size (the settings panel offers only these) */
 void runtime_warm_progress(uint64_t done,uint64_t total,uint64_t shaders,uint64_t shader_total,uint64_t pipelines,uint64_t pipeline_total);
 void runtime_warm_done(void);
 void runtime_warm_title(void);   /* nvn_mtl.m warm_start: the title may be seen now, the rest of the warm-up behind it or done */

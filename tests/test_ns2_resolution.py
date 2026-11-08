@@ -83,6 +83,50 @@ int main(void) {
    result=subprocess.run([str(exe)],capture_output=True,text=True)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
  @unittest.skipUnless(sys.platform=='darwin' and platform.machine()=='arm64','native Apple ARM64 required')
+ def test_oot_base_size_follows_request(self):
+  source=r'''
+#include "oot_display.h"
+#include <sys/mman.h>
+#include <libkern/OSCacheControl.h>
+#include <unistd.h>
+int main(void) {
+ size_t ps=(size_t)sysconf(_SC_PAGESIZE);
+ unsigned char *m=mmap(0,ps*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+ if(m==MAP_FAILED)return 1;
+ uint64_t *p=(void *)(m+ps);const uintptr_t v1=(uintptr_t)m,v2=v1+0x20,set=v1+0x100,frame=v1+0x200;
+ uint32_t base[OOT_BASE_WORDS],upd[OOT_FRAME_WORDS];
+ oot_base_code(base,v1,(uintptr_t)p,set+4);oot_frame_code(upd,v2,(uintptr_t)p,frame+4,set);
+ memcpy(m,base,sizeof base);memcpy(m+0x20,upd,sizeof upd);
+ /* stand-ins: setBaseSize after its first ldp (store *x1, set bit 21 on a change, clobber w8-w11), and the cfg update after its ldp
+    (record w11,w9 at +0x20 and x1 at +0x28); their first words branch to the veneers as the patched game's do */
+ const uint32_t set_body[]={0xf9400028,0xf9400809,0xeb09011f,0x540000a0,0xf9000808,0xb940080a,0x320b014a,0xb900080a,0x528000eb,0xd65f03c0};
+ const uint32_t frame_body[]={0x2904240b,0xf9001401,0xd65f03c0};
+ uint32_t jump=bananza_display_branch(set,v1);memcpy(m+0x100,&jump,4);memcpy(m+0x104,set_body,sizeof set_body);
+ jump=bananza_display_branch(frame,v2);memcpy(m+0x200,&jump,4);memcpy(m+0x204,frame_body,sizeof frame_body);
+ sys_icache_invalidate(m,0x300);if(mprotect(m,ps,PROT_READ|PROT_EXEC))return 2;
+ unsigned char cfg[0x40];memset(cfg,0xa5,sizeof cfg);uint32_t flags=5,word;uint64_t v,shipped=2048ull|(1152ull<<32),other=1280ull|(720ull<<32);
+ memcpy(cfg+8,&flags,4);memcpy(cfg+0x10,&shipped,8);p[1]=shipped;
+ ((void(*)(void *,uint64_t))frame)(cfg,0xdead);
+ memcpy(&v,cfg+0x28,8);if(v!=0xdead)return 3;   /* x1 kept */
+ memcpy(&word,cfg+0x20,4);if(word!=5)return 4;  /* the displaced ldp ran */
+ memcpy(&v,cfg+0x10,8);if(v!=shipped||p[3])return 5; /* an unchanged base: no setBaseSize call */
+ p[1]=2560ull|(1440ull<<32);memset(cfg+0x20,0,0x10);
+ ((void(*)(void *,uint64_t))frame)(cfg,0xbeef);
+ memcpy(&v,cfg+0x10,8);if(v!=p[1]||p[2]!=p[1]||p[3]!=(uintptr_t)cfg)return 6;
+ memcpy(&word,cfg+0x20,4);if(word!=(5|0x200000))return 7;   /* the same update sees bit 21 */
+ memcpy(&v,cfg+0x28,8);if(v!=0xbeef)return 8;
+ for(unsigned i=0x18;i<0x20;i++)if(cfg[i]!=0xa5)return 9;
+ p[1]=960ull|(540ull<<32);((void(*)(void *,void *))set)(cfg,&other);   /* the game's own request: the host's size wins */
+ memcpy(&v,cfg+0x10,8);if(v!=p[1]||other!=(1280ull|(720ull<<32)))return 10;
+ return munmap(m,ps*2)!=0;
+}
+'''
+  with tempfile.TemporaryDirectory() as d:
+   c=pathlib.Path(d)/'oot.c';exe=pathlib.Path(d)/'oot';c.write_text(source)
+   subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'games/totk/runtime'),str(c),'-o',str(exe)],check=True,capture_output=True)
+   result=subprocess.run([str(exe)],capture_output=True,text=True)
+   self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+ @unittest.skipUnless(sys.platform=='darwin' and platform.machine()=='arm64','native Apple ARM64 required')
  def test_live_display_runs_on_game_thread(self):
   source=r'''
 #include "bananza_display.h"
@@ -198,3 +242,48 @@ int main(void) {
   self.assertEqual(rows['TOTK_OUTPUT_RES']['Type'],'PSTextFieldSpecifier')
   self.assertNotIn('TOTK_DOCKED',rows)
   self.assertNotIn('TOTK_RENDER_RES',rows)
+ def test_output_size_valid_per_game(self):
+  """runtime_output_size_valid, cut from game_patches_ns2.c: Ocarina of Time takes 16:9 on the 8-pixel grid from 640x360 up to its
+     capacity; Bananza and Pokopia keep exactly their earlier rule (a page, both sides nonzero, within the capacity)."""
+  compiler=shutil.which('cc')
+  if not compiler:self.skipTest('C compiler required')
+  import re
+  text=(ROOT/'games/totk/runtime/game_patches_ns2.c').read_text()
+  fits=re.search(r'#ifdef GAME_OOT\n/\* Ocarina of Time v1: its sizes.*?\n#endif\n',text,re.S).group(0)
+  valid=re.search(r'int runtime_output_size_valid\(unsigned w,unsigned h\) \{.*?\n\}\n',text,re.S).group(0)
+  source=r'''
+#include "ns2_resolution.h"
+#include <stdatomic.h>
+static _Atomic(uint64_t *) output_page;static int has;static unsigned cw,ch;
+static int runtime_output_res(unsigned *w,unsigned *h){if(!has)return 0;*w=cw;*h=ch;return 1;}
+'''+fits+'static '+valid+r'''
+#ifndef GAME_OOT   /* runtime_output_size_set's own test before runtime_output_size_valid */
+static int earlier(unsigned w,unsigned h){unsigned mw,mh;return !(!atomic_load(&output_page)||!w||!h||!runtime_output_res(&mw,&mh)||w>mw||h>mh);}
+#endif
+int main(void) {
+ static uint64_t page[4];
+#ifdef GAME_OOT
+ const unsigned good[][2]={{640,360},{1024,576},{1280,720},{1920,1080},{2048,1152},{2560,1440},{1152,648}};
+ const unsigned bad[][2]={{960,540},{1600,900},{1366,768},{1360,768},{1921,1080},{1920,1088},{632,356},{2568,1444},{3840,2160},{0,0},{2560,0},{1280,736}};
+ has=1;cw=OOT_OUTPUT_MAX_W;ch=OOT_OUTPUT_MAX_H;atomic_store(&output_page,page);
+ for(unsigned i=0;i<sizeof good/sizeof *good;i++)if(!runtime_output_size_valid(good[i][0],good[i][1])||!oot_output_size_fits(good[i][0],good[i][1]))return 1;
+ for(unsigned i=0;i<sizeof bad/sizeof *bad;i++)if(runtime_output_size_valid(bad[i][0],bad[i][1])||oot_output_size_fits(bad[i][0],bad[i][1]))return 2;
+ atomic_store(&output_page,(uint64_t *)0);if(runtime_output_size_valid(1920,1080))return 3;   /* as shipped: no page */
+ atomic_store(&output_page,page);has=0;if(runtime_output_size_valid(1920,1080))return 4;
+#else
+ const unsigned caps[][2]={{3840,2160},{2880,1620},{1920,1080}};
+ for(unsigned c=0;c<3;c++)for(int pg=0;pg<2;pg++)for(has=0;has<2;has++){
+  cw=caps[c][0];ch=caps[c][1];atomic_store(&output_page,pg?page:(uint64_t *)0);
+  for(unsigned w=0;w<=4000;w+=37)for(unsigned h=0;h<=2300;h+=23)if(runtime_output_size_valid(w,h)!=earlier(w,h))return 5;
+  if(runtime_output_size_valid(cw,ch)!=(pg&&has)||runtime_output_size_valid(961,541)!=(pg&&has)||runtime_output_size_valid(cw+1,ch))return 6;
+ }
+#endif
+ return 0;
+}
+'''
+  with tempfile.TemporaryDirectory() as d:
+   c=pathlib.Path(d)/'valid.c';c.write_text(source)
+   for game in ('GAME_OOT','GAME_DKB','GAME_POKOPIA'):
+    exe=pathlib.Path(d)/game
+    subprocess.run([compiler,'-std=c11','-Wall','-Wextra','-Werror','-D'+game,'-I',str(ROOT/'games/totk/runtime'),str(c),'-o',str(exe)],check=True,capture_output=True)
+    p=subprocess.run([str(exe)],capture_output=True,text=True);self.assertEqual(p.returncode,0,game+': '+p.stdout+p.stderr)

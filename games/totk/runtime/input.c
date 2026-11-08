@@ -291,7 +291,7 @@ static void *input_file(void *arg) {
                 if(!vr_set_resolution(w,h))fprintf(stderr,"[totk] live VR render resolution rejected: %dx%d\n",w,h);
             } else fprintf(stderr,"[totk] vr_resolution command needs widthxheight per eye\n");
 #endif
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
         } else if (!strncmp(line,"resolution ",11)) {
             unsigned w,h;int n=0;
             if(sscanf(line+11,"%ux%u %n",&w,&h,&n)==2&&n&&!line[11+n]) {

@@ -29,6 +29,15 @@ static inline int ns2_parse_saved_resolution(const char *s,unsigned *w,unsigned 
     return ns2_parse_resolution(word,w,h);
 }
 
+/* Ocarina of Time v1's sizes (game_patches_ns2.c runtime_output_size_valid, the settings panel's text): 16:9 (the camera and UI were not
+   traced for other shapes), both sides on the scene's grid (main+0x654e70 floors it to view+0x5330 multiples, believed 8), from 640x360
+   up to the game's own swapchain, 2560x1440 (main+0x1202ee0, created once; the crop it publishes must never exceed it). Shipped: 2048x1152. */
+enum { OOT_OUTPUT_ALIGN=8, OOT_OUTPUT_MIN_W=640, OOT_OUTPUT_MIN_H=360, OOT_OUTPUT_MAX_W=2560, OOT_OUTPUT_MAX_H=1440, OOT_OUTPUT_SHIPPED_W=2048, OOT_OUTPUT_SHIPPED_H=1152 };
+static inline int oot_output_size_fits(unsigned w,unsigned h) {
+    return w>=OOT_OUTPUT_MIN_W&&h>=OOT_OUTPUT_MIN_H&&w<=OOT_OUTPUT_MAX_W&&h<=OOT_OUTPUT_MAX_H&&!(w%OOT_OUTPUT_ALIGN)&&!(h%OOT_OUTPUT_ALIGN)
+        &&(w*9>h*16?w*9-h*16:h*16-w*9)<=16;   /* 16:9 within 16/9 of a pixel */
+}
+
 /* Compare rounded pixels before fitting: float 32/9 is slightly above its
    exact value, but a 3840x1080 canvas still fits the 3840-pixel capacity. */
 static inline int ns2_aspect_size(float ratio,unsigned height,unsigned max_w,unsigned max_h,unsigned *w,unsigned *h) {
