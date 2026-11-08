@@ -206,7 +206,8 @@ executable-memory allocation, or game binaries, and skip on other architectures.
 - **macOS / Apple M5, game 1.4.1 (v458752):** signed app built with 40,729
   shaders; the first missions played by hand with audio at 60 fps, and the save
   carried across launches. Full rendering and whole-game acceptance remain
-  incomplete. The DLC has not been tested on either version.
+  incomplete. The DLC works on 1.4.1 as far as its bonus items and the game's DLC
+  section; no DLC mission has been played, and 1.3.0 does not take it.
 - **iOS/iPadOS:** no full app build or device playtest. The copied iOS tools lack
   this target's `runtime/ios/Sources` and `runtime/ios/project.yml`; the public
   AoC builder targets macOS. Shared-source SDK compile checks are separate from

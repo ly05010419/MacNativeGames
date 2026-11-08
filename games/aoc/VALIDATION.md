@@ -1,5 +1,23 @@
 # Age of Calamity validation — 2026-10-27
 
+## DLC on 1.4.1 — 2026-11-07
+
+The four add-ons were extracted and pinned: 1 is a marker file, 2 and 3 hold archives,
+and 4 also holds 26 movies. None holds a shader container, so the 40,729 shaders came
+from the cache. Before the mount fix the log showed one `aoc` mount and the game read
+the first DLC's `DLCDATA.dat` four times, so only the preorder bonus arrived.
+
+A signed app was built from this change with the four DLC inside and ran one scripted
+session from the save to the map. The host reported indices 1 to 4, the game mounted
+each one, then `aoc001` to `aoc003`, and read their files. The log carries one
+`texture type mismatch` line, a kind already seen without the DLC.
+
+A second app, this change together with the cutscene and black square changes, was
+played by hand: the bonus items arrived and the game's DLC section showed the content
+as active. A scripted session on that app showed EX Royal Ancient Lab on the map. No
+DLC mission or DLC movie has been played, and owning only some of the DLC has not been
+tried. 1.3.0 was not built: the builder rejects `--dlc` for it.
+
 ## Update 1.4.1 (v458752) — 2026-11-07
 
 The patches were mapped by matching the code that reads each location and checked
