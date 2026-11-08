@@ -115,12 +115,21 @@ def main():
                     high = 14 + (oracle(value, literal) & MASK & 7)
                     assert any(a <= high <= b for a, b in result['high_intervals']), (op, trial, high, result)
                     comparisons += 1
+                    # The fixture writes the word at low 0: the exact byte refinement must cover it.
+                    word_at = high << 32
+                    assert any(a <= word_at and word_at + 4 <= b for a, b in result['byte_intervals']), (op, trial, high, result)
+                    comparisons += 1
+            assert result['byte_guards'] and all(g in result['byte_guards'] for g in result['guards']), result
+            span = sum(b - a for a, b in result['byte_intervals'])
+            assert span <= 4 * 2 * len(result['byte_intervals']) * 16, (op, trial, result['byte_intervals'])
             reports.append(dict(op=op, trial=trial, intervals=result['high_intervals']))
             (args.work / f'op-{op}-{trial}.spv').write_bytes(code)
     wide = run(fixture(wide_branch=True), 0)
     assert wide['ok'] and len(wide['calls']) == 2, wide
     for high in (14, 30):
         assert any(a <= high <= b for a, b in wide['high_intervals']), wide
+        comparisons += 1
+        assert any(a <= high << 32 and (high << 32) + 4 <= b for a, b in wide['byte_intervals']), wide
         comparisons += 1
     for name, result in [('unattested-store', run(fixture(hidden=True), 7)),
                          ('mutable-uniform', run(fixture(), 7, immutable=False)),
@@ -131,7 +140,7 @@ def main():
         comparisons += 1
     output = dict(ok=True, comparisons=comparisons, cases=reports, scope='synthetic range/ABI checks; no game FPS claim')
     (args.work / 'results.json').write_text(json.dumps(output, indent=2) + '\n')
-    print(f'raw-write-proof: pass {comparisons} independent comparisons; ordinary/atomic stores, uint32 wrap/shift, 64-bit unknown branch and four rejection controls')
+    print(f'raw-write-proof: pass {comparisons} independent comparisons; exact byte refinement, ordinary/atomic stores, uint32 wrap/shift, 64-bit unknown branch and four rejection controls')
 
 
 if __name__ == '__main__':

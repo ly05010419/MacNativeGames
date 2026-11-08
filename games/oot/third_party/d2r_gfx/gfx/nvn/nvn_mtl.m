@@ -1403,7 +1403,7 @@ static void oot_bar_sync(void) {
     if (g_oot_bar_serial != g_fence + 1) {
         int requested = atomic_load_explicit(&g_oot_bar_request, memory_order_relaxed);
         if (requested < 0) {
-            const char *e = getenv("OOT_DRAW_BARRIERS"); int initial = oot_bar_allowed() && e && !strcmp(e, "1"), expected = -1;
+            const char *e = getenv("OOT_DRAW_BARRIERS"); int initial = oot_bar_allowed() && !(e && !strcmp(e, "0")), expected = -1; /* Mac default on since 2026-11-08; OOT_DRAW_BARRIERS=0 restores full barriers */ 
             atomic_compare_exchange_strong(&g_oot_bar_request, &expected, initial);
             requested = atomic_load_explicit(&g_oot_bar_request, memory_order_relaxed);
         }

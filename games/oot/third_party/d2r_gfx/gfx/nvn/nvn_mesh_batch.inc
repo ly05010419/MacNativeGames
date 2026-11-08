@@ -12,7 +12,7 @@ static int g_mb_negative; // GPU probe only: 1 drops write invalidation, 2 binds
 static _Atomic uint64_t g_mb_verified;
 static int mesh_batch_on(void) {
     int v=atomic_load(&g_mesh_batch);
-    if(v<0){const char *e=getenv("OOT_MESH_BATCH");v=!TARGET_OS_IPHONE&&e&&atoi(e)!=0;atomic_store(&g_mesh_batch,v);}
+    if(v<0){const char *e=getenv("OOT_MESH_BATCH");v=!TARGET_OS_IPHONE&&!(e&&!atoi(e));atomic_store(&g_mesh_batch,v); /* Mac default on since 2026-11-08; OOT_MESH_BATCH=0 turns it off */ }
     return v&&!TARGET_OS_IPHONE&&g_oot_bar_mode==1;
 }
 static void mesh_batch_write(uint64_t lo,uint64_t size) {

@@ -39,6 +39,12 @@ def clone_file(source, destination):
         shutil.copy2(source,destination)
     return str(destination)
 
+def bundle_shaders():
+    """User 2026-11-08: while the port is still changing, the App carries no translated shaders; the runtime
+    translates, compiles and caches each shader on first use. OOT_BUNDLE_SHADERS=1 restores the offline seed,
+    Metal libraries and compute pipeline archive (bring it back once the game is stable)."""
+    return os.environ.get('OOT_BUNDLE_SHADERS')=='1'
+
 def verify_shader_resources(tree):
     """Check every prepared variant/library and bind both manifests into the normal build record."""
     seed=tree/'build/shader-seed/oot';libraries=tree/'build/shader-libs'
@@ -142,7 +148,7 @@ def compute_pipeline_archive(work, tree):
 
 def package_app(work,tree,out,game_data_mode='app',game_data_folder=None):
     """Stage a sealed App containing its runtime data, then replace the closed App."""
-    shader_record=verify_shader_resources(tree)
+    shader_record=verify_shader_resources(tree) if bundle_shaders() else None
     pipelines=compute_pipeline_archive(work,tree) if shader_record else None
     prepared=shader_bundle(tree,shader_record) if shader_record else None
     opening_overlay=tree/'extracted/oot/opening-patches'
@@ -286,9 +292,11 @@ def build(args, source):
     shutil.copy2(proof.with_name('SPIRV-Tools.LICENSE'),service/'SPIRV-Tools.LICENSE')
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
-    run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
+    if not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=1 bundles them): translated at first use',flush=True)
+    else:
+     run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
          '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs],'prepare-shader-seed')
-    run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
+     run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
          '--out',tree/'build/shader-libs','--jobs',str(shader_jobs())],'compile-shader-libraries')
     package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)

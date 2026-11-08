@@ -642,16 +642,71 @@ static class RawWriteProof
             }
             Value domain = Union(results);
             if (domain.R == null || domain.R.Length == 0 || domain.R.Any(r => r.Hi == Mask)) throw new InvalidOperationException("empty or unbounded proof");
+            var highReads = new Dictionary<(uint, uint), uint>(reads);
+            var proof = new JsonObject { ["ok"] = true, ["abi"] = 1, ["grid"] = JsonTriplet(grid), ["local"] = JsonTriplet(local), ["simd_width"] = simd,
+                ["guards"] = Guards(highReads), ["high_intervals"] = JsonRanges(domain), ["calls"] = callResults, ["analysis_steps"] = 2_000_000 - budget };
+            // Refinement (2026-11-08): the helper writes the 4-byte word at (high << 32) + low,
+            // so the low word's range narrows each 4-GiB stripe to exact bytes. Its extra
+            // uniform reads become separate guards: when they do not match at a dispatch,
+            // the runtime keeps the stripes above, so the refinement can never widen waits.
+            int highSteps = 2_000_000 - budget;
+            budget = 2_000_000; // the refinement has its own bounded budget; failure keeps the stripes
+            var bytes = ByteIntervals(calls.Where(x => baseReach[x.Fn].Contains(x.Block)).ToArray(), out string why);
+            if (bytes == null) proof["byte_reject"] = why;
+            if (bytes != null)
+            {
+                proof["byte_intervals"] = new JsonArray(bytes.Select(r => (JsonNode)new JsonArray(JsonValue.Create(r.Lo), JsonValue.Create(r.Hi))).ToArray());
+                proof["byte_guards"] = Guards(reads);
+            }
+            proof["analysis_steps"] = highSteps; proof["refine_steps"] = 2_000_000 - budget;
+            return proof;
+        }
+        JsonArray Guards(Dictionary<(uint, uint), uint> words)
+        {
             var guards = new JsonArray();
-            foreach (var (key, word) in reads.OrderBy(v => v.Key.Item1).ThenBy(v => v.Key.Item2))
+            foreach (var (key, word) in words.OrderBy(v => v.Key.Item1).ThenBy(v => v.Key.Item2))
             {
                 var (p, off) = key; int reg = regs[p];
                 if (reg < 0) continue; // c1 is part of the source-identity capsule
                 if (off % 4 != 0) throw new InvalidOperationException("unaligned uniform guard");
                 guards.Add((JsonNode)new JsonObject { ["reg"] = reg, ["arg_id"] = aids[p], ["offset"] = off, ["word"] = word });
             }
-            return new JsonObject { ["ok"] = true, ["abi"] = 1, ["grid"] = JsonTriplet(grid), ["local"] = JsonTriplet(local), ["simd_width"] = simd,
-                ["guards"] = guards, ["high_intervals"] = JsonRanges(domain), ["calls"] = callResults, ["analysis_steps"] = 2_000_000 - budget };
+            return guards;
+        }
+        // Exact byte ranges [Lo, Hi) of every reachable writer call, or null when any
+        // call's low or high word is not a small bounded set (the stripes then stand).
+        List<(ulong Lo, ulong Hi)> ByteIntervals(Inst[] calls, out string why)
+        {
+            var spans = new List<(ulong Lo, ulong Hi)>(); why = null;
+            try
+            {
+                foreach (Inst call in calls)
+                {
+                    Context(call);
+                    uint pl = call.A[1], ph = call.A[2];
+                    Inst lv = Def(pl);
+                    if (lv.Op != Op.OpVariable || lv.A[0] != (uint)StorageClass.Function || Root(pl) != pl) { why = "low argument at call " + call.Id; return null; }
+                    Value high = LocalLoad(ph, new(), call), low = LocalLoad(pl, new(), call);
+                    ulong[] hv = Values(high, 64);
+                    if (hv == null || hv.Length == 0) { why = "high not a small set at call " + call.Id; return null; }
+                    if (low.R == null || low.R.Length == 0) { why = "low unsupported at call " + call.Id; return null; }
+                    foreach (ulong h in hv) foreach (Range r in low.R)
+                        spans.Add(((h << 32) + r.Lo, (h << 32) + r.Hi + 4)); // a 4-byte word may carry into the next stripe
+                }
+            }
+            catch (InvalidOperationException e) { why = e.Message; return null; } // budget exhausted: keep the stripe proof
+            spans.Sort();
+            var merged = new List<(ulong Lo, ulong Hi)>();
+            foreach (var s in spans)
+                if (merged.Count != 0 && s.Lo <= merged[^1].Hi) merged[^1] = (merged[^1].Lo, Math.Max(merged[^1].Hi, s.Hi));
+                else merged.Add(s);
+            while (merged.Count > 64)
+            {   // widening is always sound: join the two neighbours with the smallest gap
+                int best = 0; ulong gap = ulong.MaxValue;
+                for (int i = 0; i + 1 < merged.Count; i++) if (merged[i + 1].Lo - merged[i].Hi < gap) { gap = merged[i + 1].Lo - merged[i].Hi; best = i; }
+                merged[best] = (merged[best].Lo, merged[best + 1].Hi); merged.RemoveAt(best + 1);
+            }
+            return merged;
         }
     }
     static JsonArray JsonTriplet(uint[] a) => new(a.Select(v => (JsonNode)JsonValue.Create(v)).ToArray());
