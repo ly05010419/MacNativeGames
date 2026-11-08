@@ -15,6 +15,7 @@
    Layouts: VibrationValue {amplitude low, frequency low, amplitude high, frequency high} (0..1 and Hz; neutral 0/160/0/320,
    sdk+0x4a2df8); VibrationDeviceInfo {type, position} (8 bytes, sdk+0x49da78); SixAxisSensorState 0x60 bytes. */
 #include "runtime.h"
+#include "ipc.h"
 #include <TargetConditionals.h>
 #include "feedback_settings.h"
 #include <math.h>
@@ -229,3 +230,18 @@ void *runtime_hid_feedback_override(const char *name) {
         if (!strcmp(name, entries[i].name)) return (entries[i].gyro ? gyro : rumble) ? entries[i].fn : NULL;
     return NULL;
 }
+/* ---------- the "hid" service ----------
+   OoT opens nn::hid's service when the ocarina first runs (main+0x329541c -> sdk+0x10be854); the runtime had no handler
+   for it, so sm answered "service hid not implemented" and stopped the process. Input, rumble and motion already reach
+   the game through the SDK hooks above, so the service only has to answer: every command returns success with a zeroed
+   reply, which is what nn::hid::Initialize and its style-set / handle queries accept. Commands are logged (first 12)
+   so a call that really needs data can be recognised. */
+static void hid_service(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    if (rq->cmd == 0) return;                       /* Initialize */
+    static int said;
+    if (said++ < 12) fprintf(stderr, "[totk-ipc] hid command %u: success, zero reply\n", rq->cmd);
+    memset(rs->data, 0, sizeof rs->data);
+    rs->data_size = 0;
+}
+__attribute__((constructor)) static void register_hid_service(void) { runtime_ipc_register("hid", hid_service, NULL, NULL); }
