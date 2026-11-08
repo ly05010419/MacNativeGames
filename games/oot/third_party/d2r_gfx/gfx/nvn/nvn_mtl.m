@@ -1510,8 +1510,10 @@ static void pt_apply_request(void) {
     MLOG("[pass-gpu] requested %d frames; active range %ld..%ld (diagnostic; exclude from FPS)",
          frames, g_pt_f0, g_pt_f1);
 }
-static void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
+#include <dlfcn.h>
+static __attribute__((noinline)) void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
     if (!pt_active()) return;
+    void *caller = __builtin_return_address(1);   /* the encoder helper's caller (arm64 keeps frame pointers) */
     if (!g_pt_heap) {
         MTL4CounterHeapDescriptor *hd = [MTL4CounterHeapDescriptor new]; hd.type = MTL4CounterHeapTypeTimestamp; hd.count = PT_MAX;
         NSError *e = nil; g_pt_heap = [g_dev newCounterHeapWithDescriptor:hd error:&e];
@@ -1522,6 +1524,7 @@ static void pt_mark(id cb, char kind, MTL4RenderPassDescriptor *d) {
     if (g_pt_n >= PT_MAX - 1) return;
     [(id<MTL4CommandBuffer>)cb writeTimestampIntoHeap:g_pt_heap atIndex:(NSUInteger)g_pt_n];
     pt_ent *p = &g_pt[g_pt_n++]; memset(p, 0, sizeof *p); p->kind = kind; p->draw0 = g_stat_draw; p->pass = g_stat_pass; g_pt_key_pending = kind == 'R';
+    if (kind != 'R') { Dl_info di; if (dladdr(caller, &di) && di.dli_fbase) snprintf(p->key, sizeof p->key, "@%#llx", (unsigned long long)((uintptr_t)caller - (uintptr_t)di.dli_fbase)); }   // until a dispatch names it: where the encoder was opened (atos)
     if (!d) return;
     for (int i = 0; i < 8; i++) {
         MTLRenderPassColorAttachmentDescriptor *a = d.colorAttachments[i]; if (!a.texture) continue;
@@ -1538,7 +1541,7 @@ static void pt_note_key(const char *key) { if (g_pt_key_pending && g_pt_n && key
 static void pt_note_dispatch(const char *key, const p_dispatch *dp, const uint16_t *tg) {
     if (!g_pt_heap || !g_pt_n) return;
     pt_ent *p = &g_pt[g_pt_n - 1]; p->dispatches++;
-    if (!p->key[0]) snprintf(p->key, sizeof p->key, "%s", key);
+    if (!p->key[0] || p->key[0] == '@') snprintf(p->key, sizeof p->key, "%s", key);
     MLOG("[gpu-work] F%llu submit=%llu encoder=%d pass=%llu dispatch=%u key=%s grid=%dx%dx%d tg=%ux%ux%u indirect=%#llx",
          (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)(g_fence + 1), g_pt_n - 1,
          (unsigned long long)g_stat_pass, p->dispatches, key, dp->x, dp->y, dp->z, tg[0], tg[1], tg[2], (unsigned long long)dp->indirect);
@@ -3187,6 +3190,8 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "render_stream")) { atomic_store(&g_rs_on, v != 0); MLOG("[flag] render_stream = %d (next render pass)", v != 0); return; }
     if (!strcmp(name, "cube_merge")) { atomic_store(&g_cg_on, v != 0); MLOG("[flag] cube_merge = %d", v != 0); return; }
     if (!strcmp(name, "skip_invisible")) { skv_set(v); return; }
+    if (!strcmp(name, "never_fs")) { extern _Atomic uint32_t g_never_fs; atomic_store(&g_never_fs, (uint32_t)v); MLOG("[flag] never_fs: draws with fragment shader %07x fail the depth test (diagnostic)", (uint32_t)v); return; }
+    if (!strcmp(name, "skip_fs")) { extern _Atomic uint32_t g_skip_fs; atomic_store(&g_skip_fs, (uint32_t)v); MLOG("[flag] skip_fs: draws with fragment shader %07x left out (diagnostic)", (uint32_t)v); return; }
     if (!strcmp(name, "mfx_upscale")) { mfxup_set(v < 0 ? !mfxup_enabled() : v); return; }   // TOTK_MFX_UPSCALE at run time (manual key 3 picture mode)
     if (!strcmp(name, "mfx_temporal")) { tup_set(v < 0 ? !tup_enabled() : v); return; }   // TOTK_MFX_TEMPORAL at run time (totk_taa.m)
     if (!strcmp(name, "tup_log")) { tup_log_frames(v); return; }
@@ -14431,6 +14436,13 @@ static void vr_palscan(const char *vs) {
    meshes are the palettes whose first bone sits within 0.5 m of the player's position modulo 10 m (found with vr_palscan).
    Returns the mesh's number among the player's meshes of this frame's G-buffer pass, or -1. */
 long g_vr_hidemesh; _Atomic long g_vr_meshlog;
+/* Diagnostic "flag skip_fs <first 7 hex digits of a fragment shader key, given in decimal>" (0 = off, 2026-11-08): draws
+   with that fragment shader are left out, so the per-pass GPU time (flag pass_gpu) shows what that shader costs. Wrong
+   pictures while on. */
+_Atomic uint32_t g_skip_fs;
+/* Diagnostic "flag never_fs <same key form>": that shader's draws keep everything but a depth test that never passes, so
+   pass_gpu shows the cost of rasterizing and rejecting them; equal to skip_fs means early depth rejection works. */
+_Atomic uint32_t g_never_fs;
 long g_vr_skip_lo, g_vr_skip_hi;   // diagnostic "flag vr_skip_lo / vr_skip_hi": G-buffer draws lo..hi-1 of each frame are left out
 /* diagnostic (vr_meshlog): a draw that is not a skinned mesh of the player, with a vertex uniform block holding a rotation
    whose translation is within 2.5 m of the player (modulo 10 m): rigid pieces on the player (earrings, eyebrows?) */
@@ -15985,6 +15997,15 @@ frz_plain:;
     /* TOTK diagnostic TOTK_GPU_SKIP_VC=<n>: skip every draw whose vertex count is n and whose colour mask is 0 (isolates a single depth-only draw). */
     { static long skip_vc = -2; if (skip_vc == -2) { const char *e = getenv("TOTK_GPU_SKIP_VC"); skip_vc = e ? atol(e) : -1; }
       if (skip_vc >= 0 && S.chmask.mask == 0 && (long)(dw ? dw->count : di->count) == skip_vc) { static int said; if (said++ < 3) MLOG("TOTK_GPU_SKIP_VC: skipped a %ld-vertex depth-only draw (pass %llu)", skip_vc, g_stat_pass); return; } }
+    { uint32_t sk = atomic_load_explicit(&g_skip_fs, memory_order_relaxed);
+      if (sk && pr->sh[1]) { char h[8]; memcpy(h, pr->sh[1]->key, 7); h[7] = 0; if ((uint32_t)strtoul(h, NULL, 16) == sk) return; }
+      uint32_t nv = atomic_load_explicit(&g_never_fs, memory_order_relaxed);
+      if (nv && pr->sh[1]) { char h[8]; memcpy(h, pr->sh[1]->key, 7); h[7] = 0;
+          static int said; if ((uint32_t)strtoul(h, NULL, 16) == nv && said++ < 4) MLOG("[never_fs] F%llu pass %llu fs %.16s pass-depth %d pass-stencil %d rt-depth %p defer %d", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, pr->sh[1]->key, g_pass.hd, g_pass.hs, (void *)R.rt.depth, g_defer_replaying); }
+      if (nv && g_pass.hd && pr->sh[1]) { char h[8]; memcpy(h, pr->sh[1]->key, 7); h[7] = 0;
+          if ((uint32_t)strtoul(h, NULL, 16) == nv) { static id<MTLDepthStencilState> never;
+              if (!never) { MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new]; d.depthCompareFunction = MTLCompareFunctionNever; d.depthWriteEnabled = NO; never = [g_dev newDepthStencilStateWithDescriptor:d]; }
+              cur_ds = never; g_dss_dirty = 1; } } }
     if (R.rt.n == 6 && R.rt.depth && (g_vr_skip_hi > g_vr_skip_lo || atomic_load(&g_vr_meshlog) > 0)) {   // diagnostic: G-buffer draws by number (bisecting for a mesh)
         static uint64_t fr = ~0ull; static long k; uint64_t now = atomic_load(&g_cur_frame); if (now != fr) { fr = now; k = 0; }
         long i = k++;
@@ -16088,6 +16109,11 @@ frz_plain:;
              R.rt.n > 0 && R.rt.color[0] ? R.rt.color[0]->d.format : 0, (unsigned long long)(R.rt.n > 0 && R.rt.color[0] ? R.rt.color[0]->serial : 0),
              (unsigned)S.blend[0].src_rgb, (unsigned)S.blend[0].dst_rgb, (unsigned)S.blend[0].eq_rgb, (unsigned)S.blend[0].src_a, (unsigned)S.blend[0].dst_a, (unsigned)S.blend[0].eq_a,
              S.chmask.mask, dw ? dw->prim : di ? di->prim : -1);
+    if (atomic_load(&g_draw_log) > 0)   /* depth / stencil state of the draw (2026-11-08): which pixels a full-screen pass may skip */
+        MLOG("[uw-ds] F%llu pass %llu fs %.16s depth %d/%d/f%d stencil %d f%d/%d ops %d,%d,%d ref %u read %#x write %#x rt-depth %d",
+             (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass, pr && pr->sh[1] ? pr->sh[1]->key : "-",
+             (int)S.ds.dt, (int)S.ds.dw, (int)S.ds.df, (int)S.ds.st, (int)S.ds.sf_f, (int)S.ds.sf_b, (int)S.ds.fail_f, (int)S.ds.zfail_f, (int)S.ds.zpass_f,
+             S.st_ref[0], S.st_vmask[0], S.st_wmask[0], R.rt.depth ? (int)R.rt.depth->d.format : 0);
     if (atomic_load(&g_draw_log) > 0 && pr && pr->sh[0]) {   // TOTK_DRAW_LOG_UBO=<vertex shader key prefix>:<cbuf reg>[:<stage>]: also log the first words of that uniform buffer and the fragment stage's texture 0 / sampler
         static const char *spec; static int init; if (!init++) spec = getenv("TOTK_DRAW_LOG_UBO");
         const char *colon = spec ? strchr(spec, ':') : NULL;
