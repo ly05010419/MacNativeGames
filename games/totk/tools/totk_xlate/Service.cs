@@ -571,6 +571,7 @@ static partial class ShaderService
             src = RewriteDepthTextures(src, depthSlots);
         src = MatchSwitchDepthSampling(src);
         src = ShaderHmma.Rewrite(src);
+        src = ShaderSharedStore.Rewrite(src);
         return PreciseMinMax(src);   // after the depth rewrite: its totk_d16ref clamp is written as precise:: too
     }
 

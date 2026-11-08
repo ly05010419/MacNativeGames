@@ -1,0 +1,770 @@
+From nxnative (seedds/nxnative, MIT) 16776913 b5948342 1a410e6e b97f0dc6 9dc81953 645d3029 ffebfd59 473c9026 04419bc2: LDSM subgroup barriers, MUFU sin/cos turns, ATOMS INC/DEC/CAS, ALU carries and modifiers, half pairs, directed I2F/F2F rounding, named shared stores, the depth register, raw 64/128-bit global loads as one vector load.
+diff --git a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+index 6790a5a..f42b5ca 100644
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -1792,6 +1792,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+         private static OperationResult GenerateLoadOrStore(CodeGenContext context, AstOperation operation, bool isStore)
+         {
++            if (!isStore && operation.StorageKind == StorageKind.GlobalMemoryVector)
++            {
++                return GenerateRawVectorLoad(context, operation);
++            }
++
+             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
+ 
+             // nxnative: a load or store through a physical storage buffer pointer must state its alignment (a 32-bit word)
+@@ -1821,6 +1826,40 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+         }
+ 
++        // nxnative: a raw vector load (GlobalToStorage.TryGenerateRawStorageOp): low and high words of the host GPU address, the word count, the local memory for words 1 and up.
++        // One load of a vector of 32-bit words through a physical storage buffer pointer (aligned as a word, as the scalar loads), word 0 returned, the others stored
++        private static OperationResult GenerateRawVectorLoad(CodeGenContext context, AstOperation operation)
++        {
++            if (operation.GetSource(2) is not AstOperand { Type: OperandType.Constant } countOperand ||
++                operation.GetSource(3) is not AstOperand { Type: OperandType.Constant } memoryOperand)
++            {
++                throw new InvalidOperationException($"The word count and local memory of a {operation.StorageKind} load must be constants.");
++            }
++
++            int count = countOperand.Value;
++            SpvInstruction vectorType = context.TypeVector(context.TypeU32(), count);
++            SpvInstruction addressWords = context.CompositeConstruct(
++                context.TypeVector(context.TypeU32(), 2),
++                context.Get(AggregateType.U32, operation.GetSource(0)),
++                context.Get(AggregateType.U32, operation.GetSource(1)));
++            SpvInstruction pointer = context.ConvertUToPtr(
++                context.TypePointer(StorageClass.PhysicalStorageBuffer, vectorType),
++                context.Bitcast(context.TypeInt(64, 0), addressWords));
++
++            SpvInstruction value = context.Load(vectorType, pointer, MemoryAccessMask.Aligned);
++            value.AddOperand((SpvLiteralInteger)4);
++
++            SpvInstruction wordPointerType = context.TypePointer(StorageClass.Private, context.TypeU32());
++
++            for (int word = 1; word < count; word++)
++            {
++                SpvInstruction element = context.AccessChain(wordPointerType, context.LocalMemories[memoryOperand.Value], context.Constant(context.TypeS32(), word - 1));
++                context.Store(element, context.CompositeExtract(context.TypeU32(), value, (SpvLiteralInteger)word));
++            }
++
++            return new OperationResult(AggregateType.U32, context.CompositeExtract(context.TypeU32(), value, (SpvLiteralInteger)0));
++        }
++
+         private static SpvInstruction GetStoragePointer(CodeGenContext context, AstOperation operation, out AggregateType varType)
+         {
+             StorageKind storageKind = operation.StorageKind;
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+index de07cd0..eed4f3f 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -225,7 +225,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             // Splatoon Raiders' upscaler network (agl_ndsr.pck) takes powers of its packed halves with LOG2 and EXP2, then joins the results with PRMT 0x5410
+             bool half = x.Bit(73);
+             ASrc s = AOne(context, x);
+-            Operand res = half ? AHalfLanes(context, s, x.Bits(60, 62))[0] : AFloat(context, s);
++            // MUFU.F16's bits 60..61 pick one half (nvdisasm: 0 .H0, 1 .H1), not a pair's swizzle (where 1 is .F32): the odd values read the high half, as they did
++            Operand res = half ? AHalfLanes(context, s, (x.Bits(60, 62) & 1) != 0 ? 3 : 2)[0] : AFloat(context, s);
+ 
+             if (half && x.Bits(74, 80) is 6 or 7)
+             {
+@@ -234,8 +235,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             res = x.Bits(74, 80) switch
+             {
+-                0 => context.FPCosine(context.FPMultiply(res, ConstF(2f * MathF.PI))),   // Volta and later: the argument is in turns (the compiler multiplies by 1 / 2pi first,
+-                1 => context.FPSine(context.FPMultiply(res, ConstF(2f * MathF.PI))),     // NAK lowers fsin / fcos the same way); Maxwell's came through RRO instead
++                0 => context.FPCosine(ATurnsToRadians(context, res)),   // Volta and later: the argument is in turns (the compiler multiplies by 1 / 2pi first,
++                1 => context.FPSine(ATurnsToRadians(context, res)),     // NAK lowers fsin / fcos the same way); Maxwell's came through RRO instead
+                 2 => context.FPExponentB2(res),
+                 3 => context.FPLogarithmB2(res),
+                 4 => context.FPReciprocal(res),
+@@ -249,6 +250,16 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             ASet(context, x, half ? context.PackHalf2x16(res, ConstF(0f)) : res);
+         }
+ 
++        // MUFU.SIN / COS take turns and use only their fraction, so a large argument keeps an exact angle. t * 2pi in float rounds away that fraction (at 2^20 turns a step of 0.4 rad), and
++        // Metal's fast sin / cos return 0 from about 2^20 turns on (both, so a rotation (cos, sin) collapses to the origin): Donkey Kong Bananza's SSAO (a6f04605183d9915) rotates its kernel by
++        // 10 (3 (x mod y) + x y) / 2pi turns, past 2^20 where x y > 659,000, which at its full-size effects is a corner of the screen with no ambient occlusion. t - rint(t) is exact for
++        // every float (|t| < 2^23 has the same exponent or a smaller one; at and past 2^23 every float is an integer and the fraction is 0) and lies in [-0.5, 0.5]: the angle is in [-pi, pi],
++        // where fast sin / cos are accurate, and a small t stays itself (sin of a small angle is not moved to near 2pi). Infinity and NaN give NaN, as the hardware
++        private static Operand ATurnsToRadians(EmitterContext context, Operand turns)
++        {
++            return context.FPMultiply(context.FPSubtract(turns, context.FPRound(turns)), ConstF(2f * MathF.PI));
++        }
++
+         // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a half source is the half 60..62 selects, as F2F's (Pokemon Pokopia: 1,067 shaders)
+         public static void AF2i(EmitterContext context)
+         {
+@@ -309,10 +320,57 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             }
+ 
+             ISrcFmt src = (ISrcFmt)((x.Bit(74) ? 4 : 0) | srcSize);
++            int rnd = x.Bits(78, 80);
++
++            // A 32-bit integer to a float with .RM / .RP / .RZ (78..79): the compiler's 32-bit division starts with I2F.U32.RP, so that its reciprocal estimate stays on
++            // the side its correction step expects. Rounded to nearest, a value above 2^24 came out one ulp off in about half the cases
++            if (srcSize == 2 && dstSize == 2 && rnd != 0)
++            {
++                bool signed = x.Bit(74);
++                Operand v = AGet(context, AOne(context, x, neg: false, abs: false));
++                Operand f = signed ? context.IConvertS32ToFP32(v) : context.IConvertU32ToFP32(v);
++                // f is an integer value, exact back in 32 bits unless it rounded up to 2^31 (signed) or 2^32, where it is above v anyway
++                Operand limit = ConstF(signed ? 2147483648f : 4294967296f);
++                Operand big = context.BitwiseNot(context.FPCompareLess(f, limit));
++                Operand back = signed ? context.FP32ConvertToS32(f) : context.FP32ConvertToU32(f);
++                Operand gt = context.BitwiseOr(big, signed ? context.ICompareGreater(back, v) : context.ICompareGreaterUnsigned(back, v));
++                Operand lt = context.BitwiseAnd(context.BitwiseNot(big), signed ? context.ICompareLess(back, v) : context.ICompareLessUnsigned(back, v));
++                ASet(context, x, ADirected(context, rnd, f, gt, lt, signed ? context.ICompareLess(v, Const(0)) : null));
++                return;
++            }
+ 
+             EmitI2F(context, src, (DstFmt)dstSize, AGet(context, AOne(context, x, neg: false, abs: false)), (ByteSel)(select * (srcSize == 1 ? 2 : 1)), x.Rd, false, false);
+         }
+ 
++        // A result r rounded to nearest, moved to the directed rounding .RM (1), .RP (2) or .RZ (3) asks for, from how it compares with the exact value: gt (r is above it),
++        // lt (r is below it), neg (the value is negative; null: never). One step of a float's bits moves it to its neighbour of the same sign: + 1 away from zero, - 1 toward it.
++        // An overflow rounded to infinity steps back to the largest finite value (NAK's hardware test: F2F.F16.F32.RZ of 65536 is 0x7bff)
++        private static Operand ADirected(EmitterContext context, int rnd, Operand r, Operand gt, Operand lt, Operand neg)
++        {
++            Operand pos = neg == null ? null : context.BitwiseNot(neg);
++            Operand And(Operand a, Operand b) => a == null || b == null ? null : context.BitwiseAnd(a, b);
++            Operand away, toward;
++
++            switch (rnd)
++            {
++                case 2: away = neg == null ? lt : And(lt, pos); toward = And(lt, neg); break;   // RP: below the value, step up
++                case 1: away = And(gt, neg); toward = neg == null ? gt : And(gt, pos); break;   // RM: above the value, step down
++                default: away = null; toward = neg == null ? gt : context.BitwiseOr(And(gt, pos), And(lt, neg)); break;   // RZ: larger in magnitude, step toward zero
++            }
++
++            if (away != null)
++            {
++                r = context.ConditionalSelect(away, context.IAdd(r, Const(1)), r);
++            }
++
++            if (toward != null)
++            {
++                r = context.ConditionalSelect(toward, context.IAdd(r, Const(-1)), r);
++            }
++
++            return r;
++        }
++
+         // F2I.U64 Rd:Rd+1, b (F32): the layout of F2I. The compiler's 32-bit division takes its reciprocal this way: I2F, RCP, IADD 0x1ffffffe (2^64 and two ulps down), F2I.U64, then the high word
+         // (Fire Emblem Fortune's Weave's Lighting compute shaders). The translator has 32-bit integers, so the two words are taken apart in float: a float's value has at most 24 significant
+         // bits, so the high word and the rest are exact, and the result is exact for every value in range
+@@ -417,6 +475,19 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             }
+ 
+             EmitF2F(context, (DstFmt)srcSize, (DstFmt)dstSize, IntegerRound.Pass, src, x.Rd, s.Abs, s.Neg, false);
++
++            // F2F.F16.F32 .RM / .RP / .RZ (78..79): the pack rounds to nearest; the half read back (exact in 32 bits) tells which side of the float it fell.
++            // The read goes through a mask: the optimizer takes an unpack of a pack for the packed float itself (PropagatePack), which would skip the rounding
++            int rnd = x.Bits(78, 80);
++
++            if (srcSize == 2 && dstSize == 1 && rnd != 0 && x.Rd != RegisterConsts.RegisterZeroIndex)
++            {
++                Operand f = context.FPAbsNeg(src, s.Abs, s.Neg);
++                Operand rd = Register(x.Rd, RegisterType.Gpr);
++                Operand back = context.UnpackHalf2x16Low(context.BitwiseAnd(rd, Const(0xffff)));
++                Operand res = ADirected(context, rnd, rd, context.FPCompareLess(f, back), context.FPCompareLess(back, f), context.FPCompareLess(f, ConstF(0f)));
++                context.Copy(rd, res);
++            }
+         }
+ 
+         // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one.
+@@ -478,18 +549,23 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+         // ---- packed halves ----
+ 
+-        // A half-pair operand's two lanes after its swizzle (0 as is, 2 low twice, 3 high twice; 1 the high half of a scalar), abs / neg applied.
++        // A half-pair operand's two lanes after its swizzle (0 as is, 1 .F32: the 32-bit float itself in both lanes, 2 low twice, 3 high twice), abs / neg applied.
++        // A constant has its swizzle too (bits 60..61 in the 32 slot, nvdisasm: c[0x0] [0x168].H0_H0); only an immediate has none (those bits are its own)
+         private static Operand[] AHalfLanes(EmitterContext context, ASrc s, int swizzle)
+         {
+             Operand v = AGet(context, s);
+             Operand lo, hi;
+ 
+-            if (s.Kind == AKind.Imm || s.Kind == AKind.Cbuf || swizzle == 0)
++            if (s.Kind == AKind.Imm || swizzle == 0)
+             {
+                 lo = context.UnpackHalf2x16Low(v);
+                 hi = context.UnpackHalf2x16High(v);
+             }
+-            else if (swizzle is 1 or 3)
++            else if (swizzle == 1)
++            {
++                lo = hi = v;
++            }
++            else if (swizzle == 3)
+             {
+                 lo = hi = context.UnpackHalf2x16High(v);
+             }
+@@ -904,8 +980,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             if (carries)
+             {
+-                ASetPred(context, o0, context.ICompareNotEqual(context.BitwiseAnd(carryCount, Const(1)), Const(0)), u);
+-                ASetPred(context, o1, context.ICompareNotEqual(context.BitwiseAnd(carryCount, Const(2)), Const(0)), u);
++                // The first predicate is sum >= 2^32, the second sum >= 2 * 2^32 (Mesa NAK's OpIAdd3 fold, checked on hardware): the IADD3.X of the
++                // high word adds both, so a carry of 2 must set both, not only the second
++                ASetPred(context, o0, context.ICompareNotEqual(carryCount, Const(0)), u);
++                ASetPred(context, o1, context.ICompareLessUnsigned(Const(1), carryCount), u);
+             }
+         }
+ 
+@@ -1167,10 +1245,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             bool negInter = x.Bit(72);
+             // B's negation (63) exists where B is a register, uniform register or constant in the 32 slot (forms 1, 5, 6)
+             Operand srcB = AGet(context, b);
++            // As the intermediate: with .X the bitwise not, otherwise the two's complement ~B + 1, whose + 1 counts in the carry out (B = 0 carries;
++            // Mesa NAK's OpLea / OpLeaX folds, checked on hardware)
++            bool negB = x.Form is 1 or 5 or 6 && x.Bit(63);
+ 
+-            if (x.Form is 1 or 5 or 6 && x.Bit(63))
++            if (negB)
+             {
+-                srcB = context.INegate(srcB);
++                srcB = context.BitwiseNot(srcB);
+             }
+ 
+             Operand lo = AGet(context, a);
+@@ -1180,16 +1261,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             {
+                 t = context.ShiftLeft(lo, Const(shift));
+             }
+-            else if (shift == 0)
+-            {
+-                t = AGet(context, c);
+-            }
+             else
+             {
+-                t = context.BitwiseOr(context.ShiftLeft(AGet(context, c), Const(shift)), context.ShiftRightU32(lo, Const(32 - shift)));
++                // .SX32 (73): the high word is a's sign extension, not a source (LEA.HI.X.SX32 adds a sign-extended 32-bit index to a 64-bit address)
++                Operand hi = x.Bit(73) ? context.ShiftRightS32(lo, Const(31)) : AGet(context, c);
++                t = shift == 0 ? hi : context.BitwiseOr(context.ShiftLeft(hi, Const(shift)), context.ShiftRightU32(lo, Const(32 - shift)));
+             }
+ 
+-            int plusOne = 0;
++            int plusOne = negB && !ex ? 1 : 0;
+ 
+             if (negInter)
+             {
+@@ -1197,14 +1276,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                 if (!ex)
+                 {
+-                    plusOne = 1;
++                    plusOne++;
+                 }
+             }
+ 
+             Operand sum = context.IAdd(t, srcB);
+             Operand carry = context.ICompareLessUnsigned(sum, t);
+ 
+-            if (plusOne != 0)
++            for (int k = 0; k < plusOne; k++)
+             {
+                 Operand next = context.IAdd(sum, Const(1));
+                 carry = context.BitwiseOr(carry, context.ICompareLessUnsigned(next, sum));
+@@ -1299,7 +1378,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             bool u = AUniform(context);
+             Operand src = AGet(context, AOne(context, x, u, neg: false, abs: false));
+ 
+-            if (x.Bit(63))
++            // Bit 63 is the bitwise not only where B is a register, uniform register or constant (forms 1, 5, 6); in the immediate form it is the immediate's top bit
++            if (x.Bit(63) && x.Form is 1 or 5 or 6)
+             {
+                 src = context.BitwiseNot(src);
+             }
+@@ -1320,7 +1400,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Operand src = AGet(context, AOne(context, x, u, neg: false, abs: false));
+ 
+-            if (x.Bit(63))
++            // As POPC: bit 63 is the bitwise not only in forms 1, 5, 6 (the immediate's top bit in form 4)
++            if (x.Bit(63) && x.Form is 1 or 5 or 6)
+             {
+                 src = context.BitwiseNot(src);
+             }
+@@ -1465,8 +1546,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             int lut0 = x.Bits(64, 67) | (x.Bits(72, 77) << 3);
+             int lut1 = x.Bits(16, 24);
+ 
+-            ASetPred(context, x.Bits(81, 84), APredLut(context, a, b, c, lut0), u);
+-            ASetPred(context, x.Bits(84, 87), APredLut(context, a, b, c, lut1), u);
++            // Both results from the sources as they were: the first destination may be one of the sources (PLOP3.LUT P2, P0, P2, P0, P6, ...)
++            Operand r0 = APredLut(context, a, b, c, lut0);
++            Operand r1 = APredLut(context, a, b, c, lut1);
++            ASetPred(context, x.Bits(81, 84), r0, u);
++            ASetPred(context, x.Bits(84, 87), r1, u);
+         }
+ 
+         // A three-input boolean function by its truth table (bit (a << 2 | b << 1 | c) ... as LOP3: a = 0xf0, b = 0xcc, c = 0xaa)
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+index b165888..b1ac54c 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -309,6 +309,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 context.BranchIfFalse(lblSkip, pred);
+             }
+ 
++            // The words of one LDG.64 / LDG.128 are marked as one access (Operation.GlobalVectorCount): an address the translator ties to no storage buffer then takes one pool
++            // table lookup and one vector load for all of them, where each word took its own (Ocarina of Time's foliage mesh shaders: 4.6 ms of a 683x384 frame, 464 of 506 loads)
++            bool vector = count > 1 && storageKind == StorageKind.GlobalMemory && x.Rd + count <= RegisterConsts.RegisterZeroIndex;
++
+             for (int index = 0; index < count; index++)
+             {
+                 if (x.Rd + index >= RegisterConsts.RegisterZeroIndex)
+@@ -316,7 +320,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                     break;
+                 }
+ 
+-                context.Copy(Register(x.Rd + index, RegisterType.Gpr), context.Load(storageKind, los[index], his[index]));
++                Operand value = context.Load(storageKind, los[index], his[index]);
++
++                if (vector && value.AsgOp is Operation load)
++                {
++                    load.GlobalVectorCount = count;
++                    load.GlobalVectorWord = index;
++                }
++
++                context.Copy(Register(x.Rd + index, RegisterType.Gpr), value);
+             }
+ 
+             if (lblSkip != null)
+@@ -381,8 +393,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
+         {
+         }
+ 
+-        // ATOMS.CAS Rd, [Ra + offset], Rb (expected), Rc (new value): Rd = 1 when the swap happened, not the old value (Fire Emblem Fortune's Weave's only use is a retry loop for a float add that repeats until Rd == 1).
+-        // Only the 32-bit form (operation 3 at 87..91, size 0) occurs
++        // ATOMS.CAS Rd, [Ra + offset], Rb (expected), Rc (new value). nvdisasm names the forms by bit 87: clear, CAS, CUDA's atomicCAS, Rd the old value; set, CAST, and CAST.SPIN with
++        // bit 88 too (the compiler's retry loop for a float add on shared memory, which repeats until Rd == 1: Fire Emblem Fortune's Weave's only use), Rd 1 when the swap happened.
++        // Only the 32-bit size (73..76 = 0) is taken
+         public static void AAtomsCas(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+@@ -392,7 +405,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
+             Operand old = context.AtomicCompareAndSwap(StorageKind.SharedMemory, Const(context.ResourceManager.SharedMemoryId), offset, expected, value);
+ 
+-            ASet(context, x, context.ConditionalSelect(context.ICompareEqual(old, expected), Const(1), Const(0)));
++            ASet(context, x, !x.Bit(87) ? old : context.ConditionalSelect(context.ICompareEqual(old, expected), Const(1), Const(0)));
+         }
+ 
+         // ---- local and shared memory ----
+@@ -463,7 +476,25 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             }
+ 
+             Operand value = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
+-            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), id, offset, value);
++            AtomOp op = (AtomOp)x.Bits(87, 91);
++
++            // INC (3) and DEC (4), CUDA's atomicInc / atomicDec: EmitAtomicOp has no case for them and gave 0 with no access. A compare-and-swap loop: the new value from the old one,
++            // INC: old >= b ? 0 : old + 1; DEC: old == 0 || old > b ? b : old - 1 (unsigned), retried until the word did not change meanwhile; Rd the old value
++            if (op is AtomOp.Inc or AtomOp.Dec && x.Bits(73, 75) is 0 or 1)
++            {
++                Operand loop = Label();
++                context.MarkLabel(loop);
++                Operand cur = context.Load(StorageKind.SharedMemory, id, offset);
++                Operand next = op == AtomOp.Inc
++                    ? context.ConditionalSelect(context.ICompareGreaterOrEqualUnsigned(cur, value), Const(0), context.IAdd(cur, Const(1)))
++                    : context.ConditionalSelect(context.BitwiseOr(context.ICompareEqual(cur, Const(0)), context.ICompareGreaterUnsigned(cur, value)), value, context.IAdd(cur, Const(-1)));
++                Operand prev = context.AtomicCompareAndSwap(StorageKind.SharedMemory, id, offset, cur, next);
++                context.BranchIfFalse(loop, context.ICompareEqual(prev, cur));
++                ASet(context, x, cur);
++                return;
++            }
++
++            Operand res = EmitAtomicOp(context, StorageKind.SharedMemory, op, (AtomSize)x.Bits(73, 76), id, offset, value);
+ 
+             ASet(context, x, res);
+         }
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs
+index 47b615a..841bad0 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereTensor.cs
+@@ -1,3 +1,4 @@
++using System.Linq;
+ using Ryujinx.Graphics.Shader.Decoders;
+ using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+ using Ryujinx.Graphics.Shader.Translation;
+@@ -261,6 +262,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             int id = context.ResourceManager.SharedMemoryId;
+             Operand[] results = new Operand[count];
+ 
++            // nxnative 16776913: LDSM reads rows that other lanes of the warp stored just before, often with no BAR between them. The Switch runs a warp's shared memory accesses in order;
++            // Metal orders another lane's threadgroup store and this lane's load only through a barrier. LDSM is warp-collective, so one subgroup barrier before its reads and one after is safe
++            context.SubgroupBarrier();
++
+             for (int m = 0; m < count; m++)
+             {
+                 if (mode == 0)
+@@ -290,6 +295,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             {
+                 context.Copy(Register(x.Rd + m, RegisterType.Gpr), results[m]);
+             }
++
++            context.SubgroupBarrier();
+         }
+ 
+         // MOVM.16.MT88 Rd, Ra: the 8 x 8 matrix of halves the warp holds (lane L: row L / 4, columns 2 (L % 4), + 1), transposed into the same layout
+@@ -322,12 +329,26 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             }
+         }
+ 
++        // .FTZ (80) of HSETP2 / HSET2: a subnormal half compares as zero, as FSETP.FTZ's float does (AFtz). The lanes are unpacked to 32 bits, where a half's subnormals
++        // are normal floats, so FlushDenormal's bound would never flush them: the half's own bound is 2^-14
++        private static (Operand[] A, Operand[] B) AHalfFtz(EmitterContext context, AmpereOp x, (Operand[] A, Operand[] B) src)
++        {
++            if (!x.Bit(80))
++            {
++                return src;
++            }
++
++            Operand[] Flush(Operand[] v) => [.. v.Select(l => context.ConditionalSelect(context.FPCompareLess(context.FPAbsolute(l), ConstF(6.1035156e-05f)), ConstF(0), l))];
++
++            return (Flush(src.A), Flush(src.B));
++        }
++
+         // HSETP2 Pd0, Pd1, a, b, P: each half's comparison (76..80) combined with P (87..90) by the operation at 69..71; with .H_AND (71) the two halves' results ANDed
+         // into Pd0 and its negation into Pd1
+         public static void AHsetp2(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+-            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
++            (Operand[] a, Operand[] b) = AHalfFtz(context, x, AHalfSecond(context, x));
+ 
+             Operand lo = GetFPComparison(context, (FComp)x.Bits(76, 80), a[0], b[0]);
+             Operand hi = GetFPComparison(context, (FComp)x.Bits(76, 80), a[1], b[1]);
+@@ -349,7 +370,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+         public static void AHset2(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);
+-            (Operand[] a, Operand[] b) = AHalfSecond(context, x);
++            (Operand[] a, Operand[] b) = AHalfFtz(context, x, AHalfSecond(context, x));
+             Operand p = APred(context, x, 87, 90);
+             BoolOp bop = (BoolOp)x.Bits(69, 71);
+             Operand res = Const(0);
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+index 1767d99..080cab8 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMemory.cs
+@@ -393,6 +393,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+             Operand srcA = context.Copy(new Operand(new Register(ra, RegisterType.Gpr)));
+ 
++            // nxnative: the words of one LDG.64 / LDG.128 are marked as one access (Operation.GlobalVectorCount, as in InstEmitAmpereMem.ALdg)
++            bool vector = count > 1 && storageKind == StorageKind.GlobalMemory && rd + count <= RegisterConsts.RegisterZeroIndex;
++
+             for (int index = 0; index < count; index++)
+             {
+                 Register dest = new(rd + index, RegisterType.Gpr);
+@@ -404,6 +407,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                 Operand value = context.Load(storageKind, context.IAdd(srcA, Const(offset + index * 4)), addrHigh);
+ 
++                if (vector && value.AsgOp is Operation load)
++                {
++                    load.GlobalVectorCount = count;
++                    load.GlobalVectorWord = index;
++                }
++
+                 context.Copy(Register(dest), value);
+             }
+         }
+diff --git a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs
+index dc2f56e..875b8d8 100644
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Operation.cs
+@@ -10,6 +10,11 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
+ 
+         public bool ForcePrecise { get; set; }
+ 
++        // nxnative: the words of one 64- or 128-bit global load (LDG.64 / LDG.128), which the emitters split into 32-bit loads: the access's word count (2 or 4) on each of
++        // them and the word's index, 0 on none other. GlobalToStorage reads such an access through the pool table as one vector load (TryGenerateRawStorageOp)
++        public int GlobalVectorCount { get; set; }
++        public int GlobalVectorWord { get; set; }
++
+         private Operand[] _dests;
+ 
+         public Operand Dest
+diff --git a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/StorageKind.cs b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/StorageKind.cs
+index 2b39e85..dedc637 100644
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/StorageKind.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/StorageKind.cs
+@@ -18,6 +18,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
+         GlobalMemoryS16, // TODO: Remove this and store type as a field on the Operation class itself.
+         GlobalMemoryU8, // TODO: Remove this and store type as a field on the Operation class itself.
+         GlobalMemoryU16, // TODO: Remove this and store type as a field on the Operation class itself.
++        GlobalMemoryVector, // nxnative: a raw vector load at a host GPU address (GlobalToStorage.TryGenerateRawStorageOp): low, high, word count, the local memory taking words 1 and up
+     }
+ 
+     static class StorageKindExtensions
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs b/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
+index 78585b8..9b636b9 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
+@@ -296,7 +296,9 @@ namespace Ryujinx.Graphics.Shader.Translation
+ 
+             context.Return();
+ 
+-            return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, $"SharedStore{bitSize}_{id}", false, 2, 0);
++            // nxnative: the dmsh_ name keeps the helper's name in the SPIR-V, and the shader build replaces this compare-and-swap loop in the Metal source with a store of the byte or
++            // half-word (dmsh_build.py, shared_store_msl), which Metal's threadgroup memory takes: the name, the arguments (byte offset, value) and the array are the contract
++            return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, $"dmsh_shared_store{bitSize}_{id}", false, 2, 0);
+         }
+ 
+         private static Function GenerateShuffleFunction(HelperFunctionName functionName, int subgroupSize)
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+index 3d6f348..35de0c9 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -82,6 +82,18 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                 _hfm = hfm;
+             }
+ 
++            // nxnative: the raw vector load helpers by word count (TryGenerateRawStorageOp), kept apart from _entries, where a scalar load would find them
++            public readonly Dictionary<int, int> RawVectorFunctions = [];
++
++            public int AddRawVectorFunction(int count, Function function)
++            {
++                int functionId = _hfm.AddFunction(function);
++
++                RawVectorFunctions[count] = functionId;
++
++                return functionId;
++            }
++
+             public int AddFunction(Operation baseOp, bool isMultiTarget, IReadOnlyList<uint> targetCbs, Function function)
+             {
+                 int functionId = _hfm.AddFunction(function);
+@@ -381,15 +393,101 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                     targetLanguage,
+                     block,
+                     operation,
+-                    out int functionId))
++                    out int functionId,
++                    out bool raw))
+                 {
+                     return null;
+                 }
+ 
++                if (raw &&
++                    operation.Inst == Instruction.Load &&
++                    operation.StorageKind == StorageKind.GlobalMemory &&
++                    operation.GlobalVectorCount > 1 &&
++                    operation.GlobalVectorWord == 0 &&
++                    TryGetRawVectorFunction(gtsContext, resourceManager, gpuAccessor, operation, out int vectorFunctionId))
++                {
++                    return GenerateRawVectorLoad(resourceManager, node, operation, vectorFunctionId);
++                }
++
+                 return GenerateCallStorageOp(node, operation, null, functionId);
+             }
+         }
+ 
++        // nxnative: the first word of a 64- or 128-bit global load whose address goes through the pool table (Operation.GlobalVectorCount) calls the vector helper, which leaves
++        // the other words in the shader's gmem_vec local memory; the loads of those words, which follow in the block, read them from there right after the call. A word whose
++        // load is gone (unused) is not read. The scan stops at any other memory access or call, so nothing writes gmem_vec in between
++        private static LinkedListNode<INode> GenerateRawVectorLoad(ResourceManager resourceManager, LinkedListNode<INode> node, Operation operation, int functionId)
++        {
++            int count = operation.GlobalVectorCount;
++            int vectorMemoryId = resourceManager.GetRawVectorMemory();
++
++            node = GenerateCallStorageOp(node, operation, null, functionId);   // the first word's load, now a copy of the call's result
++
++            LinkedListNode<INode> insertAfter = node;
++
++            for (LinkedListNode<INode> next = node.Next; next != null; next = next.Next)
++            {
++                if (next.Value is not Operation follower)
++                {
++                    continue;
++                }
++
++                if (follower.Inst == Instruction.Load &&
++                    follower.StorageKind == StorageKind.GlobalMemory &&
++                    follower.GlobalVectorCount == count &&
++                    follower.GlobalVectorWord > 0)
++                {
++                    Operand word = Local();
++                    Operation load = new(Instruction.Load, StorageKind.LocalMemory, word, Const(vectorMemoryId), Const(follower.GlobalVectorWord - 1));
++
++                    insertAfter = insertAfter.List.AddAfter(insertAfter, load);
++
++                    // A plain copy in its place: TurnIntoCopy keeps the storage kind, and this pass, which reaches the node later, would take it for a global access again
++                    Operand dest = follower.Dest;
++                    follower.TurnIntoCopy(word);
++                    word.UseOps.Remove(follower);
++                    follower.Dest = null;
++                    next.Value = new Operation(Instruction.Copy, dest, word);
++
++                    if (follower.GlobalVectorWord == count - 1)
++                    {
++                        break;
++                    }
++
++                    continue;
++                }
++
++                if (follower.GlobalVectorCount != 0 ||
++                    follower.StorageKind != StorageKind.None ||
++                    follower.Inst == Instruction.Call ||
++                    follower.Inst == Instruction.Barrier ||
++                    follower.Inst == Instruction.MemoryBarrier ||
++                    follower.Inst.IsAtomic())
++                {
++                    break;
++                }
++            }
++
++            return node;
++        }
++
++        private static bool TryGetRawVectorFunction(
++            GtsContext gtsContext,
++            ResourceManager resourceManager,
++            IGpuAccessor gpuAccessor,
++            Operation operation,
++            out int functionId)
++        {
++            int count = operation.GlobalVectorCount;
++
++            if (gtsContext.RawVectorFunctions.TryGetValue(count, out functionId))
++            {
++                return true;
++            }
++
++            return TryGenerateRawStorageOp(gtsContext, resourceManager, gpuAccessor, operation, out functionId, count);
++        }
++
+         private static bool CanUseInlineStorageOp(Operation operation, TargetLanguage targetLanguage)
+         {
+             if (operation.StorageKind != StorageKind.GlobalMemory)
+@@ -589,11 +687,13 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             TargetLanguage targetLanguage,
+             BasicBlock block,
+             Operation operation,
+-            out int functionId)
++            out int functionId,
++            out bool raw)
+         {
+             Queue<PhiNode> phis = new();
+             HashSet<PhiNode> visited = [];
+             List<uint> targetCbs = [];
++            raw = false;
+ 
+             Operand globalAddress = operation.GetSource(0);
+ 
+@@ -658,6 +758,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                 gpuAccessor.Log($"Global memory operation \"{operation.Inst}\" traced to no storage buffer: it goes through the memory pool table.");
+             }
+ 
++            raw = targetCbs.Count == 0;
++
+             if (gtsContext.TryGetFunctionId(operation, isMultiTarget: true, targetCbs, out functionId))
+             {
+                 return true;
+@@ -802,7 +904,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+             ResourceManager resourceManager,
+             IGpuAccessor gpuAccessor,
+             Operation operation,
+-            out int functionId)
++            out int functionId,
++            int vectorCount = 1)
+         {
+             functionId = 0;
+ 
+@@ -924,7 +1027,16 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+ 
+             Operand resultValue = null;
+ 
+-            if (operation.Inst == Instruction.Load)
++            if (operation.Inst == Instruction.Load && vectorCount > 1)
++            {
++                // All the words of a 64- or 128-bit load in one vector load (ReplaceGlobalMemoryWithStorage, GenerateRawVectorLoad): word 0 returned, the others left in gmem_vec.
++                // The first word's entry holds them all: such a load is aligned to its size on the GPU, and every entry starts and ends on a pool's 4 KiB boundary
++                // (nvn_mtl.m gmem_map). Ocarina of Time's foliage mesh shaders read 464 of their 506 raw words as 116 such loads, which Metal's compiler kept as four word
++                // loads each, every one through a pointer of its own: one vector load each (first as an overlay of those shaders) took the frame's GPU time from 17.0 to
++                // 13.9 ms on an M4 Pro (docs/reference/shaders.md, 128-bit raw global loads read one word at a time)
++                resultValue = context.Add(Instruction.Load, StorageKind.GlobalMemoryVector, Local(), hostLow, hostHigh, Const(vectorCount), Const(resourceManager.GetRawVectorMemory()));
++            }
++            else if (operation.Inst == Instruction.Load)
+             {
+                 resultValue = context.Load(StorageKind.GlobalMemory, hostLow, hostHigh);
+ 
+@@ -997,12 +1109,14 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+ 
+             Function function = new(
+                 ControlFlowGraph.Create(context.GetOperations()).Blocks,
+-                GetFunctionName(operation, isMultiTarget: true, []) + "Raw",
++                GetFunctionName(operation, isMultiTarget: true, []) + (vectorCount > 1 ? $"RawV{vectorCount}" : "Raw"),
+                 returnsValue,
+                 inArgumentsCount,
+                 0);
+ 
+-            functionId = gtsContext.AddFunction(operation, isMultiTarget: true, [], function);
++            functionId = vectorCount > 1
++                ? gtsContext.AddRawVectorFunction(vectorCount, function)
++                : gtsContext.AddFunction(operation, isMultiTarget: true, [], function);
+ 
+             return true;
+         }
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+index 2fbad68..db15f40 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/ResourceManager.cs
+@@ -165,6 +165,20 @@ namespace Ryujinx.Graphics.Shader.Translation
+             return Properties.AddLocalMemory(new MemoryDefinition($"gmem_last_{Properties.LocalMemories.Count}", AggregateType.U32, 1, zeroInit: true));
+         }
+ 
++        // nxnative: words 1 to 3 of a raw vector load (GlobalToStorage.TryGenerateRawStorageOp), one for the shader: the helper writes them and the loads of those words read them
++        // right after its call, before any other access
++        private int _rawVectorMemoryId = -1;
++
++        public int GetRawVectorMemory()
++        {
++            if (_rawVectorMemoryId < 0)
++            {
++                _rawVectorMemoryId = Properties.AddLocalMemory(new MemoryDefinition("gmem_vec", AggregateType.Array | AggregateType.U32, 3));
++            }
++
++            return _rawVectorMemoryId;
++        }
++
+         private int AddMemoryDefinition(string name, AggregateType type, int arrayLength = 1)
+         {
+             return Properties.AddLocalMemory(new MemoryDefinition(name, type, arrayLength));
+diff --git a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+index 4c6092e..318c856 100644
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -160,8 +160,21 @@ namespace Ryujinx.Graphics.Shader.Translation
+ 
+         internal int GetDepthRegister()
+         {
+-            // The depth register is always two registers after the last color output.
+-            return BitOperations.PopCount((uint)Definitions.OmapTargets) + 1;
++            // nxnative: the colours are read four registers per render target with any component enabled (component c of the n-th
++            // such target in R(4n + c), as PrepareForReturn reads them), then the sample mask register, then the depth. Upstream
++            // counted enabled components, which agrees only when every enabled target has all four: Ocarina of Time's agl_common
++            // depth pass (OmapTargets 0x10f, RT0 RGBA and RT2 R) computes its depth into R9, and R6, which was read, holds a step before it
++            int targets = 0;
++
++            for (int rt = 0; rt < 8; rt++)
++            {
++                if ((Definitions.OmapTargets & (0xf << (rt * 4))) != 0)
++                {
++                    targets++;
++                }
++            }
++
++            return targets * 4 + 1;
+         }
+ 
+         public void SetLayerOutputAttribute(int attr)

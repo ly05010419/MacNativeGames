@@ -56,6 +56,7 @@ static double compile_one(id<MTLDevice> dev, MTLCompileOptions *opts, NSString *
     NSString *src = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     if (!src) { if (why) *why = @"cannot read the file"; return -2; }
     if (skipped_source(src)) return -1;
+    if ([src containsString:@"[[mesh]]"]) { opts = [opts copy]; opts.preserveInvariance = YES; }   // as the game (nvn_mtl.m totk_shader_opts): another option is another cache entry
     for (int attempt = 1;; attempt++) {
         NSError *e = nil; CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
         id<MTLLibrary> lib = [dev newLibraryWithSource:src options:opts error:&e];

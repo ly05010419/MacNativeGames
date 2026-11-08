@@ -6063,6 +6063,13 @@ static MTLCompileOptions *totk_precise_opts(void) {
     });
     return o;
 }
+/* A mesh library's position is invariant (nxnative e5f1adee): the game draws foliage with a mesh depth pre-pass and a mesh colour pass at
+   depth EQUAL, and without this option Metal may compute the two positions differently. Only mesh libraries, so no other library changes. */
+static MTLCompileOptions *totk_shader_opts(NSString *src) {
+    static MTLCompileOptions *mesh; static dispatch_once_t once;
+    dispatch_once(&once, ^{ MTLCompileOptions *x = [totk_precise_opts() copy]; x.preserveInvariance = YES; mesh = x; });
+    return [src containsString:@"[[mesh]]"] ? mesh : totk_precise_opts();
+}
 /* Compile translated MSL with the precise options. The system compiler service (MTLCompilerService) can be stopped under
    memory pressure in the middle of a compile (iPad, 2026-10-18: "Compilation failed due to an interrupted connection:
    XPC_ERROR_CONNECTION_INTERRUPTED" while the shader warm-up was running); it restarts on the next request, so such a
@@ -6089,7 +6096,7 @@ static id<MTLLibrary> totk_msl_library(NSString *source, NSError **err) {
     NSError *e = nil;
     NSString *src = msl_fix_depth_gather(source);
     for (int attempt = 1;; attempt++) {
-        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_precise_opts() error:&e];
+        id<MTLLibrary> lib = [g_dev newLibraryWithSource:src options:totk_shader_opts(src) error:&e];
         BOOL interrupted = !lib && [e.localizedDescription containsString:@"XPC_ERROR_CONNECTION_INTERRUPTED"];
         if (lib || !interrupted || attempt == 4) { if (err) *err = e; return lib; }
         MLOG("【红】着色器编译服务连接中断（第 %d 次），%d ms 后重试", attempt, attempt * 100);

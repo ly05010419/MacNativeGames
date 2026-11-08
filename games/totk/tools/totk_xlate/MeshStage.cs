@@ -14,6 +14,7 @@ static partial class ShaderService
 {
     static JsonArray MeshComponents(byte[] sph) {
         var a = new JsonArray();
+        if ((sph[0x35] & 8) != 0) a.Add((JsonNode)new JsonArray(-1, 0));   // the point size (n = -1): a vertex block's first component, ahead of the position
         for (int c = 0; c < 4; c++) if ((sph[0x35] & (1 << (4 + c))) != 0) a.Add((JsonNode)new JsonArray(null, JsonValue.Create(c)));
         for (int n = 0; n < 32; n++) for (int c = 0; c < 4; c++)
             if (((sph[0x36 + n / 2] >> (4 * (n % 2))) & (1 << c)) != 0) a.Add((JsonNode)new JsonArray(n, c));
@@ -48,12 +49,16 @@ static partial class ShaderService
             if ((ctl[0x68] & 0x80) != 0) {
                 uint off = BitConverter.ToUInt32(ctl, 0x64);
                 if (off == 0 || (ulong)off + 0x80 > (ulong)area.Length) throw new RuntimeError("invalid per-primitive SPH offset");
-                pcomps = new JsonArray(MeshComponents(area.AsSpan((int)off, 0x80).ToArray()).Where(c => c[0] != null).Select(c => c.DeepClone()).ToArray());
+                pcomps = new JsonArray(MeshComponents(area.AsSpan((int)off, 0x80).ToArray()).Where(c => c[0] != null && (int)c[0] >= 0).Select(c => c.DeepClone()).ToArray());
             }
-            info["max_v"] = mv; info["max_p"] = mp; info["comps"] = comps; info["pcomps"] = pcomps; info["task"] = ctl[0x5e] != 0;
-            int blocks = Math.Max(Math.Max((mv + 31) / 32, (mp + 31) / 32), 1);
-            prim = output + blocks * Math.Max(comps.Count + pcomps.Count, 1) * 0x80;
-            words = (prim + 4 + 3 * Math.Max(mp, 1) + 15) / 4 + 4;
+            int verts = ctl[0x5f] == 0 ? 3 : ctl[0x5f];   // +0x5f: a primitive's vertices (1 point, 2 line, 3 triangle)
+            if (verts > 3) throw new RuntimeError("mesh primitive vertex count is not 1, 2 or 3");
+            info["max_v"] = mv; info["max_p"] = mp; info["comps"] = comps; info["pcomps"] = pcomps; info["task"] = ctl[0x5e] != 0; info["verts"] = verts;
+            // nxnative 3ccb7da0, d365496d: all blocks of 32 vertices come first, then all blocks of 32 primitives, each block its own SPH's components. A meshlet count of 0 wraps count - 1,
+            // so every lane of every primitive block writes its index bytes: they are reserved for whole blocks (a max_p 126 mesh wrote past 4 + 3 * 126, into the next workgroup's memory)
+            int vblocks = (mv + 31) / 32, pblocks = (mp + 31) / 32;
+            prim = output + Math.Max(vblocks * comps.Count + pblocks * pcomps.Count, 1) * 0x80;
+            words = (prim + 4 + verts * pblocks * 32 + 15) / 4 + 4;
         }
         if (words * 4 > 32768) throw new RuntimeError("mesh stage memory exceeds Metal threadgroup limit");
         info["mesh_layout"] = new JsonArray(0, 0x40, output, prim);
@@ -110,26 +115,31 @@ static partial class ShaderService
         }
         var comps = info["comps"].AsArray().Select(c => (n: c[0] == null ? (int?)null : (int)c[0], c: (int)c[1])).ToList();
         var pcomps = info["pcomps"].AsArray().Select(c => (n: (int?)c[0], c: (int)c[1])).ToList();
-        var gens = comps.Where(c => c.n != null).Select(c => c.n.Value).Distinct().OrderBy(n => n).ToList();
+        var gens = comps.Where(c => c.n >= 0).Select(c => c.n.Value).Distinct().OrderBy(n => n).ToList();
         var pgens = pcomps.Select(c => c.n.Value).Distinct().OrderBy(n => n).ToList();
-        int mv = (int)info["max_v"], mp = (int)info["max_p"], stride = Math.Max(comps.Count + pcomps.Count, 1) * 32;
+        int mv = (int)info["max_v"], mp = (int)info["max_p"], verts = (int)info["verts"];
+        int vstride = Math.Max(comps.Count, 1) * 32, pstride = Math.Max(pcomps.Count, 1) * 32, poutput = output + (mv + 31) / 32 * comps.Count * 32;   // words: the primitive blocks follow every vertex block
+        int psiz = comps.IndexOf(((int?)-1, 0));
+        string topology = verts == 1 ? "point" : verts == 2 ? "line" : "triangle";
         bool task = (bool)info["task"];
         string Lanes(List<(int? n, int c)> cs, int? n, int off) => string.Join(", ", Enumerable.Range(0, 4).Select(c => cs.Contains((n, c)) ? $"as_type<float>({arr}[b + {(off + cs.IndexOf((n, c))) * 32}u])" : c == 3 ? "1.0" : "0.0"));
         string sets = string.Concat(new int?[] { null }.Concat(gens.Select(n => (int?)n)).Select(n => $"        o.{(n == null ? "position" : "a" + n)} = float4({Lanes(comps, n, 0)});\n"));
-        string psets = string.Concat(pgens.Select(n => $"        q.p{n} = float4({Lanes(pcomps, n, comps.Count)});\n"));
-        head += "struct dm_vertex_t {\n    float4 position [[position]];\n" + string.Concat(gens.Select(n => $"    float4 a{n} [[user(locn{n})]];\n")) + "};\n";
+        if (psiz >= 0) sets += $"        o.point_size = as_type<float>({arr}[b + {psiz * 32}u]);\n";
+        string psets = string.Concat(pgens.Select(n => $"        q.p{n} = float4({Lanes(pcomps, n, 0)});\n"));
+        // nxnative e5f1adee: invariant, as a vertex shader's: the game draws its foliage with a mesh depth pre-pass and a mesh colour pass at depth EQUAL (nvn_mtl.m compiles mesh libraries with preserveInvariance)
+        head += "struct dm_vertex_t {\n    float4 position [[position, invariant]];\n" + (psiz >= 0 ? "    float point_size [[point_size]];\n" : "") + string.Concat(gens.Select(n => $"    float4 a{n} [[user(locn{n})]];\n")) + "};\n";
         if (pgens.Count > 0) head += "struct dm_prim_t {\n" + string.Concat(pgens.Select(n => $"    float4 p{n} [[user(locn{n})]];\n")) + "};\n";
-        head += $"using dm_mesh_t = metal::mesh<dm_vertex_t, {(pgens.Count > 0 ? "dm_prim_t" : "void")}, {mv}, {mp}, metal::topology::triangle>;\n";
+        head += $"using dm_mesh_t = metal::mesh<dm_vertex_t, {(pgens.Count > 0 ? "dm_prim_t" : "void")}, {mv}, {mp}, metal::topology::{topology}>;\n";
         string Entry(string name, bool gl) {
             var args = pars.Append("dm_mesh_t dm_out").ToList();
             if (task) args.Add("const object_data dm_payload_t& dm_pl [[payload]]");
             args.AddRange(extra); args.Add("constant uint* dm_first [[buffer(29)]]");
             return $"[[mesh]] void {name}({string.Join(", ", args)})\n{{\n" + start +
                 (task ? $"    for (uint i = dm_lid; i < {payw}u; i += {thr}u) {arr}[{input}u + i] = dm_pl.w[i];\n" + barrier + $"    if (dm_lid == 0u) {{ {arr}[{sys}] = dm_tg; {arr}[{input}] = dm_tg; }}\n" : $"    if (dm_lid == 0u) {arr}[{sys}] = dm_first[0] + dm_tg;\n") + barrier + $"    {call}\n" + barrier +
-                $"    uint np = min(({arr}[{prim / 4}] >> 24) & 0xffu, {mp}u);\n    if (dm_lid == 0u) dm_out.set_primitive_count(np);\n    for (uint v = dm_lid; v < {mv}u; v += {thr}u)\n    {{\n        uint b = {output}u + (v / 32u) * {stride}u + (v % 32u);\n        dm_vertex_t o;\n" + sets +
+                $"    uint np = min(({arr}[{prim / 4}] >> 24) & 0xffu, {mp}u);\n    if (dm_lid == 0u) dm_out.set_primitive_count(np);\n    for (uint v = dm_lid; v < {mv}u; v += {thr}u)\n    {{\n        uint b = {output}u + (v / 32u) * {vstride}u + (v % 32u);\n        dm_vertex_t o;\n" + sets +
                 (gl ? "        o.position.z = fma(o.position.z, 0.5, o.position.w * 0.5);\n" : "") + "        dm_out.set_vertex(v, o);\n    }\n" +
-                (pgens.Count > 0 ? $"    for (uint p = dm_lid; p < np; p += {thr}u)\n    {{\n        uint b = {output}u + (p / 32u) * {stride}u + (p % 32u);\n        dm_prim_t q;\n" + psets + "        dm_out.set_primitive(p, q);\n    }\n" : "") +
-                $"    for (uint i = dm_lid; i < np * 3u; i += {thr}u) {{ uint a = {prim + 4}u + i; dm_out.set_index(i, ({arr}[a / 4u] >> ((a % 4u) * 8u)) & 0xffu); }}\n}}\n";
+                (pgens.Count > 0 ? $"    for (uint p = dm_lid; p < np; p += {thr}u)\n    {{\n        uint b = {poutput}u + (p / 32u) * {pstride}u + (p % 32u);\n        dm_prim_t q;\n" + psets + "        dm_out.set_primitive(p, q);\n    }\n" : "") +
+                $"    for (uint i = dm_lid; i < np * {verts}u; i += {thr}u) {{ uint a = {prim + 4}u + i; dm_out.set_index(i, ({arr}[a / 4u] >> ((a % 4u) * 8u)) & 0xffu); }}\n}}\n";
         }
         return src + "\n" + head + Entry("main0", true) + "\n" + Entry("main0_z", false);
     }
