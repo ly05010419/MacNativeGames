@@ -601,8 +601,9 @@ static void boot(void) {
 }
 /* Host aborts (e.g. Metal validation assertions) print the host call stack before the process ends. */
 #include <execinfo.h>
+void (*runtime_abort_hook)(void);   /* graphics layer diagnostics printed before the stack (nvn_queue_order.inc's event ring) */
 static void abort_report(int num) {
- (void)num;void *frames[64];int n=backtrace(frames,64);write(2,"[totk] host abort, call stack:\n",31);backtrace_symbols_fd(frames,n,2);
+ (void)num;void *frames[64];int n=backtrace(frames,64);if(runtime_abort_hook)runtime_abort_hook();write(2,"[totk] host abort, call stack:\n",31);backtrace_symbols_fd(frames,n,2);
  signal(SIGABRT,SIG_DFL);raise(SIGABRT);
 }
 #if !TARGET_OS_IPHONE

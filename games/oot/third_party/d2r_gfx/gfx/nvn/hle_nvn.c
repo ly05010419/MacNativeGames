@@ -159,6 +159,7 @@ static void replay_enter(void), replay_leave(void);   // the replay section (bel
 /* guest queue ordering (nvn_queue_order.inc) */
 static int qo_on(void); static void qo_init(void); static void qo_submit(const NVNqueue *q, int n, const uint64_t *h);
 static int qo_fence_sync(const NVNqueue *q, sync_t *s); static int qo_sync_wait(const sync_t *s, uint64_t timeout);
+static int qo_present(const NVNqueue *q, win_t *o, int idx, double period, const int crop[4], uint64_t frame); static void qo_wait_present(int idx); static int g_qo_pdefer;
 static void qo_queue_wait_sync(const NVNqueue *q, const sync_t *s); static void qo_drain(const NVNqueue *q); static void qo_cpu_signal(volatile uint32_t *val); static void qo_queue_flush(const NVNqueue *q);
 static int async_replay(void);
 static int call_stats_on(void);
@@ -584,6 +585,7 @@ NVN(nvnTextureFinalize, void, NVNtexture *t) {
     totk_texture_lifetime("finalize", t, TX(t));
     if (totk_life_match(TX(t))) totk_life_log("fin tex=%p ser=%llu mem=%p", (void *)t, (unsigned long long)TX(t)->serial, (void *)TX(t)->mem);
     if (async_replay()) { void x_texrel(const tex_t *o); x_texrel(TX(t)); TX(t)->magic = 0; return; }
+    { int qo_texrel_defer(const tex_t *o); if (qo_texrel_defer(TX(t))) { TX(t)->magic = 0; return; } }   /* queued replay: after the submissions made before it */
     live_del(TX(t)); mtl_tex_release(TX(t)); TX(t)->magic = 0;
 }
 NVN(nvnTextureGetStorageClass, NVNstorageClass, const NVNtexture *t){return totk_storage_class(&CTX(t)->d);}
@@ -870,9 +872,11 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     if (tok ? fence_wait_to(o->fence, want, 0) : mtl_wait(want, 0)) { survey_after_wait(s); mtl_wb_fence_done(); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = lg ? now_ns() : 0;
     totk_tl(TL_WAIT_IN, o->fence, o->fence == mtl_last_fence());
+    { void qo_note(uint32_t, const void *, uint64_t, uint64_t); qo_note(15, s, o->fence, want); }
     if (sync_chain_left(1)) { char w[96]; snprintf(w, sizeof w, "SyncWait sync=%p fence=%llu newest=%d", (const void *)s, (unsigned long long)o->fence, o->fence == mtl_last_fence()); guest_chain(w); }
     int ok = tok ? fence_wait_to(o->fence, want, timeout) : mtl_wait(want, timeout);
     totk_tl(TL_WAIT_OUT, o->fence, ok);
+    { void qo_note(uint32_t, const void *, uint64_t, uint64_t); qo_note(16, s, o->fence, (uint64_t)ok); }
     if (lg) { atomic_fetch_add(&g_sw_blocked[k], 1); atomic_fetch_add(&g_sw_ns[k], now_ns() - t0); }
     if (ok) { survey_after_wait(s); mtl_wb_fence_done(); }
     return ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
@@ -1246,6 +1250,7 @@ static void copy_touch(NVNcommandHandle h, uint64_t now) {
    reported. Held under g_copy_mu. */
 static int async_replay(void);
 static uint64_t xsub_pushed(void), xsub_replayed(void);
+static int qo_replay_async(void); static uint64_t qo_pushed(void), qo_replayed(void);   /* nvn_queue_order.inc: queued replay (OOT_QO_ASYNC) */
 typedef struct { copy_prefix *pf; uint64_t after; } retired_copy;
 static retired_copy *g_retired; static size_t g_nretired, g_cretired;
 static void retired_sweep(void) {
@@ -1258,7 +1263,7 @@ static void retired_sweep(void) {
     g_nretired = k;
 }
 static void copy_free(copy_prefix *pf) {
-    uint64_t after = async_replay() ? xsub_pushed() : 0;
+    uint64_t after = async_replay() || qo_replay_async() ? xsub_pushed() : 0;
     if (!after || after <= xsub_replayed()) { g_copy_bytes -= malloc_size(pf); free(pf); return; }
     if (g_nretired == g_cretired) {
         size_t cap = g_cretired ? g_cretired * 2 : 256; retired_copy *r = realloc(g_retired, cap * sizeof *r);
@@ -2645,8 +2650,8 @@ static void *x_thread(void *unused) {
     }
     return NULL;
 }
-static uint64_t xsub_pushed(void) { pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_in; pthread_mutex_unlock(&g_xq_mu); return v; }
-static uint64_t xsub_replayed(void) { pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_done; pthread_mutex_unlock(&g_xq_mu); return v; }
+static uint64_t xsub_pushed(void) { if (qo_replay_async()) return qo_pushed(); pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_in; pthread_mutex_unlock(&g_xq_mu); return v; }
+static uint64_t xsub_replayed(void) { if (qo_replay_async()) return qo_replayed(); pthread_mutex_lock(&g_xq_mu); uint64_t v = g_xsub_done; pthread_mutex_unlock(&g_xq_mu); return v; }
 static uint64_t x_push(xjob *j) {   // returns the job number (1-based)
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     void x_start(void);
@@ -2778,7 +2783,7 @@ NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h)
     }
     { extern _Atomic uint64_t g_pf3_fence; uint64_t f = atomic_exchange(&g_pf3_fence, 0); if (f) mtl_wait(f, UINT64_MAX); }
     if (qo_on()) {   // guest queue ordering: cross-queue waits honoured; fences and fenced syncs follow the committed work
-        replay_enter(); qo_init(); qo_submit(q, n, (const uint64_t *)h); replay_leave();
+        qo_init(); qo_submit(q, n, (const uint64_t *)h);   // queues it (g_qo_mu); the replay runs on the queue-order thread
     } else {
     replay_enter(); { extern uint64_t g_qwait_queue; g_qwait_queue = (uint64_t)(uintptr_t)q; } submit_exec(n, (const uint64_t *)h, NULL); replay_leave();
     if (atomic_load(&g_fence_sync_used)) for (int i = 0; i < n; i++) fence_syncs((const uint8_t *)h[i], 0, mtl_last_fence(), 0);   /* without the translation thread: the fence the submit ended with */
@@ -3065,6 +3070,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     // 该张上一次出图还没被出图线程处理完（显示跟不上、落后一整轮交换链）：等它归还，再交给游戏画
     // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
     if (async_replay() && *idx < 4 && g_xp_win == o) x_wait_job(g_xp_job[*idx]);   // TOTK: that image's last present has run (its ticket is set)
+    else qo_wait_present(*idx);   // queued presents (OOT_QO_ASYNC): the same
     uint64_t tk = *idx < 4 ? o->ticket[*idx] : 0;
     if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); g_pq_wait_ns += now_ns() - w0; }
     /* TOTK: the acquire sync means "this swapchain texture is no longer read by the display path". mtl_present_wait above
@@ -3563,7 +3569,8 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
         j.frame = g_frame + 1;   // dump_frame below advances g_frame before mtl_set_frame
         uint64_t no = x_push(&j);
         if (idx >= 0 && idx < 4) { g_xp_win = o; g_xp_job[idx] = no; }
-    } else { qo_drain(q); replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); }
+    } else if (qo_present(q, o, idx, present_period(o) / 1e9, o->crop, g_frame + 1)) g_qo_pdefer = 1;   // queued behind the frame (dump_frame below advances g_frame)
+    else { g_qo_pdefer = 0; qo_drain(q); replay_enter(); present_exec(o, idx, present_period(o) / 1e9, o->crop, 0); replay_leave(); }
     { static int fin = -1; if (fin < 0) { { const char *e = getenv("TOTK_PRESENT_FINISH"); fin = e ? (atoi(e) >= 2 && atoi(e) <= 3 ? atoi(e) : 1) : 0; } if (fin) LOG("[nvn] TOTK_PRESENT_FINISH: each present waits until its frame has run on the GPU (diagnostic)"); }
       if (fin == 1) { if (async_replay() && idx >= 0 && idx < 4) x_wait_job(g_xp_job[idx]); void mtl_finish(void); mtl_finish(); }
       /* TOTK_PRESENT_FINISH=2 (diagnostic): each present waits until the previous frame has run on the GPU: at most one frame in flight */
@@ -3682,7 +3689,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
             g_cs_calls / 300.0, g_cs_bytes / 300.0 / 1024, g_cs_same_calls / 300.0, g_cs_same_bytes / 300.0 / 1024);
         g_cs_calls = g_cs_draws = g_cs_same_calls = g_cs_same_draws = g_cs_bytes = g_cs_same_bytes = 0;
     }
-    if (!async_replay()) mtl_set_frame(g_frame);
+    if (!async_replay() && !g_qo_pdefer) mtl_set_frame(g_frame);   // a queued present sets it on the queue-order thread
     else if (g_frame % 300 == 0) { uint64_t d = atomic_exchange(&g_x_drains, 0), dn = atomic_exchange(&g_x_drain_ns, 0);
         pthread_mutex_lock(&g_xq_mu); uint64_t q = g_xq_in - g_xq_done; pthread_mutex_unlock(&g_xq_mu);
         LOG("[nvn] 翻译线程 至帧 %llu：排空等待 %llu 次 / %.1f ms（近 300 帧），队列中 %llu 项", (unsigned long long)g_frame, (unsigned long long)d, dn / 1e6, (unsigned long long)q); }
