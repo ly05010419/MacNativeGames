@@ -2716,7 +2716,8 @@ static void gpu_hang_guard(NSError *error) {
     MLOG("【红】GPU 超时 / 挂起（第 %d 次）：%s", n, d.UTF8String);
     if (n >= 2) MDIE("GPU 连续超时 / 挂起，停止游戏以保护系统（WindowServer 看门狗会让整机重启）：%s", d.UTF8String);
 }
-static void rp_flush(void);
+static void rp_flush_(int from);
+#define rp_flush() rp_flush_(__LINE__)   // passdump: the pass_end record names the rp_flush call site
 static const char *cctx_snap(void);   // 这次提交里有什么（出错时打进红行；定义在 mtl_exec 之前） | What is in this submission (printed into the failure line on error; defined before mtl_exec)
 /* TOTK: mid-submission commits. The game puts a whole frame into one nvnQueueSubmitCommands and waits for that frame's
    fence before it submits the next one, so replaying the frame and executing it on the GPU were strictly serial. Between
@@ -6208,11 +6209,11 @@ static void rt_dims(NSUInteger *tw, NSUInteger *th) {
 }
 // 有挂起的清除但通道里没有绘制：开一次通道把清除落地
 // There are pending clears but no draw in the pass: open a pass once to land the clears
-static void rp_flush(void) {
+static void rp_flush_(int from) {
     int pend = R.clear_d || R.clear_s;
     for (int i = 0; i < 8; i++) pend |= R.clear_c[i];
     if (pend && !g_enc && g_cb) rp_begin_ex(1);
-    rp_end();
+    rp_end_from("rp_flush", from);
 }
 static int scissor_full(const tex_t *t, const view_t *v, int has_v) {
     NSUInteger level = has_v && v->set_levels ? v->base_level : 0;
