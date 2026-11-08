@@ -16,6 +16,7 @@
 #include "ns2_resolution.h"
 #include "bananza_display.h"
 #include "pokopia_display.h"
+#include "oot_display.h"
 
 #ifdef GAME_OOT
 /* Ocarina of Time's game time: each frame main+0x6e6cc4 takes the step as 60 / fps (fps = the frame-rate controller's, whole divisors of 60), in units of 1/60 s, adds it
@@ -26,9 +27,11 @@ static _Atomic uint32_t oot_step_bits;   /* a float: seconds of game time for th
 static uint64_t oot_last_ns, oot_report_ns, oot_frames;
 static double oot_game_s, oot_scale = 1, oot_samples[5];
 static unsigned oot_sample_count, oot_sample_next;
+static void oot_display_watch(void);   /* patch_oot_display's diagnostic, once a frame */
 void runtime_frame_step_pin(double ms) { (void)ms; }
 void runtime_frame_step_update(uint64_t now_ns) {
     if (!now_ns) return;
+    oot_display_watch();
     if (!oot_last_ns) { oot_last_ns = oot_report_ns = now_ns; return; }
     double dt = (double)(now_ns - oot_last_ns) * 1e-9;
     oot_last_ns = now_ns;
@@ -84,7 +87,15 @@ void runtime_frame_step_pin(double ms) { (void)ms; }
 void runtime_frame_step_update(uint64_t now_ns) { (void)now_ns; }
 #endif
 
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#ifdef GAME_OOT
+/* Ocarina of Time v1: its sizes and limits are ns2_resolution.h's (oot_output_size_fits); the default is the shipped (docked) size. */
+#define OUTPUT_DEFAULT "2048x1152"
+#define OUTPUT_FITS(w,h) oot_output_size_fits(w,h)
+#else
+#define OUTPUT_DEFAULT "1920x1080"
+#define OUTPUT_FITS(w,h) 1
+#endif
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
 static pthread_once_t output_once=PTHREAD_ONCE_INIT;
 static unsigned output_w,output_h;
 static unsigned output_start_w,output_start_h;
@@ -93,22 +104,24 @@ static _Atomic(uint64_t *) output_page;
 static void output_initialize(void) {
     const char *e = getenv("TOTK_OUTPUT_RES");
 #if TARGET_OS_IPHONE
-    if(!e||!*e)e="1920x1080";
+    if(!e||!*e)e=OUTPUT_DEFAULT;
 #endif
 #if !TARGET_OS_IPHONE
     char saved[32];
     if (!e || !*e) {
         if(runtime_setting_word("graphics-output-size.txt",saved,sizeof saved)){
-            if(ns2_parse_saved_resolution(saved,&output_w,&output_h)){saved[strcspn(saved,"\r\n")]=0;e=saved;}
+            if(ns2_parse_saved_resolution(saved,&output_w,&output_h)&&OUTPUT_FITS(output_w,output_h)){saved[strcspn(saved,"\r\n")]=0;e=saved;}
             else
-            fprintf(stderr,"[totk] invalid saved render resolution; using 1920x1080\n");
+            fprintf(stderr,"[totk] invalid saved render resolution; using " OUTPUT_DEFAULT "\n");
         }
-        if(!e||!*e)e="1920x1080";
+        if(!e||!*e)e=OUTPUT_DEFAULT;
     }
 #endif
     if (!strcmp(e, "0")) {
 #ifdef GAME_DKB
         output_start_w=2880;output_start_h=1620;
+#elif defined(GAME_OOT)
+        output_start_w=OOT_OUTPUT_SHIPPED_W;output_start_h=OOT_OUTPUT_SHIPPED_H;
 #else
         output_start_w=1920;output_start_h=1080;
 #endif
@@ -118,7 +131,13 @@ static void output_initialize(void) {
         runtime_fail("TOTK_OUTPUT_RES must be <width>x<height>, each 1..16384 (Metal texture extent)");
     output_has_size=1;
     output_start_w=output_w;output_start_h=output_h;
-#if !TARGET_OS_IPHONE
+#ifdef GAME_OOT
+    if(!OUTPUT_FITS(output_w,output_h)){
+        char m[200];snprintf(m,sizeof m,"TOTK_OUTPUT_RES: Ocarina of Time takes 16:9, both sides multiples of %u, from %ux%u to %ux%u (its swapchain), "
+            "e.g. 1920x1080; 0 = as shipped",OOT_OUTPUT_ALIGN,OOT_OUTPUT_MIN_W,OOT_OUTPUT_MIN_H,OOT_OUTPUT_MAX_W,OOT_OUTPUT_MAX_H);runtime_fail(m);
+    }
+    output_w=OOT_OUTPUT_MAX_W;output_h=OOT_OUTPUT_MAX_H;
+#elif !TARGET_OS_IPHONE
     /* Reserve the largest supported canvas once; render at the saved extent.
        Bananza also reserves its matching gsys pool and parent heap at startup. */
 #ifdef GAME_DKB
@@ -133,7 +152,7 @@ static void output_initialize(void) {
 }
 #endif
 int runtime_output_res(unsigned *w, unsigned *h) {
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
     pthread_once(&output_once,output_initialize);
     if(!output_has_size)return 0;
     *w=output_w;*h=output_h;return 1;
@@ -150,7 +169,7 @@ uint64_t runtime_output_res_extra_bytes(void) {
     return 0;
 }
 uint64_t runtime_output_size_current(void) {
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
     pthread_once(&output_once,output_initialize);
     uint64_t *p=atomic_load(&output_page);
     return p?atomic_load((_Atomic uint64_t *)(p+1)):((uint64_t)output_start_h<<32|output_start_w);
@@ -158,10 +177,16 @@ uint64_t runtime_output_size_current(void) {
     return 1920ull|(1080ull<<32);
 #endif
 }
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
+/* The one rule for a live size: a parameter page, within this run's capacity, and the game's own shape (OUTPUT_FITS). */
+int runtime_output_size_valid(unsigned w,unsigned h) {
+    unsigned mw,mh;
+    if(!atomic_load(&output_page)||!w||!h||!runtime_output_res(&mw,&mh)||w>mw||h>mh)return 0;
+    return OUTPUT_FITS(w,h);
+}
 int runtime_output_size_set(unsigned w,unsigned h) {
     unsigned mw,mh;uint64_t *p=atomic_load(&output_page);
-    if(!p||!w||!h||!runtime_output_res(&mw,&mh)||w>mw||h>mh)return 0;
+    if(!p||!runtime_output_size_valid(w,h)||!runtime_output_res(&mw,&mh))return 0;
     atomic_store((_Atomic uint64_t *)(p+1),(uint64_t)h<<32|w);
 #if !TARGET_OS_IPHONE
     void runtime_front_resize_output(unsigned,unsigned);runtime_front_resize_output(w,h);
@@ -411,6 +436,50 @@ static void patch_pokopia_display(Module *m) {
 }
 #endif
 
+#ifdef GAME_OOT
+/* Ocarina of Time's live output size (oot_display.h): setBaseSize main+0x1087f40 takes the host's size whatever it is asked for (the
+   docked/handheld scale and the per-tier clamp main+0x112c5e0 no longer apply), and the per-frame cfg update main+0x6502f8 calls it when
+   the base differs from the request; the engine then re-creates the layer targets, moves the crop, and the scene follows. The swapchain
+   stays the game's 2560x1440 (main+0x1202ee0): that is the capacity. Veneers after the frame step's stub, below rodata (main+0x3c47000). */
+static int oot_display_log;   /* TOTK_OOT_DISPLAY_LOG=1: each change of the request (p[1]) or of the size setBaseSize was last given (p[2]) */
+static void oot_display_watch(void) {   /* the page only: the game's DisplayConfig (p[3]) has no lifetime the host thread can rely on */
+    static uint64_t last_want,last_base;if(!oot_display_log)return;
+    uint64_t *p=atomic_load_explicit(&output_page,memory_order_acquire);if(!p)return;
+    uint64_t want=atomic_load_explicit((_Atomic uint64_t *)(p+1),memory_order_relaxed),base=atomic_load_explicit((_Atomic uint64_t *)(p+2),memory_order_relaxed);
+    if(want==last_want&&base==last_base)return;
+    last_want=want;last_base=base;
+    fprintf(stderr,"[totk] Ocarina of Time display: requested %ux%u, setBaseSize last given %ux%u\n",(unsigned)want,(unsigned)(want>>32),(unsigned)base,(unsigned)(base>>32));
+}
+static void patch_oot_display(Module *m) {
+    unsigned mw,mh;
+    if(!runtime_output_res(&mw,&mh)){fprintf(stderr,"[totk] Ocarina of Time output: as shipped, " OUTPUT_DEFAULT " (TOTK_OUTPUT_RES=0)\n");return;}
+    enum { BASE_SITE=0x1087f40, FRAME_SITE=0x6502f8 };
+    const uint64_t page=(m->file_size+0x3fff)&~0x3fffULL,stub=((m->text_end+15)&~15ULL)+0x20,frame_stub=stub+0x20;
+    if(page+0x4000!=m->size||frame_stub+OOT_FRAME_WORDS*4>m->ro_off)runtime_fail("Ocarina of Time display patch layout");
+    uint32_t word;memcpy(&word,m->base+BASE_SITE,4);
+    if(word!=0x29422408u)runtime_fail("Ocarina of Time setBaseSize (main+0x1087f40) differs from verified 1.0.0");
+    memcpy(&word,m->base+FRAME_SITE,4);
+    if(word!=0x2941240bu)runtime_fail("Ocarina of Time display update (main+0x6502f8) differs from verified 1.0.0");
+    for(uint64_t k=stub;k<frame_stub+OOT_FRAME_WORDS*4;k++)if(m->base[k])runtime_fail("Ocarina of Time display text padding in use");
+    uint64_t *p=(void *)(m->base+page);for(unsigned k=0;k<4;k++)if(p[k])runtime_fail("Ocarina of Time display parameter page in use");
+    p[0]=(uint64_t)mh<<32|mw;p[1]=p[2]=(uint64_t)output_start_h<<32|output_start_w;   /* p[0]: the capacity, a record for the host side (Pokopia's page layout); no veneer reads it */
+    atomic_store(&output_page,p);
+    uint32_t base[OOT_BASE_WORDS],frame[OOT_FRAME_WORDS];
+    oot_base_code(base,(uintptr_t)m->base+stub,(uintptr_t)p,(uintptr_t)m->base+BASE_SITE+4);
+    oot_frame_code(frame,(uintptr_t)m->base+frame_stub,(uintptr_t)p,(uintptr_t)m->base+FRAME_SITE+4,(uintptr_t)m->base+BASE_SITE);
+    memcpy(m->base+stub,base,sizeof base);memcpy(m->base+frame_stub,frame,sizeof frame);
+    uint32_t jump=bananza_display_branch(BASE_SITE,stub);memcpy(m->base+BASE_SITE,&jump,4);
+    jump=bananza_display_branch(FRAME_SITE,frame_stub);memcpy(m->base+FRAME_SITE,&jump,4);
+    __builtin___clear_cache((char *)m->base+FRAME_SITE,(char *)m->base+FRAME_SITE+4);__builtin___clear_cache((char *)m->base+BASE_SITE,(char *)m->base+BASE_SITE+4);
+    __builtin___clear_cache((char *)m->base+stub,(char *)m->base+frame_stub+sizeof frame);
+    const char *e=getenv("TOTK_OOT_DISPLAY_LOG");oot_display_log=e&&!strcmp(e,"1");
+    fprintf(stderr,"[totk] Ocarina of Time output: %ux%u (capacity %ux%u) at main+%#x/+%#x; change it live in the settings panel (Resolution) or with \"resolution WxH\" "
+        "in the input file, at start with TOTK_OUTPUT_RES=WxH (16:9, both sides multiples of %u, %ux%u up to the game's %ux%u swapchain; 0 = as shipped; "
+        "TOTK_OOT_DISPLAY_LOG=1 logs each request and what setBaseSize was given)\n",output_start_w,output_start_h,mw,mh,(unsigned)BASE_SITE,(unsigned)FRAME_SITE,
+        OOT_OUTPUT_ALIGN,OOT_OUTPUT_MIN_W,OOT_OUTPUT_MIN_H,OOT_OUTPUT_MAX_W,OOT_OUTPUT_MAX_H);
+}
+#endif
+
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
@@ -421,6 +490,7 @@ void runtime_game_patches(Module *m) {
     patch_pokopia_display(m);
 #elif defined(GAME_OOT)
     patch_oot_frame_step(m);
+    patch_oot_display(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {

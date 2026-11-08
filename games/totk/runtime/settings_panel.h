@@ -120,7 +120,7 @@
 #include "controller_map.h"  /* the controller layout */
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
 #include "ns2_resolution.h"
 #endif
 
@@ -369,26 +369,31 @@ static TOTKSettingRow *settings_fixed(NSString *title, NSString *value) {
  return settings_row(title,@[value],@[@0],^int{return 0;},nil);
 }
 static NSString *settings_on_off(int on) { return on?settings_text("开","On"):settings_text("关","Off"); }
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
 /* The game consumes this request in its native display calculation. */
 static void settings_ns2_save_size(void) {
  uint64_t s=runtime_output_size_current();unsigned w=(unsigned)s,h=(unsigned)(s>>32);char word[32];
  snprintf(word,sizeof word,"%ux%u",w,h);runtime_setting_save("graphics-output-size.txt",word,"native render resolution");
+#ifndef GAME_OOT   /* Ocarina of Time keeps 16:9 (runtime_aspect_ratio 0): no ratio to save */
  snprintf(word,sizeof word,"%.8g",h?(double)w/h:16.0/9);runtime_setting_save("graphics-aspect.txt",word,"aspect ratio");
+#endif
 }
 static TOTKSettingRow *settings_ns2_resolution_row(void) {
  NSString *title=settings_text("分辨率","Resolution");
  uint64_t current=runtime_output_size_current();unsigned w=(unsigned)current,h=(unsigned)(current>>32);
  NSString *picked=[NSString stringWithFormat:@"%ux%u",w,h];
  NSMutableArray<NSString *> *sizes=[NSMutableArray array],*names=[NSMutableArray array];
- unsigned mw=3840,mh=2160;runtime_output_res(&mw,&mh);
+ unsigned mw=3840,mh=2160;int capacity=runtime_output_res(&mw,&mh);
+#ifdef GAME_OOT   /* as shipped (TOTK_OUTPUT_RES=0): no parameter page, so nothing to change live */
+ if(!capacity)return settings_fixed(title,[picked stringByReplacingOccurrencesOfString:@"x" withString:@"×"]);
+#endif
  const unsigned heights[]={540,720,1080,1440,2160};
  const char *labels[]={"540p","720p","1080p","2K","4K"};
  for(unsigned k=0;k<5;k++){
   unsigned nh=heights[k],nw=h?(unsigned)(((uint64_t)w*nh+h/2)/h):nh*16/9;
   if(nw>mw){nh=w?(unsigned)((uint64_t)mw*h/w):0;nw=h?(unsigned)(((uint64_t)w*nh+h/2)/h):0;}
   if(nh>mh){nw=(unsigned)((uint64_t)nw*mh/nh);nh=mh;}
-  if(!nw||!nh)continue;
+  if(!nw||!nh||(capacity&&!runtime_output_size_valid(nw,nh)))continue;   /* only what the game takes (Ocarina of Time: not 960x540, off its 8-pixel grid) */
   NSString *s=[NSString stringWithFormat:@"%ux%u",nw,nh];if([sizes containsObject:s])continue;
   [sizes addObject:s];[names addObject:nh==heights[k]?[NSString stringWithFormat:@"%s (%u×%u)",labels[k],nw,nh]:[NSString stringWithFormat:@"%u×%u",nw,nh]];
  }
@@ -400,7 +405,13 @@ static TOTKSettingRow *settings_ns2_resolution_row(void) {
   NSString *size=value>=0&&value<(int)sizes.count?sizes[(NSUInteger)value]:nil;
   if(value<0){
    NSAlert *alert=[NSAlert new];alert.messageText=settings_text("自定义渲染分辨率","Custom render resolution");
+#ifdef GAME_OOT   /* ns2_resolution.h oot_output_size_fits */
+   alert.informativeText=[NSString stringWithFormat:settings_text("输入宽x高：16:9，宽高均为 %u 的倍数，%u×%u 至 %u×%u，例如%ux%u。保存后立即应用。",
+    "Enter widthxheight: 16:9, both sides multiples of %u, from %u×%u up to %u×%u, e.g. %ux%u. Applies immediately."),
+    (unsigned)OOT_OUTPUT_ALIGN,(unsigned)OOT_OUTPUT_MIN_W,(unsigned)OOT_OUTPUT_MIN_H,mw,mh,mw,mh];
+#else
    alert.informativeText=settings_text("输入宽x高，例如3840x2160。保存后立即应用。","Enter widthxheight, e.g. 3840x2160. Applies immediately.");
+#endif
    NSTextField *field=[[NSTextField alloc] initWithFrame:NSMakeRect(0,0,240,24)];field.stringValue=picked;alert.accessoryView=field;
    [alert addButtonWithTitle:settings_text("保存","Save")];[alert addButtonWithTitle:settings_text("取消","Cancel")];
    if([alert runModal]!=NSAlertFirstButtonReturn){dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;}
@@ -411,10 +422,17 @@ static TOTKSettingRow *settings_ns2_resolution_row(void) {
    NSAlert *error=[NSAlert new];error.messageText=settings_text("分辨率格式无效","Invalid resolution");
    error.informativeText=settings_text("请输入宽x高，每边1–16384。原设置保留。","Use widthxheight, each 1–16384. The previous choice is kept.");[error runModal];dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;
   }
-  if(!runtime_output_size_set(nw,nh)){
+  if(!runtime_output_size_valid(nw,nh)||!runtime_output_size_set(nw,nh)){
    NSAlert *error=[NSAlert new];error.messageText=settings_text("分辨率超出本次启动容量","Resolution exceeds this run's capacity");
    unsigned mw=0,mh=0;runtime_output_res(&mw,&mh);
    error.informativeText=[NSString stringWithFormat:settings_text("本次最高支持 %u×%u。原设置保留。","This run supports up to %u×%u. The previous choice is kept."),mw,mh];
+#ifdef GAME_OOT   /* within the capacity, but off the shape or the grid (ns2_resolution.h oot_output_size_fits) */
+   if(nw<=mw&&nh<=mh){
+    error.messageText=settings_text("不支持该分辨率","Not a supported size");
+    error.informativeText=[NSString stringWithFormat:settings_text("仅支持 16:9，宽高均为 %u 的倍数，%u×%u 至 %u×%u。原设置保留。",
+     "Use 16:9, both sides multiples of %u, from %u×%u up to %u×%u. The previous choice is kept."),(unsigned)OOT_OUTPUT_ALIGN,(unsigned)OOT_OUTPUT_MIN_W,(unsigned)OOT_OUTPUT_MIN_H,mw,mh];
+   }
+#endif
    [error runModal];dispatch_async(dispatch_get_main_queue(),^{settings_rebuild();});return;
   }
   settings_ns2_save_size();
@@ -866,7 +884,7 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
  vr_eye_sizing=vr_enabled();
 #endif
  if(!vr_eye_sizing){
-#if defined(GAME_DKB) || defined(GAME_POKOPIA)
+#if defined(GAME_DKB) || defined(GAME_POKOPIA) || defined(GAME_OOT)
  (void)resolution;
  [rows addObject:settings_ns2_resolution_row()];
 #else
