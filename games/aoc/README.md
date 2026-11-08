@@ -174,6 +174,32 @@ draws. Tested on 1.4.1, where the squares went away with the copies. On the
 measured route they added 0.33 and 0.60 ms to a mean GPU frame of about 6 ms, and
 sessions held 59.9 fps with and without them.
 
+## Pipeline warm-up list
+
+Every Metal shader library is translated when the app is built. What can still cost a stutter in play is the first use of
+a pipeline (a library loaded and a render or compute pipeline created on demand). At start the host warms up, in the
+background, the pipelines listed in the app's `pso_manifest.tsv` and in the player's own `pso_user.tsv`, next to the save.
+The host appends to `pso_user.tsv` every pipeline it had to build on demand that neither list held, so each player's
+second session warms up what the first one met.
+
+The repository holds `runtime/games/01002B00111A2000/pso_manifest.tsv`, a list prepared from the recordings of earlier
+sessions (the title, menus, the first missions and the DLC up to its section). Whether a built app carries it unchanged
+and which of its rows the host actually builds at start are still to be checked (VALIDATION.md); it is not a claim of
+mission coverage. It was merged from recorded `pso_user.tsv` files by
+`scripts/pso_seed.py`, which keeps each file's order (the files in the order given), drops repeats, and checks every row:
+S, R and C rows with their columns, an R row being the host's `pso_skey` at its exact size with valid keys, stages and
+flags, and with `--shader-map` (a built `shader_map.tsv`) every key one of the app's shaders. The list's header names each
+source by its folder and file with its SHA-256. More lines than `--max-lines` (1,500 by default, header included) is an
+error and nothing is written; the list is never cut to fit.
+
+```sh
+python3 scripts/pso_seed.py --output NEW/pso_manifest.tsv --shader-map WORK/source/dm/games/01002B00111A2000/shader_map.tsv \
+    REC1/pso_user.tsv REC2/pso_user.tsv ...
+```
+
+The list does not change the shader chain or any pin: `pso_manifest.tsv` is not one of the chain's input tables, and the
+build copies it into the app as it copies the rest of `runtime/`.
+
 ## Tests
 
 ```sh
