@@ -30,10 +30,11 @@ static int initialized;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static void make_source(void) { arc4random_buf(source_id, sizeof source_id); }
 
-static int64_t steady_seconds(void) {
+static int64_t steady_ns(void) {
     mach_timebase_info_data_t tb; mach_timebase_info(&tb);
-    return (int64_t)((__uint128_t)mach_continuous_time() * tb.numer / tb.denom / 1000000000u);
+    return (int64_t)((__uint128_t)mach_continuous_time() * tb.numer / tb.denom);
 }
+static int64_t steady_seconds(void) { return steady_ns() / 1000000000; }
 static SteadyClockTimePoint steady_now(void) { pthread_once(&once, make_source); SteadyClockTimePoint p = {steady_seconds(), {0}}; memcpy(p.source, source_id, 16); return p; }
 static int64_t posix_now(void) {
     static long off = -1; if (off < 0) { const char *e = getenv("TOTK_TIME_OFFSET"); off = e ? atol(e) : 0; if (off < 0) off = 0; }   /* diagnostic: shift the clock the game sees (seconds) */
@@ -130,24 +131,32 @@ static void *clock_task_event_get(void *self) { (void)self; static int bound; if
 
 /* TOTK_CLOCK_POLL_LOG=1 (diagnostic, 2026-11-08): which guest threads poll the clock, from where, how often. The Time
    Profiler showed one guest thread on a P-core 90% of every Ocarina frame with nothing but clock_gettime calls into the
-   runtime: a busy-wait in game code. The guest return address comes from the frame chain, which the HLE stack switch links
-   back to the guest caller (hle_stack.S). Every 2 s: calls per second per (host thread id, guest caller). */
+   runtime: gRPC's timer thread looping because the SDK's pthread_cond_timedwait failed (see the POSIX clock providers below).
+   The guest return address comes from the frame chain, which the HLE stack switch links back to the guest caller
+   (hle_stack.S). Every 2 s: calls per second per (host thread id, guest caller, its caller). */
 int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
-typedef struct { uint64_t tid, lr, n; const char *mod; uint64_t off; } clock_poll_ent;
+typedef struct { uint64_t tid, lr, lr2, n; const char *mod, *mod2; uint64_t off, off2; } clock_poll_ent;
 static void clock_poll_note(void) {
  static int on = -1; if (on < 0) { const char *e = getenv("TOTK_CLOCK_POLL_LOG"); on = e && atoi(e); }
  if (!on) return;
  uint64_t tid = 0; pthread_threadid_np(NULL, &tid);
- uint64_t lr = 0, off = 0; const char *mod = NULL;
+ uint64_t lr = 0, off = 0, lr2 = 0, off2 = 0; const char *mod = NULL, *mod2 = NULL;
  uintptr_t *fp = __builtin_frame_address(0);
  for (int d = 0; d < 24 && fp; d++) {
   uintptr_t ret = fp[1];
   if (runtime_module_offset(ret, &mod, &off)) {
    /* The host frame record of the HLE stack switch: [fp] = guest x29/x30, [fp+16] = guest sp at the call (hle_stack.S).
-      The game's clock wrapper (main+0x21e5170) keeps its return address at [sp+0x20] and the libc shim that called it
-      (main+0x21e51f0, `str x30, [sp,#-0x10]!`) at [sp+0x40]: that one is the caller that actually wants the time. */
-   uint64_t gsp = fp[2]; lr = ret;
-   if (gsp && !(gsp & 7)) { const char *m2; uint64_t o2, cand = *(uint64_t *)(gsp + 0x40); if (runtime_module_offset(cand, &m2, &o2)) { lr = cand; mod = m2; off = o2; } }
+      The guest return address is inside the SDK's clock_gettime (sdk+0xb52a0: `stp x29,x30,[sp,#-0x20]!` ... `bl sdk+0xaf160`,
+      which jumps through the provider slot to the host), so the caller that wants the time left its return address at
+      [gsp+8], clock_gettime's saved x30. Recorded only when it is a code address of a loaded module. */
+   lr = ret;
+   /* Only the switch frame has [fp+16] = guest sp and [fp+24] = this host stack's top (just above this frame); a nested
+      host call or a host thread reaches guest code through other frames whose words are not a stack pointer. */
+   uint64_t gsp = fp[2], top = fp[3];
+   if (top > (uintptr_t)fp && top - (uintptr_t)fp < (1u << 22) && gsp > 0x100000 && !(gsp & 15) && gsp + 0x20 > gsp) {
+    const char *m2; uint64_t o2, cand = *(uint64_t *)(gsp + 8);
+    if (runtime_module_offset(cand, &m2, &o2)) { lr2 = cand; mod2 = m2; off2 = o2; }
+   }
    break;
   }
   uintptr_t *next = (uintptr_t *)fp[0];
@@ -157,8 +166,8 @@ static void clock_poll_note(void) {
  static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
  static clock_poll_ent ent[64]; static int nent; static uint64_t since, total;
  pthread_mutex_lock(&mu);
- int i; for (i = 0; i < nent; i++) if (ent[i].tid == tid && ent[i].lr == lr) break;
- if (i == nent && nent < 64) { ent[nent] = (clock_poll_ent){tid, lr, 0, mod, off}; nent++; }
+ int i; for (i = 0; i < nent; i++) if (ent[i].tid == tid && ent[i].lr == lr && ent[i].lr2 == lr2) break;
+ if (i == nent && nent < 64) { ent[nent] = (clock_poll_ent){tid, lr, lr2, 0, mod, mod2, off, off2}; nent++; }
  if (i < nent) ent[i].n++;
  total++;
  uint64_t now = runtime_now_ns(); if (!since) since = now;
@@ -168,7 +177,7 @@ static void clock_poll_note(void) {
   for (int k = 0; k < 6; k++) {
    int best = -1; for (int j = 0; j < nent; j++) if (ent[j].n && (best < 0 || ent[j].n > ent[best].n)) best = j;
    if (best < 0) break;
-   fprintf(stderr, "[totk-clock]   thread 0x%llx: %.0f/s from %s+0x%llx\n", (unsigned long long)ent[best].tid, ent[best].n / s, ent[best].mod ? ent[best].mod : "?", (unsigned long long)ent[best].off);
+   fprintf(stderr, "[totk-clock]   thread 0x%llx: %.0f/s from %s+0x%llx <- %s+0x%llx\n", (unsigned long long)ent[best].tid, ent[best].n / s, ent[best].mod ? ent[best].mod : "?", (unsigned long long)ent[best].off, ent[best].mod2 ? ent[best].mod2 : "?", (unsigned long long)ent[best].off2);
    ent[best].n = 0;
   }
   for (int j = 0; j < nent; j++) ent[j].n = 0;
@@ -176,19 +185,31 @@ static void clock_poll_note(void) {
  }
  pthread_mutex_unlock(&mu);
 }
-/* POSIX clock IDs use the guest libc's numbering, not Darwin's constants. */
-static int guest_clock_gettime(int id, int64_t *out) {
- runtime_core_checkpoint();
- clock_poll_note();
- if(!out)return -1;
- struct timespec t;clockid_t host;
- switch(id){case 0:host=CLOCK_REALTIME;break;case 1:host=CLOCK_MONOTONIC;break;case 2:host=CLOCK_PROCESS_CPUTIME_ID;break;case 3:host=CLOCK_THREAD_CPUTIME_ID;break;default:{int *(*loc)(void)=runtime_symbol("__errno_location");if(loc)*loc()=22;return -1;}}
- if(clock_gettime(host,&t))return -1;
- out[0]=t.tv_sec;out[1]=t.tv_nsec;return 0;
+/* The SDK libc's POSIX clocks (2026-11-08). The SDK's clock_gettime(CLOCK_REALTIME / CLOCK_MONOTONIC) jumps through two
+   function pointers that the SDK fills (relative relocations, redirected here by loader.c relocate) with
+   nn::time::GetStandardUserSystemClockCurrentTimespec / GetStandardSteadyClockCurrentTimespec. The SDK's own versions need
+   the nn::time shared-memory client that its nn::time::Initialize sets up, which we replace: they answered result 0x74,
+   clock_gettime failed with EAGAIN, the SDK's pthread_cond_timedwait returned 11 at once, and gRPC's timer thread (which takes
+   11 as a wake-up) spun on one core at up to 6 M waits/s. The whole process now has one clock_gettime, the SDK's, backed by
+   these two: wall clock = the host's CLOCK_REALTIME (as GetCurrentTime above, with nanoseconds), steady = host continuous time
+   (as steady_seconds). main's import of clock_gettime is no longer replaced separately (it was, with the host clock, which hid
+   the failing SDK path from direct callers only). A timespec is two int64 words in the SDK as on Darwin arm64. */
+static uint32_t user_clock_timespec(int64_t *ts) {
+    runtime_core_checkpoint(); clock_poll_note();
+    if (!ts) return R_INVALID;
+    struct timespec t; if (clock_gettime(CLOCK_REALTIME, &t)) return R_INVALID;
+    ts[0] = t.tv_sec; ts[1] = t.tv_nsec; return 0;
+}
+static uint32_t steady_clock_timespec(int64_t *ts) {
+    runtime_core_checkpoint(); clock_poll_note();
+    if (!ts) return R_INVALID;
+    int64_t ns = steady_ns(); ts[0] = ns / 1000000000; ts[1] = ns % 1000000000; return 0;
 }
 void *runtime_time_override(const char *name) {
- if(!strcmp(name,"clock_gettime"))return guest_clock_gettime;
     static const struct { const char *name; void *fn; } map[] = {
+        {"_ZN2nn4time41GetStandardUserSystemClockCurrentTimespecEP8timespec", user_clock_timespec},
+        {"_ZN2nn4time43GetAdjustableUserSystemClockCurrentTimespecEP8timespec", user_clock_timespec},   /* the libc's other CLOCK_REALTIME source (sdk+0xaf020 kind 2) */
+        {"_ZN2nn4time37GetStandardSteadyClockCurrentTimespecEP8timespec", steady_clock_timespec},
         {"_ZN2nn4time10InitializeEv", initialize}, {"_ZN2nn4time8FinalizeEv", finalize}, {"_ZN2nn4time13IsInitializedEv", is_initialized},
         {"_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},
         {"_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", user_time},

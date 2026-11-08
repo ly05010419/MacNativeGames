@@ -675,6 +675,50 @@ static int64_t block_inner(thr_t *t, int kind, int64_t ns) {
     return t->wres;
 }
 
+/* TOTK_CONDWAIT_LOG=1 (diagnostic, 2026-11-08): condition-variable waits (svc 0x1C) per guest thread and caller - how many
+   ask for a zero timeout (the SDK's pthread_cond_timedwait clamps a deadline that its own clock_gettime says is past to 0, and
+   block_inner then returns R_TIMEOUT at once), how many for less than a millisecond, infinite ones, and the shortest positive
+   timeout. Printed every 2 s. Called holding G. */
+int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
+static void condwait_note(thr_t *t, int64_t ns) {
+    static int on = -1; if (on < 0) { const char *e = getenv("TOTK_CONDWAIT_LOG"); on = e && atoi(e); }
+    if (!on) return;
+    typedef struct { uint32_t handle; uint64_t lr, n, zero, sub_ms, inf; int64_t min_pos; } ent_t;
+    static ent_t ent[64]; static int nent; static uint64_t since, total;
+    uint64_t lr = t->last_lr; int i;
+    for (i = 0; i < nent; i++) if (ent[i].handle == t->handle && ent[i].lr == lr) break;
+    if (i == nent && nent < 64) { ent[nent] = (ent_t){t->handle, lr, 0, 0, 0, 0, INT64_MAX}; nent++; }
+    if (i < nent) { ent_t *e = &ent[i]; e->n++; if (ns == 0) e->zero++; else if (ns < 0) e->inf++; else { if (ns < 1000000) e->sub_ms++; if (ns < e->min_pos) e->min_pos = ns; } }
+    total++;
+    uint64_t now = runtime_now_ns(); if (!since) since = now;
+    if (now - since < 2000000000ull) return;
+    double s = (now - since) / 1e9;
+    fprintf(stderr, "[totk-condwait] %.0f cv waits/s from %d (thread, caller) pairs\n", total / s, nent);
+    {   /* Which implementation the SDK's own clock_gettime(CLOCK_REALTIME / CLOCK_MONOTONIC) dispatches to right now: the two
+           function-pointer slots sdk+0xeb0018 / +0x20 (sdk+0xaf160 / +0xaf170 `ldr x1,[x8,#0x18|0x20]; br x1`; both default to the
+           tick-based sdk+0xaf0a0, the setters sdk+0xaf020 / +0xaf0f8 can install a time-service provider). Diagnostic only. */
+        uint8_t *sdk = runtime_module_base("sdk"); uint64_t rt = 0, mono = 0; const char *m1 = "?", *m2 = "?"; uint64_t o1 = 0, o2 = 0;
+        if (sdk) { memcpy(&rt, sdk + 0xeb0018, 8); memcpy(&mono, sdk + 0xeb0020, 8); runtime_module_offset(rt, &m1, &o1); runtime_module_offset(mono, &m2, &o2); }
+        fprintf(stderr, "[totk-condwait]   sdk clock_gettime sources: REALTIME -> %s+0x%llx, MONOTONIC -> %s+0x%llx\n", m1, (unsigned long long)o1, m2, (unsigned long long)o2);
+        /* Both installed providers (sdk+0x5d8bb0 / +0x5d8770) first require the nn::time::detail::SharedMemoryClient object
+           ([sdk+0xe8c0c0] -> client, byte +0x48 == 1 "initialized"), else they return result 0x74 and the SDK's clock_gettime
+           fails with errno 11 (sdk+0xb5300). Read that byte: it decides whether the SDK's POSIX clocks work at all. */
+        uint64_t client = 0; const char *mc = "?"; uint64_t oc = 0; int flag = -1;
+        if (sdk) { memcpy(&client, sdk + 0xe8c0c0, 8); if (client && runtime_module_offset(client, &mc, &oc)) flag = *(uint8_t *)(client + 0x48); }
+        fprintf(stderr, "[totk-condwait]   sdk time SharedMemoryClient %s+0x%llx initialized=%d\n", mc, (unsigned long long)oc, flag);
+    }
+    for (int k = 0; k < 5; k++) {
+        int best = -1; for (int j = 0; j < nent; j++) if (ent[j].n && (best < 0 || ent[j].n > ent[best].n)) best = j;
+        if (best < 0) break;
+        ent_t *e = &ent[best]; const char *mod = "?"; uint64_t off = e->lr; runtime_module_offset(e->lr, &mod, &off);
+        fprintf(stderr, "[totk-condwait]   thread %#x from %s+0x%llx: %.0f/s, timeout 0: %.0f/s, <1 ms: %.0f/s, infinite: %.0f/s, shortest positive %lld us\n",
+                e->handle, mod, (unsigned long long)off, e->n / s, e->zero / s, e->sub_ms / s, e->inf / s, e->min_pos == INT64_MAX ? -1LL : (long long)(e->min_pos / 1000));
+        e->n = 0;
+    }
+    for (int j = 0; j < nent; j++) { ent[j].n = ent[j].zero = ent[j].sub_ms = ent[j].inf = 0; ent[j].min_pos = INT64_MAX; }
+    total = 0; since = now;
+}
+
 // ---------- 锁 ----------
 // ---------- Locks ----------
 static inline uint32_t ld32(uint64_t a) { return __atomic_load_n((uint32_t *)a, __ATOMIC_SEQ_CST); }
@@ -1095,6 +1139,7 @@ int svc_thread(int num, uint64_t *regs) {
         st32(key, 1);
         t->wkey = key; t->waddr = addr; t->wtag = (uint32_t)regs[2];
 #endif
+        condwait_note(t, (int64_t)regs[3]);
         int64_t r = block(t, 2, (int64_t)regs[3]);   // 超时：不重新拿锁（用户态自己拿） | Timeout: the lock is not re-acquired (user mode takes it itself)
         pthread_mutex_unlock(&G);
         regs[0] = (uint64_t)r; return 1;
