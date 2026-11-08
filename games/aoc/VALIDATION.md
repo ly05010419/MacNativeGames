@@ -1,5 +1,67 @@
 # Age of Calamity validation — 2026-10-27
 
+## Settings panel on key 1 and on-demand activity — 2026-11-08
+
+Key 1 opens and closes the settings panel. The number keys 2 to 7 are no longer shortcuts, and the hints box with its
+switch and `hints=` key is gone. The stats pane shows on-demand library loads and pipeline build attempts and turns yellow
+after them. `DM_AOC_STATS` / `DM_AOC_FRAME_GRAPH` lock their rows without overwriting the saved choice. Checked without
+the game:
+
+- The native settings test passes 122 checks in both language overrides (71 before). It adds key 1 routing on the game
+  window and on the panel (first press, repeats, release, Command), released keys around the panel, the precedence
+  rules and locked rows, the activity colour rule with injected times and in the pane, and the absence of the hints box.
+- `controller-layout.txt` through the real file, with the loading and saving `front_mac.m` uses
+  (`front_settings_file.h`): a player's file with stats Full, the graph off and the old `hints=1`; a run where
+  `DM_AOC_STATS=1` and `DM_AOC_FRAME_GRAPH=1` decide; another setting changed and saved. The file keeps `stats=2` and
+  `frame_graph=0`, writes the change and drops `hints=`, and a run without the variables reads Full and off back.
+- Negative controls: with the lock check removed from `dm_pref_set` and a repeated 1 allowed to close the panel, four
+  checks fail; with the run's values saved instead of the saved choices, three file checks fail.
+- `make test` passes. `front_mac.m` and `front_settings.m` pass a syntax-only compile with no new warning.
+
+Checked in the game through internal events and logged state, on an instrumented app: a signed 1.4.1 app built from this
+change plus test-only DM_CTL hooks, which are not part of it. `mackey` posts a key event into the process's own queue, to
+the key window, so it goes through the local key monitor and the window's `keyDown:` like a typed key. `macstate` only
+reads and logs the panel, the keyboard and the stats pane's colour as the view holds it. `macset` makes a change as a panel
+control does. The hooks' sources were kept, and the app's host has the same code and strings as the one built from them. The hook read
+its down / up / repeat word inside the queued block, from a reusable buffer; every logged key event matches the command
+sent, in order (13 of 13 and 2 of 2), so the evidence stands, and a fixed hook is kept for any later test app.
+Two scripted sessions on a disposable profile copy:
+
+- With `DM_AOC_STATS=1` and `DM_AOC_FRAME_GRAPH=1`, over a file holding `stats=2`, `frame_graph=0` and the old `hints=1`:
+  - stats 1 and graph 1, both locked, both rows greyed;
+  - 1 on the game window opened the panel and made it the key window; its repeats and release on the panel left it
+    open; 1 on the panel closed it; the release then reaching the game window left the keyboard untouched;
+  - W held, then 1: W was released as the panel opened, its release on the panel and the closing 1 left nothing held;
+  - F1 opened the panel and Esc closed it;
+  - Swap A / B changed and saved, and changes to the locked stats and graph refused. The file kept `stats=2` and
+    `frame_graph=0`, wrote `swap_ab=1` and dropped `hints=`;
+  - polled once a second from the title into the map: yellow whenever the on-demand counts had risen in the last
+    three seconds (pipeline build attempts 128 to 167 entering the map, library loads 140 to 158), green when they
+    stayed still. One sample read green just after a rise, because the pane recolours on its own half-second timer.
+- With no variables, on the file that session saved: stats 2 and graph 0, rows enabled, `swap_ab=1` kept; a stats change
+  was accepted and written.
+
+The sessions logged one `texture type mismatch` line, a kind seen before, and no crash. Both were ended on purpose
+(the supervisor's code 5 for an aborted route), and both closed in order.
+
+Added after those sessions, checked without the game (the settings test passes 137 checks; `make test` passes; the changed
+host and graphics sources compile with no new warning): the graph shows frames per second from 0 to 60 instead of frame
+times, and the panel and the stats pane show the game's picture size (the scene target the `feedback_snap` draws read,
+1440x810 in the earlier logs) and output size (the presented texture) as last observed, with the window size: within one
+second shown as is, older as "last seen N s ago", never observed as --. The test drives those states, a size change
+included. The size cap row is renamed "Window size
+cap" and says it does not change the game's resolution.
+
+The clean-app session of 2026-11-08 (no hooks; see the pipeline warm-up list below) logged the sizes the readout uses as observed by the host: the scene
+target the `feedback_snap` draws read at 1440x810, and the window initialised at 1920x1080 (the presented size itself is
+not logged). The panel's text, the stats pane and the FPS graph were not seen: this session has no screen access, so
+they remain without visual check.
+
+Not validated: key 1 and the panel on the clean app (that session sent no keys; this session can post no system
+events), keys typed on a physical keyboard, and how the panel, the stats pane and the graph look on screen (no screen
+capture). This is not a visual acceptance, and the panel was not used in battle.
+
+
 ## DLC on 1.4.1 — 2026-11-07
 
 The four add-ons were extracted and pinned: 1 is a marker file, 2 and 3 hold archives,
