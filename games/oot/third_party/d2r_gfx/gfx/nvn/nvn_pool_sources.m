@@ -34,10 +34,21 @@ static void reject_escaped_locals(NSString *src,NSMutableDictionary *defs) {
         }
     }
 }
-@interface PoolExpr : NSObject { @public NSString *op; int type, binding; uint32_t value; NSArray<PoolExpr *> *args; } @end
-@implementation PoolExpr @end
+/* code / argv (2026-11-08): the operation as a number and the operands as a C array, fixed when the node is made. The
+   replay evaluates these per draw (prepare_shader_pools); comparing op strings there was about 5 % of the replay thread. */
+enum { PE_LITERAL, PE_UNIFORM, PE_UNION, PE_CAST, PE_NEG, PE_ADD, PE_SUB, PE_MUL, PE_AND, PE_OR, PE_XOR, PE_SHL, PE_SHR, PE_OTHER };
+@interface PoolExpr : NSObject { @public NSString *op; int type, binding, code, argc; uint32_t value; NSArray<PoolExpr *> *args; __unsafe_unretained PoolExpr **argv; } @end
+@implementation PoolExpr - (void)dealloc { free(argv); } @end
+static int pe_code(NSString *op) {
+    static NSDictionary<NSString *, NSNumber *> *codes; static dispatch_once_t once;
+    dispatch_once(&once, ^{ codes = @{@"literal":@(PE_LITERAL), @"uniform":@(PE_UNIFORM), @"union":@(PE_UNION), @"cast":@(PE_CAST), @"neg":@(PE_NEG),
+        @"+":@(PE_ADD), @"-":@(PE_SUB), @"*":@(PE_MUL), @"&":@(PE_AND), @"|":@(PE_OR), @"^":@(PE_XOR), @"<<":@(PE_SHL), @">>":@(PE_SHR)}; });
+    NSNumber *c = op ? codes[op] : nil; return c ? c.intValue : PE_OTHER;
+}
 static PoolExpr *node(NSString *op,int type,uint32_t value,NSArray *args) {
-    PoolExpr *p=[PoolExpr new];p->op=op;p->type=type;p->value=value;p->args=args;return p;
+    PoolExpr *p=[PoolExpr new];p->op=op;p->type=type;p->value=value;p->args=args;p->code=pe_code(op);
+    p->argc=(int)args.count;if(p->argc){p->argv=(__unsafe_unretained PoolExpr **)calloc((size_t)p->argc,sizeof *p->argv);if(!p->argv)abort();for(int i=0;i<p->argc;i++)p->argv[i]=args[i];}   // args keeps them alive
+    return p;
 }
 static NSDictionary *pool_uniforms(const nvn_refl *rf,NSArray *bindings,NSString *src) {
     NSMutableDictionary *out=[NSMutableDictionary dictionary];
@@ -89,17 +100,25 @@ static PoolExpr *pool_expr(NSString *expr,NSDictionary *defs,NSDictionary *types
 typedef struct {uint32_t v[64];int n;} pool_values;
 static int value_add(pool_values *v,uint32_t n){for(int i=0;i<v->n;i++)if(v->v[i]==n)return 1;if(v->n==64)return 0;v->v[v->n++]=n;return 1;}
 static int eval_index(PoolExpr *p,nvn_pool_uniform_read read,void *context,pool_values *out) {
-    if([p->op isEqual:@"literal"])return value_add(out,p->value);
-    if([p->op isEqual:@"uniform"]){uint32_t v;return read(context,p->binding,p->value,&v)&&value_add(out,v);}
-    if([p->op isEqual:@"union"]){for(PoolExpr *a in p->args)if(!eval_index(a,read,context,out))return 0;return 1;}
-    pool_values a={0},b={0};if(!eval_index(p->args[0],read,context,&a))return 0;
-    if([p->op isEqual:@"cast"]||[p->op isEqual:@"neg"]){for(int i=0;i<a.n;i++)if(!value_add(out,[p->op isEqual:@"neg"]?0u-a.v[i]:a.v[i]))return 0;return 1;}
-    if(!eval_index(p->args[1],read,context,&b))return 0;
+    switch(p->code){
+    case PE_LITERAL: return value_add(out,p->value);
+    case PE_UNIFORM: {uint32_t v;return read(context,p->binding,p->value,&v)&&value_add(out,v);}
+    case PE_UNION: for(int i=0;i<p->argc;i++)if(!eval_index(p->argv[i],read,context,out))return 0;return 1;
+    case PE_OTHER: return 0;
+    default: break;
+    }
+    if(p->argc<1)return 0;
+    pool_values a={0},b={0};if(!eval_index(p->argv[0],read,context,&a))return 0;
+    if(p->code==PE_CAST||p->code==PE_NEG){for(int i=0;i<a.n;i++)if(!value_add(out,p->code==PE_NEG?0u-a.v[i]:a.v[i]))return 0;return 1;}
+    if(p->argc<2||!eval_index(p->argv[1],read,context,&b))return 0;
     for(int i=0;i<a.n;i++)for(int j=0;j<b.n;j++){uint32_t x=a.v[i],y=b.v[j],v;
-        if([p->op isEqual:@"+"])v=x+y;else if([p->op isEqual:@"-"])v=x-y;else if([p->op isEqual:@"*"])v=x*y;
-        else if([p->op isEqual:@"&"])v=x&y;else if([p->op isEqual:@"|"])v=x|y;else if([p->op isEqual:@"^"])v=x^y;
-        else if([p->op isEqual:@"<<"]){if(y>=32)return 0;v=x<<y;}
-        else if([p->op isEqual:@">>"]){if(y>=32)return 0;v=p->type?(uint32_t)((int32_t)x>>y):x>>y;}else return 0;
+        switch(p->code){
+        case PE_ADD: v=x+y;break; case PE_SUB: v=x-y;break; case PE_MUL: v=x*y;break;
+        case PE_AND: v=x&y;break; case PE_OR: v=x|y;break; case PE_XOR: v=x^y;break;
+        case PE_SHL: if(y>=32)return 0;v=x<<y;break;
+        case PE_SHR: if(y>=32)return 0;v=p->type?(uint32_t)((int32_t)x>>y):x>>y;break;
+        default: return 0;
+        }
         if(!value_add(out,v))return 0;
     }
     return 1;
