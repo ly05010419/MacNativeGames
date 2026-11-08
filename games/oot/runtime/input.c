@@ -327,7 +327,13 @@ static void *input_file(void *arg) {
         } else if (!strncmp(line, "wshot ", 6)) {   /* "wshot <path>": the next shown picture as the window shows it (FPS box and the bottom-left box included) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic window screenshot path");
             extern void dm_gfx_window_shot(const char *path); dm_gfx_window_shot(line + 6);
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(GAME_OOT)
+        } else if (sscanf(line, "ashotn %u %n", &code, &used) == 1 && used && code > 0 && code <= 60) {
+            /* "ashotn <n> <path with %d>": n consecutive game frames written in the background (OOT flicker measurements at the real frame rate) */
+            line[strcspn(line, "\r\n")] = 0; const char *fmt = line + used;
+            if (!*fmt || !strstr(fmt, "%d") || strchr(strstr(fmt, "%d") + 2, '%')) runtime_fail("diagnostic ashotn path needs one %d");
+            extern void dm_gfx_ashot_at(const char *path, long k);
+            for (unsigned i = 0; i < code; i++) { char p[1200]; snprintf(p, sizeof p, fmt, (int)i); dm_gfx_ashot_at(p, 1 + (long)i); }
         } else if (!strncmp(line, "ashot ", 6)) {   /* "ashot <path>": the next game frame, written in the background, its present time logged (botw.md) */
             line[strcspn(line, "\r\n")] = 0; if (!line[6]) runtime_fail("diagnostic ashot path");
             extern void dm_gfx_ashot(const char *path); dm_gfx_ashot(line + 6);

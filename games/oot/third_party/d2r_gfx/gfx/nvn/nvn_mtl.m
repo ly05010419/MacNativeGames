@@ -21382,7 +21382,7 @@ int mtl_probe_arg_epoch(void) {
 #include "nvn_stor_alias_probe.h"
 #include "nvn_arena_trim_probe.h"
 #include "nvn_cube_group_probe.h"
-#ifdef GAME_BOTW
+#if defined(GAME_BOTW) || defined(GAME_OOT)
 /* "ashot <path>" (botw.md, game-speed checks; at the end of the file so TOTK's line numbers stay as they were): the next
    game frame like "shot", but only the read-back runs on the game's present thread (wait for the GPU, one blit: a few
    ms); the picture is scaled to 480 wide and written as PNG on a background queue, so a sequence of them barely moves the
@@ -21390,12 +21390,16 @@ int mtl_probe_arg_epoch(void) {
    carries the frame's present time (CLOCK_UPTIME_RAW), which the alignment uses instead of when the command was read
    (the command file is polled every 100 ms). */
 static struct { uint64_t frame; char path[1024]; } g_ashotq[SHOTQ_MAX]; static int g_nashotq;
-void dm_gfx_ashot(const char *path) {
+/* OOT (2026-11-09): "ashotn <n> <path with %d>" queues n consecutive frames (k = 1..n), for flicker measurements at the
+   game's real frame rate ("shotn" writes full-size PNGs on the present thread and dropped the game to ~4 fps). */
+void dm_gfx_ashot_at(const char *path, long k) {
     pthread_mutex_lock(&g_shotq_mu);
-    if (g_nashotq < SHOTQ_MAX) { g_ashotq[g_nashotq].frame = atomic_load(&g_cur_frame) + 1; strlcpy(g_ashotq[g_nashotq].path, path, sizeof g_ashotq[0].path); g_nashotq++; }
+    if (g_nashotq < SHOTQ_MAX) { g_ashotq[g_nashotq].frame = atomic_load(&g_cur_frame) + (uint64_t)(k > 0 ? k : 1); strlcpy(g_ashotq[g_nashotq].path, path, sizeof g_ashotq[0].path); g_nashotq++; }
     else MLOG("【红】ashot 请求超过 %d 个，丢弃 %s", SHOTQ_MAX, path);
     pthread_mutex_unlock(&g_shotq_mu);
 }
+void dm_gfx_ashot(const char *path) { dm_gfx_ashot_at(path, 1); }
+static size_t ashot_width(void) { static size_t w; if (!w) { const char *e = getenv("TOTK_ASHOT_WIDTH"); long v = e ? atol(e) : 0; w = v >= 64 && v <= 4096 ? (size_t)v : 480; } return w; }   // TOTK_ASHOT_WIDTH: output width (default 480, botw.md)
 static void ashot_take(id<MTLTexture> src, const char *path, long frame) { @autoreleasepool {
     uint64_t t = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     MTLPixelFormat pf = src.pixelFormat;
@@ -21418,7 +21422,7 @@ static void ashot_take(id<MTLTexture> src, const char *path, long frame) { @auto
         CGBitmapInfo bi = bgra ? (kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little) : (CGBitmapInfo)kCGImageAlphaNoneSkipLast;
         CGDataProviderRef dp = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
         CGImageRef img = dp ? CGImageCreate(w, h, 8, 32, row, cs, bi, dp, NULL, false, kCGRenderingIntentDefault) : NULL;
-        size_t ow = 480, oh = h * ow / (w ? w : 1);
+        size_t ow = ashot_width(), oh = h * ow / (w ? w : 1);
         CGContextRef small = img ? CGBitmapContextCreate(NULL, ow, oh, 8, 0, cs, kCGImageAlphaNoneSkipLast) : NULL;
         CGImageRef out = NULL;
         if (small) { CGContextSetInterpolationQuality(small, kCGInterpolationMedium); CGContextDrawImage(small, CGRectMake(0, 0, ow, oh), img); out = CGBitmapContextCreateImage(small); }

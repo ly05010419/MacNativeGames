@@ -333,7 +333,12 @@ int totk_wb_fence_on(void);
 #define BOTW_RT_DUP_SKIP(i)
 #define BOTW_RT_DUP_PREDICT(r, cf)
 #define BOTW_RT_DUP_CLEAR_TO_FIRST(c)
+#ifdef GAME_OOT
+void botw_ashot_poll(const void *t, long cur);   /* OOT (2026-11-09): "ashot" / "ashotn" background screenshots at the real frame rate (flicker measurements) */
+#define BOTW_ASHOT_POLL(t, cur) botw_ashot_poll((t), (cur));
+#else
 #define BOTW_ASHOT_POLL(t, cur)
+#endif
 #define BOTW_REUP_TRACKED(pk, t)
 #define BOTW_PKG_FIELDS
 #define BOTW_WB_LANDED(t)
