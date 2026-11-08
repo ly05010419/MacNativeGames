@@ -122,6 +122,7 @@ enum {
     OP_STENCIL, OP_POLY_OFFSET, OP_DRAW, OP_DRAW_IDX, OP_DISPATCH, OP_BARRIER,
     OP_SET_TEX_POOL, OP_SET_SAMP_POOL, OP_COPY_B2T, OP_COPY_STRIDE, OP_BLEND_COLOR, OP_COPY_T2B, OP_BIND_IMG, OP_COPY_T2T, OP_RESET_COUNTER, OP_CLEAR_TEX, OP_DEPTH_CLAMP, OP_RENDER_ENABLE, OP_RASTER_DISCARD, OP_RENDER_COND, OP_PUSH_CONST, OP_FENCE_SYNC,
     OP_EYE,   // zeldaVR stereo B2: the ops up to the next OP_EYE are for these eyes (p_eye; the replay of each eye skips the others')
+    OP_WAIT_EVENT,   // nvnCommandBufferWaitEvent {volatile uint32_t *val; uint32_t mode, value} (2026-11-08: recorded for cross-queue ordering)
     OP_COUNT_
 };
 typedef struct { uint32_t mask, pad; } p_eye;   // OP_EYE: 1 left, 2 right, 3 both (what every recording is outside such marks)

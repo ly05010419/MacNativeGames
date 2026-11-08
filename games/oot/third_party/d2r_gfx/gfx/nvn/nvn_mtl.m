@@ -34,6 +34,21 @@ static _Atomic int g_raw_write_capture;
 static _Atomic int g_mesh_batch = -1,g_mesh_batch_dump,g_mesh_batch_check;
 static _Atomic int g_writer_boundary = -1;
 static int writer_boundary_on(void);
+static _Atomic int g_cpu_wait_live = -1;   // see cpu_wait_live_on (guest queue ordering)
+static _Atomic int g_usnap_skip;   // diagnostic "flag usnap_skip N": 1 blocks >= 8 KiB, 2 smaller blocks, 3 compute uniforms, 4 graphics uniforms read live memory
+static _Atomic int g_usnap_keyskip;   // diagnostic "flag usnap_keyskip lo|hi<<8": graphics draws whose shader key starts with a byte in [lo, hi) read live memory
+static _Atomic int g_usnap_keyskip3;   // "flag usnap_key3 prefix|regmask<<12": a 3-hex-digit key prefix and the cb slots (bit per slot, 0 = all)
+static int usnap_key_skipped(const char *key, int reg) {
+    if (!key) return 0;
+    int v3 = g_usnap_keyskip3;
+    if (v3) { unsigned p = (unsigned)v3 & 0xfff, mask = (unsigned)v3 >> 12, b = 0;
+        for (int i = 0; i < 3; i++) { char c = key[i]; b = b * 16 + (unsigned)(c >= 'a' ? c - 'a' + 10 : c - '0'); }
+        if (b == p && (!mask || (reg >= 0 && reg < 16 && (mask >> reg & 1)))) return 1; }
+    int v = g_usnap_keyskip; if (!v) return 0; unsigned lo = (unsigned)v & 255, hi = (unsigned)v >> 8, b = 0;
+    for (int i = 0; i < 2; i++) { char c = key[i]; b = b * 16 + (unsigned)(c >= 'a' ? c - 'a' + 10 : c - '0'); } return b >= lo && b < hi; }
+static int usnap_skipped(uint64_t size, int compute) { int k = g_usnap_skip;
+    return k == 1 ? size >= 8192 : k == 2 ? size < 8192 : k == 3 ? compute : k == 4 ? !compute : 0; }
+static _Atomic int g_exact_usnap_stripes_ext;   // flag exact_usnap_stripes (nvn_raw_write_domain.inc)
 static _Atomic int g_mesh_empty_export = -1;
 static _Atomic int g_mesh_translation = -1;
 static _Atomic int g_mesh_reuse_check;
@@ -1159,6 +1174,7 @@ uint64_t g_b2gw_page; _Atomic int g_b2gw_n;   // stereo B2 diagnostic ("flag b2g
 static void b2gw_note(uint64_t a, uint64_t n, const void *ra);   // below, with the replay's state
 static void mesh_indirect_write(uint64_t a,uint64_t n);
 static void mesh_batch_write(uint64_t a,uint64_t n);
+static uint64_t g_sbufu_write_drops;   // storage writes through uniform-held pointers (whole pool dropped)
 static void usnap_drop(uint64_t a, uint64_t n) {   // the GPU writes [a, a+n) within this submission
     if (!n) return;
     g_pool_write_epoch++;pool_input_invalidate(a,n);
@@ -1925,6 +1941,7 @@ void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
     }
 }
 void mtl_sub_snapshot_ubos(const uint64_t *h, int n) { mtl_sub_snapshot_ubos_cap(h, n, NULL); }
+static uint64_t g_usnap_take_stamp; static int g_usnap_take_over, g_usnap_take_npend, g_usnap_take_ngw;
 static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     uint64_t tq0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t done = cap && !g_ucap_probe_now ? cap->done : __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
@@ -1975,6 +1992,8 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
         atomic_store_explicit(&c->st, US_PENDING, memory_order_relaxed);
         g_usnap_bytes += sz;
     }
+    { static int st_on = -1; if (st_on < 0) st_on = getenv("OOT_SNAPTRACE") != NULL;   // diagnostic: CPU writes between the snapshot and the encode
+      if (st_on) { g_usnap_take_stamp = nvn_dirty_now(); g_usnap_take_over = pend_over(); g_usnap_take_npend = g_npend; g_usnap_take_ngw = g_ngw; } }
     // phase 2: the bytes. Helpers claim entries through the cursor; the replay goes on and copies what it needs first itself.
     g_usnap_cap = cap;
     g_usnap_pend_n = g_npend;   // the copies (helpers or the replay itself) overlay only the pending writes known now
@@ -2263,6 +2282,49 @@ static void post(post_op o) {
     if (g_npost == g_postcap) { g_postcap = g_postcap ? g_postcap * 2 : 64; g_post = realloc(g_post, g_postcap * sizeof *g_post); }
     g_post[g_npost++] = o;
 }
+/* Cross-queue event ordering probe (2026-11-08). Signals are replayed into the single Metal queue in submit order; the
+   value each event will hold once they execute is projected here (by replay order, not completion). A wait whose target
+   neither the projection nor the CPU-visible value reaches was replayed before its producer: its work reads stale data. */
+uint64_t g_qwait_queue;   // guest queue (NVNqueue address) of the submission being replayed (hle_nvn.c)
+typedef struct { volatile uint32_t *val; uint32_t projected, hist[8]; unsigned nhist; uint64_t queue, frame, fence; } qwait_ev;
+static qwait_ev g_qwait_ev[512]; static uint64_t g_qwait_waits, g_qwait_unready, g_qwait_signals, g_qwait_last_report;
+static qwait_ev *qwait_find(volatile uint32_t *val, int add) {
+    unsigned h = (unsigned)(((uintptr_t)val >> 2) * 2654435761u) & 511;
+    for (unsigned k = 0; k < 512; k++) { qwait_ev *e = &g_qwait_ev[(h + k) & 511]; if (e->val == val) return e; if (!e->val) { if (!add) return NULL; e->val = val; e->projected = *val; return e; } }
+    return NULL;
+}
+static int qwait_ready(uint32_t actual, uint32_t mode, uint32_t target) { return mode == 0 ? actual == target : (uint32_t)(actual - target) < 0x80000000u; }
+static void qwait_signal(volatile uint32_t *val, uint32_t mode, uint32_t v) {
+    qwait_ev *e = qwait_find(val, 1); g_qwait_signals++; if (!e) return;
+    uint32_t before = e->fence && g_done < e->fence ? e->projected : *val;   // a completed projection yields to memory
+    e->projected = mode == 1 ? before + v : v; e->queue = g_qwait_queue; e->frame = atomic_load(&g_cur_frame); e->fence = g_fence + 1;
+    e->hist[e->nhist++ & 7] = e->projected;
+}
+/* The value a wait sees at this point of the single queue's order: CPU-visible memory, or the projection of signals
+   already replayed whose GPU work has not completed. An EQUAL wait also accepts a value the event held earlier in this
+   order (the guest's consumer would have caught it; replaying it later must not turn into a hang). */
+int mtl_qo_event_ready(volatile uint32_t *val, uint32_t mode, uint32_t target) {
+    if (qwait_ready(*val, mode, target)) return 1;
+    qwait_ev *e = qwait_find(val, 0); if (!e || !e->fence) return 0;
+    if (qwait_ready(e->projected, mode, target)) return 1;
+    if (mode == 0) for (unsigned k = 0; k < 8 && k < e->nhist; k++) if (e->hist[k] == target) return 1;
+    return 0;
+}
+/* 1 when the event's current value comes from a signal replayed on the GPU timeline and not yet completed (a GPU producer),
+   0 when it is memory as the CPU sees it (a CPU signal or completed GPU work). */
+int mtl_qo_event_gpu_projected(volatile uint32_t *val) { qwait_ev *e = qwait_find(val, 0); return e && e->fence && g_done < e->fence; }
+/* nvnEventSignal from the CPU: memory is authoritative again for this event. */
+void mtl_qo_cpu_signal(volatile uint32_t *val) { qwait_ev *e = qwait_find(val, 0); if (e) { e->projected = *val; e->fence = 0; e->nhist = 0; } }
+static void qwait_check(volatile uint32_t *val, uint32_t mode, uint32_t target) {
+    qwait_ev *e = qwait_find(val, 0); uint32_t mem = *val; g_qwait_waits++;
+    int ready = mtl_qo_event_ready(val, mode, target); (void)mem; (void)e;
+    uint64_t fr = atomic_load(&g_cur_frame);
+    if (!ready) { g_qwait_unready++;
+        if (g_qwait_unready <= 24) MLOG("[queue-wait] unready F%llu queue=%#llx event=%p mode=%u target=%u memory=%u projected=%u last-signal queue=%#llx F%llu",
+            (unsigned long long)fr, (unsigned long long)g_qwait_queue, (void *)val, mode, target, mem, e ? e->projected : 0, e ? (unsigned long long)e->queue : 0ull, e ? (unsigned long long)e->frame : 0ull); }
+    if (fr >= g_qwait_last_report + 300) { g_qwait_last_report = fr;
+        MLOG("[queue-wait] F%llu waits=%llu unready=%llu signals=%llu", (unsigned long long)fr, (unsigned long long)g_qwait_waits, (unsigned long long)g_qwait_unready, (unsigned long long)g_qwait_signals); }
+}
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, NULL}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) { post((post_op){2, NULL, 0, 0, addr, type, NULL}); }
 // ---------- TOTK: conditional rendering evaluated in GPU order ----------
@@ -2273,6 +2335,7 @@ void mtl_sub_counter(uint64_t addr, uint32_t type) { post((post_op){2, NULL, 0, 
 typedef struct { uint64_t addr, fence, val; int known; } cpend_ent;
 #define CPEND_N 4096
 static cpend_ent g_cpend[CPEND_N]; static unsigned g_cpend_head, g_cpend_tail; static pthread_mutex_t g_cpend_mu = PTHREAD_MUTEX_INITIALIZER;   // TOTK: [tail, head) may still be pending (fences rise with the index, so completions clear a prefix)
+static uint64_t g_crep_addr[1024], g_crep_frame[1024]; static uint32_t g_crep_type[1024]; static unsigned g_crep_n;   // diagnostic: recent counter report addresses
 static void cpend_push(uint64_t addr, uint64_t fence, uint64_t val, int known) {
     pthread_mutex_lock(&g_cpend_mu); g_cpend[g_cpend_head % CPEND_N] = (cpend_ent){addr, fence, val, known}; g_cpend_head++; pthread_mutex_unlock(&g_cpend_mu);
 }
@@ -2591,6 +2654,41 @@ static void chunk_maybe_split(void) {
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     mtl_sub_split();
 }
+/* OOT_USNAP_CHECK=1 (diagnostic, off by default, 2026-11-08 white frames): each ready uniform snapshot of a submission is
+   compared, once the submission has completed, with memory. Different bytes with no CPU write in between (dirty pages)
+   mean the GPU wrote them: the snapshot handed the GPU stale bytes. Reported once per address. */
+typedef struct { uint64_t a, b, sub; const char *key; } xdrop_ent;
+static xdrop_ent g_xdrop[4096]; static int g_nxdrop; static uint64_t g_xdrop_sub; static unsigned g_xdrop_ring;
+void mtl_note_exact_drop(uint64_t a, uint64_t b, const char *key) { g_xdrop[g_xdrop_ring++ & 4095] = (xdrop_ent){a, b, g_sub_serial, key}; g_nxdrop = g_xdrop_ring < 4096 ? (int)g_xdrop_ring : 4096; g_xdrop_sub = g_sub_serial; }
+typedef struct { uint64_t lo, n, stamp; uint8_t *copy; } usck_ent;
+typedef struct { int n, nd; uint64_t frame, serial; xdrop_ent *d; usck_ent e[1]; } usck_list;
+static void usnap_check_done(usck_list *l) {
+    static uint64_t logged[256]; static int nl; static uint64_t stale;
+    for (int i = 0; i < l->n; i++) { usck_ent *e = &l->e[i];
+        int cpu = !nvn_dirty_tracked((const void *)(uintptr_t)e->lo, (size_t)e->n) || nvn_dirty_since((const void *)(uintptr_t)e->lo, (size_t)e->n, e->stamp);
+        if (!cpu && memcmp(e->copy, (const void *)(uintptr_t)e->lo, (size_t)e->n)) {
+            stale++; size_t off = 0; while (off < e->n && e->copy[off] == ((const uint8_t *)(uintptr_t)e->lo)[off]) off++;
+            int seen = 0; for (int k = 0; k < nl; k++) if (logged[k] == e->lo) seen = 1;
+            if (!seen && nl < 256) { logged[nl++] = e->lo; MLOG("[usnap-stale] F%llu sub=%llu snapshot %#llx+%llu: the GPU changed it (first byte %zu) after the copy (%llu so far)",
+                (unsigned long long)l->frame, (unsigned long long)l->serial, (unsigned long long)e->lo, (unsigned long long)e->n, off, (unsigned long long)stale);
+                { int shown = 0; for (unsigned k = 0; k < 1024 && shown < 6; k++) if (g_crep_addr[k] >= e->lo && g_crep_addr[k] < e->lo + e->n) { shown++;
+                    MLOG("[usnap-stale]   counter report type %u at +%llu (frame %llu)", g_crep_type[k], (unsigned long long)(g_crep_addr[k] - e->lo), (unsigned long long)g_crep_frame[k]); } }
+                for (int k = 0; k < l->nd; k++) { const xdrop_ent *d = &l->d[k]; if (d->b + 65536 > e->lo && d->a < e->lo + e->n + 65536)
+                    MLOG("[usnap-stale]   exact drop %#llx..%#llx by %.16s in sub %llu (%+lld bytes from the changed byte)", (unsigned long long)d->a, (unsigned long long)d->b, d->key ? d->key : "-", (unsigned long long)d->sub, (long long)(d->a - (e->lo + off))); } } }
+        free(e->copy); }
+    free(l->d); free(l);
+}
+static void usnap_check_commit(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("OOT_USNAP_CHECK"); on = e && atoi(e); } if (!on || !g_nusnap || !g_commit_blocks) return;
+    usck_list *l = calloc(1, sizeof *l + sizeof(usck_ent) * (size_t)g_nusnap); if (!l) return;
+    l->frame = atomic_load(&g_cur_frame); l->serial = g_sub_serial;
+    if (g_nxdrop) { l->d = malloc(sizeof *l->d * (size_t)g_nxdrop); if (l->d) { memcpy(l->d, g_xdrop, sizeof *l->d * (size_t)g_nxdrop); l->nd = g_nxdrop; } }
+    for (int i = 0; i < g_nusnap; i++) { usnap_t *u = &g_usnap[i];
+        if (atomic_load(&u->st) != US_READY || u->hi - u->lo > 262144) continue;
+        usck_ent *e = &l->e[l->n]; e->lo = u->lo; e->n = u->hi - u->lo; e->copy = malloc((size_t)e->n); if (!e->copy) continue;
+        memcpy(e->copy, u->cpu, (size_t)e->n); e->stamp = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)e->lo, (size_t)e->n); l->n++; }
+    [g_commit_blocks addObject:^{ usnap_check_done(l); }];
+}
 uint64_t mtl_sub_commit(void) {
     copy_sites_report();   // OOT_COPY_SITES=1 only
     cg_flush();   // TOTK: cube-face-set groups still pending at the end of the submission (reason 4 in the stats line)
@@ -2598,6 +2696,7 @@ uint64_t mtl_sub_commit(void) {
     rp_flush();
     usnap_finish();   // TOTK: the helper threads must be done with the copies (they are, long before this)
     ms_grid_flush();
+    usnap_check_commit();
     g_nusnap = 0;   // TOTK: the replay is done; the uniform copies stay in this submission's arena until it completes
     upd_flush(); BOTW_WB_STAGE() BOTW_TINY_COMMIT()   // TOTK: renamed uniform updates reach memory here, after every draw that read them through private copies
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -3168,6 +3267,11 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"mesh_batch")) { atomic_store(&g_mesh_batch,v!=0&&!TARGET_OS_IPHONE);atomic_store(&g_mesh_batch_dump,1);MLOG("[flag] mesh_batch = %d (requires draw_barriers 1)",v!=0);return; }
     if (!strcmp(name,"mesh_batch_stats")) { atomic_store(&g_mesh_batch_dump,1);return; }
     if (!strcmp(name,"mesh_batch_check")) { atomic_store(&g_mesh_batch_check,v!=0);MLOG("[flag] mesh_batch_check = %d (GPU validation, exclude from FPS)",v!=0);return; }
+    if (!strcmp(name,"cpu_wait_live")) { g_cpu_wait_live = v != 0; MLOG("[flag] cpu_wait_live = %d", v != 0); return; }
+    if (!strcmp(name,"usnap_key3")) { atomic_store(&g_usnap_keyskip3, v); args_dirty_all(); MLOG("[flag] usnap_key3 = %#x", v); return; }
+    if (!strcmp(name,"usnap_keyskip")) { atomic_store(&g_usnap_keyskip, v); args_dirty_all(); MLOG("[flag] usnap_keyskip = %#x", v); return; }
+    if (!strcmp(name,"usnap_skip")) { atomic_store(&g_usnap_skip, v); args_dirty_all(); MLOG("[flag] usnap_skip = %d", v); return; }
+    if (!strcmp(name,"exact_usnap_stripes")) { atomic_store(&g_exact_usnap_stripes_ext,v); MLOG("[flag] exact_usnap_stripes = %d (1 snapshots, 2 descriptor sources, 4 everything by stripes)",v); return; }
     if (!strcmp(name,"raw_write_auto")) { atomic_store(&g_raw_write_auto,v!=0); MLOG("[flag] raw_write_auto = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_domain")) { atomic_store(&g_raw_write_domain,v!=0); MLOG("[flag] raw_write_domain = %d",v!=0); return; }
     if (!strcmp(name,"raw_write_log")) { atomic_store(&g_raw_write_log,v!=0); MLOG("[flag] raw_write_log = %d",v!=0); return; }
@@ -4253,6 +4357,7 @@ static id<MTLBuffer> up_param_alloc(size_t *off) {
     *off = g_up_pblock_off; g_up_pblock_off += 64;
     return g_up_pblock;
 }
+static int race_on(void); static void race_note(uint64_t addr, uint64_t size, const char *key, char kind);   // OOT_RACE_CHECK (below)
 static void up_blit_add(id<MTLBuffer> src, size_t off, size_t row, size_t image, MTLSize size,
                         id<MTLTexture> dst, NSUInteger slice, NSUInteger level) {
     if (g_nup_blits == g_up_blitcap) {
@@ -4513,6 +4618,7 @@ static id<MTLTexture> pkg_upload_(const tex_t *t, uint64_t *stamp, reup_key *key
         nvn_dirty_gpu_write_end(token);
         if(!source)MDIE("texture upload source wrapper failed: %p+%llu",t->mem,(unsigned long long)t->L.size);
         res_add(source);[g_up_keep addObject:source];mb=(__bridge void *)source;mo=(uintptr_t)t->mem-a;
+        if (race_on()) { static char lbl[64][48]; static unsigned li; char *l = lbl[li++ & 63]; snprintf(l, 48, "upload ser=%llu %ux%u fmt=%#x", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.format); race_note((uint64_t)(uintptr_t)t->mem, t->L.size, l, 't'); }
         size_t off = 0; int enc_ok = g_up_ce != nil, nb0 = g_nup_blits, nd0 = g_nup_decs, nt0 = g_nup_tcas, nx0 = g_nup_tcxs;
         for (unsigned l = drop; enc_ok && l < d.mipmapLevelCount + drop; l++) {
             uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;
@@ -5395,6 +5501,43 @@ static void nt_watch_after_pass(void);
 static uint8_t g_nt_pass_clear[8]; static MTLClearColor g_nt_pass_cc[8]; static unsigned g_nt_pass_draws;   /* TOTK_NAN_TRACE watch log: how the current pass began */
 static const char *nan_trace_prefix(void);
 #include "totk_hdr_shadow.h"
+/* OOT_WATCH_TEX=<serial>[,<serial>...] (diagnostic, off by default, 2026-11-08 white frames): when a watched texture is
+   bound for sampling, the centre 4x4 texels of each slice of its level 0 are read after the pass and logged with the
+   count of non-finite texels (RG11B10 / RGBA16F / R32F). */
+static uint64_t g_wt_ser[8]; static int g_wt_n = -1;
+static __strong id<MTLTexture> g_wt_req[8]; static uint64_t g_wt_req_ser[8]; static int g_wt_nreq;
+static int watch_tex_is(uint64_t ser) {
+    if (g_wt_n < 0) { g_wt_n = 0; const char *e = getenv("OOT_WATCH_TEX"); while (e && *e && g_wt_n < 8) { g_wt_ser[g_wt_n++] = strtoull(e, (char **)&e, 10); if (*e == ',') e++; else break; } }
+    for (int i = 0; i < g_wt_n; i++) if (g_wt_ser[i] == ser) return 1;
+    return 0;
+}
+static void watch_tex_req(id<MTLTexture> t, uint64_t ser) {
+    for (int i = 0; i < g_wt_nreq; i++) if (g_wt_req_ser[i] == ser) return;
+    if (g_wt_nreq < 8) { g_wt_req[g_wt_nreq] = t.parentTexture ? t.parentTexture : t; g_wt_req_ser[g_wt_nreq++] = ser; }
+}
+static void watch_tex_flush(void) {
+    for (int k = 0; k < g_wt_nreq; k++) {
+        id<MTLTexture> src = g_wt_req[k]; uint64_t ser = g_wt_req_ser[k]; g_wt_req[k] = nil;
+        MTLPixelFormat pf = src.pixelFormat; size_t bpp = pf == MTLPixelFormatRGBA16Float ? 8 : 4;
+        if (pf != MTLPixelFormatRG11B10Float && pf != MTLPixelFormatRGBA16Float && pf != MTLPixelFormatR32Float) continue;
+        NSUInteger slices = src.textureType == MTLTextureTypeCube ? 6 : src.arrayLength; if (slices > 6) slices = 6;
+        NSUInteger w = MIN(src.width, 4u), h = MIN(src.height, 4u);
+        id<MTLBuffer> rb; size_t ro = arena_alloc(6 * 16 * bpp, &rb);
+        blit_close(); rs_sync(); id<MTL4ComputeCommandEncoder> be = [g_cb computeCommandEncoder];
+        [be barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+        for (NSUInteger s = 0; s < slices; s++) enc_b_copy_texture_buffer(be, src, s, 0, MTLOriginMake((src.width - w) / 2, (src.height - h) / 2, 0), MTLSizeMake(w, h, 1), rb, ro + s * 16 * bpp, w * bpp, 16 * bpp);
+        m4_end(be);
+        uint64_t fr = atomic_load(&g_cur_frame); unsigned ns = (unsigned)slices, nt = (unsigned)(w * h);
+        [g_commit_blocks addObject:^{ const uint8_t *v = (const uint8_t *)rb.contents + ro; unsigned bad = 0; double mx = 0;
+            for (unsigned s = 0; s < ns; s++) for (unsigned q = 0; q < nt; q++) { const uint8_t *px = v + (s * 16 + q) * bpp;
+                if (bpp == 8) { const __fp16 *c = (const __fp16 *)px; for (int j = 0; j < 3; j++) { double x = (double)c[j]; if (!isfinite(x)) bad++; else if (x > mx) mx = x; } }
+                else if (pf == MTLPixelFormatR32Float) { float x; memcpy(&x, px, 4); if (!isfinite(x)) bad++; else if (x > mx) mx = x; }
+                else { uint32_t z; memcpy(&z, px, 4); uint32_t c[3] = {z & 0x7ff, (z >> 11) & 0x7ff, (z >> 22) & 0x3ff};
+                    for (int j = 0; j < 3; j++) { int mb = j == 2 ? 5 : 6; uint32_t e = c[j] >> mb, mm = c[j] & ((1u << mb) - 1); if (e == 31) bad++; else { double x = e ? ldexp(1.0 + (double)mm / (1 << mb), (int)e - 15) : ldexp((double)mm / (1 << mb), -14); if (x > mx) mx = x; } } } }
+            MLOG("[watch-tex] F%llu ser=%llu slices=%u nonfinite=%u max=%.3f", (unsigned long long)fr, (unsigned long long)ser, ns, bad, mx); }];
+    }
+    g_wt_nreq = 0;
+}
 static void rp_end(void) { if (g_enc) {
     ghost_flush();
     if (enc_label_on() && !g_rs_active) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // 帧内序号：同一趟每帧同名，表里才能按名归并 | Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
@@ -5426,6 +5569,34 @@ static void rp_end(void) { if (g_enc) {
                   (unsigned long long)fr, (unsigned long long)pass, i, (unsigned long long)serial,
                   sum[0]/4096.0, sum[1]/4096.0, sum[2]/4096.0, nonfinite[0], nonfinite[1], nonfinite[2]); fflush(f); pthread_mutex_unlock(&mu); }];
       } }
+    /* OOT_PASS_PIXELS=<file> (diagnostic, off by default, 2026-11-08 white frames): after every pass, the mean of the
+       centre 8x8 texels of each RG11B10 / RGBA16F colour target, decoded, read once the submission has completed. One
+       line per target: game frame, pass number within the frame, serial, size, mean R G B. */
+    { static int on = -1; static FILE *f; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static uint64_t lf = ~0ull, base;
+      if (on < 0) { const char *path = getenv("OOT_PASS_PIXELS"); on = path && (f = fopen(path, "w")) != NULL; }
+      uint64_t fr = atomic_load(&g_cur_frame); if (fr != lf) { lf = fr; base = g_stat_pass; }
+      if (on) for (int i = 0; i < R.rt.n && i < 8; i++) {
+          const tex_t *rt = R.rt.color[i]; if (!rt) continue;
+          id<MTLTexture> src = tex_mtl(rt);
+          if (!src || (src.pixelFormat != MTLPixelFormatRG11B10Float && src.pixelFormat != MTLPixelFormatRGBA16Float) || src.textureType != MTLTextureType2D || src.width < 8 || src.height < 8) continue;
+          int half = src.pixelFormat == MTLPixelFormatRGBA16Float; size_t bpp = half ? 8 : 4;
+          id<MTLBuffer> rb; size_t ro = arena_alloc(64 * bpp, &rb);
+          blit_close(); rs_sync(); id<MTL4ComputeCommandEncoder> be = [g_cb computeCommandEncoder];
+          [be barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+          enc_b_copy_texture_buffer(be, src, 0, 0, MTLOriginMake((src.width - 8) / 2, (src.height - 8) / 2, 0), MTLSizeMake(8, 8, 1), rb, ro, 8 * bpp, 64 * bpp);
+          m4_end(be);
+          uint64_t pass = g_stat_pass - base, serial = rt->serial; unsigned w = (unsigned)src.width, hgt = (unsigned)src.height;
+          [g_commit_blocks addObject:^{ const uint8_t *v = (const uint8_t *)rb.contents + ro; double sum[3] = {0};
+              for (unsigned q = 0; q < 64; q++) {
+                  if (half) { const __fp16 *c = (const __fp16 *)(v + q * 8); for (int j = 0; j < 3; j++) sum[j] += (double)c[j]; }
+                  else { uint32_t z; memcpy(&z, v + q * 4, 4); uint32_t c[3] = {z & 0x7ff, (z >> 11) & 0x7ff, (z >> 22) & 0x3ff};
+                      for (int j = 0; j < 3; j++) { int mb = j == 2 ? 5 : 6; uint32_t e = c[j] >> mb, mm = c[j] & ((1u << mb) - 1);
+                          sum[j] += e == 0 ? ldexp((double)mm / (1 << mb), -14) : e == 31 ? 65504.0 : ldexp(1.0 + (double)mm / (1 << mb), (int)e - 15); } }
+              }
+              pthread_mutex_lock(&mu); fprintf(f, "%llu\t%llu\t%llu\t%ux%u\t%.4f\t%.4f\t%.4f\n", (unsigned long long)fr, (unsigned long long)pass, (unsigned long long)serial, w, hgt,
+                  sum[0] / 64, sum[1] / 64, sum[2] / 64); pthread_mutex_unlock(&mu); }];
+      } }
+    if (g_wt_nreq) watch_tex_flush();
     nt_watch_after_pass();
     for (int i = 0; i < g_nblk_wb; i++) blk_copy(g_blk_wb[i].aux, 1, g_blk_wb[i].dst, &g_blk_wb[i]);   // TOTK: block-render results into the compressed texture
     g_nblk_wb = 0; g_rt_range_active = g_rt_range_pending = 0; pg_end_render(); ts_after(); if (g_lp.count) lp_finish(); fz_end();
@@ -7508,7 +7679,8 @@ static NvArena *arena_new(size_t minimum) {
     uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
     /* Most recently retired first: the working set stays hot and the surplus stays idle, so arena_trim can release it.
        Taking the oldest rotated every block through use and none ever went idle. */
-    for (NvArena *it in g_arenas.reverseObjectEnumerator) if (it->fence && it->fence <= done && it->capacity == capacity) {
+    static int lag = -1; if (lag < 0) { const char *e = getenv("OOT_ARENA_REUSE_LAG"); lag = e ? atoi(e) : 0; if (lag) MLOG("[arena] diagnostic: blocks reused %d submissions after their fence completed", lag); }
+    for (NvArena *it in g_arenas.reverseObjectEnumerator) if (it->fence && it->fence + (uint64_t)lag <= done && it->capacity == capacity) {
         if (it->fence > g_pend_reuse_done) {
             static int audit = -1; if (audit < 0) audit = getenv("TOTK_PEND_ARENA_AUDIT") != NULL;
             if (audit) { uintptr_t lo = (uintptr_t)it->buf.contents, hi = lo + it->used;
@@ -10469,6 +10641,130 @@ static int raw_write_log_on(void) {
     return v;
 }
 static const uint8_t *bound_uniform_bytes(uint64_t gpu, size_t size, id<MTLBuffer> original);
+/* Read-only storage buffers as of the submit call (2026-11-08, Ocarina of Time white frames). The game rewrites some
+   small per-object storage buffers right after a submit, while the GPU may still be drawing with them (the race check,
+   OOT_RACE_CHECK, found 16-196 KB buffers written by the CPU before their submission completed; one frame's NaN then
+   filled the whole screen through bloom). As with uniform blocks (usnap), the GPU reads the bytes the submit call
+   saw: a copy in the submission's arena. A range with GPU writes not yet complete (this or an earlier submission) is
+   read live, so GPU-produced data is never replaced by a CPU copy. OOT_SBUF_SNAPSHOT=0 reads memory as before. */
+static uint64_t pool_range_write_fence(const p_bind_buf *u);
+static int sbuf_snap_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_SBUF_SNAPSHOT"); on = e && atoi(e); } return on; }   // off by default (OOT_SBUF_SNAPSHOT=1): no visible effect; the white frames came from the uniform capture at a parked queue's stop
+typedef struct { uint64_t addr, size, sub, epoch, gpu; } sbuf_snap_ent;
+static sbuf_snap_ent g_sbuf_snap[256]; static uint64_t g_sbuf_snap_copies, g_sbuf_snap_hits, g_sbuf_snap_live, g_sbuf_snap_bytes;
+static uint64_t sbuf_snap_get(const p_bind_buf *u) {
+    if (u->size > 262144 || !mtl_addr_known(u->addr, u->size)) return 0;
+    if (pool_range_write_fence(u)) { g_sbuf_snap_live++; return 0; }   // GPU writes pending on these bytes: the GPU's own data
+    unsigned h = (unsigned)(((u->addr >> 4) ^ u->size) * 2654435761u) & 255;
+    sbuf_snap_ent *e = &g_sbuf_snap[h];
+    if (e->addr == u->addr && e->size == u->size && e->sub == g_sub_serial && e->epoch == g_pool_write_epoch) { g_sbuf_snap_hits++; return e->gpu; }
+    __unsafe_unretained id<MTLBuffer> buf = nil; uint8_t *cpu = NULL; uint64_t gpu = 0;
+    arena_alloc_u((size_t)u->size, &buf, &cpu, &gpu);
+    memcpy(cpu, (const void *)(uintptr_t)u->addr, (size_t)u->size);
+    *e = (sbuf_snap_ent){u->addr, u->size, g_sub_serial, g_pool_write_epoch, gpu};
+    g_sbuf_snap_copies++; g_sbuf_snap_bytes += u->size;
+    static uint64_t last; uint64_t f = atomic_load(&g_cur_frame);
+    if (f >= last + 600) { last = f; MLOG("[sbuf-snapshot] F%llu copies=%llu hits=%llu live=%llu bytes=%.1f MB", (unsigned long long)f, (unsigned long long)g_sbuf_snap_copies,
+        (unsigned long long)g_sbuf_snap_hits, (unsigned long long)g_sbuf_snap_live, g_sbuf_snap_bytes / 1048576.0); }
+    return gpu;
+}
+/* OOT_RACE_CHECK=1 (diagnostic, off by default, 2026-11-08 white frames): guest memory a draw or dispatch reads directly
+   (read-only storage buffers, uniform blocks read from live memory) is write-protected when encoded; once the submission
+   has completed on the GPU, a CPU write in between is reported once per address: the CPU changed bytes the GPU had not
+   finished reading. */
+static int race_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_RACE_CHECK"); on = e && atoi(e); } return on; }
+typedef struct { uint64_t addr, size, stamp, hash; uint8_t *copy; const char *key; char kind; } race_ent;
+typedef struct { uint64_t serial, frame; int n; race_ent e[4096]; } race_list;
+static race_list *g_rl;
+static uint64_t race_hash(const uint8_t *p, uint64_t n) { uint64_t h = 1469598103934665603ull; uint64_t w; size_t i = 0;
+    for (; i + 8 <= n; i += 8) { memcpy(&w, p + i, 8); h = (h ^ w) * 1099511628211ull; } for (; i < n; i++) h = (h ^ p[i]) * 1099511628211ull; return h; }
+static void race_check(race_list *rl) {
+    static uint64_t logged[512]; static int nl; static uint64_t total;
+    for (int i = 0; i < rl->n; i++) {
+        const race_ent *e = &rl->e[i];
+        int dirty = nvn_dirty_tracked((const void *)(uintptr_t)e->addr, (size_t)e->size) && nvn_dirty_since((const void *)(uintptr_t)e->addr, (size_t)e->size, e->stamp);
+        int changed = dirty && (e->copy ? memcmp(e->copy, (const void *)(uintptr_t)e->addr, (size_t)e->size) != 0 : race_hash((const uint8_t *)(uintptr_t)e->addr, e->size) != e->hash);
+        free(e->copy);
+        if (!changed) continue;   // the page was written, these bytes were not
+        total++; int seen = 0; for (int k = 0; k < nl; k++) if (logged[k] == e->addr) { seen = 1; break; }
+        if (!seen && nl < 512) { logged[nl++] = e->addr;
+            MLOG("[race] F%llu sub=%llu %c addr=%#llx size=%llu shader=%.20s: the CPU wrote it before the GPU finished this submission (%llu so far)",
+                 (unsigned long long)rl->frame, (unsigned long long)rl->serial, e->kind, (unsigned long long)e->addr, (unsigned long long)e->size, e->key ? e->key : "-", (unsigned long long)total); }
+    }
+    free(rl);
+}
+static void race_note(uint64_t addr, uint64_t size, const char *key, char kind) {
+    if (!race_on() || !addr || !size || size > (64u << 20) || !nvn_dirty_tracked((const void *)(uintptr_t)addr, (size_t)size)) return;
+    if (!g_rl || g_rl->serial != g_sub_serial) {
+        g_rl = calloc(1, sizeof *g_rl); if (!g_rl) MDIE("race list"); g_rl->serial = g_sub_serial; g_rl->frame = atomic_load(&g_cur_frame);
+        race_list *rl = g_rl; if (g_commit_blocks) [g_commit_blocks addObject:^{ race_check(rl); }];
+    }
+    for (int i = g_rl->n - 1; i >= 0 && i >= g_rl->n - 64; i--) if (g_rl->e[i].addr == addr && g_rl->e[i].size == size) return;
+    if (g_rl->n >= 4096) return;
+    uint64_t st = nvn_dirty_now(); nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size);
+    race_ent e = {addr, size, st, 0, NULL, key, kind};
+    if (size <= 65536) { e.copy = malloc((size_t)size); if (e.copy) memcpy(e.copy, (const void *)(uintptr_t)addr, (size_t)size); }
+    else e.hash = race_hash((const uint8_t *)(uintptr_t)addr, size);
+    g_rl->e[g_rl->n++] = e;
+}
+/* OOT_SNAPTRACE=<key prefix> (diagnostic, 2026-11-08): for graphics uniform bindings of shaders with this key prefix that
+   use a snapshot: compare snapshot vs memory at encode, then memory at GPU completion vs both, with CPU dirty tracking
+   from the encode on. Reports when the bytes differ, at most 200 lines. */
+static void snaptrace(const char *key, int reg, uint64_t addr, uint64_t size, const uint8_t *snap) {
+    static const char *pfx; static int init, lines; if (!init) { init = 1; pfx = getenv("OOT_SNAPTRACE"); }
+    if (!pfx || !key || strncmp(key, pfx, strlen(pfx)) || !snap || size > 65536 || lines >= 200) return;
+    static uint64_t checked; checked++;
+    if (atomic_load(&g_cur_frame) < 1100) return;
+    { static uint64_t ls, la; if (ls == g_sub_serial && la == addr) return; ls = g_sub_serial; la = addr; }
+    int at_encode = memcmp(snap, (const void *)(uintptr_t)addr, (size_t)size) != 0;
+    int cpu_between = at_encode && nvn_dirty_tracked((const void *)(uintptr_t)addr, (size_t)size) ? nvn_dirty_since((const void *)(uintptr_t)addr, (size_t)size, g_usnap_take_stamp) : -1;
+    if (at_encode) { int ph = 0; uint64_t pf = 0; for (int i = 0; i < g_npend; i++) if (addr < g_pend_hi[i] && addr + size > g_pend_lo[i]) { ph++; if (g_pend_fence[i] > pf) pf = g_pend_fence[i]; }
+        int gh = 0; for (int i = 0; i < g_ngw; i++) if (addr < g_gw[i].hi && addr + size > g_gw[i].lo && g_gw[i].fence > g_done) gh++;
+        MLOG("[snaptrace-state] F%llu sub=%llu cb%d %#llx: at snapshot pend-over=%d npend=%d ngw=%d; now npend=%d overlapping-pend=%d (latest fence %llu) pending-gpu-writes=%d fence=%llu done=%llu",
+             (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_sub_serial, reg, (unsigned long long)addr, g_usnap_take_over, g_usnap_take_npend, g_usnap_take_ngw, g_npend, ph,
+             (unsigned long long)pf, gh, (unsigned long long)g_fence, (unsigned long long)g_done); }
+    uint8_t *s = malloc((size_t)size), *enc = malloc((size_t)size); if (!s || !enc) { free(s); free(enc); return; }
+    memcpy(s, snap, (size_t)size); memcpy(enc, (const void *)(uintptr_t)addr, (size_t)size);
+    int tracked = nvn_dirty_tracked((const void *)(uintptr_t)addr, (size_t)size); uint64_t st = nvn_dirty_now(); if (tracked) nvn_dirty_protect((const void *)(uintptr_t)addr, (size_t)size);
+    uint64_t fr = atomic_load(&g_cur_frame), sub = g_sub_serial;
+    if (!g_commit_blocks) { free(s); free(enc); return; }
+    [g_commit_blocks addObject:^{
+        int after = memcmp(enc, (const void *)(uintptr_t)addr, (size_t)size) != 0, cpu = tracked && nvn_dirty_since((const void *)(uintptr_t)addr, (size_t)size, st);
+        int arena = memcmp(s, snap, (size_t)size) != 0;   // the snapshot's own bytes (what the GPU read) changed since the encode
+        if (arena && lines < 200) { lines++; size_t o = 0; while (o < size && s[o] == snap[o]) o++;
+            MLOG("[snaptrace] F%llu sub=%llu %.12s cb%d %#llx+%llu: the SNAPSHOT bytes changed after the encode (first %zu): the arena was overwritten", (unsigned long long)fr, (unsigned long long)sub, key, reg, (unsigned long long)addr, (unsigned long long)size, o); }
+        static uint64_t done_n; if (++done_n % 20000 == 0) MLOG("[snaptrace] %llu bindings checked", (unsigned long long)done_n);
+        if ((at_encode || after) && lines < 200) { lines++; size_t o1 = 0, o2 = 0;
+            while (o1 < size && s[o1] == enc[o1]) o1++; while (o2 < size && enc[o2] == ((const uint8_t *)(uintptr_t)addr)[o2]) o2++;
+            MLOG("[snaptrace] F%llu sub=%llu %.12s cb%d %#llx+%llu: snapshot%sencode (first %zu; %s), encode%scompletion (first %zu)%s",
+                (unsigned long long)fr, (unsigned long long)sub, key, reg, (unsigned long long)addr, (unsigned long long)size,
+                at_encode ? "!=" : "==", o1, cpu_between < 0 ? "-" : cpu_between ? "the CPU wrote it after the snapshot" : "no CPU page write after the snapshot",
+                after ? "!=" : "==", o2, after ? (cpu ? " by the CPU" : tracked ? " not by a CPU page write" : " untracked") : ""); }
+        free(s); free(enc); }];
+}
+/* OOT_WATCH_FS=<shader key prefix> (diagnostic, off by default, 2026-11-08 white frames): for each draw whose fragment
+   shader key starts with the prefix, one line per frame: the uniform block a graphics cb slot reads, which copy the GPU
+   is given (cache / renamed / snapshot / live memory), words 12..15 of those bytes at encode time, and the same words
+   of guest memory once this submission has completed. */
+static const char *watch_fs_prefix(void) { static const char *p; static int init; if (!init) { p = getenv("OOT_WATCH_FS"); init = 1; } return p; }
+static void watch_cb(const char *key, int stage, int reg, uint64_t addr, uint64_t size, uint64_t gpu, id<MTLBuffer> mb, const char *src) {
+    const char *w = watch_fs_prefix(); if (!w || !key) return;
+    if (!strcmp(w, "nan")) {   // every graphics uniform binding: report blocks whose bound bytes hold non-finite floats
+        static int lines; if (lines >= 200) return;
+        const float *s = (const float *)bound_uniform_bytes(gpu, (size_t)size, mb); if (!s) s = (const float *)(uintptr_t)addr;
+        unsigned bad = 0, first = 0; for (uint64_t i = 0; i < size / 4; i++) if (!isfinite(s[i])) { if (!bad) first = (unsigned)i; bad++; }
+        if (bad) { lines++; MLOG("[watch-nan] F%llu stage%d cb%d shader=%.20s addr=%#llx size=%llu src=%s nonfinite=%u first-word=%u", (unsigned long long)atomic_load(&g_cur_frame), stage, reg, key, (unsigned long long)addr, (unsigned long long)size, src, bad, first); }
+        return;
+    }
+    if (stage != 1 || strncmp(key, w, strlen(w)) || size < 64) return;
+    static uint64_t last_frame = ~0ull; static int per_frame; uint64_t fr = atomic_load(&g_cur_frame);
+    if (fr != last_frame) { last_frame = fr; per_frame = 0; } if (per_frame++ >= 12) return;
+    const float *b = (const float *)bound_uniform_bytes(gpu, (size_t)size, mb), *live = (const float *)(uintptr_t)addr;
+    const float *s = b ? b : live; unsigned bad = 0; float mx = 0; uint64_t hsh = 1469598103934665603ull;
+    for (uint64_t i = 0; i < size / 4; i++) { float x = s[i]; if (!isfinite(x)) bad++; else if (fabsf(x) > mx) mx = fabsf(x); uint32_t w; memcpy(&w, &s[i], 4); hsh = (hsh ^ w) * 1099511628211ull; }
+    MLOG("[watch-fs] F%llu sub=%llu cb%d addr=%#llx size=%llu src=%s nonfinite=%u maxabs=%g hash=%016llx", (unsigned long long)fr, (unsigned long long)g_sub_serial, reg,
+         (unsigned long long)addr, (unsigned long long)size, src, bad, mx, (unsigned long long)hsh);
+    
+}
 static void raw_write_capture(NvShader *sh,int stage,const uint64_t *slots,int resolved,id<MTLBuffer> log,size_t offset);
 static uint32_t g_dispatch_grid[3];
 static int g_dispatch_domain_direct,g_dispatch_domain_simd;
@@ -11429,6 +11725,7 @@ static inline void cbc_ctx_now(cbc_ctx *c) {
     c->pool = atomic_load_explicit(&g_pool_gen, memory_order_acquire); c->upd_seq = g_upd_seq; c->shadow_wraps = g_shadow_wraps;
     c->sub = g_sub_serial; c->drops = g_usnap_drops; c->nupd = g_nupd; c->nusnap = g_nusnap;
 }
+static void snaptrace(const char *key, int reg, uint64_t addr, uint64_t size, const uint8_t *snap);
 static int ab_same_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("TOTK_AB_SAME"); v = !(e && !atoi(e)); if (!v) MLOG("TOTK_AB_SAME=0: every rebuilt argument block gets a new copy"); } return v; }
 static inline unsigned cbc_slot(uint64_t addr, uint64_t size) { uint64_t h = (addr >> 4) ^ (addr >> 17) ^ (size * UINT64_C(0x9e3779b97f4a7c15)); return (unsigned)(h ^ (h >> 29)) & (CBC_N - 1); }
 /* TOTK_BIND_TRACE=<key prefix>[,<key prefix>...] (diagnostic): the first 24 encodes of those shaders name the texture
@@ -11548,10 +11845,13 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
         if (b->kind == NVN_RB_CBUF) {
             const p_bind_buf *u = reg < 16 ? &S.ubo[nvn_stage][reg] : NULL;
             cbc_ent *ce = NULL; cbc_ctx cx; int ce_hit = 0;   // TOTK_CBUF_CACHE
-            if (cbc && u && u->addr && !(nvn_stage == 0 && reg == 0 && ui_mat_on()) && !(g_vr_collapse_draw && nvn_stage == 0 && reg == 2)) {
+            if (cbc && u && u->addr && !g_usnap_skip && !g_usnap_keyskip && !g_usnap_keyskip3 && !(nvn_stage == 0 && reg == 0 && ui_mat_on()) && !(g_vr_collapse_draw && nvn_stage == 0 && reg == 2)) {
                 cbc_ctx_now(&cx); ce = &g_cbc[cbc_slot(u->addr, u->size)];
                 ce_hit = ce->addr == u->addr && ce->size == u->size && !memcmp(&ce->cx, &cx, sizeof cx);
-                if (ce_hit) { g_cbc_hits++; if (cbc < 2) { slots[aid] = ce->gpu; continue; } } else g_cbc_misses++;
+                if (ce_hit) { g_cbc_hits++; if (cbc < 2) { slots[aid] = ce->gpu; watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, ce->gpu, nil, "cache");
+                    { static int st_on = -1; if (st_on < 0) st_on = getenv("OOT_SNAPTRACE") != NULL;
+                      if (st_on) { const usnap_t *sc2 = usnap_find(u->addr, u->size ? u->size : 1); if (sc2 && ce->gpu == sc2->gpu + (u->addr - sc2->lo)) snaptrace(sh ? sh->key : NULL, reg, u->addr, u->size, sc2->cpu + (u->addr - sc2->lo)); } }
+                    continue; } } else g_cbc_misses++;
             }
             void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
@@ -11559,7 +11859,9 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             uint64_t ren = g_nupd ? upd_shadow(u->addr, u->size) : 0;   // TOTK: renamed inline updates (see upd_shadow)
             if (ren) { gpu = ren; if (nvn_stage == 0 && reg == 0 && ui_mat_on()) RED_ONCE(58, "UI 矩阵修补读的是内存，跳过了含内联更新的 uniform 副本"); }
             else if (nvn_stage == 0 && reg == 0 && ui_mat_on()) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
-            else { const usnap_t *sc = usnap_find(u->addr, u->size ? u->size : 1); if (sc) gpu = sc->gpu + (u->addr - sc->lo); }   // TOTK: contents as of the submit call
+            else { const usnap_t *sc = usnap_skipped(u->size, 0) || usnap_key_skipped(sh ? sh->key : NULL, reg) ? NULL : usnap_find(u->addr, u->size ? u->size : 1); if (sc) { gpu = sc->gpu + (u->addr - sc->lo); snaptrace(sh ? sh->key : NULL, reg, u->addr, u->size, sc->cpu + (u->addr - sc->lo)); } }   // TOTK: contents as of the submit call
+            if (race_on() && !ren && !usnap_find(u->addr, u->size ? u->size : 1)) race_note(u->addr, u->size, sh ? sh->key : NULL, 'u');
+            if (watch_fs_prefix()) watch_cb(sh ? sh->key : NULL, nvn_stage, reg, u->addr, u->size, gpu, (__bridge id<MTLBuffer>)mb, ren ? "renamed" : usnap_find(u->addr, u->size ? u->size : 1) ? "snapshot" : "live");
             if (g_vr_collapse_draw && nvn_stage == 0 && reg == 2 && u->size <= 48 * 256) {   // zeldaVR: bones scaled to nothing, from the contents this draw reads (inline updates too)
                 static uint8_t pal[48 * 256]; pend_materialize(u->addr, pal, (size_t)u->size, 0);
                 uint64_t pg = vr_palette_patch(pal, u->size); if (pg) gpu = pg; }
@@ -11605,6 +11907,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu mem=%p sz=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial, (void *)g_treg[tid].t.mem, (unsigned long long)g_treg[tid].t.L.size);
             if (t && tid < g_ntreg) tp_note_fs(sh->key, g_treg[tid].t.serial, &g_treg[tid].t);   // TOTK: DM_NVN_TEXPNG_FS
+            if (t && tid < g_ntreg && watch_tex_is(g_treg[tid].t.serial)) watch_tex_req(t, g_treg[tid].t.serial);
             if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu nvnfmt=%#x vfmt=%#x fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0,
                        tid < g_ntreg ? g_treg[tid].t.d.format : 0, tid < g_ntreg && g_treg[tid].has_v && g_treg[tid].v.set_format ? g_treg[tid].v.format : 0ull,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
@@ -11658,8 +11961,12 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             }
             void *mb; uint64_t mo, gpu;
             if (va && g_nupd && upd_overlap_seq(va, va + 65536)) { g_ren_late++; RED_ONCE(60, "uniform 槽里的存储缓冲指针 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)va); }
-            if (va && b->rw) usnap_drop(va, 65536);   // TOTK: the shader may write there (extent unknown: 64 KiB as for the update check)
-            if (va && mtl_gpu_addr(va, 1, &mb, &mo, &gpu)) { use_rec("buf", va, 1, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
+            int va_pool = va && mtl_gpu_addr(va, 1, &mb, &mo, &gpu);
+            /* The shader may write anywhere it can address from this pointer: its whole memory pool (mb starts mo bytes
+               before va). Unknown pool: everything. The former 64 KiB guess was hidden by whole-stripe raw-write drops
+               until write proofs became exact (2026-11-08 white frames). */
+            if (va && b->rw) { if (va_pool) usnap_drop(va - mo, ((__bridge id<MTLBuffer>)mb).length); else usnap_drop(0, UINT64_MAX); g_sbufu_write_drops++; }
+            if (va_pool) { use_rec("buf", va, 1, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
             else { RED_ONCE(40, "阶段 %d uniform 槽 %d 偏移 %u 处的存储缓冲指针 %#llx 不在内存池里（uniform %s）", nvn_stage, reg, b->off, (unsigned long long)va, u && u->addr ? "已绑" : "未绑"); slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead);
                 /* TOTK diagnostic (first 12): which bound uniform block of this stage holds a pool pointer at this offset, and the head of every bound block */
                 static uint64_t dn; if (dn < 12 && sh) { dn++; char line[1400]; size_t o = 0;
@@ -11680,9 +11987,11 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 else if (upd_overlap_seq(u->addr, u->addr + (u->size ? u->size : 1))) { g_ren_late++; RED_ONCE(59, "存储缓冲 %#llx 在编码器打开后才发现与待写入的 uniform 更新重叠", (unsigned long long)u->addr); }
             }
             if (b->kind == NVN_RB_SBUFP && b->rw && u && u->addr) usnap_drop(u->addr, u->size ? u->size : 1);   // TOTK: the shader may write it: no stale uniform copy from here on
-            const usnap_t *usc = !ren && b->kind == NVN_RB_UBOP && u && u->addr ? usnap_find(u->addr, u->size ? u->size : 1) : NULL;   // TOTK: compute uniforms as of the submit call
+            if (b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && race_on()) race_note(u->addr, u->size, sh ? sh->key : NULL, 's');
+            const usnap_t *usc = !ren && b->kind == NVN_RB_UBOP && u && u->addr && !usnap_skipped(u->size, 1) ? usnap_find(u->addr, u->size ? u->size : 1) : NULL;   // TOTK: compute uniforms as of the submit call
             if (ren) { slots[aid] = ren; USE(dummy_buf(), MTLResourceUsageRead); }
             else if (usc) { slots[aid] = usc->gpu + (u->addr - usc->lo); USE(dummy_buf(), MTLResourceUsageRead); }
+            else if (b->kind == NVN_RB_SBUFP && !b->rw && u && u->addr && u->size && sbuf_snap_on() && (gpu = sbuf_snap_get(u))) { slots[aid] = gpu; USE(dummy_buf(), MTLResourceUsageRead); }
             else if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) { /* TOTK: first 16 bytes and the count of non-zero 32-bit words (CPU view of the pool: what earlier GPU work left there) */
@@ -11815,6 +12124,7 @@ static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **o
             case OP_JUMP: memcpy(&c->p, a, 8); continue;
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8); if (c->ret_n >= 8) { c->bad = 1; return 0; }
                 c->ret[c->ret_n++] = c->p + h.size; c->p = (const uint8_t *)t; continue; }
+            case OP_WAIT_EVENT: c->p = NULL; return 0;   // another guest queue's work may come first: nothing is decided across it
             default: break;
         }
         const uint8_t *p = c->p; c->p += h.size;
@@ -11882,6 +12192,7 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
         if (g_hoist_n && hoist_skipped(p)) { p += h.size; continue; }   // 已提前执行的清除通道 | Clear pass already executed early
         switch (h.op) {
             case OP_END: return DS_RET;
+            case OP_WAIT_EVENT: return DS_USED;   // the replay may stop here and other queues' work run in between
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8); if (depth >= 8) return DS_USED;
                 int r = ds_scan((const uint8_t *)t, ds, depth + 1); if (r != DS_RET) return r; break; }
@@ -12758,6 +13069,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
         if (g_sdx_nop == g_sdx_opcap) { g_sdx_opcap = g_sdx_opcap ? g_sdx_opcap * 2 : 16384; g_sdx_op = realloc(g_sdx_op, g_sdx_opcap * sizeof *g_sdx_op); }
         uint32_t seq = g_sdx_nop; g_sdx_op[g_sdx_nop++] = p;
+        if (h.op == OP_WAIT_EVENT) { g_sdx_ok = 0; return; }   // future uses past a cross-queue wait are not indexed: the index is not valid
         switch (h.op) {
             case OP_END: return;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
@@ -12884,7 +13196,7 @@ static void hoist_try(void) {
     for (int guard = 0; guard < 200000; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
         switch (h.op) {
-            case OP_END: case OP_CALL: case OP_COPY_T2T: case OP_COPY_B2T: case OP_COPY_T2B: case OP_CLEAR_TEX: case OP_DISPATCH: return;
+            case OP_END: case OP_CALL: case OP_COPY_T2T: case OP_COPY_B2T: case OP_COPY_T2B: case OP_CLEAR_TEX: case OP_DISPATCH: case OP_WAIT_EVENT: return;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_DRAW: case OP_DRAW_IDX: if (in_grp) return; break;
             case OP_SCISSOR: sc = *(const p_scissor *)a; has_sc = 1; break;
@@ -13185,7 +13497,7 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
         if (g_hoist_n && hoist_skipped(p)) { p += h.size; continue; }
         switch (h.op) {
             case OP_END: { const uint8_t *nx = defer_cont(&ci); if (!nx) { g_defer.reason = 1; goto fail; } p = nx; continue; }
-            case OP_CALL: g_defer.reason = 2; goto fail;
+            case OP_CALL: case OP_WAIT_EVENT: g_defer.reason = 2; goto fail;
             case OP_JUMP: memcpy(&p, a, 8); continue;
             case OP_BIND_PROGRAM: if (bind_graphics(a)) pg = ((const p_bind_program *)a)->prog; break;
             case OP_BIND_TEX: case OP_BIND_IMG: { const p_bind_handles *b = a; int lim = h.op == OP_BIND_IMG ? 32 : 128;
@@ -16888,6 +17200,45 @@ static int frz_op(unsigned op, const void *a) {   // 返回 1 = 这条操作不�
     return 0;
 }
 
+/* ---------- Guest queue ordering (2026-11-08) ----------
+   Every guest queue is replayed into one Metal queue in submit order. A command buffer's WaitEvent on another queue's
+   SignalEvent is honoured by stopping the replay at an unready wait: the work encoded so far is committed, and the rest
+   of the guest submission (a cursor: the wait, then each caller's next op) resumes later from hle_nvn.c, after the
+   producer's replay. A replayed SignalEvent that makes a parked queue's wait ready also stops its own replay right after
+   it, so an EQUAL wait sees the value it waits for. Replay state S / R travels with the stopped queue. Same approach as
+   seedds/nxnative #1245 (MIT), without copying the command stream. */
+static int g_qo_armed, g_qo_stopped, g_qo_ncur;
+/* A wait the CPU satisfied (nvnEventSignal, or a store to the event word) marks where the game has finished writing the
+   data the following commands read: Ocarina of Time submits a frame's command buffers, its worker threads then fill the
+   per-object and scene uniform blocks, and the CPU signals the event the queue waits on. Uniform snapshots were taken at
+   the submit call, before those writes (white frames: 5a29269e... read a half-written block, NaN spread by bloom). From
+   such a wait on, the submission's snapshots are dropped: the GPU reads the blocks as written. OOT_CPU_WAIT_LIVE=0 /
+   "flag cpu_wait_live 0" keeps the snapshots (diagnostic). */
+static uint64_t g_cpu_wait_drops;
+static int cpu_wait_live_on(void) { int v = g_cpu_wait_live; if (v < 0) { const char *e = getenv("OOT_CPU_WAIT_LIVE"); v = e && atoi(e); g_cpu_wait_live = v; } return v; }   // off by default (OOT_CPU_WAIT_LIVE=1): no measured effect
+static void usnap_drop_snapshots_only(void) { for (int i = 0; i < g_nusnap; i++) if (atomic_exchange(&g_usnap[i].st, US_DROPPED) != US_DROPPED) g_usnap_drops++; }
+static const uint8_t *g_qo_cur[40];
+int (*g_qo_signal_releases)(volatile uint32_t *val);   // hle_nvn.c: a parked queue's wait is now ready
+static void qo_push(const uint8_t *p) { if (g_qo_ncur >= 40) MDIE("guest queue cursor deeper than 40 calls"); g_qo_cur[g_qo_ncur++] = p; }
+void mtl_qo_arm(int on) { g_qo_armed = on; g_qo_stopped = 0; g_qo_ncur = 0; }
+int mtl_qo_stopped(void) { return g_qo_stopped; }
+int mtl_qo_cursor(const uint8_t **out, int max) { int n = g_qo_ncur < max ? g_qo_ncur : max; memcpy(out, g_qo_cur, sizeof *out * (size_t)n); return n; }
+/* The callers' continuations of a resumed sub-list, outermost first, for the lookahead's return stack. */
+void mtl_qo_set_callers(const uint8_t *const *outer_first, int n) { g_ret_n = n; for (int i = 0; i < n && i < 16; i++) g_ret[i] = outer_first[i]; }
+typedef struct { typeof(S) s; typeof(R) r; } qo_state;
+void *mtl_qo_state_save(void) { qo_state *q = malloc(sizeof *q); if (!q) MDIE("guest queue state"); memcpy(&q->s, &S, sizeof S); q->r = R; return q; }
+void mtl_qo_state_restore(void *p) { qo_state *q = p; memcpy(&S, &q->s, sizeof S); R = q->r; args_dirty_all(); g_pso_dirty = g_dss_dirty = 1; }
+/* OOT_RACE_CHECK: a draw's vertex streams and index buffer (read live from guest memory by the GPU). */
+static void race_draw(uint32_t op, const void *a) {
+    uint32_t count = 0, isz = 0; uint64_t ibuf = 0; uint32_t instances = 1;
+    if (op == OP_DRAW) { const p_draw *d = a; count = (uint32_t)(d->first + d->count); instances = d->instances > 0 ? (uint32_t)d->instances : 1; }
+    else { const p_draw_idx *d = a; ibuf = d->ibuf; isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4; count = (uint32_t)d->count; instances = d->instances > 0 ? (uint32_t)d->instances : 1;
+        if (ibuf && count) race_note(ibuf, (uint64_t)count * isz, "index", 'i'); }
+    uint32_t seen = 0;
+    for (int i = 0; i < S.nattr && i < 16; i++) { int st = S.attr[i].stream; if (st < 0 || st >= 16 || (seen >> st & 1) || !S.vbuf[st].address) continue; seen |= 1u << st;
+        uint64_t n = S.vbuf[st].size; if (!n && op == OP_DRAW) n = (uint64_t)S.stream[st].stride * (S.stream[st].divisor ? instances : count);
+        if (n) race_note(S.vbuf[st].address, n, "vertex", 'v'); }
+}
 void mtl_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
@@ -16914,6 +17265,7 @@ void mtl_exec(const uint8_t *p) {
         if (g_cg_pending && !cg_op_safe(h.op)) { g_cg.reason[1]++; cg_flush(); }   // TOTK: cube-face-set groups pend only across state / binding ops (nvn_cube_group.h)
         if (g_hoist_n && hoist_take(p)) { if (g_fz.active && p == g_fz.rt2_op) { g_fz.phase = 2; g_rt_merged = 0; PD("F %llu 合并通道进入后一个通道的绘制", g_stat_pass); } p += h.size; continue; }   // 已提前执行的纯清除通道 / 已并入的后一个通道开头   // 进入后一个通道：前一个通道的同目标续用到此为止，后一个通道读前一个通道附件由 fz_p2_draw 证本像素，不再按续用规则切开 | A pure-clear render pass already executed early / the start of a later pass already merged in   // Entering the later pass: the same-target continuation of the earlier pass ends here; the later pass reading the earlier pass's attachment is proven to be same-pixel by fz_p2_draw, and is no longer split by the continuation rule
         const void *a = p + 8;
+        if ((h.op == OP_DRAW || h.op == OP_DRAW_IDX) && race_on()) race_draw(h.op, a);
         mesh_indirect_op(h.op,a);
         mesh_batch_op(h.op,a);
         switch (h.op) {
@@ -16927,12 +17279,25 @@ void mtl_exec(const uint8_t *p) {
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_CALL: { uint64_t t; memcpy(&t, a, 8);
                 if (g_ret_n < 16) g_ret[g_ret_n] = p + h.size; g_ret_n++;   // 前瞻用的返回栈：子列表结束后接着看调用方 | Return stack for lookahead: after a sub-list ends, continue looking at the caller
-                mtl_exec((const uint8_t *)t); g_ret_n--; break; }
+                mtl_exec((const uint8_t *)t); g_ret_n--;
+                if (g_qo_stopped) { qo_push(p + h.size); return; }   // guest queue ordering: the caller resumes after the call
+                break; }
+            case OP_WAIT_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
+                qwait_check(val, m, v);
+                if (cpu_wait_live_on() && mtl_qo_event_ready(val, m, v) && !mtl_qo_event_gpu_projected(val)) { usnap_drop_snapshots_only(); g_cpu_wait_drops++; }
+                if (g_qo_armed && !mtl_qo_event_ready(val, m, v)) {   // another queue's producer first: stop before the wait
+                    if (g_cg_pending) cg_flush();
+                    if (g_hoist_n) MLOG("【红】guest queue stop with %d hoisted ops pending", g_hoist_n);
+                    qo_push(p); g_qo_stopped = 1; g_exec_cur = NULL; return; }
+                break; }
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, (const uint8_t *)a + 8, 4); memcpy(&v, (const uint8_t *)a + 12, 4);
-                PD("Y signal_event cmd=%p dst=%p mode=%u value=%u", p, val, m, v); mtl_sub_event(val, m, v); break; }
+                qwait_signal(val, m, v);
+                PD("Y signal_event cmd=%p dst=%p mode=%u value=%u", p, val, m, v); mtl_sub_event(val, m, v); if (g_qo_armed && g_qo_signal_releases && g_qo_signal_releases(val)) { if (g_cg_pending) cg_flush(); qo_push(p + h.size); g_qo_stopped = 1; g_exec_cur = NULL; return; }
+                break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, (const uint8_t *)a + 8, 8); g_cnt_report[t & 31]++;
                 PD("Q report type=%llu cmd=%p dst=%#llx", (unsigned long long)t, p, (unsigned long long)ad);
                 cpend_push(ad, g_fence + 1, 0, t != NVN_COUNTER_TYPE_SAMPLES_PASSED);   // TOTK: value the completion handler will write (counter word)
+                { unsigned k = g_crep_n++ & 1023; g_crep_addr[k] = ad; g_crep_frame[k] = atomic_load(&g_cur_frame); g_crep_type[k] = (uint32_t)t; }
                 if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
                     post_op q = {3, NULL, 0, 0, ad, (uint32_t)t, vis_snapshot()};
                     if ((long)atomic_load(&g_cur_frame) <= atomic_load(&g_ql_until)) {   // "querylog": the proxy draw's sphere (vertex uniform block 1)
@@ -18384,6 +18749,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
           sysload_note_gpu(f.GPUStartTime, f.GPUEndTime);   // the load line's game GPU share includes the present (and its MetalFX upscale)
           if (timed && !f.error) outup_note_gpu(slot); }]; }
     if (src_buf) { id<MTLBuffer> buf = src_buf; size_t w = src_w, h = src_h; NSString *path = grab_src;
+        MLOG("[wshot-frame] %s present-frame=%llu game-frame=%llu", path.UTF8String, (unsigned long long)frame, (unsigned long long)atomic_load(&g_cur_frame));
         [o addFeedbackHandler:^(id<MTL4CommitFeedback> f) {
             if (!f.error) { CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
                 CGContextRef ctx = CGBitmapContextCreate(buf.contents, w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipLast | kCGBitmapByteOrder32Big);
@@ -18434,7 +18800,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
                     (unsigned long long)ticket, (unsigned long long)frame, srgb[0]/16384.0, srgb[1]/16384.0, srgb[2]/16384.0, sm,
                     drgb[0]/16384.0, drgb[1]/16384.0, drgb[2]/16384.0, dm);
             if (db > 1024 || sb > 1024 || llabs((long long)dv - (long long)sv) > 128 * 128 * 100)
-                MLOG("[present-probe] ticket=%llu source avg=%.1f bright=%d drawable avg=%.1f bright=%d", (unsigned long long)ticket,
+                MLOG("[present-probe] ticket=%llu frame=%llu source avg=%.1f bright=%d drawable avg=%.1f bright=%d", (unsigned long long)ticket, (unsigned long long)frame,
                     (double)sv / (128 * 128 * 3), sb, (double)dv / (128 * 128 * 3), db);
             if (getenv("DM_PRESENT_PROBE_DUMP") && ticket > 3000 && sv > 128ull * 128 * 3 * 220 && sb > 4000 && g_td_frame == -1) {
                 int expected = 0;

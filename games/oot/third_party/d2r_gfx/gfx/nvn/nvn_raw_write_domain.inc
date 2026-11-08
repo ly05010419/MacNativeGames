@@ -48,6 +48,7 @@ static int raw_write_domain_match(NvShader *sh,NSDictionary *d,int stage,const u
 }
 #include "nvn_raw_write_auto.inc"
 static NSArray *raw_write_domain_bytes(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved);
+void mtl_note_exact_drop(uint64_t a, uint64_t b, const char *key);
 /* The GPU oracle consumes the same frozen uniform whose guard was checked.
    This tests the binding/guard gate, not the offline address analyzer. */
 static int raw_write_domain_probe(void) {
@@ -124,6 +125,7 @@ static int raw_write_domain_probe(void) {
    own guards (the extra uniform words the low analysis read); when they do not
    match this dispatch, the stripes stand. Each range must lie in a proved stripe. */
 static uint64_t g_write_domain_exact,g_write_domain_stripe;
+static uint64_t g_spared_lo[48];static int g_nspared;
 static NSArray *raw_write_domain_bytes(NvShader *sh,NSDictionary *d,int stage,const uint64_t *slots,int resolved) {
     NSArray *bytes=d[@"byte_intervals"],*guards=d[@"byte_guards"],*stripes=d[@"high_intervals"];
     if(![bytes isKindOfClass:NSArray.class]||!bytes.count||bytes.count>64||![guards isKindOfClass:NSArray.class]||!guards.count||guards.count>256)return nil;
@@ -167,10 +169,26 @@ static int raw_write_domain_drop(NvShader *sh,int stage,const uint64_t *slots,in
         NSArray *fb=fresh?raw_write_domain_bytes(sh,fresh,stage,slots,resolved):nil;
         if(fb){match=fresh;ranges=fresh[@"high_intervals"];bytes=fb;}
     }
-    if(bytes){for(NSArray *r in bytes){uint64_t a=[r[0] unsignedLongLongValue],b=[r[1] unsignedLongLongValue];usnap_drop(a,b-a);}g_write_domain_exact++;}
+    if(bytes){
+        for(NSArray *r in bytes){uint64_t a=[r[0] unsignedLongLongValue],b=[r[1] unsignedLongLongValue];usnap_drop(a,b-a);mtl_note_exact_drop(a,b,sh->key);}g_write_domain_exact++;
+        /* Diagnostic (2026-11-08 white frames): uniform snapshots inside the proved stripes that the exact bytes leave
+           valid. flag exact_usnap_stripes 1 drops them as the stripes did (snapshots only; waits stay exact). */
+        int layers=atomic_load(&g_exact_usnap_stripes_ext);
+        for(NSArray *s in ranges){
+            uint64_t a=[s[0] unsignedLongLongValue]<<32,b=([s[1] unsignedLongLongValue]+1)<<32;
+            if(layers&2){g_pool_write_epoch++;pool_input_invalidate(a,b-a);}   // diagnostic: descriptor-source captures by stripes
+            if(layers&4){usnap_drop(a,b-a);continue;}                           // diagnostic: the complete former stripe drop
+            for(int i=usnap_first(a);i<g_nusnap&&g_usnap[i].lo<b;i++){
+                if(atomic_load(&g_usnap[i].st)==US_DROPPED)continue;
+                if(layers&1){if(atomic_exchange(&g_usnap[i].st,US_DROPPED)!=US_DROPPED)g_usnap_drops++;continue;}
+                int seen=0;for(int k=0;k<g_nspared;k++)if(g_spared_lo[k]==g_usnap[i].lo){seen=1;break;}
+                if(!seen&&g_nspared<48){g_spared_lo[g_nspared++]=g_usnap[i].lo;MLOG("[write-domain-spared] writer=%.16s snapshot lo=%#llx size=%llu frame=%llu",sh->key,(unsigned long long)g_usnap[i].lo,(unsigned long long)(g_usnap[i].hi-g_usnap[i].lo),(unsigned long long)atomic_load(&g_cur_frame));}
+            }
+        }
+    }
     else {for(NSArray *r in ranges){uint64_t a=[r[0] unsignedLongLongValue]<<32,b=([r[1] unsignedLongLongValue]+1)<<32;usnap_drop(a,b-a);}g_write_domain_stripe++;}
     g_write_domain_hits++;
-    if(g_write_domain_hits<=4||atomic_load(&g_cur_frame)%300==0)MLOG("[write-domain] matched %.16s hits=%llu fallback=%llu verified=%llu exact=%llu stripe=%llu",sh->key,g_write_domain_hits,g_write_domain_misses,g_write_domain_verified,g_write_domain_exact,g_write_domain_stripe);
+    if(g_write_domain_hits<=4||atomic_load(&g_cur_frame)%300==0)MLOG("[write-domain] matched %.16s hits=%llu fallback=%llu verified=%llu exact=%llu stripe=%llu sbufu-pool-drops=%llu",sh->key,g_write_domain_hits,g_write_domain_misses,g_write_domain_verified,g_write_domain_exact,g_write_domain_stripe,g_sbufu_write_drops);
     const char *check=getenv("OOT_RAW_WRITE_DOMAIN_CHECK");
     if((check&&atoi(check))||raw_write_log_on()){
         ((uint32_t *)((uint8_t *)log.contents+offset))[GML_CONTROL_WORD]=1;
