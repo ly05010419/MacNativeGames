@@ -1425,6 +1425,22 @@ static int g_oot_bar_writes, g_oot_bar_order;
 static int g_oot_bar_begin_prev, g_oot_bar_begin_pending, g_oot_bar_begin_mode, g_oot_bar_prev_writes;
 static __unsafe_unretained id<MTL4RenderCommandEncoder> g_oot_bar_encoder;
 static uint64_t g_oot_bar_serial = ~0ull, g_oot_bar_full, g_oot_bar_skip, g_oot_bar_splits;
+/* 2026-11-09: the native barrier bits pending since the last game pass began (~0u = unknown: a new submission, or a
+   native barrier whose bits were not recorded). A game pass that follows a game pass with only fragment-ordering
+   bits pending (ORDER_FRAGMENTS / ORDER_FRAGMENTS_TILED plus cache invalidations) needs no consumer barrier: the
+   previous pass's end barrier already orders its vertex / object / mesh / fragment work before every later fragment
+   stage (device visibility), which is what NVN's ORDER_FRAGMENTS asks for -- later primitive processing does not wait.
+   ORDER_PRIMITIVES / ORDER_INDIRECT_DATA (later vertex work or indirect reads depend on earlier work) keep the full
+   barrier. OOT_BAR_FRAG_SKIP=0 restores the full barrier for every pending native barrier. */
+static uint32_t g_oot_bar_pending_bits = ~0u, g_oot_bar_begin_bits; static uint64_t g_oot_bar_frag_skip;
+#define OOT_BAR_FRAG_ONLY_BITS ((uint32_t)(NVN_BARRIER_ORDER_FRAGMENTS_BIT | NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT | \
+    NVN_BARRIER_INVALIDATE_SHADER_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_DESCRIPTOR_BIT | NVN_BARRIER_INVALIDATE_ZCULL_BIT))
+static int oot_bar_frag_skip_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("OOT_BAR_FRAG_SKIP"); v = !(e && !strcmp(e, "0"));
+        if (!v) MLOG("OOT_BAR_FRAG_SKIP=0：只含 ORDER_FRAGMENTS 的原生屏障之后的渲染通道也用全量开始屏障"); }
+    return v;
+}
 static struct { uint32_t bits; uint64_t count; } g_oot_bar_hist[32];
 static unsigned g_oot_bar_hist_n; static uint64_t g_oot_bar_hist_overflow;
 static int oot_bar_allowed(void) {
@@ -1443,13 +1459,13 @@ static void oot_bar_sync(void) {
             requested = atomic_load_explicit(&g_oot_bar_request, memory_order_relaxed);
         }
         g_oot_bar_mode = oot_bar_allowed() && requested;
-        g_oot_bar_serial = g_fence + 1; g_oot_bar_pending = 1;
+        g_oot_bar_serial = g_fence + 1; g_oot_bar_pending = 1; g_oot_bar_pending_bits = ~0u;
         g_oot_bar_writes = g_oot_bar_order = 0; atomic_store(&g_oot_bar_last, 0);
     }
     if (atomic_exchange_explicit(&g_oot_bar_dump, 0, memory_order_relaxed)) {
-        MLOG("[oot-barriers] mode=%d fence=%llu full=%llu skip=%llu shader-order-splits=%llu overflow=%llu",
+        MLOG("[oot-barriers] mode=%d fence=%llu full=%llu skip=%llu fragment-only-skip=%llu shader-order-splits=%llu overflow=%llu",
              g_oot_bar_mode, (unsigned long long)g_oot_bar_serial, (unsigned long long)g_oot_bar_full,
-             (unsigned long long)g_oot_bar_skip, (unsigned long long)g_oot_bar_splits, (unsigned long long)g_oot_bar_hist_overflow);
+             (unsigned long long)g_oot_bar_skip, (unsigned long long)g_oot_bar_frag_skip, (unsigned long long)g_oot_bar_splits, (unsigned long long)g_oot_bar_hist_overflow);
         for (unsigned i=0;i<g_oot_bar_hist_n;i++) MLOG("[oot-barriers] native bits=%#x count=%llu",g_oot_bar_hist[i].bits,(unsigned long long)g_oot_bar_hist[i].count);
     }
 }
@@ -1478,11 +1494,15 @@ static int bar_narrow(void) {
     return v;
 }
 static int bar_start_mode(void) {
-    if(g_oot_bar_beginning){g_oot_bar_begin_prev=atomic_load(&g_oot_bar_last);g_oot_bar_begin_pending=g_oot_bar_pending;}
+    if(g_oot_bar_beginning){g_oot_bar_begin_prev=atomic_load(&g_oot_bar_last);g_oot_bar_begin_pending=g_oot_bar_pending;g_oot_bar_begin_bits=g_oot_bar_pending_bits;}
     if (g_oot_bar_beginning && g_oot_bar_pass) {
-        int skip = atomic_load_explicit(&g_oot_bar_last, memory_order_relaxed) && !g_oot_bar_pending;
+        int last = atomic_load_explicit(&g_oot_bar_last, memory_order_relaxed);
+        /* previous encoder = a game pass (its end barrier is in place) and the pending native barriers only order fragments */
+        int frag = last && g_oot_bar_pending && !(g_oot_bar_pending_bits & ~OOT_BAR_FRAG_ONLY_BITS) && oot_bar_frag_skip_on();
+        int skip = last && (!g_oot_bar_pending || frag);
+        if (frag) g_oot_bar_frag_skip++;
         if (skip) g_oot_bar_skip++; else g_oot_bar_full++;
-        g_oot_bar_pending = 0; g_oot_bar_begin_mode=skip?0:1;return g_oot_bar_begin_mode;
+        g_oot_bar_pending = 0; g_oot_bar_pending_bits = 0; g_oot_bar_begin_mode=skip?0:1;return g_oot_bar_begin_mode;
     }
     int mode=bar_start_on() ? (bar_narrow() == 2 ? 2 : 1) : 0;
     if(g_oot_bar_beginning)g_oot_bar_begin_mode=mode;return mode;
@@ -1626,7 +1646,7 @@ static inline void enc_r_end(id e) {
     g_oot_bar_prev_writes=g_oot_bar_writes;
     if (g_oot_bar_pass && e == g_oot_bar_encoder) {
         if (rs_using(e)) rs_pass_end(e, 3, (uint64_t)MTL4VisibilityOptionDevice);
-        else { [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment
+        else { [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageObject | MTLStageMesh | MTLStageFragment
             beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];
         [e endEncoding]; }
         atomic_store_explicit(&g_oot_bar_last, 1, memory_order_relaxed);
@@ -6158,7 +6178,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) {
     g_enc = oot_bar_render_begin(pd);
     args_dirty_all();
     g_stat_pass++;
-    PD("J %llu barrier-mode=%d consumer=%d previous-render=%d pending-native=%d previous-shader-writes=%d submit=%llu virtual-aliases=%d",g_stat_pass,g_oot_bar_mode,g_oot_bar_begin_mode,g_oot_bar_begin_prev,g_oot_bar_begin_pending,g_oot_bar_prev_writes,(unsigned long long)g_sub_serial,totk_vpool_aliases_used());
+    PD("J %llu barrier-mode=%d consumer=%d previous-render=%d pending-native=%d pending-bits=%#x previous-shader-writes=%d submit=%llu virtual-aliases=%d",g_stat_pass,g_oot_bar_mode,g_oot_bar_begin_mode,g_oot_bar_begin_prev,g_oot_bar_begin_pending,g_oot_bar_begin_bits,g_oot_bar_prev_writes,(unsigned long long)g_sub_serial,totk_vpool_aliases_used());
     g_pass_draw0 = g_stat_draw;
     if (totk_tl_on()) totk_tl(TL_PASS_BEGIN, g_stat_pass, 0);   // TOTK_TIMELINE: draws per pass
     if (lay_n) { g_lay.active = 1; g_lay.base = g_lay.cur = lay_first; g_lay.count = lay_n; if (g_cg_force_layers) g_lay.cur = g_cg_cur;
@@ -16004,7 +16024,7 @@ static void oot_bar_native(uint32_t bits) {
     if(i<32) g_oot_bar_hist[i].count++; else g_oot_bar_hist_overflow++;
     PD("I %llu barrier bits=%#x submit=%llu",g_stat_pass,bits,(unsigned long long)g_sub_serial);
     if (!bits) return;
-    g_oot_bar_pending = g_oot_bar_probe_negative != 1;
+    if (g_oot_bar_probe_negative != 1) { g_oot_bar_pending = 1; g_oot_bar_pending_bits |= bits; }   // ~0u (unknown) stays unknown
     if (g_oot_bar_mode && g_enc) {
         if (g_oot_bar_writes) { rp_end(); g_oot_bar_splits++; }
         else g_oot_bar_order = 1;
@@ -16904,8 +16924,10 @@ static void dispatch(const p_dispatch *dp) {
     cs_capture(cs,"before");
     if (pre) encode_args(nil, cs, 5, 0);   // binds through g_ct only (enc_c_args ignores the encoder)
     id<MTLComputeCommandEncoder> ce;
+    int kprev = atomic_load_explicit(&g_oot_bar_last, memory_order_relaxed);   // passdump: what this dispatch follows
     if (reuse) ce = disp_enc();
     else { if (g_blit) { enc_b_end(g_blit); g_blit = nil; } ce = pg_compute(); }
+    PD("K %llu dispatch cs %.16s previous-render=%d pending-native=%d pending-bits=%#x submit=%llu",g_stat_pass,cs->key,kprev,g_oot_bar_pending,g_oot_bar_pending_bits,(unsigned long long)g_sub_serial);
     enc_c_pso(ce, ps);
     if (!pre) encode_args(ce, cs, 5, 0);
     cs_trace_prepare(cs);
