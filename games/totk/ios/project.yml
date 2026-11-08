@@ -26,6 +26,8 @@ targets:
       - path: ../runtime/loader.c
         compilerFlags: "-Dmain=totk_host_main"
     dependencies:
+      - sdk: CoreText.framework     # shared prompt renderer
+      - sdk: CoreGraphics.framework
       - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
       - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
       - sdk: Photos.framework        # a controller's capture button saves to the photo library (runtime/frontend_ios.m)

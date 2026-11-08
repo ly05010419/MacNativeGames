@@ -1451,7 +1451,19 @@ def resolve_lists(tree, res, game, logs):
          res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
-def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
+def prepare_prompt_assets(tree, app, version, logs, *, prompt_app=None):
+    """Bind the live HUD masks to this player's verified game image, without packaging pixels."""
+    res = app / 'Contents/Resources/totk'
+    if version == 'v143':
+        # A fresh app has not received its GameData bundle yet. Runtime updates
+        # can instead read the installed app when no extraction cache is kept.
+        romfs = tree / f'extracted/{version}/romfs'
+        source = ['--romfs', romfs] if (romfs / 'romfs.bin').is_file() else ['--app', prompt_app or app]
+        run([sys.executable, tree / 'scripts/prepare_prompt_hud.py', *source,
+             '--version', version, '--output', res / 'build/prompt-hud.tsv'], logs / 'prompt-hud.log')
+
+
+def place_runtime(tree, app, version, logs, *, game='totk', lists=True, prompt_app=None):
     """The parts of the app made from this repository alone, which update_runtime.py replaces in an installed app: the
     game binary, the launcher, the shader tools and the warm-up lists exported from the shared shader list. Everything
     else in the app comes from the player's game files (place_game_data, the rewritten modules, the RomFS, the seed).
@@ -1466,6 +1478,7 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res / 'build/totk-native')
     clone(tree / 'build/spirv-cross/spirv-cross', res / 'build/spirv-cross/spirv-cross')
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
+    prepare_prompt_assets(tree, app, version, logs, prompt_app=prompt_app)
     if lists:
         resolve_lists(tree, res, game, logs)
     clone(res / 'build/totk-native', app / f'Contents/MacOS/{APPS[game][2]}')

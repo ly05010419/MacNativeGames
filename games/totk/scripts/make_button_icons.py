@@ -15,7 +15,7 @@ Styles:
   keyboard  the default keyboard and mouse layout (runtime/keyboard_map.h, the settings panel's key bindings): A B X Y =
             E Shift Space and the left mouse button, L R = F R, ZL ZR = Q and the right mouse button, + - = Esc Tab,
             left stick = W A S D, right stick = arrow keys, stick presses = Ctrl V, d-pad = 2 3 4 5 (left up right down).
-            A layout changed in the settings panel is not drawn: the icons show the default.
+            --bindings <keyboard.txt> draws a layout changed in the settings panel instead.
   azerty    the same keys with the letters a French (AZERTY) keyboard prints on them: the keyboard plays physical
             positions, so ZL = A, left stick = Z Q S D. The launcher can serve it only while
             no controller is connected (mods/<version>-keyboard, app/launcher.m).
@@ -50,6 +50,7 @@ import struct
 import sys
 import zlib
 from pathlib import Path
+from prompt_assets import HUD_TEXTURES, gob_offset
 
 try:
     import compression.zstd as zstd
@@ -239,7 +240,7 @@ def key(glyphs, pen, x0, y0, x1, y1, label, radius=None, cap=None):
         glyphs.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap or h * 0.56, w * 0.78)
 
 
-def keyboard_style(g, layout=None):
+def keyboard_style(g, layout=None, bindings=None, mouse_enabled=True):
     def k(label):   # the letter another layout prints on the same physical key
         return label.translate(layout) if layout and len(label) == 1 else label
     def single(label, advance=640):
@@ -258,7 +259,7 @@ def keyboard_style(g, layout=None):
             for label, (x, y) in ((top, (xs[1], upper)), (left, (xs[0], bottom)), (mid, (xs[1], bottom)), (right, (xs[2], bottom))):
                 key(g, pen, x, y, x + w, y + h, k(label), radius=w * 0.18, cap=h * 0.6)
         return advance, draw
-    return {
+    icons = {
         0xE040: single('E'), 0xE041: wide('Shift', 1080), 0xE042: wide('Space', 1080), 0xE043: wide('LMB', 900),
         0xE044: single('F', 720), 0xE045: single('R', 720), 0xE046: single('Q', 720), 0xE047: wide('RMB', 900),
         0xE049: cluster('3', '2', '5', '4', 900), 0xE04B: wide('Esc', 820), 0xE04C: wide('Tab', 820),
@@ -272,6 +273,33 @@ def keyboard_style(g, layout=None):
         0xE060: single('3'), 0xE061: single('5'), 0xE062: single('2'), 0xE063: single('4'),
         0xE064: pair('3', '5', 900), 0xE065: pair('2', '4', 900),
     }
+    if bindings is not None:
+        from tools.builder.keyboard_layout import INPUTS
+        aliases = {'mouse_left': 'LMB', 'mouse_right': 'RMB', 'mouse_middle': 'MMB',
+                   'mouse4': 'M4', 'mouse5': 'M5', 'control': 'Ctrl', 'escape': 'Esc',
+                   'arrow_up': '↑', 'arrow_down': '↓', 'arrow_left': '←', 'arrow_right': '→'}
+
+        def label(action):
+            inputs = [i for i in bindings[action] if mouse_enabled or not i.startswith('mouse')]
+            return aliases.get(inputs[0], INPUTS[inputs[0]]) if inputs else '—'
+
+        actions = {0xE040: 'a', 0xE041: 'b', 0xE042: 'x', 0xE043: 'y', 0xE044: 'l', 0xE045: 'r',
+                   0xE046: 'zl', 0xE047: 'zr', 0xE04B: 'plus', 0xE04C: 'minus',
+                   0xE056: 'lstick', 0xE057: 'rstick', 0xE060: 'up', 0xE061: 'down', 0xE062: 'left', 0xE063: 'right'}
+        for cp, action in actions.items():
+            text = label(action)
+            icons[cp] = single(text) if len(text) == 1 else wide(text, min(1200, 500 + len(text) * 110))
+        for base, prefix in ((0, 'move_'), (1, 'camera_')):
+            up, left, down, right = (label(prefix + d) for d in ('up', 'left', 'down', 'right'))
+            icons.update({0xE050 + base: single(down), 0xE052 + base: single(up),
+                          0xE054 + base: pair(left, right), 0xE058 + base: single(right),
+                          0xE05A + base: single(left), 0xE05C + base: pair(up, down),
+                          0xE05E + base: cluster(up, left, down, right)})
+        icons[0xE068] = icons[0xE05F]
+        icons[0xE049] = cluster(*(label(d) for d in ('up', 'left', 'down', 'right')))
+        icons[0xE064] = pair(label('up'), label('down'), 900)
+        icons[0xE065] = pair(label('left'), label('right'), 900)
+    return icons
 
 
 def stick(g, label, up=False, advance=640):
@@ -411,18 +439,7 @@ STYLES = {'keyboard': keyboard_style, 'azerty': lambda g: keyboard_style(g, AZER
 # Square R8_UNORM masks (white key, black letter; 72x72 up to 1.2.1, 108x108 in 1.4.3), block-linear, one mip, in timg/__Combined.bntx. Each is redrawn from the
 # style's icon for the same Switch button, fitted into the same square, and written back in place: the BNTX keeps its size.
 LAYOUT_PREFIX, BNTX = 'UI/LayoutArchive/Common.', 'timg/__Combined.bntx'
-HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX_00': 0xE042, 'Nt_KeyTexY_00': 0xE043,
-                'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046,
-                'Nt_KeyTexLSt_00': 0xE052,   # the left stick with an arrow up: push it forward
-                'Nt_KeyTexLSt_01': 0xE05E}   # the left stick
 R8_UNORM, HUD_MARGIN, SUPERSAMPLE = 0x201, 4, 4
-
-
-def gob_offset(x, y, width_gobs, block_height):
-    """Byte offset of (x, y) in a Tegra block-linear surface of 1 byte per pixel (GOBs of 64 bytes x 8 rows)."""
-    return ((y // (8 * block_height)) * 512 * block_height * width_gobs + (x // 64) * 512 * block_height
-            + ((y % (8 * block_height)) // 8) * 512 + ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64
-            + ((x % 32) // 16) * 32 + (y % 2) * 16 + (x % 16))
 
 
 class PolygonPen(BasePen):
@@ -533,7 +550,26 @@ def main():
     parser.add_argument('--version', choices=VERSIONS, help='the game version (default: the mod folder name)')
     parser.add_argument('--style', choices=sorted(STYLES), default='keyboard')
     parser.add_argument('--replace', action='store_true', help='overwrite a font archive already in the mod folder')
+    parser.add_argument('--bindings', type=Path, help='keyboard.txt to draw instead of the default keyboard layout')
+    parser.add_argument('--mouse', action=argparse.BooleanOptionalAction, default=None,
+                        help='include mouse bindings; with --bindings, defaults to its sibling mouse.txt setting')
     args = parser.parse_args()
+    if args.bindings or args.mouse is not None:
+        if args.style not in ('keyboard', 'azerty'):
+            parser.error('--bindings and --mouse need --style keyboard or azerty')
+        if args.bindings and not args.bindings.is_file():
+            parser.error(f'no binding file: {args.bindings}')
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+        from tools.builder.keyboard_layout import default_layout, read_layout
+        parsed = read_layout(args.bindings) if args.bindings else default_layout()
+        if not parsed.valid:
+            parser.error('; '.join(parsed.problems))
+        mouse = args.mouse
+        if mouse is None:
+            mouse_file = args.bindings.with_name('mouse.txt')
+            mouse = mouse_file.is_file() and mouse_file.read_text().strip() == 'on'
+        layout = str.maketrans('QWAZ', 'AZQW') if args.style == 'azerty' else None
+        STYLES[args.style] = lambda g: keyboard_style(g, layout, parsed.bindings, mouse)
     version = args.version or (args.mod.name if args.mod.name in VERSIONS else None)
     romfs = args.romfs
     if args.app:

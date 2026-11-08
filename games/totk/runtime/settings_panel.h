@@ -118,6 +118,7 @@
 #include "../zeldaVR/runtime/vr_camera.h"   /* runtime_camera_distance_*: 1.4.3's camera hook, a default elsewhere */
 #include "keyboard_map.h"    /* the keyboard and mouse layout */
 #include "controller_map.h"  /* the controller layout */
+#include "input_prompts.h"
 #include "feedback_settings.h"   /* feedback_word: ssao.txt */
 #include "users.h"           /* the local users (runtime/account.c): the User page */
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
@@ -903,6 +904,12 @@ static NSArray<TOTKSettingRow *> *settings_rows(void) {
   @[@(GAMEPAD_TYPE_AUTO),@(GAMEPAD_TYPE_XBOX),@(GAMEPAD_TYPE_PLAYSTATION),@(GAMEPAD_TYPE_SWITCH)],
   ^int{return runtime_gamepad_type(NULL);},^(int v){runtime_gamepad_type_set(v);});
  pad.firstTitle=^NSString *{return settings_pad_auto_text();};[rows addObject:pad];
+#if defined(TOTK_GAME_V143)
+ [rows addObject:settings_row(settings_text("按键提示图标","Button prompts"),
+  @[settings_text("自动","Auto"),settings_text("键盘和鼠标","Keyboard / mouse"),@"Xbox",@"PlayStation",@"Switch"],
+  @[@(PROMPT_AUTO),@(PROMPT_KEYBOARD),@(PROMPT_XBOX),@(PROMPT_PLAYSTATION),@(PROMPT_SWITCH)],
+  ^int{return runtime_prompt_style();},^(int v){runtime_prompt_style_set(v);})];
+#endif
  [rows addObject:settings_row(settings_text("后台手柄输入","Controller input in background"),nil,nil,
   ^int{return runtime_gamepad_background_enabled();},^(int v){runtime_gamepad_background_set(v);})];
  NSString *bow=settings_text("DualSense 拉弓扳机（R2）","DualSense bow trigger (R2)");

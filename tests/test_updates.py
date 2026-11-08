@@ -290,7 +290,8 @@ class Updates(unittest.TestCase):
                     version=version, chain='totk-native-v9-unverified', shaders=8000,
                     files={'pso_manifest.tsv':hashlib.sha256(b'test').hexdigest()})))
                 with patch.object(build_app, 'app_seal_valid', return_value=True), patch.object(build_app, 'sign_app') as signing, \
-                     patch.object(build_app, 'resolve_lists', side_effect=fake_lists):
+                     patch.object(build_app, 'resolve_lists', side_effect=fake_lists), \
+                     patch.object(build_app, 'prepare_prompt_assets'):
                     build_app.step_app(tree,out,self.root/'logs',version=version)
                 signing.assert_called_once_with(out.with_name(out.name+'.partial'),self.root/'logs')
                 info=plistlib.loads((out/'Contents/Info.plist').read_bytes())
@@ -324,7 +325,7 @@ class Updates(unittest.TestCase):
             target.parent.mkdir(parents=True,exist_ok=True)
             target.write_bytes(b'synthetic payload')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'clone',side_effect=fake_clone), \
-             patch.object(build_app,'sign_app',side_effect=build_app.BuildError('seal rejected')),patch.object(build_app,'resolve_lists'):
+             patch.object(build_app,'sign_app',side_effect=build_app.BuildError('seal rejected')),patch.object(build_app,'resolve_lists'),patch.object(build_app,'prepare_prompt_assets'):
             with self.assertRaisesRegex(build_app.BuildError,'seal rejected'):
                 build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual((out/'keep.txt').read_text(),'previous working app')
@@ -363,7 +364,8 @@ class Updates(unittest.TestCase):
             return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'shader_bundle',side_effect=fake_shader_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
              patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
-             patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause:
+             patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause, \
+             patch.object(build_app,'prepare_prompt_assets'):
             build_app.step_app(tree,out,self.root/'logs',version='v143')
         self.assertEqual(len(checks),2);pause.assert_called_once_with(2)
         self.assertEqual(old.read_bytes(),b'new app')
