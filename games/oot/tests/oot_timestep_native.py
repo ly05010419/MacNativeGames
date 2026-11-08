@@ -11,7 +11,7 @@ D=args.work_dir.resolve();D.mkdir(parents=True,exist_ok=True)
 source=Path(__file__).resolve().parent
 h=(source.parent/'runtime/oot_timestep.h').read_text()
 asm='.data\n.p2align 12\n.globl _step_state\n_step_state: .space 4096\n.globl _step_check\n_step_check: .space 64\n.text\n'
-for name,ret in [('input',19),('logic',28)]:
+for name,ret in [('input',21),('logic',30)]:
  vals=[int(x,16)for x in re.findall(r'0x[0-9a-f]+',re.search('uint32_t '+name+r'\[\] = \{(.*?)\};',h,re.S).group(1))]
  asm+=f'''.globl _call_{name}
 _call_{name}:

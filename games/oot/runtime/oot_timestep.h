@@ -45,20 +45,35 @@ static void patch_oot_timestep(Module *m) {
     /* stp x16,x17; stp q16,q17; adrp/add page; optional pin; otherwise
        scvtf elapsed; multiply by 1/31250000; multiply original numerator;
        record; restore; branch back. Literal pools stay in the RX text page. */
+    /* The measured duration is capped (2026-11-08): seconds = min(ticks / 31250000, cap), cap 1/30 s by default, the
+       game's own slowest native step (its 30/60 selector). Unbounded, a 2.3 s loading hitch became one 2.3 s physics
+       step; Havok's contact buffers for it (148 MiB of short-lived blocks in one second, claude/oot-net-bypass hr2)
+       overran its 49 MiB limit (Q+0x60) and the game died (null header store at main+0xa98e78, or the SDK abort).
+       With the original fixed step (OOT_REALTIME=0) the burst is absent (hr3). Above 30 fps nothing changes; below it
+       the game slows down as on the console. OOT_REALTIME_MAX_MS=<ms> overrides the cap for diagnostics.
+       ldr s17, cap; fmin s16, s16, s17 sit before the numerator multiply, so a pinned duration is capped too. */
     uint32_t input[] = {
         0xa9bd47f0,0xad00c7f0,0x90000011,0x91000231,0xbd400230,0x1e260210,
-        0x350000d0,0xf9408270,0xb40000d0,0x9e220210,0x1c000151,0x1e310a10,
-        0x1e300820,0x14000002,0x1e201820,0xf9000633,0xbd002220,0xad40c7f0,
-        0xa8c347f0,0x14000000,0x3309705f,0xd503201f,0x11111111,0x3f911111
+        0x350000d0,0xf9408270,0xb4000110,0x9e220210,0x1c000191,0x1e310a10,
+        0x1c000171,0x1e315a10,0x1e300820,0x14000002,0x1e201820,0xf9000633,
+        0xbd002220,0xad40c7f0,0xa8c347f0,0x14000000,0x3309705f,0x3d088889,
+        0x11111111,0x3f911111
     };
     uint32_t logic[] = {
         0xa9bd47f0,0xad00c7f0,0x90000011,0x91000231,0xbd400230,0x1e260210,
-        0x350000d0,0xf94082b0,0xb40000d0,0x9e220210,0x1c000271,0x1e310a10,
-        0x1e300828,0x14000002,0x1e201828,0xf9000635,0xbd002628,0xf9400a30,
-        0x91000610,0xf9000a30,0x1e22c110,0x5c000131,0x1e710a10,0xfd400e31,
-        0x1e712a10,0xfd000e30,0xad40c7f0,0xa8c347f0,0x14000000,0x3309705f,
-        0x11111111,0x3f911111
+        0x350000d0,0xf94082b0,0xb4000110,0x9e220210,0x1c0002b1,0x1e310a10,
+        0x1c000291,0x1e315a10,0x1e300828,0x14000002,0x1e201828,0xf9000635,
+        0xbd002628,0xf9400a30,0x91000610,0xf9000a30,0x1e22c110,0x5c000171,
+        0x1e710a10,0xfd400e31,0x1e712a10,0xfd000e30,0xad40c7f0,0xa8c347f0,
+        0x14000000,0x3309705f,0x3d088889,0xd503201f,0x11111111,0x3f911111
     };
+    enum { INPUT_CAP = 23, LOGIC_CAP = 32 };
+    {   const char *mx = getenv("OOT_REALTIME_MAX_MS");
+        float cap = 1.0f / 30.0f;
+        if (mx && *mx) { char *e = NULL; double ms = strtod(mx, &e); if (!e || *e || !(ms > 0 && ms <= 1000)) runtime_fail("OOT_REALTIME_MAX_MS must be in (0, 1000]"); cap = (float)(ms / 1000.0); }
+        uint32_t bits; memcpy(&bits, &cap, sizeof bits); input[INPUT_CAP] = bits; logic[LOGIC_CAP] = bits;
+        fprintf(stderr, "[oot] time step capped at %.3f ms a frame%s\n", cap * 1000.0, mx && *mx ? " (OOT_REALTIME_MAX_MS)" : "");
+    }
     uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL;
     uint64_t stub = (m->text_end + 15) & ~15ULL;
     uint64_t rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
@@ -73,7 +88,7 @@ static void patch_oot_timestep(Module *m) {
         if (m->base[k]) runtime_fail("OOT time-step data page already in use");
     uint32_t *code[] = { input, logic };
     const uint64_t sites[] = { 0x3b4eaf8, 0x6e6cc4 };
-    const unsigned lengths[] = { sizeof input, sizeof logic }, returns[] = { 19, 28 };
+    const unsigned lengths[] = { sizeof input, sizeof logic }, returns[] = { 21, 30 };
     for (unsigned k = 0; k < 2; k++) {
         int64_t pages = ((int64_t)page - (int64_t)((stub + 8) & ~4095ULL)) / 4096;
         code[k][2] = 0x90000011 | (((uint32_t)pages & 3) << 29) |
