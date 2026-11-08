@@ -140,11 +140,11 @@ int mtl_probe_memory_demand(void) {
             uint32_t index=draw<2?37:0;mtl_sub_update(&index,(uintptr_t)uniform,4);
             if(negative==10&&draw==2){
                 // Deliberately erase the prior uniform value from the key.
-                pool_memo_uniform wrong={2,0,0};sh->pool_memo[1]->uniforms=[NSData dataWithBytes:&wrong length:sizeof wrong];
+                pool_memo_uniform wrong={2,0,0};for(int w=0;w<POOL_MEMO_WAYS;w++)if(sh->pool_memo[1]->ent[w].valid)sh->pool_memo[1]->uniforms[w]=[NSData dataWithBytes:&wrong length:sizeof wrong];
             }
             uint64_t hits=g_pool_demand_memo;
             prepare_shader_pools(sh);
-            if(negative!=10&&pool_memo_on()&&g_pool_demand_memo!=hits+(draw==1||draw==3))MDIE("memo hit/miss draw%d",draw);checked++;
+            if(negative!=10&&pool_memo_on()&&g_pool_demand_memo!=hits+(draw==1||draw==3||draw==5))MDIE("memo hit/miss draw%d",draw);checked++;   // draw 5: a new submission, same inputs and uniform (memo valid across submissions, 2026-11-08)
             if(!(sh->pool_capture_mask&4))MDIE("memo omitted uniform capture draw%d",draw);checked++;
             const uint64_t *need=pool_demand_for(sh,&sh->rf.b[1]);
             if(!need||!(need[0]&(UINT64_C(1)<<(draw<2?2:1))))MDIE("memo omitted required descriptor draw%d",draw);checked++;

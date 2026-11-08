@@ -6147,15 +6147,34 @@ static void shmap_load(void) {
     id peer[4]; NSString *key[4]; id<MTLFunction> fn[4]; int mode[4]; unsigned next;
 } @end
 @implementation NvFunctionCache @end
-// Only bindings that actually prepare demand allocate a memo. Keeping the
-// 496-byte records inline would reserve 31 KiB in every shader object.
+/* The demand memo of one descriptor-pool binding (pool_demand_prepare), 2026-11-08: up to POOL_MEMO_WAYS proofs, each keyed
+   by the uniform values the binding's index programs read, valid across submissions. The need bitmap of an exact proof is a
+   pure function of those uniform values and of the pool-input words the programs then read; a whole proof (an index the
+   programs could not bound) depends on the whole input, kept by identity. A hit re-reads the uniforms and the words (or the
+   identity) from the current captures, so a changed object or handle table misses. Measured on the single-entry,
+   same-submission memo this replaces (sh1, OOT_POOL_MEMO_SHADOW): keys including the inputs' copy identity repeated 6 % of
+   the time, keys by uniform values 99.5 %, of which 0.8 % had a different bitmap - the content check covers exactly those.
+   Only bindings that actually prepare demand allocate a memo. */
+enum { POOL_MEMO_WAYS = 256, POOL_MEMO_SLOTS = 512 };   // 8 ways answered 23 % (mm1), 64 ways 54 % with evictions ~ fills (mm2): a shader drawn with more objects than ways cycles through them every frame
+struct pool_memo_src { uint64_t lo, size, gpu, stamp, poolgen, hostwrite; };
+typedef struct { uint32_t src, idx, val; } pool_memo_word;   // an input word an exact proof read: source binding, word index, value
+typedef struct {
+    int valid, nid, nwords; uint64_t n, use, whole, uhash;   // use: fill / hit order (the LRU victim has the smallest); whole: sources proved whole (bit = rf.b index); uhash: of the uniform list
+    pool_memo_word *words; struct pool_memo_src src[8];   // src: identity of each source in srcidx order, checked for whole sources
+} pool_memo_ent;
 @interface NvPoolMemo : NSObject { @public
-    int valid, nid; uint64_t n, submission;
-    NSDictionary *reads; NSData *uniforms;
-    struct pool_memo_src { uint64_t lo, size, gpu, stamp, poolgen, hostwrite; } src[8];
-    uint64_t capture[8]; NSMutableData *need;
+    pool_memo_ent ent[POOL_MEMO_WAYS]; uint16_t slot[POOL_MEMO_SLOTS]; int mru; uint64_t clock;   // slot: open-addressing index by uhash, way + 1 (0 = empty); mru: the way last filled or hit
+    NSDictionary *reads[POOL_MEMO_WAYS]; NSData *uniforms[POOL_MEMO_WAYS], *need[POOL_MEMO_WAYS];
 } @end
-@implementation NvPoolMemo @end
+@implementation NvPoolMemo
+- (void)dealloc { for (int w = 0; w < POOL_MEMO_WAYS; w++) free(ent[w].words); }
+@end
+static uint64_t pool_memo_hash(const void *p, size_t n) { uint64_t h = 0xcbf29ce484222325ull; const uint8_t *b = p; for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; } return h | 1; }
+static void pool_memo_index(NvPoolMemo *m) {   // rebuild the uhash -> way index (after an eviction)
+    memset(m->slot, 0, sizeof m->slot);
+    for (int w = 0; w < POOL_MEMO_WAYS; w++) if (m->ent[w].valid) { unsigned s = (unsigned)(m->ent[w].uhash % POOL_MEMO_SLOTS); while (m->slot[s]) s = (s + 1) % POOL_MEMO_SLOTS; m->slot[s] = (uint16_t)(w + 1); }
+}
+static uint64_t g_pmemo_hit, g_pmemo_none, g_pmemo_uread, g_pmemo_udiff, g_pmemo_wdiff, g_pmemo_whole_diff, g_pmemo_split, g_pmemo_evict, g_pmemo_fill;   // [descriptor-demand-memo]
 @interface NvShader : NSObject { @public id<MTLFunction> fn, hdr_fn;   /* hdr_fn (PR #1129): the HDR twin of fn, used only by HDR pipelines (PSO_HDR) */ nvn_refl rf;
     /* geometry as compute (nvn_geometry_rt.inc): a vertex variant's capture entry (geo_fn, main0_gs); a geometry kernel's output
        layout from its reflection's "geometry" (vertices, invocations, output 1 points / 6 line strip / 7 triangle strip, index
@@ -11641,6 +11660,37 @@ static int pool_memo_uniforms_match(NvShader *sh,NSData *data) {
 static int pool_memo_on(void) {
     static int on=-1;if(on<0){const char *v=getenv("OOT_POOL_DEMAND_MEMO");on=!(v&&!atoi(v));}return on;
 }
+/* OOT_POOL_MEMO_CHECK=1 (diagnostic, default off): every memo answer is checked against a fresh proof of the same draw. */
+static int pool_memo_check_on(void){static int on=-1;if(on<0){const char *v=getenv("OOT_POOL_MEMO_CHECK");on=v&&atoi(v);}return on;}
+static uint64_t g_pool_memo_check_ok,g_pool_memo_check_bad;
+/* A memo entry whose uniform values, input words (exact sources) and input identities (whole sources) all equal the current
+   ones: its bitmap is this draw's answer. The uniforms are read first (pool_uniform_read may synchronize and replace a
+   capture), then the current input copies; on a hit they are bound as the captures. Returns the way, or -1. */
+static int pool_memo_lookup(NvShader *sh,NvPoolMemo *m,uint64_t n,const int *srcidx,int nsrc){
+    if(!m->ent[m->mru].valid){g_pmemo_none++;return -1;}
+    // The current values of the uniforms the most recent proof read, in its order: the key of this draw.
+    NSData *ref=m->uniforms[m->mru];const pool_memo_uniform *ru=ref.bytes;size_t nu=ref.length/sizeof *ru;
+    pool_memo_uniform cur[64];if(nu>64){g_pmemo_uread++;return -1;}
+    for(size_t i=0;i<nu;i++){cur[i]=ru[i];if(!pool_uniform_read((__bridge void *)sh,ru[i].binding,ru[i].offset,&cur[i].value)){g_pmemo_uread++;return -1;}}
+    uint64_t uhash=pool_memo_hash(cur,nu*sizeof *cur);
+    for(unsigned s=(unsigned)(uhash%POOL_MEMO_SLOTS);m->slot[s];s=(s+1)%POOL_MEMO_SLOTS){
+        int w=m->slot[s]-1;const pool_memo_ent *e=&m->ent[w];
+        if(e->uhash!=uhash||!e->valid||e->n!=n||e->nid!=nsrc||m->reads[w]!=sh->pool_reads||m->uniforms[w].length!=nu*sizeof *cur||memcmp(m->uniforms[w].bytes,cur,nu*sizeof *cur))continue;
+        pool_input *in[8];int ok=1;
+        for(int t=0;ok&&t<nsrc;t++){
+            int i=srcidx[t];in[t]=pool_input_get(&S.ssbo[sh->stage][sh->rf.b[i].reg],0);
+            if(e->whole&(UINT64_C(1)<<i)){struct pool_memo_src id={in[t]->lo,in[t]->size,in[t]->gpu,in[t]->stamp,in[t]->poolgen,in[t]->hostwrite};if(memcmp(&id,&e->src[t],sizeof id)){ok=0;g_pmemo_whole_diff++;}}
+        }
+        for(int j=0;ok&&j<e->nwords;j++){
+            const pool_memo_word *x=&e->words[j];int t=0;while(t<nsrc&&srcidx[t]!=(int)x->src)t++;
+            if(t==nsrc||(uint64_t)x->idx>=in[t]->size/4||in[t]->cpu[x->idx]!=x->val){ok=0;g_pmemo_wdiff++;}
+        }
+        if(!ok)continue;
+        for(int t=0;t<nsrc;t++){sh->pool_capture_gpu[srcidx[t]]=in[t]->gpu;sh->pool_capture_mask|=UINT64_C(1)<<srcidx[t];}
+        g_pmemo_hit++;return w;
+    }
+    g_pmemo_udiff++;return -1;
+}
 static void pool_demand_prepare(NvShader *sh) {
     if(atomic_exchange(&g_pool_wait_dump,0))MLOG("[pool-wait-stats] precise=%d prior=%llu current=%llu wait-ms=%.3f capture-new=%llu",pool_wait_precise_on(),(unsigned long long)g_pool_wait_prior,(unsigned long long)g_pool_wait_current,(double)g_pool_wait_ns/1e6,(unsigned long long)g_pool_input_misses);
     if(!sh->pool_demand)sh->pool_demand=[NSMutableDictionary dictionary];
@@ -11670,29 +11720,22 @@ static void pool_demand_prepare(NvShader *sh) {
             // retains the submission's arena, pending updates and allocator.
             for(uint64_t bits=sources;bits;bits&=bits-1){const nvn_rbind *sb=&sh->rf.b[__builtin_ctzll(bits)];pool_inputs_wait_range(&S.ssbo[sh->stage][sb->reg]);}
         }
-        // The inputs' identity first: the same immutable captures as last time give the same bitmap (memo above).
+        // The memo: a proof made earlier for these uniform values whose input words (or whole inputs) are still the same.
         int memo_ok=pool_memo_on()&&__builtin_popcountll(sources)<=8;
         NvPoolMemo *memo=sh->pool_memo[k];
         if(memo_ok&&!memo)sh->pool_memo[k]=memo=[NvPoolMemo new];
-        struct pool_memo_src ident[8];uint64_t capture[8];int nid=0;uint64_t submission=g_sub_serial;
-        for(uint64_t bits=memo_ok?sources:0;bits;bits&=bits-1){
-            int i=__builtin_ctzll(bits);const p_bind_buf *u=&S.ssbo[sh->stage][sh->rf.b[i].reg];
-            if(nid>=8){memo_ok=0;break;}
-            pool_input *in=pool_input_get(u,0);ident[nid]=(struct pool_memo_src){in->lo,in->size,in->gpu,in->stamp,in->poolgen,in->hostwrite};capture[nid++]=in->gpu;
-        }
-        int hit=memo_ok&&memo->valid&&memo->need&&memo->n==(uint64_t)n&&memo->nid==nid&&memo->submission==submission&&memo->reads==sh->pool_reads&&!memcmp(memo->src,ident,(size_t)nid*sizeof ident[0])&&pool_memo_uniforms_match(sh,memo->uniforms)&&g_sub_serial==submission;
-        // Uniform synchronization may also land writes to a storage source.
-        int source_index=0;
-        for(uint64_t bits=hit?sources:0;bits;bits&=bits-1){
-            int i=__builtin_ctzll(bits);pool_input *current=pool_input_find(&S.ssbo[sh->stage][sh->rf.b[i].reg]);
-            if(!current||current->gpu!=capture[source_index++]){hit=0;break;}
-        }
-        if(hit){
-            int j=0;for(uint64_t bits=sources;bits;bits&=bits-1){int i=__builtin_ctzll(bits);sh->pool_capture_gpu[i]=memo->capture[j++];sh->pool_capture_mask|=UINT64_C(1)<<i;}
-            sh->pool_demand[@(b->aid)]=memo->need;g_pool_demand_proved++;g_pool_demand_memo++;continue;
+        uint64_t submission=g_sub_serial;int srcidx[8],nsrc=0;
+        for(uint64_t bits=memo_ok?sources:0;bits;bits&=bits-1)srcidx[nsrc++]=__builtin_ctzll(bits);
+        int hitw=memo_ok?pool_memo_lookup(sh,memo,(uint64_t)n,srcidx,nsrc):-1;
+        if(hitw>=0&&g_sub_serial!=submission){hitw=-1;g_pmemo_split++;}   // a uniform read split the submission: captures may have moved, prove again
+        int check=hitw>=0&&pool_memo_check_on();
+        if(hitw>=0){
+            memo->ent[hitw].use=++memo->clock;memo->mru=hitw;
+            if(!check){sh->pool_demand[@(b->aid)]=memo->need[hitw];g_pool_demand_proved++;g_pool_demand_memo++;continue;}
         }
         NSMutableData *uniforms=memo_ok?[NSMutableData data]:nil;pool_memo_reader reader={sh,uniforms,1};
         NSMutableData *data=[NSMutableData dataWithLength:words*8];uint64_t *need=data.mutableBytes;need[0]|=1; // proved constant-zero branch
+        pool_memo_word wbuf[8*64];int nw=0,nid=0;uint64_t whole=0;struct pool_memo_src ident[8];
         for(uint64_t bits=sources;bits;bits&=bits-1){
             int i=__builtin_ctzll(bits);const p_bind_buf *u=&S.ssbo[sh->stage][sh->rf.b[i].reg];
             NSArray *programs=sh->pool_reads[@(b->aid)][@(i)];uint32_t indices[64];int count=nvn_pool_index_values(programs,pool_memo_read,&reader,indices,64);
@@ -11700,17 +11743,28 @@ static void pool_demand_prepare(NvShader *sh) {
             if(count<0){static unsigned reports;if(reports++<4)MLOG("[descriptor-index-whole] shader=%s source=%d programs=%lu bytes=%llu",sh->key,i,(unsigned long)programs.count,u->size);}
             pool_input *input=pool_input_get(u,count>=0?0:n);
             sh->pool_capture_gpu[i]=input->gpu;sh->pool_capture_mask|=UINT64_C(1)<<i;
-            if(count>=0){for(int k=0;k<count;k++){uint32_t id_=input->cpu[indices[k]]&1048575u;if(id_<(uint32_t)n)need[id_/64]|=UINT64_C(1)<<(id_%64);}g_pool_demand_exact++;}
-            else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];g_pool_demand_whole++;}
+            if(count>=0){for(int k=0;k<count;k++){uint32_t v=input->cpu[indices[k]],id_=v&1048575u;if(id_<(uint32_t)n)need[id_/64]|=UINT64_C(1)<<(id_%64);if(nw<(int)(sizeof wbuf/sizeof *wbuf))wbuf[nw++]=(pool_memo_word){(uint32_t)i,indices[k],v};}g_pool_demand_exact++;}
+            else {const uint64_t *ids=input->ids.bytes;for(size_t w=0;w<words;w++)need[w]|=ids[w];whole|=UINT64_C(1)<<i;g_pool_demand_whole++;}
+            if(nid<8)ident[nid++]=(struct pool_memo_src){input->lo,input->size,input->gpu,input->stamp,input->poolgen,input->hostwrite};
+        }
+        if(check){   // OOT_POOL_MEMO_CHECK=1: the memo's answer against the proof just made
+            if([data isEqualToData:memo->need[hitw]])g_pool_memo_check_ok++;
+            else{g_pool_memo_check_bad++;if(g_pool_memo_check_bad<=8)MLOG("【红】[descriptor-demand-check] shader=%s binding=%d: the memo's bitmap (way %d) differs from a fresh proof, n=%d",sh->key,b->aid,hitw,n);}
         }
         sh->pool_demand[@(b->aid)]=data;g_pool_demand_proved++;
-        // Uniform evaluation can wait/split, or a concurrent CPU write can
-        // replace a capture. Only publish identities of the bytes actually used.
-        for(int i=0,j=0;memo_ok&&i<sh->rf.nb;i++)if(sources&(UINT64_C(1)<<i)){
-            if(sh->pool_capture_gpu[i]!=capture[j++])memo_ok=0;
-        }
-        if(memo)memo->valid=0;
-        if(memo_ok&&reader.valid&&submission==g_sub_serial){memo->valid=1;memo->submission=submission;memo->reads=sh->pool_reads;memo->uniforms=uniforms;memo->n=(uint64_t)n;memo->nid=nid;memcpy(memo->src,ident,(size_t)nid*sizeof ident[0]);memcpy(memo->capture,capture,(size_t)nid*sizeof capture[0]);memo->need=data;}
+        if(check)continue;
+        // Record the proof: only when every uniform read succeeded, no wait split the submission and every source was captured.
+        // A whole proof is not kept: its answer depends on the input copy's identity, which changes every frame, so it could
+        // only evict useful entries (mm2: 3.4 M identity mismatches, evictions = fills).
+        if(!(memo_ok&&reader.valid&&submission==g_sub_serial&&nid==nsrc&&!whole))continue;
+        int w=0;for(int c=0;c<POOL_MEMO_WAYS;c++){if(!memo->ent[c].valid){w=c;break;}if(memo->ent[c].use<memo->ent[w].use)w=c;}
+        pool_memo_ent *e=&memo->ent[w];int evict=e->valid;free(e->words);
+        *e=(pool_memo_ent){.valid=1,.nid=nid,.nwords=nw,.n=(uint64_t)n,.use=++memo->clock,.whole=whole,.uhash=pool_memo_hash(uniforms.bytes,uniforms.length),.words=nw?malloc((size_t)nw*sizeof *wbuf):NULL};
+        if(nw&&!e->words){e->valid=0;pool_memo_index(memo);continue;}
+        if(nw)memcpy(e->words,wbuf,(size_t)nw*sizeof *wbuf);memcpy(e->src,ident,(size_t)nid*sizeof ident[0]);
+        memo->reads[w]=sh->pool_reads;memo->uniforms[w]=uniforms;memo->need[w]=data;memo->mru=w;g_pmemo_fill++;
+        if(evict){g_pmemo_evict++;pool_memo_index(memo);}
+        else{unsigned s=(unsigned)(e->uhash%POOL_MEMO_SLOTS);while(memo->slot[s])s=(s+1)%POOL_MEMO_SLOTS;memo->slot[s]=(uint16_t)(w+1);}
     }
 }
 static const uint64_t *pool_demand_for(NvShader *sh,const nvn_rbind *b) { return [sh->pool_demand objectForKey:@(b->aid)].bytes; }
@@ -11728,6 +11782,8 @@ static void prepare_shader_pools(NvShader *sh) {
         g_tex_prepare_split=0;g_descriptor_pool_splits+=g_enc!=nil;rp_end();
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
+    if(frame>=last+300&&pool_memo_check_on())MLOG("[descriptor-demand-check] memo answers verified against a fresh proof: same=%llu different=%llu",(unsigned long long)g_pool_memo_check_ok,(unsigned long long)g_pool_memo_check_bad);
+    if(frame>=last+300)MLOG("[descriptor-demand-memo] hits=%llu fills=%llu evictions=%llu misses: no-entry=%llu uniform-read=%llu uniforms-differ=%llu words-differ=%llu whole-differ=%llu split=%llu",(unsigned long long)g_pmemo_hit,(unsigned long long)g_pmemo_fill,(unsigned long long)g_pmemo_evict,(unsigned long long)g_pmemo_none,(unsigned long long)g_pmemo_uread,(unsigned long long)g_pmemo_udiff,(unsigned long long)g_pmemo_wdiff,(unsigned long long)g_pmemo_whole_diff,(unsigned long long)g_pmemo_split);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu need-hits=%llu hits=%llu misses=%llu scanned=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips,(unsigned long long)g_descriptor_pool_need_hits,(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned);
     if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
