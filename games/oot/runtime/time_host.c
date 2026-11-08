@@ -128,9 +128,58 @@ static void clock_task_noop(void *self) { (void)self; }
 static unsigned clock_task_ok(void *self) { (void)self; return 0; }
 static void *clock_task_event_get(void *self) { (void)self; static int bound; if (!bound) { bound = 1; hle_bind_system_event(clock_task_event, 0); hle_signal_system_event(clock_task_event); } return clock_task_event; }
 
+/* TOTK_CLOCK_POLL_LOG=1 (diagnostic, 2026-11-08): which guest threads poll the clock, from where, how often. The Time
+   Profiler showed one guest thread on a P-core 90% of every Ocarina frame with nothing but clock_gettime calls into the
+   runtime: a busy-wait in game code. The guest return address comes from the frame chain, which the HLE stack switch links
+   back to the guest caller (hle_stack.S). Every 2 s: calls per second per (host thread id, guest caller). */
+int runtime_module_offset(uint64_t pc, const char **name, uint64_t *off);
+typedef struct { uint64_t tid, lr, n; const char *mod; uint64_t off; } clock_poll_ent;
+static void clock_poll_note(void) {
+ static int on = -1; if (on < 0) { const char *e = getenv("TOTK_CLOCK_POLL_LOG"); on = e && atoi(e); }
+ if (!on) return;
+ uint64_t tid = 0; pthread_threadid_np(NULL, &tid);
+ uint64_t lr = 0, off = 0; const char *mod = NULL;
+ uintptr_t *fp = __builtin_frame_address(0);
+ for (int d = 0; d < 24 && fp; d++) {
+  uintptr_t ret = fp[1];
+  if (runtime_module_offset(ret, &mod, &off)) {
+   /* The host frame record of the HLE stack switch: [fp] = guest x29/x30, [fp+16] = guest sp at the call (hle_stack.S).
+      The game's clock wrapper (main+0x21e5170) keeps its return address at [sp+0x20] and the libc shim that called it
+      (main+0x21e51f0, `str x30, [sp,#-0x10]!`) at [sp+0x40]: that one is the caller that actually wants the time. */
+   uint64_t gsp = fp[2]; lr = ret;
+   if (gsp && !(gsp & 7)) { const char *m2; uint64_t o2, cand = *(uint64_t *)(gsp + 0x40); if (runtime_module_offset(cand, &m2, &o2)) { lr = cand; mod = m2; off = o2; } }
+   break;
+  }
+  uintptr_t *next = (uintptr_t *)fp[0];
+  if (next <= fp || ((uintptr_t)next & 7)) break;
+  fp = next;
+ }
+ static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+ static clock_poll_ent ent[64]; static int nent; static uint64_t since, total;
+ pthread_mutex_lock(&mu);
+ int i; for (i = 0; i < nent; i++) if (ent[i].tid == tid && ent[i].lr == lr) break;
+ if (i == nent && nent < 64) { ent[nent] = (clock_poll_ent){tid, lr, 0, mod, off}; nent++; }
+ if (i < nent) ent[i].n++;
+ total++;
+ uint64_t now = runtime_now_ns(); if (!since) since = now;
+ if (now - since >= 2000000000ull) {
+  double s = (now - since) / 1e9;
+  fprintf(stderr, "[totk-clock] %.0f clock_gettime calls/s from %d (thread, caller) pairs\n", total / s, nent);
+  for (int k = 0; k < 6; k++) {
+   int best = -1; for (int j = 0; j < nent; j++) if (ent[j].n && (best < 0 || ent[j].n > ent[best].n)) best = j;
+   if (best < 0) break;
+   fprintf(stderr, "[totk-clock]   thread 0x%llx: %.0f/s from %s+0x%llx\n", (unsigned long long)ent[best].tid, ent[best].n / s, ent[best].mod ? ent[best].mod : "?", (unsigned long long)ent[best].off);
+   ent[best].n = 0;
+  }
+  for (int j = 0; j < nent; j++) ent[j].n = 0;
+  total = 0; since = now;
+ }
+ pthread_mutex_unlock(&mu);
+}
 /* POSIX clock IDs use the guest libc's numbering, not Darwin's constants. */
 static int guest_clock_gettime(int id, int64_t *out) {
  runtime_core_checkpoint();
+ clock_poll_note();
  if(!out)return -1;
  struct timespec t;clockid_t host;
  switch(id){case 0:host=CLOCK_REALTIME;break;case 1:host=CLOCK_MONOTONIC;break;case 2:host=CLOCK_PROCESS_CPUTIME_ID;break;case 3:host=CLOCK_THREAD_CPUTIME_ID;break;default:{int *(*loc)(void)=runtime_symbol("__errno_location");if(loc)*loc()=22;return -1;}}

@@ -30,10 +30,21 @@ enum {
     RS_INDIRECT,           /* u[0] primitive, u[1] the indirect record (non-indexed) */
     RS_MESH_TIMESTAMP,     /* bounded diagnostics: heap, entry, render stages */
 };
-enum { RS_SPIN_NS = 200000 };   /* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses
-                                   for that long, so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev,
-                                   not a hot spin: with a hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*,
-                                   rs4v-* with 200 us): CPU power taken from the GPU's budget. */
+/* B waits (wfe) this long on an empty queue before sleeping on the semaphore. During a replay A never pauses for that long,
+   so B sleeps in the frame gap and wakes (~30 us) at the next submission. The waits are wfe / sev, not a hot spin: with a
+   hot spin (2 ms yield loop) the visible-mode GPU time rose 8.9 -> 9.3 ms (analysis/rs3v-*, rs4v-* with 200 us): CPU power
+   taken from the GPU's budget. TOTK_RS_SPIN_US overrides the 200 us (2026-11-08: Time Profiler showed B on a P-core 85% of
+   every OOT frame in this wait while the frame's packets keep arriving under 200 us apart). */
+static uint64_t rs_spin_ns(void) {
+    static uint64_t v;
+#ifdef GAME_OOT
+    enum { RS_SPIN_DEFAULT_US = 20 };    /* Ocarina (2026-11-08): 200 us kept B on a P-core 77% of the frame; 20 us -> 48%, fps unchanged (cp1 52.4 vs j22 52.6) */
+#else
+    enum { RS_SPIN_DEFAULT_US = 200 };
+#endif
+    if (!v) { const char *e = getenv("TOTK_RS_SPIN_US"); long us = e ? atol(e) : RS_SPIN_DEFAULT_US; v = (uint64_t)(us < 1 ? 1 : us) * 1000ull; if (e) MLOG("TOTK_RS_SPIN_US=%ld: the encode stage waits %ld us on an empty queue before sleeping", us, us); }
+    return v;
+}
 static nvn_encode_fifo g_rs_fifo;
 static _Atomic int g_rs_on = -1;
 static _Atomic int g_rs_sleeping;          /* B announced it is about to sleep (seq_cst handshake with the publisher) */
@@ -125,7 +136,7 @@ static void *rs_worker(void *unused) {
             uint64_t now = rs_now();
             if (busy_since) { atomic_fetch_add_explicit(&g_rs_b_busy_ns, now - busy_since, memory_order_relaxed); busy_since = 0; }
             if (!idle_since) idle_since = now;
-            if (now - idle_since < RS_SPIN_NS) { __builtin_arm_wfe(); continue; }   /* low-power wait; A does sev after every publish */
+            if (now - idle_since < rs_spin_ns()) { __builtin_arm_wfe(); continue; }   /* low-power wait; A does sev after every publish */
             atomic_store_explicit(&g_rs_sleeping, 1, memory_order_seq_cst);
             atomic_thread_fence(memory_order_seq_cst);
             if (!nvn_encode_fifo_peek(&g_rs_fifo)) { dispatch_semaphore_wait(g_rs_sem, DISPATCH_TIME_FOREVER); atomic_fetch_add_explicit(&g_rs_b_sleeps, 1, memory_order_relaxed); }

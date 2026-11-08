@@ -11269,9 +11269,10 @@ static void raw_write_capture(NvShader *sh,int stage,const uint64_t *slots,int r
 /* Full, typed NVN descriptor pools stay GPU-indexed when a handle comes from
    shader memory. Each immutable snapshot owns resource IDs for the bound pool,
    with one zero descriptor after its end. It never truncates IDs to 32 slots. */
-typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask,*dead_mask,*trans_mask; int base,n,kind,tt,pf,partial; } oot_pool_snapshot;
+typedef struct { __strong id<MTLBuffer> buffer; uint64_t reg,ser,dirty,sub,revision,memory; uint64_t *cpu_mask,*dead_mask,*trans_mask; int base,n,kind,tt,pf,partial;
+    uint64_t *valid_mask;   /* entries checked under the generation tuple above: a draw whose proved demand set lies inside it needs no revalidation (2026-11-08) */ } oot_pool_snapshot;
 static oot_pool_snapshot g_descriptor_pools[16];static unsigned g_descriptor_pool_next;
-static uint64_t g_descriptor_pool_hits,g_descriptor_pool_misses,g_descriptor_pool_scanned,g_descriptor_pool_splits;
+static uint64_t g_descriptor_pool_hits,g_descriptor_pool_misses,g_descriptor_pool_scanned,g_descriptor_pool_splits,g_descriptor_pool_need_hits;
 static uint64_t g_descriptor_pool_type_skips,g_descriptor_pool_uncreated_skips;
 static int descriptor_pool_type_filter(void) {
     static int on=-1;
@@ -11325,6 +11326,14 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
     oot_pool_snapshot *slot=NULL;
     for(int i=0;i<16;i++)if(descriptor_pool_matches(&g_descriptor_pools[i],binding)){
         slot=&g_descriptor_pools[i];if(!need&&!slot->partial&&descriptor_pool_valid(slot)){g_descriptor_pool_hits++;return slot->buffer.gpuAddress;}break;
+    }
+    /* A proved demand set whose entries were all checked under the slot's current generation tuple (nothing about
+       textures, pools, serials or dirty pages changed since) reads the same table: skip the per-draw revalidation.
+       Time Profiler 2026-11-08: that revalidation was 1.05 ms of a 19 ms frame on the replay threads. */
+    if(need&&slot&&slot->valid_mask&&descriptor_pool_valid(slot)){
+        size_t words=((size_t)n+63)/64;int covered=1;
+        for(size_t w=0;covered&&w<words;w++)if(need[w]&~slot->valid_mask[w])covered=0;
+        if(covered){g_descriptor_pool_need_hits++;return slot->buffer.gpuAddress;}
     }
     int replace=slot==NULL;if(replace)slot=&g_descriptor_pools[g_descriptor_pool_next++%16];
     uint64_t reg=g_reg_gen,ser=g_ser_gen,dirty=nvn_dirty_now(),revision=g_descriptor_revision,memory=atomic_load_explicit(&g_pool_gen,memory_order_acquire);
@@ -11415,12 +11424,13 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
         }
         if(buffer)ids[i]=value;
     }
-    free(changed);g_descriptor_pool_scanned+=checked;
+    g_descriptor_pool_scanned+=checked;
     /* Creating an alias/usage view can replace the shared backing of earlier
        entries. Validate the complete pool again before publishing that table. */
     if(atomic_load_explicit(&g_ser_last_all,memory_order_relaxed)>ser||atomic_load_explicit(&g_storage_revision,memory_order_acquire)!=storage_revision){
         descriptor_profile_pool(&dp,full,checked,buffer!=nil,2,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
         if(replace){free(cpu_mask);free(dead_mask);free(trans_mask);}else slot->ser=0;
+        free(changed);
         return descriptor_pool_gpu_need(binding,need);
     }
     if(buffer){
@@ -11429,6 +11439,14 @@ static uint64_t descriptor_pool_gpu_need(const nvn_rbind *binding,const uint64_t
         slot->buffer=buffer;g_descriptor_pool_misses++;
     }else g_descriptor_pool_hits++;
     descriptor_profile_pool(&dp,full,checked,buffer!=nil,0,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);
+    /* The validated mask: entries checked under the generation tuple stored below. A tuple change (or a new slot) starts
+       it over; a complete or incremental pass (no demand set) leaves the whole table current. */
+    { int same=!replace&&slot->reg==reg&&slot->ser==ser&&slot->dirty==dirty&&slot->sub==g_sub_serial&&slot->revision==revision&&slot->memory==memory;
+      if(replace){free(slot->valid_mask);slot->valid_mask=calloc(words,sizeof *slot->valid_mask);if(!slot->valid_mask)MDIE("descriptor pool validated mask");}
+      else if(!same)memset(slot->valid_mask,0,words*sizeof *slot->valid_mask);
+      if(need)for(size_t w=0;w<words;w++)slot->valid_mask[w]|=changed[w];
+      else{for(size_t w=0;w<words;w++)slot->valid_mask[w]=UINT64_MAX;if(n%64)slot->valid_mask[words-1]=(UINT64_C(1)<<(n%64))-1;} }
+    free(changed);
     slot->reg=reg;slot->ser=ser;slot->dirty=dirty;slot->sub=g_sub_serial;
     slot->partial=need!=NULL;slot->revision=revision;slot->memory=memory;slot->cpu_mask=cpu_mask;slot->dead_mask=dead_mask;slot->trans_mask=trans_mask;slot->base=base;slot->n=n;slot->kind=binding->kind;slot->tt=binding->dtt;slot->pf=binding->dpf;
     return slot->buffer.gpuAddress;
@@ -11709,7 +11727,7 @@ static void prepare_shader_pools(NvShader *sh) {
         g_tex_prepare_split=0;g_descriptor_pool_splits+=g_enc!=nil;rp_end();
     }
     static uint64_t last;uint64_t frame=atomic_load(&g_cur_frame);
-    if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips);
+    if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu need-hits=%llu hits=%llu misses=%llu scanned=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips,(unsigned long long)g_descriptor_pool_need_hits,(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned);
     if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
 static int arg_epoch_safe(NvShader *sh) {
