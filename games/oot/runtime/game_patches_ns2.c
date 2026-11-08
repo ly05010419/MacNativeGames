@@ -352,6 +352,34 @@ static void patch_pokopia_display(Module *m) {
 }
 #endif
 
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* OOT (2026-11-08, the user's choice): the 3D renders at a fixed size, docked 1536x864 (0.75 of the 2048x1152 canvas, the
+   game's own top size) and handheld 1280x720 (2/3 of 1920x1080), through the game's own "dynamic resolution disabled" path.
+   Why it is needed: with correct GPU timestamps (guest queue ordering, 159a2fee) the game's controller measures our real GPU
+   time and settles at 683x384 docked; the former 1536x864 came from a measurement of 0.2 ms.
+   main+0x805bd0 tbz w8, #0, 0x80640c becomes a branch to that path, which returns scale 1.0 (main+0x806420 mov w9, #1.0, then
+   a branch back). 2/3 needs two instructions, so main+0x806420 branches to a veneer after the time-step veneers.
+   OOT_FIXED_RES=0: the game's dynamic resolution. OOT_FIXED_RES=<scale>, 0 < scale <= 1, overrides the scale. */
+static void patch_oot_fixed_res(Module *m) {
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    const char *e = getenv("OOT_FIXED_RES");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[oot] dynamic resolution left to the game (OOT_FIXED_RES=0)\n"); return; }
+    float s = runtime_handheld_mode() ? 2.0f / 3.0f : 0.75f;
+    if (e && *e) { char *end = NULL; s = strtof(e, &end); if (!end || *end || !(s > 0 && s <= 1)) runtime_fail("OOT_FIXED_RES must be 0 or a scale in (0, 1]"); }
+    uint32_t bits; memcpy(&bits, &s, sizeof bits);
+    const uint64_t site = 0x805bd0, disabled = 0x80640c, scale_site = 0x806420;
+    uint32_t have, have_mov; memcpy(&have, m->base + site, 4); memcpy(&have_mov, m->base + scale_site, 4);
+    if (have != 0x360041e8 || have_mov != 0x52a7f009) runtime_fail("OOT resolution sites differ from verified update 131072");
+    /* After the 248 bytes of time-step veneers (oot_timestep.h), which stay reserved even with OOT_REALTIME=0. */
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    uint32_t veneer[3] = { 0x52a00009 | ((bits >> 16) << 5), 0x72800009 | ((bits & 0xffff) << 5), oot_step_branch(stub + 8, scale_site + 4) };
+    if (stub + sizeof veneer > rx_end) runtime_fail("OOT fixed resolution: no text padding left");
+    for (uint64_t k = stub; k < stub + sizeof veneer; k++) if (m->base[k]) runtime_fail("OOT fixed resolution: text padding already in use");
+    uint32_t b = oot_step_branch(site, disabled), to_veneer = oot_step_branch(scale_site, stub);
+    memcpy(m->base + stub, veneer, sizeof veneer); memcpy(m->base + site, &b, 4); memcpy(m->base + scale_site, &to_veneer, 4);
+    fprintf(stderr, "[oot] fixed render scale %g (%s; OOT_FIXED_RES=0: the game's dynamic resolution)\n", s, runtime_handheld_mode() ? "handheld" : "docked");
+}
+#endif
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
@@ -362,6 +390,7 @@ void runtime_game_patches(Module *m) {
     patch_pokopia_display(m);
 #elif defined(GAME_OOT) && !TARGET_OS_IPHONE
     patch_oot_timestep(m);
+    patch_oot_fixed_res(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {
