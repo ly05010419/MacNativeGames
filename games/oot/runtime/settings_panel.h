@@ -705,7 +705,7 @@ static TOTKSettingRow *settings_aniso_row(void) {
 static void settings_effects_reset(void) {
  if(!getenv("TOTK_TAA")){taa_set(0);runtime_setting_remove("graphics-taa.txt");}
 #if defined(GAME_OOT) && !TARGET_OS_IPHONE
- if(!getenv("OOT_NET_BYPASS")){extern void netbp_set_flag(int);netbp_set_flag(0);runtime_setting_remove("graphics-net-bypass.txt");}
+ if(!getenv("OOT_NET_BYPASS")){extern void netbp_set_flag(int);netbp_set_flag(1);runtime_setting_remove("graphics-net-bypass.txt");}   /* MetalFX is the default since 2026-11-08 (oot_net_bypass.inc) */
 #endif
 #ifdef SETTINGS_SSAO
  if(!dm_gfx_ssao_locked()&&dm_gfx_ssao_live()){settingsSsao=0;dm_gfx_ssao_set(0);runtime_setting_remove("ssao.txt");}
