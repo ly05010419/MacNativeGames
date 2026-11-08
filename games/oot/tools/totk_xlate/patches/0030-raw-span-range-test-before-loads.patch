@@ -1,0 +1,29 @@
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -1158 +1158,6 @@
+-            Operand first = Call(lo, hi), fallback = Label();
++            Operand fallback = Label();
++            // One range test for the whole span, before any load (2026-11-08). The scalar helper's
++            // cache-hit test for the first word is this predicate restricted to one address, and its
++            // hit path reads through the same cached translation, so a span that passes reads every
++            // word directly; a span that fails takes the scalar helper for every word, whose first
++            // call refills the cache exactly as before. Same loads, same results, one test a span.
+@@ -1169,2 +1174,2 @@
+-            Operand dl = W(6), dh = W(7);
+-            for (int i=1;i<count;i++)
++            Operand dl = W(6), dh = W(7), first = null;
++            for (int i=0;i<count;i++)
+@@ -1172,2 +1177,2 @@
+-                Operand guestLo = c.IAdd(lo, Const(i*4));
+-                Operand guestHi = c.IAdd(hi, c.ConditionalSelect(c.ICompareLessUnsigned(guestLo, lo), Const(1), Const(0)));
++                Operand guestLo = i == 0 ? lo : c.IAdd(lo, Const(i*4));
++                Operand guestHi = i == 0 ? hi : c.IAdd(hi, c.ConditionalSelect(c.ICompareLessUnsigned(guestLo, lo), Const(1), Const(0)));
+@@ -1176 +1181,2 @@
+-                c.Copy(Argument(1+i), c.Load(StorageKind.GlobalMemory, hostLo, hostHi));
++                Operand word = c.Load(StorageKind.GlobalMemory, hostLo, hostHi);
++                if (i == 0) first = word; else c.Copy(Argument(1+i), word);
+@@ -1179,0 +1186 @@
++            Operand slow = Call(lo, hi);
+@@ -1186 +1193 @@
+-            c.Return(first);
++            c.Return(slow);

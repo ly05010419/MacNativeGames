@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v19-mesh-byte-stores"
+#define DMSH_CHAIN "oot-native-v20-raw-span-range-test"
