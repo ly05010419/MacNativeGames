@@ -52,6 +52,7 @@ static void mesh_batch_write(uint64_t lo,uint64_t size){mesh_batch_write_why(lo,
    clears (their destination's memory), render targets, event / counter writes (post), CPU writes (dirty pages). Reads
    never invalidate. The same rules as the native draw barriers' write test (oot_bar_shader_writes: rw), by range. */
 static uint64_t g_mb_wr_rt,g_mb_wr_sbuf,g_mb_wr_img,g_mb_wr_whole,g_mb_op_dispatch,g_mb_op_tex,g_mb_op_buf,g_mb_op_fence;
+static uint64_t g_mb_prefetch,g_mb_split_inval,g_mb_split_miss;   // batches made before a pass opened; splits whose source had been invalidated / had never been collected
 static int mtk_owners(NvShader **ts,NvShader **ms);   // nvn_mesh_tasks.inc (included later): the current mesh draw's task / mesh shaders, 0 for other draws
 static int mesh_batch_tex_range(const tex_t *t,uint64_t *lo,uint64_t *n){if(!t||!t->mem||!t->L.size)return 0;*lo=(uintptr_t)t->mem;*n=t->L.size;return 1;}
 static void mesh_batch_whole(uint64_t *why){g_mb_wr_whole++;mesh_batch_write_why(0,UINT64_MAX,NULL,why);}
@@ -76,8 +77,9 @@ static void mesh_batch_context(void) {
         (unsigned long long)g_mb_inv_upd,(unsigned long long)g_mb_inv_op,(unsigned long long)g_mb_inv_post,(unsigned long long)g_mb_inv_written,(unsigned long long)g_mb_inv_dirty,(unsigned long long)g_mb_fallback,g_mb_n,(unsigned long long)atomic_load(&g_mb_verified),
         (unsigned long long)g_mb_cpu,(unsigned long long)g_mb_promoted,(unsigned long long)g_mb_kept_upd,(unsigned long long)g_mb_partial,(unsigned long long)g_mb_second,(unsigned long long)g_mb_updfull);
     if(atomic_load(&g_mesh_batch_dump)==0&&g_mb_runs&&g_mb_runs%2000==0&&g_mb_runs!=g_mb_last_report){g_mb_last_report=g_mb_runs;
-        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu)",
-        (unsigned long long)g_mb_wr_rt,(unsigned long long)g_mb_wr_sbuf,(unsigned long long)g_mb_wr_img,(unsigned long long)g_mb_wr_whole,(unsigned long long)g_mb_op_dispatch,(unsigned long long)g_mb_op_tex,(unsigned long long)g_mb_op_buf,(unsigned long long)g_mb_op_fence,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_splits);}
+        MLOG("[mesh-batch] writers: targets %llu storage-ranges %llu image-ranges %llu whole %llu; ops: dispatch %llu texture %llu buffer %llu fence %llu (runs %llu splits %llu: invalidated %llu never-collected %llu; prefetched %llu)",
+        (unsigned long long)g_mb_wr_rt,(unsigned long long)g_mb_wr_sbuf,(unsigned long long)g_mb_wr_img,(unsigned long long)g_mb_wr_whole,(unsigned long long)g_mb_op_dispatch,(unsigned long long)g_mb_op_tex,(unsigned long long)g_mb_op_buf,(unsigned long long)g_mb_op_fence,(unsigned long long)g_mb_runs,(unsigned long long)g_mb_splits,
+        (unsigned long long)g_mb_split_inval,(unsigned long long)g_mb_split_miss,(unsigned long long)g_mb_prefetch);}
 }
 static mesh_batch_entry *mesh_batch_find(uint64_t source) {
     for(unsigned i=0;i<g_mb_n;i++)if(g_mb[i].source==source){
@@ -159,8 +161,8 @@ static void mesh_batch_prepare(uint64_t current) {
         }
     }
     if(!n)return;mesh_batch_pipeline();
-    if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
-    if(g_enc){g_mb_splits++;rp_end();}blit_close();
+    if(g_mb_n+n>MESH_BATCH_CAP){g_mb_n=0;if(!current)return;n=1;sources[0]=current;fill[0]=(mb_fill){0};}
+    if(g_enc){int had=0;for(unsigned j=0;j<g_mb_n&&!had;j++)had=g_mb[j].source==current;if(had)g_mb_split_inval++;else g_mb_split_miss++;g_mb_splits++;rp_end();}blit_close();
     typedef struct {uint64_t source,output;} job;
     unsigned padded=(n+63u)&~63u;id<MTLBuffer> buffer;size_t at=arena_alloc((size_t)padded*sizeof(job)+(size_t)n*16,&buffer);
     job *jobs=(job *)((uint8_t *)buffer.contents+at);memset(jobs,0,(size_t)padded*sizeof(job));uint64_t out=buffer.gpuAddress+at+(uint64_t)padded*sizeof(job);unsigned issued=0,gpu_jobs=0;
@@ -214,4 +216,12 @@ static uint64_t mesh_batch_grid(uint64_t source,uint64_t *first) {
     mesh_batch_entry *e=mesh_batch_find(source);if(e){g_mb_hits++;return mesh_batch_bound(e,first);}
     mesh_batch_prepare(source);e=mesh_batch_find(source);if(!e){g_mb_fallback++;return 0;}
     return mesh_batch_bound(e,first);
+}
+/* Before a render pass opens (draw_inner, g_enc nil): the mesh draws ahead of this draw, up to the next dispatch / copy /
+   clear, get their grids now, so the pass is not split for them later. mb2: 1.65 of the 2.2 batches a frame still split
+   an open pass; a pass opened by ordinary draws met its first mesh draw with no batch. Nothing to collect: no encoder. */
+static void mesh_batch_prefetch(void) {
+    if(g_enc||!g_exec_next)return;
+    mesh_batch_context();if(!mesh_batch_on())return;
+    uint64_t runs=g_mb_runs;mesh_batch_prepare(0);if(g_mb_runs!=runs)g_mb_prefetch++;
 }
