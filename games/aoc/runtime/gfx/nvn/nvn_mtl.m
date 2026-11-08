@@ -4507,6 +4507,14 @@ static id<MTLBuffer> atom_scratch(const tex_t *t) {
 }
 // Snapshot substitution for same-pass feedback sampling (registered by fb_prepare, used by encode_args; see the notes before draw)
 static uint64_t g_draw_seq, g_fb_seq, g_fb_count; static int g_fb_n, g_fb_rebind;
+// The scene target's size as last observed, width << 16 | height, and when (monotonic ns): the attachment the profile's feedback_snap draws read (Age of Calamity:
+// its 3D scene target). The settings panel shows it as the game's picture, current while fresh and as last seen otherwise. *age_s is -1 before the first snapshot,
+// and stays so while DM_NVN_FB_SNAP=0 turns the snapshots off
+static _Atomic uint32_t g_fb_scene_wh; static _Atomic uint64_t g_fb_scene_ns;
+void dm_gfx_scene_size(int *w, int *h, double *age_s) {
+    uint32_t v = atomic_load(&g_fb_scene_wh); uint64_t t = atomic_load(&g_fb_scene_ns);
+    *w = (int)(v >> 16); *h = (int)(v & 0xffff); *age_s = t ? (double)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t) / 1e9 : -1;
+}
 static __unsafe_unretained id<MTLTexture> g_fb_src[4]; static __strong id<MTLTexture> g_fb_use[4]; static uint64_t g_fb_rid[4];
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen;
@@ -6306,7 +6314,7 @@ static void fb_prepare(NvProg *pr) {
             if (!use) { RED_ONCE(81, "same-pass feedback sampling: cannot create the snapshot view (format %lu); left as is", (unsigned long)t.pixelFormat); continue; }
             if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
             g_fb_src[g_fb_n] = t; g_fb_use[g_fb_n] = use; g_fb_rid[g_fb_n] = use.gpuResourceID._impl; g_fb_n++;
-            g_fb_count++;
+            g_fb_count++; atomic_store(&g_fb_scene_wh, (uint32_t)(w & 0xffff) << 16 | (uint32_t)(h & 0xffff)); atomic_store(&g_fb_scene_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
             if (g_fb_count == 1 || g_fb_count == 10 || g_fb_count == 1000 || g_fb_count % 100000 == 0)
                 MLOG("same-pass feedback sampling: snapshot #%llu (frame %llu pass %llu, shader %s slot %d samples attachment %d ser=%llu %lux%lu format %lu)", (unsigned long long)g_fb_count, (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass + !g_enc,
                      fs->key, b->reg, k, (unsigned long long)ser, (unsigned long)w, (unsigned long)h, (unsigned long)base.pixelFormat);
