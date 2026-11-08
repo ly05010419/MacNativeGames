@@ -107,4 +107,5 @@ static int netbp_dispatch(NvShader *cs) {
                                                      g_nb_own ? "own texture + copy" : "direct", (unsigned long)cw, (unsigned long)ch, (unsigned long long)g_nb_fail, (unsigned long long)g_nb_novp);
     return 1;
 }
+int netbp_flag(void) { return netbp_on(); }   // the settings panel
 void netbp_set_flag(int on) { netbp_set(on); }   // "flag net_bypass 0|1" (the flag handler comes earlier in nvn_mtl.m)

@@ -265,6 +265,9 @@ static void settings_restore_begin(void) {
   else if(sscanf(word,"interp-%d %c",&n,&tail)==1&&n>=MFX_30&&n<MFX_NMODES){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",n);}
   else if(!strcmp(word,"off")||!strcmp(word,"off\n")){nvn_fps_lock_set(0);dm_gfx_set_flag("mfx_interp",MFX_OFF);}
  }
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ {extern void netbp_set_flag(int);if(!getenv("OOT_NET_BYPASS")&&settings_read_int("graphics-net-bypass.txt",&v)&&(v==0||v==1))netbp_set_flag(v);}
+#endif
  if(!getenv("TOTK_TAA")&&settings_read_int("graphics-taa.txt",&v)&&(v==0||v==1))taa_set(v);
  settings_ssao_restore();
  if(!dm_gfx_aniso_locked()&&settings_read_int("graphics-aniso.txt",&v)&&v<=16)dm_gfx_aniso_start(v);
@@ -669,10 +672,22 @@ static TOTKSettingRow *settings_botw_fov_row(void);      /* below: Breath of the
 #ifdef GAME_BOTW190
 #include "botw_effects.h"   /* Breath of the Wild 1.9.0's page: the effect switches its shaders allow (PR #1602) */
 #else
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* The upscaler at the end of the frame: the game's own network or MetalFX (oot_net_bypass.inc). Takes effect on the next frame. */
+extern int netbp_flag(void); extern void netbp_set_flag(int);
+static TOTKSettingRow *settings_oot_upscaler_row(void) {
+ return settings_row(settings_text("放大方式","Upscaler"),@[settings_text("游戏自带","Game's own"),@"MetalFX"],@[@0,@1],
+  ^int{return netbp_flag();},^(int v){netbp_set_flag(v);settings_save_int("graphics-net-bypass.txt",v,"upscaler");});
+}
+#endif
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {   /* other versions: the page says so */
  NSString *none=settings_text("这个版本没有","Not in this version");
- return @[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
+ NSArray<TOTKSettingRow *> *rows=@[settings_botw_shadow_row(),settings_fixed(settings_text("景深","Depth of field"),none),settings_botw_fov_row(),settings_fixed(settings_text("FXAA 抗锯齿","FXAA anti-aliasing"),none),settings_fixed(settings_text("锐化","Sharpening"),none),settings_fixed(settings_text("模型细节距离（LOD）","Model detail distance (LOD)"),none),settings_fixed(settings_text("渲染距离","Render distance"),none),
           settings_fixed(settings_text("效果开关","Effect switches"),none)];
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ rows=[@[settings_oot_upscaler_row()] arrayByAddingObjectsFromArray:rows];
+#endif
+ return rows;
 }
 #endif
 #endif
@@ -689,6 +704,9 @@ static TOTKSettingRow *settings_aniso_row(void) {
    a row the environment decides stays. */
 static void settings_effects_reset(void) {
  if(!getenv("TOTK_TAA")){taa_set(0);runtime_setting_remove("graphics-taa.txt");}
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+ if(!getenv("OOT_NET_BYPASS")){extern void netbp_set_flag(int);netbp_set_flag(0);runtime_setting_remove("graphics-net-bypass.txt");}
+#endif
 #ifdef SETTINGS_SSAO
  if(!dm_gfx_ssao_locked()&&dm_gfx_ssao_live()){settingsSsao=0;dm_gfx_ssao_set(0);runtime_setting_remove("ssao.txt");}
 #endif
