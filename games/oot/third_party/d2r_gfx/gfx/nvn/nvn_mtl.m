@@ -1722,6 +1722,9 @@ static void pend_overlay_x(uint64_t a, uint8_t *out, size_t n, int depth, int wa
 typedef struct { uint64_t lo, hi; } usnap_rng;
 typedef struct { usnap_rng *r; int n, cap; } usnap_rngs;
 static usnap_rngs g_usr;   // replay side (the capture on the game thread uses its own list)
+static uint64_t g_usnap_presorted_subs, g_usnap_walked_subs;   // usnap_presorted (below): submissions merged from the copies' pre-sorted lists / walked op by op
+static uint64_t g_usnap_check_subs, g_usnap_check_bad;   // OOT_USNAP_PRESORTED=2 self-check: submissions compared / found different
+static uint64_t g_usnap_pre_nocopy, g_usnap_pre_many, g_usnap_pre_deep;   // why a submission walked the ops instead (usp1: 69 % did)
 static void usnap_collect(usnap_rngs *v, const uint8_t *p, int depth) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
@@ -1931,9 +1934,11 @@ void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
         uint64_t cns = atomic_exchange(&g_ucap_ns, 0), cby = atomic_exchange(&g_ucap_bytes, 0);
         { uint64_t a = atomic_exchange(&g_ucap_t[0], 0), b = atomic_exchange(&g_ucap_t[1], 0), c = atomic_exchange(&g_ucap_t[2], 0), d = atomic_exchange(&g_ucap_t[3], 0);
           MLOG("[nvn] uniform capture in the submit call (ms per submission): collect %.3f / sort %.3f / merge %.3f / copy %.3f", a / 1800 / 1e6, b / 1800 / 1e6, c / 1800 / 1e6, d / 1800 / 1e6); }
-        MLOG("[nvn] uniform 提交时快照：每次提交平均 %.0f 段 / %.1f KB / 回放线程 %.3f ms（收集排序 %.3f / 合并 %.3f / 分配并派发 %.3f）；辅助线程拷 %llu 段、回放自取 %llu 段、等辅助线程 %llu 次；本次提交里 GPU 写入使快照失效共 %llu 段，因前次提交的 GPU 写入未完成而不拷贝共 %llu 段%s",
+        MLOG("[nvn] uniform 提交时快照：每次提交平均 %.0f 段 / %.1f KB / 回放线程 %.3f ms（收集排序 %.3f / 合并 %.3f / 分配并派发 %.3f；预排序表合并 %llu 次、走操作流 %llu 次（非副本 %llu / 表过多 %llu / 过深 %llu）、自检 %llu 次不符 %llu）；辅助线程拷 %llu 段、回放自取 %llu 段、等辅助线程 %llu 次；本次提交里 GPU 写入使快照失效共 %llu 段，因前次提交的 GPU 写入未完成而不拷贝共 %llu 段%s",
              (double)g_usnap_n / 1800, (double)g_usnap_bytes / 1800 / 1024, (double)g_usnap_ns / 1800 / 1e6,
-             (double)g_usnap_t[0] / 1800 / 1e6, (double)g_usnap_t[1] / 1800 / 1e6, (double)g_usnap_t[2] / 1800 / 1e6,
+             (double)g_usnap_t[0] / 1800 / 1e6, (double)g_usnap_t[1] / 1800 / 1e6, (double)g_usnap_t[2] / 1800 / 1e6, (unsigned long long)g_usnap_presorted_subs, (unsigned long long)g_usnap_walked_subs,
+             (unsigned long long)g_usnap_pre_nocopy, (unsigned long long)g_usnap_pre_many, (unsigned long long)g_usnap_pre_deep,
+             (unsigned long long)g_usnap_check_subs, (unsigned long long)g_usnap_check_bad,
              (unsigned long long)atomic_load(&g_usnap_helped), (unsigned long long)g_usnap_self, (unsigned long long)g_usnap_waits,
              (unsigned long long)g_usnap_drops, (unsigned long long)g_usnap_skip_gpu,
              cby ? [NSString stringWithFormat:@"；翻译线程模式：提交调用里先拷 %.1f KB / %.3f ms（游戏线程）", (double)cby / 1800 / 1024, (double)cns / 1800 / 1e6].UTF8String : "");
@@ -1949,6 +1954,70 @@ void mtl_sub_snapshot_ubos_cap(const uint64_t *h, int n, void *capv) {
 }
 void mtl_sub_snapshot_ubos(const uint64_t *h, int n) { mtl_sub_snapshot_ubos_cap(h, n, NULL); }
 static uint64_t g_usnap_take_stamp; static int g_usnap_take_over, g_usnap_take_npend, g_usnap_take_ngw;
+/* The uniform ranges of a submission from the lists its recordings gathered when they were flattened (hle_nvn.c flat_note:
+   (start, end) pairs, deduplicated, sorted by start, plus the OP_CALL targets, which are followed as usnap_collect follows
+   OP_CALL): a k-way merge of sorted lists into g_usr. Returns 0 when a recording has no list (a probe's hand-built stream,
+   a call nested deeper than 16) and the caller walks the ops as before. OOT_USNAP_PRESORTED=0 keeps the walk (A/B). Before
+   (tp4, village): usnap_collect 0.76 + rng_sort 0.86 ms a frame on the replay path. */
+int hle_copy_ubo_lists(uint64_t h, const uint64_t **ubo, int *nubo, const uint64_t **call, int *ncall);
+static int usnap_presorted_mode(void) { static int m = -1; if (m < 0) { const char *e = getenv("OOT_USNAP_PRESORTED"); m = e ? atoi(e) : 1; if (!m) MLOG("OOT_USNAP_PRESORTED=0: the uniform snapshot walks the ops of every submission (A/B)"); if (m == 2) MLOG("OOT_USNAP_PRESORTED=2: every merged list is checked against the op walk (self-check)"); } return m; }
+static int usnap_presorted_on(void) { return usnap_presorted_mode() != 0; }
+static int usnap_presorted_check(void) { return usnap_presorted_mode() == 2; }
+typedef struct { const uint64_t *p; int n, i; } usnap_list;
+static int usnap_lists_add(usnap_list *ls, int *nl, int cap, uint64_t h, int depth) {
+    const uint64_t *ubo, *call; int nubo, ncall;
+    if (depth > 16) { g_usnap_pre_deep++; return 0; }
+    if (hle_copy_ubo_lists(h, &ubo, &nubo, &call, &ncall) < 0) { g_usnap_pre_nocopy++; return 0; }
+    if (nubo) { if (*nl == cap) { g_usnap_pre_many++; return 0; } ls[(*nl)++] = (usnap_list){ubo, nubo, 0}; }
+    for (int k = 0; k < ncall; k++) if (!usnap_lists_add(ls, nl, cap, call[k], depth + 1)) return 0;
+    return 1;
+}
+static int usnap_presorted(const uint64_t *h, int n) {
+    if (!usnap_presorted_on()) return 0;
+    enum { LMAX = 256 }; usnap_list ls[LMAX]; int nl = 0;
+    for (int i = 0; i < n; i++) if (!usnap_lists_add(ls, &nl, LMAX, h[i], 0)) return 0;
+    int total = 0; for (int k = 0; k < nl; k++) total += ls[k].n;
+    if (total > g_usr.cap) { g_usr.cap = total + 256; g_usr.r = realloc(g_usr.r, g_usr.cap * sizeof *g_usr.r); if (!g_usr.r) MDIE("uniform copy ranges"); }
+    g_usr.n = 0;
+    int heap[LMAX], hn = 0;   // a min-heap over the lists' heads, by start address
+#define USNAP_HKEY(k) (ls[k].p[2 * ls[k].i])
+    for (int k = 0; k < nl; k++) { int c = hn++; heap[c] = k; while (c && USNAP_HKEY(heap[(c - 1) / 2]) > USNAP_HKEY(heap[c])) { int t = heap[c]; heap[c] = heap[(c - 1) / 2]; heap[(c - 1) / 2] = t; c = (c - 1) / 2; } }
+    while (hn) {
+        int k = heap[0]; usnap_rng r = {ls[k].p[2 * ls[k].i], ls[k].p[2 * ls[k].i + 1]};
+        if (!g_usr.n || g_usr.r[g_usr.n - 1].lo != r.lo || g_usr.r[g_usr.n - 1].hi != r.hi) g_usr.r[g_usr.n++] = r;
+        if (++ls[k].i == ls[k].n) heap[0] = heap[--hn];
+        for (int c = 0; hn;) { int l = 2 * c + 1, rr = l + 1, m = c; if (l < hn && USNAP_HKEY(heap[l]) < USNAP_HKEY(heap[m])) m = l; if (rr < hn && USNAP_HKEY(heap[rr]) < USNAP_HKEY(heap[m])) m = rr; if (m == c) break; int t = heap[c]; heap[c] = heap[m]; heap[m] = t; c = m; }
+    }
+#undef USNAP_HKEY
+    g_usnap_presorted_subs++;
+    return 1;
+}
+/* OOT_USNAP_PRESORTED=2: the merged list must equal the op walk's, both normalized (sorted by (lo, hi), exact duplicates
+   dropped); differences are counted and the first few logged (lists are compared as sets: the merge below needs only the
+   order by start, which both have). */
+static int usnap_lohi_cmp(const void *x, const void *y) { const usnap_rng *a = x, *b = y; return a->lo < b->lo ? -1 : a->lo > b->lo ? 1 : a->hi < b->hi ? -1 : a->hi > b->hi; }
+static int usnap_normalize(usnap_rng *r, int n) {
+    if (n > 1) qsort(r, (size_t)n, sizeof *r, usnap_lohi_cmp);
+    int m = n ? 1 : 0;
+    for (int i = 1; i < n; i++) if (r[i].lo != r[m - 1].lo || r[i].hi != r[m - 1].hi) r[m++] = r[i];
+    return m;
+}
+static void usnap_presorted_verify(const uint64_t *h, int n) {
+    static usnap_rngs walk, mine;
+    walk.n = 0; for (int i = 0; i < n; i++) usnap_collect(&walk, (const uint8_t *)(uintptr_t)h[i], 0);
+    if (g_usr.n > mine.cap) { mine.cap = g_usr.n + 256; mine.r = realloc(mine.r, (size_t)mine.cap * sizeof *mine.r); if (!mine.r) MDIE("uniform range check"); }
+    memcpy(mine.r, g_usr.r, (size_t)g_usr.n * sizeof *mine.r); mine.n = g_usr.n;
+    int a = usnap_normalize(walk.r, walk.n), b = usnap_normalize(mine.r, mine.n);
+    g_usnap_check_subs++;
+    if (a == b && (!a || !memcmp(walk.r, mine.r, (size_t)a * sizeof *walk.r))) return;
+    g_usnap_check_bad++;
+    if (g_usnap_check_bad <= 5) {
+        int first = -1; for (int i = 0; i < a && i < b && first < 0; i++) if (walk.r[i].lo != mine.r[i].lo || walk.r[i].hi != mine.r[i].hi) first = i;
+        MLOG("【红】[nvn] uniform 预排序表自检不符：走操作流 %d 段 / 预排序 %d 段（排序去重后），首个不同项 %d：走 %#llx..%#llx，预排序 %#llx..%#llx", a, b, first,
+             first >= 0 ? (unsigned long long)walk.r[first].lo : 0ull, first >= 0 ? (unsigned long long)walk.r[first].hi : 0ull,
+             first >= 0 ? (unsigned long long)mine.r[first].lo : 0ull, first >= 0 ? (unsigned long long)mine.r[first].hi : 0ull);
+    }
+}
 static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     uint64_t tq0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     uint64_t done = cap && !g_ucap_probe_now ? cap->done : __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
@@ -1962,14 +2031,15 @@ static void usnap_take(const uint64_t *h, int n, const usnap_cap *cap) {
     if (ng > 1) qsort(g_gw, (size_t)ng, sizeof *g_gw, gw_cmp);
     if (neye) memcpy(g_gw + ng, eyegw, (size_t)neye * sizeof *g_gw);   // fits: they came out of g_gw
     g_ngw = ng + neye;
-    g_usr.n = 0;
+    g_usr.n = 0; int pre = 0;
     if (cap) {   // the bindings as captured (merged, inside pools); the merge below works on them as on fresh ones
         if (cap->n > g_usr.cap) { g_usr.cap = cap->n + 256; g_usr.r = realloc(g_usr.r, g_usr.cap * sizeof *g_usr.r); if (!g_usr.r) MDIE("uniform copy ranges"); }
         memcpy(g_usr.r, cap->r, sizeof *cap->r * (size_t)cap->n); g_usr.n = cap->n;
-    } else for (int i = 0; i < n; i++) usnap_collect(&g_usr, (const uint8_t *)(uintptr_t)h[i], 0);
+    } else if (!(pre = usnap_presorted(h, n))) { g_usr.n = 0; g_usnap_walked_subs++; for (int i = 0; i < n; i++) usnap_collect(&g_usr, (const uint8_t *)(uintptr_t)h[i], 0); }
+    if (pre && usnap_presorted_check()) usnap_presorted_verify(h, n);
     if (!g_usr.n) return;
     usnap_rng *u = g_usr.r;
-    if (!cap) rng_sort(u, g_usr.n);
+    if (!cap && !pre) rng_sort(u, g_usr.n);
     uint64_t tq1 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); g_usnap_t[0] += tq1 - tq0;
     /* merge ranges up to 256 bytes apart that lie in one memory pool, at most 1 MiB each (arena blocks are 4 MiB); the copies
        stay disjoint and sorted (usnap_first): a range overlapping a full copy keeps only its part beyond it, so a binding
@@ -11581,12 +11651,48 @@ static void pool_input_ids(pool_input *p,const p_bind_buf *u,int n) {
     p->ids=d;p->n=n;
     if(pool_ids_incremental_on()){if(!m)m=victim;*m=(pool_ids_memo){u->addr,u->size,p->poolgen,p->hostwrite,p->stamp,++g_pool_ids_use,n,[d mutableCopy]};p->ids=m->ids;}
 }
+/* OOT (2026-11-08): captures of a handle table reuse dedicated buffers and copy only the pages written since the buffer's
+   previous capture of the same table (nvn_dirty_runs_since: the generations pool_input_find already relies on). Before, every
+   capture took arena memory and copied the whole table (5.8 MB, about 1.7 captures a frame in the village, 3,544 a game:
+   pool_input_get 0.66 ms a frame of the replay), while the game rewrites about 9 KB of it a frame. A buffer is reused only
+   when the GPU finished every submission that bound it (last_use, recorded at capture and at bind, <= g_done); a buffer of
+   another table, a pool generation or host write-back change, or an untracked range gets a whole copy; with no finished
+   buffer the capture takes arena memory as before. Entries of g_pool_inputs still pointing into a reused buffer are dropped.
+   OOT_POOL_CAPTURE_INC=0: arena copies as before (A/B). */
+enum { POOL_CAP_BUFS = 8 };
+typedef struct { __strong id<MTLBuffer> buf; uint8_t *cpu; uint64_t gpu,cap,lo,size,stamp,poolgen,hostwrite,last_use; int valid; } pool_cap_buf;
+static pool_cap_buf g_pool_caps[POOL_CAP_BUFS];
+static uint64_t g_pool_cap_inc,g_pool_cap_full,g_pool_cap_arena,g_pool_cap_evict,g_pool_cap_inc_bytes,g_pool_cap_full_bytes;
+static int pool_cap_on(void){static int on=-1;if(on<0){const char *e=getenv("OOT_POOL_CAPTURE_INC");on=!(e&&!atoi(e));if(!on)MLOG("OOT_POOL_CAPTURE_INC=0: handle-table captures copy the whole table into arena memory (A/B)");}return on;}
+typedef struct { uint8_t *dst; uint64_t lo; } pool_cap_ctx;
+static void pool_cap_run(void *c,uintptr_t lo,uintptr_t hi){pool_cap_ctx *x=c;memcpy(x->dst+(lo-x->lo),(const void *)lo,hi-lo);g_pool_cap_inc_bytes+=hi-lo;}
+/* The submission being encoded (fence g_fence+1 at its commit) binds this capture: its buffer stays until the GPU is done with it. */
+static void pool_cap_touch(uint64_t gpu){for(int i=0;i<POOL_CAP_BUFS;i++){pool_cap_buf *b=&g_pool_caps[i];if(b->valid&&gpu>=b->gpu&&gpu<b->gpu+b->size){b->last_use=g_fence+1;return;}}}
+/* The buffer for a new capture of table (lo, size): a finished one of the same table with the newest content, else an empty
+   or the least recently used finished one (reallocated when too small). NULL when the GPU still uses every buffer. */
+static pool_cap_buf *pool_cap_pick(uint64_t lo,uint64_t size){
+    uint64_t done=__atomic_load_n(&g_done,__ATOMIC_ACQUIRE);pool_cap_buf *same=NULL,*other=NULL;
+    for(int i=0;i<POOL_CAP_BUFS;i++){pool_cap_buf *b=&g_pool_caps[i];
+        if(b->valid&&b->last_use>done)continue;
+        if(b->valid&&b->lo==lo&&b->size==size){if(!same||b->stamp>same->stamp)same=b;}
+        else if(!other||(other->valid&&(!b->valid||b->last_use<other->last_use)))other=b;
+    }
+    pool_cap_buf *b=same?same:other;if(!b)return NULL;
+    if(b->valid){for(int i=0;i<64;i++)if(g_pool_inputs[i].gpu>=b->gpu&&g_pool_inputs[i].gpu<b->gpu+b->cap)g_pool_inputs[i].gpu=0;if(!same)g_pool_cap_evict++;}
+    if(b->cap<size){
+        if(b->buf)res_remove(b->buf);
+        b->buf=[g_dev newBufferWithLength:(NSUInteger)size options:MTLResourceStorageModeShared];if(!b->buf)MDIE("handle table capture buffer: %llu bytes",(unsigned long long)size);
+        b->cap=size;b->cpu=(uint8_t *)b->buf.contents;b->gpu=b->buf.gpuAddress;res_add(b->buf);b->valid=0;
+    }
+    return b;
+}
 static pool_input *pool_input_get(const p_bind_buf *u,int n) {
-    pool_input *p=pool_input_find(u);if(p)g_pool_input_hits++;
+    pool_input *p=pool_input_find(u);if(p){g_pool_input_hits++;pool_cap_touch(p->gpu);}
     if(!p){
         p=&g_pool_inputs[g_pool_input_next++%64];
         __unsafe_unretained id<MTLBuffer> buf=nil;uint8_t *cpu=NULL;uint64_t gpu=0,stamp=nvn_dirty_now();
-        arena_alloc_u((size_t)u->size,&buf,&cpu,&gpu);
+        pool_cap_buf *b=pool_cap_on()?pool_cap_pick(u->addr,u->size):NULL;
+        if(b){cpu=b->cpu;gpu=b->gpu;}else arena_alloc_u((size_t)u->size,&buf,&cpu,&gpu);
         // Stamp before re-protecting: writes during protection/copy invalidate
         // this cache entry; the GPU consumes precisely the captured copy.
         nvn_dirty_protect((const void *)(uintptr_t)u->addr,(size_t)u->size);
@@ -11594,8 +11700,14 @@ static pool_input *pool_input_get(const p_bind_buf *u,int n) {
         // Capture its epoch and bytes together, after any in-progress landing.
         pthread_mutex_lock(&g_mu);
         uint64_t poolgen=atomic_load_explicit(&g_pool_gen,memory_order_acquire),hostwrite=atomic_load_explicit(&g_pool_input_hostwrite,memory_order_acquire);
-        memcpy(cpu,(const void *)(uintptr_t)u->addr,(size_t)u->size);
+        // Same table, same pool generation and write-back epoch: the buffer holds the table as of its stamp; only the pages
+        // written since (generation > stamp, including the ones whose write the earlier copy may already have seen) are copied.
+        int inc=b&&b->valid&&b->lo==u->addr&&b->size==u->size&&b->poolgen==poolgen&&b->hostwrite==hostwrite;
+        if(inc){pool_cap_ctx c={cpu,u->addr};inc=nvn_dirty_runs_since((const void *)(uintptr_t)u->addr,(size_t)u->size,b->stamp,pool_cap_run,&c);}
+        if(inc)g_pool_cap_inc++;
+        else{memcpy(cpu,(const void *)(uintptr_t)u->addr,(size_t)u->size);g_pool_cap_full_bytes+=u->size;if(b)g_pool_cap_full++;else g_pool_cap_arena++;}
         pthread_mutex_unlock(&g_mu);
+        if(b){b->valid=1;b->lo=u->addr;b->size=u->size;b->stamp=stamp;b->poolgen=poolgen;b->hostwrite=hostwrite;b->last_use=g_fence+1;}
         p->lo=u->addr;p->size=u->size;p->gpu=gpu;p->cpu=(const uint32_t *)cpu;p->stamp=stamp;p->poolgen=poolgen;p->hostwrite=hostwrite;p->ids=nil;p->n=0;g_pool_input_misses++;
     }
     if(n&&(p->n!=n||!p->ids))pool_input_ids(p,u,n);
@@ -11846,7 +11958,8 @@ static void prepare_shader_pools(NvShader *sh) {
     if(frame>=last+300&&pool_memo_check_on())MLOG("[descriptor-demand-check] memo answers verified against a fresh proof: same=%llu different=%llu; table coverage memo hits=%llu wrong=%llu; conditional-render index ok=%llu wrong=%llu",(unsigned long long)g_pool_memo_check_ok,(unsigned long long)g_pool_memo_check_bad,(unsigned long long)g_descriptor_pool_cover_hits,(unsigned long long)g_descriptor_pool_cover_bad,(unsigned long long)g_cpend_index_ok,(unsigned long long)g_cpend_index_bad);
     if(frame>=last+300)MLOG("[descriptor-demand-memo] hits=%llu fills=%llu evictions=%llu misses: no-entry=%llu uniform-read=%llu uniforms-differ=%llu words-differ=%llu whole-differ=%llu split=%llu",(unsigned long long)g_pmemo_hit,(unsigned long long)g_pmemo_fill,(unsigned long long)g_pmemo_evict,(unsigned long long)g_pmemo_none,(unsigned long long)g_pmemo_uread,(unsigned long long)g_pmemo_udiff,(unsigned long long)g_pmemo_wdiff,(unsigned long long)g_pmemo_whole_diff,(unsigned long long)g_pmemo_split);
     if(frame>=last+300)MLOG("[descriptor-pool-types] filter=%d incompatible=%llu not-created=%llu need-hits=%llu hits=%llu misses=%llu scanned=%llu",descriptor_pool_type_filter(),(unsigned long long)g_descriptor_pool_type_skips,(unsigned long long)g_descriptor_pool_uncreated_skips,(unsigned long long)g_descriptor_pool_need_hits,(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned);
-    if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
+    if(frame>=last+300){MLOG("[descriptor-ids] full-scans=%llu incremental-words=%llu captures: incremental=%llu (%.1f MB) whole=%llu (%.1f MB) arena=%llu evict=%llu",(unsigned long long)g_pool_ids_full,(unsigned long long)g_pool_ids_words_inc,
+            (unsigned long long)g_pool_cap_inc,(double)g_pool_cap_inc_bytes/1048576,(unsigned long long)g_pool_cap_full,(double)g_pool_cap_full_bytes/1048576,(unsigned long long)g_pool_cap_arena,(unsigned long long)g_pool_cap_evict);MLOG("[descriptor-demand] proved=%llu fallback=%llu waits=%llu words=%llu capture-hit=%llu capture-new=%llu exact=%llu whole=%llu excluded-calls=%llu memo=%llu",g_pool_demand_proved,g_pool_demand_fallback,g_pool_demand_waits,g_pool_demand_words,g_pool_input_hits,g_pool_input_misses,g_pool_demand_exact,g_pool_demand_whole,g_pool_demand_excluded,g_pool_demand_memo);last=frame;MLOG("[descriptor-pools] hit=%llu rebuild=%llu entries=%llu splits=%llu physical-view reuse=%llu create=%llu reasons=%llu/%llu/%llu/%llu/%llu once=%d",(unsigned long long)g_descriptor_pool_hits,(unsigned long long)g_descriptor_pool_misses,(unsigned long long)g_descriptor_pool_scanned,(unsigned long long)g_descriptor_pool_splits,(unsigned long long)g_stor_sampling_hits,(unsigned long long)g_stor_sampling_misses,(unsigned long long)g_descriptor_pool_reasons[0],(unsigned long long)g_descriptor_pool_reasons[1],(unsigned long long)g_descriptor_pool_reasons[2],(unsigned long long)g_descriptor_pool_reasons[3],(unsigned long long)g_descriptor_pool_reasons[4],descriptor_pool_once());}
 }
 static int arg_epoch_safe(NvShader *sh) {
     if (!sh->ab_epoch_ok) {
@@ -12023,7 +12136,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                 if (!slot_check) { slots[aid] = sh->tex_slots.slots[aid]; continue; }
             } else slot_misses++;
         }
-        if((b->kind==NVN_RB_SBUFP||b->kind==NVN_RB_CBUF)&&(sh->pool_capture_mask&(UINT64_C(1)<<i))){slots[aid]=sh->pool_capture_gpu[i];continue;}
+        if((b->kind==NVN_RB_SBUFP||b->kind==NVN_RB_CBUF)&&(sh->pool_capture_mask&(UINT64_C(1)<<i))){slots[aid]=sh->pool_capture_gpu[i];pool_cap_touch(slots[aid]);continue;}
         if (b->kind == NVN_RB_TEXP || b->kind == NVN_RB_SAMPP) { slots[aid]=descriptor_pool_for_shader(sh,b,1); continue; }
         if (b->kind == NVN_RB_CBUF && reg == NVN_PUSH_BANK) {   /* NVN2 push constants (OP_PUSH_CONST): this draw's or dispatch's copy of the block */
             __unsafe_unretained id<MTLBuffer> pb = nil; uint8_t *cpu = NULL; uint64_t pgpu = 0;

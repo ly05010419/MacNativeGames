@@ -1140,9 +1140,10 @@ static pthread_mutex_t g_copy_mu = PTHREAD_MUTEX_INITIALIZER;
 /* The opaque handle points past this host-only validation and accounting prefix. */
 #define COPY_MAGIC 0x59504f43444d43ull   /* "CMDCOPY" */
 #ifdef GAME_BOTW
-typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; _Atomic uint32_t used; uint32_t pad_; uint64_t *ubo, *call; uint32_t nubo, ncall; } copy_prefix;   // used: called or submitted at least once (NVN 53 lifetime, release_copies)
 #else
-typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; uint64_t keep_until, rec_cb, eyes, tdraws; } copy_prefix;   // keep_until, rec_cb (the command buffer that recorded it), eyes (OP_EYE marks in the body): zeldaVR stereo B2 (below)
+typedef struct { uint64_t magic; _Atomic uint64_t used_at; uint64_t made_at; uint32_t body_bytes, last_size; uint64_t keep_until, rec_cb, eyes, tdraws;
+    uint64_t *ubo, *call; uint32_t nubo, ncall; } copy_prefix;   // keep_until, rec_cb (the command buffer that recorded it), eyes (OP_EYE marks in the body): zeldaVR stereo B2 (below); ubo / call: the recording's uniform ranges and OP_CALL targets (flat_note, 2026-11-08)
 #endif
 /* zeldaVR stereo B2 (game_patches_v143.c): the first run's recordings are inlined into the frame's final assembly after the
    second run (the left eye's twins), but command buffers both runs use add their control memory again in the second run,
@@ -1157,6 +1158,41 @@ static int copy_kept(const cmd_copy *c);
 static _Atomic uint64_t g_copy_bytes;   /* live recording-copy bytes (logged with the copy count) */
 static copy_prefix *copy_of(NVNcommandHandle h) { copy_prefix *c = (copy_prefix *)(uintptr_t)h - 1; return c; }
 static uint8_t *flatten_recording_ops(const uint8_t *p);
+/* The recording's uniform bindings and nested calls, gathered while the copy is made (2026-11-08): the replay's uniform
+   snapshot used to walk every op of every submission again, on the game's main thread between the game's signal and the
+   commit (usnap_collect 0.76 + rng_sort 0.86 ms a frame in Ocarina's village). Ranges as usnap_collect takes them (an address
+   and a size up to 64 KiB), stored as (start, end) pairs deduplicated and sorted by start; the calls are followed by the
+   replay through their own copies (nvn_mtl.m usnap_presorted). */
+typedef struct { uint64_t *ubo, *call; uint32_t nubo, cubo, ncall, ccall; } flat_lists;
+static void flat_note(flat_lists *l, const op_hdr *h, const uint8_t *q) {
+    if (h->op == OP_BIND_UBO) {
+        p_bind_buf b; memcpy(&b, q + 8, sizeof b);
+        if (!b.addr || !b.size || b.size > 65536) return;
+        if (l->nubo == l->cubo) { l->cubo = l->cubo ? l->cubo * 2 : 16; l->ubo = realloc(l->ubo, (size_t)l->cubo * 2 * sizeof *l->ubo); if (!l->ubo) die("uniform range list"); }
+        l->ubo[2 * l->nubo] = b.addr; l->ubo[2 * l->nubo + 1] = b.addr + b.size; l->nubo++;
+    } else if (h->op == OP_CALL) {
+        uint64_t t; memcpy(&t, q + 8, 8);
+        if (l->ncall == l->ccall) { l->ccall = l->ccall ? l->ccall * 2 : 4; l->call = realloc(l->call, (size_t)l->ccall * sizeof *l->call); if (!l->call) die("call list"); }
+        l->call[l->ncall++] = t;
+    }
+}
+static int flat_rng_cmp(const void *a, const void *b) { const uint64_t *x = a, *y = b; return x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : x[1] < y[1] ? -1 : x[1] > y[1]; }
+static void flat_store(copy_prefix *c, flat_lists *l) {
+    if (l->nubo > 1) {
+        qsort(l->ubo, l->nubo, 2 * sizeof *l->ubo, flat_rng_cmp);
+        uint32_t m = 1;
+        for (uint32_t i = 1; i < l->nubo; i++) if (l->ubo[2 * i] != l->ubo[2 * m - 2] || l->ubo[2 * i + 1] != l->ubo[2 * m - 1]) { l->ubo[2 * m] = l->ubo[2 * i]; l->ubo[2 * m + 1] = l->ubo[2 * i + 1]; m++; }
+        l->nubo = m;
+    }
+    c->ubo = l->ubo; c->nubo = l->nubo; c->call = l->call; c->ncall = l->ncall;
+}
+static void copy_lists_free(copy_prefix *c) { free(c->ubo); free(c->call); c->ubo = c->call = NULL; c->nubo = c->ncall = 0; }
+/* For the replay's uniform snapshot: the lists a flattened copy gathered, or -1 for a handle that is not one (a probe's stream). */
+int hle_copy_ubo_lists(uint64_t h, const uint64_t **ubo, int *nubo, const uint64_t **call, int *ncall) {
+    const copy_prefix *c = copy_of((NVNcommandHandle)h);
+    if (!h || c->magic != COPY_MAGIC) return -1;
+    *ubo = c->ubo; *nubo = (int)c->nubo; *call = c->call; *ncall = (int)c->ncall; return 0;
+}
 /* TOTK_FLATTEN_FAST (default on; =0 the op-by-op copy, =2 both and compare), 2026-10-24: a recording sits contiguous in
    the recorder's one buffer (cmd_reserve reallocs it whole), so the copy is one exact-size allocation and one memcpy after
    a header walk that checks the ops and works out what the op-by-op copy derives. The op-by-op copy grew its buffer from
@@ -1166,11 +1202,12 @@ static int flatten_fast_mode(void) { static int v = -1; if (v < 0) { const char 
 static uint8_t *flatten_recording(const uint8_t *p) {
     int mode = flatten_fast_mode();
     if (!mode) return flatten_recording_ops(p);
-    const uint8_t *q = p; int bulk_ok = 1, first = 1; uint32_t last_size = 0, end_size = 0;
+    const uint8_t *q = p; int bulk_ok = 1, first = 1; uint32_t last_size = 0, end_size = 0; flat_lists fl = {0};
     for (;;) {
         op_hdr h; memcpy(&h, q, sizeof h);
         if (h.size < 8 || (h.size & 7)) die("corrupt recording at %p (op %u size %u)", (const void *)q, h.op, h.size);
-        if (h.op == OP_JUMP) return flatten_recording_ops(p);
+        if (h.op == OP_JUMP) { free(fl.ubo); free(fl.call); return flatten_recording_ops(p); }
+        flat_note(&fl, &h, q);
         if (h.op >= OP_COUNT_ || h.size > (64u << 20)) bulk_ok = 0;
         if (first) { if (h.op != OP_BEGIN || h.size != 8) bulk_ok = 0; first = 0; }
         else if (h.op == OP_BEGIN) bulk_ok = 0;
@@ -1181,7 +1218,7 @@ static uint8_t *flatten_recording(const uint8_t *p) {
     size_t len = (size_t)(q - p), n = sizeof(copy_prefix) + len;
     uint8_t *out = malloc(n); if (!out) die("command copy allocation");
     memcpy(out + sizeof(copy_prefix), p, len);
-    copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c);
+    copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c); flat_store(c, &fl);
 #ifdef GAME_BOTW
     c->used = 0;
 #endif
@@ -1194,19 +1231,20 @@ static uint8_t *flatten_recording(const uint8_t *p) {
         static _Atomic uint64_t checked;
         if (malloc_size(r) < n || memcmp(out + sizeof(copy_prefix), ref, len) || r->body_bytes != c->body_bytes || r->last_size != c->last_size)
             die("TOTK_FLATTEN_FAST=2: fast copy differs (len %zu, body %u/%u, last %u/%u)", len, c->body_bytes, r->body_bytes, c->last_size, r->last_size);
-        g_copy_bytes -= malloc_size(r); free(r);
+        copy_lists_free(r); g_copy_bytes -= malloc_size(r); free(r);
         if (!(atomic_fetch_add(&checked, 1) % 20000)) LOG("[flatten] TOTK_FLATTEN_FAST=2: %llu recordings identical", (unsigned long long)checked + 1);
     }
     return out + sizeof(copy_prefix);
 }
 static uint8_t *flatten_recording_ops(const uint8_t *p) {
     size_t n = sizeof(copy_prefix), cap = 4096; uint8_t *out = malloc(cap);
-    int bulk_ok = 1; uint32_t last_size = 0;
+    int bulk_ok = 1; uint32_t last_size = 0; flat_lists fl = {0};
     if (!out) die("command copy allocation");
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
         if (h.size < 8 || (h.size & 7)) die("corrupt recording at %p (op %u size %u)", (const void *)p, h.op, h.size);
         if (h.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        flat_note(&fl, &h, p);
         if (h.op >= OP_COUNT_ || h.size > (64u << 20)) bulk_ok = 0;
         if (n == sizeof(copy_prefix)) { if (h.op != OP_BEGIN || h.size != 8) bulk_ok = 0; }
         else if (h.op == OP_BEGIN) bulk_ok = 0;
@@ -1215,7 +1253,7 @@ static uint8_t *flatten_recording_ops(const uint8_t *p) {
         memcpy(out + n, p, h.size); n += h.size;
         if (h.op == OP_END) {
             uint8_t *trimmed = realloc(out, n); if (trimmed) out = trimmed;
-            copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c);
+            copy_prefix *c = (copy_prefix *)out; c->magic = COPY_MAGIC; c->used_at = 0; c->made_at = g_submits; COPY_KEEP_INIT(c); flat_store(c, &fl);
 #ifdef GAME_BOTW
             c->used = 0;
 #endif
@@ -1257,14 +1295,14 @@ static void retired_sweep(void) {
     if (!g_nretired) return;
     uint64_t done = xsub_replayed(); size_t k = 0;
     for (size_t i = 0; i < g_nretired; i++) {
-        if (g_retired[i].after <= done) { g_copy_bytes -= malloc_size(g_retired[i].pf); free(g_retired[i].pf); }
+        if (g_retired[i].after <= done) { copy_lists_free(g_retired[i].pf); g_copy_bytes -= malloc_size(g_retired[i].pf); free(g_retired[i].pf); }
         else g_retired[k++] = g_retired[i];
     }
     g_nretired = k;
 }
 static void copy_free(copy_prefix *pf) {
     uint64_t after = async_replay() || qo_replay_async() ? xsub_pushed() : 0;
-    if (!after || after <= xsub_replayed()) { g_copy_bytes -= malloc_size(pf); free(pf); return; }
+    if (!after || after <= xsub_replayed()) { copy_lists_free(pf); g_copy_bytes -= malloc_size(pf); free(pf); return; }
     if (g_nretired == g_cretired) {
         size_t cap = g_cretired ? g_cretired * 2 : 256; retired_copy *r = realloc(g_retired, cap * sizeof *r);
         if (!r) die("retired command copies");
