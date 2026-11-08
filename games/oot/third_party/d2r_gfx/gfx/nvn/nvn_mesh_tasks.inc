@@ -6,6 +6,7 @@ typedef struct { pso_key p; void *task; uint64_t variant; } mtk_pso_key;
 static nvn_hmap g_mtk_cache={.klen=sizeof(mtk_pso_key)};
 #include "nvn_mesh_capture.inc"
 #include "nvn_mesh_translation.inc"
+#include "nvn_mesh_pack.inc"
 /* Diagnostic only: copy the selected draw's storage inputs on the same GPU
  * timeline, after their producers and before this draw. A CPU memcpy while
  * encoding observes older contents when an earlier dispatch has not run yet.
@@ -114,12 +115,15 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
     pso_key_fill(&key.p,ms,fs,g_pass.cfmt,g_pass.dfmt,g_pass.sfmt,g_pass.samples,0);
     memset(key.p.attr,0,sizeof key.p.attr);memset(key.p.stream,0,sizeof key.p.stream);
     key.task=(__bridge void *)(ts?ts->fn:nil);
-    key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|((uint64_t)selected<<2);
+    int pack=mtk_pack_on()&&!g_mtk_geometry&&!((key.p.a2c&PSO_HDR)&&fs&&fs->hdr_fn);   // the geometry capture diagnostic and the HDR twin read the unpacked layout
+    key.variant=mtk_empty_export_on()|(g_mtk_geometry?2u:0u)|(pack?4u:0u)|((uint64_t)selected<<3);
     id<MTLRenderPipelineState> ps=hm_get_id(&g_mtk_cache,&key);if(ps)return ps;
-    MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,nil,0);
+    id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base),packedFs=nil;
+    if(pack)mesh=mtk_pack_varyings(ms,fs,mesh,key.p.dfmt==0,&packedFs);   // nvn_mesh_pack.inc: fewer declared vec4 slots, same values
+    MTLRenderPipelineDescriptor *d=pso_desc(&key.p,ms,fs,packedFs,0);
     MTLMeshRenderPipelineDescriptor *m=[MTLMeshRenderPipelineDescriptor new];
     m.label=[NSString stringWithFormat:@"task=%s mesh=%s fs=%s",ts?ts->key:"none",ms->key,fs?fs->key:"none"];
-    id<MTLFunction> mesh=mtk_mesh_fn_base(ms,fs,base);if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
+    if(g_mtk_geometry)mesh=mtk_geo_function(ms,fs,mesh);
     m.meshFunction=mtk_empty_export_fn(mesh,ms);m.fragmentFunction=d.fragmentFunction;m.maxTotalThreadsPerMeshThreadgroup=ms->mesh_threads;
     if(!m.meshFunction.label.length)m.meshFunction.label=@(ms->key);
     if(ts){m.objectFunction=ts->fn;m.payloadMemoryLength=(ts->mesh_payload+15u)&~15u;m.maxTotalThreadsPerObjectThreadgroup=ts->mesh_threads;}

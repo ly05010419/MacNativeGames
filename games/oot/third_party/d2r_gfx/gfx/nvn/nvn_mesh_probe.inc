@@ -184,6 +184,59 @@ static int mesh_device_stage_probe(void) {
     MLOG("[mesh] device stage memory probe: %u threadgroups through %u slots, 3 rounds, no overlap, every slot released",groups,slots);
     defer_obj_release(color);defer_obj_release(results);defer_obj_release(scratch);return checked;
 }
+/* Packed varyings (nvn_mesh_pack.inc): a mesh in the generator's export format spreading real lanes over five attributes
+   (one read flat, one without perspective) plus one input the mesh never writes; the fragment reads lanes of all six.
+   Rendered with packing off and on: both must give the expected constants and identical bytes, and the packed pair must
+   declare four slots (flat 1, no-perspective 1, default 2) instead of six. */
+static int mesh_pack_probe(void) {
+    NSError *error=nil;int checked=0;
+    NSString *source=@"#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct dm_vertex_t { float4 position [[position, invariant]];\nfloat4 a0 [[user(locn0)]];\nfloat4 a1 [[user(locn1)]];\nfloat4 a2 [[user(locn2)]];\nfloat4 a5 [[user(locn5)]];\nfloat4 a6 [[user(locn6)]];\n};\n"
+        "struct dm_prim_t {\nfloat4 p7 [[user(locn7)]];\n};\n"
+        "using dm_mesh_t=metal::mesh<dm_vertex_t,dm_prim_t,3,1,metal::topology::triangle>;\n"
+        "[[mesh]] void main0(dm_mesh_t dm_out, uint dm_lid [[thread_position_in_threadgroup]]) {\n"
+        "threadgroup uint _46[16];\nfor(uint i=dm_lid;i<16u;i+=32u)_46[i]=as_type<uint>(float(i)*0.0625);\nthreadgroup_barrier(mem_flags::mem_threadgroup);\n"
+        "if(dm_lid==0u){dm_out.set_primitive_count(1u);uint b=0u;dm_prim_t p;\np.p7=float4(as_type<float>(_46[b+11u]), 0.0, 0.0, 1.0);\ndm_out.set_primitive(0u,p);}\n"
+        "for(uint n=dm_lid;n<3u;n+=32u){uint b=0u; dm_vertex_t v;\n"
+        "float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)};\n"
+        "v.position=float4(p[n],0.5,1.0);\n"
+        "v.a0=float4(as_type<float>(_46[b+1u]), 0.0, 0.0, 1.0);\n"
+        "v.a1=float4(as_type<float>(_46[b+2u]), as_type<float>(_46[b+3u]), as_type<float>(_46[b+4u]), 1.0);\n"
+        "v.a2=float4(as_type<float>(_46[b+5u]), 0.0, 0.0, 1.0);\n"
+        "v.a5=float4(as_type<float>(_46[b+6u]), as_type<float>(_46[b+7u]), 0.0, 1.0);\n"
+        "v.a6=float4(as_type<float>(_46[b+8u]), as_type<float>(_46[b+9u]), as_type<float>(_46[b+10u]), 1.0);\n"
+        "dm_out.set_vertex(n,v);}\n"
+        "for(uint n=dm_lid;n<3u;n+=32u)dm_out.set_index(n,n);\n}\n";
+    NSString *fsrc=@"#include <metal_stdlib>\nusing namespace metal;\nstruct main0_in\n{\n    float4 m_1 [[user(locn0), flat]];\n    float4 m_2 [[user(locn1)]];\n    float4 m_3 [[user(locn2), center_no_perspective]];\n    float4 m_4 [[user(locn3)]];\n    float4 m_5 [[user(locn5)]];\n    float4 m_6 [[user(locn6)]];\n    float4 m_7 [[user(locn7), flat]];\n};\n"
+        "fragment float4 main0(main0_in in [[stage_in]])\n{\n    return float4(in.m_1.x + in.m_2.y + in.m_7.x, in.m_3.x + in.m_4.x + in.m_5.y, in.m_6.z + in.m_2.w * 0.125, in.m_5.w * 0.5 + in.m_1.w * 0.25 + in.m_7.w * 0.125);\n}\n";
+    id<MTLLibrary> library=totk_msl_library(source,&error);if(!library)MDIE("mesh pack probe library: %s",error.localizedDescription.UTF8String);
+    NvShader *ms=[NvShader new];ms->fn=[library newFunctionWithName:@"main0"];ms->src=source;ms->stage=4;ms->mesh_kind=2;ms->mesh_notask=1;ms->mesh_threads=32;strcpy(ms->key,"probe-mesh-pack");
+    id<MTLLibrary> fl=totk_msl_library(fsrc,&error);if(!fl)MDIE("mesh pack probe fragment: %s",error.localizedDescription.UTF8String);
+    NvShader *fs=[NvShader new];fs->src=fsrc;fs->stage=1;fs->fn=[fl newFunctionWithName:@"main0"];strcpy(fs->key,"probe-mesh-pack-fragment");
+    id<MTLFunction> packedFs=nil,packed=mtk_pack_varyings(ms,fs,mtk_mesh_fn_base(ms,fs,ms->fn),1,&packedFs);
+    NSString *psrc=fn_src(packed),*fsv=fn_src(packedFs);
+    if(!packedFs||!psrc||![psrc containsString:@"float4 dm_p3 [[user("]||[psrc containsString:@"dm_p4 "]||[psrc containsString:@"oot_unwritten_3"]||[psrc containsString:@"v.a1="]||![psrc containsString:@"p.p7=float4("])MDIE("mesh pack probe: expected four packed slots, no original vertex exports, the primitive output untouched");
+    if(!fsv||![fsv containsString:@"float4 dm_m_4 = float4(0.0, 0.0, 0.0, 0.0);"]||![fsv containsString:@"[[user(locn0), flat]]"]||![fsv containsString:@", center_no_perspective]]"]||![fsv containsString:@"float4 m_7 [[user(locn7), flat]];"]||![fsv containsString:@"in.m_7.x"]||[fsv containsString:@"in.m_1"])MDIE("mesh pack probe: fragment variant layout");
+    MTLTextureDescriptor *td=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:16 height:16 mipmapped:NO];
+    td.storageMode=MTLStorageModePrivate;td.usage=MTLTextureUsageRenderTarget;id<MTLTexture> color=[g_dev newTextureWithDescriptor:td];res_add(color);id<MTLBuffer> readback=probe_buf(1024);
+    memset(&S.color,0,sizeof S.color);S.chmask.mask=15;S.ms.a2c=0;memset(g_pass.cfmt,0,sizeof g_pass.cfmt);g_pass.cfmt[0]=MTLPixelFormatRGBA8Unorm;g_pass.dfmt=g_pass.sfmt=0;g_pass.samples=1;
+    uint8_t unpacked[1024];
+    for(int on=0;on<2;on++){
+        atomic_store(&g_mesh_pack,on);
+        g_mtk=(__typeof__(g_mtk)){.on=1,.profile_grid=-1,.ms=ms,.count=1};NvProg *raster=[NvProg new];raster->sh[1]=fs;
+        id<MTLRenderPipelineState> pipeline=mtk_pso(raster);
+        mtl_sub_begin();MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.renderTargetWidth=rp.renderTargetHeight=16;
+        id<MTL4RenderCommandEncoder> en=enc_r_begin(rp);enc_r_pso(en,pipeline);enc_r_viewport(en,(MTLViewport){0,0,16,16,0,1});enc_r_scissor(en,(MTLScissorRect){0,0,16,16});
+        mtk_encode(en);enc_r_end(en);enc_b_copy_texture_buffer(blit(),color,0,0,MTLOriginMake(0,0,0),MTLSizeMake(16,16,1),readback,0,64,1024);mtl_sub_commit();mtl_finish();
+        const uint8_t *pixels=readback.contents;
+        // r = 1/16 + 3/16 + 11/16, g = 5/16 + 0 + 7/16, b = 10/16 + 1/8, a = 1/2 + 1/4 + 1/8
+        for(int p=0;p<256;p++){const uint8_t *v=pixels+4*p;if(abs((int)v[0]-239)>1||abs((int)v[1]-191)>1||abs((int)v[2]-191)>1||abs((int)v[3]-223)>1)MDIE("mesh pack probe pack=%d pixel %d: %u %u %u %u",on,p,v[0],v[1],v[2],v[3]);checked++;}
+        if(!on)memcpy(unpacked,pixels,sizeof unpacked);else if(memcmp(unpacked,pixels,sizeof unpacked))MDIE("mesh pack probe: packed pixels differ from the unpacked pair");
+    }
+    atomic_store(&g_mesh_pack,-1);g_mtk.on=0;defer_obj_release(color);defer_obj_release(readback);
+    MLOG("[mesh] packed varyings probe: six fragment inputs over four slots, pixels identical to the unpacked pair");
+    return checked;
+}
 int mtl_probe_mesh(void) {
     mtl_init();NSError *error=nil;int checked=0;
     checked+=mesh_indirect_probe();
@@ -220,6 +273,7 @@ int mtl_probe_mesh(void) {
     g_mtk.on=0;defer_obj_release(color);defer_obj_release(readback);
     checked+=mesh_empty_export_probe();
     checked+=mesh_device_stage_probe();
+    checked+=mesh_pack_probe();
     // Optional original-program corpus, supplied externally. This exercises the
     // production linkage/pipeline builder without replaying an opening movie.
     const char *manifest=getenv("OOT_MESH_PIPELINE_CASES");

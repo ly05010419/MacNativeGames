@@ -50,6 +50,7 @@ static int usnap_skipped(uint64_t size, int compute) { int k = g_usnap_skip;
     return k == 1 ? size >= 8192 : k == 2 ? size < 8192 : k == 3 ? compute : k == 4 ? !compute : 0; }
 static _Atomic int g_exact_usnap_stripes_ext;   // flag exact_usnap_stripes (nvn_raw_write_domain.inc)
 static _Atomic int g_mesh_empty_export = -1;
+static _Atomic int g_mesh_pack = -1;   // nvn_mesh_pack.inc: packed mesh varyings (-1 = OOT_MESH_PACK_VARYINGS, default on)
 static _Atomic int g_mesh_translation = -1;
 static _Atomic int g_mesh_reuse_check;
 static _Atomic int g_mesh_trace_frames;
@@ -3292,6 +3293,7 @@ void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name,"descriptor_profile")) { descriptor_profile_set(v!=0); return; }
     if (!strcmp(name,"pool_validate_once")) { atomic_store(&g_pool_validate_once,v!=0); MLOG("[flag] pool_validate_once = %d",v!=0); return; }
     if (!strcmp(name,"mesh_empty_export")) { atomic_store(&g_mesh_empty_export,v!=0); MLOG("[flag] mesh_empty_export = %d",v!=0); return; }
+    if (!strcmp(name,"mesh_pack")) { atomic_store(&g_mesh_pack,v!=0); MLOG("[flag] mesh_pack = %d",v!=0); return; }   // packed mesh varyings (new pipelines only)
     if (!strcmp(name,"mesh_translation")) { atomic_store(&g_mesh_translation,v>=0&&v<=2?v:0); MLOG("[flag] mesh_translation = %d",v); return; }
     if (!strcmp(name,"pool_issue_once")) { extern void nvn_pool_issue_once_set(int); nvn_pool_issue_once_set(v); MLOG("[flag] pool_issue_once = %d",v!=0); return; }
     if (!strcmp(name,"pool_issue_stats")) { extern void nvn_pool_issue_statistics(uint64_t[3],int); uint64_t n[3]; nvn_pool_issue_statistics(n,v); MLOG("[pool-issue] stats=%d calls=%llu skipped=%llu registered=%llu",v!=0,n[0],n[1],n[2]); return; }
