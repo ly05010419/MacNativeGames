@@ -10,6 +10,24 @@ A copy of `games/ot0` at upstream commit `5ab07b7` (2026-10-28); see [third_part
 
 ## Log
 
+### 2026-11-08: every shader translates
+
+One vertex shader of the game (`4b98320a…`, used through a generated shuffle helper) failed in SPIRV-Cross with "Subgroup builtins are not available in this type of function": Metal has no subgroup operations in vertex functions, and the game's shader reads a subgroup mask, the lane ID, a ballot and a shuffle. It was the only shader of 28,137 distinct translations to fail, before play and in play.
+- **`tools/totk_xlate/patches/0010-vertex-subgroup-operations-are-one-lane.patch`:** in the vertex stage a subgroup is one lane, as in seedds/nxnative's `spv_single_lane`, written here in the translator rather than on the SPIR-V: the lane ID is 0, the masks are constants, a ballot is the predicate's own bit, a shuffle returns the lane's value, votes are the predicate. `prebuilt/macos-arm64/totk_xlate` is rebuilt.
+- The 32 shaders met in play that the census does not find stay as they were: 6 are in `main` outside its SLCT, 26 are in no file the census reads; each is translated once when first used.
+
+Verified (2.2.1 with add-ons 1–4, M5):
+
+| Check | Result |
+|---|---|
+| Translation before play | 28,137 of 28,137 (was 28,136, one failed) in 64 s |
+| Every other output | 56,272 files (MSL and reflection) byte-identical to the previous translator's |
+| Seed | 31,739 variants (was 31,738) |
+| A player's saves | Future Redeemed (its opening) and the base game (Yzana Plains): no translation failure, no error in the log, picture right |
+| Geometry shaders with triangle input at Everblight Plain | Noah's hair the same with them on and off (the 2026-10-30 regression does not reproduce) |
+| Builds | 2.2.1 and 1.0.0 |
+| Tests | `games/xc3/tests` pass (13); root `python -m unittest discover -s tests` passes (1,537 tests, 169 skipped) |
+
 ### 2026-11-03: Future Redeemed's flat polygons fixed (unaligned vertex buffers)
 
 In Future Redeemed giant flat planes crossed the scene (the "blue polygons" of its opening, and in Vermilion Woods brown planes over cliffs and water); the base game was fine. The add-on binds some model vertex streams at addresses that are 2 mod 4 (38 of 912 vertex bindings in a Vermilion Woods frame, none of 13,384 in the base game at Yzana Plains). Metal reads a vertex stream from the address rounded down to 4 bytes, so every attribute came 2 bytes early and the positions were garbage.
