@@ -13,7 +13,7 @@ static BOOL probe_spawn(const char *mode, const char *arg) { if (!spawn_ok) retu
 /* The probe's game window: real (AppKit lays it out, draws it and routes the probe's events), never seen (user 2026-11-03:
    test windows must not show): fully transparent, no shadow, and the mouse goes through it to whatever is below. */
 static NSWindow *probe_window(void) {
-    NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 720) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+    NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1280, 1000) styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
     w.alphaValue = 0; w.hasShadow = NO; w.ignoresMouseEvents = YES;
     return w;
 }
