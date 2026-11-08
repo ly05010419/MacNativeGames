@@ -10,7 +10,7 @@ sealed class MeshStage
 {
     readonly string kind;
     readonly int threads, payload, maxV, maxP;
-    readonly bool task;
+    readonly bool task, deviceAllowed;   // deviceAllowed: the request may say stage_device=false (tests reading the stage memory from a compute wrapper)
     readonly List<(int n,int c)> vertex = new(), primitive = new();
     readonly int[] layout;
     readonly int shared;
@@ -22,8 +22,25 @@ sealed class MeshStage
     // 0 a counter, 1 the slot mask, 2 the slot stride in words; one in-use flag a slot from word ScratchFlagsWord;
     // the slots from word ScratchSlotsWord. A threadgroup takes a free slot (counter, then exchange on the flag) and
     // releases it after its exports; a slot is never reused while its threadgroup runs, whatever the GPU's schedule.
-    public const int ScratchBuffer = 28, ScratchFlagsWord = 4, ScratchSlotsWord = 8192, ScratchSlotWords = 4096, DeviceStageBytes = 4096;
+    public const int ScratchBuffer = 28, ScratchForcedWord = 3, ScratchFlagsWord = 4, ScratchSlotsWord = 8192, ScratchSlotWords = 4096, DeviceStageBytes = 4096, ScratchSpinLimit = 1 << 16;
     public bool Device { get; private set; }
+    public int ByteStores { get; private set; }
+    // A byte store into the stage memory (a primitive's index bytes, STAGEOUT of 8 bits) comes out of the translator as a
+    // compare-exchange loop inserting 8 bits into the word, the only way SPIR-V can write a byte of a uint array. Metal's
+    // byte stores are byte-granular on threadgroup and device memory (lanes writing the neighbouring bytes of a word do
+    // not disturb each other), so the helper becomes one store; little-endian, byte k of a word at bits 8k, as the
+    // loop's shift (address & 3) << 3 says. Measured 2026-11-08 (village, fed302d7 alone): GPU frame 20.5 -> 19.7 ms.
+    static readonly Regex ByteStoreLoop=new(@"void (_\d+)\(thread const int& (_\d+), thread const int& (_\d+), (threadgroup|device) spvUnsafeArray<uint, (\d+)>& (_\d+)\)\n\{\n(.*?)\n\}\n",RegexOptions.Singleline);
+    string ByteStores_(string src){
+        int n=0;
+        src=ByteStoreLoop.Replace(src,m=>{
+            string body=m.Groups[7].Value;
+            if(!body.Contains("insert_bits(")||!body.Contains(", 8u)")||!body.Contains("atomic_compare_exchange_weak_explicit")||!body.Contains(">> uint(2)")||!body.Contains("& 3")||!body.Contains("<< 3"))return m.Value;
+            n++;
+            return $"void {m.Groups[1].Value}(thread const int& {m.Groups[2].Value}, thread const int& {m.Groups[3].Value}, {m.Groups[4].Value} spvUnsafeArray<uint, {m.Groups[5].Value}>& {m.Groups[6].Value})\n{{\n    reinterpret_cast<{m.Groups[4].Value} uchar*>(&{m.Groups[6].Value}[0])[uint({m.Groups[2].Value})] = uchar(uint({m.Groups[3].Value}));\n}}\n";
+        });
+        ByteStores=n;return src;
+    }
     static int Align(int n,int a)=>(n+a-1)&-a;
     static List<(int n,int c)> Outputs(byte[] a,int at) {
         if(at<0 || at+0x80>a.Length) throw new Exception("mesh SPH outside code area");
@@ -35,6 +52,7 @@ sealed class MeshStage
     public MeshStage(JsonObject rq,JsonObject job,string outDir) {
         byte[] ctl=Convert.FromHexString((string)rq["mesh_ctl"]), code=File.ReadAllBytes((string)rq["code"]);
         kind=(string)rq["stage"]; threads=BitConverter.ToUInt16(ctl,0x58);payload=BitConverter.ToUInt16(ctl,0x5a);
+        deviceAllowed=!(rq["stage_device"] is JsonValue sd && sd.TryGetValue<bool>(out bool allowed) && !allowed);
         if(threads<1||threads>1024||code.Length<0x80)throw new Exception("invalid task/mesh control");
         int output=16+Align(payload,16), prim;
         if(kind=="ts") {prim=output+payload;shared=output+Align(payload,4);}
@@ -70,7 +88,7 @@ sealed class MeshStage
         string path=Path.Combine(outDir,(string)rq["variant"]+".mesh.code");File.WriteAllBytes(path,code[0x80..]);job["code"]=path;
         job["local"]=new JsonArray(threads,1,1);job["shared"]=shared;job["stage_memory"]=new JsonArray(layout.Select(x=>(JsonNode)JsonValue.Create(x)).ToArray());
     }
-    public JsonObject Reflection()=>new(){["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device};
+    public JsonObject Reflection()=>new(){["kind"]=kind,["threads"]=threads,["payload"]=payload,["task"]=task,["device"]=Device,["byte_stores"]=ByteStores};
     static List<string> Params(string t) {
         var r=new List<string>();int depth=0,at=0;
         for(int i=0;i<t.Length;i++){char c=t[i];if(c==','&&depth==0){r.Add(t[at..i].Trim());at=i+1;}if("([<".Contains(c))depth++;if(")]>".Contains(c))depth--;}
@@ -81,7 +99,7 @@ sealed class MeshStage
         if(!m.Success)throw new Exception(kind+": no kernel stage memory declaration");
         var pars=Params(m.Groups[1].Value);int words=int.Parse(m.Groups[2].Value);string mem=m.Groups[3].Value;
         var names=pars.Select(p=>Regex.Match(p,@"(\w+)\s*(?:\[\[.*\]\])?$").Groups[1].Value).ToList();
-        bool device=kind=="ms"&&words*4>DeviceStageBytes&&words<=ScratchSlotWords;
+        bool device=deviceAllowed&&kind=="ms"&&words*4>DeviceStageBytes&&words<=ScratchSlotWords;
         string space=device?"device":"threadgroup";
         var plain=pars.Select(p=>Regex.Replace(p,@"\s*\[\[.*\]\]$","")).ToList();plain.Add($"{space} spvUnsafeArray<uint, {words}>& {mem}");
         string src=msl[..m.Index]+$"static inline __attribute__((always_inline)) void dm_stage_body({string.Join(", ",plain)})\n{{\n"+msl[(m.Index+m.Length)..];
@@ -99,6 +117,7 @@ sealed class MeshStage
                 src=msl[..m.Index]+$"static inline __attribute__((always_inline)) void dm_stage_body({string.Join(", ",plain)})\n{{\n"+msl[(m.Index+m.Length)..];}
         }
         Device=device;
+        src=ByteStores_(src);
         string lid="dm_lid",tg="dm_tg";var extras=new List<string>();
         foreach(string attr in new[]{"thread_position_in_threadgroup","threadgroup_position_in_grid"}){
             var t=pars.Select(p=>Regex.Match(p,@"(uint3?)\s+(\w+)\s*\[\[("+attr+@")\]\]$")).FirstOrDefault(x=>x.Success);
@@ -109,7 +128,7 @@ sealed class MeshStage
         string call=$"dm_stage_body({string.Join(", ",names.Append(mem))});";
         string bar=device?"threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);":"threadgroup_barrier(mem_flags::mem_threadgroup);";
         string start=device
-            ?$"    threadgroup uint dm_slot_tg;\n    if({lid}==0u){{ uint s; for(;;){{ s=atomic_fetch_add_explicit((device atomic_uint*)dm_scratch,1u,memory_order_relaxed)&dm_scratch[1]; if(atomic_exchange_explicit((device atomic_uint*)(dm_scratch+{ScratchFlagsWord}u+s),1u,memory_order_relaxed)==0u)break; }} dm_slot_tg=s; }}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n    device spvUnsafeArray<uint, {words}>& {mem}=*reinterpret_cast<device spvUnsafeArray<uint, {words}>*>(dm_scratch+{ScratchSlotsWord}u+dm_slot_tg*dm_scratch[2]);\n    for(uint i={lid}; i<{words}u;i+={threads}u) {mem}[i]=0u;\n    {bar}\n"
+            ?$"    threadgroup uint dm_slot_tg;\n    if({lid}==0u){{ uint s, tries=0u; for(;;){{ s=atomic_fetch_add_explicit((device atomic_uint*)dm_scratch,1u,memory_order_relaxed)&dm_scratch[1]; if(atomic_exchange_explicit((device atomic_uint*)(dm_scratch+{ScratchFlagsWord}u+s),1u,memory_order_relaxed)==0u)break; if(++tries=={ScratchSpinLimit}u){{atomic_fetch_add_explicit((device atomic_uint*)(dm_scratch+{ScratchForcedWord}u),1u,memory_order_relaxed);break;}} }} dm_slot_tg=s; }}\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n    device spvUnsafeArray<uint, {words}>& {mem}=*reinterpret_cast<device spvUnsafeArray<uint, {words}>*>(dm_scratch+{ScratchSlotsWord}u+dm_slot_tg*dm_scratch[2]);\n    for(uint i={lid}; i<{words}u;i+={threads}u) {mem}[i]=0u;\n    {bar}\n"
             :$"    threadgroup spvUnsafeArray<uint, {words}> {mem};\n    for(uint i={lid}; i<{words}u;i+={threads}u) {mem}[i]=0u;\n    threadgroup_barrier(mem_flags::mem_threadgroup);\n";
         string scratch=device?$", device uint* dm_scratch [[buffer({ScratchBuffer})]]":"";
         string release=device?$"dm_release_slot(dm_scratch,dm_slot_tg,{lid});\n":"";

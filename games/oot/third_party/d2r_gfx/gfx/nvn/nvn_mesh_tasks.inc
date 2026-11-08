@@ -137,7 +137,8 @@ static id<MTLRenderPipelineState> mtk_pso(NvProg *raster) {
    Why: as threadgroup memory the 11-16 KiB stage area let a core hold two or three mesh threadgroups (about 5 %
    occupancy, Instruments 2026-11-06); the village's four heaviest mesh shaders moved to a device scratch by hand took the
    GPU frame from 22.2 to 20.0 ms (measurement 2026-11-08). OOT_MESH_SCRATCH_SLOTS overrides the slot count (power of two). */
-enum { MTK_SCRATCH_BUFFER=28, MTK_SCRATCH_FLAGS=4, MTK_SCRATCH_SLOTS=8192, MTK_SCRATCH_SLOT_WORDS=4096 };
+enum { MTK_SCRATCH_BUFFER=28, MTK_SCRATCH_FORCED=3, MTK_SCRATCH_FLAGS=4, MTK_SCRATCH_SLOTS=8192, MTK_SCRATCH_SLOT_WORDS=4096 };
+static unsigned g_mtk_scratch_slots;
 static id<MTLBuffer> g_mtk_scratch;
 static uint64_t mtk_scratch_gpu(void) {
     if(!g_mtk_scratch){
@@ -147,11 +148,21 @@ static uint64_t mtk_scratch_gpu(void) {
         size_t bytes=((size_t)MTK_SCRATCH_SLOTS+(size_t)slots*MTK_SCRATCH_SLOT_WORDS)*4;
         g_mtk_scratch=[g_dev newBufferWithLength:bytes options:MTLResourceStorageModeShared];
         if(!g_mtk_scratch)MDIE("mesh stage scratch: %zu bytes",bytes);
-        uint32_t *h=g_mtk_scratch.contents;memset(h,0,(size_t)MTK_SCRATCH_SLOTS*4);h[1]=slots-1;h[2]=MTK_SCRATCH_SLOT_WORDS;
+        uint32_t *h=g_mtk_scratch.contents;memset(h,0,(size_t)MTK_SCRATCH_SLOTS*4);h[1]=slots-1;h[2]=MTK_SCRATCH_SLOT_WORDS;g_mtk_scratch_slots=slots;
         g_mtk_scratch.label=@"OOT mesh stage memory";res_add(g_mtk_scratch);
         MLOG("[mesh] device stage memory: %u slots of %u KiB (%zu MiB)",slots,MTK_SCRATCH_SLOT_WORDS*4/1024,bytes>>20);
     }
     return g_mtk_scratch.gpuAddress;
+}
+/* Every 600 frames (and on demand with flag mesh_batch_stats): slots the GPU holds right now (a racy read of the shared
+   flags; a count that only grows is a leak), the counter, and threadgroups that gave up waiting for a free slot (the
+   generated wrapper's spin limit; must stay 0). */
+static void mtk_scratch_report(void) {
+    if(!g_mtk_scratch)return;
+    static uint64_t last;uint64_t f=atomic_load(&g_cur_frame);if(f<last+600&&!atomic_load(&g_mesh_batch_dump))return;last=f;
+    const uint32_t *h=g_mtk_scratch.contents;unsigned held=0;for(unsigned i=0;i<g_mtk_scratch_slots;i++)held+=h[MTK_SCRATCH_FLAGS+i]!=0;
+    MLOG("[mesh] device stage memory F%llu: slots held now %u of %u, counter %u, forced takes %u",(unsigned long long)f,held,g_mtk_scratch_slots,h[0],h[MTK_SCRATCH_FORCED]);
+    if(h[MTK_SCRATCH_FORCED]){static int said;if(said++<3)MLOG("【红】[mesh] %u threadgroups took a slot still in use (spin limit): stage memory may have been shared",h[MTK_SCRATCH_FORCED]);}
 }
 static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     NvShader *ts=g_mtk.ts,*ms=g_mtk.ms;
@@ -162,7 +173,7 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
     if(ts){g_args_dirty[3]=1;encode_args((id<MTLCommandEncoder>)en,ts,3,0);
         if(rs_using(en))rs_put((nvn_encode_packet){.op=RS_OBJECT_ADDRESS,.u={29,first}},0);else[g_ot setAddress:first atIndex:29];}
     g_args_dirty[4]=1;encode_args((id<MTLCommandEncoder>)en,ms,4,1);enc_r_vbuf(en,29,first);
-    enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
+    enc_r_vbuf(en,MTK_SCRATCH_BUFFER,mtk_scratch_gpu());mtk_scratch_report();   // device stage memory of the mesh shaders the translator put there (MeshStage.cs)
     if(mtk_geo_selected(g_mtk.fs))enc_r_vbuf(en,30,g_mtk_geometry?g_mtk_geometry.gpuAddress:zero_bank_gpu());
     int timing=ms_time_begin(en,ms->key,ts?ts->key:NULL,g_mtk.fs?g_mtk.fs->key:NULL,g_mtk.indirect_gpu,g_mtk.first,g_mtk.count,ms->mesh_threads,g_mtk.profile_grid);
     if(g_mtk.indirect_gpu){

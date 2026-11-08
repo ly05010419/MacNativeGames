@@ -48,7 +48,7 @@ def main():
         path = work / (key + '.code')
         path.write_bytes(code)
         rq = dict(variant=key, stage='ms', arch='sm86', code=str(path), mesh_ctl=ctl.hex(),
-                  c1='', local=[1, 1, 1], depth_minus_w=True)
+                  c1='', local=[1, 1, 1], depth_minus_w=True, stage_device=False)   # the compute wrapper below reads threadgroup stage memory
         proc.stdin.write(json.dumps(rq) + '\n')
         proc.stdin.flush()
         reply = json.loads(proc.stdout.readline())

@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v18-mesh-device-stage"
+#define DMSH_CHAIN "oot-native-v19-mesh-byte-stores"
