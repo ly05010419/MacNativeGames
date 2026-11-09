@@ -2640,7 +2640,7 @@ static id<MTLTexture> stor_recreate(const stor_key *k, MTLTextureUsage usage);
    pkg_evict_sweep, reup_retire). As an id return each call was a retain + autorelease in here and a claim in the caller. */
 static void *tex_mtl_p(const tex_t *ct);
 #include "totk_prompt_icons.h"
-#if defined(TOTK_GAME_V143) && !TARGET_OS_IPHONE   /* only TotK 1.4.3 on the Mac has the prompt hook; nothing else pays for this lookup */
+#if !defined(GAME_BOTW) && !defined(GAME_NS2) && !TARGET_OS_IPHONE   /* only TotK on the Mac has the prompt hook (1.4.3 turns it on; this file is shared by its versions, so no version macro); other games and iOS skip this lookup */
 #define TOTK_PROMPT_ICONS_ON 1
 static void prompt_resident(id<MTLResource> resource) { res_add(resource); }
 static void *prompt_texture(const tex_t *t) {
