@@ -63,7 +63,6 @@ A subsequent old/new/new/old comparison used byte-identical v12 MSL with legacy 
 
 ## Optional settings (Mac)
 
-- Internal 1280×720 (the Switch's handheld mode) instead of the default 1536×864:
-  `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` — takes effect from the next start; measured
-  58–61 fps against 49–50 fps docked on an M4 (2026-11-09, `docs/fps-60-90.md`). `defaults delete org.macnativegames.oot
-  TOTK_OPERATION_MODE` (or the value `docked`) restores the default. The environment variable of the same name wins.
+- The default picture is 960×540 inside a 1280×720 canvas, scaled up by MetalFX (the game's handheld mode with `OOT_GFX_SCALE=2` and `OOT_FIXED_RES=0.75`).
+  `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` runs the handheld mode at its full scale, and the value `docked` the former 1536×864;
+  `defaults delete org.macnativegames.oot TOTK_OPERATION_MODE` returns to the default. A resolution other than "Default" chosen in the settings panel, and the environment variables, win over the default.

@@ -498,7 +498,14 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
              mode (runtime/services.c handheld_mode), measured 58-61 fps against 49-50 docked; `defaults delete` or the
              value "docked" restores the default. The environment wins (the test tools pass it). */
           NSString *om = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_OPERATION_MODE"];
-          if (om.length) setenv("TOTK_OPERATION_MODE", om.UTF8String, 0); }
+          if (om.length) setenv("TOTK_OPERATION_MODE", om.UTF8String, 0);
+          /* The default picture (user 2026-11-09): handheld mode at the reduced graphics-scale tier, 960x540 inside a 1280x720
+             canvas, MetalFX between them (oot_net_bypass.inc). An operation mode named above or in the environment, or an
+             internal resolution chosen in the settings panel (its scales are of the full canvas; 0 is its "default" row), keeps what was asked for. */
+          NSString *internalRes = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"graphics-internal-res.txt"] encoding:NSUTF8StringEncoding error:nil];
+          if (!getenv("TOTK_OPERATION_MODE") && internalRes.intValue == 0) {
+              setenv("TOTK_OPERATION_MODE", "handheld", 0); setenv("OOT_GFX_SCALE", "2", 0); setenv("OOT_FIXED_RES", "0.75", 0);
+          } }
         /* The log is written only with debug on, as on the iPhone: defaults write org.macnativegames.totk TOTK_DEBUG_LOG
            -bool YES (org.macnativegames.botw for Breath of the Wild), or TOTK_DEBUG_LOG=1 in the environment, which wins
            (the test tools pass it). Off, the game's output goes to /dev/null and the logs of earlier runs are removed. */

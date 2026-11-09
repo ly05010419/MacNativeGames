@@ -694,7 +694,7 @@ static void settings_oot_output2k_apply(int on) {
 }
 static TOTKSettingRow *settings_oot_internal_row(void) {
  return settings_row(settings_text("内部分辨率（下次启动生效）","Internal resolution (next start)"),
-  @[settings_text("默认（底座 1536×864 / 掌机 1280×720）","Default (docked 1536×864 / handheld 1280×720)"),settings_text("约 720p","About 720p"),settings_text("约 900p","About 900p"),settings_text("约 1080p","About 1080p"),settings_text("最高（底座 2048×1152）","Highest (docked 2048×1152)")],@[@0,@720,@900,@1080,@1152],
+  @[settings_text("默认（960×540，放大到 1280×720）","Default (960×540, upscaled to 1280×720)"),settings_text("约 720p","About 720p"),settings_text("约 900p","About 900p"),settings_text("约 1080p","About 1080p"),settings_text("最高（底座 2048×1152）","Highest (docked 2048×1152)")],@[@0,@720,@900,@1080,@1152],
   ^int{return runtime_oot_internal_res();},^(int v){runtime_oot_internal_res_set(v);settings_save_int("graphics-internal-res.txt",v,"internal resolution");});
 }
 static TOTKSettingRow *settings_oot_output_row(void) {
