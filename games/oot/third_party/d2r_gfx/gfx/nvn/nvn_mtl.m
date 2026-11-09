@@ -3659,6 +3659,27 @@ void mtl_pool_invalidate(const pool_t *p, uint64_t off, uint64_t n) {
           MLOG("[inv] f%llu range %p+%#llx: %d renderings written back:%s", (unsigned long long)atomic_load(&g_cur_frame), (void *)a, (unsigned long long)n, nl, sers); } }
     wb_write_list(list, nl, 0);
 }
+/* The game makes a new texture object over memory an earlier object rendered into. On hardware the rendering is already in
+   that memory; here it is only in the Metal texture, and the new object would be uploaded from empty bytes. Ocarina of Time
+   does this to its terrain tiles' GPU-rendered normal maps when a save is loaded (260x260 RG8, 9 levels, 214,528 bytes), and
+   never invalidates those pages, so each such tile drew from a black normal map: straight-edged dark rectangles with long
+   streaks on the ground (2026-11-09). Only same-sized, finished renderings up to the snapshot limit: a transient target
+   re-made every frame must not pay for a full read-back, and nothing waits here for GPU work still queued. */
+void mtl_wb_storage_reused(const uint8_t *mem, uint64_t n) {
+    if (!mem || !n || n > WB_SNAP_MAX || !atomic_load(&g_wb_on)) return;
+    uint64_t done = __atomic_load_n(&g_done, __ATOMIC_ACQUIRE);
+    pthread_mutex_lock(&g_smu);
+    wb_ent *list[32]; int nl = 0;
+    for (uint32_t i = 0; g_wb.n && i < g_wb.cap && nl < 32; i++) {
+        wb_ent *e = g_wb.vals ? g_wb.vals[i] : NULL;
+        if (!e || e->t.mem != mem || e->t.L.size != n || e->fence > done) continue;
+        uint64_t k = e->t.serial; nvn_hm_del(&g_wb, &k); list[nl++] = e; i = (uint32_t)-1;   // deletion shifts entries: rescan
+    }
+    pthread_mutex_unlock(&g_smu);
+    if (!nl) return;
+    static _Atomic uint64_t seen; if (atomic_fetch_add(&seen, (uint64_t)nl) < 8) MLOG("[writeback] a new texture object over %p (%llu bytes): %d earlier renderings written back first", (const void *)mem, (unsigned long long)n, nl);
+    wb_write_list(list, nl, 0);
+}
 /* A memory pool is finalized: pending renderings into its bytes are dropped. The game has given the range back to its
    allocator, which hands it to something else (a sead heap object, another pool); a later invalidate over that address
    would write GPU pixels into the new owner (2026-10-24: warping to a shrine with write-back on crashed in the sead heap
