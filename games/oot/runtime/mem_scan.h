@@ -6,6 +6,7 @@
      mscan changed | unchanged | inc | dec
                                   keep the candidates whose value did that since the step before (the first step
                                   compares with the snapshot and then frees it); f32 keeps only finite values under 1e6
+     mscan eq <value>             keep the candidates whose value is now that (f32: within 1e-5), e.g. after "new"
      mscan show [n]               the candidates and their values now (n, default 40)
      mscan watch <hex address> <seconds> [rw]   (runs on its own thread; the hits are written when the time is up)
                                   a hardware watchpoint on those 4 bytes in the guest threads: every instruction that
@@ -100,9 +101,11 @@ static void scan_free_snapshot(void) {
 }
 static void scan_free_candidates(void) { free(scan_addr); free(scan_val); scan_addr = NULL; scan_val = NULL; scan_n = scan_cap = 0; }
 
-enum { KEEP_CHANGED, KEEP_UNCHANGED, KEEP_INC, KEEP_DEC };
+enum { KEEP_CHANGED, KEEP_UNCHANGED, KEEP_INC, KEEP_DEC, KEEP_EQ };
+static float scan_eq_value;   /* "mscan eq <value>": candidates whose value is now that (f32: within 1e-5) */
 static int scan_plausible(uint32_t w) { float f; memcpy(&f, &w, 4); return isfinite(f) && fabsf(f) < 1e6f; }
 static int scan_keep(int mode, uint32_t old, uint32_t now) {
+    if (mode == KEEP_EQ) { if (scan_i32) return (int32_t)now == (int32_t)scan_eq_value; float f; memcpy(&f, &now, 4); return fabsf(f - scan_eq_value) < 1e-5f; }
     if (!scan_i32 && (!scan_plausible(now) || !scan_plausible(old))) return 0;
     if (mode == KEEP_CHANGED) return now != old;
     if (mode == KEEP_UNCHANGED) return now == old;
@@ -328,6 +331,10 @@ int runtime_mem_scan_command(const char *line) {   /* runtime/input.c: the text 
     } else if (!strcmp(cmd, "changed") || !strcmp(cmd, "unchanged") || !strcmp(cmd, "inc") || !strcmp(cmd, "dec")) {
         if (!scan_have) scan_out("%s: no snapshot (mscan new first)", cmd);
         else scan_filter(cmd[0] == 'c' ? KEEP_CHANGED : cmd[0] == 'u' ? KEEP_UNCHANGED : cmd[0] == 'i' ? KEEP_INC : KEEP_DEC, cmd);
+    } else if (!strcmp(cmd, "eq")) {
+        if (!scan_have) scan_out("eq: no snapshot (mscan new first)");
+        else if (sscanf(arg, "%f", &fv) != 1) scan_out("error: mscan eq <value>");
+        else { scan_eq_value = fv; scan_filter(KEEP_EQ, "eq"); }
     } else if (!strcmp(cmd, "show")) {
         unsigned n = 40; if (*arg) sscanf(arg, "%u", &n); scan_show(n);
     } else if (!strcmp(cmd, "watch")) {

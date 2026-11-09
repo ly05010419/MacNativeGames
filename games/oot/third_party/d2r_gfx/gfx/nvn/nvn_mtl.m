@@ -5929,8 +5929,16 @@ static int uw_ui_vs(const char *vs) {
     return 0;
 }
 /* The squeeze for this draw (totk_ui_squeeze.h): *ux narrows it, *uy flattens it, both 1 when not UI or at 16:9. */
+#ifdef GAME_OOT
+static int oot_ui_draw(void);   /* oot_net_bypass.inc: a draw of this frame's UI (onto the canvas after the upscaler network) */
+#endif
 static void uw_ui_squeeze(const char *vs, const p_draw *dw, const p_draw_idx *di, NSUInteger tw, NSUInteger th, double *ux, double *uy) {
     *ux = *uy = 1;
+#ifdef GAME_OOT
+    (void)vs; (void)dw; (void)di;
+    if (tw && th && uw_ratio() > 0 && oot_ui_draw()) totk_ui_squeeze(uw_ratio(), ux, uy);
+    return;
+#endif
     /* TOTK_UI_SQUEEZE=0: the UI layouts themselves are laid out for the wide canvas (scripts/ultrawide_layout.py, the
        launcher's ultrawide resolution), so nothing is squeezed here. */
     static int off = -1; if (off < 0) { const char *e = getenv("TOTK_UI_SQUEEZE"); off = e && !strcmp(e, "0"); }

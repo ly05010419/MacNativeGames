@@ -114,7 +114,12 @@ int runtime_output_size_set(unsigned w,unsigned h) {
 int runtime_output_res_toggle(void) { return 0; }
 int runtime_output_mode_cycle(void) { return 0; }
 int runtime_aspect_toggle(void) { return 0; }
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+static _Atomic uint32_t *oot_aspect_cell;   /* the 3D view's aspect ratio for the projection (float bits, 0 = the game's own) */
+float runtime_aspect_now(void) { if (!oot_aspect_cell) return 0; uint32_t b = atomic_load(oot_aspect_cell); float f; memcpy(&f, &b, 4); return f; }
+#else
 float runtime_aspect_now(void) { return 0; }
+#endif
 int runtime_aspect_step(void) { return -1; }   /* the settings panel selects the ratio */
 void runtime_aspect_view(double w, double h) { (void)w; (void)h; }
 int runtime_output_modes(void) { return 0; }
@@ -128,6 +133,10 @@ int runtime_aspect_set_ratio(float r) {
     if(!runtime_output_res(&mw,&mh))return 0;
     if(!ns2_aspect_size(r,h,mw,mh,&w,&h))return 0;
     return runtime_output_size_set(w,h);
+#elif defined(GAME_OOT) && !TARGET_OS_IPHONE
+    if(!oot_aspect_cell||!isfinite(r)||r<1||r>4)return 0;
+    float v=fabsf(r-16.0f/9)<0.002f?0:r;uint32_t b;memcpy(&b,&v,4);atomic_store(oot_aspect_cell,b);
+    fprintf(stderr,"[oot] aspect ratio %g\n",v?v:16.0/9);return 1;
 #else
     (void)r;return 0;
 #endif
@@ -138,6 +147,8 @@ float runtime_aspect_ratio(void) {
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
     unsigned w,h;if(!atomic_load(&output_page)||!runtime_output_res(&w,&h))return 0;
     uint64_t s=runtime_output_size_current();return (unsigned)(s>>32)?(float)(unsigned)s/(unsigned)(s>>32):0;
+#elif defined(GAME_OOT) && !TARGET_OS_IPHONE
+    if(!oot_aspect_cell)return 0;float r=runtime_aspect_now();return r>0?r:16.0f/9;
 #else
     return 0;
 #endif
@@ -145,6 +156,8 @@ float runtime_aspect_ratio(void) {
 float runtime_aspect_start(void) {
 #if defined(GAME_DKB) || defined(GAME_POKOPIA)
     return output_start_h?(float)output_start_w/output_start_h:0;
+#elif defined(GAME_OOT) && !TARGET_OS_IPHONE
+    const char *e=getenv("OOT_ASPECT");return e&&*e?strtof(e,NULL):0;
 #else
     return 0;
 #endif
@@ -409,6 +422,39 @@ static void patch_oot_fixed_res(Module *m) {
     fprintf(stderr, "[oot] fixed render scale %g (%s; OOT_FIXED_RES=0: the game's dynamic resolution)\n", s, runtime_handheld_mode() ? "handheld" : "docked");
 }
 #endif
+#if defined(GAME_OOT) && !TARGET_OS_IPHONE
+/* OOT aspect ratio (2026-11-09). The game camera's parameters (near +0x134, far +0x138, fovy +0x13c, aspect +0x140) are
+   copied into its sead perspective projection every frame at main+0x4c52d0; main+0x4c5334 ldr s0, [x19, #0x140] reads
+   the aspect for the store at main+0x4c533c (the projection's +0xb0; found with mscan bp / watch, claude/oot-gpu-ts w1, w2).
+   That load branches to a veneer that runs it and, while a ratio sits in the data-page cell (+56), uses that instead.
+   x16 and s1 are free there (not read before the bl at main+0x4c534c). OOT_ASPECT=<ratio> starts with that ratio. */
+enum { OOT_ASPECT_CELL = 56 };
+static void patch_oot_aspect(Module *m) {
+    if (getenv("TOTK_EXPORT_IOS")) return;
+    const uint64_t site = 0x4c5334; uint32_t have; memcpy(&have, m->base + site, 4);
+    if (have != 0xbd414260) runtime_fail("OOT aspect site differs from verified update 131072");
+    uint64_t page = (m->file_size + 0x3fff) & ~0x3fffULL, rx_end = (m->text_end + 0x3fff) & ~0x3fffULL;
+    uint64_t stub = ((m->text_end + 15) & ~15ULL) + 248 + 8 + 16;
+    int64_t pages = ((int64_t)page - (int64_t)((stub + 4) & ~4095ULL)) / 4096;
+    uint32_t code[6] = {
+        0xbd414260,                                                                                   /* ldr s0, [x19, #0x140] */
+        0x90000010 | (((uint32_t)pages & 3) << 29) | ((((uint32_t)pages >> 2) & 0x7ffff) << 5),    /* adrp x16, page */
+        0xbd400201 | (((OOT_ASPECT_CELL + (uint32_t)(page & 4095)) / 4) << 10),                     /* ldr s1, [x16, #cell] */
+        0x1e202028,                                                                                   /* fcmp s1, #0.0 */
+        0x1e201c20,                                                                                   /* fcsel s0, s1, s0, ne */
+        oot_step_branch(stub + 20, site + 4) };
+    if (stub + sizeof code > rx_end || page + OOT_ASPECT_CELL + 4 > m->size) runtime_fail("OOT aspect: no room left");
+    for (uint64_t k = stub; k < stub + sizeof code; k++) if (m->base[k]) runtime_fail("OOT aspect: text padding already in use");
+    for (uint64_t k = page + OOT_ASPECT_CELL; k < page + OOT_ASPECT_CELL + 4; k++) if (m->base[k]) runtime_fail("OOT aspect: data page already in use");
+    oot_aspect_cell = (_Atomic uint32_t *)(void *)(m->base + page + OOT_ASPECT_CELL);
+    const char *e = getenv("OOT_ASPECT"); float r = e && *e ? strtof(e, NULL) : 0;
+    if (r && !(r >= 1 && r <= 4)) runtime_fail("OOT_ASPECT must be a ratio between 1 and 4");
+    uint32_t bits; memcpy(&bits, &r, 4); atomic_store(oot_aspect_cell, bits);
+    uint32_t jump = oot_step_branch(site, stub);
+    memcpy(m->base + stub, code, sizeof code); memcpy(m->base + site, &jump, 4);
+    fprintf(stderr, "[oot] aspect veneer at main+0x%llx; ratio %g (0 = the game's 16:9)\n", (unsigned long long)site, r);
+}
+#endif
 void runtime_game_patches(Module *m) {
     if (strcmp(m->name, "main")) runtime_fail("game patches expect the main module");
     if (getenv("TOTK_PCHTXT") || getenv("TOTK_ASPECT"))
@@ -420,6 +466,7 @@ void runtime_game_patches(Module *m) {
 #elif defined(GAME_OOT) && !TARGET_OS_IPHONE
     patch_oot_timestep(m);
     patch_oot_fixed_res(m);
+    patch_oot_aspect(m);
 #endif
     const char *a = getenv("TOTK_EXCL_ACQUIRE");
     if (TARGET_OS_IPHONE || getenv("TOTK_EXPORT_IOS") || !a || strcmp(a, "0")) {
