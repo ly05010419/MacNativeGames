@@ -42,3 +42,8 @@ tiles, rewritten pages, tails, cross-texture physical sharing, GPU-written
 R8 contents and lost-page diagnostics. The independent fixed GOB fixture checks
 2,560 bytes across CPU read/write, GPU upload and GPU region read/write.
 These checks do not establish correct full-game rendering.
+
+### Dump folder importer (copy)
+
+`scripts/import_dump.py` is a copy of `games/totk/scripts/import_dump.py` at `17f79ddc`, unchanged. `build_mkw.py --dump` runs it to
+pack a dumped game folder's RomFS (no NCA) into `romfs.bin` the way the Switch 2 games do.

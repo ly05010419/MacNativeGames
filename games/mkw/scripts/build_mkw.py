@@ -200,12 +200,14 @@ def romfs_valid(romfs, game):
         return False
 
 
-def step_code(tree, game, logs):
+def step_code(tree, game, logs, dump=None):
     py = tree / '.venv/bin/python'
     exefs, romfs = tree / f'extracted/{VERSION}/exefs', tree / f'extracted/{VERSION}/romfs'
     want = EXPECTED['exefs_sha256']
     exefs_ok = all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items())
-    if not exefs_ok or not romfs_valid(romfs, game):
+    if dump:
+        game = step_code_dump(tree, dump, logs)
+    elif not exefs_ok or not romfs_valid(romfs, game):
         say('2. code and data: the ExeFS and the RomFS index from the NSP, verified in place (a few minutes: 23 GB are hashed)')
         for d in (exefs, romfs):
             if d.exists():
@@ -237,6 +239,47 @@ def step_code(tree, game, logs):
     text = json.dumps(report, indent=2) + '\n'
     if not path.is_file() or path.read_text() != text:
         path.write_text(text)
+    return game   # with --dump: the packed RomFS image, which the app carries in place of the NSP
+
+
+def step_code_dump(tree, dump, logs):
+    """--dump: a dumped game folder (exefs/ and romfs/, as Switch 2 dumpers write it) instead of the NSP. Its ExeFS is checked
+    against the pinned hashes as usual. Its RomFS has no NCA and no IVFC tree, so it is packed into romfs.bin by the
+    Switch 2 dump importer (scripts/import_dump.py, a copy of games/totk's, see tools/SOURCE_NOTES.md: the files one after another, 16-byte aligned, sorted by
+    path); that image's SHA-256 is its own, not the NSP's pinned one, and the runtime checks the image against it.
+    romfs.source then names the image at offset 0, so the rest of the build and the app treat it as the game file."""
+    py = tree / '.venv/bin/python'
+    extracted = tree / f'extracted/{VERSION}'
+    exefs, romfs = extracted / 'exefs', extracted / 'romfs'
+    image = romfs / 'romfs.bin'
+    want = EXPECTED['exefs_sha256']
+    def imported():
+        try:
+            index = json.loads((romfs / 'index.json').read_text())
+        except (OSError, ValueError):
+            return False
+        return (index.get('status') == 'pass' and index.get('source') == str(dump / 'romfs') and image.is_file()
+                and image.stat().st_size == index.get('romfs_size')
+                and all((exefs / n).is_file() and sha256(exefs / n) == h for n, h in want.items()))
+    if not imported():
+        say('2. code and data: the ExeFS and the RomFS packed from the dump folder (a while: 23 GB are copied and hashed)')
+        for d in (exefs, romfs, extracted / 'extraction-manifest.json'):
+            if d.is_dir():
+                shutil.rmtree(d)
+            elif d.exists():
+                d.unlink()
+        view = tree / 'build/dump-view'   # import_dump.py takes <dump>/base/{exefs,romfs}
+        if view.exists() or view.is_symlink():
+            remove_tree(view)
+        view.mkdir(parents=True)
+        (view / 'base').symlink_to(dump)
+        run([py, 'scripts/import_dump.py', view, '--output', extracted],
+            logs / 'import-dump.log', cwd=tree)
+        index = json.loads((romfs / 'index.json').read_text())
+        index['source'] = str(dump / 'romfs')   # the real folder, not the view
+        (romfs / 'index.json').write_text(json.dumps(index) + '\n')
+    (romfs / 'romfs.source').write_text(f'0 {image}\n')
+    return image
 
 
 # ---- 3. system fonts (optional) ----
@@ -437,7 +480,10 @@ def step_app(tree, game, out, logs, have_fonts):
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--game', type=Path, required=True, help='your Mario Kart World 1.0.0 NSP, decrypted with your own keys')
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument('--game', type=Path, help='your Mario Kart World 1.0.0 NSP, decrypted with your own keys')
+    source.add_argument('--dump', type=Path, help='or your dumped 1.0.0 game folder (exefs/ and romfs/); --work and the app '
+                        'must then be on one volume (the packed 23 GB RomFS image is cloned into the app)')
     ap.add_argument('--work', type=Path, help='work folder (default: MKW_build next to the game file)')
     ap.add_argument('--out', type=Path, help='the app to write (default: next to the game file)')
     ap.add_argument('--keys', type=Path, help='prod.keys: only needed with --firmware')
@@ -446,13 +492,20 @@ def main(argv):
     fonts.add_argument('--shared-fonts', type=Path, help='optional: a font folder an earlier build verified (manifest.json + six .bfttf)')
     a = ap.parse_args(argv)
     t0 = time.time()
-    game = a.game.expanduser().resolve()
-    if not game.is_file():
-        raise BuildError(f'no such file: {game}')
-    check_game(game)
+    dump = a.dump and a.dump.expanduser().resolve()
+    if dump:
+        if not ((dump / 'exefs/main.npdm').is_file() and (dump / 'romfs').is_dir()):
+            raise BuildError(f'{dump}: expected a dumped game folder with exefs/ (main.npdm) and romfs/')
+        game, home = None, dump
+    else:
+        game = a.game.expanduser().resolve()
+        if not game.is_file():
+            raise BuildError(f'no such file: {game}')
+        check_game(game)
+        home = game
     keys = a.keys and a.keys.expanduser().resolve()
-    work = a.work.expanduser().resolve() if a.work else game.parent / 'MKW_build'
-    out = a.out.expanduser().resolve() if a.out else game.parent / f'{APP_NAME}.app'
+    work = a.work.expanduser().resolve() if a.work else home.parent / 'MKW_build'
+    out = a.out.expanduser().resolve() if a.out else home.parent / f'{APP_NAME}.app'
     work, out = outside_source(work), outside_source(out)
     if out.suffix != '.app':
         raise BuildError(f'the output must end in .app: {out}')
@@ -460,14 +513,17 @@ def main(argv):
     if missing:
         raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
     work.mkdir(parents=True, exist_ok=True)
-    if os.stat(work).st_dev != os.stat(game).st_dev or os.stat(out.parent).st_dev != os.stat(game).st_dev:
-        raise BuildError('the work folder and the app must be on the same volume as the game file (the app clones the 23 GB NSP)')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    data_dev = os.stat(work).st_dev if dump else os.stat(game).st_dev   # --dump: the image is packed into the work folder
+    if os.stat(work).st_dev != data_dev or os.stat(out.parent).st_dev != data_dev:
+        raise BuildError('the work folder and the app must be on the same volume as the game data (the app clones the 23 GB image)')
     logs = work / 'logs/build'
-    if shutil.disk_usage(work).free / 2**30 < 6:
-        raise BuildError('needs about 6 GB free for the work folder (the NSP itself is cloned, not copied)')
+    need = 30 if dump and not (work / f'mkw/extracted/{VERSION}/romfs/romfs.bin').is_file() else 6
+    if shutil.disk_usage(work).free / 2**30 < need:
+        raise BuildError(f'needs about {need} GB free for the work folder' + (' (the packed RomFS image is 23 GB)' if dump else ' (the NSP itself is cloned, not copied)'))
     say(f'{APP_NAME} {EXPECTED["display_version"]}; work folder {work}')
     tree = prepare_work(work, sys.executable, logs)
-    step_code(tree, game, logs)
+    game = step_code(tree, game, logs, dump=dump)
     have_fonts = step_fonts(tree, logs, keys=keys, firmware=a.firmware and a.firmware.expanduser().resolve(),
                             shared_fonts=a.shared_fonts and a.shared_fonts.expanduser().resolve())
     step_binary(tree, logs, have_fonts)
