@@ -33,7 +33,12 @@ int main(void) {
     if (setenv("TOTK_GAME_SLOT_DIR", path, 1)) return 2;
     unsetenv("TOTK_AUTOLOAD");
     unsetenv("TOTK_INPUT_SCRIPT");
-    execl(binary, binary, "rewritten/v100", "boot", (char *)NULL);
+    CFTypeRef game_dir = CFBundleGetValueForInfoDictionaryKey(bundle, CFSTR("XCXGameDirectory"));
+    char directory[32];
+    if (!game_dir || CFGetTypeID(game_dir) != CFStringGetTypeID() ||
+        !CFStringGetCString(game_dir, directory, sizeof directory, kCFStringEncodingUTF8) ||
+        (strcmp(directory, "rewritten/v100") && strcmp(directory, "rewritten/v200"))) return 2;
+    execl(binary, binary, directory, "boot", (char *)NULL);
     perror("xcx-native");
     return 2;
 }

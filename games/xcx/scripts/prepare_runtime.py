@@ -2,9 +2,9 @@
 """Bind the native loader to the pinned Xenoblade Chronicles X rewrite and verified RomFS: generated headers stay in the work folder.
 
 Writes <work>/build/runtime_tables.h (modules, symbols, relocations, gates), romfs_config.h and
-extracted/v100/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
+extracted/<version>/romfs/runtime-index.bin (the RomFS index the runtime reads), and shared_fonts_config.h.
 Adapted from games/totk/scripts/prepare_runtime.py, prepare_romfs_backend.py and prepare_shared_fonts.py; every input
-is checked against assets/expected-v1.0.0.json first.
+is checked against the selected assets/expected-v<version>.json first.
 """
 import argparse
 import hashlib
@@ -19,8 +19,15 @@ from xcx_artifact_paths import outside_source
 sys.path.insert(0, str(HERE / 'third_party/d2r'))   # Xenoblade Chronicles X's own copy of the rewriter
 from relr import decode_relr
 
-VERSION = 'v100'
-EXPECTED = json.loads((HERE / 'assets/expected-v1.0.0.json').read_text())
+VERSIONS = {'1.0.0': 'v100', '2.0.0': 'v200'}
+
+def version_inputs(display_version):
+    if display_version not in VERSIONS:
+        raise ValueError('Unsupported XCX version')
+    expected = json.loads((HERE / f'assets/expected-v{display_version}.json').read_text())
+    if expected['display_version'] != display_version or expected['title_id'] != '0100453019AA8000':
+        raise ValueError('Version manifest identity differs')
+    return VERSIONS[display_version], expected
 
 
 def sha(path):
@@ -32,19 +39,19 @@ def checked_sha(path, expected, label):
         raise ValueError(f'{label}: SHA256 differs')
 
 
-def verify_rewrite_metadata(work):
-    for filename, digest in EXPECTED['rewrite_metadata_sha256'].items():
-        checked_sha(work / f'rewritten/{VERSION}/{filename}', digest, f'Rewrite metadata {filename}')
+def verify_rewrite_metadata(work, version, expected):
+    for filename, digest in expected['rewrite_metadata_sha256'].items():
+        checked_sha(work / f'rewritten/{version}/{filename}', digest, f'Rewrite metadata {filename}')
 
 
-def module_table(work, name):
-    path = work / f'rewritten/{VERSION}/{name}.patched.bin'
+def module_table(work, name, version, expected):
+    path = work / f'rewritten/{version}/{name}.patched.bin'
     image = path.read_bytes()
     digest = hashlib.sha256(image).hexdigest()
-    assert digest == EXPECTED['rewritten_sha256'][f'{name}.patched.bin'], f'Unverified rewrite: {name}'
-    assert sha(work / f'extracted/{VERSION}/exefs/{name}') == EXPECTED['exefs_sha256'][name], f'Unverified ExeFS: {name}'
+    assert digest == expected['rewritten_sha256'][f'{name}.patched.bin'], f'Unverified rewrite: {name}'
+    assert sha(work / f'extracted/{version}/exefs/{name}') == expected['exefs_sha256'][name], f'Unverified ExeFS: {name}'
     layout = {}
-    for line in (work / f'rewritten/{VERSION}/{name}.fixups.tsv').read_text().splitlines():
+    for line in (work / f'rewritten/{version}/{name}.fixups.tsv').read_text().splitlines():
         _, key, value = line.split()
         layout[key] = int(value, 0)
     mod0 = struct.unpack_from('<I', image, 4)[0]
@@ -59,7 +66,7 @@ def module_table(work, name):
     if 4 in tags:
         nsym = struct.unpack_from('<I', image, tags[4] + 4)[0]
     else:
-        raw_header = (work / f'extracted/{VERSION}/exefs/{name}').read_bytes()[:256]
+        raw_header = (work / f'extracted/{version}/exefs/{name}').read_bytes()[:256]
         _, _, symbol_offset, symbol_size = struct.unpack_from('<IIII', raw_header, 0x90)
         assert layout['RO_OFF'] + symbol_offset == tags[6] and symbol_size % 24 == 0
         nsym = symbol_size // 24
@@ -85,7 +92,7 @@ def module_table(work, name):
             relocated.add(where)
             relocs.append(dict(where=where, kind=kind, symbol=si, addend=addend))
     gates = []
-    for line in (work / f'rewritten/{VERSION}/{name}.gates.tsv').read_text().splitlines():
+    for line in (work / f'rewritten/{version}/{name}.gates.tsv').read_text().splitlines():
         ret, kind, arg, original = line.split()
         assert kind in ['cntpct', 'cntvct', 'svc']
         gates.append(dict(ret=int(ret, 0), timer=kind != 'svc', arg=int(arg), original=int(original, 0)))
@@ -115,13 +122,13 @@ def ctor_flag(image, tags, layout, name):
     raise ValueError(f'{name}: no constructor-state load in DT_INIT')
 
 
-def runtime_tables(work, out):
-    verify_rewrite_metadata(work)
-    modules = [module_table(work, n) for n in ['main', 'subsdk0', 'sdk']]
+def runtime_tables(work, out, version, expected):
+    verify_rewrite_metadata(work, version, expected)
+    modules = [module_table(work, n, version, expected) for n in ['main', 'subsdk0', 'sdk']]
     main = modules[0]
     target = '_ZN2nn2os13GetSystemTickEv'
     slot = next(r['where'] for r in main['relocs'] if main['symbols'][r['symbol']]['name'] == target and r['kind'] == 1026)
-    image = (work / f'rewritten/{VERSION}/main.patched.bin').read_bytes()
+    image = (work / f'rewritten/{version}/main.patched.bin').read_bytes()
     plt = []
     for address in range(main['layout']['TEXT_END'] - 0x10000, main['layout']['TEXT_END'] - 12, 4):
         a, b, c, d = struct.unpack_from('<IIII', image, address)
@@ -154,13 +161,13 @@ def runtime_tables(work, out):
     return dict(modules=len(modules), relocations=sum(len(m['relocs']) for m in modules), main_plt=hex(plt[0]))
 
 
-def romfs_config(work, out):
-    folder = work / f'extracted/{VERSION}/romfs'
+def romfs_config(work, out, version, expected):
+    folder = work / f'extracted/{version}/romfs'
     manifest = json.loads((folder / 'index.json').read_text())
-    assert manifest['status'] == 'pass' and manifest['romfs_sha256'] == EXPECTED['romfs']['sha256']
-    if sha(folder / 'romfs.bin') != EXPECTED['romfs']['sha256']:
+    assert manifest['status'] == 'pass' and manifest['romfs_sha256'] == expected['romfs']['sha256']
+    if sha(folder / 'romfs.bin') != expected['romfs']['sha256']:
         raise ValueError('RomFS content hash differs')
-    assert (folder / 'romfs.bin').stat().st_size == manifest['romfs_size'] == EXPECTED['romfs']['size']
+    assert (folder / 'romfs.bin').stat().st_size == manifest['romfs_size'] == expected['romfs']['size']
     strings, rows = bytearray(), bytearray()
     for item in manifest['files']:
         name = item['path'].encode() + b'\0'
@@ -198,11 +205,21 @@ def shared_fonts_config(work, out):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
-    work = outside_source(parser.parse_args().work)
+    parser.add_argument('--version', choices=VERSIONS, default='1.0.0')
+    args = parser.parse_args()
+    version, expected = version_inputs(args.version)
+    work = outside_source(args.work)
     out = work / 'build'
     out.mkdir(parents=True, exist_ok=True)
-    print(json.dumps(dict(runtime=runtime_tables(work, out), romfs=romfs_config(work, out),
-                          shared_fonts=shared_fonts_config(work, out))))
+    result = dict(runtime=runtime_tables(work, out, version, expected),
+                  romfs=romfs_config(work, out, version, expected),
+                  shared_fonts=shared_fonts_config(work, out))
+    (out / 'xcx_version_config.h').write_text(
+        f'#define TOTK_GAME_VERSION {json.dumps(args.version)}\n'
+        f'#define TOTK_GAME_DIR {json.dumps(version)}\n')
+    (out / 'xcx-version.json').write_text(json.dumps(
+        dict(display_version=args.version, directory=version), indent=2) + '\n')
+    print(json.dumps(result))
 
 
 if __name__ == '__main__':

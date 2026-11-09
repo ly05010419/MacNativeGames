@@ -4,7 +4,8 @@
    The effect switches are totk_fx.h's (dm_gfx_fx_*), saved as on 1.4.3: graphics-effects.txt holds the ids of the
    effects that are off, one word each ("none" when all are on). On this game dm_gfx_fx_available opens only the switches
    that act here: ambient occlusion, the AO patch's own switch (totk_ssao.h, c1[3].w bit 0 in the shader 0eeb23f2), while the AO
-   shaders are the patched ones. The sun's shadows have their row (settings_botw_shadow_row), as on 1.4.3.
+   shaders are the patched ones, the grass blades (their own fragment / vertex shader pair in totk_fx.h), and the sun's
+   shadows, which are an Off choice in their row (settings_botw_shadow_row), as on 1.4.3.
    FXAA and sharpening are 1.4.3's rows and files (graphics-fxaa.txt, graphics-sharpen.txt) acting around this game's
    FXAA / upscale draw (gfx/nvn/botw_finish.h); while MetalFX replaces that draw the FXAA row says so instead. */
 int dm_gfx_fx_count(void); const char *dm_gfx_fx_id(int i); const char *dm_gfx_fx_name(int i, int english);   /* totk_fx.h */
@@ -33,6 +34,23 @@ static void settings_botw_effects_reset(void) {
  for(int i=0;i<dm_gfx_fx_count();i++)if(!dm_gfx_fx_on(i))dm_gfx_fx_set(i,1);
  dm_gfx_fxaa_set(1);dm_gfx_sharpen_set(0);
  for(const char *const *f=(const char *const[]){"graphics-effects.txt","graphics-fxaa.txt","graphics-sharpen.txt",NULL};*f;f++)runtime_setting_remove(*f);
+}
+/* The sun shadows' row (settings_botw_shadow_row in settings_panel.h names it): off, the game's sizes or 2048 per cascade.
+   The sizes are the next launch's (botw_shadow_res.h); off is the effect switch "shadow" and acts at once (P9, 2026-11-05:
+   on the Great Plateau the shadows of Link, rocks and cliffs go, with no other evident fault in that scene; AO and other conditions not checked). Without that switch, the sizes only. */
+static TOTKSettingRow *settings_botw190_shadow_row(NSString *t) {
+ if(!runtime_shadow_res_available())return settings_fixed(t,settings_text("这个版本没有","Not in this version"));
+ if(runtime_shadow_res_locked())return settings_fixed(t,settings_text("由 TOTK_SHADOW_RES 设置","Set by TOTK_SHADOW_RES"));
+ t=[t stringByAppendingString:settings_text("（下次启动生效）"," (from the next launch)")];
+ /* Off (the effect switch "shadow", totk_fx.h: every shadow-map comparison reads lit) acts at once and is saved in
+    graphics-effects.txt; the resolution keeps its own file and its next-launch rule. -1 = off in this row. */
+ int fx=-1;for(int i=0;i<dm_gfx_fx_count();i++)if(!strcmp(dm_gfx_fx_id(i),"shadow"))fx=i;
+ if(fx<0||!dm_gfx_fx_available(fx))
+  return settings_row(t,@[settings_text("游戏原样","As the game has it"),settings_text("2048（每级）","2048 per cascade")],@[@0,@2048],
+   ^int{return runtime_shadow_res_saved();},^(int v){runtime_shadow_res_save(v);});
+ return settings_row(t,@[settings_text("关（无阴影，立即生效）","Off (no shadows, at once)"),settings_text("游戏原样","As the game has it"),settings_text("2048（每级）","2048 per cascade")],@[@-1,@0,@2048],
+  ^int{return dm_gfx_fx_on(fx)?runtime_shadow_res_saved():-1;},
+  ^(int v){dm_gfx_fx_set(fx,v>=0);if(v>=0)runtime_shadow_res_save(v);settings_effects_save();});
 }
 static NSArray<TOTKSettingRow *> *settings_effect_rows(void) {
  NSString *none=settings_text("这个版本没有","Not in this version");

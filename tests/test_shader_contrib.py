@@ -178,6 +178,69 @@ class OtherGamesTests(unittest.TestCase):
         line, per_game = collect_shader_issues.merge_issue(issue, lists, keys, {}, '', False)
         return lists, line, per_game
 
+    def seeded_keys(self, game):
+        keys = {g: set() for g in collect_shader_issues.GAMES}
+        keys[game] = {self.KEY_A}
+        return keys
+
+    def test_a_seeded_game_named_in_the_title_takes_the_rows_no_seed_names(self):
+        body = f'```\nV\t{self.KEY_W}\t{{}}\n```'   # a shader outside the seed: new to the list, so it is collected
+        for title, game in (('Shader list (Breath of the Wild): 1 shaders', 'botw'),
+                            ('Shader list: 5227 shaders from Mac (TOTK 1.0.0)', 'totk')):
+            with self.subTest(title=title):
+                lists, line, per_game = self.merge(self.issue(title, body), self.seeded_keys(game))
+                self.assertEqual(lists[game].variants, {(self.KEY_W, '{}')})
+                self.assertEqual(per_game, {game: (1, 1)})
+                self.assertNotIn('neither game has', line)
+
+    def test_a_title_that_names_no_game_leaves_unknown_rows_open(self):
+        body = f'```\nV\t{self.KEY_W}\t{{}}\n```'
+        lists, line, per_game = self.merge(self.issue('Shader list: my iPhone, 2 hours', body), self.seeded_keys('totk'))
+        self.assertEqual(lists['totk'].variants, set())
+        self.assertIsNone(per_game)
+        self.assertIn('neither game has', line)
+
+    def test_known_rows_of_the_other_seeded_game_stay_with_it(self):
+        keys = self.seeded_keys('totk')
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'
+        lists, _, per_game = self.merge(self.issue('Shader list (Breath of the Wild): 2 shaders', body), keys)
+        self.assertEqual(lists['totk'].variants, {(self.KEY_A, '{}')})
+        self.assertEqual(lists['botw'].variants, {(self.KEY_W, '{}')})
+        self.assertEqual(per_game, {'totk': (1, 1), 'botw': (1, 1)})
+
+    def test_a_plain_title_whose_known_rows_are_one_games_gives_it_the_rest(self):
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'   # one install's file: one game's shaders
+        lists, line, per_game = self.merge(self.issue('Shader list:', body), self.seeded_keys('totk'))
+        self.assertEqual(lists['totk'].variants, {(self.KEY_A, '{}'), (self.KEY_W, '{}')})
+        self.assertEqual(per_game, {'totk': (2, 2)})
+        self.assertNotIn('neither game has', line)
+
+    def test_a_file_with_two_games_rows_leaves_the_rest_unknown(self):
+        key_b = 'b' * 64
+        keys = self.seeded_keys('totk'); keys['botw'] = {key_b}
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{key_b}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'
+        lists, line, per_game = self.merge(self.issue('Shader list:', body), keys)
+        self.assertIsNone(per_game)
+        self.assertIn('1 rows of shaders neither game has', line)
+
+    def test_pokopia_issues_are_its_own_game(self):
+        titled = collect_shader_issues.titled_game
+        self.assertEqual(titled(self.issue('Shader list: 167 shaders from Mac (Pokopia 2.0.1)')), 'pokopia')
+
+    def test_the_report_is_what_the_merge_found(self):
+        issue = self.issue('Shader list (Breath of the Wild): 1 shaders', number=7)
+        report = collect_shader_issues.merged_report([(issue, {'botw': (3, 1)})])
+        self.assertEqual(report, [{'number': 7, 'titled': 'botw', 'per_game': {'botw': [3, 1]}}])
+
+    def test_bananza_issues_are_its_own_game(self):
+        titled = collect_shader_issues.titled_game
+        self.assertEqual(titled(self.issue('Shader list: 1120 shaders from Mac (Bananza v458752)')), 'dkb')
+        self.assertEqual(titled(self.issue('Shader list (Donkey Kong Bananza): Mac v458752, en')), 'dkb')
+        body = f'```\nV\t{self.KEY_W}\t{{}}\n```'
+        keys = {g: set() for g in collect_shader_issues.GAMES}
+        lists, _, _ = self.merge(self.issue('Shader list: 1 shaders from Mac (Bananza v458752)', body), keys)
+        self.assertEqual(lists['dkb'].variants, {(self.KEY_W, '{}')})
+
     def test_another_game_takes_every_row_no_seeded_game_has(self):
         keys = {g: set() for g in collect_shader_issues.GAMES}; keys['totk'] = {self.KEY_A}
         body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'   # a file shared with Tears of the Kingdom

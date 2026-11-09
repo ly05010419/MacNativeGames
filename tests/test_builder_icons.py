@@ -83,6 +83,21 @@ class BotwPlan(unittest.TestCase):
         self.assertEqual(icons_plan.botw_diamond(cf.swap(inputs(), 'x', 'l1')),
                          {'a': 'right', 'b': 'bottom', 'y': 'left'})       # X on LB: its part keeps the Switch drawing
 
+    def test_1_6_0_uses_its_own_code_points_past_the_letters(self):
+        letters = cf.xbox_letters(inputs())
+        glyphs = lambda layout: icons_plan.botw_glyphs(layout, 'botw160')  # noqa: E731
+        self.assertEqual(glyphs(inputs()), icons_plan.botw_glyphs(inputs()))   # the letters are the same in both
+        self.assertEqual(glyphs(cf.swap(letters, 'lstick', 'r3')), {0xE056: 0xE057, 0xE057: 0xE056})
+        self.assertEqual(glyphs(inputs(b'north = none\n'))[0xE042], 0xE08F)    # its cross
+        turned = cf.swap(cf.swap(letters, 'up', 'left'), 'down', 'right')
+        self.assertEqual(glyphs(turned), {0xE060: 0xE062, 0xE062: 0xE060, 0xE061: 0xE063, 0xE063: 0xE061,
+                                          0xE064: 0xE065, 0xE065: 0xE064})
+        crossed = glyphs(cf.swap(letters, 'up', 'right'))
+        self.assertEqual((crossed[0xE064], crossed[0xE065]), (0xE049, 0xE049))
+        used = {cp for layout in (turned, crossed, inputs(b'north = none\n'), cf.swap(letters, 'lstick', 'r3'))
+                for pair in glyphs(layout).items() for cp in pair}
+        self.assertFalse(used & {0xE05C, 0xE070, 0xE068})               # code points 1.6.0's font has no icon for
+
 
 class Env(unittest.TestCase):
     def setUp(self):
@@ -237,6 +252,11 @@ class Mod(LibraryBase):
             self.assertEqual((seen['argv'][:3], seen['argv'][4:8], seen['argv'][-1]),
                              ([sys.executable, '-I', str(icons_mod.BOTW_SCRIPT)], ['--app', str(self.app), '--version',
                                                                                   'botw190'], '--write-all'))
+            self.assertEqual(seen['argv'][-3:-1], ['--style', 'xbox'])
+            controller_icons_style = __import__('tools.builder.controller_icons', fromlist=['icon_style']).icon_style
+            for word, style in (('playstation', 'playstation'), ('auto', 'xbox'), ('xbox', 'xbox')):
+                state = type('State', (), {'type_word': word})()
+                self.assertEqual(controller_icons_style(state), style, word)
             self.assertEqual((seen['glyphs'], seen['seeded'], table), ([[0xE040, 0xE041], [0xE041, 0xE040],
                                                                        [0xE042, 0xE043], [0xE043, 0xE042]], False, None))
             self.assertEqual(seen['diamond'], {'a': 'right', 'b': 'bottom', 'x': 'top', 'y': 'left'})

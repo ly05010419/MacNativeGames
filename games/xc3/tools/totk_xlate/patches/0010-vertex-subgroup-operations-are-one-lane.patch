@@ -1,0 +1,171 @@
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-11-08 10:38:13
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs	2026-11-08 10:38:28
+@@ -224,8 +224,23 @@
+             return GenerateAtomicMemoryBinary(context, operation, context.Delegates.AtomicXor);
+         }
+ 
++        // Metal has no subgroup operations in vertex functions, so a vertex is a subgroup of one lane.
++        private static bool IsOneLane(CodeGenContext context)
++        {
++            return context.Definitions.Stage == ShaderStage.Vertex;
++        }
++
+         private static OperationResult GenerateBallot(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                // The lane's own bit, which is bit 0 of the first word.
++                SpvInstruction pred = context.Get(AggregateType.Bool, operation.GetSource(0));
++                SpvInstruction bit = context.Constant(context.TypeU32(), operation.Index == 0 ? 1 : 0);
++
++                return new OperationResult(AggregateType.U32, context.Select(context.TypeU32(), pred, bit, context.Constant(context.TypeU32(), 0)));
++            }
++
+             IAstNode source = operation.GetSource(0);
+ 
+             SpvInstruction uvec4Type = context.TypeVector(context.TypeU32(), 4);
+@@ -1079,6 +1094,11 @@
+ 
+         private static OperationResult GenerateShuffle(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.FP32, context.GetFP32(operation.GetSource(0)));
++            }
++
+             SpvInstruction value = context.GetFP32(operation.GetSource(0));
+             SpvInstruction index = context.GetU32(operation.GetSource(1));
+ 
+@@ -1089,6 +1109,11 @@
+ 
+         private static OperationResult GenerateShuffleDown(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.FP32, context.GetFP32(operation.GetSource(0)));
++            }
++
+             SpvInstruction value = context.GetFP32(operation.GetSource(0));
+             SpvInstruction index = context.GetU32(operation.GetSource(1));
+ 
+@@ -1099,6 +1124,11 @@
+ 
+         private static OperationResult GenerateShuffleUp(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.FP32, context.GetFP32(operation.GetSource(0)));
++            }
++
+             SpvInstruction value = context.GetFP32(operation.GetSource(0));
+             SpvInstruction index = context.GetU32(operation.GetSource(1));
+ 
+@@ -1109,6 +1139,11 @@
+ 
+         private static OperationResult GenerateShuffleXor(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.FP32, context.GetFP32(operation.GetSource(0)));
++            }
++
+             SpvInstruction value = context.GetFP32(operation.GetSource(0));
+             SpvInstruction index = context.GetU32(operation.GetSource(1));
+ 
+@@ -1585,6 +1620,11 @@
+ 
+         private static OperationResult GenerateVoteAll(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.Bool, context.Get(AggregateType.Bool, operation.GetSource(0)));
++            }
++
+             SpvInstruction execution = context.Constant(context.TypeU32(), Scope.Subgroup);
+             SpvInstruction result = context.GroupNonUniformAll(context.TypeBool(), execution, context.Get(AggregateType.Bool, operation.GetSource(0)));
+             return new OperationResult(AggregateType.Bool, result);
+@@ -1592,6 +1632,11 @@
+ 
+         private static OperationResult GenerateVoteAllEqual(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.Bool, context.ConstantTrue(context.TypeBool()));
++            }
++
+             SpvInstruction execution = context.Constant(context.TypeU32(), Scope.Subgroup);
+             SpvInstruction result = context.GroupNonUniformAllEqual(context.TypeBool(), execution, context.Get(AggregateType.Bool, operation.GetSource(0)));
+             return new OperationResult(AggregateType.Bool, result);
+@@ -1599,6 +1644,11 @@
+ 
+         private static OperationResult GenerateVoteAny(CodeGenContext context, AstOperation operation)
+         {
++            if (IsOneLane(context))
++            {
++                return new OperationResult(AggregateType.Bool, context.Get(AggregateType.Bool, operation.GetSource(0)));
++            }
++
+             SpvInstruction execution = context.Constant(context.TypeU32(), Scope.Subgroup);
+             SpvInstruction result = context.GroupNonUniformAny(context.TypeBool(), execution, context.Get(AggregateType.Bool, operation.GetSource(0)));
+             return new OperationResult(AggregateType.Bool, result);
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs	2026-11-08 10:38:13
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitMove.cs	2026-11-08 10:41:43
+@@ -182,6 +182,18 @@
+ 
+         private static Operand EmitLoadSubgroupMask(EmitterContext context, IoVariable ioVariable)
+         {
++            if (context.TranslatorContext.Definitions.Stage == ShaderStage.Vertex)
++            {
++                // Metal has no subgroup builtins in vertex functions, so a vertex is a subgroup of one lane.
++                return ioVariable switch
++                {
++                    IoVariable.SubgroupEqMask or IoVariable.SubgroupLeMask => Const(1),
++                    IoVariable.SubgroupGtMask => Const(unchecked((int)0xfffffffe)),
++                    IoVariable.SubgroupGeMask => Const(unchecked((int)0xffffffff)),
++                    _ => Const(0),
++                };
++            }
++
+             int subgroupSize = context.TranslatorContext.GpuAccessor.QueryHostSubgroupSize();
+ 
+             if (subgroupSize <= 32)
+--- a/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs	2026-11-08 10:38:13
++++ b/src/Ryujinx.Graphics.Shader/Translation/EmitterContextInsts.cs	2026-11-08 10:41:43
+@@ -711,6 +711,11 @@
+ 
+         public static Operand Load(this EmitterContext context, StorageKind storageKind, IoVariable ioVariable, Operand primVertex = null)
+         {
++            if (storageKind == StorageKind.Input && ioVariable == IoVariable.SubgroupLaneId && context.TranslatorContext?.Definitions.Stage == ShaderStage.Vertex)
++            {
++                return Const(0);   // Metal has no subgroup builtins in vertex functions, so a vertex is a subgroup of one lane.
++            }
++
+             return primVertex != null
+                 ? context.Load(storageKind, (int)ioVariable, primVertex)
+                 : context.Load(storageKind, (int)ioVariable);
+--- a/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs	2026-11-08 10:38:13
++++ b/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs	2026-11-08 10:44:35
+@@ -58,6 +58,11 @@
+ 
+         public int GetOrCreateShuffleFunctionId(HelperFunctionName functionName, int subgroupSize)
+         {
++            if (_stage == ShaderStage.Vertex)
++            {
++                subgroupSize = 0;   // Metal has no subgroup builtins in vertex functions: one lane, whose ID is 0
++            }
++
+             if (_functionIds.TryGetValue((int)functionName, out int functionId))
+             {
+                 return functionId;
+@@ -341,6 +346,11 @@
+ 
+         private static Operand GenerateLoadSubgroupLaneId(EmitterContext context, int subgroupSize)
+         {
++            if (subgroupSize == 0)
++            {
++                return Const(0);
++            }
++
+             if (subgroupSize <= 32)
+             {
+                 return context.Load(StorageKind.Input, IoVariable.SubgroupLaneId);

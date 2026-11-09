@@ -377,7 +377,10 @@ class UpdateRuntime(unittest.TestCase):
         before = {p: p.read_bytes() for p in res.rglob('*') if p.is_file()}
         with patch.object(build_app, 'run') as run:
             build_app.place_runtime(tree, app, 'v143', self.root / 'logs', lists=False)
-        run.assert_not_called()   # lists=False: the shared list is not resolved
+        self.assertEqual(run.call_count, 1)   # HUD metadata still refreshes; lists=False keeps shader lists.
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[1]).name, 'prepare_prompt_hud.py')
+        self.assertEqual(command[command.index('--app') + 1], app)
         self.assertEqual((res / 'build/totk-native').read_bytes(), b'new build/totk-native-v143')
         self.assertEqual((app / 'Contents/MacOS/TOTK').read_bytes(), b'new build/totk-native-v143')   # the game is the app's executable
         self.assertFalse((res / 'build/pso_title.tsv').exists(), 'lists=False keeps the app\'s lists')

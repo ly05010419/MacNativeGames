@@ -5,6 +5,10 @@
 #include "autoload.h"
 #include "world_survey.h"
 #include "keyboard_map.h"
+#include "input_prompts.h"
+/* Input-only probes do not link the platform renderer. */
+extern void runtime_prompt_keyboard(const KeyMap *) __attribute__((weak_import));
+extern void runtime_prompt_note_input(PromptDevice) __attribute__((weak_import));
 #include "../zeldaVR/gfx/vr_labo.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -29,10 +33,11 @@ static KeyMap keyMap;static int keyMapLoaded;
 static unsigned char held[KEYMAP_INPUTS];static KeyMapOutput heldOut;
 static void keymap_load_locked(void){
  if(keyMapLoaded)return;keyMapLoaded=1;keymap_default(&keyMap);
- char text[8192];if(!runtime_setting_word("keyboard.txt",text,sizeof text)){fprintf(stderr,"[totk-input] keyboard layout: default\n");return;}
+ char text[8192];if(!runtime_setting_word("keyboard.txt",text,sizeof text)){fprintf(stderr,"[totk-input] keyboard layout: default\n");if(runtime_prompt_keyboard)runtime_prompt_keyboard(&keyMap);return;}
  const char *error=NULL;int line=keymap_parse(text,&keyMap,&error);
  if(line)fprintf(stderr,"[totk-input] keyboard.txt line %d: %s; using the default keyboard layout\n",line,error);
  else fprintf(stderr,"[totk-input] keyboard layout: keyboard.txt\n");
+ if(runtime_prompt_keyboard)runtime_prompt_keyboard(&keyMap);
 }
 /* The Switch buttons the held keys drive, for runtime_keyboard_buttons, which takes no lock (the mouse ticks under the
    gamepad's lock, which is taken inside inputLock): the script keys' fixed layout and the player's (after PR #1210). */
@@ -47,11 +52,13 @@ void runtime_keymap_set(const KeyMap *map){
  char text[8192];int n=keymap_format(map,text,sizeof text);
  pthread_mutex_lock(&inputLock);keyMapLoaded=1;keyMap=*map;held_changed_locked();pthread_mutex_unlock(&inputLock);
  if(n>0)runtime_setting_save("keyboard.txt",text,"keyboard layout");
+ if(runtime_prompt_keyboard)runtime_prompt_keyboard(map);
 }
 void runtime_keymap_reset(void){
  KeyMap map;keymap_default(&map);
  pthread_mutex_lock(&inputLock);keyMapLoaded=1;keyMap=map;held_changed_locked();pthread_mutex_unlock(&inputLock);
  runtime_setting_remove("keyboard.txt");fprintf(stderr,"[totk-input] keyboard layout: default (reset)\n");
+ if(runtime_prompt_keyboard)runtime_prompt_keyboard(&map);
 }
 /* Real user input (a window key, a controller button, a stick pushed past half) stops TOTK_AUTOLOAD and is logged at most
    once a minute. In an agent's test session (TOTK_SLOT_OWNER other than user) the line says the user is playing it: its
@@ -91,6 +98,7 @@ void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pth
  if(press&&code==KEY_VR_RECENTER)vr_recenter_key();}
 void runtime_input_key(unsigned code,int down){
  if(code>=128||ignore_user())return;if(down)user_input("keyboard");
+ if(down&&runtime_prompt_note_input)runtime_prompt_note_input(PROMPT_KEYBOARD);
  pthread_mutex_lock(&inputLock);int press=down&&!held[code];held[code]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
  if(press&&code==KEY_SETTINGS)runtime_settings_toggle();
  if(press&&code==KEY_VR_VIEW)vr_view_key();
@@ -99,6 +107,7 @@ void runtime_input_key(unsigned code,int down){
 /* A mouse button in mouse mode (runtime/gamepad.m: 0 left, 1 right, 2 middle, 3 and 4 the side buttons). */
 void runtime_input_mouse(int button,int down){
  if(button<0||button>=KEYMAP_MOUSE_BUTTONS||ignore_user())return;if(down)user_input("mouse");
+ if(down&&runtime_prompt_note_input)runtime_prompt_note_input(PROMPT_KEYBOARD);
  pthread_mutex_lock(&inputLock);held[KEYMAP_MOUSE_FIRST+button]=(unsigned char)!!down;held_changed_locked();pthread_mutex_unlock(&inputLock);
 }
 void runtime_input_clear_window(void){pthread_mutex_lock(&inputLock);memset(keys,0,sizeof(keys));memset(held,0,sizeof held);heldOut=(KeyMapOutput){0};pending=0;held_buttons_locked();pthread_mutex_unlock(&inputLock);}

@@ -1031,3 +1031,13 @@ void *runtime_front_override(const char *name){
  };
  for(unsigned i=0;i<sizeof(entries)/sizeof(*entries);i++)if(!strcmp(name,entries[i].name))return entries[i].fn;return NULL;
 }
+
+/* A notice from the game's services (runtime/cloud_save.m: the folder's newer save did not load), as a sheet on the
+   game window; the game keeps running behind it. */
+void runtime_front_notice(const char *title,const char *detail){
+ NSString *t=@(title?title:""),*d=@(detail?detail:"");
+ dispatch_async(dispatch_get_main_queue(),^{
+  NSAlert *a=[NSAlert new];a.messageText=t;a.informativeText=d;[a addButtonWithTitle:@(TOTK_UI("好","OK"))];
+  if(window&&window.visible)[a beginSheetModalForWindow:window completionHandler:nil];else [a runModal];
+ });
+}

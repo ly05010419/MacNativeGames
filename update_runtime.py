@@ -491,7 +491,7 @@ def main(argv):
         lists = (new_res / 'build/shader-seed/shader-keys.json').is_file()   # the seed resolve names the rows by
         if not lists:
             say('   the app\'s startup shader seed predates its shader-keys.json, so the app keeps its warm-up lists (--seed makes a new one)')
-        build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists)
+        build_app.place_runtime(tree, tmp, version, logs, game=game, lists=lists, prompt_app=app)
         record_commit(tmp, work, native_5k=preference)
         probe_runtime(tree, tmp, version, logs)
         build_app.mac_pipelines(tree, new_res, version, logs)   # the new binary's pipeline keys, as a build makes them

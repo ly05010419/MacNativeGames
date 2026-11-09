@@ -45,9 +45,10 @@ static void glitch_mark(void){
  char dir[900],png[1000],trace[1000],stamp[32];const char *d=getenv("PSV_GLITCH_DIR"),*home=getenv("HOME");
  if(d&&*d)snprintf(dir,sizeof dir,"%s",d);else if(!access("logs",W_OK))snprintf(dir,sizeof dir,"logs");
  else snprintf(dir,sizeof dir,"%s/Library/Logs/MacNativeGames",home?home:"/tmp");
- time_t now=time(NULL);strftime(stamp,sizeof stamp,"%Y%m%d-%H%M%S",localtime(&now));
+ struct timespec ts;clock_gettime(CLOCK_REALTIME,&ts);time_t now=ts.tv_sec;size_t sl=strftime(stamp,sizeof stamp,"%Y%m%d-%H%M%S",localtime(&now));
+ snprintf(stamp+sl,sizeof stamp-sl,"-%03ld",ts.tv_nsec/1000000);   // milliseconds: two presses within one second kept only one file
  snprintf(png,sizeof png,"%s/glitch-%s.png",dir,stamp);snprintf(trace,sizeof trace,"%s/glitch-%s.gputrace",dir,stamp);
- fprintf(stderr,"[glitch] key 0: %s\n",png);dm_gfx_shot_at(2,png);
+ fprintf(stderr,"[glitch] key 0: %s t=%.3f\n",png,runtime_now_ns()/1e9);   dm_gfx_shot_at(2,png);   // t: the clock of the PSV_FS_TIMING read windows
  {extern void dm_gfx_ishot_next(const char *path);char ip[1000];snprintf(ip,sizeof ip,"%s/glitch-%s-interp.png",dir,stamp);dm_gfx_ishot_next(ip);}
  if(getenv("MTL_CAPTURE_ENABLED"))dm_gfx_gpucapture_next(trace);}
 void runtime_input_key_synthetic(unsigned code,int down){if(code>=128)return;pthread_mutex_lock(&inputLock);int press=down&&!keys[code];if(down&&!keys[code])pending|=button(code);keys[code]=(unsigned char)!!down;pthread_mutex_unlock(&inputLock);
@@ -254,7 +255,8 @@ static void *input_file(void *arg) {
                     ra += rs; }
                 fprintf(stderr, "[psv-input] findd %#x: %u hits\n", want, hits); }
         } else if (!strncmp(line, "findq ", 6) || !strncmp(line, "poke8 ", 6)) {
-            /* Diagnostic (2026-11-02): "findq <value>" lists writable memory holding that 8-byte value (first 60 hits);
+            /* Diagnostic (2026-11-02): "findq <value> [<next>]" lists writable memory holding that 8-byte value (first 60 hits;
+               with <next>, only where the following 8 bytes hold it: a pair such as a width and a height);
                "poke8 <addr> <value>" writes 8 bytes. Values in hex (0x...) or decimal. */
             uint64_t a1 = 0, a2 = 0; char *e1 = NULL; a1 = strtoull(line + 6, &e1, 0); if (e1) a2 = strtoull(e1, NULL, 0);
             if (line[1] == 'o') {
@@ -266,10 +268,15 @@ static void *input_file(void *arg) {
                     if (info.is_submap) { depth++; continue; }
                     if ((info.protection & 3) == 3 && rs < ((vm_size_t)4 << 30)) {
                         const uint64_t *q = (const uint64_t *)ra; size_t nq = rs / 8;
-                        for (size_t i = 0; i < nq && hits < 60; i++) if (q[i] == a1) { fprintf(stderr, "[psv-input] findq %#llx\n", (unsigned long long)(ra + i * 8)); hits++; }
+                        for (size_t i = 0; i < nq && hits < 400; i++) if (q[i] == a1 && (!a2 || (i + 1 < nq && q[i + 1] == a2))) { fprintf(stderr, "[psv-input] findq %#llx\n", (unsigned long long)(ra + i * 8)); hits++; }
                     }
                     ra += rs; }
                 fprintf(stderr, "[psv-input] findq %#llx: %u hits\n", (unsigned long long)a1, hits); }
+        } else if (!strncmp(line, "watch ", 6)) {
+            /* Diagnostic (2026-11-04): "watch <addr> [<len>]" arms the write watch (gfx_bridge.c, as PSV_WATCH_ADDR) while the
+               game runs, so an address found with findq in this session can be watched in the same session. */
+            char *e = NULL; uint64_t a = strtoull(line + 6, &e, 16), n = e ? strtoull(e, NULL, 0) : 0;
+            extern void runtime_watch_set(uintptr_t addr, size_t len); runtime_watch_set((uintptr_t)a, n ? (size_t)n : 16);
         } else if (!strncmp(line, "peek ", 5) || !strncmp(line, "poke1 ", 6)) {
             /* Diagnostic (2026-10-31): "peek <addr> [<off> ...] <words>" reads guest memory: <addr> is main+0x<hex> or 0x<hex>;
                every <off> after it dereferences the pointer there and adds the offset. "poke1 <addr> <value>" writes one byte.

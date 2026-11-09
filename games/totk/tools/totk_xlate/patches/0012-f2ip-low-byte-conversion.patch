@@ -1,0 +1,33 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -28,6 +28,7 @@
+             alu(0x008, InstName.Sel, AFsel);
+             alu(0x108, InstName.Mufu, AMufu);
+             alu(0x105, InstName.F2i, AF2i);
++            x(0x243, InstName.F2i, AF2ipByte, N);
+             alu(0x106, InstName.I2f, AI2f);
+             alu(0x045, InstName.I2f, AI2fp);
+             alu(0x107, InstName.F2f, AFrnd);
+@@ -235,6 +236,22 @@
+         // F2I: destination signed (72) and size (75..77, log2 bytes), rounding (78..80), source size (84..86); a 16-bit source
+         // is one half of the operand, the high one when 60..62 is 1 or 3 (as F2F reads it), widened to 32 bits first (exact),
+         // its abs / neg applied by EmitF2I as for a 32-bit one (Pokemon Pokopia: 169 fragment shaders round F16 to U32)
++        // F2IP's observed low-byte form has no merge value (Ra=RZ).
++        // Convert FP32 toward zero and saturate to U8; all other pack modes
++        // remain rejected until their field layout is independently verified.
++        public static void AF2ipByte(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            if (x.Ra != RegisterConsts.RegisterZeroIndex || x.Bits(40, 64) != 0 || x.Bits(64, 96) != 0x0000c4ff)
++                throw AFail(context, "F2IP low U8 form");
++            EmitF2I(context, DstFmt.F32, IDstFmt.U16, RoundMode2.Trunc, AGpr(x.Rb), x.Rd, false, false);
++            if (x.Rd != RegisterConsts.RegisterZeroIndex)
++            {
++                Operand r = Register(x.Rd, RegisterType.Gpr);
++                context.Copy(r, context.IClampU32(r, Const(0), Const(255)));
++            }
++        }
++
+         public static void AF2i(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);

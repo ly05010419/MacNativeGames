@@ -62,6 +62,15 @@ BOTW_SHOWN = {('face', 'A'): 0xE040, ('face', 'B'): 0xE041, ('face', 'X'): 0xE04
 BOTW_ARMS = {('up',): 0xE05C, ('down',): 0xE05D, ('left',): 0xE05E, ('right',): 0xE05F, ('down', 'up'): 0xE060,
              ('left', 'right'): 0xE061, ('down', 'left', 'right', 'up'): 0xE049}
 
+# Breath of the Wild 1.6.0: a smaller External_00.bffnt (49 icons of 44x39, U+E040-E08F) whose code points are Tears of
+# the Kingdom's (SINGLE, COMBINED): the stick presses at U+E056 E057, the d-pad arms at U+E060-E063, up+down and
+# left+right at U+E064 E065. It has no U+E05C or U+E070; its cross is U+E08F.
+BOTW160_SHOWN = {**BOTW_SHOWN, ('face', 'L3'): 0xE056, ('face', 'R3'): 0xE057, ('none',): 0xE08F}
+BOTW160_ARMS = {('up',): 0xE060, ('down',): 0xE061, ('left',): 0xE062, ('right',): 0xE063, ('down', 'up'): 0xE064,
+                ('left', 'right'): 0xE065, ('down', 'left', 'right', 'up'): 0xE049}
+BOTW_TABLES = {'botw190': (BOTW_SINGLE, BOTW_COMBINED, BOTW_SHOWN, BOTW_ARMS),
+               'botw160': (SINGLE, COMBINED, BOTW160_SHOWN, BOTW160_ARMS)}
+
 
 BOTW_SLOTS = {'south': 'bottom', 'east': 'right', 'west': 'left', 'north': 'top'}
 
@@ -72,16 +81,17 @@ def botw_diamond(inputs):
     return {s: BOTW_SLOTS[d] for s in 'abxy' if (d := driver(inputs, s)) in BOTW_SLOTS}
 
 
-def botw_glyphs(inputs):
-    """{code point: code point whose icon it shows} for Breath of the Wild, the code points that change only. A combined
-    d-pad icon whose inputs sit on two arms the font has no icon for (up and right) shows all four arms; one whose inputs
-    are not all on the d-pad keeps its own icon."""
+def botw_glyphs(inputs, version='botw190'):
+    """{code point: code point whose icon it shows} for Breath of the Wild (botw190 or botw160), the code points that
+    change only. A combined d-pad icon whose inputs sit on two arms the font has no icon for (up and right) shows all four
+    arms; one whose inputs are not all on the d-pad keeps its own icon."""
+    single, combined, shown_of, arms = BOTW_TABLES[version]
     out = {}
-    for cp, kind, *args in plan(inputs, BOTW_SINGLE, BOTW_COMBINED):
+    for cp, kind, *args in plan(inputs, single, combined):
         if kind == 'dpad':
-            shown = BOTW_ARMS.get(tuple(sorted(set(args[0]))), 0xE049)
+            shown = arms.get(tuple(sorted(set(args[0]))), 0xE049)
         elif kind != 'labels':
-            shown = BOTW_SHOWN.get((kind, *args))
+            shown = shown_of.get((kind, *args))
         else:
             shown = None
         if shown is not None and shown != cp:

@@ -275,6 +275,27 @@ static void shaped(double ratio) {
     NSSize now = window.contentView.bounds.size;
     if (fabs(now.width / now.height - ratio) > 0.01) { fprintf(stderr, "window %.0fx%.0f, expected ratio %.3f\n", now.width, now.height, ratio); abort(); }
 }
+static void rows_fit(void) {
+    /* Short windows compress rows, then scroll: check their actual geometry instead of assuming the default height. */
+    assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
+    for (NSInteger page = 0; page < SETTINGS_PAGE_BINDINGS; page++) {
+        NSView *view = settingsPanel.pages[(NSUInteger)page], *document = view;
+        assert(NSContainsRect(settingsPanel.bounds, view.frame));
+        if ([view isKindOfClass:NSScrollView.class]) {
+            NSScrollView *scroll = (NSScrollView *)view;
+            assert(scroll.hasVerticalScroller && scroll.documentView);
+            document = scroll.documentView;
+        }
+        CGFloat previousBottom = NSMaxY(document.bounds);
+        for (TOTKSettingRow *r in settingsPanel.allRows) if (r.page == page) {
+            NSView *band = r.control.superview;
+            assert(band && band.superview == document && band.frame.size.height >= 24);
+            assert(NSContainsRect(document.bounds, band.frame));
+            assert(NSMaxY(band.frame) <= previousBottom);   /* no overlapping rows */
+            previousBottom = NSMinY(band.frame);
+        }
+    }
+}
 static NSEvent *key_down(unsigned short code, NSEventModifierFlags flags) {
     return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0 windowNumber:window.windowNumber
                              context:nil characters:@"x" charactersIgnoringModifiers:@"x" isARepeat:NO keyCode:code];
@@ -602,7 +623,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     runtime_input_key_synthetic(18, 1); runtime_input_key_synthetic(18, 1); tick(); runtime_input_key_synthetic(18, 0); tick();
     assert(settingsOpen && fakeSettingsCapture && settingsPanel && !settingsPanel.hidden && settingsPanel.superview == window.contentView);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
-    assert(settingsPanel.allRows.count == 28 + 2*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
+    assert(settingsPanel.allRows.count == 28 + 3*TOTK_V143 + BOTW_V190 + (TOTK_V143 && totk_hdr_available() ? SETTINGS_HDR_ROWS : 0));   /* + the HDR rows (PR #1129) */   /* 17 (anisotropy last on the display page, controller
                                                                  background input on the input page), the user page's
                                                                  two, then the effects page: FOV, two distances, shadows,
                                                                  depth of field, FXAA, sharpening and effect switches
@@ -899,6 +920,18 @@ int main(int argc, const char **argv) { @autoreleasepool {
     pick(@"Controller type", @"Switch"); assert(fakePadType == GAMEPAD_TYPE_SWITCH);
     pick(@"Controller type", @"Auto (PlayStation)"); assert(fakePadType == GAMEPAD_TYPE_AUTO);
     fakePadDetected = -1; shows(@"Controller type", @"Auto (no controller)");
+#if TOTK_V143
+    /* Style changes publish immediately and leave controller routing alone. */
+    shows(@"Button prompts", @"Auto");
+    pick(@"Button prompts", @"PlayStation");
+    PromptBindings prompt;
+    runtime_prompt_snapshot(&prompt); assert(prompt.device == PROMPT_PLAYSTATION);
+    assert(fakePadType == GAMEPAD_TYPE_AUTO);
+    pick(@"Button prompts", @"Keyboard / mouse");
+    runtime_prompt_snapshot(&prompt); assert(prompt.device == PROMPT_KEYBOARD);
+    pick(@"Button prompts", @"Auto");
+#endif
+
 
     assert(!switched(@"Controller input in background"));
     flip(@"Controller input in background", YES); assert(fakePadBackground && switched(@"Controller input in background"));
@@ -928,12 +961,10 @@ int main(int argc, const char **argv) { @autoreleasepool {
            [menu(@"User this run").titleOfSelectedItem isEqualToString:@"Local"]);
     shows(@"User (from the next launch)", @"Local");
     assert(settingsPanel.controllerTargets.count == 3);
-    {   /* The panel is as tall as its tallest page below the key bindings, the user page's two rows included. */
+    {   /* All pages fit, including the user page's two rows. */
         NSUInteger perPage[SETTINGS_PAGES] = {0};
         for (TOTKSettingRow *r in settingsPanel.allRows) perPage[r.page]++;
-        NSUInteger tallest = 0;
-        for (NSInteger page = 0; page < SETTINGS_PAGE_BINDINGS; page++) if (perPage[page] > tallest) tallest = perPage[page];
-        assert(settingsPanel.frame.size.height >= SETTINGS_TOP + tallest * SETTINGS_ROW_H + SETTINGS_BOTTOM - 1);
+        rows_fit();
         assert(perPage[SETTINGS_PAGE_USERS] == 2);
     }
     NSButton *addUser = settingsPanel.userButtons[0];
@@ -981,11 +1012,13 @@ int main(int argc, const char **argv) { @autoreleasepool {
     /* A short window (32:9 on a laptop screen): the rows close up, so the title, the close button and the first row stay in it. */
     NSSize was = window.contentView.bounds.size; press(18); [window setContentSize:NSMakeSize(1728, 486)]; press(18); assert(settingsOpen);
     assert(NSContainsRect(window.contentView.bounds, settingsPanel.frame));
+    rows_fit();
     press(18); [window setContentSize:was]; press(18); assert(settingsOpen);
 #ifdef TOTK_GAME_V143
     /* More effects than fit: both pointer scrolling and controller navigation can reach the top and bottom. */
     press(18);[window setContentSize:NSMakeSize(1728,360)];press(18);[settingsPanel selectPage:SETTINGS_PAGE_EFFECTS];
     assert(NSContainsRect(window.contentView.bounds,settingsPanel.frame));
+    rows_fit();
     NSScrollView *effects=(NSScrollView *)settingsPanel.pages[SETTINGS_PAGE_EFFECTS];
     assert([effects isKindOfClass:NSScrollView.class]&&effects.documentView.bounds.size.height>effects.contentSize.height);
     settingsPanel.controllerIndex=0;
@@ -1035,7 +1068,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     settingsPanel.versionLabel.stringValue = versionText; settingsPanel.versionLabel.frame = NSMakeRect(18, 9, 230, 16);
     [settingsPanel selectPage:SETTINGS_PAGE_INPUT];
     assert(contribute.hidden && starButton.hidden);   /* the first page only */
-    assert(settingsPanel.rows.count == 9 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
+    assert(settingsPanel.rows.count == 9 + TOTK_V143 && !settingsPanel.pages[SETTINGS_PAGE_INPUT].hidden && settingsPanel.pages[SETTINGS_PAGE_DISPLAY].hidden);   /* the screenshot folder last */
     assert(settingsPanel.tabs.selectedSegment == SETTINGS_PAGE_INPUT);
     press(18); press(18); assert(settingsOpen && settingsPanel.page == SETTINGS_PAGE_INPUT);
 

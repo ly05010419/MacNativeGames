@@ -82,7 +82,7 @@ static int botw_fin_upscale(__unsafe_unretained NvShader *fs, int replaced) {
     if (pct) { g_bfin.pending = 1; g_bfin.frame = frame; g_bfin.canvas_ser = R.rt.color[0]->serial; g_bfin.canvas = dst; }
     if (replaced || !off) return 0;
     int tid = (int)(S.tex[1][0] & 0xfffff);
-    id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast(tid) : nil;
+    id<MTLTexture> src = tid > 0 ? (__bridge id<MTLTexture>)tex_fast_lk(tid) : nil;
     int ok = src && src.textureType == MTLTextureType2D && src != dst && !(S.color.blend_en & 1) && bfin_mask_rgb_only(S.chmask.mask) &&
              !(hv && ((cv->set_levels && cv->base_level) || (cv->set_layers && cv->min_layer))) &&
              !(S.has_vp && !(S.vp[0][0] == 0 && S.vp[0][1] == 0 && S.vp[0][2] == (float)dst.width && S.vp[0][3] == (float)dst.height)) &&

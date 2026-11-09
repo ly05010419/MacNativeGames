@@ -47,7 +47,7 @@ For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and N
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
 """
-import argparse, concurrent.futures, glob, hashlib, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
+import argparse, concurrent.futures, glob, hashlib, itertools, json, os, platform, plistlib, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -1212,6 +1212,25 @@ def metal_compiler():
 
 # The options of totk_precise_opts() in nvn_mtl.m: the translated shaders need exactly rounded float arithmetic.
 METAL_FLAGS = ['-fmetal-math-mode=safe']
+# Adapted from stan69b/nxnative oot-clean 56b73f21 (seedds, MIT); see THIRD_PARTY_NOTICES.md.
+METAL_BRACKET_LIMIT = 256
+_BRACKETS = bytes.maketrans(b'([{)]}', b'((()))')
+_NOT_BRACKETS = bytes(c for c in range(256) if c not in b'([{)]}')
+
+
+def bracket_depth(msl):
+    """Count the combined nesting of all three bracket kinds in generated MSL."""
+    # shortcut: comments/literals count too; use a lexer if this accepts arbitrary handwritten MSL.
+    marks = Path(msl).read_bytes().translate(_BRACKETS, _NOT_BRACKETS)
+    return max(itertools.accumulate(1 if c == 0x28 else -1 for c in marks), default=0)
+
+
+def metal_flags(msl):
+    """Raise the parser limit only for deeply nested generated sources (unrolled early-exit loops)."""
+    # A higher parser limit changes no code generation: keep it out of METAL_FLAGS and the shared cache stamp.
+    if bracket_depth(msl) > METAL_BRACKET_LIMIT:
+        return [*METAL_FLAGS, '-fbracket-depth=1024']
+    return METAL_FLAGS
 
 
 def variant_folder(game):
@@ -1263,7 +1282,8 @@ def step_shader_libs(tree, logs, *, version='v0'):
     def compile_one(item):
         digest, src = item
         partial = libs/f'{digest}.partial'
-        r = subprocess.run([metal, *METAL_FLAGS, '-o', partial, src], capture_output=True, text=True, env=metal_env)
+        flags = metal_flags(src) if ns2_game(version) else METAL_FLAGS
+        r = subprocess.run([metal, *flags, '-o', partial, src], capture_output=True, text=True, env=metal_env)
         if r.returncode:
             partial.unlink(missing_ok=True)
             return f'{src.name}\n{r.stdout}{r.stderr}'
@@ -1456,7 +1476,19 @@ def resolve_lists(tree, res, game, logs):
          res/'build/pso_manifest.tsv', res/'build/pso_title.tsv'], logs/'shader-list-resolve.log', cwd=tree)
 
 
-def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
+def prepare_prompt_assets(tree, app, version, logs, *, prompt_app=None):
+    """Bind the live HUD masks to this player's verified game image, without packaging pixels."""
+    res = app / 'Contents/Resources/totk'
+    if version == 'v143':
+        # A fresh app has not received its GameData bundle yet. Runtime updates
+        # can instead read the installed app when no extraction cache is kept.
+        romfs = tree / f'extracted/{version}/romfs'
+        source = ['--romfs', romfs] if (romfs / 'romfs.bin').is_file() else ['--app', prompt_app or app]
+        run([sys.executable, tree / 'scripts/prepare_prompt_hud.py', *source,
+             '--version', version, '--output', res / 'build/prompt-hud.tsv'], logs / 'prompt-hud.log')
+
+
+def place_runtime(tree, app, version, logs, *, game='totk', lists=True, prompt_app=None):
     """The parts of the app made from this repository alone, which update_runtime.py replaces in an installed app: the
     game binary, the launcher, the shader tools and the warm-up lists exported from the shared shader list. Everything
     else in the app comes from the player's game files (place_game_data, the rewritten modules, the RomFS, the seed).
@@ -1471,6 +1503,7 @@ def place_runtime(tree, app, version, logs, *, game='totk', lists=True):
     clone(tree / ('build/totk-native' if version == 'v0' else f'build/totk-native-{version}'), res / 'build/totk-native')
     clone(tree / 'build/spirv-cross/spirv-cross', res / 'build/spirv-cross/spirv-cross')
     clone(tree / 'prebuilt/macos-arm64/totk_xlate', res / 'build/shader-service/totk_xlate')   # where totk_shader_rt.m looks for it
+    prepare_prompt_assets(tree, app, version, logs, prompt_app=prompt_app)
     if lists:
         resolve_lists(tree, res, game, logs)
     clone(res / 'build/totk-native', app / f'Contents/MacOS/{APPS[game][2]}')
@@ -1815,9 +1848,27 @@ def wait_until_closed(out, prefix=''):
     old_binaries = [b for b in old_binaries if b.is_file()]   # the game runs as the app's executable (Contents/MacOS)
     notified = 0
     while old_binaries:
-        processes = subprocess.run(['ps', '-axo', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
-        running = {p.strip() for p in processes}
-        if not any(str(b.resolve()) in running for b in old_binaries):
+        processes = subprocess.run(['ps', '-axo', 'pid=,comm='], capture_output=True, text=True, check=True).stdout.splitlines()
+        binaries = {str(b.resolve()) for b in old_binaries}
+        running = False
+        for process in processes:
+            fields = process.strip().split(maxsplit=1)
+            if len(fields) != 2 or fields[1] not in binaries:
+                continue
+            pid, binary = fields
+            args = subprocess.run(['ps', '-ww', '-p', pid, '-o', 'args='], capture_output=True, text=True)
+            if args.returncode == 1 and not args.stdout.strip():
+                continue   # the process exited between the two snapshots
+            args.check_returncode()
+            command = args.stdout.strip()
+            options = command[len(binary) + 1:].split() if command.startswith(binary + ' ') else []
+            # The update window uses the game's executable and waits for this installer.
+            if options == ['--update-check'] or (len(options) == 2 and options[0] == '--update-install'
+                                                and options[1].isdigit() and int(options[1]) > 0):
+                continue
+            running = True
+            break
+        if not running:
             break
         if time.monotonic()-notified >= 60:
             say(f'{prefix}replacement is ready; waiting for the running game to close before updating it')
