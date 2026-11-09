@@ -60,3 +60,14 @@ Apple Metal `32023.883` 将 42,845 份 MSL 去重为 41,217 个库，全部编�
 外部目录：`MacNativeGames-artifacts/codex/oot-native-20261105/shader-prewarm-20261106/`。`inventory.json`、`upstream-comparison.json`、`upstream-six-extra-records.json` 保留数量及六项差异的来源；`seed.log` 是修复前完整翻译的失败基线，`verified/` 是修复后的完整准备日志。生成的机器码、MSL 和库不得放入源码仓库。
 
 `preparation-result.json` 汇总全量翻译、GPU 指令读回、库编译、资源签名及 12 项回归；`installed-app.json` 核对实际安装包；`runtime/result.json`、`runtime/game.log`、`runtime/world.png` 和 `runtime/turned.png` 是最终冷缓存实机证据。
+
+## Render pipelines: the shared list (2026-11-09)
+
+Until today the packaged App warmed only compute pipelines (`build/pipelines`: the seed's compute variants); every render pipeline was built in play. The game records what it builds into the profile's `pso_user.tsv` (S / C / R / T rows, this build's variant names) and the contribution file `shader-list-contribution.txt` (V rows with bind states, R / T rows renamed portably). `scripts/shader_list.py` (the TOTK list code, which now knows `oot`) merges them into **`games/oot/assets/shader_list.tsv`**: V rows for the bind states the game met, A rows naming them, and the warm rows. First merge: the 21 runtime shader-cache folders of the active profile (their `.variants` indexes rename locally named rows to the listed names), the App's seed index, the contribution and `pso_user.tsv`: 43,422 V over 42,848 shaders (1,909 bind states), 3,168 R, 2,681 S, 244 C, 19 T; 103 rows refused (bind states no cache knows).
+
+```
+python3 -I scripts/shader_list.py merge assets/shader_list.tsv <profile>/shader-cache/*/ <App seed dir> <profile>/shader-list-contribution.txt <profile>/profile/pso_user.tsv
+python3 -I scripts/shader_list.py stats assets/shader_list.tsv
+```
+
+Packaging (`build.py`): `prepare_ns2_seed.py --list assets/shader_list.tsv` translates the listed bind states into the seed and exports `pso_title.tsv` / `pso_manifest.tsv` (each variant named as the seed serves it, `shader_list.py resolve`); `compute_pipeline_archive` passes those lists to the game's `pipeline-archive` mode with the compute plan, so the Metal pipeline archive in `build/pipelines` holds the listed render pipelines too, and the first start loads them (`par_load_prebuilt`) instead of building them. Keys match seedds/nxnative's `dm/games/0400486024DEC000` tables (sha256 of control section and code; its 42,848 keys = our 42,845 + 3 agl_ndsr_vr NDSR kernels our census lacks), but its pipeline keys (504 bytes, 24-byte variant names) are not ours (544 bytes, 80-byte names), so only our own recordings fill the list. Next: record the first-start route (title, file select, opening, Link's house, Kokiri Forest) on a fresh profile (`scripts/dev/record_first_start.py`) and merge it.

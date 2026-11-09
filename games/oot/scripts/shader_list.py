@@ -66,7 +66,9 @@ from pathlib import Path
 HEADER = ('# TOTK shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
           '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.\n')
 HEADERS = {'botw': ('# Breath of the Wild shader list v1 (games/totk/scripts/shader_list.py; docs/shader-list.md). The one list for every platform.\n'
-                    '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.\n')}
+                    '# Identifiers and pipeline descriptors only, no game data. Translation chain totk-native-v9-unverified.\n'),
+           'oot': ('# Ocarina of Time (Switch 2, v131072) shader list v1 (games/oot/scripts/shader_list.py). Recorded bind states and\n'
+                   '# pipelines for the Mac warm-up; the seed translates every game shader itself. Identifiers and descriptors only, no game data.\n')}
 EXPORT = '# Generated from {} by scripts/shader_list.py; edit that list, not this file.\n'
 KEY = re.compile(r'^[0-9a-f]{64}$')
 VARIANT = re.compile(r'^[0-9a-f]{64}-[0-9a-f]{12}_b$')
@@ -204,7 +206,7 @@ def list_name(path):
 
 # The games run by this runtime (games/totk): their lists carry A rows and packed pipeline keys. Every other game's own
 # tools read only V and warm rows, as hex.
-OUR_RUNTIME = (None, 'totk', 'botw', 'dkb', 'pokopia')
+OUR_RUNTIME = (None, 'totk', 'botw', 'dkb', 'pokopia', 'oot')
 
 
 def list_game(path):
@@ -477,7 +479,7 @@ def main(argv):
     elif argv[:1] == ['export'] and len(argv) == 3:
         Path(argv[2]).write_text(ShaderList.load(argv[1]).export('t', 'm', source=list_name(argv[1])))
     elif argv[:1] == ['prune'] and len(argv) == 3:
-        if list_game(argv[1]) in ('dkb', 'pokopia'):   # a Switch 2 game's V rows are what its seed translates (prepare_ns2_seed.py)
+        if list_game(argv[1]) in ('dkb', 'pokopia', 'oot'):   # a Switch 2 game's V rows are what its seed translates (prepare_ns2_seed.py)
             sys.exit(f'{argv[1]}: a Switch 2 game\'s list is not pruned: its V rows name the shaders its seed takes from the game files')
         sys.path.insert(0, str(Path(__file__).resolve().parent))   # also when run with python -I
         from prepare_shader_seed import builtin_serves   # it imports this module

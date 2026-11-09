@@ -109,7 +109,9 @@ def shader_bundle(tree,record):
     return bundle
 
 def compute_pipeline_archive(work, tree):
-    """Build every seed compute pipeline, then package only a complete verified archive."""
+    """Build every seed compute pipeline and, with them, the render pipelines the seed's warm-up lists name (pso_title.tsv /
+    pso_manifest.tsv, resolved from games/oot/assets/shader_list.tsv by prepare_ns2_seed.py), then package only a complete
+    verified archive: every planned compute pipeline must be in the index; the render rows are reported."""
     scripts=str(GAME/'scripts')
     if scripts not in sys.path:sys.path.insert(0,scripts)
     from prepare_compute_pipelines import compute_rows
@@ -125,22 +127,24 @@ def compute_pipeline_archive(work, tree):
     log=logs/'compute-pipelines.log'
     env=dict(os.environ,TOTK_NATIVE_DIR=str(tree/'build'),TOTK_SHADER_CACHE=str(cache),
              TOTK_SHADER_SEED_DIR=str(seed),TOTK_PIPELINE_ARCHIVE_HOST='1',TOTK_DEBUG_LOG='1')
-    print(f'Preparing {len(rows)} compute pipelines before packaging',flush=True)
-    with GameSlot(owner='build',purpose='OOT offline compute pipelines',expect_seconds=1800),log.open('w') as f:
-        subprocess.run([work/'build/oot-native',tree/'rewritten/oot','pipeline-archive',plan],
+    lists=[p for p in (seed/'pso_title.tsv',seed/'pso_manifest.tsv') if p.is_file() and any(l and not l.startswith('#') for l in p.read_text().splitlines())]
+    render_rows=sum(1 for p in lists for l in p.read_text().splitlines() if l.startswith(('R\t','B\t','T\t')))
+    print(f'Preparing {len(rows)} compute pipelines and {render_rows} listed render pipelines before packaging',flush=True)
+    with GameSlot(owner='build',purpose='OOT offline pipelines',expect_seconds=3600),log.open('w') as f:
+        subprocess.run([work/'build/oot-native',tree/'rewritten/oot','pipeline-archive',plan,*lists],
                        cwd=tree,env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
     reports=[json.loads(line) for line in log.read_text().splitlines() if line.startswith('{"render":')]
     if not reports:raise ValueError('compute archive produced no completion report')
     report=reports[-1]
-    if report['failed'] or report['write_failed'] or report['compute']+report['kept']!=len(rows):
-        raise ValueError('incomplete compute pipeline archive: '+str(report))
+    if report['failed'] or report['write_failed'] or report['compute']+report['kept']<len(rows):
+        raise ValueError('incomplete pipeline archive: '+str(report))   # kept counts the listed render pipelines too
     target=tree/'build/pipelines'
     count=build_helpers().mac_pipeline_files(cache/'pipelines',target,report['arch'],chain)
     expected={'c'+hashlib.sha256(row[2:].encode()).hexdigest()[:40]for row in rows}
     index=target/f"pipelines-{report['arch']}.tsv"
     actual={line.split('\t')[0]for line in index.read_text().splitlines()} if index.exists() else set()
     if not expected<=actual:raise ValueError('compute archive index omits planned pipelines')
-    report.update(planned=len(rows),indexed=count,chain=chain,
+    report.update(planned=len(rows),listed_render=render_rows,lists=[p.name for p in lists],indexed=count,chain=chain,
                   plan_sha256=sha(plan),runtime_sha256=sha(work/'build/oot-native'),
                   files={p.name:sha(p)for p in sorted(target.iterdir()) if p.is_file() and p.name!='compute-manifest.json'})
     (target/'compute-manifest.json').write_text(json.dumps(report,indent=2)+'\n')
@@ -294,8 +298,10 @@ def build(args, source):
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
     if not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=1 bundles them): translated at first use',flush=True)
     else:
+     shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
      run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
-         '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs],'prepare-shader-seed')
+         '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
+         *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
      run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
          '--out',tree/'build/shader-libs','--jobs',str(shader_jobs())],'compile-shader-libraries')
     package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)

@@ -216,9 +216,21 @@ def main():
         os.link(src, staging / name) if src.stat().st_dev == staging.stat().st_dev else shutil.copy2(src, staging / name)
     scope = shader_key_scope(keys, v, romfs_sha)
     (staging / 'shader-keys.json').write_text(json.dumps(scope, separators=(',', ':')) + '\n')
-    # Unlike the shaders, a complete render-pipeline description needs the game's bind state. NS2 starts without
-    # recorded pipeline rows; the shared list adds real rows as the game is played (never invent descriptors).
-    (staging / 'pso_manifest.tsv').write_text('# NS2 startup shaders; render pipelines come from the shared list.\n')
+    # Unlike the shaders, a complete render-pipeline description needs the game's bind state: the warm-up lists come from
+    # the shared list's recorded rows (S / C / R / B / T), each variant named as this seed serves it (shader_list.py
+    # resolve, as the TOTK packaging's resolve_lists). Without a list the file only says so (never invent descriptors).
+    if a.list:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from shader_list import ShaderList, EXPORT, list_name
+        lst = ShaderList.load(a.list)
+        title, counts_t = lst.resolve(staging, 't')
+        rest, counts_m = lst.resolve(staging, 'm', given=title)
+        for name, rows, counts in (('pso_title.tsv', title, counts_t), ('pso_manifest.tsv', rest, counts_m)):
+            (staging / name).write_text(EXPORT.format(list_name(a.list)) + ''.join('\t'.join(row) + '\n' for row in rows))
+            print(f'{name}: {len(rows)} warm rows; left out {counts["other"]} of other versions, {counts["missing"]} the seed cannot build, '
+                  f'{counts["renamed"]} renamed to the seed\'s variants', flush=True)
+    else:
+        (staging / 'pso_manifest.tsv').write_text('# NS2 startup shaders; render pipelines come from the shared list.\n')
     report = dict(schema=1, chain=CHAIN, version=v, game=v, source_romfs_sha256=romfs_sha,
                   translation_context_sha256=context,
                   nvn_depth_mode=a.depth_mode,
