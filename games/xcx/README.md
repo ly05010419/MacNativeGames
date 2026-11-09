@@ -1,6 +1,6 @@
 # Xenoblade Chronicles X: Definitive Edition — diagnostic Mac host
 
-**Gameplay acceptance remains open.** Base 1.0.0 (`0100453019AA8000`)
+**Whole-game acceptance remains open.** Base 1.0.0 and cumulative update 2.0.0 (`0100453019AA8000`)
 builds as a native arm64 host and local diagnostic `.app`. The opt-in
 `XCX_EXTENDED_VA=1` layout lets the original SDK reserve its 60 GiB region,
 complete constructors and reach `nnMain`. Identity-checked SDK encoder masks
@@ -31,6 +31,74 @@ All source dependencies live in this directory. See
 [source provenance](third_party/COPIES.md). No Zelda/Bayonetta game patches
 or addresses are used. Player data, generated headers, rewrites, keys,
 shader caches and saves stay outside the checkout.
+
+## Update 2.0.0 (Mac diagnostic)
+
+The cumulative update can be merged directly with the original 1.0.0 base;
+no 1.0.1/1.0.2 intermediate update is needed. `assets/expected-v2.0.0.json`
+pins the separately verified input, rewrite and merged RomFS identities.
+The 1.0.0 pins and default version are unchanged. Use a separate local `WORK`
+and a **copy** of your profile: do not assume a save written by 2.0.0 can be
+loaded by an older version.
+
+From this directory, with your own update NSP and existing Python environment:
+
+```sh
+# An expendable external SciresM/hactool checkout at this exact commit,
+# including its bundled mbedTLS and licenses (no game or key files in it):
+# 1d64a83450e025622f3468c28fc4164dad2c5ef6
+$PY scripts/build_hactool.py --source /absolute/local/hactool
+$PY scripts/extract_exefs.py /path/to/update-2.0.0.nsp --update \
+  --keys /path/to/prod.keys --title-id 0100453019AA8000 \
+  --output "$WORK/extracted/v200/exefs"
+$PY scripts/extract_update_romfs.py /path/to/base-1.0.0.nsp \
+  /path/to/update-2.0.0.nsp --keys /path/to/prod.keys \
+  --hactool /absolute/local/hactool/hactool --output "$WORK/extracted/v200/romfs"
+for m in sdk subsdk0 main; do
+  DM_RULESET=native DM_PRIVATE_GATES=0 "$PY" third_party/d2r/patch_nso.py \
+    "$WORK/extracted/v200/exefs/$m" "$WORK/rewritten/v200" "$m"
+done
+# Supply verified shared fonts as described below, then:
+make prepare WORK="$WORK" PY="$PY" VERSION=2.0.0
+make -j4 runtime WORK="$WORK"
+make shader-tools WORK="$WORK"
+make app WORK="$WORK" PY="$PY" APP_EXTENDED_VA=1 APP_GPU_SUBMIT=1
+# Or: XCX_EXTENDED_VA=1 make boot WORK="$WORK" VERSION=2.0.0
+```
+
+The hactool helper independently carries the existing private ticket-file,
+bounded base-container and sector-padding hooks. It is build-time only,
+macOS-specific, and does not download anything. All six IVFC levels must
+verify; zero exit status alone is insufficient. RSA signature availability
+is distinct from these data checks. The merged result is additionally
+pinned by size and full SHA-256 during preparation.
+
+Local automated checks on 2026-11-09 (M3 Max, macOS 27): the actual update's
+ExeFS block hashes and six merged RomFS levels pass; all three fresh rewrites
+pass structural checks and equivalence at 36,711 sites with zero divergences,
+zero ineffective sites and 900 detected mutation controls. The original SDK
+and subsdk0 inputs are byte-identical to 1.0.0; main has build ID
+`ec4ed46bbc4a9ebbe7ce0af7a4a8ebbc09e5724a000000000000000000000000000`.
+This differs from the 1.0.2 build discussed in [#1761](https://github.com/ly05010419/MacNativeGames/issues/1761).
+No 1.0.2 offsets or 60 FPS timing patches are applied.
+
+Both versions build and package as ad-hoc-signed Mac diagnostics. Eleven
+loader/address/IPC/memory/input/graphics/filesystem/save probes per version
+pass, including deliberate rejection of the wrong identity. All 20 XCX
+source tests pass. A copied early-forest profile loads under 2.0.0 with both
+characters visible; scripted movement/camera, manual saving, normal quit,
+restart and loading the newly written slot were exercised. Core Audio opens
+at 48 kHz stereo; no new human listening or USB-controller acceptance is
+claimed for this update. The existing opt-in `XCX_GRASS_WIND_SNAPSHOT=1`
+was used for the field checks. The host retains its 30 FPS game timing;
+black save thumbnails and broader gameplay coverage remain open.
+
+Root suite: 1,537 tests, 169 skipped, two errors in the unchanged
+`test_builder_mod_archive.Stopping` cancellation/timeout fixtures (their
+`tar.pid` was not written). Both errors reproduce from the untouched public
+base `9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca`; the root suite is not
+reported as green. iOS was not built: this Mac has Command Line Tools and
+no iPhoneOS SDK. No iOS/device compatibility is claimed.
 
 ## Inputs and preparation
 

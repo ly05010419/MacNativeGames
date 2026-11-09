@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package a local XCX diagnostic app; it requires its external work directory."""
 import argparse
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -22,6 +23,10 @@ def package(work, output, extended_va=False, gpu_submit=False):
             path = work / "build" / tool
             if not path.is_file() or not os.access(path, os.X_OK):
                 raise ValueError(f"Build shader-tools first: missing executable {path}")
+    version = json.loads((work / "build/xcx-version.json").read_text())
+    supported = {"1.0.0": "v100", "2.0.0": "v200"}
+    if version.get("display_version") not in supported or supported[version["display_version"]] != version.get("directory"):
+        raise ValueError("Unsupported XCX build version")
     contents = output / "Contents"
     binary = contents / "MacOS"
     binary.mkdir(parents=True)
@@ -31,8 +36,8 @@ def package(work, output, extended_va=False, gpu_submit=False):
     shutil.copy2(work / "build/xcx-native", binary / "xcx-native")
     info = dict(CFBundleName="Xenoblade Chronicles X Experiment", CFBundlePackageType="APPL",
                 CFBundleExecutable="xcx-launcher", CFBundleIdentifier="private.macnativegames.xcx.experiment",
-                CFBundleShortVersionString="1.0.0", CFBundleVersion="1", LSMinimumSystemVersion="26.0", NSHighResolutionCapable=True,
-                XCXWorkFolder=str(work), XCXExtendedVA=extended_va, XCXGPUSubmit=gpu_submit)
+                CFBundleShortVersionString=version["display_version"], CFBundleVersion="1", LSMinimumSystemVersion="26.0", NSHighResolutionCapable=True,
+                XCXGameDirectory="rewritten/" + version["directory"], XCXWorkFolder=str(work), XCXExtendedVA=extended_va, XCXGPUSubmit=gpu_submit)
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
     subprocess.run(["codesign", "--force", "--sign", "-", "--deep", str(output)], check=True)
     subprocess.run(["codesign", "--verify", "--strict", "--deep", str(output)], check=True)
