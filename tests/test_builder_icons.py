@@ -252,6 +252,11 @@ class Mod(LibraryBase):
             self.assertEqual((seen['argv'][:3], seen['argv'][4:8], seen['argv'][-1]),
                              ([sys.executable, '-I', str(icons_mod.BOTW_SCRIPT)], ['--app', str(self.app), '--version',
                                                                                   'botw190'], '--write-all'))
+            self.assertEqual(seen['argv'][-3:-1], ['--style', 'xbox'])
+            controller_icons_style = __import__('tools.builder.controller_icons', fromlist=['icon_style']).icon_style
+            for word, style in (('playstation', 'playstation'), ('auto', 'xbox'), ('xbox', 'xbox')):
+                state = type('State', (), {'type_word': word})()
+                self.assertEqual(controller_icons_style(state), style, word)
             self.assertEqual((seen['glyphs'], seen['seeded'], table), ([[0xE040, 0xE041], [0xE041, 0xE040],
                                                                        [0xE042, 0xE043], [0xE043, 0xE042]], False, None))
             self.assertEqual(seen['diamond'], {'a': 'right', 'b': 'bottom', 'x': 'top', 'y': 'left'})

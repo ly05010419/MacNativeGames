@@ -6,7 +6,7 @@ E9 S9.1 C5: only the games in ICONS are offered; for the others the tab says so,
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tools.builder import game_state, icons_env, icons_mod, icons_plan
+from tools.builder import controls_file, game_state, icons_env, icons_mod, icons_plan
 from tools.builder import controller_controls      # read_state, at call time (it imports this module)
 from tools.builder.controller_mods import LATEST, _library
 
@@ -51,6 +51,11 @@ def icons_info(game_dir, store, repo, spec, app, data_dir, builder_dir):
                      icons_plan.shared(state.inputs))
 
 
+def icon_style(state):
+    """The Breath of the Wild icons for the controller: playstation when controller-type.txt says so; else xbox."""
+    return 'playstation' if state.type_word == 'playstation' else 'xbox'
+
+
 def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_env, cancel):
     """The icons venv (made first when the player agreed), then the mod made in the library's work folder."""
     if spec.id not in ICONS:
@@ -64,7 +69,8 @@ def make_icons(game_dir, store, repo, spec, app, data_dir, builder_dir, install_
         if state.by_label is None or state.by_label or state.error:
             return IconsBuilt(False, 'changed')
         library = _library(repo, spec, LATEST[spec.id], data_dir)
-        work, table = icons_mod.build(repo, app, LATEST[spec.id], library, state.inputs, builder_dir, cancel)
+        work, table = icons_mod.build(repo, app, LATEST[spec.id], library, state.inputs, builder_dir, cancel,
+                                      icon_style(state))
     except (icons_env.EnvError, icons_mod.BuildError) as e:
         return IconsBuilt(False, e.reason, e.detail)
     return IconsBuilt(True, work=str(work), made_from=icons_mod.record(state.raw, state.type_raw, state.answer, table))
