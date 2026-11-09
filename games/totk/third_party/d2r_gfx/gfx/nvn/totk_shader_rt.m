@@ -96,7 +96,8 @@ static NSString *seed_dir(void) {   // the prepared startup shaders that come wi
 }
 NSString *totk_rt_dir(void) {
     static dispatch_once_t once;
-    dispatch_once(&once, ^{
+    // Guest threads may keep their outer pool for the whole run; release import metadata now.
+    dispatch_once(&once, ^{ @autoreleasepool {
         const char *e = getenv("TOTK_SHADER_CACHE");
         NSString *cacheChain = @DMSH_CHAIN;
         NSData *manifest = [NSData dataWithContentsOfFile:[seed_dir() stringByAppendingPathComponent:@"seed-manifest.json"]];
@@ -163,7 +164,7 @@ NSString *totk_rt_dir(void) {
             (unsigned long)[fill[@"packs"] unsignedIntegerValue], (unsigned long)[fill[@"imported_files"] unsignedIntegerValue]);
         for (NSString *why in fill[@"rejected"]) LOG("【红】[shader-fill] 丢弃不完整的着色器包 %s（请在 Mac 上重新运行 fill_shaders.py）", why.UTF8String);
 #endif
-    });
+    } });
     return g_dir;
 }
 
