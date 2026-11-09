@@ -125,5 +125,16 @@ class MetalBracketDepth(unittest.TestCase):
         self.assertGreater(output.stat().st_size, 0)
 
 
+class IosMetalBracketDepth(unittest.TestCase):
+    def test_ios_tools_raise_the_limit_only_for_deep_sources(self):
+        spec = importlib.util.spec_from_file_location('ios_compile_seed', ROOT / 'games/totk/ios/tools/compile_seed.py')
+        seed = importlib.util.module_from_spec(spec); spec.loader.exec_module(seed)
+        with tempfile.TemporaryDirectory(prefix='mng-metal-depth-') as tmp:
+            shallow, deep = Path(tmp) / 'shallow.metal', Path(tmp) / 'deep.metal'
+            shallow.write_text(nested_kernel(10)); deep.write_text(nested_kernel(300))
+            self.assertEqual(seed.metal_flags(shallow), seed.METAL_FLAGS)
+            self.assertEqual(seed.metal_flags(deep), [*seed.METAL_FLAGS, '-fbracket-depth=1024'])
+
+
 if __name__ == '__main__':
     unittest.main()
