@@ -347,6 +347,8 @@ def main():
             parser.error(f'{need} not found')
     kind = args.controls.with_name('controller-type.txt')
     style = args.style or ('xbox' if args.plan else default_style(kind))   # the builder's plan names its style
+    if style == 'playstation' and args.version != 'botw190':
+        sys.exit("the PlayStation icons are drawn for 1.9.0's sheet only (1.6.0's cells are smaller and not checked)")
     if args.plan:
         plan = json.loads(args.plan.read_text())
         glyphs, slots = {cp: shown for cp, shown in plan['glyphs']}, plan['diamond']
