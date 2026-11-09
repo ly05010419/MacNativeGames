@@ -1,0 +1,29 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -58,6 +58,7 @@
+             x(0x38c, InstName.Atoms, AAtoms, N);
+             x(0xf8c, InstName.Atoms, AAtomsPopcInc, N, writesRd: false);
+             x(0x301, InstName.Bfe, ABrev, N);
++            x(0x2be, InstName.Bfe, AUbrev, N, uniform: true);
+             x(0x883, InstName.P2r, AUp2ur, N, uniform: true);
+         }
+ 
+@@ -408,6 +409,18 @@
+         }
+ 
+         // BREV Rd, Rb (0x301, the register form): Rb's bits reversed (Pokemon Pokopia's compute shader 6e8db04c25a53d8c)
++        // Mesa NAK SM70 OpBRev: uniform opcode 0x0be, source in the uniform B slot.
++        // Decode the observed UBREV register form explicitly; no float conversion.
++        public static void AUbrev(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            if (x.Bits(64, 96) != 0x08000000 || x.Bits(38, 64) != 0)
++                throw AFail(context, "UBREV register form");
++            int source = x.Bits(32, 38);
++            Operand value = source == RegisterConsts.UniformZeroIndex ? Const(0) : Register(source, RegisterType.Uniform);
++            ASet(context, x, context.BitfieldReverse(value), true);
++        }
++
+         public static void ABrev(EmitterContext context)
+         {
+             AmpereOp x = new(context.CurrOp);

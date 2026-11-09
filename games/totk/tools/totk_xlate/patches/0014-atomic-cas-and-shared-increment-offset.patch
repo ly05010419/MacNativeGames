@@ -1,0 +1,57 @@
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -28,6 +28,7 @@
+             x(0x98e, InstName.Red, ARed, N, writesRd: false);
+             x(0x9a8, InstName.Atom, AAtomg, N);
+             x(0x3a8, InstName.Atom, AAtomg, N);
++            x(0x3a9, InstName.AtomCas, AAtomgCas, N);
+             x(AmpereOpcodes.Ldl, InstName.Ldl, ALdLocalShared, N);
+             x(0x984, InstName.Lds, ALdLocalShared, N);
+             x(0x387, InstName.Stl, AStLocalShared, N, writesRd: false);
+@@ -365,6 +366,19 @@
+             ASet(context, x, res);
+         }
+ 
++        // Mesa NAK OpAtom CmpExch (SM70 opcode 0x3a9): Ra is the
++        // address, B the comparison and C the replacement. Preserve the old
++        // memory value as Rd, including when a source aliases that register.
++        public static void AAtomgCas(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            if (x.Bit(91) || x.Bits(73, 76) != 0 || x.Bits(81, 84) != 7)
++                throw AFail(context, "ATOMG.CAS U32 form");
++            (Operand lo, Operand hi) = AGlobalAddress(context, x, 72, 64, 0);
++            Operand comparison = AGpr(x.Rb), value = AGpr(x.Rc);
++            ASet(context, x, context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, comparison, value));
++        }
++
+         // ATOMS Rd, [Ra + offset], Rb (0x38c): a shared memory atomic, the byte offset 40..64, type 73..76 and operation 87..91 as ATOMG's. Ryujinx
+         // indexes shared memory in words (Maxwell's ATOMS). Pokemon Pokopia's compute shader 9b2f28c9920548aa adds to a shared counter at 0x7fc with it
+         public static void AAtoms(EmitterContext context)
+@@ -390,7 +404,7 @@
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
+-            if (x.Rd != RegisterConsts.RegisterZeroIndex || x.Bits(32, 64) != 0 || (x.Bits(64, 96) & ~0xc000) != 0x0d00003f)
++            if (x.Rd != RegisterConsts.RegisterZeroIndex || x.Bits(32, 40) != 0 || (x.Bits(40, 64) & 3) != 0 || (x.Bits(64, 96) & ~0xc000) != 0x0d00003f)
+             {
+                 throw AFail(context, "ATOMS.POPC.INC form");
+             }
+@@ -403,6 +417,7 @@
+                 addr = context.ShiftLeft(addr, Const(stride + 1));
+             }
+ 
++            addr = context.IAdd(addr, Const((int)x.SignedField(40, 64)));
+             Operand id = Const(context.ResourceManager.SharedMemoryId);
+ 
+             EmitAtomicOp(context, StorageKind.SharedMemory, AtomOp.Add, AtomSize.U32, id, context.ShiftRightU32(addr, Const(2)), Const(1));
+--- a/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Decoders/DecoderAmpere.cs
+@@ -278,6 +278,7 @@
+                     case 0x98e:
+                     case 0x9a8:
+                     case 0x3a8:
++                    case 0x3a9:
+                     case 0x9a9:
+                     case 0xb9b:
+                     case 0x99b:

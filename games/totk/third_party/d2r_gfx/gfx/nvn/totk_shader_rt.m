@@ -106,7 +106,7 @@ NSString *totk_rt_dir(void) {
             [context rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet]].location == NSNotFound)
             cacheChain = [cacheChain stringByAppendingFormat:@"-%@", context];
 #ifdef GAME_NS2
-        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1"];   // development runs without a seed
+        else cacheChain = [cacheChain stringByAppendingString:@"-nvn-default-depth-v1-predicated-writes"];   // development runs without a seed; the suffix names the translator semantics such caches hold
 #endif
 #if TARGET_OS_IPHONE
         g_dir = e ? @(e) : [NSString stringWithFormat:@"shader-cache/rt-%@", cacheChain];   // in Documents (the app's working directory)
