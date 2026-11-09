@@ -181,7 +181,7 @@ enum { TLK_GW_IN = 19, TLK_GW_OUT, TLK_GWAKE, TLK_CW_IN, TLK_CW_OUT };   /* totk
 static int tl_on(void) { return totk_tl_on(); }
 static void wake(thr_t *t, int64_t res) {
     if (tl_on()) { uint64_t id = 0; pthread_threadid_np(t->pt, &id); totk_tl(TLK_GWAKE, id, (uint64_t)t->wkind); }
-    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+    wait_unlink(t); t->wkind = 0; t->wres = res; __atomic_store_n(&t->woke, 1, __ATOMIC_RELEASE); pthread_cond_signal(&t->cv);   // wres before woke: a waiter spinning on woke (TOTK_WAIT_SPIN_US) reads wres after it
 #ifdef GAME_BOTW
     wake_queue(t);
 #endif
@@ -646,6 +646,24 @@ void runtime_core_checkpoint(void) {
 }
 int runtime_current_core(void) { thr_t *t = me_or_null(); return t ? (t->cur_core >= 0 ? t->cur_core : t->core) : -1; }
 
+/* TOTK_WAIT_SPIN_US=<n> (OOT experiment 2026-11-09, default 0 = off): a guest thread that has to block (lock, condition
+   variable, ...) first polls its wake flag for up to n microseconds, holding neither G nor a virtual core, and only then
+   sleeps on its condition variable. Semantics are unchanged (it still returns only when woken or timed out); what goes
+   away is the kernel sleep / wake-up round trip (measured p50 6 us, p90 26 us) on the game's job hand-offs, which in the
+   720p runs number about 300 per frame-start phase with 14 us of work between them (docs/fps-60-90.md 2026-11-09). */
+static int g_wait_spin_us = -1;
+static uint64_t g_wait_spins, g_wait_spin_hits, g_wait_spin_ns, g_wait_spin_report;
+static int wait_spin_us(void) { if (g_wait_spin_us < 0) { const char *e = getenv("TOTK_WAIT_SPIN_US"); g_wait_spin_us = e ? atoi(e) : 0; if (g_wait_spin_us > 0) fprintf(stderr, "[threads] waiters spin up to %d us before sleeping (TOTK_WAIT_SPIN_US)\n", g_wait_spin_us); } return g_wait_spin_us; }
+static void wait_spin(thr_t *t, int us) {   // holding G on entry and exit; the thread is already linked into g_wait
+    pthread_mutex_unlock(&G);
+    uint64_t t0 = runtime_now_ns(), lim = (uint64_t)us * 1000ull, now = t0;
+    while (!__atomic_load_n(&t->woke, __ATOMIC_ACQUIRE) && (now = runtime_now_ns()) - t0 < lim) __asm__ volatile("yield");
+    pthread_mutex_lock(&G);
+    g_wait_spins++; g_wait_spin_ns += now - t0; if (t->woke) g_wait_spin_hits++;
+    if (now - g_wait_spin_report > 5000000000ull) { g_wait_spin_report = now;
+        fprintf(stderr, "[threads] wait spin: %llu spins, %llu woken while spinning (%.0f%%), %.1f ms spent spinning\n", (unsigned long long)g_wait_spins, (unsigned long long)g_wait_spin_hits,
+                g_wait_spins ? 100.0 * g_wait_spin_hits / g_wait_spins : 0.0, g_wait_spin_ns / 1e6); }
+}
 static int64_t block(thr_t *t,int kind,int64_t ns) {
     if (ns == 0) return block_inner(t, kind, ns);
     int tl = tl_on();
@@ -662,6 +680,7 @@ static int64_t block_inner(thr_t *t, int kind, int64_t ns) {
     uint64_t guest_deadline = det_wait ? guest_ns() + (uint64_t)ns : 0;
     if (ns > 0 && !det_wait) { clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += ns / 1000000000; dl.tv_nsec += ns % 1000000000;
                   if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; } }
+    { int us = wait_spin_us(); if (us > 0 && !det_wait && (ns < 0 || ns > (int64_t)us * 1000)) wait_spin(t, us); }   // TOTK_WAIT_SPIN_US
     while (!t->woke) {
         int rc;
         if (det_wait) {
