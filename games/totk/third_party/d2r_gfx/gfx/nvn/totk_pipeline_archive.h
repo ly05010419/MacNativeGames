@@ -203,9 +203,8 @@ static void par_open_dir(id<MTLDevice> dev) {
         else if (!g_par_valid) MLOG("管线存档：还没有，这次%s", par_fill_light() ? "在后台把管线清单收进存档（不常驻）" : "边玩边收（游戏空闲时在后台写）");
     });
 }
-// The archive with this pipeline's code, or nil (no file yet; off); *from: the file's name (par_repair).
-static id<MTLBinaryArchive> par_archive_named(id<MTLDevice> dev, NSString *key, NSString **from) {
-    if (from) *from = nil;
+// The archive with this pipeline's code, or nil (no file yet; off).
+static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) {
     par_open_dir(dev);
     if (!g_par_on || !key) return nil;
     pthread_mutex_lock(&g_par_mu);
@@ -222,12 +221,10 @@ static id<MTLBinaryArchive> par_archive_named(id<MTLDevice> dev, NSString *key, 
             else { [NSFileManager.defaultManager removeItemAtPath:par_file(name) error:nil]; [NSFileManager.defaultManager removeItemAtPath:par_keys_file(name) error:nil]; }
         }
     }
-    if (from && a) *from = name;
     pthread_mutex_unlock(&g_par_mu);
     par_last_pre = a && pre;
     return a;
 }
-static id<MTLBinaryArchive> par_archive_for(id<MTLDevice> dev, NSString *key) { return par_archive_named(dev, key, NULL); }
 /* A pipeline from par_archive_for's file was found there (hit) or not: for the files the app brought (par_load_prebuilt). */
 static void par_pre_note(int hit) {
     if (par_last_pre) atomic_fetch_add(hit ? &g_par_pre_hit : &g_par_pre_miss, 1);
@@ -264,7 +261,7 @@ static void par_flush_thread(void) {
         ParBatch *b = td[k_par_batch]; [td removeObjectForKey:k_par_batch];
         keys = b->keys;
         if (keys.count) {
-            /* Named after its first key; a name taken (a repaired key's new file, another writer) goes to -2, -3, ...
+            /* Named after its first key; a name taken (another writer) goes to -2, -3, ...
                (totk_pipeline_archive_publish.h: reserved temp files, no file replaced, only its own files removed). */
             id<MTLBinaryArchive> archive = b->archive;
             name = par_pub_batch(par_dir(), par_lock_file(), [keys.firstObject stringByAppendingFormat:@"-%lu", (unsigned long)keys.count],
