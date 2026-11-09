@@ -88,3 +88,8 @@ Open:
 - A changed byte inside a cartridge NCA's hashed region stops `nx_extract` with an unhandled exception
   (exit 134) instead of a named exit code.
 - Not checked: a play-through past the village.
+- Packaging gaps against the repository's standard (the same in `games/aoc`, which this port is copied from): the shader
+  libraries stay in `Resources/game/shader-cache` instead of a signed `Contents/Helpers/ShaderData-*.bundle`; no
+  pipeline archive is built at packaging, so warm-up happens at run time and the title cannot skip it; verified digests
+  are not reused between steps; repackaging refuses an existing `.app` instead of keeping the folder and replacing its
+  contents; there is no runtime-only fast update. Not done yet.
