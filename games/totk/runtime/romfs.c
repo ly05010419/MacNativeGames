@@ -323,7 +323,10 @@ void runtime_fs_init(void) {
 }
 static int path_ok(const char *p) {return romfs_path_valid_relative(p);}
 static const char *rom_path(const char *path) {
- const char *m=mount_of(path);return romfs_path_relative(m?m:mount_name,path);
+ static _Thread_local char norm[4096];
+ const char *m=mount_of(path);
+ const char *p=romfs_path_relative(m?m:mount_name,path);
+ return p?romfs_path_collapse(p,norm,sizeof norm):NULL;
 }
 static uint64_t lower(const char *name) {uint64_t lo=0,hi=file_count;while(lo<hi){uint64_t m=lo+(hi-lo)/2;if(strcmp(entry_name(entry(m)),name)<0)lo=m+1;else hi=m;}return lo;}
 static unsigned mount_rom(const char *name,void *cache,uint64_t size) {
@@ -436,6 +439,10 @@ void runtime_fs_probe(void) {
    need(!runtime_romfs_read(&n,h,0,actual,sizeof actual)&&n==sizeof actual&&!memcmp(actual,expected,sizeof actual),"normalized audio stream bytes");runtime_romfs_close(h);
   }
   need(runtime_romfs_open(&h,"rom://../Sound/Resource/Stream/Dm_OP_0001.bwav",1)!=0,"reject traversal after repeated root separator");
+  /* Voice stream requests join "Resource" and "Stream" with an extra slash (Voice/Resource//Stream). */
+  snprintf(path,sizeof path,"rom:/Sound/Resource//Stream/Dm_OP_0001.bwav");
+  need(!runtime_romfs_open(&h,path,1),"open interior double-slash audio stream");
+  need(!runtime_romfs_read(&n,h,0,actual,sizeof actual)&&n==sizeof actual&&!memcmp(actual,expected,sizeof actual),"interior double-slash audio bytes");runtime_romfs_close(h);
  }
  for(uint64_t i=0;i<file_count;i+=file_count/64){Entry e=entry(i);char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",entry_name(e))<(int)sizeof(p),"probe path");uint64_t h=0,n=0;int64_t size;uint32_t ov=overlay_slot(i);uint64_t expected_size=ov?overlays[ov-1].size:e.size;need(!runtime_romfs_open(&h,p,1)&&!runtime_romfs_size(&size,h)&&(uint64_t)size==expected_size,"probe open/size");need(!runtime_romfs_read(&n,h,0,buffer,sizeof(buffer)),"probe partial read");for(uint64_t j=0;j<n;j++)sum=sum*131+buffer[j];need(!runtime_romfs_read(&n,h,size,buffer,1)&&n==0,"probe EOF");runtime_romfs_close(h);count++;}
  for(size_t k=0;k<noverlay;k++){char p[4096];need(snprintf(p,sizeof(p),"rom:/%s",overlays[k].name)<(int)sizeof(p),"probe overlay path");
