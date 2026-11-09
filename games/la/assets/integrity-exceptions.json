@@ -1,0 +1,9 @@
+{
+  "reason": "Link's Awakening cartridge dump whose base content meta fails its header signature; authorized by the project owner on 2026-11-07. The meta only selects the program: the version it declares is not authenticated.",
+  "base_meta": {
+    "container_sha256": "32567931762e5266603d4aa099fd0f9d8702f199939a5049608f7067154cfa3b",
+    "meta_nca": "02afc9bf32594c40e33755cc443c6055.cnmt.nca",
+    "meta_sha256": "c57ef14fa44f0bacc24ee7ee0ce303a7fe1486c15e3278cfd92ad6c8393667bf",
+    "program_sha256": "27bc536b91a7089b9f2dac80720c08bab3c3d1697825faa01433ffd9e5ab15c5"
+  }
+}
