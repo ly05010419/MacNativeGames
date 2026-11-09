@@ -39,7 +39,8 @@ Tested on one Mac: Apple M3 Pro, macOS 27, game version 4.0.0 (base NSP 1.0.0 pl
 ## Known gaps
 
 - Rare crash at a scene change (`CentralHeap::Free` of a misaligned pointer from gflib's scene manager, about one run in eight). Not reproduced under A/B.
-- A hang in the game's job system, about once per 5 to 15 minutes of walking (31 October). Cause open, see the CHANGELOG.
+- A hang in the game's job system, about once per 5 to 15 minutes of walking, came from a missing memory barrier in the game. It is patched (`PSV_JOB_FENCE`, 5 November) and did not come back in 49 test sessions. Keep the log of a session that hangs.
+- Above 60 fps the fixed script step runs scripted motion too fast (4 times at 120), and the hang once seen at 120 is not retested. Effects and the redraw after a throw are fixed there (CHANGELOG, 5 November).
 - Stretches of minutes with every tenth frame at about 29 ms in player sessions. Not reproduced in test runs.
 - Only one scissor rectangle per draw is replayed. Conservative rasterisation is drawn normally.
 - One packaged texture is read back on the CPU because its storage is not in a memory pool.
@@ -76,11 +77,13 @@ Key 1 or Esc closes it again. Each pick applies at once and is kept in `settings
 | Row | Choices |
 |---|---|
 | Frame lock | 30, 60, 90, 120 fps (60 when nothing is saved). **90 and 120 break the game's effects** (they run slow or stop, and the game can hang). The panel says so. |
-| Resolution | 1080p, or 1080p with MetalFX upscaling to the window or full screen. |
+| Render resolution | 1080p (the game's own), 1440p, 1800p, 2160p. Applies at the next start. Measured in the grassland on an M3 Pro at the 60 fps lock: GPU 7.3, 9.1, 12.7 and 17.0 ms per frame, so 2160p drops a little below 60. `PSV_RENDER_RES=<w>x<h>` decides first. |
+| Upscaling to the window | plain, or MetalFX to the window or full screen. |
 | Frame interpolation | on or off. MetalFX makes one frame between every two game frames: 60 + 60 on a 120 Hz screen, with the 60 fps lock. About 3.3 ms more GPU per frame and about 5 ms more delay. `PSV_MFX=interp` or `0` decides first. |
+| Anisotropic filtering | off (the game's own), 4x, 8x, 16x (16x when nothing is saved). Only the material textures get it: shadow and nearest samplers keep the game's value. `PSV_ANISO=<1..16>` decides first. |
 | Overlay | the FPS and shader box |
 
-**A higher frame lock does not speed the game up.** The game counts every frame as 33.3 ms. The runtime makes its clocks follow the measured frame time (`runtime/game_patches.c`), so walking is right at 30, 60, 90 and 120. At 30 and 60 the clocks step whole 60 Hz ticks, as on the Switch 2. Above 60 they cannot (a step of 0 ticks stops the game), so effects run slow. `PSV_FRAME_STEP=game` keeps the game's own timing for comparison: then 60 runs twice as fast. In the 60 fps mode two systems keep 30 fps steps on purpose. The first is the fixed-step clock of the game's scripts: they step every frame, so rooms are smooth but scripted fixed-step motion runs twice as fast. Ride jumps get a 1.95 upward scale against that, as in the community mod, and are still shorter than at 30 fps (`PSV_FIXED_STEP=0` turns the clock off and rooms then jerk, `PSV_JUMP_SCALE=0` the jump scale). The second is the interface animations, authored in 30 fps frames (`PSV_UI_SCALE=0` turns that off, and menus and the Pokédex then run twice as fast). `PSV_FAR_DISTANCE=0` keeps the game's animation distance limit of 50000 instead of the mod's 100000. 60 fps is the tested rate, but the frame lock starts at 30 (the game's own rate) until the player picks 60, because of the scripts' faster fixed step. The game's canvas stays 1920x1080: a native higher resolution needs patches to its renderer, which this port does not have yet. At 120 the grassland holds 120 fps on an M3 Pro (1 November 2026). **On "Choose a look for yourself" the cursor starts between the faces: push the left stick once before A.**
+**A higher frame lock does not speed the game up.** The game counts every frame as 33.3 ms. The runtime makes its clocks follow the measured frame time (`runtime/game_patches.c`), so walking is right at 30, 60, 90 and 120. At 30 and 60 the clocks step whole 60 Hz ticks, as on the Switch 2. Above 60 they cannot (a step of 0 ticks stops the game), so effects run slow. `PSV_FRAME_STEP=game` keeps the game's own timing for comparison: then 60 runs twice as fast. In the 60 fps mode two systems keep 30 fps steps on purpose. The first is the fixed-step clock of the game's scripts: they step every frame, so rooms are smooth but scripted fixed-step motion runs twice as fast. Ride jumps get a 1.95 upward scale against that, as in the community mod, and are still shorter than at 30 fps (`PSV_FIXED_STEP=0` turns the clock off and rooms then jerk, `PSV_JUMP_SCALE=0` the jump scale). The second is the interface animations, authored in 30 fps frames (`PSV_UI_SCALE=0` turns that off, and menus and the Pokédex then run twice as fast). `PSV_FAR_DISTANCE=0` keeps the game's animation distance limit of 50000 instead of the mod's 100000. 60 fps is the tested rate, but the frame lock starts at 30 (the game's own rate) until the player picks 60, because of the scripts' faster fixed step. The render resolution is a setting (the panel's Render resolution row, CHANGELOG 4 November). At 120 the grassland holds 120 fps on an M3 Pro (1 November 2026). **On "Choose a look for yourself" the cursor starts between the faces: push the left stick once before A.**
 
 ### Mods
 
@@ -98,7 +101,13 @@ xcrun xctrace export --input PSV_build/logs/<name>.trace --xpath '/trace-toc/run
 PSV_build/venv/bin/python PSV_build/test-tools/profsum.py PSV_build/logs/<name>.xml PSV_build/logs/<name>.log 40 [<thread id>]
 ```
 
-Game code shows as `main+0x...` (the log names each module's base). **The .trace holds the shell's environment: delete it after the export.**
+`PSV_build/test-tools/profstart.sh <name>` records the first 10 s of a start instead (the shader warm-up). Game code shows as `main+0x...` (the log names each module's base). **The .trace holds the shell's environment: delete it after the export.**
+
+### Power
+
+`PSV_build/test-tools/abpow.sh "<name>=<flag lines>" ...` switches live flags in one session and prints per 20 s phase the GPU package power, the game's CPU cores and the frame and GPU times (`WALK=1` walks meanwhile). The power comes from `test-tools/pw` (IOReport, no sudo). It reads GPU energy only: the CPU energy channels read 0 on macOS 27.
+
+- **The GPU keep-alive is automatic** (`nvn_mtl.m` `ka_governor`). It runs only while the game's GPU time passes 85% of the frame time, and it is the largest power cost when it runs. `PSV_GPU_KEEPALIVE=0` off, `=1` always on (the old default).
 
 ## Test runs
 
