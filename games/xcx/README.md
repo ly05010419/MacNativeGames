@@ -80,7 +80,8 @@ zero ineffective sites and 900 detected mutation controls. The original SDK
 and subsdk0 inputs are byte-identical to 1.0.0; main has build ID
 `ec4ed46bbc4a9ebbe7ce0af7a4a8ebbc09e5724a000000000000000000000000000`.
 This differs from the 1.0.2 build discussed in [#1761](https://github.com/ly05010419/MacNativeGames/issues/1761).
-No 1.0.2 offsets or 60 FPS timing patches are applied.
+No 1.0.2 offsets are reused. Default launches retain the original 30 FPS timing;
+the separate opt-in timing experiment below is disabled unless requested.
 
 Both versions build and package as ad-hoc-signed Mac diagnostics. Eleven
 loader/address/IPC/memory/input/graphics/filesystem/save probes per version
@@ -99,6 +100,52 @@ Root suite: 1,537 tests, 169 skipped, two errors in the unchanged
 base `9fe3fdc1d08ce5e1a64d120f257d79cc2dc7c0ca`; the root suite is not
 reported as green. iOS was not built: this Mac has Command Line Tools and
 no iPhoneOS SDK. No iOS/device compatibility is claimed.
+
+### Opt-in 2.0.0 frame-time experiment
+
+On macOS with the verified 2.0.0 image, `XCX_FPS_LIMIT=60` or `120` enables
+23 checked timing sites. This independently adapts the MIT-licensed
+[xcx-recomp 2.0.0 implementation](https://github.com/jmars125/xcx-recomp/blob/feb125c975924331da8ca5365f39d7a6548d6eed/recomp/patches-upd.txt);
+see [provenance and license](third_party/COPIES.md). It does not reuse 1.0.2
+addresses. No setting, or `30`, keeps the original behavior.
+
+The game period follows a five-frame average of measured present-call
+intervals, capped at 1/15 s with a reset after loading gaps. Camera rotation,
+30-Hz field/battle/event updates, battle prompts, salvage, held jumps, menu
+models and cloud animation receive the corresponding time scale. Cutscenes
+and active host-decoded movies retain 30 FPS. These are timing corrections,
+not new shader optimizations, interpolation or a guarantee of the selected
+frame rate. A 120 cap is especially experimental.
+
+```sh
+XCX_FPS_LIMIT=60 XCX_EXTENDED_VA=1 XCX_GRASS_WIND_SNAPSHOT=1 \
+  make boot WORK="$WORK" VERSION=2.0.0
+# Optional timing diagnostics: XCX_FPS_TRACE=1
+```
+
+Every original instruction and the complete unused text-padding region is
+validated before the first image write. Native trampolines occupy that
+verified padding; data uses the loader's private writable page. Rewritten
+files on disk stay unchanged. Unsupported versions, invalid rates, occupied
+padding and conflicting presentation/interpolation settings stop explicitly.
+Leave `DM_PRESENT_HZ` unset (or equal to the selected limit), use game interval
+mode and keep frame interpolation off during this experiment.
+
+Validation: all 21 focused XCX tests pass, including 13 timing scenarios.
+The camera test executes the installed ARM64 trampoline and checks its
+output at 60/120 caps; variable frame times, cutscene/movie transitions and
+loading-gap resets are covered. Late instruction mismatches, occupied
+padding, insufficient private space and the wrong version fail before any
+fixture memory changes. The native loader probe passes with the option on.
+
+An early-forest copied profile rendered characters and accepted scripted
+movement/camera at both caps, then quit normally. Render-loop rates above
+30 were observed, but **these are not accepted performance measurements**:
+the contributor was working with heavy background processes, and parts of
+the runs had no active display-link callbacks. A quieter repeat, actual
+displayed-frame/VSync checks, independent game-speed checks, extended battle
+and jump coverage, audio/USB acceptance and a save/reload cycle with the
+timing option remain open. Default 30 FPS is retained for ordinary use.
 
 ## Inputs and preparation
 
