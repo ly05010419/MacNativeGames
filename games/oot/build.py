@@ -265,13 +265,14 @@ def shader_jobs():
     return max(4, min(8, (os.cpu_count() or 4) - 2))
 
 def build(args, source):
-    if args.platform!='macos':raise ValueError('Ocarina of Time currently has a macOS build path only')
+    if args.platform not in ('macos','ios'):raise ValueError('Ocarina of Time has macOS and iOS build paths only')
+    device=args.platform=='ios'
     if args.update or args.dlc or args.mod:raise ValueError('use the complete original update 131072 in the dump/NUP')
     source=Path(source).resolve();work=args.work.expanduser().resolve() if args.work else source.parent/'OcarinaOfTime_build'
     repo=GAME.parents[1]
     if work==repo or repo in work.parents:raise ValueError('game build data must remain outside the source checkout')
     out=args.out.expanduser().resolve() if args.out else source.parent/'Ocarina of Time.app'
-    if out.suffix!='.app':raise ValueError('output must end in .app')
+    if out.suffix!='.app' and not (device and out.suffix=='.ipa'):raise ValueError('output must end in .app'+(' or .ipa' if device else ''))
     if out==repo or repo in out.parents:raise ValueError('App must remain outside the source checkout')
     if args.vr or args.native_4k or args.native_5k:raise ValueError('this title currently uses its original rendering options')
     # Close this title normally before changing its resource workspace or App.
@@ -337,15 +338,24 @@ def build(args, source):
     shutil.copy2(proof.with_name('SPIRV-Tools.LICENSE'),service/'SPIRV-Tools.LICENSE')
     (tree/'build/shader-map.tsv').write_text('# TOTK control-code-sha256-v1\n')
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
-    if not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=1 bundles them): translated at first use',flush=True)
+    icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
+    if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
+    if not device and not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=1 bundles them): translated at first use',flush=True)
     else:
      shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
      run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
          '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
          *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
-     run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
+     if not device:
+      run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
          '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',os.environ['OOT_SHADER_SUBSET']] if os.environ.get('OOT_SHADER_SUBSET') else [])],'compile-shader-libraries')
-    package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
+    if device:
+     # The phone's own Metal libraries and pipeline archive: the seed above is compiled for the device in ios/tools/build_ipa.py.
+     run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',
+         *([] if os.environ.get('OOT_IOS_ALL_SHADERS')=='1' else ['--listed-shaders-only']),   # user 2026-11-09: only the shaders the render pipelines use, for now
+         *(['--image-outside'] if args.ios_game_data=='documents' else []),*[x for g in args.device_gpu or [] for x in ('--device-gpu',g)]],'build-ipa')
+    else:
+     package_app(work,tree,out,'library' if args.mac_game_data_folder else args.mac_game_data,args.mac_game_data_folder)
     print(f'Built {out}; native gameplay validation is recorded separately.',flush=True)
     chain=(GAME/'third_party/d2r_gfx/gfx/nvn/dmsh_chain.h').read_text().split('"')[1]
     return out,tree,expected,chain

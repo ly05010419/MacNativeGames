@@ -9,9 +9,14 @@ import subprocess
 import tempfile
 import urllib.request
 from pathlib import Path
-from extract_exefs import read_at, require, container_entries, common_tickets, nca_inventory
-from extract_romfs import index_romfs
-from extract_shared_fonts import Slice, load_keys, nca_romfs
+
+
+def load_container_tools():
+    """Only an XCI or NSP needs these (and their cryptography module); --source-spec does not."""
+    global read_at, require, container_entries, common_tickets, nca_inventory, index_romfs, Slice, load_keys, nca_romfs
+    from extract_exefs import read_at, require, container_entries, common_tickets, nca_inventory
+    from extract_romfs import index_romfs
+    from extract_shared_fonts import Slice, load_keys, nca_romfs
 
 LANGUAGES = ['AmericanEnglish', 'BritishEnglish', 'Japanese', 'French', 'German', 'LatinAmericanSpanish', 'Spanish',
              'Italian', 'Dutch', 'CanadianFrench', 'Portuguese', 'Russian', 'Korean', 'TraditionalChinese', 'SimplifiedChinese']
@@ -82,6 +87,7 @@ def main():
         return
     if a.game is None or a.keys is None:
         ap.error('game and --keys are required unless --source-spec is given')
+    load_container_tools()
     keys = load_keys(a.keys)
     with tempfile.TemporaryDirectory() as t:
         t = Path(t)
