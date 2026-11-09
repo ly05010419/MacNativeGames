@@ -6367,7 +6367,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 // and no live texture was found at its storage yet, so every serial-table step re-checks it (see tex_by_id).
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty;
     uint64_t indexed_serial, used; int view_prev, view_next; uint8_t view_pkg, dead_pending;
-    uint8_t view_tt; void *view_parent, *image_view; } treg_t;   // used (TOTK): last submission that resolved this id
+    uint8_t view_tt, image_ready; void *view_parent, *image_view; } treg_t;   // used (TOTK): last submission that resolved this id
 /* TOTK: view_tt / view_parent: textureType and parentTexture of view, read once when it is stored (a Metal texture never
    changes either). view_parent is only compared, never messaged; the view retains its parent while it is stored. */
 static treg_t *g_treg; static int g_ntreg;
@@ -6397,7 +6397,7 @@ static void treg_clear_view_locked(int tid) {
     treg_unlink_locked(tid);
     if (r->view) { defer_obj_unref((__bridge id)r->view); CFRelease(r->view); r->view = NULL; }
     if (r->image_view) { defer_obj_unref((__bridge id)r->image_view); CFRelease(r->image_view); r->image_view = NULL; }
-    r->view_id = r->view_rid = r->view_ser = r->view_dirty = 0; r->view_pkg = r->dead_pending = 0; r->view_tt = 0; r->view_parent = NULL;
+    r->view_id = r->view_rid = r->view_ser = r->view_dirty = 0; r->view_pkg = r->dead_pending = 0; r->view_tt = r->image_ready = 0; r->view_parent = NULL;
 }
 // 贴图号 → 序号的无锁副本（回放热路径只要序号：写回前瞻索引、纯清除前提的绑定集合）：贴图号 20 位，固定 1M 项（BSS，只占碰过的页），
 // 登记时 release 写、读端 relaxed 原子读，不进 g_rmu（原 h_ser 每次查表加解锁，营地每帧数千次）
@@ -10492,7 +10492,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
             /* Image stores need the writable companion, not its RGB-only sampling swizzle. */
             if (tid && hdr_shadow_enabled()) {
                 id<MTLTexture> hdr = hdr_shadow_find(tex_by_id(tid));
-                if (hdr) { t = hdr; trid = hdr.gpuResourceID._impl; }
+                if (hdr && (hdr.usage & MTLTextureUsageShaderWrite)) { t = hdr; trid = hdr.gpuResourceID._impl; }
             }
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "实" : "哑", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
             if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "图像槽绑的贴图没有可写用途（贴图号 %d）", tid); t = nil; }
@@ -14993,19 +14993,25 @@ static void dispatch(const p_dispatch *dp) {
     const uint16_t *tg = cs->rf.tg;
     if (!tg[0]) { RED_ONCE(29, "计算着色器缺线程组大小反射"); return; }
     rp_end();
-    /* A render target may first acquire image usage at dispatch, after its storage was allocated. */
-    registry_lock();
-    for (int i = 0; i < cs->rf.nb; i++) {
-        const nvn_rbind *b = &cs->rf.b[i];
-        if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
-        int tid = (int)(S.img[5][b->reg] & 0xfffff);
-        if (!tid) continue;
-        id<MTLTexture> view = tex_by_id(tid);
-        if (!view || hdr_shadow_find(view) || (view.usage & MTLTextureUsageShaderWrite)) continue;
-        id<MTLTexture> base = tex_mtl(&g_treg[tid].t);
-        if (base && !(base.usage & MTLTextureUsageShaderWrite)) (void)tex_upgrade_usage(&g_treg[tid].t, base, MTLTextureUsageShaderWrite);
+    /* A render target may first acquire image usage at dispatch, after its storage was allocated. A dispatch without images
+       takes no lock, and a texture found writable is not asked again until it is registered anew. */
+    int has_img = 0;
+    for (int i = 0; i < cs->rf.nb && !has_img; i++) has_img = cs->rf.b[i].kind == NVN_RB_IMG && cs->rf.b[i].reg < 32 && (S.img[5][cs->rf.b[i].reg] & 0xfffff);
+    if (has_img) {
+        registry_lock();
+        for (int i = 0; i < cs->rf.nb; i++) {
+            const nvn_rbind *b = &cs->rf.b[i];
+            if (b->kind != NVN_RB_IMG || b->reg >= 32) continue;
+            int tid = (int)(S.img[5][b->reg] & 0xfffff);
+            if (!tid || (tid < g_ntreg && g_treg[tid].image_ready)) continue;
+            id<MTLTexture> view = tex_by_id(tid);
+            if (!view || hdr_shadow_find(view)) continue;
+            id<MTLTexture> base = (view.usage & MTLTextureUsageShaderWrite) ? view : tex_mtl(&g_treg[tid].t);
+            if (base && !(base.usage & MTLTextureUsageShaderWrite)) base = tex_upgrade_usage(&g_treg[tid].t, base, MTLTextureUsageShaderWrite);
+            if (base && (base.usage & MTLTextureUsageShaderWrite)) g_treg[tid].image_ready = 1;
+        }
+        registry_unlock();
     }
-    registry_unlock();
     int reuse = disp_reuse_on() && !pg_on();
     /* TOTK_DISP_PREARGS (default on): when this dispatch opens the compute encoder after a streamed render pass, disp_enc
        first waits for the encode stage to finish that pass (rs_sync, ~5% of the replay in the world). The dispatch's
@@ -15026,7 +15032,7 @@ static void dispatch(const p_dispatch *dp) {
     enc_c_dispatch(ce, MTLSizeMake(dp->x, dp->y, dp->z), MTLSizeMake(tg[0], tg[1], tg[2]));
     if (!reuse) enc_c_end(ce);
     /* Keep guest copies/readbacks coherent with compute writes, as for render-pass stores. */
-    if (hdr_shadow_enabled()) {
+    if (has_img && g_hdr_companion_store && hdr_shadow_enabled()) {
         registry_lock();
         for (int i = 0; i < cs->rf.nb; i++) {
             const nvn_rbind *b = &cs->rf.b[i];
@@ -18727,6 +18733,7 @@ int mtl_probe_drv_c0(void) {
 
 /* Image writes must reach HDR companions and their guest-format originals; sampling must still return alpha one. */
 static int probe_hdr_image_dispatch(void) {
+    g_hdr_companion_store = 1;
     NSString *msl = @"#include <metal_stdlib>\nusing namespace metal;\n"
         "struct Args { texture2d<float, access::write> image [[id(0)]]; constant float4* colour [[id(1)]]; };\n"
         "kernel void main0(constant Args& a [[buffer(0)]], uint2 p [[thread_position_in_grid]])"
