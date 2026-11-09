@@ -3,7 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #include "../gfx/nvn/aoc_stats.h"
 typedef struct {
-    int face_layout, swap_ab, start_fullscreen, output_preset, fullscreen;
+    int face_layout, swap_ab, start_fullscreen, output_preset, fullscreen, aspect;   // aspect: 0 = the game's 16:9, 1 = 16:10
     NSUInteger output_width, output_height, controllers;
     int fps_target, dynamic_fps, stats_mode, frame_graph, screen_fps;
     int stats_locked, graph_locked;
@@ -14,7 +14,7 @@ typedef struct {
 typedef NS_ENUM(NSInteger, DmMacSetting) {
     DmSettingFaceLayout, DmSettingSwapAB, DmSettingStartFullscreen,
     DmSettingOutput, DmSettingFullscreen, DmSettingResetController,
-    DmSettingFpsTarget, DmSettingDynamicFps, DmSettingStats, DmSettingFrameGraph
+    DmSettingFpsTarget, DmSettingDynamicFps, DmSettingStats, DmSettingFrameGraph, DmSettingAspect
 };
 typedef DmMacSettings (^DmSettingsSnapshot)(void);
 typedef void (^DmSettingsChange)(DmMacSetting setting, NSInteger value);

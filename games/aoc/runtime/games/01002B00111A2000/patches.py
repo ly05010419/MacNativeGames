@@ -43,6 +43,9 @@ CUTS = {
 #   ktgl: the pointer to the KTGL device.
 LAYOUT_130 = dict(task=0x166dab4, step=0x166dc60, device=0x8d94b0, scene=0x8c3610, scene_word='295d41bd',
                   rate=0x269e150, ntsc=0x1ef5f3c, ktgl=0x2bac798)
+# 1.4.1: the camera aspect stores (str s<n>,[x<m>,#0x12ec]) the aspect-ratio stubs below wrap, with their original bytes.
+ASPECT_STORES = {0xb0cf48: 'a1ee12bd', 0xb0e5d0: '61ee12bd', 0xb0e934: 'a1ee12bd', 0xfa85f8: '62ee12bd',
+                 0xfbf99c: '82ee12bd', 0x115fa64: '00ec12bd'}
 LAYOUT_141 = dict(task=0x1670124, step=0x16702d0, device=0x8d9ae0, scene=0x8c3c40, scene_word='298d42bd',
                   rate=0x26a2280, ntsc=0x1ef8ddc, ktgl=0x2bb0798)
 
@@ -210,6 +213,28 @@ def frame_step(ctx, at=LAYOUT_130):
             0x52a7f010, 0xb928b330, 0xb928b730,   # w16 = 1.0f; dev 2D scale back to 1.0
             0xd10303a1],                          # sub x1,x29,#0xc0 (original)
             'UI 2D node end: dev 2D scale back to 1.0')
+
+        # Aspect ratio (16:10 like TOTK, 1.4.1): the canvas stays 16:9 and the host stretches it to the chosen shape, so
+        # each camera's aspect (camera +0x12ec = scene w/h times its split factor) is multiplied by the state's factor
+        # (+0x88: chosen ratio / (16/9); 0 = the game's own). Only 3D views of 16:9 or wider (>= 1.5) are touched, which
+        # covers the split-screen halves (32:9) and leaves square offscreen cameras alone. Six writers compute the aspect
+        # from a view size and then call the camera's update (vtable +0x418): five from the scene size at [app+0x368],
+        # one (main+0x115fa64) from its own size at +0xf0; that one reads its factor from +0x8c, so the host can turn it
+        # off alone. Every site is followed by a call or a tail call, so x16/x17 and s16/s17 are free there.
+        for site, slot in ((0xb0cf48, 0x88), (0xb0e5d0, 0x88), (0xb0e934, 0x88), (0xfa85f8, 0x88), (0xfbf99c, 0x88),
+                           (0x115fa64, 0x8c)):
+            orig = ASPECT_STORES[site]
+            ctx.site(site, orig)
+            w = int.from_bytes(bytes.fromhex(orig), 'little')
+            src, base = w & 31, (w >> 5) & 31
+            stub(site, site + 4, [page, ld(16,16,slot),
+                0x1e202208, ('cond13','orig'),             # fcmp s16,#0.0; b.le: the game's own aspect
+                0x1e2f1011, 0x1e312000 | src << 5,         # fmov s17,#1.5; fcmp s<src>,s17
+                ('cond11','orig'),                         # b.lt: narrower than 3:2, not the screen's view
+                0x1e300811 | src << 5,                     # fmul s17,s<src>,s16
+                st(base,17,0x12ec), ('b','done'),
+                'orig', w, 'done'],
+                f'camera aspect times the chosen ratio over 16:9 (state +{slot:#x})')
 
 FRAME_STEP = {'c3cf52bf2b05d7310884971b50bcccb8': frame_step,
               'e5f275b5d0889899e55de1a164eef060': partial(frame_step, at=LAYOUT_141)}

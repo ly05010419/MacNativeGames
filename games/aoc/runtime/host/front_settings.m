@@ -100,7 +100,7 @@ static NSString *performance_text(DmMacSettings s, BOOL full) {
 @property (weak) NSWindow *parent;
 @property (copy) DmSettingsSnapshot snapshot;
 @property (copy) DmSettingsChange change;
-@property NSPopUpButton *output, *face, *fps, *stats;
+@property NSPopUpButton *output, *face, *fps, *stats, *aspect;
 @property NSButton *swap, *startup, *fullscreen, *dynamicFps, *frameGraph;
 @property NSTextField *dimensions, *connected, *performance;
 @property NSTimer *timer;
@@ -140,6 +140,8 @@ static NSString *performance_text(DmMacSettings s, BOOL full) {
     self.performance.identifier = @"settings-performance";
     self.output = [self popup:output_names() tags:@[@0,@1,@2,@3,@4] setting:DmSettingOutput identifier:@"settings-output"];
     self.dimensions = label(@"", 11, NSColor.secondaryLabelColor); self.dimensions.identifier = @"settings-resolution";
+    self.aspect = [self popup:@[@"16:9 · original", @"16:10 · fills a Mac screen"] tags:@[@0,@1] setting:DmSettingAspect identifier:@"settings-aspect"];
+    self.aspect.toolTip = @"16:10 stretches the picture to the screen: the 3D view sees the wider shape and the HUD stays in the middle 16:9, as in Tears of the Kingdom";
     self.fullscreen = [self check:@"Full screen" setting:DmSettingFullscreen identifier:@"settings-fullscreen"];
     self.startup = [self check:@"Start in full screen" setting:DmSettingStartFullscreen identifier:@"settings-start-fullscreen"];
     self.face = [self popup:@[face_name(0), face_name(2), face_name(1)] tags:@[@0,@2,@1] setting:DmSettingFaceLayout identifier:@"settings-controller"];
@@ -153,7 +155,7 @@ static NSString *performance_text(DmMacSettings s, BOOL full) {
     NSTextField *note = label(@"The window size cap only scales the shown picture; it does not change the game's own resolution (Display shows it). MetalFX and internal quality enhancements require game-specific support.", 11, NSColor.secondaryLabelColor);
     NSTextField *keys = label(@"1 / F1 / ⌘,  Settings (1, F1 or Esc closes) · ⌃⌘F  Full screen\nWASD  Move · Arrow keys  D-pad\nJ / K / U / I  A / B / X / Y\nQ / E  L / R · Z / C  ZL / ZR\nF / G  Stick clicks · Return / Tab  + / −\nSpace  Shake · Left mouse  Touch screen", 11, NSColor.secondaryLabelColor);
     NSStackView *body = column(@[heading, subtitle,
-        card(@"Display", @[row(@"Window size cap", self.output), self.dimensions, self.fullscreen, self.startup]),
+        card(@"Display", @[row(@"Aspect ratio", self.aspect), row(@"Window size cap", self.output), self.dimensions, self.fullscreen, self.startup]),
         card(@"Frame rate & stats", @[row(@"FPS target", self.fps), self.dynamicFps,
             label(@"60 FPS is experimental. 120 FPS is disabled pending gameplay timing fixes.", 11, NSColor.secondaryLabelColor),
             row(@"Stats pane", self.stats), self.frameGraph, self.performance]),
@@ -209,7 +211,7 @@ static NSString *performance_text(DmMacSettings s, BOOL full) {
 - (void)resetController:(id)sender { (void)sender; self.change(DmSettingResetController, 0); [self refresh]; }
 - (void)refresh {
     DmMacSettings s = self.snapshot();
-    [self.output selectItemWithTag:s.output_preset]; [self.face selectItemWithTag:s.face_layout];
+    [self.output selectItemWithTag:s.output_preset]; [self.face selectItemWithTag:s.face_layout]; [self.aspect selectItemWithTag:s.aspect];
     [self.fps selectItemWithTag:s.fps_target]; [self.stats selectItemWithTag:s.stats_mode];
     self.dynamicFps.state=s.dynamic_fps; self.dynamicFps.enabled=s.fps_target!=0;
     self.frameGraph.state=s.frame_graph;

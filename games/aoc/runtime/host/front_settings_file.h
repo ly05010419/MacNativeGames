@@ -2,13 +2,13 @@
 // environment's decisions for the stats pane and the frame graph (front_prefs.h). Shared with the settings UI test, which goes
 // through the real file: a saved choice the environment overrides for one run is written back as it was.
 // One key=value per line: layout (auto / position / label), swap_ab, fullscreen, output (0-4), fps_target, dynamic_fps, stats
-// (0-2), frame_graph (0-1). Unknown keys, such as the hints= of older versions, are ignored.
+// (0-2), frame_graph (0-1), aspect (0 = 16:9, 1 = 16:10). Unknown keys, such as the hints= of older versions, are ignored.
 #pragma once
 #import <Foundation/Foundation.h>
 #include "front_prefs.h"
-typedef struct { int layout, swap_ab, fullscreen, output, fps_target, dynamic_fps, stats, frame_graph; } DmSettingsFile;   // -1: not in the file
+typedef struct { int layout, swap_ab, fullscreen, output, fps_target, dynamic_fps, stats, frame_graph, aspect; } DmSettingsFile;   // -1: not in the file
 static inline DmSettingsFile dm_settings_file_read(NSString *path) {
-    DmSettingsFile f = {-1, -1, -1, -1, -1, -1, -1, -1};
+    DmSettingsFile f = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
     NSString *text = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
     for (NSString *raw in [text componentsSeparatedByString:@"\n"]) {
         NSArray<NSString *> *pair = [[raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@"="];
@@ -24,6 +24,7 @@ static inline DmSettingsFile dm_settings_file_read(NSString *path) {
         else if ([key isEqualToString:@"dynamic_fps"]) f.dynamic_fps = n != 0;
         else if ([key isEqualToString:@"stats"]) f.stats = n;
         else if ([key isEqualToString:@"frame_graph"]) f.frame_graph = n;
+        else if ([key isEqualToString:@"aspect"]) f.aspect = n == 1 ? 1 : n == 0 ? 0 : -1;
     }
     return f;
 }
@@ -40,8 +41,8 @@ static inline DmSettingsLoaded dm_settings_load(NSString *path, const char *env_
 // environment decided for this run.
 static inline BOOL dm_settings_save(NSString *path, DmSettingsFile current, DmPref stats, DmPref graph, NSError **error) {
     static const char *layout[] = {"auto", "position", "label"};
-    NSString *text = [NSString stringWithFormat:@"layout=%s\nswap_ab=%d\nfullscreen=%d\noutput=%d\nfps_target=%d\ndynamic_fps=%d\nstats=%d\nframe_graph=%d\n",
+    NSString *text = [NSString stringWithFormat:@"layout=%s\nswap_ab=%d\nfullscreen=%d\noutput=%d\nfps_target=%d\ndynamic_fps=%d\nstats=%d\nframe_graph=%d\naspect=%d\n",
         layout[current.layout >= 0 && current.layout < 3 ? current.layout : 0], current.swap_ab > 0, current.fullscreen > 0,
-        current.output >= 0 && current.output < 5 ? current.output : 0, current.fps_target, current.dynamic_fps > 0, stats.saved, graph.saved];
+        current.output >= 0 && current.output < 5 ? current.output : 0, current.fps_target, current.dynamic_fps > 0, stats.saved, graph.saved, current.aspect == 1];
     return [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:error];
 }

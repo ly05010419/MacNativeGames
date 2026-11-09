@@ -28,6 +28,7 @@ static void change(DmMacSetting key, NSInteger value) {
         case DmSettingDynamicFps: state.dynamic_fps=(int)value; break;
         case DmSettingStats: state.stats_mode=(int)value; break;
         case DmSettingFrameGraph: state.frame_graph=(int)value; break;
+        case DmSettingAspect: state.aspect=(int)value; break;
         case DmSettingOutput: { state.output_preset = (int)value; DmOutputSize s = dm_output_size(3840,2160,(int)value); state.output_width=s.width;state.output_height=s.height; break; }
         case DmSettingFaceLayout: state.face_layout = (int)value; break;
         case DmSettingSwapAB: state.swap_ab = (int)value; break;
@@ -136,6 +137,11 @@ int main(int argc, const char **argv) { @autoreleasepool {
         CHECK("file: the other change and settings are written",[written containsString:@"swap_ab=1\n"]&&[written containsString:@"layout=label\n"]&&
               [written containsString:@"output=2\n"]&&[written containsString:@"fps_target=60\n"]);
         CHECK("file: the retired hints key is dropped",![written containsString:@"hints"]);
+        CHECK("file: an old file without aspect reads as not set and saves 16:9",run.file.aspect==-1&&[written containsString:@"aspect=0\n"]);
+        { DmSettingsFile wide=run.file; wide.aspect=1;
+          CHECK("file: 16:10 is saved and read back",dm_settings_save(file,wide,run.stats,run.graph,NULL)&&dm_settings_load(file,NULL,NULL).file.aspect==1);
+          CHECK("file: the other settings survive the aspect change",dm_settings_load(file,NULL,NULL).file.output==2);
+          dm_settings_save(file,now,run.stats,run.graph,NULL); }
         DmSettingsLoaded next=dm_settings_load(file,NULL,NULL);
         CHECK("file: next run without the variables gets the saved choices back",next.stats.value==2&&!next.stats.locked&&next.graph.value==0&&!next.graph.locked&&next.file.swap_ab==1);
         CHECK("file: an unlocked change is saved and read back",dm_pref_set(&next.stats,1)&&dm_settings_save(file,next.file,next.stats,next.graph,NULL)&&
@@ -148,6 +154,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
         [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
         // The hints box and its switch are gone (Tears of the Kingdom's panel replaced its reminder box)
         CHECK("no hints row in the panel",find(panel.window.contentView,@"settings-hints")==nil);
+        { NSPopUpButton *aspect=(id)find(panel.window.contentView,@"settings-aspect");
+          CHECK("aspect ratio row offers 16:9 and 16:10",aspect&&aspect.numberOfItems==2&&[aspect itemAtIndex:0].tag==0&&[aspect itemAtIndex:1].tag==1);
+          [aspect selectItemWithTag:1]; [aspect sendAction:aspect.action to:aspect.target];
+          CHECK("choosing 16:10 reaches the host",state.aspect==1);
+          [aspect selectItemWithTag:0]; [aspect sendAction:aspect.action to:aspect.target];
+          CHECK("choosing 16:9 reaches the host",state.aspect==0); }
         CHECK("no hints box over the game",find(parent.contentView,@"settings-shortcuts")==nil&&find(parent.contentView,@"shortcut-values")==nil);
         state=original;state.stats_mode=2;state.frame_graph=1;[performance refresh];
         [parent setContentSize:NSMakeSize(640,360)];[performance refresh];
