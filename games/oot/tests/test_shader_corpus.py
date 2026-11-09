@@ -34,4 +34,17 @@ class CorpusTests(unittest.TestCase):
   found=corpus.nintendo_shaders(bytes(data),'fixture')
   self.assertEqual(len(found),2)
   self.assertTrue(all('#BAHS@0x40' in r[4] or '#BAHS@0x50' in r[4]for r in found))
+ def test_ndsr_data_entry_shifts_the_next_shader_by_eight(self):
+  # NDSR entries are 8 bytes (offset, length<<4|type) and a shader takes two (control, code), so a constant-data
+  # entry between shaders moves the next shader's record by 8. A fixed 16-byte walk lost agl_ndsr_vr's kernels.
+  data=bytearray(0x1000);data[:4]=b'NDSR'
+  def control(at,code,stage):
+   data[at:at+8]=corpus.CTL_MAGIC+b'\xc9\0\0\0';struct.pack_into('<I',data,at+0x44,16);data[at+0x56]=stage;data[code]=stage+1
+  control(0x200,0x400,5);control(0x300,0x420,5)
+  o=0x10
+  struct.pack_into('<4I',data,o,0x200,0xe0<<4|6,0x400,1<<8|7);o+=16
+  struct.pack_into('<2I',data,o,0x800,0x10<<4|0xb);o+=8     # one constant-data entry: 8 bytes
+  struct.pack_into('<4I',data,o,0x300,0xe0<<4|6,0x420,1<<8|7)
+  found=corpus.nintendo_shaders(bytes(data),'fixture.pck')
+  self.assertEqual(sorted(r[4] for r in found),['fixture.pck#NDSR@0x200','fixture.pck#NDSR@0x300'])
 if __name__=='__main__':unittest.main()

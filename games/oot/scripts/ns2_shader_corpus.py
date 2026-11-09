@@ -321,11 +321,17 @@ def nintendo_shaders(data, label, depth=0, decode=None):
                        for c, _, _, _ in struct.iter_unpack('<4I', data[o:o + 256]))
         o = max((0x10, 0x14), key=score)
         while o + 16 <= len(data):
-            c, cl, k, _ = struct.unpack_from('<4I', data, o); o += 16
-            if not c and not cl:
+            c, cl, k, last = struct.unpack_from('<4I', data, o)
+            if not (c or cl or k or last):
                 break
-            if c + 0x48 <= len(data) and data[c:c + 8] == CTL_MAGIC + b'\xc9\0\0\0':
-                add(c, cl >> 4, k, struct.unpack_from('<I', data, c + 0x44)[0], f'{label}#NDSR@{c:#x}')
+            # Entries are 8 bytes (offset, length << 4 | type) and a shader takes two of them (control, code), so a
+            # constant-data entry moves the next shader by 8 (seedds/nxnative shader_split.py ndsr_shaders, MIT). A fixed
+            # 16-byte walk lost three agl_ndsr_vr kernels, which the game then translated at run time.
+            if not (c + 0x48 <= len(data) and data[c:c + 8] == CTL_MAGIC + b'\xc9\0\0\0'):
+                o += 8
+                continue
+            o += 16
+            add(c, cl >> 4, k, struct.unpack_from('<I', data, c + 0x44)[0], f'{label}#NDSR@{c:#x}')
     if 'primitive_drawer_nvn2_shader' in label and len(data) >= 16:
         vc, fc, vk, fk = struct.unpack_from('<4I', data)
         for c, k in ((vc, vk), (fc, fk)):
