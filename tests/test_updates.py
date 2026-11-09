@@ -359,9 +359,11 @@ class Updates(unittest.TestCase):
         def processes(args,*_args,**_kwargs):
             if args[0]=='git':   # build_app.source_commit: the commit the app records (MNGSourceCommit)
                 return SimpleNamespace(returncode=0,stdout='abc1234\n')
+            if args[:2]==['ps','-ww']:   # build_app.wait_until_closed: the matching process's own command line
+                return SimpleNamespace(returncode=0,stdout=str(old.resolve())+'\n',check_returncode=lambda:None)
             self.assertEqual(old.read_bytes(),b'old running app')
             checks.append(True)
-            return SimpleNamespace(stdout=str(old.resolve())+'\n' if len(checks)==1 else '')
+            return SimpleNamespace(stdout=f'  101 {old.resolve()}\n' if len(checks)==1 else '')
         with patch.object(build_app,'data_bundle',side_effect=fake_data_bundle),patch.object(build_app,'shader_bundle',side_effect=fake_shader_bundle),patch.object(build_app,'clone',side_effect=fake_clone),patch.object(build_app,'sign_app'),patch.object(build_app,'mac_pipelines'),patch.object(build_app,'app_seal_valid',return_value=True),patch.object(build_app,'resolve_lists'), \
              patch.object(build_app.subprocess,'check_output',return_value='a'*40), \
              patch.object(build_app.subprocess,'run',side_effect=processes),patch.object(build_app.time,'sleep') as pause, \
