@@ -221,9 +221,18 @@ static void mtk_encode(id<MTL4RenderCommandEncoder> en) {
 static void mesh_tasks_draw(const p_draw *dw) {
     if(!S.prog||dw->count<=0)return;
     NvProg *pr=prog_get(S.prog);if(!pr)MDIE("mesh draw has no program");
-    if(prog_fit(pr)<0)MDIE("mesh shader translation is unavailable");
+    int fit=prog_fit(pr);
+#if TARGET_OS_IPHONE
+    /* A variant the phone has no translation for (ios/tools: only the listed shaders, no translator yet) is skipped and counted
+       like any other draw whose shader is not ready (draw_skipped), not fatal; the request is recorded for fill_shaders.py. */
+    if(fit<0||pr->missing){draw_skipped();return;}
+#endif
+    if(fit<0)MDIE("mesh shader translation is unavailable");
     NvShader *ts=pr->sh[3],*ms=pr->sh[4];
     if(ts&&ts->mesh_kind!=1)MDIE("task stage is not a task shader");
+#if TARGET_OS_IPHONE
+    if(!ms||!ms->fn||(ts&&!ts->fn)){draw_skipped();return;}
+#endif
     if(!ms||ms->mesh_kind!=2||!ms->fn||(ts?!ts->fn:!ms->mesh_notask))MDIE("DrawMeshTasks without complete task/mesh stages");
     upd_guard_stage(ts,3);upd_guard_stage(ms,4);
     prepare_shader_pools(ts);prepare_shader_pools(ms);

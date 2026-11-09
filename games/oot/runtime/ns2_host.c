@@ -3,6 +3,7 @@
    behaviour is ported from seedds/nxnative (MIT): commit 8dd0c98a (dm/host/hle_misc.c, hle_hid.c, hle_oe.c, hle_audren.c,
    dm/gfx/hle_vi.c) and its nv::InitCheck (dm/gfx/hle_nv.c), all found on Donkey Kong Bananza. They are matched by the
    game's imports (runtime_override, services.c), like every other host function here. */
+#include <stdlib.h>
 #include "runtime.h"
 #include <stdatomic.h>
 #include <stdint.h>
@@ -85,7 +86,17 @@ static uint32_t stpl_jcms_handle(const void *id, const void *type) { (void)id; (
    the console reports in which mode is not measured (open, as in nxnative): 0 handheld, 1 docked, following the mode.
    PokeDinner (an Eden fork) answers 10 (scale 0) in either mode and kirakira-dev/ouncenative returns 0 for Pokopia; the
    mode rule Bananza was played with stays until the console's answer is known (Pokopia runs with either). */
-static int oe_graphics_scale(void) { return !runtime_handheld_mode(); }
+/* nn::oe::GetCurrentGraphicsScale: the share of the GPU the system leaves the game: 0 all of it, 1 and 2 smaller ones.
+   OOT_GFX_SCALE=<0..2> overrides the answer (the game sizes its final picture by it). Default: as before. */
+static int oe_graphics_scale(void) {
+    static int v = -2;
+    if (v == -2) {
+        const char *e = getenv("OOT_GFX_SCALE"); char *end = NULL; long n = e && *e ? strtol(e, &end, 10) : -1;
+        if (e && *e && (*end || n < 0 || n > 2)) runtime_fail("OOT_GFX_SCALE must be 0, 1 or 2");
+        v = (int)n;
+    }
+    return v >= 0 ? v : !runtime_handheld_mode();
+}
 static void oe_graphics_scale_notify(unsigned on) { (void)on; }
 
 /* ---------- nv::InitCheck ----------

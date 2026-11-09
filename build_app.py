@@ -2196,11 +2196,11 @@ def record_ns2_device_build(tree, out, g, args):
     outputs += [tree / 'ios/Gen/ios_embed.h', seed]
     device_seed = out.with_name(out.stem + '-shader-seed') if args.ios_game_data == 'documents' else tree / 'ios/Gen/totk/shader-seed'
     outputs += [p for p in device_seed.iterdir() if p.is_file()]
-    record = dict(schema=1, game=v, platform=args.platform, input=VERSIONS[v],
+    record = dict(schema=1, game=v, platform=args.platform, input=VERSIONS.get(v) or g['expected'],
                   options=dict(ios_game_data=args.ios_game_data, device_gpu=args.device_gpu or ['auto'],
                                nvn_depth_mode=g['depth_mode']),
                   build_app_sha256=sha256(Path(__file__)),
-                  source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources)},
+                  source_sha256={str(p.relative_to(tree)): sha256(p) for p in sorted(sources) if p.is_file()},
                   output_sha256={str(p): sha256(p) for p in sorted(set(outputs))})
     icon_spec = g['folder'] / 'assets/app-icon.json'
     if icon_spec.is_file():
@@ -2656,7 +2656,7 @@ def build_oot(args, source):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     out, tree, expected, shader_chain = module.build(args, source)
-    record_ns2_device_build(tree, out, dict(version='oot', expected=expected,
+    record_ns2_device_build(tree, out, dict(version='oot', expected=expected, folder=REPO / 'games/oot',
                            executable='OcarinaOfTime', depth_mode='runtime-device-state',
                            shader_chain=shader_chain), args)
 

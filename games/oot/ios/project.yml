@@ -1,0 +1,84 @@
+name: TOTKIOS
+options:
+  bundleIdPrefix: org.macnativegames
+  deploymentTarget:
+    iOS: "26.0"
+configFiles:
+  Release: Gen/totk.xcconfig
+  Debug: Gen/totk.xcconfig
+targets:
+  TOTKIOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Settings.bundle   # the Settings app pane; options stored in NSUserDefaults
+      - path: ../runtime
+        excludes:
+          - frontend.m
+          - loader.c
+          - game_patches_botw.c
+          - game_patches_ns2.c
+      - path: ../third_party/d2r_gfx/gfx/nvn
+      - path: ../third_party/d2r_gfx/gfx/tex
+      - path: ../zeldaVR/gfx   # zeldaVR: the VR modules (empty on iOS; the build copies zeldaVR into the tree)
+      - path: Gen/embed.S
+      - path: ../runtime/loader.c
+        compilerFlags: "-Dmain=totk_host_main"
+    dependencies:
+      - sdk: CoreHaptics.framework   # the iPhone's Taptic Engine while the touch controls are used
+      - sdk: CoreMotion.framework    # the iPhone's own gyro while the touch controls are used
+      - sdk: Photos.framework        # a controller's capture button saves to the photo library (runtime/frontend_ios.m)
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: ${TOTK_APP_NAME}
+        CFBundleName: ${TOTK_APP_NAME}
+        CFBundleIdentifier: ${TOTK_BUNDLE_ID}
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        GCSupportsControllerUserInteraction: true
+        NSMotionUsageDescription: Tilt the iPhone to aim while you play with the on-screen controls.
+        NSPhotoLibraryAddUsageDescription: Saves the screenshots you take with a controller to your photo library.
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        CADisableMinimumFrameDurationOnPhone: true
+        UIApplicationShortcutItems:   # the Home Screen icon's menu: choose the save sync folder (main.m, runtime/cloud_save.m)
+          - UIApplicationShortcutItemType: save-sync-folder
+            UIApplicationShortcutItemTitle: Save sync folder   # Sources/<language>.lproj/InfoPlist.strings
+            UIApplicationShortcutItemIconSymbolName: folder
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: TOTKSceneDelegate
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: ${TOTK_BUNDLE_ID}
+      PRODUCT_NAME: TOTK
+      CODE_SIGN_ENTITLEMENTS: Sources/TOTK.entitlements
+      TARGETED_DEVICE_FAMILY: "1,2"
+      IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGNING_ALLOWED: NO
+      ENABLE_BITCODE: NO
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      CLANG_ENABLE_OBJC_ARC: YES
+      GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+      HEADER_SEARCH_PATHS:
+        - $(inherited)
+        - ../third_party/d2r_gfx/gfx/nvn
+        - ../third_party/d2r_gfx/gfx/nvn/include
+        - Gen
+        - Gen/deps/include
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-a15 -I../runtime -I../third_party/d2r_gfx/gfx/nvn -I../third_party/d2r_gfx/gfx/nvn/include -IGen -I../build

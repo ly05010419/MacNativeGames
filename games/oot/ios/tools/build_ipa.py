@@ -1,0 +1,424 @@
+#!/usr/bin/env python3
+"""Build an unsigned, sideloadable iPhone/iPad IPA from a prepared work tree: Tears of the Kingdom (v0, v121, v143)
+or Breath of the Wild (botw160, botw190; the runtime and graphics layer built with GAME_BOTW, game_patches_botw.c, its own
+shader list and the add-on content beside the RomFS)."""
+import argparse, json, os, plistlib, shutil, subprocess, sys, time
+from pathlib import Path
+from compile_seed import METAL_FLAGS
+from device_pipelines import SCHEMA, connected_gpus, seed_check
+from xcode_dir import developer_dir
+import settings_strings
+
+def settings_without_totk(root):
+    """The pane for Breath of the Wild, in place: every row Root.plist marks TOTKApp=totk (its picture modes and scene
+    sizes, the custom picture tier, MetalFX, and the aspect-ratio row, whose key means ultrawide in Breath of the Wild),
+    and any group they leave empty. The Full HD switch stays: botw_pane describes it for Breath of the Wild and adds
+    its docked scene row. The mark sits on the row itself, so this list is not kept
+    a second time here; tests/test_ios_packaging.py checks that every marked row is gone from the pane."""
+    specs=[s for s in root['PreferenceSpecifiers'] if s.get('TOTKApp')!='totk']
+    kept=[]
+    for i,s in enumerate(specs):
+        if s.get('Type')=='PSGroupSpecifier':
+            nxt=specs[i+1] if i+1<len(specs) else None
+            if nxt is None or nxt.get('Type')=='PSGroupSpecifier': continue
+        kept.append(s)
+    root['PreferenceSpecifiers']=kept
+    return root
+
+def seed_fingerprint(seed, lists):
+    """What decides whether the app's seed is copied again (and pushed again by install_device.py): the manifest, the
+    lists, the variant libraries by name, and every pipelines-* file by name (the name carries the GPU) and content. The
+    pipelines' index (.tsv) is the same for every GPU, so with it alone an iPhone build kept the iPad's pipelines from the
+    build before and the iPhone filled its own archive on its first start (2026-11-01)."""
+    import hashlib
+    fp=hashlib.sha256(b''.join((d/n).read_bytes() for d,n in [(seed,'seed-manifest.json'),(seed,'shader_map.tsv'),
+                                (lists,'pso_list.tsv'),(lists,'pso_title.tsv')])
+                      +''.join(sorted(p.name for p in seed.glob('variant-*'))).encode())
+    for p in sorted(seed.glob('pipelines-*')): fp.update(p.name.encode()+b'\0'+hashlib.sha256(p.read_bytes()).digest())
+    return fp.hexdigest()
+
+def botw_pane(root):
+    """Breath of the Wild's pane, in place: the Full HD switch described for this game, its docked scene row right after
+    it (TOTK_BOTW_SCENE, game_patches_botw.c patch_render_phone: original is the Switch's 1600x900 scene upscaled into
+    the 1920x1080 canvas, HD the scene at 1920x1080; user 2026-11-01), then settings_without_totk."""
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+    specs[at-1]['FooterText']=('開啟：遊戲的底座設定，輸出 1920×1080，畫面見下一行（原始 1600×900，和 Switch 底座一樣；高清 1920×1080，更清晰也更吃性能），'
+                               'iPad 預設開啟。關閉：手持 1280×720（內部 960×540），iPhone 預設。重新啟動遊戲後生效 · '
+                               'on: the game\'s docked settings, 1920×1080 output with the docked scene below (original: 1600×900, as the Switch '
+                               'docked; HD: 1920×1080, sharper and heavier), the iPad\'s default. Off: handheld 1280×720 (960×540 inside), '
+                               'the iPhone\'s default. Takes effect after relaunching the game')
+    specs.insert(at+1,{'Type':'PSMultiValueSpecifier','Key':'TOTK_BOTW_SCENE','TOTKPhone':True,'Title':'底座畫面 · Docked scene',
+                       'Titles':['原始 1600×900 · Original 1600×900','高清 1920×1080 · HD 1920×1080'],
+                       'Values':['1600x900','1920x1080'],'DefaultValue':'1600x900'})
+    return settings_without_totk(root)
+
+def bananza_pane(root):
+    """Bananza's own engine size; TOTK/BotW's docked presets describe other engines."""
+    root=settings_without_totk(root)
+    specs=root['PreferenceSpecifiers']
+    at=next(i for i,s in enumerate(specs) if s.get('Key')=='TOTK_DOCKED')
+    specs[at-1]['FooterText']=('輸入寬x高，例如 1280x720（720p）、960x540 或 1920x1080。'
+        '改變遊戲渲染尺寸，保留原始貼圖和完整 mip。重新啟動遊戲後生效 · '
+        'Enter widthxheight, such as 1280x720 (720p), 960x540 or 1920x1080. '
+        'Changes the game render size; original textures and full mip chains are preserved. Relaunch to apply.')
+    specs[at]={'Type':'PSTextFieldSpecifier','Key':'TOTK_OUTPUT_RES','Title':'渲染分辨率 · Render resolution',
+        'DefaultValue':'960x540','AutocapitalizationType':'None','AutocorrectionType':'No','KeyboardType':'ASCIICapable'}
+    return root
+
+def run(args, cwd, log, env):
+    log.parent.mkdir(parents=True,exist_ok=True)
+    with log.open('w') as f:
+        p=subprocess.run([str(x) for x in args],cwd=cwd,env=env,stdout=f,stderr=subprocess.STDOUT)
+    if p.returncode:
+        tail=log.read_text(errors='replace').splitlines()[-35:]
+        raise RuntimeError(f"{args[0]} failed; see {log}\n"+'\n'.join(tail))
+
+def clone(src,dst):
+    dst.parent.mkdir(parents=True,exist_ok=True)
+    if subprocess.run(['cp','-c',str(src),str(dst)],capture_output=True).returncode: shutil.copy2(src,dst)
+def clone_folder(src,dst):
+    """One APFS clone of a whole folder (macOS clonefile), as build_app.py copy_tree: the seed is ~100,000 files, which
+    cp -cR clones one by one (minutes per copy, 2026-10-22)."""
+    if sys.platform!='darwin': return False
+    import ctypes
+    libc=ctypes.CDLL(None);libc.clonefile.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_uint32]
+    dst.parent.mkdir(parents=True,exist_ok=True)
+    return libc.clonefile(os.fsencode(src),os.fsencode(dst),0)==0
+
+def discard(path,beside=None):
+    """Out of the way at once (a rename), deleted in the background: tens of thousands of files take minutes to delete on
+    an external disk, and the build does not need to wait for it. `beside`: the folder to rename it into, when its own
+    folder is copied or zipped next (a folder inside the app, the app inside Payload)."""
+    if not path.exists(): return
+    old=(beside or path.parent)/f'.{path.name}.old-{os.getpid()}-{time.time_ns()}'
+    os.rename(path,old); subprocess.Popen(['/bin/rm','-rf',str(old)],start_new_session=True)
+
+def copy_tree(src,dst):
+    src=Path(src);dst=Path(dst)
+    if dst.exists(): shutil.rmtree(dst)
+    if clone_folder(src,dst): return
+    dst.mkdir(parents=True,exist_ok=True)
+    if sys.platform=='darwin':
+        result=subprocess.run(['/bin/cp','-cR',str(src)+os.sep+'.',str(dst)],capture_output=True)
+        if result.returncode==0: return
+        shutil.rmtree(dst);dst.mkdir(parents=True,exist_ok=True)
+    for p in src.rglob('*'):
+        if p.is_file(): clone(p,dst/p.relative_to(src))
+
+def configure_app_icon(tree, gen, project, logs, env, vision=False):
+    # The home screen icon: the game's own, which the build took from its control data for the Mac app
+    # (build/AppIcon.icns, scripts/extract_app_icon.py), as a single-size asset catalog. Without it the app had none.
+    icon=tree/'build/AppIcon.icns'; catalog=gen/'Assets.xcassets'; shutil.rmtree(catalog,ignore_errors=True)
+    if icon.is_file() and not vision:
+        appicon=catalog/'AppIcon.appiconset'; appicon.mkdir(parents=True)
+        (catalog/'Contents.json').write_text(json.dumps({'info':{'author':'xcode','version':1}}))
+        run(['sips','-s','format','png','-z','1024','1024',icon,'--out',appicon/'icon-1024.png'],tree,logs/'ios-icon.log',env)
+        (appicon/'Contents.json').write_text(json.dumps({'images':[{'filename':'icon-1024.png','idiom':'universal','platform':'ios','size':'1024x1024'}],
+                                                         'info':{'author':'xcode','version':1}}))
+        project=project.replace('      - path: Gen/embed.S\n','      - path: Gen/embed.S\n      - path: Gen/Assets.xcassets\n')
+        project=project.replace('      CODE_SIGN_STYLE: Manual\n','      CODE_SIGN_STYLE: Manual\n      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon\n')
+    return project
+
+def project_for_platform(project, platform):
+    if platform == 'ios': return project
+    if platform != 'visionos': raise ValueError(f'unknown platform {platform}')
+    for old,new in [('    iOS: "26.0"','    visionOS: "26.0"'),('    platform: iOS','    platform: visionOS'),
+                    ('IPHONEOS_DEPLOYMENT_TARGET','XROS_DEPLOYMENT_TARGET'),
+                    ('TARGETED_DEVICE_FAMILY: "1,2"','TARGETED_DEVICE_FAMILY: "7"'),
+                    ('        UIRequiresFullScreen: true\n','')]:
+        if old not in project: raise RuntimeError(f'project.yml no longer has {old!r}')
+        project=project.replace(old,new)
+    return project
+
+def listed_names(lists, shader_list, seed_src):
+    """The shaders the pipeline lists use, as "<key>-<suffix>_b": every name in the resolved lists, and the listed variants
+    of the shared list (its S rows) the seed carries."""
+    import re
+    name=re.compile(r'[0-9a-f]{64}-[0-9a-f]{12}_b')
+    found=set()
+    for path in (lists/'pso_list.tsv',lists/'pso_title.tsv'): found.update(name.findall(path.read_text(errors='replace')))
+    for line in shader_list.read_text(errors='replace').splitlines():
+        if line.startswith('S\t'): found.update(n for n in name.findall(line) if (seed_src/(n+'.metal')).is_file())
+    return found
+
+def listed_files(files, keep):
+    """The manifest's files of a seed cut down to the kept shaders."""
+    keys={n[:64] for n in keep}
+    def wanted(f):
+        if f.endswith(('_b.metal','_b.json')): return f.rsplit('.',1)[0] in keep
+        if f.endswith('.variants'): return f[:-len('.variants')] in keys
+        return True
+    return {f:d for f,d in files.items() if wanted(f)}
+
+def prune_seed(seed, keep):
+    """Cut a copied seed down to the kept shaders: the files, each .variants to its kept rows, the seed's own pipeline lists to
+    rows that only use kept shaders. The manifest's hashes follow, so the seed stays consistent for the runtime's checks."""
+    import hashlib, re
+    name=re.compile(r'[0-9a-f]{64}-[0-9a-f]{12}_b')
+    manifest=json.loads((seed/'seed-manifest.json').read_text()); files=listed_files(manifest['files'],keep)
+    for f in manifest['files']:
+        if f not in files: (seed/f).unlink(missing_ok=True)
+    for f in files:
+        path=seed/f
+        if f.endswith('.variants'):
+            rows=[r for r in json.loads(path.read_text()) if isinstance(r,dict) and str(r.get('variant'))+'_b' in keep]
+            path.write_text(json.dumps(rows))
+        elif f.endswith('.tsv'):
+            path.write_text(''.join(l+'\n' for l in path.read_text(errors='replace').splitlines() if all(n in keep for n in name.findall(l))))
+        else: continue
+        files[f]=hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest['files']=files
+    manifest['listed_shaders_only']=len(keep)
+    (seed/'seed-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+
+def seed_reusable(seed, source_hash, source_files, sdk):
+    manifest=seed/'seed-manifest.json'
+    if not manifest.is_file(): return False
+    cached=json.loads(manifest.read_text())
+    shaders=[name for name in source_files if name.endswith('_b.metal')]
+    return (cached.get('ios_source_manifest_sha256')==source_hash and
+            cached.get('ios_metallibs')==len(shaders) and cached.get('ios_sdk','iphoneos')==sdk and
+            cached.get('ios_metal_flags')==' '.join(METAL_FLAGS) and
+            all((seed/(name.removesuffix('.metal')+'.metallib')).is_file() for name in shaders))
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--tree',type=Path,required=True);p.add_argument('--out',type=Path,required=True)
+    p.add_argument('--version',choices=['v0','v121','v143','botw160','botw190','dkb','pkp','oot'],required=True);p.add_argument('--logs',type=Path,required=True)
+    p.add_argument('--platform',choices=['ios','visionos'],default='ios')
+    p.add_argument('--device-gpu',action='append',default=[],metavar='ARCH',help='compile the pipeline archive here for this device GPU (applegpu_g14p: iPhone 14); auto (default): the iPhones / iPads on the cable; none')
+    p.add_argument('--listed-shaders-only',action='store_true',help='only the shaders the pipeline lists use go into the app (Ocarina of Time: compiling all 42,848 takes about 45 minutes)')
+    p.add_argument('--image-outside',action='store_true',help='leave romfs.bin out: the device keeps it in Documents/GameData');p.add_argument('--app-name',default='Tears of the Kingdom');p.add_argument('--bundle-id',default='org.macnativegames.totk')
+    a=p.parse_args(); tree=a.tree.resolve(); ios=tree/'ios';gen=ios/'Gen';logs=a.logs.resolve(); out=a.out.resolve()
+    if out.suffix.lower() not in ('.ipa','.app'): raise RuntimeError('iOS output path must end in .ipa (or .app: the unsigned folder)')
+    env=dict(os.environ,DEVELOPER_DIR=developer_dir())
+    vision=a.platform=='visionos'; sdk_name='xros' if vision else 'iphoneos'
+    if vision and a.version.startswith('botw'): raise RuntimeError('native visionOS builds currently support Tears of the Kingdom only')
+    sdk=subprocess.check_output(['xcrun','--sdk',sdk_name,'--show-sdk-path'],env=env,text=True).strip()
+    subprocess.run(['xcodebuild','-version'],env=env,check=True,stdout=subprocess.DEVNULL)
+    if not shutil.which('xcodegen'): raise RuntimeError('install xcodegen: brew install xcodegen')
+    gen.mkdir(parents=True,exist_ok=True)
+    botw=a.version.startswith('botw')
+    ns2=a.version in ('dkb','pkp','oot')
+    # The runtime's tables and hashes from the player's files (runtime/game_data.h) go into the app as files, not into its code.
+    game_data=tree/f'build/game-data/{a.version}'
+    if not (game_data/'runtime-tables.bin').is_file(): raise RuntimeError(f'missing game data: {game_data} (make game-data-{a.version})')
+    # Export the final code after all verified runtime patches have been applied, then embed it in executable segments.
+    # Ocarina of Time's Makefile builds its Mac binary in the work folder, beside the tree.
+    host=tree.parent/'build/oot-native' if a.version=='oot' else tree/('build/totk-native' if a.version=='v0' else f'build/totk-native-{a.version}')
+    rewritten=tree/f'rewritten/{a.version}'; modules=gen/'modules';modules.mkdir(exist_ok=True)
+    # The Settings pane chooses the scene size at launch, but the size patch is code the phone cannot write: export
+    # with one valid size so the patch is embedded, then the device's own TOTK_RENDER_RES (main.m from the pane) drives
+    # it. Without this the embedded code keeps the game's handheld size and the pane's scene row does nothing.
+    e=dict(env,TOTK_EXPORT_IOS=str(modules),TOTK_RENDER_RES='1280x720')
+    run([host,rewritten,'export-ios'],tree,logs/'export-ios.log',e)
+    names=['main',*(f'subsdk{i}' for i in range(10) if (rewritten/f'subsdk{i}.patched.bin').is_file()),'sdk']
+    flags=subprocess.check_output([sys.executable,ios/'tools/gen_embed.py',rewritten,gen/'embed.S','--text-dir',modules,*names],text=True,env=env).strip()
+    # The app's sources use version-specific patch and generated runtime tables.
+    project=project_for_platform((ios/'project.yml').read_text(),a.platform)
+    # The Settings pane, copied so it can be changed for the game and given its languages (settings_strings.py: one language,
+    # the device's, instead of every row in Chinese and English).
+    settings=gen/'Settings.bundle'; shutil.rmtree(settings,ignore_errors=True); shutil.copytree(ios/'Settings.bundle',settings)
+    project=project.replace('      - Settings.bundle','      - path: Gen/Settings.bundle',1)
+    if ns2:
+        project=project.replace('          - game_patches_ns2.c','          - game_patches.c\n          - game_patches_v143.c')
+        define={'dkb':'GAME_DKB','pkp':'GAME_POKOPIA','oot':'GAME_OOT'}[a.version]
+        project=project.replace('-I../build\n',f'-I../build -D{define}=1 -DGAME_NS2=1\n')
+        root=plistlib.loads((settings/'Root.plist').read_bytes())
+        root=bananza_pane(root) if a.version=='dkb' else settings_without_totk(root)
+        (settings/'Root.plist').write_bytes(plistlib.dumps(root))
+    elif botw:   # game_patches_botw.c instead of both Tears of the Kingdom files; GAME_BOTW for the runtime and the graphics layer
+        project=project.replace('          - game_patches_botw.c','          - game_patches.c\n          - game_patches_v143.c')
+        project=project.replace('-I../build\n','-I../build -DGAME_BOTW=1 -DGAME_'+a.version.upper()+'=1\n')
+        root=botw_pane(plistlib.loads((settings/'Root.plist').read_bytes()))
+        (settings/'Root.plist').write_bytes(plistlib.dumps(root))
+    elif a.version=='v143': project=project.replace('          - loader.c','          - loader.c\n          - game_patches.c')
+    else: project=project.replace('          - loader.c','          - loader.c\n          - game_patches_v143.c')
+    settings_strings.localize(settings)   # after the game's own changes to the pane
+    if not botw and not ns2 and a.version!='v0': project=project.replace('-I../build\n','-I../build -DTOTK_GAME_'+a.version.upper()+'=1\n')
+    project=configure_app_icon(tree,gen,project,logs,env,vision)
+    (ios/'project.generated.yml').write_text(project)
+    # Build device dependencies separately: Homebrew's Mac archives cannot be linked into an iOS application.
+    deps=tree/('build/xros-deps' if vision else 'build/ios-deps')
+    run([sys.executable,ios/'tools/build_deps.py',deps,sdk_name],tree,logs/f'{sdk_name}-dependencies.log',env)
+    shutil.copytree(deps/'include',gen/'deps/include',dirs_exist_ok=True)
+    (gen/'deps/lib').mkdir(parents=True,exist_ok=True)
+    for lib in ('libopus.a','libvpx.a','libdav1d.a'): clone(deps/'lib'/lib,gen/'deps/lib'/lib)
+    # The shader translator in the app (build_app.py build_device_translator: the Mac's totk_xlate as a static library and
+    # SPIRV-Cross for the device; totk_shader_rt.m DEVICE_XLATE): a variant the startup shaders lack is translated in the
+    # background on the device. Without them (visionOS, or this script run on a tree build_app.py did not prepare) the
+    # app skips such draws and records the request for fill_shaders.py, as before.
+    xlate=tree/'build/ios-xlate'; xlate_libs=('libtotk_xlate_bootstrap.o','libtotk_xlate.a','libtotk_spirv_cross.a')
+    device_xlate=not vision and all((xlate/lib).is_file() for lib in xlate_libs)
+    for lib in xlate_libs:
+        if device_xlate: clone(xlate/lib,gen/'deps/lib'/lib)
+        elif (gen/'deps/lib'/lib).exists(): (gen/'deps/lib'/lib).unlink()   # an earlier build's
+    print('shader translator in the app: '+('yes' if device_xlate else 'no (startup shaders and fill_shaders.py only)'))
+    seed_src=tree/f'build/shader-seed/{a.version}'; seed=gen/'totk/shader-seed'
+    if not (seed_src/'seed-manifest.json').is_file(): raise RuntimeError(f'missing verified shader seed: {seed_src}')
+    import hashlib
+    source_files=json.loads((seed_src/'seed-manifest.json').read_text())['files']
+    keep=None
+    if a.listed_shaders_only:   # the lists are resolved against the whole seed, as below, to name what the app needs
+        if a.version!='oot': raise RuntimeError('--listed-shaders-only is for Ocarina of Time')
+        pre=tree/'build/ios-seed-lists-pre'; shutil.rmtree(pre,ignore_errors=True); pre.mkdir(parents=True)
+        whole_list=tree/'assets/shader_list.tsv'
+        run([sys.executable,tree/'scripts/shader_list.py','resolve',seed_src,whole_list,pre/'pso_list.tsv',pre/'pso_title.tsv'],tree,logs/'shader-list-pre.log',env)
+        keep=listed_names(pre,whole_list,seed_src); source_files=listed_files(source_files,keep)
+        print(f'shaders in the app: {len(keep)} used by the pipeline lists, the others are left out')
+    source_manifest_hash=hashlib.sha256((seed_src/'seed-manifest.json').read_bytes()+'\n'.join(sorted(keep or ())).encode()).hexdigest()
+    reuse_seed=seed_reusable(seed,source_manifest_hash,source_files,sdk_name)
+    if not reuse_seed:
+        discard(seed)
+        if keep is None: copy_tree(seed_src,seed)
+        else:   # only the kept shaders' files are copied: the whole seed is 128,000 files
+            seed.mkdir(parents=True,exist_ok=True); clone(seed_src/'seed-manifest.json',seed/'seed-manifest.json')
+            for name in source_files: clone(seed_src/name,seed/name)
+            prune_seed(seed,keep)
+        run([sys.executable,ios/'tools/compile_seed.py',seed,sdk_name],tree,logs/f'{sdk_name}-shaders.log',env)
+    seed_manifest=json.loads((seed/'seed-manifest.json').read_text())
+    seed_manifest['ios_source_manifest_sha256']=source_manifest_hash; seed_manifest['ios_sdk']=sdk_name
+    (seed/'seed-manifest.json').write_text(json.dumps(seed_manifest,indent=2)+'\n')
+    (seed/'shader_map.tsv').write_text('# TOTK control-code-sha256-v1\n')
+    # The file list: every shader file with its SHA-256. Hashes the manifest already has are kept (the seed's own files,
+    # checked when it was prepared, and the metallibs compile_seed.py hashed); only a file it lacks is read, so a build
+    # whose seed did not change hashes nothing (all ~100,000 files were read again in each build, 2026-10-22).
+    # shader_map.tsv is read in place (DM_NVN_SHMAP); the importer accepts only shader files, so it stays out of the list.
+    manifest=json.loads((seed/'seed-manifest.json').read_text()); known=manifest.get('files',{})
+    names=sorted(n for n in os.listdir(seed) if n not in ('seed-manifest.json','shader_map.tsv') and not n.startswith(('pipelines-','variant-')) and (seed/n).is_file())
+    manifest['files']={n:known.get(n) or hashlib.sha256((seed/n).read_bytes()).hexdigest() for n in names}
+    (seed/'seed-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+    # Generate the app project with resolved identity and the embedded-segment linker flags.
+    env.update(TOTK_APP_NAME=a.app_name,TOTK_BUNDLE_ID=a.bundle_id)
+    xcconfig=gen/'totk.xcconfig'
+    frameworks=' '.join('-framework '+x for x in ['UIKit','Metal','MetalFX','Foundation','QuartzCore','ImageIO','CoreGraphics','CoreText','UniformTypeIdentifiers','CoreFoundation','AudioToolbox','GameController','CoreHaptics','CoreMotion','Photos','AVFAudio','Security','VideoToolbox','CoreMedia','CoreVideo'])
+    # the start-up object as a file of its own (publish_ios_lib.sh: inside the archive nothing would pull it in)
+    xlate_link=' Gen/deps/lib/libtotk_xlate_bootstrap.o Gen/deps/lib/libtotk_xlate.a Gen/deps/lib/libtotk_spirv_cross.a -lc++ -lz -licucore' if device_xlate else ''
+    xcconfig.write_text(f'OTHER_LDFLAGS = $(inherited) {frameworks} Gen/deps/lib/libopus.a Gen/deps/lib/libvpx.a Gen/deps/lib/libdav1d.a{xlate_link} {flags}\n'
+                        + ('OTHER_CFLAGS = $(inherited) -DTOTK_DEVICE_XLATE=1\n' if device_xlate else ''))
+    run(['xcodegen','generate','--spec','project.generated.yml'],ios,logs/'xcodegen.log',env)
+    derived=tree/('build/xros-derived' if vision else 'build/ios-derived');run(['xcodebuild','-project','TOTKIOS.xcodeproj','-scheme','TOTKIOS','-configuration','Release',
+        '-destination','generic/platform='+('visionOS' if vision else 'iOS'),'-derivedDataPath',derived,'CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO','CODE_SIGN_IDENTITY='],
+        ios,logs/f'xcodebuild-{a.platform}.log',env)
+    app=derived/f'Build/Products/Release-{sdk_name}/TOTK.app'
+    if not app.is_dir(): raise RuntimeError(f'Xcode did not produce {app}')
+    # Carry the increased-memory-limit entitlement in the executable's ad-hoc signature so re-signing tools keep it;
+    # the game's 3.2 GiB pool exceeds the default iOS footprint limit.
+    run(['codesign','--force','--sign','-','--entitlements',ios/'Sources/TOTK.entitlements',app/'TOTK'],ios,logs/'ios-entitlements.log',env)
+    # The game data goes into a copy of Xcode's product, never into the product itself: it then stays small (its own
+    # files only), and each build copies it once instead of three times (product -> Payload -> output, ~27,000 seed
+    # files each, 5 of the 7 minutes of a build, 2026-10-23). Products of earlier builds still carry GameData.
+    # Renamed beside the product, not inside it: inside, the copy below took the half-deleted folder along (a 33 GB IPA,
+    # zip stopped at files the background delete had removed, 2026-10-25).
+    if (app/'GameData').exists(): discard(app/'GameData',beside=app.parent)
+    dest=out if out.suffix=='.app' else tree/'build/ios-payload/Payload/TOTK.app'
+    discard(dest,beside=dest.parent.parent if out.suffix!='.app' else None)   # not in Payload, which is zipped whole
+    copy_tree(app,dest)
+    res=dest/'GameData';res.mkdir(exist_ok=True)
+    copy_tree(game_data,res/'game-data')   # TOTK_GAME_DATA (Sources/main.m)
+    romfs=tree/f'extracted/{a.version}/romfs'
+    copy_tree(romfs,res/'romfs')
+    if a.image_outside:   # the index stays (it changes with the build); the 17 GB image is in Documents/GameData (main.m)
+        for p in list((res/'romfs').glob('romfs.bin*')): p.unlink()
+    for src,dst in [(tree/f'extracted/{a.version}/romfs-patches',res/'romfs-patches'),
+                    (tree/f'extracted/{a.version}/romfs-patches-out',res/'romfs-patches-out'),
+                    (tree/'extracted/firmware/shared-fonts',res/'shared-fonts')]:
+        if src.is_dir(): copy_tree(src,dst)   # only the overlays and fonts this game actually has
+    if botw:   # the add-on content packs the build extracted (games/botw/scripts/extract_aoc_romfs.py), read through TOTK_AOC (main.m)
+        aoc=tree/f'extracted/{a.version}/aoc'
+        for pack in sorted(aoc.iterdir()) if aoc.is_dir() else []:
+            if (pack/'romfs.bin').is_file() and (pack/'runtime-index.bin').is_file():
+                for n in ('romfs.bin','runtime-index.bin'): clone(pack/n,res/'aoc'/pack.name/n)
+    # The first frame waits only for the title screen's shaders (pso_title.tsv); the runtime looks for the list next to
+    # DM_NVN_SHMAP, which is in shader-seed on iOS. Without it the first frame waits for the whole warm-up.
+    # Exported from the one shared shader list (games/totk/assets/shader_list.tsv, docs/shader-list.md).
+    # The list's other warm rows (its render pipelines) go in as pso_list.tsv: shader-seed/pso_manifest.tsv is the seed's own
+    # list there, and the runtime reads both (nvn_mtl.m warm_start). Before 2026-10-22 they stayed in the build logs.
+    lists=tree/'build/ios-seed-lists';shutil.rmtree(lists,ignore_errors=True);lists.mkdir(parents=True)
+    folder='dkb' if a.version=='dkb' else 'pokopia'
+    shader_list=(tree/'assets/shader_list.tsv' if a.version=='oot' else tree.parent/folder/'assets/shader_list.tsv' if ns2 else
+                 tree.parent/'botw/assets/shader_list.tsv' if botw else tree/'assets/shader_list.tsv')
+    # This version's rows, each variant named as the device seed serves its bind state (shader_list.py resolve).
+    run([sys.executable,tree/'scripts/shader_list.py','resolve',seed_src,shader_list,lists/'pso_list.tsv',
+         lists/'pso_title.tsv'],tree,logs/'shader-list.log',env)
+    # The device's pipeline archive, compiled here (2026-10-29): the Mac game binary makes every pipeline of the lists from
+    # the device seed's metallibs (pipeline-archive mode), device_pipelines.py compiles them for the device GPU with metal-tt
+    # into the seed (pipelines-<arch>-*). The first start then takes them from there instead of filling its own archive:
+    # Breath of the Wild 1.6.0 on an iPhone 14 spent 567.8 s on that before the title. Without a GPU to build for, the
+    # device fills it as before. Kept in build/ios-pipelines/<version>, so a build whose lists did not change is quick.
+    gpus=[]
+    for g in a.device_gpu or ['auto']:
+        if g=='auto':
+            found=connected_gpus(env)
+            for name,product,arch in found: print(f'pipelines: {name} ({product}) on the cable: '+(arch or 'GPU not known here, its first start fills them'))
+            if not found: print('pipelines: no iPhone / iPad on the cable, so its first start fills them (about 10 minutes); connect it, or --device-gpu <arch>')
+            gpus+=[arch for _,_,arch in found if arch]
+        elif g!='none': gpus.append(g)
+    gpus=sorted(set(gpus))
+    pipe_work=tree/f'build/ios-pipelines/{a.version}'
+    # Two runs of the Mac binary's mode: the first records the patched variants the runtime compiles from source
+    # (variant-scan/variants), device_pipelines.py --variants compiles them for the device into the seed, and the second
+    # makes every pipeline from the seed's libraries, those variants included. Both caches are kept between builds.
+    lists_args=[lists/'pso_title.tsv',lists/'pso_list.tsv',seed/'pso_manifest.tsv']
+    # The pipelines are this runtime's descriptions too (vertex formats, blend, ...): a runtime that builds them otherwise
+    # makes them again (2026-11-03: the narrowed vertex formats, nvn_mtl.m vfmt_fit, were never seen, since the
+    # stamp held only the shaders and lists and the last runtime's descriptions were kept). The schema too (PR #1635).
+    want=hashlib.sha256(f'pipeline-schema:{SCHEMA}\0'.encode()+(seed/'seed-manifest.json').read_bytes()+(lists/'pso_list.tsv').read_bytes()
+                        +(lists/'pso_title.tsv').read_bytes()+host.read_bytes()).hexdigest()
+    # Under its own name: the game lock takes any totk-native* process for a game that does not use it (runtime/game_slot.c
+    # pid_is_game), and the player's game waited until this packaging step ended (2026-10-29). It is a tool, not a game.
+    tool=host.with_name('ios-pipeline-archive'); tool.unlink(missing_ok=True); clone(host,tool)
+    def mac_pipelines(folder,log):
+        stamp=folder/'seed.txt'
+        if not (stamp.is_file() and stamp.read_text().strip()==want): shutil.rmtree(folder,ignore_errors=True)   # pipelines of other shaders or lists
+        folder.mkdir(parents=True,exist_ok=True)
+        # A game running at the same time shares Metal's gpuarchiver folder and the two remove each other's files (2026-11-03):
+        # the game slot makes this step wait for a running game, and a game wait for this step.
+        sys.path.insert(0,str(tree/'scripts/dev'))
+        os.environ.setdefault('TOTK_GAME_SLOT_DIR',str(Path.home()/'Library/Application Support/MacNativeGames/TOTK/game-slot'))
+        from game_slot import GameSlot
+        with GameSlot(owner='build',purpose='OOT iOS pipeline archive',expect_seconds=1800):
+            run([tool,rewritten,'pipeline-archive',*lists_args],tree,logs/log,dict(env,TOTK_SHADER_CACHE=str(folder),TOTK_SHADER_SEED_DIR=str(seed),TOTK_DEBUG_LOG='1'))
+        stamp.write_text(want+'\n')
+    t0=time.time()
+    if gpus:   # without the last build's variant libraries, so the first run compiles and records every variant it meets
+        for p in seed.glob('variant-*'): p.unlink()
+        mac_pipelines(pipe_work/'variant-scan','device-pipelines-scan.log')
+    run([sys.executable,ios/'tools/device_pipelines.py','--variants',pipe_work/('variant-scan/variants' if gpus else 'none'),'--seed',seed,'--cache',pipe_work,
+         '--sdk',sdk_name],tree,logs/'device-variants.log',env)
+    if gpus:
+        v=json.loads((logs/'device-variants.log').read_text().strip().splitlines()[-1])
+        mac_pipelines(pipe_work/'mac-cache','device-pipelines-mac.log')
+        print(f"pipelines: made on the Mac in {time.time()-t0:.0f} s, with {v['variants']} variants compiled for the device ({v['compiled']} new, "
+              f"{v['failed']} failed); compiling them for {', '.join(gpus)}",flush=True)
+    t0=time.time()
+    run([sys.executable,ios/'tools/device_pipelines.py','--mac',pipe_work/'mac-cache/pipelines','--seed',seed,'--cache',pipe_work,'--sdk',sdk_name,
+         *[x for g in gpus for x in ('--arch',g)]],tree,logs/'device-pipelines.log',env)
+    if gpus:
+        done=json.loads((logs/'device-pipelines.log').read_text().strip().splitlines()[-1])
+        for r in done['archs']: print(f"pipelines: {r['arch']}: {r['pipelines']} ({r['compiled']} compiled, {r['kept']} kept from earlier builds, "
+                                      f"{r['failed']} failed) in {time.time()-t0:.0f} s; {done['library from source']} still use shaders the device compiles itself")
+    # What the device reads: the seed and the two lists. With --image-outside it goes beside the app (<out>-shader-seed),
+    # for install_device.py to put into Documents/GameData once per content (main.m); unchanged content is not copied again.
+    fingerprint=seed_fingerprint(seed,lists)
+    seed_out=out.with_name(out.stem+'-shader-seed') if a.image_outside else res/'shader-seed'
+    stamp=seed_out/'fingerprint.txt'
+    if not (a.image_outside and stamp.is_file() and stamp.read_text().strip()==fingerprint):
+        discard(seed_out); copy_tree(seed,seed_out)
+        for n in ('pso_list.tsv','pso_title.tsv'): clone(lists/n,seed_out/n)
+        stamp.write_text(fingerprint+'\n')
+    for g in gpus:   # what goes to the device carries each cabled GPU's pipelines (install_device.py checks it again)
+        state,line=seed_check(seed_out,g)
+        if state!='ok': raise RuntimeError(f'{seed_out}: {line}')
+    if a.image_outside: print(f'shader seed: {seed_out} (install_device.py puts it into Documents once per content)')
+    if out.suffix=='.app':   # the unsigned app as a folder, for install_device.py: no 100,000-file zip
+        print(f'app ready: {out}; unsigned, install it with ios/tools/install_device.py'); return
+    payload=tree/'build/ios-payload'
+    out.parent.mkdir(parents=True,exist_ok=True);out.unlink(missing_ok=True)
+    run(['zip','-qry','-0',out,'Payload'],payload,logs/'ipa-zip.log',env)
+    print(f'IPA ready: {out} ({out.stat().st_size/2**30:.1f} GiB); unsigned, sideload with your signing tool')
+
+if __name__=='__main__':
+    try: main()
+    except (RuntimeError,subprocess.CalledProcessError,OSError) as e: print(f'ERROR: {e}',file=sys.stderr);sys.exit(1)
