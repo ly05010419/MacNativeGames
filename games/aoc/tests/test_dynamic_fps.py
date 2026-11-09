@@ -127,7 +127,8 @@ class BuildLayouts(unittest.TestCase):
     def test_1_4_1_asserts_its_own_sites(self):
         originals, _, placed = recorded(patches.LAYOUT_141)
         self.assertEqual(originals, {0x1670124: '68734339', 0x16702d0: 'e83640b9681a00b9e04640bd',
-                                     0x8d9ae0: '4900c0f2', 0x8c3c40: '298d42bd'})
+                                     0x8d9ae0: '4900c0f2', 0x8c3c40: '298d42bd',
+                                     0x18f8f30: '20a9fb97', 0x18f969c: 'a10303d1'})   # output 1440p: the UI 2D node's scale
         self.assertEqual(set(placed), set(originals))
 
     def test_1_4_1_writes_its_own_frame_rate_block(self):

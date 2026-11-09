@@ -19,6 +19,17 @@ CUTS = {
   'e5f275b5d0889899e55de1a164eef060': [
     (0x8d9c40, '081ea0d2', '0826a0d2', SOUND_HEAPS[0]),
     (0x8d9c48, '091ca152', '0914a152', SOUND_HEAPS[1]),
+    # Output 1440p: output 2560x1440, scene 1920x1080 (1.4.1 only; 1.3.0 keeps 1920x1080 and 1440x810). nnMain builds the KTGL device config with x8 = {1920, 1080}
+    # and stores it twice, as config[0..1] (window crop, device +0x2a90) and config[8..9] (output depth, device +0x2ab0).
+    # The swap-chain textures take config[0..1] only when device +0x2a32 is 0; on the Mac it is not, and the init's csel
+    # picks its own 1920x1080 constants (main+0x17c5de0/0x17c5df4), so those change too. After the init, nnMain stores
+    # the scene size {1440, 810} at [app + 0x368]. The UI keeps its 1920x1080 reference canvas and scales by output / 1920.
+    (0x8d9ac0, '08f080d2', '084081d2', 'output width: mov x8,#0x780 -> mov x8,#0xa00 (2560)'),
+    (0x8d9ac8, '0887c0f2', '08b4c0f2', 'output height: movk x8,#0x438,lsl #32 -> movk x8,#0x5a0,lsl #32 (1440)'),
+    (0x8d9b00, '08b480d2', '08f080d2', 'scene width: mov x8,#0x5a0 -> mov x8,#0x780 (1920)'),
+    (0x8d9b04, '4865c0f2', '0887c0f2', 'scene height: movk x8,#0x32a,lsl #32 -> movk x8,#0x438,lsl #32 (1080)'),
+    (0x17c5de0, 'ea0f1932', '0a408152', 'swap-chain width when +0x2a32 is set: mov w10,#0x780 -> mov w10,#0xa00 (2560)'),
+    (0x17c5df4, '0b878052', '0bb48052', 'swap-chain height when +0x2a32 is set: mov w11,#0x438 -> mov w11,#0x5a0 (1440)'),
   ],
 }
 
@@ -81,6 +92,8 @@ def frame_step(ctx, at=LAYOUT_130):
                     word = 0x54000000 | (((labels[arg] - here()) // 4 & 0x7ffff) << 5) | int(op[4:])
                 elif op.startswith('cbz'):
                     word = 0x34000000 | (((labels[arg] - here()) // 4 & 0x7ffff) << 5) | int(op[3:])
+                elif op == 'bl':   # a call to an absolute target
+                    word = 0x80000000 | B(here(), arg)
             emit(word)
         emit(B(here(), resume))
         ctx.put(site, [B(site, start)], reason)
@@ -170,6 +183,33 @@ def frame_step(ctx, at=LAYOUT_130):
         ld(16,17,0x78,'x'), 0x91000631, st(16,17,0x78,'x'),
         ('b','done'), 'original', scene_word, 'done'],
         'AoC scene/battle clock: own measured interval, independent of KIDS/present rates')
+
+    # Output 1440p, 1.4.1: the UI 2D primitive node (minimap markers). The UI renderer
+    # main+0x18f8ca0 draws these nodes in 1920x1080 canvas pixels through KTGL's 2D pipeline, whose
+    # ortho is (2*sx/W, -2*sy/H) with W,H the viewport and sx,sy at dev+0x28b0/+0x28b4 (1.0).
+    # When the viewport is the output, set sx,sy = output/1920x1080 around the node; restore 1.0.
+    if at is LAYOUT_141:
+        begin2d, node, after = 0x18f8f30, 0x18f969c, 0x17e33b0
+        ctx.site(begin2d, '20a9fb97')   # bl 0x17e33b0
+        ctx.site(node, 'a10303d1')
+        stub(begin2d, begin2d + 4, [
+            0xb9802728,                    # ldrsw x8,[x25,#0x24]   viewport index
+            0xf100011f, ('cond11','call'),  # cmp x8,#0; b.lt
+            0xf9400f29, 0x52800b0a,        # ldr x9,[x25,#0x18]; mov w10,#0x58
+            0x9b0a2508, 0xf9402908,        # madd x8,x8,x10,x9; ldr x8,[x8,#0x50]
+            0xb9407909,                    # ldr w9,[x8,#0x78]      viewport width
+            0xb96a932a,                    # ldr w10,[x25,#0x2a90]  output width
+            0x6b0a013f, ('cond1','call'),   # cmp w9,w10; b.ne
+            0x1e220150, 0x52a89e0b, 0x1e270171, 0x1e311a10,   # s16 = output w / 1920
+            0xb96a972a,                    # ldr w10,[x25,#0x2a94]  output height
+            0x1e220152, 0x52a890eb, 0x1e270171, 0x1e311a52,   # s18 = output h / 1080
+            0xbd28b330, 0xbd28b732,        # str s16,[x25,#0x28b0]; str s18,[x25,#0x28b4]
+            'call', ('bl', after)],
+            'UI 2D node in canvas pixels: dev 2D scale = output/1920x1080 when drawing to the output')
+        stub(node, node + 4, [
+            0x52a7f010, 0xb928b330, 0xb928b730,   # w16 = 1.0f; dev 2D scale back to 1.0
+            0xd10303a1],                          # sub x1,x29,#0xc0 (original)
+            'UI 2D node end: dev 2D scale back to 1.0')
 
 FRAME_STEP = {'c3cf52bf2b05d7310884971b50bcccb8': frame_step,
               'e5f275b5d0889899e55de1a164eef060': partial(frame_step, at=LAYOUT_141)}
