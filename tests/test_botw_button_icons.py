@@ -162,6 +162,12 @@ class Remap(unittest.TestCase):
         self.assertEqual([i for i in range(len(font)) if font[i] != out[i]], [table, table + 4, table + 6])
         self.assertRaises(AssertionError, icons.remap, font, {0xE048: 0xE040})   # outside the table
 
+    def test_a_code_point_is_only_pointed_at_an_icon_the_font_has(self):
+        font = bytearray(bffnt()); table, _, _ = icons.cmap_table(font)
+        struct.pack_into('<H', font, table + 2*7, 0xFFFF)                      # U+E047 has no icon, as U+E070 in 1.6.0
+        self.assertRaises(AssertionError, icons.remap, bytes(font), {0xE040: 0xE047})
+        self.assertEqual(struct.unpack_from('<H', icons.remap(bytes(font), {0xE047: 0xE040}), table + 14)[0], 0)
+
     def test_stored_yaz0_round_trips_and_keeps_the_alignment(self):
         for data in (b'', b'x', bytes(range(256)) * 3 + b'tail'):
             packed = icons.yaz0_stored(data, 0x1000)
@@ -221,6 +227,16 @@ class Script(unittest.TestCase):
         refused = self.make([[0xE040, 0xE041]])
         self.assertIn('pack/A.pack (the RomFS has Pack/A.pack)', refused.stderr)
         self.assertFalse((self.mod/'Font').exists() or (self.mod/'manifest.tsv').exists())
+
+    def test_the_version_comes_from_the_app(self):
+        extracted = Path(self.tmp.name)/'BotW.app/Contents/Resources/totk/extracted'
+        (extracted/'botw160').mkdir(parents=True)
+        self.romfs.rename(extracted/'botw160/romfs')
+        done = run(self.mod, '--app', extracted.parents[3], '--controls', Path(self.tmp.name)/'none.txt')
+        self.assertEqual(done.returncode, 0, done.stderr)            # the default layout, 1.6.0's code points
+        (extracted/'botw190').mkdir()
+        both = run(self.mod, '--app', extracted.parents[3], '--controls', Path(self.tmp.name)/'none.txt')
+        self.assertIn('name one with --version', both.stderr)
 
     def test_write_all_writes_archives_that_keep_their_icons(self):
         done = self.make([], '--write-all')

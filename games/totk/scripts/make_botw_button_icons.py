@@ -20,8 +20,15 @@ button drives. A combined d-pad icon whose inputs are not all on the d-pad keeps
 PlayStation symbols are not in the font, so a PlayStation controller gets the Xbox letters; a Nintendo controller (by
 label, controller-type.txt 'switch') is refused, as the builder's icons for Tears of the Kingdom refuse it.
 
-Checked on 1.9.0 (the code points of 1.6.0 are not checked). Needs no package beyond the standard library.
-usage: make_botw_button_icons.py <mod folder> (--app <Breath of the Wild.app> | --romfs <folder>) [--version botw190]
+1.6.0 has six region archives (no TH) and a smaller font: 49 icons in 44x39 cells (2 x 25 on a 128x1024 sheet) for
+U+E040-E08F, with Tears of the Kingdom's code points past U+E04C (the stick presses at U+E056 E057, the d-pad at
+U+E060-E065) and its cross at U+E08F; icons_plan.BOTW_TABLES holds each version's. Its action guide is laid out as 1.9.0's.
+A code point is only pointed at an icon the font has, so a plan made for the other version stops the run.
+
+Checked on 1.9.0 and 1.6.0 (the font's icons and the guide's parts read from each version's files). Needs no package
+beyond the standard library.
+usage: make_botw_button_icons.py <mod folder> (--app <Breath of the Wild.app> | --romfs <folder>)
+                                 [--version botw190|botw160]
                                  [--controls <controls.txt> | --glyphs <json>] [--write-all]
 """
 import argparse
@@ -39,6 +46,7 @@ REPO = Path(__file__).resolve().parents[3]
 ARCHIVES = 'Font/Font_'                             # Font/Font_<region>.sbfarc
 MEMBER = 'External_00.bffnt'
 DATA = Path.home()/'Library/Application Support/MacNativeGames/BotW'
+VERSIONS = ('botw190', 'botw160')
 
 
 def sarc_member(sarc, name):
@@ -78,6 +86,7 @@ def remap(ffnt, glyphs):
     out = bytearray(ffnt)
     for cp, shown in glyphs.items():
         assert lo <= cp <= hi and lo <= shown <= hi, f'U+{cp:X} or U+{shown:X} outside U+{lo:X}-U+{hi:X}'
+        assert index(shown) != 0xFFFF, f'U+{shown:X} has no icon in this font (a plan made for another version?)'
         struct.pack_into('<H', out, table + (cp - lo)*2, index(shown))
     return bytes(out)
 
@@ -263,7 +272,7 @@ def pack_names(sarc):
             (names + (struct.unpack_from('<I', sarc, 0x20 + k*16 + 4)[0] & 0xffffff)*4 for k in range(nodes))]
 
 
-def layout_plan(controls):
+def layout_plan(controls, version='botw190'):
     """(glyphs, diamond) for the layout of a controls.txt (bytes, or None for the default layout), by position."""
     sys.path.insert(0, str(REPO))
     from tools.builder import controls_file, icons_plan
@@ -271,16 +280,17 @@ def layout_plan(controls):
     if parsed.line:
         sys.exit(f'controls.txt line {parsed.line}: {parsed.error}')
     inputs, _ = controls_file.layout(parsed, False)
-    return icons_plan.botw_glyphs(inputs), icons_plan.botw_diamond(inputs)
+    return icons_plan.botw_glyphs(inputs, version), icons_plan.botw_diamond(inputs)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('mod', type=Path, help='the mod folder (for the app: <data>/BotW/mods/botw190)')
+    parser.add_argument('mod', type=Path, help='the mod folder (for the app: <data>/BotW/mods/<version>)')
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument('--app', type=Path, help='the built Breath of the Wild.app')
     source.add_argument('--romfs', type=Path, help='a folder holding romfs.bin and runtime-index.bin')
-    parser.add_argument('--version', default='botw190', choices=('botw190',), help='the game version (default botw190)')
+    parser.add_argument('--version', choices=VERSIONS, help='the game version (default: the one the app was built '
+                        'from, botw190 with --romfs)')
     parser.add_argument('--controls', type=Path, default=DATA/'controls.txt',
                         help='the layout (default: the game\'s controls.txt; a missing file is the default layout)')
     parser.add_argument('--plan', type=Path, help='JSON {"glyphs": [[code point, code point shown], ...], "diamond": '
@@ -289,6 +299,11 @@ def main():
                         'leaves as they are (the builder: its icons mod must replace something to be valid)')
     args = parser.parse_args()
     romfs = args.romfs
+    if args.version is None:
+        built = [v for v in VERSIONS if args.app and (args.app/f'Contents/Resources/totk/extracted/{v}').is_dir()]
+        if len(built) > 1:
+            parser.error(f'{args.app} holds {" and ".join(built)}: name one with --version')
+        args.version = built[0] if built else 'botw190'
     if args.app:
         romfs = args.app/f'Contents/Resources/totk/extracted/{args.version}/romfs'
         if not (romfs/'romfs.bin').exists():   # built with --mac-game-data library
@@ -303,7 +318,7 @@ def main():
         kind = args.controls.with_name('controller-type.txt')
         if kind.is_file() and kind.read_text().strip() == 'switch':
             sys.exit(f'{kind} says switch: a Nintendo controller\'s face buttons go by label, which this does not draw')
-        glyphs, slots = layout_plan(args.controls.read_bytes() if args.controls.is_file() else None)
+        glyphs, slots = layout_plan(args.controls.read_bytes() if args.controls.is_file() else None, args.version)
     assert set(slots) <= set(PARTS) and set(slots.values()) <= set(BUTTON), f'bad diamond plan {slots}'
     index = read_index(romfs/'runtime-index.bin')
     archives = sorted(p for p in index if p.startswith(ARCHIVES) and p.endswith('.sbfarc'))
