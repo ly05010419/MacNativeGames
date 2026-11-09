@@ -41,10 +41,6 @@
 static NSString *g_local, *g_state, *g_backups, *g_cloud, *g_user;   // save folder, <profile>/cloud-sync.plist, backups, <cloud>/Saves
 static dispatch_queue_t g_queue;
 static void watch_lifecycle(void);   // upload at quit / background (below)
-/* The start could not load the folder's newer save and plays this device's: the save's hash then. Unchanged, it is not
-   uploaded (it is older than the folder's); a save made in the game since goes up (the later save wins, as at a start
-   that sees both). */
-static NSString *g_held_hash;
 /* Tell the player (runtime/frontend.m on the Mac, ios/Sources/main.m on the phone; absent in tests). */
 __attribute__((weak)) void runtime_front_notice(const char *title, const char *detail) { (void)title; (void)detail; }
 static void notice(NSString *title, NSString *detail) { runtime_front_notice(title.UTF8String, detail.UTF8String); }
@@ -172,6 +168,13 @@ static void write_superseded(NSDictionary *state, NSNumber *cloudGen) {
     NSMutableDictionary *d = [state ?: @{} mutableCopy]; d[@"superseded"] = cloudGen;
     [d writeToFile:g_state atomically:YES];
 }
+/* Conflict copies go only once the files in the folder are the save sync.plist describes: a copy may hold the real data
+   while the main file is still half synced. */
+static void clean_cloud_checked(NSString *cur, NSString *hash) {
+    __block BOOL same = NO;
+    read_coordinated(cur, ^(NSString *p) { same = [save_hash(p) isEqualToString:hash]; });
+    if (same) clean_cloud(cur); else LOG("the folder's files do not match its sync.plist yet: conflict copies kept\n");
+}
 
 /* Replace the contents of `dst` with those of `src`, through a sibling folder so a failure leaves `dst` as it was. */
 static BOOL replace_folder(NSString *src, NSString *dst) {
@@ -208,9 +211,6 @@ static void push(void) {
     __block NSDictionary *meta = read_cloud_meta([cur stringByAppendingPathComponent:@"sync.plist"]);
     if (!hash || !save_files(g_local).count) return;
     if (g_superseded || g_identity_conflict) return;
-    if (g_held_hash && [hash isEqualToString:g_held_hash]) {
-        LOG("this device's save is unchanged since the start and older than the folder's: not uploaded\n"); return;
-    }
     if (!meta && [NSFileManager.defaultManager fileExistsAtPath:cur]) {
         LOG("remote save has no complete metadata; upload waits rather than replacing it\n"); return;
     }
@@ -310,10 +310,10 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
                the game uploads, after push looks again (or the next start, if a save has arrived by then). */
             LOG("no save in the folder yet%s\n", localSaves ? "; this device's save goes up at its first save in the game, if the folder is still empty then" : ""); return;
         }
-        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); clean_cloud(cur); return; }
+        if ([meta[@"hash"] isEqualToString:local]) { write_state(meta[@"gen"], local); LOG("in sync (generation %lld)\n", [meta[@"gen"] longLongValue]); clean_cloud_checked(cur, meta[@"hash"]); return; }
         long long cloudGen = [meta[@"gen"] longLongValue], ownGen = [state[@"gen"] longLongValue];
         BOOL localChanged = localSaves && !(state && [state[@"hash"] isEqualToString:local]);
-        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); clean_cloud(cur); return; }   // new progress goes up with the next save
+        if (state && cloudGen == ownGen) { LOG("the folder has this device's last upload (generation %lld)\n", cloudGen); clean_cloud_checked(cur, meta[@"hash"]); return; }   // new progress goes up with the next save
         if (state && cloudGen < ownGen) {
             /* An older generation than this device synced: another device wrote from an out-of-date view of the folder. This
                device's save is the newer one. */
@@ -341,13 +341,13 @@ void runtime_cloud_save_start(const char *save_dir, const char *profile_dir) {
         });
         if (taken) clean_cloud(cur);
         if (!taken && !g_identity_conflict) {
-            g_held_hash = local;
-            LOG("the folder's newer save (generation %lld) is not loaded: this device's save goes up only after a new save in the game\n", cloudGen);
+            g_superseded = 1; write_superseded(state, meta[@"gen"]);
+            LOG("the folder's newer save (generation %lld) is not loaded: this device's saves stay local, and its next start takes that one (keeping this one in cloud-backups)\n", cloudGen);
             BOOL zh = [NSLocale.preferredLanguages.firstObject hasPrefix:@"zh"];
             NSString *from = meta[@"device"] ?: @"?";
             notice(zh ? @"云端存档没有同步下来" : @"The synced save did not load",
-                   [NSString stringWithFormat:(zh ? @"同步文件夹里有一份更新的存档（来自 %@），但还没下载完，这次没能读取。现在用的是这台设备上的存档。\n\n只要你不在游戏里存档，云端那份就不会被动。想用它，请退出游戏，等 iCloud 下载完再打开。\n\n如果在这里存档，这台设备的存档会传上去替换它；那份会在另一台设备下次打开游戏时备份到它的 cloud-backups。"
-                                                     : @"The sync folder has a newer save (from %@), but it had not finished downloading and could not be read. This device's save is used now.\n\nAs long as you do not save in the game, the folder's save is left alone. To use it, quit and open the game again once iCloud has downloaded it.\n\nIf you save here, this device's save goes up in its place; the other device keeps that one in its cloud-backups at its next start."), from]);
+                   [NSString stringWithFormat:(zh ? @"同步文件夹里有一份更新的存档（来自 %@），但还没下载完，这次没能读取。现在用的是这台设备上的存档。\n\n这一局的存档只留在这台设备上，不会上传，云端那份不会被动。等 iCloud 下载完再打开游戏，会换成云端那份，这台设备的存档备份到 cloud-backups。"
+                                                     : @"The sync folder has a newer save (from %@), but it had not finished downloading and could not be read. This device's save is used now.\n\nThis session's saves stay on this device and are not uploaded, so the folder's save is left alone. Open the game again once iCloud has downloaded it: that start takes the folder's save and keeps this device's in cloud-backups."), from]);
         }
     }
 }
