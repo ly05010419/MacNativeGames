@@ -11,7 +11,7 @@ You must own the game: use your own NSP and the `prod.keys` and system fonts dum
 
 ## Status (8 November 2026)
 
-Playable on the Mac with no known issues: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
+Playable on the Mac: the base game and the four add-ons start, play and save, and a 2.5-hour session showed no glitches. Neither the main story nor Future Redeemed has been played to the end yet.
 
 Tested on one Mac: Apple M5, 32 GB, macOS 27.0.1, game versions 1.0.0 and 2.2.1. The port targets the Mac only; iPhone and iPad are not a goal.
 
