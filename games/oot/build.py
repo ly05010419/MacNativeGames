@@ -40,10 +40,47 @@ def clone_file(source, destination):
     return str(destination)
 
 def bundle_shaders():
-    """User 2026-11-08: while the port is still changing, the App carries no translated shaders; the runtime
-    translates, compiles and caches each shader on first use. OOT_BUNDLE_SHADERS=1 restores the offline seed,
-    Metal libraries and compute pipeline archive (bring it back once the game is stable)."""
-    return os.environ.get('OOT_BUNDLE_SHADERS')=='1'
+    """The App carries the offline seed, the Metal libraries of the shaders the list uses (listed_shader_keys) and the
+    pipeline archive. User 2026-11-08: no translated shaders while the port changes; 2026-11-09: "不要编译全部着色器 …
+    用我最近玩的 … 管线要全部预热", then "只要 我一直用的 我收集的" and "为什么不能和以前一样 自动": so a full build does
+    it by default, not only update_runtime. OOT_BUNDLE_SHADERS=0 leaves the shaders out (each translated at first use)."""
+    return os.environ.get('OOT_BUNDLE_SHADERS','1')!='0'
+
+def oot_shader_list():
+    """games/oot/scripts/shader_list.py, imported by its path: "import shader_list" can give TOTK's module of the same name
+    (another script put games/totk/scripts first, or imported it already), which does not know mesh (M) rows."""
+    import importlib.util
+    if 'oot_shader_list' not in sys.modules:
+        spec=importlib.util.spec_from_file_location('oot_shader_list',GAME/'scripts/shader_list.py')
+        module=importlib.util.module_from_spec(spec);sys.modules['oot_shader_list']=module;spec.loader.exec_module(module)
+    return sys.modules['oot_shader_list']
+
+def listed_shader_keys(seed, shared, compute):
+    """The shaders whose Metal libraries the Mac App carries: every shader the seed's resolved warm-up lists use (a render,
+    tile or mesh row names its stages inside its hex key: shader_list.row_variants), the shared list's own variants (its
+    V rows) and every compute shader (the compute pipeline archive must be complete). The others are compiled by the game
+    at first use. On 2026-11-09 this held all 5,923 shaders picked by hand (the ones played + the warm-up lists)."""
+    row_variants=oot_shader_list().row_variants
+    keys=set()
+    for row in compute:keys.update(name[:64] for name in row_variants(row.split('\t')))
+    for path in (Path(seed)/'pso_title.tsv',Path(seed)/'pso_manifest.tsv'):
+        if not path.is_file():continue
+        for line in path.read_text().splitlines():
+            if line and not line.startswith('#'):keys.update(name[:64] for name in row_variants(line.split('\t')))
+    if Path(shared).is_file():
+        keys.update(line.split('\t')[1] for line in Path(shared).read_text().splitlines() if line.startswith('V\t'))
+    return keys
+
+def listed_shader_file(tree, shared):
+    """listed_shader_keys of this build's seed, written for build_shader_libs.py --only."""
+    scripts=str(GAME/'scripts')
+    if scripts not in sys.path:sys.path.insert(0,scripts)
+    from prepare_compute_pipelines import compute_rows
+    seed=tree/'build/shader-seed/oot'
+    keys=listed_shader_keys(seed,shared,compute_rows(seed))
+    path=tree/'build/shader-libs-listed.txt';path.write_text(''.join(k+'\n' for k in sorted(keys)))
+    print(f'Metal libraries: {len(keys)} shaders the list uses (OOT_SHADER_SUBSET=all compiles every one)',flush=True)
+    return str(path)
 
 def verify_shader_resources(tree):
     """Check every prepared variant/library and bind both manifests into the normal build record."""
@@ -340,15 +377,16 @@ def build(args, source):
     run(['make','-C',GAME,'WORK='+str(work),'-j2'],'native-runtime',work)
     icon_spec=GAME/'assets/app-icon.json'   # the dump has no Control data: the pinned official image, as Donkey Kong Bananza
     if icon_spec.is_file():run([py,'scripts/extract_app_icon.py','--source-spec',icon_spec,'--output','build/AppIcon.icns'],'app-icon')
-    if not device and not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=1 bundles them): translated at first use',flush=True)
+    if not device and not bundle_shaders():print('Shaders are not bundled (OOT_BUNDLE_SHADERS=0): translated at first use',flush=True)
     else:
      shared=GAME/'assets/shader_list.tsv'   # recorded bind states and pipelines (scripts/shader_list.py merge): listed variants and the warm-up lists
      run([py,GAME/'scripts/prepare_ns2_seed.py','--version','oot','--depth-mode','minus-w',
          '--binary',work/'build/oot-native','--jobs',str(shader_jobs()),'--logs',logs,
          *(['--list',shared] if shared.is_file() else [])],'prepare-shader-seed')
      if not device:
+      only=os.environ.get('OOT_SHADER_SUBSET') or listed_shader_file(tree,shared)   # a key file; "all": every shader
       run([py,GAME/'scripts/build_shader_libs.py','--cache',tree/'build/shader-seed/oot',
-         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',os.environ['OOT_SHADER_SUBSET']] if os.environ.get('OOT_SHADER_SUBSET') else [])],'compile-shader-libraries')
+         '--out',tree/'build/shader-libs','--jobs',str(shader_jobs()),*(['--only',only] if only!='all' else [])],'compile-shader-libraries')
     if device:
      # The phone's own Metal libraries and pipeline archive: the seed above is compiled for the device in ios/tools/build_ipa.py.
      run([py,tree/'ios/tools/build_ipa.py','--tree',tree,'--out',out,'--version','oot','--logs',logs,'--app-name','OcarinaOfTime','--bundle-id','org.macnativegames.oot',
