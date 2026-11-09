@@ -92,6 +92,26 @@ typedef struct thr {
 static thr_t *g_all;
 
 static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
+/* TOTK_SVC_STATS=1 (diagnostic, 2026-11-09, default off): what the game's synchronization costs on this runtime - time
+   inside the thread SVCs minus the time blocked (svc_thread), how long G (the runtime's one lock; every thread SVC
+   takes it) is waited for and held, SVC counts by number. dm_svc_stats hands the totals to the frame rows (@svc_ms,
+   @g_wait_ms, @g_hold_ms, ...). The G timing wraps pthread_mutex_lock / unlock in this file through the macros below. */
+static int g_svc_stats = -1;
+static int svc_stats_on(void) { if (g_svc_stats < 0) { const char *e = getenv("TOTK_SVC_STATS"); g_svc_stats = e && atoi(e); } return g_svc_stats; }
+static uint64_t g_svc_ns, g_svc_blocked_ns, g_svc_n, g_svc_kind_n[64], g_G_wait_ns, g_G_waits, g_G_hold_ns, g_G_locks, g_G_acquired_at;
+static __thread uint64_t t_svc_blocked;   // ns this thread spent blocked inside the current SVC
+static inline void G_hold_end(void) { if (g_svc_stats > 0 && g_G_acquired_at) { g_G_hold_ns += runtime_now_ns() - g_G_acquired_at; g_G_acquired_at = 0; } }   // the holder, before it releases G (unlock or condition wait)
+static inline void G_reacquired(void) { if (g_svc_stats > 0) g_G_acquired_at = runtime_now_ns(); }   // after a condition wait returned holding G
+static inline int G_lock_timed(pthread_mutex_t *m) {
+    if (m != &G || !svc_stats_on()) return pthread_mutex_lock(m);
+    if (pthread_mutex_trylock(m) == 0) { g_G_acquired_at = runtime_now_ns(); __atomic_fetch_add(&g_G_locks, 1, __ATOMIC_RELAXED); return 0; }
+    uint64_t t0 = runtime_now_ns(); int r = pthread_mutex_lock(m); uint64_t t1 = runtime_now_ns();
+    __atomic_fetch_add(&g_G_wait_ns, t1 - t0, __ATOMIC_RELAXED); __atomic_fetch_add(&g_G_waits, 1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_G_locks, 1, __ATOMIC_RELAXED);
+    g_G_acquired_at = t1; return r;
+}
+static inline int G_unlock_timed(pthread_mutex_t *m) { if (m == &G) G_hold_end(); return pthread_mutex_unlock(m); }
+#define pthread_mutex_lock(m) G_lock_timed(m)
+#define pthread_mutex_unlock(m) G_unlock_timed(m)
 #define MAX_H 4096
 static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
@@ -559,7 +579,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     int reported = 0;
     while (t->cur_core < 0) {   // the owners it beats are marked (and, with the asynchronous preemption, signalled again every millisecond)
         int kick = totk_kick(t) && totk_ap_on();
-        if (!kick && (reported || !core_diag_on())) { pthread_cond_wait(&t->cv, &G); continue; }
+        if (!kick && (reported || !core_diag_on())) { G_hold_end(); pthread_cond_wait(&t->cv, &G); G_reacquired(); continue; }
         struct timespec again = {0, kick ? 1000000 : CORE_DIAG_NS};   // TOTK_CORE_DIAG: one look at the owners once a wait gets long
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && core_diag_on() && t->cur_core < 0 && now_ns() - w0 >= CORE_DIAG_NS) { core_wait_report(t, w0); reported = 1; }
@@ -668,9 +688,9 @@ static int64_t block(thr_t *t,int kind,int64_t ns) {
     if (ns == 0) return block_inner(t, kind, ns);
     int tl = tl_on();
     if (tl) { uint64_t k = kind == 2 ? t->wkey : kind == 4 ? t->wh[0] : t->waddr; totk_tl(TLK_GW_IN, (uint64_t)kind << 56 | (k & 0x00ffffffffffffffull), t->last_lr); }
-    core_put(t); int64_t r = block_inner(t, kind, ns);
+    core_put(t); uint64_t b0 = svc_stats_on() ? runtime_now_ns() : 0; int64_t r = block_inner(t, kind, ns);
     if (tl) totk_tl(TLK_GW_OUT, (uint64_t)kind, (uint64_t)r);
-    core_take(t); return r;
+    core_take(t); if (b0) t_svc_blocked += runtime_now_ns() - b0; return r;
 }
 static int64_t block_inner(thr_t *t, int kind, int64_t ns) {
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
@@ -682,13 +702,14 @@ static int64_t block_inner(thr_t *t, int kind, int64_t ns) {
                   if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; } }
     { int us = wait_spin_us(); if (us > 0 && !det_wait && (ns < 0 || ns > (int64_t)us * 1000)) wait_spin(t, us); }   // TOTK_WAIT_SPIN_US
     while (!t->woke) {
-        int rc;
+        int rc; G_hold_end();
         if (det_wait) {
             uint64_t now = guest_ns();
             if (now >= guest_deadline) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
             (void)(guest_deadline - now);
             rc = pthread_cond_wait(&t->cv, &G);
         } else rc = ns > 0 ? pthread_cond_timedwait(&t->cv, &G, &dl) : pthread_cond_wait(&t->cv, &G);
+        G_reacquired();
         if (rc == ETIMEDOUT && !t->woke && (!det_wait || guest_ns() >= guest_deadline)) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     }
     return t->wres;
@@ -799,7 +820,7 @@ static void *thread_main(void *p) {
 
     guest_thread_init();
     publish_thread_id(t->id);
-    pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); core_take(t); pthread_mutex_unlock(&G);
+    pthread_mutex_lock(&G); while (!t->started) { G_hold_end(); pthread_cond_wait(&t->cv, &G); G_reacquired(); } core_take(t); pthread_mutex_unlock(&G);
     { volatile char marker = 0; runtime_hle_stack_set((uintptr_t)&marker - 1024); }   // host services of this thread run below this frame
     dm_thread_enter(t->entry, t->arg, t->stack_top,t->host_context);   // 不返回：客体须经 ExitThread 退出 | Does not return: the guest must exit through ExitThread
     die("客体线程入口返回");
@@ -1019,7 +1040,21 @@ static uint64_t yield_backoff_ns(uint64_t run_ns) {
     return s < (uint64_t)cap ? s : (uint64_t)cap;
 }
 
-int svc_thread(int num, uint64_t *regs) {
+static int svc_thread_(int num, uint64_t *regs);
+int svc_thread(int num, uint64_t *regs) {   // TOTK_SVC_STATS: time inside minus time blocked, counts by number
+    if (!svc_stats_on()) return svc_thread_(num, regs);
+    uint64_t s0 = runtime_now_ns(); t_svc_blocked = 0;
+    int r = svc_thread_(num, regs);
+    uint64_t d = runtime_now_ns() - s0, b = t_svc_blocked < d ? t_svc_blocked : d;
+    __atomic_fetch_add(&g_svc_ns, d - b, __ATOMIC_RELAXED); __atomic_fetch_add(&g_svc_blocked_ns, b, __ATOMIC_RELAXED); __atomic_fetch_add(&g_svc_n, 1, __ATOMIC_RELAXED);
+    if (num >= 0 && num < 64) __atomic_fetch_add(&g_svc_kind_n[num], 1, __ATOMIC_RELAXED);
+    return r;
+}
+void dm_svc_stats(uint64_t *svc_ns, uint64_t *svc_blocked_ns, uint64_t *svc_n, uint64_t *g_wait_ns, uint64_t *g_waits, uint64_t *g_hold_ns, uint64_t *g_locks) {
+    *svc_ns = g_svc_ns; *svc_blocked_ns = g_svc_blocked_ns; *svc_n = g_svc_n; *g_wait_ns = g_G_wait_ns; *g_waits = g_G_waits; *g_hold_ns = g_G_hold_ns; *g_locks = g_G_locks;
+}
+uint64_t dm_svc_kind_count(int num) { return num >= 0 && num < 64 ? g_svc_kind_n[num] : 0; }
+static int svc_thread_(int num, uint64_t *regs) {
     { thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->last_fp = regs[29]; me->nsvc++; } }
 
     switch (num) {
