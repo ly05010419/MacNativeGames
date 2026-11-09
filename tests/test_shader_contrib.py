@@ -208,6 +208,30 @@ class OtherGamesTests(unittest.TestCase):
         self.assertEqual(lists['botw'].variants, {(self.KEY_W, '{}')})
         self.assertEqual(per_game, {'totk': (1, 1), 'botw': (1, 1)})
 
+    def test_a_plain_title_whose_known_rows_are_one_games_gives_it_the_rest(self):
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'   # one install's file: one game's shaders
+        lists, line, per_game = self.merge(self.issue('Shader list:', body), self.seeded_keys('totk'))
+        self.assertEqual(lists['totk'].variants, {(self.KEY_A, '{}'), (self.KEY_W, '{}')})
+        self.assertEqual(per_game, {'totk': (2, 2)})
+        self.assertNotIn('neither game has', line)
+
+    def test_a_file_with_two_games_rows_leaves_the_rest_unknown(self):
+        key_b = 'b' * 64
+        keys = self.seeded_keys('totk'); keys['botw'] = {key_b}
+        body = f'```\nV\t{self.KEY_A}\t{{}}\nV\t{key_b}\t{{}}\nV\t{self.KEY_W}\t{{}}\n```'
+        lists, line, per_game = self.merge(self.issue('Shader list:', body), keys)
+        self.assertIsNone(per_game)
+        self.assertIn('1 rows of shaders neither game has', line)
+
+    def test_pokopia_issues_are_its_own_game(self):
+        titled = collect_shader_issues.titled_game
+        self.assertEqual(titled(self.issue('Shader list: 167 shaders from Mac (Pokopia 2.0.1)')), 'pokopia')
+
+    def test_the_report_is_what_the_merge_found(self):
+        issue = self.issue('Shader list (Breath of the Wild): 1 shaders', number=7)
+        report = collect_shader_issues.merged_report([(issue, {'botw': (3, 1)})])
+        self.assertEqual(report, [{'number': 7, 'titled': 'botw', 'per_game': {'botw': [3, 1]}}])
+
     def test_bananza_issues_are_its_own_game(self):
         titled = collect_shader_issues.titled_game
         self.assertEqual(titled(self.issue('Shader list: 1120 shaders from Mac (Bananza v458752)')), 'dkb')
