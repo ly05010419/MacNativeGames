@@ -98,7 +98,9 @@ static pthread_mutex_t G = PTHREAD_MUTEX_INITIALIZER;
    @g_wait_ms, @g_hold_ms, ...). The G timing wraps pthread_mutex_lock / unlock in this file through the macros below. */
 static int g_svc_stats = -1;
 static int svc_stats_on(void) { if (g_svc_stats < 0) { const char *e = getenv("TOTK_SVC_STATS"); g_svc_stats = e && atoi(e); } return g_svc_stats; }
-static uint64_t g_svc_ns, g_svc_blocked_ns, g_svc_n, g_svc_kind_n[64], g_G_wait_ns, g_G_waits, g_G_hold_ns, g_G_locks, g_G_acquired_at;
+static uint64_t g_svc_ns, g_svc_blocked_ns, g_svc_n, g_svc_kind_n[64], g_svc_kind_ns[64], g_G_wait_ns, g_G_waits, g_G_hold_ns, g_G_locks, g_G_acquired_at;
+static uint64_t g_sched_ns[4], g_sched_n[4];   // TOTK_SVC_STATS: time inside pick / core_grant / lock_handoff / eff_prio (all under G)
+#define SCHED_TIMED(idx, call) do { uint64_t st0_ = g_svc_stats > 0 ? runtime_now_ns() : 0; call; if (st0_) { g_sched_ns[idx] += runtime_now_ns() - st0_; g_sched_n[idx]++; } } while (0)
 static __thread uint64_t t_svc_blocked;   // ns this thread spent blocked inside the current SVC
 static inline void G_hold_end(void) { if (g_svc_stats > 0 && g_G_acquired_at) { g_G_hold_ns += runtime_now_ns() - g_G_acquired_at; g_G_acquired_at = 0; } }   // the holder, before it releases G (unlock or condition wait)
 static inline void G_reacquired(void) { if (g_svc_stats > 0) g_G_acquired_at = runtime_now_ns(); }   // after a condition wait returned holding G
@@ -182,7 +184,9 @@ static void wait_unlink(thr_t *t) {
 // 按内核顺序挑等待者：优先级数值小者优先，同优先级先登记者优先（持 G）。kind 1 按锁地址、2 按条件键、3 按地址匹配
 // Pick a waiter in kernel order: numerically lower priority first, at equal priority the earlier registered first (holding G). kind 1 matches by lock address, 2 by condition key, 3 by address
 static uint64_t g_wseq;
-static thr_t *pick(int kind, uint64_t a) {
+static thr_t *pick_(int kind, uint64_t a);
+static thr_t *pick(int kind, uint64_t a) { thr_t *r = NULL; SCHED_TIMED(0, r = pick_(kind, a)); return r; }
+static thr_t *pick_(int kind, uint64_t a) {
     thr_t *b = NULL;
     for (thr_t *t = g_wait; t; t = t->next) {
         if (t->wkind != kind || (kind == 2 ? t->wkey : t->waddr) != a) continue;
@@ -264,12 +268,13 @@ static int starved(const thr_t *w, uint64_t now) { sched_knobs(); return g_starv
    mutex word, so it follows hand-offs). Used only with the asynchronous preemption (TOTK_ASYNC_PREEMPT, below): without
    it that preemption stopped the game at its first "Continue" (a better thread took the core from the low-priority
    owner of a mutex it then waited for). With the preemption off the scheduling is exactly as before. Holding G. */
-static int eff_prio(const thr_t *o) {
+static int eff_prio_(const thr_t *o) {
     int p = o->prio;
     for (const thr_t *w = g_wait; w; w = w->next)
         if (w->wkind == 1 && w->waddr && (__atomic_load_n((const uint32_t *)(uintptr_t)w->waddr, __ATOMIC_RELAXED) & ~WAITERS_BIT) == o->handle && w->prio < p) p = w->prio;
     return p;
 }
+static int eff_prio(const thr_t *o) { int p = 0; SCHED_TIMED(3, p = eff_prio_(o)); return p; }
 static int totk_ap_on(void);
 #endif
 /* Complete waits at the grant, including BotW threads queued by wake_queue before core_take.
@@ -310,7 +315,9 @@ static int core_migrate(thr_t *w) {
     }
     return 0;
 }
-static void core_grant(int c) {   // holding G: give free core c to the best waiter
+static void core_grant_(int c);
+static void core_grant(int c) { SCHED_TIMED(1, core_grant_(c)); }
+static void core_grant_(int c) {   // holding G: give free core c to the best waiter
     thr_t *b = NULL, **bp = NULL;
 #ifdef GAME_BOTW
     uint64_t now = now_ns(); int bpri = 0, bst = 0;   // starved waiters first, then by effective priority, then first come
@@ -576,7 +583,8 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
     if (c >= 0) { t->cur_core = c; t->core_since = now_ns(); g_core_owner[c] = t; return; }
     t->cseq = ++g_wseq; t->cnext = g_core_wait; g_core_wait = t;
     if (core_migrate(t)) return;
-    int reported = 0;
+    int reported = 0, tlc = tl_on();
+    if (tlc) totk_tl(TLK_CW_IN, 0, 0);   // TOTK_TIMELINE: the wait for a virtual core (OOT 2026-11-09: the lock hand-off chain's missing link)
     while (t->cur_core < 0) {   // the owners it beats are marked (and, with the asynchronous preemption, signalled again every millisecond)
         int kick = totk_kick(t) && totk_ap_on();
         if (!kick && (reported || !core_diag_on())) { G_hold_end(); pthread_cond_wait(&t->cv, &G); G_reacquired(); continue; }
@@ -584,6 +592,7 @@ static void core_take(thr_t *t) {   // holding G; waits until a core in t's mask
         pthread_cond_timedwait_relative_np(&t->cv, &G, &again);
         if (!reported && core_diag_on() && t->cur_core < 0 && now_ns() - w0 >= CORE_DIAG_NS) { core_wait_report(t, w0); reported = 1; }
     }
+    if (tlc) totk_tl(TLK_CW_OUT, (uint64_t)t->cur_core, 0);
 #endif
 }
 static thr_t *me_or_null(void) { return g_keythr ? pthread_getspecific(g_keythr) : NULL; }
@@ -776,7 +785,9 @@ static void tag_check(const thr_t *t, uint32_t tag, const char *what, uint64_t a
 #endif
 // 释放 addr 处的锁：交给等在它上面的第一个线程，或清零（持 G）
 // Release the lock at addr: hand it to the first thread waiting on it, or clear it to zero (holding G)
-static void lock_handoff(uint64_t addr) {
+static void lock_handoff_(uint64_t addr);
+static void lock_handoff(uint64_t addr) { SCHED_TIMED(2, lock_handoff_(addr)); }
+static void lock_handoff_(uint64_t addr) {
     thr_t *w = pick(1, addr); int more = 0;
     if (!w) { st32(addr, 0); return; }
     for (thr_t *t = g_wait; t; t = t->next) if (t != w && t->wkind == 1 && t->waddr == addr) { more = 1; break; }
@@ -1047,13 +1058,15 @@ int svc_thread(int num, uint64_t *regs) {   // TOTK_SVC_STATS: time inside minus
     int r = svc_thread_(num, regs);
     uint64_t d = runtime_now_ns() - s0, b = t_svc_blocked < d ? t_svc_blocked : d;
     __atomic_fetch_add(&g_svc_ns, d - b, __ATOMIC_RELAXED); __atomic_fetch_add(&g_svc_blocked_ns, b, __ATOMIC_RELAXED); __atomic_fetch_add(&g_svc_n, 1, __ATOMIC_RELAXED);
-    if (num >= 0 && num < 64) __atomic_fetch_add(&g_svc_kind_n[num], 1, __ATOMIC_RELAXED);
+    if (num >= 0 && num < 64) { __atomic_fetch_add(&g_svc_kind_n[num], 1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_svc_kind_ns[num], d - b, __ATOMIC_RELAXED); }
     return r;
 }
 void dm_svc_stats(uint64_t *svc_ns, uint64_t *svc_blocked_ns, uint64_t *svc_n, uint64_t *g_wait_ns, uint64_t *g_waits, uint64_t *g_hold_ns, uint64_t *g_locks) {
     *svc_ns = g_svc_ns; *svc_blocked_ns = g_svc_blocked_ns; *svc_n = g_svc_n; *g_wait_ns = g_G_wait_ns; *g_waits = g_G_waits; *g_hold_ns = g_G_hold_ns; *g_locks = g_G_locks;
 }
 uint64_t dm_svc_kind_count(int num) { return num >= 0 && num < 64 ? g_svc_kind_n[num] : 0; }
+uint64_t dm_svc_kind_ns(int num) { return num >= 0 && num < 64 ? g_svc_kind_ns[num] : 0; }   // non-blocked ns inside that SVC
+void dm_sched_stats(uint64_t ns[4], uint64_t n[4]) { for (int i = 0; i < 4; i++) { ns[i] = g_sched_ns[i]; n[i] = g_sched_n[i]; } }   // pick, core_grant, lock_handoff, eff_prio
 static int svc_thread_(int num, uint64_t *regs) {
     { thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL); if (me) { me->last_svc = num; me->last_lr = regs[30]; me->last_fp = regs[29]; me->nsvc++; } }
 
@@ -1097,7 +1110,7 @@ static int svc_thread_(int num, uint64_t *regs) {
         if (ns > 0 && dm_detclock_enabled()) {
             uint64_t deadline = guest_ns() + (uint64_t)ns;
             while (guest_ns() < deadline) { struct timespec ts = {0, 1000000}; nanosleep(&ts, 0); }
-        } else if (ns > 0) { struct timespec ts = {ns / 1000000000, ns % 1000000000}; nanosleep(&ts, 0); }
+        } else if (ns > 0) { struct timespec ts = {ns / 1000000000, ns % 1000000000}; uint64_t sb0 = svc_stats_on() ? runtime_now_ns() : 0; nanosleep(&ts, 0); if (sb0) t_svc_blocked += runtime_now_ns() - sb0; }
         else {   // 让出（0 / -1 / -2）。主线程的让出次数与耗时记账：游戏渲染任务图「等全部做完」是纯轮询 + 让出（main+0x15ee898），量它占一帧多少 | Yield (0 / -1 / -2). Count and time of the main thread's yields are recorded: the game's render task graph "wait for everything to finish" is pure polling + yield (main+0x15ee898); measure how much of a frame it takes
             thr_t *me = (g_keythr ? pthread_getspecific(g_keythr) : NULL);
             uint64_t y0 = now_ns();
@@ -1105,6 +1118,7 @@ static int svc_thread_(int num, uint64_t *regs) {
             if (me) me->yrun_svc = me->nsvc;
             pthread_mutex_lock(&G);   // Horizon yield: hand the core to a waiting thread of equal or higher priority
             int give = 0; for (thr_t *w = g_core_wait; w && !give; w = w->cnext) give = me->cur_core >= 0 && core_allowed(w, me->cur_core) && w->prio <= me->prio;
+            uint64_t sb0 = svc_stats_on() ? runtime_now_ns() : 0;   // TOTK_SVC_STATS: a yield's core hand-over, sleep and sched_yield count as blocked time
             if (give) { core_put(me); core_take(me); }
             pthread_mutex_unlock(&G);
             uint64_t backoff = !give && me ? yield_backoff_ns(y0 - me->yrun_ns) : 0;
@@ -1113,6 +1127,7 @@ static int svc_thread_(int num, uint64_t *regs) {
                 struct timespec ts = {0, (long)backoff}; nanosleep(&ts, 0);
                 pthread_mutex_lock(&G); core_take(me); pthread_mutex_unlock(&G);
             } else if (!give) sched_yield();
+            if (sb0) t_svc_blocked += runtime_now_ns() - sb0;
 #ifdef GAME_BOTW
             if (me && me->handle == g_main_handle) { g_main_yield_ns += now_ns() - y0; g_main_yield_n++; }
 #else

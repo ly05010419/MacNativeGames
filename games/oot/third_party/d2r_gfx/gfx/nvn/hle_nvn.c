@@ -3217,7 +3217,9 @@ extern void mtl_wait_stats(uint64_t *plib_ns, uint64_t *pso_ns); extern void mtl
 extern void totk_rt_submit_stats(uint64_t *wait_n, uint64_t *wait_ns, uint64_t *sync_n, uint64_t *sync_ns);
 __attribute__((weak)) void dm_core_wait_stats(uint64_t *self_ns, uint64_t *all_ns, uint64_t *all_n) { *self_ns = *all_ns = *all_n = 0; }
 __attribute__((weak)) void dm_svc_stats(uint64_t *a, uint64_t *b, uint64_t *c, uint64_t *d, uint64_t *e, uint64_t *f, uint64_t *g) { *a = *b = *c = *d = *e = *f = *g = 0; }   // runtime/threads.c (TOTK_SVC_STATS)
-__attribute__((weak)) uint64_t dm_svc_kind_count(int n) { (void)n; return 0; }   // runtime/threads.c; 0 in the graphics unit tests
+__attribute__((weak)) uint64_t dm_svc_kind_count(int n) { (void)n; return 0; }
+__attribute__((weak)) uint64_t dm_svc_kind_ns(int n) { (void)n; return 0; }
+__attribute__((weak)) void dm_sched_stats(uint64_t ns[4], uint64_t n[4]) { for (int i = 0; i < 4; i++) ns[i] = n[i] = 0; }   // runtime/threads.c; 0 in the graphics unit tests
 extern uint64_t mtl_view_stats(void); extern void mtl_variant_stats(uint64_t *n, uint64_t *ns, uint64_t *pre, uint64_t *bg, uint64_t *plain);
 /* TOTK_LONGFRAME_DETAIL=1: a long-frame line also names the frame's draws, render passes and new texture views, to tell a
    frame that drew far more than usual from one that met many textures for the first time, and the patched shader
@@ -3706,7 +3708,10 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
               trow(f, "@svc_ms", (s1 - ps1) / 1e6); trow(f, "@svc_blocked_ms", (s2 - ps2) / 1e6); trow(f, "@svc_n", (double)(s3 - ps3));
               trow(f, "@g_wait_ms", (g1 - pg1) / 1e6); trow(f, "@g_waits", (double)(g2 - pg2)); trow(f, "@g_hold_ms", (g3 - pg3) / 1e6); trow(f, "@g_locks", (double)(g4 - pg4));
               static const int kinds[5] = {0x1A, 0x1B, 0x1C, 0x1D, 0x0B}; static const char *const names[5] = {"@svc_lock", "@svc_unlock", "@svc_cvwait", "@svc_cvsignal", "@svc_sleep"};
-              for (int i = 0; i < 5; i++) { uint64_t v = dm_svc_kind_count(kinds[i]); trow(f, names[i], (double)(v - pk[i])); pk[i] = v; }
+              static const char *const names_ms[5] = {"@svc_lock_ms", "@svc_unlock_ms", "@svc_cvwait_ms", "@svc_cvsignal_ms", "@svc_sleep_ms"}; static uint64_t pkn[5];
+              for (int i = 0; i < 5; i++) { uint64_t v = dm_svc_kind_count(kinds[i]), ns = dm_svc_kind_ns(kinds[i]); trow(f, names[i], (double)(v - pk[i])); trow(f, names_ms[i], (ns - pkn[i]) / 1e6); pk[i] = v; pkn[i] = ns; }
+              { static uint64_t psn[4], psc[4]; uint64_t sn[4], sc[4]; dm_sched_stats(sn, sc); static const char *const sch[4] = {"@sch_pick", "@sch_grant", "@sch_handoff", "@sch_effprio"}, *const sch_ms[4] = {"@sch_pick_ms", "@sch_grant_ms", "@sch_handoff_ms", "@sch_effprio_ms"};
+                for (int i = 0; i < 4; i++) { trow(f, sch[i], (double)(sc[i] - psc[i])); trow(f, sch_ms[i], (sn[i] - psn[i]) / 1e6); psn[i] = sn[i]; psc[i] = sc[i]; } }
               ps1 = s1; ps2 = s2; ps3 = s3; pg1 = g1; pg2 = g2; pg3 = g3; pg4 = g4; }
             pxw = xw; pxs = xs; ppl = pl_; ppp = pp_; plns2 = ln_; ppns2 = pn_; psp = sp_; ppp2 = pp2_; pcw_self = cw_s; pcw_all = cw_a; pcw_n = cw_n;
             (void)xwn; (void)xsn;

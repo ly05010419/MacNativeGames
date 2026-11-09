@@ -484,6 +484,12 @@ int runtime_app_launch(int argc, char **argv, char ***boot) {
           setenv("TOTK_VR_OFFSET", [data stringByAppendingPathComponent:@"vr-offset.txt"].fileSystemRepresentation, 0);   /* the camera's offset (VR page) */
           setenv("TOTK_VR_OPTIONS", [data stringByAppendingPathComponent:@"vr-options.txt"].fileSystemRepresentation, 0); }   /* the VR page's switches: Mac screen, 6DoF, snap turning */   /* the camera's offset (VR page) */   /* Link's head shown / hidden */
 
+        { /* Internal 1280x720 as a switch (user 2026-11-09: a switch first, the default stays docked 1536x864):
+             defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld  runs the game in the Switch's handheld
+             mode (runtime/services.c handheld_mode), measured 58-61 fps against 49-50 docked; `defaults delete` or the
+             value "docked" restores the default. The environment wins (the test tools pass it). */
+          NSString *om = [NSUserDefaults.standardUserDefaults stringForKey:@"TOTK_OPERATION_MODE"];
+          if (om.length) setenv("TOTK_OPERATION_MODE", om.UTF8String, 0); }
         /* The log is written only with debug on, as on the iPhone: defaults write org.macnativegames.totk TOTK_DEBUG_LOG
            -bool YES (org.macnativegames.botw for Breath of the Wild), or TOTK_DEBUG_LOG=1 in the environment, which wins
            (the test tools pass it). Off, the game's output goes to /dev/null and the logs of earlier runs are removed. */

@@ -60,3 +60,10 @@ With 951 unique precompiled libraries packaged, the same-process v13 off/on/off/
 
 
 A subsequent old/new/new/old comparison used byte-identical v12 MSL with legacy ABI on the same v13 host, then the new MSL with range reuse enabled. All four runs used the same signed executable, desktop App, active profile and tree-house view. Actual 24-second windows delivered 54.66 / 58.47 / 58.42 / 53.11 fps; the new windows had frame p50/p95 of 17.02/19.13 and 17.02/18.97 ms. Sources were neither added nor changed during the runs. The second new window created one pipeline and loaded two libraries; drawing counts and idle animation varied between runs, so the approximately 8.5% difference between group means is an observation rather than a precisely isolated cache-only gain. Screenshots were inspected for both implementations and showed no observed corruption. This supports enabling range reuse by default, without establishing stable 60 fps, 90 fps, or whole-game compatibility.
+
+## Optional settings (Mac)
+
+- Internal 1280×720 (the Switch's handheld mode) instead of the default 1536×864:
+  `defaults write org.macnativegames.oot TOTK_OPERATION_MODE handheld` — takes effect from the next start; measured
+  58–61 fps against 49–50 fps docked on an M4 (2026-11-09, `docs/fps-60-90.md`). `defaults delete org.macnativegames.oot
+  TOTK_OPERATION_MODE` (or the value `docked`) restores the default. The environment variable of the same name wins.
