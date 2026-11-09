@@ -111,7 +111,7 @@ for line in sys.stdin:
                     self.assertIn("bind states: 2 of 3 translated", output)
                     self.assertIn('synthetic unsupported shader', output)
                     if phase == 'cold':
-                        self.assertIn('background jobs at drain: 1', output)
+                        self.assertIn('background jobs at drain: 3', output)   # every default runs in the background
                     index = json.loads((cache / (keys[0] + '.variants')).read_text())
                     self.assertEqual({r['deps']['tex']['0'] for r in index}, {'2d', '2d_depth', 'cube'})
                     requests = [json.loads(line) for line in (cache / 'requests.jsonl').read_text().splitlines()]
