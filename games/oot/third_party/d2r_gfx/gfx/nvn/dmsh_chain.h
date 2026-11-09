@@ -1,1 +1,1 @@
-#define DMSH_CHAIN "oot-native-v22-one-translation-per-2d-slot"
+#define DMSH_CHAIN "oot-native-v23-txd-derivative-order"
