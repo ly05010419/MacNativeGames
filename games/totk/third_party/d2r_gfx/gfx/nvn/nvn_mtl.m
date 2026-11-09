@@ -6224,7 +6224,7 @@ void mtl_variant_stats(uint64_t *n, uint64_t *ns, uint64_t *pre, uint64_t *bg, u
    shader that reads c0 was given the all-zero segment: compute shaders saw 0 thread groups (the occlusion-culling kernel
    ce4993a0 then put all its cells into the first row and left the other 17 rows 0 -- every occlusion query failed and NPCs
    vanished), vertex shaders a point-size limit of 0, and both 0 for the base addresses they add offsets to. Words the replay
-   fills (encode_args): c0 storage-buffer table at 0x110 (vertex) / 0x310 (compute) / 0x510 (fragment), 16 bytes per slot
+   fills (encode_args): c0 storage-buffer table at 0x110 (vertex) / 0x310 (compute) / 0x510 (fragment) / 0x670 (task) / 0x770 (mesh), 16 bytes per slot
    {address, size}; compute thread-group counts {x, y, z} at 0x200 and uniform-buffer table at 0x210; vertex point-size
    limit at 0x610; c2 texture / sampler handle tables. Anything else reads 0 and is reported. */
 static int drv_fillable(int stage, int bank, unsigned off) {
@@ -6237,6 +6237,8 @@ static int drv_fillable(int stage, int bank, unsigned off) {
 #endif
     case 1: return off >= 0x510 && off < 0x610;
 #ifdef GAME_NS2
+    case 3: return off >= 0x670 && off < 0x770;   /* task storage-buffer table */
+    case 4: return off >= 0x770 && off < 0x870;   /* mesh storage-buffer table */
     case 5: return off < 0x10 || (off >= 0x200 && off < 0x410);   /* NVN2: the workgroup counts at c0 + 4 */
 #else
     case 5: return off >= 0x200 && off < 0x410;
