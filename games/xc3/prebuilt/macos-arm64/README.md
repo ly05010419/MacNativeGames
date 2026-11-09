@@ -14,6 +14,11 @@ that building the app needs no .NET and the app needs no .NET runtime.
   reflection files (17,424 files; Ori's translator, run the same way, differs in 12,636 of them, so the comparison sees
   differences). Limit: those shaders use neither transform feedback nor geometry shaders, so patches 0008 and 0009 were
   not exercised by the comparison; this build is the one made from the sources here.
+- Replaced by PR #1917's own build (2026-11-09: patch 0010, one-lane subgroup operations in vertex shaders). It was checked
+  the same way: a rebuild from this repository's sources with the .NET SDK 10.0.401 and this build, replaying the 4,356
+  Tears of the Kingdom variants, gave 17,420 byte-identical files (Ori's translator differs in 12,635). Limit: those
+  shaders do not use subgroup operations in vertex shaders, so patch 0010 itself was not exercised. The rebuild was not
+  committed (git on the maintainer's Mac was killed whenever it hashed that file), so the binary here is the contributor's.
 - NativeAOT builds are not byte-for-byte reproducible across folders (paths end up in the binary), so a rebuild gets a
   different hash; what matters is that it translates the same. Check a rebuild by replaying a shader cache through
   both programs and comparing every MSL, SPIR-V and reflection file.
