@@ -51,14 +51,22 @@ static int netbp_region(const void *mem, uint64_t f, NSUInteger *w, NSUInteger *
     return 0;
 }
 static int netbp_tid(int slot, int image) { return image ? (slot < 32 ? (int)(S.img[5][slot] & 0xfffff) : 0) : (slot < 128 ? (int)(S.tex[5][slot] & 0xfffff) : 0); }
-static id<MTLTexture> netbp_tex(int tid, int image) { void *tv = NULL; if (tid) (void)(image ? image_fast_rid(tid, &tv) : tex_fast_rid(tid, &tv)); return (__bridge id<MTLTexture>)tv; }
+/* The texture table (g_treg) is reallocated when a game thread registers a texture past its end (mtl_reg_tex, under g_rmu):
+   these run on the replay thread, so every read takes the lock (as TOTK's tex_fast_lk, 9280ef3f; g_rmu is reentrant). */
+static id<MTLTexture> netbp_tex(int tid, int image) {
+    void *tv = NULL;
+    if (tid) { if (image) { registry_lock(); (void)image_fast_rid(tid, &tv); registry_unlock(); } else (void)tex_fast_rid_lk(tid, &tv); }
+    return (__bridge id<MTLTexture>)tv;
+}
+static uint64_t netbp_serial(int tid) { registry_lock(); uint64_t s = tid > 0 && tid < g_ntreg ? g_treg[tid].t.serial : 0; registry_unlock(); return s; }
+static const void *netbp_mem(int tid) { registry_lock(); const void *m = tid > 0 && tid < g_ntreg ? (const void *)g_treg[tid].t.mem : NULL; registry_unlock(); return m; }
 /* The network: a dispatch that samples C in the frame a335c1db wrote it. Its image binding is O. */
 static int netbp_is_network_c(NvShader *cs, int *o_slot, uint64_t c_serial);
 static int netbp_is_network(NvShader *cs, int *o_slot) { return netbp_is_network_c(cs, o_slot, g_nb_c_serial); }
 static int netbp_is_network_c(NvShader *cs, int *o_slot, uint64_t c_serial) {
     int reads_c = 0; *o_slot = -1;
     for (int i = 0; i < cs->rf.nb; i++) { const nvn_rbind *b = &cs->rf.b[i];
-        if (b->kind == NVN_RB_TEX) { int tid = netbp_tid(b->reg, 0); if (tid && tid < g_ntreg && g_treg[tid].t.serial == c_serial) reads_c = 1; }
+        if (b->kind == NVN_RB_TEX) { int tid = netbp_tid(b->reg, 0); if (tid && netbp_serial(tid) == c_serial) reads_c = 1; }
         else if (b->kind == NVN_RB_IMG && *o_slot < 0) *o_slot = b->reg; }
     return reads_c && *o_slot >= 0;
 }
@@ -66,7 +74,8 @@ static _Atomic uint32_t g_scene_w, g_scene_h;   // the FPS panel's internal reso
 /* a335c1db reads T, the frame's tonemapped picture: T's rendered region is the size the game rendered this frame. */
 static void netbp_publish_internal(void) {
     int tt = netbp_tid(NB_T_SLOT, 0); NSUInteger w = 0, h = 0;
-    if (tt && tt < g_ntreg && netbp_region((const void *)g_treg[tt].t.mem, atomic_load(&g_cur_frame), &w, &h)) { atomic_store(&g_scene_w, (uint32_t)w); atomic_store(&g_scene_h, (uint32_t)h); }
+    const void *mem = netbp_mem(tt);
+    if (mem && netbp_region(mem, atomic_load(&g_cur_frame), &w, &h)) { atomic_store(&g_scene_w, (uint32_t)w); atomic_store(&g_scene_h, (uint32_t)h); }
 }
 /* 1: this dispatch is skipped or replaced; 0: it runs as usual. Called on the replay thread before the dispatch. */
 /* The UI of a frame (2026-11-09, the aspect ratio's UI squeeze): the draws into O, the canvas the network writes, after the
@@ -78,9 +87,9 @@ static int oot_ui_draw(void) {
 }
 static void netbp_note_ui(NvShader *cs) {
     uint64_t f = atomic_load(&g_cur_frame);
-    if (!strncmp(cs->key, NB_MIX_KEY, 16)) { int tc = netbp_tid(NB_C_SLOT, 1); g_ui_c_serial = tc && tc < g_ntreg ? g_treg[tc].t.serial : 0; g_ui_mix_frame = f; return; }
+    if (!strncmp(cs->key, NB_MIX_KEY, 16)) { int tc = netbp_tid(NB_C_SLOT, 1); g_ui_c_serial = tc ? netbp_serial(tc) : 0; g_ui_mix_frame = f; return; }
     int o_slot; if (g_ui_mix_frame != f || !g_ui_c_serial || !netbp_is_network_c(cs, &o_slot, g_ui_c_serial)) return;
-    int to = netbp_tid(o_slot, 1); if (to && to < g_ntreg) { g_ui_canvas = g_treg[to].t.serial; g_ui_frame = f; }
+    int to = netbp_tid(o_slot, 1); uint64_t canvas = to ? netbp_serial(to) : 0; if (canvas) { g_ui_canvas = canvas; g_ui_frame = f; }
     g_ui_mix_frame = ~0ull;
 }
 static int netbp_dispatch(NvShader *cs) {
@@ -91,8 +100,8 @@ static int netbp_dispatch(NvShader *cs) {
     if (!strncmp(cs->key, NB_PREP_KEY, 16)) { if (g_nb_ready) { g_nb_skip_frame = f; return 1; } return 0; }
     if (!strncmp(cs->key, NB_MIX_KEY, 16)) {
         int tt = netbp_tid(NB_T_SLOT, 0), tc = netbp_tid(NB_C_SLOT, 1);
-        g_nb_t = netbp_tex(tt, 0); g_nb_t_mem = tt && tt < g_ntreg ? (const void *)g_treg[tt].t.mem : NULL;
-        g_nb_c_serial = tc && tc < g_ntreg ? g_treg[tc].t.serial : 0; g_nb_mix_frame = f;
+        g_nb_t = netbp_tex(tt, 0); g_nb_t_mem = tt ? netbp_mem(tt) : NULL;
+        g_nb_c_serial = tc ? netbp_serial(tc) : 0; g_nb_mix_frame = f;
         return g_nb_skip_frame == f;
     }
     int o_slot; if (g_nb_mix_frame != f || !g_nb_c_serial || !netbp_is_network(cs, &o_slot)) return 0;
