@@ -3168,6 +3168,16 @@ static void gpu_owned_mark(uint64_t k) { pthread_mutex_lock(&g_smu); int had = t
 static int gpu_owned(uint64_t k) { pthread_mutex_lock(&g_smu); int d = totk_serial_has(&g_gpu_owned, k); pthread_mutex_unlock(&g_smu); return d; }
 
 static uint64_t *g_dead_put; static int g_dead_put_n, g_dead_put_cap; static uint64_t g_dead_put_total;
+/* OOT_DEAD_TEX=1 (diagnostic): who asks for the textures made for finalized serials (dead_put_note), how many bytes they are and
+   what making them costs; a texture is counted for the request that makes it, the first of its submission. "flag dead_dummy <mask>"
+   (independent of OOT_DEAD_TEX) gives requests by texture ID no texture instead (1 outside pool tables, 2 pool tables with a proved
+   demand set, 4 whole pool tables), to see in one session whether the picture depends on them. Direct uses of a texture object
+   (render targets, copies) are counted apart and cannot be switched off here. */
+enum { DEAD_SRC_BIND, DEAD_SRC_POOL_PROVED, DEAD_SRC_POOL_WHOLE, DEAD_SRC_DIRECT, DEAD_SRC_N };
+static _Thread_local uint8_t g_dead_src, g_dead_by_id;   // on this thread: the requester by texture ID, and whether tex_by_id_p is asking
+static uint64_t g_dead_made[DEAD_SRC_N], g_dead_bytes[DEAD_SRC_N], g_dead_skipped[DEAD_SRC_N], g_dead_unique; static totk_serial_set g_dead_seen;
+static _Atomic uint64_t g_dead_ns; static _Atomic int g_dead_dummy;
+static int dead_stat_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("OOT_DEAD_TEX"); on = e && *e && strcmp(e, "0"); } return on; }
 static int serial_is_dead(uint64_t k) { pthread_mutex_lock(&g_smu); int d = totk_serial_has(&g_dead_serial, k); pthread_mutex_unlock(&g_smu); return d; }
 /* 2026-10-20: a finalised serial is forgotten (dropped from g_dead_serial and g_gpu_owned) once nothing can bring it back:
    no recording copy names it (dm_nvn_pin_has_serial: only a recording's texture copy brings a serial to the replay) and
@@ -3192,8 +3202,16 @@ static void serial_forget_locked_rmu(uint64_t k) {   /* g_rmu held (g_rmu -> g_p
 }
 static inline int registry_lock(void); static inline void registry_unlock(void);
 static void serial_forget_if_unreferenced(uint64_t k) { registry_lock(); serial_forget_locked_rmu(k); registry_unlock(); }
-static void dead_put_note(uint64_t k) {
+static void dead_put_note(const tex_t *t) {
+    uint64_t k = t->serial;
     pthread_mutex_lock(&g_smu);
+    if (dead_stat_on()) {
+        int src = g_dead_by_id ? g_dead_src : DEAD_SRC_DIRECT;
+        g_dead_made[src]++; g_dead_bytes[src] += t->L.size;
+        if (!totk_serial_has(&g_dead_seen, k)) { totk_serial_add(&g_dead_seen, k);
+            if (g_dead_unique++ < 48) MLOG("[dead-tex] new: serial %llu, %ux%ux%u, format %#x, %u levels, target %d, %llu KB at %p, asked for by %s", (unsigned long long)k, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.levels, t->d.target, (unsigned long long)t->L.size >> 10, (void *)t->mem,
+                src == DEAD_SRC_BIND ? "a texture ID outside the pool tables" : src == DEAD_SRC_POOL_PROVED ? "a pool table (proved demand)" : src == DEAD_SRC_POOL_WHOLE ? "a whole pool table" : "a direct use"); }
+    }
     if (g_dead_put_n == g_dead_put_cap) { g_dead_put_cap = g_dead_put_cap ? g_dead_put_cap * 2 : 256; g_dead_put = realloc(g_dead_put, g_dead_put_cap * sizeof *g_dead_put); if (!g_dead_put) MDIE("dead-serial list"); }
     g_dead_put[g_dead_put_n++] = k; g_dead_put_total++;
     pthread_mutex_unlock(&g_smu);
@@ -3331,6 +3349,7 @@ static int diag_shader_prefix_csv_matches(const char *key,const char *prefixes) 
     }
     return 0;
 }
+static void dead_stat_print(unsigned long long frame);
 void dm_gfx_set_flag(const char *name, int v) {
     if (!strcmp(name, "arg_epoch")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_on, v != 0); MLOG("[flag] arg_epoch = %d", v != 0); return; }
     if (!strcmp(name, "arg_epoch_check")) { (void)arg_epoch_on(); atomic_store(&g_arg_epoch_check, v != 0); MLOG("[flag] arg_epoch_check = %d verified=%llu extra=%llu", v != 0, (unsigned long long)atomic_load(&g_arg_epoch_verified), (unsigned long long)atomic_load(&g_arg_epoch_extra)); return; }
@@ -3485,6 +3504,8 @@ void dm_gfx_set_flag(const char *name, int v) {
         for (int i = 0; i < dm_gfx_fx_count(); i++) if (!strcmp(name + 3, dm_gfx_fx_id(i))) { dm_gfx_fx_set(i, v != 0); return; }
         MLOG("[flag] no effect %s", name + 3); return;
     }
+    if (!strcmp(name, "dead_stats")) { dead_stat_print(atomic_load(&g_cur_frame)); return; }
+    if (!strcmp(name, "dead_dummy")) { atomic_store(&g_dead_dummy, v); MLOG("[flag] dead_dummy = %d (1 bindings, 2 pool tables with a proved demand set, 4 whole pool tables)", v); return; }
     if (!strcmp(name, "net_bypass")) { extern void netbp_set_flag(int); netbp_set_flag(v); return; }   // OOT: oot_net_bypass.inc
     if (!strncmp(name, "skipcs_", 7)) {   // the same for the dispatches of a compute shader
         const char *p = name + 7;
@@ -5011,7 +5032,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         serial_put(t->serial, pk);
         pk->owned = gpu_owned(t->serial);   // after it is in the table: a later mark finds it there (pkg_owned_locked)
         if ((pk->hashed = pkg_hashed(t))) { if (!pkg_hash_guarded(t, &pk->chash)) pk->chash = 0; pk->csub = g_sub_serial; }
-        if (serial_is_dead(t->serial)) dead_put_note(t->serial); BOTW_PKG_RENDER_ALIAS(pk, t)
+        if (serial_is_dead(t->serial)) dead_put_note(t); BOTW_PKG_RENDER_ALIAS(pk, t)
         return (__bridge void *)pk->tex;
     }
     if (have) return (__bridge void *)have;
@@ -5030,7 +5051,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         if (!mt) { RED_ONCE(39, "缓冲贴图建不出：%u 元素 格式 %#x", t->d.width, t->d.format); return NULL; }
         res_add(mt);
         serial_put(t->serial, mt);
-        if (serial_is_dead(t->serial)) dead_put_note(t->serial);
+        if (serial_is_dead(t->serial)) dead_put_note(t);
         return (__bridge void *)mt;
     }
     MTLTextureDescriptor *d = tex_desc(t, 0);
@@ -5045,7 +5066,7 @@ static void *tex_mtl_p(const tex_t *ct) {
         stor_publish(t, mt);
     }
     serial_put(t->serial, mt);
-    if (serial_is_dead(t->serial)) dead_put_note(t->serial);
+    if (serial_is_dead(t->serial)) dead_put_note(t);
     return (__bridge void *)mt;
 }
 // 内存读数行（常开、低频、封顶）：常驻内存、显卡已分配、延迟释放队列、驻留集对象数、在册内存池数 / 峰值 / 跟踪表容量、贴图重传累计。
@@ -5054,7 +5075,22 @@ static void *tex_mtl_p(const tex_t *ct) {
 // Memory readout line (always on, low frequency, capped): resident memory, GPU allocated, deferred-release queue, residency set object count, registered memory pools / peak / tracking table capacity, cumulative texture re-uploads.
 // Purpose: pin down "crashes with no log". The system gives no notice before killing a process for memory, so only readouts left beforehand can show which number kept climbing.
 // Called by the frame hook every 300 frames; printed only when resident or GPU allocated changed by ≥ 64 MB since the last line, otherwise one line every 3000 frames; capped at 400 lines per game. All integers (the frame hook runs on the guest thread's small stack, so no floating-point formatting)
+static void dead_stat_print(unsigned long long frame) {   // OOT_DEAD_TEX: per frame since the last line, in tenths (integers only, as mtl_mem_stat)
+    static uint64_t last_made[DEAD_SRC_N], last_bytes[DEAD_SRC_N], last_skipped[DEAD_SRC_N], last_ns; static unsigned long long last_frame;
+    uint64_t made[DEAD_SRC_N], bytes[DEAD_SRC_N], skipped[DEAD_SRC_N];
+    pthread_mutex_lock(&g_smu); memcpy(made, g_dead_made, sizeof made); memcpy(bytes, g_dead_bytes, sizeof bytes); uint64_t unique = g_dead_unique; pthread_mutex_unlock(&g_smu);
+    memcpy(skipped, g_dead_skipped, sizeof skipped);
+    uint64_t ns = atomic_load_explicit(&g_dead_ns, memory_order_relaxed), all_bytes = 0; unsigned long long n = frame > last_frame ? frame - last_frame : 1;
+    for (int i = 0; i < DEAD_SRC_N; i++) all_bytes += bytes[i] - last_bytes[i];
+    #define DEAD_TENTHS(d) (unsigned long long)((d) * 10 / n) / 10, (unsigned long long)((d) * 10 / n) % 10
+    MLOG("[dead-tex] F%llu, per frame since F%llu: made %llu.%llu by texture IDs outside pool tables, %llu.%llu by proved pool tables, %llu.%llu by whole pool tables, %llu.%llu by direct uses; %llu.%llu MB; %llu.%llu ms making them through texture IDs; given no texture %llu.%llu / %llu.%llu / %llu.%llu; %llu different textures so far",
+         frame, last_frame, DEAD_TENTHS(made[0] - last_made[0]), DEAD_TENTHS(made[1] - last_made[1]), DEAD_TENTHS(made[2] - last_made[2]), DEAD_TENTHS(made[3] - last_made[3]), DEAD_TENTHS(all_bytes >> 20), DEAD_TENTHS((ns - last_ns) / 1000000),
+         DEAD_TENTHS(skipped[0] - last_skipped[0]), DEAD_TENTHS(skipped[1] - last_skipped[1]), DEAD_TENTHS(skipped[2] - last_skipped[2]), (unsigned long long)unique);
+    #undef DEAD_TENTHS
+    memcpy(last_made, made, sizeof made); memcpy(last_bytes, bytes, sizeof bytes); memcpy(last_skipped, skipped, sizeof skipped); last_ns = ns; last_frame = frame;
+}
 void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {
+    if (dead_stat_on() && frame % 1800 == 0) dead_stat_print(frame);
     static unsigned long long last_rss, last_gpu, last_frame; static int lines; unsigned long long gpu = (unsigned long long)(g_dev.currentAllocatedSize >> 20);
     unsigned long long dr = rss_mb > last_rss ? rss_mb - last_rss : last_rss - rss_mb, dg = gpu > last_gpu ? gpu - last_gpu : last_gpu - gpu;
     if (lines >= 400 || (lines && dr < 64 && dg < 64 && frame - last_frame < 3000)) return; lines++; last_rss = rss_mb; last_gpu = gpu; last_frame = frame;
@@ -7649,10 +7685,11 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
         }
     }
     rp->dead_pending = (uint8_t)dead;
+    if (dead && !rp->view && (atomic_load_explicit(&g_dead_dummy, memory_order_relaxed) >> g_dead_src & 1)) { g_dead_skipped[g_dead_src]++; return NULL; }   // diagnostic (flag dead_dummy)
     /* TOTK: the stored view is compared by pointer (cur, view_parent: no retain, no parentTexture message); a strong local
        was a retain + release each time a guest write or serial step sent a bound texture through here. */
     if (rp->view) {   // 序号表或客体内存有过变动：核基贴图是否被重传换新，换了则视图作废 | The serial table or guest memory has changed: check whether the base texture was re-uploaded and replaced; if so the view is invalidated
-        __unsafe_unretained id<MTLTexture> cur = tex_mtl(&rp->t);   // held by the serial table / its NvPkg
+        g_dead_by_id = 1; __unsafe_unretained id<MTLTexture> cur = tex_mtl(&rp->t); g_dead_by_id = 0;   // held by the serial table / its NvPkg
         if (g_tex_prepare_split) return NULL;
         if ((cur || g_upstream_negative==1) && ((__bridge void *)cur == rp->view || (__bridge void *)cur == rp->view_parent)) { rp->view_ser = sg; rp->view_pkg = treg_kind(&rp->t); rp->view_dirty = rp->view_pkg == 2 || (rp->view_pkg == 1 && tex_check_once()) ? g_sub_serial : dg; return rp->view; }
         treg_clear_view_locked(tid);
@@ -7660,7 +7697,9 @@ static void *tex_by_id_p(int tid) {   // 调用方持 g_rmu | Caller holds g_rmu
     id<MTLTexture> v = nil;
     treg_t r = *rp;
     if (!r.has_v) memset(&r.v, 0, sizeof r.v);   // only a registered view may change format, levels, layers or target
-    id<MTLTexture> base = tex_mtl(&rp->t);
+    uint64_t dead_t0 = dead && dead_stat_on() ? clock_gettime_nsec_np(CLOCK_UPTIME_RAW) : 0, dead_made0 = g_dead_put_total;
+    g_dead_by_id = 1; id<MTLTexture> base = tex_mtl(&rp->t); g_dead_by_id = 0;
+    if (dead_t0 && g_dead_put_total != dead_made0) atomic_fetch_add_explicit(&g_dead_ns, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - dead_t0, memory_order_relaxed);
     if (!base) return NULL;
     v = base;
     MTLTextureSwizzleChannels vsw = MTLTextureSwizzleChannelsDefault;
@@ -11741,7 +11780,7 @@ static uint64_t descriptor_pool_gpu_need_c(const nvn_rbind *binding,const uint64
                 g_descriptor_pool_type_skips++;
                 if(!r->view&&!serial_ptr(r->t.serial))g_descriptor_pool_uncreated_skips++;
             }else if(r->view||mtl_addr_known((uint64_t)r->t.mem,r->t.L.size?r->t.L.size:1)){
-                void *view=NULL;uint64_t rid=tex_fast_rid(id_,&view);
+                void *view=NULL;g_dead_src=need?DEAD_SRC_POOL_PROVED:DEAD_SRC_POOL_WHOLE;uint64_t rid=tex_fast_rid(id_,&view);g_dead_src=DEAD_SRC_BIND;
                 if(g_tex_prepare_split){descriptor_profile_pool(&dp,full,checked,buffer!=nil,1,atomic_load(&g_ser_gen),g_descriptor_revision,g_sub_serial);free(changed);if(replace){free(cpu_mask);free(dead_mask);free(trans_mask);}return 0;}
                 if(view&&((__bridge id<MTLTexture>)view).textureType==binding->dtt)value=rid;
                 if(!view)dead_mask[w]|=bit;
