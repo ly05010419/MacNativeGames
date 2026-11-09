@@ -72,7 +72,7 @@ const char *dm_gfx_fx_id(int i) { return i >= 0 && i < FX_N ? k_fx[i].id : ""; }
 const char *dm_gfx_fx_name(int i, int english) { return i >= 0 && i < FX_N ? (english ? k_fx[i].en : k_fx[i].zh) : ""; }
 int dm_gfx_fx_available(int i) {
 #if defined(GAME_BOTW190)
-    return (i == FX_AO && ssao_on()) || i == FX_GRASS;   // grass: its own key pair above; the others' keys are TOTK's; AO is the AO patch's own switch (0eeb23f2's c1[3].w)
+    return (i == FX_AO && ssao_on()) || i == FX_GRASS || i == FX_SHADOW;   // grass: its own key pair above; the others' keys are TOTK's; AO is the AO patch's own switch (0eeb23f2's c1[3].w), shadows the comparison samplers (its shadow pre-pass compares by sampler; the AO patch's bit 1 is TOTK's only)
 #elif defined(GAME_BOTW)
     (void)i; return 0;   // the keys are TOTK's
 #else
@@ -84,6 +84,12 @@ void dm_gfx_fx_set(int i, int on) {
     if (!dm_gfx_fx_available(i)) return;
     if (on) atomic_fetch_and(&g_fx_off, ~(1u << i)); else atomic_fetch_or(&g_fx_off, 1u << i);
     if (i == FX_AO) ssao_set_off(!on);
-    if (i == FX_SHADOW) { extern void dm_gfx_shadow_samplers_off(int off); ssao_set_shadow_off(!on); dm_gfx_shadow_samplers_off(!on); }
+    if (i == FX_SHADOW) {
+        extern void dm_gfx_shadow_samplers_off(int off);
+#ifndef GAME_BOTW
+        ssao_set_shadow_off(!on);   // TOTK's shadow pre-pass term (AO patch bit 1); Breath of the Wild's compares by sampler
+#endif
+        dm_gfx_shadow_samplers_off(!on);
+    }
     MLOG("[fx] %s %s", k_fx[i].id, on ? "on" : "off");
 }
