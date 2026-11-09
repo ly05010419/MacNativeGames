@@ -10494,7 +10494,7 @@ static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, in
                    Metal needs a matching texture type in the argument buffer, so bind a cached 1-slice view of the right type. */
                 id<MTLTexture> av = tex_type_view(t, (MTLTextureType)b->dtt);
                 if (av) { t = av; trid = av.gpuResourceID._impl; } }
-            if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial, sh, reg, (int)(S.tex[nvn_stage][reg] >> 20)); if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
+            if (t && tid && tid < g_ntreg && R.has_rt) { id<MTLTexture> mv = mip_feedback_view(t, g_treg[tid].t.serial, sh, reg, b->fetch ? 0 : (int)(S.tex[nvn_stage][reg] >> 20)); /* a slot the shader also reads by integer texel coordinates (read(..., 0)) keeps every level below: a one-level view would move its level 0 */ if (mv) { t = mv; trid = mv.gpuResourceID._impl; } }
             if (g_mfxup_out && (__bridge void *)sh == (__bridge void *)g_mfxup_sh && t == g_mfxup_src) { t = g_mfxup_out; trid = t.gpuResourceID._impl; }   // TOTK_MFX_UPSCALE
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
