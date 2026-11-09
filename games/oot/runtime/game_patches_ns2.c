@@ -433,7 +433,8 @@ static void *oot_canvas_flip(void *arg) {
    upscale between them is the game's network or MetalFX, as the "Upscaler" row says. Docked scales move in steps; these were
    measured (claude/oot-depth-unify g34, g36): 0.6667 gives 854x480 in 1280x720 and 1280x720 in 1920x1080, 0.75 gives 1920x1080
    in 2560x1440. 6 and 7 need a 4K canvas, which crashes at scale 1 (issues_lessons 2026-11-09): not in the list.
-   0, the default (user 2026-11-09), is 854x480 in 1280x720; 8 is the same (saved by an earlier list). 9 keeps the canvas the
+   0 is 854x480 in 1280x720 and 8 the same (saved by an earlier list); with no choice saved the settings panel starts 2,
+   1280x720 in 1920x1080 (user 2026-11-09: the Mac default, with MetalFX). 9 keeps the canvas the
    game computes (docked 2048x1152) with patch_oot_fixed_res's scale (1536x864): not the game's own picture, which is dynamic
    resolution; not listed (user 2026-11-09), "flag oot_canvas 9" only. */
 void runtime_oot_canvas_set(int index, int live) {
